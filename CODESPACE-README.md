@@ -5,7 +5,7 @@ This repository is optimized for GitHub Codespaces with powerful hardware specif
 ## 🔧 Hardware Specifications
 
 - **CPU**: 4 cores (Premium Linux)
-- **RAM**: 8GB 
+- **RAM**: 8GB
 - **Storage**: 64GB SSD
 - **GPU**: Enabled for WebGL/3D acceleration
 
@@ -36,7 +36,7 @@ cd /workspaces/project2
 npm run dev -- --port 3001
 
 # Terminal 3 - Project 3 (Port 3002)
-cd /workspaces/project3  
+cd /workspaces/project3
 npm run dev -- --port 3002
 ```
 
@@ -67,7 +67,7 @@ npm run performance
 
 This shows:
 - CPU usage
-- Memory consumption  
+- Memory consumption
 - Disk space
 - Active Node processes
 
@@ -161,6 +161,6 @@ npm run setup-dev
 
 ---
 
-**💻 Enjoy your powerful cloud development environment!** 
+**💻 Enjoy your powerful cloud development environment!**
 
 Your codespace is configured for optimal performance with multiple concurrent projects. The premium hardware ensures smooth development experience even with resource-intensive 3D applications.

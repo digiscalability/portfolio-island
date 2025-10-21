@@ -153,15 +153,15 @@ renderer.startRenderLoop(scene, camera, (deltaTime) => {
   const moveInput = inputManager.getMovementInput();
   const cameraInput = inputManager.getCameraInput();
   const jumpInput = inputManager.getJumpInput();
-  
+
   // 2. Apply to scene
   scene.setPlayerMovement(moveInput.forward, moveInput.strafe);
   if (jumpInput) scene.playerJump();
   scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
-  
+
   // 3. Update scene (physics, camera, all systems)
   scene.update(deltaTime);
-  
+
   // 4. Renderer handles drawing automatically
 });
 ```
@@ -352,7 +352,7 @@ curl -O https://raw.githubusercontent.com/digiscalability/portfolio-island/maste
 - **VS Code**: `http://VM_IP:8080`
 - **Portfolio Island**: `http://VM_IP:3000`
 - **Project 2**: `http://VM_IP:3001`
-- **Project 3**: `http://VM_IP:3002` 
+- **Project 3**: `http://VM_IP:3002`
 - **Project 4**: `http://VM_IP:3003`
 
 ## VM Cost Optimization
