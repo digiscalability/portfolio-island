@@ -1,0 +1,36 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Assets folder - public read, owner write
+    match /assets/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == 'ZNrmHgQcluNjOVl9pActQ4G1T002';
+    }
+
+    // Uploads folder - authenticated users can upload
+    match /uploads/{userId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Models folder - public read, owner write
+    match /models/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == 'ZNrmHgQcluNjOVl9pActQ4G1T002';
+    }
+
+    // Textures folder - public read, owner write
+    match /textures/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == 'ZNrmHgQcluNjOVl9pActQ4G1T002';
+    }
+
+    // Audio folder - public read, owner write
+    match /audio/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == 'ZNrmHgQcluNjOVl9pActQ4G1T002';
+    }
+  }
+}
+
