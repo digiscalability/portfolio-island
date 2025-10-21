@@ -1,0 +1,138 @@
+{
+  "name": "DigiScalability Portfolio Island - Optimized",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:18",
+  
+  // Hardware Configuration - Request powerful machine
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  
+  // Features for enhanced development
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "18"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+
+  // VSCode Extensions optimized for your workflow
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Essential for TypeScript/JavaScript
+        "ms-vscode.vscode-typescript-next",
+        "bradlc.vscode-tailwindcss",
+        "esbenp.prettier-vscode",
+        "ms-vscode.vscode-eslint",
+        
+        // 3D/WebGL Development
+        "slevesque.shader",
+        "raczzalan.webgl-glsl-editor",
+        
+        // Git & GitHub
+        "github.vscode-pull-request-github",
+        "github.github-vscode-theme",
+        "github.copilot",
+        "github.copilot-chat",
+        
+        // Productivity & Multi-project management
+        "ms-vscode.project-manager",
+        "alefragnani.bookmarks",
+        "gruntfuggly.todo-tree",
+        "aaron-bond.better-comments",
+        
+        // Performance & Debugging
+        "ms-vscode.vscode-json",
+        "christian-kohler.path-intellisense",
+        "visualstudioexptteam.vscodeintellicode",
+        
+        // Firebase & Deployment
+        "toba.vsfire",
+        "ms-vscode.azure-account"
+      ],
+      
+      "settings": {
+        // Performance optimizations
+        "typescript.preferences.maxInlayHintLength": 30,
+        "typescript.updateImportsOnFileMove.enabled": "always",
+        "editor.inlayHints.enabled": "on",
+        "editor.bracketPairColorization.enabled": true,
+        
+        // Multi-project workspace settings
+        "workbench.startupEditor": "welcomePageInEmptyWorkbench",
+        "explorer.compactFolders": false,
+        "search.exclude": {
+          "**/node_modules": true,
+          "**/assets/**/*.fbx": true,
+          "**/assets/**/*.bin": true,
+          "**/.git": true
+        },
+        
+        // Memory optimization for large projects
+        "typescript.preferences.includePackageJsonAutoImports": "auto",
+        "typescript.suggest.autoImports": true,
+        "files.watcherExclude": {
+          "**/.git/objects/**": true,
+          "**/.git/subtree-cache/**": true,
+          "**/node_modules/*/**": true,
+          "**/assets/**/*.fbx": true,
+          "**/assets/**/*.gltf": true,
+          "**/assets/**/*.bin": true
+        }
+      }
+    }
+  },
+
+  // Ports for development servers
+  "forwardPorts": [3000, 5173, 8080, 4000, 9005],
+  "portsAttributes": {
+    "3000": {
+      "label": "Vite Dev Server",
+      "onAutoForward": "openPreview"
+    },
+    "5173": {
+      "label": "Vite Alt Port",
+      "onAutoForward": "openPreview"
+    },
+    "4000": {
+      "label": "Firebase Emulator",
+      "onAutoForward": "notify"
+    }
+  },
+
+  // Lifecycle hooks
+  "postCreateCommand": "npm install && npm run setup-dev",
+  "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
+
+  // Mount additional workspace for multiple projects
+  "mounts": [
+    "source=/workspaces,target=/workspaces,type=bind,consistency=cached"
+  ],
+
+  // Environment variables
+  "containerEnv": {
+    "NODE_ENV": "development",
+    "FORCE_COLOR": "1",
+    "NPM_CONFIG_COLOR": "always"
+  },
+
+  // Performance optimizations
+  "runArgs": [
+    "--memory=6g",
+    "--cpus=3",
+    "--shm-size=1g"
+  ],
+
+  // User settings
+  "remoteUser": "node",
+  
+  // Enable GPU acceleration for WebGL/3D work
+  "runArgs": ["--gpus", "all"]
+}
