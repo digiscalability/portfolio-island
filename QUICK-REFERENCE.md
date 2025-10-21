@@ -306,3 +306,57 @@ console.log(player.getWorldPosition());
 ---
 
 **Status**: This simplified architecture is production-ready. Add features by creating new components that follow the same patterns.
+
+# 🚀 GCP VM Quick Reference
+
+## Essential VM Commands
+
+### VM Management (run from your local machine)
+```bash
+# Create VM
+gcloud compute instances create digiscale-dev-vm --zone=us-central1-a --machine-type=e2-standard-4 --boot-disk-size=100GB --boot-disk-type=pd-ssd --image-family=ubuntu-2204-lts --image-project=ubuntu-os-cloud --tags=http-server,https-server
+
+# SSH into VM
+gcloud compute ssh digiscale-dev-vm --zone=us-central1-a
+
+# Start/Stop VM
+gcloud compute instances start digiscale-dev-vm --zone=us-central1-a
+gcloud compute instances stop digiscale-dev-vm --zone=us-central1-a
+
+# Get VM IP
+gcloud compute instances describe digiscale-dev-vm --zone=us-central1-a --format='get(networkInterfaces[0].accessConfigs[0].natIP)'
+```
+
+### Setup Firewall (run once)
+```bash
+gcloud compute firewall-rules create allow-code-server --allow tcp:8080 --source-ranges 0.0.0.0/0
+gcloud compute firewall-rules create allow-dev-ports --allow tcp:3000-3010 --source-ranges 0.0.0.0/0
+```
+
+### On VM Setup Commands
+```bash
+# Setup development environment
+curl -O https://raw.githubusercontent.com/digiscalability/portfolio-island/master/gcp-vm-setup.sh && chmod +x gcp-vm-setup.sh && ./gcp-vm-setup.sh
+
+# Clone additional projects
+curl -O https://raw.githubusercontent.com/digiscalability/portfolio-island/master/clone-all-projects.sh && chmod +x clone-all-projects.sh && ./clone-all-projects.sh
+
+# Start all projects
+~/workspace/start-all-projects.sh
+
+# Monitor performance
+~/workspace/monitor.sh
+```
+
+## VM Access URLs
+- **VS Code**: `http://VM_IP:8080`
+- **Portfolio Island**: `http://VM_IP:3000`
+- **Project 2**: `http://VM_IP:3001`
+- **Project 3**: `http://VM_IP:3002` 
+- **Project 4**: `http://VM_IP:3003`
+
+## VM Cost Optimization
+- **Running**: ~$2.40/day
+- **Stopped**: ~$1.20/day (storage only)
+- **Monthly (always on)**: ~$70
+- **Monthly (8hrs/day)**: ~$40
