@@ -74,7 +74,7 @@ run_project() {
     local project_path=$1
     local project_name=$2
     local port=$3
-    
+
     echo "Starting $project_name on port $port..."
     cd "$project_path"
     npm run dev -- --port $port --host 0.0.0.0 &
