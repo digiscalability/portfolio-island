@@ -1,0 +1,13 @@
+# GitHub Codespaces Configuration
+# This file configures the default machine type for your codespace
+
+# Request a powerful machine for development
+# Available sizes: basicLinux32gb, standardLinux32gb, premiumLinux64gb
+CODESPACE_MACHINE=premiumLinux64gb
+
+# Enable prebuilds for faster startup
+CODESPACE_PREBUILD=true
+
+# Environment variables
+NODE_ENV=development
+VITE_PORT=3000
