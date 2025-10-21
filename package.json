@@ -1,0 +1,24 @@
+{
+  "name": "digiscalability-life-island",
+  "version": "1.0.0",
+  "description": "An immersive 3D interactive experience - DigiScalability Life Island",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/three": "^0.180.0",
+    "typescript": "^5.9.3",
+    "vite": "^5.0.0"
+  },
+  "private": true
+}

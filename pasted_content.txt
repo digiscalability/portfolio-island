@@ -1,0 +1,94 @@
+Text file: pasted_content.txt
+Latest content with line numbers:
+1	Create a full-stack project called "DigiScalability Life Island".
+2	
+3	Purpose:
+4	A 3D interactive island that represents my life, business, hobbies, and achievements. 
+5	Visitors can explore the island, interact with objects, ask questions, leave feedback, and schedule appointments. 
+6	The experience should feel like visiting a living digital version of me and my world.
+7	
+8	Frontend stack:
+9	- Three.js (r180+)
+10	- TypeScript + Vite
+11	- Firebase SDK (v10+)
+12	- WebGL shaders (toon, outline, water)
+13	- React or vanilla Three.js + UI overlay (based on configuration)
+14	
+15	Backend stack:
+16	- Firebase Firestore (data)
+17	- Firebase Authentication (optional sign-in for visitors)
+18	- Firebase Functions (chat, appointments, notifications)
+19	- Firebase Storage (assets and uploads)
+20	- Firebase Hosting (deploy)
+21	- Firebase Cloud Messaging (notifications)
+22	- Firebase Extensions (Calendar sync via Google Calendar API)
+23	
+24	Core data models:
+25	- users/{uid}/profile
+26	- islands/{island_id}/zones  — business, hobbies, achievements, contact
+27	- visitors/{visitor_id}/feedback
+28	- appointments/{appointment_id}
+29	- conversations/{chat_id}
+30	
+31	UI/UX requirements:
+32	- Entry screen: “Welcome to My Island”
+33	- Character selection or free-fly camera
+34	- Interactive zones:
+35	  1. Business Hub (DigiScalability projects, AI products)
+36	  2. Hobby Cove (music, art, writing, fitness)
+37	  3. Achievement Hall (timeline, milestones)
+38	  4. Memory Garden (personal stories)
+39	  5. Contact Dock (chat, feedback, appointment booking)
+40	- 3D floating labels or portals for each zone
+41	- On-click interaction panels (React or HTML overlays)
+42	- Voice or text Q&A powered by Firebase Function + Gemini API
+43	- Appointment booking integrated with Google Calendar API
+44	- Feedback stored in Firestore
+45	- Visitor tracking via Analytics
+46	
+47	Gameplay and interactions:
+48	- Explore island freely using WASD or touch controls
+49	- Object interactions via raycast triggers
+50	- Chat window overlay connects to AI agent
+51	- Visitors can:
+52	  - Ask questions about your life/work/hobbies
+53	  - Leave feedback or comments
+54	  - Schedule a meeting or call
+55	  - Subscribe for updates or newsletters
+56	- Use Firebase Functions for serverless message routing and appointment scheduling
+57	- Optional multi-user exploration via Firestore presence
+58	
+59	Architecture:
+60	src/
+61	 ├── core/Engine.ts
+62	 ├── world/Island.ts
+63	 ├── world/Zones.ts
+64	 ├── gameplay/InteractionSystem.ts
+65	 ├── systems/ChatSystem.ts
+66	 ├── systems/AppointmentSystem.ts
+67	 ├── ui/Menu.ts
+68	 ├── ui/FeedbackPanel.ts
+69	 ├── ui/AppointmentPanel.ts
+70	 ├── shaders/
+71	 └── assets/
+72	
+73	Environment:
+74	- Ambient soundscape (WebAudio API)
+75	- Day/night lighting cycle
+76	- Optional water and cloud shaders
+77	- Optimized for 60 FPS desktop/mobile
+78	
+79	Firebase setup:
+80	- Authentication (anonymous + Google login)
+81	- Firestore rules: visitors read-only, owner full control
+82	- Functions: AI Q&A, appointment scheduling, feedback notifications
+83	- Hosting + SSL domain
+84	- Analytics, Performance, Crashlytics enabled
+85	
+86	Deployment:
+87	- Ready-to-run on Firebase Hosting
+88	- Output message: “DigiScalability Life Island generated successfully”
+89	
+90	Goal:
+91	Generate the full scaffold (frontend + backend + CI/CD setup) with placeholder assets and interaction templates ready for extension.
+92	

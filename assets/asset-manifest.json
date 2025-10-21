@@ -1,0 +1,36 @@
+{
+  "textures": [
+    "title-handdrawn.svg",
+    "profile-avatar.svg",
+    "project-thumbnail.svg",
+    "hobby-music.svg",
+    "hobby-art.svg",
+    "achievement-badge.svg",
+    "hdri_studio_small_1k.hdr",
+    "hdri_studio_small_01_1k.hdr",
+    "hdri_venice_sunset_1k.hdr",
+    "models/T_Eye_Brown.png",
+    "models/T_Eye_Normal.png",
+    "models/T_Hair_1_BaseColor.png",
+    "models/T_Hair_1_BaseColor_png.png",
+    "models/T_Hair_1_Normal.png",
+    "models/T_Hair_2_BaseColor.png",
+    "models/T_Hair_2_BaseColor_png.png",
+    "models/T_Hair_2_Normal.png",
+    "models/T_Superhero_Female_Dark_BaseColor.png",
+    "models/T_Superhero_Female_Normal.png",
+    "models/T_Superhero_Female_Roughness.png",
+    "models/T_Superhero_Male_Dark.png",
+    "models/T_Superhero_Male_Normal.png",
+    "models/T_Superhero_Male_Roughness.png"
+  ],
+  "audio": [
+    "cc0_trex.mp3",
+    "cc0_sample_short.mp3",
+    "cc0_example_long.mp3"
+  ],
+  "models": [
+    "models/Superhero_Female.gltf",
+    "models/Superhero_Male.gltf"
+  ]
+}

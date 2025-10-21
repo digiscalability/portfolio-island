@@ -1,0 +1,354 @@
+Text file: pasted_content_2.txt
+Latest content with line numbers:
+263	Target 60fps on mid-range devices
+264	
+265	Asset Loading
+266	
+267	Show loading screen with progress bar
+268	Preload all assets before game starts
+269	Use GLTF/GLB for compressed models
+270	Compress textures (JPEG for color, PNG for alpha)
+271	
+272	
+273	Implementation Steps
+274	Phase 1: Core Setup (Day 1)
+275	
+276	Initialize Vite project with Three.js
+277	Set up basic Three.js scene with renderer, camera, lights
+278	Create planet sphere with basic material
+279	Implement camera controller
+280	
+281	Phase 2: Player & Movement (Day 2)
+282	
+283	Load or create simple player character model
+284	Implement sphere-walking mechanics
+285	Add keyboard input handling
+286	Wire camera to follow player
+287	
+288	Phase 3: World Building (Day 3)
+289	
+290	Create house and mailbox models
+291	Place objects on planet surface with proper alignment
+292	Add trees and decorative props
+293	Implement toon shading materials
+294	
+295	Phase 4: Gameplay (Day 4)
+296	
+297	Implement delivery system logic
+298	Add mailbox interaction (proximity detection + key press)
+299	Create visual indicators for destinations
+300	Add delivery counter and win condition
+301	
+302	Phase 5: Polish (Day 5)
+303	
+304	Add character customization system
+305	Implement 3D emoji with animations
+306	Add sound effects and music
+307	Create main menu and HUD
+308	Add grain/noise post-processing effect
+309	Test and optimize performance
+310	
+311	
+312	Code Implementation Guidelines
+313	Three.js Scene Setup
+314	javascript// main.js - Scene initialization
+315	import * as THREE from 'three';
+316	import { Game } from './game/Game';
+317	
+318	const canvas = document.querySelector('#game-canvas');
+319	const renderer = new THREE.WebGLRenderer({ 
+320	  canvas, 
+321	  antialias: true 
+322	});
+323	renderer.setSize(window.innerWidth, window.innerHeight);
+324	renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+325	renderer.outputColorSpace = THREE.SRGBColorSpace;
+326	renderer.toneMapping = THREE.ACESFilmicToneMapping;
+327	
+328	const scene = new THREE.Scene();
+329	scene.background = new THREE.Color(0x87ceeb); // Sky blue
+330	
+331	const camera = new THREE.PerspectiveCamera(
+332	  60,
+333	  window.innerWidth / window.innerHeight,
+334	  0.1,
+335	  1000
+336	);
+337	camera.position.set(0, 10, 20);
+338	
+339	// Lighting for toon shading
+340	const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+341	scene.add(ambientLight);
+342	
+343	const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+344	directionalLight.position.set(5, 10, 5);
+345	scene.add(directionalLight);
+346	
+347	// Initialize game
+348	const game = new Game(scene, camera, renderer);
+349	
+350	// Animation loop
+351	function animate() {
+352	  requestAnimationFrame(animate);
+353	  game.update();
+354	  renderer.render(scene, camera);
+355	}
+356	animate();
+357	
+358	// Handle window resize
+359	window.addEventListener('resize', () => {
+360	  camera.aspect = window.innerWidth / window.innerHeight;
+361	  camera.updateProjectionMatrix();
+362	  renderer.setSize(window.innerWidth, window.innerHeight);
+363	});
+364	Planet Class
+365	javascript// game/Planet.js
+366	import * as THREE from 'three';
+367	
+368	export class Planet {
+369	  constructor(radius = 15) {
+370	    this.radius = radius;
+371	    this.mesh = this.createPlanet();
+372	  }
+373	
+374	  createPlanet() {
+375	    const geometry = new THREE.SphereGeometry(this.radius, 64, 64);
+376	    
+377	    // Toon material
+378	    const material = new THREE.MeshToonMaterial({
+379	      color: 0x88dd88,
+380	      gradientMap: this.createGradientMap()
+381	    });
+382	
+383	    const mesh = new THREE.Mesh(geometry, material);
+384	    mesh.receiveShadow = true;
+385	    return mesh;
+386	  }
+387	
+388	  createGradientMap() {
+389	    const colors = new Uint8Array([0, 128, 255]);
+390	    const gradientMap = new THREE.DataTexture(colors, 3, 1, THREE.RedFormat);
+391	    gradientMap.minFilter = THREE.NearestFilter;
+392	    gradientMap.magFilter = THREE.NearestFilter;
+393	    gradientMap.needsUpdate = true;
+394	    return gradientMap;
+395	  }
+396	
+397	  getCenter() {
+398	    return this.mesh.position.clone();
+399	  }
+400	
+401	  getSurfaceNormal(position) {
+402	    return position.clone()
+403	      .sub(this.getCenter())
+404	      .normalize();
+405	  }
+406	}
+407	Player Class
+408	javascript// game/Player.js
+409	import * as THREE from 'three';
+410	
+411	export class Player {
+412	  constructor(planet) {
+413	    this.planet = planet;
+414	    this.mesh = this.createCharacter();
+415	    this.speed = 3;
+416	    this.velocity = new THREE.Vector3();
+417	    
+418	    // Position on top of planet
+419	    this.mesh.position.set(0, planet.radius + 1, 0);
+420	  }
+421	
+422	  createCharacter() {
+423	    // Simple capsule character for MVP
+424	    const group = new THREE.Group();
+425	    
+426	    // Body
+427	    const bodyGeometry = new THREE.CapsuleGeometry(0.3, 1, 8, 16);
+428	    const bodyMaterial = new THREE.MeshToonMaterial({ color: 0xff6b6b });
+429	    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+430	    body.position.y = 0.5;
+431	    group.add(body);
+432	    
+433	    // Head
+434	    const headGeometry = new THREE.SphereGeometry(0.4, 16, 16);
+435	    const headMaterial = new THREE.MeshToonMaterial({ color: 0xffddaa });
+436	    const head = new THREE.Mesh(headGeometry, headMaterial);
+437	    head.position.y = 1.5;
+438	    group.add(head);
+439	    
+440	    group.castShadow = true;
+441	    return group;
+442	  }
+443	
+444	  update(input, deltaTime) {
+445	    // Movement direction in local space
+446	    const moveDirection = new THREE.Vector3();
+447	    if (input.forward) moveDirection.z -= 1;
+448	    if (input.backward) moveDirection.z += 1;
+449	    if (input.left) moveDirection.x -= 1;
+450	    if (input.right) moveDirection.x += 1;
+451	    
+452	    if (moveDirection.length() > 0) {
+453	      moveDirection.normalize();
+454	      
+455	      // Apply movement in character's local space
+456	      const worldDirection = moveDirection.applyQuaternion(this.mesh.quaternion);
+457	      this.mesh.position.add(worldDirection.multiplyScalar(this.speed * deltaTime));
+458	    }
+459	    
+460	    // Stick to planet surface
+461	    this.stickToPlanet();
+462	  }
+463	
+464	  stickToPlanet() {
+465	    const planetCenter = this.planet.getCenter();
+466	    const surfaceNormal = this.mesh.position.clone()
+467	      .sub(planetCenter)
+468	      .normalize();
+469	    
+470	    // Set position at correct radius
+471	    this.mesh.position.copy(
+472	      planetCenter.add(surfaceNormal.multiplyScalar(this.planet.radius + 1))
+473	    );
+474	    
+475	    // Align to surface
+476	    const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(
+477	      new THREE.Vector3(0, 1, 0),
+478	      surfaceNormal
+479	    );
+480	    this.mesh.quaternion.slerp(targetQuaternion, 0.2);
+481	  }
+482	}
+483	Input Manager
+484	javascript// utils/InputManager.js
+485	export class InputManager {
+486	  constructor() {
+487	    this.keys = {
+488	      forward: false,
+489	      backward: false,
+490	      left: false,
+491	      right: false,
+492	      action: false
+493	    };
+494	    
+495	    this.setupListeners();
+496	  }
+497	
+498	  setupListeners() {
+499	    window.addEventListener('keydown', (e) => this.handleKeyDown(e));
+500	    window.addEventListener('keyup', (e) => this.handleKeyUp(e));
+501	  }
+502	
+503	  handleKeyDown(e) {
+504	    switch(e.key.toLowerCase()) {
+505	      case 'w': case 'arrowup': this.keys.forward = true; break;
+506	      case 's': case 'arrowdown': this.keys.backward = true; break;
+507	      case 'a': case 'arrowleft': this.keys.left = true; break;
+508	      case 'd': case 'arrowright': this.keys.right = true; break;
+509	      case 'e': case ' ': this.keys.action = true; break;
+510	    }
+511	  }
+512	
+513	  handleKeyUp(e) {
+514	    switch(e.key.toLowerCase()) {
+515	      case 'w': case 'arrowup': this.keys.forward = false; break;
+516	      case 's': case 'arrowdown': this.keys.backward = false; break;
+517	      case 'a': case 'arrowleft': this.keys.left = false; break;
+518	      case 'd': case 'arrowright': this.keys.right = false; break;
+519	      case 'e': case ' ': this.keys.action = false; break;
+520	    }
+521	  }
+522	
+523	  getInput() {
+524	    return { ...this.keys };
+525	  }
+526	}
+527	Game Controller
+528	javascript// game/Game.js
+529	import { Planet } from './Planet';
+530	import { Player } from './Player';
+531	import { InputManager } from '../utils/InputManager';
+532	import { DeliverySystem } from './DeliverySystem';
+533	import { Camera } from './Camera';
+534	
+535	export class Game {
+536	  constructor(scene, camera, renderer) {
+537	    this.scene = scene;
+538	    this.camera = camera;
+539	    this.renderer = renderer;
+540	    
+541	    this.clock = new THREE.Clock();
+542	    this.inputManager = new InputManager();
+543	    
+544	    this.init();
+545	  }
+546	
+547	  init() {
+548	    // Create planet
+549	    this.planet = new Planet(15);
+550	    this.scene.add(this.planet.mesh);
+551	    
+552	    // Create player
+553	    this.player = new Player(this.planet);
+554	    this.scene.add(this.player.mesh);
+555	    
+556	    // Setup camera controller
+557	    this.cameraController = new Camera(this.camera, this.player);
+558	    
+559	    // Setup delivery system
+560	    this.deliverySystem = new DeliverySystem(this.scene, this.planet);
+561	    
+562	    // Generate world objects (houses, mailboxes, etc.)
+563	    this.generateWorld();
+564	  }
+565	
+566	  generateWorld() {
+567	    // TODO: Place houses, mailboxes, trees, NPCs on planet surface
+568	    // Use spherical coordinates to distribute evenly
+569	  }
+570	
+571	  update() {
+572	    const deltaTime = this.clock.getDelta();
+573	    const input = this.inputManager.getInput();
+574	    
+575	    // Update player
+576	    this.player.update(input, deltaTime);
+577	    
+578	    // Update camera
+579	    this.cameraController.update();
+580	    
+581	    // Update delivery system
+582	    this.deliverySystem.update(this.player, input);
+583	  }
+584	}
+585	
+586	Minimum Viable Product (MVP) Checklist
+587	Must-Have Features
+588	
+589	 Spherical planet with toon shading
+590	 Player character that walks on planet surface
+591	 WASD/Arrow key movement
+592	 Gravity toward planet center
+593	 Camera follows player (third-person)
+594	 3-5 houses placed on planet
+595	 Mailboxes at each house
+596	 Delivery mechanic (approach mailbox + press E)
+597	 Delivery counter UI
+598	 Win condition (all deliveries complete)
+599	 Basic toon/cel shading materials
+600	
+601	Nice-to-Have Features
+602	
+603	 Character customization menu
+604	 3D emoji decorations
+605	 Background music and sound effects
+606	 Particle effects on delivery
+607	 NPC characters
+608	 Walking animation
+609	 Grain/noise post-processing
+610	 Loading screen with progress
+611	
+612	Optional Enhancements
+613	
+614	(Content truncated due to size limit. Use page ranges or line ranges to read remaining content)

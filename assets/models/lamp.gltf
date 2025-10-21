@@ -1,0 +1,8 @@
+
+{
+	"asset":{
+		"generator":"Khronos glTF Blender I/O v4.0.44",
+		"version":"2.0"
+	},
+	...existing code from Lantern_Wall.gltf...
+}
