@@ -21,20 +21,27 @@ export class NPC {
     this.group.position.copy(position);
     this.group.quaternion.copy(quaternion);
     this.group.scale.setScalar(scale);
-    this.group.traverse((o: any) => { if (o.isMesh) { try { o.castShadow = true; o.receiveShadow = true; } catch (e) {} } });
+    this.group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true;
+        object.receiveShadow = true;
+      }
+    });
 
     this.animations = animations || [];
     if (this.animations.length) {
       try {
         this.mixer = new THREE.AnimationMixer(this.group);
         // prefer Idle or first clip
-        let clip = this.animations.find(a => /idle/i.test(a.name)) || this.animations[0];
+        let clip = this.animations.find((a) => /idle/i.test(a.name)) || this.animations[0];
         if (clip) {
           this.currentAction = this.mixer.clipAction(clip);
           this.currentAction.reset();
           this.currentAction.play();
         }
-      } catch (e) { this.mixer = null; }
+      } catch {
+        this.mixer = null;
+      }
     }
 
     this.basePosition = position.clone();
@@ -46,7 +53,11 @@ export class NPC {
   public update(deltaTime: number) {
     // advance animations
     if (this.mixer) {
-      try { this.mixer.update(deltaTime); } catch (e) { }
+      try {
+        this.mixer.update(deltaTime);
+      } catch {
+        /* ignore mixer update */
+      }
     }
 
     // simple state machine: idle for a bit, then walk a short random arc, then idle
@@ -73,14 +84,21 @@ export class NPC {
       // orient to surface normal and forward direction
       try {
         const up = surfacePos.clone().sub(this.islandCenter).normalize();
-        const forward = this.targetPosition.clone().sub(this.group.position).projectOnPlane(up).normalize();
+        const forward = this.targetPosition
+          .clone()
+          .sub(this.group.position)
+          .projectOnPlane(up)
+          .normalize();
         if (forward.lengthSq() > 1e-6) {
           const right = new THREE.Vector3().crossVectors(up, forward).normalize();
-          const mat = new THREE.Matrix4(); mat.makeBasis(right, up, forward);
+          const mat = new THREE.Matrix4();
+          mat.makeBasis(right, up, forward);
           const q = new THREE.Quaternion().setFromRotationMatrix(mat);
           this.group.quaternion.slerp(q, Math.min(1, deltaTime * 6.0));
         }
-      } catch (e) {}
+      } catch {
+        /* ignore orientation update */
+      }
 
       if (this.walkTimer <= 0) {
         this.endWalk();
@@ -118,14 +136,16 @@ export class NPC {
     // play walk animation if available
     try {
       if (this.mixer && this.animations.length) {
-        const clip = this.animations.find(a => /walk|run/i.test(a.name)) || this.animations[0];
+        const clip = this.animations.find((a) => /walk|run/i.test(a.name)) || this.animations[0];
         if (clip) {
-          if (this.currentAction) this.currentAction.fadeOut(0.2);
+          this.currentAction?.fadeOut(0.2);
           this.currentAction = this.mixer.clipAction(clip);
           this.currentAction.reset().fadeIn(0.2).play();
         }
       }
-    } catch (e) {}
+    } catch {
+      /* ignore animation state change */
+    }
   }
 
   private endWalk() {
@@ -139,13 +159,15 @@ export class NPC {
     // play idle animation
     try {
       if (this.mixer && this.animations.length) {
-        const clip = this.animations.find(a => /idle/i.test(a.name)) || this.animations[0];
+        const clip = this.animations.find((a) => /idle/i.test(a.name)) || this.animations[0];
         if (clip) {
-          if (this.currentAction) this.currentAction.fadeOut(0.2);
+          this.currentAction?.fadeOut(0.2);
           this.currentAction = this.mixer.clipAction(clip);
           this.currentAction.reset().fadeIn(0.2).play();
         }
       }
-    } catch (e) {}
+    } catch {
+      /* ignore animation state change */
+    }
   }
 }

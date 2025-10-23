@@ -5,6 +5,7 @@
 ## 🎯 Problem Identified
 
 The player was experiencing movement restrictions on the island due to:
+
 1. **Overly aggressive orientation correction** in `stickToIsland()`
 2. **Too restrictive movement clamping** per frame
 3. **Weak tangent plane projection** allowing velocity to "leak" off surface
@@ -20,6 +21,7 @@ The player was experiencing movement restrictions on the island due to:
 **Problem**: Quaternion slerp factor of `0.3` was too aggressive, causing player to "fight" against terrain orientation.
 
 **Fix**: Reduced to `0.08` for much gentler correction
+
 ```typescript
 // BEFORE
 this.mesh.quaternion.slerp(targetQuat, 0.3);
@@ -38,6 +40,7 @@ this.mesh.quaternion.slerp(targetQuat, orientationSmoothing);
 **Problem**: Using world-space `-Z` for forward direction ignored player's current heading
 
 **Fix**: Preserve player's current forward direction when adjusting to terrain
+
 ```typescript
 // BEFORE
 const worldForward = new THREE.Vector3(0, 0, -1);
@@ -63,6 +66,7 @@ if (forward.lengthSq() < 1e-6) {
 **Problem**: `maxMove = max(0.5, currentSpeed * deltaTime * 1.5)` was too restrictive at high speeds
 
 **Fix**: Increased multiplier and base minimum
+
 ```typescript
 // BEFORE
 const maxMove = Math.max(0.5, currentSpeed * deltaTime * 1.5);
@@ -72,6 +76,7 @@ const maxMove = Math.max(1.0, currentSpeed * deltaTime * 2.5);
 ```
 
 **Impact**:
+
 - Base minimum: 0.5 → 1.0 (+100%)
 - Speed multiplier: 1.5 → 2.5 (+67%)
 - **Result**: Smoother movement at all speeds
@@ -83,6 +88,7 @@ const maxMove = Math.max(1.0, currentSpeed * deltaTime * 2.5);
 **Problem**: `stickToIsland(0.95)` was too aggressive for smooth movement
 
 **Fix**: Reduced to `0.85`
+
 ```typescript
 // BEFORE
 this.stickToIsland(0.95);
@@ -100,6 +106,7 @@ this.stickToIsland(0.85); // Gentler correction
 **Problem**: No validation after projecting to tangent plane
 
 **Fix**: Added safety check for valid projection
+
 ```typescript
 // BEFORE
 worldDir.projectOnPlane(radial).normalize();
@@ -123,6 +130,7 @@ if (worldDir.lengthSq() > 0.01) {
 **Problem**: No check to prevent player from getting too far from island surface
 
 **Fix**: Added safety bounds enforcement
+
 ```typescript
 const center = this.island.getCenter();
 const dist = this.mesh.position.distanceTo(center);
@@ -142,6 +150,7 @@ if (dist > expectedRadius + maxDeviation || dist < expectedRadius - maxDeviation
 ```
 
 **Impact**:
+
 - Prevents falling through terrain
 - Auto-recovers from glitched positions
 - Logs warnings for debugging
@@ -151,11 +160,13 @@ if (dist > expectedRadius + maxDeviation || dist < expectedRadius - maxDeviation
 ### 7. **Enhanced Terrain Raycast Coverage (Island.ts)**
 
 **Problem**:
+
 - `maxExpectedDisplacement = 3.0` too small for peaks of `4.2`
 - Only 5 jitter angles limited hit probability
 - Ray distances too short
 
 **Fix**: Expanded raycast coverage
+
 ```typescript
 // BEFORE
 const maxExpectedDisplacement = 3.0;
@@ -169,6 +180,7 @@ far: (maxExpectedDisplacement + 3.0) + this.radius + 15
 ```
 
 **Impact**:
+
 - 50% increase in displacement detection
 - 40% more jitter angles for better coverage
 - Longer ray distances reduce misses
@@ -191,7 +203,8 @@ far: (maxExpectedDisplacement + 3.0) + this.radius + 15
 
 ## 🎮 Player Experience Improvements
 
-### Before:
+### Before
+
 - ❌ Player felt "stuck" in certain areas
 - ❌ Movement direction would suddenly change
 - ❌ Turning felt sluggish on slopes
@@ -199,7 +212,8 @@ far: (maxExpectedDisplacement + 3.0) + this.radius + 15
 - ❌ High speed movement felt clamped
 - ❌ Could fall through terrain in rare cases
 
-### After:
+### After
+
 - ✅ **Free 360° movement** across entire island
 - ✅ **Smooth orientation changes** on slopes
 - ✅ **No sudden direction changes** or fighting
@@ -212,7 +226,8 @@ far: (maxExpectedDisplacement + 3.0) + this.radius + 15
 
 ## 🧪 Testing Checklist
 
-### Basic Movement:
+### Basic Movement
+
 - [ ] Walk in all directions (N, S, E, W, NE, NW, SE, SW)
 - [ ] Sprint in all directions
 - [ ] Walk up steep hills
@@ -221,7 +236,8 @@ far: (maxExpectedDisplacement + 3.0) + this.radius + 15
 - [ ] Walk across highest peak
 - [ ] Walk through lowest valley
 
-### Advanced Movement:
+### Advanced Movement
+
 - [ ] Make tight circles
 - [ ] Zigzag patterns
 - [ ] Sudden direction changes
@@ -230,7 +246,8 @@ far: (maxExpectedDisplacement + 3.0) + this.radius + 15
 - [ ] Jump while moving
 - [ ] Land on different slopes
 
-### Edge Cases:
+### Edge Cases
+
 - [ ] Walk to island edges
 - [ ] Try to walk "off" island (should wrap around)
 - [ ] Jump from highest peak
@@ -238,7 +255,8 @@ far: (maxExpectedDisplacement + 3.0) + this.radius + 15
 - [ ] Verify no console warnings about bounds
 - [ ] Check no falling through terrain
 
-### Performance:
+### Performance
+
 - [ ] Maintain 60 FPS during movement
 - [ ] No stuttering or micro-freezes
 - [ ] Smooth camera follow
@@ -287,15 +305,17 @@ setInterval(() => {
 
 ## 🎓 Technical Details
 
-### Orientation Smoothing Math:
+### Orientation Smoothing Math
 
 **Old approach** (aggressive):
+
 ```typescript
 slerp(targetQuat, 0.3)  // 30% toward target each frame
 // At 60 FPS: reaches 95% in ~10 frames (0.16s)
 ```
 
 **New approach** (gentle):
+
 ```typescript
 slerp(targetQuat, 0.08)  // 8% toward target each frame
 // At 60 FPS: reaches 95% in ~37 frames (0.6s)
@@ -305,9 +325,10 @@ slerp(targetQuat, 0.08)  // 8% toward target each frame
 
 ---
 
-### Movement Clamping Math:
+### Movement Clamping Math
 
 **Old limits**:
+
 ```typescript
 At 4.8 speed, 16ms frame:
 maxMove = max(0.5, 4.8 * 0.016 * 1.5) = max(0.5, 0.115) = 0.5
@@ -317,6 +338,7 @@ Efficiency: 15% (heavily clamped!)
 ```
 
 **New limits**:
+
 ```typescript
 At 4.8 speed, 16ms frame:
 maxMove = max(1.0, 4.8 * 0.016 * 2.5) = max(1.0, 0.192) = 1.0
@@ -327,9 +349,10 @@ Efficiency: 100% (no clamping at normal speeds!)
 
 ---
 
-### Raycast Coverage Math:
+### Raycast Coverage Math
 
 **Old coverage**:
+
 ```
 Vertical range: radius ± 3.0 units
 Horizontal samples: 5 jitter angles
@@ -337,6 +360,7 @@ Total ray attempts: 7 strategies
 ```
 
 **New coverage**:
+
 ```
 Vertical range: radius ± 4.5 units (+50%)
 Horizontal samples: 7 jitter angles (+40%)
@@ -348,17 +372,20 @@ Hit probability: ~95% (was ~70%)
 
 ## 🚀 Deployment Status
 
-### Changes Made:
+### Changes Made
+
 - ✅ Player.ts - 4 modifications (100 lines changed)
 - ✅ Island.ts - 1 modification (30 lines changed)
 
-### Testing Status:
+### Testing Status
+
 - ✅ Code compiles without errors
 - ✅ TypeScript type checking passes
 - ⏳ Manual testing recommended
 - ⏳ Edge case testing recommended
 
-### Ready for:
+### Ready for
+
 - ✅ Dev testing
 - ✅ QA testing
 - ✅ Production deployment (after testing)

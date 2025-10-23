@@ -8,14 +8,14 @@ Before deploying, ensure you have:
 
 1. **Node.js 18+** installed
 2. **Firebase CLI** installed globally: `npm install -g firebase-tools`
-3. **A Firebase project** created at https://console.firebase.google.com/
+3. **A Firebase project** created at <https://console.firebase.google.com/>
 4. **Project dependencies** installed: `pnpm install` and `cd functions && npm install`
 
 ## Step 1: Firebase Project Setup
 
 ### 1.1 Create a Firebase Project
 
-1. Go to https://console.firebase.google.com/
+1. Go to <https://console.firebase.google.com/>
 2. Click "Add project"
 3. Enter a project name (e.g., "digiscalability-life-island")
 4. Follow the setup wizard
@@ -26,32 +26,38 @@ Before deploying, ensure you have:
 In the Firebase Console, enable the following services:
 
 **Authentication**
+
 - Go to Authentication > Sign-in method
 - Enable "Anonymous" provider
 - Enable "Google" provider (optional)
 
 **Firestore Database**
+
 - Go to Firestore Database
 - Click "Create database"
 - Start in production mode
 - Choose a location close to your users
 
 **Cloud Functions**
+
 - Functions will be automatically set up when you deploy
 - Upgrade to Blaze (pay-as-you-go) plan if needed for external API calls
 
 **Cloud Storage**
+
 - Go to Storage
 - Click "Get started"
 - Use production mode
 - Choose the same location as Firestore
 
 **Firebase Hosting**
+
 - Go to Hosting
 - Click "Get started"
 - Follow the setup wizard
 
 **Firebase Analytics** (Optional)
+
 - Go to Analytics
 - Enable Google Analytics for your project
 
@@ -108,10 +114,12 @@ export const firebaseConfig = {
 ### 2.5 Update Security Rules
 
 **Firestore Rules** (`firestore.rules`):
+
 - Replace `YOUR_OWNER_UID` with your actual Firebase Auth UID
 - To get your UID: Go to Authentication > Users after you sign in
 
 **Storage Rules** (`storage.rules`):
+
 - Replace `YOUR_OWNER_UID` with your actual Firebase Auth UID
 
 ## Step 3: Configure Firebase Functions
@@ -128,7 +136,7 @@ cd ..
 
 If you want to enable AI chat functionality:
 
-1. Get a Gemini API key from https://makersuite.google.com/app/apikey
+1. Get a Gemini API key from <https://makersuite.google.com/app/apikey>
 2. Set the config:
 
 ```bash
@@ -146,6 +154,7 @@ pnpm build
 ```
 
 This will:
+
 1. Compile TypeScript to JavaScript
 2. Bundle the application with Vite
 3. Output to the `dist/` directory
@@ -161,6 +170,7 @@ firebase deploy
 ```
 
 This deploys:
+
 - Hosting (your website)
 - Functions (backend API)
 - Firestore rules
@@ -171,21 +181,25 @@ This deploys:
 You can also deploy services individually:
 
 **Hosting only:**
+
 ```bash
 firebase deploy --only hosting
 ```
 
 **Functions only:**
+
 ```bash
 firebase deploy --only functions
 ```
 
 **Firestore rules only:**
+
 ```bash
 firebase deploy --only firestore:rules
 ```
 
 **Storage rules only:**
+
 ```bash
 firebase deploy --only storage:rules
 ```
@@ -193,8 +207,9 @@ firebase deploy --only storage:rules
 ### 5.3 Monitor Deployment
 
 Watch the console output for:
+
 - ✓ Deploy complete!
-- Hosting URL: https://your-project-id.web.app
+- Hosting URL: <https://your-project-id.web.app>
 
 ## Step 6: Post-Deployment Configuration
 
@@ -273,6 +288,7 @@ jobs:
 **Issue:** TypeScript compilation errors
 
 **Solution:**
+
 ```bash
 pnpm install
 cd functions && npm install && cd ..
@@ -284,6 +300,7 @@ pnpm build
 **Issue:** "Permission denied" or authentication errors
 
 **Solution:**
+
 ```bash
 firebase login --reauth
 firebase use your-project-id
@@ -294,6 +311,7 @@ firebase use your-project-id
 **Issue:** Functions return 500 errors
 
 **Solution:**
+
 1. Check Firebase Console > Functions > Logs
 2. Ensure Blaze plan is enabled
 3. Verify all environment variables are set
@@ -304,6 +322,7 @@ firebase use your-project-id
 **Issue:** "Missing or insufficient permissions"
 
 **Solution:**
+
 1. Verify you've replaced `YOUR_OWNER_UID` in `firestore.rules`
 2. Redeploy rules: `firebase deploy --only firestore:rules`
 3. Check rules in Firebase Console > Firestore > Rules
@@ -313,6 +332,7 @@ firebase use your-project-id
 **Issue:** Changes don't appear after deployment
 
 **Solution:**
+
 1. Clear browser cache
 2. Try incognito/private mode
 3. Wait a few minutes for CDN propagation
@@ -330,11 +350,13 @@ cd functions && npm update && cd ..
 ### View Logs
 
 **Hosting logs:**
+
 ```bash
 firebase hosting:channel:list
 ```
 
 **Functions logs:**
+
 ```bash
 firebase functions:log
 ```
@@ -369,11 +391,11 @@ Monitor usage in Firebase Console > Usage and billing.
 ## Support
 
 For issues or questions:
-- Check Firebase documentation: https://firebase.google.com/docs
-- Visit Firebase support: https://firebase.google.com/support
+
+- Check Firebase documentation: <https://firebase.google.com/docs>
+- Visit Firebase support: <https://firebase.google.com/support>
 - Review project README.md
 
 ---
 
 **Congratulations!** Your DigiScalability Life Island is now deployed and accessible to the world! 🎉
-

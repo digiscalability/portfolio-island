@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+
 import { Emoji } from './Emoji';
 import { House } from './House';
 import { Island } from './Island';
@@ -56,13 +57,13 @@ export class ObjectPlacement {
     // Remove any objects named 'boundary', 'wall', 'plane', 'stripe', 'decal', or similar from the scene
     const names = ['boundary', 'wall', 'plane', 'stripe', 'decal', 'roadPlane'];
     this.scene.traverse((obj: any) => {
-      if (obj && obj.name && names.some(n => obj.name.toLowerCase().includes(n))) {
+      if (obj && obj.name && names.some((n) => obj.name.toLowerCase().includes(n))) {
         if (obj.parent) obj.parent.remove(obj);
       }
     });
   }
 
-  private placeHouses(count: number): void {
+  private placeHouses(_count: number): void {
     // Island already places houses with correct displaced sampling and higher detail.
     // Avoid duplicating boxy placeholders created elsewhere. Instead, ensure mailboxes/benches near houses are placed.
     return;
@@ -87,7 +88,7 @@ export class ObjectPlacement {
         'Have you seen my parcel?',
         'Lovely day for a delivery.',
         'I like your hat!',
-        'Drop by the business hub!'
+        'Drop by the business hub!',
       ];
       const idx = Math.floor(Math.random() * greetings.length);
       mailbox.setBubbleText(greetings[idx]);
@@ -110,7 +111,7 @@ export class ObjectPlacement {
     }
   }
 
-  private placeTrees(count: number): void {
+  private placeTrees(_count: number): void {
     // Use Island's higher-quality tree assets (instanced or GLTF replacements). Don't add simple boxy trees here to avoid duplicates.
     return;
   }
@@ -211,7 +212,7 @@ export class ObjectPlacement {
     const group = new THREE.Group();
 
     const stemGeom = new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6);
-    const stemMat = Materials.createStandardMaterial({ color: 0x228B22 });
+    const stemMat = Materials.createStandardMaterial({ color: 0x228b22 });
     const stem = new THREE.Mesh(stemGeom, stemMat);
     stem.position.y = 0.2;
     group.add(stem);
@@ -304,17 +305,17 @@ export class ObjectPlacement {
     const group = new THREE.Group();
 
     // Trunk
-  const trunkGeometry = new THREE.CylinderGeometry(0.4, 0.5, 4, 8);
-  const trunkMaterial = Materials.createPBRMaterial({ color: 0x8b4513, roughness: 0.7 });
-  const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+    const trunkGeometry = new THREE.CylinderGeometry(0.4, 0.5, 4, 8);
+    const trunkMaterial = Materials.createPBRMaterial({ color: 0x8b4513, roughness: 0.7 });
+    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
     trunk.position.y = 2;
     trunk.castShadow = true;
     group.add(trunk);
 
     // Foliage (cone)
     const foliageGeometry = new THREE.ConeGeometry(2, 4, 8);
-  const foliageMaterial = Materials.createTreeMaterial();
-  const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+    const foliageMaterial = Materials.createTreeMaterial();
+    const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
     foliage.position.y = 5;
     foliage.castShadow = true;
     group.add(foliage);

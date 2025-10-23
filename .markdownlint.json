@@ -1,0 +1,33 @@
+{
+  "default": true,
+  "MD013": {
+    "line_length": 200,
+    "code_blocks": false,
+    "tables": false
+  },
+  "MD033": {
+    "allowed_elements": ["details", "summary", "br", "sub", "sup", "file", "script", "style", "div", "span", "table", "tr", "td", "th"]
+  },
+  "MD036": false,
+  "MD040": false,
+  "MD043": false,
+  "MD052": false,
+  "MD041": false,
+  "MD024": {
+    "siblings_only": true
+  },
+  "MD007": {
+    "indent": 2
+  },
+  "MD010": {
+    "code_blocks": false
+  },
+  "MD025": false,
+  "MD026": {
+    "punctuation": ".,;:"
+  },
+  "MD029": false,
+  "MD046": {
+    "style": "fenced"
+  }
+}

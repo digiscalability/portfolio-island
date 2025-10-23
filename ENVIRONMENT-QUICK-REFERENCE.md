@@ -3,10 +3,12 @@
 ## User Controls
 
 ### Open Panel
+
 - **Button**: Click 🌤️ in top-right corner
 - **Keyboard**: Press `E` key
 
 ### Quick Presets
+
 | Preset | Time | Description |
 |--------|------|-------------|
 | 🌙 Midnight | 0.0 | Dark night, stars visible |
@@ -15,6 +17,7 @@
 | 🌆 Sunset | 0.75 | Red/orange evening |
 
 ### Settings
+
 - **Time Slider**: Manual time control (0-100%)
 - **Auto Cycle**: Toggle automatic day/night progression
 - **Cycle Speed**: 1-10 minutes per full cycle (default: 3 min)
@@ -63,24 +66,28 @@ console.log(env.autoCycle);
 ## Environment Features
 
 ### ☁️ Clouds (25)
+
 - Drift speed: 0.3-0.8 units/sec
 - Orbit: Slow rotation around island
 - Height: 30-130 units
 - Fade: Transparent, overlapping
 
 ### ⭐ Stars (3000)
+
 - Visible: Night only (time 0.0-0.2, 0.85-1.0)
 - Colors: White (70%), Blue-white (15%), Yellow (15%)
 - Size: 1.5 pixels
 - Rotation: Gentle spin (0.002 rad/sec)
 
 ### ☀️ Sun & 🌙 Moon
+
 - Orbit: 300 unit radius
 - Sun peaks: Time 0.5 (noon)
 - Moon peaks: Time 0.0 (midnight)
 - Auto-fade: Below horizon invisible
 
 ### 🌫️ Atmospheric Effects
+
 - Dynamic fog color
 - Sky gradient shader
 - Ambient light tinting

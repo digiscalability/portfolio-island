@@ -90,13 +90,13 @@ export class VirtualJoystick {
     try {
       const v = localStorage.getItem('ds_joystick_sensitivity');
       if (v) this.sensitivity = parseFloat(v);
-    } catch (e) { /* ignore */ }
+    } catch (_e) { /* ignore */ }
   }
 
   private savePersistence() {
     try {
       localStorage.setItem('ds_joystick_sensitivity', String(this.sensitivity));
-    } catch (e) { /* ignore */ }
+    } catch (_e) { /* ignore */ }
   }
 
   // Allow external setting to persist
@@ -132,7 +132,7 @@ export class VirtualJoystick {
       if (this.container.parentNode) {
         this.container.parentNode.removeChild(this.container);
       }
-    } catch (e) {
+    } catch (_e) {
       // ignore
     }
   }

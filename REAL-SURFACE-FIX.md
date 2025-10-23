@@ -1,11 +1,12 @@
 # REAL FIX - Object Floating & Surface Placement
 
 **Deployed:** October 20, 2025 (Second Fix)
-**Live Site:** https://life-island.web.app
+**Live Site:** <https://life-island.web.app>
 
 ## Critical Issues Found (After First "Fix")
 
-### ❌ Problems Still Present:
+### ❌ Problems Still Present
+
 1. **Objects still floating/orbiting** - not sitting on terrain
 2. **Giant beige cylinder** appearing (clipping/rendering artifact)
 3. **Objects at weird angles** - not properly aligned to surface
@@ -16,7 +17,7 @@
 
 ## Root Cause: Broken `sampleSurfaceByDirection` Method
 
-### The REAL Bug (Line 1459):
+### The REAL Bug (Line 1459)
 
 ```typescript
 // ❌ BEFORE - COMPLETELY BROKEN
@@ -29,13 +30,14 @@ public sampleSurfaceByDirection(direction: THREE.Vector3, desiredOffset: number 
 ```
 
 **Why this was broken:**
+
 - Takes direction vector (intended for terrain sampling)
 - Multiplies by BASE RADIUS (18 units)
 - Completely ignores terrain displacement (-0.72 to +4.2)
 - Objects placed at PERFECT SPHERE radius, not displaced terrain
 - Result: **All objects at same distance = orbit ring + floating**
 
-### The Fix:
+### The Fix
 
 ```typescript
 // ✅ AFTER - ACTUALLY SAMPLES TERRAIN
@@ -76,6 +78,7 @@ public sampleSurfaceByDirection(direction: THREE.Vector3, desiredOffset: number 
 ```
 
 **How this works:**
+
 1. **Creates raycaster from CENTER** of island
 2. **Casts outward along direction** vector
 3. **Intersects with displaced terrain mesh** (actual geometry)
@@ -84,6 +87,7 @@ public sampleSurfaceByDirection(direction: THREE.Vector3, desiredOffset: number 
 6. **Applies offset along normal** (for object height)
 
 **Result:**
+
 - ✅ Trees find actual terrain surface (radius 17.3 - 22.4)
 - ✅ Houses placed on hills AND valleys
 - ✅ Buildings follow terrain elevation
@@ -94,7 +98,7 @@ public sampleSurfaceByDirection(direction: THREE.Vector3, desiredOffset: number 
 
 ## Second Issue: Building Centering
 
-### The Problem (Line 141):
+### The Problem (Line 141)
 
 ```typescript
 // ❌ BEFORE - Half-buried buildings
@@ -106,12 +110,13 @@ b.position.copy(sampled.position);  // Geometry centered at origin
 ```
 
 **Why buildings were half-buried:**
+
 - BoxGeometry is centered at (0, 0, 0)
 - Height = 2.4, so extends from y=-1.2 to y=+1.2
 - Position at surface = center at surface
 - Result: **Bottom 1.2 units UNDERGROUND**
 
-### The Fix:
+### The Fix
 
 ```typescript
 // ✅ AFTER - Base on ground
@@ -126,6 +131,7 @@ b.position.copy(offsetPos);
 ```
 
 **How this works:**
+
 1. Sample gives surface position
 2. Add offset of `height * 0.5` along normal
 3. Geometry center now ABOVE surface
@@ -138,6 +144,7 @@ b.position.copy(offsetPos);
 ### Raycasting Strategy
 
 **Old (broken):**
+
 ```
 Start: direction * radius (fixed distance)
   ↓
@@ -147,6 +154,7 @@ Returns: position at or near radius (ignores displacement)
 ```
 
 **New (working):**
+
 ```
 Start: island center (0, 0, 0)
 Direction: normalized direction vector
@@ -245,6 +253,7 @@ Returns: hit point + face normal
 ### Visual Quality
 
 **Before:**
+
 - ❌ Objects hovering in space
 - ❌ Visible orbit ring pattern
 - ❌ Buildings half-underground
@@ -252,6 +261,7 @@ Returns: hit point + face normal
 - ❌ Unrealistic geography
 
 **After:**
+
 - ✅ Objects sit ON terrain
 - ✅ Natural distribution across elevation
 - ✅ Buildings fully visible
@@ -274,6 +284,7 @@ Returns: hit point + face normal
 The real problem was **`sampleSurfaceByDirection` was completely broken** - it just multiplied the direction by a fixed radius instead of actually raycasting to find the displaced terrain surface. This caused ALL objects to sit at exactly radius 18.0, completely ignoring the terrain displacement that varies from 17.3 to 22.2.
 
 **The fix:**
+
 1. ✅ Raycast from center outward through actual terrain mesh
 2. ✅ Find intersection with displaced geometry
 3. ✅ Return hit point (varies based on hills/valleys)

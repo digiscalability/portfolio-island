@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+
 import { Environment } from './Environment';
 import { Lighting } from './Lighting';
 

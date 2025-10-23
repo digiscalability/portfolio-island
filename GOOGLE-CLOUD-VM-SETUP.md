@@ -1,7 +1,9 @@
 # Google Cloud VM Setup for DigiScalability Development
+
 # Zero local files, maximum performance, minimum cost
 
 ## 🔧 VM Specifications (Recommended)
+
 - **Machine Type**: e2-standard-4 (4 vCPU, 16GB RAM)
 - **Boot Disk**: Ubuntu 22.04 LTS, 100GB SSD
 - **Zone**: us-central1-a (or closest to you)
@@ -10,6 +12,7 @@
 ## 🚀 Quick Setup Commands
 
 ### 1. Create VM Instance
+
 ```bash
 gcloud compute instances create dev-workstation \
     --zone=us-central1-a \
@@ -27,6 +30,7 @@ gcloud compute instances create dev-workstation \
 ```
 
 ### 2. Setup Firewall Rules
+
 ```bash
 # Allow VS Code Server (port 8080)
 gcloud compute firewall-rules create allow-code-server \
@@ -42,6 +46,7 @@ gcloud compute firewall-rules create allow-dev-ports \
 ```
 
 ### 3. Connect to VM
+
 ```bash
 # SSH into your VM
 gcloud compute ssh dev-workstation --zone=us-central1-a
@@ -53,6 +58,7 @@ gcloud compute ssh dev-workstation --zone=us-central1-a
 ## 💻 Development Environment Setup
 
 ### Auto-Setup Script for VM
+
 ```bash
 #!/bin/bash
 # Run this once on your new VM
@@ -96,6 +102,7 @@ echo "🔑 Password: your-secure-password-here"
 ```
 
 ## 🔐 Security Best Practices
+
 ```bash
 # Restrict access to your IP only
 gcloud compute firewall-rules update allow-code-server \
@@ -108,6 +115,7 @@ gcloud compute ssh dev-workstation --zone=us-central1-a \
 ```
 
 ## 📁 Project Management (Zero Local Files)
+
 ```bash
 # All work happens on VM - no local files needed!
 
@@ -120,6 +128,7 @@ cd ~/workspace/project3 && npm run dev -- --host 0.0.0.0 --port 3002 &
 ```
 
 ## 💰 Cost Optimization
+
 ```bash
 # Stop VM when not working (saves money)
 gcloud compute instances stop dev-workstation --zone=us-central1-a

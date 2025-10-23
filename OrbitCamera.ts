@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+
 import type { SimplePlayer } from './SimplePlayer';
 
 /**
@@ -40,9 +41,6 @@ export class OrbitCamera {
   private minPitch: number = -Math.PI * 0.4;
   private maxPitch: number = Math.PI * 0.4;
 
-  private movingTarget: boolean = false;
-  private targetYaw: number = 0;
-
   constructor(camera: THREE.Camera, player: SimplePlayer) {
     this.camera = camera;
     this.player = player;
@@ -64,9 +62,13 @@ export class OrbitCamera {
     // Calculate camera position in orbit
     const horizontalDistance = this.distance * Math.cos(this.pitch);
     this.cameraPosition.set(
-      this.targetPosition.x + Math.sin(this.yaw) * horizontalDistance + Math.cos(this.yaw) * this.sideOffset,
+      this.targetPosition.x +
+        Math.sin(this.yaw) * horizontalDistance +
+        Math.cos(this.yaw) * this.sideOffset,
       this.targetPosition.y + Math.sin(this.pitch) * this.distance,
-      this.targetPosition.z + Math.cos(this.yaw) * horizontalDistance - Math.sin(this.yaw) * this.sideOffset
+      this.targetPosition.z +
+        Math.cos(this.yaw) * horizontalDistance -
+        Math.sin(this.yaw) * this.sideOffset
     );
   }
 
@@ -202,22 +204,27 @@ export class OrbitCamera {
    * Orient camera to match a specific direction
    */
   public lookInDirection(direction: THREE.Vector3): void {
-    this.targetYaw = Math.atan2(direction.x, direction.z);
-    this.movingTarget = true;
+    const targetYaw = Math.atan2(direction.x, direction.z);
+    this.setYaw(targetYaw);
   }
 
   /**
    * Cinematic fly-in from distant view (like Messenger title screen)
    */
-  public async flyInFromDistant(duration: number = 2000, targetOffset?: THREE.Vector3): Promise<void> {
+  public async flyInFromDistant(
+    duration: number = 2000,
+    targetOffset?: THREE.Vector3
+  ): Promise<void> {
     return new Promise((resolve) => {
       const startTime = Date.now();
       const startPos = this.cameraPosition.clone();
 
       // Start from far away
-      const farAwayPos = this.player.getWorldPosition().clone().add(
-        targetOffset || new THREE.Vector3(0, 25, 40)
-      ).multiplyScalar(2.5);
+      const farAwayPos = this.player
+        .getWorldPosition()
+        .clone()
+        .add(targetOffset || new THREE.Vector3(0, 25, 40))
+        .multiplyScalar(2.5);
 
       this.cameraPosition.copy(farAwayPos);
       this.camera.position.copy(farAwayPos);
@@ -227,9 +234,10 @@ export class OrbitCamera {
         const progress = Math.min(elapsed / duration, 1);
 
         // Ease in-out cubic
-        const easeProgress = progress < 0.5
-          ? 4 * progress * progress * progress
-          : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+        const easeProgress =
+          progress < 0.5
+            ? 4 * progress * progress * progress
+            : 1 - Math.pow(-2 * progress + 2, 3) / 2;
 
         this.cameraPosition.lerpVectors(farAwayPos, startPos, easeProgress);
         this.camera.position.copy(this.cameraPosition);

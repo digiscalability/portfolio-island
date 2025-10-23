@@ -11,12 +11,14 @@
 
 ## Step 1: Install Dependencies (5 minutes)
 
-### Install frontend dependencies:
+### Install frontend dependencies
+
 ```powershell
 npm install
 ```
 
-### Install Firebase Functions dependencies:
+### Install Firebase Functions dependencies
+
 ```powershell
 cd functions
 npm install
@@ -28,6 +30,7 @@ cd ..
 ## Step 2: Create Firebase Project (10 minutes)
 
 ### 2.1 Create Project
+
 1. Go to [Firebase Console](https://console.firebase.google.com/)
 2. Click "Add project"
 3. Enter project name: `digiscalability-life-island`
@@ -39,25 +42,30 @@ cd ..
 In Firebase Console, enable these services:
 
 **Authentication:**
+
 - Go to Authentication > Sign-in method
 - Enable "Anonymous"
 - Enable "Google" (optional)
 
 **Firestore Database:**
+
 - Go to Firestore Database
 - Click "Create database"
 - Start in "production mode"
 - Choose your region (e.g., `us-central1`)
 
 **Cloud Storage:**
+
 - Go to Storage
 - Click "Get started"
 - Start in "production mode"
 
 **Cloud Functions:**
+
 - Already enabled by default
 
 **Hosting:**
+
 - Already enabled by default
 
 ---
@@ -65,14 +73,17 @@ In Firebase Console, enable these services:
 ## Step 3: Configure Firebase (10 minutes)
 
 ### 3.1 Login to Firebase CLI
+
 ```powershell
 firebase login
 ```
 
 ### 3.2 Link Your Project
+
 ```powershell
 firebase use --add
 ```
+
 - Select your project from the list
 - Use alias: `default`
 
@@ -112,16 +123,20 @@ VITE_OWNER_UID=YOUR_OWNER_UID
 ### 4.1 Get Your Owner UID
 
 **Option A: Sign in first, then get UID**
+
 1. Build and run the app locally (see Step 5)
 2. Open the app in browser
 3. Sign in with Google (if enabled) or it will sign in anonymously
 4. Open browser console and run:
+
    ```javascript
    firebase.auth().currentUser.uid
    ```
+
 5. Copy the UID
 
 **Option B: Create a user in Firebase Console**
+
 1. Go to Authentication > Users
 2. Click "Add user"
 3. Enter email and password
@@ -156,11 +171,13 @@ VITE_OWNER_UID=abc123xyz789yourActualUID
 ## Step 5: Test Locally (10 minutes)
 
 ### 5.1 Generate Asset Manifest (Optional)
+
 ```powershell
 npm run generate:manifest
 ```
 
 ### 5.2 Start Development Server
+
 ```powershell
 npm run dev
 ```
@@ -168,11 +185,13 @@ npm run dev
 Open browser to `http://localhost:5173`
 
 **Expected Result:**
+
 - 3D island loads
 - You can move with WASD keys
 - No Firebase errors in console
 
 ### 5.3 Test Firebase Functions Locally (Optional)
+
 ```powershell
 npm run functions:serve
 ```
@@ -188,6 +207,7 @@ npm run build
 ```
 
 **Expected Output:**
+
 ```
 ✓ built in 3.45s
 dist/index.html                   0.XX kB
@@ -195,6 +215,7 @@ dist/assets/index-XXXXX.js      514.XX kB
 ```
 
 ### Test Production Build Locally
+
 ```powershell
 npm run preview
 ```
@@ -206,17 +227,20 @@ Open `http://localhost:4173` and verify everything works.
 ## Step 7: Deploy to Firebase (5 minutes)
 
 ### 7.1 Deploy Everything
+
 ```powershell
 npm run deploy
 ```
 
 This deploys:
+
 - Hosting (your website)
 - Functions (backend APIs)
 - Firestore rules
 - Storage rules
 
 **Expected Output:**
+
 ```
 ✔ Deploy complete!
 
@@ -227,16 +251,19 @@ Hosting URL: https://your-project.web.app
 ### 7.2 Alternative: Deploy Separately
 
 **Deploy only hosting:**
+
 ```powershell
 npm run deploy:hosting
 ```
 
 **Deploy only functions:**
+
 ```powershell
 npm run deploy:functions
 ```
 
 **Deploy only database rules:**
+
 ```powershell
 firebase deploy --only firestore:rules
 firebase deploy --only storage:rules
@@ -247,16 +274,19 @@ firebase deploy --only storage:rules
 ## Step 8: Configure Gemini AI (Optional, 10 minutes)
 
 ### 8.1 Get Gemini API Key
+
 1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
 2. Click "Create API Key"
 3. Copy the key
 
 ### 8.2 Set Function Config
+
 ```powershell
 firebase functions:config:set gemini.apikey="YOUR_GEMINI_API_KEY"
 ```
 
 ### 8.3 Redeploy Functions
+
 ```powershell
 npm run deploy:functions
 ```
@@ -268,9 +298,11 @@ Now the AI chat will work with actual Gemini responses!
 ## Step 9: Post-Deployment Verification (5 minutes)
 
 ### 9.1 Visit Your Site
+
 Open: `https://your-project.web.app`
 
 ### 9.2 Test Features
+
 - [ ] Island loads and renders
 - [ ] Movement works (WASD)
 - [ ] Zones are visible
@@ -280,6 +312,7 @@ Open: `https://your-project.web.app`
 - [ ] Appointment form works
 
 ### 9.3 Check Firebase Console
+
 - [ ] Conversations appear in Firestore after chatting
 - [ ] Feedback appears in Firestore after submission
 - [ ] Appointments appear in Firestore after booking
@@ -289,13 +322,16 @@ Open: `https://your-project.web.app`
 ## Step 10: Set Up Custom Domain (Optional, 15 minutes)
 
 ### 10.1 Add Domain in Firebase
+
 1. Go to Hosting in Firebase Console
 2. Click "Add custom domain"
 3. Enter your domain (e.g., `island.yourdomain.com`)
 4. Follow DNS setup instructions
 
 ### 10.2 Update DNS Records
+
 Add the provided DNS records to your domain registrar:
+
 - A record pointing to Firebase IP
 - TXT record for verification
 
@@ -308,12 +344,14 @@ Wait 24-48 hours for DNS propagation.
 ### Build Errors
 
 **"Module not found"**
+
 ```powershell
 rm -rf node_modules package-lock.json
 npm install
 ```
 
 **TypeScript errors**
+
 ```powershell
 npm run build -- --force
 ```
@@ -321,6 +359,7 @@ npm run build -- --force
 ### Deployment Errors
 
 **"Functions failed to deploy"**
+
 ```powershell
 cd functions
 npm install
@@ -330,25 +369,30 @@ firebase deploy --only functions
 ```
 
 **"Firestore rules syntax error"**
+
 - Check `firestore.rules` for syntax errors
 - Validate at: Firebase Console > Firestore > Rules
 
 **"Permission denied"**
+
 - Make sure you're logged in: `firebase login`
 - Make sure you selected the right project: `firebase use your-project-id`
 
 ### Runtime Errors
 
 **"Firebase not configured" warning**
+
 - Check `.env.local` exists and has correct values
 - Restart dev server after changing `.env.local`
 
 **"CORS error" when calling functions**
+
 - Functions include CORS headers by default
 - If still errors, check browser console for actual error
 - Make sure functions are deployed: `firebase deploy --only functions`
 
 **"Permission denied" in Firestore**
+
 - Check you updated `YOUR_OWNER_UID` in `firestore.rules`
 - Redeploy rules: `firebase deploy --only firestore:rules`
 
@@ -395,9 +439,9 @@ After deployment:
 
 ## Need Help?
 
-- **Firebase Documentation**: https://firebase.google.com/docs
-- **Three.js Documentation**: https://threejs.org/docs
-- **Vite Documentation**: https://vitejs.dev/guide
+- **Firebase Documentation**: <https://firebase.google.com/docs>
+- **Three.js Documentation**: <https://threejs.org/docs>
+- **Vite Documentation**: <https://vitejs.dev/guide>
 
 ---
 

@@ -27,6 +27,7 @@ When creating a new class that uses any of these, add a `dispose()` method:
 ## 🔧 Common Patterns
 
 ### Event Listener Pattern
+
 ```typescript
 class MyClass {
   private boundHandlers: {
@@ -47,6 +48,7 @@ class MyClass {
 ```
 
 ### Timer Pattern
+
 ```typescript
 class MyClass {
   private timers: number[] = [];
@@ -64,6 +66,7 @@ class MyClass {
 ```
 
 ### Three.js Pattern
+
 ```typescript
 class MyClass {
   private mesh: THREE.Mesh;
@@ -82,6 +85,7 @@ class MyClass {
 ```
 
 ### Audio Pattern
+
 ```typescript
 class MyClass {
   private ctx: AudioContext;

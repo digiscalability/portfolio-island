@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+
 import { Materials } from './Materials';
 
 export class House {
@@ -69,4 +70,3 @@ export class House {
     this.mesh.quaternion.copy(quaternion);
   }
 }
-

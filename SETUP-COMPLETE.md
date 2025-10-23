@@ -3,6 +3,7 @@
 ## What We Just Fixed
 
 ### 1. ✅ Created Proper Firebase Functions Structure
+
 ```
 functions/
   ├── src/
@@ -13,28 +14,33 @@ functions/
 ```
 
 ### 2. ✅ Fixed Root package.json
+
 - Changed name from "functions" to main project name
 - Added proper scripts for deployment
 - Separated frontend and backend dependencies
 - Added deployment commands
 
 ### 3. ✅ Updated TypeScript Configuration
+
 - Fixed `tsconfig.json` for ES modules (required by Vite)
 - Added support for `import.meta.env` (Vite environment variables)
 - Properly configured for modern JavaScript
 
 ### 4. ✅ Created Environment Configuration
+
 - `.env.example` - Template with all required variables
 - Updated `FirebaseConfig.ts` to use environment variables
 - Added validation to warn if not configured
 
 ### 5. ✅ Enhanced Firebase Functions
+
 - Improved Gemini AI integration with better error handling
 - Added actual Firestore queries for appointments
 - Better CORS configuration
 - Improved error messages
 
 ### 6. ✅ Created Comprehensive Documentation
+
 - `QUICK-START.md` - Step-by-step deployment guide (60-90 min)
 - Clear instructions for each phase
 - Troubleshooting section
@@ -44,20 +50,22 @@ functions/
 
 ## 🎯 What You Need to Do Next
 
-### IMMEDIATE (Required for deployment):
+### IMMEDIATE (Required for deployment)
 
 1. **Create Firebase Project** (10 min)
-   - Go to https://console.firebase.google.com/
+   - Go to <https://console.firebase.google.com/>
    - Create new project
    - Enable Authentication, Firestore, Storage
 
 2. **Configure Environment** (5 min)
+
    ```powershell
    cp .env.example .env.local
    # Edit .env.local with your Firebase config
    ```
 
 3. **Install Dependencies** (5 min)
+
    ```powershell
    npm install
    cd functions && npm install && cd ..
@@ -73,6 +81,7 @@ functions/
    - Update `VITE_OWNER_UID` in `.env.local`
 
 6. **Deploy!** (5 min)
+
    ```powershell
    npm run build
    firebase login
@@ -88,7 +97,7 @@ functions/
 
 Follow the **QUICK-START.md** guide for detailed instructions.
 
-### Quick Path (for experienced devs):
+### Quick Path (for experienced devs)
 
 ```powershell
 # 1. Install
@@ -151,7 +160,7 @@ digiscalability-life-island/
 
 ## 🚨 CRITICAL: Before Deploying
 
-### Must Update These Files:
+### Must Update These Files
 
 1. **`.env.local`** (create from .env.example)
    - Add your Firebase configuration
@@ -165,7 +174,7 @@ digiscalability-life-island/
    - Replace `YOUR_OWNER_UID` with actual UID
    - Found on line: 6
 
-### Verification Commands:
+### Verification Commands
 
 ```powershell
 # Check if rules have placeholders (should return nothing):
@@ -181,6 +190,7 @@ Get-Content .env.local
 ## 🎨 Optional Enhancements (After Deployment)
 
 ### 1. Add Gemini AI (10 min)
+
 ```powershell
 # Get API key from https://makersuite.google.com/app/apikey
 firebase functions:config:set gemini.apikey="YOUR_KEY"
@@ -188,14 +198,17 @@ npm run deploy:functions
 ```
 
 ### 2. Add 3D Models
+
 - Place GLTF/GLB files in `assets/models/`
 - Update references in `Player.ts`, `ObjectPlacement.ts`
 
 ### 3. Add Audio
+
 - Place audio files in `assets/audio/`
 - Run `npm run generate:manifest`
 
 ### 4. Custom Domain
+
 - Firebase Console > Hosting > Add custom domain
 - Follow DNS setup instructions
 
@@ -217,7 +230,7 @@ Before running `npm run deploy`:
 
 After deployment:
 
-- [ ] Site loads at https://your-project.web.app
+- [ ] Site loads at <https://your-project.web.app>
 - [ ] Can move around the island
 - [ ] Zones are visible and interactive
 - [ ] Chat window works (even if placeholder responses)
@@ -229,15 +242,18 @@ After deployment:
 ## 🐛 Common Issues & Fixes
 
 ### "import.meta.env is not defined"
+
 - Make sure `tsconfig.json` has `"module": "ESNext"`
 - Restart dev server after changing tsconfig
 
 ### "Firebase not configured" warning
+
 - Check `.env.local` exists
 - Check all VITE_ variables are set
 - Restart dev server (`npm run dev`)
 
 ### Build errors in functions/
+
 ```powershell
 cd functions
 rm -rf node_modules package-lock.json
@@ -247,6 +263,7 @@ cd ..
 ```
 
 ### Functions not deploying
+
 ```powershell
 # Deploy with verbose logging
 firebase deploy --only functions --debug
@@ -272,6 +289,7 @@ firebase deploy --only functions --debug
 Everything is now properly structured for deployment. Follow the **QUICK-START.md** guide and you'll be live in about an hour!
 
 **Questions?** Review:
+
 - `QUICK-START.md` - Complete deployment guide
 - `README.md` - Project overview
 - `Firebase Deployment Guide.md` - Detailed Firebase setup

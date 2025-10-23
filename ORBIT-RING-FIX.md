@@ -1,14 +1,16 @@
 # ORBIT RING BUG FIX - Object Distribution
 
 **Deployed:** October 20, 2025
-**Live Site:** https://life-island.web.app
+**Live Site:** <https://life-island.web.app>
 
 ## Critical Issues Fixed
 
 ### ❌ **Before: ORBIT RING PROBLEM**
+
 ![Orbit Ring Issue](user's screenshots showed objects forming visible ring around island)
 
 **Problems:**
+
 1. ⭕ **All trees formed a visible ring** at exact same radius
 2. ⭕ **Houses clustered in narrow equator band**
 3. ⭕ **Buildings in restricted zone**
@@ -18,6 +20,7 @@
 7. 🌍 **Unrealistic earth surface** - objects not following terrain
 
 ### ✅ **After: TRUE SPHERE DISTRIBUTION**
+
 - 🌳 **Trees spread across entire sphere surface** naturally
 - 🏠 **Houses distributed in 3D** across all elevations
 - 🏢 **Buildings placed realistically** on varied terrain
@@ -33,6 +36,7 @@
 ### 1. Tree Orbit Ring (CRITICAL BUG)
 
 **The Problem - Lines 233-268:**
+
 ```typescript
 // BEFORE - ORBIT RING BUG
 for (let i = 0; i < treeCount; i++) {
@@ -54,6 +58,7 @@ for (let i = 0; i < treeCount; i++) {
 ```
 
 **Why this created a ring:**
+
 - Fibonacci algorithm creates even distribution on **unit sphere** (radius 1.0)
 - Code then multiplies by `this.radius * 1.2` = `18 * 1.2` = **21.6 units**
 - **EVERY tree** starts at exactly 21.6 units from center
@@ -61,6 +66,7 @@ for (let i = 0; i < treeCount; i++) {
 - Result: **Perfect orbit ring** at radius ~21.6
 
 **The Fix:**
+
 ```typescript
 // AFTER - TRUE SPHERE DISTRIBUTION
 for (let i = 0; i < treeCount; i++) {
@@ -81,6 +87,7 @@ for (let i = 0; i < treeCount; i++) {
 ```
 
 **Impact:**
+
 - Trees now distributed across **entire sphere surface**
 - Follow actual terrain elevation (valleys at ~17, peaks at ~22)
 - No visible ring pattern
@@ -91,6 +98,7 @@ for (let i = 0; i < treeCount; i++) {
 ### 2. House Ring (RESTRICTED BAND BUG)
 
 **The Problem - Lines 150-160:**
+
 ```typescript
 // BEFORE - EQUATOR BAND BUG
 for (let i = 0; i < houseCount; i++) {
@@ -109,12 +117,14 @@ for (let i = 0; i < houseCount; i++) {
 ```
 
 **Why this created a ring:**
+
 - `polar` restricted to 22° - 52° = narrow latitude band
 - `radial` restricted to 0.56-0.78 of radius = tight distance band
 - All houses clustered in **equator ring** at radius 10-14 units
 - No houses at poles, no variation in elevation
 
 **The Fix:**
+
 ```typescript
 // AFTER - UNIFORM SPHERE DISTRIBUTION
 for (let i = 0; i < houseCount; i++) {
@@ -135,6 +145,7 @@ for (let i = 0; i < houseCount; i++) {
 ```
 
 **Impact:**
+
 - Houses now appear at **all elevations**
 - Distributed across **poles, equator, and everywhere in between**
 - Natural village appearance
@@ -145,6 +156,7 @@ for (let i = 0; i < houseCount; i++) {
 ### 3. Building Ring (SAME BUG)
 
 **The Problem - Lines 118-131:**
+
 ```typescript
 // BEFORE - RESTRICTED CROWN BAND
 for (let i = 0; i < 12; i++) {
@@ -163,6 +175,7 @@ for (let i = 0; i < 12; i++) {
 ```
 
 **The Fix:**
+
 ```typescript
 // AFTER - TRUE SPHERE DISTRIBUTION
 for (let i = 0; i < 12; i++) {
@@ -184,6 +197,7 @@ for (let i = 0; i < 12; i++) {
 ### 4. NPC Ring (SCATTERED BAND BUG)
 
 **The Problem - Lines 370-379:**
+
 ```typescript
 // BEFORE - WIDE BUT STILL BANDED
 for (let i = 0; i < 20; i++) {
@@ -201,6 +215,7 @@ for (let i = 0; i < 20; i++) {
 ```
 
 **The Fix:**
+
 ```typescript
 // AFTER - FULL SPHERE
 for (let i = 0; i < 20; i++) {
@@ -222,6 +237,7 @@ for (let i = 0; i < 20; i++) {
 ## Mathematical Explanation
 
 ### ❌ Old Method: Restricted Spherical Coordinates
+
 ```typescript
 // Creates visible bands/rings
 const polar = THREE.MathUtils.lerp(0.22, 0.52, Math.random());
@@ -236,11 +252,13 @@ const radial = this.radius * (0.56 + 0.22 * Math.random());
 ```
 
 **Problem:**
+
 - `polar` (θ) restricted → latitude band
 - `radial` restricted → distance shell
 - Combined → **torus (orbit ring)** pattern
 
 ### ✅ New Method: Uniform Sphere Distribution
+
 ```typescript
 // Proper uniform distribution
 const phi = Math.acos(2 * Math.random() - 1);
@@ -258,6 +276,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ```
 
 **Why this works:**
+
 1. **`phi = Math.acos(2 * Math.random() - 1)`**
    - Generates uniform distribution over sphere surface
    - Corrects for area distortion at poles
@@ -280,6 +299,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ### Island.ts - Object Placement Fixes
 
 #### Trees (48 instances)
+
 ```diff
 - const approxPos = dir.clone().multiplyScalar(this.radius * 1.2);
 - const sampled = this.sampleSurfacePosition(approxPos, 0.0);
@@ -287,6 +307,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ```
 
 #### Houses (16 instances)
+
 ```diff
 - const theta = Math.random() * Math.PI * 2;
 - const polar = THREE.MathUtils.lerp(Math.PI * 0.22, Math.PI * 0.52, Math.random());
@@ -305,6 +326,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ```
 
 #### Buildings (12 instances)
+
 ```diff
 - const polar = THREE.MathUtils.lerp(Math.PI * 0.18, Math.PI * 0.45, Math.random());
 - const radial = this.radius * (0.52 + Math.random() * 0.18);
@@ -321,6 +343,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ```
 
 #### NPCs (20 instances)
+
 ```diff
 - const polar = THREE.MathUtils.lerp(Math.PI * 0.2, Math.PI * 0.55, Math.random());
 - const radial = this.radius * (0.6 + Math.random() * 0.24);
@@ -341,6 +364,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ## Impact Summary
 
 ### Object Distribution
+
 | Object Type | Before | After | Change |
 |------------|--------|-------|---------|
 | **Trees (48)** | Ring at R=21.6 | Spread R=17-22 | +23% coverage area |
@@ -349,6 +373,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 | **NPCs (20)** | Middle band 20°-55° | Full sphere 0°-180° | +414% latitude range |
 
 ### Realism Improvements
+
 ✅ **Objects follow terrain elevation** - trees/houses on hills AND valleys
 ✅ **No artificial clustering** - removed restrictive polar/radial bands
 ✅ **Natural geographic distribution** - like real cities on Earth
@@ -356,6 +381,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ✅ **Varied elevations** - structures at all altitudes (0° poles to 180° antipode)
 
 ### Performance
+
 - **No performance impact** - same number of objects
 - **Same raycast count** - using existing sampleSurfaceByDirection
 - **Better visual variety** - objects spread across entire viewable surface
@@ -367,6 +393,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 ### sampleSurfaceByDirection vs sampleSurfacePosition
 
 **sampleSurfaceByDirection(dir, offset):**
+
 - Takes normalized direction vector (unit sphere)
 - Casts ray from center OUTWARD along direction
 - Finds actual displaced terrain surface
@@ -374,6 +401,7 @@ const sampled = this.sampleSurfaceByDirection(dir, offset);
 - **Correct for sphere distribution**
 
 **sampleSurfacePosition(approxPos, offset):**
+
 - Takes approximate 3D position
 - Casts ray from OUTSIDE inward
 - Good for placing near existing point
@@ -395,6 +423,7 @@ const dir = new THREE.Vector3(x, y, z).normalize();
 ```
 
 **Why `Math.acos(2 * Math.random() - 1)`?**
+
 - Naive `Math.random() * Math.PI` creates clustering at poles
 - `acos` corrects for sphere surface area differential
 - Result: equal probability across entire sphere surface
@@ -413,10 +442,12 @@ const dir = new THREE.Vector3(x, y, z).normalize();
 ## Result
 
 ### Visual Changes
+
 ❌ **Before:** Obvious orbit rings, clustered objects, unrealistic distribution
 ✅ **After:** Natural spread, realistic geography, objects at all elevations
 
 ### User Experience
+
 ✅ **Exploration feels organic** - discover structures throughout island
 ✅ **No artificial boundaries** - objects naturally distributed
 ✅ **Realistic world** - like exploring real planet geography

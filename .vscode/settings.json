@@ -1,0 +1,130 @@
+{
+  "editor.formatOnSave": false,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "files.associations": {
+    "*.glsl": "glsl",
+    "*.frag": "glsl",
+    "*.vert": "glsl"
+  },
+  "prettier.enable": true,
+  "prettier.configPath": "",
+  "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"],
+  "eslint.lintTask.enable": true,
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.updateImportsOnFileMove.enabled": "always",
+  "typescript.preferences.includePackageJsonAutoImports": "auto",
+  "typescript.suggest.autoImports": true,
+  "files.exclude": {
+    "**/.git": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/.cache": true
+  },
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/*/**": true,
+    "**/assetKits/**": true,
+    "**/assets/**/*.fbx": true,
+    "**/assets/**/*.gltf": true,
+    "**/assets/**/*.bin": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/.cache": true,
+    "**/assetKits": true,
+    "**/assets/**/*.fbx": true,
+    "**/assets/**/*.gltf": true,
+    "**/assets/**/*.bin": true
+  },
+  "explorer.compactFolders": false,
+  "editor.inlayHints.enabled": "on",
+  "workbench.startupEditor": "welcomePageInEmptyWorkbench",
+
+  // GitHub Copilot optimizations
+  "github.copilot.chat.virtualTools.threshold": 128,
+  "github.copilot.chat.requireApprovalForTools": false,
+  "github.copilot.chat.allowEditing": true,
+  "github.copilot.chat.allowCreating": true,
+  "github.copilot.chat.allowDeleting": true,
+  "github.copilot.chat.allowRunningCommands": true,
+
+  // Performance optimizations
+  "typescript.tsserver.maxTsServerMemory": 4096,
+  "typescript.disableAutomaticTypeAcquisition": false,
+  "typescript.suggest.includeCompletionsForImportStatements": true,
+  "typescript.suggest.includeAutomaticOptionalChainCompletions": true,
+  "editor.suggest.localityBonus": true,
+  "editor.suggest.shareSuggestSelections": true,
+  "editor.quickSuggestions": {
+    "other": true,
+    "comments": false,
+    "strings": true
+  },
+  "editor.suggestOnTriggerCharacters": true,
+  "editor.acceptSuggestionOnCommitCharacter": true,
+  "editor.snippetSuggestions": "top",
+  "editor.tabCompletion": "on",
+  "editor.wordBasedSuggestions": "matchingDocuments",
+
+  // File handling
+  "files.autoSave": "onFocusChange",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // Terminal
+  "terminal.integrated.defaultProfile.linux": "bash",
+  "terminal.integrated.scrollback": 10000,
+
+  // Edge DevTools configuration
+  "vscode-edge-devtools.mirrorEdits": true,
+  "vscode-edge-devtools.defaultUrl": "http://localhost:5173",
+  "vscode-edge-devtools.headless": false,
+  "vscode-edge-devtools.sourceMapPathOverrides": {
+    "webpack:///./*": "${webRoot}/*",
+    "webpack:///src/*": "${webRoot}/src/*",
+    "webpack:///*": "*"
+  },
+  "eslint.format.enable": true,
+  "prettier.withNodeModules": true
+  ,
+
+  // MCP servers (VS Code Copilot Chat)
+  // Allow MCP servers and auto-(re)start when configuration changes are detected
+  "chat.mcp.access": "all",
+  "chat.mcp.autostart": true,
+
+  // Markdown-specific settings
+  "[markdown]": {
+    "editor.defaultFormatter": "yzhang.markdown-all-in-one",
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "strings": "off",
+      "other": "off"
+    }
+  },
+
+  // Markdown All in One settings
+  "markdown.extension.toc.levels": "1..6",
+  "markdown.extension.toc.orderedList": false,
+  "markdown.extension.toc.updateOnSave": true,
+  "markdown.extension.list.indentationSize": "adaptive",
+  "markdown.extension.orderedList.marker": "ordered",
+  "markdown.extension.italic.indicator": "*",
+  "markdown.extension.bold.indicator": "**",
+  "markdown.extension.tableFormatter.enabled": true,
+
+  // Markdownlint settings
+  "markdownlint.config": {
+    "MD013": false,
+    "MD033": false,
+    "MD041": false
+  }
+}

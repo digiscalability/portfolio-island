@@ -19,11 +19,13 @@ npm run generate:placeholders
 ```
 
 Notes:
+
 - Download scripts must be run locally; they are provided for convenience and
   will not be executed by the repository automatically.
 - When adding large or third-party assets to the repo, verify the license and
   consider referencing them in `CREDITS.md` if attribution is required.
 
 Next steps available on request:
+
 - Add curated CC0 asset lists and expand `download-assets.ps1`.
 - Add a Node-based downloader that works cross-platform and verifies checksums.

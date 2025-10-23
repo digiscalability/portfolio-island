@@ -2,10 +2,10 @@
   "name": "DigiScalability Portfolio Island - Optimized",
   "image": "mcr.microsoft.com/devcontainers/typescript-node:18",
 
-  // Hardware Configuration - Request powerful machine
+  // Hardware Configuration - Aligned with runArgs
   "hostRequirements": {
-    "cpus": 4,
-    "memory": "8gb",
+    "cpus": 3,
+    "memory": "6gb",
     "storage": "32gb"
   },
 
@@ -15,10 +15,6 @@
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/node:1": {
       "version": "18"
-    },
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "version": "latest",
-      "dockerDashComposeVersion": "v2"
     }
   },
 
@@ -90,49 +86,48 @@
     }
   },
 
-  // Ports for development servers
+  // Ports for development servers (5 ports only - optimized configuration)
   "forwardPorts": [3000, 5173, 8080, 4000, 9005],
   "portsAttributes": {
     "3000": {
-      "label": "Vite Dev Server",
-      "onAutoForward": "openPreview"
+      "label": "Vite Dev Server (Primary)",
+      "onAutoForward": "notify"
     },
     "5173": {
-      "label": "Vite Alt Port",
-      "onAutoForward": "openPreview"
+      "label": "Vite Dev Server (Alternative)",
+      "onAutoForward": "notify"
+    },
+    "8080": {
+      "label": "Web Preview / VS Code Tunnel",
+      "onAutoForward": "silent"
     },
     "4000": {
       "label": "Firebase Emulator",
-      "onAutoForward": "notify"
+      "onAutoForward": "silent"
+    },
+    "9005": {
+      "label": "Chrome DevTools Protocol",
+      "onAutoForward": "silent"
     }
   },
 
   // Lifecycle hooks
-  "postCreateCommand": "npm install && npm run setup-dev",
+  "postCreateCommand": "npm install",
   "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
-
-  // Mount additional workspace for multiple projects
-  "mounts": [
-    "source=/workspaces,target=/workspaces,type=bind,consistency=cached"
-  ],
 
   // Environment variables
   "containerEnv": {
     "NODE_ENV": "development",
     "FORCE_COLOR": "1",
-    "NPM_CONFIG_COLOR": "always"
+    "NPM_CONFIG_COLOR": "always",
+    "NPM_CONFIG_CACHE": "/home/node/.npm-cache"
   },
 
-  // Performance optimizations
-  "runArgs": [
-    "--memory=6g",
-    "--cpus=3",
-    "--shm-size=1g"
-  ],
+  // Performance optimizations - GPU support requires host configuration
+  // To enable GPU: install nvidia-docker2 on host and uncomment runArgs below
+  // "runArgs": ["--memory=6g", "--cpus=3", "--shm-size=1g", "--gpus", "all"],
+  "runArgs": ["--memory=6g", "--cpus=3", "--shm-size=1g"],
 
   // User settings
-  "remoteUser": "node",
-
-  // Enable GPU acceleration for WebGL/3D work
-  "runArgs": ["--gpus", "all"]
+  "remoteUser": "node"
 }

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+
 import { Materials } from './Materials';
 import { loadGLTFModel } from './src/utils/GLTFModelLoader';
 
@@ -30,28 +31,57 @@ export class Emoji {
   private async loadModelForType(type: string): Promise<void> {
     // Map emoji types to appropriate 3D models from Stylized Nature MegaKit
     const modelMap: Record<string, string[]> = {
-      '😊': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_3_Single.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_4_Single.gltf'],
-  '🌟': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Round_1.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Round_3.gltf'],
-      '🎨': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Common.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Laetiporus.gltf'],
-      '🎵': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Plant_1.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Plant_7.gltf'],
-  '💡': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Square_1.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Square_3.gltf'],
-  '🚀': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Rock_Medium_2.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Rock_Medium_3.gltf'],
-      '🏆': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_3_Group.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_4_Group.gltf'],
-      '📚': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Bush_Common.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Bush_Common_Flowers.gltf'],
-      '☕': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Laetiporus.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Common.gltf'],
-      '🌈': ['/assetKits/Stylized Nature MegaKit[Standard]/glTF/Fern_1.gltf', '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Plant_7_Big.gltf']
+      '😊': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_3_Single.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_4_Single.gltf',
+      ],
+      '🌟': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Round_1.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Round_3.gltf',
+      ],
+      '🎨': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Common.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Laetiporus.gltf',
+      ],
+      '🎵': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Plant_1.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Plant_7.gltf',
+      ],
+      '💡': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Square_1.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Pebble_Square_3.gltf',
+      ],
+      '🚀': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Rock_Medium_2.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Rock_Medium_3.gltf',
+      ],
+      '🏆': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_3_Group.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Flower_4_Group.gltf',
+      ],
+      '📚': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Bush_Common.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Bush_Common_Flowers.gltf',
+      ],
+      '☕': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Laetiporus.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Mushroom_Common.gltf',
+      ],
+      '🌈': [
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Fern_1.gltf',
+        '/assetKits/Stylized Nature MegaKit[Standard]/glTF/Plant_7_Big.gltf',
+      ],
     };
 
     const candidates = modelMap[type] || modelMap['😊'];
-
     try {
-      let res = null;
+      let res: Awaited<ReturnType<typeof loadGLTFModel>> | null = null;
       // Try each candidate path
       for (const path of candidates) {
         try {
           res = await loadGLTFModel(path);
           if (res) break;
-        } catch (e) {
+        } catch {
           // Try next candidate
         }
       }
@@ -75,16 +105,14 @@ export class Emoji {
       }
 
       // Fix materials
-      model.traverse((obj: any) => {
-        if (obj.isMesh && obj.material) {
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m: any) => Materials.fixMaterialTextures(m));
-          } else {
-            Materials.fixMaterialTextures(obj.material);
-          }
-          obj.castShadow = true;
-          obj.receiveShadow = true;
+      model.traverse((obj: THREE.Object3D) => {
+        if (!(obj instanceof THREE.Mesh) || !obj.material) {
+          return;
         }
+        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+        materials.forEach((material) => Materials.fixMaterialTextures(material));
+        obj.castShadow = true;
+        obj.receiveShadow = true;
       });
 
       // Replace placeholder with loaded model
@@ -100,9 +128,8 @@ export class Emoji {
       model.position.copy(pos);
       model.quaternion.copy(quat);
       this.mesh = model;
-
-    } catch (e) {
-      console.warn(`Emoji: Failed to load 3D model for ${type}, using placeholder`, e);
+    } catch (error) {
+      console.warn(`Emoji: Failed to load 3D model for ${type}, using placeholder`, error);
     }
   }
 

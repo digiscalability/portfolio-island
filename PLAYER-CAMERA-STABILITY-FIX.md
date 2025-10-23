@@ -1,31 +1,37 @@
 # Player & Camera Stability Fix
 
 **Deployed:** October 20, 2025
-**Live Site:** https://life-island.web.app
+**Live Site:** <https://life-island.web.app>
 
 ## Issues Fixed
 
 ### Player Problems
+
 ❌ **Before:**
+
 - Player didn't stand straight on surface
 - Constant wobbling/shaking left and right
 - Player kept falling or sliding
 - Rotation was jittery and unstable
 
 ✅ **After:**
+
 - Player stands upright and stable
 - No wobbling or shaking
 - Stays firmly on ground
 - Smooth, stable rotation
 
 ### Camera Problems
+
 ❌ **Before:**
+
 - Camera became weird after moving player
 - Jittery tracking
 - Too aggressive yaw following (0.65)
 - Used movement-based forward calculation causing instability
 
 ✅ **After:**
+
 - Camera follows smoothly
 - Stable tracking
 - Moderate yaw following (0.5)
@@ -36,7 +42,9 @@
 ## Root Causes Identified
 
 ### 1. Over-Frequent `stickToIsland()` Calls
+
 **Problem:** Called every 3-5 frames with different smooth values (0.4, 0.6, 1.0)
+
 ```typescript
 // BEFORE - Too frequent, causing micro-adjustments
 if (this.frameCount % 3 === 0) {
@@ -48,6 +56,7 @@ if (this.frameCount % 5 === 0) {
 ```
 
 **Fix:** Reduced frequency and smoothing values
+
 ```typescript
 // AFTER - Less frequent, gentler adjustments
 if (this.frameCount % 5 === 0) {
@@ -59,7 +68,9 @@ if (this.frameCount % 10 === 0) {
 ```
 
 ### 2. Unstable Rotation System
+
 **Problem:** Player rotation calculated from movement direction, causing wobbling
+
 ```typescript
 // BEFORE - Movement-based rotation (unstable)
 const heading = moved.clone().normalize();
@@ -69,6 +80,7 @@ this.mesh.quaternion.slerp(targetRotation, slerpFactor);
 ```
 
 **Fix:** Stable yaw-based rotation system
+
 ```typescript
 // AFTER - Yaw-based rotation (stable)
 private currentYaw: number = 0;
@@ -86,7 +98,9 @@ this.currentYaw += normalizedDiff * rotationAmount;
 ```
 
 ### 3. Position Stability Threshold Too Small
+
 **Problem:** `positionStabilityThreshold = 0.08` caused constant micro-corrections
+
 ```typescript
 // BEFORE - Too sensitive
 private positionStabilityThreshold: number = 0.08;
@@ -97,13 +111,16 @@ if (distToTarget > this.positionStabilityThreshold) {
 ```
 
 **Fix:** Increased threshold to prevent micro-jitter
+
 ```typescript
 // AFTER - More tolerant
 private positionStabilityThreshold: number = 0.2;
 ```
 
 ### 4. Aggressive Orientation Smoothing
+
 **Problem:** `orientationSmoothing = 0.06` was too aggressive
+
 ```typescript
 // BEFORE - Too aggressive
 const orientationSmoothing = 0.06;
@@ -111,6 +128,7 @@ this.mesh.quaternion.slerp(targetQuat, orientationSmoothing);
 ```
 
 **Fix:** Gentler smoothing for stability
+
 ```typescript
 // AFTER - More gentle
 const orientationSmoothing = 0.15;
@@ -118,7 +136,9 @@ this.mesh.quaternion.slerp(targetQuat, orientationSmoothing);
 ```
 
 ### 5. Camera Using Movement-Based Forward
+
 **Problem:** Camera calculated forward from player movement, causing jitter
+
 ```typescript
 // BEFORE - Movement-based (jittery)
 if (this.prevPlayerPos) {
@@ -128,6 +148,7 @@ if (this.prevPlayerPos) {
 ```
 
 **Fix:** Always use player's quaternion
+
 ```typescript
 // AFTER - Quaternion-based (stable)
 forward = new THREE.Vector3(0, 0, -1)
@@ -136,7 +157,9 @@ forward = new THREE.Vector3(0, 0, -1)
 ```
 
 ### 6. Over-Aggressive Camera Settings
+
 **Problem:** Too responsive camera settings caused jitter
+
 ```typescript
 // BEFORE
 smoothness: 0.08      // Too fast
@@ -145,6 +168,7 @@ yawFollow: 0.65       // Too strong
 ```
 
 **Fix:** More balanced settings
+
 ```typescript
 // AFTER
 smoothness: 0.12      // More stable
@@ -159,6 +183,7 @@ yawFollow: 0.5        // Less aggressive
 ### Player.ts Changes
 
 #### 1. Stable Yaw Tracking
+
 ```typescript
 // Added stable yaw property
 private currentYaw: number = 0;
@@ -169,12 +194,14 @@ this.currentYaw = spawnYaw;
 ```
 
 #### 2. Improved Position Stability
+
 ```typescript
 // Increased threshold from 0.08 → 0.2
 private positionStabilityThreshold: number = 0.2;
 ```
 
 #### 3. Stable Rotation System
+
 ```typescript
 // Calculate target yaw from movement
 const targetYaw = Math.atan2(heading.x, heading.z);
@@ -192,6 +219,7 @@ const yawQuat = new THREE.Quaternion().setFromAxisAngle(radial, this.currentYaw)
 ```
 
 #### 4. Reduced stickToIsland Frequency
+
 ```typescript
 // Moving: every 5 frames with 0.3 smooth (was every 3 frames with 0.4)
 if (this.frameCount % 5 === 0) {
@@ -205,6 +233,7 @@ if (this.frameCount % 10 === 0) {
 ```
 
 #### 5. Gentler Orientation Smoothing
+
 ```typescript
 // Increased from 0.06 → 0.15
 const orientationSmoothing = 0.15;
@@ -212,6 +241,7 @@ this.mesh.quaternion.slerp(targetQuat, orientationSmoothing);
 ```
 
 #### 6. Updated stickToIsland Method
+
 ```typescript
 private stickToIsland(smooth: number = 1): void {
   // ... position correction ...
@@ -236,6 +266,7 @@ private stickToIsland(smooth: number = 1): void {
 ### Camera.ts Changes
 
 #### 1. Stable Forward Calculation
+
 ```typescript
 // BEFORE - Movement-based
 if (this.prevPlayerPos) {
@@ -250,6 +281,7 @@ forward = new THREE.Vector3(0, 0, -1)
 ```
 
 #### 2. More Stable Camera Settings
+
 ```typescript
 // Constructor defaults
 this.smoothness = 0.12;      // Was 0.08
@@ -258,6 +290,7 @@ this.yawFollowFactor = 0.5;  // Was 0.65
 ```
 
 #### 3. Updated Preset Defaults
+
 ```typescript
 // setThirdPersonPreset defaults
 smoothness: 0.12    // Was 0.08
@@ -266,6 +299,7 @@ yawFollow: 0.5      // Was 0.65
 ```
 
 #### 4. Updated Camera Presets
+
 ```typescript
 // Default preset
 smoothness: 0.12, lookAtSmooth: 5.0, yawFollow: 0.5
@@ -278,6 +312,7 @@ smoothness: 0.15, lookAtSmooth: 4.0, yawFollow: 0.4
 ```
 
 #### 5. Reduced Occlusion Checks
+
 ```typescript
 this.sweepThrottleInterval = 0.3;  // Was 0.22
 this.occlusionSmoothTime = 0.6;    // Was 0.5
@@ -301,6 +336,7 @@ this.cameraController.setThirdPersonPreset({
 ## Technical Summary
 
 ### Player Stability Improvements
+
 | Parameter | Before | After | Impact |
 |-----------|--------|-------|--------|
 | **Position Threshold** | 0.08 | 0.2 | -60% micro-corrections |
@@ -312,6 +348,7 @@ this.cameraController.setThirdPersonPreset({
 | **Rotation System** | Movement-based | Yaw-based | Eliminates wobble |
 
 ### Camera Stability Improvements
+
 | Parameter | Before | After | Impact |
 |-----------|--------|-------|--------|
 | **Smoothness** | 0.08 | 0.12 | +50% position damping |
@@ -326,6 +363,7 @@ this.cameraController.setThirdPersonPreset({
 ## Result
 
 ### Player Behavior
+
 ✅ **Stands perfectly straight** on any terrain slope
 ✅ **No wobbling** - stable rotation using yaw-based system
 ✅ **No sliding** - reduced stick-to-surface frequency
@@ -333,6 +371,7 @@ this.cameraController.setThirdPersonPreset({
 ✅ **Natural turning** - normalized angle interpolation
 
 ### Camera Behavior
+
 ✅ **Smooth tracking** - increased damping prevents jitter
 ✅ **Stable orientation** - uses player quaternion not movement
 ✅ **Moderate following** - reduced yaw coupling (0.5 vs 0.65)
@@ -340,6 +379,7 @@ this.cameraController.setThirdPersonPreset({
 ✅ **Reduced overhead** - fewer occlusion checks
 
 ### Build Info
+
 - **Build Time:** 56s
 - **Bundle Size:** 771.85 kB (197.70 kB gzipped)
 - **Status:** ✅ Production ready

@@ -1,0 +1,23 @@
+dist/
+assetKits/
+assets/
+functions/
+node_modules/
+*.fbx
+*.gltf
+*.bin
+
+# Ignore markdown files to prevent chronic formatting issues
+*.md
+
+# Ignore environment files
+.env*
+
+# Ignore documentation that should preserve manual formatting
+CREDITS.md
+README*.md
+*-GUIDE.md
+*-COMPLETE.md
+*-SUMMARY.md
+*-STATUS.md
+*-REPORT.md

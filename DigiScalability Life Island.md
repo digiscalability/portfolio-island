@@ -5,6 +5,7 @@ An immersive 3D interactive experience that combines a personalized "Life Island
 ## 🌟 Features
 
 ### Core Experience
+
 - **3D Spherical World**: Navigate a beautiful toon-shaded planet representing life, business, hobbies, and achievements
 - **Sphere Walking Mechanics**: Realistic gravity-based movement on a spherical surface
 - **Interactive Zones**: Five distinct areas to explore:
@@ -15,6 +16,7 @@ An immersive 3D interactive experience that combines a personalized "Life Island
   - Contact Dock (chat, feedback, appointment booking)
 
 ### Gameplay & Interactions
+
 - **WASD Movement**: Smooth character control with sprint capability
 - **Zone Interactions**: Press E or Space to interact with zones
 - **AI Chat System**: Press C to chat with an AI guide (powered by Gemini API)
@@ -23,6 +25,7 @@ An immersive 3D interactive experience that combines a personalized "Life Island
 - **Decorative Elements**: Houses, mailboxes, trees, and 3D emojis populate the island
 
 ### Technical Features
+
 - **Toon Shading**: Beautiful cel-shaded graphics with custom materials
 - **Third-Person Camera**: Smooth follow camera with automatic positioning
 - **Firebase Integration**: Full backend with Firestore, Functions, Storage, and Hosting
@@ -32,26 +35,30 @@ An immersive 3D interactive experience that combines a personalized "Life Island
 ## 🚀 Getting Started
 
 ### Prerequisites
+
 - Node.js 18+ and pnpm
 - Firebase CLI (`npm install -g firebase-tools`)
-- A Firebase project (create one at https://console.firebase.google.com/)
+- A Firebase project (create one at <https://console.firebase.google.com/>)
 
 ### Installation
 
 1. **Clone or navigate to the project directory**
+
    ```bash
    cd digiscalability-life-island
    ```
 
 2. **Install dependencies**
+
    ```bash
    pnpm install
    cd functions && npm install && cd ..
    ```
 
 3. **Configure Firebase**
-   
+
    a. Update `.firebaserc` with your Firebase project ID:
+
    ```json
    {
      "projects": {
@@ -59,8 +66,9 @@ An immersive 3D interactive experience that combines a personalized "Life Island
      }
    }
    ```
-   
+
    b. Update `src/core/FirebaseConfig.ts` with your Firebase configuration:
+
    ```typescript
    export const firebaseConfig = {
      apiKey: "YOUR_API_KEY",
@@ -72,17 +80,18 @@ An immersive 3D interactive experience that combines a personalized "Life Island
      measurementId: "YOUR_MEASUREMENT_ID"
    };
    ```
-   
+
    c. Update Firestore and Storage rules with your owner UID:
    - Replace `YOUR_OWNER_UID` in `firestore.rules`
    - Replace `YOUR_OWNER_UID` in `storage.rules`
 
 4. **Set up Firebase services**
+
    ```bash
    firebase login
    firebase use your-project-id
    ```
-   
+
    Enable the following in Firebase Console:
    - Authentication (Anonymous + Google)
    - Firestore Database
@@ -92,8 +101,9 @@ An immersive 3D interactive experience that combines a personalized "Life Island
    - Firebase Analytics (optional)
 
 5. **Configure Gemini API (Optional)**
-   
+
    For AI chat functionality, set up the Gemini API key:
+
    ```bash
    firebase functions:config:set gemini.apikey="YOUR_GEMINI_API_KEY"
    ```
@@ -101,6 +111,7 @@ An immersive 3D interactive experience that combines a personalized "Life Island
 ## 💻 Development
 
 ### Run Development Server
+
 ```bash
 pnpm dev
 ```
@@ -108,11 +119,13 @@ pnpm dev
 The app will be available at `http://localhost:5173`
 
 ### Build for Production
+
 ```bash
 pnpm build
 ```
 
 ### Preview Production Build
+
 ```bash
 pnpm preview
 ```
@@ -122,16 +135,19 @@ pnpm preview
 ### Deploy to Firebase Hosting
 
 1. **Build the project**
+
    ```bash
    pnpm build
    ```
 
 2. **Deploy everything (Hosting + Functions + Firestore rules)**
+
    ```bash
    firebase deploy
    ```
 
 3. **Deploy only specific services**
+
    ```bash
    firebase deploy --only hosting
    firebase deploy --only functions
@@ -142,6 +158,7 @@ pnpm preview
 ### Post-Deployment
 
 After deployment, your site will be available at:
+
 - `https://your-project-id.web.app`
 - `https://your-project-id.firebaseapp.com`
 
@@ -236,6 +253,7 @@ Edit `src/gameplay/Player.ts` in the `createCharacter()` method to change the ch
 ### Build Errors
 
 If you encounter TypeScript errors, ensure all dependencies are installed:
+
 ```bash
 pnpm install
 cd functions && npm install && cd ..
@@ -284,4 +302,3 @@ This project is provided as-is for personal and commercial use.
 **DigiScalability Life Island generated successfully!** 🎉
 
 For questions or support, please visit the Contact Dock in the experience or reach out through the feedback system.
-

@@ -12,5 +12,6 @@ Suggested credits template (fill after downloading):
   - [name] — source: [url] — license: [license] — file: assets/<file>
 
 Notes:
+
 - Always check the original page for attribution requirements. Some sample files included from Khronos or other repos are for testing and may not be CC0 for commercial use.
 - Remove or replace any asset that has a restrictive license if you plan to publish the project.

@@ -47,6 +47,8 @@ export default class DebugOverlay {
   }
 
   dispose() {
-    try { document.body.removeChild(this.container); } catch (e) {}
+    if (this.container.parentElement) {
+      this.container.parentElement.removeChild(this.container);
+    }
   }
 }

@@ -32,7 +32,7 @@ export class Lighting {
     try {
       (this.directionalLight.shadow as any).radius = 3;
       this.directionalLight.shadow.bias = -0.0005;
-    } catch (e) {
+    } catch (_e) {
       // ignore if property not supported
     }
 

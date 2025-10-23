@@ -241,16 +241,18 @@ export class Environment {
    */
   private createCelestialBody(size: number, color: number, emissive: boolean): THREE.Mesh {
     const geometry = new THREE.SphereGeometry(size, 32, 32);
-    const material = new THREE.MeshBasicMaterial({
-      color: color,
+    const material = new THREE.MeshStandardMaterial({
+      color,
       transparent: true,
-      opacity: 1.0
+      opacity: 1.0,
+      metalness: 0,
+      roughness: 1
     });
 
     if (emissive) {
       // Sun glows
-      (material as any).emissive = new THREE.Color(color);
-      (material as any).emissiveIntensity = 0.8;
+      material.emissive = new THREE.Color(color);
+      material.emissiveIntensity = 0.8;
     }
 
     const mesh = new THREE.Mesh(geometry, material);

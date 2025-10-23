@@ -1,18 +1,21 @@
 # Critical Fixes: Floor Color, Object Orbit, Player Flying, Ground Placement
 
 **Deployed:** October 20, 2025
-**Live Site:** https://life-island.web.app
+**Live Site:** <https://life-island.web.app>
 
 ## Critical Issues from Screenshots
 
 ### Issue 1: White Floor ❌
+
 **Screenshot Evidence:** Terrain appeared pure white instead of grass-colored
 **Root Cause:** Line 101 in `Island.ts` had `color: 0xffffff` (pure white) overriding the grass texture
 **Fix:** Changed to `color: 0x6b8f6b` (natural green tint)
 
 ### Issue 2: Objects in Orbit ❌
+
 **Screenshot Evidence:** Buildings, houses, trees floating in space away from island
 **Root Cause:** Using `position.add()` with world-space vectors instead of surface normals
+
 - Buildings: `b.position.add(sampled.normal.clone().multiplyScalar(1.3))` pushed them 1.3 units away
 - Houses: `house.position.add(sampled.normal.clone().multiplyScalar(0.15))`
 - Trees: `new THREE.Vector3(0, 0.35, 0)` added in WORLD Y, not along surface normal
@@ -20,14 +23,17 @@
 **Fix:** Removed ALL manual offset additions - `sampleSurfacePosition` already includes epsilon
 
 ### Issue 3: Player Flying ❌
+
 **Screenshot Evidence:** Player spawning/staying airborne, not touching ground
 **Root Cause:**
+
 - Spawn using offset 0.5 kept player elevated
 - `isAirborne` not explicitly set to false on spawn
 - Landing threshold (0.25) too lenient
 - `stickToIsland()` using offset 0.5 instead of 0.0
 
 **Fix:**
+
 - Changed spawn offset from 0.5 to 0.0
 - Added explicit `this.isAirborne = false` and `this.verticalVelocity = 0` on spawn
 - Called `this.stickToIsland(1)` for full snap to surface
@@ -35,8 +41,10 @@
 - Changed all `sampleSurfaceByDirection` calls to use 0.0 offset
 
 ### Issue 4: Objects Not On Ground ❌
+
 **Screenshot Evidence:** Buildings half-sunk or floating
 **Root Cause:** Mixing two offset systems:
+
 1. `sampleSurfacePosition(approx, offset)` - adds offset IN the function
 2. `position.add(normal * offset)` - adds offset AFTER positioning
 This caused DOUBLE offsetting or incorrect direction
@@ -46,6 +54,7 @@ This caused DOUBLE offsetting or incorrect direction
 ## Code Changes
 
 ### Island.ts - Grass Material Color
+
 ```typescript
 // BEFORE
 const material = Materials.createPBRMaterial({
@@ -67,6 +76,7 @@ const material = Materials.createPBRMaterial({
 ```
 
 ### Island.ts - Buildings (Removed Offset)
+
 ```typescript
 // BEFORE
 b.position.copy(sampled.position);
@@ -80,6 +90,7 @@ b.position.copy(sampled.position); // ✅ On surface
 ```
 
 ### Island.ts - Houses (Removed Offset)
+
 ```typescript
 // BEFORE
 house.position.copy(sampled.position);
@@ -91,6 +102,7 @@ house.position.copy(sampled.position); // ✅ On surface
 ```
 
 ### Island.ts - Trees (Fixed Direction)
+
 ```typescript
 // BEFORE
 dummy.position.copy(sampled.position.clone().add(new THREE.Vector3(0, 0.35, 0))); // ❌ World Y
@@ -104,6 +116,7 @@ dummy.position.copy(sampled.position.clone().add(
 ```
 
 ### Player.ts - Spawn Fix
+
 ```typescript
 // BEFORE
 const spawnSurface = island.sampleSurfaceByDirection(spawnDir, 0.5); // ❌ Elevated
@@ -119,6 +132,7 @@ this.stickToIsland(1); // ✅ Full snap
 ```
 
 ### Player.ts - stickToIsland Fix
+
 ```typescript
 // BEFORE
 const sampled = this.island.sampleSurfaceByDirection(sampleDir.normalize(), 0.5); // ❌ Elevated
@@ -128,6 +142,7 @@ const sampled = this.island.sampleSurfaceByDirection(sampleDir.normalize(), 0.0)
 ```
 
 ### Player.ts - Landing Threshold
+
 ```typescript
 // BEFORE
 if (worldDist <= 0.25 && this.verticalVelocity <= 0) { // ❌ Too lenient
@@ -137,6 +152,7 @@ if (worldDist <= 0.15 && this.verticalVelocity <= 0) { // ✅ Proper detection
 ```
 
 ### Player.ts - Airborne Sampling
+
 ```typescript
 // BEFORE
 const sampled = this.island.sampleSurfaceByDirection(dir, 0.5); // ❌ Wrong height
@@ -151,6 +167,7 @@ const sampled = this.island.sampleSurfaceByDirection(dir, 0.0); // ✅ Actual gr
 **Reality:** `sampleSurfacePosition` ALREADY includes epsilon (0.02) to prevent z-fighting
 
 **Wrong Pattern:**
+
 ```typescript
 const sampled = sampleSurfacePosition(approx, 0.0);
 object.position.copy(sampled.position);
@@ -158,6 +175,7 @@ object.position.add(normal * offset); // ❌ DOUBLE OFFSET
 ```
 
 **Correct Pattern:**
+
 ```typescript
 const sampled = sampleSurfacePosition(approx, 0.0);
 object.position.copy(sampled.position); // ✅ Already offset by epsilon

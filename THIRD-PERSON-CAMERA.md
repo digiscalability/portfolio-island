@@ -1,30 +1,34 @@
 # Third-Person Action Camera Implementation
 
 **Deployed:** October 20, 2025
-**Live Site:** https://life-island.web.app
+**Live Site:** <https://life-island.web.app>
 **Genre:** Open-World Sandbox / Third-Person Action
 
 ## Transformation: Aerial → Third-Person Over-Shoulder
 
 ### Before (Aerial/Cinematic View)
+
 ```typescript
 offset: (0, 3.6, 7.5)  // High up, far back
 smoothness: 0.07       // Slow
 yawFollow: 0.3         // Weak tracking
 FOV: 55°               // Narrow
 ```
+
 - Camera positioned high above player (Y=3.6)
 - Far distance (Z=7.5) created bird's-eye view
 - Low yaw follow made camera feel detached
 - Narrow FOV limited peripheral vision
 
 ### After (Action Game View)
+
 ```typescript
 offset: (0.8, 1.8, 4.5)  // Over-shoulder, closer
 smoothness: 0.08         // Responsive
 yawFollow: 0.65          // Strong tracking
 FOV: 65°                 // Wide awareness
 ```
+
 - Camera positioned at shoulder height (Y=1.8)
 - Closer distance (Z=4.5) for intimate view
 - Slight horizontal offset (X=0.8) for asymmetric over-shoulder
@@ -34,6 +38,7 @@ FOV: 65°                 // Wide awareness
 ## Camera Configuration Changes
 
 ### Engine.ts - Initialization
+
 ```typescript
 // BEFORE
 this.cameraController.setThirdPersonPreset({
@@ -55,6 +60,7 @@ this.cameraController.setThirdPersonPreset({
 ```
 
 ### Camera.ts - Default Values
+
 ```typescript
 // BEFORE - Cinematic defaults
 this.offset = new THREE.Vector3(0, 3.0, 7.0);
@@ -76,41 +82,49 @@ this.baseFOV = 65;
 ### Camera Presets (F1 key cycles)
 
 #### Default (Action)
+
 ```typescript
 offset: (0.8, 1.8, 4.5)
 smoothness: 0.08
 yawFollow: 0.65
 pitch: 10° - 65°
 ```
+
 Standard third-person action view, similar to GTA V, Fortnite
 
 #### Close (Combat)
+
 ```typescript
 offset: (0.6, 1.2, 2.8)
 smoothness: 0.06
 yawFollow: 0.75
 pitch: 8° - 55°
 ```
+
 Tight over-shoulder for close combat, like Resident Evil 4
 
 #### Wide (Exploration)
+
 ```typescript
 offset: (1.2, 2.4, 6.5)
 smoothness: 0.10
 yawFollow: 0.5
 pitch: 12° - 70°
 ```
+
 Cinematic exploration view, like Breath of the Wild
 
 ## Genre Alignment
 
 ### Open-World Sandbox
+
 ✅ **Wide FOV (65°)** - See more of the environment
 ✅ **Responsive camera** - Quick reactions to player input
 ✅ **Strong yaw tracking** - Camera follows player orientation
 ✅ **Lower position** - Ground-level exploration feel
 
 ### Third-Person Action/Shooter
+
 ✅ **Over-shoulder offset** - Clear view ahead for aiming/navigation
 ✅ **Asymmetric view (X=0.8)** - Classic third-person shooter style
 ✅ **Quick look-at (6.0)** - Responsive target tracking
@@ -132,6 +146,7 @@ Cinematic exploration view, like Breath of the Wild
 ## Player Experience Changes
 
 ### Before (Aerial View)
+
 - ❌ Felt like controlling a map/RTS
 - ❌ Disconnected from character
 - ❌ Hard to see details
@@ -139,6 +154,7 @@ Cinematic exploration view, like Breath of the Wild
 - ❌ Limited immersion
 
 ### After (Third-Person Action)
+
 - ✅ **Immediate connection** to character
 - ✅ **Clear forward vision** for exploration
 - ✅ **Responsive** to player movements
@@ -148,14 +164,16 @@ Cinematic exploration view, like Breath of the Wild
 
 ## Game Feel Comparison
 
-### Similar To:
+### Similar To
+
 - **GTA V** - Over-shoulder offset, responsive tracking
 - **Fortnite** - Wide FOV, quick camera movement
 - **The Last of Us** - Tight third-person action
 - **Horizon Zero Dawn** - Exploration + combat balance
 - **Ghost of Tsushima** - Dynamic camera following
 
-### Key Features Implemented:
+### Key Features Implemented
+
 1. **Over-shoulder asymmetry** - Classic third-person shooter style
 2. **Dynamic FOV** - Widens during sprint/speed
 3. **Yaw tracking** - Camera follows player orientation

@@ -29,7 +29,13 @@ export class InputManager {
     touchmove?: (e: TouchEvent) => void;
     touchend?: (e: TouchEvent) => void;
     canvasClick?: () => void;
-  } = {} as any;
+  } = {
+    keydown: () => {},
+    keyup: () => {},
+    mousemove: () => {},
+    mousedown: () => {},
+    mouseup: () => {},
+  };
   private isDisposed: boolean = false;
 
   constructor(canvas?: HTMLCanvasElement) {
@@ -98,13 +104,9 @@ export class InputManager {
 
   // Return a continuous sprint value in range 0..1. If a joystick provider exposes getSprint(), prefer that.
   public getSprintValue(): number {
-    try {
-      if (this.joystickProvider && typeof this.joystickProvider.getSprint === 'function') {
-        const v = this.joystickProvider.getSprint();
-        return Math.max(0, Math.min(1, v));
-      }
-    } catch (e) {
-      // ignore
+    if (this.joystickProvider && typeof this.joystickProvider.getSprint === 'function') {
+      const v = this.joystickProvider.getSprint();
+      return Math.max(0, Math.min(1, v));
     }
     // Keyboard fallback: shift key acts as binary sprint
     return this.keys.sprint ? 1 : 0;
@@ -155,10 +157,10 @@ export class InputManager {
     this.boundHandlers.canvasClick = () => {
       // Only request pointer lock when controls are explicitly enabled (prevent early camera grabs during cinematic)
       if (!this.controlsEnabled) return;
-      if ((document as any).pointerLockElement !== canvas) {
+      if (document.pointerLockElement !== canvas) {
         try {
-          canvas.requestPointerLock && canvas.requestPointerLock();
-        } catch (e) {
+          canvas.requestPointerLock?.();
+        } catch {
           // ignore
         }
       }
@@ -205,8 +207,8 @@ export class InputManager {
         this.keys.jump = true;
         break;
     }
-  // Any explicit keyboard input should unsquelch joystick so user can switch seamlessly
-  try { this.unsquelchJoystick(); } catch (e) {}
+    // Any explicit keyboard input should unsquelch joystick so user can switch seamlessly
+    this.unsquelchJoystick();
   }
 
   private handleKeyUp(e: KeyboardEvent): void {
@@ -253,7 +255,7 @@ export class InputManager {
     this.mousePosition.y = -(t.clientY / window.innerHeight) * 2 + 1;
     this.keys.action = true;
     e.preventDefault();
-    try { this.unsquelchJoystick(); } catch (e) {}
+    this.unsquelchJoystick();
   }
 
   private handleTouchMove(e: TouchEvent): void {
@@ -280,7 +282,7 @@ export class InputManager {
         this.mouseButtons.right = true;
         break;
     }
-    try { this.unsquelchJoystick(); } catch (e) {}
+    this.unsquelchJoystick();
   }
 
   private handleMouseUp(e: MouseEvent): void {
@@ -343,17 +345,19 @@ export class InputManager {
             this.joystickSquelched = false;
           }
         }
-      } catch (e) {
+      } catch {
         // ignore joystick errors
       }
     }
 
     // Auto-squelch joystick if idle for > joystickAutoSquelchMs
-    try {
-      if (!this.joystickSquelched && this.joystickLastActive && (performance.now() - this.joystickLastActive) > this.joystickAutoSquelchMs) {
-        this.joystickSquelched = true;
-      }
-    } catch (e) {}
+    if (
+      !this.joystickSquelched &&
+      this.joystickLastActive &&
+      performance.now() - this.joystickLastActive > this.joystickAutoSquelchMs
+    ) {
+      this.joystickSquelched = true;
+    }
 
     // clamp
     rawX = Math.max(-1, Math.min(1, rawX));
@@ -435,4 +439,3 @@ export class InputManager {
     this.joystickProvider = undefined;
   }
 }
-

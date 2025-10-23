@@ -1,6 +1,8 @@
 import { GameScene } from './GameScene';
-import { SimpleInputManager } from './SimpleInputManager';
+import { GraphicsDebug } from './GraphicsDebug';
+import { SimpleInputManager, type InputRecording } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
+import logger from './src/utils/Logger';
 import './style.css';
 
 /**
@@ -21,12 +23,19 @@ class SimpleApp {
   private scene!: GameScene;
   private inputManager!: SimpleInputManager;
   private isRunning: boolean = false;
+  private debugEnabled: boolean = false;
+  private debugInitialized: boolean = false;
+  private graphicsDebug?: GraphicsDebug;
 
   private boundHandlers: {
     beforeUnload?: () => void;
   } = {};
 
   constructor() {
+    this.debugEnabled = this.detectDebugMode();
+    (window as unknown as { __app?: SimpleApp }).__app = this;
+    (window as typeof window & { enableDebugTools?: () => void }).enableDebugTools = () =>
+      this.enableDebugFeatures();
     this.init();
   }
 
@@ -64,10 +73,7 @@ class SimpleApp {
       console.log('✓ Scene initialized and ready');
 
       // Initialize post-processing
-      this.renderer.initPostProcessing(
-        this.scene,
-        this.scene.getCamera()
-      );
+      this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
       console.log('✓ Post-processing initialized');
 
       // Create input manager
@@ -85,9 +91,29 @@ class SimpleApp {
 
       console.log('🌎 DigiScalability Life Island - Simplified Edition initialized!');
 
+      if (this.debugEnabled) {
+        this.enableDebugFeatures();
+      }
     } catch (error) {
       console.error('❌ Failed to initialize app:', error);
       this.showErrorScreen(error as Error);
+    }
+  }
+
+  private detectDebugMode(): boolean {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+
+    try {
+      const hash = window.location?.hash ?? '';
+      const search = window.location?.search ?? '';
+      const debugParams = hash.includes('debug') || search.includes('debug=1');
+      const forced = Boolean(window.__FORCE_DEBUG);
+      const preset = Boolean((window as typeof window & { __DEBUG_MODE?: boolean }).__DEBUG_MODE);
+      return debugParams || forced || preset;
+    } catch {
+      return false;
     }
   }
 
@@ -98,10 +124,8 @@ class SimpleApp {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    this.renderer.startRenderLoop(
-      this.scene,
-      this.scene.getCamera(),
-      (deltaTime: number) => this.update(deltaTime)
+    this.renderer.startRenderLoop(this.scene, this.scene.getCamera(), (deltaTime: number) =>
+      this.update(deltaTime),
     );
   }
 
@@ -125,6 +149,105 @@ class SimpleApp {
 
     // Update scene (this updates player physics, camera, etc.)
     this.scene.update(deltaTime);
+  }
+
+  private enableDebugFeatures(): void {
+    if (this.debugInitialized) return;
+    if (!this.scene || !this.renderer || !this.inputManager) return;
+
+    this.debugInitialized = true;
+    (window as typeof window & { __DEBUG_MODE?: boolean }).__DEBUG_MODE = true;
+    window.__DEBUG_PLAYER = true;
+
+    try {
+      logger.init();
+    } catch (error) {
+      console.warn('Logger initialization failed', error);
+    }
+
+    this.exposeDebugGlobals();
+    this.exposeInputRecorder();
+    this.registerDebugCommands();
+
+    try {
+      const playerObject = this.scene.getPlayer().getMesh();
+      const planetObject = this.scene.getPlanet();
+      if (!this.graphicsDebug) {
+        this.graphicsDebug = new GraphicsDebug(document.body, undefined, this.scene, {
+          player: playerObject,
+          planet: planetObject,
+        });
+      }
+    } catch (error) {
+      console.warn('GraphicsDebug setup failed', error);
+    }
+
+    window.toggleDebugOverlay = (enabled: boolean) => {
+      logger.setEnabled(enabled);
+    };
+
+    console.info(
+      '🔧 Debug tools enabled. Use window.scene, window.camera, and window.__INPUT_RECORDER.',
+    );
+  }
+
+  private exposeDebugGlobals(): void {
+    const globalWindow = window as typeof window & {
+      scene?: GameScene;
+      camera?: ReturnType<GameScene['getCamera']>;
+      renderer?: ReturnType<SimpleRenderer['getRenderer']>;
+      player?: ReturnType<GameScene['getPlayer']>;
+      planet?: ReturnType<GameScene['getPlanet']>;
+      orbitCamera?: ReturnType<GameScene['getOrbitCamera']>;
+      runCameraFlyIn?: (duration?: number) => Promise<void>;
+      listRecentLogs?: () => unknown[];
+    };
+
+    globalWindow.scene = this.scene;
+    globalWindow.camera = this.scene.getCamera();
+    globalWindow.renderer = this.renderer.getRenderer();
+    globalWindow.player = this.scene.getPlayer();
+    globalWindow.planet = this.scene.getPlanet();
+    globalWindow.orbitCamera = this.scene.getOrbitCamera();
+    globalWindow.runCameraFlyIn = async (duration?: number) => {
+      await this.scene.getOrbitCamera().flyInFromDistant(duration ?? 2000);
+    };
+    globalWindow.listRecentLogs = () => window.__LOGGER?.getRecent?.() ?? [];
+  }
+
+  private exposeInputRecorder(): void {
+    const recorder = {
+      start: () => this.inputManager.startRecording(),
+      stop: () => this.inputManager.stopRecording(),
+      export: () => this.inputManager.exportRecording(),
+      clear: () => this.inputManager.clearRecording(),
+      get: () => this.inputManager.getRecording(),
+      isRecording: () => this.inputManager.isRecording(),
+    } satisfies {
+      start(): void;
+      stop(): InputRecording | null;
+      export(): string | null;
+      clear(): void;
+      get(): InputRecording | null;
+      isRecording(): boolean;
+    };
+
+    (window as typeof window & { __INPUT_RECORDER?: typeof recorder }).__INPUT_RECORDER = recorder;
+  }
+
+  private registerDebugCommands(): void {
+    const globalWindow = window as typeof window & {
+      captureInput?: (seconds?: number) => Promise<InputRecording | null>;
+      enableDebugTools?: () => void;
+    };
+
+    globalWindow.captureInput = async (seconds: number = 5) => {
+      this.inputManager.startRecording();
+      await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+      return this.inputManager.stopRecording();
+    };
+
+    globalWindow.enableDebugTools = () => this.enableDebugFeatures();
   }
 
   /**

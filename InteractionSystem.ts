@@ -1,7 +1,15 @@
+import type { Object3D, Vector3 } from 'three';
+
 import { Player } from './Player';
 import { Zone, ZonesManager } from './Zones';
 
 export type InteractionCallback = (zone: Zone) => void;
+export type InteractableObject =
+  | (Object3D & { position: Vector3 })
+  | {
+      mesh: Object3D & { position: Vector3 };
+      [key: string]: unknown;
+    };
 
 export class InteractionSystem {
   private player: Player;
@@ -9,9 +17,9 @@ export class InteractionSystem {
   private interactionDistance: number = 3;
   private onInteractionCallback?: InteractionCallback;
   // provider for interactable world objects (returns array of objects with .mesh)
-  private interactableProvider?: () => any[];
+  private interactableProvider?: () => InteractableObject[];
   // callback invoked when player interacts with a nearby object (E/Action)
-  private onObjectInteractionCallback?: (obj: any) => void;
+  private onObjectInteractionCallback?: (obj: InteractableObject) => void;
 
   constructor(player: Player, zonesManager: ZonesManager) {
     this.player = player;
@@ -23,12 +31,12 @@ export class InteractionSystem {
   }
 
   // Register a provider function that returns an array of interactable objects (mailboxes, NPC groups, etc.)
-  public setInteractableProvider(provider: () => any[]): void {
+  public setInteractableProvider(provider: () => InteractableObject[]): void {
     this.interactableProvider = provider;
   }
 
   // Register a callback to be invoked when the player presses the action near an interactable object
-  public onObjectInteraction(callback: (obj: any) => void): void {
+  public onObjectInteraction(callback: (obj: InteractableObject) => void): void {
     this.onObjectInteractionCallback = callback;
   }
 
@@ -40,23 +48,31 @@ export class InteractionSystem {
   }
 
   // Find the nearest interactable object from the provider (within interactionDistance)
-  public getNearbyInteractable(): any | null {
+  public getNearbyInteractable(): InteractableObject | null {
     try {
       if (!this.interactableProvider) return null;
       const list = this.interactableProvider() || [];
       if (!Array.isArray(list) || list.length === 0) return null;
       const pos = this.player.getPosition();
-      let nearest: any = null; let nearestDist = this.interactionDistance;
+      let nearest: InteractableObject | null = null;
+      let nearestDist = this.interactionDistance;
       for (const obj of list) {
         try {
-          const mesh = obj.mesh || obj;
-          if (!mesh || !mesh.position) continue;
+          const mesh = 'mesh' in obj ? obj.mesh : obj;
+          if (!mesh?.position) continue;
           const d = mesh.position.distanceTo(pos);
-          if (d < nearestDist) { nearest = obj; nearestDist = d; }
-        } catch (e) { /* ignore per-object errors */ }
+          if (d < nearestDist) {
+            nearest = obj;
+            nearestDist = d;
+          }
+        } catch {
+          /* ignore per-object errors */
+        }
       }
       return nearest;
-    } catch (e) { return null; }
+    } catch {
+      return null;
+    }
   }
 
   public setInteractionDistance(distance: number): void {
@@ -82,8 +98,9 @@ export class InteractionSystem {
         if (obj && actionPressed) {
           this.onObjectInteractionCallback(obj);
         }
-      } catch (e) { /* tolerate errors */ }
+      } catch {
+        /* tolerate errors */
+      }
     }
   }
 }
-
