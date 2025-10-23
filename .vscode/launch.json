@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vscode/master/extensions/json-language-features/server/schema/launch.schema.json",
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Vite in Chrome",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}",
+      "preLaunchTask": "npm: dev",
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "ready in",
+        "uriFormat": "http://localhost:5173"
+      }
+    },
+    {
+      "name": "Launch Vite in Edge DevTools",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}",
+      "preLaunchTask": "npm: dev",
+      "sourceMaps": true,
+      "userDataDir": false,
+      "runtimeArgs": ["--remote-debugging-port=9222", "--disable-background-networking"]
+    },
+    {
+      "name": "Attach to Edge DevTools",
+      "type": "msedge",
+      "request": "attach",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}",
+      "port": 9222
+    },
+    {
+      "name": "Debug TypeScript (Node)",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": ["-r", "ts-node/register"],
+      "args": ["${file}"],
+      "cwd": "${workspaceFolder}",
+      "protocol": "inspector",
+      "internalConsoleOptions": "openOnSessionStart",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Run npm script",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run-script", "${input:npmScript}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "npmScript",
+      "type": "pickString",
+      "description": "Select npm script to debug",
+      "options": ["dev", "build", "lint", "typecheck", "format"]
+    }
+  ]
+}

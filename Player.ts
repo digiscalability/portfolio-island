@@ -1,6 +1,7 @@
 
 import type { Camera } from 'three';
 import * as THREE from 'three';
+
 import type { Axes, InputManager, InputState } from './InputManager';
 import { Island } from './Island';
 import { Materials } from './Materials';
@@ -8,12 +9,27 @@ import DebugOverlay from './src/utils/DebugOverlay';
 import { getPendingGLTFLoads, loadGLTFModel } from './src/utils/GLTFModelLoader';
 import logger from './src/utils/Logger';
 
+type LoggerMetrics = Parameters<typeof logger.updateMetrics>[0];
+type MaterialWithOptionalMaps = THREE.Material & {
+  map?: THREE.Texture;
+  normalMap?: THREE.Texture;
+  roughnessMap?: THREE.Texture;
+  metalnessMap?: THREE.Texture;
+  aoMap?: THREE.Texture;
+  emissiveMap?: THREE.Texture;
+  bumpMap?: THREE.Texture;
+  displacementMap?: THREE.Texture;
+  alphaMap?: THREE.Texture;
+  envMap?: THREE.Texture;
+  needsUpdate?: boolean;
+  color?: THREE.Color;
+};
+
 export interface CharacterCustomization {
   skinColor: number;
   outfitColor: number;
   hairColor: number;
 }
-
 
 export class Player {
   public mesh: THREE.Group;
@@ -26,7 +42,7 @@ export class Player {
   private island: Island;
   private speed: number = 4.8; // increased base speed for better feel
   private sprintMultiplier: number = 1.85; // more noticeable sprint difference
-  private velocity: THREE.Vector3 = new THREE.Vector3(0,0,0);
+  private velocity: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
   private isAirborne: boolean = false;
   private verticalVelocity: number = 0; // along surface normal, positive = away from center
   private jumpStrength: number = 5.5; // higher jump for better arc
@@ -52,7 +68,6 @@ export class Player {
   // Stable yaw tracking (separate from full quaternion)
   private currentYaw: number = 0;
   // Landing effects
-  private landingTime: number = 0;
   private wasAirborne: boolean = false;
   private customization: CharacterCustomization;
   private debugOverlay: DebugOverlay | null = null;
@@ -68,13 +83,13 @@ export class Player {
 
     // Start with procedural mesh, then try to load model async
     this.mesh = this.createCharacter();
-  // make the procedural character slightly larger by default to be more visible
-  this.mesh.scale.setScalar(1.4);
-  // place the procedural character on the island surface at a safe spawn location
-  // For spherical island, we need to use proper surface sampling, not just Y offset
-  const spawnDir = new THREE.Vector3(0, 1, 0).normalize();
-  const spawnSurface = island.sampleSurfaceByDirection(spawnDir, 0.0);
-  this.mesh.position.copy(spawnSurface.position);
+    // make the procedural character slightly larger by default to be more visible
+    this.mesh.scale.setScalar(1.4);
+    // place the procedural character on the island surface at a safe spawn location
+    // For spherical island, we need to use proper surface sampling, not just Y offset
+    const spawnDir = new THREE.Vector3(0, 1, 0).normalize();
+    const spawnSurface = island.sampleSurfaceByDirection(spawnDir, 0.0);
+    this.mesh.position.copy(spawnSurface.position);
     // Ensure player starts grounded, not airborne
     this.isAirborne = false;
     this.verticalVelocity = 0;
@@ -89,15 +104,22 @@ export class Player {
     this.tryLoadModel();
 
     // Create debug overlay if requested via global flag
-    try { if ((window as any).__DEBUG_PLAYER) this.debugOverlay = new DebugOverlay(); } catch (e) {}
+    try {
+      if (window.__DEBUG_PLAYER) this.debugOverlay = new DebugOverlay();
+    } catch {}
   }
 
   private async tryLoadModel() {
     try {
       // try common extensions (.gltf then .glb) in assets first, then search assetKits for glTF files
-  let res: { scene: THREE.Group, animations: THREE.AnimationClip[] } | null = null;
-  let selectedUrl: string | null = null;
-      const candidates = ['/assets/models/Superhero_Female.gltf', '/assets/models/Superhero_Male.gltf', '/assets/models/player.gltf', '/assets/models/player.glb'];
+      let res: { scene: THREE.Group; animations: THREE.AnimationClip[] } | null = null;
+      let selectedUrl: string | null = null;
+      const candidates = [
+        '/assets/models/Superhero_Female.gltf',
+        '/assets/models/Superhero_Male.gltf',
+        '/assets/models/player.gltf',
+        '/assets/models/player.glb',
+      ];
       // per-model scale map (basename -> scalar). Tune these so models appear at sensible size by default.
       const scaleMap: Record<string, number> = {
         'Superhero_Female.gltf': 0.12,
@@ -115,7 +137,7 @@ export class Player {
           res = await loadGLTFModel(url);
           selectedUrl = url;
           if (res) break;
-        } catch (e) {
+        } catch {
           // try next
         }
       }
@@ -127,33 +149,46 @@ export class Player {
             '/assetKits/Universal Base Characters[Standard]/Base Characters/Unreal Engine/Superhero_Male.gltf',
             '/assetKits/Universal Base Characters[Standard]/Base Characters/Unreal Engine/Superhero_Female.gltf',
             '/assetKits/Universal Base Characters[Standard]/glTF/Superhero_Male.gltf',
-            '/assetKits/Universal Base Characters[Standard]/glTF/Superhero_Female.gltf'
+            '/assetKits/Universal Base Characters[Standard]/glTF/Superhero_Female.gltf',
           ];
           for (const k of kitCandidates) {
-            try { res = await loadGLTFModel(k); if (res) { selectedUrl = k; break; } } catch (e) { }
+            try {
+              res = await loadGLTFModel(k);
+              if (res) {
+                selectedUrl = k;
+                break;
+              }
+            } catch {}
           }
-        } catch (e) { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
       if (!res) throw new Error('player model not found');
       const { scene, animations } = res;
       // Preserve the parent, remove procedural mesh and later add the loaded model to the same parent
       const previousParent = this.mesh.parent || null;
       if (previousParent) previousParent.remove(this.mesh);
-    this.modelMesh = scene;
+      this.modelMesh = scene;
       this.modelAnimations = animations;
       this.modelLoaded = true;
-  console.info('Player: loaded model from GLTF, applying in-scene. Animations:', animations.map(a => a.name));
+      console.info(
+        'Player: loaded model from GLTF, applying in-scene. Animations:',
+        animations.map((a) => a.name),
+      );
       // Scale the model to an approximate human height (use per-model scale map when available)
       try {
         // compute bounding box of the loaded scene to determine its natural height
-        const bbox = new THREE.Box3().setFromObject(scene as any);
-        const size = new THREE.Vector3(); bbox.getSize(size);
-          const targetHeight = 1.9; // meters in world units for player height (slightly taller)
+        const bbox = new THREE.Box3().setFromObject(scene);
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+        const targetHeight = 1.9; // meters in world units for player height (slightly taller)
         let computedScale = 1;
         if (size.y > 1e-4) computedScale = targetHeight / size.y;
         let basename = '';
         if (selectedUrl) basename = selectedUrl.replace(/^.*[\\/]/, '');
-        if (!basename && typeof (scene as any).name === 'string') basename = (scene as any).name.replace(/^.*[\\/]/, '');
+        if (!basename && typeof scene.name === 'string')
+          basename = scene.name.replace(/^.*[\\/]/, '');
         const mapped = basename ? scaleMap[basename] : undefined;
         if (typeof mapped === 'number') {
           // respect per-model mapping but apply a global visibility multiplier
@@ -163,26 +198,36 @@ export class Player {
           const clamped = Math.max(0.02, Math.min(5, computedScale));
           this.modelMesh.scale.setScalar(clamped);
         }
-        console.info('Player: model basename for scale lookup:', basename, 'applied scale:', this.modelMesh.scale.x, 'bboxHeight:', size.y);
-      } catch (e) {
+        console.info(
+          'Player: model basename for scale lookup:',
+          basename,
+          'applied scale:',
+          this.modelMesh.scale.x,
+          'bboxHeight:',
+          size.y,
+        );
+      } catch {
         this.modelMesh.scale.setScalar(0.1);
       }
       // Ensure materials are fixed for correct encoding/opacity
       try {
-        this.modelMesh.traverse((o: any) => {
-          if (o && o.isMesh && o.material) {
+        this.modelMesh.traverse((object) => {
+          if (!(object instanceof THREE.Mesh)) return;
+          const material = object.material;
+          if (material) {
             try {
-              if (Array.isArray(o.material)) o.material.forEach((m: any) => Materials.fixMaterialTextures(m));
-              else Materials.fixMaterialTextures(o.material);
-            } catch (ee) {}
+              if (Array.isArray(material))
+                material.forEach((mat) => Materials.fixMaterialTextures(mat));
+              else Materials.fixMaterialTextures(material);
+            } catch {}
           }
         });
-      } catch (e) {}
+      } catch {}
       // Rotate to face correct direction
       // this.modelMesh.rotation.y = Math.PI;
-    // Copy position/quaternion from procedural mesh
-    this.modelMesh.position.copy(this.mesh.position);
-    this.modelMesh.quaternion.copy(this.mesh.quaternion);
+      // Copy position/quaternion from procedural mesh
+      this.modelMesh.position.copy(this.mesh.position);
+      this.modelMesh.quaternion.copy(this.mesh.quaternion);
       // Add the new mesh to the previous parent (if any) so it remains in the scene; otherwise the caller's addToScene will pick it up
       if (previousParent) {
         previousParent.add(this.modelMesh);
@@ -198,9 +243,12 @@ export class Player {
         this.currentAction = this.animationMixer.clipAction(defaultClip);
         this.currentAction.play();
         this.currentAnimationName = defaultClip.name;
-        console.log('Player model animations loaded:', animations.map(a => a.name));
+        console.log(
+          'Player model animations loaded:',
+          animations.map((a) => a.name),
+        );
       }
-    } catch (e) {
+    } catch (_err) {
       // Model not found or failed to load, fallback to procedural
       this.modelLoaded = false;
       this.modelMesh = null;
@@ -209,7 +257,7 @@ export class Player {
       this.currentAction = null;
       this.currentAnimationName = '';
       // Already using procedural mesh
-      console.warn('Player model not found or failed to load, using procedural mesh.', e);
+      console.warn('Player model not found or failed to load, using procedural mesh.', _err);
     }
   }
 
@@ -218,8 +266,8 @@ export class Player {
 
     // Body (capsule)
     const bodyGeometry = new THREE.CapsuleGeometry(0.3, 1, 8, 16);
-  // Keep toon look for body but add subtle specular via MeshStandardMaterial overlay for highlights
-  const bodyMaterial = Materials.createCharacterBodyMaterial();
+    // Keep toon look for body but add subtle specular via MeshStandardMaterial overlay for highlights
+    const bodyMaterial = Materials.createCharacterBodyMaterial();
     const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
     body.position.y = 0.5;
     body.castShadow = true;
@@ -227,28 +275,40 @@ export class Player {
 
     // Head (sphere)
     const headGeometry = new THREE.SphereGeometry(0.4, 16, 16);
-  // Use a standard material for head to allow soft shading and highlights
-  const headMaterial = Materials.createStandardMaterial({ color: this.customization.skinColor, metalness: 0.02, roughness: 0.6, envMapIntensity: 0.4 });
-  const head = new THREE.Mesh(headGeometry, headMaterial);
+    // Use a standard material for head to allow soft shading and highlights
+    const headMaterial = Materials.createStandardMaterial({
+      color: this.customization.skinColor,
+      metalness: 0.02,
+      roughness: 0.6,
+      envMapIntensity: 0.4,
+    });
+    const head = new THREE.Mesh(headGeometry, headMaterial);
     head.position.y = 1.5;
     head.castShadow = true;
     group.add(head);
 
     // Hair (smaller sphere on top)
     const hairGeometry = new THREE.SphereGeometry(0.35, 16, 16);
-  const hairMaterial = Materials.createPBRMaterial({ color: this.customization.hairColor, roughness: 0.6 });
+    const hairMaterial = Materials.createPBRMaterial({
+      color: this.customization.hairColor,
+      roughness: 0.6,
+    });
     const hair = new THREE.Mesh(hairGeometry, hairMaterial);
     hair.position.y = 1.8;
     hair.scale.set(1, 0.6, 1);
     hair.castShadow = true;
     group.add(hair);
 
-  // Slightly scale up procedural group to increase visibility
-  group.scale.setScalar(1.25);
+    // Slightly scale up procedural group to increase visibility
+    group.scale.setScalar(1.25);
 
     // Eyes (simple black spheres)
     const eyeGeometry = new THREE.SphereGeometry(0.08, 8, 8);
-  const eyeMaterial = Materials.createStandardMaterial({ color: 0x000000, metalness: 0, roughness: 0.3 });
+    const eyeMaterial = Materials.createStandardMaterial({
+      color: 0x000000,
+      metalness: 0,
+      roughness: 0.3,
+    });
 
     const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
     leftEye.position.set(-0.15, 1.55, 0.35);
@@ -263,7 +323,12 @@ export class Player {
 
   // accept an optional camera so movement can be interpreted relative to camera yaw (third-person control)
   // Also accept an optional InputManager so we can read analog axes (gamepad/joystick) via getAxes().
-  public update(input: InputState, deltaTime: number, camera?: Camera, inputManager?: InputManager): void {
+  public update(
+    input: InputState,
+    deltaTime: number,
+    camera?: Camera,
+    inputManager?: InputManager,
+  ): void {
     // Animation update (if model and mixer loaded)
     if (this.modelLoaded && this.animationMixer) {
       this.animationMixer.update(deltaTime);
@@ -282,7 +347,7 @@ export class Player {
         }
       }
       // Find animation clip by name (case-insensitive)
-      let clip = this.modelAnimations.find(a => a.name.toLowerCase() === animName.toLowerCase());
+      let clip = this.modelAnimations.find((a) => a.name.toLowerCase() === animName.toLowerCase());
       if (!clip) {
         // Fallback: use first animation
         clip = this.modelAnimations[0];
@@ -298,26 +363,34 @@ export class Player {
       }
     }
     // Calculate movement direction in local space (input vector)
-  const moveDirection = new THREE.Vector3();
+    const moveDirection = new THREE.Vector3();
 
     // If an InputManager is provided and joystick is squelched, reactivate on explicit inputs
-    try {
-      if (inputManager && typeof (inputManager as any).isJoystickSquelched === 'function') {
-        // if the user pressed any keyboard key or button, unsquelch the joystick provider
-        if (input.forward || input.backward || input.left || input.right || input.jump || input.action) {
-          try { (inputManager as any).unsquelchJoystick(); } catch (e) {}
+    if (inputManager?.isJoystickSquelched()) {
+      if (
+        input.forward ||
+        input.backward ||
+        input.left ||
+        input.right ||
+        input.jump ||
+        input.action
+      ) {
+        try {
+          inputManager.unsquelchJoystick();
+        } catch {
+          // ignore runtime errors from custom implementations
         }
       }
-    } catch (e) {}
+    }
 
     // Prefer analog axes when an InputManager is supplied
     let axes: Axes | null = null;
-    try {
-      if (inputManager && typeof (inputManager as any).getAxes === 'function') {
-        axes = (inputManager as any).getAxes(true) as Axes;
+    if (inputManager) {
+      try {
+        axes = inputManager.getAxes(true);
+      } catch {
+        axes = null;
       }
-    } catch (e) {
-      axes = null;
     }
 
     if (axes) {
@@ -339,24 +412,25 @@ export class Player {
       if (input.right) moveDirection.x += 1;
     }
 
-  const rawMag = moveDirection.length();
-  // require a bit larger threshold to avoid tiny drift
-  const hasInput = rawMag > 0.02;
+    const rawMag = moveDirection.length();
+    // require a bit larger threshold to avoid tiny drift
+    const hasInput = rawMag > 0.02;
 
     // Determine sprint as continuous 0..1 (prefer InputManager.getSprintValue if available)
     let sprintValue = 0;
-    try {
-      if (inputManager && typeof (inputManager as any).getSprintValue === 'function') {
-        sprintValue = (inputManager as any).getSprintValue();
-      } else {
+    if (inputManager) {
+      try {
+        sprintValue = inputManager.getSprintValue();
+      } catch {
         sprintValue = input.sprint ? 1 : 0;
       }
-    } catch (e) {
+    } else {
       sprintValue = input.sprint ? 1 : 0;
     }
 
     // Compute effective speed (continuous) where sprintValue blends between base and sprintMultiplier
-    const currentSpeed = this.speed * (1 + (this.sprintMultiplier - 1) * Math.max(0, Math.min(1, sprintValue)));
+    const currentSpeed =
+      this.speed * (1 + (this.sprintMultiplier - 1) * Math.max(0, Math.min(1, sprintValue)));
 
     // Convert local input direction into a world-space tangent direction.
     // If a camera is provided, interpret input relative to camera yaw (typical third-person control).
@@ -410,12 +484,12 @@ export class Player {
       // apply friction to slow down (less friction while airborne)
       const frictionAmount = this.isAirborne ? this.friction * 0.3 : this.friction;
       const f = Math.min(1, frictionAmount * deltaTime);
-      this.velocity.lerp(new THREE.Vector3(0,0,0), f);
+      this.velocity.lerp(new THREE.Vector3(0, 0, 0), f);
     }
 
     // Hard-stop very small velocities to avoid drifting due to float error
     if (!this.isAirborne && this.velocity.length() < 0.01) {
-      this.velocity.set(0,0,0);
+      this.velocity.set(0, 0, 0);
     }
 
     // Handle jump input (rising edge) with enhanced jump feel
@@ -466,7 +540,7 @@ export class Player {
         if (worldDist <= 0.15 && this.verticalVelocity <= 0) {
           this.isAirborne = false;
           this.verticalVelocity = 0;
-          this.landingTime = performance.now() / 1000;
+          // Note: landingTime was removed as it was unused
 
           // snap fully to surface when landing to avoid bounce
           this.stickToIsland(1);
@@ -474,14 +548,18 @@ export class Player {
           // Emit landing event for effects (dust, sound, etc.)
           if (this.wasAirborne) {
             try {
-              window.dispatchEvent(new CustomEvent('player:landed', {
-                detail: {
-                  position: this.mesh.position.clone(),
-                  velocity: this.velocity.length(),
-                  hardLanding: this.velocity.length() > currentSpeed * 1.2
-                }
-              }));
-            } catch (e) { /* ignore */ }
+              window.dispatchEvent(
+                new CustomEvent('player:landed', {
+                  detail: {
+                    position: this.mesh.position.clone(),
+                    velocity: this.velocity.length(),
+                    hardLanding: this.velocity.length() > currentSpeed * 1.2,
+                  },
+                }),
+              );
+            } catch {
+              /* ignore */
+            }
           }
           this.wasAirborne = false;
         }
@@ -524,7 +602,7 @@ export class Player {
 
         // Enhanced rotation smoothing based on movement state
         const baseRotSpeed = this.turnSpeed;
-        const sprintRotBoost = 1.0 + (sprintValue * 0.3); // faster turning when sprinting
+        const sprintRotBoost = 1.0 + sprintValue * 0.3; // faster turning when sprinting
         const airborneRotPenalty = this.isAirborne ? 0.6 : 1.0; // slower turning in air
         const effectiveRotSpeed = baseRotSpeed * sprintRotBoost * airborneRotPenalty;
 
@@ -551,9 +629,17 @@ export class Player {
         this.mesh.quaternion.slerp(this.targetRotation, slerpFactor);
       }
 
-  // Minimal rotation smoothing: remove procedural sway for simpler, stable feel
-  try { this.mesh.rotation.y = THREE.MathUtils.lerp(this.mesh.rotation.y, 0, 0.08); } catch (e) {}
-  try { (this.mesh.children[1] as THREE.Mesh).rotation.y = THREE.MathUtils.lerp((this.mesh.children[1] as THREE.Mesh).rotation.y, 0, 0.08); } catch (e) {}
+      // Minimal rotation smoothing: remove procedural sway for simpler, stable feel
+      try {
+        this.mesh.rotation.y = THREE.MathUtils.lerp(this.mesh.rotation.y, 0, 0.08);
+      } catch {}
+      try {
+        (this.mesh.children[1] as THREE.Mesh).rotation.y = THREE.MathUtils.lerp(
+          (this.mesh.children[1] as THREE.Mesh).rotation.y,
+          0,
+          0.08,
+        );
+      } catch {}
     } else {
       // ensure we stick to island when standing still, but only every 10th frame
       this.frameCount++;
@@ -561,8 +647,16 @@ export class Player {
         this.stickToIsland(0.2);
       }
       // relax rotations
-      try { this.mesh.rotation.y = THREE.MathUtils.lerp(this.mesh.rotation.y, 0, 0.1); } catch (e) {}
-      try { (this.mesh.children[1] as THREE.Mesh).rotation.y = THREE.MathUtils.lerp((this.mesh.children[1] as THREE.Mesh).rotation.y, 0, 0.1); } catch (e) {}
+      try {
+        this.mesh.rotation.y = THREE.MathUtils.lerp(this.mesh.rotation.y, 0, 0.1);
+      } catch {}
+      try {
+        (this.mesh.children[1] as THREE.Mesh).rotation.y = THREE.MathUtils.lerp(
+          (this.mesh.children[1] as THREE.Mesh).rotation.y,
+          0,
+          0.1,
+        );
+      } catch {}
     }
 
     // Safety check: ensure player never gets too far from island surface
@@ -575,7 +669,10 @@ export class Player {
 
       // If player is way too far or too close to center, reset to safe position
       if (dist > expectedRadius + maxDeviation || dist < expectedRadius - maxDeviation) {
-        console.warn('Player position outside safe bounds, correcting...', { dist, expectedRadius });
+        console.warn('Player position outside safe bounds, correcting...', {
+          dist,
+          expectedRadius,
+        });
         const safeDir = this.mesh.position.clone().sub(center).normalize();
         const safeSampled = this.island.sampleSurfaceByDirection(safeDir, 1.0);
         this.mesh.position.copy(safeSampled.position);
@@ -583,7 +680,7 @@ export class Player {
         this.isAirborne = false;
         this.verticalVelocity = 0;
       }
-    } catch (e) {
+    } catch {
       // Fail silently - this is just a safety check
     }
 
@@ -591,48 +688,63 @@ export class Player {
     try {
       if (this.debugOverlay) {
         const lines: string[] = [];
-        lines.push(`pos: ${this.mesh.position.x.toFixed(2)},${this.mesh.position.y.toFixed(2)},${this.mesh.position.z.toFixed(2)}`);
-        lines.push(`vel: ${this.velocity.x.toFixed(2)},${this.velocity.y.toFixed(2)},${this.velocity.z.toFixed(2)} (mag:${this.velocity.length().toFixed(2)})`);
+        lines.push(
+          `pos: ${this.mesh.position.x.toFixed(2)},${this.mesh.position.y.toFixed(2)},${this.mesh.position.z.toFixed(2)}`,
+        );
+        lines.push(
+          `vel: ${this.velocity.x.toFixed(2)},${this.velocity.y.toFixed(2)},${this.velocity.z.toFixed(2)} (mag:${this.velocity.length().toFixed(2)})`,
+        );
         lines.push(`airborne: ${this.isAirborne} vY:${this.verticalVelocity.toFixed(2)}`);
         // axes
-        try { if (axes) lines.push(`axes: x:${axes.x.toFixed(2)} y:${axes.y.toFixed(2)}`); } catch (e) {}
-        // sampled surface at current direction
-        try {
-          const center = this.island.getCenter();
-          const dir = this.mesh.position.clone().sub(center).normalize();
-          const sampled = this.island.sampleSurfaceByDirection(dir, 1.0);
-          lines.push(`surface: ${sampled.position.x.toFixed(2)},${sampled.position.y.toFixed(2)},${sampled.position.z.toFixed(2)}`);
-          lines.push(`normal: ${sampled.normal.x.toFixed(2)},${sampled.normal.y.toFixed(2)},${sampled.normal.z.toFixed(2)}`);
-        } catch (e) {}
-        try { if (inputManager && typeof (inputManager as any).getJoystickIdleMs === 'function') lines.push(`joyIdle: ${Math.round((inputManager as any).getJoystickIdleMs())}ms`); } catch (e) {}
-        try { if (inputManager && typeof (inputManager as any).isJoystickSquelched === 'function') lines.push(`joySquelch: ${ (inputManager as any).isJoystickSquelched() ? 'YES' : 'NO' }`); } catch (e) {}
+        if (axes) lines.push(`axes: x:${axes.x.toFixed(2)} y:${axes.y.toFixed(2)}`);
+        const center = this.island.getCenter();
+        const dir = this.mesh.position.clone().sub(center).normalize();
+        const sampled = this.island.sampleSurfaceByDirection(dir, 1.0);
+        lines.push(
+          `surface: ${sampled.position.x.toFixed(2)},${sampled.position.y.toFixed(2)},${sampled.position.z.toFixed(2)}`,
+        );
+        lines.push(
+          `normal: ${sampled.normal.x.toFixed(2)},${sampled.normal.y.toFixed(2)},${sampled.normal.z.toFixed(2)}`,
+        );
+
+        if (inputManager) {
+          lines.push(`joyIdle: ${Math.round(inputManager.getJoystickIdleMs())}ms`);
+          lines.push(`joySquelch: ${inputManager.isJoystickSquelched() ? 'YES' : 'NO'}`);
+        }
 
         // Collect scene/system metrics if we have a scene reference
-        const metrics: any = {};
-        try {
-          if (this.sceneRef) {
-            metrics.sceneObjects = this.sceneRef.children.length;
-            // count unique geometries and textures
-            const geoms = new Set<any>();
-            const texs = new Set<any>();
-            this.sceneRef.traverse((o: any) => {
-              try { if (o && o.geometry) geoms.add(o.geometry); } catch (e) {}
-              try { if (o && o.material) {
-                if (Array.isArray(o.material)) o.material.forEach((m: any) => m && m.map && texs.add(m.map));
-                else if (o.material.map) texs.add(o.material.map);
-              } } catch (e) {}
-            });
-            metrics.geometries = geoms.size;
-            metrics.textures = texs.size;
-          }
-          if ((performance as any).memory) metrics.memoryMB = ((performance as any).memory.usedJSHeapSize || 0) / (1024*1024);
-          metrics.pendingGLTF = getPendingGLTFLoads();
-        } catch (e) {}
+        const metrics: LoggerMetrics = {};
+        if (this.sceneRef) {
+          metrics.sceneObjects = this.sceneRef.children.length;
+          const geoms = new Set<THREE.BufferGeometry>();
+          const texs = new Set<THREE.Texture>();
+          this.sceneRef.traverse((object) => {
+            const mesh = object as THREE.Mesh;
+            if (mesh.isMesh) {
+              const geometry = mesh.geometry as THREE.BufferGeometry | undefined;
+              if (geometry) geoms.add(geometry);
+              const material = mesh.material;
+              const materials = Array.isArray(material) ? material : material ? [material] : [];
+              for (const mat of materials) {
+                if ('map' in mat && mat.map) texs.add(mat.map as THREE.Texture);
+              }
+            }
+          });
+          metrics.geometries = geoms.size;
+          metrics.textures = texs.size;
+        }
+        const perfWithMemory = performance as Performance & {
+          memory?: { usedJSHeapSize: number };
+        };
+        if (perfWithMemory.memory) {
+          metrics.memoryMB = (perfWithMemory.memory.usedJSHeapSize || 0) / (1024 * 1024);
+        }
+        metrics.pendingGLTF = getPendingGLTFLoads();
 
         this.debugOverlay.update({ lines, metrics });
-        try { logger.updateMetrics(metrics); } catch (e) {}
+        logger.updateMetrics(metrics);
       }
-    } catch (e) {}
+    } catch {}
   }
 
   /**
@@ -677,7 +789,7 @@ export class Player {
       // Extremely gentle orientation smoothing to maintain stability
       const orientationSmoothing = 0.15;
       this.mesh.quaternion.slerp(targetQuat, orientationSmoothing);
-    } catch (e) {
+    } catch {
       // fallback
       this.mesh.quaternion.set(0, 0, 0, 1);
     }
@@ -701,12 +813,16 @@ export class Player {
     // compute surface normal aligned basis but rotate around up by yaw
     const surfaceNormal = this.mesh.position.clone().sub(this.island.getCenter()).normalize();
     const up = surfaceNormal;
-    const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+    const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
     // create a forward vector by rotating the world forward by yaw, then project onto tangent
-    const forward = new THREE.Vector3(0,0,-1).applyQuaternion(yawQuat).projectOnPlane(up).normalize();
+    const forward = new THREE.Vector3(0, 0, -1)
+      .applyQuaternion(yawQuat)
+      .projectOnPlane(up)
+      .normalize();
     if (forward.lengthSq() < 1e-6) return;
     const right = new THREE.Vector3().crossVectors(up, forward).normalize();
-    const mat = new THREE.Matrix4(); mat.makeBasis(right, up, forward);
+    const mat = new THREE.Matrix4();
+    mat.makeBasis(right, up, forward);
     const targetQuat = new THREE.Quaternion().setFromRotationMatrix(mat);
     this.mesh.quaternion.copy(targetQuat);
   }
@@ -720,36 +836,64 @@ export class Player {
     this.customization = customization;
     // Only update procedural character parts if the model hasn't been replaced by a GLTF
     if (!this.modelLoaded) {
-      try { (this.mesh.children[0] as THREE.Mesh).material = Materials.createCharacterBodyMaterial(); } catch (e) {}
-      try { (this.mesh.children[1] as THREE.Mesh).material = Materials.createCharacterHeadMaterial(); } catch (e) {}
-      try { (this.mesh.children[2] as THREE.Mesh).material = Materials.createPBRMaterial({ color: customization.hairColor, roughness: 0.6 }); } catch (e) {}
+      try {
+        (this.mesh.children[0] as THREE.Mesh).material = Materials.createCharacterBodyMaterial();
+      } catch {}
+      try {
+        (this.mesh.children[1] as THREE.Mesh).material = Materials.createCharacterHeadMaterial();
+      } catch {}
+      try {
+        (this.mesh.children[2] as THREE.Mesh).material = Materials.createPBRMaterial({
+          color: customization.hairColor,
+          roughness: 0.6,
+        });
+      } catch {}
     } else {
       // If a GLTF model is loaded, attempt to apply simple color overrides to known nodes (best-effort)
       try {
-        this.modelMesh && this.modelMesh.traverse((o: any) => {
-          if (!o.isMesh || !o.material) return;
-          // common naming: head, hair, body
-          const name = (o.name || '').toLowerCase();
-          if (name.includes('hair')) {
+        this.modelMesh?.traverse((object) => {
+          if (!(object instanceof THREE.Mesh)) return;
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          const nodeName = (object.name || '').toLowerCase();
+          const applyToMaterials = (updater: (mat: MaterialWithOptionalMaps) => void) => {
+            materials.forEach((mat) => {
+              if (mat) updater(mat as MaterialWithOptionalMaps);
+            });
+          };
+
+          if (nodeName.includes('hair')) {
             // Load hair texture
             const textureLoader = new THREE.TextureLoader();
             const hairTexture = textureLoader.load('/assets/models/T_Hair_2_BaseColor.png');
-            o.material.map = hairTexture;
-            o.material.needsUpdate = true;
+            applyToMaterials((mat) => {
+              mat.map = hairTexture;
+              mat.needsUpdate = true;
+            });
           }
-          if (name.includes('head') || name.includes('face')) {
-            // For skin, perhaps adjust color or use a skin texture if available
-            try { o.material.color && (o.material.color.setHex(customization.skinColor)); } catch (e) {}
+          if (nodeName.includes('head') || nodeName.includes('face')) {
+            applyToMaterials((mat) => {
+              if (mat.color instanceof THREE.Color) {
+                mat.color.setHex(customization.skinColor);
+                mat.needsUpdate = true;
+              }
+            });
           }
-          if (name.includes('body') || name.includes('torso') || name.includes('shirt')) {
-            // Load body texture
+          if (
+            nodeName.includes('body') ||
+            nodeName.includes('torso') ||
+            nodeName.includes('shirt')
+          ) {
             const textureLoader = new THREE.TextureLoader();
-            const bodyTexture = textureLoader.load('/assets/models/T_Superhero_Female_Dark_BaseColor.png');
-            o.material.map = bodyTexture;
-            o.material.needsUpdate = true;
+            const bodyTexture = textureLoader.load(
+              '/assets/models/T_Superhero_Female_Dark_BaseColor.png',
+            );
+            applyToMaterials((mat) => {
+              mat.map = bodyTexture;
+              mat.needsUpdate = true;
+            });
           }
         });
-      } catch (e) { }
+      } catch {}
     }
   }
 
@@ -762,30 +906,27 @@ export class Player {
     if (this.animationMixer) {
       try {
         this.animationMixer.stopAllAction();
-      } catch (e) {
+      } catch {
         // ignore
       }
       this.animationMixer = null;
     }
 
     // Dispose all geometries, materials, and textures in the character mesh hierarchy
-    this.mesh.traverse((obj) => {
-      if ((obj as any).isMesh) {
-        const mesh = obj as THREE.Mesh;
+    this.mesh.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const mesh = object as THREE.Mesh;
 
-        // Dispose geometry
-        if (mesh.geometry) {
-          mesh.geometry.dispose();
-        }
+      if (mesh.geometry) {
+        mesh.geometry.dispose();
+      }
 
-        // Dispose material(s)
-        if (mesh.material) {
-          if (Array.isArray(mesh.material)) {
-            mesh.material.forEach((mat) => this.disposeMaterial(mat));
-          } else {
-            this.disposeMaterial(mesh.material);
-          }
-        }
+      const { material } = mesh;
+      if (!material) return;
+      if (Array.isArray(material)) {
+        material.forEach((mat) => this.disposeMaterial(mat));
+      } else {
+        this.disposeMaterial(material);
       }
     });
 
@@ -797,8 +938,8 @@ export class Player {
     // Dispose debug overlay if exists
     if (this.debugOverlay) {
       try {
-        (this.debugOverlay as any).dispose?.();
-      } catch (e) {
+        this.debugOverlay.dispose();
+      } catch {
         // ignore
       }
       this.debugOverlay = null;
@@ -816,7 +957,7 @@ export class Player {
    */
   private disposeMaterial(material: THREE.Material): void {
     // Dispose all textures in the material
-    const materialWithMaps = material as any;
+    const materialWithMaps = material as MaterialWithOptionalMaps;
     if (materialWithMaps.map) materialWithMaps.map.dispose();
     if (materialWithMaps.normalMap) materialWithMaps.normalMap.dispose();
     if (materialWithMaps.roughnessMap) materialWithMaps.roughnessMap.dispose();

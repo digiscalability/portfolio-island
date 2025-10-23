@@ -1,13 +1,17 @@
 # 🚀 GCP VM Setup - COMPLETED ✅
 
 ## Current Status: ✅ VM Ready for Development
+
 ## Project: awesome-height-472504-p0
+
 ## VM Name: digiscale-dev-vm
+
 ## External IP: 34.57.94.36
 
 ## 🎉 Setup Complete!
 
 ### ✅ All Tasks Completed
+
 1. **Billing Enabled** ✅
 2. **Compute Engine API Enabled** ✅
 3. **VM Instance Created** ✅
@@ -27,18 +31,21 @@
 ## 🔗 Access Information
 
 ### VS Code Server
-- **URL**: http://34.57.94.36:8080
+
+- **URL**: <http://34.57.94.36:8080>
 - **Password**: `rYz8/z36d32BGi4h1h4ny9Qerp0=`
 
 ### Development Ports Available
-- Portfolio Island: http://34.57.94.36:3000
-- Project 2: http://34.57.94.36:3001
-- Project 3: http://34.57.94.36:3002
-- Project 4: http://34.57.94.36:3003
+
+- Portfolio Island: <http://34.57.94.36:3000>
+- Project 2: <http://34.57.94.36:3001>
+- Project 3: <http://34.57.94.36:3002>
+- Project 4: <http://34.57.94.36:3003>
 
 ## 📂 Multi-Project Setup
 
 ### Available Scripts on VM
+
 ```bash
 # Start all projects concurrently
 ~/workspace/start-all-projects.sh
@@ -51,24 +58,29 @@ tail -f ~/logs/*.log
 ```
 
 ### To Add More Projects
+
 1. SSH into VM: `gcloud compute ssh digiscale-dev-vm --zone=us-central1-a`
 2. Navigate to workspace: `cd ~/workspace/`
 3. Clone projects:
+
    ```bash
    git clone https://github.com/yourusername/project2.git
    git clone https://github.com/yourusername/project3.git
    git clone https://github.com/yourusername/project4.git
    ```
+
 4. Update start script with your project paths
 
 ## 💰 Cost Management
 
 ### Daily Costs
+
 - **VM Running**: ~$2.40/day ($72/month)
 - **VM Stopped**: ~$1.20/day ($36/month) - storage only
 - **Google Cloud Free Tier**: $300 credit for new accounts
 
 ### Cost-Saving Commands
+
 ```bash
 # Stop VM when not in use (saves ~50% on costs)
 gcloud compute instances stop digiscale-dev-vm --zone=us-central1-a
@@ -85,6 +97,7 @@ gcloud compute instances list --filter="name:digiscale-dev-vm"
 1. **Project Clone**: The portfolio-island project clone failed during automated setup due to authentication. You can manually clone it after accessing VS Code Server.
 
 2. **Git Configuration**: You'll need to configure Git with your credentials when you first access the VM:
+
    ```bash
    git config --global user.name "Your Name"
    git config --global user.email "your.email@example.com"
@@ -93,11 +106,13 @@ gcloud compute instances list --filter="name:digiscale-dev-vm"
 3. **VS Code Extensions**: Install your preferred extensions through the VS Code Server interface.
 
 ## 🚀 Ready to Use!
-Your powerful cloud development environment is now ready. Access VS Code Server at http://34.57.94.36:8080 and start developing across multiple projects simultaneously!
+
+Your powerful cloud development environment is now ready. Access VS Code Server at <http://34.57.94.36:8080> and start developing across multiple projects simultaneously!
 
 ## 📋 Quick Reference Commands
 
 ### Local Management (from your local machine)
+
 ```bash
 # Connect to VM
 gcloud compute ssh digiscale-dev-vm --zone=us-central1-a
@@ -118,7 +133,9 @@ gcloud compute instances start digiscale-dev-vm --zone=us-central1-a
 ## 📁 Moving Your Local Projects to VM
 
 ### Method 1: Git Clone (Recommended) 🏆
+
 **Best for:** Projects already on GitHub
+
 ```bash
 # SSH into VM first
 gcloud compute ssh digiscale-dev-vm --zone=us-central1-a
@@ -132,7 +149,9 @@ git clone https://github.com/yourusername/project4.git
 ```
 
 ### Method 2: SCP File Transfer 🚀
+
 **Best for:** Individual files or small projects
+
 ```powershell
 # Copy single file
 gcloud compute scp "C:\path\to\your\file.js" digiscale-dev-vm:~/workspace/ --zone=us-central1-a
@@ -145,7 +164,9 @@ gcloud compute scp --recurse "d:\GitHUB\Build Project Ready for Deployment\" dig
 ```
 
 ### Method 3: Archive and Upload 📦
+
 **Best for:** Large projects with many files
+
 ```powershell
 # Create archive locally
 Compress-Archive -Path "C:\path\to\your\project\*" -DestinationPath "C:\temp\project.zip"
@@ -158,14 +179,18 @@ gcloud compute ssh digiscale-dev-vm --zone=us-central1-a --command="cd ~/workspa
 ```
 
 ### Method 4: VS Code Server Upload 💻
+
 **Best for:** Small edits and individual files
-1. Access VS Code Server at http://34.57.94.36:8080
+
+1. Access VS Code Server at <http://34.57.94.36:8080>
 2. Use the built-in file explorer
 3. Right-click → "Upload..." to upload files directly
 4. Or drag & drop files into the editor
 
 ### Method 5: GitHub Push/Pull Workflow 🔄
+
 **Best for:** Ongoing development
+
 ```bash
 # On your local machine - push changes
 git add .
@@ -181,6 +206,7 @@ git pull origin main
 ## 🛠️ Step-by-Step: Move Your Current Portfolio Project
 
 ### Option A: Quick SCP Transfer
+
 ```powershell
 # Copy your entire current project to VM
 gcloud compute scp --recurse "d:\GitHUB\Build Project Ready for Deployment\" digiscale-dev-vm:~/workspace/portfolio-island/ --zone=us-central1-a --compress
@@ -192,6 +218,7 @@ npm install
 ```
 
 ### Option B: Git Workflow (Clean)
+
 ```powershell
 # First, ensure all changes are committed locally
 git add .
@@ -209,6 +236,7 @@ npm install
 ## ⚡ Transfer Tips
 
 ### Speed Optimization
+
 ```powershell
 # Use compression for large transfers
 gcloud compute scp --recurse --compress "C:\your\project\" digiscale-dev-vm:~/workspace/project/ --zone=us-central1-a
@@ -218,7 +246,9 @@ gcloud compute scp --recurse "C:\your\project\" digiscale-dev-vm:~/workspace/pro
 ```
 
 ### File Exclusion Patterns
+
 Create `.gcloudignore` file to exclude unnecessary files:
+
 ```
 node_modules/
 dist/
@@ -230,6 +260,7 @@ build/
 ```
 
 ### VM Management (on the VM)
+
 ```bash
 # Check system resources
 htop

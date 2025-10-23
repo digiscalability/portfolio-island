@@ -1,4 +1,6 @@
+import type { Material, Object3D } from 'three';
 import * as THREE from 'three';
+
 import { OrbitCamera } from './OrbitCamera';
 import { SimplePlanet } from './SimplePlanet';
 import { SimplePlayer } from './SimplePlayer';
@@ -20,6 +22,7 @@ export class GameScene extends THREE.Scene {
   private player!: SimplePlayer;
   private camera!: THREE.PerspectiveCamera;
   private orbitCamera!: OrbitCamera;
+  private elapsedTime: number = 0;
 
   private lights: {
     sun?: THREE.DirectionalLight;
@@ -50,12 +53,7 @@ export class GameScene extends THREE.Scene {
    */
   private async initialize(): Promise<void> {
     // Create camera
-    this.camera = new THREE.PerspectiveCamera(
-      60,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      500
-    );
+    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
 
     // Create planet
     this.planet = new SimplePlanet(18);
@@ -116,6 +114,16 @@ export class GameScene extends THREE.Scene {
    */
   public update(deltaTime: number): void {
     if (!this.player) return;
+    if (deltaTime <= 0) return;
+
+    this.elapsedTime += deltaTime;
+
+    if (this.orbitCamera) {
+      this.player.setCameraFrame(
+        this.orbitCamera.getForwardDirection(),
+        this.orbitCamera.getRightDirection(),
+      );
+    }
 
     // Update player physics
     this.player.update(deltaTime);
@@ -162,11 +170,20 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
+   * Get total elapsed simulation time
+   */
+  public getElapsedTime(): number {
+    return this.elapsedTime;
+  }
+
+  /**
    * Set player movement input
    */
   public setPlayerMovement(forward: number, strafe: number): void {
     if (this.player) {
-      this.player.setMovement(forward, strafe);
+      const cameraForward = this.orbitCamera?.getForwardDirection();
+      const cameraRight = this.orbitCamera?.getRightDirection();
+      this.player.setMovement(forward, strafe, cameraForward, cameraRight);
     }
   }
 
@@ -213,7 +230,7 @@ export class GameScene extends THREE.Scene {
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2(
       (x / window.innerWidth) * 2 - 1,
-      -(y / window.innerHeight) * 2 + 1
+      -(y / window.innerHeight) * 2 + 1,
     );
 
     raycaster.setFromCamera(mouse, this.camera);
@@ -233,14 +250,15 @@ export class GameScene extends THREE.Scene {
     }
 
     // Dispose all materials and geometries
-    this.traverse((obj: any) => {
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) {
-        if (Array.isArray(obj.material)) {
-          obj.material.forEach((m: any) => m.dispose());
-        } else {
-          obj.material.dispose();
-        }
+    this.traverse((obj: Object3D) => {
+      const geometry = (obj as { geometry?: THREE.BufferGeometry }).geometry;
+      geometry?.dispose?.();
+
+      const material = (obj as { material?: Material | Material[] }).material;
+      if (Array.isArray(material)) {
+        material.forEach((mat) => mat.dispose());
+      } else {
+        material?.dispose?.();
       }
     });
   }

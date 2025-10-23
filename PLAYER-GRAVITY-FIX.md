@@ -1,7 +1,7 @@
 # Player, Gravity & Floor Critical Fixes
 
 **Deployed:** October 20, 2025
-**Live Site:** https://life-island.web.app
+**Live Site:** <https://life-island.web.app>
 
 ## Issues Identified
 
@@ -33,14 +33,17 @@
 ## Fixes Applied
 
 ### 1. Epsilon Correction
+
 ```typescript
 // Changed from 0.15 to 0.02
 const epsilon = 0.02;
 ```
+
 - Prevents z-fighting without floating objects
 - Proper ground contact
 
 ### 2. Player Spawn Fix
+
 ```typescript
 // OLD: this.mesh.position.set(0, island.getRadius() + 1, 0);
 // NEW:
@@ -48,26 +51,32 @@ const spawnDir = new THREE.Vector3(0, 1, 0).normalize();
 const spawnSurface = island.sampleSurfaceByDirection(spawnDir, 0.5);
 this.mesh.position.copy(spawnSurface.position);
 ```
+
 - Proper spherical surface sampling
 - Spawns on actual terrain
 
 ### 3. Position Stability Threshold
+
 ```typescript
 // Changed from 0.15 to 0.08
 private positionStabilityThreshold: number = 0.08;
 ```
+
 - Balanced: absorbs raycast variance, maintains terrain adherence
 - No micro-jitter, no floating
 
 ### 4. Consistent Offset Usage
+
 ```typescript
 // All sampleSurfaceByDirection calls now use 0.5
 const sampled = this.island.sampleSurfaceByDirection(dir, 0.5);
 ```
+
 - Player height consistent across all scenarios
 - Proper foot placement
 
 ### 5. Landing Detection Fix
+
 ```typescript
 // Changed from 0.1 to 0.25 to account for epsilon + offset
 if (worldDist <= 0.25 && this.verticalVelocity <= 0) {
@@ -75,33 +84,40 @@ if (worldDist <= 0.25 && this.verticalVelocity <= 0) {
   // ...
 }
 ```
+
 - Proper ground detection
 - No stuck-in-air issues
 
 ### 6. Gravity Increase
+
 ```typescript
 // Changed from 18.0 to 22.0
 private gravity: number = 22.0;
 ```
+
 - Snappier, more responsive feel
 - Better physics feedback
 - Shorter, tighter jump arc
 
 ### 7. stickToIsland Refinements
+
 ```typescript
 // Increased blend factors for better terrain following
 // Movement: 0.3 → 0.4
 // Idle: 0.5 → 0.6
 // Orientation smoothing: 0.04 → 0.06
 ```
+
 - Better terrain adherence while moving
 - Smoother rotation
 
 ### 8. House Offset Fix
+
 ```typescript
 // Changed from variable offset (0.7 + random) to 0.0
 const sampled = this.sampleSurfacePosition(approx, 0.0);
 ```
+
 - Consistent building placement
 - No sinking into terrain
 

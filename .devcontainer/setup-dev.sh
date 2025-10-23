@@ -19,23 +19,19 @@ sudo apt-get install -y \
     git-lfs \
     build-essential
 
-# Setup Git LFS for large assets
+# Setup Git LFS for large assets (restrict to actual heavy files, not PNGs)
 echo "📁 Configuring Git LFS for large assets..."
 git lfs install
 git lfs track "*.fbx"
-git lfs track "*.bin"
 git lfs track "*.gltf"
-git lfs track "*.png"
-git lfs track "*.jpg"
+git lfs track "*.bin"
 
 # Install global npm packages for development
-echo "📚 Installing global development tools..."
+# Note: Removed global installs that conflict with project devDependencies
+# Use npx for project-local CLIs instead
+echo "📚 Installing essential global development tools..."
 npm install -g \
-    @vite/cli \
     firebase-tools \
-    typescript \
-    ts-node \
-    nodemon \
     concurrently
 
 # Setup workspace for multiple projects
@@ -99,11 +95,15 @@ npm config set progress=false
 npm config set audit=false
 npm config set fund=false
 
-# Setup project dependencies
+# Setup project dependencies (skip if already installed to save time on rebuilds)
 echo "📦 Installing project dependencies..."
 if [ -f "package.json" ]; then
-    npm install
-    echo "✅ Dependencies installed successfully!"
+    if [ ! -d "node_modules" ]; then
+        npm install
+        echo "✅ Dependencies installed successfully!"
+    else
+        echo "✅ Dependencies already installed, skipping..."
+    fi
 else
     echo "⚠️ No package.json found in current directory"
 fi

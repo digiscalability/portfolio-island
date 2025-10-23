@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+
 import { Materials } from './Materials';
 
 // Helper to add a simple low-poly house on the sphere surface
@@ -58,7 +59,7 @@ export function createPlanetThumbnail(container: HTMLElement): { dispose: () => 
   container.appendChild(canvas);
 
   // ensure container can position overlays
-  try { if (getComputedStyle(container).position === 'static') container.style.position = 'relative'; } catch (e) { container.style.position = 'relative'; }
+  try { if (getComputedStyle(container).position === 'static') container.style.position = 'relative'; } catch (_e) { container.style.position = 'relative'; }
 
   // overlay UI (title + begin button)
   const overlay = document.createElement('div');
@@ -274,10 +275,10 @@ export function createPlanetThumbnail(container: HTMLElement): { dispose: () => 
         try {
           const ext = gl.getExtension && gl.getExtension('WEBGL_lose_context');
           if (ext && typeof ext.loseContext === 'function') ext.loseContext();
-        } catch (e) { }
-      } catch (e) { }
-      try { renderer.dispose(); } catch (e) { }
-      try { if (canvas.parentNode) canvas.parentNode.removeChild(canvas); } catch (e) { }
+        } catch (_e) { }
+      } catch (_e) { }
+      try { renderer.dispose(); } catch (_e) { }
+      try { if (canvas.parentNode) canvas.parentNode.removeChild(canvas); } catch (_e) { }
     }
   };
 }

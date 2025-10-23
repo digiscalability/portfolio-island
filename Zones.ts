@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+
 import { Island } from './Island';
 
 export interface ZoneData {
@@ -40,7 +41,7 @@ export class Zone {
       this.marker.quaternion.copy(q);
       // keep stored logical position as the sampled surface position (so proximity checks match visual)
       this.position.copy(sampled.position);
-    } catch (e) {
+    } catch (_e) {
       this.marker.position.copy(this.position);
       this.marker.position.y = island.getRadius() + 0.5;
     }

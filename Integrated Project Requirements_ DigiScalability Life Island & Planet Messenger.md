@@ -11,6 +11,7 @@ To provide an immersive, living digital representation of the owner's world, all
 ## 3. Technical Stack
 
 ### Frontend
+
 - **3D Engine:** Three.js (r180+)
 - **Build Tool:** Vite
 - **Language:** TypeScript
@@ -19,6 +20,7 @@ To provide an immersive, living digital representation of the owner's world, all
 - **Firebase SDK:** v10+
 
 ### Backend
+
 - **Cloud Platform:** Firebase
   - **Database:** Firestore (for data models, visitor tracking, feedback, conversations, appointments)
   - **Authentication:** Firebase Authentication (anonymous + Google login for visitors, owner full control)
@@ -32,21 +34,25 @@ To provide an immersive, living digital representation of the owner's world, all
 ## 4. Integrated Features
 
 ### 4.1. 3D World & Environment
-- **Spherical Island/Planet:** A central spherical 3D environment representing the 
+
+- **Spherical Island/Planet:** A central spherical 3D environment representing the
 
 Life Island, with a radius of 15-20 units.
+
 - **Toon Shading & Art Style:** Consistent toon-shaded graphics with pastel color palettes, 2-3 step cel shading, and optional outline shaders. This applies to the planet, character, and all interactive objects.
 - **Surface Objects:** Procedurally or manually placed houses, mailboxes, trees, decorative objects, and 3D emojis on the island surface, aligned with the planet's normal.
 - **Dynamic Environment:** Day/night lighting cycle, ambient soundscape (WebAudio API), and optional water/cloud shaders.
 - **Optimization:** Optimized for 60 FPS on desktop/mobile, using frustum culling, low-poly models, texture atlasing, and limited lights.
 
 ### 4.2. Player Character & Navigation
+
 - **Player Character:** A low-poly humanoid character (500-2000 triangles), rigged with basic skeleton for animations (idle, walk, delivery).
 - **Movement:** WASD or touch controls for free exploration. Character walks on the spherical surface, with gravity pulling towards the center. Smooth rotation to match surface normal using quaternion SLERP.
 - **Camera System:** Third-person follow camera (60-75° FOV), positioned behind and above the player, with smooth following and damping. No manual camera rotation for MVP.
 - **Character Customization:** In-game menu for skin tone, outfit/color variations, hair styles, and accessory toggles. Preferences stored in memory.
 
 ### 4.3. Interactive Zones & Content (Life Island Specific)
+
 - **Interactive Zones:** Clearly defined zones on the island, each representing a different aspect of the owner's life:
   1. **Business Hub:** DigiScalability projects, AI products.
   2. **Hobby Cove:** Music, art, writing, fitness.
@@ -57,9 +63,11 @@ Life Island, with a radius of 15-20 units.
 - **Q&A System:** Voice or text Q&A powered by Firebase Function + Gemini API, allowing visitors to ask questions about the owner's life/work/hobbies.
 
 ### 4.4. Gameplay & Messenger Mechanics
-- **Delivery System:** Start with 3-5 
+
+- **Delivery System:** Start with 3-5
 
 messages/tasks to deliver within the Life Island. Each message has a destination (e.g., a specific zone or interactive object).
+
 - **Visual Indicators:** Floating arrows or glows to show the next destination.
 - **Interaction:** Walk to the destination, trigger interaction with proximity + keypress (E or Space). Play delivery animation and sound effect.
 - **Feedback System:** Visitors can leave feedback or comments, stored in Firestore.
@@ -69,6 +77,7 @@ messages/tasks to deliver within the Life Island. Each message has a destination
 - **Optional Multi-user Exploration:** Via Firestore presence.
 
 ### 4.5. User Interface (UI/UX)
+
 - **Entry Screen:** "Welcome to My Island" screen.
 - **Character Selection/Free-fly Camera:** Option to choose between a character or a free-fly camera at the start.
 - **HUD Elements:** Delivery counter (if applicable), current objective hint, FPS counter (debug only).
@@ -77,16 +86,19 @@ messages/tasks to deliver within the Life Island. Each message has a destination
 - **Minimal Design:** Clean, minimal design with rounded corners and semi-transparent backgrounds.
 
 ### 4.6. Audio System
+
 - **Sound Effects:** Footstep sounds, delivery success chime, UI click sounds.
 - **Ambient Music:** Looping, calming track.
 - **Implementation:** Web Audio API or Three.js Audio, with volume controls (mute toggle minimum).
 
 ### 4.7. Asset Management
+
 - **Loading Screen:** Show loading screen with progress bar.
 - **Preloading:** Preload all assets before the experience starts.
 - **Formats:** Use GLTF/GLB for compressed 3D models, JPEG for color textures, PNG for alpha textures.
 
 ## 5. Firebase Setup
+
 - **Authentication:** Anonymous + Google login for visitors, owner full control.
 - **Firestore Rules:** Visitors read-only, owner full control.
 - **Functions:** AI Q&A, appointment scheduling, feedback notifications, message routing.
@@ -158,6 +170,7 @@ project-root/
 ```
 
 ## 7. Deployment
+
 - Ready-to-run on Firebase Hosting.
 - Output message: "DigiScalability Life Island generated successfully" upon successful deployment scaffold generation.
 

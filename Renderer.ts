@@ -21,7 +21,7 @@ export class Renderer {
     this.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x87ceeb, 1); // sky blue
   // Use physically correct lighting and sRGB output for nicer shading
-  try { (this.renderer as any).physicallyCorrectLights = true; } catch (e) { /* ignore */ }
+  try { (this.renderer as any).physicallyCorrectLights = true; } catch (_e) { /* ignore */ }
   // Set output color space for Three.js r152+
   try {
     if ('outputColorSpace' in this.renderer) {
@@ -29,7 +29,7 @@ export class Renderer {
     } else {
       (this.renderer as any).outputEncoding = 3001; // sRGBEncoding fallback
     }
-  } catch (e) { /* ignore */ }
+  } catch (_e) { /* ignore */ }
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     // Reduced exposure to fix glowing/bright terrain appearance
     this.renderer.toneMappingExposure = 0.75;
@@ -51,7 +51,7 @@ export class Renderer {
       const mq = (window as any).matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
       try {
         mq.addEventListener && mq.addEventListener('change', onWindowResize);
-      } catch (e) {
+      } catch (_e) {
         // older browsers
         mq.addListener && mq.addListener(onWindowResize);
       }
@@ -77,8 +77,8 @@ export class Renderer {
       // SSAO for contact shadows/occlusion (disabled by default; can be enabled later)
       try {
         // If we later enable SSAO we can instantiate it from the `ss` module above.
-      } catch (e) {
-        console.warn('SSAO pass init failed', e);
+      } catch (_e) {
+        console.warn('SSAO pass init failed', _e);
       }
 
       // FXAA for antialiasing (disabled by default). We only enable it on platforms that
@@ -93,8 +93,8 @@ export class Renderer {
         } catch (innerErr) {
           console.warn('FXAA init check failed, skipping FXAA', innerErr);
         }
-      } catch (e) {
-        console.warn('FXAA init failed', e);
+      } catch (_e) {
+        console.warn('FXAA init failed', _e);
       }
 
           // Bloom pass (optional) - tuned to be less aggressive by default
@@ -108,8 +108,8 @@ export class Renderer {
             bloomPass.radius = 0.4;
             this.bloomPass = bloomPass;
             this.composer.addPass(bloomPass);
-          } catch (e) {
-            console.warn('Bloom pass init failed', e);
+          } catch (_e) {
+            console.warn('Bloom pass init failed', _e);
           }
 
   // Create a simple equirectangular environment from a canvas gradient and generate PMREM
@@ -153,17 +153,17 @@ export class Renderer {
                 this.applyEnvironment(scene, loaded);
                 break;
               }
-            } catch (ee) { /* ignore single-file load errors */ }
+            } catch (_ee) { /* ignore single-file load errors */ }
           }
-        } catch (e) { /* ignore HDR attempts */ }
-      } catch (e) {
-        console.warn('env map generation failed', e);
+        } catch (_e) { /* ignore HDR attempts */ }
+      } catch (_e) {
+        console.warn('env map generation failed', _e);
       }
 
       // ensure composer size matches renderer
       this.composer.setSize(window.innerWidth, window.innerHeight);
-    } catch (e) {
-      console.warn('Post-processing modules not available', e);
+    } catch (_e) {
+      console.warn('Post-processing modules not available', _e);
       this.composer = null;
     }
   }
@@ -186,7 +186,7 @@ export class Renderer {
       const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
       (this.fxaaPass.uniforms as any)['resolution'].value.x = 1 / (window.innerWidth * pixelRatio);
       (this.fxaaPass.uniforms as any)['resolution'].value.y = 1 / (window.innerHeight * pixelRatio);
-    } catch (e) { }
+    } catch (_e) { }
   }
 
   public setBloomParams(params: { strength?: number; radius?: number; threshold?: number }) {
@@ -199,11 +199,11 @@ export class Renderer {
   public setVignette(strength: number) {
     // Simple vignette via CSS overlay or later ShaderPass; for now adjust via composer uniforms if shader exists
     if (!this.vignettePass) return;
-    try { (this.vignettePass.uniforms as any)['strength'].value = strength; } catch (e) { }
+    try { (this.vignettePass.uniforms as any)['strength'].value = strength; } catch (_e) { }
   }
 
   public setExposure(exposure: number) {
-    try { this.renderer.toneMappingExposure = exposure; } catch (e) { }
+    try { this.renderer.toneMappingExposure = exposure; } catch (_e) { }
   }
 
   public async loadEnvironmentFromUrl(url: string) {
@@ -220,12 +220,12 @@ export class Renderer {
       }
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       const env = pmrem.fromEquirectangular(tex as any).texture;
-      try { (tex as any).dispose && (tex as any).dispose(); } catch (e) { }
+      try { (tex as any).dispose && (tex as any).dispose(); } catch (_e) { }
       // clamp intensity by creating a lightweight wrapper that sets envMapIntensity on materials when applied
       pmrem.dispose();
       return env;
-    } catch (e) {
-      console.warn('loadEnvironmentFromUrl failed', e);
+    } catch (_e) {
+      console.warn('loadEnvironmentFromUrl failed', _e);
       return null;
     }
   }
@@ -235,7 +235,7 @@ export class Renderer {
     try {
       // clamp environment intensity via scene.environment and tune renderer exposure
       scene.environment = env;
-      try { scene.background = env; } catch (e) { /* some builds don't allow using pmrem as background */ }
+      try { scene.background = env; } catch (_e) { /* some builds don't allow using pmrem as background */ }
       // walk materials and gently increase envMapIntensity only to a safe maximum
       let changed = 0;
       scene.traverse((obj: any) => {
@@ -249,7 +249,7 @@ export class Renderer {
               m.envMapIntensity = Math.min(0.8, typeof m.envMapIntensity === 'number' ? Math.max(m.envMapIntensity, 0.6) : 0.6);
               changed++;
             }
-          } catch (e) { }
+          } catch (_e) { }
         });
       });
       // safe guard: reduce bloom/exposure if env appears very bright
@@ -261,9 +261,9 @@ export class Renderer {
           this.bloomPass.strength = Math.min(this.bloomPass.strength || 0.18, 0.5);
           this.bloomPass.threshold = Math.max(this.bloomPass.threshold || 1.0, 0.9);
         }
-      } catch (e) { }
+      } catch (_e) { }
       return changed;
-    } catch (e) { console.warn('applyEnvironment failed', e); }
+    } catch (_e) { console.warn('applyEnvironment failed', _e); }
     return 0;
   }
 
@@ -283,7 +283,7 @@ export class Renderer {
     this.renderer.setSize(width, height, false);
     try {
       if (this.composer && typeof this.composer.setSize === 'function') this.composer.setSize(width, height);
-    } catch (e) { /* ignore */ }
+    } catch (_e) { /* ignore */ }
   }
 
   public render(scene: THREE.Scene, camera: THREE.Camera): void {
@@ -291,8 +291,8 @@ export class Renderer {
       try {
         this.composer.render();
         return;
-      } catch (e) {
-        console.warn('composer render failed, falling back to renderer', e);
+      } catch (_e) {
+        console.warn('composer render failed, falling back to renderer', _e);
       }
     }
     this.renderer.render(scene, camera);

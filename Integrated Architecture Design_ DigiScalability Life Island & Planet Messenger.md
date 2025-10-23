@@ -38,6 +38,7 @@ The frontend will be a single-page application (SPA) built with Vite and TypeScr
 ### 4.1. Core 3D Engine (`src/core/Engine.ts`)
 
 This module will act as the central orchestrator for the Three.js scene. It will be responsible for:
+
 - Initializing the WebGL renderer, scene, and camera.
 - Managing the animation loop (`requestAnimationFrame`).
 - Handling window resizing and camera aspect ratio updates.
@@ -60,6 +61,7 @@ This module will act as the central orchestrator for the Three.js scene. It will
 ### 4.4. Backend Interaction Systems (`src/systems/`)
 
 These modules will encapsulate client-side logic for interacting with Firebase Functions and Firestore:
+
 - **`ChatSystem.ts`:** Handles sending user queries to a Firebase Function (which then calls the Gemini API) and displaying AI responses in an overlay UI.
 - **`AppointmentSystem.ts`:** Manages the UI for booking appointments and sends requests to a Firebase Function that interacts with the Google Calendar API.
 - **`FeedbackSystem.ts`:** Provides an interface for visitors to submit feedback, which is then stored in Firestore.
@@ -131,6 +133,7 @@ The project will be deployed entirely on Firebase. The `firebase.json` and `.fir
 ## 7. CI/CD (Placeholder)
 
 A basic CI/CD setup will be scaffolded, potentially using GitHub Actions, to automate:
+
 - Building the frontend application.
 - Deploying to Firebase Hosting.
 - Deploying Firebase Functions.

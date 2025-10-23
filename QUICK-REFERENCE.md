@@ -19,6 +19,7 @@ root/
 ## Core Classes Overview
 
 ### GameScene (extends THREE.Scene)
+
 ```typescript
 const scene = new GameScene();
 await scene.ready();
@@ -41,6 +42,7 @@ scene.setCameraInput(deltaX, deltaY);
 ```
 
 ### SimplePlanet (extends THREE.Group)
+
 ```typescript
 const planet = new SimplePlanet(radius);
 await planet.ready();
@@ -60,6 +62,7 @@ planet.dispose();
 ```
 
 ### SimplePlayer (extends THREE.Group)
+
 ```typescript
 const player = new SimplePlayer(planet, startPosition);
 
@@ -82,6 +85,7 @@ player.dispose();
 ```
 
 ### OrbitCamera
+
 ```typescript
 const camera = new OrbitCamera(threeCamera, player);
 
@@ -105,6 +109,7 @@ await camera.flyInFromDistant(duration, targetOffset);
 ```
 
 ### SimpleRenderer
+
 ```typescript
 const renderer = new SimpleRenderer(canvas);
 
@@ -126,6 +131,7 @@ renderer.dispose();
 ```
 
 ### SimpleInputManager
+
 ```typescript
 const input = new SimpleInputManager();
 input.attachToCanvas(canvas);
@@ -169,6 +175,7 @@ renderer.startRenderLoop(scene, camera, (deltaTime) => {
 ## Common Tasks
 
 ### Adding an NPC or Object
+
 ```typescript
 const model = new THREE.Mesh(geometry, material);
 model.position.copy(planet.getGroundPoint(position));
@@ -179,6 +186,7 @@ model.position.copy(planet.getGroundPoint(newPosition));
 ```
 
 ### Adding UI Overlay
+
 ```typescript
 const uiDiv = document.createElement('div');
 uiDiv.style.position = 'fixed';
@@ -187,6 +195,7 @@ document.body.appendChild(uiDiv);
 ```
 
 ### Raycasting from Camera
+
 ```typescript
 const hits = scene.rayCastFromCamera(mouseX, mouseY);
 if (hits.length > 0) {
@@ -195,6 +204,7 @@ if (hits.length > 0) {
 ```
 
 ### Getting Player State
+
 ```typescript
 const player = scene.getPlayer();
 const pos = player.getWorldPosition();
@@ -203,6 +213,7 @@ const isGrounded = player.getIsGrounded();
 ```
 
 ### Modifying Camera
+
 ```typescript
 const camera = scene.getOrbitCamera();
 camera.setDistance(8);      // Closer
@@ -214,6 +225,7 @@ camera.setSmoothness(0.15); // More responsive
 ## Physics Constants
 
 In `SimplePlayer.ts`:
+
 ```typescript
 private speed: number = 15;           // Movement speed
 private jumpForce: number = 8;        // Jump height
@@ -222,6 +234,7 @@ private groundStickThreshold: number = 0.5;  // How far to stick to surface
 ```
 
 Adjust these for different feel:
+
 - **Faster**: Increase `speed` (15 → 20)
 - **Higher jump**: Increase `jumpForce` (8 → 12)
 - **Floatier**: Decrease `gravity` magnitude (25 → 18)
@@ -230,12 +243,14 @@ Adjust these for different feel:
 ## Rendering Constants
 
 In `GameScene.ts`:
+
 ```typescript
 this.background = new THREE.Color(0x87ceeb);  // Sky blue
 this.fog = new THREE.Fog(0x87ceeb, 80, 200); // Fog range
 ```
 
 In `SimpleRenderer.ts`:
+
 ```typescript
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1;  // Brightness
@@ -244,11 +259,13 @@ renderer.toneMappingExposure = 1;  // Brightness
 ## Debug Helpers
 
 In `main-simple.ts`:
+
 ```typescript
 (window as any).getGameState(); // Check if running
 ```
 
 In browser console:
+
 ```javascript
 // Access scene
 const scene = document.querySelector('canvas').__scene;
@@ -267,21 +284,25 @@ console.log(player.getWorldPosition());
 ## Troubleshooting
 
 ### Player floating in air
+
 - Check `SimplePlanet.rayCastToSurface()` raycast range
 - Verify planet radius matches in `SimplePlayer` constructor
 - Check ground stick threshold in physics update
 
 ### Camera jittering
+
 - Increase `OrbitCamera.smoothness` (0.1 → 0.2)
 - Reduce input sensitivity in `SimpleInputManager`
 - Check for large deltaTime values (cap at 16ms)
 
 ### No terrain visible
+
 - Verify icosphere is being created
 - Check camera far plane (should be > 500)
 - Verify terrain material and lighting
 
 ### Slow performance
+
 - Reduce draw calls: combine meshes
 - Profile in DevTools: Performance tab
 - Check GPU memory in Three.js stats
@@ -312,6 +333,7 @@ console.log(player.getWorldPosition());
 ## Essential VM Commands
 
 ### VM Management (run from your local machine)
+
 ```bash
 # Create VM
 gcloud compute instances create digiscale-dev-vm --zone=us-central1-a --machine-type=e2-standard-4 --boot-disk-size=100GB --boot-disk-type=pd-ssd --image-family=ubuntu-2204-lts --image-project=ubuntu-os-cloud --tags=http-server,https-server
@@ -328,12 +350,14 @@ gcloud compute instances describe digiscale-dev-vm --zone=us-central1-a --format
 ```
 
 ### Setup Firewall (run once)
+
 ```bash
 gcloud compute firewall-rules create allow-code-server --allow tcp:8080 --source-ranges 0.0.0.0/0
 gcloud compute firewall-rules create allow-dev-ports --allow tcp:3000-3010 --source-ranges 0.0.0.0/0
 ```
 
 ### On VM Setup Commands
+
 ```bash
 # Setup development environment
 curl -O https://raw.githubusercontent.com/digiscalability/portfolio-island/master/gcp-vm-setup.sh && chmod +x gcp-vm-setup.sh && ./gcp-vm-setup.sh
@@ -349,6 +373,7 @@ curl -O https://raw.githubusercontent.com/digiscalability/portfolio-island/maste
 ```
 
 ## VM Access URLs
+
 - **VS Code**: `http://VM_IP:8080`
 - **Portfolio Island**: `http://VM_IP:3000`
 - **Project 2**: `http://VM_IP:3001`
@@ -356,6 +381,7 @@ curl -O https://raw.githubusercontent.com/digiscalability/portfolio-island/maste
 - **Project 4**: `http://VM_IP:3003`
 
 ## VM Cost Optimization
+
 - **Running**: ~$2.40/day
 - **Stopped**: ~$1.20/day (storage only)
 - **Monthly (always on)**: ~$70

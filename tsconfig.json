@@ -13,6 +13,10 @@
     "isolatedModules": true,
     "noEmit": true,
 
+    /* Performance optimizations */
+    "incremental": true,
+    "tsBuildInfoFile": "./.tsbuildinfo",
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
@@ -23,17 +27,19 @@
     "esModuleInterop": true,
 
     /* Vite specific */
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+
+    /* Path aliases for cleaner imports */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@core/*": ["./*"],
+      "@utils/*": ["./src/utils/*"],
+      "@assets/*": ["./assets/*"],
+      "@assetKits/*": ["./assetKits/*"]
+    }
   },
-  "include": [
-    "*.ts",
-    "src/**/*.ts",
-    "vite.config.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "functions"
-  ]
+  "include": ["*.ts", "*.d.ts", "src/**/*.ts", "vite.config.ts"],
+  "exclude": ["node_modules", "dist", "functions", "index.ts"]
 }
 

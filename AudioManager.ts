@@ -1,9 +1,26 @@
+type ExtendedAudioListener = AudioListener & {
+  positionX?: AudioParam;
+  positionY?: AudioParam;
+  positionZ?: AudioParam;
+  forwardX?: AudioParam;
+  forwardY?: AudioParam;
+  forwardZ?: AudioParam;
+  upX?: AudioParam;
+  upY?: AudioParam;
+  upZ?: AudioParam;
+  setPosition?: (x: number, y: number, z: number) => void;
+  setOrientation?: (fx: number, fy: number, fz: number, ux: number, uy: number, uz: number) => void;
+};
+
 export class AudioManager {
   private muted: boolean = false;
   private volume: number = 1.0;
   private ctx: AudioContext | null = null;
   private buffers: Map<string, AudioBuffer> = new Map();
-  private playing: Map<string, { source: AudioBufferSourceNode; panner: PannerNode; gain: GainNode }> = new Map();
+  private playing: Map<
+    string,
+    { source: AudioBufferSourceNode; panner: PannerNode; gain: GainNode }
+  > = new Map();
   private fadeDuration: number = 0.8; // seconds
 
   // allow injecting an AudioContext (useful for tests)
@@ -15,14 +32,20 @@ export class AudioManager {
         this.muted = !!parsed.muted;
         this.volume = typeof parsed.volume === 'number' ? parsed.volume : 1.0;
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
     if (ctx) this.ctx = ctx;
   }
 
   private ensureCtx(): AudioContext {
-    if (!this.ctx) this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    if (!this.ctx) {
+      const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
+      if (!AudioContextConstructor) {
+        throw new Error('Web Audio API is not supported in this environment');
+      }
+      this.ctx = new AudioContextConstructor();
+    }
     return this.ctx;
   }
 
@@ -38,7 +61,11 @@ export class AudioManager {
     this.volume = Math.max(0, Math.min(1, v));
     this.save();
     // animate current playing sources to new volume
-    try { this.applyVolumeToPlaying(); } catch (e) { }
+    try {
+      this.applyVolumeToPlaying();
+    } catch {
+      /* ignore */
+    }
   }
 
   // animate current playing sources' gains to the new volume
@@ -50,16 +77,21 @@ export class AudioManager {
         item.gain.gain.cancelScheduledValues(now);
         item.gain.gain.setValueAtTime(item.gain.gain.value, now);
         item.gain.gain.linearRampToValueAtTime(this.volume, now + 0.2);
-      } catch (e) { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     });
   }
 
   public toggleMute(): boolean {
     this.muted = !this.muted;
     try {
-      if (this.muted) this.ctx && this.ctx.suspend && this.ctx.suspend();
-      else this.ctx && this.ctx.resume && this.ctx.resume();
-    } catch (e) {
+      if (this.muted) {
+        void this.ctx?.suspend?.();
+      } else {
+        void this.ctx?.resume?.();
+      }
+    } catch {
       // ignore
     }
     this.save();
@@ -68,8 +100,11 @@ export class AudioManager {
 
   private save(): void {
     try {
-      localStorage.setItem('ds_audio_settings', JSON.stringify({ muted: this.muted, volume: this.volume }));
-    } catch (e) {
+      localStorage.setItem(
+        'ds_audio_settings',
+        JSON.stringify({ muted: this.muted, volume: this.volume }),
+      );
+    } catch {
       // ignore
     }
   }
@@ -102,7 +137,7 @@ export class AudioManager {
       try {
         existing.panner.setPosition(position.x, position.y, position.z);
         existing.panner.maxDistance = maxDistance;
-      } catch (e) {
+      } catch {
         // ignore
       }
       return;
@@ -116,19 +151,35 @@ export class AudioManager {
     panner.panningModel = 'HRTF';
     panner.distanceModel = 'inverse';
     panner.maxDistance = maxDistance;
-    try { panner.setPosition(position.x, position.y, position.z); } catch (e) { /* ignore */ }
+    try {
+      panner.setPosition(position.x, position.y, position.z);
+    } catch {
+      /* ignore */
+    }
 
-  const gain = ctx.createGain();
-  gain.gain.value = 0; // start silent for fade-in
+    const gain = ctx.createGain();
+    gain.gain.value = 0; // start silent for fade-in
 
     src.connect(panner);
     panner.connect(gain);
     gain.connect(ctx.destination);
 
     const now = ctx.currentTime;
-    try { gain.gain.cancelScheduledValues(now); } catch (e) {}
-    try { gain.gain.setValueAtTime(0, now); } catch (e) {}
-    try { gain.gain.linearRampToValueAtTime(this.volume, now + this.fadeDuration); } catch (e) {}
+    try {
+      gain.gain.cancelScheduledValues(now);
+    } catch {
+      /* ignore */
+    }
+    try {
+      gain.gain.setValueAtTime(0, now);
+    } catch {
+      /* ignore */
+    }
+    try {
+      gain.gain.linearRampToValueAtTime(this.volume, now + this.fadeDuration);
+    } catch {
+      /* ignore */
+    }
     src.start(0);
 
     this.playing.set(key, { source: src, panner, gain });
@@ -136,7 +187,9 @@ export class AudioManager {
     // emit event for UI
     try {
       window.dispatchEvent(new CustomEvent('ds:ambient-start', { detail: { key } }));
-    } catch (e) { }
+    } catch {
+      /* ignore */
+    }
   }
 
   // Update position of a currently playing spatial source
@@ -145,7 +198,9 @@ export class AudioManager {
     if (!item) return;
     try {
       item.panner.setPosition(position.x, position.y, position.z);
-    } catch (e) { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   // Stop a playing spatial source
@@ -159,18 +214,43 @@ export class AudioManager {
       item.gain.gain.setValueAtTime(item.gain.gain.value, now);
       item.gain.gain.linearRampToValueAtTime(0.0, now + this.fadeDuration);
       // stop after fade completes
-      setTimeout(() => {
-        try { item.source.stop(0); } catch (e) {}
-        try { item.source.disconnect(); } catch (e) {}
-        try { item.panner.disconnect(); } catch (e) {}
-        try { item.gain.disconnect(); } catch (e) {}
-      }, Math.ceil(this.fadeDuration * 1000) + 40);
-    } catch (e) {
-      try { item.source.stop(0); } catch (e) { /* ignore */ }
+      setTimeout(
+        () => {
+          try {
+            item.source.stop(0);
+          } catch {
+            /* ignore */
+          }
+          try {
+            item.source.disconnect();
+          } catch {
+            /* ignore */
+          }
+          try {
+            item.panner.disconnect();
+          } catch {
+            /* ignore */
+          }
+          try {
+            item.gain.disconnect();
+          } catch {
+            /* ignore */
+          }
+        },
+        Math.ceil(this.fadeDuration * 1000) + 40,
+      );
+    } catch {
+      try {
+        item.source.stop(0);
+      } catch {
+        /* ignore */
+      }
     }
     try {
       window.dispatchEvent(new CustomEvent('ds:ambient-stop', { detail: { key } }));
-    } catch (e) { }
+    } catch {
+      /* ignore */
+    }
     this.playing.delete(key);
   }
 
@@ -179,33 +259,40 @@ export class AudioManager {
     return this.playing.has(key);
   }
 
-  public updateListener(position: { x: number; y: number; z: number }, forward?: { x: number; y: number; z: number }, up?: { x: number; y: number; z: number }) {
+  public updateListener(
+    position: { x: number; y: number; z: number },
+    forward?: { x: number; y: number; z: number },
+    up?: { x: number; y: number; z: number },
+  ) {
     const ctx = this.ensureCtx();
-    try {
-      const listener = ctx.listener;
-      if (listener.positionX) {
-        // modern API
-        (listener.positionX as any).value = position.x;
-        (listener.positionY as any).value = position.y;
-        (listener.positionZ as any).value = position.z;
-      } else if ((listener as any).setPosition) {
-        (listener as any).setPosition(position.x, position.y, position.z);
-      }
+    const listener = ctx.listener as ExtendedAudioListener;
 
-      if (forward && up) {
-        if ((listener as any).forwardX) {
-          (listener as any).forwardX.value = forward.x;
-          (listener as any).forwardY.value = forward.y;
-          (listener as any).forwardZ.value = forward.z;
-          (listener as any).upX.value = up.x;
-          (listener as any).upY.value = up.y;
-          (listener as any).upZ.value = up.z;
-        } else if ((listener as any).setOrientation) {
-          (listener as any).setOrientation(forward.x, forward.y, forward.z, up.x, up.y, up.z);
-        }
+    if (listener.positionX && listener.positionY && listener.positionZ) {
+      listener.positionX.value = position.x;
+      listener.positionY.value = position.y;
+      listener.positionZ.value = position.z;
+    } else {
+      listener.setPosition?.(position.x, position.y, position.z);
+    }
+
+    if (forward && up) {
+      if (
+        listener.forwardX &&
+        listener.forwardY &&
+        listener.forwardZ &&
+        listener.upX &&
+        listener.upY &&
+        listener.upZ
+      ) {
+        listener.forwardX.value = forward.x;
+        listener.forwardY.value = forward.y;
+        listener.forwardZ.value = forward.z;
+        listener.upX.value = up.x;
+        listener.upY.value = up.y;
+        listener.upZ.value = up.z;
+      } else {
+        listener.setOrientation?.(forward.x, forward.y, forward.z, up.x, up.y, up.z);
       }
-    } catch (e) {
-      // ignore
     }
   }
 
@@ -215,13 +302,13 @@ export class AudioManager {
    */
   public dispose(): void {
     // Stop all currently playing sources and disconnect nodes
-    this.playing.forEach((item, key) => {
+    this.playing.forEach((item, _key) => {
       try {
         item.source.stop(0);
         item.source.disconnect();
         item.panner.disconnect();
         item.gain.disconnect();
-      } catch (e) {
+      } catch {
         // ignore errors during cleanup
       }
     });
@@ -231,7 +318,7 @@ export class AudioManager {
     if (this.ctx) {
       try {
         this.ctx.close();
-      } catch (e) {
+      } catch {
         // ignore errors during cleanup
       }
       this.ctx = null;
@@ -241,4 +328,3 @@ export class AudioManager {
     this.buffers.clear();
   }
 }
-

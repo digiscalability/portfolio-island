@@ -20,6 +20,7 @@ This repository is optimized for GitHub Codespaces with powerful hardware specif
 ### Adding Additional Projects
 
 1. Clone your other projects to `/workspaces/`:
+
 ```bash
 cd /workspaces
 git clone https://github.com/yourusername/project2.git
@@ -27,6 +28,7 @@ git clone https://github.com/yourusername/project3.git
 ```
 
 2. Start multiple projects concurrently:
+
 ```bash
 # Terminal 1 - Portfolio Island (Port 3000)
 npm run dev
@@ -61,11 +63,13 @@ npm run multi-dev
 ## 📊 Performance Monitoring
 
 Monitor your codespace performance:
+
 ```bash
 npm run performance
 ```
 
 This shows:
+
 - CPU usage
 - Memory consumption
 - Disk space
@@ -85,24 +89,28 @@ Your codespace automatically forwards these ports:
 ## 💡 Optimization Tips
 
 ### Memory Management
+
 - The environment excludes large asset files from search/watch
 - Git LFS handles large 3D assets efficiently
 - TypeScript is configured for optimal performance
 
 ### Multi-Project Best Practices
+
 1. Use separate terminals for each project
 2. Monitor memory usage when running multiple projects
 3. Use the PORTS tab to quickly access different applications
 4. Close unused projects to free up resources
 
 ### File Management
-- Large assets (*.fbx, *.bin, *.gltf) are tracked with Git LFS
+
+- Large assets (*.fbx,*.bin, *.gltf) are tracked with Git LFS
 - Search excludes asset directories for faster performance
 - Workspace folders are optimized for large projects
 
 ## 🔄 Workspace Configuration
 
 The codespace includes a VS Code workspace file (`portfolio-workspace.code-workspace`) that:
+
 - Organizes multiple projects in folders
 - Provides optimized settings for TypeScript/3D development
 - Includes recommended extensions
@@ -111,6 +119,7 @@ The codespace includes a VS Code workspace file (`portfolio-workspace.code-works
 ## 🚨 Troubleshooting
 
 ### High Memory Usage
+
 ```bash
 # Check memory usage
 free -h
@@ -123,7 +132,9 @@ npm run dev
 ```
 
 ### Port Conflicts
+
 If ports are busy:
+
 ```bash
 # Kill process on specific port
 npx kill-port 3000
@@ -133,6 +144,7 @@ npm run dev -- --port 3005
 ```
 
 ### Performance Issues
+
 ```bash
 # Monitor system resources
 htop

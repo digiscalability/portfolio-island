@@ -1,5 +1,10 @@
 import * as THREE from 'three';
+
 import { Player } from './Player';
+
+interface GroundProvider {
+  getSurfaceNormal?(position: THREE.Vector3): THREE.Vector3 | null | undefined;
+}
 
 export class CameraController {
   // Animate camera from a distant planet view to the player (cinematic fly-in)
@@ -39,7 +44,7 @@ export class CameraController {
   private player: Player;
   private scene?: THREE.Scene;
   // optional ground provider (e.g., Island) that exposes getSurfaceNormal(pos) and getSurfacePosition(dir)
-  private groundProvider?: any;
+  private groundProvider?: GroundProvider;
   private offset: THREE.Vector3;
   private smoothness: number = 0.2;
   private lookAtSmooth: number = 5.0; // larger = faster
@@ -56,7 +61,7 @@ export class CameraController {
   private occlusionIgnorePredicate?: (obj: THREE.Object3D) => boolean;
   // smart pivoting: when occluded, attempt offset sweeps around player yaw to find alternative camera positions
   private smartPivotEnabled: boolean = true;
-  private pivotSweepAngles: number[] = [0, 15, -15, 30, -30].map(a => a * (Math.PI / 180));
+  private pivotSweepAngles: number[] = [0, 15, -15, 30, -30].map((a) => a * (Math.PI / 180));
   private occlusionLayerMask: number = 0; // bitmask of layers to IGNORE in occlusion tests (if object.layers.mask & mask) != 0 => ignored
   private occlusionCallback?: (blend: number) => void;
   // yaw follow factor: 0 = ignore player's yaw (camera maintains own yaw), 1 = fully use player's yaw
@@ -81,7 +86,12 @@ export class CameraController {
   private lookAheadSpeed: number = 4.0;
   private maxLookAhead: number = 2.5;
 
-  constructor(camera: THREE.PerspectiveCamera, player: Player, scene?: THREE.Scene, groundProvider?: any) {
+  constructor(
+    camera: THREE.PerspectiveCamera,
+    player: Player,
+    scene?: THREE.Scene,
+    groundProvider?: GroundProvider
+  ) {
     this.camera = camera;
     this.player = player;
     this.scene = scene;
@@ -89,9 +99,9 @@ export class CameraController {
     // Default offset for third-person action game (over-shoulder view)
     this.offset = new THREE.Vector3(0.8, 1.8, 4.5);
     // Responsive but stable settings for action gameplay
-    this.smoothness = 0.12;      // Slightly more smooth to reduce jitter
-    this.lookAtSmooth = 5.0;     // Moderate look-at speed
-    this.yawFollowFactor = 0.5;  // Moderate yaw tracking (reduced from 0.65)
+    this.smoothness = 0.12; // Slightly more smooth to reduce jitter
+    this.lookAtSmooth = 5.0; // Moderate look-at speed
+    this.yawFollowFactor = 0.5; // Moderate yaw tracking (reduced from 0.65)
     this.minHeightAboveSurface = 0.5;
     this.sweepThrottleInterval = 0.3; // Less frequent sweeps (was 0.22)
     this.occlusionSmoothTime = 0.6; // Slower occlusion blend (was 0.5)
@@ -105,14 +115,24 @@ export class CameraController {
   }
 
   // Quick helper to set conservative third-person camera preset tuned to character model sizes
-  public setThirdPersonPreset(overrides?: { offset?: THREE.Vector3; smoothness?: number; lookAtSmooth?: number; yawFollow?: number; minHeight?: number }) {
+  public setThirdPersonPreset(overrides?: {
+    offset?: THREE.Vector3;
+    smoothness?: number;
+    lookAtSmooth?: number;
+    yawFollow?: number;
+    minHeight?: number;
+  }) {
     try {
       this.offset = overrides?.offset ?? new THREE.Vector3(0.8, 1.8, 4.5);
       this.smoothness = typeof overrides?.smoothness === 'number' ? overrides.smoothness : 0.12;
-      this.lookAtSmooth = typeof overrides?.lookAtSmooth === 'number' ? overrides.lookAtSmooth : 5.0;
-      this.minHeightAboveSurface = typeof overrides?.minHeight === 'number' ? overrides.minHeight : 0.5;
+      this.lookAtSmooth =
+        typeof overrides?.lookAtSmooth === 'number' ? overrides.lookAtSmooth : 5.0;
+      this.minHeightAboveSurface =
+        typeof overrides?.minHeight === 'number' ? overrides.minHeight : 0.5;
       this.setYawFollowFactor(typeof overrides?.yawFollow === 'number' ? overrides.yawFollow : 0.5);
-    } catch (e) { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   // Apply one of a few named presets useful for debugging and tuning camera placement
@@ -120,30 +140,47 @@ export class CameraController {
     switch (name) {
       case 'close':
         // Close combat view - tight over-shoulder
-        this.setThirdPersonPreset({ offset: new THREE.Vector3(0.6, 1.2, 2.8), smoothness: 0.08, lookAtSmooth: 6.0, yawFollow: 0.6, minHeight: 0.4 });
+        this.setThirdPersonPreset({
+          offset: new THREE.Vector3(0.6, 1.2, 2.8),
+          smoothness: 0.08,
+          lookAtSmooth: 6.0,
+          yawFollow: 0.6,
+          minHeight: 0.4,
+        });
         this.setPitchLimits(8, 55);
         break;
       case 'wide':
         // Wide exploration view - more cinematic
-        this.setThirdPersonPreset({ offset: new THREE.Vector3(1.2, 2.4, 6.5), smoothness: 0.15, lookAtSmooth: 4.0, yawFollow: 0.4, minHeight: 0.7 });
+        this.setThirdPersonPreset({
+          offset: new THREE.Vector3(1.2, 2.4, 6.5),
+          smoothness: 0.15,
+          lookAtSmooth: 4.0,
+          yawFollow: 0.4,
+          minHeight: 0.7,
+        });
         this.setPitchLimits(12, 70);
         break;
       default:
         // Default action game view - over-shoulder
-        this.setThirdPersonPreset({ offset: new THREE.Vector3(0.8, 1.8, 4.5), smoothness: 0.12, lookAtSmooth: 5.0, yawFollow: 0.5, minHeight: 0.5 });
+        this.setThirdPersonPreset({
+          offset: new THREE.Vector3(0.8, 1.8, 4.5),
+          smoothness: 0.12,
+          lookAtSmooth: 5.0,
+          yawFollow: 0.5,
+          minHeight: 0.5,
+        });
         this.setPitchLimits(10, 65);
         break;
     }
   }
 
   // Provide ground provider at runtime (useful if engine constructs camera before island is ready)
-  public setGroundProvider(provider: any) {
+  public setGroundProvider(provider: GroundProvider | undefined) {
     this.groundProvider = provider;
   }
 
   // deltaTime in seconds
   public update(deltaTime: number = 0.016): void {
-
     // advance any offset animation
     if (this.animTargetOffset && this.animStartOffset && this.animDuration > 0) {
       this.animElapsed = Math.min(this.animDuration, this.animElapsed + deltaTime);
@@ -152,7 +189,12 @@ export class CameraController {
       const tt = t * t * (3 - 2 * t);
       const cur = new THREE.Vector3().copy(this.animStartOffset).lerp(this.animTargetOffset, tt);
       this.offset.copy(cur);
-      if (t >= 1) { this.animStartOffset = undefined; this.animTargetOffset = undefined; this.animDuration = 0; this.animElapsed = 0; }
+      if (t >= 1) {
+        this.animStartOffset = undefined;
+        this.animTargetOffset = undefined;
+        this.animDuration = 0;
+        this.animElapsed = 0;
+      }
     }
     const playerPosition = this.player.getPosition();
 
@@ -163,14 +205,16 @@ export class CameraController {
         const n = this.groundProvider.getSurfaceNormal(playerPosition);
         if (n && n.lengthSq() > 0.0001) localUp.copy(n.normalize());
       }
-    } catch (e) { }
-  // Compute a stable player forward vector projected onto tangent plane so camera follows slopes gracefully.
-  // Use player's stable quaternion, not movement-based calculation
-  let forward = new THREE.Vector3(0, 0, -1);
+    } catch {}
+    // Compute a stable player forward vector projected onto tangent plane so camera follows slopes gracefully.
+    // Use player's stable quaternion, not movement-based calculation
+    let forward = new THREE.Vector3(0, 0, -1);
     try {
       // Always use player's quaternion for consistent forward direction
-      forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.player.mesh.quaternion).normalize();
-    } catch (e) {
+      forward = new THREE.Vector3(0, 0, -1)
+        .applyQuaternion(this.player.mesh.quaternion)
+        .normalize();
+    } catch {
       forward = new THREE.Vector3(0, 0, -1);
     }
 
@@ -187,11 +231,17 @@ export class CameraController {
     // Blend camera yaw with player's yaw (yawFollowFactor). This makes the camera less twitchy when
     // the player's model rotates quickly due to animation changes.
     try {
-      const camYawQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), forwardProj.clone());
-      const playerYawQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0, -1).applyQuaternion(this.player.mesh.quaternion));
+      const camYawQuat = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 0, -1),
+        forwardProj.clone()
+      );
+      const playerYawQuat = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 0, -1),
+        new THREE.Vector3(0, 0, -1).applyQuaternion(this.player.mesh.quaternion)
+      );
       // slerp between camera follow and player yaw
       camYawQuat.slerp(playerYawQuat, this.yawFollowFactor);
-    } catch (e) {}
+    } catch {}
 
     // ENFORCE camera always behind player: offset is always -forward direction
     // Remove yaw blending, always use player's forwardProj for camera placement
@@ -220,38 +270,65 @@ export class CameraController {
           this.raycaster.set(playerPosition, dir);
           // build a filtered occluder list to avoid foliage/noise and reduce raycast flakiness
           let targetObjects: THREE.Object3D[];
-          if (this.occluderObjects && this.occluderObjects.length) targetObjects = this.occluderObjects;
+          if (this.occluderObjects && this.occluderObjects.length)
+            targetObjects = this.occluderObjects;
           else {
-            targetObjects = this.scene.children.filter((c: any) => {
+            targetObjects = this.scene.children.filter((c) => {
               if (!c) return false;
               if (c === this.player.mesh) return false;
-              if (c.userData && c.userData.ignoreOcclusion) return false;
+              if (c.userData && (c.userData as { ignoreOcclusion?: boolean }).ignoreOcclusion)
+                return false;
               if (c.name && /foliage|leaf|grass|bush|decal|plane/i.test(c.name)) return false;
               return true;
             });
           }
           const intersects = this.raycaster.intersectObjects(targetObjects, true);
           for (const it of intersects) {
-            let obj: any = it.object;
+            let obj: THREE.Object3D | null = it.object;
             let skip = false;
             while (obj) {
-              if (obj === this.player.mesh) { skip = true; break; }
-              if (this.occlusionIgnorePredicate && this.occlusionIgnorePredicate(obj)) { skip = true; break; }
-              try { if (this.occlusionLayerMask && (obj.layers && (obj.layers.mask & this.occlusionLayerMask))) { skip = true; break; } } catch (e) { }
-              if (obj.name && /foliage|leaf|grass|bush|decal|plane/i.test(obj.name)) { skip = true; break; }
-              if (obj.userData && obj.userData.ignoreOcclusion) { skip = true; break; }
+              if (obj === this.player.mesh) {
+                skip = true;
+                break;
+              }
+              if (this.occlusionIgnorePredicate && this.occlusionIgnorePredicate(obj)) {
+                skip = true;
+                break;
+              }
+              try {
+                if (
+                  this.occlusionLayerMask &&
+                  obj.layers &&
+                  obj.layers.mask & this.occlusionLayerMask
+                ) {
+                  skip = true;
+                  break;
+                }
+              } catch {}
+              if (obj.name && /foliage|leaf|grass|bush|decal|plane/i.test(obj.name)) {
+                skip = true;
+                break;
+              }
+              if (obj.userData && (obj.userData as { ignoreOcclusion?: boolean }).ignoreOcclusion) {
+                skip = true;
+                break;
+              }
               obj = obj.parent;
             }
             if (skip) continue;
             if (it.distance < dist) {
               const hitPoint = it.point.clone();
-              clampedPos = hitPoint.clone().add(playerPosition.clone().sub(hitPoint).normalize().multiplyScalar(0.35));
+              clampedPos = hitPoint
+                .clone()
+                .add(playerPosition.clone().sub(hitPoint).normalize().multiplyScalar(0.35));
               isOccluded = true;
               break;
             }
           }
         }
-      } catch (e) { /* non-fatal, keep desiredPos */ }
+      } catch {
+        /* non-fatal, keep desiredPos */
+      }
     }
 
     // If occluded and smart pivot is enabled, try sweeping offsets around yaw to find an alternative unclipped camera position
@@ -263,11 +340,17 @@ export class CameraController {
       let bestDistDelta = 1e9;
 
       // throttle expensive sweep attempts to avoid per-frame cost
-      const now = (typeof performance !== 'undefined' && performance.now) ? (performance.now() / 1000) : Date.now() / 1000;
+      const now =
+        typeof performance !== 'undefined' && performance.now
+          ? performance.now() / 1000
+          : Date.now() / 1000;
       if (now - this.lastSweepTime >= this.sweepThrottleInterval) {
         this.lastSweepTime = now;
         for (const a of this.pivotSweepAngles) {
-          const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), baseYaw + a);
+          const yawQuat = new THREE.Quaternion().setFromAxisAngle(
+            new THREE.Vector3(0, 1, 0),
+            baseYaw + a
+          );
           const altOffset = originalOffset.clone().applyQuaternion(yawQuat);
           const altPos = playerPosition.clone().add(altOffset);
           const dirAlt = altPos.clone().sub(playerPosition);
@@ -275,25 +358,56 @@ export class CameraController {
           if (distAlt <= 0.001) continue;
           dirAlt.normalize();
           this.raycaster.set(playerPosition, dirAlt);
-          const targetObjectsAlt = this.occluderObjects && this.occluderObjects.length ? this.occluderObjects : this.scene.children;
+          const targetObjectsAlt =
+            this.occluderObjects && this.occluderObjects.length
+              ? this.occluderObjects
+              : this.scene.children;
           const intersectsAlt = this.raycaster.intersectObjects(targetObjectsAlt, true);
           let occludedAlt = false;
           for (const it of intersectsAlt) {
-            let obj: any = it.object; let skip = false;
+            let obj: THREE.Object3D | null = it.object;
+            let skip = false;
             while (obj) {
-              if (obj === this.player.mesh) { skip = true; break; }
-              if (this.occlusionIgnorePredicate && this.occlusionIgnorePredicate(obj)) { skip = true; break; }
-              try { if (this.occlusionLayerMask && (obj.layers && (obj.layers.mask & this.occlusionLayerMask))) { skip = true; break; } } catch (e) { }
-              if (obj.name && /foliage|leaf|grass|bush|decal|plane/i.test(obj.name)) { skip = true; break; }
-              if (obj.userData && obj.userData.ignoreOcclusion) { skip = true; break; }
+              if (obj === this.player.mesh) {
+                skip = true;
+                break;
+              }
+              if (this.occlusionIgnorePredicate && this.occlusionIgnorePredicate(obj)) {
+                skip = true;
+                break;
+              }
+              try {
+                if (
+                  this.occlusionLayerMask &&
+                  obj.layers &&
+                  obj.layers.mask & this.occlusionLayerMask
+                ) {
+                  skip = true;
+                  break;
+                }
+              } catch {}
+              if (obj.name && /foliage|leaf|grass|bush|decal|plane/i.test(obj.name)) {
+                skip = true;
+                break;
+              }
+              if (obj.userData && (obj.userData as { ignoreOcclusion?: boolean }).ignoreOcclusion) {
+                skip = true;
+                break;
+              }
               obj = obj.parent;
             }
             if (skip) continue;
-            if (it.distance < distAlt) { occludedAlt = true; break; }
+            if (it.distance < distAlt) {
+              occludedAlt = true;
+              break;
+            }
           }
           if (!occludedAlt) {
             const delta = altPos.distanceTo(desiredPos);
-            if (delta < bestDistDelta) { bestDistDelta = delta; foundBetter = altPos.clone(); }
+            if (delta < bestDistDelta) {
+              bestDistDelta = delta;
+              foundBetter = altPos.clone();
+            }
           }
         }
         if (foundBetter) {
@@ -308,7 +422,9 @@ export class CameraController {
     else this.occlusionBlend = Math.max(0, this.occlusionBlend - blendDelta);
 
     // notify callback about occlusion blend (if any)
-    try { if (this.occlusionCallback) this.occlusionCallback(this.occlusionBlend); } catch (e) { }
+    try {
+      if (this.occlusionCallback) this.occlusionCallback(this.occlusionBlend);
+    } catch {}
 
     // Interpolate between desiredPos and clampedPos by occlusionBlend to produce target position
     const targetPos = desiredPos.clone().lerp(clampedPos, this.occlusionBlend);
@@ -323,7 +439,7 @@ export class CameraController {
         const safe = playerPos.clone().add(dir.multiplyScalar(this.minHeightAboveSurface));
         targetPos.copy(safe);
       }
-    } catch (e) { }
+    } catch {}
 
     // Clamp how far the camera may move in a single frame to reduce snapping/jitter
     try {
@@ -332,7 +448,7 @@ export class CameraController {
       if (delta.length() > maxMove) {
         targetPos.copy(this.camera.position.clone().add(delta.normalize().multiplyScalar(maxMove)));
       }
-    } catch (e) {}
+    } catch {}
 
     // Smooth camera movement (damping factor scaled by frame rate)
     const damping = Math.max(0.001, this.smoothness);
@@ -350,21 +466,25 @@ export class CameraController {
       this.camera.quaternion.slerp(desiredQuat, lookT);
       // Constrain pitch so the camera doesn't go over the top or under the character too far
       try {
-        const e = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+        const euler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
         const maxPitch = Math.abs(this.maxPitchDeg) || 80;
         const minPitch = Math.max(0, this.minPitchDeg || 0);
-        const clamped = THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(e.x), -maxPitch, -minPitch);
-        e.x = THREE.MathUtils.degToRad(clamped);
-        this.camera.quaternion.setFromEuler(e);
-      } catch (ee) {}
-    } catch (e) {
+        const clamped = THREE.MathUtils.clamp(
+          THREE.MathUtils.radToDeg(euler.x),
+          -maxPitch,
+          -minPitch
+        );
+        euler.x = THREE.MathUtils.degToRad(clamped);
+        this.camera.quaternion.setFromEuler(euler);
+      } catch {}
+    } catch {
       // fallback to instant lookAt if anything goes wrong
       this.camera.lookAt(lookAtTarget);
     }
 
     // Dynamic FOV based on player speed for enhanced sense of motion
     try {
-      const playerVelocity = this.player.getVelocity ? this.player.getVelocity() : new THREE.Vector3(0, 0, 0);
+      const playerVelocity = this.player.getVelocity();
       const speed = playerVelocity.length();
       const maxSpeed = 8.0; // approximate max player speed
       const speedRatio = Math.min(1, speed / maxSpeed);
@@ -375,9 +495,10 @@ export class CameraController {
       // Add sprint boost if player is sprinting (check for sprint state)
       let sprintBoost = 0;
       try {
-        const isSprinting = (this.player as any).isSprinting?.() || false;
-        if (isSprinting) sprintBoost = this.sprintFOVBoost;
-      } catch (e) { /* ignore */ }
+        if (this.player.isSprinting()) sprintBoost = this.sprintFOVBoost;
+      } catch {
+        /* ignore */
+      }
 
       this.targetFOV = this.baseFOV + speedBoost + sprintBoost;
 
@@ -389,7 +510,7 @@ export class CameraController {
       // Apply FOV to camera
       this.camera.fov = this.currentFOV;
       this.camera.updateProjectionMatrix();
-    } catch (e) {
+    } catch {
       // Fallback: maintain base FOV
       if (this.camera.fov !== this.baseFOV) {
         this.camera.fov = this.baseFOV;
@@ -410,10 +531,12 @@ export class CameraController {
           this.lookAheadDistance += lookAheadDelta * Math.min(1, this.lookAheadSpeed * deltaTime);
         } else {
           // Reduce look-ahead when slowing down
-          this.lookAheadDistance *= Math.max(0, 1 - (deltaTime * 3.0));
+          this.lookAheadDistance *= Math.max(0, 1 - deltaTime * 3.0);
         }
       }
-    } catch (e) { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // Store current position for next frame's velocity calculation
     this.prevPlayerPos = playerPosition.clone();
@@ -495,7 +618,6 @@ export class CameraController {
     this.minPitchDeg = Math.max(0, Math.min(89, minDeg));
     this.maxPitchDeg = Math.max(this.minPitchDeg + 1, Math.min(89, maxDeg));
   }
-
 }
 
 

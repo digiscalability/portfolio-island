@@ -6,6 +6,7 @@
 ## ✅ FIXED: Compilation Errors
 
 ### Errors Resolved
+
 1. ✅ **InputManager.ts** - `boundHandlers` property initialization
    - Added `= {} as any` initializer
 
@@ -16,8 +17,9 @@
    - Removed erroneous line with undefined variable
 
 ### Build Status
+
 - ✅ TypeScript compilation: **SUCCESS**
-- ✅ Dev server: **RUNNING** on http://localhost:5173
+- ✅ Dev server: **RUNNING** on <http://localhost:5173>
 - ⚠️ Warnings: 7 unused variable warnings (non-blocking)
 
 ---
@@ -27,6 +29,7 @@
 ### Issue #1: Objects Stuck in Circle ⭕
 
 **Root Cause**: `ObjectPlacement.ts` line 122-125
+
 ```typescript
 // PROBLEM CODE:
 const angle = (i / count) * Math.PI * 2;
@@ -38,6 +41,7 @@ const z = Math.sin(angle) * r;
 This creates a **perfect circle** of objects at 70% island radius.
 
 **Impact**:
+
 - Benches appear in circular pattern
 - Lamps appear in circular pattern
 - Signs appear in circular pattern
@@ -61,11 +65,13 @@ if (dist > expectedRadius + maxDeviation || dist < expectedRadius - maxDeviation
 ```
 
 **Impact**:
+
 - Player might get forcefully repositioned when on steep terrain
 - Jumping or moving on peaks might trigger safety correction
 - Creates "stuck" or "pulled back" sensation
 
 **Diagnosis**:
+
 - maxDeviation of 6.0 might be too small for terrain with 4.2 max displacement
 - Peak terrain can be at radius + 4.2, plus player height ~1.5 = 5.7 total
 - Any jump adds another ~2-3 units temporarily
@@ -78,6 +84,7 @@ if (dist > expectedRadius + maxDeviation || dist < expectedRadius - maxDeviation
 **Location**: `Island.ts` sampleSurfacePosition()
 
 **Current State**: ✅ GOOD
+
 - 7 jitter angles for wide coverage
 - maxExpectedDisplacement = 4.5 (matches terrain)
 - Multiple raycast strategies
@@ -129,6 +136,7 @@ private placeBenches(count: number): void {
 ```
 
 Apply same fix to:
+
 - `placeLamps()`
 - `placeFlowers()`
 - `placeSigns()`
@@ -149,6 +157,7 @@ const maxDeviation = 10.0; // Allows for peaks (4.2) + jumps (3) + margin
 ```
 
 **Rationale**:
+
 - Terrain peaks: +4.2 units
 - Player height: +1.5 units
 - Jump height: +2.5 units
@@ -190,14 +199,17 @@ After applying fixes:
 ## 🎯 Expected Results
 
 ### Object Distribution
+
 **Before**: ⭕ Circle pattern
 **After**: 🌍 Natural sphere distribution
 
 ### Player Movement
+
 **Before**: Stuck/restricted on peaks
 **After**: Free roaming across all terrain
 
 ### Performance
+
 **Before**: ✅ Good (no issues)
 **After**: ✅ Good (no regression expected)
 
@@ -206,6 +218,7 @@ After applying fixes:
 ## 🚨 Critical Code Sections
 
 ### 1. Island Terrain Generation (Island.ts:20-90)
+
 ```typescript
 Status: ✅ WORKING CORRECTLY
 - Multi-octave noise
@@ -214,6 +227,7 @@ Status: ✅ WORKING CORRECTLY
 ```
 
 ### 2. Player Physics (Player.ts:200-550)
+
 ```typescript
 Status: ⚠️ NEEDS ADJUSTMENT
 - Safety bounds too restrictive (6.0 → 10.0)
@@ -221,6 +235,7 @@ Status: ⚠️ NEEDS ADJUSTMENT
 ```
 
 ### 3. Object Placement (ObjectPlacement.ts:115-330)
+
 ```typescript
 Status: ⚠️ NEEDS FIXING
 - Circular pattern in placeBenches, placeLamps, etc.
@@ -234,21 +249,24 @@ Status: ⚠️ NEEDS FIXING
 ### Why Objects Appear in Circle
 
 **Mathematical Cause**:
+
 ```typescript
-angle = (i / count) * Math.PI * 2  // Evenly spaced angles
-x = cos(angle) * radius            // Circular X coordinate
-z = sin(angle) * radius            // Circular Z coordinate
+angle = (i / count) * Math.PI * 2; // Evenly spaced angles
+x = cos(angle) * radius; // Circular X coordinate
+z = sin(angle) * radius; // Circular Z coordinate
 ```
 
 This is **polar coordinates** → creates perfect circle.
 
 **Why It Happened**:
+
 - Original code designed for flat ground gameplay
 - Worked fine on planar surfaces
 - Spherical island exposed the circular pattern
 - Not adapted when switching to spherical terrain
 
 **Proper Solution**:
+
 - Use Fibonacci sphere (already available in MathUtils)
 - Sample actual terrain surface for each position
 - Align object rotation to surface normal
@@ -258,15 +276,18 @@ This is **polar coordinates** → creates perfect circle.
 ## 🔬 Investigation Tools Used
 
 ### 1. Code Analysis
+
 - ✅ grep searches for "circle", "radius", "clamp", "restrict"
 - ✅ Read critical sections of Island.ts, Player.ts, ObjectPlacement.ts
 - ✅ Checked terrain generation algorithms
 
 ### 2. Error Analysis
+
 - ✅ TypeScript compilation errors fixed
 - ✅ Runtime error patterns identified (safety bounds warnings)
 
 ### 3. Mathematical Review
+
 - ✅ Terrain displacement math validated
 - ✅ Safety bounds calculations reviewed
 - ✅ Object placement geometry analyzed
@@ -276,6 +297,7 @@ This is **polar coordinates** → creates perfect circle.
 ## 📝 Commit Strategy
 
 ### Phase 1: Fix Compilation (DONE ✅)
+
 ```
 fix: Initialize boundHandlers properties in InputManager and VirtualJoystick
 
@@ -285,6 +307,7 @@ fix: Initialize boundHandlers properties in InputManager and VirtualJoystick
 ```
 
 ### Phase 2: Fix Object Placement (IN PROGRESS)
+
 ```
 fix: Replace circular object placement with natural sphere distribution
 
@@ -296,6 +319,7 @@ Fixes #[issue-number]: Objects stuck in circle around island
 ```
 
 ### Phase 3: Adjust Player Bounds (IN PROGRESS)
+
 ```
 fix: Increase player safety bounds tolerance for peaks and jumps
 
@@ -319,12 +343,12 @@ Fixes #[issue-number]: Player movement restricted on peaks
 
 ## ✅ Resolution Status
 
-| Issue | Status | File | Lines | Fix |
-|-------|--------|------|-------|-----|
-| Compilation errors | ✅ FIXED | InputManager.ts, VirtualJoystick.ts, UIManager.ts | 22, 12, 439 | Added initializers |
-| Objects in circle | 🔧 READY TO FIX | ObjectPlacement.ts | 115-330 | Use Fibonacci sphere |
-| Player stuck on peaks | 🔧 READY TO FIX | Player.ts | 533, 541 | Increase bounds, gentler correction |
-| Terrain raycasting | ✅ WORKING | Island.ts | 590-690 | No changes needed |
+| Issue                 | Status          | File                                              | Lines       | Fix                                 |
+| --------------------- | --------------- | ------------------------------------------------- | ----------- | ----------------------------------- |
+| Compilation errors    | ✅ FIXED        | InputManager.ts, VirtualJoystick.ts, UIManager.ts | 22, 12, 439 | Added initializers                  |
+| Objects in circle     | 🔧 READY TO FIX | ObjectPlacement.ts                                | 115-330     | Use Fibonacci sphere                |
+| Player stuck on peaks | 🔧 READY TO FIX | Player.ts                                         | 533, 541    | Increase bounds, gentler correction |
+| Terrain raycasting    | ✅ WORKING      | Island.ts                                         | 590-690     | No changes needed                   |
 
 ---
 

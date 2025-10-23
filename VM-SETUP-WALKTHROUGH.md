@@ -5,7 +5,9 @@ Follow these commands to set up your development VM and clone all 4 projects.
 ## Step 1: Create Google Cloud VM
 
 ### Prerequisites
+
 Make sure you have Google Cloud CLI installed:
+
 ```powershell
 # On Windows (run in PowerShell as Administrator)
 winget install Google.CloudSDK
@@ -18,6 +20,7 @@ gcloud config set project YOUR_PROJECT_ID
 ```
 
 ### Create the VM Instance
+
 ```bash
 # Create the VM with optimal specs for development
 gcloud compute instances create digiscale-dev-vm \
@@ -32,6 +35,7 @@ gcloud compute instances create digiscale-dev-vm \
 ```
 
 ### Setup Firewall Rules
+
 ```bash
 # Allow VS Code Server (port 8080)
 gcloud compute firewall-rules create allow-code-server \
@@ -49,6 +53,7 @@ gcloud compute firewall-rules create allow-dev-ports \
 ```
 
 ### Get VM Information
+
 ```bash
 # Get your VM's external IP
 gcloud compute instances describe digiscale-dev-vm \
@@ -59,6 +64,7 @@ gcloud compute instances describe digiscale-dev-vm \
 ## Step 2: Connect to VM and Run Setup
 
 ### SSH into the VM
+
 ```bash
 # Connect via gcloud SSH
 gcloud compute ssh digiscale-dev-vm --zone=us-central1-a
@@ -69,6 +75,7 @@ gcloud compute ssh digiscale-dev-vm --zone=us-central1-a
 ```
 
 ### Download and Run Setup Script
+
 ```bash
 # Once connected to your VM, run these commands:
 
@@ -133,6 +140,7 @@ nano ~/workspace/start-all-projects.sh
 ```
 
 Replace the commented lines with your actual project names:
+
 ```bash
 # Start projects
 start_project "$HOME/workspace/portfolio-island" "Portfolio-Island" 3000
@@ -144,12 +152,14 @@ start_project "$HOME/workspace/project4" "Project-4" 3003
 ## Step 5: Test Your Setup
 
 ### Start All Projects
+
 ```bash
 # Start all projects
 ~/workspace/start-all-projects.sh
 ```
 
 ### Access Your Development Environment
+
 ```bash
 # Get your VM IP and password
 cat ~/workspace/.vm-info
@@ -165,6 +175,7 @@ cat ~/workspace/.vm-info
 ## Step 6: Optimize for Your Workflow
 
 ### Set up VS Code Extensions (run in VS Code terminal on VM)
+
 ```bash
 # Install essential extensions
 code-server --install-extension ms-vscode.vscode-typescript-next
@@ -175,6 +186,7 @@ code-server --install-extension github.copilot
 ```
 
 ### Create Project Shortcuts
+
 ```bash
 # Create easy access scripts
 cat > ~/workspace/goto-portfolio.sh << 'EOF'
@@ -200,6 +212,7 @@ chmod +x ~/workspace/goto-*.sh
 ## Useful Commands for Daily Use
 
 ### VM Management
+
 ```bash
 # Stop VM (save money when not working)
 gcloud compute instances stop digiscale-dev-vm --zone=us-central1-a
@@ -212,6 +225,7 @@ gcloud compute ssh digiscale-dev-vm --zone=us-central1-a
 ```
 
 ### Project Management on VM
+
 ```bash
 # Start all projects
 ~/workspace/start-all-projects.sh
@@ -227,6 +241,7 @@ pkill -f node
 ```
 
 ### Access Your Work
+
 - **VS Code**: `http://YOUR_VM_IP:8080` (password in `~/workspace/.vm-info`)
 - **Portfolio Island**: `http://YOUR_VM_IP:3000`
 - **Project 2**: `http://YOUR_VM_IP:3001`
@@ -235,7 +250,8 @@ pkill -f node
 
 ## Troubleshooting
 
-### If VS Code Server isn't accessible:
+### If VS Code Server isn't accessible
+
 ```bash
 # Restart code-server
 sudo systemctl restart code-server@$USER
@@ -244,7 +260,8 @@ sudo systemctl restart code-server@$USER
 sudo systemctl status code-server@$USER
 ```
 
-### If projects won't start:
+### If projects won't start
+
 ```bash
 # Check if ports are free
 netstat -tuln | grep :3000
@@ -253,7 +270,8 @@ netstat -tuln | grep :3000
 cd ~/workspace/PROJECT_NAME && npm install
 ```
 
-### Check VM external IP:
+### Check VM external IP
+
 ```bash
 curl ifconfig.me
 ```

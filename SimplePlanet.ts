@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import { Materials } from './Materials';
+
 /**
  * SimplePlanet
  *
@@ -18,7 +20,8 @@ export class SimplePlanet extends THREE.Group {
   private radius: number;
   private terrainMesh!: THREE.Mesh;
   private terrainGeometry!: THREE.BufferGeometry;
-  private terrainMaterial!: THREE.MeshPhongMaterial;
+  private terrainMaterial!: THREE.MeshToonMaterial;
+  private center: THREE.Vector3 = new THREE.Vector3();
 
   // Raycasting support
   private raycaster: THREE.Raycaster = new THREE.Raycaster();
@@ -101,13 +104,10 @@ export class SimplePlanet extends THREE.Group {
 
     posAttribute.needsUpdate = true;
     geometry.computeVertexNormals();
-    geometry.computeBoundingSphere();    // Simple Phong material for compatibility and performance
-    this.terrainMaterial = new THREE.MeshPhongMaterial({
-      color: 0x2d5016,
-      emissive: 0x1a2e0a,
-      shininess: 10,
-      flatShading: false,
-    });
+    geometry.computeBoundingSphere();
+
+    // Use toon material for cel-shaded look like messenger.abeto.co
+    this.terrainMaterial = Materials.createToonMaterial(0x4a9b5c); // Vibrant green
 
     this.terrainMesh = new THREE.Mesh(geometry, this.terrainMaterial);
     this.terrainGeometry = geometry;
@@ -126,7 +126,7 @@ export class SimplePlanet extends THREE.Group {
    * Raycast from a point downward to find terrain surface
    * Returns the hit point or null
    */
-  public rayCastToSurface(point: THREE.Vector3, maxDistance: number = 100): THREE.Vector3 | null {
+  public rayCastToSurface(point: THREE.Vector3, _maxDistance: number = 100): THREE.Vector3 | null {
     this.rayOrigin.copy(point);
     this.rayDirection.set(0, -1, 0);
 
@@ -163,9 +163,15 @@ export class SimplePlanet extends THREE.Group {
    * Find a point on the surface given a world position
    * Useful for grounding objects to terrain
    */
-  public getGroundPoint(worldPosition: THREE.Vector3, searchDistance: number = this.radius * 3): THREE.Vector3 {
+  public getGroundPoint(
+    worldPosition: THREE.Vector3,
+    searchDistance: number = this.radius * 3,
+  ): THREE.Vector3 {
     // Cast from above
-    const searchPoint = worldPosition.clone().normalize().multiplyScalar(this.radius * 2);
+    const searchPoint = worldPosition
+      .clone()
+      .normalize()
+      .multiplyScalar(this.radius * 2);
     const hit = this.rayCastToSurface(searchPoint, searchDistance);
     return hit || worldPosition;
   }
@@ -189,10 +195,55 @@ export class SimplePlanet extends THREE.Group {
   }
 
   /**
+   * Sample the surface by shooting a ray along a direction.
+   * Returns the surface position and normal, falling back to an analytical sphere if no hit.
+   */
+  public sampleSurfaceByDirection(
+    direction: THREE.Vector3,
+    rayLength: number = this.radius * 2,
+  ): { position: THREE.Vector3; normal: THREE.Vector3 } {
+    const dir = direction.clone();
+    if (dir.lengthSq() === 0) {
+      dir.set(0, 1, 0);
+    }
+    dir.normalize();
+
+    const origin = dir.clone().multiplyScalar(this.radius + rayLength);
+    const ray = dir.clone().multiplyScalar(-1);
+
+    const hit = this.rayCast(origin, ray);
+
+    if (hit && hit.point) {
+      const position = hit.point.clone();
+      let normal = dir.clone();
+
+      if (hit.face) {
+        this.terrainMesh.updateMatrixWorld(true);
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(this.terrainMesh.matrixWorld);
+        normal = hit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+      }
+
+      return { position, normal };
+    }
+
+    return {
+      position: dir.clone().multiplyScalar(this.radius),
+      normal: dir.clone(),
+    };
+  }
+
+  /**
    * Get the radius of the planet
    */
   public getRadius(): number {
     return this.radius;
+  }
+
+  /**
+   * Get the center of the planet (origin in this simplified implementation)
+   */
+  public getCenter(): THREE.Vector3 {
+    return this.center;
   }
 
   /**

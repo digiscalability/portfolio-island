@@ -1,24 +1,28 @@
 # Quick Testing Guide
 
 ## 🚀 Server is Running!
-**URL:** http://localhost:5173/
+
+**URL:** <http://localhost:5173/>
 
 ---
 
 ## ✅ What Was Fixed
 
 ### 1. **Island Terrain** - No More Falling Through!
+
 - Added radius clamping to prevent deep valleys
 - Terrain now stays exterior to the sphere
 - Min radius: ~94% of base (prevents hollow interior)
 - Max radius: base + 3.8 units (limits peaks)
 
 ### 2. **Props/Assets** - GLTF Models Now Load
+
 - Fixed asset path from `'assets/models/'` to `'/assets/models/'`
 - Vite can now correctly resolve model files
 - Props like benches, stalls, workbenches should load
 
 ### 3. **Dev Server** - Clean Startup
+
 - Removed problematic predev scripts
 - Server starts without errors
 - Faster startup time
@@ -27,7 +31,7 @@
 
 ## 🎮 What to Test in Browser
 
-### Open: http://localhost:5173/
+### Open: <http://localhost:5173/>
 
 1. **Visual Check:**
    - Island should be visible and solid
@@ -54,7 +58,8 @@
 
 ## 🐛 Debug Tools
 
-### Enable Debug Mode in Browser Console:
+### Enable Debug Mode in Browser Console
+
 ```javascript
 // Enable island raycasting debug helpers
 window.__ISLAND_DEBUG = true;
@@ -63,7 +68,8 @@ window.__ISLAND_DEBUG = true;
 window.__DEBUG_PLAYER = true;
 ```
 
-### Check Console for:
+### Check Console for
+
 - GLTF model loading attempts
 - Any error messages
 - Asset load failures
@@ -73,7 +79,8 @@ window.__DEBUG_PLAYER = true;
 
 ## 📋 Quick Verification
 
-### In Browser Console, run:
+### In Browser Console, run
+
 ```javascript
 // Check player exists
 console.log(window.game?.player);
@@ -89,22 +96,26 @@ console.log(window.game?.renderer?.info);
 
 ## 🔧 If Something Doesn't Work
 
-### Terrain Issues:
+### Terrain Issues
+
 - Refresh the page (Ctrl+F5)
 - Check console for errors
 - Verify textures loading from `/assetKits/`
 
-### Player Falls Through:
+### Player Falls Through
+
 - This should be fixed, but if it happens:
 - Check console for "stickToIsland" errors
 - Verify player starting position
 
-### Props Don't Load:
+### Props Don't Load
+
 - Check browser console for 404 errors
 - Verify `/assets/models/` folder exists
 - GLTF files may not be present yet (placeholders will show)
 
-### Performance Issues:
+### Performance Issues
+
 - Lower graphics settings in game UI
 - Check FPS in browser dev tools
 - Consider reducing terrain detail
@@ -113,14 +124,16 @@ console.log(window.game?.renderer?.info);
 
 ## ✨ Expected Behavior
 
-### Good Signs:
+### Good Signs
+
 - ✅ Island renders as complete sphere
 - ✅ Player visible and moves smoothly
 - ✅ No console errors (or only asset 404s)
 - ✅ Jumping works naturally
 - ✅ Camera follows player
 
-### It's Normal If:
+### It's Normal If
+
 - Some props are still placeholder geometry (models loading async)
 - Initial load takes a few seconds
 - Some textures appear after first render
@@ -130,6 +143,7 @@ console.log(window.game?.renderer?.info);
 ## 🎯 Success Criteria
 
 The fixes are working if:
+
 1. **No falling through terrain** ✓
 2. **Player stays on surface** ✓
 3. **Movement feels natural** ✓
@@ -141,6 +155,7 @@ The fixes are working if:
 ## 📝 Report Issues
 
 If you find problems:
+
 1. Note the exact steps to reproduce
 2. Check browser console for errors
 3. Screenshot any visual glitches
@@ -148,4 +163,4 @@ If you find problems:
 
 ---
 
-**Ready to test!** Open http://localhost:5173/ and enjoy the island! 🏝️
+**Ready to test!** Open <http://localhost:5173/> and enjoy the island! 🏝️

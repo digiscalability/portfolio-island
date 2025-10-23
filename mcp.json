@@ -1,0 +1,34 @@
+{
+  "servers": {
+    "markitdown": {
+      "type": "stdio",
+      "command": "/home/node/.local/bin/uvx",
+      "args": [
+        "markitdown-mcp"
+      ],
+      "env": {
+        "PATH": "${env:PATH}:/home/node/.local/bin",
+        "MARKITDOWN_ENABLE_PLUGINS": "0"
+      }
+    },
+    "notion": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@notionhq/notion-mcp-server"
+      ],
+      "env": {
+        "NOTION_TOKEN": "${env:NOTION_TOKEN}",
+        "OPENAPI_MCP_HEADERS": "{\"Notion-Version\":\"2025-09-03\"}"
+      }
+    },
+    "notion-http": {
+      "type": "http",
+      "url": "http://127.0.0.1:3000/mcp",
+      "env": {
+        "AUTH_TOKEN": "auto-generated"
+      }
+    }
+  }
+}
