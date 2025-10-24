@@ -8,14 +8,271 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DigiScalability Life Island - Simplified</title>
     <style>
-      * { margin: 0; padding: 0; }
-      body { overflow: hidden; }
-      #game-canvas { display: block; }
+      :root {
+        --bg-gradient-start: #667eea;
+        --bg-gradient-end: #764ba2;
+        --text-light: #ffffff;
+        --text-dark: #0b1220;
+        --overlay-bg: rgba(0, 0, 0, 0.7);
+        --card-bg: rgba(255, 255, 255, 0.95);
+        --card-shadow: 0 12px 30px rgba(20, 24, 44, 0.2);
+        --primary: #5b6cff;
+        --primary-hover: #4350d8;
+        --radius: 18px;
+        --font-display: 'Bebas Neue', sans-serif;
+        --font-body: 'Patrick Hand', cursive;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        overflow: hidden;
+        font-family: var(--font-body);
+        background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
+      }
+
+      #game-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 500; /* Between UI overlay (1000) and background (0) */
+      }
+
+      /* Loading Screen */
+      #loading-screen {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+        color: var(--text-light);
+        transition: opacity 0.5s ease-out;
+      }
+
+      #loading-screen.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #loading-screen h2 {
+        font-family: var(--font-display);
+        font-size: 48px;
+        letter-spacing: 2px;
+        margin-bottom: 20px;
+      }
+
+      .loading-spinner {
+        width: 60px;
+        height: 60px;
+        border: 6px solid rgba(255, 255, 255, 0.3);
+        border-top-color: var(--text-light);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Welcome Modal */
+      #welcome-modal {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--card-bg);
+        padding: 40px;
+        border-radius: var(--radius);
+        box-shadow: var(--card-shadow);
+        z-index: 900;
+        max-width: 500px;
+        width: 90%;
+        text-align: center;
+        transition: opacity 0.3s ease-out;
+      }
+
+      #welcome-modal.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #welcome-modal h1 {
+        font-family: var(--font-display);
+        font-size: 36px;
+        color: var(--text-dark);
+        margin-bottom: 20px;
+      }
+
+      #welcome-modal p {
+        font-size: 18px;
+        color: var(--text-dark);
+        margin-bottom: 30px;
+        line-height: 1.6;
+      }
+
+      #start-button {
+        font-family: var(--font-display);
+        font-size: 24px;
+        padding: 15px 40px;
+        background: var(--primary);
+        color: var(--text-light);
+        border: none;
+        border-radius: var(--radius);
+        cursor: pointer;
+        transition: background 0.2s ease;
+        box-shadow: 0 4px 12px rgba(91, 108, 255, 0.3);
+      }
+
+      #start-button:hover {
+        background: var(--primary-hover);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(91, 108, 255, 0.4);
+      }
+
+      /* HUD Overlay */
+      #hud-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 100;
+        pointer-events: none;
+      }
+
+      #hud-overlay > * {
+        pointer-events: auto;
+      }
+
+      /* Controls Guide */
+      #controls-guide {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        background: var(--overlay-bg);
+        color: var(--text-light);
+        padding: 20px;
+        border-radius: var(--radius);
+        font-size: 16px;
+      }
+
+      #controls-guide h3 {
+        font-family: var(--font-display);
+        font-size: 24px;
+        margin-bottom: 10px;
+      }
+
+      #controls-guide ul {
+        list-style: none;
+      }
+
+      #controls-guide li {
+        margin: 5px 0;
+      }
+
+      #controls-guide kbd {
+        display: inline-block;
+        padding: 3px 8px;
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 4px;
+        font-family: monospace;
+        font-weight: bold;
+      }
+
+      /* Quest Tracker */
+      #quest-tracker {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: var(--overlay-bg);
+        color: var(--text-light);
+        padding: 20px;
+        border-radius: var(--radius);
+        min-width: 250px;
+      }
+
+      #quest-tracker h3 {
+        font-family: var(--font-display);
+        font-size: 24px;
+        margin-bottom: 10px;
+      }
+
+      #quest-tracker p {
+        font-size: 16px;
+        margin: 5px 0;
+      }
+
+      /* FPS Counter */
+      #fps-counter {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        background: var(--overlay-bg);
+        color: var(--text-light);
+        padding: 10px 15px;
+        border-radius: var(--radius);
+        font-family: monospace;
+        font-size: 14px;
+      }
     </style>
   </head>
   <body>
     <canvas id="game-canvas"></canvas>
+
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+      <h2>DIGISCALABILITY LIFE ISLAND</h2>
+      <div class="loading-spinner"></div>
+    </div>
+
+    <!-- Welcome Modal -->
+    <div id="welcome-modal" class="hidden">
+      <h1>Welcome to Life Island!</h1>
+      <p>
+        Explore a vibrant 3D world inspired by messenger.abeto.co.
+        Walk around the spherical planet, meet NPCs, and discover hidden areas.
+      </p>
+      <button id="start-button">START ADVENTURE</button>
+    </div>
+
+    <!-- HUD Overlay -->
+    <div id="hud-overlay" class="hidden">
+      <!-- FPS Counter -->
+      <div id="fps-counter">FPS: 60</div>
+
+      <!-- Quest Tracker -->
+      <div id="quest-tracker">
+        <h3>QUEST</h3>
+        <p>🎯 Explore the island</p>
+        <p>🏠 Visit 5 houses</p>
+        <p>🌳 Find the golden tree</p>
+      </div>
+
+      <!-- Controls Guide -->
+      <div id="controls-guide">
+        <h3>CONTROLS</h3>
+        <ul>
+          <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> - Move</li>
+          <li><kbd>SPACE</kbd> - Jump</li>
+          <li><kbd>SHIFT</kbd> - Run</li>
+          <li><kbd>Mouse</kbd> - Look around</li>
+        </ul>
+      </div>
+    </div>
+
     <script type="module" src="/main-simple.ts"></script>
   </body>
 </html>
-

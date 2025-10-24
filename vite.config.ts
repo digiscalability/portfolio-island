@@ -45,6 +45,17 @@ export default defineConfig({
       // Improve file watching performance
       usePolling: false,
       interval: 100,
+      // Reduce chokidar pressure by ignoring heavy, static assets and build output
+      ignored: [
+        '**/.git/**',
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/assetKits/**',
+        '**/assets/**/*.gltf',
+        '**/assets/**/*.glb',
+        '**/assets/**/*.bin',
+        '**/assets/**/*.fbx',
+      ],
     },
     fs: {
       // allow serving files from these directories (useful for local assetKits)

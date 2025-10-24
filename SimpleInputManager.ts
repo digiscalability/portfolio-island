@@ -4,18 +4,6 @@
  * Simplified input handling for keyboard, mouse, and touch
  * Replaces complex InputManager.ts with focused input gathering
  */
-export type InputFrame = {
-  time: number;
-  movement: { forward: number; strafe: number };
-  camera: { deltaX: number; deltaY: number };
-  jump: boolean;
-};
-
-export type InputRecording = {
-  frames: InputFrame[];
-  duration: number;
-};
-
 export class SimpleInputManager {
   private keys: Set<string> = new Set();
   private mouseInput: { x: number; y: number; lastX: number; lastY: number } = {
@@ -24,6 +12,7 @@ export class SimpleInputManager {
     lastX: 0,
     lastY: 0,
   };
+  private mouseDelta: { x: number; y: number } = { x: 0, y: 0 };
   private touchInput: { x: number; y: number; lastX: number; lastY: number } = {
     x: 0,
     y: 0,
@@ -32,13 +21,7 @@ export class SimpleInputManager {
   };
 
   private isPointerLocked: boolean = false;
-
-  private recording: boolean = false;
-  private recordingStart: number = 0;
-  private recordedFrames: InputFrame[] = [];
-  private lastMovement: { forward: number; strafe: number } = { forward: 0, strafe: 0 };
-  private lastCamera: { deltaX: number; deltaY: number } = { deltaX: 0, deltaY: 0 };
-  private lastJump: boolean = false;
+  private canvas?: HTMLCanvasElement;
 
   constructor() {
     this.setupKeyboardListeners();
@@ -52,6 +35,10 @@ export class SimpleInputManager {
   private setupKeyboardListeners(): void {
     document.addEventListener('keydown', (e) => {
       this.keys.add(e.key.toLowerCase());
+      // Debug: Log first few key presses
+      if (this.keys.size <= 3) {
+        console.log('⌨️ Key pressed:', e.key.toLowerCase());
+      }
     });
 
     document.addEventListener('keyup', (e) => {
@@ -64,20 +51,24 @@ export class SimpleInputManager {
    */
   private setupMouseListeners(): void {
     document.addEventListener('mousemove', (e) => {
-      this.mouseInput.lastX = this.mouseInput.x;
-      this.mouseInput.lastY = this.mouseInput.y;
-      this.mouseInput.x = e.clientX;
-      this.mouseInput.y = e.clientY;
-    });
-
-    document.addEventListener('click', () => {
-      if (!this.isPointerLocked && document.pointerLockElement !== document.body) {
-        document.body.requestPointerLock?.();
+      if (this.isPointerLocked) {
+        // When locked we can rely on relative movement provided by the browser
+        this.mouseDelta.x += e.movementX;
+        this.mouseDelta.y += e.movementY;
+      } else {
+        this.mouseInput.lastX = this.mouseInput.x;
+        this.mouseInput.lastY = this.mouseInput.y;
+        this.mouseInput.x = e.clientX;
+        this.mouseInput.y = e.clientY;
       }
     });
 
     document.addEventListener('pointerlockchange', () => {
-      this.isPointerLocked = document.pointerLockElement === document.body;
+      this.isPointerLocked = document.pointerLockElement === this.canvas;
+      if (!this.isPointerLocked) {
+        this.mouseDelta.x = 0;
+        this.mouseDelta.y = 0;
+      }
     });
   }
 
@@ -103,8 +94,14 @@ export class SimpleInputManager {
   /**
    * Attach to canvas for mouse controls
    */
-  public attachToCanvas(_canvas: HTMLCanvasElement): void {
-    // Canvas reference not currently used in this simplified manager
+  public attachToCanvas(canvas: HTMLCanvasElement): void {
+    this.canvas = canvas;
+
+    canvas.addEventListener('click', () => {
+      if (document.pointerLockElement !== canvas) {
+        canvas.requestPointerLock?.();
+      }
+    });
   }
 
   /**
@@ -130,7 +127,6 @@ export class SimpleInputManager {
     if (this.isKeyPressed('a') || this.isKeyPressed('arrowleft')) strafe -= 1;
     if (this.isKeyPressed('d') || this.isKeyPressed('arrowright')) strafe += 1;
 
-    this.lastMovement = { forward, strafe };
     return { forward, strafe };
   }
 
@@ -138,10 +134,7 @@ export class SimpleInputManager {
    * Check if jump is requested (space or touch tap)
    */
   public getJumpInput(): boolean {
-    const jump = this.isKeyPressed(' ') || this.isKeyPressed('space');
-    this.lastJump = jump;
-    this.recordFrame();
-    return jump;
+    return this.isKeyPressed(' ') || this.isKeyPressed('space');
   }
 
   /**
@@ -149,25 +142,20 @@ export class SimpleInputManager {
    */
   public getCameraInput(): { deltaX: number; deltaY: number } {
     if (this.isPointerLocked) {
-      // Use accumulated mouse movement (mouse events provide event.movementX/Y)
-      // For now, return relative to last frame
-      const deltaX = this.mouseInput.x - this.mouseInput.lastX;
-      const deltaY = this.mouseInput.y - this.mouseInput.lastY;
-      const value = { deltaX: deltaX * 0.005, deltaY: deltaY * 0.005 };
-      this.lastCamera = value;
-      return value;
+      const deltaX = this.mouseDelta.x;
+      const deltaY = this.mouseDelta.y;
+      this.mouseDelta.x = 0;
+      this.mouseDelta.y = 0;
+      // Return raw mouse delta - OrbitCamera applies its own sensitivity multiplier
+      return { deltaX, deltaY };
     } else if (this.touchInput.x !== 0) {
       // Use touch delta
       const deltaX = this.touchInput.x - this.touchInput.lastX;
       const deltaY = this.touchInput.y - this.touchInput.lastY;
-      const value = { deltaX: deltaX * 0.01, deltaY: deltaY * 0.01 };
-      this.lastCamera = value;
-      return value;
+      return { deltaX: deltaX * 0.01, deltaY: deltaY * 0.01 };
     }
 
-    const neutral = { deltaX: 0, deltaY: 0 };
-    this.lastCamera = neutral;
-    return neutral;
+    return { deltaX: 0, deltaY: 0 };
   }
 
   /**
@@ -190,8 +178,8 @@ export class SimpleInputManager {
   public reset(): void {
     this.keys.clear();
     this.mouseInput = { x: 0, y: 0, lastX: 0, lastY: 0 };
+    this.mouseDelta = { x: 0, y: 0 };
     this.touchInput = { x: 0, y: 0, lastX: 0, lastY: 0 };
-    this.clearRecording();
   }
 
   /**
@@ -199,86 +187,5 @@ export class SimpleInputManager {
    */
   public dispose(): void {
     this.reset();
-  }
-
-  public startRecording(): void {
-    this.recording = true;
-    this.recordingStart = this.now();
-    this.recordedFrames = [];
-  }
-
-  public stopRecording(): InputRecording | null {
-    if (!this.recording) {
-      return this.getRecording();
-    }
-    this.recording = false;
-    return this.getRecording();
-  }
-
-  public isRecording(): boolean {
-    return this.recording;
-  }
-
-  public clearRecording(): void {
-    this.recordedFrames = [];
-    this.recordingStart = 0;
-  }
-
-  public getRecording(): InputRecording | null {
-    if (this.recordedFrames.length === 0) {
-      return null;
-    }
-    const duration = this.recordedFrames[this.recordedFrames.length - 1]?.time ?? 0;
-    return {
-      frames: [...this.recordedFrames],
-      duration,
-    };
-  }
-
-  public exportRecording(): string | null {
-    const recording = this.getRecording();
-    if (!recording) return null;
-    return JSON.stringify(recording, null, 2);
-  }
-
-  public importRecording(json: string): InputRecording {
-    const data = JSON.parse(json) as InputRecording;
-    this.recordedFrames = Array.isArray(data.frames)
-      ? data.frames.map((frame) => ({
-          time: frame.time,
-          movement: { forward: frame.movement.forward, strafe: frame.movement.strafe },
-          camera: { deltaX: frame.camera.deltaX, deltaY: frame.camera.deltaY },
-          jump: frame.jump,
-        }))
-      : [];
-    this.recordingStart = 0;
-    this.recording = false;
-    return {
-      frames: [...this.recordedFrames],
-      duration: data.duration ?? this.recordedFrames.at(-1)?.time ?? 0,
-    };
-  }
-
-  private recordFrame(): void {
-    if (!this.recording) return;
-    const now = this.now();
-    if (this.recordingStart === 0) {
-      this.recordingStart = now;
-    }
-    const elapsed = (now - this.recordingStart) / 1000;
-    const frame: InputFrame = {
-      time: elapsed,
-      movement: { ...this.lastMovement },
-      camera: { ...this.lastCamera },
-      jump: this.lastJump,
-    };
-    this.recordedFrames.push(frame);
-  }
-
-  private now(): number {
-    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
-      return performance.now();
-    }
-    return Date.now();
   }
 }
