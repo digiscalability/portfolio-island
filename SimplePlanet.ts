@@ -21,7 +21,6 @@ export class SimplePlanet extends THREE.Group {
   private terrainMesh!: THREE.Mesh;
   private terrainGeometry!: THREE.BufferGeometry;
   private terrainMaterial!: THREE.MeshToonMaterial;
-  private center: THREE.Vector3 = new THREE.Vector3();
 
   // Raycasting support
   private raycaster: THREE.Raycaster = new THREE.Raycaster();
@@ -35,6 +34,7 @@ export class SimplePlanet extends THREE.Group {
   constructor(radius: number = 18) {
     super();
     this.name = 'SimplePlanet';
+    this.userData.type = 'planet'; // Mark for debugging
     this.radius = radius;
 
     // Create ready promise
@@ -95,8 +95,10 @@ export class SimplePlanet extends THREE.Group {
 
       noise /= maxAmplitude;
 
-      // Apply displacement
-      const displacement = this.radius * (0.15 + noise * 0.1);
+      // Center noise around zero so terrain raises and lowers around the base radius
+      const centeredNoise = noise * 2 - 1;
+      const displacement = this.radius + centeredNoise * this.radius * 0.12;
+
       posArray[i] = v.x * displacement;
       posArray[i + 1] = v.y * displacement;
       posArray[i + 2] = v.z * displacement;
@@ -195,55 +197,10 @@ export class SimplePlanet extends THREE.Group {
   }
 
   /**
-   * Sample the surface by shooting a ray along a direction.
-   * Returns the surface position and normal, falling back to an analytical sphere if no hit.
-   */
-  public sampleSurfaceByDirection(
-    direction: THREE.Vector3,
-    rayLength: number = this.radius * 2,
-  ): { position: THREE.Vector3; normal: THREE.Vector3 } {
-    const dir = direction.clone();
-    if (dir.lengthSq() === 0) {
-      dir.set(0, 1, 0);
-    }
-    dir.normalize();
-
-    const origin = dir.clone().multiplyScalar(this.radius + rayLength);
-    const ray = dir.clone().multiplyScalar(-1);
-
-    const hit = this.rayCast(origin, ray);
-
-    if (hit && hit.point) {
-      const position = hit.point.clone();
-      let normal = dir.clone();
-
-      if (hit.face) {
-        this.terrainMesh.updateMatrixWorld(true);
-        const normalMatrix = new THREE.Matrix3().getNormalMatrix(this.terrainMesh.matrixWorld);
-        normal = hit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
-      }
-
-      return { position, normal };
-    }
-
-    return {
-      position: dir.clone().multiplyScalar(this.radius),
-      normal: dir.clone(),
-    };
-  }
-
-  /**
    * Get the radius of the planet
    */
   public getRadius(): number {
     return this.radius;
-  }
-
-  /**
-   * Get the center of the planet (origin in this simplified implementation)
-   */
-  public getCenter(): THREE.Vector3 {
-    return this.center;
   }
 
   /**

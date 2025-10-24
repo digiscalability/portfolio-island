@@ -1,53 +1,43 @@
 import * as THREE from 'three';
 
 import { Materials } from './Materials';
-import type { SimplePlanet } from './SimplePlanet';
+import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
 
 /**
  * SimplePlayer
  *
- * A simplified player controller replacing the 834-line Player.ts
- * Following Messenger's simple character movement pattern.
- *
+ * A simplified player controller for flat ground
  * Features:
  * - Simple position and velocity
- * - Gravity and ground sticking
- * - Animation state management
- * - No complex quaternion tracking
+ * - Gravity and ground sticking (flat floor)
+ * - WASD/arrow key movement
+ * - Spacebar jump
  */
 export class SimplePlayer extends THREE.Group {
-  private readonly mesh: THREE.Group;
-  private readonly planet: SimplePlanet;
+  private mesh: THREE.Group;
+  private playerPosition: THREE.Vector3 = new THREE.Vector3(0, 0.7, 0);
+  private velocity: THREE.Vector3 = new THREE.Vector3();
+  private acceleration: THREE.Vector3 = new THREE.Vector3();
 
-  private readonly playerPosition: THREE.Vector3 = new THREE.Vector3();
-  private readonly velocity: THREE.Vector3 = new THREE.Vector3();
-  private readonly acceleration: THREE.Vector3 = new THREE.Vector3();
+  private yaw: number = 0; // rotation around Y axis
 
-  private readonly cameraForward: THREE.Vector3 = new THREE.Vector3(0, 0, -1);
-  private readonly cameraRight: THREE.Vector3 = new THREE.Vector3(1, 0, 0);
-  private readonly facingDirection: THREE.Vector3 = new THREE.Vector3(0, 0, -1);
-
-  private readonly moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
-  private wantJump: boolean = false;
-
-  private yaw: number = 0; // rotation around local up axis
-
-  private readonly speed: number = 15; // movement speed
-  private readonly jumpForce: number = 8;
-  private readonly gravityStrength: number = 25; // gravitational acceleration magnitude
-  private readonly movementDamping: number = 0.9;
+  private speed: number = 18; // movement speed (faster)
+  private jumpForce: number = 8;
+  private gravityStrength: number = 25; // gravitational acceleration
 
   private isGrounded: boolean = false;
-  private readonly groundStickThreshold: number = 0.5;
+  private groundLevel: number = 0; // Y position of ground
 
-  private readonly lastGravity: THREE.Vector3 = new THREE.Vector3();
-  private debugTelemetryTimer: number = 0;
-  private readonly debugTelemetryInterval: number = 0.25;
+  private moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
+  private wantJump: boolean = false;
 
-  constructor(planet: SimplePlanet, startPosition?: THREE.Vector3) {
+  // GLTF model support
+  private gltfModel: THREE.Group | null = null;
+  private animationMixer: THREE.AnimationMixer | null = null;
+
+  constructor() {
     super();
     this.name = 'SimplePlayer';
-    this.planet = planet;
 
     // Create a simple capsule mesh (cylinder + spheres for head/feet)
     const group = new THREE.Group();
@@ -84,243 +74,197 @@ export class SimplePlayer extends THREE.Group {
     this.mesh = group;
     this.add(this.mesh);
 
-    // Start position
-    if (startPosition) {
-      this.playerPosition.copy(startPosition);
-    } else {
-      this.playerPosition.set(0, planet.getRadius() + 2, 0);
-    }
-
+    // Start at center with player height above ground
+    this.playerPosition.set(0, 0.7, 0);
+    this.isGrounded = true;
     this.updateWorldMatrix();
+
+    // Try to load GLTF character model asynchronously
+    this.loadGLTFCharacter();
+  }
+
+  /**
+   * Attempt to load GLTF character model (async, non-blocking)
+   */
+  private async loadGLTFCharacter(): Promise<void> {
+    try {
+      console.log('🎭 Loading GLTF character model...');
+
+      const gltfResult = await loadGLTFWithFallbacks('/assets/models/player.gltf', {
+        candidates: [
+          '/assets/models/Superhero_Male.gltf',
+          '/assets/models/Superhero_Female.gltf',
+          '/assetKits/Universal Base Characters[Standard]/Base Characters/Unreal Engine/Superhero_Male.gltf',
+          '/assetKits/Universal Base Characters[Standard]/Base Characters/Unreal Engine/Superhero_Female.gltf',
+          '/assetKits/Universal Base Characters[Standard]/glTF/Superhero_Male.gltf',
+          '/assetKits/Universal Base Characters[Standard]/glTF/Superhero_Female.gltf',
+        ],
+        scale: 0.8, // Scale to appropriate size for the scene
+        overrides: {
+          envMapIntensity: 0.7,
+          roughnessScale: 1.0,
+        },
+      });
+
+      if (gltfResult) {
+        // Remove the simple mesh
+        this.remove(this.mesh);
+
+        // Add the GLTF model
+        this.gltfModel = gltfResult.scene;
+        this.add(this.gltfModel);
+
+        // Setup animations
+        this.animationMixer = setupModelAnimation(gltfResult.scene, gltfResult.animations, 'idle');
+
+        // Enable shadows
+        this.gltfModel.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) {
+            obj.castShadow = true;
+            obj.receiveShadow = true;
+          }
+        });
+
+        console.log(`✅ Loaded GLTF character from: ${gltfResult.loadedUrl}`);
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to load GLTF character, keeping simple mesh:', error);
+      // Keep the simple mesh if GLTF loading fails
+    }
   }
 
   /**
    * Update player physics and position
    */
   public update(deltaTime: number): void {
-    if (deltaTime <= 0) {
-      return;
-    }
+    if (deltaTime <= 0) return;
 
     // Clamp delta time to prevent large jumps
-    deltaTime = Math.min(deltaTime, 0.02);
+    const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.02));
 
-    // Reset accumulated forces
-    this.acceleration.set(0, 0, 0);
+    // Apply gravity
+    this.acceleration.set(0, -this.gravityStrength, 0);
+    this.velocity.addScaledVector(this.acceleration, safeDeltaTime);
 
-    // Apply core forces & controls
-    this.applyGravity();
-    this.applyMovement(deltaTime);
+    // Clamp velocity to prevent infinite speeds
+    const maxVelocity = 50;
+    if (this.velocity.length() > maxVelocity) {
+      this.velocity.normalize().multiplyScalar(maxVelocity);
+    }
 
-    if (this.wantJump && this.isGrounded) {
-      this.performJump();
+    // Apply movement input or stop immediately if no input
+    if (this.moveInput && this.moveInput.length() > 0.01) {
+      this.applyMovement(safeDeltaTime);
     } else {
+      // No input: stop immediately with zero inertia
+      this.stopMovement();
+    }
+
+    // Integrate position
+    this.playerPosition.addScaledVector(this.velocity, safeDeltaTime);
+
+    // Clamp player position to reasonable bounds
+    const maxBounds = 500;
+    this.playerPosition.x = Math.max(-maxBounds, Math.min(maxBounds, this.playerPosition.x));
+    this.playerPosition.z = Math.max(-maxBounds, Math.min(maxBounds, this.playerPosition.z));
+
+    // Ground detection and sticking
+    this.updateGroundState();
+
+    // Handle jump
+    if (this.wantJump && this.isGrounded) {
+      this.velocity.y = this.jumpForce;
+      this.isGrounded = false;
       this.wantJump = false;
     }
 
-    // Integrate motion
-    this.velocity.addScaledVector(this.acceleration, deltaTime);
-    this.playerPosition.addScaledVector(this.velocity, deltaTime);
+    // Update GLTF animations
+    if (this.animationMixer) {
+      this.animationMixer.update(safeDeltaTime);
+    }
 
-    // Ground correction & orientation update
-    this.updateGroundState();
+    // Update mesh position
     this.updateWorldMatrix();
-
-    this.emitDebugTelemetry(deltaTime);
   }
 
   /**
    * Check ground state and apply ground sticking
    */
   private updateGroundState(): void {
-    const origin = this.playerPosition.clone();
-    const direction = this.planet.getCenter().clone().sub(origin);
+    const playerHeight = 0.7; // distance from ground to player center
 
-    if (direction.lengthSq() === 0) {
-      direction.set(0, -1, 0);
-    }
-
-    direction.normalize();
-
-    const hit = this.planet.rayCast(origin, direction);
-
-    if (hit && hit.distance <= this.groundStickThreshold + 0.1) {
+    if (this.playerPosition.y <= this.groundLevel + playerHeight) {
       if (!this.isGrounded) {
+        // Just landed
         this.isGrounded = true;
+        this.velocity.y = 0; // Kill velocity
       }
 
-      const surfacePoint = this.planet.getGroundPoint(this.playerPosition);
-      this.playerPosition.copy(surfacePoint);
-
-      const up = this.getUpVector();
-      const radialVelocity = this.velocity.dot(up);
-
-      if (radialVelocity < 0) {
-        this.velocity.addScaledVector(up, -radialVelocity);
-      }
+      // Stick to ground
+      this.playerPosition.y = this.groundLevel + playerHeight;
     } else {
       this.isGrounded = false;
     }
   }
 
   /**
-   * Apply movement input
+   * Apply movement input (input already in world space from GameScene)
    */
   private applyMovement(_deltaTime: number): void {
-    const up = this.getUpVector();
+    // If no input, stop immediately
+    if (!this.moveInput || this.moveInput.length() === 0) {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+      return;
+    }
 
-    const forward = this.projectOntoTangent(this.cameraForward, up);
-    const right = this.projectOntoTangent(this.cameraRight, up);
+    // Safety check: ensure move input is finite
+    if (!Number.isFinite(this.moveInput.x) || !Number.isFinite(this.moveInput.z)) {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+      return;
+    }
 
-    const moveDir = new THREE.Vector3();
-    moveDir.addScaledVector(forward, this.moveInput.z);
-    moveDir.addScaledVector(right, this.moveInput.x);
+    // moveInput is already in world space (from GameScene.setPlayerMovement)
+    // Just apply speed smoothly for better feel
+    const moveDir = this.moveInput.clone();
 
-    if (moveDir.lengthSq() > 0) {
-      moveDir.normalize().multiplyScalar(this.speed);
-
-      const radialVelocity = up.clone().multiplyScalar(this.velocity.dot(up));
-      this.velocity.copy(radialVelocity).add(moveDir);
-
-      this.facingDirection.copy(moveDir).normalize();
-      this.updateYawFromFacing(up);
+    // Normalize safely
+    const moveLength = moveDir.length();
+    if (moveLength > 0.01) {
+      moveDir.normalize();
     } else {
-      const radialVelocity = up.clone().multiplyScalar(this.velocity.dot(up));
-      const tangentialVelocity = this.velocity
-        .clone()
-        .sub(radialVelocity)
-        .multiplyScalar(this.movementDamping);
-      this.velocity.copy(radialVelocity).add(tangentialVelocity);
-    }
-  }
-
-  private applyGravity(): void {
-    const gravityVector = this.planet.getCenter().clone().sub(this.playerPosition);
-
-    if (gravityVector.lengthSq() === 0) {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
       return;
     }
 
-    gravityVector.normalize().multiplyScalar(this.gravityStrength);
-    this.acceleration.copy(gravityVector);
-    this.lastGravity.copy(gravityVector);
+    // Target horizontal velocity
+    const targetVX = moveDir.x * this.speed;
+    const targetVZ = moveDir.z * this.speed;
+
+    // Smooth acceleration towards target (instant stop handled elsewhere)
+    const accelRate = 12; // units per second to blend towards target
+    const t = Math.min(1, accelRate * Math.max(0.001, _deltaTime));
+    this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, targetVX, t);
+    this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, targetVZ, t);
   }
 
-  private performJump(): void {
-    const up = this.getUpVector();
-    const radialVelocity = this.velocity.dot(up);
-
-    if (radialVelocity < 0) {
-      this.velocity.addScaledVector(up, -radialVelocity);
-    }
-
-    this.velocity.addScaledVector(up, this.jumpForce);
-    this.isGrounded = false;
-    this.wantJump = false;
-  }
-
-  private getUpVector(): THREE.Vector3 {
-    const up = this.playerPosition.clone().sub(this.planet.getCenter());
-    if (up.lengthSq() === 0) {
-      up.set(0, 1, 0);
-    }
-    return up.normalize();
-  }
-
-  private projectOntoTangent(vector: THREE.Vector3, up: THREE.Vector3): THREE.Vector3 {
-    const projected = vector.clone().sub(up.clone().multiplyScalar(vector.dot(up)));
-    if (projected.lengthSq() === 0) {
-      return projected;
-    }
-    return projected.normalize();
-  }
-
-  private updateYawFromFacing(up: THREE.Vector3): void {
-    const referenceForward = this.projectOntoTangent(new THREE.Vector3(0, 0, -1), up);
-    const facing = this.projectOntoTangent(this.facingDirection, up);
-
-    if (referenceForward.lengthSq() === 0 || facing.lengthSq() === 0) {
-      return;
-    }
-
-    referenceForward.normalize();
-    facing.normalize();
-
-    const referenceRight = new THREE.Vector3().crossVectors(up, referenceForward).normalize();
-    this.yaw = Math.atan2(facing.dot(referenceRight), facing.dot(referenceForward));
-  }
-
-  private emitDebugTelemetry(deltaTime: number): void {
-    if (typeof window === 'undefined') return;
-    if (!window.__DEBUG_PLAYER && !window.__LOGGER) return;
-
-    this.debugTelemetryTimer += deltaTime;
-    if (this.debugTelemetryTimer < this.debugTelemetryInterval) {
-      return;
-    }
-
-    this.debugTelemetryTimer = 0;
-
-    const position = this.getPosition();
-    const velocity = this.velocity.clone();
-    const up = this.getUpVector();
-
-    const formatVec = (vec: THREE.Vector3) =>
-      [vec.x, vec.y, vec.z].map((v) => Number(v.toFixed(3)));
-
-    console.debug('SimplePlayer::state', {
-      position: formatVec(position),
-      velocity: formatVec(velocity),
-      speed: Number(velocity.length().toFixed(3)),
-      up: formatVec(up),
-      gravity: formatVec(this.lastGravity),
-    });
-
-    window.__LOGGER?.updateMetrics({
-      sceneObjects: this.planet.children.length,
-    });
+  /**
+   * Stop movement immediately
+   */
+  private stopMovement(): void {
+    this.velocity.x = 0;
+    this.velocity.z = 0;
+    this.moveInput.set(0, 0, 0);
   }
 
   /**
    * Set movement input (-1 to 1)
    */
-  public setMovement(
-    forward: number,
-    strafe: number,
-    cameraForward?: THREE.Vector3,
-    cameraRight?: THREE.Vector3,
-  ): void {
+  public setMovement(forward: number, strafe: number): void {
     this.moveInput.set(strafe, 0, forward);
     this.moveInput.clampLength(0, 1);
-
-    if (cameraForward) {
-      this.cameraForward.copy(cameraForward).normalize();
-    }
-
-    if (cameraRight) {
-      this.cameraRight.copy(cameraRight).normalize();
-    }
-
-    if (this.moveInput.lengthSq() > 0) {
-      const up = this.getUpVector();
-      const forwardVec = this.projectOntoTangent(this.cameraForward, up);
-      const rightVec = this.projectOntoTangent(this.cameraRight, up);
-
-      const desiredFacing = new THREE.Vector3();
-      desiredFacing.addScaledVector(forwardVec, this.moveInput.z);
-      desiredFacing.addScaledVector(rightVec, this.moveInput.x);
-
-      if (desiredFacing.lengthSq() > 0) {
-        desiredFacing.normalize();
-        this.facingDirection.copy(desiredFacing);
-        this.updateYawFromFacing(up);
-      }
-    }
-  }
-
-  public setCameraFrame(forward: THREE.Vector3, right: THREE.Vector3): void {
-    this.cameraForward.copy(forward).normalize();
-    this.cameraRight.copy(right).normalize();
   }
 
   /**
@@ -337,56 +281,27 @@ export class SimplePlayer extends THREE.Group {
    */
   public setRotation(yaw: number, _pitch?: number): void {
     this.yaw = yaw;
-
-    const up = this.getUpVector();
-    let baseForward = this.projectOntoTangent(new THREE.Vector3(0, 0, -1), up);
-
-    if (baseForward.lengthSq() === 0) {
-      baseForward = this.projectOntoTangent(new THREE.Vector3(1, 0, 0), up);
-    }
-
-    const baseRight = new THREE.Vector3().crossVectors(up, baseForward).normalize();
-
-    const rotatedForward = baseForward
-      .clone()
-      .multiplyScalar(Math.cos(yaw))
-      .add(baseRight.clone().multiplyScalar(Math.sin(yaw)));
-
-    if (rotatedForward.lengthSq() > 0) {
-      this.facingDirection.copy(rotatedForward.normalize());
-    }
   }
 
   /**
    * Get player world position
    */
   public getWorldPosition(): THREE.Vector3 {
-    return this.getPosition();
-  }
-
-  /**
-   * Get player position reference
-   */
-  public getPosition(): THREE.Vector3 {
     return this.playerPosition.clone();
   }
 
   /**
-   * Get player forward direction aligned with the planet surface
+   * Set player world position (for collision resolution)
    */
-  public getForwardDirection(): THREE.Vector3 {
-    const forward = this.projectOntoTangent(this.facingDirection, this.getUpVector());
-    if (forward.lengthSq() === 0) {
-      return new THREE.Vector3(0, 0, -1);
-    }
-    return forward.normalize();
+  public setWorldPosition(position: THREE.Vector3): void {
+    this.playerPosition.copy(position);
   }
 
   /**
-   * Expose the character mesh for compatibility with full systems
+   * Get player forward direction
    */
-  public getMesh(): THREE.Group {
-    return this.mesh;
+  public getForwardDirection(): THREE.Vector3 {
+    return new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
   }
 
   /**
@@ -407,36 +322,28 @@ export class SimplePlayer extends THREE.Group {
    * Update world matrix from position
    */
   public updateWorldMatrix(): void {
-    const up = this.getUpVector();
-    let forward = this.projectOntoTangent(this.facingDirection, up);
-
-    if (forward.lengthSq() === 0) {
-      forward = this.projectOntoTangent(new THREE.Vector3(0, 0, -1), up);
-    }
-
-    if (forward.lengthSq() === 0) {
-      forward = this.projectOntoTangent(new THREE.Vector3(1, 0, 0), up);
-    }
-
-    forward.normalize();
-
-    const right = new THREE.Vector3().crossVectors(forward, up).normalize();
-    const correctedForward = new THREE.Vector3().crossVectors(up, right).normalize();
-
-    const matrix = new THREE.Matrix4();
-    matrix.makeBasis(right, up, correctedForward);
-
-    const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
-
-    this.mesh.quaternion.copy(quaternion);
-    this.mesh.position.copy(this.playerPosition);
-    this.mesh.updateMatrixWorld();
+    this.position.copy(this.playerPosition);
+    this.rotation.order = 'YXZ';
+    this.rotation.y = this.yaw;
+    this.rotation.x = 0;
+    this.updateMatrix();
+    this.updateMatrixWorld(true);
   }
 
   /**
    * Dispose resources
    */
   public dispose(): void {
+    // Dispose animation mixer
+    if (this.animationMixer) {
+      try {
+        this.animationMixer.stopAllAction();
+      } catch {
+        // Ignore cleanup issues
+      }
+      this.animationMixer = null;
+    }
+
     this.traverse((obj: THREE.Object3D) => {
       if (obj instanceof THREE.Mesh) {
         if (obj.geometry) obj.geometry.dispose();

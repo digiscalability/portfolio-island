@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { Materials } from './Materials';
+import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 
 export class Mailbox {
   public mesh: THREE.Group;
@@ -10,38 +11,80 @@ export class Mailbox {
   public bubbleText?: string;
 
   constructor() {
-    this.mesh = this.createMailbox();
+    this.mesh = new THREE.Group();
+    this.createMailbox();
   }
 
-  private createMailbox(): THREE.Group {
+  private async createMailbox(): Promise<void> {
+    try {
+      // Try to load a GLTF mailbox model first, with fallbacks
+      const gltfResult = await loadGLTFWithFallbacks('/assets/models/mailbox.gltf', {
+        candidates: [
+          '/assets/models/lamp.gltf', // Use lamp as alternate prop
+          '/assets/models/bench.gltf', // Use bench as alternate prop
+        ],
+        scale: 1.2,
+        overrides: {
+          envMapIntensity: 0.8, // Nice lighting for mailbox
+        },
+      });
+
+      if (gltfResult) {
+        // Position the GLTF model properly
+        gltfResult.scene.position.y = 0; // Place on ground
+        this.mesh.add(gltfResult.scene);
+        console.log('✅ Mailbox: Loaded GLTF model');
+        return;
+      }
+    } catch (error) {
+      console.warn('⚠️ Mailbox: Could not load GLTF model, using fallback geometry:', error);
+    }
+
+    // Fallback: Create simple mailbox geometry if GLTF fails
+    const fallbackMailbox = this.createSimpleMailbox();
+    this.mesh.add(fallbackMailbox);
+  }
+
+  private createSimpleMailbox(): THREE.Group {
     const group = new THREE.Group();
 
     // Post (cylinder)
     const postGeometry = new THREE.CylinderGeometry(0.1, 0.1, 1.5, 8);
-  const post = new THREE.Mesh(postGeometry, Materials.createPBRMaterial({ color: 0x654321, roughness: 0.7 }));
+    const post = new THREE.Mesh(
+      postGeometry,
+      Materials.createPBRMaterial({ color: 0x654321, roughness: 0.7 }),
+    );
     post.position.y = 0.75;
     post.castShadow = true;
     group.add(post);
 
     // Box (main mailbox)
-  const boxGeometry = new THREE.BoxGeometry(0.8, 0.5, 0.4);
-  const boxMaterial = Materials.createMailboxStandard();
-  const box = new THREE.Mesh(boxGeometry, boxMaterial);
+    const boxGeometry = new THREE.BoxGeometry(0.8, 0.5, 0.4);
+    const boxMaterial = Materials.createMailboxStandard();
+    const box = new THREE.Mesh(boxGeometry, boxMaterial);
     box.position.y = 1.7;
     box.castShadow = true;
     box.receiveShadow = true;
     group.add(box);
 
-  // small white decal plate on front for legibility (slightly inset)
-  const plateGeo = new THREE.PlaneGeometry(0.42, 0.18);
-  const plateMat = Materials.createStandardMaterial({ color: 0xffffff, metalness: 0, roughness: 0.9, envMapIntensity: 0 });
-  const plate = new THREE.Mesh(plateGeo, plateMat);
-  plate.position.set(0, 1.7, 0.21);
-  group.add(plate);
+    // small white decal plate on front for legibility (slightly inset)
+    const plateGeo = new THREE.PlaneGeometry(0.42, 0.18);
+    const plateMat = Materials.createStandardMaterial({
+      color: 0xffffff,
+      metalness: 0,
+      roughness: 0.9,
+      envMapIntensity: 0,
+    });
+    const plate = new THREE.Mesh(plateGeo, plateMat);
+    plate.position.set(0, 1.7, 0.21);
+    group.add(plate);
 
     // Flag (small box)
-  const flagGeometry = new THREE.BoxGeometry(0.3, 0.1, 0.05);
-  const flag = new THREE.Mesh(flagGeometry, Materials.createPBRMaterial({ color: 0xff0000, roughness: 0.4 }));
+    const flagGeometry = new THREE.BoxGeometry(0.3, 0.1, 0.05);
+    const flag = new THREE.Mesh(
+      flagGeometry,
+      Materials.createPBRMaterial({ color: 0xff0000, roughness: 0.4 }),
+    );
     flag.position.set(0.5, 1.8, 0);
     group.add(flag);
 

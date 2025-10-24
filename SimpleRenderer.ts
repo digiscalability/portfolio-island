@@ -17,7 +17,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 export class SimpleRenderer {
   private renderer: THREE.WebGLRenderer;
   private composer?: EffectComposer;
-  private postProcessingEnabled: boolean = true;
+  private postProcessingEnabled: boolean = false;
 
   private scene?: THREE.Scene;
   private camera?: THREE.Camera;
@@ -32,7 +32,7 @@ export class SimpleRenderer {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: true,
-      alpha: true,
+      alpha: false,
       powerPreference: 'high-performance',
       precision: 'highp',
     });
@@ -45,6 +45,18 @@ export class SimpleRenderer {
     this.renderer.toneMappingExposure = 1;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // Limit shadow resolution for better performance on mobile
+    this.renderer.shadowMap.autoUpdate = true;
+
+    // Set a clear background color for debugging
+    this.renderer.setClearColor(0x87ceeb, 1); // Sky blue
+
+    console.log('🎨 SimpleRenderer configured:', {
+      size: [window.innerWidth, window.innerHeight],
+      pixelRatio: this.renderer.getPixelRatio(),
+      clearColor: '#' + this.renderer.getClearColor(new THREE.Color()).getHexString(),
+      shadowMap: this.renderer.shadowMap.enabled,
+    });
 
     // Responsive resize
     window.addEventListener('resize', () => this.onWindowResize());
@@ -66,9 +78,9 @@ export class SimpleRenderer {
 
     // Bloom effect
     const bloomPass = new BloomPass(
-      1.0,    // strength
-      25,     // radius
-      4.0     // threshold
+      1.0, // strength
+      25, // radius
+      4.0, // threshold
     );
     this.composer.addPass(bloomPass);
 
@@ -80,7 +92,11 @@ export class SimpleRenderer {
   /**
    * Start the render loop
    */
-  public startRenderLoop(scene: THREE.Scene, camera: THREE.Camera, onUpdate: (deltaTime: number) => void): void {
+  public startRenderLoop(
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+    onUpdate: (deltaTime: number) => void,
+  ): void {
     if (this.isRunning) return;
 
     this.scene = scene;
@@ -122,7 +138,13 @@ export class SimpleRenderer {
    * Render a single frame
    */
   private render(): void {
-    if (!this.scene || !this.camera) return;
+    if (!this.scene || !this.camera) {
+      console.warn('⚠️ Render called but scene or camera missing:', {
+        scene: !!this.scene,
+        camera: !!this.camera,
+      });
+      return;
+    }
 
     if (this.postProcessingEnabled && this.composer) {
       this.composer.render();
@@ -136,6 +158,15 @@ export class SimpleRenderer {
    */
   public setPostProcessingEnabled(enabled: boolean): void {
     this.postProcessingEnabled = enabled;
+  }
+
+  public isPostProcessingEnabled(): boolean {
+    return this.postProcessingEnabled;
+  }
+
+  public togglePostProcessing(): boolean {
+    this.postProcessingEnabled = !this.postProcessingEnabled;
+    return this.postProcessingEnabled;
   }
 
   /**

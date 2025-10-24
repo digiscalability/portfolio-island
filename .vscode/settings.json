@@ -96,11 +96,11 @@
   // MCP servers (VS Code Copilot Chat)
   // Allow MCP servers and auto-(re)start when configuration changes are detected
   "chat.mcp.access": "all",
-  "chat.mcp.autostart": true,
+  "chat.mcp.autostart": "newAndOutdated",
 
   // Markdown-specific settings
   "[markdown]": {
-    "editor.defaultFormatter": "yzhang.markdown-all-in-one",
+    "editor.defaultFormatter": "vscode.markdown-language-features",
     "editor.formatOnSave": true,
     "editor.formatOnPaste": true,
     "editor.wordWrap": "on",
@@ -126,5 +126,16 @@
     "MD013": false,
     "MD033": false,
     "MD041": false
-  }
+  },
+
+  // TypeScript server watch optimizations (reduce CPU and watchers)
+  "typescript.tsserver.watchOptions": {
+    "watchFile": "useFsEvents",
+    "watchDirectory": "useFsEvents",
+  "fallbackPolling": "dynamicPriorityPolling",
+    "synchronousWatchDirectory": false
+  },
+
+  // Reduce git UI overhead on huge repos (can re-enable later)
+  "git.decorations.enabled": false
 }
