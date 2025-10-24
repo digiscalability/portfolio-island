@@ -48,3 +48,8 @@ functions/lib/
 # Uncomment the line below if you don't want to commit Firebase config
 # src/core/FirebaseConfig.ts
 
+# Heavy local assets (kept outside git)
+# Prevent accidentally committing large binary assets and kits
+assetKits/
+assets/
+
