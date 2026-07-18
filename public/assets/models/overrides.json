@@ -5,7 +5,7 @@
   },
   "tree.glb": {
     "envMapIntensity": 0.5,
-    "scale": 0.95
+    "scale": 1.0
   },
   "bench.glb": {
     "envMapIntensity": 0.8

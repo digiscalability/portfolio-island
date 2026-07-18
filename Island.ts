@@ -485,7 +485,7 @@ export class Island {
     // Add stairs near some houses for access to "higher" ground
     const stairs = new THREE.Group();
     for (let i = 0; i < 4; i++) {
-      const pos = this.scatterDir(i, 4, 3).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 4, 3), 0.3).multiplyScalar(this.radius);
       const stair = this.createStairs();
       try {
         this.placeObjectOnSurface(stair, pos, 0.05, true);
@@ -502,7 +502,7 @@ export class Island {
     const lamps = new THREE.Group();
     const lampPositions: THREE.Vector3[] = [];
     for (let i = 0; i < 6; i++) {
-      const pos = this.scatterDir(i, 6, 17).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 6, 17), 0.22).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       const lampPost = new THREE.Mesh(
         new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8),
@@ -614,7 +614,7 @@ export class Island {
     water.position.set(0, 0.55, 0);
     fountain.add(water);
     // Seat the fountain on the actual terrain at the pole (was radius+0.3 → floated)
-    this.placeObjectOnSurface(fountain, new THREE.Vector3(0, this.radius, 0), 0.02, true);
+    this.placeObjectOnSurface(fountain, new THREE.Vector3(6, this.radius, 2.5), 0.02, true);
 
     // Add a central statue for glam
     const statue = new THREE.Group();
@@ -629,7 +629,7 @@ export class Island {
     figure.position.set(0, 1.25, 0);
     statue.add(figure);
     // Seat the statue on the terrain, slightly off the pole so it doesn't overlap the fountain
-    this.placeObjectOnSurface(statue, new THREE.Vector3(1.2, this.radius, 1.2), 0.02, true);
+    this.placeObjectOnSurface(statue, new THREE.Vector3(7.5, this.radius, -1.5), 0.02, true);
     statue.castShadow = true;
     statue.receiveShadow = true;
     statue.name = 'central_statue';
@@ -641,7 +641,7 @@ export class Island {
       const carGeom = new THREE.BoxGeometry(1.5, 0.8, 3);
       const carMat = Materials.createTrimMaterial(0xff0000 + i * 0x222222);
       const car = new THREE.Mesh(carGeom, carMat);
-      const pos = this.scatterDir(i, 8, 29).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 8, 29), 0.28).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.4);
       car.position.copy(sampled.position);
       car.quaternion.copy(
@@ -657,7 +657,7 @@ export class Island {
     const stalls = new THREE.Group();
     for (let i = 0; i < 6; i++) {
       const stall = this.createStall();
-      const pos = this.scatterDir(i, 6, 41).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 6, 41), 0.32).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.05); // base sits at group origin
       stall.position.copy(sampled.position);
       stall.quaternion.copy(
@@ -675,7 +675,7 @@ export class Island {
       const signGeom = new THREE.PlaneGeometry(1.2, 0.6);
       const signMat = Materials.createTrimMaterial(0xffffff);
       const sign = new THREE.Mesh(signGeom, signMat);
-      const pos = this.scatterDir(i, 12, 53).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 12, 53), 0.12).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.8); // readable sign height, not 2u float
       sign.position.copy(sampled.position);
       sign.quaternion.copy(
@@ -689,7 +689,7 @@ export class Island {
     const rivers = new THREE.Group();
     for (let i = 0; i < 2; i++) {
       const river = this.createRiver();
-      const pos = this.scatterDir(i, 2, 67).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 2, 67), 0.5).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       river.position.copy(sampled.position);
       river.quaternion.copy(
@@ -721,7 +721,7 @@ export class Island {
     const mountains = new THREE.Group();
     for (let i = 0; i < 4; i++) {
       const mountain = this.createMountain();
-      const pos = this.scatterDir(i, 4, 79).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 4, 79), 0.65).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.05); // mountain base at group origin
       mountain.position.copy(sampled.position);
       mountain.quaternion.copy(
@@ -737,7 +737,7 @@ export class Island {
     const constructions = new THREE.Group();
     for (let i = 0; i < 3; i++) {
       const block = this.createConstructionBlock();
-      const pos = this.scatterDir(i, 3, 97).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 3, 97), 0.45).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.05); // block base at group origin
       block.position.copy(sampled.position);
       block.quaternion.copy(
@@ -757,7 +757,7 @@ export class Island {
         color: 0xff69b4 + Math.floor(Math.random() * 0x333333),
       });
       const flower = new THREE.Mesh(flowerGeom, flowerMat);
-      const pos = this.scatterDir(i, 50, 131).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 50, 131), 0.05).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.2);
       flower.position.copy(sampled.position);
       flower.quaternion.copy(
@@ -773,7 +773,7 @@ export class Island {
       const signGeom = new THREE.PlaneGeometry(0.8, 0.4);
       const signMat = Materials.createTrimMaterial(0xffffff);
       const sign = new THREE.Mesh(signGeom, signMat);
-      const pos = this.scatterDir(i, 6, 113).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.scatterDir(i, 6, 113), 0.12).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 1.5);
       sign.position.copy(sampled.position);
       const q = new THREE.Quaternion().setFromUnitVectors(
@@ -864,6 +864,51 @@ export class Island {
     const rad = Math.sqrt(Math.max(0, 1 - y * y));
     const theta = GOLDEN * (index + salt);
     return new THREE.Vector3(Math.cos(theta) * rad, y, Math.sin(theta) * rad);
+  }
+
+  // Global placement registry: every claimed direction with its clearance,
+  // shared across all prop categories (and used by GameScene) so independent
+  // scatter passes stop clustering on top of each other.
+  private occupiedDirs: Array<{ dir: THREE.Vector3; arc: number }> = [];
+
+  /**
+   * Claim a surface direction with a minimum angular clearance. If the
+   * candidate is too close to something already placed, jitter around it
+   * (up to 10 tries) before accepting the least-bad candidate.
+   */
+  public claimDir(candidate: THREE.Vector3, minArc: number): THREE.Vector3 {
+    let best = candidate.clone().normalize();
+    let bestClearance = -1;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const dir =
+        attempt === 0
+          ? candidate.clone().normalize()
+          : candidate
+              .clone()
+              .normalize()
+              .add(
+                new THREE.Vector3(
+                  (Math.random() - 0.5) * 0.5,
+                  (Math.random() - 0.5) * 0.35,
+                  (Math.random() - 0.5) * 0.5,
+                ),
+              )
+              .normalize();
+      let clearance = Infinity;
+      for (const o of this.occupiedDirs) {
+        clearance = Math.min(clearance, dir.angleTo(o.dir) - o.arc);
+      }
+      if (clearance >= minArc) {
+        this.occupiedDirs.push({ dir, arc: minArc });
+        return dir;
+      }
+      if (clearance > bestClearance) {
+        bestClearance = clearance;
+        best = dir;
+      }
+    }
+    this.occupiedDirs.push({ dir: best, arc: minArc });
+    return best;
   }
 
   private sampleSurfacePosition(
@@ -1196,18 +1241,18 @@ export class Island {
   private createMountain(): THREE.Group {
     const group = new THREE.Group();
     // Cone for peak
-    const peakGeom = new THREE.ConeGeometry(2, 4, 8);
+    const peakGeom = new THREE.ConeGeometry(4.4, 8.8, 8);
     const peakMat = Materials.createPBRMaterial({ color: 0x8b8b8b, roughness: 0.9 });
     const peak = new THREE.Mesh(peakGeom, peakMat);
-    peak.position.set(0, 2, 0);
+    peak.position.set(0, 6.6, 0);
     peak.castShadow = true;
     peak.receiveShadow = true;
     group.add(peak);
     // Base
-    const baseGeom = new THREE.CylinderGeometry(2.5, 3, 1, 8);
+    const baseGeom = new THREE.CylinderGeometry(5.4, 6.4, 2.2, 8);
     const baseMat = Materials.createPBRMaterial({ color: 0x654321, roughness: 0.8 });
     const base = new THREE.Mesh(baseGeom, baseMat);
-    base.position.set(0, 0.5, 0);
+    base.position.set(0, 1.1, 0);
     base.castShadow = true;
     base.receiveShadow = true;
     group.add(base);
@@ -1955,10 +2000,8 @@ export class Island {
       });
       loadAndReplace(basePath + 'car.glb', 'car_', {
         scale: 1,
-        candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Cart_Empty.gltf'],
         randomYaw: true,
-        scaleJitter: 0.15,
-        fitHeight: 2.8,
+        scaleJitter: 0.1,
       });
       loadAndReplace(basePath + 'lamp.glb', 'lamp', {
         scale: 1,
@@ -1969,13 +2012,13 @@ export class Island {
       // Buildings/houses use the intended toon house model (previously these
       // were "replaced" with market-stall kit models, which looked broken)
       loadAndReplace(basePath + 'house.glb', 'building_placeholder_', {
-        fitHeight: 3.6,
+        fitHeight: 5.2,
         randomYaw: true,
         scaleJitter: 0.25,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
       });
       loadAndReplace(basePath + 'house.glb', 'house_', {
-        fitHeight: 3.2,
+        fitHeight: 4.7,
         randomYaw: true,
         scaleJitter: 0.3,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],

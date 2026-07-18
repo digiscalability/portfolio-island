@@ -22,8 +22,8 @@ export class OrbitCamera {
   private targetPosition: THREE.Vector3 = new THREE.Vector3();
   private cameraPosition: THREE.Vector3 = new THREE.Vector3();
 
-  private distance: number = 6.5; // close enough that the player reads clearly
-  private height: number = 3.0; // height above player
+  private distance: number = 5.2; // tight third-person frame — player always reads
+  private height: number = 2.4; // height above player
 
   private yaw: number = 0; // horizontal rotation around player
   private pitch: number = -0.35; // vertical tilt (looking slightly downward at player)
@@ -52,8 +52,9 @@ export class OrbitCamera {
   private followDir: THREE.Vector3 | null = null;
   private followStrength: number = 2.5; // how quickly the camera swings behind motion
 
-  // Optional terrain mesh for camera collision (pull in when a hill blocks view)
-  private collisionMesh: THREE.Mesh | null = null;
+  // Optional collision root for the camera (terrain + props): pull the camera
+  // in whenever ANYTHING blocks the view ray to the player.
+  private collisionMesh: THREE.Object3D | null = null;
   private raycaster: THREE.Raycaster = new THREE.Raycaster();
 
   constructor(camera: THREE.Camera, player: SimplePlayer) {
@@ -67,8 +68,8 @@ export class OrbitCamera {
   /**
    * Provide the terrain mesh so the camera can avoid clipping through hills.
    */
-  public setCollisionMesh(mesh: THREE.Mesh | undefined): void {
-    this.collisionMesh = mesh ?? null;
+  public setCollisionMesh(root: THREE.Object3D | undefined): void {
+    this.collisionMesh = root ?? null;
   }
 
   /**
@@ -132,7 +133,7 @@ export class OrbitCamera {
       try {
         this.raycaster.set(this.targetPosition, cameraDir);
         this.raycaster.far = this.distance + 0.5;
-        const hits = this.raycaster.intersectObject(this.collisionMesh, false);
+        const hits = this.raycaster.intersectObject(this.collisionMesh, true);
         if (hits.length > 0 && hits[0].distance < this.distance) {
           effectiveDistance = Math.max(this.minDistance, hits[0].distance * 0.9);
         }

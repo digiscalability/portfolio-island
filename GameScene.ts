@@ -116,7 +116,7 @@ export class GameScene extends THREE.Scene {
 
     // Create orbit camera (with terrain collision so hills don't block the view)
     this.orbitCamera = new OrbitCamera(this.camera, this.player);
-    this.orbitCamera.setCollisionMesh(this.island.getSurfaceMesh());
+    this.orbitCamera.setCollisionMesh(this.island.mesh); // terrain + all props
 
     // Create zones manager for portfolio content
     this.zonesManager = new ZonesManager(this.island, this);
@@ -158,8 +158,8 @@ export class GameScene extends THREE.Scene {
     sunLight.castShadow = true;
 
     // Setup shadow properties (optimized for performance)
-    sunLight.shadow.mapSize.width = 1024;
-    sunLight.shadow.mapSize.height = 1024;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
     sunLight.shadow.camera.near = 0.1;
     sunLight.shadow.camera.far = 100;
     sunLight.shadow.camera.left = -50;
@@ -197,18 +197,28 @@ export class GameScene extends THREE.Scene {
       angle: number,
       latitude: number, // radians from equator, positive = north
       radiusOffset: number,
+      clearArc: number = 0.2,
     ) => {
-      const R = this.island.getRadius() + radiusOffset;
       const cosLat = Math.cos(latitude);
-      const pos = new THREE.Vector3(
-        Math.cos(angle) * R * cosLat,
-        Math.sin(latitude) * R,
-        Math.sin(angle) * R * cosLat,
-      );
+      let dir = new THREE.Vector3(
+        Math.cos(angle) * cosLat,
+        Math.sin(latitude),
+        Math.sin(angle) * cosLat,
+      ).normalize();
+      // Shared spacing registry with Island's own props — stops clustering
+      dir = this.island.claimDir(dir, clearArc);
+      // Seat on the DISPLACED terrain, not the ideal sphere (hills are ±4
+      // units — ideal-sphere placement left props floating over valleys)
+      let R = this.island.getRadius();
+      try {
+        R = this.island.sampleSurfaceByDirection(dir, 0).position.length();
+      } catch {
+        /* ideal-sphere fallback */
+      }
+      const pos = dir.clone().multiplyScalar(R + radiusOffset);
       mesh.position.copy(pos);
       // Align asset's +Y with outward surface normal
-      const outward = pos.clone().normalize();
-      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), outward);
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
     };
 
     // The delivery loop needs several mailboxes; TownPlanner yields one per block,
@@ -226,14 +236,15 @@ export class GameScene extends THREE.Scene {
     result.mailboxes.forEach((mailbox, index) => {
       const angle = index * 2.399963; // golden angle spread
       const lat = MAILBOX_LATS[index % MAILBOX_LATS.length];
-      placeOnSphere(mailbox.mesh, angle, lat, 0.5);
+      mailbox.mesh.scale.setScalar(0.55); // real-scale: roadside mailbox, not a monument
+      placeOnSphere(mailbox.mesh, angle, lat, 0.05, 0.3);
     });
 
     result.lamps.forEach((lamp, index) => {
       const angle =
         (index / Math.max(result.lamps.length, 1)) * Math.PI * 2 +
         Math.PI / Math.max(result.lamps.length, 1);
-      placeOnSphere(lamp.group, angle, -0.1, 0.3); // slight south latitude
+      placeOnSphere(lamp.group, angle, -0.1, 0.05, 0.25);
     });
 
     // Houses: TownPlanner lays them out on a flat grid, which floats them far off
@@ -241,7 +252,7 @@ export class GameScene extends THREE.Scene {
     const HOUSE_LATS = [0.45, -0.5, 0.2, -0.3];
     result.houses.forEach((house, index) => {
       const angle = index * 2.399963 + Math.PI / 5;
-      placeOnSphere(house.mesh, angle, HOUSE_LATS[index % HOUSE_LATS.length], 0);
+      placeOnSphere(house.mesh, angle, HOUSE_LATS[index % HOUSE_LATS.length], 0, 0.4);
     });
 
     // Replace colliders with sphere-surface positions (TownPlanner placed them at Y=0)
@@ -268,16 +279,23 @@ export class GameScene extends THREE.Scene {
   private async scatterProps(): Promise<void> {
     const GOLDEN = 2.399963; // golden angle for even angular spread
 
-    const placeOnSphere = (obj: THREE.Object3D, angle: number, latitude: number) => {
-      const R = this.island.getRadius();
+    const placeOnSphere = (obj: THREE.Object3D, angle: number, latitude: number, clearArc = 0.22) => {
       const cosLat = Math.cos(latitude);
-      const pos = new THREE.Vector3(
-        Math.cos(angle) * R * cosLat,
-        Math.sin(latitude) * R,
-        Math.sin(angle) * R * cosLat,
-      );
-      obj.position.copy(pos);
-      obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pos.clone().normalize());
+      let dir = new THREE.Vector3(
+        Math.cos(angle) * cosLat,
+        Math.sin(latitude),
+        Math.sin(angle) * cosLat,
+      ).normalize();
+      dir = this.island.claimDir(dir, clearArc); // shared anti-cluster registry
+      // Seat on the displaced terrain, not the ideal sphere
+      let R = this.island.getRadius();
+      try {
+        R = this.island.sampleSurfaceByDirection(dir, 0).position.length();
+      } catch {
+        /* ideal-sphere fallback */
+      }
+      obj.position.copy(dir.clone().multiplyScalar(R + 0.02));
+      obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       obj.rotateY(Math.random() * Math.PI * 2); // random yaw around the surface normal
     };
 
@@ -298,11 +316,11 @@ export class GameScene extends THREE.Scene {
       for (let i = 0; i < N; i++) {
         const inst = tree.scene.clone(true);
         // keep a band around the equator so props don't clash with the north-pole spawn
-        placeOnSphere(inst, i * GOLDEN, Math.random() * 1.4 - 0.7);
-        inst.scale.multiplyScalar(0.8 + Math.random() * 0.5);
+        placeOnSphere(inst, i * GOLDEN, Math.random() * 1.4 - 0.7, 0.28);
+        inst.scale.multiplyScalar(0.85 + Math.random() * 0.3); // native ~5.6u tall
         enableShadows(inst);
         this.add(inst);
-        this.colliders.push({ position: inst.position.clone(), radius: 0.6 });
+        this.colliders.push({ position: inst.position.clone(), radius: 0.7 });
         treeCount++;
       }
     }
