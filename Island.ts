@@ -152,11 +152,12 @@ export class Island {
       // Medium-scale hills and valleys with variation
       const mediumTerrain = noise3D(v.x, v.y, v.z, 0.15) * 1.5;
 
-      // Small-scale rolling hills
-      const smallDetail = noise3D(v.x, v.y, v.z, 0.35) * 0.7;
+      // Small-scale rolling hills (halved: was crinkling the surface)
+      const smallDetail = noise3D(v.x, v.y, v.z, 0.35) * 0.35;
 
-      // Micro detail for surface roughness
-      const microNoise = (Math.random() - 0.5) * 0.25;
+      // No per-vertex random micro noise: it rendered as crumpled-paper
+      // wrinkles across the whole planet from any distance.
+      const microNoise = 0;
 
       // Height-based biomes: create flatter areas at lower elevations (beaches/plateaus)
       const baseHeight = largeTerrain + mediumTerrain;
@@ -180,17 +181,49 @@ export class Island {
     geometry.attributes.position.needsUpdate = true;
     geometry.computeVertexNormals();
     geometry.computeBoundingSphere(); // Ensure proper bounding sphere for raycasting
+
+    // Elevation-tinted vertex colors: valleys richer/darker, meadows mid,
+    // ridges drier/lighter — the flat monotone read as plastic. A small
+    // deterministic per-vertex jitter breaks banding without wrinkle noise.
+    {
+      const posA = geometry.attributes.position;
+      const colors = new Float32Array(posA.count * 3);
+      const valley = new THREE.Color(0x6f9c58);
+      const meadow = new THREE.Color(0x8cc06e);
+      const ridge = new THREE.Color(0xaacb7b);
+      const tmp = new THREE.Color();
+      let minR = Infinity, maxR = -Infinity;
+      for (let i = 0; i < posA.count; i++) {
+        const r = Math.hypot(posA.getX(i), posA.getY(i), posA.getZ(i));
+        if (r < minR) minR = r;
+        if (r > maxR) maxR = r;
+      }
+      const span = Math.max(1e-6, maxR - minR);
+      for (let i = 0; i < posA.count; i++) {
+        const r = Math.hypot(posA.getX(i), posA.getY(i), posA.getZ(i));
+        const t = (r - minR) / span;
+        if (t < 0.5) tmp.copy(valley).lerp(meadow, t * 2);
+        else tmp.copy(meadow).lerp(ridge, (t - 0.5) * 2);
+        // deterministic jitter from vertex index (no Math.random -> stable)
+        const j = 1 + (((i * 2654435761) % 1000) / 1000 - 0.5) * 0.07;
+        colors[i * 3] = tmp.r * j;
+        colors[i * 3 + 1] = tmp.g * j;
+        colors[i * 3 + 2] = tmp.b * j;
+      }
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    }
     // Use authored grass textures from the Stylized Nature kit to ground the island in the intended art direction
     // No tiling texture: Grass.png repeated 6x around the sphere and its dark
     // tile edges rendered as six meridian stripes converging in ugly pinwheels
     // at BOTH poles. Clean flat color suits the low-poly look and kills the
     // artifact entirely.
     const material = Materials.createPBRMaterial({
-      color: 0x8cc06e, // fresh spring green
+      color: 0xffffff, // tint comes from elevation vertex colors
       roughness: 0.85,
       metalness: 0.0,
       envMapIntensity: 0.5,
     });
+    material.vertexColors = true;
 
     const mesh = new THREE.Mesh(geometry, material);
     // keep a direct reference to the terrain mesh for raycasting / accurate placement
@@ -673,7 +706,7 @@ export class Island {
     for (let i = 0; i < 4; i++) {
       const mountain = this.createMountain();
       const pos = this.claimDir(this.scatterDir(i, 4, 79), 0.65, 0.3).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, -0.9); // wide base fully bedded into terrain
+      const sampled = this.sampleSurfacePosition(pos, -0.35); // bedded into terrain
       mountain.position.copy(sampled.position);
       mountain.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -1127,6 +1160,12 @@ export class Island {
 
   private createStall(): THREE.Group {
     const group = new THREE.Group();
+    // ground skirt so slope gaps under the stall read as a wooden deck
+    const skirtGeom = new THREE.BoxGeometry(1.35, 0.5, 0.95);
+    const skirtMat = Materials.createTrimMaterial(0x8a7355);
+    const skirt = new THREE.Mesh(skirtGeom, skirtMat);
+    skirt.position.set(0, -0.2, 0);
+    group.add(skirt);
     // Base table
     const tableGeom = new THREE.BoxGeometry(1.2, 0.3, 0.8);
     const tableMat = Materials.createTrimMaterial(0x8b4513);
@@ -1190,23 +1229,23 @@ export class Island {
   }
 
   private createMountain(): THREE.Group {
+    // Redesigned: a single granite peak with a snow cap, half the old size.
+    // The old 11u cone + wide base cylinder covered a third of the visible
+    // hemisphere from orbit and read as a grey octagon landing pad with a
+    // brown ring from above.
     const group = new THREE.Group();
-    // Cone for peak
-    const peakGeom = new THREE.ConeGeometry(4.4, 8.8, 8);
-    const peakMat = Materials.createPBRMaterial({ color: 0xb9bcc2, roughness: 0.9 }); // light granite, not a black mass
+    const peakGeom = new THREE.ConeGeometry(2.6, 5.2, 7);
+    const peakMat = Materials.createPBRMaterial({ color: 0x9aa0a8, roughness: 0.95 });
     const peak = new THREE.Mesh(peakGeom, peakMat);
-    peak.position.set(0, 6.6, 0);
+    peak.position.set(0, 2.6, 0);
     peak.castShadow = true;
     peak.receiveShadow = true;
     group.add(peak);
-    // Base
-    const baseGeom = new THREE.CylinderGeometry(5.4, 6.4, 2.2, 8);
-    const baseMat = Materials.createPBRMaterial({ color: 0x8e7452, roughness: 0.85 }); // warm earth tone
-    const base = new THREE.Mesh(baseGeom, baseMat);
-    base.position.set(0, 1.1, 0);
-    base.castShadow = true;
-    base.receiveShadow = true;
-    group.add(base);
+    const snowGeom = new THREE.ConeGeometry(0.95, 1.6, 7);
+    const snowMat = Materials.createPBRMaterial({ color: 0xf4f6f8, roughness: 0.6 });
+    const snow = new THREE.Mesh(snowGeom, snowMat);
+    snow.position.set(0, 4.5, 0);
+    group.add(snow);
     return group;
   }
 
@@ -1963,14 +2002,14 @@ export class Island {
       // Buildings/houses use the intended toon house model (previously these
       // were "replaced" with market-stall kit models, which looked broken)
       loadAndReplace(basePath + 'house.glb', 'building_placeholder_', {
-        fitHeight: 5.2,
+        fitHeight: 3.8,
         heightOffset: -0.18,
         randomYaw: true,
         scaleJitter: 0.25,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
       });
       loadAndReplace(basePath + 'house.glb', 'house_', {
-        fitHeight: 4.7,
+        fitHeight: 3.4,
         heightOffset: -0.15,
         randomYaw: true,
         scaleJitter: 0.3,
@@ -2113,7 +2152,7 @@ export class Island {
               for (let i = 0; i < treeCount; i++) {
                 const dir = this.claimDir(this.scatterDir(i, treeCount, 211), 0.24);
                 const p = dir.clone().multiplyScalar(this.radius);
-                const usedScale = 0.75 + Math.random() * 0.3; // 4.2-5.9u tall
+                const usedScale = 0.6 + Math.random() * 0.22; // 3.4-4.6u tall — planet-scale trees
                 const copy = prepareClone(model, usedScale, overrides);
                 try {
                   this.placeObjectOnSurface(copy, p.clone(), -0.07, true);

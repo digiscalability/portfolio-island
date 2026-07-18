@@ -19,6 +19,15 @@ export class House {
   private createSimpleHouse(color: number): THREE.Group {
     const group = new THREE.Group();
 
+    // Foundation plinth: extends below ground so slope gaps under the house
+    // read as intentional stonework instead of a floating box edge.
+    const foundationGeometry = new THREE.BoxGeometry(2.3, 1.0, 2.3);
+    const foundationMaterial = Materials.createPBRMaterial({ color: 0x9a917f, roughness: 0.95 });
+    const foundation = new THREE.Mesh(foundationGeometry, foundationMaterial);
+    foundation.position.y = -0.45;
+    foundation.receiveShadow = true;
+    group.add(foundation);
+
     // Main building (box)
     const buildingGeometry = new THREE.BoxGeometry(2, 2, 2);
     const buildingMaterial = Materials.createHouseMaterial(color);
