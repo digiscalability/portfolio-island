@@ -252,11 +252,14 @@ export class Island {
     });
     const buildingPlaceholders: THREE.Mesh[] = [];
     const buildingSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    for (let i = 0; i < 8; i++) {
-      // Even angular spread (golden spiral) + shared spacing registry — the
-      // old fully-random phi/theta placement let buildings spawn on top of
-      // each other and everything else (houses, npcs, trees).
-      const dir = this.claimDir(this.scatterDir(i, 8, 151), 0.55, 0.28);
+    // MARKET district [zone2..zone3]: two rows of shops facing Main Street
+    const BUILDING_SITES: Array<[number, number]> = [
+      [2.72, 0.17], [2.97, 0.17], [3.22, 0.17], [3.47, 0.17],
+      [2.85, -0.17], [3.1, -0.17], [3.35, -0.17], [3.6, -0.17],
+    ];
+    for (let i = 0; i < BUILDING_SITES.length; i++) {
+      const [lon, lat] = BUILDING_SITES[i];
+      const dir = this.claimDir(this.dirAt(lon, lat), 0.1);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -279,13 +282,8 @@ export class Island {
       );
       b.quaternion.copy(q);
       // spin around the surface normal so later GLTF replacements feel organic
-      const spin = new THREE.Quaternion().setFromAxisAngle(
-        sampled.normal,
-        Math.random() * Math.PI * 2,
-      );
-      // premultiply: spin is a WORLD-space rotation about the surface normal.
-      // (multiply would apply it in local space and tilt the object off the normal)
-      b.quaternion.premultiply(spin);
+      // Face Main Street (the equator road) instead of a random spin
+      this.faceObjectToward(b, sampled.normal, this.dirAt(lon, 0).multiplyScalar(this.radius));
       b.castShadow = true;
       b.receiveShadow = true;
       b.name = `building_placeholder_${i}`;
@@ -296,12 +294,16 @@ export class Island {
     // Procedural houses: add a few more detailed block houses with roofs/windows to make the island feel inhabited
     const houses = new THREE.Group();
     const houseSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    const houseCount = 11;
+    // VILLAGE district [zone0..zone1]: cottages lining both sides of the road
+    const HOUSE_SITES: Array<[number, number]> = [
+      [0.2, 0.15], [0.42, 0.15], [0.64, 0.15], [0.86, 0.15], [1.08, 0.15],
+      [0.31, -0.15], [0.53, -0.15], [0.75, -0.15], [0.97, -0.15],
+      [0.42, 0.31], [0.75, 0.3],
+    ];
+    const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
-      // Golden-spiral spread + shared spacing registry (was fully-random
-      // phi/theta with no anti-overlap — houses could spawn on top of
-      // buildings, npcs, trees, or each other).
-      const dir = this.claimDir(this.scatterDir(i, houseCount, 173), 0.42, 0.28);
+      const [lon, lat] = HOUSE_SITES[i];
+      const dir = this.claimDir(this.dirAt(lon, lat), 0.09);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -354,12 +356,8 @@ export class Island {
         sampled.normal,
       );
       house.quaternion.copy(q);
-      const spin = new THREE.Quaternion().setFromAxisAngle(
-        sampled.normal,
-        Math.random() * Math.PI * 2,
-      );
-      // premultiply: world-space spin about the normal (multiply = local-space tilt bug)
-      house.quaternion.premultiply(spin);
+      // Face the road
+      this.faceObjectToward(house, sampled.normal, this.dirAt(lon, 0).multiplyScalar(this.radius));
       house.position.copy(sampled.position);
       // Houses are already positioned by sampleSurfacePosition - no additional offset needed
       house.name = `house_${i}`;
@@ -492,8 +490,9 @@ export class Island {
 
     // Add stairs near some houses for access to "higher" ground
     const stairs = new THREE.Group();
-    for (let i = 0; i < 4; i++) {
-      const pos = this.claimDir(this.scatterDir(i, 4, 3), 0.3).multiplyScalar(this.radius);
+    const STAIR_SITES: Array<[number, number]> = [[1.38, 0.1], [3.9, -0.1]];
+    for (let i = 0; i < STAIR_SITES.length; i++) {
+      const pos = this.claimDir(this.dirAt(STAIR_SITES[i][0], STAIR_SITES[i][1]), 0.08).multiplyScalar(this.radius);
       const stair = this.createStairs();
       try {
         this.placeObjectOnSurface(stair, pos, -0.06, true);
@@ -509,8 +508,9 @@ export class Island {
     // Add street lamps for evening ambiance
     const lamps = new THREE.Group();
     const lampPositions: THREE.Vector3[] = [];
+    const LAMP_LONS = [0.55, 1.6, 2.51, 3.15, 4.4, 5.55];
     for (let i = 0; i < 6; i++) {
-      const pos = this.claimDir(this.scatterDir(i, 6, 17), 0.22).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(LAMP_LONS[i], i % 2 === 0 ? 0.06 : -0.06), 0.05).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       const lampPost = new THREE.Mesh(
         new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8),
@@ -548,15 +548,22 @@ export class Island {
     const npcs = new THREE.Group();
     const npcMat = Materials.createCharacterBodyMaterial();
     const npcPlaceholders: THREE.Mesh[] = [];
-    for (let i = 0; i < 20; i++) {
-      // Golden-spiral spread + shared spacing registry — NPCs were the one
-      // category never registered, so they could spawn embedded inside
-      // houses/trees/cars, reading as "exploded" jumbles of overlapping props.
-      const dir = this.claimDir(this.scatterDir(i, 20, 191), 0.16);
+    const NPC_SITES: Array<[number, number]> = [
+      // villagers on the village street
+      [0.28, 0.06], [0.5, -0.06], [0.72, 0.07], [0.94, -0.05], [1.02, 0.08],
+      // market crowd around zone2 + stalls
+      [2.42, 0.06], [2.51, -0.08], [2.6, 0.05], [2.45, -0.05], [2.58, 0.09], [2.68, -0.06],
+      // plaza visitors at zones 1, 3, 4
+      [1.2, 0.05], [1.31, -0.06], [3.71, 0.06], [3.83, -0.05], [4.97, 0.06], [5.09, -0.06],
+      // wanderers
+      [1.7, 0.2], [4.3, 0.12], [5.6, -0.12],
+    ];
+    for (let i = 0; i < NPC_SITES.length; i++) {
+      const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), 0.03);
 
       const nGeom = new THREE.SphereGeometry(0.22, 10, 10);
       const n = new THREE.Mesh(nGeom, npcMat);
-      const sampled = this.sampleSurfaceByDirection(dir, 0.03);
+      const sampled = this.sampleSurfaceByDirection(dir, 0.22); // centered sphere: seat ON ground, not half-buried
       n.position.copy(sampled.position);
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
@@ -637,7 +644,9 @@ export class Island {
       const carGeom = new THREE.BoxGeometry(1.5, 0.8, 3);
       const carMat = Materials.createTrimMaterial(0xff0000 + i * 0x222222);
       const car = new THREE.Mesh(carGeom, carMat);
-      const pos = this.claimDir(this.scatterDir(i, 8, 29), 0.28, 0.3).multiplyScalar(this.radius);
+      // Parked along Main Street near the districts
+      const CAR_LONS = [0.32, 0.7, 1.35, 2.3, 3.68, 4.1, 4.5, 5.85];
+      const pos = this.claimDir(this.dirAt(CAR_LONS[i % CAR_LONS.length], i % 2 === 0 ? 0.08 : -0.08), 0.06).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
       car.position.copy(sampled.position);
       car.quaternion.copy(
@@ -651,9 +660,14 @@ export class Island {
 
     // Add market stalls near houses
     const stalls = new THREE.Group();
-    for (let i = 0; i < 6; i++) {
+    // Market stalls ring the zone2 plaza (the market district centerpiece)
+    const STALL_SITES: Array<[number, number]> = [
+      [2.35, 0.12], [2.35, -0.12], [2.51, 0.17], [2.51, -0.17], [2.67, 0.12], [2.67, -0.12],
+    ];
+    for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
-      const pos = this.claimDir(this.scatterDir(i, 6, 41), 0.32, 0.3).multiplyScalar(this.radius);
+      const [sLon, sLat] = STALL_SITES[i];
+      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.07).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       stall.quaternion.copy(
@@ -671,9 +685,10 @@ export class Island {
 
     // Add rivers
     const rivers = new THREE.Group();
-    for (let i = 0; i < 2; i++) {
+    const RIVER_SITES: Array<[number, number]> = [[4.62, 0.4], [0.6, -0.38]];
+    for (let i = 0; i < RIVER_SITES.length; i++) {
       const river = this.createRiver();
-      const pos = this.claimDir(this.scatterDir(i, 2, 67), 0.5).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(RIVER_SITES[i][0], RIVER_SITES[i][1]), 0.2).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       river.position.copy(sampled.position);
       river.quaternion.copy(
@@ -703,9 +718,11 @@ export class Island {
 
     // Add mountains
     const mountains = new THREE.Group();
-    for (let i = 0; i < 4; i++) {
+    const MOUNTAIN_SITES: Array<[number, number]> = [[3.9, 0.95], [5.1, 1.02], [1.9, -0.98]];
+    for (let i = 0; i < MOUNTAIN_SITES.length; i++) {
       const mountain = this.createMountain();
-      const pos = this.claimDir(this.scatterDir(i, 4, 79), 0.65, 0.3).multiplyScalar(this.radius);
+      const [mLon, mLat] = MOUNTAIN_SITES[i];
+      const pos = this.claimDir(this.dirAt(mLon, mLat), 0.3).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.35); // bedded into terrain
       mountain.position.copy(sampled.position);
       mountain.quaternion.copy(
@@ -719,9 +736,10 @@ export class Island {
 
     // Add construction blocks
     const constructions = new THREE.Group();
-    for (let i = 0; i < 3; i++) {
+    const WORK_SITES: Array<[number, number]> = [[4.15, 0.22], [4.55, -0.24]];
+    for (let i = 0; i < WORK_SITES.length; i++) {
       const block = this.createConstructionBlock();
-      const pos = this.claimDir(this.scatterDir(i, 3, 97), 0.45, 0.32).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
       block.quaternion.copy(
@@ -741,7 +759,11 @@ export class Island {
         color: 0xff69b4 + Math.floor(Math.random() * 0x333333),
       });
       const flower = new THREE.Mesh(flowerGeom, flowerMat);
-      const pos = this.claimDir(this.scatterDir(i, 50, 131), 0.05).multiplyScalar(this.radius);
+      // ten flowers ringing each of the five zone plazas
+      const zoneLon = [0, 1.2566, 2.5133, 3.7699, 5.0265][Math.floor(i / 10)];
+      const ringA = ((i % 10) / 10) * Math.PI * 2;
+      const fDir = this.dirAt(zoneLon + Math.cos(ringA) * 0.14, Math.sin(ringA) * 0.14);
+      const pos = this.claimDir(fDir, 0.015).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       flower.position.copy(sampled.position);
       flower.quaternion.copy(
@@ -821,19 +843,33 @@ export class Island {
    * @param approxPos - an approximate position (usually a vector on the base radius circle)
    * @param desiredOffset - how far above the base radius the caller expects the object to sit (used as a small bias)
    */
+  /** Unit direction from (longitude, latitude) in radians. */
+  private dirAt(lon: number, lat: number): THREE.Vector3 {
+    return new THREE.Vector3(
+      Math.cos(lon) * Math.cos(lat),
+      Math.sin(lat),
+      Math.sin(lon) * Math.cos(lat),
+    ).normalize();
+  }
+
   /**
-   * Golden-spiral direction over the sphere for even prop distribution.
-   * Replaces the old equatorial rings (cosθ, 0, sinθ) that concentrated every
-   * prop on one band around the planet. Pole caps are kept clear for the
-   * spawn plaza (|y| capped at 0.85).
+   * Yaw an already surface-aligned object so its local +Z faces a target
+   * point (projected onto the tangent plane). Used to face houses/stalls
+   * toward the road/plaza instead of random spins.
    */
-  private scatterDir(index: number, total: number, salt: number): THREE.Vector3 {
-    const GOLDEN = 2.399963229728653;
-    const t = (index + 0.5) / Math.max(1, total);
-    const y = (1 - 2 * t) * 0.85;
-    const rad = Math.sqrt(Math.max(0, 1 - y * y));
-    const theta = GOLDEN * (index + salt);
-    return new THREE.Vector3(Math.cos(theta) * rad, y, Math.sin(theta) * rad);
+  private faceObjectToward(obj: THREE.Object3D, normal: THREE.Vector3, target: THREE.Vector3): void {
+    const proj = (v: THREE.Vector3) =>
+      v.clone().sub(normal.clone().multiplyScalar(v.dot(normal)));
+    const current = proj(new THREE.Vector3(0, 0, 1).applyQuaternion(obj.quaternion));
+    const desired = proj(target.clone().sub(obj.position));
+    if (current.lengthSq() < 1e-8 || desired.lengthSq() < 1e-8) return;
+    current.normalize();
+    desired.normalize();
+    const angle = Math.atan2(
+      new THREE.Vector3().crossVectors(current, desired).dot(normal),
+      current.dot(desired),
+    );
+    obj.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(normal, angle));
   }
 
   // Global placement registry: every claimed direction with its clearance,
@@ -1868,6 +1904,25 @@ export class Island {
                   }
                   if (placement) {
                     const normal = placement.normal.clone();
+                    // Inherit the placeholder's yaw about the normal (layout
+                    // facing, e.g. houses toward the road) unless randomYaw.
+                    {
+                      const proj = (v: THREE.Vector3) =>
+                        v.clone().sub(normal.clone().multiplyScalar(v.dot(normal)));
+                      const phF = proj(new THREE.Vector3(0, 0, 1).applyQuaternion(ph.quaternion));
+                      const clF = proj(new THREE.Vector3(0, 0, 1).applyQuaternion(clone.quaternion));
+                      if (phF.lengthSq() > 1e-8 && clF.lengthSq() > 1e-8) {
+                        phF.normalize();
+                        clF.normalize();
+                        const yawAng = Math.atan2(
+                          new THREE.Vector3().crossVectors(clF, phF).dot(normal),
+                          clF.dot(phF),
+                        );
+                        clone.quaternion.premultiply(
+                          new THREE.Quaternion().setFromAxisAngle(normal, yawAng),
+                        );
+                      }
+                    }
                     if (typeof appliedOverrides.yOffset === 'number') {
                       clone.position.add(normal.clone().multiplyScalar(appliedOverrides.yOffset));
                     }
@@ -2004,14 +2059,14 @@ export class Island {
       loadAndReplace(basePath + 'house.glb', 'building_placeholder_', {
         fitHeight: 3.8,
         heightOffset: -0.18,
-        randomYaw: true,
+        randomYaw: false,
         scaleJitter: 0.25,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
       });
       loadAndReplace(basePath + 'house.glb', 'house_', {
         fitHeight: 3.4,
         heightOffset: -0.15,
-        randomYaw: true,
+        randomYaw: false,
         scaleJitter: 0.3,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
       });
@@ -2148,9 +2203,25 @@ export class Island {
               // registry, grounded with sunk roots. The old code put 48 trees
               // on a flat equatorial ring (y=0, unregistered -> giant merged
               // groves) floating 0.55-1.25u above the terrain.
-              const treeCount = 26;
+              // ORCHARD [z1..z2] north grove, FOREST [z4..z0] both sides,
+              // SOUTH WOOD off-belt, plus singles
+              const TREE_SITES: Array<[number, number]> = [
+                // orchard rows (north of road)
+                [1.45, 0.3], [1.62, 0.3], [1.79, 0.3], [1.96, 0.3],
+                [1.53, 0.44], [1.7, 0.44], [1.87, 0.44],
+                // forest segment (both sides of road)
+                [5.25, 0.18], [5.45, 0.3], [5.65, 0.16], [5.85, 0.28],
+                [5.35, -0.18], [5.55, -0.3], [5.75, -0.16], [5.95, -0.26],
+                [6.1, 0.1],
+                // south wood
+                [2.0, -0.48], [2.2, -0.58], [2.4, -0.46], [2.15, -0.35],
+                // scattered singles
+                [0.5, 0.55], [1.3, -0.4], [3.3, 0.42], [4.3, -0.45], [4.75, 0.35], [0.05, -0.5],
+              ];
+              const treeCount = TREE_SITES.length;
               for (let i = 0; i < treeCount; i++) {
-                const dir = this.claimDir(this.scatterDir(i, treeCount, 211), 0.24);
+                const [tLon, tLat] = TREE_SITES[i];
+                const dir = this.claimDir(this.dirAt(tLon, tLat), 0.07);
                 const p = dir.clone().multiplyScalar(this.radius);
                 const usedScale = 0.6 + Math.random() * 0.22; // 3.4-4.6u tall — planet-scale trees
                 const copy = prepareClone(model, usedScale, overrides);

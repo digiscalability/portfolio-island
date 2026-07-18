@@ -383,8 +383,14 @@ export class GameScene extends THREE.Scene {
 
       // If player is overlapping with this collider
       if (dist < minDist) {
-        // Push player away from collider
-        const direction = playerPos.clone().sub(collider.position).normalize();
+        // Push player away TANGENTIALLY: a radial component here shoves the
+        // player into the terrain (visible as being 'dug in' while walking
+        // past props) or launches them off it — grounding owns the radial axis.
+        const normal = playerPos.clone().normalize();
+        const direction = playerPos.clone().sub(collider.position);
+        direction.sub(normal.clone().multiplyScalar(direction.dot(normal)));
+        if (direction.lengthSq() < 1e-6) direction.copy(normal.clone().cross(new THREE.Vector3(0, 1, 0.001)));
+        direction.normalize();
         const pushDistance = minDist - dist + 0.01; // Small buffer to prevent re-collision
         playerPos.addScaledVector(direction, pushDistance);
 
