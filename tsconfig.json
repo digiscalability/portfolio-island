@@ -40,6 +40,6 @@
     }
   },
   "include": ["*.ts", "*.d.ts", "src/**/*.ts", "vite.config.ts"],
-  "exclude": ["node_modules", "dist", "functions", "index.ts"]
+  "exclude": ["node_modules", "dist", "functions", "_legacy", "**/*.test.ts"]
 }
 
