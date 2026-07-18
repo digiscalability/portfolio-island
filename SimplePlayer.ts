@@ -145,10 +145,29 @@ export class SimplePlayer extends THREE.Group {
         this.add(this.gltfModel);
 
         // Self-calibrate: place the model's feet at local -playerHeight (0.7)
-        // regardless of where the exporter put the mesh origin (bbox already
-        // reflects the scale applied by the loader).
+        // regardless of where the exporter put the mesh origin.
+        //
+        // CRITICAL: Box3.setFromObject() always measures in WORLD space (it
+        // walks matrixWorld). By the time this GLTF resolves, the player has
+        // already been positioned on the sphere (world Y ~18.7 at spawn), so
+        // the "local" offset below was actually a world-space number — it
+        // shoved the mesh ~18.7 units through the planet and made the player
+        // invisible. Zero the player's own world transform before measuring
+        // so the box reflects gltfModel's position relative to its parent,
+        // then restore.
         try {
+          const savedPos = this.position.clone();
+          const savedQuat = this.quaternion.clone();
+          this.position.set(0, 0, 0);
+          this.quaternion.identity();
+          this.updateMatrixWorld(true);
+
           const box = new THREE.Box3().setFromObject(this.gltfModel);
+
+          this.position.copy(savedPos);
+          this.quaternion.copy(savedQuat);
+          this.updateMatrixWorld(true);
+
           if (Number.isFinite(box.min.y)) {
             this.gltfModel.position.y += -0.7 - box.min.y;
           }

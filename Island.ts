@@ -231,17 +231,11 @@ export class Island {
     });
     const buildingPlaceholders: THREE.Mesh[] = [];
     const buildingSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    for (let i = 0; i < 12; i++) {
-      // FIX: Use TRUE spherical distribution across entire surface
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1); // Uniform sphere distribution
-
-      // Create unit direction vector
-      const dir = new THREE.Vector3(
-        Math.sin(phi) * Math.cos(theta),
-        Math.cos(phi),
-        Math.sin(phi) * Math.sin(theta),
-      ).normalize();
+    for (let i = 0; i < 8; i++) {
+      // Even angular spread (golden spiral) + shared spacing registry — the
+      // old fully-random phi/theta placement let buildings spawn on top of
+      // each other and everything else (houses, npcs, trees).
+      const dir = this.claimDir(this.scatterDir(i, 8, 151), 0.55);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -281,19 +275,12 @@ export class Island {
     // Procedural houses: add a few more detailed block houses with roofs/windows to make the island feel inhabited
     const houses = new THREE.Group();
     const houseSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    const houseCount = 16;
+    const houseCount = 11;
     for (let i = 0; i < houseCount; i++) {
-      // FIX: Use TRUE spherical distribution, not restricted radial bands
-      // Distribute homes across entire sphere surface using spherical coordinates
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1); // Uniform sphere distribution
-
-      // Create unit direction vector
-      const dir = new THREE.Vector3(
-        Math.sin(phi) * Math.cos(theta),
-        Math.cos(phi),
-        Math.sin(phi) * Math.sin(theta),
-      ).normalize();
+      // Golden-spiral spread + shared spacing registry (was fully-random
+      // phi/theta with no anti-overlap — houses could spawn on top of
+      // buildings, npcs, trees, or each other).
+      const dir = this.claimDir(this.scatterDir(i, houseCount, 173), 0.42);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -548,15 +535,10 @@ export class Island {
     const npcMat = Materials.createCharacterBodyMaterial();
     const npcPlaceholders: THREE.Mesh[] = [];
     for (let i = 0; i < 20; i++) {
-      // FIX: Use TRUE spherical distribution
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-
-      const dir = new THREE.Vector3(
-        Math.sin(phi) * Math.cos(theta),
-        Math.cos(phi),
-        Math.sin(phi) * Math.sin(theta),
-      ).normalize();
+      // Golden-spiral spread + shared spacing registry — NPCs were the one
+      // category never registered, so they could spawn embedded inside
+      // houses/trees/cars, reading as "exploded" jumbles of overlapping props.
+      const dir = this.claimDir(this.scatterDir(i, 20, 191), 0.16);
 
       const nGeom = new THREE.SphereGeometry(0.22, 10, 10);
       const n = new THREE.Mesh(nGeom, npcMat);
@@ -2050,7 +2032,7 @@ export class Island {
                   const quat = ph.quaternion.clone();
                   const baseScale = 0.6;
                   // allow manifest override scale
-                  const overrides = modelOverrides['npc.gltf'];
+                  const overrides = modelOverrides['npc.glb'] ?? modelOverrides['npc.gltf'];
                   const scale = typeof overrides?.scale === 'number' ? overrides.scale : baseScale;
                   // create an NPC instance which clones the provided model internally
                   const npc = new NPC(

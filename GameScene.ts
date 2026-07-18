@@ -148,7 +148,7 @@ export class GameScene extends THREE.Scene {
    */
   private setupLighting(): void {
     // Ambient light for base illumination
-    const ambientLight = new THREE.AmbientLight(0xfff6e8, 0.55);
+    const ambientLight = new THREE.AmbientLight(0xfff6e8, 0.4); // was washing out material colors
     this.add(ambientLight);
     this.lights.ambient = ambientLight;
 
@@ -172,7 +172,7 @@ export class GameScene extends THREE.Scene {
     this.lights.sun = sunLight;
 
     // Hemisphere light for natural gradual lighting (sky blue / warm ground)
-    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.8);
+    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.55);
     this.add(hemiLight);
   }
 
