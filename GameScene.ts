@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 
 import { Island } from './Island';
+import { Mailbox } from './Mailbox';
 import { OrbitCamera } from './OrbitCamera';
 import { SimplePlayer } from './SimplePlayer';
 import { TownPlanner, type TownPlanResult } from './TownPlanner';
-import { ZonesManager } from './ZonesManager';
-import { Mailbox } from './Mailbox';
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
+import { ZonesManager } from './ZonesManager';
 
 /**
  * GameScene

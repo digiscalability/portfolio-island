@@ -1,8 +1,8 @@
+import { DeliverySystem } from './DeliverySystem';
 import { GameScene } from './GameScene';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
-import { DeliverySystem } from './DeliverySystem';
 import './style.css';
 
 /**

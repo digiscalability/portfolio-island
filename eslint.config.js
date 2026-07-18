@@ -5,7 +5,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'assetKits/**', 'assets/**', 'functions/**', 'tools/**', '**/*.js', '**/*.cjs', '**/*.mjs'],
+    ignores: ['dist/**', 'assetKits/**', 'assets/**', 'functions/**', 'tools/**', '_legacy/**', '**/*.js', '**/*.cjs', '**/*.mjs'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
