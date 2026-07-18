@@ -254,6 +254,30 @@ export class AudioManager {
     this.playing.delete(key);
   }
 
+  // Play background music (non-spatial, looping)
+  public playBackground(key: string): void {
+    if (this.muted) return;
+    const buf = this.buffers.get(key);
+    if (!buf) return;
+    const ctx = this.ensureCtx();
+
+    // If already playing, do nothing
+    if (this.playing.has(key)) return;
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+
+    const gain = ctx.createGain();
+    gain.gain.value = this.volume;
+
+    src.connect(gain);
+    gain.connect(ctx.destination);
+
+    src.start(0);
+    this.playing.set(key, { source: src, panner: null as any, gain });
+  }
+
   // helper for tests and introspection
   public isPlaying(key: string): boolean {
     return this.playing.has(key);

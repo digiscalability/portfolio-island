@@ -31,19 +31,19 @@ export class SimpleRenderer {
     // Create WebGL renderer with anti-aliasing
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: false, // Disabled for performance
       alpha: false,
       powerPreference: 'high-performance',
-      precision: 'highp',
+      precision: 'mediump', // Lower precision for performance
     });
 
     // Configure renderer
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1)); // Limit to 1 for performance
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = false; // Disabled for performance
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // Limit shadow resolution for better performance on mobile
     this.renderer.shadowMap.autoUpdate = true;

@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 
 import { Materials } from './Materials';
-import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 
 export class House {
   public mesh: THREE.Group;
@@ -12,34 +11,7 @@ export class House {
   }
 
   private async createHouse(color: number): Promise<void> {
-    try {
-      // Try to load a GLTF house/structure model first, with fallbacks
-      const gltfResult = await loadGLTFWithFallbacks('/assets/models/house.gltf', {
-        candidates: [
-          '/assets/models/cabin.gltf',
-          '/assetKits/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf',
-          '/assetKits/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Cart_Empty.gltf',
-          '/assetKits/Fantasy Props MegaKit[Standard]/Exports/glTF/Workbench.gltf',
-          '/public/assetKits/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf',
-        ],
-        scale: 3.0, // Larger scale for structures to be visible
-        overrides: {
-          envMapIntensity: 0.7, // Nice lighting for houses
-        },
-      });
-
-      if (gltfResult) {
-        // Position the GLTF model properly
-        gltfResult.scene.position.y = 0; // Place on ground
-        this.mesh.add(gltfResult.scene);
-        console.log('✅ House: Loaded GLTF model');
-        return;
-      }
-    } catch (error) {
-      console.warn('⚠️ House: Could not load GLTF model, using fallback geometry:', error);
-    }
-
-    // Fallback: Create simple house geometry if GLTF fails
+    // Skip GLTF loading for performance - use simple geometry
     const fallbackHouse = this.createSimpleHouse(color);
     this.mesh.add(fallbackHouse);
   }

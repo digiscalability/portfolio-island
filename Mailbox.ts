@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 
 import { Materials } from './Materials';
-import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 
 export class Mailbox {
   public mesh: THREE.Group;
@@ -16,31 +15,7 @@ export class Mailbox {
   }
 
   private async createMailbox(): Promise<void> {
-    try {
-      // Try to load a GLTF mailbox model first, with fallbacks
-      const gltfResult = await loadGLTFWithFallbacks('/assets/models/mailbox.gltf', {
-        candidates: [
-          '/assets/models/lamp.gltf', // Use lamp as alternate prop
-          '/assets/models/bench.gltf', // Use bench as alternate prop
-        ],
-        scale: 1.2,
-        overrides: {
-          envMapIntensity: 0.8, // Nice lighting for mailbox
-        },
-      });
-
-      if (gltfResult) {
-        // Position the GLTF model properly
-        gltfResult.scene.position.y = 0; // Place on ground
-        this.mesh.add(gltfResult.scene);
-        console.log('✅ Mailbox: Loaded GLTF model');
-        return;
-      }
-    } catch (error) {
-      console.warn('⚠️ Mailbox: Could not load GLTF model, using fallback geometry:', error);
-    }
-
-    // Fallback: Create simple mailbox geometry if GLTF fails
+    // Skip GLTF loading for performance - use simple geometry
     const fallbackMailbox = this.createSimpleMailbox();
     this.mesh.add(fallbackMailbox);
   }
