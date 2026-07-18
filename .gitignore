@@ -51,6 +51,6 @@ functions/lib/
 # Heavy local assets (kept outside git)
 # Prevent accidentally committing large binary assets and kits
 assetKits/
-assets/
+/assets/
 
 _legacy/unused-assets/

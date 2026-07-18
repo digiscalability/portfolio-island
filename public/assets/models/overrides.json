@@ -1,0 +1,13 @@
+{
+  "npc.glb": {
+    "envMapIntensity": 0.7,
+    "scale": 1.0
+  },
+  "tree.glb": {
+    "envMapIntensity": 0.5,
+    "scale": 0.95
+  },
+  "bench.glb": {
+    "envMapIntensity": 0.8
+  }
+}
