@@ -235,7 +235,7 @@ export class Island {
       // Even angular spread (golden spiral) + shared spacing registry — the
       // old fully-random phi/theta placement let buildings spawn on top of
       // each other and everything else (houses, npcs, trees).
-      const dir = this.claimDir(this.scatterDir(i, 8, 151), 0.55);
+      const dir = this.claimDir(this.scatterDir(i, 8, 151), 0.55, 0.28);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -280,7 +280,7 @@ export class Island {
       // Golden-spiral spread + shared spacing registry (was fully-random
       // phi/theta with no anti-overlap — houses could spawn on top of
       // buildings, npcs, trees, or each other).
-      const dir = this.claimDir(this.scatterDir(i, houseCount, 173), 0.42);
+      const dir = this.claimDir(this.scatterDir(i, houseCount, 173), 0.42, 0.28);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -475,7 +475,7 @@ export class Island {
       const pos = this.claimDir(this.scatterDir(i, 4, 3), 0.3).multiplyScalar(this.radius);
       const stair = this.createStairs();
       try {
-        this.placeObjectOnSurface(stair, pos, 0.05, true);
+        this.placeObjectOnSurface(stair, pos, -0.06, true);
       } catch {
         /* ignore placement issues */
       }
@@ -542,7 +542,7 @@ export class Island {
 
       const nGeom = new THREE.SphereGeometry(0.22, 10, 10);
       const n = new THREE.Mesh(nGeom, npcMat);
-      const sampled = this.sampleSurfaceByDirection(dir, 0.58 + Math.random() * 0.1);
+      const sampled = this.sampleSurfaceByDirection(dir, 0.03);
       n.position.copy(sampled.position);
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
@@ -623,8 +623,8 @@ export class Island {
       const carGeom = new THREE.BoxGeometry(1.5, 0.8, 3);
       const carMat = Materials.createTrimMaterial(0xff0000 + i * 0x222222);
       const car = new THREE.Mesh(carGeom, carMat);
-      const pos = this.claimDir(this.scatterDir(i, 8, 29), 0.28).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 0.4);
+      const pos = this.claimDir(this.scatterDir(i, 8, 29), 0.28, 0.3).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, 0.33);
       car.position.copy(sampled.position);
       car.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -639,8 +639,8 @@ export class Island {
     const stalls = new THREE.Group();
     for (let i = 0; i < 6; i++) {
       const stall = this.createStall();
-      const pos = this.claimDir(this.scatterDir(i, 6, 41), 0.32).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 0.05); // base sits at group origin
+      const pos = this.claimDir(this.scatterDir(i, 6, 41), 0.32, 0.3).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       stall.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -651,21 +651,9 @@ export class Island {
       stalls.add(stall);
     }
 
-    // Add signboards on buildings
+    // Signboards removed: unsupported flat planes floating at 0.8u read as
+    // glitches (assets hovering in the air), not decor.
     const signboards = new THREE.Group();
-    for (let i = 0; i < 12; i++) {
-      const signGeom = new THREE.PlaneGeometry(1.2, 0.6);
-      const signMat = Materials.createTrimMaterial(0xffffff);
-      const sign = new THREE.Mesh(signGeom, signMat);
-      const pos = this.claimDir(this.scatterDir(i, 12, 53), 0.12).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 0.8); // readable sign height, not 2u float
-      sign.position.copy(sampled.position);
-      sign.quaternion.copy(
-        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
-      );
-      sign.name = `signboard_${i}`;
-      signboards.add(sign);
-    }
 
     // Add rivers
     const rivers = new THREE.Group();
@@ -704,7 +692,7 @@ export class Island {
     for (let i = 0; i < 4; i++) {
       const mountain = this.createMountain();
       const pos = this.claimDir(this.scatterDir(i, 4, 79), 0.65).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 0.05); // mountain base at group origin
+      const sampled = this.sampleSurfacePosition(pos, -0.5); // big base sinks into terrain
       mountain.position.copy(sampled.position);
       mountain.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -719,8 +707,8 @@ export class Island {
     const constructions = new THREE.Group();
     for (let i = 0; i < 3; i++) {
       const block = this.createConstructionBlock();
-      const pos = this.claimDir(this.scatterDir(i, 3, 97), 0.45).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 0.05); // block base at group origin
+      const pos = this.claimDir(this.scatterDir(i, 3, 97), 0.45, 0.32).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
       block.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -740,7 +728,7 @@ export class Island {
       });
       const flower = new THREE.Mesh(flowerGeom, flowerMat);
       const pos = this.claimDir(this.scatterDir(i, 50, 131), 0.05).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 0.2);
+      const sampled = this.sampleSurfacePosition(pos, 0.1);
       flower.position.copy(sampled.position);
       flower.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -751,21 +739,7 @@ export class Island {
 
     // Add signs for shops/buildings
     const signs = new THREE.Group();
-    for (let i = 0; i < 6; i++) {
-      const signGeom = new THREE.PlaneGeometry(0.8, 0.4);
-      const signMat = Materials.createTrimMaterial(0xffffff);
-      const sign = new THREE.Mesh(signGeom, signMat);
-      const pos = this.claimDir(this.scatterDir(i, 6, 113), 0.12).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 1.5);
-      sign.position.copy(sampled.position);
-      const q = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        sampled.normal,
-      );
-      sign.quaternion.copy(q);
-      sign.name = `sign_${i}`;
-      signs.add(sign);
-    }
+    // (small floating sign planes removed for the same reason)
 
     // Add dust particles for ambiance
     const dustParticles = new THREE.Group();
@@ -858,7 +832,7 @@ export class Island {
    * candidate is too close to something already placed, jitter around it
    * (up to 10 tries) before accepting the least-bad candidate.
    */
-  public claimDir(candidate: THREE.Vector3, minArc: number): THREE.Vector3 {
+  public claimDir(candidate: THREE.Vector3, minArc: number, maxSlopeRad?: number): THREE.Vector3 {
     let best = candidate.clone().normalize();
     let bestClearance = -1;
     for (let attempt = 0; attempt < 10; attempt++) {
@@ -880,7 +854,20 @@ export class Island {
       for (const o of this.occupiedDirs) {
         clearance = Math.min(clearance, dir.angleTo(o.dir) - o.arc);
       }
-      if (clearance >= minArc) {
+      // Slope check: structures on steep sites bury their uphill corner and
+      // float the downhill one - reject steep candidates so buildings settle
+      // on flat-ish ground.
+      let slopeOk = true;
+      if (typeof maxSlopeRad === 'number') {
+        try {
+          const s = this.sampleSurfacePosition(dir.clone().multiplyScalar(this.radius), 0);
+          const n = (s as { rawNormal?: THREE.Vector3 }).rawNormal ?? s.normal;
+          slopeOk = n.angleTo(dir) <= maxSlopeRad;
+        } catch {
+          slopeOk = true;
+        }
+      }
+      if (clearance >= minArc && slopeOk) {
         this.occupiedDirs.push({ dir, arc: minArc });
         return dir;
       }
@@ -896,7 +883,7 @@ export class Island {
   private sampleSurfacePosition(
     approxPos: THREE.Vector3,
     desiredOffset: number = 0,
-  ): { position: THREE.Vector3; normal: THREE.Vector3 } {
+  ): { position: THREE.Vector3; normal: THREE.Vector3; rawNormal?: THREE.Vector3 } {
     // Enhanced fallback: use nearest point on terrain mesh if available
     const fallbackNormal = approxPos.clone().normalize();
     const fallbackPos = this.center
@@ -983,6 +970,7 @@ export class Island {
         } else {
           normal = point.clone().sub(this.center).normalize();
         }
+        const rawNormal = normal.clone(); // unclamped - used for slope tests
         // Clamp tilt: raw face normals on bumpy terrain deviate wildly from "up",
         // laying large props (stalls, mountains, cars) on their sides. Keep the
         // terrain-sampled position but cap orientation at a slight lean.
@@ -1030,7 +1018,7 @@ export class Island {
             helpers.remove(line);
           }, 2000);
         }
-        return { position: outPos, normal };
+        return { position: outPos, normal, rawNormal };
       }
       return { position: fallbackPos, normal: fallbackNormal };
     } catch {
@@ -1972,13 +1960,13 @@ export class Island {
           ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Chair_1.gltf',
         ],
         randomYaw: true,
-        heightOffset: 0.05,
+        heightOffset: -0.03,
         scaleJitter: 0.2,
       });
       loadAndReplace(basePath + 'mailbox.glb', 'mailbox_', {
         scale: 1,
         randomYaw: true,
-        heightOffset: 0.1,
+        heightOffset: -0.02,
       });
       loadAndReplace(basePath + 'car.glb', 'car_', {
         scale: 1,
@@ -1988,19 +1976,21 @@ export class Island {
       loadAndReplace(basePath + 'lamp.glb', 'lamp', {
         scale: 1,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Lantern_Wall.gltf'],
-        heightOffset: 0.2,
+        heightOffset: -0.04,
         randomYaw: true,
       });
       // Buildings/houses use the intended toon house model (previously these
       // were "replaced" with market-stall kit models, which looked broken)
       loadAndReplace(basePath + 'house.glb', 'building_placeholder_', {
         fitHeight: 5.2,
+        heightOffset: -0.18,
         randomYaw: true,
         scaleJitter: 0.25,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
       });
       loadAndReplace(basePath + 'house.glb', 'house_', {
         fitHeight: 4.7,
+        heightOffset: -0.15,
         randomYaw: true,
         scaleJitter: 0.3,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
@@ -2043,6 +2033,7 @@ export class Island {
                     scale,
                     this.center,
                     this.radius,
+                    (d: THREE.Vector3) => this.sampleSurfaceByDirection(d, 0).position.length(),
                   );
                   this.npcInstances.push(npc);
                   // add NPC group to the same parent as placeholder

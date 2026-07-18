@@ -15,7 +15,9 @@ export class NPC {
   private islandCenter: THREE.Vector3;
   private islandRadius: number;
 
-  constructor(model: THREE.Object3D, animations: THREE.AnimationClip[], position: THREE.Vector3, quaternion: THREE.Quaternion, scale: number, islandCenter: THREE.Vector3, islandRadius: number) {
+  private groundDist: ((dir: THREE.Vector3) => number) | null = null;
+
+  constructor(model: THREE.Object3D, animations: THREE.AnimationClip[], position: THREE.Vector3, quaternion: THREE.Quaternion, scale: number, islandCenter: THREE.Vector3, islandRadius: number, groundDist?: (dir: THREE.Vector3) => number) {
     // deep clone the model for isolation
     this.group = model.clone(true);
     this.group.position.copy(position);
@@ -47,7 +49,21 @@ export class NPC {
     this.basePosition = position.clone();
     this.islandCenter = islandCenter.clone();
     this.islandRadius = islandRadius;
+    this.groundDist = groundDist ?? null;
     this.idleTimer = 1 + Math.random() * 4;
+  }
+
+  /** Distance from island center to the actual terrain along dir (feet offset included). */
+  private surfaceRadiusAt(dir: THREE.Vector3): number {
+    if (this.groundDist) {
+      try {
+        const d = this.groundDist(dir);
+        if (Number.isFinite(d) && d > 0) return d + 0.03;
+      } catch {
+        /* fall through to ideal sphere */
+      }
+    }
+    return this.islandRadius + 0.58;
   }
 
   public update(deltaTime: number) {
@@ -79,7 +95,7 @@ export class NPC {
   const next = current.lerp(this.targetPosition, Math.min(1, deltaTime * 0.9));
       // ensure on surface radius
       const dir = next.clone().sub(this.islandCenter).normalize();
-      const surfacePos = this.islandCenter.clone().add(dir.multiplyScalar(this.islandRadius + 0.58));
+      const surfacePos = this.islandCenter.clone().add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
       this.group.position.copy(surfacePos);
       // orient to surface normal and forward direction
       try {
@@ -130,7 +146,7 @@ export class NPC {
     const offset = right.applyAxisAngle(baseDir, angle).multiplyScalar(dist);
     const candidate = this.basePosition.clone().add(offset);
     const dir = candidate.clone().sub(this.islandCenter).normalize();
-    this.targetPosition = this.islandCenter.clone().add(dir.multiplyScalar(this.islandRadius + 0.58));
+    this.targetPosition = this.islandCenter.clone().add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
     this.state = 'Walk';
     this.walkTimer = 0.6 + Math.random() * 1.2;
     // play walk animation if available
@@ -154,7 +170,7 @@ export class NPC {
     this.idleTimer = 2 + Math.random() * 4;
     // restore base position exactly on surface
     const dir = this.basePosition.clone().sub(this.islandCenter).normalize();
-    const surfacePos = this.islandCenter.clone().add(dir.multiplyScalar(this.islandRadius + 0.58));
+    const surfacePos = this.islandCenter.clone().add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
     this.group.position.copy(surfacePos);
     // play idle animation
     try {

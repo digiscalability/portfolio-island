@@ -237,14 +237,14 @@ export class GameScene extends THREE.Scene {
       const angle = index * 2.399963; // golden angle spread
       const lat = MAILBOX_LATS[index % MAILBOX_LATS.length];
       mailbox.mesh.scale.setScalar(0.55); // real-scale: roadside mailbox, not a monument
-      placeOnSphere(mailbox.mesh, angle, lat, 0.05, 0.3);
+      placeOnSphere(mailbox.mesh, angle, lat, -0.02, 0.3);
     });
 
     result.lamps.forEach((lamp, index) => {
       const angle =
         (index / Math.max(result.lamps.length, 1)) * Math.PI * 2 +
         Math.PI / Math.max(result.lamps.length, 1);
-      placeOnSphere(lamp.group, angle, -0.1, 0.05, 0.25);
+      placeOnSphere(lamp.group, angle, -0.1, -0.04, 0.25);
     });
 
     // Houses: TownPlanner lays them out on a flat grid, which floats them far off
@@ -252,7 +252,7 @@ export class GameScene extends THREE.Scene {
     const HOUSE_LATS = [0.45, -0.5, 0.2, -0.3];
     result.houses.forEach((house, index) => {
       const angle = index * 2.399963 + Math.PI / 5;
-      placeOnSphere(house.mesh, angle, HOUSE_LATS[index % HOUSE_LATS.length], 0, 0.4);
+      placeOnSphere(house.mesh, angle, HOUSE_LATS[index % HOUSE_LATS.length], -0.15, 0.4);
     });
 
     // Replace colliders with sphere-surface positions (TownPlanner placed them at Y=0)
@@ -294,7 +294,7 @@ export class GameScene extends THREE.Scene {
       } catch {
         /* ideal-sphere fallback */
       }
-      obj.position.copy(dir.clone().multiplyScalar(R + 0.02));
+      obj.position.copy(dir.clone().multiplyScalar(R - 0.07)); // roots sunk: bury-not-float
       obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       obj.rotateY(Math.random() * Math.PI * 2); // random yaw around the surface normal
     };
