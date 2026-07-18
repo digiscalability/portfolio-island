@@ -1,5 +1,3 @@
-import * as THREE from 'three';
-
 import { Mailbox } from './Mailbox';
 
 export interface Delivery {
@@ -136,15 +134,6 @@ export class DeliverySystem {
     }
   }
 
-  public addDeliveryToMailbox(deliveryId: string, mailbox: Mailbox): void {
-    const delivery = this.deliveries.find(d => d.id === deliveryId);
-    if (delivery && !delivery.completed) {
-      delivery.destination = mailbox;
-      mailbox.setHasDelivery(true);
-      mailbox.setBubbleText(`📬 ${delivery.message}`);
-    }
-  }
-
   /**
    * Assign every delivery a destination mailbox (round-robin), then light up
    * only the currently unlocked ones. Later deliveries in a chain point at
@@ -187,17 +176,6 @@ export class DeliverySystem {
     if (!delivery) return false;
     this.completeDelivery(delivery);
     return true;
-  }
-
-  public update(playerPosition: THREE.Vector3, actionPressed: boolean): void {
-    for (const delivery of this.activeDeliveries) {
-      if (delivery.completed) continue;
-
-      const distance = delivery.destination.mesh.position.distanceTo(playerPosition);
-      if (distance < 2 && actionPressed) {
-        this.completeDelivery(delivery);
-      }
-    }
   }
 
   private completeDelivery(delivery: Delivery): void {
