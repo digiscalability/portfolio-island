@@ -34,7 +34,7 @@ export class Zone {
     // Align marker to island displaced surface properly
     try {
       const dir = this.position.clone().normalize();
-      const sampled = island.sampleSurfaceByDirection(dir, 0.12); // disc is 0.2 thick, centered
+      const sampled = island.sampleSurfaceByDirection(dir, 0.3); // clear of terrain bumps so ring+pillars never half-bury
       this.marker.position.copy(sampled.position);
       // orient marker up along sampled normal
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), sampled.normal);

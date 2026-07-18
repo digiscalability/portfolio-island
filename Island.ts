@@ -1,4 +1,3 @@
-import type { Texture } from 'three';
 import * as THREE from 'three';
 import type { GLTF, GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
@@ -11,7 +10,6 @@ type IslandMeshUserData = {
   _debugHelpers?: THREE.Group;
 };
 
-type TextureWithEncoding = Texture & { encoding?: number };
 
 type RoadRingUserData = {
   pathRadius: number;
@@ -183,22 +181,12 @@ export class Island {
     geometry.computeVertexNormals();
     geometry.computeBoundingSphere(); // Ensure proper bounding sphere for raycasting
     // Use authored grass textures from the Stylized Nature kit to ground the island in the intended art direction
-    const textureLoader = new THREE.TextureLoader();
-    const grassMap = textureLoader.load(
-      '/assets/textures/Grass.png', // bundled copy — the 434MB assetKits dir is no longer served
-    );
-    if ('colorSpace' in grassMap) {
-      grassMap.colorSpace = THREE.SRGBColorSpace;
-    } else {
-      // Legacy Three.js (<r152) fallback; 3001 === the removed THREE.sRGBEncoding constant
-      (grassMap as TextureWithEncoding).encoding = 3001;
-    }
-    grassMap.wrapS = grassMap.wrapT = THREE.RepeatWrapping;
-    grassMap.repeat.set(6, 6);
-    // Changed color from 0xffffff (pure white) to natural green tint
+    // No tiling texture: Grass.png repeated 6x around the sphere and its dark
+    // tile edges rendered as six meridian stripes converging in ugly pinwheels
+    // at BOTH poles. Clean flat color suits the low-poly look and kills the
+    // artifact entirely.
     const material = Materials.createPBRMaterial({
-      map: grassMap,
-      color: 0x8cc06e, // fresh spring green — the muddy 0x6b8f6b read as swamp
+      color: 0x8cc06e, // fresh spring green
       roughness: 0.85,
       metalness: 0.0,
       envMapIntensity: 0.5,
@@ -520,15 +508,8 @@ export class Island {
       lamps.add(lampLight);
       lampPositions.push(lampHead.position.clone());
     }
-    // Add electric wires between lamps
-    const wireMat = new THREE.LineBasicMaterial({ color: 0x333333 });
-    for (let i = 0; i < lampPositions.length; i++) {
-      const start = lampPositions[i];
-      const end = lampPositions[(i + 1) % lampPositions.length];
-      const wireGeom = new THREE.BufferGeometry().setFromPoints([start, end]);
-      const wire = new THREE.Line(wireGeom, wireMat);
-      lamps.add(wire);
-    }
+    // (Electric wires removed: straight chord lines between lamps cut through
+    // the planet and pierced props — they were designed for a flat town.)
 
     // Tiny NPC placeholders (spheres) near buildings to imply life
     const npcs = new THREE.Group();
@@ -691,8 +672,8 @@ export class Island {
     const mountains = new THREE.Group();
     for (let i = 0; i < 4; i++) {
       const mountain = this.createMountain();
-      const pos = this.claimDir(this.scatterDir(i, 4, 79), 0.65).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, -0.5); // big base sinks into terrain
+      const pos = this.claimDir(this.scatterDir(i, 4, 79), 0.65, 0.3).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, -0.9); // wide base fully bedded into terrain
       mountain.position.copy(sampled.position);
       mountain.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -1069,7 +1050,7 @@ export class Island {
 
       const planeGeom = new THREE.PlaneGeometry(segLength * 1.05, width, 1, 1);
       // prefer a PBR trim/road material and attach generated maps
-      const mat = Materials.createTrimMaterial(0xcbb489); // warm sand path, not dark mud
+      const mat = Materials.createTrimMaterial(0xc9cf9a); // sandy-green worn path
       // Material is guaranteed to be MeshStandardMaterial from createTrimMaterial return type
       if (mat) {
         mat.map = tex;
@@ -1212,7 +1193,7 @@ export class Island {
     const group = new THREE.Group();
     // Cone for peak
     const peakGeom = new THREE.ConeGeometry(4.4, 8.8, 8);
-    const peakMat = Materials.createPBRMaterial({ color: 0x8b8b8b, roughness: 0.9 });
+    const peakMat = Materials.createPBRMaterial({ color: 0xb9bcc2, roughness: 0.9 }); // light granite, not a black mass
     const peak = new THREE.Mesh(peakGeom, peakMat);
     peak.position.set(0, 6.6, 0);
     peak.castShadow = true;
@@ -1220,7 +1201,7 @@ export class Island {
     group.add(peak);
     // Base
     const baseGeom = new THREE.CylinderGeometry(5.4, 6.4, 2.2, 8);
-    const baseMat = Materials.createPBRMaterial({ color: 0x654321, roughness: 0.8 });
+    const baseMat = Materials.createPBRMaterial({ color: 0x8e7452, roughness: 0.85 }); // warm earth tone
     const base = new THREE.Mesh(baseGeom, baseMat);
     base.position.set(0, 1.1, 0);
     base.castShadow = true;
@@ -1255,9 +1236,9 @@ export class Island {
       const decalMat = new THREE.MeshStandardMaterial({
         map: tex || undefined,
         normalMap: normalTex || undefined,
-        color: 0xd8c398, // warm sand tint — untinted road texture rendered as dark mud stripes
+        color: 0xc9cf9a, // sandy-green worn path — blends with grass instead of reading as dark shards
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.45,
         depthTest: true,
         depthWrite: false,
         polygonOffset: true,
@@ -2124,19 +2105,18 @@ export class Island {
               toRemove.forEach((object) => {
                 if (object.parent) object.parent.remove(object);
               });
-              // scatter clones roughly where trees were generated previously: random distribution across island
-              const treeCount = 48;
+              // Trees: even golden-spiral spread through the shared spacing
+              // registry, grounded with sunk roots. The old code put 48 trees
+              // on a flat equatorial ring (y=0, unregistered -> giant merged
+              // groves) floating 0.55-1.25u above the terrain.
+              const treeCount = 26;
               for (let i = 0; i < treeCount; i++) {
-                const angle = Math.random() * Math.PI * 2;
-                const dist = this.radius * 0.45 + Math.random() * (this.radius * 0.45);
-                const p = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
-                const usedScale =
-                  typeof overrides?.scale === 'number'
-                    ? overrides.scale * (0.9 + Math.random() * 0.4)
-                    : 0.9 + Math.random() * 0.4;
+                const dir = this.claimDir(this.scatterDir(i, treeCount, 211), 0.24);
+                const p = dir.clone().multiplyScalar(this.radius);
+                const usedScale = 0.75 + Math.random() * 0.3; // 4.2-5.9u tall
                 const copy = prepareClone(model, usedScale, overrides);
                 try {
-                  this.placeObjectOnSurface(copy, p.clone(), 0.55 + Math.random() * 0.7, true);
+                  this.placeObjectOnSurface(copy, p.clone(), -0.07, true);
                 } catch {
                   /* ignore placement */
                 }
