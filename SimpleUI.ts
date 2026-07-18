@@ -431,82 +431,94 @@ export class SimpleUI {
   private getZoneContent(zone: any): string {
     const contents: { [key: string]: string } = {
       welcome: `
-        <h2 style="margin-top: 0; color: #4CAF50;">🏠 Welcome to DigiScalability Life Island</h2>
-        <p>Your personal 3D portfolio space inspired by Messenger.</p>
-        <p>Explore the island to discover different aspects of my work and life:</p>
+        <h2 style="margin-top: 0; color: #4CAF50;">🏠 Welcome to the DigiScalability World</h2>
+        <p><strong>DigiScalability</strong> is a Melbourne-based venture studio building
+        AI-powered products — and this island is its living 3D portfolio.</p>
+        <p>Walk the planet to explore:</p>
         <ul style="text-align: left; display: inline-block;">
-          <li><strong>Professional Experience</strong> - Career journey and skills</li>
-          <li><strong>Project Portfolio</strong> - Key projects and technologies</li>
-          <li><strong>Personal Life</strong> - Hobbies and interests</li>
-          <li><strong>Contact</strong> - Get in touch</li>
+          <li><strong>Professional Experience</strong> — the builder behind the studio</li>
+          <li><strong>Project Portfolio</strong> — RankPilot, ChocoMate, and more</li>
+          <li><strong>Personal Life</strong> — food, family recipes, creative tools</li>
+          <li><strong>Get In Touch</strong> — work with DigiScalability</li>
         </ul>
-        <p style="margin-top: 20px;"><em>Use WASD to move, mouse to look around, E to interact</em></p>
+        <p style="margin-top: 20px;"><em>WASD to move, mouse to look, E to interact.
+        Glowing mailboxes hold deliveries — follow the quest chain around the world!</em></p>
       `,
       professional: `
         <h2 style="margin-top: 0; color: #2196F3;">💼 Professional Experience</h2>
-        <p>Full-stack developer with expertise in modern web technologies.</p>
-        <h3>Skills & Technologies</h3>
+        <p>Syed Abbas Ali — solo founder & full-stack AI builder. Day job in tech,
+        a venture studio after hours, hospitality management roots.</p>
+        <h3>Core Stack</h3>
         <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin: 20px 0;">
+          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Next.js</span>
           <span style="background: #333; padding: 5px 10px; border-radius: 15px;">TypeScript</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">React</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Node.js</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Three.js</span>
+          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Firebase / GCP</span>
           <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Python</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">AWS</span>
+          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Three.js</span>
+          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">LLM / AI Automation</span>
         </div>
-        <p>Experienced in building scalable web applications, 3D experiences, and AI integrations.</p>
+        <p>Ships end-to-end: product, code, infra, and the AI pipelines that glue
+        them together — n8n automations, local model inference, and agentic tooling.</p>
       `,
       projects: `
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Project Portfolio</h2>
-        <p>Showcase of innovative projects and technical achievements.</p>
         <div style="text-align: left;">
-          <h3>🌍 DigiScalability Life Island</h3>
-          <p><em>Current Project</em> - 3D portfolio experience built with Three.js</p>
-          <ul>
-            <li>Interactive spherical world navigation</li>
-            <li>Quest-based delivery system</li>
-            <li>Real-time 3D rendering with toon shading</li>
-          </ul>
-          <h3>🤖 AI Chat Integration</h3>
-          <p>Gemini API-powered conversational interfaces</p>
-          <h3>☁️ Cloud Infrastructure</h3>
-          <p>Serverless applications on Firebase & AWS</p>
+          <h3>📈 RankPilot</h3>
+          <p><em>Flagship — live</em> — AI-powered SEO & search-visibility platform.
+          Audits, schema, and LLM-readiness for the answer-engine era.</p>
+          <h3>🍫 ChocoMate</h3>
+          <p>Direct-to-consumer chocolate brand — e-commerce build, brand, and
+          content pipeline.</p>
+          <h3>📖 Bano's Cookbook</h3>
+          <p>Digitising a family's 1981 handwritten recipes into a living cookbook
+          app — heritage meets modern web.</p>
+          <h3>🤝 Insta Services</h3>
+          <p>Services marketplace — Java EE API with a full Jetpack Compose
+          Android client.</p>
+          <h3>🌍 This Island</h3>
+          <p>The world you're standing on: Three.js spherical world, sphere-walking
+          physics, Blender-authored assets, quest-driven exploration.</p>
         </div>
       `,
       personal: `
         <h2 style="margin-top: 0; color: #E91E63;">🎨 Personal Life</h2>
-        <p>Beyond coding, I enjoy creative pursuits and continuous learning.</p>
+        <p>Melbourne, Australia. Builder by day and night — but not only of software.</p>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0;">
           <div>
-            <h3>🎵 Music & Audio</h3>
-            <p>Creating ambient soundscapes and exploring generative music</p>
+            <h3>🍽️ Food Ventures</h3>
+            <p>Hospitality management background; exploring kitchen-to-market
+            concepts from steak frites to desserts</p>
           </div>
           <div>
-            <h3>🎮 Gaming</h3>
-            <p>Strategy games, indie development, and game design</p>
+            <h3>👵 Family Heritage</h3>
+            <p>Preserving handwritten family recipes from 1981 — the heart behind
+            Bano's Cookbook</p>
           </div>
           <div>
-            <h3>📚 Learning</h3>
-            <p>Always exploring new technologies and creative coding</p>
+            <h3>🎬 Creative Tooling</h3>
+            <p>Blender, DaVinci Resolve, ComfyUI — a full content studio for
+            product storytelling</p>
           </div>
           <div>
-            <h3>🌱 Growth</h3>
-            <p>Building meaningful connections and contributing to open source</p>
+            <h3>📚 Always Learning</h3>
+            <p>Computer science degree, a Masters of IT nearly done, and a new
+            experiment every week</p>
           </div>
         </div>
       `,
       contact: `
         <h2 style="margin-top: 0; color: #9C27B0;">📬 Get In Touch</h2>
-        <p>Let's connect and discuss opportunities!</p>
+        <p>Work with DigiScalability — product builds, AI automation, SEO/LLM
+        visibility, or something new.</p>
         <div style="margin: 30px 0;">
-          <p><strong>Email:</strong> contact@example.com</p>
-          <p><strong>LinkedIn:</strong> linkedin.com/in/yourprofile</p>
-          <p><strong>GitHub:</strong> github.com/yourusername</p>
-          <p><strong>Portfolio:</strong> yourwebsite.com</p>
+          <p><strong>Web:</strong> digiscalability.com</p>
+          <p><strong>Flagship:</strong> RankPilot — AI search visibility</p>
+          <p><strong>Based in:</strong> Melbourne, Australia</p>
         </div>
         <div style="background: #333; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h3>💬 Quick Chat</h3>
-          <p>Press <strong>C</strong> to open the AI chat assistant for questions about my work or collaborations.</p>
+          <h3>💬 Coming Soon</h3>
+          <p>An AI concierge for instant questions, plus in-world appointment
+          booking — right here on the island.</p>
         </div>
       `,
     };
