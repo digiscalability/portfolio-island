@@ -6,6 +6,15 @@
  */
 export class SimpleInputManager {
   private keys: Set<string> = new Set();
+  // Keys pressed since the game loop last consumed them. Latching presses in the
+  // event handler (instead of polling isKeyPressed) guarantees a fast tap is
+  // never missed even if keydown+keyup both land between two frames.
+  private pressedSinceLastPoll: Set<string> = new Set();
+  // Last keydown timestamp per key. Genuinely held keys re-fire keydown via OS
+  // auto-repeat every ~35ms; a key with no event for STALE_KEY_MS is a phantom
+  // (stray synthetic keydown with no keyup) and gets dropped by purgeStaleKeys.
+  private lastKeyEventAt: Map<string, number> = new Map();
+  private static readonly STALE_KEY_MS = 2000;
   private mouseInput: { x: number; y: number; lastX: number; lastY: number } = {
     x: 0,
     y: 0,
@@ -34,15 +43,31 @@ export class SimpleInputManager {
    */
   private setupKeyboardListeners(): void {
     document.addEventListener('keydown', (e) => {
-      this.keys.add(e.key.toLowerCase());
+      const k = e.key.toLowerCase();
+      this.keys.add(k);
+      this.lastKeyEventAt.set(k, performance.now());
+      // Latch the press edge (ignore OS auto-repeat) for consumeKeyPress()
+      if (!e.repeat) {
+        this.pressedSinceLastPoll.add(k);
+      }
       // Debug: Log first few key presses
       if (this.keys.size <= 3) {
-        console.log('⌨️ Key pressed:', e.key.toLowerCase());
+        console.log('⌨️ Key pressed:', k);
       }
     });
 
     document.addEventListener('keyup', (e) => {
-      this.keys.delete(e.key.toLowerCase());
+      const k = e.key.toLowerCase();
+      this.keys.delete(k);
+      this.lastKeyEventAt.delete(k);
+    });
+
+    // Focus-loss hygiene: if the window blurs (alt-tab, dev tools, automation)
+    // while a key is down, the keyup is never delivered and the key sticks —
+    // the player then "walks on their own" forever. Clear all input state.
+    window.addEventListener('blur', () => this.reset());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this.reset();
     });
   }
 
@@ -105,10 +130,41 @@ export class SimpleInputManager {
   }
 
   /**
+   * Drop keys that stopped sending events (phantom keydowns with no keyup).
+   * Held keys are kept alive by OS auto-repeat.
+   */
+  private purgeStaleKeys(): void {
+    if (this.keys.size === 0) return;
+    const now = performance.now();
+    for (const k of [...this.keys]) {
+      const last = this.lastKeyEventAt.get(k);
+      if (last === undefined || now - last > SimpleInputManager.STALE_KEY_MS) {
+        this.keys.delete(k);
+        this.lastKeyEventAt.delete(k);
+      }
+    }
+  }
+
+  /**
    * Check if a key is pressed
    */
   public isKeyPressed(key: string): boolean {
+    this.purgeStaleKeys();
     return this.keys.has(key.toLowerCase());
+  }
+
+  /**
+   * Consume a latched key press (edge-triggered, auto-repeat-proof).
+   * Returns true at most once per physical press, no matter how the
+   * keydown/keyup timing interleaves with the render loop.
+   */
+  public consumeKeyPress(key: string): boolean {
+    const k = key.toLowerCase();
+    if (this.pressedSinceLastPoll.has(k)) {
+      this.pressedSinceLastPoll.delete(k);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -177,6 +233,8 @@ export class SimpleInputManager {
    */
   public reset(): void {
     this.keys.clear();
+    this.pressedSinceLastPoll.clear();
+    this.lastKeyEventAt.clear();
     this.mouseInput = { x: 0, y: 0, lastX: 0, lastY: 0 };
     this.mouseDelta = { x: 0, y: 0 };
     this.touchInput = { x: 0, y: 0, lastX: 0, lastY: 0 };

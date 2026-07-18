@@ -2,6 +2,7 @@ import { GameScene } from './GameScene';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
+import { DeliverySystem } from './DeliverySystem';
 import './style.css';
 
 /**
@@ -22,8 +23,8 @@ class SimpleApp {
   private scene!: GameScene;
   private inputManager!: SimpleInputManager;
   private ui!: SimpleUI;
+  private deliverySystem!: DeliverySystem;
   private isRunning: boolean = false;
-  private lastInteractAt: number = 0;
 
   // FPS tracking
   private frameCount: number = 0;
@@ -73,7 +74,7 @@ class SimpleApp {
 
       // Create UI first (shows loading screen)
       try {
-        this.ui = new SimpleUI('ui-overlay', canvas);
+        this.ui = new SimpleUI('ui-overlay');
         console.log('✓ UI constructor called with canvas');
         this.ui.showLoading(10);
         console.log('✓ Loading screen shown');
@@ -98,6 +99,32 @@ class SimpleApp {
       await this.scene.ready();
       this.ui.showLoading(90);
       console.log('✓ Scene initialized and ready');
+
+      // Initialize delivery system
+      this.deliverySystem = new DeliverySystem();
+      this.ui.showLoading(95);
+      console.log('✓ Delivery system initialized');
+
+      // Assign the full quest chain across the mailboxes (round-robin) and
+      // route mailbox interaction through the delivery system
+      const mailboxes = this.scene.getMailboxes();
+      this.deliverySystem.assignDestinations(mailboxes);
+      this.scene.setOnMailboxInteract((mailbox) =>
+        this.deliverySystem.collectFromMailbox(mailbox),
+      );
+      console.log(`✓ Quest deliveries assigned across ${mailboxes.length} mailboxes`);
+
+      // Setup quest completion callback
+      this.deliverySystem.setOnQuestComplete((quest) => {
+        console.log(`🎉 Quest "${quest.name}" completed!`);
+        this.ui.showQuestComplete(quest);
+      });
+
+      // Setup zone interaction callback
+      this.scene.setOnZoneInteract((zone) => {
+        console.log(`🎯 Opening zone: ${zone.name}`);
+        this.ui.showZonePanel(zone);
+      });
 
       // Initialize post-processing
       this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
@@ -127,6 +154,9 @@ class SimpleApp {
       // Start render loop
       this.startRenderLoop();
       console.log('✓ Render loop started');
+
+      // Start background music
+      this.startBackgroundMusic();
 
       console.log('🌎 DigiScalability Life Island - Simplified Edition initialized!');
 
@@ -168,6 +198,16 @@ class SimpleApp {
             ? '✨ Bloom enabled (Ctrl+B to toggle).'
             : '✨ Bloom disabled (Ctrl+B to toggle).',
         );
+      } else if (event.key.toLowerCase() === 'c') {
+        // Toggle character customization
+        if (this.ui['customizeDiv']) {
+          this.ui.hideCustomize();
+        } else {
+          this.ui.showCustomize((part, value) => {
+            console.log(`🎨 Changed ${part} to ${value}`);
+            // TODO: Apply customization to player
+          });
+        }
       }
     };
 
@@ -247,14 +287,15 @@ class SimpleApp {
           text = nearby.mailbox.bubbleText || text;
         } else if (nearby.type === 'lamp') {
           text = '💡 Press <strong>E</strong> to toggle lamp';
+        } else if (nearby.type === 'zone') {
+          text = `🎯 Press <strong>E</strong> to explore ${nearby.zone.name}`;
         }
         this.ui.showInteractionPrompt(text);
 
-        // Debounce interactions to avoid repeated triggers while holding E
-        const now = performance.now();
-        if (this.inputManager.isKeyPressed('e') && now - this.lastInteractAt > 300) {
+        // Consume the latched press: fires at most once per physical E press,
+        // immune to both key auto-repeat and taps shorter than one frame.
+        if (this.inputManager.consumeKeyPress('e')) {
           this.scene.interactWith(nearby);
-          this.lastInteractAt = now;
         }
       } else {
         // Hide prompt when not near interactable
@@ -283,6 +324,55 @@ class SimpleApp {
       this.ui.updateFPS(fps);
       this.frameCount = 0;
       this.fpsUpdateInterval = 0;
+    }
+  }
+
+  /**
+   * Start background music
+   */
+  private async startBackgroundMusic(): Promise<void> {
+    try {
+      // Create audio manager if not exists
+      if (!(window as any).audioManager) {
+        (window as any).audioManager = new (await import('./AudioManager')).AudioManager();
+      }
+      const audioManager = (window as any).audioManager;
+
+      // Try to load a background music file
+      // For now, we'll create a simple generative ambient track
+      console.log('🎵 Generating ambient background music...');
+
+      // Create a simple ambient audio buffer
+      const ctx = audioManager.ensureCtx();
+      const sampleRate = ctx.sampleRate;
+      const duration = 120; // 2 minutes
+      const frameCount = sampleRate * duration;
+
+      const buffer = ctx.createBuffer(2, frameCount, sampleRate); // Stereo
+
+      // Generate simple ambient tones
+      for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+        const channelData = buffer.getChannelData(channel);
+        for (let i = 0; i < frameCount; i++) {
+          // Create gentle sine waves with some randomness
+          const t = i / sampleRate;
+          const freq1 = 220 + Math.sin(t * 0.1) * 20; // Slow modulation
+          const freq2 = 330 + Math.sin(t * 0.15) * 30;
+          const wave1 = Math.sin(t * freq1 * 2 * Math.PI) * 0.3;
+          const wave2 = Math.sin(t * freq2 * 2 * Math.PI) * 0.2;
+          const noise = (Math.random() - 0.5) * 0.05; // Subtle noise
+
+          channelData[i] = (wave1 + wave2 + noise) * 0.1; // Low volume
+        }
+      }
+
+      // Load the buffer and play
+      await audioManager.loadAudioBuffer(buffer, 'background_music');
+      audioManager.playBackground('background_music');
+
+      console.log('🎵 Ambient background music started');
+    } catch (error) {
+      console.warn('Failed to start background music:', error);
     }
   }
 
@@ -357,11 +447,20 @@ class SimpleApp {
   }
 }
 
+// Idempotent boot: guard against any double module evaluation (HMR edge cases,
+// prerendered/duplicated page targets) constructing two apps on one canvas.
+const bootState = window as unknown as { __lifeIslandBooted?: boolean };
+const bootApp = () => {
+  if (bootState.__lifeIslandBooted) return;
+  bootState.__lifeIslandBooted = true;
+  new SimpleApp();
+};
+
 // Initialize app when DOM is ready
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => new SimpleApp());
+  document.addEventListener('DOMContentLoaded', bootApp);
 } else {
-  new SimpleApp();
+  bootApp();
 }
 
 // Global debug helpers

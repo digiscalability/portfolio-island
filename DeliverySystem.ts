@@ -1,104 +1,285 @@
+import * as THREE from 'three';
 import { Mailbox } from './Mailbox';
-import { Player } from './Player';
-import { Zone } from './Zones';
 
 export interface Delivery {
   id: string;
-  destination: Mailbox | Zone;
+  destination: Mailbox;
   message: string;
   completed: boolean;
+  reward?: string;
+  questId?: string;
+  unlocks?: string[]; // IDs of deliveries this unlocks
+  requiredDeliveries?: string[]; // IDs that must be completed first
+}
+
+export interface Quest {
+  id: string;
+  name: string;
+  description: string;
+  deliveries: string[]; // Delivery IDs in this quest
+  completed: boolean;
+  reward: {
+    type: 'visual' | 'unlock' | 'message';
+    value: string;
+  };
 }
 
 export class DeliverySystem {
   private deliveries: Delivery[] = [];
-  private currentDeliveryIndex: number = 0;
+  private activeDeliveries: Delivery[] = [];
+  private completedDeliveries: Delivery[] = [];
+  private quests: Quest[] = [];
   private onDeliveryCompleteCallback?: (delivery: Delivery) => void;
-  private onAllDeliveriesCompleteCallback?: () => void;
+  private onQuestCompleteCallback?: (quest: Quest) => void;
 
   constructor() {
-    // Initialize with some placeholder deliveries
-    // In a full implementation, these would be loaded from Firestore or generated dynamically
+    this.initializeQuests();
   }
 
-  public addDelivery(destination: Mailbox | Zone, message: string): void {
-    const delivery: Delivery = {
-      id: this.generateId(),
-      destination,
-      message,
-      completed: false,
-    };
-    this.deliveries.push(delivery);
+  private initializeQuests(): void {
+    // Define quests with chained deliveries
+    this.quests = [
+      {
+        id: 'welcome_quest',
+        name: 'Welcome to the Island',
+        description: 'Complete your first deliveries to get settled.',
+        deliveries: ['welcome_1', 'welcome_2', 'welcome_3'],
+        completed: false,
+        reward: {
+          type: 'message',
+          value: '🏠 Welcome home! You\'ve completed your first deliveries.'
+        }
+      },
+      {
+        id: 'explorer_quest',
+        name: 'Island Explorer',
+        description: 'Explore the island and help the residents.',
+        deliveries: ['explore_1', 'explore_2'],
+        completed: false,
+        reward: {
+          type: 'unlock',
+          value: 'customization_unlocked'
+        }
+      }
+    ];
+
+    // Define deliveries with dependencies
+    const allDeliveries: Delivery[] = [
+      {
+        id: 'welcome_1',
+        destination: null as any, // Will be set when added
+        message: 'Welcome package for new resident!',
+        completed: false,
+        reward: '🏠 Welcome to the island!',
+        questId: 'welcome_quest'
+      },
+      {
+        id: 'welcome_2',
+        destination: null as any,
+        message: 'Essential supplies delivery',
+        completed: false,
+        reward: '📦 Supplies received!',
+        questId: 'welcome_quest',
+        requiredDeliveries: ['welcome_1']
+      },
+      {
+        id: 'welcome_3',
+        destination: null as any,
+        message: 'Final welcome gift',
+        completed: false,
+        reward: '🎁 Special delivery!',
+        questId: 'welcome_quest',
+        requiredDeliveries: ['welcome_2']
+      },
+      {
+        id: 'explore_1',
+        destination: null as any,
+        message: 'Help a neighbor with groceries',
+        completed: false,
+        reward: '🛒 Groceries delivered!',
+        questId: 'explorer_quest',
+        requiredDeliveries: ['welcome_3']
+      },
+      {
+        id: 'explore_2',
+        destination: null as any,
+        message: 'Deliver important documents',
+        completed: false,
+        reward: '📄 Documents delivered!',
+        questId: 'explorer_quest',
+        requiredDeliveries: ['explore_1']
+      }
+    ];
+
+    this.deliveries = allDeliveries;
+    this.updateAvailableDeliveries();
   }
 
-  public update(player: Player, _mailboxes: Mailbox[], actionPressed: boolean): void {
-    if (this.currentDeliveryIndex >= this.deliveries.length) {
-      return; // All deliveries completed
-    }
+  private updateAvailableDeliveries(): void {
+    // Clear current active deliveries
+    this.activeDeliveries = [];
 
-    const currentDelivery = this.deliveries[this.currentDeliveryIndex];
-    if (currentDelivery.completed) {
-      return;
-    }
+    // Check which deliveries are now available
+    for (const delivery of this.deliveries) {
+      if (delivery.completed) continue;
 
-    // Check if player is near the destination mailbox
-    const destination = currentDelivery.destination;
-    if (destination instanceof Mailbox) {
-      if (destination.isNearby(player.getPosition(), 2) && actionPressed) {
-        this.completeDelivery(currentDelivery);
+      // Check if all required deliveries are completed
+      const requirementsMet = !delivery.requiredDeliveries ||
+        delivery.requiredDeliveries.every(reqId =>
+          this.completedDeliveries.some(d => d.id === reqId)
+        );
+
+      if (requirementsMet) {
+        this.activeDeliveries.push(delivery);
+      }
+    }
+  }
+
+  public addDeliveryToMailbox(deliveryId: string, mailbox: Mailbox): void {
+    const delivery = this.deliveries.find(d => d.id === deliveryId);
+    if (delivery && !delivery.completed) {
+      delivery.destination = mailbox;
+      mailbox.setHasDelivery(true);
+      mailbox.setBubbleText(`📬 ${delivery.message}`);
+    }
+  }
+
+  /**
+   * Assign every delivery a destination mailbox (round-robin), then light up
+   * only the currently unlocked ones. Later deliveries in a chain point at
+   * different mailboxes, so the quest walks the player around the island.
+   */
+  public assignDestinations(mailboxes: Mailbox[]): void {
+    if (mailboxes.length === 0) return;
+    this.deliveries.forEach((delivery, index) => {
+      delivery.destination = mailboxes[index % mailboxes.length];
+    });
+    this.syncMailboxState();
+  }
+
+  /**
+   * Reflect delivery availability on the mailboxes: active (unlocked, not yet
+   * completed) deliveries show a bubble + glow, everything else is cleared.
+   */
+  private syncMailboxState(): void {
+    const seen = new Set<Mailbox>();
+    for (const delivery of this.activeDeliveries) {
+      if (delivery.destination) {
+        delivery.destination.setHasDelivery(true);
+        delivery.destination.setBubbleText(`📬 ${delivery.message}`);
+        seen.add(delivery.destination);
+      }
+    }
+    for (const delivery of this.deliveries) {
+      if (delivery.destination && !seen.has(delivery.destination)) {
+        delivery.destination.setHasDelivery(false);
+      }
+    }
+  }
+
+  /**
+   * Player pressed E at a mailbox: complete the active delivery held there.
+   * Returns true if a delivery was collected.
+   */
+  public collectFromMailbox(mailbox: Mailbox): boolean {
+    const delivery = this.activeDeliveries.find(d => d.destination === mailbox);
+    if (!delivery) return false;
+    this.completeDelivery(delivery);
+    return true;
+  }
+
+  public update(playerPosition: THREE.Vector3, actionPressed: boolean): void {
+    for (const delivery of this.activeDeliveries) {
+      if (delivery.completed) continue;
+
+      const distance = delivery.destination.mesh.position.distanceTo(playerPosition);
+      if (distance < 2 && actionPressed) {
+        this.completeDelivery(delivery);
       }
     }
   }
 
   private completeDelivery(delivery: Delivery): void {
     delivery.completed = true;
+    delivery.destination.setHasDelivery(false);
+    delivery.destination.setBubbleText(`✅ ${delivery.reward || 'Delivery complete!'}`);
+
+    // Remove from active list
+    const index = this.activeDeliveries.indexOf(delivery);
+    if (index > -1) {
+      this.activeDeliveries.splice(index, 1);
+    }
+
+    this.completedDeliveries.push(delivery);
+
+    // Reset bubble text after 3 seconds
+    setTimeout(() => {
+      delivery.destination.setBubbleText(undefined);
+    }, 3000);
+
+    console.log(`📬 Completed delivery: ${delivery.message}`);
+
+    // Check if this completes a quest
+    this.checkQuestCompletion(delivery);
+
+    // Update available deliveries (may unlock new ones) and light up
+    // the mailboxes holding the newly unlocked deliveries
+    this.updateAvailableDeliveries();
+    this.syncMailboxState();
 
     if (this.onDeliveryCompleteCallback) {
       this.onDeliveryCompleteCallback(delivery);
     }
+  }
 
-    this.currentDeliveryIndex++;
+  private checkQuestCompletion(completedDelivery: Delivery): void {
+    if (!completedDelivery.questId) return;
 
-    if (this.currentDeliveryIndex >= this.deliveries.length) {
-      if (this.onAllDeliveriesCompleteCallback) {
-        this.onAllDeliveriesCompleteCallback();
+    const quest = this.quests.find(q => q.id === completedDelivery.questId);
+    if (!quest || quest.completed) return;
+
+    // Check if all deliveries in this quest are completed
+    const questCompleted = quest.deliveries.every(deliveryId =>
+      this.completedDeliveries.some(d => d.id === deliveryId)
+    );
+
+    if (questCompleted) {
+      quest.completed = true;
+      console.log(`🎉 Quest completed: ${quest.name}`);
+      console.log(`🏆 Reward: ${quest.reward.value}`);
+
+      if (this.onQuestCompleteCallback) {
+        this.onQuestCompleteCallback(quest);
       }
     }
   }
 
-  public getCurrentDelivery(): Delivery | null {
-    if (this.currentDeliveryIndex < this.deliveries.length) {
-      return this.deliveries[this.currentDeliveryIndex];
-    }
-    return null;
+  public getActiveDeliveries(): Delivery[] {
+    return this.activeDeliveries;
   }
 
   public getCompletedCount(): number {
-    return this.deliveries.filter((d) => d.completed).length;
+    return this.completedDeliveries.length;
   }
 
-  public getTotalCount(): number {
-    return this.deliveries.length;
+  public getQuests(): Quest[] {
+    return this.quests;
   }
 
-  public isAllComplete(): boolean {
-    return this.currentDeliveryIndex >= this.deliveries.length;
+  public getActiveQuests(): Quest[] {
+    return this.quests.filter(q => !q.completed);
   }
 
-  public onDeliveryComplete(callback: (delivery: Delivery) => void): void {
+  public getCompletedQuests(): Quest[] {
+    return this.quests.filter(q => q.completed);
+  }
+
+  public setOnQuestComplete(callback: (quest: Quest) => void): void {
+    this.onQuestCompleteCallback = callback;
+  }
+
+  public setOnDeliveryComplete(callback: (delivery: Delivery) => void): void {
     this.onDeliveryCompleteCallback = callback;
-  }
-
-  public onAllDeliveriesComplete(callback: () => void): void {
-    this.onAllDeliveriesCompleteCallback = callback;
-  }
-
-  private generateId(): string {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  public reset(): void {
-    this.deliveries = [];
-    this.currentDeliveryIndex = 0;
   }
 }
 

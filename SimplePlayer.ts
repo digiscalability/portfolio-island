@@ -21,12 +21,21 @@ export class SimplePlayer extends THREE.Group {
 
   private yaw: number = 0; // rotation around Y axis
 
-  private speed: number = 18; // movement speed (faster)
+  private speed: number = 5.5; // movement speed (~20s to cross the island — was 18, which circled the planet in 6s)
   private jumpForce: number = 8;
   private gravityStrength: number = 25; // gravitational acceleration
 
   private isGrounded: boolean = false;
-  private groundLevel: number = 0; // Y position of ground
+  private groundLevel: number = 0; // Y position of ground (flat mode only)
+
+  // Spherical planet physics
+  private planetCenter: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+  private planetRadius: number = 0; // 0 = flat ground mode
+
+  // Optional terrain sampler: given the outward unit direction, returns the
+  // distance from planet center to the actual (displaced) terrain surface.
+  // Without it, grounding falls back to the ideal sphere radius.
+  private groundSampler: ((outwardDir: THREE.Vector3) => number) | null = null;
 
   private moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
   private wantJump: boolean = false;
@@ -34,6 +43,8 @@ export class SimplePlayer extends THREE.Group {
   // GLTF model support
   private gltfModel: THREE.Group | null = null;
   private animationMixer: THREE.AnimationMixer | null = null;
+  private idleAction: THREE.AnimationAction | null = null;
+  private walkAction: THREE.AnimationAction | null = null;
 
   constructor() {
     super();
@@ -84,26 +95,45 @@ export class SimplePlayer extends THREE.Group {
   }
 
   /**
+   * Set spherical planet for physics. Call from GameScene after construction.
+   */
+  public setPlanet(center: THREE.Vector3, radius: number): void {
+    this.planetCenter = center.clone();
+    this.planetRadius = radius;
+  }
+
+  /**
+   * Provide a terrain height sampler so grounding follows the displaced
+   * terrain instead of the ideal sphere (hills rise ~4 units above radius).
+   */
+  public setGroundSampler(sampler: (outwardDir: THREE.Vector3) => number): void {
+    this.groundSampler = sampler;
+  }
+
+  /**
+   * Get the surface normal at the player's current position (away from planet center).
+   * Returns (0,1,0) in flat-ground mode.
+   */
+  public getSurfaceNormal(): THREE.Vector3 {
+    if (this.planetRadius <= 0) return new THREE.Vector3(0, 1, 0);
+    const n = this.playerPosition.clone().sub(this.planetCenter);
+    const len = n.length();
+    if (len < 0.001) return new THREE.Vector3(0, 1, 0);
+    return n.divideScalar(len);
+  }
+
+  /**
    * Attempt to load GLTF character model (async, non-blocking)
    */
   private async loadGLTFCharacter(): Promise<void> {
     try {
       console.log('🎭 Loading GLTF character model...');
 
-      const gltfResult = await loadGLTFWithFallbacks('/assets/models/player.gltf', {
-        candidates: [
-          '/assets/models/Superhero_Male.gltf',
-          '/assets/models/Superhero_Female.gltf',
-          '/assetKits/Universal Base Characters[Standard]/Base Characters/Unreal Engine/Superhero_Male.gltf',
-          '/assetKits/Universal Base Characters[Standard]/Base Characters/Unreal Engine/Superhero_Female.gltf',
-          '/assetKits/Universal Base Characters[Standard]/glTF/Superhero_Male.gltf',
-          '/assetKits/Universal Base Characters[Standard]/glTF/Superhero_Female.gltf',
-        ],
-        scale: 0.8, // Scale to appropriate size for the scene
-        overrides: {
-          envMapIntensity: 0.7,
-          roughnessScale: 1.0,
-        },
+      // Intended toon player (Blender-authored, rigged with Idle+Walk clips).
+      // The old Superhero kit fallbacks (12.6k tris + ~15MB of 4K textures)
+      // are gone; if this fails the primitive capsule mesh remains.
+      const gltfResult = await loadGLTFWithFallbacks('/assets/models/player.glb', {
+        scale: 1.35, // read clearly at third-person camera distance
       });
 
       if (gltfResult) {
@@ -114,16 +144,52 @@ export class SimplePlayer extends THREE.Group {
         this.gltfModel = gltfResult.scene;
         this.add(this.gltfModel);
 
-        // Setup animations
-        this.animationMixer = setupModelAnimation(gltfResult.scene, gltfResult.animations, 'idle');
+        // Self-calibrate: place the model's feet at local -playerHeight (0.7)
+        // regardless of where the exporter put the mesh origin (bbox already
+        // reflects the scale applied by the loader).
+        try {
+          const box = new THREE.Box3().setFromObject(this.gltfModel);
+          if (Number.isFinite(box.min.y)) {
+            this.gltfModel.position.y += -0.7 - box.min.y;
+          }
+        } catch {
+          /* keep default placement */
+        }
+
+        // Skinned meshes are culled against their rest-pose bounds; on a small
+        // planet the camera regularly proves those bounds wrong — disable.
+        this.gltfModel.traverse((obj) => {
+          if ((obj as THREE.SkinnedMesh).isSkinnedMesh) obj.frustumCulled = false;
+        });
+
+        // Setup animations: keep idle+walk actions for speed-based blending
+        if (gltfResult.animations.length > 0) {
+          this.animationMixer = new THREE.AnimationMixer(gltfResult.scene);
+          const idleClip = gltfResult.animations.find((c) => /idle/i.test(c.name));
+          const walkClip = gltfResult.animations.find((c) => /walk|run/i.test(c.name));
+          if (idleClip) {
+            this.idleAction = this.animationMixer.clipAction(idleClip);
+            this.idleAction.play();
+          }
+          if (walkClip) {
+            this.walkAction = this.animationMixer.clipAction(walkClip);
+            this.walkAction.setEffectiveWeight(0);
+            this.walkAction.play();
+          }
+          if (!this.idleAction && !this.walkAction) {
+            this.animationMixer = setupModelAnimation(gltfResult.scene, gltfResult.animations, 'idle');
+          }
+        }
 
         // Enable shadows
-        this.gltfModel.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) {
-            obj.castShadow = true;
-            obj.receiveShadow = true;
-          }
-        });
+        if (this.gltfModel) {
+          this.gltfModel.traverse((obj) => {
+            if (obj instanceof THREE.Mesh) {
+              obj.castShadow = true;
+              obj.receiveShadow = true;
+            }
+          });
+        }
 
         console.log(`✅ Loaded GLTF character from: ${gltfResult.loadedUrl}`);
       }
@@ -142,9 +208,14 @@ export class SimplePlayer extends THREE.Group {
     // Clamp delta time to prevent large jumps
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.02));
 
-    // Apply gravity
-    this.acceleration.set(0, -this.gravityStrength, 0);
-    this.velocity.addScaledVector(this.acceleration, safeDeltaTime);
+    // Apply gravity (spherical toward planet center, or flat -Y)
+    if (this.planetRadius > 0) {
+      const gravDir = this.planetCenter.clone().sub(this.playerPosition).normalize();
+      this.velocity.addScaledVector(gravDir, this.gravityStrength * safeDeltaTime);
+    } else {
+      this.acceleration.set(0, -this.gravityStrength, 0);
+      this.velocity.addScaledVector(this.acceleration, safeDeltaTime);
+    }
 
     // Clamp velocity to prevent infinite speeds
     const maxVelocity = 50;
@@ -178,6 +249,21 @@ export class SimplePlayer extends THREE.Group {
       this.wantJump = false;
     }
 
+    // Blend idle/walk by tangential speed. Weights are set directly every
+    // frame (no fadeIn/fadeOut scheduling — interleaved fades can strand both
+    // actions at weight 0 when the speed oscillates around the threshold).
+    if (this.idleAction && this.walkAction) {
+      const normal = this.getSurfaceNormal();
+      const vTangent = this.velocity
+        .clone()
+        .sub(normal.clone().multiplyScalar(this.velocity.dot(normal)));
+      const target = vTangent.length() > 0.8 ? 1 : 0;
+      const k = Math.min(1, 10 * safeDeltaTime);
+      const w = THREE.MathUtils.lerp(this.walkAction.getEffectiveWeight(), target, k);
+      this.walkAction.setEffectiveWeight(w);
+      this.idleAction.setEffectiveWeight(1 - w);
+    }
+
     // Update GLTF animations
     if (this.animationMixer) {
       this.animationMixer.update(safeDeltaTime);
@@ -191,19 +277,49 @@ export class SimplePlayer extends THREE.Group {
    * Check ground state and apply ground sticking
    */
   private updateGroundState(): void {
-    const playerHeight = 0.7; // distance from ground to player center
+    const playerHeight = 0.7;
 
-    if (this.playerPosition.y <= this.groundLevel + playerHeight) {
-      if (!this.isGrounded) {
-        // Just landed
-        this.isGrounded = true;
-        this.velocity.y = 0; // Kill velocity
+    if (this.planetRadius > 0) {
+      // Spherical ground: keep player on the terrain surface. When a ground
+      // sampler is attached, follow the actual displaced terrain (hills and
+      // valleys); otherwise fall back to the ideal sphere radius.
+      const toPlayer = this.playerPosition.clone().sub(this.planetCenter);
+      const dist = toPlayer.length();
+      const surfaceNormal = toPlayer.clone().divideScalar(dist);
+      let terrainDist = this.planetRadius;
+      if (this.groundSampler) {
+        try {
+          const sampled = this.groundSampler(surfaceNormal);
+          if (Number.isFinite(sampled) && sampled > 0) terrainDist = sampled;
+        } catch {
+          // keep sphere fallback
+        }
       }
+      const groundDist = terrainDist + playerHeight;
 
-      // Stick to ground
-      this.playerPosition.y = this.groundLevel + playerHeight;
+      if (dist <= groundDist) {
+        this.isGrounded = true;
+        // Cancel velocity component going into the planet
+        const velInto = this.velocity.dot(surfaceNormal);
+        if (velInto < 0) {
+          this.velocity.addScaledVector(surfaceNormal, -velInto);
+        }
+        // Snap exactly to surface
+        this.playerPosition.copy(surfaceNormal.multiplyScalar(groundDist));
+      } else {
+        this.isGrounded = false;
+      }
     } else {
-      this.isGrounded = false;
+      // Flat ground
+      if (this.playerPosition.y <= this.groundLevel + playerHeight) {
+        if (!this.isGrounded) {
+          this.isGrounded = true;
+          this.velocity.y = 0;
+        }
+        this.playerPosition.y = this.groundLevel + playerHeight;
+      } else {
+        this.isGrounded = false;
+      }
     }
   }
 
@@ -226,36 +342,59 @@ export class SimplePlayer extends THREE.Group {
     }
 
     // moveInput is already in world space (from GameScene.setPlayerMovement)
-    // Just apply speed smoothly for better feel
     const moveDir = this.moveInput.clone();
 
-    // Normalize safely
+    // For spherical world, project move direction onto tangent plane
+    if (this.planetRadius > 0) {
+      const normal = this.getSurfaceNormal();
+      moveDir.sub(normal.clone().multiplyScalar(moveDir.dot(normal)));
+    }
+
     const moveLength = moveDir.length();
     if (moveLength > 0.01) {
       moveDir.normalize();
     } else {
-      this.velocity.x = 0;
-      this.velocity.z = 0;
+      this.stopMovement();
       return;
     }
 
-    // Target horizontal velocity
-    const targetVX = moveDir.x * this.speed;
-    const targetVZ = moveDir.z * this.speed;
-
-    // Smooth acceleration towards target (instant stop handled elsewhere)
     const accelRate = 12; // units per second to blend towards target
     const t = Math.min(1, accelRate * Math.max(0.001, _deltaTime));
-    this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, targetVX, t);
-    this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, targetVZ, t);
+
+    if (this.planetRadius > 0) {
+      // Spherical world: the tangent direction is a full 3D vector (it has a
+      // Y component almost everywhere on the sphere). Decompose velocity into
+      // normal + tangential parts, steer ONLY the tangential part toward the
+      // move target, and preserve the normal part (gravity/jump).
+      // (The old code lerped velocity.x/z only, which is not tangent to the
+      // sphere away from the poles — walking used to launch the player off
+      // the planet and bend paths into orbits.)
+      const normal = this.getSurfaceNormal();
+      const vNormal = normal.clone().multiplyScalar(this.velocity.dot(normal));
+      const vTangent = this.velocity.clone().sub(vNormal);
+      const target = moveDir.clone().multiplyScalar(this.speed); // moveDir already tangent-projected
+      vTangent.lerp(target, t);
+      this.velocity.copy(vTangent.add(vNormal));
+    } else {
+      // Flat ground: steer horizontal components, gravity owns Y
+      this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, moveDir.x * this.speed, t);
+      this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, moveDir.z * this.speed, t);
+    }
   }
 
   /**
-   * Stop movement immediately
+   * Stop movement immediately (zero the tangential velocity, keep the
+   * normal/vertical part so gravity and jumps still resolve)
    */
   private stopMovement(): void {
-    this.velocity.x = 0;
-    this.velocity.z = 0;
+    if (this.planetRadius > 0) {
+      const normal = this.getSurfaceNormal();
+      const vNormal = normal.multiplyScalar(this.velocity.dot(normal));
+      this.velocity.copy(vNormal);
+    } else {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+    }
     this.moveInput.set(0, 0, 0);
   }
 
@@ -268,11 +407,30 @@ export class SimplePlayer extends THREE.Group {
   }
 
   /**
+   * Set movement as a full world-space direction vector. On a sphere the
+   * tangent direction has a Y component almost everywhere; passing only the
+   * X/Z components (the old path) collapsed input to zero near latitudes
+   * where the tangent points mostly up/down — the player couldn't cross
+   * those bands. applyMovement projects this onto the tangent plane.
+   */
+  public setMovementVector(dir: THREE.Vector3): void {
+    this.moveInput.copy(dir);
+    this.moveInput.clampLength(0, 1);
+  }
+
+  /**
    * Request jump
    */
   public jump(): void {
     if (this.isGrounded) {
-      this.wantJump = true;
+      if (this.planetRadius > 0) {
+        // Jump away from planet surface
+        const surfaceNormal = this.getSurfaceNormal();
+        this.velocity.addScaledVector(surfaceNormal, this.jumpForce);
+        this.isGrounded = false;
+      } else {
+        this.wantJump = true;
+      }
     }
   }
 
@@ -288,6 +446,13 @@ export class SimplePlayer extends THREE.Group {
    */
   public getWorldPosition(): THREE.Vector3 {
     return this.playerPosition.clone();
+  }
+
+  /**
+   * Get current velocity (world space)
+   */
+  public getVelocity(): THREE.Vector3 {
+    return this.velocity.clone();
   }
 
   /**
@@ -319,13 +484,29 @@ export class SimplePlayer extends THREE.Group {
   }
 
   /**
-   * Update world matrix from position
+   * Update world matrix from position — orients player to stand upright on sphere surface
    */
   public updateWorldMatrix(): void {
     this.position.copy(this.playerPosition);
-    this.rotation.order = 'YXZ';
-    this.rotation.y = this.yaw;
-    this.rotation.x = 0;
+
+    if (this.planetRadius > 0) {
+      // Align player "up" with surface normal, then yaw around that normal
+      const surfaceNormal = this.getSurfaceNormal();
+      const worldUp = new THREE.Vector3(0, 1, 0);
+
+      // Quaternion that rotates world-Y onto the surface normal
+      const alignQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, surfaceNormal);
+
+      // Yaw rotation around surface normal
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(surfaceNormal, this.yaw);
+
+      this.quaternion.multiplyQuaternions(yawQuat, alignQuat);
+    } else {
+      this.rotation.order = 'YXZ';
+      this.rotation.y = this.yaw;
+      this.rotation.x = 0;
+    }
+
     this.updateMatrix();
     this.updateMatrixWorld(true);
   }

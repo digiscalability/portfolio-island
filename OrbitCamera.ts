@@ -22,8 +22,8 @@ export class OrbitCamera {
   private targetPosition: THREE.Vector3 = new THREE.Vector3();
   private cameraPosition: THREE.Vector3 = new THREE.Vector3();
 
-  private distance: number = 9; // distance from player (farther for better view)
-  private height: number = 3.8; // height above player (more elevated)
+  private distance: number = 6.5; // close enough that the player reads clearly
+  private height: number = 3.0; // height above player
 
   private yaw: number = 0; // horizontal rotation around player
   private pitch: number = -0.35; // vertical tilt (looking slightly downward at player)
@@ -45,33 +45,109 @@ export class OrbitCamera {
   private minHeight: number = 0.8; // Minimum height to keep ground visible
   private maxHeight: number = 8;
 
+  // World-space unit vector pointing from the player BACK toward the camera,
+  // kept tangent to the sphere via parallel transport each frame. This replaces
+  // the old world-anchored yaw frame, which made the camera sit at a fixed
+  // world azimuth instead of following behind the player around the planet.
+  private followDir: THREE.Vector3 | null = null;
+  private followStrength: number = 2.5; // how quickly the camera swings behind motion
+
+  // Optional terrain mesh for camera collision (pull in when a hill blocks view)
+  private collisionMesh: THREE.Mesh | null = null;
+  private raycaster: THREE.Raycaster = new THREE.Raycaster();
+
   constructor(camera: THREE.Camera, player: SimplePlayer) {
     this.camera = camera;
     this.player = player;
 
     // Initialize camera position
-    this.updateCameraPosition();
+    this.updateCameraPosition(0);
   }
 
   /**
-   * Update camera position based on player and orbit angles
-   * Proper RPG third-person positioning: camera stays close to player, looks at torso
+   * Provide the terrain mesh so the camera can avoid clipping through hills.
    */
-  private updateCameraPosition(): void {
+  public setCollisionMesh(mesh: THREE.Mesh | undefined): void {
+    this.collisionMesh = mesh ?? null;
+  }
+
+  /**
+   * Update camera position based on player and orbit state.
+   * Spherical-aware: uses the planet surface normal as "up" and keeps a
+   * parallel-transported follow direction so the camera trails the player.
+   */
+  private updateCameraPosition(deltaTime: number): void {
     const playerPos = this.player.getWorldPosition();
+    const surfaceNormal = this.player.getSurfaceNormal(); // "up" at player's location
 
-    // Target is at player's torso level (not above head)
-    this.targetPosition.copy(playerPos);
-    this.targetPosition.y += this.height;
+    // --- Maintain the tangent follow direction ---
+    if (!this.followDir) {
+      const seed = new THREE.Vector3(0, 0, 1);
+      if (Math.abs(surfaceNormal.dot(seed)) > 0.9) seed.set(1, 0, 0);
+      this.followDir = seed;
+    }
+    // Parallel transport: re-project onto the current tangent plane
+    this.followDir
+      .sub(surfaceNormal.clone().multiplyScalar(this.followDir.dot(surfaceNormal)));
+    if (this.followDir.lengthSq() < 1e-6) {
+      // Degenerate after projection — re-seed
+      const seed = new THREE.Vector3(1, 0, 0);
+      this.followDir
+        .copy(seed)
+        .sub(surfaceNormal.clone().multiplyScalar(seed.dot(surfaceNormal)));
+    }
+    this.followDir.normalize();
 
-    // Calculate camera position orbiting around player
-    // Use standard spherical coordinates for predictable third-person feel
-    const horizontalDistance = this.distance * Math.cos(this.pitch);
-    this.cameraPosition.set(
-      this.targetPosition.x + Math.sin(this.yaw) * horizontalDistance,
-      this.targetPosition.y + Math.sin(this.pitch) * this.distance,
-      this.targetPosition.z + Math.cos(this.yaw) * horizontalDistance,
-    );
+    // Manual orbit: user yaw input rotates the follow direction around "up"
+    if (Math.abs(this.yawVelocity) > 1e-5 && deltaTime > 0) {
+      const yawQuat = new THREE.Quaternion().setFromAxisAngle(
+        surfaceNormal,
+        this.yawVelocity * deltaTime,
+      );
+      this.followDir.applyQuaternion(yawQuat);
+    }
+
+    // Auto-follow: swing behind the player's tangential motion
+    if (deltaTime > 0) {
+      const vel = this.player.getVelocity();
+      const vTangent = vel.sub(surfaceNormal.clone().multiplyScalar(vel.dot(surfaceNormal)));
+      if (vTangent.lengthSq() > 0.25) {
+        const desired = vTangent.normalize().negate(); // behind the motion
+        const k = Math.min(1, this.followStrength * deltaTime);
+        this.followDir.lerp(desired, k).normalize();
+      }
+    }
+
+    // --- Build the camera ray (pitch around the tangent right axis) ---
+    const right = surfaceNormal.clone().cross(this.followDir).normalize();
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, this.pitch);
+    const cameraDir = this.followDir.clone().applyQuaternion(pitchQuat).normalize();
+
+    // Target point: player + up*height (toward torso level)
+    this.targetPosition.copy(playerPos).addScaledVector(surfaceNormal, this.height * 0.5);
+
+    // Camera collision: pull in when terrain blocks the view ray
+    let effectiveDistance = this.distance;
+    if (this.collisionMesh) {
+      try {
+        this.raycaster.set(this.targetPosition, cameraDir);
+        this.raycaster.far = this.distance + 0.5;
+        const hits = this.raycaster.intersectObject(this.collisionMesh, false);
+        if (hits.length > 0 && hits[0].distance < this.distance) {
+          effectiveDistance = Math.max(this.minDistance, hits[0].distance * 0.9);
+        }
+      } catch {
+        // collision is best-effort; keep full distance on raycast issues
+      }
+    }
+
+    // Camera position
+    this.cameraPosition
+      .copy(this.targetPosition)
+      .addScaledVector(cameraDir, effectiveDistance);
+
+    // Set camera up to match surface normal for correct lookAt()
+    this.camera.up.copy(surfaceNormal);
   }
 
   /**
@@ -98,8 +174,8 @@ export class OrbitCamera {
     this.yawVelocity *= this.damping;
     this.pitchVelocity *= this.damping;
 
-    // Update angles safely
-    this.yaw += this.yawVelocity * safeDeltaTime;
+    // Yaw is applied to the follow direction inside updateCameraPosition;
+    // pitch accumulates here as before.
     this.pitch += this.pitchVelocity * safeDeltaTime;
 
     // Clamp pitch to valid range
@@ -110,7 +186,7 @@ export class OrbitCamera {
     this.height = Math.max(this.minHeight, Math.min(this.maxHeight, this.height));
 
     // Update camera position
-    this.updateCameraPosition();
+    this.updateCameraPosition(safeDeltaTime);
 
     // Smooth transition of camera
     const currentCamPos = new THREE.Vector3();
@@ -118,7 +194,7 @@ export class OrbitCamera {
 
     // Safety check: ensure values are finite
     if (!Number.isFinite(currentCamPos.x)) currentCamPos.copy(this.cameraPosition);
-    if (!Number.isFinite(this.cameraPosition.x)) this.updateCameraPosition();
+    if (!Number.isFinite(this.cameraPosition.x)) this.updateCameraPosition(0);
 
     currentCamPos.lerp(this.cameraPosition, this.smoothness);
 
@@ -198,24 +274,26 @@ export class OrbitCamera {
   }
 
   /**
-   * Get camera forward direction (towards target)
+   * Get camera forward direction projected onto the planet tangent plane
    */
   public getForwardDirection(): THREE.Vector3 {
-    const forward = this.targetPosition.clone().sub(this.cameraPosition).normalize();
-    return forward;
+    const surfaceNormal = this.player.getSurfaceNormal();
+    const raw = this.targetPosition.clone().sub(this.cameraPosition).normalize();
+    // Project onto tangent plane so movement stays on the surface
+    const projected = raw.sub(surfaceNormal.clone().multiplyScalar(raw.dot(surfaceNormal)));
+    const len = projected.length();
+    return len > 0.001 ? projected.divideScalar(len) : raw;
   }
 
   /**
-   * Get camera right direction
+   * Get camera right direction projected onto the planet tangent plane
    */
   public getRightDirection(): THREE.Vector3 {
+    const surfaceNormal = this.player.getSurfaceNormal();
     const forward = this.getForwardDirection();
-    // Use forward × up to compute a true right vector (not inverted)
-    const right = forward
-      .clone()
-      .cross(new THREE.Vector3(0, 1, 0))
-      .normalize();
-    return right;
+    // up × forward gives the LEFTWARD vector — negate for rightward.
+    // (This negation was documented but missing: A/D were inverted.)
+    return surfaceNormal.clone().cross(forward).normalize().negate();
   }
 
   /**

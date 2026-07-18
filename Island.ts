@@ -185,23 +185,23 @@ export class Island {
     // Use authored grass textures from the Stylized Nature kit to ground the island in the intended art direction
     const textureLoader = new THREE.TextureLoader();
     const grassMap = textureLoader.load(
-      '/assetKits/Stylized Nature MegaKit[Standard]/Textures/Grass.png',
+      '/assets/textures/Grass.png', // bundled copy — the 434MB assetKits dir is no longer served
     );
     if ('colorSpace' in grassMap) {
       grassMap.colorSpace = THREE.SRGBColorSpace;
     } else {
-      const srgbEncoding = (THREE as unknown as { sRGBEncoding?: number }).sRGBEncoding ?? 3001;
-      (grassMap as TextureWithEncoding).encoding = srgbEncoding;
+      // Legacy Three.js (<r152) fallback; 3001 === the removed THREE.sRGBEncoding constant
+      (grassMap as TextureWithEncoding).encoding = 3001;
     }
     grassMap.wrapS = grassMap.wrapT = THREE.RepeatWrapping;
     grassMap.repeat.set(6, 6);
     // Changed color from 0xffffff (pure white) to natural green tint
     const material = Materials.createPBRMaterial({
       map: grassMap,
-      color: 0x6b8f6b,
-      roughness: 0.78,
-      metalness: 0.02,
-      envMapIntensity: 0.65,
+      color: 0x8cc06e, // fresh spring green — the muddy 0x6b8f6b read as swamp
+      roughness: 0.85,
+      metalness: 0.0,
+      envMapIntensity: 0.5,
     });
 
     const mesh = new THREE.Mesh(geometry, material);
@@ -268,7 +268,9 @@ export class Island {
         sampled.normal,
         Math.random() * Math.PI * 2,
       );
-      b.quaternion.multiply(spin);
+      // premultiply: spin is a WORLD-space rotation about the surface normal.
+      // (multiply would apply it in local space and tilt the object off the normal)
+      b.quaternion.premultiply(spin);
       b.castShadow = true;
       b.receiveShadow = true;
       b.name = `building_placeholder_${i}`;
@@ -348,7 +350,8 @@ export class Island {
         sampled.normal,
         Math.random() * Math.PI * 2,
       );
-      house.quaternion.multiply(spin);
+      // premultiply: world-space spin about the normal (multiply = local-space tilt bug)
+      house.quaternion.premultiply(spin);
       house.position.copy(sampled.position);
       // Houses are already positioned by sampleSurfacePosition - no additional offset needed
       house.name = `house_${i}`;
@@ -455,7 +458,7 @@ export class Island {
       const approx = sampled.position
         .clone()
         .add(tangent.multiplyScalar(0.8 + Math.random() * 0.4));
-      const placement = this.sampleSurfacePosition(approx, 0.25);
+      const placement = this.sampleSurfacePosition(approx, 0.03); // NPC feet on the ground (0.25 floated them)
 
       const mb = new THREE.Mesh(
         new THREE.BoxGeometry(0.18, 0.24, 0.12),
@@ -467,7 +470,8 @@ export class Island {
         placement.normal,
       );
       mb.quaternion.copy(q);
-      mb.quaternion.multiply(
+      // premultiply: world-space spin about the normal (multiply = local-space tilt bug)
+      mb.quaternion.premultiply(
         new THREE.Quaternion().setFromAxisAngle(placement.normal, Math.random() * Math.PI * 2),
       );
       mb.name = `mailbox_${i}`;
@@ -481,12 +485,10 @@ export class Island {
     // Add stairs near some houses for access to "higher" ground
     const stairs = new THREE.Group();
     for (let i = 0; i < 4; i++) {
-      const theta = ((i + 0.25) / 4) * Math.PI * 2;
-      const r = (pathGroup.userData?.pathRadius || this.radius * 0.9) - 1.2;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
+      const pos = this.scatterDir(i, 4, 3).multiplyScalar(this.radius);
       const stair = this.createStairs();
       try {
-        this.placeObjectOnSurface(stair, pos, 0.8, true);
+        this.placeObjectOnSurface(stair, pos, 0.05, true);
       } catch {
         /* ignore placement issues */
       }
@@ -500,10 +502,7 @@ export class Island {
     const lamps = new THREE.Group();
     const lampPositions: THREE.Vector3[] = [];
     for (let i = 0; i < 6; i++) {
-      const theta = (i / 6) * Math.PI * 2;
-      const baseRoadRadius = pathGroup.userData?.pathRadius || roadRadius;
-      const r = baseRoadRadius + 0.45 + Math.sin(theta * 2) * 0.12;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
+      const pos = this.scatterDir(i, 6, 17).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       const lampPost = new THREE.Mesh(
         new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8),
@@ -614,12 +613,8 @@ export class Island {
     const water = new THREE.Mesh(waterGeom, waterMat);
     water.position.set(0, 0.55, 0);
     fountain.add(water);
-    fountain.position.set(0, this.radius + 0.3, 0);
-    const fountainQ = new THREE.Quaternion().setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0),
-      new THREE.Vector3(0, 1, 0),
-    ); // flat
-    fountain.quaternion.copy(fountainQ);
+    // Seat the fountain on the actual terrain at the pole (was radius+0.3 → floated)
+    this.placeObjectOnSurface(fountain, new THREE.Vector3(0, this.radius, 0), 0.02, true);
 
     // Add a central statue for glam
     const statue = new THREE.Group();
@@ -633,7 +628,8 @@ export class Island {
     const figure = new THREE.Mesh(figureGeom, figureMat);
     figure.position.set(0, 1.25, 0);
     statue.add(figure);
-    statue.position.set(0, this.radius + 1.5, 0);
+    // Seat the statue on the terrain, slightly off the pole so it doesn't overlap the fountain
+    this.placeObjectOnSurface(statue, new THREE.Vector3(1.2, this.radius, 1.2), 0.02, true);
     statue.castShadow = true;
     statue.receiveShadow = true;
     statue.name = 'central_statue';
@@ -645,9 +641,7 @@ export class Island {
       const carGeom = new THREE.BoxGeometry(1.5, 0.8, 3);
       const carMat = Materials.createTrimMaterial(0xff0000 + i * 0x222222);
       const car = new THREE.Mesh(carGeom, carMat);
-      const theta = (i / 8) * Math.PI * 2; // Adjusted for more cars
-      const r = (pathGroup.userData?.pathRadius || this.radius * 0.9) + 0.4;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
+      const pos = this.scatterDir(i, 8, 29).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.4);
       car.position.copy(sampled.position);
       car.quaternion.copy(
@@ -663,10 +657,8 @@ export class Island {
     const stalls = new THREE.Group();
     for (let i = 0; i < 6; i++) {
       const stall = this.createStall();
-      const theta = ((i + 0.1) / 6) * Math.PI * 2;
-      const r = (pathGroup.userData?.pathRadius || this.radius * 0.9) - 1.8;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
-      const sampled = this.sampleSurfacePosition(pos, 0.5);
+      const pos = this.scatterDir(i, 6, 41).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, 0.05); // base sits at group origin
       stall.position.copy(sampled.position);
       stall.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -683,10 +675,8 @@ export class Island {
       const signGeom = new THREE.PlaneGeometry(1.2, 0.6);
       const signMat = Materials.createTrimMaterial(0xffffff);
       const sign = new THREE.Mesh(signGeom, signMat);
-      const theta = (i / 6) * Math.PI * 2;
-      const ringR = (pathGroup.userData?.pathRadius || this.radius * 0.9) + 1.4;
-      const pos = new THREE.Vector3(Math.cos(theta) * ringR, 0, Math.sin(theta) * ringR);
-      const sampled = this.sampleSurfacePosition(pos, 2.0);
+      const pos = this.scatterDir(i, 12, 53).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, 0.8); // readable sign height, not 2u float
       sign.position.copy(sampled.position);
       sign.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -699,9 +689,7 @@ export class Island {
     const rivers = new THREE.Group();
     for (let i = 0; i < 2; i++) {
       const river = this.createRiver();
-      const theta = i * Math.PI + Math.PI / 4;
-      const r = this.radius * 0.6;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
+      const pos = this.scatterDir(i, 2, 67).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       river.position.copy(sampled.position);
       river.quaternion.copy(
@@ -709,16 +697,32 @@ export class Island {
       );
       river.name = `river_${i}`;
       rivers.add(river);
+      // Conform the flat plane to the curved terrain: a 10-unit chord floats at
+      // its ends on an r=18 sphere, so project every vertex onto the surface.
+      rivers.updateMatrixWorld(true);
+      river.updateMatrixWorld(true);
+      river.traverse((n) => {
+        if (!(n instanceof THREE.Mesh)) return;
+        const posAttr = n.geometry.attributes.position as THREE.BufferAttribute;
+        const v = new THREE.Vector3();
+        for (let vi = 0; vi < posAttr.count; vi++) {
+          v.fromBufferAttribute(posAttr, vi).applyMatrix4(n.matrixWorld);
+          const s = this.sampleSurfacePosition(v, 0.06);
+          v.copy(s.position);
+          n.worldToLocal(v);
+          posAttr.setXYZ(vi, v.x, v.y, v.z);
+        }
+        posAttr.needsUpdate = true;
+        n.geometry.computeVertexNormals();
+      });
     }
 
     // Add mountains
     const mountains = new THREE.Group();
     for (let i = 0; i < 4; i++) {
       const mountain = this.createMountain();
-      const theta = (i / 4) * Math.PI * 2 + Math.PI / 8;
-      const r = this.radius * 0.8;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
-      const sampled = this.sampleSurfacePosition(pos, 2);
+      const pos = this.scatterDir(i, 4, 79).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, 0.05); // mountain base at group origin
       mountain.position.copy(sampled.position);
       mountain.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -733,10 +737,8 @@ export class Island {
     const constructions = new THREE.Group();
     for (let i = 0; i < 3; i++) {
       const block = this.createConstructionBlock();
-      const theta = (i / 3) * Math.PI * 2;
-      const r = this.radius * 0.7;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
-      const sampled = this.sampleSurfacePosition(pos, 1.5);
+      const pos = this.scatterDir(i, 3, 97).multiplyScalar(this.radius);
+      const sampled = this.sampleSurfacePosition(pos, 0.05); // block base at group origin
       block.position.copy(sampled.position);
       block.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
@@ -755,9 +757,7 @@ export class Island {
         color: 0xff69b4 + Math.floor(Math.random() * 0x333333),
       });
       const flower = new THREE.Mesh(flowerGeom, flowerMat);
-      const angle = Math.random() * Math.PI * 2;
-      const dist = this.radius * 0.6 + Math.random() * this.radius * 0.3;
-      const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+      const pos = this.scatterDir(i, 50, 131).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.2);
       flower.position.copy(sampled.position);
       flower.quaternion.copy(
@@ -773,9 +773,7 @@ export class Island {
       const signGeom = new THREE.PlaneGeometry(0.8, 0.4);
       const signMat = Materials.createTrimMaterial(0xffffff);
       const sign = new THREE.Mesh(signGeom, signMat);
-      const theta = ((i + 0.2) / 6) * Math.PI * 2;
-      const r = (pathGroup.userData?.pathRadius || this.radius * 0.9) - 0.5;
-      const pos = new THREE.Vector3(Math.cos(theta) * r, 0, Math.sin(theta) * r);
+      const pos = this.scatterDir(i, 6, 113).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 1.5);
       sign.position.copy(sampled.position);
       const q = new THREE.Quaternion().setFromUnitVectors(
@@ -853,6 +851,21 @@ export class Island {
    * @param approxPos - an approximate position (usually a vector on the base radius circle)
    * @param desiredOffset - how far above the base radius the caller expects the object to sit (used as a small bias)
    */
+  /**
+   * Golden-spiral direction over the sphere for even prop distribution.
+   * Replaces the old equatorial rings (cosθ, 0, sinθ) that concentrated every
+   * prop on one band around the planet. Pole caps are kept clear for the
+   * spawn plaza (|y| capped at 0.85).
+   */
+  private scatterDir(index: number, total: number, salt: number): THREE.Vector3 {
+    const GOLDEN = 2.399963229728653;
+    const t = (index + 0.5) / Math.max(1, total);
+    const y = (1 - 2 * t) * 0.85;
+    const rad = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = GOLDEN * (index + salt);
+    return new THREE.Vector3(Math.cos(theta) * rad, y, Math.sin(theta) * rad);
+  }
+
   private sampleSurfacePosition(
     approxPos: THREE.Vector3,
     desiredOffset: number = 0,
@@ -943,6 +956,22 @@ export class Island {
         } else {
           normal = point.clone().sub(this.center).normalize();
         }
+        // Clamp tilt: raw face normals on bumpy terrain deviate wildly from "up",
+        // laying large props (stalls, mountains, cars) on their sides. Keep the
+        // terrain-sampled position but cap orientation at a slight lean.
+        {
+          const radial = point.clone().sub(this.center).normalize();
+          if (normal.dot(radial) < 0) normal.negate();
+          const MAX_TILT = 0.21; // ~12 degrees
+          const tilt = radial.angleTo(normal);
+          if (tilt > MAX_TILT) {
+            const axis = new THREE.Vector3().crossVectors(radial, normal);
+            normal =
+              axis.lengthSq() > 1e-10
+                ? radial.clone().applyAxisAngle(axis.normalize(), MAX_TILT).normalize()
+                : radial;
+          }
+        }
         // apply a tiny outward epsilon so placed objects don't z-fight
         // Small epsilon to prevent z-fighting, actual object offsets handled separately
         const epsilon = 0.02;
@@ -1025,7 +1054,7 @@ export class Island {
 
       const planeGeom = new THREE.PlaneGeometry(segLength * 1.05, width, 1, 1);
       // prefer a PBR trim/road material and attach generated maps
-      const mat = Materials.createTrimMaterial(0x6b5f4f);
+      const mat = Materials.createTrimMaterial(0xcbb489); // warm sand path, not dark mud
       // Material is guaranteed to be MeshStandardMaterial from createTrimMaterial return type
       if (mat) {
         mat.map = tex;
@@ -1211,7 +1240,9 @@ export class Island {
       const decalMat = new THREE.MeshStandardMaterial({
         map: tex || undefined,
         normalMap: normalTex || undefined,
+        color: 0xd8c398, // warm sand tint — untinted road texture rendered as dark mud stripes
         transparent: true,
+        opacity: 0.85,
         depthTest: true,
         depthWrite: false,
         polygonOffset: true,
@@ -1304,6 +1335,15 @@ export class Island {
 
       // per-model override table (basename -> tweaks)
       let modelOverrides: Record<string, ModelOverride> = {
+        // Intended toon set (Blender-authored, public/assets/models/*.glb)
+        'bench.glb': { envMapIntensity: 0.8, randomYaw: true },
+        'mailbox.glb': { envMapIntensity: 0.8 },
+        'car.glb': { envMapIntensity: 0.9, randomYaw: true },
+        'npc.glb': { envMapIntensity: 0.7, scale: 1.0 },
+        'tree.glb': { envMapIntensity: 0.5 },
+        'lamp.glb': { envMapIntensity: 0.6 },
+        'house.glb': { envMapIntensity: 0.8, randomYaw: true },
+        // Legacy kit fallbacks
         'bench.gltf': { envMapIntensity: 0.8 },
         'Bench.gltf': { envMapIntensity: 0.85, fitHeight: 1.15, randomYaw: true },
         'Chair_1.gltf': { envMapIntensity: 0.85, fitHeight: 1.4, randomYaw: true },
@@ -1809,7 +1849,8 @@ export class Island {
                     if (allowRandomYaw) {
                       const yaw = Math.random() * Math.PI * 2;
                       const spin = new THREE.Quaternion().setFromAxisAngle(normal, yaw);
-                      clone.quaternion.multiply(spin);
+                      // premultiply: world-space spin about the normal
+                      clone.quaternion.premultiply(spin);
                     }
                   }
                   if (typeof options.scaleJitter === 'number' && options.scaleJitter > 0) {
@@ -1897,7 +1938,7 @@ export class Island {
       // Replace benches, mailboxes, signs, cars, lamps
       // Provide fallback candidate paths under assetKits folders so models shipped inside assetKits are discoverable
       const ak = '/assetKits';
-      loadAndReplace(basePath + 'bench.gltf', 'bench_', {
+      loadAndReplace(basePath + 'bench.glb', 'bench_', {
         scale: 1,
         candidates: [
           ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Bench.gltf',
@@ -1907,59 +1948,43 @@ export class Island {
         heightOffset: 0.05,
         scaleJitter: 0.2,
       });
-      loadAndReplace(basePath + 'mailbox.gltf', 'mailbox_', {
+      loadAndReplace(basePath + 'mailbox.glb', 'mailbox_', {
         scale: 1,
         randomYaw: true,
         heightOffset: 0.1,
       });
-      loadAndReplace(basePath + 'car.gltf', 'car_', {
+      loadAndReplace(basePath + 'car.glb', 'car_', {
         scale: 1,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Cart_Empty.gltf'],
         randomYaw: true,
         scaleJitter: 0.15,
         fitHeight: 2.8,
       });
-      loadAndReplace(basePath + 'lamp.gltf', 'lamp', {
+      loadAndReplace(basePath + 'lamp.glb', 'lamp', {
         scale: 1,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Lantern_Wall.gltf'],
         heightOffset: 0.2,
         randomYaw: true,
       });
-      loadAndReplace(
-        ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf',
-        'building_placeholder_',
-        {
-          fitHeight: 3.6,
-          randomYaw: true,
-          scaleJitter: 0.25,
-          candidates: [
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Cart_Empty.gltf',
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Cabinet.gltf',
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Workbench.gltf',
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Workbench_Drawers.gltf',
-          ],
-        },
-      );
-      loadAndReplace(
-        ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf',
-        'house_',
-        {
-          fitHeight: 3.2,
-          randomYaw: true,
-          scaleJitter: 0.3,
-          candidates: [
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Cabinet.gltf',
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Bench.gltf',
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Crate_Wooden.gltf',
-            ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Barrel.gltf',
-          ],
-        },
-      );
+      // Buildings/houses use the intended toon house model (previously these
+      // were "replaced" with market-stall kit models, which looked broken)
+      loadAndReplace(basePath + 'house.glb', 'building_placeholder_', {
+        fitHeight: 3.6,
+        randomYaw: true,
+        scaleJitter: 0.25,
+        candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
+      });
+      loadAndReplace(basePath + 'house.glb', 'house_', {
+        fitHeight: 3.2,
+        randomYaw: true,
+        scaleJitter: 0.3,
+        candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
+      });
 
       // For NPCs we want an NPC wrapper that handles mixer and simple AI. Use a specialized loader callback.
       try {
         const npcCandidates = [
-          basePath + 'npc.gltf',
+          basePath + 'npc.glb',
           '/assetKits/Universal Base Characters[Standard]/glTF/npc.gltf',
           '/assetKits/Fantasy Props MegaKit[Standard]/Exports/glTF/npc.gltf',
         ];
@@ -2054,7 +2079,7 @@ export class Island {
       // Trees: replace instanced trunks/foliage with model clones if tree model exists
       try {
         const treeCandidates = [
-          basePath + 'tree.gltf',
+          basePath + 'tree.glb',
           '/assetKits/Stylized Nature MegaKit[Standard]/glTF/CommonTree_1.gltf',
           '/assetKits/Stylized Nature MegaKit[Standard]/glTF/CommonTree_2.gltf',
           '/assetKits/Stylized Nature MegaKit[Standard]/glTF/CommonTree_3.gltf',
@@ -2069,7 +2094,7 @@ export class Island {
                 tryTree(idx + 1);
                 return;
               }
-              const overrides = modelOverrides['tree.gltf'];
+              const overrides = modelOverrides['tree.glb'] ?? modelOverrides['tree.gltf'];
               // remove instanced meshes (if present)
               const toRemove: THREE.Object3D[] = [];
               this.mesh.traverse((object) => {
@@ -2171,6 +2196,13 @@ export class Island {
   }
 
   /**
+   * The displaced terrain mesh (for external raycasts, e.g. camera collision).
+   */
+  public getSurfaceMesh(): THREE.Mesh | undefined {
+    return this.surfaceMesh;
+  }
+
+  /**
    * Public wrapper to sample the displaced surface given a direction vector (world-space).
    * Returns an object with { position, normal } so callers can place markers accurately.
    */
@@ -2208,6 +2240,20 @@ export class Island {
             normal.negate();
           }
           normal.normalize();
+
+          // Clamp tilt away from radial "up" (see sampleSurfacePosition)
+          {
+            const radial = toHit.clone().normalize();
+            const MAX_TILT = 0.21; // ~12 degrees
+            const tilt = radial.angleTo(normal);
+            if (tilt > MAX_TILT) {
+              const axis = new THREE.Vector3().crossVectors(radial, normal);
+              normal =
+                axis.lengthSq() > 1e-10
+                  ? radial.clone().applyAxisAngle(axis.normalize(), MAX_TILT).normalize()
+                  : radial;
+            }
+          }
 
           // Apply offset along normal
           const finalPos = hitPoint.clone().add(normal.clone().multiplyScalar(desiredOffset));

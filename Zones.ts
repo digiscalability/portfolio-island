@@ -34,7 +34,7 @@ export class Zone {
     // Align marker to island displaced surface properly
     try {
       const dir = this.position.clone().normalize();
-      const sampled = island.sampleSurfaceByDirection(dir, 0.5);
+      const sampled = island.sampleSurfaceByDirection(dir, 0.12); // disc is 0.2 thick, centered
       this.marker.position.copy(sampled.position);
       // orient marker up along sampled normal
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), sampled.normal);
@@ -48,21 +48,22 @@ export class Zone {
   }
 
   private createMarker(color: number): THREE.Mesh {
-    // Create a glowing portal-like marker
-    const geometry = new THREE.CylinderGeometry(1.5, 1.5, 0.2, 32);
+    // Landmark plaza: glowing disc + emissive ring + pillar circle, so each
+    // zone reads as a destination from across the planet.
+    const geometry = new THREE.CylinderGeometry(1.6, 1.7, 0.18, 24);
     const material = new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.5,
-      metalness: 0.5,
-      roughness: 0.3,
+      emissiveIntensity: 0.45,
+      metalness: 0.2,
+      roughness: 0.4,
     });
 
     const mesh = new THREE.Mesh(geometry, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
 
-    // Add a floating indicator above
+    // Floating indicator orb (animated by update())
     const indicatorGeometry = new THREE.SphereGeometry(0.3, 16, 16);
     const indicatorMaterial = new THREE.MeshStandardMaterial({
       color,
@@ -72,6 +73,37 @@ export class Zone {
     const indicator = new THREE.Mesh(indicatorGeometry, indicatorMaterial);
     indicator.position.y = 2;
     mesh.add(indicator);
+
+    // Emissive ground ring around the disc
+    const ringGeom = new THREE.TorusGeometry(2.1, 0.07, 8, 32);
+    const ringMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.9,
+      roughness: 0.4,
+    });
+    const ring = new THREE.Mesh(ringGeom, ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.05;
+    mesh.add(ring);
+
+    // Pillar circle with glowing caps
+    const pillarMat = new THREE.MeshStandardMaterial({ color: 0xf2ede2, roughness: 0.7 });
+    const capMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 1.2,
+    });
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.4, 0.22), pillarMat);
+      pillar.position.set(Math.cos(a) * 2.6, 0.7, Math.sin(a) * 2.6);
+      pillar.castShadow = true;
+      mesh.add(pillar);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), capMat);
+      cap.position.set(Math.cos(a) * 2.6, 1.5, Math.sin(a) * 2.6);
+      mesh.add(cap);
+    }
 
     return mesh;
   }
