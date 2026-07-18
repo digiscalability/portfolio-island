@@ -6,6 +6,7 @@ export class Mailbox {
   public mesh: THREE.Group;
   public hasDelivery: boolean = false;
   private glowMaterial?: THREE.MeshStandardMaterial;
+  private beam?: THREE.Mesh;
   // optional short text to show in speech bubble when player approaches
   public bubbleText?: string;
 
@@ -76,6 +77,21 @@ export class Mailbox {
     glow.position.y = 2.2;
     group.add(glow);
 
+    // Sky beacon: a tall translucent light shaft visible across the planet,
+    // shown only while this mailbox holds the active delivery.
+    const beamGeometry = new THREE.CylinderGeometry(0.12, 0.3, 14, 8, 1, true);
+    const beamMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffe27a,
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.beam = new THREE.Mesh(beamGeometry, beamMaterial);
+    this.beam.position.y = 8.2;
+    this.beam.visible = false;
+    group.add(this.beam);
+
     return group;
   }
 
@@ -99,6 +115,9 @@ export class Mailbox {
     this.hasDelivery = hasDelivery;
     if (this.glowMaterial) {
       this.glowMaterial.opacity = hasDelivery ? 0.6 : 0;
+    }
+    if (this.beam) {
+      this.beam.visible = hasDelivery;
     }
   }
 

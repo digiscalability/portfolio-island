@@ -307,8 +307,52 @@ class SimpleApp {
       this.scene.setCameraInput(0, 0);
     }
 
+    // Quest compass: point at the active delivery's mailbox
+    this.updateQuestCompass();
+
     // Always update scene (for animations, etc.)
     this.scene.update(deltaTime);
+  }
+
+  /**
+   * Compute the bearing from the camera's forward direction to the active
+   * delivery target (both projected onto the player's tangent plane) and
+   * feed it to the HUD compass. Hidden when the chain is complete.
+   */
+  private updateQuestCompass(): void {
+    const active = this.deliverySystem?.getActiveDeliveries?.() ?? [];
+    const target = active.length > 0 ? active[0] : null;
+    if (!target || !target.destination) {
+      this.ui.updateQuestCompass(null);
+      return;
+    }
+    const player = this.scene.getPlayer();
+    const playerPos = player.getWorldPosition();
+    const normal = player.getSurfaceNormal();
+    const targetPos = target.destination.mesh.position;
+
+    const project = (v: { clone(): any }) => {
+      const p = (v as any).clone();
+      return p.sub(normal.clone().multiplyScalar(p.dot(normal)));
+    };
+    const toTarget = project(targetPos.clone().sub(playerPos));
+    const camForward = project(this.scene.getOrbitCamera().getForwardDirection());
+    if (toTarget.lengthSq() < 1e-6 || camForward.lengthSq() < 1e-6) {
+      this.ui.updateQuestCompass(null);
+      return;
+    }
+    toTarget.normalize();
+    camForward.normalize();
+    const cross = camForward.clone().cross(toTarget);
+    const angleRad = Math.atan2(cross.dot(normal), camForward.dot(toTarget));
+    // great-circle distance on the planet surface
+    const R = playerPos.length();
+    const arc = playerPos.clone().normalize().angleTo(targetPos.clone().normalize());
+    this.ui.updateQuestCompass({
+      angleRad,
+      distance: arc * R,
+      label: '\uD83D\uDCEC Delivery',
+    });
   }
 
   /**

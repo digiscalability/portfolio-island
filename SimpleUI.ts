@@ -340,6 +340,66 @@ export class SimpleUI {
   /**
    * Show zone interaction panel
    */
+  private compassDiv: HTMLDivElement | null = null;
+  private compassArrow: HTMLDivElement | null = null;
+  private compassLabel: HTMLDivElement | null = null;
+
+  /**
+   * Quest compass: an arrow at the top of the screen pointing toward the
+   * active delivery (angle is relative to the camera's forward direction),
+   * with the remaining distance. Pass null to hide.
+   */
+  updateQuestCompass(state: { angleRad: number; distance: number; label: string } | null): void {
+    if (!state) {
+      if (this.compassDiv) this.compassDiv.style.display = 'none';
+      return;
+    }
+    if (!this.compassDiv) {
+      this.compassDiv = document.createElement('div');
+      Object.assign(this.compassDiv.style, {
+        position: 'fixed',
+        top: '14px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px',
+        background: 'rgba(0, 0, 0, 0.55)',
+        borderRadius: '20px',
+        padding: '6px 14px',
+        zIndex: '1200',
+        pointerEvents: 'none',
+        fontFamily: 'sans-serif',
+      });
+      this.compassArrow = document.createElement('div');
+      this.compassArrow.textContent = '\u27A4';
+      Object.assign(this.compassArrow.style, {
+        fontSize: '20px',
+        color: '#ffd54a',
+        transition: 'transform 0.12s linear',
+        transformOrigin: '50% 50%',
+      });
+      this.compassLabel = document.createElement('div');
+      Object.assign(this.compassLabel.style, {
+        color: 'white',
+        fontSize: '13px',
+        whiteSpace: 'nowrap',
+      });
+      this.compassDiv.appendChild(this.compassArrow);
+      this.compassDiv.appendChild(this.compassLabel);
+      this.overlay.appendChild(this.compassDiv);
+    }
+    this.compassDiv.style.display = 'flex';
+    if (this.compassArrow) {
+      // arrow glyph points right at 0deg; screen-up (camera forward) is -90deg
+      const deg = (state.angleRad * 180) / Math.PI - 90;
+      this.compassArrow.style.transform = `rotate(${deg.toFixed(1)}deg)`;
+    }
+    if (this.compassLabel) {
+      this.compassLabel.textContent = `${state.label} \u2022 ${Math.round(state.distance)}m`;
+    }
+  }
+
   showZonePanel(zone: any): void {
     this.hideZonePanel(); // Hide any existing panel
 
@@ -530,6 +590,10 @@ export class SimpleUI {
    * Dispose of UI elements
    */
   dispose(): void {
+    if (this.compassDiv) {
+      this.compassDiv.remove();
+      this.compassDiv = null;
+    }
     this.hideLoading();
     this.hideWelcome();
     this.hideInteractionPrompt();

@@ -755,8 +755,11 @@ export class Island {
     const flowers = new THREE.Group();
     for (let i = 0; i < 50; i++) {
       const flowerGeom = new THREE.ConeGeometry(0.1, 0.3, 6);
+      // Fixed palette: the old 0xff69b4 + random(0x333333) overflowed past
+      // 0xffffff and wrapped into broken teal shards.
+      const FLOWER_COLORS = [0xff69b4, 0xf4a940, 0xffffff, 0xb46bd8, 0xff8866];
       const flowerMat = Materials.createStandardMaterial({
-        color: 0xff69b4 + Math.floor(Math.random() * 0x333333),
+        color: FLOWER_COLORS[i % FLOWER_COLORS.length],
       });
       const flower = new THREE.Mesh(flowerGeom, flowerMat);
       // ten flowers ringing each of the five zone plazas
