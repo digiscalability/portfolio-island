@@ -1,5 +1,6 @@
 import { DeliverySystem } from './DeliverySystem';
 import { GameScene } from './GameScene';
+import { sfx } from './Sfx';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
@@ -29,6 +30,14 @@ class SimpleApp {
   // FPS tracking
   private frameCount: number = 0;
   private fpsUpdateInterval: number = 0;
+
+  // Footstep/landing SFX state. Grounding flickers frame-to-frame while
+  // walking (integrate-out then snap-back), so landings are debounced by
+  // continuous airborne time rather than raw grounded transitions.
+  private stepAccum: number = 0;
+  private stepAlt: boolean = false;
+  private airborneTime: number = 0;
+  private prevJumpHeld: boolean = false;
 
   private boundHandlers: {
     beforeUnload?: () => void;
@@ -117,8 +126,12 @@ class SimpleApp {
       // Setup quest completion callback
       this.deliverySystem.setOnQuestComplete((quest) => {
         console.log(`🎉 Quest "${quest.name}" completed!`);
+        sfx.questComplete();
         this.ui.showQuestComplete(quest);
       });
+
+      // Pickup ding on every completed delivery
+      this.deliverySystem.setOnDeliveryComplete(() => sfx.collect());
 
       // Setup zone interaction callback
       this.scene.setOnZoneInteract((zone) => {
@@ -165,6 +178,24 @@ class SimpleApp {
 
       // Start background music
       this.startBackgroundMusic();
+
+      // Browsers create AudioContexts suspended until a user gesture; nothing
+      // resumed it before, so music (and now SFX) stayed silent. Resume once
+      // on the first key/click, unless the user has muted.
+      const resumeAudio = () => {
+        window.removeEventListener('keydown', resumeAudio);
+        window.removeEventListener('pointerdown', resumeAudio);
+        try {
+          const am = (window as unknown as {
+            audioManager?: { ensureCtx(): AudioContext; isMuted(): boolean };
+          }).audioManager;
+          if (am && !am.isMuted()) void am.ensureCtx().resume();
+        } catch {
+          /* ignore */
+        }
+      };
+      window.addEventListener('keydown', resumeAudio);
+      window.addEventListener('pointerdown', resumeAudio);
 
       console.log('🌎 DigiScalability Life Island - Simplified Edition initialized!');
 
@@ -266,6 +297,7 @@ class SimpleApp {
         this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
 
         if (this.inputManager.consumeKeyPress('e')) {
+          sfx.blip();
           this.ui.advanceDialogue();
         }
 
@@ -282,8 +314,35 @@ class SimpleApp {
 
         // Apply player input
         this.scene.setPlayerMovement(moveInput.forward, moveInput.strafe);
+        const player = this.scene.getPlayer();
         if (jumpInput) {
+          // Edge-triggered: one blip per press, only from the ground
+          if (player && player.isOnGround() && !this.prevJumpHeld) sfx.jump();
           this.scene.playerJump();
+        }
+        this.prevJumpHeld = jumpInput;
+
+        // Footsteps while walking; thud when landing from a real jump/fall
+        if (player) {
+          const grounded = player.isOnGround();
+          const speed = player.getTangentialSpeed();
+          if (!grounded) {
+            this.airborneTime += deltaTime;
+          } else {
+            if (this.airborneTime > 0.12) sfx.land();
+            this.airborneTime = 0;
+          }
+          if (speed > 0.8 && this.airborneTime < 0.12) {
+            this.stepAccum += speed * deltaTime;
+            if (this.stepAccum > 1.7) {
+              this.stepAccum = 0;
+              this.stepAlt = !this.stepAlt;
+              sfx.footstep(this.stepAlt);
+            }
+          } else if (speed <= 0.8) {
+            // Primed so the first step after moving again lands quickly
+            this.stepAccum = 1.0;
+          }
         }
 
         // Apply camera input (mouse/touch)

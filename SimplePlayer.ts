@@ -174,6 +174,20 @@ export class SimplePlayer extends THREE.Group {
    * Get the surface normal at the player's current position (away from planet center).
    * Returns (0,1,0) in flat-ground mode.
    */
+  /** Whether the player is currently standing on the ground (for SFX etc.). */
+  public isOnGround(): boolean {
+    return this.isGrounded;
+  }
+
+  /** Speed along the surface (gravity axis removed) — drives footstep cadence. */
+  public getTangentialSpeed(): number {
+    const n = this.getSurfaceNormal();
+    return this.velocity
+      .clone()
+      .sub(n.clone().multiplyScalar(this.velocity.dot(n)))
+      .length();
+  }
+
   public getSurfaceNormal(): THREE.Vector3 {
     if (this.planetRadius <= 0) return new THREE.Vector3(0, 1, 0);
     const n = this.playerPosition.clone().sub(this.planetCenter);
