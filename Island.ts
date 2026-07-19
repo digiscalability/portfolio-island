@@ -336,19 +336,41 @@ export class Island {
       house.add(body);
       house.add(roof);
 
-      // tiny windows as emissive planes
+      // Windows as emissive planes
       const winMat = new THREE.MeshStandardMaterial({
         color: 0xffffcc,
         emissive: 0xffe6b3,
         emissiveIntensity: 0.6,
       });
       const winGeom = new THREE.PlaneGeometry(0.16, 0.18);
-      const win = new THREE.Mesh(winGeom, winMat);
-      win.position.set(w * 0.22, h * 0.45, d * 0.51);
-      house.add(win.clone());
-      const win2 = win.clone();
+      const win1 = new THREE.Mesh(winGeom, winMat);
+      win1.position.set(w * 0.22, h * 0.45, d * 0.51);
+      house.add(win1);
+      const win2 = new THREE.Mesh(winGeom, winMat);
       win2.position.set(-w * 0.22, h * 0.45, d * 0.51);
       house.add(win2);
+      // Door
+      const doorMat = new THREE.MeshStandardMaterial({ color: 0x5a3d2b, roughness: 0.7 });
+      const door = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.35), doorMat);
+      door.position.set(0, h * 0.22, d * 0.51);
+      house.add(door);
+      // Doorknob
+      const knob = new THREE.Mesh(
+        new THREE.SphereGeometry(0.02, 6, 6),
+        new THREE.MeshStandardMaterial({ color: 0xccaa44, metalness: 0.6 }),
+      );
+      knob.position.set(0.06, h * 0.22, d * 0.52);
+      house.add(knob);
+      // Chimney (every other house)
+      if (i % 2 === 0) {
+        const chimney = new THREE.Mesh(
+          new THREE.BoxGeometry(0.15, 0.35, 0.15),
+          Materials.createTrimMaterial(0x884433),
+        );
+        chimney.position.set(w * 0.25, h + 0.3, -d * 0.15);
+        chimney.castShadow = true;
+        house.add(chimney);
+      }
 
       // align to surface
       const q = new THREE.Quaternion().setFromUnitVectors(
@@ -376,70 +398,55 @@ export class Island {
       house.add(light);
     }
 
-    // Trees: use InstancedMesh for performance with varied transforms; distribute naturally across sphere
+    // Trees: multi-tier toon trees with varied foliage colors
     const trees = new THREE.Group();
     const treeCount = 48;
-    // trunk as thin cylinder instances
-    const trunkGeom = new THREE.CylinderGeometry(0.04, 0.05, 0.36, 6);
     const trunkMat = Materials.createStandardMaterial({ color: 0x6b4a2a, roughness: 0.8 });
-    const trunkInst = new THREE.InstancedMesh(trunkGeom, trunkMat, treeCount);
-    // foliage as cone instances
-    const foliageGeom = new THREE.ConeGeometry(0.26, 0.6, 6);
-    const foliageMat = Materials.createTreeMaterial();
-    const foliageInst = new THREE.InstancedMesh(foliageGeom, foliageMat, treeCount);
-    const dummy = new THREE.Object3D();
+    const FOLIAGE_COLORS = [0x3a8c3a, 0x4a9e3e, 0x2d7a3a, 0x55a644, 0x3b8e50];
 
-    // Use spherical coordinates to distribute trees naturally across the island like real geography
-    // Fibonacci sphere for even distribution across ENTIRE surface, not just a ring
-    const phi = Math.PI * (3 - Math.sqrt(5)); // Golden angle
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
     for (let i = 0; i < treeCount; i++) {
-      // Fibonacci sphere algorithm for natural distribution
-      const y = 1 - (i / (treeCount - 1)) * 2; // y from 1 to -1
+      const treeGroup = new THREE.Group();
+      const y = 1 - (i / (treeCount - 1)) * 2;
       const radiusAtY = Math.sqrt(1 - y * y);
-      const theta = phi * i;
-
-      // Convert to 3D position on unit sphere
+      const theta = goldenAngle * i;
       const x = Math.cos(theta) * radiusAtY;
       const z = Math.sin(theta) * radiusAtY;
-
-      // Create direction vector (on unit sphere)
       const dir = new THREE.Vector3(x, y, z).normalize();
-
-      // FIX: Don't multiply by radius - let sampleSurfacePosition find the terrain
-      // Pass direction vector directly so it samples the ACTUAL displaced terrain surface
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         sampled.normal,
       );
 
-      // Position trunk ON surface (sampleSurfacePosition already includes epsilon offset)
-      dummy.position.copy(sampled.position);
-      dummy.quaternion.copy(q);
-      dummy.scale.setScalar(1 + Math.random() * 0.2);
-      dummy.updateMatrix();
-      trunkInst.setMatrixAt(i, dummy.matrix);
-      // Position foliage slightly above trunk along surface normal
-      dummy.position.copy(
-        sampled.position
-          .clone()
-          .add(sampled.normal.clone().multiplyScalar(0.5 + Math.random() * 0.1)),
-      );
-      dummy.scale.setScalar(1 + Math.random() * 0.4);
-      dummy.updateMatrix();
-      foliageInst.setMatrixAt(i, dummy.matrix);
+      const scale = 0.9 + Math.random() * 0.4;
+      // Trunk
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.05 * scale, 0.07 * scale, 0.5 * scale, 6), trunkMat);
+      trunk.position.y = 0.25 * scale;
+      trunk.castShadow = true;
+      treeGroup.add(trunk);
+      // Foliage tiers (2-3 stacked cones)
+      const tierCount = 2 + (i % 3 === 0 ? 1 : 0);
+      const fColor = FOLIAGE_COLORS[i % FOLIAGE_COLORS.length];
+      const fMat = new THREE.MeshStandardMaterial({ color: fColor, roughness: 0.8 });
+      for (let t = 0; t < tierCount; t++) {
+        const tierScale = 1 - t * 0.25;
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(0.3 * scale * tierScale, 0.35 * scale, 7),
+          fMat,
+        );
+        cone.position.y = (0.5 + t * 0.25) * scale;
+        cone.castShadow = true;
+        treeGroup.add(cone);
+      }
+
+      treeGroup.position.copy(sampled.position);
+      treeGroup.quaternion.copy(q);
+      treeGroup.name = `tree_${i}`;
+      const treeData = treeGroup.userData as Record<string, unknown>;
+      treeData.ignoreOcclusion = true;
+      trees.add(treeGroup);
     }
-    trunkInst.instanceMatrix.needsUpdate = true;
-    foliageInst.instanceMatrix.needsUpdate = true;
-    trunkInst.name = 'trees_trunk_instanced';
-    foliageInst.name = 'trees_foliage_instanced';
-    // mark as foliage so occlusion ignores
-    const trunkData = trunkInst.userData as Record<string, unknown>;
-    trunkData.ignoreOcclusion = true;
-    const foliageData = foliageInst.userData as Record<string, unknown>;
-    foliageData.ignoreOcclusion = true;
-    trees.add(trunkInst);
-    trees.add(foliageInst);
 
     // Mailboxes: seed around homes/structures instead of a perfect orbit
     const mailboxes = new THREE.Group();
@@ -889,6 +896,43 @@ export class Island {
       dustParticles.add(dust);
     }
 
+    // Park benches near zone plazas
+    const benches = new THREE.Group();
+    const BENCH_SITES: Array<[number, number]> = [
+      [0.1, 0.08], [0.6, -0.1], [1.15, 0.1], [2.3, 0.08], [2.7, -0.08],
+      [3.6, 0.07], [4.0, -0.06], [5.0, 0.08], [5.5, -0.07],
+    ];
+    const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
+    const benchLegMat = Materials.createTrimMaterial(0x444444);
+    for (let i = 0; i < BENCH_SITES.length; i++) {
+      const bDir = this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.02);
+      const bSampled = this.sampleSurfaceByDirection(bDir, 0.0);
+      const bench = new THREE.Group();
+      // Seat plank
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.18), benchWoodMat);
+      seat.position.y = 0.2;
+      bench.add(seat);
+      // Back rest
+      const back = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.03), benchWoodMat);
+      back.position.set(0, 0.35, -0.08);
+      bench.add(back);
+      // Two legs
+      for (const lx of [-0.2, 0.2]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.16), benchLegMat);
+        leg.position.set(lx, 0.1, 0);
+        bench.add(leg);
+      }
+      bench.position.copy(bSampled.position);
+      const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bSampled.normal);
+      bench.quaternion.copy(bq);
+      bench.quaternion.premultiply(
+        new THREE.Quaternion().setFromAxisAngle(bSampled.normal, Math.random() * Math.PI * 2),
+      );
+      bench.name = `bench_${i}`;
+      bench.castShadow = true;
+      benches.add(bench);
+    }
+
     // Group everything and attach to the main mesh as children so the island remains dominant
     const root = new THREE.Group();
     root.add(mesh);
@@ -912,6 +956,7 @@ export class Island {
     root.add(constructions);
     root.add(rivers);
     root.add(mountains);
+    root.add(benches);
     this.tryLoadModels(buildings, npcs, buildingPlaceholders, npcPlaceholders).catch(() => {
       /* swallow errors */
     });
