@@ -40,6 +40,13 @@ export class SimplePlayer extends THREE.Group {
   private moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
   private wantJump: boolean = false;
 
+  // Procedural walk-cycle state (used when no GLTF model is loaded)
+  private legPivots: THREE.Group[] = [];
+  private armPivots: THREE.Group[] = [];
+  private walkPhase: number = 0;
+  private wasAirborne: boolean = false;
+  private squashTime: number = 0;
+
   // GLTF model support
   private gltfModel: THREE.Group | null = null;
   private animationMixer: THREE.AnimationMixer | null = null;
@@ -50,37 +57,90 @@ export class SimplePlayer extends THREE.Group {
     super();
     this.name = 'SimplePlayer';
 
-    // Create a simple capsule mesh (cylinder + spheres for head/feet)
     const group = new THREE.Group();
 
-    // Body (cylinder) - vibrant blue like messenger.abeto.co
-    const bodyGeo = new THREE.CylinderGeometry(0.4, 0.35, 1.4, 8);
-    const bodyMat = Materials.createToonMaterial(0x4a90e2); // Vibrant blue
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.castShadow = true;
-    body.receiveShadow = true;
-    group.add(body);
+    const shirtMat = Materials.createToonMaterial(0x4a90e2);
+    const skinMat = Materials.createToonMaterial(0xffddaa);
+    const pantsMat = Materials.createToonMaterial(0x2a3a5a);
+    const shoeMat = Materials.createToonMaterial(0x3d2b1a);
+    const hairMat = Materials.createToonMaterial(0x3a2a1a);
+    const eyeMat = Materials.createToonMaterial(0x1a1a1a);
 
-    // Head (sphere) - warm skin tone
-    const headGeo = new THREE.SphereGeometry(0.3, 12, 12);
-    const headMat = Materials.createToonMaterial(0xffddaa); // Warm peachy color
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = 1.0;
+    // Legs — pivoted at the hip so they can swing in the walk cycle
+    for (const lx of [-0.12, 0.12]) {
+      const legPivot = new THREE.Group();
+      legPivot.position.set(lx, -0.08, 0);
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.09, 0.55, 8), pantsMat);
+      leg.position.set(0, -0.27, 0);
+      leg.castShadow = true;
+      legPivot.add(leg);
+      const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.22), shoeMat);
+      shoe.position.set(0, -0.57, 0.03);
+      shoe.castShadow = true;
+      legPivot.add(shoe);
+      group.add(legPivot);
+      this.legPivots.push(legPivot);
+    }
+
+    // Torso
+    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.6, 8), shirtMat);
+    torso.position.y = 0.22;
+    torso.castShadow = true;
+    torso.receiveShadow = true;
+    group.add(torso);
+
+    // Arms — pivoted at the shoulder for the walk swing
+    for (const ax of [-0.32, 0.32]) {
+      const armPivot = new THREE.Group();
+      armPivot.position.set(ax, 0.35, 0);
+      armPivot.rotation.z = ax > 0 ? -0.12 : 0.12;
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.5, 7), shirtMat);
+      arm.position.set(0, -0.25, 0);
+      arm.castShadow = true;
+      armPivot.add(arm);
+      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), skinMat);
+      hand.position.set(0, -0.5, 0);
+      armPivot.add(hand);
+      group.add(armPivot);
+      this.armPivots.push(armPivot);
+    }
+
+    // Head
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 12), skinMat);
+    head.position.y = 0.72;
     head.castShadow = true;
     head.receiveShadow = true;
     group.add(head);
 
-    // Eyes - simple black spheres for charm
-    const eyeGeo = new THREE.SphereGeometry(0.06, 6, 6);
-    const eyeMat = Materials.createToonMaterial(0x1a1a1a); // Dark eyes
+    // Hair (cap on top)
+    const hair = new THREE.Mesh(
+      new THREE.SphereGeometry(0.21, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
+      hairMat,
+    );
+    hair.position.y = 0.76;
+    group.add(hair);
 
-    const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
-    leftEye.position.set(-0.1, 1.05, 0.2);
-    group.add(leftEye);
+    // Eyes
+    for (const [ex, ey, ez] of [[-0.08, 0.76, 0.17], [0.08, 0.76, 0.17]] as [number, number, number][]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 6), eyeMat);
+      eye.position.set(ex, ey, ez);
+      group.add(eye);
+      const pupilHighlight = new THREE.Mesh(
+        new THREE.SphereGeometry(0.015, 4, 4),
+        new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      );
+      pupilHighlight.position.set(ex + 0.015, ey + 0.015, ez + 0.02);
+      group.add(pupilHighlight);
+    }
 
-    const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
-    rightEye.position.set(0.1, 1.05, 0.2);
-    group.add(rightEye);
+    // Mouth — small curve
+    const mouth = new THREE.Mesh(
+      new THREE.TorusGeometry(0.04, 0.01, 4, 8, Math.PI),
+      eyeMat,
+    );
+    mouth.position.set(0, 0.66, 0.18);
+    mouth.rotation.x = Math.PI;
+    group.add(mouth);
 
     this.mesh = group;
     this.add(this.mesh);
@@ -261,11 +321,78 @@ export class SimplePlayer extends THREE.Group {
     // Ground detection and sticking
     this.updateGroundState();
 
-    // Handle jump
+    // Handle jump — impulse along the surface normal, not world +Y.
+    // (World-Y only points "up" at the sphere's north pole; anywhere else
+    // it is partly tangential and grounding instantly re-sticks the player.)
     if (this.wantJump && this.isGrounded) {
-      this.velocity.y = this.jumpForce;
+      const jumpNormal = this.getSurfaceNormal();
+      this.velocity.addScaledVector(jumpNormal, this.jumpForce);
       this.isGrounded = false;
       this.wantJump = false;
+    }
+
+    // Procedural walk cycle for the built-in model: swing limbs from their
+    // hip/shoulder pivots and bounce the body, scaled by tangential speed.
+    if (!this.gltfModel && this.legPivots.length === 2 && this.armPivots.length === 2) {
+      const surfNormal = this.getSurfaceNormal();
+      const tangential = this.velocity
+        .clone()
+        .sub(surfNormal.clone().multiplyScalar(this.velocity.dot(surfNormal)))
+        .length();
+      if (tangential > 0.5 && this.isGrounded) {
+        this.walkPhase += safeDeltaTime * (4 + tangential * 1.6);
+        const swing = Math.sin(this.walkPhase) * 0.55;
+        this.legPivots[0].rotation.x = swing;
+        this.legPivots[1].rotation.x = -swing;
+        this.armPivots[0].rotation.x = -swing * 0.7;
+        this.armPivots[1].rotation.x = swing * 0.7;
+        // Bouncy step + slight forward lean while moving
+        this.mesh.position.y = Math.abs(Math.sin(this.walkPhase)) * 0.06;
+        this.mesh.rotation.x = 0.06;
+      } else {
+        // Ease limbs back to rest, then breathe gently
+        const k = Math.min(1, 8 * safeDeltaTime);
+        for (const p of [...this.legPivots, ...this.armPivots]) {
+          p.rotation.x *= 1 - k;
+        }
+        this.mesh.rotation.x *= 1 - k;
+        this.mesh.position.y = Math.sin(performance.now() / 500) * 0.015;
+      }
+
+    }
+
+    // Squash-and-stretch on whichever model is active (rigged GLTF or the
+    // procedural fallback): elongate while airborne, squash on landing,
+    // spring back to neutral. Scales relative to the model's base scale.
+    {
+      const activeModel: THREE.Object3D = this.gltfModel ?? this.mesh;
+      const ud = activeModel.userData as { baseScale?: THREE.Vector3 };
+      if (!ud.baseScale) ud.baseScale = activeModel.scale.clone();
+      const base = ud.baseScale;
+      let sx = 1;
+      let sy = 1;
+      let kSpring = Math.min(1, 10 * safeDeltaTime);
+      if (!this.isGrounded) {
+        const ssNormal = this.getSurfaceNormal();
+        const vAlong = Math.abs(this.velocity.dot(ssNormal));
+        sy = Math.min(1.15, 1 + vAlong * 0.02);
+        sx = 2 - sy;
+        this.wasAirborne = true;
+      } else {
+        if (this.wasAirborne) {
+          this.wasAirborne = false;
+          this.squashTime = 0.12;
+        }
+        if (this.squashTime > 0) {
+          this.squashTime -= safeDeltaTime;
+          sy = 0.85;
+          sx = 1.12;
+          kSpring = Math.min(1, 20 * safeDeltaTime);
+        }
+      }
+      activeModel.scale.x += (base.x * sx - activeModel.scale.x) * kSpring;
+      activeModel.scale.y += (base.y * sy - activeModel.scale.y) * kSpring;
+      activeModel.scale.z += (base.z * sx - activeModel.scale.z) * kSpring;
     }
 
     // Blend idle/walk by tangential speed. Weights are set directly every

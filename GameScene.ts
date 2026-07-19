@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import { Island } from './Island';
 import { Mailbox } from './Mailbox';
+import { Materials } from './Materials';
 import { OrbitCamera } from './OrbitCamera';
 import { SimplePlayer } from './SimplePlayer';
 import { TownPlanner, type TownPlanResult } from './TownPlanner';
@@ -39,6 +40,30 @@ export class GameScene extends THREE.Scene {
 
   // Animation mixers for GLTF models
   private animationMixers: THREE.AnimationMixer[] = [];
+
+  // Drifting cloud pivots (rotated in update for slow orbits)
+  private cloudPivots: THREE.Object3D[] = [];
+
+  // Birds orbiting the planet with flapping wings
+  private birds: Array<{
+    pivot: THREE.Object3D;
+    wingL: THREE.Mesh;
+    wingR: THREE.Mesh;
+    speed: number;
+    phase: number;
+  }> = [];
+
+  // Trees swaying gently around their surface-aligned base orientation
+  private swayTrees: Array<{
+    group: THREE.Object3D;
+    baseQuat: THREE.Quaternion;
+    phase: number;
+  }> = [];
+
+  // Scratch objects for per-frame ambient animation (no allocations in update)
+  private static readonly _swayAxis = new THREE.Vector3(1, 0, 0);
+  private readonly _swayQuat = new THREE.Quaternion();
+  private readonly _npcNormal = new THREE.Vector3();
 
   // Mailbox instances for interaction tracking
   private mailboxes: Mailbox[] = [];
@@ -92,6 +117,19 @@ export class GameScene extends THREE.Scene {
     // Create spherical island
     this.island = new Island(18); // 18 unit radius like Messenger
     this.add(this.island.mesh);
+    // Unify the art direction: stepped toon shading on every prop (abeto-style)
+    this.toonifyIslandMaterials();
+
+    // Register trees for the gentle ambient sway in update()
+    this.island.mesh.traverse((obj) => {
+      if (/^tree_\d+$/.test(obj.name)) {
+        this.swayTrees.push({
+          group: obj,
+          baseQuat: obj.quaternion.clone(),
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+    });
 
     // Create player on island surface with spherical physics
     this.player = new SimplePlayer();
@@ -171,8 +209,10 @@ export class GameScene extends THREE.Scene {
     this.add(sunLight);
     this.lights.sun = sunLight;
 
-    // Hemisphere light for natural gradual lighting (sky blue / warm ground)
-    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.55);
+    // Hemisphere light for natural gradual lighting (sky blue / warm ground).
+    // Intensity lifted for the toon ramp — its stepped shading crushes
+    // unlit undersides (tree canopies) to near-black without ambient fill.
+    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.85);
     this.add(hemiLight);
 
     // Soft fill light from below-opposite to reduce harsh shadows on planet's far side
@@ -182,6 +222,138 @@ export class GameScene extends THREE.Scene {
 
     // Sky dome — gradient sphere that moves with the camera
     this.createSkyDome();
+
+    // Puffy clouds drifting around the planet
+    this.createClouds();
+
+    // A few birds circling below the clouds
+    this.createBirds();
+  }
+
+  /**
+   * Small birds orbiting the planet below the cloud layer, wings
+   * flapping in update(). Pure ambient life — no interaction.
+   */
+  private createBirds(): void {
+    const bodyMat = new THREE.MeshToonMaterial({ color: 0x4a4a55 });
+    const wingMat = new THREE.MeshToonMaterial({ color: 0x666677, side: THREE.DoubleSide });
+    const planetR = this.island ? this.island.getRadius() : 18;
+    for (let i = 0; i < 4; i++) {
+      const pivot = new THREE.Object3D();
+      pivot.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
+      const bird = new THREE.Group();
+      // Body — small elongated sphere pointing along travel direction (-Z of pivot spin)
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), bodyMat);
+      body.scale.set(1, 0.9, 1.9);
+      bird.add(body);
+      // Beak
+      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 4), wingMat);
+      beak.rotation.x = -Math.PI / 2;
+      beak.position.z = -0.2;
+      bird.add(beak);
+      // Wings — thin flattened boxes hinged at the body sides
+      const wingGeo = new THREE.BoxGeometry(0.34, 0.015, 0.15);
+      wingGeo.translate(0.17, 0, 0); // hinge at inner edge
+      const wingL = new THREE.Mesh(wingGeo, wingMat);
+      wingL.position.set(0.06, 0.02, 0);
+      bird.add(wingL);
+      const wingR = new THREE.Mesh(wingGeo, wingMat);
+      wingR.position.set(-0.06, 0.02, 0);
+      wingR.rotation.y = Math.PI;
+      bird.add(wingR);
+      // pivot.rotateY carries the bird along its local -Z, which is
+      // already the model's forward (beak at -Z) — no extra yaw needed
+      bird.position.set(planetR + 3 + Math.random() * 2.5, 0, 0);
+      pivot.add(bird);
+      pivot.name = `bird_pivot_${i}`;
+      this.add(pivot);
+      this.birds.push({
+        pivot,
+        wingL,
+        wingR,
+        speed: 0.12 + Math.random() * 0.08,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
+  /**
+   * Low-poly clouds orbiting the planet on randomized great circles.
+   * Each cloud hangs off a pivot at the origin; rotating the pivot in
+   * update() drifts the cloud around the planet and its shadow across
+   * the terrain.
+   */
+  private createClouds(): void {
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 1.0,
+      transparent: true,
+      opacity: 0.92,
+    });
+    const planetR = this.island ? this.island.getRadius() : 18;
+    for (let i = 0; i < 10; i++) {
+      const pivot = new THREE.Object3D();
+      // Random orbit plane
+      pivot.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
+      const cloud = new THREE.Group();
+      const blobCount = 3 + Math.floor(Math.random() * 3);
+      for (let b = 0; b < blobCount; b++) {
+        const r = 0.7 + Math.random() * 0.9;
+        const blob = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), cloudMat);
+        blob.position.set(b * 1.1 - (blobCount - 1) * 0.55, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.8);
+        blob.scale.y = 0.55;
+        blob.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
+        blob.castShadow = true;
+        cloud.add(blob);
+      }
+      cloud.position.set(planetR + 6 + Math.random() * 4, 0, 0);
+      const cloudData = cloud.userData as Record<string, unknown>;
+      cloudData.ignoreOcclusion = true;
+      pivot.add(cloud);
+      const pivotData = pivot.userData as Record<string, unknown>;
+      pivotData.driftSpeed = 0.01 + Math.random() * 0.02;
+      pivot.name = `cloud_pivot_${i}`;
+      this.add(pivot);
+      this.cloudPivots.push(pivot);
+    }
+  }
+
+  /**
+   * Swap every opaque MeshStandardMaterial under the island for a
+   * MeshToonMaterial with the shared gradient ramp — one consistent
+   * cel-shaded look across terrain and props (messenger.abeto.co style).
+   * Transparent/emissive-only materials (glass, sparkles, glow) keep
+   * their original shading.
+   */
+  private toonifyIslandMaterials(): void {
+    const gradientMap = Materials.createGradientMap();
+    const cache = new Map<string, THREE.MeshToonMaterial>();
+    const convert = (mat: THREE.Material): THREE.Material => {
+      if (!(mat instanceof THREE.MeshStandardMaterial)) return mat;
+      if (mat.transparent) return mat;
+      const cached = cache.get(mat.uuid);
+      if (cached) return cached;
+      const toon = new THREE.MeshToonMaterial({
+        color: mat.color.clone(),
+        emissive: mat.emissive.clone(),
+        emissiveIntensity: mat.emissiveIntensity,
+        map: mat.map,
+        vertexColors: mat.vertexColors,
+        gradientMap,
+      });
+      cache.set(mat.uuid, toon);
+      return toon;
+    };
+    this.island.mesh.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      if (Array.isArray(mesh.material)) {
+        mesh.material = mesh.material.map(convert);
+      } else if (mesh.material) {
+        mesh.material = convert(mesh.material);
+      }
+    });
+    console.log('🎨 Toonified island materials:', cache.size, 'unique materials converted');
   }
 
   private createSkyDome(): void {
@@ -419,6 +591,41 @@ export class GameScene extends THREE.Scene {
     this.mailboxes.forEach((mailbox) => {
       mailbox.update(time);
     });
+
+    // Drift clouds around the planet
+    for (const pivot of this.cloudPivots) {
+      pivot.rotateY((pivot.userData.driftSpeed as number) * deltaTime);
+    }
+
+    // Birds: orbit + wing flap
+    for (const b of this.birds) {
+      b.pivot.rotateY(b.speed * deltaTime);
+      const flap = Math.sin(time * 9 + b.phase) * 0.55;
+      b.wingL.rotation.z = flap;
+      b.wingR.rotation.z = -flap;
+    }
+
+    // Trees: gentle sway around their surface-aligned base orientation
+    for (const tr of this.swayTrees) {
+      this._swayQuat.setFromAxisAngle(
+        GameScene._swayAxis,
+        Math.sin(time * 1.1 + tr.phase) * 0.018,
+      );
+      tr.group.quaternion.copy(tr.baseQuat).multiply(this._swayQuat);
+    }
+
+    // NPCs: subtle idle bob along their surface normal
+    if (this.island) {
+      for (let i = 0; i < this.island.npcTargets.length; i++) {
+        const npc = this.island.npcTargets[i];
+        const data = npc.meshRef.userData as { bobBase?: THREE.Vector3 };
+        if (!data.bobBase) data.bobBase = npc.meshRef.position.clone();
+        this._npcNormal.copy(data.bobBase).normalize();
+        npc.meshRef.position
+          .copy(data.bobBase)
+          .addScaledVector(this._npcNormal, (Math.sin(time * 2 + i * 1.7) + 1) * 0.015);
+      }
+    }
   }
 
   /**
@@ -460,6 +667,7 @@ export class GameScene extends THREE.Scene {
     | { type: 'mailbox'; mailbox: Mailbox; distance: number }
     | { type: 'lamp'; lamp: TownPlanResult['lamps'][number]; distance: number }
     | { type: 'zone'; zone: any; distance: number }
+    | { type: 'npc'; npcData: { name: string; dialogue: string[] }; distance: number }
     | null {
     if (!this.player) return null;
 
@@ -499,6 +707,15 @@ export class GameScene extends THREE.Scene {
     if (nearbyZone && nearbyZone.distance < nearestDist) {
       nearest = { type: 'zone' as const, zone: nearbyZone.zone, distance: nearbyZone.distance };
       nearestDist = nearbyZone.distance;
+    }
+
+    // Check NPCs
+    for (const npc of this.island.npcTargets) {
+      const d = npc.meshRef.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
+      if (d < nearestDist) {
+        nearest = { type: 'npc' as const, npcData: { name: npc.name, dialogue: npc.dialogue }, distance: d };
+        nearestDist = d;
+      }
     }
 
     this.cachedNearby = nearest;
@@ -554,7 +771,8 @@ export class GameScene extends THREE.Scene {
     interactable:
       | { type: 'mailbox'; mailbox: Mailbox; distance: number }
       | { type: 'lamp'; lamp: TownPlanResult['lamps'][number]; distance: number }
-      | { type: 'zone'; zone: any; distance: number },
+      | { type: 'zone'; zone: any; distance: number }
+      | { type: 'npc'; npcData: { name: string; dialogue: string[] }; distance: number },
   ): void {
     // Interaction may change interactable state (delivery collected, lamp toggled)
     // — invalidate the proximity cache so the prompt refreshes immediately.
@@ -578,6 +796,19 @@ export class GameScene extends THREE.Scene {
       this.interactWithZone(interactable.zone);
       return;
     }
+
+    if (interactable.type === 'npc') {
+      if (this.onNPCInteractCallback) {
+        this.onNPCInteractCallback(interactable.npcData);
+      }
+      return;
+    }
+  }
+
+  private onNPCInteractCallback: ((npcData: { name: string; dialogue: string[] }) => void) | null = null;
+
+  public setOnNPCInteract(callback: (npcData: { name: string; dialogue: string[] }) => void): void {
+    this.onNPCInteractCallback = callback;
   }
 
   /**
