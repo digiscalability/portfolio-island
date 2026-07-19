@@ -175,6 +175,11 @@ export class GameScene extends THREE.Scene {
     const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.55);
     this.add(hemiLight);
 
+    // Soft fill light from below-opposite to reduce harsh shadows on planet's far side
+    const fillLight = new THREE.DirectionalLight(0xd4e8ff, 0.25);
+    fillLight.position.set(-20, -30, -20);
+    this.add(fillLight);
+
     // Sky dome — gradient sphere that moves with the camera
     this.createSkyDome();
   }

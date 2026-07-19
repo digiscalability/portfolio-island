@@ -188,9 +188,11 @@ export class Island {
     {
       const posA = geometry.attributes.position;
       const colors = new Float32Array(posA.count * 3);
+      const lowValley = new THREE.Color(0x5a8a45);
       const valley = new THREE.Color(0x6f9c58);
       const meadow = new THREE.Color(0x8cc06e);
-      const ridge = new THREE.Color(0xaacb7b);
+      const ridge = new THREE.Color(0xb5c98a);
+      const peak = new THREE.Color(0xc8cca0);
       const tmp = new THREE.Color();
       let minR = Infinity, maxR = -Infinity;
       for (let i = 0; i < posA.count; i++) {
@@ -202,10 +204,12 @@ export class Island {
       for (let i = 0; i < posA.count; i++) {
         const r = Math.hypot(posA.getX(i), posA.getY(i), posA.getZ(i));
         const t = (r - minR) / span;
-        if (t < 0.5) tmp.copy(valley).lerp(meadow, t * 2);
-        else tmp.copy(meadow).lerp(ridge, (t - 0.5) * 2);
+        if (t < 0.2) tmp.copy(lowValley).lerp(valley, t * 5);
+        else if (t < 0.5) tmp.copy(valley).lerp(meadow, (t - 0.2) / 0.3);
+        else if (t < 0.8) tmp.copy(meadow).lerp(ridge, (t - 0.5) / 0.3);
+        else tmp.copy(ridge).lerp(peak, (t - 0.8) * 5);
         // deterministic jitter from vertex index (no Math.random -> stable)
-        const j = 1 + (((i * 2654435761) % 1000) / 1000 - 0.5) * 0.07;
+        const j = 1 + (((i * 2654435761) % 1000) / 1000 - 0.5) * 0.09;
         colors[i * 3] = tmp.r * j;
         colors[i * 3 + 1] = tmp.g * j;
         colors[i * 3 + 2] = tmp.b * j;
@@ -2592,23 +2596,22 @@ export class Island {
   public update(deltaTime: number): void {
     const time = performance.now() * 0.001; // seconds
 
-    // Sway trees gently
+    // Sway tree foliage gently
     this.mesh.traverse((object) => {
-      if (
-        object instanceof THREE.InstancedMesh &&
-        typeof object.name === 'string' &&
-        object.name.startsWith('trees_foliage_instanced')
-      ) {
-        const matrix = new THREE.Matrix4();
-        for (let i = 0; i < object.count; i++) {
-          object.getMatrixAt(i, matrix);
-          const position = new THREE.Vector3().setFromMatrixPosition(matrix);
-          const sway = Math.sin(time * 2 + i * 0.5) * 0.02;
-          position.x += sway;
-          matrix.setPosition(position);
-          object.setMatrixAt(i, matrix);
+      if (typeof object.name === 'string' && object.name.startsWith('tree_')) {
+        const idx = parseInt(object.name.split('_')[1] || '0', 10);
+        const sway = Math.sin(time * 1.5 + idx * 0.7) * 0.015;
+        object.rotation.z = sway;
+      }
+    });
+
+    // Animate water surfaces (fountain + river shimmer)
+    this.mesh.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.material instanceof THREE.MeshStandardMaterial) {
+        const mat = object.material;
+        if (mat.opacity > 0 && mat.opacity < 1 && mat.transparent && mat.color.b > 0.5) {
+          mat.emissiveIntensity = 0.1 + Math.sin(time * 3) * 0.05;
         }
-        object.instanceMatrix.needsUpdate = true;
       }
     });
 
