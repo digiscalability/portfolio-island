@@ -383,6 +383,22 @@ export class Island {
     const roadRadius = this.radius * 0.6;
     const pathGroup = this.createRoadRing(roadRadius, 0.7, 96);
 
+    // ── Urban planning ──────────────────────────────────────────────────
+    // Each content zone anchors a district spread around the sphere (the
+    // zone plazas sit at lat ~0.4636 = atan(0.5), Welcome at the pole):
+    //   Professional (lon 0)      → office towers, statue, parked cars
+    //   Projects     (lon 1.2566) → construction/work sites
+    //   Personal     (lon 2.5133) → cottage village, fountain square
+    //   Contact      (lon 3.7699) → market stalls
+    //   Welcome      (north pole) → spawn plaza, benches, flowers
+    // Pre-claim the plaza sites so no props squat on the zone markers.
+    const ZONE_LAT = 0.4636;
+    this.claimDir(this.dirAt(0, ZONE_LAT), 0.13);
+    this.claimDir(this.dirAt(1.2566, ZONE_LAT), 0.13);
+    this.claimDir(this.dirAt(2.5133, ZONE_LAT), 0.13);
+    this.claimDir(this.dirAt(3.7699, ZONE_LAT), 0.13);
+    this.claimDir(new THREE.Vector3(0, 1, 0), 0.13);
+
     // Add a few low-poly buildings aligned to the surface (placeholders). We'll attempt to replace them with GLTF models if present.
     const buildings = new THREE.Group();
     // generate procedural building textures and use them for PBR-like facades
@@ -398,10 +414,10 @@ export class Island {
     });
     const buildingPlaceholders: THREE.Mesh[] = [];
     const buildingSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    // MARKET district [zone2..zone3]: two rows of shops facing Main Street
+    // PROFESSIONAL district: office towers in two arcs flanking the plaza
     const BUILDING_SITES: Array<[number, number]> = [
-      [2.72, 0.17], [2.97, 0.17], [3.22, 0.17], [3.47, 0.17],
-      [2.85, -0.17], [3.1, -0.17], [3.35, -0.17], [3.6, -0.17],
+      [5.98, 0.34], [6.14, 0.28], [0.15, 0.28], [0.31, 0.34],
+      [5.97, 0.60], [6.13, 0.67], [0.14, 0.67], [0.30, 0.60],
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
@@ -427,9 +443,8 @@ export class Island {
         sampled.normal,
       );
       b.quaternion.copy(q);
-      // spin around the surface normal so later GLTF replacements feel organic
-      // Face Main Street (the equator road) instead of a random spin
-      this.faceObjectToward(b, sampled.normal, this.dirAt(lon, 0).multiplyScalar(this.radius));
+      // Face the Professional plaza — every district building addresses its square
+      this.faceObjectToward(b, sampled.normal, this.dirAt(0, ZONE_LAT).multiplyScalar(this.radius));
       b.castShadow = true;
       b.receiveShadow = true;
       b.name = `building_placeholder_${i}`;
@@ -440,11 +455,11 @@ export class Island {
     // Procedural houses: add a few more detailed block houses with roofs/windows to make the island feel inhabited
     const houses = new THREE.Group();
     const houseSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    // VILLAGE district [zone0..zone1]: cottages lining both sides of the road
+    // PERSONAL district: a cottage hamlet ringing the Personal Life plaza
     const HOUSE_SITES: Array<[number, number]> = [
-      [0.2, 0.15], [0.42, 0.15], [0.64, 0.15], [0.86, 0.15], [1.08, 0.15],
-      [0.31, -0.15], [0.53, -0.15], [0.75, -0.15], [0.97, -0.15],
-      [0.42, 0.31], [0.75, 0.3],
+      [2.24, 0.40], [2.36, 0.29], [2.55, 0.25], [2.74, 0.31], [2.82, 0.44],
+      [2.77, 0.58], [2.62, 0.66], [2.42, 0.64], [2.27, 0.55],
+      [2.51, 0.76], [2.51, 0.18],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
@@ -525,8 +540,8 @@ export class Island {
         sampled.normal,
       );
       house.quaternion.copy(q);
-      // Face the road
-      this.faceObjectToward(house, sampled.normal, this.dirAt(lon, 0).multiplyScalar(this.radius));
+      // Face the village square (the Personal Life plaza)
+      this.faceObjectToward(house, sampled.normal, this.dirAt(2.5133, ZONE_LAT).multiplyScalar(this.radius));
       house.position.copy(sampled.position);
       // Record the chimney tip (post-alignment) for GameScene's smoke puffs
       if (i % 2 === 0) {
@@ -733,9 +748,14 @@ export class Island {
     // Add street lamps for evening ambiance
     const lamps = new THREE.Group();
     const lampPositions: THREE.Vector3[] = [];
-    const LAMP_LONS = [0.55, 1.6, 2.51, 3.15, 4.4, 5.55];
-    for (let i = 0; i < 6; i++) {
-      const pos = this.claimDir(this.dirAt(LAMP_LONS[i], i % 2 === 0 ? 0.06 : -0.06), 0.07).multiplyScalar(this.radius);
+    // One or two lamps per district plaza
+    const LAMP_SITES: Array<[number, number]> = [
+      [6.09, 0.33], [0.19, 0.33],   // professional
+      [2.40, 0.36], [2.64, 0.36],   // village
+      [3.66, 0.47], [3.88, 0.47],   // market
+    ];
+    for (let i = 0; i < LAMP_SITES.length; i++) {
+      const pos = this.claimDir(this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]), 0.07).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       const lampGroup = new THREE.Group();
       lampGroup.name = `lamp_${i}`;
@@ -786,14 +806,18 @@ export class Island {
     const npcs = new THREE.Group();
     const npcPlaceholders: THREE.Mesh[] = [];
     const NPC_SITES: Array<[number, number]> = [
-      // villagers on the village street
-      [0.28, 0.06], [0.5, -0.06], [0.72, 0.07], [0.94, -0.05], [1.02, 0.08],
-      // market crowd around zone2 + stalls
-      [2.42, 0.06], [2.51, -0.08], [2.6, 0.05], [2.45, -0.05], [2.58, 0.09], [2.68, -0.06],
-      // plaza visitors at zones 1, 3, 4
-      [1.2, 0.05], [1.31, -0.06], [3.71, 0.06], [3.83, -0.05], [4.97, 0.06], [5.09, -0.06],
-      // wanderers
-      [1.7, 0.2], [4.3, 0.12], [5.6, -0.12],
+      // welcome greeters near the spawn plaza
+      [0.5, 1.30], [2.2, 1.32], [4.0, 1.30], [5.5, 1.33],
+      // villagers around the Personal hamlet
+      [2.36, 0.45], [2.66, 0.45], [2.51, 0.32], [2.51, 0.60], [2.43, 0.53],
+      // office crowd at the Professional plaza
+      [6.11, 0.45], [0.17, 0.45], [0.0, 0.30], [6.21, 0.58],
+      // builders at the Projects work sites
+      [1.15, 0.45], [1.36, 0.50], [1.26, 0.32],
+      // market-goers at the Contact stalls
+      [3.69, 0.51], [3.86, 0.51], [3.77, 0.36],
+      // one wanderer out on the countryside road
+      [5.0, 0.1],
     ];
     const NPC_SHIRT_COLORS = [0x4488bb, 0xcc5544, 0x55aa55, 0xddaa33, 0x8866aa, 0xbb6644];
     const NPC_PERSONALITIES = [
@@ -1025,7 +1049,14 @@ export class Island {
     cap.position.y = 2.0;
     fountain.add(cap);
     fountain.castShadow = true;
-    this.placeObjectOnSurface(fountain, new THREE.Vector3(6, this.radius, 2.5), 0.02, true);
+    // Village square centerpiece, at the edge of the Personal hamlet
+    // (the old raw world coords stranded it near the north pole)
+    this.placeObjectOnSurface(
+      fountain,
+      this.claimDir(this.dirAt(2.32, 0.50), 0.12).multiplyScalar(this.radius),
+      0.02,
+      true,
+    );
 
     // Stylized human statue
     const statue = new THREE.Group();
@@ -1050,7 +1081,14 @@ export class Island {
     sArm.position.set(0.35, 1.7, 0);
     sArm.rotation.z = -Math.PI / 3;
     statue.add(sArm);
-    this.placeObjectOnSurface(statue, new THREE.Vector3(7.5, this.radius, -1.5), 0.02, true);
+    // Forecourt of the Professional plaza (was stranded near the north
+    // pole by raw world coords, same as the fountain)
+    this.placeObjectOnSurface(
+      statue,
+      this.claimDir(this.dirAt(0.18, 0.52), 0.08).multiplyScalar(this.radius),
+      0.02,
+      true,
+    );
     statue.castShadow = true;
     statue.receiveShadow = true;
     statue.name = 'central_statue';
@@ -1135,12 +1173,25 @@ export class Island {
         carGroup.add(hub);
       }
 
-      const CAR_LONS = [0.32, 0.7, 1.35, 2.3, 3.68, 4.1, 4.5, 5.85];
-      const pos = this.claimDir(this.dirAt(CAR_LONS[i % CAR_LONS.length], i % 2 === 0 ? 0.08 : -0.08), 0.1).multiplyScalar(this.radius);
+      // Parked at district edges (most at Professional — it's the office lot)
+      const CAR_SITES: Array<[number, number]> = [
+        [6.03, 0.22], [0.10, 0.20], [0.36, 0.27],  // professional
+        [2.30, 0.27], [2.73, 0.25],                // village
+        [3.58, 0.27], [3.97, 0.29],                // market
+        [1.34, 0.30],                              // projects
+      ];
+      const [carLon, carLat] = CAR_SITES[i % CAR_SITES.length];
+      const pos = this.claimDir(this.dirAt(carLon, carLat), 0.1).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
       carGroup.position.copy(sampled.position);
       carGroup.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
+      );
+      // Nose toward the district center line — reads as parked around the plaza
+      this.faceObjectToward(
+        carGroup,
+        sampled.normal,
+        this.dirAt(carLon, 0.4636).multiplyScalar(this.radius),
       );
       carGroup.castShadow = true;
       carGroup.name = `car_${i}`;
@@ -1150,8 +1201,9 @@ export class Island {
     // Add market stalls near houses
     const stalls = new THREE.Group();
     // Market stalls ring the zone2 plaza (the market district centerpiece)
+    // CONTACT district: market stalls ringing the Get In Touch plaza
     const STALL_SITES: Array<[number, number]> = [
-      [2.35, 0.12], [2.35, -0.12], [2.51, 0.17], [2.51, -0.17], [2.67, 0.12], [2.67, -0.12],
+      [3.62, 0.37], [3.77, 0.31], [3.92, 0.37], [3.62, 0.56], [3.77, 0.62], [3.92, 0.56],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
@@ -1161,6 +1213,12 @@ export class Island {
       stall.position.copy(sampled.position);
       stall.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
+      );
+      // Counters face the Get In Touch plaza at the ring's center
+      this.faceObjectToward(
+        stall,
+        sampled.normal,
+        this.dirAt(3.7699, ZONE_LAT).multiplyScalar(this.radius),
       );
       stall.castShadow = true;
       stall.receiveShadow = true;
@@ -1225,7 +1283,8 @@ export class Island {
 
     // Add construction blocks
     const constructions = new THREE.Group();
-    const WORK_SITES: Array<[number, number]> = [[4.15, 0.22], [4.55, -0.24]];
+    // PROJECTS district: work-in-progress sites near the Portfolio plaza
+    const WORK_SITES: Array<[number, number]> = [[1.09, 0.37], [1.43, 0.55]];
     for (let i = 0; i < WORK_SITES.length; i++) {
       const block = this.createConstructionBlock();
       const pos = this.claimDir(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
@@ -1269,10 +1328,13 @@ export class Island {
       );
       center.position.y = 0.27;
       flowerGroup.add(center);
-      // Position on island surface
-      const zoneLon = [0, 1.2566, 2.5133, 3.7699, 5.0265][Math.floor(i / 10)];
+      // Flower rings around each district plaza (incl. the spawn at the pole)
+      const FLOWER_ANCHORS: Array<[number, number]> = [
+        [0, 0.4636], [1.2566, 0.4636], [2.5133, 0.4636], [3.7699, 0.4636], [0, 1.42],
+      ];
+      const [fLon, fLat] = FLOWER_ANCHORS[Math.floor(i / 10)];
       const ringA = ((i % 10) / 10) * Math.PI * 2;
-      const fDir = this.dirAt(zoneLon + Math.cos(ringA) * 0.14, Math.sin(ringA) * 0.14);
+      const fDir = this.dirAt(fLon + Math.cos(ringA) * 0.2, fLat + Math.sin(ringA) * 0.15);
       const pos = this.claimDir(fDir, 0.015).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       flowerGroup.position.copy(sampled.position);
@@ -1313,9 +1375,12 @@ export class Island {
 
     // Park benches near zone plazas
     const benches = new THREE.Group();
-    const BENCH_SITES: Array<[number, number]> = [
-      [0.1, 0.08], [0.6, -0.1], [1.15, 0.1], [2.3, 0.08], [2.7, -0.08],
-      [3.6, 0.07], [4.0, -0.06], [5.0, 0.08], [5.5, -0.07],
+    // Benches at the plazas: [lon, lat, latOfPlazaTheyFace]
+    const BENCH_SITES: Array<[number, number, number]> = [
+      [0.8, 1.36, 1.5708], [3.9, 1.36, 1.5708],       // welcome / spawn
+      [2.44, 0.40, 0.4636], [2.60, 0.40, 0.4636], [2.51, 0.56, 0.4636], // village
+      [6.16, 0.40, 0.4636], [0.13, 0.42, 0.4636],     // professional
+      [3.70, 0.42, 0.4636], [3.85, 0.42, 0.4636],     // market
     ];
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
     const benchLegMat = Materials.createTrimMaterial(0x444444);
@@ -1340,12 +1405,11 @@ export class Island {
       bench.position.copy(bSampled.position);
       const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bSampled.normal);
       bench.quaternion.copy(bq);
-      // Face the road (seat toward it, backrest away) — random yaw left
-      // benches staring at walls or turned back-first to the street
+      // Face the plaza this bench belongs to (seat toward it, backrest away)
       this.faceObjectToward(
         bench,
         bSampled.normal,
-        this.dirAt(BENCH_SITES[i][0], 0).multiplyScalar(this.radius),
+        this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][2]).multiplyScalar(this.radius),
       );
       bench.name = `bench_${i}`;
       bench.castShadow = true;
@@ -1413,7 +1477,7 @@ export class Island {
    * @param desiredOffset - how far above the base radius the caller expects the object to sit (used as a small bias)
    */
   /** Unit direction from (longitude, latitude) in radians. */
-  private dirAt(lon: number, lat: number): THREE.Vector3 {
+  public dirAt(lon: number, lat: number): THREE.Vector3 {
     return new THREE.Vector3(
       Math.cos(lon) * Math.cos(lat),
       Math.sin(lat),
