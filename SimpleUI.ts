@@ -11,6 +11,13 @@ export class SimpleUI {
   private playerCountDiv: HTMLElement | null = null;
   private customizeDiv: HTMLElement | null = null;
   private zonePanelDiv: HTMLElement | null = null;
+  private dialogueDiv: HTMLElement | null = null;
+  private dialogueLines: string[] = [];
+  private dialogueIndex: number = 0;
+  private typewriterTimer: number = 0;
+  private typewriterText: string = '';
+  private typewriterPos: number = 0;
+  private dialogueActive: boolean = false;
 
   constructor(id: string) {
     // Create or get overlay
@@ -587,6 +594,138 @@ export class SimpleUI {
   }
 
   /**
+   * Show dialogue panel with typewriter effect (Messenger-inspired)
+   */
+  showDialogue(name: string, lines: string[]): void {
+    this.dialogueLines = lines;
+    this.dialogueIndex = 0;
+    this.dialogueActive = true;
+
+    if (!this.dialogueDiv) {
+      this.dialogueDiv = document.createElement('div');
+      Object.assign(this.dialogueDiv.style, {
+        position: 'absolute',
+        bottom: '30px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: 'min(600px, 90%)',
+        background: 'rgba(10, 10, 20, 0.92)',
+        color: '#f0f0f0',
+        padding: '0',
+        borderRadius: '16px',
+        pointerEvents: 'auto',
+        fontSize: '16px',
+        border: '2px solid rgba(120, 160, 255, 0.4)',
+        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+        opacity: '0',
+        transition: 'opacity 0.3s ease',
+        zIndex: '1600',
+        overflow: 'hidden',
+      });
+      this.overlay.appendChild(this.dialogueDiv);
+      requestAnimationFrame(() => {
+        if (this.dialogueDiv) this.dialogueDiv.style.opacity = '1';
+      });
+    }
+
+    this.dialogueDiv.innerHTML = `
+      <div style="
+        padding: 6px 16px;
+        background: linear-gradient(135deg, rgba(80, 130, 255, 0.3), rgba(120, 80, 255, 0.2));
+        border-bottom: 1px solid rgba(120, 160, 255, 0.2);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        color: rgba(160, 200, 255, 0.9);
+      ">${name}</div>
+      <div style="padding: 16px 20px; min-height: 60px;">
+        <div id="dialogue-text" style="
+          line-height: 1.6;
+          font-size: 15px;
+          min-height: 24px;
+        "></div>
+        <div style="
+          text-align: right;
+          margin-top: 10px;
+          font-size: 12px;
+          color: rgba(160, 200, 255, 0.5);
+        ">
+          <span id="dialogue-hint">Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to continue</span>
+        </div>
+      </div>
+    `;
+
+    this.startTypewriter(lines[0]);
+  }
+
+  private startTypewriter(text: string): void {
+    this.typewriterText = text;
+    this.typewriterPos = 0;
+    if (this.typewriterTimer) cancelAnimationFrame(this.typewriterTimer);
+    this.tickTypewriter();
+  }
+
+  private tickTypewriter(): void {
+    if (!this.dialogueDiv) return;
+    const textEl = this.dialogueDiv.querySelector('#dialogue-text');
+    if (!textEl) return;
+
+    if (this.typewriterPos < this.typewriterText.length) {
+      this.typewriterPos += 1;
+      textEl.textContent = this.typewriterText.substring(0, this.typewriterPos);
+      this.typewriterTimer = requestAnimationFrame(() => {
+        setTimeout(() => this.tickTypewriter(), 25);
+      });
+    } else {
+      textEl.textContent = this.typewriterText;
+    }
+  }
+
+  advanceDialogue(): boolean {
+    if (!this.dialogueActive) return false;
+
+    // If typewriter still animating, complete it instantly
+    if (this.typewriterPos < this.typewriterText.length) {
+      this.typewriterPos = this.typewriterText.length;
+      const textEl = this.dialogueDiv?.querySelector('#dialogue-text');
+      if (textEl) textEl.textContent = this.typewriterText;
+      return true;
+    }
+
+    this.dialogueIndex++;
+    if (this.dialogueIndex < this.dialogueLines.length) {
+      this.startTypewriter(this.dialogueLines[this.dialogueIndex]);
+      const hint = this.dialogueDiv?.querySelector('#dialogue-hint');
+      if (hint && this.dialogueIndex === this.dialogueLines.length - 1) {
+        hint.innerHTML = 'Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to close';
+      }
+      return true;
+    }
+
+    this.hideDialogue();
+    return false;
+  }
+
+  hideDialogue(): void {
+    this.dialogueActive = false;
+    if (this.dialogueDiv) {
+      this.dialogueDiv.style.opacity = '0';
+      const div = this.dialogueDiv;
+      setTimeout(() => div.remove(), 300);
+      this.dialogueDiv = null;
+    }
+    if (this.typewriterTimer) {
+      cancelAnimationFrame(this.typewriterTimer);
+      this.typewriterTimer = 0;
+    }
+  }
+
+  isDialogueActive(): boolean {
+    return this.dialogueActive;
+  }
+
+  /**
    * Dispose of UI elements
    */
   dispose(): void {
@@ -599,6 +738,7 @@ export class SimpleUI {
     this.hideInteractionPrompt();
     this.hideCustomize();
     this.hideZonePanel();
+    this.hideDialogue();
     if (this.fpsDiv) {
       this.fpsDiv.remove();
       this.fpsDiv = null;

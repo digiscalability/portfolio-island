@@ -56,8 +56,30 @@ export class DeliverySystem {
         deliveries: ['explore_1', 'explore_2'],
         completed: false,
         reward: {
-          type: 'unlock',
-          value: 'customization_unlocked'
+          type: 'message',
+          value: '🗺️ You know this island like the back of your hand!'
+        }
+      },
+      {
+        id: 'community_quest',
+        name: 'Community Helper',
+        description: 'Lend a hand around the village.',
+        deliveries: ['community_1', 'community_2', 'community_3'],
+        completed: false,
+        reward: {
+          type: 'message',
+          value: '🤝 The village owes you one. You\'re officially a local!'
+        }
+      },
+      {
+        id: 'secret_quest',
+        name: 'The Last Delivery',
+        description: 'A mysterious package with no return address.',
+        deliveries: ['secret_1', 'secret_2'],
+        completed: false,
+        reward: {
+          type: 'message',
+          value: '✨ You\'ve delivered everything there is. The island is complete.'
         }
       }
     ];
@@ -107,6 +129,51 @@ export class DeliverySystem {
         reward: '📄 Documents delivered!',
         questId: 'explorer_quest',
         requiredDeliveries: ['explore_1']
+      },
+      {
+        id: 'community_1',
+        destination: null as any,
+        message: 'Bring hot soup to the elder',
+        completed: false,
+        reward: '🍲 The elder sends thanks!',
+        questId: 'community_quest',
+        requiredDeliveries: ['explore_2']
+      },
+      {
+        id: 'community_2',
+        destination: null as any,
+        message: 'Return a lost book to the storyteller',
+        completed: false,
+        reward: '📖 Story unlocked!',
+        questId: 'community_quest',
+        requiredDeliveries: ['community_1']
+      },
+      {
+        id: 'community_3',
+        destination: null as any,
+        message: 'Deliver flowers from the gardener',
+        completed: false,
+        reward: '💐 Beautiful!',
+        questId: 'community_quest',
+        requiredDeliveries: ['community_2']
+      },
+      {
+        id: 'secret_1',
+        destination: null as any,
+        message: 'A sealed letter with no name',
+        completed: false,
+        reward: '🔮 Curious...',
+        questId: 'secret_quest',
+        requiredDeliveries: ['community_3']
+      },
+      {
+        id: 'secret_2',
+        destination: null as any,
+        message: 'The final package — handle with care',
+        completed: false,
+        reward: '🌟 Congratulations, master courier!',
+        questId: 'secret_quest',
+        requiredDeliveries: ['secret_1']
       }
     ];
 

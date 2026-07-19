@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BloomPass } from 'three/addons/postprocessing/BloomPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -76,11 +76,12 @@ export class SimpleRenderer {
     const renderPass = new RenderPass(scene, camera);
     this.composer.addPass(renderPass);
 
-    // Bloom effect
-    const bloomPass = new BloomPass(
-      1.0, // strength
-      25, // radius
-      4.0, // threshold
+    // Bloom effect (UnrealBloomPass: resolution, strength, radius, threshold)
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      0.4, // strength — subtle glow
+      0.6, // radius — tight halos
+      0.85, // threshold — only bright emissives bloom
     );
     this.composer.addPass(bloomPass);
 

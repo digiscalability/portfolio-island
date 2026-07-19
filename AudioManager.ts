@@ -38,7 +38,7 @@ export class AudioManager {
     if (ctx) this.ctx = ctx;
   }
 
-  private ensureCtx(): AudioContext {
+  public ensureCtx(): AudioContext {
     if (!this.ctx) {
       const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
       if (!AudioContextConstructor) {

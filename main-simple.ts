@@ -126,12 +126,18 @@ class SimpleApp {
         this.ui.showZonePanel(zone);
       });
 
+      // Setup NPC interaction callback
+      this.scene.setOnNPCInteract((npcData) => {
+        console.log(`💬 Talking to: ${npcData.name}`);
+        this.ui.showDialogue(npcData.name, npcData.dialogue);
+      });
+
       // Initialize post-processing
       this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
       console.log('✓ Post-processing initialized');
 
-      this.renderer.setPostProcessingEnabled(false);
-      console.log('✨ Bloom disabled by default for crisp visuals (Ctrl+B to toggle).');
+      this.renderer.setPostProcessingEnabled(true);
+      console.log('✨ Bloom enabled by default (Ctrl+B to toggle).');
 
       this.setupDebugShortcuts();
 
@@ -144,11 +150,13 @@ class SimpleApp {
       this.boundHandlers.beforeUnload = () => this.dispose();
       window.addEventListener('beforeunload', this.boundHandlers.beforeUnload);
 
-      // Finish loading and show welcome
+      // Finish loading, fly in, then show welcome
       this.ui.showLoading(100);
       setTimeout(() => {
         this.ui.hideLoading();
-        this.ui.showWelcome();
+        this.scene.getOrbitCamera().flyInFromDistant(2500).then(() => {
+          this.ui.showWelcome();
+        });
       }, 500);
 
       // Start render loop
@@ -250,56 +258,60 @@ class SimpleApp {
 
     // Only process input if welcome screen is not visible
     if (!this.ui.isWelcomeVisible()) {
-      // Get input
-      const moveInput = this.inputManager.getMovementInput();
-      const cameraInput = this.inputManager.getCameraInput();
-      const jumpInput = this.inputManager.getJumpInput();
+      // If dialogue is active, E advances/closes it; suppress movement
+      if (this.ui.isDialogueActive()) {
+        this.scene.setPlayerMovement(0, 0);
+        this.ui.hideInteractionPrompt();
+        const cameraInput = this.inputManager.getCameraInput();
+        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
 
-      // Debug: log when input is detected (only log once per second to avoid spam)
-      if (this.frameCount % 60 === 0) {
-        // Log every ~60 frames
-        if (
-          moveInput.forward !== 0 ||
-          moveInput.strafe !== 0 ||
-          jumpInput ||
-          cameraInput.deltaX !== 0 ||
-          cameraInput.deltaY !== 0
-        ) {
-          console.log('🎮 Input detected:', { moveInput, cameraInput, jumpInput });
-        }
-      }
-
-      // Apply player input
-      this.scene.setPlayerMovement(moveInput.forward, moveInput.strafe);
-      if (jumpInput) {
-        this.scene.playerJump();
-      }
-
-      // Apply camera input (mouse/touch)
-      this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
-
-      // Check for nearby interactable and handle interaction
-      const nearby = this.scene.getNearbyInteractable();
-      if (nearby) {
-        // Show interaction prompt
-        let text = '⌨️ Press <strong>E</strong> to interact';
-        if (nearby.type === 'mailbox') {
-          text = nearby.mailbox.bubbleText || text;
-        } else if (nearby.type === 'lamp') {
-          text = '💡 Press <strong>E</strong> to toggle lamp';
-        } else if (nearby.type === 'zone') {
-          text = `🎯 Press <strong>E</strong> to explore ${nearby.zone.name}`;
-        }
-        this.ui.showInteractionPrompt(text);
-
-        // Consume the latched press: fires at most once per physical E press,
-        // immune to both key auto-repeat and taps shorter than one frame.
         if (this.inputManager.consumeKeyPress('e')) {
-          this.scene.interactWith(nearby);
+          this.ui.advanceDialogue();
+        }
+
+        // Walking away from the NPC closes dialogue
+        const nearby = this.scene.getNearbyInteractable();
+        if (!nearby || nearby.type !== 'npc') {
+          this.ui.hideDialogue();
         }
       } else {
-        // Hide prompt when not near interactable
-        this.ui.hideInteractionPrompt();
+        // Get input
+        const moveInput = this.inputManager.getMovementInput();
+        const cameraInput = this.inputManager.getCameraInput();
+        const jumpInput = this.inputManager.getJumpInput();
+
+        // Apply player input
+        this.scene.setPlayerMovement(moveInput.forward, moveInput.strafe);
+        if (jumpInput) {
+          this.scene.playerJump();
+        }
+
+        // Apply camera input (mouse/touch)
+        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+
+        // Check for nearby interactable and handle interaction
+        const nearby = this.scene.getNearbyInteractable();
+        if (nearby) {
+          // Show interaction prompt
+          let text = '⌨️ Press <strong>E</strong> to interact';
+          if (nearby.type === 'mailbox') {
+            text = nearby.mailbox.bubbleText || text;
+          } else if (nearby.type === 'lamp') {
+            text = '💡 Press <strong>E</strong> to toggle lamp';
+          } else if (nearby.type === 'zone') {
+            text = `🎯 Press <strong>E</strong> to explore ${nearby.zone.name}`;
+          } else if (nearby.type === 'npc') {
+            text = `💬 Press <strong>E</strong> to talk to <strong>${nearby.npcData.name}</strong>`;
+          }
+          this.ui.showInteractionPrompt(text);
+
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.interactWith(nearby);
+          }
+        } else {
+          // Hide prompt when not near interactable
+          this.ui.hideInteractionPrompt();
+        }
       }
     } else {
       // Stop player movement when welcome screen is visible
@@ -382,31 +394,129 @@ class SimpleApp {
       }
       const audioManager = (window as any).audioManager;
 
-      // Try to load a background music file
-      // For now, we'll create a simple generative ambient track
       console.log('🎵 Generating ambient background music...');
 
-      // Create a simple ambient audio buffer
       const ctx = audioManager.ensureCtx();
-      const sampleRate = ctx.sampleRate;
-      const duration = 120; // 2 minutes
-      const frameCount = sampleRate * duration;
+      const sr = ctx.sampleRate;
+      const duration = 120;
+      const N = sr * duration;
+      const buffer = ctx.createBuffer(2, N, sr);
 
-      const buffer = ctx.createBuffer(2, frameCount, sampleRate); // Stereo
+      // --- Musical constants ---
+      const TAU = 2 * Math.PI;
+      // Pentatonic scale frequencies (C major pentatonic across two octaves)
+      const NOTE = {
+        C3: 130.81, D3: 146.83, E3: 164.81, G3: 196.00, A3: 220.00,
+        C4: 261.63, D4: 293.66, E4: 329.63, G4: 392.00, A4: 440.00,
+        C5: 523.25, E5: 659.25, G5: 783.99,
+      };
 
-      // Generate simple ambient tones
-      for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-        const channelData = buffer.getChannelData(channel);
-        for (let i = 0; i < frameCount; i++) {
-          // Create gentle sine waves with some randomness
-          const t = i / sampleRate;
-          const freq1 = 220 + Math.sin(t * 0.1) * 20; // Slow modulation
-          const freq2 = 330 + Math.sin(t * 0.15) * 30;
-          const wave1 = Math.sin(t * freq1 * 2 * Math.PI) * 0.3;
-          const wave2 = Math.sin(t * freq2 * 2 * Math.PI) * 0.2;
-          const noise = (Math.random() - 0.5) * 0.05; // Subtle noise
+      // Chord progression: 10s per chord, cycles every 40s
+      const chords = [
+        { bass: NOTE.C3, tones: [NOTE.C4, NOTE.E4, NOTE.G4] },        // Cmaj
+        { bass: NOTE.A3 * 0.5, tones: [NOTE.A3, NOTE.C4, NOTE.E4] },  // Am
+        { bass: NOTE.G3 * 0.5, tones: [NOTE.G3, NOTE.D4, NOTE.G4] },  // G5sus
+        { bass: NOTE.C3, tones: [NOTE.E4, NOTE.G4, NOTE.C5] },        // Cmaj (inv)
+      ];
+      const chordDur = 10;
 
-          channelData[i] = (wave1 + wave2 + noise) * 0.1; // Low volume
+      // Melody: sequence of pentatonic notes with timing
+      const melodyNotes = [
+        NOTE.E4, NOTE.G4, NOTE.A4, NOTE.G4, NOTE.E4, NOTE.C4, NOTE.D4, NOTE.E4,
+        NOTE.G4, NOTE.C5, NOTE.A4, NOTE.G4, NOTE.E4, NOTE.D4, NOTE.C4, NOTE.E4,
+        NOTE.A4, NOTE.G4, NOTE.E4, NOTE.G4, NOTE.C5, NOTE.A4, NOTE.G4, NOTE.E4,
+      ];
+      const melNoteDur = 2.5;
+
+      // Soft waveform: sine with a touch of 2nd harmonic for warmth
+      const soft = (phase: number) =>
+        Math.sin(phase) * 0.85 + Math.sin(phase * 2) * 0.12 + Math.sin(phase * 3) * 0.03;
+
+      // ADSR envelope
+      const env = (t: number, atk: number, dec: number, sus: number, rel: number, total: number) => {
+        if (t < 0 || t > total) return 0;
+        if (t < atk) return t / atk;
+        if (t < atk + dec) return 1 - (1 - sus) * ((t - atk) / dec);
+        if (t < total - rel) return sus;
+        return sus * (1 - (t - (total - rel)) / rel);
+      };
+
+      // Seeded PRNG for deterministic variation
+      let seed = 42;
+      const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+
+      // Schedule bird chirps (2-note warbles)
+      const chirps: { start: number; f1: number; f2: number; dur: number }[] = [];
+      for (let s = 2; s < duration; s++) {
+        if (rand() < 0.04) {
+          const f1 = 2200 + rand() * 1600;
+          chirps.push({
+            start: (s + rand()) * sr,
+            f1,
+            f2: f1 * (1.2 + rand() * 0.3),
+            dur: (0.08 + rand() * 0.12) * sr,
+          });
+        }
+      }
+
+      for (let ch = 0; ch < 2; ch++) {
+        const d = buffer.getChannelData(ch);
+        let lp = 0;
+        const panShift = ch === 0 ? 0 : 0.4;
+
+        for (let i = 0; i < N; i++) {
+          const t = i / sr;
+
+          // --- Chord pad: warm triangle blend, breathing ---
+          const chordIdx = Math.floor((t / chordDur) % chords.length);
+          const chordT = (t / chordDur) % 1;
+          const chord = chords[chordIdx];
+          const breathe = 0.4 + 0.6 * Math.sin(t * 0.15 + panShift) ** 2;
+          let padVal = soft(t * chord.bass * TAU) * 0.3;
+          for (let ci = 0; ci < chord.tones.length; ci++) {
+            const detune = 1 + (ci * 0.001 + panShift * 0.002);
+            padVal += soft(t * chord.tones[ci] * detune * TAU + ci * 0.5) * 0.2;
+          }
+          // Crossfade between chords at boundaries
+          const xfade = chordT < 0.08 ? chordT / 0.08 : chordT > 0.92 ? (1 - chordT) / 0.08 : 1;
+          padVal *= breathe * xfade;
+
+          // --- Melody: pentatonic notes with soft envelope ---
+          const melIdx = Math.floor(t / melNoteDur) % melodyNotes.length;
+          const melT = (t % melNoteDur);
+          const melFreq = melodyNotes[melIdx];
+          const melEnv = env(melT, 0.6, 0.4, 0.5, 0.8, melNoteDur);
+          const melVal = soft(t * melFreq * TAU + panShift * 1.2) * melEnv;
+
+          // --- Arpeggio sparkle: high notes on beat subdivisions ---
+          const arpPeriod = 3.33;
+          const arpT = t % arpPeriod;
+          const arpIdx = Math.floor(t / arpPeriod) % 3;
+          const arpFreqs = [NOTE.C5, NOTE.E5, NOTE.G5];
+          const arpEnv = env(arpT, 0.02, 0.3, 0.15, 1.5, arpPeriod);
+          const arpVal = Math.sin(t * arpFreqs[arpIdx] * TAU) * arpEnv;
+
+          // --- Subtle wind bed ---
+          const raw = (Math.random() - 0.5) * 2;
+          const cutoff = 160 + 40 * Math.sin(t * 0.04 + ch);
+          const alpha = 1 / (1 + sr / (TAU * cutoff));
+          lp += alpha * (raw - lp);
+          const wind = lp * (0.2 + 0.1 * Math.sin(t * 0.07));
+
+          // --- Bird warble ---
+          let birdVal = 0;
+          for (const c of chirps) {
+            const rel = i - c.start;
+            if (rel >= 0 && rel < c.dur) {
+              const p = rel / c.dur;
+              const bEnv = Math.sin(p * Math.PI) * 0.15;
+              const freq = c.f1 + (c.f2 - c.f1) * Math.sin(p * Math.PI * 3);
+              birdVal += Math.sin(rel / sr * freq * TAU) * bEnv;
+            }
+          }
+
+          // --- Mix ---
+          d[i] = padVal * 0.045 + melVal * 0.05 + arpVal * 0.025 + wind * 0.02 + birdVal * 0.03;
         }
       }
 
