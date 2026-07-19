@@ -145,6 +145,11 @@ class SimpleApp {
         this.ui.showDialogue(npcData.name, npcData.dialogue);
       });
 
+      // Environment badge: weather · time of day · place
+      this.scene.getEnvironmentCycle()?.onStatus((status) => {
+        this.ui.setEnvironmentBadge(status);
+      });
+
       // Initialize post-processing
       this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
       console.log('✓ Post-processing initialized');

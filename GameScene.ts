@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { EnvironmentCycle } from './EnvironmentCycle';
 import { Island } from './Island';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
@@ -93,6 +94,15 @@ export class GameScene extends THREE.Scene {
 
   // Sky-dome "up" uniform so the gradient follows the camera around the sphere
   private skyUpUniform: { value: THREE.Vector3 } | null = null;
+
+  // Sky color uniforms + lights handed to the day/night + weather cycle
+  private skyColorUniforms: {
+    topColor: { value: THREE.Color };
+    bottomColor: { value: THREE.Color };
+    horizonColor: { value: THREE.Color };
+  } | null = null;
+  private hemiLight: THREE.HemisphereLight | null = null;
+  private envCycle: EnvironmentCycle | null = null;
 
   // Scratch objects for the guide-trail math
   private readonly _guideAxis = new THREE.Vector3();
@@ -200,6 +210,17 @@ export class GameScene extends THREE.Scene {
     // Setup lights
     this.setupLighting();
 
+    // Day/night + weather matched to the visitor's clock and location
+    // (needs the sun, hemisphere light, and sky uniforms from setupLighting)
+    if (this.lights.sun && this.hemiLight && this.skyColorUniforms) {
+      this.envCycle = new EnvironmentCycle(
+        this,
+        this.lights.sun,
+        this.hemiLight,
+        this.skyColorUniforms,
+      );
+    }
+
     // Create orbit camera (with terrain collision so hills don't block the view)
     this.orbitCamera = new OrbitCamera(this.camera, this.player);
     this.orbitCamera.setCollisionMesh(this.island.mesh); // terrain + all props
@@ -262,6 +283,7 @@ export class GameScene extends THREE.Scene {
     // unlit undersides (tree canopies) to near-black without ambient fill.
     const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.85);
     this.add(hemiLight);
+    this.hemiLight = hemiLight;
 
     // Soft fill light from below-opposite to reduce harsh shadows on planet's far side
     const fillLight = new THREE.DirectionalLight(0xd4e8ff, 0.25);
@@ -585,6 +607,11 @@ export class GameScene extends THREE.Scene {
     skyDome.renderOrder = -1;
     this.add(skyDome);
     this.skyUpUniform = skyMat.uniforms.uUp as { value: THREE.Vector3 };
+    this.skyColorUniforms = {
+      topColor: skyMat.uniforms.topColor as { value: THREE.Color },
+      bottomColor: skyMat.uniforms.bottomColor as { value: THREE.Color },
+      horizonColor: skyMat.uniforms.horizonColor as { value: THREE.Color },
+    };
   }
 
   /**
@@ -896,6 +923,15 @@ export class GameScene extends THREE.Scene {
     if (this.skyUpUniform && this.camera) {
       this.skyUpUniform.value.copy(this.camera.position).normalize();
     }
+
+    // Day/night + weather cycle
+    if (this.envCycle) {
+      this.envCycle.update(deltaTime, playerPos, time);
+    }
+  }
+
+  public getEnvironmentCycle(): EnvironmentCycle | null {
+    return this.envCycle;
   }
 
   /**

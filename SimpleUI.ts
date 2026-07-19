@@ -9,6 +9,7 @@ export class SimpleUI {
   private interactionDiv: HTMLElement | null = null;
   private fpsDiv: HTMLElement | null = null;
   private playerCountDiv: HTMLElement | null = null;
+  private envBadgeDiv: HTMLElement | null = null;
   private customizeDiv: HTMLElement | null = null;
   private zonePanelDiv: HTMLElement | null = null;
   private dialogueDiv: HTMLElement | null = null;
@@ -218,6 +219,30 @@ export class SimpleUI {
     if (this.fpsDiv) {
       this.fpsDiv.textContent = `FPS: ${fps.toFixed(1)}`;
     }
+  }
+
+  /**
+   * Environment badge (weather · time of day · place) in the top-left.
+   * Lazy-created so it only appears once the cycle reports something.
+   */
+  setEnvironmentBadge(text: string): void {
+    if (!this.envBadgeDiv) {
+      this.envBadgeDiv = document.createElement('div');
+      Object.assign(this.envBadgeDiv.style, {
+        position: 'absolute',
+        top: '10px',
+        left: '10px',
+        background: 'rgba(0, 0, 0, 0.55)',
+        color: 'white',
+        padding: '5px 12px',
+        borderRadius: '12px',
+        fontSize: '12px',
+        fontFamily: 'system-ui, sans-serif',
+        pointerEvents: 'none',
+      });
+      this.overlay.appendChild(this.envBadgeDiv);
+    }
+    this.envBadgeDiv.textContent = text;
   }
 
   /**
