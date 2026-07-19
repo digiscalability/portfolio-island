@@ -567,7 +567,9 @@ export class Island {
       const theta = goldenAngle * i;
       const x = Math.cos(theta) * radiusAtY;
       const z = Math.sin(theta) * radiusAtY;
-      const dir = new THREE.Vector3(x, y, z).normalize();
+      // Trees claim spacing too — they used to ignore the registry and
+      // grow through houses, stalls, and each other
+      const dir = this.claimDir(new THREE.Vector3(x, y, z).normalize(), 0.055);
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
@@ -724,29 +726,16 @@ export class Island {
 
     // (Removed stripes/road centerline boxes to eliminate boundaries)
 
-    // Add stairs near some houses for access to "higher" ground
+    // (Freestanding staircases removed — steps rising out of an open field
+    // with nothing above them read as leftovers, not architecture.)
     const stairs = new THREE.Group();
-    const STAIR_SITES: Array<[number, number]> = [[1.38, 0.1], [3.9, -0.1]];
-    for (let i = 0; i < STAIR_SITES.length; i++) {
-      const pos = this.claimDir(this.dirAt(STAIR_SITES[i][0], STAIR_SITES[i][1]), 0.08).multiplyScalar(this.radius);
-      const stair = this.createStairs();
-      try {
-        this.placeObjectOnSurface(stair, pos, -0.06, true);
-      } catch {
-        /* ignore placement issues */
-      }
-      stair.castShadow = true;
-      stair.receiveShadow = true;
-      stair.name = `stairs_${i}`;
-      stairs.add(stair);
-    }
 
     // Add street lamps for evening ambiance
     const lamps = new THREE.Group();
     const lampPositions: THREE.Vector3[] = [];
     const LAMP_LONS = [0.55, 1.6, 2.51, 3.15, 4.4, 5.55];
     for (let i = 0; i < 6; i++) {
-      const pos = this.claimDir(this.dirAt(LAMP_LONS[i], i % 2 === 0 ? 0.06 : -0.06), 0.05).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(LAMP_LONS[i], i % 2 === 0 ? 0.06 : -0.06), 0.07).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       const lampGroup = new THREE.Group();
       lampGroup.name = `lamp_${i}`;
@@ -913,7 +902,7 @@ export class Island {
     const npcShoeMat = Materials.createStandardMaterial({ color: 0x3d2b1a, roughness: 0.8 });
     const HAIR_COLORS = [0x3a2a1a, 0x8b6b3a, 0x222222, 0xcc8844, 0x5a3a2a, 0x1a1a2a];
     for (let i = 0; i < NPC_SITES.length; i++) {
-      const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), 0.03);
+      const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), 0.05);
       const npcGroup = new THREE.Group();
       const shirtMat = new THREE.MeshStandardMaterial({ color: NPC_SHIRT_COLORS[i % NPC_SHIRT_COLORS.length], roughness: 0.6 });
       const pantsMat = Materials.createStandardMaterial({ color: 0x3a4a6a, roughness: 0.7 });
@@ -1147,7 +1136,7 @@ export class Island {
       }
 
       const CAR_LONS = [0.32, 0.7, 1.35, 2.3, 3.68, 4.1, 4.5, 5.85];
-      const pos = this.claimDir(this.dirAt(CAR_LONS[i % CAR_LONS.length], i % 2 === 0 ? 0.08 : -0.08), 0.06).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(CAR_LONS[i % CAR_LONS.length], i % 2 === 0 ? 0.08 : -0.08), 0.1).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
       carGroup.position.copy(sampled.position);
       carGroup.quaternion.copy(
@@ -1167,7 +1156,7 @@ export class Island {
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
       const [sLon, sLat] = STALL_SITES[i];
-      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.07).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.1).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       stall.quaternion.copy(
@@ -1331,7 +1320,7 @@ export class Island {
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
     const benchLegMat = Materials.createTrimMaterial(0x444444);
     for (let i = 0; i < BENCH_SITES.length; i++) {
-      const bDir = this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.02);
+      const bDir = this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.06);
       const bSampled = this.sampleSurfaceByDirection(bDir, 0.0);
       const bench = new THREE.Group();
       // Seat plank
@@ -1351,8 +1340,12 @@ export class Island {
       bench.position.copy(bSampled.position);
       const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bSampled.normal);
       bench.quaternion.copy(bq);
-      bench.quaternion.premultiply(
-        new THREE.Quaternion().setFromAxisAngle(bSampled.normal, Math.random() * Math.PI * 2),
+      // Face the road (seat toward it, backrest away) — random yaw left
+      // benches staring at walls or turned back-first to the street
+      this.faceObjectToward(
+        bench,
+        bSampled.normal,
+        this.dirAt(BENCH_SITES[i][0], 0).multiplyScalar(this.radius),
       );
       bench.name = `bench_${i}`;
       bench.castShadow = true;
@@ -1393,7 +1386,7 @@ export class Island {
     // offsets. Runs before tryLoadModels so GLB replacements inherit the
     // corrected positions.
     this.seatGroupsOnTerrain(root, [
-      buildings, houses, trees, lamps, npcs, cars, mailboxes, stalls, constructions, benches,
+      buildings, houses, trees, lamps, npcs, cars, mailboxes, stalls, constructions, benches, flowers,
     ]);
 
     this.tryLoadModels(buildings, npcs, buildingPlaceholders, npcPlaceholders).catch(() => {
@@ -1739,34 +1732,6 @@ export class Island {
       segments,
     };
     group.userData = roadUserData;
-    return group;
-  }
-
-  private createStairs(): THREE.Group {
-    const group = new THREE.Group();
-    const stepHeight = 0.15;
-    const stepDepth = 0.3;
-    const stepWidth = 1.5;
-    const numSteps = 5;
-    const stepMat = Materials.createTrimMaterial(0x888888);
-    for (let i = 0; i < numSteps; i++) {
-      const stepGeom = new THREE.BoxGeometry(stepWidth, stepHeight, stepDepth);
-      const step = new THREE.Mesh(stepGeom, stepMat);
-      step.position.set(0, i * stepHeight, i * stepDepth);
-      step.castShadow = true;
-      step.receiveShadow = true;
-      group.add(step);
-    }
-    // Add railings
-    const railMat = Materials.createTrimMaterial(0x444444);
-    const railGeom = new THREE.CylinderGeometry(0.05, 0.05, numSteps * stepDepth);
-    const leftRail = new THREE.Mesh(railGeom, railMat);
-    leftRail.position.set(-stepWidth / 2, (numSteps * stepHeight) / 2, (numSteps * stepDepth) / 2);
-    leftRail.rotation.z = Math.PI / 2;
-    group.add(leftRail);
-    const rightRail = leftRail.clone();
-    rightRail.position.x = stepWidth / 2;
-    group.add(rightRail);
     return group;
   }
 
