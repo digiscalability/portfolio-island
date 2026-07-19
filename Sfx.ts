@@ -127,6 +127,11 @@ export class Sfx {
   public blip(): void {
     this.tone(440, 480, 0.045, 'square', 0.04);
   }
+
+  /** Bright little ping for grabbing a meadow coin. */
+  public coin(): void {
+    this.tone(988, 1319, 0.09, 'sine', 0.1);
+  }
 }
 
 export const sfx = new Sfx();

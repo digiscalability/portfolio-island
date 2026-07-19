@@ -395,12 +395,16 @@ class SimpleApp {
     const target = active.length > 0 ? active[0] : null;
     if (!target || !target.destination) {
       this.ui.updateQuestCompass(null);
+      this.scene.setGuideTarget(null);
       return;
     }
     const player = this.scene.getPlayer();
     const playerPos = player.getWorldPosition();
     const normal = player.getSurfaceNormal();
     const targetPos = target.destination.mesh.position;
+
+    // Feed the in-world breadcrumb trail the same target as the HUD compass
+    this.scene.setGuideTarget(targetPos);
 
     const project = (v: { clone(): any }) => {
       const p = (v as any).clone();

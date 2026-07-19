@@ -284,6 +284,30 @@ export class SimplePlayer extends THREE.Group {
           });
         }
 
+        // The GLB's own hair patch is tiny — from the follow camera the
+        // head reads as a bald egg. Hang a fuller toon hair cap off the
+        // head bone (tracks idle/walk animation for free). Sizing tuned
+        // live against the model (head bone at +0.63, world scale 1).
+        if (this.gltfModel) {
+          let headBone: THREE.Bone | null = null;
+          this.gltfModel.traverse((obj) => {
+            if ((obj as THREE.Bone).isBone && obj.name === 'head' && !headBone) {
+              headBone = obj as THREE.Bone;
+            }
+          });
+          if (headBone) {
+            const hairCap = new THREE.Mesh(
+              new THREE.SphereGeometry(0.21, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62),
+              new THREE.MeshToonMaterial({ color: 0x6c594b }),
+            );
+            hairCap.name = 'hair_cap';
+            hairCap.position.set(0, 0.16, -0.02);
+            hairCap.rotation.x = 0.25;
+            hairCap.castShadow = true;
+            (headBone as THREE.Bone).add(hairCap);
+          }
+        }
+
         console.log(`✅ Loaded GLTF character from: ${gltfResult.loadedUrl}`);
       }
     } catch (error) {

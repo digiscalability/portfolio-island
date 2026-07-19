@@ -4,6 +4,7 @@ import { Island } from './Island';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
 import { OrbitCamera } from './OrbitCamera';
+import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
 import { TownPlanner, type TownPlanResult } from './TownPlanner';
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
@@ -81,6 +82,24 @@ export class GameScene extends THREE.Scene {
     offset: number;
   }> = [];
 
+  // Breadcrumb sparkles leading toward the active delivery target.
+  // Terrain resampling is throttled; per-frame we only bob/spin.
+  private guideTarget: THREE.Vector3 | null = null;
+  private guideSparkles: THREE.Mesh[] = [];
+  private guideRefreshAt: number = 0;
+
+  // Collectible coins scattered across the meadows
+  private coins: Array<{ mesh: THREE.Mesh; respawnAt: number }> = [];
+
+  // Sky-dome "up" uniform so the gradient follows the camera around the sphere
+  private skyUpUniform: { value: THREE.Vector3 } | null = null;
+
+  // Scratch objects for the guide-trail math
+  private readonly _guideAxis = new THREE.Vector3();
+  private readonly _guideDir = new THREE.Vector3();
+  private readonly _playerDir = new THREE.Vector3();
+  private readonly _targetDir = new THREE.Vector3();
+
   // Scratch objects for per-frame ambient animation (no allocations in update)
   private static readonly _swayAxis = new THREE.Vector3(1, 0, 0);
   private readonly _swayQuat = new THREE.Quaternion();
@@ -155,6 +174,10 @@ export class GameScene extends THREE.Scene {
     // Ambient life anchored to island sites
     this.createButterflies();
     this.createChimneySmoke();
+
+    // Navigation + traversal rewards
+    this.createGuideSparkles();
+    this.createCoins();
 
     // Create player on island surface with spherical physics
     this.player = new SimplePlayer();
@@ -390,6 +413,67 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
+   * Five glowing breadcrumb sparkles that arc ahead of the player along
+   * the great-circle route to the active delivery — in-world navigation
+   * so the HUD compass isn't the only cue. Hidden when no target.
+   */
+  private createGuideSparkles(): void {
+    const geo = new THREE.OctahedronGeometry(0.11, 0);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffe066,
+      transparent: true,
+      opacity: 0.9,
+    });
+    for (let i = 0; i < 5; i++) {
+      const sparkle = new THREE.Mesh(geo, mat);
+      sparkle.visible = false;
+      sparkle.name = `guide_sparkle_${i}`;
+      this.add(sparkle);
+      this.guideSparkles.push(sparkle);
+    }
+  }
+
+  /** Set (or clear) the world position the guide sparkles lead toward. */
+  public setGuideTarget(pos: THREE.Vector3 | null): void {
+    this.guideTarget = pos;
+  }
+
+  /**
+   * Spinning collectible coins scattered across the open meadows —
+   * traversal rewards between districts (A Short Hike-style). Collected
+   * on touch with a chime; each respawns after 45 seconds.
+   */
+  private createCoins(): void {
+    const geo = new THREE.CylinderGeometry(0.16, 0.16, 0.045, 12);
+    const mat = new THREE.MeshToonMaterial({ color: 0xffd34a });
+    mat.emissive = new THREE.Color(0x554411);
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const dir = new THREE.Vector3();
+    for (let i = 0; i < 20; i++) {
+      const y = 1 - ((i + 0.5) / 20) * 2;
+      const rAt = Math.sqrt(Math.max(0, 1 - y * y));
+      const th = golden * i * 7.3;
+      dir
+        .set(
+          Math.cos(th) * rAt + (Math.random() - 0.5) * 0.2,
+          y + (Math.random() - 0.5) * 0.2,
+          Math.sin(th) * rAt + (Math.random() - 0.5) * 0.2,
+        )
+        .normalize();
+      const sampled = this.island.sampleSurfaceByDirection(dir, 0);
+      const coin = new THREE.Mesh(geo, mat);
+      coin.position.copy(sampled.position).addScaledVector(sampled.normal, 0.35);
+      // Stand on edge, aligned to the surface
+      coin.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
+      coin.rotateX(Math.PI / 2);
+      coin.castShadow = true;
+      coin.name = `coin_${i}`;
+      this.add(coin);
+      this.coins.push({ mesh: coin, respawnAt: 0 });
+    }
+  }
+
+  /**
    * Cozy chimney smoke: 3 looping puffs per chimney that rise along the
    * surface normal, growing and fading before wrapping back down.
    */
@@ -465,6 +549,10 @@ export class GameScene extends THREE.Scene {
         horizonColor: { value: new THREE.Color(0xa8d8f0) },
         offset: { value: 0 },
         exponent: { value: 0.5 },
+        // Camera's local up (updated per frame): the gradient follows the
+        // player around the sphere instead of being world-Y locked, so the
+        // sky doesn't wash out on the far side of the planet
+        uUp: { value: new THREE.Vector3(0, 1, 0) },
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -480,9 +568,10 @@ export class GameScene extends THREE.Scene {
         uniform vec3 horizonColor;
         uniform float offset;
         uniform float exponent;
+        uniform vec3 uUp;
         varying vec3 vWorldPosition;
         void main() {
-          float h = normalize(vWorldPosition + offset).y;
+          float h = dot(normalize(vWorldPosition + offset), uUp);
           float t = max(h, 0.0);
           vec3 sky = mix(horizonColor, topColor, pow(t, exponent));
           float b = max(-h, 0.0);
@@ -495,6 +584,7 @@ export class GameScene extends THREE.Scene {
     skyDome.name = 'SkyDome';
     skyDome.renderOrder = -1;
     this.add(skyDome);
+    this.skyUpUniform = skyMat.uniforms.uUp as { value: THREE.Vector3 };
   }
 
   /**
@@ -751,6 +841,71 @@ export class GameScene extends THREE.Scene {
       const s = 0.05 + ph * 0.16;
       puff.mesh.scale.set(s, s, s);
       puff.material.opacity = 0.4 * Math.sin(ph * Math.PI);
+    }
+
+    const playerPos = this.player.getWorldPosition();
+
+    // Guide sparkles: arc ahead of the player along the great circle to
+    // the delivery target. Terrain resampling runs on a 0.15s throttle;
+    // every frame just bobs/spins around the cached base position.
+    let guideVisible = false;
+    if (this.guideTarget) {
+      this._playerDir.copy(playerPos).normalize();
+      this._targetDir.copy(this.guideTarget).normalize();
+      const totalAngle = this._playerDir.angleTo(this._targetDir);
+      this._guideAxis.crossVectors(this._playerDir, this._targetDir);
+      const R = playerPos.length();
+      if (totalAngle > 0.08 && this._guideAxis.lengthSq() > 1e-8) {
+        guideVisible = true;
+        const refresh = time > this.guideRefreshAt;
+        if (refresh) this.guideRefreshAt = time + 0.15;
+        this._guideAxis.normalize();
+        for (let i = 0; i < this.guideSparkles.length; i++) {
+          const s = this.guideSparkles[i];
+          const sData = s.userData as { base?: THREE.Vector3; normal?: THREE.Vector3 };
+          if (refresh || !sData.base) {
+            const arcAngle = Math.min((2.0 + i * 1.6) / R, totalAngle * 0.9);
+            this._guideDir.copy(this._playerDir).applyAxisAngle(this._guideAxis, arcAngle);
+            const sampled = this.island.sampleSurfaceByDirection(this._guideDir, 0);
+            sData.base = (sData.base ?? new THREE.Vector3()).copy(sampled.position);
+            sData.normal = (sData.normal ?? new THREE.Vector3()).copy(sampled.normal);
+          }
+          s.position
+            .copy(sData.base as THREE.Vector3)
+            .addScaledVector(sData.normal as THREE.Vector3, 0.45 + Math.sin(time * 2.5 + i) * 0.08);
+          s.rotation.y = time * 2 + i;
+          const sc = 0.85 + Math.sin(time * 3 + i * 0.8) * 0.15;
+          s.scale.set(sc, sc, sc);
+          s.visible = true;
+        }
+      }
+    }
+    if (!guideVisible) {
+      for (const s of this.guideSparkles) s.visible = false;
+    }
+
+    // Coins: spin in place, collect on touch, respawn after 45s
+    for (const c of this.coins) {
+      if (!c.mesh.visible) {
+        if (c.respawnAt > 0 && time > c.respawnAt) {
+          c.mesh.visible = true;
+          c.respawnAt = 0;
+        }
+        continue;
+      }
+      this._npcNormal.copy(c.mesh.position).normalize();
+      c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 2.5);
+      if (c.mesh.position.distanceToSquared(playerPos) < 0.9) {
+        c.mesh.visible = false;
+        c.respawnAt = time + 45;
+        sfx.coin();
+      }
+    }
+
+    // Keep the sky gradient oriented to the camera's local "up" so the
+    // mood doesn't shift as the player circumnavigates
+    if (this.skyUpUniform && this.camera) {
+      this.skyUpUniform.value.copy(this.camera.position).normalize();
     }
   }
 
