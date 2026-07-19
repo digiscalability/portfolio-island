@@ -466,17 +466,35 @@ export class Island {
         .add(tangent.multiplyScalar(0.8 + Math.random() * 0.4));
       const placement = this.sampleSurfacePosition(approx, 0.03); // NPC feet on the ground (0.25 floated them)
 
-      const mb = new THREE.Mesh(
-        new THREE.BoxGeometry(0.18, 0.24, 0.12),
-        Materials.createMailboxMaterial(),
+      const mb = new THREE.Group();
+      // Post
+      const postMat = new THREE.MeshStandardMaterial({ color: 0x5a3d2b, roughness: 0.8 });
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.5, 6), postMat);
+      post.position.y = 0.25;
+      mb.add(post);
+      // Box body
+      const boxMat = Materials.createMailboxMaterial();
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.16, 0.12), boxMat);
+      box.position.y = 0.56;
+      mb.add(box);
+      // Rounded top (half-cylinder look via a squashed sphere)
+      const top = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), boxMat);
+      top.scale.set(1, 0.5, 0.67);
+      top.position.y = 0.64;
+      mb.add(top);
+      // Flag
+      const flag = new THREE.Mesh(
+        new THREE.BoxGeometry(0.02, 0.08, 0.06),
+        new THREE.MeshStandardMaterial({ color: 0xcc3333 }),
       );
+      flag.position.set(0.1, 0.6, 0);
+      mb.add(flag);
       mb.position.copy(placement.position);
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         placement.normal,
       );
       mb.quaternion.copy(q);
-      // premultiply: world-space spin about the normal (multiply = local-space tilt bug)
       mb.quaternion.premultiply(
         new THREE.Quaternion().setFromAxisAngle(placement.normal, Math.random() * Math.PI * 2),
       );
@@ -512,41 +530,53 @@ export class Island {
     for (let i = 0; i < 6; i++) {
       const pos = this.claimDir(this.dirAt(LAMP_LONS[i], i % 2 === 0 ? 0.06 : -0.06), 0.05).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
-      const lampPost = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05, 0.05, 1.5, 8),
-        Materials.createTrimMaterial(0x333333),
+      const lampGroup = new THREE.Group();
+      lampGroup.name = `lamp_${i}`;
+      const poleMat = Materials.createTrimMaterial(0x3a3a3a);
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.6, 8), poleMat);
+      pole.position.y = 0.8;
+      pole.castShadow = true;
+      lampGroup.add(pole);
+      // Curved arm
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 6), poleMat);
+      arm.position.set(0.2, 1.55, 0);
+      arm.rotation.z = -Math.PI / 4;
+      lampGroup.add(arm);
+      // Lamp shade (cone)
+      const shade = new THREE.Mesh(
+        new THREE.ConeGeometry(0.2, 0.15, 8),
+        Materials.createTrimMaterial(0x2a2a2a),
       );
-      const lampHead = new THREE.Mesh(
-        new THREE.SphereGeometry(0.15, 8, 8),
-        Materials.createTrimMaterial(0x444444),
+      shade.position.set(0.35, 1.55, 0);
+      shade.rotation.z = Math.PI;
+      shade.castShadow = true;
+      lampGroup.add(shade);
+      // Glowing bulb
+      const bulb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 8, 8),
+        new THREE.MeshStandardMaterial({ color: 0xfff4cc, emissive: 0xffe8a0, emissiveIntensity: 0.8 }),
       );
-      lampPost.position.copy(sampled.position.clone().add(new THREE.Vector3(0, 0.75, 0)));
-      lampHead.position.copy(sampled.position.clone().add(new THREE.Vector3(0, 1.35, 0)));
+      bulb.position.set(0.35, 1.48, 0);
+      lampGroup.add(bulb);
+
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         sampled.normal,
       );
-      lampPost.quaternion.copy(q);
-      lampHead.quaternion.copy(q);
-      lampPost.castShadow = true;
-      lampPost.receiveShadow = true;
-      lampHead.castShadow = true;
-      lampHead.receiveShadow = true;
-      // Add a small point light at the lamp head for night
+      lampGroup.position.copy(sampled.position);
+      lampGroup.quaternion.copy(q);
       const lampLight = new THREE.PointLight(0xffeeaa, 0.8, 3, 2);
-      lampLight.position.copy(lampHead.position);
+      lampLight.position.set(0.35, 1.48, 0);
       lampLight.userData = { isLampLight: true };
-      lamps.add(lampPost);
-      lamps.add(lampHead);
-      lamps.add(lampLight);
-      lampPositions.push(lampHead.position.clone());
+      lampGroup.add(lampLight);
+      lamps.add(lampGroup);
+      lampPositions.push(sampled.position.clone().add(new THREE.Vector3(0, 1.48, 0)));
     }
     // (Electric wires removed: straight chord lines between lamps cut through
     // the planet and pierced props — they were designed for a flat town.)
 
     // Tiny NPC placeholders (spheres) near buildings to imply life
     const npcs = new THREE.Group();
-    const npcMat = Materials.createCharacterBodyMaterial();
     const npcPlaceholders: THREE.Mesh[] = [];
     const NPC_SITES: Array<[number, number]> = [
       // villagers on the village street
@@ -558,80 +588,118 @@ export class Island {
       // wanderers
       [1.7, 0.2], [4.3, 0.12], [5.6, -0.12],
     ];
+    const NPC_SHIRT_COLORS = [0x4488bb, 0xcc5544, 0x55aa55, 0xddaa33, 0x8866aa, 0xbb6644];
+    const headMat = new THREE.MeshStandardMaterial({ color: 0xf5c6a0, roughness: 0.7 });
     for (let i = 0; i < NPC_SITES.length; i++) {
       const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), 0.03);
+      const npcGroup = new THREE.Group();
+      // Body (capsule-like: cylinder + hemisphere top)
+      const shirtMat = new THREE.MeshStandardMaterial({ color: NPC_SHIRT_COLORS[i % NPC_SHIRT_COLORS.length], roughness: 0.6 });
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.1, 0.35, 8), shirtMat);
+      body.position.y = 0.175;
+      body.castShadow = true;
+      npcGroup.add(body);
+      // Head
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), headMat);
+      head.position.y = 0.43;
+      head.castShadow = true;
+      npcGroup.add(head);
 
-      const nGeom = new THREE.SphereGeometry(0.22, 10, 10);
-      const n = new THREE.Mesh(nGeom, npcMat);
-      const sampled = this.sampleSurfaceByDirection(dir, 0.22); // centered sphere: seat ON ground, not half-buried
-      n.position.copy(sampled.position);
+      const sampled = this.sampleSurfaceByDirection(dir, 0.02);
+      npcGroup.position.copy(sampled.position);
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         sampled.normal,
       );
-      n.quaternion.copy(q);
-      n.castShadow = true;
-      n.receiveShadow = true;
-      n.name = `npc_placeholder_${i}`;
-      npcs.add(n);
-      npcPlaceholders.push(n);
+      npcGroup.quaternion.copy(q);
+      npcGroup.name = `npc_placeholder_${i}`;
+      npcs.add(npcGroup);
+      npcPlaceholders.push(npcGroup as unknown as THREE.Mesh);
     }
 
-    // Add subtle ambient particles (sparkles) for whimsy
+    // Floating sparkles around the planet surface
     const particles = new THREE.Group();
     const sparkleMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+      color: 0xffffee,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.55,
     });
-    for (let i = 0; i < 20; i++) {
-      const sparkle = new THREE.Mesh(new THREE.SphereGeometry(0.02, 4, 4), sparkleMat);
-      const angle = Math.random() * Math.PI * 2;
-      const dist = this.radius * 0.8 + Math.random() * this.radius * 0.2;
-      const pos = new THREE.Vector3(
-        Math.cos(angle) * dist,
-        Math.random() * 2 + 1,
-        Math.sin(angle) * dist,
+    for (let i = 0; i < 30; i++) {
+      const sparkle = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 4), sparkleMat);
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(Math.random() * 2 - 1);
+      const r = this.radius + 0.3 + Math.random() * 2;
+      sparkle.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta),
+        r * Math.cos(phi),
       );
-      sparkle.position.copy(pos);
-      sparkle.userData = { baseY: pos.y, phase: Math.random() * Math.PI * 2 };
+      sparkle.userData = { baseY: sparkle.position.y, phase: Math.random() * Math.PI * 2 };
       particles.add(sparkle);
     }
 
-    // Add a central fountain for the town square
+    // Tiered fountain for the town square
     const fountain = new THREE.Group();
-    const baseGeom = new THREE.CylinderGeometry(2, 2, 0.5, 16);
-    const baseMat = Materials.createTrimMaterial(0x666666);
-    const base = new THREE.Mesh(baseGeom, baseMat);
-    base.position.set(0, 0.25, 0);
-    fountain.add(base);
-    const waterGeom = new THREE.CylinderGeometry(1.8, 1.8, 0.1, 16);
-    const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x0066cc,
-      transparent: true,
-      opacity: 0.8,
-      roughness: 0.1,
-      metalness: 0.1,
+    const stoneMat = Materials.createTrimMaterial(0x888888);
+    // Outer basin
+    const outerBasin = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.2, 0.5, 16), stoneMat);
+    outerBasin.position.y = 0.25;
+    fountain.add(outerBasin);
+    // Inner rim
+    const innerRim = new THREE.Mesh(new THREE.TorusGeometry(1.9, 0.1, 8, 16), stoneMat);
+    innerRim.rotation.x = Math.PI / 2;
+    innerRim.position.y = 0.52;
+    fountain.add(innerRim);
+    // Water surface
+    const fWaterMat = new THREE.MeshStandardMaterial({
+      color: 0x3399dd, transparent: true, opacity: 0.7,
+      roughness: 0.05, metalness: 0.3, emissive: 0x1155aa, emissiveIntensity: 0.1,
     });
-    const water = new THREE.Mesh(waterGeom, waterMat);
-    water.position.set(0, 0.55, 0);
+    const water = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.08, 16), fWaterMat);
+    water.position.y = 0.5;
     fountain.add(water);
-    // Seat the fountain on the actual terrain at the pole (was radius+0.3 → floated)
+    // Central pillar
+    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.25, 1.2, 10), stoneMat);
+    pillar.position.y = 1.0;
+    fountain.add(pillar);
+    // Upper basin
+    const upperBasin = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.8, 0.25, 12), stoneMat);
+    upperBasin.position.y = 1.65;
+    fountain.add(upperBasin);
+    // Upper water
+    const upperWater = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.06, 12), fWaterMat);
+    upperWater.position.y = 1.78;
+    fountain.add(upperWater);
+    // Spout cap
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), stoneMat);
+    cap.position.y = 2.0;
+    fountain.add(cap);
+    fountain.castShadow = true;
     this.placeObjectOnSurface(fountain, new THREE.Vector3(6, this.radius, 2.5), 0.02, true);
 
-    // Add a central statue for glam
+    // Stylized human statue
     const statue = new THREE.Group();
-    const pedestalGeom = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
-    const pedestalMat = Materials.createTrimMaterial(0xaaaaaa);
-    const pedestal = new THREE.Mesh(pedestalGeom, pedestalMat);
-    pedestal.position.set(0, 0.5, 0);
-    statue.add(pedestal);
-    const figureGeom = new THREE.CapsuleGeometry(0.3, 1.5, 8, 16);
-    const figureMat = Materials.createPBRMaterial({ color: 0x8b4513, roughness: 0.7 });
-    const figure = new THREE.Mesh(figureGeom, figureMat);
-    figure.position.set(0, 1.25, 0);
-    statue.add(figure);
-    // Seat the statue on the terrain, slightly off the pole so it doesn't overlap the fountain
+    const bronzeMat = Materials.createPBRMaterial({ color: 0x8b6914, roughness: 0.5, metalness: 0.6 });
+    const marbleMat = Materials.createTrimMaterial(0xd4cfc4);
+    // Two-tier pedestal
+    const pedestalBase = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.3, 1.0), marbleMat);
+    pedestalBase.position.y = 0.15;
+    statue.add(pedestalBase);
+    const pedestalTop = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.45, 0.7, 10), marbleMat);
+    pedestalTop.position.y = 0.65;
+    statue.add(pedestalTop);
+    // Figure: torso + head + outstretched arm
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.8, 8, 12), bronzeMat);
+    torso.position.y = 1.5;
+    statue.add(torso);
+    const sHead = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 10), bronzeMat);
+    sHead.position.y = 2.1;
+    statue.add(sHead);
+    // Outstretched arm
+    const sArm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.5, 6), bronzeMat);
+    sArm.position.set(0.35, 1.7, 0);
+    sArm.rotation.z = -Math.PI / 3;
+    statue.add(sArm);
     this.placeObjectOnSurface(statue, new THREE.Vector3(7.5, this.radius, -1.5), 0.02, true);
     statue.castShadow = true;
     statue.receiveShadow = true;
@@ -642,7 +710,8 @@ export class Island {
     for (let i = 0; i < 8; i++) {
       // Increased from 4 to 8
       const carGeom = new THREE.BoxGeometry(1.5, 0.8, 3);
-      const carMat = Materials.createTrimMaterial(0xff0000 + i * 0x222222);
+      const CAR_COLORS = [0xc44040, 0x4488bb, 0x55aa55, 0xddcc44, 0xbb6633, 0x8866aa, 0xdd7744, 0x557788];
+      const carMat = Materials.createTrimMaterial(CAR_COLORS[i % CAR_COLORS.length]);
       const car = new THREE.Mesh(carGeom, carMat);
       // Parked along Main Street near the districts
       const CAR_LONS = [0.32, 0.7, 1.35, 2.3, 3.68, 4.1, 4.5, 5.85];
@@ -751,49 +820,69 @@ export class Island {
       constructions.add(block);
     }
 
-    // Add flowers for color and life
+    // Add flowers for color and life — each is a stem + petal ring + center
     const flowers = new THREE.Group();
+    const FLOWER_COLORS = [0xff69b4, 0xf4a940, 0xffffff, 0xb46bd8, 0xff8866];
+    const stemMat = Materials.createStandardMaterial({ color: 0x3d7a3d });
     for (let i = 0; i < 50; i++) {
-      const flowerGeom = new THREE.ConeGeometry(0.1, 0.3, 6);
-      // Fixed palette: the old 0xff69b4 + random(0x333333) overflowed past
-      // 0xffffff and wrapped into broken teal shards.
-      const FLOWER_COLORS = [0xff69b4, 0xf4a940, 0xffffff, 0xb46bd8, 0xff8866];
-      const flowerMat = Materials.createStandardMaterial({
-        color: FLOWER_COLORS[i % FLOWER_COLORS.length],
+      const flowerGroup = new THREE.Group();
+      // Stem
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.25, 5), stemMat);
+      stem.position.y = 0.125;
+      flowerGroup.add(stem);
+      // Petals — 5 small spheres in a ring
+      const petalColor = FLOWER_COLORS[i % FLOWER_COLORS.length];
+      const petalMat = new THREE.MeshStandardMaterial({
+        color: petalColor, emissive: petalColor, emissiveIntensity: 0.15,
       });
-      const flower = new THREE.Mesh(flowerGeom, flowerMat);
-      // ten flowers ringing each of the five zone plazas
+      for (let p = 0; p < 5; p++) {
+        const pa = (p / 5) * Math.PI * 2;
+        const petal = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), petalMat);
+        petal.position.set(Math.cos(pa) * 0.06, 0.27, Math.sin(pa) * 0.06);
+        petal.scale.set(1.2, 0.6, 1.2);
+        flowerGroup.add(petal);
+      }
+      // Center
+      const center = new THREE.Mesh(
+        new THREE.SphereGeometry(0.04, 6, 6),
+        new THREE.MeshStandardMaterial({ color: 0xffdd44, emissive: 0xffdd44, emissiveIntensity: 0.3 }),
+      );
+      center.position.y = 0.27;
+      flowerGroup.add(center);
+      // Position on island surface
       const zoneLon = [0, 1.2566, 2.5133, 3.7699, 5.0265][Math.floor(i / 10)];
       const ringA = ((i % 10) / 10) * Math.PI * 2;
       const fDir = this.dirAt(zoneLon + Math.cos(ringA) * 0.14, Math.sin(ringA) * 0.14);
       const pos = this.claimDir(fDir, 0.015).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
-      flower.position.copy(sampled.position);
-      flower.quaternion.copy(
+      flowerGroup.position.copy(sampled.position);
+      flowerGroup.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
-      flower.name = `flower_${i}`;
-      flowers.add(flower);
+      flowerGroup.name = `flower_${i}`;
+      flowers.add(flowerGroup);
     }
 
     // Add signs for shops/buildings
     const signs = new THREE.Group();
     // (small floating sign planes removed for the same reason)
 
-    // Add dust particles for ambiance
+    // Add dust/pollen particles for ambiance
     const dustParticles = new THREE.Group();
-    for (let i = 0; i < 100; i++) {
-      const dustGeom = new THREE.SphereGeometry(0.01, 4, 4);
-      const dustMat = new THREE.MeshBasicMaterial({
-        color: 0xcccccc,
-        transparent: true,
-        opacity: 0.3,
-      });
-      const dust = new THREE.Mesh(dustGeom, dustMat);
+    const dustMat = new THREE.MeshBasicMaterial({
+      color: 0xeeddaa,
+      transparent: true,
+      opacity: 0.35,
+    });
+    for (let i = 0; i < 80; i++) {
+      const dust = new THREE.Mesh(new THREE.SphereGeometry(0.03, 4, 4), dustMat);
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(Math.random() * 2 - 1);
+      const r = this.radius + 0.5 + Math.random() * 4;
       dust.position.set(
-        (Math.random() - 0.5) * this.radius * 2,
-        Math.random() * 10 + 2,
-        (Math.random() - 0.5) * this.radius * 2,
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta),
+        r * Math.cos(phi),
       );
       dust.userData = { baseY: dust.position.y, phase: Math.random() * Math.PI * 2 };
       dust.name = 'dust';
@@ -1213,14 +1302,34 @@ export class Island {
     table.castShadow = true;
     table.receiveShadow = true;
     group.add(table);
+    // Four support posts
+    const postMat = Materials.createTrimMaterial(0x6b4226);
+    for (const sx of [-0.5, 0.5]) {
+      for (const sz of [-0.3, 0.3]) {
+        const p = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.6, 5), postMat);
+        p.position.set(sx, 0.6, sz);
+        group.add(p);
+      }
+    }
     // Roof
     const roofGeom = new THREE.ConeGeometry(0.8, 0.4, 4);
-    const roofMat = Materials.createTrimMaterial(0xff0000);
+    const STALL_COLORS = [0xd44e3c, 0xc47a2e, 0x3e8e6d, 0x4478a8];
+    const roofMat = Materials.createTrimMaterial(STALL_COLORS[Math.floor(Math.random() * STALL_COLORS.length)]);
     const roof = new THREE.Mesh(roofGeom, roofMat);
-    roof.position.set(0, 0.5, 0);
+    roof.position.set(0, 1.05, 0);
+    roof.rotation.y = Math.PI / 4;
     roof.castShadow = true;
-    roof.receiveShadow = true;
     group.add(roof);
+    // Small goods on the table
+    const goodColors = [0xff8844, 0x44aa44, 0xddcc33, 0xaa4488];
+    for (let g = 0; g < 3; g++) {
+      const good = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.1, 0.12),
+        new THREE.MeshStandardMaterial({ color: goodColors[g % goodColors.length], roughness: 0.6 }),
+      );
+      good.position.set(-0.3 + g * 0.3, 0.35, 0);
+      group.add(good);
+    }
     return group;
   }
 
@@ -1251,14 +1360,23 @@ export class Island {
 
   private createRiver(): THREE.Group {
     const group = new THREE.Group();
-    // Winding water plane
-    const riverGeom = new THREE.PlaneGeometry(10, 2, 20, 4);
+    const riverGeom = new THREE.PlaneGeometry(8, 1.6, 32, 6);
+    const pos = riverGeom.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      pos.setZ(i, Math.sin(x * 0.8) * 0.35);
+      const edgeFade = 1 - Math.abs(pos.getY(i)) / 0.8;
+      pos.setY(i, pos.getY(i) * (0.6 + edgeFade * 0.4));
+    }
+    riverGeom.computeVertexNormals();
     const riverMat = new THREE.MeshStandardMaterial({
-      color: 0x0066cc,
+      color: 0x3399dd,
       transparent: true,
-      opacity: 0.8,
-      roughness: 0.1,
-      metalness: 0.1,
+      opacity: 0.7,
+      roughness: 0.05,
+      metalness: 0.3,
+      emissive: 0x1155aa,
+      emissiveIntensity: 0.15,
     });
     const river = new THREE.Mesh(riverGeom, riverMat);
     river.rotation.x = -Math.PI / 2;

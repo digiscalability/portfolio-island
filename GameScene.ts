@@ -66,8 +66,8 @@ export class GameScene extends THREE.Scene {
   constructor() {
     super();
     this.name = 'GameScene';
-    this.background = new THREE.Color(0x87ceeb); // Sky blue
-    this.fog = new THREE.Fog(0x87ceeb, 500, 1000); // Extended fog for visibility
+    this.background = null; // sky dome handles it
+    this.fog = new THREE.FogExp2(0xa8d8f0, 0.012);
 
     // Create ready promise
     this.readyPromise = new Promise((resolve) => {
@@ -174,6 +174,52 @@ export class GameScene extends THREE.Scene {
     // Hemisphere light for natural gradual lighting (sky blue / warm ground)
     const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.55);
     this.add(hemiLight);
+
+    // Sky dome — gradient sphere that moves with the camera
+    this.createSkyDome();
+  }
+
+  private createSkyDome(): void {
+    const skyGeo = new THREE.SphereGeometry(800, 32, 16);
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        topColor: { value: new THREE.Color(0x4a90d9) },
+        bottomColor: { value: new THREE.Color(0xd4e8f7) },
+        horizonColor: { value: new THREE.Color(0xa8d8f0) },
+        offset: { value: 0 },
+        exponent: { value: 0.5 },
+      },
+      vertexShader: `
+        varying vec3 vWorldPosition;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 topColor;
+        uniform vec3 bottomColor;
+        uniform vec3 horizonColor;
+        uniform float offset;
+        uniform float exponent;
+        varying vec3 vWorldPosition;
+        void main() {
+          float h = normalize(vWorldPosition + offset).y;
+          float t = max(h, 0.0);
+          vec3 sky = mix(horizonColor, topColor, pow(t, exponent));
+          float b = max(-h, 0.0);
+          sky = mix(sky, bottomColor, pow(b, 0.8));
+          gl_FragColor = vec4(sky, 1.0);
+        }
+      `,
+    });
+    const skyDome = new THREE.Mesh(skyGeo, skyMat);
+    skyDome.name = 'SkyDome';
+    skyDome.renderOrder = -1;
+    this.add(skyDome);
   }
 
   /**

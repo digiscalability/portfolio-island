@@ -49,7 +49,7 @@ export class SimpleRenderer {
     this.renderer.shadowMap.autoUpdate = true;
 
     // Set a clear background color for debugging
-    this.renderer.setClearColor(0x87ceeb, 1); // Sky blue
+    this.renderer.setClearColor(0xa8d8f0, 1);
 
     console.log('🎨 SimpleRenderer configured:', {
       size: [window.innerWidth, window.innerHeight],

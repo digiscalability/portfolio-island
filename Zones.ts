@@ -94,16 +94,28 @@ export class Zone {
       emissive: color,
       emissiveIntensity: 1.2,
     });
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2;
-      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.4, 0.22), pillarMat);
-      pillar.position.set(Math.cos(a) * 2.6, 0.7, Math.sin(a) * 2.6);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 1.8, 8), pillarMat);
+      pillar.position.set(Math.cos(a) * 2.4, 0.9, Math.sin(a) * 2.4);
       pillar.castShadow = true;
       mesh.add(pillar);
-      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), capMat);
-      cap.position.set(Math.cos(a) * 2.6, 1.5, Math.sin(a) * 2.6);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 10), capMat);
+      cap.position.set(Math.cos(a) * 2.4, 1.9, Math.sin(a) * 2.4);
       mesh.add(cap);
     }
+
+    // Central light column
+    const beamMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.6,
+      transparent: true,
+      opacity: 0.25,
+    });
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.3, 3.5, 8), beamMat);
+    beam.position.y = 1.75;
+    mesh.add(beam);
 
     return mesh;
   }

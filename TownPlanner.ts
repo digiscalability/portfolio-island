@@ -139,24 +139,36 @@ export class TownPlanner {
   private createLamp(): LampObject {
     const lamp = new THREE.Group() as unknown as LampObject;
 
-    // Pole
-    const poleGeometry = new THREE.CylinderGeometry(0.1, 0.1, 4);
-    const poleMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
-    const pole = new THREE.Mesh(poleGeometry, poleMaterial);
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0x3a3a3a });
+    // Main pole
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 4, 8), poleMat);
     pole.position.y = 2;
     pole.castShadow = true;
     lamp.add(pole);
-
-    // Light fixture
-    const fixtureGeometry = new THREE.SphereGeometry(0.3);
-    const fixtureMaterial = new THREE.MeshBasicMaterial({ color: 0xffff88 });
-    const fixture = new THREE.Mesh(fixtureGeometry, fixtureMaterial);
-    fixture.position.y = 4;
-    lamp.add(fixture);
-
+    // Curved arm
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.8, 6), poleMat);
+    arm.position.set(0.35, 3.9, 0);
+    arm.rotation.z = -Math.PI / 4;
+    lamp.add(arm);
+    // Lamp shade
+    const shade = new THREE.Mesh(
+      new THREE.ConeGeometry(0.35, 0.25, 8),
+      new THREE.MeshLambertMaterial({ color: 0x2a2a2a }),
+    );
+    shade.position.set(0.6, 3.9, 0);
+    shade.rotation.z = Math.PI;
+    shade.castShadow = true;
+    lamp.add(shade);
+    // Glowing bulb
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 8, 8),
+      new THREE.MeshStandardMaterial({ color: 0xfff4cc, emissive: 0xffe8a0, emissiveIntensity: 0.8 }),
+    );
+    bulb.position.set(0.6, 3.78, 0);
+    lamp.add(bulb);
     // Add point light
-    const light = new THREE.PointLight(0xffff88, 0.5, 20);
-    light.position.y = 4;
+    const light = new THREE.PointLight(0xffeeaa, 0.5, 20);
+    light.position.set(0.6, 3.78, 0);
     lamp.add(light);
 
     // Add properties expected by GameScene

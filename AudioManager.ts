@@ -117,8 +117,12 @@ export class AudioManager {
     this.buffers.set(key || url, buf);
   }
 
-  // Decode and store an ArrayBuffer directly (avoid double-fetch)
-  public async loadAudioBuffer(arr: ArrayBuffer, key?: string): Promise<void> {
+  // Store a pre-decoded AudioBuffer or decode a raw ArrayBuffer
+  public async loadAudioBuffer(arr: ArrayBuffer | AudioBuffer, key?: string): Promise<void> {
+    if (arr instanceof AudioBuffer) {
+      this.buffers.set(key || String(Math.random()), arr);
+      return;
+    }
     const ctx = this.ensureCtx();
     const buf = await ctx.decodeAudioData(arr.slice(0));
     this.buffers.set(key || String(Math.random()), buf);
