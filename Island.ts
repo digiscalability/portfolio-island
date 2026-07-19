@@ -92,6 +92,7 @@ export class Island {
   private surfaceMesh?: THREE.Mesh;
   private animationMixers: THREE.AnimationMixer[] = [];
   private npcInstances: NPC[] = [];
+  public npcTargets: Array<{ position: THREE.Vector3; name: string; dialogue: string[]; meshRef: THREE.Object3D }> = [];
 
   constructor(radius: number = 18) {
     this.radius = radius;
@@ -402,10 +403,11 @@ export class Island {
       house.add(light);
     }
 
-    // Trees: multi-tier toon trees with varied foliage colors
+    // Trees: stylized low-poly trees with clustered dodecahedron canopies
     const trees = new THREE.Group();
     const treeCount = 48;
     const trunkMat = Materials.createStandardMaterial({ color: 0x6b4a2a, roughness: 0.8 });
+    const darkTrunkMat = Materials.createStandardMaterial({ color: 0x5a3d1e, roughness: 0.9 });
     const FOLIAGE_COLORS = [0x3a8c3a, 0x4a9e3e, 0x2d7a3a, 0x55a644, 0x3b8e50];
 
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
@@ -424,24 +426,80 @@ export class Island {
       );
 
       const scale = 0.9 + Math.random() * 0.4;
-      // Trunk
-      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.05 * scale, 0.07 * scale, 0.5 * scale, 6), trunkMat);
-      trunk.position.y = 0.25 * scale;
-      trunk.castShadow = true;
-      treeGroup.add(trunk);
-      // Foliage tiers (2-3 stacked cones)
-      const tierCount = 2 + (i % 3 === 0 ? 1 : 0);
+      const treeType = i % 4;
       const fColor = FOLIAGE_COLORS[i % FOLIAGE_COLORS.length];
-      const fMat = new THREE.MeshStandardMaterial({ color: fColor, roughness: 0.8 });
-      for (let t = 0; t < tierCount; t++) {
-        const tierScale = 1 - t * 0.25;
-        const cone = new THREE.Mesh(
-          new THREE.ConeGeometry(0.3 * scale * tierScale, 0.35 * scale, 7),
-          fMat,
+      const fMat = new THREE.MeshStandardMaterial({ color: fColor, roughness: 0.75 });
+
+      if (treeType <= 1) {
+        // Round canopy tree — tapered trunk + clustered dodecahedrons
+        const trunk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.04 * scale, 0.08 * scale, 0.6 * scale, 6),
+          trunkMat,
         );
-        cone.position.y = (0.5 + t * 0.25) * scale;
-        cone.castShadow = true;
-        treeGroup.add(cone);
+        trunk.position.y = 0.3 * scale;
+        trunk.castShadow = true;
+        treeGroup.add(trunk);
+        // Main canopy blob
+        const mainCanopy = new THREE.Mesh(new THREE.DodecahedronGeometry(0.35 * scale, 0), fMat);
+        mainCanopy.position.y = 0.75 * scale;
+        mainCanopy.rotation.set(i * 0.7, i * 1.3, 0);
+        mainCanopy.castShadow = true;
+        treeGroup.add(mainCanopy);
+        // 2-3 smaller satellite blobs for organic volume
+        const blobCount = 2 + (i % 2);
+        for (let b = 0; b < blobCount; b++) {
+          const angle = (b / blobCount) * Math.PI * 2 + i;
+          const blobR = 0.18 * scale;
+          const blob = new THREE.Mesh(new THREE.DodecahedronGeometry(blobR, 0), fMat);
+          blob.position.set(
+            Math.cos(angle) * 0.2 * scale,
+            0.7 * scale + (b === 0 ? 0.15 : -0.05) * scale,
+            Math.sin(angle) * 0.2 * scale,
+          );
+          blob.rotation.set(b * 1.1, b * 2.3, 0);
+          blob.castShadow = true;
+          treeGroup.add(blob);
+        }
+      } else if (treeType === 2) {
+        // Pine/conifer — tall trunk + layered cone tiers (sharper, taller)
+        const trunk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.03 * scale, 0.06 * scale, 0.8 * scale, 6),
+          darkTrunkMat,
+        );
+        trunk.position.y = 0.4 * scale;
+        trunk.castShadow = true;
+        treeGroup.add(trunk);
+        const darkGreen = new THREE.MeshStandardMaterial({ color: 0x2a6e2a, roughness: 0.8 });
+        for (let t = 0; t < 3; t++) {
+          const tierScale = 1 - t * 0.22;
+          const cone = new THREE.Mesh(
+            new THREE.ConeGeometry(0.22 * scale * tierScale, 0.3 * scale, 6),
+            darkGreen,
+          );
+          cone.position.y = (0.65 + t * 0.22) * scale;
+          cone.castShadow = true;
+          treeGroup.add(cone);
+        }
+      } else {
+        // Bushy shrub tree — short trunk, wide icosahedron canopy
+        const trunk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.05 * scale, 0.07 * scale, 0.3 * scale, 5),
+          trunkMat,
+        );
+        trunk.position.y = 0.15 * scale;
+        trunk.castShadow = true;
+        treeGroup.add(trunk);
+        const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(0.4 * scale, 0), fMat);
+        bush.position.y = 0.5 * scale;
+        bush.scale.set(1.3, 0.8, 1.3);
+        bush.rotation.y = i * 0.9;
+        bush.castShadow = true;
+        treeGroup.add(bush);
+        // Small accent blob
+        const accent = new THREE.Mesh(new THREE.DodecahedronGeometry(0.15 * scale, 0), fMat);
+        accent.position.set(0.2 * scale, 0.55 * scale, 0.1 * scale);
+        accent.castShadow = true;
+        treeGroup.add(accent);
       }
 
       treeGroup.position.copy(sampled.position);
@@ -600,21 +658,156 @@ export class Island {
       [1.7, 0.2], [4.3, 0.12], [5.6, -0.12],
     ];
     const NPC_SHIRT_COLORS = [0x4488bb, 0xcc5544, 0x55aa55, 0xddaa33, 0x8866aa, 0xbb6644];
-    const headMat = new THREE.MeshStandardMaterial({ color: 0xf5c6a0, roughness: 0.7 });
+    const NPC_PERSONALITIES = [
+      { name: 'Elder Sage', dialogue: [
+        'Welcome to Life Island, traveller.',
+        'Each zone tells a chapter of the story.',
+        'Seek the glowing mailboxes — they hold deliveries for you.',
+      ]},
+      { name: 'Village Baker', dialogue: [
+        'Nothing beats fresh bread on a tiny planet!',
+        'The secret ingredient? Always butter.',
+        'Come back anytime — the oven is always warm.',
+      ]},
+      { name: 'Island Explorer', dialogue: [
+        'Have you found all five zones yet?',
+        'The compass at the top points to your next delivery.',
+        'Press E near a glowing mailbox to collect!',
+      ]},
+      { name: 'Young Student', dialogue: [
+        'I\'m learning TypeScript! It\'s amazing.',
+        'Did you know this whole island runs on Three.js?',
+        'One day I\'ll build my own world like this.',
+      ]},
+      { name: 'Market Vendor', dialogue: [
+        'Fresh ideas, get your fresh ideas here!',
+        'Special today: one-of-a-kind digital experiences.',
+        'Browse the Project Portfolio zone for the full catalogue.',
+      ]},
+      { name: 'Market Vendor', dialogue: [
+        'You look like someone who appreciates quality.',
+        'Everything here is handcrafted, pixel by pixel.',
+        'Tell your friends about Life Island!',
+      ]},
+      { name: 'Fisherman', dialogue: [
+        'The waters here are unlike any other...',
+        'Sometimes I wonder what\'s beyond the fog.',
+        'Patience is the best algorithm.',
+      ]},
+      { name: 'Artist', dialogue: [
+        'Look at how the light catches the terrain!',
+        'Every pixel on this planet was placed with care.',
+        'The zone markers... they pulse like a heartbeat.',
+      ]},
+      { name: 'Guard', dialogue: [
+        'All clear! No bugs spotted today.',
+        'Move along, citizen. Nothing to debug here.',
+        'I keep watch over the render pipeline.',
+      ]},
+      { name: 'Storyteller', dialogue: [
+        'Once upon a time, there was an empty sphere...',
+        'Then the creator filled it with houses, trees, and dreams.',
+        'And the people came, one visitor at a time.',
+      ]},
+      { name: 'Wanderer', dialogue: [
+        '...',
+        'I\'ve walked every arc of this sphere.',
+        'There are secrets in the spaces between zones.',
+      ]},
+      { name: 'Gardener', dialogue: [
+        'These flowers bloom in every colour of the palette.',
+        'A little water, a little sunlight, and voila!',
+        'The trees sway even without wind. Magic, I say.',
+      ]},
+      { name: 'Architect', dialogue: [
+        'I designed half the buildings on this island.',
+        'The trick is making them sit on a curved surface.',
+        'Every house is grounded to the terrain. No floating allowed!',
+      ]},
+      { name: 'Musician', dialogue: [
+        'Can you hear the music? It\'s procedurally generated.',
+        'Each note is chosen from a pentatonic scale.',
+        'The birds? Also procedural. Nature imitates code.',
+      ]},
+      { name: 'Lighthouse Keeper', dialogue: [
+        'The beacons guide delivery runners to their targets.',
+        'Gold light means a package awaits.',
+        'I\'ve been keeping these lights running since version 1.0.',
+      ]},
+      { name: 'Tourist', dialogue: [
+        'What a charming little planet!',
+        'I came for the portfolio, stayed for the vibes.',
+        'Have you tried walking all the way around?',
+      ]},
+      { name: 'Cartographer', dialogue: [
+        'Five zones, twenty buildings, one sphere.',
+        'The Welcome Hub is at the north pole.',
+        'Everything else sits along the equator belt.',
+      ]},
+      { name: 'Philosopher', dialogue: [
+        'Is the player walking on the planet...',
+        '...or is the planet turning under the player?',
+        'Either way, we are all spheres in the end.',
+      ]},
+      { name: 'Courier', dialogue: [
+        'Another day, another delivery!',
+        'The quest chain starts with the Welcome packages.',
+        'Finish them all and you unlock something special.',
+      ]},
+      { name: 'Night Watch', dialogue: [
+        'The lamps flicker at dusk. Have you noticed?',
+        'Press E near a lamp to toggle it.',
+        'I prefer the island at night. Quieter.',
+      ]},
+    ];
+    const npcSkinMat = new THREE.MeshStandardMaterial({ color: 0xf5c6a0, roughness: 0.7 });
+    const npcShoeMat = Materials.createStandardMaterial({ color: 0x3d2b1a, roughness: 0.8 });
+    const HAIR_COLORS = [0x3a2a1a, 0x8b6b3a, 0x222222, 0xcc8844, 0x5a3a2a, 0x1a1a2a];
     for (let i = 0; i < NPC_SITES.length; i++) {
       const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), 0.03);
       const npcGroup = new THREE.Group();
-      // Body (capsule-like: cylinder + hemisphere top)
       const shirtMat = new THREE.MeshStandardMaterial({ color: NPC_SHIRT_COLORS[i % NPC_SHIRT_COLORS.length], roughness: 0.6 });
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.1, 0.35, 8), shirtMat);
-      body.position.y = 0.175;
+      const pantsMat = Materials.createStandardMaterial({ color: 0x3a4a6a, roughness: 0.7 });
+      // Torso
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.09, 0.22, 8), shirtMat);
+      body.position.y = 0.32;
       body.castShadow = true;
       npcGroup.add(body);
+      // Legs (two small cylinders)
+      for (const lx of [-0.04, 0.04]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 0.2, 6), pantsMat);
+        leg.position.set(lx, 0.1, 0);
+        leg.castShadow = true;
+        npcGroup.add(leg);
+        const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.03, 0.07), npcShoeMat);
+        shoe.position.set(lx, 0.0, 0.01);
+        npcGroup.add(shoe);
+      }
+      // Arms (two small cylinders at sides)
+      for (const ax of [-0.13, 0.13]) {
+        const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.02, 0.18, 6), npcSkinMat);
+        arm.position.set(ax, 0.28, 0);
+        arm.rotation.z = ax > 0 ? -0.15 : 0.15;
+        arm.castShadow = true;
+        npcGroup.add(arm);
+      }
       // Head
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), headMat);
-      head.position.y = 0.43;
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), npcSkinMat);
+      head.position.y = 0.5;
       head.castShadow = true;
       npcGroup.add(head);
+      // Eyes
+      const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2a });
+      for (const ex of [-0.03, 0.03]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.015, 5, 5), eyeMat);
+        eye.position.set(ex, 0.52, 0.07);
+        npcGroup.add(eye);
+      }
+      // Hair (half-sphere on top)
+      const hairMat = new THREE.MeshStandardMaterial({ color: HAIR_COLORS[i % HAIR_COLORS.length], roughness: 0.8 });
+      const hair = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
+      hair.position.y = 0.53;
+      npcGroup.add(hair);
 
       const sampled = this.sampleSurfaceByDirection(dir, 0.02);
       npcGroup.position.copy(sampled.position);
@@ -626,6 +819,14 @@ export class Island {
       npcGroup.name = `npc_placeholder_${i}`;
       npcs.add(npcGroup);
       npcPlaceholders.push(npcGroup as unknown as THREE.Mesh);
+
+      const personality = NPC_PERSONALITIES[i % NPC_PERSONALITIES.length];
+      this.npcTargets.push({
+        position: sampled.position.clone(),
+        name: personality.name,
+        dialogue: personality.dialogue,
+        meshRef: npcGroup,
+      });
     }
 
     // Floating sparkles around the planet surface
@@ -716,26 +917,96 @@ export class Island {
     statue.receiveShadow = true;
     statue.name = 'central_statue';
 
-    // Add parked cars along the road
+    // Add parked cars along the road — proper body + cabin + wheels
     const cars = new THREE.Group();
+    const CAR_COLORS = [0xc44040, 0x4488bb, 0x55aa55, 0xddcc44, 0xbb6633, 0x8866aa, 0xdd7744, 0x557788];
+    const wheelMat = Materials.createStandardMaterial({ color: 0x222222, roughness: 0.9 });
+    const hubMat = Materials.createStandardMaterial({ color: 0x999999, metalness: 0.6 });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0x88bbdd, roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.6,
+    });
+    const bumperMat = Materials.createStandardMaterial({ color: 0x333333, roughness: 0.7 });
     for (let i = 0; i < 8; i++) {
-      // Increased from 4 to 8
-      const carGeom = new THREE.BoxGeometry(1.5, 0.8, 3);
-      const CAR_COLORS = [0xc44040, 0x4488bb, 0x55aa55, 0xddcc44, 0xbb6633, 0x8866aa, 0xdd7744, 0x557788];
-      const carMat = Materials.createTrimMaterial(CAR_COLORS[i % CAR_COLORS.length]);
-      const car = new THREE.Mesh(carGeom, carMat);
-      // Parked along Main Street near the districts
+      const carGroup = new THREE.Group();
+      const carColor = CAR_COLORS[i % CAR_COLORS.length];
+      const bodyMat = Materials.createTrimMaterial(carColor);
+      // Lower body / chassis
+      const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.4, 2.6), bodyMat);
+      chassis.position.y = 0.35;
+      chassis.castShadow = true;
+      chassis.receiveShadow = true;
+      carGroup.add(chassis);
+      // Upper cabin (smaller, centered)
+      const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.4, 1.4), bodyMat);
+      cabin.position.set(0, 0.75, -0.2);
+      cabin.castShadow = true;
+      carGroup.add(cabin);
+      // Windshield (front glass)
+      const windshield = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.35), glassMat);
+      windshield.position.set(0, 0.75, 0.51);
+      windshield.rotation.x = -0.15;
+      carGroup.add(windshield);
+      // Rear window
+      const rearWin = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.3), glassMat);
+      rearWin.position.set(0, 0.75, -0.91);
+      rearWin.rotation.x = Math.PI + 0.15;
+      carGroup.add(rearWin);
+      // Front bumper
+      const fBumper = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.12, 0.15), bumperMat);
+      fBumper.position.set(0, 0.2, 1.35);
+      carGroup.add(fBumper);
+      // Rear bumper
+      const rBumper = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.12, 0.15), bumperMat);
+      rBumper.position.set(0, 0.2, -1.35);
+      carGroup.add(rBumper);
+      // Headlights
+      const headlightMat = new THREE.MeshStandardMaterial({
+        color: 0xffffee, emissive: 0xffffcc, emissiveIntensity: 0.4,
+      });
+      for (const hx of [-0.45, 0.45]) {
+        const hl = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 6), headlightMat);
+        hl.position.set(hx, 0.35, 1.31);
+        hl.scale.set(1, 1, 0.5);
+        carGroup.add(hl);
+      }
+      // Taillights
+      const taillightMat = new THREE.MeshStandardMaterial({
+        color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 0.3,
+      });
+      for (const tx of [-0.45, 0.45]) {
+        const tl = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.08, 0.04), taillightMat);
+        tl.position.set(tx, 0.35, -1.31);
+        carGroup.add(tl);
+      }
+      // 4 wheels (cylinder on side)
+      const wheelGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.12, 10);
+      const hubGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.13, 6);
+      const WHEEL_POS: [number, number, number][] = [
+        [-0.6, 0.15, 0.75], [0.6, 0.15, 0.75],
+        [-0.6, 0.15, -0.75], [0.6, 0.15, -0.75],
+      ];
+      for (const [wx, wy, wz] of WHEEL_POS) {
+        const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+        wheel.position.set(wx, wy, wz);
+        wheel.rotation.z = Math.PI / 2;
+        wheel.castShadow = true;
+        carGroup.add(wheel);
+        const hub = new THREE.Mesh(hubGeo, hubMat);
+        hub.position.set(wx, wy, wz);
+        hub.rotation.z = Math.PI / 2;
+        carGroup.add(hub);
+      }
+
       const CAR_LONS = [0.32, 0.7, 1.35, 2.3, 3.68, 4.1, 4.5, 5.85];
       const pos = this.claimDir(this.dirAt(CAR_LONS[i % CAR_LONS.length], i % 2 === 0 ? 0.08 : -0.08), 0.06).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
-      car.position.copy(sampled.position);
-      car.quaternion.copy(
+      carGroup.position.copy(sampled.position);
+      carGroup.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
-      car.castShadow = true;
-      car.receiveShadow = true;
-      car.name = `car_${i}`;
-      cars.add(car);
+      carGroup.castShadow = true;
+      carGroup.name = `car_${i}`;
+      cars.add(carGroup);
     }
 
     // Add market stalls near houses
@@ -2312,12 +2583,14 @@ export class Island {
                   } catch {
                     /* ignore patrol setup issues */
                   }
-                  // attach simple dialogue/bubble text
+                  // update the npcTarget meshRef to point at the GLTF group
                   try {
+                    const phIdx = parseInt(ph.name.replace('npc_placeholder_', ''), 10);
+                    if (phIdx >= 0 && phIdx < this.npcTargets.length) {
+                      this.npcTargets[phIdx].meshRef = npc.group;
+                      this.npcTargets[phIdx].position = pos.clone();
+                    }
                     npc.group.name = 'villager';
-                    npc.group.userData = npc.group.userData || {};
-                    npc.group.userData.bubbleText = 'Hello there!';
-                    npc.group.userData.dialogue = 'Nice to meet you.';
                   } catch {
                     /* ignore userData attachment issues */
                   }
@@ -2486,15 +2759,18 @@ export class Island {
     direction: THREE.Vector3,
     desiredOffset: number = 0,
   ): { position: THREE.Vector3; normal: THREE.Vector3 } {
-    // Cast from center outward along the given direction to find actual terrain surface
     const dir = direction.clone().normalize();
-    const startPos = this.center.clone();
-    const raycaster = new THREE.Raycaster(startPos, dir, 0, this.radius * 3);
 
     // If we have the mesh, use it - otherwise approximate
     if (this.surfaceMesh) {
       try {
         this.surfaceMesh.updateMatrixWorld(true);
+        // Cast from OUTSIDE inward so we hit front faces (material.side = FrontSide).
+        // Casting from center outward only sees backfaces and always misses.
+        const maxDisp = 5;
+        const startPos = this.center.clone().add(dir.clone().multiplyScalar(this.radius + maxDisp + 1));
+        const inwardDir = this.center.clone().sub(startPos).normalize();
+        const raycaster = new THREE.Raycaster(startPos, inwardDir, 0, maxDisp + 3 + this.radius);
         const hits = raycaster.intersectObject(this.surfaceMesh, false);
 
         if (hits && hits.length > 0) {
