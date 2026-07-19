@@ -376,7 +376,9 @@ export class GameScene extends THREE.Scene {
         blob.castShadow = true;
         cloud.add(blob);
       }
-      cloud.position.set(planetR + 6 + Math.random() * 4, 0, 0);
+      // One consistent cloud ceiling (tight altitude band) — a wide random
+      // band read as clouds "stacked" vertically instead of a sky layer
+      cloud.position.set(planetR + 6.5 + Math.random() * 1.2, 0, 0);
       const cloudData = cloud.userData as Record<string, unknown>;
       cloudData.ignoreOcclusion = true;
       pivot.add(cloud);

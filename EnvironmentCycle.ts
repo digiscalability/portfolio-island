@@ -53,8 +53,9 @@ export class EnvironmentCycle {
   private placeLabel = '';
   private statusCb?: (status: string) => void;
 
-  private stars: THREE.Points;
-  private starsMat: THREE.PointsMaterial;
+  private starLayers: Array<{ points: THREE.Points; mat: THREE.PointsMaterial; peak: number }> = [];
+  private moon: THREE.Mesh;
+  private moonMat: THREE.MeshBasicMaterial;
 
   private precip: THREE.Points | null = null;
   private precipGeo: THREE.BufferGeometry | null = null;
@@ -100,33 +101,54 @@ export class EnvironmentCycle {
       }
     });
 
-    // Star field (fades in at night, hidden under cloud/rain)
-    const starCount = 350;
-    const starPos = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i++) {
-      const dir = new THREE.Vector3(
-        Math.random() * 2 - 1,
-        Math.random() * 2 - 1,
-        Math.random() * 2 - 1,
-      ).normalize();
-      starPos[i * 3] = dir.x * 700;
-      starPos[i * 3 + 1] = dir.y * 700;
-      starPos[i * 3 + 2] = dir.z * 700;
-    }
-    const starGeo = new THREE.BufferGeometry();
-    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-    this.starsMat = new THREE.PointsMaterial({
-      color: 0xffffff,
-      size: 2.2,
-      sizeAttenuation: false,
+    // Star field in two layers (dense faint + sparse bright). fog: false is
+    // essential — at radius 700 the scene's FogExp2 otherwise erases them.
+    const makeStars = (count: number, size: number, peak: number) => {
+      const pos = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        const dir = new THREE.Vector3(
+          Math.random() * 2 - 1,
+          Math.random() * 2 - 1,
+          Math.random() * 2 - 1,
+        ).normalize();
+        pos[i * 3] = dir.x * 700;
+        pos[i * 3 + 1] = dir.y * 700;
+        pos[i * 3 + 2] = dir.z * 700;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      const mat = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size,
+        sizeAttenuation: false,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        fog: false,
+      });
+      const points = new THREE.Points(geo, mat);
+      points.name = 'stars';
+      points.renderOrder = -1;
+      points.frustumCulled = false;
+      scene.add(points);
+      this.starLayers.push({ points, mat, peak });
+    };
+    makeStars(750, 1.6, 0.75);
+    makeStars(220, 3.0, 1.0);
+
+    // Moon disc: position and brightness follow the real lunar phase
+    this.moonMat = new THREE.MeshBasicMaterial({
+      color: 0xf2ecdc,
       transparent: true,
       opacity: 0,
       depthWrite: false,
+      fog: false,
     });
-    this.stars = new THREE.Points(starGeo, this.starsMat);
-    this.stars.name = 'stars';
-    this.stars.renderOrder = -1;
-    scene.add(this.stars);
+    this.moon = new THREE.Mesh(new THREE.CircleGeometry(26, 24), this.moonMat);
+    this.moon.name = 'moon';
+    this.moon.renderOrder = -1;
+    this.moon.frustumCulled = false;
+    scene.add(this.moon);
 
     void this.fetchWeather();
   }
@@ -183,6 +205,18 @@ export class EnvironmentCycle {
       });
       lat = pos.coords.latitude;
       lon = pos.coords.longitude;
+      // Real coordinates granted — reverse-geocode a proper city label
+      try {
+        const geo = await fetch(
+          `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`,
+        );
+        if (geo.ok) {
+          const g = (await geo.json()) as { city?: string; locality?: string };
+          this.placeLabel = g.city || g.locality || '';
+        }
+      } catch {
+        /* label stays empty */
+      }
     } catch {
       try {
         const resp = await fetch('https://ipapi.co/json/');
@@ -191,7 +225,9 @@ export class EnvironmentCycle {
           if (typeof j.latitude === 'number' && typeof j.longitude === 'number') {
             lat = j.latitude;
             lon = j.longitude;
-            if (j.city) this.placeLabel = j.city;
+            // IP geolocation lands on the ISP's hub, not the visitor —
+            // mark the label as approximate
+            if (j.city) this.placeLabel = `≈ ${j.city}`;
           }
         }
       } catch {
@@ -309,7 +345,36 @@ export class EnvironmentCycle {
     }
 
     // Stars: night only, hidden by bad weather
-    this.starsMat.opacity = (1 - dayFactor) * (this.weather === 'clear' ? 0.9 : 0.15);
+    const starVis = (1 - dayFactor) * (this.weather === 'clear' ? 1 : 0.15);
+    for (const layer of this.starLayers) {
+      layer.mat.opacity = starVis * layer.peak;
+    }
+
+    // Moon: real lunar phase (0 = new, 0.5 = full), trailing the sun by
+    // ~phase * 24h so a full moon rises at sunset. Brightness follows the
+    // illuminated fraction; overcast hides it.
+    const SYNODIC_MS = 29.530588 * 86400000;
+    const sinceNew = Date.now() - Date.UTC(2000, 0, 6, 18, 14);
+    const phase = (((sinceNew % SYNODIC_MS) + SYNODIC_MS) % SYNODIC_MS) / SYNODIC_MS;
+    const illum = (1 - Math.cos(phase * Math.PI * 2)) / 2;
+    const moonHour = hour - phase * 24;
+    const mElev = Math.sin(((moonHour - 6) / 24) * Math.PI * 2);
+    if (mElev > 0.03) {
+      const mAz = (moonHour / 24) * Math.PI * 2;
+      this.moon.position
+        .set(
+          Math.cos(mAz) * Math.sqrt(1 - mElev * mElev),
+          mElev,
+          Math.sin(mAz) * Math.sqrt(1 - mElev * mElev),
+        )
+        .multiplyScalar(640);
+      this.moon.lookAt(0, 0, 0);
+      this.moonMat.opacity =
+        illum * (0.25 + 0.75 * (1 - dayFactor)) * (this.weather === 'clear' ? 1 : 0.25);
+      this.moon.visible = this.moonMat.opacity > 0.02;
+    } else {
+      this.moon.visible = false;
+    }
 
     // Lamps and house windows glow up as the sun goes down
     const glow = 0.25 + (1 - dayFactor) * 1.05;
@@ -339,9 +404,15 @@ export class EnvironmentCycle {
   }
 
   public dispose(): void {
-    this.scene.remove(this.stars);
-    this.stars.geometry.dispose();
-    this.starsMat.dispose();
+    for (const layer of this.starLayers) {
+      this.scene.remove(layer.points);
+      layer.points.geometry.dispose();
+      layer.mat.dispose();
+    }
+    this.starLayers.length = 0;
+    this.scene.remove(this.moon);
+    this.moon.geometry.dispose();
+    this.moonMat.dispose();
     if (this.precip) {
       this.scene.remove(this.precip);
       this.precipGeo?.dispose();
