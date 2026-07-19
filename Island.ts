@@ -464,16 +464,18 @@ export class Island {
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
       const [lon, lat] = HOUSE_SITES[i];
-      const dir = this.claimDir(this.dirAt(lon, lat), 0.09);
+      const dir = this.claimDir(this.dirAt(lon, lat), 0.13);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
       houseSamples.push({ position: sampled.position.clone(), normal: sampled.normal.clone() });
 
-      // main body
-      const w = 0.9 + Math.random() * 0.8;
-      const h = 0.9 + Math.random() * 1.4;
-      const d = 0.8 + Math.random() * 0.6;
+      // main body — wider than tall (cottage proportions) and scaled so the
+      // 1.8u player fits the door; the old 0.9-1.7w × 0.9-2.3h range made
+      // dollhouses and skinny towers
+      const w = 1.5 + Math.random() * 1.0;
+      const h = 1.3 + Math.random() * 0.7;
+      const d = 1.2 + Math.random() * 0.7;
       const bodyGeom = new THREE.BoxGeometry(w, h, d);
       // Curated warm cottage palette. The old `0xa8c3a8 + random(0x003333)`
       // bled across color channels and produced lime/acid-green/cyan walls.
@@ -483,8 +485,8 @@ export class Island {
       body.castShadow = true;
       body.receiveShadow = true;
 
-      // roof
-      const roofGeom = new THREE.ConeGeometry(Math.max(w, d) * 0.9, 0.5, 4);
+      // roof — taller pyramid to suit the bigger footprint
+      const roofGeom = new THREE.ConeGeometry(Math.max(w, d) * 0.9, 0.75, 4);
       const roofMat = Materials.createTrimMaterial(0x8b5a2b);
       const roof = new THREE.Mesh(roofGeom, roofMat);
       roof.castShadow = true;
@@ -494,7 +496,7 @@ export class Island {
       const house = new THREE.Group();
       // FIX: Body geometry is centered at origin, so position.y = h/2 makes BOTTOM at y=0 (on ground)
       body.position.set(0, h * 0.5, 0);
-      roof.position.set(0, h + 0.12, 0);
+      roof.position.set(0, h + 0.2, 0);
       house.add(body);
       house.add(roof);
 
@@ -504,32 +506,32 @@ export class Island {
         emissive: 0xffe6b3,
         emissiveIntensity: 0.6,
       });
-      const winGeom = new THREE.PlaneGeometry(0.16, 0.18);
+      const winGeom = new THREE.PlaneGeometry(0.3, 0.32);
       const win1 = new THREE.Mesh(winGeom, winMat);
-      win1.position.set(w * 0.22, h * 0.45, d * 0.51);
+      win1.position.set(w * 0.24, h * 0.55, d * 0.51);
       house.add(win1);
       const win2 = new THREE.Mesh(winGeom, winMat);
-      win2.position.set(-w * 0.22, h * 0.45, d * 0.51);
+      win2.position.set(-w * 0.24, h * 0.55, d * 0.51);
       house.add(win2);
-      // Door
+      // Door — person-sized (the 1.8u player used to tower over a 0.35u door)
       const doorMat = new THREE.MeshStandardMaterial({ color: 0x5a3d2b, roughness: 0.7 });
-      const door = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.35), doorMat);
-      door.position.set(0, h * 0.22, d * 0.51);
+      const door = new THREE.Mesh(new THREE.PlaneGeometry(0.44, 0.9), doorMat);
+      door.position.set(0, 0.45, d * 0.51);
       house.add(door);
       // Doorknob
       const knob = new THREE.Mesh(
-        new THREE.SphereGeometry(0.02, 6, 6),
+        new THREE.SphereGeometry(0.035, 6, 6),
         new THREE.MeshStandardMaterial({ color: 0xccaa44, metalness: 0.6 }),
       );
-      knob.position.set(0.06, h * 0.22, d * 0.52);
+      knob.position.set(0.15, 0.48, d * 0.52);
       house.add(knob);
       // Chimney (every other house)
       if (i % 2 === 0) {
         const chimney = new THREE.Mesh(
-          new THREE.BoxGeometry(0.15, 0.35, 0.15),
+          new THREE.BoxGeometry(0.24, 0.55, 0.24),
           Materials.createTrimMaterial(0x884433),
         );
-        chimney.position.set(w * 0.25, h + 0.3, -d * 0.15);
+        chimney.position.set(w * 0.25, h + 0.45, -d * 0.15);
         chimney.castShadow = true;
         house.add(chimney);
       }
@@ -545,7 +547,7 @@ export class Island {
       house.position.copy(sampled.position);
       // Record the chimney tip (post-alignment) for GameScene's smoke puffs
       if (i % 2 === 0) {
-        const chimneyTip = new THREE.Vector3(w * 0.25, h + 0.5, -d * 0.15)
+        const chimneyTip = new THREE.Vector3(w * 0.25, h + 0.75, -d * 0.15)
           .applyQuaternion(house.quaternion)
           .add(house.position);
         this.chimneySites.push({ position: chimneyTip, normal: sampled.normal.clone() });
@@ -978,6 +980,9 @@ export class Island {
         sampled.normal,
       );
       npcGroup.quaternion.copy(q);
+      // Villager scale: the raw build is ~0.6u — waist-high toddlers next to
+      // the 1.8u player. 2.2x puts them at a believable ~1.3u.
+      npcGroup.scale.setScalar(2.2);
       npcGroup.name = `npc_placeholder_${i}`;
       npcs.add(npcGroup);
       npcPlaceholders.push(npcGroup as unknown as THREE.Mesh);
@@ -1181,9 +1186,11 @@ export class Island {
         [1.34, 0.30],                              // projects
       ];
       const [carLon, carLat] = CAR_SITES[i % CAR_SITES.length];
-      const pos = this.claimDir(this.dirAt(carLon, carLat), 0.1).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(carLon, carLat), 0.13).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
       carGroup.position.copy(sampled.position);
+      // Roof was waist-high (0.95u) next to the 1.8u player
+      carGroup.scale.setScalar(1.25);
       carGroup.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
@@ -1208,9 +1215,11 @@ export class Island {
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
       const [sLon, sLat] = STALL_SITES[i];
-      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.1).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.12).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
+      // Counter was at knee height (0.3u) for the scaled-up vendors
+      stall.scale.setScalar(1.35);
       stall.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
@@ -1405,6 +1414,8 @@ export class Island {
       bench.position.copy(bSampled.position);
       const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bSampled.normal);
       bench.quaternion.copy(bq);
+      // Seat height: raw build sits at 0.2u (shin height for a 1.8u player)
+      bench.scale.setScalar(1.7);
       // Face the plaza this bench belongs to (seat toward it, backrest away)
       this.faceObjectToward(
         bench,
@@ -2045,7 +2056,7 @@ export class Island {
         'mailbox.glb': { envMapIntensity: 0.8 },
         // fitHeight rescales by bbox: native car.glb is ~4.4u long (wider
         // than a house) and lamp.glb ~4.1u tall (towers over the roofs)
-        'car.glb': { envMapIntensity: 0.9, randomYaw: true, fitHeight: 0.95 },
+        'car.glb': { envMapIntensity: 0.9, randomYaw: true, fitHeight: 1.15 },
         'npc.glb': { envMapIntensity: 0.7, scale: 1.0 },
         'tree.glb': { envMapIntensity: 0.5 },
         'lamp.glb': { envMapIntensity: 0.6, fitHeight: 2.4 },

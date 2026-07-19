@@ -366,16 +366,30 @@ export class GameScene extends THREE.Scene {
       // Random orbit plane
       pivot.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
       const cloud = new THREE.Group();
-      const blobCount = 3 + Math.floor(Math.random() * 3);
-      for (let b = 0; b < blobCount; b++) {
-        const r = 0.7 + Math.random() * 0.9;
-        const blob = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), cloudMat);
-        blob.position.set(b * 1.1 - (blobCount - 1) * 0.55, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.8);
-        blob.scale.y = 0.55;
-        blob.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
+      // Classic cartoon cloud: one big smooth dome + smaller overlapping
+      // flanks, bottoms aligned to a flat base, all flattened along the SAME
+      // axis with no random tilt. (The old version random-rotated each
+      // already-flattened faceted blob — squashing every one along a
+      // different axis, which read as a stack of stones.)
+      const coreR = 0.9 + Math.random() * 0.5;
+      const flanks = 2 + Math.floor(Math.random() * 3); // 2-4 per side pattern
+      const radii: number[] = [coreR];
+      for (let f = 0; f < flanks; f++) radii.push(coreR * (0.5 + Math.random() * 0.3));
+      let xCursor = 0;
+      radii.forEach((r, idx) => {
+        const blob = new THREE.Mesh(new THREE.SphereGeometry(r, 9, 7), cloudMat);
+        if (idx === 0) {
+          blob.position.set(0, r * 0.35, 0);
+        } else {
+          const side = idx % 2 === 1 ? 1 : -1;
+          if (idx % 2 === 1) xCursor += r * 0.9;
+          blob.position.set(side * (coreR * 0.55 + xCursor * 0.6), r * 0.32, (Math.random() - 0.5) * 0.5);
+        }
+        blob.scale.y = 0.6;
+        blob.rotation.y = Math.random() * Math.PI; // yaw only — never tilt
         blob.castShadow = true;
         cloud.add(blob);
-      }
+      });
       // One consistent cloud ceiling (tight altitude band) — a wide random
       // band read as clouds "stacked" vertically instead of a sky layer
       cloud.position.set(planetR + 6.5 + Math.random() * 1.2, 0, 0);
