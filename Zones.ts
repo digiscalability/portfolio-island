@@ -48,13 +48,13 @@ export class Zone {
   }
 
   private createMarker(color: number): THREE.Mesh {
-    // Landmark plaza: glowing disc + emissive ring + pillar circle, so each
-    // zone reads as a destination from across the planet.
+    // Landmark plaza: stone-toned disc + emissive ring + light beam, so each
+    // zone reads as a destination without looking radioactive up close.
     const geometry = new THREE.CylinderGeometry(1.6, 1.7, 0.18, 24);
     const material = new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.45,
+      emissiveIntensity: 0.12,
       metalness: 0.2,
       roughness: 0.4,
     });
@@ -87,23 +87,9 @@ export class Zone {
     ring.position.y = 0.05;
     mesh.add(ring);
 
-    // Pillar circle with glowing caps
-    const pillarMat = new THREE.MeshStandardMaterial({ color: 0xf2ede2, roughness: 0.7 });
-    const capMat = new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 1.2,
-    });
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 1.8, 8), pillarMat);
-      pillar.position.set(Math.cos(a) * 2.4, 0.9, Math.sin(a) * 2.4);
-      pillar.castShadow = true;
-      mesh.add(pillar);
-      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 10), capMat);
-      cap.position.set(Math.cos(a) * 2.4, 1.9, Math.sin(a) * 2.4);
-      mesh.add(cap);
-    }
+    // (The old 6-pillar "henge" with glowing ball caps is gone — from the
+    // ground the poles read as bizarre antennae ringing every plaza. The
+    // disc + ring + beam + floating orb carry the landmark job fine.)
 
     // Central light column
     const beamMat = new THREE.MeshStandardMaterial({

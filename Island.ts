@@ -114,6 +114,55 @@ export class Island {
   }
 
   /**
+   * Seat each prop group's children exactly on the terrain: project the
+   * child's bounding box onto its surface normal and shift it so the box
+   * base rests at the sampled surface (minus a small sink). Shape-agnostic
+   * — wheel bottoms, lamp poles, and mailbox posts all land correctly.
+   */
+  private seatGroupsOnTerrain(root: THREE.Group, groups: THREE.Group[]): void {
+    root.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    const dir = new THREE.Vector3();
+    const savedPos = new THREE.Vector3();
+    const savedQuat = new THREE.Quaternion();
+    const SINK = 0.05;
+    for (const group of groups) {
+      for (const child of group.children) {
+        if (child.position.lengthSq() < 1) continue; // not surface-positioned
+        // Measure the bbox in the child's LOCAL frame: a world-space AABB of
+        // a sphere-aligned (rotated) prop inflates below the true base and
+        // over-lifts it. Temporarily zero the transform, measure, restore.
+        savedPos.copy(child.position);
+        savedQuat.copy(child.quaternion);
+        child.position.set(0, 0, 0);
+        child.quaternion.identity();
+        child.updateMatrixWorld(true);
+        box.setFromObject(child);
+        child.position.copy(savedPos);
+        child.quaternion.copy(savedQuat);
+        child.updateMatrixWorld(true);
+        if (box.isEmpty()) continue;
+        // Local +Y is the surface normal for all these props, so box.min.y
+        // is how far the geometry extends below the group origin.
+        const minY = box.min.y;
+        dir.copy(savedPos).normalize();
+        const sampled = this.sampleSurfaceByDirection(dir, 0);
+        const surfaceProj = sampled.position.dot(dir);
+        const originProj = savedPos.dot(dir);
+        const delta = surfaceProj - SINK - minY - originProj;
+        if (Math.abs(delta) > 0.02) {
+          child.position.addScaledVector(dir, delta);
+          child.updateMatrixWorld(true);
+          // Keep NPC interaction anchors in sync with the moved mesh
+          for (const npc of this.npcTargets) {
+            if (npc.meshRef === child) npc.position.copy(child.position);
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Wind-blown grass: one InstancedMesh of cross-blade triangles scattered
    * over the sphere (golden-spiral + jitter). Blades are vertex-colored
    * dark base → light tip (fake AO for free) and bend in a vertex shader
@@ -411,9 +460,10 @@ export class Island {
       const h = 0.9 + Math.random() * 1.4;
       const d = 0.8 + Math.random() * 0.6;
       const bodyGeom = new THREE.BoxGeometry(w, h, d);
-      const bodyMat = Materials.createHouseMaterial(
-        0xa8c3a8 + Math.floor(Math.random() * 0x003333),
-      );
+      // Curated warm cottage palette. The old `0xa8c3a8 + random(0x003333)`
+      // bled across color channels and produced lime/acid-green/cyan walls.
+      const WALL_COLORS = [0xc47a5a, 0xd9a066, 0xb5654a, 0xe0c9a6, 0x9e5b4b, 0xcc8a5d];
+      const bodyMat = Materials.createHouseMaterial(WALL_COLORS[i % WALL_COLORS.length]);
       const body = new THREE.Mesh(bodyGeom, bodyMat);
       body.castShadow = true;
       body.receiveShadow = true;
@@ -1337,6 +1387,15 @@ export class Island {
     root.add(rivers);
     root.add(mountains);
     root.add(benches);
+
+    // Ground every prop exactly on the terrain: an audit found buildings
+    // floating +1.2 and mailboxes sunk -1.3 from inconsistent per-site
+    // offsets. Runs before tryLoadModels so GLB replacements inherit the
+    // corrected positions.
+    this.seatGroupsOnTerrain(root, [
+      buildings, houses, trees, lamps, npcs, cars, mailboxes, stalls, constructions, benches,
+    ]);
+
     this.tryLoadModels(buildings, npcs, buildingPlaceholders, npcPlaceholders).catch(() => {
       /* swallow errors */
     });
@@ -1955,10 +2014,12 @@ export class Island {
         // Intended toon set (Blender-authored, public/assets/models/*.glb)
         'bench.glb': { envMapIntensity: 0.8, randomYaw: true },
         'mailbox.glb': { envMapIntensity: 0.8 },
-        'car.glb': { envMapIntensity: 0.9, randomYaw: true },
+        // fitHeight rescales by bbox: native car.glb is ~4.4u long (wider
+        // than a house) and lamp.glb ~4.1u tall (towers over the roofs)
+        'car.glb': { envMapIntensity: 0.9, randomYaw: true, fitHeight: 0.95 },
         'npc.glb': { envMapIntensity: 0.7, scale: 1.0 },
         'tree.glb': { envMapIntensity: 0.5 },
-        'lamp.glb': { envMapIntensity: 0.6 },
+        'lamp.glb': { envMapIntensity: 0.6, fitHeight: 2.4 },
         'house.glb': { envMapIntensity: 0.8, randomYaw: true },
         // Legacy kit fallbacks
         'bench.gltf': { envMapIntensity: 0.8 },

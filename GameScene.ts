@@ -718,23 +718,12 @@ export class GameScene extends THREE.Scene {
         }
       });
 
-    let treeCount = 0;
     let rockCount = 0;
 
-    const tree = await loadGLTFWithFallbacks('/assets/models/tree.glb');
-    if (tree) {
-      const N = 14;
-      for (let i = 0; i < N; i++) {
-        const inst = tree.scene.clone(true);
-        // keep a band around the equator so props don't clash with the north-pole spawn
-        placeOnSphere(inst, i * GOLDEN, Math.random() * 1.4 - 0.7, 0.28);
-        inst.scale.multiplyScalar(0.85 + Math.random() * 0.3); // native ~5.6u tall
-        enableShadows(inst);
-        this.add(inst);
-        this.colliders.push({ position: inst.position.clone(), radius: 0.7 });
-        treeCount++;
-      }
-    }
+    // NOTE: the tree.glb scatter is gone. At ~5.6u native height the GLB
+    // trees towered 3x over the houses and their bare trunk + ball canopy
+    // read as "gray poles with green balls" ringing the spawn. The island's
+    // 48 in-scale procedural trees carry the forest now.
 
     const rock = await loadGLTFWithFallbacks('/assets/models/rock.glb');
     if (rock) {
@@ -749,7 +738,7 @@ export class GameScene extends THREE.Scene {
       }
     }
 
-    console.log('🌲 Scattered Blender toon props:', { trees: treeCount, rocks: rockCount });
+    console.log('🌲 Scattered Blender toon props:', { rocks: rockCount });
   }
 
   /**
