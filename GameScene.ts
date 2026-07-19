@@ -60,6 +60,27 @@ export class GameScene extends THREE.Scene {
     phase: number;
   }> = [];
 
+  // Butterflies fluttering around flower clusters
+  private butterflies: Array<{
+    group: THREE.Group;
+    wingL: THREE.Mesh;
+    wingR: THREE.Mesh;
+    base: THREE.Vector3;
+    normal: THREE.Vector3;
+    tanA: THREE.Vector3;
+    tanB: THREE.Vector3;
+    phase: number;
+  }> = [];
+
+  // Looping smoke puffs rising from house chimneys
+  private smokePuffs: Array<{
+    mesh: THREE.Mesh;
+    material: THREE.MeshBasicMaterial;
+    base: THREE.Vector3;
+    normal: THREE.Vector3;
+    offset: number;
+  }> = [];
+
   // Scratch objects for per-frame ambient animation (no allocations in update)
   private static readonly _swayAxis = new THREE.Vector3(1, 0, 0);
   private readonly _swayQuat = new THREE.Quaternion();
@@ -130,6 +151,10 @@ export class GameScene extends THREE.Scene {
         });
       }
     });
+
+    // Ambient life anchored to island sites
+    this.createButterflies();
+    this.createChimneySmoke();
 
     // Create player on island surface with spherical physics
     this.player = new SimplePlayer();
@@ -315,6 +340,79 @@ export class GameScene extends THREE.Scene {
       pivot.name = `cloud_pivot_${i}`;
       this.add(pivot);
       this.cloudPivots.push(pivot);
+    }
+  }
+
+  /**
+   * Butterflies hovering near flower clusters: two wing triangles flapping
+   * fast while the body drifts in a slow figure-8 above its home flowers.
+   */
+  private createButterflies(): void {
+    const WING_COLORS = [0xffa04a, 0xf5f5ff, 0xc48ae0, 0xffd34a, 0x7ab8ff];
+    const bodyMat = new THREE.MeshToonMaterial({ color: 0x33302a });
+    for (let i = 0; i < this.island.flowerSites.length; i++) {
+      const site = this.island.flowerSites[i];
+      const group = new THREE.Group();
+      const wingMat = new THREE.MeshToonMaterial({
+        color: WING_COLORS[i % WING_COLORS.length],
+        side: THREE.DoubleSide,
+      });
+      const wingGeo = new THREE.PlaneGeometry(0.09, 0.07);
+      wingGeo.translate(0.045, 0, 0); // hinge at the body
+      const wingL = new THREE.Mesh(wingGeo, wingMat);
+      group.add(wingL);
+      const wingR = new THREE.Mesh(wingGeo, wingMat);
+      wingR.rotation.y = Math.PI;
+      group.add(wingR);
+      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.012, 0.06, 2, 4), bodyMat);
+      body.rotation.x = Math.PI / 2;
+      group.add(body);
+
+      const normal = site.clone().normalize();
+      // Build a tangent frame for the drift path
+      const tanA = new THREE.Vector3(0, 1, 0).cross(normal);
+      if (tanA.lengthSq() < 1e-4) tanA.set(1, 0, 0);
+      tanA.normalize();
+      const tanB = normal.clone().cross(tanA).normalize();
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+      this.add(group);
+      this.butterflies.push({
+        group,
+        wingL,
+        wingR,
+        base: site.clone(),
+        normal,
+        tanA,
+        tanB,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
+  /**
+   * Cozy chimney smoke: 3 looping puffs per chimney that rise along the
+   * surface normal, growing and fading before wrapping back down.
+   */
+  private createChimneySmoke(): void {
+    const puffGeo = new THREE.SphereGeometry(1, 6, 5);
+    for (const site of this.island.chimneySites) {
+      for (let p = 0; p < 3; p++) {
+        const material = new THREE.MeshBasicMaterial({
+          color: 0xe8e8e8,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(puffGeo, material);
+        this.add(mesh);
+        this.smokePuffs.push({
+          mesh,
+          material,
+          base: site.position.clone(),
+          normal: site.normal.clone(),
+          offset: p / 3,
+        });
+      }
     }
   }
 
@@ -625,6 +723,34 @@ export class GameScene extends THREE.Scene {
           .copy(data.bobBase)
           .addScaledVector(this._npcNormal, (Math.sin(time * 2 + i * 1.7) + 1) * 0.015);
       }
+
+      // Grass wind (GPU-side — just advance the shared uniform)
+      this.island.grassTimeUniform.value = time;
+    }
+
+    // Butterflies: slow figure-8 drift + fast wing flap
+    for (const bf of this.butterflies) {
+      const t = time * 0.6 + bf.phase;
+      bf.group.position
+        .copy(bf.base)
+        .addScaledVector(bf.normal, 0.35 + Math.sin(time * 1.3 + bf.phase) * 0.1)
+        .addScaledVector(bf.tanA, Math.sin(t) * 0.35)
+        .addScaledVector(bf.tanB, Math.sin(t * 2) * 0.18);
+      const flap = Math.sin(time * 14 + bf.phase) * 1.05;
+      bf.wingL.rotation.y = flap;
+      bf.wingR.rotation.y = Math.PI - flap;
+    }
+
+    // Chimney smoke: puffs loop up the normal, growing and fading
+    for (const puff of this.smokePuffs) {
+      const ph = (time * 0.22 + puff.offset) % 1;
+      puff.mesh.position
+        .copy(puff.base)
+        .addScaledVector(puff.normal, 0.1 + ph * 1.1);
+      puff.mesh.position.x += Math.sin(time * 0.8 + puff.offset * 7) * 0.06 * ph;
+      const s = 0.05 + ph * 0.16;
+      puff.mesh.scale.set(s, s, s);
+      puff.material.opacity = 0.4 * Math.sin(ph * Math.PI);
     }
   }
 

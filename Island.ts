@@ -93,6 +93,11 @@ export class Island {
   private animationMixers: THREE.AnimationMixer[] = [];
   private npcInstances: NPC[] = [];
   public npcTargets: Array<{ position: THREE.Vector3; name: string; dialogue: string[]; meshRef: THREE.Object3D }> = [];
+  // Sampled sites exposed for GameScene's ambient life (butterflies, smoke)
+  public flowerSites: THREE.Vector3[] = [];
+  public chimneySites: Array<{ position: THREE.Vector3; normal: THREE.Vector3 }> = [];
+  // Shared time uniform driving the grass wind vertex shader
+  public grassTimeUniform: { value: number } = { value: 0 };
 
   constructor(radius: number = 18) {
     this.radius = radius;
@@ -106,6 +111,93 @@ export class Island {
         data._debug = true;
       }
     }
+  }
+
+  /**
+   * Wind-blown grass: one InstancedMesh of cross-blade triangles scattered
+   * over the sphere (golden-spiral + jitter). Blades are vertex-colored
+   * dark base → light tip (fake AO for free) and bend in a vertex shader
+   * driven by the shared grassTimeUniform — zero per-frame CPU cost.
+   */
+  private createGrass(): THREE.InstancedMesh {
+    // Two crossed tapered triangles, base at origin
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const baseC = new THREE.Color(0x2e7a30);
+    const tipC = new THREE.Color(0x74d055);
+    const addBlade = (rotY: number) => {
+      const c = Math.cos(rotY);
+      const s = Math.sin(rotY);
+      const v = (x: number, y: number, z: number, col: THREE.Color) => {
+        positions.push(x * c - z * s, y, x * s + z * c);
+        colors.push(col.r, col.g, col.b);
+      };
+      v(-0.045, 0, 0, baseC);
+      v(0.045, 0, 0, baseC);
+      v(0, 0.3, 0, tipC);
+    };
+    addBlade(0);
+    addBlade(Math.PI / 2);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshToonMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.createGradientMap(),
+    });
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = this.grassTimeUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <begin_vertex>',
+          [
+            '#include <begin_vertex>',
+            '#ifdef USE_INSTANCING',
+            '  float gPhase = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3 + instanceMatrix[3].y * 1.1;',
+            '  float gBend = sin(uTime * 2.1 + gPhase) + 0.5 * sin(uTime * 3.6 + gPhase * 1.4);',
+            '  transformed.x += gBend * 0.055 * (position.y / 0.3);',
+            '#endif',
+          ].join('\n'),
+        );
+    };
+
+    const COUNT = 6000;
+    const grass = new THREE.InstancedMesh(geo, mat, COUNT);
+    const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const dir = new THREE.Vector3();
+    for (let i = 0; i < COUNT; i++) {
+      const y = 1 - (i / (COUNT - 1)) * 2;
+      const rAt = Math.sqrt(Math.max(0, 1 - y * y));
+      const th = golden * i;
+      dir
+        .set(
+          Math.cos(th) * rAt + (Math.random() - 0.5) * 0.08,
+          y + (Math.random() - 0.5) * 0.08,
+          Math.sin(th) * rAt + (Math.random() - 0.5) * 0.08,
+        )
+        .normalize();
+      const sampled = this.sampleSurfaceByDirection(dir, 0);
+      dummy.position.copy(sampled.position);
+      dummy.quaternion.setFromUnitVectors(up, sampled.normal);
+      dummy.rotateOnAxis(up, Math.random() * Math.PI * 2);
+      const sc = 0.7 + Math.random() * 0.7;
+      dummy.scale.set(sc, sc, sc);
+      dummy.updateMatrix();
+      grass.setMatrixAt(i, dummy.matrix);
+    }
+    grass.instanceMatrix.needsUpdate = true;
+    grass.name = 'grass';
+    grass.castShadow = false;
+    grass.receiveShadow = true;
+    const grassData = grass.userData as Record<string, unknown>;
+    grassData.ignoreOcclusion = true;
+    return grass;
   }
 
   private createIsland(): THREE.Mesh {
@@ -386,6 +478,13 @@ export class Island {
       // Face the road
       this.faceObjectToward(house, sampled.normal, this.dirAt(lon, 0).multiplyScalar(this.radius));
       house.position.copy(sampled.position);
+      // Record the chimney tip (post-alignment) for GameScene's smoke puffs
+      if (i % 2 === 0) {
+        const chimneyTip = new THREE.Vector3(w * 0.25, h + 0.5, -d * 0.15)
+          .applyQuaternion(house.quaternion)
+          .add(house.position);
+        this.chimneySites.push({ position: chimneyTip, normal: sampled.normal.clone() });
+      }
       // Houses are already positioned by sampleSurfacePosition - no additional offset needed
       house.name = `house_${i}`;
       houses.add(house);
@@ -1143,6 +1242,8 @@ export class Island {
       );
       flowerGroup.name = `flower_${i}`;
       flowers.add(flowerGroup);
+      // Every ~8th flower anchors a butterfly cluster (see GameScene)
+      if (i % 8 === 0) this.flowerSites.push(sampled.position.clone());
     }
 
     // Add signs for shops/buildings
@@ -1208,9 +1309,13 @@ export class Island {
       benches.add(bench);
     }
 
+    // Instanced wind-blown grass across the whole planet
+    const grass = this.createGrass();
+
     // Group everything and attach to the main mesh as children so the island remains dominant
     const root = new THREE.Group();
     root.add(mesh);
+    root.add(grass);
     root.add(pathGroup);
     root.add(buildings);
     root.add(houses);
