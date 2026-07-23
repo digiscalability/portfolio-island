@@ -118,9 +118,11 @@ class SimpleApp {
       // route mailbox interaction through the delivery system
       const mailboxes = this.scene.getMailboxes();
       this.deliverySystem.assignDestinations(mailboxes);
-      this.scene.setOnMailboxInteract((mailbox) =>
-        this.deliverySystem.collectFromMailbox(mailbox),
-      );
+      this.scene.setOnMailboxInteract((mailbox) => {
+        const collected = this.deliverySystem.collectFromMailbox(mailbox);
+        if (collected) this.scene.wiggleMailbox(mailbox);
+        return collected;
+      });
       console.log(`✓ Quest deliveries assigned across ${mailboxes.length} mailboxes`);
 
       // Setup quest completion callback
@@ -338,7 +340,10 @@ class SimpleApp {
           if (!grounded) {
             this.airborneTime += deltaTime;
           } else {
-            if (this.airborneTime > 0.12) sfx.land();
+            if (this.airborneTime > 0.12) {
+              sfx.land();
+              this.scene.spawnDust(player.getWorldPosition(), 6);
+            }
             this.airborneTime = 0;
           }
           if (speed > 0.8 && this.airborneTime < 0.12) {
@@ -347,6 +352,7 @@ class SimpleApp {
               this.stepAccum = 0;
               this.stepAlt = !this.stepAlt;
               sfx.footstep(this.stepAlt);
+              this.scene.spawnDust(player.getWorldPosition(), 1);
             }
           } else if (speed <= 0.8) {
             // Primed so the first step after moving again lands quickly
@@ -357,19 +363,24 @@ class SimpleApp {
         // Apply camera input (mouse/touch)
         this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
 
-        // Check for nearby interactable and handle interaction
+        // Check for nearby interactable and handle interaction.
+        // Interpolated values are HTML-escaped: the prompt renders via
+        // innerHTML (for the <strong> keycap), and names/bubble text must
+        // never become an XSS vector once they turn dynamic (multiplayer).
+        const esc = (s: string) =>
+          s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const nearby = this.scene.getNearbyInteractable();
         if (nearby) {
           // Show interaction prompt
           let text = '⌨️ Press <strong>E</strong> to interact';
           if (nearby.type === 'mailbox') {
-            text = nearby.mailbox.bubbleText || text;
+            text = nearby.mailbox.bubbleText ? esc(nearby.mailbox.bubbleText) : text;
           } else if (nearby.type === 'lamp') {
             text = '💡 Press <strong>E</strong> to toggle lamp';
           } else if (nearby.type === 'zone') {
-            text = `🎯 Press <strong>E</strong> to explore ${nearby.zone.name}`;
+            text = `🎯 Press <strong>E</strong> to explore ${esc(nearby.zone.name)}`;
           } else if (nearby.type === 'npc') {
-            text = `💬 Press <strong>E</strong> to talk to <strong>${nearby.npcData.name}</strong>`;
+            text = `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong>`;
           }
           this.ui.showInteractionPrompt(text);
 

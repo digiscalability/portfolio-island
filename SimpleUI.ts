@@ -149,7 +149,6 @@ export class SimpleUI {
         position: 'absolute',
         bottom: '100px',
         left: '50%',
-        transform: 'translateX(-50%)',
         background: 'rgba(0, 0, 0, 0.8)',
         color: 'white',
         padding: '15px 25px',
@@ -157,8 +156,17 @@ export class SimpleUI {
         textAlign: 'center',
         pointerEvents: 'auto',
         fontSize: '16px',
+        // Pop-in: created hidden/short, springs to place on the next frame
+        opacity: '0',
+        transform: 'translateX(-50%) translateY(10px) scale(0.9)',
+        transition: 'transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.16s ease',
       });
       this.overlay.appendChild(this.interactionDiv);
+      const el = this.interactionDiv;
+      requestAnimationFrame(() => {
+        el.style.opacity = '1';
+        el.style.transform = 'translateX(-50%) translateY(0) scale(1)';
+      });
     }
 
     this.interactionDiv.innerHTML = text;
@@ -262,10 +270,19 @@ export class SimpleUI {
         fontSize: '12px',
         fontFamily: 'system-ui, sans-serif',
         pointerEvents: 'none',
+        transition: 'transform 0.12s ease',
       });
       this.overlay.appendChild(this.coinDiv);
+      this.coinDiv.textContent = `🪙 ${total}`;
+      return; // no bump on first render
     }
     this.coinDiv.textContent = `🪙 ${total}`;
+    // Bump: quick scale-up that springs back
+    this.coinDiv.style.transform = 'scale(1.35)';
+    const el = this.coinDiv;
+    window.setTimeout(() => {
+      el.style.transform = 'scale(1)';
+    }, 130);
   }
 
   /**
@@ -655,7 +672,6 @@ export class SimpleUI {
         position: 'absolute',
         bottom: '30px',
         left: '50%',
-        transform: 'translateX(-50%)',
         width: 'min(600px, 90%)',
         background: 'rgba(10, 10, 20, 0.92)',
         color: '#f0f0f0',
@@ -666,13 +682,18 @@ export class SimpleUI {
         border: '2px solid rgba(120, 160, 255, 0.4)',
         boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
         opacity: '0',
-        transition: 'opacity 0.3s ease',
+        transform: 'translateX(-50%) translateY(16px) scale(0.96)',
+        transition:
+          'opacity 0.3s ease, transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1)',
         zIndex: '1600',
         overflow: 'hidden',
       });
       this.overlay.appendChild(this.dialogueDiv);
       requestAnimationFrame(() => {
-        if (this.dialogueDiv) this.dialogueDiv.style.opacity = '1';
+        if (this.dialogueDiv) {
+          this.dialogueDiv.style.opacity = '1';
+          this.dialogueDiv.style.transform = 'translateX(-50%) translateY(0) scale(1)';
+        }
       });
     }
 

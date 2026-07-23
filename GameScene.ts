@@ -105,6 +105,17 @@ export class GameScene extends THREE.Scene {
     phase: number;
   }> = [];
 
+  // Micro-animation state: dust puffs (footsteps/landings) + prop wiggles
+  private dustPuffs: Array<{
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    t0: number;
+    origin: THREE.Vector3;
+    dir: THREE.Vector3;
+    normal: THREE.Vector3;
+  }> = [];
+  private wiggles: Array<{ obj: THREE.Object3D; baseQuat: THREE.Quaternion; t0: number }> = [];
+
   // Sky-dome "up" uniform so the gradient follows the camera around the sphere
   private skyUpUniform: { value: THREE.Vector3 } | null = null;
 
@@ -198,6 +209,7 @@ export class GameScene extends THREE.Scene {
     this.createButterflies();
     this.createFireflies();
     this.createChimneySmoke();
+    this.createDustPool();
 
     // Navigation + traversal rewards
     this.createGuideSparkles();
@@ -524,6 +536,69 @@ export class GameScene extends THREE.Scene {
         });
       }
     }
+  }
+
+  /**
+   * Pooled dust puffs for footsteps and landings: small fading spheres
+   * that scatter along the surface tangent. 18 puffs cover a landing
+   * ring (6) plus a trail of footsteps without allocation.
+   */
+  private createDustPool(): void {
+    const geo = new THREE.SphereGeometry(1, 6, 5);
+    for (let i = 0; i < 18; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xd8cfc0,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.visible = false;
+      this.add(mesh);
+      this.dustPuffs.push({
+        mesh,
+        mat,
+        t0: -1,
+        origin: new THREE.Vector3(),
+        dir: new THREE.Vector3(),
+        normal: new THREE.Vector3(),
+      });
+    }
+  }
+
+  /** Kick up `count` dust puffs at a world position (footstep: 1, landing: 6). */
+  public spawnDust(center: THREE.Vector3, count: number): void {
+    const time = performance.now() / 1000;
+    this._npcNormal.copy(center).normalize();
+    let spawned = 0;
+    for (const p of this.dustPuffs) {
+      if (p.mesh.visible) continue;
+      const ang = Math.random() * Math.PI * 2;
+      // Random tangent direction on the surface
+      p.dir
+        .set(Math.cos(ang), Math.sin(ang) * 0.3, Math.sin(ang))
+        .addScaledVector(this._npcNormal, -this._npcNormal.dot(p.dir))
+        .normalize();
+      p.origin.copy(center).addScaledVector(this._npcNormal, -0.55);
+      p.normal.copy(this._npcNormal);
+      p.t0 = time;
+      p.mesh.visible = true;
+      if (++spawned >= count) break;
+    }
+  }
+
+  /** Brief wobble for a mailbox that just handed over a delivery. */
+  public wiggleMailbox(mb: Mailbox): void {
+    const existing = this.wiggles.find((w) => w.obj === mb.mesh);
+    if (existing) {
+      existing.t0 = performance.now() / 1000;
+      return;
+    }
+    this.wiggles.push({
+      obj: mb.mesh,
+      baseQuat: mb.mesh.quaternion.clone(),
+      t0: performance.now() / 1000,
+    });
   }
 
   /** Register a listener for coin pickups (receives the new total). */
@@ -898,16 +973,23 @@ export class GameScene extends THREE.Scene {
       tr.group.quaternion.copy(tr.baseQuat).multiply(this._swayQuat);
     }
 
-    // NPCs: subtle idle bob along their surface normal
+    // NPCs: subtle idle bob along their surface normal, plus a little
+    // greeting hop when the player starts talking to them
     if (this.island) {
       for (let i = 0; i < this.island.npcTargets.length; i++) {
         const npc = this.island.npcTargets[i];
-        const data = npc.meshRef.userData as { bobBase?: THREE.Vector3 };
+        const data = npc.meshRef.userData as { bobBase?: THREE.Vector3; greetT0?: number };
         if (!data.bobBase) data.bobBase = npc.meshRef.position.clone();
         this._npcNormal.copy(data.bobBase).normalize();
+        let hop = 0;
+        if (typeof data.greetT0 === 'number') {
+          const gt = time - data.greetT0;
+          if (gt < 0.4) hop = Math.sin((gt / 0.4) * Math.PI) * 0.25;
+          else delete data.greetT0;
+        }
         npc.meshRef.position
           .copy(data.bobBase)
-          .addScaledVector(this._npcNormal, (Math.sin(time * 2 + i * 1.7) + 1) * 0.015);
+          .addScaledVector(this._npcNormal, (Math.sin(time * 2 + i * 1.7) + 1) * 0.015 + hop);
       }
 
       // Grass wind (GPU-side — just advance the shared uniform)
@@ -980,8 +1062,26 @@ export class GameScene extends THREE.Scene {
       for (const s of this.guideSparkles) s.visible = false;
     }
 
-    // Coins: spin in place, collect on touch, respawn after 45s
+    // Coins: spin in place; on touch they fly up, spin fast, and shrink
+    // away (0.45s) before hiding; respawn after 45s
     for (const c of this.coins) {
+      const cu = c.mesh.userData as { homePos?: THREE.Vector3; collectT0?: number };
+      if (typeof cu.collectT0 === 'number') {
+        const ct = time - cu.collectT0;
+        const home = cu.homePos as THREE.Vector3;
+        if (ct >= 0.45) {
+          c.mesh.visible = false;
+          delete cu.collectT0;
+          c.mesh.position.copy(home);
+          c.mesh.scale.setScalar(1);
+        } else {
+          this._npcNormal.copy(home).normalize();
+          c.mesh.position.copy(home).addScaledVector(this._npcNormal, ct * 2.4);
+          c.mesh.scale.setScalar(Math.max(0.01, 1 - ct / 0.45));
+          c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 18);
+        }
+        continue;
+      }
       if (!c.mesh.visible) {
         if (c.respawnAt > 0 && time > c.respawnAt) {
           c.mesh.visible = true;
@@ -992,7 +1092,9 @@ export class GameScene extends THREE.Scene {
       this._npcNormal.copy(c.mesh.position).normalize();
       c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 2.5);
       if (c.mesh.position.distanceToSquared(playerPos) < 0.9) {
-        c.mesh.visible = false;
+        if (!cu.homePos) cu.homePos = c.mesh.position.clone();
+        cu.homePos.copy(c.mesh.position);
+        cu.collectT0 = time;
         c.respawnAt = time + 45;
         sfx.coin();
         this.coinsCollected++;
@@ -1033,6 +1135,36 @@ export class GameScene extends THREE.Scene {
     // mood doesn't shift as the player circumnavigates
     if (this.skyUpUniform && this.camera) {
       this.skyUpUniform.value.copy(this.camera.position).normalize();
+    }
+
+    // Dust puffs: scatter along the tangent, grow and fade over 0.5s
+    for (const p of this.dustPuffs) {
+      if (!p.mesh.visible) continue;
+      const t = time - p.t0;
+      if (t > 0.5) {
+        p.mesh.visible = false;
+        continue;
+      }
+      p.mesh.position.copy(p.origin).addScaledVector(p.dir, t * 1.6).addScaledVector(p.normal, 0.05 + t * 0.15);
+      const s = 0.05 + t * 0.28;
+      p.mesh.scale.set(s, s, s);
+      p.mat.opacity = 0.45 * (1 - t / 0.5);
+    }
+
+    // Prop wiggles (mailbox thank-you wobble): decaying shake, then restore
+    for (let i = this.wiggles.length - 1; i >= 0; i--) {
+      const w = this.wiggles[i];
+      const t = time - w.t0;
+      if (t > 0.6) {
+        w.obj.quaternion.copy(w.baseQuat);
+        this.wiggles.splice(i, 1);
+        continue;
+      }
+      this._swayQuat.setFromAxisAngle(
+        GameScene._swayAxis,
+        Math.sin(t * 26) * 0.14 * (1 - t / 0.6),
+      );
+      w.obj.quaternion.copy(w.baseQuat).multiply(this._swayQuat);
     }
 
     // Day/night + weather cycle
@@ -1215,6 +1347,11 @@ export class GameScene extends THREE.Scene {
     }
 
     if (interactable.type === 'npc') {
+      // Little greeting hop from the NPC being addressed
+      const target = this.island.npcTargets.find((n) => n.name === interactable.npcData.name);
+      if (target) {
+        (target.meshRef.userData as { greetT0?: number }).greetT0 = performance.now() / 1000;
+      }
       if (this.onNPCInteractCallback) {
         this.onNPCInteractCallback(interactable.npcData);
       }
