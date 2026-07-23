@@ -419,6 +419,12 @@ export class GameScene extends THREE.Scene {
       // One consistent cloud ceiling (tight altitude band) — a wide random
       // band read as clouds "stacked" vertically instead of a sky layer
       cloud.position.set(planetR + 6.5 + Math.random() * 1.2, 0, 0);
+      // Lie flat relative to the planet: the cloud sits on the pivot's +X
+      // (radial), but its flat-bottom/spread axes were pivot-tangent, so
+      // clouds stood on their side depending on the pivot's random
+      // orientation. Rotating 90° maps the cloud's local "up" onto the
+      // radial axis — flat base toward the ground, spread along the sky.
+      cloud.rotation.z = -Math.PI / 2;
       const cloudData = cloud.userData as Record<string, unknown>;
       cloudData.ignoreOcclusion = true;
       pivot.add(cloud);
