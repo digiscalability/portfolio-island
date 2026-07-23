@@ -2701,22 +2701,11 @@ export class Island {
         heightOffset: -0.04,
         randomYaw: true,
       });
-      // Buildings/houses use the intended toon house model (previously these
-      // were "replaced" with market-stall kit models, which looked broken)
-      loadAndReplace(basePath + 'house.glb', 'building_placeholder_', {
-        fitHeight: 3.8,
-        heightOffset: -0.18,
-        randomYaw: false,
-        scaleJitter: 0.25,
-        candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
-      });
-      loadAndReplace(basePath + 'house.glb', 'house_', {
-        fitHeight: 3.4,
-        heightOffset: -0.15,
-        randomYaw: false,
-        scaleJitter: 0.3,
-        candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Stall_Empty.gltf'],
-      });
+      // Houses and towers stay PROCEDURAL. house.glb used to replace both
+      // the village cottages and the office placeholders, but it renders
+      // with an oversized detached roof, bare support posts, and floating
+      // chimney segments — the procedural cottage (warm walls, person-sized
+      // door, teal windows) is the approved look for every house.
 
       // For NPCs we want an NPC wrapper that handles mixer and simple AI. Use a specialized loader callback.
       try {
