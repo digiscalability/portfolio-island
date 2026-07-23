@@ -132,6 +132,42 @@ export class Sfx {
   public coin(): void {
     this.tone(988, 1319, 0.09, 'sine', 0.1);
   }
+
+  private rainGain: GainNode | null = null;
+  private rainLevel = -1;
+
+  /**
+   * Looping rain bed (band-passed noise). Level 0..1; ramps over 1.5s.
+   * Safe to call every frame — no-ops until the level changes.
+   */
+  public setRainLevel(level: number): void {
+    if (level === this.rainLevel) return;
+    const ctx = this.ctxOrNull;
+    if (!ctx) return; // muted or not unlocked yet — retried on next change
+    if (!this.rainGain) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.ensureNoise(ctx);
+      src.loop = true;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 400;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 2600;
+      this.rainGain = ctx.createGain();
+      this.rainGain.gain.value = 0;
+      src.connect(hp);
+      hp.connect(lp);
+      lp.connect(this.rainGain);
+      this.rainGain.connect(this.ensureMaster(ctx));
+      src.start();
+    }
+    this.rainLevel = level;
+    const t = ctx.currentTime;
+    this.rainGain.gain.cancelScheduledValues(t);
+    this.rainGain.gain.setValueAtTime(this.rainGain.gain.value, t);
+    this.rainGain.gain.linearRampToValueAtTime(0.09 * level, t + 1.5);
+  }
 }
 
 export const sfx = new Sfx();

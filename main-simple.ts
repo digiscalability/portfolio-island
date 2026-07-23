@@ -150,6 +150,10 @@ class SimpleApp {
         this.ui.setEnvironmentBadge(status);
       });
 
+      // Coin counter (persisted across visits)
+      this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+      this.scene.setOnCoinCollected((total) => this.ui.updateCoinCounter(total));
+
       // Initialize post-processing
       this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
       console.log('✓ Post-processing initialized');
@@ -385,6 +389,9 @@ class SimpleApp {
 
     // Quest compass: point at the active delivery's mailbox
     this.updateQuestCompass();
+
+    // Rain ambience follows the live weather (no-op unless the level changes)
+    sfx.setRainLevel(this.scene.getEnvironmentCycle()?.getWeather() === 'rain' ? 1 : 0);
 
     // Always update scene (for animations, etc.)
     this.scene.update(deltaTime);

@@ -91,6 +91,19 @@ export class GameScene extends THREE.Scene {
 
   // Collectible coins scattered across the meadows
   private coins: Array<{ mesh: THREE.Mesh; respawnAt: number }> = [];
+  private coinsCollected = 0;
+  private onCoinCollected?: (total: number) => void;
+
+  // Fireflies that take over from the butterflies after dark
+  private fireflies: Array<{
+    mesh: THREE.Mesh;
+    material: THREE.MeshBasicMaterial;
+    base: THREE.Vector3;
+    normal: THREE.Vector3;
+    tanA: THREE.Vector3;
+    tanB: THREE.Vector3;
+    phase: number;
+  }> = [];
 
   // Sky-dome "up" uniform so the gradient follows the camera around the sphere
   private skyUpUniform: { value: THREE.Vector3 } | null = null;
@@ -183,6 +196,7 @@ export class GameScene extends THREE.Scene {
 
     // Ambient life anchored to island sites
     this.createButterflies();
+    this.createFireflies();
     this.createChimneySmoke();
 
     // Navigation + traversal rewards
@@ -477,11 +491,61 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
+   * Fireflies: 3 per flower cluster, wandering slowly with a blinking
+   * glow. Invisible by day — they take over from the butterflies after
+   * dark (drives from EnvironmentCycle's day factor in update()).
+   */
+  private createFireflies(): void {
+    const geo = new THREE.SphereGeometry(0.04, 6, 5);
+    for (const site of this.island.flowerSites) {
+      const normal = site.clone().normalize();
+      const tanA = new THREE.Vector3(0, 1, 0).cross(normal);
+      if (tanA.lengthSq() < 1e-4) tanA.set(1, 0, 0);
+      tanA.normalize();
+      const tanB = normal.clone().cross(tanA).normalize();
+      for (let f = 0; f < 3; f++) {
+        const material = new THREE.MeshBasicMaterial({
+          color: 0xffe27a,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(geo, material);
+        mesh.visible = false;
+        this.add(mesh);
+        this.fireflies.push({
+          mesh,
+          material,
+          base: site.clone(),
+          normal,
+          tanA,
+          tanB,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+    }
+  }
+
+  /** Register a listener for coin pickups (receives the new total). */
+  public setOnCoinCollected(cb: (total: number) => void): void {
+    this.onCoinCollected = cb;
+  }
+
+  public getCoinsCollected(): number {
+    return this.coinsCollected;
+  }
+
+  /**
    * Spinning collectible coins scattered across the open meadows —
    * traversal rewards between districts (A Short Hike-style). Collected
    * on touch with a chime; each respawns after 45 seconds.
    */
   private createCoins(): void {
+    try {
+      this.coinsCollected = parseInt(localStorage.getItem('ds_coins') ?? '0', 10) || 0;
+    } catch {
+      /* counter starts at 0 */
+    }
     const geo = new THREE.CylinderGeometry(0.16, 0.16, 0.045, 12);
     const mat = new THREE.MeshToonMaterial({ color: 0xffd34a });
     mat.emissive = new THREE.Color(0x554411);
@@ -931,7 +995,38 @@ export class GameScene extends THREE.Scene {
         c.mesh.visible = false;
         c.respawnAt = time + 45;
         sfx.coin();
+        this.coinsCollected++;
+        try {
+          localStorage.setItem('ds_coins', String(this.coinsCollected));
+        } catch {
+          /* session-only counter */
+        }
+        this.onCoinCollected?.(this.coinsCollected);
       }
+    }
+
+    // Day/night handoff for the small life: butterflies by day,
+    // blinking fireflies wandering the flower clusters by night
+    const dayFactor = this.envCycle ? this.envCycle.getDayFactor() : 1;
+    const butterfliesOut = dayFactor > 0.25;
+    for (const bf of this.butterflies) {
+      bf.group.visible = butterfliesOut;
+    }
+    const fireflyGlow = 1 - dayFactor;
+    for (const ff of this.fireflies) {
+      if (fireflyGlow < 0.05) {
+        ff.mesh.visible = false;
+        continue;
+      }
+      ff.mesh.visible = true;
+      const t = time * 0.4 + ff.phase;
+      ff.mesh.position
+        .copy(ff.base)
+        .addScaledVector(ff.normal, 0.35 + Math.sin(time * 0.9 + ff.phase) * 0.15)
+        .addScaledVector(ff.tanA, Math.sin(t) * 0.5)
+        .addScaledVector(ff.tanB, Math.sin(t * 1.7 + 1.3) * 0.5);
+      // Blink: each firefly pulses on its own rhythm
+      ff.material.opacity = fireflyGlow * (0.35 + 0.65 * Math.max(0, Math.sin(time * 2.2 + ff.phase * 3)));
     }
 
     // Keep the sky gradient oriented to the camera's local "up" so the

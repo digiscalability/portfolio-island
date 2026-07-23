@@ -245,6 +245,29 @@ export class SimpleUI {
     this.envBadgeDiv.textContent = text;
   }
 
+  private coinDiv: HTMLElement | null = null;
+
+  /** Coin counter chip under the online-count in the top-right. */
+  updateCoinCounter(total: number): void {
+    if (!this.coinDiv) {
+      this.coinDiv = document.createElement('div');
+      Object.assign(this.coinDiv.style, {
+        position: 'absolute',
+        top: '60px',
+        right: '10px',
+        background: 'rgba(0, 0, 0, 0.55)',
+        color: '#ffd34a',
+        padding: '4px 10px',
+        borderRadius: '10px',
+        fontSize: '12px',
+        fontFamily: 'system-ui, sans-serif',
+        pointerEvents: 'none',
+      });
+      this.overlay.appendChild(this.coinDiv);
+    }
+    this.coinDiv.textContent = `🪙 ${total}`;
+  }
+
   /**
    * Update player count display
    */

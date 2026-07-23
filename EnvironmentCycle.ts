@@ -76,6 +76,13 @@ export class EnvironmentCycle {
   /** Debug override: fractional hour 0-24, or null for the real clock. */
   public debugHour: number | null = null;
 
+  /** Last computed day factor (0 = deep night, 1 = full day). */
+  private lastDayFactor = 1;
+
+  public getDayFactor(): number {
+    return this.lastDayFactor;
+  }
+
   // Scratch
   private readonly _c1 = new THREE.Color();
   private readonly _c2 = new THREE.Color();
@@ -347,6 +354,7 @@ export class EnvironmentCycle {
     }
     const dayFactor = THREE.MathUtils.smoothstep(elev, -0.12, 0.3);
     const duskFactor = Math.max(0, 1 - Math.abs(elev) / 0.35);
+    this.lastDayFactor = dayFactor;
 
     // Sun position on its arc (moon takes over below the horizon)
     const e = Math.max(elev, 0.06);
