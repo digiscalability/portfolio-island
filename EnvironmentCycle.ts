@@ -52,6 +52,12 @@ export class EnvironmentCycle {
   private weather: WeatherKind = 'clear';
   private placeLabel = '';
   private statusCb?: (status: string) => void;
+  // Real sun times for the resolved location (decimal hours, local tz).
+  // Until the fetch lands we fall back to a 6am/6pm approximation.
+  private sunriseHour: number | null = null;
+  private sunsetHour: number | null = null;
+  private temperatureC: number | null = null;
+  private nextStatusAt = 0;
 
   private starLayers: Array<{ points: THREE.Points; mat: THREE.PointsMaterial; peak: number }> = [];
   private moon: THREE.Mesh;
@@ -172,14 +178,21 @@ export class EnvironmentCycle {
   private emitStatus(): void {
     if (!this.statusCb) return;
     const hour = this.currentHour();
+    // Time-of-day labels keyed to the location's real sunrise/sunset
+    const sunrise = this.sunriseHour ?? 6;
+    const sunset = this.sunsetHour ?? 18;
     const timeLabel =
-      hour >= 5.5 && hour < 8 ? '🌅 Morning'
-      : hour >= 8 && hour < 17 ? '☀️ Day'
-      : hour >= 17 && hour < 19.5 ? '🌇 Evening'
+      hour >= sunrise && hour < sunrise + 2 ? '🌅 Morning'
+      : hour >= sunrise + 2 && hour < sunset - 1.5 ? '☀️ Day'
+      : hour >= sunset - 1.5 && hour < sunset + 0.75 ? '🌇 Evening'
       : '🌙 Night';
-    const wLabel = { clear: '', cloudy: '☁️ Cloudy · ', rain: '🌧️ Rain · ', snow: '❄️ Snow · ' }[this.weather];
-    const place = this.placeLabel ? ` · ${this.placeLabel}` : '';
-    this.statusCb(`${wLabel}${timeLabel}${place}`);
+    const wName = { clear: '', cloudy: '☁️ Cloudy', rain: '🌧️ Rain', snow: '❄️ Snow' }[this.weather];
+    const temp = this.temperatureC !== null ? `${Math.round(this.temperatureC)}°C` : '';
+    const parts: string[] = [];
+    if (wName || temp) parts.push([wName, temp].filter(Boolean).join(' '));
+    parts.push(timeLabel);
+    if (this.placeLabel) parts.push(this.placeLabel);
+    this.statusCb(parts.join(' · '));
   }
 
   private currentHour(): number {
@@ -240,10 +253,24 @@ export class EnvironmentCycle {
     }
     try {
       const resp = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`,
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&daily=sunrise,sunset&timezone=auto&forecast_days=1`,
       );
       if (!resp.ok) return;
-      const data = (await resp.json()) as { current_weather?: { weathercode?: number } };
+      const data = (await resp.json()) as {
+        current_weather?: { weathercode?: number; temperature?: number };
+        daily?: { sunrise?: string[]; sunset?: string[] };
+      };
+      // Real sun times for the location — the fixed 6am/6pm fallback is up
+      // to ~1.5h wrong in winter/summer (Melbourne July: ~7:30/17:10)
+      const parseHour = (iso?: string): number | null => {
+        const m = iso?.match(/T(\d{2}):(\d{2})/);
+        return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 60 : null;
+      };
+      this.sunriseHour = parseHour(data.daily?.sunrise?.[0]);
+      this.sunsetHour = parseHour(data.daily?.sunset?.[0]);
+      if (typeof data.current_weather?.temperature === 'number') {
+        this.temperatureC = data.current_weather.temperature;
+      }
       const code = data.current_weather?.weathercode ?? 0;
       // WMO codes → our four kinds
       this.weather =
@@ -298,9 +325,26 @@ export class EnvironmentCycle {
   /** Call every frame with the player's world position. */
   public update(deltaTime: number, playerPos: THREE.Vector3, time: number): void {
     const hour = this.currentHour();
-    // Sun elevation: -1 (midnight) .. +1 (noon)
-    const elev = Math.sin(((hour - 6) / 24) * Math.PI * 2);
+    // Sun elevation anchored to the location's REAL sunrise/sunset (fetched
+    // with the weather); 6am/6pm approximation until/unless that arrives.
+    const sunrise = this.sunriseHour ?? 6;
+    const sunset = this.sunsetHour ?? 18;
+    const dayLen = Math.max(1, sunset - sunrise);
+    const nightLen = Math.max(1, 24 - dayLen);
+    let elev: number;
+    if (hour >= sunrise && hour <= sunset) {
+      elev = Math.sin(((hour - sunrise) / dayLen) * Math.PI);
+    } else {
+      const intoNight = (hour - sunset + 24) % 24;
+      elev = -Math.sin((intoNight / nightLen) * Math.PI);
+    }
     const azimuth = (hour / 24) * Math.PI * 2;
+
+    // Refresh the HUD badge periodically so the time label tracks the clock
+    if (time > this.nextStatusAt) {
+      this.nextStatusAt = time + 60;
+      this.emitStatus();
+    }
     const dayFactor = THREE.MathUtils.smoothstep(elev, -0.12, 0.3);
     const duskFactor = Math.max(0, 1 - Math.abs(elev) / 0.35);
 
