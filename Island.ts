@@ -1054,6 +1054,7 @@ export class Island {
     cap.position.y = 2.0;
     fountain.add(cap);
     fountain.castShadow = true;
+    fountain.name = 'town_fountain';
     // Village square centerpiece, at the edge of the Personal hamlet
     // (the old raw world coords stranded it near the north pole)
     this.placeObjectOnSurface(

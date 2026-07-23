@@ -211,6 +211,42 @@ export class GameScene extends THREE.Scene {
     this.createChimneySmoke();
     this.createDustPool();
 
+    // Solid props: register colliders so the player can't walk through
+    // them. Only TownPlanner props ever registered before — the island's
+    // own houses/trees/cars/stalls were all ghost-walkable. Radii are
+    // footprints, not bounding spheres (tree = trunk, so you can walk
+    // under the canopy). Positions are static — captured post-seating,
+    // and GLB replacements land on the same spots.
+    const COLLIDER_RADII: Array<[RegExp, number]> = [
+      [/^house_\d+$/, 1.35],
+      [/^building_placeholder_\d+$/, 1.1],
+      [/^tree_\d+$/, 0.3],
+      [/^stall_\d+$/, 0.95],
+      [/^car_\d+$/, 1.05],
+      [/^lamp_\d+$/, 0.18],
+      [/^bench_\d+$/, 0.55],
+      [/^construction_\d+$/, 0.8],
+      [/^mailbox_\d+$/, 0.35],
+      [/^npc_placeholder_\d+$/, 0.4],
+      [/^central_statue$/, 0.55],
+      [/^town_fountain$/, 2.3],
+    ];
+    this.island.mesh.updateMatrixWorld(true);
+    let colliderCount = 0;
+    this.island.mesh.traverse((obj) => {
+      for (const [re, radius] of COLLIDER_RADII) {
+        if (re.test(obj.name)) {
+          this.colliders.push({
+            position: obj.getWorldPosition(new THREE.Vector3()),
+            radius,
+          });
+          colliderCount++;
+          break;
+        }
+      }
+    });
+    console.log(`🧱 Registered ${colliderCount} island prop colliders`);
+
     // Navigation + traversal rewards
     this.createGuideSparkles();
     this.createCoins();
@@ -854,12 +890,15 @@ export class GameScene extends THREE.Scene {
       placeOnSphere(house.mesh, angle, HOUSE_LATS[index % HOUSE_LATS.length], -0.15, 0.4);
     });
 
-    // Replace colliders with sphere-surface positions (TownPlanner placed them at Y=0)
-    this.colliders = [
+    // APPEND TownPlanner colliders at their re-projected sphere positions
+    // (their flat-grid originals sat at Y=0 and were never merged). This
+    // used to ASSIGN the array — wiping the island prop colliders
+    // registered in initialize() and leaving houses/trees ghost-walkable.
+    this.colliders.push(
       ...result.mailboxes.map((m) => ({ position: m.mesh.position.clone(), radius: 1 })),
       ...result.lamps.map((l) => ({ position: l.group.position.clone(), radius: 0.5 })),
       ...result.houses.map((h) => ({ position: h.mesh.position.clone(), radius: 1.6 })),
-    ];
+    );
     this.mailboxes = result.mailboxes;
     this.lamps = result.lamps;
 
