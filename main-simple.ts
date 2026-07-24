@@ -2,6 +2,7 @@ import { DeliverySystem } from './DeliverySystem';
 import { GameScene } from './GameScene';
 import { NpcQuestSystem } from './NpcQuests';
 import { sfx } from './Sfx';
+import type { HatId } from './SimplePlayer';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
@@ -28,6 +29,15 @@ class SimpleApp {
   private deliverySystem!: DeliverySystem;
   private npcQuests!: NpcQuestSystem;
   private isRunning: boolean = false;
+
+  // Island shop (hat cosmetics, paid with meadow coins)
+  private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
+    { id: 'party', icon: '🥳', name: 'Party Hat', price: 10 },
+    { id: 'top', icon: '🎩', name: 'Top Hat', price: 15 },
+    { id: 'crown', icon: '👑', name: 'Golden Crown', price: 25 },
+  ];
+  private ownedHats: Set<string> = new Set();
+  private equippedHat: string | null = null;
 
   // FPS tracking
   private frameCount: number = 0;
@@ -147,9 +157,24 @@ class SimpleApp {
       this.npcQuests = new NpcQuestSystem();
       this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
 
+      // Restore the shop wardrobe (owned + equipped hats)
+      try {
+        this.ownedHats = new Set(JSON.parse(localStorage.getItem('ds_owned_hats') ?? '[]'));
+        this.equippedHat = localStorage.getItem('ds_hat');
+        if (this.equippedHat) this.scene.equipPlayerHat(this.equippedHat as HatId);
+      } catch {
+        /* fresh wardrobe */
+      }
+
       // Setup NPC interaction callback (quest dialogue wins when relevant)
       this.scene.setOnNPCInteract((npcData) => {
         console.log(`💬 Talking to: ${npcData.name}`);
+        // The Market Vendor runs the island shop
+        if (npcData.name === 'Market Vendor') {
+          sfx.blip();
+          this.openShop();
+          return;
+        }
         const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
         this.ui.showDialogue(npcData.name, talk ? talk.lines : npcData.dialogue);
         if (talk?.accepted) {
@@ -510,6 +535,53 @@ class SimpleApp {
       this.frameCount = 0;
       this.fpsUpdateInterval = 0;
     }
+  }
+
+  /**
+   * Open the island shop: buy hats with coins, equip owned ones. The UI
+   * re-renders after every action so balances and buttons stay current.
+   */
+  private openShop(): void {
+    const render = () => {
+      this.ui.showShop(
+        {
+          coins: this.scene.getCoinsCollected(),
+          items: this.hatCatalog.map((h) => ({
+            ...h,
+            owned: this.ownedHats.has(h.id),
+            equipped: this.equippedHat === h.id,
+          })),
+        },
+        (id) => {
+          const item = this.hatCatalog.find((h) => h.id === id);
+          if (!item) return;
+          if (!this.ownedHats.has(id)) {
+            if (!this.scene.spendCoins(item.price)) return;
+            this.ownedHats.add(id);
+            try {
+              localStorage.setItem('ds_owned_hats', JSON.stringify([...this.ownedHats]));
+            } catch {
+              /* session-only */
+            }
+            sfx.coin();
+          } else {
+            sfx.blip();
+          }
+          this.equippedHat = id;
+          try {
+            localStorage.setItem('ds_hat', id);
+          } catch {
+            /* session-only */
+          }
+          this.scene.equipPlayerHat(id as HatId);
+          render();
+        },
+        () => {
+          /* closed */
+        },
+      );
+    };
+    render();
   }
 
   /**

@@ -432,6 +432,101 @@ export class SimpleUI {
   }
 
   private coinDiv: HTMLElement | null = null;
+  private shopDiv: HTMLElement | null = null;
+
+  /**
+   * Island shop panel. Rows come from the caller (main-simple owns the
+   * catalog + owned/equipped state); button clicks call `onAction(id)`
+   * and the caller re-renders by calling showShop again.
+   */
+  showShop(
+    state: {
+      coins: number;
+      items: Array<{ id: string; icon: string; name: string; price: number; owned: boolean; equipped: boolean }>;
+    },
+    onAction: (id: string) => void,
+    onClose: () => void,
+  ): void {
+    this.hideShop();
+    this.shopDiv = document.createElement('div');
+    Object.assign(this.shopDiv.style, {
+      position: 'absolute',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)',
+      width: 'min(420px, 92%)',
+      background: 'rgba(12, 12, 24, 0.95)',
+      color: 'white',
+      borderRadius: '16px',
+      border: '2px solid rgba(255, 211, 74, 0.5)',
+      padding: '18px 20px',
+      pointerEvents: 'auto',
+      zIndex: '1700',
+      fontFamily: 'system-ui, sans-serif',
+    });
+    const rows = state.items
+      .map((it) => {
+        const btnLabel = it.equipped ? 'Equipped' : it.owned ? 'Equip' : `${it.price} 🪙`;
+        const disabled = it.equipped || (!it.owned && state.coins < it.price);
+        return `
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
+          <div style="font-size:24px;">${it.icon}</div>
+          <div style="flex:1;">
+            <div style="font-weight:600;">${it.name}</div>
+            <div style="font-size:12px;color:#aaa;">${it.owned ? 'Owned' : `${it.price} coins`}</div>
+          </div>
+          <button data-shop-id="${it.id}" ${disabled ? 'disabled' : ''} style="
+            background:${it.equipped ? '#2e7d32' : '#ffd34a'};
+            color:${it.equipped ? 'white' : '#332200'};
+            border:none;padding:7px 14px;border-radius:8px;font-weight:700;
+            cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled && !it.equipped ? 0.45 : 1};
+          ">${btnLabel}</button>
+        </div>`;
+      })
+      .join('');
+    this.shopDiv.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h3 style="margin:0;color:#ffd34a;">🛒 Island Shop</h3>
+        <div style="display:flex;gap:12px;align-items:center;">
+          <span style="color:#ffd34a;font-weight:700;">🪙 ${state.coins}</span>
+          <span id="shop-close" style="cursor:pointer;font-size:18px;padding:2px 8px;">✕</span>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#9ab;margin-bottom:6px;">Hats for the well-dressed courier. Purchases persist.</div>
+      ${rows}
+    `;
+    this.overlay.appendChild(this.shopDiv);
+    this.shopDiv.querySelectorAll('button[data-shop-id]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = (btn as HTMLElement).getAttribute('data-shop-id');
+        if (id) onAction(id);
+      });
+    });
+    this.shopDiv.querySelector('#shop-close')?.addEventListener('click', () => {
+      this.hideShop();
+      onClose();
+    });
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        this.hideShop();
+        onClose();
+        document.removeEventListener('keydown', escHandler);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+  }
+
+  hideShop(): void {
+    if (this.shopDiv) {
+      this.shopDiv.remove();
+      this.shopDiv = null;
+    }
+  }
+
+  isShopOpen(): boolean {
+    return this.shopDiv !== null;
+  }
 
   /** Coin counter chip under the online-count in the top-right. */
   updateCoinCounter(total: number): void {

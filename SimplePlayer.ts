@@ -3,6 +3,9 @@ import * as THREE from 'three';
 import { Materials } from './Materials';
 import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
 
+/** Cosmetic hats sold in the island shop. */
+export type HatId = 'party' | 'top' | 'crown';
+
 /**
  * SimplePlayer
  *
@@ -51,6 +54,10 @@ export class SimplePlayer extends THREE.Group {
   private seated: boolean = false;
   private legLBone: THREE.Bone | null = null;
   private legRBone: THREE.Bone | null = null;
+
+  // Shop cosmetics: hat attached to the head bone (or fallback head)
+  private currentHat: THREE.Group | null = null;
+  private pendingHatId: HatId | null = null;
 
   // GLTF model support
   private gltfModel: THREE.Group | null = null;
@@ -179,6 +186,103 @@ export class SimplePlayer extends THREE.Group {
    * Get the surface normal at the player's current position (away from planet center).
    * Returns (0,1,0) in flat-ground mode.
    */
+  /**
+   * Equip a shop hat (null removes). Attaches to the GLTF head bone so it
+   * tracks animation; queued if the model hasn't finished loading yet.
+   */
+  public equipHat(id: HatId | null): void {
+    // Find the attachment point: head bone (GLTF) or the fallback head
+    let parent: THREE.Object3D | null = null;
+    if (this.gltfModel) {
+      this.gltfModel.traverse((o) => {
+        if (!parent && (o as THREE.Bone).isBone && o.name === 'head') parent = o;
+      });
+    }
+    if (!parent && !this.gltfModel) {
+      this.pendingHatId = id;
+      parent = this.mesh; // fallback model: hat sits on the group
+    }
+    if (!parent) {
+      this.pendingHatId = id;
+      return;
+    }
+    if (this.currentHat) {
+      this.currentHat.parent?.remove(this.currentHat);
+      this.currentHat = null;
+    }
+    if (!id) return;
+    const hat = SimplePlayer.buildHat(id);
+    // Head bone: crown of the head is ~0.34 above the bone origin.
+    // Fallback group: head sphere top is ~0.94.
+    hat.position.set(0, this.gltfModel ? 0.36 : 0.95, 0);
+    parent.add(hat);
+    this.currentHat = hat;
+  }
+
+  /** Procedural toon hats sold in the island shop. */
+  private static buildHat(id: HatId): THREE.Group {
+    const g = new THREE.Group();
+    g.name = 'player_hat';
+    if (id === 'party') {
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.14, 0.32, 10),
+        Materials.createToonMaterial(0xe84a5f),
+      );
+      cone.position.y = 0.16;
+      g.add(cone);
+      const pom = new THREE.Mesh(
+        new THREE.SphereGeometry(0.05, 8, 6),
+        Materials.createToonMaterial(0xfff5e0),
+      );
+      pom.position.y = 0.34;
+      g.add(pom);
+      g.rotation.z = 0.12;
+    } else if (id === 'top') {
+      const brim = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.24, 0.24, 0.03, 14),
+        Materials.createToonMaterial(0x22222c),
+      );
+      g.add(brim);
+      const crownPart = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.14, 0.15, 0.28, 14),
+        Materials.createToonMaterial(0x22222c),
+      );
+      crownPart.position.y = 0.15;
+      g.add(crownPart);
+      const band = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.152, 0.155, 0.06, 14),
+        Materials.createToonMaterial(0xc0392b),
+      );
+      band.position.y = 0.05;
+      g.add(band);
+    } else {
+      // crown
+      const goldMat = new THREE.MeshStandardMaterial({
+        color: 0xffd34a,
+        metalness: 0.7,
+        roughness: 0.3,
+        emissive: 0x553d00,
+        emissiveIntensity: 0.25,
+      });
+      const ring = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.17, 0.19, 0.12, 10, 1, true),
+        goldMat,
+      );
+      ring.material.side = THREE.DoubleSide;
+      g.add(ring);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        const spike = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.11, 4), goldMat);
+        spike.position.set(Math.cos(a) * 0.17, 0.11, Math.sin(a) * 0.17);
+        g.add(spike);
+      }
+    }
+    g.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+    });
+    return g;
+  }
+
   /** Whether the player is currently standing on the ground (for SFX etc.). */
   public isOnGround(): boolean {
     return this.isGrounded;
@@ -367,6 +471,13 @@ export class SimplePlayer extends THREE.Group {
             hairCap.castShadow = true;
             (headBone as THREE.Bone).add(hairCap);
           }
+        }
+
+        // Apply a hat equipped before the model finished loading
+        if (this.pendingHatId) {
+          const hatId = this.pendingHatId;
+          this.pendingHatId = null;
+          this.equipHat(hatId);
         }
 
         console.log(`✅ Loaded GLTF character from: ${gltfResult.loadedUrl}`);

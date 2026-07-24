@@ -663,6 +663,18 @@ export class GameScene extends THREE.Scene {
     this.onCoinCollected?.(this.coinsCollected);
   }
 
+  /** Spend coins in the shop. Returns false (no change) if unaffordable. */
+  public spendCoins(n: number): boolean {
+    if (this.coinsCollected < n) return false;
+    this.addCoins(-n);
+    return true;
+  }
+
+  /** Equip a cosmetic hat on the player (shop purchase). */
+  public equipPlayerHat(id: import('./SimplePlayer').HatId | null): void {
+    this.player?.equipHat(id);
+  }
+
   // Quest "!" markers floating above NPC quest givers
   private questMarkers: Array<{ mesh: THREE.Group; npcName: string; base: THREE.Vector3; normal: THREE.Vector3 }> = [];
 
@@ -1181,6 +1193,30 @@ export class GameScene extends THREE.Scene {
       }
       if (!c.mesh.visible) {
         if (c.respawnAt > 0 && time > c.respawnAt) {
+          // Respawn at a FRESH random meadow spot (away from the plazas)
+          // instead of the same place every time
+          const ZL2 = 0.4636;
+          const anchors = [
+            this.island.dirAt(0, ZL2),
+            this.island.dirAt(1.2566, ZL2),
+            this.island.dirAt(2.5133, ZL2),
+            this.island.dirAt(3.7699, ZL2),
+            new THREE.Vector3(0, 1, 0),
+          ];
+          const dir = new THREE.Vector3();
+          for (let attempt = 0; attempt < 8; attempt++) {
+            dir
+              .set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1)
+              .normalize();
+            if (dir.lengthSq() < 0.5) continue;
+            if (anchors.every((a) => dir.angleTo(a) > 0.2)) break;
+          }
+          const sampled = this.island.sampleSurfaceByDirection(dir, 0);
+          c.mesh.position.copy(sampled.position).addScaledVector(sampled.normal, 0.35);
+          c.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
+          c.mesh.rotateX(Math.PI / 2);
+          const cuR = c.mesh.userData as { homePos?: THREE.Vector3 };
+          if (cuR.homePos) cuR.homePos.copy(c.mesh.position);
           c.mesh.visible = true;
           c.respawnAt = 0;
         }
