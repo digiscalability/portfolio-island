@@ -19,11 +19,14 @@ interface SkyUniforms {
   horizonColor: { value: THREE.Color };
 }
 
+// Sky palettes. Day blues are deliberately deeper than the target look:
+// ACES tone mapping in the output pass lifts and desaturates them, so
+// pale source values render near-white.
 const PALETTE = {
   day: {
-    top: new THREE.Color(0x4a90d9),
-    horizon: new THREE.Color(0xa8d8f0),
-    bottom: new THREE.Color(0xd4e8f7),
+    top: new THREE.Color(0x2a6fd6),
+    horizon: new THREE.Color(0x79b7e6),
+    bottom: new THREE.Color(0xc0def2),
   },
   dusk: {
     top: new THREE.Color(0x51548e),
@@ -35,10 +38,11 @@ const PALETTE = {
     horizon: new THREE.Color(0x27395e),
     bottom: new THREE.Color(0x0e1838),
   },
+  // Blue-leaning grays: a cloudy sky is dimmer, not white
   overcast: {
-    top: new THREE.Color(0x8d99a8),
-    horizon: new THREE.Color(0xb8bfc8),
-    bottom: new THREE.Color(0xcfd4da),
+    top: new THREE.Color(0x76889f),
+    horizon: new THREE.Color(0xa6b4c2),
+    bottom: new THREE.Color(0xc3ccd6),
   },
 };
 
@@ -365,7 +369,7 @@ export class EnvironmentCycle {
     // Weather dimming
     const wDim = { clear: 1, cloudy: 0.55, rain: 0.35, snow: 0.5 }[this.weather];
     const overcastMix =
-      this.weather === 'cloudy' ? 0.55 : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.45 : 0;
+      this.weather === 'cloudy' ? 0.45 : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.45 : 0;
 
     // Lights
     this.sun.intensity = this.baseSunIntensity * (0.12 + 0.88 * dayFactor) * wDim;

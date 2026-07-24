@@ -767,7 +767,10 @@ export class GameScene extends THREE.Scene {
         bottomColor: { value: new THREE.Color(0xd4e8f7) },
         horizonColor: { value: new THREE.Color(0xa8d8f0) },
         offset: { value: 0 },
-        exponent: { value: 0.5 },
+        // Lower exponent = the top-sky blue arrives at lower elevations;
+        // the follow camera mostly frames 0-30 deg where 0.5 left the sky
+        // horizon-pale (washed near-white after ACES tone mapping)
+        exponent: { value: 0.35 },
         // Camera's local up (updated per frame): the gradient follows the
         // player around the sphere instead of being world-Y locked, so the
         // sky doesn't wash out on the far side of the planet
