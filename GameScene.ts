@@ -1212,6 +1212,14 @@ export class GameScene extends THREE.Scene {
       w.obj.quaternion.copy(w.baseQuat).multiply(this._swayQuat);
     }
 
+    // Drain colliders queued by async GLB placements (e.g. the orchard/
+    // forest trees, which finish loading after the registration pass)
+    if (this.island.pendingColliders.length > 0) {
+      this.colliders.push(...this.island.pendingColliders);
+      console.log(`🧱 +${this.island.pendingColliders.length} async prop colliders (total ${this.colliders.length})`);
+      this.island.pendingColliders.length = 0;
+    }
+
     // Day/night + weather cycle
     if (this.envCycle) {
       this.envCycle.update(deltaTime, playerPos, time);

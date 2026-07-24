@@ -96,6 +96,9 @@ export class Island {
   // Sampled sites exposed for GameScene's ambient life (butterflies, smoke)
   public flowerSites: THREE.Vector3[] = [];
   public chimneySites: Array<{ position: THREE.Vector3; normal: THREE.Vector3 }> = [];
+  // Colliders for props placed ASYNCHRONOUSLY (GLB loads finish after
+  // GameScene's registration pass) — GameScene drains this each frame
+  public pendingColliders: Array<{ position: THREE.Vector3; radius: number }> = [];
   // Shared time uniform driving the grass wind vertex shader
   public grassTimeUniform: { value: number } = { value: 0 };
 
@@ -2870,6 +2873,10 @@ export class Island {
                   /* ignore placement */
                 }
                 this.mesh.add(copy);
+                // These trees land after GameScene's collider registration —
+                // queue a trunk collider for it to drain (canopy stays
+                // walk-under, same as the procedural trees)
+                this.pendingColliders.push({ position: copy.position.clone(), radius: 0.35 });
                 // If tree model contains animations (rare), add mixer
                 try {
                   const animations = gltf.animations || [];
