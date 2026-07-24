@@ -1,5 +1,6 @@
 import { DeliverySystem } from './DeliverySystem';
 import { GameScene } from './GameScene';
+import { Multiplayer } from './Multiplayer';
 import { NpcQuestSystem } from './NpcQuests';
 import { sfx } from './Sfx';
 import type { HatId } from './SimplePlayer';
@@ -28,6 +29,7 @@ class SimpleApp {
   private ui!: SimpleUI;
   private deliverySystem!: DeliverySystem;
   private npcQuests!: NpcQuestSystem;
+  private multiplayer: Multiplayer | null = null;
   private isRunning: boolean = false;
 
   // Island shop (hat cosmetics, paid with meadow coins)
@@ -168,6 +170,11 @@ class SimpleApp {
       } catch {
         /* fresh wardrobe */
       }
+
+      // Multiplayer: other visitors on the same island, waves included
+      this.multiplayer = new Multiplayer(this.scene, this.scene.getPlayer());
+      this.multiplayer.onCount((count) => this.ui.updatePlayerCount(count));
+      this.multiplayer.setHat((this.equippedHat as HatId) ?? null);
 
       // Setup NPC interaction callback (quest dialogue wins when relevant)
       this.scene.setOnNPCInteract((npcData) => {
@@ -426,6 +433,12 @@ class SimpleApp {
         }
         this.prevJumpHeld = jumpInput;
 
+        // Wave at nearby visitors
+        if (this.inputManager.consumeKeyPress('q') && this.multiplayer) {
+          this.multiplayer.wave();
+          sfx.blip();
+        }
+
         // Footsteps while walking; thud when landing from a real jump/fall
         if (player) {
           const grounded = player.isOnGround();
@@ -482,6 +495,9 @@ class SimpleApp {
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.interactWith(nearby);
           }
+        } else if (this.multiplayer && this.multiplayer.nearestPeerDistance() < 4) {
+          // Another visitor is close: offer a wave
+          this.ui.showInteractionPrompt('👋 Press <strong>Q</strong> to wave');
         } else {
           // Hide prompt when not near interactable
           this.ui.hideInteractionPrompt();
@@ -505,6 +521,9 @@ class SimpleApp {
 
     // Rain ambience follows the live weather (no-op unless the level changes)
     sfx.setRainLevel(this.scene.getEnvironmentCycle()?.getWeather() === 'rain' ? 1 : 0);
+
+    // Multiplayer: broadcast state, interpolate remote avatars
+    this.multiplayer?.update(deltaTime);
 
     // Always update scene (for animations, etc.)
     this.scene.update(deltaTime);
@@ -608,6 +627,7 @@ class SimpleApp {
             /* session-only */
           }
           this.scene.equipPlayerHat(id as HatId);
+          this.multiplayer?.setHat(id as HatId);
           render();
         },
         () => {

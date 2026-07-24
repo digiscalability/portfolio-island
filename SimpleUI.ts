@@ -284,7 +284,7 @@ export class SimpleUI {
     const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
     const controlsLine = isTouch
       ? 'Drag the joystick to move, buttons to jump and interact.'
-      : 'Use WASD to move, mouse to look around, space to jump.';
+      : 'Use WASD to move, mouse to look around, space to jump, Q to wave at other visitors.';
     this.welcomeDiv.innerHTML = returning
       ? `<h2 style="margin: 0; color: #4CAF50;">👋 Welcome back!</h2>`
       : `

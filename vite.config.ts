@@ -1,8 +1,41 @@
 import path from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin, type ViteDevServer } from 'vite';
+import { WebSocketServer, WebSocket } from 'ws';
+
+/**
+ * Dev multiplayer relay: a WebSocket echo hub on the SAME port as Vite
+ * (path /mp), so it works on localhost and across the LAN (phones) with
+ * zero extra processes. Every message a client sends is forwarded to all
+ * other clients — the game protocol lives entirely client-side
+ * (Multiplayer.ts). Production can swap in Firebase RTDB via the same
+ * transport seam.
+ */
+function multiplayerRelay(): Plugin {
+  return {
+    name: 'multiplayer-relay',
+    configureServer(server: ViteDevServer) {
+      const wss = new WebSocketServer({ noServer: true });
+      wss.on('connection', (ws) => {
+        ws.on('message', (data) => {
+          for (const client of wss.clients) {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(data.toString());
+            }
+          }
+        });
+      });
+      server.httpServer?.on('upgrade', (req, socket, head) => {
+        if (req.url === '/mp') {
+          wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+        }
+      });
+    },
+  };
+}
 
 // Vite config: expose assetKits and assets directories via aliases and allow serving them
 export default defineConfig({
+  plugins: [multiplayerRelay()],
   publicDir: 'public',
   build: {
     // Copy assets during build

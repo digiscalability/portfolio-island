@@ -219,8 +219,8 @@ export class SimplePlayer extends THREE.Group {
     this.currentHat = hat;
   }
 
-  /** Procedural toon hats sold in the island shop. */
-  private static buildHat(id: HatId): THREE.Group {
+  /** Procedural toon hats sold in the island shop (also used by remote avatars). */
+  public static buildHat(id: HatId): THREE.Group {
     const g = new THREE.Group();
     g.name = 'player_hat';
     if (id === 'party') {
