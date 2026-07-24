@@ -141,6 +141,11 @@ export class GameScene extends THREE.Scene {
   private static readonly _swayAxis = new THREE.Vector3(1, 0, 0);
   private readonly _swayQuat = new THREE.Quaternion();
   private readonly _npcNormal = new THREE.Vector3();
+  private readonly _wanderAxis = new THREE.Vector3();
+  private readonly _wanderFwd = new THREE.Vector3();
+  private readonly _wanderZ = new THREE.Vector3();
+  private readonly _wanderYawQ = new THREE.Quaternion();
+  private static readonly _localUp = new THREE.Vector3(0, 1, 0);
 
   // Mailbox instances for interaction tracking
   private mailboxes: Mailbox[] = [];
@@ -1082,23 +1087,94 @@ export class GameScene extends THREE.Scene {
       tr.group.quaternion.copy(tr.baseQuat).multiply(this._swayQuat);
     }
 
-    // NPCs: subtle idle bob along their surface normal, plus a little
-    // greeting hop when the player starts talking to them
+    // NPCs: wander their district (stroll → pause → stroll) with a walk
+    // bob, facing eased toward the travel direction, plus the greet hop
     if (this.island) {
       for (let i = 0; i < this.island.npcTargets.length; i++) {
         const npc = this.island.npcTargets[i];
-        const data = npc.meshRef.userData as { bobBase?: THREE.Vector3; greetT0?: number };
-        if (!data.bobBase) data.bobBase = npc.meshRef.position.clone();
-        this._npcNormal.copy(data.bobBase).normalize();
+        const data = npc.meshRef.userData as {
+          greetT0?: number;
+          wander?: {
+            home: THREE.Vector3;
+            dir: THREE.Vector3;
+            target: THREE.Vector3;
+            state: 'idle' | 'walk';
+            until: number;
+            yaw: number;
+          };
+        };
+        if (!data.wander) {
+          const home = npc.meshRef.position.clone().normalize();
+          data.wander = {
+            home,
+            dir: home.clone(),
+            target: home.clone(),
+            state: 'idle',
+            until: time + 2 + Math.random() * 6,
+            yaw: Math.random() * Math.PI * 2,
+          };
+        }
+        const w = data.wander;
+        let moving = false;
+        if (w.state === 'idle') {
+          if (time > w.until) {
+            w.target.copy(this.randomDirNear(w.home, 0.1));
+            w.state = 'walk';
+          }
+        } else {
+          const remaining = w.dir.angleTo(w.target);
+          if (remaining < 0.004) {
+            w.state = 'idle';
+            w.until = time + 3 + Math.random() * 7;
+          } else {
+            this._wanderAxis.crossVectors(w.dir, w.target);
+            if (this._wanderAxis.lengthSq() > 1e-10) {
+              this._wanderAxis.normalize();
+              // ~0.5 u/s stroll on the R=18 sphere
+              w.dir.applyAxisAngle(this._wanderAxis, Math.min(0.028 * deltaTime, remaining));
+              // Travel direction (tangent) = axis × dir
+              this._wanderFwd.crossVectors(this._wanderAxis, w.dir).normalize();
+              moving = true;
+            } else {
+              w.state = 'idle';
+              w.until = time + 2;
+            }
+          }
+        }
+        const sampled = this.island.sampleSurfaceByDirection(w.dir, 0.02);
+        this._npcNormal.copy(sampled.normal);
+        // Greet hop
         let hop = 0;
         if (typeof data.greetT0 === 'number') {
           const gt = time - data.greetT0;
           if (gt < 0.4) hop = Math.sin((gt / 0.4) * Math.PI) * 0.25;
           else delete data.greetT0;
         }
+        // Walk bob is faster/taller than the idle breathing bob
+        const bob = moving
+          ? (Math.sin(time * 9 + i * 1.7) + 1) * 0.03
+          : (Math.sin(time * 2 + i * 1.7) + 1) * 0.015;
         npc.meshRef.position
-          .copy(data.bobBase)
-          .addScaledVector(this._npcNormal, (Math.sin(time * 2 + i * 1.7) + 1) * 0.015 + hop);
+          .copy(sampled.position)
+          .addScaledVector(this._npcNormal, bob + hop);
+        npc.position.copy(npc.meshRef.position);
+        // Orientation: surface-aligned, yaw eased toward travel direction
+        this._swayQuat.setFromUnitVectors(GameScene._localUp, this._npcNormal);
+        if (moving) {
+          this._wanderZ.set(0, 0, 1).applyQuaternion(this._swayQuat);
+          const cosA = THREE.MathUtils.clamp(this._wanderZ.dot(this._wanderFwd), -1, 1);
+          const sinA = this._npcNormal.dot(
+            this._wanderAxis.crossVectors(this._wanderZ, this._wanderFwd),
+          );
+          const yawTarget = Math.atan2(sinA, cosA);
+          let dYaw = yawTarget - w.yaw;
+          while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+          while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+          w.yaw += dYaw * Math.min(1, 6 * deltaTime);
+        }
+        npc.meshRef.quaternion
+          .copy(this._swayQuat)
+          .multiply(this._wanderYawQ.setFromAxisAngle(GameScene._localUp, w.yaw));
       }
 
       // Grass wind (GPU-side — just advance the shared uniform)
@@ -1300,8 +1376,13 @@ export class GameScene extends THREE.Scene {
       w.obj.quaternion.copy(w.baseQuat).multiply(this._swayQuat);
     }
 
-    // Quest markers: bob + spin above their NPCs
+    // Quest markers: follow their (wandering) NPC, bob + spin
     for (const m of this.questMarkers) {
+      const owner = this.island.npcTargets.find((n) => n.name === m.npcName);
+      if (owner) {
+        m.base.copy(owner.meshRef.position);
+        m.normal.copy(m.base).normalize();
+      }
       m.mesh.position
         .copy(m.base)
         .addScaledVector(m.normal, 2.1 + Math.sin(time * 2.4) * 0.12);
@@ -1477,6 +1558,69 @@ export class GameScene extends THREE.Scene {
   /**
    * Interact with generic interactable
    */
+  /** Random unit direction within maxArc radians of an anchor direction. */
+  private randomDirNear(anchor: THREE.Vector3, maxArc: number): THREE.Vector3 {
+    const t1 = new THREE.Vector3(0, 1, 0).cross(anchor);
+    if (t1.lengthSq() < 1e-6) t1.set(1, 0, 0);
+    t1.normalize();
+    const t2 = anchor.clone().cross(t1).normalize();
+    const bearing = Math.random() * Math.PI * 2;
+    const r = maxArc * (0.35 + 0.65 * Math.random());
+    return anchor
+      .clone()
+      .multiplyScalar(Math.cos(r))
+      .addScaledVector(t1, Math.sin(r) * Math.cos(bearing))
+      .addScaledVector(t2, Math.sin(r) * Math.sin(bearing))
+      .normalize();
+  }
+
+  /**
+   * Minimap data: equirectangular lon/lat of the player (with heading),
+   * NPCs (quest givers flagged), zone plazas, and the delivery target.
+   */
+  public getMinimapData(): {
+    player: { lon: number; lat: number; heading: number };
+    npcs: Array<{ lon: number; lat: number; hasQuest: boolean }>;
+    zones: Array<{ lon: number; lat: number; color: string }>;
+    delivery: { lon: number; lat: number } | null;
+  } {
+    const toLL = (p: THREE.Vector3) => {
+      const len = p.length() || 1;
+      return {
+        lon: Math.atan2(p.z, p.x),
+        lat: Math.asin(THREE.MathUtils.clamp(p.y / len, -1, 1)),
+      };
+    };
+    const playerPos = this.player.getWorldPosition();
+    const pl = toLL(playerPos);
+    // Heading: player forward projected onto the map's east/north basis
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.player.quaternion);
+    const east = new THREE.Vector3(-Math.sin(pl.lon), 0, Math.cos(pl.lon));
+    const north = new THREE.Vector3(
+      -Math.cos(pl.lon) * Math.sin(pl.lat),
+      Math.cos(pl.lat),
+      -Math.sin(pl.lon) * Math.sin(pl.lat),
+    );
+    const heading = Math.atan2(fwd.dot(east), fwd.dot(north));
+    const questNames = new Set(this.questMarkers.map((m) => m.npcName));
+    const ZL = 0.4636;
+    return {
+      player: { ...pl, heading },
+      npcs: this.island.npcTargets.map((n) => ({
+        ...toLL(n.meshRef.position),
+        hasQuest: questNames.has(n.name),
+      })),
+      zones: [
+        { ...toLL(this.island.dirAt(0, ZL)), color: '#2196F3' },
+        { ...toLL(this.island.dirAt(1.2566, ZL)), color: '#FF9800' },
+        { ...toLL(this.island.dirAt(2.5133, ZL)), color: '#E91E63' },
+        { ...toLL(this.island.dirAt(3.7699, ZL)), color: '#9C27B0' },
+        { lon: 0, lat: Math.PI / 2, color: '#4CAF50' },
+      ],
+      delivery: this.guideTarget ? toLL(this.guideTarget) : null,
+    };
+  }
+
   /** Sit the player on a bench: seat position + facing from the bench frame. */
   public sitOnBench(bench: THREE.Object3D): void {
     bench.updateWorldMatrix(true, false);

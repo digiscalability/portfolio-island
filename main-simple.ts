@@ -43,6 +43,9 @@ class SimpleApp {
   private frameCount: number = 0;
   private fpsUpdateInterval: number = 0;
 
+  // Minimap refresh throttle (10 Hz is plenty for a 190px map)
+  private mapAccum: number = 0;
+
   // Footstep/landing SFX state. Grounding flickers frame-to-frame while
   // walking (integrate-out then snap-back), so landings are debounced by
   // continuous airborne time rather than raw grounded transitions.
@@ -468,6 +471,13 @@ class SimpleApp {
 
     // Quest compass: point at the active delivery's mailbox
     this.updateQuestCompass();
+
+    // Minimap: player + NPCs + plazas + delivery target (throttled to 10 Hz)
+    this.mapAccum += deltaTime;
+    if (this.mapAccum > 0.1) {
+      this.mapAccum = 0;
+      this.ui.updateMinimap(this.scene.getMinimapData());
+    }
 
     // Rain ambience follows the live weather (no-op unless the level changes)
     sfx.setRainLevel(this.scene.getEnvironmentCycle()?.getWeather() === 'rain' ? 1 : 0);

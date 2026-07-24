@@ -433,6 +433,101 @@ export class SimpleUI {
 
   private coinDiv: HTMLElement | null = null;
   private shopDiv: HTMLElement | null = null;
+  private mapCanvas: HTMLCanvasElement | null = null;
+
+  /**
+   * Minimap (top-left, under the environment badge): equirectangular
+   * projection of the sphere. Zone plazas as colored dots, NPCs as amber
+   * dots (gold + halo when they hold a quest), the delivery target as a
+   * pulsing red dot, and the player as a white heading arrow.
+   */
+  updateMinimap(data: {
+    player: { lon: number; lat: number; heading: number };
+    npcs: Array<{ lon: number; lat: number; hasQuest: boolean }>;
+    zones: Array<{ lon: number; lat: number; color: string }>;
+    delivery: { lon: number; lat: number } | null;
+  }): void {
+    const W = 190;
+    const H = 108;
+    if (!this.mapCanvas) {
+      this.mapCanvas = document.createElement('canvas');
+      this.mapCanvas.width = W;
+      this.mapCanvas.height = H;
+      Object.assign(this.mapCanvas.style, {
+        position: 'absolute',
+        top: '40px',
+        left: '10px',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.25)',
+        pointerEvents: 'none',
+      });
+      this.overlay.appendChild(this.mapCanvas);
+    }
+    const ctx = this.mapCanvas.getContext('2d');
+    if (!ctx) return;
+    const px = (lon: number) => ((lon / (Math.PI * 2) + 0.5) % 1) * W;
+    const py = (lat: number) => (1 - (lat / Math.PI + 0.5)) * H;
+    // Background: sea-to-land gradient feel
+    ctx.fillStyle = 'rgba(10, 26, 34, 0.78)';
+    ctx.fillRect(0, 0, W, H);
+    // Faint latitude lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth = 1;
+    for (const lat of [-0.9, -0.45, 0, 0.45, 0.9]) {
+      ctx.beginPath();
+      ctx.moveTo(0, py(lat));
+      ctx.lineTo(W, py(lat));
+      ctx.stroke();
+    }
+    // Zone plazas
+    for (const z of data.zones) {
+      ctx.fillStyle = z.color;
+      ctx.beginPath();
+      ctx.arc(px(z.lon), py(z.lat), 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // NPCs
+    for (const n of data.npcs) {
+      if (n.hasQuest) {
+        ctx.fillStyle = '#ffd34a';
+        ctx.beginPath();
+        ctx.arc(px(n.lon), py(n.lat), 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 211, 74, 0.5)';
+        ctx.beginPath();
+        ctx.arc(px(n.lon), py(n.lat), 5, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = 'rgba(255, 190, 130, 0.85)';
+        ctx.beginPath();
+        ctx.arc(px(n.lon), py(n.lat), 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // Delivery target
+    if (data.delivery) {
+      const pulse = 3 + Math.sin(performance.now() / 250) * 1.2;
+      ctx.fillStyle = '#ff5252';
+      ctx.beginPath();
+      ctx.arc(px(data.delivery.lon), py(data.delivery.lat), pulse, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Player: heading arrow
+    const x = px(data.player.lon);
+    const y = py(data.player.lat);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(data.player.heading);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.lineTo(4, 4);
+    ctx.lineTo(0, 1.5);
+    ctx.lineTo(-4, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
 
   /**
    * Island shop panel. Rows come from the caller (main-simple owns the
