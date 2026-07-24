@@ -34,9 +34,13 @@ class SimpleApp {
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
+    { id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 8 },
     { id: 'party', icon: '🥳', name: 'Party Hat', price: 10 },
+    { id: 'flower', icon: '🌸', name: 'Flower Crown', price: 12 },
     { id: 'top', icon: '🎩', name: 'Top Hat', price: 15 },
+    { id: 'wizard', icon: '🧙', name: 'Wizard Hat', price: 20 },
     { id: 'crown', icon: '👑', name: 'Golden Crown', price: 25 },
+    { id: 'halo', icon: '😇', name: 'Halo', price: 40 },
   ];
   private ownedHats: Set<string> = new Set();
   private equippedHat: string | null = null;

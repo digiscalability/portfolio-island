@@ -238,7 +238,9 @@ export class Island {
       dummy.position.copy(sampled.position);
       dummy.quaternion.setFromUnitVectors(up, sampled.normal);
       dummy.rotateOnAxis(up, Math.random() * Math.PI * 2);
-      const sc = 0.7 + Math.random() * 0.7;
+      // Blades landing on pavement collapse to nothing (instance count
+      // stays fixed — no index bookkeeping) so streets stay clean
+      const sc = this.isNearStreet(dir) ? 0.0001 : 0.7 + Math.random() * 0.7;
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
       grass.setMatrixAt(i, dummy.matrix);
@@ -386,6 +388,30 @@ export class Island {
     const roadRadius = this.radius * 0.6;
     const pathGroup = this.createRoadRing(roadRadius, 0.7, 96);
 
+    // ── Street network ──────────────────────────────────────────────────
+    // A planned city needs streets before lots: the BOULEVARD is a ring
+    // through all four district plazas (lat 0.4636); each district also
+    // gets an AVENUE from the Welcome pole down through its plaza and a
+    // CONNECTOR continuing to the equator country road. Every structure
+    // below addresses one of these streets. Waypoints are unit dirs.
+    const DISTRICT_LONS = [0, 1.2566, 2.5133, 3.7699];
+    const boulevardPts: THREE.Vector3[] = [];
+    const BOULEVARD_SEGS = 84;
+    for (let i = 0; i <= BOULEVARD_SEGS; i++) {
+      boulevardPts.push(this.dirAt((i / BOULEVARD_SEGS) * Math.PI * 2, 0.4636));
+    }
+    pathGroup.add(this.createStreetPath(boulevardPts, 1.0));
+    for (const dLon of DISTRICT_LONS) {
+      // Avenue: pole plaza → district plaza
+      const avenue: THREE.Vector3[] = [];
+      for (let s = 0; s <= 12; s++) avenue.push(this.dirAt(dLon, 1.32 - (s / 12) * 0.82));
+      pathGroup.add(this.createStreetPath(avenue, 0.8));
+      // Connector: district plaza → equator country road
+      const connector: THREE.Vector3[] = [];
+      for (let s = 0; s <= 6; s++) connector.push(this.dirAt(dLon, 0.43 - (s / 6) * 0.38));
+      pathGroup.add(this.createStreetPath(connector, 0.8));
+    }
+
     // ── Urban planning ──────────────────────────────────────────────────
     // Each content zone anchors a district spread around the sphere (the
     // zone plazas sit at lat ~0.4636 = atan(0.5), Welcome at the pole):
@@ -417,15 +443,17 @@ export class Island {
     });
     const buildingPlaceholders: THREE.Mesh[] = [];
     const buildingSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    // PROFESSIONAL district: 8 towers on an even ring around the plaza
-    // (the old two tight arcs overlapped at the 3u tower footprint)
+    // PROFESSIONAL district: two office rows forming a street wall along
+    // the boulevard (planned CBD blocks, not a ring). North row lat 0.64,
+    // south row lat 0.29 — ±0.175 rad from the boulevard centerline leaves
+    // pavement + sidewalk. Small claim arcs keep the rows exact.
     const BUILDING_SITES: Array<[number, number]> = [
-      [0.46, 0.64], [0.19, 0.88], [6.09, 0.88], [5.82, 0.64],
-      [5.82, 0.29], [6.09, 0.05], [0.19, 0.05], [0.46, 0.29],
+      [5.84, 0.64], [6.12, 0.64], [0.16, 0.64], [0.44, 0.64],
+      [5.84, 0.29], [6.12, 0.29], [0.16, 0.29], [0.44, 0.29],
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
-      const dir = this.claimDir(this.dirAt(lon, lat), 0.19);
+      const dir = this.claimDir(this.dirAt(lon, lat), 0.09);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -448,8 +476,9 @@ export class Island {
         sampled.normal,
       );
       b.quaternion.copy(q);
-      // Face the Professional plaza — every district building addresses its square
-      this.faceObjectToward(b, sampled.normal, this.dirAt(0, ZONE_LAT).multiplyScalar(this.radius));
+      // Face the boulevard — each tower addresses the street, so the two
+      // rows front each other across the pavement like a real CBD block
+      this.faceObjectToward(b, sampled.normal, this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius));
       b.castShadow = true;
       b.receiveShadow = true;
       b.name = `building_placeholder_${i}`;
@@ -460,18 +489,18 @@ export class Island {
     // Procedural houses: add a few more detailed block houses with roofs/windows to make the island feel inhabited
     const houses = new THREE.Group();
     const houseSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    // PERSONAL district: 8 cottages on an even ring around the plaza with
-    // organic jitter. (11 houses at real scale saturated the ring — their
-    // combined spacing claims exceeded its circumference, so claimDir's
-    // fallback jammed them together.)
+    // PERSONAL district: a village street — two staggered cottage rows
+    // flanking the boulevard (lat 0.66 / 0.27), garden gaps between lots,
+    // rows offset in lon so no cottage stares straight into another.
+    // Near-plaza columns keep ≥0.2 rad from the plaza claim.
     const HOUSE_SITES: Array<[number, number]> = [
-      [2.99, 0.44], [2.86, 0.74], [2.52, 0.89], [2.17, 0.77],
-      [2.03, 0.47], [2.19, 0.15], [2.50, 0.03], [2.87, 0.18],
+      [2.10, 0.66], [2.36, 0.66], [2.68, 0.66], [2.94, 0.66],
+      [2.04, 0.27], [2.30, 0.27], [2.72, 0.27], [2.98, 0.27],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
       const [lon, lat] = HOUSE_SITES[i];
-      const dir = this.claimDir(this.dirAt(lon, lat), 0.22);
+      const dir = this.claimDir(this.dirAt(lon, lat), 0.1);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -549,8 +578,8 @@ export class Island {
         sampled.normal,
       );
       house.quaternion.copy(q);
-      // Face the village square (the Personal Life plaza)
-      this.faceObjectToward(house, sampled.normal, this.dirAt(2.5133, ZONE_LAT).multiplyScalar(this.radius));
+      // Front door faces the village street (nearest boulevard point)
+      this.faceObjectToward(house, sampled.normal, this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius));
       house.position.copy(sampled.position);
       // Record the chimney tip (post-alignment) for GameScene's smoke puffs
       if (i % 2 === 0) {
@@ -594,6 +623,8 @@ export class Island {
       // Trees claim spacing too — they used to ignore the registry and
       // grow through houses, stalls, and each other
       const dir = this.claimDir(new THREE.Vector3(x, y, z).normalize(), 0.08);
+      // No trees through the pavement — skip candidates on a street
+      if (this.isNearStreet(dir)) continue;
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
@@ -759,14 +790,15 @@ export class Island {
     // Add street lamps for evening ambiance
     const lamps = new THREE.Group();
     const lampPositions: THREE.Vector3[] = [];
-    // One or two lamps per district plaza
+    // Street lighting: lamps march along the boulevard at regular
+    // intervals, alternating kerbs (odd = north lat 0.515, even = south
+    // lat 0.412) — mid-block lons chosen clear of building/house columns.
     const LAMP_SITES: Array<[number, number]> = [
-      [6.09, 0.33], [0.19, 0.33],   // professional
-      [2.40, 0.36], [2.64, 0.36],   // village
-      [3.66, 0.47], [3.88, 0.47],   // market
+      [0.28, 0.412], [0.91, 0.515], [1.54, 0.412], [2.17, 0.515], [2.80, 0.412],
+      [3.43, 0.515], [4.06, 0.412], [4.71, 0.515], [5.34, 0.412], [5.97, 0.515],
     ];
     for (let i = 0; i < LAMP_SITES.length; i++) {
-      const pos = this.claimDir(this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]), 0.07).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]), 0.05).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       const lampGroup = new THREE.Group();
       lampGroup.name = `lamp_${i}`;
@@ -803,6 +835,14 @@ export class Island {
       );
       lampGroup.position.copy(sampled.position);
       lampGroup.quaternion.copy(q);
+      // Swing the arm (local +X) out over the roadway: yaw +Z toward the
+      // boulevard centerline, then back off 90° so +X takes its place
+      this.faceObjectToward(
+        lampGroup,
+        sampled.normal,
+        this.dirAt(LAMP_SITES[i][0], 0.4636).multiplyScalar(this.radius),
+      );
+      lampGroup.rotateOnAxis(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
       const lampLight = new THREE.PointLight(0xffeeaa, 0.8, 3, 2);
       lampLight.position.set(0.35, 1.48, 0);
       lampLight.userData = { isLampLight: true };
@@ -1189,15 +1229,15 @@ export class Island {
         carGroup.add(hub);
       }
 
-      // Parked at district edges (most at Professional — it's the office lot)
+      // Parallel-parked along the boulevard: kerbside spots in the blocks
+      // between districts, alternating sides of the street (odd index =
+      // north kerb lat 0.512, even = south kerb lat 0.415).
       const CAR_SITES: Array<[number, number]> = [
-        [6.03, 0.22], [0.10, 0.20], [0.36, 0.27],  // professional
-        [2.30, 0.27], [2.73, 0.25],                // village
-        [3.58, 0.27], [3.97, 0.29],                // market
-        [1.34, 0.30],                              // projects
+        [0.72, 0.415], [1.02, 0.512], [1.62, 0.415], [2.21, 0.512],
+        [3.10, 0.415], [3.35, 0.512], [4.30, 0.415], [5.55, 0.512],
       ];
       const [carLon, carLat] = CAR_SITES[i % CAR_SITES.length];
-      const pos = this.claimDir(this.dirAt(carLon, carLat), 0.13).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(carLon, carLat), 0.08).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
       carGroup.position.copy(sampled.position);
       // Real car proportions: roof ~1.47u, length ~4.0u
@@ -1205,11 +1245,12 @@ export class Island {
       carGroup.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
-      // Nose toward the district center line — reads as parked around the plaza
+      // Nose ALONG the street (tangent of the boulevard), direction matching
+      // the side of the road it's parked on — reads as kerbside parking
       this.faceObjectToward(
         carGroup,
         sampled.normal,
-        this.dirAt(carLon, 0.4636).multiplyScalar(this.radius),
+        this.dirAt(carLon + (i % 2 === 0 ? 0.4 : -0.4), carLat).multiplyScalar(this.radius),
       );
       carGroup.castShadow = true;
       carGroup.name = `car_${i}`;
@@ -1218,16 +1259,17 @@ export class Island {
 
     // Add market stalls near houses
     const stalls = new THREE.Group();
-    // Market stalls ring the zone2 plaza (the market district centerpiece)
-    // CONTACT district: market stalls on a wider hex ring (3u-wide stalls
-    // overlapped on the old tight ring)
+    // CONTACT district: a market street — stalls line BOTH kerbs of the
+    // boulevard through the plaza (staggered rows so counters don't face
+    // each other head-on), the classic two-sided bazaar strip.
     const STALL_SITES: Array<[number, number]> = [
-      [4.17, 0.46], [3.97, 0.78], [3.57, 0.78], [3.37, 0.46], [3.57, 0.15], [3.97, 0.15],
+      [3.51, 0.65], [3.73, 0.65], [3.95, 0.65],
+      [3.59, 0.28], [3.81, 0.28], [4.03, 0.28],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
       const [sLon, sLat] = STALL_SITES[i];
-      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.17).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.06).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       // Counter at ~0.66u working height for the 1.56u vendors
@@ -1235,11 +1277,11 @@ export class Island {
       stall.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
-      // Counters face the Get In Touch plaza at the ring's center
+      // Counters face the market street (nearest boulevard point)
       this.faceObjectToward(
         stall,
         sampled.normal,
-        this.dirAt(3.7699, ZONE_LAT).multiplyScalar(this.radius),
+        this.dirAt(sLon, ZONE_LAT).multiplyScalar(this.radius),
       );
       stall.castShadow = true;
       stall.receiveShadow = true;
@@ -1305,7 +1347,9 @@ export class Island {
     // Add construction blocks
     const constructions = new THREE.Group();
     // PROJECTS district: work-in-progress sites near the Portfolio plaza
-    const WORK_SITES: Array<[number, number]> = [[1.09, 0.37], [1.43, 0.55]];
+    // PROJECTS district: construction lots set back off the boulevard,
+    // one per side of the street
+    const WORK_SITES: Array<[number, number]> = [[1.05, 0.65], [1.46, 0.28]];
     for (let i = 0; i < WORK_SITES.length; i++) {
       const block = this.createConstructionBlock();
       const pos = this.claimDir(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
@@ -1356,6 +1400,8 @@ export class Island {
       const [fLon, fLat] = FLOWER_ANCHORS[Math.floor(i / 10)];
       const ringA = ((i % 10) / 10) * Math.PI * 2;
       const fDir = this.dirAt(fLon + Math.cos(ringA) * 0.2, fLat + Math.sin(ringA) * 0.15);
+      // Plaza flower rings cross the boulevard — keep blooms off the pavement
+      if (this.isNearStreet(fDir)) continue;
       const pos = this.claimDir(fDir, 0.015).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       flowerGroup.position.copy(sampled.position);
@@ -1731,6 +1777,66 @@ export class Island {
     } catch {
       return { position: fallbackPos, normal: fallbackNormal };
     }
+  }
+
+  // Street keep-out registry: segment midpoints with an angular margin so
+  // organic scatter (trees, flowers) stays off the pavement. Deliberately
+  // separate from claimDir's occupiedDirs — structures PLACED along a street
+  // (buildings, cars, lamps) must be allowed closer than a claim would let.
+  private streetDirs: Array<{ dir: THREE.Vector3; halfArc: number }> = [];
+
+  /** True when a unit direction lands on (or within margin of) a street. */
+  public isNearStreet(dir: THREE.Vector3): boolean {
+    for (const s of this.streetDirs) {
+      if (dir.angleTo(s.dir) < s.halfArc) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Lay a surface-conforming street along a chain of unit-direction
+   * waypoints (great-circle-ish polyline). Shares one road material for
+   * the whole path and registers each segment in the street keep-out list.
+   */
+  private createStreetPath(waypoints: THREE.Vector3[], width: number): THREE.Group {
+    const group = new THREE.Group();
+    group.name = 'street_path';
+    const roadTex = TextureGenerator.createRoadTextures(512, 64);
+    roadTex.albedo.wrapS = roadTex.albedo.wrapT = THREE.RepeatWrapping;
+    roadTex.roughness.wrapS = roadTex.roughness.wrapT = THREE.RepeatWrapping;
+    // Warm paver grey — deliberately OFF the grass palette so streets read
+    // as streets from altitude (the sandy-green country-road tint vanished
+    // into the lawn)
+    const mat = Materials.createTrimMaterial(0xb3a68f);
+    mat.map = roadTex.albedo;
+    mat.normalMap = roadTex.normal;
+    mat.roughnessMap = roadTex.roughness;
+    mat.normalScale = new THREE.Vector2(0.6, 0.6);
+    const keepOutArc = (width * 0.5 + 0.8) / this.radius;
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const a = waypoints[i].clone().normalize();
+      const b = waypoints[i + 1].clone().normalize();
+      const midDir = a.clone().add(b).normalize();
+      // sampleSurfaceByDirection (not sampleSurfacePosition): the latter
+      // raycasts from the base radius, which starts INSIDE raised terrain
+      // and falls back to r=base — burying street segments under hills
+      const sampled = this.sampleSurfaceByDirection(midDir, 0.03);
+      const posA = a.multiplyScalar(this.radius);
+      const posB = b.multiplyScalar(this.radius);
+      const segLength = posA.distanceTo(posB);
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(segLength * 1.12, width, 1, 1), mat);
+      mesh.position.copy(sampled.position);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
+      mesh.quaternion.copy(q);
+      // yaw the plane so its long axis runs along the path
+      const along = posB.clone().sub(posA).normalize();
+      const localDir = along.applyQuaternion(q.clone().invert());
+      mesh.rotateOnAxis(new THREE.Vector3(0, 1, 0), Math.atan2(localDir.z, localDir.x));
+      mesh.receiveShadow = true;
+      group.add(mesh);
+      this.streetDirs.push({ dir: midDir, halfArc: keepOutArc });
+    }
+    return group;
   }
 
   // Build a ring of small segment meshes that sit on the sphere surface to emulate a road/decals.

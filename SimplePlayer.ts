@@ -4,7 +4,7 @@ import { Materials } from './Materials';
 import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
 
 /** Cosmetic hats sold in the island shop. */
-export type HatId = 'party' | 'top' | 'crown';
+export type HatId = 'party' | 'top' | 'crown' | 'cap' | 'flower' | 'wizard' | 'halo';
 
 /**
  * SimplePlayer
@@ -255,8 +255,7 @@ export class SimplePlayer extends THREE.Group {
       );
       band.position.y = 0.05;
       g.add(band);
-    } else {
-      // crown
+    } else if (id === 'crown') {
       const goldMat = new THREE.MeshStandardMaterial({
         color: 0xffd34a,
         metalness: 0.7,
@@ -276,6 +275,78 @@ export class SimplePlayer extends THREE.Group {
         spike.position.set(Math.cos(a) * 0.17, 0.11, Math.sin(a) * 0.17);
         g.add(spike);
       }
+    } else if (id === 'cap') {
+      // Baseball cap: dome + forward brim
+      const capMat = Materials.createToonMaterial(0x3f6fb5);
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
+        capMat,
+      );
+      dome.scale.y = 0.75;
+      g.add(dome);
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.15, 0.025, 10), capMat);
+      brim.scale.z = 1.4;
+      brim.position.set(0, 0.01, 0.2);
+      g.add(brim);
+      const button = new THREE.Mesh(
+        new THREE.SphereGeometry(0.035, 8, 6),
+        Materials.createToonMaterial(0x2c4f85),
+      );
+      button.position.y = 0.155;
+      g.add(button);
+    } else if (id === 'flower') {
+      // Flower crown: leafy ring with alternating blooms
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.18, 0.035, 8, 16),
+        Materials.createToonMaterial(0x4a8c3a),
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.04;
+      g.add(ring);
+      const BLOOM_COLORS = [0xe84a5f, 0xf7c948, 0xba68c8, 0xff8a65];
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const bloom = new THREE.Mesh(
+          new THREE.SphereGeometry(0.045, 8, 6),
+          Materials.createToonMaterial(BLOOM_COLORS[i % BLOOM_COLORS.length]),
+        );
+        bloom.position.set(Math.cos(a) * 0.18, 0.07, Math.sin(a) * 0.18);
+        g.add(bloom);
+      }
+    } else if (id === 'wizard') {
+      // Wizard hat: tall starry cone with a wide floppy brim
+      const feltMat = Materials.createToonMaterial(0x4b3a8c);
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.03, 14), feltMat);
+      g.add(brim);
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 12), feltMat);
+      cone.position.y = 0.22;
+      cone.rotation.z = 0.1;
+      g.add(cone);
+      const starMat = new THREE.MeshStandardMaterial({
+        color: 0xffe066,
+        emissive: 0xccaa22,
+        emissiveIntensity: 0.5,
+      });
+      for (const [sx, sy, sz] of [[0.09, 0.16, 0.1], [-0.08, 0.28, 0.05], [0.02, 0.1, -0.12]]) {
+        const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.028), starMat);
+        star.position.set(sx, sy, sz);
+        g.add(star);
+      }
+    } else {
+      // halo — floats just above the head, glowing
+      const halo = new THREE.Mesh(
+        new THREE.TorusGeometry(0.14, 0.025, 10, 22),
+        new THREE.MeshStandardMaterial({
+          color: 0xffe680,
+          emissive: 0xffd700,
+          emissiveIntensity: 1.2,
+          metalness: 0.4,
+          roughness: 0.2,
+        }),
+      );
+      halo.rotation.x = Math.PI / 2;
+      halo.position.y = 0.22;
+      g.add(halo);
     }
     g.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
