@@ -652,6 +652,51 @@ export class GameScene extends THREE.Scene {
     this.onCoinCollected = cb;
   }
 
+  /** Grant coins directly (quest rewards) — persists and updates the HUD. */
+  public addCoins(n: number): void {
+    this.coinsCollected += n;
+    try {
+      localStorage.setItem('ds_coins', String(this.coinsCollected));
+    } catch {
+      /* session-only counter */
+    }
+    this.onCoinCollected?.(this.coinsCollected);
+  }
+
+  // Quest "!" markers floating above NPC quest givers
+  private questMarkers: Array<{ mesh: THREE.Group; npcName: string; base: THREE.Vector3; normal: THREE.Vector3 }> = [];
+
+  /** Show a bobbing "!" above each named NPC (clears markers not in the list). */
+  public setQuestMarkers(npcNames: string[]): void {
+    // Remove stale markers
+    for (let i = this.questMarkers.length - 1; i >= 0; i--) {
+      if (!npcNames.includes(this.questMarkers[i].npcName)) {
+        this.remove(this.questMarkers[i].mesh);
+        this.questMarkers.splice(i, 1);
+      }
+    }
+    // Add new ones
+    for (const name of npcNames) {
+      if (this.questMarkers.some((m) => m.npcName === name)) continue;
+      const npc = this.island.npcTargets.find((n) => n.name === name);
+      if (!npc) continue;
+      const marker = new THREE.Group();
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffd34a });
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.32, 0.09), mat);
+      bar.position.y = 0.14;
+      marker.add(bar);
+      const dot = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.09), mat);
+      dot.position.y = -0.12;
+      marker.add(dot);
+      const base = npc.meshRef.getWorldPosition(new THREE.Vector3());
+      const normal = base.clone().normalize();
+      marker.position.copy(base).addScaledVector(normal, 2.1);
+      marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+      this.add(marker);
+      this.questMarkers.push({ mesh: marker, npcName: name, base, normal });
+    }
+  }
+
   public getCoinsCollected(): number {
     return this.coinsCollected;
   }
@@ -1217,6 +1262,14 @@ export class GameScene extends THREE.Scene {
         Math.sin(t * 26) * 0.14 * (1 - t / 0.6),
       );
       w.obj.quaternion.copy(w.baseQuat).multiply(this._swayQuat);
+    }
+
+    // Quest markers: bob + spin above their NPCs
+    for (const m of this.questMarkers) {
+      m.mesh.position
+        .copy(m.base)
+        .addScaledVector(m.normal, 2.1 + Math.sin(time * 2.4) * 0.12);
+      m.mesh.rotateOnWorldAxis(m.normal, deltaTime * 1.8);
     }
 
     // Drain colliders queued by async GLB placements (e.g. the orchard/

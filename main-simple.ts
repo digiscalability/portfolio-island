@@ -1,5 +1,6 @@
 import { DeliverySystem } from './DeliverySystem';
 import { GameScene } from './GameScene';
+import { NpcQuestSystem } from './NpcQuests';
 import { sfx } from './Sfx';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
@@ -25,6 +26,7 @@ class SimpleApp {
   private inputManager!: SimpleInputManager;
   private ui!: SimpleUI;
   private deliverySystem!: DeliverySystem;
+  private npcQuests!: NpcQuestSystem;
   private isRunning: boolean = false;
 
   // FPS tracking
@@ -141,10 +143,29 @@ class SimpleApp {
         this.ui.showZonePanel(zone);
       });
 
-      // Setup NPC interaction callback
+      // NPC quests: stateful dialogue + rewards layered over ambient lines
+      this.npcQuests = new NpcQuestSystem();
+      this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+
+      // Setup NPC interaction callback (quest dialogue wins when relevant)
       this.scene.setOnNPCInteract((npcData) => {
         console.log(`💬 Talking to: ${npcData.name}`);
-        this.ui.showDialogue(npcData.name, npcData.dialogue);
+        const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
+        this.ui.showDialogue(npcData.name, talk ? talk.lines : npcData.dialogue);
+        if (talk?.accepted) {
+          sfx.blip();
+          this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+        }
+        if (talk?.completed) {
+          const q = talk.completed;
+          this.scene.addCoins(q.rewardCoins);
+          sfx.questComplete();
+          this.ui.showQuestComplete({
+            name: `${q.giverName}'s request`,
+            reward: { type: 'message', value: `+${q.rewardCoins} 🪙 reward` },
+          } as any);
+          this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+        }
       });
 
       // Environment badge: weather · time of day · place
