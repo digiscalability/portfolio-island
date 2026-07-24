@@ -334,7 +334,6 @@ export class OrbitCamera {
     targetOffset?: THREE.Vector3,
   ): Promise<void> {
     return new Promise((resolve) => {
-      const startTime = Date.now();
       const startPos = this.cameraPosition.clone();
 
       // Start from far away
@@ -347,8 +346,17 @@ export class OrbitCamera {
       this.cameraPosition.copy(farAwayPos);
       this.camera.position.copy(farAwayPos);
 
+      // Stall-immune clock: elapsed accrues from the FIRST animation frame
+      // with per-frame deltas clamped to 100ms. A wall clock from call time
+      // let first-render work (texture uploads, GLB decode) consume the
+      // whole window before any frame drew — the fly-in appeared skipped.
+      let elapsed = 0;
+      let last: number | null = null;
+
       const animate = () => {
-        const elapsed = Date.now() - startTime;
+        const now = Date.now();
+        if (last !== null) elapsed += Math.min(now - last, 100);
+        last = now;
         const progress = Math.min(elapsed / duration, 1);
 
         // Ease in-out cubic
