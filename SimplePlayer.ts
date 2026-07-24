@@ -47,6 +47,11 @@ export class SimplePlayer extends THREE.Group {
   private wasAirborne: boolean = false;
   private squashTime: number = 0;
 
+  // Sitting (on benches): physics frozen, legs posed forward
+  private seated: boolean = false;
+  private legLBone: THREE.Bone | null = null;
+  private legRBone: THREE.Bone | null = null;
+
   // GLTF model support
   private gltfModel: THREE.Group | null = null;
   private animationMixer: THREE.AnimationMixer | null = null;
@@ -177,6 +182,62 @@ export class SimplePlayer extends THREE.Group {
   /** Whether the player is currently standing on the ground (for SFX etc.). */
   public isOnGround(): boolean {
     return this.isGrounded;
+  }
+
+  public isSeated(): boolean {
+    return this.seated;
+  }
+
+  /**
+   * Sit at a world position facing `faceDir` (surface-tangent). Physics
+   * freezes; the model is posed (GLTF: mixer paused + leg bones forward,
+   * fallback: hip pivots forward) until standUp().
+   */
+  public sitDown(seatPos: THREE.Vector3, faceDir: THREE.Vector3): void {
+    this.seated = true;
+    this.velocity.set(0, 0, 0);
+    this.playerPosition.copy(seatPos);
+    // Orient: up = surface normal, forward (+Z of the model) = faceDir
+    const up = this.getSurfaceNormal();
+    const fwd = faceDir.clone().sub(up.clone().multiplyScalar(faceDir.dot(up))).normalize();
+    const right = up.clone().cross(fwd).normalize();
+    const m = new THREE.Matrix4().makeBasis(right, up, fwd);
+    this.quaternion.setFromRotationMatrix(m);
+    this.updateWorldMatrix();
+  }
+
+  /** Stand up from a bench: unfreeze physics with a small forward step. */
+  public standUp(): void {
+    if (!this.seated) return;
+    this.seated = false;
+    const up = this.getSurfaceNormal();
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.quaternion);
+    fwd.sub(up.clone().multiplyScalar(fwd.dot(up))).normalize();
+    this.playerPosition.addScaledVector(fwd, 0.7).addScaledVector(up, 0.15);
+    this.updateWorldMatrix();
+  }
+
+  /** Pose applied every frame while seated. */
+  private applySitPose(): void {
+    if (this.gltfModel) {
+      // Mixer is paused while seated (update() skips it) — pose the leg
+      // bones directly; the mixer re-drives them on stand-up.
+      if (!this.legLBone || !this.legRBone) {
+        this.gltfModel.traverse((o) => {
+          const bone = o as THREE.Bone;
+          if (!bone.isBone) return;
+          if (o.name === 'legL') this.legLBone = bone;
+          if (o.name === 'legR') this.legRBone = bone;
+        });
+      }
+      if (this.legLBone) this.legLBone.rotation.x = -1.35;
+      if (this.legRBone) this.legRBone.rotation.x = -1.35;
+    } else if (this.legPivots.length === 2) {
+      this.legPivots[0].rotation.x = -1.45;
+      this.legPivots[1].rotation.x = -1.45;
+      this.armPivots[0].rotation.x = -0.25;
+      this.armPivots[1].rotation.x = -0.25;
+    }
   }
 
   /** Speed along the surface (gravity axis removed) — drives footstep cadence. */
@@ -321,6 +382,13 @@ export class SimplePlayer extends THREE.Group {
    */
   public update(deltaTime: number): void {
     if (deltaTime <= 0) return;
+
+    // Seated on a bench: physics + animation mixer paused, sit pose held
+    if (this.seated) {
+      this.applySitPose();
+      this.updateWorldMatrix();
+      return;
+    }
 
     // Clamp delta time to prevent large jumps
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.02));

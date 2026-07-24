@@ -323,6 +323,16 @@ class SimpleApp {
         if (!nearby || nearby.type !== 'npc') {
           this.ui.hideDialogue();
         }
+      } else if (this.scene.isPlayerSeated()) {
+        // Seated on a bench: movement suppressed, E stands back up
+        this.scene.setPlayerMovement(0, 0);
+        this.ui.showInteractionPrompt('🪑 Press <strong>E</strong> to stand up');
+        const cameraInput = this.inputManager.getCameraInput();
+        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        if (this.inputManager.consumeKeyPress('e')) {
+          this.scene.standUpFromBench();
+          this.ui.hideInteractionPrompt();
+        }
       } else {
         // Get input
         const moveInput = this.inputManager.getMovementInput();
@@ -391,6 +401,8 @@ class SimpleApp {
             text = `🎯 Press <strong>E</strong> to explore ${esc(nearby.zone.name)}`;
           } else if (nearby.type === 'npc') {
             text = `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong>`;
+          } else if (nearby.type === 'bench') {
+            text = '🪑 Press <strong>E</strong> to sit down';
           }
           this.ui.showInteractionPrompt(text);
 

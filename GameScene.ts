@@ -105,6 +105,9 @@ export class GameScene extends THREE.Scene {
     phase: number;
   }> = [];
 
+  // Sittable benches (collected from the island at init)
+  private benchGroups: THREE.Object3D[] = [];
+
   // Micro-animation state: dust puffs (footsteps/landings) + prop wiggles
   private dustPuffs: Array<{
     mesh: THREE.Mesh;
@@ -234,6 +237,7 @@ export class GameScene extends THREE.Scene {
     this.island.mesh.updateMatrixWorld(true);
     let colliderCount = 0;
     this.island.mesh.traverse((obj) => {
+      if (/^bench_\d+$/.test(obj.name)) this.benchGroups.push(obj);
       for (const [re, radius] of COLLIDER_RADII) {
         if (re.test(obj.name)) {
           this.colliders.push({
@@ -1237,6 +1241,8 @@ export class GameScene extends THREE.Scene {
    * Check and resolve player collisions with assets
    */
   private checkPlayerCollisions(): void {
+    // Seated players sit INSIDE the bench's collider by design
+    if (this.player.isSeated()) return;
     const playerPos = this.player.getWorldPosition();
     const playerRadius = 0.4; // Player collision radius
 
@@ -1273,6 +1279,7 @@ export class GameScene extends THREE.Scene {
     | { type: 'lamp'; lamp: TownPlanResult['lamps'][number]; distance: number }
     | { type: 'zone'; zone: any; distance: number }
     | { type: 'npc'; npcData: { name: string; dialogue: string[] }; distance: number }
+    | { type: 'bench'; benchGroup: THREE.Object3D; distance: number }
     | null {
     if (!this.player) return null;
 
@@ -1319,6 +1326,15 @@ export class GameScene extends THREE.Scene {
       const d = npc.meshRef.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
       if (d < nearestDist) {
         nearest = { type: 'npc' as const, npcData: { name: npc.name, dialogue: npc.dialogue }, distance: d };
+        nearestDist = d;
+      }
+    }
+
+    // Check benches (sit down)
+    for (const bench of this.benchGroups) {
+      const d = bench.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
+      if (d < nearestDist && d < 2.2) {
+        nearest = { type: 'bench' as const, benchGroup: bench, distance: d };
         nearestDist = d;
       }
     }
@@ -1372,12 +1388,37 @@ export class GameScene extends THREE.Scene {
   /**
    * Interact with generic interactable
    */
+  /** Sit the player on a bench: seat position + facing from the bench frame. */
+  public sitOnBench(bench: THREE.Object3D): void {
+    bench.updateWorldMatrix(true, false);
+    const seatWorld = bench.localToWorld(new THREE.Vector3(0, 0.62, 0.06));
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(
+      bench.getWorldQuaternion(new THREE.Quaternion()),
+    );
+    this.player.sitDown(seatWorld, fwd);
+    sfx.blip();
+    this.cachedNearby = null;
+    this.lastPlayerPos.set(Infinity, Infinity, Infinity);
+  }
+
+  public standUpFromBench(): void {
+    this.player.standUp();
+    sfx.blip();
+    this.cachedNearby = null;
+    this.lastPlayerPos.set(Infinity, Infinity, Infinity);
+  }
+
+  public isPlayerSeated(): boolean {
+    return this.player ? this.player.isSeated() : false;
+  }
+
   public interactWith(
     interactable:
       | { type: 'mailbox'; mailbox: Mailbox; distance: number }
       | { type: 'lamp'; lamp: TownPlanResult['lamps'][number]; distance: number }
       | { type: 'zone'; zone: any; distance: number }
-      | { type: 'npc'; npcData: { name: string; dialogue: string[] }; distance: number },
+      | { type: 'npc'; npcData: { name: string; dialogue: string[] }; distance: number }
+      | { type: 'bench'; benchGroup: THREE.Object3D; distance: number },
   ): void {
     // Interaction may change interactable state (delivery collected, lamp toggled)
     // — invalidate the proximity cache so the prompt refreshes immediately.
@@ -1399,6 +1440,11 @@ export class GameScene extends THREE.Scene {
 
     if (interactable.type === 'zone') {
       this.interactWithZone(interactable.zone);
+      return;
+    }
+
+    if (interactable.type === 'bench') {
+      this.sitOnBench(interactable.benchGroup);
       return;
     }
 

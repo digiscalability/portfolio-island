@@ -417,10 +417,11 @@ export class Island {
     });
     const buildingPlaceholders: THREE.Mesh[] = [];
     const buildingSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    // PROFESSIONAL district: office towers in two arcs flanking the plaza
+    // PROFESSIONAL district: 8 towers on an even ring around the plaza
+    // (the old two tight arcs overlapped at the 3u tower footprint)
     const BUILDING_SITES: Array<[number, number]> = [
-      [5.98, 0.34], [6.14, 0.28], [0.15, 0.28], [0.31, 0.34],
-      [5.97, 0.60], [6.13, 0.67], [0.14, 0.67], [0.30, 0.60],
+      [0.46, 0.64], [0.19, 0.88], [6.09, 0.88], [5.82, 0.64],
+      [5.82, 0.29], [6.09, 0.05], [0.19, 0.05], [0.46, 0.29],
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
@@ -459,12 +460,13 @@ export class Island {
     // Procedural houses: add a few more detailed block houses with roofs/windows to make the island feel inhabited
     const houses = new THREE.Group();
     const houseSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
-    // PERSONAL district: a cottage hamlet ringing the Personal Life plaza.
-    // Ring widened ~1.6x for the real-scale (3.4-4.4u wide) houses.
+    // PERSONAL district: 8 cottages on an even ring around the plaza with
+    // organic jitter. (11 houses at real scale saturated the ring — their
+    // combined spacing claims exceeded its circumference, so claimDir's
+    // fallback jammed them together.)
     const HOUSE_SITES: Array<[number, number]> = [
-      [2.08, 0.36], [2.27, 0.19], [2.57, 0.12], [2.88, 0.22], [3.00, 0.43],
-      [2.92, 0.65], [2.68, 0.78], [2.36, 0.75], [2.12, 0.60],
-      [2.51, 0.94], [2.51, 0.01],
+      [2.99, 0.44], [2.86, 0.74], [2.52, 0.89], [2.17, 0.77],
+      [2.03, 0.47], [2.19, 0.15], [2.50, 0.03], [2.87, 0.18],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
@@ -1216,14 +1218,15 @@ export class Island {
     // Add market stalls near houses
     const stalls = new THREE.Group();
     // Market stalls ring the zone2 plaza (the market district centerpiece)
-    // CONTACT district: market stalls ringing the Get In Touch plaza
+    // CONTACT district: market stalls on a wider hex ring (3u-wide stalls
+    // overlapped on the old tight ring)
     const STALL_SITES: Array<[number, number]> = [
-      [3.62, 0.37], [3.77, 0.31], [3.92, 0.37], [3.62, 0.56], [3.77, 0.62], [3.92, 0.56],
+      [4.17, 0.46], [3.97, 0.78], [3.57, 0.78], [3.37, 0.46], [3.57, 0.15], [3.97, 0.15],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
       const [sLon, sLat] = STALL_SITES[i];
-      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.12).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.17).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       // Counter at ~0.66u working height for the 1.56u vendors
@@ -1402,28 +1405,28 @@ export class Island {
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
     const benchLegMat = Materials.createTrimMaterial(0x444444);
     for (let i = 0; i < BENCH_SITES.length; i++) {
-      const bDir = this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.06);
+      const bDir = this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.1);
       const bSampled = this.sampleSurfaceByDirection(bDir, 0.0);
       const bench = new THREE.Group();
-      // Seat plank
-      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.18), benchWoodMat);
-      seat.position.y = 0.2;
+      // Real park-bench dimensions vs the 1.8u player: 1.7u long,
+      // 0.45u seat height, backrest to ~1.0u with a comfortable tilt
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.07, 0.5), benchWoodMat);
+      seat.position.y = 0.45;
+      seat.castShadow = true;
       bench.add(seat);
-      // Back rest
-      const back = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.03), benchWoodMat);
-      back.position.set(0, 0.35, -0.08);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.5, 0.06), benchWoodMat);
+      back.position.set(0, 0.76, -0.25);
+      back.rotation.x = -0.15;
+      back.castShadow = true;
       bench.add(back);
-      // Two legs
-      for (const lx of [-0.2, 0.2]) {
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.16), benchLegMat);
-        leg.position.set(lx, 0.1, 0);
+      for (const lx of [-0.72, 0.72]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.45, 0.42), benchLegMat);
+        leg.position.set(lx, 0.225, 0);
         bench.add(leg);
       }
       bench.position.copy(bSampled.position);
       const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bSampled.normal);
       bench.quaternion.copy(bq);
-      // Seat height: raw seat is 0.2u; 2.4x → 0.48u, real bench height
-      bench.scale.setScalar(2.4);
       // Face the plaza this bench belongs to (seat toward it, backrest away)
       this.faceObjectToward(
         bench,
