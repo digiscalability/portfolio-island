@@ -108,6 +108,10 @@ export class GameScene extends THREE.Scene {
   // Sittable benches (collected from the island at init)
   private benchGroups: THREE.Object3D[] = [];
 
+  // Close-range ambience groups, hidden while the camera is far (fly-in):
+  // from a distance they read as debris stuck mid-air around the planet
+  private ambientGroups: THREE.Object3D[] = [];
+
   // Micro-animation state: dust puffs (footsteps/landings) + prop wiggles
   private dustPuffs: Array<{
     mesh: THREE.Mesh;
@@ -243,6 +247,9 @@ export class GameScene extends THREE.Scene {
     let colliderCount = 0;
     this.island.mesh.traverse((obj) => {
       if (/^bench_\d+$/.test(obj.name)) this.benchGroups.push(obj);
+      if (obj.name === 'ambient_sparkles' || obj.name === 'ambient_dust') {
+        this.ambientGroups.push(obj);
+      }
       for (const [re, radius] of COLLIDER_RADII) {
         if (re.test(obj.name)) {
           this.colliders.push({
@@ -1211,8 +1218,15 @@ export class GameScene extends THREE.Scene {
       bf.wingR.rotation.y = Math.PI - flap;
     }
 
+    // Close-range ambience only exists near the ground: while the camera
+    // is far (cinematic fly-in), dust/sparkles/smoke/butterflies read as
+    // debris hovering around the planet
+    const camNear = this.camera ? this.camera.position.length() < 45 : true;
+    for (const g of this.ambientGroups) g.visible = camNear;
+
     // Chimney smoke: puffs loop up the normal, growing and fading
     for (const puff of this.smokePuffs) {
+      puff.mesh.visible = camNear;
       const ph = (time * 0.22 + puff.offset) % 1;
       puff.mesh.position
         .copy(puff.base)
@@ -1256,7 +1270,7 @@ export class GameScene extends THREE.Scene {
           s.rotation.y = time * 2 + i;
           const sc = 0.85 + Math.sin(time * 3 + i * 0.8) * 0.15;
           s.scale.set(sc, sc, sc);
-          s.visible = true;
+          s.visible = camNear;
         }
       }
     }
@@ -1336,13 +1350,13 @@ export class GameScene extends THREE.Scene {
     // Day/night handoff for the small life: butterflies by day,
     // blinking fireflies wandering the flower clusters by night
     const dayFactor = this.envCycle ? this.envCycle.getDayFactor() : 1;
-    const butterfliesOut = dayFactor > 0.25;
+    const butterfliesOut = dayFactor > 0.25 && camNear;
     for (const bf of this.butterflies) {
       bf.group.visible = butterfliesOut;
     }
     const fireflyGlow = 1 - dayFactor;
     for (const ff of this.fireflies) {
-      if (fireflyGlow < 0.05) {
+      if (fireflyGlow < 0.05 || !camNear) {
         ff.mesh.visible = false;
         continue;
       }

@@ -1007,6 +1007,7 @@ export class Island {
 
     // Floating sparkles around the planet surface
     const particles = new THREE.Group();
+    particles.name = 'ambient_sparkles';
     const sparkleMat = new THREE.MeshBasicMaterial({
       color: 0xffffee,
       transparent: true,
@@ -1373,6 +1374,7 @@ export class Island {
 
     // Add dust/pollen particles for ambiance
     const dustParticles = new THREE.Group();
+    dustParticles.name = 'ambient_dust';
     const dustMat = new THREE.MeshBasicMaterial({
       color: 0xeeddaa,
       transparent: true,

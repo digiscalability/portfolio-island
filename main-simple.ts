@@ -229,14 +229,33 @@ class SimpleApp {
       this.boundHandlers.beforeUnload = () => this.dispose();
       window.addEventListener('beforeunload', this.boundHandlers.beforeUnload);
 
-      // Finish loading, fly in, then show welcome
+      // Pre-compile every shader program while the loading screen is still
+      // up. Otherwise the first rendered frames compile ~50 programs
+      // (toonified materials, sky, bloom) mid-fly-in — seconds of jank on
+      // every refresh.
       this.ui.showLoading(100);
+      try {
+        const gl = this.renderer.getRenderer() as unknown as {
+          compile: (scene: unknown, camera: unknown) => void;
+          compileAsync?: (scene: unknown, camera: unknown) => Promise<unknown>;
+        };
+        if (typeof gl.compileAsync === 'function') {
+          await gl.compileAsync(this.scene, this.scene.getCamera());
+        } else {
+          gl.compile(this.scene, this.scene.getCamera());
+        }
+        console.log('✓ Shaders pre-compiled');
+      } catch (e) {
+        console.warn('Shader pre-compile skipped:', e);
+      }
+
+      // Finish loading, fly in, then show welcome
       setTimeout(() => {
         this.ui.hideLoading();
         this.scene.getOrbitCamera().flyInFromDistant(2500).then(() => {
           this.ui.showWelcome();
         });
-      }, 500);
+      }, 200);
 
       // Start render loop
       this.startRenderLoop();
