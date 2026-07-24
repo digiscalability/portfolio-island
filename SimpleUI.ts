@@ -209,39 +209,52 @@ export class SimpleUI {
    */
   showLoading(progress: number): void {
     if (!this.loadingDiv) {
+      // FULLSCREEN opaque backdrop: the first frames can render before the
+      // camera is placed (degenerate inside-the-planet views) — nothing
+      // behind the loader may ever be visible.
       this.loadingDiv = document.createElement('div');
       Object.assign(this.loadingDiv.style, {
         position: 'absolute',
-        top: '50%',
-        left: '50%',
-        transform: 'translate(-50%, -50%)',
-        background: 'rgba(0, 0, 0, 0.8)',
+        inset: '0',
+        width: '100%',
+        height: '100%',
+        background: '#0a121c',
         color: 'white',
-        padding: '20px',
-        borderRadius: '10px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
         textAlign: 'center',
         pointerEvents: 'auto',
+        zIndex: '3000',
+        transition: 'opacity 0.45s ease',
       });
       this.overlay.appendChild(this.loadingDiv);
     }
 
     this.loadingDiv.innerHTML = `
-      <div style="font-size: 24px; margin-bottom: 10px;">🌎 Loading DigiScalability Life Island</div>
-      <div style="width: 200px; height: 20px; background: #333; border-radius: 10px; margin: 0 auto 10px;">
+      <div style="font-size: 24px; margin-bottom: 14px;">🌎 Loading DigiScalability Life Island</div>
+      <div style="width: 220px; height: 18px; background: #223; border-radius: 10px; margin-bottom: 10px;">
         <div style="width: ${progress}%; height: 100%; background: #4CAF50; border-radius: 10px; transition: width 0.3s;"></div>
       </div>
-      <div>${progress}%</div>
+      <div style="color:#9ab;">${progress}%</div>
     `;
   }
 
   /**
-   * Hide loading screen
+   * Hide loading screen (fades the backdrop out over the arriving scene)
    */
   hideLoading(): void {
     if (this.loadingDiv) {
-      this.loadingDiv.remove();
+      const el = this.loadingDiv;
       this.loadingDiv = null;
+      el.style.opacity = '0';
+      window.setTimeout(() => el.remove(), 500);
     }
+  }
+
+  isLoadingVisible(): boolean {
+    return this.loadingDiv !== null;
   }
 
   /**

@@ -249,17 +249,22 @@ class SimpleApp {
         console.warn('Shader pre-compile skipped:', e);
       }
 
-      // Finish loading, fly in, then show welcome
-      setTimeout(() => {
-        this.ui.hideLoading();
-        this.scene.getOrbitCamera().flyInFromDistant(2500).then(() => {
+      // Start the fly-in BEFORE the first frame renders: its first act is
+      // placing the camera at the distant start, so no frame can ever show
+      // the degenerate pre-placement view. The opaque loader then fades
+      // out over the already-moving cinematic.
+      this.scene
+        .getOrbitCamera()
+        .flyInFromDistant(2500)
+        .then(() => {
           this.ui.showWelcome();
         });
-      }, 200);
 
       // Start render loop
       this.startRenderLoop();
       console.log('✓ Render loop started');
+
+      setTimeout(() => this.ui.hideLoading(), 350);
 
       // Start background music
       this.startBackgroundMusic();
@@ -372,8 +377,8 @@ class SimpleApp {
     // Update FPS counter
     this.updateFPS(deltaTime);
 
-    // Only process input if welcome screen is not visible
-    if (!this.ui.isWelcomeVisible()) {
+    // Only process input once the loader and welcome screen are gone
+    if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
       // If dialogue is active, E advances/closes it; suppress movement
       if (this.ui.isDialogueActive()) {
         this.scene.setPlayerMovement(0, 0);
