@@ -156,6 +156,12 @@ class SimpleApp {
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
       this.scene.setOnCoinCollected((total) => this.ui.updateCoinCounter(total));
 
+      // Mute button → shared AudioManager (created by startBackgroundMusic)
+      this.ui.setOnMuteToggle(() => {
+        const am = (window as unknown as { audioManager?: { toggleMute(): boolean } }).audioManager;
+        return am ? am.toggleMute() : false;
+      });
+
       // Initialize post-processing
       this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
       console.log('✓ Post-processing initialized');
@@ -323,8 +329,12 @@ class SimpleApp {
         const cameraInput = this.inputManager.getCameraInput();
         const jumpInput = this.inputManager.getJumpInput();
 
-        // Apply player input
-        this.scene.setPlayerMovement(moveInput.forward, moveInput.strafe);
+        // Apply player input (keyboard merged with the touch joystick)
+        const joy = this.ui.getJoystick();
+        this.scene.setPlayerMovement(
+          Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
+          Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
+        );
         const player = this.scene.getPlayer();
         if (jumpInput) {
           // Edge-triggered: one blip per press, only from the ground

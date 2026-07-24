@@ -42,6 +42,166 @@ export class SimpleUI {
     });
 
     this.createFPSDisplay();
+    this.createMuteButton();
+    this.createTouchControls();
+  }
+
+  // ── UX chrome ─────────────────────────────────────────────────────────
+
+  private muteBtn: HTMLElement | null = null;
+  private onMuteToggle: (() => boolean) | null = null;
+  private joyState = { forward: 0, strafe: 0 };
+
+  /** Wire the mute button to the audio system (returns new muted state). */
+  setOnMuteToggle(cb: () => boolean): void {
+    this.onMuteToggle = cb;
+  }
+
+  /** Joystick vector for touch devices ({0,0} on desktop). */
+  getJoystick(): { forward: number; strafe: number } {
+    return this.joyState;
+  }
+
+  private createMuteButton(): void {
+    this.muteBtn = document.createElement('div');
+    let muted = false;
+    try {
+      muted = !!JSON.parse(localStorage.getItem('ds_audio_settings') ?? '{}').muted;
+    } catch {
+      /* default unmuted */
+    }
+    this.muteBtn.textContent = muted ? '🔇' : '🔊';
+    Object.assign(this.muteBtn.style, {
+      position: 'absolute',
+      top: '88px',
+      right: '10px',
+      background: 'rgba(0, 0, 0, 0.55)',
+      padding: '5px 9px',
+      borderRadius: '10px',
+      fontSize: '14px',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+    });
+    this.muteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!this.onMuteToggle || !this.muteBtn) return;
+      const nowMuted = this.onMuteToggle();
+      this.muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+    });
+    this.overlay.appendChild(this.muteBtn);
+  }
+
+  /**
+   * Touch controls (joystick + E / Jump buttons), created only on touch
+   * devices. Buttons dispatch synthetic keyboard events so every existing
+   * input path (interaction, dialogue advance, jump) works unchanged;
+   * the analog joystick is merged into movement in main-simple.
+   */
+  private createTouchControls(): void {
+    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    if (!isTouch) return;
+
+    // Joystick
+    const base = document.createElement('div');
+    Object.assign(base.style, {
+      position: 'absolute',
+      left: '26px',
+      bottom: '26px',
+      width: '110px',
+      height: '110px',
+      borderRadius: '50%',
+      background: 'rgba(255,255,255,0.12)',
+      border: '2px solid rgba(255,255,255,0.25)',
+      pointerEvents: 'auto',
+      touchAction: 'none',
+    });
+    const thumb = document.createElement('div');
+    Object.assign(thumb.style, {
+      position: 'absolute',
+      left: '31px',
+      top: '31px',
+      width: '44px',
+      height: '44px',
+      borderRadius: '50%',
+      background: 'rgba(255,255,255,0.45)',
+    });
+    base.appendChild(thumb);
+    this.overlay.appendChild(base);
+
+    const moveThumb = (dx: number, dy: number) => {
+      thumb.style.left = `${31 + dx}px`;
+      thumb.style.top = `${31 + dy}px`;
+    };
+    const handleTouch = (e: TouchEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = base.getBoundingClientRect();
+      const t = e.touches[0];
+      let dx = t.clientX - (rect.left + rect.width / 2);
+      let dy = t.clientY - (rect.top + rect.height / 2);
+      const len = Math.hypot(dx, dy);
+      const max = 40;
+      if (len > max) {
+        dx = (dx / len) * max;
+        dy = (dy / len) * max;
+      }
+      moveThumb(dx, dy);
+      this.joyState.strafe = dx / max;
+      this.joyState.forward = -dy / max;
+    };
+    base.addEventListener('touchstart', handleTouch, { passive: false });
+    base.addEventListener('touchmove', handleTouch, { passive: false });
+    base.addEventListener('touchend', (e) => {
+      e.stopPropagation();
+      this.joyState.forward = 0;
+      this.joyState.strafe = 0;
+      moveThumb(0, 0);
+    });
+
+    // Action buttons: synthetic key events reuse every existing input path
+    const makeButton = (label: string, bottom: string, code: string, key: string) => {
+      const btn = document.createElement('div');
+      btn.textContent = label;
+      Object.assign(btn.style, {
+        position: 'absolute',
+        right: '30px',
+        bottom,
+        width: '62px',
+        height: '62px',
+        borderRadius: '50%',
+        background: 'rgba(255,255,255,0.16)',
+        border: '2px solid rgba(255,255,255,0.3)',
+        color: 'white',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '20px',
+        fontFamily: 'system-ui, sans-serif',
+        pointerEvents: 'auto',
+        touchAction: 'none',
+        userSelect: 'none',
+      });
+      const fire = (type: 'keydown' | 'keyup') => {
+        const ev = new KeyboardEvent(type, { code, key, bubbles: true });
+        window.dispatchEvent(ev);
+        document.dispatchEvent(ev);
+      };
+      btn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        btn.style.background = 'rgba(255,255,255,0.35)';
+        fire('keydown');
+      }, { passive: false });
+      btn.addEventListener('touchend', (e) => {
+        e.stopPropagation();
+        btn.style.background = 'rgba(255,255,255,0.16)';
+        fire('keyup');
+      });
+      this.overlay.appendChild(btn);
+    };
+    makeButton('E', '116px', 'KeyE', 'e');
+    makeButton('⤒', '34px', 'Space', ' ');
   }
 
   /**
@@ -106,9 +266,17 @@ export class SimpleUI {
       this.overlay.appendChild(this.welcomeDiv);
     }
 
-    this.welcomeDiv.innerHTML = `
+    // Returning visitors get a brief hello instead of the full tutorial
+    const returning = localStorage.getItem('ds_welcomed') === '1';
+    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const controlsLine = isTouch
+      ? 'Drag the joystick to move, buttons to jump and interact.'
+      : 'Use WASD to move, mouse to look around, space to jump.';
+    this.welcomeDiv.innerHTML = returning
+      ? `<h2 style="margin: 0; color: #4CAF50;">👋 Welcome back!</h2>`
+      : `
       <h2 style="margin: 0 0 20px 0; color: #4CAF50;">Welcome to DigiScalability Life Island</h2>
-      <p style="margin: 0 0 20px 0;">Use WASD to move, mouse to look around, space to jump.</p>
+      <p style="margin: 0 0 20px 0;">${controlsLine}</p>
       <p style="margin: 0 0 20px 0; font-size: 14px; color: #ccc;">Press any key to start exploring!</p>
     `;
 
@@ -120,6 +288,7 @@ export class SimpleUI {
     };
     document.addEventListener('keydown', hideWelcome);
     document.addEventListener('click', hideWelcome);
+    if (returning) window.setTimeout(hideWelcome, 1600);
   }
 
   /**
@@ -129,6 +298,11 @@ export class SimpleUI {
     if (this.welcomeDiv) {
       this.welcomeDiv.remove();
       this.welcomeDiv = null;
+      try {
+        localStorage.setItem('ds_welcomed', '1');
+      } catch {
+        /* full welcome every visit */
+      }
     }
   }
 
@@ -186,21 +360,25 @@ export class SimpleUI {
    * Create FPS display
    */
   private createFPSDisplay(): void {
-    this.fpsDiv = document.createElement('div');
-    Object.assign(this.fpsDiv.style, {
-      position: 'absolute',
-      top: '10px',
-      right: '10px',
-      background: 'rgba(0, 0, 0, 0.7)',
-      color: 'white',
-      padding: '5px 10px',
-      borderRadius: '5px',
-      fontSize: '12px',
-      fontFamily: 'monospace',
-      pointerEvents: 'none',
-    });
-    this.overlay.appendChild(this.fpsDiv);
-    this.fpsDiv.textContent = 'FPS: --';
+    // FPS is a dev readout — visitors shouldn't see it. ?debug shows it.
+    const debug = new URLSearchParams(window.location.search).has('debug');
+    if (debug) {
+      this.fpsDiv = document.createElement('div');
+      Object.assign(this.fpsDiv.style, {
+        position: 'absolute',
+        top: '10px',
+        right: '10px',
+        background: 'rgba(0, 0, 0, 0.7)',
+        color: 'white',
+        padding: '5px 10px',
+        borderRadius: '5px',
+        fontSize: '12px',
+        fontFamily: 'monospace',
+        pointerEvents: 'none',
+      });
+      this.overlay.appendChild(this.fpsDiv);
+      this.fpsDiv.textContent = 'FPS: --';
+    }
 
     // Create player count display
     this.playerCountDiv = document.createElement('div');
