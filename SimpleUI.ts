@@ -864,6 +864,113 @@ export class SimpleUI {
     }, 130);
   }
 
+  private breathWrap: HTMLDivElement | null = null;
+  private breathFill: HTMLDivElement | null = null;
+  private waterVignette: HTMLDivElement | null = null;
+
+  /**
+   * Swim UX: a breath meter (bottom-centre) + an underwater vignette that
+   * closes in and reddens as oxygen runs out. Both fade away on dry land.
+   */
+  updateBreath(oxygen: number, inWater: boolean): void {
+    if (!this.breathWrap) {
+      this.waterVignette = document.createElement('div');
+      Object.assign(this.waterVignette.style, {
+        position: 'absolute',
+        inset: '0',
+        pointerEvents: 'none',
+        opacity: '0',
+        transition: 'opacity 0.4s ease',
+        zIndex: '900',
+      });
+      this.overlay.appendChild(this.waterVignette);
+
+      this.breathWrap = document.createElement('div');
+      Object.assign(this.breathWrap.style, {
+        position: 'absolute',
+        bottom: 'calc(var(--sab, 0px) + 150px)',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: '160px',
+        height: '12px',
+        borderRadius: '7px',
+        background: 'rgba(0,0,0,0.5)',
+        border: '1px solid rgba(255,255,255,0.35)',
+        overflow: 'hidden',
+        opacity: '0',
+        transition: 'opacity 0.3s ease',
+        pointerEvents: 'none',
+        zIndex: '1100',
+      });
+      this.breathFill = document.createElement('div');
+      Object.assign(this.breathFill.style, {
+        height: '100%',
+        width: '100%',
+        borderRadius: '6px',
+        transition: 'width 0.12s linear, background 0.3s ease',
+      });
+      const label = document.createElement('div');
+      label.textContent = '🫧';
+      Object.assign(label.style, {
+        position: 'absolute',
+        left: '-22px',
+        top: '-4px',
+        fontSize: '15px',
+      });
+      this.breathWrap.appendChild(this.breathFill);
+      this.breathWrap.appendChild(label);
+      this.overlay.appendChild(this.breathWrap);
+    }
+    const danger = 1 - Math.max(0, Math.min(1, oxygen));
+    // Meter only matters in water (or briefly while recovering)
+    const show = inWater || oxygen < 0.999;
+    this.breathWrap!.style.opacity = show ? '1' : '0';
+    if (this.breathFill) {
+      this.breathFill.style.width = `${Math.max(0, oxygen) * 100}%`;
+      // green → amber → red as it drains
+      const hue = 120 * Math.max(0, oxygen);
+      this.breathFill.style.background = `hsl(${hue}, 80%, 50%)`;
+    }
+    if (this.waterVignette) {
+      const strength = inWater ? 0.35 + danger * 0.55 : 0;
+      this.waterVignette.style.opacity = String(strength);
+      // deepen from teal to a drowning red-tinged dark as oxygen falls
+      const edge = danger > 0.5 ? '20,40,60' : '10,40,70';
+      this.waterVignette.style.background = `radial-gradient(circle at 50% 45%, rgba(60,140,190,0.05) 30%, rgba(${edge},0.85) 100%)`;
+    }
+  }
+
+  /** Brief centred splash message (used for the drown/rescue). */
+  flashMessage(text: string): void {
+    const el = document.createElement('div');
+    el.textContent = text;
+    Object.assign(el.style, {
+      position: 'absolute',
+      top: '38%',
+      left: '50%',
+      transform: 'translate(-50%, -50%) scale(0.9)',
+      background: 'rgba(0,0,0,0.78)',
+      color: 'white',
+      padding: '14px 22px',
+      borderRadius: '14px',
+      fontSize: '18px',
+      fontFamily: 'system-ui, sans-serif',
+      pointerEvents: 'none',
+      zIndex: '2000',
+      opacity: '0',
+      transition: 'opacity 0.25s ease, transform 0.25s cubic-bezier(0.34,1.56,0.64,1)',
+    });
+    this.overlay.appendChild(el);
+    requestAnimationFrame(() => {
+      el.style.opacity = '1';
+      el.style.transform = 'translate(-50%, -50%) scale(1)';
+    });
+    window.setTimeout(() => {
+      el.style.opacity = '0';
+      window.setTimeout(() => el.remove(), 300);
+    }, 1800);
+  }
+
   /**
    * Update player count display
    */

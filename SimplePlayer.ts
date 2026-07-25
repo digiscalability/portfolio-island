@@ -40,8 +40,21 @@ export class SimplePlayer extends THREE.Group {
   // Without it, grounding falls back to the ideal sphere radius.
   private groundSampler: ((outwardDir: THREE.Vector3) => number) | null = null;
 
+  // Water: given the outward unit direction, returns the wavy water-surface
+  // radius there and whether it is open water (terrain below the sea).
+  private waterSampler: ((outwardDir: THREE.Vector3) => { surface: number; isWater: boolean }) | null = null;
+  private swimIntent = false; // swim button held this frame
+  private inWater = false; // over open water right now
+  private swimming = false; // afloat (in water + intent held)
+  private oxygen = 1; // 1 = full breath, 0 = drowned
+  private onDrown: (() => void) | null = null;
+  private static readonly SWIM_FLOAT = 0.55; // player centre above the surface while afloat
+  private static readonly DROWN_RATE = 0.16; // oxygen/sec while under (≈6s)
+  private static readonly RECOVER_RATE = 0.5; // oxygen/sec refill out of danger
+
   private moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
   private wantJump: boolean = false;
+  private rideActive = false; // physics suspended while riding a boat/jetski
 
   // Procedural walk-cycle state (used when no GLTF model is loaded)
   private legPivots: THREE.Group[] = [];
@@ -180,6 +193,42 @@ export class SimplePlayer extends THREE.Group {
    */
   public setGroundSampler(sampler: (outwardDir: THREE.Vector3) => number): void {
     this.groundSampler = sampler;
+  }
+
+  /** Water-surface sampler (see updateWaterState). */
+  public setWaterSampler(
+    sampler: (outwardDir: THREE.Vector3) => { surface: number; isWater: boolean },
+  ): void {
+    this.waterSampler = sampler;
+  }
+
+  /** Called when oxygen hits zero (GameScene respawns the player). */
+  public setOnDrown(cb: () => void): void {
+    this.onDrown = cb;
+  }
+
+  /** Hold the swim button to stay afloat; release in water to drown. */
+  public setSwimIntent(held: boolean): void {
+    this.swimIntent = held;
+  }
+
+  public isInWater(): boolean {
+    return this.inWater;
+  }
+  public isSwimming(): boolean {
+    return this.swimming;
+  }
+  public getOxygen(): number {
+    return this.oxygen;
+  }
+  /** Reset breath (call on respawn after a drown). */
+  public resetOxygen(): void {
+    this.oxygen = 1;
+  }
+  /** Suspend physics while riding a vehicle (GameScene drives the transform). */
+  public setRiding(active: boolean): void {
+    this.rideActive = active;
+    if (active) this.velocity.set(0, 0, 0);
   }
 
   /**
@@ -575,6 +624,13 @@ export class SimplePlayer extends THREE.Group {
       return;
     }
 
+    // Riding a boat/jetski: GameScene owns the transform. Advance the mixer
+    // so the model still animates, but skip all physics.
+    if (this.rideActive) {
+      if (this.animationMixer) this.animationMixer.update(Math.min(deltaTime, 0.05));
+      return;
+    }
+
     // Clamp delta time to prevent large jumps
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.02));
 
@@ -612,14 +668,20 @@ export class SimplePlayer extends THREE.Group {
     // Ground detection and sticking
     this.updateGroundState();
 
+    // Water: float when swimming, sink + drown otherwise (overrides the
+    // seafloor grounding above so you don't just walk along the bottom)
+    this.updateWaterState(safeDeltaTime);
+
     // Handle jump — impulse along the surface normal, not world +Y.
     // (World-Y only points "up" at the sphere's north pole; anywhere else
     // it is partly tangential and grounding instantly re-sticks the player.)
-    if (this.wantJump && this.isGrounded) {
+    if (this.wantJump && this.isGrounded && !this.inWater) {
       const jumpNormal = this.getSurfaceNormal();
       this.velocity.addScaledVector(jumpNormal, this.jumpForce);
       this.isGrounded = false;
       this.wantJump = false;
+    } else if (this.inWater) {
+      this.wantJump = false; // no jumping out of the sea
     }
 
     // Procedural walk cycle for the built-in model: swing limbs from their
@@ -756,6 +818,55 @@ export class SimplePlayer extends THREE.Group {
         this.playerPosition.y = this.groundLevel + playerHeight;
       } else {
         this.isGrounded = false;
+      }
+    }
+  }
+
+  /**
+   * Water physics. Runs after grounding: on open water it overrides the
+   * seafloor stick so the player floats (swim button held) or sinks and
+   * drowns (button released). On land it just tops the breath back up.
+   */
+  private updateWaterState(dt: number): void {
+    this.inWater = false;
+    this.swimming = false;
+    if (this.planetRadius <= 0 || !this.waterSampler) {
+      this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
+      return;
+    }
+    const toPlayer = this.playerPosition.clone().sub(this.planetCenter);
+    const dist = toPlayer.length();
+    const dir = toPlayer.divideScalar(dist);
+    let water: { surface: number; isWater: boolean };
+    try {
+      water = this.waterSampler(dir);
+    } catch {
+      return;
+    }
+    // Not over water (or already above the surface on land) → recover breath
+    if (!water.isWater || dist > water.surface + 1.2) {
+      this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
+      return;
+    }
+    this.inWater = true;
+    const floatDist = water.surface + SimplePlayer.SWIM_FLOAT;
+
+    if (this.swimIntent) {
+      // Afloat: ease the body to the wave surface, kill the radial velocity
+      // so gravity can't drag it under, and refill the breath.
+      this.swimming = true;
+      this.isGrounded = false;
+      const target = dir.clone().multiplyScalar(floatDist);
+      this.playerPosition.lerp(target, Math.min(1, 9 * dt));
+      const vRad = this.velocity.dot(dir);
+      this.velocity.addScaledVector(dir, -vRad * 0.9);
+      this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
+    } else {
+      // Drowning: let gravity pull the player under and drain the breath.
+      // (updateGroundState will still catch them on the seafloor.)
+      this.oxygen = Math.max(0, this.oxygen - dt * SimplePlayer.DROWN_RATE);
+      if (this.oxygen <= 0 && this.onDrown) {
+        this.onDrown();
       }
     }
   }

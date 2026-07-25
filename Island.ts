@@ -88,6 +88,16 @@ export class Island {
   public pendingColliders: Array<{ position: THREE.Vector3; radius: number }> = [];
   // Shared time uniform driving the grass wind vertex shader
   public grassTimeUniform: { value: number } = { value: 0 };
+  // Shared time uniform driving the sea wave vertex shader
+  public seaTimeUniform: { value: number } = { value: 0 };
+  // Radial water-surface offset above the base radius (matches the sea mesh).
+  // Land sits >= base+0.3 (continent mask floor); the calm surface at +0.1
+  // with wave crests to +0.25 stays just under the beach so waves lap the
+  // shore without flooding the districts.
+  public static readonly SEA_OFFSET = 0.1;
+  // Wave field constants (shared by the sea shader AND the analytic sampler
+  // that floats swimmers/boats, so the mesh and the physics agree exactly).
+  private static readonly WAVE_AMP = 0.15;
 
   constructor(radius: number = 18) {
     this.radius = radius;
@@ -399,15 +409,43 @@ export class Island {
     // toonify skips it and it keeps its glossy PBR water look. It is a
     // separate mesh from surfaceMesh, so terrain sampling (raycasts
     // surfaceMesh only) and colliders never see it.
+    const seaMat = new THREE.MeshStandardMaterial({
+      color: 0x2f7fae,
+      transparent: true,
+      opacity: 0.84,
+      roughness: 0.1,
+      metalness: 0.1,
+    });
+    // Animated waves: displace each vertex radially by the SAME sum-of-sines
+    // the CPU sampler (waveHeightAt) uses, so swimmers/boats bob in lockstep
+    // with the visible surface. Crest foam lightens the colour.
+    seaMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = this.seaTimeUniform;
+      shader.uniforms.uAmp = { value: Island.WAVE_AMP };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uAmp;\nvarying float vWave;')
+        .replace(
+          '#include <begin_vertex>',
+          [
+            '#include <begin_vertex>',
+            'vec3 nrm = normalize(position);',
+            'float w = sin(nrm.x * 9.0 + uTime * 1.3) * 0.6',
+            '       + sin(nrm.z * 11.0 - uTime * 1.1) * 0.4',
+            '       + sin((nrm.x + nrm.z) * 7.0 + uTime * 0.9) * 0.5;',
+            'vWave = w;',
+            'transformed += nrm * w * uAmp;',
+          ].join('\n'),
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vWave;')
+        .replace(
+          '#include <color_fragment>',
+          '#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.75,0.9,1.0), smoothstep(0.7,1.4,vWave)*0.5);',
+        );
+    };
     const sea = new THREE.Mesh(
-      new THREE.SphereGeometry(this.radius + 0.08, 96, 96),
-      new THREE.MeshStandardMaterial({
-        color: 0x2f7fae,
-        transparent: true,
-        opacity: 0.82,
-        roughness: 0.12,
-        metalness: 0.08,
-      }),
+      new THREE.SphereGeometry(this.radius + Island.SEA_OFFSET, 96, 96),
+      seaMat,
     );
     sea.name = 'sea';
     sea.receiveShadow = true;
@@ -1600,6 +1638,34 @@ export class Island {
       Math.sin(lat),
       Math.sin(lon) * Math.cos(lat),
     ).normalize();
+  }
+
+  /** Radius of the calm water surface (matches the sea mesh). */
+  public seaLevel(): number {
+    return this.radius + Island.SEA_OFFSET;
+  }
+
+  /**
+   * Radius of the WAVY water surface along `dir` at time `t` — the same
+   * sum-of-sines the sea vertex shader uses, so swimmers and boats ride the
+   * exact crests you see. `t` is seconds (pass seaTimeUniform.value).
+   */
+  public waveHeightAt(dir: THREE.Vector3, t: number): number {
+    const n = dir.clone().normalize();
+    const w =
+      Math.sin(n.x * 9.0 + t * 1.3) * 0.6 +
+      Math.sin(n.z * 11.0 - t * 1.1) * 0.4 +
+      Math.sin((n.x + n.z) * 7.0 + t * 0.9) * 0.5;
+    return this.seaLevel() + w * Island.WAVE_AMP;
+  }
+
+  /**
+   * True where `dir` is open water — the terrain there sits below the calm
+   * sea surface (with a small margin so the beach isn't counted as sea).
+   */
+  public isOverWater(dir: THREE.Vector3): boolean {
+    const terrain = this.sampleSurfaceByDirection(dir, 0).position.length();
+    return terrain < this.seaLevel() - 0.15;
   }
 
   /**

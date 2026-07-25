@@ -101,6 +101,21 @@ export class GameScene extends THREE.Scene {
   private coinsCollected = 0;
   private onCoinCollected?: (total: number) => void;
 
+  // Rideable watercraft: boats + jetskis that float on the waves offshore.
+  // `dir` is the unit surface direction (position); `forward` is the last
+  // travel tangent (drives orientation). Boarded by swimming up + E.
+  private vehicles: Array<{
+    group: THREE.Group;
+    kind: 'boat' | 'jetski';
+    dir: THREE.Vector3;
+    forward: THREE.Vector3;
+    bob: number;
+    occupied: boolean;
+  }> = [];
+  private activeVehicle: number = -1; // index into vehicles, or -1
+  private vehicleMove = { forward: 0, strafe: 0 };
+  private onDrownRespawn?: () => void;
+
   // Fireflies that take over from the butterflies after dark
   private fireflies: Array<{
     mesh: THREE.Mesh;
@@ -277,6 +292,7 @@ export class GameScene extends THREE.Scene {
     // Navigation + traversal rewards
     this.createGuideSparkles();
     this.createCoins();
+    this.createVehicles();
 
     // Create player on island surface with spherical physics
     this.player = new SimplePlayer();
@@ -286,6 +302,13 @@ export class GameScene extends THREE.Scene {
       const sampled = this.island.sampleSurfaceByDirection(outwardDir, 0);
       return sampled.position.length();
     });
+    // Water: float/drown physics needs the wavy surface height + a water test
+    this.player.setWaterSampler((outwardDir) => ({
+      surface: this.island.waveHeightAt(outwardDir, this.island.seaTimeUniform.value),
+      isWater: this.island.isOverWater(outwardDir),
+    }));
+    // Drowning: bounce the player back to dry land at the nearest shore
+    this.player.setOnDrown(() => this.respawnFromDrown());
     // Spawn ON the terrain at the north pole (the ideal-sphere height can be
     // inside or above a terrain bump, which used to cause a slide at spawn)
     const spawnDir = new THREE.Vector3(0, 1, 0);
@@ -790,6 +813,250 @@ export class GameScene extends THREE.Scene {
     }
   }
 
+  // ── Watercraft ────────────────────────────────────────────────────────
+
+  private buildBoat(): THREE.Group {
+    const g = new THREE.Group();
+    const hullMat = new THREE.MeshToonMaterial({ color: 0xb5532f });
+    const woodMat = new THREE.MeshToonMaterial({ color: 0xe0c08a });
+    // Hull: a tapered box with a raised bow
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.5, 3.2), hullMat);
+    hull.position.y = 0.25;
+    g.add(hull);
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(0.7, 1.0, 4), hullMat);
+    bow.rotation.x = -Math.PI / 2;
+    bow.rotation.z = Math.PI / 4;
+    bow.scale.set(1, 0.7, 1);
+    bow.position.set(0, 0.25, 2.0);
+    g.add(bow);
+    // Deck + a little cabin
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.08, 2.6), woodMat);
+    deck.position.y = 0.5;
+    g.add(deck);
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.9), woodMat);
+    cabin.position.set(0, 0.85, -0.7);
+    g.add(cabin);
+    g.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+    });
+    return g;
+  }
+
+  private buildJetski(): THREE.Group {
+    const g = new THREE.Group();
+    const bodyMat = new THREE.MeshToonMaterial({ color: 0x27c2d6 });
+    const seatMat = new THREE.MeshToonMaterial({ color: 0x223344 });
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 2.0), bodyMat);
+    hull.position.y = 0.2;
+    g.add(hull);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.36, 0.8, 4), bodyMat);
+    nose.rotation.x = -Math.PI / 2;
+    nose.rotation.z = Math.PI / 4;
+    nose.position.set(0, 0.24, 1.3);
+    g.add(nose);
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.9), seatMat);
+    seat.position.set(0, 0.42, -0.2);
+    g.add(seat);
+    const bars = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.1), seatMat);
+    bars.position.set(0, 0.5, 0.45);
+    g.add(bars);
+    g.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+    });
+    return g;
+  }
+
+  /** Scatter a couple of boats + jetskis on the water just off the beach. */
+  private createVehicles(): void {
+    const SPOTS: Array<{ kind: 'boat' | 'jetski'; lon: number; lat: number }> = [
+      { kind: 'boat', lon: 0.3, lat: 0.14 },
+      { kind: 'boat', lon: 3.4, lat: 0.12 },
+      { kind: 'jetski', lon: 1.5, lat: 0.15 },
+      { kind: 'jetski', lon: 4.6, lat: 0.13 },
+    ];
+    for (const s of SPOTS) {
+      const dir = this.island.dirAt(s.lon, s.lat);
+      const group = s.kind === 'boat' ? this.buildBoat() : this.buildJetski();
+      group.name = `vehicle_${this.vehicles.length}`;
+      group.scale.setScalar(1.1);
+      // forward tangent points "uphill" toward the shore initially
+      const north = new THREE.Vector3(0, 1, 0)
+        .addScaledVector(dir, -dir.y)
+        .normalize();
+      const v = { group, kind: s.kind, dir: dir.clone(), forward: north, bob: Math.random() * 6, occupied: false };
+      this.vehicles.push(v);
+      this.add(group);
+      this.orientVehicle(v);
+    }
+  }
+
+  /** Place + orient a vehicle on the current wave surface along its dir. */
+  private orientVehicle(v: {
+    group: THREE.Group;
+    dir: THREE.Vector3;
+    forward: THREE.Vector3;
+    bob: number;
+  }): void {
+    const surf = this.island.waveHeightAt(v.dir, this.island.seaTimeUniform.value);
+    v.group.position.copy(v.dir).multiplyScalar(surf);
+    // Basis: +Z = travel forward, +Y = surface normal (up), +X = up × fwd
+    const zAxis = v.forward.clone().normalize();
+    const xAxis = new THREE.Vector3().crossVectors(v.dir, zAxis).normalize();
+    const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+    v.group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
+  }
+
+  /** True while the player is riding a boat/jetski. */
+  public isRidingVehicle(): boolean {
+    return this.activeVehicle >= 0;
+  }
+
+  /** Steer the active vehicle (camera-relative, like player movement). */
+  public setVehicleMove(forward: number, strafe: number): void {
+    this.vehicleMove.forward = forward;
+    this.vehicleMove.strafe = strafe;
+  }
+
+  /** Nearest boardable vehicle to the player within range, or -1. */
+  public nearestBoardable(): number {
+    if (this.activeVehicle >= 0) return -1;
+    const p = this.player.getWorldPosition();
+    let best = -1;
+    let bestD = 3.2; // board range
+    this.vehicles.forEach((v, i) => {
+      if (v.occupied) return;
+      const d = v.group.position.distanceTo(p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return best;
+  }
+
+  public vehicleKind(index: number): 'boat' | 'jetski' | null {
+    return this.vehicles[index]?.kind ?? null;
+  }
+
+  /** Board a vehicle: suspend player physics, mark it occupied. */
+  public boardVehicle(index: number): void {
+    const v = this.vehicles[index];
+    if (!v || v.occupied) return;
+    v.occupied = true;
+    this.activeVehicle = index;
+    this.vehicleMove.forward = 0;
+    this.vehicleMove.strafe = 0;
+    this.player.setRiding(true);
+  }
+
+  /** Hop off onto the nearest dry shore so you don't instantly drown. */
+  public disembarkVehicle(): void {
+    if (this.activeVehicle < 0) return;
+    const v = this.vehicles[this.activeVehicle];
+    v.occupied = false;
+    this.activeVehicle = -1;
+    this.player.setRiding(false);
+    // find dry land at the vehicle's longitude, just up the beach
+    const lon = Math.atan2(v.dir.z, v.dir.x);
+    for (let lat = 0.3; lat <= 0.55; lat += 0.03) {
+      const d = this.island.dirAt(lon, lat);
+      if (!this.island.isOverWater(d)) {
+        const s = this.island.sampleSurfaceByDirection(d, 0);
+        this.player.setWorldPosition(d.clone().multiplyScalar(s.position.length() + 0.75));
+        this.player.updateWorldMatrix();
+        this.player.resetOxygen();
+        return;
+      }
+    }
+  }
+
+  private _vehFwd = new THREE.Vector3();
+  private _vehTangent = new THREE.Vector3();
+  private _vehNext = new THREE.Vector3();
+
+  /** Per-frame: bob idle craft, drive the active one, keep the rider aboard. */
+  private updateVehicles(deltaTime: number): void {
+    if (this.vehicles.length === 0) return;
+    const R = this.island.getRadius();
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      if (i === this.activeVehicle && this.orbitCamera) {
+        // Drive: camera-relative move → step along a great circle on water
+        const camF = this.orbitCamera.getForwardDirection();
+        const camR = this.orbitCamera.getRightDirection();
+        this._vehFwd
+          .copy(camF)
+          .multiplyScalar(this.vehicleMove.forward)
+          .addScaledVector(camR, this.vehicleMove.strafe);
+        const inLen = this._vehFwd.length();
+        if (inLen > 0.02) {
+          this._vehFwd.normalize();
+          // tangent = move projected off the radial
+          this._vehTangent
+            .copy(this._vehFwd)
+            .addScaledVector(v.dir, -this._vehFwd.dot(v.dir))
+            .normalize();
+          const speed = v.kind === 'jetski' ? 10 : 6.5;
+          const theta = (speed * deltaTime) / R;
+          this._vehNext
+            .copy(v.dir)
+            .multiplyScalar(Math.cos(theta))
+            .addScaledVector(this._vehTangent, Math.sin(theta))
+            .normalize();
+          // stay on water — don't beach the boat
+          if (this.island.isOverWater(this._vehNext)) {
+            v.dir.copy(this._vehNext);
+            v.forward.copy(this._vehTangent);
+          }
+        }
+        this.orientVehicle(v);
+        // Seat the rider on deck; camera follows via playerPosition
+        const surf = this.island.waveHeightAt(v.dir, this.island.seaTimeUniform.value);
+        this.player.setWorldPosition(v.dir.clone().multiplyScalar(surf + 0.9));
+        // Face travel: same tangent-frame yaw setPlayerMovement uses
+        const alignQ = new THREE.Quaternion().setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0),
+          v.dir,
+        );
+        const local = v.forward.clone().applyQuaternion(alignQ.invert());
+        this.player.setRotation(Math.atan2(local.x, local.z));
+        this.player.updateWorldMatrix();
+      } else {
+        // Idle: bob gently on the swell
+        v.bob += deltaTime;
+        this.orientVehicle(v);
+        v.group.position.addScaledVector(v.dir, Math.sin(v.bob * 1.4) * 0.06);
+      }
+    }
+  }
+
+  private respawnFromDrown(): void {
+    const p = this.player.getWorldPosition();
+    const lon = Math.atan2(p.z, p.x);
+    // nearest dry beach at this longitude
+    let placed = false;
+    for (let lat = 0.32; lat <= 0.6; lat += 0.03) {
+      const d = this.island.dirAt(lon, lat);
+      if (!this.island.isOverWater(d)) {
+        const s = this.island.sampleSurfaceByDirection(d, 0);
+        this.player.setWorldPosition(d.clone().multiplyScalar(s.position.length() + 0.75));
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      const s = this.island.sampleSurfaceByDirection(new THREE.Vector3(0, 1, 0), 0);
+      this.player.setWorldPosition(new THREE.Vector3(0, s.position.length() + 0.75, 0));
+    }
+    this.player.updateWorldMatrix();
+    this.player.resetOxygen();
+    this.onDrownRespawn?.();
+  }
+
+  public setOnDrownRespawn(cb: () => void): void {
+    this.onDrownRespawn = cb;
+  }
+
   /**
    * Cozy chimney smoke: 3 looping puffs per chimney that rise along the
    * surface normal, growing and fading before wrapping back down.
@@ -1236,6 +1503,10 @@ export class GameScene extends THREE.Scene {
       // Grass wind (GPU-side — just advance the shared uniform)
       this.island.grassTimeUniform.value = time;
     }
+
+    // Sea waves (GPU-side + shared with the CPU swim/boat sampler)
+    this.island.seaTimeUniform.value = time;
+    this.updateVehicles(deltaTime);
 
     // Butterflies: slow figure-8 drift + fast wing flap
     for (const bf of this.butterflies) {

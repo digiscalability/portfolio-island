@@ -216,6 +216,12 @@ class SimpleApp {
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
       this.scene.setOnCoinCollected((total) => this.ui.updateCoinCounter(total));
 
+      // Drowning: washed back to shore with a splash message
+      this.scene.setOnDrownRespawn(() => {
+        this.ui.flashMessage('🌊 You nearly drowned! Washed ashore.');
+        sfx.land();
+      });
+
       // Mute button → shared AudioManager (created by startBackgroundMusic)
       this.ui.setOnMuteToggle(() => {
         const am = (window as unknown as { audioManager?: { toggleMute(): boolean } }).audioManager;
@@ -417,6 +423,22 @@ class SimpleApp {
           this.scene.standUpFromBench();
           this.ui.hideInteractionPrompt();
         }
+      } else if (this.scene.isRidingVehicle()) {
+        // Driving a boat/jetski: WASD/joystick steers the craft; E hops off
+        const moveInput = this.inputManager.getMovementInput();
+        const joy = this.ui.getJoystick();
+        this.scene.setVehicleMove(
+          Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
+          Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
+        );
+        const cameraInput = this.inputManager.getCameraInput();
+        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
+        if (this.inputManager.consumeKeyPress('e')) {
+          this.scene.disembarkVehicle();
+          this.ui.hideInteractionPrompt();
+        }
+        this.ui.updateBreath(1, false);
       } else {
         // Get input
         const moveInput = this.inputManager.getMovementInput();
@@ -430,12 +452,16 @@ class SimpleApp {
           Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
         );
         const player = this.scene.getPlayer();
-        if (jumpInput) {
+        // Swim: hold Space to stay afloat in water (same key jumps on land)
+        if (player) player.setSwimIntent(jumpInput);
+        if (jumpInput && player && !player.isInWater()) {
           // Edge-triggered: one blip per press, only from the ground
-          if (player && player.isOnGround() && !this.prevJumpHeld) sfx.jump();
+          if (player.isOnGround() && !this.prevJumpHeld) sfx.jump();
           this.scene.playerJump();
         }
         this.prevJumpHeld = jumpInput;
+        // Breath meter + underwater vignette
+        if (player) this.ui.updateBreath(player.getOxygen(), player.isInWater());
 
         // Wave at nearby visitors
         if (this.inputManager.consumeKeyPress('q') && this.multiplayer) {
@@ -479,8 +505,21 @@ class SimpleApp {
         // never become an XSS vector once they turn dynamic (multiplayer).
         const esc = (s: string) =>
           s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const boardable = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
-        if (nearby) {
+        if (boardable >= 0) {
+          // A boat/jetski is within reach (swim up to it): offer to board
+          const kind = this.scene.vehicleKind(boardable);
+          const icon = kind === 'jetski' ? '🛶' : '⛵';
+          this.ui.showInteractionPrompt(`${icon} Press <strong>E</strong> to ride`);
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.boardVehicle(boardable);
+            sfx.blip();
+          }
+        } else if (player && player.isInWater() && !player.isSwimming()) {
+          // In the water and sinking: tell them how to swim
+          this.ui.showInteractionPrompt('🏊 Hold <strong>Space</strong> to swim');
+        } else if (nearby) {
           // Show interaction prompt
           let text = '⌨️ Press <strong>E</strong> to interact';
           if (nearby.type === 'mailbox') {
