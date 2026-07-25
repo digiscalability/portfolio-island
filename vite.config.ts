@@ -43,6 +43,19 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'index.html'),
       },
+      output: {
+        // Split heavy vendors into their own long-lived chunks: three (the
+        // bulk of the bundle) and firebase parse/cache independently of app
+        // code, so an app-only change doesn't re-ship megabytes and the
+        // browser can cache the engine across deploys.
+        manualChunks(id: string): string | undefined {
+          if (id.includes('node_modules')) {
+            if (id.includes('/three/') || id.includes('\\three\\')) return 'three';
+            if (id.includes('firebase') || id.includes('@firebase')) return 'firebase';
+          }
+          return undefined;
+        },
+      },
     },
     // Ensure assets are copied to output
     copyPublicDir: true,

@@ -6,6 +6,7 @@ export class SimpleUI {
   private overlay: HTMLElement;
   private loadingDiv: HTMLElement | null = null;
   private welcomeDiv: HTMLElement | null = null;
+  private nameModalDiv: HTMLElement | null = null;
   private interactionDiv: HTMLElement | null = null;
   private fpsDiv: HTMLElement | null = null;
   private playerCountDiv: HTMLElement | null = null;
@@ -19,6 +20,14 @@ export class SimpleUI {
   private typewriterText: string = '';
   private typewriterPos: number = 0;
   private dialogueActive: boolean = false;
+  // Touch device? Drives on-screen buttons + rewrites key-name prompts
+  // ("Press E") into tap language ("Tap USE") pointing at those buttons.
+  private readonly isTouch: boolean =
+    typeof window !== 'undefined' &&
+    ('ontouchstart' in window ||
+      (navigator.maxTouchPoints ?? 0) > 0 ||
+      // ?touch forces the mobile control scheme on desktop for testing
+      (typeof location !== 'undefined' && location.search.includes('touch')));
 
   constructor(id: string) {
     // Create or get overlay
@@ -209,8 +218,7 @@ export class SimpleUI {
    * the analog joystick is merged into movement in main-simple.
    */
   private createTouchControls(): void {
-    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    if (!isTouch) return;
+    if (!this.isTouch) return;
 
     // Joystick
     const base = document.createElement('div');
@@ -269,28 +277,43 @@ export class SimpleUI {
       moveThumb(0, 0);
     });
 
-    // Action buttons: synthetic key events reuse every existing input path
-    const makeButton = (label: string, bottom: string, code: string, key: string) => {
+    // Action buttons: synthetic key events reuse every existing input path.
+    // z-index 1650 keeps them ABOVE the dialogue panel (1600) so the touch
+    // controls are never hidden behind it — the reported "keys behind the
+    // dialogue" bug. Each button shows an icon + caption so its job is clear
+    // without a physical key.
+    const makeButton = (
+      icon: string,
+      caption: string,
+      bottom: string,
+      code: string,
+      key: string,
+      tint: string,
+    ) => {
       const btn = document.createElement('div');
-      btn.textContent = label;
+      btn.innerHTML =
+        `<div style="font-size:24px;line-height:1;">${icon}</div>` +
+        `<div style="font-size:10px;font-weight:700;letter-spacing:1px;margin-top:2px;opacity:0.9;">${caption}</div>`;
       Object.assign(btn.style, {
         position: 'absolute',
-        right: 'calc(var(--sar, 0px) + 30px)',
+        right: 'calc(var(--sar, 0px) + 26px)',
         bottom: `calc(var(--sab, 0px) + ${bottom})`,
-        width: '68px',
-        height: '68px',
+        width: '74px',
+        height: '74px',
         borderRadius: '50%',
-        background: 'rgba(255,255,255,0.16)',
-        border: '2px solid rgba(255,255,255,0.3)',
+        background: tint,
+        border: '2px solid rgba(255,255,255,0.4)',
+        boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
         color: 'white',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        fontSize: '22px',
         fontFamily: 'system-ui, sans-serif',
         pointerEvents: 'auto',
         touchAction: 'none',
         userSelect: 'none',
+        zIndex: '1650',
       });
       const fire = (type: 'keydown' | 'keyup') => {
         const ev = new KeyboardEvent(type, { code, key, bubbles: true });
@@ -300,18 +323,25 @@ export class SimpleUI {
       btn.addEventListener('touchstart', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        btn.style.background = 'rgba(255,255,255,0.35)';
+        btn.style.transform = 'scale(0.9)';
+        btn.style.filter = 'brightness(1.35)';
         fire('keydown');
       }, { passive: false });
-      btn.addEventListener('touchend', (e) => {
+      const release = (e: Event) => {
         e.stopPropagation();
-        btn.style.background = 'rgba(255,255,255,0.16)';
+        btn.style.transform = 'scale(1)';
+        btn.style.filter = 'none';
         fire('keyup');
-      });
+      };
+      btn.addEventListener('touchend', release);
+      btn.addEventListener('touchcancel', release);
       this.overlay.appendChild(btn);
     };
-    makeButton('E', '116px', 'KeyE', 'e');
-    makeButton('⤒', '34px', 'Space', ' ');
+    // Stacked bottom-right: interact (primary, lowest for thumb reach),
+    // jump/swim (hold), wave.
+    makeButton('👆', 'USE', '36px', 'KeyE', 'e', 'rgba(80,150,90,0.5)');
+    makeButton('⤒', 'JUMP', '124px', 'Space', ' ', 'rgba(70,120,190,0.5)');
+    makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', 'rgba(160,120,60,0.5)');
   }
 
   /**
@@ -393,9 +423,8 @@ export class SimpleUI {
 
     // Returning visitors get a brief hello instead of the full tutorial
     const returning = localStorage.getItem('ds_welcomed') === '1';
-    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    const controlsLine = isTouch
-      ? 'Drag the joystick to move, buttons to jump and interact.'
+    const controlsLine = this.isTouch
+      ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE. Tap a dialogue to continue.'
       : 'Use WASD to move, mouse to look around, space to jump, Q to wave at other visitors.';
     this.welcomeDiv.innerHTML = returning
       ? `<h2 style="margin: 0; color: #4CAF50;">👋 Welcome back!</h2>`
@@ -435,7 +464,86 @@ export class SimpleUI {
    * Check if welcome is visible
    */
   isWelcomeVisible(): boolean {
-    return this.welcomeDiv !== null;
+    // The name modal counts as blocking too, so movement/interaction stays
+    // suspended (and typing your name never drives the player).
+    return this.welcomeDiv !== null || this.nameModalDiv !== null;
+  }
+
+  /**
+   * First-visit name entry. Shows a centered modal; on submit it persists the
+   * name and calls onDone(name). Returning visitors (saved name) skip it.
+   */
+  promptName(defaultName: string, onDone: (name: string) => void): void {
+    const modal = document.createElement('div');
+    Object.assign(modal.style, {
+      position: 'absolute',
+      inset: '0',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '18px',
+      background: 'rgba(6,10,20,0.85)',
+      pointerEvents: 'auto',
+      zIndex: '3200',
+      color: 'white',
+      fontFamily: 'system-ui, sans-serif',
+      textAlign: 'center',
+      padding: '24px',
+    });
+    modal.innerHTML = `
+      <div style="font-size:26px;font-weight:700;">🌎 Welcome to Life Island</div>
+      <div style="opacity:0.85;font-size:15px;max-width:320px;">What should other visitors call you?</div>
+    `;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 20;
+    input.placeholder = 'Your name';
+    input.value = defaultName || '';
+    Object.assign(input.style, {
+      padding: '12px 16px',
+      fontSize: '18px',
+      borderRadius: '12px',
+      border: '2px solid rgba(120,160,255,0.5)',
+      background: 'rgba(255,255,255,0.1)',
+      color: 'white',
+      textAlign: 'center',
+      width: 'min(300px, 80vw)',
+      outline: 'none',
+    });
+    const btn = document.createElement('button');
+    btn.textContent = 'Enter the island →';
+    Object.assign(btn.style, {
+      padding: '12px 26px',
+      fontSize: '16px',
+      fontWeight: '700',
+      borderRadius: '12px',
+      border: 'none',
+      background: 'linear-gradient(135deg,#4CAF50,#3d8b40)',
+      color: 'white',
+      cursor: 'pointer',
+    });
+    let done = false;
+    const submit = (): void => {
+      if (done) return;
+      done = true;
+      const name = (input.value.trim() || defaultName || 'Visitor').slice(0, 20);
+      modal.remove();
+      this.nameModalDiv = null;
+      onDone(name);
+    };
+    // stopPropagation so keystrokes (incl. WASD/Space) never reach the game
+    // input handlers while the field is focused.
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') submit();
+    });
+    btn.addEventListener('click', submit);
+    modal.appendChild(input);
+    modal.appendChild(btn);
+    this.overlay.appendChild(modal);
+    this.nameModalDiv = modal;
+    window.setTimeout(() => input.focus(), 60);
   }
 
   /**
@@ -470,7 +578,21 @@ export class SimpleUI {
       });
     }
 
-    this.interactionDiv.innerHTML = text;
+    this.interactionDiv.innerHTML = this.touchify(text);
+  }
+
+  /**
+   * Rewrite keyboard prompts into touch language on phones/tablets. Desktop
+   * gets the text unchanged. Maps each key to the on-screen button that fires
+   * it so "Press E / Space / Q" becomes "Tap USE / JUMP / WAVE".
+   */
+  private touchify(html: string): string {
+    if (!this.isTouch) return html;
+    return html
+      .replace(/Press <strong>E<\/strong>/g, 'Tap <strong>👆 USE</strong>')
+      .replace(/Press <strong>Space<\/strong>/g, 'Tap <strong>⤒ JUMP</strong>')
+      .replace(/Hold <strong>Space<\/strong>/g, 'Hold <strong>⤒ JUMP</strong>')
+      .replace(/Press <strong>Q<\/strong>/g, 'Tap <strong>👋 WAVE</strong>');
   }
 
   /**
@@ -1496,6 +1618,15 @@ export class SimpleUI {
           'opacity 0.3s ease, transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1)',
         zIndex: '1600',
         overflow: 'hidden',
+        cursor: 'pointer',
+      });
+      // Tap anywhere on the panel to advance — the primary way to progress
+      // dialogue on touch (no keyboard). Routes through the same synthetic 'e'
+      // the USE button fires, so main-simple's dialogue handler runs unchanged.
+      this.dialogueDiv.addEventListener('click', () => {
+        const ev = new KeyboardEvent('keydown', { code: 'KeyE', key: 'e', bubbles: true });
+        window.dispatchEvent(ev);
+        document.dispatchEvent(ev);
       });
       this.overlay.appendChild(this.dialogueDiv);
       requestAnimationFrame(() => {
@@ -1529,7 +1660,7 @@ export class SimpleUI {
           font-size: 12px;
           color: rgba(160, 200, 255, 0.5);
         ">
-          <span id="dialogue-hint">Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to continue</span>
+          <span id="dialogue-hint">${this.isTouch ? 'Tap to continue' : 'Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to continue'}</span>
         </div>
       </div>
     `;
@@ -1576,7 +1707,9 @@ export class SimpleUI {
       this.startTypewriter(this.dialogueLines[this.dialogueIndex]);
       const hint = this.dialogueDiv?.querySelector('#dialogue-hint');
       if (hint && this.dialogueIndex === this.dialogueLines.length - 1) {
-        hint.innerHTML = 'Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to close';
+        hint.innerHTML = this.isTouch
+          ? 'Tap to close'
+          : 'Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to close';
       }
       return true;
     }

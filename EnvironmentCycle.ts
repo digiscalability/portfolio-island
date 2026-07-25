@@ -70,6 +70,11 @@ export class EnvironmentCycle {
   private precip: THREE.Points | null = null;
   private precipGeo: THREE.BufferGeometry | null = null;
   private precipSpeeds: Float32Array | null = null;
+  // Cached sprite textures for the two precipitation looks (built once,
+  // shared across every rebuild). Snow = soft round flake; rain = a thin
+  // vertical streak that reads as a falling drop on the camera-facing quad.
+  private static _snowTex: THREE.Texture | null = null;
+  private static _rainTex: THREE.Texture | null = null;
 
   private glowLights: Array<{ light: THREE.Light; base: number }> = [];
 
@@ -297,6 +302,56 @@ export class EnvironmentCycle {
     this.emitStatus();
   }
 
+  /** Soft round snowflake: bright core feathering to transparent, with a
+   * faint 6-spoke crystal hint. Reads as a fluffy flake instead of a hard dot. */
+  private static snowTexture(): THREE.Texture {
+    if (this._snowTex) return this._snowTex;
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 30);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.35, 'rgba(255,255,255,0.85)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(32, 32, 30, 0, Math.PI * 2);
+    ctx.fill();
+    // Subtle crystal spokes for a snowflake read at larger sizes
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(32, 32);
+      ctx.lineTo(32 + Math.cos(a) * 22, 32 + Math.sin(a) * 22);
+      ctx.stroke();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    this._snowTex = tex;
+    return tex;
+  }
+
+  /** Thin vertical rain streak: a soft-edged bright bar fading top and bottom. */
+  private static rainTexture(): THREE.Texture {
+    if (this._rainTex) return this._rainTex;
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createLinearGradient(0, 0, 0, 64);
+    g.addColorStop(0, 'rgba(200,224,255,0)');
+    g.addColorStop(0.45, 'rgba(210,230,255,0.95)');
+    g.addColorStop(0.75, 'rgba(190,215,255,0.7)');
+    g.addColorStop(1, 'rgba(190,215,255,0)');
+    ctx.fillStyle = g;
+    // Thin bar down the middle; soft horizontal falloff via a second gradient
+    ctx.filter = 'blur(1px)';
+    ctx.fillRect(28, 2, 8, 60);
+    const tex = new THREE.CanvasTexture(c);
+    this._rainTex = tex;
+    return tex;
+  }
+
   private rebuildPrecipitation(): void {
     if (this.precip) {
       this.scene.remove(this.precip);
@@ -309,23 +364,27 @@ export class EnvironmentCycle {
     if (this.weather !== 'rain' && this.weather !== 'snow') return;
 
     const snow = this.weather === 'snow';
-    const count = snow ? 400 : 500;
+    const count = snow ? 550 : 650;
     const pos = new Float32Array(count * 3);
     this.precipSpeeds = new Float32Array(count);
+    // Taller spawn column: with size-attenuation, the spread in depth gives a
+    // natural flake/drop size variance (nearer particles read bigger).
     for (let i = 0; i < count; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * 12;
-      pos[i * 3 + 1] = Math.random() * 9;
-      pos[i * 3 + 2] = (Math.random() - 0.5) * 12;
-      this.precipSpeeds[i] = snow ? 1.2 + Math.random() * 1.2 : 10 + Math.random() * 6;
+      pos[i * 3] = (Math.random() - 0.5) * 14;
+      pos[i * 3 + 1] = Math.random() * 11;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 14;
+      this.precipSpeeds[i] = snow ? 1.1 + Math.random() * 1.3 : 13 + Math.random() * 8;
     }
     this.precipGeo = new THREE.BufferGeometry();
     this.precipGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const mat = new THREE.PointsMaterial({
-      color: snow ? 0xffffff : 0x9db8d9,
-      size: snow ? 0.12 : 0.06,
+      color: snow ? 0xffffff : 0xcfe0ff,
+      size: snow ? 0.42 : 0.6,
+      map: snow ? EnvironmentCycle.snowTexture() : EnvironmentCycle.rainTexture(),
       transparent: true,
-      opacity: snow ? 0.9 : 0.65,
+      opacity: snow ? 0.95 : 0.7,
       depthWrite: false,
+      sizeAttenuation: true,
     });
     this.precip = new THREE.Points(this.precipGeo, mat);
     this.precip.name = 'precipitation';
@@ -446,13 +505,22 @@ export class EnvironmentCycle {
       const attr = this.precipGeo.getAttribute('position') as THREE.BufferAttribute;
       const arr = attr.array as Float32Array;
       const snow = this.weather === 'snow';
+      // Rain is driven at a steady slant; snow drifts on a gentle sine breeze.
+      const windX = snow ? 0 : Math.cos(time * 0.15) * 2.2;
+      const windZ = snow ? 0 : Math.sin(time * 0.15) * 1.4;
       for (let i = 0; i < this.precipSpeeds.length; i++) {
         arr[i * 3 + 1] -= this.precipSpeeds[i] * deltaTime;
-        if (snow) arr[i * 3] += Math.sin(time * 1.5 + i) * deltaTime * 0.4;
+        if (snow) {
+          arr[i * 3] += Math.sin(time * 1.5 + i) * deltaTime * 0.5;
+          arr[i * 3 + 2] += Math.cos(time * 1.1 + i * 0.7) * deltaTime * 0.4;
+        } else {
+          arr[i * 3] += windX * deltaTime;
+          arr[i * 3 + 2] += windZ * deltaTime;
+        }
         if (arr[i * 3 + 1] < -0.5) {
-          arr[i * 3 + 1] += 9.5;
-          arr[i * 3] = (Math.random() - 0.5) * 12;
-          arr[i * 3 + 2] = (Math.random() - 0.5) * 12;
+          arr[i * 3 + 1] += 11.5;
+          arr[i * 3] = (Math.random() - 0.5) * 14;
+          arr[i * 3 + 2] = (Math.random() - 0.5) * 14;
         }
       }
       attr.needsUpdate = true;

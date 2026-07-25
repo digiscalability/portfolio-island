@@ -1,7 +1,17 @@
 import * as THREE from 'three';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
 import { Materials } from './Materials';
 import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
+
+/** A remote player's rendered avatar — the SAME rigged model the local
+ * player uses, so a visitor looks identical on every screen. */
+export interface RemoteAvatar {
+  body: THREE.Group;
+  headBone: THREE.Object3D | null;
+  update: (dt: number, speed: number) => void;
+  dispose: () => void;
+}
 
 /** Cosmetic hats sold in the island shop. */
 export type HatId = 'party' | 'top' | 'crown' | 'cap' | 'flower' | 'wizard' | 'halo';
@@ -292,6 +302,98 @@ export class SimplePlayer extends THREE.Group {
     hat.position.set(0, this.gltfModel ? 0.36 : 0.95, 0);
     parent.add(hat);
     this.currentHat = hat;
+  }
+
+  // Base model loaded once, then skeleton-cloned per remote player.
+  private static remoteBasePromise:
+    | Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] } | null>
+    | null = null;
+
+  /**
+   * Build a remote-player avatar from the SAME rigged GLB the local player
+   * uses (skeleton-cloned so animation is independent). This is why other
+   * visitors used to look different to you than they do to themselves — the
+   * local player was the GLTF hero while peers were a crude cylinder figure.
+   * Returns null if the model can't load (caller keeps its procedural body).
+   */
+  public static async createRemoteAvatar(): Promise<RemoteAvatar | null> {
+    if (!this.remoteBasePromise) {
+      this.remoteBasePromise = loadGLTFWithFallbacks('/assets/models/player.glb', { scale: 0.88 })
+        .then((r) => (r ? { scene: r.scene, animations: r.animations } : null))
+        .catch(() => null);
+    }
+    const base = await this.remoteBasePromise;
+    if (!base) return null;
+
+    const model = cloneSkeleton(base.scene) as THREE.Group;
+    const body = new THREE.Group();
+    body.add(model);
+    body.updateMatrixWorld(true);
+
+    // Feet calibration to local -0.7 (same as the local player) so the peer
+    // group origin lines up with the broadcast player-centre position.
+    try {
+      const box = new THREE.Box3().setFromObject(model);
+      if (Number.isFinite(box.min.y)) model.position.y += -0.7 - box.min.y;
+    } catch {
+      /* keep default placement */
+    }
+
+    let headBone: THREE.Object3D | null = null;
+    model.traverse((o) => {
+      if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false;
+      if (o instanceof THREE.Mesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+      }
+      if (!headBone && (o as THREE.Bone).isBone && o.name === 'head') headBone = o;
+    });
+
+    // Match the local player's added hair cap (the GLB's own patch is sparse)
+    if (headBone) {
+      const hair = new THREE.Mesh(
+        new THREE.SphereGeometry(0.21, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62),
+        new THREE.MeshToonMaterial({ color: 0x6c594b }),
+      );
+      hair.position.set(0, 0.16, -0.02);
+      hair.rotation.x = 0.25;
+      hair.castShadow = true;
+      (headBone as THREE.Object3D).add(hair);
+    }
+
+    // Idle/walk blend so peers never freeze in the bind (T) pose
+    let mixer: THREE.AnimationMixer | null = null;
+    let idle: THREE.AnimationAction | null = null;
+    let walk: THREE.AnimationAction | null = null;
+    if (base.animations.length) {
+      mixer = new THREE.AnimationMixer(model);
+      const idleClip = base.animations.find((c) => /idle/i.test(c.name));
+      const walkClip = base.animations.find((c) => /walk|run/i.test(c.name));
+      if (idleClip) {
+        idle = mixer.clipAction(idleClip);
+        idle.play();
+      }
+      if (walkClip) {
+        walk = mixer.clipAction(walkClip);
+        walk.setEffectiveWeight(0);
+        walk.play();
+      }
+      if (!idle && !walk) mixer.clipAction(base.animations[0]).play();
+    }
+
+    const update = (dt: number, speed: number): void => {
+      if (mixer) mixer.update(dt);
+      if (walk) {
+        const w = THREE.MathUtils.clamp(speed / 3, 0, 1);
+        walk.setEffectiveWeight(w);
+        if (idle) idle.setEffectiveWeight(1 - w);
+      }
+    };
+    const dispose = (): void => {
+      mixer?.stopAllAction();
+    };
+
+    return { body, headBone, update, dispose };
   }
 
   /** Procedural toon hats sold in the island shop (also used by remote avatars). */

@@ -392,6 +392,9 @@ export class GameScene extends THREE.Scene {
       zones: this.zonesManager.getZoneCount(),
     });
 
+    // Floating identity pins above every NPC
+    this.createNameTags();
+
     // Mark as ready
     this.readyResolve();
   }
@@ -933,6 +936,13 @@ export class GameScene extends THREE.Scene {
   // Quest "!" markers floating above NPC quest givers
   private questMarkers: Array<{ mesh: THREE.Group; npcName: string; base: THREE.Vector3; normal: THREE.Vector3 }> = [];
 
+  // Floating role labels ("🥖 Baker") above every NPC, readable from afar.
+  private nameTags: Array<{
+    sprite: THREE.Sprite;
+    target: { position: THREE.Vector3; meshRef: THREE.Object3D };
+  }> = [];
+  private readonly _tagNormal = new THREE.Vector3();
+
   /** Show a bobbing "!" above each named NPC (clears markers not in the list). */
   public setQuestMarkers(npcNames: string[]): void {
     // Remove stale markers
@@ -962,6 +972,75 @@ export class GameScene extends THREE.Scene {
       this.add(marker);
       this.questMarkers.push({ mesh: marker, npcName: name, base, normal });
     }
+  }
+
+  // NPC name → floating-pin identity (emoji + short trade label). Lets a
+  // visitor read who's who from across the district without walking up.
+  private static readonly NPC_ROLES: Record<string, { emoji: string; role: string }> = {
+    'Elder Sage': { emoji: '🧙', role: 'Sage' },
+    'Village Baker': { emoji: '🥖', role: 'Baker' },
+    'Island Explorer': { emoji: '🧭', role: 'Explorer' },
+    'Young Student': { emoji: '📚', role: 'Student' },
+    'Market Vendor': { emoji: '🛒', role: 'Shop' },
+    Fisherman: { emoji: '🎣', role: 'Fisher' },
+    Artist: { emoji: '🎨', role: 'Artist' },
+    Guard: { emoji: '🛡️', role: 'Guard' },
+    Storyteller: { emoji: '📖', role: 'Storyteller' },
+    Wanderer: { emoji: '🚶', role: 'Wanderer' },
+    Gardener: { emoji: '🌷', role: 'Gardener' },
+    Architect: { emoji: '📐', role: 'Architect' },
+    Musician: { emoji: '🎵', role: 'Musician' },
+    'Lighthouse Keeper': { emoji: '🗼', role: 'Keeper' },
+    Tourist: { emoji: '📷', role: 'Tourist' },
+    Cartographer: { emoji: '🗺️', role: 'Mapmaker' },
+    Philosopher: { emoji: '🤔', role: 'Philosopher' },
+    Courier: { emoji: '✉️', role: 'Courier' },
+    'Night Watch': { emoji: '🔦', role: 'Watch' },
+  };
+
+  /** Build a floating identity pin above every NPC (once, after placement). */
+  private createNameTags(): void {
+    for (const npc of this.island.npcTargets) {
+      const info = GameScene.NPC_ROLES[npc.name] ?? { emoji: '📍', role: npc.name };
+      const sprite = GameScene.makeNameSprite(info.emoji, info.role);
+      this.add(sprite);
+      this.nameTags.push({ sprite, target: npc });
+    }
+    console.log(`🏷️ ${this.nameTags.length} NPC name pins created`);
+  }
+
+  /** Canvas pill (emoji + role) rendered as a camera-facing sprite. */
+  private static makeNameSprite(emoji: string, role: string): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const text = `${emoji} ${role}`;
+      ctx.font = '600 30px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const w = Math.min(248, ctx.measureText(text).width + 30);
+      // Pill background
+      ctx.fillStyle = 'rgba(10,14,26,0.85)';
+      ctx.beginPath();
+      ctx.roundRect(128 - w / 2, 12, w, 40, 20);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(170,205,255,0.7)';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(text, 128, 33);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    const sprite = new THREE.Sprite(
+      // depthWrite:false so pills never occlude each other; depthTest stays TRUE
+      // so terrain hides pins on the far side of the planet (no x-ray labels).
+      new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
+    );
+    sprite.scale.set(1.7, 0.42, 1);
+    sprite.renderOrder = 2;
+    return sprite;
   }
 
   public getCoinsCollected(): number {
@@ -1164,6 +1243,12 @@ export class GameScene extends THREE.Scene {
   /** True while the player is riding a boat/jetski. */
   public isRidingVehicle(): boolean {
     return this.activeVehicle >= 0;
+  }
+
+  /** Kind of vehicle the local player is currently riding (null if on foot).
+   * Broadcast over multiplayer so peers can render the craft under a rider. */
+  public getActiveVehicleKind(): 'boat' | 'jetski' | 'car' | null {
+    return this.activeVehicle >= 0 ? this.vehicles[this.activeVehicle]?.kind ?? null : null;
   }
 
   /** Steer the active vehicle (camera-relative, like player movement). */
@@ -2039,6 +2124,31 @@ export class GameScene extends THREE.Scene {
         .copy(m.base)
         .addScaledVector(m.normal, 2.1 + Math.sin(time * 2.4) * 0.12);
       m.mesh.rotateOnWorldAxis(m.normal, deltaTime * 1.8);
+    }
+
+    // NPC name pins: follow each (wandering) NPC, sit just above the head,
+    // scale with camera distance so they stay legible from afar, and fade
+    // out when you're right next to the NPC (so the pin never covers them).
+    for (const tag of this.nameTags) {
+      const pos = tag.target.position;
+      this._tagNormal.copy(pos).normalize();
+      tag.sprite.position
+        .copy(pos)
+        .addScaledVector(this._tagNormal, 1.82 + Math.sin(time * 2 + pos.x) * 0.05);
+      const dist = this.camera.position.distanceTo(tag.sprite.position);
+      // Constant-ish on-screen size: sprites attenuate ∝1/dist, so scale ∝dist.
+      const s = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6);
+      tag.sprite.scale.set(s * 1.7, s * 0.42, 1);
+      // Fade: hidden hugging-close, full through mid range, gone past the horizon
+      const op =
+        dist < 2.6 ? 0
+        : dist < 6 ? (dist - 2.6) / 3.4
+        : dist < 62 ? 1
+        : dist < 88 ? 1 - (dist - 62) / 26
+        : 0;
+      const mat = tag.sprite.material as THREE.SpriteMaterial;
+      mat.opacity = op;
+      tag.sprite.visible = op > 0.02;
     }
 
     // Drain colliders queued by async GLB placements (e.g. the orchard/

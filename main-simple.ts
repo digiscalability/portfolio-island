@@ -274,7 +274,23 @@ class SimpleApp {
         .getOrbitCamera()
         .flyInFromDistant(2500)
         .then(() => {
-          this.ui.showWelcome();
+          // Ask first-time visitors for their name (used everywhere instead of
+          // a random handle); returning visitors keep their saved one.
+          let saved: string | null = null;
+          try {
+            saved = localStorage.getItem('ds_player_name');
+          } catch {
+            /* no storage */
+          }
+          if (saved) {
+            this.multiplayer?.setName(saved);
+            this.ui.showWelcome();
+          } else {
+            this.ui.promptName('', (name) => {
+              this.multiplayer?.setName(name);
+              this.ui.showWelcome();
+            });
+          }
         });
 
       // Start render loop
@@ -283,8 +299,19 @@ class SimpleApp {
 
       setTimeout(() => this.ui.hideLoading(), 350);
 
-      // Start background music
-      this.startBackgroundMusic();
+      // Background music synthesis is heavy — it generates a minute of stereo
+      // samples with per-sample trig on the main thread. Running it during
+      // init (as before) stalled the opening fly-in: the startup "lag". Defer
+      // it to an idle slot after first paint; audio needs a user gesture to
+      // play anyway, so nothing is lost by generating it lazily.
+      const startMusic = () => void this.startBackgroundMusic();
+      if ('requestIdleCallback' in window) {
+        (window as unknown as {
+          requestIdleCallback: (cb: () => void, o?: { timeout: number }) => void;
+        }).requestIdleCallback(startMusic, { timeout: 5000 });
+      } else {
+        setTimeout(startMusic, 1500);
+      }
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
       // resumed it before, so music (and now SFX) stayed silent. Resume once
@@ -581,7 +608,11 @@ class SimpleApp {
     // Rain ambience follows the live weather (no-op unless the level changes)
     sfx.setRainLevel(this.scene.getEnvironmentCycle()?.getWeather() === 'rain' ? 1 : 0);
 
-    // Multiplayer: broadcast state, interpolate remote avatars
+    // Multiplayer: broadcast state (incl. which vehicle we're riding, so peers
+    // render the craft under us instead of seeing us float), interpolate peers
+    this.multiplayer?.setVehicle(
+      this.scene.isRidingVehicle() ? this.scene.getActiveVehicleKind() : null,
+    );
     this.multiplayer?.update(deltaTime);
 
     // Always update scene (for animations, etc.)
@@ -712,7 +743,9 @@ class SimpleApp {
 
       const ctx = audioManager.ensureCtx();
       const sr = ctx.sampleRate;
-      const duration = 120;
+      // 60s loop (was 120): halves synthesis cost/memory; the pad+melody
+      // cycles still line up, and it loops seamlessly for ambience.
+      const duration = 60;
       const N = sr * duration;
       const buffer = ctx.createBuffer(2, N, sr);
 
