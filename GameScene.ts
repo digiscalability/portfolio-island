@@ -115,6 +115,7 @@ export class GameScene extends THREE.Scene {
     // radius + normal and only re-sample while actually being driven.
     radius: number;
     normal: THREE.Vector3;
+    wheels: THREE.Object3D[]; // car wheel pivots (spin + steer), else empty
   }> = [];
   private parkedCars: THREE.Object3D[] = []; // collected during collider pass
   private activeVehicle: number = -1; // index into vehicles, or -1
@@ -1089,6 +1090,7 @@ export class GameScene extends THREE.Scene {
         occupied: false,
         radius: 0,
         normal: dir.clone(),
+        wheels: [] as THREE.Object3D[],
       };
       this.vehicles.push(v);
       this.add(group);
@@ -1103,6 +1105,14 @@ export class GameScene extends THREE.Scene {
       const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(car.quaternion);
       fwd.addScaledVector(sampled.normal, -fwd.dot(sampled.normal)).normalize();
       if (fwd.lengthSq() < 1e-6) fwd.copy(new THREE.Vector3(0, 1, 0).addScaledVector(dir, -dir.y)).normalize();
+      const wheels: THREE.Object3D[] = [];
+      car.traverse((o) => {
+        if (o.userData && o.userData.isWheel) {
+          // steer(Y) then roll(X): steer must be the outer rotation
+          if (o.userData.isFront) o.rotation.order = 'YXZ';
+          wheels.push(o);
+        }
+      });
       const v = {
         group: car,
         kind: 'car' as const,
@@ -1112,6 +1122,7 @@ export class GameScene extends THREE.Scene {
         occupied: false,
         radius: sampled.position.length() + 0.15,
         normal: sampled.normal.clone(),
+        wheels,
       };
       this.vehicles.push(v);
       this.placeVehicle(v, v.radius, v.normal);
@@ -1225,6 +1236,7 @@ export class GameScene extends THREE.Scene {
   private _vehTangent = new THREE.Vector3();
   private _vehNext = new THREE.Vector3();
   private _vehVel = new THREE.Vector3();
+  private _carDustAccum = 0;
 
   /** Per-frame: bob idle craft, drive the active one, keep the rider aboard. */
   private updateVehicles(deltaTime: number): void {
@@ -1287,6 +1299,27 @@ export class GameScene extends THREE.Scene {
         // Bank into turns + pitch (motion feel)
         v.group.rotateOnAxis(GameScene._localForward, -this.vehicleMove.strafe * 0.35);
         v.group.rotateOnAxis(GameScene._localRight, -Math.abs(this.vehicleMove.forward) * 0.1);
+
+        // Cars: roll the wheels (visible spokes), steer the fronts, and kick
+        // up a dust trail so the driving actually READS as motion.
+        if (isCar && v.wheels.length) {
+          const dirSign = this.vehicleMove.forward < -0.01 ? -1 : 1;
+          const roll = (moving ? dirSign * speed : 0) * deltaTime / 0.31;
+          const steer = Math.max(-1, Math.min(1, this.vehicleMove.strafe)) * 0.5;
+          for (const w of v.wheels) {
+            w.rotation.x -= roll;
+            if (w.userData.isFront) w.rotation.y = steer;
+          }
+          this._carDustAccum += deltaTime;
+          if (moving && this._carDustAccum > 0.1) {
+            this._carDustAccum = 0;
+            const rear = v.dir
+              .clone()
+              .multiplyScalar(surfaceR)
+              .addScaledVector(v.forward, -1.5);
+            this.spawnDust(rear, 2);
+          }
+        }
 
         // Seat the rider; camera follows via playerPosition + trails motion
         const seat = isCar ? 1.0 : 0.9;

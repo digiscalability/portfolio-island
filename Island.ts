@@ -1300,19 +1300,34 @@ export class Island {
       const wheelGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.12, 10);
       const hubGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.13, 6);
       const WHEEL_POS: [number, number, number][] = [
-        [-0.6, 0.15, 0.75], [0.6, 0.15, 0.75],
-        [-0.6, 0.15, -0.75], [0.6, 0.15, -0.75],
+        [-0.6, 0.15, 0.75], [0.6, 0.15, 0.75],   // front L, R
+        [-0.6, 0.15, -0.75], [0.6, 0.15, -0.75], // rear L, R
       ];
-      for (const [wx, wy, wz] of WHEEL_POS) {
+      // Wheels are parented to a hub pivot at the axle so the driving code
+      // can SPIN them (roll) around local X and STEER the fronts around
+      // local Y. A crossed spoke breaks the cylinder's symmetry so the roll
+      // is actually visible.
+      const spokeMat = Materials.createTrimMaterial(0xbfc4cc);
+      for (let wi = 0; wi < WHEEL_POS.length; wi++) {
+        const [wx, wy, wz] = WHEEL_POS[wi];
+        const pivot = new THREE.Group();
+        pivot.position.set(wx, wy, wz);
+        pivot.name = 'car_wheel';
+        pivot.userData.isWheel = true;
+        pivot.userData.isFront = wz > 0;
         const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-        wheel.position.set(wx, wy, wz);
-        wheel.rotation.z = Math.PI / 2;
+        wheel.rotation.z = Math.PI / 2; // lay the cylinder onto the axle (local X)
         wheel.castShadow = true;
-        carGroup.add(wheel);
+        pivot.add(wheel);
         const hub = new THREE.Mesh(hubGeo, hubMat);
-        hub.position.set(wx, wy, wz);
         hub.rotation.z = Math.PI / 2;
-        carGroup.add(hub);
+        pivot.add(hub);
+        for (let s = 0; s < 2; s++) {
+          const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.03, 0.32), spokeMat);
+          spoke.rotation.x = (s * Math.PI) / 2; // cross of two bars across the face
+          pivot.add(spoke);
+        }
+        carGroup.add(pivot);
       }
 
       // Parallel-parked along the boulevard: kerbside spots in the blocks
