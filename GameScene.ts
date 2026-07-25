@@ -2517,7 +2517,44 @@ export class GameScene extends THREE.Scene {
   private _vehTangent = new THREE.Vector3();
   private _vehNext = new THREE.Vector3();
   private _vehVel = new THREE.Vector3();
+  private _carColWorld = new THREE.Vector3();
+  private _carColPush = new THREE.Vector3();
   private _carDustAccum = 0;
+  private static readonly CAR_COLLIDE_RADIUS = 1.0;
+
+  /**
+   * Slide a driving car's surface direction out of any town-structure footprint
+   * it has entered (tangential push, like the player's own collision — the
+   * radial axis is owned by grounding). Mutates `dir` in place.
+   */
+  private resolveCarCollision(dir: THREE.Vector3, surfaceR: number): void {
+    const world = this._carColWorld.copy(dir).multiplyScalar(surfaceR);
+    let pushed = false;
+    for (const c of this.colliders) {
+      if (c.radius >= 1.2 && this.pushCarOutOf(world, c.position, c.radius)) pushed = true;
+    }
+    for (const o of this.placedObstacles) {
+      if (this.pushCarOutOf(world, o.pos, o.radius)) pushed = true;
+    }
+    if (pushed) dir.copy(world).normalize();
+  }
+
+  /** One car-vs-collider resolve: tangential push out of the footprint. */
+  private pushCarOutOf(world: THREE.Vector3, center: THREE.Vector3, cr: number): boolean {
+    const dx = world.x - center.x;
+    const dy = world.y - center.y;
+    const dz = world.z - center.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const minDist = GameScene.CAR_COLLIDE_RADIUS + cr;
+    if (dist >= minDist || dist < 1e-4) return false;
+    // Strip the radial component so the push stays along the surface.
+    this._carColPush.set(dx, dy, dz);
+    this._carColPush.addScaledVector(world, -this._carColPush.dot(world) / world.lengthSq());
+    if (this._carColPush.lengthSq() < 1e-6) return false;
+    this._carColPush.normalize().multiplyScalar(minDist - dist + 0.02);
+    world.add(this._carColPush);
+    return true;
+  }
 
   /** Per-frame: bob idle craft, drive the active one, keep the rider aboard. */
   private updateVehicles(deltaTime: number): void {
@@ -2577,6 +2614,9 @@ export class GameScene extends THREE.Scene {
           }
           surfaceR = v.radius;
           up = v.normal;
+          // Town collision: cars slide off building/stall footprints instead of
+          // driving through them (watercraft roam open sea, so skip them).
+          if (moving) this.resolveCarCollision(v.dir, surfaceR);
         } else {
           surfaceR = this.island.waveHeightAt(v.dir, this.island.seaTimeUniform.value);
           up = v.dir;
