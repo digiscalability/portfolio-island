@@ -476,9 +476,12 @@ export class SimpleUI {
     npcs: Array<{ lon: number; lat: number; hasQuest: boolean }>;
     zones: Array<{ lon: number; lat: number; color: string }>;
     delivery: { lon: number; lat: number } | null;
+    peers?: Array<{ lon: number; lat: number; name: string; waving: boolean }>;
   }): void {
-    const W = 190;
-    const H = 108;
+    const W = 208;
+    const HEAD = 18; // header strip height
+    const MAP = 118; // map body height
+    const H = HEAD + MAP;
     if (!this.mapCanvas) {
       this.mapCanvas = document.createElement('canvas');
       this.mapCanvas.width = W;
@@ -489,21 +492,32 @@ export class SimpleUI {
         left: 'calc(var(--sal, 0px) + 10px)',
         maxWidth: 'calc(100vw - var(--sal, 0px) - var(--sar, 0px) - 20px)',
         height: 'auto',
-        borderRadius: '10px',
-        border: '1px solid rgba(255,255,255,0.25)',
+        borderRadius: '12px',
+        border: '1px solid rgba(255,255,255,0.22)',
+        boxShadow: '0 6px 18px rgba(0,0,0,0.35)',
         pointerEvents: 'none',
       });
       this.overlay.appendChild(this.mapCanvas);
     }
     const ctx = this.mapCanvas.getContext('2d');
     if (!ctx) return;
+    const t = performance.now();
     const px = (lon: number) => ((lon / (Math.PI * 2) + 0.5) % 1) * W;
-    const py = (lat: number) => (1 - (lat / Math.PI + 0.5)) * H;
-    // Background: sea-to-land gradient feel
-    ctx.fillStyle = 'rgba(10, 26, 34, 0.78)';
-    ctx.fillRect(0, 0, W, H);
-    // Faint latitude lines
-    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    const py = (lat: number) => HEAD + (1 - (lat / Math.PI + 0.5)) * MAP;
+    const peers = data.peers ?? [];
+
+    ctx.clearRect(0, 0, W, H);
+
+    // ── Map body: deep-water vertical gradient with a soft vignette ──────
+    const grad = ctx.createLinearGradient(0, HEAD, 0, H);
+    grad.addColorStop(0, 'rgba(14, 40, 52, 0.9)');
+    grad.addColorStop(0.5, 'rgba(9, 26, 36, 0.9)');
+    grad.addColorStop(1, 'rgba(6, 18, 26, 0.9)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, HEAD, W, MAP);
+
+    // Grid: meridians (district longitudes) + latitude lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.lineWidth = 1;
     for (const lat of [-0.9, -0.45, 0, 0.45, 0.9]) {
       ctx.beginPath();
@@ -511,54 +525,169 @@ export class SimpleUI {
       ctx.lineTo(W, py(lat));
       ctx.stroke();
     }
-    // Zone plazas
+    for (let m = 0; m < 6; m++) {
+      const gx = (m / 6) * W;
+      ctx.beginPath();
+      ctx.moveTo(gx, HEAD);
+      ctx.lineTo(gx, H);
+      ctx.stroke();
+    }
+    // Equator a touch brighter for orientation
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath();
+    ctx.moveTo(0, py(0));
+    ctx.lineTo(W, py(0));
+    ctx.stroke();
+
+    // ── District plazas: glowing colored beacons ────────────────────────
     for (const z of data.zones) {
+      const zx = px(z.lon);
+      const zy = py(z.lat);
+      ctx.save();
+      ctx.shadowColor = z.color;
+      ctx.shadowBlur = 8;
       ctx.fillStyle = z.color;
       ctx.beginPath();
-      ctx.arc(px(z.lon), py(z.lat), 4, 0, Math.PI * 2);
+      ctx.arc(zx, zy, 4, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
+      ctx.strokeStyle = z.color;
+      ctx.globalAlpha = 0.35;
+      ctx.beginPath();
+      ctx.arc(zx, zy, 6.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
     }
-    // NPCs
+
+    // ── NPCs ────────────────────────────────────────────────────────────
     for (const n of data.npcs) {
+      const nx = px(n.lon);
+      const ny = py(n.lat);
       if (n.hasQuest) {
         ctx.fillStyle = '#ffd34a';
         ctx.beginPath();
-        ctx.arc(px(n.lon), py(n.lat), 3, 0, Math.PI * 2);
+        ctx.arc(nx, ny, 3, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = 'rgba(255, 211, 74, 0.5)';
+        ctx.strokeStyle = `rgba(255, 211, 74, ${0.35 + 0.25 * Math.sin(t / 260)})`;
         ctx.beginPath();
-        ctx.arc(px(n.lon), py(n.lat), 5, 0, Math.PI * 2);
+        ctx.arc(nx, ny, 5 + 1.2 * Math.sin(t / 260), 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        ctx.fillStyle = 'rgba(255, 190, 130, 0.85)';
+        ctx.fillStyle = 'rgba(255, 190, 130, 0.8)';
         ctx.beginPath();
-        ctx.arc(px(n.lon), py(n.lat), 1.8, 0, Math.PI * 2);
+        ctx.arc(nx, ny, 1.8, 0, Math.PI * 2);
         ctx.fill();
       }
     }
-    // Delivery target
-    if (data.delivery) {
-      const pulse = 3 + Math.sin(performance.now() / 250) * 1.2;
-      ctx.fillStyle = '#ff5252';
+
+    // ── Other players online: cyan blips with a soft glow ───────────────
+    for (const p of peers) {
+      const ppx = px(p.lon);
+      const ppy = py(p.lat);
+      // waving peers get an expanding ring so you can spot the greeting
+      if (p.waving) {
+        const r = 5 + ((t / 90) % 6);
+        ctx.strokeStyle = `rgba(63, 224, 255, ${Math.max(0, 0.6 - r / 12)})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(ppx, ppy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+      ctx.save();
+      ctx.shadowColor = '#3fe0ff';
+      ctx.shadowBlur = 7;
+      ctx.fillStyle = '#3fe0ff';
       ctx.beginPath();
-      ctx.arc(px(data.delivery.lon), py(data.delivery.lat), pulse, 0, Math.PI * 2);
+      ctx.arc(ppx, ppy, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // white core so it reads as a "player" pip
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.beginPath();
+      ctx.arc(ppx, ppy, 1.1, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Player: heading arrow
+
+    // ── Delivery target: pulsing red with a crosshair ───────────────────
+    if (data.delivery) {
+      const dx = px(data.delivery.lon);
+      const dy = py(data.delivery.lat);
+      const pulse = 3 + Math.sin(t / 250) * 1.4;
+      ctx.strokeStyle = `rgba(255, 82, 82, ${0.5 + 0.3 * Math.sin(t / 250)})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(dx, dy, pulse + 3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(dx - pulse - 5, dy);
+      ctx.lineTo(dx - pulse - 1, dy);
+      ctx.moveTo(dx + pulse + 1, dy);
+      ctx.lineTo(dx + pulse + 5, dy);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#ff5252';
+      ctx.beginPath();
+      ctx.arc(dx, dy, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── You: heading arrow with a field-of-view cone ────────────────────
     const x = px(data.player.lon);
     const y = py(data.player.lat);
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(data.player.heading);
+    // FOV cone fans out ahead (screen-up = forward)
+    const cone = ctx.createLinearGradient(0, 0, 0, -20);
+    cone.addColorStop(0, 'rgba(255,255,255,0.28)');
+    cone.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = cone;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-9, -20);
+    ctx.lineTo(9, -20);
+    ctx.closePath();
+    ctx.fill();
+    // arrow
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 3;
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.moveTo(0, -6);
-    ctx.lineTo(4, 4);
+    ctx.moveTo(0, -7);
+    ctx.lineTo(4.5, 4.5);
     ctx.lineTo(0, 1.5);
-    ctx.lineTo(-4, 4);
+    ctx.lineTo(-4.5, 4.5);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
+    ctx.restore();
+
+    // ── Header strip: title + live online count ─────────────────────────
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, HEAD);
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText('🗺  ISLAND MAP', 8, HEAD / 2 + 1);
+    const online = peers.length + 1;
+    const label = `${online} online`;
+    ctx.textAlign = 'right';
+    // green online dot + count
+    ctx.fillStyle = '#3fe0ff';
+    ctx.beginPath();
+    ctx.arc(W - 12 - ctx.measureText(label).width - 5, HEAD / 2, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText(label, W - 8, HEAD / 2 + 1);
+    // header underline
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath();
+    ctx.moveTo(0, HEAD - 0.5);
+    ctx.lineTo(W, HEAD - 0.5);
+    ctx.stroke();
   }
 
   /**

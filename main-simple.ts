@@ -516,11 +516,17 @@ class SimpleApp {
     // Quest compass: point at the active delivery's mailbox
     this.updateQuestCompass();
 
-    // Minimap: player + NPCs + plazas + delivery target (throttled to 10 Hz)
+    // Minimap: player + NPCs + plazas + delivery target + online peers
+    // (throttled to 10 Hz). Peers come from Multiplayer (GameScene stays
+    // decoupled from the network layer), merged in here.
     this.mapAccum += deltaTime;
     if (this.mapAccum > 0.1) {
       this.mapAccum = 0;
-      this.ui.updateMinimap(this.scene.getMinimapData());
+      const mapData = this.scene.getMinimapData();
+      this.ui.updateMinimap({
+        ...mapData,
+        peers: this.multiplayer ? this.multiplayer.getPeerLocations() : [],
+      });
     }
 
     // Rain ambience follows the live weather (no-op unless the level changes)
