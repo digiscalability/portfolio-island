@@ -117,6 +117,10 @@ export class GameScene extends THREE.Scene {
     normal: THREE.Vector3;
     wheels: THREE.Object3D[]; // car wheel pivots (spin + steer), else empty
   }> = [];
+
+  // Indices of vehicles currently driven by a REMOTE peer — their transform
+  // comes from the network, so the local vehicle update skips them.
+  private remoteHeldVehicles = new Set<number>();
   private parkedCars: THREE.Object3D[] = []; // collected during collider pass
   private activeVehicle: number = -1; // index into vehicles, or -1
   private vehicleMove = { forward: 0, strafe: 0 };
@@ -239,9 +243,35 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
+   * Seed Math.random with a FIXED sequence for the duration of world
+   * generation, then restore the real RNG. Every client runs the same
+   * generation code in the same order, so a fixed seed makes them build the
+   * IDENTICAL map — the prerequisite for a shared multiplayer world (props in
+   * the same place for everyone, and vehicle indices that line up so a car
+   * can be networked by index). Runtime randomness (multiplayer ids, FX)
+   * stays truly random because it happens after generation, once restored.
+   */
+  private static installSeededRandom(seedInit = 0x1a2b3c4d): () => void {
+    const real = Math.random;
+    let s = seedInit >>> 0;
+    Math.random = () => {
+      // mulberry32
+      s = (s + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    return () => {
+      Math.random = real;
+    };
+  }
+
+  /**
    * Initialize scene components
    */
   private async initialize(): Promise<void> {
+    const restoreRandom = GameScene.installSeededRandom();
+    try {
     // Create camera with extended far plane
     this.camera = new THREE.PerspectiveCamera(
       60,
@@ -394,6 +424,10 @@ export class GameScene extends THREE.Scene {
 
     // Floating identity pins above every NPC
     this.createNameTags();
+    } finally {
+      // Generation done — restore true randomness for runtime/FX.
+      restoreRandom();
+    }
 
     // Mark as ready
     this.readyResolve();
@@ -1251,6 +1285,63 @@ export class GameScene extends THREE.Scene {
     return this.activeVehicle >= 0 ? this.vehicles[this.activeVehicle]?.kind ?? null : null;
   }
 
+  /** Full state of the vehicle the local player drives, for broadcasting: the
+   * shared-index + exact world transform. Peers move THEIR copy of the same
+   * vehicle to match, so it's the real craft (correct colour) and it stays put
+   * when dropped. Null when on foot. */
+  public getActiveVehicleState(): {
+    idx: number;
+    kind: 'boat' | 'jetski' | 'car';
+    pos: [number, number, number];
+    quat: [number, number, number, number];
+  } | null {
+    if (this.activeVehicle < 0) return null;
+    const v = this.vehicles[this.activeVehicle];
+    if (!v) return null;
+    const p = v.group.position;
+    const q = v.group.quaternion;
+    return {
+      idx: this.activeVehicle,
+      kind: v.kind,
+      pos: [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)],
+      quat: [+q.x.toFixed(3), +q.y.toFixed(3), +q.z.toFixed(3), +q.w.toFixed(3)],
+    };
+  }
+
+  /**
+   * Apply peer-driven vehicle transforms to the local (identical, thanks to
+   * seeded generation) world vehicles. Held vehicles are moved + marked
+   * occupied so locals can't board them; released ones are left exactly where
+   * the peer dropped them and re-opened for boarding — so a car another player
+   * parks is right there for you to drive.
+   */
+  public syncRemoteVehicles(
+    list: Array<{ idx: number; pos: THREE.Vector3; quat: THREE.Quaternion }>,
+  ): void {
+    const nowHeld = new Set<number>();
+    for (const s of list) {
+      const v = this.vehicles[s.idx];
+      if (!v || s.idx === this.activeVehicle) continue; // never override my ride
+      v.group.position.copy(s.pos);
+      v.group.quaternion.copy(s.quat);
+      // Keep the logical fields in step so idle placement / a later local
+      // boarding uses the dropped location, not the original spawn.
+      v.dir.copy(s.pos).normalize();
+      v.radius = s.pos.length();
+      v.normal.copy(v.dir);
+      v.occupied = true;
+      nowHeld.add(s.idx);
+    }
+    // Release vehicles no longer held remotely: leave them put, reopen boarding
+    for (const idx of this.remoteHeldVehicles) {
+      if (!nowHeld.has(idx) && idx !== this.activeVehicle) {
+        const v = this.vehicles[idx];
+        if (v) v.occupied = false;
+      }
+    }
+    this.remoteHeldVehicles = nowHeld;
+  }
+
   /** Steer the active vehicle (camera-relative, like player movement). */
   public setVehicleMove(forward: number, strafe: number): void {
     this.vehicleMove.forward = forward;
@@ -1330,6 +1421,10 @@ export class GameScene extends THREE.Scene {
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
       const isCar = v.kind === 'car';
+
+      // A peer is driving this one — its transform is set by syncRemoteVehicles;
+      // don't bob/re-place it here or we'd fight the networked position.
+      if (this.remoteHeldVehicles.has(i)) continue;
 
       if (i === this.activeVehicle && this.orbitCamera) {
         // Drive: camera-relative move → step along a great circle. Cars stay

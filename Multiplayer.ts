@@ -28,6 +28,16 @@ interface WireMessage {
   p?: [number, number, number];
   q?: [number, number, number, number];
   veh?: VehicleKind | null; // vehicle the sender is riding (null = on foot)
+  vehIdx?: number; // shared index of that vehicle (same on every client)
+  vp?: [number, number, number]; // vehicle world position
+  vq?: [number, number, number, number]; // vehicle world quaternion
+}
+
+interface VehicleState {
+  idx: number;
+  kind: VehicleKind;
+  pos: [number, number, number];
+  quat: [number, number, number, number];
 }
 
 interface Peer {
@@ -46,9 +56,13 @@ interface Peer {
   // it loads so peers match the local player exactly.
   fallbackParts: THREE.Object3D[];
   remote: RemoteAvatar | null;
-  // Vehicle the peer is riding + its rendered mesh under the avatar.
+  // Vehicle the peer is riding: kind (freezes the walk anim) + shared index and
+  // its transform, which GameScene applies to the REAL world vehicle so the
+  // craft has the right colour and persists where it's parked.
   veh: VehicleKind | null;
-  vehMesh: THREE.Object3D | null;
+  vehIdx: number;
+  vp: THREE.Vector3;
+  vq: THREE.Quaternion;
   prevPos: THREE.Vector3; // for movement-speed → walk-blend
   speed: number;
 }
@@ -61,7 +75,7 @@ export class Multiplayer {
   public readonly selfId: string;
   public selfName: string;
   private selfHat: HatId | null = null;
-  private selfVehicle: VehicleKind | null = null;
+  private selfVehicle: VehicleState | null = null;
   private selfLabel: THREE.Sprite | null = null;
 
   private peers: Map<string, Peer> = new Map();
@@ -139,10 +153,25 @@ export class Multiplayer {
     this.sendState();
   }
 
-  /** Called each frame by the app: which vehicle (if any) the local player
-   * is riding, so it can be broadcast for peers to render. */
-  public setVehicle(kind: VehicleKind | null): void {
-    this.selfVehicle = kind;
+  /** Called each frame by the app: the vehicle (index + transform) the local
+   * player is riding, so peers can move their copy of the same craft. */
+  public setVehicle(state: VehicleState | null): void {
+    this.selfVehicle = state;
+  }
+
+  /** Peer-driven vehicles for GameScene to apply to the shared world vehicles. */
+  public getRemoteVehicleStates(): Array<{
+    idx: number;
+    pos: THREE.Vector3;
+    quat: THREE.Quaternion;
+  }> {
+    const out: Array<{ idx: number; pos: THREE.Vector3; quat: THREE.Quaternion }> = [];
+    for (const peer of this.peers.values()) {
+      if (peer.veh && peer.vehIdx >= 0) {
+        out.push({ idx: peer.vehIdx, pos: peer.vp, quat: peer.vq });
+      }
+    }
+    return out;
   }
 
   /**
@@ -192,6 +221,9 @@ export class Multiplayer {
         p: msg.p,
         q: msg.q,
         veh: msg.veh ?? null,
+        vehIdx: msg.vehIdx ?? -1,
+        vp: msg.vp ?? null,
+        vq: msg.vq ?? null,
         t: Date.now(),
         wave: this.selfWaveMs,
       }).catch(() => {});
@@ -237,6 +269,9 @@ export class Multiplayer {
         p: v.p,
         q: v.q,
         veh: v.veh ?? null,
+        vehIdx: v.vehIdx ?? -1,
+        vp: v.vp ?? undefined,
+        vq: v.vq ?? undefined,
       }),
     );
   }
@@ -351,11 +386,12 @@ export class Multiplayer {
       peer.hat = hat;
       this.applyPeerHat(peer);
     }
-    const veh = msg.veh ?? null;
-    if (veh !== peer.veh) {
-      peer.veh = veh;
-      this.setPeerVehicle(peer, veh);
-    }
+    // Vehicle: kind freezes the walk anim; idx+transform are applied to the
+    // shared world vehicle by GameScene (see getRemoteVehicleStates).
+    peer.veh = msg.veh ?? null;
+    peer.vehIdx = msg.vehIdx ?? -1;
+    if (msg.vp) peer.vp.set(msg.vp[0], msg.vp[1], msg.vp[2]);
+    if (msg.vq) peer.vq.set(msg.vq[0], msg.vq[1], msg.vq[2], msg.vq[3]);
   }
 
   /** Attach the peer's hat to the GLTF head bone (once loaded) or the avatar
@@ -387,69 +423,6 @@ export class Multiplayer {
     peer.avatar.add(peer.label);
   }
 
-  /** Show/hide the craft a peer is riding, parented under their avatar so it
-   * inherits the broadcast position + heading. This is the fix for peers
-   * "floating" while driving — vehicle state was never networked before. */
-  private setPeerVehicle(peer: Peer, kind: VehicleKind | null): void {
-    if (peer.vehMesh) {
-      peer.avatar.remove(peer.vehMesh);
-      peer.vehMesh = null;
-    }
-    if (!kind) return;
-    const mesh = Multiplayer.buildPeerVehicle(kind);
-    peer.avatar.add(mesh);
-    peer.vehMesh = mesh;
-  }
-
-  /** Compact toon craft rendered under a riding peer. Built facing −Z (the
-   * player model's forward) and sunk so the rider sits on it. */
-  private static buildPeerVehicle(kind: VehicleKind): THREE.Group {
-    const g = new THREE.Group();
-    const add = (w: number, h: number, d: number, c: number, y: number, z = 0): void => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), Materials.createToonMaterial(c));
-      m.position.set(0, y, z);
-      m.castShadow = true;
-      g.add(m);
-    };
-    const cone = (r: number, len: number, c: number, y: number, z: number): void => {
-      const m = new THREE.Mesh(new THREE.ConeGeometry(r, len, 4), Materials.createToonMaterial(c));
-      m.rotation.x = Math.PI / 2; // point the nose toward −Z (avatar forward)
-      m.rotation.z = Math.PI / 4;
-      m.scale.set(1, 0.7, 1);
-      m.position.set(0, y, z);
-      m.castShadow = true;
-      g.add(m);
-    };
-    if (kind === 'boat') {
-      add(1.3, 0.45, 3.0, 0xb5532f, 0.0); // hull
-      add(1.2, 0.08, 2.4, 0xe0c08a, 0.26); // deck
-      add(0.85, 0.55, 0.85, 0xe0c08a, 0.55, 0.85); // cabin (behind rider)
-      cone(0.62, 0.9, 0xb5532f, 0.2, -1.85); // bow
-      g.position.set(0, -0.95, 0.2);
-    } else if (kind === 'jetski') {
-      add(0.62, 0.32, 1.9, 0x27c2d6, 0.0); // hull
-      add(0.46, 0.16, 0.8, 0x223344, 0.22, -0.1); // seat
-      cone(0.32, 0.7, 0x27c2d6, 0.06, -1.15); // nose
-      g.position.set(0, -0.82, 0.05);
-    } else {
-      add(1.15, 0.4, 2.1, 0x3f6fb0, 0.12); // body
-      add(0.92, 0.42, 1.05, 0x2a4f80, 0.52, -0.05); // cabin
-      for (const sx of [-0.58, 0.58]) {
-        for (const sz of [-0.72, 0.72]) {
-          const wheel = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.24, 0.24, 0.16, 12),
-            Materials.createToonMaterial(0x1a1a1a),
-          );
-          wheel.rotation.z = Math.PI / 2;
-          wheel.position.set(sx, -0.05, sz);
-          wheel.castShadow = true;
-          g.add(wheel);
-        }
-      }
-      g.position.set(0, -0.62, 0);
-    }
-    return g;
-  }
 
   /**
    * Create a remote player. A crude procedural body shows instantly, then the
@@ -515,7 +488,9 @@ export class Multiplayer {
       fallbackParts,
       remote: null,
       veh: null,
-      vehMesh: null,
+      vehIdx: -1,
+      vp: new THREE.Vector3(),
+      vq: new THREE.Quaternion(),
       prevPos: new THREE.Vector3(),
       speed: 0,
     };
@@ -596,7 +571,10 @@ export class Multiplayer {
       hat: this.selfHat,
       p: [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)],
       q: [+q.x.toFixed(3), +q.y.toFixed(3), +q.z.toFixed(3), +q.w.toFixed(3)],
-      veh: this.selfVehicle,
+      veh: this.selfVehicle?.kind ?? null,
+      vehIdx: this.selfVehicle?.idx ?? -1,
+      vp: this.selfVehicle?.pos,
+      vq: this.selfVehicle?.quat,
     });
   }
 

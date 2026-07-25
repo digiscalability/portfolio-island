@@ -608,12 +608,15 @@ class SimpleApp {
     // Rain ambience follows the live weather (no-op unless the level changes)
     sfx.setRainLevel(this.scene.getEnvironmentCycle()?.getWeather() === 'rain' ? 1 : 0);
 
-    // Multiplayer: broadcast state (incl. which vehicle we're riding, so peers
-    // render the craft under us instead of seeing us float), interpolate peers
-    this.multiplayer?.setVehicle(
-      this.scene.isRidingVehicle() ? this.scene.getActiveVehicleKind() : null,
-    );
+    // Multiplayer: broadcast our state (incl. the vehicle index + transform
+    // we're driving) and interpolate peers, then apply peers' vehicles onto
+    // the shared world vehicles — so a peer drives the real craft (right
+    // colour) and a car they park stays there for anyone to drive.
+    this.multiplayer?.setVehicle(this.scene.getActiveVehicleState());
     this.multiplayer?.update(deltaTime);
+    if (this.multiplayer) {
+      this.scene.syncRemoteVehicles(this.multiplayer.getRemoteVehicleStates());
+    }
 
     // Always update scene (for animations, etc.)
     this.scene.update(deltaTime);
