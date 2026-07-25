@@ -61,6 +61,7 @@ class SimpleApp {
   private airborneTime: number = 0;
   private prevJumpHeld: boolean = false;
   private lastSwimWarnAt = 0; // throttle for the shoreline-barrier hint
+  private currentThrottle = 0; // last vehicle throttle magnitude (for engine sfx)
 
   private boundHandlers: {
     beforeUnload?: () => void;
@@ -242,7 +243,9 @@ class SimpleApp {
       // Vehicle time-trials: banner on start/checkpoint/finish + live lap HUD
       this.scene.setOnRaceEvent((e) => {
         this.ui.flashMessage(e.text);
-        if (e.kind === 'finish') sfx.coin();
+        if (e.kind === 'start') sfx.raceGo();
+        else if (e.kind === 'checkpoint') sfx.checkpoint();
+        else if (e.kind === 'finish') sfx.questComplete();
       });
       this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
 
@@ -492,10 +495,10 @@ class SimpleApp {
         // Driving a boat/jetski: WASD/joystick steers the craft; E hops off
         const moveInput = this.inputManager.getMovementInput();
         const joy = this.ui.getJoystick();
-        this.scene.setVehicleMove(
-          Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
-          Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
-        );
+        const vFwd = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
+        const vStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
+        this.scene.setVehicleMove(vFwd, vStrafe);
+        this.currentThrottle = Math.max(Math.abs(vFwd), Math.abs(vStrafe) * 0.5);
         const cameraInput = this.inputManager.getCameraInput();
         this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
         this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
@@ -653,6 +656,23 @@ class SimpleApp {
 
     // Rain ambience follows the live weather (no-op unless the level changes)
     sfx.setRainLevel(this.scene.getEnvironmentCycle()?.getWeather() === 'rain' ? 1 : 0);
+
+    // Ambient sea swell — a distant murmur inland, coastal near the shore,
+    // full when in the water (quantised so setSeaLevel only fires on changes).
+    const audioPlayer = this.scene.getPlayer();
+    if (audioPlayer) {
+      const wp = audioPlayer.getWorldPosition();
+      const lat = Math.asin(Math.max(-1, Math.min(1, wp.y / (wp.length() || 1))));
+      let sea = lat < 0.5 ? 0.45 : 0.15;
+      if (audioPlayer.isInWater()) sea = 1;
+      sfx.setSeaLevel(sea);
+    }
+    // Vehicle engine loop while driving; silent on foot
+    if (this.scene.isRidingVehicle()) {
+      sfx.setEngine(this.scene.getActiveVehicleKind(), this.currentThrottle);
+    } else {
+      sfx.setEngine(null, 0);
+    }
 
     // Multiplayer: broadcast our state (incl. the vehicle index + transform
     // we're driving) and interpolate peers, then apply peers' vehicles onto

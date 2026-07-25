@@ -1943,6 +1943,7 @@ export class GameScene extends THREE.Scene {
       const onSurf = dir.clone().multiplyScalar(surf);
       this.spawnRipple(onSurf, 2.4, 1.1);
       this.spawnSpray(onSurf, dir.clone(), 10, 5);
+      sfx.splash();
     }
 
     // Vehicle wakes + spray
