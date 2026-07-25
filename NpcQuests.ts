@@ -16,22 +16,27 @@ export type NpcQuestState = 'available' | 'active' | 'done';
 export interface NpcQuest {
   id: string;
   giverName: string;
-  kind: 'relay' | 'coins';
+  // 'relay' = carry a message to a target (completes at the target)
+  // 'fetch' = accept at giver, pick up an item at the target, return to giver
+  // 'coins' = gather N meadow coins, return to giver
+  kind: 'relay' | 'fetch' | 'coins';
   targetName?: string;
   coinTarget?: number;
   introDialogue: string[];
   activeGiverDialogue: string[];
-  relayDialogue?: string[];
+  relayDialogue?: string[]; // reused by 'fetch' as the pickup line at the target
   doneDialogue: string[];
   rewardCoins: number;
   state: NpcQuestState;
   coinBaseline: number;
+  carrying?: boolean; // 'fetch': the item has been picked up, not yet delivered
 }
 
 export interface TalkResult {
   lines: string[];
   accepted?: NpcQuest;
   completed?: NpcQuest;
+  pickedUp?: NpcQuest; // 'fetch': just collected the item at the target
 }
 
 const STORAGE_KEY = 'ds_npc_quests';
@@ -69,24 +74,25 @@ export class NpcQuestSystem {
     {
       id: 'baker_catch',
       giverName: 'Village Baker',
-      kind: 'relay',
+      kind: 'fetch',
       targetName: 'Fisherman',
       introDialogue: [
         'My fish pies are famous, but my supplier vanished!',
-        'Find the Fisherman and ask if today’s catch is any good.',
-        '📜 Quest accepted: talk to the Fisherman!',
+        'Bring me a fresh fish from the Fisherman down at the shore.',
+        '📜 Quest accepted: fetch a fish for the Baker!',
       ],
       activeGiverDialogue: [
-        'The Fisherman likes the quiet spots near the water.',
-        'No fish, no pies. Hurry, courier!',
+        'No fish yet? The Fisherman works the beach — bring me his best catch.',
       ],
       relayDialogue: [
-        'The Baker sent you? Tell them the catch is the best all season!',
-        'Snapper as big as your arm. The pies are saved.',
-        '✅ Quest complete!',
+        'The Baker sent you? Here — the finest snapper of the day.',
+        '🐟 You take the fish. Get it to the Baker while it’s fresh!',
       ],
-      doneDialogue: ['The pies are back in the oven. Come by later for a slice.'],
-      rewardCoins: 4,
+      doneDialogue: [
+        'A beauty! Watch closely — straight into the pie it goes. 🥧',
+        '✅ Quest complete! Come back for a slice.',
+      ],
+      rewardCoins: 6,
       state: 'available',
       coinBaseline: 0,
     },
@@ -115,12 +121,16 @@ export class NpcQuestSystem {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const saved = JSON.parse(raw) as Record<string, { state: NpcQuestState; coinBaseline: number }>;
+        const saved = JSON.parse(raw) as Record<
+          string,
+          { state: NpcQuestState; coinBaseline: number; carrying?: boolean }
+        >;
         for (const q of this.quests) {
           const s = saved[q.id];
           if (s) {
             q.state = s.state;
             q.coinBaseline = s.coinBaseline;
+            q.carrying = s.carrying;
           }
         }
       }
@@ -131,8 +141,10 @@ export class NpcQuestSystem {
 
   private save(): void {
     try {
-      const out: Record<string, { state: NpcQuestState; coinBaseline: number }> = {};
-      for (const q of this.quests) out[q.id] = { state: q.state, coinBaseline: q.coinBaseline };
+      const out: Record<string, { state: NpcQuestState; coinBaseline: number; carrying?: boolean }> =
+        {};
+      for (const q of this.quests)
+        out[q.id] = { state: q.state, coinBaseline: q.coinBaseline, carrying: q.carrying };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(out));
     } catch {
       /* session-only */
@@ -144,11 +156,31 @@ export class NpcQuestSystem {
     return this.quests.filter((q) => q.state === 'available').map((q) => q.giverName);
   }
 
+  /** True if a fetch item has been picked up but not yet delivered (restore the
+   * carried prop after a reload). */
+  public isCarryingFetchItem(): boolean {
+    return this.quests.some((q) => q.kind === 'fetch' && q.state === 'active' && !!q.carrying);
+  }
+
   /**
    * Called when the player talks to an NPC. Returns quest dialogue and any
    * accept/complete event, or null to use the NPC's ambient dialogue.
    */
   public onTalk(npcName: string, currentCoins: number): TalkResult | null {
+    // 0. Fetch quests: pick the item up at the target, deliver it back to the giver
+    for (const q of this.quests) {
+      if (q.kind !== 'fetch' || q.state !== 'active') continue;
+      if (npcName === q.targetName && !q.carrying) {
+        q.carrying = true;
+        this.save();
+        return { lines: q.relayDialogue ?? ['Take this back!'], pickedUp: q };
+      }
+      if (npcName === q.giverName && q.carrying) {
+        q.state = 'done';
+        this.save();
+        return { lines: q.doneDialogue, completed: q };
+      }
+    }
     // 1. Completing a relay quest by reaching its target
     for (const q of this.quests) {
       if (q.state === 'active' && q.kind === 'relay' && q.targetName === npcName) {

@@ -195,8 +195,15 @@ class SimpleApp {
           sfx.blip();
           this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
         }
+        // Fetch quest: picked the fish up at the Fisherman — carry it in hand
+        if (talk?.pickedUp) {
+          sfx.collect();
+          this.scene.setPlayerCarryingFish(true);
+        }
         if (talk?.completed) {
           const q = talk.completed;
+          // Delivering the fish → the Baker bakes it into a pie before your eyes
+          if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
           this.scene.addCoins(q.rewardCoins);
           sfx.questComplete();
           this.ui.showQuestComplete({
@@ -206,6 +213,11 @@ class SimpleApp {
           this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
         }
       });
+
+      // Restore the carried fish if a fetch quest was mid-delivery on reload
+      if (this.npcQuests.isCarryingFetchItem()) {
+        this.scene.setPlayerCarryingFish(true);
+      }
 
       // Environment badge: weather · time of day · place
       this.scene.getEnvironmentCycle()?.onStatus((status) => {

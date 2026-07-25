@@ -533,9 +533,11 @@ export class Island {
     // the boulevard (planned CBD blocks, not a ring). North row lat 0.64,
     // south row lat 0.29 — ±0.175 rad from the boulevard centerline leaves
     // pavement + sidewalk. Small claim arcs keep the rows exact.
+    // Thinned from 8 → 4 towers (one per corner) and spread wider so the CBD
+    // reads as a couple of blocks, not a wall — the island felt congested.
     const BUILDING_SITES: Array<[number, number]> = [
-      [5.84, 0.64], [6.12, 0.64], [0.16, 0.64], [0.44, 0.64],
-      [5.84, 0.29], [6.12, 0.29], [0.16, 0.29], [0.44, 0.29],
+      [5.8, 0.64], [0.48, 0.64],
+      [5.8, 0.29], [0.48, 0.29],
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
@@ -579,9 +581,10 @@ export class Island {
     // flanking the boulevard (lat 0.66 / 0.27), garden gaps between lots,
     // rows offset in lon so no cottage stares straight into another.
     // Near-plaza columns keep ≥0.2 rad from the plaza claim.
+    // Thinned from 8 → 6 cottages and spread wider (roomier village street).
     const HOUSE_SITES: Array<[number, number]> = [
-      [2.10, 0.66], [2.36, 0.66], [2.68, 0.66], [2.94, 0.66],
-      [2.04, 0.27], [2.30, 0.27], [2.72, 0.27], [2.98, 0.27],
+      [2.08, 0.66], [2.52, 0.66], [2.96, 0.66],
+      [2.06, 0.27], [2.54, 0.27], [3.0, 0.27],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
@@ -1570,7 +1573,12 @@ export class Island {
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
     const benchLegMat = Materials.createTrimMaterial(0x444444);
     for (let i = 0; i < BENCH_SITES.length; i++) {
-      const bDir = this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.1);
+      // Benches belong BESIDE the plaza paths, not on them. Claim clearance
+      // FIRST, then slide off any pavement — doing it the other way round let
+      // claimDir's jitter shove the bench back onto the street.
+      const bDir = this.pushOffStreet(
+        this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.1),
+      );
       const bSampled = this.sampleSurfaceByDirection(bDir, 0.0);
       const bench = new THREE.Group();
       // Real park-bench dimensions vs the 1.8u player: 1.7u long,
@@ -1941,6 +1949,42 @@ export class Island {
       if (dir.angleTo(s.dir) < s.halfArc) return true;
     }
     return false;
+  }
+
+  /** If `dir` sits on a street, slide it sideways off the pavement (benches,
+   * props that belong BESIDE a path, not on it). Returns the nudged direction. */
+  public pushOffStreet(dir: THREE.Vector3, step = 0.03, tries = 10): THREE.Vector3 {
+    const d = dir.clone().normalize();
+    for (let i = 0; i < tries && this.isNearStreet(d); i++) {
+      const s = this.nearestStreetDir(d, 0.6);
+      if (!s) break;
+      // Tangent pointing away from the street point (project d−s onto d's plane)
+      const away = d.clone().sub(s);
+      away.addScaledVector(d, -away.dot(d));
+      if (away.lengthSq() < 1e-8) break;
+      away.normalize();
+      d.addScaledVector(away, step).normalize();
+      if (d.y < Math.sin(0.29)) {
+        d.y = Math.sin(0.29);
+        d.normalize();
+      }
+    }
+    return d;
+  }
+
+  /** The nearest street-segment direction (for orienting shops/houses to face
+   * the pathway), or null if there are no streets or the nearest is > maxArc. */
+  public nearestStreetDir(dir: THREE.Vector3, maxArc = 0.35): THREE.Vector3 | null {
+    let best: THREE.Vector3 | null = null;
+    let bestAng = maxArc;
+    for (const s of this.streetDirs) {
+      const a = dir.angleTo(s.dir);
+      if (a < bestAng) {
+        bestAng = a;
+        best = s.dir;
+      }
+    }
+    return best ? best.clone() : null;
   }
 
   /**

@@ -126,6 +126,31 @@ export class GameScene extends THREE.Scene {
     catchIdx: number; // FISH_TYPES index of the current catch
   } | null = null;
 
+  // The Baker's routine: knead dough → bake it in the oven → lay the pie on the
+  // counter, on a loop. A quest can inject a one-off "fish pie" bake. Props
+  // (dough / pie / oven glow) are children of the bakery group (local space).
+  private baker: {
+    npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string; dialogue: string[] };
+    bakery: THREE.Group;
+    ovenGlow: THREE.Mesh;
+    dough: THREE.Group;
+    pie: THREE.Group | null;
+    questFish: THREE.Group | null; // the delivered fish, during the special bake
+    stand: { dir: THREE.Vector3; r: number; n: THREE.Vector3; face: THREE.Vector3 };
+    ovenLocal: THREE.Vector3; // oven-door position in bakery-local space
+    kneadLocal: THREE.Vector3; // prep spot on the counter
+    slots: THREE.Vector3[]; // local counter display positions
+    pies: THREE.Object3D[]; // displayed pies (FIFO capped)
+    state: 'knead' | 'toOven' | 'bake' | 'toCounter' | 'display' | 'fishBake';
+    t0: number;
+    fishPie: boolean; // the pie currently in the oven is the quest fish pie
+  } | null = null;
+
+  // The fish the player carries during the Baker's fetch quest (child of player).
+  private carriedFish: THREE.Group | null = null;
+  // Generic gold coin-pops (sales / rewards), rising + spinning + fading.
+  private popCoins: Array<{ mesh: THREE.Mesh; t0: number; n: THREE.Vector3 }> = [];
+
   // Looping smoke puffs rising from house chimneys
   private smokePuffs: Array<{
     mesh: THREE.Mesh;
@@ -472,6 +497,8 @@ export class GameScene extends THREE.Scene {
 
     // The Fisherman stands at the shore and casts a line
     this.setupFisherman();
+    // The Baker works his oven at the village bakery
+    this.setupBaker();
     } finally {
       // Generation done — restore true randomness for runtime/FX.
       restoreRandom();
@@ -726,21 +753,159 @@ export class GameScene extends THREE.Scene {
   }
 
   /** Surface radius + normal along a direction (raycast, ideal-sphere fallback). */
-  private surfaceInfo(dir: THREE.Vector3): { r: number; n: THREE.Vector3 } {
-    try {
-      const s = this.island!.sampleSurfaceByDirection(dir, 0.02);
-      return { r: s.position.length(), n: s.normal.clone() };
-    } catch {
-      return { r: this.island!.getRadius(), n: dir.clone() };
-    }
+  /** Quaternion orienting local +Y → up and model-forward (−Z) → fwd. */
+  private orientQuat(up: THREE.Vector3, fwd: THREE.Vector3): THREE.Quaternion {
+    const z = fwd.clone().multiplyScalar(-1);
+    const x = new THREE.Vector3().crossVectors(up, z).normalize();
+    z.crossVectors(x, up).normalize();
+    return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, up, z));
   }
 
   /** Orient an object so its local +Y = up and its model-forward (−Z) = fwd. */
   private orientObj(obj: THREE.Object3D, up: THREE.Vector3, fwd: THREE.Vector3): void {
-    const z = fwd.clone().multiplyScalar(-1);
-    const x = new THREE.Vector3().crossVectors(up, z).normalize();
-    z.crossVectors(x, up).normalize();
-    obj.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, up, z));
+    obj.quaternion.copy(this.orientQuat(up, fwd));
+  }
+
+  // Footprints of things placed via findPlacement (kept separate from the
+  // player-collision `colliders`, though it also reads those) so later
+  // placements avoid earlier ones.
+  private placedObstacles: Array<{ pos: THREE.Vector3; radius: number }> = [];
+
+  /**
+   * Context-aware placement: search outward from an anchor for a surface spot
+   * that respects land/water, slope, pathways, and other objects, then orient
+   * the thing to face the street / water / a target. Returns null only if the
+   * whole search area is unusable (caller can fall back).
+   *
+   * This is the single seam every prop should go through instead of a
+   * hand-picked lon/lat — it "knows" about the world around the spot.
+   */
+  private findPlacement(intent: {
+    anchor: THREE.Vector3; // unit dir to search around
+    footprint: number; // world-unit half-clearance the object needs
+    searchArc?: number; // max angular search radius (rad)
+    water?: boolean; // must be over water (default false → dry land)
+    minLat?: number; // latitude floor (rad)
+    maxLat?: number; // latitude ceiling (rad)
+    maxSlope?: number; // reject steeper ground (rad)
+    avoidStreet?: boolean; // keep off pathways (default: true on land)
+    face?: 'street' | 'water' | 'inland' | 'anchor' | 'point';
+    facePoint?: THREE.Vector3; // for face:'point'
+    register?: boolean; // record the footprint for later placements (default true)
+  }): {
+    dir: THREE.Vector3;
+    position: THREE.Vector3;
+    normal: THREE.Vector3;
+    faceDir: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+  } | null {
+    const island = this.island;
+    if (!island) return null;
+    const R = island.getRadius();
+    const searchArc = intent.searchArc ?? 0.3;
+    const maxSlope = intent.maxSlope ?? 0.32;
+    const water = !!intent.water;
+    const avoidStreet = intent.avoidStreet ?? !water;
+    const minLat = intent.minLat ?? (water ? -Math.PI / 2 : 0.3);
+    const maxLat = intent.maxLat ?? Math.PI / 2;
+    const anchor = intent.anchor.clone().normalize();
+
+    // Tangent frame at the anchor for a geodesic golden-spiral search
+    const ref = Math.abs(anchor.y) > 0.9 ? GameScene._localForward : GameScene._localUp;
+    const tanX = new THREE.Vector3().crossVectors(ref, anchor).normalize();
+    const tanY = new THREE.Vector3().crossVectors(anchor, tanX).normalize();
+
+    // Only STRUCTURES (houses/buildings, radius ≥ 1.2) and previously-placed
+    // things are hard obstacles. Small props (lamps, mailboxes, benches,
+    // flowers) are fine to sit beside — requiring metres of clearance from
+    // every lamppost would leave nowhere to build in a village.
+    // Trees are a special case: their collider is only the ~0.35 trunk, but the
+    // canopy is much wider, so avoid clipping foliage by keeping clear of the
+    // tree centres.
+    const treeCanopy = 1.4;
+    const trees = this.swayTrees.map((t) => t.group.position);
+    const clearOf = (pos: THREE.Vector3): number => {
+      let min = Infinity;
+      for (const c of this.colliders)
+        if (c.radius >= 1.2) min = Math.min(min, pos.distanceTo(c.position) - c.radius);
+      for (const o of this.placedObstacles) min = Math.min(min, pos.distanceTo(o.pos) - o.radius);
+      for (const t of trees) min = Math.min(min, pos.distanceTo(t) - treeCanopy);
+      return min;
+    };
+    const faceFor = (dir: THREE.Vector3, normal: THREE.Vector3, pos: THREE.Vector3): THREE.Vector3 => {
+      const proj = (v: THREE.Vector3) =>
+        v.clone().addScaledVector(normal, -v.dot(normal)).normalize();
+      const seaward = proj(new THREE.Vector3(0, -1, 0).addScaledVector(dir, dir.y));
+      const mode = intent.face ?? (avoidStreet ? 'street' : 'water');
+      if (mode === 'water') return seaward;
+      if (mode === 'inland') return seaward.negate();
+      if (mode === 'anchor') return proj(anchor.clone().multiplyScalar(R).sub(pos));
+      if (mode === 'point' && intent.facePoint) return proj(intent.facePoint.clone().sub(pos));
+      // 'street': face the nearest pathway, else fall back to inland
+      const sd = island.nearestStreetDir(dir, 0.4);
+      if (sd) return proj(sd.multiplyScalar(R).sub(pos));
+      return seaward.negate();
+    };
+
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const N = 120;
+    let best: { pos: THREE.Vector3; dir: THREE.Vector3; normal: THREE.Vector3; clear: number } | null =
+      null;
+    for (let i = 0; i < N; i++) {
+      const arc = searchArc * Math.sqrt((i + 0.5) / N); // area-uniform outward
+      const ang = i * golden;
+      const tangent = tanX
+        .clone()
+        .multiplyScalar(Math.cos(ang))
+        .addScaledVector(tanY, Math.sin(ang));
+      const dir = anchor
+        .clone()
+        .multiplyScalar(Math.cos(arc))
+        .addScaledVector(tangent, Math.sin(arc))
+        .normalize();
+
+      const lat = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1));
+      if (lat < minLat || lat > maxLat) continue;
+      if (island.isOverWater(dir) !== water) continue;
+      if (avoidStreet && island.isNearStreet(dir)) continue;
+
+      let position: THREE.Vector3;
+      let normal: THREE.Vector3;
+      if (water) {
+        position = dir.clone().multiplyScalar(island.waveHeightAt(dir, 0));
+        normal = dir.clone();
+      } else {
+        const s = island.sampleSurfaceByDirection(dir, 0.02);
+        const raw = (s as { rawNormal?: THREE.Vector3 }).rawNormal ?? s.normal;
+        if (raw.angleTo(dir) > maxSlope) continue; // too steep
+        position = s.position.clone();
+        normal = s.normal.clone();
+      }
+
+      const clear = clearOf(position);
+      if (clear >= intent.footprint) {
+        const faceDir = faceFor(dir, normal, position);
+        if (intent.register ?? true)
+          this.placedObstacles.push({ pos: position.clone(), radius: intent.footprint });
+        return { dir, position, normal, faceDir, quaternion: this.orientQuat(normal, faceDir) };
+      }
+      if (!best || clear > best.clear) best = { pos: position, dir, normal, clear };
+    }
+
+    // Best-effort: nothing perfectly clear, take the roomiest valid-terrain spot
+    if (best) {
+      const faceDir = faceFor(best.dir, best.normal, best.pos);
+      if (intent.register ?? true)
+        this.placedObstacles.push({ pos: best.pos.clone(), radius: intent.footprint });
+      return {
+        dir: best.dir,
+        position: best.pos,
+        normal: best.normal,
+        faceDir,
+        quaternion: this.orientQuat(best.normal, faceDir),
+      };
+    }
+    return null;
   }
 
   /** A little beachfront fish stall: counter, awning, ice crate, sign. Returns
@@ -819,24 +984,32 @@ export class GameScene extends THREE.Scene {
     if (!this.island) return;
     const npc = this.island.npcTargets.find((n) => n.name === 'Fisherman');
     if (!npc) return;
-    // Stand on the widest open stretch of beach — the gap between districts
-    // (plazas sit at lon 0/1.26/2.51/3.77), so ~5.0 is clear of the crowd.
-    const lon = 5.0;
+    // Fishing spot: the water's edge on the widest open beach (the gap between
+    // district plazas at lon 0/1.26/2.51/3.77), facing out to sea.
+    const spotPlace = this.findPlacement({
+      anchor: this.island.dirAt(5.0, 0.3),
+      footprint: 1.0,
+      searchArc: 0.18,
+      minLat: 0.285,
+      maxLat: 0.33,
+      avoidStreet: false,
+      face: 'water',
+      register: false, // a person barely blocks — don't reserve the spot
+    });
+    if (!spotPlace) return;
+    const seaward = spotPlace.faceDir;
 
-    // Fishing spot at the water's edge; seaward tangent = decreasing latitude
-    const spotDir = this.island.dirAt(lon, 0.3);
-    const sp = this.surfaceInfo(spotDir);
-    const seaward = new THREE.Vector3(0, -1, 0).addScaledVector(spotDir, spotDir.y);
-    seaward.addScaledVector(sp.n, -seaward.dot(sp.n)).normalize();
-
-    // Shop stand a couple of metres along the beach. The stall FRONT (counter +
-    // sign) faces the LAND — that's where customers/players walk up from; the
-    // fisherman works behind it on the water side.
-    const standDir = this.island.dirAt(lon - 0.12, 0.325);
-    const sd = this.surfaceInfo(standDir);
-    const standSea = new THREE.Vector3(0, -1, 0).addScaledVector(standDir, standDir.y);
-    standSea.addScaledVector(sd.n, -standSea.dot(sd.n)).normalize();
-    const landward = standSea.clone().negate();
+    // Fish stall: on land just behind the spot, its front facing inland toward
+    // the village where customers come down from.
+    const stallPlace = this.findPlacement({
+      anchor: spotPlace.dir.clone().addScaledVector(seaward, -0.07).normalize(),
+      footprint: 2.2,
+      searchArc: 0.2,
+      minLat: 0.3,
+      maxLat: 0.46,
+      face: 'inland',
+    });
+    if (!stallPlace) return;
 
     // Rig (rod + line + bobber): world-placed each frame, children forward = −Z
     const rig = new THREE.Group();
@@ -862,8 +1035,8 @@ export class GameScene extends THREE.Scene {
 
     // Build + place the stall, then bake its counter slots into world space
     const { group: shop, slots: localSlots } = this.buildFishShop();
-    shop.position.copy(standDir).multiplyScalar(sd.r);
-    this.orientObj(shop, sd.n, landward); // stall front (−Z: counter + sign) faces the land
+    shop.position.copy(stallPlace.position);
+    shop.quaternion.copy(stallPlace.quaternion);
     this.add(shop);
     shop.updateMatrixWorld(true);
     const slots = localSlots.map((s) => shop.localToWorld(s.clone()));
@@ -876,8 +1049,18 @@ export class GameScene extends THREE.Scene {
       line,
       bobber,
       caught: null,
-      spot: { dir: spotDir, r: sp.r, n: sp.n, seaward },
-      stand: { dir: standDir, r: sd.r, n: sd.n, face: landward },
+      spot: {
+        dir: spotPlace.dir,
+        r: spotPlace.position.length(),
+        n: spotPlace.normal,
+        seaward,
+      },
+      stand: {
+        dir: stallPlace.dir,
+        r: stallPlace.position.length(),
+        n: stallPlace.normal,
+        face: stallPlace.faceDir,
+      },
       shop,
       slots,
       sold: [],
@@ -1067,6 +1250,362 @@ export class GameScene extends THREE.Scene {
       }
       F.state = 'toSpot';
       F.t0 = time;
+    }
+  }
+
+  /** A small golden pie (optionally topped with a little fish for fish pies). */
+  private buildPie(fishTopped = false): THREE.Group {
+    const g = new THREE.Group();
+    const tin = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.14, 0.06, 12),
+      new THREE.MeshToonMaterial({ color: 0x8a5a2f }),
+    );
+    tin.position.y = 0.03;
+    tin.castShadow = true;
+    g.add(tin);
+    const crust = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshToonMaterial({ color: 0xe2b566 }),
+    );
+    crust.scale.y = 0.55;
+    crust.position.y = 0.06;
+    crust.castShadow = true;
+    g.add(crust);
+    if (fishTopped) {
+      const fish = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.07),
+        new THREE.MeshToonMaterial({ color: 0xff7a33 }),
+      );
+      fish.scale.set(0.5, 0.45, 1.4);
+      fish.position.set(0, 0.14, 0);
+      g.add(fish);
+    }
+    return g;
+  }
+
+  /** A village bakery stall: counter, awning, a brick oven with a glowing door
+   * + chimney, and a "Bakery" sign. Returns the group + local anchors. */
+  private buildBakery(): {
+    group: THREE.Group;
+    ovenLocal: THREE.Vector3;
+    kneadLocal: THREE.Vector3;
+    slots: THREE.Vector3[];
+    ovenGlow: THREE.Mesh;
+  } {
+    const g = new THREE.Group();
+    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f });
+    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
+    const brick = new THREE.MeshToonMaterial({ color: 0x9a5140 });
+    const box = (w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      g.add(m);
+      return m;
+    };
+    // Counter (front −Z toward customers) on legs
+    box(2.4, 0.14, 0.95, wood, 0, 0.92, -0.95);
+    for (const sx of [-1.05, 1.05]) for (const sz of [-1.32, -0.6]) box(0.1, 0.92, 0.1, dark, sx, 0.46, sz);
+    // Back posts + a warm striped awning
+    for (const sx of [-1.15, 1.15]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.1, 6), dark);
+      post.position.set(sx, 1.05, 0.15);
+      post.castShadow = true;
+      g.add(post);
+    }
+    const awnA = new THREE.MeshToonMaterial({ color: 0xd9843a, side: THREE.DoubleSide });
+    const awnB = new THREE.MeshToonMaterial({ color: 0xf2e0c0, side: THREE.DoubleSide });
+    for (let i = 0; i < 5; i++) {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.05, 1.7), i % 2 ? awnB : awnA);
+      panel.position.set(-1.04 + i * 0.52, 1.77, -0.55);
+      panel.rotation.x = -0.32;
+      g.add(panel);
+    }
+    // Brick OVEN on the right (+X): base + dome + dark door + glow + chimney
+    box(1.1, 1.0, 1.1, brick, 1.75, 0.5, 0.35);
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.62, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      brick,
+    );
+    dome.position.set(1.75, 1.0, 0.35);
+    dome.castShadow = true;
+    g.add(dome);
+    box(0.55, 0.55, 0.12, new THREE.MeshToonMaterial({ color: 0x160b04 }), 1.75, 0.5, -0.22);
+    const ovenGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.5, 0.5),
+      new THREE.MeshBasicMaterial({
+        color: 0xff8433,
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide,
+        // Draw over the dark door recess (which is opaque + at the same depth)
+        // rather than z-fighting behind it.
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    ovenGlow.position.set(1.75, 0.5, -0.29);
+    ovenGlow.renderOrder = 3;
+    g.add(ovenGlow);
+    box(0.22, 0.6, 0.22, brick, 1.75, 1.55, 0.35);
+    // "Bakery" sign facing customers (−Z)
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 96;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#5a3410';
+      ctx.fillRect(0, 0, 256, 96);
+      ctx.font = '600 34px system-ui, sans-serif';
+      ctx.fillStyle = '#ffe6b0';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🥧 Bakery', 128, 50);
+    }
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.5, 0.56),
+      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, side: THREE.DoubleSide }),
+    );
+    sign.position.set(0, 1.75, -1.35);
+    sign.rotation.y = Math.PI;
+    g.add(sign);
+    const ovenLocal = new THREE.Vector3(1.75, 0.55, -0.28);
+    const kneadLocal = new THREE.Vector3(-0.55, 1.06, -0.9);
+    const slots: THREE.Vector3[] = [];
+    for (let i = 0; i < 4; i++) slots.push(new THREE.Vector3(0.15 + i * 0.34, 1.03, -0.9));
+    return { group: g, ovenLocal, kneadLocal, slots, ovenGlow };
+  }
+
+  /** Relocate the Baker to his bakery and start his baking routine. */
+  private setupBaker(): void {
+    if (!this.island) return;
+    const npc = this.island.npcTargets.find((n) => n.name === 'Village Baker');
+    if (!npc) return;
+    // Context-aware placement: a clear spot in the village (near the cottages,
+    // off the pathways, on flat ground), with the counter + sign facing the
+    // nearest street where customers walk.
+    const place = this.findPlacement({
+      anchor: this.island.dirAt(2.5, 0.52),
+      footprint: 2.2,
+      searchArc: 0.5,
+      minLat: 0.34,
+      maxLat: 0.66,
+      face: 'inland', // counter + sign face the island/village, not the sea
+    });
+    if (!place) return;
+
+    const { group: bakery, ovenLocal, kneadLocal, slots, ovenGlow } = this.buildBakery();
+    bakery.position.copy(place.position);
+    bakery.quaternion.copy(place.quaternion);
+    this.add(bakery);
+
+    const dough = new THREE.Group();
+    const ball = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14, 10, 8),
+      new THREE.MeshToonMaterial({ color: 0xf0e2c0 }),
+    );
+    ball.scale.y = 0.65;
+    ball.castShadow = true;
+    dough.add(ball);
+    dough.position.copy(kneadLocal);
+    bakery.add(dough);
+
+    this.baker = {
+      npc,
+      bakery,
+      ovenGlow,
+      dough,
+      pie: null,
+      questFish: null,
+      stand: { dir: place.dir, r: place.position.length(), n: place.normal, face: place.faceDir },
+      ovenLocal,
+      kneadLocal,
+      slots,
+      pies: [],
+      state: 'knead',
+      t0: performance.now() / 1000,
+      fishPie: false,
+    };
+    console.log('🥧 Bakery + baker routine set up');
+  }
+
+  /** A gold coin-pop rising + spinning + fading (sales / quest rewards). */
+  private spawnCoinPop(pos: THREE.Vector3, up: THREE.Vector3): void {
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.12, 0.03, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffd34a, transparent: true, opacity: 1 }),
+    );
+    mesh.position.copy(pos);
+    mesh.quaternion.setFromUnitVectors(GameScene._localUp, up);
+    this.add(mesh);
+    this.popCoins.push({ mesh, t0: performance.now() / 1000, n: up.clone() });
+  }
+
+  /** Show/hide a fish carried in the player's hands (Baker fetch quest). */
+  public setPlayerCarryingFish(on: boolean): void {
+    if (on && !this.carriedFish) {
+      const [bc, fc, sc] = GameScene.FISH_TYPES[0];
+      const f = this.buildFish(bc, fc).group;
+      f.scale.setScalar(sc * 0.62);
+      // Held up above the head so it reads from the normal follow-cam (behind)
+      f.position.set(0, 1.75, -0.1);
+      f.rotation.set(-0.5, 0, 0);
+      this.player.add(f);
+      this.carriedFish = f;
+    } else if (!on && this.carriedFish) {
+      this.player.remove(this.carriedFish);
+      this.carriedFish = null;
+    }
+  }
+
+  /** Quest payoff: hand the fish to the Baker → he bakes it into a fish pie. */
+  public deliverFishToBaker(): void {
+    this.setPlayerCarryingFish(false);
+    const B = this.baker;
+    if (!B) return;
+    const [bc, fc, sc] = GameScene.FISH_TYPES[0];
+    const f = this.buildFish(bc, fc).group;
+    f.scale.setScalar(sc * 0.7);
+    f.position.copy(B.kneadLocal);
+    B.bakery.add(f);
+    B.questFish = f;
+    B.pie = null;
+    B.state = 'fishBake';
+    B.t0 = performance.now() / 1000;
+    B.fishPie = true;
+  }
+
+  /** Baker routine state machine: knead → oven → bake → pie → counter, looping,
+   * with a one-off 'fishBake' the quest injects. */
+  private updateBaker(time: number, _dt: number): void {
+    const B = this.baker;
+    if (!B || !this.island) return;
+    const bob = (Math.sin(time * 2) + 1) * 0.008;
+    const standW = B.stand.dir.clone().multiplyScalar(B.stand.r);
+    const kneadBob = B.state === 'knead' ? Math.abs(Math.sin(time * 7)) * 0.05 : 0;
+    B.npc.meshRef.position.copy(standW).addScaledVector(B.stand.n, bob + kneadBob);
+    B.npc.position.copy(B.npc.meshRef.position);
+    // Face the oven while baking, else the counter/customers
+    const ovenW = B.bakery.localToWorld(B.ovenLocal.clone());
+    let faceDir = B.stand.face;
+    if (B.state === 'toOven' || B.state === 'bake' || B.state === 'fishBake') {
+      faceDir = ovenW.clone().sub(standW);
+      faceDir.addScaledVector(B.stand.n, -faceDir.dot(B.stand.n)).normalize();
+    }
+    this.orientObj(B.npc.meshRef, B.stand.n, faceDir);
+
+    const st = time - B.t0;
+    const glow = (v: number) => {
+      (B.ovenGlow.material as THREE.MeshBasicMaterial).opacity = Math.max(0, Math.min(1, v));
+    };
+    const slot = () => B.slots[B.pies.length % B.slots.length];
+    const depositPie = () => {
+      if (!B.pie) return;
+      B.pie.position.copy(slot());
+      B.pies.push(B.pie);
+      if (B.pies.length > B.slots.length) {
+        const old = B.pies.shift();
+        if (old) B.bakery.remove(old);
+      }
+      B.pie = null;
+    };
+
+    switch (B.state) {
+      case 'knead':
+        B.dough.visible = true;
+        B.dough.position.copy(B.kneadLocal);
+        B.dough.scale.set(
+          1 + Math.sin(time * 7) * 0.14,
+          0.65 + Math.sin(time * 7 + 1) * 0.12,
+          1 + Math.cos(time * 7) * 0.14,
+        );
+        glow(0);
+        if (st > 2.5) {
+          B.state = 'toOven';
+          B.t0 = time;
+        }
+        break;
+      case 'toOven': {
+        const p = Math.min(st / 1.2, 1);
+        B.dough.visible = true;
+        B.dough.scale.setScalar(1);
+        B.dough.position.copy(B.kneadLocal).lerp(B.ovenLocal, p);
+        if (p >= 1) {
+          B.state = 'bake';
+          B.t0 = time;
+        }
+        break;
+      }
+      case 'bake': {
+        const p = Math.min(st / 3, 1);
+        B.dough.visible = false;
+        glow(Math.sin(p * Math.PI) * 0.7 + (p < 1 ? 0.2 : 0));
+        if (p >= 1) {
+          B.pie = this.buildPie(false);
+          B.pie.position.copy(B.ovenLocal);
+          B.bakery.add(B.pie);
+          B.state = 'toCounter';
+          B.t0 = time;
+        }
+        break;
+      }
+      case 'toCounter': {
+        const p = Math.min(st / 1.2, 1);
+        glow((1 - p) * 0.4);
+        if (B.pie) B.pie.position.copy(B.ovenLocal).lerp(slot(), p);
+        if (p >= 1) {
+          B.state = 'display';
+          B.t0 = time;
+        }
+        break;
+      }
+      case 'display':
+        glow(0);
+        if (st > 0.4) {
+          depositPie();
+          B.state = 'knead';
+          B.t0 = time;
+        }
+        break;
+      case 'fishBake': {
+        const p = Math.min(st / 4.5, 1);
+        B.dough.visible = false;
+        if (p < 0.35) {
+          if (B.questFish) {
+            B.questFish.visible = true;
+            B.questFish.position.copy(B.kneadLocal).lerp(B.ovenLocal, p / 0.35);
+          }
+          glow(0.25);
+        } else if (p < 0.75) {
+          if (B.questFish) B.questFish.visible = false;
+          glow(Math.sin(((p - 0.35) / 0.4) * Math.PI) * 1.0 + 0.35);
+          if (!B.pie && p > 0.68) {
+            B.pie = this.buildPie(true);
+            B.pie.position.copy(B.ovenLocal);
+            B.bakery.add(B.pie);
+          }
+        } else {
+          glow((1 - p) / 0.25 * 0.4);
+          if (B.pie) B.pie.position.copy(B.ovenLocal).lerp(slot(), (p - 0.75) / 0.25);
+        }
+        if (p >= 1) {
+          if (B.questFish) {
+            B.bakery.remove(B.questFish);
+            B.questFish = null;
+          }
+          if (B.pie) {
+            this.spawnCoinPop(
+              B.bakery.localToWorld(slot().clone()).addScaledVector(B.stand.n, 0.55),
+              B.stand.n,
+            );
+          }
+          depositPie();
+          B.fishPie = false;
+          B.state = 'knead';
+          B.t0 = time;
+        }
+        break;
+      }
     }
   }
 
@@ -2414,8 +2953,9 @@ export class GameScene extends THREE.Scene {
     if (this.island) {
       for (let i = 0; i < this.island.npcTargets.length; i++) {
         const npc = this.island.npcTargets[i];
-        // The Fisherman is anchored + animated by updateFisherman() — skip wander
+        // The Fisherman + Baker run their own routines — skip the wander for them
         if (this.fisherman && npc === this.fisherman.npc) continue;
+        if (this.baker && npc === this.baker.npc) continue;
         const data = npc.meshRef.userData as {
           greetT0?: number;
           wander?: {
@@ -2534,6 +3074,22 @@ export class GameScene extends THREE.Scene {
     this.updateWaterFX(deltaTime);
     this.updateFish(deltaTime, time);
     this.updateFisherman(time, deltaTime);
+    this.updateBaker(time, deltaTime);
+    // Carried quest fish: gentle wiggle in the player's hands
+    if (this.carriedFish) this.carriedFish.rotation.z = Math.sin(time * 5) * 0.15;
+    // Generic gold coin-pops
+    for (let i = this.popCoins.length - 1; i >= 0; i--) {
+      const c = this.popCoins[i];
+      const p = (time - c.t0) / 1.0;
+      if (p >= 1) {
+        this.remove(c.mesh);
+        this.popCoins.splice(i, 1);
+        continue;
+      }
+      c.mesh.position.addScaledVector(c.n, deltaTime * 0.9);
+      c.mesh.rotation.y += deltaTime * 6;
+      (c.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - p;
+    }
 
     // Butterflies: slow figure-8 drift + fast wing flap
     for (const bf of this.butterflies) {
