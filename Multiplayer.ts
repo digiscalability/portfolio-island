@@ -57,6 +57,9 @@ export class Multiplayer {
   private onCountChange?: (count: number) => void;
   private selfWaveSprite: THREE.Sprite | null = null;
   private selfWaveUntil = 0;
+  // Firebase RTDB transport state
+  private selfWaveMs = 0; // last time WE waved (ms); rides along in state writes
+  private peerWave = new Map<string, number>(); // last wave value seen per peer
 
   constructor(scene: THREE.Scene, player: SimplePlayer) {
     this.scene = scene;
@@ -96,8 +99,95 @@ export class Multiplayer {
     return name;
   }
 
-  /** WebSocket first (LAN-capable), BroadcastChannel as fallback. */
+  /**
+   * Firebase Realtime Database first (real cross-device presence, works on
+   * the deployed site AND localhost). If it can't init (offline / blocked),
+   * fall back to the dev WebSocket relay, then same-device BroadcastChannel.
+   */
   private connect(): void {
+    this.connectFirebase().catch((err) => {
+      console.warn('🌐 Firebase multiplayer unavailable, falling back:', err);
+      this.connectRelay();
+    });
+  }
+
+  /**
+   * Firebase RTDB transport. Each player owns /presence/island/{uid} and can
+   * only write their own node (security rules); onDisconnect auto-removes it.
+   * Peers' nodes are streamed in and translated into the same wire protocol
+   * handleMessage already understands.
+   */
+  private async connectFirebase(): Promise<void> {
+    const [{ getFirebaseRealtime }, rtdb] = await Promise.all([
+      import('./firebaseClient'),
+      import('firebase/database'),
+    ]);
+    const { db, uid } = await getFirebaseRealtime();
+    const { ref, set, remove, onChildAdded, onChildChanged, onChildRemoved, onDisconnect } = rtdb;
+    const roomPath = 'presence/island';
+    const myNode = ref(db, `${roomPath}/${uid}`);
+    const room = ref(db, roomPath);
+    onDisconnect(myNode).remove();
+
+    this.transportName = 'firebase';
+    this.send = (msg) => {
+      if (msg.kind === 'leave') {
+        remove(myNode).catch(() => {});
+        return;
+      }
+      if (msg.kind === 'wave') {
+        this.selfWaveMs = Date.now(); // carried in the next state write
+        return;
+      }
+      // state
+      set(myNode, {
+        name: msg.name ?? this.selfName,
+        hat: msg.hat ?? null,
+        p: msg.p,
+        q: msg.q,
+        t: Date.now(),
+        wave: this.selfWaveMs,
+      }).catch(() => {});
+    };
+
+    onChildAdded(room, (snap) => {
+      const key = snap.key;
+      if (!key || key === uid) return;
+      const v = snap.val();
+      if (!v) return;
+      this.peerWave.set(key, v.wave || 0); // baseline: don't wave on first sight
+      this.routeRtdbState(key, v);
+    });
+    onChildChanged(room, (snap) => {
+      const key = snap.key;
+      if (!key || key === uid) return;
+      const v = snap.val();
+      if (!v) return;
+      this.routeRtdbState(key, v);
+      const w = v.wave || 0;
+      if (w > (this.peerWave.get(key) || 0)) {
+        this.peerWave.set(key, w);
+        this.handleMessage(JSON.stringify({ kind: 'wave', id: key, name: v.name, hat: v.hat }));
+      }
+    });
+    onChildRemoved(room, (snap) => {
+      const key = snap.key;
+      if (!key || key === uid) return;
+      this.peerWave.delete(key);
+      this.handleMessage(JSON.stringify({ kind: 'leave', id: key }));
+    });
+    console.log('🌐 Multiplayer connected via Firebase RTDB');
+  }
+
+  /** Translate an RTDB presence node into a wire 'state' message. */
+  private routeRtdbState(key: string, v: Record<string, unknown>): void {
+    this.handleMessage(
+      JSON.stringify({ kind: 'state', id: key, name: v.name, hat: v.hat, p: v.p, q: v.q }),
+    );
+  }
+
+  /** WebSocket first (LAN-capable), BroadcastChannel as fallback. */
+  private connectRelay(): void {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     let settled = false;
     try {
