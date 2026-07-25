@@ -60,6 +60,7 @@ class SimpleApp {
   private stepAlt: boolean = false;
   private airborneTime: number = 0;
   private prevJumpHeld: boolean = false;
+  private lastSwimWarnAt = 0; // throttle for the shoreline-barrier hint
 
   private boundHandlers: {
     beforeUnload?: () => void;
@@ -526,6 +527,14 @@ class SimpleApp {
         this.prevJumpHeld = jumpInput;
         // Breath meter + underwater vignette
         if (player) this.ui.updateBreath(player.getOxygen(), player.isInWater());
+        // Shoreline barrier: nudge the swimmer back with a throttled hint
+        if (player && player.isBeyondSwimLimit()) {
+          const now = performance.now();
+          if (now - this.lastSwimWarnAt > 4500) {
+            this.lastSwimWarnAt = now;
+            this.ui.flashMessage('🌊 The current pulls you back to shore');
+          }
+        }
 
         // Wave at nearby visitors
         if (this.inputManager.consumeKeyPress('q') && this.multiplayer) {

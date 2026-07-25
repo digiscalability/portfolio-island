@@ -61,6 +61,13 @@ export class SimplePlayer extends THREE.Group {
   private static readonly SWIM_FLOAT = 0.55; // player centre above the surface while afloat
   private static readonly DROWN_RATE = 0.16; // oxygen/sec while under (≈6s)
   private static readonly RECOVER_RATE = 0.5; // oxygen/sec refill out of danger
+  // Shoreline barrier: the island is the north cap, so `dir.y` (= sin latitude)
+  // shrinks as you swim out to sea. Past this a current pushes you back so the
+  // open ocean isn't a place to get lost forever.
+  private static readonly SWIM_LIMIT_Y = 0.05; // ~equator; land starts at y≈0.276
+  private static readonly _poleUp = new THREE.Vector3(0, 1, 0);
+  private _swimTangent = new THREE.Vector3();
+  private beyondSwimLimit = false; // true while the swim-back current is active
 
   private moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
   private wantJump: boolean = false;
@@ -238,6 +245,10 @@ export class SimplePlayer extends THREE.Group {
   }
   public getOxygen(): number {
     return this.oxygen;
+  }
+  /** True while the shoreline current is actively pushing the swimmer back. */
+  public isBeyondSwimLimit(): boolean {
+    return this.beyondSwimLimit;
   }
   /** Reset breath (call on respawn after a drown). */
   public resetOxygen(): void {
@@ -1076,6 +1087,7 @@ export class SimplePlayer extends THREE.Group {
   private updateWaterState(dt: number): void {
     this.inWater = false;
     this.swimming = false;
+    this.beyondSwimLimit = false;
     if (this.planetRadius <= 0 || !this.waterSampler) {
       this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
       return;
@@ -1111,6 +1123,23 @@ export class SimplePlayer extends THREE.Group {
       const vRad = this.velocity.dot(dir);
       this.velocity.addScaledVector(dir, -vRad * 0.9);
       this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
+      // Shoreline barrier — past the swim limit a current nudges you back toward
+      // the island. It composes with your own strokes, so you can still swim
+      // along the shore; you just can't make headway into the deep ocean.
+      const overshoot = SimplePlayer.SWIM_LIMIT_Y - dir.y;
+      if (overshoot > 0) {
+        this.beyondSwimLimit = true;
+        this._swimTangent
+          .copy(SimplePlayer._poleUp)
+          .addScaledVector(dir, -SimplePlayer._poleUp.dot(dir));
+        if (this._swimTangent.lengthSq() > 1e-6) {
+          this._swimTangent.normalize();
+          const strength = Math.min(1, overshoot / 0.1);
+          this.playerPosition.addScaledVector(this._swimTangent, 4.0 * strength * dt);
+        }
+      } else {
+        this.beyondSwimLimit = false;
+      }
     } else {
       // Drowning: let gravity pull the player under and drain the breath.
       // (updateGroundState will still catch them on the seafloor.)

@@ -280,6 +280,9 @@ export class GameScene extends THREE.Scene {
   private static readonly _localUp = new THREE.Vector3(0, 1, 0);
   private static readonly _localForward = new THREE.Vector3(0, 0, 1);
   private static readonly _localRight = new THREE.Vector3(1, 0, 0);
+  // Sea edge: watercraft can't drive south of this latitude (dir.y = sin lat)
+  // into the featureless open ocean — matches the swimmer's shoreline barrier.
+  private static readonly SEA_EDGE_Y = 0.05;
 
   // Mailbox instances for interaction tracking
   private mailboxes: Mailbox[] = [];
@@ -2553,7 +2556,8 @@ export class GameScene extends THREE.Scene {
             .normalize();
           const onValidGround = isCar
             ? !this.island.isOverWater(this._vehNext) // cars keep off the sea
-            : this.island.isOverWater(this._vehNext); // craft keep on the sea
+            : this.island.isOverWater(this._vehNext) && // craft keep on the sea…
+              this._vehNext.y >= GameScene.SEA_EDGE_Y; // …but not past the sea edge
           if (onValidGround) {
             v.dir.copy(this._vehNext);
             v.forward.copy(this._vehTangent);
