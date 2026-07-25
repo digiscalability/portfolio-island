@@ -50,6 +50,7 @@ export class SimpleUI {
 
     this.createFPSDisplay();
     this.createMuteButton();
+    this.createPortfolioButton();
     this.createTouchControls();
   }
 
@@ -97,6 +98,108 @@ export class SimpleUI {
       this.muteBtn.textContent = nowMuted ? '🔇' : '🔊';
     });
     this.overlay.appendChild(this.muteBtn);
+  }
+
+  private portfolioMenuDiv: HTMLElement | null = null;
+
+  /**
+   * Persistent "Portfolio" button (top-right): opens a menu so a visitor can
+   * jump straight to any section — About / Projects / Contact etc. — without
+   * having to navigate the 3D world. The world stays for those who explore.
+   */
+  private createPortfolioButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '📖 Portfolio';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 118px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      background: 'linear-gradient(135deg, #5b6cff, #8a4de0)',
+      color: 'white',
+      padding: '7px 12px',
+      borderRadius: '10px',
+      fontSize: '13px',
+      fontWeight: '600',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.togglePortfolioMenu();
+    });
+    this.overlay.appendChild(btn);
+  }
+
+  private togglePortfolioMenu(): void {
+    if (this.portfolioMenuDiv) {
+      this.portfolioMenuDiv.remove();
+      this.portfolioMenuDiv = null;
+      return;
+    }
+    this.hideZonePanel();
+    const menu = document.createElement('div');
+    Object.assign(menu.style, {
+      position: 'fixed',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)',
+      background: 'rgba(12, 12, 20, 0.95)',
+      color: 'white',
+      padding: '24px',
+      borderRadius: '16px',
+      pointerEvents: 'auto',
+      zIndex: '1600',
+      width: 'min(340px, calc(100vw - 32px))',
+      textAlign: 'center',
+      border: '1px solid rgba(255,255,255,0.15)',
+      boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+    });
+    const sections: Array<{ id: string; label: string }> = [
+      { id: 'welcome', label: '🏠 About this world' },
+      { id: 'professional', label: '💼 Professional' },
+      { id: 'projects', label: '🚀 Projects' },
+      { id: 'personal', label: '🎨 Personal' },
+      { id: 'contact', label: '📬 Get in touch' },
+    ];
+    const rows = sections
+      .map(
+        (s) =>
+          `<button data-section="${s.id}" style="display:block;width:100%;margin:7px 0;padding:12px;
+            background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);
+            border-radius:10px;font-size:15px;cursor:pointer;text-align:left;">${s.label}</button>`,
+      )
+      .join('');
+    menu.innerHTML = `
+      <h2 style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
+      <p style="margin:0 0 16px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
+      ${rows}`;
+    // close button
+    const close = document.createElement('button');
+    close.textContent = '×';
+    Object.assign(close.style, {
+      position: 'absolute',
+      top: '10px',
+      right: '14px',
+      background: 'transparent',
+      color: 'white',
+      border: 'none',
+      fontSize: '24px',
+      cursor: 'pointer',
+    });
+    close.addEventListener('click', () => this.togglePortfolioMenu());
+    menu.appendChild(close);
+    menu.querySelectorAll('button[data-section]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const id = (b as HTMLElement).dataset.section!;
+        this.togglePortfolioMenu();
+        this.showZonePanel({ id, name: id });
+      });
+    });
+    this.portfolioMenuDiv = menu;
+    this.overlay.appendChild(menu);
   }
 
   /**
