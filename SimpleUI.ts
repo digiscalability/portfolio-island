@@ -471,30 +471,34 @@ export class SimpleUI {
    * dots (gold + halo when they hold a quest), the delivery target as a
    * pulsing red dot, and the player as a white heading arrow.
    */
+  /**
+   * GTA-style circular radar: north-up, player fixed at the centre. Every
+   * entity arrives already projected onto the player-centred tangent plane
+   * (rx = +east, ry = +north, dist = 1 at the radar edge) so this method is
+   * pure drawing. Objectives past the edge clamp to the ring as chevrons.
+   */
   updateMinimap(data: {
-    player: { lon: number; lat: number; heading: number };
-    npcs: Array<{ lon: number; lat: number; hasQuest: boolean }>;
-    zones: Array<{ lon: number; lat: number; color: string }>;
-    delivery: { lon: number; lat: number } | null;
-    peers?: Array<{ lon: number; lat: number; name: string; waving: boolean }>;
+    heading: number;
+    npcs: Array<{ rx: number; ry: number; dist: number; hasQuest: boolean }>;
+    zones: Array<{ rx: number; ry: number; dist: number; color: string }>;
+    delivery: { rx: number; ry: number; dist: number } | null;
+    peers?: Array<{ rx: number; ry: number; dist: number; waving: boolean }>;
+    online?: number;
   }): void {
-    const W = 208;
-    const HEAD = 18; // header strip height
-    const MAP = 118; // map body height
-    const H = HEAD + MAP;
+    const D = 172; // square canvas (the radar disc)
     if (!this.mapCanvas) {
       this.mapCanvas = document.createElement('canvas');
-      this.mapCanvas.width = W;
-      this.mapCanvas.height = H;
+      this.mapCanvas.width = D;
+      this.mapCanvas.height = D;
       Object.assign(this.mapCanvas.style, {
         position: 'absolute',
         top: 'calc(var(--sat, 0px) + 40px)',
         left: 'calc(var(--sal, 0px) + 10px)',
         maxWidth: 'calc(100vw - var(--sal, 0px) - var(--sar, 0px) - 20px)',
         height: 'auto',
-        borderRadius: '12px',
-        border: '1px solid rgba(255,255,255,0.22)',
-        boxShadow: '0 6px 18px rgba(0,0,0,0.35)',
+        borderRadius: '50%',
+        border: '2px solid rgba(255,255,255,0.28)',
+        boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
         pointerEvents: 'none',
       });
       this.overlay.appendChild(this.mapCanvas);
@@ -502,95 +506,111 @@ export class SimpleUI {
     const ctx = this.mapCanvas.getContext('2d');
     if (!ctx) return;
     const t = performance.now();
-    const px = (lon: number) => ((lon / (Math.PI * 2) + 0.5) % 1) * W;
-    const py = (lat: number) => HEAD + (1 - (lat / Math.PI + 0.5)) * MAP;
     const peers = data.peers ?? [];
+    const cx = D / 2;
+    const cy = D / 2;
+    const R = D / 2 - 3; // radar radius
+    // normalized radar coords → screen; ry is +north so it draws UP
+    const sx = (rx: number) => cx + rx * R;
+    const sy = (ry: number) => cy - ry * R;
 
-    ctx.clearRect(0, 0, W, H);
+    ctx.clearRect(0, 0, D, D);
 
-    // ── Map body: deep-water vertical gradient with a soft vignette ──────
-    const grad = ctx.createLinearGradient(0, HEAD, 0, H);
-    grad.addColorStop(0, 'rgba(14, 40, 52, 0.9)');
-    grad.addColorStop(0.5, 'rgba(9, 26, 36, 0.9)');
-    grad.addColorStop(1, 'rgba(6, 18, 26, 0.9)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, HEAD, W, MAP);
-
-    // Grid: meridians (district longitudes) + latitude lines
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.lineWidth = 1;
-    for (const lat of [-0.9, -0.45, 0, 0.45, 0.9]) {
-      ctx.beginPath();
-      ctx.moveTo(0, py(lat));
-      ctx.lineTo(W, py(lat));
-      ctx.stroke();
-    }
-    for (let m = 0; m < 6; m++) {
-      const gx = (m / 6) * W;
-      ctx.beginPath();
-      ctx.moveTo(gx, HEAD);
-      ctx.lineTo(gx, H);
-      ctx.stroke();
-    }
-    // Equator a touch brighter for orientation
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    // ── Disc: clip to the circle, then paint everything inside ──────────
+    ctx.save();
     ctx.beginPath();
-    ctx.moveTo(0, py(0));
-    ctx.lineTo(W, py(0));
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.clip();
+
+    const bg = ctx.createRadialGradient(cx, cy, 4, cx, cy, R);
+    bg.addColorStop(0, 'rgba(18, 46, 58, 0.92)');
+    bg.addColorStop(1, 'rgba(6, 16, 24, 0.92)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, D, D);
+
+    // Range rings + N-S / E-W crosshair for orientation
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    for (const rr of [0.4, 0.72]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * rr, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - R);
+    ctx.lineTo(cx, cy + R);
+    ctx.moveTo(cx - R, cy);
+    ctx.lineTo(cx + R, cy);
     ctx.stroke();
 
-    // ── District plazas: glowing colored beacons ────────────────────────
+    // clamp helper: keep off-radar objectives on the ring as a chevron
+    const place = (o: { rx: number; ry: number; dist: number }) => {
+      if (o.dist <= 1) return { x: sx(o.rx), y: sy(o.ry), edge: false };
+      const k = 0.92 / o.dist;
+      return { x: sx(o.rx * k), y: sy(o.ry * k), edge: true };
+    };
+
+    // ── District plazas: glowing beacons (clamp to ring if off-radar) ───
     for (const z of data.zones) {
-      const zx = px(z.lon);
-      const zy = py(z.lat);
+      const p = place(z);
+      if (p.edge) {
+        ctx.fillStyle = z.color;
+        ctx.globalAlpha = 0.6;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        continue;
+      }
       ctx.save();
       ctx.shadowColor = z.color;
       ctx.shadowBlur = 8;
       ctx.fillStyle = z.color;
       ctx.beginPath();
-      ctx.arc(zx, zy, 4, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       ctx.strokeStyle = z.color;
       ctx.globalAlpha = 0.35;
       ctx.beginPath();
-      ctx.arc(zx, zy, 6.5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, 6.5, 0, Math.PI * 2);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
 
-    // ── NPCs ────────────────────────────────────────────────────────────
+    // ── NPCs (only when within radar range) ─────────────────────────────
     for (const n of data.npcs) {
-      const nx = px(n.lon);
-      const ny = py(n.lat);
+      if (n.dist > 1) continue;
+      const x = sx(n.rx);
+      const y = sy(n.ry);
       if (n.hasQuest) {
         ctx.fillStyle = '#ffd34a';
         ctx.beginPath();
-        ctx.arc(nx, ny, 3, 0, Math.PI * 2);
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = `rgba(255, 211, 74, ${0.35 + 0.25 * Math.sin(t / 260)})`;
         ctx.beginPath();
-        ctx.arc(nx, ny, 5 + 1.2 * Math.sin(t / 260), 0, Math.PI * 2);
+        ctx.arc(x, y, 5 + 1.2 * Math.sin(t / 260), 0, Math.PI * 2);
         ctx.stroke();
       } else {
         ctx.fillStyle = 'rgba(255, 190, 130, 0.8)';
         ctx.beginPath();
-        ctx.arc(nx, ny, 1.8, 0, Math.PI * 2);
+        ctx.arc(x, y, 1.8, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
     // ── Other players online: cyan blips with a soft glow ───────────────
     for (const p of peers) {
-      const ppx = px(p.lon);
-      const ppy = py(p.lat);
-      // waving peers get an expanding ring so you can spot the greeting
+      if (p.dist > 1) continue;
+      const x = sx(p.rx);
+      const y = sy(p.ry);
       if (p.waving) {
         const r = 5 + ((t / 90) % 6);
         ctx.strokeStyle = `rgba(63, 224, 255, ${Math.max(0, 0.6 - r / 12)})`;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(ppx, ppy, r, 0, Math.PI * 2);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.stroke();
         ctx.lineWidth = 1;
       }
@@ -599,95 +619,123 @@ export class SimpleUI {
       ctx.shadowBlur = 7;
       ctx.fillStyle = '#3fe0ff';
       ctx.beginPath();
-      ctx.arc(ppx, ppy, 3, 0, Math.PI * 2);
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
-      // white core so it reads as a "player" pip
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
       ctx.beginPath();
-      ctx.arc(ppx, ppy, 1.1, 0, Math.PI * 2);
+      ctx.arc(x, y, 1.1, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // ── Delivery target: pulsing red with a crosshair ───────────────────
+    // ── Delivery target: pulsing crosshair (edge chevron if off-radar) ──
     if (data.delivery) {
-      const dx = px(data.delivery.lon);
-      const dy = py(data.delivery.lat);
-      const pulse = 3 + Math.sin(t / 250) * 1.4;
-      ctx.strokeStyle = `rgba(255, 82, 82, ${0.5 + 0.3 * Math.sin(t / 250)})`;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(dx, dy, pulse + 3, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(dx - pulse - 5, dy);
-      ctx.lineTo(dx - pulse - 1, dy);
-      ctx.moveTo(dx + pulse + 1, dy);
-      ctx.lineTo(dx + pulse + 5, dy);
-      ctx.stroke();
-      ctx.lineWidth = 1;
-      ctx.fillStyle = '#ff5252';
-      ctx.beginPath();
-      ctx.arc(dx, dy, 2.6, 0, Math.PI * 2);
-      ctx.fill();
+      const p = place(data.delivery);
+      if (p.edge) {
+        // arrow on the ring pointing outward toward the objective
+        const ang = Math.atan2(p.y - cy, p.x - cx);
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(ang);
+        ctx.fillStyle = '#ff5252';
+        ctx.beginPath();
+        ctx.moveTo(4, 0);
+        ctx.lineTo(-3, -4);
+        ctx.lineTo(-3, 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      } else {
+        const pulse = 3 + Math.sin(t / 250) * 1.4;
+        ctx.strokeStyle = `rgba(255, 82, 82, ${0.5 + 0.3 * Math.sin(t / 250)})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, pulse + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x - pulse - 5, p.y);
+        ctx.lineTo(p.x - pulse - 1, p.y);
+        ctx.moveTo(p.x + pulse + 1, p.y);
+        ctx.lineTo(p.x + pulse + 5, p.y);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+        ctx.fillStyle = '#ff5252';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
-    // ── You: heading arrow with a field-of-view cone ────────────────────
-    const x = px(data.player.lon);
-    const y = py(data.player.lat);
+    // ── You: fixed at the centre, arrow rotates to heading (north-up) ───
     ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(data.player.heading);
-    // FOV cone fans out ahead (screen-up = forward)
-    const cone = ctx.createLinearGradient(0, 0, 0, -20);
-    cone.addColorStop(0, 'rgba(255,255,255,0.28)');
-    cone.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.translate(cx, cy);
+    ctx.rotate(data.heading); // 0 = facing north = arrow up
+    const cone = ctx.createLinearGradient(0, 0, 0, -22);
+    cone.addColorStop(0, 'rgba(120, 200, 255, 0.35)');
+    cone.addColorStop(1, 'rgba(120, 200, 255, 0)');
     ctx.fillStyle = cone;
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.lineTo(-9, -20);
-    ctx.lineTo(9, -20);
+    ctx.lineTo(-10, -22);
+    ctx.lineTo(10, -22);
     ctx.closePath();
     ctx.fill();
-    // arrow
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowColor = 'rgba(0,0,0,0.7)';
     ctx.shadowBlur = 3;
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.moveTo(0, -7);
-    ctx.lineTo(4.5, 4.5);
-    ctx.lineTo(0, 1.5);
-    ctx.lineTo(-4.5, 4.5);
+    ctx.moveTo(0, -8);
+    ctx.lineTo(5, 5);
+    ctx.lineTo(0, 2);
+    ctx.lineTo(-5, 5);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
     ctx.restore();
 
-    // ── Header strip: title + live online count ─────────────────────────
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(0, 0, W, HEAD);
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.restore(); // release the disc clip
+
+    // ── Compass ring: N always at the top (north-up) + E/S/W ticks ──────
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    ctx.fillText('🗺  ISLAND MAP', 8, HEAD / 2 + 1);
-    const online = peers.length + 1;
-    const label = `${online} online`;
-    ctx.textAlign = 'right';
-    // green online dot + count
+    const dirs: Array<[string, number, number, string, string]> = [
+      ['N', cx, cy - R + 9, '700 10px system-ui, sans-serif', '#ff6b6b'],
+      ['E', cx + R - 8, cy, '600 8px system-ui, sans-serif', 'rgba(255,255,255,0.6)'],
+      ['S', cx, cy + R - 8, '600 8px system-ui, sans-serif', 'rgba(255,255,255,0.6)'],
+      ['W', cx - R + 8, cy, '600 8px system-ui, sans-serif', 'rgba(255,255,255,0.6)'],
+    ];
+    for (const [ch, tx, ty, font, color] of dirs) {
+      ctx.font = font;
+      ctx.fillStyle = color;
+      ctx.fillText(ch, tx, ty + 0.5);
+    }
+
+    // ── Online count pill along the bottom of the ring ──────────────────
+    const online = data.online ?? peers.length + 1;
+    const label = `${online} ONLINE`;
+    ctx.font = '700 9px system-ui, sans-serif';
+    const tw = ctx.measureText(label).width;
+    const pillW = tw + 22;
+    const pillH = 15;
+    const pillX = cx - pillW / 2;
+    const pillY = D - pillH - 1;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.beginPath();
+    ctx.roundRect(pillX, pillY, pillW, pillH, 7);
+    ctx.fill();
     ctx.fillStyle = '#3fe0ff';
     ctx.beginPath();
-    ctx.arc(W - 12 - ctx.measureText(label).width - 5, HEAD / 2, 3, 0, Math.PI * 2);
+    ctx.arc(pillX + 9, pillY + pillH / 2, 3, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.fillText(label, W - 8, HEAD / 2 + 1);
-    // header underline
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.beginPath();
-    ctx.moveTo(0, HEAD - 0.5);
-    ctx.lineTo(W, HEAD - 0.5);
-    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, pillX + 15, pillY + pillH / 2 + 0.5);
   }
 
   /**

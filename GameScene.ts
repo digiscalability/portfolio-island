@@ -46,6 +46,13 @@ export class GameScene extends THREE.Scene {
   // Drifting cloud pivots (rotated in update for slow orbits)
   private cloudPivots: THREE.Object3D[] = [];
 
+  // Player-centred radar tangent basis (recomputed each minimap refresh).
+  // The minimap is a GTA-style local radar: north-up, player at the centre.
+  private static readonly RADAR_RANGE = 1.35; // radians of arc to the radar edge
+  private radarUp = new THREE.Vector3(0, 1, 0);
+  private radarNorth = new THREE.Vector3(0, 0, 1);
+  private radarEast = new THREE.Vector3(1, 0, 0);
+
   // Birds orbiting the planet with flapping wings
   private birds: Array<{
     pivot: THREE.Object3D;
@@ -1621,46 +1628,66 @@ export class GameScene extends THREE.Scene {
    * Minimap data: equirectangular lon/lat of the player (with heading),
    * NPCs (quest givers flagged), zone plazas, and the delivery target.
    */
+  /**
+   * Recompute the player-centred tangent basis for the radar: up = radial,
+   * north = +Y pole projected onto the tangent plane, east = up × north.
+   */
+  private updateRadarBasis(): void {
+    const pos = this.player.getWorldPosition();
+    this.radarUp.copy(pos).normalize();
+    // North: world +Y projected off the radial, then normalized. Degenerates
+    // only at the exact poles, where we fall back to a fixed tangent.
+    this.radarNorth.set(0, 1, 0).addScaledVector(this.radarUp, -this.radarUp.y);
+    if (this.radarNorth.lengthSq() < 1e-6) this.radarNorth.set(0, 0, 1);
+    this.radarNorth.normalize();
+    this.radarEast.crossVectors(this.radarUp, this.radarNorth).normalize();
+  }
+
+  /**
+   * Project a world position onto the north-up radar. Returns normalized
+   * coords where hypot(rx,ry) = 1 is the radar edge (RADAR_RANGE arc);
+   * ry is +north (drawn up), rx is +east (drawn right). `dist` = the same
+   * hypot so the caller can clamp/hide anything past the edge.
+   * Call updateRadarBasis() first (getMinimapData does).
+   */
+  public worldToRadar(worldPos: THREE.Vector3): { rx: number; ry: number; dist: number } {
+    const dir = worldPos.clone().normalize();
+    const theta = Math.acos(THREE.MathUtils.clamp(dir.dot(this.radarUp), -1, 1));
+    const bearing = Math.atan2(dir.dot(this.radarEast), dir.dot(this.radarNorth));
+    const r = theta / GameScene.RADAR_RANGE;
+    return { rx: r * Math.sin(bearing), ry: r * Math.cos(bearing), dist: r };
+  }
+
   public getMinimapData(): {
-    player: { lon: number; lat: number; heading: number };
-    npcs: Array<{ lon: number; lat: number; hasQuest: boolean }>;
-    zones: Array<{ lon: number; lat: number; color: string }>;
-    delivery: { lon: number; lat: number } | null;
+    heading: number;
+    npcs: Array<{ rx: number; ry: number; dist: number; hasQuest: boolean }>;
+    zones: Array<{ rx: number; ry: number; dist: number; color: string }>;
+    delivery: { rx: number; ry: number; dist: number } | null;
   } {
-    const toLL = (p: THREE.Vector3) => {
-      const len = p.length() || 1;
-      return {
-        lon: Math.atan2(p.z, p.x),
-        lat: Math.asin(THREE.MathUtils.clamp(p.y / len, -1, 1)),
-      };
-    };
-    const playerPos = this.player.getWorldPosition();
-    const pl = toLL(playerPos);
-    // Heading: player forward projected onto the map's east/north basis
-    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.player.quaternion);
-    const east = new THREE.Vector3(-Math.sin(pl.lon), 0, Math.cos(pl.lon));
-    const north = new THREE.Vector3(
-      -Math.cos(pl.lon) * Math.sin(pl.lat),
-      Math.cos(pl.lat),
-      -Math.sin(pl.lon) * Math.sin(pl.lat),
-    );
-    const heading = Math.atan2(fwd.dot(east), fwd.dot(north));
+    this.updateRadarBasis();
+    // Heading: player forward projected onto the east/north basis. 0 = facing
+    // north (arrow up), +90° = facing east (arrow right) — same basis the
+    // blips use, so the arrow and the world can never disagree.
+    // The player MODEL faces local -Z (see SimplePlayer.getForwardDirection);
+    // using +Z here is what made the old arrow point backwards.
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.player.quaternion);
+    const heading = Math.atan2(fwd.dot(this.radarEast), fwd.dot(this.radarNorth));
     const questNames = new Set(this.questMarkers.map((m) => m.npcName));
     const ZL = 0.4636;
     return {
-      player: { ...pl, heading },
+      heading,
       npcs: this.island.npcTargets.map((n) => ({
-        ...toLL(n.meshRef.position),
+        ...this.worldToRadar(n.meshRef.position),
         hasQuest: questNames.has(n.name),
       })),
       zones: [
-        { ...toLL(this.island.dirAt(0, ZL)), color: '#2196F3' },
-        { ...toLL(this.island.dirAt(1.2566, ZL)), color: '#FF9800' },
-        { ...toLL(this.island.dirAt(2.5133, ZL)), color: '#E91E63' },
-        { ...toLL(this.island.dirAt(3.7699, ZL)), color: '#9C27B0' },
-        { lon: 0, lat: Math.PI / 2, color: '#4CAF50' },
+        { ...this.worldToRadar(this.island.dirAt(0, ZL)), color: '#2196F3' },
+        { ...this.worldToRadar(this.island.dirAt(1.2566, ZL)), color: '#FF9800' },
+        { ...this.worldToRadar(this.island.dirAt(2.5133, ZL)), color: '#E91E63' },
+        { ...this.worldToRadar(this.island.dirAt(3.7699, ZL)), color: '#9C27B0' },
+        { ...this.worldToRadar(new THREE.Vector3(0, 1, 0)), color: '#4CAF50' },
       ],
-      delivery: this.guideTarget ? toLL(this.guideTarget) : null,
+      delivery: this.guideTarget ? this.worldToRadar(this.guideTarget) : null,
     };
   }
 

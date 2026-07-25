@@ -523,9 +523,18 @@ class SimpleApp {
     if (this.mapAccum > 0.1) {
       this.mapAccum = 0;
       const mapData = this.scene.getMinimapData();
+      // Project peers through the same player-centred radar basis getMinimapData
+      // just set up (worldToRadar reads the cached basis).
+      const peers = this.multiplayer
+        ? this.multiplayer.getPeerWorlds().map((p) => ({
+            ...this.scene.worldToRadar(p.pos),
+            waving: p.waving,
+          }))
+        : [];
       this.ui.updateMinimap({
         ...mapData,
-        peers: this.multiplayer ? this.multiplayer.getPeerLocations() : [],
+        peers,
+        online: (this.multiplayer ? this.multiplayer.getPeerCount() : 0) + 1,
       });
     }
 

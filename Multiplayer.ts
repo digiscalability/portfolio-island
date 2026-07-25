@@ -377,22 +377,15 @@ export class Multiplayer {
   }
 
   /**
-   * Peer positions for the minimap: world lon/lat plus name and whether the
-   * peer is mid-wave (so the map can flag them). Avatars live at the scene
-   * root, so avatar.position is already a world position.
+   * Peer world positions for the minimap (GameScene projects them onto the
+   * player-centred radar). Avatars live at the scene root, so avatar.position
+   * is already a world position; `waving` flags a peer mid-greeting.
    */
-  public getPeerLocations(): Array<{ lon: number; lat: number; name: string; waving: boolean }> {
+  public getPeerWorlds(): Array<{ pos: THREE.Vector3; name: string; waving: boolean }> {
     const now = performance.now() / 1000;
-    const out: Array<{ lon: number; lat: number; name: string; waving: boolean }> = [];
+    const out: Array<{ pos: THREE.Vector3; name: string; waving: boolean }> = [];
     for (const p of this.peers.values()) {
-      const v = p.avatar.position;
-      const len = v.length() || 1;
-      out.push({
-        lon: Math.atan2(v.z, v.x),
-        lat: Math.asin(Math.max(-1, Math.min(1, v.y / len))),
-        name: p.name,
-        waving: p.waveUntil > now,
-      });
+      out.push({ pos: p.avatar.position.clone(), name: p.name, waving: p.waveUntil > now });
     }
     return out;
   }
