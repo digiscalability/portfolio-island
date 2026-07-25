@@ -443,7 +443,10 @@ export class SimplePlayer extends THREE.Group {
       // The old Superhero kit fallbacks (12.6k tris + ~15MB of 4K textures)
       // are gone; if this fails the primitive capsule mesh remains.
       const gltfResult = await loadGLTFWithFallbacks('/assets/models/player.glb', {
-        scale: 1.0, // v2 model is natively 1.8u — the real-life canon height
+        // v2 model is natively 1.8u; scaled to ~1.58u so the world reads
+        // bigger around the player (feet re-calibrate below, so the scaled
+        // model still lands exactly on the physics floor).
+        scale: 0.88,
       });
 
       if (gltfResult) {

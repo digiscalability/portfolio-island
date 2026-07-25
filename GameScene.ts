@@ -208,7 +208,11 @@ export class GameScene extends THREE.Scene {
     );
 
     // Create spherical island
-    this.island = new Island(18); // 18 unit radius like Messenger
+    // 22u radius (was 18, Messenger parity): with the player scaled to
+    // ~1.58u the world reads noticeably bigger — longer blocks, gentler
+    // horizon. All placement is lon/lat-based so the districts spread
+    // automatically; physical spacing grows with the radius.
+    this.island = new Island(22);
     this.add(this.island.mesh);
     // Unify the art direction: stepped toon shading on every prop (abeto-style)
     this.toonifyIslandMaterials();
@@ -767,7 +771,9 @@ export class GameScene extends THREE.Scene {
       dir
         .set(
           Math.cos(th) * rAt + (Math.random() - 0.5) * 0.2,
-          y + (Math.random() - 0.5) * 0.2,
+          // Island-only world: |y| mirrors southern spots onto the north cap,
+          // and the max() keeps every coin above the shoreline band
+          Math.max(Math.abs(y + (Math.random() - 0.5) * 0.2), Math.sin(0.3)),
           Math.sin(th) * rAt + (Math.random() - 0.5) * 0.2,
         )
         .normalize();
@@ -960,9 +966,10 @@ export class GameScene extends THREE.Scene {
       result.mailboxes.push(mailbox);
     }
 
-    // Spread quest mailboxes across latitudes so the delivery chain sends the
-    // player exploring the whole planet, not one band.
-    const MAILBOX_LATS = [0.55, -0.45, 0.15, -0.2, 0.35, -0.6];
+    // Spread quest mailboxes across the ISLAND's latitude bands (coastal
+    // road up to the highlands) so the delivery chain still tours the whole
+    // map — southern latitudes are open ocean now.
+    const MAILBOX_LATS = [0.55, 0.3, 0.95, 0.42, 0.75, 1.1];
     result.mailboxes.forEach((mailbox, index) => {
       const angle = index * 2.399963; // golden angle spread
       const lat = MAILBOX_LATS[index % MAILBOX_LATS.length];
@@ -1151,6 +1158,12 @@ export class GameScene extends THREE.Scene {
         if (w.state === 'idle') {
           if (time > w.until) {
             w.target.copy(this.randomDirNear(w.home, 0.1));
+            // Island-only world: never pick a stroll target below the
+            // shoreline — NPCs were wandering into the surf
+            if (w.target.y < Math.sin(0.3)) {
+              w.target.y = Math.sin(0.3) + 0.02;
+              w.target.normalize();
+            }
             w.state = 'walk';
           }
         } else {
@@ -1332,9 +1345,14 @@ export class GameScene extends THREE.Scene {
           const dir = new THREE.Vector3();
           for (let attempt = 0; attempt < 8; attempt++) {
             dir
-              .set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1)
+              .set(
+                Math.random() * 2 - 1,
+                // island-only: respawns stay on the north cap, above shore
+                Math.sin(0.3) + Math.random() * (1 - Math.sin(0.3)),
+                Math.random() * 2 - 1,
+              )
               .normalize();
-            if (dir.lengthSq() < 0.5) continue;
+            if (dir.y < Math.sin(0.3)) continue;
             if (anchors.every((a) => dir.angleTo(a) > 0.2)) break;
           }
           const sampled = this.island.sampleSurfaceByDirection(dir, 0);

@@ -11,19 +11,6 @@ type IslandMeshUserData = {
 };
 
 
-type RoadRingUserData = {
-  pathRadius: number;
-  tex: THREE.Texture;
-  normalTex: THREE.Texture;
-  roughnessTex: THREE.Texture;
-  width: number;
-  segments: number;
-};
-
-type RoadPlaneUserData = {
-  isRoadPlane: true;
-};
-
 type ORMSplitResult = {
   aoMap: THREE.Texture;
   roughnessMap: THREE.Texture;
@@ -240,13 +227,19 @@ export class Island {
           Math.sin(th) * rAt + (Math.random() - 0.5) * 0.08,
         )
         .normalize();
+      // Island-only world: mirror southern candidates onto the north cap
+      // (keeps full grass density on the island, none on the seafloor)
+      dir.y = Math.abs(dir.y);
+      dir.normalize();
       const sampled = this.sampleSurfaceByDirection(dir, 0);
       dummy.position.copy(sampled.position);
       dummy.quaternion.setFromUnitVectors(up, sampled.normal);
       dummy.rotateOnAxis(up, Math.random() * Math.PI * 2);
       // Blades landing on pavement collapse to nothing (instance count
-      // stays fixed — no index bookkeeping) so streets stay clean
-      const sc = this.isNearStreet(dir) ? 0.0001 : 0.7 + Math.random() * 0.7;
+      // stays fixed — no index bookkeeping); below the shoreline they
+      // collapse too so the beach stays sandy-clean
+      const belowShore = dir.y < Math.sin(0.26);
+      const sc = this.isNearStreet(dir) || belowShore ? 0.0001 : 0.7 + Math.random() * 0.7;
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
       grass.setMatrixAt(i, dummy.matrix);
@@ -318,12 +311,23 @@ export class Island {
       const plateauFactor = 1.0 - Math.pow(Math.abs(heightFactor - 0.3) * 3, 2) * 0.3;
 
       // Combine layers for natural variation with plateau effect
-      const displacement =
+      const noiseDisp =
         (largeTerrain + mediumTerrain * plateauFactor + smallDetail) * 0.95 + microNoise;
+
+      // ── Continent mask: one proper ISLAND on the north cap, ocean below.
+      // sin(latitude) = normal.y. Land above lat ~0.28, seafloor below
+      // lat ~0.05, smooth beach slope between. Interior valleys are floored
+      // at +0.3 so no inland dip ever sits under the sea surface (+0.08).
+      const sinLat = normal.y;
+      const shoreT = THREE.MathUtils.clamp((sinLat - 0.05) / (0.28 - 0.05), 0, 1);
+      const mask = shoreT * shoreT * (3 - 2 * shoreT); // smoothstep
+      const landDisp = Math.max(noiseDisp, 0.3);
+      const oceanDisp = -2.4 + noiseDisp * 0.15; // gently rolling seafloor
+      const displacement = oceanDisp + (landDisp - oceanDisp) * mask;
 
       // Clamp radius to prevent terrain from going inside the sphere
       const rawRadius = this.radius + displacement;
-      const minRadius = this.radius * 0.96; // slightly increased minimum for smoother terrain
+      const minRadius = this.radius * 0.86; // deep enough for the seafloor
       const maxRadius = this.radius + 4.2; // slightly higher peaks
       const finalRadius = THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
       const newPos = normal.multiplyScalar(finalRadius);
@@ -389,17 +393,37 @@ export class Island {
     mesh.castShadow = false;
     mesh.position.copy(this.center);
 
-    // Create a conforming 'road' ring made of many small segments that sit on the sphere surface.
-    // keep the main roadway closer to the crown of the island so structures can sit around it naturally
-    const roadRadius = this.radius * 0.6;
-    const pathGroup = this.createRoadRing(roadRadius, 0.7, 96);
+    // ── Sea: a translucent water sphere just above the base radius. The
+    // continent mask sinks all terrain south of the shoreline below this,
+    // so the north-cap island stands alone in open ocean. Transparent, so
+    // toonify skips it and it keeps its glossy PBR water look. It is a
+    // separate mesh from surfaceMesh, so terrain sampling (raycasts
+    // surfaceMesh only) and colliders never see it.
+    const sea = new THREE.Mesh(
+      new THREE.SphereGeometry(this.radius + 0.08, 96, 96),
+      new THREE.MeshStandardMaterial({
+        color: 0x2f7fae,
+        transparent: true,
+        opacity: 0.82,
+        roughness: 0.12,
+        metalness: 0.08,
+      }),
+    );
+    sea.name = 'sea';
+    sea.receiveShadow = true;
+    sea.position.copy(this.center);
 
+    // Create a conforming 'road' ring made of many small segments that sit on the sphere surface.
     // ── Street network ──────────────────────────────────────────────────
     // A planned city needs streets before lots: the BOULEVARD is a ring
     // through all four district plazas (lat 0.4636); each district also
     // gets an AVENUE from the Welcome pole down through its plaza and a
-    // CONNECTOR continuing to the equator country road. Every structure
-    // below addresses one of these streets. Waypoints are unit dirs.
+    // CONNECTOR down to the COASTAL ROAD — a beachfront ring at lat 0.28
+    // (worst-case terrain there is +0.2 above sea; 0.24 dipped underwater
+    // in places) replacing the old equator country road, which is open
+    // ocean now that the island occupies the north cap.
+    const pathGroup = new THREE.Group();
+    pathGroup.name = 'street_network';
     const DISTRICT_LONS = [0, 1.2566, 2.5133, 3.7699];
     const boulevardPts: THREE.Vector3[] = [];
     const BOULEVARD_SEGS = 84;
@@ -407,14 +431,19 @@ export class Island {
       boulevardPts.push(this.dirAt((i / BOULEVARD_SEGS) * Math.PI * 2, 0.4636));
     }
     pathGroup.add(this.createStreetPath(boulevardPts, 1.0));
+    const coastalPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= BOULEVARD_SEGS; i++) {
+      coastalPts.push(this.dirAt((i / BOULEVARD_SEGS) * Math.PI * 2, 0.28));
+    }
+    pathGroup.add(this.createStreetPath(coastalPts, 0.8));
     for (const dLon of DISTRICT_LONS) {
       // Avenue: pole plaza → district plaza
       const avenue: THREE.Vector3[] = [];
       for (let s = 0; s <= 12; s++) avenue.push(this.dirAt(dLon, 1.32 - (s / 12) * 0.82));
       pathGroup.add(this.createStreetPath(avenue, 0.8));
-      // Connector: district plaza → equator country road
+      // Connector: district plaza → coastal road
       const connector: THREE.Vector3[] = [];
-      for (let s = 0; s <= 6; s++) connector.push(this.dirAt(dLon, 0.43 - (s / 6) * 0.38));
+      for (let s = 0; s <= 5; s++) connector.push(this.dirAt(dLon, 0.43 - (s / 5) * 0.15));
       pathGroup.add(this.createStreetPath(connector, 0.8));
     }
 
@@ -627,8 +656,17 @@ export class Island {
       const x = Math.cos(theta) * radiusAtY;
       const z = Math.sin(theta) * radiusAtY;
       // Trees claim spacing too — they used to ignore the registry and
-      // grow through houses, stalls, and each other
-      const dir = this.claimDir(new THREE.Vector3(x, y, z).normalize(), 0.08);
+      // grow through houses, stalls, and each other.
+      // The world is one north-cap island now: mirror southern-hemisphere
+      // candidates up (|y|) instead of dropping them, so the island keeps
+      // its full tree count and nothing grows on the seafloor. Anything
+      // still below the shoreline band (lat < 0.27) is skipped.
+      const candidate = new THREE.Vector3(x, Math.abs(y), z).normalize();
+      if (candidate.y < Math.sin(0.27)) continue;
+      const dir = this.claimDir(candidate, 0.08);
+      // Re-check AFTER claimDir: its jitter can shove a crowded candidate
+      // back below the shoreline (that's how trees ended up in the surf)
+      if (dir.y < Math.sin(0.27)) continue;
       // No trees through the pavement — skip candidates on a street
       if (this.isNearStreet(dir)) continue;
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -873,8 +911,8 @@ export class Island {
       [1.15, 0.45], [1.36, 0.50], [1.26, 0.32],
       // market-goers at the Contact stalls
       [3.69, 0.51], [3.86, 0.51], [3.77, 0.36],
-      // one wanderer out on the countryside road
-      [5.0, 0.1],
+      // one wanderer out on the coastal road (the equator is ocean now)
+      [5.0, 0.28],
     ];
     const NPC_SHIRT_COLORS = [0x4488bb, 0xcc5544, 0x55aa55, 0xddaa33, 0x8866aa, 0xbb6644];
     const NPC_PERSONALITIES = [
@@ -1270,7 +1308,9 @@ export class Island {
     // each other head-on), the classic two-sided bazaar strip.
     const STALL_SITES: Array<[number, number]> = [
       [3.51, 0.65], [3.73, 0.65], [3.95, 0.65],
-      [3.59, 0.28], [3.81, 0.28], [4.03, 0.28],
+      // south row at 0.31 — 0.28 was the shoreline band, and claimDir
+      // jitter kept nudging the end stall into the surf
+      [3.59, 0.31], [3.81, 0.31], [4.03, 0.31],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
@@ -1301,7 +1341,8 @@ export class Island {
 
     // Add rivers
     const rivers = new THREE.Group();
-    const RIVER_SITES: Array<[number, number]> = [[4.62, 0.4], [0.6, -0.38]];
+    // Both on the island (the second used to sit at lat -0.38 — seafloor now)
+    const RIVER_SITES: Array<[number, number]> = [[4.62, 0.4], [0.72, 0.62]];
     for (let i = 0; i < RIVER_SITES.length; i++) {
       const river = this.createRiver();
       const pos = this.claimDir(this.dirAt(RIVER_SITES[i][0], RIVER_SITES[i][1]), 0.2).multiplyScalar(this.radius);
@@ -1334,7 +1375,9 @@ export class Island {
 
     // Add mountains
     const mountains = new THREE.Group();
-    const MOUNTAIN_SITES: Array<[number, number]> = [[3.9, 0.95], [5.1, 1.02], [1.9, -0.98]];
+    // All on the island's upland ring (the old third site at lat -0.98 is
+    // open ocean now)
+    const MOUNTAIN_SITES: Array<[number, number]> = [[3.9, 0.95], [5.1, 1.02], [1.9, 0.98]];
     for (let i = 0; i < MOUNTAIN_SITES.length; i++) {
       const mountain = this.createMountain();
       const [mLon, mLat] = MOUNTAIN_SITES[i];
@@ -1355,7 +1398,7 @@ export class Island {
     // PROJECTS district: work-in-progress sites near the Portfolio plaza
     // PROJECTS district: construction lots set back off the boulevard,
     // one per side of the street
-    const WORK_SITES: Array<[number, number]> = [[1.05, 0.65], [1.46, 0.28]];
+    const WORK_SITES: Array<[number, number]> = [[1.05, 0.65], [1.46, 0.34]];
     for (let i = 0; i < WORK_SITES.length; i++) {
       const block = this.createConstructionBlock();
       const pos = this.claimDir(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
@@ -1498,6 +1541,7 @@ export class Island {
     // Group everything and attach to the main mesh as children so the island remains dominant
     const root = new THREE.Group();
     root.add(mesh);
+    root.add(sea);
     root.add(grass);
     root.add(pathGroup);
     root.add(buildings);
@@ -1533,11 +1577,8 @@ export class Island {
       /* swallow errors */
     });
 
-    // Try to convert the segmented road to decal-projected meshes for crisper inlays (async)
-    // non-blocking; will fall back to segmented planes if DecalGeometry isn't available
-    this.tryConvertRoadToDecals(pathGroup, mesh).catch(() => {
-      /* ignore */
-    });
+    // (The old equator ring road + its decal conversion are gone — the
+    // street network is built entirely from createStreetPath segments.)
 
     // Return the group as a Mesh-typed value to keep compatibility with existing code
     return root as unknown as THREE.Mesh;
@@ -1609,6 +1650,13 @@ export class Island {
                 ),
               )
               .normalize();
+      // Island-only world: every claim stays above the shoreline. The
+      // jitter used to shove crowded losers south of the shore, parking
+      // stalls/NPCs on the seafloor.
+      if (dir.y < Math.sin(0.29)) {
+        dir.y = Math.sin(0.29) + Math.random() * 0.03;
+        dir.normalize();
+      }
       let clearance = Infinity;
       for (const o of this.occupiedDirs) {
         clearance = Math.min(clearance, dir.angleTo(o.dir) - o.arc);
@@ -1854,100 +1902,6 @@ export class Island {
     return group;
   }
 
-  // Build a ring of small segment meshes that sit on the sphere surface to emulate a road/decals.
-  private createRoadRing(radius: number, width: number, segments: number = 64): THREE.Group {
-    const group = new THREE.Group();
-    // generate PBR-style road textures (albedo, normal, roughness) via TextureGenerator
-    const roadTex = TextureGenerator.createRoadTextures(512, 64);
-    const tex = roadTex.albedo;
-    const normalTex = roadTex.normal;
-    const roughnessTex = roadTex.roughness;
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(segments / 8, 1);
-    roughnessTex.wrapS = THREE.RepeatWrapping;
-    roughnessTex.wrapT = THREE.RepeatWrapping;
-    roughnessTex.repeat.set(segments / 8, 1);
-
-    const segAngle = (Math.PI * 2) / segments;
-    const segLength = (2 * Math.PI * radius) / segments;
-    for (let i = 0; i < segments; i++) {
-      const angle = i * segAngle;
-      // central point on sphere surface
-      const approxCenter = new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-      const center = this.center.clone().add(
-        approxCenter
-          .clone()
-          .normalize()
-          .multiplyScalar(this.radius + 0.01),
-      );
-      // tangent direction along ring
-      const approxNext = new THREE.Vector3(
-        Math.cos(angle + segAngle) * radius,
-        0,
-        Math.sin(angle + segAngle) * radius,
-      );
-      const next = this.center.clone().add(
-        approxNext
-          .clone()
-          .normalize()
-          .multiplyScalar(this.radius + 0.01),
-      );
-      const dir = next.clone().sub(center).normalize();
-
-      const planeGeom = new THREE.PlaneGeometry(segLength * 1.05, width, 1, 1);
-      // prefer a PBR trim/road material and attach generated maps
-      const mat = Materials.createTrimMaterial(0xc9cf9a); // sandy-green worn path
-      // Same night-visibility floor as the streets: without it the dark
-      // road albedo goes black after sunset once toonified
-      mat.emissive = new THREE.Color(0x241f18);
-      mat.emissiveIntensity = 1;
-      // Material is guaranteed to be MeshStandardMaterial from createTrimMaterial return type
-      if (mat) {
-        mat.map = tex;
-        mat.normalMap = normalTex;
-        mat.roughnessMap = roughnessTex;
-        mat.normalScale = new THREE.Vector2(0.6, 0.6);
-        tex.needsUpdate = true;
-        normalTex.needsUpdate = true;
-        roughnessTex.needsUpdate = true;
-      }
-      const mesh = new THREE.Mesh(planeGeom, mat);
-      // mark as temporary plane so we can remove when decals are projected
-      const planeUserData: RoadPlaneUserData = { isRoadPlane: true };
-      mesh.userData = planeUserData;
-      // position at midpoint between center and next, then project to surface normal
-      const mid = center.clone().add(next).multiplyScalar(0.5);
-      const sampled = this.sampleSurfacePosition(mid, 0.02);
-      const normal = sampled.normal;
-      const surfacePos = sampled.position;
-      mesh.position.copy(surfacePos);
-      // align plane so its up is surface normal and rotation follows dir
-      const up = new THREE.Vector3(0, 1, 0);
-      const q = new THREE.Quaternion().setFromUnitVectors(up, normal);
-      mesh.quaternion.copy(q);
-      // rotate around local Y so plane faces along tangent
-      const qInv = q.clone().invert();
-      const localDir = dir.clone().applyQuaternion(qInv);
-      const yaw = Math.atan2(localDir.z, localDir.x);
-      mesh.rotateOnAxis(new THREE.Vector3(0, 1, 0), yaw);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      group.add(mesh);
-    }
-    // store texture references for potential decal conversion
-    const roadUserData: RoadRingUserData = {
-      pathRadius: radius,
-      tex,
-      normalTex,
-      roughnessTex,
-      width,
-      segments,
-    };
-    group.userData = roadUserData;
-    return group;
-  }
-
   private createStall(): THREE.Group {
     const group = new THREE.Group();
     // ground skirt so slope gaps under the stall read as a wooden deck
@@ -2069,101 +2023,6 @@ export class Island {
   }
 
   // Attempt to replace the segmented road planes with DecalGeometry projected decals for sharper results.
-  private async tryConvertRoadToDecals(pathGroup: THREE.Group, targetMesh: THREE.Mesh) {
-    try {
-      const mod = await import('three/addons/geometries/DecalGeometry.js');
-      const { DecalGeometry } = mod as {
-        DecalGeometry: new (
-          mesh: THREE.Mesh,
-          position: THREE.Vector3,
-          orientation: THREE.Euler,
-          size: THREE.Vector3,
-        ) => THREE.BufferGeometry;
-      };
-      const ud = pathGroup.userData as Partial<RoadRingUserData>;
-      const segments = ud.segments ?? 128;
-      const width = ud.width ?? 0.8;
-      const pathRadius = ud.pathRadius ?? this.radius * 0.9;
-      const tex = ud.tex;
-      const normalTex = ud.normalTex;
-
-      const segAngle = (Math.PI * 2) / segments;
-      const segLength = (2 * Math.PI * pathRadius) / segments;
-
-      // create decal material
-      const decalMat = new THREE.MeshStandardMaterial({
-        map: tex || undefined,
-        normalMap: normalTex || undefined,
-        color: 0xc9cf9a, // sandy-green worn path — blends with grass instead of reading as dark shards
-        transparent: true,
-        opacity: 0.45,
-        depthTest: true,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -4,
-        side: THREE.DoubleSide,
-      });
-
-      // For each segment, project a decal onto the target mesh
-      for (let i = 0; i < segments; i++) {
-        const angle = i * segAngle;
-        const approxCenterLocal = new THREE.Vector3(
-          Math.cos(angle) * pathRadius,
-          0,
-          Math.sin(angle) * pathRadius,
-        );
-        const centerLocal = this.center.clone().add(
-          approxCenterLocal
-            .clone()
-            .normalize()
-            .multiplyScalar(this.radius + 0.02),
-        );
-        // midpoint toward next segment for stable placement
-        const approxNextLocal = new THREE.Vector3(
-          Math.cos(angle + segAngle) * pathRadius,
-          0,
-          Math.sin(angle + segAngle) * pathRadius,
-        );
-        const nextLocal = this.center.clone().add(
-          approxNextLocal
-            .clone()
-            .normalize()
-            .multiplyScalar(this.radius + 0.02),
-        );
-        const mid = centerLocal.clone().add(nextLocal).multiplyScalar(0.5);
-        const normal = mid.clone().sub(this.center).normalize();
-
-        // decal size: width across ring, length along ring, depth small
-        const size = new THREE.Vector3(segLength * 1.4, width * 1.2, 0.6);
-
-        // orientation: make decal face outward along surface normal
-        const up = new THREE.Vector3(0, 1, 0);
-        const q = new THREE.Quaternion().setFromUnitVectors(up, normal);
-        // DecalGeometry wants an Euler orientation; build from quaternion
-        const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
-
-        const decalGeom = new DecalGeometry(targetMesh, mid, euler, size);
-        const decalMesh = new THREE.Mesh(decalGeom, decalMat);
-        decalMesh.castShadow = false;
-        decalMesh.receiveShadow = true;
-        pathGroup.add(decalMesh);
-      }
-
-      // remove previous plane segments
-      const toRemove: THREE.Object3D[] = [];
-      pathGroup.children.forEach((child) => {
-        const data = child.userData as RoadPlaneUserData | undefined;
-        if (data?.isRoadPlane) toRemove.push(child);
-      });
-      toRemove.forEach((child) => {
-        pathGroup.remove(child);
-      });
-    } catch {
-      // DecalGeometry not available or failed — leave plane segments in place
-      return;
-    }
-  }
-
   private async tryLoadModels(
     _buildings: THREE.Group,
     _npcs: THREE.Group,
@@ -2981,18 +2840,21 @@ export class Island {
               // groves) floating 0.55-1.25u above the terrain.
               // ORCHARD [z1..z2] north grove, FOREST [z4..z0] both sides,
               // SOUTH WOOD off-belt, plus singles
+              // Island-only world: every site sits above the shoreline
+              // (lat >= 0.3) — the old south wood / forest south rows are
+              // open ocean now, so they moved to the island's mid-slopes.
               const TREE_SITES: Array<[number, number]> = [
-                // orchard rows (north of road)
-                [1.45, 0.3], [1.62, 0.3], [1.79, 0.3], [1.96, 0.3],
+                // orchard rows (west slope)
+                [1.45, 0.32], [1.62, 0.32], [1.79, 0.32], [1.96, 0.32],
                 [1.53, 0.44], [1.7, 0.44], [1.87, 0.44],
-                // forest segment (both sides of road)
-                [5.25, 0.18], [5.45, 0.3], [5.65, 0.16], [5.85, 0.28],
-                [5.35, -0.18], [5.55, -0.3], [5.75, -0.16], [5.95, -0.26],
-                [6.1, 0.1],
-                // south wood
-                [2.0, -0.48], [2.2, -0.58], [2.4, -0.46], [2.15, -0.35],
+                // forest segment (two bands up the eastern slope)
+                [5.25, 0.34], [5.45, 0.3], [5.65, 0.36], [5.85, 0.3],
+                [5.35, 0.55], [5.55, 0.62], [5.75, 0.52], [5.95, 0.6],
+                [6.1, 0.38],
+                // high wood (upland between Personal and Projects)
+                [2.0, 0.78], [2.2, 0.88], [2.4, 0.76], [2.15, 0.65],
                 // scattered singles
-                [0.5, 0.55], [1.3, -0.4], [3.3, 0.42], [4.3, -0.45], [4.75, 0.35], [0.05, -0.5],
+                [0.5, 0.55], [1.3, 0.85], [3.3, 0.42], [4.3, 0.72], [4.75, 0.35], [0.05, 0.92],
               ];
               const treeCount = TREE_SITES.length;
               for (let i = 0; i < treeCount; i++) {
