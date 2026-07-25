@@ -2772,11 +2772,11 @@ export class Island {
         randomYaw: true,
         heightOffset: -0.02,
       });
-      loadAndReplace(basePath + 'car.glb', 'car_', {
-        scale: 1,
-        randomYaw: true,
-        scaleJitter: 0.1,
-      });
+      // Cars stay PROCEDURAL now: they're drivable vehicles whose wheels the
+      // driving code spins/steers, and GameScene moves the car_N group. The
+      // GLB replacement hid the procedural car and dropped a STATIC mesh on
+      // top — so a driven car appeared to stay parked while the rider drove
+      // off. (car.glb replacement removed.)
       loadAndReplace(basePath + 'lamp.glb', 'lamp', {
         scale: 1,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Lantern_Wall.gltf'],
