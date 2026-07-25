@@ -145,6 +145,26 @@ export class GameScene extends THREE.Scene {
   }> = [];
   private wiggles: Array<{ obj: THREE.Object3D; baseQuat: THREE.Quaternion; t0: number }> = [];
 
+  // Water FX pools: expanding foam rings (swim/wake) + spray droplets
+  // (splash/bow-spray/rooster-tail). Both are pooled flat on the sea.
+  private waterRings: Array<{
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    t0: number;
+    life: number;
+    maxScale: number;
+    normal: THREE.Vector3;
+  }> = [];
+  private waterSpray: Array<{
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    t0: number;
+    life: number;
+    origin: THREE.Vector3;
+    vel: THREE.Vector3;
+  }> = [];
+  private _fxScratch = new THREE.Vector3();
+
   // Sky-dome "up" uniform so the gradient follows the camera around the sphere
   private skyUpUniform: { value: THREE.Vector3 } | null = null;
 
@@ -172,6 +192,8 @@ export class GameScene extends THREE.Scene {
   private readonly _wanderZ = new THREE.Vector3();
   private readonly _wanderYawQ = new THREE.Quaternion();
   private static readonly _localUp = new THREE.Vector3(0, 1, 0);
+  private static readonly _localForward = new THREE.Vector3(0, 0, 1);
+  private static readonly _localRight = new THREE.Vector3(1, 0, 0);
 
   // Mailbox instances for interaction tracking
   private mailboxes: Mailbox[] = [];
@@ -293,6 +315,7 @@ export class GameScene extends THREE.Scene {
     this.createGuideSparkles();
     this.createCoins();
     this.createVehicles();
+    this.createWaterFX();
 
     // Create player on island surface with spherical physics
     this.player = new SimplePlayer();
@@ -670,6 +693,169 @@ export class GameScene extends THREE.Scene {
     }
   }
 
+  // ── Water FX ────────────────────────────────────────────────────────
+
+  private createWaterFX(): void {
+    const ringGeo = new THREE.RingGeometry(0.4, 0.55, 20);
+    for (let i = 0; i < 24; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xe8f6ff,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(ringGeo, mat);
+      mesh.visible = false;
+      this.add(mesh);
+      this.waterRings.push({ mesh, mat, t0: -1, life: 1, maxScale: 1, normal: new THREE.Vector3() });
+    }
+    const dropGeo = new THREE.SphereGeometry(0.07, 5, 4);
+    for (let i = 0; i < 44; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xf0fbff,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(dropGeo, mat);
+      mesh.visible = false;
+      this.add(mesh);
+      this.waterSpray.push({
+        mesh,
+        mat,
+        t0: -1,
+        life: 1,
+        origin: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+      });
+    }
+  }
+
+  /** Expanding foam ring flat on the water at `center` (normal = radial). */
+  private spawnRipple(center: THREE.Vector3, maxScale: number, life = 1.1): void {
+    const time = performance.now() / 1000;
+    for (const r of this.waterRings) {
+      if (r.mesh.visible) continue;
+      r.normal.copy(center).normalize();
+      r.mesh.position.copy(center);
+      r.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), r.normal);
+      r.mesh.scale.setScalar(0.4);
+      r.t0 = time;
+      r.life = life;
+      r.maxScale = maxScale;
+      r.mat.opacity = 0.5;
+      r.mesh.visible = true;
+      return;
+    }
+  }
+
+  /** Fling `count` spray droplets from `origin` along `dir` (splash/wake). */
+  private spawnSpray(origin: THREE.Vector3, dir: THREE.Vector3, count: number, speed: number): void {
+    const time = performance.now() / 1000;
+    const up = this._fxScratch.copy(origin).normalize();
+    let spawned = 0;
+    for (const s of this.waterSpray) {
+      if (s.mesh.visible) continue;
+      s.origin.copy(origin);
+      // mostly along dir, biased upward, with a little scatter
+      s.vel
+        .copy(dir)
+        .multiplyScalar(0.5 + Math.random() * 0.6)
+        .addScaledVector(up, 0.7 + Math.random() * 0.6)
+        .add(
+          new THREE.Vector3(
+            (Math.random() - 0.5) * 0.5,
+            (Math.random() - 0.5) * 0.5,
+            (Math.random() - 0.5) * 0.5,
+          ),
+        )
+        .normalize()
+        .multiplyScalar(speed * (0.6 + Math.random() * 0.5));
+      s.t0 = time;
+      s.life = 0.6 + Math.random() * 0.3;
+      s.mesh.position.copy(origin);
+      s.mesh.scale.setScalar(0.6 + Math.random() * 0.7);
+      s.mat.opacity = 0.9;
+      s.mesh.visible = true;
+      if (++spawned >= count) break;
+    }
+  }
+
+  private _rippleAccum = 0;
+
+  /** Animate the rings/spray + emit swim & wake foam. Called from update(). */
+  private updateWaterFX(deltaTime: number): void {
+    const time = performance.now() / 1000;
+
+    // Emit foam under the swimmer + behind moving craft (throttled)
+    this._rippleAccum += deltaTime;
+    const emit = this._rippleAccum > 0.14;
+    if (emit) this._rippleAccum = 0;
+
+    // NB: spawnRipple/spawnSpray use this._fxScratch internally, so callers
+    // pass their OWN fresh vectors (never _fxScratch) to avoid aliasing.
+    if (this.player.isSwimming()) {
+      const p = this.player.getWorldPosition();
+      const dir = p.clone().normalize();
+      const surf = this.island.waveHeightAt(dir, this.island.seaTimeUniform.value);
+      const onSurf = dir.clone().multiplyScalar(surf + 0.02);
+      if (emit && this.player.getTangentialSpeed() > 0.4) this.spawnRipple(onSurf, 1.6, 1.0);
+      else if (emit && Math.random() < 0.5) this.spawnRipple(onSurf, 1.1, 1.2);
+    }
+    // Entry splash
+    if (this.player.consumeWaterEntry()) {
+      const p = this.player.getWorldPosition();
+      const dir = p.clone().normalize();
+      const surf = this.island.waveHeightAt(dir, this.island.seaTimeUniform.value);
+      const onSurf = dir.clone().multiplyScalar(surf);
+      this.spawnRipple(onSurf, 2.4, 1.1);
+      this.spawnSpray(onSurf, dir.clone(), 10, 5);
+    }
+
+    // Vehicle wakes + spray
+    if (this.activeVehicle >= 0) {
+      const v = this.vehicles[this.activeVehicle];
+      const speedInput = Math.abs(this.vehicleMove.forward) + Math.abs(this.vehicleMove.strafe);
+      if (speedInput > 0.1) {
+        const stern = v.group.position
+          .clone()
+          .addScaledVector(v.forward, v.kind === 'jetski' ? -1.0 : -1.6);
+        if (emit) this.spawnRipple(stern.clone(), v.kind === 'jetski' ? 1.4 : 2.2, 1.0);
+        // jetski throws a rooster tail; boat a lighter bow/stern spray
+        const back = v.forward.clone().multiplyScalar(-1);
+        this.spawnSpray(stern, back, v.kind === 'jetski' ? 3 : 1, v.kind === 'jetski' ? 6 : 4);
+      }
+    }
+
+    // Animate rings: expand + fade
+    for (const r of this.waterRings) {
+      if (!r.mesh.visible) continue;
+      const a = (time - r.t0) / r.life;
+      if (a >= 1) {
+        r.mesh.visible = false;
+        continue;
+      }
+      const sc = 0.4 + a * r.maxScale;
+      r.mesh.scale.setScalar(sc);
+      r.mat.opacity = 0.5 * (1 - a);
+    }
+
+    // Animate spray: ballistic arc under gentle gravity, fade
+    for (const s of this.waterSpray) {
+      if (!s.mesh.visible) continue;
+      const a = (time - s.t0) / s.life;
+      if (a >= 1) {
+        s.mesh.visible = false;
+        continue;
+      }
+      // integrate velocity with light gravity toward planet centre
+      s.vel.addScaledVector(this._fxScratch.copy(s.origin).normalize(), -14 * deltaTime);
+      s.mesh.position.addScaledVector(s.vel, deltaTime);
+      s.mat.opacity = 0.9 * (1 - a);
+    }
+  }
+
   /** Kick up `count` dust puffs at a world position (footstep: 1, landing: 6). */
   public spawnDust(center: THREE.Vector3, count: number): void {
     const time = performance.now() / 1000;
@@ -1010,6 +1196,11 @@ export class GameScene extends THREE.Scene {
           }
         }
         this.orientVehicle(v);
+        // Bank into turns + pitch the bow up with speed (motion feel)
+        const lean = -this.vehicleMove.strafe * 0.35;
+        const pitch = -Math.abs(this.vehicleMove.forward) * 0.12;
+        v.group.rotateOnAxis(GameScene._localForward, lean);
+        v.group.rotateOnAxis(GameScene._localRight, pitch);
         // Seat the rider on deck; camera follows via playerPosition
         const surf = this.island.waveHeightAt(v.dir, this.island.seaTimeUniform.value);
         this.player.setWorldPosition(v.dir.clone().multiplyScalar(surf + 0.9));
@@ -1507,6 +1698,7 @@ export class GameScene extends THREE.Scene {
     // Sea waves (GPU-side + shared with the CPU swim/boat sampler)
     this.island.seaTimeUniform.value = time;
     this.updateVehicles(deltaTime);
+    this.updateWaterFX(deltaTime);
 
     // Butterflies: slow figure-8 drift + fast wing flap
     for (const bf of this.butterflies) {

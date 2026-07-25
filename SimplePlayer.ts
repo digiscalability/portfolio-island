@@ -67,6 +67,12 @@ export class SimplePlayer extends THREE.Group {
   private seated: boolean = false;
   private legLBone: THREE.Bone | null = null;
   private legRBone: THREE.Bone | null = null;
+  private armLBone: THREE.Bone | null = null;
+  private armRBone: THREE.Bone | null = null;
+  private swimPhase = 0; // stroke-cycle clock
+  private wasInWater = false; // edge-detect for the entry splash
+  private justEnteredWater = false;
+  private swimPoseActive = false; // swim pose currently overriding the mixer
 
   // Shop cosmetics: hat attached to the head bone (or fallback head)
   private currentHat: THREE.Group | null = null;
@@ -464,6 +470,63 @@ export class SimplePlayer extends THREE.Group {
     }
   }
 
+  /** Read-and-clear the "entered the water this frame" edge (entry splash). */
+  public consumeWaterEntry(): boolean {
+    const v = this.justEnteredWater;
+    this.justEnteredWater = false;
+    return v;
+  }
+
+  /**
+   * Prone swim pose + stroke cycle. Tilts the body face-down along the
+   * surface and drives an alternating overhead arm pull with a flutter
+   * kick. Runs with the GLTF mixer paused (bones posed directly) or on the
+   * procedural pivots. dt advances the stroke clock; `moving` picks the
+   * cadence (a gentle tread when holding station).
+   */
+  private applySwimPose(dt: number, moving: boolean): void {
+    this.swimPhase += dt * (moving ? 7 : 3.2);
+    const s = Math.sin(this.swimPhase);
+    const s2 = Math.sin(this.swimPhase * 2);
+    if (this.gltfModel) {
+      if (!this.armLBone || !this.legLBone) {
+        this.gltfModel.traverse((o) => {
+          const b = o as THREE.Bone;
+          if (!b.isBone) return;
+          if (o.name === 'legL') this.legLBone = b;
+          if (o.name === 'legR') this.legRBone = b;
+          if (o.name === 'armL') this.armLBone = b;
+          if (o.name === 'armR') this.armRBone = b;
+        });
+      }
+      // Face-down along the water, rolling slightly with each stroke
+      this.gltfModel.rotation.x = 1.15;
+      this.gltfModel.rotation.z = s * 0.18;
+      // Alternating overhead crawl
+      if (this.armLBone) this.armLBone.rotation.x = -1.4 + s * 1.3;
+      if (this.armRBone) this.armRBone.rotation.x = -1.4 - s * 1.3;
+      // Small flutter kick
+      if (this.legLBone) this.legLBone.rotation.x = s2 * 0.35;
+      if (this.legRBone) this.legRBone.rotation.x = -s2 * 0.35;
+    } else if (this.legPivots.length === 2 && this.armPivots.length === 2) {
+      this.mesh.rotation.x = 1.15;
+      this.armPivots[0].rotation.x = -1.4 + s * 1.3;
+      this.armPivots[1].rotation.x = -1.4 - s * 1.3;
+      this.legPivots[0].rotation.x = s2 * 0.35;
+      this.legPivots[1].rotation.x = -s2 * 0.35;
+    }
+  }
+
+  /** Undo the swim tilt when leaving the water (mixer resumes on land). */
+  private clearSwimPose(): void {
+    if (this.gltfModel) {
+      this.gltfModel.rotation.x = 0;
+      this.gltfModel.rotation.z = 0;
+    } else {
+      this.mesh.rotation.x = 0;
+    }
+  }
+
   /** Speed along the surface (gravity axis removed) — drives footstep cadence. */
   public getTangentialSpeed(): number {
     const n = this.getSurfaceNormal();
@@ -684,6 +747,28 @@ export class SimplePlayer extends THREE.Group {
       this.wantJump = false; // no jumping out of the sea
     }
 
+    // ── In water: swim pose overrides the walk/idle animation ───────────
+    if (this.inWater) {
+      const surfN = this.getSurfaceNormal();
+      const tang = this.velocity
+        .clone()
+        .sub(surfN.clone().multiplyScalar(this.velocity.dot(surfN)))
+        .length();
+      this.applySwimPose(safeDeltaTime, this.swimming && tang > 0.4);
+      this.swimPoseActive = true;
+      this.updateWorldMatrix();
+      return;
+    }
+    if (this.swimPoseActive) {
+      // Just climbed out: drop the tilt and neutralise the posed bones so
+      // the mixer resumes cleanly.
+      this.clearSwimPose();
+      this.swimPoseActive = false;
+      for (const b of [this.armLBone, this.armRBone, this.legLBone, this.legRBone]) {
+        if (b) b.rotation.x = 0;
+      }
+    }
+
     // Procedural walk cycle for the built-in model: swing limbs from their
     // hip/shoulder pivots and bounce the body, scaled by tangential speed.
     if (!this.gltfModel && this.legPivots.length === 2 && this.armPivots.length === 2) {
@@ -846,9 +931,13 @@ export class SimplePlayer extends THREE.Group {
     // Not over water (or already above the surface on land) → recover breath
     if (!water.isWater || dist > water.surface + 1.2) {
       this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
+      this.wasInWater = false;
       return;
     }
     this.inWater = true;
+    // Rising edge → let GameScene spawn an entry splash once
+    if (!this.wasInWater) this.justEnteredWater = true;
+    this.wasInWater = true;
     const floatDist = water.surface + SimplePlayer.SWIM_FLOAT;
 
     if (this.swimIntent) {
