@@ -40,6 +40,13 @@ export class SimpleUI {
       zIndex: '1000',
       fontFamily: 'Arial, sans-serif',
     });
+    // Safe-area insets published as inheriting custom properties so every
+    // edge-anchored HUD child can offset itself off notches / home
+    // indicators with calc(var(--sa*) + Npx). Resolve to 0 on desktop.
+    this.overlay.style.setProperty('--sat', 'env(safe-area-inset-top, 0px)');
+    this.overlay.style.setProperty('--sar', 'env(safe-area-inset-right, 0px)');
+    this.overlay.style.setProperty('--sab', 'env(safe-area-inset-bottom, 0px)');
+    this.overlay.style.setProperty('--sal', 'env(safe-area-inset-left, 0px)');
 
     this.createFPSDisplay();
     this.createMuteButton();
@@ -73,12 +80,12 @@ export class SimpleUI {
     this.muteBtn.textContent = muted ? '🔇' : '🔊';
     Object.assign(this.muteBtn.style, {
       position: 'absolute',
-      top: '88px',
-      right: '10px',
+      top: 'calc(var(--sat, 0px) + 88px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
       background: 'rgba(0, 0, 0, 0.55)',
-      padding: '5px 9px',
+      padding: '7px 11px',
       borderRadius: '10px',
-      fontSize: '14px',
+      fontSize: '15px',
       cursor: 'pointer',
       pointerEvents: 'auto',
       userSelect: 'none',
@@ -106,8 +113,8 @@ export class SimpleUI {
     const base = document.createElement('div');
     Object.assign(base.style, {
       position: 'absolute',
-      left: '26px',
-      bottom: '26px',
+      left: 'calc(var(--sal, 0px) + 26px)',
+      bottom: 'calc(var(--sab, 0px) + 26px)',
       width: '110px',
       height: '110px',
       borderRadius: '50%',
@@ -165,10 +172,10 @@ export class SimpleUI {
       btn.textContent = label;
       Object.assign(btn.style, {
         position: 'absolute',
-        right: '30px',
-        bottom,
-        width: '62px',
-        height: '62px',
+        right: 'calc(var(--sar, 0px) + 30px)',
+        bottom: `calc(var(--sab, 0px) + ${bottom})`,
+        width: '68px',
+        height: '68px',
         borderRadius: '50%',
         background: 'rgba(255,255,255,0.16)',
         border: '2px solid rgba(255,255,255,0.3)',
@@ -176,7 +183,7 @@ export class SimpleUI {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        fontSize: '20px',
+        fontSize: '22px',
         fontFamily: 'system-ui, sans-serif',
         pointerEvents: 'auto',
         touchAction: 'none',
@@ -274,7 +281,9 @@ export class SimpleUI {
         borderRadius: '15px',
         textAlign: 'center',
         pointerEvents: 'auto',
-        maxWidth: '400px',
+        width: 'min(400px, calc(100vw - 32px))',
+        maxHeight: 'calc(100dvh - 32px)',
+        overflowY: 'auto',
       });
       this.overlay.appendChild(this.welcomeDiv);
     }
@@ -334,8 +343,10 @@ export class SimpleUI {
       this.interactionDiv = document.createElement('div');
       Object.assign(this.interactionDiv.style, {
         position: 'absolute',
-        bottom: '100px',
+        // Clear the touch buttons / home indicator on phones
+        bottom: 'calc(var(--sab, 0px) + 100px)',
         left: '50%',
+        maxWidth: 'calc(100vw - 32px)',
         background: 'rgba(0, 0, 0, 0.8)',
         color: 'white',
         padding: '15px 25px',
@@ -379,8 +390,8 @@ export class SimpleUI {
       this.fpsDiv = document.createElement('div');
       Object.assign(this.fpsDiv.style, {
         position: 'absolute',
-        top: '10px',
-        right: '10px',
+        top: 'calc(var(--sat, 0px) + 10px)',
+        right: 'calc(var(--sar, 0px) + 10px)',
         background: 'rgba(0, 0, 0, 0.7)',
         color: 'white',
         padding: '5px 10px',
@@ -397,8 +408,8 @@ export class SimpleUI {
     this.playerCountDiv = document.createElement('div');
     Object.assign(this.playerCountDiv.style, {
       position: 'absolute',
-      top: '35px',
-      right: '10px',
+      top: 'calc(var(--sat, 0px) + 35px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
       background: 'rgba(0, 0, 0, 0.7)',
       color: 'white',
       padding: '5px 10px',
@@ -429,8 +440,8 @@ export class SimpleUI {
       this.envBadgeDiv = document.createElement('div');
       Object.assign(this.envBadgeDiv.style, {
         position: 'absolute',
-        top: '10px',
-        left: '10px',
+        top: 'calc(var(--sat, 0px) + 10px)',
+        left: 'calc(var(--sal, 0px) + 10px)',
         background: 'rgba(0, 0, 0, 0.55)',
         color: 'white',
         padding: '5px 12px',
@@ -438,6 +449,12 @@ export class SimpleUI {
         fontSize: '12px',
         fontFamily: 'system-ui, sans-serif',
         pointerEvents: 'none',
+        // Never grow past the left third — keeps it clear of the centered
+        // delivery pill on phones while still showing temp + time of day.
+        maxWidth: 'calc(50vw - 58px)',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
       });
       this.overlay.appendChild(this.envBadgeDiv);
     }
@@ -468,8 +485,10 @@ export class SimpleUI {
       this.mapCanvas.height = H;
       Object.assign(this.mapCanvas.style, {
         position: 'absolute',
-        top: '40px',
-        left: '10px',
+        top: 'calc(var(--sat, 0px) + 40px)',
+        left: 'calc(var(--sal, 0px) + 10px)',
+        maxWidth: 'calc(100vw - var(--sal, 0px) - var(--sar, 0px) - 20px)',
+        height: 'auto',
         borderRadius: '10px',
         border: '1px solid rgba(255,255,255,0.25)',
         pointerEvents: 'none',
@@ -563,6 +582,8 @@ export class SimpleUI {
       left: '50%',
       transform: 'translate(-50%, -50%)',
       width: 'min(420px, 92%)',
+      maxHeight: 'calc(100dvh - 32px)',
+      overflowY: 'auto',
       background: 'rgba(12, 12, 24, 0.95)',
       color: 'white',
       borderRadius: '16px',
@@ -586,7 +607,7 @@ export class SimpleUI {
           <button data-shop-id="${it.id}" ${disabled ? 'disabled' : ''} style="
             background:${it.equipped ? '#2e7d32' : '#ffd34a'};
             color:${it.equipped ? 'white' : '#332200'};
-            border:none;padding:7px 14px;border-radius:8px;font-weight:700;
+            border:none;padding:10px 16px;border-radius:8px;font-weight:700;min-height:40px;
             cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled && !it.equipped ? 0.45 : 1};
           ">${btnLabel}</button>
         </div>`;
@@ -642,8 +663,8 @@ export class SimpleUI {
       this.coinDiv = document.createElement('div');
       Object.assign(this.coinDiv.style, {
         position: 'absolute',
-        top: '60px',
-        right: '10px',
+        top: 'calc(var(--sat, 0px) + 60px)',
+        right: 'calc(var(--sar, 0px) + 10px)',
         background: 'rgba(0, 0, 0, 0.55)',
         color: '#ffd34a',
         padding: '4px 10px',
@@ -811,7 +832,7 @@ export class SimpleUI {
       this.compassDiv = document.createElement('div');
       Object.assign(this.compassDiv.style, {
         position: 'fixed',
-        top: '14px',
+        top: 'calc(var(--sat, 0px) + 14px)',
         left: '50%',
         transform: 'translateX(-50%)',
         display: 'flex',
@@ -849,7 +870,13 @@ export class SimpleUI {
       this.compassArrow.style.transform = `rotate(${deg.toFixed(1)}deg)`;
     }
     if (this.compassLabel) {
-      this.compassLabel.textContent = `${state.label} \u2022 ${Math.round(state.distance)}m`;
+      // Narrow screens: drop the label (the arrow already shows direction),
+      // keep only the distance so the centered pill stays compact and clear
+      // of the top-left env badge.
+      const compact = window.innerWidth < 480;
+      this.compassLabel.textContent = compact
+        ? `${Math.round(state.distance)}m`
+        : `${state.label} \u2022 ${Math.round(state.distance)}m`;
     }
   }
 

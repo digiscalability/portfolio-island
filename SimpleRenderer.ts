@@ -27,6 +27,16 @@ export class SimpleRenderer {
   private clock: THREE.Clock = new THREE.Clock();
   private isRunning: boolean = false;
 
+  // Adaptive resolution: render at a fraction of the CSS resolution and let
+  // it float with the frame budget. This is the biggest single lever for a
+  // slow/loaded GPU (e.g. several tabs sharing one card) since pixel cost
+  // scales with the square of the ratio.
+  private dprCap: number; // hard ceiling (device tier)
+  private dprFloor = 0.6; // never go blurrier than this
+  private renderScale = 1; // current multiplier applied on top of dprCap
+  private fpsEma = 60; // smoothed frame rate driving the controller
+  private qualityAccum = 0; // seconds since the last quality adjustment
+
   constructor(canvas: HTMLCanvasElement) {
     // Create WebGL renderer with anti-aliasing
     this.renderer = new THREE.WebGLRenderer({
@@ -37,8 +47,14 @@ export class SimpleRenderer {
       precision: 'highp',
     });
 
-    // Configure renderer
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Device-tier pixel-ratio ceiling. Phones/tablets (coarse pointer) and
+    // low-core machines can't afford 2x on a scene this dense, so they start
+    // lower; the adaptive controller floats down further under load.
+    const coarse =
+      typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
+    this.dprCap = Math.min(window.devicePixelRatio, coarse || lowCore ? 1.25 : 2);
+    this.renderer.setPixelRatio(this.dprCap);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -109,8 +125,19 @@ export class SimpleRenderer {
     const animate = () => {
       this.animationId = requestAnimationFrame(animate);
 
-      // Get delta time
-      const deltaTime = this.clock.getDelta();
+      // Backgrounded tab: skip ALL sim + GPU work. rAF is already throttled
+      // when hidden, but a tab can still receive occasional catch-up frames —
+      // and with several tabs open that wasted render is exactly what makes
+      // the others stutter. Presence is kept alive by Multiplayer's own 1s
+      // heartbeat, so nothing is lost by going fully idle here.
+      if (typeof document !== 'undefined' && document.hidden) {
+        this.clock.getDelta(); // drain so the resume frame isn't a huge dt
+        return;
+      }
+
+      // Clamp dt: after a stall (alt-tab, GC pause) getDelta can be huge and
+      // would teleport physics/animation on the catch-up frame.
+      const deltaTime = Math.min(this.clock.getDelta(), 0.05);
 
       // Update game logic
       if (this.renderCallback) {
@@ -119,9 +146,43 @@ export class SimpleRenderer {
 
       // Render
       this.render();
+
+      // Float the render resolution to hold the frame budget
+      this.updateAdaptiveResolution(deltaTime);
     };
 
     animate();
+  }
+
+  /**
+   * Nudge the internal render scale toward whatever the GPU can sustain.
+   * Runs at most ~once/second with hysteresis so it settles instead of
+   * oscillating. Costs nothing when already at the ceiling and healthy.
+   */
+  private updateAdaptiveResolution(deltaTime: number): void {
+    if (deltaTime <= 0) return;
+    // Exponential moving average of instantaneous FPS
+    const instFps = 1 / deltaTime;
+    this.fpsEma += (instFps - this.fpsEma) * 0.1;
+
+    this.qualityAccum += deltaTime;
+    if (this.qualityAccum < 1) return;
+    this.qualityAccum = 0;
+
+    const prev = this.renderScale;
+    if (this.fpsEma < 45 && this.renderScale > this.dprFloor / this.dprCap) {
+      // Struggling: shed ~15% of the pixels
+      this.renderScale = Math.max(this.dprFloor / this.dprCap, this.renderScale - 0.15);
+    } else if (this.fpsEma > 57 && this.renderScale < 1) {
+      // Plenty of headroom: claw resolution back gently
+      this.renderScale = Math.min(1, this.renderScale + 0.1);
+    }
+    if (this.renderScale !== prev) {
+      this.renderer.setPixelRatio(this.dprCap * this.renderScale);
+      if (this.composer) {
+        this.composer.setSize(window.innerWidth, window.innerHeight);
+      }
+    }
   }
 
   /**

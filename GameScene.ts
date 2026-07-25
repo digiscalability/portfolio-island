@@ -342,9 +342,15 @@ export class GameScene extends THREE.Scene {
     sunLight.position.set(30, 40, 30);
     sunLight.castShadow = true;
 
-    // Setup shadow properties (optimized for performance)
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
+    // Setup shadow properties (optimized for performance). The shadow map is
+    // re-rendered every frame; a 2048² depth pass is a real cost on weaker
+    // GPUs, so phones/tablets and low-core machines drop to 1024².
+    const coarse =
+      typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
+    const shadowRes = coarse || lowCore ? 1024 : 2048;
+    sunLight.shadow.mapSize.width = shadowRes;
+    sunLight.shadow.mapSize.height = shadowRes;
     sunLight.shadow.camera.near = 0.1;
     sunLight.shadow.camera.far = 100;
     sunLight.shadow.camera.left = -50;

@@ -217,7 +217,13 @@ export class Island {
         );
     };
 
-    const COUNT = 6000;
+    // Grass is pure decoration but 6000 instanced blades still cost vertex
+    // work every frame (wind shader). Halve it on phones/tablets and
+    // low-core machines so the ambient layer doesn't tax weaker GPUs.
+    const coarse =
+      typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
+    const COUNT = coarse || lowCore ? 3000 : 6000;
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);

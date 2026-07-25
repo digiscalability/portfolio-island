@@ -5,7 +5,17 @@
     <!-- Fonts matching the mood: bold display and hand-drawn dialogue -->
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap" rel="stylesheet">
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: paint under notches (we inset the HUD via
+         env(safe-area-*)). maximum-scale/user-scalable=no: a game canvas
+         must not pinch-zoom or double-tap-zoom on touch. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b1220" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>DigiScalability Life Island - Simplified</title>
     <style>
       :root {
@@ -39,6 +49,7 @@
         display: block;
         width: 100vw;
         height: 100vh;
+        height: 100dvh; /* mobile: exclude the address bar (fallback above) */
         position: fixed;
         top: 0;
         left: 0;
@@ -52,6 +63,7 @@
         left: 0;
         width: 100vw;
         height: 100vh;
+        height: 100dvh;
         background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
         display: flex;
         flex-direction: column;
