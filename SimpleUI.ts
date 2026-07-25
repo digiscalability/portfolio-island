@@ -1253,97 +1253,111 @@ export class SimpleUI {
    * Get content for zone
    */
   private getZoneContent(zone: any): string {
+    // Shared button styles for the clickable portfolio links. Links are the
+    // owner's own curated URLs (a visitor chooses to click), opened in a new
+    // tab with rel=noopener — the portfolio's whole point is to be actionable.
+    const link = (
+      href: string,
+      label: string,
+      opts: { primary?: boolean } = {},
+    ): string => {
+      const base =
+        'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;';
+      const style = opts.primary
+        ? base +
+          'background:linear-gradient(135deg,#5b6cff,#8a4de0);color:#fff;font-weight:600;border:none;'
+        : base + 'background:#2a2a37;color:#e8e8f0;border:1px solid rgba(255,255,255,0.14);';
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="${style}">${label}</a>`;
+    };
+    const chip = (t: string): string =>
+      `<span style="background:#33333f;padding:5px 11px;border-radius:15px;font-size:13px;">${t}</span>`;
+
     const contents: { [key: string]: string } = {
       welcome: `
         <h2 style="margin-top: 0; color: #4CAF50;">🏠 Welcome to the DigiScalability World</h2>
         <p><strong>DigiScalability</strong> is a Melbourne-based venture studio building
         AI-powered products — and this island is its living 3D portfolio.</p>
-        <p>Walk the planet to explore:</p>
-        <ul style="text-align: left; display: inline-block;">
-          <li><strong>Professional Experience</strong> — the builder behind the studio</li>
-          <li><strong>Project Portfolio</strong> — RankPilot, ChocoMate, and more</li>
-          <li><strong>Personal Life</strong> — food, family recipes, creative tools</li>
+        <p style="text-align:left;">Walk the planet to explore:</p>
+        <ul style="text-align: left; display: inline-block; line-height:1.7;">
+          <li><strong>Professional</strong> — the builder behind the studio</li>
+          <li><strong>Projects</strong> — RankPilot, ChocoMate, and more</li>
+          <li><strong>Personal</strong> — food, family recipes, creative tools</li>
           <li><strong>Get In Touch</strong> — work with DigiScalability</li>
         </ul>
-        <p style="margin-top: 20px;"><em>WASD to move, mouse to look, E to interact.
-        Glowing mailboxes hold deliveries — follow the quest chain around the world!</em></p>
+        <p style="margin-top: 18px; font-size:14px; color:#bbb;"><em>WASD to move, mouse to
+        look, E to interact. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
       `,
       professional: `
-        <h2 style="margin-top: 0; color: #2196F3;">💼 Professional Experience</h2>
-        <p>Syed Abbas Ali — solo founder & full-stack AI builder. Day job in tech,
-        a venture studio after hours, hospitality management roots.</p>
-        <h3>Core Stack</h3>
-        <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin: 20px 0;">
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Next.js</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">TypeScript</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Firebase / GCP</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Python</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">Three.js</span>
-          <span style="background: #333; padding: 5px 10px; border-radius: 15px;">LLM / AI Automation</span>
+        <h2 style="margin-top: 0; color: #2196F3;">💼 Professional</h2>
+        <p>Abbas Ali — solo founder &amp; full-stack AI builder. Day job in tech,
+        a venture studio after hours, hospitality-management roots, CS degree with an
+        MIT (Deakin) nearly done.</p>
+        <h3 style="margin-bottom:8px;">Core Stack</h3>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 12px 0 18px;">
+          ${chip('Next.js')} ${chip('TypeScript')} ${chip('Firebase / GCP')}
+          ${chip('Python')} ${chip('Three.js')} ${chip('LLM / AI Automation')}
         </div>
-        <p>Ships end-to-end: product, code, infra, and the AI pipelines that glue
-        them together — n8n automations, local model inference, and agentic tooling.</p>
+        <p style="font-size:14px;">Ships end-to-end: product, code, infra, and the AI
+        pipelines that glue them together — n8n automations, local model inference,
+        agentic tooling.</p>
+        <div style="margin-top:16px;">
+          ${link('https://linkedin.com/in/digiscalability', '🔗 LinkedIn', { primary: true })}
+          ${link('https://github.com/digiscalability', '💻 GitHub')}
+          ${link('https://digiscalability.com', '🌐 digiscalability.com')}
+        </div>
       `,
       projects: `
-        <h2 style="margin-top: 0; color: #FF9800;">🚀 Project Portfolio</h2>
+        <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
         <div style="text-align: left;">
-          <h3>📈 RankPilot</h3>
-          <p><em>Flagship — live</em> — AI-powered SEO & search-visibility platform.
-          Audits, schema, and LLM-readiness for the answer-engine era.</p>
-          <h3>🍫 ChocoMate</h3>
-          <p>Direct-to-consumer chocolate brand — e-commerce build, brand, and
-          content pipeline.</p>
-          <h3>📖 Bano's Cookbook</h3>
-          <p>Digitising a family's 1981 handwritten recipes into a living cookbook
-          app — heritage meets modern web.</p>
-          <h3>🤝 Insta Services</h3>
-          <p>Services marketplace — Java EE API with a full Jetpack Compose
-          Android client.</p>
-          <h3>🌍 This Island</h3>
-          <p>The world you're standing on: Three.js spherical world, sphere-walking
-          physics, Blender-authored assets, quest-driven exploration.</p>
+          <h3 style="margin-bottom:4px;">📈 RankPilot <span style="font-size:12px;color:#8f8;">● live</span></h3>
+          <p style="margin-top:4px;">Flagship — AI-powered SEO &amp; search-visibility
+          platform. Audits, schema, and LLM-readiness for the answer-engine era.</p>
+          ${link('https://rankpilot-h3jpc.web.app', '↗ Visit RankPilot', { primary: true })}
+          <h3 style="margin-bottom:4px;margin-top:22px;">🍫 ChocoMate</h3>
+          <p style="margin-top:4px;">Direct-to-consumer chocolate brand — e-commerce
+          build, brand, and content pipeline.</p>
+          ${link('https://chocomate.au', '↗ chocomate.au')}
+          <h3 style="margin-bottom:4px;margin-top:22px;">🌐 DigiScalability</h3>
+          <p style="margin-top:4px;">The studio itself — services, case studies, and
+          the SEO/LLM-visibility practice behind RankPilot.</p>
+          ${link('https://digiscalability.com', '↗ digiscalability.com')}
+          <h3 style="margin-bottom:4px;margin-top:22px;">📖 Bano's Cookbook &amp; more</h3>
+          <p style="margin-top:4px;">Digitising a family's 1981 handwritten recipes;
+          a services marketplace (Insta Services); and this Three.js island world.</p>
+          ${link('https://github.com/digiscalability', '💻 See more on GitHub')}
         </div>
       `,
       personal: `
-        <h2 style="margin-top: 0; color: #E91E63;">🎨 Personal Life</h2>
+        <h2 style="margin-top: 0; color: #E91E63;">🎨 Personal</h2>
         <p>Melbourne, Australia. Builder by day and night — but not only of software.</p>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0;">
-          <div>
-            <h3>🍽️ Food Ventures</h3>
-            <p>Hospitality management background; exploring kitchen-to-market
-            concepts from steak frites to desserts</p>
-          </div>
-          <div>
-            <h3>👵 Family Heritage</h3>
-            <p>Preserving handwritten family recipes from 1981 — the heart behind
-            Bano's Cookbook</p>
-          </div>
-          <div>
-            <h3>🎬 Creative Tooling</h3>
-            <p>Blender, DaVinci Resolve, ComfyUI — a full content studio for
-            product storytelling</p>
-          </div>
-          <div>
-            <h3>📚 Always Learning</h3>
-            <p>Computer science degree, a Masters of IT nearly done, and a new
-            experiment every week</p>
-          </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 18px 0; text-align:left;">
+          <div><h3 style="margin:0 0 4px;">🍽️ Food Ventures</h3>
+            <p style="font-size:14px;">Hospitality roots; kitchen-to-market concepts from
+            steak frites to desserts.</p></div>
+          <div><h3 style="margin:0 0 4px;">👵 Family Heritage</h3>
+            <p style="font-size:14px;">Preserving handwritten family recipes from 1981 —
+            the heart behind Bano's Cookbook.</p></div>
+          <div><h3 style="margin:0 0 4px;">🎬 Creative Tooling</h3>
+            <p style="font-size:14px;">Blender, DaVinci Resolve, ComfyUI — a full studio
+            for product storytelling.</p></div>
+          <div><h3 style="margin:0 0 4px;">📚 Always Learning</h3>
+            <p style="font-size:14px;">A CS degree, a Masters of IT nearly done, and a
+            new experiment every week.</p></div>
         </div>
       `,
       contact: `
         <h2 style="margin-top: 0; color: #9C27B0;">📬 Get In Touch</h2>
         <p>Work with DigiScalability — product builds, AI automation, SEO/LLM
-        visibility, or something new.</p>
-        <div style="margin: 30px 0;">
-          <p><strong>Web:</strong> digiscalability.com</p>
-          <p><strong>Flagship:</strong> RankPilot — AI search visibility</p>
-          <p><strong>Based in:</strong> Melbourne, Australia</p>
+        visibility, or something new. Melbourne, Australia.</p>
+        <div style="margin: 22px 0; display:flex; flex-wrap:wrap; justify-content:center;">
+          ${link('mailto:admin@digiscalability.com', '✉️ Email', { primary: true })}
+          ${link('https://linkedin.com/in/digiscalability', '🔗 LinkedIn')}
+          ${link('https://github.com/digiscalability', '💻 GitHub')}
+          ${link('https://x.com/digiscalability', '𝕏 Twitter')}
+          ${link('https://instagram.com/digiscalability', '📸 Instagram')}
+          ${link('https://youtube.com/@DigiScalability', '▶️ YouTube')}
         </div>
-        <div style="background: #333; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h3>💬 Coming Soon</h3>
-          <p>An AI concierge for instant questions, plus in-world appointment
-          booking — right here on the island.</p>
-        </div>
+        <p style="font-size:13px; color:#999;">All channels @digiscalability.</p>
       `,
     };
 
