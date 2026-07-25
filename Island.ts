@@ -1801,17 +1801,14 @@ export class Island {
   private createStreetPath(waypoints: THREE.Vector3[], width: number): THREE.Group {
     const group = new THREE.Group();
     group.name = 'street_path';
-    const roadTex = TextureGenerator.createRoadTextures(512, 64);
-    roadTex.albedo.wrapS = roadTex.albedo.wrapT = THREE.RepeatWrapping;
-    roadTex.roughness.wrapS = roadTex.roughness.wrapT = THREE.RepeatWrapping;
-    // Warm paver grey — deliberately OFF the grass palette so streets read
-    // as streets from altitude (the sandy-green country-road tint vanished
-    // into the lawn)
-    const mat = Materials.createTrimMaterial(0xb3a68f);
-    mat.map = roadTex.albedo;
-    mat.normalMap = roadTex.normal;
-    mat.roughnessMap = roadTex.roughness;
-    mat.normalScale = new THREE.Vector2(0.6, 0.6);
+    // Plain pale paver — no albedo map. The generated road texture is dark
+    // asphalt; after toonify (which keeps .map) it multiplied the tint to
+    // near-black and the streets vanished at night ("black panels").
+    // A faint warm emissive floor keeps pavement readable after dark
+    // (moonlit-path look) since toonify carries emissive through.
+    const mat = Materials.createTrimMaterial(0xcfc4ae);
+    mat.emissive = new THREE.Color(0x2a241c);
+    mat.emissiveIntensity = 1;
     const keepOutArc = (width * 0.5 + 0.8) / this.radius;
     for (let i = 0; i < waypoints.length - 1; i++) {
       const a = waypoints[i].clone().normalize();
@@ -1824,14 +1821,26 @@ export class Island {
       const posA = a.multiplyScalar(this.radius);
       const posB = b.multiplyScalar(this.radius);
       const segLength = posA.distanceTo(posB);
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(segLength * 1.12, width, 1, 1), mat);
+      // 1.3x overlap: consecutive planes tilt with the terrain, and at 1.12
+      // the joins opened visible gaps on bumpy stretches ("panel" look)
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(segLength * 1.3, width, 1, 1), mat);
       mesh.position.copy(sampled.position);
-      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
-      mesh.quaternion.copy(q);
-      // yaw the plane so its long axis runs along the path
-      const along = posB.clone().sub(posA).normalize();
-      const localDir = along.applyQuaternion(q.clone().invert());
-      mesh.rotateOnAxis(new THREE.Vector3(0, 1, 0), Math.atan2(localDir.z, localDir.x));
+      // Orient with an explicit basis so the ribbon lies FLAT. A
+      // PlaneGeometry spans local X (length) × local Y (width) and faces
+      // local +Z. For a road on the ground we want:
+      //   +Z (face)  → surface normal   (so it lies flat, facing up)
+      //   +X (length)→ path tangent      (so it runs along the street)
+      //   +Y (width) → normal × tangent
+      // The earlier setFromUnitVectors(+Y, normal) instead stood the plane
+      // up on edge like a fence panel.
+      const zAxis = sampled.normal.clone().normalize();
+      const along = posB.clone().sub(posA);
+      // project the tangent onto the surface tangent plane
+      const xAxis = along.sub(zAxis.clone().multiplyScalar(along.dot(zAxis))).normalize();
+      const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+      mesh.quaternion.setFromRotationMatrix(
+        new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis),
+      );
       mesh.receiveShadow = true;
       group.add(mesh);
       this.streetDirs.push({ dir: midDir, halfArc: keepOutArc });
@@ -1883,6 +1892,10 @@ export class Island {
       const planeGeom = new THREE.PlaneGeometry(segLength * 1.05, width, 1, 1);
       // prefer a PBR trim/road material and attach generated maps
       const mat = Materials.createTrimMaterial(0xc9cf9a); // sandy-green worn path
+      // Same night-visibility floor as the streets: without it the dark
+      // road albedo goes black after sunset once toonified
+      mat.emissive = new THREE.Color(0x241f18);
+      mat.emissiveIntensity = 1;
       // Material is guaranteed to be MeshStandardMaterial from createTrimMaterial return type
       if (mat) {
         mat.map = tex;
