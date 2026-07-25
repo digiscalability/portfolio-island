@@ -275,8 +275,12 @@ export class GameScene extends THREE.Scene {
   private readonly _npcNormal = new THREE.Vector3();
   private readonly _wanderAxis = new THREE.Vector3();
   private readonly _wanderFwd = new THREE.Vector3();
+  private readonly _wanderFwd2 = new THREE.Vector3();
   private readonly _wanderZ = new THREE.Vector3();
   private readonly _wanderYawQ = new THREE.Quaternion();
+  // NPCs turn to face the player within FACE_RANGE and greet within GREET_RANGE
+  private static readonly NPC_FACE_RANGE = 4.5;
+  private static readonly NPC_GREET_RANGE = 3.2;
   private static readonly _localUp = new THREE.Vector3(0, 1, 0);
   private static readonly _localForward = new THREE.Vector3(0, 0, 1);
   private static readonly _localRight = new THREE.Vector3(1, 0, 0);
@@ -3031,6 +3035,7 @@ export class GameScene extends THREE.Scene {
     // NPCs: wander their district (stroll → pause → stroll) with a walk
     // bob, facing eased toward the travel direction, plus the greet hop
     if (this.island) {
+      const npcPlayerW = this.player.getWorldPosition();
       for (let i = 0; i < this.island.npcTargets.length; i++) {
         const npc = this.island.npcTargets[i];
         // The Fisherman + Baker run their own routines — skip the wander for them
@@ -3038,6 +3043,7 @@ export class GameScene extends THREE.Scene {
         if (this.baker && npc === this.baker.npc) continue;
         const data = npc.meshRef.userData as {
           greetT0?: number;
+          lastGreetAt?: number;
           wander?: {
             home: THREE.Vector3;
             dir: THREE.Vector3;
@@ -3125,14 +3131,32 @@ export class GameScene extends THREE.Scene {
           .multiplyScalar(w.radius)
           .addScaledVector(this._npcNormal, bob + hop);
         npc.position.copy(npc.meshRef.position);
-        // Orientation: surface-aligned, yaw eased toward travel direction
+
+        // Notice the player: when they walk near, turn to face them and greet
+        // once (throttled). Makes the townsfolk feel aware, not scripted props.
+        this._wanderFwd2.subVectors(npcPlayerW, npc.meshRef.position);
+        const toPlayerDist = this._wanderFwd2.length();
+        let faceFwd: THREE.Vector3 | null = moving ? this._wanderFwd : null;
+        if (toPlayerDist < GameScene.NPC_FACE_RANGE) {
+          // project player direction onto the NPC's tangent plane
+          this._wanderFwd2.addScaledVector(this._npcNormal, -this._wanderFwd2.dot(this._npcNormal));
+          if (this._wanderFwd2.lengthSq() > 1e-6) faceFwd = this._wanderFwd2.normalize();
+          if (
+            toPlayerDist < GameScene.NPC_GREET_RANGE &&
+            (data.lastGreetAt === undefined || time - data.lastGreetAt > 12)
+          ) {
+            data.greetT0 = time;
+            data.lastGreetAt = time;
+          }
+        }
+
+        // Orientation: surface-aligned, yaw eased toward the desired facing
+        // (the player when close, otherwise the travel direction)
         this._swayQuat.setFromUnitVectors(GameScene._localUp, this._npcNormal);
-        if (moving) {
+        if (faceFwd) {
           this._wanderZ.set(0, 0, 1).applyQuaternion(this._swayQuat);
-          const cosA = THREE.MathUtils.clamp(this._wanderZ.dot(this._wanderFwd), -1, 1);
-          const sinA = this._npcNormal.dot(
-            this._wanderAxis.crossVectors(this._wanderZ, this._wanderFwd),
-          );
+          const cosA = THREE.MathUtils.clamp(this._wanderZ.dot(faceFwd), -1, 1);
+          const sinA = this._npcNormal.dot(this._wanderAxis.crossVectors(this._wanderZ, faceFwd));
           const yawTarget = Math.atan2(sinA, cosA);
           let dYaw = yawTarget - w.yaw;
           while (dYaw > Math.PI) dYaw -= Math.PI * 2;
@@ -3758,6 +3782,18 @@ export class GameScene extends THREE.Scene {
 
   public setOnNPCInteract(callback: (npcData: { name: string; dialogue: string[] }) => void): void {
     this.onNPCInteractCallback = callback;
+  }
+
+  /** Player waved (Q): nearby townsfolk hop a friendly greeting back. */
+  public greetNearbyNPCs(): void {
+    if (!this.island) return;
+    const p = this.player.getWorldPosition();
+    const now = performance.now() / 1000;
+    for (const npc of this.island.npcTargets) {
+      if (npc.meshRef.position.distanceTo(p) < 6) {
+        (npc.meshRef.userData as { greetT0?: number }).greetT0 = now;
+      }
+    }
   }
 
   /**

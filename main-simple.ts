@@ -539,9 +539,10 @@ class SimpleApp {
           }
         }
 
-        // Wave at nearby visitors
-        if (this.inputManager.consumeKeyPress('q') && this.multiplayer) {
-          this.multiplayer.wave();
+        // Wave at nearby visitors — peers see it, and the townsfolk wave back
+        if (this.inputManager.consumeKeyPress('q')) {
+          this.multiplayer?.wave();
+          this.scene.greetNearbyNPCs();
           sfx.blip();
         }
 
