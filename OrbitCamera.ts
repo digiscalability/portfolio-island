@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { a11y } from './Accessibility';
 import type { SimplePlayer } from './SimplePlayer';
 
 /**
@@ -82,9 +83,11 @@ export class OrbitCamera {
     this.collisionMesh = root ?? null;
   }
 
+  private _reducedVel = new THREE.Vector3();
   /** Feed an external motion vector for the chase-cam to trail (riding). */
   public setFollowVelocity(v: THREE.Vector3 | null): void {
-    this.externalVelocity = v;
+    // Reduced motion: keep the chase-cam close to the craft (less swoop/trail)
+    this.externalVelocity = v && a11y.reducedMotion ? this._reducedVel.copy(v).multiplyScalar(0.25) : v;
   }
 
   /** Pull the camera back a little for driving; restore on foot. */

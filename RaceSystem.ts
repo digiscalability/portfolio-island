@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { a11y } from './Accessibility';
 import type { Island } from './Island';
 
 /**
@@ -344,7 +345,8 @@ export class RaceSystem {
     const c = this.circuits[kind];
     if (!c) return;
     const running = this.state === 'running' && this.active === kind;
-    const glow = 1.1 + Math.sin(this.pulse * 4) * 0.7; // pulsing highlight
+    // Reduced motion: hold a steady glow instead of a throbbing pulse
+    const glow = a11y.reducedMotion ? 1.4 : 1.1 + Math.sin(this.pulse * 4) * 0.7;
     for (let i = 0; i < c.rings.length; i++) {
       const mat = c.rings[i].material as THREE.MeshStandardMaterial;
       if (forceDim) {

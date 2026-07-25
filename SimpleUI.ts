@@ -1,3 +1,5 @@
+import { a11y } from './Accessibility';
+
 /**
  * SimpleUI - Simplified UI manager for the basic app
  * Handles loading screen, welcome message, interaction prompts, and FPS display
@@ -107,6 +109,38 @@ export class SimpleUI {
       this.muteBtn.textContent = nowMuted ? '🔇' : '🔊';
     });
     this.overlay.appendChild(this.muteBtn);
+    this.createReducedMotionButton();
+  }
+
+  /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
+  private createReducedMotionButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '♿';
+    btn.title = 'Reduced motion — dampens the fly-in, camera swoop, and pulsing effects';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 124px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      padding: '7px 11px',
+      borderRadius: '10px',
+      fontSize: '15px',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      transition: 'background 0.15s ease',
+    });
+    const render = () => {
+      btn.style.background = a11y.reducedMotion
+        ? 'rgba(80, 180, 120, 0.75)'
+        : 'rgba(0, 0, 0, 0.55)';
+    };
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      a11y.setReducedMotion(!a11y.reducedMotion);
+      render();
+    });
+    render();
+    this.overlay.appendChild(btn);
   }
 
   private portfolioMenuDiv: HTMLElement | null = null;

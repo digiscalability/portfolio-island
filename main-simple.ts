@@ -1,3 +1,4 @@
+import { a11y } from './Accessibility';
 import { DeliverySystem } from './DeliverySystem';
 import { GameScene } from './GameScene';
 import { Multiplayer } from './Multiplayer';
@@ -104,6 +105,9 @@ class SimpleApp {
 
       // Remove legacy DOM overlays that conflict with the simplified UI stack
       this.disableLegacyUI();
+
+      // Accessibility prefs (reduced motion) — seed before anything animates
+      a11y.init();
 
       // Create UI first (shows loading screen)
       try {
@@ -293,33 +297,36 @@ class SimpleApp {
         console.warn('Shader pre-compile skipped:', e);
       }
 
+      // Ask first-time visitors for their name (used everywhere instead of a
+      // random handle); returning visitors keep their saved one.
+      const afterIntro = () => {
+        let saved: string | null = null;
+        try {
+          saved = localStorage.getItem('ds_player_name');
+        } catch {
+          /* no storage */
+        }
+        if (saved) {
+          this.multiplayer?.setName(saved);
+          this.ui.showWelcome();
+        } else {
+          this.ui.promptName('', (name) => {
+            this.multiplayer?.setName(name);
+            saveProfile({ name });
+            this.ui.showWelcome();
+          });
+        }
+      };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
       // the degenerate pre-placement view. The opaque loader then fades
-      // out over the already-moving cinematic.
-      this.scene
-        .getOrbitCamera()
-        .flyInFromDistant(2500)
-        .then(() => {
-          // Ask first-time visitors for their name (used everywhere instead of
-          // a random handle); returning visitors keep their saved one.
-          let saved: string | null = null;
-          try {
-            saved = localStorage.getItem('ds_player_name');
-          } catch {
-            /* no storage */
-          }
-          if (saved) {
-            this.multiplayer?.setName(saved);
-            this.ui.showWelcome();
-          } else {
-            this.ui.promptName('', (name) => {
-              this.multiplayer?.setName(name);
-              saveProfile({ name });
-              this.ui.showWelcome();
-            });
-          }
-        });
+      // out over the already-moving cinematic. Reduced-motion skips the
+      // swoop entirely and drops straight into the settled follow view.
+      if (a11y.reducedMotion) {
+        afterIntro();
+      } else {
+        this.scene.getOrbitCamera().flyInFromDistant(2500).then(afterIntro);
+      }
 
       // Warm the post-processing + shadow shaders on a hidden frame (camera is
       // already at the distant fly-in start) so the first VISIBLE frame doesn't
