@@ -1665,12 +1665,18 @@ export class GameScene extends THREE.Scene {
     delivery: { rx: number; ry: number; dist: number } | null;
   } {
     this.updateRadarBasis();
-    // Heading: player forward projected onto the east/north basis. 0 = facing
-    // north (arrow up), +90° = facing east (arrow right) — same basis the
-    // blips use, so the arrow and the world can never disagree.
-    // The player MODEL faces local -Z (see SimplePlayer.getForwardDirection);
-    // using +Z here is what made the old arrow point backwards.
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.player.quaternion);
+    // Heading: the CAMERA's tangent-projected forward — the same vector
+    // setPlayerMovement builds moveDir from. Movement is camera-relative
+    // (W walks along camera-forward), so deriving the radar arrow from the
+    // identical source guarantees "press W" moves you exactly toward the
+    // arrow, and the FOV cone always matches what's up-screen. (Deriving it
+    // from the player model's quaternion was wrong twice over: the model
+    // faces +Z-along-travel — see setPlayerMovement's atan2(local.x,
+    // local.z) — and it holds its LAST walk direction while you orbit the
+    // camera, so the arrow disagreed with both view and next movement.)
+    const fwd = this.orbitCamera
+      ? this.orbitCamera.getForwardDirection()
+      : new THREE.Vector3(0, 0, 1).applyQuaternion(this.player.quaternion);
     const heading = Math.atan2(fwd.dot(this.radarEast), fwd.dot(this.radarNorth));
     const questNames = new Set(this.questMarkers.map((m) => m.npcName));
     const ZL = 0.4636;
