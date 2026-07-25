@@ -14,6 +14,8 @@ export interface Profile {
   hat?: string | null;
   ownedHats?: string[];
   coins?: number;
+  /** Body colours as hex strings, keyed by part (outfit/pants/hair/skin). */
+  colors?: Record<string, string>;
 }
 
 let saveTimer: number | undefined;

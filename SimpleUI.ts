@@ -110,6 +110,36 @@ export class SimpleUI {
     });
     this.overlay.appendChild(this.muteBtn);
     this.createReducedMotionButton();
+    this.createCustomizeButton();
+  }
+
+  private onCustomizeToggle: (() => void) | null = null;
+  setOnCustomizeToggle(cb: () => void): void {
+    this.onCustomizeToggle = cb;
+  }
+
+  /** 🎨 button (also bound to the C key): opens the appearance editor. */
+  private createCustomizeButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '🎨';
+    btn.title = 'Customize appearance (C)';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 160px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      background: 'rgba(0, 0, 0, 0.55)',
+      padding: '7px 11px',
+      borderRadius: '10px',
+      fontSize: '15px',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onCustomizeToggle?.();
+    });
+    this.overlay.appendChild(btn);
   }
 
   /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
@@ -1301,72 +1331,98 @@ export class SimpleUI {
   /**
    * Show character customization panel
    */
-  showCustomize(onCustomize?: (part: string, value: string) => void): void {
+  // Preset swatches per body part (first entry ≈ the model default)
+  private static readonly CUSTOMIZE_PALETTES: Record<string, number[]> = {
+    outfit: [0xf3b359, 0x4a90e2, 0xe84a5f, 0x4caf50, 0x9b59b6, 0x1abc9c, 0xff8ab0, 0x2c2c33],
+    pants: [0x6f7c95, 0x2a3a5a, 0x5a4632, 0x2c2c33, 0x8a7d5a, 0x37516e],
+    hair: [0x6c594b, 0x201a15, 0xd9a441, 0xb5482e, 0xaaaaaa, 0x5566cc],
+    skin: [0xffe0bd, 0xf3b98a, 0xd8955c, 0xa9713f, 0x7a4a24, 0xe8c39e],
+  };
+  private static readonly CUSTOMIZE_LABELS: Record<string, string> = {
+    outfit: 'Outfit',
+    pants: 'Pants',
+    hair: 'Hair',
+    skin: 'Skin',
+  };
+
+  /**
+   * Appearance editor: colour swatches per body part + a picker over owned
+   * hats. Recolours the live model through the callbacks and persists via the
+   * caller. Re-renders itself after each pick to move the active highlight.
+   */
+  showCustomize(opts: {
+    colors: Record<string, number | undefined>;
+    ownedHats: string[];
+    equippedHat: string | null;
+    hats: Array<{ id: string; icon: string }>;
+    onColor: (part: string, hex: number) => void;
+    onHat: (id: string | null) => void;
+  }): void {
     if (!this.customizeDiv) {
       this.customizeDiv = document.createElement('div');
       Object.assign(this.customizeDiv.style, {
         position: 'absolute',
-        bottom: '20px',
-        left: '20px',
+        bottom: 'calc(var(--sab, 0px) + 20px)',
+        left: 'calc(var(--sal, 0px) + 20px)',
         background: 'rgba(0, 0, 0, 0.9)',
         color: 'white',
-        padding: '15px',
-        borderRadius: '10px',
+        padding: '14px 16px',
+        borderRadius: '12px',
         pointerEvents: 'auto',
-        fontSize: '14px',
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '13px',
+        maxWidth: '272px',
+        zIndex: '1400',
       });
       this.overlay.appendChild(this.customizeDiv);
     }
 
+    const hexStr = (h: number) => `#${h.toString(16).padStart(6, '0')}`;
+    const swatchRow = (part: string): string => {
+      const cur = opts.colors[part];
+      const swatches = SimpleUI.CUSTOMIZE_PALETTES[part]
+        .map((hex) => {
+          const active = cur === hex;
+          return `<button data-part="${part}" data-hex="${hex}" title="${hexStr(hex)}" style="width:23px;height:23px;border-radius:6px;border:2px solid ${active ? '#fff' : 'transparent'};background:${hexStr(hex)};cursor:pointer;margin:2px;padding:0;"></button>`;
+        })
+        .join('');
+      return `<div style="margin-bottom:7px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">${SimpleUI.CUSTOMIZE_LABELS[part]}</div><div style="display:flex;flex-wrap:wrap;">${swatches}</div></div>`;
+    };
+    const hatBtn = (id: string | null, icon: string): string => {
+      const active = (opts.equippedHat ?? null) === id;
+      return `<button data-hat="${id ?? ''}" style="font-size:16px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
+    };
+    const ownedBtns = opts.hats
+      .filter((h) => opts.ownedHats.includes(h.id))
+      .map((h) => hatBtn(h.id, h.icon))
+      .join('');
+    const hatRow = `<div style="margin-bottom:6px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">Hat</div><div style="display:flex;flex-wrap:wrap;align-items:center;">${hatBtn(null, '🚫')}${ownedBtns || '<span style="font-size:11px;color:#888;margin-left:4px;">buy hats at the 🛒 shop</span>'}</div></div>`;
+
     this.customizeDiv.innerHTML = `
-      <div style="margin-bottom: 10px; font-weight: bold;">🎨 Customize Character</div>
-      <div style="margin-bottom: 5px;">
-        <label>Hair: </label>
-        <select id="hair-select" style="background: #333; color: white; border: none; padding: 2px;">
-          <option value="short">Short</option>
-          <option value="long">Long</option>
-          <option value="curly">Curly</option>
-        </select>
-      </div>
-      <div style="margin-bottom: 5px;">
-        <label>Top: </label>
-        <select id="top-select" style="background: #333; color: white; border: none; padding: 2px;">
-          <option value="shirt">Shirt</option>
-          <option value="jacket">Jacket</option>
-          <option value="hoodie">Hoodie</option>
-        </select>
-      </div>
-      <div style="margin-bottom: 5px;">
-        <label>Bottom: </label>
-        <select id="bottom-select" style="background: #333; color: white; border: none; padding: 2px;">
-          <option value="pants">Pants</option>
-          <option value="shorts">Shorts</option>
-          <option value="skirt">Skirt</option>
-        </select>
-      </div>
-      <div style="margin-bottom: 5px;">
-        <label>Shoes: </label>
-        <select id="shoes-select" style="background: #333; color: white; border: none; padding: 2px;">
-          <option value="sneakers">Sneakers</option>
-          <option value="boots">Boots</option>
-          <option value="sandals">Sandals</option>
-        </select>
-      </div>
-      <button id="close-customize" style="background: #4CAF50; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; margin-top: 5px;">Close</button>
+      <div style="font-weight:700;margin-bottom:9px;">🎨 Appearance</div>
+      ${swatchRow('outfit')}${swatchRow('pants')}${swatchRow('hair')}${swatchRow('skin')}
+      ${hatRow}
+      <button id="close-customize" style="background:#4CAF50;color:white;border:none;padding:6px 13px;border-radius:8px;cursor:pointer;margin-top:6px;">Done</button>
     `;
 
-    // Add event listeners
-    const selects = ['hair', 'top', 'bottom', 'shoes'];
-    selects.forEach(part => {
-      const select = this.customizeDiv!.querySelector(`#${part}-select`) as HTMLSelectElement;
-      select.addEventListener('change', () => {
-        if (onCustomize) {
-          onCustomize(part, select.value);
-        }
+    this.customizeDiv.querySelectorAll<HTMLElement>('button[data-hex]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const part = btn.dataset.part!;
+        const hex = parseInt(btn.dataset.hex!, 10);
+        opts.onColor(part, hex);
+        opts.colors[part] = hex; // reflect for the re-render highlight
+        this.showCustomize(opts);
       });
     });
-
-    const closeBtn = this.customizeDiv!.querySelector('#close-customize') as HTMLButtonElement;
+    this.customizeDiv.querySelectorAll<HTMLElement>('button[data-hat]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.hat ? btn.dataset.hat : null;
+        opts.onHat(id);
+        opts.equippedHat = id;
+        this.showCustomize(opts);
+      });
+    });
+    const closeBtn = this.customizeDiv.querySelector('#close-customize') as HTMLButtonElement;
     closeBtn.addEventListener('click', () => this.hideCustomize());
   }
 

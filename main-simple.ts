@@ -5,7 +5,7 @@ import { Multiplayer } from './Multiplayer';
 import { NpcQuestSystem } from './NpcQuests';
 import { loadProfile, saveProfile } from './profileSync';
 import { sfx } from './Sfx';
-import type { HatId } from './SimplePlayer';
+import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
@@ -39,7 +39,10 @@ class SimpleApp {
     { id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 8 },
     { id: 'party', icon: '🥳', name: 'Party Hat', price: 10 },
     { id: 'flower', icon: '🌸', name: 'Flower Crown', price: 12 },
+    { id: 'chef', icon: '👨‍🍳', name: "Chef's Toque", price: 14 },
     { id: 'top', icon: '🎩', name: 'Top Hat', price: 15 },
+    { id: 'headphones', icon: '🎧', name: 'Headphones', price: 16 },
+    { id: 'pirate', icon: '🏴‍☠️', name: 'Pirate Hat', price: 18 },
     { id: 'wizard', icon: '🧙', name: 'Wizard Hat', price: 20 },
     { id: 'crown', icon: '👑', name: 'Golden Crown', price: 25 },
     { id: 'halo', icon: '😇', name: 'Halo', price: 40 },
@@ -182,6 +185,18 @@ class SimpleApp {
         /* fresh wardrobe */
       }
 
+      // Restore saved body colours (applied now; re-applied when the GLTF loads)
+      try {
+        const stored = JSON.parse(localStorage.getItem('ds_appearance') ?? '{}') as Record<string, string>;
+        const player = this.scene.getPlayer();
+        for (const key of Object.keys(stored)) {
+          const hex = parseInt(stored[key].replace('#', ''), 16);
+          if (Number.isFinite(hex)) player?.setBodyColor(key as BodyPart, hex);
+        }
+      } catch {
+        /* default colours */
+      }
+
       // Multiplayer: other visitors on the same island, waves included
       this.multiplayer = new Multiplayer(this.scene, this.scene.getPlayer());
       this.multiplayer.onCount((count) => this.ui.updatePlayerCount(count));
@@ -252,6 +267,12 @@ class SimpleApp {
         else if (e.kind === 'finish') sfx.questComplete();
       });
       this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
+
+      // 🎨 button / C key: toggle the appearance editor
+      this.ui.setOnCustomizeToggle(() => {
+        if (this.ui['customizeDiv']) this.ui.hideCustomize();
+        else this.openCustomize();
+      });
 
       // Mute button → shared AudioManager (created by startBackgroundMusic)
       this.ui.setOnMuteToggle(() => {
@@ -420,14 +441,11 @@ class SimpleApp {
             : '✨ Bloom disabled (Ctrl+B to toggle).',
         );
       } else if (event.key.toLowerCase() === 'c') {
-        // Toggle character customization
+        // Toggle the appearance editor
         if (this.ui['customizeDiv']) {
           this.ui.hideCustomize();
         } else {
-          this.ui.showCustomize((part, value) => {
-            console.log(`🎨 Changed ${part} to ${value}`);
-            // TODO: Apply customization to player
-          });
+          this.openCustomize();
         }
       }
     };
@@ -807,6 +825,51 @@ class SimpleApp {
   }
 
   /**
+   * Open the appearance editor (C): live-recolour body parts + pick an owned
+   * hat. Each change applies to the model immediately and persists (local +
+   * cloud profile).
+   */
+  private openCustomize(): void {
+    const player = this.scene.getPlayer();
+    if (!player) return;
+    const appr = player.getAppearance();
+    const colors: Record<string, number | undefined> = { ...appr };
+    this.ui.showCustomize({
+      colors,
+      ownedHats: [...this.ownedHats],
+      equippedHat: this.equippedHat,
+      hats: this.hatCatalog.map((h) => ({ id: h.id, icon: h.icon })),
+      onColor: (part, hex) => {
+        player.setBodyColor(part as BodyPart, hex);
+        this.saveAppearance();
+      },
+      onHat: (id) => {
+        this.equippedHat = id;
+        try {
+          if (id) localStorage.setItem('ds_hat', id);
+          else localStorage.removeItem('ds_hat');
+        } catch {
+          /* session-only */
+        }
+        this.scene.equipPlayerHat((id as HatId) ?? null);
+        this.multiplayer?.setHat((id as HatId) ?? null);
+        saveProfile({ hat: id, ownedHats: [...this.ownedHats] });
+      },
+    });
+  }
+
+  /** Persist the current body colours to localStorage + the cloud profile. */
+  private saveAppearance(): void {
+    const colors = this.currentColorsHex();
+    try {
+      localStorage.setItem('ds_appearance', JSON.stringify(colors));
+    } catch {
+      /* session-only */
+    }
+    saveProfile({ colors });
+  }
+
+  /**
    * Pull the cloud profile once Firebase auth settles and reconcile it with
    * the local state: owned hats are unioned, an equipped hat is restored if the
    * local wardrobe has none, and coins take the higher of the two (progress is
@@ -840,13 +903,36 @@ class SimpleApp {
       if (typeof profile.coins === 'number' && profile.coins > this.scene.getCoinsCollected()) {
         this.scene.setCoins(profile.coins);
       }
+      // Body colours: apply the cloud choice for any part not set locally
+      if (profile.colors) {
+        const player = this.scene.getPlayer();
+        const local = player?.getAppearance() ?? {};
+        for (const key of Object.keys(profile.colors)) {
+          if (local[key as BodyPart] === undefined) {
+            const hex = parseInt(profile.colors[key].replace('#', ''), 16);
+            if (Number.isFinite(hex)) player?.setBodyColor(key as BodyPart, hex);
+          }
+        }
+      }
     }
     saveProfile({
       name: this.multiplayer?.selfName,
       hat: this.equippedHat,
       ownedHats: [...this.ownedHats],
       coins: this.scene.getCoinsCollected(),
+      colors: this.currentColorsHex(),
     });
+  }
+
+  /** Current body colours as hex strings (for persistence). */
+  private currentColorsHex(): Record<string, string> {
+    const appr = this.scene.getPlayer()?.getAppearance() ?? {};
+    const out: Record<string, string> = {};
+    for (const key of Object.keys(appr)) {
+      const hex = appr[key as BodyPart];
+      if (typeof hex === 'number') out[key] = `#${hex.toString(16).padStart(6, '0')}`;
+    }
+    return out;
   }
 
   /**

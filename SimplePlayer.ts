@@ -14,7 +14,26 @@ export interface RemoteAvatar {
 }
 
 /** Cosmetic hats sold in the island shop. */
-export type HatId = 'party' | 'top' | 'crown' | 'cap' | 'flower' | 'wizard' | 'halo';
+export type HatId =
+  | 'party'
+  | 'top'
+  | 'crown'
+  | 'cap'
+  | 'flower'
+  | 'wizard'
+  | 'halo'
+  | 'pirate'
+  | 'chef'
+  | 'headphones';
+
+/** Recolourable body parts (mapped to the model's named materials). */
+export type BodyPart = 'outfit' | 'pants' | 'hair' | 'skin';
+const PART_MATERIAL: Record<BodyPart, string> = {
+  outfit: 'Jacket',
+  pants: 'Pants',
+  hair: 'Hair',
+  skin: 'Skin',
+};
 
 /**
  * SimplePlayer
@@ -96,6 +115,9 @@ export class SimplePlayer extends THREE.Group {
   // Shop cosmetics: hat attached to the head bone (or fallback head)
   private currentHat: THREE.Group | null = null;
   private pendingHatId: HatId | null = null;
+  // Player-chosen body colours (applied by material name; re-applied when the
+  // GLTF finishes loading so a choice made during the fly-in isn't lost).
+  private appearance: Partial<Record<BodyPart, number>> = {};
 
   // GLTF model support
   private gltfModel: THREE.Group | null = null;
@@ -109,11 +131,18 @@ export class SimplePlayer extends THREE.Group {
 
     const group = new THREE.Group();
 
+    // Material names match the GLTF model's, so setBodyColor() recolours both
+    // the fallback body (no model) and the real model by the same lookup.
     const shirtMat = Materials.createToonMaterial(0x4a90e2);
+    shirtMat.name = 'Jacket';
     const skinMat = Materials.createToonMaterial(0xffddaa);
+    skinMat.name = 'Skin';
     const pantsMat = Materials.createToonMaterial(0x2a3a5a);
+    pantsMat.name = 'Pants';
     const shoeMat = Materials.createToonMaterial(0x3d2b1a);
+    shoeMat.name = 'Shoe';
     const hairMat = Materials.createToonMaterial(0x3a2a1a);
+    hairMat.name = 'Hair';
     const eyeMat = Materials.createToonMaterial(0x1a1a1a);
 
     // Legs — pivoted at the hip so they can swing in the walk cycle
@@ -279,9 +308,46 @@ export class SimplePlayer extends THREE.Group {
   }
 
   /**
-   * Get the surface normal at the player's current position (away from planet center).
-   * Returns (0,1,0) in flat-ground mode.
+   * Recolour a body part by its material name (works on the fallback body and
+   * the GLTF model + the added hair cap). Stored so it survives a model reload.
    */
+  public setBodyColor(part: BodyPart, hex: number): void {
+    this.appearance[part] = hex;
+    const matName = PART_MATERIAL[part];
+    const recolour = (root: THREE.Object3D) => {
+      root.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh && !(mesh as THREE.SkinnedMesh).isSkinnedMesh) return;
+        // The hair cap we add follows the hair colour (it has no material name)
+        if (part === 'hair' && mesh.name === 'hair_cap') {
+          const hm = mesh.material as THREE.MeshStandardMaterial;
+          hm?.color?.setHex(hex);
+          return;
+        }
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) {
+          const sm = m as THREE.MeshStandardMaterial;
+          if (sm && sm.name === matName && sm.color) sm.color.setHex(hex);
+        }
+      });
+    };
+    recolour(this);
+    if (this.gltfModel) recolour(this.gltfModel);
+  }
+
+  /** Re-apply every stored colour (call after the GLTF model swaps in). */
+  private reapplyAppearance(): void {
+    for (const key of Object.keys(this.appearance) as BodyPart[]) {
+      const hex = this.appearance[key];
+      if (typeof hex === 'number') this.setBodyColor(key, hex);
+    }
+  }
+
+  /** Current chosen colours (for the customiser to show the active swatch). */
+  public getAppearance(): Partial<Record<BodyPart, number>> {
+    return { ...this.appearance };
+  }
+
   /**
    * Equip a shop hat (null removes). Attaches to the GLTF head bone so it
    * tracks animation; queued if the model hasn't finished loading yet.
@@ -519,6 +585,54 @@ export class SimplePlayer extends THREE.Group {
         const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.028), starMat);
         star.position.set(sx, sy, sz);
         g.add(star);
+      }
+    } else if (id === 'pirate') {
+      // Pirate bicorn: dark oval brim + rounded crown + white skull
+      const blackMat = Materials.createToonMaterial(0x1c1c22);
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.29, 0.03, 16), blackMat);
+      brim.scale.x = 0.78;
+      g.add(brim);
+      const crown = new THREE.Mesh(
+        new THREE.SphereGeometry(0.18, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        blackMat,
+      );
+      crown.scale.set(0.85, 0.7, 1);
+      crown.position.y = 0.05;
+      g.add(crown);
+      const skull = new THREE.Mesh(
+        new THREE.SphereGeometry(0.05, 8, 6),
+        Materials.createToonMaterial(0xf3ecdd),
+      );
+      skull.scale.set(1, 1.15, 0.55);
+      skull.position.set(0, 0.09, 0.19);
+      g.add(skull);
+    } else if (id === 'chef') {
+      // Chef's toque: white band + a tall puffy top
+      const whiteMat = Materials.createToonMaterial(0xf7f7f2);
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.13, 16), whiteMat);
+      band.position.y = 0.06;
+      g.add(band);
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 10), whiteMat);
+      puff.scale.y = 0.9;
+      puff.position.y = 0.22;
+      g.add(puff);
+    } else if (id === 'headphones') {
+      // Headphones: an arc band over the head + two accented ear cups
+      const bandMat = Materials.createToonMaterial(0x2c2c33);
+      const cupMat = Materials.createToonMaterial(0x3a3a44);
+      const accentMat = Materials.createToonMaterial(0xe84a5f);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.022, 8, 20, Math.PI), bandMat);
+      band.position.y = -0.02;
+      g.add(band);
+      for (const sx of [-0.2, 0.2]) {
+        const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.06, 14), cupMat);
+        cup.rotation.z = Math.PI / 2;
+        cup.position.set(sx, -0.02, 0);
+        g.add(cup);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.013, 6, 14), accentMat);
+        ring.rotation.y = Math.PI / 2;
+        ring.position.set(sx * 1.04, -0.02, 0);
+        g.add(ring);
       }
     } else {
       // halo — floats just above the head, glowing
@@ -836,6 +950,8 @@ export class SimplePlayer extends THREE.Group {
           this.pendingHatId = null;
           this.equipHat(hatId);
         }
+        // Re-apply any body colours chosen before the model swapped in
+        this.reapplyAppearance();
 
         console.log(`✅ Loaded GLTF character from: ${gltfResult.loadedUrl}`);
       }
