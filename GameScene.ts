@@ -5,6 +5,7 @@ import { Island } from './Island';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
 import { OrbitCamera } from './OrbitCamera';
+import { RaceSystem, type RaceEvent, type RaceHudStatus } from './RaceSystem';
 import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
 import { TownPlanner, type TownPlanResult } from './TownPlanner';
@@ -195,6 +196,11 @@ export class GameScene extends THREE.Scene {
   private activeVehicle: number = -1; // index into vehicles, or -1
   private vehicleMove = { forward: 0, strafe: 0 };
   private onDrownRespawn?: () => void;
+
+  // Vehicle time-trials (land + water checkpoint circuits)
+  private races?: RaceSystem;
+  private onRaceEventCb?: (e: RaceEvent) => void;
+  private onRaceHudCb?: (s: RaceHudStatus | null) => void;
 
   // Fireflies that take over from the butterflies after dark
   private fireflies: Array<{
@@ -427,6 +433,14 @@ export class GameScene extends THREE.Scene {
     this.createCoins();
     this.createVehicles();
     this.createWaterFX();
+
+    // Checkpoint race circuits (land for cars, water for boats/jetskis). Gate
+    // events/HUD forward through GameScene fields so main can wire them before
+    // or after this async init finishes.
+    this.races = new RaceSystem(this, this.island, this.colliders);
+    this.races.onEvent = (e) => this.onRaceEventCb?.(e);
+    this.races.onHud = (s) => this.onRaceHudCb?.(s);
+    this.races.build();
 
     // Create player on island surface with spherical physics
     this.player = new SimplePlayer();
@@ -2011,6 +2025,16 @@ export class GameScene extends THREE.Scene {
     this.onCoinCollected = cb;
   }
 
+  /** Race banner events (start / checkpoint / finish) for transient messages. */
+  public setOnRaceEvent(cb: (e: RaceEvent) => void): void {
+    this.onRaceEventCb = cb;
+  }
+
+  /** Persistent race HUD status (null hides it — on foot / not racing). */
+  public setOnRaceHud(cb: (s: RaceHudStatus | null) => void): void {
+    this.onRaceHudCb = cb;
+  }
+
   /** Grant coins directly (quest rewards) — persists and updates the HUD. */
   public addCoins(n: number): void {
     this.coinsCollected += n;
@@ -3082,6 +3106,7 @@ export class GameScene extends THREE.Scene {
     // Sea waves (GPU-side + shared with the CPU swim/boat sampler)
     this.island.seaTimeUniform.value = time;
     this.updateVehicles(deltaTime);
+    this.races?.update(deltaTime, this.player.getWorldPosition(), this.getActiveVehicleKind());
     this.updateWaterFX(deltaTime);
     this.updateFish(deltaTime, time);
     this.updateFisherman(time, deltaTime);

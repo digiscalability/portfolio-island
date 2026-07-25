@@ -238,6 +238,13 @@ class SimpleApp {
         sfx.land();
       });
 
+      // Vehicle time-trials: banner on start/checkpoint/finish + live lap HUD
+      this.scene.setOnRaceEvent((e) => {
+        this.ui.flashMessage(e.text);
+        if (e.kind === 'finish') sfx.coin();
+      });
+      this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
+
       // Mute button → shared AudioManager (created by startBackgroundMusic)
       this.ui.setOnMuteToggle(() => {
         const am = (window as unknown as { audioManager?: { toggleMute(): boolean } }).audioManager;

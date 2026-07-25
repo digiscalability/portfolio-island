@@ -1089,6 +1089,65 @@ export class SimpleUI {
     }, 130);
   }
 
+  private raceDiv: HTMLElement | null = null;
+  private raceLine1: HTMLElement | null = null;
+  private raceLine2: HTMLElement | null = null;
+
+  /**
+   * Top-centre race panel: live lap time + checkpoint progress while driving a
+   * circuit, or a "drive through the ring to start" hint. Pass null to hide it
+   * (on foot / not near a circuit).
+   */
+  updateRaceHud(status: { line1: string; line2?: string } | null): void {
+    if (!this.raceDiv) {
+      this.raceDiv = document.createElement('div');
+      Object.assign(this.raceDiv.style, {
+        position: 'absolute',
+        top: 'calc(var(--sat, 0px) + 12px)',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        background: 'rgba(0, 0, 0, 0.6)',
+        color: '#fff',
+        padding: '6px 14px',
+        borderRadius: '12px',
+        textAlign: 'center',
+        fontFamily: 'system-ui, sans-serif',
+        pointerEvents: 'none',
+        zIndex: '1200',
+        opacity: '0',
+        transition: 'opacity 0.2s ease',
+        display: 'none',
+      });
+      this.raceLine1 = document.createElement('div');
+      Object.assign(this.raceLine1.style, {
+        fontSize: '17px',
+        fontWeight: '700',
+        fontVariantNumeric: 'tabular-nums',
+      });
+      this.raceLine2 = document.createElement('div');
+      Object.assign(this.raceLine2.style, {
+        fontSize: '11px',
+        color: '#cfe0ff',
+        marginTop: '1px',
+      });
+      this.raceDiv.appendChild(this.raceLine1);
+      this.raceDiv.appendChild(this.raceLine2);
+      this.overlay.appendChild(this.raceDiv);
+    }
+    if (!status) {
+      this.raceDiv.style.opacity = '0';
+      this.raceDiv.style.display = 'none';
+      return;
+    }
+    this.raceDiv.style.display = 'block';
+    this.raceDiv.style.opacity = '1';
+    if (this.raceLine1) this.raceLine1.textContent = status.line1;
+    if (this.raceLine2) {
+      this.raceLine2.textContent = status.line2 ?? '';
+      this.raceLine2.style.display = status.line2 ? 'block' : 'none';
+    }
+  }
+
   private breathWrap: HTMLDivElement | null = null;
   private breathFill: HTMLDivElement | null = null;
   private waterVignette: HTMLDivElement | null = null;
