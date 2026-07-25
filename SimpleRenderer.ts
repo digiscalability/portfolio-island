@@ -17,7 +17,15 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 export class SimpleRenderer {
   private renderer: THREE.WebGLRenderer;
   private composer?: EffectComposer;
+  private bloomPass?: UnrealBloomPass;
   private postProcessingEnabled: boolean = false;
+
+  // Hard ceiling on rendered pixels (width·height·dpr²). Without it a retina
+  // or large desktop screen renders 4–8M pixels THROUGH the bloom chain and
+  // stutters — the "laggy on different screen sizes". Adaptive resolution then
+  // floats DOWN from here under load.
+  private static readonly PIXEL_BUDGET = 2_500_000;
+  private resizeTimer = 0;
 
   private scene?: THREE.Scene;
   private camera?: THREE.Camera;
@@ -47,13 +55,8 @@ export class SimpleRenderer {
       precision: 'highp',
     });
 
-    // Device-tier pixel-ratio ceiling. Phones/tablets (coarse pointer) and
-    // low-core machines can't afford 2x on a scene this dense, so they start
-    // lower; the adaptive controller floats down further under load.
-    const coarse =
-      typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
-    this.dprCap = Math.min(window.devicePixelRatio, coarse || lowCore ? 1.25 : 2);
+    // Device-tier ceiling, then clamped by the pixel budget for this viewport.
+    this.dprCap = this.budgetedDpr(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(this.dprCap);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -78,6 +81,21 @@ export class SimpleRenderer {
     window.addEventListener('resize', () => this.onWindowResize());
   }
 
+  /** Device-tier DPR ceiling: phones/tablets and low-core machines can't
+   * afford 2× on a scene this dense. */
+  private tierDprCeiling(): number {
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
+    return Math.min(window.devicePixelRatio || 1, coarse || lowCore ? 1.25 : 2);
+  }
+
+  /** Tier ceiling, further clamped so width·height·dpr² ≤ PIXEL_BUDGET. */
+  private budgetedDpr(width: number, height: number): number {
+    const ceil = this.tierDprCeiling();
+    const maxByBudget = Math.sqrt(SimpleRenderer.PIXEL_BUDGET / Math.max(1, width * height));
+    return Math.max(this.dprFloor, Math.min(ceil, maxByBudget));
+  }
+
   /**
    * Initialize post-processing effects
    */
@@ -92,18 +110,42 @@ export class SimpleRenderer {
     const renderPass = new RenderPass(scene, camera);
     this.composer.addPass(renderPass);
 
-    // Bloom effect (UnrealBloomPass: resolution, strength, radius, threshold)
+    // Bloom effect (UnrealBloomPass: resolution, strength, radius, threshold).
+    // Rendered at HALF resolution — bloom is a blur, so the halving is
+    // invisible but its multi-pass downsample chain costs ~4× less.
     const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      new THREE.Vector2(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2)),
       0.4, // strength — subtle glow
       0.6, // radius — tight halos
       0.85, // threshold — only bright emissives bloom
     );
+    bloomPass.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
+    this.bloomPass = bloomPass;
     this.composer.addPass(bloomPass);
 
     // Output pass (tone mapping, gamma)
     const outputPass = new OutputPass();
     this.composer.addPass(outputPass);
+  }
+
+  /**
+   * Render one throwaway frame while the loading screen still covers the
+   * canvas. This compiles the post-processing (bloom/output) shader programs
+   * and primes the first shadow-map render — work that otherwise lands on the
+   * very first visible frame as a hitch during the reveal.
+   */
+  public warmUp(scene: THREE.Scene, camera: THREE.Camera): void {
+    this.scene = scene;
+    this.camera = camera;
+    try {
+      if (this.postProcessingEnabled && this.composer) {
+        this.composer.render();
+      } else {
+        this.renderer.render(scene, camera);
+      }
+    } catch {
+      /* warm-up is best-effort */
+    }
   }
 
   /**
@@ -181,6 +223,7 @@ export class SimpleRenderer {
       this.renderer.setPixelRatio(this.dprCap * this.renderScale);
       if (this.composer) {
         this.composer.setSize(window.innerWidth, window.innerHeight);
+        this.bloomPass?.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
       }
     }
   }
@@ -249,13 +292,30 @@ export class SimpleRenderer {
    * Handle window resize
    */
   private onWindowResize(): void {
+    // Debounce: resize fires many times per second during a window drag, and
+    // reallocating the composer's render targets on every event is what makes
+    // resizing stutter. The canvas CSS-stretches until the drag settles.
+    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.resizeTimer = window.setTimeout(() => {
+      this.resizeTimer = 0;
+      this.applyViewportSize();
+    }, 150);
+  }
+
+  private applyViewportSize(): void {
     const width = window.innerWidth;
     const height = window.innerHeight;
 
+    // Re-derive the pixel-budget ceiling for the new viewport; keep the
+    // adaptive scale the controller has settled on.
+    this.dprCap = this.budgetedDpr(width, height);
+    this.renderer.setPixelRatio(this.dprCap * this.renderScale);
     this.renderer.setSize(width, height);
 
     if (this.composer) {
       this.composer.setSize(width, height);
+      // composer.setSize resets bloom to full res — keep it at half.
+      this.bloomPass?.setSize(Math.ceil(width / 2), Math.ceil(height / 2));
     }
 
     if (this.camera && 'aspect' in this.camera) {

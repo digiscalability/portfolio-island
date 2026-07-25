@@ -293,11 +293,18 @@ class SimpleApp {
           }
         });
 
+      // Warm the post-processing + shadow shaders on a hidden frame (camera is
+      // already at the distant fly-in start) so the first VISIBLE frame doesn't
+      // hitch — a cause of the reveal flash.
+      this.renderer.warmUp(this.scene, this.scene.getCamera());
+
       // Start render loop
       this.startRenderLoop();
       console.log('✓ Render loop started');
 
-      setTimeout(() => this.ui.hideLoading(), 350);
+      // Hold the loader a touch longer so a couple of clean frames render
+      // before it fades over them (was 350ms — too eager, revealed mid-warmup).
+      setTimeout(() => this.ui.hideLoading(), 500);
 
       // Background music synthesis is heavy — it generates a minute of stereo
       // samples with per-sample trig on the main thread. Running it during
@@ -809,13 +816,26 @@ class SimpleApp {
         }
       }
 
-      for (let ch = 0; ch < 2; ch++) {
-        const d = buffer.getChannelData(ch);
+      // Fill the buffer in idle time-slices instead of one ~1s synchronous
+      // block. That block used to land right as the loader faded — freezing
+      // rAF mid-reveal (the "flash" + "random lag right before the island
+      // opens"). State (ch / i / lp) is carried across slices; output is
+      // byte-identical to the old loop.
+      await new Promise<void>((resolve) => {
+        let ch = 0;
+        let i = 0;
+        let d = buffer.getChannelData(0);
         let lp = 0;
-        const panShift = ch === 0 ? 0 : 0.4;
+        let panShift = 0;
+        const SLICE = 40000; // samples per slice (~a few ms) — caps each task
 
-        for (let i = 0; i < N; i++) {
-          const t = i / sr;
+        const fill = (deadline?: { timeRemaining: () => number; didTimeout: boolean }) => {
+          const hasTime = () =>
+            deadline ? deadline.timeRemaining() > 3 || deadline.didTimeout : true;
+          while (ch < 2) {
+            let budget = SLICE;
+            while (i < N && budget-- > 0 && hasTime()) {
+              const t = i / sr;
 
           // --- Chord pad: warm triangle blend, breathing ---
           const chordIdx = Math.floor((t / chordDur) % chords.length);
@@ -865,10 +885,36 @@ class SimpleApp {
             }
           }
 
-          // --- Mix ---
-          d[i] = padVal * 0.045 + melVal * 0.05 + arpVal * 0.025 + wind * 0.02 + birdVal * 0.03;
+              // --- Mix ---
+              d[i] = padVal * 0.045 + melVal * 0.05 + arpVal * 0.025 + wind * 0.02 + birdVal * 0.03;
+              i++;
+            }
+            if (i >= N) {
+              ch++;
+              if (ch >= 2) {
+                resolve();
+                return;
+              }
+              d = buffer.getChannelData(ch);
+              lp = 0;
+              panShift = ch === 0 ? 0 : 0.4;
+              i = 0;
+            } else {
+              break; // out of budget/time — resume next slice
+            }
+          }
+          if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(fill, { timeout: 500 });
+          } else {
+            setTimeout(() => fill(undefined), 0);
+          }
+        };
+        if (typeof requestIdleCallback === 'function') {
+          requestIdleCallback(fill, { timeout: 500 });
+        } else {
+          setTimeout(() => fill(undefined), 0);
         }
-      }
+      });
 
       // Load the buffer and play
       await audioManager.loadAudioBuffer(buffer, 'background_music');
