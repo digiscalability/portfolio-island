@@ -8,6 +8,15 @@
           ".validate": "newData.hasChildren(['name', 'p', 'q', 't']) && newData.child('name').isString() && newData.child('name').val().length <= 40 && newData.child('p').hasChildren() && newData.child('q').hasChildren()"
         }
       }
+    },
+    "profiles": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid",
+        ".validate": "newData.hasChildren(['t'])",
+        "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
+        "coins": { ".validate": "newData.isNumber() && newData.val() >= 0" }
+      }
     }
   }
 }

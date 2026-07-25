@@ -2029,6 +2029,17 @@ export class GameScene extends THREE.Scene {
     return true;
   }
 
+  /** Set the coin total absolutely (applying a synced cloud profile). */
+  public setCoins(total: number): void {
+    this.coinsCollected = Math.max(0, Math.floor(total));
+    try {
+      localStorage.setItem('ds_coins', String(this.coinsCollected));
+    } catch {
+      /* session-only counter */
+    }
+    this.onCoinCollected?.(this.coinsCollected);
+  }
+
   /** Equip a cosmetic hat on the player (shop purchase). */
   public equipPlayerHat(id: import('./SimplePlayer').HatId | null): void {
     this.player?.equipHat(id);

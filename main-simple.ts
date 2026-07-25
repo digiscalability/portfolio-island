@@ -2,6 +2,7 @@ import { DeliverySystem } from './DeliverySystem';
 import { GameScene } from './GameScene';
 import { Multiplayer } from './Multiplayer';
 import { NpcQuestSystem } from './NpcQuests';
+import { loadProfile, saveProfile } from './profileSync';
 import { sfx } from './Sfx';
 import type { HatId } from './SimplePlayer';
 import { SimpleInputManager } from './SimpleInputManager';
@@ -224,9 +225,12 @@ class SimpleApp {
         this.ui.setEnvironmentBadge(status);
       });
 
-      // Coin counter (persisted across visits)
+      // Coin counter (persisted across visits + mirrored to the cloud profile)
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
-      this.scene.setOnCoinCollected((total) => this.ui.updateCoinCounter(total));
+      this.scene.setOnCoinCollected((total) => {
+        this.ui.updateCoinCounter(total);
+        saveProfile({ coins: total });
+      });
 
       // Drowning: washed back to shore with a splash message
       this.scene.setOnDrownRespawn(() => {
@@ -300,6 +304,7 @@ class SimpleApp {
           } else {
             this.ui.promptName('', (name) => {
               this.multiplayer?.setName(name);
+              saveProfile({ name });
               this.ui.showWelcome();
             });
           }
@@ -324,13 +329,19 @@ class SimpleApp {
       // it to an idle slot after first paint; audio needs a user gesture to
       // play anyway, so nothing is lost by generating it lazily.
       const startMusic = () => void this.startBackgroundMusic();
-      if ('requestIdleCallback' in window) {
-        (window as unknown as {
-          requestIdleCallback: (cb: () => void, o?: { timeout: number }) => void;
-        }).requestIdleCallback(startMusic, { timeout: 5000 });
-      } else {
-        setTimeout(startMusic, 1500);
-      }
+      // Cloud profile: reconcile name/hat/coins once Firebase auth has settled.
+      const syncProfile = () => void this.syncProfile();
+      const idle = (cb: () => void, timeout: number) => {
+        if ('requestIdleCallback' in window) {
+          (window as unknown as {
+            requestIdleCallback: (c: () => void, o?: { timeout: number }) => void;
+          }).requestIdleCallback(cb, { timeout });
+        } else {
+          setTimeout(cb, timeout / 3);
+        }
+      };
+      idle(startMusic, 5000);
+      idle(syncProfile, 4000);
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
       // resumed it before, so music (and now SFX) stayed silent. Resume once
@@ -740,6 +751,7 @@ class SimpleApp {
           }
           this.scene.equipPlayerHat(id as HatId);
           this.multiplayer?.setHat(id as HatId);
+          saveProfile({ hat: id, ownedHats: [...this.ownedHats] });
           render();
         },
         () => {
@@ -748,6 +760,49 @@ class SimpleApp {
       );
     };
     render();
+  }
+
+  /**
+   * Pull the cloud profile once Firebase auth settles and reconcile it with
+   * the local state: owned hats are unioned, an equipped hat is restored if the
+   * local wardrobe has none, and coins take the higher of the two (progress is
+   * never lost). The current name is written back but never overridden — name
+   * stays owned by localStorage / the on-visit prompt. Then the merged state is
+   * pushed back so the cloud reflects this device.
+   */
+  private async syncProfile(): Promise<void> {
+    const res = await loadProfile();
+    if (!res) return;
+    const { profile } = res;
+    if (profile) {
+      if (profile.ownedHats?.length) {
+        this.ownedHats = new Set<string>([...profile.ownedHats, ...this.ownedHats]);
+        try {
+          localStorage.setItem('ds_owned_hats', JSON.stringify([...this.ownedHats]));
+        } catch {
+          /* session-only */
+        }
+      }
+      if (profile.hat && !this.equippedHat) {
+        this.equippedHat = profile.hat;
+        try {
+          localStorage.setItem('ds_hat', profile.hat);
+        } catch {
+          /* session-only */
+        }
+        this.scene.equipPlayerHat(profile.hat as HatId);
+        this.multiplayer?.setHat(profile.hat as HatId);
+      }
+      if (typeof profile.coins === 'number' && profile.coins > this.scene.getCoinsCollected()) {
+        this.scene.setCoins(profile.coins);
+      }
+    }
+    saveProfile({
+      name: this.multiplayer?.selfName,
+      hat: this.equippedHat,
+      ownedHats: [...this.ownedHats],
+      coins: this.scene.getCoinsCollected(),
+    });
   }
 
   /**
