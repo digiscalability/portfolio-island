@@ -410,8 +410,14 @@ export class GameScene extends THREE.Scene {
       wingR.rotation.y = Math.PI;
       bird.add(wingR);
       // pivot.rotateY carries the bird along its local -Z, which is
-      // already the model's forward (beak at -Z) — no extra yaw needed
+      // already the model's forward (beak at -Z) — no extra yaw needed.
       bird.position.set(planetR + 3 + Math.random() * 2.5, 0, 0);
+      // Roll the bird upright. At its +X orbit position, radially-outward
+      // is +X but the model's up (+Y) points along the pivot's +Y (the
+      // orbit axis) — so it flew banked on its side, one wing toward the
+      // planet and one into space. Roll -90° about the forward (Z) axis so
+      // up → radial-out and the wings spread horizontally (level flight).
+      bird.rotation.z = -Math.PI / 2;
       pivot.add(bird);
       pivot.name = `bird_pivot_${i}`;
       this.add(pivot);
