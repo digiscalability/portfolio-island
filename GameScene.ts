@@ -81,6 +81,51 @@ export class GameScene extends THREE.Scene {
     phase: number;
   }> = [];
 
+  // Fish swimming in the surrounding ocean (a few types), occasional jumps.
+  private fish: Array<{
+    group: THREE.Group;
+    tail: THREE.Object3D;
+    dir: THREE.Vector3; // unit position on the sphere (over water)
+    heading: THREE.Vector3; // unit tangent travel direction
+    speed: number;
+    phase: number;
+    turnAt: number;
+    jumpT0: number; // -1 = swimming, else jump start time (s)
+    jumpDur: number;
+    depth: number; // metres the body sits below the wave surface
+  }> = [];
+  private readonly _fishAxis = new THREE.Vector3();
+  private readonly _fishZ = new THREE.Vector3();
+  private readonly _fishX = new THREE.Vector3();
+  private readonly _fishMat = new THREE.Matrix4();
+  private readonly _fishDown = new THREE.Vector3();
+
+  // The Fisherman's full routine: cast at the shore → randomly hook a fish →
+  // carry it to his stall → sell it (coin pops, catch goes on the counter) →
+  // walk back and repeat. Anchored + animated in updateFisherman(); the wander
+  // loop skips him.
+  private fisherman: {
+    npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string; dialogue: string[] };
+    rig: THREE.Group; // rod + line + bobber, world-placed at the fishing spot
+    rod: THREE.Mesh;
+    rodTip: THREE.Object3D;
+    line: THREE.Mesh;
+    bobber: THREE.Mesh;
+    caught: THREE.Group | null; // the hooked fish (on the line, then carried)
+    // Fishing spot (at the water) + shop stand, surface-projected
+    spot: { dir: THREE.Vector3; r: number; n: THREE.Vector3; seaward: THREE.Vector3 };
+    stand: { dir: THREE.Vector3; r: number; n: THREE.Vector3; face: THREE.Vector3 };
+    shop: THREE.Group;
+    slots: THREE.Vector3[]; // world display positions on the stall counter
+    sold: THREE.Object3D[]; // fish laid on the counter (FIFO capped)
+    coins: Array<{ mesh: THREE.Mesh; t0: number }>; // sale coin-pops
+    state: 'cast' | 'wait' | 'reel' | 'toShop' | 'sell' | 'toSpot';
+    t0: number; // state start time (s)
+    waitDur: number;
+    hasCatch: boolean;
+    catchIdx: number; // FISH_TYPES index of the current catch
+  } | null = null;
+
   // Looping smoke puffs rising from house chimneys
   private smokePuffs: Array<{
     mesh: THREE.Mesh;
@@ -424,6 +469,9 @@ export class GameScene extends THREE.Scene {
 
     // Floating identity pins above every NPC
     this.createNameTags();
+
+    // The Fisherman stands at the shore and casts a line
+    this.setupFisherman();
     } finally {
       // Generation done — restore true randomness for runtime/FX.
       restoreRandom();
@@ -487,6 +535,9 @@ export class GameScene extends THREE.Scene {
 
     // A few birds circling below the clouds
     this.createBirds();
+
+    // Schools of fish in the surrounding ocean
+    this.createFish();
   }
 
   /**
@@ -539,6 +590,483 @@ export class GameScene extends THREE.Scene {
         speed: 0.12 + Math.random() * 0.08,
         phase: Math.random() * Math.PI * 2,
       });
+    }
+  }
+
+  // [bodyColour, finColour, scale] — shared by the ocean fish + the catch.
+  private static readonly FISH_TYPES: Array<[number, number, number]> = [
+    [0xff7a33, 0xffe0b0, 0.5], // clownfish orange
+    [0x39a6e6, 0xa6e6ff, 0.5], // blue tang
+    [0xccd4dc, 0xf0f6fa, 0.42], // silver
+    [0xd98a3a, 0xf2c48a, 0.55], // koi gold
+    [0x415a68, 0xb0c8d4, 0.8], // big dark
+  ];
+
+  /** One low-poly fish: elongated body + dorsal fin + a rear tail pivot. */
+  private buildFish(bodyC: number, finC: number): { group: THREE.Group; tail: THREE.Object3D } {
+    const g = new THREE.Group();
+    const bodyMat = new THREE.MeshToonMaterial({ color: bodyC });
+    const finMat = new THREE.MeshToonMaterial({ color: finC, side: THREE.DoubleSide });
+    const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.32, 0), bodyMat);
+    body.scale.set(0.55, 0.72, 1.5); // elongated along −Z (forward)
+    body.castShadow = true;
+    g.add(body);
+    const dorsal = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.26, 3), finMat);
+    dorsal.position.set(0, 0.24, 0.04);
+    g.add(dorsal);
+    const tail = new THREE.Object3D();
+    tail.position.set(0, 0, 0.4);
+    const tailFin = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.32, 3), finMat);
+    tailFin.rotation.x = -Math.PI / 2; // flare toward +Z (behind)
+    tailFin.scale.set(1, 0.45, 1);
+    tailFin.position.set(0, 0, 0.16);
+    tail.add(tailFin);
+    g.add(tail);
+    return { group: g, tail };
+  }
+
+  /**
+   * A few types of low-poly fish circling the coastal ocean. They swim just
+   * under the wave surface (backs breaking through so they read through the
+   * near-opaque water) and occasionally leap with a splash. Seeded placement
+   * → identical on every client; runtime wander is ambient (not networked).
+   */
+  private createFish(): void {
+    if (!this.island) return;
+    const N = 22;
+    for (let i = 0; i < N; i++) {
+      const [bc, fc, sc] = GameScene.FISH_TYPES[i % GameScene.FISH_TYPES.length];
+      const { group, tail } = this.buildFish(bc, fc);
+      group.scale.setScalar(sc);
+      // Place over open water (a random dir below the shoreline latitude)
+      let dir = new THREE.Vector3(0, -1, 0);
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const lon = Math.random() * Math.PI * 2;
+        const lat = -0.28 + Math.random() * 0.5; // −0.28..0.22
+        dir = this.island.dirAt(lon, lat);
+        if (dir.y < Math.sin(0.22)) break;
+      }
+      // Initial tangent heading
+      const ref = Math.abs(dir.y) > 0.9 ? GameScene._localForward : GameScene._localUp;
+      const heading = new THREE.Vector3().crossVectors(ref, dir).normalize();
+      this.add(group);
+      this.fish.push({
+        group,
+        tail,
+        dir,
+        heading,
+        speed: 1.1 + Math.random() * 1.5,
+        phase: Math.random() * Math.PI * 2,
+        turnAt: 0,
+        jumpT0: -1,
+        jumpDur: 0,
+        // Ride right at the surface so backs/fins break through the (now more
+        // opaque) water and read clearly; jumps do the rest.
+        depth: 0.02 + Math.random() * 0.07,
+      });
+    }
+    console.log(`🐟 ${this.fish.length} fish in the ocean`);
+  }
+
+  /** Swim + wiggle + jump the fish. Cheap: analytic wave surface, no raycasts. */
+  private updateFish(deltaTime: number, time: number): void {
+    if (this.fish.length === 0 || !this.island) return;
+    const seaT = this.island.seaTimeUniform.value;
+    const R = this.island.getRadius();
+    const shoreY = Math.sin(0.24);
+    for (const f of this.fish) {
+      // Occasional gentle turn, and a rare leap
+      if (time > f.turnAt) {
+        f.turnAt = time + 2 + Math.random() * 4;
+        f.heading.applyAxisAngle(f.dir, (Math.random() - 0.5) * 1.4).normalize();
+        if (f.jumpT0 < 0 && Math.random() < 0.3) {
+          f.jumpT0 = time;
+          f.jumpDur = 0.85 + Math.random() * 0.4;
+        }
+      }
+      // Steer back to open water if drifting up toward the beach
+      if (f.dir.y > shoreY - 0.06) {
+        this._fishDown.set(0, -1, 0).addScaledVector(f.dir, f.dir.y).normalize();
+        f.heading.lerp(this._fishDown, 0.1);
+      }
+      // Keep heading tangent, advance along the great circle
+      f.heading.addScaledVector(f.dir, -f.heading.dot(f.dir)).normalize();
+      this._fishAxis.crossVectors(f.dir, f.heading);
+      if (this._fishAxis.lengthSq() > 1e-8) {
+        this._fishAxis.normalize();
+        f.dir.applyAxisAngle(this._fishAxis, (f.speed * deltaTime) / R).normalize();
+        f.heading.crossVectors(this._fishAxis, f.dir).normalize();
+      }
+      // Radius: swim near the surface, or arc up for a jump
+      const waveR = this.island.waveHeightAt(f.dir, seaT);
+      let radius = waveR - f.depth;
+      let pitch = 0;
+      if (f.jumpT0 >= 0) {
+        const p = (time - f.jumpT0) / f.jumpDur;
+        if (p >= 1) {
+          f.jumpT0 = -1;
+          this.spawnRipple(f.dir.clone().multiplyScalar(waveR), 1.5, 0.9);
+          this.spawnSpray(f.dir.clone().multiplyScalar(waveR), f.heading, 3, 3.2);
+        } else {
+          radius = waveR + Math.sin(p * Math.PI) * 1.3;
+          pitch = Math.cos(p * Math.PI) * 0.9;
+        }
+      }
+      f.group.position.copy(f.dir).multiplyScalar(radius);
+      // Orient: local +Y → up (dir), local −Z → heading
+      this._fishZ.copy(f.heading).multiplyScalar(-1);
+      this._fishX.crossVectors(f.dir, this._fishZ).normalize();
+      this._fishZ.crossVectors(this._fishX, f.dir).normalize();
+      this._fishMat.makeBasis(this._fishX, f.dir, this._fishZ);
+      f.group.quaternion.setFromRotationMatrix(this._fishMat);
+      if (pitch !== 0) f.group.rotateX(pitch);
+      // Tail swish
+      f.tail.rotation.y = Math.sin(time * 10 + f.phase) * 0.5;
+    }
+  }
+
+  /** Surface radius + normal along a direction (raycast, ideal-sphere fallback). */
+  private surfaceInfo(dir: THREE.Vector3): { r: number; n: THREE.Vector3 } {
+    try {
+      const s = this.island!.sampleSurfaceByDirection(dir, 0.02);
+      return { r: s.position.length(), n: s.normal.clone() };
+    } catch {
+      return { r: this.island!.getRadius(), n: dir.clone() };
+    }
+  }
+
+  /** Orient an object so its local +Y = up and its model-forward (−Z) = fwd. */
+  private orientObj(obj: THREE.Object3D, up: THREE.Vector3, fwd: THREE.Vector3): void {
+    const z = fwd.clone().multiplyScalar(-1);
+    const x = new THREE.Vector3().crossVectors(up, z).normalize();
+    z.crossVectors(x, up).normalize();
+    obj.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, up, z));
+  }
+
+  /** A little beachfront fish stall: counter, awning, ice crate, sign. Returns
+   * the group + local counter slot positions where sold fish are laid out. */
+  private buildFishShop(): { group: THREE.Group; slots: THREE.Vector3[] } {
+    const g = new THREE.Group();
+    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f });
+    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
+    const stripe = new THREE.MeshToonMaterial({ color: 0x2f7fae, side: THREE.DoubleSide });
+    const stripe2 = new THREE.MeshToonMaterial({ color: 0xf2f2f2, side: THREE.DoubleSide });
+    // Counter (front toward the beach = −Z), on legs
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.14, 0.95), wood);
+    counter.position.set(0, 0.92, -0.95);
+    counter.castShadow = true;
+    g.add(counter);
+    for (const sx of [-1.05, 1.05])
+      for (const sz of [-1.32, -0.6]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.92, 0.1), dark);
+        leg.position.set(sx, 0.46, sz);
+        g.add(leg);
+      }
+    // Back posts + a striped awning slanting toward the beach
+    for (const sx of [-1.15, 1.15]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.1, 6), dark);
+      post.position.set(sx, 1.05, 0.15);
+      post.castShadow = true;
+      g.add(post);
+    }
+    for (let i = 0; i < 5; i++) {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.05, 1.7), i % 2 ? stripe2 : stripe);
+      panel.position.set(-1.04 + i * 0.52, 2.05 - 0.28, -0.55);
+      panel.rotation.x = -0.32;
+      panel.castShadow = true;
+      g.add(panel);
+    }
+    // Ice crate on the counter
+    const crate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.95, 0.22, 0.66),
+      new THREE.MeshToonMaterial({ color: 0xd4eaf4 }),
+    );
+    crate.position.set(-0.72, 1.1, -0.95);
+    g.add(crate);
+    // "Fresh Fish" sign hanging under the awning
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 96;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#20303c';
+      ctx.fillRect(0, 0, 256, 96);
+      ctx.font = '600 34px system-ui, sans-serif';
+      ctx.fillStyle = '#ffe0a0';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🐟 Fresh Fish', 128, 50);
+    }
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.5, 0.56),
+      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, side: THREE.DoubleSide }),
+    );
+    sign.position.set(0, 1.75, -1.35);
+    sign.rotation.y = Math.PI; // face the beach/water side (front = −Z)
+    g.add(sign);
+    // Counter display slots
+    const slots: THREE.Vector3[] = [];
+    for (let i = 0; i < 5; i++) slots.push(new THREE.Vector3(0.15 + (i - 2) * 0.34, 1.02, -0.95));
+    return { group: g, slots };
+  }
+
+  /**
+   * Relocate the Fisherman to the shore and set up his fishing routine (rig +
+   * a fish stall). The routine runs in updateFisherman(); the wander loop skips
+   * him.
+   */
+  private setupFisherman(): void {
+    if (!this.island) return;
+    const npc = this.island.npcTargets.find((n) => n.name === 'Fisherman');
+    if (!npc) return;
+    // Stand on the widest open stretch of beach — the gap between districts
+    // (plazas sit at lon 0/1.26/2.51/3.77), so ~5.0 is clear of the crowd.
+    const lon = 5.0;
+
+    // Fishing spot at the water's edge; seaward tangent = decreasing latitude
+    const spotDir = this.island.dirAt(lon, 0.3);
+    const sp = this.surfaceInfo(spotDir);
+    const seaward = new THREE.Vector3(0, -1, 0).addScaledVector(spotDir, spotDir.y);
+    seaward.addScaledVector(sp.n, -seaward.dot(sp.n)).normalize();
+
+    // Shop stand a couple of metres along the beach. The stall FRONT (counter +
+    // sign) faces the LAND — that's where customers/players walk up from; the
+    // fisherman works behind it on the water side.
+    const standDir = this.island.dirAt(lon - 0.12, 0.325);
+    const sd = this.surfaceInfo(standDir);
+    const standSea = new THREE.Vector3(0, -1, 0).addScaledVector(standDir, standDir.y);
+    standSea.addScaledVector(sd.n, -standSea.dot(sd.n)).normalize();
+    const landward = standSea.clone().negate();
+
+    // Rig (rod + line + bobber): world-placed each frame, children forward = −Z
+    const rig = new THREE.Group();
+    const rod = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.03, 1.4, 6),
+      new THREE.MeshToonMaterial({ color: 0x6b4a2a }),
+    );
+    rod.castShadow = true;
+    rig.add(rod);
+    const rodTip = new THREE.Object3D();
+    rig.add(rodTip);
+    const line = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.006, 0.006, 1, 4),
+      new THREE.MeshBasicMaterial({ color: 0xeeeeee }),
+    );
+    rig.add(line);
+    const bobber = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 8, 6),
+      new THREE.MeshToonMaterial({ color: 0xdd3b3b, emissive: 0x551111 }),
+    );
+    rig.add(bobber);
+    this.add(rig);
+
+    // Build + place the stall, then bake its counter slots into world space
+    const { group: shop, slots: localSlots } = this.buildFishShop();
+    shop.position.copy(standDir).multiplyScalar(sd.r);
+    this.orientObj(shop, sd.n, landward); // stall front (−Z: counter + sign) faces the land
+    this.add(shop);
+    shop.updateMatrixWorld(true);
+    const slots = localSlots.map((s) => shop.localToWorld(s.clone()));
+
+    this.fisherman = {
+      npc,
+      rig,
+      rod,
+      rodTip,
+      line,
+      bobber,
+      caught: null,
+      spot: { dir: spotDir, r: sp.r, n: sp.n, seaward },
+      stand: { dir: standDir, r: sd.r, n: sd.n, face: landward },
+      shop,
+      slots,
+      sold: [],
+      coins: [],
+      state: 'cast',
+      t0: performance.now() / 1000,
+      waitDur: 0,
+      hasCatch: false,
+      catchIdx: 0,
+    };
+    console.log('🎣 Fisherman routine set up (shore + stall)');
+  }
+
+  /** A gold coin that pops above the stall on a sale, rising + spinning + fading. */
+  private spawnFishermanCoin(pos: THREE.Vector3, up: THREE.Vector3): void {
+    const F = this.fisherman;
+    if (!F) return;
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.12, 0.03, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffd34a, transparent: true, opacity: 1 }),
+    );
+    mesh.position.copy(pos);
+    mesh.quaternion.setFromUnitVectors(GameScene._localUp, up);
+    mesh.userData.n = up.clone();
+    this.add(mesh);
+    F.coins.push({ mesh, t0: performance.now() / 1000 });
+  }
+
+  /**
+   * The fisherman's routine state machine: cast → wait for a bite → reel (a
+   * ~60% chance of a fish) → carry the catch to his stall → sell it (coin pop,
+   * fish laid on the counter) → walk back → cast again.
+   */
+  private updateFisherman(time: number, dt: number): void {
+    const F = this.fisherman;
+    if (!F || !this.island) return;
+    const bob = (Math.sin(time * 2) + 1) * 0.008;
+
+    // Sale coins: rise + spin + fade, independent of state
+    for (let i = F.coins.length - 1; i >= 0; i--) {
+      const c = F.coins[i];
+      const p = (time - c.t0) / 1.0;
+      if (p >= 1) {
+        this.remove(c.mesh);
+        F.coins.splice(i, 1);
+        continue;
+      }
+      c.mesh.position.addScaledVector(c.mesh.userData.n as THREE.Vector3, dt * 0.9);
+      c.mesh.rotation.y += dt * 6;
+      (c.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - p;
+    }
+
+    if (F.state === 'cast' || F.state === 'wait' || F.state === 'reel') {
+      // Standing at the water with the rig out
+      F.rig.visible = true;
+      F.npc.meshRef.position
+        .copy(F.spot.dir)
+        .multiplyScalar(F.spot.r)
+        .addScaledVector(F.spot.n, bob);
+      F.npc.position.copy(F.npc.meshRef.position);
+      this.orientObj(F.npc.meshRef, F.spot.n, F.spot.seaward);
+      F.rig.position.copy(F.npc.meshRef.position);
+      F.rig.quaternion.copy(F.npc.meshRef.quaternion);
+
+      const st = time - F.t0;
+      let theta = 0.85; // rod elevation over the water
+      let bobberFwd = 2.6;
+      let bobberDrop = 0.14;
+      if (F.state === 'cast') {
+        // Whip the rod back then forward, then the line lands
+        const p = Math.min(st / 1.0, 1);
+        theta = 1.35 - Math.sin(p * Math.PI) * 0.85;
+        bobberFwd = 0.6 + p * 2.0;
+        if (p >= 1) {
+          F.state = 'wait';
+          F.t0 = time;
+          F.waitDur = 3 + Math.random() * 5;
+          this.spawnRipple(F.bobber.getWorldPosition(new THREE.Vector3()), 1.0, 0.9);
+        }
+      } else if (F.state === 'wait') {
+        theta = 0.9 + Math.sin(time * 0.8) * 0.05;
+        bobberDrop = 0.14 - Math.sin(time * 1.6) * 0.05;
+        if (st > F.waitDur) {
+          F.state = 'reel';
+          F.t0 = time;
+          F.hasCatch = Math.random() < 0.6;
+          if (F.hasCatch) {
+            F.catchIdx = Math.floor(Math.random() * GameScene.FISH_TYPES.length);
+            const [bc, fc, sc] = GameScene.FISH_TYPES[F.catchIdx];
+            const cf = this.buildFish(bc, fc).group;
+            cf.scale.setScalar(sc * 0.7);
+            this.add(cf);
+            F.caught = cf;
+          }
+          this.spawnRipple(F.bobber.getWorldPosition(new THREE.Vector3()), 0.7, 0.8);
+        }
+      } else {
+        // reel: pull the rod up, the bobber (and catch) lift out of the water
+        const p = Math.min(st / 1.4, 1);
+        theta = 0.9 + p * 0.7;
+        bobberFwd = 2.6 - p * 1.9;
+        bobberDrop = 0.14 - p * 0.7;
+        if (p >= 1) {
+          F.state = F.hasCatch ? 'toShop' : 'cast';
+          F.t0 = time;
+        }
+      }
+
+      // Rig geometry (rod up + seaward = −Z; line to the bobber)
+      const hand = new THREE.Vector3(0.12, 0.9, -0.05);
+      const rodDir = new THREE.Vector3(0, Math.sin(theta), -Math.cos(theta));
+      F.rod.quaternion.setFromUnitVectors(GameScene._localUp, rodDir);
+      F.rod.position.copy(hand).addScaledVector(rodDir, 0.7);
+      F.rodTip.position.copy(hand).addScaledVector(rodDir, 1.4);
+      const bobberLocal = new THREE.Vector3(0.12, -bobberDrop, -bobberFwd);
+      F.bobber.position.copy(bobberLocal);
+      const delta = bobberLocal.clone().sub(F.rodTip.position);
+      const len = delta.length() || 0.001;
+      F.line.position.copy(F.rodTip.position).add(bobberLocal).multiplyScalar(0.5);
+      F.line.quaternion.setFromUnitVectors(GameScene._localUp, delta.multiplyScalar(1 / len));
+      F.line.scale.set(1, len, 1);
+      // Dangle the hooked fish just under the bobber while reeling
+      if (F.state === 'reel' && F.caught) {
+        F.caught.position.copy(F.rig.localToWorld(bobberLocal.clone())).addScaledVector(F.spot.n, -0.18);
+        this.orientObj(F.caught, F.spot.n, F.spot.seaward);
+        F.caught.rotateX(Math.PI / 2 + Math.sin(time * 20) * 0.3); // flapping
+      }
+      return;
+    }
+
+    if (F.state === 'toShop' || F.state === 'toSpot') {
+      // Walk between the fishing spot and the stall
+      F.rig.visible = false;
+      const from = F.state === 'toShop' ? F.spot : F.stand;
+      const to = F.state === 'toShop' ? F.stand : F.spot;
+      const fromW = from.dir.clone().multiplyScalar(from.r);
+      const toW = to.dir.clone().multiplyScalar(to.r);
+      const p = Math.min((time - F.t0) / 2.2, 1);
+      const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      const pos = fromW.clone().lerp(toW, ease);
+      const n = pos.clone().normalize();
+      pos.copy(n).multiplyScalar(THREE.MathUtils.lerp(from.r, to.r, ease));
+      const walkBob = Math.abs(Math.sin(time * 8)) * 0.04;
+      F.npc.meshRef.position.copy(pos).addScaledVector(n, walkBob);
+      F.npc.position.copy(F.npc.meshRef.position);
+      const travel = toW.clone().sub(fromW);
+      travel.addScaledVector(n, -travel.dot(n)).normalize();
+      this.orientObj(F.npc.meshRef, n, travel);
+      // Carry the catch overhead on the way to the stall
+      if (F.caught && F.state === 'toShop') {
+        F.caught.position.copy(pos).addScaledVector(n, 1.15).addScaledVector(travel, 0.25);
+        this.orientObj(F.caught, n, travel);
+        F.caught.rotateZ(Math.sin(time * 6) * 0.2);
+      }
+      if (p >= 1) {
+        F.state = F.state === 'toShop' ? 'sell' : 'cast';
+        F.t0 = time;
+      }
+      return;
+    }
+
+    // state === 'sell': lay the catch on the counter, pop a coin
+    F.rig.visible = false;
+    F.npc.meshRef.position
+      .copy(F.stand.dir)
+      .multiplyScalar(F.stand.r)
+      .addScaledVector(F.stand.n, bob);
+    F.npc.position.copy(F.npc.meshRef.position);
+    this.orientObj(F.npc.meshRef, F.stand.n, F.stand.face);
+    const sp2 = Math.min((time - F.t0) / 1.4, 1);
+    const slot = F.slots[F.sold.length % F.slots.length];
+    if (F.caught) {
+      const hand = F.npc.meshRef.position.clone().addScaledVector(F.stand.n, 1.1).addScaledVector(F.stand.face, 0.3);
+      F.caught.position.copy(hand).lerp(slot, Math.min(sp2 * 1.3, 1));
+      this.orientObj(F.caught, F.stand.n, F.stand.face);
+    }
+    if (sp2 >= 1) {
+      if (F.caught) {
+        F.caught.position.copy(slot);
+        F.sold.push(F.caught);
+        if (F.sold.length > F.slots.length) {
+          const old = F.sold.shift();
+          if (old) this.remove(old);
+        }
+        F.caught = null;
+        this.spawnFishermanCoin(slot.clone().addScaledVector(F.stand.n, 0.6), F.stand.n);
+      }
+      F.state = 'toSpot';
+      F.t0 = time;
     }
   }
 
@@ -1870,11 +2398,13 @@ export class GameScene extends THREE.Scene {
       b.wingR.rotation.z = -flap;
     }
 
-    // Trees: gentle sway around their surface-aligned base orientation
+    // Trees: gentle sway + a slow wind gust that rolls through every ~25s so
+    // the whole canopy leans together, not just idle jitter.
+    const gust = 1 + 0.7 * Math.max(0, Math.sin(time * 0.25));
     for (const tr of this.swayTrees) {
       this._swayQuat.setFromAxisAngle(
         GameScene._swayAxis,
-        Math.sin(time * 1.1 + tr.phase) * 0.018,
+        Math.sin(time * 1.1 + tr.phase) * 0.018 * gust,
       );
       tr.group.quaternion.copy(tr.baseQuat).multiply(this._swayQuat);
     }
@@ -1884,6 +2414,8 @@ export class GameScene extends THREE.Scene {
     if (this.island) {
       for (let i = 0; i < this.island.npcTargets.length; i++) {
         const npc = this.island.npcTargets[i];
+        // The Fisherman is anchored + animated by updateFisherman() — skip wander
+        if (this.fisherman && npc === this.fisherman.npc) continue;
         const data = npc.meshRef.userData as {
           greetT0?: number;
           wander?: {
@@ -2000,6 +2532,8 @@ export class GameScene extends THREE.Scene {
     this.island.seaTimeUniform.value = time;
     this.updateVehicles(deltaTime);
     this.updateWaterFX(deltaTime);
+    this.updateFish(deltaTime, time);
+    this.updateFisherman(time, deltaTime);
 
     // Butterflies: slow figure-8 drift + fast wing flap
     for (const bf of this.butterflies) {

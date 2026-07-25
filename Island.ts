@@ -410,11 +410,14 @@ export class Island {
     // separate mesh from surfaceMesh, so terrain sampling (raycasts
     // surfaceMesh only) and colliders never see it.
     const seaMat = new THREE.MeshStandardMaterial({
-      color: 0x2f7fae,
+      color: 0x1f6a9c,
+      // Was 0.84 — too see-through, the dark seafloor showed through and read
+      // as murky glass. 0.92 kills the x-ray look while still letting fish
+      // near the surface glimmer through faintly.
       transparent: true,
-      opacity: 0.84,
-      roughness: 0.1,
-      metalness: 0.1,
+      opacity: 0.92,
+      roughness: 0.18,
+      metalness: 0.12,
     });
     // Animated waves: displace each vertex radially by the SAME sum-of-sines
     // the CPU sampler (waveHeightAt) uses, so swimmers/boats bob in lockstep
@@ -440,7 +443,13 @@ export class Island {
         .replace('#include <common>', '#include <common>\nvarying float vWave;')
         .replace(
           '#include <color_fragment>',
-          '#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.75,0.9,1.0), smoothstep(0.7,1.4,vWave)*0.5);',
+          [
+            '#include <color_fragment>',
+            // Deepen the wave troughs toward a dark teal for a sense of depth
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03,0.11,0.20), smoothstep(0.0,-1.2,vWave)*0.4);',
+            // Whitecap foam on the crests (stronger + broader than before)
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85,0.94,1.0), smoothstep(0.55,1.35,vWave)*0.7);',
+          ].join('\n'),
         );
     };
     const sea = new THREE.Mesh(
