@@ -1120,7 +1120,7 @@ export class GameScene extends THREE.Scene {
         forward: fwd,
         bob: 0,
         occupied: false,
-        radius: sampled.position.length() + 0.15,
+        radius: sampled.position.length() + 0.06, // smaller car → wheels sit lower
         normal: sampled.normal.clone(),
         wheels,
       };
@@ -1286,7 +1286,7 @@ export class GameScene extends THREE.Scene {
         if (isCar) {
           if (moving) {
             const s = this.island.sampleSurfaceByDirection(v.dir, 0);
-            v.radius = s.position.length() + 0.15;
+            v.radius = s.position.length() + 0.06;
             v.normal.copy(s.normal);
           }
           surfaceR = v.radius;
@@ -1304,7 +1304,8 @@ export class GameScene extends THREE.Scene {
         // up a dust trail so the driving actually READS as motion.
         if (isCar && v.wheels.length) {
           const dirSign = this.vehicleMove.forward < -0.01 ? -1 : 1;
-          const roll = (moving ? dirSign * speed : 0) * deltaTime / 0.31;
+          // wheel radius 0.2 * car scale 1.12 ≈ 0.224 — roll = arc / radius
+          const roll = (moving ? dirSign * speed : 0) * deltaTime / 0.224;
           const steer = Math.max(-1, Math.min(1, this.vehicleMove.strafe)) * 0.5;
           for (const w of v.wheels) {
             w.rotation.x -= roll;
@@ -1321,8 +1322,9 @@ export class GameScene extends THREE.Scene {
           }
         }
 
-        // Seat the rider; camera follows via playerPosition + trails motion
-        const seat = isCar ? 1.0 : 0.9;
+        // Seat the rider; camera follows via playerPosition + trails motion.
+        // Lower seat for the smaller car so the rider sits on it, not above.
+        const seat = isCar ? 0.72 : 0.9;
         this.player.setWorldPosition(v.dir.clone().multiplyScalar(surfaceR + seat));
         const alignQ = new THREE.Quaternion().setFromUnitVectors(GameScene._localUp, v.dir);
         const local = v.forward.clone().applyQuaternion(alignQ.invert());

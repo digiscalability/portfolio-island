@@ -1341,8 +1341,10 @@ export class Island {
       const pos = this.claimDir(this.dirAt(carLon, carLat), 0.08).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
       carGroup.position.copy(sampled.position);
-      // Real car proportions: roof ~1.47u, length ~4.0u
-      carGroup.scale.setScalar(1.55);
+      // Scaled to the ~1.6u player: roof ~1.06u, length ~2.9u — a car the
+      // person can plausibly get into (1.55 read oversized next to the
+      // shrunk player).
+      carGroup.scale.setScalar(1.12);
       carGroup.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
