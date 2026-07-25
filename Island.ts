@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { GLTF, GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 import { Materials } from './Materials';
@@ -694,12 +695,55 @@ export class Island {
       house.add(light);
     }
 
-    // Trees: stylized low-poly trees with clustered dodecahedron canopies
+    // Trees: stylized low-poly trees with clustered dodecahedron canopies.
+    // Each tree's 5-7 parts are merged into ONE vertex-coloured mesh so the
+    // whole tree is a single draw call (~327 part meshes -> ~48). Colours ride
+    // in the vertex `color` attribute, so every tree shares one material; the
+    // per-tree group still owns the position/orientation and gets swayed in
+    // GameScene, and the `tree_N` name still drives colliders + canopy spacing.
     const trees = new THREE.Group();
     const treeCount = 48;
-    const trunkMat = Materials.createStandardMaterial({ color: 0x6b4a2a, roughness: 0.8 });
-    const darkTrunkMat = Materials.createStandardMaterial({ color: 0x5a3d1e, roughness: 0.9 });
+    const TRUNK_COLOR = 0x6b4a2a;
+    const DARK_TRUNK_COLOR = 0x5a3d1e;
+    const PINE_COLOR = 0x2a6e2a;
     const FOLIAGE_COLORS = [0x3a8c3a, 0x4a9e3e, 0x2d7a3a, 0x55a644, 0x3b8e50];
+    const treeMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78 });
+
+    // Bake a part's local transform + a flat vertex colour into its geometry,
+    // ready to merge into the tree's single mesh.
+    const _tm = new THREE.Matrix4();
+    const _tq = new THREE.Quaternion();
+    const _te = new THREE.Euler();
+    const _tp = new THREE.Vector3();
+    const _ts = new THREE.Vector3();
+    const _tc = new THREE.Color();
+    const bakePart = (
+      parts: THREE.BufferGeometry[],
+      geo: THREE.BufferGeometry,
+      colorHex: number,
+      pos: [number, number, number],
+      rot: [number, number, number] = [0, 0, 0],
+      scl: [number, number, number] = [1, 1, 1],
+    ): void => {
+      _te.set(rot[0], rot[1], rot[2]);
+      _tq.setFromEuler(_te);
+      _tp.set(pos[0], pos[1], pos[2]);
+      _ts.set(scl[0], scl[1], scl[2]);
+      geo.applyMatrix4(_tm.compose(_tp, _tq, _ts));
+      if (geo.index) geo = geo.toNonIndexed();
+      const n = geo.attributes.position.count;
+      const col = new Float32Array(n * 3);
+      _tc.set(colorHex);
+      for (let k = 0; k < n; k++) {
+        col[k * 3] = _tc.r;
+        col[k * 3 + 1] = _tc.g;
+        col[k * 3 + 2] = _tc.b;
+      }
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      // Drop uv so every part shares an identical attribute set for the merge
+      geo.deleteAttribute('uv');
+      parts.push(geo);
+    };
 
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
     for (let i = 0; i < treeCount; i++) {
@@ -734,79 +778,48 @@ export class Island {
       const scale = 2.2 + Math.random() * 1.1;
       const treeType = i % 4;
       const fColor = FOLIAGE_COLORS[i % FOLIAGE_COLORS.length];
-      const fMat = new THREE.MeshStandardMaterial({ color: fColor, roughness: 0.75 });
+      const parts: THREE.BufferGeometry[] = [];
 
       if (treeType <= 1) {
         // Round canopy tree — tapered trunk + clustered dodecahedrons
-        const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.04 * scale, 0.08 * scale, 0.6 * scale, 6),
-          trunkMat,
-        );
-        trunk.position.y = 0.3 * scale;
-        trunk.castShadow = true;
-        treeGroup.add(trunk);
-        // Main canopy blob
-        const mainCanopy = new THREE.Mesh(new THREE.DodecahedronGeometry(0.35 * scale, 0), fMat);
-        mainCanopy.position.y = 0.75 * scale;
-        mainCanopy.rotation.set(i * 0.7, i * 1.3, 0);
-        mainCanopy.castShadow = true;
-        treeGroup.add(mainCanopy);
+        bakePart(parts, new THREE.CylinderGeometry(0.04 * scale, 0.08 * scale, 0.6 * scale, 6),
+          TRUNK_COLOR, [0, 0.3 * scale, 0]);
+        bakePart(parts, new THREE.DodecahedronGeometry(0.35 * scale, 0),
+          fColor, [0, 0.75 * scale, 0], [i * 0.7, i * 1.3, 0]);
         // 2-3 smaller satellite blobs for organic volume
         const blobCount = 2 + (i % 2);
         for (let b = 0; b < blobCount; b++) {
           const angle = (b / blobCount) * Math.PI * 2 + i;
-          const blobR = 0.18 * scale;
-          const blob = new THREE.Mesh(new THREE.DodecahedronGeometry(blobR, 0), fMat);
-          blob.position.set(
+          bakePart(parts, new THREE.DodecahedronGeometry(0.18 * scale, 0), fColor, [
             Math.cos(angle) * 0.2 * scale,
             0.7 * scale + (b === 0 ? 0.15 : -0.05) * scale,
             Math.sin(angle) * 0.2 * scale,
-          );
-          blob.rotation.set(b * 1.1, b * 2.3, 0);
-          blob.castShadow = true;
-          treeGroup.add(blob);
+          ], [b * 1.1, b * 2.3, 0]);
         }
       } else if (treeType === 2) {
         // Pine/conifer — tall trunk + layered cone tiers (sharper, taller)
-        const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.03 * scale, 0.06 * scale, 0.8 * scale, 6),
-          darkTrunkMat,
-        );
-        trunk.position.y = 0.4 * scale;
-        trunk.castShadow = true;
-        treeGroup.add(trunk);
-        const darkGreen = new THREE.MeshStandardMaterial({ color: 0x2a6e2a, roughness: 0.8 });
+        bakePart(parts, new THREE.CylinderGeometry(0.03 * scale, 0.06 * scale, 0.8 * scale, 6),
+          DARK_TRUNK_COLOR, [0, 0.4 * scale, 0]);
         for (let t = 0; t < 3; t++) {
           const tierScale = 1 - t * 0.22;
-          const cone = new THREE.Mesh(
-            new THREE.ConeGeometry(0.22 * scale * tierScale, 0.3 * scale, 6),
-            darkGreen,
-          );
-          cone.position.y = (0.65 + t * 0.22) * scale;
-          cone.castShadow = true;
-          treeGroup.add(cone);
+          bakePart(parts, new THREE.ConeGeometry(0.22 * scale * tierScale, 0.3 * scale, 6),
+            PINE_COLOR, [0, (0.65 + t * 0.22) * scale, 0]);
         }
       } else {
         // Bushy shrub tree — short trunk, wide icosahedron canopy
-        const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.05 * scale, 0.07 * scale, 0.3 * scale, 5),
-          trunkMat,
-        );
-        trunk.position.y = 0.15 * scale;
-        trunk.castShadow = true;
-        treeGroup.add(trunk);
-        const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(0.4 * scale, 0), fMat);
-        bush.position.y = 0.5 * scale;
-        bush.scale.set(1.3, 0.8, 1.3);
-        bush.rotation.y = i * 0.9;
-        bush.castShadow = true;
-        treeGroup.add(bush);
+        bakePart(parts, new THREE.CylinderGeometry(0.05 * scale, 0.07 * scale, 0.3 * scale, 5),
+          TRUNK_COLOR, [0, 0.15 * scale, 0]);
+        bakePart(parts, new THREE.IcosahedronGeometry(0.4 * scale, 0),
+          fColor, [0, 0.5 * scale, 0], [0, i * 0.9, 0], [1.3, 0.8, 1.3]);
         // Small accent blob
-        const accent = new THREE.Mesh(new THREE.DodecahedronGeometry(0.15 * scale, 0), fMat);
-        accent.position.set(0.2 * scale, 0.55 * scale, 0.1 * scale);
-        accent.castShadow = true;
-        treeGroup.add(accent);
+        bakePart(parts, new THREE.DodecahedronGeometry(0.15 * scale, 0),
+          fColor, [0.2 * scale, 0.55 * scale, 0.1 * scale]);
       }
+
+      // Merge the tree's parts into one vertex-coloured mesh → one draw call
+      const treeMesh = new THREE.Mesh(mergeGeometries(parts, false), treeMat);
+      treeMesh.castShadow = true;
+      treeGroup.add(treeMesh);
 
       treeGroup.position.copy(sampled.position);
       treeGroup.quaternion.copy(q);
@@ -1484,39 +1497,24 @@ export class Island {
       constructions.add(block);
     }
 
-    // Add flowers for color and life — each is a stem + petal ring + center
+    // Flowers — instanced for batching. Each bloom is a stem + 5-petal ring +
+    // center of identical static geometry, so instead of ~7 meshes per flower
+    // (168 draw calls) we scatter placements once, then render each part family
+    // as a single InstancedMesh: 1 stem batch + 1 center batch + one petal
+    // batch per colour (~7 draw calls total). Petals bucket by colour so each
+    // keeps its own emissive tint (instanceColor can't drive emissive).
     const flowers = new THREE.Group();
+    flowers.name = 'flowers';
     const FLOWER_COLORS = [0xff69b4, 0xf4a940, 0xffffff, 0xb46bd8, 0xff8866];
     const stemMat = Materials.createStandardMaterial({ color: 0x3d7a3d });
+    const FLOWER_ANCHORS: Array<[number, number]> = [
+      [0, 0.4636], [1.2566, 0.4636], [2.5133, 0.4636], [3.7699, 0.4636], [0, 1.42],
+    ];
+    // Pass 1: scatter valid placements (respecting street skips) + colour index
+    const bloomUp = new THREE.Vector3(0, 1, 0);
+    const bloomOne = new THREE.Vector3(1, 1, 1);
+    const blooms: Array<{ mat: THREE.Matrix4; c: number }> = [];
     for (let i = 0; i < 50; i++) {
-      const flowerGroup = new THREE.Group();
-      // Stem
-      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.25, 5), stemMat);
-      stem.position.y = 0.125;
-      flowerGroup.add(stem);
-      // Petals — 5 small spheres in a ring
-      const petalColor = FLOWER_COLORS[i % FLOWER_COLORS.length];
-      const petalMat = new THREE.MeshStandardMaterial({
-        color: petalColor, emissive: petalColor, emissiveIntensity: 0.15,
-      });
-      for (let p = 0; p < 5; p++) {
-        const pa = (p / 5) * Math.PI * 2;
-        const petal = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), petalMat);
-        petal.position.set(Math.cos(pa) * 0.06, 0.27, Math.sin(pa) * 0.06);
-        petal.scale.set(1.2, 0.6, 1.2);
-        flowerGroup.add(petal);
-      }
-      // Center
-      const center = new THREE.Mesh(
-        new THREE.SphereGeometry(0.04, 6, 6),
-        new THREE.MeshStandardMaterial({ color: 0xffdd44, emissive: 0xffdd44, emissiveIntensity: 0.3 }),
-      );
-      center.position.y = 0.27;
-      flowerGroup.add(center);
-      // Flower rings around each district plaza (incl. the spawn at the pole)
-      const FLOWER_ANCHORS: Array<[number, number]> = [
-        [0, 0.4636], [1.2566, 0.4636], [2.5133, 0.4636], [3.7699, 0.4636], [0, 1.42],
-      ];
       const [fLon, fLat] = FLOWER_ANCHORS[Math.floor(i / 10)];
       const ringA = ((i % 10) / 10) * Math.PI * 2;
       const fDir = this.dirAt(fLon + Math.cos(ringA) * 0.2, fLat + Math.sin(ringA) * 0.15);
@@ -1524,14 +1522,72 @@ export class Island {
       if (this.isNearStreet(fDir)) continue;
       const pos = this.claimDir(fDir, 0.015).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
-      flowerGroup.position.copy(sampled.position);
-      flowerGroup.quaternion.copy(
-        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
-      );
-      flowerGroup.name = `flower_${i}`;
-      flowers.add(flowerGroup);
+      const quat = new THREE.Quaternion().setFromUnitVectors(bloomUp, sampled.normal);
+      blooms.push({
+        mat: new THREE.Matrix4().compose(sampled.position.clone(), quat, bloomOne),
+        c: i % FLOWER_COLORS.length,
+      });
       // Every ~8th flower anchors a butterfly cluster (see GameScene)
       if (i % 8 === 0) this.flowerSites.push(sampled.position.clone());
+    }
+
+    // Pass 2: build the instanced part batches (world = bloom * partLocal)
+    if (blooms.length > 0) {
+      const out = new THREE.Matrix4();
+      const addBatch = (
+        geo: THREE.BufferGeometry,
+        mat: THREE.Material,
+        name: string,
+        picks: number[],
+        locals: THREE.Matrix4[],
+      ) => {
+        const im = new THREE.InstancedMesh(geo, mat, picks.length * locals.length);
+        let k = 0;
+        for (const i of picks) {
+          for (const local of locals) {
+            im.setMatrixAt(k++, out.multiplyMatrices(blooms[i].mat, local));
+          }
+        }
+        im.instanceMatrix.needsUpdate = true;
+        im.name = name;
+        flowers.add(im);
+      };
+      const all = blooms.map((_, i) => i);
+      // Stem: cylinder centred at local y=0.125
+      addBatch(new THREE.CylinderGeometry(0.02, 0.025, 0.25, 5), stemMat, 'flower_stems', all, [
+        new THREE.Matrix4().makeTranslation(0, 0.125, 0),
+      ]);
+      // Center: yellow sphere at local y=0.27
+      addBatch(
+        new THREE.SphereGeometry(0.04, 6, 6),
+        new THREE.MeshStandardMaterial({ color: 0xffdd44, emissive: 0xffdd44, emissiveIntensity: 0.3 }),
+        'flower_centers',
+        all,
+        [new THREE.Matrix4().makeTranslation(0, 0.27, 0)],
+      );
+      // Petals: 5 spheres in a ring, scaled flat, one batch per colour
+      const petalGeo = new THREE.SphereGeometry(0.05, 6, 6);
+      const petalLocals: THREE.Matrix4[] = [];
+      for (let p = 0; p < 5; p++) {
+        const pa = (p / 5) * Math.PI * 2;
+        petalLocals.push(
+          new THREE.Matrix4()
+            .makeTranslation(Math.cos(pa) * 0.06, 0.27, Math.sin(pa) * 0.06)
+            .multiply(new THREE.Matrix4().makeScale(1.2, 0.6, 1.2)),
+        );
+      }
+      for (let c = 0; c < FLOWER_COLORS.length; c++) {
+        const picks = all.filter((i) => blooms[i].c === c);
+        if (!picks.length) continue;
+        const color = FLOWER_COLORS[c];
+        addBatch(
+          petalGeo,
+          new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.15 }),
+          `flower_petals_${c}`,
+          picks,
+          petalLocals,
+        );
+      }
     }
 
     // Add signs for shops/buildings
@@ -1645,8 +1701,10 @@ export class Island {
     // floating +1.2 and mailboxes sunk -1.3 from inconsistent per-site
     // offsets. Runs before tryLoadModels so GLB replacements inherit the
     // corrected positions.
+    // (flowers omitted — instanced blooms are origin-anchored InstancedMeshes
+    // that seatGroupsOnTerrain skips; each bloom is grounded at scatter time.)
     this.seatGroupsOnTerrain(root, [
-      buildings, houses, trees, lamps, npcs, cars, mailboxes, stalls, constructions, benches, flowers,
+      buildings, houses, trees, lamps, npcs, cars, mailboxes, stalls, constructions, benches,
     ]);
 
     this.tryLoadModels(buildings, npcs, buildingPlaceholders, npcPlaceholders).catch(() => {
