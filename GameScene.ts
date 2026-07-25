@@ -105,13 +105,18 @@ export class GameScene extends THREE.Scene {
   // `dir` is the unit surface direction (position); `forward` is the last
   // travel tangent (drives orientation). Boarded by swimming up + E.
   private vehicles: Array<{
-    group: THREE.Group;
-    kind: 'boat' | 'jetski';
+    group: THREE.Object3D;
+    kind: 'boat' | 'jetski' | 'car';
     dir: THREE.Vector3;
     forward: THREE.Vector3;
     bob: number;
     occupied: boolean;
+    // Cars ground on the (expensive-to-sample) terrain — cache the surface
+    // radius + normal and only re-sample while actually being driven.
+    radius: number;
+    normal: THREE.Vector3;
   }> = [];
+  private parkedCars: THREE.Object3D[] = []; // collected during collider pass
   private activeVehicle: number = -1; // index into vehicles, or -1
   private vehicleMove = { forward: 0, strafe: 0 };
   private onDrownRespawn?: () => void;
@@ -277,12 +282,13 @@ export class GameScene extends THREE.Scene {
     // footprints, not bounding spheres (tree = trunk, so you can walk
     // under the canopy). Positions are static — captured post-seating,
     // and GLB replacements land on the same spots.
+    // Cars are drivable now (not obstacles) — collect them here and DON'T
+    // give them a static collider, so a driven car leaves no ghost wall.
     const COLLIDER_RADII: Array<[RegExp, number]> = [
       [/^house_\d+$/, 2.3],
       [/^building_placeholder_\d+$/, 2.1],
       [/^tree_\d+$/, 0.45],
       [/^stall_\d+$/, 1.5],
-      [/^car_\d+$/, 1.6],
       [/^lamp_\d+$/, 0.2],
       [/^bench_\d+$/, 0.85],
       [/^construction_\d+$/, 0.8],
@@ -297,6 +303,10 @@ export class GameScene extends THREE.Scene {
       if (/^bench_\d+$/.test(obj.name)) this.benchGroups.push(obj);
       if (obj.name === 'ambient_sparkles' || obj.name === 'ambient_dust') {
         this.ambientGroups.push(obj);
+      }
+      if (/^car_\d+$/.test(obj.name)) {
+        this.parkedCars.push(obj);
+        return;
       }
       for (const [re, radius] of COLLIDER_RADII) {
         if (re.test(obj.name)) {
@@ -1052,7 +1062,10 @@ export class GameScene extends THREE.Scene {
     return g;
   }
 
-  /** Scatter a couple of boats + jetskis on the water just off the beach. */
+  /**
+   * Boats + jetskis on the water off the beach, and the parked island cars
+   * turned into drivable land vehicles.
+   */
   private createVehicles(): void {
     const SPOTS: Array<{ kind: 'boat' | 'jetski'; lon: number; lat: number }> = [
       { kind: 'boat', lon: 0.3, lat: 0.14 },
@@ -1066,28 +1079,73 @@ export class GameScene extends THREE.Scene {
       group.name = `vehicle_${this.vehicles.length}`;
       group.scale.setScalar(1.1);
       // forward tangent points "uphill" toward the shore initially
-      const north = new THREE.Vector3(0, 1, 0)
-        .addScaledVector(dir, -dir.y)
-        .normalize();
-      const v = { group, kind: s.kind, dir: dir.clone(), forward: north, bob: Math.random() * 6, occupied: false };
+      const north = new THREE.Vector3(0, 1, 0).addScaledVector(dir, -dir.y).normalize();
+      const v = {
+        group,
+        kind: s.kind,
+        dir: dir.clone(),
+        forward: north,
+        bob: Math.random() * 6,
+        occupied: false,
+        radius: 0,
+        normal: dir.clone(),
+      };
       this.vehicles.push(v);
       this.add(group);
-      this.orientVehicle(v);
+      this.placeWaterVehicle(v);
+    }
+
+    // Parked island cars → drivable land vehicles (collected in the collider
+    // pass, colliders skipped). Keep their spot + heading; ground on terrain.
+    for (const car of this.parkedCars) {
+      const dir = car.getWorldPosition(new THREE.Vector3()).normalize();
+      const sampled = this.island.sampleSurfaceByDirection(dir, 0);
+      const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(car.quaternion);
+      fwd.addScaledVector(sampled.normal, -fwd.dot(sampled.normal)).normalize();
+      if (fwd.lengthSq() < 1e-6) fwd.copy(new THREE.Vector3(0, 1, 0).addScaledVector(dir, -dir.y)).normalize();
+      const v = {
+        group: car,
+        kind: 'car' as const,
+        dir: dir.clone(),
+        forward: fwd,
+        bob: 0,
+        occupied: false,
+        radius: sampled.position.length() + 0.15,
+        normal: sampled.normal.clone(),
+      };
+      this.vehicles.push(v);
+      this.placeVehicle(v, v.radius, v.normal);
     }
   }
 
-  /** Place + orient a vehicle on the current wave surface along its dir. */
-  private orientVehicle(v: {
-    group: THREE.Group;
+  /** Place a water craft at the live wave surface (up = radial). */
+  private placeWaterVehicle(v: {
+    group: THREE.Object3D;
     dir: THREE.Vector3;
     forward: THREE.Vector3;
-    bob: number;
   }): void {
     const surf = this.island.waveHeightAt(v.dir, this.island.seaTimeUniform.value);
-    v.group.position.copy(v.dir).multiplyScalar(surf);
-    // Basis: +Z = travel forward, +Y = surface normal (up), +X = up × fwd
-    const zAxis = v.forward.clone().normalize();
-    const xAxis = new THREE.Vector3().crossVectors(v.dir, zAxis).normalize();
+    this.placeVehicle(v as never, surf, v.dir);
+  }
+
+  /**
+   * Position + orient a vehicle: sits at `surfaceR` along its dir, +Z faces
+   * travel (`forward`, re-projected tangent to `up`), +Y is `up` (radial for
+   * water, terrain normal for cars).
+   */
+  private placeVehicle(
+    v: { group: THREE.Object3D; dir: THREE.Vector3; forward: THREE.Vector3 },
+    surfaceR: number,
+    up: THREE.Vector3,
+  ): void {
+    v.group.position.copy(v.dir).multiplyScalar(surfaceR);
+    const zAxis = v.forward.clone();
+    zAxis.addScaledVector(up, -zAxis.dot(up));
+    if (zAxis.lengthSq() < 1e-6) {
+      zAxis.set(0, 1, 0).addScaledVector(up, -up.y);
+    }
+    zAxis.normalize();
+    const xAxis = new THREE.Vector3().crossVectors(up, zAxis).normalize();
     const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
     v.group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
   }
@@ -1120,11 +1178,11 @@ export class GameScene extends THREE.Scene {
     return best;
   }
 
-  public vehicleKind(index: number): 'boat' | 'jetski' | null {
+  public vehicleKind(index: number): 'boat' | 'jetski' | 'car' | null {
     return this.vehicles[index]?.kind ?? null;
   }
 
-  /** Board a vehicle: suspend player physics, mark it occupied. */
+  /** Board a vehicle: suspend player physics, pull the chase cam back. */
   public boardVehicle(index: number): void {
     const v = this.vehicles[index];
     if (!v || v.occupied) return;
@@ -1132,13 +1190,13 @@ export class GameScene extends THREE.Scene {
     this.activeVehicle = index;
     this.vehicleMove.forward = 0;
     this.vehicleMove.strafe = 0;
-    this.player.setRiding(true, v.kind);
+    this.player.setRiding(true, v.kind === 'car' ? 'boat' : v.kind); // car sits like the boat helm
+    this.orbitCamera?.setRideMode(true);
   }
 
   /**
-   * Hop off INTO the water right beside the craft (not teleported ashore).
-   * The player drops at the wave surface at full breath, so they start
-   * afloat and can swim away (or hold Space to keep swimming).
+   * Hop off beside the vehicle: into the water next to a boat/jetski (start
+   * afloat), or onto the ground next to a car. Never teleported far away.
    */
   public disembarkVehicle(): void {
     if (this.activeVehicle < 0) return;
@@ -1146,12 +1204,19 @@ export class GameScene extends THREE.Scene {
     v.occupied = false;
     this.activeVehicle = -1;
     this.player.setRiding(false);
-    // step to the craft's side (perpendicular to its heading) so we don't
-    // land on the hull; nudge along the sphere, then drop to the surface
+    this.orbitCamera?.setRideMode(false);
+    this.orbitCamera?.setFollowVelocity(null);
+    // step to the vehicle's side (perpendicular to heading) so we don't land
+    // on the hull/roof
     const side = this._fxScratch.crossVectors(v.forward, v.dir).normalize();
-    const dropDir = v.dir.clone().addScaledVector(side, 1.6 / this.island.getRadius()).normalize();
-    const surf = this.island.waveHeightAt(dropDir, this.island.seaTimeUniform.value);
-    this.player.setWorldPosition(dropDir.multiplyScalar(surf + 0.55));
+    const dropDir = v.dir.clone().addScaledVector(side, 1.8 / this.island.getRadius()).normalize();
+    if (v.kind === 'car') {
+      const s = this.island.sampleSurfaceByDirection(dropDir, 0);
+      this.player.setWorldPosition(dropDir.multiplyScalar(s.position.length() + 0.75));
+    } else {
+      const surf = this.island.waveHeightAt(dropDir, this.island.seaTimeUniform.value);
+      this.player.setWorldPosition(dropDir.multiplyScalar(surf + 0.55));
+    }
     this.player.updateWorldMatrix();
     this.player.resetOxygen();
   }
@@ -1159,6 +1224,7 @@ export class GameScene extends THREE.Scene {
   private _vehFwd = new THREE.Vector3();
   private _vehTangent = new THREE.Vector3();
   private _vehNext = new THREE.Vector3();
+  private _vehVel = new THREE.Vector3();
 
   /** Per-frame: bob idle craft, drive the active one, keep the rider aboard. */
   private updateVehicles(deltaTime: number): void {
@@ -1166,56 +1232,76 @@ export class GameScene extends THREE.Scene {
     const R = this.island.getRadius();
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
+      const isCar = v.kind === 'car';
+
       if (i === this.activeVehicle && this.orbitCamera) {
-        // Drive: camera-relative move → step along a great circle on water
+        // Drive: camera-relative move → step along a great circle. Cars stay
+        // on land, boats/jetskis stay on water.
         const camF = this.orbitCamera.getForwardDirection();
         const camR = this.orbitCamera.getRightDirection();
         this._vehFwd
           .copy(camF)
           .multiplyScalar(this.vehicleMove.forward)
           .addScaledVector(camR, this.vehicleMove.strafe);
-        const inLen = this._vehFwd.length();
-        if (inLen > 0.02) {
+        let moving = false;
+        const speed = v.kind === 'jetski' ? 10 : isCar ? 9 : 6.5;
+        if (this._vehFwd.length() > 0.02) {
           this._vehFwd.normalize();
-          // tangent = move projected off the radial
           this._vehTangent
             .copy(this._vehFwd)
             .addScaledVector(v.dir, -this._vehFwd.dot(v.dir))
             .normalize();
-          const speed = v.kind === 'jetski' ? 10 : 6.5;
           const theta = (speed * deltaTime) / R;
           this._vehNext
             .copy(v.dir)
             .multiplyScalar(Math.cos(theta))
             .addScaledVector(this._vehTangent, Math.sin(theta))
             .normalize();
-          // stay on water — don't beach the boat
-          if (this.island.isOverWater(this._vehNext)) {
+          const onValidGround = isCar
+            ? !this.island.isOverWater(this._vehNext) // cars keep off the sea
+            : this.island.isOverWater(this._vehNext); // craft keep on the sea
+          if (onValidGround) {
             v.dir.copy(this._vehNext);
             v.forward.copy(this._vehTangent);
+            moving = true;
           }
         }
-        this.orientVehicle(v);
-        // Bank into turns + pitch the bow up with speed (motion feel)
-        const lean = -this.vehicleMove.strafe * 0.35;
-        const pitch = -Math.abs(this.vehicleMove.forward) * 0.12;
-        v.group.rotateOnAxis(GameScene._localForward, lean);
-        v.group.rotateOnAxis(GameScene._localRight, pitch);
-        // Seat the rider on deck; camera follows via playerPosition
-        const surf = this.island.waveHeightAt(v.dir, this.island.seaTimeUniform.value);
-        this.player.setWorldPosition(v.dir.clone().multiplyScalar(surf + 0.9));
-        // Face travel: same tangent-frame yaw setPlayerMovement uses
-        const alignQ = new THREE.Quaternion().setFromUnitVectors(
-          new THREE.Vector3(0, 1, 0),
-          v.dir,
-        );
+
+        // Surface + up axis differ by terrain (car) vs waves (craft). Cars
+        // re-sample the (expensive) terrain only while actually driving.
+        let surfaceR: number;
+        let up: THREE.Vector3;
+        if (isCar) {
+          if (moving) {
+            const s = this.island.sampleSurfaceByDirection(v.dir, 0);
+            v.radius = s.position.length() + 0.15;
+            v.normal.copy(s.normal);
+          }
+          surfaceR = v.radius;
+          up = v.normal;
+        } else {
+          surfaceR = this.island.waveHeightAt(v.dir, this.island.seaTimeUniform.value);
+          up = v.dir;
+        }
+        this.placeVehicle(v, surfaceR, up);
+        // Bank into turns + pitch (motion feel)
+        v.group.rotateOnAxis(GameScene._localForward, -this.vehicleMove.strafe * 0.35);
+        v.group.rotateOnAxis(GameScene._localRight, -Math.abs(this.vehicleMove.forward) * 0.1);
+
+        // Seat the rider; camera follows via playerPosition + trails motion
+        const seat = isCar ? 1.0 : 0.9;
+        this.player.setWorldPosition(v.dir.clone().multiplyScalar(surfaceR + seat));
+        const alignQ = new THREE.Quaternion().setFromUnitVectors(GameScene._localUp, v.dir);
         const local = v.forward.clone().applyQuaternion(alignQ.invert());
         this.player.setRotation(Math.atan2(local.x, local.z));
         this.player.updateWorldMatrix();
-      } else {
-        // Idle: bob gently on the swell
+        this.orbitCamera.setFollowVelocity(
+          moving ? this._vehVel.copy(v.forward).multiplyScalar(speed) : this._vehVel.set(0, 0, 0),
+        );
+      } else if (!isCar) {
+        // Idle water craft bob on the swell (parked cars stay put)
         v.bob += deltaTime;
-        this.orientVehicle(v);
+        this.placeWaterVehicle(v);
         v.group.position.addScaledVector(v.dir, Math.sin(v.bob * 1.4) * 0.06);
       }
     }

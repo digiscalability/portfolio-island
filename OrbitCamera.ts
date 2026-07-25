@@ -52,6 +52,16 @@ export class OrbitCamera {
   private followDir: THREE.Vector3 | null = null;
   private followStrength: number = 2.5; // how quickly the camera swings behind motion
 
+  // While riding a vehicle the player's own velocity is zero (GameScene owns
+  // the transform), so the auto-follow has nothing to trail. GameScene feeds
+  // the craft's travel velocity here so the chase cam still swings behind.
+  private externalVelocity: THREE.Vector3 | null = null;
+  private rideMode = false;
+  private static readonly WALK_DISTANCE = 5.2;
+  private static readonly WALK_HEIGHT = 2.4;
+  private static readonly RIDE_DISTANCE = 8.5;
+  private static readonly RIDE_HEIGHT = 3.4;
+
   // Optional collision root for the camera (terrain + props): pull the camera
   // in whenever ANYTHING blocks the view ray to the player.
   private collisionMesh: THREE.Object3D | null = null;
@@ -70,6 +80,19 @@ export class OrbitCamera {
    */
   public setCollisionMesh(root: THREE.Object3D | undefined): void {
     this.collisionMesh = root ?? null;
+  }
+
+  /** Feed an external motion vector for the chase-cam to trail (riding). */
+  public setFollowVelocity(v: THREE.Vector3 | null): void {
+    this.externalVelocity = v;
+  }
+
+  /** Pull the camera back a little for driving; restore on foot. */
+  public setRideMode(on: boolean): void {
+    if (on === this.rideMode) return;
+    this.rideMode = on;
+    this.distance = on ? OrbitCamera.RIDE_DISTANCE : OrbitCamera.WALK_DISTANCE;
+    this.height = on ? OrbitCamera.RIDE_HEIGHT : OrbitCamera.WALK_HEIGHT;
   }
 
   /**
@@ -108,13 +131,16 @@ export class OrbitCamera {
       this.followDir.applyQuaternion(yawQuat);
     }
 
-    // Auto-follow: swing behind the player's tangential motion
+    // Auto-follow: swing behind the tangential motion. While riding, use
+    // the vehicle's velocity (the player's own is zero); a stronger pull so
+    // the chase cam keeps up with the faster craft.
     if (deltaTime > 0) {
-      const vel = this.player.getVelocity();
+      const vel = this.externalVelocity ? this.externalVelocity.clone() : this.player.getVelocity();
       const vTangent = vel.sub(surfaceNormal.clone().multiplyScalar(vel.dot(surfaceNormal)));
       if (vTangent.lengthSq() > 0.25) {
         const desired = vTangent.normalize().negate(); // behind the motion
-        const k = Math.min(1, this.followStrength * deltaTime);
+        const strength = this.rideMode ? this.followStrength * 1.8 : this.followStrength;
+        const k = Math.min(1, strength * deltaTime);
         this.followDir.lerp(desired, k).normalize();
       }
     }

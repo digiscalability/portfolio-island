@@ -450,6 +450,10 @@ export class Island {
     sea.name = 'sea';
     sea.receiveShadow = true;
     sea.position.copy(this.center);
+    // Keep the sea out of ALL raycasts: the camera-collision ray must not
+    // catch the water sphere (it would jam the chase cam at the waterline),
+    // and terrain sampling already targets surfaceMesh only.
+    sea.raycast = () => {};
 
     // Create a conforming 'road' ring made of many small segments that sit on the sphere surface.
     // ── Street network ──────────────────────────────────────────────────

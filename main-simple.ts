@@ -508,10 +508,11 @@ class SimpleApp {
         const boardable = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
         if (boardable >= 0) {
-          // A boat/jetski is within reach (swim up to it): offer to board
+          // A vehicle is within reach (swim up to craft / walk up to a car)
           const kind = this.scene.vehicleKind(boardable);
-          const icon = kind === 'jetski' ? '🛶' : '⛵';
-          this.ui.showInteractionPrompt(`${icon} Press <strong>E</strong> to ride`);
+          const icon = kind === 'jetski' ? '🛶' : kind === 'car' ? '🚗' : '⛵';
+          const verb = kind === 'car' ? 'drive' : 'ride';
+          this.ui.showInteractionPrompt(`${icon} Press <strong>E</strong> to ${verb}`);
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.boardVehicle(boardable);
             sfx.blip();
