@@ -55,6 +55,8 @@ export class SimplePlayer extends THREE.Group {
   private moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
   private wantJump: boolean = false;
   private rideActive = false; // physics suspended while riding a boat/jetski
+  private rideKind: 'boat' | 'jetski' = 'boat';
+  private rideBob = 0; // idle-sway clock for the riding pose
 
   // Procedural walk-cycle state (used when no GLTF model is loaded)
   private legPivots: THREE.Group[] = [];
@@ -232,9 +234,27 @@ export class SimplePlayer extends THREE.Group {
     this.oxygen = 1;
   }
   /** Suspend physics while riding a vehicle (GameScene drives the transform). */
-  public setRiding(active: boolean): void {
+  public setRiding(active: boolean, kind: 'boat' | 'jetski' = 'boat'): void {
     this.rideActive = active;
-    if (active) this.velocity.set(0, 0, 0);
+    this.rideKind = kind;
+    if (active) {
+      this.velocity.set(0, 0, 0);
+      // Leaving the water for the deck: drop the swim tilt + state so the
+      // rider doesn't stay in a prone swim pose on the vehicle.
+      this.clearSwimPose();
+      this.swimPoseActive = false;
+      this.inWater = false;
+      this.swimming = false;
+    } else {
+      // Back to swimming/walking: neutralise the posed bones + model tilt so
+      // the mixer / swim pose take over cleanly.
+      if (this.gltfModel) this.gltfModel.rotation.set(0, 0, 0);
+      else this.mesh.rotation.set(0, 0, 0);
+      for (const b of [this.armLBone, this.armRBone, this.legLBone, this.legRBone]) {
+        if (b) b.rotation.set(0, 0, 0);
+      }
+      for (const p of [...this.legPivots, ...this.armPivots]) p.rotation.x = 0;
+    }
   }
 
   /**
@@ -517,6 +537,44 @@ export class SimplePlayer extends THREE.Group {
     }
   }
 
+  /**
+   * Riding pose — distinct from walking and swimming. Jetski: seated,
+   * leaning forward with knees up and hands on the bars. Boat: standing at
+   * the helm, hands forward. Mixer stays paused; bones posed directly (or
+   * the procedural pivots) with a gentle idle sway.
+   */
+  private applyRidePose(dt: number): void {
+    this.rideBob += dt * 2.2;
+    const sway = Math.sin(this.rideBob) * 0.05;
+    const jetski = this.rideKind === 'jetski';
+    const lean = jetski ? 0.32 : 0.06;
+    const legX = jetski ? -1.15 : 0.0;
+    const armX = jetski ? -0.95 : -0.5;
+    if (this.gltfModel) {
+      if (!this.armLBone || !this.legLBone) {
+        this.gltfModel.traverse((o) => {
+          const b = o as THREE.Bone;
+          if (!b.isBone) return;
+          if (o.name === 'legL') this.legLBone = b;
+          if (o.name === 'legR') this.legRBone = b;
+          if (o.name === 'armL') this.armLBone = b;
+          if (o.name === 'armR') this.armRBone = b;
+        });
+      }
+      this.gltfModel.rotation.set(lean, 0, sway);
+      if (this.legLBone) this.legLBone.rotation.x = legX;
+      if (this.legRBone) this.legRBone.rotation.x = legX;
+      if (this.armLBone) this.armLBone.rotation.x = armX;
+      if (this.armRBone) this.armRBone.rotation.x = armX;
+    } else if (this.legPivots.length === 2 && this.armPivots.length === 2) {
+      this.mesh.rotation.set(lean, 0, sway);
+      this.legPivots[0].rotation.x = legX;
+      this.legPivots[1].rotation.x = legX;
+      this.armPivots[0].rotation.x = armX;
+      this.armPivots[1].rotation.x = armX;
+    }
+  }
+
   /** Undo the swim tilt when leaving the water (mixer resumes on land). */
   private clearSwimPose(): void {
     if (this.gltfModel) {
@@ -687,10 +745,11 @@ export class SimplePlayer extends THREE.Group {
       return;
     }
 
-    // Riding a boat/jetski: GameScene owns the transform. Advance the mixer
-    // so the model still animates, but skip all physics.
+    // Riding a boat/jetski: GameScene owns the transform (position + yaw set
+    // in updateVehicles, right after this). Hold a dedicated riding pose —
+    // NOT the walk/idle mixer or the swim pose — and skip all physics.
     if (this.rideActive) {
-      if (this.animationMixer) this.animationMixer.update(Math.min(deltaTime, 0.05));
+      this.applyRidePose(Math.min(deltaTime, 0.05));
       return;
     }
 

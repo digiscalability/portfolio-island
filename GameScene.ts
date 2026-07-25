@@ -1132,28 +1132,28 @@ export class GameScene extends THREE.Scene {
     this.activeVehicle = index;
     this.vehicleMove.forward = 0;
     this.vehicleMove.strafe = 0;
-    this.player.setRiding(true);
+    this.player.setRiding(true, v.kind);
   }
 
-  /** Hop off onto the nearest dry shore so you don't instantly drown. */
+  /**
+   * Hop off INTO the water right beside the craft (not teleported ashore).
+   * The player drops at the wave surface at full breath, so they start
+   * afloat and can swim away (or hold Space to keep swimming).
+   */
   public disembarkVehicle(): void {
     if (this.activeVehicle < 0) return;
     const v = this.vehicles[this.activeVehicle];
     v.occupied = false;
     this.activeVehicle = -1;
     this.player.setRiding(false);
-    // find dry land at the vehicle's longitude, just up the beach
-    const lon = Math.atan2(v.dir.z, v.dir.x);
-    for (let lat = 0.3; lat <= 0.55; lat += 0.03) {
-      const d = this.island.dirAt(lon, lat);
-      if (!this.island.isOverWater(d)) {
-        const s = this.island.sampleSurfaceByDirection(d, 0);
-        this.player.setWorldPosition(d.clone().multiplyScalar(s.position.length() + 0.75));
-        this.player.updateWorldMatrix();
-        this.player.resetOxygen();
-        return;
-      }
-    }
+    // step to the craft's side (perpendicular to its heading) so we don't
+    // land on the hull; nudge along the sphere, then drop to the surface
+    const side = this._fxScratch.crossVectors(v.forward, v.dir).normalize();
+    const dropDir = v.dir.clone().addScaledVector(side, 1.6 / this.island.getRadius()).normalize();
+    const surf = this.island.waveHeightAt(dropDir, this.island.seaTimeUniform.value);
+    this.player.setWorldPosition(dropDir.multiplyScalar(surf + 0.55));
+    this.player.updateWorldMatrix();
+    this.player.resetOxygen();
   }
 
   private _vehFwd = new THREE.Vector3();
