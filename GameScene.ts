@@ -1640,7 +1640,13 @@ export class GameScene extends THREE.Scene {
     this.radarNorth.set(0, 1, 0).addScaledVector(this.radarUp, -this.radarUp.y);
     if (this.radarNorth.lengthSq() < 1e-6) this.radarNorth.set(0, 0, 1);
     this.radarNorth.normalize();
-    this.radarEast.crossVectors(this.radarUp, this.radarNorth).normalize();
+    // East = north × up (right-handed as seen from OUTSIDE the sphere —
+    // same as geographic ECEF, where Ẑpole × X̂surface = Ŷ = 90°E).
+    // The previous up × north gave WEST, mirroring the whole radar
+    // left-right: forward travel still matched (the mirror flips heading
+    // and displacement bearing together) but turns and strafes drew on the
+    // wrong side.
+    this.radarEast.crossVectors(this.radarNorth, this.radarUp).normalize();
   }
 
   /**
