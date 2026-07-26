@@ -51,6 +51,7 @@ interface Peer {
   hat: HatId | null;
   avatar: THREE.Group;
   label: THREE.Sprite;
+  muted: boolean;
   hatMesh: THREE.Group | null;
   targetPos: THREE.Vector3;
   targetQuat: THREE.Quaternion;
@@ -400,6 +401,30 @@ export class Multiplayer {
     return this.player;
   }
 
+  /** Walk up from a raycast-hit object to the peer id it belongs to (or null).
+   *  Peer avatars are named `remote_player_<id>`. */
+  public peerIdForObject(obj: THREE.Object3D | null): string | null {
+    let o: THREE.Object3D | null = obj;
+    while (o) {
+      if (o.name.startsWith('remote_player_')) return o.name.slice('remote_player_'.length);
+      o = o.parent;
+    }
+    return null;
+  }
+
+  /** A peer's display name (for mute feedback), or null. */
+  public getPeerName(id: string): string | null {
+    return this.peers.get(id)?.name ?? null;
+  }
+
+  /** Reflect a peer's muted state on their floating name label (🔇 prefix). */
+  public setPeerMuted(id: string, muted: boolean): void {
+    const peer = this.peers.get(id);
+    if (!peer || peer.muted === muted) return;
+    peer.muted = muted;
+    this.refreshPeerLabel(peer);
+  }
+
   /** Keep outgoing hat state in sync with the shop. */
   public setHat(hat: HatId | null): void {
     this.selfHat = hat;
@@ -506,7 +531,7 @@ export class Multiplayer {
     const y = peer.label.position.y;
     peer.avatar.remove(peer.label);
     (peer.label.material as THREE.SpriteMaterial).map?.dispose();
-    peer.label = Multiplayer.makeTextSprite(peer.name);
+    peer.label = Multiplayer.makeTextSprite((peer.muted ? '🔇 ' : '') + peer.name);
     peer.label.position.set(0, y, 0);
     peer.avatar.add(peer.label);
   }
@@ -567,6 +592,7 @@ export class Multiplayer {
       hat,
       avatar,
       label,
+      muted: false,
       hatMesh: null,
       targetPos: new THREE.Vector3(),
       targetQuat: new THREE.Quaternion(),

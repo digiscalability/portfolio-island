@@ -76,6 +76,8 @@ class SimpleApp {
     debugKeydown?: (event: KeyboardEvent) => void;
     chatKeydown?: (event: KeyboardEvent) => void;
     chatKeyup?: (event: KeyboardEvent) => void;
+    mutePointerDown?: (event: PointerEvent) => void;
+    mutePointerUp?: (event: PointerEvent) => void;
   } = {};
 
   constructor() {
@@ -218,6 +220,38 @@ class SimpleApp {
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
       this.ui.setOnMicDown(() => void this.chat?.startRecording());
       this.ui.setOnMicUp(() => this.chat?.stopRecording());
+
+      // Tap a peer (their avatar or name) to mute/unmute them. A tap is
+      // distinguished from a camera-orbit drag by small movement + short time,
+      // so it coexists with OrbitCamera's own pointer handling on the canvas.
+      const muteCanvas = document.getElementById('game-canvas');
+      if (muteCanvas) {
+        let tapX = 0;
+        let tapY = 0;
+        let tapT = 0;
+        this.boundHandlers.mutePointerDown = (e: PointerEvent) => {
+          tapX = e.clientX;
+          tapY = e.clientY;
+          tapT = performance.now();
+        };
+        this.boundHandlers.mutePointerUp = (e: PointerEvent) => {
+          if (this.ui.isChatInputOpen()) return;
+          if (Math.hypot(e.clientX - tapX, e.clientY - tapY) > 6) return; // was a drag
+          if (performance.now() - tapT > 400) return; // was a long-press
+          const hits = this.scene.rayCastFromCamera(e.clientX, e.clientY);
+          for (const h of hits) {
+            const id = this.multiplayer?.peerIdForObject(h.object);
+            if (!id) continue;
+            const muted = this.chat?.toggleMute(id) ?? false;
+            this.multiplayer?.setPeerMuted(id, muted);
+            const name = this.multiplayer?.getPeerName(id) ?? 'player';
+            this.ui.toast(`${muted ? '🔇 Muted' : '🔊 Unmuted'} ${name}`);
+            break; // only the nearest peer under the tap
+          }
+        };
+        muteCanvas.addEventListener('pointerdown', this.boundHandlers.mutePointerDown);
+        muteCanvas.addEventListener('pointerup', this.boundHandlers.mutePointerUp);
+      }
 
       // Setup NPC interaction callback (quest dialogue wins when relevant)
       this.scene.setOnNPCInteract((npcData) => {
@@ -1260,6 +1294,14 @@ class SimpleApp {
 
     if (this.boundHandlers.chatKeyup) {
       window.removeEventListener('keyup', this.boundHandlers.chatKeyup);
+    }
+
+    const muteCanvas = document.getElementById('game-canvas');
+    if (muteCanvas && this.boundHandlers.mutePointerDown) {
+      muteCanvas.removeEventListener('pointerdown', this.boundHandlers.mutePointerDown);
+    }
+    if (muteCanvas && this.boundHandlers.mutePointerUp) {
+      muteCanvas.removeEventListener('pointerup', this.boundHandlers.mutePointerUp);
     }
 
     this.isRunning = false;

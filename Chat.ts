@@ -101,10 +101,18 @@ export class Chat {
     }
   }
 
-  /** Client-side mute of a peer's messages (persisted). */
-  public mutePeer(id: string): void {
-    this.muted.add(id);
+  /** Toggle client-side mute of a peer (drops their text AND voice). Persisted.
+   *  Returns the new muted state. */
+  public toggleMute(id: string): boolean {
+    if (this.muted.has(id)) this.muted.delete(id);
+    else this.muted.add(id);
     try { localStorage.setItem('ds_muted_peers', JSON.stringify([...this.muted])); } catch { /* ignore */ }
+    return this.muted.has(id);
+  }
+
+  /** Is this peer currently muted? */
+  public isMuted(id: string): boolean {
+    return this.muted.has(id);
   }
 
   /** Begin recording (push-to-talk DOWN). Prompts for mic the first time;

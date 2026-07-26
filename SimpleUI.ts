@@ -101,6 +101,29 @@ export class SimpleUI {
   public setOnMicDown(cb: () => void): void { this.onMicDown = cb; }
   public setOnMicUp(cb: () => void): void { this.onMicUp = cb; }
 
+  private toastEl: HTMLDivElement | null = null;
+  private toastTimer = 0;
+  /** Brief auto-dismissing status toast (bottom-centre) — e.g. "Muted <name>". */
+  public toast(message: string): void {
+    if (!this.toastEl) {
+      this.toastEl = document.createElement('div');
+      Object.assign(this.toastEl.style, {
+        position: 'absolute', left: '50%', bottom: 'calc(var(--sab, 0px) + 150px)',
+        transform: 'translateX(-50%)', background: 'rgba(12,12,20,0.92)', color: '#fff',
+        padding: '9px 16px', borderRadius: '12px', fontSize: '14px',
+        fontFamily: 'system-ui, sans-serif', pointerEvents: 'none', zIndex: '1750',
+        opacity: '0', transition: 'opacity 0.2s ease', whiteSpace: 'nowrap',
+      });
+      this.overlay.appendChild(this.toastEl);
+    }
+    this.toastEl.textContent = message;
+    this.toastEl.style.opacity = '1';
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => {
+      if (this.toastEl) this.toastEl.style.opacity = '0';
+    }, 2000);
+  }
+
   /** Hide the mobile 🎤 button where voice can't work (e.g. iOS Safari, where
    *  MediaRecorder doesn't support opus) — text chat still works there.
    *  Defaults visible; call once Chat.voiceSupported is known. */
