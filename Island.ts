@@ -239,9 +239,9 @@ export class Island {
     // object. Halving the height while keeping the width takes it to ~1:1.3 —
     // a low tuft. Density (see COUNT below) does the rest: carpet is a
     // property of the crowd, not of one blade.
-    const BLADE_H = 0.13;
-    const BASE_W = 0.05;
-    const TIP_W = 0.028; // blunt and wide — a rounded tuft, not a needle
+    const BLADE_H = 0.088;
+    const BASE_W = 0.032; // thinner: fine strands, not leaves
+    const TIP_W = 0.017; // still blunt — a flat tip is what keeps it un-spiky
     const addBlade = (rotY: number) => {
       const c = Math.cos(rotY);
       const s = Math.sin(rotY);
@@ -300,7 +300,7 @@ export class Island {
     // Tripled now that each blade is half the height — 18000 x 4 tris = 72k,
     // still one draw call, and the blades are small enough that the extra
     // vertex work is cheap. Phones keep a lower count.
-    const COUNT = coarse || lowCore ? 7000 : 18000;
+    const COUNT = coarse || lowCore ? 12000 : 32000;
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -337,9 +337,20 @@ export class Island {
       // stays fixed — no index bookkeeping); below the shoreline they
       // collapse too so the beach stays sandy-clean
       const belowShore = dir.y < Math.sin(0.26);
-      // Tighter spread than the old 0.7-1.4: with carpet you want an even
-      // pile, not a few blades towering over their neighbours.
-      const sc = this.isNearStreet(dir) || belowShore ? 0.0001 : 0.85 + Math.random() * 0.4;
+      // Slope gate. Measured: the analytic normal tracks the mesh to ~2.7°
+      // on ordinary ground but diverges up to ~50° on the mountain crags,
+      // where ~2.9-unit rock detail is finer than the 1.08-unit terrain mesh
+      // can represent — so blades there were orienting to a surface that
+      // isn't the one you see, and leaning wildly. Lawn doesn't grow on
+      // cliffs regardless, so collapse the blade past a slope threshold:
+      // correct orientation everywhere it does appear, and none where the
+      // normal can't be trusted.
+      const slopeCos = sampled.normal.dot(dir);
+      const tooSteep = slopeCos < 0.86; // ~31 degrees
+      const sc =
+        this.isNearStreet(dir) || belowShore || tooSteep
+          ? 0.0001
+          : 0.85 + Math.random() * 0.4;
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
       grass.setMatrixAt(i, dummy.matrix);
