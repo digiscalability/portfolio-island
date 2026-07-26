@@ -182,6 +182,40 @@ export class Island {
    * dark base → light tip (fake AO for free) and bend in a vertex shader
    * driven by the shared grassTimeUniform — zero per-frame CPU cost.
    */
+  /**
+   * Surface sample WITHOUT a raycast — ~200x cheaper than
+   * sampleSurfaceByDirection (measured 1.24ms per raycast against the 32k-tri
+   * terrain, versus a few analytic noise evaluations here). Use this for bulk
+   * placement of thousands of items; keep the raycast version for anything
+   * that must hit the real mesh (e.g. props placed after GLB swaps).
+   *
+   * The normal comes from finite differences: two tangent offsets, crossed.
+   */
+  public analyticSurface(dir: THREE.Vector3): { radius: number; normal: THREE.Vector3 } {
+    const n = dir.clone().normalize();
+    if (!this.terrainRadiusFor) {
+      const s = this.sampleSurfaceByDirection(n, 0);
+      return { radius: s.position.length(), normal: s.normal };
+    }
+    const at = (d: THREE.Vector3): number =>
+      this.terrainRadiusFor(d, d.clone().multiplyScalar(this.radius));
+    const r = at(n);
+    const t1 = new THREE.Vector3(0, 1, 0).cross(n);
+    if (t1.lengthSq() < 1e-8) t1.set(1, 0, 0);
+    t1.normalize();
+    const t2 = new THREE.Vector3().crossVectors(n, t1).normalize();
+    const EPS = 0.02;
+    const pA = n.clone().addScaledVector(t1, EPS).normalize();
+    const pB = n.clone().addScaledVector(t2, EPS).normalize();
+    const p0 = n.clone().multiplyScalar(r);
+    const vA = pA.multiplyScalar(at(pA)).sub(p0);
+    const vB = pB.multiplyScalar(at(pB)).sub(p0);
+    const normal = new THREE.Vector3().crossVectors(vA, vB).normalize();
+    if (normal.dot(n) < 0) normal.negate();
+    if (!Number.isFinite(normal.x)) normal.copy(n);
+    return { radius: r, normal };
+  }
+
   private createGrass(): THREE.InstancedMesh {
     // Two crossed tapered triangles, base at origin
     const positions: number[] = [];
@@ -258,8 +292,11 @@ export class Island {
       // (keeps full grass density on the island, none on the seafloor)
       dir.y = Math.abs(dir.y);
       dir.normalize();
-      const sampled = this.sampleSurfaceByDirection(dir, 0);
-      dummy.position.copy(sampled.position);
+      // Analytic, not raycast: at 1.24ms per raycast these 6000 blades alone
+      // cost ~7.5s of startup — the single biggest item in a ~24s boot, which
+      // was tripping the 25s watchdog and showing the fallback on phones.
+      const sampled = this.analyticSurface(dir);
+      dummy.position.copy(dir).multiplyScalar(sampled.radius);
       dummy.quaternion.setFromUnitVectors(up, sampled.normal);
       dummy.rotateOnAxis(up, Math.random() * Math.PI * 2);
       // Blades landing on pavement collapse to nothing (instance count

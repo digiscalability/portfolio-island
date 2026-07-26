@@ -492,16 +492,23 @@
         }
         window.addEventListener('error', function (e) {
           if (!booted()) showFallback('but something went wrong loading it.');
-          else if (window.console) console.error('[island] runtime error', e && e.message);
+          else if (window.console) {
+            // Log the stack too — a bare message ("cannot read 'dispose' of
+            // undefined") is unactionable when it fires during async init.
+            console.error('[island] runtime error', e && e.message, (e && e.error && e.error.stack) || '(no stack)');
+          }
         });
         window.addEventListener('unhandledrejection', function () {
           if (!booted()) showFallback('but something went wrong loading it.');
         });
         // Watchdog: a silent stall (slow CDN, blocked asset) is otherwise an
         // endless spinner with no explanation.
+        // Generous: a mid-range phone is several times slower than a desktop
+        // through the world-generation pass, and a false "timed out" that
+        // hides a working game is far worse than a long spinner.
         setTimeout(function () {
           showFallback('but it timed out while loading.');
-        }, 25000);
+        }, 60000);
       })();
     </script>
 
