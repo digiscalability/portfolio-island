@@ -31,6 +31,10 @@ export function distanceGain(dist: number, radius: number): number {
 
 interface Bubble { sprite: THREE.Sprite; until: number; parent: THREE.Object3D; }
 
+/** A voice clip currently playing, spatialised via a PannerNode that tracks the
+ *  speaker's avatar every frame so the sound emanates FROM the character. */
+interface ActiveVoice { panner: PannerNode; avatar: THREE.Object3D | null; }
+
 /** The slice of Multiplayer that Chat needs. Multiplayer implements this. */
 export interface ChatHost {
   /** Send a wire message through the active transport (RTDB/WS/BroadcastChannel). */
@@ -57,6 +61,8 @@ export class Chat {
   private recStopTimer = 0;
   private micStream: MediaStream | null = null;
   private audioCtx: AudioContext | null = null;
+  private activeVoices: ActiveVoice[] = [];
+  private static readonly _vp = new THREE.Vector3();
   private starting = false;
   public readonly voiceSupported =
     typeof navigator !== 'undefined' &&
@@ -97,7 +103,7 @@ export class Chat {
     if (msg.kind === 'voice' && msg.audio) {
       if (msg.audio.length > 60000) return; // defense-in-depth: WS/BroadcastChannel lack RTDB's size rule
       const dist = this.host.getSelfWorldPosition().distanceTo(peerPos);
-      void this.playClip(msg.audio, dist, this.host.getPeerAvatar(msg.id));
+      void this.playClip(msg.audio, this.host.getPeerAvatar(msg.id), peerPos, dist);
     }
   }
 
@@ -197,41 +203,97 @@ export class Chat {
     return bytes.buffer;
   }
 
-  /** Decode + play an incoming base64 voice clip through Web Audio, gained by
-   *  distance, with a transient 🔊 indicator on the speaker's avatar. Cleans
-   *  the indicator up on both normal end and any failure (best-effort). */
-  private async playClip(audioB64: string, dist: number, avatar: THREE.Object3D | null): Promise<void> {
+  /** Decode + play an incoming voice clip so it emanates FROM the speaker: a
+   *  PannerNode positioned at their avatar (and tracked each frame in update()),
+   *  played through the game's shared AudioContext whose listener follows the
+   *  camera — the same 3D sound field as the rest of the game audio. Falls back
+   *  to a flat distance-gain only if the game audio context isn't up yet. A
+   *  transient 🔊 indicator rides the avatar; cleaned up on end and on failure. */
+  private async playClip(
+    audioB64: string,
+    avatar: THREE.Object3D | null,
+    speakerPos: THREE.Vector3,
+    dist: number,
+  ): Promise<void> {
     let indicator: THREE.Sprite | null = null;
-    const cleanupIndicator = () => {
+    let active: ActiveVoice | null = null;
+    const cleanup = () => {
       if (indicator && avatar) {
         avatar.remove(indicator);
         (indicator.material as THREE.SpriteMaterial).map?.dispose();
         indicator.material.dispose();
         indicator = null;
       }
+      if (active) {
+        const i = this.activeVoices.indexOf(active);
+        if (i >= 0) this.activeVoices.splice(i, 1);
+        active = null;
+      }
     };
     try {
-      const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!Ctor) return; // no Web Audio → skip playback
-      if (!this.audioCtx) this.audioCtx = new Ctor();
-      const buf = await this.audioCtx.decodeAudioData(Chat.base64ToArrayBuffer(audioB64));
-      const src = this.audioCtx.createBufferSource();
+      const gameCtx = Chat.getGameAudioCtx();
+      const ctx = gameCtx ?? this.ensureOwnCtx();
+      if (!ctx) return; // no Web Audio → skip playback
+      if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+      const buf = await ctx.decodeAudioData(Chat.base64ToArrayBuffer(audioB64));
+      const src = ctx.createBufferSource();
       src.buffer = buf;
-      const gain = this.audioCtx.createGain();
-      gain.gain.value = distanceGain(dist, PROXIMITY_RADIUS);
-      src.connect(gain).connect(this.audioCtx.destination);
+      if (gameCtx) {
+        // Spatial: place the sound at the speaker; the camera-driven listener
+        // does the panning + distance falloff, so it comes from their direction.
+        const panner = ctx.createPanner();
+        panner.panningModel = 'HRTF';
+        panner.distanceModel = 'linear';
+        panner.refDistance = 1;
+        panner.maxDistance = PROXIMITY_RADIUS; // fully faded by the proximity edge
+        panner.rolloffFactor = 1;
+        Chat.setPannerPosition(panner, avatar ? avatar.getWorldPosition(Chat._vp) : speakerPos);
+        src.connect(panner).connect(ctx.destination);
+        active = { panner, avatar };
+        this.activeVoices.push(active);
+      } else {
+        // Fallback (audio system not up): flat gain by distance, non-directional.
+        const gain = ctx.createGain();
+        gain.gain.value = distanceGain(dist, PROXIMITY_RADIUS);
+        src.connect(gain).connect(ctx.destination);
+      }
       if (avatar) {
         indicator = Chat.makeBubbleSprite('🔊');
         indicator.position.set(0, 2.1, 0);
         avatar.add(indicator);
       }
-      src.onended = cleanupIndicator;
+      src.onended = cleanup;
       src.start();
     } catch {
-      // undecodable / autoplay-blocked / etc. — clean up the indicator if we
-      // added one, then silently skip (voice is best-effort).
-      cleanupIndicator();
+      // undecodable / autoplay-blocked / etc. — clean up, then silently skip.
+      cleanup();
     }
+  }
+
+  /** The game's shared AudioContext (whose listener the app drives from the
+   *  camera each frame). null if the audio system isn't up yet. */
+  private static getGameAudioCtx(): AudioContext | null {
+    const am = (window as unknown as { audioManager?: { ensureCtx?: () => AudioContext } }).audioManager;
+    if (am?.ensureCtx) {
+      try { return am.ensureCtx(); } catch { return null; }
+    }
+    return null;
+  }
+
+  /** Lazily create Chat's own AudioContext (fallback playback path only). */
+  private ensureOwnCtx(): AudioContext | null {
+    if (this.audioCtx) return this.audioCtx;
+    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) return null;
+    this.audioCtx = new Ctor();
+    return this.audioCtx;
+  }
+
+  /** Move a PannerNode to a world position (AudioParam API). */
+  private static setPannerPosition(panner: PannerNode, p: THREE.Vector3): void {
+    panner.positionX.value = p.x;
+    panner.positionY.value = p.y;
+    panner.positionZ.value = p.z;
   }
 
   /** Attach a speech-bubble sprite above `parent`, expiring after BUBBLE_TTL.
@@ -269,6 +331,10 @@ export class Chat {
       } else {
         (b.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, remaining); // fade last second
       }
+    }
+    // Keep each playing voice glued to its speaker's avatar as they move.
+    for (const v of this.activeVoices) {
+      if (v.avatar) Chat.setPannerPosition(v.panner, v.avatar.getWorldPosition(Chat._vp));
     }
   }
 

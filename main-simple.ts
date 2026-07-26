@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 import { a11y } from './Accessibility';
 import { trackOnce } from './Analytics';
 import { Chat } from './Chat';
@@ -800,6 +802,25 @@ class SimpleApp {
     this.multiplayer?.setVehicle(this.scene.getActiveVehicleState());
     this.multiplayer?.update(deltaTime);
     this.chat?.update(deltaTime);
+
+    // Drive the Web Audio listener from the local player + camera each frame so
+    // positional voice (and spatial sfx) is heard from the character's location
+    // and facing. Nothing else updates the listener, so without this the whole
+    // 3D audio field sits inert at the origin.
+    const am = (window as unknown as {
+      audioManager?: {
+        updateListener?: (
+          p: { x: number; y: number; z: number },
+          f?: { x: number; y: number; z: number },
+          u?: { x: number; y: number; z: number },
+        ) => void;
+      };
+    }).audioManager;
+    if (am?.updateListener && this.scene) {
+      const lp = this.scene.getPlayer().getWorldPosition();
+      const fwd = this.scene.getCamera().getWorldDirection(new THREE.Vector3());
+      am.updateListener({ x: lp.x, y: lp.y, z: lp.z }, { x: fwd.x, y: fwd.y, z: fwd.z }, { x: 0, y: 1, z: 0 });
+    }
     if (this.multiplayer) {
       this.scene.syncRemoteVehicles(this.multiplayer.getRemoteVehicleStates());
     }
