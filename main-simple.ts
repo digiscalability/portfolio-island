@@ -1,5 +1,6 @@
 import { a11y } from './Accessibility';
 import { DeliverySystem } from './DeliverySystem';
+import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
 import { Multiplayer } from './Multiplayer';
 import { NpcQuestSystem } from './NpcQuests';
@@ -246,6 +247,13 @@ class SimpleApp {
         this.ui.setEnvironmentBadge(status);
       });
 
+      // Live weather is opt-in (it shares approximate location) — the badge is
+      // the consent gate. Day/night runs off the device clock regardless.
+      this.ui.setWeatherConsentHandler(EnvironmentCycle.hasWeatherConsent(), (on) => {
+        this.scene.getEnvironmentCycle()?.setWeatherConsent(on);
+        this.ui.flashMessage(on ? '🌦️ Live weather on' : '🌤️ Live weather off');
+      });
+
       // Coin counter (persisted across visits + mirrored to the cloud profile)
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
       this.scene.setOnCoinCollected((total) => {
@@ -381,6 +389,16 @@ class SimpleApp {
       };
       idle(startMusic, 5000);
       idle(syncProfile, 4000);
+      // Visitor counts: Vercel Web Analytics is cookieless and collects no
+      // personal data, so it needs no consent banner. Deferred + failure-safe —
+      // analytics must never be able to break the app.
+      idle(() => {
+        void import('@vercel/analytics')
+          .then((m) => m.inject({ mode: import.meta.env.PROD ? 'production' : 'development' }))
+          .catch(() => {
+            /* blocked by an ad-blocker or offline — not a problem */
+          });
+      }, 3000);
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
       // resumed it before, so music (and now SFX) stayed silent. Resume once
@@ -460,6 +478,11 @@ class SimpleApp {
   private startRenderLoop(): void {
     if (this.isRunning) return;
     this.isRunning = true;
+    // Signals the boot guard in index.html that the app really is running, so
+    // it stands down (a late error must not blank a playable game). Distinct
+    // from __lifeIslandBooted, which is set before construction as a
+    // double-boot latch and so can't prove init succeeded.
+    (window as unknown as { __lifeIslandReady?: boolean }).__lifeIslandReady = true;
 
     console.log('🔄 Starting render loop...');
     console.log('🔍 Render loop parameters:', {

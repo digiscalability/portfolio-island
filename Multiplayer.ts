@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { Materials } from './Materials';
+import { safePeerName } from './Moderation';
 import { SimplePlayer, type HatId, type RemoteAvatar } from './SimplePlayer';
 
 type VehicleKind = 'boat' | 'jetski' | 'car';
@@ -364,7 +365,9 @@ export class Multiplayer {
     }
     let peer = this.peers.get(msg.id);
     if (!peer) {
-      peer = this.createPeer(msg.id, msg.name ?? 'Visitor', msg.hat ?? null);
+      // Never trust a name off the wire — a modified client can send anything,
+      // and it renders above the avatar for every visitor.
+      peer = this.createPeer(msg.id, safePeerName(msg.name), msg.hat ?? null);
       this.peers.set(msg.id, peer);
       this.onCountChange?.(1 + this.peers.size);
     }
@@ -377,9 +380,12 @@ export class Multiplayer {
     // state
     if (msg.p) peer.targetPos.set(msg.p[0], msg.p[1], msg.p[2]);
     if (msg.q) peer.targetQuat.set(msg.q[0], msg.q[1], msg.q[2], msg.q[3]);
-    if (msg.name && msg.name !== peer.name) {
-      peer.name = msg.name;
-      this.refreshPeerLabel(peer);
+    if (msg.name) {
+      const clean = safePeerName(msg.name);
+      if (clean !== peer.name) {
+        peer.name = clean;
+        this.refreshPeerLabel(peer);
+      }
     }
     const hat = msg.hat ?? null;
     if (hat !== peer.hat) {

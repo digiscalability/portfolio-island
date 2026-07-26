@@ -1,4 +1,5 @@
 import { a11y } from './Accessibility';
+import { checkName } from './Moderation';
 
 /**
  * SimpleUI - Simplified UI manager for the basic app
@@ -587,14 +588,29 @@ export class SimpleUI {
       color: 'white',
       cursor: 'pointer',
     });
+    // Inline validation message (offensive / too-short names)
+    const err = document.createElement('div');
+    Object.assign(err.style, {
+      color: '#ff9a9a',
+      fontSize: '12.5px',
+      marginTop: '9px',
+      minHeight: '16px',
+    });
     let done = false;
     const submit = (): void => {
       if (done) return;
+      const raw = input.value.trim() || defaultName || 'Visitor';
+      // Names are shown to every other visitor — filter before they land
+      const check = checkName(raw);
+      if (!check.ok) {
+        err.textContent = check.reason ?? 'Please pick another name.';
+        input.focus();
+        return;
+      }
       done = true;
-      const name = (input.value.trim() || defaultName || 'Visitor').slice(0, 20);
       modal.remove();
       this.nameModalDiv = null;
-      onDone(name);
+      onDone(check.name);
     };
     // stopPropagation so keystrokes (incl. WASD/Space) never reach the game
     // input handlers while the field is focused.
@@ -605,6 +621,7 @@ export class SimpleUI {
     btn.addEventListener('click', submit);
     modal.appendChild(input);
     modal.appendChild(btn);
+    modal.appendChild(err);
     this.overlay.appendChild(modal);
     this.nameModalDiv = modal;
     window.setTimeout(() => input.focus(), 60);
@@ -737,7 +754,8 @@ export class SimpleUI {
         borderRadius: '12px',
         fontSize: '12px',
         fontFamily: 'system-ui, sans-serif',
-        pointerEvents: 'none',
+        pointerEvents: 'auto',
+        cursor: 'pointer',
         // Never grow past the left third — keeps it clear of the centered
         // delivery pill on phones while still showing temp + time of day.
         maxWidth: 'calc(50vw - 58px)',
@@ -745,9 +763,75 @@ export class SimpleUI {
         overflow: 'hidden',
         textOverflow: 'ellipsis',
       });
+      this.envBadgeDiv.title = 'Live weather settings';
+      this.envBadgeDiv.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleWeatherPopover();
+      });
       this.overlay.appendChild(this.envBadgeDiv);
     }
     this.envBadgeDiv.textContent = text;
+  }
+
+  private weatherPopover: HTMLElement | null = null;
+  private onWeatherConsent: ((on: boolean) => void) | null = null;
+  private weatherConsentState = false;
+
+  /** Wire the live-weather opt-in (current state + a setter). */
+  setWeatherConsentHandler(current: boolean, cb: (on: boolean) => void): void {
+    this.weatherConsentState = current;
+    this.onWeatherConsent = cb;
+  }
+
+  /**
+   * Consent popover for live weather. Location data only leaves the device
+   * after an explicit opt-in here, so this is the gate — not a silent fetch.
+   */
+  private toggleWeatherPopover(): void {
+    if (this.weatherPopover) {
+      this.weatherPopover.remove();
+      this.weatherPopover = null;
+      return;
+    }
+    const pop = document.createElement('div');
+    Object.assign(pop.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 42px)',
+      left: 'calc(var(--sal, 0px) + 10px)',
+      background: 'rgba(10, 16, 28, 0.96)',
+      color: '#e6edf7',
+      padding: '13px 15px',
+      borderRadius: '12px',
+      fontSize: '12.5px',
+      lineHeight: '1.5',
+      fontFamily: 'system-ui, sans-serif',
+      maxWidth: '270px',
+      pointerEvents: 'auto',
+      zIndex: '1500',
+      border: '1px solid rgba(255,255,255,0.14)',
+    });
+    const on = this.weatherConsentState;
+    pop.innerHTML = `
+      <div style="font-weight:700;margin-bottom:5px;">🌦️ Live weather</div>
+      <div style="color:#aebbcd;margin-bottom:10px;">
+        Match the island's sky to your real local weather. This shares your
+        approximate location with a weather service. Day and night already follow
+        your device clock — that never leaves your device.
+      </div>
+      <button id="wx-toggle" style="background:${on ? '#c0392b' : '#4CAF50'};color:#fff;border:none;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12.5px;">
+        ${on ? 'Turn off' : 'Turn on'}
+      </button>
+      <a href="/privacy.html" target="_blank" rel="noopener" style="color:#7fb2ff;margin-left:10px;font-size:11.5px;">Privacy</a>
+    `;
+    (pop.querySelector('#wx-toggle') as HTMLButtonElement).addEventListener('click', () => {
+      const next = !this.weatherConsentState;
+      this.weatherConsentState = next;
+      this.onWeatherConsent?.(next);
+      pop.remove();
+      this.weatherPopover = null;
+    });
+    this.overlay.appendChild(pop);
+    this.weatherPopover = pop;
   }
 
   private coinDiv: HTMLElement | null = null;

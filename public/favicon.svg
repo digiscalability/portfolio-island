@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Life Island">
+  <defs>
+    <clipPath id="planet"><circle cx="32" cy="32" r="30" /></clipPath>
+  </defs>
+  <!-- Ocean planet -->
+  <circle cx="32" cy="32" r="30" fill="#2f7fbf" />
+  <g clip-path="url(#planet)">
+    <!-- Island cap -->
+    <ellipse cx="32" cy="26" rx="26" ry="18" fill="#5cb85c" />
+    <ellipse cx="32" cy="23" rx="20" ry="13" fill="#78c96a" />
+    <!-- Mountain -->
+    <path d="M20 24 L28 11 L36 24 Z" fill="#8d99a6" />
+    <path d="M25.2 17.5 L28 11 L30.8 17.5 Z" fill="#f2f6fa" />
+    <!-- Trees -->
+    <path d="M42 26 L45.5 18 L49 26 Z" fill="#2f8f4e" />
+    <path d="M13 27 L16 20.5 L19 27 Z" fill="#2f8f4e" />
+    <!-- Ocean shading -->
+    <ellipse cx="32" cy="56" rx="30" ry="14" fill="#2569a3" opacity="0.55" />
+  </g>
+  <circle cx="32" cy="32" r="30" fill="none" stroke="#123d63" stroke-width="2.5" />
+</svg>

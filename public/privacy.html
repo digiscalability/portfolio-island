@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy — DigiScalability Life Island</title>
+    <meta
+      name="description"
+      content="What DigiScalability Life Island stores, what it sends to third parties, and how to clear it."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0b1220" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 40px 20px 80px;
+        background: #0b1220;
+        color: #dbe4f0;
+        font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 30px;
+        margin: 0 0 6px;
+        color: #fff;
+      }
+      h2 {
+        font-size: 19px;
+        margin: 34px 0 8px;
+        color: #7fd18b;
+      }
+      .sub {
+        color: #8fa1b8;
+        margin: 0 0 28px;
+        font-size: 14px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 10px 0;
+        font-size: 14.5px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 9px 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        vertical-align: top;
+      }
+      th {
+        color: #9fb4cc;
+        font-weight: 600;
+      }
+      a {
+        color: #7fb2ff;
+      }
+      code {
+        background: rgba(255, 255, 255, 0.09);
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 13.5px;
+      }
+      .back {
+        display: inline-block;
+        margin-bottom: 26px;
+        color: #7fb2ff;
+        text-decoration: none;
+      }
+      ul {
+        padding-left: 20px;
+      }
+      li {
+        margin: 5px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back" href="/">← Back to the island</a>
+      <h1>Privacy</h1>
+      <p class="sub">Last updated 26 July 2026 · DigiScalability, Melbourne, Australia</p>
+
+      <p>
+        Life Island is an interactive 3D portfolio. It is not an advertising product: there are no
+        advertising cookies, no ad networks, and nothing here is sold or shared with data brokers.
+        This page describes plainly what it stores and what leaves your device.
+      </p>
+
+      <h2>What is stored</h2>
+      <table>
+        <tr>
+          <th>What</th>
+          <th>Where</th>
+          <th>Why</th>
+        </tr>
+        <tr>
+          <td>Display name you type</td>
+          <td>Your browser, plus Google Firebase</td>
+          <td>To label your character — other visitors on the island at the same time can see it</td>
+        </tr>
+        <tr>
+          <td>Anonymous ID</td>
+          <td>Your browser (IndexedDB) + Firebase</td>
+          <td>
+            A random per-device ID from Firebase Anonymous Auth so your progress persists. It is not
+            linked to an email, an account, or your identity.
+          </td>
+        </tr>
+        <tr>
+          <td>Game progress — coins, hats, character colours</td>
+          <td>Your browser (localStorage) + Firebase</td>
+          <td>So your character and progress survive a refresh</td>
+        </tr>
+        <tr>
+          <td>Character position while you are online</td>
+          <td>Firebase (temporary)</td>
+          <td>
+            So other visitors can see you move. It is deleted automatically the moment you
+            disconnect.
+          </td>
+        </tr>
+        <tr>
+          <td>Settings — sound, reduced motion</td>
+          <td>Your browser only</td>
+          <td>To remember your preferences. Never leaves your device.</td>
+        </tr>
+      </table>
+
+      <h2>Location and weather (off by default)</h2>
+      <p>
+        The island can mirror your real local weather. <strong>This is off unless you turn it on.</strong>
+        Until you do, the island uses your device's clock for day and night — that never leaves your
+        device — and a default clear sky.
+      </p>
+      <p>If you switch live weather on, one of the following happens:</p>
+      <ul>
+        <li>
+          Your browser asks permission for your precise location. If you allow it, those coordinates
+          are sent to <a href="https://open-meteo.com/" rel="noopener">Open-Meteo</a> for the forecast
+          and to <a href="https://www.bigdatacloud.com/" rel="noopener">BigDataCloud</a> to turn them
+          into a place name.
+        </li>
+        <li>
+          If you decline or it is unavailable, your IP address is sent to
+          <a href="https://ipapi.co/" rel="noopener">ipapi.co</a> for an approximate city-level
+          location, which is then used for the forecast.
+        </li>
+      </ul>
+      <p>
+        Coordinates are used for that request and are not stored on our side. You can switch live
+        weather back off at any time from the weather badge.
+      </p>
+
+      <h2>Third parties</h2>
+      <ul>
+        <li><strong>Google Firebase</strong> — anonymous sign-in, saved progress, live presence</li>
+        <li><strong>Vercel</strong> — hosting, and privacy-friendly, cookieless visit counts (no cross-site tracking)</li>
+        <li><strong>Google Fonts</strong> — the two display fonts</li>
+        <li><strong>Open-Meteo, BigDataCloud, ipapi.co</strong> — only if you enable live weather</li>
+      </ul>
+
+      <h2>Other visitors can see</h2>
+      <p>
+        Your display name, your character's appearance, and where you are on the island — while you
+        are online. Please do not type anything into the name field you would not want a stranger to
+        read. Names are filtered for offensive content and may be reset.
+      </p>
+
+      <h2>Clearing your data</h2>
+      <p>
+        Clearing your browser's site data for this domain erases your name, progress, settings and
+        anonymous ID. There is no account to delete. To have anything else removed, email
+        <a href="mailto:admin@digiscalability.com">admin@digiscalability.com</a>.
+      </p>
+
+      <h2>Children</h2>
+      <p>
+        This site is not directed at children under 13 and does not knowingly collect their
+        information.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        Questions about this page or your data:
+        <a href="mailto:admin@digiscalability.com">admin@digiscalability.com</a>.
+      </p>
+    </main>
+  </body>
+</html>

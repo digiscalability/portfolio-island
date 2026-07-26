@@ -172,7 +172,41 @@ export class EnvironmentCycle {
     this.moon.frustumCulled = false;
     scene.add(this.moon);
 
-    void this.fetchWeather();
+    // Live weather is OPT-IN: nothing about the visitor leaves the device until
+    // they ask for it. Day/night still works from the device clock alone.
+    if (EnvironmentCycle.hasWeatherConsent()) void this.fetchWeather();
+  }
+
+  /** Has the visitor opted into location-based live weather? */
+  public static hasWeatherConsent(): boolean {
+    try {
+      return localStorage.getItem('ds_weather_consent') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Turn live weather on/off. Enabling triggers the (consented) location +
+   * forecast lookup; disabling clears the sky and the place label immediately.
+   */
+  public setWeatherConsent(on: boolean): void {
+    try {
+      localStorage.setItem('ds_weather_consent', on ? '1' : '0');
+    } catch {
+      /* session-only */
+    }
+    if (on) {
+      void this.fetchWeather();
+    } else {
+      this.weather = 'clear';
+      this.placeLabel = '';
+      this.temperatureC = null;
+      this.sunriseHour = null;
+      this.sunsetHour = null;
+      this.rebuildPrecipitation();
+      this.emitStatus();
+    }
   }
 
   public onStatus(cb: (status: string) => void): void {
