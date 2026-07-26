@@ -77,8 +77,10 @@ export class Chat {
     if (!peerPos) return; // unknown peer → out of range
     if (!withinProximity(this.host.getSelfWorldPosition(), peerPos, PROXIMITY_RADIUS)) return;
     if (msg.kind === 'chat' && msg.text) {
+      const text = cleanChatText(msg.text);
+      if (!text) return;
       const avatar = this.host.getPeerAvatar(msg.id);
-      if (avatar) this.showBubble(avatar, cleanChatText(msg.text));
+      if (avatar) this.showBubble(avatar, text);
     }
     // voice handled in a later task
   }
@@ -89,12 +91,27 @@ export class Chat {
     try { localStorage.setItem('ds_muted_peers', JSON.stringify([...this.muted])); } catch { /* ignore */ }
   }
 
-  /** Attach a speech-bubble sprite above `parent`, expiring after BUBBLE_TTL. */
+  /** Attach a speech-bubble sprite above `parent`, expiring after BUBBLE_TTL.
+   *  Replaces any bubble already live on the same parent so rapid messages
+   *  from one speaker don't stack overlapping sprites. */
   private showBubble(parent: THREE.Object3D, text: string): void {
+    for (let i = this.bubbles.length - 1; i >= 0; i--) {
+      if (this.bubbles[i].parent === parent) {
+        this.disposeBubble(this.bubbles[i]);
+        this.bubbles.splice(i, 1);
+      }
+    }
     const sprite = Chat.makeBubbleSprite(text);
     sprite.position.set(0, 1.95, 0); // above the name label (which sits at 1.35)
     parent.add(sprite);
     this.bubbles.push({ sprite, until: performance.now() / 1000 + BUBBLE_TTL, parent });
+  }
+
+  /** Detach a bubble from its parent and free its texture/material. */
+  private disposeBubble(b: Bubble): void {
+    b.parent.remove(b.sprite);
+    (b.sprite.material as THREE.SpriteMaterial).map?.dispose();
+    b.sprite.material.dispose();
   }
 
   /** Per-frame: fade+expire bubbles. Call from the app update loop. */
@@ -104,9 +121,7 @@ export class Chat {
       const b = this.bubbles[i];
       const remaining = b.until - now;
       if (remaining <= 0) {
-        b.parent.remove(b.sprite);
-        (b.sprite.material as THREE.SpriteMaterial).map?.dispose();
-        b.sprite.material.dispose();
+        this.disposeBubble(b);
         this.bubbles.splice(i, 1);
       } else {
         (b.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, remaining); // fade last second
@@ -114,25 +129,33 @@ export class Chat {
     }
   }
 
+  /** Tear down: drop all live bubbles and free their textures/materials. */
+  public dispose(): void {
+    for (const b of this.bubbles) this.disposeBubble(b);
+    this.bubbles = [];
+  }
+
   /** Word-wrapped speech bubble on a canvas → sprite (mirrors Multiplayer.makeTextSprite). */
   private static makeBubbleSprite(text: string): THREE.Sprite {
     const canvas = document.createElement('canvas');
     const pad = 16, lineH = 30, maxW = 260, font = '600 24px system-ui, sans-serif';
-    const ctx0 = canvas.getContext('2d')!;
-    ctx0.font = font;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return new THREE.Sprite(new THREE.SpriteMaterial());
+    ctx.font = font;
     const words = text.split(' ');
     const lines: string[] = [];
     let line = '';
     for (const w of words) {
       const test = line ? `${line} ${w}` : w;
-      if (ctx0.measureText(test).width > maxW && line) { lines.push(line); line = w; }
+      if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; }
       else line = test;
     }
     if (line) lines.push(line);
-    const textW = Math.min(maxW, Math.max(...lines.map((l) => ctx0.measureText(l).width)));
+    const textW = Math.min(maxW, Math.max(...lines.map((l) => ctx.measureText(l).width)));
     canvas.width = textW + pad * 2;
     canvas.height = lines.length * lineH + pad * 2;
-    const ctx = canvas.getContext('2d')!;
+    // Resizing the canvas resets its 2D state, so font must be re-applied
+    // before drawing (measurements above already used it once, pre-resize).
     ctx.font = font;
     ctx.fillStyle = 'rgba(20,20,28,0.82)';
     ctx.beginPath();
