@@ -2056,7 +2056,17 @@ export class Island {
    * sea surface (with a small margin so the beach isn't counted as sea).
    */
   public isOverWater(dir: THREE.Vector3): boolean {
-    const terrain = this.sampleSurfaceByDirection(dir, 0).position.length();
+    // Analytic, not raycast. This is a threshold test against sea level, so
+    // sub-facet differences between the smooth function and the faceted mesh
+    // are irrelevant — but the cost difference is not: this is called all
+    // through world generation AND every frame a boat is moving, at 1.22ms per
+    // raycast versus 0.003ms here.
+    const terrain = this.terrainRadiusFor
+      ? this.terrainRadiusFor(
+          dir.clone().normalize(),
+          dir.clone().normalize().multiplyScalar(this.radius),
+        )
+      : this.sampleSurfaceByDirection(dir, 0).position.length();
     return terrain < this.seaLevel() - 0.15;
   }
 
