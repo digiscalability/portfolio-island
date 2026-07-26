@@ -421,10 +421,48 @@ export class Island {
     // summits; the spacing (~0.2 rad) still overlaps their skirts enough to
     // read as a connected ridge rather than three isolated cones.
     const PEAKS = [
-      { dir: this.dirAt(5.12, 0.73), height: 2.6, reach: 0.14 },
-      { dir: this.dirAt(5.35, 0.79), height: 3.3, reach: 0.16 },
-      { dir: this.dirAt(5.58, 0.72), height: 2.3, reach: 0.13 },
+      { dir: this.dirAt(5.12, 0.73), height: 4.0, reach: 0.155 },
+      { dir: this.dirAt(5.35, 0.79), height: 6.2, reach: 0.185 },
+      { dir: this.dirAt(5.58, 0.72), height: 3.5, reach: 0.145 },
     ];
+
+    // ── Summit trail ──────────────────────────────────────────────────────
+    // A spiral switchback carved up the tallest peak, so the summit is
+    // reachable on foot instead of being a wall you slide off. Implemented as
+    // terrain, not a decal: within a band around the spiral the crag noise is
+    // suppressed and the surface is cut slightly, which produces a genuinely
+    // flatter ramp the player's grounding sampler follows for free.
+    const trailPeak = PEAKS[1];
+    const trailUp = trailPeak.dir.clone();
+    const trailA = new THREE.Vector3(0, 1, 0).cross(trailUp);
+    if (trailA.lengthSq() < 1e-8) trailA.set(1, 0, 0);
+    trailA.normalize();
+    const trailB = new THREE.Vector3().crossVectors(trailUp, trailA).normalize();
+    const TRAIL_REACH = trailPeak.reach * 1.05; // trail spans the whole flank
+    // More turns = a longer, shallower climb. But turn SPACING must stay wider
+    // than the trail itself or adjacent loops merge and flatten the whole peak
+    // into a cone: spacing here is REACH/TURNS ~= 0.058 rad ~= 1.3 world units,
+    // against a trail half-width of ~1.2 (see trailAt), which keeps them
+    // distinct while roughly halving the gradient.
+    const TRAIL_TURNS = 3.35;
+    const _tProj = new THREE.Vector3();
+    /** 1 on the trail centreline, falling to 0 at its edge. */
+    const trailAt = (normal: THREE.Vector3): number => {
+      const ang = Math.acos(THREE.MathUtils.clamp(normal.dot(trailUp), -1, 1));
+      if (ang > TRAIL_REACH || ang < 1e-4) return ang <= 1e-4 ? 1 : 0;
+      _tProj.copy(normal).addScaledVector(trailUp, -normal.dot(trailUp));
+      if (_tProj.lengthSq() < 1e-9) return 1;
+      _tProj.normalize();
+      const bearing = Math.atan2(_tProj.dot(trailB), _tProj.dot(trailA));
+      // Where the spiral should be at this distance from the summit
+      const wanted = (ang / TRAIL_REACH) * TRAIL_TURNS * Math.PI * 2;
+      let d = bearing - wanted;
+      d = Math.atan2(Math.sin(d), Math.cos(d)); // wrap to -PI..PI
+      // Convert the bearing error to a real lateral distance on the ground,
+      // so the path keeps a constant width instead of fanning out near the base
+      const lateral = this.radius * ang * Math.abs(d);
+      return 1 - THREE.MathUtils.smoothstep(lateral, 0.45, 1.2);
+    };
     const highlandAt = (normal: THREE.Vector3): number => {
       let boost = 0;
       for (const p of PEAKS) {
@@ -499,14 +537,26 @@ export class Island {
       // smooth domes rather than rock.
       const highland = highlandAt(normal);
       let crag = 0;
+      let trail = 0;
       if (highland > 0.05) {
         const ridged = 1 - Math.abs(noise3D(v.x, v.y, v.z, 2.2)); // ~2.9u crags
         const coarse = 1 - Math.abs(noise3D(v.x, v.y, v.z, 0.9)); // ~7u buttresses
         crag = (ridged * 0.62 + coarse * 0.38) * highland * 0.5;
+        // Smooth the rock away along the trail and cut a shallow shelf, so
+        // the ramp reads as a worn path and is gentle enough to walk.
+        trail = trailAt(normal);
+        crag *= 1 - trail * 0.96;
       }
       // Land floor raised 0.3 -> 0.75 so the ocean's crests + tide (max ~0.55
       // above the base sphere) can never break through the beach.
-      const landDisp = Math.max(noiseDisp, 0.75) + highland + crag;
+      // On the trail, blend the ground toward a SMOOTH reference instead of
+      // merely damping the crag. `highland` is the peak's smooth falloff, so
+      // (floor + highland) is a clean ramp with none of the noise wobble that
+      // was still making the path undulate underfoot; the -0.3 keeps it cut
+      // below the rock either side so it reads as a worn ledge.
+      const rock = Math.max(noiseDisp, 0.75) + highland + crag;
+      const ramp = 0.75 + highland - 0.3;
+      const landDisp = rock * (1 - trail) + ramp * trail;
       const oceanDisp = -2.4 + noiseDisp * 0.15; // gently rolling seafloor
       const displacement = oceanDisp + (landDisp - oceanDisp) * mask;
 
