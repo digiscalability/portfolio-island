@@ -85,7 +85,10 @@ const extractTexture = (material: MaterialWithTextureProps): THREE.Texture | und
 type GLTFLoaderConstructor = new () => GLTFLoader;
 
 export class Island {
-  public mesh: THREE.Mesh;
+  /** The island root GROUP (terrain, sea, props…). Not a Mesh — the terrain
+   *  itself is `surfaceMesh`. Was mistyped as THREE.Mesh, which hid a crash in
+   *  GameScene.dispose that read `.geometry` off this group every teardown. */
+  public mesh: THREE.Group;
   public radius: number;
   private center: THREE.Vector3;
   private surfaceMesh?: THREE.Mesh;
@@ -396,7 +399,7 @@ export class Island {
     return grass;
   }
 
-  private createIsland(): THREE.Mesh {
+  private createIsland(): THREE.Group {
     // Use a sphere geometry for the island surface so objects placed on the sphere align correctly.
     const seg = 128;
     const geometry = new THREE.SphereGeometry(this.radius, seg, seg);
@@ -2168,8 +2171,7 @@ export class Island {
     // (The old equator ring road + its decal conversion are gone — the
     // street network is built entirely from createStreetPath segments.)
 
-    // Return the group as a Mesh-typed value to keep compatibility with existing code
-    return root as unknown as THREE.Mesh;
+    return root;
   }
 
   /**

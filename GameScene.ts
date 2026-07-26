@@ -4092,14 +4092,22 @@ export class GameScene extends THREE.Scene {
       this.player.dispose();
     }
 
-    // Dispose island resources
+    // Dispose island resources. island.mesh is the island GROUP (dozens of
+    // child meshes), NOT a Mesh — it has no geometry/material of its own, so the
+    // old island.mesh.geometry.dispose() read .dispose off undefined and threw
+    // "Cannot read properties of undefined (reading 'dispose')" on every
+    // teardown / page unload (the long-standing 2-per-load LIVE error). Traverse
+    // the group and dispose each descendant's geometry (incl. its three-mesh-bvh
+    // bounds tree) and material, all null-guarded.
     if (this.island && this.island.mesh) {
-      this.island.mesh.geometry.dispose();
-      if (Array.isArray(this.island.mesh.material)) {
-        this.island.mesh.material.forEach(mat => mat.dispose());
-      } else {
-        this.island.mesh.material.dispose();
-      }
+      this.island.mesh.traverse((obj: THREE.Object3D) => {
+        const g = (obj as THREE.Mesh).geometry;
+        g?.disposeBoundsTree?.();
+        g?.dispose?.();
+        const mat = (obj as THREE.Mesh).material;
+        if (Array.isArray(mat)) mat.forEach((m) => m?.dispose?.());
+        else mat?.dispose?.();
+      });
     }
 
     // Stop and dispose animation mixers
@@ -4115,6 +4123,7 @@ export class GameScene extends THREE.Scene {
     // Dispose all materials and geometries
     this.traverse((obj: THREE.Object3D) => {
       const geometry = (obj as { geometry?: THREE.BufferGeometry }).geometry;
+      geometry?.disposeBoundsTree?.();
       geometry?.dispose?.();
 
       const material = (obj as { material?: THREE.Material | THREE.Material[] }).material;

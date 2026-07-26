@@ -4,8 +4,10 @@ import { describe, expect, test, vi } from 'vitest';
 import { DeliverySystem } from '../DeliverySystem';
 import { Mailbox } from '../Mailbox';
 
-/** The shipped quest data: welcome_1 -> welcome_2 -> welcome_3 unlock in
- *  sequence (welcome_quest), then explore_1 -> explore_2 (explorer_quest). */
+/** The shipped quest data unlocks as one linear chain: welcome_1..3
+ *  (welcome_quest), explore_1..2 (explorer_quest), community_1..3
+ *  (community_quest), then secret_1..2 (secret_quest) — 10 deliveries across
+ *  4 quests, exactly one delivery active at a time. */
 
 const makeMailboxes = (n: number) => Array.from({ length: n }, () => new Mailbox());
 
@@ -21,7 +23,7 @@ describe('DeliverySystem quest chain', () => {
     const boxes = makeMailboxes(4);
     ds.assignDestinations(boxes);
 
-    // 5 deliveries over 4 boxes: box0 gets welcome_1 AND explore_2
+    // 10 deliveries round-robin over 4 boxes; only welcome_1 starts active
     expect(boxes[0].hasDelivery).toBe(true); // welcome_1 is active
     expect(boxes[1].hasDelivery).toBe(false); // welcome_2 locked
     expect(boxes[2].hasDelivery).toBe(false);
@@ -61,17 +63,24 @@ describe('DeliverySystem quest chain', () => {
       const completedQuests: string[] = [];
       ds.setOnQuestComplete((q) => completedQuests.push(q.id));
 
-      for (let guard = 0; guard < 10 && ds.getActiveDeliveries().length > 0; guard++) {
+      for (let guard = 0; guard < 20 && ds.getActiveDeliveries().length > 0; guard++) {
         const d = ds.getActiveDeliveries()[0];
         expect(ds.collectFromMailbox(d.destination)).toBe(true);
       }
 
-      expect(ds.getCompletedCount()).toBe(5);
+      expect(ds.getCompletedCount()).toBe(10);
       expect(ds.getActiveDeliveries()).toEqual([]);
-      expect(completedQuests).toEqual(['welcome_quest', 'explorer_quest']);
+      expect(completedQuests).toEqual([
+        'welcome_quest',
+        'explorer_quest',
+        'community_quest',
+        'secret_quest',
+      ]);
       expect(ds.getCompletedQuests().map((q) => q.id)).toEqual([
         'welcome_quest',
         'explorer_quest',
+        'community_quest',
+        'secret_quest',
       ]);
       // every mailbox dark once the chain is done
       expect(boxes.every((b) => !b.hasDelivery)).toBe(true);
