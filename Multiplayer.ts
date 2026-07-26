@@ -95,7 +95,6 @@ export class Multiplayer {
   private selfWaveMs = 0; // last time WE waved (ms); rides along in state writes
   private peerWave = new Map<string, number>(); // last wave value seen per peer
   private chatHandler?: (msg: WireMessage) => void;
-  private connectTime = Date.now(); // ignore chat/voice pushed before we joined
 
   constructor(scene: THREE.Scene, player: SimplePlayer) {
     this.scene = scene;
@@ -206,7 +205,7 @@ export class Multiplayer {
       import('firebase/database'),
     ]);
     const { db, uid } = await getFirebaseRealtime();
-    const { ref, set, remove, push, onChildAdded, onChildChanged, onChildRemoved, onDisconnect } =
+    const { ref, set, remove, push, onValue, onChildAdded, onChildChanged, onChildRemoved, onDisconnect } =
       rtdb;
     const roomPath = 'presence/island';
     const myNode = ref(db, `${roomPath}/${uid}`);
@@ -287,7 +286,17 @@ export class Multiplayer {
 
     for (const kind of ['chat', 'voice'] as const) {
       const path = kind === 'chat' ? 'chat/island' : 'voice/island';
-      onChildAdded(ref(db, path), (snap) => {
+      const listRef = ref(db, path);
+      // Ignore the initial burst of existing children (RTDB replays them on
+      // attach); only act on entries that arrive AFTER the current list has
+      // loaded. onValue(onlyOnce) fires right after that initial replay, so
+      // `ready` is false during it and true for genuinely new messages. This
+      // replaces a broken timestamp filter that compared the sender's clock to
+      // THIS device's clock — any cross-device skew silently dropped live chat.
+      let ready = false;
+      onValue(listRef, () => { ready = true; }, { onlyOnce: true });
+      onChildAdded(listRef, (snap) => {
+        if (!ready) return;
         const val = snap.val();
         if (!val || val.id === uid) return;
         this.handleMessage(
@@ -297,7 +306,6 @@ export class Multiplayer {
             text: val.text ?? undefined,
             audio: val.audio ?? undefined,
             dur: val.dur ?? undefined,
-            t: val.t ?? 0,
           }),
         );
       });
@@ -461,8 +469,6 @@ export class Multiplayer {
     }
     if (!msg || msg.id === this.selfId) return;
     if (msg.kind === 'chat' || msg.kind === 'voice') {
-      // Drop entries that predate our join (RTDB replays existing children).
-      if (typeof msg.t === 'number' && msg.t < this.connectTime) return;
       this.chatHandler?.(msg);
       return;
     }
