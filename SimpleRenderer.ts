@@ -26,6 +26,8 @@ export class SimpleRenderer {
   // floats DOWN from here under load.
   private static readonly PIXEL_BUDGET = 2_500_000;
   private resizeTimer = 0;
+  private lastAppliedWidth = 0;
+  private lastAppliedHeight = 0;
 
   private scene?: THREE.Scene;
   private camera?: THREE.Camera;
@@ -138,6 +140,12 @@ export class SimpleRenderer {
     this.scene = scene;
     this.camera = camera;
     try {
+      // compile() walks the ENTIRE scene and builds every shader program up
+      // front. A single hidden render only compiles what that one viewpoint
+      // happened to see — everything else compiled mid-fly-in, and each
+      // compile stalls a frame, which is what shows as a white flash. The
+      // heavy sea shader (wave normals + surf) made this much more visible.
+      this.renderer.compile(scene, camera);
       if (this.postProcessingEnabled && this.composer) {
         this.composer.render();
       } else {
@@ -298,6 +306,14 @@ export class SimpleRenderer {
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     this.resizeTimer = window.setTimeout(() => {
       this.resizeTimer = 0;
+      // Ignore the mobile address-bar show/hide. It fires resize with a
+      // height change of ~60-120px and no width change, and reallocating the
+      // composer's render targets for it produces a one-frame white flash
+      // while scrolling/driving on a phone. The canvas CSS-stretches over the
+      // difference, which is imperceptible at this magnitude.
+      const dh = Math.abs(window.innerHeight - this.lastAppliedHeight);
+      const dw = Math.abs(window.innerWidth - this.lastAppliedWidth);
+      if (dw === 0 && dh > 0 && dh <= 140) return;
       this.applyViewportSize();
     }, 150);
   }
@@ -305,6 +321,8 @@ export class SimpleRenderer {
   private applyViewportSize(): void {
     const width = window.innerWidth;
     const height = window.innerHeight;
+    this.lastAppliedWidth = width;
+    this.lastAppliedHeight = height;
 
     // Re-derive the pixel-budget ceiling for the new viewport; keep the
     // adaptive scale the controller has settled on.

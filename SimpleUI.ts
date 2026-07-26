@@ -132,8 +132,11 @@ export class SimpleUI {
     btn.title = 'Customize appearance (C)';
     Object.assign(btn.style, {
       position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 160px)',
-      right: 'calc(var(--sar, 0px) + 10px)',
+      // Icon row (see createMuteButton): 🎨 ♿ 🔊 sit side by side so the wide
+      // "📖 Portfolio" pill below them has a clear row of its own. They used to
+      // stack vertically at the same right edge and the pill covered them.
+      top: 'calc(var(--sat, 0px) + 88px)',
+      right: 'calc(var(--sar, 0px) + 102px)',
       background: 'rgba(0, 0, 0, 0.55)',
       padding: '7px 11px',
       borderRadius: '10px',
@@ -156,8 +159,8 @@ export class SimpleUI {
     btn.title = 'Reduced motion — dampens the fly-in, camera swoop, and pulsing effects';
     Object.assign(btn.style, {
       position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 124px)',
-      right: 'calc(var(--sar, 0px) + 10px)',
+      top: 'calc(var(--sat, 0px) + 88px)',
+      right: 'calc(var(--sar, 0px) + 56px)', // 46px pitch; the buttons are 43px wide
       padding: '7px 11px',
       borderRadius: '10px',
       fontSize: '15px',
@@ -192,7 +195,9 @@ export class SimpleUI {
     btn.textContent = '📖 Portfolio';
     Object.assign(btn.style, {
       position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 118px)',
+      // Own row, clear of the 🎨 ♿ 🔊 icon row above (which sits at +88).
+      // This pill is wide and was overlapping them at +118.
+      top: 'calc(var(--sat, 0px) + 126px)',
       right: 'calc(var(--sar, 0px) + 10px)',
       background: 'linear-gradient(135deg, #5b6cff, #8a4de0)',
       color: 'white',
@@ -444,22 +449,75 @@ export class SimpleUI {
       this.overlay.appendChild(this.loadingDiv);
     }
 
-    this.loadingDiv.innerHTML = `
-      <div style="font-size: 24px; margin-bottom: 14px;">🌎 Loading DigiScalability Life Island</div>
-      <div style="width: 220px; height: 18px; background: #223; border-radius: 10px; margin-bottom: 10px;">
-        <div style="width: ${progress}%; height: 100%; background: #4CAF50; border-radius: 10px; transition: width 0.3s;"></div>
-      </div>
-      <div style="color:#9ab;">${progress}%</div>
-    `;
+    // Built ONCE. Re-writing innerHTML on every progress call (as before) threw
+    // away the bar's CSS transition each time, so it jumped instead of filling.
+    if (!this.loadingBar) {
+      this.loadingDiv.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;max-width:320px;padding:0 24px;">
+          <div id="ld-planet" style="width:76px;height:76px;border-radius:50%;
+               background:radial-gradient(circle at 34% 30%, #7fc96b 0 38%, #4e9e57 38% 52%, #2f7fbf 52% 100%);
+               box-shadow:0 0 34px rgba(80,170,220,0.45), inset -8px -10px 20px rgba(0,0,0,0.45);
+               margin-bottom:20px;"></div>
+          <div style="font-family:'Bebas Neue',system-ui,sans-serif;font-size:25px;letter-spacing:1.5px;">
+            DIGISCALABILITY LIFE ISLAND</div>
+          <div id="ld-msg" style="color:#8fa6bd;font-size:12.5px;margin:8px 0 16px;min-height:16px;"></div>
+          <div style="width:230px;height:7px;background:rgba(255,255,255,0.12);border-radius:6px;overflow:hidden;">
+            <div id="ld-bar" style="width:0%;height:100%;border-radius:6px;
+                 background:linear-gradient(90deg,#4CAF50,#7fd18b);transition:width 0.35s ease;"></div>
+          </div>
+          <div id="ld-pct" style="color:#6e8298;font-size:11px;margin-top:8px;">0%</div>
+        </div>`;
+      this.loadingBar = this.loadingDiv.querySelector('#ld-bar');
+      this.loadingPct = this.loadingDiv.querySelector('#ld-pct');
+      this.loadingMsg = this.loadingDiv.querySelector('#ld-msg');
+      // World generation is a single long synchronous stretch with no progress
+      // events inside it, so a bar pinned to real milestones sits dead for
+      // ~15s and reads as a hang. This eases toward the target and, once
+      // caught up, creeps a little further so it always looks alive.
+      this.loadingTimer = window.setInterval(() => {
+        const ceiling = Math.min(this.loadingTarget + 7, 99);
+        this.loadingShown += (ceiling - this.loadingShown) * 0.06;
+        if (this.loadingBar) this.loadingBar.style.width = `${this.loadingShown.toFixed(1)}%`;
+        if (this.loadingPct) this.loadingPct.textContent = `${Math.round(this.loadingShown)}%`;
+      }, 120);
+    }
+    this.loadingTarget = Math.max(this.loadingTarget, Math.max(0, Math.min(100, progress)));
+    if (this.loadingMsg) {
+      const msg =
+        this.loadingTarget < 55 ? 'Waking the island…'
+        : this.loadingTarget < 90 ? 'Raising the mountains and filling the sea…'
+        : this.loadingTarget < 100 ? 'Planting trees and lighting the lamps…'
+        : 'Ready';
+      this.loadingMsg.textContent = msg;
+    }
+    if (this.loadingTarget >= 100) {
+      this.loadingShown = 100;
+      if (this.loadingBar) this.loadingBar.style.width = '100%';
+      if (this.loadingPct) this.loadingPct.textContent = '100%';
+    }
   }
+
+  private loadingBar: HTMLElement | null = null;
+  private loadingPct: HTMLElement | null = null;
+  private loadingMsg: HTMLElement | null = null;
+  private loadingTarget = 0;
+  private loadingShown = 0;
+  private loadingTimer = 0;
 
   /**
    * Hide loading screen (fades the backdrop out over the arriving scene)
    */
   hideLoading(): void {
+    if (this.loadingTimer) {
+      clearInterval(this.loadingTimer);
+      this.loadingTimer = 0;
+    }
     if (this.loadingDiv) {
       const el = this.loadingDiv;
       this.loadingDiv = null;
+      this.loadingBar = null;
+      this.loadingPct = null;
+      this.loadingMsg = null;
       el.style.opacity = '0';
       window.setTimeout(() => el.remove(), 500);
     }
