@@ -234,9 +234,14 @@ export class Island {
     // carries the hue and this gradient only shades base→tip.
     const baseC = new THREE.Color(0xb2b2b2);
     const tipC = new THREE.Color(0xffffff);
-    const BLADE_H = 0.26;
-    const BASE_W = 0.058;
-    const TIP_W = 0.019; // > 0: a flat tip is what removes the spike
+    // Carpet, not spikes. The giveaway of a spike is the ASPECT RATIO: at
+    // 0.116 wide by 0.26 tall each blade was ~1:2.2 and read as its own
+    // object. Halving the height while keeping the width takes it to ~1:1.3 —
+    // a low tuft. Density (see COUNT below) does the rest: carpet is a
+    // property of the crowd, not of one blade.
+    const BLADE_H = 0.13;
+    const BASE_W = 0.05;
+    const TIP_W = 0.028; // blunt and wide — a rounded tuft, not a needle
     const addBlade = (rotY: number) => {
       const c = Math.cos(rotY);
       const s = Math.sin(rotY);
@@ -277,7 +282,9 @@ export class Island {
             // Normalised by BLADE_H so the tip bends by the full amount and
             // the base stays planted — keep this divisor in step with the
             // blade height above, or the sway scales wrong.
-            `  transformed.x += gBend * 0.062 * (position.y / ${BLADE_H});`,
+            // Gentler now the blades are half as tall — a short tuft that
+            // swings as far as a long blade did just looks like it's twitching.
+            `  transformed.x += gBend * 0.026 * (position.y / ${BLADE_H});`,
             '#endif',
           ].join('\n'),
         );
@@ -289,7 +296,11 @@ export class Island {
     const coarse =
       typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
     const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
-    const COUNT = coarse || lowCore ? 3000 : 6000;
+    // Density is what makes it read as carpet rather than scattered objects.
+    // Tripled now that each blade is half the height — 18000 x 4 tris = 72k,
+    // still one draw call, and the blades are small enough that the extra
+    // vertex work is cheap. Phones keep a lower count.
+    const COUNT = coarse || lowCore ? 7000 : 18000;
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -326,7 +337,9 @@ export class Island {
       // stays fixed — no index bookkeeping); below the shoreline they
       // collapse too so the beach stays sandy-clean
       const belowShore = dir.y < Math.sin(0.26);
-      const sc = this.isNearStreet(dir) || belowShore ? 0.0001 : 0.7 + Math.random() * 0.7;
+      // Tighter spread than the old 0.7-1.4: with carpet you want an even
+      // pile, not a few blades towering over their neighbours.
+      const sc = this.isNearStreet(dir) || belowShore ? 0.0001 : 0.85 + Math.random() * 0.4;
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
       grass.setMatrixAt(i, dummy.matrix);
