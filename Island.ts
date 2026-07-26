@@ -98,6 +98,13 @@ export class Island {
   // Analytic terrain height, captured from createIsland so the sea mesh can
   // bake per-vertex water depth without 9k raycasts.
   private terrainRadiusFor!: (normal: THREE.Vector3, v: THREE.Vector3) => number;
+  // Summit-trail lookup (w: 1 on the path centreline → 0 at its edge; t: 0 at
+  // the summit → 1 at the base). Shared with the colour pass, grass, and trees
+  // so they can dirt-tint the path and keep vegetation off it.
+  private trailAt!: (normal: THREE.Vector3) => { w: number; t: number };
+  public trailSummitDir?: THREE.Vector3;
+  // Rotated/bobbed by GameScene each frame — the pizzazz for reaching the top.
+  public summitBeacon?: THREE.Object3D;
   // Radial water-surface offset above the base radius (matches the sea mesh).
   // Land sits >= base+0.3 (continent mask floor); the calm surface at +0.1
   // with wave crests to +0.25 stays just under the beach so waves lap the
@@ -347,8 +354,10 @@ export class Island {
       // normal can't be trusted.
       const slopeCos = sampled.normal.dot(dir);
       const tooSteep = slopeCos < 0.86; // ~31 degrees
+      // Keep the blades off the summit dirt track so it reads as bare earth.
+      const onTrail = this.trailAt ? this.trailAt(dir).w > 0.4 : false;
       const sc =
-        this.isNearStreet(dir) || belowShore || tooSteep
+        this.isNearStreet(dir) || belowShore || tooSteep || onTrail
           ? 0.0001
           : 0.85 + Math.random() * 0.4;
       dummy.scale.set(sc, sc, sc);
@@ -421,9 +430,10 @@ export class Island {
     // summits; the spacing (~0.2 rad) still overlaps their skirts enough to
     // read as a connected ridge rather than three isolated cones.
     const PEAKS = [
-      { dir: this.dirAt(5.12, 0.73), height: 4.0, reach: 0.155 },
-      { dir: this.dirAt(5.35, 0.79), height: 6.2, reach: 0.185 },
-      { dir: this.dirAt(5.58, 0.72), height: 3.5, reach: 0.145 },
+      { dir: this.dirAt(5.12, 0.73), height: 4.6, reach: 0.16 },
+      { dir: this.dirAt(5.35, 0.79), height: 7.3, reach: 0.245 }, // main summit — wider base leaves room for both trail and craggy faces
+      { dir: this.dirAt(5.58, 0.72), height: 4.2, reach: 0.155 },
+      { dir: this.dirAt(4.95, 0.67), height: 2.7, reach: 0.12 }, // foothill, extends the range
     ];
 
     // ── Summit trail ──────────────────────────────────────────────────────
@@ -432,37 +442,75 @@ export class Island {
     // terrain, not a decal: within a band around the spiral the crag noise is
     // suppressed and the surface is cut slightly, which produces a genuinely
     // flatter ramp the player's grounding sampler follows for free.
+    // Post-mortem of the first attempt, so it isn't repeated: the band was
+    // ~1.2 units wide on a mesh with ~1.08 units BETWEEN VERTICES — the
+    // terrain could not represent it, so it was invisible and the "ramp"
+    // never materialised underfoot. This version works WITH the resolution:
+    //   • band ~2.2 units half-width (spans several vertices),
+    //   • few turns (1.45) so loop spacing (~3 units) exceeds the band,
+    //   • the ramp height is an EXPLICIT monotonic profile of distance-to-
+    //     summit — not the peak's falloff curve — so the climb is gentle by
+    //     construction,
+    //   • reach extends past the flank onto the meadow, so the path begins
+    //     on walkable grass instead of materialising mid-cliff.
     const trailPeak = PEAKS[1];
     const trailUp = trailPeak.dir.clone();
     const trailA = new THREE.Vector3(0, 1, 0).cross(trailUp);
     if (trailA.lengthSq() < 1e-8) trailA.set(1, 0, 0);
     trailA.normalize();
     const trailB = new THREE.Vector3().crossVectors(trailUp, trailA).normalize();
-    const TRAIL_REACH = trailPeak.reach * 1.05; // trail spans the whole flank
-    // More turns = a longer, shallower climb. But turn SPACING must stay wider
-    // than the trail itself or adjacent loops merge and flatten the whole peak
-    // into a cone: spacing here is REACH/TURNS ~= 0.058 rad ~= 1.3 world units,
-    // against a trail half-width of ~1.2 (see trailAt), which keeps them
-    // distinct while roughly halving the gradient.
-    const TRAIL_TURNS = 3.35;
+    const TRAIL_REACH = 0.3; // rad — starts on the meadow below the flank
+    // ONE wrap, not several. The hard constraint is mesh resolution: the band
+    // must be several units wide for vertices to actually fall in its full
+    // core (~1.08u vertex spacing), or the terrain never samples the ramp and
+    // stays as steep as the rock. A wide band forces few turns so adjacent
+    // loops don't merge into a cone — 1.1 turns gives ~6u loop spacing against
+    // a ~3.5u trail width. It's a single helical ramp rather than tight
+    // switchbacks, but it's actually walkable, which the switchbacks never were.
+    const TRAIL_TURNS = 1.1;
     const _tProj = new THREE.Vector3();
-    /** 1 on the trail centreline, falling to 0 at its edge. */
-    const trailAt = (normal: THREE.Vector3): number => {
+    const trailInfo = { w: 0, t: 1 }; // w: 1 on centreline→0 at edge; t: 0 summit→1 base
+    const trailAt = (normal: THREE.Vector3): { w: number; t: number } => {
       const ang = Math.acos(THREE.MathUtils.clamp(normal.dot(trailUp), -1, 1));
-      if (ang > TRAIL_REACH || ang < 1e-4) return ang <= 1e-4 ? 1 : 0;
+      trailInfo.w = 0;
+      trailInfo.t = 1;
+      if (ang > TRAIL_REACH) return trailInfo;
+      trailInfo.t = ang / TRAIL_REACH;
+      if (ang < 1e-4) {
+        trailInfo.w = 1;
+        trailInfo.t = 0;
+        return trailInfo; // summit plateau: the loops converge into a landing
+      }
       _tProj.copy(normal).addScaledVector(trailUp, -normal.dot(trailUp));
-      if (_tProj.lengthSq() < 1e-9) return 1;
+      if (_tProj.lengthSq() < 1e-9) {
+        trailInfo.w = 1;
+        return trailInfo;
+      }
       _tProj.normalize();
       const bearing = Math.atan2(_tProj.dot(trailB), _tProj.dot(trailA));
-      // Where the spiral should be at this distance from the summit
-      const wanted = (ang / TRAIL_REACH) * TRAIL_TURNS * Math.PI * 2;
+      const wanted = trailInfo.t * TRAIL_TURNS * Math.PI * 2;
       let d = bearing - wanted;
       d = Math.atan2(Math.sin(d), Math.cos(d)); // wrap to -PI..PI
-      // Convert the bearing error to a real lateral distance on the ground,
-      // so the path keeps a constant width instead of fanning out near the base
+      // Bearing error → real lateral distance, so the band keeps a constant
+      // width instead of fanning out near the base
       const lateral = this.radius * ang * Math.abs(d);
-      return 1 - THREE.MathUtils.smoothstep(lateral, 0.45, 1.2);
+      // Full-strength core out to 1.7u (~3 vertices across, so the mesh can
+      // represent the ramp) then a SHARP fade to 2.5u, so the rock returns
+      // quickly off the path and the flanks between loops stay craggy instead
+      // of the whole peak going smooth.
+      trailInfo.w = 1 - THREE.MathUtils.smoothstep(lateral, 1.7, 2.5);
+      return trailInfo;
     };
+    // Stashed so the colour pass, the grass scatter, and the tree loop can
+    // all keep their content aligned with (or off) the path.
+    this.trailAt = trailAt;
+    this.trailSummitDir = trailUp.clone();
+    // Explicit ramp endpoints (radial units above the base sphere). The path
+    // interpolates between these as trailT goes base→summit, so the climb is
+    // gentle BY CONSTRUCTION rather than inheriting the peak's steep falloff.
+    // A landing just under the tip leaves a rim to stand a summit marker on.
+    const TRAIL_SUMMIT_H = 0.75 + trailPeak.height * 0.94;
+    const TRAIL_BASE_H = 1.0;
     const highlandAt = (normal: THREE.Vector3): number => {
       let boost = 0;
       for (const p of PEAKS) {
@@ -536,27 +584,32 @@ export class Island {
       // wavelength — a gentle swell, which is exactly why the peaks read as
       // smooth domes rather than rock.
       const highland = highlandAt(normal);
+      // Trail works over its FULL reach — NOT gated behind `highland`. The
+      // previous version gated it, so the carve died on the lower flank
+      // exactly where the climb begins and the path was never walkable.
+      const tr = trailAt(normal);
+      const trailW = tr.w;
       let crag = 0;
-      let trail = 0;
       if (highland > 0.05) {
         const ridged = 1 - Math.abs(noise3D(v.x, v.y, v.z, 2.2)); // ~2.9u crags
         const coarse = 1 - Math.abs(noise3D(v.x, v.y, v.z, 0.9)); // ~7u buttresses
         crag = (ridged * 0.62 + coarse * 0.38) * highland * 0.5;
-        // Smooth the rock away along the trail and cut a shallow shelf, so
-        // the ramp reads as a worn path and is gentle enough to walk.
-        trail = trailAt(normal);
-        crag *= 1 - trail * 0.96;
+        crag *= 1 - trailW * 0.98; // the path is smooth rock, not crag
       }
-      // Land floor raised 0.3 -> 0.75 so the ocean's crests + tide (max ~0.55
-      // above the base sphere) can never break through the beach.
-      // On the trail, blend the ground toward a SMOOTH reference instead of
-      // merely damping the crag. `highland` is the peak's smooth falloff, so
-      // (floor + highland) is a clean ramp with none of the noise wobble that
-      // was still making the path undulate underfoot; the -0.3 keeps it cut
-      // below the rock either side so it reads as a worn ledge.
+      // Land floor raised 0.3 -> 0.75 so the ocean's crests + tide can't break
+      // through the beach.
       const rock = Math.max(noiseDisp, 0.75) + highland + crag;
-      const ramp = 0.75 + highland - 0.3;
-      const landDisp = rock * (1 - trail) + ramp * trail;
+      let landDisp = rock;
+      if (trailW > 0.001) {
+        // EXPLICIT monotonic ramp: height falls smoothly from a summit landing
+        // to the meadow as trailT goes 0->1. Because the spiral's arc length
+        // per unit radial angle is long (the switchbacks), a height near-linear
+        // in radial angle yields a gentle grade along the actual walk.
+        const climb = 1 - tr.t;
+        const eased = climb * climb * (3 - 2 * climb); // soften the top/bottom joins
+        const rampH = TRAIL_BASE_H + (TRAIL_SUMMIT_H - TRAIL_BASE_H) * eased;
+        landDisp = rock * (1 - trailW) + rampH * trailW;
+      }
       const oceanDisp = -2.4 + noiseDisp * 0.15; // gently rolling seafloor
       const displacement = oceanDisp + (landDisp - oceanDisp) * mask;
 
@@ -566,7 +619,10 @@ export class Island {
       // Headroom for the highland range (base floor 0.75 + peak 3.3 + crag
       // ~1.65). At +4.2 the peaks clipped flat into a pale mesa. Keep this
       // BELOW the sampler's maxDisp or raycasts start inside the summits.
-      const maxRadius = this.radius + 7.5;
+      // Headroom for the taller range: main peak 7.3 + floor 0.75 + crag ~0.8
+      // ≈ 8.85. Kept below the sampler's ray start (radius + maxDisp 11), or
+      // raycasts begin inside the summit and miss it.
+      const maxRadius = this.radius + 9.2;
       return THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
     };
     this.terrainRadiusFor = terrainRadiusFor;
@@ -605,6 +661,7 @@ export class Island {
       const peak = new THREE.Color(0xc8cca0);
       const rock = new THREE.Color(0x8d8878);
       const snow = new THREE.Color(0xf2f6fa);
+      const dirt = new THREE.Color(0x9a7550); // the worn summit path
       const tmp = new THREE.Color();
       const vDir = new THREE.Vector3();
       const vNrm = new THREE.Vector3();
@@ -631,7 +688,7 @@ export class Island {
       // highland range. With no range present it lands above the tallest
       // vertex, so no snow appears at all.
       const maxAbove = aboveList.length ? aboveList[aboveList.length - 1] : 1;
-      const snowLine = Math.max(landTop * 1.55, maxAbove * 0.5);
+      const snowLine = Math.max(landTop * 1.55, maxAbove * 0.42);
       for (let i = 0; i < posA.count; i++) {
         vDir.set(posA.getX(i), posA.getY(i), posA.getZ(i));
         const r = vDir.length() || 1;
@@ -665,10 +722,16 @@ export class Island {
         // Snow line on the highland peaks. Gated on elevation AND flatness so
         // it settles on summits and shelves but not on sheer rock faces.
         if (above > snowLine) {
-          const alt = THREE.MathUtils.clamp((above - snowLine) / Math.max(0.4, snowLine * 0.5), 0, 1);
-          const settles = 1 - THREE.MathUtils.smoothstep(slope, 0.4, 0.8);
-          tmp.lerp(snow, alt * (0.35 + 0.65 * settles));
+          const alt = THREE.MathUtils.clamp((above - snowLine) / Math.max(0.4, snowLine * 0.45), 0, 1);
+          const settles = 1 - THREE.MathUtils.smoothstep(slope, 0.42, 0.85);
+          tmp.lerp(snow, alt * (0.45 + 0.55 * settles));
         }
+
+        // Dirt path: tint the summit trail so the switchback reads as a worn
+        // track cut through the rock and snow. Drawn AFTER snow so the path
+        // stays bare earth even up in the snowfield.
+        const tw = this.trailAt(vDir).w;
+        if (tw > 0.01) tmp.lerp(dirt, tw * 0.9);
 
         // deterministic jitter from vertex index (no Math.random -> stable)
         const j = 1 + (((i * 2654435761) % 1000) / 1000 - 0.5) * 0.09;
@@ -2083,11 +2146,110 @@ export class Island {
       /* swallow errors */
     });
 
+    // Reward for the climb: a monument on the summit (built after the terrain
+    // exists so it seats on the real height).
+    const summit = this.createSummitMarker();
+    if (summit) root.add(summit);
+
     // (The old equator ring road + its decal conversion are gone — the
     // street network is built entirely from createStreetPath segments.)
 
     // Return the group as a Mesh-typed value to keep compatibility with existing code
     return root as unknown as THREE.Mesh;
+  }
+
+  /**
+   * Summit monument at the top of the trail: a stone landing, a cairn, a flag,
+   * and a glowing beacon crystal (strong emissive → the bloom pass gives it a
+   * halo visible from across the island, so the peak reads as a destination).
+   */
+  private createSummitMarker(): THREE.Group | null {
+    if (!this.trailSummitDir) return null;
+    const dir = this.trailSummitDir.clone().normalize();
+    const surf = this.sampleSurfaceByDirection(dir, 0);
+    const g = new THREE.Group();
+    g.name = 'summit_marker';
+    g.position.copy(dir).multiplyScalar(surf.position.length() - 0.15);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), surf.normal);
+    (g.userData as Record<string, unknown>).ignoreOcclusion = true;
+
+    // Stone landing
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x9198a1, roughness: 0.92 });
+    const plat = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.4, 0.3, 14), stoneMat);
+    plat.position.y = 0.15;
+    plat.castShadow = true;
+    plat.receiveShadow = true;
+    g.add(plat);
+
+    // Cairn — a little stack of rocks off to one side
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x767b83, roughness: 0.95 });
+    let cy = 0.5;
+    let rIdx = 0;
+    for (const rr of [0.42, 0.32, 0.22, 0.14]) {
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(rr, 0), rockMat);
+      rock.position.set(1.0, cy, 0.55);
+      rock.rotation.set(rIdx * 1.1, rIdx * 2.3, rIdx);
+      rock.castShadow = true;
+      g.add(rock);
+      cy += rr * 1.4;
+      rIdx++;
+    }
+
+    // Flagpole + pennant
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.045, 0.06, 3.4, 8),
+      new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 0.7 }),
+    );
+    pole.position.set(-0.6, 1.9, -0.3);
+    pole.castShadow = true;
+    g.add(pole);
+    const flagMat = new THREE.MeshStandardMaterial({
+      color: 0x4caf50,
+      emissive: 0x1c5a22,
+      emissiveIntensity: 0.35,
+      side: THREE.DoubleSide,
+      roughness: 0.6,
+    });
+    const flagGeo = new THREE.BufferGeometry();
+    // Triangular pennant off the top of the pole (+X), in the local XY plane
+    flagGeo.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([0, 3.4, 0, 1.25, 3.15, 0, 0, 2.75, 0], 3),
+    );
+    flagGeo.computeVertexNormals();
+    const flag = new THREE.Mesh(flagGeo, flagMat);
+    flag.position.set(-0.6, 0, -0.3);
+    g.add(flag);
+
+    // Beacon crystal — the glow. Very high emissive so the bloom halo carries.
+    const beacon = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.42, 0),
+      new THREE.MeshStandardMaterial({
+        color: 0xfff0b0,
+        emissive: 0xffcc44,
+        emissiveIntensity: 2.2,
+        metalness: 0.3,
+        roughness: 0.15,
+      }),
+    );
+    beacon.position.set(0, 1.35, 0);
+    beacon.name = 'summit_beacon';
+    g.add(beacon);
+    // A halo ring around it for extra sparkle
+    const halo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.62, 0.045, 8, 24),
+      new THREE.MeshStandardMaterial({
+        color: 0xffe680,
+        emissive: 0xffd24a,
+        emissiveIntensity: 1.6,
+      }),
+    );
+    halo.rotation.x = Math.PI / 2;
+    beacon.add(halo);
+    this.summitBeacon = beacon;
+
+    console.log(`⛰️ Summit monument placed at ${(surf.position.length() - this.seaLevel()).toFixed(1)}u above sea`);
+    return g;
   }
 
   /**
@@ -3571,7 +3733,7 @@ export class Island {
         // createIsland), or the ray STARTS INSIDE a peak and misses it — the
         // sampler then silently returns a fallback, which broke placement,
         // NPC walking and grounding shadows on the highland summits.
-        const maxDisp = 9;
+        const maxDisp = 11;
         const startPos = this.center.clone().add(dir.clone().multiplyScalar(this.radius + maxDisp + 1));
         const inwardDir = this.center.clone().sub(startPos).normalize();
         const raycaster = new THREE.Raycaster(startPos, inwardDir, 0, maxDisp + 3 + this.radius);

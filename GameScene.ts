@@ -3282,6 +3282,11 @@ export class GameScene extends THREE.Scene {
     // Sea waves (GPU-side + shared with the CPU swim/boat sampler) + the tide
     this.island.seaTimeUniform.value = time;
     this.island.updateTide(time);
+    // Summit beacon: slow spin + gentle bob so the reward reads as alive
+    if (this.island.summitBeacon) {
+      this.island.summitBeacon.rotation.y = time * 0.7;
+      this.island.summitBeacon.position.y = 1.35 + Math.sin(time * 1.6) * 0.12;
+    }
     this.updateVehicles(deltaTime);
     this.races?.update(deltaTime, this.player.getWorldPosition(), this.getActiveVehicleKind());
     this.updateWaterFX(deltaTime);
