@@ -116,7 +116,14 @@ export class SimpleUI {
       background: 'rgba(12,12,20,0.92)', color: '#fff', outline: '2px solid rgba(120,170,255,0.9)',
       pointerEvents: 'auto', zIndex: '1700',
     });
-    const close = () => { input.remove(); this.chatInput = null; };
+    const close = () => {
+      // Idempotent: removing the focused input fires `blur`, whose handler also
+      // calls close() — guard so the second call doesn't double-remove (which
+      // throws NotFoundError). Null the ref first, then detach.
+      if (this.chatInput !== input) return;
+      this.chatInput = null;
+      input.remove();
+    };
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
       if (e.key === 'Enter') { const t = input.value; close(); if (t.trim()) this.onChatSend?.(t); }
