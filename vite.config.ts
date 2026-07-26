@@ -65,6 +65,15 @@ export default defineConfig({
     target: 'es2020',
     chunkSizeWarningLimit: 1000,
   },
+  // Drop dev-only console noise from the PRODUCTION bundle. `pure` marks these
+  // calls as side-effect-free so the minifier removes them during `vite build`,
+  // but leaves them intact in `vite dev` (esbuild only applies pure-elision when
+  // minifying). console.warn / console.error are deliberately kept — the boot
+  // watchdog and error telemetry in index.html rely on them.
+  esbuild: {
+    pure: ['console.log', 'console.debug', 'console.info', 'console.trace'],
+    drop: ['debugger'],
+  },
   // Development optimizations
   optimizeDeps: {
     include: ['three'], // Pre-bundle dependencies for faster dev server

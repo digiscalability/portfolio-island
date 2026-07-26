@@ -1,5 +1,3 @@
-import { getFirebaseRealtime } from './firebaseClient';
-
 /**
  * Cloud-backed player profile.
  *
@@ -24,6 +22,9 @@ let pending: Profile = {};
 /** Read the stored profile for this visitor (null if none / offline). */
 export async function loadProfile(): Promise<{ profile: Profile | null; uid: string } | null> {
   try {
+    // Dynamic import keeps the ~76KB-gzipped Firebase chunk off the critical
+    // path — it loads only when a profile is actually read/written, not at boot.
+    const { getFirebaseRealtime } = await import('./firebaseClient');
     const { db, uid } = await getFirebaseRealtime();
     const { ref, get } = await import('firebase/database');
     const snap = await get(ref(db, `profiles/${uid}`));
@@ -42,6 +43,7 @@ export function saveProfile(patch: Profile): void {
     pending = {};
     void (async () => {
       try {
+        const { getFirebaseRealtime } = await import('./firebaseClient');
         const { db, uid } = await getFirebaseRealtime();
         const { ref, update } = await import('firebase/database');
         await update(ref(db, `profiles/${uid}`), { ...data, t: Date.now() });
