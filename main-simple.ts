@@ -1,5 +1,6 @@
 import { a11y } from './Accessibility';
 import { trackOnce } from './Analytics';
+import { Chat } from './Chat';
 import { DeliverySystem } from './DeliverySystem';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
@@ -34,6 +35,7 @@ class SimpleApp {
   private deliverySystem!: DeliverySystem;
   private npcQuests!: NpcQuestSystem;
   private multiplayer: Multiplayer | null = null;
+  private chat?: Chat;
   private isRunning: boolean = false;
 
   // Island shop (hat cosmetics, paid with meadow coins)
@@ -72,6 +74,8 @@ class SimpleApp {
   private boundHandlers: {
     beforeUnload?: () => void;
     debugKeydown?: (event: KeyboardEvent) => void;
+    chatKeydown?: (event: KeyboardEvent) => void;
+    chatKeyup?: (event: KeyboardEvent) => void;
   } = {};
 
   constructor() {
@@ -204,6 +208,16 @@ class SimpleApp {
       this.multiplayer.onCount((count) => this.ui.updatePlayerCount(count));
       this.multiplayer.setHat((this.equippedHat as HatId) ?? null);
 
+      // Proximity chat: text bubbles + push-to-talk voice between nearby
+      // visitors. Wired to the mobile chat/mic HUD buttons and to
+      // Enter/V(oice) on desktop (see setupDebugShortcuts-adjacent binding
+      // below, near the input manager setup).
+      this.chat = new Chat(this.multiplayer);
+      this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
+      this.ui.setOnChatSend((text) => this.chat?.sendText(text));
+      this.ui.setOnMicDown(() => void this.chat?.startRecording());
+      this.ui.setOnMicUp(() => this.chat?.stopRecording());
+
       // Setup NPC interaction callback (quest dialogue wins when relevant)
       this.scene.setOnNPCInteract((npcData) => {
         console.log(`💬 Talking to: ${npcData.name}`);
@@ -302,6 +316,23 @@ class SimpleApp {
       this.inputManager = new SimpleInputManager();
       this.inputManager.attachToCanvas(canvas);
       console.log('✓ Input manager created');
+
+      // Chat keybindings: Enter opens the text input; V is push-to-talk
+      // voice (no existing hotkey uses V — checked SimpleInputManager and
+      // this file's debug shortcuts, which use C and Ctrl+B). Bound on
+      // window rather than through SimpleInputManager so the chat input's
+      // own keydown handler (which calls stopPropagation) can fully own
+      // the keyboard while it's focused.
+      this.boundHandlers.chatKeydown = (e: KeyboardEvent) => {
+        if (this.ui.isChatInputOpen()) return; // the input owns the keyboard while typing
+        if (e.key === 'Enter') { this.ui.openChatInput(); return; }
+        if ((e.key === 'v' || e.key === 'V') && !e.repeat) { void this.chat?.startRecording(); }
+      };
+      this.boundHandlers.chatKeyup = (e: KeyboardEvent) => {
+        if (e.key === 'v' || e.key === 'V') this.chat?.stopRecording();
+      };
+      window.addEventListener('keydown', this.boundHandlers.chatKeydown);
+      window.addEventListener('keyup', this.boundHandlers.chatKeyup);
 
       // Setup cleanup on page unload
       this.boundHandlers.beforeUnload = () => this.dispose();
@@ -733,6 +764,7 @@ class SimpleApp {
     // colour) and a car they park stays there for anyone to drive.
     this.multiplayer?.setVehicle(this.scene.getActiveVehicleState());
     this.multiplayer?.update(deltaTime);
+    this.chat?.update(deltaTime);
     if (this.multiplayer) {
       this.scene.syncRemoteVehicles(this.multiplayer.getRemoteVehicleStates());
     }
@@ -1193,6 +1225,10 @@ class SimpleApp {
   private dispose(): void {
     console.log('🛑 Disposing resources...');
 
+    if (this.chat) {
+      this.chat.dispose();
+    }
+
     if (this.ui) {
       this.ui.dispose();
     }
@@ -1215,6 +1251,14 @@ class SimpleApp {
 
     if (this.boundHandlers.debugKeydown) {
       document.removeEventListener('keydown', this.boundHandlers.debugKeydown);
+    }
+
+    if (this.boundHandlers.chatKeydown) {
+      window.removeEventListener('keydown', this.boundHandlers.chatKeydown);
+    }
+
+    if (this.boundHandlers.chatKeyup) {
+      window.removeEventListener('keyup', this.boundHandlers.chatKeyup);
     }
 
     this.isRunning = false;

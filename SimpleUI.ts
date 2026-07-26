@@ -88,6 +88,46 @@ export class SimpleUI {
     return this.joyState;
   }
 
+  // ── Proximity chat ────────────────────────────────────────────────────
+
+  private chatInput: HTMLInputElement | null = null;
+  private onChatSend: ((text: string) => void) | null = null;
+  private onMicDown: (() => void) | null = null;
+  private onMicUp: (() => void) | null = null;
+
+  public isChatInputOpen(): boolean { return this.chatInput !== null; }
+  public setOnChatSend(cb: (text: string) => void): void { this.onChatSend = cb; }
+  public setOnMicDown(cb: () => void): void { this.onMicDown = cb; }
+  public setOnMicUp(cb: () => void): void { this.onMicUp = cb; }
+
+  /** Open the one-line chat input (Enter sends, Esc/blur cancels). */
+  public openChatInput(): void {
+    if (this.chatInput) { this.chatInput.focus(); return; }
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 120;
+    input.setAttribute('aria-label', 'Type a message to nearby players');
+    input.placeholder = 'Say something…';
+    Object.assign(input.style, {
+      position: 'absolute',
+      left: '50%', bottom: 'calc(var(--sab, 0px) + 96px)', transform: 'translateX(-50%)',
+      width: 'min(70vw, 420px)', padding: '10px 14px', borderRadius: '12px',
+      border: 'none', fontSize: '15px', fontFamily: 'system-ui, sans-serif',
+      background: 'rgba(12,12,20,0.92)', color: '#fff', outline: '2px solid rgba(120,170,255,0.9)',
+      pointerEvents: 'auto', zIndex: '50',
+    });
+    const close = () => { input.remove(); this.chatInput = null; };
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
+      if (e.key === 'Enter') { const t = input.value; close(); if (t.trim()) this.onChatSend?.(t); }
+      else if (e.key === 'Escape') close();
+    });
+    input.addEventListener('blur', close);
+    this.overlay.appendChild(input);
+    this.chatInput = input;
+    input.focus();
+  }
+
   /**
    * Make a styled HUD <div> behave like a real button for assistive tech and
    * keyboard users: announced with a label, focusable, and activated by Enter
@@ -447,6 +487,51 @@ export class SimpleUI {
     makeButton('👆', 'USE', '36px', 'KeyE', 'e', 'rgba(80,150,90,0.5)');
     makeButton('⤒', 'JUMP', '124px', 'Space', ' ', 'rgba(70,120,190,0.5)');
     makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', 'rgba(160,120,60,0.5)');
+
+    // Proximity chat: 💬 opens the text input, 🎤 is press-hold-to-talk.
+    // Stacked above the joystick (which spans bottom 26–136px here) so
+    // neither control overlaps it.
+    const chatBtn = document.createElement('div');
+    chatBtn.textContent = '💬';
+    Object.assign(chatBtn.style, {
+      position: 'absolute',
+      left: 'calc(var(--sal, 0px) + 26px)',
+      bottom: 'calc(var(--sab, 0px) + 152px)',
+      background: 'rgba(0,0,0,0.55)',
+      padding: '7px 11px',
+      borderRadius: '10px',
+      fontSize: '15px',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+    });
+    chatBtn.addEventListener('click', (e) => { e.stopPropagation(); this.openChatInput(); });
+    this.makeHudButtonAccessible(chatBtn, 'Open chat');
+    this.overlay.appendChild(chatBtn);
+
+    const micBtn = document.createElement('div');
+    micBtn.textContent = '🎤';
+    Object.assign(micBtn.style, {
+      position: 'absolute',
+      left: 'calc(var(--sal, 0px) + 26px)',
+      bottom: 'calc(var(--sab, 0px) + 198px)',
+      background: 'rgba(0,0,0,0.55)',
+      padding: '7px 11px',
+      borderRadius: '10px',
+      fontSize: '15px',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      touchAction: 'none',
+    });
+    const micDown = (e: Event) => { e.preventDefault(); this.onMicDown?.(); };
+    const micUp = (e: Event) => { e.preventDefault(); this.onMicUp?.(); };
+    micBtn.addEventListener('touchstart', micDown, { passive: false });
+    micBtn.addEventListener('touchend', micUp);
+    micBtn.addEventListener('mousedown', micDown);
+    micBtn.addEventListener('mouseup', micUp);
+    this.makeHudButtonAccessible(micBtn, 'Hold to talk to nearby players');
+    this.overlay.appendChild(micBtn);
   }
 
   /**
