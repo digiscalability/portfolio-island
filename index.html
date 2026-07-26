@@ -5,7 +5,9 @@
     <!-- Fonts matching the mood: bold display and hand-drawn dialogue -->
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap" rel="stylesheet">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <!-- iOS ignores SVG apple-touch-icons; needs a real PNG for home-screen. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="canonical" href="https://island.digiscalability.com/" />
     <!-- viewport-fit=cover: paint under notches (we inset the HUD via
          env(safe-area-*)). maximum-scale/user-scalable=no: a game canvas
