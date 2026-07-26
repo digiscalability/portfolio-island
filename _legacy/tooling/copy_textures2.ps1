@@ -1,3 +1,0 @@
-Copy-Item 'd:\GitHUB\Build Project Ready for Deployment\assetKits\Universal Base Characters[Standard]\Base Characters\Unreal Engine\T_Eye_Brown.png' 'd:\GitHUB\Build Project Ready for Deployment\assets\textures\'
-Copy-Item 'd:\GitHUB\Build Project Ready for Deployment\assetKits\Universal Base Characters[Standard]\Base Characters\Unreal Engine\T_Eye_Normal.png' 'd:\GitHUB\Build Project Ready for Deployment\assets\textures\'
-Copy-Item 'd:\GitHUB\Build Project Ready for Deployment\assetKits\Universal Base Characters[Standard]\Base Characters\Unreal Engine\T_Hair_1_BaseColor.png' 'd:\GitHUB\Build Project Ready for Deployment\assets\textures\'

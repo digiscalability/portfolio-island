@@ -4,7 +4,7 @@ This repo is part of a multi-venture operator setup. **Portfolio Island / "DigiS
 
 ## Live state (read this before anything else)
 
-Fetch via Notion MCP: {PASTE PORTFOLIO ISLAND STATE PAGE URL AFTER CREATING IT IN NOTION}
+Fetch via Notion MCP: _State page URL was never set up._ Until it is, skip step 1 and use `.claude/LOCAL-STATE.md` plus Claude's memory (`project_portfolio_island_revival.md`) for last-session context.
 
 Before answering my first prompt in any session:
 
@@ -32,20 +32,18 @@ When I arrive, assume I'm resuming. Never ask "what would you like to work on to
 
 ## Stack (don't ask)
 
-- **Runtime:** Three.js scene (island + interactive props + player movement)
-- **Language:** TypeScript (look at the scattered `.ts` files at repo root — Camera, Environment, Island, Lighting, InputManager, InteractionSystem, FeedbackSystem, Emoji, ChatSystem, AppointmentSystem)
-- **Backend:** Firebase (Auth, Firestore for feedback/appointments/chat)
-- **Deploy:** Firebase Hosting + Google Cloud VM for heavier workloads (see `GOOGLE-CLOUD-VM-SETUP.md`)
-- **MCP integrations:** Notion, Playwright (for visual testing — `.playwright-mcp/` has state screenshots)
-- **Dev env:** Codespaces-ready (`.codespaces.yml`, `.devcontainer/`)
+- **Runtime:** Three.js spherical-world scene — island planet, interactive props, orbit camera, player movement, real-time multiplayer.
+- **Language:** TypeScript. Live entry is `main-simple.ts`. The active stack is the `Simple*` + scene files at repo root — the two big ones are `GameScene.ts` (light rig, shadows, update loop, input glue) and `Island.ts` (terrain, sea shader, grass, trail); plus `SimpleUI.ts`, `SimplePlayer.ts`, `SimpleRenderer.ts`, `SimpleInputManager.ts`, `Multiplayer.ts`, `EnvironmentCycle.ts`, `RaceSystem.ts`, `DeliverySystem.ts`, `NpcQuests.ts`, `Accessibility.ts`, `Analytics.ts`, `Moderation.ts`. (The old scattered Camera/Environment/InputManager/etc. files are gone — they lived in `_legacy/`, now removed.)
+- **Backend:** Firebase — anonymous Auth + Realtime Database (RTDB) for multiplayer presence and cloud player profiles (`firebaseClient.ts`, `profileSync.ts`, `Multiplayer.ts`). Loaded **lazily**, off the startup critical path — keep it that way (import `firebaseClient` dynamically, never statically from an eager module). `functions/` holds Cloud Functions.
+- **Deploy:** Vercel — LIVE at island.digiscalability.com via `vercel --prod --yes`. Branch pushed to GitHub (`digiscalability/portfolio-island`). (Firebase Hosting / Google Cloud VM are no longer used.)
+- **Dev env:** `npm run dev` (Vite, pinned to port 5173). Windows: stop leaked servers by PID, never `pkill` (a no-op here).
 
 ## Recurring concerns (read before touching)
 
-- Memory leaks in Three.js scene — `MEMORY-LEAK-FIXES-APPLIED.md`
-- Critical gameplay fixes history — `CRITICAL-FIXES-COMPLETE.md`
-- Island prop / player interaction — `ISLAND-PROPS-PLAYER-FIXES.md`
-- Frontend fixes summary — `FRONTEND-FIXES-SUMMARY.md`
-- Environment system — `ENVIRONMENT-SYSTEM-GUIDE.md` (read before changing env logic)
+- **Terrain is a raycast/analytic hybrid.** `terrainRadiusFor` / `analyticSurface` are raycast-free and cheap (~0.003ms); `sampleSurfaceByDirection` raycasts the mesh (~1.24ms — expensive). Prefer analytic on hot/startup paths. Mesh is a 128×128 sphere (~1.08-unit vertex spacing): features narrower than that can't be resolved (the summit-trail width constraint).
+- **Sea shader.** Wave displacement is injected via `onBeforeCompile`; the CPU `waveHeightAt` MUST mirror the shader math exactly, and normals are perturbed analytically. `seaLevel()` / `isOverWater()` stay pinned to MEAN sea level — tide is visual-only.
+- **Three.js disposal.** Dispose geometries / materials / textures on teardown to avoid GPU leaks (there's a known LIVE-only dispose warning still being chased).
+- **`instanceColor` multiplies `vertexColor`** in three.js — the cause of the earlier near-black grass.
 
 ## What I hate (don't suggest)
 
@@ -56,7 +54,7 @@ When I arrive, assume I'm resuming. Never ask "what would you like to work on to
 
 ## Visual regression protocol
 
-Before claiming a visual fix worked, invoke Playwright MCP to capture a new screenshot of the affected state, compare against the named baseline in `.playwright-mcp/`, and attach the diff description. Don't trust "looks good in my head."
+Before claiming a visual fix worked, capture a fresh screenshot of the affected state with the in-app Browser preview tools (dev server on port 5173), verify against what the change intended, and describe what actually rendered. Don't trust "looks good in my head." (The old `.playwright-mcp/` baselines were archived to `_legacy/` and removed.)
 
 ## Cross-venture awareness
 
