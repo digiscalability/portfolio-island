@@ -284,9 +284,15 @@ export class GameScene extends THREE.Scene {
   private static readonly _localUp = new THREE.Vector3(0, 1, 0);
   private static readonly _localForward = new THREE.Vector3(0, 0, 1);
   private static readonly _localRight = new THREE.Vector3(1, 0, 0);
-  // Sea edge: watercraft can't drive south of this latitude (dir.y = sin lat)
-  // into the featureless open ocean — matches the swimmer's shoreline barrier.
-  private static readonly SEA_EDGE_Y = 0.05;
+  // Sea edge: watercraft can't sail south of this (dir.y = sin latitude) into
+  // the featureless far side of the planet.
+  //
+  // This was 0.05 — level with the equator — which combined with the shoreline
+  // (now as low as y≈0.14 where the coast bulges) left a navigable channel
+  // barely 2 units wide. Boats were effectively rail-bound. At -0.45 there is
+  // ~14 units of open water to roam and the island can be freely circled,
+  // while the empty south pole stays out of reach.
+  private static readonly SEA_EDGE_Y = -0.45;
   // Half-width of the sun's shadow box. Small = sharp shadows, but it must
   // still cover what the chase camera can see behind the player.
   private static readonly SHADOW_EXTENT = 17;

@@ -83,7 +83,11 @@ export class SimplePlayer extends THREE.Group {
   // Shoreline barrier: the island is the north cap, so `dir.y` (= sin latitude)
   // shrinks as you swim out to sea. Past this a current pushes you back so the
   // open ocean isn't a place to get lost forever.
-  private static readonly SWIM_LIMIT_Y = 0.05; // ~equator; land starts at y≈0.276
+  // Swimmers get a shorter leash than boats (drowning is a real risk out
+  // there), but 0.05 was only ~2 units of water once the irregular coastline
+  // dropped the shore to y≈0.14 in places — you were turned back almost at the
+  // beach. -0.08 gives room to actually swim offshore.
+  private static readonly SWIM_LIMIT_Y = -0.08;
   private static readonly _poleUp = new THREE.Vector3(0, 1, 0);
   private _swimTangent = new THREE.Vector3();
   private beyondSwimLimit = false; // true while the swim-back current is active
