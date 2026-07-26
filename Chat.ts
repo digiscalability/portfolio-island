@@ -126,7 +126,15 @@ export class Chat {
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.recChunks = [];
-      const mr = new MediaRecorder(this.micStream, { mimeType: 'audio/webm;codecs=opus' });
+      // Pin a low, speech-grade bitrate. Without this the browser default
+      // (~48–128 kbps) makes a full-length (VOICE_MAX_MS) clip 48–100KB, which
+      // blows past VOICE_MAX_BYTES and finishRecording silently drops it — so
+      // longer clips never relayed. 24 kbps × 8s ≈ 24KB, well under the cap, and
+      // opus at 24 kbps is clear for voice.
+      const mr = new MediaRecorder(this.micStream, {
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 24000,
+      });
       mr.ondataavailable = (e) => { if (e.data.size) this.recChunks.push(e.data); };
       mr.onstop = () => void this.finishRecording();
       this.mediaRecorder = mr;
