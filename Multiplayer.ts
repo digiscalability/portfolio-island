@@ -230,7 +230,7 @@ export class Multiplayer {
           .remove()
           .catch(() => {});
         void set(entryRef, {
-          id: this.selfId,
+          id: uid,
           text: msg.text ?? null,
           audio: msg.audio ?? null,
           dur: msg.dur ?? null,
@@ -288,7 +288,7 @@ export class Multiplayer {
       const path = kind === 'chat' ? 'chat/island' : 'voice/island';
       onChildAdded(ref(db, path), (snap) => {
         const val = snap.val();
-        if (!val || val.id === this.selfId) return;
+        if (!val || val.id === uid) return;
         this.handleMessage(
           JSON.stringify({
             kind,

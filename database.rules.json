@@ -22,7 +22,7 @@
       "island": {
         "$entry": {
           ".read": "auth != null",
-          ".write": "auth != null && (!data.exists() || data.child('id').val() === newData.child('id').val())",
+          ".write": "auth != null && newData.child('id').val() === auth.uid",
           "text": { ".validate": "newData.isString() && newData.val().length <= 120" },
           "id":   { ".validate": "newData.isString()" },
           "t":    { ".validate": "newData.isNumber()" }
@@ -33,7 +33,7 @@
       "island": {
         "$entry": {
           ".read": "auth != null",
-          ".write": "auth != null",
+          ".write": "auth != null && newData.child('id').val() === auth.uid",
           "audio": { ".validate": "newData.isString() && newData.val().length <= 60000" },
           "id":    { ".validate": "newData.isString()" },
           "t":     { ".validate": "newData.isNumber()" }

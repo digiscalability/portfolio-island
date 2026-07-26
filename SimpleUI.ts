@@ -94,11 +94,19 @@ export class SimpleUI {
   private onChatSend: ((text: string) => void) | null = null;
   private onMicDown: (() => void) | null = null;
   private onMicUp: (() => void) | null = null;
+  private micBtn: HTMLElement | null = null;
 
   public isChatInputOpen(): boolean { return this.chatInput !== null; }
   public setOnChatSend(cb: (text: string) => void): void { this.onChatSend = cb; }
   public setOnMicDown(cb: () => void): void { this.onMicDown = cb; }
   public setOnMicUp(cb: () => void): void { this.onMicUp = cb; }
+
+  /** Hide the mobile 🎤 button where voice can't work (e.g. iOS Safari, where
+   *  MediaRecorder doesn't support opus) — text chat still works there.
+   *  Defaults visible; call once Chat.voiceSupported is known. */
+  public setVoiceSupported(supported: boolean): void {
+    if (this.micBtn) this.micBtn.style.display = supported ? '' : 'none';
+  }
 
   /** Open the one-line chat input (Enter sends, Esc/blur cancels). */
   public openChatInput(): void {
@@ -520,6 +528,7 @@ export class SimpleUI {
     this.overlay.appendChild(chatBtn);
 
     const micBtn = document.createElement('div');
+    this.micBtn = micBtn;
     micBtn.textContent = '🎤';
     Object.assign(micBtn.style, {
       position: 'absolute',

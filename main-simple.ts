@@ -213,6 +213,7 @@ class SimpleApp {
       // Enter/V(oice) on desktop (see setupDebugShortcuts-adjacent binding
       // below, near the input manager setup).
       this.chat = new Chat(this.multiplayer);
+      this.ui.setVoiceSupported(this.chat.voiceSupported);
       this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
       this.ui.setOnMicDown(() => void this.chat?.startRecording());
