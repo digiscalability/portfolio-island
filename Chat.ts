@@ -52,6 +52,16 @@ export class Chat {
   private bubbles: Bubble[] = [];
   private muted = new Set<string>();
 
+  private mediaRecorder: MediaRecorder | null = null;
+  private recChunks: BlobPart[] = [];
+  private recStopTimer = 0;
+  private micStream: MediaStream | null = null;
+  private audioCtx: AudioContext | null = null;
+  public readonly voiceSupported =
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof MediaRecorder !== 'undefined';
+
   constructor(host: ChatHost) {
     this.host = host;
     try {
@@ -82,13 +92,105 @@ export class Chat {
       const avatar = this.host.getPeerAvatar(msg.id);
       if (avatar) this.showBubble(avatar, text);
     }
-    // voice handled in a later task
+    if (msg.kind === 'voice' && msg.audio) {
+      const dist = this.host.getSelfWorldPosition().distanceTo(peerPos);
+      void this.playClip(msg.audio, dist, this.host.getPeerAvatar(msg.id));
+    }
   }
 
   /** Client-side mute of a peer's messages (persisted). */
   public mutePeer(id: string): void {
     this.muted.add(id);
     try { localStorage.setItem('ds_muted_peers', JSON.stringify([...this.muted])); } catch { /* ignore */ }
+  }
+
+  /** Begin recording (push-to-talk DOWN). Prompts for mic the first time.
+   *  No-op if voice unsupported or already recording. */
+  public async startRecording(): Promise<void> {
+    if (!this.voiceSupported || this.mediaRecorder) return;
+    try {
+      if (!this.micStream) {
+        this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      this.recChunks = [];
+      const mr = new MediaRecorder(this.micStream, { mimeType: 'audio/webm;codecs=opus' });
+      mr.ondataavailable = (e) => { if (e.data.size) this.recChunks.push(e.data); };
+      mr.onstop = () => void this.finishRecording();
+      this.mediaRecorder = mr;
+      mr.start();
+      this.recStopTimer = window.setTimeout(() => this.stopRecording(), VOICE_MAX_MS);
+    } catch {
+      this.mediaRecorder = null; // denied/unavailable — voice off, text unaffected
+    }
+  }
+
+  /** Stop recording (push-to-talk UP, or auto at VOICE_MAX_MS). */
+  public stopRecording(): void {
+    if (this.recStopTimer) { clearTimeout(this.recStopTimer); this.recStopTimer = 0; }
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
+  }
+
+  private async finishRecording(): Promise<void> {
+    const mr = this.mediaRecorder;
+    this.mediaRecorder = null;
+    if (!mr || this.recChunks.length === 0) return;
+    const blob = new Blob(this.recChunks, { type: 'audio/webm;codecs=opus' });
+    const buf = await blob.arrayBuffer();
+    if (!voiceClipFits(buf.byteLength, VOICE_MAX_BYTES)) return; // too long/big — drop
+    const audio = Chat.arrayBufferToBase64(buf);
+    this.host.sendWire({ kind: 'voice', id: this.host.selfId, audio });
+  }
+
+  private static arrayBufferToBase64(buf: ArrayBuffer): string {
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+
+  private static base64ToArrayBuffer(b64: string): ArrayBuffer {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  private async playClip(audioB64: string, dist: number, avatar: THREE.Object3D | null): Promise<void> {
+    let indicator: THREE.Sprite | null = null;
+    try {
+      const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctor) return; // no Web Audio → skip playback
+      if (!this.audioCtx) this.audioCtx = new Ctor();
+      const buf = await this.audioCtx.decodeAudioData(Chat.base64ToArrayBuffer(audioB64));
+      const src = this.audioCtx.createBufferSource();
+      src.buffer = buf;
+      const gain = this.audioCtx.createGain();
+      gain.gain.value = distanceGain(dist, PROXIMITY_RADIUS);
+      src.connect(gain).connect(this.audioCtx.destination);
+      if (avatar) {
+        indicator = Chat.makeBubbleSprite('🔊');
+        indicator.position.set(0, 2.1, 0);
+        avatar.add(indicator);
+      }
+      const cleanupIndicator = () => {
+        if (indicator && avatar) {
+          avatar.remove(indicator);
+          (indicator.material as THREE.SpriteMaterial).map?.dispose();
+          indicator.material.dispose();
+          indicator = null;
+        }
+      };
+      src.onended = cleanupIndicator;
+      src.start();
+    } catch {
+      // undecodable / autoplay-blocked / etc. — clean up the indicator if we
+      // added one, then silently skip (voice is best-effort).
+      if (indicator && avatar) {
+        avatar.remove(indicator);
+        (indicator.material as THREE.SpriteMaterial).map?.dispose();
+        indicator.material.dispose();
+      }
+    }
   }
 
   /** Attach a speech-bubble sprite above `parent`, expiring after BUBBLE_TTL.
