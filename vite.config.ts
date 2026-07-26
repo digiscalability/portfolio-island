@@ -84,6 +84,14 @@ export default defineConfig({
     },
   },
   server: {
+    // Pin the dev port and refuse to wander. Without strictPort, Vite silently
+    // climbs to the next free port when 5173 is busy (e.g. a leaked server still
+    // holding it), so each launch lands somewhere new and the preview tool — which
+    // watches 5173 per .claude/launch.json — ends up pointing at the wrong port.
+    // strictPort makes a busy port a hard error instead, surfacing the stale
+    // server immediately rather than hiding it behind a fresh port number.
+    port: 5173,
+    strictPort: true,
     hmr: {
       overlay: true, // Show HMR errors as overlay
     },

@@ -4,7 +4,12 @@
     {
       "name": "portfolio-island-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "C:\\claudeSessions\\githubCLONES\\portfolio-island",
+        "run",
+        "dev"
+      ],
       "port": 5173
     }
   ]
