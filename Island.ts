@@ -217,11 +217,26 @@ export class Island {
   }
 
   private createGrass(): THREE.InstancedMesh {
-    // Two crossed tapered triangles, base at origin
+    // Two crossed blades, base at origin.
+    //
+    // Each blade was ONE triangle converging to a single point — 0.09 wide by
+    // 0.3 tall, a 1:3.3 spike, which is why the meadow read as spiky. Now a
+    // tapered quad with a BLUNT top: wider at the base, narrower but still
+    // flat-topped at the tip, and a little shorter. Two triangles per face
+    // instead of one (4 per instance, ~24k total) buys the softer silhouette
+    // cheaply, and it stays a single draw call.
     const positions: number[] = [];
     const colors: number[] = [];
-    const baseC = new THREE.Color(0x2e7a30);
-    const tipC = new THREE.Color(0x74d055);
+    // LUMINANCE ONLY — not green. three.js MULTIPLIES instanceColor by
+    // vertexColor, so colouring both green squared the darkness and the blades
+    // came out near-black against pale terrain; that contrast, more than the
+    // silhouette, is what read as harsh. The per-blade instanceColor now
+    // carries the hue and this gradient only shades base→tip.
+    const baseC = new THREE.Color(0xb2b2b2);
+    const tipC = new THREE.Color(0xffffff);
+    const BLADE_H = 0.26;
+    const BASE_W = 0.058;
+    const TIP_W = 0.019; // > 0: a flat tip is what removes the spike
     const addBlade = (rotY: number) => {
       const c = Math.cos(rotY);
       const s = Math.sin(rotY);
@@ -229,9 +244,12 @@ export class Island {
         positions.push(x * c - z * s, y, x * s + z * c);
         colors.push(col.r, col.g, col.b);
       };
-      v(-0.045, 0, 0, baseC);
-      v(0.045, 0, 0, baseC);
-      v(0, 0.3, 0, tipC);
+      v(-BASE_W, 0, 0, baseC);
+      v(BASE_W, 0, 0, baseC);
+      v(TIP_W, BLADE_H, 0, tipC);
+      v(-BASE_W, 0, 0, baseC);
+      v(TIP_W, BLADE_H, 0, tipC);
+      v(-TIP_W, BLADE_H, 0, tipC);
     };
     addBlade(0);
     addBlade(Math.PI / 2);
@@ -256,7 +274,10 @@ export class Island {
             '#ifdef USE_INSTANCING',
             '  float gPhase = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3 + instanceMatrix[3].y * 1.1;',
             '  float gBend = sin(uTime * 2.1 + gPhase) + 0.5 * sin(uTime * 3.6 + gPhase * 1.4);',
-            '  transformed.x += gBend * 0.055 * (position.y / 0.3);',
+            // Normalised by BLADE_H so the tip bends by the full amount and
+            // the base stays planted — keep this divisor in step with the
+            // blade height above, or the sway scales wrong.
+            `  transformed.x += gBend * 0.062 * (position.y / ${BLADE_H});`,
             '#endif',
           ].join('\n'),
         );
@@ -274,8 +295,10 @@ export class Island {
     const up = new THREE.Vector3(0, 1, 0);
     const golden = Math.PI * (3 - Math.sqrt(5));
     const dir = new THREE.Vector3();
-    const GRASS_DRY = new THREE.Color(0xbcc46a);
-    const GRASS_LUSH = new THREE.Color(0x4e8f3f);
+    // Sit close to the terrain's own meadow green (0x8cc06e) so the blades
+    // blend into the ground instead of stippling dark dots across it.
+    const GRASS_DRY = new THREE.Color(0xc6cc80);
+    const GRASS_LUSH = new THREE.Color(0x74b25c);
     const bladeColor = new THREE.Color();
     for (let i = 0; i < COUNT; i++) {
       const y = 1 - (i / (COUNT - 1)) * 2;
