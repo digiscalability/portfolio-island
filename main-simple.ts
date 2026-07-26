@@ -1,4 +1,5 @@
 import { a11y } from './Accessibility';
+import { trackOnce } from './Analytics';
 import { DeliverySystem } from './DeliverySystem';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
@@ -483,6 +484,9 @@ class SimpleApp {
     // from __lifeIslandBooted, which is set before construction as a
     // double-boot latch and so can't prove init succeeded.
     (window as unknown as { __lifeIslandReady?: boolean }).__lifeIslandReady = true;
+    // Funnel denominator: pageviews vs world_ready shows how many visitors
+    // actually got the 3D scene running (device/WebGL compatibility signal).
+    trackOnce('world_ready', { touch: this.ui.isTouchDevice() });
 
     console.log('🔄 Starting render loop...');
     console.log('🔍 Render loop parameters:', {

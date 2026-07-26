@@ -1,4 +1,5 @@
 import { a11y } from './Accessibility';
+import { linkLabel, track, trackOnce } from './Analytics';
 import { checkName } from './Moderation';
 
 /**
@@ -31,6 +32,11 @@ export class SimpleUI {
       (navigator.maxTouchPoints ?? 0) > 0 ||
       // ?touch forces the mobile control scheme on desktop for testing
       (typeof location !== 'undefined' && location.search.includes('touch')));
+
+  /** Whether the touch control scheme is active (used as an analytics dimension). */
+  isTouchDevice(): boolean {
+    return this.isTouch;
+  }
 
   constructor(id: string) {
     // Create or get overlay
@@ -213,6 +219,7 @@ export class SimpleUI {
       this.portfolioMenuDiv = null;
       return;
     }
+    trackOnce('portfolio_opened');
     this.hideZonePanel();
     const menu = document.createElement('div');
     Object.assign(menu.style, {
@@ -1647,6 +1654,19 @@ export class SimpleUI {
 
     const content = this.getZoneContent(zone);
     this.zonePanelDiv.innerHTML = content;
+
+    // Funnel: which sections a visitor actually reaches, and the outbound
+    // clicks that are the real conversion. Once-per-session so re-opening the
+    // same panel doesn't inflate the numbers.
+    trackOnce('zone_explored', { zone: String(zone?.id ?? 'unknown') });
+    if (zone?.id === 'contact') trackOnce('contact_opened');
+    // Delegated: catches every link in the panel without touching the markup
+    this.zonePanelDiv.addEventListener('click', (e) => {
+      const a = (e.target as HTMLElement)?.closest?.('a');
+      if (a instanceof HTMLAnchorElement && a.href) {
+        track('external_link', { to: linkLabel(a.href), from: String(zone?.id ?? 'unknown') });
+      }
+    });
 
     // Add close button
     const closeBtn = document.createElement('button');
