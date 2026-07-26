@@ -1,6 +1,17 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { GLTF, GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
+
+// Accelerate terrain raycasts with a bounds tree (BVH). The island surface is a
+// ~32k-triangle sphere that gets raycast thousands of times at boot (prop / path
+// / shadow placement) and every frame (player grounding, camera collision).
+// Plain intersectObject is O(triangles) per ray; a BVH makes it O(log n) with
+// IDENTICAL hit results. Patched onto THREE's prototypes once — meshes without a
+// boundsTree are unaffected (acceleratedRaycast falls back to the stock raycast).
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 import { Materials } from './Materials';
 import { NPC } from './NPC';
@@ -757,6 +768,9 @@ export class Island {
     const mesh = new THREE.Mesh(geometry, material);
     // keep a direct reference to the terrain mesh for raycasting / accurate placement
     this.surfaceMesh = mesh;
+    // Build the BVH now that the terrain vertices are fully displaced. Every
+    // sampleSurfaceByDirection raycast against this mesh then uses it.
+    mesh.geometry.computeBoundsTree();
     mesh.receiveShadow = true;
     mesh.castShadow = false;
     mesh.position.copy(this.center);
@@ -3737,6 +3751,7 @@ export class Island {
         const startPos = this.center.clone().add(dir.clone().multiplyScalar(this.radius + maxDisp + 1));
         const inwardDir = this.center.clone().sub(startPos).normalize();
         const raycaster = new THREE.Raycaster(startPos, inwardDir, 0, maxDisp + 3 + this.radius);
+        raycaster.firstHitOnly = true; // BVH fast-path: we only use hits[0]
         const hits = raycaster.intersectObject(this.surfaceMesh, false);
 
         if (hits && hits.length > 0) {
