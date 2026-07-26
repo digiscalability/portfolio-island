@@ -17,6 +17,28 @@
         "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
         "coins": { ".validate": "newData.isNumber() && newData.val() >= 0" }
       }
+    },
+    "chat": {
+      "island": {
+        "$entry": {
+          ".read": "auth != null",
+          ".write": "auth != null && (!data.exists() || data.child('id').val() === newData.child('id').val())",
+          "text": { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "id":   { ".validate": "newData.isString()" },
+          "t":    { ".validate": "newData.isNumber()" }
+        }
+      }
+    },
+    "voice": {
+      "island": {
+        "$entry": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          "audio": { ".validate": "newData.isString() && newData.val().length <= 60000" },
+          "id":    { ".validate": "newData.isString()" },
+          "t":     { ".validate": "newData.isNumber()" }
+        }
+      }
     }
   }
 }
