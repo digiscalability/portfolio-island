@@ -102,8 +102,12 @@ export class Island {
   public static readonly SEA_OFFSET = 0.1;
   // Wave field constants (shared by the sea shader AND the analytic sampler
   // that floats swimmers/boats, so the mesh and the physics agree exactly).
-  private static readonly WAVE_AMP = 0.15;
-  private static readonly TIDE_AMP = 0.1; // radial units above/below mean sea
+  // NB: the wave sum peaks at 1.8, so the real displacement is AMP * 1.8.
+  // Sea can therefore reach SEA_OFFSET + 0.36 + TIDE_AMP ≈ 0.55 above the base
+  // sphere — which must stay BELOW the land floor in createIsland(), or the
+  // ocean pokes up through the beach (it did: 0.425 sea vs a 0.3 land floor).
+  private static readonly WAVE_AMP = 0.2;
+  private static readonly TIDE_AMP = 0.09; // radial units above/below mean sea
   private static readonly TIDE_PERIOD = 120; // seconds for a full high→low→high
 
   constructor(radius: number = 18) {
@@ -382,21 +386,32 @@ export class Island {
       const sinLat = normal.y;
       const shoreT = THREE.MathUtils.clamp((sinLat - 0.05) / (0.28 - 0.05), 0, 1);
       const mask = shoreT * shoreT * (3 - 2 * shoreT); // smoothstep
-      // Ridged noise on the flanks breaks the smooth dome into crags. Applied
-      // only where the highland actually lifts, so the rest of the island is
-      // untouched.
+      // Ridged noise on the flanks breaks the smooth dome into crags. Two
+      // octaves, and the fine one is pitched near the mesh limit: at 128
+      // segments on r=22 the vertex spacing is ~1.08 units, so features below
+      // ~2.5 units can't be resolved. The old scale of 0.5 was a ~12.6-unit
+      // wavelength — a gentle swell, which is exactly why the peaks read as
+      // smooth domes rather than rock.
       const highland = highlandAt(normal);
-      const crag = highland > 0.05 ? (1 - Math.abs(noise3D(v.x, v.y, v.z, 0.5))) * highland * 0.55 : 0;
-      const landDisp = Math.max(noiseDisp, 0.3) + highland + crag;
+      let crag = 0;
+      if (highland > 0.05) {
+        const ridged = 1 - Math.abs(noise3D(v.x, v.y, v.z, 2.2)); // ~2.9u crags
+        const coarse = 1 - Math.abs(noise3D(v.x, v.y, v.z, 0.9)); // ~7u buttresses
+        crag = (ridged * 0.62 + coarse * 0.38) * highland * 0.5;
+      }
+      // Land floor raised 0.3 -> 0.75 so the ocean's crests + tide (max ~0.55
+      // above the base sphere) can never break through the beach.
+      const landDisp = Math.max(noiseDisp, 0.75) + highland + crag;
       const oceanDisp = -2.4 + noiseDisp * 0.15; // gently rolling seafloor
       const displacement = oceanDisp + (landDisp - oceanDisp) * mask;
 
       // Clamp radius to prevent terrain from going inside the sphere
       const rawRadius = this.radius + displacement;
       const minRadius = this.radius * 0.86; // deep enough for the seafloor
-      // Headroom for the highland range. At +4.2 the peaks clipped flat and
-      // the range read as a pale mesa instead of summits.
-      const maxRadius = this.radius + 6.5;
+      // Headroom for the highland range (base floor 0.75 + peak 3.3 + crag
+      // ~1.65). At +4.2 the peaks clipped flat into a pale mesa. Keep this
+      // BELOW the sampler's maxDisp or raycasts start inside the summits.
+      const maxRadius = this.radius + 7.5;
       const finalRadius = THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
       const newPos = normal.multiplyScalar(finalRadius);
       vertices[i] = newPos.x;
@@ -535,7 +550,10 @@ export class Island {
       // near the surface glimmer through faintly.
       transparent: true,
       opacity: 0.92,
-      roughness: 0.18,
+      // Slightly rougher than a mirror: with the wave normals now perturbed,
+      // 0.18 made the crests catch the sun as hard laser streaks. 0.3 spreads
+      // each glint into something that reads as water.
+      roughness: 0.3,
       metalness: 0.12,
     });
     // Animated waves: displace each vertex radially by the SAME sum-of-sines
@@ -547,14 +565,43 @@ export class Island {
       shader.uniforms.uTide = this.seaTideUniform;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uAmp;\nuniform float uTide;\nvarying float vWave;')
+        // Tilt the NORMAL to match the wave slope. Without this the shader
+        // displaces geometry but lights it as a smooth sphere, so the ocean
+        // slides around without ever shading like water — the single biggest
+        // reason it read as "moving but flat". Uses the analytic gradient of
+        // the same sum-of-sines, projected onto the tangent plane.
+        .replace(
+          '#include <beginnormal_vertex>',
+          [
+            '#include <beginnormal_vertex>',
+            'vec3 wn = normalize(position);',
+            'float dwx = 0.6*9.0*cos(wn.x*9.0 + uTime*1.3)',
+            '          + 0.5*7.0*cos((wn.x+wn.z)*7.0 + uTime*0.9)',
+            '          + 0.18*23.0*cos((wn.x-wn.z)*23.0 + uTime*2.1);',
+            'float dwz = 0.4*11.0*cos(wn.z*11.0 - uTime*1.1)',
+            '          + 0.5*7.0*cos((wn.x+wn.z)*7.0 + uTime*0.9)',
+            '          - 0.18*23.0*cos((wn.x-wn.z)*23.0 + uTime*2.1);',
+            'float dwy = 0.12*19.0*cos(wn.y*19.0 + uTime*1.7);',
+            'vec3 wgrad = vec3(dwx, dwy, dwz);',
+            'wgrad -= wn * dot(wgrad, wn);',
+            'objectNormal = normalize(objectNormal - wgrad * uAmp * 0.32);',
+          ].join('\n'),
+        )
         .replace(
           '#include <begin_vertex>',
           [
             '#include <begin_vertex>',
             'vec3 nrm = normalize(position);',
+            // Swell (3 broad terms) + chop (2 fine, faster terms). The chop is
+            // what actually makes waves READ as waves — broad swell alone on a
+            // planet-sized sphere just looks like a smooth moving surface.
+            // MUST stay identical to waveHeightAt() on the CPU or boats and
+            // swimmers float off the surface you can see.
             'float w = sin(nrm.x * 9.0 + uTime * 1.3) * 0.6',
             '       + sin(nrm.z * 11.0 - uTime * 1.1) * 0.4',
-            '       + sin((nrm.x + nrm.z) * 7.0 + uTime * 0.9) * 0.5;',
+            '       + sin((nrm.x + nrm.z) * 7.0 + uTime * 0.9) * 0.5',
+            '       + sin((nrm.x - nrm.z) * 23.0 + uTime * 2.1) * 0.18',
+            '       + sin(nrm.y * 19.0 + uTime * 1.7) * 0.12;',
             'vWave = w;',
             // uTide raises/lowers the whole surface far more slowly than the
             // waves, so the waterline creeps up and down the beach.
@@ -568,9 +615,11 @@ export class Island {
           [
             '#include <color_fragment>',
             // Deepen the wave troughs toward a dark teal for a sense of depth
-            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03,0.11,0.20), smoothstep(0.0,-1.2,vWave)*0.4);',
-            // Whitecap foam on the crests (stronger + broader than before)
-            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85,0.94,1.0), smoothstep(0.55,1.35,vWave)*0.7);',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03,0.11,0.20), smoothstep(0.0,-1.4,vWave)*0.45);',
+            // Whitecaps. Thresholds re-tuned for the new 1.8 wave peak; a
+            // narrow band keeps foam on the crest tips instead of washing the
+            // whole surface pale.
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88,0.95,1.0), smoothstep(0.5,1.25,vWave)*0.85);',
           ].join('\n'),
         );
     };
@@ -1869,10 +1918,13 @@ export class Island {
    */
   public waveHeightAt(dir: THREE.Vector3, t: number): number {
     const n = dir.clone().normalize();
+    // Mirrors the sea vertex shader exactly (swell + chop) — see onBeforeCompile
     const w =
       Math.sin(n.x * 9.0 + t * 1.3) * 0.6 +
       Math.sin(n.z * 11.0 - t * 1.1) * 0.4 +
-      Math.sin((n.x + n.z) * 7.0 + t * 0.9) * 0.5;
+      Math.sin((n.x + n.z) * 7.0 + t * 0.9) * 0.5 +
+      Math.sin((n.x - n.z) * 23.0 + t * 2.1) * 0.18 +
+      Math.sin(n.y * 19.0 + t * 1.7) * 0.12;
     // + tide, so swimmers, boats and jetskis ride the same surface they see
     return this.seaLevel() + w * Island.WAVE_AMP + this.seaTideUniform.value;
   }
@@ -3303,7 +3355,11 @@ export class Island {
         this.surfaceMesh.updateMatrixWorld(true);
         // Cast from OUTSIDE inward so we hit front faces (material.side = FrontSide).
         // Casting from center outward only sees backfaces and always misses.
-        const maxDisp = 5;
+        // Must exceed the tallest possible terrain (the maxRadius clamp in
+        // createIsland), or the ray STARTS INSIDE a peak and misses it — the
+        // sampler then silently returns a fallback, which broke placement,
+        // NPC walking and grounding shadows on the highland summits.
+        const maxDisp = 9;
         const startPos = this.center.clone().add(dir.clone().multiplyScalar(this.radius + maxDisp + 1));
         const inwardDir = this.center.clone().sub(startPos).normalize();
         const raycaster = new THREE.Raycaster(startPos, inwardDir, 0, maxDisp + 3 + this.radius);
