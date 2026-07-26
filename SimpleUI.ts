@@ -88,6 +88,28 @@ export class SimpleUI {
     return this.joyState;
   }
 
+  /**
+   * Make a styled HUD <div> behave like a real button for assistive tech and
+   * keyboard users: announced with a label, focusable, and activated by Enter
+   * or Space (which just re-fires the existing click handler, so click logic
+   * stays in one place). `pressed`, when given, reflects a toggle's on/off
+   * state via aria-pressed. Pairs with the `.hud-btn:focus-visible` ring in
+   * style.css.
+   */
+  private makeHudButtonAccessible(el: HTMLElement, label: string, pressed?: boolean): void {
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', label);
+    el.classList.add('hud-btn');
+    if (pressed !== undefined) el.setAttribute('aria-pressed', String(pressed));
+    el.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        el.click();
+      }
+    });
+  }
+
   private createMuteButton(): void {
     this.muteBtn = document.createElement('div');
     let muted = false;
@@ -114,7 +136,9 @@ export class SimpleUI {
       if (!this.onMuteToggle || !this.muteBtn) return;
       const nowMuted = this.onMuteToggle();
       this.muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+      this.muteBtn.setAttribute('aria-pressed', String(nowMuted));
     });
+    this.makeHudButtonAccessible(this.muteBtn, 'Toggle sound', muted);
     this.overlay.appendChild(this.muteBtn);
     this.createReducedMotionButton();
     this.createCustomizeButton();
@@ -149,6 +173,7 @@ export class SimpleUI {
       e.stopPropagation();
       this.onCustomizeToggle?.();
     });
+    this.makeHudButtonAccessible(btn, 'Customize appearance');
     this.overlay.appendChild(btn);
   }
 
@@ -173,12 +198,14 @@ export class SimpleUI {
       btn.style.background = a11y.reducedMotion
         ? 'rgba(80, 180, 120, 0.75)'
         : 'rgba(0, 0, 0, 0.55)';
+      btn.setAttribute('aria-pressed', String(a11y.reducedMotion));
     };
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       a11y.setReducedMotion(!a11y.reducedMotion);
       render();
     });
+    this.makeHudButtonAccessible(btn, 'Toggle reduced motion', a11y.reducedMotion);
     render();
     this.overlay.appendChild(btn);
   }
@@ -215,6 +242,7 @@ export class SimpleUI {
       e.stopPropagation();
       this.togglePortfolioMenu();
     });
+    this.makeHudButtonAccessible(btn, 'Open portfolio menu');
     this.overlay.appendChild(btn);
   }
 

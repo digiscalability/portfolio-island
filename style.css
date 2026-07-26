@@ -855,3 +855,15 @@ body {
   .gallery-content .gallery-image-wrap { width: calc(100vw - 80px); height: 44vh; }
 }
 
+/* HUD icon controls (🎨 ♿ 🔊 and the 📖 Portfolio pill) are <div role="button">
+   for layout flexibility. Give keyboard users a clear focus ring and a subtle
+   hover so the controls are operable and discoverable without a mouse. Uses
+   :focus-visible so the ring only shows for keyboard/AT focus, not mouse taps. */
+.hud-btn:focus-visible {
+  outline: 3px solid rgba(120, 170, 255, 0.95);
+  outline-offset: 2px;
+}
+.hud-btn:hover {
+  filter: brightness(1.18);
+}
+
