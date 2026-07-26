@@ -114,7 +114,7 @@ export class SimpleUI {
       width: 'min(70vw, 420px)', padding: '10px 14px', borderRadius: '12px',
       border: 'none', fontSize: '15px', fontFamily: 'system-ui, sans-serif',
       background: 'rgba(12,12,20,0.92)', color: '#fff', outline: '2px solid rgba(120,170,255,0.9)',
-      pointerEvents: 'auto', zIndex: '50',
+      pointerEvents: 'auto', zIndex: '1700',
     });
     const close = () => { input.remove(); this.chatInput = null; };
     input.addEventListener('keydown', (e) => {
@@ -504,6 +504,9 @@ export class SimpleUI {
       cursor: 'pointer',
       pointerEvents: 'auto',
       userSelect: 'none',
+      // Match the other touch buttons: sit above the dialogue panel (1600)
+      // so it isn't hidden behind (and its taps swallowed by) it mid-NPC-chat.
+      zIndex: '1650',
     });
     chatBtn.addEventListener('click', (e) => { e.stopPropagation(); this.openChatInput(); });
     this.makeHudButtonAccessible(chatBtn, 'Open chat');
@@ -523,14 +526,36 @@ export class SimpleUI {
       pointerEvents: 'auto',
       userSelect: 'none',
       touchAction: 'none',
+      zIndex: '1650',
     });
     const micDown = (e: Event) => { e.preventDefault(); this.onMicDown?.(); };
     const micUp = (e: Event) => { e.preventDefault(); this.onMicUp?.(); };
     micBtn.addEventListener('touchstart', micDown, { passive: false });
     micBtn.addEventListener('touchend', micUp);
+    // touchcancel (interrupted touch, e.g. an incoming call) and mouseleave
+    // (mouse dragged/released off the button) must also release the mic —
+    // otherwise it stays live until the 8s safety timer, breaking the
+    // "mic only live while held" contract. micUp/stopRecording is a no-op
+    // when not recording, so a stray mouseleave is harmless.
+    micBtn.addEventListener('touchcancel', micUp);
+    micBtn.addEventListener('mouseleave', micUp);
     micBtn.addEventListener('mousedown', micDown);
     micBtn.addEventListener('mouseup', micUp);
-    this.makeHudButtonAccessible(micBtn, 'Hold to talk to nearby players');
+    // Not makeHudButtonAccessible: that activates on a synthetic *click*
+    // (Enter/Space), which is wrong for a hold control — a keyboard user
+    // pressing Enter would fire mic-on with no way to release it. Wire real
+    // hold semantics: keydown starts (edge-triggered, ignoring OS repeat),
+    // keyup stops.
+    micBtn.setAttribute('role', 'button');
+    micBtn.setAttribute('tabindex', '0');
+    micBtn.setAttribute('aria-label', 'Hold to talk to nearby players (or hold the V key)');
+    micBtn.classList.add('hud-btn'); // reuse the existing :focus-visible ring
+    micBtn.addEventListener('keydown', (e) => {
+      if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); this.onMicDown?.(); }
+    });
+    micBtn.addEventListener('keyup', (e) => {
+      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); this.onMicUp?.(); }
+    });
     this.overlay.appendChild(micBtn);
   }
 
