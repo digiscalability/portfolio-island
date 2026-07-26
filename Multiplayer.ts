@@ -224,14 +224,19 @@ export class Multiplayer {
       }
       if (msg.kind === 'chat' || msg.kind === 'voice') {
         const path = msg.kind === 'chat' ? 'chat/island' : 'voice/island';
-        const entryRef = push(ref(db, path), {
+        const entryRef = push(ref(db, path));
+        // Auto-remove on disconnect (covers tab close/crash before the timer).
+        onDisconnect(entryRef)
+          .remove()
+          .catch(() => {});
+        void set(entryRef, {
           id: this.selfId,
           text: msg.text ?? null,
           audio: msg.audio ?? null,
           dur: msg.dur ?? null,
           t: Date.now(),
-        });
-        // Self-clean: remove our own entry after it can no longer be needed.
+        }).catch(() => {});
+        // Normal-case cleanup so the path never accumulates blobs.
         window.setTimeout(() => {
           void remove(entryRef).catch(() => {});
         }, 12000);
@@ -283,7 +288,7 @@ export class Multiplayer {
       const path = kind === 'chat' ? 'chat/island' : 'voice/island';
       onChildAdded(ref(db, path), (snap) => {
         const val = snap.val();
-        if (!val || val.id === uid || val.id === this.selfId) return;
+        if (!val || val.id === this.selfId) return;
         this.handleMessage(
           JSON.stringify({
             kind,
@@ -374,19 +379,23 @@ export class Multiplayer {
     this.send(msg);
   }
 
-  public getLocalWorldPosition(): THREE.Vector3 {
+  /** Local player's current world position. */
+  public getSelfWorldPosition(): THREE.Vector3 {
     return this.player.getWorldPosition();
   }
 
+  /** A peer's current world position, or null if they're not connected. */
   public getPeerWorldPosition(id: string): THREE.Vector3 | null {
     const peer = this.peers.get(id);
     return peer ? peer.avatar.position.clone() : null;
   }
 
+  /** A peer's avatar object (for attaching chat bubbles etc.), or null. */
   public getPeerAvatar(id: string): THREE.Object3D | null {
     return this.peers.get(id)?.avatar ?? null;
   }
 
+  /** The local player's avatar object (for attaching chat bubbles etc.). */
   public getSelfAvatar(): THREE.Object3D {
     return this.player;
   }
