@@ -57,10 +57,12 @@ export class Chat {
   private recStopTimer = 0;
   private micStream: MediaStream | null = null;
   private audioCtx: AudioContext | null = null;
+  private starting = false;
   public readonly voiceSupported =
     typeof navigator !== 'undefined' &&
     !!navigator.mediaDevices?.getUserMedia &&
-    typeof MediaRecorder !== 'undefined';
+    typeof MediaRecorder !== 'undefined' &&
+    MediaRecorder.isTypeSupported('audio/webm;codecs=opus');
 
   constructor(host: ChatHost) {
     this.host = host;
@@ -93,6 +95,7 @@ export class Chat {
       if (avatar) this.showBubble(avatar, text);
     }
     if (msg.kind === 'voice' && msg.audio) {
+      if (msg.audio.length > 60000) return; // defense-in-depth: WS/BroadcastChannel lack RTDB's size rule
       const dist = this.host.getSelfWorldPosition().distanceTo(peerPos);
       void this.playClip(msg.audio, dist, this.host.getPeerAvatar(msg.id));
     }
@@ -104,14 +107,16 @@ export class Chat {
     try { localStorage.setItem('ds_muted_peers', JSON.stringify([...this.muted])); } catch { /* ignore */ }
   }
 
-  /** Begin recording (push-to-talk DOWN). Prompts for mic the first time.
-   *  No-op if voice unsupported or already recording. */
+  /** Begin recording (push-to-talk DOWN). Prompts for mic the first time;
+   *  subsequent holds re-acquire a fresh stream (permission persists
+   *  per-origin so this does NOT re-prompt — only tens of ms of device-open
+   *  latency) so the mic is never left open between clips.
+   *  No-op if voice unsupported, already recording, or already starting. */
   public async startRecording(): Promise<void> {
-    if (!this.voiceSupported || this.mediaRecorder) return;
+    if (!this.voiceSupported || this.mediaRecorder || this.starting) return;
+    this.starting = true;
     try {
-      if (!this.micStream) {
-        this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      }
+      this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.recChunks = [];
       const mr = new MediaRecorder(this.micStream, { mimeType: 'audio/webm;codecs=opus' });
       mr.ondataavailable = (e) => { if (e.data.size) this.recChunks.push(e.data); };
@@ -120,7 +125,10 @@ export class Chat {
       mr.start();
       this.recStopTimer = window.setTimeout(() => this.stopRecording(), VOICE_MAX_MS);
     } catch {
+      this.releaseMic();
       this.mediaRecorder = null; // denied/unavailable — voice off, text unaffected
+    } finally {
+      this.starting = false;
     }
   }
 
@@ -130,17 +138,34 @@ export class Chat {
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
   }
 
+  /** Release the mic (stop all tracks) so the browser/OS mic-in-use
+   *  indicator turns off between clips — the privacy contract is that the
+   *  mic is only live while the talk button is held. */
+  private releaseMic(): void {
+    if (this.micStream) {
+      this.micStream.getTracks().forEach((t) => t.stop());
+      this.micStream = null;
+    }
+  }
+
+  /** Recorder stopped: package chunks, enforce the size budget, send or
+   *  drop — and release the mic on every path (sent, too big, or empty). */
   private async finishRecording(): Promise<void> {
     const mr = this.mediaRecorder;
     this.mediaRecorder = null;
-    if (!mr || this.recChunks.length === 0) return;
-    const blob = new Blob(this.recChunks, { type: 'audio/webm;codecs=opus' });
-    const buf = await blob.arrayBuffer();
-    if (!voiceClipFits(buf.byteLength, VOICE_MAX_BYTES)) return; // too long/big — drop
-    const audio = Chat.arrayBufferToBase64(buf);
-    this.host.sendWire({ kind: 'voice', id: this.host.selfId, audio });
+    try {
+      if (!mr || this.recChunks.length === 0) return;
+      const blob = new Blob(this.recChunks, { type: 'audio/webm;codecs=opus' });
+      const buf = await blob.arrayBuffer();
+      if (!voiceClipFits(buf.byteLength, VOICE_MAX_BYTES)) return; // too long/big — drop
+      const audio = Chat.arrayBufferToBase64(buf);
+      this.host.sendWire({ kind: 'voice', id: this.host.selfId, audio });
+    } finally {
+      this.releaseMic();
+    }
   }
 
+  /** ArrayBuffer → base64 string, for putting a binary clip on a JSON wire. */
   private static arrayBufferToBase64(buf: ArrayBuffer): string {
     let binary = '';
     const bytes = new Uint8Array(buf);
@@ -148,6 +173,7 @@ export class Chat {
     return btoa(binary);
   }
 
+  /** base64 string → ArrayBuffer, the inverse of arrayBufferToBase64. */
   private static base64ToArrayBuffer(b64: string): ArrayBuffer {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
@@ -155,8 +181,19 @@ export class Chat {
     return bytes.buffer;
   }
 
+  /** Decode + play an incoming base64 voice clip through Web Audio, gained by
+   *  distance, with a transient 🔊 indicator on the speaker's avatar. Cleans
+   *  the indicator up on both normal end and any failure (best-effort). */
   private async playClip(audioB64: string, dist: number, avatar: THREE.Object3D | null): Promise<void> {
     let indicator: THREE.Sprite | null = null;
+    const cleanupIndicator = () => {
+      if (indicator && avatar) {
+        avatar.remove(indicator);
+        (indicator.material as THREE.SpriteMaterial).map?.dispose();
+        indicator.material.dispose();
+        indicator = null;
+      }
+    };
     try {
       const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!Ctor) return; // no Web Audio → skip playback
@@ -172,24 +209,12 @@ export class Chat {
         indicator.position.set(0, 2.1, 0);
         avatar.add(indicator);
       }
-      const cleanupIndicator = () => {
-        if (indicator && avatar) {
-          avatar.remove(indicator);
-          (indicator.material as THREE.SpriteMaterial).map?.dispose();
-          indicator.material.dispose();
-          indicator = null;
-        }
-      };
       src.onended = cleanupIndicator;
       src.start();
     } catch {
       // undecodable / autoplay-blocked / etc. — clean up the indicator if we
       // added one, then silently skip (voice is best-effort).
-      if (indicator && avatar) {
-        avatar.remove(indicator);
-        (indicator.material as THREE.SpriteMaterial).map?.dispose();
-        indicator.material.dispose();
-      }
+      cleanupIndicator();
     }
   }
 
@@ -231,10 +256,16 @@ export class Chat {
     }
   }
 
-  /** Tear down: drop all live bubbles and free their textures/materials. */
+  /** Tear down: drop all live bubbles and free their textures/materials,
+   *  plus any voice state (in-flight recorder, mic, audio context). */
   public dispose(): void {
     for (const b of this.bubbles) this.disposeBubble(b);
     this.bubbles = [];
+    if (this.recStopTimer) { clearTimeout(this.recStopTimer); this.recStopTimer = 0; }
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
+    this.releaseMic();
+    void this.audioCtx?.close().catch(() => {});
+    this.audioCtx = null;
   }
 
   /** Word-wrapped speech bubble on a canvas → sprite (mirrors Multiplayer.makeTextSprite). */
