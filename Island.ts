@@ -227,6 +227,9 @@ export class Island {
     const up = new THREE.Vector3(0, 1, 0);
     const golden = Math.PI * (3 - Math.sqrt(5));
     const dir = new THREE.Vector3();
+    const GRASS_DRY = new THREE.Color(0xbcc46a);
+    const GRASS_LUSH = new THREE.Color(0x4e8f3f);
+    const bladeColor = new THREE.Color();
     for (let i = 0; i < COUNT; i++) {
       const y = 1 - (i / (COUNT - 1)) * 2;
       const rAt = Math.sqrt(Math.max(0, 1 - y * y));
@@ -254,7 +257,19 @@ export class Island {
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
       grass.setMatrixAt(i, dummy.matrix);
+      // Per-blade colour. A single flat green over thousands of instances is
+      // what makes the meadow read as plastic; drifting each blade between a
+      // dry yellow-green and a deep shade — biased by elevation so low ground
+      // is lusher — gives the field depth for free (still one draw call).
+      const lush = 1 - THREE.MathUtils.clamp((dir.y - Math.sin(0.28)) * 2.2, 0, 1);
+      bladeColor
+        .copy(GRASS_DRY)
+        .lerp(GRASS_LUSH, THREE.MathUtils.clamp(lush * 0.75 + Math.random() * 0.5, 0, 1));
+      // subtle per-blade brightness so neighbours never match exactly
+      const shade = 0.86 + Math.random() * 0.28;
+      grass.setColorAt(i, bladeColor.multiplyScalar(shade));
     }
+    if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
     grass.instanceMatrix.needsUpdate = true;
     grass.name = 'grass';
     grass.castShadow = false;
@@ -354,28 +369,74 @@ export class Island {
     // ridges drier/lighter — the flat monotone read as plastic. A small
     // deterministic per-vertex jitter breaks banding without wrinkle noise.
     {
+      // Three signals, not one. Elevation alone (the old version) normalised
+      // across the WHOLE sphere — seabed to peak — so the island's actual
+      // surface occupied a narrow slice of the ramp and read as flat monotone.
+      // Now: elevation is measured ABOVE SEA LEVEL (so the land uses the full
+      // ramp), SLOPE exposes rock on steep ground, and a SAND band wraps the
+      // shoreline so the coast reads as a beach instead of grass meeting water.
       const posA = geometry.attributes.position;
+      const nrmA = geometry.attributes.normal;
       const colors = new Float32Array(posA.count * 3);
+      const seabed = new THREE.Color(0x4a6b74);
+      const sand = new THREE.Color(0xd8cca0);
       const lowValley = new THREE.Color(0x5a8a45);
       const valley = new THREE.Color(0x6f9c58);
       const meadow = new THREE.Color(0x8cc06e);
       const ridge = new THREE.Color(0xb5c98a);
       const peak = new THREE.Color(0xc8cca0);
+      const rock = new THREE.Color(0x8d8878);
       const tmp = new THREE.Color();
-      let minR = Infinity, maxR = -Infinity;
+      const vDir = new THREE.Vector3();
+      const vNrm = new THREE.Vector3();
+      const sea = this.seaLevel();
+      // Self-tuning bands. Hard-coded heights are a trap here: this island is
+      // far flatter than it looks — land spans only ~0.2-1.0 units above sea
+      // (median ~0.3) — so a "0.3 beach" silently painted half the island as
+      // sand. Derive the ramp from the ACTUAL distribution instead, using the
+      // 95th percentile so one freak peak can't stretch it.
+      const aboveList: number[] = [];
       for (let i = 0; i < posA.count; i++) {
-        const r = Math.hypot(posA.getX(i), posA.getY(i), posA.getZ(i));
-        if (r < minR) minR = r;
-        if (r > maxR) maxR = r;
+        const a = Math.hypot(posA.getX(i), posA.getY(i), posA.getZ(i)) - sea;
+        if (a > 0) aboveList.push(a);
       }
-      const span = Math.max(1e-6, maxR - minR);
+      aboveList.sort((a, b) => a - b);
+      const landTop = aboveList.length
+        ? Math.max(0.25, aboveList[Math.floor(aboveList.length * 0.95)])
+        : 1;
+      const BEACH_TOP = landTop * 0.2; // sand hugs the waterline only
+      const BEACH_FADE = landTop * 0.18;
+      const landSpan = Math.max(1e-6, landTop - BEACH_TOP);
       for (let i = 0; i < posA.count; i++) {
-        const r = Math.hypot(posA.getX(i), posA.getY(i), posA.getZ(i));
-        const t = (r - minR) / span;
-        if (t < 0.2) tmp.copy(lowValley).lerp(valley, t * 5);
-        else if (t < 0.5) tmp.copy(valley).lerp(meadow, (t - 0.2) / 0.3);
-        else if (t < 0.8) tmp.copy(meadow).lerp(ridge, (t - 0.5) / 0.3);
-        else tmp.copy(ridge).lerp(peak, (t - 0.8) * 5);
+        vDir.set(posA.getX(i), posA.getY(i), posA.getZ(i));
+        const r = vDir.length() || 1;
+        vDir.divideScalar(r);
+        vNrm.set(nrmA.getX(i), nrmA.getY(i), nrmA.getZ(i));
+        // 0 where the ground faces straight out, →1 on a cliff face
+        const slope = THREE.MathUtils.clamp(1 - vNrm.dot(vDir), 0, 1);
+        const above = r - sea;
+
+        if (above < -0.3) {
+          // Submerged: fades from sand at the water's edge down to seabed
+          tmp.copy(seabed).lerp(sand, THREE.MathUtils.clamp((above + 2.4) / 2.1, 0, 1));
+        } else if (above < BEACH_TOP) {
+          tmp.copy(sand);
+        } else {
+          const t = THREE.MathUtils.clamp((above - BEACH_TOP) / landSpan, 0, 1);
+          // Weighted toward the greens: most of the island should be meadow,
+          // with the pale ridge/peak tones reserved for the genuine high ground.
+          if (t < 0.25) tmp.copy(lowValley).lerp(valley, t / 0.25);
+          else if (t < 0.62) tmp.copy(valley).lerp(meadow, (t - 0.25) / 0.37);
+          else if (t < 0.86) tmp.copy(meadow).lerp(ridge, (t - 0.62) / 0.24);
+          else tmp.copy(ridge).lerp(peak, (t - 0.86) / 0.14);
+          // Feather the sand upward so the beach doesn't end on a hard line
+          const beachFade = THREE.MathUtils.clamp((above - BEACH_TOP) / BEACH_FADE, 0, 1);
+          tmp.lerp(sand, (1 - beachFade) * 0.6);
+        }
+        // Rock breaks through only where the ground is genuinely steep. A low
+        // threshold catches every ordinary hill and greys out the meadows.
+        tmp.lerp(rock, THREE.MathUtils.smoothstep(slope, 0.26, 0.62) * 0.65);
+
         // deterministic jitter from vertex index (no Math.random -> stable)
         const j = 1 + (((i * 2654435761) % 1000) / 1000 - 0.5) * 0.09;
         colors[i * 3] = tmp.r * j;

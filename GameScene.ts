@@ -287,6 +287,11 @@ export class GameScene extends THREE.Scene {
   // Sea edge: watercraft can't drive south of this latitude (dir.y = sin lat)
   // into the featureless open ocean — matches the swimmer's shoreline barrier.
   private static readonly SEA_EDGE_Y = 0.05;
+  // Half-width of the sun's shadow box. Small = sharp shadows, but it must
+  // still cover what the chase camera can see behind the player.
+  private static readonly SHADOW_EXTENT = 17;
+  private rimLight?: THREE.DirectionalLight;
+  private _sunDir = new THREE.Vector3();
 
   // Mailbox instances for interaction tracking
   private mailboxes: Mailbox[] = [];
@@ -435,6 +440,9 @@ export class GameScene extends THREE.Scene {
     });
     console.log(`🧱 Registered ${colliderCount} island prop colliders`);
 
+    // Soft contact shadows so props read as sitting ON the ground
+    this.createGroundingShadows();
+
     // Navigation + traversal rewards
     this.createGuideSparkles();
     this.createCoins();
@@ -532,14 +540,88 @@ export class GameScene extends THREE.Scene {
   /**
    * Setup lighting for the scene
    */
+  /**
+   * Soft dark discs under every registered prop — the classic stylised
+   * "contact shadow". Two reasons it earns its place even with real shadows on:
+   * the sun's shadow box is tight around the player (so props further out cast
+   * nothing), and a grounding blob reads correctly at every sun angle, whereas
+   * a cast shadow stretches away at dawn/dusk and leaves the base floating.
+   * One InstancedMesh = one draw call for the lot.
+   */
+  private createGroundingShadows(): void {
+    const props = this.colliders.filter((c) => c.radius >= 0.3);
+    if (props.length === 0) return;
+
+    // Radial falloff blob, drawn once into a small canvas
+    const size = 64;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, 'rgba(0,0,0,0.55)');
+    grad.addColorStop(0.55, 'rgba(0,0,0,0.28)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      // Lift off the terrain in depth rather than in position — a positional
+      // offset on a curved surface either floats on slopes or sinks on crests.
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, props.length);
+    mesh.name = 'grounding_shadows';
+    mesh.renderOrder = 1;
+    mesh.frustumCulled = false;
+    (mesh.userData as Record<string, unknown>).ignoreOcclusion = true;
+
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const dir = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+    const pos = new THREE.Vector3();
+    const PLANE_NORMAL = new THREE.Vector3(0, 0, 1);
+    for (let i = 0; i < props.length; i++) {
+      const c = props[i];
+      dir.copy(c.position).normalize();
+      const s = this.island.sampleSurfaceByDirection(dir, 0);
+      pos.copy(dir).multiplyScalar(s.position.length() + 0.02);
+      q.setFromUnitVectors(PLANE_NORMAL, s.normal);
+      // Quad width = 2 * (footprint + margin). An additive margin beats a
+      // multiplier here because the collider means different things by size: a
+      // tree's radius is its TRUNK (0.45) with a much wider canopy overhead,
+      // while a house's radius already IS its footprint. Scaling both by one
+      // factor under-shadows trees and over-shadows buildings.
+      const r = c.radius * 2 + 1.1;
+      scl.set(r, r, 1);
+      mesh.setMatrixAt(i, m.compose(pos, q, scl));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    this.add(mesh);
+    console.log(`🌑 ${props.length} grounding shadows (1 draw call)`);
+  }
+
   private setupLighting(): void {
-    // Ambient light for base illumination
-    const ambientLight = new THREE.AmbientLight(0xfff6e8, 0.4); // was washing out material colors
+    // Light rig: a dominant warm KEY (sun), a cool sky FILL, and a RIM to
+    // separate silhouettes. The old rig ran ambient 0.4 + hemi 0.85 + fill 0.25
+    // (≈1.5 of flat fill) against a 1.35 sun — the fill drowned the key, so
+    // nothing had form. Key:fill is now ≈2:1, which is what gives stylised
+    // scenes their shape. Fill can't go much lower: the toon ramp crushes
+    // unlit undersides (tree canopies) to black without it.
+    const ambientLight = new THREE.AmbientLight(0xfff6e8, 0.22);
     this.add(ambientLight);
     this.lights.ambient = ambientLight;
 
-    // Directional light (warm sun)
-    const sunLight = new THREE.DirectionalLight(0xfff1d6, 1.35);
+    // Directional light (warm sun) — the key
+    const sunLight = new THREE.DirectionalLight(0xfff1d6, 1.6);
     sunLight.position.set(30, 40, 30);
     sunLight.castShadow = true;
 
@@ -552,28 +634,47 @@ export class GameScene extends THREE.Scene {
     const shadowRes = coarse || lowCore ? 1024 : 2048;
     sunLight.shadow.mapSize.width = shadowRes;
     sunLight.shadow.mapSize.height = shadowRes;
-    sunLight.shadow.camera.near = 0.1;
-    sunLight.shadow.camera.far = 100;
-    sunLight.shadow.camera.left = -50;
-    sunLight.shadow.camera.right = 50;
-    sunLight.shadow.camera.top = 50;
-    sunLight.shadow.camera.bottom = -50;
-    sunLight.shadow.bias = -0.0001;
+    // The box used to be a fixed ±50 around the origin so it could cover the
+    // whole planet — which spent 2048² on a 100-unit span (~20 texels/unit) and
+    // is why contact shadows read mushy. It now FOLLOWS the player (see
+    // updateSunShadow) over a ±SHADOW_EXTENT span, roughly tripling the
+    // effective resolution where the camera is actually looking.
+    sunLight.shadow.camera.near = 1;
+    sunLight.shadow.camera.far = 120;
+    sunLight.shadow.camera.left = -GameScene.SHADOW_EXTENT;
+    sunLight.shadow.camera.right = GameScene.SHADOW_EXTENT;
+    sunLight.shadow.camera.top = GameScene.SHADOW_EXTENT;
+    sunLight.shadow.camera.bottom = -GameScene.SHADOW_EXTENT;
+    sunLight.shadow.bias = -0.0004;
+    // normalBias offsets along the surface normal — the fix for acne on a
+    // curved planet, where a flat depth bias alone either acnes or peter-pans.
+    sunLight.shadow.normalBias = 0.035;
 
     this.add(sunLight);
+    // A DirectionalLight aims at its target's world position; the target must
+    // be in the scene graph to have one. Parked on the player each frame.
+    this.add(sunLight.target);
     this.lights.sun = sunLight;
 
     // Hemisphere light for natural gradual lighting (sky blue / warm ground).
     // Intensity lifted for the toon ramp — its stepped shading crushes
     // unlit undersides (tree canopies) to near-black without ambient fill.
-    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.85);
+    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.62);
     this.add(hemiLight);
     this.hemiLight = hemiLight;
 
-    // Soft fill light from below-opposite to reduce harsh shadows on planet's far side
-    const fillLight = new THREE.DirectionalLight(0xd4e8ff, 0.25);
+    // Soft fill from below-opposite so the planet's far side isn't pure black
+    const fillLight = new THREE.DirectionalLight(0xd4e8ff, 0.18);
     fillLight.position.set(-20, -30, -20);
     this.add(fillLight);
+
+    // RIM: a cool back-light roughly opposite the key. This is what separates
+    // a prop's silhouette from the terrain behind it — the single biggest
+    // reason stylised scenes read as "lit" rather than "flat shaded".
+    const rimLight = new THREE.DirectionalLight(0xcfe6ff, 0.55);
+    rimLight.position.set(-34, 26, -30);
+    this.add(rimLight);
+    this.rimLight = rimLight;
 
     // Sky dome — gradient sphere that moves with the camera
     this.createSkyDome();
@@ -3452,6 +3553,31 @@ export class GameScene extends THREE.Scene {
     // Day/night + weather cycle
     if (this.envCycle) {
       this.envCycle.update(deltaTime, playerPos, time);
+    }
+    // AFTER the cycle, which owns the sun's direction each frame
+    this.updateSunShadow(playerPos);
+  }
+
+  /**
+   * Park the sun's shadow box on the player. EnvironmentCycle sets the sun's
+   * position on an arc from the origin — that vector is the light DIRECTION.
+   * We keep the direction but re-seat the light above the player and aim it at
+   * them, so the tight ortho box is always spent where the camera is looking
+   * instead of being smeared across the whole planet.
+   */
+  private updateSunShadow(playerPos: THREE.Vector3): void {
+    const sun = this.lights.sun;
+    if (!sun) return;
+    this._sunDir.copy(sun.position).normalize();
+    if (this._sunDir.lengthSq() < 1e-6) return;
+    sun.position.copy(playerPos).addScaledVector(this._sunDir, 55);
+    sun.target.position.copy(playerPos);
+    sun.target.updateMatrixWorld();
+    // Rim tracks the day cycle — a bright rim over a dark night scene would
+    // read as a light leak. Keeps a little at night for moonlit separation.
+    if (this.rimLight) {
+      const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
+      this.rimLight.intensity = 0.12 + 0.43 * day;
     }
   }
 
