@@ -95,6 +95,9 @@ export class Island {
   // wave sampler. Amplitude is kept under the ~0.19 height where land begins,
   // so a high tide laps the beach without visually swallowing it.
   public seaTideUniform: { value: number } = { value: 0 };
+  // Analytic terrain height, captured from createIsland so the sea mesh can
+  // bake per-vertex water depth without 9k raycasts.
+  private terrainRadiusFor!: (normal: THREE.Vector3, v: THREE.Vector3) => number;
   // Radial water-surface offset above the base radius (matches the sea mesh).
   // Land sits >= base+0.3 (continent mask floor); the calm surface at +0.1
   // with wave crests to +0.25 stays just under the beach so waves lap the
@@ -352,10 +355,14 @@ export class Island {
       return boost;
     };
 
-    for (let i = 0; i < vertices.length; i += 3) {
-      v.set(vertices[i], vertices[i + 1], vertices[i + 2]);
-      const normal = v.clone().normalize();
-
+    /**
+     * Terrain radius for a surface direction. Extracted from the displacement
+     * loop so the SEA mesh can evaluate the same landscape analytically and
+     * bake a per-vertex water depth (raycasting 9k sea vertices would take
+     * seconds; this is pure maths). `v` is the direction scaled to the base
+     * radius, which is the domain the noise was authored in.
+     */
+    const terrainRadiusFor = (normal: THREE.Vector3, v: THREE.Vector3): number => {
       // Enhanced terrain generation with better geographic features
       // Large-scale continents/mountains using multi-octave noise
       const largeTerrain = multiOctaveNoise(v.x, v.y, v.z) * 3.2;
@@ -383,8 +390,22 @@ export class Island {
       // sin(latitude) = normal.y. Land above lat ~0.28, seafloor below
       // lat ~0.05, smooth beach slope between. Interior valleys are floored
       // at +0.3 so no inland dip ever sits under the sea surface (+0.08).
+      // COASTLINE WARP: a pure latitude threshold makes a perfectly circular
+      // island. Displacing the whole shore band in/out by longitude-varying
+      // noise carves bays and headlands instead. Two octaves — broad inlets
+      // plus finer crenellation. Amplitude is capped (~0.062 in sin-latitude)
+      // so the coast can never advance far enough inland to swallow the
+      // village, the boulevard, or the land race ring.
       const sinLat = normal.y;
-      const shoreT = THREE.MathUtils.clamp((sinLat - 0.05) / (0.28 - 0.05), 0, 1);
+      // noise3D averages three sin*cos products, so its practical range is far
+      // narrower than ±1 — the first pass at ±0.062 moved the coast by under
+      // 1 world unit, which reads as a circle. These amplitudes are tuned
+      // empirically against the measured shoreline spread.
+      const coastWarp =
+        noise3D(v.x, v.y, v.z, 0.16) * 0.105 + noise3D(v.x, v.y, v.z, 0.42) * 0.05;
+      const shoreLo = 0.05 + coastWarp;
+      const shoreHi = 0.28 + coastWarp;
+      const shoreT = THREE.MathUtils.clamp((sinLat - shoreLo) / (shoreHi - shoreLo), 0, 1);
       const mask = shoreT * shoreT * (3 - 2 * shoreT); // smoothstep
       // Ridged noise on the flanks breaks the smooth dome into crags. Two
       // octaves, and the fine one is pitched near the mesh limit: at 128
@@ -412,8 +433,14 @@ export class Island {
       // ~1.65). At +4.2 the peaks clipped flat into a pale mesa. Keep this
       // BELOW the sampler's maxDisp or raycasts start inside the summits.
       const maxRadius = this.radius + 7.5;
-      const finalRadius = THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
-      const newPos = normal.multiplyScalar(finalRadius);
+      return THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
+    };
+    this.terrainRadiusFor = terrainRadiusFor;
+
+    for (let i = 0; i < vertices.length; i += 3) {
+      v.set(vertices[i], vertices[i + 1], vertices[i + 2]);
+      const normal = v.clone().normalize();
+      const newPos = normal.multiplyScalar(terrainRadiusFor(normal, v));
       vertices[i] = newPos.x;
       vertices[i + 1] = newPos.y;
       vertices[i + 2] = newPos.z;
@@ -606,10 +633,15 @@ export class Island {
             // uTide raises/lowers the whole surface far more slowly than the
             // waves, so the waterline creeps up and down the beach.
             'transformed += nrm * (w * uAmp + uTide);',
+            'vDepth = aDepth;',
           ].join('\n'),
         );
+      shader.vertexShader = shader.vertexShader.replace(
+        'uniform float uTide;',
+        'uniform float uTide;\nattribute float aDepth;\nvarying float vDepth;',
+      );
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying float vWave;')
+        .replace('#include <common>', '#include <common>\nvarying float vWave;\nvarying float vDepth;\nuniform float uTime;\nuniform float uTide;')
         .replace(
           '#include <color_fragment>',
           [
@@ -620,13 +652,49 @@ export class Island {
             // narrow band keeps foam on the crest tips instead of washing the
             // whole surface pale.
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88,0.95,1.0), smoothstep(0.5,1.25,vWave)*0.85);',
+            // ── Shoreline surf ────────────────────────────────────────────
+            // vDepth is the baked water depth (sea surface minus terrain), so
+            // "how close to shore" is known per-vertex without any raycasting.
+            // Shallows turn turquoise, then three offset bands of foam sweep
+            // shoreward at different speeds — the layering is what sells it as
+            // surf rather than a single pulsing ring. The tide shifts the
+            // effective depth, so the whole surf line advances and retreats
+            // with the water.
+            // Ranges are generous because the shallowest water is HIDDEN under
+            // the beach — only the depth beyond the visible waterline renders,
+            // so a tight band collapses to a hairline.
+            'float d = vDepth - uTide;',
+            'float shallow = 1.0 - smoothstep(0.0, 5.0, d);',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22,0.68,0.72), shallow*shallow*0.65);',
+            'float edge = 1.0 - smoothstep(0.0, 3.2, d);',
+            'float s1 = sin(d * 2.6 - uTime * 1.9);',
+            'float s2 = sin(d * 4.3 - uTime * 2.7 + 1.7);',
+            'float s3 = sin(d * 1.5 - uTime * 1.2 + 3.4);',
+            'float surf = max(max(s1, s2 * 0.85), s3 * 0.7);',
+            'float foam = edge * smoothstep(0.2, 0.9, surf);',
+            // A permanent wet band right at the waterline under the moving foam
+            'foam = max(foam, (1.0 - smoothstep(0.0, 0.9, d)) * 0.8);',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95,0.98,1.0), clamp(foam, 0.0, 1.0) * 0.9);',
           ].join('\n'),
         );
     };
-    const sea = new THREE.Mesh(
-      new THREE.SphereGeometry(this.radius + Island.SEA_OFFSET, 96, 96),
-      seaMat,
-    );
+    // Bake water depth per sea vertex from the analytic terrain height — the
+    // shoreline foam and shallow tint key off this. One-time maths, no raycasts.
+    const seaGeo = new THREE.SphereGeometry(this.radius + Island.SEA_OFFSET, 96, 96);
+    {
+      const sp = seaGeo.attributes.position;
+      const depth = new Float32Array(sp.count);
+      const sn = new THREE.Vector3();
+      const sv = new THREE.Vector3();
+      const seaR = this.radius + Island.SEA_OFFSET;
+      for (let i = 0; i < sp.count; i++) {
+        sn.set(sp.getX(i), sp.getY(i), sp.getZ(i)).normalize();
+        sv.copy(sn).multiplyScalar(this.radius); // noise domain = base radius
+        depth[i] = seaR - this.terrainRadiusFor(sn, sv);
+      }
+      seaGeo.setAttribute('aDepth', new THREE.BufferAttribute(depth, 1));
+    }
+    const sea = new THREE.Mesh(seaGeo, seaMat);
     sea.name = 'sea';
     sea.receiveShadow = true;
     sea.position.copy(this.center);
