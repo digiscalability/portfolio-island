@@ -3273,8 +3273,9 @@ export class GameScene extends THREE.Scene {
       this.island.grassTimeUniform.value = time;
     }
 
-    // Sea waves (GPU-side + shared with the CPU swim/boat sampler)
+    // Sea waves (GPU-side + shared with the CPU swim/boat sampler) + the tide
     this.island.seaTimeUniform.value = time;
+    this.island.updateTide(time);
     this.updateVehicles(deltaTime);
     this.races?.update(deltaTime, this.player.getWorldPosition(), this.getActiveVehicleKind());
     this.updateWaterFX(deltaTime);
@@ -3795,7 +3796,7 @@ export class GameScene extends THREE.Scene {
   public getMinimapData(): {
     heading: number;
     npcs: Array<{ rx: number; ry: number; dist: number; hasQuest: boolean }>;
-    zones: Array<{ rx: number; ry: number; dist: number; color: string }>;
+    zones: Array<{ rx: number; ry: number; dist: number; color: string; label: string }>;
     delivery: { rx: number; ry: number; dist: number } | null;
   } {
     this.updateRadarBasis();
@@ -3820,12 +3821,14 @@ export class GameScene extends THREE.Scene {
         ...this.worldToRadar(n.meshRef.position),
         hasQuest: questNames.has(n.name),
       })),
+      // Labels are short by necessity — the radar disc is only 172px, so
+      // anything longer than ~8 characters collides with its neighbours.
       zones: [
-        { ...this.worldToRadar(this.island.dirAt(0, ZL)), color: '#2196F3' },
-        { ...this.worldToRadar(this.island.dirAt(1.2566, ZL)), color: '#FF9800' },
-        { ...this.worldToRadar(this.island.dirAt(2.5133, ZL)), color: '#E91E63' },
-        { ...this.worldToRadar(this.island.dirAt(3.7699, ZL)), color: '#9C27B0' },
-        { ...this.worldToRadar(new THREE.Vector3(0, 1, 0)), color: '#4CAF50' },
+        { ...this.worldToRadar(this.island.dirAt(0, ZL)), color: '#2196F3', label: 'Work' },
+        { ...this.worldToRadar(this.island.dirAt(1.2566, ZL)), color: '#FF9800', label: 'Projects' },
+        { ...this.worldToRadar(this.island.dirAt(2.5133, ZL)), color: '#E91E63', label: 'Life' },
+        { ...this.worldToRadar(this.island.dirAt(3.7699, ZL)), color: '#9C27B0', label: 'Contact' },
+        { ...this.worldToRadar(new THREE.Vector3(0, 1, 0)), color: '#4CAF50', label: 'Hub' },
       ],
       delivery: this.guideTarget ? this.worldToRadar(this.guideTarget) : null,
     };

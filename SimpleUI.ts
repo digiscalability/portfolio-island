@@ -860,7 +860,7 @@ export class SimpleUI {
   updateMinimap(data: {
     heading: number;
     npcs: Array<{ rx: number; ry: number; dist: number; hasQuest: boolean }>;
-    zones: Array<{ rx: number; ry: number; dist: number; color: string }>;
+    zones: Array<{ rx: number; ry: number; dist: number; color: string; label?: string }>;
     delivery: { rx: number; ry: number; dist: number } | null;
     peers?: Array<{ rx: number; ry: number; dist: number; waving: boolean }>;
     online?: number;
@@ -950,6 +950,20 @@ export class SimpleUI {
       ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+      // Name the zone under its dot. Stroked first so it stays legible over
+      // both the dark disc and a bright marker.
+      if (z.label) {
+        ctx.save();
+        ctx.font = '600 8.5px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.strokeText(z.label, p.x, p.y + 5.5);
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fillText(z.label, p.x, p.y + 5.5);
+        ctx.restore();
+      }
       ctx.strokeStyle = z.color;
       ctx.globalAlpha = 0.35;
       ctx.beginPath();

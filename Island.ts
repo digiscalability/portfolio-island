@@ -91,6 +91,10 @@ export class Island {
   public grassTimeUniform: { value: number } = { value: 0 };
   // Shared time uniform driving the sea wave vertex shader
   public seaTimeUniform: { value: number } = { value: 0 };
+  // Slow rise/fall of the whole sea surface, shared by the shader and the CPU
+  // wave sampler. Amplitude is kept under the ~0.19 height where land begins,
+  // so a high tide laps the beach without visually swallowing it.
+  public seaTideUniform: { value: number } = { value: 0 };
   // Radial water-surface offset above the base radius (matches the sea mesh).
   // Land sits >= base+0.3 (continent mask floor); the calm surface at +0.1
   // with wave crests to +0.25 stays just under the beach so waves lap the
@@ -99,6 +103,8 @@ export class Island {
   // Wave field constants (shared by the sea shader AND the analytic sampler
   // that floats swimmers/boats, so the mesh and the physics agree exactly).
   private static readonly WAVE_AMP = 0.15;
+  private static readonly TIDE_AMP = 0.1; // radial units above/below mean sea
+  private static readonly TIDE_PERIOD = 120; // seconds for a full high→low→high
 
   constructor(radius: number = 18) {
     this.radius = radius;
@@ -313,6 +319,35 @@ export class Island {
       return total / maxValue;
     };
 
+    // ── Highland range ────────────────────────────────────────────────────
+    // Three overlapping peaks strung along a line, so it reads as a RANGE
+    // rather than one cone. Sited at lon ~5.0-5.7 / lat ~0.72-0.82: the widest
+    // gap between the district plazas (lon 0, 1.26, 2.51, 3.77) and well
+    // inland of the fisherman's shore, the boulevard, and the land race ring
+    // (lat 0.38) — so it can't swallow town geometry or block a circuit.
+    // `reach` is ANGULAR — on this r=22 sphere 0.3 rad is ~6.6 world units,
+    // which produced one swollen dome. Narrow reaches give steep, distinct
+    // summits; the spacing (~0.2 rad) still overlaps their skirts enough to
+    // read as a connected ridge rather than three isolated cones.
+    const PEAKS = [
+      { dir: this.dirAt(5.12, 0.73), height: 2.6, reach: 0.14 },
+      { dir: this.dirAt(5.35, 0.79), height: 3.3, reach: 0.16 },
+      { dir: this.dirAt(5.58, 0.72), height: 2.3, reach: 0.13 },
+    ];
+    const highlandAt = (normal: THREE.Vector3): number => {
+      let boost = 0;
+      for (const p of PEAKS) {
+        // Angular distance on the sphere, so the falloff is geodesic
+        const ang = Math.acos(THREE.MathUtils.clamp(normal.dot(p.dir), -1, 1));
+        if (ang >= p.reach) continue;
+        const t = 1 - ang / p.reach;
+        // smoothstep² gives a broad shoulder with a sharper summit
+        const s = t * t * (3 - 2 * t);
+        boost += p.height * s * s;
+      }
+      return boost;
+    };
+
     for (let i = 0; i < vertices.length; i += 3) {
       v.set(vertices[i], vertices[i + 1], vertices[i + 2]);
       const normal = v.clone().normalize();
@@ -347,14 +382,21 @@ export class Island {
       const sinLat = normal.y;
       const shoreT = THREE.MathUtils.clamp((sinLat - 0.05) / (0.28 - 0.05), 0, 1);
       const mask = shoreT * shoreT * (3 - 2 * shoreT); // smoothstep
-      const landDisp = Math.max(noiseDisp, 0.3);
+      // Ridged noise on the flanks breaks the smooth dome into crags. Applied
+      // only where the highland actually lifts, so the rest of the island is
+      // untouched.
+      const highland = highlandAt(normal);
+      const crag = highland > 0.05 ? (1 - Math.abs(noise3D(v.x, v.y, v.z, 0.5))) * highland * 0.55 : 0;
+      const landDisp = Math.max(noiseDisp, 0.3) + highland + crag;
       const oceanDisp = -2.4 + noiseDisp * 0.15; // gently rolling seafloor
       const displacement = oceanDisp + (landDisp - oceanDisp) * mask;
 
       // Clamp radius to prevent terrain from going inside the sphere
       const rawRadius = this.radius + displacement;
       const minRadius = this.radius * 0.86; // deep enough for the seafloor
-      const maxRadius = this.radius + 4.2; // slightly higher peaks
+      // Headroom for the highland range. At +4.2 the peaks clipped flat and
+      // the range read as a pale mesa instead of summits.
+      const maxRadius = this.radius + 6.5;
       const finalRadius = THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
       const newPos = normal.multiplyScalar(finalRadius);
       vertices[i] = newPos.x;
@@ -386,6 +428,7 @@ export class Island {
       const ridge = new THREE.Color(0xb5c98a);
       const peak = new THREE.Color(0xc8cca0);
       const rock = new THREE.Color(0x8d8878);
+      const snow = new THREE.Color(0xf2f6fa);
       const tmp = new THREE.Color();
       const vDir = new THREE.Vector3();
       const vNrm = new THREE.Vector3();
@@ -407,6 +450,12 @@ export class Island {
       const BEACH_TOP = landTop * 0.2; // sand hugs the waterline only
       const BEACH_FADE = landTop * 0.18;
       const landSpan = Math.max(1e-6, landTop - BEACH_TOP);
+      // Snow line, also self-tuning: high enough above the ordinary ground
+      // (p95) that rolling hills never whiten, but low enough to cap the
+      // highland range. With no range present it lands above the tallest
+      // vertex, so no snow appears at all.
+      const maxAbove = aboveList.length ? aboveList[aboveList.length - 1] : 1;
+      const snowLine = Math.max(landTop * 1.55, maxAbove * 0.5);
       for (let i = 0; i < posA.count; i++) {
         vDir.set(posA.getX(i), posA.getY(i), posA.getZ(i));
         const r = vDir.length() || 1;
@@ -436,6 +485,14 @@ export class Island {
         // Rock breaks through only where the ground is genuinely steep. A low
         // threshold catches every ordinary hill and greys out the meadows.
         tmp.lerp(rock, THREE.MathUtils.smoothstep(slope, 0.26, 0.62) * 0.65);
+
+        // Snow line on the highland peaks. Gated on elevation AND flatness so
+        // it settles on summits and shelves but not on sheer rock faces.
+        if (above > snowLine) {
+          const alt = THREE.MathUtils.clamp((above - snowLine) / Math.max(0.4, snowLine * 0.5), 0, 1);
+          const settles = 1 - THREE.MathUtils.smoothstep(slope, 0.4, 0.8);
+          tmp.lerp(snow, alt * (0.35 + 0.65 * settles));
+        }
 
         // deterministic jitter from vertex index (no Math.random -> stable)
         const j = 1 + (((i * 2654435761) % 1000) / 1000 - 0.5) * 0.09;
@@ -487,8 +544,9 @@ export class Island {
     seaMat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.seaTimeUniform;
       shader.uniforms.uAmp = { value: Island.WAVE_AMP };
+      shader.uniforms.uTide = this.seaTideUniform;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uAmp;\nvarying float vWave;')
+        .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uAmp;\nuniform float uTide;\nvarying float vWave;')
         .replace(
           '#include <begin_vertex>',
           [
@@ -498,7 +556,9 @@ export class Island {
             '       + sin(nrm.z * 11.0 - uTime * 1.1) * 0.4',
             '       + sin((nrm.x + nrm.z) * 7.0 + uTime * 0.9) * 0.5;',
             'vWave = w;',
-            'transformed += nrm * w * uAmp;',
+            // uTide raises/lowers the whole surface far more slowly than the
+            // waves, so the waterline creeps up and down the beach.
+            'transformed += nrm * (w * uAmp + uTide);',
           ].join('\n'),
         );
       shader.fragmentShader = shader.fragmentShader
@@ -1813,7 +1873,25 @@ export class Island {
       Math.sin(n.x * 9.0 + t * 1.3) * 0.6 +
       Math.sin(n.z * 11.0 - t * 1.1) * 0.4 +
       Math.sin((n.x + n.z) * 7.0 + t * 0.9) * 0.5;
-    return this.seaLevel() + w * Island.WAVE_AMP;
+    // + tide, so swimmers, boats and jetskis ride the same surface they see
+    return this.seaLevel() + w * Island.WAVE_AMP + this.seaTideUniform.value;
+  }
+
+  /**
+   * Advance the slow tide. Deliberately visual-only: `seaLevel()` and
+   * `isOverWater()` stay pinned to MEAN sea level, so land/water
+   * classification never changes underneath gameplay — boats can't strand,
+   * the water race gates don't drift, and the shoreline barrier stays put.
+   * Only the rendered surface and anything floating on it move.
+   */
+  public updateTide(t: number): void {
+    this.seaTideUniform.value =
+      Math.sin((t / Island.TIDE_PERIOD) * Math.PI * 2) * Island.TIDE_AMP;
+  }
+
+  /** Current tide offset (+high / -low), for HUD or shoreline FX. */
+  public getTide(): number {
+    return this.seaTideUniform.value;
   }
 
   /**
