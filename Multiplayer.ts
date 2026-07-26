@@ -21,8 +21,8 @@ type VehicleKind = 'boat' | 'jetski' | 'car';
  * State goes out at 10Hz; peers expire after 3.5s of silence.
  */
 
-interface WireMessage {
-  kind: 'state' | 'wave' | 'leave';
+export interface WireMessage {
+  kind: 'state' | 'wave' | 'leave' | 'chat' | 'voice';
   id: string;
   name?: string;
   hat?: HatId | null;
@@ -32,6 +32,10 @@ interface WireMessage {
   vehIdx?: number; // shared index of that vehicle (same on every client)
   vp?: [number, number, number]; // vehicle world position
   vq?: [number, number, number, number]; // vehicle world quaternion
+  text?: string; // chat: message body
+  audio?: string; // voice: base64 Opus
+  dur?: number; // voice: clip length (ms)
+  t?: number; // chat/voice: sender timestamp (ms) for replay filtering
 }
 
 interface VehicleState {
@@ -89,6 +93,8 @@ export class Multiplayer {
   // Firebase RTDB transport state
   private selfWaveMs = 0; // last time WE waved (ms); rides along in state writes
   private peerWave = new Map<string, number>(); // last wave value seen per peer
+  private chatHandler?: (msg: WireMessage) => void;
+  private connectTime = Date.now(); // ignore chat/voice pushed before we joined
 
   constructor(scene: THREE.Scene, player: SimplePlayer) {
     this.scene = scene;
@@ -199,7 +205,8 @@ export class Multiplayer {
       import('firebase/database'),
     ]);
     const { db, uid } = await getFirebaseRealtime();
-    const { ref, set, remove, onChildAdded, onChildChanged, onChildRemoved, onDisconnect } = rtdb;
+    const { ref, set, remove, push, onChildAdded, onChildChanged, onChildRemoved, onDisconnect } =
+      rtdb;
     const roomPath = 'presence/island';
     const myNode = ref(db, `${roomPath}/${uid}`);
     const room = ref(db, roomPath);
@@ -213,6 +220,21 @@ export class Multiplayer {
       }
       if (msg.kind === 'wave') {
         this.selfWaveMs = Date.now(); // carried in the next state write
+        return;
+      }
+      if (msg.kind === 'chat' || msg.kind === 'voice') {
+        const path = msg.kind === 'chat' ? 'chat/island' : 'voice/island';
+        const entryRef = push(ref(db, path), {
+          id: this.selfId,
+          text: msg.text ?? null,
+          audio: msg.audio ?? null,
+          dur: msg.dur ?? null,
+          t: Date.now(),
+        });
+        // Self-clean: remove our own entry after it can no longer be needed.
+        window.setTimeout(() => {
+          void remove(entryRef).catch(() => {});
+        }, 12000);
         return;
       }
       // state
@@ -256,6 +278,24 @@ export class Multiplayer {
       this.peerWave.delete(key);
       this.handleMessage(JSON.stringify({ kind: 'leave', id: key }));
     });
+
+    for (const kind of ['chat', 'voice'] as const) {
+      const path = kind === 'chat' ? 'chat/island' : 'voice/island';
+      onChildAdded(ref(db, path), (snap) => {
+        const val = snap.val();
+        if (!val || val.id === uid || val.id === this.selfId) return;
+        this.handleMessage(
+          JSON.stringify({
+            kind,
+            id: val.id,
+            text: val.text ?? undefined,
+            audio: val.audio ?? undefined,
+            dur: val.dur ?? undefined,
+            t: val.t ?? 0,
+          }),
+        );
+      });
+    }
     console.log('🌐 Multiplayer connected via Firebase RTDB');
   }
 
@@ -324,6 +364,33 @@ export class Multiplayer {
     cb(1 + this.peers.size);
   }
 
+  /** Register a callback for incoming chat/voice wire messages (Chat.onWire). */
+  public setChatHandler(cb: (msg: WireMessage) => void): void {
+    this.chatHandler = cb;
+  }
+
+  /** Send an arbitrary wire message through the active transport. */
+  public sendWire(msg: WireMessage): void {
+    this.send(msg);
+  }
+
+  public getLocalWorldPosition(): THREE.Vector3 {
+    return this.player.getWorldPosition();
+  }
+
+  public getPeerWorldPosition(id: string): THREE.Vector3 | null {
+    const peer = this.peers.get(id);
+    return peer ? peer.avatar.position.clone() : null;
+  }
+
+  public getPeerAvatar(id: string): THREE.Object3D | null {
+    return this.peers.get(id)?.avatar ?? null;
+  }
+
+  public getSelfAvatar(): THREE.Object3D {
+    return this.player;
+  }
+
   /** Keep outgoing hat state in sync with the shop. */
   public setHat(hat: HatId | null): void {
     this.selfHat = hat;
@@ -359,6 +426,12 @@ export class Multiplayer {
       return;
     }
     if (!msg || msg.id === this.selfId) return;
+    if (msg.kind === 'chat' || msg.kind === 'voice') {
+      // Drop entries that predate our join (RTDB replays existing children).
+      if (typeof msg.t === 'number' && msg.t < this.connectTime) return;
+      this.chatHandler?.(msg);
+      return;
+    }
     if (msg.kind === 'leave') {
       this.removePeer(msg.id);
       return;
