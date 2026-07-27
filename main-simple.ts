@@ -460,6 +460,17 @@ class SimpleApp {
       // before it fades over them (was 350ms — too eager, revealed mid-warmup).
       setTimeout(() => this.ui.hideLoading(), 500);
 
+      // Register the service worker for instant repeat visits + offline shell.
+      // Production only (SW caching would fight Vite HMR in dev), on load so it
+      // never competes with the initial render.
+      if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {
+            /* SW is a progressive enhancement — ignore failures */
+          });
+        });
+      }
+
       // Background music synthesis is heavy — it generates a minute of stereo
       // samples with per-sample trig on the main thread. Running it during
       // init (as before) stalled the opening fly-in: the startup "lag". Defer
