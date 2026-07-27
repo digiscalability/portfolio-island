@@ -1,5 +1,5 @@
 import { a11y } from './Accessibility';
-import { linkLabel, track, trackOnce } from './Analytics';
+import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import { VOICE_MAX_MS } from './Chat';
 import { checkName } from './Moderation';
 
@@ -72,6 +72,7 @@ export class SimpleUI {
     this.createFPSDisplay();
     this.createMuteButton();
     this.createPortfolioButton();
+    this.createContactCTA();
     this.createTouchControls();
   }
 
@@ -127,6 +128,58 @@ export class SimpleUI {
     }, 2000);
   }
 
+  private coachMarkShown = false;
+  /**
+   * One-shot proximity coach mark: the first time another visitor comes within
+   * chat range, surface how to interact (chat / talk / mute) — otherwise those
+   * affordances are undiscoverable. Persisted so it shows at most once, ever.
+   */
+  showProximityCoachMark(): void {
+    if (this.coachMarkShown) return;
+    this.coachMarkShown = true;
+    try {
+      if (localStorage.getItem('ds_coach_proximity') === '1') return;
+      localStorage.setItem('ds_coach_proximity', '1');
+    } catch {
+      /* storage blocked — still show it this session */
+    }
+
+    const el = document.createElement('div');
+    el.setAttribute('role', 'status');
+    el.textContent = this.isTouch
+      ? '👋 Someone’s nearby! Tap 💬 to say hi · hold 🎤 to talk · tap their name to mute.'
+      : '👋 Someone’s nearby! Press Enter to say hi · hold V to talk · tap their name to mute.';
+    Object.assign(el.style, {
+      position: 'absolute',
+      left: '50%',
+      top: 'calc(var(--sat, 0px) + 52px)',
+      transform: 'translateX(-50%)',
+      maxWidth: 'min(90vw, 460px)',
+      background: 'rgba(12,12,20,0.95)',
+      color: '#fff',
+      padding: '11px 16px',
+      borderRadius: '12px',
+      fontSize: '13.5px',
+      lineHeight: '1.4',
+      textAlign: 'center',
+      fontFamily: 'system-ui, sans-serif',
+      border: '1px solid rgba(120,170,255,0.5)',
+      boxShadow: '0 6px 20px rgba(0,0,0,0.45)',
+      pointerEvents: 'auto',
+      cursor: 'pointer',
+      zIndex: '1600',
+      transition: 'opacity 0.3s ease',
+    });
+    const remove = () => {
+      el.style.opacity = '0';
+      window.setTimeout(() => el.remove(), 320);
+    };
+    el.addEventListener('click', remove);
+    this.overlay.appendChild(el);
+    trackOnce('coach_proximity_shown');
+    window.setTimeout(remove, 9000);
+  }
+
   /** Hide the mobile 🎤 button where voice can't work (e.g. iOS Safari, where
    *  MediaRecorder doesn't support opus) — text chat still works there.
    *  Defaults visible; call once Chat.voiceSupported is known. */
@@ -150,6 +203,10 @@ export class SimpleUI {
       background: 'rgba(12,12,20,0.92)', color: '#fff', outline: '2px solid rgba(120,170,255,0.9)',
       pointerEvents: 'auto', zIndex: '1700',
     });
+    // Quick-phrase chips (touch only): sending a canned greeting without a
+    // keyboard, which is otherwise painful to do over a full-screen 3D canvas.
+    let chipsRow: HTMLElement | null = null;
+
     const close = () => {
       // Idempotent: removing the focused input fires `blur`, whose handler also
       // calls close() — guard so the second call doesn't double-remove (which
@@ -157,6 +214,7 @@ export class SimpleUI {
       if (this.chatInput !== input) return;
       this.chatInput = null;
       input.remove();
+      chipsRow?.remove();
     };
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
@@ -165,6 +223,47 @@ export class SimpleUI {
     });
     input.addEventListener('blur', close);
     this.overlay.appendChild(input);
+
+    if (this.isTouch) {
+      chipsRow = document.createElement('div');
+      Object.assign(chipsRow.style, {
+        position: 'absolute',
+        left: '50%',
+        bottom: 'calc(var(--sab, 0px) + 140px)',
+        transform: 'translateX(-50%)',
+        display: 'flex',
+        gap: '8px',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+        width: 'min(86vw, 460px)',
+        pointerEvents: 'auto',
+        zIndex: '1700',
+      });
+      ['👋 Hi!', 'Nice island!', 'How do I race?', '🎉 GG'].forEach((phrase) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.textContent = phrase;
+        Object.assign(chip.style, {
+          padding: '8px 12px',
+          borderRadius: '999px',
+          border: '1px solid rgba(255,255,255,0.2)',
+          background: 'rgba(12,12,20,0.9)',
+          color: '#fff',
+          fontSize: '14px',
+          cursor: 'pointer',
+        });
+        // pointerdown + preventDefault: fire before the input's blur→close and
+        // keep focus off the chip, so the tap reliably sends and dismisses.
+        chip.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          close();
+          this.onChatSend?.(phrase);
+        });
+        chipsRow!.appendChild(chip);
+      });
+      this.overlay.appendChild(chipsRow);
+    }
+
     this.chatInput = input;
     input.focus();
   }
@@ -324,6 +423,41 @@ export class SimpleUI {
       this.togglePortfolioMenu();
     });
     this.makeHudButtonAccessible(btn, 'Open portfolio menu');
+    this.overlay.appendChild(btn);
+  }
+
+  /**
+   * Persistent "Work with me" pill (top-center). A portfolio's whole job is to
+   * convert, but the only always-visible path to contact was buried in the
+   * Portfolio menu. This routes straight to the Contact zone from anywhere.
+   */
+  private createContactCTA(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '💼 Work with me';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 10px)',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      background: 'linear-gradient(135deg, #12b76a, #0e9f6e)',
+      color: 'white',
+      padding: '7px 14px',
+      borderRadius: '999px',
+      fontSize: '13px',
+      fontWeight: '700',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+      zIndex: '1200',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('cta_pill_click');
+      this.showZonePanel({ id: 'contact', name: 'contact' });
+    });
+    this.makeHudButtonAccessible(btn, 'Work with me — open contact');
     this.overlay.appendChild(btn);
   }
 
@@ -2028,7 +2162,13 @@ export class SimpleUI {
     // Funnel: which sections a visitor actually reaches, and the outbound
     // clicks that are the real conversion. Once-per-session so re-opening the
     // same panel doesn't inflate the numbers.
-    trackOnce('zone_explored', { zone: String(zone?.id ?? 'unknown') });
+    const zid = String(zone?.id ?? 'unknown');
+    trackOnce('zone_explored', { zone: zid });
+    // "Reached the actual work" = any real section, not the intro or an unknown.
+    if (zid !== 'welcome' && zid !== 'unknown') {
+      markReachedPortfolio();
+      trackOnce('reached_portfolio', { first: zid });
+    }
     if (zone?.id === 'contact') trackOnce('contact_opened');
     // Delegated: catches every link in the panel without touching the markup
     this.zonePanelDiv.addEventListener('click', (e) => {

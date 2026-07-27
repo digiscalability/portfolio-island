@@ -55,6 +55,40 @@ export function trackOnce(name: string, props?: Props): void {
 }
 
 /**
+ * Dwell tracking. The single most useful portfolio question is "do visitors
+ * bounce before they ever reach the work?" — so on the first time the page is
+ * backgrounded/left we fire ONE `session_end` event carrying how many seconds
+ * they stayed and whether they ever opened a real portfolio section.
+ *
+ * We use visibilitychange→hidden (the last reliable moment on mobile, where
+ * pagehide/unload often don't fire) and latch so it reports at most once.
+ */
+let reachedPortfolio = false;
+export function markReachedPortfolio(): void {
+  reachedPortfolio = true;
+}
+
+let dwellStarted = false;
+export function startDwellTracking(): void {
+  if (dwellStarted || typeof document === 'undefined') return;
+  dwellStarted = true;
+  const startedAt = performance.now();
+  let fired = false;
+  const end = () => {
+    if (fired) return;
+    fired = true;
+    track('session_end', {
+      dwell_s: Math.round((performance.now() - startedAt) / 1000),
+      reached_portfolio: reachedPortfolio,
+    });
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') end();
+  });
+  window.addEventListener('pagehide', end);
+}
+
+/**
  * Collapse an outbound URL to a short, stable label. Full URLs make noisy
  * dimensions and can carry query junk, so only the destination is recorded.
  */

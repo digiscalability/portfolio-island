@@ -50,7 +50,14 @@ export default defineConfig({
         // browser can cache the engine across deploys.
         manualChunks(id: string): string | undefined {
           if (id.includes('node_modules')) {
-            if (id.includes('/three/') || id.includes('\\three\\')) return 'three';
+            if (id.includes('/three/') || id.includes('\\three\\')) {
+              // Bloom/postprocessing is dynamically imported (SimpleRenderer)
+              // and default-on but not needed until after world build, so give
+              // it its own chunk that fetches in parallel instead of bloating
+              // the eager `three` chunk that blocks first paint.
+              if (id.includes('postprocessing')) return 'postprocessing';
+              return 'three';
+            }
             if (id.includes('firebase') || id.includes('@firebase')) return 'firebase';
           }
           return undefined;

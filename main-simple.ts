@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { trackOnce } from './Analytics';
-import { Chat } from './Chat';
+import { startDwellTracking, trackOnce } from './Analytics';
+import { Chat, PROXIMITY_RADIUS } from './Chat';
 import { DeliverySystem } from './DeliverySystem';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
@@ -343,8 +343,9 @@ class SimpleApp {
         return am ? am.toggleMute() : false;
       });
 
-      // Initialize post-processing
-      this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
+      // Initialize post-processing. Awaited so the lazily-loaded bloom addons
+      // are constructed before warmUp() compiles their shaders ahead of reveal.
+      await this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
       console.log('✓ Post-processing initialized');
 
       this.renderer.setPostProcessingEnabled(true);
@@ -557,7 +558,13 @@ class SimpleApp {
     (window as unknown as { __lifeIslandReady?: boolean }).__lifeIslandReady = true;
     // Funnel denominator: pageviews vs world_ready shows how many visitors
     // actually got the 3D scene running (device/WebGL compatibility signal).
-    trackOnce('world_ready', { touch: this.ui.isTouchDevice() });
+    // `ms` is time-to-interactive from navigation start — the cold-start cost.
+    trackOnce('world_ready', {
+      touch: this.ui.isTouchDevice(),
+      ms: Math.round(performance.now()),
+    });
+    // Begin dwell tracking now that the world is up (fires session_end on leave).
+    startDwellTracking();
 
     console.log('🔄 Starting render loop...');
     console.log('🔍 Render loop parameters:', {
@@ -805,6 +812,12 @@ class SimpleApp {
     this.multiplayer?.setVehicle(this.scene.getActiveVehicleState());
     this.multiplayer?.update(deltaTime);
     this.chat?.update(deltaTime);
+
+    // First time a real visitor comes within chat range, surface how to
+    // interact (idempotent + persisted, so this is effectively free after once).
+    if (this.multiplayer && this.multiplayer.nearestPeerDistance() < PROXIMITY_RADIUS) {
+      this.ui.showProximityCoachMark();
+    }
 
     // Drive the Web Audio listener from the local player + camera each frame so
     // positional voice (and spatial sfx) is heard from the character's location

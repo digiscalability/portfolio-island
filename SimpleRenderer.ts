@@ -1,8 +1,10 @@
 import * as THREE from 'three';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+// Bloom/post-processing addons are type-only at module scope (erased from the
+// bundle) and loaded lazily as a parallel chunk in initPostProcessing() — see
+// there. Keeps the ~40KB of postprocessing code out of the critical bundle that
+// blocks first paint; it's still fetched and warmed well before the reveal.
+import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import type { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 
 /**
  * SimpleRenderer
@@ -101,8 +103,19 @@ export class SimpleRenderer {
   /**
    * Initialize post-processing effects
    */
-  public initPostProcessing(scene: THREE.Scene, camera: THREE.Camera): void {
+  public async initPostProcessing(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
     if (this.composer) return; // Already initialized
+
+    // Lazy-load the postprocessing addons as a parallel chunk (kept out of the
+    // critical bundle via the type-only imports above). Awaited by the caller
+    // before warmUp(), so bloom is still fully compiled ahead of the reveal.
+    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }] =
+      await Promise.all([
+        import('three/addons/postprocessing/EffectComposer.js'),
+        import('three/addons/postprocessing/RenderPass.js'),
+        import('three/addons/postprocessing/UnrealBloomPass.js'),
+        import('three/addons/postprocessing/OutputPass.js'),
+      ]);
 
     // Create effect composer
     this.composer = new EffectComposer(this.renderer);
