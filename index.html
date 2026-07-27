@@ -52,6 +52,42 @@
       content="A hand-built 3D island you can actually explore — walk the planet, meet the townsfolk, and discover the work."
     />
     <meta name="twitter:image" content="https://island.digiscalability.com/og-cover.jpg" />
+
+    <!-- Structured data: help search + AI crawlers understand this is Abbas's
+         portfolio under DigiScalability. Verify the name / social links are how
+         you want them presented publicly. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://island.digiscalability.com/#website",
+            "name": "DigiScalability Life Island",
+            "url": "https://island.digiscalability.com/",
+            "description": "A hand-built, explorable 3D portfolio from DigiScalability, a Melbourne-based venture studio building AI-powered products.",
+            "author": { "@id": "https://island.digiscalability.com/#person" }
+          },
+          {
+            "@type": "Person",
+            "@id": "https://island.digiscalability.com/#person",
+            "name": "Abbas Ali",
+            "jobTitle": "Founder",
+            "worksFor": {
+              "@type": "Organization",
+              "name": "DigiScalability",
+              "url": "https://digiscalability.com"
+            },
+            "url": "https://island.digiscalability.com/",
+            "sameAs": [
+              "https://digiscalability.com",
+              "https://www.linkedin.com/in/digiscalability",
+              "https://github.com/digiscalability"
+            ]
+          }
+        ]
+      }
+    </script>
     <style>
       :root {
         --bg-gradient-start: #667eea;

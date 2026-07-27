@@ -426,6 +426,7 @@ class SimpleApp {
             this.ui.showWelcome();
           });
         }
+        this.openDeepLinkZone();
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -547,6 +548,20 @@ class SimpleApp {
     this.scene.equipPlayerHat(hat as HatId);
     this.multiplayer?.setHat(hat as HatId);
     this.ui.showPassportComplete();
+  }
+
+  /** Open a section directly from a /?zone=<id> deep link, if present + valid. */
+  private openDeepLinkZone(): void {
+    try {
+      const z = new URLSearchParams(location.search).get('zone');
+      if (!z) return;
+      if (['welcome', 'professional', 'projects', 'personal', 'contact'].includes(z)) {
+        this.ui.hideWelcome();
+        this.ui.showZonePanel({ id: z, name: z });
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   private setupDebugShortcuts(): void {

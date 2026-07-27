@@ -311,6 +311,7 @@ export class SimpleUI {
     // Quick-phrase chips (touch only): sending a canned greeting without a
     // keyboard, which is otherwise painful to do over a full-screen 3D canvas.
     let chipsRow: HTMLElement | null = null;
+    let vvHandler: (() => void) | null = null;
 
     const close = () => {
       // Idempotent: removing the focused input fires `blur`, whose handler also
@@ -320,6 +321,10 @@ export class SimpleUI {
       this.chatInput = null;
       input.remove();
       chipsRow?.remove();
+      if (vvHandler && window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', vvHandler);
+        window.visualViewport.removeEventListener('scroll', vvHandler);
+      }
     };
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
@@ -367,6 +372,22 @@ export class SimpleUI {
         chipsRow!.appendChild(chip);
       });
       this.overlay.appendChild(chipsRow);
+    }
+
+    // Mobile: lift the input (and chips) above the soft keyboard using the
+    // VisualViewport API. Best-effort — if unavailable, the input just stays at
+    // its default position, same as before.
+    if (this.isTouch && window.visualViewport) {
+      const vv = window.visualViewport;
+      vvHandler = () => {
+        const keyboardInset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        const lift = keyboardInset + 12;
+        input.style.bottom = `calc(var(--sab, 0px) + ${lift}px)`;
+        if (chipsRow) chipsRow.style.bottom = `calc(var(--sab, 0px) + ${lift + 46}px)`;
+      };
+      vv.addEventListener('resize', vvHandler);
+      vv.addEventListener('scroll', vvHandler);
+      window.setTimeout(vvHandler, 60); // after focus settles + keyboard animates in
     }
 
     this.chatInput = input;
@@ -541,9 +562,10 @@ export class SimpleUI {
     btn.textContent = '💼 Work with me';
     Object.assign(btn.style, {
       position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 10px)',
-      left: '50%',
-      transform: 'translateX(-50%)',
+      // Stacked just below the 📖 Portfolio pill (top-right conversion column),
+      // clear of the top-center quest/delivery tracker.
+      top: 'calc(var(--sat, 0px) + 164px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
       background: 'linear-gradient(135deg, #12b76a, #0e9f6e)',
       color: 'white',
       padding: '7px 14px',
@@ -2332,6 +2354,14 @@ export class SimpleUI {
 
     this.overlay.appendChild(this.zonePanelDiv);
 
+    // Reflect the open zone in the URL so a visitor can copy/share a deep link
+    // (e.g. /?zone=projects); cleared again on close.
+    try {
+      history.replaceState(null, '', `${location.pathname}?zone=${encodeURIComponent(zid)}`);
+    } catch {
+      /* ignore */
+    }
+
     // Add keyboard listener for escape
     const escapeHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -2349,6 +2379,12 @@ export class SimpleUI {
     if (this.zonePanelDiv) {
       this.zonePanelDiv.remove();
       this.zonePanelDiv = null;
+      // Drop the ?zone= deep link when the panel closes.
+      try {
+        if (location.search) history.replaceState(null, '', location.pathname);
+      } catch {
+        /* ignore */
+      }
     }
   }
 
