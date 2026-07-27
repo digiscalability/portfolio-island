@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { a11y } from './Accessibility';
 import { startDwellTracking, trackOnce } from './Analytics';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
+import { Passport } from './Passport';
 import { DeliverySystem } from './DeliverySystem';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
@@ -55,6 +56,7 @@ class SimpleApp {
   ];
   private ownedHats: Set<string> = new Set();
   private equippedHat: string | null = null;
+  private passport: Passport | null = null;
 
   // FPS tracking
   private frameCount: number = 0;
@@ -225,6 +227,12 @@ class SimpleApp {
       // Show the "● Recording Xs" indicator only while the mic is truly live.
       this.chat.setOnRecordingStart(() => this.ui.showRecordingIndicator());
       this.chat.setOnRecordingStop(() => this.ui.hideRecordingIndicator());
+
+      // Portfolio Passport: visiting all four work zones unlocks the Founder's
+      // Golden Crown — the mechanic that routes explorers through the real work.
+      this.passport = new Passport();
+      this.passport.setOnComplete(() => this.grantPassportReward());
+      this.ui.setPassport(this.passport);
 
       // Tap a peer (their avatar or name) to mute/unmute them. A tap is
       // distinguished from a camera-orbit drag by small movement + short time,
@@ -517,6 +525,28 @@ class SimpleApp {
         console.log(`🧹 Removed legacy UI element: ${id}`);
       }
     });
+  }
+
+  /** Passport complete: grant + auto-equip the Golden Crown, persist, celebrate. */
+  private grantPassportReward(): void {
+    const hat = 'crown';
+    if (!this.ownedHats.has(hat)) {
+      this.ownedHats.add(hat);
+      try {
+        localStorage.setItem('ds_owned_hats', JSON.stringify([...this.ownedHats]));
+      } catch {
+        /* ignore */
+      }
+    }
+    this.equippedHat = hat;
+    try {
+      localStorage.setItem('ds_hat', hat);
+    } catch {
+      /* ignore */
+    }
+    this.scene.equipPlayerHat(hat as HatId);
+    this.multiplayer?.setHat(hat as HatId);
+    this.ui.showPassportComplete();
   }
 
   private setupDebugShortcuts(): void {

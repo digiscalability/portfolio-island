@@ -2,6 +2,7 @@ import { a11y } from './Accessibility';
 import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import { VOICE_MAX_MS } from './Chat';
 import { checkName } from './Moderation';
+import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 
 /**
  * SimpleUI - Simplified UI manager for the basic app
@@ -14,6 +15,10 @@ export class SimpleUI {
   private nameModalDiv: HTMLElement | null = null;
   private recordingDiv: HTMLElement | null = null;
   private recordingRaf = 0;
+  private passport: Passport | null = null;
+  public setPassport(p: Passport): void {
+    this.passport = p;
+  }
   private interactionDiv: HTMLElement | null = null;
   private fpsDiv: HTMLElement | null = null;
   private playerCountDiv: HTMLElement | null = null;
@@ -178,6 +183,106 @@ export class SimpleUI {
     this.overlay.appendChild(el);
     trackOnce('coach_proximity_shown');
     window.setTimeout(remove, 9000);
+  }
+
+  /** The passport "stamp book": the four zones, stamped or not, + the reward. */
+  showPassport(): void {
+    const pp = this.passport;
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    const stamps = PASSPORT_ZONES.map((z) => {
+      const meta = PASSPORT_META[z];
+      const done = !!pp?.has(z);
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px 8px;
+        border-radius:12px;border:2px ${done ? 'solid #12b76a' : 'dashed rgba(255,255,255,0.2)'};
+        background:${done ? 'rgba(18,183,106,0.12)' : 'rgba(255,255,255,0.03)'};">
+        <span style="font-size:26px;filter:${done ? 'none' : 'grayscale(1)'};opacity:${done ? '1' : '0.5'};">${meta.icon}</span>
+        <span style="font-size:12px;">${meta.label}</span>
+        <span style="font-size:11px;color:${done ? '#4ade80' : '#7d8ea6'};">${done ? '✓ Stamped' : 'Not yet'}</span>
+      </div>`;
+    }).join('');
+    const complete = !!pp?.isComplete();
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 4px;color:#8a9bff;">🛂 Portfolio Passport</h2>
+       <p style="margin:0 0 16px;font-size:13px;color:#aab;">Visit all four zones to earn the Founder's Golden Crown 👑</p>
+       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">${stamps}</div>
+       <div style="font-size:14px;font-weight:600;color:${complete ? '#4ade80' : '#ccd'};">
+         ${complete ? '👑 Complete — crown unlocked & equipped!' : `${pp?.count() ?? 0} / ${pp?.total() ?? 4} stamped`}</div>`,
+    );
+    trackOnce('passport_opened');
+    this.overlay.appendChild(modal);
+  }
+
+  /** Reward celebration fired when the last stamp lands (see Passport.onComplete). */
+  showPassportComplete(): void {
+    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))');
+    modal.style.border = '1px solid rgba(255,213,74,0.55)';
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<div style="font-size:52px;line-height:1;">👑</div>
+       <h2 style="margin:10px 0 6px;color:#ffd54a;">Portfolio complete!</h2>
+       <p style="margin:0 0 18px;font-size:15px;line-height:1.5;">
+         You explored every zone of the island. The <strong>Founder's Golden Crown</strong>
+         is now yours — and equipped. Thanks for taking the full tour.</p>`,
+    );
+    const cta = document.createElement('button');
+    cta.textContent = 'Wear it with pride →';
+    Object.assign(cta.style, {
+      padding: '11px 22px',
+      borderRadius: '10px',
+      border: 'none',
+      background: 'linear-gradient(135deg,#f5b301,#e08a00)',
+      color: '#241a00',
+      fontSize: '15px',
+      fontWeight: '700',
+      cursor: 'pointer',
+    });
+    cta.addEventListener('click', () => modal.remove());
+    modal.appendChild(cta);
+    trackOnce('passport_complete');
+    this.overlay.appendChild(modal);
+  }
+
+  /**
+   * Build a centered, dismissible modal shell (backdrop click + × close). Shared
+   * by the passport views; content is appended by the caller.
+   */
+  private buildCenteredModal(width: string): HTMLElement {
+    const modal = document.createElement('div');
+    Object.assign(modal.style, {
+      position: 'fixed',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)',
+      background: 'rgba(12, 12, 20, 0.96)',
+      color: 'white',
+      padding: '24px',
+      borderRadius: '16px',
+      pointerEvents: 'auto',
+      zIndex: '1650',
+      width,
+      textAlign: 'center',
+      border: '1px solid rgba(255,255,255,0.15)',
+      boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+    });
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    const close = document.createElement('button');
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Close');
+    Object.assign(close.style, {
+      position: 'absolute',
+      top: '8px',
+      right: '14px',
+      background: 'transparent',
+      color: 'white',
+      border: 'none',
+      fontSize: '24px',
+      cursor: 'pointer',
+    });
+    close.addEventListener('click', () => modal.remove());
+    modal.appendChild(close);
+    return modal;
   }
 
   /** Hide the mobile 🎤 button where voice can't work (e.g. iOS Safari, where
@@ -501,9 +606,19 @@ export class SimpleUI {
             border-radius:10px;font-size:15px;cursor:pointer;text-align:left;">${s.label}</button>`,
       )
       .join('');
+    const pp = this.passport;
+    const ppLabel = pp
+      ? pp.isComplete()
+        ? '🛂 Passport — complete 👑'
+        : `🛂 Passport — ${pp.count()}/${pp.total()} stamped`
+      : '🛂 Passport';
     menu.innerHTML = `
       <h2 style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
-      <p style="margin:0 0 16px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
+      <p style="margin:0 0 14px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
+      <button data-passport="1" style="display:block;width:100%;margin:0 0 12px;padding:12px;
+        background:linear-gradient(135deg,rgba(18,183,106,0.28),rgba(14,159,110,0.18));color:#fff;
+        border:1px solid rgba(120,220,170,0.45);border-radius:10px;font-size:14px;font-weight:600;
+        cursor:pointer;text-align:center;">${ppLabel}</button>
       ${rows}`;
     // close button
     const close = document.createElement('button');
@@ -526,6 +641,10 @@ export class SimpleUI {
         this.togglePortfolioMenu();
         this.showZonePanel({ id, name: id });
       });
+    });
+    menu.querySelector('button[data-passport]')?.addEventListener('click', () => {
+      this.togglePortfolioMenu();
+      this.showPassport();
     });
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);
@@ -2170,6 +2289,16 @@ export class SimpleUI {
       trackOnce('reached_portfolio', { first: zid });
     }
     if (zone?.id === 'contact') trackOnce('contact_opened');
+
+    // Passport: stamp this zone. A new stamp shows brief progress; the fourth
+    // triggers the reward flow via the onComplete callback wired in main-simple.
+    if (this.passport?.visit(zid)) {
+      trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
+      if (!this.passport.isComplete()) {
+        const meta = PASSPORT_META[zid as PassportZone];
+        this.toast(`🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`);
+      }
+    }
     // Delegated: catches every link in the panel without touching the markup
     this.zonePanelDiv.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement)?.closest?.('a');
