@@ -296,6 +296,53 @@ export class SimpleUI {
     );
   }
 
+  /** Contact-zone lead form → a PRIVATE leads node (owner-only), giving a real
+   *  "get in touch" path beyond the mailto link. Email is used only to reply. */
+  private appendLeadForm(container: HTMLElement): void {
+    const form = document.createElement('div');
+    form.style.cssText =
+      'margin-top:18px;text-align:left;border-top:1px solid rgba(255,255,255,0.12);padding-top:16px;';
+    const field =
+      'width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-size:14px;outline:1px solid rgba(255,255,255,0.15);';
+    form.innerHTML = `
+      <h3 style="margin:0 0 4px;font-size:15px;">Or send a message</h3>
+      <p style="margin:0 0 10px;font-size:12px;color:#9aa;">Straight to my inbox — I'll reply personally.</p>
+      <input id="lead-name" placeholder="Your name (optional)" maxlength="80" style="${field}" />
+      <input id="lead-email" type="email" placeholder="Your email" maxlength="120" style="${field}" />
+      <textarea id="lead-msg" placeholder="What are you working on?" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
+      <button id="lead-send" style="width:100%;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
+      <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;">Privacy</a></p>`;
+    container.appendChild(form);
+    // Keep keystrokes out of the game while typing.
+    form
+      .querySelectorAll('input,textarea')
+      .forEach((el) => el.addEventListener('keydown', (e) => e.stopPropagation()));
+    const btn = form.querySelector('#lead-send') as HTMLButtonElement | null;
+    btn?.addEventListener('click', async () => {
+      const name = (form.querySelector('#lead-name') as HTMLInputElement).value;
+      const email = (form.querySelector('#lead-email') as HTMLInputElement).value;
+      const msg = (form.querySelector('#lead-msg') as HTMLTextAreaElement).value;
+      if (!email.trim()) {
+        this.toast('Please add your email.');
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      const { submitLead } = await import('./Boards');
+      const ok = await submitLead(name, email, msg);
+      if (ok) {
+        track('lead_submitted');
+        form.innerHTML = `<p style="font-size:15px;color:#a5d6a7;text-align:center;padding:12px 0;">✓ Thanks${
+          name.trim() ? ', ' + this.escapeHtml(name.trim()) : ''
+        }! I'll be in touch soon.</p>`;
+      } else {
+        btn.disabled = false;
+        btn.textContent = 'Send message';
+        this.toast('Please check your email address.');
+      }
+    });
+  }
+
   /** Global race leaderboard: fastest laps per circuit. */
   async showLeaderboard(): Promise<void> {
     const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
@@ -2557,7 +2604,10 @@ export class SimpleUI {
       markReachedPortfolio();
       trackOnce('reached_portfolio', { first: zid });
     }
-    if (zone?.id === 'contact') trackOnce('contact_opened');
+    if (zone?.id === 'contact') {
+      trackOnce('contact_opened');
+      this.appendLeadForm(this.zonePanelDiv);
+    }
 
     // Passport: stamp this zone. A new stamp shows brief progress; the fourth
     // triggers the reward flow via the onComplete callback wired in main-simple.
@@ -2710,8 +2760,12 @@ export class SimpleUI {
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
         <div style="text-align: left;">
           <h3 style="margin-bottom:4px;">📈 RankPilot <span style="font-size:12px;color:#8f8;">● live</span></h3>
-          <p style="margin-top:4px;">Flagship — AI-powered SEO &amp; search-visibility
-          platform. Audits, schema, and LLM-readiness for the answer-engine era.</p>
+          <p style="margin:4px 0;font-size:14px;"><strong style="color:#ffcc80;">Problem:</strong>
+          search is shifting from ten blue links to AI answers — and most sites are invisible to
+          the models doing the answering.</p>
+          <p style="margin:4px 0;font-size:14px;"><strong style="color:#ffcc80;">What I built:</strong>
+          a platform that audits a site's schema, content and LLM-readiness and shows exactly what
+          to fix. Built solo; live and in daily use.</p>
           ${link('https://rankpilot-h3jpc.web.app', '↗ Visit RankPilot', { primary: true })}
           <h3 style="margin-bottom:4px;margin-top:22px;">🍫 ChocoMate</h3>
           <p style="margin-top:4px;">Direct-to-consumer chocolate brand — e-commerce

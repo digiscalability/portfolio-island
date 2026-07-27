@@ -76,6 +76,20 @@
           "$other": { ".validate": false }
         }
       }
+    },
+    "leads": {
+      "island": {
+        "$entry": {
+          ".write": "auth != null && newData.exists() && newData.child('id').val() === auth.uid",
+          ".validate": "newData.hasChildren(['id', 'email', 't'])",
+          "id":      { ".validate": "newData.isString()" },
+          "name":    { ".validate": "newData.isString() && newData.val().length <= 80" },
+          "email":   { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "message": { ".validate": "newData.isString() && newData.val().length <= 1000" },
+          "t":       { ".validate": "newData.isNumber()" },
+          "$other":  { ".validate": false }
+        }
+      }
     }
   }
 }

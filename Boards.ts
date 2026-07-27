@@ -73,6 +73,33 @@ export async function signGuestbook(name: string, msg: string): Promise<boolean>
   }
 }
 
+/**
+ * Submit a contact lead. Writes to leads/island, which is NOT world-readable
+ * (see rules: no .read) — submitted emails stay private to the site owner.
+ * Returns false on an obviously-invalid email or a write failure.
+ */
+export async function submitLead(name: string, email: string, message: string): Promise<boolean> {
+  const cleanEmail = email.trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) return false;
+  try {
+    const { getFirebaseRealtime } = await import('./firebaseClient');
+    const { ref, push, set } = await import('firebase/database');
+    const { db, uid } = await getFirebaseRealtime();
+    const entryRef = push(ref(db, 'leads/island'));
+    await set(entryRef, {
+      id: uid,
+      name: safePeerName(name).slice(0, 80),
+      email: cleanEmail.slice(0, 120),
+      // Kept verbatim (private, owner-only); length is capped by the rules too.
+      message: message.trim().slice(0, 1000),
+      t: Date.now(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Most-recent guestbook entries, newest first. */
 export async function getGuestbook(limitN = 25): Promise<GuestEntry[]> {
   try {
