@@ -234,6 +234,14 @@ class SimpleApp {
       this.passport.setOnComplete(() => this.grantPassportReward());
       this.ui.setPassport(this.passport);
 
+      // Roster: click the online-count to see who's here and mute per peer.
+      this.ui.setRosterProvider(() => this.multiplayer?.getPeerList() ?? []);
+      this.ui.setOnPeerMuteToggle((id) => {
+        const muted = this.chat?.toggleMute(id) ?? false;
+        this.multiplayer?.setPeerMuted(id, muted);
+        return muted;
+      });
+
       // Tap a peer (their avatar or name) to mute/unmute them. A tap is
       // distinguished from a camera-orbit drag by small movement + short time,
       // so it coexists with OrbitCamera's own pointer handling on the canvas.

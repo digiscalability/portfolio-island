@@ -441,6 +441,15 @@ export class Multiplayer {
     return this.peers.get(id)?.name ?? null;
   }
 
+  /** Snapshot of connected peers (id, name, muted) for the roster panel. */
+  public getPeerList(): Array<{ id: string; name: string; muted: boolean }> {
+    const out: Array<{ id: string; name: string; muted: boolean }> = [];
+    for (const [id, peer] of this.peers) {
+      out.push({ id, name: peer.name || 'Guest', muted: !!peer.muted });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   /** Reflect a peer's muted state on their floating name label (🔇 prefix). */
   public setPeerMuted(id: string, muted: boolean): void {
     const peer = this.peers.get(id);

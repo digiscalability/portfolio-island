@@ -1360,10 +1360,66 @@ export class SimpleUI {
       borderRadius: '5px',
       fontSize: '12px',
       fontFamily: 'monospace',
-      pointerEvents: 'none',
+      pointerEvents: 'auto',
+      cursor: 'pointer',
     });
+    this.playerCountDiv.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showRoster();
+    });
+    this.makeHudButtonAccessible(this.playerCountDiv, 'Show who is online');
     this.overlay.appendChild(this.playerCountDiv);
     this.updatePlayerCount(1); // Start with 1 (self)
+  }
+
+  private rosterProvider: (() => Array<{ id: string; name: string; muted: boolean }>) | null = null;
+  private onPeerMuteToggle: ((id: string) => boolean) | null = null;
+  public setRosterProvider(fn: () => Array<{ id: string; name: string; muted: boolean }>): void {
+    this.rosterProvider = fn;
+  }
+  public setOnPeerMuteToggle(fn: (id: string) => boolean): void {
+    this.onPeerMuteToggle = fn;
+  }
+
+  /** Roster panel: who's on the island right now, with a per-peer mute toggle. */
+  showRoster(): void {
+    const peers = this.rosterProvider?.() ?? [];
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))');
+    let rowsHtml: string;
+    if (peers.length === 0) {
+      rowsHtml = `<p style="margin:12px 0;font-size:14px;color:#aab;">You're the only one exploring right now.
+        Share the link and bring a friend! 👋</p>`;
+    } else {
+      rowsHtml = peers
+        .map(
+          (p) => `<div data-peer="${p.id}" style="display:flex;align-items:center;justify-content:space-between;
+            gap:10px;padding:10px 12px;margin:6px 0;background:rgba(255,255,255,0.04);border-radius:10px;">
+            <span style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👤 ${p.name}</span>
+            <button data-mute="${p.id}" style="flex:0 0 auto;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
+              background:${p.muted ? 'rgba(255,90,90,0.25)' : 'rgba(255,255,255,0.08)'};color:#fff;font-size:13px;cursor:pointer;">
+              ${p.muted ? '🔇 Muted' : '🔊 Mute'}</button>
+          </div>`,
+        )
+        .join('');
+    }
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 4px;color:#8a9bff;">👥 On the island (${peers.length + 1})</h2>
+       <p style="margin:0 0 12px;font-size:13px;color:#aab;">Tap a name's button to mute their chat &amp; voice.</p>
+       ${rowsHtml}`,
+    );
+    modal.querySelectorAll('button[data-mute]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const id = (b as HTMLElement).dataset.mute!;
+        const muted = this.onPeerMuteToggle?.(id) ?? false;
+        (b as HTMLElement).textContent = muted ? '🔇 Muted' : '🔊 Mute';
+        (b as HTMLElement).style.background = muted
+          ? 'rgba(255,90,90,0.25)'
+          : 'rgba(255,255,255,0.08)';
+      });
+    });
+    trackOnce('roster_opened');
+    this.overlay.appendChild(modal);
   }
 
   /**
