@@ -64,6 +64,13 @@ export class Chat {
   private activeVoices: ActiveVoice[] = [];
   private static readonly _vp = new THREE.Vector3();
   private starting = false;
+  // Fired when recording TRULY begins (mic granted + recorder started) and when
+  // it ends — so the UI never shows "Recording" while a permission prompt is up
+  // or after a denial. The UI subscribes to drive the on-screen indicator.
+  private onRecStart: (() => void) | null = null;
+  private onRecStop: (() => void) | null = null;
+  public setOnRecordingStart(cb: () => void): void { this.onRecStart = cb; }
+  public setOnRecordingStop(cb: () => void): void { this.onRecStop = cb; }
   public readonly voiceSupported =
     typeof navigator !== 'undefined' &&
     !!navigator.mediaDevices?.getUserMedia &&
@@ -145,6 +152,7 @@ export class Chat {
       mr.onstop = () => void this.finishRecording();
       this.mediaRecorder = mr;
       mr.start();
+      this.onRecStart?.(); // recording is truly live now — show the indicator
       this.recStopTimer = window.setTimeout(() => this.stopRecording(), VOICE_MAX_MS);
     } catch {
       this.releaseMic();
@@ -157,7 +165,11 @@ export class Chat {
   /** Stop recording (push-to-talk UP, or auto at VOICE_MAX_MS). */
   public stopRecording(): void {
     if (this.recStopTimer) { clearTimeout(this.recStopTimer); this.recStopTimer = 0; }
-    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
+    const wasActive = !!this.mediaRecorder && this.mediaRecorder.state !== 'inactive';
+    if (wasActive) this.mediaRecorder!.stop();
+    // Hide the indicator the instant capture ends (on release or auto-stop),
+    // not after the async encode/send in finishRecording.
+    if (wasActive) this.onRecStop?.();
   }
 
   /** Release the mic (stop all tracks) so the browser/OS mic-in-use

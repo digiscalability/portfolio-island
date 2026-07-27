@@ -222,6 +222,9 @@ class SimpleApp {
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
       this.ui.setOnMicDown(() => void this.chat?.startRecording());
       this.ui.setOnMicUp(() => this.chat?.stopRecording());
+      // Show the "● Recording Xs" indicator only while the mic is truly live.
+      this.chat.setOnRecordingStart(() => this.ui.showRecordingIndicator());
+      this.chat.setOnRecordingStop(() => this.ui.hideRecordingIndicator());
 
       // Tap a peer (their avatar or name) to mute/unmute them. A tap is
       // distinguished from a camera-orbit drag by small movement + short time,

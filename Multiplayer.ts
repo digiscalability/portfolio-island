@@ -205,8 +205,19 @@ export class Multiplayer {
       import('firebase/database'),
     ]);
     const { db, uid } = await getFirebaseRealtime();
-    const { ref, set, remove, push, onValue, onChildAdded, onChildChanged, onChildRemoved, onDisconnect } =
-      rtdb;
+    const {
+      ref,
+      set,
+      remove,
+      push,
+      query,
+      limitToLast,
+      onValue,
+      onChildAdded,
+      onChildChanged,
+      onChildRemoved,
+      onDisconnect,
+    } = rtdb;
     const roomPath = 'presence/island';
     const myNode = ref(db, `${roomPath}/${uid}`);
     const room = ref(db, roomPath);
@@ -286,7 +297,12 @@ export class Multiplayer {
 
     for (const kind of ['chat', 'voice'] as const) {
       const path = kind === 'chat' ? 'chat/island' : 'voice/island';
-      const listRef = ref(db, path);
+      // Cap the initial replay: RTDB downloads every child on attach (billed),
+      // and a joiner would otherwise pull the ENTIRE backlog. Voice entries are
+      // ~24-53KB of base64 each, so cap voice far tighter than text. The replay
+      // is discarded anyway (the `ready` gate below), so this is pure bandwidth
+      // savings — live messages still arrive as new child_added events.
+      const listRef = query(ref(db, path), limitToLast(kind === 'voice' ? 8 : 30));
       // Ignore the initial burst of existing children (RTDB replays them on
       // attach); only act on entries that arrive AFTER the current list has
       // loaded. onValue(onlyOnce) fires right after that initial replay, so

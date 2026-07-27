@@ -1,5 +1,6 @@
 import { a11y } from './Accessibility';
 import { linkLabel, track, trackOnce } from './Analytics';
+import { VOICE_MAX_MS } from './Chat';
 import { checkName } from './Moderation';
 
 /**
@@ -11,6 +12,8 @@ export class SimpleUI {
   private loadingDiv: HTMLElement | null = null;
   private welcomeDiv: HTMLElement | null = null;
   private nameModalDiv: HTMLElement | null = null;
+  private recordingDiv: HTMLElement | null = null;
+  private recordingRaf = 0;
   private interactionDiv: HTMLElement | null = null;
   private fpsDiv: HTMLElement | null = null;
   private playerCountDiv: HTMLElement | null = null;
@@ -725,31 +728,149 @@ export class SimpleUI {
         maxHeight: 'calc(100dvh - 32px)',
         overflowY: 'auto',
       });
+      this.welcomeDiv.setAttribute('role', 'dialog');
+      this.welcomeDiv.setAttribute('aria-modal', 'true');
+      this.welcomeDiv.setAttribute('aria-label', 'Welcome to DigiScalability Life Island');
       this.overlay.appendChild(this.welcomeDiv);
     }
 
-    // Returning visitors get a brief hello instead of the full tutorial
+    trackOnce('welcome_shown');
+
+    // Returning visitors get a brief hello; first-timers get the pitch + CTAs.
     const returning = localStorage.getItem('ds_welcomed') === '1';
     const controlsLine = this.isTouch
-      ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE. Tap a dialogue to continue.'
-      : 'Use WASD to move, mouse to look around, space to jump, Q to wave at other visitors.';
+      ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
+      : 'WASD to move · mouse to look · space to jump · Q to wave.';
+
+    // Two CTAs route straight to the real portfolio content, so a recruiter who
+    // won't explore still reaches the work and the contact links in one click.
+    const ctaRow = `
+      <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 16px;">
+        <button data-cta="projects" style="flex:1 1 140px; padding:12px 14px; border:none; border-radius:10px;
+          background:linear-gradient(135deg,#5b6cff,#8a4de0); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
+          🚀 See the work</button>
+        <button data-cta="contact" style="flex:1 1 140px; padding:12px 14px; border-radius:10px;
+          background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
+          📬 Get in touch</button>
+      </div>`;
+
     this.welcomeDiv.innerHTML = returning
-      ? `<h2 style="margin: 0; color: #4CAF50;">👋 Welcome back!</h2>`
+      ? `<h2 style="margin: 0 0 14px 0; color: #4CAF50;">👋 Welcome back!</h2>
+         ${ctaRow}
+         <p style="margin:0; font-size:12px; color:#9aa;">…or press any key to keep exploring.</p>`
       : `
-      <h2 style="margin: 0 0 20px 0; color: #4CAF50;">Welcome to DigiScalability Life Island</h2>
-      <p style="margin: 0 0 20px 0;">${controlsLine}</p>
-      <p style="margin: 0 0 20px 0; font-size: 14px; color: #ccc;">Press any key to start exploring!</p>
+      <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
+      <p style="margin: 0 0 18px 0; font-size:15px; line-height:1.5;">
+        I'm <strong>Abbas</strong> — I build AI-powered products. This is my portfolio,
+        hand-built in Three.js, that you can actually walk through.</p>
+      ${ctaRow}
+      <p style="margin: 0 0 6px 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
+      <p style="margin: 0; font-size: 12px; color: #7fbf8a;">…or just start exploring — press any key.</p>
     `;
 
-    // Auto-hide on any key press
-    const hideWelcome = () => {
+    // CTA buttons: track, navigate to the section, then dismiss. stopPropagation
+    // so the outside-click dismiss below doesn't double-fire.
+    this.welcomeDiv.querySelectorAll('button[data-cta]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const cta = (b as HTMLElement).dataset.cta!;
+        track('welcome_cta', { cta });
+        this.hideWelcome();
+        this.showZonePanel({ id: cta, name: cta });
+      });
+    });
+
+    // Dismiss on any key ("start exploring") or a click OUTSIDE the modal.
+    // Two exemptions: keyboard activation of a focused CTA (Enter/Space) and
+    // clicks landing inside the modal — both must reach the CTA handler first.
+    const hideWelcome = (ev?: Event) => {
+      if (ev?.type === 'keydown' && ev.target instanceof HTMLButtonElement) return;
+      if (
+        ev?.type === 'click' &&
+        ev.target instanceof Node &&
+        this.welcomeDiv?.contains(ev.target)
+      )
+        return;
       this.hideWelcome();
       document.removeEventListener('keydown', hideWelcome);
       document.removeEventListener('click', hideWelcome);
     };
     document.addEventListener('keydown', hideWelcome);
     document.addEventListener('click', hideWelcome);
-    if (returning) window.setTimeout(hideWelcome, 1600);
+    if (returning) window.setTimeout(hideWelcome, 2600);
+  }
+
+  /**
+   * Push-to-talk recording indicator: a pulsing red dot + elapsed seconds +
+   * a progress bar toward the max clip length. Driven by Chat's REAL start/stop
+   * callbacks, so it appears only while the mic is genuinely live (never during
+   * a permission prompt or after a denial).
+   */
+  showRecordingIndicator(): void {
+    if (!this.recordingDiv) {
+      const div = document.createElement('div');
+      div.setAttribute('role', 'status');
+      div.setAttribute('aria-live', 'assertive');
+      Object.assign(div.style, {
+        position: 'absolute',
+        left: '50%',
+        bottom: 'calc(var(--sab, 0px) + 96px)',
+        transform: 'translateX(-50%)',
+        background: 'rgba(20,0,0,0.82)',
+        color: '#fff',
+        padding: '8px 14px',
+        borderRadius: '999px',
+        fontSize: '13px',
+        fontFamily: 'system-ui, sans-serif',
+        fontWeight: '600',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '9px',
+        pointerEvents: 'none',
+        zIndex: '1750',
+        border: '1px solid rgba(255,90,90,0.5)',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+      });
+      div.innerHTML = `
+        <span class="rec-dot" style="width:10px;height:10px;border-radius:50%;background:#ff4d4d;box-shadow:0 0 8px #ff4d4d;"></span>
+        <span class="rec-label">Recording…</span>
+        <span style="position:relative;width:52px;height:4px;border-radius:2px;background:rgba(255,255,255,0.2);overflow:hidden;">
+          <span class="rec-bar" style="position:absolute;left:0;top:0;height:100%;width:0%;background:#ff6b6b;"></span>
+        </span>`;
+      // Pulse the dot without a stylesheet, and respect reduced-motion.
+      if (!a11y.reducedMotion) {
+        const dot = div.querySelector('.rec-dot') as HTMLElement | null;
+        dot?.animate([{ opacity: 1 }, { opacity: 0.3 }, { opacity: 1 }], {
+          duration: 900,
+          iterations: Infinity,
+        });
+      }
+      this.overlay.appendChild(div);
+      this.recordingDiv = div;
+    }
+    const label = this.recordingDiv.querySelector('.rec-label') as HTMLElement | null;
+    const bar = this.recordingDiv.querySelector('.rec-bar') as HTMLElement | null;
+    const start = performance.now();
+    const tick = () => {
+      if (!this.recordingDiv) return;
+      const elapsed = performance.now() - start;
+      const frac = Math.min(1, elapsed / VOICE_MAX_MS);
+      if (label) label.textContent = `Recording ${(elapsed / 1000).toFixed(1)}s`;
+      if (bar) bar.style.width = `${(frac * 100).toFixed(0)}%`;
+      this.recordingRaf = requestAnimationFrame(tick);
+    };
+    this.recordingRaf = requestAnimationFrame(tick);
+  }
+
+  hideRecordingIndicator(): void {
+    if (this.recordingRaf) {
+      cancelAnimationFrame(this.recordingRaf);
+      this.recordingRaf = 0;
+    }
+    if (this.recordingDiv) {
+      this.recordingDiv.remove();
+      this.recordingDiv = null;
+    }
   }
 
   /**
