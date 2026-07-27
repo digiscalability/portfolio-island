@@ -23,9 +23,13 @@
         ".read": "auth != null",
         "$entry": {
           ".write": "auth != null && (newData.child('id').val() === auth.uid || (!newData.exists() && data.child('id').val() === auth.uid))",
-          "text": { ".validate": "newData.isString() && newData.val().length <= 120" },
-          "id":   { ".validate": "newData.isString()" },
-          "t":    { ".validate": "newData.isNumber()" }
+          ".validate": "newData.hasChildren(['id', 't'])",
+          "text":  { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "audio": { ".validate": "newData.isString() && newData.val().length <= 60000" },
+          "dur":   { ".validate": "newData.isNumber()" },
+          "id":    { ".validate": "newData.isString()" },
+          "t":     { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
         }
       }
     },
@@ -34,9 +38,13 @@
         ".read": "auth != null",
         "$entry": {
           ".write": "auth != null && (newData.child('id').val() === auth.uid || (!newData.exists() && data.child('id').val() === auth.uid))",
+          ".validate": "newData.hasChildren(['id', 'audio', 't'])",
           "audio": { ".validate": "newData.isString() && newData.val().length <= 60000" },
+          "text":  { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "dur":   { ".validate": "newData.isNumber()" },
           "id":    { ".validate": "newData.isString()" },
-          "t":     { ".validate": "newData.isNumber()" }
+          "t":     { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
         }
       }
     }
