@@ -36,6 +36,7 @@ export interface WireMessage {
   audio?: string; // voice: base64 Opus
   dur?: number; // voice: clip length (ms)
   t?: number; // chat/voice: sender timestamp (ms) for replay filtering
+  founder?: boolean; // state: sender is the site founder (renders a 👑 badge)
 }
 
 interface VehicleState {
@@ -52,6 +53,7 @@ interface Peer {
   avatar: THREE.Group;
   label: THREE.Sprite;
   muted: boolean;
+  founder: boolean;
   hatMesh: THREE.Group | null;
   targetPos: THREE.Vector3;
   targetQuat: THREE.Quaternion;
@@ -81,6 +83,19 @@ export class Multiplayer {
   public readonly selfId: string;
   public selfName: string;
   private selfHat: HatId | null = null;
+  // Founder flag: broadcast so peers render a 👑 badge on this session's label.
+  // Set once via ?founder=1 (persisted) or a pre-set localStorage flag. Only a
+  // cosmetic marker, so being spoofable is acceptable.
+  private selfFounder = ((): boolean => {
+    try {
+      if (new URLSearchParams(location.search).get('founder') === '1') {
+        localStorage.setItem('ds_founder', '1');
+      }
+      return localStorage.getItem('ds_founder') === '1';
+    } catch {
+      return false;
+    }
+  })();
   private selfVehicle: VehicleState | null = null;
   private selfLabel: THREE.Sprite | null = null;
 
@@ -265,6 +280,7 @@ export class Multiplayer {
         vq: msg.vq ?? null,
         t: Date.now(),
         wave: this.selfWaveMs,
+        founder: this.selfFounder,
       }).catch(() => {});
     };
 
@@ -343,6 +359,7 @@ export class Multiplayer {
         vehIdx: v.vehIdx ?? -1,
         vp: v.vp ?? undefined,
         vq: v.vq ?? undefined,
+        founder: !!v.founder,
       }),
     );
   }
@@ -525,6 +542,11 @@ export class Multiplayer {
         this.refreshPeerLabel(peer);
       }
     }
+    const founder = !!msg.founder;
+    if (founder !== peer.founder) {
+      peer.founder = founder;
+      this.refreshPeerLabel(peer);
+    }
     const hat = msg.hat ?? null;
     if (hat !== peer.hat) {
       peer.hat = hat;
@@ -562,7 +584,9 @@ export class Multiplayer {
     const y = peer.label.position.y;
     peer.avatar.remove(peer.label);
     (peer.label.material as THREE.SpriteMaterial).map?.dispose();
-    peer.label = Multiplayer.makeTextSprite((peer.muted ? '🔇 ' : '') + peer.name);
+    peer.label = Multiplayer.makeTextSprite(
+      (peer.muted ? '🔇 ' : '') + (peer.founder ? '👑 ' : '') + peer.name,
+    );
     peer.label.position.set(0, y, 0);
     peer.avatar.add(peer.label);
   }
@@ -624,6 +648,7 @@ export class Multiplayer {
       avatar,
       label,
       muted: false,
+      founder: false,
       hatMesh: null,
       targetPos: new THREE.Vector3(),
       targetQuat: new THREE.Quaternion(),
@@ -720,6 +745,7 @@ export class Multiplayer {
       vehIdx: this.selfVehicle?.idx ?? -1,
       vp: this.selfVehicle?.pos,
       vq: this.selfVehicle?.quat,
+      founder: this.selfFounder,
     });
   }
 

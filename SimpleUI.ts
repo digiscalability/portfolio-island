@@ -78,6 +78,7 @@ export class SimpleUI {
     this.createMuteButton();
     this.createPortfolioButton();
     this.createContactCTA();
+    this.createEmoteButton();
     this.createTouchControls();
   }
 
@@ -283,6 +284,81 @@ export class SimpleUI {
     close.addEventListener('click', () => modal.remove());
     modal.appendChild(close);
     return modal;
+  }
+
+  private emoteWheel: HTMLElement | null = null;
+  /** 😀 button in the top-right icon row: opens a small emote wheel. Emotes are
+   *  sent through the normal chat pipeline, so they get proximity bubbles,
+   *  moderation and muting for free — no separate protocol. */
+  private createEmoteButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '😀';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 88px)',
+      right: 'calc(var(--sar, 0px) + 148px)',
+      background: 'rgba(0, 0, 0, 0.55)',
+      padding: '7px 11px',
+      borderRadius: '10px',
+      fontSize: '15px',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleEmoteWheel();
+    });
+    this.makeHudButtonAccessible(btn, 'Send an emote');
+    this.overlay.appendChild(btn);
+  }
+
+  private toggleEmoteWheel(): void {
+    if (this.emoteWheel) {
+      this.emoteWheel.remove();
+      this.emoteWheel = null;
+      return;
+    }
+    const wheel = document.createElement('div');
+    Object.assign(wheel.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 132px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      display: 'grid',
+      gridTemplateColumns: 'repeat(4, 1fr)',
+      gap: '6px',
+      background: 'rgba(12,12,20,0.96)',
+      padding: '10px',
+      borderRadius: '12px',
+      border: '1px solid rgba(255,255,255,0.15)',
+      pointerEvents: 'auto',
+      zIndex: '1700',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+    });
+    // Single-codepoint emoji (no ZWJ sequences) so they survive text cleaning.
+    ['👋', '😂', '❤️', '🎉', '👍', '🔥', '😮', '🙌'].forEach((emo) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = emo;
+      b.setAttribute('aria-label', `Send ${emo}`);
+      Object.assign(b.style, {
+        width: '40px',
+        height: '40px',
+        fontSize: '20px',
+        background: 'rgba(255,255,255,0.06)',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderRadius: '10px',
+        cursor: 'pointer',
+      });
+      b.addEventListener('click', () => {
+        this.onChatSend?.(emo);
+        track('emote_sent', { emote: emo });
+        this.toggleEmoteWheel();
+      });
+      wheel.appendChild(b);
+    });
+    this.emoteWheel = wheel;
+    this.overlay.appendChild(wheel);
   }
 
   /** Hide the mobile 🎤 button where voice can't work (e.g. iOS Safari, where
