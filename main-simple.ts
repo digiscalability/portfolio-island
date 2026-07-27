@@ -343,7 +343,14 @@ class SimpleApp {
         this.ui.flashMessage(e.text);
         if (e.kind === 'start') sfx.raceGo();
         else if (e.kind === 'checkpoint') sfx.checkpoint();
-        else if (e.kind === 'finish') sfx.questComplete();
+        else if (e.kind === 'finish') {
+          sfx.questComplete();
+          // Submit a new personal best to the global leaderboard (best-effort).
+          if (e.improved && e.circuit && typeof e.timeSec === 'number') {
+            const name = this.multiplayer?.selfName ?? 'Guest';
+            void import('./Boards').then((b) => b.submitRaceTime(e.circuit!, e.timeSec!, name));
+          }
+        }
       });
       this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
 

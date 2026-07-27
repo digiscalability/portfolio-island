@@ -286,6 +286,107 @@ export class SimpleUI {
     return modal;
   }
 
+  /** Escape user-provided text before it goes into innerHTML. Guestbook notes
+   *  and peer names are shown to OTHER visitors, so this is a real XSS guard —
+   *  cleanChatText masks slurs but does not neutralise markup. */
+  private escapeHtml(s: string): string {
+    return s.replace(
+      /[&<>"']/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
+    );
+  }
+
+  /** Global race leaderboard: fastest laps per circuit. */
+  async showLeaderboard(): Promise<void> {
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 4px;color:#8a9bff;">🏁 Leaderboard</h2>
+       <p style="margin:0 0 14px;font-size:13px;color:#aab;">Fastest checkpoint laps. Board a vehicle and race!</p>
+       <div id="lb-body" style="text-align:left;">Loading…</div>`,
+    );
+    trackOnce('leaderboard_opened');
+    this.overlay.appendChild(modal);
+    const { getLeaderboard } = await import('./Boards');
+    const [land, water] = await Promise.all([getLeaderboard('land'), getLeaderboard('water')]);
+    const fmt = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
+    const section = (title: string, entries: Array<{ name: string; timeMs: number }>) =>
+      `<h3 style="margin:14px 0 6px;font-size:14px;color:#cdd;">${title}</h3>` +
+      (entries.length
+        ? entries
+            .map(
+              (e, i) =>
+                `<div style="display:flex;justify-content:space-between;padding:5px 8px;border-radius:8px;
+                  background:${i === 0 ? 'rgba(245,179,1,0.14)' : 'rgba(255,255,255,0.03)'};margin:3px 0;font-size:13px;">
+                  <span>${i + 1}. ${this.escapeHtml(e.name)}</span><span style="font-variant-numeric:tabular-nums;">${fmt(e.timeMs)}</span></div>`,
+            )
+            .join('')
+        : `<p style="margin:2px 0 0;font-size:12px;color:#889;">No times yet — be the first!</p>`);
+    const body = modal.querySelector('#lb-body');
+    if (body) body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
+  }
+
+  /** Guestbook: read recent notes + leave one. */
+  async showGuestbook(): Promise<void> {
+    const modal = this.buildCenteredModal('min(400px, calc(100vw - 32px))');
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 4px;color:#8a9bff;">✍️ Guestbook</h2>
+       <p style="margin:0 0 12px;font-size:13px;color:#aab;">Leave a note for the next visitor.</p>
+       <div style="display:flex;gap:8px;margin-bottom:12px;">
+         <input id="gb-msg" maxlength="200" placeholder="Say hi…" style="flex:1;padding:9px 12px;border-radius:10px;
+           border:none;font-size:14px;background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
+         <button id="gb-sign" style="padding:9px 16px;border:none;border-radius:10px;background:linear-gradient(135deg,#5b6cff,#8a4de0);
+           color:#fff;font-size:14px;font-weight:600;cursor:pointer;">Sign</button>
+       </div>
+       <div id="gb-body" style="text-align:left;max-height:40vh;overflow:auto;">Loading…</div>`,
+    );
+    trackOnce('guestbook_opened');
+    this.overlay.appendChild(modal);
+    const { getGuestbook, signGuestbook } = await import('./Boards');
+    const body = modal.querySelector('#gb-body');
+    const render = async () => {
+      const entries = await getGuestbook();
+      if (!body) return;
+      body.innerHTML = entries.length
+        ? entries
+            .map(
+              (e) =>
+                `<div style="padding:8px 10px;border-radius:10px;background:rgba(255,255,255,0.04);margin:6px 0;">
+                  <div style="font-size:13px;font-weight:600;color:#bcd;">${this.escapeHtml(e.name)}</div>
+                  <div style="font-size:13px;color:#eee;">${this.escapeHtml(e.msg)}</div></div>`,
+            )
+            .join('')
+        : `<p style="font-size:12px;color:#889;">No notes yet — be the first to sign!</p>`;
+    };
+    await render();
+    const input = modal.querySelector('#gb-msg') as HTMLInputElement | null;
+    input?.addEventListener('keydown', (e) => e.stopPropagation()); // don't leak to game
+    const name = (() => {
+      try {
+        return localStorage.getItem('ds_player_name') || 'Guest';
+      } catch {
+        return 'Guest';
+      }
+    })();
+    const sign = async () => {
+      const msg = input?.value.trim();
+      if (!msg) return;
+      const ok = await signGuestbook(name, msg);
+      if (ok) {
+        if (input) input.value = '';
+        this.toast('✍️ Signed the guestbook!');
+        await render();
+      } else {
+        this.toast('Message could not be posted.');
+      }
+    };
+    modal.querySelector('#gb-sign')?.addEventListener('click', () => void sign());
+    input?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') void sign();
+    });
+  }
+
   private emoteWheel: HTMLElement | null = null;
   /** 😀 button in the top-right icon row: opens a small emote wheel. Emotes are
    *  sent through the normal chat pipeline, so they get proximity bubbles,
@@ -717,7 +818,13 @@ export class SimpleUI {
         background:linear-gradient(135deg,rgba(18,183,106,0.28),rgba(14,159,110,0.18));color:#fff;
         border:1px solid rgba(120,220,170,0.45);border-radius:10px;font-size:14px;font-weight:600;
         cursor:pointer;text-align:center;">${ppLabel}</button>
-      ${rows}`;
+      ${rows}
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button data-board="leaderboard" style="flex:1;padding:11px;background:#26263340;color:#fff;
+          border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">🏁 Leaderboard</button>
+        <button data-board="guestbook" style="flex:1;padding:11px;background:#26263340;color:#fff;
+          border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">✍️ Guestbook</button>
+      </div>`;
     // close button
     const close = document.createElement('button');
     close.textContent = '×';
@@ -743,6 +850,14 @@ export class SimpleUI {
     menu.querySelector('button[data-passport]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
       this.showPassport();
+    });
+    menu.querySelectorAll('button[data-board]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const board = (b as HTMLElement).dataset.board;
+        this.togglePortfolioMenu();
+        if (board === 'leaderboard') void this.showLeaderboard();
+        else void this.showGuestbook();
+      });
     });
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);

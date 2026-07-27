@@ -47,6 +47,35 @@
           "$other": { ".validate": false }
         }
       }
+    },
+    "leaderboard": {
+      "island": {
+        ".read": "auth != null",
+        "$circuit": {
+          "$uid": {
+            ".write": "auth != null && auth.uid == $uid",
+            ".validate": "newData.hasChildren(['name', 'timeMs', 't'])",
+            "name":   { ".validate": "newData.isString() && newData.val().length <= 40" },
+            "timeMs": { ".validate": "newData.isNumber() && newData.val() > 0" },
+            "t":      { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          }
+        }
+      }
+    },
+    "guestbook": {
+      "island": {
+        ".read": "auth != null",
+        "$entry": {
+          ".write": "auth != null && (newData.child('id').val() === auth.uid || (!newData.exists() && data.child('id').val() === auth.uid))",
+          ".validate": "newData.hasChildren(['id', 'name', 'msg', 't'])",
+          "id":   { ".validate": "newData.isString()" },
+          "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
+          "msg":  { ".validate": "newData.isString() && newData.val().length <= 200" },
+          "t":    { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        }
+      }
     }
   }
 }

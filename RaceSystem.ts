@@ -32,6 +32,9 @@ export interface RaceHudStatus {
 export interface RaceEvent {
   kind: 'start' | 'checkpoint' | 'finish' | 'abort';
   text: string;
+  timeSec?: number; // finish: numeric lap time (for the leaderboard)
+  circuit?: CircuitKind; // finish: which circuit
+  improved?: boolean; // finish: was this a new personal best
 }
 
 interface Circuit {
@@ -312,6 +315,9 @@ export class RaceSystem {
       text: improved
         ? `🏆 ${formatTime(elapsed)} — new best!`
         : `🏁 ${formatTime(elapsed)} (best ${formatTime(prev!)})`,
+      timeSec: elapsed,
+      circuit: kind,
+      improved,
     });
     this.state = 'idle';
     this.active = null;
