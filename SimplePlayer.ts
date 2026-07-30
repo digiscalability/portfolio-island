@@ -52,6 +52,9 @@ export class SimplePlayer extends THREE.Group {
   private acceleration: THREE.Vector3 = new THREE.Vector3();
 
   private yaw: number = 0; // rotation around Y axis
+  private targetYaw: number = 0; // heading setRotation asked for; yaw eases onto it in update()
+  private yawVel: number = 0; // yaw rad/s actually applied this frame — drives the turn lean
+  private leanRoll: number = 0; // eased roll into turns (on-foot only)
 
   private speed: number = 5.5; // movement speed (~20s to cross the island — was 18, which circled the planet in 6s)
   private jumpForce: number = 8;
@@ -304,6 +307,8 @@ export class SimplePlayer extends THREE.Group {
       // the mixer / swim pose take over cleanly.
       if (this.gltfModel) this.gltfModel.rotation.set(0, 0, 0);
       else this.mesh.rotation.set(0, 0, 0);
+      this.leanRoll = 0;
+      this.yawVel = 0;
       for (const b of [this.armLBone, this.armRBone, this.legLBone, this.legRBone]) {
         if (b) b.rotation.set(0, 0, 0);
       }
@@ -813,6 +818,7 @@ export class SimplePlayer extends THREE.Group {
       this.gltfModel.rotation.z = 0;
     } else {
       this.mesh.rotation.x = 0;
+      this.mesh.rotation.z = 0;
     }
   }
 
@@ -989,6 +995,18 @@ export class SimplePlayer extends THREE.Group {
     // Clamp delta time to prevent large jumps
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.02));
 
+    // Ease heading onto targetYaw (shortest arc, ~12 rad/s exponential) so
+    // direction reversals sweep around instead of teleport-flipping 180°.
+    // Scalar yaw only — the up-vector alignment in updateWorldMatrix is
+    // untouched, so this smooths purely in the tangent frame.
+    {
+      const dYaw = this.targetYaw - this.yaw;
+      const arc = Math.atan2(Math.sin(dYaw), Math.cos(dYaw)); // wrap to ±π
+      const step = arc * (1 - Math.exp(-12 * safeDeltaTime));
+      this.yaw += step;
+      this.yawVel = step / safeDeltaTime;
+    }
+
     // Apply gravity (spherical toward planet center, or flat -Y)
     if (this.planetRadius > 0) {
       const gravDir = this.planetCenter.clone().sub(this.playerPosition).normalize();
@@ -1056,6 +1074,7 @@ export class SimplePlayer extends THREE.Group {
       // the mixer resumes cleanly.
       this.clearSwimPose();
       this.swimPoseActive = false;
+      this.leanRoll = 0;
       for (const b of [this.armLBone, this.armRBone, this.legLBone, this.legRBone]) {
         if (b) b.rotation.x = 0;
       }
@@ -1123,6 +1142,20 @@ export class SimplePlayer extends THREE.Group {
       activeModel.scale.x += (base.x * sx - activeModel.scale.x) * kSpring;
       activeModel.scale.y += (base.y * sy - activeModel.scale.y) * kSpring;
       activeModel.scale.z += (base.z * sx - activeModel.scale.z) * kSpring;
+    }
+
+    // Roll into turns while on foot on the ground: proportional to turn
+    // rate, clamped subtle, eased. Negative z leans toward the model's +X
+    // (its right), matching a positive-yaw (rightward) turn. Swim/ride
+    // return above and own the model rotation; leanRoll is re-zeroed on
+    // those state exits so the lean always eases back in from neutral.
+    {
+      const activeModel: THREE.Object3D = this.gltfModel ?? this.mesh;
+      const leanTarget = this.isGrounded
+        ? Math.max(-0.12, Math.min(0.12, -this.yawVel * 0.08))
+        : 0;
+      this.leanRoll += (leanTarget - this.leanRoll) * Math.min(1, 10 * safeDeltaTime);
+      activeModel.rotation.z = this.leanRoll;
     }
 
     // Blend idle/walk by tangential speed. Weights are set directly every
@@ -1382,10 +1415,13 @@ export class SimplePlayer extends THREE.Group {
   }
 
   /**
-   * Set player rotation (yaw)
+   * Set player heading (yaw, radians about the surface normal). On foot the
+   * yaw eases onto it (shortest arc) in update(); riding/seated snap because
+   * GameScene owns the transform there and update() returns before easing.
    */
   public setRotation(yaw: number, _pitch?: number): void {
-    this.yaw = yaw;
+    this.targetYaw = yaw;
+    if (this.rideActive || this.seated) this.yaw = yaw;
   }
 
   /**

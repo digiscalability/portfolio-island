@@ -77,6 +77,12 @@ export class EnvironmentCycle {
   private static _rainTex: THREE.Texture | null = null;
 
   private glowLights: Array<{ light: THREE.Light; base: number }> = [];
+  // Tagged emissive materials (house windows, lamp bulbs). Owned by
+  // Island — never disposed here.
+  private nightEmissives: Array<{
+    mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+    base: THREE.Color;
+  }> = [];
 
   private baseSunIntensity: number;
   private baseHemiIntensity: number;
@@ -113,14 +119,34 @@ export class EnvironmentCycle {
     this.baseHemiIntensity = hemi.intensity;
     this.baseFogDensity = this.fog ? this.fog.density : 0.012;
 
-    // Collect lamp + house-window lights so they can brighten at night
+    // Collect lamp + house-window lights so they can brighten at night,
+    // plus the isNightEmissive-tagged meshes (house windows, lamp bulbs).
+    // This runs after GameScene's toonify pass, so the collected materials
+    // are the live toon clones; every tagged mesh owns a private material
+    // (created inline in Island, and the toonify cache is keyed per
+    // instance), so the emissive writes in update() can't leak to other
+    // props. Dedupe: a house's two windows share one material.
+    const seenEmissive = new Set<THREE.Material>();
     scene.traverse((obj) => {
+      const data = obj.userData as {
+        isLampLight?: boolean;
+        isHouseWarmLight?: boolean;
+        isNightEmissive?: boolean;
+      };
       const l = obj as THREE.Light;
-      if (!l.isLight) return;
-      const data = obj.userData as { isLampLight?: boolean; isHouseWarmLight?: boolean };
-      if (data.isLampLight || data.isHouseWarmLight) {
-        this.glowLights.push({ light: l, base: l.intensity });
+      if (l.isLight) {
+        if (data.isLampLight || data.isHouseWarmLight) {
+          this.glowLights.push({ light: l, base: l.intensity });
+        }
+        return;
       }
+      if (!data.isNightEmissive) return;
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh || Array.isArray(mesh.material)) return;
+      const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+      if (!mat.emissive || seenEmissive.has(mat)) return;
+      seenEmissive.add(mat);
+      this.nightEmissives.push({ mat, base: mat.emissive.clone() });
     });
 
     // Star field in two layers (dense faint + sparse bright). fog: false is
@@ -531,6 +557,17 @@ export class EnvironmentCycle {
       g.light.intensity = g.base * glow;
     }
 
+    // Window panes + lamp bulbs: dim by day, glowing after dark, emissive
+    // deepened toward amber. 1.3 clears the 0.85 bloom threshold, so the
+    // bloom pass wraps them in halos at night for free.
+    const nightF = 1 - dayFactor;
+    const emIntensity = 0.15 + nightF * 1.15;
+    this._c2.set(0xff9c46);
+    for (const e of this.nightEmissives) {
+      e.mat.emissiveIntensity = emIntensity;
+      e.mat.emissive.copy(e.base).lerp(this._c2, nightF * 0.3);
+    }
+
     // Precipitation: particles fall in the player's local frame
     if (this.precip && this.precipGeo && this.precipSpeeds) {
       this.precip.position.copy(playerPos);
@@ -568,6 +605,7 @@ export class EnvironmentCycle {
       layer.mat.dispose();
     }
     this.starLayers.length = 0;
+    this.nightEmissives.length = 0;
     this.scene.remove(this.moon);
     this.moon.geometry.dispose();
     this.moonMat.dispose();

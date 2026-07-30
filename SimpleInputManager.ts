@@ -22,12 +22,19 @@ export class SimpleInputManager {
     lastY: 0,
   };
   private mouseDelta: { x: number; y: number } = { x: 0, y: 0 };
-  private touchInput: { x: number; y: number; lastX: number; lastY: number } = {
-    x: 0,
-    y: 0,
-    lastX: 0,
-    lastY: 0,
-  };
+  // Camera-look touch: the first finger that lands on the game canvas claims
+  // the camera (joystick/buttons are their own DOM targets and never reach
+  // here), identified by Touch.identifier so a second finger — e.g. the
+  // joystick thumb — can come and go without stealing the look gesture.
+  // Deltas accumulate into touchDelta and are consumed (zeroed) by
+  // getCameraInput, mirroring the pointer-locked mouseDelta path.
+  private cameraTouchId: number | null = null;
+  private touchLast: { x: number; y: number } = { x: 0, y: 0 };
+  private touchDelta: { x: number; y: number } = { x: 0, y: 0 };
+  // Touch feeds the same raw-pixel pipeline as the mouse; a small boost
+  // compensates for a phone swipe covering far fewer CSS pixels than a
+  // desktop mouse motion.
+  private static readonly TOUCH_SENSITIVITY = 1.3;
 
   private isPointerLocked: boolean = false;
   private canvas?: HTMLCanvasElement;
@@ -101,19 +108,50 @@ export class SimpleInputManager {
    * Setup touch event listeners
    */
   private setupTouchListeners(): void {
-    document.addEventListener('touchmove', (e) => {
-      if (e.touches.length > 0) {
-        this.touchInput.lastX = this.touchInput.x;
-        this.touchInput.lastY = this.touchInput.y;
-        this.touchInput.x = e.touches[0].clientX;
-        this.touchInput.y = e.touches[0].clientY;
+    // Listeners stay passive: the canvas has touch-action: none, so the
+    // browser never scrolls/refreshes for touches that start there anyway.
+    document.addEventListener('touchstart', (e) => {
+      if (this.cameraTouchId !== null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.target === this.canvas) {
+          this.cameraTouchId = t.identifier;
+          // Seed last position so the first move computes a true delta
+          // (not clientX - 0, which snapped the camera on gesture start)
+          this.touchLast.x = t.clientX;
+          this.touchLast.y = t.clientY;
+          break;
+        }
       }
-    });
+    }, { passive: true });
 
-    document.addEventListener('touchend', () => {
-      this.touchInput.x = 0;
-      this.touchInput.y = 0;
-    });
+    document.addEventListener('touchmove', (e) => {
+      if (this.cameraTouchId === null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === this.cameraTouchId) {
+          this.touchDelta.x += t.clientX - this.touchLast.x;
+          this.touchDelta.y += t.clientY - this.touchLast.y;
+          this.touchLast.x = t.clientX;
+          this.touchLast.y = t.clientY;
+          break;
+        }
+      }
+    }, { passive: true });
+
+    // Release only when THE camera finger lifts — joystick/button fingers
+    // ending must not cancel an in-flight look gesture.
+    const endCameraTouch = (e: TouchEvent) => {
+      if (this.cameraTouchId === null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === this.cameraTouchId) {
+          this.cameraTouchId = null;
+          break;
+        }
+      }
+    };
+    document.addEventListener('touchend', endCameraTouch);
+    document.addEventListener('touchcancel', endCameraTouch);
   }
 
   /**
@@ -204,11 +242,13 @@ export class SimpleInputManager {
       this.mouseDelta.y = 0;
       // Return raw mouse delta - OrbitCamera applies its own sensitivity multiplier
       return { deltaX, deltaY };
-    } else if (this.touchInput.x !== 0) {
-      // Use touch delta
-      const deltaX = this.touchInput.x - this.touchInput.lastX;
-      const deltaY = this.touchInput.y - this.touchInput.lastY;
-      return { deltaX: deltaX * 0.01, deltaY: deltaY * 0.01 };
+    } else if (this.touchDelta.x !== 0 || this.touchDelta.y !== 0) {
+      // Consume-and-zero, same contract as the mouse path above
+      const deltaX = this.touchDelta.x * SimpleInputManager.TOUCH_SENSITIVITY;
+      const deltaY = this.touchDelta.y * SimpleInputManager.TOUCH_SENSITIVITY;
+      this.touchDelta.x = 0;
+      this.touchDelta.y = 0;
+      return { deltaX, deltaY };
     }
 
     return { deltaX: 0, deltaY: 0 };
@@ -237,7 +277,9 @@ export class SimpleInputManager {
     this.lastKeyEventAt.clear();
     this.mouseInput = { x: 0, y: 0, lastX: 0, lastY: 0 };
     this.mouseDelta = { x: 0, y: 0 };
-    this.touchInput = { x: 0, y: 0, lastX: 0, lastY: 0 };
+    this.cameraTouchId = null;
+    this.touchLast = { x: 0, y: 0 };
+    this.touchDelta = { x: 0, y: 0 };
   }
 
   /**

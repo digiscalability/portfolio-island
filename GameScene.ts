@@ -3995,6 +3995,11 @@ export class GameScene extends THREE.Scene {
     return this.orbitCamera;
   }
 
+  // setPlayerMovement scratch — called every input frame, keep allocation-free
+  private _moveDir = new THREE.Vector3();
+  private _moveAlignQ = new THREE.Quaternion();
+  private _moveLocal = new THREE.Vector3();
+
   /**
    * Set player movement input (camera-relative)
    */
@@ -4005,22 +4010,21 @@ export class GameScene extends THREE.Scene {
       const cameraRight = this.orbitCamera.getRightDirection();
 
       // Build world-space movement direction from camera orientation
-      const moveDir = new THREE.Vector3();
+      const moveDir = this._moveDir.set(0, 0, 0);
       moveDir.addScaledVector(cameraForward, forward);
       moveDir.addScaledVector(cameraRight, strafe);
 
       // Full 3D vector — tangent directions have a Y component on a sphere
       this.player.setMovementVector(moveDir);
 
-      // Rotate player to face movement direction. Yaw is defined around the
-      // surface normal, so express moveDir in the player's tangent frame first.
+      // Face the movement direction. Yaw is defined around the surface
+      // normal, so express moveDir in the player's tangent frame first.
+      // setRotation is a target heading — the player eases onto it
+      // (shortest arc) in its own update, so reversals sweep, not snap.
       if (moveDir.length() > 0.01) {
         const normal = this.player.getSurfaceNormal();
-        const alignQuat = new THREE.Quaternion().setFromUnitVectors(
-          new THREE.Vector3(0, 1, 0),
-          normal,
-        );
-        const local = moveDir.clone().applyQuaternion(alignQuat.clone().invert());
+        this._moveAlignQ.setFromUnitVectors(GameScene._localUp, normal);
+        const local = this._moveLocal.copy(moveDir).applyQuaternion(this._moveAlignQ.invert());
         this.player.setRotation(Math.atan2(local.x, local.z));
       }
     }

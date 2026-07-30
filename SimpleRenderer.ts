@@ -53,7 +53,7 @@ export class SimpleRenderer {
     // Create WebGL renderer with anti-aliasing
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true, // scene is ~45k tris now — plenty of headroom
+      antialias: true, // native MSAA: the whole image on the low tier (no composer) and the bloom-off path elsewhere
       alpha: false,
       powerPreference: 'high-performance',
       precision: 'highp',
@@ -68,7 +68,6 @@ export class SimpleRenderer {
     this.renderer.toneMappingExposure = 1.08;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    // Limit shadow resolution for better performance on mobile
     this.renderer.shadowMap.autoUpdate = true;
 
     // Set a clear background color for debugging
@@ -85,12 +84,19 @@ export class SimpleRenderer {
     window.addEventListener('resize', () => this.onWindowResize());
   }
 
+  /** Coarse-pointer (phone/tablet) or low-core device — the tier that gets a
+   * lower DPR cap and skips the composer entirely (see initPostProcessing).
+   * Same heuristic GameScene/Island use for shadow-map size and grass count. */
+  public static isLowTierDevice(): boolean {
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
+    return coarse || lowCore;
+  }
+
   /** Device-tier DPR ceiling: phones/tablets and low-core machines can't
    * afford 2× on a scene this dense. */
   private tierDprCeiling(): number {
-    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
-    return Math.min(window.devicePixelRatio || 1, coarse || lowCore ? 1.25 : 2);
+    return Math.min(window.devicePixelRatio || 1, SimpleRenderer.isLowTierDevice() ? 1.25 : 2);
   }
 
   /** Tier ceiling, further clamped so width·height·dpr² ≤ PIXEL_BUDGET. */
@@ -106,6 +112,13 @@ export class SimpleRenderer {
   public async initPostProcessing(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
     if (this.composer) return; // Already initialized
 
+    // Coarse/low-core tier: no composer at all. On tile GPUs the ~13 bloom
+    // passes and the two full-canvas HalfFloat targets cost more than bloom
+    // is worth, and the direct path renders into the natively antialiased
+    // canvas — faster AND sharper. Returning before the imports also keeps
+    // the postprocessing chunk from ever being fetched.
+    if (SimpleRenderer.isLowTierDevice()) return;
+
     // Lazy-load the postprocessing addons as a parallel chunk (kept out of the
     // critical bundle via the type-only imports above). Awaited by the caller
     // before warmUp(), so bloom is still fully compiled ahead of the reveal.
@@ -117,8 +130,17 @@ export class SimpleRenderer {
         import('three/addons/postprocessing/OutputPass.js'),
       ]);
 
-    // Create effect composer
-    this.composer = new EffectComposer(this.renderer);
+    // Explicit MSAA render target: EffectComposer's default target has
+    // samples: 0, which routed every frame around the canvas's native MSAA —
+    // the shipped image had zero antialiasing. clone() preserves `samples`,
+    // so both ping-pong buffers inherit it; HalfFloatType keeps bloom's HDR
+    // input intact. Desktop-only by the tier gate above.
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const msaaTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    this.composer = new EffectComposer(this.renderer, msaaTarget);
     this.composer.setSize(window.innerWidth, window.innerHeight);
 
     // Render pass
@@ -241,9 +263,15 @@ export class SimpleRenderer {
       this.renderScale = Math.min(1, this.renderScale + 0.1);
     }
     if (this.renderScale !== prev) {
-      this.renderer.setPixelRatio(this.dprCap * this.renderScale);
+      const effectiveDpr = this.dprCap * this.renderScale;
+      this.renderer.setPixelRatio(effectiveDpr);
       if (this.composer) {
-        this.composer.setSize(window.innerWidth, window.innerHeight);
+        // Must be setPixelRatio, not setSize: the composer caches its pixel
+        // ratio and setSize multiplies by the STALE cached value, so the
+        // scene+bloom targets never shrank and the controller was a no-op.
+        // setPixelRatio re-runs setSize internally with the new ratio.
+        this.composer.setPixelRatio(effectiveDpr);
+        // Composer resize resets bloom to full res — keep it at half.
         this.bloomPass?.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
       }
     }
@@ -280,17 +308,25 @@ export class SimpleRenderer {
   }
 
   /**
-   * Set post-processing enabled/disabled
+   * Set post-processing enabled/disabled. A no-op enable when no composer
+   * exists (low-tier skip in initPostProcessing) — the flag must not claim
+   * bloom is on while render() falls through to the direct path.
    */
   public setPostProcessingEnabled(enabled: boolean): void {
-    this.postProcessingEnabled = enabled;
+    this.postProcessingEnabled = enabled && !!this.composer;
   }
 
   public isPostProcessingEnabled(): boolean {
     return this.postProcessingEnabled;
   }
 
+  /** Whether a composer was ever constructed (false on the low tier). */
+  public isPostProcessingAvailable(): boolean {
+    return !!this.composer;
+  }
+
   public togglePostProcessing(): boolean {
+    if (!this.composer) return false; // low tier: nothing to toggle
     this.postProcessingEnabled = !this.postProcessingEnabled;
     return this.postProcessingEnabled;
   }
@@ -344,6 +380,10 @@ export class SimpleRenderer {
     this.renderer.setSize(width, height);
 
     if (this.composer) {
+      // Push the re-derived cap (and the settled adaptive scale) into the
+      // composer's cached pixel ratio first — setSize alone would keep the
+      // stale ratio (see updateAdaptiveResolution) — then apply the new dims.
+      this.composer.setPixelRatio(this.dprCap * this.renderScale);
       this.composer.setSize(width, height);
       // composer.setSize resets bloom to full res — keep it at half.
       this.bloomPass?.setSize(Math.ceil(width / 2), Math.ceil(height / 2));

@@ -36,6 +36,13 @@ body {
   color: #0b1220;
 }
 
+/* No pull-to-refresh / rubber-banding: a downward camera drag must never
+   reload the game. Global on purpose — panels that scroll internally keep
+   their own overflow scrolling, this only stops the chain to the page. */
+html, body {
+  overscroll-behavior: none;
+}
+
 #game-canvas {
   display: block;
   width: 100vw;
@@ -44,6 +51,9 @@ body {
   top: 0;
   left: 0;
   z-index: 500;
+  /* Canvas drags are game input, never browser scroll/zoom gestures.
+     Canvas only — DOM overlays (zone panels etc.) keep touch scrolling. */
+  touch-action: none;
 }
 
 #ui-overlay {

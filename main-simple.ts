@@ -368,11 +368,17 @@ class SimpleApp {
 
       // Initialize post-processing. Awaited so the lazily-loaded bloom addons
       // are constructed before warmUp() compiles their shaders ahead of reveal.
-      await this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
-      console.log('✓ Post-processing initialized');
+      // On the coarse/low-core tier this never constructs a composer (nor
+      // fetches the chunk) — phones stay on the native antialiased canvas.
+      if (SimpleRenderer.isLowTierDevice()) {
+        console.log('📱 Low-tier device: bloom skipped, native MSAA path.');
+      } else {
+        await this.renderer.initPostProcessing(this.scene, this.scene.getCamera());
+        console.log('✓ Post-processing initialized');
 
-      this.renderer.setPostProcessingEnabled(true);
-      console.log('✨ Bloom enabled by default (Ctrl+B to toggle).');
+        this.renderer.setPostProcessingEnabled(true);
+        console.log('✨ Bloom enabled by default (Ctrl+B to toggle).');
+      }
 
       this.setupDebugShortcuts();
 
@@ -596,6 +602,10 @@ class SimpleApp {
     const handler = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.key.toLowerCase() === 'b') {
         event.preventDefault();
+        if (!this.renderer.isPostProcessingAvailable()) {
+          console.log('✨ Bloom unavailable on this device tier (no composer).');
+          return;
+        }
         const enabled = this.renderer.togglePostProcessing();
         console.log(
           enabled

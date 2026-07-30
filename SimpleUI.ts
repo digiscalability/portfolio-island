@@ -1014,22 +1014,34 @@ export class SimpleUI {
         userSelect: 'none',
         zIndex: '1650',
       });
-      const fire = (type: 'keydown' | 'keyup') => {
-        const ev = new KeyboardEvent(type, { code, key, bubbles: true });
+      const fire = (type: 'keydown' | 'keyup', repeat = false) => {
+        const ev = new KeyboardEvent(type, { code, key, bubbles: true, repeat });
         window.dispatchEvent(ev);
         document.dispatchEvent(ev);
       };
+      // Keepalive while held: SimpleInputManager purges keys silent for 2s
+      // (phantom-key guard) and synthetic buttons have no OS auto-repeat, so
+      // a held JUMP died mid-swim. Re-fire with repeat:true so edge-triggered
+      // (!e.repeat) press handlers don't see it as a new press.
+      let holdRepeat: number | null = null;
       btn.addEventListener('touchstart', (e) => {
         e.preventDefault();
         e.stopPropagation();
         btn.style.transform = 'scale(0.9)';
         btn.style.filter = 'brightness(1.35)';
         fire('keydown');
+        if (holdRepeat === null) {
+          holdRepeat = window.setInterval(() => fire('keydown', true), 700);
+        }
       }, { passive: false });
       const release = (e: Event) => {
         e.stopPropagation();
         btn.style.transform = 'scale(1)';
         btn.style.filter = 'none';
+        if (holdRepeat !== null) {
+          window.clearInterval(holdRepeat);
+          holdRepeat = null;
+        }
         fire('keyup');
       };
       btn.addEventListener('touchend', release);
@@ -1521,11 +1533,22 @@ export class SimpleUI {
         borderRadius: '25px',
         textAlign: 'center',
         pointerEvents: 'auto',
+        cursor: 'pointer',
         fontSize: '16px',
         // Pop-in: created hidden/short, springs to place on the next frame
         opacity: '0',
         transform: 'translateX(-50%) translateY(10px) scale(0.9)',
         transition: 'transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.16s ease',
+      });
+      // Tap the prompt itself to trigger it — the natural phone instinct.
+      // Same synthetic 'e' the USE button and dialogue panel fire, so every
+      // interaction path (talk / board / sit / stand / zone) runs unchanged.
+      this.interactionDiv.addEventListener('click', () => {
+        for (const type of ['keydown', 'keyup'] as const) {
+          const ev = new KeyboardEvent(type, { code: 'KeyE', key: 'e', bubbles: true });
+          window.dispatchEvent(ev);
+          document.dispatchEvent(ev);
+        }
       });
       this.overlay.appendChild(this.interactionDiv);
       const el = this.interactionDiv;

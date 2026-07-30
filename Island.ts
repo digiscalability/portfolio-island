@@ -1087,9 +1087,13 @@ export class Island {
       const winGeom = new THREE.PlaneGeometry(0.7, 0.75);
       const win1 = new THREE.Mesh(winGeom, winMat);
       win1.position.set(w * 0.24, h * 0.58, d * 0.51);
+      // EnvironmentCycle collects tagged meshes post-toonify and drives
+      // their emissiveIntensity with the day/night cycle
+      win1.userData.isNightEmissive = true;
       house.add(win1);
       const win2 = new THREE.Mesh(winGeom, winMat);
       win2.position.set(-w * 0.24, h * 0.58, d * 0.51);
+      win2.userData.isNightEmissive = true;
       house.add(win2);
       // Door — 1.9u tall: the 1.8u player walks through with headroom
       const doorMat = new THREE.MeshStandardMaterial({ color: 0x5a3d2b, roughness: 0.7 });
@@ -1390,6 +1394,7 @@ export class Island {
         new THREE.MeshStandardMaterial({ color: 0xfff4cc, emissive: 0xffe8a0, emissiveIntensity: 0.8 }),
       );
       bulb.position.set(0.35, 1.48, 0);
+      bulb.userData.isNightEmissive = true;
       lampGroup.add(bulb);
 
       const q = new THREE.Quaternion().setFromUnitVectors(

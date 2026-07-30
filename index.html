@@ -116,6 +116,13 @@
         background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
       }
 
+      /* No pull-to-refresh / rubber-banding: a downward camera drag must
+         never reload the game (duplicated in style.css; this copy applies
+         before the stylesheet module loads). */
+      html, body {
+        overscroll-behavior: none;
+      }
+
       #game-canvas {
         display: block;
         width: 100vw;
@@ -125,6 +132,8 @@
         top: 0;
         left: 0;
         z-index: 500; /* Between UI overlay (1000) and background (0) */
+        /* Canvas drags are game input, never browser scroll/zoom gestures */
+        touch-action: none;
       }
 
       /* Loading Screen */
