@@ -48,6 +48,7 @@ export class SimpleRenderer {
   private renderScale = 1; // current multiplier applied on top of dprCap
   private fpsEma = 60; // smoothed frame rate driving the controller
   private qualityAccum = 0; // seconds since the last quality adjustment
+  private contextLost = false; // true between webglcontextlost and ...restored
 
   constructor(canvas: HTMLCanvasElement) {
     // Create WebGL renderer with anti-aliasing
@@ -82,6 +83,33 @@ export class SimpleRenderer {
 
     // Responsive resize
     window.addEventListener('resize', () => this.onWindowResize());
+
+    // WebGL context-loss resilience. Under GPU memory pressure a mobile browser
+    // can drop the context: the canvas goes black while the DOM HUD stays on
+    // top, and a drop→restore cycle reads as a full-screen flash. We can't stop
+    // a real driver/memory loss, but we (a) preventDefault so the browser will
+    // actually fire `restored` (without it the context never comes back),
+    // (b) skip rendering while lost so nothing throws, and (c) re-prime shaders
+    // + shadows on restore so the first frame back is clean, not white garbage.
+    // The real frequency fix is memory: the low tier skips the bloom composer
+    // (its full-res HalfFloat targets are the biggest mobile GPU-memory cost).
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      console.warn('⚠️ WebGL context lost — pausing render until restore');
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.renderer.shadowMap.needsUpdate = true;
+      if (this.scene && this.camera) {
+        try {
+          this.renderer.compile(this.scene, this.camera);
+        } catch {
+          /* best-effort re-prime */
+        }
+      }
+      console.info('✓ WebGL context restored — re-primed');
+    });
   }
 
   /** Coarse-pointer (phone/tablet) or low-core device — the tier that gets a
@@ -292,6 +320,8 @@ export class SimpleRenderer {
    * Render a single frame
    */
   private render(): void {
+    if (this.contextLost) return; // GL context gone — resume on webglcontextrestored
+
     if (!this.scene || !this.camera) {
       console.warn('⚠️ Render called but scene or camera missing:', {
         scene: !!this.scene,
