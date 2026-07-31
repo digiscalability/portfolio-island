@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 import { Materials } from './Materials';
 import { safePeerName } from './Moderation';
-import { SimplePlayer, type HatId, type RemoteAvatar } from './SimplePlayer';
+import { SimplePlayer, type BodyPart, type HatId, type RemoteAvatar } from './SimplePlayer';
 
 type VehicleKind = 'boat' | 'jetski' | 'car';
 
@@ -37,6 +37,8 @@ export interface WireMessage {
   dur?: number; // voice: clip length (ms)
   t?: number; // chat/voice: sender timestamp (ms) for replay filtering
   founder?: boolean; // state: sender is the site founder (renders a 👑 badge)
+  pose?: number; // state: 0 on-foot, 1 swimming, 2 riding, 3 airborne
+  cols?: Partial<Record<BodyPart, number>>; // state: owner's body-customisation colours
 }
 
 interface VehicleState {
@@ -73,6 +75,9 @@ interface Peer {
   vq: THREE.Quaternion;
   prevPos: THREE.Vector3; // for movement-speed → walk-blend
   speed: number;
+  pose: number; // broadcast pose byte applied to the remote avatar
+  cols: Partial<Record<BodyPart, number>> | null; // owner's colours (re-applied post-GLTF-swap)
+  colsSig: string; // change-detect key so we only recolour when colours change
 }
 
 type SendFn = (msg: WireMessage) => void;
@@ -110,6 +115,7 @@ export class Multiplayer {
   private selfWaveMs = 0; // last time WE waved (ms); rides along in state writes
   private peerWave = new Map<string, number>(); // last wave value seen per peer
   private chatHandler?: (msg: WireMessage) => void;
+  private _selfPos = new THREE.Vector3(); // scratch for the 10Hz state write
 
   constructor(scene: THREE.Scene, player: SimplePlayer) {
     this.scene = scene;
@@ -281,6 +287,8 @@ export class Multiplayer {
         t: Date.now(),
         wave: this.selfWaveMs,
         founder: this.selfFounder,
+        pose: msg.pose ?? 0,
+        cols: msg.cols ?? null,
       }).catch(() => {});
     };
 
@@ -360,6 +368,8 @@ export class Multiplayer {
         vp: v.vp ?? undefined,
         vq: v.vq ?? undefined,
         founder: !!v.founder,
+        pose: v.pose ?? 0,
+        cols: v.cols ?? undefined,
       }),
     );
   }
@@ -493,6 +503,7 @@ export class Multiplayer {
   /** Broadcast a wave; also show it locally above our own head. */
   public wave(): void {
     this.send({ kind: 'wave', id: this.selfId });
+    this.player.triggerWave(); // animate the local avatar's arm, not just the emoji
     this.selfWaveUntil = performance.now() / 1000 + 1.6;
     if (!this.selfWaveSprite) {
       this.selfWaveSprite = Multiplayer.makeEmojiSprite('👋');
@@ -530,6 +541,7 @@ export class Multiplayer {
     if (msg.kind === 'wave') {
       peer.waveUntil = peer.lastSeen + 1.6;
       if (peer.waveSprite) peer.waveSprite.visible = true;
+      peer.remote?.wave(); // animate the peer's arm, not just the emoji
       return;
     }
     // state
@@ -558,6 +570,19 @@ export class Multiplayer {
     peer.vehIdx = msg.vehIdx ?? -1;
     if (msg.vp) peer.vp.set(msg.vp[0], msg.vp[1], msg.vp[2]);
     if (msg.vq) peer.vq.set(msg.vq[0], msg.vq[1], msg.vq[2], msg.vq[3]);
+    // Broadcast pose byte → the remote avatar strikes swim/ride/air poses
+    // instead of always walk-cycling upright (applied each frame in update()).
+    peer.pose = typeof msg.pose === 'number' ? msg.pose : 0;
+    // Body-customisation colours: recolour only when they change (traversal),
+    // and remember them so they can be re-applied after the GLTF model swaps in.
+    if (msg.cols) {
+      const sig = JSON.stringify(msg.cols);
+      if (sig !== peer.colsSig) {
+        peer.colsSig = sig;
+        peer.cols = msg.cols;
+        SimplePlayer.applyBodyColors(peer.avatar, msg.cols);
+      }
+    }
   }
 
   /** Attach the peer's hat to the GLTF head bone (once loaded) or the avatar
@@ -663,6 +688,9 @@ export class Multiplayer {
       vq: new THREE.Quaternion(),
       prevPos: new THREE.Vector3(),
       speed: 0,
+      pose: 0,
+      cols: null,
+      colsSig: '',
     };
     this.applyPeerHat(peer);
 
@@ -682,6 +710,8 @@ export class Multiplayer {
       peer.remote = remote;
       // Re-seat the hat on the real head bone now that it exists
       if (peer.hat) this.applyPeerHat(peer);
+      // The fallback body's materials were unnamed; recolour the real GLB body.
+      if (peer.cols) SimplePlayer.applyBodyColors(remote.body, peer.cols);
     });
 
     return peer;
@@ -732,9 +762,15 @@ export class Multiplayer {
 
   /** One outgoing state packet (10Hz loop + background heartbeat). */
   private sendState(): void {
-    const p = this.player.getWorldPosition();
+    const p = this.player.getWorldPositionInto(this._selfPos);
     const q = this.player.quaternion;
-    this.send({
+    // Pose byte peers replay on the remote avatar. Ride wins (the player leaves
+    // the water for the deck); else swim while over water; else airborne.
+    let pose = 0;
+    if (this.selfVehicle) pose = 2;
+    else if (this.player.isInWater()) pose = 1;
+    else if (!this.player.isOnGround()) pose = 3;
+    const msg: WireMessage = {
       kind: 'state',
       id: this.selfId,
       name: this.selfName,
@@ -746,7 +782,12 @@ export class Multiplayer {
       vp: this.selfVehicle?.pos,
       vq: this.selfVehicle?.quat,
       founder: this.selfFounder,
-    });
+      pose,
+    };
+    // Body colours ride along only when the visitor has customised (small).
+    const cols = this.player.getAppearance();
+    if (Object.keys(cols).length) msg.cols = cols;
+    this.send(msg);
   }
 
   /** Call every frame: sends state at 10Hz, interpolates and prunes peers. */
@@ -782,6 +823,7 @@ export class Multiplayer {
         peer.speed = peer.avatar.position.distanceTo(peer.prevPos) / Math.max(deltaTime, 1e-3);
         peer.prevPos.copy(peer.avatar.position);
       }
+      peer.remote?.setPose(peer.pose);
       peer.remote?.update(deltaTime, peer.veh ? 0 : peer.speed);
       if (peer.waveSprite) {
         if (now > peer.waveUntil) peer.waveSprite.visible = false;

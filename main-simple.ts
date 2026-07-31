@@ -71,10 +71,24 @@ class SimpleApp {
   // continuous airborne time rather than raw grounded transitions.
   private stepAccum: number = 0;
   private stepAlt: boolean = false;
+  private prevWalkPhase: number = -1; // last sampled walk-cycle phase (-1 = stride inactive)
   private airborneTime: number = 0;
   private prevJumpHeld: boolean = false;
   private lastSwimWarnAt = 0; // throttle for the shoreline-barrier hint
   private currentThrottle = 0; // last vehicle throttle magnitude (for engine sfx)
+
+  // Scratch vectors reused every frame to keep the update loop allocation-free
+  // (mobile minor-GC hitch reduction). Never hold a reference to these across
+  // frames — each consumer copies into them fresh before use.
+  private readonly _listenerPos = new THREE.Vector3();
+  private readonly _listenerFwd = new THREE.Vector3();
+  private readonly _listenerUp = new THREE.Vector3(0, 1, 0);
+  private readonly _qcPlayerPos = new THREE.Vector3();
+  private readonly _qcNormal = new THREE.Vector3();
+  private readonly _qcToTarget = new THREE.Vector3();
+  private readonly _qcCamFwd = new THREE.Vector3();
+  private readonly _qcCross = new THREE.Vector3();
+  private readonly _qcTmp = new THREE.Vector3();
 
   private boundHandlers: {
     beforeUnload?: () => void;
@@ -778,7 +792,33 @@ class SimpleApp {
             }
             this.airborneTime = 0;
           }
-          if (speed > 0.8 && this.airborneTime < 0.12) {
+          const onFoot = speed > 0.8 && this.airborneTime < 0.12;
+          // Prefer clip-synced footfalls: the avatar exposes its normalised
+          // walk-cycle phase (added by the avatar rig this wave). Firing on the
+          // two mid-stride plants locks footsteps to the animation instead of a
+          // distance accumulator that visibly drifts as speed varies. The getter
+          // is optional — fall back to the accumulator when it's absent.
+          const walkPhase =
+            (player as { getWalkCyclePhase?: () => number }).getWalkCyclePhase?.();
+          if (typeof walkPhase === 'number') {
+            if (onFoot) {
+              // Two footfalls per cycle; alt-foot falls out of which plant fired.
+              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.25)) {
+                this.stepAlt = false;
+                sfx.footstep(this.stepAlt);
+                this.scene.spawnDust(player.getWorldPosition(), 1);
+              }
+              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.75)) {
+                this.stepAlt = true;
+                sfx.footstep(this.stepAlt);
+                this.scene.spawnDust(player.getWorldPosition(), 1);
+              }
+              this.prevWalkPhase = walkPhase;
+            } else {
+              // Not striding: reset so a resumed walk never fires from a stale phase.
+              this.prevWalkPhase = -1;
+            }
+          } else if (onFoot) {
             this.stepAccum += speed * deltaTime;
             if (this.stepAccum > 1.7) {
               this.stepAccum = 0;
@@ -922,9 +962,11 @@ class SimpleApp {
       };
     }).audioManager;
     if (am?.updateListener && this.scene) {
-      const lp = this.scene.getPlayer().getWorldPosition();
-      const fwd = this.scene.getCamera().getWorldDirection(new THREE.Vector3());
-      am.updateListener({ x: lp.x, y: lp.y, z: lp.z }, { x: fwd.x, y: fwd.y, z: fwd.z }, { x: 0, y: 1, z: 0 });
+      // Vector3 satisfies the {x,y,z} shape updateListener reads, and it copies
+      // the values out synchronously, so reusing these scratches is safe.
+      const lp = this._listenerPos.copy(this.scene.getPlayer().getWorldPosition());
+      const fwd = this.scene.getCamera().getWorldDirection(this._listenerFwd);
+      am.updateListener(lp, fwd, this._listenerUp);
     }
     if (this.multiplayer) {
       this.scene.syncRemoteVehicles(this.multiplayer.getRemoteVehicleStates());
@@ -948,35 +990,67 @@ class SimpleApp {
       return;
     }
     const player = this.scene.getPlayer();
-    const playerPos = player.getWorldPosition();
-    const normal = player.getSurfaceNormal();
+    // Copy into scratch (getWorldPosition/getSurfaceNormal return fresh clones)
+    // so this per-frame path allocates nothing while a delivery is active.
+    const playerPos = this._qcPlayerPos.copy(player.getWorldPosition());
+    const normal = this._qcNormal.copy(player.getSurfaceNormal());
     const targetPos = target.destination.mesh.position;
 
     // Feed the in-world breadcrumb trail the same target as the HUD compass
     this.scene.setGuideTarget(targetPos);
 
-    const project = (v: { clone(): any }) => {
-      const p = (v as any).clone();
-      return p.sub(normal.clone().multiplyScalar(p.dot(normal)));
-    };
-    const toTarget = project(targetPos.clone().sub(playerPos));
-    const camForward = project(this.scene.getOrbitCamera().getForwardDirection());
+    // Bearing vectors projected onto the player's tangent plane (reused scratch).
+    const toTarget = this.projectTangent(
+      this._qcToTarget,
+      this._qcTmp.copy(targetPos).sub(playerPos),
+      normal,
+    );
+    const camForward = this.projectTangent(
+      this._qcCamFwd,
+      this.scene.getOrbitCamera().getForwardDirection(),
+      normal,
+    );
     if (toTarget.lengthSq() < 1e-6 || camForward.lengthSq() < 1e-6) {
       this.ui.updateQuestCompass(null);
       return;
     }
     toTarget.normalize();
     camForward.normalize();
-    const cross = camForward.clone().cross(toTarget);
+    const cross = this._qcCross.copy(camForward).cross(toTarget);
     const angleRad = Math.atan2(cross.dot(normal), camForward.dot(toTarget));
     // great-circle distance on the planet surface
     const R = playerPos.length();
-    const arc = playerPos.clone().normalize().angleTo(targetPos.clone().normalize());
+    // _qcTmp and _qcCross are free again here; reuse them for the two great-circle endpoints.
+    const arc = this._qcTmp
+      .copy(playerPos)
+      .normalize()
+      .angleTo(this._qcCross.copy(targetPos).normalize());
     this.ui.updateQuestCompass({
       angleRad,
       distance: arc * R,
       label: '\uD83D\uDCEC Delivery',
     });
+  }
+
+  /**
+   * True when a normalised walk phase [0,1) swept past `thr` between the
+   * previous and current sample, accounting for the 1\u21920 wrap. `prev < 0` marks
+   * a freshly (re)started stride, so nothing has been crossed yet.
+   */
+  private crossedPhase(prev: number, cur: number, thr: number): boolean {
+    if (prev < 0) return false;
+    if (cur >= prev) return prev < thr && thr <= cur;
+    return thr > prev || thr <= cur; // wrapped past 1.0 this frame
+  }
+
+  /** Project `v` onto the tangent plane defined by `normal`, writing into `out`. */
+  private projectTangent(
+    out: THREE.Vector3,
+    v: THREE.Vector3,
+    normal: THREE.Vector3,
+  ): THREE.Vector3 {
+    out.copy(v);
+    return out.addScaledVector(normal, -out.dot(normal));
   }
 
   /**

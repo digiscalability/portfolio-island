@@ -94,6 +94,42 @@ export class SimpleUI {
     this.createContactCTA();
     this.createEmoteButton();
     this.createTouchControls();
+    this.initResponsiveHud();
+  }
+
+  /**
+   * Watch for short-landscape phones and reflow the minimap off the left-edge
+   * chat/mic stack. Portrait restores the full-size disc. The change handler
+   * early-returns unless the boolean actually flips, so a spurious media event
+   * never triggers layout work.
+   */
+  private initResponsiveHud(): void {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    this.shortLandscapeMql = window.matchMedia(
+      '(max-height: 500px) and (orientation: landscape)',
+    );
+    this.shortLandscape = this.shortLandscapeMql.matches;
+    this.onShortLandscapeChange = () => {
+      const v = this.shortLandscapeMql!.matches;
+      if (v === this.shortLandscape) return; // no thrash
+      this.shortLandscape = v;
+      this.applyResponsiveHud();
+    };
+    this.shortLandscapeMql.addEventListener?.('change', this.onShortLandscapeChange);
+  }
+
+  /** Apply the current short-landscape state to reflowable HUD elements. */
+  private applyResponsiveHud(): void {
+    if (this.mapCanvas) {
+      const short = this.shortLandscape;
+      // Shrink the 172px disc to ~60% and raise it so its lower arc clears the
+      // 🎤 button (bottom+198); portrait ('' + 40px) restores the tuned layout.
+      this.mapCanvas.style.width = short ? '104px' : '';
+      this.mapCanvas.style.height = 'auto';
+      this.mapCanvas.style.top = short
+        ? 'calc(var(--sat, 0px) + 8px)'
+        : 'calc(var(--sat, 0px) + 40px)';
+    }
   }
 
   // ── UX chrome ─────────────────────────────────────────────────────────
@@ -101,6 +137,12 @@ export class SimpleUI {
   private muteBtn: HTMLElement | null = null;
   private onMuteToggle: (() => boolean) | null = null;
   private joyState = { forward: 0, strafe: 0 };
+  // Short-landscape phones (max-height 500 + landscape): the portrait-tuned
+  // 172px minimap covers ~46% of the screen and collides with the left-edge
+  // 💬/🎤 stack. Tracked so a media change that doesn't flip this does no work.
+  private shortLandscape = false;
+  private shortLandscapeMql: MediaQueryList | null = null;
+  private onShortLandscapeChange: (() => void) | null = null;
 
   /** Wire the mute button to the audio system (returns new muted state). */
   setOnMuteToggle(cb: () => boolean): void {
@@ -115,6 +157,10 @@ export class SimpleUI {
   // ── Proximity chat ────────────────────────────────────────────────────
 
   private chatInput: HTMLInputElement | null = null;
+  // Preserved chat draft: an accidental blur (soft-keyboard collapse, tap-away)
+  // must not silently discard typed text — restored if the input reopens soon.
+  private chatDraft = '';
+  private chatDraftTime = 0;
   private onChatSend: ((text: string) => void) | null = null;
   private onMicDown: (() => void) | null = null;
   private onMicUp: (() => void) | null = null;
@@ -131,8 +177,11 @@ export class SimpleUI {
   public toast(message: string): void {
     if (!this.toastEl) {
       this.toastEl = document.createElement('div');
+      // Bottom-centre lane, stacked so concurrent notices don't overlap:
+      // chat-input 96 · interaction-prompt 100 · breath 150 · recording 200 ·
+      // toast 250 (highest — it can co-occur with any of the others).
       Object.assign(this.toastEl.style, {
-        position: 'absolute', left: '50%', bottom: 'calc(var(--sab, 0px) + 150px)',
+        position: 'absolute', left: '50%', bottom: 'calc(var(--sab, 0px) + 250px)',
         transform: 'translateX(-50%)', background: 'rgba(12,12,20,0.92)', color: '#fff',
         padding: '9px 16px', borderRadius: '12px', fontSize: '14px',
         fontFamily: 'system-ui, sans-serif', pointerEvents: 'none', zIndex: '1750',
@@ -566,10 +615,20 @@ export class SimpleUI {
     };
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
-      if (e.key === 'Enter') { const t = input.value; close(); if (t.trim()) this.onChatSend?.(t); }
-      else if (e.key === 'Escape') close();
+      if (e.key === 'Enter') { const t = input.value; this.chatDraft = ''; close(); if (t.trim()) this.onChatSend?.(t); }
+      else if (e.key === 'Escape') { this.chatDraft = ''; close(); }
     });
-    input.addEventListener('blur', close);
+    // Blur (soft-keyboard collapse, tap-away) must PRESERVE the draft, not drop
+    // it. Guard on `chatInput === input`: close() removes the still-focused
+    // input, which fires a second blur — without the guard a just-sent or
+    // just-cleared message would be resurrected as a draft.
+    input.addEventListener('blur', () => {
+      if (this.chatInput === input) {
+        this.chatDraft = input.value;
+        this.chatDraftTime = performance.now();
+      }
+      close();
+    });
     this.overlay.appendChild(input);
 
     if (this.isTouch) {
@@ -604,6 +663,7 @@ export class SimpleUI {
         // keep focus off the chip, so the tap reliably sends and dismisses.
         chip.addEventListener('pointerdown', (e) => {
           e.preventDefault();
+          this.chatDraft = '';
           close();
           this.onChatSend?.(phrase);
         });
@@ -628,8 +688,16 @@ export class SimpleUI {
       window.setTimeout(vvHandler, 60); // after focus settles + keyboard animates in
     }
 
+    // Restore a recently-preserved draft so an accidental blur didn't cost the
+    // message. ~30s window: long enough to survive a fumbled keyboard dismissal,
+    // short enough not to resurface a stale thought a minute later.
+    if (this.chatDraft && performance.now() - this.chatDraftTime < 30000) {
+      input.value = this.chatDraft;
+    }
     this.chatInput = input;
     input.focus();
+    const caret = input.value.length;
+    if (caret) input.setSelectionRange(caret, caret);
   }
 
   /**
@@ -1354,7 +1422,7 @@ export class SimpleUI {
     this.welcomeDiv.innerHTML = returning
       ? `<h2 style="margin: 0 0 14px 0; color: #4CAF50;">👋 Welcome back!</h2>
          ${ctaRow}
-         <p style="margin:0; font-size:12px; color:#9aa;">…or press any key to keep exploring.</p>`
+         <p style="margin:0; font-size:12px; color:#9aa;">…or ${this.isTouch ? 'tap anywhere' : 'press any key'} to keep exploring.</p>`
       : `
       <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
       <p style="margin: 0 0 18px 0; font-size:15px; line-height:1.5;">
@@ -1362,7 +1430,7 @@ export class SimpleUI {
         hand-built in Three.js, that you can actually walk through.</p>
       ${ctaRow}
       <p style="margin: 0 0 6px 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
-      <p style="margin: 0; font-size: 12px; color: #7fbf8a;">…or just start exploring — press any key.</p>
+      <p style="margin: 0; font-size: 12px; color: #7fbf8a;">…or just start exploring — ${this.isTouch ? 'tap anywhere' : 'press any key'}.</p>
     `;
 
     // CTA buttons: track, navigate to the section, then dismiss. stopPropagation
@@ -1411,7 +1479,9 @@ export class SimpleUI {
       Object.assign(div.style, {
         position: 'absolute',
         left: '50%',
-        bottom: 'calc(var(--sab, 0px) + 96px)',
+        // Own row in the bottom-centre lane (see toast): clears the chat input
+        // (96) and interaction prompt (100) it used to sit exactly on top of.
+        bottom: 'calc(var(--sab, 0px) + 200px)',
         transform: 'translateX(-50%)',
         background: 'rgba(20,0,0,0.82)',
         color: '#fff',
@@ -1902,6 +1972,9 @@ export class SimpleUI {
         pointerEvents: 'none',
       });
       this.overlay.appendChild(this.mapCanvas);
+      // A canvas created while already in short-landscape must adopt the
+      // shrunk layout immediately (the media listener only fires on changes).
+      this.applyResponsiveHud();
     }
     const ctx = this.mapCanvas.getContext('2d');
     if (!ctx) return;
@@ -2487,8 +2560,6 @@ export class SimpleUI {
       this.customizeDiv = document.createElement('div');
       Object.assign(this.customizeDiv.style, {
         position: 'absolute',
-        bottom: 'calc(var(--sab, 0px) + 20px)',
-        left: 'calc(var(--sal, 0px) + 20px)',
         background: 'rgba(0, 0, 0, 0.9)',
         color: 'white',
         padding: '14px 16px',
@@ -2499,6 +2570,25 @@ export class SimpleUI {
         maxWidth: '272px',
         zIndex: '1400',
       });
+      if (this.isTouch) {
+        // Bottom-left is the joystick's corner — anchoring the panel there
+        // covers the stick and traps movement (you can't walk while recolouring,
+        // which defeats "preview while moving"). Float it top-centre and let it
+        // scroll, clear of both the joystick and the action buttons in portrait
+        // and short-landscape alike.
+        Object.assign(this.customizeDiv.style, {
+          top: 'calc(var(--sat, 0px) + 10px)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          maxHeight: 'calc(100dvh - var(--sat, 0px) - 20px)',
+          overflowY: 'auto',
+        });
+      } else {
+        Object.assign(this.customizeDiv.style, {
+          bottom: 'calc(var(--sab, 0px) + 20px)',
+          left: 'calc(var(--sal, 0px) + 20px)',
+        });
+      }
       this.overlay.appendChild(this.customizeDiv);
     }
 
@@ -2829,8 +2919,9 @@ export class SimpleUI {
           <li><strong>Personal</strong> — food, family recipes, creative tools</li>
           <li><strong>Get In Touch</strong> — work with DigiScalability</li>
         </ul>
-        <p style="margin-top: 18px; font-size:14px; color:#bbb;"><em>WASD to move, mouse to
-        look, E to interact. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
+        <p style="margin-top: 18px; font-size:14px; color:#bbb;"><em>${this.isTouch
+          ? 'Drag the joystick to move, drag to look, 👆 USE to interact'
+          : 'WASD to move, mouse to look, E to interact'}. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
       `,
       professional: `
         <h2 style="margin-top: 0; color: #2196F3;">💼 Professional</h2>
@@ -3081,6 +3172,10 @@ export class SimpleUI {
     if (this.playerCountDiv) {
       this.playerCountDiv.remove();
       this.playerCountDiv = null;
+    }
+    if (this.shortLandscapeMql && this.onShortLandscapeChange) {
+      this.shortLandscapeMql.removeEventListener?.('change', this.onShortLandscapeChange);
+      this.onShortLandscapeChange = null;
     }
     if (this.overlay && this.overlay.parentNode) {
       this.overlay.parentNode.removeChild(this.overlay);

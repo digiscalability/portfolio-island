@@ -10,6 +10,11 @@ export interface RemoteAvatar {
   body: THREE.Group;
   headBone: THREE.Object3D | null;
   update: (dt: number, speed: number) => void;
+  // Pose byte broadcast by the owner (0 on-foot, 1 swimming, 2 riding, 3 airborne)
+  // so peers strike the right pose instead of always walk-cycling upright.
+  setPose: (pose: number) => void;
+  // Play the arm-raise wave gesture (mirrors the local player's Q wave).
+  wave: () => void;
   dispose: () => void;
 }
 
@@ -118,6 +123,22 @@ export class SimplePlayer extends THREE.Group {
   private wasInWater = false; // edge-detect for the entry splash
   private justEnteredWater = false;
   private swimPoseActive = false; // swim pose currently overriding the mixer
+
+  // Jump/air pose (on-foot only): eases 0→1 while airborne, back on land.
+  private airPoseWeight = 0;
+  // Arm-wave gesture: seconds of the ~1.2s wave remaining (0 = idle).
+  private waveTime = 0;
+  private static readonly WAVE_DURATION = 1.2;
+  // Ground speed at which the walk clip reads natural at timeScale 1; the clip
+  // rate is scaled by tangentialSpeed / this so slow walks don't moonwalk and
+  // runs don't foot-slide.
+  private static readonly WALK_REF_SPEED = 4.2;
+
+  // Per-frame scratch (avoid allocating in update()/updateWorldMatrix hot paths)
+  private _normalScratch = new THREE.Vector3();
+  private _vecScratch = new THREE.Vector3();
+  private _alignQuat = new THREE.Quaternion();
+  private _yawQuat = new THREE.Quaternion();
 
   // Shop cosmetics: hat attached to the head bone (or fallback head)
   private currentHat: THREE.Group | null = null;
@@ -302,6 +323,7 @@ export class SimplePlayer extends THREE.Group {
       this.swimPoseActive = false;
       this.inWater = false;
       this.swimming = false;
+      this.airPoseWeight = 0;
     } else {
       // Back to swimming/walking: neutralise the posed bones + model tilt so
       // the mixer / swim pose take over cleanly.
@@ -412,6 +434,25 @@ export class SimplePlayer extends THREE.Group {
     if (!base) return null;
 
     const model = cloneSkeleton(base.scene) as THREE.Group;
+    // SkeletonUtils.clone SHARES materials with the base (and every other peer),
+    // so per-peer body-colour sync needs independent material instances. Clone
+    // them once here (geometry stays shared — cheap) and track for disposal.
+    const clonedMats: THREE.Material[] = [];
+    model.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh && !(m as THREE.SkinnedMesh).isSkinnedMesh) return;
+      if (Array.isArray(m.material)) {
+        m.material = m.material.map((x) => {
+          const c = x.clone();
+          clonedMats.push(c);
+          return c;
+        });
+      } else if (m.material) {
+        const c = (m.material as THREE.Material).clone();
+        clonedMats.push(c);
+        m.material = c;
+      }
+    });
     const body = new THREE.Group();
     body.add(model);
     body.updateMatrixWorld(true);
@@ -425,22 +466,36 @@ export class SimplePlayer extends THREE.Group {
       /* keep default placement */
     }
 
+    // Limb bones captured for the broadcast swim/ride/air poses + the wave.
     let headBone: THREE.Object3D | null = null;
+    let armLBone: THREE.Object3D | null = null;
+    let armRBone: THREE.Object3D | null = null;
+    let legLBone: THREE.Object3D | null = null;
+    let legRBone: THREE.Object3D | null = null;
     model.traverse((o) => {
       if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false;
       if (o instanceof THREE.Mesh) {
         o.castShadow = true;
         o.receiveShadow = true;
       }
-      if (!headBone && (o as THREE.Bone).isBone && o.name === 'head') headBone = o;
+      if ((o as THREE.Bone).isBone) {
+        if (o.name === 'head') headBone = headBone ?? o;
+        else if (o.name === 'armL') armLBone = o;
+        else if (o.name === 'armR') armRBone = o;
+        else if (o.name === 'legL') legLBone = o;
+        else if (o.name === 'legR') legRBone = o;
+      }
     });
 
-    // Match the local player's added hair cap (the GLB's own patch is sparse)
+    // Match the local player's added hair cap (the GLB's own patch is sparse).
+    // Named `hair_cap` so applyBodyColors can recolour it like the local one.
+    let hairCapGeom: THREE.BufferGeometry | null = null;
     if (headBone) {
-      const hair = new THREE.Mesh(
-        new THREE.SphereGeometry(0.21, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62),
-        new THREE.MeshToonMaterial({ color: 0x6c594b }),
-      );
+      const hairMat = new THREE.MeshToonMaterial({ color: 0x6c594b });
+      clonedMats.push(hairMat);
+      hairCapGeom = new THREE.SphereGeometry(0.21, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
+      const hair = new THREE.Mesh(hairCapGeom, hairMat);
+      hair.name = 'hair_cap';
       hair.position.set(0, 0.16, -0.02);
       hair.rotation.x = 0.25;
       hair.castShadow = true;
@@ -467,19 +522,85 @@ export class SimplePlayer extends THREE.Group {
       if (!idle && !walk) mixer.clipAction(base.animations[0]).play();
     }
 
+    // Broadcast pose (0 foot, 1 swim, 2 ride, 3 air) + eased override weight, so
+    // a swimming/riding/jumping peer strikes the right pose instead of always
+    // walk-cycling upright. Applied AFTER mixer.update (the clip writes the same
+    // limb bones every frame); activePose remembers the last non-foot pose so it
+    // eases back out. Wave overrides the right arm regardless of pose.
+    let curPose = 0;
+    let activePose = 0;
+    let poseW = 0;
+    let swimClock = 0;
+    let waveT = 0;
+
     const update = (dt: number, speed: number): void => {
       if (mixer) mixer.update(dt);
+      const overriding = curPose !== 0;
       if (walk) {
-        const w = THREE.MathUtils.clamp(speed / 3, 0, 1);
+        const w = overriding ? 0 : THREE.MathUtils.clamp(speed / 3, 0, 1);
         walk.setEffectiveWeight(w);
+        // Cadence follows measured ground speed so feet don't slide/moonwalk.
+        walk.timeScale = THREE.MathUtils.clamp(speed / SimplePlayer.WALK_REF_SPEED, 0.6, 1.6);
         if (idle) idle.setEffectiveWeight(1 - w);
       }
+      const k = Math.min(1, 10 * dt);
+      if (curPose !== 0) activePose = curPose;
+      poseW += ((overriding ? 1 : 0) - poseW) * k;
+      if (poseW > 0.001 && activePose !== 0) {
+        if (activePose === 1) {
+          // Swimming: face-down tilt + alternating overhead crawl + flutter kick.
+          swimClock += dt * 6;
+          const s = Math.sin(swimClock);
+          const s2 = Math.sin(swimClock * 2);
+          model.rotation.x = 1.15 * poseW;
+          model.rotation.z = s * 0.18 * poseW;
+          if (armLBone) armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -1.4 + s * 1.3, poseW);
+          if (armRBone) armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -1.4 - s * 1.3, poseW);
+          if (legLBone) legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, s2 * 0.35, poseW);
+          if (legRBone) legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -s2 * 0.35, poseW);
+        } else if (activePose === 2) {
+          // Riding: forward lean, hands forward, knees up.
+          model.rotation.set(0.12 * poseW, 0, 0);
+          if (armLBone) armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -0.7, poseW);
+          if (armRBone) armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -0.7, poseW);
+          if (legLBone) legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, -0.6, poseW);
+          if (legRBone) legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -0.6, poseW);
+        } else {
+          // Airborne: arms up, knees tucked (additive on top of the mixer).
+          model.rotation.set(0, 0, 0);
+          if (armLBone) armLBone.rotation.x += -0.85 * poseW;
+          if (armRBone) armRBone.rotation.x += -0.85 * poseW;
+          if (legLBone) legLBone.rotation.x += -0.45 * poseW;
+          if (legRBone) legRBone.rotation.x += -0.45 * poseW;
+        }
+      } else {
+        model.rotation.set(0, 0, 0);
+      }
+      if (waveT > 0) {
+        waveT = Math.max(0, waveT - dt);
+        const elapsed = SimplePlayer.WAVE_DURATION - waveT;
+        const env = Math.min(Math.min(1, elapsed / 0.15), Math.min(1, waveT / 0.25));
+        if (armRBone) {
+          armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -2.6, env);
+          armRBone.rotation.z = Math.sin(elapsed * 14) * 0.4 * env;
+        }
+      }
+    };
+    const setPose = (pose: number): void => {
+      curPose = pose;
+    };
+    const wave = (): void => {
+      waveT = SimplePlayer.WAVE_DURATION;
     };
     const dispose = (): void => {
       mixer?.stopAllAction();
+      // Materials were cloned per-peer above, so disposing them here is safe
+      // (geometry stays shared with the base and is NOT disposed).
+      for (const m of clonedMats) m.dispose();
+      hairCapGeom?.dispose();
     };
 
-    return { body, headBone, update, dispose };
+    return { body, headBone, update, setPose, wave, dispose };
   }
 
   /** Procedural toon hats sold in the island shop (also used by remote avatars). */
@@ -822,6 +943,118 @@ export class SimplePlayer extends THREE.Group {
     }
   }
 
+  /** Cache the four limb bones once (used by the air pose + wave). */
+  private ensureLimbBones(): void {
+    if (!this.gltfModel) return;
+    if (this.armLBone && this.armRBone && this.legLBone && this.legRBone) return;
+    this.gltfModel.traverse((o) => {
+      const b = o as THREE.Bone;
+      if (!b.isBone) return;
+      if (o.name === 'legL') this.legLBone = b;
+      else if (o.name === 'legR') this.legRBone = b;
+      else if (o.name === 'armL') this.armLBone = b;
+      else if (o.name === 'armR') this.armRBone = b;
+    });
+  }
+
+  /** Start the ~1.2s arm-raise wave gesture (triggered by the local Q wave). */
+  public triggerWave(): void {
+    this.waveTime = SimplePlayer.WAVE_DURATION;
+  }
+
+  /**
+   * Jump/air pose + arm-wave, applied on top of the mixer output (which has
+   * already written these bones this frame). Air: arms up + knees tucked,
+   * eased in while airborne and back on land. Wave: the right arm raises and
+   * wags for ~1.2s, overriding the air pose on that arm. On-foot only —
+   * update() returns earlier for swim/ride/seat, so isGrounded is the gate.
+   */
+  private applyAirWavePose(dt: number): void {
+    const k = Math.min(1, 10 * dt);
+    this.airPoseWeight += ((this.isGrounded ? 0 : 1) - this.airPoseWeight) * k;
+    const aw = this.airPoseWeight;
+    let waveEnv = 0;
+    let waveElapsed = 0;
+    if (this.waveTime > 0) {
+      this.waveTime = Math.max(0, this.waveTime - dt);
+      waveElapsed = SimplePlayer.WAVE_DURATION - this.waveTime;
+      waveEnv = Math.min(Math.min(1, waveElapsed / 0.15), Math.min(1, this.waveTime / 0.25));
+    }
+    const wag = Math.sin(waveElapsed * 14) * 0.4;
+    if (this.gltfModel) {
+      this.ensureLimbBones();
+      if (aw > 0.001) {
+        if (this.armLBone) this.armLBone.rotation.x += -0.85 * aw;
+        if (this.armRBone) this.armRBone.rotation.x += -0.85 * aw;
+        if (this.legLBone) this.legLBone.rotation.x += -0.45 * aw;
+        if (this.legRBone) this.legRBone.rotation.x += -0.45 * aw;
+      }
+      if (waveEnv > 0 && this.armRBone) {
+        this.armRBone.rotation.x = THREE.MathUtils.lerp(this.armRBone.rotation.x, -2.6, waveEnv);
+        this.armRBone.rotation.z = wag * waveEnv;
+      }
+    } else if (this.armPivots.length === 2 && this.legPivots.length === 2) {
+      if (aw > 0.001) {
+        this.armPivots[0].rotation.x += -0.85 * aw;
+        this.armPivots[1].rotation.x += -0.85 * aw;
+        this.legPivots[0].rotation.x += -0.45 * aw;
+        this.legPivots[1].rotation.x += -0.45 * aw;
+      }
+      if (waveEnv > 0) {
+        const arm = this.armPivots[1]; // right shoulder pivot
+        arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, -2.6, waveEnv);
+        // Blend back to the rest splay (-0.12) as the wave eases out.
+        arm.rotation.z = wag * waveEnv + -0.12 * (1 - waveEnv);
+      }
+    }
+  }
+
+  /**
+   * Normalised walk-cycle phase (0..1 across one full gait cycle) so footstep
+   * code can fire on the two mid-stride plants (~0.25 and ~0.75) instead of a
+   * distance accumulator that drifts as speed varies. Tracks the walk clip's
+   * (speed-scaled) time, or the procedural walk phase in the fallback body.
+   */
+  public getWalkCyclePhase(): number {
+    if (this.walkAction) {
+      const dur = this.walkAction.getClip().duration || 1;
+      return (((this.walkAction.time % dur) + dur) % dur) / dur;
+    }
+    const twoPi = Math.PI * 2;
+    return (((this.walkPhase % twoPi) + twoPi) % twoPi) / twoPi;
+  }
+
+  /**
+   * Recolour a rigged body by material name (peers apply the owner's chosen
+   * colours here). Shares the local player's material-name mapping; also
+   * recolours the added `hair_cap` mesh. Static so Multiplayer can call it on a
+   * remote avatar whose materials were cloned per-peer.
+   */
+  public static applyBodyColors(
+    root: THREE.Object3D,
+    cols: Partial<Record<BodyPart, number>>,
+  ): void {
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh && !(mesh as THREE.SkinnedMesh).isSkinnedMesh) return;
+      if (mesh.name === 'hair_cap') {
+        if (typeof cols.hair === 'number') {
+          (mesh.material as THREE.MeshStandardMaterial)?.color?.setHex(cols.hair);
+        }
+        return;
+      }
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const sm = m as THREE.MeshStandardMaterial;
+        if (!sm || !sm.name || !sm.color) continue;
+        for (const key of Object.keys(cols) as BodyPart[]) {
+          const hex = cols[key];
+          if (typeof hex === 'number' && sm.name === PART_MATERIAL[key]) sm.color.setHex(hex);
+        }
+      }
+    });
+  }
+
   /** Speed along the surface (gravity axis removed) — drives footstep cadence. */
   public getTangentialSpeed(): number {
     const n = this.getSurfaceNormal();
@@ -832,11 +1065,16 @@ export class SimplePlayer extends THREE.Group {
   }
 
   public getSurfaceNormal(): THREE.Vector3 {
-    if (this.planetRadius <= 0) return new THREE.Vector3(0, 1, 0);
-    const n = this.playerPosition.clone().sub(this.planetCenter);
-    const len = n.length();
-    if (len < 0.001) return new THREE.Vector3(0, 1, 0);
-    return n.divideScalar(len);
+    return this.getSurfaceNormalInto(new THREE.Vector3());
+  }
+
+  /** Allocation-free surface normal into a caller-owned vector (hot paths). */
+  private getSurfaceNormalInto(out: THREE.Vector3): THREE.Vector3 {
+    if (this.planetRadius <= 0) return out.set(0, 1, 0);
+    out.copy(this.playerPosition).sub(this.planetCenter);
+    const len = out.length();
+    if (len < 0.001) return out.set(0, 1, 0);
+    return out.divideScalar(len);
   }
 
   /**
@@ -1059,10 +1297,10 @@ export class SimplePlayer extends THREE.Group {
 
     // ── In water: swim pose overrides the walk/idle animation ───────────
     if (this.inWater) {
-      const surfN = this.getSurfaceNormal();
-      const tang = this.velocity
-        .clone()
-        .sub(surfN.clone().multiplyScalar(this.velocity.dot(surfN)))
+      const surfN = this.getSurfaceNormalInto(this._normalScratch);
+      const tang = this._vecScratch
+        .copy(this.velocity)
+        .addScaledVector(surfN, -this.velocity.dot(surfN))
         .length();
       this.applySwimPose(safeDeltaTime, this.swimming && tang > 0.4);
       this.swimPoseActive = true;
@@ -1075,6 +1313,7 @@ export class SimplePlayer extends THREE.Group {
       this.clearSwimPose();
       this.swimPoseActive = false;
       this.leanRoll = 0;
+      this.airPoseWeight = 0;
       for (const b of [this.armLBone, this.armRBone, this.legLBone, this.legRBone]) {
         if (b) b.rotation.x = 0;
       }
@@ -1083,10 +1322,10 @@ export class SimplePlayer extends THREE.Group {
     // Procedural walk cycle for the built-in model: swing limbs from their
     // hip/shoulder pivots and bounce the body, scaled by tangential speed.
     if (!this.gltfModel && this.legPivots.length === 2 && this.armPivots.length === 2) {
-      const surfNormal = this.getSurfaceNormal();
-      const tangential = this.velocity
-        .clone()
-        .sub(surfNormal.clone().multiplyScalar(this.velocity.dot(surfNormal)))
+      const surfNormal = this.getSurfaceNormalInto(this._normalScratch);
+      const tangential = this._vecScratch
+        .copy(this.velocity)
+        .addScaledVector(surfNormal, -this.velocity.dot(surfNormal))
         .length();
       if (tangential > 0.5 && this.isGrounded) {
         this.walkPhase += safeDeltaTime * (4 + tangential * 1.6);
@@ -1122,7 +1361,7 @@ export class SimplePlayer extends THREE.Group {
       let sy = 1;
       let kSpring = Math.min(1, 10 * safeDeltaTime);
       if (!this.isGrounded) {
-        const ssNormal = this.getSurfaceNormal();
+        const ssNormal = this.getSurfaceNormalInto(this._normalScratch);
         const vAlong = Math.abs(this.velocity.dot(ssNormal));
         sy = Math.min(1.15, 1 + vAlong * 0.02);
         sx = 2 - sy;
@@ -1162,21 +1401,29 @@ export class SimplePlayer extends THREE.Group {
     // frame (no fadeIn/fadeOut scheduling — interleaved fades can strand both
     // actions at weight 0 when the speed oscillates around the threshold).
     if (this.idleAction && this.walkAction) {
-      const normal = this.getSurfaceNormal();
-      const vTangent = this.velocity
-        .clone()
-        .sub(normal.clone().multiplyScalar(this.velocity.dot(normal)));
-      const target = vTangent.length() > 0.8 ? 1 : 0;
+      const normal = this.getSurfaceNormalInto(this._normalScratch);
+      const spd = this._vecScratch
+        .copy(this.velocity)
+        .addScaledVector(normal, -this.velocity.dot(normal))
+        .length();
+      const target = spd > 0.8 ? 1 : 0;
       const k = Math.min(1, 10 * safeDeltaTime);
       const w = THREE.MathUtils.lerp(this.walkAction.getEffectiveWeight(), target, k);
       this.walkAction.setEffectiveWeight(w);
       this.idleAction.setEffectiveWeight(1 - w);
+      // Cadence follows ground speed so slow walks don't moonwalk / runs slide.
+      this.walkAction.timeScale = THREE.MathUtils.clamp(spd / SimplePlayer.WALK_REF_SPEED, 0.6, 1.6);
     }
 
     // Update GLTF animations
     if (this.animationMixer) {
       this.animationMixer.update(safeDeltaTime);
     }
+
+    // Jump/air pose + arm-wave: applied AFTER the mixer (the clip writes these
+    // same bones every frame). Reached only on foot — swim/ride/seat return
+    // earlier — so isGrounded gates the air pose.
+    this.applyAirWavePose(safeDeltaTime);
 
     // Update mesh position
     this.updateWorldMatrix();
@@ -1425,10 +1672,16 @@ export class SimplePlayer extends THREE.Group {
   }
 
   /**
-   * Get player world position
+   * Get player world position (allocates a fresh vector — kept for callers
+   * that store the result; per-frame callers should use getWorldPositionInto).
    */
   public getWorldPosition(): THREE.Vector3 {
-    return this.playerPosition.clone();
+    return this.getWorldPositionInto(new THREE.Vector3());
+  }
+
+  /** Allocation-free world position into a caller-owned vector (hot paths). */
+  public getWorldPositionInto(out: THREE.Vector3): THREE.Vector3 {
+    return out.copy(this.playerPosition);
   }
 
   /**
@@ -1473,16 +1726,11 @@ export class SimplePlayer extends THREE.Group {
     this.position.copy(this.playerPosition);
 
     if (this.planetRadius > 0) {
-      // Align player "up" with surface normal, then yaw around that normal
-      const surfaceNormal = this.getSurfaceNormal();
-      const worldUp = new THREE.Vector3(0, 1, 0);
-
-      // Quaternion that rotates world-Y onto the surface normal
-      const alignQuat = new THREE.Quaternion().setFromUnitVectors(worldUp, surfaceNormal);
-
-      // Yaw rotation around surface normal
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(surfaceNormal, this.yaw);
-
+      // Align player "up" with surface normal, then yaw around that normal.
+      // Scratch quats/vector — this runs every frame.
+      const surfaceNormal = this.getSurfaceNormalInto(this._normalScratch);
+      const alignQuat = this._alignQuat.setFromUnitVectors(SimplePlayer._poleUp, surfaceNormal);
+      const yawQuat = this._yawQuat.setFromAxisAngle(surfaceNormal, this.yaw);
       this.quaternion.multiplyQuaternions(yawQuat, alignQuat);
     } else {
       this.rotation.order = 'YXZ';
