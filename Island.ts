@@ -731,10 +731,15 @@ export class Island {
       const tr = trailAt(normal);
       const trailW = tr.w;
       let crag = 0;
-      if (highland > 0.05) {
+      // Crag only on the tall SUMMIT range (highland > ~1.8), ramped smoothly
+      // from the threshold so there is no seam. The gentle inter-district hills
+      // (highland < 1.8) stay SMOOTH rolling grass — craggy bumps there both
+      // looked wrong for "gentle" hills AND made analytic-seated props (rocks,
+      // grass) float against the bumpier raycast mesh.
+      if (highland > 1.8) {
         const ridged = 1 - Math.abs(noise3D(v.x, v.y, v.z, 2.2)); // ~2.9u crags
         const coarse = 1 - Math.abs(noise3D(v.x, v.y, v.z, 0.9)); // ~7u buttresses
-        crag = (ridged * 0.62 + coarse * 0.38) * highland * 0.5;
+        crag = (ridged * 0.62 + coarse * 0.38) * (highland - 1.8) * 0.5;
         crag *= 1 - trailW * 0.98; // the path is smooth rock, not crag
       }
       // Land floor raised 0.3 -> 0.75 so the ocean's crests + tide can't break

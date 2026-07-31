@@ -3014,11 +3014,27 @@ export class SimpleUI {
 
     if (!this.dialogueDiv) {
       this.dialogueDiv = document.createElement('div');
+      // On touch the dialogue shares the base of the screen with the joystick
+      // (bottom-left, ~136px ring) and the USE/JUMP/WAVE column (far right, up to
+      // ~286px tall, z 1650). A centred full-width panel tucks UNDER those controls
+      // — the "too crowded on small phones" report. So on touch we reflow it into
+      // the clear zone: a compact bar left of the button column, lifted above the
+      // joystick ring. Desktop (no touch controls) keeps the centred panel.
+      const centerX = this.isTouch ? '' : 'translateX(-50%) ';
+      const layout: Record<string, string> = this.isTouch
+        ? {
+            left: 'calc(var(--sal, 0px) + 14px)',
+            right: 'calc(var(--sar, 0px) + 106px)',
+            bottom: 'calc(var(--sab, 0px) + 150px)',
+            maxWidth: '460px',
+          }
+        : {
+            left: '50%',
+            width: 'min(600px, 90%)',
+            bottom: '30px',
+          };
       Object.assign(this.dialogueDiv.style, {
         position: 'absolute',
-        bottom: '30px',
-        left: '50%',
-        width: 'min(600px, 90%)',
         background: 'rgba(10, 10, 20, 0.92)',
         color: '#f0f0f0',
         padding: '0',
@@ -3028,12 +3044,13 @@ export class SimpleUI {
         border: '2px solid rgba(120, 160, 255, 0.4)',
         boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
         opacity: '0',
-        transform: 'translateX(-50%) translateY(16px) scale(0.96)',
+        transform: `${centerX}translateY(16px) scale(0.96)`,
         transition:
           'opacity 0.3s ease, transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1)',
         zIndex: '1600',
         overflow: 'hidden',
         cursor: 'pointer',
+        ...layout,
       });
       // Tap anywhere on the panel to advance — the primary way to progress
       // dialogue on touch (no keyboard). Routes through the same synthetic 'e'
@@ -3047,32 +3064,35 @@ export class SimpleUI {
       requestAnimationFrame(() => {
         if (this.dialogueDiv) {
           this.dialogueDiv.style.opacity = '1';
-          this.dialogueDiv.style.transform = 'translateX(-50%) translateY(0) scale(1)';
+          this.dialogueDiv.style.transform = `${centerX}translateY(0) scale(1)`;
         }
       });
     }
 
+    // clamp() lets every dimension shrink on small viewports and settle at the
+    // original desktop values on large ones, so the panel never cramps its text
+    // on a phone yet stays comfortable on a monitor — no media-query branching.
     this.dialogueDiv.innerHTML = `
       <div style="
-        padding: 6px 16px;
+        padding: clamp(4px, 1vh, 6px) clamp(12px, 4vw, 16px);
         background: linear-gradient(135deg, rgba(80, 130, 255, 0.3), rgba(120, 80, 255, 0.2));
         border-bottom: 1px solid rgba(120, 160, 255, 0.2);
-        font-size: 13px;
+        font-size: clamp(11px, 2.9vw, 13px);
         font-weight: 700;
-        letter-spacing: 1.5px;
+        letter-spacing: 1px;
         text-transform: uppercase;
         color: rgba(160, 200, 255, 0.9);
       ">${name}</div>
-      <div style="padding: 16px 20px; min-height: 60px;">
+      <div style="padding: clamp(10px, 1.8vh, 16px) clamp(14px, 4vw, 20px); min-height: clamp(36px, 7vh, 60px);">
         <div id="dialogue-text" style="
-          line-height: 1.6;
-          font-size: 15px;
-          min-height: 24px;
+          line-height: 1.5;
+          font-size: clamp(13px, 3.5vw, 15px);
+          min-height: clamp(18px, 4vh, 24px);
         "></div>
         <div style="
           text-align: right;
-          margin-top: 10px;
-          font-size: 12px;
+          margin-top: clamp(5px, 1vh, 10px);
+          font-size: clamp(10px, 2.6vw, 12px);
           color: rgba(160, 200, 255, 0.5);
         ">
           <span id="dialogue-hint">${this.isTouch ? 'Tap to continue' : 'Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to continue'}</span>
