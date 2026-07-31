@@ -560,6 +560,21 @@ export class Island {
       { dir: this.dirAt(5.66, 0.64), height: 1.5, reach: 0.12 },
       { dir: this.dirAt(5.55, 0.54), height: 1.2, reach: 0.11 },
       { dir: this.dirAt(5.3, 0.54), height: 1.1, reach: 0.11 },
+      // Gentle rolling GREEN hills in the OTHER three inter-district gaps, so the
+      // whole island reads as hilly rather than one mountain + flat lawn. Low
+      // (1.6-2.3u ≈ knee-to-shoulder of the ~1.7u player), in the lat 0.6-0.82
+      // upland band (clear of the lat-0.4636 boulevard) and centred in each gap
+      // clear of district content: Professional(0)-Projects(1.57),
+      // Projects-Personal(3.14), Personal-Contact(4.71). Far below the snow line.
+      { dir: this.dirAt(0.85, 0.72), height: 1.7, reach: 0.15 },
+      { dir: this.dirAt(1.05, 0.62), height: 1.2, reach: 0.13 },
+      { dir: this.dirAt(0.7, 0.79), height: 1.4, reach: 0.14 },
+      { dir: this.dirAt(2.2, 0.72), height: 1.7, reach: 0.15 },
+      { dir: this.dirAt(2.42, 0.63), height: 1.2, reach: 0.13 },
+      { dir: this.dirAt(2.03, 0.8), height: 1.4, reach: 0.14 },
+      { dir: this.dirAt(4.0, 0.72), height: 1.7, reach: 0.15 },
+      { dir: this.dirAt(4.22, 0.62), height: 1.2, reach: 0.13 },
+      { dir: this.dirAt(3.83, 0.8), height: 1.4, reach: 0.14 },
     ];
 
     // ── Summit trail ──────────────────────────────────────────────────────
