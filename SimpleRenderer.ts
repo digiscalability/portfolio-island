@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import type { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 
+import { isRealTheme } from './Theme';
+
 /**
  * SimpleRenderer
  *
@@ -96,7 +98,9 @@ export class SimpleRenderer {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    // Real theme runs a touch hotter: continuous PBR + the soft sky PMREM
+    // read dimmer than the toon ramp at the same exposure.
+    this.renderer.toneMappingExposure = isRealTheme() ? 1.14 : 1.08;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.shadowMap.autoUpdate = true;

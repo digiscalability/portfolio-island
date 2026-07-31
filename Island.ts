@@ -477,6 +477,9 @@ export class Island {
           GRASS_LUSH,
           THREE.MathUtils.clamp(lush * 0.75 - moist * 0.35 + Math.random() * 0.5, 0, 1),
         );
+      // Real theme: same saturation punch-up as the terrain vertex colors
+      // (see the terrain color pass) so blades keep matching their ground.
+      if (isRealTheme()) bladeColor.offsetHSL(0, 0.1, 0.01);
       // subtle per-blade brightness so neighbours never match exactly
       const shade = 0.86 + Math.random() * 0.28;
       grass.setColorAt(k, bladeColor.multiplyScalar(shade));
@@ -852,6 +855,12 @@ export class Island {
         // stays bare earth even up in the snowfield.
         const tw = this.trailAt(vDir).w;
         if (tw > 0.01) tmp.lerp(dirt, tw * 0.9);
+
+        // Real theme: vertex colors bypass the material grade in GameScene
+        // (material.color is white here), so the saturation punch-up that
+        // keeps the candy palette under continuous PBR shading lands at
+        // color-build time instead. One-time CPU.
+        if (isRealTheme()) tmp.offsetHSL(0, 0.12, 0.01);
 
         // deterministic jitter from vertex index (no Math.random -> stable)
         const j = 1 + (((i * 2654435761) % 1000) / 1000 - 0.5) * 0.09;

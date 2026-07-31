@@ -271,6 +271,7 @@ export class GameScene extends THREE.Scene {
   } | null = null;
   private hemiLight: THREE.HemisphereLight | null = null;
   private envCycle: EnvironmentCycle | null = null;
+  private realGradeDone = false; // one-shot latch for the real-theme grade
 
   // Scratch objects for the guide-trail math
   private readonly _guideAxis = new THREE.Vector3();
@@ -397,10 +398,13 @@ export class GameScene extends THREE.Scene {
     // automatically; physical spacing grows with the radius.
     this.island = new Island(22);
     this.add(this.island.mesh);
-    // Unify the art direction: stepped toon shading on every prop (abeto-style).
-    // Under ?theme=real the pass is skipped — every material is already
-    // authored as MeshStandardMaterial, so NOT converting them IS the PBR look
-    // (paired with the sky PMREM in applyRealEnvironment).
+    // Unify the art direction. Toon (?theme=toon): stepped shading on every
+    // prop (abeto-style). Real (default): materials stay MeshStandardMaterial
+    // (they're authored that way) + a saturation grade — continuous PBR
+    // lighting reads more muted than the toon ramp, so colors get a one-time
+    // punch-up to keep the island's candy palette. The grade runs on the
+    // FIRST update (see update()), not here: zones/NPCs/town props don't
+    // exist yet at this point and would be missed.
     if (!isRealTheme()) this.toonifyIslandMaterials();
 
     // Register trees for the gentle ambient sway in update()
@@ -2980,6 +2984,38 @@ export class GameScene extends THREE.Scene {
     console.log('🌐 Real theme: sky PMREM environment applied');
   }
 
+  /**
+   * Real theme's counterpart to toonify: one-time saturation/lightness lift on
+   * every island material color. Continuous PBR shading + the soft sky PMREM
+   * mute the flat-color palette (the toon ramp used to do the punching); this
+   * restores it. Vertex-colored surfaces (terrain, grass) are graded where
+   * their colors are BUILT (Island.ts — material.color is white there, so an
+   * HSL lift here would do nothing). Materials are mutated in place (they're
+   * the live ones) and deduped so shared materials aren't graded twice.
+   */
+  private gradeRealMaterials(): void {
+    const seen = new Set<string>();
+    let count = 0;
+    // Whole scene, not just island.mesh (toonify's old scope): the zone plaza
+    // discs, NPCs and other scene-level props are big fixed-color surfaces
+    // that read washed-out if left out of the grade. The guards below make
+    // this safe — only non-vertex-colored MeshStandardMaterials are touched.
+    this.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const mat of mats) {
+        const m = mat as THREE.MeshStandardMaterial;
+        if (!m || !m.isMeshStandardMaterial || seen.has(m.uuid)) continue;
+        seen.add(m.uuid);
+        if (m.vertexColors) continue; // graded at color-build time in Island
+        m.color.offsetHSL(0, 0.12, 0.02);
+        count++;
+      }
+    });
+    console.log('🎨 Real theme: graded', count, 'materials (+sat)');
+  }
+
   private toonifyIslandMaterials(): void {
     const gradientMap = Materials.createGradientMap();
     const cache = new Map<string, THREE.MeshToonMaterial>();
@@ -3231,6 +3267,14 @@ export class GameScene extends THREE.Scene {
    */
   public update(deltaTime: number): void {
     if (!this.player) return;
+
+    // Real theme's saturation grade, deferred to the first update so the
+    // whole populated scene (zones, NPCs, town props — added after
+    // construction) is in the traverse. Dedupe inside makes re-runs safe.
+    if (isRealTheme() && !this.realGradeDone) {
+      this.realGradeDone = true;
+      this.gradeRealMaterials();
+    }
 
     // Update player physics
     this.player.update(deltaTime);
