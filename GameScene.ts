@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { Island } from './Island';
+import { isRealTheme } from './Theme';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
 import { OrbitCamera } from './OrbitCamera';
@@ -396,8 +397,11 @@ export class GameScene extends THREE.Scene {
     // automatically; physical spacing grows with the radius.
     this.island = new Island(22);
     this.add(this.island.mesh);
-    // Unify the art direction: stepped toon shading on every prop (abeto-style)
-    this.toonifyIslandMaterials();
+    // Unify the art direction: stepped toon shading on every prop (abeto-style).
+    // Under ?theme=real the pass is skipped — every material is already
+    // authored as MeshStandardMaterial, so NOT converting them IS the PBR look
+    // (paired with the sky PMREM in applyRealEnvironment).
+    if (!isRealTheme()) this.toonifyIslandMaterials();
 
     // Register trees for the gentle ambient sway in update()
     this.island.mesh.traverse((obj) => {
@@ -515,6 +519,12 @@ export class GameScene extends THREE.Scene {
         this.hemiLight,
         this.skyColorUniforms,
       );
+      // Share the LIVE horizon Color with the sea's fresnel uniform (by
+      // reference — the cycle lerps it in place), so the water's sky
+      // reflection tracks day/dusk/night for free. Wave 2 added both ends of
+      // this seam but couldn't wire them across file ownership; this is the
+      // one-line connection.
+      this.island.bindSeaSkyColor(this.skyColorUniforms.horizonColor.value);
     }
 
     // Create orbit camera (with terrain collision so hills don't block the view)
@@ -2935,6 +2945,41 @@ export class GameScene extends THREE.Scene {
    * Transparent/emissive-only materials (glass, sparkles, glow) keep
    * their original shading.
    */
+  /**
+   * ?theme=real: give the PBR materials an environment to reflect. A tiny
+   * equirectangular gradient built from the day sky palette is PMREM-filtered
+   * once (~a few ms, off the hot path) and set as scene.environment — this is
+   * what stops un-toonified MeshStandardMaterials reading as "gray plastic".
+   * EnvironmentCycle then drives scene.environmentIntensity with the day
+   * factor so reflections dim at night. Needs the renderer, so main-simple
+   * calls it after both exist (real theme only).
+   */
+  public applyRealEnvironment(renderer: THREE.WebGLRenderer): void {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 32;
+    const ctx = c.getContext('2d')!;
+    const grad = ctx.createLinearGradient(0, 0, 0, 32);
+    grad.addColorStop(0.0, '#4a90d9'); // zenith (sky dome topColor)
+    grad.addColorStop(0.45, '#a8d8f0'); // horizon
+    grad.addColorStop(0.55, '#7fb0c9'); // haze just below the horizon line
+    grad.addColorStop(1.0, '#3a6a8c'); // "ground" = sea-deep bounce light
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 64, 32);
+
+    const equirect = new THREE.CanvasTexture(c);
+    equirect.mapping = THREE.EquirectangularReflectionMapping;
+    equirect.colorSpace = THREE.SRGBColorSpace;
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envRT = pmrem.fromEquirectangular(equirect);
+    this.environment = envRT.texture;
+    this.environmentIntensity = 1;
+    equirect.dispose();
+    pmrem.dispose();
+    console.log('🌐 Real theme: sky PMREM environment applied');
+  }
+
   private toonifyIslandMaterials(): void {
     const gradientMap = Materials.createGradientMap();
     const cache = new Map<string, THREE.MeshToonMaterial>();

@@ -15,6 +15,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 import { Materials } from './Materials';
 import { SimpleRenderer } from './SimpleRenderer';
+import { isRealTheme } from './Theme';
 import { NPC } from './NPC';
 import TextureGenerator from './TextureGenerator';
 
@@ -337,11 +338,22 @@ export class Island {
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geo.computeVertexNormals();
 
-    const mat = new THREE.MeshToonMaterial({
-      vertexColors: true,
-      side: THREE.DoubleSide,
-      gradientMap: Materials.createGradientMap(),
-    });
+    // Grass is the one material authored directly as toon (everything else is
+    // MeshStandardMaterial + the toonify pass). Under ?theme=real it becomes
+    // standard too; the sway/push shader injections below target chunks
+    // (<common>, <begin_vertex>) present in BOTH materials' vertex shaders.
+    const mat = isRealTheme()
+      ? new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          roughness: 0.9,
+          metalness: 0,
+        })
+      : new THREE.MeshToonMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          gradientMap: Materials.createGradientMap(),
+        });
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.grassTimeUniform;
       shader.uniforms.uPlayerPos = this.grassPlayerUniform;
@@ -1002,15 +1014,18 @@ export class Island {
             'roughnessFactor = mix(roughnessFactor, 0.14, smoothstep(0.6, 1.3, vWave));',
           ].join('\n'),
         )
-        // Fresnel sky reflection: no envmap exists in this scene, so fake the
-        // sky bounce analytically. Grazing angles mix toward the (live) horizon
-        // colour and go opaque; looking straight down stays diffuse water and
-        // slightly more transparent over the shallows.
+        // Fresnel sky reflection: under the toon theme no envmap exists, so
+        // fake the sky bounce analytically. Under ?theme=real the scene HAS a
+        // PMREM environment giving the standard-material sea true reflections —
+        // the analytic colour mix would double-dip, so only the grazing-angle
+        // opacity part is kept there.
         .replace(
           '#include <opaque_fragment>',
           [
             'float fres = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);',
-            'outgoingLight = mix(outgoingLight, uSkyHorizon, fres * 0.55);',
+            isRealTheme()
+              ? '// real theme: envmap supplies the sky reflection'
+              : 'outgoingLight = mix(outgoingLight, uSkyHorizon, fres * 0.55);',
             'diffuseColor.a = mix(0.85, 0.97, fres);',
             '#include <opaque_fragment>',
           ].join('\n'),

@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import { isRealTheme } from './Theme';
+
 /**
  * EnvironmentCycle — day/night + weather matched to the visitor.
  *
@@ -603,6 +605,14 @@ export class EnvironmentCycle {
     const dayFactor = THREE.MathUtils.smoothstep(elev, -0.12, 0.3);
     const duskFactor = Math.max(0, 1 - Math.abs(elev) / 0.35);
     this.lastDayFactor = dayFactor;
+
+    // ?theme=real: the sky PMREM (GameScene.applyRealEnvironment) is generated
+    // once from the DAY palette; dim its contribution with the sun so PBR
+    // reflections don't glow daylight-blue at midnight. Floor of 0.2 ≈ moon +
+    // starlight bounce.
+    if (isRealTheme() && this.scene.environment) {
+      this.scene.environmentIntensity = 0.2 + 0.8 * dayFactor;
+    }
 
     // Moon arc, hoisted: the light-direction blend below needs it before the
     // disc is drawn. Real lunar phase (0 = new, 0.5 = full), trailing the sun

@@ -15,6 +15,7 @@ import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
+import { isRealTheme } from './Theme';
 import './style.css';
 
 /**
@@ -407,6 +408,13 @@ class SimpleApp {
       // Setup cleanup on page unload
       this.boundHandlers.beforeUnload = () => this.dispose();
       window.addEventListener('beforeunload', this.boundHandlers.beforeUnload);
+
+      // ?theme=real: set the sky PMREM environment BEFORE the shader
+      // precompile below, so every material compiles once with its envmap
+      // defines instead of recompiling mid-fly-in when the env appears.
+      if (isRealTheme()) {
+        this.scene.applyRealEnvironment(this.renderer.getRenderer());
+      }
 
       // Pre-compile every shader program while the loading screen is still
       // up. Otherwise the first rendered frames compile ~50 programs
