@@ -24,11 +24,11 @@ export class OrbitCamera {
   private targetPosition: THREE.Vector3 = new THREE.Vector3();
   private cameraPosition: THREE.Vector3 = new THREE.Vector3();
 
-  private distance: number = 5.2; // tight third-person frame — player always reads
-  private height: number = 2.4; // height above player
+  private distance: number = 4.4; // tight third-person frame — player always reads
+  private height: number = 1.5; // height above player (lowered for a grounded, near-eye POV)
 
   private yaw: number = 0; // horizontal rotation around player
-  private pitch: number = -0.35; // vertical tilt (looking slightly downward at player)
+  private pitch: number = -0.12; // vertical tilt: near eye-level (was -0.35, a downward/aerial look)
 
   private yawVelocity: number = 0;
   private pitchVelocity: number = 0;
@@ -40,7 +40,7 @@ export class OrbitCamera {
   private damping: number = 0.9; // velocity damping (higher = more responsive)
   private mouseSensitivity: number = 0.005; // mouse input multiplier (raw pixels -> radians)
 
-  private minPitch: number = -0.35; // Don't look too far down (prevents ground clipping)
+  private minPitch: number = -0.18; // Don't look too far down (prevents ground clipping)
   private maxPitch: number = Math.PI * 0.25; // Don't look too far up
   private minDistance: number = 2;
   private maxDistance: number = 12;
@@ -59,8 +59,8 @@ export class OrbitCamera {
   // the craft's travel velocity here so the chase cam still swings behind.
   private externalVelocity: THREE.Vector3 | null = null;
   private rideMode = false;
-  private static readonly WALK_DISTANCE = 5.2;
-  private static readonly WALK_HEIGHT = 2.4;
+  private static readonly WALK_DISTANCE = 4.4;
+  private static readonly WALK_HEIGHT = 1.5;
   private static readonly RIDE_DISTANCE = 8.5;
   private static readonly RIDE_HEIGHT = 3.4;
 

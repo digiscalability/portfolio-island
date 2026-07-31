@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { DISTRICTS, dirFor } from './Districts';
 import { Island } from './Island';
 import { Zone, type ZoneData } from './Zones';
 
@@ -15,65 +16,32 @@ export class ZonesManager {
   }
 
   private initializeZones(): void {
-    // Define the five zones distributed around the island
-    const zoneData: ZoneData[] = [
-      {
-        id: 'welcome',
-        name: 'Welcome Hub',
+    // Positions/colors/names come from the shared DISTRICTS source of truth
+    // (Districts.ts) so the glowing plaza markers always sit exactly on the
+    // Island's district plazas + minimap dots. Descriptions/icons are zone
+    // content and stay here.
+    const META: Record<string, { description: string; icon: string }> = {
+      welcome: {
         description: 'Introduction to DigiScalability Life Island - your personal 3D portfolio space',
-        position: new THREE.Vector3(0, this.island.getRadius(), 0), // North pole
-        color: 0x4CAF50, // Green
         icon: '🏠',
       },
-      {
-        id: 'professional',
-        name: 'Professional Experience',
-        description: 'Career journey, skills, and professional achievements',
-        position: new THREE.Vector3(
-          Math.cos(0) * this.island.getRadius(),
-          this.island.getRadius() * 0.5,
-          Math.sin(0) * this.island.getRadius()
-        ),
-        color: 0x2196F3, // Blue
-        icon: '💼',
-      },
-      {
-        id: 'projects',
-        name: 'Project Portfolio',
-        description: 'Showcase of key projects, technologies, and innovations',
-        position: new THREE.Vector3(
-          Math.cos(Math.PI * 2/5) * this.island.getRadius(),
-          this.island.getRadius() * 0.5,
-          Math.sin(Math.PI * 2/5) * this.island.getRadius()
-        ),
-        color: 0xFF9800, // Orange
-        icon: '🚀',
-      },
-      {
-        id: 'personal',
-        name: 'Personal Life',
-        description: 'Hobbies, interests, and life outside of work',
-        position: new THREE.Vector3(
-          Math.cos(Math.PI * 4/5) * this.island.getRadius(),
-          this.island.getRadius() * 0.5,
-          Math.sin(Math.PI * 4/5) * this.island.getRadius()
-        ),
-        color: 0xE91E63, // Pink
-        icon: '🎨',
-      },
-      {
-        id: 'contact',
-        name: 'Get In Touch',
+      professional: { description: 'Career journey, skills, and professional achievements', icon: '💼' },
+      projects: { description: 'Showcase of key projects, technologies, and innovations', icon: '🚀' },
+      personal: { description: 'Hobbies, interests, and life outside of work', icon: '🎨' },
+      contact: {
         description: 'Contact information, social links, and collaboration opportunities',
-        position: new THREE.Vector3(
-          Math.cos(Math.PI * 6/5) * this.island.getRadius(),
-          this.island.getRadius() * 0.5,
-          Math.sin(Math.PI * 6/5) * this.island.getRadius()
-        ),
-        color: 0x9C27B0, // Purple
         icon: '📬',
       },
-    ];
+    };
+    const R = this.island.getRadius();
+    const zoneData: ZoneData[] = DISTRICTS.map((d) => ({
+      id: d.id,
+      name: d.name,
+      description: META[d.id].description,
+      position: dirFor(d.lon, d.lat).multiplyScalar(R),
+      color: d.color,
+      icon: META[d.id].icon,
+    }));
 
     // Create zones
     for (const data of zoneData) {

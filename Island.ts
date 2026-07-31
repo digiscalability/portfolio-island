@@ -16,6 +16,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 import { Materials } from './Materials';
 import { SimpleRenderer } from './SimpleRenderer';
 import { isRealTheme } from './Theme';
+import { RING_DISTRICT_LONS, ZONE_LAT, DISTRICT_SHIFT } from './Districts';
 import { NPC } from './NPC';
 import TextureGenerator from './TextureGenerator';
 
@@ -398,7 +399,7 @@ export class Island {
     // Tripled now that each blade is half the height — 18000 x 4 tris = 72k,
     // still one draw call, and the blades are small enough that the extra
     // vertex work is cheap. Phones keep a lower count.
-    const COUNT = lowTier ? 12000 : 32000;
+    const COUNT = lowTier ? 16000 : 44000; // scaled up for the larger R=30 surface so the meadow doesn't thin out
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -500,7 +501,7 @@ export class Island {
 
   private createIsland(): THREE.Group {
     // Use a sphere geometry for the island surface so objects placed on the sphere align correctly.
-    const seg = 128;
+    const seg = 176; // was 128; scaled with radius (30) to hold ~1.07u vertex spacing so crag/terrain detail still resolves
     const geometry = new THREE.SphereGeometry(this.radius, seg, seg);
     // Displace vertices along their normals to create varied hills and valleys on the sphere surface.
     const vertices = geometry.attributes.position.array as Float32Array;
@@ -1035,6 +1036,12 @@ export class Island {
             isRealTheme()
               ? '// real theme: envmap supplies the sky reflection'
               : 'outgoingLight = mix(outgoingLight, uSkyHorizon, fres * 0.55);',
+            // Horizon haze: dissolve the distant sea into the LIVE sky-horizon
+            // colour so the water no longer meets the sky as a hard line — the
+            // single biggest "sells a world, not an object on a table" cue.
+            // Distance-keyed so near water stays saturated. Applies to both themes.
+            'float horizonHaze = smoothstep(18.0, 46.0, length(vViewPosition));',
+            'outgoingLight = mix(outgoingLight, uSkyHorizon, horizonHaze * 0.75);',
             'diffuseColor.a = mix(0.85, 0.97, fres);',
             '#include <opaque_fragment>',
           ].join('\n'),
@@ -1080,7 +1087,14 @@ export class Island {
     // ocean now that the island occupies the north cap.
     const pathGroup = new THREE.Group();
     pathGroup.name = 'street_network';
-    const DISTRICT_LONS = [0, 1.2566, 2.5133, 3.7699];
+    // Districts are evenly spaced on the cardinal points now (Districts.ts is the
+    // single source of truth, shared with the zone markers + minimap). Each
+    // district's hand-authored site arrays below add SHIFT_* so the buildings and
+    // crowds move WITH their plaza + avenue under the respacing.
+    const DISTRICT_LONS = RING_DISTRICT_LONS;
+    const SHIFT_PROJECTS = DISTRICT_SHIFT[1];
+    const SHIFT_PERSONAL = DISTRICT_SHIFT[2];
+    const SHIFT_CONTACT = DISTRICT_SHIFT[3];
     const boulevardPts: THREE.Vector3[] = [];
     const BOULEVARD_SEGS = 84;
     for (let i = 0; i <= BOULEVARD_SEGS; i++) {
@@ -1112,12 +1126,11 @@ export class Island {
     //   Contact      (lon 3.7699) → market stalls
     //   Welcome      (north pole) → spawn plaza, benches, flowers
     // Pre-claim the plaza sites so no props squat on the zone markers.
-    const ZONE_LAT = 0.4636;
-    this.claimDir(this.dirAt(0, ZONE_LAT), 0.13);
-    this.claimDir(this.dirAt(1.2566, ZONE_LAT), 0.13);
-    this.claimDir(this.dirAt(2.5133, ZONE_LAT), 0.13);
-    this.claimDir(this.dirAt(3.7699, ZONE_LAT), 0.13);
+    // ZONE_LAT is imported from Districts.ts (shared). Pre-claim each plaza + pole.
+    for (const dLon of DISTRICT_LONS) this.claimDir(this.dirAt(dLon, ZONE_LAT), 0.13);
     this.claimDir(new THREE.Vector3(0, 1, 0), 0.13);
+    // Reserve the coastal lighthouse footprint so trees/props keep clear of it.
+    this.claimDir(this.dirAt(5.4, 0.34), 0.3);
 
     // Add a few low-poly buildings aligned to the surface (placeholders). We'll attempt to replace them with GLTF models if present.
     const buildings = new THREE.Group();
@@ -1188,8 +1201,8 @@ export class Island {
     // Near-plaza columns keep ≥0.2 rad from the plaza claim.
     // Thinned from 8 → 6 cottages and spread wider (roomier village street).
     const HOUSE_SITES: Array<[number, number]> = [
-      [2.08, 0.66], [2.52, 0.66], [2.96, 0.66],
-      [2.06, 0.27], [2.54, 0.27], [3.0, 0.27],
+      [2.08 + SHIFT_PERSONAL, 0.66], [2.52 + SHIFT_PERSONAL, 0.66], [2.96 + SHIFT_PERSONAL, 0.66],
+      [2.06 + SHIFT_PERSONAL, 0.27], [2.54 + SHIFT_PERSONAL, 0.27], [3.0 + SHIFT_PERSONAL, 0.27],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
@@ -1310,11 +1323,10 @@ export class Island {
     // per-tree group still owns the position/orientation and gets swayed in
     // GameScene, and the `tree_N` name still drives colliders + canopy spacing.
     const trees = new THREE.Group();
-    const treeCount = 48;
     const TRUNK_COLOR = 0x6b4a2a;
     const DARK_TRUNK_COLOR = 0x5a3d1e;
     const PINE_COLOR = 0x2a6e2a;
-    const FOLIAGE_COLORS = [0x3a8c3a, 0x4a9e3e, 0x2d7a3a, 0x55a644, 0x3b8e50];
+    const FOLIAGE_COLORS = [0x7ba84e, 0x5aa244, 0x4a9e3e, 0x3a8c3a, 0x2d7a3a]; // ordered dry→lush; canopy indexes this by moisture
     const treeMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78 });
 
     // Bake a part's local transform + a flat vertex colour into its geometry,
@@ -1354,28 +1366,43 @@ export class Island {
     };
 
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-    for (let i = 0; i < treeCount; i++) {
-      const treeGroup = new THREE.Group();
-      const y = 1 - (i / (treeCount - 1)) * 2;
+    // Grove-based, biome-driven scatter. We generate MORE candidates than we
+    // place and accept each by a probability keyed to the moisture/elevation
+    // FIELDS already computed for terrain colour: lush low valleys read as
+    // dense groves, dry ridges and highlands thin toward clearings + a
+    // treeline. Species + canopy colour follow the same fields — conifers on
+    // high/dry ground, shrubs in the shore band, broadleaf in the lush lows —
+    // so the eye reads distinct biomes instead of a uniform sprinkle. (The
+    // Math.random here is seeded via GameScene.installSeededRandom, so the
+    // whole layout is reproducible across reloads.)
+    const TREE_CANDIDATES = 232;
+    const TREE_CAP = 78;
+    let placed = 0;
+    for (let i = 0; i < TREE_CANDIDATES && placed < TREE_CAP; i++) {
+      const y = 1 - (i / (TREE_CANDIDATES - 1)) * 2;
       const radiusAtY = Math.sqrt(1 - y * y);
       const theta = goldenAngle * i;
-      const x = Math.cos(theta) * radiusAtY;
-      const z = Math.sin(theta) * radiusAtY;
-      // Trees claim spacing too — they used to ignore the registry and
-      // grow through houses, stalls, and each other.
-      // The world is one north-cap island now: mirror southern-hemisphere
-      // candidates up (|y|) instead of dropping them, so the island keeps
-      // its full tree count and nothing grows on the seafloor. Anything
-      // still below the shoreline band (lat < 0.27) is skipped.
-      const candidate = new THREE.Vector3(x, Math.abs(y), z).normalize();
-      if (candidate.y < Math.sin(0.27)) continue;
-      const dir = this.claimDir(candidate, 0.08);
-      // Re-check AFTER claimDir: its jitter can shove a crowded candidate
-      // back below the shoreline (that's how trees ended up in the surf)
-      if (dir.y < Math.sin(0.27)) continue;
+      const candidate = new THREE.Vector3(
+        Math.cos(theta) * radiusAtY,
+        Math.abs(y),
+        Math.sin(theta) * radiusAtY,
+      ).normalize();
+      if (candidate.y < Math.sin(0.29)) continue; // shoreline gate
+      if (candidate.y > Math.sin(1.24)) continue; // treeline / snowline gate
+      const moist = (this.moistureAt(candidate) + 1) * 0.5; // 0..1 lush
+      // Grove density: lush = dense grove, dry/high = clearing. The smooth
+      // moisture field (~10-20u features) makes trees clump into contiguous
+      // groves and open up meadows between — clumping AND negative space.
+      const groveP = 0.36 + moist * 0.70 - Math.max(0, candidate.y - Math.sin(0.92)) * 1.7;
+      if (Math.random() > groveP) continue; // a clearing
+      const dir = this.claimDir(candidate, 0.07);
+      if (dir.y < Math.sin(0.29)) continue;
       // No trees through the pavement — skip candidates on a street
       if (this.isNearStreet(dir)) continue;
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
+      // Slope gate: no trees on cliff faces (mirrors the grass gate 60 lines
+      // down) so trees stop growing on crags and accent the peaks instead.
+      if (sampled.normal.dot(dir) < 0.84) continue;
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         sampled.normal,
@@ -1384,9 +1411,20 @@ export class Island {
       // Real-scale trees: 2.4-3.6u total height (they were 1.0-1.4u —
       // shorter than the player)
       const scale = 2.2 + Math.random() * 1.1;
-      const treeType = i % 4;
-      const fColor = FOLIAGE_COLORS[i % FOLIAGE_COLORS.length];
+      // Species by biome: conifers on peaks/dry ridges, shrubs in the shore
+      // band, broadleaf in the lush valleys.
+      const elevAbove = sampled.position.length() - this.radius;
+      let treeType: number;
+      if (elevAbove > 4.2 || moist < 0.32) treeType = 2;
+      else if (dir.y < Math.sin(0.44)) treeType = 3;
+      else treeType = Math.random() < 0.5 ? 0 : 1;
+      // Canopy colour tracks moisture (lusher = deeper green); conifers fixed.
+      const fColor =
+        treeType === 2
+          ? PINE_COLOR
+          : FOLIAGE_COLORS[Math.min(FOLIAGE_COLORS.length - 1, Math.floor(moist * FOLIAGE_COLORS.length))];
       const parts: THREE.BufferGeometry[] = [];
+      const treeGroup = new THREE.Group();
 
       if (treeType <= 1) {
         // Round canopy tree — tapered trunk + clustered dodecahedrons
@@ -1431,10 +1469,11 @@ export class Island {
 
       treeGroup.position.copy(sampled.position);
       treeGroup.quaternion.copy(q);
-      treeGroup.name = `tree_${i}`;
+      treeGroup.name = `tree_${placed}`;
       const treeData = treeGroup.userData as Record<string, unknown>;
       treeData.ignoreOcclusion = true;
       trees.add(treeGroup);
+      placed++;
     }
 
     // Mailboxes: seed around homes/structures instead of a perfect orbit
@@ -1580,13 +1619,13 @@ export class Island {
       // welcome greeters near the spawn plaza
       [0.5, 1.30], [2.2, 1.32], [4.0, 1.30], [5.5, 1.33],
       // villagers around the Personal hamlet
-      [2.36, 0.45], [2.66, 0.45], [2.51, 0.32], [2.51, 0.60], [2.43, 0.53],
+      [2.36 + SHIFT_PERSONAL, 0.45], [2.66 + SHIFT_PERSONAL, 0.45], [2.51 + SHIFT_PERSONAL, 0.32], [2.51 + SHIFT_PERSONAL, 0.60], [2.43 + SHIFT_PERSONAL, 0.53],
       // office crowd at the Professional plaza
       [6.11, 0.45], [0.17, 0.45], [0.0, 0.30], [6.21, 0.58],
       // builders at the Projects work sites
-      [1.15, 0.45], [1.36, 0.50], [1.26, 0.32],
+      [1.15 + SHIFT_PROJECTS, 0.45], [1.36 + SHIFT_PROJECTS, 0.50], [1.26 + SHIFT_PROJECTS, 0.32],
       // market-goers at the Contact stalls
-      [3.69, 0.51], [3.86, 0.51], [3.77, 0.36],
+      [3.69 + SHIFT_CONTACT, 0.51], [3.86 + SHIFT_CONTACT, 0.51], [3.77 + SHIFT_CONTACT, 0.36],
       // one wanderer out on the coastal road (the equator is ocean now)
       [5.0, 0.28],
     ];
@@ -1829,7 +1868,7 @@ export class Island {
     // (the old raw world coords stranded it near the north pole)
     this.placeObjectOnSurface(
       fountain,
-      this.claimDir(this.dirAt(2.32, 0.50), 0.12).multiplyScalar(this.radius),
+      this.claimDir(this.dirAt(2.32 + SHIFT_PERSONAL, 0.50), 0.12).multiplyScalar(this.radius),
       0.02,
       true,
     );
@@ -2000,10 +2039,10 @@ export class Island {
     // boulevard through the plaza (staggered rows so counters don't face
     // each other head-on), the classic two-sided bazaar strip.
     const STALL_SITES: Array<[number, number]> = [
-      [3.51, 0.65], [3.73, 0.65], [3.95, 0.65],
+      [3.51 + SHIFT_CONTACT, 0.65], [3.73 + SHIFT_CONTACT, 0.65], [3.95 + SHIFT_CONTACT, 0.65],
       // south row at 0.31 — 0.28 was the shoreline band, and claimDir
       // jitter kept nudging the end stall into the surf
-      [3.59, 0.31], [3.81, 0.31], [4.03, 0.31],
+      [3.59 + SHIFT_CONTACT, 0.31], [3.81 + SHIFT_CONTACT, 0.31], [4.03 + SHIFT_CONTACT, 0.31],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
@@ -2091,7 +2130,11 @@ export class Island {
     // PROJECTS district: work-in-progress sites near the Portfolio plaza
     // PROJECTS district: construction lots set back off the boulevard,
     // one per side of the street
-    const WORK_SITES: Array<[number, number]> = [[1.05, 0.65], [1.46, 0.34]];
+    const WORK_SITES: Array<[number, number]> = [
+      [1.05 + SHIFT_PROJECTS, 0.65], [1.46 + SHIFT_PROJECTS, 0.34],
+      // levelled up to match the other districts' density (was only 2 lots)
+      [0.95 + SHIFT_PROJECTS, 0.34], [1.55 + SHIFT_PROJECTS, 0.66], [1.25 + SHIFT_PROJECTS, 0.72],
+    ];
     for (let i = 0; i < WORK_SITES.length; i++) {
       const block = this.createConstructionBlock();
       const pos = this.claimDir(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
@@ -2117,7 +2160,8 @@ export class Island {
     const FLOWER_COLORS = [0xff69b4, 0xf4a940, 0xffffff, 0xb46bd8, 0xff8866];
     const stemMat = Materials.createStandardMaterial({ color: 0x3d7a3d });
     const FLOWER_ANCHORS: Array<[number, number]> = [
-      [0, 0.4636], [1.2566, 0.4636], [2.5133, 0.4636], [3.7699, 0.4636], [0, 1.42],
+      ...DISTRICT_LONS.map((l) => [l, ZONE_LAT] as [number, number]),
+      [0, 1.42],
     ];
     // Pass 1: scatter valid placements (respecting street skips) + colour index
     const bloomUp = new THREE.Vector3(0, 1, 0);
@@ -2231,9 +2275,9 @@ export class Island {
     // Benches at the plazas: [lon, lat, latOfPlazaTheyFace]
     const BENCH_SITES: Array<[number, number, number]> = [
       [0.8, 1.36, 1.5708], [3.9, 1.36, 1.5708],       // welcome / spawn
-      [2.44, 0.40, 0.4636], [2.60, 0.40, 0.4636], [2.51, 0.56, 0.4636], // village
+      [2.44 + SHIFT_PERSONAL, 0.40, 0.4636], [2.60 + SHIFT_PERSONAL, 0.40, 0.4636], [2.51 + SHIFT_PERSONAL, 0.56, 0.4636], // village
       [6.16, 0.40, 0.4636], [0.13, 0.42, 0.4636],     // professional
-      [3.70, 0.42, 0.4636], [3.85, 0.42, 0.4636],     // market
+      [3.70 + SHIFT_CONTACT, 0.42, 0.4636], [3.85 + SHIFT_CONTACT, 0.42, 0.4636],     // market
     ];
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
     const benchLegMat = Materials.createTrimMaterial(0x444444);
@@ -2279,9 +2323,68 @@ export class Island {
     // Instanced wind-blown grass across the whole planet
     const grass = this.createGrass();
 
+    // ── Welcome Plaza: the hub centerpiece ────────────────────────────
+    // All four avenues radiate from the north-pole spawn, but the hub held
+    // only benches + the zone marker — a hub-and-spoke plan with an empty
+    // centre never reads as a place. Lay a paved plaza and four lantern
+    // pillars that mark where each avenue departs, framing the marker beam.
+    const welcomePlaza = new THREE.Group();
+    welcomePlaza.name = 'welcome_plaza';
+    const plazaStone = Materials.createTrimMaterial(0xb8b0a4);
+    const plazaTrim = Materials.createTrimMaterial(0x9a9186);
+    const plazaBase = new THREE.Group();
+    const plazaFloor = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.5, 0.1, 40), plazaStone);
+    plazaFloor.receiveShadow = true;
+    plazaBase.add(plazaFloor);
+    const plazaRing = new THREE.Mesh(new THREE.TorusGeometry(3.05, 0.1, 8, 40), plazaTrim);
+    plazaRing.rotation.x = Math.PI / 2;
+    plazaRing.position.y = 0.06;
+    plazaBase.add(plazaRing);
+    this.placeObjectOnSurface(
+      plazaBase,
+      new THREE.Vector3(0, 1, 0).multiplyScalar(this.radius),
+      0.03,
+      true,
+    );
+    welcomePlaza.add(plazaBase);
+    // Four lantern pillars at the avenue departure points — they mark the
+    // roads out and frame the central marker beam. Placed toward each
+    // DISTRICT_LON so they stay locked to the avenues if districts respace.
+    const pillarStone = Materials.createTrimMaterial(0xa89f92);
+    for (const dLon of DISTRICT_LONS) {
+      const pillar = new THREE.Group();
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.24, 2.1, 8), pillarStone);
+      shaft.position.y = 1.05;
+      shaft.castShadow = true;
+      pillar.add(shaft);
+      const capBase = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.16, 0.44), pillarStone);
+      capBase.position.y = 2.2;
+      pillar.add(capBase);
+      const lantern = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 12, 12),
+        new THREE.MeshStandardMaterial({
+          color: 0xffdf9a,
+          emissive: 0xffb347,
+          emissiveIntensity: 0.9,
+          roughness: 0.4,
+        }),
+      );
+      lantern.position.y = 2.5;
+      lantern.userData.isNightEmissive = true; // EnvironmentCycle lights it at night, dims by day
+      pillar.add(lantern);
+      this.placeObjectOnSurface(
+        pillar,
+        this.dirAt(dLon, Math.PI / 2 - 3.3 / this.radius).multiplyScalar(this.radius), // ~3.3u from the pole at any radius, so pillars stay on the plaza floor
+        0.0,
+        true,
+      );
+      welcomePlaza.add(pillar);
+    }
+
     // Group everything and attach to the main mesh as children so the island remains dominant
     const root = new THREE.Group();
     root.add(mesh);
+    root.add(welcomePlaza);
     root.add(sea);
     root.add(grass);
     root.add(pathGroup);
@@ -2324,6 +2427,19 @@ export class Island {
     // exists so it seats on the real height).
     const summit = this.createSummitMarker();
     if (summit) root.add(summit);
+
+    // Coastal lighthouse — the tall skyline landmark the roaming experience
+    // lacked. At ~13u it breaches the local horizon from neighbouring districts
+    // (the 7.3u summit beacon dropped out of sight within ~15-20u), giving a
+    // world-space orientation anchor to complement the HUD compass.
+    const lighthouse = this.createLighthouse();
+    if (lighthouse) root.add(lighthouse);
+
+    // Instanced boulder layer — scree on steep slopes (where grass collapses
+    // for steepness) plus a shoreline band, so cliffs and beaches get real rock
+    // geometry to back the terrain's rock/steep shading. One draw call.
+    const rocks = this.createRocks();
+    if (rocks) root.add(rocks);
 
     // (The old equator ring road + its decal conversion are gone — the
     // street network is built entirely from createStreetPath segments.)
@@ -2423,6 +2539,155 @@ export class Island {
 
     console.log(`⛰️ Summit monument placed at ${(surf.position.length() - this.seaLevel()).toFixed(1)}u above sea`);
     return g;
+  }
+
+  /**
+   * Coastal lighthouse: a tapered red/white banded tower with a glowing lantern.
+   * Tall enough (~13u) to stay on the skyline from adjacent districts, so it
+   * anchors orientation while roaming. Seated on the real terrain height at a
+   * reserved coastal spot (see the pre-claim in buildIsland).
+   */
+  private createLighthouse(): THREE.Group | null {
+    const dir = this.dirAt(5.4, 0.34).normalize();
+    let surf;
+    try {
+      surf = this.sampleSurfaceByDirection(dir, 0);
+    } catch {
+      return null;
+    }
+    const g = new THREE.Group();
+    g.name = 'lighthouse';
+    g.position.copy(dir).multiplyScalar(surf.position.length() - 0.1);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), surf.normal);
+    (g.userData as Record<string, unknown>).ignoreOcclusion = true;
+
+    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xeef0f2, roughness: 0.7 });
+    const redMat = new THREE.MeshStandardMaterial({ color: 0xc9433a, roughness: 0.65 });
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x7d8590, roughness: 0.95 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: 0x33383f, roughness: 0.55, metalness: 0.25 });
+
+    // Rocky base plinth
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.9, 2.5, 1.2, 12), rockMat);
+    base.position.y = 0.6;
+    base.castShadow = true;
+    base.receiveShadow = true;
+    g.add(base);
+
+    // Tapered tower built as stacked segments so the red/white bands are clean
+    // (no z-fighting rings). CylinderGeometry(topR, bottomR, height).
+    const TOWER_H = 9.5;
+    const baseY = 1.2;
+    const rBottom = 1.5;
+    const rTop = 0.9;
+    const SEGS = 5;
+    for (let sIdx = 0; sIdx < SEGS; sIdx++) {
+      const t0 = sIdx / SEGS;
+      const t1 = (sIdx + 1) / SEGS;
+      const r0 = rBottom + (rTop - rBottom) * t0;
+      const r1 = rBottom + (rTop - rBottom) * t1;
+      const seg = new THREE.Mesh(
+        new THREE.CylinderGeometry(r1, r0, TOWER_H / SEGS, 16),
+        sIdx % 2 === 0 ? whiteMat : redMat,
+      );
+      seg.position.y = baseY + ((t0 + t1) / 2) * TOWER_H;
+      seg.castShadow = true;
+      g.add(seg);
+    }
+
+    const galleryY = baseY + TOWER_H;
+    // Gallery deck
+    const gallery = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 0.3, 16), darkMat);
+    gallery.position.y = galleryY + 0.15;
+    gallery.castShadow = true;
+    g.add(gallery);
+    // Lantern housing
+    const housing = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.82, 1.1, 12), darkMat);
+    housing.position.y = galleryY + 0.85;
+    g.add(housing);
+    // The lamp — high emissive so the bloom pass carries it as a skyline beacon
+    const lamp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.52, 16, 16),
+      new THREE.MeshStandardMaterial({
+        color: 0xfff3c0,
+        emissive: 0xffcf5a,
+        emissiveIntensity: 2.4,
+        metalness: 0.2,
+        roughness: 0.15,
+      }),
+    );
+    lamp.position.y = galleryY + 0.85;
+    lamp.name = 'lighthouse_lamp';
+    g.add(lamp);
+    // A faint halo ring for extra glow (mirrors the summit beacon)
+    const halo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.78, 0.05, 8, 24),
+      new THREE.MeshStandardMaterial({ color: 0xffe680, emissive: 0xffd24a, emissiveIntensity: 1.6 }),
+    );
+    halo.rotation.x = Math.PI / 2;
+    lamp.add(halo);
+    // Conical roof
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(0.98, 0.95, 12), redMat);
+    roof.position.y = galleryY + 1.85;
+    roof.castShadow = true;
+    g.add(roof);
+
+    console.log('🗼 Lighthouse placed on the coast');
+    return g;
+  }
+
+  /**
+   * Instanced boulders — scree on steep slopes (where grass collapses for
+   * steepness) plus a shoreline boulder band. Analytic surface only (no
+   * raycasts) so it stays cheap at boot. One InstancedMesh = one draw call.
+   */
+  private createRocks(): THREE.InstancedMesh | null {
+    const geo = new THREE.IcosahedronGeometry(0.5, 0);
+    geo.scale(1.0, 0.72, 1.12); // slightly flattened boulder
+    const mat = new THREE.MeshStandardMaterial({ color: 0x8b857a, roughness: 0.96, flatShading: true }); // warm neutral rock grey
+    const MAX = 128;
+    const inst = new THREE.InstancedMesh(geo, mat, MAX);
+    inst.name = 'rocks';
+    inst.castShadow = true;
+    inst.receiveShadow = true;
+    const up = new THREE.Vector3(0, 1, 0);
+    const dummy = new THREE.Object3D();
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const CANDIDATES = 400;
+    let placed = 0;
+    for (let i = 0; i < CANDIDATES && placed < MAX; i++) {
+      const y = 1 - (i / (CANDIDATES - 1)) * 2;
+      const rAtY = Math.sqrt(1 - y * y);
+      const theta = golden * i;
+      const candidate = new THREE.Vector3(
+        Math.cos(theta) * rAtY,
+        Math.abs(y),
+        Math.sin(theta) * rAtY,
+      ).normalize();
+      if (candidate.y < Math.sin(0.255)) continue; // below the waterline
+      if (this.isNearStreet(candidate)) continue;
+      const a = this.analyticSurface(candidate);
+      const slopeCos = a.normal.dot(candidate);
+      const steep = slopeCos < 0.92; // cliff / scree slope
+      const shoreBand = candidate.y < Math.sin(0.4); // boulders just above the surf
+      // Rocks belong on scree + shorelines; only an occasional erratic elsewhere.
+      if (!steep && !shoreBand && Math.random() > 0.1) continue;
+      const dir = this.claimDir(candidate, 0.03); // tight — scree clusters
+      const a2 = this.analyticSurface(dir);
+      dummy.position
+        .copy(dir)
+        .multiplyScalar(a2.radius)
+        .addScaledVector(a2.normal, -0.14); // sink slightly: bury-not-float
+      dummy.quaternion.setFromUnitVectors(up, a2.normal);
+      dummy.rotateY(Math.random() * Math.PI * 2);
+      dummy.scale.setScalar(0.45 + Math.random() * (steep ? 1.5 : 0.85));
+      dummy.updateMatrix();
+      inst.setMatrixAt(placed, dummy.matrix);
+      placed++;
+    }
+    inst.count = placed;
+    inst.instanceMatrix.needsUpdate = true;
+    console.log(`🪨 Rock layer: ${placed} boulders (scree + shoreline)`);
+    return placed > 0 ? inst : null;
   }
 
   /**

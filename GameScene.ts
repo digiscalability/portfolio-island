@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { EnvironmentCycle } from './EnvironmentCycle';
+import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT } from './Districts';
 import { Island } from './Island';
 import { isRealTheme } from './Theme';
 import { Mailbox } from './Mailbox';
@@ -10,7 +11,7 @@ import { OrbitCamera } from './OrbitCamera';
 import { RaceSystem, type RaceEvent, type RaceHudStatus } from './RaceSystem';
 import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
-import { TownPlanner, type TownPlanResult } from './TownPlanner';
+import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 import { ZonesManager } from './ZonesManager';
 
@@ -343,7 +344,7 @@ export class GameScene extends THREE.Scene {
     super();
     this.name = 'GameScene';
     this.background = null; // sky dome handles it
-    this.fog = new THREE.FogExp2(0xa8d8f0, 0.012);
+    this.fog = new THREE.FogExp2(0xa8d8f0, 0.015); // atmospheric depth, scaled down for the larger R=30 world (was 0.02 at R=22); EnvironmentCycle reads this as baseFogDensity
 
     // Create ready promise
     this.readyPromise = new Promise((resolve) => {
@@ -385,7 +386,7 @@ export class GameScene extends THREE.Scene {
     try {
     // Create camera with extended far plane
     this.camera = new THREE.PerspectiveCamera(
-      60,
+      50, // narrowed from 60: flatter perspective, straighter horizon — reads as a bigger world
       window.innerWidth / window.innerHeight,
       0.1,
       2000,
@@ -396,7 +397,7 @@ export class GameScene extends THREE.Scene {
     // ~1.58u the world reads noticeably bigger — longer blocks, gentler
     // horizon. All placement is lon/lat-based so the districts spread
     // automatically; physical spacing grows with the radius.
-    this.island = new Island(22);
+    this.island = new Island(30); // grown from 22: flatter horizon, bigger walkable world (WD-9). setPlanet below reads getRadius() so it follows automatically.
     this.add(this.island.mesh);
     // Unify the art direction. Toon (?theme=toon): stepped shading on every
     // prop (abeto-style). Real (default): materials stay MeshStandardMaterial
@@ -538,7 +539,7 @@ export class GameScene extends THREE.Scene {
     // Create zones manager for portfolio content
     this.zonesManager = new ZonesManager(this.island, this);
 
-    // Place decorative assets via TownPlanner
+    // Place quest mailboxes (Island.ts owns the town proper)
     await this.placeAssets();
 
     // Warm light pools under the lamps (needs both lamp populations placed)
@@ -2964,10 +2965,13 @@ export class GameScene extends THREE.Scene {
     c.height = 32;
     const ctx = c.getContext('2d')!;
     const grad = ctx.createLinearGradient(0, 0, 0, 32);
-    grad.addColorStop(0.0, '#4a90d9'); // zenith (sky dome topColor)
-    grad.addColorStop(0.45, '#a8d8f0'); // horizon
-    grad.addColorStop(0.55, '#7fb0c9'); // haze just below the horizon line
-    grad.addColorStop(1.0, '#3a6a8c'); // "ground" = sea-deep bounce light
+    // Stops matched to PALETTE.day (EnvironmentCycle) so PBR water/materials
+    // reflect the SAME sky that is drawn behind them. Were the old sky-dome
+    // inits (#4a90d9/#a8d8f0/#7fb0c9), a bluer/paler sky than the rendered one.
+    grad.addColorStop(0.0, '#2a6fd6'); // zenith = PALETTE.day.top
+    grad.addColorStop(0.45, '#79b7e6'); // horizon = PALETTE.day.horizon
+    grad.addColorStop(0.55, '#aecfe8'); // haze just below the horizon line
+    grad.addColorStop(1.0, '#35708f'); // "ground" = sea-deep bounce light
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 64, 32);
 
@@ -3053,9 +3057,11 @@ export class GameScene extends THREE.Scene {
       side: THREE.BackSide,
       depthWrite: false,
       uniforms: {
-        topColor: { value: new THREE.Color(0x4a90d9) },
-        bottomColor: { value: new THREE.Color(0xd4e8f7) },
-        horizonColor: { value: new THREE.Color(0xa8d8f0) },
+        // Seeded from PALETTE.day (EnvironmentCycle overwrites per-frame): no
+        // first-frame palette pop, and a correct look if the cycle fails to init.
+        topColor: { value: new THREE.Color(0x2a6fd6) },
+        bottomColor: { value: new THREE.Color(0xc0def2) },
+        horizonColor: { value: new THREE.Color(0x79b7e6) },
         offset: { value: 0 },
         // Lower exponent = the top-sky blue arrives at lower elevations;
         // the follow camera mostly frames 0-30 deg where 0.5 left the sky
@@ -3108,18 +3114,14 @@ export class GameScene extends THREE.Scene {
    * Place decorative assets on the island surface
    */
   private async placeAssets(): Promise<void> {
-    const planner = new TownPlanner(this);
-    const result = await planner.generate({
-      size: 80,
-      roadSpacing: 80,
-      roadWidth: 6,
-      blockInset: 4,
-      treesPerBlock: [1, 3],
-    });
+    // Island.ts is the SOLE town authority: it hand-places the district houses,
+    // office towers, market stalls and the 10 boulevard lamps along its street
+    // network. The old TownPlanner flat-grid pass that ran here duplicated those
+    // props and re-projected them onto random, often sub-shoreline latitudes
+    // (houses and lamps ended up underwater on the north-cap island) — it has
+    // been removed. Only the quest mailboxes the delivery loop needs land here.
 
-    // Position assets on the sphere surface
-    // For a sphere centred at origin, equatorial points are at (cos(a)*R, 0, sin(a)*R).
-    // We orient each asset so its local +Y aligns with the outward surface normal.
+    // Seat an asset on the DISPLACED terrain with +Y along the outward normal.
     const placeOnSphere = (
       mesh: THREE.Object3D,
       angle: number,
@@ -3135,71 +3137,41 @@ export class GameScene extends THREE.Scene {
       ).normalize();
       // Shared spacing registry with Island's own props — stops clustering
       dir = this.island.claimDir(dir, clearArc);
-      // Seat on the DISPLACED terrain, not the ideal sphere (hills are ±4
-      // units — ideal-sphere placement left props floating over valleys)
       let R = this.island.getRadius();
       try {
         R = this.island.sampleSurfaceByDirection(dir, 0).position.length();
       } catch {
         /* ideal-sphere fallback */
       }
-      const pos = dir.clone().multiplyScalar(R + radiusOffset);
-      mesh.position.copy(pos);
-      // Align asset's +Y with outward surface normal
+      mesh.position.copy(dir.clone().multiplyScalar(R + radiusOffset));
       mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
     };
 
-    // The delivery loop needs several mailboxes; TownPlanner yields one per block,
-    // so top up to a minimum before projecting everything onto the sphere.
-    const MIN_MAILBOXES = 4;
-    while (result.mailboxes.length < MIN_MAILBOXES) {
+    // Quest mailboxes: spread across the ISLAND's habitable latitude bands
+    // (coastal road up to the highlands) so the delivery chain tours the whole
+    // map. Every latitude here is ABOVE the shoreline (sin(0.27)); southern
+    // latitudes are open ocean.
+    const MAILBOX_LATS = [0.55, 0.3, 0.95, 0.42, 0.75];
+    const mailboxes: Mailbox[] = [];
+    for (let i = 0; i < MAILBOX_LATS.length; i++) {
       const mailbox = new Mailbox();
       this.add(mailbox.mesh);
-      result.mailboxes.push(mailbox);
+      mailbox.mesh.scale.setScalar(0.55); // real-scale: roadside mailbox, not a monument
+      placeOnSphere(mailbox.mesh, i * 2.399963, MAILBOX_LATS[i], -0.02, 0.3);
+      mailboxes.push(mailbox);
     }
 
-    // Spread quest mailboxes across the ISLAND's latitude bands (coastal
-    // road up to the highlands) so the delivery chain still tours the whole
-    // map — southern latitudes are open ocean now.
-    const MAILBOX_LATS = [0.55, 0.3, 0.95, 0.42, 0.75, 1.1];
-    result.mailboxes.forEach((mailbox, index) => {
-      const angle = index * 2.399963; // golden angle spread
-      const lat = MAILBOX_LATS[index % MAILBOX_LATS.length];
-      mailbox.mesh.scale.setScalar(0.55); // real-scale: roadside mailbox, not a monument
-      placeOnSphere(mailbox.mesh, angle, lat, -0.02, 0.3);
-    });
-
-    result.lamps.forEach((lamp, index) => {
-      const angle =
-        (index / Math.max(result.lamps.length, 1)) * Math.PI * 2 +
-        Math.PI / Math.max(result.lamps.length, 1);
-      placeOnSphere(lamp.group, angle, -0.1, -0.04, 0.25);
-    });
-
-    // Houses: TownPlanner lays them out on a flat grid, which floats them far off
-    // an r≈18 sphere. Re-project each onto the surface at spread angles/latitudes.
-    const HOUSE_LATS = [0.45, -0.5, 0.2, -0.3];
-    result.houses.forEach((house, index) => {
-      const angle = index * 2.399963 + Math.PI / 5;
-      placeOnSphere(house.mesh, angle, HOUSE_LATS[index % HOUSE_LATS.length], -0.15, 0.4);
-    });
-
-    // APPEND TownPlanner colliders at their re-projected sphere positions
-    // (their flat-grid originals sat at Y=0 and were never merged). This
-    // used to ASSIGN the array — wiping the island prop colliders
-    // registered in initialize() and leaving houses/trees ghost-walkable.
+    // APPEND colliders (never ASSIGN — that would wipe the island prop colliders
+    // registered in initialize() and leave houses/trees ghost-walkable).
     this.colliders.push(
-      ...result.mailboxes.map((m) => ({ position: m.mesh.position.clone(), radius: 1 })),
-      ...result.lamps.map((l) => ({ position: l.group.position.clone(), radius: 0.5 })),
-      ...result.houses.map((h) => ({ position: h.mesh.position.clone(), radius: 1.6 })),
+      ...mailboxes.map((m) => ({ position: m.mesh.position.clone(), radius: 1 })),
     );
-    this.mailboxes = result.mailboxes;
-    this.lamps = result.lamps;
+    this.mailboxes = mailboxes;
+    this.lamps = []; // boulevard lamps live in Island.ts (named lamp_<i>); collected separately
 
     console.log('🏝️ Island assets placed:', {
       colliders: this.colliders.length,
       mailboxes: this.mailboxes.length,
-      lamps: this.lamps.length,
     });
   }
 
@@ -3251,7 +3223,7 @@ export class GameScene extends THREE.Scene {
       const N = 8;
       for (let i = 0; i < N; i++) {
         const inst = rock.scene.clone(true);
-        placeOnSphere(inst, i * GOLDEN + 1.0, Math.random() * 1.6 - 0.8);
+        placeOnSphere(inst, i * GOLDEN + 1.0, 0.3 + Math.random() * 0.8); // above-shore band (was -0.8..0.8: half sat underwater)
         inst.scale.multiplyScalar(0.6 + Math.random() * 0.6);
         enableShadows(inst);
         this.add(inst);
@@ -3606,12 +3578,8 @@ export class GameScene extends THREE.Scene {
         if (c.respawnAt > 0 && time > c.respawnAt) {
           // Respawn at a FRESH random meadow spot (away from the plazas)
           // instead of the same place every time
-          const ZL2 = 0.4636;
           const anchors = [
-            this.island.dirAt(0, ZL2),
-            this.island.dirAt(1.2566, ZL2),
-            this.island.dirAt(2.5133, ZL2),
-            this.island.dirAt(3.7699, ZL2),
+            ...RING_DISTRICT_LONS.map((l) => this.island.dirAt(l, ZONE_LAT)),
             new THREE.Vector3(0, 1, 0),
           ];
           const dir = new THREE.Vector3();
@@ -4058,7 +4026,6 @@ export class GameScene extends THREE.Scene {
       : new THREE.Vector3(0, 0, 1).applyQuaternion(this.player.quaternion);
     const heading = Math.atan2(fwd.dot(this.radarEast), fwd.dot(this.radarNorth));
     const questNames = new Set(this.questMarkers.map((m) => m.npcName));
-    const ZL = 0.4636;
     return {
       heading,
       npcs: this.island.npcTargets.map((n) => ({
@@ -4067,13 +4034,12 @@ export class GameScene extends THREE.Scene {
       })),
       // Labels are short by necessity — the radar disc is only 172px, so
       // anything longer than ~8 characters collides with its neighbours.
-      zones: [
-        { ...this.worldToRadar(this.island.dirAt(0, ZL)), color: '#2196F3', label: 'Work' },
-        { ...this.worldToRadar(this.island.dirAt(1.2566, ZL)), color: '#FF9800', label: 'Projects' },
-        { ...this.worldToRadar(this.island.dirAt(2.5133, ZL)), color: '#E91E63', label: 'Life' },
-        { ...this.worldToRadar(this.island.dirAt(3.7699, ZL)), color: '#9C27B0', label: 'Contact' },
-        { ...this.worldToRadar(new THREE.Vector3(0, 1, 0)), color: '#4CAF50', label: 'Hub' },
-      ],
+      // Dots come from the shared DISTRICTS source of truth (Districts.ts).
+      zones: DISTRICTS.map((d) => ({
+        ...this.worldToRadar(this.island.dirAt(d.lon, d.lat)),
+        color: '#' + d.color.toString(16).padStart(6, '0'),
+        label: d.radar,
+      })),
       delivery: this.guideTarget ? this.worldToRadar(this.guideTarget) : null,
     };
   }
