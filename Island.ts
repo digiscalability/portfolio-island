@@ -544,10 +544,22 @@ export class Island {
     // summits; the spacing (~0.2 rad) still overlaps their skirts enough to
     // read as a connected ridge rather than three isolated cones.
     const PEAKS = [
+      // Main craggy summit range (the summit trail climbs the 7.3u peak).
       { dir: this.dirAt(5.12, 0.73), height: 4.6, reach: 0.16 },
       { dir: this.dirAt(5.35, 0.79), height: 7.3, reach: 0.245 }, // main summit — wider base leaves room for both trail and craggy faces
       { dir: this.dirAt(5.58, 0.72), height: 4.2, reach: 0.155 },
-      { dir: this.dirAt(4.95, 0.67), height: 2.7, reach: 0.12 }, // foothill, extends the range
+      { dir: this.dirAt(4.95, 0.67), height: 2.7, reach: 0.12 }, // foothill toward Contact
+      // Rolling foothills spread the highland DOWN-slope into a hilly region.
+      // Kept BELOW the summit band (lat ~0.55-0.64) so their boosts don't stack
+      // onto the 7.3u peak and flat-top against the terrain clamp; inside the
+      // Contact(->4.97)–Professional(5.8->) gap so no town geometry is buried.
+      // Terrain collision means the player walks OVER them (no ghost props).
+      { dir: this.dirAt(5.05, 0.62), height: 1.6, reach: 0.13 },
+      { dir: this.dirAt(5.22, 0.57), height: 1.3, reach: 0.12 },
+      { dir: this.dirAt(5.45, 0.59), height: 1.7, reach: 0.13 },
+      { dir: this.dirAt(5.66, 0.64), height: 1.5, reach: 0.12 },
+      { dir: this.dirAt(5.55, 0.54), height: 1.2, reach: 0.11 },
+      { dir: this.dirAt(5.3, 0.54), height: 1.1, reach: 0.11 },
     ];
 
     // ── Summit trail ──────────────────────────────────────────────────────
@@ -806,7 +818,11 @@ export class Island {
       // highland range. With no range present it lands above the tallest
       // vertex, so no snow appears at all.
       const maxAbove = aboveList.length ? aboveList[aboveList.length - 1] : 1;
-      const snowLine = Math.max(landTop * 1.55, maxAbove * 0.42);
+      // Snow only on the summit range, not the foothills — with the highland
+      // now a rolling hilly region (foothills ~3-4.6u under a ~7.6u summit),
+      // the old 0.42 factor snowed the whole massif white. 0.65 keeps the
+      // foothills GREEN and caps just the top ~2.5u in snow.
+      const snowLine = Math.max(landTop * 1.55, maxAbove * 0.8);
       for (let i = 0; i < posA.count; i++) {
         vDir.set(posA.getX(i), posA.getY(i), posA.getZ(i));
         const r = vDir.length() || 1;
@@ -1567,7 +1583,9 @@ export class Island {
       [3.43, 0.515], [4.06, 0.412], [4.71, 0.515], [5.34, 0.412], [5.97, 0.515],
     ];
     for (let i = 0; i < LAMP_SITES.length; i++) {
-      const pos = this.claimDir(this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]), 0.05).multiplyScalar(this.radius);
+      // claimOffStreet, not claimDir: a couple of boulevard lamps landed on the
+      // ribbon where an avenue meets the boulevard; this keeps them at the kerb.
+      const pos = this.claimOffStreet(this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]), 0.05).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       const lampGroup = new THREE.Group();
       lampGroup.name = `lamp_${i}`;
@@ -2125,7 +2143,10 @@ export class Island {
     const mountains = new THREE.Group();
     // All on the island's upland ring (the old third site at lat -0.98 is
     // open ocean now)
-    const MOUNTAIN_SITES: Array<[number, number]> = [[3.9, 0.95], [5.1, 1.02], [1.9, 0.98]];
+    // The highland is TERRAIN now (the rolling PEAKS above), so there are no
+    // scattered stand-alone mountain PROPS — they had no colliders (walk-through)
+    // and sat near districts. Terrain hills collide naturally (player walks over).
+    const MOUNTAIN_SITES: Array<[number, number]> = [];
     for (let i = 0; i < MOUNTAIN_SITES.length; i++) {
       const mountain = this.createMountain();
       const [mLon, mLat] = MOUNTAIN_SITES[i];
@@ -2367,8 +2388,10 @@ export class Island {
     // roads out and frame the central marker beam. Placed toward each
     // DISTRICT_LON so they stay locked to the avenues if districts respace.
     const pillarStone = Materials.createTrimMaterial(0xa89f92);
-    for (const dLon of DISTRICT_LONS) {
+    for (let pi = 0; pi < DISTRICT_LONS.length; pi++) {
+      const dLon = DISTRICT_LONS[pi];
       const pillar = new THREE.Group();
+      pillar.name = `pillar_${pi}`; // named so GameScene registers a collider (no walk-through)
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.24, 2.1, 8), pillarStone);
       shaft.position.y = 1.05;
       shaft.castShadow = true;
