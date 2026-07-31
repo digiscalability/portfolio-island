@@ -318,11 +318,16 @@ export class SimpleRenderer {
         this.renderCallback(deltaTime);
       }
 
+      // Float the render resolution to hold the frame budget — BEFORE render().
+      // A pixel-ratio change reallocates (blanks) the WebGL drawing buffer, so it
+      // MUST be followed by an in-frame render() into the freshly-sized buffer.
+      // Running it AFTER render() left the just-drawn frame discarded and the
+      // browser composited the blank buffer for one frame — the white/black
+      // flash. Adjust first, then draw.
+      this.updateAdaptiveResolution(deltaTime);
+
       // Render
       this.render();
-
-      // Float the render resolution to hold the frame budget
-      this.updateAdaptiveResolution(deltaTime);
     };
 
     animate();
@@ -346,7 +351,17 @@ export class SimpleRenderer {
     // Cap only when it changes anything: on a true-60Hz phone the limiter
     // would just add skip judder for zero savings.
     if (SimpleRenderer.isLowTierDevice() && hz > 66) this.frameCapFps = 60;
-    const target = this.frameCapFps > 0 ? Math.min(hz, this.frameCapFps) : hz;
+    // Cap the ADAPTIVE target. `hz` comes from the fastest frame observed during
+    // the sample window, so one quick boot frame (light scene, not yet built)
+    // can snap it to 120/165 — a rate this WebGL scene can't hold. The controller
+    // then sheds+claws resolution every time FPS wobbles under that ceiling, and
+    // each change reallocates the drawing buffer (a flash pre-reorder; a sharpness
+    // shimmer regardless). 90fps is smooth and actually reachable, so pin the
+    // ceiling there — true 60Hz is unaffected (60 < 90), and a genuine 120/165Hz
+    // display simply stops shedding to chase a rate it wasn't sustaining anyway.
+    const ADAPTIVE_TARGET_CAP = 90;
+    const capped = Math.min(hz, ADAPTIVE_TARGET_CAP);
+    const target = this.frameCapFps > 0 ? Math.min(capped, this.frameCapFps) : capped;
     this.fpsLowThreshold = target * 0.75; // = 45 at 60Hz, same ratio as before
     this.fpsHighThreshold = target * 0.95; // = 57 at 60Hz
   }
@@ -590,6 +605,14 @@ export class SimpleRenderer {
       (this.camera as THREE.PerspectiveCamera).aspect = width / height;
       (this.camera as THREE.PerspectiveCamera).updateProjectionMatrix();
     }
+
+    // The setPixelRatio/setSize calls above reallocate (blank) the canvas AND the
+    // composer's HalfFloat targets. This runs OUTSIDE the rAF loop (debounced
+    // resize), so without an immediate redraw a compositor tick before the next
+    // rAF would present the cleared (black) canvas / uninitialized (white)
+    // composer target — a resize flash the address-bar guard only partly dodges.
+    // Draw one frame straight into the fresh buffers.
+    this.render();
   }
 
   /**
