@@ -385,8 +385,16 @@ export class SimpleRenderer {
       }
     } else if (this.fpsEma > this.fpsHighThreshold) {
       if (this.qualityRung > 0) {
-        // Headroom is back: release rungs first (reverse order)...
-        if (this.rungCooldown >= SimpleRenderer.RUNG_RELEASE_COOLDOWN_S) {
+        // Headroom is back: release rungs first (reverse order)... but keep the
+        // GRASS rung (rung 3, the deepest + most visible) STICKY — release it
+        // only with clear EXTRA headroom, so grass doesn't pop 44k<->22k on a
+        // borderline device that holds FPS at half-grass but not full ("grass
+        // going less and more randomly").
+        const releaseBar =
+          this.qualityRung === SimpleRenderer.MAX_QUALITY_RUNG
+            ? this.fpsHighThreshold + 8
+            : this.fpsHighThreshold;
+        if (this.fpsEma > releaseBar && this.rungCooldown >= SimpleRenderer.RUNG_RELEASE_COOLDOWN_S) {
           this.setQualityRung(this.qualityRung - 1);
         }
       } else if (this.renderScale < 1) {

@@ -1408,9 +1408,9 @@ export class Island {
         sampled.normal,
       );
 
-      // Real-scale trees: 2.4-3.6u total height (they were 1.0-1.4u —
-      // shorter than the player)
-      const scale = 2.2 + Math.random() * 1.1;
+      // Real tree scale: ~4-6u tall so they read as TREES, not shrubs, beside
+      // the ~1.7u player (were 2.4-3.6u — barely taller than the person).
+      const scale = 3.6 + Math.random() * 1.6;
       // Species by biome: conifers on peaks/dry ridges, shrubs in the shore
       // band, broadleaf in the lush valleys.
       const elevAbove = sampled.position.length() - this.radius;
@@ -1598,6 +1598,8 @@ export class Island {
       bulb.position.set(0.35, 1.48, 0);
       bulb.userData.isNightEmissive = true;
       lampGroup.add(bulb);
+      // Real street-lamp height ~3.9u — was ~1.7u, the same height as the player.
+      lampGroup.scale.setScalar(2.2);
 
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
@@ -2022,13 +2024,16 @@ export class Island {
         [3.10, 0.415], [3.35, 0.512], [4.30, 0.415], [5.55, 0.512],
       ];
       const [carLon, carLat] = CAR_SITES[i % CAR_SITES.length];
-      const pos = this.claimDir(this.dirAt(carLon, carLat), 0.08).multiplyScalar(this.radius);
+      // claimOffStreet, not claimDir: claimDir's jitter was nudging parked cars
+      // off their kerb site onto the middle of the boulevard ribbon. This keeps
+      // them at the roadside, clear of the walkable path.
+      const pos = this.claimOffStreet(this.dirAt(carLon, carLat), 0.08).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.33);
       carGroup.position.copy(sampled.position);
       // Scaled to the ~1.6u player: roof ~1.06u, length ~2.9u — a car the
       // person can plausibly get into (1.55 read oversized next to the
       // shrunk player).
-      carGroup.scale.setScalar(1.12);
+      carGroup.scale.setScalar(1.45); // ~1.3u tall vs the 1.7u player (was 0.99u, toy-sized)
       carGroup.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
@@ -2062,7 +2067,7 @@ export class Island {
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       // Counter at ~0.66u working height for the 1.56u vendors
-      stall.scale.setScalar(2.2);
+      stall.scale.setScalar(2.2); // ~3.7u incl. awning (~2.2x the 1.7u player) — already well-proportioned
       stall.quaternion.copy(
         new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
       );
@@ -3068,16 +3073,51 @@ export class Island {
    * nothing double-claims a position. Returns a fresh unit direction.
    */
   public claimOffStreet(rawDir: THREE.Vector3, clearArc: number): THREE.Vector3 {
-    let dir = rawDir.clone().normalize();
-    if (this.isNearStreet(dir)) dir = this.pushOffStreet(dir);
-    dir = this.claimDir(dir, clearArc);
-    if (this.isNearStreet(dir)) {
-      dir = this.pushOffStreet(dir);
-      // Re-claim at the pushed spot so it's REGISTERED — otherwise the next prop
-      // doesn't know this one moved off the road and can settle on top of it.
-      dir = this.claimDir(dir, clearArc);
+    // Street-aware claim: like claimDir, but every jittered candidate is first
+    // slid off the pavement, and any that still lands on a road is rejected — so
+    // the result is BOTH off the road AND clear of other props in one pass, and
+    // it registers the FINAL spot. (The earlier pushOff-then-reclaim could
+    // re-jitter a crowded pick back onto the road — e.g. a parked car onto the
+    // middle of the boulevard.)
+    let base = rawDir.clone().normalize();
+    if (this.isNearStreet(base)) base = this.pushOffStreet(base);
+    let best = base.clone();
+    let bestClearance = -Infinity;
+    for (let attempt = 0; attempt < 14; attempt++) {
+      let dir =
+        attempt === 0
+          ? base.clone()
+          : base
+              .clone()
+              .add(
+                new THREE.Vector3(
+                  (Math.random() - 0.5) * 0.5,
+                  (Math.random() - 0.5) * 0.35,
+                  (Math.random() - 0.5) * 0.5,
+                ),
+              )
+              .normalize();
+      if (dir.y < Math.sin(0.29)) {
+        dir.y = Math.sin(0.29) + Math.random() * 0.03;
+        dir.normalize();
+      }
+      if (this.isNearStreet(dir)) dir = this.pushOffStreet(dir);
+      if (this.isNearStreet(dir)) continue; // still on a road after the nudge — reject
+      let clearance = Infinity;
+      for (const o of this.occupiedDirs) {
+        clearance = Math.min(clearance, dir.angleTo(o.dir) - o.arc);
+      }
+      if (clearance >= clearArc) {
+        this.occupiedDirs.push({ dir, arc: clearArc });
+        return dir;
+      }
+      if (clearance > bestClearance) {
+        bestClearance = clearance;
+        best = dir.clone();
+      }
     }
-    return dir;
+    this.occupiedDirs.push({ dir: best, arc: clearArc });
+    return best;
   }
 
   /**
