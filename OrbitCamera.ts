@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
+import { consumePinchZoomFactor } from './SimpleInputManager';
 import type { SimplePlayer } from './SimplePlayer';
 
 /**
@@ -203,6 +204,12 @@ export class OrbitCamera {
     // Apply damping to velocities for smooth motion
     this.yawVelocity *= this.damping;
     this.pitchVelocity *= this.damping;
+
+    // Two-finger pinch (SimpleInputManager publishes a consumable ratio):
+    // spreading zooms in, pinching zooms out. setDistance keeps the 2–12
+    // clamp, and the per-frame collision pull-in below is unaffected.
+    const pinch = consumePinchZoomFactor();
+    if (pinch !== 1) this.setDistance(this.distance * pinch);
 
     // Yaw is applied to the follow direction inside updateCameraPosition;
     // pitch accumulates here as before.

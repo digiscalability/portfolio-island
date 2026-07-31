@@ -63,15 +63,17 @@ export class Zone {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
 
-    // Floating indicator orb (animated by update())
-    const indicatorGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+    // Floating indicator orb (animated by update()). Held above the beam tip
+    // (~3.5): at y=2 it sat exactly at player-head height under the mobile
+    // follow-camera pitch and read as a balloon glued to the player.
+    const indicatorGeometry = new THREE.SphereGeometry(0.24, 16, 16);
     const indicatorMaterial = new THREE.MeshStandardMaterial({
       color,
       emissive: color,
       emissiveIntensity: 1.0,
     });
     const indicator = new THREE.Mesh(indicatorGeometry, indicatorMaterial);
-    indicator.position.y = 2;
+    indicator.position.y = 3.6;
     mesh.add(indicator);
 
     // Emissive ground ring around the disc
@@ -111,10 +113,10 @@ export class Zone {
   }
 
   public update(time: number): void {
-    // Animate the floating indicator
+    // Animate the floating indicator (bobs just above the beam tip)
     if (this.marker.children.length > 0) {
       const indicator = this.marker.children[0];
-      indicator.position.y = 2 + Math.sin(time * 2) * 0.3;
+      indicator.position.y = 3.6 + Math.sin(time * 2) * 0.25;
     }
 
     // Rotate the marker slowly

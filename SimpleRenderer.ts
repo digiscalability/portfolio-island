@@ -50,6 +50,36 @@ export class SimpleRenderer {
   private qualityAccum = 0; // seconds since the last quality adjustment
   private contextLost = false; // true between webglcontextlost and ...restored
 
+  // Frame limiter + refresh-derived thresholds. The first ~60 rAF callbacks
+  // run UNCAPPED while the shortest frame interval is recorded — that cadence
+  // IS the display refresh (janky frames only ever run longer). Then the
+  // coarse/low-core tier is capped at 60fps (90/120Hz phones render at full
+  // refresh for zero gameplay gain, and the thermal throttling that buys
+  // degrades the rest of the session), and the adaptive controller's
+  // thresholds are scaled to the achievable rate — against the old hardcoded
+  // 45/57 a struggling 120Hz desktop at 70fps read as "healthy".
+  private static readonly REFRESH_SAMPLE_FRAMES = 60;
+  private refreshSamples = 0;
+  private minFrameDt = Infinity; // shortest plausible frame seen while sampling
+  private frameCapFps = 0; // 0 = uncapped; set once the refresh estimate lands
+  private frameAccum = 0; // wall-time accrued across skipped rAF frames
+  private fpsLowThreshold = 45; // shed quality below this (60Hz default)
+  private fpsHighThreshold = 57; // recover quality above this
+
+  // Quality governor: when renderScale is pinned at its floor and the frame
+  // rate is still under budget, engage discrete rungs in order — R1 bloom off
+  // (desktop only; the low tier never builds a composer), R2 shadow map at
+  // half rate, R3 half the grass — and release them in REVERSE as headroom
+  // returns. Per-direction cooldowns on top of the low/high hysteresis stop
+  // it oscillating.
+  private qualityRung = 0;
+  private static readonly MAX_QUALITY_RUNG = 3;
+  private static readonly RUNG_ENGAGE_COOLDOWN_S = 4;
+  private static readonly RUNG_RELEASE_COOLDOWN_S = 12;
+  private rungCooldown = 0; // seconds since the last rung change
+  private bloomSuspendedByGovernor = false;
+  private shadowFramePhase = 0;
+
   constructor(canvas: HTMLCanvasElement) {
     // Create WebGL renderer with anti-aliasing
     this.renderer = new THREE.WebGLRenderer({
@@ -248,9 +278,36 @@ export class SimpleRenderer {
         return;
       }
 
+      const rawDt = this.clock.getDelta();
+
+      // Refresh-rate sampling window (~1s, uncapped): frameCapFps stays 0
+      // until the estimate lands, so the cap below is inert meanwhile.
+      if (this.refreshSamples < SimpleRenderer.REFRESH_SAMPLE_FRAMES) {
+        if (rawDt > 0.004 && rawDt < 0.05) {
+          this.minFrameDt = Math.min(this.minFrameDt, rawDt);
+        }
+        if (++this.refreshSamples === SimpleRenderer.REFRESH_SAMPLE_FRAMES) {
+          this.applyRefreshEstimate();
+        }
+      }
+
+      // Frame limiter: skip whole rAF frames until a full cap interval has
+      // accumulated. Skipped time is NOT lost — it stays in frameAccum, so
+      // the deltaTime handed to the update callback stays true wall-time and
+      // game speed is unchanged. The 1ms tolerance absorbs rAF timestamp
+      // jitter so a healthy cadence doesn't spuriously drop to half rate.
+      let wallDt = rawDt;
+      if (this.frameCapFps > 0) {
+        this.frameAccum += rawDt;
+        const interval = 1 / this.frameCapFps;
+        if (this.frameAccum < interval - 0.001) return;
+        wallDt = this.frameAccum;
+        this.frameAccum %= interval;
+      }
+
       // Clamp dt: after a stall (alt-tab, GC pause) getDelta can be huge and
       // would teleport physics/animation on the catch-up frame.
-      const deltaTime = Math.min(this.clock.getDelta(), 0.05);
+      const deltaTime = Math.min(wallDt, 0.05);
 
       // Update game logic
       if (this.renderCallback) {
@@ -268,9 +325,35 @@ export class SimpleRenderer {
   }
 
   /**
+   * One-off after the sampling window: snap the observed refresh to a
+   * standard rate, engage the low-tier 60fps cap when the display actually
+   * runs faster, and scale the adaptive controller's thresholds to the
+   * achievable frame rate (the 45/57 defaults assume 60Hz). Snapping matters:
+   * an un-snapped 64Hz estimate on a true 60Hz display would put the recover
+   * threshold above vsync and the controller could never claw quality back.
+   */
+  private applyRefreshEstimate(): void {
+    if (!Number.isFinite(this.minFrameDt) || this.minFrameDt <= 0) return; // all frames janky — keep defaults
+    const observed = 1 / this.minFrameDt;
+    let hz = 60;
+    for (const r of [60, 75, 90, 120, 144, 165, 240]) {
+      if (Math.abs(r - observed) < Math.abs(hz - observed)) hz = r;
+    }
+    // Cap only when it changes anything: on a true-60Hz phone the limiter
+    // would just add skip judder for zero savings.
+    if (SimpleRenderer.isLowTierDevice() && hz > 66) this.frameCapFps = 60;
+    const target = this.frameCapFps > 0 ? Math.min(hz, this.frameCapFps) : hz;
+    this.fpsLowThreshold = target * 0.75; // = 45 at 60Hz, same ratio as before
+    this.fpsHighThreshold = target * 0.95; // = 57 at 60Hz
+  }
+
+  /**
    * Nudge the internal render scale toward whatever the GPU can sustain.
    * Runs at most ~once/second with hysteresis so it settles instead of
    * oscillating. Costs nothing when already at the ceiling and healthy.
+   * When renderScale alone can't hold the budget the quality-rung ladder
+   * takes over (engage order R1→R3, release order R3→R1, then resolution
+   * recovers last).
    */
   private updateAdaptiveResolution(deltaTime: number): void {
     if (deltaTime <= 0) return;
@@ -278,17 +361,34 @@ export class SimpleRenderer {
     const instFps = 1 / deltaTime;
     this.fpsEma += (instFps - this.fpsEma) * 0.1;
 
+    this.rungCooldown += deltaTime;
     this.qualityAccum += deltaTime;
     if (this.qualityAccum < 1) return;
     this.qualityAccum = 0;
 
+    const scaleFloor = this.dprFloor / this.dprCap;
     const prev = this.renderScale;
-    if (this.fpsEma < 45 && this.renderScale > this.dprFloor / this.dprCap) {
-      // Struggling: shed ~15% of the pixels
-      this.renderScale = Math.max(this.dprFloor / this.dprCap, this.renderScale - 0.15);
-    } else if (this.fpsEma > 57 && this.renderScale < 1) {
-      // Plenty of headroom: claw resolution back gently
-      this.renderScale = Math.min(1, this.renderScale + 0.1);
+    if (this.fpsEma < this.fpsLowThreshold) {
+      if (this.renderScale > scaleFloor) {
+        // Struggling: shed ~15% of the pixels
+        this.renderScale = Math.max(scaleFloor, this.renderScale - 0.15);
+      } else if (
+        this.qualityRung < SimpleRenderer.MAX_QUALITY_RUNG &&
+        this.rungCooldown >= SimpleRenderer.RUNG_ENGAGE_COOLDOWN_S
+      ) {
+        // Resolution is at the floor and it's still not enough: next rung
+        this.setQualityRung(this.qualityRung + 1);
+      }
+    } else if (this.fpsEma > this.fpsHighThreshold) {
+      if (this.qualityRung > 0) {
+        // Headroom is back: release rungs first (reverse order)...
+        if (this.rungCooldown >= SimpleRenderer.RUNG_RELEASE_COOLDOWN_S) {
+          this.setQualityRung(this.qualityRung - 1);
+        }
+      } else if (this.renderScale < 1) {
+        // ...then claw resolution back gently
+        this.renderScale = Math.min(1, this.renderScale + 0.1);
+      }
     }
     if (this.renderScale !== prev) {
       const effectiveDpr = this.dprCap * this.renderScale;
@@ -302,6 +402,54 @@ export class SimpleRenderer {
         // Composer resize resets bloom to full res — keep it at half.
         this.bloomPass?.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
       }
+    }
+  }
+
+  /** Step the governor to `next`, applying/releasing each rung in order. */
+  private setQualityRung(next: number): void {
+    const target = Math.max(0, Math.min(SimpleRenderer.MAX_QUALITY_RUNG, next));
+    while (this.qualityRung < target) this.engageRung(++this.qualityRung);
+    while (this.qualityRung > target) this.releaseRung(this.qualityRung--);
+    this.rungCooldown = 0;
+  }
+
+  private engageRung(rung: number): void {
+    switch (rung) {
+      case 1:
+        // Bloom off. Remember whether it was actually on so release doesn't
+        // force bloom onto someone who toggled it off themselves (Ctrl+B).
+        // On the low tier (no composer) both calls are inert no-ops.
+        this.bloomSuspendedByGovernor = this.postProcessingEnabled;
+        this.setPostProcessingEnabled(false);
+        break;
+      case 2:
+        // Shadow half-rate: render() re-arms needsUpdate every 2nd frame.
+        this.renderer.shadowMap.autoUpdate = false;
+        this.renderer.shadowMap.needsUpdate = true;
+        break;
+      case 3:
+        // Grass density 0.5 — Island's golden-spiral scatter keeps any prefix
+        // uniform. Optional-chained end to end so it degrades to a no-op if
+        // the GameScene accessor / Island method aren't present.
+        (this.scene as { getIsland?: () => { setGrassBudget?: (f: number) => void } } | undefined)
+          ?.getIsland?.()?.setGrassBudget?.(0.5);
+        break;
+    }
+  }
+
+  private releaseRung(rung: number): void {
+    switch (rung) {
+      case 3:
+        (this.scene as { getIsland?: () => { setGrassBudget?: (f: number) => void } } | undefined)
+          ?.getIsland?.()?.setGrassBudget?.(1);
+        break;
+      case 2:
+        this.renderer.shadowMap.autoUpdate = true;
+        break;
+      case 1:
+        if (this.bloomSuspendedByGovernor) this.setPostProcessingEnabled(true);
+        this.bloomSuspendedByGovernor = false;
+        break;
     }
   }
 
@@ -328,6 +476,13 @@ export class SimpleRenderer {
         camera: !!this.camera,
       });
       return;
+    }
+
+    // Governor rung 2+: refresh the shadow map every OTHER frame. The sun
+    // moves slowly enough that a one-frame-stale map is invisible.
+    if (this.qualityRung >= 2) {
+      this.shadowFramePhase ^= 1;
+      if (this.shadowFramePhase === 1) this.renderer.shadowMap.needsUpdate = true;
     }
 
     if (this.postProcessingEnabled && this.composer) {

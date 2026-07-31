@@ -5,6 +5,20 @@ import { checkName } from './Moderation';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 
 /**
+ * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
+ * harmless no-op). Gated OFF under reduced motion. Exported so game events
+ * elsewhere (landings, race checkpoints, coins) can adopt it too.
+ */
+export function hapticPulse(ms: number): void {
+  if (a11y.reducedMotion) return;
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    /* unsupported or blocked by permissions policy */
+  }
+}
+
+/**
  * SimpleUI - Simplified UI manager for the basic app
  * Handles loading screen, welcome message, interaction prompts, and FPS display
  */
@@ -919,19 +933,32 @@ export class SimpleUI {
   private createTouchControls(): void {
     if (!this.isTouch) return;
 
-    // Joystick
+    // Joystick — the visible ring sits inside a larger INVISIBLE hit region
+    // (the whole ~166px lower-left corner): a blind thumb landing a little
+    // outside the ring must still engage it, not dead-tap. The ring itself
+    // stays at its old spot (26px in from the safe-area corner).
+    const hit = document.createElement('div');
+    Object.assign(hit.style, {
+      position: 'absolute',
+      left: 'var(--sal, 0px)',
+      bottom: 'var(--sab, 0px)',
+      width: '166px',
+      height: '166px',
+      pointerEvents: 'auto',
+      touchAction: 'none',
+    });
     const base = document.createElement('div');
     Object.assign(base.style, {
       position: 'absolute',
-      left: 'calc(var(--sal, 0px) + 26px)',
-      bottom: 'calc(var(--sab, 0px) + 26px)',
+      left: '26px',
+      bottom: '26px',
       width: '110px',
       height: '110px',
       borderRadius: '50%',
       background: 'rgba(255,255,255,0.12)',
       border: '2px solid rgba(255,255,255,0.25)',
-      pointerEvents: 'auto',
-      touchAction: 'none',
+      // The wrapper owns all touch events; ring + thumb are visuals only
+      pointerEvents: 'none',
     });
     const thumb = document.createElement('div');
     Object.assign(thumb.style, {
@@ -944,17 +971,19 @@ export class SimpleUI {
       background: 'rgba(255,255,255,0.45)',
     });
     base.appendChild(thumb);
-    this.overlay.appendChild(base);
+    hit.appendChild(base);
+    this.overlay.appendChild(hit);
 
     const moveThumb = (dx: number, dy: number) => {
       thumb.style.left = `${31 + dx}px`;
       thumb.style.top = `${31 + dy}px`;
     };
-    const handleTouch = (e: TouchEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
+    // Identifier-tracked: e.touches[0] is the earliest finger ON THE PAGE,
+    // so with a camera finger already down the joystick read the WRONG
+    // finger and movement lurched. Track the pad's own finger by identifier.
+    let joyTouchId: number | null = null;
+    const applyJoyTouch = (t: Touch) => {
       const rect = base.getBoundingClientRect();
-      const t = e.touches[0];
       let dx = t.clientX - (rect.left + rect.width / 2);
       let dy = t.clientY - (rect.top + rect.height / 2);
       const len = Math.hypot(dx, dy);
@@ -964,17 +993,59 @@ export class SimpleUI {
         dy = (dy / len) * max;
       }
       moveThumb(dx, dy);
-      this.joyState.strafe = dx / max;
-      this.joyState.forward = -dy / max;
+      // ~12% radial dead zone, renormalized so the range past it still spans
+      // 0..1: a resting thumb's 2-3px jitter must not creep the player or
+      // flicker the idle/walk animation.
+      const DEAD = 0.12;
+      const mag = Math.min(1, len / max);
+      if (mag < DEAD) {
+        this.joyState.strafe = 0;
+        this.joyState.forward = 0;
+      } else {
+        const scale = (mag - DEAD) / (1 - DEAD) / (mag * max);
+        this.joyState.strafe = dx * scale;
+        this.joyState.forward = -dy * scale;
+      }
     };
-    base.addEventListener('touchstart', handleTouch, { passive: false });
-    base.addEventListener('touchmove', handleTouch, { passive: false });
-    base.addEventListener('touchend', (e) => {
+    hit.addEventListener('touchstart', (e) => {
+      e.preventDefault();
       e.stopPropagation();
-      this.joyState.forward = 0;
-      this.joyState.strafe = 0;
-      moveThumb(0, 0);
-    });
+      if (joyTouchId !== null || e.changedTouches.length === 0) return;
+      const t = e.changedTouches[0];
+      joyTouchId = t.identifier;
+      hapticPulse(5); // first-engage tick
+      applyJoyTouch(t);
+    }, { passive: false });
+    hit.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (joyTouchId === null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === joyTouchId) {
+          applyJoyTouch(t);
+          break;
+        }
+      }
+    }, { passive: false });
+    // touchcancel too: a notification shade / incoming call mid-walk fires
+    // cancel, not end — without it joyState stuck non-zero and the player
+    // walked on forever.
+    const resetJoy = (e: TouchEvent) => {
+      e.stopPropagation();
+      if (joyTouchId === null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === joyTouchId) {
+          joyTouchId = null;
+          this.joyState.forward = 0;
+          this.joyState.strafe = 0;
+          moveThumb(0, 0);
+          break;
+        }
+      }
+    };
+    hit.addEventListener('touchend', resetJoy);
+    hit.addEventListener('touchcancel', resetJoy);
 
     // Action buttons: synthetic key events reuse every existing input path.
     // z-index 1650 keeps them ABOVE the dialogue panel (1600) so the touch
@@ -1029,6 +1100,7 @@ export class SimpleUI {
         e.stopPropagation();
         btn.style.transform = 'scale(0.9)';
         btn.style.filter = 'brightness(1.35)';
+        hapticPulse(8);
         fire('keydown');
         if (holdRepeat === null) {
           holdRepeat = window.setInterval(() => fire('keydown', true), 700);

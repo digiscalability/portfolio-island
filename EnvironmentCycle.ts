@@ -63,9 +63,17 @@ export class EnvironmentCycle {
   private temperatureC: number | null = null;
   private nextStatusAt = 0;
 
-  private starLayers: Array<{ points: THREE.Points; mat: THREE.PointsMaterial; peak: number }> = [];
+  private starLayers: Array<{
+    points: THREE.Points;
+    mat: THREE.PointsMaterial;
+    peak: number;
+    twinkleFreq: number;
+    twinklePhase: number;
+  }> = [];
   private moon: THREE.Mesh;
   private moonMat: THREE.MeshBasicMaterial;
+  private sunDisc: THREE.Mesh;
+  private sunDiscMat: THREE.MeshBasicMaterial;
 
   private precip: THREE.Points | null = null;
   private precipGeo: THREE.BufferGeometry | null = null;
@@ -75,6 +83,8 @@ export class EnvironmentCycle {
   // vertical streak that reads as a falling drop on the camera-facing quad.
   private static _snowTex: THREE.Texture | null = null;
   private static _rainTex: THREE.Texture | null = null;
+  private static _sunTex: THREE.Texture | null = null;
+  private static _starTex: THREE.Texture | null = null;
 
   private glowLights: Array<{ light: THREE.Light; base: number }> = [];
   // Tagged emissive materials (house windows, lamp bulbs). Owned by
@@ -83,6 +93,10 @@ export class EnvironmentCycle {
     mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
     base: THREE.Color;
   }> = [];
+  // Dedupe across collection passes (constructor + the late rescan)
+  private readonly seenGlow = new Set<THREE.Light>();
+  private readonly seenEmissive = new Set<THREE.Material>();
+  private rescanned = false;
 
   private baseSunIntensity: number;
   private baseHemiIntensity: number;
@@ -103,6 +117,8 @@ export class EnvironmentCycle {
   private readonly _c2 = new THREE.Color();
   private readonly _up = new THREE.Vector3(0, 1, 0);
   private readonly _normal = new THREE.Vector3();
+  private readonly _v1 = new THREE.Vector3();
+  private readonly _v2 = new THREE.Vector3();
 
   constructor(
     scene: THREE.Scene,
@@ -119,46 +135,44 @@ export class EnvironmentCycle {
     this.baseHemiIntensity = hemi.intensity;
     this.baseFogDensity = this.fog ? this.fog.density : 0.012;
 
-    // Collect lamp + house-window lights so they can brighten at night,
-    // plus the isNightEmissive-tagged meshes (house windows, lamp bulbs).
-    // This runs after GameScene's toonify pass, so the collected materials
-    // are the live toon clones; every tagged mesh owns a private material
-    // (created inline in Island, and the toonify cache is keyed per
-    // instance), so the emissive writes in update() can't leak to other
-    // props. Dedupe: a house's two windows share one material.
-    const seenEmissive = new Set<THREE.Material>();
-    scene.traverse((obj) => {
-      const data = obj.userData as {
-        isLampLight?: boolean;
-        isHouseWarmLight?: boolean;
-        isNightEmissive?: boolean;
-      };
-      const l = obj as THREE.Light;
-      if (l.isLight) {
-        if (data.isLampLight || data.isHouseWarmLight) {
-          this.glowLights.push({ light: l, base: l.intensity });
-        }
-        return;
-      }
-      if (!data.isNightEmissive) return;
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh || Array.isArray(mesh.material)) return;
-      const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
-      if (!mat.emissive || seenEmissive.has(mat)) return;
-      seenEmissive.add(mat);
-      this.nightEmissives.push({ mat, base: mat.emissive.clone() });
-    });
+    this.collectNightAssets();
 
-    // Star field in two layers (dense faint + sparse bright). fog: false is
-    // essential — at radius 700 the scene's FogExp2 otherwise erases them.
-    const makeStars = (count: number, size: number, peak: number) => {
+    // Star field: layered soft sprites (dense faint + sparse bright + two
+    // small twinkle layers on staggered rhythms + a Milky Way band along a
+    // fixed great circle). fog: false is essential — at radius 700 the
+    // scene's FogExp2 otherwise erases them.
+    const makeStars = (
+      count: number,
+      size: number,
+      peak: number,
+      twinkleFreq = 0,
+      bandNormal?: THREE.Vector3,
+      color = 0xffffff,
+    ) => {
       const pos = new Float32Array(count * 3);
+      const dir = new THREE.Vector3();
+      const u = new THREE.Vector3();
+      const v = new THREE.Vector3();
+      if (bandNormal) {
+        u.set(0, 1, 0).cross(bandNormal).normalize();
+        v.crossVectors(bandNormal, u);
+      }
       for (let i = 0; i < count; i++) {
-        const dir = new THREE.Vector3(
-          Math.random() * 2 - 1,
-          Math.random() * 2 - 1,
-          Math.random() * 2 - 1,
-        ).normalize();
+        if (bandNormal) {
+          // Great-circle strip: uniform angle around the band, center-weighted
+          // offset toward its pole — reads as a Milky Way arch.
+          const t = Math.random() * Math.PI * 2;
+          const off = ((Math.random() + Math.random() + Math.random()) / 1.5 - 1) * 0.2;
+          dir
+            .copy(u)
+            .multiplyScalar(Math.cos(t) * Math.cos(off))
+            .addScaledVector(v, Math.sin(t) * Math.cos(off))
+            .addScaledVector(bandNormal, Math.sin(off));
+        } else {
+          dir
+            .set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1)
+            .normalize();
+        }
         pos[i * 3] = dir.x * 700;
         pos[i * 3 + 1] = dir.y * 700;
         pos[i * 3 + 2] = dir.z * 700;
@@ -166,8 +180,9 @@ export class EnvironmentCycle {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       const mat = new THREE.PointsMaterial({
-        color: 0xffffff,
+        color,
         size,
+        map: EnvironmentCycle.starTexture(),
         sizeAttenuation: false,
         transparent: true,
         opacity: 0,
@@ -179,10 +194,20 @@ export class EnvironmentCycle {
       points.renderOrder = -1;
       points.frustumCulled = false;
       scene.add(points);
-      this.starLayers.push({ points, mat, peak });
+      this.starLayers.push({
+        points,
+        mat,
+        peak,
+        twinkleFreq,
+        twinklePhase: Math.random() * Math.PI * 2,
+      });
     };
-    makeStars(750, 1.6, 0.75);
-    makeStars(220, 3.0, 1.0);
+    makeStars(750, 2.4, 0.75);
+    makeStars(220, 3.8, 1.0);
+    // Twinklers: per-LAYER opacity wobble in update() — zero per-star cost
+    makeStars(70, 4.4, 0.9, 1.7);
+    makeStars(50, 3.4, 0.85, 2.6);
+    makeStars(900, 2.0, 0.38, 0, new THREE.Vector3(0.42, 0.55, 0.72).normalize(), 0xd8e6ff);
 
     // Moon disc: position and brightness follow the real lunar phase
     this.moonMat = new THREE.MeshBasicMaterial({
@@ -198,9 +223,65 @@ export class EnvironmentCycle {
     this.moon.frustumCulled = false;
     scene.add(this.moon);
 
+    // Sun disc: additive soft-glow billboard riding the TRUE sun arc. The
+    // texture's radial falloff carries the golden-hour halo even on tiers
+    // where the bloom pass is gated off.
+    this.sunDiscMat = new THREE.MeshBasicMaterial({
+      color: 0xfff3d0,
+      map: EnvironmentCycle.sunTexture(),
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false,
+    });
+    this.sunDisc = new THREE.Mesh(new THREE.CircleGeometry(55, 24), this.sunDiscMat);
+    this.sunDisc.name = 'sun';
+    this.sunDisc.renderOrder = -1;
+    this.sunDisc.frustumCulled = false;
+    scene.add(this.sunDisc);
+
     // Live weather is OPT-IN: nothing about the visitor leaves the device until
     // they ask for it. Day/night still works from the device clock alone.
     if (EnvironmentCycle.hasWeatherConsent()) void this.fetchWeather();
+  }
+
+  /**
+   * Collect lamp + house-window lights so they can brighten at night,
+   * plus the isNightEmissive-tagged meshes (house windows, lamp bulbs).
+   * The constructor pass runs after GameScene's toonify pass, so the
+   * collected materials are the live toon clones; every tagged mesh owns a
+   * private material (created inline in Island, and the toonify cache is
+   * keyed per instance), so the emissive writes in update() can't leak to
+   * other props. Dedupe: a house's two windows share one material.
+   *
+   * Runs again once on the first update(): TownPlanner props are placed
+   * AFTER this cycle is built (GameScene.placeAssets), and the render loop
+   * only starts after that init finishes, so the late pass catches them.
+   */
+  private collectNightAssets(): void {
+    this.scene.traverse((obj) => {
+      const data = obj.userData as {
+        isLampLight?: boolean;
+        isHouseWarmLight?: boolean;
+        isNightEmissive?: boolean;
+      };
+      const l = obj as THREE.Light;
+      if (l.isLight) {
+        if ((data.isLampLight || data.isHouseWarmLight) && !this.seenGlow.has(l)) {
+          this.seenGlow.add(l);
+          this.glowLights.push({ light: l, base: l.intensity });
+        }
+        return;
+      }
+      if (!data.isNightEmissive) return;
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh || Array.isArray(mesh.material)) return;
+      const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+      if (!mat.emissive || this.seenEmissive.has(mat)) return;
+      this.seenEmissive.add(mat);
+      this.nightEmissives.push({ mat, base: mat.emissive.clone() });
+    });
   }
 
   /** Has the visitor opted into location-based live weather? */
@@ -412,6 +493,45 @@ export class EnvironmentCycle {
     return tex;
   }
 
+  /** Soft-edged sun: hot core feathering into a wide warm glow. The falloff
+   * IS the golden-hour halo, so the read survives without the bloom pass. */
+  private static sunTexture(): THREE.Texture {
+    if (this._sunTex) return this._sunTex;
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.22, 'rgba(255,250,235,1)');
+    g.addColorStop(0.4, 'rgba(255,236,200,0.55)');
+    g.addColorStop(0.7, 'rgba(255,220,170,0.18)');
+    g.addColorStop(1, 'rgba(255,210,150,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    this._sunTex = tex;
+    return tex;
+  }
+
+  /** Tiny soft round sprite — turns the square default points into star discs. */
+  private static starTexture(): THREE.Texture {
+    if (this._starTex) return this._starTex;
+    const c = document.createElement('canvas');
+    c.width = c.height = 32;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 15);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.9)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(16, 16, 15, 0, Math.PI * 2);
+    ctx.fill();
+    const tex = new THREE.CanvasTexture(c);
+    this._starTex = tex;
+    return tex;
+  }
+
   private rebuildPrecipitation(): void {
     if (this.precip) {
       this.scene.remove(this.precip);
@@ -454,6 +574,11 @@ export class EnvironmentCycle {
 
   /** Call every frame with the player's world position. */
   public update(deltaTime: number, playerPos: THREE.Vector3, time: number): void {
+    // One-shot late pass for props placed after construction (TownPlanner)
+    if (!this.rescanned) {
+      this.rescanned = true;
+      this.collectNightAssets();
+    }
     const hour = this.currentHour();
     // Sun elevation anchored to the location's REAL sunrise/sunset (fetched
     // with the weather); 6am/6pm approximation until/unless that arrives.
@@ -479,11 +604,36 @@ export class EnvironmentCycle {
     const duskFactor = Math.max(0, 1 - Math.abs(elev) / 0.35);
     this.lastDayFactor = dayFactor;
 
-    // Sun position on its arc (moon takes over below the horizon)
+    // Moon arc, hoisted: the light-direction blend below needs it before the
+    // disc is drawn. Real lunar phase (0 = new, 0.5 = full), trailing the sun
+    // by ~phase * 24h so a full moon rises at sunset.
+    const SYNODIC_MS = 29.530588 * 86400000;
+    const sinceNew = Date.now() - Date.UTC(2000, 0, 6, 18, 14);
+    const phase = (((sinceNew % SYNODIC_MS) + SYNODIC_MS) % SYNODIC_MS) / SYNODIC_MS;
+    const illum = (1 - Math.cos(phase * Math.PI * 2)) / 2;
+    const moonHour = hour - phase * 24;
+    const mElev = Math.sin(((moonHour - 6) / 24) * Math.PI * 2);
+    const mAz = (moonHour / 24) * Math.PI * 2;
+
+    // Directional light rides the sun arc by day; after dusk it swings toward
+    // the visible moon so night shadows come FROM the moon instead of an
+    // underground sun. The weight ramps across dayFactor 0.5→0.15 (a ~30-real-
+    // minute window — no visible snap) and fades with moon elevation so a
+    // setting moon hands back to the horizon-clamped sun direction smoothly.
     const e = Math.max(elev, 0.06);
-    this.sun.position
-      .set(Math.cos(azimuth) * Math.sqrt(1 - e * e), e, Math.sin(azimuth) * Math.sqrt(1 - e * e))
-      .multiplyScalar(60);
+    this._v1.set(Math.cos(azimuth) * Math.sqrt(1 - e * e), e, Math.sin(azimuth) * Math.sqrt(1 - e * e));
+    if (dayFactor < 0.5 && mElev > 0.03) {
+      const w =
+        THREE.MathUtils.smoothstep(0.5 - dayFactor, 0.02, 0.35) *
+        THREE.MathUtils.smoothstep(mElev, 0.03, 0.2);
+      this._v2.set(
+        Math.cos(mAz) * Math.sqrt(1 - mElev * mElev),
+        mElev,
+        Math.sin(mAz) * Math.sqrt(1 - mElev * mElev),
+      );
+      this._v1.lerp(this._v2, w).normalize();
+    }
+    this.sun.position.copy(this._v1).multiplyScalar(60);
 
     // Weather dimming
     const wDim = { clear: 1, cloudy: 0.55, rain: 0.35, snow: 0.5 }[this.weather];
@@ -496,6 +646,24 @@ export class EnvironmentCycle {
     this._c1.set(0xfff2dd).lerp(this._c2.set(0xffb066), duskFactor * 0.8);
     this._c1.lerp(this._c2.set(0x93a4cc), 1 - dayFactor);
     this.sun.color.copy(this._c1);
+
+    // Sun disc rides the TRUE elevation (the shadow light clamps to a floor):
+    // warm white and modest at noon, swollen + reddened through golden hour,
+    // faded out below the horizon and in bad weather. Terrain occludes it
+    // naturally (depthTest stays on).
+    const se = Math.max(elev, -0.05);
+    this.sunDisc.position
+      .set(Math.cos(azimuth) * Math.sqrt(1 - se * se), se, Math.sin(azimuth) * Math.sqrt(1 - se * se))
+      .multiplyScalar(640);
+    this.sunDisc.lookAt(0, 0, 0);
+    this.sunDisc.scale.setScalar(1 + 0.6 * duskFactor);
+    this._c1.set(0xfff3d0).lerp(this._c2.set(0xff7e3d), Math.min(1, duskFactor * 1.15));
+    this.sunDiscMat.color.copy(this._c1);
+    this.sunDiscMat.opacity =
+      THREE.MathUtils.smoothstep(elev, -0.03, 0.08) *
+      (0.55 + 0.45 * duskFactor) *
+      (this.weather === 'clear' ? 1 : this.weather === 'cloudy' ? 0.25 : 0.1);
+    this.sunDisc.visible = this.sunDiscMat.opacity > 0.02;
 
     // Sky palette: night → day, pushed toward dusk at the horizon crossing,
     // then washed toward overcast by weather
@@ -519,23 +687,21 @@ export class EnvironmentCycle {
         (this.weather === 'rain' ? 0.01 : this.weather === 'cloudy' || this.weather === 'snow' ? 0.005 : 0);
     }
 
-    // Stars: night only, hidden by bad weather
+    // Stars: night only, hidden by bad weather. Twinkle is a per-LAYER
+    // opacity wobble; visible=false by day drops the draw calls entirely.
     const starVis = (1 - dayFactor) * (this.weather === 'clear' ? 1 : 0.15);
     for (const layer of this.starLayers) {
-      layer.mat.opacity = starVis * layer.peak;
+      let o = starVis * layer.peak;
+      if (layer.twinkleFreq > 0) {
+        o *= 0.72 + 0.28 * Math.sin(time * layer.twinkleFreq + layer.twinklePhase);
+      }
+      layer.mat.opacity = o;
+      layer.points.visible = o > 0.01;
     }
 
-    // Moon: real lunar phase (0 = new, 0.5 = full), trailing the sun by
-    // ~phase * 24h so a full moon rises at sunset. Brightness follows the
+    // Moon disc (arc + phase hoisted above): brightness follows the
     // illuminated fraction; overcast hides it.
-    const SYNODIC_MS = 29.530588 * 86400000;
-    const sinceNew = Date.now() - Date.UTC(2000, 0, 6, 18, 14);
-    const phase = (((sinceNew % SYNODIC_MS) + SYNODIC_MS) % SYNODIC_MS) / SYNODIC_MS;
-    const illum = (1 - Math.cos(phase * Math.PI * 2)) / 2;
-    const moonHour = hour - phase * 24;
-    const mElev = Math.sin(((moonHour - 6) / 24) * Math.PI * 2);
     if (mElev > 0.03) {
-      const mAz = (moonHour / 24) * Math.PI * 2;
       this.moon.position
         .set(
           Math.cos(mAz) * Math.sqrt(1 - mElev * mElev),
@@ -551,10 +717,13 @@ export class EnvironmentCycle {
       this.moon.visible = false;
     }
 
-    // Lamps and house windows glow up as the sun goes down
+    // Lamps and house windows glow up as the sun goes down. Interactive
+    // lamps (TownPlanner) carry isOn on their group — a lamp the player
+    // switched off must stay dark instead of being re-lit every frame.
     const glow = 0.25 + (1 - dayFactor) * 1.05;
     for (const g of this.glowLights) {
-      g.light.intensity = g.base * glow;
+      const host = g.light.parent as ({ isOn?: boolean } & THREE.Object3D) | null;
+      g.light.intensity = host && host.isOn === false ? 0 : g.base * glow;
     }
 
     // Window panes + lamp bulbs: dim by day, glowing after dark, emissive
@@ -606,9 +775,15 @@ export class EnvironmentCycle {
     }
     this.starLayers.length = 0;
     this.nightEmissives.length = 0;
+    this.glowLights.length = 0;
+    this.seenGlow.clear();
+    this.seenEmissive.clear();
     this.scene.remove(this.moon);
     this.moon.geometry.dispose();
     this.moonMat.dispose();
+    this.scene.remove(this.sunDisc);
+    this.sunDisc.geometry.dispose();
+    this.sunDiscMat.dispose();
     if (this.precip) {
       this.scene.remove(this.precip);
       this.precipGeo?.dispose();

@@ -14,6 +14,7 @@ THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 import { Materials } from './Materials';
+import { SimpleRenderer } from './SimpleRenderer';
 import { NPC } from './NPC';
 import TextureGenerator from './TextureGenerator';
 
@@ -103,6 +104,14 @@ export class Island {
   public pendingColliders: Array<{ position: THREE.Vector3; radius: number }> = [];
   // Shared time uniform driving the grass wind vertex shader
   public grassTimeUniform: { value: number } = { value: 0 };
+  // Player position (island-local == world, the root sits at origin) for the
+  // grass push-aside shader. Default at planet centre → every blade is ~radius
+  // away → zero push until someone wires setGrassPlayerPosition.
+  public grassPlayerUniform: { value: THREE.Vector3 } = { value: new THREE.Vector3() };
+  // Sky-horizon colour for the sea's fresnel reflection. Defaults to the day
+  // horizon blue; bindSeaSkyColor swaps in EnvironmentCycle's live Color so
+  // the water tracks dusk/night with zero per-frame plumbing.
+  public seaSkyHorizonUniform: { value: THREE.Color } = { value: new THREE.Color(0x79b7e6) };
   // Shared time uniform driving the sea wave vertex shader
   public seaTimeUniform: { value: number } = { value: 0 };
   // Slow rise/fall of the whole sea surface, shared by the shader and the CPU
@@ -119,6 +128,9 @@ export class Island {
   public trailSummitDir?: THREE.Vector3;
   // Rotated/bobbed by GameScene each frame — the pizzazz for reaching the top.
   public summitBeacon?: THREE.Object3D;
+  // Grass instancing handle + full count for the quality governor's budget hook
+  private grassMesh?: THREE.InstancedMesh;
+  private grassFullCount = 0;
   // Radial water-surface offset above the base radius (matches the sea mesh).
   // Land sits >= base+0.3 (continent mask floor); the calm surface at +0.1
   // with wave crests to +0.25 stays just under the beach so waves lap the
@@ -146,6 +158,31 @@ export class Island {
         data._debug = true;
       }
     }
+  }
+
+  /**
+   * Quality-governor hook: draw only a prefix of the grass instances.
+   * Instance SLOTS are written in coprime-stride order over the golden-spiral
+   * scatter (see createGrass) — a raw spiral prefix would strip everything
+   * below a latitude line, the stride makes any prefix spatially uniform.
+   */
+  public setGrassBudget(fraction: number): void {
+    if (!this.grassMesh || !this.grassFullCount) return;
+    const f = THREE.MathUtils.clamp(fraction, 0.25, 1);
+    this.grassMesh.count = Math.max(1, Math.round(this.grassFullCount * f));
+  }
+
+  /** Per-frame: copy the player's world position into the grass push uniform
+   *  (island-local == world — the root group sits at origin). No allocation. */
+  public setGrassPlayerPosition(pos: THREE.Vector3): void {
+    this.grassPlayerUniform.value.copy(pos);
+  }
+
+  /** Share EnvironmentCycle's live horizon Color BY REFERENCE so the sea's
+   *  fresnel sky mix tracks day/dusk/night for free. Safe before or after the
+   *  sea shader compiles — the uniform object itself is what's shared. */
+  public bindSeaSkyColor(horizon: THREE.Color): void {
+    this.seaSkyHorizonUniform.value = horizon;
   }
 
   /**
@@ -212,6 +249,22 @@ export class Island {
    *
    * The normal comes from finite differences: two tangent offsets, crossed.
    */
+  /** Low-frequency lateral moisture field (-1..1), shared by the terrain
+   *  colour pass and the grass tint so blades match the ground they stand on.
+   *  Same formula as createIsland's noise3D — keep them in step. */
+  private moistureAt(dir: THREE.Vector3): number {
+    const s = 0.3; // ~10-20u features on the r=18 island
+    const x = dir.x * this.radius;
+    const y = dir.y * this.radius;
+    const z = dir.z * this.radius;
+    return (
+      (Math.sin(x * s) * Math.cos(z * s) +
+        Math.sin(y * s) * Math.cos(x * s) +
+        Math.sin(z * s) * Math.cos(y * s)) /
+      3
+    );
+  }
+
   public analyticSurface(dir: THREE.Vector3): { radius: number; normal: THREE.Vector3 } {
     const n = dir.clone().normalize();
     if (!this.terrainRadiusFor) {
@@ -291,8 +344,12 @@ export class Island {
     });
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.grassTimeUniform;
+      shader.uniforms.uPlayerPos = this.grassPlayerUniform;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <common>',
+          '#include <common>\nuniform float uTime;\nuniform vec3 uPlayerPos;',
+        )
         .replace(
           '#include <begin_vertex>',
           [
@@ -300,12 +357,22 @@ export class Island {
             '#ifdef USE_INSTANCING',
             '  float gPhase = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3 + instanceMatrix[3].y * 1.1;',
             '  float gBend = sin(uTime * 2.1 + gPhase) + 0.5 * sin(uTime * 3.6 + gPhase * 1.4);',
+            // Traveling gust: a directional wave sweeping the field, layered
+            // over the local sway so the wind reads as weather, not twitching.
+            '  float gGust = 0.65 + 0.5 * sin(dot(instanceMatrix[3].xz, vec2(0.31, 0.24)) - uTime * 1.5);',
             // Normalised by BLADE_H so the tip bends by the full amount and
             // the base stays planted — keep this divisor in step with the
             // blade height above, or the sway scales wrong.
             // Gentler now the blades are half as tall — a short tuft that
             // swings as far as a long blade did just looks like it's twitching.
-            `  transformed.x += gBend * 0.026 * (position.y / ${BLADE_H});`,
+            `  transformed.x += gBend * gGust * 0.026 * (position.y / ${BLADE_H});`,
+            // Player push: bend away within ~1.2u. `transformed` is blade-local
+            // (instanceMatrix applies later), so rotate the world-space "away"
+            // into the blade frame — transpose ≈ inverse for the rotation part;
+            // the instance scale only jitters the radius by ±20%, fine.
+            '  vec3 gAway = transpose(mat3(instanceMatrix)) * (instanceMatrix[3].xyz - uPlayerPos);',
+            '  float gPush = max(0.0, 1.0 - length(gAway) / 1.2);',
+            `  transformed.xz += normalize(gAway.xz + vec2(1e-4)) * (gPush * gPush * 0.18) * (position.y / ${BLADE_H});`,
             '#endif',
           ].join('\n'),
         );
@@ -314,14 +381,12 @@ export class Island {
     // Grass is pure decoration but 6000 instanced blades still cost vertex
     // work every frame (wind shader). Halve it on phones/tablets and
     // low-core machines so the ambient layer doesn't tax weaker GPUs.
-    const coarse =
-      typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-    const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
+    const lowTier = SimpleRenderer.isLowTierDevice();
     // Density is what makes it read as carpet rather than scattered objects.
     // Tripled now that each blade is half the height — 18000 x 4 tris = 72k,
     // still one draw call, and the blades are small enough that the extra
     // vertex work is cheap. Phones keep a lower count.
-    const COUNT = coarse || lowCore ? 12000 : 32000;
+    const COUNT = lowTier ? 12000 : 32000;
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -332,7 +397,16 @@ export class Island {
     const GRASS_DRY = new THREE.Color(0xc6cc80);
     const GRASS_LUSH = new THREE.Color(0x74b25c);
     const bladeColor = new THREE.Color();
-    for (let i = 0; i < COUNT; i++) {
+    // Slot order matters: setGrassBudget trims to a PREFIX of instance slots,
+    // and the spiral index sweeps latitude pole→pole (then mirrors), so a raw
+    // prefix would strip everything below a latitude line. Visiting spiral
+    // indices with a stride coprime to COUNT equidistributes them, so any
+    // prefix of slots is a uniform sample of the island.
+    const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+    let stride = Math.max(1, Math.round(COUNT * 0.618));
+    while (gcd(stride, COUNT) !== 1) stride++;
+    for (let k = 0; k < COUNT; k++) {
+      const i = (k * stride) % COUNT;
       const y = 1 - (i / (COUNT - 1)) * 2;
       const rAt = Math.sqrt(Math.max(0, 1 - y * y));
       const th = golden * i;
@@ -376,26 +450,36 @@ export class Island {
           : 0.85 + Math.random() * 0.4;
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
-      grass.setMatrixAt(i, dummy.matrix);
+      grass.setMatrixAt(k, dummy.matrix);
       // Per-blade colour. A single flat green over thousands of instances is
       // what makes the meadow read as plastic; drifting each blade between a
       // dry yellow-green and a deep shade — biased by elevation so low ground
-      // is lusher — gives the field depth for free (still one draw call).
+      // is lusher, and by the same lateral moisture field that tints the
+      // terrain so blades match the ground they stand on — gives the field
+      // depth for free (still one draw call).
       const lush = 1 - THREE.MathUtils.clamp((dir.y - Math.sin(0.28)) * 2.2, 0, 1);
+      const moist = this.moistureAt(dir); // +ve = dry patch (matches terrain pass)
       bladeColor
         .copy(GRASS_DRY)
-        .lerp(GRASS_LUSH, THREE.MathUtils.clamp(lush * 0.75 + Math.random() * 0.5, 0, 1));
+        .lerp(
+          GRASS_LUSH,
+          THREE.MathUtils.clamp(lush * 0.75 - moist * 0.35 + Math.random() * 0.5, 0, 1),
+        );
       // subtle per-blade brightness so neighbours never match exactly
       const shade = 0.86 + Math.random() * 0.28;
-      grass.setColorAt(i, bladeColor.multiplyScalar(shade));
+      grass.setColorAt(k, bladeColor.multiplyScalar(shade));
     }
     if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
     grass.instanceMatrix.needsUpdate = true;
     grass.name = 'grass';
     grass.castShadow = false;
-    grass.receiveShadow = true;
+    // Coarse tier: 12k DoubleSide blades sampling the shadow map for shadows
+    // nobody can see at phone DPR — skip the receive entirely there.
+    grass.receiveShadow = !lowTier;
     const grassData = grass.userData as Record<string, unknown>;
     grassData.ignoreOcclusion = true;
+    this.grassMesh = grass;
+    this.grassFullCount = COUNT;
     return grass;
   }
 
@@ -676,6 +760,10 @@ export class Island {
       const rock = new THREE.Color(0x8d8878);
       const snow = new THREE.Color(0xf2f6fa);
       const dirt = new THREE.Color(0x9a7550); // the worn summit path
+      // Lateral moisture targets — sun-dried and rain-shadow patches that
+      // break the concentric elevation bands (greens only; sand/snow untouched)
+      const dryMeadow = new THREE.Color(0xaeb767);
+      const lushMeadow = new THREE.Color(0x5f9e52);
       const tmp = new THREE.Color();
       const vDir = new THREE.Vector3();
       const vNrm = new THREE.Vector3();
@@ -725,6 +813,12 @@ export class Island {
           else if (t < 0.62) tmp.copy(valley).lerp(meadow, (t - 0.25) / 0.37);
           else if (t < 0.86) tmp.copy(meadow).lerp(ridge, (t - 0.62) / 0.24);
           else tmp.copy(ridge).lerp(peak, (t - 0.86) / 0.14);
+          // Lateral moisture drift: elevation-only bands read as a contour
+          // map. Fades out toward the high ground so ridge/peak keep their
+          // pale tones. One-time CPU, shared with the grass tint (moistureAt).
+          const moist = this.moistureAt(vDir) * (1 - THREE.MathUtils.clamp(t, 0, 1) * 0.7);
+          if (moist > 0) tmp.lerp(dryMeadow, Math.min(moist * 1.4, 0.5));
+          else tmp.lerp(lushMeadow, Math.min(-moist * 1.2, 0.4));
           // Feather the sand upward so the beach doesn't end on a hard line
           const beachFade = THREE.MathUtils.clamp((above - BEACH_TOP) / BEACH_FADE, 0, 1);
           tmp.lerp(sand, (1 - beachFade) * 0.6);
@@ -804,8 +898,9 @@ export class Island {
       shader.uniforms.uTime = this.seaTimeUniform;
       shader.uniforms.uAmp = { value: Island.WAVE_AMP };
       shader.uniforms.uTide = this.seaTideUniform;
+      shader.uniforms.uSkyHorizon = this.seaSkyHorizonUniform;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uAmp;\nuniform float uTide;\nvarying float vWave;')
+        .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uAmp;\nuniform float uTide;\nvarying float vWave;\nvarying vec2 vFoamUv;')
         // Tilt the NORMAL to match the wave slope. Without this the shader
         // displaces geometry but lights it as a smooth sphere, so the ocean
         // slides around without ever shading like water — the single biggest
@@ -844,6 +939,8 @@ export class Island {
             '       + sin((nrm.x - nrm.z) * 23.0 + uTime * 2.1) * 0.18',
             '       + sin(nrm.y * 19.0 + uTime * 1.7) * 0.12;',
             'vWave = w;',
+            // Lateral anchor for the foam hash — breaks the concentric rings
+            'vFoamUv = nrm.xz;',
             // uTide raises/lowers the whole surface far more slowly than the
             // waves, so the waterline creeps up and down the beach.
             'transformed += nrm * (w * uAmp + uTide);',
@@ -855,7 +952,7 @@ export class Island {
         'uniform float uTide;\nattribute float aDepth;\nvarying float vDepth;',
       );
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying float vWave;\nvarying float vDepth;\nuniform float uTime;\nuniform float uTide;')
+        .replace('#include <common>', '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uSkyHorizon;')
         .replace(
           '#include <color_fragment>',
           [
@@ -885,16 +982,47 @@ export class Island {
             'float s2 = sin(d * 4.3 - uTime * 2.7 + 1.7);',
             'float s3 = sin(d * 1.5 - uTime * 1.2 + 3.4);',
             'float surf = max(max(s1, s2 * 0.85), s3 * 0.7);',
-            'float foam = edge * smoothstep(0.2, 0.9, surf);',
+            // Hash noise in the foam threshold: the three terms are pure sines
+            // of depth, so without it the surf is geometrically perfect
+            // concentric rings. Coarse cells (38) keep it from shimmering at
+            // phone DPR.
+            'float fn = fract(sin(dot(floor(vFoamUv * 38.0), vec2(12.9898, 78.233))) * 43758.5453);',
+            'float foam = edge * smoothstep(0.2, 0.9, surf + (fn - 0.5) * 0.45);',
             // A permanent wet band right at the waterline under the moving foam
             'foam = max(foam, (1.0 - smoothstep(0.0, 0.9, d)) * 0.8);',
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95,0.98,1.0), clamp(foam, 0.0, 1.0) * 0.9);',
+          ].join('\n'),
+        )
+        // Crest sparkle: tighten the specular lobe on wave tips so the sun
+        // glints off crests. COLOR-side only — displacement math untouched.
+        .replace(
+          '#include <roughnessmap_fragment>',
+          [
+            '#include <roughnessmap_fragment>',
+            'roughnessFactor = mix(roughnessFactor, 0.14, smoothstep(0.6, 1.3, vWave));',
+          ].join('\n'),
+        )
+        // Fresnel sky reflection: no envmap exists in this scene, so fake the
+        // sky bounce analytically. Grazing angles mix toward the (live) horizon
+        // colour and go opaque; looking straight down stays diffuse water and
+        // slightly more transparent over the shallows.
+        .replace(
+          '#include <opaque_fragment>',
+          [
+            'float fres = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);',
+            'outgoingLight = mix(outgoingLight, uSkyHorizon, fres * 0.55);',
+            'diffuseColor.a = mix(0.85, 0.97, fres);',
+            '#include <opaque_fragment>',
           ].join('\n'),
         );
     };
     // Bake water depth per sea vertex from the analytic terrain height — the
     // shoreline foam and shallow tint key off this. One-time maths, no raycasts.
-    const seaGeo = new THREE.SphereGeometry(this.radius + Island.SEA_OFFSET, 96, 96);
+    // Coarse tier gets 64 segments instead of 96 — pure tessellation (~19k vs
+    // ~55k tris of per-frame wave displacement); the wave MATH is untouched,
+    // so the CPU waveHeightAt mirror stays exact.
+    const seaSegs = SimpleRenderer.isLowTierDevice() ? 64 : 96;
+    const seaGeo = new THREE.SphereGeometry(this.radius + Island.SEA_OFFSET, seaSegs, seaSegs);
     {
       const sp = seaGeo.attributes.position;
       const depth = new Float32Array(sp.count);

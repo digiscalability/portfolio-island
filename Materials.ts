@@ -62,20 +62,25 @@ export class Materials {
 
   public static createGradientMap(): THREE.DataTexture {
     // Create a slightly larger RGBA gradient texture (12 steps) to reduce banding artifacts
-    // Palette tuned to soft pastels for friendly visuals
+    // NEUTRAL ramp. MeshToonMaterial treats this as irradiance, so any tint
+    // here multiplies into EVERY toonified prop's shading — the old
+    // green-pastel ramp shifted red cottages and blue mailboxes toward olive
+    // in their shadow bands. Grayscale (luminance-matched to the old ramp,
+    // slightly cool dark end for the pastel feel) keeps hue on the material
+    // colour where it belongs.
     const colors = [
-      [24, 50, 40],
-      [44, 84, 64],
-      [68, 116, 88],
-      [84, 140, 108],
-      [108, 164, 128],
-      [132, 188, 146],
-      [156, 202, 162],
-      [178, 216, 182],
-      [198, 226, 196],
-      [214, 240, 210],
-      [232, 248, 226],
-      [240, 255, 240],
+      [40, 44, 52],
+      [70, 74, 81],
+      [101, 104, 110],
+      [124, 126, 130],
+      [149, 149, 151],
+      [173, 173, 173],
+      [189, 189, 189],
+      [205, 205, 205],
+      [218, 218, 218],
+      [232, 232, 232],
+      [243, 243, 243],
+      [251, 251, 251],
     ];
     const width = colors.length;
     const data = new Uint8Array(width * 4);

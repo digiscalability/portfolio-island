@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { Island } from './Island';
@@ -46,6 +47,13 @@ export class GameScene extends THREE.Scene {
 
   // Drifting cloud pivots (rotated in update for slow orbits)
   private cloudPivots: THREE.Object3D[] = [];
+  // Shared cloud material — every cloud's blobs are merged into one mesh, so
+  // weather/time-of-day tinting is a single material write per frame
+  private cloudMat: THREE.MeshStandardMaterial | null = null;
+  private cloudWet = 0; // smoothed 0-1 overcast mix (weather flips are discrete)
+  // Fake pools of warm lamplight on the terrain (one InstancedMesh of
+  // additive discs); update() fades them in as dayFactor falls
+  private lampPoolMat: THREE.MeshBasicMaterial | null = null;
 
   // Player-centred radar tangent basis (recomputed each minimap refresh).
   // The minimap is a GTA-style local radar: north-up, player at the centre.
@@ -278,6 +286,13 @@ export class GameScene extends THREE.Scene {
   private readonly _wanderFwd2 = new THREE.Vector3();
   private readonly _wanderZ = new THREE.Vector3();
   private readonly _wanderYawQ = new THREE.Quaternion();
+  private readonly _npcRollQ = new THREE.Quaternion();
+  // Day/night grading endpoints (lerped per frame — no allocations)
+  private static readonly _ambientDay = new THREE.Color(0xfff6e8);
+  private static readonly _ambientNight = new THREE.Color(0x2c3a5e);
+  private static readonly _cloudClear = new THREE.Color(0xffffff);
+  private static readonly _cloudStorm = new THREE.Color(0x8a95a5);
+  private static readonly _cloudDusk = new THREE.Color(0xffc9a0);
   // NPCs turn to face the player within FACE_RANGE and greet within GREET_RANGE
   private static readonly NPC_FACE_RANGE = 4.5;
   private static readonly NPC_GREET_RANGE = 3.2;
@@ -512,6 +527,9 @@ export class GameScene extends THREE.Scene {
     // Place decorative assets via TownPlanner
     await this.placeAssets();
 
+    // Warm light pools under the lamps (needs both lamp populations placed)
+    this.createLampLightPools();
+
     // Scatter low-poly toon props (Blender-exported glb) correctly onto the sphere
     await this.scatterProps();
 
@@ -613,6 +631,76 @@ export class GameScene extends THREE.Scene {
     mesh.instanceMatrix.needsUpdate = true;
     this.add(mesh);
     console.log(`🌑 ${props.length} grounding shadows (1 draw call)`);
+  }
+
+  /**
+   * Fake pools of warm lamplight on the terrain under every street lamp — the
+   * night-time twin of the grounding shadows: one InstancedMesh of additive
+   * radial-gradient discs, faded in by update() as dayFactor falls. Reads as
+   * cast light without adding a single real light.
+   */
+  private createLampLightPools(): void {
+    // Island boulevard lamps are the groups named lamp_<i>; TownPlanner lamps
+    // arrive via placeAssets() in this.lamps — collect both populations.
+    const anchors: THREE.Object3D[] = [];
+    this.traverse((obj) => {
+      if (/^lamp_\d+$/.test(obj.name)) anchors.push(obj);
+    });
+    for (const lamp of this.lamps) anchors.push(lamp.group);
+    if (anchors.length === 0) return;
+
+    const size = 64;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, 'rgba(255,214,140,0.85)');
+    grad.addColorStop(0.45, 'rgba(255,190,110,0.35)');
+    grad.addColorStop(1, 'rgba(255,170,80,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      opacity: 0, // update() fades this in at night
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      // Same depth-lift trick as the grounding shadows (positional offsets
+      // float on slopes); one step nearer so pools draw over the shadow discs.
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, anchors.length);
+    mesh.name = 'lamp_light_pools';
+    mesh.renderOrder = 2;
+    mesh.frustumCulled = false;
+    (mesh.userData as Record<string, unknown>).ignoreOcclusion = true;
+
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const dir = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+    const pos = new THREE.Vector3();
+    const world = new THREE.Vector3();
+    const PLANE_NORMAL = new THREE.Vector3(0, 0, 1);
+    for (let i = 0; i < anchors.length; i++) {
+      anchors[i].getWorldPosition(world);
+      dir.copy(world).normalize();
+      const s = this.island.sampleSurfaceByDirection(dir, 0);
+      pos.copy(dir).multiplyScalar(s.position.length() + 0.03);
+      q.setFromUnitVectors(PLANE_NORMAL, s.normal);
+      scl.set(2.6, 2.6, 1);
+      mesh.setMatrixAt(i, m.compose(pos, q, scl));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    this.add(mesh);
+    this.lampPoolMat = mat;
+    console.log(`💡 ${anchors.length} lamp light pools (1 draw call)`);
   }
 
   private setupLighting(): void {
@@ -1750,6 +1838,7 @@ export class GameScene extends THREE.Scene {
       transparent: true,
       opacity: 0.92,
     });
+    this.cloudMat = cloudMat;
     const planetR = this.island ? this.island.getRadius() : 18;
     for (let i = 0; i < 10; i++) {
       const pivot = new THREE.Object3D();
@@ -1766,20 +1855,25 @@ export class GameScene extends THREE.Scene {
       const radii: number[] = [coreR];
       for (let f = 0; f < flanks; f++) radii.push(coreR * (0.5 + Math.random() * 0.3));
       let xCursor = 0;
+      // Blobs baked into ONE geometry per cloud (the per-tree merge pattern):
+      // ~40 blob meshes → 10 draws, and none in the shadow pass — with the
+      // ±17u player-following shadow box clouds almost never intersected it
+      // but were submitted to the depth pass every frame.
+      const parts: THREE.BufferGeometry[] = [];
       radii.forEach((r, idx) => {
-        const blob = new THREE.Mesh(new THREE.SphereGeometry(r, 9, 7), cloudMat);
+        const blobGeo = new THREE.SphereGeometry(r, 9, 7);
+        blobGeo.scale(1, 0.6, 1);
+        blobGeo.rotateY(Math.random() * Math.PI); // yaw only — never tilt
         if (idx === 0) {
-          blob.position.set(0, r * 0.35, 0);
+          blobGeo.translate(0, r * 0.35, 0);
         } else {
           const side = idx % 2 === 1 ? 1 : -1;
           if (idx % 2 === 1) xCursor += r * 0.9;
-          blob.position.set(side * (coreR * 0.55 + xCursor * 0.6), r * 0.32, (Math.random() - 0.5) * 0.5);
+          blobGeo.translate(side * (coreR * 0.55 + xCursor * 0.6), r * 0.32, (Math.random() - 0.5) * 0.5);
         }
-        blob.scale.y = 0.6;
-        blob.rotation.y = Math.random() * Math.PI; // yaw only — never tilt
-        blob.castShadow = true;
-        cloud.add(blob);
+        parts.push(blobGeo);
       });
+      cloud.add(new THREE.Mesh(mergeGeometries(parts, false), cloudMat));
       // One consistent cloud ceiling (tight altitude band) — a wide random
       // band read as clouds "stacked" vertically instead of a sky layer
       cloud.position.set(planetR + 6.5 + Math.random() * 1.2, 0, 0);
@@ -3161,6 +3255,8 @@ export class GameScene extends THREE.Scene {
             radius: number;
             normal: THREE.Vector3;
             nextSampleAt: number;
+            dist: number; // accumulated ground distance — waddle/bob phase
+            roll: number; // current waddle roll (eased to 0 when idle)
           };
         };
         if (!data.wander) {
@@ -3175,6 +3271,8 @@ export class GameScene extends THREE.Scene {
             radius: 0,
             normal: new THREE.Vector3(0, 1, 0),
             nextSampleAt: 0,
+            dist: 0,
+            roll: 0,
           };
         }
         const w = data.wander;
@@ -3200,7 +3298,12 @@ export class GameScene extends THREE.Scene {
             if (this._wanderAxis.lengthSq() > 1e-10) {
               this._wanderAxis.normalize();
               // ~0.5 u/s stroll on the R=18 sphere
-              w.dir.applyAxisAngle(this._wanderAxis, Math.min(0.028 * deltaTime, remaining));
+              const step = Math.min(0.028 * deltaTime, remaining);
+              w.dir.applyAxisAngle(this._wanderAxis, step);
+              // Gait phase = accumulated ground distance, so cadence tracks
+              // actual motion. (radius is 0 until the first surface sample —
+              // one frame of missed phase, invisible.)
+              w.dist += step * w.radius;
               // Travel direction (tangent) = axis × dir
               this._wanderFwd.crossVectors(this._wanderAxis, w.dir).normalize();
               moving = true;
@@ -3229,10 +3332,17 @@ export class GameScene extends THREE.Scene {
           if (gt < 0.4) hop = Math.sin((gt / 0.4) * Math.PI) * 0.25;
           else delete data.greetT0;
         }
-        // Walk bob is faster/taller than the idle breathing bob
+        // Walk bob is faster/taller than the idle breathing bob. While
+        // walking it runs on the gait-distance phase (dist×18 ≈ the old
+        // time×9 at the 0.5 u/s stroll) so footfalls stop with the feet.
         const bob = moving
-          ? (Math.sin(time * 9 + i * 1.7) + 1) * 0.03
+          ? (Math.sin(w.dist * 18 + i * 1.7) + 1) * 0.03
           : (Math.sin(time * 2 + i * 1.7) + 1) * 0.015;
+        // Waddle: roll about the local forward axis at HALF the footfall
+        // frequency (left step / right step), eased out on stopping so the
+        // body settles upright instead of freezing mid-lean.
+        const rollTarget = moving ? Math.sin(w.dist * 9 + i * 1.7) * 0.07 : 0;
+        w.roll += (rollTarget - w.roll) * Math.min(1, 12 * deltaTime);
         npc.meshRef.position
           .copy(w.dir)
           .multiplyScalar(w.radius)
@@ -3272,7 +3382,8 @@ export class GameScene extends THREE.Scene {
         }
         npc.meshRef.quaternion
           .copy(this._swayQuat)
-          .multiply(this._wanderYawQ.setFromAxisAngle(GameScene._localUp, w.yaw));
+          .multiply(this._wanderYawQ.setFromAxisAngle(GameScene._localUp, w.yaw))
+          .multiply(this._npcRollQ.setFromAxisAngle(GameScene._localForward, w.roll));
       }
 
       // Grass wind (GPU-side — just advance the shared uniform)
@@ -3565,9 +3676,42 @@ export class GameScene extends THREE.Scene {
     // Day/night + weather cycle
     if (this.envCycle) {
       this.envCycle.update(deltaTime, playerPos, time);
+      this.updateAtmosphereGrade(deltaTime);
     }
     // AFTER the cycle, which owns the sun's direction each frame
     this.updateSunShadow(playerPos);
+  }
+
+  /**
+   * Per-frame day/night + weather grading owned by GameScene: ambient retint
+   * (lamps/windows/fireflies need a dark cool floor to pop against), cloud
+   * tint/coverage, and the lamp light pools. Zero allocations.
+   */
+  private updateAtmosphereGrade(deltaTime: number): void {
+    if (!this.envCycle) return;
+    const day = this.envCycle.getDayFactor();
+    const ambient = this.lights.ambient;
+    if (ambient) {
+      // 0.22 warm by day → 0.10 cool blue at night (floor keeps shapes readable)
+      ambient.intensity = 0.1 + 0.12 * day;
+      ambient.color.lerpColors(GameScene._ambientNight, GameScene._ambientDay, day);
+    }
+    if (this.cloudMat) {
+      const w = this.envCycle.getWeather();
+      const wet = w === 'rain' ? 1 : w === 'snow' ? 0.7 : w === 'cloudy' ? 0.55 : 0;
+      // Weather flips are discrete — ease so the cloudscape doesn't pop
+      this.cloudWet += (wet - this.cloudWet) * Math.min(1, deltaTime * 0.5);
+      // Dusk proxy: dayFactor's smoothstep midpoint = sun at the horizon
+      const dusk = Math.max(0, 1 - Math.abs(day * 2 - 1));
+      this.cloudMat.color
+        .copy(GameScene._cloudClear)
+        .lerp(GameScene._cloudDusk, dusk * 0.6 * (1 - this.cloudWet))
+        .lerp(GameScene._cloudStorm, this.cloudWet);
+      this.cloudMat.opacity = 0.92 + 0.06 * this.cloudWet;
+    }
+    if (this.lampPoolMat) {
+      this.lampPoolMat.opacity = 0.55 * (1 - day);
+    }
   }
 
   /**

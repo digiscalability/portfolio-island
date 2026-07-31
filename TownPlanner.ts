@@ -159,16 +159,21 @@ export class TownPlanner {
     shade.rotation.z = Math.PI;
     shade.castShadow = true;
     lamp.add(shade);
-    // Glowing bulb
+    // Glowing bulb — isNightEmissive so EnvironmentCycle dims it by day
     const bulb = new THREE.Mesh(
       new THREE.SphereGeometry(0.15, 8, 8),
       new THREE.MeshStandardMaterial({ color: 0xfff4cc, emissive: 0xffe8a0, emissiveIntensity: 0.8 }),
     );
     bulb.position.set(0.6, 3.78, 0);
+    bulb.userData.isNightEmissive = true;
     lamp.add(bulb);
-    // Add point light
-    const light = new THREE.PointLight(0xffeeaa, 0.5, 20);
+    // Point light — isLampLight so EnvironmentCycle's night pass drives it
+    // (picked up by the cycle's late rescan; these lamps are placed after
+    // its construction). Range 7, not 20: on an r≈22 planet a range-20
+    // light reached half the village and every lit fragment paid for it.
+    const light = new THREE.PointLight(0xffeeaa, 0.5, 7, 2);
     light.position.set(0.6, 3.78, 0);
+    light.userData = { isLampLight: true };
     lamp.add(light);
 
     // Add properties expected by GameScene
