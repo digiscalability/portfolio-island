@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { startDwellTracking, trackOnce } from './Analytics';
+import { startDwellTracking, track, trackOnce } from './Analytics';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
 import { Passport } from './Passport';
 import { DeliverySystem } from './DeliverySystem';
@@ -340,6 +340,13 @@ class SimpleApp {
         this.ui.flashMessage(on ? '🌦️ Live weather on' : '🌤️ Live weather off');
       });
 
+      // Photo mode: capture the next rendered frame, brand it, preview it.
+      this.ui.setOnPhotoRequest(() => this.capturePhoto());
+
+      // ?hour= override: let a shared link show the island at a chosen time so
+      // daytime visitors can see the night art (stars/moon/fireflies/windows).
+      this.applyHourParam();
+
       // Coin counter (persisted across visits + mirrored to the cloud profile)
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
       this.scene.setOnCoinCollected((total) => {
@@ -572,7 +579,9 @@ class SimpleApp {
    * Remove existing static overlays from index.html so the simplified UI can take over
    */
   private disableLegacyUI(): void {
-    const legacyIds = ['loading-screen', 'welcome-modal', 'hud-overlay'];
+    // welcome-modal / hud-overlay were deleted from index.html; the pre-JS
+    // #loading-screen placeholder is the only static element left to retire.
+    const legacyIds = ['loading-screen'];
     legacyIds.forEach((id) => {
       const element = document.getElementById(id);
       if (element) {
@@ -602,6 +611,74 @@ class SimpleApp {
     this.scene.equipPlayerHat(hat as HatId);
     this.multiplayer?.setHat(hat as HatId);
     this.ui.showPassportComplete();
+  }
+
+  /** True while a photo capture is composing, so P/📸 don't stack requests. */
+  private capturing = false;
+
+  /**
+   * Photo mode: hide the HUD for one frame, capture the drawing buffer, brand
+   * it into a share card, and preview it. The renderer captures in-frame (no
+   * preserveDrawingBuffer) so the HUD must be hidden BEFORE the capture frame
+   * and restored after.
+   */
+  private async capturePhoto(): Promise<void> {
+    if (this.capturing) return;
+    this.capturing = true;
+    const overlay = this.ui.getOverlay();
+    const prevVis = overlay?.style.visibility ?? '';
+    try {
+      if (overlay) overlay.style.visibility = 'hidden';
+      // Let the hidden-HUD state paint, then grab the very next rendered frame.
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      const shot = await this.renderer.captureFrame();
+      if (overlay) overlay.style.visibility = prevVis;
+      if (!shot) {
+        this.ui.flashMessage('📸 Capture failed — try again.');
+        return;
+      }
+      const { composePhotoCard } = await import('./Share');
+      const card = await composePhotoCard(shot);
+      track('photo_captured');
+      this.ui.showPhotoPreview(card);
+    } catch {
+      if (overlay) overlay.style.visibility = prevVis;
+      this.ui.flashMessage('📸 Capture failed — try again.');
+    } finally {
+      this.capturing = false;
+    }
+  }
+
+  /**
+   * Apply a /?hour=<0-24> override to the day/night clock and show a revert
+   * pill. Lets a shared night link reveal the art most daytime visitors never
+   * see. The revert restores the live clock and strips the param.
+   */
+  private applyHourParam(): void {
+    try {
+      const raw = new URLSearchParams(location.search).get('hour');
+      if (raw === null) return;
+      const h = Number(raw);
+      if (!Number.isFinite(h) || h < 0 || h > 24) return;
+      const env = this.scene.getEnvironmentCycle();
+      if (!env) return;
+      env.debugHour = h;
+      const hh = Math.floor(h) % 24;
+      const label = `🕐 ${((hh + 11) % 12) + 1}${hh < 12 ? 'am' : 'pm'}`;
+      this.ui.showTimeOverridePill(label, () => {
+        env.debugHour = null;
+        try {
+          const sp = new URLSearchParams(location.search);
+          sp.delete('hour');
+          const q = sp.toString();
+          history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}`);
+        } catch {
+          /* ignore */
+        }
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   /** Open a section directly from a /?zone=<id> deep link, if present + valid. */
@@ -640,6 +717,14 @@ class SimpleApp {
           this.ui.hideCustomize();
         } else {
           this.openCustomize();
+        }
+      } else if (event.key.toLowerCase() === 'p' && !event.ctrlKey && !event.metaKey) {
+        // Photo mode — but not while typing in chat / the name field.
+        const el = document.activeElement as HTMLElement | null;
+        const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+        if (!typing) {
+          event.preventDefault();
+          void this.capturePhoto();
         }
       }
     };

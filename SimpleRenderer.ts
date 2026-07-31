@@ -491,6 +491,23 @@ export class SimpleRenderer {
     this.isRunning = false;
   }
 
+  /** One-shot photo-mode capture resolver; see captureFrame(). */
+  private pendingCapture: ((blob: Blob | null) => void) | null = null;
+
+  /**
+   * Resolve with a JPEG of the NEXT rendered frame. The canvas has no
+   * preserveDrawingBuffer (deliberate — permanent memory/perf cost), so the
+   * capture must happen in the same task as the draw, before the browser
+   * composites and the buffer is cleared. render() honours this flag right
+   * after its draw call.
+   */
+  public captureFrame(): Promise<Blob | null> {
+    return new Promise((resolve) => {
+      this.pendingCapture?.(null); // a second request supersedes an unserved one
+      this.pendingCapture = resolve;
+    });
+  }
+
   /**
    * Render a single frame
    */
@@ -516,6 +533,15 @@ export class SimpleRenderer {
       this.composer.render();
     } else {
       this.renderer.render(this.scene, this.camera);
+    }
+
+    // Photo mode: read the drawing buffer in the SAME task as the draw
+    // (toBlob snapshots the bitmap at call time; without preserveDrawingBuffer
+    // the buffer is invalid after compositing).
+    if (this.pendingCapture) {
+      const deliver = this.pendingCapture;
+      this.pendingCapture = null;
+      this.renderer.domElement.toBlob((b) => deliver(b), 'image/jpeg', 0.95);
     }
   }
 

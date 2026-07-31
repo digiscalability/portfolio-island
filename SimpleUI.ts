@@ -3,6 +3,7 @@ import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import { VOICE_MAX_MS } from './Chat';
 import { checkName } from './Moderation';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
+import { buildShareUrl, setUrlParam, share } from './Share';
 
 /**
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
@@ -60,6 +61,11 @@ export class SimpleUI {
     return this.isTouch;
   }
 
+  /** The HUD root — photo mode hides it for one frame to shoot a clean scene. */
+  getOverlay(): HTMLElement {
+    return this.overlay;
+  }
+
   constructor(id: string) {
     // Create or get overlay
     this.overlay = document.getElementById(id) as HTMLElement;
@@ -92,6 +98,7 @@ export class SimpleUI {
     this.createMuteButton();
     this.createPortfolioButton();
     this.createContactCTA();
+    this.createPhotoButton();
     this.createEmoteButton();
     this.createTouchControls();
     this.initResponsiveHud();
@@ -303,6 +310,19 @@ export class SimpleUI {
     });
     cta.addEventListener('click', () => modal.remove());
     modal.appendChild(cta);
+    // The single highest-intent share moment in the app — the visitor just
+    // finished the whole tour and is being congratulated. Hand them the link.
+    const shareRow = document.createElement('div');
+    shareRow.style.cssText = 'margin-top:12px;';
+    shareRow.appendChild(
+      this.makeShareButton('📣 Share the island', {
+        surface: 'passport_complete',
+        url: buildShareUrl(),
+        title: 'DigiScalability Life Island',
+        text: 'I explored every zone of this 3D portfolio island and earned the Founder’s Crown 👑 — take the tour:',
+      }),
+    );
+    modal.appendChild(shareRow);
     trackOnce('passport_complete');
     this.overlay.appendChild(modal);
   }
@@ -347,6 +367,36 @@ export class SimpleUI {
     close.addEventListener('click', () => modal.remove());
     modal.appendChild(close);
     return modal;
+  }
+
+  /**
+   * One share button, consistent everywhere. Calls Share.share() and toasts the
+   * outcome the user can't otherwise see (clipboard copy); native sheet and
+   * user-dismissal need no follow-up noise.
+   */
+  private makeShareButton(
+    label: string,
+    opts: { surface: string; url: string; title?: string; text?: string },
+  ): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    Object.assign(btn.style, {
+      padding: '9px 16px',
+      borderRadius: '10px',
+      border: '1px solid rgba(120,160,255,0.45)',
+      background: 'rgba(80,130,255,0.18)',
+      color: '#cfe0ff',
+      fontSize: '13.5px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    btn.addEventListener('click', () => {
+      void share(opts).then((outcome) => {
+        if (outcome === 'copied') this.toast('🔗 Link copied — paste it anywhere!');
+        else if (outcome === 'failed') this.toast('Could not share on this device.');
+      });
+    });
+    return btn;
   }
 
   /** Escape user-provided text before it goes into innerHTML. Guestbook notes
@@ -894,6 +944,144 @@ export class SimpleUI {
     this.overlay.appendChild(btn);
   }
 
+  /** Photo mode entry — the game loop owns the actual capture (renderer flag). */
+  private onPhotoRequest: (() => void) | null = null;
+  public setOnPhotoRequest(fn: () => void): void {
+    this.onPhotoRequest = fn;
+  }
+
+  /** 📸 pill in the top-right conversion column (below Work-with-me). */
+  private createPhotoButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = this.isTouch ? '📸' : '📸 P';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 202px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      background: 'rgba(12, 16, 28, 0.72)',
+      border: '1px solid rgba(255,255,255,0.22)',
+      color: 'white',
+      padding: '7px 12px',
+      borderRadius: '999px',
+      fontSize: '13px',
+      fontWeight: '600',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onPhotoRequest?.();
+    });
+    this.makeHudButtonAccessible(btn, 'Take a photo of the island');
+    this.overlay.appendChild(btn);
+  }
+
+  /** Object URL of the previewed photo — revoked when replaced or closed. */
+  private photoUrl: string | null = null;
+
+  /**
+   * Photo preview modal: the composited share card with Share / Download.
+   * The buttons are fresh user gestures, which keeps iOS's share-sheet
+   * transient-activation requirement satisfied (capture happened frames ago).
+   */
+  showPhotoPreview(card: Blob): void {
+    if (this.photoUrl) URL.revokeObjectURL(this.photoUrl);
+    this.photoUrl = URL.createObjectURL(card);
+    const modal = this.buildCenteredModal('min(440px, calc(100vw - 32px))');
+    const closeX = modal.querySelector('button');
+    closeX?.addEventListener('click', () => {
+      if (this.photoUrl) URL.revokeObjectURL(this.photoUrl);
+      this.photoUrl = null;
+    });
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 10px;color:#8a9bff;font-size:18px;">📸 Your island shot</h2>
+       <img src="${this.photoUrl}" alt="Island photo" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`,
+    );
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:10px;justify-content:center;flex-wrap:wrap;';
+    const file = new File([card], 'life-island.jpg', { type: 'image/jpeg' });
+    // Plain button (not makeShareButton) so the file-attached share fires once.
+    const shareBtn = document.createElement('button');
+    shareBtn.textContent = '📣 Share photo';
+    Object.assign(shareBtn.style, {
+      padding: '9px 16px',
+      borderRadius: '10px',
+      border: '1px solid rgba(120,160,255,0.45)',
+      background: 'rgba(80,130,255,0.18)',
+      color: '#cfe0ff',
+      fontSize: '13.5px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    shareBtn.addEventListener('click', () => {
+      void share({
+        surface: 'photo',
+        url: buildShareUrl(),
+        title: 'DigiScalability Life Island',
+        text: 'Snapped on the DigiScalability Life Island 🏝️ — walk around it yourself:',
+        file,
+      }).then((outcome) => {
+        if (outcome === 'copied') this.toast('🔗 Link copied — the photo saved via Download.');
+        else if (outcome === 'failed') this.toast('Could not share on this device.');
+      });
+    });
+    const dl = document.createElement('a');
+    dl.textContent = '⬇️ Download';
+    dl.href = this.photoUrl;
+    dl.download = 'life-island.jpg';
+    Object.assign(dl.style, {
+      padding: '9px 16px',
+      borderRadius: '10px',
+      border: '1px solid rgba(255,255,255,0.25)',
+      background: 'rgba(255,255,255,0.08)',
+      color: '#fff',
+      fontSize: '13.5px',
+      fontWeight: '600',
+      textDecoration: 'none',
+    });
+    row.appendChild(shareBtn);
+    row.appendChild(dl);
+    modal.appendChild(row);
+    this.overlay.appendChild(modal);
+  }
+
+  /**
+   * "Time travelled" pill for ?hour= visitors — bottom-center, tap to return
+   * to the live clock. The revert callback clears debugHour + strips the param.
+   */
+  showTimeOverridePill(label: string, onRevert: () => void): void {
+    const pill = document.createElement('div');
+    pill.textContent = `${label} — tap to return to live time`;
+    Object.assign(pill.style, {
+      position: 'absolute',
+      bottom: 'calc(var(--sab, 0px) + 64px)',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      background: 'rgba(10, 14, 30, 0.82)',
+      border: '1px solid rgba(140,160,255,0.4)',
+      color: '#dbe4ff',
+      padding: '8px 16px',
+      borderRadius: '999px',
+      fontSize: '13px',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      zIndex: '1300',
+      boxShadow: '0 4px 14px rgba(0,0,0,0.4)',
+    });
+    pill.addEventListener('click', () => {
+      onRevert();
+      pill.remove();
+      this.toast('🕐 Back to live island time.');
+    });
+    this.overlay.appendChild(pill);
+  }
+
   private togglePortfolioMenu(): void {
     if (this.portfolioMenuDiv) {
       this.portfolioMenuDiv.remove();
@@ -1419,50 +1607,55 @@ export class SimpleUI {
           📬 Get in touch</button>
       </div>`;
 
+    // Explicit dismiss button so the pitch stays put until the visitor chooses
+    // to leave it (moving with WASD no longer evaporates it).
+    const exploreBtn = `
+      <button data-dismiss="1" style="width:100%; padding:11px 14px; margin:0 0 12px; border:none; border-radius:10px;
+        background:linear-gradient(135deg,#12b76a,#0e9f6e); color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
+        🧭 Explore the island →</button>`;
+
     this.welcomeDiv.innerHTML = returning
       ? `<h2 style="margin: 0 0 14px 0; color: #4CAF50;">👋 Welcome back!</h2>
          ${ctaRow}
-         <p style="margin:0; font-size:12px; color:#9aa;">…or ${this.isTouch ? 'tap anywhere' : 'press any key'} to keep exploring.</p>`
+         <p style="margin:0; font-size:12px; color:#9aa;">Dive back in — this closes on its own.</p>`
       : `
       <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
       <p style="margin: 0 0 18px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI-powered products. This is my portfolio,
         hand-built in Three.js, that you can actually walk through.</p>
       ${ctaRow}
-      <p style="margin: 0 0 6px 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
-      <p style="margin: 0; font-size: 12px; color: #7fbf8a;">…or just start exploring — ${this.isTouch ? 'tap anywhere' : 'press any key'}.</p>
+      ${exploreBtn}
+      <p style="margin: 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
     `;
 
-    // CTA buttons: track, navigate to the section, then dismiss. stopPropagation
-    // so the outside-click dismiss below doesn't double-fire.
+    // Dismiss only on an explicit choice — a CTA, the Explore button, or
+    // Escape. The old "any key / click-outside" dismiss evaporated the pitch
+    // the instant a visitor pressed W to move.
+    const onEscape = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') closeWelcome();
+    };
+    const closeWelcome = () => {
+      this.hideWelcome();
+      document.removeEventListener('keydown', onEscape);
+    };
+
     this.welcomeDiv.querySelectorAll('button[data-cta]').forEach((b) => {
       b.addEventListener('click', (e) => {
         e.stopPropagation();
         const cta = (b as HTMLElement).dataset.cta!;
         track('welcome_cta', { cta });
-        this.hideWelcome();
+        closeWelcome();
         this.showZonePanel({ id: cta, name: cta });
       });
     });
+    this.welcomeDiv.querySelector('button[data-dismiss]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('welcome_cta', { cta: 'explore' });
+      closeWelcome();
+    });
 
-    // Dismiss on any key ("start exploring") or a click OUTSIDE the modal.
-    // Two exemptions: keyboard activation of a focused CTA (Enter/Space) and
-    // clicks landing inside the modal — both must reach the CTA handler first.
-    const hideWelcome = (ev?: Event) => {
-      if (ev?.type === 'keydown' && ev.target instanceof HTMLButtonElement) return;
-      if (
-        ev?.type === 'click' &&
-        ev.target instanceof Node &&
-        this.welcomeDiv?.contains(ev.target)
-      )
-        return;
-      this.hideWelcome();
-      document.removeEventListener('keydown', hideWelcome);
-      document.removeEventListener('click', hideWelcome);
-    };
-    document.addEventListener('keydown', hideWelcome);
-    document.addEventListener('click', hideWelcome);
-    if (returning) window.setTimeout(hideWelcome, 2600);
+    document.addEventListener('keydown', onEscape);
+    if (returning) window.setTimeout(closeWelcome, 2600);
   }
 
   /**
@@ -1790,8 +1983,10 @@ export class SimpleUI {
     const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))');
     let rowsHtml: string;
     if (peers.length === 0) {
-      rowsHtml = `<p style="margin:12px 0;font-size:14px;color:#aab;">You're the only one exploring right now.
-        Share the link and bring a friend! 👋</p>`;
+      // This copy begged visitors to share for months without giving them a
+      // button. The invite button below the rows is the actual invite path.
+      rowsHtml = `<p style="margin:12px 0;font-size:14px;color:#aab;">You're the only one exploring right now —
+        invite someone and wander together. 👋</p>`;
     } else {
       rowsHtml = peers
         .map(
@@ -1821,6 +2016,17 @@ export class SimpleUI {
           : 'rgba(255,255,255,0.08)';
       });
     });
+    const inviteRow = document.createElement('div');
+    inviteRow.style.cssText = 'margin-top:12px;';
+    inviteRow.appendChild(
+      this.makeShareButton('💌 Invite a friend', {
+        surface: 'roster',
+        url: buildShareUrl(),
+        title: 'DigiScalability Life Island',
+        text: 'Come wander around this 3D portfolio island with me 🏝️',
+      }),
+    );
+    modal.appendChild(inviteRow);
     trackOnce('roster_opened');
     this.overlay.appendChild(modal);
   }
@@ -2811,6 +3017,24 @@ export class SimpleUI {
       }
     });
 
+    // Share footer — the ?zone= deep link has round-tripped for months without
+    // a single UI element ever advertising it. Every panel now hands the
+    // visitor the link.
+    if (zid !== 'unknown') {
+      const footer = document.createElement('div');
+      footer.style.cssText =
+        'margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.12);';
+      footer.appendChild(
+        this.makeShareButton('🔗 Share this zone', {
+          surface: `zone_${zid}`,
+          url: buildShareUrl({ zone: zid }),
+          title: 'DigiScalability Life Island',
+          text: `Walk through the ${String(zone?.name ?? zid)} zone of this 3D portfolio island:`,
+        }),
+      );
+      this.zonePanelDiv.appendChild(footer);
+    }
+
     // Add close button
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '×';
@@ -2837,12 +3061,9 @@ export class SimpleUI {
     this.overlay.appendChild(this.zonePanelDiv);
 
     // Reflect the open zone in the URL so a visitor can copy/share a deep link
-    // (e.g. /?zone=projects); cleared again on close.
-    try {
-      history.replaceState(null, '', `${location.pathname}?zone=${encodeURIComponent(zid)}`);
-    } catch {
-      /* ignore */
-    }
+    // (e.g. /?zone=projects); cleared again on close. Param-scoped so it never
+    // clobbers ?hour=/?theme=.
+    setUrlParam('zone', zid);
 
     // Add keyboard listener for escape
     const escapeHandler = (e: KeyboardEvent) => {
@@ -2861,12 +3082,9 @@ export class SimpleUI {
     if (this.zonePanelDiv) {
       this.zonePanelDiv.remove();
       this.zonePanelDiv = null;
-      // Drop the ?zone= deep link when the panel closes.
-      try {
-        if (location.search) history.replaceState(null, '', location.pathname);
-      } catch {
-        /* ignore */
-      }
+      // Drop ONLY the ?zone= deep link when the panel closes — the old
+      // whole-search wipe also destroyed ?hour=/?theme=.
+      setUrlParam('zone', null);
     }
   }
 

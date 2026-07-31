@@ -36,12 +36,12 @@
       property="og:description"
       content="A hand-built 3D island you can actually explore: walk the planet, meet the townsfolk, race the boats and cars, and discover the work of a Melbourne venture studio."
     />
-    <meta property="og:image" content="https://island.digiscalability.com/og-cover.jpg" />
+    <meta property="og:image" content="https://island.digiscalability.com/og-cover-v2.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="A low-poly 3D island planet with a village, ocean and mountains."
+      content="DigiScalability Life Island — an explorable low-poly 3D portfolio planet with a village, ocean and mountains."
     />
 
     <!-- X / Twitter -->
@@ -51,7 +51,11 @@
       name="twitter:description"
       content="A hand-built 3D island you can actually explore — walk the planet, meet the townsfolk, and discover the work."
     />
-    <meta name="twitter:image" content="https://island.digiscalability.com/og-cover.jpg" />
+    <meta name="twitter:image" content="https://island.digiscalability.com/og-cover-v2.jpg" />
+    <meta
+      name="twitter:image:alt"
+      content="DigiScalability Life Island — an explorable 3D portfolio planet."
+    />
 
     <!-- Structured data: help search + AI crawlers understand this is Abbas's
          portfolio under DigiScalability. Verify the name / social links are how
@@ -330,40 +334,12 @@
       <div class="loading-spinner"></div>
     </div>
 
-    <!-- Welcome Modal -->
-    <div id="welcome-modal" class="hidden">
-      <h1>Welcome to Life Island!</h1>
-      <p>
-        Explore a vibrant 3D world inspired by messenger.abeto.co.
-        Walk around the spherical planet, meet NPCs, and discover hidden areas.
-      </p>
-      <button id="start-button">START ADVENTURE</button>
-    </div>
-
-    <!-- HUD Overlay -->
-    <div id="hud-overlay" class="hidden">
-      <!-- FPS Counter -->
-      <div id="fps-counter">FPS: 60</div>
-
-      <!-- Quest Tracker -->
-      <div id="quest-tracker">
-        <h3>QUEST</h3>
-        <p>🎯 Explore the island</p>
-        <p>🏠 Visit 5 houses</p>
-        <p>🌳 Find the golden tree</p>
-      </div>
-
-      <!-- Controls Guide -->
-      <div id="controls-guide">
-        <h3>CONTROLS</h3>
-        <ul>
-          <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> - Move</li>
-          <li><kbd>SPACE</kbd> - Jump</li>
-          <li><kbd>SHIFT</kbd> - Run</li>
-          <li><kbd>Mouse</kbd> - Look around</li>
-        </ul>
-      </div>
-    </div>
+    <!--
+      (Removed: the old static #welcome-modal and #hud-overlay placeholders —
+      dead markup the app replaced at runtime, one still name-dropping a template
+      it was scaffolded from. Real no-JS/crawler content lives in the <noscript>
+      + JSON-LD + boot-fallback below.)
+    -->
 
     <!--
       Fallback surface. Shown when WebGL is unavailable (locked-down laptops,
