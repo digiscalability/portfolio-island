@@ -3135,8 +3135,8 @@ export class GameScene extends THREE.Scene {
         Math.sin(latitude),
         Math.sin(angle) * cosLat,
       ).normalize();
-      // Shared spacing registry with Island's own props — stops clustering
-      dir = this.island.claimDir(dir, clearArc);
+      // Shared spacing registry + keep OFF the streets (roadside is fine, on-road isn't)
+      dir = this.island.claimOffStreet(dir, clearArc);
       let R = this.island.getRadius();
       try {
         R = this.island.sampleSurfaceByDirection(dir, 0).position.length();
@@ -3190,7 +3190,7 @@ export class GameScene extends THREE.Scene {
         Math.sin(latitude),
         Math.sin(angle) * cosLat,
       ).normalize();
-      dir = this.island.claimDir(dir, clearArc); // shared anti-cluster registry
+      dir = this.island.claimOffStreet(dir, clearArc); // shared anti-cluster registry + off streets
       // Seat on the displaced terrain, not the ideal sphere
       let R = this.island.getRadius();
       try {

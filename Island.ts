@@ -1159,7 +1159,7 @@ export class Island {
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
-      const dir = this.claimDir(this.dirAt(lon, lat), 0.09);
+      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.09);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -1207,7 +1207,7 @@ export class Island {
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
       const [lon, lat] = HOUSE_SITES[i];
-      const dir = this.claimDir(this.dirAt(lon, lat), 0.1);
+      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.1);
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -1488,18 +1488,24 @@ export class Island {
     for (let i = 0; i < mailboxCount; i++) {
       const sampled = mailboxSources[mailboxIndices[i]];
       if (!sampled) continue;
-      const tangentSeed = new THREE.Vector3().crossVectors(
-        sampled.normal,
-        new THREE.Vector3(0, 1, 0),
-      );
-      if (tangentSeed.lengthSq() < 1e-6) tangentSeed.set(1, 0, 0);
-      tangentSeed.normalize();
-      const spinAngle = Math.random() * Math.PI * 2;
-      const tangent = tangentSeed.applyAxisAngle(sampled.normal, spinAngle).normalize();
-      const approx = sampled.position
-        .clone()
-        .add(tangent.multiplyScalar(0.8 + Math.random() * 0.4));
-      const placement = this.sampleSurfacePosition(approx, 0.03); // NPC feet on the ground (0.25 floated them)
+      // Put the mailbox at the ROADSIDE by the house: step ~2.6u toward the
+      // nearest street (clears the ~2u-half-width house footprint so it never
+      // sits inside the walls — the old 0.8-1.2u offset buried it in the house),
+      // then slide off the pavement and claim the spot so it can't collide.
+      const houseDir = sampled.position.clone().normalize();
+      const street = this.nearestStreetDir(houseDir, 0.7);
+      const tangent = new THREE.Vector3();
+      if (street) tangent.copy(street).addScaledVector(houseDir, -street.dot(houseDir));
+      if (tangent.lengthSq() < 1e-6) {
+        tangent.crossVectors(sampled.normal, new THREE.Vector3(0, 1, 0));
+        if (tangent.lengthSq() < 1e-6) tangent.set(1, 0, 0);
+        tangent.applyAxisAngle(sampled.normal, Math.random() * Math.PI * 2);
+      }
+      tangent.normalize();
+      let mbDir = houseDir.clone().addScaledVector(tangent, 2.6 / this.radius).normalize();
+      mbDir = this.pushOffStreet(mbDir);
+      mbDir = this.claimDir(mbDir, 0.05);
+      const placement = this.sampleSurfaceByDirection(mbDir, 0.03);
 
       const mb = new THREE.Group();
       // Post
@@ -1530,9 +1536,14 @@ export class Island {
         placement.normal,
       );
       mb.quaternion.copy(q);
-      mb.quaternion.premultiply(
-        new THREE.Quaternion().setFromAxisAngle(placement.normal, Math.random() * Math.PI * 2),
-      );
+      // Face the mailbox toward the road (a roadside mailbox addresses the street).
+      if (street) {
+        this.faceObjectToward(mb, placement.normal, street.clone().multiplyScalar(this.radius));
+      } else {
+        mb.quaternion.premultiply(
+          new THREE.Quaternion().setFromAxisAngle(placement.normal, Math.random() * Math.PI * 2),
+        );
+      }
       mb.name = `mailbox_${i}`;
       mb.castShadow = true;
       mb.receiveShadow = true;
@@ -2047,7 +2058,7 @@ export class Island {
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
       const [sLon, sLat] = STALL_SITES[i];
-      const pos = this.claimDir(this.dirAt(sLon, sLat), 0.06).multiplyScalar(this.radius);
+      const pos = this.claimOffStreet(this.dirAt(sLon, sLat), 0.06).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       // Counter at ~0.66u working height for the 1.56u vendors
@@ -2137,7 +2148,7 @@ export class Island {
     ];
     for (let i = 0; i < WORK_SITES.length; i++) {
       const block = this.createConstructionBlock();
-      const pos = this.claimDir(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
+      const pos = this.claimOffStreet(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
       block.quaternion.copy(
@@ -3046,6 +3057,27 @@ export class Island {
       }
     }
     return best ? best.clone() : null;
+  }
+
+  /**
+   * Reserve a conflict-free surface spot that ALSO sits off the streets.
+   * Drop-in replacement for claimDir with the same (dir, arc)→dir signature:
+   * slide off any pavement first, claimDir to clear other props, then slide off
+   * again in case claimDir's jitter nudged the pick back onto a path. Every
+   * hand-placed structure goes through this so nothing lands on a road and
+   * nothing double-claims a position. Returns a fresh unit direction.
+   */
+  public claimOffStreet(rawDir: THREE.Vector3, clearArc: number): THREE.Vector3 {
+    let dir = rawDir.clone().normalize();
+    if (this.isNearStreet(dir)) dir = this.pushOffStreet(dir);
+    dir = this.claimDir(dir, clearArc);
+    if (this.isNearStreet(dir)) {
+      dir = this.pushOffStreet(dir);
+      // Re-claim at the pushed spot so it's REGISTERED — otherwise the next prop
+      // doesn't know this one moved off the road and can settle on top of it.
+      dir = this.claimDir(dir, clearArc);
+    }
+    return dir;
   }
 
   /**
