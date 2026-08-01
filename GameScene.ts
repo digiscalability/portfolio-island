@@ -449,6 +449,7 @@ export class GameScene extends THREE.Scene {
       [/^town_fountain$/, 2.3],
       [/^lighthouse$/, 2.0], // solid tower base — was walk-through
       [/^pillar_\d+$/, 0.45], // hub lantern pillars — were walk-through
+      [/^gatepost_\d+$/, 0.4], // district entry-gate posts (straddle the avenue)
     ];
     this.island.mesh.updateMatrixWorld(true);
     let colliderCount = 0;

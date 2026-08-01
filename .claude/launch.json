@@ -3,12 +3,10 @@
   "configurations": [
     {
       "name": "portfolio-island-dev",
-      "runtimeExecutable": "npm",
+      "runtimeExecutable": "cmd",
       "runtimeArgs": [
-        "--prefix",
-        "C:\\claudeSessions\\githubCLONES\\portfolio-island",
-        "run",
-        "dev"
+        "/c",
+        "cd /d C:\\claudeSessions\\githubCLONES\\portfolio-island && npm run dev"
       ],
       "port": 5173
     }

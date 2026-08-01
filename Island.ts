@@ -16,7 +16,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 import { Materials } from './Materials';
 import { SimpleRenderer } from './SimpleRenderer';
 import { isRealTheme } from './Theme';
-import { RING_DISTRICT_LONS, ZONE_LAT, DISTRICT_SHIFT, districtAccentAt } from './Districts';
+import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, DISTRICT_SHIFT, districtAccentAt } from './Districts';
 import { NPC } from './NPC';
 import TextureGenerator from './TextureGenerator';
 
@@ -1547,15 +1547,28 @@ export class Island {
 
     // Mailboxes: seed around homes/structures instead of a perfect orbit
     const mailboxes = new THREE.Group();
-    const mailboxSources = houseSamples.length ? houseSamples : buildingSamples;
-    const mailboxIndices = mailboxSources.map((_, idx) => idx);
-    for (let i = mailboxIndices.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [mailboxIndices[i], mailboxIndices[j]] = [mailboxIndices[j], mailboxIndices[i]];
-    }
-    const mailboxCount = Math.min(6, mailboxIndices.length);
+    // Spread the 6 mailboxes ONE-PER-DISTRICT (with a second in the cottage
+    // village, which has the most homes) instead of clustering all of them in
+    // Personal off houseSamples. Because deliveries are anchored to the
+    // mailboxes, this scatters pickups across the whole island so a courier
+    // run actually tours the map rather than pacing one street. Each site is
+    // sampled at the plaza roadside; the per-mailbox stepping below still
+    // slides it clear of the pavement and claims the spot.
+    const MAILBOX_SITES: Array<[number, number]> = [
+      [0.30, 1.30], // welcome — near the spawn plaza
+      [6.10, 0.42], // professional
+      [1.30 + SHIFT_PROJECTS, 0.42], // projects
+      [2.30 + SHIFT_PERSONAL, 0.50], // personal (village)
+      [2.75 + SHIFT_PERSONAL, 0.40], // personal (second)
+      [3.80 + SHIFT_CONTACT, 0.42], // contact
+    ];
+    const mailboxSources = MAILBOX_SITES.map(([lon, lat]) => {
+      const s = this.sampleSurfaceByDirection(this.claimOffStreet(this.dirAt(lon, lat), 0.1), 0.0);
+      return { position: s.position.clone(), normal: s.normal.clone() };
+    });
+    const mailboxCount = mailboxSources.length;
     for (let i = 0; i < mailboxCount; i++) {
-      const sampled = mailboxSources[mailboxIndices[i]];
+      const sampled = mailboxSources[i];
       if (!sampled) continue;
       // Put the mailbox at the ROADSIDE by the house: step ~2.6u toward the
       // nearest street (clears the ~2u-half-width house footprint so it never
@@ -1888,26 +1901,40 @@ export class Island {
       });
     }
 
-    // Floating sparkles around the planet surface
-    const particles = new THREE.Group();
-    particles.name = 'ambient_sparkles';
+    // Floating sparkles around the planet surface — ONE InstancedMesh (was 30
+    // separate meshes, each with its own geometry). They're purely decorative
+    // and never animated per frame (GameScene only toggles the whole object's
+    // .visible by camera distance, keyed off its name), so the scattered
+    // positions bake straight into instance matrices. frustumCulled=false: the
+    // instances wrap the entire planet shell, so all-or-nothing culling would
+    // only ever flicker the layer on/off — cheaper to just always draw it.
+    const SPARKLE_COUNT = 30;
     const sparkleMat = new THREE.MeshBasicMaterial({
       color: 0xffffee,
       transparent: true,
       opacity: 0.55,
     });
-    for (let i = 0; i < 30; i++) {
-      const sparkle = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 4), sparkleMat);
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(Math.random() * 2 - 1);
-      const r = this.radius + 0.3 + Math.random() * 2;
-      sparkle.position.set(
-        r * Math.sin(phi) * Math.cos(theta),
-        r * Math.sin(phi) * Math.sin(theta),
-        r * Math.cos(phi),
-      );
-      sparkle.userData = { baseY: sparkle.position.y, phase: Math.random() * Math.PI * 2 };
-      particles.add(sparkle);
+    const particles = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.04, 4, 4),
+      sparkleMat,
+      SPARKLE_COUNT,
+    );
+    particles.name = 'ambient_sparkles';
+    particles.frustumCulled = false;
+    {
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < SPARKLE_COUNT; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(Math.random() * 2 - 1);
+        const r = this.radius + 0.3 + Math.random() * 2;
+        m.makeTranslation(
+          r * Math.sin(phi) * Math.cos(theta),
+          r * Math.sin(phi) * Math.sin(theta),
+          r * Math.cos(phi),
+        );
+        particles.setMatrixAt(i, m);
+      }
+      particles.instanceMatrix.needsUpdate = true;
     }
 
     // Tiered fountain for the town square
@@ -2234,7 +2261,7 @@ export class Island {
       'Insta Services',
     ];
     for (let i = 0; i < WORK_SITES.length; i++) {
-      const block = this.createConstructionBlock(PROJECT_LABELS[i]);
+      const block = this.createConstructionBlock(PROJECT_LABELS[i], i === 0);
       const pos = this.claimOffStreet(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
@@ -2351,27 +2378,36 @@ export class Island {
     const signs = new THREE.Group();
     // (small floating sign planes removed for the same reason)
 
-    // Add dust/pollen particles for ambiance
-    const dustParticles = new THREE.Group();
-    dustParticles.name = 'ambient_dust';
+    // Add dust/pollen particles for ambiance — ONE InstancedMesh (was 80
+    // separate meshes). Same rationale as the sparkles above: decorative,
+    // never animated, whole-object visibility toggle keyed off the name.
+    const DUST_COUNT = 80;
     const dustMat = new THREE.MeshBasicMaterial({
       color: 0xeeddaa,
       transparent: true,
       opacity: 0.35,
     });
-    for (let i = 0; i < 80; i++) {
-      const dust = new THREE.Mesh(new THREE.SphereGeometry(0.03, 4, 4), dustMat);
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(Math.random() * 2 - 1);
-      const r = this.radius + 0.5 + Math.random() * 4;
-      dust.position.set(
-        r * Math.sin(phi) * Math.cos(theta),
-        r * Math.sin(phi) * Math.sin(theta),
-        r * Math.cos(phi),
-      );
-      dust.userData = { baseY: dust.position.y, phase: Math.random() * Math.PI * 2 };
-      dust.name = 'dust';
-      dustParticles.add(dust);
+    const dustParticles = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.03, 4, 4),
+      dustMat,
+      DUST_COUNT,
+    );
+    dustParticles.name = 'ambient_dust';
+    dustParticles.frustumCulled = false;
+    {
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < DUST_COUNT; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(Math.random() * 2 - 1);
+        const r = this.radius + 0.5 + Math.random() * 4;
+        m.makeTranslation(
+          r * Math.sin(phi) * Math.cos(theta),
+          r * Math.sin(phi) * Math.sin(theta),
+          r * Math.cos(phi),
+        );
+        dustParticles.setMatrixAt(i, m);
+      }
+      dustParticles.instanceMatrix.needsUpdate = true;
     }
 
     // Park benches near zone plazas
@@ -2381,6 +2417,7 @@ export class Island {
       [0.8, 1.36, 1.5708], [3.9, 1.36, 1.5708],       // welcome / spawn
       [2.44 + SHIFT_PERSONAL, 0.40, 0.4636], [2.60 + SHIFT_PERSONAL, 0.40, 0.4636], [2.51 + SHIFT_PERSONAL, 0.56, 0.4636], // village
       [6.16, 0.40, 0.4636], [0.13, 0.42, 0.4636],     // professional
+      [1.18 + SHIFT_PROJECTS, 0.42, 0.4636], [1.32 + SHIFT_PROJECTS, 0.42, 0.4636],   // projects (was benchless)
       [3.70 + SHIFT_CONTACT, 0.42, 0.4636], [3.85 + SHIFT_CONTACT, 0.42, 0.4636],     // market
     ];
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
@@ -2487,10 +2524,113 @@ export class Island {
       welcomePlaza.add(pillar);
     }
 
+    // District entry gates — a framed arch at the head of each avenue where it
+    // meets a ring district. Two stone posts straddle the path, a crossbeam
+    // carries the district name, and an accent lantern crowns it. Same stone
+    // kit as the hub pillars, so the town reads as one set of streets with
+    // signed neighbourhoods rather than four disconnected clusters. Placed a
+    // little POLEWARD of each plaza (lat ZONE_LAT + 0.16) so you walk UNDER the
+    // sign entering a district — and well north of the race lines (lat 0.38 /
+    // 0.12) so a gate never fouls a lap.
+    const gates = new THREE.Group();
+    const gateStone = Materials.createTrimMaterial(0xb2a894);
+    const RING_DISTRICTS = DISTRICTS.filter((d) => d.id !== 'welcome');
+    const GATE_HALF_WIDTH = 2.1; // post centres 4.2u apart — frames the ~2u avenue with clearance
+    for (let gi = 0; gi < RING_DISTRICTS.length; gi++) {
+      const d = RING_DISTRICTS[gi];
+      const gate = new THREE.Group();
+      gate.name = `district_gate_${gi}`;
+      // Posts at local ±X. After the gate is faced down the avenue below, local
+      // +X becomes "across the street", so the two posts straddle the path.
+      const postGeom = new THREE.CylinderGeometry(0.18, 0.26, 3.0, 8);
+      const capGeom = new THREE.BoxGeometry(0.5, 0.18, 0.5);
+      for (let side = 0; side < 2; side++) {
+        const post = new THREE.Group();
+        const shaft = new THREE.Mesh(postGeom, gateStone);
+        shaft.position.y = 1.5;
+        shaft.castShadow = true;
+        post.add(shaft);
+        const cap = new THREE.Mesh(capGeom, gateStone);
+        cap.position.y = 3.05;
+        post.add(cap);
+        post.position.set(side === 0 ? -GATE_HALF_WIDTH : GATE_HALF_WIDTH, 0, 0);
+        post.name = `gatepost_${gi * 2 + side}`; // GameScene registers a collider off this name
+        gate.add(post);
+      }
+      // Crossbeam spanning the posts
+      const beam = new THREE.Mesh(
+        new THREE.BoxGeometry(GATE_HALF_WIDTH * 2 + 0.5, 0.4, 0.4),
+        gateStone,
+      );
+      beam.position.set(0, 3.2, 0);
+      beam.castShadow = true;
+      gate.add(beam);
+      // Name board on the beam — a DoubleSide CanvasTexture so it reads both
+      // approaching (from the pole) and leaving (from the plaza).
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const accentHex = `#${d.accent.toString(16).padStart(6, '0')}`;
+        ctx.fillStyle = 'rgba(20,26,38,0.9)';
+        ctx.fillRect(0, 0, 512, 128);
+        ctx.strokeStyle = accentHex;
+        ctx.lineWidth = 6;
+        ctx.strokeRect(5, 5, 502, 118);
+        ctx.fillStyle = '#f2f6ff';
+        ctx.font = 'bold 64px system-ui, "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(d.radar, 256, 68);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const board = new THREE.Mesh(
+          new THREE.PlaneGeometry(3.0, 0.75),
+          // Unlit so the name stays legible at any hour (matches the project
+          // plaques' sprites); DoubleSide so it reads from both directions.
+          new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }),
+        );
+        board.position.set(0, 3.2, 0.22);
+        board.name = 'gate-board';
+        board.raycast = () => {}; // decorative — skip interaction/camera rays
+        gate.add(board);
+      }
+      // Accent lantern crowning the gate — night-emissive, NO PointLight (the
+      // rig is already at its 16-light budget).
+      const lantern = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 12, 12),
+        new THREE.MeshStandardMaterial({
+          color: d.accent,
+          emissive: d.accent,
+          emissiveIntensity: 0.9,
+          roughness: 0.4,
+        }),
+      );
+      lantern.position.set(0, 3.65, 0);
+      lantern.userData.isNightEmissive = true;
+      gate.add(lantern);
+      // Seat at the avenue head, then turn so +Z (and the ±X post span) line up
+      // with the street: face the gate toward its plaza.
+      const placed = this.placeObjectOnSurface(
+        gate,
+        this.dirAt(d.lon, ZONE_LAT + 0.16).multiplyScalar(this.radius),
+        0.0,
+        true,
+      );
+      this.faceObjectToward(
+        gate,
+        placed.normal,
+        this.dirAt(d.lon, ZONE_LAT).multiplyScalar(this.radius),
+      );
+      gates.add(gate);
+    }
+
     // Group everything and attach to the main mesh as children so the island remains dominant
     const root = new THREE.Group();
     root.add(mesh);
     root.add(welcomePlaza);
+    root.add(gates);
     root.add(sea);
     root.add(grass);
     root.add(pathGroup);
@@ -3312,18 +3452,35 @@ export class Island {
     return group;
   }
 
-  private createConstructionBlock(label?: string): THREE.Group {
+  private createConstructionBlock(label?: string, withCrane = false): THREE.Group {
     const group = new THREE.Group();
-    // Main building block
-    const buildingGeom = new THREE.BoxGeometry(2, 3, 2);
-    const buildingMat = Materials.createPBRMaterial({ color: 0xcccccc, roughness: 0.9 });
-    const building = new THREE.Mesh(buildingGeom, buildingMat);
-    building.position.set(0, 1.5, 0);
-    building.castShadow = true;
-    building.receiveShadow = true;
-    group.add(building);
-    // Scaffolding poles
-    const poleMat = Materials.createTrimMaterial(0x666666);
+    // A half-built workshop, not a grey concrete cube. Finished timber lower
+    // storey + a narrower "blueprint blue" upper storey still going up, so the
+    // Projects district reads as an ACTIVE build site — matching the
+    // "currently building" story the panel tells — instead of five anonymous
+    // grey boxes.
+    const timberMat = Materials.createPBRMaterial({ color: 0x9c774a, roughness: 0.85 });
+    const blueprintMat = Materials.createPBRMaterial({ color: 0x2f5aa0, roughness: 0.55 });
+    // Foundation slab (timber)
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.3, 2.3), timberMat);
+    slab.position.y = 0.15;
+    slab.receiveShadow = true;
+    group.add(slab);
+    // Lower storey — finished timber frame
+    const lower = new THREE.Mesh(new THREE.BoxGeometry(2, 1.6, 2), timberMat);
+    lower.position.set(0, 1.1, 0);
+    lower.castShadow = true;
+    lower.receiveShadow = true;
+    group.add(lower);
+    // Upper storey — blueprint-blue, narrower + set up: the part still "under
+    // construction"
+    const upper = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.2, 1.7), blueprintMat);
+    upper.position.set(0, 2.5, 0);
+    upper.castShadow = true;
+    upper.receiveShadow = true;
+    group.add(upper);
+    // Scaffolding — safety-orange poles + a couple of cross-rails
+    const poleMat = Materials.createTrimMaterial(0xd98a2b);
     const poleGeom = new THREE.CylinderGeometry(0.05, 0.05, 4, 8);
     for (let i = 0; i < 4; i++) {
       const pole = new THREE.Mesh(poleGeom, poleMat);
@@ -3333,6 +3490,35 @@ export class Island {
       pole.castShadow = true;
       pole.receiveShadow = true;
       group.add(pole);
+    }
+    const railGeom = new THREE.BoxGeometry(1.9, 0.06, 0.06);
+    for (const rz of [-0.9, 0.9]) {
+      const rail = new THREE.Mesh(railGeom, poleMat);
+      rail.position.set(0, 2.7, rz);
+      group.add(rail);
+    }
+    // Tower-crane silhouette — landmark for the hero (RankPilot) lot. Reads as
+    // "being built" from across the district and gives Projects a skyline.
+    if (withCrane) {
+      const craneMat = Materials.createTrimMaterial(0xe0b030);
+      const mast = new THREE.Mesh(new THREE.BoxGeometry(0.2, 6.5, 0.2), craneMat);
+      mast.position.set(1.3, 3.25, 1.3);
+      mast.castShadow = true;
+      group.add(mast);
+      const jib = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.18, 0.18), craneMat);
+      jib.position.set(0.1, 6.2, 1.3);
+      jib.castShadow = true;
+      group.add(jib);
+      const cable = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, 2.2, 6),
+        Materials.createTrimMaterial(0x333333),
+      );
+      cable.position.set(-0.9, 5.1, 1.3);
+      group.add(cable);
+      const load = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 0.45), timberMat);
+      load.position.set(-0.9, 3.85, 1.3);
+      load.castShadow = true;
+      group.add(load);
     }
     // Name plaque: connect the world to the content. Standing in the Projects
     // district you saw five anonymous grey boxes while the panel talked about
