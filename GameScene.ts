@@ -346,7 +346,7 @@ export class GameScene extends THREE.Scene {
     super();
     this.name = 'GameScene';
     this.background = null; // sky dome handles it
-    this.fog = new THREE.FogExp2(0xa8d8f0, 0.015); // atmospheric depth, scaled down for the larger R=30 world (was 0.02 at R=22); EnvironmentCycle reads this as baseFogDensity
+    this.fog = new THREE.FogExp2(0xa8d8f0, 0.009); // atmospheric depth. Keep density×R ≈ 0.45 (0.02@R22, 0.015@R30, 0.009@R50) so the far side of the bigger island stays visible instead of washing to fog — a fixed 0.015 hid exactly the extra world the grow was meant to reveal. EnvironmentCycle reads this as baseFogDensity.
 
     // Create ready promise
     this.readyPromise = new Promise((resolve) => {
@@ -399,7 +399,7 @@ export class GameScene extends THREE.Scene {
     // ~1.58u the world reads noticeably bigger — longer blocks, gentler
     // horizon. All placement is lon/lat-based so the districts spread
     // automatically; physical spacing grows with the radius.
-    this.island = new Island(40); // grown 30→40: bigger walkable world + all lon/lat placement spreads ~33% further apart, de-clustering the districts. setPlanet below reads getRadius() so it follows automatically.
+    this.island = new Island(50); // grown 30→40→50: bigger walkable world + all lon/lat placement spreads further apart, de-clustering the districts. setPlanet below reads getRadius() so it follows automatically.
     this.add(this.island.mesh);
     // Unify the art direction. Toon (?theme=toon): stepped shading on every
     // prop (abeto-style). Real (default): materials stay MeshStandardMaterial
@@ -3517,7 +3517,11 @@ export class GameScene extends THREE.Scene {
     // Close-range ambience only exists near the ground: while the camera
     // is far (cinematic fly-in), dust/sparkles/smoke/butterflies read as
     // debris hovering around the planet
-    const camNear = this.camera ? this.camera.position.length() < 45 : true;
+    // Threshold tracks radius (R + ~5u): the chase cam orbits a few units above
+    // the surface, so |cam| ≈ R+5 in play and ≫ that on the fly-in. A hardcoded
+    // 45 (tuned at R40) went PERMANENTLY false at R50 — |cam|≈55 — silently
+    // hiding ambient life, chimney smoke AND the delivery guide sparkles.
+    const camNear = this.camera ? this.camera.position.length() < this.island.getRadius() + 6 : true;
     for (const g of this.ambientGroups) g.visible = camNear;
 
     // Chimney smoke: puffs loop up the normal, growing and fading

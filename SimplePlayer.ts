@@ -61,7 +61,7 @@ export class SimplePlayer extends THREE.Group {
   private yawVel: number = 0; // yaw rad/s actually applied this frame — drives the turn lean
   private leanRoll: number = 0; // eased roll into turns (on-foot only)
 
-  private speed: number = 7.0; // movement speed. Bumped 5.5→7.0 with the R30→40 grow so crossing the (now bigger) island still takes ~20s instead of ~27 — the goal was a roomier, less-clustered world, not a more tedious walk.
+  private speed: number = 8.0; // movement speed. Bumped 5.5→7.0→8.0 alongside the R30→40→50 grows so crossing the (now much bigger) island stays ~22s — a roomier world, not a tediously long walk.
   private jumpForce: number = 8;
   private gravityStrength: number = 25; // gravitational acceleration
 
@@ -540,7 +540,7 @@ export class SimplePlayer extends THREE.Group {
         const w = overriding ? 0 : THREE.MathUtils.clamp(speed / 3, 0, 1);
         walk.setEffectiveWeight(w);
         // Cadence follows measured ground speed so feet don't slide/moonwalk.
-        walk.timeScale = THREE.MathUtils.clamp(speed / SimplePlayer.WALK_REF_SPEED, 0.6, 1.6);
+        walk.timeScale = THREE.MathUtils.clamp(speed / SimplePlayer.WALK_REF_SPEED, 0.6, 2.1); // ceiling raised 1.6→2.1: at the R50 run speed 8.0 the ratio is 1.9, so a 1.6 cap under-cycled the legs and slid the feet
         if (idle) idle.setEffectiveWeight(1 - w);
       }
       const k = Math.min(1, 10 * dt);
@@ -1412,7 +1412,7 @@ export class SimplePlayer extends THREE.Group {
       this.walkAction.setEffectiveWeight(w);
       this.idleAction.setEffectiveWeight(1 - w);
       // Cadence follows ground speed so slow walks don't moonwalk / runs slide.
-      this.walkAction.timeScale = THREE.MathUtils.clamp(spd / SimplePlayer.WALK_REF_SPEED, 0.6, 1.6);
+      this.walkAction.timeScale = THREE.MathUtils.clamp(spd / SimplePlayer.WALK_REF_SPEED, 0.6, 2.1); // ceiling raised 1.6→2.1 for the R50 run speed 8.0 (ratio 1.9) so the feet don't slide at a full run
     }
 
     // Update GLTF animations

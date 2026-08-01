@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { cleanChatText } from './Moderation';
 
-export const PROXIMITY_RADIUS = 14;
+export const PROXIMITY_RADIUS = 17.5; // scaled 14→17.5 with the R40→50 grow (×50/40) so voice/text proximity + the coach-mark keep the same fraction of the (now bigger) world's reach
 export const BUBBLE_TTL = 6;
 export const TEXT_MAX = 120;
 export const VOICE_MAX_MS = 8000;

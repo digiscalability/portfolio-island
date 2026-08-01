@@ -401,7 +401,7 @@ export class Island {
     // Tripled now that each blade is half the height — 18000 x 4 tris = 72k,
     // still one draw call, and the blades are small enough that the extra
     // vertex work is cheap. Phones keep a lower count.
-    const COUNT = lowTier ? 24000 : 72000; // scaled up again for R=40 (~1.8× the R=30 area) so the meadow keeps its carpet density; the governor still draws only a prefix under load
+    const COUNT = lowTier ? 32000 : 100000; // scaled again for R=50 (~1.56× the R=40 area) so the meadow keeps its carpet density; the governor still draws only a prefix under load
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -509,7 +509,7 @@ export class Island {
 
   private createIsland(): THREE.Group {
     // Use a sphere geometry for the island surface so objects placed on the sphere align correctly.
-    const seg = 176; // was 128; scaled with radius (30) to hold ~1.07u vertex spacing so crag/terrain detail still resolves
+    const seg = Math.round(this.radius * 5.8); // tessellation tracks radius (~1.08u/vertex at ANY size) so the 1.7u summit trail + crags always resolve. A fixed 176 left R50 at 1.79u/vertex — the trail fell BETWEEN vertices and went non-walkable (and mesh-raycast grounding went coarse). Now radius-derived so it never goes stale again.
     const geometry = new THREE.SphereGeometry(this.radius, seg, seg);
     // Displace vertices along their normals to create varied hills and valleys on the sphere surface.
     const vertices = geometry.attributes.position.array as Float32Array;
@@ -1092,7 +1092,7 @@ export class Island {
             // colour so the water no longer meets the sky as a hard line — the
             // single biggest "sells a world, not an object on a table" cue.
             // Distance-keyed so near water stays saturated. Applies to both themes.
-            'float horizonHaze = smoothstep(18.0, 46.0, length(vViewPosition));',
+            'float horizonHaze = smoothstep(20.0, 52.0, length(vViewPosition));',
             'outgoingLight = mix(outgoingLight, uSkyHorizon, horizonHaze * 0.75);',
             'diffuseColor.a = mix(0.85, 0.97, fres);',
             '#include <opaque_fragment>',
@@ -1104,7 +1104,7 @@ export class Island {
     // Coarse tier gets 64 segments instead of 96 — pure tessellation (~19k vs
     // ~55k tris of per-frame wave displacement); the wave MATH is untouched,
     // so the CPU waveHeightAt mirror stays exact.
-    const seaSegs = SimpleRenderer.isLowTierDevice() ? 64 : 96;
+    const seaSegs = SimpleRenderer.isLowTierDevice() ? 80 : 120; // bumped 64/96→80/120 so each sea face spans ~the same world area at R50 (crest/foam bands stay crisp on the bigger sphere); wave MATH unchanged so the waveHeightAt mirror stays exact
     const seaGeo = new THREE.SphereGeometry(this.radius + Island.SEA_OFFSET, seaSegs, seaSegs);
     {
       const sp = seaGeo.attributes.position;
@@ -1440,8 +1440,8 @@ export class Island {
     // so the eye reads distinct biomes instead of a uniform sprinkle. (The
     // Math.random here is seeded via GameScene.installSeededRandom, so the
     // whole layout is reproducible across reloads.)
-    const TREE_CANDIDATES = 232;
-    const TREE_CAP = 78;
+    const TREE_CANDIDATES = 290;
+    const TREE_CAP = 96; // grown with the R40→50 area (~×1.56) so groves don't thin out on the bigger sphere; kept below full-proportional to protect the draw-call budget the ambient batching reclaimed
     let placed = 0;
     for (let i = 0; i < TREE_CANDIDATES && placed < TREE_CAP; i++) {
       const y = 1 - (i / (TREE_CANDIDATES - 1)) * 2;
@@ -1912,7 +1912,7 @@ export class Island {
     // positions bake straight into instance matrices. frustumCulled=false: the
     // instances wrap the entire planet shell, so all-or-nothing culling would
     // only ever flicker the layer on/off — cheaper to just always draw it.
-    const SPARKLE_COUNT = 30;
+    const SPARKLE_COUNT = 47; // scaled ×1.56 with the R40→50 area so the ambient shimmer keeps its density over the bigger shell (near-free — it's one InstancedMesh)
     const sparkleMat = new THREE.MeshBasicMaterial({
       color: 0xffffee,
       transparent: true,
@@ -2385,7 +2385,7 @@ export class Island {
     // Add dust/pollen particles for ambiance — ONE InstancedMesh (was 80
     // separate meshes). Same rationale as the sparkles above: decorative,
     // never animated, whole-object visibility toggle keyed off the name.
-    const DUST_COUNT = 80;
+    const DUST_COUNT = 125; // scaled ×1.56 with the R40→50 area to hold pollen density over the bigger shell (near-free — one InstancedMesh)
     const dustMat = new THREE.MeshBasicMaterial({
       color: 0xeeddaa,
       transparent: true,
