@@ -16,6 +16,7 @@ import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
+import { connectWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 import { isRealTheme } from './Theme';
 import './style.css';
 
@@ -317,7 +318,15 @@ class SimpleApp {
           return;
         }
         const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
-        this.ui.showDialogue(npcData.name, talk ? talk.lines : npcData.dialogue);
+        let lines = talk ? talk.lines : npcData.dialogue;
+        // Living-world tone: on a plain greeting (no active quest beat), lead
+        // with a line reflecting the island's mood today, so NPCs feel like
+        // they're living in the world the director keeps evolving.
+        if (!talk) {
+          const flavor = moodNpcFlavor();
+          if (flavor) lines = [flavor, ...lines];
+        }
+        this.ui.showDialogue(npcData.name, lines);
         if (talk?.accepted) {
           sfx.blip();
           this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
@@ -339,6 +348,16 @@ class SimpleApp {
           } as any);
           this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
         }
+      });
+
+      // Living world: subscribe to the server-owned world/island beat (a mood +
+      // pre-authored headline the scheduled director evolves every few hours).
+      // Surface it as a bulletin banner; it also colours NPC tone via
+      // moodNpcFlavor() above. Degrades to silence if the backend/beat is
+      // absent (e.g. before the director is deployed). ?mood=festive previews.
+      connectWorldState((s) => {
+        this.ui.showWorldBulletin(s.headline, MOOD_META[s.mood].accent);
+        track('world_beat_seen', { mood: s.mood });
       });
 
       // Restore the carried fish if a fetch quest was mid-delivery on reload

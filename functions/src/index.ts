@@ -69,6 +69,101 @@ export const janitor = onSchedule(
   },
 );
 
+// ── Living-world "director" ─────────────────────────────────────────────────
+// A RULE-BASED (no LLM, $0, zero abuse surface) world beat. Every 6h it reads
+// how busy the island is + the time of day, picks a MOOD + a PRE-AUTHORED
+// headline (never free text), and writes a small durable doc to world/island
+// via the Admin SDK — which bypasses the security rules, and the node is
+// .write:false so clients can't forge it. The client subscribes and reacts
+// (bulletin banner, ambience tint, NPC tone), so the world visibly "lives"
+// between visits. Phase 0 is deliberately model-free: free, safe, unforgeable.
+// A future LLM narrator may only ever slot in as an INDEX-SELECTOR over these
+// same pre-authored pools — never free prose written to this public node.
+
+type Mood = 'festive' | 'busy' | 'calm' | 'mysterious' | 'proud';
+
+// The ONLY strings the director can publish. On-brand, pre-moderated, safe.
+const HEADLINES: Record<Mood, string[]> = {
+  festive: [
+    'The island is buzzing — someone just shipped something big.',
+    'Lanterns are up and the plazas are humming today.',
+    'A celebratory mood has swept across the districts.',
+  ],
+  busy: [
+    'Deliveries are flying — the couriers can barely keep up.',
+    'The market is packed and the boulevards are full.',
+    'A brisk, productive day across every district.',
+  ],
+  calm: [
+    'A quiet, golden kind of day on the island.',
+    'Slow tides and soft light — the island is resting.',
+    'Nothing but birdsong and open meadows today.',
+  ],
+  mysterious: [
+    'A strange fog rolled in overnight — the islanders are whispering.',
+    'Something feels different today… no one can quite say what.',
+    'Odd lights were seen near the shore last night.',
+  ],
+  proud: [
+    'Word is a new project just launched — the town is proud.',
+    'The workshop lights burned late; something was finished.',
+    "There's a quiet pride in the streets today.",
+  ],
+};
+
+// mulberry32-style deterministic pick: varied per tick, reproducible within it.
+function seededPick<T>(arr: T[], seed: number): T {
+  let t = (seed + 0x6d2b79f5) >>> 0;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  const r = ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  return arr[Math.floor(r * arr.length)];
+}
+
+/** Count presence children with a heartbeat inside the live window. */
+async function countLivePresence(db: admin.database.Database, now: number): Promise<number> {
+  const snap = await db.ref('presence/island').get();
+  const val = snap.val() as Record<string, { t?: number }> | null;
+  if (!val) return 0;
+  let live = 0;
+  for (const entry of Object.values(val)) {
+    const t = typeof entry?.t === 'number' ? entry.t : 0;
+    if (now - t <= STALE_PRESENCE_MS) live++;
+  }
+  return live;
+}
+
+export const director = onSchedule(
+  {
+    schedule: 'every 6 hours',
+    region: 'us-central1',
+    timeoutSeconds: 60,
+    memory: '256MiB',
+  },
+  async () => {
+    const db = admin.database();
+    const now = Date.now();
+    const online = await countLivePresence(db, now);
+    const hour = new Date(now).getUTCHours();
+    const daySeed = Math.floor(now / (6 * 60 * 60 * 1000)); // rotates each tick
+
+    // Rule-based mood: how busy the island is + the time of day, with the
+    // day-seed rotating the tie-breaks so consecutive beats vary.
+    let mood: Mood;
+    if (online >= 3) mood = seededPick(['festive', 'busy'] as Mood[], daySeed);
+    else if (hour >= 22 || hour < 6) mood = seededPick(['mysterious', 'calm'] as Mood[], daySeed);
+    else if (online >= 1) mood = seededPick(['busy', 'proud'] as Mood[], daySeed);
+    else mood = seededPick(['calm', 'proud', 'festive'] as Mood[], daySeed);
+
+    const headline = seededPick(HEADLINES[mood], daySeed);
+    const weather = mood === 'mysterious' ? 'fog' : 'clear';
+
+    // Admin SDK write bypasses rules; world/island is .write:false for clients.
+    await db.ref('world/island').set({ mood, headline, weather, online, updatedAt: now });
+    console.log(`director set mood=${mood} online=${online} headline="${headline}"`);
+  },
+);
+
 // ── Lead-notification email ─────────────────────────────────────────────────
 // Fires when the island contact form (Boards.ts::submitLead) writes a new child
 // under leads/island. Emails the site owner via provider-agnostic SMTP

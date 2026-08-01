@@ -273,6 +273,53 @@ export class SimpleUI {
     }, 2000);
   }
 
+  private bulletinEl: HTMLDivElement | null = null;
+  private bulletinBodyEl: HTMLDivElement | null = null;
+  private bulletinTimer = 0;
+  /**
+   * The "living world" beat: a top-centre banner announcing the island's mood +
+   * headline for the day, tinted with the mood accent, auto-dismissing. Fed by
+   * the server-owned world/island doc via WorldState.connectWorldState — the
+   * headline is server-authored + pre-approved, but we render it with
+   * textContent (never innerHTML) so no markup can ever reach the DOM.
+   */
+  public showWorldBulletin(headline: string, accent: string): void {
+    if (!this.bulletinEl) {
+      this.bulletinEl = document.createElement('div');
+      Object.assign(this.bulletinEl.style, {
+        position: 'absolute', left: '50%', top: 'calc(var(--sat, 0px) + 66px)',
+        transform: 'translateX(-50%) translateY(-8px)', maxWidth: 'min(90vw, 520px)',
+        background: 'rgba(12,14,22,0.9)', color: '#f2f6ff', padding: '10px 18px',
+        borderRadius: '14px', fontFamily: 'system-ui, sans-serif', fontSize: '14px',
+        lineHeight: '1.35', textAlign: 'center', pointerEvents: 'none', zIndex: '1700',
+        border: '1px solid rgba(255,255,255,0.12)', borderTop: '3px solid #fff',
+        boxShadow: '0 6px 24px rgba(0,0,0,0.35)', opacity: '0',
+        transition: 'opacity 0.4s ease, transform 0.4s ease',
+      });
+      const label = document.createElement('div');
+      label.textContent = 'The island today';
+      Object.assign(label.style, {
+        fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase',
+        opacity: '0.6', marginBottom: '2px',
+      });
+      this.bulletinBodyEl = document.createElement('div');
+      this.bulletinEl.appendChild(label);
+      this.bulletinEl.appendChild(this.bulletinBodyEl);
+      this.overlay.appendChild(this.bulletinEl);
+    }
+    if (this.bulletinBodyEl) this.bulletinBodyEl.textContent = headline; // textContent: no markup injection
+    this.bulletinEl.style.borderTopColor = accent;
+    this.bulletinEl.style.opacity = '1';
+    this.bulletinEl.style.transform = 'translateX(-50%) translateY(0)';
+    if (this.bulletinTimer) clearTimeout(this.bulletinTimer);
+    this.bulletinTimer = window.setTimeout(() => {
+      if (this.bulletinEl) {
+        this.bulletinEl.style.opacity = '0';
+        this.bulletinEl.style.transform = 'translateX(-50%) translateY(-8px)';
+      }
+    }, 7000);
+  }
+
   private coachMarkShown = false;
   /**
    * One-shot proximity coach mark: the first time another visitor comes within

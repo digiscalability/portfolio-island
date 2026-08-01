@@ -90,6 +90,12 @@
           "$other":  { ".validate": false }
         }
       }
+    },
+    "world": {
+      "island": {
+        ".read": "auth != null",
+        ".write": false
+      }
     }
   }
 }
