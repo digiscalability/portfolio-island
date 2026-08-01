@@ -399,7 +399,7 @@ export class GameScene extends THREE.Scene {
     // ~1.58u the world reads noticeably bigger — longer blocks, gentler
     // horizon. All placement is lon/lat-based so the districts spread
     // automatically; physical spacing grows with the radius.
-    this.island = new Island(30); // grown from 22: flatter horizon, bigger walkable world (WD-9). setPlanet below reads getRadius() so it follows automatically.
+    this.island = new Island(40); // grown 30→40: bigger walkable world + all lon/lat placement spreads ~33% further apart, de-clustering the districts. setPlanet below reads getRadius() so it follows automatically.
     this.add(this.island.mesh);
     // Unify the art direction. Toon (?theme=toon): stepped shading on every
     // prop (abeto-style). Real (default): materials stay MeshStandardMaterial

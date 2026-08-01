@@ -61,7 +61,7 @@ export class SimplePlayer extends THREE.Group {
   private yawVel: number = 0; // yaw rad/s actually applied this frame — drives the turn lean
   private leanRoll: number = 0; // eased roll into turns (on-foot only)
 
-  private speed: number = 5.5; // movement speed (~20s to cross the island — was 18, which circled the planet in 6s)
+  private speed: number = 7.0; // movement speed. Bumped 5.5→7.0 with the R30→40 grow so crossing the (now bigger) island still takes ~20s instead of ~27 — the goal was a roomier, less-clustered world, not a more tedious walk.
   private jumpForce: number = 8;
   private gravityStrength: number = 25; // gravitational acceleration
 

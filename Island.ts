@@ -401,7 +401,7 @@ export class Island {
     // Tripled now that each blade is half the height — 18000 x 4 tris = 72k,
     // still one draw call, and the blades are small enough that the extra
     // vertex work is cheap. Phones keep a lower count.
-    const COUNT = lowTier ? 16000 : 44000; // scaled up for the larger R=30 surface so the meadow doesn't thin out
+    const COUNT = lowTier ? 24000 : 72000; // scaled up again for R=40 (~1.8× the R=30 area) so the meadow keeps its carpet density; the governor still draws only a prefix under load
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -1211,7 +1211,7 @@ export class Island {
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
-      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.09);
+      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.11); // roomier: was 0.09
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -1253,13 +1253,17 @@ export class Island {
     // Near-plaza columns keep ≥0.2 rad from the plaza claim.
     // Thinned from 8 → 6 cottages and spread wider (roomier village street).
     const HOUSE_SITES: Array<[number, number]> = [
-      [2.08 + SHIFT_PERSONAL, 0.66], [2.52 + SHIFT_PERSONAL, 0.66], [2.96 + SHIFT_PERSONAL, 0.66],
-      [2.06 + SHIFT_PERSONAL, 0.27], [2.54 + SHIFT_PERSONAL, 0.27], [3.0 + SHIFT_PERSONAL, 0.27],
+      // Widened the row spread (was ±0.44 rad about the plaza, now ±0.60) so the
+      // cottages read as a roomy village street, not a packed terrace — the
+      // R40 grow already pushed them ~33% further apart; this opens the gaps
+      // more. Still well clear of the neighbouring districts (1.57 rad away).
+      [1.92 + SHIFT_PERSONAL, 0.66], [2.52 + SHIFT_PERSONAL, 0.66], [3.12 + SHIFT_PERSONAL, 0.66],
+      [1.92 + SHIFT_PERSONAL, 0.27], [2.54 + SHIFT_PERSONAL, 0.27], [3.12 + SHIFT_PERSONAL, 0.27],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
       const [lon, lat] = HOUSE_SITES[i];
-      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.1);
+      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.12); // roomier: was 0.1
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
