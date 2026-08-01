@@ -16,7 +16,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 import { Materials } from './Materials';
 import { SimpleRenderer } from './SimpleRenderer';
 import { isRealTheme } from './Theme';
-import { RING_DISTRICT_LONS, ZONE_LAT, DISTRICT_SHIFT } from './Districts';
+import { RING_DISTRICT_LONS, ZONE_LAT, DISTRICT_SHIFT, districtAccentAt } from './Districts';
 import { NPC } from './NPC';
 import TextureGenerator from './TextureGenerator';
 
@@ -410,6 +410,7 @@ export class Island {
     const GRASS_DRY = new THREE.Color(0xc6cc80);
     const GRASS_LUSH = new THREE.Color(0x74b25c);
     const bladeColor = new THREE.Color();
+    const bladeAccent = new THREE.Color(); // reused per-blade district-accent tint
     // Slot order matters: setGrassBudget trims to a PREFIX of instance slots,
     // and the spiral index sweeps latitude pole→pole (then mirrors), so a raw
     // prefix would strip everything below a latitude line. Visiting spiral
@@ -481,6 +482,11 @@ export class Island {
       // Real theme: same saturation punch-up as the terrain vertex colors
       // (see the terrain color pass) so blades keep matching their ground.
       if (isRealTheme()) bladeColor.offsetHSL(0, 0.1, 0.01);
+      // Per-district accent, HALF the terrain strength (blades are denser + more
+      // saturated, so they'd over-read). LERP only — instanceColor MULTIPLIES the
+      // vertex color, so a darkening multiply here is the near-black-grass trap.
+      const gaw = districtAccentAt(dir, bladeAccent);
+      if (gaw > 0) bladeColor.lerp(bladeAccent, gaw * 0.07);
       // subtle per-blade brightness so neighbours never match exactly
       const shade = 0.86 + Math.random() * 0.28;
       grass.setColorAt(k, bladeColor.multiplyScalar(shade));
@@ -813,6 +819,7 @@ export class Island {
       const dryMeadow = new THREE.Color(0xaeb767);
       const lushMeadow = new THREE.Color(0x5f9e52);
       const tmp = new THREE.Color();
+      const accentScratch = new THREE.Color(); // reused per-vertex district-accent tint
       const vDir = new THREE.Vector3();
       const vNrm = new THREE.Vector3();
       const sea = this.seaLevel();
@@ -871,6 +878,13 @@ export class Island {
           const moist = this.moistureAt(vDir) * (1 - THREE.MathUtils.clamp(t, 0, 1) * 0.7);
           if (moist > 0) tmp.lerp(dryMeadow, Math.min(moist * 1.4, 0.5));
           else tmp.lerp(lushMeadow, Math.min(-moist * 1.2, 0.4));
+          // Per-district pastoral accent: nudge the meadow near each plaza toward
+          // the district's accent (Professional cooler, Personal warmer/pink, …).
+          // Low-strength LERP (never multiply) that fades out with altitude, so
+          // only the low grassy land carries district identity — ridge/peak/rock
+          // keep their neutral tones. `districtAccentAt` returns 0 between plazas.
+          const aw = districtAccentAt(vDir, accentScratch) * (1 - THREE.MathUtils.clamp(t, 0, 1) * 0.5);
+          if (aw > 0) tmp.lerp(accentScratch, aw * 0.14);
           // Feather the sand upward so the beach doesn't end on a hard line
           const beachFade = THREE.MathUtils.clamp((above - BEACH_TOP) / BEACH_FADE, 0, 1);
           tmp.lerp(sand, (1 - beachFade) * 0.6);
@@ -1455,10 +1469,18 @@ export class Island {
       else if (dir.y < Math.sin(0.44)) treeType = 3;
       else treeType = Math.random() < 0.5 ? 0 : 1;
       // Canopy colour tracks moisture (lusher = deeper green); conifers fixed.
-      const fColor =
+      let fColor =
         treeType === 2
           ? PINE_COLOR
           : FOLIAGE_COLORS[Math.min(FOLIAGE_COLORS.length - 1, Math.floor(moist * FOLIAGE_COLORS.length))];
+      // Per-district canopy tint (broadleaf only — conifers/shrubs keep their
+      // biome colour): blossom-pink near Personal, cool blue-green near
+      // Professional, etc. Reads as different trees per district, no new geo.
+      if (treeType <= 1) {
+        const acc = new THREE.Color();
+        const tw = districtAccentAt(dir, acc);
+        if (tw > 0) fColor = new THREE.Color(fColor).lerp(acc, tw * 0.45).getHex();
+      }
       const parts: THREE.BufferGeometry[] = [];
       const treeGroup = new THREE.Group();
 
@@ -2222,7 +2244,11 @@ export class Island {
     // keeps its own emissive tint (instanceColor can't drive emissive).
     const flowers = new THREE.Group();
     flowers.name = 'flowers';
-    const FLOWER_COLORS = [0xff69b4, 0xf4a940, 0xffffff, 0xb46bd8, 0xff8866];
+    // One flower hue PER DISTRICT (anchors below are the 4 plazas + the pole),
+    // ordered to match FLOWER_ANCHORS: professional=blue, projects=marigold,
+    // personal=pink, contact=lavender, welcome=daisy-yellow. So the ring of
+    // blooms around each plaza reinforces that district's identity.
+    const FLOWER_COLORS = [0x6f9fe0, 0xf4a940, 0xff69b4, 0xb46bd8, 0xf4e04d];
     const stemMat = Materials.createStandardMaterial({ color: 0x3d7a3d });
     const FLOWER_ANCHORS: Array<[number, number]> = [
       ...DISTRICT_LONS.map((l) => [l, ZONE_LAT] as [number, number]),
@@ -2243,7 +2269,9 @@ export class Island {
       const quat = new THREE.Quaternion().setFromUnitVectors(bloomUp, sampled.normal);
       blooms.push({
         mat: new THREE.Matrix4().compose(sampled.position.clone(), quat, bloomOne),
-        c: i % FLOWER_COLORS.length,
+        // Bucket by ANCHOR (= district) instead of cycling all hues at every
+        // plaza, so each district's ring is a single identity colour.
+        c: Math.floor(i / 10),
       });
       // Every ~8th flower anchors a butterfly cluster (see GameScene)
       if (i % 8 === 0) this.flowerSites.push(sampled.position.clone());

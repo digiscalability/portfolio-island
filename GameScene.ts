@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { EnvironmentCycle } from './EnvironmentCycle';
-import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT } from './Districts';
+import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { Island } from './Island';
 import { isRealTheme } from './Theme';
 import { Mailbox } from './Mailbox';
@@ -316,6 +316,8 @@ export class GameScene extends THREE.Scene {
   private static readonly SHADOW_EXTENT = 17;
   private rimLight?: THREE.DirectionalLight;
   private _sunDir = new THREE.Vector3();
+  private _atmDir = new THREE.Vector3(); // scratch: player surface dir for district atmosphere
+  private _atmAccent = new THREE.Color(); // scratch: nearest-district accent
 
   // Mailbox instances for interaction tracking
   private mailboxes: Mailbox[] = [];
@@ -3777,6 +3779,15 @@ export class GameScene extends THREE.Scene {
     }
     if (this.lampPoolMat) {
       this.lampPoolMat.opacity = 0.55 * (1 - day);
+    }
+    // Per-district atmosphere: nudge the fog toward the nearest plaza's accent by
+    // proximity, so arriving in a district gives a subtle warm/cool shift (the
+    // "you have arrived somewhere" cue). Runs AFTER EnvironmentCycle writes
+    // fog.color from the sky horizon; faded by daylight so night stays true.
+    if (this.player && this.fog) {
+      this._atmDir.copy(this.player.getWorldPosition()).normalize();
+      const w = districtAccentAt(this._atmDir, this._atmAccent) * 0.12 * day;
+      if (w > 0) (this.fog as THREE.FogExp2).color.lerp(this._atmAccent, w);
     }
   }
 
