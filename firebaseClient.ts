@@ -36,9 +36,15 @@ async function maybeInitAppCheck(app: FirebaseApp): Promise<void> {
   const siteKey = (import.meta.env.VITE_APPCHECK_SITE_KEY as string | undefined)?.trim();
   if (!siteKey) return;
   try {
-    const { initializeAppCheck, ReCaptchaV3Provider } = await import('firebase/app-check');
+    // reCAPTCHA ENTERPRISE provider — the key is a score-based Enterprise key
+    // (created via gcloud, registered with App Check via the REST API; free
+    // tier 10k assessments/mo covers this site's traffic). Must stay in sync
+    // with the provider type registered in App Check, or attestation fails
+    // (which only degrades: unattested calls fall back / are rejected only
+    // where enforcement is on).
+    const { initializeAppCheck, ReCaptchaEnterpriseProvider } = await import('firebase/app-check');
     initializeAppCheck(app, {
-      provider: new ReCaptchaV3Provider(siteKey),
+      provider: new ReCaptchaEnterpriseProvider(siteKey),
       isTokenAutoRefreshEnabled: true,
     });
   } catch (e) {
