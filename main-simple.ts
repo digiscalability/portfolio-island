@@ -17,6 +17,7 @@ import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
 import { connectWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
+import { askNpc, isAiNpc } from './NpcChat';
 import { isRealTheme } from './Theme';
 import './style.css';
 
@@ -317,6 +318,25 @@ class SimpleApp {
           this.openShop();
           return;
         }
+        // Intelligent NPCs open a free-text conversation — the server brain
+        // replies in character. On ANY failure (function not deployed yet, App
+        // Check off, rate/spend cap, moderation, offline) askNpc returns a
+        // fallback and we cycle the NPC's authored canned lines, so the NPC
+        // never appears broken. Until the npcChat backend is live this simply
+        // behaves like a chat box that always answers with canned lines.
+        if (isAiNpc(npcData.name)) {
+          sfx.blip();
+          const canned = npcData.dialogue;
+          let ci = 1; // first fallback skips the opening line (canned[0])
+          this.ui.showNpcChat(npcData.name, canned[0] ?? 'Hello, traveller.', async (text) => {
+            track('npc_chat_sent', { npc: npcData.name });
+            const res = await askNpc(npcData.name, text);
+            if (res.reply && !res.fallback) return res.reply;
+            return canned[ci++ % canned.length] ?? '…';
+          });
+          return;
+        }
+
         const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
         let lines = talk ? talk.lines : npcData.dialogue;
         // Living-world tone: on a plain greeting (no active quest beat), lead

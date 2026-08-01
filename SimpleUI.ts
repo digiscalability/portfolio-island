@@ -3439,6 +3439,119 @@ export class SimpleUI {
   /**
    * Show dialogue panel with typewriter effect (Messenger-inspired)
    */
+  private npcChatDiv: HTMLDivElement | null = null;
+  /**
+   * Free-text conversation panel for an AI-brained NPC. Shows an opening line, a
+   * scrolling transcript and a text input; on send it calls `onSend(text)` —
+   * which routes to the server brain and returns the line to display (a real
+   * reply, or a canned fallback) — showing a "…" thinking state meanwhile. Input
+   * keystrokes are stopped from reaching the game's movement handlers.
+   */
+  public showNpcChat(name: string, opening: string, onSend: (text: string) => Promise<string>): void {
+    this.closeNpcChat();
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+      position: 'absolute', left: '50%', bottom: '28px', transform: 'translateX(-50%)',
+      width: 'min(560px, 92%)', background: 'rgba(10,10,20,0.94)', color: '#f0f0f0',
+      borderRadius: '16px', border: '2px solid rgba(120,160,255,0.4)',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.5)', zIndex: '1620',
+      fontFamily: 'system-ui, sans-serif', overflow: 'hidden', pointerEvents: 'auto',
+    });
+    const header = document.createElement('div');
+    header.textContent = name;
+    Object.assign(header.style, {
+      padding: '8px 16px', fontWeight: '600',
+      background: 'linear-gradient(135deg, rgba(80,130,255,0.3), rgba(120,80,255,0.2))',
+      borderBottom: '1px solid rgba(120,160,255,0.2)', display: 'flex', justifyContent: 'space-between',
+    });
+    const closeBtn = document.createElement('span');
+    closeBtn.textContent = '✕';
+    Object.assign(closeBtn.style, { cursor: 'pointer', opacity: '0.7' });
+    closeBtn.addEventListener('click', () => this.closeNpcChat());
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+    const log = document.createElement('div');
+    Object.assign(log.style, {
+      padding: '12px 16px', maxHeight: '38vh', overflowY: 'auto', fontSize: '15px',
+      lineHeight: '1.4', display: 'flex', flexDirection: 'column', gap: '8px',
+    });
+    panel.appendChild(log);
+    const addLine = (who: 'npc' | 'you', text: string): HTMLDivElement => {
+      const row = document.createElement('div');
+      row.textContent = text; // textContent: NPC + player text never becomes markup
+      Object.assign(
+        row.style,
+        who === 'you'
+          ? { alignSelf: 'flex-end', background: 'rgba(90,140,255,0.25)', padding: '6px 10px', borderRadius: '10px', maxWidth: '80%' }
+          : { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' },
+      );
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+      return row;
+    };
+    addLine('npc', opening);
+    const inputRow = document.createElement('div');
+    Object.assign(inputRow.style, { display: 'flex', gap: '8px', padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,0.08)' });
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 300;
+    input.placeholder = `Say something to ${name}…`;
+    Object.assign(input.style, {
+      flex: '1', padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.15)',
+      background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: '15px', outline: 'none',
+    });
+    const send = document.createElement('button');
+    send.textContent = 'Send';
+    Object.assign(send.style, { padding: '8px 16px', borderRadius: '10px', border: 'none', cursor: 'pointer', background: '#5a8cff', color: '#fff', fontWeight: '600' });
+    inputRow.appendChild(input);
+    inputRow.appendChild(send);
+    panel.appendChild(inputRow);
+    // Typing must not drive the player: stop key events reaching window/document.
+    for (const ev of ['keydown', 'keyup', 'keypress']) input.addEventListener(ev, (e) => e.stopPropagation());
+    let busy = false;
+    const doSend = async (): Promise<void> => {
+      const text = input.value.trim();
+      if (!text || busy) return;
+      busy = true;
+      input.value = '';
+      send.disabled = true;
+      input.disabled = true;
+      addLine('you', text);
+      const thinking = addLine('npc', '…');
+      try {
+        thinking.textContent = await onSend(text);
+      } catch {
+        thinking.textContent = '…';
+      }
+      log.scrollTop = log.scrollHeight;
+      busy = false;
+      send.disabled = false;
+      input.disabled = false;
+      input.focus();
+    };
+    send.addEventListener('click', () => void doSend());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void doSend();
+      }
+    });
+    this.overlay.appendChild(panel);
+    this.npcChatDiv = panel;
+    window.setTimeout(() => input.focus(), 50);
+  }
+
+  public closeNpcChat(): void {
+    if (this.npcChatDiv) {
+      this.npcChatDiv.remove();
+      this.npcChatDiv = null;
+    }
+  }
+
+  public isNpcChatOpen(): boolean {
+    return !!this.npcChatDiv;
+  }
+
   showDialogue(name: string, lines: string[]): void {
     this.dialogueLines = lines;
     this.dialogueIndex = 0;

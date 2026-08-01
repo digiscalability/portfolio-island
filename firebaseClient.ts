@@ -16,7 +16,7 @@ const firebaseConfig = {
   appId: '1:813194014051:web:52ce78d5fd47354fdcf756',
 };
 
-let ready: Promise<{ db: Database; uid: string }> | null = null;
+let ready: Promise<{ app: FirebaseApp; db: Database; uid: string }> | null = null;
 
 /**
  * App Check (env-gated). When VITE_APPCHECK_SITE_KEY is set at build time, every
@@ -51,14 +51,19 @@ async function maybeInitAppCheck(app: FirebaseApp): Promise<void> {
  * Database handle + this session's uid. Cached so repeat callers share one
  * app/auth/connection.
  */
-export function getFirebaseRealtime(): Promise<{ db: Database; uid: string }> {
+export function getFirebaseRealtime(): Promise<{ app: FirebaseApp; db: Database; uid: string }> {
   if (!ready) {
     ready = (async () => {
       const app: FirebaseApp = initializeApp(firebaseConfig);
       await maybeInitAppCheck(app);
       const cred = await signInAnonymously(getAuth(app));
-      return { db: getDatabase(app), uid: cred.user.uid };
+      return { app, db: getDatabase(app), uid: cred.user.uid };
     })();
   }
   return ready;
+}
+
+/** The shared FirebaseApp (for callable Cloud Functions, etc.). */
+export async function getFirebaseApp(): Promise<FirebaseApp> {
+  return (await getFirebaseRealtime()).app;
 }
