@@ -1,8 +1,19 @@
 // @vitest-environment happy-dom
-import { describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { DeliverySystem } from '../DeliverySystem';
 import { Mailbox } from '../Mailbox';
+
+// DeliverySystem now persists completed deliveries to localStorage (ds_deliveries)
+// and restores them in its constructor. Clear it between tests so each case
+// starts from a fresh chain instead of inheriting the previous test's progress.
+beforeEach(() => {
+  try {
+    localStorage.clear();
+  } catch {
+    /* no storage in this env */
+  }
+});
 
 /** The shipped quest data unlocks as one linear chain: welcome_1..3
  *  (welcome_quest), explore_1..2 (explorer_quest), community_1..3

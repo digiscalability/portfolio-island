@@ -2412,7 +2412,7 @@ export class GameScene extends THREE.Scene {
   /**
    * Spinning collectible coins scattered across the open meadows —
    * traversal rewards between districts (A Short Hike-style). Collected
-   * on touch with a chime; each respawns after 45 seconds.
+   * on touch with a chime; each respawns after 120 seconds.
    */
   private createCoins(): void {
     try {
@@ -3614,7 +3614,10 @@ export class GameScene extends THREE.Scene {
         if (!cu.homePos) cu.homePos = c.mesh.position.clone();
         cu.homePos.copy(c.mesh.position);
         cu.collectT0 = time;
-        c.respawnAt = time + 45;
+        // 120s (was 45s): a 45s cycle made the meadow an infinite coin farm, so
+        // hat prices were a timer, not a choice. Slower respawn makes race +
+        // quest + delivery rewards the sane way to kit out.
+        c.respawnAt = time + 120;
         sfx.coin();
         this.coinsCollected++;
         try {

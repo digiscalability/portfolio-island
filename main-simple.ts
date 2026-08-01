@@ -188,15 +188,29 @@ class SimpleApp {
         console.log(`🎉 Quest "${quest.name}" completed!`);
         sfx.questComplete();
         this.ui.showQuestComplete(quest);
+        track('quest_completed', { id: quest.id });
+        // Finale: finishing all ten deliveries makes good on the NPC's promise
+        // ("unlock something special") — grant the rare 😇 Halo + 25 coins, once.
+        if (this.deliverySystem.isAllComplete()) {
+          track('delivery_all_complete');
+          this.grantCourierReward();
+        }
       });
 
-      // Pickup ding on every completed delivery
-      this.deliverySystem.setOnDeliveryComplete(() => sfx.collect());
+      // Pickup ding + analytics on every completed delivery
+      this.deliverySystem.setOnDeliveryComplete((d) => {
+        sfx.collect();
+        track('delivery_completed', {
+          id: d.id,
+          count: this.deliverySystem.getCompletedCount(),
+        });
+      });
 
-      // Setup zone interaction callback
+      // Setup zone interaction callback — walking up to a zone is the ONLY path
+      // that stamps the passport (source: 'proximity'). Menu/deep-link opens don't.
       this.scene.setOnZoneInteract((zone) => {
         console.log(`🎯 Opening zone: ${zone.name}`);
-        this.ui.showZonePanel(zone);
+        this.ui.showZonePanel(zone, { source: 'proximity' });
       });
 
       // NPC quests: stateful dialogue + rewards layered over ambient lines
@@ -352,6 +366,8 @@ class SimpleApp {
       this.scene.setOnCoinCollected((total) => {
         this.ui.updateCoinCounter(total);
         saveProfile({ coins: total });
+        if (total >= 100) trackOnce('coins_milestone', { n: 100 });
+        else if (total >= 50) trackOnce('coins_milestone', { n: 50 });
       });
 
       // Drowning: washed back to shore with a splash message
@@ -362,17 +378,37 @@ class SimpleApp {
 
       // Vehicle time-trials: banner on start/checkpoint/finish + live lap HUD
       this.scene.setOnRaceEvent((e) => {
-        this.ui.flashMessage(e.text);
-        if (e.kind === 'start') sfx.raceGo();
-        else if (e.kind === 'checkpoint') sfx.checkpoint();
-        else if (e.kind === 'finish') {
+        if (e.kind === 'finish') {
           sfx.questComplete();
-          // Submit a new personal best to the global leaderboard (best-effort).
+          // Racing paid NOTHING before — the most complete loop in the game had
+          // no reward. Every finish now pays out (bigger on a PB).
+          const reward = e.improved ? 15 : 5;
+          this.scene.addCoins(reward);
+          this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+          this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
+          track('race_finish', {
+            circuit: e.circuit ?? 'unknown',
+            timeMs: Math.round((e.timeSec ?? 0) * 1000),
+            improved: !!e.improved,
+          });
+          const name = this.multiplayer?.selfName ?? 'Guest';
           if (e.improved && e.circuit && typeof e.timeSec === 'number') {
-            const name = this.multiplayer?.selfName ?? 'Guest';
             void import('./Boards').then((b) => b.submitRaceTime(e.circuit!, e.timeSec!, name));
           }
+          // Surface the (otherwise buried) global leaderboard a beat after the
+          // finish, with a Share button — turns every PB into a share prompt.
+          if (e.circuit) {
+            const circuit = e.circuit;
+            const tMs = typeof e.timeSec === 'number' ? Math.round(e.timeSec * 1000) : null;
+            window.setTimeout(() => void this.ui.showRaceLeaderboard(circuit, tMs, name), 1200);
+          }
+          return;
         }
+        this.ui.flashMessage(e.text);
+        if (e.kind === 'start') {
+          sfx.raceGo();
+          track('race_start', { circuit: e.circuit ?? 'unknown' });
+        } else if (e.kind === 'checkpoint') sfx.checkpoint();
       });
       this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
 
@@ -681,6 +717,41 @@ class SimpleApp {
     }
   }
 
+  /**
+   * One-time finale reward for delivering all ten packages: +25 coins and the
+   * rare 😇 Halo (normally the priciest hat), owned + equipped. Guarded so a
+   * refresh after completion doesn't re-grant. Mirrors the passport crown flow.
+   */
+  private grantCourierReward(): void {
+    try {
+      if (localStorage.getItem('ds_courier_reward') === '1') return;
+      localStorage.setItem('ds_courier_reward', '1');
+    } catch {
+      /* storage blocked — still grant for this session */
+    }
+    this.scene.addCoins(25);
+    this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+    const hat: HatId = 'halo';
+    if (!this.ownedHats.has(hat)) {
+      this.ownedHats.add(hat);
+      try {
+        localStorage.setItem('ds_owned_hats', JSON.stringify([...this.ownedHats]));
+      } catch {
+        /* ignore */
+      }
+    }
+    this.equippedHat = hat;
+    try {
+      localStorage.setItem('ds_hat', hat);
+    } catch {
+      /* ignore */
+    }
+    this.scene.equipPlayerHat(hat);
+    this.multiplayer?.setHat(hat);
+    saveProfile({ hat, ownedHats: [...this.ownedHats], coins: this.scene.getCoinsCollected() });
+    this.ui.flashMessage('🌟 Master Courier! +25 coins and the rare 😇 Halo — equipped.');
+  }
+
   /** Open a section directly from a /?zone=<id> deep link, if present + valid. */
   private openDeepLinkZone(): void {
     try {
@@ -688,7 +759,7 @@ class SimpleApp {
       if (!z) return;
       if (['welcome', 'professional', 'projects', 'personal', 'contact'].includes(z)) {
         this.ui.hideWelcome();
-        this.ui.showZonePanel({ id: z, name: z });
+        this.ui.showZonePanel({ id: z, name: z }, { source: 'deeplink' });
       }
     } catch {
       /* ignore */
@@ -937,6 +1008,7 @@ class SimpleApp {
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.boardVehicle(boardable);
             sfx.blip();
+            track('vehicle_enter', { kind });
           }
         } else if (player && player.isInWater() && !player.isSwimming()) {
           // In the water and sinking: tell them how to swim
@@ -1193,6 +1265,7 @@ class SimpleApp {
           this.scene.equipPlayerHat(id as HatId);
           this.multiplayer?.setHat(id as HatId);
           saveProfile({ hat: id, ownedHats: [...this.ownedHats] });
+          track('hat_equipped', { hat: id });
           render();
         },
         () => {

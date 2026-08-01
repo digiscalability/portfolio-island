@@ -486,6 +486,69 @@ export class SimpleUI {
     if (body) body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
   }
 
+  /**
+   * Auto-surfaced a beat after a race finish: the circuit's global top times
+   * with the player's fresh run highlighted, plus a Share button. The global
+   * board was otherwise buried two clicks deep in the Portfolio menu — you could
+   * set a record and never know a leaderboard existed.
+   */
+  async showRaceLeaderboard(
+    circuit: 'land' | 'water',
+    playerTimeMs: number | null,
+    playerName: string,
+  ): Promise<void> {
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    const title = circuit === 'land' ? '🚗 Land Circuit' : '⛵ Water Circuit';
+    const fmt = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 4px;color:#8a9bff;">🏁 ${title}</h2>
+       <p style="margin:0 0 12px;font-size:13px;color:#aab;">${
+         playerTimeMs != null
+           ? `Your run: <strong style="color:#ffd54a;">${fmt(playerTimeMs)}</strong>`
+           : 'Global top times'
+       }</p>
+       <div id="rlb-body" style="text-align:left;">Loading…</div>`,
+    );
+    trackOnce('leaderboard_opened');
+    const shareRow = document.createElement('div');
+    shareRow.style.cssText = 'margin-top:14px;';
+    shareRow.appendChild(
+      this.makeShareButton('📣 Share your time', {
+        surface: 'race_finish',
+        url: buildShareUrl(),
+        title: 'DigiScalability Life Island',
+        text:
+          playerTimeMs != null
+            ? `I ran ${fmt(playerTimeMs)} on the ${circuit} circuit of this 3D island 🏁 — beat me:`
+            : 'Race me around this 3D portfolio island 🏁',
+      }),
+    );
+    modal.appendChild(shareRow);
+    this.overlay.appendChild(modal);
+    const { getLeaderboard } = await import('./Boards');
+    const entries = await getLeaderboard(circuit);
+    const body = modal.querySelector('#rlb-body');
+    if (!body) return;
+    if (!entries.length) {
+      body.innerHTML = `<p style="margin:2px 0 0;font-size:13px;color:#889;">No times yet — you're on the board!</p>`;
+      return;
+    }
+    let highlighted = false;
+    body.innerHTML = entries
+      .map((e, i) => {
+        const mine =
+          !highlighted && playerTimeMs != null && e.name === playerName && e.timeMs === playerTimeMs;
+        if (mine) highlighted = true;
+        return `<div style="display:flex;justify-content:space-between;padding:6px 9px;border-radius:8px;
+          background:${mine ? 'rgba(245,179,1,0.22)' : i === 0 ? 'rgba(245,179,1,0.10)' : 'rgba(255,255,255,0.03)'};
+          margin:3px 0;font-size:13px;${mine ? 'outline:1px solid rgba(245,179,1,0.5);' : ''}">
+          <span>${i + 1}. ${this.escapeHtml(e.name)}${mine ? ' (you)' : ''}</span>
+          <span style="font-variant-numeric:tabular-nums;">${fmt(e.timeMs)}</span></div>`;
+      })
+      .join('');
+  }
+
   /** Guestbook: read recent notes + leave one. */
   async showGuestbook(): Promise<void> {
     const modal = this.buildCenteredModal('min(400px, calc(100vw - 32px))');
@@ -536,6 +599,7 @@ export class SimpleUI {
       if (ok) {
         if (input) input.value = '';
         this.toast('✍️ Signed the guestbook!');
+        track('guestbook_signed');
         await render();
       } else {
         this.toast('Message could not be posted.');
@@ -938,7 +1002,7 @@ export class SimpleUI {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       track('cta_pill_click');
-      this.showZonePanel({ id: 'contact', name: 'contact' });
+      this.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'cta' });
     });
     this.makeHudButtonAccessible(btn, 'Work with me — open contact');
     this.overlay.appendChild(btn);
@@ -1645,7 +1709,7 @@ export class SimpleUI {
         const cta = (b as HTMLElement).dataset.cta!;
         track('welcome_cta', { cta });
         closeWelcome();
-        this.showZonePanel({ id: cta, name: cta });
+        this.showZonePanel({ id: cta, name: cta }, { source: 'cta' });
       });
     });
     this.welcomeDiv.querySelector('button[data-dismiss]')?.addEventListener('click', (e) => {
@@ -2959,7 +3023,8 @@ export class SimpleUI {
     }
   }
 
-  showZonePanel(zone: any): void {
+  showZonePanel(zone: any, opts?: { source?: 'proximity' | 'menu' | 'deeplink' | 'cta' }): void {
+    const source = opts?.source ?? 'menu';
     this.hideZonePanel(); // Hide any existing panel
 
     this.zonePanelDiv = document.createElement('div');
@@ -2989,7 +3054,7 @@ export class SimpleUI {
     // clicks that are the real conversion. Once-per-session so re-opening the
     // same panel doesn't inflate the numbers.
     const zid = String(zone?.id ?? 'unknown');
-    trackOnce('zone_explored', { zone: zid });
+    trackOnce('zone_explored', { zone: zid, source });
     // "Reached the actual work" = any real section, not the intro or an unknown.
     if (zid !== 'welcome' && zid !== 'unknown') {
       markReachedPortfolio();
@@ -3000,9 +3065,12 @@ export class SimpleUI {
       this.appendLeadForm(this.zonePanelDiv);
     }
 
-    // Passport: stamp this zone. A new stamp shows brief progress; the fourth
-    // triggers the reward flow via the onComplete callback wired in main-simple.
-    if (this.passport?.visit(zid)) {
+    // Passport: stamp ONLY when the visitor physically walked up to the zone
+    // ('proximity'). Opening the same panel from the top-right Portfolio menu, a
+    // welcome CTA, or a deep link no longer stamps — the 👑 crown now means the
+    // island was actually explored, not that five buttons were clicked. The menu
+    // still opens every panel, so a hurried recruiter loses no content.
+    if (source === 'proximity' && this.passport?.visit(zid)) {
       trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
       if (!this.passport.isComplete()) {
         const meta = PASSPORT_META[zid as PassportZone];

@@ -31,8 +31,14 @@ export class DeliverySystem {
   private onDeliveryCompleteCallback?: (delivery: Delivery) => void;
   private onQuestCompleteCallback?: (quest: Quest) => void;
 
+  // The whole 10-delivery chain used to reset on every page load — the "island
+  // is complete" finale was effectively unreachable. Persist completed IDs so
+  // progress (and the finale) survives a refresh, mirroring NpcQuests.
+  private static readonly STORAGE_KEY = 'ds_deliveries';
+
   constructor() {
     this.initializeQuests();
+    this.restoreProgress();
   }
 
   private initializeQuests(): void {
@@ -272,6 +278,7 @@ export class DeliverySystem {
     // the mailboxes holding the newly unlocked deliveries
     this.updateAvailableDeliveries();
     this.syncMailboxState();
+    this.saveProgress();
 
     if (this.onDeliveryCompleteCallback) {
       this.onDeliveryCompleteCallback(delivery);
@@ -326,6 +333,49 @@ export class DeliverySystem {
 
   public setOnDeliveryComplete(callback: (delivery: Delivery) => void): void {
     this.onDeliveryCompleteCallback = callback;
+  }
+
+  /** All ten deliveries done — drives the finale reward. */
+  public isAllComplete(): boolean {
+    return this.completedDeliveries.length >= this.deliveries.length;
+  }
+
+  /** Persist the set of completed delivery IDs. */
+  private saveProgress(): void {
+    try {
+      const ids = this.completedDeliveries.map((d) => d.id);
+      localStorage.setItem(DeliverySystem.STORAGE_KEY, JSON.stringify(ids));
+    } catch {
+      /* storage unavailable — non-fatal */
+    }
+  }
+
+  /**
+   * Re-apply saved completions on boot: mark those deliveries done, rebuild the
+   * completed list, silently recompute which quests are finished, and refresh
+   * the unlocked set. Runs before assignDestinations, so no mailbox/destination
+   * is touched here — syncMailboxState lights the right ones once destinations
+   * are assigned. Quest-complete callbacks are NOT fired (no reward re-grant).
+   */
+  private restoreProgress(): void {
+    let ids: string[] = [];
+    try {
+      ids = JSON.parse(localStorage.getItem(DeliverySystem.STORAGE_KEY) ?? '[]');
+    } catch {
+      return;
+    }
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    const done = new Set(ids);
+    for (const delivery of this.deliveries) {
+      if (done.has(delivery.id)) {
+        delivery.completed = true;
+        this.completedDeliveries.push(delivery);
+      }
+    }
+    for (const quest of this.quests) {
+      quest.completed = quest.deliveries.every((id) => done.has(id));
+    }
+    this.updateAvailableDeliveries();
   }
 }
 
