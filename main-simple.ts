@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { a11y } from './Accessibility';
 import { startDwellTracking, track, trackOnce } from './Analytics';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
+import { DISTRICTS } from './Districts';
 import { Passport, PASSPORT_META, type PassportZone } from './Passport';
 import { DeliverySystem } from './DeliverySystem';
 import { EnvironmentCycle } from './EnvironmentCycle';
@@ -206,12 +207,15 @@ class SimpleApp {
         });
       });
 
-      // Setup zone interaction callback — walking up to a zone is the ONLY path
-      // that stamps the passport (source: 'proximity'). Menu/deep-link opens don't.
+      // Walking up to a zone building + E now STEPS INSIDE it (3D interior) and
+      // shows the content over the room. Proximity is still the only path that
+      // stamps the passport. (Menu/deep-link opens still just show the panel.)
       this.scene.setOnZoneInteract((zone) => {
-        console.log(`🎯 Opening zone: ${zone.name}`);
-        this.ui.showZonePanel(zone, { source: 'proximity' });
+        console.log(`🎯 Entering zone: ${zone.name}`);
+        this.enterBuilding(zone.id, true, zone);
       });
+      // Cottage doors: walk up + E → step inside a cosy room.
+      this.scene.setOnHouseEnter((id) => this.enterBuilding(id, false));
 
       // NPC quests: stateful dialogue + rewards layered over ambient lines
       this.npcQuests = new NpcQuestSystem();
@@ -752,6 +756,34 @@ class SimpleApp {
     this.ui.flashMessage('🌟 Master Courier! +25 coins and the rare 😇 Halo — equipped.');
   }
 
+  /**
+   * Step inside a building: fade to black → move the camera into the interior
+   * room → (zones) show the content panel over it → a Leave button. The player
+   * world is frozen (GameScene.update), so leaving drops them back at the door.
+   */
+  private enterBuilding(id: string, isZone: boolean, zone?: { id: string; name: string }): void {
+    if (this.scene.isInsideInterior()) return;
+    const d = DISTRICTS.find((x) => x.id === id);
+    const title = isZone ? (zone?.name ?? d?.name ?? id) : 'A cosy home';
+    const wall = isZone ? (d?.accent ?? 0xcfc4ae) : 0xe0c9a8;
+    sfx.blip();
+    this.ui.fadeThrough(() => {
+      this.scene.enterInterior(title, wall);
+      if (isZone && zone) {
+        this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
+      }
+      this.ui.showLeaveButton(() => this.exitBuilding(isZone));
+    });
+  }
+
+  private exitBuilding(isZone: boolean): void {
+    this.ui.fadeThrough(() => {
+      this.scene.exitInterior();
+      this.ui.hideLeaveButton();
+      if (isZone) this.ui.hideZonePanel();
+    });
+  }
+
   /** Open a section directly from a /?zone=<id> deep link, if present + valid. */
   private openDeepLinkZone(): void {
     try {
@@ -853,8 +885,13 @@ class SimpleApp {
 
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
-      // If dialogue is active, E advances/closes it; suppress movement
-      if (this.ui.isDialogueActive()) {
+      // Inside a building: the world is frozen and the camera auto-orbits the
+      // room; the only control is the Leave button. Suppress movement + prompt.
+      if (this.scene.isInsideInterior()) {
+        this.scene.setPlayerMovement(0, 0);
+        this.ui.hideInteractionPrompt();
+      } else if (this.ui.isDialogueActive()) {
+        // If dialogue is active, E advances/closes it; suppress movement
         this.scene.setPlayerMovement(0, 0);
         this.ui.hideInteractionPrompt();
         const cameraInput = this.inputManager.getCameraInput();
@@ -1021,7 +1058,9 @@ class SimpleApp {
           } else if (nearby.type === 'lamp') {
             text = '💡 Press <strong>E</strong> to toggle lamp';
           } else if (nearby.type === 'zone') {
-            text = `🎯 Press <strong>E</strong> to explore ${esc(nearby.zone.name)}`;
+            text = `🚪 Press <strong>E</strong> to enter ${esc(nearby.zone.name)}`;
+          } else if (nearby.type === 'house_door') {
+            text = '🚪 Press <strong>E</strong> to enter';
           } else if (nearby.type === 'npc') {
             text = `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong>`;
           } else if (nearby.type === 'bench') {

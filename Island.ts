@@ -101,6 +101,8 @@ export class Island {
   // Sampled sites exposed for GameScene's ambient life (butterflies, smoke)
   public flowerSites: THREE.Vector3[] = [];
   public chimneySites: Array<{ position: THREE.Vector3; normal: THREE.Vector3 }> = [];
+  /** World anchors just OUTSIDE each cottage's door (for the enter interaction). */
+  public houseDoors: Array<{ position: THREE.Vector3; id: string }> = [];
   // Colliders for props placed ASYNCHRONOUSLY (GLB loads finish after
   // GameScene's registration pass) — GameScene drains this each frame
   public pendingColliders: Array<{ position: THREE.Vector3; radius: number }> = [];
@@ -1349,6 +1351,15 @@ export class Island {
           .add(house.position);
         this.chimneySites.push({ position: chimneyTip, normal: sampled.normal.clone() });
       }
+      // Enterable-house door anchor: the door plane is buried behind the ~2.3u
+      // wall collider, so the player bounces off ~1u short. Put the interaction
+      // anchor OUTSIDE the collider (~2.7u out along the door-forward +Z) — right
+      // where the tangential push actually stops the player.
+      const doorFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(house.quaternion);
+      this.houseDoors.push({
+        position: house.position.clone().addScaledVector(doorFwd, 2.7),
+        id: `house_${i}`,
+      });
       // Houses are already positioned by sampleSurfacePosition - no additional offset needed
       house.name = `house_${i}`;
       houses.add(house);

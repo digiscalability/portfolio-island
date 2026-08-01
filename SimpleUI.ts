@@ -67,6 +67,74 @@ export class SimpleUI {
     return this.overlay;
   }
 
+  // ── Interior enter/exit chrome ─────────────────────────────────────────
+  private fadeDiv: HTMLElement | null = null;
+  /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
+  fadeThrough(midCb: () => void): void {
+    if (!this.fadeDiv) {
+      this.fadeDiv = document.createElement('div');
+      Object.assign(this.fadeDiv.style, {
+        position: 'fixed',
+        inset: '0',
+        background: '#000',
+        opacity: '0',
+        transition: 'opacity 0.28s ease',
+        pointerEvents: 'none',
+        zIndex: '2000',
+      });
+      this.overlay.appendChild(this.fadeDiv);
+    }
+    const d = this.fadeDiv;
+    d.style.pointerEvents = 'auto';
+    d.style.opacity = '1';
+    window.setTimeout(() => {
+      try {
+        midCb();
+      } catch {
+        /* keep the fade sane even if the swap throws */
+      }
+      requestAnimationFrame(() => {
+        d.style.opacity = '0';
+      });
+      window.setTimeout(() => {
+        d.style.pointerEvents = 'none';
+      }, 320);
+    }, 300);
+  }
+
+  private leaveBtn: HTMLElement | null = null;
+  /** "← Leave" button shown while inside a building. */
+  showLeaveButton(onLeave: () => void): void {
+    this.hideLeaveButton();
+    const b = document.createElement('div');
+    b.textContent = '← Leave';
+    Object.assign(b.style, {
+      position: 'fixed',
+      top: 'calc(var(--sat, 0px) + 14px)',
+      left: 'calc(var(--sal, 0px) + 14px)',
+      background: 'rgba(12,16,28,0.82)',
+      color: '#fff',
+      padding: '9px 16px',
+      borderRadius: '999px',
+      border: '1px solid rgba(255,255,255,0.25)',
+      fontSize: '14px',
+      fontWeight: '600',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      zIndex: '1900',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.4)',
+    });
+    b.addEventListener('click', () => onLeave());
+    this.leaveBtn = b;
+    this.overlay.appendChild(b);
+  }
+  hideLeaveButton(): void {
+    this.leaveBtn?.remove();
+    this.leaveBtn = null;
+  }
+
   constructor(id: string) {
     // Create or get overlay
     this.overlay = document.getElementById(id) as HTMLElement;

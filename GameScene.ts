@@ -3251,6 +3251,14 @@ export class GameScene extends THREE.Scene {
   public update(deltaTime: number): void {
     if (!this.player) return;
 
+    // Inside a building: freeze the island world (player physics, camera follow,
+    // NPCs, everything) and just orbit the camera around the interior room. The
+    // player stays exactly where they were, so exiting drops them back at the door.
+    if (this.insideInterior) {
+      this.updateInteriorCamera(deltaTime);
+      return;
+    }
+
     // Real theme's saturation grade, deferred to the first update so the
     // whole populated scene (zones, NPCs, town props — added after
     // construction) is in the traverse. Dedupe inside makes re-runs safe.
@@ -3868,6 +3876,7 @@ export class GameScene extends THREE.Scene {
     | { type: 'zone'; zone: any; distance: number }
     | { type: 'npc'; npcData: { name: string; dialogue: string[] }; distance: number }
     | { type: 'bench'; benchGroup: THREE.Object3D; distance: number }
+    | { type: 'house_door'; id: string; distance: number }
     | null {
     if (!this.player) return null;
 
@@ -3923,6 +3932,16 @@ export class GameScene extends THREE.Scene {
       const d = bench.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
       if (d < nearestDist && d < 2.2) {
         nearest = { type: 'bench' as const, benchGroup: bench, distance: d };
+        nearestDist = d;
+      }
+    }
+
+    // Check cottage doors (enter). Anchor sits just outside the wall collider,
+    // so the pushed-out player is right on top of it when facing the door.
+    for (const dr of this.island.houseDoors) {
+      const d = dr.position.distanceTo(playerPos);
+      if (d < nearestDist && d < 2.4) {
+        nearest = { type: 'house_door' as const, id: dr.id, distance: d };
         nearestDist = d;
       }
     }
@@ -4101,7 +4120,8 @@ export class GameScene extends THREE.Scene {
       | { type: 'lamp'; lamp: TownPlanResult['lamps'][number]; distance: number }
       | { type: 'zone'; zone: any; distance: number }
       | { type: 'npc'; npcData: { name: string; dialogue: string[] }; distance: number }
-      | { type: 'bench'; benchGroup: THREE.Object3D; distance: number },
+      | { type: 'bench'; benchGroup: THREE.Object3D; distance: number }
+      | { type: 'house_door'; id: string; distance: number },
   ): void {
     // Interaction may change interactable state (delivery collected, lamp toggled)
     // — invalidate the proximity cache so the prompt refreshes immediately.
@@ -4128,6 +4148,11 @@ export class GameScene extends THREE.Scene {
 
     if (interactable.type === 'bench') {
       this.sitOnBench(interactable.benchGroup);
+      return;
+    }
+
+    if (interactable.type === 'house_door') {
+      this.onHouseEnterCb?.(interactable.id);
       return;
     }
 
@@ -4177,6 +4202,117 @@ export class GameScene extends THREE.Scene {
     if (this.onZoneInteractCallback) {
       this.onZoneInteractCallback(zone);
     }
+  }
+
+  // ── Enterable interiors ────────────────────────────────────────────────
+  // A single reusable room built once, hidden 300u below the island so the
+  // CAMERA can teleport into it while the (unmoved) player and the whole
+  // spherical-physics world stay put. Enclosed box → you only ever see the
+  // room; the far island is occluded by the walls anyway. No player-physics or
+  // collider changes (the exact blockers the design flagged), no 2nd scene.
+  private insideInterior = false;
+  private interiorGroup: THREE.Group | null = null;
+  private interiorWallMat: THREE.MeshStandardMaterial | null = null;
+  private interiorTitleCtx: CanvasRenderingContext2D | null = null;
+  private interiorTitleTex: THREE.CanvasTexture | null = null;
+  private interiorOrbitAngle = 0;
+  private onHouseEnterCb: ((id: string) => void) | null = null;
+  private static readonly INTERIOR_ORIGIN = new THREE.Vector3(0, -300, 0);
+
+  public setOnHouseEnter(cb: (id: string) => void): void {
+    this.onHouseEnterCb = cb;
+  }
+  public isInsideInterior(): boolean {
+    return this.insideInterior;
+  }
+
+  private buildInterior(): void {
+    if (this.interiorGroup) return;
+    const g = new THREE.Group();
+    g.position.copy(GameScene.INTERIOR_ORIGIN);
+    g.visible = false;
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.92 });
+    this.interiorWallMat = wallMat;
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6b4a, roughness: 0.85 });
+    const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, ry = 0) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.rotation.y = ry;
+      g.add(m);
+    };
+    add(new THREE.BoxGeometry(8, 0.2, 8), woodMat, 0, 0, 0); // floor
+    add(new THREE.BoxGeometry(8, 0.2, 8), wallMat, 0, 4, 0); // ceiling
+    add(new THREE.BoxGeometry(4.6, 0.06, 3.4), new THREE.MeshStandardMaterial({ color: 0xb06a72, roughness: 0.9 }), 0, 0.13, 0.3); // rug
+    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 0, 2, -4); // back
+    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 0, 2, 4); // front
+    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, -4, 2, 0, Math.PI / 2); // left
+    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 4, 2, 0, Math.PI / 2); // right
+    add(new THREE.BoxGeometry(2.4, 0.9, 0.9), new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.7 }), 0, 0.55, -3.2); // desk
+    add(new THREE.BoxGeometry(0.4, 2.6, 2.2), new THREE.MeshStandardMaterial({ color: 0x7a5638, roughness: 0.8 }), -3.6, 1.4, 0.6); // shelf
+    // Title poster on the back wall (re-drawn per building on enter)
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 256;
+    this.interiorTitleCtx = canvas.getContext('2d');
+    this.interiorTitleTex = new THREE.CanvasTexture(canvas);
+    this.interiorTitleTex.colorSpace = THREE.SRGBColorSpace;
+    const poster = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.4, 1.7),
+      new THREE.MeshStandardMaterial({ map: this.interiorTitleTex, transparent: true }),
+    );
+    poster.position.set(0, 2.5, -3.88);
+    g.add(poster);
+    // Bright, linear-falloff room light so all four walls read clearly (the
+    // island's scene ambient is deliberately low, and the sun may face away
+    // from a room 300u under the map). A second low fill kills dark corners.
+    const lamp = new THREE.PointLight(0xfff4e0, 3.2, 24, 1);
+    lamp.position.set(0, 3.4, 0);
+    g.add(lamp);
+    const fill = new THREE.PointLight(0xd8e2ff, 1.2, 20, 1);
+    fill.position.set(2.5, 1.6, 2.5);
+    g.add(fill);
+    this.interiorGroup = g;
+    this.add(g);
+  }
+
+  /** Teleport the CAMERA into the room + re-theme it. main-simple owns the fade,
+   *  the content panel (zones), and the Leave button. */
+  public enterInterior(title: string, wallColor: number): void {
+    this.buildInterior();
+    if (this.interiorWallMat) {
+      this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
+    }
+    const ctx = this.interiorTitleCtx;
+    if (ctx && this.interiorTitleTex) {
+      ctx.clearRect(0, 0, 512, 256);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 54px system-ui, sans-serif';
+      ctx.fillStyle = '#4a3b2e';
+      ctx.fillText(title, 256, 128);
+      this.interiorTitleTex.needsUpdate = true;
+    }
+    if (this.interiorGroup) this.interiorGroup.visible = true;
+    this.interiorOrbitAngle = 0;
+    this.insideInterior = true;
+  }
+
+  public exitInterior(): void {
+    this.insideInterior = false;
+    if (this.interiorGroup) this.interiorGroup.visible = false;
+  }
+
+  private updateInteriorCamera(deltaTime: number): void {
+    // Slow orbit inside the room so you see the whole space without input.
+    this.interiorOrbitAngle += deltaTime * 0.28;
+    const c = GameScene.INTERIOR_ORIGIN;
+    this.camera.up.set(0, 1, 0);
+    this.camera.position.set(
+      c.x + Math.cos(this.interiorOrbitAngle) * 3.4,
+      c.y + 1.8,
+      c.z + Math.sin(this.interiorOrbitAngle) * 3.4,
+    );
+    this.camera.lookAt(c.x, c.y + 1.4, c.z);
   }
 
   /**
