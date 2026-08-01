@@ -542,6 +542,13 @@ export class GameScene extends THREE.Scene {
 
     // Create zones manager for portfolio content
     this.zonesManager = new ZonesManager(this.island, this);
+    // Zone landmark buildings are added under THIS scene, not island.mesh, so
+    // the collider traverse (above) never registers them. Push their footprint
+    // colliders explicitly. Radius (1.7) < interactionRange (2.5) so a player
+    // stopped at the wall is still close enough to open the panel/enter.
+    for (const zone of this.zonesManager.getZones()) {
+      this.colliders.push({ position: zone.getPosition(), radius: 1.7 });
+    }
 
     // Place quest mailboxes (Island.ts owns the town proper)
     await this.placeAssets();
