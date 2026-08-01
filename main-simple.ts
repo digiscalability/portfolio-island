@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { a11y } from './Accessibility';
 import { startDwellTracking, track, trackOnce } from './Analytics';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
-import { Passport } from './Passport';
+import { Passport, PASSPORT_META, type PassportZone } from './Passport';
 import { DeliverySystem } from './DeliverySystem';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
@@ -1139,19 +1139,39 @@ class SimpleApp {
    * feed it to the HUD compass. Hidden when the chain is complete.
    */
   private updateQuestCompass(): void {
+    const player = this.scene.getPlayer();
+    if (!player) {
+      this.ui.updateQuestCompass(null);
+      return;
+    }
+    // Copy into scratch (getWorldPosition/getSurfaceNormal return fresh clones)
+    // so the active-delivery path allocates nothing.
+    const playerPos = this._qcPlayerPos.copy(player.getWorldPosition());
+    const normal = this._qcNormal.copy(player.getSurfaceNormal());
+
+    // Priority 1: an active delivery. Priority 2 (the new bit): guide the visitor
+    // to the nearest UNSTAMPED zone, so the compass finally points at the
+    // PORTFOLIO — it used to only ever point at mailboxes, leaving zone discovery
+    // to the minimap + a 2.5u proximity prompt. Hidden once all four are stamped.
     const active = this.deliverySystem?.getActiveDeliveries?.() ?? [];
-    const target = active.length > 0 ? active[0] : null;
-    if (!target || !target.destination) {
+    const delivery = active.length > 0 ? active[0] : null;
+    let targetPos: THREE.Vector3 | null = null;
+    let label = '';
+    if (delivery?.destination) {
+      targetPos = delivery.destination.mesh.position;
+      label = '📬 Delivery';
+    } else {
+      const zone = this.nearestUnstampedZone(playerPos);
+      if (zone) {
+        targetPos = zone.pos;
+        label = `${PASSPORT_META[zone.id].icon} ${PASSPORT_META[zone.id].label}`;
+      }
+    }
+    if (!targetPos) {
       this.ui.updateQuestCompass(null);
       this.scene.setGuideTarget(null);
       return;
     }
-    const player = this.scene.getPlayer();
-    // Copy into scratch (getWorldPosition/getSurfaceNormal return fresh clones)
-    // so this per-frame path allocates nothing while a delivery is active.
-    const playerPos = this._qcPlayerPos.copy(player.getWorldPosition());
-    const normal = this._qcNormal.copy(player.getSurfaceNormal());
-    const targetPos = target.destination.mesh.position;
 
     // Feed the in-world breadcrumb trail the same target as the HUD compass
     this.scene.setGuideTarget(targetPos);
@@ -1185,8 +1205,32 @@ class SimpleApp {
     this.ui.updateQuestCompass({
       angleRad,
       distance: arc * R,
-      label: '\uD83D\uDCEC Delivery',
+      label,
     });
+  }
+
+  /**
+   * Nearest passport zone the visitor hasn't stamped yet, for the compass
+   * guide-me fallback. Returns null once the passport is complete (compass off)
+   * or before the passport exists. Only the four stamp zones count \u2014 the pole
+   * Welcome hub is the intro, not a destination.
+   */
+  private nearestUnstampedZone(
+    playerPos: THREE.Vector3,
+  ): { pos: THREE.Vector3; id: PassportZone } | null {
+    if (!this.passport || this.passport.isComplete()) return null;
+    let best: { pos: THREE.Vector3; id: PassportZone } | null = null;
+    let bestD = Infinity;
+    for (const z of this.scene.getZonesManager().getZones()) {
+      if (!this.passport.isStampZone(z.id) || this.passport.has(z.id)) continue;
+      const zp = z.getPosition();
+      const d = zp.distanceToSquared(playerPos);
+      if (d < bestD) {
+        bestD = d;
+        best = { pos: zp, id: z.id as PassportZone };
+      }
+    }
+    return best;
   }
 
   /**

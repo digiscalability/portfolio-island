@@ -3740,6 +3740,10 @@ export class GameScene extends THREE.Scene {
       this.envCycle.update(deltaTime, playerPos, time);
       this.updateAtmosphereGrade(deltaTime);
     }
+    // Animate the zone markers (orb bob + slow spin). ZonesManager.update was
+    // never called, so Zone.update() had been dead code — the markers sat
+    // perfectly static, losing the "this is alive, come here" affordance.
+    this.zonesManager.update(time);
     // AFTER the cycle, which owns the sun's direction each frame
     this.updateSunShadow(playerPos);
   }
@@ -4288,6 +4292,10 @@ export class GameScene extends THREE.Scene {
     );
 
     raycaster.setFromCamera(mouse, this.camera);
+    // Explicitly set .camera too: this recurses the whole scene, which now
+    // contains Sprites (zone icons, project plaques, fireflies), and Sprite
+    // raycasting needs raycaster.camera or it logs a console error per sprite.
+    raycaster.camera = this.camera;
     const hits = raycaster.intersectObjects(this.children, true);
     return hits;
   }

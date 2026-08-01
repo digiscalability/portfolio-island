@@ -2192,8 +2192,16 @@ export class Island {
       // levelled up to match the other districts' density (was only 2 lots)
       [0.95 + SHIFT_PROJECTS, 0.34], [1.55 + SHIFT_PROJECTS, 0.66], [1.25 + SHIFT_PROJECTS, 0.72],
     ];
+    // One per site — names the world after the projects the panel describes.
+    const PROJECT_LABELS = [
+      'RankPilot',
+      'ChocoMate',
+      'DigiScalability',
+      "Bano's Cookbook",
+      'Insta Services',
+    ];
     for (let i = 0; i < WORK_SITES.length; i++) {
-      const block = this.createConstructionBlock();
+      const block = this.createConstructionBlock(PROJECT_LABELS[i]);
       const pos = this.claimOffStreet(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
@@ -3265,7 +3273,7 @@ export class Island {
     return group;
   }
 
-  private createConstructionBlock(): THREE.Group {
+  private createConstructionBlock(label?: string): THREE.Group {
     const group = new THREE.Group();
     // Main building block
     const buildingGeom = new THREE.BoxGeometry(2, 3, 2);
@@ -3286,6 +3294,46 @@ export class Island {
       pole.castShadow = true;
       pole.receiveShadow = true;
       group.add(pole);
+    }
+    // Name plaque: connect the world to the content. Standing in the Projects
+    // district you saw five anonymous grey boxes while the panel talked about
+    // RankPilot/ChocoMate/… — now each block is labelled with its project. A
+    // camera-facing sprite avoids the floating-plane look that got signboards
+    // removed. (The timber/blueprint visual rescue lands in a later pass.)
+    if (label) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 72;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = 'rgba(15,20,32,0.82)';
+        ctx.fillRect(0, 0, 320, 72);
+        ctx.strokeStyle = 'rgba(150,185,255,0.65)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(2, 2, 316, 68);
+        let fs = 34;
+        ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
+        while (ctx.measureText(label).width > 292 && fs > 14) {
+          fs -= 2;
+          ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
+        }
+        ctx.fillStyle = '#eaf1ff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, 160, 38);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const sprite = new THREE.Sprite(
+          new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
+        );
+        sprite.name = 'project-plaque';
+        sprite.position.set(0, 3.95, 0);
+        sprite.scale.set(2.8, 0.63, 1);
+        // Decorative label — opt out of raycasting (skip the interaction/camera
+        // rays + the "Raycaster.camera not set" console spam).
+        sprite.raycast = () => {};
+        group.add(sprite);
+      }
     }
     return group;
   }

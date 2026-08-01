@@ -29,7 +29,7 @@ export class Zone {
     this.position = data.position.clone();
 
     // Create visual marker (portal/platform)
-    this.marker = this.createMarker(data.color);
+    this.marker = this.createMarker(data.color, data.icon);
 
     // Align marker to island displaced surface properly
     try {
@@ -47,7 +47,7 @@ export class Zone {
     }
   }
 
-  private createMarker(color: number): THREE.Mesh {
+  private createMarker(color: number, icon?: string): THREE.Mesh {
     // Landmark plaza: stone-toned disc + emissive ring + light beam, so each
     // zone reads as a destination without looking radioactive up close.
     const geometry = new THREE.CylinderGeometry(1.6, 1.7, 0.18, 24);
@@ -104,6 +104,36 @@ export class Zone {
     const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.3, 3.5, 8), beamMat);
     beam.position.y = 1.75;
     mesh.add(beam);
+
+    // Emoji identity badge floating above the orb — the five markers were
+    // identical geometry in five colours, indistinguishable at a glance. The
+    // icon (🏠💼🚀🎨📬) was defined in ZoneData all along and never rendered. A
+    // camera-facing sprite reads as identity from any angle without adding a
+    // real light or a fragile floating plane.
+    if (icon) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.font = '92px system-ui, "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(icon, 64, 70);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const sprite = new THREE.Sprite(
+          new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
+        );
+        sprite.name = 'zone-icon';
+        sprite.position.y = 4.6;
+        sprite.scale.setScalar(1.5);
+        // Purely decorative — opt out of raycasting so the interaction/camera
+        // rays skip it (and don't spam the "Raycaster.camera not set" warning).
+        sprite.raycast = () => {};
+        mesh.add(sprite);
+      }
+    }
 
     return mesh;
   }

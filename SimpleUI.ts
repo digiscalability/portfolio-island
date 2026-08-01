@@ -1,6 +1,7 @@
 import { a11y } from './Accessibility';
 import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import { VOICE_MAX_MS } from './Chat';
+import { DISTRICTS } from './Districts';
 import { checkName } from './Moderation';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { buildShareUrl, setUrlParam, share } from './Share';
@@ -3049,6 +3050,14 @@ export class SimpleUI {
 
     const content = this.getZoneContent(zone);
     this.zonePanelDiv.innerHTML = content;
+    // Panel thumbnails are lazy + optional: if an image is missing (or blocked)
+    // it hides itself rather than showing a broken-image glyph. Attached here
+    // (not via an inline onerror handler) so a strict CSP can't neutralise it.
+    this.zonePanelDiv.querySelectorAll('img').forEach((img) => {
+      img.addEventListener('error', () => {
+        (img as HTMLImageElement).style.display = 'none';
+      });
+    });
 
     // Funnel: which sections a visitor actually reaches, and the outbound
     // clicks that are the real conversion. Once-per-session so re-opening the
@@ -3160,14 +3169,10 @@ export class SimpleUI {
    * Get color for zone
    */
   private getZoneColor(zoneId: string): string {
-    const colors: { [key: string]: string } = {
-      welcome: '#4CAF50',
-      professional: '#2196F3',
-      projects: '#FF9800',
-      personal: '#E91E63',
-      contact: '#9C27B0',
-    };
-    return colors[zoneId] || '#666';
+    // Derive from the single DISTRICTS source of truth (was a hardcoded hex-string
+    // copy that could drift from the 3D markers + minimap dots).
+    const d = DISTRICTS.find((x) => x.id === zoneId);
+    return d ? `#${d.color.toString(16).padStart(6, '0')}` : '#666';
   }
 
   /**
@@ -3192,20 +3197,31 @@ export class SimpleUI {
     };
     const chip = (t: string): string =>
       `<span style="background:#33333f;padding:5px 11px;border-radius:15px;font-size:13px;">${t}</span>`;
+    // Optional lazy thumbnail — hidden by the error handler in showZonePanel if
+    // the asset isn't present, so the panels never depend on the images shipping.
+    const thumb = (src: string, alt: string): string =>
+      `<img src="${src}" alt="${alt}" loading="lazy" style="width:100%;max-height:150px;object-fit:cover;
+        object-position:top;border-radius:10px;margin:8px 0 4px;display:block;border:1px solid rgba(255,255,255,0.08);" />`;
+    const card = (inner: string): string =>
+      `<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);
+        border-radius:12px;padding:14px;margin:12px 0;text-align:left;">${inner}</div>`;
 
     const contents: { [key: string]: string } = {
       welcome: `
-        <h2 style="margin-top: 0; color: #4CAF50;">🏠 Welcome to the DigiScalability World</h2>
-        <p><strong>DigiScalability</strong> is a Melbourne-based venture studio building
-        AI-powered products — and this island is its living 3D portfolio.</p>
-        <p style="text-align:left;">Walk the planet to explore:</p>
-        <ul style="text-align: left; display: inline-block; line-height:1.7;">
-          <li><strong>Professional</strong> — the builder behind the studio</li>
-          <li><strong>Projects</strong> — RankPilot, ChocoMate, and more</li>
-          <li><strong>Personal</strong> — food, family recipes, creative tools</li>
-          <li><strong>Get In Touch</strong> — work with DigiScalability</li>
+        <h2 style="margin-top: 0; color: #4CAF50;">🏝️ Welcome to the DigiScalability World</h2>
+        <p><strong>DigiScalability</strong> is a Melbourne venture studio building AI-powered
+        products — and this island is its living 3D portfolio, hand-built in Three.js.</p>
+        <p style="text-align:left;margin-bottom:4px;">Follow the
+        <strong style="color:#ffd54a;">➤ compass</strong> to each district, or just wander:</p>
+        <ul style="text-align: left; display: inline-block; line-height:1.7;margin-top:4px;">
+          <li>💼 <strong>Professional</strong> — the builder behind the studio</li>
+          <li>🚀 <strong>Projects</strong> — RankPilot, ChocoMate &amp; more</li>
+          <li>🎨 <strong>Personal</strong> — food, family recipes, creative tools</li>
+          <li>📬 <strong>Contact</strong> — work with DigiScalability</li>
         </ul>
-        <p style="margin-top: 18px; font-size:14px; color:#bbb;"><em>${this.isTouch
+        <p style="margin-top:12px; font-size:13.5px; color:#cdd;">🛂 Visit all four
+        <em>in person</em> to stamp your <strong>Passport</strong> and earn the Founder's Crown 👑.</p>
+        <p style="margin-top: 12px; font-size:13px; color:#aaa;"><em>${this.isTouch
           ? 'Drag the joystick to move, drag to look, 👆 USE to interact'
           : 'WASD to move, mouse to look, E to interact'}. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
       `,
@@ -3214,6 +3230,9 @@ export class SimpleUI {
         <p>Abbas Ali — solo founder &amp; full-stack AI builder. Day job in tech,
         a venture studio after hours, hospitality-management roots, CS degree with an
         MIT (Deakin) nearly done.</p>
+        <p style="font-size:13.5px;color:#bcd;background:rgba(90,140,255,0.12);
+          border-radius:10px;padding:8px 12px;margin:10px 0;">🛠️ <strong>Now:</strong>
+          building <strong>RankPilot</strong> — see the Projects district. 🚀</p>
         <h3 style="margin-bottom:8px;">Core Stack</h3>
         <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 12px 0 18px;">
           ${chip('Next.js')} ${chip('TypeScript')} ${chip('Firebase / GCP')}
@@ -3230,45 +3249,57 @@ export class SimpleUI {
       `,
       projects: `
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
-        <div style="text-align: left;">
-          <h3 style="margin-bottom:4px;">📈 RankPilot <span style="font-size:12px;color:#8f8;">● live</span></h3>
-          <p style="margin:4px 0;font-size:14px;"><strong style="color:#ffcc80;">Problem:</strong>
+        ${card(`
+          <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#8f8;">● live</span></h3>
+          ${thumb('/assets/panels/rankpilot.webp', 'RankPilot dashboard')}
+          <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Problem:</strong>
           search is shifting from ten blue links to AI answers — and most sites are invisible to
           the models doing the answering.</p>
-          <p style="margin:4px 0;font-size:14px;"><strong style="color:#ffcc80;">What I built:</strong>
-          a platform that audits a site's schema, content and LLM-readiness and shows exactly what
-          to fix. Built solo; live and in daily use.</p>
-          ${link('https://rankpilot-h3jpc.web.app', '↗ Visit RankPilot', { primary: true })}
-          <h3 style="margin-bottom:4px;margin-top:22px;">🍫 ChocoMate</h3>
-          <p style="margin-top:4px;">Direct-to-consumer chocolate brand — e-commerce
-          build, brand, and content pipeline.</p>
-          ${link('https://chocomate.au', '↗ chocomate.au')}
-          <h3 style="margin-bottom:4px;margin-top:22px;">🌐 DigiScalability</h3>
-          <p style="margin-top:4px;">The studio itself — services, case studies, and
-          the SEO/LLM-visibility practice behind RankPilot.</p>
-          ${link('https://digiscalability.com', '↗ digiscalability.com')}
-          <h3 style="margin-bottom:4px;margin-top:22px;">📖 Bano's Cookbook &amp; more</h3>
-          <p style="margin-top:4px;">Digitising a family's 1981 handwritten recipes;
-          a services marketplace (Insta Services); and this Three.js island world.</p>
-          ${link('https://github.com/digiscalability', '💻 See more on GitHub')}
+          <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Built:</strong>
+          a platform that audits a site's schema, content &amp; LLM-readiness and shows exactly
+          what to fix. Solo build, live and in daily use.</p>
+          <div style="margin-top:8px;">${link('https://rankpilot-h3jpc.web.app', '↗ Visit RankPilot', { primary: true })}</div>
+        `)}
+        ${card(`
+          <h3 style="margin:0 0 2px;">🍫 ChocoMate</h3>
+          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront')}
+          <p style="margin:6px 0;font-size:13.5px;">Direct-to-consumer chocolate brand —
+          the storefront, brand system, and content pipeline, end to end.</p>
+          <div style="margin-top:8px;">${link('https://chocomate.au', '↗ chocomate.au')}</div>
+        `)}
+        <div style="text-align:left;">
+          <h3 style="margin-bottom:4px;margin-top:14px;">🌐 DigiScalability</h3>
+          <p style="margin-top:4px;font-size:13.5px;">The studio itself — services, case studies,
+          and the SEO/LLM-visibility practice behind RankPilot.
+          ${link('https://digiscalability.com', '↗ digiscalability.com')}</p>
+          <h3 style="margin-bottom:4px;margin-top:14px;">📖 Bano's Cookbook &amp; more</h3>
+          <p style="margin-top:4px;font-size:13.5px;">Digitising a family's 1981 handwritten recipes;
+          a services marketplace (Insta Services); and this Three.js island world.
+          ${link('https://github.com/digiscalability', '💻 GitHub')}</p>
         </div>
       `,
       personal: `
         <h2 style="margin-top: 0; color: #E91E63;">🎨 Personal</h2>
-        <p>Melbourne, Australia. Builder by day and night — but not only of software.</p>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 18px 0; text-align:left;">
+        <p>Melbourne, Australia. Builder by day and night — but not only of software.
+        A lot of this island is personal: those cottages are the Personal district,
+        the market stalls nod to the food side, and the recipes below are real.</p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; text-align:left;">
           <div><h3 style="margin:0 0 4px;">🍽️ Food Ventures</h3>
-            <p style="font-size:14px;">Hospitality roots; kitchen-to-market concepts from
-            steak frites to desserts.</p></div>
+            <p style="font-size:13.5px;">Hospitality roots; kitchen-to-market concepts from
+            steak frites to desserts — the Bayside commissary idea in progress.</p></div>
           <div><h3 style="margin:0 0 4px;">👵 Family Heritage</h3>
-            <p style="font-size:14px;">Preserving handwritten family recipes from 1981 —
-            the heart behind Bano's Cookbook.</p></div>
+            <p style="font-size:13.5px;">Preserving a grandmother's handwritten recipes from
+            1981 — the heart behind Bano's Cookbook.</p></div>
           <div><h3 style="margin:0 0 4px;">🎬 Creative Tooling</h3>
-            <p style="font-size:14px;">Blender, DaVinci Resolve, ComfyUI — a full studio
-            for product storytelling.</p></div>
+            <p style="font-size:13.5px;">Blender, DaVinci Resolve, ComfyUI — a full studio
+            for product storytelling and 3D worlds like this one.</p></div>
           <div><h3 style="margin:0 0 4px;">📚 Always Learning</h3>
-            <p style="font-size:14px;">A CS degree, a Masters of IT nearly done, and a
-            new experiment every week.</p></div>
+            <p style="font-size:13.5px;">A CS degree, a Masters of IT nearly done, and a
+            new experiment shipped most weeks.</p></div>
+        </div>
+        <div style="margin-top:8px;">
+          ${link('https://youtube.com/@DigiScalability', '▶️ Creative builds', { primary: true })}
+          ${link('https://instagram.com/digiscalability', '📸 Instagram')}
         </div>
       `,
       contact: `
