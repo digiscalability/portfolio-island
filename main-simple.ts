@@ -761,14 +761,27 @@ class SimpleApp {
    * room → (zones) show the content panel over it → a Leave button. The player
    * world is frozen (GameScene.update), so leaving drops them back at the door.
    */
+  // Short content shown on the interior side walls so entering a building
+  // actually SHOWS the portfolio, not just its name (the full panel still opens).
+  private static readonly INTERIOR_CONTENT: Record<string, [string, string]> = {
+    welcome: ['5 districts\nto explore', 'Hand-built\nin Three.js'],
+    professional: ['Abbas Ali\nFull-stack\nAI builder', 'Next.js · TS\nFirebase\nPython'],
+    projects: ['RankPilot\nlive AI-SEO\nplatform', 'ChocoMate\nBano’s\nInsta Services'],
+    personal: ['Food · Family\nCreative\ntooling', 'Melbourne,\nAustralia'],
+    contact: ['Work with\nDigiScalability', 'admin@\ndigiscalability\n.com'],
+  };
+
   private enterBuilding(id: string, isZone: boolean, zone?: { id: string; name: string }): void {
     if (this.scene.isInsideInterior()) return;
     const d = DISTRICTS.find((x) => x.id === id);
     const title = isZone ? (zone?.name ?? d?.name ?? id) : 'A cosy home';
     const wall = isZone ? (d?.accent ?? 0xcfc4ae) : 0xe0c9a8;
+    const [left, right] = isZone
+      ? (SimpleApp.INTERIOR_CONTENT[id] ?? ['', ''])
+      : ['A place to\nrest', 'Someone\nlives here'];
     sfx.blip();
     this.ui.fadeThrough(() => {
-      this.scene.enterInterior(title, wall);
+      this.scene.enterInterior(title, wall, left, right);
       if (isZone && zone) {
         this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
       }

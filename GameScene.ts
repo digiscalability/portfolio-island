@@ -4213,8 +4213,7 @@ export class GameScene extends THREE.Scene {
   private insideInterior = false;
   private interiorGroup: THREE.Group | null = null;
   private interiorWallMat: THREE.MeshStandardMaterial | null = null;
-  private interiorTitleCtx: CanvasRenderingContext2D | null = null;
-  private interiorTitleTex: THREE.CanvasTexture | null = null;
+  private interiorPosters: Array<{ ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
   private interiorOrbitAngle = 0;
   private onHouseEnterCb: ((id: string) => void) | null = null;
   private static readonly INTERIOR_ORIGIN = new THREE.Vector3(0, -300, 0);
@@ -4249,19 +4248,29 @@ export class GameScene extends THREE.Scene {
     add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 4, 2, 0, Math.PI / 2); // right
     add(new THREE.BoxGeometry(2.4, 0.9, 0.9), new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.7 }), 0, 0.55, -3.2); // desk
     add(new THREE.BoxGeometry(0.4, 2.6, 2.2), new THREE.MeshStandardMaterial({ color: 0x7a5638, roughness: 0.8 }), -3.6, 1.4, 0.6); // shelf
-    // Title poster on the back wall (re-drawn per building on enter)
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 256;
-    this.interiorTitleCtx = canvas.getContext('2d');
-    this.interiorTitleTex = new THREE.CanvasTexture(canvas);
-    this.interiorTitleTex.colorSpace = THREE.SRGBColorSpace;
-    const poster = new THREE.Mesh(
-      new THREE.PlaneGeometry(3.4, 1.7),
-      new THREE.MeshStandardMaterial({ map: this.interiorTitleTex, transparent: true }),
-    );
-    poster.position.set(0, 2.5, -3.88);
-    g.add(poster);
+    // Three framed posters — a big title on the back wall + a content panel on
+    // each side wall — all re-drawn per building on enter (so you SEE the
+    // portfolio content inside the building, not just a title).
+    this.interiorPosters = [];
+    const makePoster = (w: number, h: number, x: number, y: number, z: number, ry: number) => {
+      const cv = document.createElement('canvas');
+      cv.width = 512;
+      cv.height = Math.round((512 * h) / w);
+      const ctx = cv.getContext('2d');
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(w, h),
+        new THREE.MeshStandardMaterial({ map: tex, transparent: true }),
+      );
+      m.position.set(x, y, z);
+      m.rotation.y = ry;
+      g.add(m);
+      if (ctx) this.interiorPosters.push({ ctx, tex });
+    };
+    makePoster(3.6, 1.9, 0, 2.5, -3.88, 0); // back — title
+    makePoster(2.6, 1.7, -3.88, 1.95, 0.4, Math.PI / 2); // left — content
+    makePoster(2.6, 1.7, 3.88, 1.95, 0.4, -Math.PI / 2); // right — content
     // Bright, linear-falloff room light so all four walls read clearly (the
     // island's scene ambient is deliberately low, and the sun may face away
     // from a room 300u under the map). A second low fill kills dark corners.
@@ -4277,24 +4286,41 @@ export class GameScene extends THREE.Scene {
 
   /** Teleport the CAMERA into the room + re-theme it. main-simple owns the fade,
    *  the content panel (zones), and the Leave button. */
-  public enterInterior(title: string, wallColor: number): void {
+  public enterInterior(title: string, wallColor: number, left = '', right = ''): void {
     this.buildInterior();
     if (this.interiorWallMat) {
       this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
     }
-    const ctx = this.interiorTitleCtx;
-    if (ctx && this.interiorTitleTex) {
-      ctx.clearRect(0, 0, 512, 256);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = 'bold 54px system-ui, sans-serif';
-      ctx.fillStyle = '#4a3b2e';
-      ctx.fillText(title, 256, 128);
-      this.interiorTitleTex.needsUpdate = true;
-    }
+    this.drawPoster(0, title, true);
+    this.drawPoster(1, left, false);
+    this.drawPoster(2, right, false);
     if (this.interiorGroup) this.interiorGroup.visible = true;
     this.interiorOrbitAngle = 0;
     this.insideInterior = true;
+  }
+
+  /** Draw a framed poster: title (big) or a content panel of \n-split lines. */
+  private drawPoster(i: number, text: string, big: boolean): void {
+    const p = this.interiorPosters[i];
+    if (!p) return;
+    const cv = p.ctx.canvas;
+    const ctx = p.ctx;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = 'rgba(250,248,242,0.94)';
+    ctx.fillRect(10, 10, cv.width - 20, cv.height - 20);
+    ctx.strokeStyle = 'rgba(60,50,40,0.35)';
+    ctx.lineWidth = 5;
+    ctx.strokeRect(10, 10, cv.width - 20, cv.height - 20);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = big ? '#3a2f26' : '#40382f';
+    const lines = (text || '').split('\n');
+    const fs = big ? 60 : 40;
+    const lh = fs * 1.28;
+    ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
+    const startY = cv.height / 2 - ((lines.length - 1) * lh) / 2;
+    lines.forEach((ln, k) => ctx.fillText(ln, cv.width / 2, startY + k * lh));
+    p.tex.needsUpdate = true;
   }
 
   public exitInterior(): void {
