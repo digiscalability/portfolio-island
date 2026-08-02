@@ -46,22 +46,20 @@ const ELEVENLABS_API_KEY = defineSecret('ELEVENLABS_API_KEY');
 const TTS_IP_WINDOW_MS = 60 * 60 * 1000; // 1h window (paid synths + all fetches)
 export const TTS_QUEUE_TTL_MS = 15 * 60 * 1000; // reply ids are short-lived
 export const TTS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // audio cache retention
-// Turbo v2.5: same 0.5 credits/char as flash but noticeably better prosody —
-// the flash renders read flat ("tones aren't the best"). Multilingual v2 is
-// better still but 1 credit/char (halves the monthly audio budget).
-const TTS_MODEL = 'eleven_turbo_v2_5';
-// Expressive delivery: lower stability lets the voice act; style adds
-// character read; speaker boost keeps it present on phone speakers.
-const TTS_VOICE_SETTINGS = {
-  stability: 0.45,
-  similarity_boost: 0.75,
-  style: 0.4,
-  use_speaker_boost: true,
-};
-// Bump when the model/settings change so stale cached renders re-synthesize
-// (the cache key would otherwise keep serving audio in the old delivery).
-const TTS_RENDER_VERSION = 'v2';
-const TTS_OUTPUT = 'mp3_22050_32'; // ~4KB/s — a reply is a few tens of KB
+// Eleven v3: the expressive/conversational flagship — the reason the owner
+// bought the plan. 1 credit/char (2× turbo), latency ~3-5s (the client waits
+// out the typewriter animation), verified live on this account 2026-08-03.
+const TTS_MODEL = 'eleven_v3';
+// v3 stability is effectively an enum (0 creative / 0.5 natural / 1 robust);
+// Natural is the documented sweet spot for in-character dialogue. v3 derives
+// the rest of the delivery itself — extra knobs are turbo-era tuning.
+const TTS_VOICE_SETTINGS = { stability: 0.5 };
+// Bump when the model/settings/bitrate change so stale cached renders
+// re-synthesize (the cache key would otherwise keep serving old audio).
+const TTS_RENDER_VERSION = 'v3';
+// Full-quality audio: the launch 22kHz/32kbps setting was voicemail-grade and
+// read as "robotic" regardless of model. ~16KB/s; a reply is 100-250KB.
+const TTS_OUTPUT = 'mp3_44100_128';
 const TTS_MAX_CHARS = 500; // replies are 1-2 short sentences; hard ceiling
 
 // personaId → ElevenLabs voice id, VERIFIED against this account's
@@ -71,7 +69,8 @@ const TTS_MAX_CHARS = 500; // replies are 1-2 short sentences; hard ceiling
 // voice; nothing breaks (and 4xx logs WITHOUT the ALERT prefix so a config
 // gap can't page like an outage).
 const VOICES: Record<string, string> = {
-  storyteller: 'hLJPUGOEwHuUGuMZlUf5', // abbas_test1 — the owner's own cloned voice (his pick)
+  storyteller: 'EXAVITQu4vr4xnSDxMaL', // Sarah — mature narrator (the abbas_test1 clone
+  // was tried here and pulled: the clone's SOURCE audio limits it, not the model)
   elder_sage: 'JBFqnCBsd6RMkjVDRZzb', // George — warm, captivating storyteller
   guard: 'SOYHLrjzK2X1ezoPC6cr', // Harry — fierce warrior (good-humoured watchman)
   village_baker: 'XrExE9yKIg1WjnnlVkGX', // Matilda — knowledgeable, friendly

@@ -125,7 +125,10 @@ export function cancelSpeech(): void {
 // a missed match just means the browser voice speaks, never a stuck line.
 const cloudOffers = new Map<string, { p: Promise<string | null>; t: number }>();
 const CLOUD_OFFER_TTL_MS = 30_000;
-const CLOUD_WAIT_MS = 4_000; // max delay before giving up and speaking locally
+// Max delay before giving up and speaking locally. Generous because the v3
+// model takes 3-5s to render — the reply text is already typing out while the
+// audio cooks, and a voice that starts a beat after the caption reads fine.
+const CLOUD_WAIT_MS = 9_000;
 let cloudAudioEl: HTMLAudioElement | null = null;
 // Generation counter: every new spoken line (and every cancel/mute) bumps it,
 // and a playCloud that awoke from its fetch only proceeds if it is STILL the

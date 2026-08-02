@@ -11,15 +11,15 @@ export const MONTHLY_TOKEN_CAP = 4_000_000;
  *  hits" metric counts IPs that exceeded this same threshold. */
 export const IP_MAX_PER_WINDOW = 8;
 
-/** Monthly ElevenLabs TTS character budget (npcVoice). Creator plan = 100k
- *  credits/month and flash v2.5 bills 0.5 credits/char, so 150k chars ≈ 75k
- *  credits — a hard denial-of-wallet stop that still leaves the owner ~25% of
- *  the plan for other use. Cache hits don't count against it. */
-export const TTS_MONTHLY_CHAR_CAP = 150_000;
+/** Monthly ElevenLabs TTS character budget (npcVoice). The plan carries 131k
+ *  credits/month and eleven_v3 bills 1 credit/char, so 100k chars ≈ 76% of
+ *  the plan — a hard denial-of-wallet stop that still leaves the owner
+ *  headroom for other use. Cache hits don't count against it. */
+export const TTS_MONTHLY_CHAR_CAP = 100_000;
 
-/** Daily ElevenLabs sub-cap (~5% of the month): one bad day — organic spike or
+/** Daily ElevenLabs sub-cap (~6% of the month): one bad day — organic spike or
  *  slow abuse — degrades to the browser voice instead of eating the month. */
-export const TTS_DAILY_CHAR_CAP = 8_000;
+export const TTS_DAILY_CHAR_CAP = 6_000;
 
 /** npcVoice PAID synths allowed per IP per hour. Legitimate use is one synth
  *  per NPC reply and npcChat already caps replies at 8/min, so this is
