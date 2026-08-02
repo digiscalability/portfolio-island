@@ -53,33 +53,33 @@ const TTS_MODEL = 'eleven_flash_v2_5';
 const TTS_OUTPUT = 'mp3_22050_32'; // ~4KB/s — a reply is a few tens of KB
 const TTS_MAX_CHARS = 500; // replies are 1-2 short sentences; hard ceiling
 
-// personaId → ElevenLabs PREMADE voice id. Cast by register: warm narrators, a
-// gravelly wanderer, a casual Australian musician. VERIFY against the
-// account's GET /v1/voices before enabling — several classic premades are now
-// "legacy" and absent from newer accounts. A missing voice fails that synth →
-// fallback:true → browser voice; nothing breaks (and 4xx logs WITHOUT the
-// ALERT prefix so a config gap can't page like an outage).
+// personaId → ElevenLabs voice id, VERIFIED against this account's
+// GET /v1/voices on 2026-08-03 (the classic premades — Rachel, Arnold, Josh,
+// Clyde… — are "legacy" and absent from newer accounts; the original cast had
+// 9 of them). A missing voice fails that synth → fallback:true → browser
+// voice; nothing breaks (and 4xx logs WITHOUT the ALERT prefix so a config
+// gap can't page like an outage).
 const VOICES: Record<string, string> = {
-  storyteller: '21m00Tcm4TlvDq8ikWAM', // Rachel — warm narrator
-  elder_sage: 'JBFqnCBsd6RMkjVDRZzb', // George — warm older British
-  guard: 'VR6AewLTigWG4xSOukaG', // Arnold — crisp, confident
-  village_baker: 'XrExE9yKIg1WjnnlVkGX', // Matilda — friendly
-  island_explorer: 'TxGEqnHWrfWFTfGW9XjX', // Josh — young, energetic
-  young_student: 'MF3mGyEYCl7XYWbV9V6O', // Elli — young, eager
-  fisherman: 'onwK4e9ZLuTAKqWW03F9', // Daniel — deep, calm
-  artist: 'XB0fDUnXU5powFXDhCwa', // Charlotte — dreamy
-  wanderer: '2EiwWnXFnvU5JabPnv8n', // Clyde — gravelly, mysterious
-  gardener: 'pFZP5JQG7iQjIQuC4Bku', // Lily — gentle
-  architect: 'nPczCjzI2devNBz1zQrb', // Brian — measured narrator
-  musician: 'IKne3meq5aSn9XLyUdCD', // Charlie — casual Australian
-  lighthouse_keeper: 'pqHfZKP75CvOlQylNhV4', // Bill — older, trustworthy
-  tourist: 'jsCqWAovK2LkecY7zXl4', // Freya — bright, delighted
-  cartographer: 'Xb7hH8MSUJpSbSDYk0k2', // Alice — precise British
-  philosopher: 'GBv7mTt0atIp3Br8iCZE', // Thomas — soft, meditative
-  courier: 'iP95p4xoKVk53GoZ742B', // Chris — natural, busy-casual
-  night_watch: 'flq6f7yk4E4fJM5XTYuZ', // Michael — older, calm
+  storyteller: 'EXAVITQu4vr4xnSDxMaL', // Sarah — mature, reassuring narrator
+  elder_sage: 'JBFqnCBsd6RMkjVDRZzb', // George — warm, captivating storyteller
+  guard: 'SOYHLrjzK2X1ezoPC6cr', // Harry — fierce warrior (good-humoured watchman)
+  village_baker: 'XrExE9yKIg1WjnnlVkGX', // Matilda — knowledgeable, friendly
+  island_explorer: 'TX3LPaxmHKxFdv7VOQHJ', // Liam — energetic
+  young_student: 'cgSgspJ2msm6clMCkdW9', // Jessica — playful, bright
+  fisherman: 'onwK4e9ZLuTAKqWW03F9', // Daniel — steady, calm
+  artist: 'FGY2WhTYpPnrIDTdsKH5', // Laura — quirky enthusiast
+  wanderer: 'N2lVS1w4EtoT3dr4eOWO', // Callum — husky trickster
+  gardener: 'pFZP5JQG7iQjIQuC4Bku', // Lily — velvety, gentle
+  architect: 'nPczCjzI2devNBz1zQrb', // Brian — deep, measured
+  musician: 'IKne3meq5aSn9XLyUdCD', // Charlie — deep, confident, energetic
+  lighthouse_keeper: 'pqHfZKP75CvOlQylNhV4', // Bill — wise, mature
+  tourist: 'hpp4J3VqNfWAUOO0d1Us', // Bella — bright, warm, delighted
+  cartographer: 'Xb7hH8MSUJpSbSDYk0k2', // Alice — clear, precise
+  philosopher: 'SAz9YHcvj6GT2YYXdXww', // River — relaxed, musing
+  courier: 'iP95p4xoKVk53GoZ742B', // Chris — charming, down-to-earth
+  night_watch: 'CwhRBWXzGAHq8TQ4Fs17', // Roger — laid-back, resonant
 };
-const DEFAULT_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George — current lineup, not legacy
+const DEFAULT_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George — verified present
 
 // Server-side twin of the client's sanitizeForSpeech: the voice reads words,
 // not *stage directions*, markdown, or emoji (kept in sync with Speech.ts's
