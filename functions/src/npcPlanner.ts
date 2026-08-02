@@ -157,7 +157,7 @@ export const planner = onSchedule(
 
     // Account tokens (best-effort) into the shared monthly + daily buckets.
     if (usedNow) {
-      await db.ref(`aiUsage/${month}/tokens`).set(usedTokens + usedNow);
+      await db.ref(`aiUsage/${month}/tokens`).transaction((c) => (c || 0) + usedNow);
       await db.ref(`aiUsage/${month}/calls`).transaction((c) => (c || 0) + 1);
       await db.ref(`aiUsage/${month}/daily/${day}/tokens`).transaction((c) => (c || 0) + usedNow);
       await db.ref(`aiUsage/${month}/daily/${day}/calls`).transaction((c) => (c || 0) + 1);

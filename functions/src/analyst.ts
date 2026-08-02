@@ -389,9 +389,7 @@ export const analyst = onSchedule(
 
     // Account tokens.
     if (usedNow) {
-      const tokRef = db.ref(`aiUsage/${month}/tokens`);
-      const cur = (await tokRef.get()).val() as number | null;
-      await tokRef.set((cur ?? 0) + usedNow);
+      await db.ref(`aiUsage/${month}/tokens`).transaction((c) => (c || 0) + usedNow);
       await db.ref(`aiUsage/${month}/calls`).transaction((c) => (c || 0) + 1);
     }
     console.log(`analyst day=${day} devices=${m.activeDevices} leadsNew=${m.leadsNew} proposals=${proposals.length} filed=${filed} tokens=${usedNow}`);

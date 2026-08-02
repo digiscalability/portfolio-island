@@ -329,9 +329,10 @@ export const npcChat = onCall(
       return { reply: null, fallback: true, reason: 'error' };
     }
 
-    // Account the spend (best-effort; a lost increment only under-counts).
+    // Account the spend (best-effort). Transaction, not read-then-set: chats run
+    // concurrently, and a stale set would drop other calls' tokens from the cap.
     if (usedNow) {
-      usageRef.set(usedTokens + usedNow).catch(() => {});
+      usageRef.transaction((c) => (c || 0) + usedNow).catch(() => {});
       db.ref(`aiUsage/${monthKey}/calls`).transaction((c) => (c || 0) + 1).catch(() => {});
       db.ref(`aiUsage/${monthKey}/daily/${dayKey}/tokens`).transaction((c) => (c || 0) + usedNow).catch(() => {});
       db.ref(`aiUsage/${monthKey}/daily/${dayKey}/calls`).transaction((c) => (c || 0) + 1).catch(() => {});
