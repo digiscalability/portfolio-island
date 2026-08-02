@@ -103,6 +103,14 @@ export class Island {
   public chimneySites: Array<{ position: THREE.Vector3; normal: THREE.Vector3 }> = [];
   /** World anchors just OUTSIDE each cottage's door (for the enter interaction). */
   public houseDoors: Array<{ position: THREE.Vector3; id: string }> = [];
+  // Activity anchors for the NPC schedule engine (NpcActivities.ts) — world
+  // positions of props NPCs walk to and work at. Populated in the build loops.
+  public lampSites: THREE.Vector3[] = [];
+  public mailboxSites: THREE.Vector3[] = [];
+  public stallSites: THREE.Vector3[] = [];
+  public benchSites: THREE.Vector3[] = [];
+  public flowerBedSites: THREE.Vector3[] = [];
+  public lighthouseDir: THREE.Vector3 | null = null;
   // Colliders for props placed ASYNCHRONOUSLY (GLB loads finish after
   // GameScene's registration pass) — GameScene drains this each frame
   public pendingColliders: Array<{ position: THREE.Vector3; radius: number }> = [];
@@ -1617,6 +1625,7 @@ export class Island {
       flag.position.set(0.1, 0.6, 0);
       mb.add(flag);
       mb.position.copy(placement.position);
+      this.mailboxSites.push(placement.position.clone()); // NPC activity anchor (mail round)
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         placement.normal,
@@ -1657,6 +1666,7 @@ export class Island {
       // ribbon where an avenue meets the boulevard; this keeps them at the kerb.
       const pos = this.claimOffStreet(this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]), 0.05).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
+      this.lampSites.push(sampled.position.clone()); // NPC activity anchor (lamp round)
       const lampGroup = new THREE.Group();
       lampGroup.name = `lamp_${i}`;
       const poleMat = Materials.createTrimMaterial(0x3a3a3a);
@@ -2168,6 +2178,7 @@ export class Island {
       const pos = this.claimOffStreet(this.dirAt(sLon, sLat), 0.06).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
+      this.stallSites.push(sampled.position.clone()); // NPC activity anchor (market visit)
       // Counter at ~0.66u working height for the 1.56u vendors
       stall.scale.setScalar(2.2); // ~3.7u incl. awning (~2.2x the 1.7u player) — already well-proportioned
       stall.quaternion.copy(
@@ -2296,6 +2307,18 @@ export class Island {
       ...DISTRICT_LONS.map((l) => [l, ZONE_LAT] as [number, number]),
       [0, 1.42],
     ];
+    // NPC activity anchors (gardener) — two off-centre points on each plaza's
+    // flower ring, nudged off the pavement so she kneels beside real blooms.
+    for (const [aLon, aLat] of FLOWER_ANCHORS) {
+      for (const [dl, dt] of [[0.22, 0.05], [-0.2, 0.13]] as Array<[number, number]>) {
+        try {
+          const fd = this.pushOffStreet(this.dirAt(aLon + dl, aLat + dt));
+          this.flowerBedSites.push(this.sampleSurfaceByDirection(fd, 0.0).position.clone());
+        } catch {
+          /* skip an unsamplable bed */
+        }
+      }
+    }
     // Pass 1: scatter valid placements (respecting street skips) + colour index
     const bloomUp = new THREE.Vector3(0, 1, 0);
     const bloomOne = new THREE.Vector3(1, 1, 1);
@@ -2452,6 +2475,7 @@ export class Island {
         bench.add(leg);
       }
       bench.position.copy(bSampled.position);
+      this.benchSites.push(bSampled.position.clone()); // NPC activity anchor (bench rest)
       const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bSampled.normal);
       bench.quaternion.copy(bq);
       // Face the plaza this bench belongs to (seat toward it, backrest away)
@@ -2799,6 +2823,7 @@ export class Island {
    */
   private createLighthouse(): THREE.Group | null {
     const dir = this.dirAt(5.4, 0.34).normalize();
+    this.lighthouseDir = dir.clone(); // NPC activity anchor (lighthouse keeper)
     let surf;
     try {
       surf = this.sampleSurfaceByDirection(dir, 0);

@@ -114,6 +114,12 @@ export class EnvironmentCycle {
     return this.lastDayFactor;
   }
 
+  /** Current in-world hour 0–24 (honours the ?hour= debug override). Drives the
+   *  NPC activity schedules in NpcActivities.ts. */
+  public getHour(): number {
+    return this.currentHour();
+  }
+
   // Scratch
   private readonly _c1 = new THREE.Color();
   private readonly _c2 = new THREE.Color();

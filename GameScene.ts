@@ -14,6 +14,9 @@ import { SimplePlayer } from './SimplePlayer';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 import { ZonesManager } from './ZonesManager';
+import * as NpcActivities from './NpcActivities';
+import { getWorldState } from './WorldState';
+import { AI_NPCS } from './NpcChat';
 
 /**
  * GameScene
@@ -290,6 +293,9 @@ export class GameScene extends THREE.Scene {
   private readonly _wanderZ = new THREE.Vector3();
   private readonly _wanderYawQ = new THREE.Quaternion();
   private readonly _npcRollQ = new THREE.Quaternion();
+  private readonly _goalScratch = new THREE.Vector3();
+  // Per-NPC persona id (parallel to island.npcTargets); null = no activity brain
+  private npcPersonaIds: (string | null)[] = [];
   // Day/night grading endpoints (lerped per frame — no allocations)
   private static readonly _ambientDay = new THREE.Color(0xfff6e8);
   private static readonly _ambientNight = new THREE.Color(0x2c3a5e);
@@ -574,6 +580,7 @@ export class GameScene extends THREE.Scene {
 
     // Floating identity pins above every NPC
     this.createNameTags();
+    this.setupNpcActivities();
 
     // The Fisherman stands at the shore and casts a line
     this.setupFisherman();
@@ -2308,10 +2315,17 @@ export class GameScene extends THREE.Scene {
   // Quest "!" markers floating above NPC quest givers
   private questMarkers: Array<{ mesh: THREE.Group; npcName: string; base: THREE.Vector3; normal: THREE.Vector3 }> = [];
 
-  // Floating role labels ("🥖 Baker") above every NPC, readable from afar.
+  // Floating labels above every NPC: role by default ("🥖 Baker"), swapped to
+  // the current activity while working ("🌷 tending"). Canvas/texture retained
+  // so the pill can be redrawn when the activity changes (a few times/day).
   private nameTags: Array<{
     sprite: THREE.Sprite;
     target: { position: THREE.Vector3; meshRef: THREE.Object3D };
+    ctx: CanvasRenderingContext2D | null;
+    tex: THREE.CanvasTexture;
+    emoji: string;
+    role: string;
+    shown: string;
   }> = [];
   private readonly _tagNormal = new THREE.Vector3();
 
@@ -2374,45 +2388,79 @@ export class GameScene extends THREE.Scene {
   private createNameTags(): void {
     for (const npc of this.island.npcTargets) {
       const info = GameScene.NPC_ROLES[npc.name] ?? { emoji: '📍', role: npc.name };
-      const sprite = GameScene.makeNameSprite(info.emoji, info.role);
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      GameScene.drawNamePill(ctx, info.emoji, info.role);
+      const tex = new THREE.CanvasTexture(canvas);
+      const sprite = new THREE.Sprite(
+        // depthWrite:false so pills never occlude each other; depthTest stays TRUE
+        // so terrain hides pins on the far side of the planet (no x-ray labels).
+        new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
+      );
+      sprite.scale.set(1.7, 0.42, 1);
+      sprite.renderOrder = 2;
       this.add(sprite);
-      this.nameTags.push({ sprite, target: npc });
+      this.nameTags.push({ sprite, target: npc, ctx, tex, emoji: info.emoji, role: info.role, shown: info.role });
     }
     console.log(`🏷️ ${this.nameTags.length} NPC name pins created`);
   }
 
-  /** Canvas pill (emoji + role) rendered as a camera-facing sprite. */
-  private static makeNameSprite(emoji: string, role: string): THREE.Sprite {
-    const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 64;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const text = `${emoji} ${role}`;
-      ctx.font = '600 30px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const w = Math.min(248, ctx.measureText(text).width + 30);
-      // Pill background
-      ctx.fillStyle = 'rgba(10,14,26,0.85)';
-      ctx.beginPath();
-      ctx.roundRect(128 - w / 2, 12, w, 40, 20);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(170,205,255,0.7)';
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(text, 128, 33);
-    }
-    const tex = new THREE.CanvasTexture(canvas);
-    const sprite = new THREE.Sprite(
-      // depthWrite:false so pills never occlude each other; depthTest stays TRUE
-      // so terrain hides pins on the far side of the planet (no x-ray labels).
-      new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
-    );
-    sprite.scale.set(1.7, 0.42, 1);
-    sprite.renderOrder = 2;
-    return sprite;
+  /** Draw the emoji + label pill onto a name-tag canvas (redrawable). */
+  private static drawNamePill(ctx: CanvasRenderingContext2D | null, emoji: string, label: string): void {
+    if (!ctx) return;
+    ctx.clearRect(0, 0, 256, 64);
+    const text = `${emoji} ${label}`;
+    ctx.font = '600 30px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const w = Math.min(250, ctx.measureText(text).width + 28);
+    ctx.fillStyle = 'rgba(10,14,26,0.85)';
+    ctx.beginPath();
+    ctx.roundRect(128 - w / 2, 12, w, 40, 20);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(170,205,255,0.7)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, 128, 33);
+  }
+
+  /** Swap a name pin between the role and the current activity label. Cheap:
+   *  only redraws when the text actually changes (a few times/NPC/day). */
+  private setNpcBadge(i: number, text: string): void {
+    const tag = this.nameTags[i];
+    if (!tag || tag.shown === text) return;
+    tag.shown = text;
+    GameScene.drawNamePill(tag.ctx, tag.emoji, text);
+    tag.tex.needsUpdate = true;
+  }
+
+  /** Hand the island's activity anchors to NpcActivities + map persona ids. */
+  private setupNpcActivities(): void {
+    const vistas = [
+      this.island.dirAt(5.4, 0.34),
+      this.island.dirAt(2.2, 0.33),
+      this.island.dirAt(4.6, 0.35),
+      this.island.dirAt(0.9, 0.33),
+    ].map((d) => this.island.sampleSurfaceByDirection(d, 0).position.clone());
+    NpcActivities.setAnchors({
+      flowers: this.island.flowerBedSites,
+      lamps: this.island.lampSites,
+      mailboxes: this.island.mailboxSites,
+      stalls: this.island.stallSites,
+      benches: this.island.benchSites,
+      lighthouseDir: this.island.lighthouseDir,
+      vistas,
+    });
+    NpcActivities.applyPlanOverrideFromUrl();
+    this.npcPersonaIds = this.island.npcTargets.map((n) => AI_NPCS[n.name] ?? null);
+  }
+
+  /** Apply a daily server plan (world/island/npcPlan) to the activity engine. */
+  public setNpcActivities(plan: unknown): void {
+    NpcActivities.setPlan(plan);
   }
 
   public getCoinsCollected(): number {
@@ -3338,6 +3386,10 @@ export class GameScene extends THREE.Scene {
             nextSampleAt: number;
             dist: number; // accumulated ground distance — waddle/bob phase
             roll: number; // current waddle roll (eased to 0 when idle)
+            rot: number; // rotation index through an activity's anchor list
+            activity?: NpcActivities.ActivityId; // current scheduled activity
+            pose?: NpcActivities.PoseId; // idle pose while at an anchor
+            nextDwell?: number; // seconds to dwell on arrival at the goal
           };
         };
         if (!data.wander) {
@@ -3354,13 +3406,39 @@ export class GameScene extends THREE.Scene {
             nextSampleAt: 0,
             dist: 0,
             roll: 0,
+            rot: (Math.random() * 100) | 0,
           };
         }
         const w = data.wander;
         let moving = false;
         if (w.state === 'idle') {
           if (time > w.until) {
-            w.target.copy(this.randomDirNear(w.home, 0.1));
+            // Ask the activity engine where this NPC should go next (persona +
+            // hour + mood). null (e.g. Market Vendor) → the plain random wander.
+            const goal =
+              this.npcPersonaIds.length > i
+                ? NpcActivities.getGoal(
+                    this.npcPersonaIds[i],
+                    this.envCycle ? this.envCycle.getHour() : 12,
+                    this.envCycle ? this.envCycle.getDayFactor() : 1,
+                    getWorldState()?.mood,
+                    w,
+                    this._goalScratch,
+                  )
+                : null;
+            if (goal) {
+              w.target.copy(this._goalScratch);
+              w.activity = goal.activity;
+              w.pose = goal.pose;
+              w.nextDwell = goal.dwellMin + Math.random() * (goal.dwellMax - goal.dwellMin);
+              const short = NpcActivities.ACTIVITY_DEFS[goal.activity].short;
+              this.setNpcBadge(i, short ?? (GameScene.NPC_ROLES[npc.name]?.role ?? npc.name));
+            } else {
+              w.target.copy(this.randomDirNear(w.home, 0.1));
+              w.activity = undefined;
+              w.pose = undefined;
+              w.nextDwell = 3 + Math.random() * 7;
+            }
             // Island-only world: never pick a stroll target below the
             // shoreline — NPCs were wandering into the surf
             if (w.target.y < Math.sin(0.3)) {
@@ -3373,7 +3451,7 @@ export class GameScene extends THREE.Scene {
           const remaining = w.dir.angleTo(w.target);
           if (remaining < 0.004) {
             w.state = 'idle';
-            w.until = time + 3 + Math.random() * 7;
+            w.until = time + (w.nextDwell ?? 3 + Math.random() * 7);
           } else {
             this._wanderAxis.crossVectors(w.dir, w.target);
             if (this._wanderAxis.lengthSq() > 1e-10) {
@@ -3416,18 +3494,32 @@ export class GameScene extends THREE.Scene {
         // Walk bob is faster/taller than the idle breathing bob. While
         // walking it runs on the gait-distance phase (dist×18 ≈ the old
         // time×9 at the 0.5 u/s stroll) so footfalls stop with the feet.
-        const bob = moving
+        let bob = moving
           ? (Math.sin(w.dist * 18 + i * 1.7) + 1) * 0.03
           : (Math.sin(time * 2 + i * 1.7) + 1) * 0.015;
         // Waddle: roll about the local forward axis at HALF the footfall
         // frequency (left step / right step), eased out on stopping so the
         // body settles upright instead of freezing mid-lean.
-        const rollTarget = moving ? Math.sin(w.dist * 9 + i * 1.7) * 0.07 : 0;
+        let rollTarget = moving ? Math.sin(w.dist * 9 + i * 1.7) * 0.07 : 0;
+        // Activity pose: while standing at an anchor, the pose preset drives the
+        // idle motion (kneel low + slow, play bouncy, sleep near-still) and a
+        // vertical `lift` (a crouch/lie via the surface-normal offset — no extra
+        // terrain sampling). npc.glb is unrigged, so this whole-group modulation
+        // is the pose vocabulary.
+        let lift = 0;
+        if (!moving && w.pose) {
+          const p = NpcActivities.POSE_PRESETS[w.pose];
+          if (p) {
+            bob = (Math.sin(time * p.bobFreq + i * 1.7) + 1) * p.bobAmp;
+            rollTarget = Math.sin(time * p.bobFreq * 0.5 + i) * p.rollAmp;
+            lift = p.lift;
+          }
+        }
         w.roll += (rollTarget - w.roll) * Math.min(1, 12 * deltaTime);
         npc.meshRef.position
           .copy(w.dir)
           .multiplyScalar(w.radius)
-          .addScaledVector(this._npcNormal, bob + hop);
+          .addScaledVector(this._npcNormal, bob + hop + lift);
         npc.position.copy(npc.meshRef.position);
 
         // Notice the player: when they walk near, turn to face them and greet
