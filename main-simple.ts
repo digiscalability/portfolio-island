@@ -78,6 +78,37 @@ class SimpleApp {
   private isRunning: boolean = false;
   // "Meet the AI townsfolk" compass override (welcome CTA → cleared on AI chat)
   private aiGuideTarget: THREE.Vector3 | null = null;
+  // "Beat the lap record" CTA → compass points at the start gate until a race starts
+  private raceGuideTarget: THREE.Vector3 | null = null;
+
+  // Tour mode: a skippable cinematic rail over the districts for the visitor
+  // who won't touch WASD (the Breton camera-rail pattern from the audit).
+  // While active the orbit camera is suspended and this drives the scene
+  // camera directly; the world (NPCs, sea, activities) keeps living.
+  private tour: {
+    stops: Array<{
+      caption: string;
+      look: THREE.Vector3; // surface point the camera studies
+      dir: THREE.Vector3; // camera position direction (unit, from planet centre)
+      r: number; // camera position radius
+    }>;
+    idx: number;
+    t: number;
+    phase: 'fly' | 'dwell';
+    fromDir: THREE.Vector3;
+    fromR: number;
+    fromLook: THREE.Vector3;
+  } | null = null;
+  // Tour scratch (kept allocation-free per frame)
+  private readonly _tourDir = new THREE.Vector3();
+  private readonly _tourLook = new THREE.Vector3();
+  private readonly _tourUp = new THREE.Vector3();
+  private readonly _tourAxis = new THREE.Vector3();
+  private readonly _tourQ = new THREE.Quaternion();
+
+  // Completion meter recompute throttle (localStorage reads are cheap; 2.5s
+  // keeps the pill fresh without touching storage every frame)
+  private completionAccum = 0;
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
@@ -391,6 +422,7 @@ class SimpleApp {
         // NPC's authored canned lines, so the NPC never appears broken.
         if (isAiNpc(npcData.name)) {
           this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
+          this.markDone('ds_npc_chatted');
           sfx.blip();
           const canned = npcData.dialogue;
           let ci = 1; // first fallback skips the opening line (canned[0])
@@ -515,6 +547,7 @@ class SimpleApp {
             timeMs: Math.round((e.timeSec ?? 0) * 1000),
             improved: !!e.improved,
           });
+          this.markDone('ds_raced');
           const name = this.multiplayer?.selfName ?? 'Guest';
           if (e.improved && e.circuit && typeof e.timeSec === 'number') {
             void import('./Boards').then((b) => b.submitRaceTime(e.circuit!, e.timeSec!, name));
@@ -531,6 +564,7 @@ class SimpleApp {
         this.ui.flashMessage(e.text);
         if (e.kind === 'start') {
           sfx.raceGo();
+          this.raceGuideTarget = null; // the guide CTA is fulfilled
           track('race_start', { circuit: e.circuit ?? 'unknown' });
         } else if (e.kind === 'checkpoint') sfx.checkpoint();
       });
@@ -547,6 +581,13 @@ class SimpleApp {
           );
         }
       });
+
+      // Cinematic tour + race guide CTAs (welcome modal / leaderboards) and the
+      // UI-side completion flags (guestbook, Times, say-hi) refreshing the pill.
+      this.ui.setOnTour(() => this.startTour());
+      this.ui.setOnRaceGuide(() => this.guideToRace());
+      this.ui.setOnProgressMade(() => this.refreshCompletion());
+      this.refreshCompletion();
 
       // 🎨 button / C key: toggle the appearance editor
       this.ui.setOnCustomizeToggle(() => {
@@ -648,9 +689,12 @@ class SimpleApp {
           /* no storage */
         }
         if (saved) this.multiplayer?.setName(saved);
-        // Deep-linked visitors came for shared content — open it directly; the
-        // persistent pills carry the pitch/CTAs (no stacked modals).
-        if (!this.openDeepLinkZone()) this.ui.showWelcome();
+        // ?tour=1 share links go straight into the cinematic rail (skippable);
+        // otherwise deep-linked visitors get their shared content directly and
+        // everyone else gets the pitch.
+        const wantTour = new URLSearchParams(window.location.search).get('tour') === '1';
+        if (wantTour) this.startTour();
+        else if (!this.openDeepLinkZone()) this.ui.showWelcome();
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -809,6 +853,7 @@ class SimpleApp {
       const { composePhotoCard } = await import('./Share');
       const card = await composePhotoCard(shot);
       track('photo_captured');
+      this.markDone('ds_photo_taken');
       this.ui.showPhotoPreview(card);
     } catch {
       if (overlay) overlay.style.visibility = prevVis;
@@ -941,6 +986,7 @@ class SimpleApp {
       ? (SimpleApp.INTERIOR_CONTENT[id] ?? ['', ''])
       : ['A place to\nrest', 'Someone\nlives here'];
     sfx.blip();
+    this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
       this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
       if (isZone && zone) {
@@ -1085,11 +1131,25 @@ class SimpleApp {
     // Update FPS counter
     this.updateFPS(deltaTime);
 
+    // Completion meter: recompute on a slow cadence (plus immediately at each
+    // flag site) so passport stamps landed elsewhere still surface here.
+    this.completionAccum += deltaTime;
+    if (this.completionAccum > 2.5) {
+      this.completionAccum = 0;
+      this.refreshCompletion();
+    }
+
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
-      // Inside a building: the world is frozen; WASD/joystick walks the room
-      // (GameScene's interior mode) and E interacts with the nearby hotspot.
-      if (this.scene.isInsideInterior()) {
+      // Cinematic tour: the rail owns the camera and the player stands still.
+      // Everything else in the world keeps running (that's the point of it).
+      if (this.tour) {
+        this.scene.setPlayerMovement(0, 0);
+        this.ui.hideInteractionPrompt();
+        this.updateTour(deltaTime);
+      } else if (this.scene.isInsideInterior()) {
+        // Inside a building: the world is frozen; WASD/joystick walks the room
+        // (GameScene's interior mode) and E interacts with the nearby hotspot.
         const moveInput = this.inputManager.getMovementInput();
         const joy = this.ui.getJoystick();
         this.scene.setInteriorMove(
@@ -1426,6 +1486,10 @@ class SimpleApp {
       // visitor talks to an AI NPC (cleared in the chat-open branch).
       targetPos = this.aiGuideTarget;
       label = '🤖 The Storyteller';
+    } else if (this.raceGuideTarget) {
+      // "Beat the lap record" CTA — explicit intent, cleared when a race starts.
+      targetPos = this.raceGuideTarget;
+      label = '🏁 Race start';
     } else if (zone && (portfolioFirst || !delivery?.destination)) {
       targetPos = zone.pos;
       label = `${PASSPORT_META[zone.id].icon} ${PASSPORT_META[zone.id].label}`;
@@ -1497,6 +1561,271 @@ class SimpleApp {
       }
     }
     return best;
+  }
+
+  // \u2500\u2500 Tour mode: skippable cinematic rail (welcome CTA / ?tour=1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  private static readonly TOUR_FLY_S = 2.6; // seconds flying between stops
+  private static readonly TOUR_DWELL_S = 6.0; // seconds studying each stop
+
+  /**
+   * Build the rail and hand the camera to it. Stops are derived from live
+   * world state (zone plazas + a working NPC), so the tour survives layout
+   * changes for free. No-op if already touring or inside a building.
+   */
+  private startTour(): void {
+    if (this.tour || this.scene.isInsideInterior()) return;
+    const zones = new Map(
+      this.scene
+        .getZonesManager()
+        .getZones()
+        .map((z) => [z.id, z.getPosition()] as const),
+    );
+    const stops: Array<{ caption: string; look: THREE.Vector3; dir: THREE.Vector3; r: number }> =
+      [];
+    const addStop = (
+      p: THREE.Vector3 | null | undefined,
+      caption: string,
+      alt: number,
+      back: number,
+    ) => {
+      if (!p) return;
+      const up = p.clone().normalize();
+      const tan = new THREE.Vector3(0, 1, 0).cross(up);
+      if (tan.lengthSq() < 0.05) tan.set(1, 0, 0).cross(up);
+      tan.normalize();
+      const camPos = p.clone().addScaledVector(up, alt).addScaledVector(tan, back);
+      stops.push({
+        caption,
+        look: p.clone().addScaledVector(up, 1.4),
+        dir: camPos.clone().normalize(),
+        r: camPos.length(),
+      });
+    };
+    addStop(
+      zones.get('welcome'),
+      "Welcome to Life Island \u2014 Abbas Ali's portfolio, built as a living planet you can walk around.",
+      24,
+      8,
+    );
+    addStop(
+      zones.get('professional'),
+      'The Professional District \u2014 full-stack and AI engineering. Step inside the office for the story.',
+      9.5,
+      14,
+    );
+    addStop(
+      zones.get('projects'),
+      'The Projects District \u2014 ventures under construction: RankPilot, ChocoMate, and friends.',
+      9.5,
+      14,
+    );
+    addStop(
+      this.scene.getNpcPosition('Gardener') ?? this.scene.getNpcPosition('Guard'),
+      'Every townsperson is a live AI agent \u2014 planned each morning, reported on nightly. Talk to anyone.',
+      3.5,
+      6,
+    );
+    addStop(
+      zones.get('personal'),
+      'The Personal District \u2014 the human behind the code, and the cottages the townsfolk sleep in.',
+      9.5,
+      14,
+    );
+    addStop(
+      zones.get('contact'),
+      'Get In Touch \u2014 the Post Office sends Abbas a real email. The island is yours from here.',
+      8.5,
+      13,
+    );
+    if (stops.length === 0) return;
+    track('tour_start');
+    const cam = this.scene.getCamera();
+    this.scene.setCameraSuspended(true);
+    this.ui.hideInteractionPrompt();
+    const playerPos = this.scene.getPlayer()?.getWorldPosition() ?? stops[0].look.clone();
+    this.tour = {
+      stops,
+      idx: 0,
+      t: 0,
+      phase: 'fly',
+      fromDir: cam.position.clone().normalize(),
+      fromR: Math.max(cam.position.length(), 20),
+      fromLook: playerPos.clone(),
+    };
+    this.ui.showTourOverlay(() => this.endTour(true));
+    this.ui.setTourCaption(stops[0].caption);
+  }
+
+  private updateTour(dt: number): void {
+    const tour = this.tour;
+    if (!tour) return;
+    const cam = this.scene.getCamera();
+    const stop = tour.stops[tour.idx];
+    tour.t += dt;
+    if (tour.phase === 'fly') {
+      const k = Math.min(1, tour.t / SimpleApp.TOUR_FLY_S);
+      const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      this.slerpDirs(this._tourDir, tour.fromDir, stop.dir, e);
+      // Altitude hop: arcing over the terrain beats a chord that dips through it
+      const r = tour.fromR + (stop.r - tour.fromR) * e + Math.sin(Math.PI * e) * 7;
+      cam.position.copy(this._tourDir).multiplyScalar(r);
+      this._tourLook.copy(tour.fromLook).lerp(stop.look, e);
+      cam.up.copy(this._tourUp.copy(cam.position).normalize());
+      cam.lookAt(this._tourLook);
+      if (k >= 1) {
+        tour.phase = 'dwell';
+        tour.t = 0;
+      }
+    } else {
+      // Gentle drift around the stop while the caption is read
+      const up = this._tourUp.copy(stop.look).normalize();
+      this._tourQ.setFromAxisAngle(up, 0.045 * dt);
+      stop.dir.applyQuaternion(this._tourQ);
+      cam.position.copy(stop.dir).multiplyScalar(stop.r);
+      cam.up.copy(up);
+      cam.lookAt(stop.look);
+      if (tour.t >= SimpleApp.TOUR_DWELL_S) this.advanceTourStop();
+    }
+  }
+
+  private advanceTourStop(): void {
+    const tour = this.tour;
+    if (!tour) return;
+    if (tour.idx + 1 >= tour.stops.length) {
+      this.endTour(false);
+      return;
+    }
+    const cam = this.scene.getCamera();
+    const prev = tour.stops[tour.idx];
+    tour.idx += 1;
+    tour.phase = 'fly';
+    tour.t = 0;
+    tour.fromDir.copy(cam.position).normalize();
+    tour.fromR = cam.position.length();
+    tour.fromLook.copy(prev.look);
+    this.ui.setTourCaption(tour.stops[tour.idx].caption);
+  }
+
+  private endTour(skipped: boolean): void {
+    if (!this.tour) return;
+    this.tour = null;
+    this.ui.hideTourOverlay();
+    this.scene.setCameraSuspended(false);
+    track(skipped ? 'tour_skip' : 'tour_complete');
+    this.ui.flashMessage('\ud83e\udded The island is yours \u2014 walk anywhere, talk to anyone');
+  }
+
+  /**
+   * Constant-speed rotation from direction `a` to `b` (unit vectors) by
+   * fraction `t`, written into `out`. Plain lerp+normalize is speed-warped on
+   * big arcs; the stops are up to ~90\u00b0 apart so the warp would be visible.
+   */
+  private slerpDirs(out: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, t: number): void {
+    const angle = a.angleTo(b);
+    if (angle < 1e-4) {
+      out.copy(b);
+      return;
+    }
+    this._tourAxis.copy(a).cross(b);
+    if (this._tourAxis.lengthSq() < 1e-8) {
+      // Near-antipodal: any perpendicular axis works
+      this._tourAxis.set(0, 1, 0).cross(a);
+      if (this._tourAxis.lengthSq() < 1e-8) this._tourAxis.set(1, 0, 0).cross(a);
+    }
+    this._tourAxis.normalize();
+    this._tourQ.setFromAxisAngle(this._tourAxis, angle * t);
+    out.copy(a).applyQuaternion(this._tourQ).normalize();
+  }
+
+  /** "Beat the lap record" CTA \u2192 compass to the land start gate (water fallback). */
+  private guideToRace(): void {
+    const pos = this.scene.getRaceStartPosition('land') ?? this.scene.getRaceStartPosition('water');
+    if (!pos) return;
+    this.raceGuideTarget = pos;
+    this.ui.flashMessage(
+      '\ud83c\udfc1 Follow the compass to the start gate \u2014 grab a car and drive through the glowing rings',
+    );
+  }
+
+  /** Set a one-shot completion flag + refresh the meter immediately. */
+  private markDone(key: string): void {
+    try {
+      localStorage.setItem(key, '1');
+    } catch {
+      /* no storage */
+    }
+    this.refreshCompletion();
+  }
+
+  /**
+   * The visitor-goal loop: everything worth doing on the island, one weight
+   * each. Stamps read the live passport; one-shot acts are localStorage flags
+   * set at their event sites (and re-polled every 2.5s, so flags flipped deep
+   * inside the UI layer surface without extra wiring).
+   */
+  private refreshCompletion(): void {
+    const flag = (k: string): boolean => {
+      try {
+        return localStorage.getItem(k) === '1';
+      } catch {
+        return false;
+      }
+    };
+    const stampIds = (Object.keys(PASSPORT_META) as PassportZone[]).filter(
+      (id) => this.passport?.isStampZone(id) ?? false,
+    );
+    const items = [
+      ...stampIds.map((id) => ({
+        icon: PASSPORT_META[id].icon,
+        label: `Visit ${PASSPORT_META[id].label}`,
+        done: this.passport?.has(id) ?? false,
+        hint: 'Walk into the district plaza \u2014 the compass points the way.',
+      })),
+      {
+        icon: '\ud83d\udcac',
+        label: 'Talk with an AI townsperson',
+        done: flag('ds_npc_chatted'),
+        hint: 'Walk up to anyone with a name tag and press E.',
+      },
+      {
+        icon: '\ud83c\udfc1',
+        label: 'Finish a race',
+        done: flag('ds_raced'),
+        hint: 'Hop in a car or boat and drive through the white start ring.',
+      },
+      {
+        icon: '\ud83d\udcec',
+        label: 'Complete the courier chain',
+        done: flag('ds_courier_reward'),
+        hint: 'Deliver every parcel \u2014 glowing mailboxes have one waiting.',
+      },
+      {
+        icon: '\ud83d\udc4b',
+        label: 'Say hi or sign the guestbook',
+        done: flag('ds_said_hi'),
+        hint: 'The \ud83d\udc4b Say hi button \u2014 five seconds, promise.',
+      },
+      {
+        icon: '\ud83d\udcf0',
+        label: 'Read the Island Times',
+        done: flag('ds_read_times'),
+        hint: '\ud83d\udcd6 Portfolio menu \u2192 Island Times: the AI-compiled daily.',
+      },
+      {
+        icon: '\ud83d\udcf8',
+        label: 'Take an island photo',
+        done: flag('ds_photo_taken'),
+        hint: 'Press P (or the \ud83d\udcf8 pill) anywhere pretty.',
+      },
+      {
+        icon: '\ud83c\udfe0',
+        label: 'Step inside a building',
+        done: flag('ds_entered_building'),
+        hint: 'Walk to any door and press E.',
+      },
+    ];
+    const done = items.filter((i) => i.done).length;
+    this.ui.setCompletion(Math.round((done / items.length) * 100), items);
   }
 
   /**
@@ -2023,7 +2352,9 @@ const bootState = window as unknown as { __lifeIslandBooted?: boolean };
 const bootApp = () => {
   if (bootState.__lifeIslandBooted) return;
   bootState.__lifeIslandBooted = true;
-  new SimpleApp();
+  // Exposed for headless E2E verification (drive update(), start the tour,
+  // read state). The client is untrusted by design, so this adds no surface.
+  (window as unknown as { app?: SimpleApp }).app = new SimpleApp();
 };
 
 // Initialize app when DOM is ready

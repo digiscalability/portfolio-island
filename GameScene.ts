@@ -3517,8 +3517,8 @@ export class GameScene extends THREE.Scene {
     // Check collisions with assets
     this.checkPlayerCollisions();
 
-    // Update camera
-    if (this.orbitCamera) {
+    // Update camera (suspended while the tour rail drives it directly)
+    if (this.orbitCamera && !this.cameraSuspended) {
       this.orbitCamera.update(deltaTime);
     }
 
@@ -5533,6 +5533,19 @@ export class GameScene extends THREE.Scene {
    */
   public getOrbitCamera(): OrbitCamera {
     return this.orbitCamera;
+  }
+
+  /** Start/finish gate of a race circuit, for the compass guide CTA. */
+  public getRaceStartPosition(kind: 'land' | 'water'): THREE.Vector3 | null {
+    return this.races?.getStartPosition(kind) ?? null;
+  }
+
+  // Tour mode drives the camera directly along a cinematic rail; the orbit
+  // follow-cam must not fight it, so its per-frame update is suspended while
+  // the rail runs. The world (NPCs, sea, activities) keeps running throughout.
+  private cameraSuspended = false;
+  public setCameraSuspended(on: boolean): void {
+    this.cameraSuspended = on;
   }
 
   // setPlayerMovement scratch — called every input frame, keep allocation-free

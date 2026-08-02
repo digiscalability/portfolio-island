@@ -18,7 +18,15 @@ function ttsSupported(): boolean {
   );
 }
 
+// Voice kill-switch: muted-state persists across visits (ds_voice_muted).
+// Speech stays opt-out (it's a big part of the NPCs' charm) but one tap of the
+// chat-panel toggle silences every future line until turned back on.
 let enabled = true;
+try {
+  enabled = localStorage.getItem('ds_voice_muted') !== '1';
+} catch {
+  /* no storage */
+}
 
 // ── TTS: voice selection ─────────────────────────────────────────────────────
 let cachedVoices: SpeechSynthesisVoice[] = [];
@@ -91,6 +99,11 @@ export function isSpeechEnabled(): boolean {
 }
 export function setSpeechEnabled(on: boolean): void {
   enabled = on;
+  try {
+    localStorage.setItem('ds_voice_muted', on ? '0' : '1');
+  } catch {
+    /* no storage */
+  }
   if (!on) cancelSpeech();
 }
 export function cancelSpeech(): void {

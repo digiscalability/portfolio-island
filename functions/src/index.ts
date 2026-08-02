@@ -28,6 +28,7 @@ import * as nodemailer from 'nodemailer';
 import Anthropic from '@anthropic-ai/sdk';
 import { containsSlur, scrubReply } from './moderation';
 import { MONTHLY_TOKEN_CAP, IP_MAX_PER_WINDOW } from './constants';
+import { seededPick, ipKey, nextIpWindow, pruneSelect } from './pure';
 
 admin.initializeApp();
 
@@ -47,13 +48,7 @@ async function prune(
   maxAgeMs: number,
 ): Promise<number> {
   const snap = await db.ref(path).get();
-  const val = snap.val() as Record<string, { t?: number }> | null;
-  if (!val) return 0;
-  const updates: Record<string, null> = {};
-  for (const [key, entry] of Object.entries(val)) {
-    const t = typeof entry?.t === 'number' ? entry.t : 0;
-    if (now - t > maxAgeMs) updates[key] = null;
-  }
+  const updates = pruneSelect(snap.val() as Record<string, { t?: number }> | null, now, maxAgeMs);
   const count = Object.keys(updates).length;
   if (count) await db.ref(path).update(updates);
   return count;
@@ -135,14 +130,7 @@ const HEADLINES: Record<Mood, string[]> = {
   ],
 };
 
-// mulberry32-style deterministic pick: varied per tick, reproducible within it.
-function seededPick<T>(arr: T[], seed: number): T {
-  let t = (seed + 0x6d2b79f5) >>> 0;
-  t = Math.imul(t ^ (t >>> 15), t | 1);
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-  const r = ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  return arr[Math.floor(r * arr.length)];
-}
+// seededPick moved to ./pure (shared with the planner + unit-tested).
 
 /** Count presence children with a heartbeat inside the live window. */
 async function countLivePresence(db: admin.database.Database, now: number): Promise<number> {
@@ -353,13 +341,12 @@ export const npcChat = onCall(
     const now = Date.now();
 
     // Per-IP burst limit (aiRate/* is unlisted in the rules ⇒ Admin-SDK-only).
-    const ip = (request.rawRequest.ip || 'noip').replace(/[.:$#[\]/]/g, '_').slice(0, 60);
+    const ip = ipKey(request.rawRequest.ip);
     const ipRef = db.ref(`aiRate/${ip}`);
     const prev = (await ipRef.get()).val() as { c?: number; t?: number } | null;
-    const within = prev && now - (prev.t ?? 0) < NPC_IP_WINDOW_MS;
-    const count = within ? (prev?.c ?? 0) + 1 : 1;
-    await ipRef.set({ c: count, t: within ? prev?.t ?? now : now }).catch(() => {});
-    if (count > NPC_IP_MAX_PER_WINDOW) return { reply: null, fallback: true, reason: 'rate' };
+    const next = nextIpWindow(prev, now, NPC_IP_WINDOW_MS);
+    await ipRef.set(next).catch(() => {});
+    if (next.c > NPC_IP_MAX_PER_WINDOW) return { reply: null, fallback: true, reason: 'rate' };
 
     // Hard monthly spend cap (aiUsage/* is unlisted ⇒ Admin-SDK-only). Keyed to
     // the Melbourne calendar month so the cap + daily buckets line up with the

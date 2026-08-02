@@ -101,6 +101,16 @@ export class RaceSystem {
     this.paintCircuit('water');
   }
 
+  /**
+   * World position of a circuit's start/finish gate, for "guide me to the
+   * race" CTAs (the compass needs somewhere to point). Null before build().
+   */
+  public getStartPosition(kind: CircuitKind): THREE.Vector3 | null {
+    const c = this.circuits[kind];
+    if (!c || c.dirs.length === 0) return null;
+    return c.dirs[0].clone().multiplyScalar(c.surfaceR[0]);
+  }
+
   private buildCircuit(
     kind: CircuitKind,
     count: number,

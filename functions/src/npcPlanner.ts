@@ -20,6 +20,7 @@ import * as admin from 'firebase-admin';
 import Anthropic from '@anthropic-ai/sdk';
 
 import { MONTHLY_TOKEN_CAP } from './constants';
+import { seededPick } from './pure';
 
 const ANTHROPIC_API_KEY = defineSecret('ANTHROPIC_API_KEY');
 
@@ -46,14 +47,7 @@ const ACTIVITY_SET = new Set<string>(ACTIVITY_IDS);
 const EVENT_IDS = ['quiet_day', 'market_day', 'music_day', 'festival', 'mystery', 'launch_day'] as const;
 type EventId = (typeof EVENT_IDS)[number];
 
-// mulberry32 deterministic pick (mirrors index.ts).
-function seededPick<T>(arr: readonly T[], seed: number): T {
-  let t = (seed + 0x6d2b79f5) >>> 0;
-  t = Math.imul(t ^ (t >>> 15), t | 1);
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-  const r = ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  return arr[Math.floor(r * arr.length)];
-}
+// seededPick moved to ./pure (shared with index.ts + unit-tested).
 
 async function countLivePresence(db: admin.database.Database, now: number): Promise<number> {
   const val = (await db.ref('presence/island').get()).val() as Record<string, { t?: number }> | null;

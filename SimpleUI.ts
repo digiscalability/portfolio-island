@@ -181,6 +181,8 @@ export class SimpleUI {
     this.createPortfolioButton();
     this.createContactCTA();
     this.createPhotoButton();
+    this.createSayHiButton();
+    this.createCompletionButton();
     this.createEmoteButton();
     this.createTouchControls();
     this.initResponsiveHud();
@@ -645,6 +647,31 @@ export class SimpleUI {
     const body = modal.querySelector('#lb-body');
     if (body)
       body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
+    modal.appendChild(this.makeRaceGuideButton(modal, 'leaderboard'));
+  }
+
+  /** "Take me to the start line" — closes the modal and compass-guides there. */
+  private makeRaceGuideButton(modal: HTMLElement, from: string): HTMLButtonElement {
+    const go = document.createElement('button');
+    go.textContent = '📍 Guide me to the start line';
+    Object.assign(go.style, {
+      width: '100%',
+      marginTop: '12px',
+      padding: '10px',
+      border: '1px solid rgba(255,215,121,0.4)',
+      borderRadius: '10px',
+      background: 'rgba(38,38,51,0.5)',
+      color: '#ffd479',
+      fontSize: '14px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    go.addEventListener('click', () => {
+      track('race_guide', { from });
+      modal.remove();
+      this.onRaceGuide?.();
+    });
+    return go;
   }
 
   /**
@@ -686,6 +713,7 @@ export class SimpleUI {
       }),
     );
     modal.appendChild(shareRow);
+    modal.appendChild(this.makeRaceGuideButton(modal, 'race_finish'));
     this.overlay.appendChild(modal);
     const { getLeaderboard } = await import('./Boards');
     const entries = await getLeaderboard(circuit);
@@ -764,6 +792,12 @@ export class SimpleUI {
         if (input) input.value = '';
         this.toast('✍️ Signed the guestbook!');
         track('guestbook_signed');
+        try {
+          localStorage.setItem('ds_said_hi', '1');
+        } catch {
+          /* no storage */
+        }
+        this.onProgressMade?.();
         await render();
       } else {
         this.toast('Message could not be posted.');
@@ -799,6 +833,12 @@ export class SimpleUI {
    */
   async showIslandTimes(): Promise<void> {
     const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))');
+    try {
+      localStorage.setItem('ds_read_times', '1');
+    } catch {
+      /* no storage */
+    }
+    this.onProgressMade?.();
     const T = SimpleUI.NOTICE_TEMPLATES;
     const notice = this.latestNotice;
     const plan = this.latestPlan;
@@ -1249,6 +1289,25 @@ export class SimpleUI {
     this.onMeetAi = cb;
   }
 
+  // Welcome/leaderboard CTAs the app fulfils: start the cinematic tour, or
+  // compass-guide to the race start line (analyst issue #6 — the race was
+  // undiscoverable until you accidentally drove through a gate).
+  private onTour: (() => void) | null = null;
+  public setOnTour(cb: () => void): void {
+    this.onTour = cb;
+  }
+  private onRaceGuide: (() => void) | null = null;
+  public setOnRaceGuide(cb: () => void): void {
+    this.onRaceGuide = cb;
+  }
+
+  // Fired whenever a completion-meter item flips done inside the UI layer
+  // (guestbook signed, Times read, hi said) so the app can recompute the pill.
+  private onProgressMade: (() => void) | null = null;
+  public setOnProgressMade(cb: () => void): void {
+    this.onProgressMade = cb;
+  }
+
   // ── "Island Times" notice board ────────────────────────────────────────
   // The pre-authored notice lines. This list MUST stay in the same order as
   // functions/src/analyst.ts NOTICE_TEMPLATES — the server writes only the
@@ -1375,6 +1434,287 @@ export class SimpleUI {
     });
     this.makeHudButtonAccessible(btn, 'Take a photo of the island');
     this.overlay.appendChild(btn);
+  }
+
+  // ── Tour mode overlay (caption bar + skip) ───────────────────────────────
+  // The rail itself lives in main-simple; this is just the chrome: a caption
+  // bar that crossfades per stop and a skip control (button or Esc).
+  private tourCaptionDiv: HTMLElement | null = null;
+  private tourSkipBtn: HTMLElement | null = null;
+  private tourEscHandler: ((e: KeyboardEvent) => void) | null = null;
+  private tourCaptionSwap: number | null = null;
+
+  showTourOverlay(onSkip: () => void): void {
+    this.hideTourOverlay();
+    const cap = document.createElement('div');
+    Object.assign(cap.style, {
+      position: 'absolute',
+      left: '50%',
+      bottom: 'calc(var(--sab, 0px) + 46px)',
+      transform: 'translateX(-50%)',
+      maxWidth: 'min(620px, calc(100vw - 40px))',
+      background: 'rgba(6, 10, 20, 0.78)',
+      color: '#fff',
+      padding: '13px 22px',
+      borderRadius: '14px',
+      fontSize: '15.5px',
+      lineHeight: '1.45',
+      textAlign: 'center',
+      fontFamily: 'system-ui, sans-serif',
+      pointerEvents: 'none',
+      zIndex: '1900',
+      transition: 'opacity 0.3s',
+      opacity: '0',
+      boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
+    });
+    this.overlay.appendChild(cap);
+    this.tourCaptionDiv = cap;
+
+    const skip = document.createElement('button');
+    skip.textContent = this.isTouch ? '✕ Skip tour' : '✕ Skip tour (Esc)';
+    Object.assign(skip.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 14px)',
+      left: 'calc(var(--sal, 0px) + 14px)',
+      background: 'rgba(6, 10, 20, 0.7)',
+      color: '#dfe6f2',
+      border: '1px solid rgba(255,255,255,0.25)',
+      padding: '8px 14px',
+      borderRadius: '999px',
+      fontSize: '13px',
+      fontWeight: '600',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      zIndex: '1900',
+    });
+    const doSkip = () => onSkip();
+    skip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      doSkip();
+    });
+    this.overlay.appendChild(skip);
+    this.tourSkipBtn = skip;
+
+    this.tourEscHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') doSkip();
+    };
+    document.addEventListener('keydown', this.tourEscHandler);
+  }
+
+  setTourCaption(text: string): void {
+    const cap = this.tourCaptionDiv;
+    if (!cap) return;
+    if (this.tourCaptionSwap !== null) window.clearTimeout(this.tourCaptionSwap);
+    cap.style.opacity = '0';
+    this.tourCaptionSwap = window.setTimeout(() => {
+      cap.textContent = text;
+      cap.style.opacity = '1';
+      this.tourCaptionSwap = null;
+    }, 300);
+  }
+
+  hideTourOverlay(): void {
+    if (this.tourCaptionSwap !== null) {
+      window.clearTimeout(this.tourCaptionSwap);
+      this.tourCaptionSwap = null;
+    }
+    this.tourCaptionDiv?.remove();
+    this.tourCaptionDiv = null;
+    this.tourSkipBtn?.remove();
+    this.tourSkipBtn = null;
+    if (this.tourEscHandler) {
+      document.removeEventListener('keydown', this.tourEscHandler);
+      this.tourEscHandler = null;
+    }
+  }
+
+  /**
+   * 👋 pill in the top-right conversion column (below 📸): the lowest-friction
+   * way to leave a trace — a two-field note that lands in the public guestbook,
+   * or goes straight to Abbas when the visitor adds an email for a reply.
+   * (Analyst issue #5: zero guestbook entries → the friction was too high.)
+   */
+  private createSayHiButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '👋 Say hi';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 240px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      background: 'rgba(12, 16, 28, 0.72)',
+      border: '1px solid rgba(255,255,255,0.22)',
+      color: 'white',
+      padding: '7px 12px',
+      borderRadius: '999px',
+      fontSize: '13px',
+      fontWeight: '600',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showSayHi();
+    });
+    this.makeHudButtonAccessible(btn, 'Say hi — leave a quick note');
+    this.overlay.appendChild(btn);
+  }
+
+  showSayHi(): void {
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    const savedName = (() => {
+      try {
+        return localStorage.getItem('ds_player_name') || '';
+      } catch {
+        return '';
+      }
+    })();
+    const field =
+      'width:100%;box-sizing:border-box;padding:9px 12px;border-radius:10px;border:none;' +
+      'font-size:14px;background:rgba(255,255,255,0.1);color:#fff;' +
+      'outline:1px solid rgba(120,170,255,0.4);margin:0 0 8px;font-family:inherit;';
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 4px;color:#8a9bff;">👋 Say hi</h2>
+       <p style="margin:0 0 12px;font-size:13px;color:#aab;">Leave a note on the island — takes five seconds.</p>
+       <input id="sh-name" maxlength="24" placeholder="Your name (optional)" value="${this.escapeHtml(savedName)}" style="${field}" />
+       <textarea id="sh-msg" maxlength="200" rows="3" placeholder="Hi Abbas! 👋" style="${field}resize:none;"></textarea>
+       <input id="sh-email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
+       <button id="sh-send" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
+         background:linear-gradient(135deg,#5b6cff,#8a4de0);color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
+       <p style="margin:9px 0 0;font-size:11px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
+    );
+    this.overlay.appendChild(modal);
+    trackOnce('say_hi_opened');
+    modal.querySelectorAll('input, textarea').forEach((el) => {
+      el.addEventListener('keydown', (e) => e.stopPropagation()); // don't leak to game
+    });
+    const msgEl = modal.querySelector('#sh-msg') as HTMLTextAreaElement | null;
+    const nameEl = modal.querySelector('#sh-name') as HTMLInputElement | null;
+    const emailEl = modal.querySelector('#sh-email') as HTMLInputElement | null;
+    const sendBtn = modal.querySelector('#sh-send') as HTMLButtonElement | null;
+    msgEl?.focus();
+    sendBtn?.addEventListener('click', () => {
+      void (async () => {
+        const msg = msgEl?.value.trim() ?? '';
+        if (!msg) {
+          this.toast('Write a little something first!');
+          return;
+        }
+        const email = emailEl?.value.trim() ?? '';
+        if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+          this.toast('Please check your email address.');
+          return;
+        }
+        const name = nameEl?.value.trim() || 'Traveller';
+        if (!sendBtn) return;
+        sendBtn.disabled = true;
+        sendBtn.textContent = 'Sending…';
+        const boards = await import('./Boards');
+        const ok = email
+          ? await boards.submitLead(name, email, msg)
+          : await boards.signGuestbook(name, msg);
+        if (ok) {
+          try {
+            localStorage.setItem('ds_said_hi', '1');
+          } catch {
+            /* no storage */
+          }
+          track('say_hi_sent', { channel: email ? 'lead' : 'guestbook' });
+          this.onProgressMade?.();
+          modal.innerHTML = `<h2 style="margin:0 0 8px;color:#4CAF50;">👋 Sent!</h2>
+            <p style="margin:0;font-size:14px;color:#cde;">${
+              email
+                ? "It's on its way to Abbas — he'll reply by email."
+                : 'Your note is in the island guestbook. Thanks for stopping by!'
+            }</p>`;
+          window.setTimeout(() => modal.remove(), 2200);
+        } else {
+          sendBtn.disabled = false;
+          sendBtn.textContent = 'Send 👋';
+          this.toast('Could not send — try again in a moment.');
+        }
+      })();
+    });
+  }
+
+  // ── Island completion meter ──────────────────────────────────────────────
+  // A quiet "🏝 43%" pill (top-right column). Clicking opens the checklist —
+  // the visitor-goal loop from the audit: give explorers a reason to see
+  // everything, with a hint per unfinished item.
+  private completionBtn: HTMLElement | null = null;
+  private completionPct = 0;
+  private completionItems: Array<{ icon: string; label: string; done: boolean; hint: string }> = [];
+
+  private createCompletionButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '🏝 …';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 278px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      background: 'rgba(12, 16, 28, 0.72)',
+      border: '1px solid rgba(255,255,255,0.22)',
+      color: 'white',
+      padding: '7px 12px',
+      borderRadius: '999px',
+      fontSize: '13px',
+      fontWeight: '600',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showCompletionModal();
+    });
+    this.makeHudButtonAccessible(btn, 'Island completion checklist');
+    this.overlay.appendChild(btn);
+    this.completionBtn = btn;
+  }
+
+  /** App-computed progress: percentage + the checklist items behind it. */
+  public setCompletion(
+    pct: number,
+    items: Array<{ icon: string; label: string; done: boolean; hint: string }>,
+  ): void {
+    this.completionPct = pct;
+    this.completionItems = items;
+    if (this.completionBtn) this.completionBtn.textContent = `🏝 ${pct}%`;
+  }
+
+  showCompletionModal(): void {
+    const modal = this.buildCenteredModal('min(390px, calc(100vw - 32px))');
+    trackOnce('completion_opened');
+    const rows = this.completionItems
+      .map(
+        (it) =>
+          `<div style="display:flex;gap:9px;align-items:flex-start;padding:7px 9px;border-radius:10px;
+             background:${it.done ? 'rgba(18,183,106,0.10)' : 'rgba(255,255,255,0.03)'};margin:4px 0;text-align:left;">
+             <span style="font-size:15px;line-height:1.3;">${it.done ? '✅' : '⬜'}</span>
+             <div style="flex:1;">
+               <div style="font-size:13.5px;font-weight:600;color:${it.done ? '#9fd8b8' : '#e8edf5'};">${it.icon} ${this.escapeHtml(it.label)}</div>
+               ${it.done ? '' : `<div style="font-size:12px;color:#93a;color:#8fa0b8;margin-top:1px;">${this.escapeHtml(it.hint)}</div>`}
+             </div>
+           </div>`,
+      )
+      .join('');
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 4px;color:#8a9bff;">🏝 Island completion — ${this.completionPct}%</h2>
+       <p style="margin:0 0 12px;font-size:13px;color:#aab;">${
+         this.completionPct >= 100
+           ? 'You have seen it all. Abbas would genuinely love to hear from you. 💚'
+           : 'Everything worth doing on the island, in one list.'
+       }</p>
+       <div style="max-height:56vh;overflow:auto;">${rows}</div>`,
+    );
+    this.overlay.appendChild(modal);
   }
 
   /** Object URL of the previewed photo — revoked when replaced or closed. */
@@ -2051,9 +2391,23 @@ export class SimpleUI {
         background:linear-gradient(135deg,#12b76a,#0e9f6e); color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
         🧭 Explore the island →</button>`;
 
+    // Secondary row: the guided 90-second camera tour (for the recruiter who
+    // won't touch WASD) and the race CTA (analyst issue #6 — the circuits were
+    // invisible unless you stumbled into a gate).
+    const secondaryRow = `
+      <div style="display:flex; gap:8px; margin:0 0 12px;">
+        <button data-tour="1" style="flex:1; padding:9px 10px; border-radius:10px;
+          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
+          🎬 90-second tour</button>
+        <button data-race="1" style="flex:1; padding:9px 10px; border-radius:10px;
+          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
+          🏁 Beat the lap record</button>
+      </div>`;
+
     this.welcomeDiv.innerHTML = returning
       ? `<h2 style="margin: 0 0 14px 0; color: #4CAF50;">👋 Welcome back!</h2>
          ${ctaRow}
+         ${secondaryRow}
          <p style="margin:0; font-size:12px; color:#9aa;">Dive back in — this closes on its own.</p>`
       : `
       <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
@@ -2066,6 +2420,7 @@ export class SimpleUI {
         Walk up and ask them anything.</p>
       ${ctaRow}
       ${exploreBtn}
+      ${secondaryRow}
       <p style="margin: 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
     `;
 
@@ -2099,6 +2454,18 @@ export class SimpleUI {
       track('welcome_cta', { cta: 'meet_ai' });
       closeWelcome();
       this.onMeetAi?.();
+    });
+    this.welcomeDiv.querySelector('button[data-tour]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('welcome_cta', { cta: 'tour' });
+      closeWelcome();
+      this.onTour?.();
+    });
+    this.welcomeDiv.querySelector('button[data-race]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('welcome_cta', { cta: 'race' });
+      closeWelcome();
+      this.onRaceGuide?.();
     });
 
     document.addEventListener('keydown', onEscape);

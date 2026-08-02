@@ -1,0 +1,3 @@
+{
+  "rewrites": [{ "source": "/z/:zone", "destination": "/api/z?zone=:zone" }]
+}

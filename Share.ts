@@ -32,8 +32,14 @@ export function buildShareUrl(params: ShareParams = {}): string {
   } catch {
     /* ignore */
   }
-  if (params.zone != null) out.set('zone', params.zone);
   if (params.hour != null) out.set('hour', String(Math.round(params.hour * 10) / 10));
+  if (params.zone != null) {
+    // Zone shares use the /z/<zone> path: a serverless route serves
+    // zone-specific OG tags to link scrapers, then bounces humans to /?zone=.
+    // Carried params (hour/theme) ride along and survive the bounce.
+    const q2 = out.toString();
+    return `${location.origin}/z/${encodeURIComponent(params.zone)}${q2 ? `?${q2}` : ''}`;
+  }
   const q = out.toString();
   return `${location.origin}${location.pathname}${q ? `?${q}` : ''}`;
 }
