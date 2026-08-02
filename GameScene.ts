@@ -2390,7 +2390,7 @@ export class GameScene extends THREE.Scene {
       const info = GameScene.NPC_ROLES[npc.name] ?? { emoji: '📍', role: npc.name };
       const canvas = document.createElement('canvas');
       canvas.width = 256;
-      canvas.height = 64;
+      canvas.height = 96; // room for the two-line role+activity pill
       const ctx = canvas.getContext('2d');
       GameScene.drawNamePill(ctx, info.emoji, info.role);
       const tex = new THREE.CanvasTexture(canvas);
@@ -2399,7 +2399,9 @@ export class GameScene extends THREE.Scene {
         // so terrain hides pins on the far side of the planet (no x-ray labels).
         new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
       );
-      sprite.scale.set(1.7, 0.42, 1);
+      // 0.63 = 0.42 × (96/64): the canvas grew, the scale compensates, so a
+      // single-line pill renders at exactly the pre-two-line world size.
+      sprite.scale.set(1.7, 0.63, 1);
       sprite.renderOrder = 2;
       this.add(sprite);
       this.nameTags.push({ sprite, target: npc, ctx, tex, emoji: info.emoji, role: info.role, shown: info.role });
@@ -2407,33 +2409,47 @@ export class GameScene extends THREE.Scene {
     console.log(`🏷️ ${this.nameTags.length} NPC name pins created`);
   }
 
-  /** Draw the emoji + label pill onto a name-tag canvas (redrawable). */
-  private static drawNamePill(ctx: CanvasRenderingContext2D | null, emoji: string, label: string): void {
+  /** Draw the identity pill onto a name-tag canvas (redrawable). One centred
+   *  line (emoji + role); with `sub` (the current activity), a second smaller
+   *  gold line below it — identity stays readable while the badge shows work. */
+  private static drawNamePill(ctx: CanvasRenderingContext2D | null, emoji: string, label: string, sub?: string): void {
     if (!ctx) return;
-    ctx.clearRect(0, 0, 256, 64);
+    ctx.clearRect(0, 0, 256, 96);
     const text = `${emoji} ${label}`;
-    ctx.font = '600 30px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const w = Math.min(250, ctx.measureText(text).width + 28);
+    ctx.font = '600 30px system-ui, sans-serif';
+    const w1 = ctx.measureText(text).width;
+    ctx.font = '500 22px system-ui, sans-serif';
+    const w2 = sub ? ctx.measureText(sub).width : 0;
+    const w = Math.min(250, Math.max(w1, w2) + 28);
+    const h = sub ? 76 : 40;
+    const top = (96 - h) / 2;
     ctx.fillStyle = 'rgba(10,14,26,0.85)';
     ctx.beginPath();
-    ctx.roundRect(128 - w / 2, 12, w, 40, 20);
+    ctx.roundRect(128 - w / 2, top, w, h, 20);
     ctx.fill();
     ctx.strokeStyle = 'rgba(170,205,255,0.7)';
     ctx.lineWidth = 2.5;
     ctx.stroke();
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(text, 128, 33);
+    ctx.font = '600 30px system-ui, sans-serif';
+    ctx.fillText(text, 128, sub ? top + 22 : 48);
+    if (sub) {
+      ctx.fillStyle = '#ffd479';
+      ctx.font = '500 22px system-ui, sans-serif';
+      ctx.fillText(sub, 128, top + 55);
+    }
   }
 
-  /** Swap a name pin between the role and the current activity label. Cheap:
-   *  only redraws when the text actually changes (a few times/NPC/day). */
-  private setNpcBadge(i: number, text: string): void {
+  /** Update a name pin: role line + optional activity sub-line. Cheap: only
+   *  redraws when the combined text actually changes (a few times/NPC/day). */
+  private setNpcBadge(i: number, role: string, sub?: string): void {
     const tag = this.nameTags[i];
-    if (!tag || tag.shown === text) return;
-    tag.shown = text;
-    GameScene.drawNamePill(tag.ctx, tag.emoji, text);
+    const key = sub ? `${role}|${sub}` : role;
+    if (!tag || tag.shown === key) return;
+    tag.shown = key;
+    GameScene.drawNamePill(tag.ctx, tag.emoji, role, sub);
     tag.tex.needsUpdate = true;
   }
 
@@ -3390,6 +3406,8 @@ export class GameScene extends THREE.Scene {
             activity?: NpcActivities.ActivityId; // current scheduled activity
             pose?: NpcActivities.PoseId; // idle pose while at an anchor
             nextDwell?: number; // seconds to dwell on arrival at the goal
+            faceDir?: THREE.Vector3; // lazily-allocated idle facing (reused)
+            faceActive?: boolean; // faceDir holds a valid dir for this goal
           };
         };
         if (!data.wander) {
@@ -3431,12 +3449,22 @@ export class GameScene extends THREE.Scene {
               w.activity = goal.activity;
               w.pose = goal.pose;
               w.nextDwell = goal.dwellMin + Math.random() * (goal.dwellMax - goal.dwellMin);
-              const short = NpcActivities.ACTIVITY_DEFS[goal.activity].short;
-              this.setNpcBadge(i, short ?? (GameScene.NPC_ROLES[npc.name]?.role ?? npc.name));
+              // Activity facing (artist paints SEAWARD, keeper watches the
+              // tower): resolve the hint into a world dir once per goal; the
+              // orientation block applies it while idle (player-greet wins).
+              if (goal.face) {
+                w.faceDir ??= new THREE.Vector3(); // one-time per NPC
+                w.faceActive = NpcActivities.computeFaceDir(goal.face, this._goalScratch, w.faceDir);
+              } else {
+                w.faceActive = false;
+              }
+              const role = GameScene.NPC_ROLES[npc.name]?.role ?? npc.name;
+              this.setNpcBadge(i, role, NpcActivities.ACTIVITY_DEFS[goal.activity].short);
             } else {
               w.target.copy(this.randomDirNear(w.home, 0.1));
               w.activity = undefined;
               w.pose = undefined;
+              w.faceActive = false;
               w.nextDwell = 3 + Math.random() * 7;
             }
             // Island-only world: never pick a stroll target below the
@@ -3527,6 +3555,13 @@ export class GameScene extends THREE.Scene {
         this._wanderFwd2.subVectors(npcPlayerW, npc.meshRef.position);
         const toPlayerDist = this._wanderFwd2.length();
         let faceFwd: THREE.Vector3 | null = moving ? this._wanderFwd : null;
+        // Idle activity facing: project the goal's face dir onto the live
+        // tangent plane (_wanderFwd is free while idle — reuse as scratch).
+        // The player-proximity block below still overrides it (greet wins).
+        if (!moving && w.faceActive && w.faceDir) {
+          this._wanderFwd.copy(w.faceDir).addScaledVector(this._npcNormal, -w.faceDir.dot(this._npcNormal));
+          if (this._wanderFwd.lengthSq() > 1e-6) faceFwd = this._wanderFwd.normalize();
+        }
         if (toPlayerDist < GameScene.NPC_FACE_RANGE) {
           // project player direction onto the NPC's tangent plane
           this._wanderFwd2.addScaledVector(this._npcNormal, -this._wanderFwd2.dot(this._npcNormal));

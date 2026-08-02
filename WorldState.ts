@@ -21,6 +21,18 @@ export interface NpcPlan {
   updatedAt?: number;
 }
 
+/** The day-theme events the planner may pick — the client-side enum whitelist
+ *  AND the pre-authored display strings for the Island Times masthead. Must
+ *  mirror EVENT_IDS in functions/src/npcPlanner.ts (parity-tested). */
+export const EVENT_META: Record<string, { label: string; emoji: string }> = {
+  quiet_day: { label: 'A quiet day', emoji: '🍃' },
+  market_day: { label: 'Market day', emoji: '🛒' },
+  music_day: { label: 'Music day', emoji: '🎵' },
+  festival: { label: 'Festival day', emoji: '🎪' },
+  mystery: { label: 'A mysterious day', emoji: '🌫️' },
+  launch_day: { label: 'Launch day', emoji: '🚀' },
+};
+
 /** The nightly public notice the analyst writes to world/island/notice. */
 export interface NoticeState {
   day: string;
@@ -72,7 +84,11 @@ function parseNpcPlan(v: unknown): NpcPlan | undefined {
   }
   return {
     day: p.day,
-    event: typeof p.event === 'string' ? p.event.slice(0, 24) : undefined,
+    // Enum-checked, not just length-capped: `event` renders on the Island Times
+    // masthead, so it gets the same both-sides validation as every other
+    // index-selected field (unknown ids are dropped, never displayed).
+    event:
+      typeof p.event === 'string' && Object.prototype.hasOwnProperty.call(EVENT_META, p.event) ? p.event : undefined,
     assignments,
     updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : undefined,
   };

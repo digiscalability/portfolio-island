@@ -27,6 +27,7 @@ import * as admin from 'firebase-admin';
 import * as nodemailer from 'nodemailer';
 import Anthropic from '@anthropic-ai/sdk';
 import { containsSlur, scrubReply } from './moderation';
+import { MONTHLY_TOKEN_CAP, IP_MAX_PER_WINDOW } from './constants';
 
 admin.initializeApp();
 
@@ -68,15 +69,18 @@ export const janitor = onSchedule(
   async () => {
     const db = admin.database();
     const now = Date.now();
-    const [presence, chat, voice, rate] = await Promise.all([
+    const [presence, chat, voice, rate, stats] = await Promise.all([
       prune(db, 'presence/island', now, STALE_PRESENCE_MS),
       prune(db, 'chat/island', now, STALE_EPHEMERAL_MS),
       prune(db, 'voice/island', now, STALE_EPHEMERAL_MS),
       // aiRate/* held one node per unique IP forever (never pruned) — drop IPs
       // not seen in 24h so it can't grow unbounded. Entries carry `t` (last-seen).
       prune(db, 'aiRate', now, 24 * 60 * 60 * 1000),
+      // stats/daily accretes one analyst snapshot per day forever; only
+      // yesterday's is ever read. Keep ~90 days (entries carry `t`).
+      prune(db, 'stats/daily', now, 90 * 24 * 60 * 60 * 1000),
     ]);
-    console.log(`janitor pruned presence=${presence} chat=${chat} voice=${voice} aiRate=${rate}`);
+    console.log(`janitor pruned presence=${presence} chat=${chat} voice=${voice} aiRate=${rate} statsDaily=${stats}`);
   },
 );
 
@@ -155,7 +159,14 @@ export const director = onSchedule(
     const db = admin.database();
     const now = Date.now();
     const online = await countLivePresence(db, now);
-    const hour = new Date(now).getUTCHours();
+    // Melbourne hour (not UTC) — every other time key in the system is
+    // Melbourne-based, and the night-mood window should mean the OWNER's night
+    // (UTC had "mysterious night" moods landing mid-afternoon AEST).
+    const hour = Number(
+      new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', hour: '2-digit', hourCycle: 'h23' }).format(
+        now,
+      ),
+    );
     const daySeed = Math.floor(now / (6 * 60 * 60 * 1000)); // rotates each tick
 
     // Rule-based mood: how busy the island is + the time of day, with the
@@ -209,11 +220,28 @@ const ANTHROPIC_API_KEY = defineSecret('ANTHROPIC_API_KEY');
 const NPC_MAX_TOKENS = 120; // short, in-character replies (also caps per-turn cost)
 const NPC_MSG_MAX_CHARS = 300; // clamp the visitor's message
 const NPC_IP_WINDOW_MS = 60_000;
-const NPC_IP_MAX_PER_WINDOW = 8; // per-IP burst cap — anon UIDs are free to mint, so gate on IP
-// Hard monthly token ceiling = THE budget guarantee (not per-turn optimism).
-// ~4M tok/mo ≈ low single-digit USD at Haiku rates; once crossed, degrade to
-// canned lines for the rest of the month. Tune to taste.
-const NPC_MONTHLY_TOKEN_CAP = 4_000_000;
+// Burst cap + the hard monthly token ceiling (THE budget guarantee) live in
+// constants.ts — shared with the planner/analyst so tuning can't desync them.
+const NPC_IP_MAX_PER_WINDOW = IP_MAX_PER_WINDOW;
+const NPC_MONTHLY_TOKEN_CAP = MONTHLY_TOKEN_CAP;
+
+/** Fire-and-forget spend accounting for one chat call. Failures are LOUD: a
+ *  persistently failing write would leave the cap reading 0 forever (spend
+ *  uncapped, invisibly) — the ALERT marker routes it to the wired log alert. */
+function accountNpcSpend(
+  db: admin.database.Database,
+  usageRef: admin.database.Reference,
+  monthKey: string,
+  dayKey: string,
+  usedNow: number,
+): void {
+  if (!usedNow) return;
+  const alarm = (e: Error) => console.error('ALERT aiusage-accounting-failed', { msg: e.message });
+  usageRef.transaction((c) => (c || 0) + usedNow).catch(alarm);
+  db.ref(`aiUsage/${monthKey}/calls`).transaction((c) => (c || 0) + 1).catch(alarm);
+  db.ref(`aiUsage/${monthKey}/daily/${dayKey}/tokens`).transaction((c) => (c || 0) + usedNow).catch(alarm);
+  db.ref(`aiUsage/${monthKey}/daily/${dayKey}/calls`).transaction((c) => (c || 0) + 1).catch(alarm);
+}
 
 // Personas — SERVER-SIDE ONLY, never sent to the client. Built from a compact
 // role table so the whole cast shares one injection-fenced rule set: the
@@ -317,26 +345,22 @@ export const npcChat = onCall(
         system: persona.system,
         messages: [{ role: 'user', content: message }],
       });
+      // Meter BEFORE any early return — a refusal still bills the full persona
+      // system prompt, and unmetered refusals would drift the cap under-counted.
+      usedNow = (resp.usage?.input_tokens ?? 0) + (resp.usage?.output_tokens ?? 0);
       if ((resp.stop_reason as string) === 'refusal') {
+        accountNpcSpend(db, usageRef, monthKey, dayKey, usedNow);
         return { reply: null, fallback: true, reason: 'refusal' };
       }
       const textBlock = resp.content.find((b) => b.type === 'text');
       replyText = textBlock && 'text' in textBlock ? textBlock.text.trim() : '';
-      usedNow = (resp.usage?.input_tokens ?? 0) + (resp.usage?.output_tokens ?? 0);
     } catch (err) {
       const e = err as { status?: number };
       console.error('ALERT npcChat-llm-failed', { status: e.status });
       return { reply: null, fallback: true, reason: 'error' };
     }
 
-    // Account the spend (best-effort). Transaction, not read-then-set: chats run
-    // concurrently, and a stale set would drop other calls' tokens from the cap.
-    if (usedNow) {
-      usageRef.transaction((c) => (c || 0) + usedNow).catch(() => {});
-      db.ref(`aiUsage/${monthKey}/calls`).transaction((c) => (c || 0) + 1).catch(() => {});
-      db.ref(`aiUsage/${monthKey}/daily/${dayKey}/tokens`).transaction((c) => (c || 0) + usedNow).catch(() => {});
-      db.ref(`aiUsage/${monthKey}/daily/${dayKey}/calls`).transaction((c) => (c || 0) + 1).catch(() => {});
-    }
+    accountNpcSpend(db, usageRef, monthKey, dayKey, usedNow);
 
     // Output moderation: scrub before any reply reaches a public brand site.
     // Empty ⇒ reject ⇒ client falls back to a canned line.

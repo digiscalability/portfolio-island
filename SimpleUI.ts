@@ -8,6 +8,7 @@ import { AI_NPCS } from './NpcChat';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { buildShareUrl, setUrlParam, share } from './Share';
 import { speak, cancelSpeech, isSpeechSupported, isSpeechEnabled, setSpeechEnabled, isSttSupported, startListening } from './Speech';
+import { EVENT_META } from './WorldState';
 import type { NoticeState, NpcPlan } from './WorldState';
 
 /**
@@ -761,14 +762,21 @@ export class SimpleUI {
       .map((i) => T[i]);
     if (!lines.length) lines.push(T[0]); // always show something
 
-    // Count strip — numbers only, each shown only if present.
+    // Count strip — numbers only, each shown only if present. Labels must match
+    // the semantics the analyst sends: these are TOTALS (leads all-time, not
+    // "new leads" — that mislabel overstated daily activity on the board).
     const c = notice?.counts ?? {};
     const countBits = [
-      c.visitors != null ? `${c.visitors} visitor${c.visitors === 1 ? '' : 's'}` : null,
-      c.leads != null ? `${c.leads} new lead${c.leads === 1 ? '' : 's'}` : null,
+      c.visitors != null ? `${c.visitors} visitor${c.visitors === 1 ? '' : 's'} today` : null,
+      c.leads != null ? `${c.leads} lead${c.leads === 1 ? '' : 's'}` : null,
       c.guestbook != null ? `${c.guestbook} guestbook note${c.guestbook === 1 ? '' : 's'}` : null,
       c.races != null ? `${c.races} racer${c.races === 1 ? '' : 's'}` : null,
     ].filter(Boolean) as string[];
+
+    // Day-theme masthead line — pre-authored EVENT_META strings only (the
+    // event id was already enum-checked in parseNpcPlan; `?? null` guards the
+    // dev/?plan= path where event is absent).
+    const ev = plan?.event ? (EVENT_META[plan.event] ?? null) : null;
 
     // "Who's about today" — from the daily plan's persona→activity map.
     const doing: string[] = [];
@@ -784,7 +792,9 @@ export class SimpleUI {
     modal.insertAdjacentHTML(
       'beforeend',
       `<h2 style="margin:0 0 2px;color:#ffd479;">📰 The Island Times</h2>
-       <p style="margin:0 0 14px;font-size:12px;color:#9aa;letter-spacing:0.5px;text-transform:uppercase;">${esc(day)}</p>
+       <p style="margin:0 0 14px;font-size:12px;color:#9aa;letter-spacing:0.5px;text-transform:uppercase;">${esc(day)}${
+         ev ? ` · ${esc(`${ev.emoji} ${ev.label}`)}` : ''
+       }</p>
        <div style="text-align:left;">
          <div style="font-size:15px;line-height:1.55;color:#eee;border-left:3px solid #ffd479;padding-left:12px;">
            ${lines.map(esc).join(' ')}

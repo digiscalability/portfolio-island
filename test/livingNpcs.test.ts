@@ -18,11 +18,13 @@ import { describe, expect, test } from 'vitest';
 const ROOT = process.cwd();
 const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8');
 
-/** Pull the `NAME ... = [ ... ];` array literal and return the single-quoted
- *  strings inside it, in order. Anchors on the `= [` assignment on the same
- *  line as NAME, so a mere mention of NAME in a comment is not matched. */
+/** Pull the `NAME ... = [ ... ];` (or `] as const;`) array literal and return
+ *  the single-quoted strings inside it, in order. Anchors on the `= [`
+ *  assignment on the same line as NAME, so a mere mention of NAME in a comment
+ *  is not matched — and stops at the array's own closer, so an `as const`
+ *  ending can't make the lazy match run into the NEXT array. */
 function arrayStringsAfter(src: string, name: string): string[] {
-  const m = src.match(new RegExp(`${name}[^\\n]*=\\s*\\[([\\s\\S]*?)\\];`));
+  const m = src.match(new RegExp(`${name}[^\\n]*=\\s*\\[([\\s\\S]*?)\\](?:\\s*as const)?;`));
   if (!m) throw new Error(`array literal not found: ${name}`);
   return [...m[1].matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((s) => s[1]);
 }
@@ -38,6 +40,32 @@ describe('Island Times notice templates stay in lockstep', () => {
   test('client and server template lists are byte-identical, in order', () => {
     // Exact + ordered: the server writes the INDEX, so order is the contract.
     expect(client).toEqual(server);
+  });
+});
+
+describe('day-event ids stay in lockstep', () => {
+  // Server pool: EVENT_IDS in the planner. Client whitelist+labels: EVENT_META
+  // keys in WorldState (also the Island Times masthead strings).
+  const serverEvents = arrayStringsAfter(read('functions/src/npcPlanner.ts'), 'EVENT_IDS');
+  const clientEvents = [...read('WorldState.ts').matchAll(/^ {2}([a-z_]+): \{ label:/gm)].map((m) => m[1]);
+
+  test('both sides list the same events', () => {
+    expect(serverEvents.length).toBeGreaterThan(1);
+    expect(new Set(clientEvents)).toEqual(new Set(serverEvents));
+  });
+});
+
+describe('persona ids stay in lockstep', () => {
+  // Planner pool vs the client's AI_NPC_DEFS ids (drift is fail-safe but silent:
+  // a renamed persona would just stop receiving daily plans, with no signal).
+  const plannerIds = arrayStringsAfter(read('functions/src/npcPlanner.ts'), 'PERSONA_IDS');
+  const chatSrc = read('NpcChat.ts');
+  const defsStart = chatSrc.indexOf('AI_NPC_DEFS');
+  const clientIds = [...chatSrc.slice(defsStart).matchAll(/id: '([a-z_]+)'/g)].map((m) => m[1]);
+
+  test('planner personas match the client cast', () => {
+    expect(plannerIds.length).toBeGreaterThan(10);
+    expect(new Set(clientIds)).toEqual(new Set(plannerIds));
   });
 });
 

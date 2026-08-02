@@ -19,9 +19,10 @@ import { defineSecret } from 'firebase-functions/params';
 import * as admin from 'firebase-admin';
 import Anthropic from '@anthropic-ai/sdk';
 
+import { MONTHLY_TOKEN_CAP } from './constants';
+
 const ANTHROPIC_API_KEY = defineSecret('ANTHROPIC_API_KEY');
 
-const PLANNER_MONTHLY_TOKEN_CAP = 4_000_000; // shared budget guard (mirrors npcChat)
 const STALE_PRESENCE_MS = 2 * 60 * 1000;
 
 // Persona ids — must match PERSONAS keys (index.ts) + AI_NPCS (client NpcChat.ts).
@@ -81,30 +82,53 @@ export const planner = onSchedule(
     memory: '256MiB',
   },
   async () => {
+    // Top-level guard: an unhandled throw anywhere (RTDB gather, plan write)
+    // would otherwise halt the run with ZERO log markers — the wired log-based
+    // alert only matches "ALERT " lines, so the failure would be silent.
+    try {
+      await runPlanner();
+    } catch (err) {
+      console.error('ALERT planner-run-failed', { msg: (err as Error).message });
+    }
+  },
+);
+
+async function runPlanner(): Promise<void> {
     const db = admin.database();
     const now = Date.now();
     const day = new Date(now).toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' }); // YYYY-MM-DD
     const month = day.slice(0, 7);
     const seed = Math.floor(now / (24 * 60 * 60 * 1000));
+    const yesterday = new Date(now - 24 * 60 * 60 * 1000).toLocaleDateString('en-CA', {
+      timeZone: 'Australia/Melbourne',
+    });
 
-    // Compact, truthful state for the prompt.
-    const [online, gbSnap, histSnap, tokSnap] = await Promise.all([
+    // Compact, truthful state for the prompt (incl. racing + yesterday's stats
+    // so the day-theme pick can react to actual island activity).
+    const [online, gbSnap, histSnap, tokSnap, lbSnap, prevSnap] = await Promise.all([
       countLivePresence(db, now),
       db.ref('guestbook/island').get(),
       db.ref('worldHistory/island').orderByKey().limitToLast(8).get(),
       db.ref(`aiUsage/${month}/tokens`).get(),
+      db.ref('leaderboard/island').get(),
+      db.ref(`stats/daily/${yesterday}`).get(),
     ]);
     const guestbookCount = Object.keys((gbSnap.val() as object) ?? {}).length;
     const recentMoods = Object.values((histSnap.val() as Record<string, { mood?: string }>) ?? {})
       .map((b) => b.mood)
       .filter(Boolean);
     const usedTokens = (tokSnap.val() as number | null) ?? 0;
+    let racersTotal = 0;
+    for (const byUid of Object.values((lbSnap.val() as Record<string, object>) ?? {})) {
+      racersTotal += Object.keys(byUid ?? {}).length;
+    }
+    const prev = (prevSnap.val() as { activeDevices?: number; racePBsNew?: number } | null) ?? null;
 
     let plan = fallbackPlan(seed);
     let usedNow = 0;
     let source: 'llm' | 'fallback' = 'fallback';
 
-    if (usedTokens < PLANNER_MONTHLY_TOKEN_CAP) {
+    if (usedTokens < MONTHLY_TOKEN_CAP) {
       try {
         const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY.value() });
         const sys =
@@ -113,7 +137,8 @@ export const planner = onSchedule(
           `Personas: ${PERSONA_IDS.join(', ')}\n` +
           `Activities (choose one per persona): ${ACTIVITY_IDS.join(', ')}\n` +
           `Events (choose one): ${EVENT_IDS.join(', ')}\n` +
-          `Today: ${online} visitors online now, ${guestbookCount} guestbook notes total, recent island moods: ${recentMoods.join(', ') || 'none'}.\n` +
+          `Today: ${online} visitors online now, ${guestbookCount} guestbook notes total, ${racersTotal} race entries all-time, recent island moods: ${recentMoods.join(', ') || 'none'}.\n` +
+          (prev ? `Yesterday: ${prev.activeDevices ?? 0} active visitors, ${prev.racePBsNew ?? 0} race PBs.\n` : '') +
           `Return JSON exactly: {"event":"<eventId>","assignments":{"<personaId>":"<activityId>", ...}}. Include every persona. Use only ids from the lists.`;
         const resp = await anthropic.messages.create({
           model: 'claude-haiku-4-5-20251001',
@@ -150,18 +175,24 @@ export const planner = onSchedule(
         console.error('ALERT planner-llm-failed', { status: e.status, msg: e.message });
         // plan stays the deterministic fallback
       }
+      // The API call SUCCEEDED but the response was unusable (no JSON match, or
+      // zero valid assignments): tokens were spent and the world silently runs
+      // on the fallback. That's a drift signal worth the same wired alert.
+      if (usedNow > 0 && source !== 'llm') {
+        console.error('ALERT planner-llm-failed', { reason: 'parse', tokens: usedNow });
+      }
     }
 
-    // Write the plan (scoped subpath; safe now that director uses .update()).
-    await db.ref('world/island/npcPlan').set({ day, event: plan.event, assignments: plan.assignments, updatedAt: now });
-
-    // Account tokens (best-effort) into the shared monthly + daily buckets.
+    // Account tokens FIRST (the call is already paid for — a later write
+    // throwing must not lose the increment), then write the plan.
     if (usedNow) {
       await db.ref(`aiUsage/${month}/tokens`).transaction((c) => (c || 0) + usedNow);
       await db.ref(`aiUsage/${month}/calls`).transaction((c) => (c || 0) + 1);
       await db.ref(`aiUsage/${month}/daily/${day}/tokens`).transaction((c) => (c || 0) + usedNow);
       await db.ref(`aiUsage/${month}/daily/${day}/calls`).transaction((c) => (c || 0) + 1);
     }
+
+    // Write the plan (scoped subpath; safe now that director uses .update()).
+    await db.ref('world/island/npcPlan').set({ day, event: plan.event, assignments: plan.assignments, updatedAt: now });
     console.log(`planner(${source}) event=${plan.event} assigned=${Object.keys(plan.assignments).length} tokens=${usedNow}`);
-  },
-);
+}

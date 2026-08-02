@@ -13,7 +13,7 @@
 
 import * as THREE from 'three';
 
-import { DISTRICTS, ZONE_LAT, dirFor } from './Districts';
+import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, dirFor } from './Districts';
 import type { Mood } from './WorldState';
 
 // ── Activities + poses ───────────────────────────────────────────────────────
@@ -38,6 +38,10 @@ export interface ActivityDef {
   pose: PoseId;
   anchorSource: AnchorSource;
   dwell: [number, number]; // seconds [min, max] spent at the anchor
+  /** Idle facing at the anchor: 'sea' looks seaward (away from the pole),
+   *  'center' looks at the anchor set's centre (the lighthouse). Unset ⇒ keep
+   *  the arrival yaw. Player proximity always overrides (the greet turn wins). */
+  face?: 'sea' | 'center';
 }
 
 // The ONLY activities that exist. This table is the client's enum whitelist for
@@ -48,9 +52,9 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
   mail_round:   { label: 'running the mail round', short: 'mail run', emoji: '✉️', pose: 'inspect', anchorSource: 'mailboxes', dwell: [4, 8] },
   play_music:   { label: 'playing a tune in the plaza', short: 'playing', emoji: '🎵', pose: 'play', anchorSource: 'plaza', dwell: [50, 90] },
   lamp_round:   { label: 'checking the lamps for the night', short: 'checking lamps', emoji: '🔦', pose: 'watch', anchorSource: 'lamps', dwell: [7, 13] },
-  paint_vista:  { label: 'painting the coastal view', short: 'painting', emoji: '🎨', pose: 'paint', anchorSource: 'vista', dwell: [40, 80] },
-  keep_light:   { label: 'keeping the lighthouse', short: 'on watch', emoji: '🗼', pose: 'watch', anchorSource: 'lighthouse', dwell: [30, 60] },
-  shore_gaze:   { label: 'watching the tide roll in', short: 'gazing out', emoji: '🌊', pose: 'watch', anchorSource: 'vista', dwell: [25, 40] },
+  paint_vista:  { label: 'painting the coastal view', short: 'painting', emoji: '🎨', pose: 'paint', anchorSource: 'vista', dwell: [40, 80], face: 'sea' },
+  keep_light:   { label: 'keeping the lighthouse', short: 'on watch', emoji: '🗼', pose: 'watch', anchorSource: 'lighthouse', dwell: [30, 60], face: 'center' },
+  shore_gaze:   { label: 'watching the tide roll in', short: 'gazing out', emoji: '🌊', pose: 'watch', anchorSource: 'vista', dwell: [25, 40], face: 'sea' },
   market_visit: { label: 'browsing the market stalls', short: 'at market', emoji: '🛒', pose: 'inspect', anchorSource: 'stalls', dwell: [12, 22] },
   bench_rest:   { label: 'resting on a bench', short: 'resting', emoji: '🪑', pose: 'sit', anchorSource: 'benches', dwell: [20, 40] },
   stroll:       { label: 'out for a stroll', emoji: '🚶', pose: 'walk', anchorSource: 'home', dwell: [4, 9] },
@@ -159,6 +163,8 @@ interface AnchorSet {
   vista: THREE.Vector3[]; // coastal viewpoints
 }
 let ANCHORS: AnchorSet | null = null;
+// The lighthouse tower's unit dir — the look-at target for face:'center'.
+let LIGHTHOUSE_CENTRE: THREE.Vector3 | null = null;
 
 const SHORE_Y = Math.sin(0.3); // matches GameScene shoreline clamp
 
@@ -211,22 +217,59 @@ export function setAnchors(a: {
     plaza: DISTRICTS.map((d) => dirFor(d.lon, d.lat)),
     vista: a.vistas.map(toDir),
   };
+  LIGHTHOUSE_CENTRE = a.lighthouseDir ? a.lighthouseDir.clone().normalize() : null;
+}
+
+const _fv = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Resolve a Goal's `face` hint into a world direction at `posDir` (the anchor
+ * the NPC stands on), written into `out` (tangent-plane projection happens in
+ * the caller against the live surface normal). Returns false when undefined
+ * (degenerate at the pole / no lighthouse) — caller keeps the arrival yaw.
+ */
+export function computeFaceDir(face: 'sea' | 'center', posDir: THREE.Vector3, out: THREE.Vector3): boolean {
+  if (face === 'sea') {
+    // Seaward = due "south" on this pole-centred island: the tangent component
+    // of −ŷ at posDir, i.e. straight away from the pole, toward the shoreline.
+    out.copy(posDir).multiplyScalar(posDir.dot(UP)).sub(UP);
+    return out.lengthSq() > 1e-6 ? (out.normalize(), true) : false;
+  }
+  if (!LIGHTHOUSE_CENTRE) return false;
+  _fv.copy(LIGHTHOUSE_CENTRE).sub(posDir); // chord toward the tower
+  out.copy(_fv).addScaledVector(posDir, -_fv.dot(posDir)); // tangent projection
+  return out.lengthSq() > 1e-6 ? (out.normalize(), true) : false;
 }
 
 // ── Plan (server override, Phase 2) ──────────────────────────────────────────
 
 let CURRENT_PLAN: { assignments: Record<string, ActivityId> } | null = null;
 
-/** Accept a server plan; keep only assignments whose activity id is known. */
+const PLAN_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+/** Accept a server plan; keep only assignments whose activity id is known.
+ *  A stale plan (updatedAt older than ~48h — the planner stopped running) is
+ *  DROPPED so NPCs fall back to their persona-correct default schedules, per
+ *  the "defaults on failure" design. Plans without updatedAt (the ?plan= dev
+ *  override) skip the staleness gate. */
 export function setPlan(plan: unknown): void {
-  const p = plan as { assignments?: Record<string, unknown> } | null;
+  const p = plan as { assignments?: Record<string, unknown>; updatedAt?: unknown } | null;
   if (!p || typeof p !== 'object' || !p.assignments) {
+    CURRENT_PLAN = null;
+    return;
+  }
+  if (typeof p.updatedAt === 'number' && Date.now() - p.updatedAt > PLAN_MAX_AGE_MS) {
     CURRENT_PLAN = null;
     return;
   }
   const clean: Record<string, ActivityId> = {};
   for (const [id, act] of Object.entries(p.assignments)) {
-    if (typeof act === 'string' && (act as ActivityId) in ACTIVITY_DEFS) clean[id] = act as ActivityId;
+    // hasOwnProperty, not `in`: `in` walks the prototype chain, so ids like
+    // 'constructor' would "validate" and wedge the NPC on an undefined def.
+    if (typeof act === 'string' && Object.prototype.hasOwnProperty.call(ACTIVITY_DEFS, act)) {
+      clean[id] = act as ActivityId;
+    }
   }
   CURRENT_PLAN = Object.keys(clean).length ? { assignments: clean } : null;
 }
@@ -254,6 +297,8 @@ export interface Goal {
   pose: PoseId;
   dwellMin: number;
   dwellMax: number;
+  /** Idle facing hint at the anchor (resolve via computeFaceDir). */
+  face?: 'sea' | 'center';
 }
 
 // Minimal shape the resolver needs from the NPC's wander state.
@@ -261,6 +306,14 @@ interface GoalState {
   home: THREE.Vector3;
   rot: number; // rotation index through an anchor list (advanced here)
 }
+
+// Patrol waypoints: the 4 ring-plaza lons + the midpoint between each adjacent
+// pair, in ring order (hoisted — pickAnchor used to allocate this per pick).
+const BOULEVARD_LONS: number[] = RING_DISTRICT_LONS.flatMap((lon, i) => {
+  const next = RING_DISTRICT_LONS[(i + 1) % RING_DISTRICT_LONS.length];
+  const half = lon + (((next - lon + Math.PI * 2) % (Math.PI * 2)) || Math.PI * 2) / 2;
+  return [lon, half];
+});
 
 const _ja = new THREE.Vector3();
 const _jb = new THREE.Vector3();
@@ -293,9 +346,12 @@ function pickAnchor(source: AnchorSource, s: GoalState, outDir: THREE.Vector3): 
     return true;
   }
   if (source === 'boulevard') {
-    // Rotate through the 5 plaza lons at ZONE_LAT — a street-following patrol.
-    const lons = DISTRICTS.map((d) => d.lon);
-    const lon = lons[s.rot % lons.length];
+    // Rotate through the ring plazas PLUS a midpoint between each pair, all at
+    // ZONE_LAT — 8 short legs that hug the boulevard parallel instead of the
+    // 90° great-circle chords (which peaked well inland of the street). The
+    // pole hub is excluded: its lon 0 duplicated the Professional plaza, so the
+    // old list visited that plaza twice per loop.
+    const lon = BOULEVARD_LONS[s.rot % BOULEVARD_LONS.length];
     s.rot += 1;
     outDir.copy(dirFor(lon, ZONE_LAT));
     clampShore(outDir);
@@ -317,7 +373,7 @@ function pickAnchor(source: AnchorSource, s: GoalState, outDir: THREE.Vector3): 
 export function getGoal(
   personaId: string | null,
   hour: number,
-  _dayFactor: number,
+  _dayFactor: number, // reserved — hour is the sole gate while hour↔daylight stay coupled
   mood: Mood | undefined,
   s: GoalState,
   outDir: THREE.Vector3,
@@ -328,13 +384,23 @@ export function getGoal(
   let activity: ActivityId = row ? row.activity : 'stroll';
   if (row?.moods && mood && row.moods[mood]) activity = row.moods[mood]!;
 
-  // Daily server plan overrides the day-time activity (never the sleep window).
+  // Daily server plan overrides the day-time activity — but never INTO or OUT
+  // of sleep: the schedule's sleep window always wins, and a planned 'sleep'
+  // can't flatten the town at midday (setPlan validated ids via hasOwnProperty,
+  // so the extra guard here is belt-and-braces).
   const planned = CURRENT_PLAN?.assignments?.[personaId];
-  if (planned && planned in ACTIVITY_DEFS && activity !== 'sleep') activity = planned;
+  if (
+    planned &&
+    planned !== 'sleep' &&
+    Object.prototype.hasOwnProperty.call(ACTIVITY_DEFS, planned) &&
+    activity !== 'sleep'
+  ) {
+    activity = planned;
+  }
 
   const def = ACTIVITY_DEFS[activity];
   if (!pickAnchor(def.anchorSource, s, outDir)) {
     jitterDir(s.home, 0.06, outDir); // graceful fallback if anchors missing
   }
-  return { activity, pose: def.pose, dwellMin: def.dwell[0], dwellMax: def.dwell[1] };
+  return { activity, pose: def.pose, dwellMin: def.dwell[0], dwellMax: def.dwell[1], face: def.face };
 }
