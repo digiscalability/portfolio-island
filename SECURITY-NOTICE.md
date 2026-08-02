@@ -1,19 +1,19 @@
-# Security notice: rotate leaked secrets
+# Security note
 
-We found real API keys committed in `.env.local` and replaced them with placeholders. If this repository has ever been pushed to a remote, assume those credentials are compromised and rotate them immediately:
+Early in this project's life (before any history that exists in this
+repository), real API keys were briefly committed to a local `.env.local`.
+That working tree's history was discarded; the history published here was
+verified clean before the repository was made public — a full scan of every
+revision on every branch found no `.env.local` blob and no credential-shaped
+strings (OpenAI/Anthropic/Notion/GitHub/AWS key formats, private keys).
 
-- Firebase keys (API key, app ID, measurement ID)
-- OpenAI and Google AI keys
-- Notion token/API key
+The keys involved in the original incident were treated as compromised and
+rotated at the time.
 
-Recommended actions:
+Current secret handling:
 
-1) Revoke/rotate each key in its provider dashboard.
-2) Confirm `.env.local` and `.env.*.local` are git‑ignored (they are in `.gitignore`).
-3) Store secrets in a secure vault (e.g., GitHub Actions secrets, 1Password, Doppler) and load at runtime.
-4) Avoid committing real secrets in any file. Use `.env.example` with placeholders.
-
-This repo now:
-
-- Sanitized `.env.local` with placeholders.
-- Configured the Notion MCP server to use secure input for the token.
+- Client: the only key in the bundle is the Firebase **Web API key**, which is
+  public by design (access control lives in database rules + App Check).
+- Server: all real secrets (Anthropic key, SMTP password, GitHub token) live in
+  Google Secret Manager via `firebase functions:secrets:set` — never in git.
+- `.env*` files are gitignored; `.env.example` files carry placeholders only.
