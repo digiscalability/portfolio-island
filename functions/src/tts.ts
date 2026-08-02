@@ -46,10 +46,21 @@ const ELEVENLABS_API_KEY = defineSecret('ELEVENLABS_API_KEY');
 const TTS_IP_WINDOW_MS = 60 * 60 * 1000; // 1h window (paid synths + all fetches)
 export const TTS_QUEUE_TTL_MS = 15 * 60 * 1000; // reply ids are short-lived
 export const TTS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // audio cache retention
-// Flash v2.5: 0.5 credits/char — twice the audio per Creator credit vs
-// multilingual v2, and low-latency, which matters more than the last few
-// percent of prosody for 1-2 sentence toon-NPC lines.
-const TTS_MODEL = 'eleven_flash_v2_5';
+// Turbo v2.5: same 0.5 credits/char as flash but noticeably better prosody —
+// the flash renders read flat ("tones aren't the best"). Multilingual v2 is
+// better still but 1 credit/char (halves the monthly audio budget).
+const TTS_MODEL = 'eleven_turbo_v2_5';
+// Expressive delivery: lower stability lets the voice act; style adds
+// character read; speaker boost keeps it present on phone speakers.
+const TTS_VOICE_SETTINGS = {
+  stability: 0.45,
+  similarity_boost: 0.75,
+  style: 0.4,
+  use_speaker_boost: true,
+};
+// Bump when the model/settings change so stale cached renders re-synthesize
+// (the cache key would otherwise keep serving audio in the old delivery).
+const TTS_RENDER_VERSION = 'v2';
 const TTS_OUTPUT = 'mp3_22050_32'; // ~4KB/s — a reply is a few tens of KB
 const TTS_MAX_CHARS = 500; // replies are 1-2 short sentences; hard ceiling
 
@@ -156,7 +167,7 @@ export const npcVoice = onCall(
 
     // Cache: replays and repeated lines skip the PAID gates below (they're
     // still counted by layer 1 above).
-    const key = createHash('sha1').update(`${voice}|${text}`).digest('hex');
+    const key = createHash('sha1').update(`${TTS_RENDER_VERSION}|${voice}|${text}`).digest('hex');
     const cacheRef = db.ref(`ttsCache/${key}`);
     const hit = (await cacheRef.get()).val() as { a?: string } | null;
     if (hit?.a) return { audio: hit.a, fallback: false };
@@ -207,7 +218,7 @@ export const npcVoice = onCall(
             'xi-api-key': ELEVENLABS_API_KEY.value(),
             'content-type': 'application/json',
           },
-          body: JSON.stringify({ text, model_id: TTS_MODEL }),
+          body: JSON.stringify({ text, model_id: TTS_MODEL, voice_settings: TTS_VOICE_SETTINGS }),
         },
       );
       if (!resp.ok) {

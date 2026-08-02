@@ -167,9 +167,37 @@ async function playCloud(
   // Muted, cancelled, or superseded by a newer line while we waited — drop it.
   if (!enabled || gen !== speakGen) return;
   if (b64) {
+    // WEB AUDIO FIRST (the mobile fix): an HTMLAudioElement.play() that fires
+    // 1-2s after the Send tap is OUTSIDE the gesture window, and iOS/Android
+    // block it — desktop heard the voice, phones never did. The game's shared
+    // AudioContext (window.audioManager, same pipe Chat voice clips use) is
+    // unlocked by the first real interaction, and an unlocked context may
+    // start sources programmatically forever after.
+    try {
+      const ctx = cloudAudioCtx();
+      if (ctx) {
+        if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+        const buf = await ctx.decodeAudioData(base64ToArrayBuffer(b64));
+        if (!enabled || gen !== speakGen) return; // re-check after the decode await
+        stopCloudAudio();
+        if (ttsSupported()) window.speechSynthesis.cancel(); // never overlap voices
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        cloudSrc = src;
+        src.onended = () => {
+          if (cloudSrc === src) cloudSrc = null;
+        };
+        src.start();
+        return;
+      }
+    } catch {
+      /* decode/context failure → element path below */
+    }
+    // No Web Audio available — element playback (fine on desktop).
     try {
       stopCloudAudio();
-      if (ttsSupported()) window.speechSynthesis.cancel(); // never overlap voices
+      if (ttsSupported()) window.speechSynthesis.cancel();
       const a = new Audio(`data:audio/mpeg;base64,${b64}`);
       cloudAudioEl = a;
       a.addEventListener('ended', () => {
@@ -184,7 +212,46 @@ async function playCloud(
   if (gen === speakGen) speakLocal(text, rate, pitch, variant);
 }
 
+let cloudSrc: AudioBufferSourceNode | null = null;
+let ownAudioCtx: AudioContext | null = null;
+
+/** The game's shared (gesture-unlocked) AudioContext, else a lazily-created
+ *  own one — same lookup Chat.ts uses for voice-clip playback. */
+function cloudAudioCtx(): AudioContext | null {
+  const am = (window as unknown as { audioManager?: { ensureCtx?: () => AudioContext } })
+    .audioManager;
+  if (am?.ensureCtx) {
+    try {
+      return am.ensureCtx();
+    } catch {
+      /* fall through */
+    }
+  }
+  if (ownAudioCtx) return ownAudioCtx;
+  const Ctor =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  ownAudioCtx = new Ctor();
+  return ownAudioCtx;
+}
+
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
 function stopCloudAudio(): void {
+  if (cloudSrc) {
+    try {
+      cloudSrc.stop();
+    } catch {
+      /* ignore */
+    }
+    cloudSrc = null;
+  }
   if (!cloudAudioEl) return;
   try {
     cloudAudioEl.pause();
