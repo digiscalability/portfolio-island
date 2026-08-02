@@ -1704,7 +1704,16 @@ export class SimplePlayer extends THREE.Group {
 
   /** Allocation-free world position into a caller-owned vector (hot paths). */
   public getWorldPositionInto(out: THREE.Vector3): THREE.Vector3 {
-    return out.copy(this.playerPosition);
+    return out.copy(this.positionHold ?? this.playerPosition);
+  }
+
+  // While set, getWorldPosition* report THIS instead of the live position —
+  // used while the player walks around a building interior (the hidden room
+  // sits 300u under the map) so multiplayer peers keep seeing them at the
+  // door they entered, not floating beneath the planet.
+  private positionHold: THREE.Vector3 | null = null;
+  public setPositionHold(v: THREE.Vector3 | null): void {
+    this.positionHold = v ? v.clone() : null;
   }
 
   /**

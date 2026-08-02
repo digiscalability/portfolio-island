@@ -2543,6 +2543,7 @@ export class GameScene extends THREE.Scene {
       benches: this.island.benchSites,
       lighthouseDir: this.island.lighthouseDir,
       vistas,
+      doors: this.island.houseDoors.map((d) => d.position),
     });
     NpcActivities.applyPlanOverrideFromUrl();
     this.npcPersonaIds = this.island.npcTargets.map((n) => AI_NPCS[n.name] ?? null);
@@ -3396,11 +3397,12 @@ export class GameScene extends THREE.Scene {
   public update(deltaTime: number): void {
     if (!this.player) return;
 
-    // Inside a building: freeze the island world (player physics, camera follow,
-    // NPCs, everything) and just orbit the camera around the interior room. The
-    // player stays exactly where they were, so exiting drops them back at the door.
+    // Inside a building: freeze the island world (player physics, camera
+    // follow, NPCs, everything) and run the interior free-walk mode instead.
+    // The spherical physics state is untouched, so exiting drops the player
+    // back at the door.
     if (this.insideInterior) {
-      this.updateInteriorCamera(deltaTime);
+      this.updateInteriorMode(deltaTime);
       return;
     }
 
@@ -3628,6 +3630,12 @@ export class GameScene extends THREE.Scene {
           }
         }
         w.roll += (rollTarget - w.roll) * Math.min(1, 12 * deltaTime);
+        // Night: an NPC that has ARRIVED at its sleep spot (the nearest cottage
+        // door) steps "inside" — hidden until the schedule wakes it. The walk
+        // home stays visible, so visitors see the townsfolk head in at dusk.
+        // Tags/quest markers mirror this in their own loops; interaction skips
+        // hidden NPCs.
+        npc.meshRef.visible = !(w.activity === 'sleep' && !moving);
         npc.meshRef.position
           .copy(w.dir)
           .multiplyScalar(w.radius)
@@ -3934,6 +3942,8 @@ export class GameScene extends THREE.Scene {
       }
       m.mesh.position.copy(m.base).addScaledVector(m.normal, 2.1 + Math.sin(time * 2.4) * 0.12);
       m.mesh.rotateOnWorldAxis(m.normal, deltaTime * 1.8);
+      // A sleeping quest-giver is "inside" — no marker floating over the doorstep.
+      if (owner) m.mesh.visible = owner.meshRef.visible;
     }
 
     // NPC name pins: follow each (wandering) NPC, sit just above the head,
@@ -3948,7 +3958,9 @@ export class GameScene extends THREE.Scene {
       const dist = this.camera.position.distanceTo(tag.sprite.position);
       // Constant-ish on-screen size: sprites attenuate ∝1/dist, so scale ∝dist.
       const s = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6);
-      tag.sprite.scale.set(s * 1.7, s * 0.42, 1);
+      // 0.63 aspect matches the 256×96 two-line pill canvas (0.42 was the old
+      // 64px canvas — it squished the role+activity pill every frame).
+      tag.sprite.scale.set(s * 1.7, s * 0.63, 1);
       // Fade: hidden hugging-close, full through mid range, gone past the horizon
       const op =
         dist < 2.6
@@ -3962,7 +3974,8 @@ export class GameScene extends THREE.Scene {
                 : 0;
       const mat = tag.sprite.material as THREE.SpriteMaterial;
       mat.opacity = op;
-      tag.sprite.visible = op > 0.02;
+      // No pin over an empty doorstep while its NPC sleeps "inside".
+      tag.sprite.visible = op > 0.02 && tag.target.meshRef.visible;
     }
 
     // Drain colliders queued by async GLB placements (e.g. the orchard/
@@ -4145,8 +4158,9 @@ export class GameScene extends THREE.Scene {
       nearestDist = nearbyZone.distance;
     }
 
-    // Check NPCs
+    // Check NPCs (skip ones asleep "inside" — no talking to an empty doorstep)
     for (const npc of this.island.npcTargets) {
+      if (!npc.meshRef.visible) continue;
       const d = npc.meshRef.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
       if (d < nearestDist) {
         nearest = {
@@ -4450,7 +4464,6 @@ export class GameScene extends THREE.Scene {
   private interiorSets: Record<string, THREE.Group> = {};
   private interiorFire: THREE.PointLight | null = null;
   private interiorTime = 0;
-  private interiorOrbitAngle = 0;
   private onHouseEnterCb: ((id: string) => void) | null = null;
   private static readonly INTERIOR_ORIGIN = new THREE.Vector3(0, -300, 0);
 
@@ -4817,8 +4830,216 @@ export class GameScene extends THREE.Scene {
     cottage: [3.05, 0.85, -2.0],
   };
 
-  /** Teleport the CAMERA into the room + re-theme it: wall tint, the building's
-   *  themed furniture set, rug colour, hearth light, and the content posters.
+  // ── Interior free-walk mode ──
+  // Inside a building the player walks the room on WASD/joystick: flat-floor
+  // movement with wall + furniture collision, a third-person follow camera,
+  // and per-theme interaction hotspots. All in room space — the spherical
+  // world stays frozen and the player's physics state is never touched.
+  private interiorMoveF = 0;
+  private interiorMoveS = 0;
+  private interiorYaw = Math.PI;
+  private interiorCamYaw = Math.PI;
+  private interiorActiveTheme = 'cottage';
+  private interiorColliders: Record<
+    string,
+    Array<{ minX: number; maxX: number; minZ: number; maxZ: number }>
+  > = {};
+  private interiorHotspot: { label: string; action: string; text?: string } | null = null;
+  private static readonly INTERIOR_WALK_BOUND = 3.35; // wall clamp (inner face 3.9 − radius/skirting)
+  private static readonly INTERIOR_PLAYER_R = 0.32;
+  private static readonly INTERIOR_PLAYER_Y = 0.68; // player origin above the floor top
+
+  /** Per-theme interaction hotspots (room-local x/z, trigger radius). The door
+   *  "leave" spot is appended to every theme at lookup time. */
+  private static readonly INTERIOR_HOTSPOTS: Record<
+    string,
+    Array<{ x: number; z: number; r: number; label: string; action: string; text?: string }>
+  > = {
+    office: [
+      {
+        x: 0,
+        z: -2.6,
+        r: 1.4,
+        label: '💻 Press <strong>E</strong> to browse the work',
+        action: 'panel',
+      },
+      {
+        x: -3.1,
+        z: -2.9,
+        r: 1.1,
+        label: '🌱 Press <strong>E</strong> to water the plant',
+        action: 'toast',
+        text: 'You water the office plant. It looks 2% happier. 🌱',
+      },
+    ],
+    workshop: [
+      {
+        x: 2.6,
+        z: -1.7,
+        r: 1.3,
+        label: '📐 Press <strong>E</strong> to study the blueprints',
+        action: 'panel',
+      },
+      {
+        x: -3.0,
+        z: -2.6,
+        r: 1.2,
+        label: '📦 Press <strong>E</strong> to peek in the crates',
+        action: 'toast',
+        text: 'Prototype parts, spare ideas, and one suspiciously good chocolate bar. 🍫',
+      },
+    ],
+    home: [
+      {
+        x: -3.3,
+        z: -2.0,
+        r: 1.3,
+        label: '🔥 Press <strong>E</strong> to warm your hands',
+        action: 'toast',
+        text: 'You warm your hands by the fire. Cosy. 🔥',
+      },
+      {
+        x: 3.5,
+        z: -2.2,
+        r: 1.2,
+        label: '📚 Press <strong>E</strong> to browse the bookshelf',
+        action: 'toast',
+        text: 'Cookbooks, sketchpads, and a well-worn map of Melbourne. 📚',
+      },
+      {
+        x: 1.6,
+        z: 2.5,
+        r: 1.2,
+        label: '🛋️ Press <strong>E</strong> to flop on the sofa',
+        action: 'toast',
+        text: 'Five stars. Would flop again. 🛋️',
+      },
+    ],
+    post: [
+      {
+        x: 0,
+        z: -1.9,
+        r: 1.4,
+        label: '📮 Press <strong>E</strong> to ring the counter bell',
+        action: 'panel',
+      },
+      {
+        x: -2.7,
+        z: -2.8,
+        r: 1.2,
+        label: '📦 Press <strong>E</strong> to check the parcels',
+        action: 'toast',
+        text: 'One is addressed to "The Fastest Racer on the Island". 👀',
+      },
+    ],
+    hall: [
+      {
+        x: 3.4,
+        z: -2.2,
+        r: 1.3,
+        label: '📰 Press <strong>E</strong> to read the notice board',
+        action: 'times',
+      },
+      {
+        x: 0,
+        z: -2.5,
+        r: 1.2,
+        label: '🎤 Press <strong>E</strong> to stand at the lectern',
+        action: 'toast',
+        text: 'You clear your throat. The benches listen politely. 🎤',
+      },
+    ],
+    cottage: [
+      {
+        x: -3.0,
+        z: -2.5,
+        r: 1.3,
+        label: '💤 Press <strong>E</strong> to test the bed',
+        action: 'toast',
+        text: 'Tempting… but the island awaits. 💤',
+      },
+      {
+        x: 3.3,
+        z: -2.0,
+        r: 1.3,
+        label: '🔥 Press <strong>E</strong> to warm your hands',
+        action: 'toast',
+        text: 'The hearth crackles softly. 🔥',
+      },
+      {
+        x: -2.4,
+        z: -3.3,
+        r: 1.1,
+        label: '🫙 Press <strong>E</strong> to inspect the jars',
+        action: 'toast',
+        text: 'Pickles, jam, and something best left unlabelled. 🫙',
+      },
+    ],
+  };
+  private static readonly INTERIOR_DOOR_HOTSPOT = {
+    x: -1.8,
+    z: 3.3,
+    r: 1.0,
+    label: '🚪 Press <strong>E</strong> to head outside',
+    action: 'leave',
+  };
+
+  /** Feed WASD/joystick input into the interior walk (from main-simple). */
+  public setInteriorMove(forward: number, strafe: number): void {
+    this.interiorMoveF = forward;
+    this.interiorMoveS = strafe;
+  }
+
+  /** The hotspot the player is standing near (null when none) — main-simple
+   *  shows the prompt and executes the action on E. */
+  public getInteriorHotspot(): { label: string; action: string; text?: string } | null {
+    return this.interiorHotspot;
+  }
+
+  /** Lazily derive furniture colliders for a themed set from its own meshes:
+   *  world-space Box3 per prop → room-local AABB; overhead items (beams,
+   *  banners, wall clocks) are skipped by their floor clearance. */
+  private buildInteriorColliders(theme: string): void {
+    if (this.interiorColliders[theme] || !this.interiorGroup) return;
+    const set = this.interiorSets[theme];
+    if (!set) return;
+    const wasVisible = set.visible;
+    set.visible = true; // Box3.setFromObject ignores invisible subtrees
+    this.interiorGroup.updateMatrixWorld(true);
+    const o = GameScene.INTERIOR_ORIGIN;
+    const boxes: Array<{ minX: number; maxX: number; minZ: number; maxZ: number }> = [];
+    const b = new THREE.Box3();
+    for (const child of set.children) {
+      b.setFromObject(child);
+      if (b.isEmpty()) continue;
+      if (b.min.y - o.y > 1.45) continue; // overhead — walk under it
+      boxes.push({
+        minX: b.min.x - o.x,
+        maxX: b.max.x - o.x,
+        minZ: b.min.z - o.z,
+        maxZ: b.max.z - o.z,
+      });
+    }
+    set.visible = wasVisible;
+    this.interiorColliders[theme] = boxes;
+  }
+
+  private interiorWallBlocked(x: number, z: number): boolean {
+    const B = GameScene.INTERIOR_WALK_BOUND;
+    return Math.abs(x) > B || Math.abs(z) > B;
+  }
+
+  private interiorFurnitureBlocked(x: number, z: number): boolean {
+    const R = GameScene.INTERIOR_PLAYER_R;
+    for (const c of this.interiorColliders[this.interiorActiveTheme] ?? []) {
+      if (x > c.minX - R && x < c.maxX + R && z > c.minZ - R && z < c.maxZ + R) return true;
+    }
+    return false;
+  }
+
+  /** Step inside: re-theme the room (wall tint, themed furniture set, rug,
+   *  hearth, posters) and start the free-walk mode — the player walks the room
+   *  with wall/furniture collision and interacts with per-theme hotspots.
    *  main-simple owns the fade, the content panel (zones), and Leave. */
   public enterInterior(
     title: string,
@@ -4843,8 +5064,22 @@ export class GameScene extends THREE.Scene {
     this.drawPoster(1, left, false);
     this.drawPoster(2, right, false);
     if (this.interiorGroup) this.interiorGroup.visible = true;
-    this.interiorOrbitAngle = 0;
     this.insideInterior = true;
+    // Free-walk: place the player's VISUAL group just inside the door and hold
+    // the broadcast position at the door outside (peers keep seeing them
+    // there, not 300u under the map). The physics state is untouched — exit
+    // re-syncs the group from it, dropping them back exactly where they were.
+    this.interiorActiveTheme = active;
+    this.buildInteriorColliders(active);
+    this.player.setPositionHold(this.player.getWorldPosition());
+    const o = GameScene.INTERIOR_ORIGIN;
+    this.player.position.set(o.x - 1.8, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + 2.6);
+    this.interiorYaw = Math.PI; // facing into the room (model +z convention)
+    this.interiorCamYaw = Math.PI;
+    this.player.quaternion.setFromAxisAngle(GameScene._localUp, Math.PI);
+    this.interiorMoveF = 0;
+    this.interiorMoveS = 0;
+    this.interiorHotspot = null;
   }
 
   /** Draw a framed poster: title (big) or a content panel of \n-split lines. */
@@ -4874,25 +5109,94 @@ export class GameScene extends THREE.Scene {
   public exitInterior(): void {
     this.insideInterior = false;
     if (this.interiorGroup) this.interiorGroup.visible = false;
+    this.interiorHotspot = null;
+    // Release the broadcast hold and snap the visual group back onto the
+    // untouched physics state — the player reappears at the door they entered.
+    this.player.setPositionHold(null);
+    this.player.updateWorldMatrix();
   }
 
-  private updateInteriorCamera(deltaTime: number): void {
-    // Slow orbit inside the room so you see the whole space without input.
-    this.interiorOrbitAngle += deltaTime * 0.28;
-    // Hearth flicker (only ever runs while inside; fire is 0 in hearthless rooms).
+  /** The interior frame: walk the player, follow with the camera, flicker the
+   *  hearth, and detect the nearest interaction hotspot. Room space is flat
+   *  (+y up), so this never touches the spherical-physics machinery. */
+  private updateInteriorMode(deltaTime: number): void {
     this.interiorTime += deltaTime;
+    // Hearth flicker (fire is 0 in hearthless rooms).
     if (this.interiorFire && this.interiorFire.intensity > 0) {
       const t = this.interiorTime;
       this.interiorFire.intensity = 1.55 + Math.sin(t * 11) * 0.22 + Math.sin(t * 23 + 1.7) * 0.14;
     }
-    const c = GameScene.INTERIOR_ORIGIN;
+
+    const o = GameScene.INTERIOR_ORIGIN;
+    const p = this.player.position;
+    const f = this.interiorMoveF;
+    const s = this.interiorMoveS;
+    const moving = Math.abs(f) + Math.abs(s) > 0.05;
+    if (moving) {
+      // Camera-relative move dir (model-forward = +z): fwd(yaw) = (sin, 0, cos).
+      const cy = this.interiorCamYaw;
+      const dirX = Math.sin(cy) * f + -Math.cos(cy) * s;
+      const dirZ = Math.cos(cy) * f + Math.sin(cy) * s;
+      const len = Math.hypot(dirX, dirZ);
+      if (len > 1e-4) {
+        const spd = (2.3 * Math.min(1, len)) / len;
+        const nx = p.x - o.x + dirX * spd * deltaTime;
+        const nz = p.z - o.z + dirZ * spd * deltaTime;
+        // Axis-separated resolve → the player slides along walls + furniture.
+        // Walls are ALWAYS solid. Furniture is skipped only while the current
+        // spot already overlaps a piece (edge cases only — normal play can't
+        // walk in), so a stuck player can escape but never leave the room.
+        const curX = p.x - o.x;
+        const curZ = p.z - o.z;
+        const overlap = this.interiorFurnitureBlocked(curX, curZ);
+        const okX =
+          !this.interiorWallBlocked(nx, curZ) &&
+          (overlap || !this.interiorFurnitureBlocked(nx, curZ));
+        const midX = okX ? nx : curX;
+        const okZ =
+          !this.interiorWallBlocked(midX, nz) &&
+          (overlap || !this.interiorFurnitureBlocked(midX, nz));
+        if (okX) p.x = o.x + nx;
+        if (okZ) p.z = o.z + nz;
+        // Face travel, shortest-arc eased.
+        const targetYaw = Math.atan2(dirX, dirZ);
+        let dYaw = targetYaw - this.interiorYaw;
+        while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+        while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+        this.interiorYaw += dYaw * Math.min(1, 10 * deltaTime);
+        this.player.quaternion.setFromAxisAngle(GameScene._localUp, this.interiorYaw);
+      }
+    }
+    // Gentle step bob (the sphere gait is frozen with the rest of the world).
+    p.y =
+      o.y + GameScene.INTERIOR_PLAYER_Y + (moving ? Math.sin(this.interiorTime * 9) * 0.035 : 0);
+
+    // Follow camera: eased behind the player's heading, clamped inside walls.
+    let dCam = this.interiorYaw - this.interiorCamYaw;
+    while (dCam > Math.PI) dCam -= Math.PI * 2;
+    while (dCam < -Math.PI) dCam += Math.PI * 2;
+    this.interiorCamYaw += dCam * Math.min(1, 3 * deltaTime);
+    const cy = this.interiorCamYaw;
+    const camX = THREE.MathUtils.clamp(p.x - o.x - Math.sin(cy) * 2.4, -3.6, 3.6);
+    const camZ = THREE.MathUtils.clamp(p.z - o.z - Math.cos(cy) * 2.4, -3.6, 3.6);
     this.camera.up.set(0, 1, 0);
-    this.camera.position.set(
-      c.x + Math.cos(this.interiorOrbitAngle) * 3.4,
-      c.y + 1.8,
-      c.z + Math.sin(this.interiorOrbitAngle) * 3.4,
-    );
-    this.camera.lookAt(c.x, c.y + 1.4, c.z);
+    this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
+    this.camera.lookAt(p.x, p.y + 0.85, p.z);
+
+    // Nearest hotspot (theme spots + the door), for the prompt + E action.
+    const spots = GameScene.INTERIOR_HOTSPOTS[this.interiorActiveTheme] ?? [];
+    let found: { label: string; action: string; text?: string } | null = null;
+    let bestD = Infinity;
+    const px = p.x - o.x;
+    const pz = p.z - o.z;
+    for (const h of [...spots, GameScene.INTERIOR_DOOR_HOTSPOT]) {
+      const d = Math.hypot(px - h.x, pz - h.z);
+      if (d < h.r && d < bestD) {
+        bestD = d;
+        found = h;
+      }
+    }
+    this.interiorHotspot = found;
   }
 
   /**

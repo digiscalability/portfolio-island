@@ -47,7 +47,8 @@ type AnchorSource =
   | 'plaza'
   | 'boulevard'
   | 'vista'
-  | 'home';
+  | 'home'
+  | 'door';
 
 export interface ActivityDef {
   /** Full pre-authored line for the Island Times board ("tending the flower beds"). */
@@ -162,7 +163,7 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
     short: 'asleep',
     emoji: '💤',
     pose: 'sleep',
-    anchorSource: 'home',
+    anchorSource: 'door', // walk to the nearest cottage door, then step "inside"
     dwell: [60, 120],
   },
   plaza_gather: {
@@ -302,6 +303,7 @@ interface AnchorSet {
   lighthouse: THREE.Vector3[]; // orbit ring around the tower
   plaza: THREE.Vector3[]; // the 5 district plazas
   vista: THREE.Vector3[]; // coastal viewpoints
+  doors: THREE.Vector3[]; // cottage doorsteps — sleep walks here, then hides
 }
 let ANCHORS: AnchorSet | null = null;
 // The lighthouse tower's unit dir — the look-at target for face:'center'.
@@ -348,6 +350,7 @@ export function setAnchors(a: {
   benches: THREE.Vector3[];
   lighthouseDir: THREE.Vector3 | null;
   vistas: THREE.Vector3[];
+  doors?: THREE.Vector3[];
 }): void {
   ANCHORS = {
     flowers: a.flowers.map(toDir),
@@ -358,6 +361,7 @@ export function setAnchors(a: {
     lighthouse: a.lighthouseDir ? ringAround(a.lighthouseDir.clone().normalize(), 0.05, 4) : [],
     plaza: DISTRICTS.map((d) => dirFor(d.lon, d.lat)),
     vista: a.vistas.map(toDir),
+    doors: (a.doors ?? []).map(toDir),
   };
   LIGHTHOUSE_CENTRE = a.lighthouseDir ? a.lighthouseDir.clone().normalize() : null;
 }
@@ -490,6 +494,23 @@ function matchRow(sched: ScheduleRow[], hour: number): ScheduleRow | null {
 function pickAnchor(source: AnchorSource, s: GoalState, outDir: THREE.Vector3): boolean {
   if (source === 'home') {
     jitterDir(s.home, 0.06, outDir);
+    return true;
+  }
+  if (source === 'door') {
+    // Sleep: walk to the cottage door NEAREST this NPC's home patch (stable per
+    // NPC — no rotation), where the engine hides them "inside" for the night.
+    const doors = ANCHORS?.doors;
+    if (!doors || !doors.length) return false; // → home-jitter fallback
+    let best = doors[0];
+    let bestAngle = Infinity;
+    for (const d of doors) {
+      const a = d.angleTo(s.home);
+      if (a < bestAngle) {
+        bestAngle = a;
+        best = d;
+      }
+    }
+    outDir.copy(best);
     return true;
   }
   if (source === 'boulevard') {

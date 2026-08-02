@@ -842,12 +842,34 @@ class SimpleApp {
     contact: 'post',
   };
 
+  // What building the player is currently inside (for hotspot actions + leave).
+  private insideZone: { id: string; name: string } | null = null;
+  private insideIsZone = false;
+
+  /** Execute the interior hotspot the player pressed E on. */
+  private runInteriorAction(hs: { action: string; text?: string }): void {
+    if (hs.action === 'leave') {
+      this.exitBuilding(this.insideIsZone);
+    } else if (hs.action === 'times') {
+      void this.ui.showIslandTimes();
+    } else if (hs.action === 'panel' && this.insideZone) {
+      this.ui.showZonePanel(
+        { id: this.insideZone.id, name: this.insideZone.name },
+        { source: 'proximity' },
+      );
+    } else if (hs.text) {
+      this.ui.flashMessage(hs.text);
+    }
+  }
+
   private enterBuilding(id: string, isZone: boolean, zone?: { id: string; name: string }): void {
     if (this.scene.isInsideInterior()) return;
     const d = DISTRICTS.find((x) => x.id === id);
     const title = isZone ? (zone?.name ?? d?.name ?? id) : 'A cosy home';
     const wall = isZone ? (d?.accent ?? 0xcfc4ae) : 0xe0c9a8;
     const theme = isZone ? (SimpleApp.INTERIOR_THEMES[id] ?? 'hall') : 'cottage';
+    this.insideZone = isZone ? (zone ?? { id, name: title }) : null;
+    this.insideIsZone = isZone;
     const [left, right] = isZone
       ? (SimpleApp.INTERIOR_CONTENT[id] ?? ['', ''])
       : ['A place to\nrest', 'Someone\nlives here'];
@@ -971,11 +993,25 @@ class SimpleApp {
 
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
-      // Inside a building: the world is frozen and the camera auto-orbits the
-      // room; the only control is the Leave button. Suppress movement + prompt.
+      // Inside a building: the world is frozen; WASD/joystick walks the room
+      // (GameScene's interior mode) and E interacts with the nearby hotspot.
       if (this.scene.isInsideInterior()) {
-        this.scene.setPlayerMovement(0, 0);
-        this.ui.hideInteractionPrompt();
+        const moveInput = this.inputManager.getMovementInput();
+        const joy = this.ui.getJoystick();
+        this.scene.setInteriorMove(
+          Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
+          Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
+        );
+        const hs = this.scene.getInteriorHotspot();
+        if (hs) {
+          this.ui.showInteractionPrompt(hs.label);
+          if (this.inputManager.consumeKeyPress('e')) {
+            sfx.blip();
+            this.runInteriorAction(hs);
+          }
+        } else {
+          this.ui.hideInteractionPrompt();
+        }
       } else if (this.ui.isDialogueActive()) {
         // If dialogue is active, E advances/closes it; suppress movement
         this.scene.setPlayerMovement(0, 0);
