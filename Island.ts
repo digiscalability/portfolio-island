@@ -13,7 +13,13 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, DISTRICT_SHIFT, districtAccentAt } from './Districts';
+import {
+  DISTRICTS,
+  RING_DISTRICT_LONS,
+  ZONE_LAT,
+  DISTRICT_SHIFT,
+  districtAccentAt,
+} from './Districts';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
 import { SimpleRenderer } from './SimpleRenderer';
@@ -24,7 +30,6 @@ type IslandMeshUserData = {
   _debug?: boolean;
   _debugHelpers?: THREE.Group;
 };
-
 
 type ORMSplitResult = {
   aoMap: THREE.Texture;
@@ -97,7 +102,12 @@ export class Island {
   private surfaceMesh?: THREE.Mesh;
   private animationMixers: THREE.AnimationMixer[] = [];
   private npcInstances: NPC[] = [];
-  public npcTargets: Array<{ position: THREE.Vector3; name: string; dialogue: string[]; meshRef: THREE.Object3D }> = [];
+  public npcTargets: Array<{
+    position: THREE.Vector3;
+    name: string;
+    dialogue: string[];
+    meshRef: THREE.Object3D;
+  }> = [];
   // Sampled sites exposed for GameScene's ambient life (butterflies, smoke)
   public flowerSites: THREE.Vector3[] = [];
   public chimneySites: Array<{ position: THREE.Vector3; normal: THREE.Vector3 }> = [];
@@ -728,8 +738,7 @@ export class Island {
       // narrower than ±1 — the first pass at ±0.062 moved the coast by under
       // 1 world unit, which reads as a circle. These amplitudes are tuned
       // empirically against the measured shoreline spread.
-      const coastWarp =
-        noise3D(v.x, v.y, v.z, 0.16) * 0.105 + noise3D(v.x, v.y, v.z, 0.42) * 0.05;
+      const coastWarp = noise3D(v.x, v.y, v.z, 0.16) * 0.105 + noise3D(v.x, v.y, v.z, 0.42) * 0.05;
       const shoreLo = 0.05 + coastWarp;
       const shoreHi = 0.28 + coastWarp;
       const shoreT = THREE.MathUtils.clamp((sinLat - shoreLo) / (shoreHi - shoreLo), 0, 1);
@@ -893,7 +902,8 @@ export class Island {
           // Low-strength LERP (never multiply) that fades out with altitude, so
           // only the low grassy land carries district identity — ridge/peak/rock
           // keep their neutral tones. `districtAccentAt` returns 0 between plazas.
-          const aw = districtAccentAt(vDir, accentScratch) * (1 - THREE.MathUtils.clamp(t, 0, 1) * 0.5);
+          const aw =
+            districtAccentAt(vDir, accentScratch) * (1 - THREE.MathUtils.clamp(t, 0, 1) * 0.5);
           if (aw > 0) tmp.lerp(accentScratch, aw * 0.14);
           // Feather the sand upward so the beach doesn't end on a hard line
           const beachFade = THREE.MathUtils.clamp((above - BEACH_TOP) / BEACH_FADE, 0, 1);
@@ -906,7 +916,11 @@ export class Island {
         // Snow line on the highland peaks. Gated on elevation AND flatness so
         // it settles on summits and shelves but not on sheer rock faces.
         if (above > snowLine) {
-          const alt = THREE.MathUtils.clamp((above - snowLine) / Math.max(0.4, snowLine * 0.45), 0, 1);
+          const alt = THREE.MathUtils.clamp(
+            (above - snowLine) / Math.max(0.4, snowLine * 0.45),
+            0,
+            1,
+          );
           const settles = 1 - THREE.MathUtils.smoothstep(slope, 0.42, 0.85);
           tmp.lerp(snow, alt * (0.45 + 0.55 * settles));
         }
@@ -982,7 +996,10 @@ export class Island {
       shader.uniforms.uTide = this.seaTideUniform;
       shader.uniforms.uSkyHorizon = this.seaSkyHorizonUniform;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uAmp;\nuniform float uTide;\nvarying float vWave;\nvarying vec2 vFoamUv;')
+        .replace(
+          '#include <common>',
+          '#include <common>\nuniform float uTime;\nuniform float uAmp;\nuniform float uTide;\nvarying float vWave;\nvarying vec2 vFoamUv;',
+        )
         // Tilt the NORMAL to match the wave slope. Without this the shader
         // displaces geometry but lights it as a smooth sphere, so the ocean
         // slides around without ever shading like water — the single biggest
@@ -1034,7 +1051,10 @@ export class Island {
         'uniform float uTide;\nattribute float aDepth;\nvarying float vDepth;',
       );
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uSkyHorizon;')
+        .replace(
+          '#include <common>',
+          '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uSkyHorizon;',
+        )
         .replace(
           '#include <color_fragment>',
           [
@@ -1214,8 +1234,10 @@ export class Island {
     // Thinned from 8 → 4 towers (one per corner) and spread wider so the CBD
     // reads as a couple of blocks, not a wall — the island felt congested.
     const BUILDING_SITES: Array<[number, number]> = [
-      [5.8, 0.64], [0.48, 0.64],
-      [5.8, 0.29], [0.48, 0.29],
+      [5.8, 0.64],
+      [0.48, 0.64],
+      [5.8, 0.29],
+      [0.48, 0.29],
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
@@ -1244,7 +1266,11 @@ export class Island {
       b.quaternion.copy(q);
       // Face the boulevard — each tower addresses the street, so the two
       // rows front each other across the pavement like a real CBD block
-      this.faceObjectToward(b, sampled.normal, this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius));
+      this.faceObjectToward(
+        b,
+        sampled.normal,
+        this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius),
+      );
       b.castShadow = true;
       b.receiveShadow = true;
       b.name = `building_placeholder_${i}`;
@@ -1265,8 +1291,12 @@ export class Island {
       // cottages read as a roomy village street, not a packed terrace — the
       // R40 grow already pushed them ~33% further apart; this opens the gaps
       // more. Still well clear of the neighbouring districts (1.57 rad away).
-      [1.92 + SHIFT_PERSONAL, 0.66], [2.52 + SHIFT_PERSONAL, 0.66], [3.12 + SHIFT_PERSONAL, 0.66],
-      [1.92 + SHIFT_PERSONAL, 0.27], [2.54 + SHIFT_PERSONAL, 0.27], [3.12 + SHIFT_PERSONAL, 0.27],
+      [1.92 + SHIFT_PERSONAL, 0.66],
+      [2.52 + SHIFT_PERSONAL, 0.66],
+      [3.12 + SHIFT_PERSONAL, 0.66],
+      [1.92 + SHIFT_PERSONAL, 0.27],
+      [2.54 + SHIFT_PERSONAL, 0.27],
+      [3.12 + SHIFT_PERSONAL, 0.27],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
@@ -1354,7 +1384,11 @@ export class Island {
       );
       house.quaternion.copy(q);
       // Front door faces the village street (nearest boulevard point)
-      this.faceObjectToward(house, sampled.normal, this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius));
+      this.faceObjectToward(
+        house,
+        sampled.normal,
+        this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius),
+      );
       house.position.copy(sampled.position);
       // Record the chimney tip (post-alignment) for GameScene's smoke puffs
       if (i % 2 === 0) {
@@ -1466,7 +1500,7 @@ export class Island {
       // Grove density: lush = dense grove, dry/high = clearing. The smooth
       // moisture field (~10-20u features) makes trees clump into contiguous
       // groves and open up meadows between — clumping AND negative space.
-      const groveP = 0.36 + moist * 0.70 - Math.max(0, candidate.y - Math.sin(0.92)) * 1.7;
+      const groveP = 0.36 + moist * 0.7 - Math.max(0, candidate.y - Math.sin(0.92)) * 1.7;
       if (Math.random() > groveP) continue; // a clearing
       const dir = this.claimDir(candidate, 0.07);
       if (dir.y < Math.sin(0.29)) continue;
@@ -1495,7 +1529,9 @@ export class Island {
       let fColor =
         treeType === 2
           ? PINE_COLOR
-          : FOLIAGE_COLORS[Math.min(FOLIAGE_COLORS.length - 1, Math.floor(moist * FOLIAGE_COLORS.length))];
+          : FOLIAGE_COLORS[
+              Math.min(FOLIAGE_COLORS.length - 1, Math.floor(moist * FOLIAGE_COLORS.length))
+            ];
       // Per-district canopy tint (broadleaf only — conifers/shrubs keep their
       // biome colour): blossom-pink near Personal, cool blue-green near
       // Professional, etc. Reads as different trees per district, no new geo.
@@ -1509,38 +1545,74 @@ export class Island {
 
       if (treeType <= 1) {
         // Round canopy tree — tapered trunk + clustered dodecahedrons
-        bakePart(parts, new THREE.CylinderGeometry(0.04 * scale, 0.08 * scale, 0.6 * scale, 6),
-          TRUNK_COLOR, [0, 0.3 * scale, 0]);
-        bakePart(parts, new THREE.DodecahedronGeometry(0.35 * scale, 0),
-          fColor, [0, 0.75 * scale, 0], [i * 0.7, i * 1.3, 0]);
+        bakePart(
+          parts,
+          new THREE.CylinderGeometry(0.04 * scale, 0.08 * scale, 0.6 * scale, 6),
+          TRUNK_COLOR,
+          [0, 0.3 * scale, 0],
+        );
+        bakePart(
+          parts,
+          new THREE.DodecahedronGeometry(0.35 * scale, 0),
+          fColor,
+          [0, 0.75 * scale, 0],
+          [i * 0.7, i * 1.3, 0],
+        );
         // 2-3 smaller satellite blobs for organic volume
         const blobCount = 2 + (i % 2);
         for (let b = 0; b < blobCount; b++) {
           const angle = (b / blobCount) * Math.PI * 2 + i;
-          bakePart(parts, new THREE.DodecahedronGeometry(0.18 * scale, 0), fColor, [
-            Math.cos(angle) * 0.2 * scale,
-            0.7 * scale + (b === 0 ? 0.15 : -0.05) * scale,
-            Math.sin(angle) * 0.2 * scale,
-          ], [b * 1.1, b * 2.3, 0]);
+          bakePart(
+            parts,
+            new THREE.DodecahedronGeometry(0.18 * scale, 0),
+            fColor,
+            [
+              Math.cos(angle) * 0.2 * scale,
+              0.7 * scale + (b === 0 ? 0.15 : -0.05) * scale,
+              Math.sin(angle) * 0.2 * scale,
+            ],
+            [b * 1.1, b * 2.3, 0],
+          );
         }
       } else if (treeType === 2) {
         // Pine/conifer — tall trunk + layered cone tiers (sharper, taller)
-        bakePart(parts, new THREE.CylinderGeometry(0.03 * scale, 0.06 * scale, 0.8 * scale, 6),
-          DARK_TRUNK_COLOR, [0, 0.4 * scale, 0]);
+        bakePart(
+          parts,
+          new THREE.CylinderGeometry(0.03 * scale, 0.06 * scale, 0.8 * scale, 6),
+          DARK_TRUNK_COLOR,
+          [0, 0.4 * scale, 0],
+        );
         for (let t = 0; t < 3; t++) {
           const tierScale = 1 - t * 0.22;
-          bakePart(parts, new THREE.ConeGeometry(0.22 * scale * tierScale, 0.3 * scale, 6),
-            PINE_COLOR, [0, (0.65 + t * 0.22) * scale, 0]);
+          bakePart(
+            parts,
+            new THREE.ConeGeometry(0.22 * scale * tierScale, 0.3 * scale, 6),
+            PINE_COLOR,
+            [0, (0.65 + t * 0.22) * scale, 0],
+          );
         }
       } else {
         // Bushy shrub tree — short trunk, wide icosahedron canopy
-        bakePart(parts, new THREE.CylinderGeometry(0.05 * scale, 0.07 * scale, 0.3 * scale, 5),
-          TRUNK_COLOR, [0, 0.15 * scale, 0]);
-        bakePart(parts, new THREE.IcosahedronGeometry(0.4 * scale, 0),
-          fColor, [0, 0.5 * scale, 0], [0, i * 0.9, 0], [1.3, 0.8, 1.3]);
+        bakePart(
+          parts,
+          new THREE.CylinderGeometry(0.05 * scale, 0.07 * scale, 0.3 * scale, 5),
+          TRUNK_COLOR,
+          [0, 0.15 * scale, 0],
+        );
+        bakePart(
+          parts,
+          new THREE.IcosahedronGeometry(0.4 * scale, 0),
+          fColor,
+          [0, 0.5 * scale, 0],
+          [0, i * 0.9, 0],
+          [1.3, 0.8, 1.3],
+        );
         // Small accent blob
-        bakePart(parts, new THREE.DodecahedronGeometry(0.15 * scale, 0),
-          fColor, [0.2 * scale, 0.55 * scale, 0.1 * scale]);
+        bakePart(parts, new THREE.DodecahedronGeometry(0.15 * scale, 0), fColor, [
+          0.2 * scale,
+          0.55 * scale,
+          0.1 * scale,
+        ]);
       }
 
       // Merge the tree's parts into one vertex-coloured mesh → one draw call
@@ -1567,12 +1639,12 @@ export class Island {
     // sampled at the plaza roadside; the per-mailbox stepping below still
     // slides it clear of the pavement and claims the spot.
     const MAILBOX_SITES: Array<[number, number]> = [
-      [0.30, 1.30], // welcome — near the spawn plaza
-      [6.10, 0.42], // professional
-      [1.30 + SHIFT_PROJECTS, 0.42], // projects
-      [2.30 + SHIFT_PERSONAL, 0.50], // personal (village)
-      [2.75 + SHIFT_PERSONAL, 0.40], // personal (second)
-      [3.80 + SHIFT_CONTACT, 0.42], // contact
+      [0.3, 1.3], // welcome — near the spawn plaza
+      [6.1, 0.42], // professional
+      [1.3 + SHIFT_PROJECTS, 0.42], // projects
+      [2.3 + SHIFT_PERSONAL, 0.5], // personal (village)
+      [2.75 + SHIFT_PERSONAL, 0.4], // personal (second)
+      [3.8 + SHIFT_CONTACT, 0.42], // contact
     ];
     const mailboxSources = MAILBOX_SITES.map(([lon, lat]) => {
       const s = this.sampleSurfaceByDirection(this.claimOffStreet(this.dirAt(lon, lat), 0.1), 0.0);
@@ -1596,7 +1668,10 @@ export class Island {
         tangent.applyAxisAngle(sampled.normal, Math.random() * Math.PI * 2);
       }
       tangent.normalize();
-      let mbDir = houseDir.clone().addScaledVector(tangent, 2.6 / this.radius).normalize();
+      let mbDir = houseDir
+        .clone()
+        .addScaledVector(tangent, 2.6 / this.radius)
+        .normalize();
       mbDir = this.pushOffStreet(mbDir);
       mbDir = this.claimDir(mbDir, 0.05);
       const placement = this.sampleSurfaceByDirection(mbDir, 0.03);
@@ -1613,7 +1688,10 @@ export class Island {
       box.position.y = 0.56;
       mb.add(box);
       // Rounded top (half-cylinder look via a squashed sphere)
-      const top = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), boxMat);
+      const top = new THREE.Mesh(
+        new THREE.SphereGeometry(0.09, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+        boxMat,
+      );
       top.scale.set(1, 0.5, 0.67);
       top.position.y = 0.64;
       mb.add(top);
@@ -1658,13 +1736,24 @@ export class Island {
     // intervals, alternating kerbs (odd = north lat 0.515, even = south
     // lat 0.412) — mid-block lons chosen clear of building/house columns.
     const LAMP_SITES: Array<[number, number]> = [
-      [0.28, 0.412], [0.91, 0.515], [1.54, 0.412], [2.17, 0.515], [2.80, 0.412],
-      [3.43, 0.515], [4.06, 0.412], [4.71, 0.515], [5.34, 0.412], [5.97, 0.515],
+      [0.28, 0.412],
+      [0.91, 0.515],
+      [1.54, 0.412],
+      [2.17, 0.515],
+      [2.8, 0.412],
+      [3.43, 0.515],
+      [4.06, 0.412],
+      [4.71, 0.515],
+      [5.34, 0.412],
+      [5.97, 0.515],
     ];
     for (let i = 0; i < LAMP_SITES.length; i++) {
       // claimOffStreet, not claimDir: a couple of boulevard lamps landed on the
       // ribbon where an avenue meets the boulevard; this keeps them at the kerb.
-      const pos = this.claimOffStreet(this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]), 0.05).multiplyScalar(this.radius);
+      const pos = this.claimOffStreet(
+        this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]),
+        0.05,
+      ).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       this.lampSites.push(sampled.position.clone()); // NPC activity anchor (lamp round)
       const lampGroup = new THREE.Group();
@@ -1691,7 +1780,11 @@ export class Island {
       // Glowing bulb
       const bulb = new THREE.Mesh(
         new THREE.SphereGeometry(0.1, 8, 8),
-        new THREE.MeshStandardMaterial({ color: 0xfff4cc, emissive: 0xffe8a0, emissiveIntensity: 0.8 }),
+        new THREE.MeshStandardMaterial({
+          color: 0xfff4cc,
+          emissive: 0xffe8a0,
+          emissiveIntensity: 0.8,
+        }),
       );
       bulb.position.set(0.35, 1.48, 0);
       bulb.userData.isNightEmissive = true;
@@ -1728,120 +1821,194 @@ export class Island {
     const npcPlaceholders: THREE.Mesh[] = [];
     const NPC_SITES: Array<[number, number]> = [
       // welcome greeters near the spawn plaza
-      [0.5, 1.30], [2.2, 1.32], [4.0, 1.30], [5.5, 1.33],
+      [0.5, 1.3],
+      [2.2, 1.32],
+      [4.0, 1.3],
+      [5.5, 1.33],
       // villagers around the Personal hamlet
-      [2.36 + SHIFT_PERSONAL, 0.45], [2.66 + SHIFT_PERSONAL, 0.45], [2.51 + SHIFT_PERSONAL, 0.32], [2.51 + SHIFT_PERSONAL, 0.60], [2.43 + SHIFT_PERSONAL, 0.53],
+      [2.36 + SHIFT_PERSONAL, 0.45],
+      [2.66 + SHIFT_PERSONAL, 0.45],
+      [2.51 + SHIFT_PERSONAL, 0.32],
+      [2.51 + SHIFT_PERSONAL, 0.6],
+      [2.43 + SHIFT_PERSONAL, 0.53],
       // office crowd at the Professional plaza
-      [6.11, 0.45], [0.17, 0.45], [0.0, 0.30], [6.21, 0.58],
+      [6.11, 0.45],
+      [0.17, 0.45],
+      [0.0, 0.3],
+      [6.21, 0.58],
       // builders at the Projects work sites
-      [1.15 + SHIFT_PROJECTS, 0.45], [1.36 + SHIFT_PROJECTS, 0.50], [1.26 + SHIFT_PROJECTS, 0.32],
+      [1.15 + SHIFT_PROJECTS, 0.45],
+      [1.36 + SHIFT_PROJECTS, 0.5],
+      [1.26 + SHIFT_PROJECTS, 0.32],
       // market-goers at the Contact stalls
-      [3.69 + SHIFT_CONTACT, 0.51], [3.86 + SHIFT_CONTACT, 0.51], [3.77 + SHIFT_CONTACT, 0.36],
+      [3.69 + SHIFT_CONTACT, 0.51],
+      [3.86 + SHIFT_CONTACT, 0.51],
+      [3.77 + SHIFT_CONTACT, 0.36],
       // one wanderer out on the coastal road (the equator is ocean now)
       [5.0, 0.28],
     ];
     const NPC_SHIRT_COLORS = [0x4488bb, 0xcc5544, 0x55aa55, 0xddaa33, 0x8866aa, 0xbb6644];
     const NPC_PERSONALITIES = [
-      { name: 'Elder Sage', dialogue: [
-        'Welcome to Life Island, traveller.',
-        'Each zone tells a chapter of the story.',
-        'Seek the glowing mailboxes — they hold deliveries for you.',
-      ]},
-      { name: 'Village Baker', dialogue: [
-        'Nothing beats fresh bread on a tiny planet!',
-        'The secret ingredient? Always butter.',
-        'Come back anytime — the oven is always warm.',
-      ]},
-      { name: 'Island Explorer', dialogue: [
-        'Have you found all five zones yet?',
-        'The compass at the top points to your next delivery.',
-        'Press E near a glowing mailbox to collect!',
-      ]},
-      { name: 'Young Student', dialogue: [
-        'I\'m learning TypeScript! It\'s amazing.',
-        'Did you know this whole island runs on Three.js?',
-        'One day I\'ll build my own world like this.',
-      ]},
-      { name: 'Market Vendor', dialogue: [
-        'Fresh ideas, get your fresh ideas here!',
-        'Special today: one-of-a-kind digital experiences.',
-        'Browse the Project Portfolio zone for the full catalogue.',
-      ]},
-      { name: 'Market Vendor', dialogue: [
-        'You look like someone who appreciates quality.',
-        'Everything here is handcrafted, pixel by pixel.',
-        'Tell your friends about Life Island!',
-      ]},
-      { name: 'Fisherman', dialogue: [
-        'The waters here are unlike any other...',
-        'Sometimes I wonder what\'s beyond the fog.',
-        'Patience is the best algorithm.',
-      ]},
-      { name: 'Artist', dialogue: [
-        'Look at how the light catches the terrain!',
-        'Every pixel on this planet was placed with care.',
-        'The zone markers... they pulse like a heartbeat.',
-      ]},
-      { name: 'Guard', dialogue: [
-        'All clear! No bugs spotted today.',
-        'Move along, citizen. Nothing to debug here.',
-        'I keep watch over the render pipeline.',
-      ]},
-      { name: 'Storyteller', dialogue: [
-        'Once upon a time, there was an empty sphere...',
-        'Then the creator filled it with houses, trees, and dreams.',
-        'And the people came, one visitor at a time.',
-      ]},
-      { name: 'Wanderer', dialogue: [
-        '...',
-        'I\'ve walked every arc of this sphere.',
-        'There are secrets in the spaces between zones.',
-      ]},
-      { name: 'Gardener', dialogue: [
-        'These flowers bloom in every colour of the palette.',
-        'A little water, a little sunlight, and voila!',
-        'The trees sway even without wind. Magic, I say.',
-      ]},
-      { name: 'Architect', dialogue: [
-        'I designed half the buildings on this island.',
-        'The trick is making them sit on a curved surface.',
-        'Every house is grounded to the terrain. No floating allowed!',
-      ]},
-      { name: 'Musician', dialogue: [
-        'Can you hear the music? It\'s procedurally generated.',
-        'Each note is chosen from a pentatonic scale.',
-        'The birds? Also procedural. Nature imitates code.',
-      ]},
-      { name: 'Lighthouse Keeper', dialogue: [
-        'The beacons guide delivery runners to their targets.',
-        'Gold light means a package awaits.',
-        'I\'ve been keeping these lights running since version 1.0.',
-      ]},
-      { name: 'Tourist', dialogue: [
-        'What a charming little planet!',
-        'I came for the portfolio, stayed for the vibes.',
-        'Have you tried walking all the way around?',
-      ]},
-      { name: 'Cartographer', dialogue: [
-        'Five zones, twenty buildings, one sphere.',
-        'The Welcome Hub is at the north pole.',
-        'Everything else sits along the equator belt.',
-      ]},
-      { name: 'Philosopher', dialogue: [
-        'Is the player walking on the planet...',
-        '...or is the planet turning under the player?',
-        'Either way, we are all spheres in the end.',
-      ]},
-      { name: 'Courier', dialogue: [
-        'Another day, another delivery!',
-        'The quest chain starts with the Welcome packages.',
-        'Finish them all and you unlock something special.',
-      ]},
-      { name: 'Night Watch', dialogue: [
-        'The lamps flicker at dusk. Have you noticed?',
-        'Press E near a lamp to toggle it.',
-        'I prefer the island at night. Quieter.',
-      ]},
+      {
+        name: 'Elder Sage',
+        dialogue: [
+          'Welcome to Life Island, traveller.',
+          'Each zone tells a chapter of the story.',
+          'Seek the glowing mailboxes — they hold deliveries for you.',
+        ],
+      },
+      {
+        name: 'Village Baker',
+        dialogue: [
+          'Nothing beats fresh bread on a tiny planet!',
+          'The secret ingredient? Always butter.',
+          'Come back anytime — the oven is always warm.',
+        ],
+      },
+      {
+        name: 'Island Explorer',
+        dialogue: [
+          'Have you found all five zones yet?',
+          'The compass at the top points to your next delivery.',
+          'Press E near a glowing mailbox to collect!',
+        ],
+      },
+      {
+        name: 'Young Student',
+        dialogue: [
+          "I'm learning TypeScript! It's amazing.",
+          'Did you know this whole island runs on Three.js?',
+          "One day I'll build my own world like this.",
+        ],
+      },
+      {
+        name: 'Market Vendor',
+        dialogue: [
+          'Fresh ideas, get your fresh ideas here!',
+          'Special today: one-of-a-kind digital experiences.',
+          'Browse the Project Portfolio zone for the full catalogue.',
+        ],
+      },
+      {
+        name: 'Market Vendor',
+        dialogue: [
+          'You look like someone who appreciates quality.',
+          'Everything here is handcrafted, pixel by pixel.',
+          'Tell your friends about Life Island!',
+        ],
+      },
+      {
+        name: 'Fisherman',
+        dialogue: [
+          'The waters here are unlike any other...',
+          "Sometimes I wonder what's beyond the fog.",
+          'Patience is the best algorithm.',
+        ],
+      },
+      {
+        name: 'Artist',
+        dialogue: [
+          'Look at how the light catches the terrain!',
+          'Every pixel on this planet was placed with care.',
+          'The zone markers... they pulse like a heartbeat.',
+        ],
+      },
+      {
+        name: 'Guard',
+        dialogue: [
+          'All clear! No bugs spotted today.',
+          'Move along, citizen. Nothing to debug here.',
+          'I keep watch over the render pipeline.',
+        ],
+      },
+      {
+        name: 'Storyteller',
+        dialogue: [
+          'Once upon a time, there was an empty sphere...',
+          'Then the creator filled it with houses, trees, and dreams.',
+          'And the people came, one visitor at a time.',
+        ],
+      },
+      {
+        name: 'Wanderer',
+        dialogue: [
+          '...',
+          "I've walked every arc of this sphere.",
+          'There are secrets in the spaces between zones.',
+        ],
+      },
+      {
+        name: 'Gardener',
+        dialogue: [
+          'These flowers bloom in every colour of the palette.',
+          'A little water, a little sunlight, and voila!',
+          'The trees sway even without wind. Magic, I say.',
+        ],
+      },
+      {
+        name: 'Architect',
+        dialogue: [
+          'I designed half the buildings on this island.',
+          'The trick is making them sit on a curved surface.',
+          'Every house is grounded to the terrain. No floating allowed!',
+        ],
+      },
+      {
+        name: 'Musician',
+        dialogue: [
+          "Can you hear the music? It's procedurally generated.",
+          'Each note is chosen from a pentatonic scale.',
+          'The birds? Also procedural. Nature imitates code.',
+        ],
+      },
+      {
+        name: 'Lighthouse Keeper',
+        dialogue: [
+          'The beacons guide delivery runners to their targets.',
+          'Gold light means a package awaits.',
+          "I've been keeping these lights running since version 1.0.",
+        ],
+      },
+      {
+        name: 'Tourist',
+        dialogue: [
+          'What a charming little planet!',
+          'I came for the portfolio, stayed for the vibes.',
+          'Have you tried walking all the way around?',
+        ],
+      },
+      {
+        name: 'Cartographer',
+        dialogue: [
+          'Five zones, twenty buildings, one sphere.',
+          'The Welcome Hub is at the north pole.',
+          'Everything else sits along the equator belt.',
+        ],
+      },
+      {
+        name: 'Philosopher',
+        dialogue: [
+          'Is the player walking on the planet...',
+          '...or is the planet turning under the player?',
+          'Either way, we are all spheres in the end.',
+        ],
+      },
+      {
+        name: 'Courier',
+        dialogue: [
+          'Another day, another delivery!',
+          'The quest chain starts with the Welcome packages.',
+          'Finish them all and you unlock something special.',
+        ],
+      },
+      {
+        name: 'Night Watch',
+        dialogue: [
+          'The lamps flicker at dusk. Have you noticed?',
+          'Press E near a lamp to toggle it.',
+          'I prefer the island at night. Quieter.',
+        ],
+      },
     ];
     const npcSkinMat = new THREE.MeshStandardMaterial({ color: 0xf5c6a0, roughness: 0.7 });
     const npcShoeMat = Materials.createStandardMaterial({ color: 0x3d2b1a, roughness: 0.8 });
@@ -1849,7 +2016,10 @@ export class Island {
     for (let i = 0; i < NPC_SITES.length; i++) {
       const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), 0.05);
       const npcGroup = new THREE.Group();
-      const shirtMat = new THREE.MeshStandardMaterial({ color: NPC_SHIRT_COLORS[i % NPC_SHIRT_COLORS.length], roughness: 0.6 });
+      const shirtMat = new THREE.MeshStandardMaterial({
+        color: NPC_SHIRT_COLORS[i % NPC_SHIRT_COLORS.length],
+        roughness: 0.6,
+      });
       const pantsMat = Materials.createStandardMaterial({ color: 0x3a4a6a, roughness: 0.7 });
       // Torso
       const body = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.09, 0.22, 8), shirtMat);
@@ -1887,8 +2057,14 @@ export class Island {
         npcGroup.add(eye);
       }
       // Hair (half-sphere on top)
-      const hairMat = new THREE.MeshStandardMaterial({ color: HAIR_COLORS[i % HAIR_COLORS.length], roughness: 0.8 });
-      const hair = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
+      const hairMat = new THREE.MeshStandardMaterial({
+        color: HAIR_COLORS[i % HAIR_COLORS.length],
+        roughness: 0.8,
+      });
+      const hair = new THREE.Mesh(
+        new THREE.SphereGeometry(0.085, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        hairMat,
+      );
       hair.position.y = 0.53;
       npcGroup.add(hair);
 
@@ -1965,8 +2141,13 @@ export class Island {
     fountain.add(innerRim);
     // Water surface
     const fWaterMat = new THREE.MeshStandardMaterial({
-      color: 0x3399dd, transparent: true, opacity: 0.7,
-      roughness: 0.05, metalness: 0.3, emissive: 0x1155aa, emissiveIntensity: 0.1,
+      color: 0x3399dd,
+      transparent: true,
+      opacity: 0.7,
+      roughness: 0.05,
+      metalness: 0.3,
+      emissive: 0x1155aa,
+      emissiveIntensity: 0.1,
     });
     const water = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.08, 16), fWaterMat);
     water.position.y = 0.5;
@@ -1993,14 +2174,18 @@ export class Island {
     // (the old raw world coords stranded it near the north pole)
     this.placeObjectOnSurface(
       fountain,
-      this.claimDir(this.dirAt(2.32 + SHIFT_PERSONAL, 0.50), 0.12).multiplyScalar(this.radius),
+      this.claimDir(this.dirAt(2.32 + SHIFT_PERSONAL, 0.5), 0.12).multiplyScalar(this.radius),
       0.02,
       true,
     );
 
     // Stylized human statue
     const statue = new THREE.Group();
-    const bronzeMat = Materials.createPBRMaterial({ color: 0x8b6914, roughness: 0.5, metalness: 0.6 });
+    const bronzeMat = Materials.createPBRMaterial({
+      color: 0x8b6914,
+      roughness: 0.5,
+      metalness: 0.6,
+    });
     const marbleMat = Materials.createTrimMaterial(0xd4cfc4);
     // Two-tier pedestal
     const pedestalBase = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.3, 1.0), marbleMat);
@@ -2035,11 +2220,17 @@ export class Island {
 
     // Add parked cars along the road — proper body + cabin + wheels
     const cars = new THREE.Group();
-    const CAR_COLORS = [0xc44040, 0x4488bb, 0x55aa55, 0xddcc44, 0xbb6633, 0x8866aa, 0xdd7744, 0x557788];
+    const CAR_COLORS = [
+      0xc44040, 0x4488bb, 0x55aa55, 0xddcc44, 0xbb6633, 0x8866aa, 0xdd7744, 0x557788,
+    ];
     const wheelMat = Materials.createStandardMaterial({ color: 0x222222, roughness: 0.9 });
     const hubMat = Materials.createStandardMaterial({ color: 0x999999, metalness: 0.6 });
     const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x88bbdd, roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.6,
+      color: 0x88bbdd,
+      roughness: 0.1,
+      metalness: 0.3,
+      transparent: true,
+      opacity: 0.6,
     });
     const bumperMat = Materials.createStandardMaterial({ color: 0x333333, roughness: 0.7 });
     for (let i = 0; i < 8; i++) {
@@ -2077,7 +2268,9 @@ export class Island {
       carGroup.add(rBumper);
       // Headlights
       const headlightMat = new THREE.MeshStandardMaterial({
-        color: 0xffffee, emissive: 0xffffcc, emissiveIntensity: 0.4,
+        color: 0xffffee,
+        emissive: 0xffffcc,
+        emissiveIntensity: 0.4,
       });
       for (const hx of [-0.45, 0.45]) {
         const hl = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 6), headlightMat);
@@ -2087,7 +2280,9 @@ export class Island {
       }
       // Taillights
       const taillightMat = new THREE.MeshStandardMaterial({
-        color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 0.3,
+        color: 0xff2222,
+        emissive: 0xff0000,
+        emissiveIntensity: 0.3,
       });
       for (const tx of [-0.45, 0.45]) {
         const tl = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.08, 0.04), taillightMat);
@@ -2098,8 +2293,10 @@ export class Island {
       const wheelGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.12, 10);
       const hubGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.13, 6);
       const WHEEL_POS: [number, number, number][] = [
-        [-0.6, 0.15, 0.75], [0.6, 0.15, 0.75],   // front L, R
-        [-0.6, 0.15, -0.75], [0.6, 0.15, -0.75], // rear L, R
+        [-0.6, 0.15, 0.75],
+        [0.6, 0.15, 0.75], // front L, R
+        [-0.6, 0.15, -0.75],
+        [0.6, 0.15, -0.75], // rear L, R
       ];
       // Wheels are parented to a hub pivot at the axle so the driving code
       // can SPIN them (roll) around local X and STEER the fronts around
@@ -2132,8 +2329,14 @@ export class Island {
       // between districts, alternating sides of the street (odd index =
       // north kerb lat 0.512, even = south kerb lat 0.415).
       const CAR_SITES: Array<[number, number]> = [
-        [0.72, 0.415], [1.02, 0.512], [1.62, 0.415], [2.21, 0.512],
-        [3.10, 0.415], [3.35, 0.512], [4.30, 0.415], [5.55, 0.512],
+        [0.72, 0.415],
+        [1.02, 0.512],
+        [1.62, 0.415],
+        [2.21, 0.512],
+        [3.1, 0.415],
+        [3.35, 0.512],
+        [4.3, 0.415],
+        [5.55, 0.512],
       ];
       const [carLon, carLat] = CAR_SITES[i % CAR_SITES.length];
       // claimOffStreet, not claimDir: claimDir's jitter was nudging parked cars
@@ -2167,10 +2370,14 @@ export class Island {
     // boulevard through the plaza (staggered rows so counters don't face
     // each other head-on), the classic two-sided bazaar strip.
     const STALL_SITES: Array<[number, number]> = [
-      [3.51 + SHIFT_CONTACT, 0.65], [3.73 + SHIFT_CONTACT, 0.65], [3.95 + SHIFT_CONTACT, 0.65],
+      [3.51 + SHIFT_CONTACT, 0.65],
+      [3.73 + SHIFT_CONTACT, 0.65],
+      [3.95 + SHIFT_CONTACT, 0.65],
       // south row at 0.31 — 0.28 was the shoreline band, and claimDir
       // jitter kept nudging the end stall into the surf
-      [3.59 + SHIFT_CONTACT, 0.31], [3.81 + SHIFT_CONTACT, 0.31], [4.03 + SHIFT_CONTACT, 0.31],
+      [3.59 + SHIFT_CONTACT, 0.31],
+      [3.81 + SHIFT_CONTACT, 0.31],
+      [4.03 + SHIFT_CONTACT, 0.31],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
@@ -2203,10 +2410,16 @@ export class Island {
     // Add rivers
     const rivers = new THREE.Group();
     // Both on the island (the second used to sit at lat -0.38 — seafloor now)
-    const RIVER_SITES: Array<[number, number]> = [[4.62, 0.4], [0.72, 0.62]];
+    const RIVER_SITES: Array<[number, number]> = [
+      [4.62, 0.4],
+      [0.72, 0.62],
+    ];
     for (let i = 0; i < RIVER_SITES.length; i++) {
       const river = this.createRiver();
-      const pos = this.claimDir(this.dirAt(RIVER_SITES[i][0], RIVER_SITES[i][1]), 0.2).multiplyScalar(this.radius);
+      const pos = this.claimDir(
+        this.dirAt(RIVER_SITES[i][0], RIVER_SITES[i][1]),
+        0.2,
+      ).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       river.position.copy(sampled.position);
       river.quaternion.copy(
@@ -2263,9 +2476,12 @@ export class Island {
     // PROJECTS district: construction lots set back off the boulevard,
     // one per side of the street
     const WORK_SITES: Array<[number, number]> = [
-      [1.05 + SHIFT_PROJECTS, 0.65], [1.46 + SHIFT_PROJECTS, 0.34],
+      [1.05 + SHIFT_PROJECTS, 0.65],
+      [1.46 + SHIFT_PROJECTS, 0.34],
       // levelled up to match the other districts' density (was only 2 lots)
-      [0.95 + SHIFT_PROJECTS, 0.34], [1.55 + SHIFT_PROJECTS, 0.66], [1.25 + SHIFT_PROJECTS, 0.72],
+      [0.95 + SHIFT_PROJECTS, 0.34],
+      [1.55 + SHIFT_PROJECTS, 0.66],
+      [1.25 + SHIFT_PROJECTS, 0.72],
     ];
     // One per site — names the world after the projects the panel describes.
     const PROJECT_LABELS = [
@@ -2277,7 +2493,10 @@ export class Island {
     ];
     for (let i = 0; i < WORK_SITES.length; i++) {
       const block = this.createConstructionBlock(PROJECT_LABELS[i], i === 0);
-      const pos = this.claimOffStreet(this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]), 0.12).multiplyScalar(this.radius);
+      const pos = this.claimOffStreet(
+        this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]),
+        0.12,
+      ).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
       block.quaternion.copy(
@@ -2310,7 +2529,10 @@ export class Island {
     // NPC activity anchors (gardener) — two off-centre points on each plaza's
     // flower ring, nudged off the pavement so she kneels beside real blooms.
     for (const [aLon, aLat] of FLOWER_ANCHORS) {
-      for (const [dl, dt] of [[0.22, 0.05], [-0.2, 0.13]] as Array<[number, number]>) {
+      for (const [dl, dt] of [
+        [0.22, 0.05],
+        [-0.2, 0.13],
+      ] as Array<[number, number]>) {
         try {
           const fd = this.pushOffStreet(this.dirAt(aLon + dl, aLat + dt));
           this.flowerBedSites.push(this.sampleSurfaceByDirection(fd, 0.0).position.clone());
@@ -2371,7 +2593,11 @@ export class Island {
       // Center: yellow sphere at local y=0.27
       addBatch(
         new THREE.SphereGeometry(0.04, 6, 6),
-        new THREE.MeshStandardMaterial({ color: 0xffdd44, emissive: 0xffdd44, emissiveIntensity: 0.3 }),
+        new THREE.MeshStandardMaterial({
+          color: 0xffdd44,
+          emissive: 0xffdd44,
+          emissiveIntensity: 0.3,
+        }),
         'flower_centers',
         all,
         [new THREE.Matrix4().makeTranslation(0, 0.27, 0)],
@@ -2441,11 +2667,17 @@ export class Island {
     const benches = new THREE.Group();
     // Benches at the plazas: [lon, lat, latOfPlazaTheyFace]
     const BENCH_SITES: Array<[number, number, number]> = [
-      [0.8, 1.36, 1.5708], [3.9, 1.36, 1.5708],       // welcome / spawn
-      [2.44 + SHIFT_PERSONAL, 0.40, 0.4636], [2.60 + SHIFT_PERSONAL, 0.40, 0.4636], [2.51 + SHIFT_PERSONAL, 0.56, 0.4636], // village
-      [6.16, 0.40, 0.4636], [0.13, 0.42, 0.4636],     // professional
-      [1.18 + SHIFT_PROJECTS, 0.42, 0.4636], [1.32 + SHIFT_PROJECTS, 0.42, 0.4636],   // projects (was benchless)
-      [3.70 + SHIFT_CONTACT, 0.42, 0.4636], [3.85 + SHIFT_CONTACT, 0.42, 0.4636],     // market
+      [0.8, 1.36, 1.5708],
+      [3.9, 1.36, 1.5708], // welcome / spawn
+      [2.44 + SHIFT_PERSONAL, 0.4, 0.4636],
+      [2.6 + SHIFT_PERSONAL, 0.4, 0.4636],
+      [2.51 + SHIFT_PERSONAL, 0.56, 0.4636], // village
+      [6.16, 0.4, 0.4636],
+      [0.13, 0.42, 0.4636], // professional
+      [1.18 + SHIFT_PROJECTS, 0.42, 0.4636],
+      [1.32 + SHIFT_PROJECTS, 0.42, 0.4636], // projects (was benchless)
+      [3.7 + SHIFT_CONTACT, 0.42, 0.4636],
+      [3.85 + SHIFT_CONTACT, 0.42, 0.4636], // market
     ];
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
     const benchLegMat = Materials.createTrimMaterial(0x444444);
@@ -2476,7 +2708,10 @@ export class Island {
       }
       bench.position.copy(bSampled.position);
       this.benchSites.push(bSampled.position.clone()); // NPC activity anchor (bench rest)
-      const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bSampled.normal);
+      const bq = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        bSampled.normal,
+      );
       bench.quaternion.copy(bq);
       // Face the plaza this bench belongs to (seat toward it, backrest away)
       this.faceObjectToward(
@@ -2690,7 +2925,16 @@ export class Island {
     // (flowers omitted — instanced blooms are origin-anchored InstancedMeshes
     // that seatGroupsOnTerrain skips; each bloom is grounded at scatter time.)
     this.seatGroupsOnTerrain(root, [
-      buildings, houses, trees, lamps, npcs, cars, mailboxes, stalls, constructions, benches,
+      buildings,
+      houses,
+      trees,
+      lamps,
+      npcs,
+      cars,
+      mailboxes,
+      stalls,
+      constructions,
+      benches,
     ]);
 
     this.tryLoadModels(buildings, npcs, buildingPlaceholders, npcPlaceholders).catch(() => {
@@ -2811,7 +3055,9 @@ export class Island {
     beacon.add(halo);
     this.summitBeacon = beacon;
 
-    console.log(`⛰️ Summit monument placed at ${(surf.position.length() - this.seaLevel()).toFixed(1)}u above sea`);
+    console.log(
+      `⛰️ Summit monument placed at ${(surf.position.length() - this.seaLevel()).toFixed(1)}u above sea`,
+    );
     return g;
   }
 
@@ -2839,7 +3085,11 @@ export class Island {
     const whiteMat = new THREE.MeshStandardMaterial({ color: 0xeef0f2, roughness: 0.7 });
     const redMat = new THREE.MeshStandardMaterial({ color: 0xc9433a, roughness: 0.65 });
     const rockMat = new THREE.MeshStandardMaterial({ color: 0x7d8590, roughness: 0.95 });
-    const darkMat = new THREE.MeshStandardMaterial({ color: 0x33383f, roughness: 0.55, metalness: 0.25 });
+    const darkMat = new THREE.MeshStandardMaterial({
+      color: 0x33383f,
+      roughness: 0.55,
+      metalness: 0.25,
+    });
 
     // Rocky base plinth
     const base = new THREE.Mesh(new THREE.CylinderGeometry(1.9, 2.5, 1.2, 12), rockMat);
@@ -2896,7 +3146,11 @@ export class Island {
     // A faint halo ring for extra glow (mirrors the summit beacon)
     const halo = new THREE.Mesh(
       new THREE.TorusGeometry(0.78, 0.05, 8, 24),
-      new THREE.MeshStandardMaterial({ color: 0xffe680, emissive: 0xffd24a, emissiveIntensity: 1.6 }),
+      new THREE.MeshStandardMaterial({
+        color: 0xffe680,
+        emissive: 0xffd24a,
+        emissiveIntensity: 1.6,
+      }),
     );
     halo.rotation.x = Math.PI / 2;
     lamp.add(halo);
@@ -2918,7 +3172,11 @@ export class Island {
   private createRocks(): THREE.InstancedMesh | null {
     const geo = new THREE.IcosahedronGeometry(0.5, 0);
     geo.scale(1.0, 0.72, 1.12); // slightly flattened boulder
-    const mat = new THREE.MeshStandardMaterial({ color: 0x8b857a, roughness: 0.96, flatShading: true }); // warm neutral rock grey
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x8b857a,
+      roughness: 0.96,
+      flatShading: true,
+    }); // warm neutral rock grey
     const MAX = 128;
     const inst = new THREE.InstancedMesh(geo, mat, MAX);
     inst.name = 'rocks';
@@ -2948,10 +3206,7 @@ export class Island {
       if (!steep && !shoreBand && Math.random() > 0.1) continue;
       const dir = this.claimDir(candidate, 0.03); // tight — scree clusters
       const a2 = this.analyticSurface(dir);
-      dummy.position
-        .copy(dir)
-        .multiplyScalar(a2.radius)
-        .addScaledVector(a2.normal, -0.14); // sink slightly: bury-not-float
+      dummy.position.copy(dir).multiplyScalar(a2.radius).addScaledVector(a2.normal, -0.14); // sink slightly: bury-not-float
       dummy.quaternion.setFromUnitVectors(up, a2.normal);
       dummy.rotateY(Math.random() * Math.PI * 2);
       dummy.scale.setScalar(0.45 + Math.random() * (steep ? 1.5 : 0.85));
@@ -3014,8 +3269,7 @@ export class Island {
    * Only the rendered surface and anything floating on it move.
    */
   public updateTide(t: number): void {
-    this.seaTideUniform.value =
-      Math.sin((t / Island.TIDE_PERIOD) * Math.PI * 2) * Island.TIDE_AMP;
+    this.seaTideUniform.value = Math.sin((t / Island.TIDE_PERIOD) * Math.PI * 2) * Island.TIDE_AMP;
   }
 
   /** Current tide offset (+high / -low), for HUD or shoreline FX. */
@@ -3047,9 +3301,12 @@ export class Island {
    * point (projected onto the tangent plane). Used to face houses/stalls
    * toward the road/plaza instead of random spins.
    */
-  private faceObjectToward(obj: THREE.Object3D, normal: THREE.Vector3, target: THREE.Vector3): void {
-    const proj = (v: THREE.Vector3) =>
-      v.clone().sub(normal.clone().multiplyScalar(v.dot(normal)));
+  private faceObjectToward(
+    obj: THREE.Object3D,
+    normal: THREE.Vector3,
+    target: THREE.Vector3,
+  ): void {
+    const proj = (v: THREE.Vector3) => v.clone().sub(normal.clone().multiplyScalar(v.dot(normal)));
     const current = proj(new THREE.Vector3(0, 0, 1).applyQuaternion(obj.quaternion));
     const desired = proj(target.clone().sub(obj.position));
     if (current.lengthSq() < 1e-8 || desired.lengthSq() < 1e-8) return;
@@ -3424,9 +3681,7 @@ export class Island {
       // project the tangent onto the surface tangent plane
       const xAxis = along.sub(zAxis.clone().multiplyScalar(along.dot(zAxis))).normalize();
       const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
-      mesh.quaternion.setFromRotationMatrix(
-        new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis),
-      );
+      mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
       mesh.receiveShadow = true;
       group.add(mesh);
       this.streetDirs.push({ dir: midDir, halfArc: keepOutArc });
@@ -3462,7 +3717,9 @@ export class Island {
     // Roof
     const roofGeom = new THREE.ConeGeometry(0.8, 0.4, 4);
     const STALL_COLORS = [0xd44e3c, 0xc47a2e, 0x3e8e6d, 0x4478a8];
-    const roofMat = Materials.createTrimMaterial(STALL_COLORS[Math.floor(Math.random() * STALL_COLORS.length)]);
+    const roofMat = Materials.createTrimMaterial(
+      STALL_COLORS[Math.floor(Math.random() * STALL_COLORS.length)],
+    );
     const roof = new THREE.Mesh(roofGeom, roofMat);
     roof.position.set(0, 1.05, 0);
     roof.rotation.y = Math.PI / 4;
@@ -3473,7 +3730,10 @@ export class Island {
     for (let g = 0; g < 3; g++) {
       const good = new THREE.Mesh(
         new THREE.BoxGeometry(0.12, 0.1, 0.12),
-        new THREE.MeshStandardMaterial({ color: goodColors[g % goodColors.length], roughness: 0.6 }),
+        new THREE.MeshStandardMaterial({
+          color: goodColors[g % goodColors.length],
+          roughness: 0.6,
+        }),
       );
       good.position.set(-0.3 + g * 0.3, 0.35, 0);
       group.add(good);
@@ -4172,7 +4432,9 @@ export class Island {
                       const proj = (v: THREE.Vector3) =>
                         v.clone().sub(normal.clone().multiplyScalar(v.dot(normal)));
                       const phF = proj(new THREE.Vector3(0, 0, 1).applyQuaternion(ph.quaternion));
-                      const clF = proj(new THREE.Vector3(0, 0, 1).applyQuaternion(clone.quaternion));
+                      const clF = proj(
+                        new THREE.Vector3(0, 0, 1).applyQuaternion(clone.quaternion),
+                      );
                       if (phF.lengthSq() > 1e-8 && clF.lengthSq() > 1e-8) {
                         phF.normalize();
                         clF.normalize();
@@ -4463,16 +4725,35 @@ export class Island {
               // open ocean now, so they moved to the island's mid-slopes.
               const TREE_SITES: Array<[number, number]> = [
                 // orchard rows (west slope)
-                [1.45, 0.32], [1.62, 0.32], [1.79, 0.32], [1.96, 0.32],
-                [1.53, 0.44], [1.7, 0.44], [1.87, 0.44],
+                [1.45, 0.32],
+                [1.62, 0.32],
+                [1.79, 0.32],
+                [1.96, 0.32],
+                [1.53, 0.44],
+                [1.7, 0.44],
+                [1.87, 0.44],
                 // forest segment (two bands up the eastern slope)
-                [5.25, 0.34], [5.45, 0.3], [5.65, 0.36], [5.85, 0.3],
-                [5.35, 0.55], [5.55, 0.62], [5.75, 0.52], [5.95, 0.6],
+                [5.25, 0.34],
+                [5.45, 0.3],
+                [5.65, 0.36],
+                [5.85, 0.3],
+                [5.35, 0.55],
+                [5.55, 0.62],
+                [5.75, 0.52],
+                [5.95, 0.6],
                 [6.1, 0.38],
                 // high wood (upland between Personal and Projects)
-                [2.0, 0.78], [2.2, 0.88], [2.4, 0.76], [2.15, 0.65],
+                [2.0, 0.78],
+                [2.2, 0.88],
+                [2.4, 0.76],
+                [2.15, 0.65],
                 // scattered singles
-                [0.5, 0.55], [1.3, 0.85], [3.3, 0.42], [4.3, 0.72], [4.75, 0.35], [0.05, 0.92],
+                [0.5, 0.55],
+                [1.3, 0.85],
+                [3.3, 0.42],
+                [4.3, 0.72],
+                [4.75, 0.35],
+                [0.05, 0.92],
               ];
               const treeCount = TREE_SITES.length;
               for (let i = 0; i < treeCount; i++) {
@@ -4589,7 +4870,9 @@ export class Island {
         // sampler then silently returns a fallback, which broke placement,
         // NPC walking and grounding shadows on the highland summits.
         const maxDisp = 11;
-        const startPos = this.center.clone().add(dir.clone().multiplyScalar(this.radius + maxDisp + 1));
+        const startPos = this.center
+          .clone()
+          .add(dir.clone().multiplyScalar(this.radius + maxDisp + 1));
         const inwardDir = this.center.clone().sub(startPos).normalize();
         const raycaster = new THREE.Raycaster(startPos, inwardDir, 0, maxDisp + 3 + this.radius);
         raycaster.firstHitOnly = true; // BVH fast-path: we only use hits[0]

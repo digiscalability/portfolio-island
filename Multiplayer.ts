@@ -334,7 +334,13 @@ export class Multiplayer {
       // replaces a broken timestamp filter that compared the sender's clock to
       // THIS device's clock — any cross-device skew silently dropped live chat.
       let ready = false;
-      onValue(listRef, () => { ready = true; }, { onlyOnce: true });
+      onValue(
+        listRef,
+        () => {
+          ready = true;
+        },
+        { onlyOnce: true },
+      );
       onChildAdded(listRef, (snap) => {
         if (!ready) return;
         const val = snap.val();
@@ -615,7 +621,6 @@ export class Multiplayer {
     peer.label.position.set(0, y, 0);
     peer.avatar.add(peer.label);
   }
-
 
   /**
    * Create a remote player. A crude procedural body shows instantly, then the

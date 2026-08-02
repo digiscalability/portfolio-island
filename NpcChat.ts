@@ -14,7 +14,11 @@ export interface NpcReply {
 /** Per-NPC spoken-voice character (browser SpeechSynthesis). `variant` picks a
  *  DIFFERENT system voice per NPC when the device has several, so they don't all
  *  sound identical; rate/pitch shape the delivery. No cloud TTS cost. */
-export interface VoiceProfile { rate: number; pitch: number; variant: number }
+export interface VoiceProfile {
+  rate: number;
+  pitch: number;
+  variant: number;
+}
 
 // One list drives everything: the display name (as in NPC_PERSONALITIES), the
 // server persona id (must match PERSONAS in functions/src/index.ts), and a
@@ -71,7 +75,10 @@ export async function askNpc(npcName: string, message: string): Promise<NpcReply
     ]);
     const app = await getFirebaseApp();
     const functions = fns.getFunctions(app, 'us-central1');
-    const call = fns.httpsCallable<{ npcId: string; message: string }, NpcReply>(functions, 'npcChat');
+    const call = fns.httpsCallable<{ npcId: string; message: string }, NpcReply>(
+      functions,
+      'npcChat',
+    );
     const res = await call({ npcId, message: text });
     const d = res.data;
     if (d && typeof d.fallback === 'boolean') return d;

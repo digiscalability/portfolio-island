@@ -177,9 +177,7 @@ export class EnvironmentCycle {
             .addScaledVector(v, Math.sin(t) * Math.cos(off))
             .addScaledVector(bandNormal, Math.sin(off));
         } else {
-          dir
-            .set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1)
-            .normalize();
+          dir.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
         }
         pos[i * 3] = dir.x * 700;
         pos[i * 3 + 1] = dir.y * 700;
@@ -347,11 +345,16 @@ export class EnvironmentCycle {
     const sunrise = this.sunriseHour ?? 6;
     const sunset = this.sunsetHour ?? 18;
     const timeLabel =
-      hour >= sunrise && hour < sunrise + 2 ? '🌅 Morning'
-      : hour >= sunrise + 2 && hour < sunset - 1.5 ? '☀️ Day'
-      : hour >= sunset - 1.5 && hour < sunset + 0.75 ? '🌇 Evening'
-      : '🌙 Night';
-    const wName = { clear: '', cloudy: '☁️ Cloudy', rain: '🌧️ Rain', snow: '❄️ Snow' }[this.weather];
+      hour >= sunrise && hour < sunrise + 2
+        ? '🌅 Morning'
+        : hour >= sunrise + 2 && hour < sunset - 1.5
+          ? '☀️ Day'
+          : hour >= sunset - 1.5 && hour < sunset + 0.75
+            ? '🌇 Evening'
+            : '🌙 Night';
+    const wName = { clear: '', cloudy: '☁️ Cloudy', rain: '🌧️ Rain', snow: '❄️ Snow' }[
+      this.weather
+    ];
     const temp = this.temperatureC !== null ? `${Math.round(this.temperatureC)}°C` : '';
     const parts: string[] = [];
     if (wName || temp) parts.push([wName, temp].filter(Boolean).join(' '));
@@ -439,12 +442,17 @@ export class EnvironmentCycle {
       const code = data.current_weather?.weathercode ?? 0;
       // WMO codes → our four kinds
       this.weather =
-        code <= 2 ? 'clear'
-        : code === 3 || code === 45 || code === 48 ? 'cloudy'
-        : (code >= 71 && code <= 77) || code === 85 || code === 86 ? 'snow'
-        : 'rain';
+        code <= 2
+          ? 'clear'
+          : code === 3 || code === 45 || code === 48
+            ? 'cloudy'
+            : (code >= 71 && code <= 77) || code === 85 || code === 86
+              ? 'snow'
+              : 'rain';
       this.rebuildPrecipitation();
-      console.log(`🌦️ Visitor weather: code ${code} → ${this.weather}${this.placeLabel ? ` (${this.placeLabel})` : ''}`);
+      console.log(
+        `🌦️ Visitor weather: code ${code} → ${this.weather}${this.placeLabel ? ` (${this.placeLabel})` : ''}`,
+      );
     } catch {
       /* stay clear */
     }
@@ -637,7 +645,11 @@ export class EnvironmentCycle {
     // minute window — no visible snap) and fades with moon elevation so a
     // setting moon hands back to the horizon-clamped sun direction smoothly.
     const e = Math.max(elev, 0.06);
-    this._v1.set(Math.cos(azimuth) * Math.sqrt(1 - e * e), e, Math.sin(azimuth) * Math.sqrt(1 - e * e));
+    this._v1.set(
+      Math.cos(azimuth) * Math.sqrt(1 - e * e),
+      e,
+      Math.sin(azimuth) * Math.sqrt(1 - e * e),
+    );
     if (dayFactor < 0.5 && mElev > 0.03) {
       const w =
         THREE.MathUtils.smoothstep(0.5 - dayFactor, 0.02, 0.35) *
@@ -654,7 +666,13 @@ export class EnvironmentCycle {
     // Weather dimming
     const wDim = { clear: 1, cloudy: 0.55, rain: 0.35, snow: 0.5 }[this.weather];
     const overcastMix =
-      this.weather === 'cloudy' ? 0.45 : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.45 : 0;
+      this.weather === 'cloudy'
+        ? 0.45
+        : this.weather === 'rain'
+          ? 0.7
+          : this.weather === 'snow'
+            ? 0.45
+            : 0;
 
     // Lights
     this.sun.intensity = this.baseSunIntensity * (0.12 + 0.88 * dayFactor) * wDim;
@@ -669,7 +687,11 @@ export class EnvironmentCycle {
     // naturally (depthTest stays on).
     const se = Math.max(elev, -0.05);
     this.sunDisc.position
-      .set(Math.cos(azimuth) * Math.sqrt(1 - se * se), se, Math.sin(azimuth) * Math.sqrt(1 - se * se))
+      .set(
+        Math.cos(azimuth) * Math.sqrt(1 - se * se),
+        se,
+        Math.sin(azimuth) * Math.sqrt(1 - se * se),
+      )
       .multiplyScalar(640);
     this.sunDisc.lookAt(0, 0, 0);
     this.sunDisc.scale.setScalar(1 + 0.6 * duskFactor);
@@ -689,9 +711,11 @@ export class EnvironmentCycle {
       this._c1.lerp(PALETTE.dusk[key], duskFactor * 0.75);
       this._c1.lerp(PALETTE.overcast[key], overcastMix * dayFactor);
       const target =
-        key === 'top' ? this.sky.topColor.value
-        : key === 'horizon' ? this.sky.horizonColor.value
-        : this.sky.bottomColor.value;
+        key === 'top'
+          ? this.sky.topColor.value
+          : key === 'horizon'
+            ? this.sky.horizonColor.value
+            : this.sky.bottomColor.value;
       target.copy(this._c1);
     }
 
@@ -700,7 +724,11 @@ export class EnvironmentCycle {
       this.fog.color.copy(this.sky.horizonColor.value);
       this.fog.density =
         this.baseFogDensity +
-        (this.weather === 'rain' ? 0.01 : this.weather === 'cloudy' || this.weather === 'snow' ? 0.005 : 0);
+        (this.weather === 'rain'
+          ? 0.01
+          : this.weather === 'cloudy' || this.weather === 'snow'
+            ? 0.005
+            : 0);
     }
 
     // Stars: night only, hidden by bad weather. Twinkle is a per-LAYER

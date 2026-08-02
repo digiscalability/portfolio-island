@@ -409,7 +409,10 @@ export class SimpleRenderer {
           this.qualityRung === SimpleRenderer.MAX_QUALITY_RUNG
             ? this.fpsHighThreshold + 8
             : this.fpsHighThreshold;
-        if (this.fpsEma > releaseBar && this.rungCooldown >= SimpleRenderer.RUNG_RELEASE_COOLDOWN_S) {
+        if (
+          this.fpsEma > releaseBar &&
+          this.rungCooldown >= SimpleRenderer.RUNG_RELEASE_COOLDOWN_S
+        ) {
           this.setQualityRung(this.qualityRung - 1);
         }
       } else if (this.renderScale < 1) {
@@ -427,7 +430,10 @@ export class SimpleRenderer {
         // setPixelRatio re-runs setSize internally with the new ratio.
         this.composer.setPixelRatio(effectiveDpr);
         // Composer resize resets bloom to full res — keep it at half.
-        this.bloomPass?.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
+        this.bloomPass?.setSize(
+          Math.ceil(window.innerWidth / 2),
+          Math.ceil(window.innerHeight / 2),
+        );
       }
     }
   }
@@ -459,7 +465,8 @@ export class SimpleRenderer {
         // uniform. Optional-chained end to end so it degrades to a no-op if
         // the GameScene accessor / Island method aren't present.
         (this.scene as { getIsland?: () => { setGrassBudget?: (f: number) => void } } | undefined)
-          ?.getIsland?.()?.setGrassBudget?.(0.5);
+          ?.getIsland?.()
+          ?.setGrassBudget?.(0.5);
         break;
     }
   }
@@ -468,7 +475,8 @@ export class SimpleRenderer {
     switch (rung) {
       case 3:
         (this.scene as { getIsland?: () => { setGrassBudget?: (f: number) => void } } | undefined)
-          ?.getIsland?.()?.setGrassBudget?.(1);
+          ?.getIsland?.()
+          ?.setGrassBudget?.(1);
         break;
       case 2:
         this.renderer.shadowMap.autoUpdate = true;

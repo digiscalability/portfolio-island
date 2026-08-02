@@ -136,10 +136,7 @@ export class RaceSystem {
       g.add(ring);
       // A slim post so the ring reads as a gate on the ground/water
       const postMat = new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.7 });
-      const post = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.06, 0.08, RING_RADIUS, 6),
-        postMat,
-      );
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, RING_RADIUS, 6), postMat);
       post.position.y = -RING_RADIUS * 0.5;
       g.add(post);
 

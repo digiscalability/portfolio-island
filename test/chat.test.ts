@@ -1,7 +1,13 @@
 import * as THREE from 'three';
 import { describe, expect, test } from 'vitest';
 
-import { withinProximity, voiceClipFits, distanceGain, PROXIMITY_RADIUS, VOICE_MAX_BYTES } from '../Chat';
+import {
+  withinProximity,
+  voiceClipFits,
+  distanceGain,
+  PROXIMITY_RADIUS,
+  VOICE_MAX_BYTES,
+} from '../Chat';
 
 const v = (x: number, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 

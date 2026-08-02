@@ -17,7 +17,16 @@ export class NPC {
 
   private groundDist: ((dir: THREE.Vector3) => number) | null = null;
 
-  constructor(model: THREE.Object3D, animations: THREE.AnimationClip[], position: THREE.Vector3, quaternion: THREE.Quaternion, scale: number, islandCenter: THREE.Vector3, islandRadius: number, groundDist?: (dir: THREE.Vector3) => number) {
+  constructor(
+    model: THREE.Object3D,
+    animations: THREE.AnimationClip[],
+    position: THREE.Vector3,
+    quaternion: THREE.Quaternion,
+    scale: number,
+    islandCenter: THREE.Vector3,
+    islandRadius: number,
+    groundDist?: (dir: THREE.Vector3) => number,
+  ) {
     // deep clone the model for isolation
     this.group = model.clone(true);
     this.group.position.copy(position);
@@ -80,22 +89,28 @@ export class NPC {
     if (this.state === 'Idle') {
       this.idleTimer -= deltaTime;
       // subtle bobbing while idle
-      const bob = Math.sin(performance.now() * 0.002 + (this.basePosition.x + this.basePosition.z)) * 0.002;
+      const bob =
+        Math.sin(performance.now() * 0.002 + (this.basePosition.x + this.basePosition.z)) * 0.002;
       this.group.position.y = this.basePosition.y + bob;
       if (this.idleTimer <= 0) {
         // start a short walk
         this.startWalk();
       }
     } else if (this.state === 'Walk') {
-      if (!this.targetPosition) { this.endWalk(); return; }
-  this.walkTimer -= deltaTime;
-  // move toward target along straight line and project to surface
-  // lerp position a bit each frame based on deltaTime
-  const current = this.group.position.clone();
-  const next = current.lerp(this.targetPosition, Math.min(1, deltaTime * 0.9));
+      if (!this.targetPosition) {
+        this.endWalk();
+        return;
+      }
+      this.walkTimer -= deltaTime;
+      // move toward target along straight line and project to surface
+      // lerp position a bit each frame based on deltaTime
+      const current = this.group.position.clone();
+      const next = current.lerp(this.targetPosition, Math.min(1, deltaTime * 0.9));
       // ensure on surface radius
       const dir = next.clone().sub(this.islandCenter).normalize();
-      const surfacePos = this.islandCenter.clone().add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
+      const surfacePos = this.islandCenter
+        .clone()
+        .add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
       this.group.position.copy(surfacePos);
       // orient to surface normal and forward direction
       try {
@@ -142,11 +157,13 @@ export class NPC {
     const dist = 0.6 + Math.random() * 1.2; // small step
     const baseDir = this.basePosition.clone().sub(this.islandCenter).normalize();
     // compute a tangent offset
-    const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0), baseDir).normalize();
+    const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), baseDir).normalize();
     const offset = right.applyAxisAngle(baseDir, angle).multiplyScalar(dist);
     const candidate = this.basePosition.clone().add(offset);
     const dir = candidate.clone().sub(this.islandCenter).normalize();
-    this.targetPosition = this.islandCenter.clone().add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
+    this.targetPosition = this.islandCenter
+      .clone()
+      .add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
     this.state = 'Walk';
     this.walkTimer = 0.6 + Math.random() * 1.2;
     // play walk animation if available
@@ -170,7 +187,9 @@ export class NPC {
     this.idleTimer = 2 + Math.random() * 4;
     // restore base position exactly on surface
     const dir = this.basePosition.clone().sub(this.islandCenter).normalize();
-    const surfacePos = this.islandCenter.clone().add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
+    const surfacePos = this.islandCenter
+      .clone()
+      .add(dir.clone().multiplyScalar(this.surfaceRadiusAt(dir)));
     this.group.position.copy(surfacePos);
     // play idle animation
     try {

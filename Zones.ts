@@ -28,15 +28,45 @@ interface BuildingCfg {
 
 const BUILDINGS: Record<string, BuildingCfg> = {
   // Town hall / visitor pavilion — wide, columned, warm stone.
-  welcome: { body: [4.0, 2.8, 3.2], bodyColor: 0xe8e0cf, roof: 'pitch', roofColor: 0x8a6d4f, accent: 'columns' },
+  welcome: {
+    body: [4.0, 2.8, 3.2],
+    bodyColor: 0xe8e0cf,
+    roof: 'pitch',
+    roofColor: 0x8a6d4f,
+    accent: 'columns',
+  },
   // Office HQ — tall, cool, glassy slab.
-  professional: { body: [3.0, 4.6, 3.0], bodyColor: 0xb9c4d4, roof: 'flat', roofColor: 0x6b7686, accent: 'none' },
+  professional: {
+    body: [3.0, 4.6, 3.0],
+    bodyColor: 0xb9c4d4,
+    roof: 'flat',
+    roofColor: 0x6b7686,
+    accent: 'none',
+  },
   // Workshop / lab — squat, ochre, rooftop antenna.
-  projects: { body: [3.4, 3.0, 3.0], bodyColor: 0xcbb089, roof: 'flat', roofColor: 0x9a7d55, accent: 'antenna' },
+  projects: {
+    body: [3.4, 3.0, 3.0],
+    bodyColor: 0xcbb089,
+    roof: 'flat',
+    roofColor: 0x9a7d55,
+    accent: 'antenna',
+  },
   // Gallery / home — cottage grown up, blossom-tinted, chimney.
-  personal: { body: [3.4, 2.7, 3.0], bodyColor: 0xe6c9d2, roof: 'pitch', roofColor: 0x9c5f74, accent: 'chimney' },
+  personal: {
+    body: [3.4, 2.7, 3.0],
+    bodyColor: 0xe6c9d2,
+    roof: 'pitch',
+    roofColor: 0x9c5f74,
+    accent: 'chimney',
+  },
   // Post office / contact hall — lavender, awning over the door.
-  contact: { body: [3.2, 2.9, 3.0], bodyColor: 0xd7c2e0, roof: 'pitch', roofColor: 0x7d5f92, accent: 'awning' },
+  contact: {
+    body: [3.2, 2.9, 3.0],
+    bodyColor: 0xd7c2e0,
+    roof: 'pitch',
+    roofColor: 0x7d5f92,
+    accent: 'awning',
+  },
 };
 
 /** Footprint collider radius pushed by GameScene — kept small so a player at
@@ -156,7 +186,11 @@ export class Zone {
     // Warm door lamp + two windows — all night-emissive so EnvironmentCycle
     // lights them (buildings mustn't go dark where the old beam glowed).
     const glowMat = () =>
-      new THREE.MeshStandardMaterial({ color: 0xffe6a8, emissive: 0xffe6a8, emissiveIntensity: 0.4 });
+      new THREE.MeshStandardMaterial({
+        color: 0xffe6a8,
+        emissive: 0xffe6a8,
+        emissiveIntensity: 0.4,
+      });
     const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10), glowMat());
     lamp.position.set(0, base + 2.05, bd / 2 + 0.16);
     lamp.userData.isNightEmissive = true;

@@ -27,19 +27,32 @@ export function distanceGain(dist: number, radius: number): number {
   if (dist <= 0) return 1;
   if (dist >= radius) return 0;
   const t = 1 - dist / radius; // 1 near → 0 far
-  return t * t * (3 - 2 * t);  // smoothstep
+  return t * t * (3 - 2 * t); // smoothstep
 }
 
-interface Bubble { sprite: THREE.Sprite; until: number; parent: THREE.Object3D; }
+interface Bubble {
+  sprite: THREE.Sprite;
+  until: number;
+  parent: THREE.Object3D;
+}
 
 /** A voice clip currently playing, spatialised via a PannerNode that tracks the
  *  speaker's avatar every frame so the sound emanates FROM the character. */
-interface ActiveVoice { panner: PannerNode; avatar: THREE.Object3D | null; }
+interface ActiveVoice {
+  panner: PannerNode;
+  avatar: THREE.Object3D | null;
+}
 
 /** The slice of Multiplayer that Chat needs. Multiplayer implements this. */
 export interface ChatHost {
   /** Send a wire message through the active transport (RTDB/WS/BroadcastChannel). */
-  sendWire(msg: { kind: 'chat' | 'voice'; id: string; text?: string; audio?: string; dur?: number }): void;
+  sendWire(msg: {
+    kind: 'chat' | 'voice';
+    id: string;
+    text?: string;
+    audio?: string;
+    dur?: number;
+  }): void;
   /** Local player's world position (cloned; safe to keep). */
   getSelfWorldPosition(): THREE.Vector3;
   /** A peer's current world position, or null if unknown/gone. */
@@ -70,8 +83,12 @@ export class Chat {
   // or after a denial. The UI subscribes to drive the on-screen indicator.
   private onRecStart: (() => void) | null = null;
   private onRecStop: (() => void) | null = null;
-  public setOnRecordingStart(cb: () => void): void { this.onRecStart = cb; }
-  public setOnRecordingStop(cb: () => void): void { this.onRecStop = cb; }
+  public setOnRecordingStart(cb: () => void): void {
+    this.onRecStart = cb;
+  }
+  public setOnRecordingStop(cb: () => void): void {
+    this.onRecStop = cb;
+  }
   public readonly voiceSupported =
     typeof navigator !== 'undefined' &&
     !!navigator.mediaDevices?.getUserMedia &&
@@ -83,7 +100,9 @@ export class Chat {
     try {
       const saved = localStorage.getItem('ds_muted_peers');
       if (saved) this.muted = new Set(JSON.parse(saved) as string[]);
-    } catch { /* none */ }
+    } catch {
+      /* none */
+    }
   }
 
   /** Local player composed a message: sanitize, show over self, broadcast. */
@@ -97,7 +116,13 @@ export class Chat {
   /** Route an incoming wire message from Multiplayer.setChatHandler. Param is
    *  broad (`kind: string`) because setChatHandler is typed with the full
    *  WireMessage union; we narrow on kind below. */
-  public onWire(msg: { kind: string; id: string; text?: string; audio?: string; dur?: number }): void {
+  public onWire(msg: {
+    kind: string;
+    id: string;
+    text?: string;
+    audio?: string;
+    dur?: number;
+  }): void {
     if (msg.id === this.host.selfId || this.muted.has(msg.id)) return;
     const peerPos = this.host.getPeerWorldPosition(msg.id);
     if (!peerPos) return; // unknown peer → out of range
@@ -120,7 +145,11 @@ export class Chat {
   public toggleMute(id: string): boolean {
     if (this.muted.has(id)) this.muted.delete(id);
     else this.muted.add(id);
-    try { localStorage.setItem('ds_muted_peers', JSON.stringify([...this.muted])); } catch { /* ignore */ }
+    try {
+      localStorage.setItem('ds_muted_peers', JSON.stringify([...this.muted]));
+    } catch {
+      /* ignore */
+    }
     return this.muted.has(id);
   }
 
@@ -149,7 +178,9 @@ export class Chat {
         mimeType: 'audio/webm;codecs=opus',
         audioBitsPerSecond: 24000,
       });
-      mr.ondataavailable = (e) => { if (e.data.size) this.recChunks.push(e.data); };
+      mr.ondataavailable = (e) => {
+        if (e.data.size) this.recChunks.push(e.data);
+      };
       mr.onstop = () => void this.finishRecording();
       this.mediaRecorder = mr;
       mr.start();
@@ -165,7 +196,10 @@ export class Chat {
 
   /** Stop recording (push-to-talk UP, or auto at VOICE_MAX_MS). */
   public stopRecording(): void {
-    if (this.recStopTimer) { clearTimeout(this.recStopTimer); this.recStopTimer = 0; }
+    if (this.recStopTimer) {
+      clearTimeout(this.recStopTimer);
+      this.recStopTimer = 0;
+    }
     const wasActive = !!this.mediaRecorder && this.mediaRecorder.state !== 'inactive';
     if (wasActive) this.mediaRecorder!.stop();
     // Hide the indicator the instant capture ends (on release or auto-stop),
@@ -286,9 +320,14 @@ export class Chat {
   /** The game's shared AudioContext (whose listener the app drives from the
    *  camera each frame). null if the audio system isn't up yet. */
   private static getGameAudioCtx(): AudioContext | null {
-    const am = (window as unknown as { audioManager?: { ensureCtx?: () => AudioContext } }).audioManager;
+    const am = (window as unknown as { audioManager?: { ensureCtx?: () => AudioContext } })
+      .audioManager;
     if (am?.ensureCtx) {
-      try { return am.ensureCtx(); } catch { return null; }
+      try {
+        return am.ensureCtx();
+      } catch {
+        return null;
+      }
     }
     return null;
   }
@@ -296,7 +335,9 @@ export class Chat {
   /** Lazily create Chat's own AudioContext (fallback playback path only). */
   private ensureOwnCtx(): AudioContext | null {
     if (this.audioCtx) return this.audioCtx;
-    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    const Ctor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return null;
     this.audioCtx = new Ctor();
     return this.audioCtx;
@@ -356,7 +397,10 @@ export class Chat {
   public dispose(): void {
     for (const b of this.bubbles) this.disposeBubble(b);
     this.bubbles = [];
-    if (this.recStopTimer) { clearTimeout(this.recStopTimer); this.recStopTimer = 0; }
+    if (this.recStopTimer) {
+      clearTimeout(this.recStopTimer);
+      this.recStopTimer = 0;
+    }
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
     this.releaseMic();
     void this.audioCtx?.close().catch(() => {});
@@ -366,7 +410,10 @@ export class Chat {
   /** Word-wrapped speech bubble on a canvas → sprite (mirrors Multiplayer.makeTextSprite). */
   private static makeBubbleSprite(text: string): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    const pad = 16, lineH = 30, maxW = 260, font = '600 24px system-ui, sans-serif';
+    const pad = 16,
+      lineH = 30,
+      maxW = 260,
+      font = '600 24px system-ui, sans-serif';
     const ctx = canvas.getContext('2d');
     if (!ctx) return new THREE.Sprite(new THREE.SpriteMaterial());
     ctx.font = font;
@@ -375,8 +422,10 @@ export class Chat {
     let line = '';
     for (const w of words) {
       const test = line ? `${line} ${w}` : w;
-      if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; }
-      else line = test;
+      if (ctx.measureText(test).width > maxW && line) {
+        lines.push(line);
+        line = w;
+      } else line = test;
     }
     if (line) lines.push(line);
     const textW = Math.min(maxW, Math.max(...lines.map((l) => ctx.measureText(l).width)));
@@ -398,7 +447,7 @@ export class Chat {
     const sprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
     );
-    const scale = 0.010; // canvas px → world units
+    const scale = 0.01; // canvas px → world units
     sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
     return sprite;
   }

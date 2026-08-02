@@ -22,11 +22,18 @@ export class ZonesManager {
     // content and stay here.
     const META: Record<string, { description: string; icon: string }> = {
       welcome: {
-        description: 'Introduction to DigiScalability Life Island - your personal 3D portfolio space',
+        description:
+          'Introduction to DigiScalability Life Island - your personal 3D portfolio space',
         icon: '🏠',
       },
-      professional: { description: 'Career journey, skills, and professional achievements', icon: '💼' },
-      projects: { description: 'Showcase of key projects, technologies, and innovations', icon: '🚀' },
+      professional: {
+        description: 'Career journey, skills, and professional achievements',
+        icon: '💼',
+      },
+      projects: {
+        description: 'Showcase of key projects, technologies, and innovations',
+        icon: '🚀',
+      },
       personal: { description: 'Hobbies, interests, and life outside of work', icon: '🎨' },
       contact: {
         description: 'Contact information, social links, and collaboration opportunities',
@@ -71,9 +78,10 @@ export class ZonesManager {
     return this.zones.length;
   }
 
-  public getNearbyZone(playerPosition: THREE.Vector3, threshold: number = 3):
-    | { zone: Zone; distance: number }
-    | null {
+  public getNearbyZone(
+    playerPosition: THREE.Vector3,
+    threshold: number = 3,
+  ): { zone: Zone; distance: number } | null {
     let nearest: Zone | null = null;
     let nearestDistance = threshold;
 
@@ -95,6 +103,6 @@ export class ZonesManager {
   }
 
   public getZoneById(id: string): Zone | undefined {
-    return this.zones.find(zone => zone.id === id);
+    return this.zones.find((zone) => zone.id === id);
   }
 }

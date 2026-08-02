@@ -79,7 +79,9 @@ export class SimplePlayer extends THREE.Group {
 
   // Water: given the outward unit direction, returns the wavy water-surface
   // radius there and whether it is open water (terrain below the sea).
-  private waterSampler: ((outwardDir: THREE.Vector3) => { surface: number; isWater: boolean }) | null = null;
+  private waterSampler:
+    | ((outwardDir: THREE.Vector3) => { surface: number; isWater: boolean })
+    | null = null;
   private swimIntent = false; // swim button held this frame
   private inWater = false; // over open water right now
   private swimming = false; // afloat (in water + intent held)
@@ -228,7 +230,10 @@ export class SimplePlayer extends THREE.Group {
     group.add(hair);
 
     // Eyes
-    for (const [ex, ey, ez] of [[-0.08, 0.76, 0.17], [0.08, 0.76, 0.17]] as [number, number, number][]) {
+    for (const [ex, ey, ez] of [
+      [-0.08, 0.76, 0.17],
+      [0.08, 0.76, 0.17],
+    ] as [number, number, number][]) {
       const eye = new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 6), eyeMat);
       eye.position.set(ex, ey, ez);
       group.add(eye);
@@ -241,10 +246,7 @@ export class SimplePlayer extends THREE.Group {
     }
 
     // Mouth — small curve
-    const mouth = new THREE.Mesh(
-      new THREE.TorusGeometry(0.04, 0.01, 4, 8, Math.PI),
-      eyeMat,
-    );
+    const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.01, 4, 8, Math.PI), eyeMat);
     mouth.position.set(0, 0.66, 0.18);
     mouth.rotation.x = Math.PI;
     group.add(mouth);
@@ -413,9 +415,10 @@ export class SimplePlayer extends THREE.Group {
   }
 
   // Base model loaded once, then skeleton-cloned per remote player.
-  private static remoteBasePromise:
-    | Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] } | null>
-    | null = null;
+  private static remoteBasePromise: Promise<{
+    scene: THREE.Group;
+    animations: THREE.AnimationClip[];
+  } | null> | null = null;
 
   /**
    * Build a remote-player avatar from the SAME rigged GLB the local player
@@ -554,17 +557,25 @@ export class SimplePlayer extends THREE.Group {
           const s2 = Math.sin(swimClock * 2);
           model.rotation.x = 1.15 * poseW;
           model.rotation.z = s * 0.18 * poseW;
-          if (armLBone) armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -1.4 + s * 1.3, poseW);
-          if (armRBone) armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -1.4 - s * 1.3, poseW);
-          if (legLBone) legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, s2 * 0.35, poseW);
-          if (legRBone) legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -s2 * 0.35, poseW);
+          if (armLBone)
+            armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -1.4 + s * 1.3, poseW);
+          if (armRBone)
+            armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -1.4 - s * 1.3, poseW);
+          if (legLBone)
+            legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, s2 * 0.35, poseW);
+          if (legRBone)
+            legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -s2 * 0.35, poseW);
         } else if (activePose === 2) {
           // Riding: forward lean, hands forward, knees up.
           model.rotation.set(0.12 * poseW, 0, 0);
-          if (armLBone) armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -0.7, poseW);
-          if (armRBone) armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -0.7, poseW);
-          if (legLBone) legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, -0.6, poseW);
-          if (legRBone) legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -0.6, poseW);
+          if (armLBone)
+            armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -0.7, poseW);
+          if (armRBone)
+            armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -0.7, poseW);
+          if (legLBone)
+            legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, -0.6, poseW);
+          if (legRBone)
+            legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -0.6, poseW);
         } else {
           // Airborne: arms up, knees tucked (additive on top of the mixer).
           model.rotation.set(0, 0, 0);
@@ -711,7 +722,11 @@ export class SimplePlayer extends THREE.Group {
         emissive: 0xccaa22,
         emissiveIntensity: 0.5,
       });
-      for (const [sx, sy, sz] of [[0.09, 0.16, 0.1], [-0.08, 0.28, 0.05], [0.02, 0.1, -0.12]]) {
+      for (const [sx, sy, sz] of [
+        [0.09, 0.16, 0.1],
+        [-0.08, 0.28, 0.05],
+        [0.02, 0.1, -0.12],
+      ]) {
         const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.028), starMat);
         star.position.set(sx, sy, sz);
         g.add(star);
@@ -806,7 +821,10 @@ export class SimplePlayer extends THREE.Group {
     this.playerPosition.copy(seatPos);
     // Orient: up = surface normal, forward (+Z of the model) = faceDir
     const up = this.getSurfaceNormal();
-    const fwd = faceDir.clone().sub(up.clone().multiplyScalar(faceDir.dot(up))).normalize();
+    const fwd = faceDir
+      .clone()
+      .sub(up.clone().multiplyScalar(faceDir.dot(up)))
+      .normalize();
     const right = up.clone().cross(fwd).normalize();
     const m = new THREE.Matrix4().makeBasis(right, up, fwd);
     this.quaternion.setFromRotationMatrix(m);
@@ -1154,7 +1172,11 @@ export class SimplePlayer extends THREE.Group {
             this.walkAction.play();
           }
           if (!this.idleAction && !this.walkAction) {
-            this.animationMixer = setupModelAnimation(gltfResult.scene, gltfResult.animations, 'idle');
+            this.animationMixer = setupModelAnimation(
+              gltfResult.scene,
+              gltfResult.animations,
+              'idle',
+            );
           }
         }
 
@@ -1346,7 +1368,6 @@ export class SimplePlayer extends THREE.Group {
         this.mesh.rotation.x *= 1 - k;
         this.mesh.position.y = Math.sin(performance.now() / 500) * 0.015;
       }
-
     }
 
     // Squash-and-stretch on whichever model is active (rigged GLTF or the
@@ -1390,9 +1411,7 @@ export class SimplePlayer extends THREE.Group {
     // those state exits so the lean always eases back in from neutral.
     {
       const activeModel: THREE.Object3D = this.gltfModel ?? this.mesh;
-      const leanTarget = this.isGrounded
-        ? Math.max(-0.12, Math.min(0.12, -this.yawVel * 0.08))
-        : 0;
+      const leanTarget = this.isGrounded ? Math.max(-0.12, Math.min(0.12, -this.yawVel * 0.08)) : 0;
       this.leanRoll += (leanTarget - this.leanRoll) * Math.min(1, 10 * safeDeltaTime);
       activeModel.rotation.z = this.leanRoll;
     }
@@ -1412,7 +1431,11 @@ export class SimplePlayer extends THREE.Group {
       this.walkAction.setEffectiveWeight(w);
       this.idleAction.setEffectiveWeight(1 - w);
       // Cadence follows ground speed so slow walks don't moonwalk / runs slide.
-      this.walkAction.timeScale = THREE.MathUtils.clamp(spd / SimplePlayer.WALK_REF_SPEED, 0.6, 2.1); // ceiling raised 1.6→2.1 for the R50 run speed 8.0 (ratio 1.9) so the feet don't slide at a full run
+      this.walkAction.timeScale = THREE.MathUtils.clamp(
+        spd / SimplePlayer.WALK_REF_SPEED,
+        0.6,
+        2.1,
+      ); // ceiling raised 1.6→2.1 for the R50 run speed 8.0 (ratio 1.9) so the feet don't slide at a full run
     }
 
     // Update GLTF animations

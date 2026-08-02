@@ -58,7 +58,11 @@ function parseNotice(v: unknown): NoticeState | undefined {
   const n = v as { day?: unknown; lines?: unknown; counts?: unknown; updatedAt?: unknown };
   if (typeof n.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(n.day)) return undefined;
   const lines = Array.isArray(n.lines)
-    ? n.lines.filter((x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x < 64).slice(0, 6)
+    ? n.lines
+        .filter(
+          (x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x < 64,
+        )
+        .slice(0, 6)
     : [];
   const counts: Record<string, number> = {};
   if (n.counts && typeof n.counts === 'object') {
@@ -66,7 +70,12 @@ function parseNotice(v: unknown): NoticeState | undefined {
       if (k.length <= 24 && typeof val === 'number' && Number.isFinite(val)) counts[k] = val;
     }
   }
-  return { day: n.day, lines, counts, updatedAt: typeof n.updatedAt === 'number' ? n.updatedAt : undefined };
+  return {
+    day: n.day,
+    lines,
+    counts,
+    updatedAt: typeof n.updatedAt === 'number' ? n.updatedAt : undefined,
+  };
 }
 
 /** Soft, field-by-field validation of the server npcPlan. Malformed → undefined
@@ -88,7 +97,9 @@ function parseNpcPlan(v: unknown): NpcPlan | undefined {
     // masthead, so it gets the same both-sides validation as every other
     // index-selected field (unknown ids are dropped, never displayed).
     event:
-      typeof p.event === 'string' && Object.prototype.hasOwnProperty.call(EVENT_META, p.event) ? p.event : undefined,
+      typeof p.event === 'string' && Object.prototype.hasOwnProperty.call(EVENT_META, p.event)
+        ? p.event
+        : undefined,
     assignments,
     updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : undefined,
   };
@@ -111,31 +122,51 @@ export const MOOD_META: Record<
     label: 'Festive',
     accent: '#ffb457',
     devHeadline: 'The island is buzzing — someone just shipped something big.',
-    npcFlavor: ["Grand day, isn't it?", 'Everyone seems in high spirits today!', "There's a party mood in the air."],
+    npcFlavor: [
+      "Grand day, isn't it?",
+      'Everyone seems in high spirits today!',
+      "There's a party mood in the air.",
+    ],
   },
   busy: {
     label: 'Busy',
     accent: '#5aa9e6',
     devHeadline: 'Deliveries are flying — the couriers can barely keep up.',
-    npcFlavor: ['Rushed off my feet today!', 'So much to do, so little time.', 'The whole island is hustling.'],
+    npcFlavor: [
+      'Rushed off my feet today!',
+      'So much to do, so little time.',
+      'The whole island is hustling.',
+    ],
   },
   calm: {
     label: 'Calm',
     accent: '#7fc9a3',
     devHeadline: 'A quiet, golden kind of day on the island.',
-    npcFlavor: ['Lovely and peaceful today.', 'Nothing beats a slow island afternoon.', 'Just soaking up the quiet.'],
+    npcFlavor: [
+      'Lovely and peaceful today.',
+      'Nothing beats a slow island afternoon.',
+      'Just soaking up the quiet.',
+    ],
   },
   mysterious: {
     label: 'Mysterious',
     accent: '#9b8cff',
     devHeadline: 'A strange fog rolled in overnight — the islanders are whispering.',
-    npcFlavor: ['Something feels… off today.', 'Did you see those lights by the shore?', "I can't shake a strange feeling."],
+    npcFlavor: [
+      'Something feels… off today.',
+      'Did you see those lights by the shore?',
+      "I can't shake a strange feeling.",
+    ],
   },
   proud: {
     label: 'Proud',
     accent: '#e08fb0',
     devHeadline: 'Word is a new project just launched — the town is proud.',
-    npcFlavor: ['Big things happening here lately!', "We're all a bit proud today.", 'Something got finished — you can feel it.'],
+    npcFlavor: [
+      'Big things happening here lately!',
+      "We're all a bit proud today.",
+      'Something got finished — you can feel it.',
+    ],
   },
 };
 

@@ -40,11 +40,51 @@ export interface District {
 // Welcome hub at the north pole. Order is Professional → Projects → Personal →
 // Contact so the ring-lon deltas below map onto the hand-authored site arrays.
 export const DISTRICTS: District[] = [
-  { id: 'welcome', name: 'Welcome Hub', lon: 0, lat: Math.PI / 2, color: 0x4caf50, accent: 0x8fbf7f, radar: 'Hub' },
-  { id: 'professional', name: 'Professional Experience', lon: 0, lat: ZONE_LAT, color: 0x2196f3, accent: 0x7fa8c9, radar: 'Work' },
-  { id: 'projects', name: 'Project Portfolio', lon: Math.PI * 0.5, lat: ZONE_LAT, color: 0xff9800, accent: 0xc9a06a, radar: 'Projects' },
-  { id: 'personal', name: 'Personal Life', lon: Math.PI, lat: ZONE_LAT, color: 0xe91e63, accent: 0xd9a8b8, radar: 'Life' },
-  { id: 'contact', name: 'Get In Touch', lon: Math.PI * 1.5, lat: ZONE_LAT, color: 0x9c27b0, accent: 0xa98fc0, radar: 'Contact' },
+  {
+    id: 'welcome',
+    name: 'Welcome Hub',
+    lon: 0,
+    lat: Math.PI / 2,
+    color: 0x4caf50,
+    accent: 0x8fbf7f,
+    radar: 'Hub',
+  },
+  {
+    id: 'professional',
+    name: 'Professional Experience',
+    lon: 0,
+    lat: ZONE_LAT,
+    color: 0x2196f3,
+    accent: 0x7fa8c9,
+    radar: 'Work',
+  },
+  {
+    id: 'projects',
+    name: 'Project Portfolio',
+    lon: Math.PI * 0.5,
+    lat: ZONE_LAT,
+    color: 0xff9800,
+    accent: 0xc9a06a,
+    radar: 'Projects',
+  },
+  {
+    id: 'personal',
+    name: 'Personal Life',
+    lon: Math.PI,
+    lat: ZONE_LAT,
+    color: 0xe91e63,
+    accent: 0xd9a8b8,
+    radar: 'Life',
+  },
+  {
+    id: 'contact',
+    name: 'Get In Touch',
+    lon: Math.PI * 1.5,
+    lat: ZONE_LAT,
+    color: 0x9c27b0,
+    accent: 0xa98fc0,
+    radar: 'Contact',
+  },
 ];
 
 /**
@@ -81,7 +121,9 @@ export function districtAccentAt(dir: THREE.Vector3, outColor: THREE.Color): num
 }
 
 /** The four ring-district longitudes (avenues/plazas), pole hub excluded. */
-export const RING_DISTRICT_LONS: number[] = DISTRICTS.filter((d) => d.id !== 'welcome').map((d) => d.lon);
+export const RING_DISTRICT_LONS: number[] = DISTRICTS.filter((d) => d.id !== 'welcome').map(
+  (d) => d.lon,
+);
 
 /**
  * The OLD 72°-spaced ring longitudes the hand-authored building-site arrays in
@@ -91,7 +133,9 @@ export const RING_DISTRICT_LONS: number[] = DISTRICTS.filter((d) => d.id !== 'we
 export const OLD_RING_DISTRICT_LONS: number[] = [0, 1.2566, 2.5133, 3.7699];
 
 /** Per-district longitude shift from the old cluster to the new cardinal layout. */
-export const DISTRICT_SHIFT: number[] = RING_DISTRICT_LONS.map((l, i) => l - OLD_RING_DISTRICT_LONS[i]);
+export const DISTRICT_SHIFT: number[] = RING_DISTRICT_LONS.map(
+  (l, i) => l - OLD_RING_DISTRICT_LONS[i],
+);
 
 /** Unit surface direction for a district (or any lon/lat), matching Island.dirAt. */
 export function dirFor(lon: number, lat: number): THREE.Vector3 {

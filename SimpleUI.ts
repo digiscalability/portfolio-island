@@ -7,7 +7,15 @@ import { ACTIVITY_DEFS } from './NpcActivities';
 import { AI_NPCS } from './NpcChat';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { buildShareUrl, setUrlParam, share } from './Share';
-import { speak, cancelSpeech, isSpeechSupported, isSpeechEnabled, setSpeechEnabled, isSttSupported, startListening } from './Speech';
+import {
+  speak,
+  cancelSpeech,
+  isSpeechSupported,
+  isSpeechEnabled,
+  setSpeechEnabled,
+  isSttSupported,
+  startListening,
+} from './Speech';
 import { EVENT_META } from './WorldState';
 import type { NoticeState, NpcPlan } from './WorldState';
 
@@ -186,9 +194,7 @@ export class SimpleUI {
    */
   private initResponsiveHud(): void {
     if (typeof window === 'undefined' || !window.matchMedia) return;
-    this.shortLandscapeMql = window.matchMedia(
-      '(max-height: 500px) and (orientation: landscape)',
-    );
+    this.shortLandscapeMql = window.matchMedia('(max-height: 500px) and (orientation: landscape)');
     this.shortLandscape = this.shortLandscapeMql.matches;
     this.onShortLandscapeChange = () => {
       const v = this.shortLandscapeMql!.matches;
@@ -247,10 +253,18 @@ export class SimpleUI {
   private onMicUp: (() => void) | null = null;
   private micBtn: HTMLElement | null = null;
 
-  public isChatInputOpen(): boolean { return this.chatInput !== null; }
-  public setOnChatSend(cb: (text: string) => void): void { this.onChatSend = cb; }
-  public setOnMicDown(cb: () => void): void { this.onMicDown = cb; }
-  public setOnMicUp(cb: () => void): void { this.onMicUp = cb; }
+  public isChatInputOpen(): boolean {
+    return this.chatInput !== null;
+  }
+  public setOnChatSend(cb: (text: string) => void): void {
+    this.onChatSend = cb;
+  }
+  public setOnMicDown(cb: () => void): void {
+    this.onMicDown = cb;
+  }
+  public setOnMicUp(cb: () => void): void {
+    this.onMicUp = cb;
+  }
 
   private toastEl: HTMLDivElement | null = null;
   private toastTimer = 0;
@@ -262,11 +276,21 @@ export class SimpleUI {
       // chat-input 96 · interaction-prompt 100 · breath 150 · recording 200 ·
       // toast 250 (highest — it can co-occur with any of the others).
       Object.assign(this.toastEl.style, {
-        position: 'absolute', left: '50%', bottom: 'calc(var(--sab, 0px) + 250px)',
-        transform: 'translateX(-50%)', background: 'rgba(12,12,20,0.92)', color: '#fff',
-        padding: '9px 16px', borderRadius: '12px', fontSize: '14px',
-        fontFamily: 'system-ui, sans-serif', pointerEvents: 'none', zIndex: '1750',
-        opacity: '0', transition: 'opacity 0.2s ease', whiteSpace: 'nowrap',
+        position: 'absolute',
+        left: '50%',
+        bottom: 'calc(var(--sab, 0px) + 250px)',
+        transform: 'translateX(-50%)',
+        background: 'rgba(12,12,20,0.92)',
+        color: '#fff',
+        padding: '9px 16px',
+        borderRadius: '12px',
+        fontSize: '14px',
+        fontFamily: 'system-ui, sans-serif',
+        pointerEvents: 'none',
+        zIndex: '1750',
+        opacity: '0',
+        transition: 'opacity 0.2s ease',
+        whiteSpace: 'nowrap',
       });
       this.overlay.appendChild(this.toastEl);
     }
@@ -292,20 +316,35 @@ export class SimpleUI {
     if (!this.bulletinEl) {
       this.bulletinEl = document.createElement('div');
       Object.assign(this.bulletinEl.style, {
-        position: 'absolute', left: '50%', top: 'calc(var(--sat, 0px) + 66px)',
-        transform: 'translateX(-50%) translateY(-8px)', maxWidth: 'min(90vw, 520px)',
-        background: 'rgba(12,14,22,0.9)', color: '#f2f6ff', padding: '10px 18px',
-        borderRadius: '14px', fontFamily: 'system-ui, sans-serif', fontSize: '14px',
-        lineHeight: '1.35', textAlign: 'center', pointerEvents: 'none', zIndex: '1700',
-        border: '1px solid rgba(255,255,255,0.12)', borderTop: '3px solid #fff',
-        boxShadow: '0 6px 24px rgba(0,0,0,0.35)', opacity: '0',
+        position: 'absolute',
+        left: '50%',
+        top: 'calc(var(--sat, 0px) + 66px)',
+        transform: 'translateX(-50%) translateY(-8px)',
+        maxWidth: 'min(90vw, 520px)',
+        background: 'rgba(12,14,22,0.9)',
+        color: '#f2f6ff',
+        padding: '10px 18px',
+        borderRadius: '14px',
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '14px',
+        lineHeight: '1.35',
+        textAlign: 'center',
+        pointerEvents: 'none',
+        zIndex: '1700',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderTop: '3px solid #fff',
+        boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+        opacity: '0',
         transition: 'opacity 0.4s ease, transform 0.4s ease',
       });
       const label = document.createElement('div');
       label.textContent = 'The island today';
       Object.assign(label.style, {
-        fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase',
-        opacity: '0.6', marginBottom: '2px',
+        fontSize: '11px',
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+        opacity: '0.6',
+        marginBottom: '2px',
       });
       this.bulletinBodyEl = document.createElement('div');
       this.bulletinEl.appendChild(label);
@@ -604,7 +643,8 @@ export class SimpleUI {
             .join('')
         : `<p style="margin:2px 0 0;font-size:12px;color:#889;">No times yet — be the first!</p>`);
     const body = modal.querySelector('#lb-body');
-    if (body) body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
+    if (body)
+      body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
   }
 
   /**
@@ -659,7 +699,10 @@ export class SimpleUI {
     body.innerHTML = entries
       .map((e, i) => {
         const mine =
-          !highlighted && playerTimeMs != null && e.name === playerName && e.timeMs === playerTimeMs;
+          !highlighted &&
+          playerTimeMs != null &&
+          e.name === playerName &&
+          e.timeMs === playerTimeMs;
         if (mine) highlighted = true;
         return `<div style="display:flex;justify-content:space-between;padding:6px 9px;border-radius:8px;
           background:${mine ? 'rgba(245,179,1,0.22)' : i === 0 ? 'rgba(245,179,1,0.10)' : 'rgba(255,255,255,0.03)'};
@@ -783,8 +826,11 @@ export class SimpleUI {
     if (plan?.assignments) {
       for (const [id, act] of Object.entries(plan.assignments)) {
         const name = SimpleUI.ID_TO_NAME[id];
-        const def = (ACTIVITY_DEFS as Record<string, { label?: string; emoji?: string } | undefined>)[act];
-        if (name && def?.label) doing.push(`${def.emoji ?? '•'}  The ${name} is ${def.label} today.`);
+        const def = (
+          ACTIVITY_DEFS as Record<string, { label?: string; emoji?: string } | undefined>
+        )[act];
+        if (name && def?.label)
+          doing.push(`${def.emoji ?? '•'}  The ${name} is ${def.label} today.`);
       }
     }
 
@@ -905,7 +951,10 @@ export class SimpleUI {
 
   /** Open the one-line chat input (Enter sends, Esc/blur cancels). */
   public openChatInput(): void {
-    if (this.chatInput) { this.chatInput.focus(); return; }
+    if (this.chatInput) {
+      this.chatInput.focus();
+      return;
+    }
     const input = document.createElement('input');
     input.type = 'text';
     input.maxLength = 120;
@@ -913,11 +962,20 @@ export class SimpleUI {
     input.placeholder = 'Say something…';
     Object.assign(input.style, {
       position: 'absolute',
-      left: '50%', bottom: 'calc(var(--sab, 0px) + 96px)', transform: 'translateX(-50%)',
-      width: 'min(70vw, 420px)', padding: '10px 14px', borderRadius: '12px',
-      border: 'none', fontSize: '15px', fontFamily: 'system-ui, sans-serif',
-      background: 'rgba(12,12,20,0.92)', color: '#fff', outline: '2px solid rgba(120,170,255,0.9)',
-      pointerEvents: 'auto', zIndex: '1700',
+      left: '50%',
+      bottom: 'calc(var(--sab, 0px) + 96px)',
+      transform: 'translateX(-50%)',
+      width: 'min(70vw, 420px)',
+      padding: '10px 14px',
+      borderRadius: '12px',
+      border: 'none',
+      fontSize: '15px',
+      fontFamily: 'system-ui, sans-serif',
+      background: 'rgba(12,12,20,0.92)',
+      color: '#fff',
+      outline: '2px solid rgba(120,170,255,0.9)',
+      pointerEvents: 'auto',
+      zIndex: '1700',
     });
     // Quick-phrase chips (touch only): sending a canned greeting without a
     // keyboard, which is otherwise painful to do over a full-screen 3D canvas.
@@ -939,8 +997,15 @@ export class SimpleUI {
     };
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
-      if (e.key === 'Enter') { const t = input.value; this.chatDraft = ''; close(); if (t.trim()) this.onChatSend?.(t); }
-      else if (e.key === 'Escape') { this.chatDraft = ''; close(); }
+      if (e.key === 'Enter') {
+        const t = input.value;
+        this.chatDraft = '';
+        close();
+        if (t.trim()) this.onChatSend?.(t);
+      } else if (e.key === 'Escape') {
+        this.chatDraft = '';
+        close();
+      }
     });
     // Blur (soft-keyboard collapse, tap-away) must PRESERVE the draft, not drop
     // it. Guard on `chatInput === input`: close() removes the still-focused
@@ -1562,27 +1627,35 @@ export class SimpleUI {
         this.joyState.forward = -dy * scale;
       }
     };
-    hit.addEventListener('touchstart', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (joyTouchId !== null || e.changedTouches.length === 0) return;
-      const t = e.changedTouches[0];
-      joyTouchId = t.identifier;
-      hapticPulse(5); // first-engage tick
-      applyJoyTouch(t);
-    }, { passive: false });
-    hit.addEventListener('touchmove', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (joyTouchId === null) return;
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.identifier === joyTouchId) {
-          applyJoyTouch(t);
-          break;
+    hit.addEventListener(
+      'touchstart',
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (joyTouchId !== null || e.changedTouches.length === 0) return;
+        const t = e.changedTouches[0];
+        joyTouchId = t.identifier;
+        hapticPulse(5); // first-engage tick
+        applyJoyTouch(t);
+      },
+      { passive: false },
+    );
+    hit.addEventListener(
+      'touchmove',
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (joyTouchId === null) return;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (t.identifier === joyTouchId) {
+            applyJoyTouch(t);
+            break;
+          }
         }
-      }
-    }, { passive: false });
+      },
+      { passive: false },
+    );
     // touchcancel too: a notification shade / incoming call mid-walk fires
     // cancel, not end — without it joyState stuck non-zero and the player
     // walked on forever.
@@ -1650,17 +1723,21 @@ export class SimpleUI {
       // a held JUMP died mid-swim. Re-fire with repeat:true so edge-triggered
       // (!e.repeat) press handlers don't see it as a new press.
       let holdRepeat: number | null = null;
-      btn.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        btn.style.transform = 'scale(0.9)';
-        btn.style.filter = 'brightness(1.35)';
-        hapticPulse(8);
-        fire('keydown');
-        if (holdRepeat === null) {
-          holdRepeat = window.setInterval(() => fire('keydown', true), 700);
-        }
-      }, { passive: false });
+      btn.addEventListener(
+        'touchstart',
+        (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          btn.style.transform = 'scale(0.9)';
+          btn.style.filter = 'brightness(1.35)';
+          hapticPulse(8);
+          fire('keydown');
+          if (holdRepeat === null) {
+            holdRepeat = window.setInterval(() => fire('keydown', true), 700);
+          }
+        },
+        { passive: false },
+      );
       const release = (e: Event) => {
         e.stopPropagation();
         btn.style.transform = 'scale(1)';
@@ -1701,7 +1778,10 @@ export class SimpleUI {
       // so it isn't hidden behind (and its taps swallowed by) it mid-NPC-chat.
       zIndex: '1650',
     });
-    chatBtn.addEventListener('click', (e) => { e.stopPropagation(); this.openChatInput(); });
+    chatBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.openChatInput();
+    });
     this.makeHudButtonAccessible(chatBtn, 'Open chat');
     this.overlay.appendChild(chatBtn);
 
@@ -1722,8 +1802,14 @@ export class SimpleUI {
       touchAction: 'none',
       zIndex: '1650',
     });
-    const micDown = (e: Event) => { e.preventDefault(); this.onMicDown?.(); };
-    const micUp = (e: Event) => { e.preventDefault(); this.onMicUp?.(); };
+    const micDown = (e: Event) => {
+      e.preventDefault();
+      this.onMicDown?.();
+    };
+    const micUp = (e: Event) => {
+      e.preventDefault();
+      this.onMicUp?.();
+    };
     micBtn.addEventListener('touchstart', micDown, { passive: false });
     micBtn.addEventListener('touchend', micUp);
     // touchcancel (interrupted touch, e.g. an incoming call) and mouseleave
@@ -1745,10 +1831,16 @@ export class SimpleUI {
     micBtn.setAttribute('aria-label', 'Hold to talk to nearby players (or hold the V key)');
     micBtn.classList.add('hud-btn'); // reuse the existing :focus-visible ring
     micBtn.addEventListener('keydown', (e) => {
-      if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); this.onMicDown?.(); }
+      if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) {
+        e.preventDefault();
+        this.onMicDown?.();
+      }
     });
     micBtn.addEventListener('keyup', (e) => {
-      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); this.onMicUp?.(); }
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        this.onMicUp?.();
+      }
     });
     this.overlay.appendChild(micBtn);
   }
@@ -1816,10 +1908,13 @@ export class SimpleUI {
     this.loadingTarget = Math.max(this.loadingTarget, Math.max(0, Math.min(100, progress)));
     if (this.loadingMsg) {
       const msg =
-        this.loadingTarget < 55 ? 'Waking the island…'
-        : this.loadingTarget < 90 ? 'Raising the mountains and filling the sea…'
-        : this.loadingTarget < 100 ? 'Planting trees and lighting the lamps…'
-        : 'Ready';
+        this.loadingTarget < 55
+          ? 'Waking the island…'
+          : this.loadingTarget < 90
+            ? 'Raising the mountains and filling the sea…'
+            : this.loadingTarget < 100
+              ? 'Planting trees and lighting the lamps…'
+              : 'Ready';
       this.loadingMsg.textContent = msg;
     }
     if (this.loadingTarget >= 100) {
@@ -2289,7 +2384,9 @@ export class SimpleUI {
     } else {
       rowsHtml = peers
         .map(
-          (p) => `<div data-peer="${p.id}" style="display:flex;align-items:center;justify-content:space-between;
+          (
+            p,
+          ) => `<div data-peer="${p.id}" style="display:flex;align-items:center;justify-content:space-between;
             gap:10px;padding:10px 12px;margin:6px 0;background:rgba(255,255,255,0.04);border-radius:10px;">
             <span style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👤 ${p.name}</span>
             <button data-mute="${p.id}" style="flex:0 0 auto;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
@@ -2738,7 +2835,14 @@ export class SimpleUI {
   showShop(
     state: {
       coins: number;
-      items: Array<{ id: string; icon: string; name: string; price: number; owned: boolean; equipped: boolean }>;
+      items: Array<{
+        id: string;
+        icon: string;
+        name: string;
+        price: number;
+        owned: boolean;
+        equipped: boolean;
+      }>;
     },
     onAction: (id: string) => void,
     onClose: () => void,
@@ -3317,7 +3421,9 @@ export class SimpleUI {
       trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
       if (!this.passport.isComplete()) {
         const meta = PASSPORT_META[zid as PassportZone];
-        this.toast(`🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`);
+        this.toast(
+          `🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`,
+        );
       }
     }
     // Delegated: catches every link in the panel without touching the markup
@@ -3416,11 +3522,7 @@ export class SimpleUI {
     // Shared button styles for the clickable portfolio links. Links are the
     // owner's own curated URLs (a visitor chooses to click), opened in a new
     // tab with rel=noopener — the portfolio's whole point is to be actionable.
-    const link = (
-      href: string,
-      label: string,
-      opts: { primary?: boolean } = {},
-    ): string => {
+    const link = (href: string, label: string, opts: { primary?: boolean } = {}): string => {
       const base =
         'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;';
       const style = opts.primary
@@ -3455,9 +3557,11 @@ export class SimpleUI {
         </ul>
         <p style="margin-top:12px; font-size:13.5px; color:#cdd;">🛂 Visit all four
         <em>in person</em> to stamp your <strong>Passport</strong> and earn the Founder's Crown 👑.</p>
-        <p style="margin-top: 12px; font-size:13px; color:#aaa;"><em>${this.isTouch
-          ? 'Drag the joystick to move, drag to look, 👆 USE to interact'
-          : 'WASD to move, mouse to look, E to interact'}. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
+        <p style="margin-top: 12px; font-size:13px; color:#aaa;"><em>${
+          this.isTouch
+            ? 'Drag the joystick to move, drag to look, 👆 USE to interact'
+            : 'WASD to move, mouse to look, E to interact'
+        }. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
       `,
       professional: `
         <h2 style="margin-top: 0; color: #2196F3;">💼 Professional</h2>
@@ -3580,18 +3684,31 @@ export class SimpleUI {
     const reduce = a11y.reducedMotion; // respect reduced-motion: no typewriter
     const panel = document.createElement('div');
     Object.assign(panel.style, {
-      position: 'absolute', left: '50%', bottom: '28px', transform: 'translateX(-50%)',
-      width: 'min(560px, 92%)', background: 'rgba(10,10,20,0.94)', color: '#f0f0f0',
-      borderRadius: '16px', border: '2px solid rgba(120,160,255,0.4)',
-      boxShadow: '0 8px 32px rgba(0,0,0,0.5)', zIndex: '1620',
-      fontFamily: 'system-ui, sans-serif', overflow: 'hidden', pointerEvents: 'auto',
+      position: 'absolute',
+      left: '50%',
+      bottom: '28px',
+      transform: 'translateX(-50%)',
+      width: 'min(560px, 92%)',
+      background: 'rgba(10,10,20,0.94)',
+      color: '#f0f0f0',
+      borderRadius: '16px',
+      border: '2px solid rgba(120,160,255,0.4)',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+      zIndex: '1620',
+      fontFamily: 'system-ui, sans-serif',
+      overflow: 'hidden',
+      pointerEvents: 'auto',
     });
     const header = document.createElement('div');
     Object.assign(header.style, {
-      padding: '8px 16px', fontWeight: '600',
+      padding: '8px 16px',
+      fontWeight: '600',
       background: 'linear-gradient(135deg, rgba(80,130,255,0.3), rgba(120,80,255,0.2))',
-      borderBottom: '1px solid rgba(120,160,255,0.2)', display: 'flex',
-      justifyContent: 'space-between', alignItems: 'center', gap: '10px',
+      borderBottom: '1px solid rgba(120,160,255,0.2)',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: '10px',
     });
     const title = document.createElement('span');
     title.textContent = name;
@@ -3601,11 +3718,16 @@ export class SimpleUI {
     // Voice mute toggle (only if the browser can speak).
     if (isSpeechSupported()) {
       const voiceBtn = document.createElement('span');
-      const render = () => { voiceBtn.textContent = isSpeechEnabled() ? '🔊' : '🔇'; };
+      const render = () => {
+        voiceBtn.textContent = isSpeechEnabled() ? '🔊' : '🔇';
+      };
       render();
       Object.assign(voiceBtn.style, { cursor: 'pointer', fontSize: '15px', userSelect: 'none' });
       voiceBtn.title = 'Toggle NPC voice';
-      voiceBtn.addEventListener('click', () => { setSpeechEnabled(!isSpeechEnabled()); render(); });
+      voiceBtn.addEventListener('click', () => {
+        setSpeechEnabled(!isSpeechEnabled());
+        render();
+      });
       controls.appendChild(voiceBtn);
     }
     const closeBtn = document.createElement('span');
@@ -3617,14 +3739,26 @@ export class SimpleUI {
     panel.appendChild(header);
     const log = document.createElement('div');
     Object.assign(log.style, {
-      padding: '12px 16px', maxHeight: '38vh', overflowY: 'auto', fontSize: '15px',
-      lineHeight: '1.4', display: 'flex', flexDirection: 'column', gap: '8px',
+      padding: '12px 16px',
+      maxHeight: '38vh',
+      overflowY: 'auto',
+      fontSize: '15px',
+      lineHeight: '1.4',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '8px',
     });
     panel.appendChild(log);
     const playerLine = (text: string): void => {
       const row = document.createElement('div');
       row.textContent = text; // textContent: player text never becomes markup
-      Object.assign(row.style, { alignSelf: 'flex-end', background: 'rgba(90,140,255,0.25)', padding: '6px 10px', borderRadius: '10px', maxWidth: '80%' });
+      Object.assign(row.style, {
+        alignSelf: 'flex-end',
+        background: 'rgba(90,140,255,0.25)',
+        padding: '6px 10px',
+        borderRadius: '10px',
+        maxWidth: '80%',
+      });
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;
     };
@@ -3652,26 +3786,50 @@ export class SimpleUI {
     };
     npcLine(opening);
     const inputRow = document.createElement('div');
-    Object.assign(inputRow.style, { display: 'flex', gap: '8px', padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,0.08)' });
+    Object.assign(inputRow.style, {
+      display: 'flex',
+      gap: '8px',
+      padding: '10px 12px',
+      borderTop: '1px solid rgba(255,255,255,0.08)',
+    });
     const input = document.createElement('input');
     input.type = 'text';
     input.maxLength = 300;
     input.placeholder = `Say something to ${name}…`;
     Object.assign(input.style, {
-      flex: '1', padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.15)',
-      background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: '15px', outline: 'none',
+      flex: '1',
+      padding: '8px 12px',
+      borderRadius: '10px',
+      border: '1px solid rgba(255,255,255,0.15)',
+      background: 'rgba(255,255,255,0.06)',
+      color: '#fff',
+      fontSize: '15px',
+      outline: 'none',
     });
     const send = document.createElement('button');
     send.textContent = 'Send';
-    Object.assign(send.style, { padding: '8px 16px', borderRadius: '10px', border: 'none', cursor: 'pointer', background: '#5a8cff', color: '#fff', fontWeight: '600' });
+    Object.assign(send.style, {
+      padding: '8px 16px',
+      borderRadius: '10px',
+      border: 'none',
+      cursor: 'pointer',
+      background: '#5a8cff',
+      color: '#fff',
+      fontWeight: '600',
+    });
     // Mic button (speech-to-text) — only where the browser supports it.
     const mic = isSttSupported() ? document.createElement('button') : null;
     if (mic) {
       mic.textContent = '🎤';
       mic.title = 'Talk to this character';
       Object.assign(mic.style, {
-        padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.15)',
-        cursor: 'pointer', background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: '15px',
+        padding: '8px 12px',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.15)',
+        cursor: 'pointer',
+        background: 'rgba(255,255,255,0.06)',
+        color: '#fff',
+        fontSize: '15px',
       });
       inputRow.appendChild(mic);
     }
@@ -3679,7 +3837,8 @@ export class SimpleUI {
     inputRow.appendChild(send);
     panel.appendChild(inputRow);
     // Typing must not drive the player: stop key events reaching window/document.
-    for (const ev of ['keydown', 'keyup', 'keypress']) input.addEventListener(ev, (e) => e.stopPropagation());
+    for (const ev of ['keydown', 'keyup', 'keypress'])
+      input.addEventListener(ev, (e) => e.stopPropagation());
     let busy = false;
     const doSend = async (): Promise<void> => {
       const text = input.value.trim();
@@ -3729,14 +3888,20 @@ export class SimpleUI {
         } // second click = stop early
         setRec(true);
         this.npcSttStop = startListening({
-          onInterim: (t) => { input.value = t; },
-          onFinal: (t) => { input.value = t; },
+          onInterim: (t) => {
+            input.value = t;
+          },
+          onFinal: (t) => {
+            input.value = t;
+          },
           onEnd: () => {
             this.npcSttStop = null;
             setRec(false);
             if (this.npcChatDiv === panel && input.value.trim()) void doSend();
           },
-          onError: () => { input.placeholder = 'Mic unavailable — type instead'; },
+          onError: () => {
+            input.placeholder = 'Mic unavailable — type instead';
+          },
         });
       });
     }
@@ -3803,8 +3968,7 @@ export class SimpleUI {
         boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
         opacity: '0',
         transform: `${centerX}translateY(16px) scale(0.96)`,
-        transition:
-          'opacity 0.3s ease, transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1)',
+        transition: 'opacity 0.3s ease, transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1)',
         zIndex: '1600',
         overflow: 'hidden',
         cursor: 'pointer',

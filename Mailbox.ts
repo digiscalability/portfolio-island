@@ -132,4 +132,3 @@ export class Mailbox {
     return this.mesh.position.distanceTo(position) < threshold;
   }
 }
-

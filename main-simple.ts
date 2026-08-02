@@ -234,7 +234,10 @@ class SimpleApp {
 
       // Restore saved body colours (applied now; re-applied when the GLTF loads)
       try {
-        const stored = JSON.parse(localStorage.getItem('ds_appearance') ?? '{}') as Record<string, string>;
+        const stored = JSON.parse(localStorage.getItem('ds_appearance') ?? '{}') as Record<
+          string,
+          string
+        >;
         const player = this.scene.getPlayer();
         for (const key of Object.keys(stored)) {
           const hex = parseInt(stored[key].replace('#', ''), 16);
@@ -507,8 +510,13 @@ class SimpleApp {
       // the keyboard while it's focused.
       this.boundHandlers.chatKeydown = (e: KeyboardEvent) => {
         if (this.ui.isChatInputOpen()) return; // the input owns the keyboard while typing
-        if (e.key === 'Enter') { this.ui.openChatInput(); return; }
-        if ((e.key === 'v' || e.key === 'V') && !e.repeat) { void this.chat?.startRecording(); }
+        if (e.key === 'Enter') {
+          this.ui.openChatInput();
+          return;
+        }
+        if ((e.key === 'v' || e.key === 'V') && !e.repeat) {
+          void this.chat?.startRecording();
+        }
       };
       this.boundHandlers.chatKeyup = (e: KeyboardEvent) => {
         if (e.key === 'v' || e.key === 'V') this.chat?.stopRecording();
@@ -613,9 +621,11 @@ class SimpleApp {
       const syncProfile = () => void this.syncProfile();
       const idle = (cb: () => void, timeout: number) => {
         if ('requestIdleCallback' in window) {
-          (window as unknown as {
-            requestIdleCallback: (c: () => void, o?: { timeout: number }) => void;
-          }).requestIdleCallback(cb, { timeout });
+          (
+            window as unknown as {
+              requestIdleCallback: (c: () => void, o?: { timeout: number }) => void;
+            }
+          ).requestIdleCallback(cb, { timeout });
         } else {
           setTimeout(cb, timeout / 3);
         }
@@ -640,9 +650,11 @@ class SimpleApp {
         window.removeEventListener('keydown', resumeAudio);
         window.removeEventListener('pointerdown', resumeAudio);
         try {
-          const am = (window as unknown as {
-            audioManager?: { ensureCtx(): AudioContext; isMuted(): boolean };
-          }).audioManager;
+          const am = (
+            window as unknown as {
+              audioManager?: { ensureCtx(): AudioContext; isMuted(): boolean };
+            }
+          ).audioManager;
           if (am && !am.isMuted()) void am.ensureCtx().resume();
         } catch {
           /* ignore */
@@ -887,7 +899,8 @@ class SimpleApp {
       } else if (event.key.toLowerCase() === 'p' && !event.ctrlKey && !event.metaKey) {
         // Photo mode — but not while typing in chat / the name field.
         const el = document.activeElement as HTMLElement | null;
-        const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+        const typing =
+          el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
         if (!typing) {
           event.preventDefault();
           void this.capturePhoto();
@@ -1054,8 +1067,7 @@ class SimpleApp {
           // two mid-stride plants locks footsteps to the animation instead of a
           // distance accumulator that visibly drifts as speed varies. The getter
           // is optional — fall back to the accumulator when it's absent.
-          const walkPhase =
-            (player as { getWalkCyclePhase?: () => number }).getWalkCyclePhase?.();
+          const walkPhase = (player as { getWalkCyclePhase?: () => number }).getWalkCyclePhase?.();
           if (typeof walkPhase === 'number') {
             if (onFoot) {
               // Two footfalls per cycle; alt-foot falls out of which plant fired.
@@ -1211,15 +1223,17 @@ class SimpleApp {
     // positional voice (and spatial sfx) is heard from the character's location
     // and facing. Nothing else updates the listener, so without this the whole
     // 3D audio field sits inert at the origin.
-    const am = (window as unknown as {
-      audioManager?: {
-        updateListener?: (
-          p: { x: number; y: number; z: number },
-          f?: { x: number; y: number; z: number },
-          u?: { x: number; y: number; z: number },
-        ) => void;
-      };
-    }).audioManager;
+    const am = (
+      window as unknown as {
+        audioManager?: {
+          updateListener?: (
+            p: { x: number; y: number; z: number },
+            f?: { x: number; y: number; z: number },
+            u?: { x: number; y: number; z: number },
+          ) => void;
+        };
+      }
+    ).audioManager;
     if (am?.updateListener && this.scene) {
       // Vector3 satisfies the {x,y,z} shape updateListener reads, and it copies
       // the values out synchronously, so reusing these scratches is safe.
@@ -1558,25 +1572,56 @@ class SimpleApp {
       const TAU = 2 * Math.PI;
       // Pentatonic scale frequencies (C major pentatonic across two octaves)
       const NOTE = {
-        C3: 130.81, D3: 146.83, E3: 164.81, G3: 196.00, A3: 220.00,
-        C4: 261.63, D4: 293.66, E4: 329.63, G4: 392.00, A4: 440.00,
-        C5: 523.25, E5: 659.25, G5: 783.99,
+        C3: 130.81,
+        D3: 146.83,
+        E3: 164.81,
+        G3: 196.0,
+        A3: 220.0,
+        C4: 261.63,
+        D4: 293.66,
+        E4: 329.63,
+        G4: 392.0,
+        A4: 440.0,
+        C5: 523.25,
+        E5: 659.25,
+        G5: 783.99,
       };
 
       // Chord progression: 10s per chord, cycles every 40s
       const chords = [
-        { bass: NOTE.C3, tones: [NOTE.C4, NOTE.E4, NOTE.G4] },        // Cmaj
-        { bass: NOTE.A3 * 0.5, tones: [NOTE.A3, NOTE.C4, NOTE.E4] },  // Am
-        { bass: NOTE.G3 * 0.5, tones: [NOTE.G3, NOTE.D4, NOTE.G4] },  // G5sus
-        { bass: NOTE.C3, tones: [NOTE.E4, NOTE.G4, NOTE.C5] },        // Cmaj (inv)
+        { bass: NOTE.C3, tones: [NOTE.C4, NOTE.E4, NOTE.G4] }, // Cmaj
+        { bass: NOTE.A3 * 0.5, tones: [NOTE.A3, NOTE.C4, NOTE.E4] }, // Am
+        { bass: NOTE.G3 * 0.5, tones: [NOTE.G3, NOTE.D4, NOTE.G4] }, // G5sus
+        { bass: NOTE.C3, tones: [NOTE.E4, NOTE.G4, NOTE.C5] }, // Cmaj (inv)
       ];
       const chordDur = 10;
 
       // Melody: sequence of pentatonic notes with timing
       const melodyNotes = [
-        NOTE.E4, NOTE.G4, NOTE.A4, NOTE.G4, NOTE.E4, NOTE.C4, NOTE.D4, NOTE.E4,
-        NOTE.G4, NOTE.C5, NOTE.A4, NOTE.G4, NOTE.E4, NOTE.D4, NOTE.C4, NOTE.E4,
-        NOTE.A4, NOTE.G4, NOTE.E4, NOTE.G4, NOTE.C5, NOTE.A4, NOTE.G4, NOTE.E4,
+        NOTE.E4,
+        NOTE.G4,
+        NOTE.A4,
+        NOTE.G4,
+        NOTE.E4,
+        NOTE.C4,
+        NOTE.D4,
+        NOTE.E4,
+        NOTE.G4,
+        NOTE.C5,
+        NOTE.A4,
+        NOTE.G4,
+        NOTE.E4,
+        NOTE.D4,
+        NOTE.C4,
+        NOTE.E4,
+        NOTE.A4,
+        NOTE.G4,
+        NOTE.E4,
+        NOTE.G4,
+        NOTE.C5,
+        NOTE.A4,
+        NOTE.G4,
+        NOTE.E4,
       ];
       const melNoteDur = 2.5;
 
@@ -1585,7 +1630,14 @@ class SimpleApp {
         Math.sin(phase) * 0.85 + Math.sin(phase * 2) * 0.12 + Math.sin(phase * 3) * 0.03;
 
       // ADSR envelope
-      const env = (t: number, atk: number, dec: number, sus: number, rel: number, total: number) => {
+      const env = (
+        t: number,
+        atk: number,
+        dec: number,
+        sus: number,
+        rel: number,
+        total: number,
+      ) => {
         if (t < 0 || t > total) return 0;
         if (t < atk) return t / atk;
         if (t < atk + dec) return 1 - (1 - sus) * ((t - atk) / dec);
@@ -1595,7 +1647,10 @@ class SimpleApp {
 
       // Seeded PRNG for deterministic variation
       let seed = 42;
-      const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+      const rand = () => {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
 
       // Schedule bird chirps (2-note warbles)
       const chirps: { start: number; f1: number; f2: number; dur: number }[] = [];
@@ -1632,53 +1687,53 @@ class SimpleApp {
             while (i < N && budget-- > 0 && hasTime()) {
               const t = i / sr;
 
-          // --- Chord pad: warm triangle blend, breathing ---
-          const chordIdx = Math.floor((t / chordDur) % chords.length);
-          const chordT = (t / chordDur) % 1;
-          const chord = chords[chordIdx];
-          const breathe = 0.4 + 0.6 * Math.sin(t * 0.15 + panShift) ** 2;
-          let padVal = soft(t * chord.bass * TAU) * 0.3;
-          for (let ci = 0; ci < chord.tones.length; ci++) {
-            const detune = 1 + (ci * 0.001 + panShift * 0.002);
-            padVal += soft(t * chord.tones[ci] * detune * TAU + ci * 0.5) * 0.2;
-          }
-          // Crossfade between chords at boundaries
-          const xfade = chordT < 0.08 ? chordT / 0.08 : chordT > 0.92 ? (1 - chordT) / 0.08 : 1;
-          padVal *= breathe * xfade;
+              // --- Chord pad: warm triangle blend, breathing ---
+              const chordIdx = Math.floor((t / chordDur) % chords.length);
+              const chordT = (t / chordDur) % 1;
+              const chord = chords[chordIdx];
+              const breathe = 0.4 + 0.6 * Math.sin(t * 0.15 + panShift) ** 2;
+              let padVal = soft(t * chord.bass * TAU) * 0.3;
+              for (let ci = 0; ci < chord.tones.length; ci++) {
+                const detune = 1 + (ci * 0.001 + panShift * 0.002);
+                padVal += soft(t * chord.tones[ci] * detune * TAU + ci * 0.5) * 0.2;
+              }
+              // Crossfade between chords at boundaries
+              const xfade = chordT < 0.08 ? chordT / 0.08 : chordT > 0.92 ? (1 - chordT) / 0.08 : 1;
+              padVal *= breathe * xfade;
 
-          // --- Melody: pentatonic notes with soft envelope ---
-          const melIdx = Math.floor(t / melNoteDur) % melodyNotes.length;
-          const melT = (t % melNoteDur);
-          const melFreq = melodyNotes[melIdx];
-          const melEnv = env(melT, 0.6, 0.4, 0.5, 0.8, melNoteDur);
-          const melVal = soft(t * melFreq * TAU + panShift * 1.2) * melEnv;
+              // --- Melody: pentatonic notes with soft envelope ---
+              const melIdx = Math.floor(t / melNoteDur) % melodyNotes.length;
+              const melT = t % melNoteDur;
+              const melFreq = melodyNotes[melIdx];
+              const melEnv = env(melT, 0.6, 0.4, 0.5, 0.8, melNoteDur);
+              const melVal = soft(t * melFreq * TAU + panShift * 1.2) * melEnv;
 
-          // --- Arpeggio sparkle: high notes on beat subdivisions ---
-          const arpPeriod = 3.33;
-          const arpT = t % arpPeriod;
-          const arpIdx = Math.floor(t / arpPeriod) % 3;
-          const arpFreqs = [NOTE.C5, NOTE.E5, NOTE.G5];
-          const arpEnv = env(arpT, 0.02, 0.3, 0.15, 1.5, arpPeriod);
-          const arpVal = Math.sin(t * arpFreqs[arpIdx] * TAU) * arpEnv;
+              // --- Arpeggio sparkle: high notes on beat subdivisions ---
+              const arpPeriod = 3.33;
+              const arpT = t % arpPeriod;
+              const arpIdx = Math.floor(t / arpPeriod) % 3;
+              const arpFreqs = [NOTE.C5, NOTE.E5, NOTE.G5];
+              const arpEnv = env(arpT, 0.02, 0.3, 0.15, 1.5, arpPeriod);
+              const arpVal = Math.sin(t * arpFreqs[arpIdx] * TAU) * arpEnv;
 
-          // --- Subtle wind bed ---
-          const raw = (Math.random() - 0.5) * 2;
-          const cutoff = 160 + 40 * Math.sin(t * 0.04 + ch);
-          const alpha = 1 / (1 + sr / (TAU * cutoff));
-          lp += alpha * (raw - lp);
-          const wind = lp * (0.2 + 0.1 * Math.sin(t * 0.07));
+              // --- Subtle wind bed ---
+              const raw = (Math.random() - 0.5) * 2;
+              const cutoff = 160 + 40 * Math.sin(t * 0.04 + ch);
+              const alpha = 1 / (1 + sr / (TAU * cutoff));
+              lp += alpha * (raw - lp);
+              const wind = lp * (0.2 + 0.1 * Math.sin(t * 0.07));
 
-          // --- Bird warble ---
-          let birdVal = 0;
-          for (const c of chirps) {
-            const rel = i - c.start;
-            if (rel >= 0 && rel < c.dur) {
-              const p = rel / c.dur;
-              const bEnv = Math.sin(p * Math.PI) * 0.15;
-              const freq = c.f1 + (c.f2 - c.f1) * Math.sin(p * Math.PI * 3);
-              birdVal += Math.sin(rel / sr * freq * TAU) * bEnv;
-            }
-          }
+              // --- Bird warble ---
+              let birdVal = 0;
+              for (const c of chirps) {
+                const rel = i - c.start;
+                if (rel >= 0 && rel < c.dur) {
+                  const p = rel / c.dur;
+                  const bEnv = Math.sin(p * Math.PI) * 0.15;
+                  const freq = c.f1 + (c.f2 - c.f1) * Math.sin(p * Math.PI * 3);
+                  birdVal += Math.sin((rel / sr) * freq * TAU) * bEnv;
+                }
+              }
 
               // --- Mix ---
               d[i] = padVal * 0.045 + melVal * 0.05 + arpVal * 0.025 + wind * 0.02 + birdVal * 0.03;
@@ -1836,5 +1891,8 @@ if (document.readyState === 'loading') {
   };
 };
 
-console.log('%c🌎 Welcome to DigiScalability Life Island', 'color: #4ade80; font-size: 16px; font-weight: bold');
+console.log(
+  '%c🌎 Welcome to DigiScalability Life Island',
+  'color: #4ade80; font-size: 16px; font-weight: bold',
+);
 console.log('%cSimplified architecture ready for deployment', 'color: #60a5fa');

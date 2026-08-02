@@ -47,7 +47,9 @@ describe('day-event ids stay in lockstep', () => {
   // Server pool: EVENT_IDS in the planner. Client whitelist+labels: EVENT_META
   // keys in WorldState (also the Island Times masthead strings).
   const serverEvents = arrayStringsAfter(read('functions/src/npcPlanner.ts'), 'EVENT_IDS');
-  const clientEvents = [...read('WorldState.ts').matchAll(/^ {2}([a-z_]+): \{ label:/gm)].map((m) => m[1]);
+  const clientEvents = [...read('WorldState.ts').matchAll(/^ {2}([a-z_]+): \{ label:/gm)].map(
+    (m) => m[1],
+  );
 
   test('both sides list the same events', () => {
     expect(serverEvents.length).toBeGreaterThan(1);
@@ -73,9 +75,9 @@ describe('NPC activity ids stay in lockstep', () => {
   // Client canonical set: the keys of ACTIVITY_DEFS (each entry is `  key: { label:`).
   const defsSrc = read('NpcActivities.ts');
   const defsBlockStart = defsSrc.indexOf('ACTIVITY_DEFS');
-  const clientIds = [...defsSrc.slice(defsBlockStart).matchAll(/^\s{2}([a-z_]+):\s*\{\s*label:/gm)].map(
-    (m) => m[1],
-  );
+  const clientIds = [
+    ...defsSrc.slice(defsBlockStart).matchAll(/^\s{2}([a-z_]+):\s*\{\s*label:/gm),
+  ].map((m) => m[1]);
   // Server pool: the ACTIVITY_IDS string array in the planner.
   const serverIds = arrayStringsAfter(read('functions/src/npcPlanner.ts'), 'ACTIVITY_IDS');
 

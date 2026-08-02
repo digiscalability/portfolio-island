@@ -130,62 +130,68 @@ export class SimpleInputManager {
   private setupTouchListeners(): void {
     // Listeners stay passive: the canvas has touch-action: none, so the
     // browser never scrolls/refreshes for touches that start there anyway.
-    document.addEventListener('touchstart', (e) => {
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.target !== this.canvas) continue;
-        if (this.cameraTouchId === null) {
-          this.cameraTouchId = t.identifier;
-          // Seed last position so the first move computes a true delta
-          // (not clientX - 0, which snapped the camera on gesture start)
-          this.touchLast.x = t.clientX;
-          this.touchLast.y = t.clientY;
-        } else if (this.pinchTouchId === null && t.identifier !== this.cameraTouchId) {
-          // Second canvas finger: the look gesture becomes a pinch-zoom.
-          this.pinchTouchId = t.identifier;
-          const a = this.findTouch(e.touches, this.cameraTouchId);
-          this.pinchLastDist = a
-            ? Math.hypot(t.clientX - a.clientX, t.clientY - a.clientY)
-            : 0;
-          // Suspend look: drop any delta accumulated but not yet consumed
-          this.touchDelta.x = 0;
-          this.touchDelta.y = 0;
-        }
-      }
-    }, { passive: true });
-
-    document.addEventListener('touchmove', (e) => {
-      if (this.cameraTouchId === null) return;
-      if (this.pinchTouchId !== null) {
-        // Pinch: both fingers' CURRENT positions drive the distance ratio.
-        // Spreading (dist grows) zooms in — orbit distance scales inversely.
-        const a = this.findTouch(e.touches, this.cameraTouchId);
-        const b = this.findTouch(e.touches, this.pinchTouchId);
-        if (a && b) {
-          const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
-          // Ignore near-degenerate spans: the ratio explodes as fingers meet
-          if (this.pinchLastDist > 10 && dist > 10) {
-            pinchState.factor *= this.pinchLastDist / dist;
+    document.addEventListener(
+      'touchstart',
+      (e) => {
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (t.target !== this.canvas) continue;
+          if (this.cameraTouchId === null) {
+            this.cameraTouchId = t.identifier;
+            // Seed last position so the first move computes a true delta
+            // (not clientX - 0, which snapped the camera on gesture start)
+            this.touchLast.x = t.clientX;
+            this.touchLast.y = t.clientY;
+          } else if (this.pinchTouchId === null && t.identifier !== this.cameraTouchId) {
+            // Second canvas finger: the look gesture becomes a pinch-zoom.
+            this.pinchTouchId = t.identifier;
+            const a = this.findTouch(e.touches, this.cameraTouchId);
+            this.pinchLastDist = a ? Math.hypot(t.clientX - a.clientX, t.clientY - a.clientY) : 0;
+            // Suspend look: drop any delta accumulated but not yet consumed
+            this.touchDelta.x = 0;
+            this.touchDelta.y = 0;
           }
-          this.pinchLastDist = dist;
-          // Track the camera finger so look resumes without a snap when the
-          // second finger lifts
-          this.touchLast.x = a.clientX;
-          this.touchLast.y = a.clientY;
         }
-        return;
-      }
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.identifier === this.cameraTouchId) {
-          this.touchDelta.x += t.clientX - this.touchLast.x;
-          this.touchDelta.y += t.clientY - this.touchLast.y;
-          this.touchLast.x = t.clientX;
-          this.touchLast.y = t.clientY;
-          break;
+      },
+      { passive: true },
+    );
+
+    document.addEventListener(
+      'touchmove',
+      (e) => {
+        if (this.cameraTouchId === null) return;
+        if (this.pinchTouchId !== null) {
+          // Pinch: both fingers' CURRENT positions drive the distance ratio.
+          // Spreading (dist grows) zooms in — orbit distance scales inversely.
+          const a = this.findTouch(e.touches, this.cameraTouchId);
+          const b = this.findTouch(e.touches, this.pinchTouchId);
+          if (a && b) {
+            const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+            // Ignore near-degenerate spans: the ratio explodes as fingers meet
+            if (this.pinchLastDist > 10 && dist > 10) {
+              pinchState.factor *= this.pinchLastDist / dist;
+            }
+            this.pinchLastDist = dist;
+            // Track the camera finger so look resumes without a snap when the
+            // second finger lifts
+            this.touchLast.x = a.clientX;
+            this.touchLast.y = a.clientY;
+          }
+          return;
         }
-      }
-    }, { passive: true });
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (t.identifier === this.cameraTouchId) {
+            this.touchDelta.x += t.clientX - this.touchLast.x;
+            this.touchDelta.y += t.clientY - this.touchLast.y;
+            this.touchLast.x = t.clientX;
+            this.touchLast.y = t.clientY;
+            break;
+          }
+        }
+      },
+      { passive: true },
+    );
 
     // Release only when THE camera/pinch fingers lift — joystick/button
     // fingers ending must not cancel an in-flight look gesture. Ending one
@@ -197,7 +203,8 @@ export class SimpleInputManager {
         const id = e.changedTouches[i].identifier;
         if (id === this.pinchTouchId) {
           this.pinchTouchId = null;
-          const a = this.cameraTouchId !== null ? this.findTouch(e.touches, this.cameraTouchId) : null;
+          const a =
+            this.cameraTouchId !== null ? this.findTouch(e.touches, this.cameraTouchId) : null;
           if (a) {
             this.touchLast.x = a.clientX;
             this.touchLast.y = a.clientY;

@@ -65,7 +65,10 @@ describe('server plan overrides', () => {
   });
 
   test('a stale plan (>48h) is dropped — defaults on planner failure', () => {
-    NA.setPlan({ assignments: { gardener: 'play_music' }, updatedAt: Date.now() - 72 * 60 * 60 * 1000 });
+    NA.setPlan({
+      assignments: { gardener: 'play_music' },
+      updatedAt: Date.now() - 72 * 60 * 60 * 1000,
+    });
     expect(goalFor('gardener', 10)?.activity).toBe('tend_flowers');
   });
 });

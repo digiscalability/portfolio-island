@@ -22,20 +22,20 @@ async function main() {
   await ensureDir(thumbsDir);
 
   // gather candidate images from manifest textures and from assets folder (png/jpg/svg)
-  const textures = (manifest.textures || []).filter(t => !/^https?:\/\//i.test(t));
+  const textures = (manifest.textures || []).filter((t) => !/^https?:\/\//i.test(t));
   const candidates = new Set();
-  textures.forEach(t => {
+  textures.forEach((t) => {
     const ext = t.split('.').pop().toLowerCase();
-    if (['png','jpg','jpeg','webp','svg','gif','svg'].includes(ext)) {
+    if (['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif', 'svg'].includes(ext)) {
       candidates.add(t);
     }
   });
 
   // also scan assets/ for common image names
   const files = fs.readdirSync(assetsDir);
-  files.forEach(f => {
+  files.forEach((f) => {
     const ext = f.split('.').pop().toLowerCase();
-    if (['png','jpg','jpeg','webp','svg'].includes(ext)) candidates.add(f);
+    if (['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(ext)) candidates.add(f);
   });
 
   console.log('Found', candidates.size, 'candidates for thumbnails');
@@ -43,14 +43,17 @@ async function main() {
   for (const fname of candidates) {
     const src = path.join(assetsDir, fname);
     const out = path.join(thumbsDir, fname.replace(/\.[^/.]+$/, '') + '.webp');
-    if (!fs.existsSync(src)) { console.warn('source missing', src); continue; }
-    if (fs.existsSync(out)) { console.log('thumb exists', out); continue; }
+    if (!fs.existsSync(src)) {
+      console.warn('source missing', src);
+      continue;
+    }
+    if (fs.existsSync(out)) {
+      console.log('thumb exists', out);
+      continue;
+    }
     try {
       // use sharp to generate 180x120 webp thumbnail with modest quality
-      await sharp(src)
-        .resize(180, 120, { fit: 'cover' })
-        .webp({ quality: 72 })
-        .toFile(out);
+      await sharp(src).resize(180, 120, { fit: 'cover' }).webp({ quality: 72 }).toFile(out);
       console.log('wrote', out);
     } catch (e) {
       console.warn('failed to thumb', src, e.message || e);
@@ -58,4 +61,7 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

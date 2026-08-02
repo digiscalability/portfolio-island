@@ -21,13 +21,33 @@ import type { Mood } from './WorldState';
 export type PoseId = 'walk' | 'kneel' | 'inspect' | 'play' | 'paint' | 'sit' | 'sleep' | 'watch';
 
 export type ActivityId =
-  | 'tend_flowers' | 'patrol' | 'mail_round' | 'play_music' | 'lamp_round'
-  | 'paint_vista' | 'keep_light' | 'shore_gaze' | 'market_visit'
-  | 'bench_rest' | 'stroll' | 'sleep' | 'plaza_gather' | 'study' | 'muse';
+  | 'tend_flowers'
+  | 'patrol'
+  | 'mail_round'
+  | 'play_music'
+  | 'lamp_round'
+  | 'paint_vista'
+  | 'keep_light'
+  | 'shore_gaze'
+  | 'market_visit'
+  | 'bench_rest'
+  | 'stroll'
+  | 'sleep'
+  | 'plaza_gather'
+  | 'study'
+  | 'muse';
 
 type AnchorSource =
-  | 'flowers' | 'lamps' | 'mailboxes' | 'stalls' | 'benches'
-  | 'lighthouse' | 'plaza' | 'boulevard' | 'vista' | 'home';
+  | 'flowers'
+  | 'lamps'
+  | 'mailboxes'
+  | 'stalls'
+  | 'benches'
+  | 'lighthouse'
+  | 'plaza'
+  | 'boulevard'
+  | 'vista'
+  | 'home';
 
 export interface ActivityDef {
   /** Full pre-authored line for the Island Times board ("tending the flower beds"). */
@@ -47,46 +67,166 @@ export interface ActivityDef {
 // The ONLY activities that exist. This table is the client's enum whitelist for
 // validating server plans, and the source of every world-visible label.
 export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
-  tend_flowers: { label: 'tending the flower beds', short: 'tending', emoji: '🌷', pose: 'kneel', anchorSource: 'flowers', dwell: [18, 34] },
-  patrol:       { label: 'on patrol along the boulevard', short: 'on patrol', emoji: '🛡️', pose: 'watch', anchorSource: 'boulevard', dwell: [5, 9] },
-  mail_round:   { label: 'running the mail round', short: 'mail run', emoji: '✉️', pose: 'inspect', anchorSource: 'mailboxes', dwell: [4, 8] },
-  play_music:   { label: 'playing a tune in the plaza', short: 'playing', emoji: '🎵', pose: 'play', anchorSource: 'plaza', dwell: [50, 90] },
-  lamp_round:   { label: 'checking the lamps for the night', short: 'checking lamps', emoji: '🔦', pose: 'watch', anchorSource: 'lamps', dwell: [7, 13] },
-  paint_vista:  { label: 'painting the coastal view', short: 'painting', emoji: '🎨', pose: 'paint', anchorSource: 'vista', dwell: [40, 80], face: 'sea' },
-  keep_light:   { label: 'keeping the lighthouse', short: 'on watch', emoji: '🗼', pose: 'watch', anchorSource: 'lighthouse', dwell: [30, 60], face: 'center' },
-  shore_gaze:   { label: 'watching the tide roll in', short: 'gazing out', emoji: '🌊', pose: 'watch', anchorSource: 'vista', dwell: [25, 40], face: 'sea' },
-  market_visit: { label: 'browsing the market stalls', short: 'at market', emoji: '🛒', pose: 'inspect', anchorSource: 'stalls', dwell: [12, 22] },
-  bench_rest:   { label: 'resting on a bench', short: 'resting', emoji: '🪑', pose: 'sit', anchorSource: 'benches', dwell: [20, 40] },
-  stroll:       { label: 'out for a stroll', emoji: '🚶', pose: 'walk', anchorSource: 'home', dwell: [4, 9] },
-  sleep:        { label: 'fast asleep', short: 'asleep', emoji: '💤', pose: 'sleep', anchorSource: 'home', dwell: [60, 120] },
-  plaza_gather: { label: 'joining the gathering in the plaza', short: 'gathering', emoji: '🎉', pose: 'watch', anchorSource: 'plaza', dwell: [30, 60] },
-  study:        { label: 'studying how the world is built', short: 'studying', emoji: '📚', pose: 'inspect', anchorSource: 'home', dwell: [20, 40] },
-  muse:         { label: 'lost in thought', short: 'thinking', emoji: '🤔', pose: 'sit', anchorSource: 'home', dwell: [25, 45] },
+  tend_flowers: {
+    label: 'tending the flower beds',
+    short: 'tending',
+    emoji: '🌷',
+    pose: 'kneel',
+    anchorSource: 'flowers',
+    dwell: [18, 34],
+  },
+  patrol: {
+    label: 'on patrol along the boulevard',
+    short: 'on patrol',
+    emoji: '🛡️',
+    pose: 'watch',
+    anchorSource: 'boulevard',
+    dwell: [5, 9],
+  },
+  mail_round: {
+    label: 'running the mail round',
+    short: 'mail run',
+    emoji: '✉️',
+    pose: 'inspect',
+    anchorSource: 'mailboxes',
+    dwell: [4, 8],
+  },
+  play_music: {
+    label: 'playing a tune in the plaza',
+    short: 'playing',
+    emoji: '🎵',
+    pose: 'play',
+    anchorSource: 'plaza',
+    dwell: [50, 90],
+  },
+  lamp_round: {
+    label: 'checking the lamps for the night',
+    short: 'checking lamps',
+    emoji: '🔦',
+    pose: 'watch',
+    anchorSource: 'lamps',
+    dwell: [7, 13],
+  },
+  paint_vista: {
+    label: 'painting the coastal view',
+    short: 'painting',
+    emoji: '🎨',
+    pose: 'paint',
+    anchorSource: 'vista',
+    dwell: [40, 80],
+    face: 'sea',
+  },
+  keep_light: {
+    label: 'keeping the lighthouse',
+    short: 'on watch',
+    emoji: '🗼',
+    pose: 'watch',
+    anchorSource: 'lighthouse',
+    dwell: [30, 60],
+    face: 'center',
+  },
+  shore_gaze: {
+    label: 'watching the tide roll in',
+    short: 'gazing out',
+    emoji: '🌊',
+    pose: 'watch',
+    anchorSource: 'vista',
+    dwell: [25, 40],
+    face: 'sea',
+  },
+  market_visit: {
+    label: 'browsing the market stalls',
+    short: 'at market',
+    emoji: '🛒',
+    pose: 'inspect',
+    anchorSource: 'stalls',
+    dwell: [12, 22],
+  },
+  bench_rest: {
+    label: 'resting on a bench',
+    short: 'resting',
+    emoji: '🪑',
+    pose: 'sit',
+    anchorSource: 'benches',
+    dwell: [20, 40],
+  },
+  stroll: {
+    label: 'out for a stroll',
+    emoji: '🚶',
+    pose: 'walk',
+    anchorSource: 'home',
+    dwell: [4, 9],
+  },
+  sleep: {
+    label: 'fast asleep',
+    short: 'asleep',
+    emoji: '💤',
+    pose: 'sleep',
+    anchorSource: 'home',
+    dwell: [60, 120],
+  },
+  plaza_gather: {
+    label: 'joining the gathering in the plaza',
+    short: 'gathering',
+    emoji: '🎉',
+    pose: 'watch',
+    anchorSource: 'plaza',
+    dwell: [30, 60],
+  },
+  study: {
+    label: 'studying how the world is built',
+    short: 'studying',
+    emoji: '📚',
+    pose: 'inspect',
+    anchorSource: 'home',
+    dwell: [20, 40],
+  },
+  muse: {
+    label: 'lost in thought',
+    short: 'thinking',
+    emoji: '🤔',
+    pose: 'sit',
+    anchorSource: 'home',
+    dwell: [25, 45],
+  },
 };
 
 // Poses are whole-group modulation of the existing bob/roll/lift channels
 // (npc.glb is unrigged/clipless — no skeletal animation). Applied while idle.
-export const POSE_PRESETS: Record<PoseId, { bobAmp: number; bobFreq: number; rollAmp: number; lift: number }> = {
-  walk:    { bobAmp: 0.015, bobFreq: 2.0, rollAmp: 0.0, lift: 0.0 },
-  kneel:   { bobAmp: 0.006, bobFreq: 1.1, rollAmp: 0.0, lift: -0.14 },
+export const POSE_PRESETS: Record<
+  PoseId,
+  { bobAmp: number; bobFreq: number; rollAmp: number; lift: number }
+> = {
+  walk: { bobAmp: 0.015, bobFreq: 2.0, rollAmp: 0.0, lift: 0.0 },
+  kneel: { bobAmp: 0.006, bobFreq: 1.1, rollAmp: 0.0, lift: -0.14 },
   inspect: { bobAmp: 0.02, bobFreq: 2.6, rollAmp: 0.05, lift: 0.0 },
-  play:    { bobAmp: 0.05, bobFreq: 4.4, rollAmp: 0.14, lift: 0.0 },
-  paint:   { bobAmp: 0.012, bobFreq: 1.6, rollAmp: 0.03, lift: 0.0 },
-  sit:     { bobAmp: 0.008, bobFreq: 1.2, rollAmp: 0.0, lift: -0.16 },
-  sleep:   { bobAmp: 0.004, bobFreq: 0.7, rollAmp: 0.0, lift: -0.18 },
-  watch:   { bobAmp: 0.014, bobFreq: 1.4, rollAmp: 0.05, lift: 0.0 },
+  play: { bobAmp: 0.05, bobFreq: 4.4, rollAmp: 0.14, lift: 0.0 },
+  paint: { bobAmp: 0.012, bobFreq: 1.6, rollAmp: 0.03, lift: 0.0 },
+  sit: { bobAmp: 0.008, bobFreq: 1.2, rollAmp: 0.0, lift: -0.16 },
+  sleep: { bobAmp: 0.004, bobFreq: 0.7, rollAmp: 0.0, lift: -0.18 },
+  watch: { bobAmp: 0.014, bobFreq: 1.4, rollAmp: 0.05, lift: 0.0 },
 };
 
 // ── Schedules ────────────────────────────────────────────────────────────────
 // Hour bands (0–24; use to > 24 to wrap past midnight). `moods` swaps the
 // activity when the island is in that mood. Personas absent here use GENERIC.
 
-interface ScheduleRow { from: number; to: number; activity: ActivityId; moods?: Partial<Record<Mood, ActivityId>> }
+interface ScheduleRow {
+  from: number;
+  to: number;
+  activity: ActivityId;
+  moods?: Partial<Record<Mood, ActivityId>>;
+}
 
 const GENERIC: ScheduleRow[] = [
   { from: 6, to: 10, activity: 'stroll', moods: { festive: 'plaza_gather' } },
   { from: 10, to: 14, activity: 'market_visit', moods: { festive: 'plaza_gather' } },
-  { from: 14, to: 18, activity: 'stroll', moods: { mysterious: 'shore_gaze', festive: 'plaza_gather' } },
+  {
+    from: 14,
+    to: 18,
+    activity: 'stroll',
+    moods: { mysterious: 'shore_gaze', festive: 'plaza_gather' },
+  },
   { from: 18, to: 22, activity: 'bench_rest', moods: { festive: 'plaza_gather' } },
   { from: 22, to: 30, activity: 'sleep' }, // 22:00 → 06:00
 ];
@@ -143,7 +283,8 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
     { from: 8, to: 20, activity: 'muse' },
     { from: 20, to: 32, activity: 'sleep' },
   ],
-  village_baker: [ // (Baker has a bespoke machine too, but keep a schedule as a safety net)
+  village_baker: [
+    // (Baker has a bespoke machine too, but keep a schedule as a safety net)
     { from: 6, to: 16, activity: 'market_visit' },
     { from: 16, to: 22, activity: 'bench_rest' },
     { from: 22, to: 30, activity: 'sleep' },
@@ -188,7 +329,8 @@ function ringAround(centre: THREE.Vector3, arc: number, n: number): THREE.Vector
   const north = new THREE.Vector3().crossVectors(centre, east).normalize();
   for (let k = 0; k < n; k++) {
     const a = (k / n) * Math.PI * 2;
-    const d = centre.clone()
+    const d = centre
+      .clone()
       .addScaledVector(east, Math.cos(a) * arc)
       .addScaledVector(north, Math.sin(a) * arc)
       .normalize();
@@ -229,7 +371,11 @@ const UP = new THREE.Vector3(0, 1, 0);
  * the caller against the live surface normal). Returns false when undefined
  * (degenerate at the pole / no lighthouse) — caller keeps the arrival yaw.
  */
-export function computeFaceDir(face: 'sea' | 'center', posDir: THREE.Vector3, out: THREE.Vector3): boolean {
+export function computeFaceDir(
+  face: 'sea' | 'center',
+  posDir: THREE.Vector3,
+  out: THREE.Vector3,
+): boolean {
   if (face === 'sea') {
     // Seaward = due "south" on this pole-centred island: the tangent component
     // of −ŷ at posDir, i.e. straight away from the pole, toward the shoreline.
@@ -311,7 +457,7 @@ interface GoalState {
 // pair, in ring order (hoisted — pickAnchor used to allocate this per pick).
 const BOULEVARD_LONS: number[] = RING_DISTRICT_LONS.flatMap((lon, i) => {
   const next = RING_DISTRICT_LONS[(i + 1) % RING_DISTRICT_LONS.length];
-  const half = lon + (((next - lon + Math.PI * 2) % (Math.PI * 2)) || Math.PI * 2) / 2;
+  const half = lon + ((next - lon + Math.PI * 2) % (Math.PI * 2) || Math.PI * 2) / 2;
   return [lon, half];
 });
 
@@ -324,7 +470,8 @@ function jitterDir(home: THREE.Vector3, arc: number, out: THREE.Vector3): void {
   _jb.crossVectors(home, _ja).normalize(); // east tangent
   _ja.crossVectors(home, _jb).normalize(); // north tangent
   const ang = Math.random() * Math.PI * 2;
-  out.copy(home)
+  out
+    .copy(home)
     .addScaledVector(_jb, Math.cos(ang) * arc)
     .addScaledVector(_ja, Math.sin(ang) * arc)
     .normalize();
@@ -402,5 +549,11 @@ export function getGoal(
   if (!pickAnchor(def.anchorSource, s, outDir)) {
     jitterDir(s.home, 0.06, outDir); // graceful fallback if anchors missing
   }
-  return { activity, pose: def.pose, dwellMin: def.dwell[0], dwellMax: def.dwell[1], face: def.face };
+  return {
+    activity,
+    pose: def.pose,
+    dwellMin: def.dwell[0],
+    dwellMax: def.dwell[1],
+    face: def.face,
+  };
 }

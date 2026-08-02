@@ -22,7 +22,7 @@ export interface GLTFOptions {
  */
 export async function loadGLTFWithFallbacks(
   primaryUrl: string,
-  options: GLTFOptions = {}
+  options: GLTFOptions = {},
 ): Promise<GLTFResult | null> {
   const urls = [primaryUrl, ...(options.candidates || [])];
   const loader = new GLTFLoader();
@@ -74,7 +74,7 @@ export async function loadGLTFWithFallbacks(
 export function setupModelAnimation(
   scene: THREE.Group,
   animations: THREE.AnimationClip[],
-  defaultAnimation: string = 'idle'
+  defaultAnimation: string = 'idle',
 ): THREE.AnimationMixer | null {
   if (animations.length === 0) {
     console.warn('⚠️ No animations found in GLTF model');
@@ -84,7 +84,9 @@ export function setupModelAnimation(
   const mixer = new THREE.AnimationMixer(scene);
 
   // Try to find the default animation
-  let clip = animations.find((anim) => anim.name.toLowerCase().includes(defaultAnimation.toLowerCase()));
+  let clip = animations.find((anim) =>
+    anim.name.toLowerCase().includes(defaultAnimation.toLowerCase()),
+  );
 
   // If not found, use the first animation
   if (!clip) {

@@ -6,7 +6,22 @@
     "tables": false
   },
   "MD033": {
-    "allowed_elements": ["details", "summary", "br", "sub", "sup", "file", "script", "style", "div", "span", "table", "tr", "td", "th"]
+    "allowed_elements": [
+      "details",
+      "summary",
+      "br",
+      "sub",
+      "sup",
+      "file",
+      "script",
+      "style",
+      "div",
+      "span",
+      "table",
+      "tr",
+      "td",
+      "th"
+    ]
   },
   "MD036": false,
   "MD040": false,

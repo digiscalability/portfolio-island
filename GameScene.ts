@@ -392,200 +392,200 @@ export class GameScene extends THREE.Scene {
   private async initialize(): Promise<void> {
     const restoreRandom = GameScene.installSeededRandom();
     try {
-    // Create camera with extended far plane
-    this.camera = new THREE.PerspectiveCamera(
-      50, // narrowed from 60: flatter perspective, straighter horizon — reads as a bigger world
-      window.innerWidth / window.innerHeight,
-      0.1,
-      2000,
-    );
-
-    // Create spherical island
-    // 22u radius (was 18, Messenger parity): with the player scaled to
-    // ~1.58u the world reads noticeably bigger — longer blocks, gentler
-    // horizon. All placement is lon/lat-based so the districts spread
-    // automatically; physical spacing grows with the radius.
-    this.island = new Island(50); // grown 30→40→50: bigger walkable world + all lon/lat placement spreads further apart, de-clustering the districts. setPlanet below reads getRadius() so it follows automatically.
-    this.add(this.island.mesh);
-    // Unify the art direction. Toon (?theme=toon): stepped shading on every
-    // prop (abeto-style). Real (default): materials stay MeshStandardMaterial
-    // (they're authored that way) + a saturation grade — continuous PBR
-    // lighting reads more muted than the toon ramp, so colors get a one-time
-    // punch-up to keep the island's candy palette. The grade runs on the
-    // FIRST update (see update()), not here: zones/NPCs/town props don't
-    // exist yet at this point and would be missed.
-    if (!isRealTheme()) this.toonifyIslandMaterials();
-
-    // Register trees for the gentle ambient sway in update()
-    this.island.mesh.traverse((obj) => {
-      if (/^tree_\d+$/.test(obj.name)) {
-        this.swayTrees.push({
-          group: obj,
-          baseQuat: obj.quaternion.clone(),
-          phase: Math.random() * Math.PI * 2,
-        });
-      }
-    });
-
-    // Ambient life anchored to island sites
-    this.createButterflies();
-    this.createFireflies();
-    this.createChimneySmoke();
-    this.createDustPool();
-
-    // Solid props: register colliders so the player can't walk through
-    // them. Only TownPlanner props ever registered before — the island's
-    // own houses/trees/cars/stalls were all ghost-walkable. Radii are
-    // footprints, not bounding spheres (tree = trunk, so you can walk
-    // under the canopy). Positions are static — captured post-seating,
-    // and GLB replacements land on the same spots.
-    // Cars are drivable now (not obstacles) — collect them here and DON'T
-    // give them a static collider, so a driven car leaves no ghost wall.
-    const COLLIDER_RADII: Array<[RegExp, number]> = [
-      [/^house_\d+$/, 2.3],
-      [/^building_placeholder_\d+$/, 2.1],
-      [/^tree_\d+$/, 0.45],
-      [/^stall_\d+$/, 1.5],
-      [/^lamp_\d+$/, 0.2],
-      [/^bench_\d+$/, 0.85],
-      [/^construction_\d+$/, 0.8],
-      [/^mailbox_\d+$/, 0.35],
-      [/^npc_placeholder_\d+$/, 0.5],
-      [/^central_statue$/, 0.55],
-      [/^town_fountain$/, 2.3],
-      [/^lighthouse$/, 2.0], // solid tower base — was walk-through
-      [/^pillar_\d+$/, 0.45], // hub lantern pillars — were walk-through
-      [/^gatepost_\d+$/, 0.4], // district entry-gate posts (straddle the avenue)
-    ];
-    this.island.mesh.updateMatrixWorld(true);
-    let colliderCount = 0;
-    this.island.mesh.traverse((obj) => {
-      if (/^bench_\d+$/.test(obj.name)) this.benchGroups.push(obj);
-      if (obj.name === 'ambient_sparkles' || obj.name === 'ambient_dust') {
-        this.ambientGroups.push(obj);
-      }
-      if (/^car_\d+$/.test(obj.name)) {
-        this.parkedCars.push(obj);
-        return;
-      }
-      for (const [re, radius] of COLLIDER_RADII) {
-        if (re.test(obj.name)) {
-          this.colliders.push({
-            position: obj.getWorldPosition(new THREE.Vector3()),
-            radius,
-          });
-          colliderCount++;
-          break;
-        }
-      }
-    });
-    console.log(`🧱 Registered ${colliderCount} island prop colliders`);
-
-    // Soft contact shadows so props read as sitting ON the ground
-    this.createGroundingShadows();
-
-    // Navigation + traversal rewards
-    this.createGuideSparkles();
-    this.createCoins();
-    this.createVehicles();
-    this.createWaterFX();
-
-    // Checkpoint race circuits (land for cars, water for boats/jetskis). Gate
-    // events/HUD forward through GameScene fields so main can wire them before
-    // or after this async init finishes.
-    this.races = new RaceSystem(this, this.island, this.colliders);
-    this.races.onEvent = (e) => this.onRaceEventCb?.(e);
-    this.races.onHud = (s) => this.onRaceHudCb?.(s);
-    this.races.build();
-
-    // Create player on island surface with spherical physics
-    this.player = new SimplePlayer();
-    this.player.setPlanet(new THREE.Vector3(0, 0, 0), this.island.getRadius());
-    // Ground the player on the actual displaced terrain, not the ideal sphere
-    this.player.setGroundSampler((outwardDir) => {
-      const sampled = this.island.sampleSurfaceByDirection(outwardDir, 0);
-      return sampled.position.length();
-    });
-    // Water: float/drown physics needs the wavy surface height + a water test
-    this.player.setWaterSampler((outwardDir) => ({
-      surface: this.island.waveHeightAt(outwardDir, this.island.seaTimeUniform.value),
-      isWater: this.island.isOverWater(outwardDir),
-    }));
-    // Drowning: bounce the player back to dry land at the nearest shore
-    this.player.setOnDrown(() => this.respawnFromDrown());
-    // Spawn ON the terrain at the north pole (the ideal-sphere height can be
-    // inside or above a terrain bump, which used to cause a slide at spawn)
-    const spawnDir = new THREE.Vector3(0, 1, 0);
-    const spawnSample = this.island.sampleSurfaceByDirection(spawnDir, 0);
-    const spawnHeight = spawnSample.position.length() + 0.75;
-    // Set playerPosition (internal field) so physics starts at the north pole
-    this.player.setWorldPosition(new THREE.Vector3(0, spawnHeight, 0));
-    this.player.updateWorldMatrix();
-    this.add(this.player);
-
-    // Setup lights
-    this.setupLighting();
-
-    // Day/night + weather matched to the visitor's clock and location
-    // (needs the sun, hemisphere light, and sky uniforms from setupLighting)
-    if (this.lights.sun && this.hemiLight && this.skyColorUniforms) {
-      this.envCycle = new EnvironmentCycle(
-        this,
-        this.lights.sun,
-        this.hemiLight,
-        this.skyColorUniforms,
+      // Create camera with extended far plane
+      this.camera = new THREE.PerspectiveCamera(
+        50, // narrowed from 60: flatter perspective, straighter horizon — reads as a bigger world
+        window.innerWidth / window.innerHeight,
+        0.1,
+        2000,
       );
-      // Share the LIVE horizon Color with the sea's fresnel uniform (by
-      // reference — the cycle lerps it in place), so the water's sky
-      // reflection tracks day/dusk/night for free. Wave 2 added both ends of
-      // this seam but couldn't wire them across file ownership; this is the
-      // one-line connection.
-      this.island.bindSeaSkyColor(this.skyColorUniforms.horizonColor.value);
-    }
 
-    // Create orbit camera (with terrain collision so hills don't block the view)
-    this.orbitCamera = new OrbitCamera(this.camera, this.player);
-    this.orbitCamera.setCollisionMesh(this.island.mesh); // terrain + all props
+      // Create spherical island
+      // 22u radius (was 18, Messenger parity): with the player scaled to
+      // ~1.58u the world reads noticeably bigger — longer blocks, gentler
+      // horizon. All placement is lon/lat-based so the districts spread
+      // automatically; physical spacing grows with the radius.
+      this.island = new Island(50); // grown 30→40→50: bigger walkable world + all lon/lat placement spreads further apart, de-clustering the districts. setPlanet below reads getRadius() so it follows automatically.
+      this.add(this.island.mesh);
+      // Unify the art direction. Toon (?theme=toon): stepped shading on every
+      // prop (abeto-style). Real (default): materials stay MeshStandardMaterial
+      // (they're authored that way) + a saturation grade — continuous PBR
+      // lighting reads more muted than the toon ramp, so colors get a one-time
+      // punch-up to keep the island's candy palette. The grade runs on the
+      // FIRST update (see update()), not here: zones/NPCs/town props don't
+      // exist yet at this point and would be missed.
+      if (!isRealTheme()) this.toonifyIslandMaterials();
 
-    // Create zones manager for portfolio content
-    this.zonesManager = new ZonesManager(this.island, this);
-    // Zone landmark buildings are added under THIS scene, not island.mesh, so
-    // the collider traverse (above) never registers them. Push their footprint
-    // colliders explicitly. Radius (1.7) < interactionRange (2.5) so a player
-    // stopped at the wall is still close enough to open the panel/enter.
-    for (const zone of this.zonesManager.getZones()) {
-      this.colliders.push({ position: zone.getPosition(), radius: 1.7 });
-    }
+      // Register trees for the gentle ambient sway in update()
+      this.island.mesh.traverse((obj) => {
+        if (/^tree_\d+$/.test(obj.name)) {
+          this.swayTrees.push({
+            group: obj,
+            baseQuat: obj.quaternion.clone(),
+            phase: Math.random() * Math.PI * 2,
+          });
+        }
+      });
 
-    // Place quest mailboxes (Island.ts owns the town proper)
-    await this.placeAssets();
+      // Ambient life anchored to island sites
+      this.createButterflies();
+      this.createFireflies();
+      this.createChimneySmoke();
+      this.createDustPool();
 
-    // Warm light pools under the lamps (needs both lamp populations placed)
-    this.createLampLightPools();
+      // Solid props: register colliders so the player can't walk through
+      // them. Only TownPlanner props ever registered before — the island's
+      // own houses/trees/cars/stalls were all ghost-walkable. Radii are
+      // footprints, not bounding spheres (tree = trunk, so you can walk
+      // under the canopy). Positions are static — captured post-seating,
+      // and GLB replacements land on the same spots.
+      // Cars are drivable now (not obstacles) — collect them here and DON'T
+      // give them a static collider, so a driven car leaves no ghost wall.
+      const COLLIDER_RADII: Array<[RegExp, number]> = [
+        [/^house_\d+$/, 2.3],
+        [/^building_placeholder_\d+$/, 2.1],
+        [/^tree_\d+$/, 0.45],
+        [/^stall_\d+$/, 1.5],
+        [/^lamp_\d+$/, 0.2],
+        [/^bench_\d+$/, 0.85],
+        [/^construction_\d+$/, 0.8],
+        [/^mailbox_\d+$/, 0.35],
+        [/^npc_placeholder_\d+$/, 0.5],
+        [/^central_statue$/, 0.55],
+        [/^town_fountain$/, 2.3],
+        [/^lighthouse$/, 2.0], // solid tower base — was walk-through
+        [/^pillar_\d+$/, 0.45], // hub lantern pillars — were walk-through
+        [/^gatepost_\d+$/, 0.4], // district entry-gate posts (straddle the avenue)
+      ];
+      this.island.mesh.updateMatrixWorld(true);
+      let colliderCount = 0;
+      this.island.mesh.traverse((obj) => {
+        if (/^bench_\d+$/.test(obj.name)) this.benchGroups.push(obj);
+        if (obj.name === 'ambient_sparkles' || obj.name === 'ambient_dust') {
+          this.ambientGroups.push(obj);
+        }
+        if (/^car_\d+$/.test(obj.name)) {
+          this.parkedCars.push(obj);
+          return;
+        }
+        for (const [re, radius] of COLLIDER_RADII) {
+          if (re.test(obj.name)) {
+            this.colliders.push({
+              position: obj.getWorldPosition(new THREE.Vector3()),
+              radius,
+            });
+            colliderCount++;
+            break;
+          }
+        }
+      });
+      console.log(`🧱 Registered ${colliderCount} island prop colliders`);
 
-    // Scatter low-poly toon props (Blender-exported glb) correctly onto the sphere
-    await this.scatterProps();
+      // Soft contact shadows so props read as sitting ON the ground
+      this.createGroundingShadows();
 
-    // Handle window resize
-    window.addEventListener('resize', () => this.onWindowResize());
+      // Navigation + traversal rewards
+      this.createGuideSparkles();
+      this.createCoins();
+      this.createVehicles();
+      this.createWaterFX();
 
-    // Debug scene state
-    console.log('🏝️ GameScene initialized (spherical island):', {
-      children: this.children.length,
-      island: { radius: this.island.getRadius() },
-      player: { position: this.player.position },
-      camera: { position: this.camera.position },
-      zones: this.zonesManager.getZoneCount(),
-    });
+      // Checkpoint race circuits (land for cars, water for boats/jetskis). Gate
+      // events/HUD forward through GameScene fields so main can wire them before
+      // or after this async init finishes.
+      this.races = new RaceSystem(this, this.island, this.colliders);
+      this.races.onEvent = (e) => this.onRaceEventCb?.(e);
+      this.races.onHud = (s) => this.onRaceHudCb?.(s);
+      this.races.build();
 
-    // Floating identity pins above every NPC
-    this.createNameTags();
-    this.setupNpcActivities();
+      // Create player on island surface with spherical physics
+      this.player = new SimplePlayer();
+      this.player.setPlanet(new THREE.Vector3(0, 0, 0), this.island.getRadius());
+      // Ground the player on the actual displaced terrain, not the ideal sphere
+      this.player.setGroundSampler((outwardDir) => {
+        const sampled = this.island.sampleSurfaceByDirection(outwardDir, 0);
+        return sampled.position.length();
+      });
+      // Water: float/drown physics needs the wavy surface height + a water test
+      this.player.setWaterSampler((outwardDir) => ({
+        surface: this.island.waveHeightAt(outwardDir, this.island.seaTimeUniform.value),
+        isWater: this.island.isOverWater(outwardDir),
+      }));
+      // Drowning: bounce the player back to dry land at the nearest shore
+      this.player.setOnDrown(() => this.respawnFromDrown());
+      // Spawn ON the terrain at the north pole (the ideal-sphere height can be
+      // inside or above a terrain bump, which used to cause a slide at spawn)
+      const spawnDir = new THREE.Vector3(0, 1, 0);
+      const spawnSample = this.island.sampleSurfaceByDirection(spawnDir, 0);
+      const spawnHeight = spawnSample.position.length() + 0.75;
+      // Set playerPosition (internal field) so physics starts at the north pole
+      this.player.setWorldPosition(new THREE.Vector3(0, spawnHeight, 0));
+      this.player.updateWorldMatrix();
+      this.add(this.player);
 
-    // The Fisherman stands at the shore and casts a line
-    this.setupFisherman();
-    // The Baker works his oven at the village bakery
-    this.setupBaker();
+      // Setup lights
+      this.setupLighting();
+
+      // Day/night + weather matched to the visitor's clock and location
+      // (needs the sun, hemisphere light, and sky uniforms from setupLighting)
+      if (this.lights.sun && this.hemiLight && this.skyColorUniforms) {
+        this.envCycle = new EnvironmentCycle(
+          this,
+          this.lights.sun,
+          this.hemiLight,
+          this.skyColorUniforms,
+        );
+        // Share the LIVE horizon Color with the sea's fresnel uniform (by
+        // reference — the cycle lerps it in place), so the water's sky
+        // reflection tracks day/dusk/night for free. Wave 2 added both ends of
+        // this seam but couldn't wire them across file ownership; this is the
+        // one-line connection.
+        this.island.bindSeaSkyColor(this.skyColorUniforms.horizonColor.value);
+      }
+
+      // Create orbit camera (with terrain collision so hills don't block the view)
+      this.orbitCamera = new OrbitCamera(this.camera, this.player);
+      this.orbitCamera.setCollisionMesh(this.island.mesh); // terrain + all props
+
+      // Create zones manager for portfolio content
+      this.zonesManager = new ZonesManager(this.island, this);
+      // Zone landmark buildings are added under THIS scene, not island.mesh, so
+      // the collider traverse (above) never registers them. Push their footprint
+      // colliders explicitly. Radius (1.7) < interactionRange (2.5) so a player
+      // stopped at the wall is still close enough to open the panel/enter.
+      for (const zone of this.zonesManager.getZones()) {
+        this.colliders.push({ position: zone.getPosition(), radius: 1.7 });
+      }
+
+      // Place quest mailboxes (Island.ts owns the town proper)
+      await this.placeAssets();
+
+      // Warm light pools under the lamps (needs both lamp populations placed)
+      this.createLampLightPools();
+
+      // Scatter low-poly toon props (Blender-exported glb) correctly onto the sphere
+      await this.scatterProps();
+
+      // Handle window resize
+      window.addEventListener('resize', () => this.onWindowResize());
+
+      // Debug scene state
+      console.log('🏝️ GameScene initialized (spherical island):', {
+        children: this.children.length,
+        island: { radius: this.island.getRadius() },
+        player: { position: this.player.position },
+        camera: { position: this.camera.position },
+        zones: this.zonesManager.getZoneCount(),
+      });
+
+      // Floating identity pins above every NPC
+      this.createNameTags();
+      this.setupNpcActivities();
+
+      // The Fisherman stands at the shore and casts a line
+      this.setupFisherman();
+      // The Baker works his oven at the village bakery
+      this.setupBaker();
     } finally {
       // Generation done — restore true randomness for runtime/FX.
       restoreRandom();
@@ -756,8 +756,7 @@ export class GameScene extends THREE.Scene {
     // Setup shadow properties (optimized for performance). The shadow map is
     // re-rendered every frame; a 2048² depth pass is a real cost on weaker
     // GPUs, so phones/tablets and low-core machines drop to 1024².
-    const coarse =
-      typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
     const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
     const shadowRes = coarse || lowCore ? 1024 : 2048;
     sunLight.shadow.mapSize.width = shadowRes;
@@ -827,7 +826,11 @@ export class GameScene extends THREE.Scene {
     const planetR = this.island ? this.island.getRadius() : 18;
     for (let i = 0; i < 4; i++) {
       const pivot = new THREE.Object3D();
-      pivot.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
+      pivot.rotation.set(
+        Math.random() * Math.PI,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI,
+      );
       const bird = new THREE.Group();
       // Body — small elongated sphere pointing along travel direction (-Z of pivot spin)
       const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), bodyMat);
@@ -1082,7 +1085,11 @@ export class GameScene extends THREE.Scene {
       for (const t of trees) min = Math.min(min, pos.distanceTo(t) - treeCanopy);
       return min;
     };
-    const faceFor = (dir: THREE.Vector3, normal: THREE.Vector3, pos: THREE.Vector3): THREE.Vector3 => {
+    const faceFor = (
+      dir: THREE.Vector3,
+      normal: THREE.Vector3,
+      pos: THREE.Vector3,
+    ): THREE.Vector3 => {
       const proj = (v: THREE.Vector3) =>
         v.clone().addScaledVector(normal, -v.dot(normal)).normalize();
       const seaward = proj(new THREE.Vector3(0, -1, 0).addScaledVector(dir, dir.y));
@@ -1099,8 +1106,12 @@ export class GameScene extends THREE.Scene {
 
     const golden = Math.PI * (3 - Math.sqrt(5));
     const N = 120;
-    let best: { pos: THREE.Vector3; dir: THREE.Vector3; normal: THREE.Vector3; clear: number } | null =
-      null;
+    let best: {
+      pos: THREE.Vector3;
+      dir: THREE.Vector3;
+      normal: THREE.Vector3;
+      clear: number;
+    } | null = null;
     for (let i = 0; i < N; i++) {
       const arc = searchArc * Math.sqrt((i + 0.5) / N); // area-uniform outward
       const ang = i * golden;
@@ -1185,7 +1196,10 @@ export class GameScene extends THREE.Scene {
       g.add(post);
     }
     for (let i = 0; i < 5; i++) {
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.05, 1.7), i % 2 ? stripe2 : stripe);
+      const panel = new THREE.Mesh(
+        new THREE.BoxGeometry(0.52, 0.05, 1.7),
+        i % 2 ? stripe2 : stripe,
+      );
       panel.position.set(-1.04 + i * 0.52, 2.05 - 0.28, -0.55);
       panel.rotation.x = -0.32;
       panel.castShadow = true;
@@ -1214,7 +1228,11 @@ export class GameScene extends THREE.Scene {
     }
     const sign = new THREE.Mesh(
       new THREE.PlaneGeometry(1.5, 0.56),
-      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        side: THREE.DoubleSide,
+      }),
     );
     sign.position.set(0, 1.75, -1.35);
     sign.rotation.y = Math.PI; // face the beach/water side (front = −Z)
@@ -1434,7 +1452,9 @@ export class GameScene extends THREE.Scene {
       F.line.scale.set(1, len, 1);
       // Dangle the hooked fish just under the bobber while reeling
       if (F.state === 'reel' && F.caught) {
-        F.caught.position.copy(F.rig.localToWorld(bobberLocal.clone())).addScaledVector(F.spot.n, -0.18);
+        F.caught.position
+          .copy(F.rig.localToWorld(bobberLocal.clone()))
+          .addScaledVector(F.spot.n, -0.18);
         this.orientObj(F.caught, F.spot.n, F.spot.seaward);
         F.caught.rotateX(Math.PI / 2 + Math.sin(time * 20) * 0.3); // flapping
       }
@@ -1483,7 +1503,10 @@ export class GameScene extends THREE.Scene {
     const sp2 = Math.min((time - F.t0) / 1.4, 1);
     const slot = F.slots[F.sold.length % F.slots.length];
     if (F.caught) {
-      const hand = F.npc.meshRef.position.clone().addScaledVector(F.stand.n, 1.1).addScaledVector(F.stand.face, 0.3);
+      const hand = F.npc.meshRef.position
+        .clone()
+        .addScaledVector(F.stand.n, 1.1)
+        .addScaledVector(F.stand.face, 0.3);
       F.caught.position.copy(hand).lerp(slot, Math.min(sp2 * 1.3, 1));
       this.orientObj(F.caught, F.stand.n, F.stand.face);
     }
@@ -1546,7 +1569,15 @@ export class GameScene extends THREE.Scene {
     const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f });
     const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
     const brick = new THREE.MeshToonMaterial({ color: 0x9a5140 });
-    const box = (w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number) => {
+    const box = (
+      w: number,
+      h: number,
+      d: number,
+      mat: THREE.Material,
+      x: number,
+      y: number,
+      z: number,
+    ) => {
       const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
       m.position.set(x, y, z);
       m.castShadow = true;
@@ -1555,7 +1586,8 @@ export class GameScene extends THREE.Scene {
     };
     // Counter (front −Z toward customers) on legs
     box(2.4, 0.14, 0.95, wood, 0, 0.92, -0.95);
-    for (const sx of [-1.05, 1.05]) for (const sz of [-1.32, -0.6]) box(0.1, 0.92, 0.1, dark, sx, 0.46, sz);
+    for (const sx of [-1.05, 1.05])
+      for (const sz of [-1.32, -0.6]) box(0.1, 0.92, 0.1, dark, sx, 0.46, sz);
     // Back posts + a warm striped awning
     for (const sx of [-1.15, 1.15]) {
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.1, 6), dark);
@@ -1614,7 +1646,11 @@ export class GameScene extends THREE.Scene {
     }
     const sign = new THREE.Mesh(
       new THREE.PlaneGeometry(1.5, 0.56),
-      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        side: THREE.DoubleSide,
+      }),
     );
     sign.position.set(0, 1.75, -1.35);
     sign.rotation.y = Math.PI;
@@ -1835,7 +1871,7 @@ export class GameScene extends THREE.Scene {
             B.bakery.add(B.pie);
           }
         } else {
-          glow((1 - p) / 0.25 * 0.4);
+          glow(((1 - p) / 0.25) * 0.4);
           if (B.pie) B.pie.position.copy(B.ovenLocal).lerp(slot(), (p - 0.75) / 0.25);
         }
         if (p >= 1) {
@@ -1877,7 +1913,11 @@ export class GameScene extends THREE.Scene {
     for (let i = 0; i < 10; i++) {
       const pivot = new THREE.Object3D();
       // Random orbit plane
-      pivot.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
+      pivot.rotation.set(
+        Math.random() * Math.PI,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI,
+      );
       const cloud = new THREE.Group();
       // Classic cartoon cloud: one big smooth dome + smaller overlapping
       // flanks, bottoms aligned to a flat base, all flattened along the SAME
@@ -1903,7 +1943,11 @@ export class GameScene extends THREE.Scene {
         } else {
           const side = idx % 2 === 1 ? 1 : -1;
           if (idx % 2 === 1) xCursor += r * 0.9;
-          blobGeo.translate(side * (coreR * 0.55 + xCursor * 0.6), r * 0.32, (Math.random() - 0.5) * 0.5);
+          blobGeo.translate(
+            side * (coreR * 0.55 + xCursor * 0.6),
+            r * 0.32,
+            (Math.random() - 0.5) * 0.5,
+          );
         }
         parts.push(blobGeo);
       });
@@ -2079,7 +2123,14 @@ export class GameScene extends THREE.Scene {
       const mesh = new THREE.Mesh(ringGeo, mat);
       mesh.visible = false;
       this.add(mesh);
-      this.waterRings.push({ mesh, mat, t0: -1, life: 1, maxScale: 1, normal: new THREE.Vector3() });
+      this.waterRings.push({
+        mesh,
+        mat,
+        t0: -1,
+        life: 1,
+        maxScale: 1,
+        normal: new THREE.Vector3(),
+      });
     }
     const dropGeo = new THREE.SphereGeometry(0.07, 5, 4);
     for (let i = 0; i < 44; i++) {
@@ -2122,7 +2173,12 @@ export class GameScene extends THREE.Scene {
   }
 
   /** Fling `count` spray droplets from `origin` along `dir` (splash/wake). */
-  private spawnSpray(origin: THREE.Vector3, dir: THREE.Vector3, count: number, speed: number): void {
+  private spawnSpray(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    count: number,
+    speed: number,
+  ): void {
     const time = performance.now() / 1000;
     const up = this._fxScratch.copy(origin).normalize();
     let spawned = 0;
@@ -2313,7 +2369,12 @@ export class GameScene extends THREE.Scene {
   }
 
   // Quest "!" markers floating above NPC quest givers
-  private questMarkers: Array<{ mesh: THREE.Group; npcName: string; base: THREE.Vector3; normal: THREE.Vector3 }> = [];
+  private questMarkers: Array<{
+    mesh: THREE.Group;
+    npcName: string;
+    base: THREE.Vector3;
+    normal: THREE.Vector3;
+  }> = [];
 
   // Floating labels above every NPC: role by default ("🥖 Baker"), swapped to
   // the current activity while working ("🌷 tending"). Canvas/texture retained
@@ -2404,7 +2465,15 @@ export class GameScene extends THREE.Scene {
       sprite.scale.set(1.7, 0.63, 1);
       sprite.renderOrder = 2;
       this.add(sprite);
-      this.nameTags.push({ sprite, target: npc, ctx, tex, emoji: info.emoji, role: info.role, shown: info.role });
+      this.nameTags.push({
+        sprite,
+        target: npc,
+        ctx,
+        tex,
+        emoji: info.emoji,
+        role: info.role,
+        shown: info.role,
+      });
     }
     console.log(`🏷️ ${this.nameTags.length} NPC name pins created`);
   }
@@ -2412,7 +2481,12 @@ export class GameScene extends THREE.Scene {
   /** Draw the identity pill onto a name-tag canvas (redrawable). One centred
    *  line (emoji + role); with `sub` (the current activity), a second smaller
    *  gold line below it — identity stays readable while the badge shows work. */
-  private static drawNamePill(ctx: CanvasRenderingContext2D | null, emoji: string, label: string, sub?: string): void {
+  private static drawNamePill(
+    ctx: CanvasRenderingContext2D | null,
+    emoji: string,
+    label: string,
+    sub?: string,
+  ): void {
     if (!ctx) return;
     ctx.clearRect(0, 0, 256, 96);
     const text = `${emoji} ${label}`;
@@ -2619,7 +2693,8 @@ export class GameScene extends THREE.Scene {
       const sampled = this.island.sampleSurfaceByDirection(dir, 0);
       const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(car.quaternion);
       fwd.addScaledVector(sampled.normal, -fwd.dot(sampled.normal)).normalize();
-      if (fwd.lengthSq() < 1e-6) fwd.copy(new THREE.Vector3(0, 1, 0).addScaledVector(dir, -dir.y)).normalize();
+      if (fwd.lengthSq() < 1e-6)
+        fwd.copy(new THREE.Vector3(0, 1, 0).addScaledVector(dir, -dir.y)).normalize();
       const wheels: THREE.Object3D[] = [];
       car.traverse((o) => {
         if (o.userData && o.userData.isWheel) {
@@ -2684,7 +2759,7 @@ export class GameScene extends THREE.Scene {
   /** Kind of vehicle the local player is currently riding (null if on foot).
    * Broadcast over multiplayer so peers can render the craft under a rider. */
   public getActiveVehicleKind(): 'boat' | 'jetski' | 'car' | null {
-    return this.activeVehicle >= 0 ? this.vehicles[this.activeVehicle]?.kind ?? null : null;
+    return this.activeVehicle >= 0 ? (this.vehicles[this.activeVehicle]?.kind ?? null) : null;
   }
 
   /** Full state of the vehicle the local player drives, for broadcasting: the
@@ -2798,7 +2873,10 @@ export class GameScene extends THREE.Scene {
     // step to the vehicle's side (perpendicular to heading) so we don't land
     // on the hull/roof
     const side = this._fxScratch.crossVectors(v.forward, v.dir).normalize();
-    const dropDir = v.dir.clone().addScaledVector(side, 1.8 / this.island.getRadius()).normalize();
+    const dropDir = v.dir
+      .clone()
+      .addScaledVector(side, 1.8 / this.island.getRadius())
+      .normalize();
     if (v.kind === 'car') {
       const s = this.island.sampleSurfaceByDirection(dropDir, 0);
       this.player.setWorldPosition(dropDir.multiplyScalar(s.position.length() + 0.75));
@@ -2928,7 +3006,7 @@ export class GameScene extends THREE.Scene {
         if (isCar && v.wheels.length) {
           const dirSign = this.vehicleMove.forward < -0.01 ? -1 : 1;
           // wheel radius 0.2 * car scale 1.12 ≈ 0.224 — roll = arc / radius
-          const roll = (moving ? dirSign * speed : 0) * deltaTime / 0.224;
+          const roll = ((moving ? dirSign * speed : 0) * deltaTime) / 0.224;
           const steer = Math.max(-1, Math.min(1, this.vehicleMove.strafe)) * 0.5;
           for (const w of v.wheels) {
             w.rotation.x -= roll;
@@ -2937,10 +3015,7 @@ export class GameScene extends THREE.Scene {
           this._carDustAccum += deltaTime;
           if (moving && this._carDustAccum > 0.1) {
             this._carDustAccum = 0;
-            const rear = v.dir
-              .clone()
-              .multiplyScalar(surfaceR)
-              .addScaledVector(v.forward, -1.5);
+            const rear = v.dir.clone().multiplyScalar(surfaceR).addScaledVector(v.forward, -1.5);
             this.spawnDust(rear, 2);
           }
         }
@@ -3259,7 +3334,12 @@ export class GameScene extends THREE.Scene {
   private async scatterProps(): Promise<void> {
     const GOLDEN = 2.399963; // golden angle for even angular spread
 
-    const placeOnSphere = (obj: THREE.Object3D, angle: number, latitude: number, clearArc = 0.22) => {
+    const placeOnSphere = (
+      obj: THREE.Object3D,
+      angle: number,
+      latitude: number,
+      clearArc = 0.22,
+    ) => {
       const cosLat = Math.cos(latitude);
       let dir = new THREE.Vector3(
         Math.cos(angle) * cosLat,
@@ -3454,7 +3534,11 @@ export class GameScene extends THREE.Scene {
               // orientation block applies it while idle (player-greet wins).
               if (goal.face) {
                 w.faceDir ??= new THREE.Vector3(); // one-time per NPC
-                w.faceActive = NpcActivities.computeFaceDir(goal.face, this._goalScratch, w.faceDir);
+                w.faceActive = NpcActivities.computeFaceDir(
+                  goal.face,
+                  this._goalScratch,
+                  w.faceDir,
+                );
               } else {
                 w.faceActive = false;
               }
@@ -3559,7 +3643,9 @@ export class GameScene extends THREE.Scene {
         // tangent plane (_wanderFwd is free while idle — reuse as scratch).
         // The player-proximity block below still overrides it (greet wins).
         if (!moving && w.faceActive && w.faceDir) {
-          this._wanderFwd.copy(w.faceDir).addScaledVector(this._npcNormal, -w.faceDir.dot(this._npcNormal));
+          this._wanderFwd
+            .copy(w.faceDir)
+            .addScaledVector(this._npcNormal, -w.faceDir.dot(this._npcNormal));
           if (this._wanderFwd.lengthSq() > 1e-6) faceFwd = this._wanderFwd.normalize();
         }
         if (toPlayerDist < GameScene.NPC_FACE_RANGE) {
@@ -3648,16 +3734,16 @@ export class GameScene extends THREE.Scene {
     // the surface, so |cam| ≈ R+5 in play and ≫ that on the fly-in. A hardcoded
     // 45 (tuned at R40) went PERMANENTLY false at R50 — |cam|≈55 — silently
     // hiding ambient life, chimney smoke AND the delivery guide sparkles.
-    const camNear = this.camera ? this.camera.position.length() < this.island.getRadius() + 6 : true;
+    const camNear = this.camera
+      ? this.camera.position.length() < this.island.getRadius() + 6
+      : true;
     for (const g of this.ambientGroups) g.visible = camNear;
 
     // Chimney smoke: puffs loop up the normal, growing and fading
     for (const puff of this.smokePuffs) {
       puff.mesh.visible = camNear;
       const ph = (time * 0.22 + puff.offset) % 1;
-      puff.mesh.position
-        .copy(puff.base)
-        .addScaledVector(puff.normal, 0.1 + ph * 1.1);
+      puff.mesh.position.copy(puff.base).addScaledVector(puff.normal, 0.1 + ph * 1.1);
       puff.mesh.position.x += Math.sin(time * 0.8 + puff.offset * 7) * 0.06 * ph;
       const s = 0.05 + ph * 0.16;
       puff.mesh.scale.set(s, s, s);
@@ -3799,7 +3885,8 @@ export class GameScene extends THREE.Scene {
         .addScaledVector(ff.tanA, Math.sin(t) * 0.5)
         .addScaledVector(ff.tanB, Math.sin(t * 1.7 + 1.3) * 0.5);
       // Blink: each firefly pulses on its own rhythm
-      ff.material.opacity = fireflyGlow * (0.35 + 0.65 * Math.max(0, Math.sin(time * 2.2 + ff.phase * 3)));
+      ff.material.opacity =
+        fireflyGlow * (0.35 + 0.65 * Math.max(0, Math.sin(time * 2.2 + ff.phase * 3)));
     }
 
     // Keep the sky gradient oriented to the camera's local "up" so the
@@ -3816,7 +3903,10 @@ export class GameScene extends THREE.Scene {
         p.mesh.visible = false;
         continue;
       }
-      p.mesh.position.copy(p.origin).addScaledVector(p.dir, t * 1.6).addScaledVector(p.normal, 0.05 + t * 0.15);
+      p.mesh.position
+        .copy(p.origin)
+        .addScaledVector(p.dir, t * 1.6)
+        .addScaledVector(p.normal, 0.05 + t * 0.15);
       const s = 0.05 + t * 0.28;
       p.mesh.scale.set(s, s, s);
       p.mat.opacity = 0.45 * (1 - t / 0.5);
@@ -3831,10 +3921,7 @@ export class GameScene extends THREE.Scene {
         this.wiggles.splice(i, 1);
         continue;
       }
-      this._swayQuat.setFromAxisAngle(
-        GameScene._swayAxis,
-        Math.sin(t * 26) * 0.14 * (1 - t / 0.6),
-      );
+      this._swayQuat.setFromAxisAngle(GameScene._swayAxis, Math.sin(t * 26) * 0.14 * (1 - t / 0.6));
       w.obj.quaternion.copy(w.baseQuat).multiply(this._swayQuat);
     }
 
@@ -3845,9 +3932,7 @@ export class GameScene extends THREE.Scene {
         m.base.copy(owner.meshRef.position);
         m.normal.copy(m.base).normalize();
       }
-      m.mesh.position
-        .copy(m.base)
-        .addScaledVector(m.normal, 2.1 + Math.sin(time * 2.4) * 0.12);
+      m.mesh.position.copy(m.base).addScaledVector(m.normal, 2.1 + Math.sin(time * 2.4) * 0.12);
       m.mesh.rotateOnWorldAxis(m.normal, deltaTime * 1.8);
     }
 
@@ -3866,11 +3951,15 @@ export class GameScene extends THREE.Scene {
       tag.sprite.scale.set(s * 1.7, s * 0.42, 1);
       // Fade: hidden hugging-close, full through mid range, gone past the horizon
       const op =
-        dist < 2.6 ? 0
-        : dist < 6 ? (dist - 2.6) / 3.4
-        : dist < 62 ? 1
-        : dist < 88 ? 1 - (dist - 62) / 26
-        : 0;
+        dist < 2.6
+          ? 0
+          : dist < 6
+            ? (dist - 2.6) / 3.4
+            : dist < 62
+              ? 1
+              : dist < 88
+                ? 1 - (dist - 62) / 26
+                : 0;
       const mat = tag.sprite.material as THREE.SpriteMaterial;
       mat.opacity = op;
       tag.sprite.visible = op > 0.02;
@@ -3880,7 +3969,9 @@ export class GameScene extends THREE.Scene {
     // forest trees, which finish loading after the registration pass)
     if (this.island.pendingColliders.length > 0) {
       this.colliders.push(...this.island.pendingColliders);
-      console.log(`🧱 +${this.island.pendingColliders.length} async prop colliders (total ${this.colliders.length})`);
+      console.log(
+        `🧱 +${this.island.pendingColliders.length} async prop colliders (total ${this.colliders.length})`,
+      );
       this.island.pendingColliders.length = 0;
     }
 
@@ -3986,7 +4077,8 @@ export class GameScene extends THREE.Scene {
         const normal = playerPos.clone().normalize();
         const direction = playerPos.clone().sub(collider.position);
         direction.sub(normal.clone().multiplyScalar(direction.dot(normal)));
-        if (direction.lengthSq() < 1e-6) direction.copy(normal.clone().cross(new THREE.Vector3(0, 1, 0.001)));
+        if (direction.lengthSq() < 1e-6)
+          direction.copy(normal.clone().cross(new THREE.Vector3(0, 1, 0.001)));
         direction.normalize();
         const pushDistance = minDist - dist + 0.01; // Small buffer to prevent re-collision
         playerPos.addScaledVector(direction, pushDistance);
@@ -4015,7 +4107,10 @@ export class GameScene extends THREE.Scene {
     const playerPos = this.player.getWorldPosition();
 
     // Check if player has moved far enough to invalidate cache
-    if (this.cachedNearby && playerPos.distanceTo(this.lastPlayerPos) < this.cacheDistanceThreshold) {
+    if (
+      this.cachedNearby &&
+      playerPos.distanceTo(this.lastPlayerPos) < this.cacheDistanceThreshold
+    ) {
       return this.cachedNearby;
     }
 
@@ -4054,7 +4149,11 @@ export class GameScene extends THREE.Scene {
     for (const npc of this.island.npcTargets) {
       const d = npc.meshRef.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
       if (d < nearestDist) {
-        nearest = { type: 'npc' as const, npcData: { name: npc.name, dialogue: npc.dialogue }, distance: d };
+        nearest = {
+          type: 'npc' as const,
+          npcData: { name: npc.name, dialogue: npc.dialogue },
+          distance: d,
+        };
         nearestDist = d;
       }
     }
@@ -4301,7 +4400,8 @@ export class GameScene extends THREE.Scene {
     }
   }
 
-  private onNPCInteractCallback: ((npcData: { name: string; dialogue: string[] }) => void) | null = null;
+  private onNPCInteractCallback: ((npcData: { name: string; dialogue: string[] }) => void) | null =
+    null;
 
   public setOnNPCInteract(callback: (npcData: { name: string; dialogue: string[] }) => void): void {
     this.onNPCInteractCallback = callback;
@@ -4365,7 +4465,14 @@ export class GameScene extends THREE.Scene {
     const wallMat = new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.92 });
     this.interiorWallMat = wallMat;
     const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6b4a, roughness: 0.85 });
-    const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, ry = 0) => {
+    const add = (
+      geo: THREE.BufferGeometry,
+      mat: THREE.Material,
+      x: number,
+      y: number,
+      z: number,
+      ry = 0,
+    ) => {
       const m = new THREE.Mesh(geo, mat);
       m.position.set(x, y, z);
       m.rotation.y = ry;
@@ -4373,13 +4480,31 @@ export class GameScene extends THREE.Scene {
     };
     add(new THREE.BoxGeometry(8, 0.2, 8), woodMat, 0, 0, 0); // floor
     add(new THREE.BoxGeometry(8, 0.2, 8), wallMat, 0, 4, 0); // ceiling
-    add(new THREE.BoxGeometry(4.6, 0.06, 3.4), new THREE.MeshStandardMaterial({ color: 0xb06a72, roughness: 0.9 }), 0, 0.13, 0.3); // rug
+    add(
+      new THREE.BoxGeometry(4.6, 0.06, 3.4),
+      new THREE.MeshStandardMaterial({ color: 0xb06a72, roughness: 0.9 }),
+      0,
+      0.13,
+      0.3,
+    ); // rug
     add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 0, 2, -4); // back
     add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 0, 2, 4); // front
     add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, -4, 2, 0, Math.PI / 2); // left
     add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 4, 2, 0, Math.PI / 2); // right
-    add(new THREE.BoxGeometry(2.4, 0.9, 0.9), new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.7 }), 0, 0.55, -3.2); // desk
-    add(new THREE.BoxGeometry(0.4, 2.6, 2.2), new THREE.MeshStandardMaterial({ color: 0x7a5638, roughness: 0.8 }), -3.6, 1.4, 0.6); // shelf
+    add(
+      new THREE.BoxGeometry(2.4, 0.9, 0.9),
+      new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.7 }),
+      0,
+      0.55,
+      -3.2,
+    ); // desk
+    add(
+      new THREE.BoxGeometry(0.4, 2.6, 2.2),
+      new THREE.MeshStandardMaterial({ color: 0x7a5638, roughness: 0.8 }),
+      -3.6,
+      1.4,
+      0.6,
+    ); // shelf
     // Three framed posters — a big title on the back wall + a content panel on
     // each side wall — all re-drawn per building on enter (so you SEE the
     // portfolio content inside the building, not just a title).

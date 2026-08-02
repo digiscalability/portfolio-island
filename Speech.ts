@@ -48,7 +48,9 @@ function voiceScore(v: SpeechSynthesisVoice): number {
   return s;
 }
 function rankedEnglish(): SpeechSynthesisVoice[] {
-  return cachedVoices.filter((v) => /^en/i.test(v.lang)).sort((a, b) => voiceScore(b) - voiceScore(a));
+  return cachedVoices
+    .filter((v) => /^en/i.test(v.lang))
+    .sort((a, b) => voiceScore(b) - voiceScore(a));
 }
 // A distinct voice per NPC when the device has several; wraps otherwise.
 function pickVoice(variant: number): SpeechSynthesisVoice | null {
@@ -65,8 +67,12 @@ function pickVoice(variant: number): SpeechSynthesisVoice | null {
 // TTS should keep ("don't", "Abbas—or") rather than mangle into "don t".
 // The class intentionally includes ZWJ (200D) + variation-selector (FE0F) as
 // standalone code points to strip them; that's what the rule flags as "combined".
-// eslint-disable-next-line no-misleading-character-class
-const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
+// (Block-style disable: Prettier wraps this declaration across lines, so a
+// disable-NEXT-LINE comment ends up pointing at the wrong one.)
+/* eslint-disable no-misleading-character-class */
+const EMOJI_RE =
+  /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
+/* eslint-enable no-misleading-character-class */
 export function sanitizeForSpeech(text: string): string {
   return text
     .replace(/\*[^*]*\*/g, ' ') // *adjusts cap and grins* → (silent)
@@ -169,7 +175,10 @@ export function startListening(handlers: SttHandlers): () => void {
   rec.maxAlternatives = 1;
   let finalText = '';
   rec.onresult = (e: unknown) => {
-    const ev = e as { resultIndex: number; results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> };
+    const ev = e as {
+      resultIndex: number;
+      results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }>;
+    };
     let interim = '';
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const r = ev.results[i];

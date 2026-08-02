@@ -60,7 +60,9 @@ export class TownPlanner {
       }
     }
 
-    console.log(`🏘️ Generated town with ${result.mailboxes.length} mailboxes, ${result.lamps.length} lamps`);
+    console.log(
+      `🏘️ Generated town with ${result.mailboxes.length} mailboxes, ${result.lamps.length} lamps`,
+    );
     return result;
   }
 
@@ -71,7 +73,7 @@ export class TownPlanner {
     centerX: number,
     centerZ: number,
     blockSize: number,
-    result: TownPlanResult
+    result: TownPlanResult,
   ): Promise<void> {
     const halfBlock = blockSize / 2;
 
@@ -85,7 +87,7 @@ export class TownPlanner {
 
     for (const pos of housePositions) {
       try {
-        const house = new House(0x8B4513); // Brown houses
+        const house = new House(0x8b4513); // Brown houses
         house.mesh.position.set(pos.x, 0, pos.z);
         this.scene.add(house.mesh);
         result.houses.push(house);
@@ -162,7 +164,11 @@ export class TownPlanner {
     // Glowing bulb — isNightEmissive so EnvironmentCycle dims it by day
     const bulb = new THREE.Mesh(
       new THREE.SphereGeometry(0.15, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0xfff4cc, emissive: 0xffe8a0, emissiveIntensity: 0.8 }),
+      new THREE.MeshStandardMaterial({
+        color: 0xfff4cc,
+        emissive: 0xffe8a0,
+        emissiveIntensity: 0.8,
+      }),
     );
     bulb.position.set(0.6, 3.78, 0);
     bulb.userData.isNightEmissive = true;

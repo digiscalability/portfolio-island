@@ -64,9 +64,7 @@ export class NpcQuestSystem {
         'Thank you, courier. Here — for your trouble.',
         '✅ Quest complete!',
       ],
-      doneDialogue: [
-        'The Storyteller and I are speaking again. You did a good thing.',
-      ],
+      doneDialogue: ['The Storyteller and I are speaking again. You did a good thing.'],
       rewardCoins: 5,
       state: 'available',
       coinBaseline: 0,
@@ -141,8 +139,10 @@ export class NpcQuestSystem {
 
   private save(): void {
     try {
-      const out: Record<string, { state: NpcQuestState; coinBaseline: number; carrying?: boolean }> =
-        {};
+      const out: Record<
+        string,
+        { state: NpcQuestState; coinBaseline: number; carrying?: boolean }
+      > = {};
       for (const q of this.quests)
         out[q.id] = { state: q.state, coinBaseline: q.coinBaseline, carrying: q.carrying };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(out));

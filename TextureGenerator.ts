@@ -56,7 +56,8 @@ export class TextureGenerator {
   // Create simple building facade textures (brick-ish) and matching normal/ao/roughness
   public static createBuildingTextures(w = 512, h = 512) {
     const c = document.createElement('canvas');
-    c.width = w; c.height = h;
+    c.width = w;
+    c.height = h;
     const ctx = c.getContext('2d')!;
     // base plaster/paint
     ctx.fillStyle = '#d9c6b3';
@@ -81,54 +82,68 @@ export class TextureGenerator {
     const normal = this.createNormalMapFromCanvas(c);
 
     // AO as subtle darkening near edges
-    const aoC = document.createElement('canvas'); aoC.width = w; aoC.height = h;
+    const aoC = document.createElement('canvas');
+    aoC.width = w;
+    aoC.height = h;
     const aoc = aoC.getContext('2d')!;
-    aoc.fillStyle = 'rgba(0,0,0,0)'; aoc.fillRect(0,0,w,h);
+    aoc.fillStyle = 'rgba(0,0,0,0)';
+    aoc.fillRect(0, 0, w, h);
     // vignette AO
-    const grad = aoc.createRadialGradient(w/2,h/2,w*0.2,w/2,h/2,w*0.7);
-    grad.addColorStop(0,'rgba(0,0,0,0)');
-    grad.addColorStop(1,'rgba(0,0,0,0.18)');
-    aoc.fillStyle = grad; aoc.fillRect(0,0,w,h);
+    const grad = aoc.createRadialGradient(w / 2, h / 2, w * 0.2, w / 2, h / 2, w * 0.7);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.18)');
+    aoc.fillStyle = grad;
+    aoc.fillRect(0, 0, w, h);
     const ao = new THREE.CanvasTexture(aoC);
-    ao.wrapS = THREE.RepeatWrapping; ao.wrapT = THREE.RepeatWrapping;
+    ao.wrapS = THREE.RepeatWrapping;
+    ao.wrapT = THREE.RepeatWrapping;
 
-    const roughC = document.createElement('canvas'); roughC.width = w; roughC.height = h;
+    const roughC = document.createElement('canvas');
+    roughC.width = w;
+    roughC.height = h;
     const rctx = roughC.getContext('2d')!;
-    rctx.fillStyle = '#b0b0b0'; rctx.fillRect(0,0,w,h);
+    rctx.fillStyle = '#b0b0b0';
+    rctx.fillRect(0, 0, w, h);
     const rough = new THREE.CanvasTexture(roughC);
-    rough.wrapS = THREE.RepeatWrapping; rough.wrapT = THREE.RepeatWrapping;
+    rough.wrapS = THREE.RepeatWrapping;
+    rough.wrapT = THREE.RepeatWrapping;
 
     return { albedo, normal, roughness: rough, ao };
   }
 
   // Create a normal map from a source canvas using a simple sobel-like operator.
   public static createNormalMapFromCanvas(source: HTMLCanvasElement): THREE.CanvasTexture {
-    const w = source.width; const h = source.height;
+    const w = source.width;
+    const h = source.height;
     const sctx = source.getContext('2d')!;
     const src = sctx.getImageData(0, 0, w, h).data;
 
     const nCanvas = document.createElement('canvas');
-    nCanvas.width = w; nCanvas.height = h;
+    nCanvas.width = w;
+    nCanvas.height = h;
     const nctx = nCanvas.getContext('2d')!;
     const nImage = nctx.createImageData(w, h);
 
     const lum = (idx: number) => {
-      const r = src[idx]; const g = src[idx+1]; const b = src[idx+2];
+      const r = src[idx];
+      const g = src[idx + 1];
+      const b = src[idx + 2];
       return 0.2126 * r + 0.7152 * g + 0.0722 * b;
     };
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const idx = (y * w + x) * 4;
-        const left = x > 0 ? lum(((y * w + (x - 1)) * 4)) : lum(idx);
-        const right = x < w - 1 ? lum(((y * w + (x + 1)) * 4)) : lum(idx);
-        const up = y > 0 ? lum((((y - 1) * w + x) * 4)) : lum(idx);
-        const down = y < h - 1 ? lum((((y + 1) * w + x) * 4)) : lum(idx);
+        const left = x > 0 ? lum((y * w + (x - 1)) * 4) : lum(idx);
+        const right = x < w - 1 ? lum((y * w + (x + 1)) * 4) : lum(idx);
+        const up = y > 0 ? lum(((y - 1) * w + x) * 4) : lum(idx);
+        const down = y < h - 1 ? lum(((y + 1) * w + x) * 4) : lum(idx);
 
         const gx = (right - left) / 255;
         const gy = (down - up) / 255;
         const nz = 1.0;
-        const nx = -gx; const ny = -gy;
+        const nx = -gx;
+        const ny = -gy;
         const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
         const nnx = (nx / len) * 0.5 + 0.5;
         const nny = (ny / len) * 0.5 + 0.5;
@@ -141,7 +156,8 @@ export class TextureGenerator {
     }
     nctx.putImageData(nImage, 0, 0);
     const tex = new THREE.CanvasTexture(nCanvas);
-    tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
     return tex;
   }
 }

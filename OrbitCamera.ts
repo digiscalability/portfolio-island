@@ -88,7 +88,8 @@ export class OrbitCamera {
   /** Feed an external motion vector for the chase-cam to trail (riding). */
   public setFollowVelocity(v: THREE.Vector3 | null): void {
     // Reduced motion: keep the chase-cam close to the craft (less swoop/trail)
-    this.externalVelocity = v && a11y.reducedMotion ? this._reducedVel.copy(v).multiplyScalar(0.25) : v;
+    this.externalVelocity =
+      v && a11y.reducedMotion ? this._reducedVel.copy(v).multiplyScalar(0.25) : v;
   }
 
   /** Pull the camera back a little for driving; restore on foot. */
@@ -115,14 +116,11 @@ export class OrbitCamera {
       this.followDir = seed;
     }
     // Parallel transport: re-project onto the current tangent plane
-    this.followDir
-      .sub(surfaceNormal.clone().multiplyScalar(this.followDir.dot(surfaceNormal)));
+    this.followDir.sub(surfaceNormal.clone().multiplyScalar(this.followDir.dot(surfaceNormal)));
     if (this.followDir.lengthSq() < 1e-6) {
       // Degenerate after projection — re-seed
       const seed = new THREE.Vector3(1, 0, 0);
-      this.followDir
-        .copy(seed)
-        .sub(surfaceNormal.clone().multiplyScalar(seed.dot(surfaceNormal)));
+      this.followDir.copy(seed).sub(surfaceNormal.clone().multiplyScalar(seed.dot(surfaceNormal)));
     }
     this.followDir.normalize();
 
@@ -173,9 +171,7 @@ export class OrbitCamera {
     }
 
     // Camera position
-    this.cameraPosition
-      .copy(this.targetPosition)
-      .addScaledVector(cameraDir, effectiveDistance);
+    this.cameraPosition.copy(this.targetPosition).addScaledVector(cameraDir, effectiveDistance);
 
     // Set camera up to match surface normal for correct lookAt()
     this.camera.up.copy(surfaceNormal);

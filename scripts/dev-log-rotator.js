@@ -50,7 +50,10 @@ function startVite() {
     }
 
     const writeStream = fs.createWriteStream(LOG, { flags: 'a' });
-    const pipeStream = (s) => { if (!s) return; s.on('data', (c) => writeStream.write(c)); };
+    const pipeStream = (s) => {
+      if (!s) return;
+      s.on('data', (c) => writeStream.write(c));
+    };
     pipeStream(viteProc.stdout);
     pipeStream(viteProc.stderr);
 
@@ -67,7 +70,9 @@ function startVite() {
     });
 
     process.on('SIGINT', () => {
-      try { viteProc.kill('SIGINT'); } catch (e) {}
+      try {
+        viteProc.kill('SIGINT');
+      } catch (e) {}
       process.exit();
     });
   } catch (e) {

@@ -16,22 +16,12 @@ function writeGltfCube(name) {
   // Minimal glTF JSON referencing a tiny binary buffer with a single cube (we'll inline simple positions)
   // For simplicity we create a JSON glTF with accessor data embedded as base64 image (not recommended for production but fine for placeholders)
   const positions = new Float32Array([
-    -0.5, -0.5,  0.5,
-     0.5, -0.5,  0.5,
-     0.5,  0.5,  0.5,
-    -0.5,  0.5,  0.5,
-    -0.5, -0.5, -0.5,
-     0.5, -0.5, -0.5,
-     0.5,  0.5, -0.5,
-    -0.5,  0.5, -0.5
+    -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5, -0.5, -0.5, -0.5, 0.5, -0.5,
+    -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
   ]);
   const indices = new Uint16Array([
-    0,1,2, 2,3,0,
-    4,5,6, 6,7,4,
-    0,4,7, 7,3,0,
-    1,5,6, 6,2,1,
-    3,2,6, 6,7,3,
-    0,1,5, 5,4,0
+    0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, 0, 4, 7, 7, 3, 0, 1, 5, 6, 6, 2, 1, 3, 2, 6, 6, 7, 3, 0, 1,
+    5, 5, 4, 0,
   ]);
 
   // Create binary buffer: positions followed by indices
@@ -44,22 +34,28 @@ function writeGltfCube(name) {
 
   // Build glTF JSON
   const gltf = {
-    asset: { version: "2.0", generator: "gen-placeholders.js" },
+    asset: { version: '2.0', generator: 'gen-placeholders.js' },
     buffers: [{ uri: `${name}.bin`, byteLength: bin.length }],
     bufferViews: [
       { buffer: 0, byteOffset: 0, byteLength: posBytes.length, target: 34962 },
-      { buffer: 0, byteOffset: posBytes.length, byteLength: idxBytes.length, target: 34963 }
+      { buffer: 0, byteOffset: posBytes.length, byteLength: idxBytes.length, target: 34963 },
     ],
     accessors: [
-      { bufferView: 0, byteOffset: 0, componentType: 5126, count: positions.length / 3, type: "VEC3", min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
-      { bufferView: 1, byteOffset: 0, componentType: 5123, count: indices.length, type: "SCALAR" }
+      {
+        bufferView: 0,
+        byteOffset: 0,
+        componentType: 5126,
+        count: positions.length / 3,
+        type: 'VEC3',
+        min: [-0.5, -0.5, -0.5],
+        max: [0.5, 0.5, 0.5],
+      },
+      { bufferView: 1, byteOffset: 0, componentType: 5123, count: indices.length, type: 'SCALAR' },
     ],
-    meshes: [
-      { primitives: [ { attributes: { POSITION: 0 }, indices: 1 } ] }
-    ],
-    nodes: [ { mesh: 0 } ],
-    scenes: [ { nodes: [0] } ],
-    scene: 0
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
   };
 
   fs.writeFileSync(path.join(outDir, `${name}.gltf`), JSON.stringify(gltf, null, 2));

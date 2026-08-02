@@ -24,11 +24,11 @@
         "$entry": {
           ".write": "auth != null && (newData.child('id').val() === auth.uid || (!newData.exists() && data.child('id').val() === auth.uid))",
           ".validate": "newData.hasChildren(['id', 't'])",
-          "text":  { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "text": { ".validate": "newData.isString() && newData.val().length <= 120" },
           "audio": { ".validate": "newData.isString() && newData.val().length <= 60000" },
-          "dur":   { ".validate": "newData.isNumber()" },
-          "id":    { ".validate": "newData.isString()" },
-          "t":     { ".validate": "newData.isNumber()" },
+          "dur": { ".validate": "newData.isNumber()" },
+          "id": { ".validate": "newData.isString()" },
+          "t": { ".validate": "newData.isNumber()" },
           "$other": { ".validate": false }
         }
       }
@@ -40,10 +40,10 @@
           ".write": "auth != null && (newData.child('id').val() === auth.uid || (!newData.exists() && data.child('id').val() === auth.uid))",
           ".validate": "newData.hasChildren(['id', 'audio', 't'])",
           "audio": { ".validate": "newData.isString() && newData.val().length <= 60000" },
-          "text":  { ".validate": "newData.isString() && newData.val().length <= 120" },
-          "dur":   { ".validate": "newData.isNumber()" },
-          "id":    { ".validate": "newData.isString()" },
-          "t":     { ".validate": "newData.isNumber()" },
+          "text": { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "dur": { ".validate": "newData.isNumber()" },
+          "id": { ".validate": "newData.isString()" },
+          "t": { ".validate": "newData.isNumber()" },
           "$other": { ".validate": false }
         }
       }
@@ -55,9 +55,9 @@
           "$uid": {
             ".write": "auth != null && auth.uid == $uid",
             ".validate": "newData.hasChildren(['name', 'timeMs', 't'])",
-            "name":   { ".validate": "newData.isString() && newData.val().length <= 40" },
+            "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
             "timeMs": { ".validate": "newData.isNumber() && newData.val() > 0" },
-            "t":      { ".validate": "newData.isNumber()" },
+            "t": { ".validate": "newData.isNumber()" },
             "$other": { ".validate": false }
           }
         }
@@ -69,10 +69,10 @@
         "$entry": {
           ".write": "auth != null && (newData.child('id').val() === auth.uid || (!newData.exists() && data.child('id').val() === auth.uid))",
           ".validate": "newData.hasChildren(['id', 'name', 'msg', 't'])",
-          "id":   { ".validate": "newData.isString()" },
+          "id": { ".validate": "newData.isString()" },
           "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
-          "msg":  { ".validate": "newData.isString() && newData.val().length <= 200" },
-          "t":    { ".validate": "newData.isNumber()" },
+          "msg": { ".validate": "newData.isString() && newData.val().length <= 200" },
+          "t": { ".validate": "newData.isNumber()" },
           "$other": { ".validate": false }
         }
       }
@@ -82,12 +82,12 @@
         "$entry": {
           ".write": "auth != null && newData.exists() && newData.child('id').val() === auth.uid",
           ".validate": "newData.hasChildren(['id', 'email', 't'])",
-          "id":      { ".validate": "newData.isString()" },
-          "name":    { ".validate": "newData.isString() && newData.val().length <= 80" },
-          "email":   { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "id": { ".validate": "newData.isString()" },
+          "name": { ".validate": "newData.isString() && newData.val().length <= 80" },
+          "email": { ".validate": "newData.isString() && newData.val().length <= 120" },
           "message": { ".validate": "newData.isString() && newData.val().length <= 1000" },
-          "t":       { ".validate": "newData.isNumber()" },
-          "$other":  { ".validate": false }
+          "t": { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
         }
       }
     },

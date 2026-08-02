@@ -90,9 +90,7 @@
     "webpack:///*": "*"
   },
   "eslint.format.enable": true,
-  "prettier.withNodeModules": true
-  ,
-
+  "prettier.withNodeModules": true,
   // MCP servers (VS Code Copilot Chat)
   // Allow MCP servers and auto-(re)start when configuration changes are detected
   "chat.mcp.access": "all",
@@ -132,7 +130,7 @@
   "typescript.tsserver.watchOptions": {
     "watchFile": "useFsEvents",
     "watchDirectory": "useFsEvents",
-  "fallbackPolling": "dynamicPriorityPolling",
+    "fallbackPolling": "dynamicPriorityPolling",
     "synchronousWatchDirectory": false
   },
 

@@ -23,8 +23,7 @@ class Accessibility {
     }
     try {
       this.reducedMotion =
-        typeof matchMedia !== 'undefined' &&
-        matchMedia('(prefers-reduced-motion: reduce)').matches;
+        typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     } catch {
       this.reducedMotion = false;
     }

@@ -52,8 +52,8 @@ export class DeliverySystem {
         completed: false,
         reward: {
           type: 'message',
-          value: '🏠 Welcome home! You\'ve completed your first deliveries.'
-        }
+          value: "🏠 Welcome home! You've completed your first deliveries.",
+        },
       },
       {
         id: 'explorer_quest',
@@ -63,8 +63,8 @@ export class DeliverySystem {
         completed: false,
         reward: {
           type: 'message',
-          value: '🗺️ You know this island like the back of your hand!'
-        }
+          value: '🗺️ You know this island like the back of your hand!',
+        },
       },
       {
         id: 'community_quest',
@@ -74,8 +74,8 @@ export class DeliverySystem {
         completed: false,
         reward: {
           type: 'message',
-          value: '🤝 The village owes you one. You\'re officially a local!'
-        }
+          value: "🤝 The village owes you one. You're officially a local!",
+        },
       },
       {
         id: 'secret_quest',
@@ -85,9 +85,9 @@ export class DeliverySystem {
         completed: false,
         reward: {
           type: 'message',
-          value: '✨ You\'ve delivered everything there is. The island is complete.'
-        }
-      }
+          value: "✨ You've delivered everything there is. The island is complete.",
+        },
+      },
     ];
 
     // Define deliveries with dependencies
@@ -98,7 +98,7 @@ export class DeliverySystem {
         message: 'Welcome package for new resident!',
         completed: false,
         reward: '🏠 Welcome to the island!',
-        questId: 'welcome_quest'
+        questId: 'welcome_quest',
       },
       {
         id: 'welcome_2',
@@ -107,7 +107,7 @@ export class DeliverySystem {
         completed: false,
         reward: '📦 Supplies received!',
         questId: 'welcome_quest',
-        requiredDeliveries: ['welcome_1']
+        requiredDeliveries: ['welcome_1'],
       },
       {
         id: 'welcome_3',
@@ -116,7 +116,7 @@ export class DeliverySystem {
         completed: false,
         reward: '🎁 Special delivery!',
         questId: 'welcome_quest',
-        requiredDeliveries: ['welcome_2']
+        requiredDeliveries: ['welcome_2'],
       },
       {
         id: 'explore_1',
@@ -125,7 +125,7 @@ export class DeliverySystem {
         completed: false,
         reward: '🛒 Groceries delivered!',
         questId: 'explorer_quest',
-        requiredDeliveries: ['welcome_3']
+        requiredDeliveries: ['welcome_3'],
       },
       {
         id: 'explore_2',
@@ -134,7 +134,7 @@ export class DeliverySystem {
         completed: false,
         reward: '📄 Documents delivered!',
         questId: 'explorer_quest',
-        requiredDeliveries: ['explore_1']
+        requiredDeliveries: ['explore_1'],
       },
       {
         id: 'community_1',
@@ -143,7 +143,7 @@ export class DeliverySystem {
         completed: false,
         reward: '🍲 The elder sends thanks!',
         questId: 'community_quest',
-        requiredDeliveries: ['explore_2']
+        requiredDeliveries: ['explore_2'],
       },
       {
         id: 'community_2',
@@ -152,7 +152,7 @@ export class DeliverySystem {
         completed: false,
         reward: '📖 Story unlocked!',
         questId: 'community_quest',
-        requiredDeliveries: ['community_1']
+        requiredDeliveries: ['community_1'],
       },
       {
         id: 'community_3',
@@ -161,7 +161,7 @@ export class DeliverySystem {
         completed: false,
         reward: '💐 Beautiful!',
         questId: 'community_quest',
-        requiredDeliveries: ['community_2']
+        requiredDeliveries: ['community_2'],
       },
       {
         id: 'secret_1',
@@ -170,7 +170,7 @@ export class DeliverySystem {
         completed: false,
         reward: '🔮 Curious...',
         questId: 'secret_quest',
-        requiredDeliveries: ['community_3']
+        requiredDeliveries: ['community_3'],
       },
       {
         id: 'secret_2',
@@ -179,8 +179,8 @@ export class DeliverySystem {
         completed: false,
         reward: '🌟 Congratulations, master courier!',
         questId: 'secret_quest',
-        requiredDeliveries: ['secret_1']
-      }
+        requiredDeliveries: ['secret_1'],
+      },
     ];
 
     this.deliveries = allDeliveries;
@@ -196,9 +196,10 @@ export class DeliverySystem {
       if (delivery.completed) continue;
 
       // Check if all required deliveries are completed
-      const requirementsMet = !delivery.requiredDeliveries ||
-        delivery.requiredDeliveries.every(reqId =>
-          this.completedDeliveries.some(d => d.id === reqId)
+      const requirementsMet =
+        !delivery.requiredDeliveries ||
+        delivery.requiredDeliveries.every((reqId) =>
+          this.completedDeliveries.some((d) => d.id === reqId),
         );
 
       if (requirementsMet) {
@@ -245,7 +246,7 @@ export class DeliverySystem {
    * Returns true if a delivery was collected.
    */
   public collectFromMailbox(mailbox: Mailbox): boolean {
-    const delivery = this.activeDeliveries.find(d => d.destination === mailbox);
+    const delivery = this.activeDeliveries.find((d) => d.destination === mailbox);
     if (!delivery) return false;
     this.completeDelivery(delivery);
     return true;
@@ -288,12 +289,12 @@ export class DeliverySystem {
   private checkQuestCompletion(completedDelivery: Delivery): void {
     if (!completedDelivery.questId) return;
 
-    const quest = this.quests.find(q => q.id === completedDelivery.questId);
+    const quest = this.quests.find((q) => q.id === completedDelivery.questId);
     if (!quest || quest.completed) return;
 
     // Check if all deliveries in this quest are completed
-    const questCompleted = quest.deliveries.every(deliveryId =>
-      this.completedDeliveries.some(d => d.id === deliveryId)
+    const questCompleted = quest.deliveries.every((deliveryId) =>
+      this.completedDeliveries.some((d) => d.id === deliveryId),
     );
 
     if (questCompleted) {
@@ -320,11 +321,11 @@ export class DeliverySystem {
   }
 
   public getActiveQuests(): Quest[] {
-    return this.quests.filter(q => !q.completed);
+    return this.quests.filter((q) => !q.completed);
   }
 
   public getCompletedQuests(): Quest[] {
-    return this.quests.filter(q => q.completed);
+    return this.quests.filter((q) => q.completed);
   }
 
   public setOnQuestComplete(callback: (quest: Quest) => void): void {
@@ -378,4 +379,3 @@ export class DeliverySystem {
     this.updateAvailableDeliveries();
   }
 }
-
