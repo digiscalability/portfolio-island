@@ -125,7 +125,7 @@ export function composeAwareGreeting(opts: {
   return `${greet} — ${opener}.${eventTag}`;
 }
 
-export async function askNpc(npcName: string, message: string): Promise<NpcReply> {
+export async function askNpc(npcName: string, message: string, opening = false): Promise<NpcReply> {
   const npcId = AI_NPCS[npcName];
   if (!npcId) return { reply: null, fallback: true, reason: 'not-ai' };
   const text = message.trim().slice(0, 300);
@@ -137,11 +137,13 @@ export async function askNpc(npcName: string, message: string): Promise<NpcReply
     ]);
     const app = await getFirebaseApp();
     const functions = fns.getFunctions(app, 'us-central1');
-    const call = fns.httpsCallable<{ npcId: string; message: string }, NpcReply>(
+    const call = fns.httpsCallable<{ npcId: string; message: string; opening?: boolean }, NpcReply>(
       functions,
       'npcChat',
     );
-    const res = await call({ npcId, message: text });
+    const res = await call(
+      opening ? { npcId, message: text, opening: true } : { npcId, message: text },
+    );
     const d = res.data;
     if (d && typeof d.fallback === 'boolean') return d;
     return { reply: null, fallback: true, reason: 'bad-shape' };
@@ -150,4 +152,14 @@ export async function askNpc(npcName: string, message: string): Promise<NpcReply
     // all degrade to canned lines. The NPC never appears broken.
     return { reply: null, fallback: true, reason: 'client-error' };
   }
+}
+
+/**
+ * Background deepening of the chat opening: the panel opens INSTANTLY with the
+ * composed aware greeting, and this asks the server persona to continue it
+ * with a fully-generated line. Fallback/failure resolves silently — the
+ * composed line already stands on its own.
+ */
+export async function askNpcOpening(npcName: string, composedGreeting: string): Promise<NpcReply> {
+  return askNpc(npcName, composedGreeting, true);
 }

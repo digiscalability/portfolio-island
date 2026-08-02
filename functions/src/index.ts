@@ -329,15 +329,25 @@ export const npcChat = onCall(
     // NOT rate-limit per-uid — anonymous uids are free to re-mint. We gate on IP.
     if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
 
-    const data = (request.data ?? {}) as { npcId?: unknown; message?: unknown };
+    const data = (request.data ?? {}) as { npcId?: unknown; message?: unknown; opening?: unknown };
     const npcId = typeof data.npcId === 'string' ? data.npcId : '';
     const persona = PERSONAS[npcId];
     if (!persona) throw new HttpsError('invalid-argument', 'Unknown character.');
 
     // Input guard: clamp length + reject offensive input outright.
-    const message = String(data.message ?? '').replace(/\s+/g, ' ').trim().slice(0, NPC_MSG_MAX_CHARS);
-    if (!message) throw new HttpsError('invalid-argument', 'Say something.');
-    if (containsSlur(message)) return { reply: null, fallback: true, reason: 'input' };
+    const rawMessage = String(data.message ?? '').replace(/\s+/g, ' ').trim().slice(0, NPC_MSG_MAX_CHARS);
+    if (!rawMessage) throw new HttpsError('invalid-argument', 'Say something.');
+    if (containsSlur(rawMessage)) return { reply: null, fallback: true, reason: 'input' };
+
+    // Opening mode: the chat just opened with the client's pre-authored aware
+    // greeting; generate the NPC's natural CONTINUATION of it (the instant
+    // composed line deepens into a fully-generated one). The greeting rides in
+    // the USER turn exactly like any visitor text — same data-not-instructions
+    // fencing, same limits — so this widens no injection surface.
+    const isOpening = data.opening === true;
+    const message = isOpening
+      ? `(You just greeted a traveller who walked up, saying: "${rawMessage}". Continue naturally in one or two short sentences — in character, aware of what you're doing today — and invite them to chat. Do not repeat the greeting.)`
+      : rawMessage;
 
     const db = admin.database();
     const now = Date.now();

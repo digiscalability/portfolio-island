@@ -9,7 +9,7 @@ import { DISTRICTS } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
 import { Multiplayer } from './Multiplayer';
-import { askNpc, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
+import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, type PassportZone } from './Passport';
 import { loadProfile, saveProfile } from './profileSync';
@@ -413,6 +413,15 @@ class SimpleApp {
             },
             voiceProfileFor(npcData.name),
           );
+          // Deepen the opening in the background: the composed line shows
+          // instantly; when the persona's generated continuation arrives the
+          // NPC simply keeps talking. Failures resolve silently — the
+          // composed opening already stands on its own.
+          void askNpcOpening(npcData.name, aware).then((res) => {
+            if (res.reply && !res.fallback) {
+              this.ui.appendNpcChatLine(npcData.name, res.reply);
+            }
+          });
           return;
         }
         // Non-AI, non-quest NPC → canned dialogue, led by a living-world mood line.

@@ -4011,10 +4011,25 @@ export class SimpleUI {
     }
     this.overlay.appendChild(panel);
     this.npcChatDiv = panel;
+    // Expose this panel's NPC-line appender so the app can deepen the opening
+    // in the background (composed greeting → generated continuation).
+    this.npcChatAppend = { name, npcLine };
     window.setTimeout(() => input.focus(), 50);
   }
 
+  private npcChatAppend: { name: string; npcLine: (text: string) => void } | null = null;
+
+  /** Append an NPC-side line to the OPEN chat panel for `name` (typewriter +
+   *  voice, same as a reply). No-ops if the panel closed or switched NPCs —
+   *  a late background continuation must never resurrect a dismissed chat. */
+  public appendNpcChatLine(name: string, text: string): void {
+    if (this.npcChatDiv && this.npcChatAppend?.name === name) {
+      this.npcChatAppend.npcLine(text);
+    }
+  }
+
   public closeNpcChat(): void {
+    this.npcChatAppend = null;
     if (this.npcTypeTimer) {
       clearTimeout(this.npcTypeTimer);
       this.npcTypeTimer = 0;
