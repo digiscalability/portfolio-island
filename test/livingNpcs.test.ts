@@ -86,3 +86,20 @@ describe('NPC activity ids stay in lockstep', () => {
     expect(new Set(clientIds)).toEqual(new Set(serverIds));
   });
 });
+
+describe('ElevenLabs voice cast stays in lockstep', () => {
+  // The VOICES map in tts.ts is a third copy of the persona id set — a renamed
+  // persona would silently drop to DEFAULT_VOICE with no signal.
+  const plannerIds = arrayStringsAfter(read('functions/src/npcPlanner.ts'), 'PERSONA_IDS');
+  const ttsSrc = read('functions/src/tts.ts');
+  const voicesStart = ttsSrc.indexOf('const VOICES');
+  const voicesEnd = ttsSrc.indexOf('};', voicesStart);
+  const voiceIds = [...ttsSrc.slice(voicesStart, voicesEnd).matchAll(/^ {2}([a-z_]+): '/gm)].map(
+    (m) => m[1],
+  );
+
+  test('every persona has a cast voice', () => {
+    expect(voiceIds.length).toBeGreaterThan(10);
+    expect(new Set(voiceIds)).toEqual(new Set(plannerIds));
+  });
+});

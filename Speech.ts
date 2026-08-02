@@ -1,13 +1,13 @@
-// Speech.ts — free, on-device VOICE for the NPCs, both directions:
-//   • TTS (SpeechSynthesis): NPCs speak their replies aloud.
+// Speech.ts — VOICE for the NPCs, both directions:
+//   • TTS: NPCs speak their replies aloud. CLOUD-FIRST for AI chat replies —
+//     NpcChat offers ElevenLabs audio (fetched via the capped npcVoice Cloud
+//     Function) into a text-keyed registry here, and speak() plays it when the
+//     exact same text is spoken. Everything else (greet bubbles, canned lines,
+//     any cloud failure/cap/timeout) uses the free on-device SpeechSynthesis.
 //   • STT (SpeechRecognition): the visitor can talk to NPCs with their mic.
-// Zero cost, no key, no server. Voices are system-provided (quality varies by
-// device) but we rank for the best available + give each NPC a distinct one.
-//
-// A premium cloud voice (e.g. ElevenLabs) would be a SEPARATE, costed add-on
-// behind the same server-proxy + spend-cap pattern as the NPC brain — dynamic
-// per-reply cloud TTS on anonymous public traffic is a denial-of-wallet risk,
-// so it is deliberately not the default.
+// The registry design means the UI plumbing never changed: SimpleUI still just
+// calls speak(text, ...) — whether that line gets a premium voice is decided
+// here, and the browser voice remains the permanent, free fallback.
 
 // ── shared ──────────────────────────────────────────────────────────────────
 function ttsSupported(): boolean {
@@ -107,6 +107,8 @@ export function setSpeechEnabled(on: boolean): void {
   if (!on) cancelSpeech();
 }
 export function cancelSpeech(): void {
+  speakGen++; // invalidate any playCloud still awaiting its fetch
+  stopCloudAudio();
   if (ttsSupported()) {
     try {
       window.speechSynthesis.cancel();
@@ -116,14 +118,106 @@ export function cancelSpeech(): void {
   }
 }
 
-/** Speak a line in an NPC's voice (variant picks the voice; rate/pitch shape it).
+// ── TTS: cloud voice (ElevenLabs via the npcVoice Cloud Function) ────────────
+// NpcChat drops { exact reply text → pending base64-MP3 } here the moment a
+// reply arrives (the fetch runs while the typewriter animates), and speak()
+// consumes it by text match. One-shot entries, tiny bound, stale ones evicted —
+// a missed match just means the browser voice speaks, never a stuck line.
+const cloudOffers = new Map<string, { p: Promise<string | null>; t: number }>();
+const CLOUD_OFFER_TTL_MS = 30_000;
+const CLOUD_WAIT_MS = 4_000; // max delay before giving up and speaking locally
+let cloudAudioEl: HTMLAudioElement | null = null;
+// Generation counter: every new spoken line (and every cancel/mute) bumps it,
+// and a playCloud that awoke from its fetch only proceeds if it is STILL the
+// newest line. Without this, a slow synth resolves after the panel closed
+// (ghost voice) or after a newer line started (kills it, plays the older one).
+let speakGen = 0;
+
+/** Offer cloud audio for an upcoming spoken line (keyed by its EXACT text). */
+export function offerCloudVoice(text: string, audio: Promise<string | null>): void {
+  const now = Date.now();
+  for (const [k, v] of cloudOffers) if (now - v.t > CLOUD_OFFER_TTL_MS) cloudOffers.delete(k);
+  cloudOffers.delete(text); // re-offer of the same text moves to the back
+  while (cloudOffers.size >= 4) {
+    const oldest = cloudOffers.keys().next().value;
+    if (oldest === undefined) break;
+    cloudOffers.delete(oldest);
+  }
+  cloudOffers.set(text, { p: audio, t: now });
+  audio.catch(() => {}); // never surface an unhandled rejection
+}
+
+async function playCloud(
+  offer: Promise<string | null>,
+  text: string,
+  rate: number,
+  pitch: number,
+  variant: number,
+  gen: number,
+): Promise<void> {
+  let b64: string | null = null;
+  try {
+    b64 = await Promise.race([
+      offer,
+      new Promise<null>((res) => setTimeout(() => res(null), CLOUD_WAIT_MS)),
+    ]);
+  } catch {
+    b64 = null;
+  }
+  // Muted, cancelled, or superseded by a newer line while we waited — drop it.
+  if (!enabled || gen !== speakGen) return;
+  if (b64) {
+    try {
+      stopCloudAudio();
+      if (ttsSupported()) window.speechSynthesis.cancel(); // never overlap voices
+      const a = new Audio(`data:audio/mpeg;base64,${b64}`);
+      cloudAudioEl = a;
+      a.addEventListener('ended', () => {
+        if (cloudAudioEl === a) cloudAudioEl = null;
+      });
+      await a.play();
+      return;
+    } catch {
+      /* autoplay/decode failure → browser voice below */
+    }
+  }
+  if (gen === speakGen) speakLocal(text, rate, pitch, variant);
+}
+
+function stopCloudAudio(): void {
+  if (!cloudAudioEl) return;
+  try {
+    cloudAudioEl.pause();
+  } catch {
+    /* ignore */
+  }
+  cloudAudioEl = null;
+}
+
+/** Speak a line in an NPC's voice. If cloud audio was offered for this exact
+ *  text (AI chat replies), that premium voice plays — with the on-device voice
+ *  as the fallback for timeouts/caps/failures. Everything else speaks locally.
  *  Reads only real words — stage directions + emoji are stripped. No-op if muted. */
 export function speak(text: string, rate = 1, pitch = 1, variant = 0): void {
+  if (!enabled) return;
+  const gen = ++speakGen; // this is now the newest line; stale fetches stand down
+  const offer = cloudOffers.get(text);
+  if (offer) {
+    cloudOffers.delete(text); // one-shot
+    void playCloud(offer.p, text, rate, pitch, variant, gen);
+    return;
+  }
+  speakLocal(text, rate, pitch, variant);
+}
+
+function speakLocal(text: string, rate = 1, pitch = 1, variant = 0): void {
   if (!enabled || !ttsSupported()) return;
   const clean = sanitizeForSpeech(text);
   if (!clean) return;
   try {
-    window.speechSynthesis.cancel(); // never overlap two NPC lines
+    // Never overlap two NPC lines — including a still-playing cloud MP3.
+    stopCloudAudio();
+    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(clean.slice(0, 400));
     const v = pickVoice(variant);
     if (v) u.voice = v;

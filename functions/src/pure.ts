@@ -19,6 +19,23 @@ export function ipKey(raw: string | null | undefined): string {
 }
 
 /**
+ * Real client IP behind Google's serverless front end: the LAST
+ * X-Forwarded-For entry is APPENDED by Google and cannot be client-forged —
+ * everything leftward is attacker-suppliable, and Express's req.ip (with the
+ * framework's trust-proxy setting) returns the LEFTMOST. Rate-limit buckets
+ * keyed on req.ip are therefore attacker-chosen; keyed on this, they're real.
+ * Falls back to the socket-derived address when the header is absent.
+ */
+export function lastForwardedIp(xff: unknown, fallback: string | null | undefined): string {
+  const raw = typeof xff === 'string' ? xff : Array.isArray(xff) ? xff.join(',') : '';
+  const parts = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : fallback || 'noip';
+}
+
+/**
  * Fixed-window per-IP rate counter: the next `{c, t}` node to store. `t` is
  * the WINDOW START (kept while within the window), so a steady burst can't
  * slide the window forward and stay under the limit forever.

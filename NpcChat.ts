@@ -5,10 +5,14 @@
 // caller: any failure (offline, App Check missing, rate/cap tripped, moderation)
 // resolves to { fallback: true } and the NPC gracefully drops to canned dialogue.
 
+import { offerCloudVoice } from './Speech';
+
 export interface NpcReply {
   reply: string | null;
   fallback: boolean;
   reason?: string;
+  /** Opaque server-minted id for fetching the ElevenLabs audio of `reply`. */
+  voiceKey?: string;
 }
 
 /** Per-NPC spoken-voice character (browser SpeechSynthesis). `variant` picks a
@@ -145,12 +149,43 @@ export async function askNpc(npcName: string, message: string, opening = false):
       opening ? { npcId, message: text, opening: true } : { npcId, message: text },
     );
     const d = res.data;
-    if (d && typeof d.fallback === 'boolean') return d;
+    if (d && typeof d.fallback === 'boolean') {
+      // Cloud voice: start fetching the ElevenLabs audio NOW (it synthesizes
+      // while the typewriter animates) and offer it to Speech keyed by the
+      // exact reply text — speak() will play it instead of the browser voice.
+      // Any failure quietly resolves null and the on-device voice takes over.
+      if (!d.fallback && d.reply && typeof d.voiceKey === 'string') {
+        offerCloudVoice(d.reply, fetchNpcVoice(d.voiceKey));
+      }
+      return d;
+    }
     return { reply: null, fallback: true, reason: 'bad-shape' };
   } catch {
     // Offline, App Check not configured yet, function not deployed, timeout —
     // all degrade to canned lines. The NPC never appears broken.
     return { reply: null, fallback: true, reason: 'client-error' };
+  }
+}
+
+/** Fetch the ElevenLabs audio (base64 MP3) for a reply id. Never throws —
+ *  every failure (cap, rate, expiry, offline) resolves to null so the caller
+ *  falls back to the free on-device voice. */
+async function fetchNpcVoice(voiceKey: string): Promise<string | null> {
+  try {
+    const [{ getFirebaseApp }, fns] = await Promise.all([
+      import('./firebaseClient'),
+      import('firebase/functions'),
+    ]);
+    const app = await getFirebaseApp();
+    const functions = fns.getFunctions(app, 'us-central1');
+    const call = fns.httpsCallable<{ id: string }, { audio: string | null; fallback: boolean }>(
+      functions,
+      'npcVoice',
+    );
+    const res = await call({ id: voiceKey });
+    return res.data && typeof res.data.audio === 'string' ? res.data.audio : null;
+  } catch {
+    return null;
   }
 }
 

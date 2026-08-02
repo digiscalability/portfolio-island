@@ -16,6 +16,9 @@
  *   onLeadCreated → an Eventarc RTDB trigger + a Secret Manager grant); do it in
  *   a supervised deploy. onLeadCreated needs its SMTP_PASSWORD secret + .env
  *   params to exist first (see below), or the deploy fails/blocks.
+ *   Likewise ELEVENLABS_API_KEY (declared in tts.ts): defineSecret resolves at
+ *   codebase discovery, so that secret must exist in Secret Manager before ANY
+ *   functions deploy succeeds — same gotcha as GITHUB_TOKEN.
  *   firebase deploy --only functions --account digiscalability@gmail.com
  */
 
@@ -23,12 +26,14 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { onValueCreated } from 'firebase-functions/v2/database';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { defineSecret, defineString } from 'firebase-functions/params';
+import { randomBytes } from 'node:crypto';
 import * as admin from 'firebase-admin';
 import * as nodemailer from 'nodemailer';
 import Anthropic from '@anthropic-ai/sdk';
 import { containsSlur, scrubReply } from './moderation';
 import { MONTHLY_TOKEN_CAP, IP_MAX_PER_WINDOW } from './constants';
-import { seededPick, ipKey, nextIpWindow, pruneSelect } from './pure';
+import { TTS_QUEUE_TTL_MS, TTS_CACHE_TTL_MS } from './tts';
+import { seededPick, ipKey, nextIpWindow, pruneSelect, lastForwardedIp } from './pure';
 
 admin.initializeApp();
 
@@ -36,6 +41,8 @@ admin.initializeApp();
 // modules; re-export so the Firebase functions loader discovers them here.
 export { planner } from './npcPlanner';
 export { analyst } from './analyst';
+// ElevenLabs cloud voice for chat replies (id-gated, capped, cached).
+export { npcVoice } from './tts';
 
 const STALE_PRESENCE_MS = 2 * 60 * 1000; // 2 min without a heartbeat ⇒ dead client
 const STALE_EPHEMERAL_MS = 60 * 1000; // chat/voice: client TTL is 12s, so 60s is safe
@@ -64,7 +71,9 @@ export const janitor = onSchedule(
   async () => {
     const db = admin.database();
     const now = Date.now();
-    const [presence, chat, voice, rate, stats] = await Promise.all([
+    // allSettled, not all: one oversized/failed node must not abort every
+    // other prune (a wedged janitor never self-heals).
+    const settled = await Promise.allSettled([
       prune(db, 'presence/island', now, STALE_PRESENCE_MS),
       prune(db, 'chat/island', now, STALE_EPHEMERAL_MS),
       prune(db, 'voice/island', now, STALE_EPHEMERAL_MS),
@@ -74,7 +83,33 @@ export const janitor = onSchedule(
       // stats/daily accretes one analyst snapshot per day forever; only
       // yesterday's is ever read. Keep ~90 days (entries carry `t`).
       prune(db, 'stats/daily', now, 90 * 24 * 60 * 60 * 1000),
+      // ElevenLabs voice nodes: short-lived reply ids + per-IP windows.
+      prune(db, 'ttsQueue', now, TTS_QUEUE_TTL_MS),
+      prune(db, 'ttsRate', now, 24 * 60 * 60 * 1000),
+      prune(db, 'ttsFetch', now, 24 * 60 * 60 * 1000),
+      // ttsCache holds base64 MP3s — NEVER download it wholesale. The
+      // ttsCacheAt index mirrors each entry's timestamp; read that (a few KB),
+      // then delete stale audio + index in one multi-path update.
+      (async () => {
+        const idx = (await db.ref('ttsCacheAt').get()).val() as Record<string, number> | null;
+        if (!idx) return 0;
+        const updates: Record<string, null> = {};
+        for (const [k, t] of Object.entries(idx)) {
+          if (typeof t !== 'number' || now - t > TTS_CACHE_TTL_MS) {
+            updates[`ttsCache/${k}`] = null;
+            updates[`ttsCacheAt/${k}`] = null;
+          }
+        }
+        if (Object.keys(updates).length) await db.ref().update(updates);
+        return Object.keys(updates).length / 2;
+      })(),
     ]);
+    const counts = settled.map((s, i) => {
+      if (s.status === 'fulfilled') return s.value;
+      console.error('ALERT janitor-prune-failed', { index: i, msg: String(s.reason) });
+      return -1;
+    });
+    const [presence, chat, voice, rate, stats, ttsQ, ttsR, ttsF, ttsC] = counts;
     // stats/leadEmailRate: hour-keyed throttle counters — drop all but the
     // current hour (they carry no `t`, so the generic prune() can't see them).
     const hourKey = new Date().toISOString().slice(0, 13);
@@ -84,7 +119,9 @@ export const janitor = onSchedule(
       for (const k of Object.keys(rateVal)) if (k !== hourKey) rm[k] = null;
       if (Object.keys(rm).length) await db.ref('stats/leadEmailRate').update(rm);
     }
-    console.log(`janitor pruned presence=${presence} chat=${chat} voice=${voice} aiRate=${rate} statsDaily=${stats}`);
+    console.log(
+      `janitor pruned presence=${presence} chat=${chat} voice=${voice} aiRate=${rate} statsDaily=${stats} ttsQueue=${ttsQ} ttsRate=${ttsR} ttsFetch=${ttsF} ttsCache=${ttsC}`,
+    );
   },
 );
 
@@ -312,7 +349,9 @@ export const npcChat = onCall(
     timeoutSeconds: 30,
     memory: '256MiB',
   },
-  async (request): Promise<{ reply: string | null; fallback: boolean; reason?: string }> => {
+  async (
+    request,
+  ): Promise<{ reply: string | null; fallback: boolean; reason?: string; voiceKey?: string }> => {
     // Auth: anonymous is fine (every visitor has a uid), but we deliberately do
     // NOT rate-limit per-uid — anonymous uids are free to re-mint. We gate on IP.
     if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
@@ -341,12 +380,22 @@ export const npcChat = onCall(
     const now = Date.now();
 
     // Per-IP burst limit (aiRate/* is unlisted in the rules ⇒ Admin-SDK-only).
-    const ip = ipKey(request.rawRequest.ip);
-    const ipRef = db.ref(`aiRate/${ip}`);
-    const prev = (await ipRef.get()).val() as { c?: number; t?: number } | null;
-    const next = nextIpWindow(prev, now, NPC_IP_WINDOW_MS);
-    await ipRef.set(next).catch(() => {});
-    if (next.c > NPC_IP_MAX_PER_WINDOW) return { reply: null, fallback: true, reason: 'rate' };
+    // Keyed on the unforgeable last-XFF address (req.ip returns the leftmost,
+    // attacker-suppliable entry) and counted atomically — the old get→set
+    // pattern let a parallel burst count as one call.
+    const ip = ipKey(
+      lastForwardedIp(request.rawRequest.headers['x-forwarded-for'], request.rawRequest.ip),
+    );
+    const rateTx = await db
+      .ref(`aiRate/${ip}`)
+      .transaction((prev) =>
+        nextIpWindow(prev as { c?: number; t?: number } | null, now, NPC_IP_WINDOW_MS),
+      )
+      .catch(() => null);
+    const rateCount = (rateTx?.snapshot?.val() as { c?: number } | null)?.c ?? 0;
+    if (!rateTx?.committed || rateCount > NPC_IP_MAX_PER_WINDOW) {
+      return { reply: null, fallback: true, reason: 'rate' };
+    }
 
     // Hard monthly spend cap (aiUsage/* is unlisted ⇒ Admin-SDK-only). Keyed to
     // the Melbourne calendar month so the cap + daily buckets line up with the
@@ -415,7 +464,19 @@ export const npcChat = onCall(
     // Empty ⇒ reject ⇒ client falls back to a canned line.
     const safe = scrubReply(replyText);
     if (!safe) return { reply: null, fallback: true, reason: 'output' };
-    return { reply: safe, fallback: false };
+
+    // Cloud voice handoff: stash the scrubbed reply under an opaque id and
+    // return the id — npcVoice will ONLY synthesize text found here, so the
+    // ElevenLabs key can never be aimed at arbitrary text. Best-effort: if the
+    // write fails the reply still ships and the client uses the browser voice.
+    let voiceKey: string | undefined;
+    try {
+      voiceKey = randomBytes(9).toString('base64url');
+      await db.ref(`ttsQueue/${voiceKey}`).set({ x: safe, p: npcId, t: now });
+    } catch {
+      voiceKey = undefined;
+    }
+    return { reply: safe, fallback: false, voiceKey };
   },
 );
 
