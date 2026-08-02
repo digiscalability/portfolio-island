@@ -308,6 +308,14 @@ interface AnchorSet {
 let ANCHORS: AnchorSet | null = null;
 // The lighthouse tower's unit dir — the look-at target for face:'center'.
 let LIGHTHOUSE_CENTRE: THREE.Vector3 | null = null;
+// personaId → door index: balanced sleeping arrangements, computed once by the
+// scene at setup (it knows every NPC's home AND all the doors).
+let DOOR_ASSIGNMENTS: Record<string, number> = {};
+
+/** Install the scene's balanced persona→door map for the sleep walk. */
+export function setDoorAssignments(map: Record<string, number>): void {
+  DOOR_ASSIGNMENTS = map;
+}
 
 const SHORE_Y = Math.sin(0.3); // matches GameScene shoreline clamp
 
@@ -491,16 +499,29 @@ function matchRow(sched: ScheduleRow[], hour: number): ScheduleRow | null {
 
 // Pick the anchor for an activity, writing a unit dir into outDir. Returns false
 // if no anchor is available (caller then falls back to a home stroll).
-function pickAnchor(source: AnchorSource, s: GoalState, outDir: THREE.Vector3): boolean {
+function pickAnchor(
+  source: AnchorSource,
+  s: GoalState,
+  outDir: THREE.Vector3,
+  personaId?: string | null,
+): boolean {
   if (source === 'home') {
     jitterDir(s.home, 0.06, outDir);
     return true;
   }
   if (source === 'door') {
-    // Sleep: walk to the cottage door NEAREST this NPC's home patch (stable per
-    // NPC — no rotation), where the engine hides them "inside" for the night.
+    // Sleep: walk to this persona's ASSIGNED cottage door (balanced by the
+    // scene at setup so the town doesn't pile behind one popular cottage);
+    // personas without an assignment fall back to the nearest door. Stable per
+    // NPC either way — sleep re-picks its goal every dwell, and a shifting
+    // door would have them shuffling between houses all night.
     const doors = ANCHORS?.doors;
     if (!doors || !doors.length) return false; // → home-jitter fallback
+    const assigned = personaId != null ? DOOR_ASSIGNMENTS[personaId] : undefined;
+    if (assigned !== undefined && doors[assigned]) {
+      outDir.copy(doors[assigned]);
+      return true;
+    }
     let best = doors[0];
     let bestAngle = Infinity;
     for (const d of doors) {
@@ -567,7 +588,7 @@ export function getGoal(
   }
 
   const def = ACTIVITY_DEFS[activity];
-  if (!pickAnchor(def.anchorSource, s, outDir)) {
+  if (!pickAnchor(def.anchorSource, s, outDir, personaId)) {
     jitterDir(s.home, 0.06, outDir); // graceful fallback if anchors missing
   }
   return {

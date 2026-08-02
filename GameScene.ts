@@ -2547,6 +2547,30 @@ export class GameScene extends THREE.Scene {
     });
     NpcActivities.applyPlanOverrideFromUrl();
     this.npcPersonaIds = this.island.npcTargets.map((n) => AI_NPCS[n.name] ?? null);
+    // Balanced sleeping arrangements: greedy nearest-door with a per-door cap,
+    // so the town spreads across the cottages instead of piling behind one
+    // popular door (14 sleepers once shared a single house). Computed ONCE —
+    // sleep re-picks goals all night, so assignments must be stable.
+    const doorDirs = this.island.houseDoors.map((d) => d.position.clone().normalize());
+    if (doorDirs.length) {
+      const personas: Array<{ id: string; home: THREE.Vector3 }> = [];
+      this.island.npcTargets.forEach((n, i) => {
+        const id = this.npcPersonaIds[i];
+        if (id) personas.push({ id, home: n.meshRef.position.clone().normalize() });
+      });
+      const cap = Math.ceil(personas.length / doorDirs.length);
+      const load = new Array<number>(doorDirs.length).fill(0);
+      const assign: Record<string, number> = {};
+      for (const p of personas) {
+        const order = doorDirs
+          .map((d, i) => ({ i, a: d.angleTo(p.home) }))
+          .sort((x, y) => x.a - y.a);
+        const pick = order.find((o) => load[o.i] < cap) ?? order[0];
+        load[pick.i]++;
+        assign[p.id] = pick.i;
+      }
+      NpcActivities.setDoorAssignments(assign);
+    }
   }
 
   /** Apply a daily server plan (world/island/npcPlan) to the activity engine. */
@@ -4734,7 +4758,12 @@ export class GameScene extends THREE.Scene {
     box(cot, 1.1, 0.38, 2.0, D, -3.0, 0.3, -2.5); // bed frame
     box(cot, 1.0, 0.16, 1.9, 0xefe9dc, -3.0, 0.57, -2.5);
     box(cot, 0.8, 0.14, 0.42, 0xf7f3ea, -3.0, 0.68, -3.25);
-    box(cot, 1.02, 0.15, 1.05, 0xa54242, -3.0, 0.63, -2.05); // blanket
+    // Blanket gets a DEDICATED material: its colour varies per house, and the
+    // shared matFor cache would tint every 0xa54242 prop island-wide with it.
+    this.cottageBlanketMat = new THREE.MeshStandardMaterial({ color: 0xa54242, roughness: 0.9 });
+    const blanket = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.15, 1.05), this.cottageBlanketMat);
+    blanket.position.set(-3.0, 0.63, -2.05);
+    cot.add(blanket);
     cyl(cot, 0.7, 0.7, 0.09, W, 1.6, 0.86, -1.6); // round table
     cyl(cot, 0.09, 0.12, 0.82, D, 1.6, 0.41, -1.6);
     cyl(cot, 0.24, 0.26, 0.5, D, 0.75, 0.29, -1.3); // stools
@@ -4766,6 +4795,42 @@ export class GameScene extends THREE.Scene {
       cot.add(zzz);
       this.interiorZzz = zzz;
     }
+    // Optional decor groups — each house shows a seeded 2-of-4 subset so the
+    // six cottages stop being clones. Placed in corners / on furniture so the
+    // (cached, superset) collider layout stays honest for every combination.
+    this.cottageExtras = [];
+    const extra = (): THREE.Group => {
+      const e = new THREE.Group();
+      e.visible = false;
+      cot.add(e);
+      this.cottageExtras.push(e);
+      return e;
+    };
+    const vase = extra(); // flowers on the round table
+    cyl(vase, 0.09, 0.11, 0.22, 0x7d6b8f, 1.6, 1.0, -1.6);
+    for (const [fx, fz, fc] of [
+      [1.52, -1.66, 0xd9536f],
+      [1.68, -1.58, 0xe0b13e],
+      [1.6, -1.5, 0xf0f0e8],
+    ] as const) {
+      const fl = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), matFor(fc));
+      fl.position.set(fx, 1.22, fz);
+      vase.add(fl);
+    }
+    const books = extra(); // little wall shelf of books (front-right wall)
+    box(books, 0.06, 0.08, 1.1, W, 3.8, 1.85, 1.2);
+    box(books, 0.05, 0.3, 0.24, 0xa54242, 3.79, 2.04, 0.85);
+    box(books, 0.05, 0.34, 0.22, 0x3f6f8a, 3.79, 2.06, 1.15);
+    box(books, 0.05, 0.28, 0.2, 0x8a9a5b, 3.79, 2.03, 1.45);
+    const basket = extra(); // pet basket by the hearth
+    cyl(basket, 0.38, 0.42, 0.16, 0xb5854e, 2.2, 0.18, -3.0);
+    cyl(basket, 0.3, 0.3, 0.08, 0xd9c8b0, 2.2, 0.26, -3.0);
+    const chest = extra(); // storage chest at the foot of the bed
+    box(chest, 0.85, 0.45, 0.5, D, -3.05, 0.33, -1.15);
+    box(chest, 0.89, 0.1, 0.54, W, -3.05, 0.6, -1.15);
+    const clasp = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), matFor(0xc9a227, 0.4));
+    clasp.position.set(-3.05, 0.48, -0.88);
+    chest.add(clasp);
 
     // Fireplace glow — one shared light, repositioned per themed set and only
     // switched on for sets that have a hearth. Flicker runs in the interior
@@ -5026,6 +5091,10 @@ export class GameScene extends THREE.Scene {
   // on the first frame after exit, so no restore bookkeeping is needed.
   private interiorOccupants: THREE.Object3D[] = [];
   private interiorZzz: THREE.Sprite | null = null;
+  // Cottage variation: seeded per-house decor — dedicated tint materials plus
+  // optional prop groups toggled per house (2 of 4 shown).
+  private cottageBlanketMat: THREE.MeshStandardMaterial | null = null;
+  private cottageExtras: THREE.Group[] = [];
 
   /** Show the NPCs sleeping behind THIS cottage's door (cap 2: bed + rug).
    *  A sleeper's wander target IS the door dir it walked to, so matching it
@@ -5036,10 +5105,12 @@ export class GameScene extends THREE.Scene {
     if (!door) return;
     const doorDir = this._goalScratch.copy(door.position).normalize();
     const o = GameScene.INTERIOR_ORIGIN;
-    // Lying poses: pitched onto the back, body along z (bed) / x (rug).
+    // Lying poses: pitched onto the back, body along z (bed) / x (rugs). Three
+    // spots — matches the balanced per-door cap (18 personas / 6 doors).
     const SPOTS: Array<{ x: number; y: number; z: number; euler: THREE.Euler }> = [
       { x: -3.0, y: 0.82, z: -2.35, euler: new THREE.Euler(-Math.PI / 2, 0, 0) }, // in the bed
       { x: 1.2, y: 0.42, z: -0.6, euler: new THREE.Euler(-Math.PI / 2, Math.PI / 2, 0, 'YXZ') }, // on the rug
+      { x: 0.4, y: 0.42, z: 1.7, euler: new THREE.Euler(-Math.PI / 2, -Math.PI / 2, 0, 'YXZ') }, // by the door wall
     ];
     for (const npc of this.island.npcTargets) {
       const w = (npc.meshRef.userData as { wander?: { activity?: string; target: THREE.Vector3 } })
@@ -5148,6 +5219,24 @@ export class GameScene extends THREE.Scene {
     this.interiorMoveF = 0;
     this.interiorMoveS = 0;
     this.interiorHotspot = null;
+    // Cottage variation: deterministic per-house decor from the house number —
+    // blanket/rug/wall palettes + a 2-of-4 subset of the optional prop groups,
+    // so the six cottages read as different homes, stable across visits.
+    if (active === 'cottage') {
+      const seed = houseId ? parseInt(houseId.replace(/\D/g, ''), 10) || 0 : 0;
+      const BLANKETS = [0xa54242, 0x3f6f8a, 0x8a9a5b, 0xc9a227];
+      const RUG_VARIANTS = [0x9c5f4e, 0x51687d, 0x5d8a58, 0x7d6b8f, 0xb06a72];
+      const WALL_VARIANTS = [0xe0c9a8, 0xd8cbb5, 0xcfd4c2, 0xe2c2b8, 0xd6c4d4, 0xc9d0da];
+      this.cottageBlanketMat?.color.set(BLANKETS[seed % BLANKETS.length]);
+      this.interiorRugMat?.color.set(RUG_VARIANTS[seed % RUG_VARIANTS.length]);
+      this.interiorWallMat?.color
+        .set(WALL_VARIANTS[seed % WALL_VARIANTS.length])
+        .lerp(new THREE.Color(0xffffff), 0.35);
+      const a = seed % this.cottageExtras.length;
+      const b =
+        (a + 1 + ((seed >> 1) % (this.cottageExtras.length - 1))) % this.cottageExtras.length;
+      this.cottageExtras.forEach((g, i) => (g.visible = i === a || i === b));
+    }
     // Cottage at night: reveal whoever is asleep behind THIS door.
     this.interiorOccupants = [];
     if (this.interiorZzz) this.interiorZzz.visible = false;
