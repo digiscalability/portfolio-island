@@ -875,7 +875,7 @@ class SimpleApp {
       : ['A place to\nrest', 'Someone\nlives here'];
     sfx.blip();
     this.ui.fadeThrough(() => {
-      this.scene.enterInterior(title, wall, left, right, theme);
+      this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
       if (isZone && zone) {
         this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
       }

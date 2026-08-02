@@ -4744,6 +4744,28 @@ export class GameScene extends THREE.Scene {
     cyl(cot, 0.12, 0.12, 0.28, 0x8a9a5b, -2.9, 1.88, -3.78);
     cyl(cot, 0.1, 0.1, 0.24, 0xb0603e, -2.45, 1.86, -3.78);
     cyl(cot, 0.11, 0.11, 0.3, 0x7d6b8f, -2.0, 1.89, -3.78);
+    // Floating 💤 over the bed — shown only while a sleeping NPC occupies it.
+    {
+      const zcv = document.createElement('canvas');
+      zcv.width = zcv.height = 128;
+      const zx = zcv.getContext('2d');
+      if (zx) {
+        zx.font = '96px system-ui, sans-serif';
+        zx.textAlign = 'center';
+        zx.textBaseline = 'middle';
+        zx.fillText('💤', 64, 70);
+      }
+      const ztex = new THREE.CanvasTexture(zcv);
+      ztex.colorSpace = THREE.SRGBColorSpace;
+      const zzz = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: ztex, transparent: true, depthWrite: false }),
+      );
+      zzz.scale.set(0.55, 0.55, 1);
+      zzz.position.set(-3.0, 1.55, -2.5);
+      zzz.visible = false;
+      cot.add(zzz);
+      this.interiorZzz = zzz;
+    }
 
     // Fireplace glow — one shared light, repositioned per themed set and only
     // switched on for sets that have a hearth. Flicker runs in the interior
@@ -4853,7 +4875,15 @@ export class GameScene extends THREE.Scene {
    *  "leave" spot is appended to every theme at lookup time. */
   private static readonly INTERIOR_HOTSPOTS: Record<
     string,
-    Array<{ x: number; z: number; r: number; label: string; action: string; text?: string }>
+    Array<{
+      id?: string;
+      x: number;
+      z: number;
+      r: number;
+      label: string;
+      action: string;
+      text?: string;
+    }>
   > = {
     office: [
       {
@@ -4951,6 +4981,7 @@ export class GameScene extends THREE.Scene {
     ],
     cottage: [
       {
+        id: 'bed',
         x: -3.0,
         z: -2.5,
         r: 1.3,
@@ -4990,6 +5021,41 @@ export class GameScene extends THREE.Scene {
     this.interiorMoveS = strafe;
   }
 
+  // NPCs asleep "inside" the cottage the player entered, temporarily borrowed
+  // into the room. The wander loop re-claims position/orientation/visibility
+  // on the first frame after exit, so no restore bookkeeping is needed.
+  private interiorOccupants: THREE.Object3D[] = [];
+  private interiorZzz: THREE.Sprite | null = null;
+
+  /** Show the NPCs sleeping behind THIS cottage's door (cap 2: bed + rug).
+   *  A sleeper's wander target IS the door dir it walked to, so matching it
+   *  against this house's door identifies the room's occupants. */
+  private placeCottageOccupants(houseId: string): void {
+    this.interiorOccupants = [];
+    const door = this.island.houseDoors.find((d) => d.id === houseId);
+    if (!door) return;
+    const doorDir = this._goalScratch.copy(door.position).normalize();
+    const o = GameScene.INTERIOR_ORIGIN;
+    // Lying poses: pitched onto the back, body along z (bed) / x (rug).
+    const SPOTS: Array<{ x: number; y: number; z: number; euler: THREE.Euler }> = [
+      { x: -3.0, y: 0.82, z: -2.35, euler: new THREE.Euler(-Math.PI / 2, 0, 0) }, // in the bed
+      { x: 1.2, y: 0.42, z: -0.6, euler: new THREE.Euler(-Math.PI / 2, Math.PI / 2, 0, 'YXZ') }, // on the rug
+    ];
+    for (const npc of this.island.npcTargets) {
+      const w = (npc.meshRef.userData as { wander?: { activity?: string; target: THREE.Vector3 } })
+        .wander;
+      if (!w || npc.meshRef.visible || w.activity !== 'sleep') continue;
+      if (w.target.angleTo(doorDir) > 0.05) continue; // asleep behind a different door
+      const spot = SPOTS[this.interiorOccupants.length];
+      if (!spot) break;
+      npc.meshRef.visible = true;
+      npc.meshRef.position.set(o.x + spot.x, o.y + spot.y, o.z + spot.z);
+      npc.meshRef.quaternion.setFromEuler(spot.euler);
+      this.interiorOccupants.push(npc.meshRef);
+    }
+    if (this.interiorZzz) this.interiorZzz.visible = this.interiorOccupants.length > 0;
+  }
+
   /** The hotspot the player is standing near (null when none) — main-simple
    *  shows the prompt and executes the action on E. */
   public getInteriorHotspot(): { label: string; action: string; text?: string } | null {
@@ -5010,6 +5076,7 @@ export class GameScene extends THREE.Scene {
     const boxes: Array<{ minX: number; maxX: number; minZ: number; maxZ: number }> = [];
     const b = new THREE.Box3();
     for (const child of set.children) {
+      if ((child as THREE.Sprite).isSprite) continue; // markers (💤) never block
       b.setFromObject(child);
       if (b.isEmpty()) continue;
       if (b.min.y - o.y > 1.45) continue; // overhead — walk under it
@@ -5047,6 +5114,7 @@ export class GameScene extends THREE.Scene {
     left = '',
     right = '',
     theme = 'cottage',
+    houseId?: string,
   ): void {
     this.buildInterior();
     if (this.interiorWallMat) {
@@ -5080,6 +5148,10 @@ export class GameScene extends THREE.Scene {
     this.interiorMoveF = 0;
     this.interiorMoveS = 0;
     this.interiorHotspot = null;
+    // Cottage at night: reveal whoever is asleep behind THIS door.
+    this.interiorOccupants = [];
+    if (this.interiorZzz) this.interiorZzz.visible = false;
+    if (active === 'cottage' && houseId) this.placeCottageOccupants(houseId);
   }
 
   /** Draw a framed poster: title (big) or a content panel of \n-split lines. */
@@ -5110,6 +5182,11 @@ export class GameScene extends THREE.Scene {
     this.insideInterior = false;
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
+    // Borrowed sleepers: hide now; the wander loop re-claims their position,
+    // orientation, and visibility on the first world frame after exit.
+    for (const m of this.interiorOccupants) m.visible = false;
+    this.interiorOccupants = [];
+    if (this.interiorZzz) this.interiorZzz.visible = false;
     // Release the broadcast hold and snap the visual group back onto the
     // untouched physics state — the player reappears at the door they entered.
     this.player.setPositionHold(null);
@@ -5183,9 +5260,14 @@ export class GameScene extends THREE.Scene {
     this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
     this.camera.lookAt(p.x, p.y + 0.85, p.z);
 
+    // Floating 💤 bob while a sleeper occupies the bed.
+    if (this.interiorZzz?.visible) {
+      this.interiorZzz.position.y = 1.55 + Math.sin(this.interiorTime * 2.2) * 0.09;
+    }
+
     // Nearest hotspot (theme spots + the door), for the prompt + E action.
     const spots = GameScene.INTERIOR_HOTSPOTS[this.interiorActiveTheme] ?? [];
-    let found: { label: string; action: string; text?: string } | null = null;
+    let found: { id?: string; label: string; action: string; text?: string } | null = null;
     let bestD = Infinity;
     const px = p.x - o.x;
     const pz = p.z - o.z;
@@ -5195,6 +5277,14 @@ export class GameScene extends THREE.Scene {
         bestD = d;
         found = h;
       }
+    }
+    // An occupied bed changes the interaction — you don't "test" someone's bed.
+    if (found?.id === 'bed' && this.interiorOccupants.length > 0) {
+      found = {
+        label: '🤫 Press <strong>E</strong> to whisper goodnight',
+        action: 'toast',
+        text: 'You whisper goodnight. The blanket rises and falls. 💤',
+      };
     }
     this.interiorHotspot = found;
   }
