@@ -312,18 +312,46 @@ class SimpleApp {
       // Setup NPC interaction callback (quest dialogue wins when relevant)
       this.scene.setOnNPCInteract((npcData) => {
         console.log(`💬 Talking to: ${npcData.name}`);
-        // The Market Vendor runs the island shop
+        // The Market Vendor runs the island shop.
         if (npcData.name === 'Market Vendor') {
           sfx.blip();
           this.openShop();
           return;
         }
-        // Intelligent NPCs open a free-text conversation — the server brain
-        // replies in character. On ANY failure (function not deployed yet, App
-        // Check off, rate/spend cap, moderation, offline) askNpc returns a
-        // fallback and we cycle the NPC's authored canned lines, so the NPC
-        // never appears broken. Until the npcChat backend is live this simply
-        // behaves like a chat box that always answers with canned lines.
+        // Quest steps take PRIORITY over idle chat, so a quest-giver still gives
+        // its quest (and fetch pickups / completions still fire) even though it
+        // is also an AI NPC. When it has no active quest step, it falls through
+        // to free-text chat below.
+        const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
+        if (talk) {
+          this.ui.showDialogue(npcData.name, talk.lines);
+          if (talk.accepted) {
+            sfx.blip();
+            this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+          }
+          // Fetch quest: picked the fish up at the Fisherman — carry it in hand
+          if (talk.pickedUp) {
+            sfx.collect();
+            this.scene.setPlayerCarryingFish(true);
+          }
+          if (talk.completed) {
+            const q = talk.completed;
+            // Delivering the fish → the Baker bakes it into a pie before your eyes
+            if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
+            this.scene.addCoins(q.rewardCoins);
+            sfx.questComplete();
+            this.ui.showQuestComplete({
+              name: `${q.giverName}'s request`,
+              reward: { type: 'message', value: `+${q.rewardCoins} 🪙 reward` },
+            } as any);
+            this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+          }
+          return;
+        }
+        // No active quest for this NPC → intelligent free-text conversation if it
+        // has a brain wired up. On ANY failure (function/App Check/rate/spend
+        // cap/moderation/offline) askNpc returns a fallback and we cycle the
+        // NPC's authored canned lines, so the NPC never appears broken.
         if (isAiNpc(npcData.name)) {
           sfx.blip();
           const canned = npcData.dialogue;
@@ -341,38 +369,11 @@ class SimpleApp {
           );
           return;
         }
-
-        const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
-        let lines = talk ? talk.lines : npcData.dialogue;
-        // Living-world tone: on a plain greeting (no active quest beat), lead
-        // with a line reflecting the island's mood today, so NPCs feel like
-        // they're living in the world the director keeps evolving.
-        if (!talk) {
-          const flavor = moodNpcFlavor();
-          if (flavor) lines = [flavor, ...lines];
-        }
+        // Non-AI, non-quest NPC → canned dialogue, led by a living-world mood line.
+        let lines = npcData.dialogue;
+        const flavor = moodNpcFlavor();
+        if (flavor) lines = [flavor, ...lines];
         this.ui.showDialogue(npcData.name, lines);
-        if (talk?.accepted) {
-          sfx.blip();
-          this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
-        }
-        // Fetch quest: picked the fish up at the Fisherman — carry it in hand
-        if (talk?.pickedUp) {
-          sfx.collect();
-          this.scene.setPlayerCarryingFish(true);
-        }
-        if (talk?.completed) {
-          const q = talk.completed;
-          // Delivering the fish → the Baker bakes it into a pie before your eyes
-          if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
-          this.scene.addCoins(q.rewardCoins);
-          sfx.questComplete();
-          this.ui.showQuestComplete({
-            name: `${q.giverName}'s request`,
-            reward: { type: 'message', value: `+${q.rewardCoins} 🪙 reward` },
-          } as any);
-          this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
-        }
       });
 
       // Living world: subscribe to the server-owned world/island beat (a mood +
