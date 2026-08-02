@@ -1,3 +1,19 @@
 {
-  "rewrites": [{ "source": "/z/:zone", "destination": "/api/z?zone=:zone" }]
+  "rewrites": [
+    {
+      "source": "/z/:zone",
+      "destination": "/api/z?zone=:zone"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/launch-clip.mp4",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
+      ]
+    }
+  ]
 }
