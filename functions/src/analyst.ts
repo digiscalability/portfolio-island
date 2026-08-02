@@ -28,7 +28,10 @@ const SMTP_PORT = defineString('SMTP_PORT');
 const SMTP_USER = defineString('SMTP_USER');
 const LEAD_FROM = defineString('LEAD_FROM');
 const LEAD_TO = defineString('LEAD_TO');
-const ANALYST_TO = defineString('ANALYST_TO'); // optional; falls back to LEAD_TO
+// Optional owner override for the digest recipient. Defaults to '' so it needs
+// no .env entry and resolves in non-interactive deploys; the runtime falls back
+// to LEAD_TO whenever it's blank (see the sendMail `to:` below).
+const ANALYST_TO = defineString('ANALYST_TO', { default: '' });
 
 const GITHUB_REPO = 'digiscalability/portfolio-island';
 const ANALYST_TOKEN_CAP = 4_000_000;
