@@ -5,7 +5,7 @@ import { DISTRICTS } from './Districts';
 import { checkName } from './Moderation';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { buildShareUrl, setUrlParam, share } from './Share';
-import { speak, cancelSpeech, isSpeechSupported, isSpeechEnabled, setSpeechEnabled } from './Speech';
+import { speak, cancelSpeech, isSpeechSupported, isSpeechEnabled, setSpeechEnabled, isSttSupported, startListening } from './Speech';
 
 /**
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
@@ -3442,6 +3442,7 @@ export class SimpleUI {
    */
   private npcChatDiv: HTMLDivElement | null = null;
   private npcTypeTimer = 0;
+  private npcSttStop: (() => void) | null = null;
   /**
    * Free-text conversation panel for an AI-brained NPC. Shows an opening line, a
    * scrolling transcript and a text input; on send it calls `onSend(text)` —
@@ -3455,7 +3456,7 @@ export class SimpleUI {
     name: string,
     opening: string,
     onSend: (text: string) => Promise<string>,
-    voice: { rate: number; pitch: number } = { rate: 1, pitch: 1 },
+    voice: { rate: number; pitch: number; variant: number } = { rate: 1, pitch: 1, variant: 0 },
   ): void {
     this.closeNpcChat();
     const reduce = a11y.reducedMotion; // respect reduced-motion: no typewriter
@@ -3514,7 +3515,7 @@ export class SimpleUI {
       const row = document.createElement('div');
       Object.assign(row.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
       log.appendChild(row);
-      speak(text, voice.rate, voice.pitch);
+      speak(text, voice.rate, voice.pitch, voice.variant);
       if (reduce) {
         row.textContent = text;
         log.scrollTop = log.scrollHeight;
@@ -3545,6 +3546,17 @@ export class SimpleUI {
     const send = document.createElement('button');
     send.textContent = 'Send';
     Object.assign(send.style, { padding: '8px 16px', borderRadius: '10px', border: 'none', cursor: 'pointer', background: '#5a8cff', color: '#fff', fontWeight: '600' });
+    // Mic button (speech-to-text) — only where the browser supports it.
+    const mic = isSttSupported() ? document.createElement('button') : null;
+    if (mic) {
+      mic.textContent = '🎤';
+      mic.title = 'Talk to this character';
+      Object.assign(mic.style, {
+        padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.15)',
+        cursor: 'pointer', background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: '15px',
+      });
+      inputRow.appendChild(mic);
+    }
     inputRow.appendChild(input);
     inputRow.appendChild(send);
     panel.appendChild(inputRow);
@@ -3584,6 +3596,32 @@ export class SimpleUI {
         void doSend();
       }
     });
+    // Speech-to-text: click 🎤 to dictate; interim text streams into the input,
+    // and the settled phrase auto-sends when you pause (click again to stop
+    // early). Guarded so closing the panel mid-dictation never fires a stray send.
+    if (mic) {
+      const setRec = (on: boolean): void => {
+        mic.style.background = on ? 'rgba(230,80,80,0.9)' : 'rgba(255,255,255,0.06)';
+        mic.textContent = on ? '●' : '🎤';
+      };
+      mic.addEventListener('click', () => {
+        if (this.npcSttStop) {
+          this.npcSttStop();
+          return;
+        } // second click = stop early
+        setRec(true);
+        this.npcSttStop = startListening({
+          onInterim: (t) => { input.value = t; },
+          onFinal: (t) => { input.value = t; },
+          onEnd: () => {
+            this.npcSttStop = null;
+            setRec(false);
+            if (this.npcChatDiv === panel && input.value.trim()) void doSend();
+          },
+          onError: () => { input.placeholder = 'Mic unavailable — type instead'; },
+        });
+      });
+    }
     this.overlay.appendChild(panel);
     this.npcChatDiv = panel;
     window.setTimeout(() => input.focus(), 50);
@@ -3595,10 +3633,14 @@ export class SimpleUI {
       this.npcTypeTimer = 0;
     }
     cancelSpeech();
-    if (this.npcChatDiv) {
-      this.npcChatDiv.remove();
-      this.npcChatDiv = null;
-    }
+    // Null the panel BEFORE stopping dictation so the recogniser's onEnd guard
+    // (npcChatDiv === panel) sees it's gone and skips the auto-send.
+    const div = this.npcChatDiv;
+    this.npcChatDiv = null;
+    const stopStt = this.npcSttStop;
+    this.npcSttStop = null;
+    if (stopStt) stopStt();
+    if (div) div.remove();
   }
 
   public isNpcChatOpen(): boolean {

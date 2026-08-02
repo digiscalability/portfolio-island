@@ -19,13 +19,14 @@ export const AI_NPCS: Record<string, string> = {
   Guard: 'guard',
 };
 
-/** Per-NPC spoken-voice character (browser SpeechSynthesis rate/pitch). Gives
- *  each NPC a recognisably different voice without any cloud TTS cost. */
-export interface VoiceProfile { rate: number; pitch: number }
+/** Per-NPC spoken-voice character (browser SpeechSynthesis). `variant` picks a
+ *  DIFFERENT system voice per NPC when the device has several, so they don't all
+ *  sound identical; rate/pitch shape the delivery. No cloud TTS cost. */
+export interface VoiceProfile { rate: number; pitch: number; variant: number }
 export const VOICE_PROFILES: Record<string, VoiceProfile> = {
-  Storyteller: { rate: 0.92, pitch: 1.05 }, // warm, unhurried
-  'Elder Sage': { rate: 0.82, pitch: 0.8 }, // slow, deep, wise
-  Guard: { rate: 1.06, pitch: 0.95 }, // brisk, firm
+  Storyteller: { rate: 0.95, pitch: 1.08, variant: 0 }, // warm, lilting
+  'Elder Sage': { rate: 0.85, pitch: 0.82, variant: 1 }, // slow, deep, wise
+  Guard: { rate: 1.04, pitch: 0.98, variant: 2 }, // brisk, firm
 };
 
 export function isAiNpc(name: string): boolean {
@@ -33,7 +34,7 @@ export function isAiNpc(name: string): boolean {
 }
 
 export function voiceProfileFor(name: string): VoiceProfile {
-  return VOICE_PROFILES[name] ?? { rate: 1, pitch: 1 };
+  return VOICE_PROFILES[name] ?? { rate: 1, pitch: 1, variant: 0 };
 }
 
 export async function askNpc(npcName: string, message: string): Promise<NpcReply> {
