@@ -6,6 +6,9 @@ import { checkName } from './Moderation';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { buildShareUrl, setUrlParam, share } from './Share';
 import { speak, cancelSpeech, isSpeechSupported, isSpeechEnabled, setSpeechEnabled, isSttSupported, startListening } from './Speech';
+import { ACTIVITY_DEFS } from './NpcActivities';
+import { AI_NPCS } from './NpcChat';
+import type { NoticeState, NpcPlan } from './WorldState';
 
 /**
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
@@ -728,6 +731,86 @@ export class SimpleUI {
     });
   }
 
+  /**
+   * Cache the latest server notice + daily plan for the Island Times board.
+   * Called from the world-beat subscription in main-simple. Pure state store —
+   * the board reads these lazily when opened, so a beat mid-session is free.
+   */
+  public setIslandTimes(notice: NoticeState | null, plan: NpcPlan | null): void {
+    this.latestNotice = notice;
+    this.latestPlan = plan;
+  }
+
+  /**
+   * "📰 The Island Times" — a read-only front page composed ENTIRELY from
+   * pre-authored strings + integers: notice-line templates (indexed by the
+   * server), activity labels from ACTIVITY_DEFS, persona display names, and
+   * numeric counts. Nothing user-generated can reach this by construction, so
+   * it can never carry injected text — but we still escapeHtml defensively.
+   */
+  async showIslandTimes(): Promise<void> {
+    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))');
+    const T = SimpleUI.NOTICE_TEMPLATES;
+    const notice = this.latestNotice;
+    const plan = this.latestPlan;
+    const day = notice?.day ?? new Date().toISOString().slice(0, 10);
+
+    // Headline lines: server-chosen indices, bounded to our template list.
+    const lines = (notice?.lines ?? [])
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < T.length)
+      .map((i) => T[i]);
+    if (!lines.length) lines.push(T[0]); // always show something
+
+    // Count strip — numbers only, each shown only if present.
+    const c = notice?.counts ?? {};
+    const countBits = [
+      c.visitors != null ? `${c.visitors} visitor${c.visitors === 1 ? '' : 's'}` : null,
+      c.leads != null ? `${c.leads} new lead${c.leads === 1 ? '' : 's'}` : null,
+      c.guestbook != null ? `${c.guestbook} guestbook note${c.guestbook === 1 ? '' : 's'}` : null,
+      c.races != null ? `${c.races} racer${c.races === 1 ? '' : 's'}` : null,
+    ].filter(Boolean) as string[];
+
+    // "Who's about today" — from the daily plan's persona→activity map.
+    const doing: string[] = [];
+    if (plan?.assignments) {
+      for (const [id, act] of Object.entries(plan.assignments)) {
+        const name = SimpleUI.ID_TO_NAME[id];
+        const def = (ACTIVITY_DEFS as Record<string, { label?: string; emoji?: string } | undefined>)[act];
+        if (name && def?.label) doing.push(`${def.emoji ?? '•'}  The ${name} is ${def.label} today.`);
+      }
+    }
+
+    const esc = (s: string) => this.escapeHtml(s);
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 2px;color:#ffd479;">📰 The Island Times</h2>
+       <p style="margin:0 0 14px;font-size:12px;color:#9aa;letter-spacing:0.5px;text-transform:uppercase;">${esc(day)}</p>
+       <div style="text-align:left;">
+         <div style="font-size:15px;line-height:1.55;color:#eee;border-left:3px solid #ffd479;padding-left:12px;">
+           ${lines.map(esc).join(' ')}
+         </div>
+         ${
+           countBits.length
+             ? `<p style="margin:12px 0 0;font-size:12px;color:#9ab;">${esc(countBits.join('  ·  '))}</p>`
+             : ''
+         }
+         ${
+           doing.length
+             ? `<h3 style="margin:18px 0 8px;font-size:13px;color:#8a9bff;text-transform:uppercase;letter-spacing:0.5px;">Who's about today</h3>
+                <div style="max-height:34vh;overflow:auto;">${doing
+                  .map(
+                    (l) =>
+                      `<div style="padding:5px 0;font-size:13px;color:#dde;border-bottom:1px solid rgba(255,255,255,0.05);">${esc(l)}</div>`,
+                  )
+                  .join('')}</div>`
+             : `<p style="margin:16px 0 0;font-size:12px;color:#889;">The town's plans for today haven't been posted yet — check back soon.</p>`
+         }
+       </div>`,
+    );
+    trackOnce('island_times_opened');
+    this.overlay.appendChild(modal);
+  }
+
   private emoteWheel: HTMLElement | null = null;
   /** 😀 button in the top-right icon row: opens a small emote wheel. Emotes are
    *  sent through the normal chat pipeline, so they get proximity bubbles,
@@ -1055,6 +1138,28 @@ export class SimpleUI {
 
   private portfolioMenuDiv: HTMLElement | null = null;
 
+  // ── "Island Times" notice board ────────────────────────────────────────
+  // The pre-authored notice lines. This list MUST stay in the same order as
+  // functions/src/analyst.ts NOTICE_TEMPLATES — the server writes only the
+  // integer index of a line, never its text, so a mismatch would show the
+  // wrong (but still safe, pre-authored) sentence. A parity vitest guards it.
+  private static readonly NOTICE_TEMPLATES: readonly string[] = [
+    'A steady day on the island.', // 0
+    'New faces arrived from across the sea.', // 1
+    'The racing circuits saw fresh records.', // 2
+    'The guestbook gained some kind words.', // 3
+    'The market and plazas were busy today.', // 4
+    'A quiet, restful day in the districts.', // 5
+    'The couriers had a full postbag.', // 6
+    'Word of the island is spreading.', // 7
+  ];
+  // persona id → display name, inverted from AI_NPCS (display name → id).
+  private static readonly ID_TO_NAME: Record<string, string> = Object.fromEntries(
+    Object.entries(AI_NPCS).map(([name, id]) => [id, name]),
+  );
+  private latestNotice: NoticeState | null = null;
+  private latestPlan: NpcPlan | null = null;
+
   /**
    * Persistent "Portfolio" button (top-right): opens a menu so a visitor can
    * jump straight to any section — About / Projects / Contact etc. — without
@@ -1322,7 +1427,9 @@ export class SimpleUI {
           border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">🏁 Leaderboard</button>
         <button data-board="guestbook" style="flex:1;padding:11px;background:#26263340;color:#fff;
           border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">✍️ Guestbook</button>
-      </div>`;
+      </div>
+      <button data-board="times" style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
+        border:1px solid rgba(255,215,121,0.28);border-radius:10px;font-size:14px;cursor:pointer;">📰 Island Times</button>`;
     // close button
     const close = document.createElement('button');
     close.textContent = '×';
@@ -1354,6 +1461,7 @@ export class SimpleUI {
         const board = (b as HTMLElement).dataset.board;
         this.togglePortfolioMenu();
         if (board === 'leaderboard') void this.showLeaderboard();
+        else if (board === 'times') void this.showIslandTimes();
         else void this.showGuestbook();
       });
     });

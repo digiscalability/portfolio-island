@@ -21,6 +21,14 @@ export interface NpcPlan {
   updatedAt?: number;
 }
 
+/** The nightly public notice the analyst writes to world/island/notice. */
+export interface NoticeState {
+  day: string;
+  lines: number[]; // indices into the client's NOTICE_TEMPLATES
+  counts: Record<string, number>; // numbers only
+  updatedAt?: number;
+}
+
 export interface WorldState {
   mood: Mood;
   headline: string;
@@ -28,6 +36,25 @@ export interface WorldState {
   online?: number;
   updatedAt?: number;
   npcPlan?: NpcPlan; // soft-optional — never gates the mood/headline beat
+  notice?: NoticeState; // soft-optional — the Island Times board data
+}
+
+/** Soft validation of the public notice: integer line indices + numeric counts
+ *  only (the composer + template bounds live client-side). Malformed → undefined. */
+function parseNotice(v: unknown): NoticeState | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const n = v as { day?: unknown; lines?: unknown; counts?: unknown; updatedAt?: unknown };
+  if (typeof n.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(n.day)) return undefined;
+  const lines = Array.isArray(n.lines)
+    ? n.lines.filter((x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x < 64).slice(0, 6)
+    : [];
+  const counts: Record<string, number> = {};
+  if (n.counts && typeof n.counts === 'object') {
+    for (const [k, val] of Object.entries(n.counts as Record<string, unknown>)) {
+      if (k.length <= 24 && typeof val === 'number' && Number.isFinite(val)) counts[k] = val;
+    }
+  }
+  return { day: n.day, lines, counts, updatedAt: typeof n.updatedAt === 'number' ? n.updatedAt : undefined };
 }
 
 /** Soft, field-by-field validation of the server npcPlan. Malformed → undefined
@@ -160,6 +187,7 @@ export function connectWorldState(onUpdate: (s: WorldState) => void): void {
           online: typeof v.online === 'number' ? v.online : undefined,
           updatedAt: typeof v.updatedAt === 'number' ? v.updatedAt : undefined,
           npcPlan: parseNpcPlan((v as { npcPlan?: unknown }).npcPlan),
+          notice: parseNotice((v as { notice?: unknown }).notice),
         };
         current = s;
         onUpdate(s);

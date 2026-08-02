@@ -386,6 +386,9 @@ class SimpleApp {
         track('world_beat_seen', { mood: s.mood });
         // Hand the day's NPC assignments to the activity engine (Phase 2).
         if (s.npcPlan) this.scene.setNpcActivities(s.npcPlan);
+        // Feed the "Island Times" board its notice + plan (Phase 4). Cached
+        // lazily — the board reads it only when the visitor opens it.
+        this.ui.setIslandTimes(s.notice ?? null, s.npcPlan ?? null);
       });
 
       // Restore the carried fish if a fetch quest was mid-delivery on reload
