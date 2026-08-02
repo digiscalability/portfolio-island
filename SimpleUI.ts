@@ -780,9 +780,14 @@ export class SimpleUI {
    * Called from the world-beat subscription in main-simple. Pure state store —
    * the board reads these lazily when opened, so a beat mid-session is free.
    */
-  public setIslandTimes(notice: NoticeState | null, plan: NpcPlan | null): void {
+  public setIslandTimes(
+    notice: NoticeState | null,
+    plan: NpcPlan | null,
+    archive: Array<{ day: string; lines: number[]; visitors?: number }> | null = null,
+  ): void {
     this.latestNotice = notice;
     this.latestPlan = plan;
+    this.latestArchive = archive;
   }
 
   /**
@@ -862,6 +867,30 @@ export class SimpleUI {
              : `<p style="margin:16px 0 0;font-size:12px;color:#889;">The town's plans for today haven't been posted yet — check back soon.</p>`
          }
        </div>`,
+    );
+    // Past editions: durable, visible proof the pipeline has been running
+    // nightly — one day's edition could be faked; a dated archive can't.
+    const past = (this.latestArchive ?? []).filter((e) => e.day !== day).slice(0, 7);
+    if (past.length) {
+      const rows = past
+        .map((e) => {
+          const line = T[e.lines[0] ?? 0] ?? T[0];
+          return `<div style="padding:4px 0;font-size:12px;color:#9ab;border-bottom:1px solid rgba(255,255,255,0.04);">
+            <span style="color:#788;">${esc(e.day)}</span> — ${esc(line)}</div>`;
+        })
+        .join('');
+      modal.insertAdjacentHTML(
+        'beforeend',
+        `<h3 style="margin:16px 0 6px;font-size:12px;color:#8a9bff;text-transform:uppercase;letter-spacing:0.5px;text-align:left;">Past editions</h3>
+         <div style="text-align:left;max-height:18vh;overflow:auto;">${rows}</div>`,
+      );
+    }
+    // The byline is the proof-of-autonomy line — without it the board reads as
+    // hand-authored flavour text instead of a nightly agent pipeline.
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<p style="margin:14px 0 0;font-size:11px;color:#788;font-style:italic;">
+        Compiled nightly by the island's AI analyst · daily jobs assigned by the AI town planner</p>`,
     );
     trackOnce('island_times_opened');
     this.overlay.appendChild(modal);
@@ -1213,6 +1242,13 @@ export class SimpleUI {
 
   private portfolioMenuDiv: HTMLElement | null = null;
 
+  // "Meet the AI townsfolk" welcome CTA → the app guides the visitor to the
+  // nearest chatty persona (compass override until they talk to one).
+  private onMeetAi: (() => void) | null = null;
+  public setOnMeetAi(cb: () => void): void {
+    this.onMeetAi = cb;
+  }
+
   // ── "Island Times" notice board ────────────────────────────────────────
   // The pre-authored notice lines. This list MUST stay in the same order as
   // functions/src/analyst.ts NOTICE_TEMPLATES — the server writes only the
@@ -1234,6 +1270,7 @@ export class SimpleUI {
   );
   private latestNotice: NoticeState | null = null;
   private latestPlan: NpcPlan | null = null;
+  private latestArchive: Array<{ day: string; lines: number[]; visitors?: number }> | null = null;
 
   /**
    * Persistent "Portfolio" button (top-right): opens a menu so a visitor can
@@ -1884,6 +1921,8 @@ export class SimpleUI {
                margin-bottom:20px;"></div>
           <div style="font-family:'Bebas Neue',system-ui,sans-serif;font-size:25px;letter-spacing:1.5px;">
             DIGISCALABILITY LIFE ISLAND</div>
+          <div style="color:#a9bdd4;font-size:12.5px;margin-top:3px;max-width:290px;">
+            Abbas Ali's hand-built 3D portfolio — a living island run by AI agents</div>
           <div id="ld-msg" style="color:#8fa6bd;font-size:12.5px;margin:8px 0 16px;min-height:16px;"></div>
           <div style="width:230px;height:7px;background:rgba(255,255,255,0.12);border-radius:6px;overflow:hidden;">
             <div id="ld-bar" style="width:0%;height:100%;border-radius:6px;
@@ -1989,17 +2028,21 @@ export class SimpleUI {
       ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
       : 'WASD to move · mouse to look · space to jump · Q to wave.';
 
-    // Two CTAs route straight to the real portfolio content, so a recruiter who
-    // won't explore still reaches the work and the contact links in one click.
+    // Three CTAs: the work, the contact path, and the differentiator — meeting
+    // the live-AI townsfolk (guided; no competitor portfolio has them). A
+    // recruiter who won't explore still reaches everything in one click.
     const ctaRow = `
-      <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 16px;">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 10px;">
         <button data-cta="projects" style="flex:1 1 140px; padding:12px 14px; border:none; border-radius:10px;
           background:linear-gradient(135deg,#5b6cff,#8a4de0); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
           🚀 See the work</button>
         <button data-cta="contact" style="flex:1 1 140px; padding:12px 14px; border-radius:10px;
           background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
           📬 Get in touch</button>
-      </div>`;
+      </div>
+      <button data-meet-ai="1" style="width:100%; padding:11px 14px; margin:0 0 16px; border-radius:10px;
+        background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,212,121,0.45); font-size:14.5px; font-weight:600; cursor:pointer;">
+        🤖 Meet the AI townsfolk</button>`;
 
     // Explicit dismiss button so the pitch stays put until the visitor chooses
     // to leave it (moving with WASD no longer evaporates it).
@@ -2014,9 +2057,13 @@ export class SimpleUI {
          <p style="margin:0; font-size:12px; color:#9aa;">Dive back in — this closes on its own.</p>`
       : `
       <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
-      <p style="margin: 0 0 18px 0; font-size:15px; line-height:1.5;">
+      <p style="margin: 0 0 12px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI-powered products. This is my portfolio,
         hand-built in Three.js, that you can actually walk through.</p>
+      <p style="margin: 0 0 16px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
+        Every townsperson is a <strong>live AI agent</strong> — an AI planner assigns their
+        jobs each morning, and an AI analyst reports on the island nightly.
+        Walk up and ask them anything.</p>
       ${ctaRow}
       ${exploreBtn}
       <p style="margin: 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
@@ -2046,6 +2093,12 @@ export class SimpleUI {
       e.stopPropagation();
       track('welcome_cta', { cta: 'explore' });
       closeWelcome();
+    });
+    this.welcomeDiv.querySelector('button[data-meet-ai]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('welcome_cta', { cta: 'meet_ai' });
+      closeWelcome();
+      this.onMeetAi?.();
     });
 
     document.addEventListener('keydown', onEscape);
@@ -2236,8 +2289,30 @@ export class SimpleUI {
       if (e.key === 'Enter') submit();
     });
     btn.addEventListener('click', submit);
+    // Never a gate: browsing must not require naming yourself. Skip proceeds
+    // anonymously (caller gets '' and saves nothing — asked again next time
+    // a social feature needs it).
+    const skip = document.createElement('button');
+    skip.textContent = 'Skip — just browsing';
+    Object.assign(skip.style, {
+      background: 'transparent',
+      border: 'none',
+      color: 'rgba(255,255,255,0.65)',
+      fontSize: '13px',
+      textDecoration: 'underline',
+      cursor: 'pointer',
+      padding: '4px',
+    });
+    skip.addEventListener('click', () => {
+      if (done) return;
+      done = true;
+      modal.remove();
+      this.nameModalDiv = null;
+      onDone('');
+    });
     modal.appendChild(input);
     modal.appendChild(btn);
+    modal.appendChild(skip);
     modal.appendChild(err);
     this.overlay.appendChild(modal);
     this.nameModalDiv = modal;
@@ -3588,6 +3663,19 @@ export class SimpleUI {
       projects: `
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
         ${card(`
+          <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:11px;color:#ffd479;">● you are standing in it</span></h3>
+          <p style="margin:6px 0;font-size:13.5px;">The flagship: a multiplayer 3D world where
+          <strong>every townsperson is a live AI agent</strong>. An LLM planner assigns their jobs each
+          morning, they follow real daily schedules (and sleep in the cottages at night), and an
+          autonomous analyst emails me a nightly report and files GitHub issues about its own island.</p>
+          <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Three.js + TypeScript + Firebase +
+          Claude · 18 conversational agents · runs at 60fps on a ~300KB core bundle · the whole
+          agent fleet costs under $0.10/day with hard token caps.</p>
+          <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Proof it runs itself: read the
+          📰 Island Times (Portfolio menu) — compiled nightly by the analyst — or just walk up to
+          anyone and ask what they're doing today.</p>
+        `)}
+        ${card(`
           <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#8f8;">● live</span></h3>
           ${thumb('/assets/panels/rankpilot.webp', 'RankPilot dashboard')}
           <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Problem:</strong>
@@ -3713,6 +3801,22 @@ export class SimpleUI {
     const title = document.createElement('span');
     title.textContent = name;
     header.appendChild(title);
+    // The differentiator, made legible: this is a REAL model conversation, not
+    // a dialogue tree — visitors couldn't tell (fallbacks look identical).
+    const aiBadge = document.createElement('span');
+    aiBadge.textContent = '✨ live AI';
+    Object.assign(aiBadge.style, {
+      fontSize: '10.5px',
+      fontWeight: '700',
+      letterSpacing: '0.5px',
+      color: '#ffd479',
+      border: '1px solid rgba(255,212,121,0.5)',
+      borderRadius: '20px',
+      padding: '2px 8px',
+      whiteSpace: 'nowrap',
+    });
+    aiBadge.title = 'A live language-model conversation — every reply is generated, not scripted';
+    header.appendChild(aiBadge);
     const controls = document.createElement('span');
     Object.assign(controls.style, { display: 'flex', gap: '12px', alignItems: 'center' });
     // Voice mute toggle (only if the browser can speak).

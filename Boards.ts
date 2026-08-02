@@ -85,6 +85,20 @@ export async function submitLead(name: string, email: string, message: string): 
     const { getFirebaseRealtime } = await import('./firebaseClient');
     const { ref, push, set } = await import('firebase/database');
     const { db, uid } = await getFirebaseRealtime();
+    // Attribution context (owner-only, best-effort): which channel/campaign
+    // produced this lead, and how long they explored before writing. Captured
+    // at boot into sessionStorage by main-simple; without it a lead email
+    // can't tell a Show HN visitor from a LinkedIn one.
+    let ctx = '';
+    try {
+      const entry = sessionStorage.getItem('ds_entry');
+      ctx = JSON.stringify({
+        ...(entry ? (JSON.parse(entry) as object) : {}),
+        dwellS: Math.round(performance.now() / 1000),
+      }).slice(0, 500);
+    } catch {
+      /* no storage — lead still submits */
+    }
     const entryRef = push(ref(db, 'leads/island'));
     await set(entryRef, {
       id: uid,
@@ -92,6 +106,7 @@ export async function submitLead(name: string, email: string, message: string): 
       email: cleanEmail.slice(0, 120),
       // Kept verbatim (private, owner-only); length is capped by the rules too.
       message: message.trim().slice(0, 1000),
+      ...(ctx ? { ctx } : {}),
       t: Date.now(),
     });
     return true;

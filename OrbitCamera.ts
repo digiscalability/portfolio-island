@@ -111,8 +111,12 @@ export class OrbitCamera {
 
     // --- Maintain the tangent follow direction ---
     if (!this.followDir) {
-      const seed = new THREE.Vector3(0, 0, 1);
-      if (Math.abs(surfaceNormal.dot(seed)) > 0.9) seed.set(1, 0, 0);
+      // Seed (1,0,0), not (0,0,1): at the pole spawn the old seed parked the
+      // camera so the Welcome Hub's blank wall filled half the first frame —
+      // the single most screenshotted view. +x composes the meadow, trees and
+      // curved horizon with the hub reduced to an edge (verified by capture).
+      const seed = new THREE.Vector3(1, 0, 0);
+      if (Math.abs(surfaceNormal.dot(seed)) > 0.9) seed.set(0, 0, 1);
       this.followDir = seed;
     }
     // Parallel transport: re-project onto the current tangent plane

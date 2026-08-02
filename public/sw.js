@@ -33,6 +33,26 @@ self.addEventListener('activate', (event) => {
     caches
       .keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // Evict hashed assets on activation: the cache name never rotates, so
+      // every deploy used to strand the previous build's ~1.4MB of chunks in
+      // the visitor's cache forever. A new worker activates exactly once per
+      // deploy, so flushing /assets/* here bounds the cache at one build's
+      // worth; stale-while-revalidate refills entries as they're used. (An
+      // index.html-based keep-list would be wrong — dynamically-imported
+      // chunks are never referenced there and would be evicted while live.)
+      .then(() => caches.open(CACHE))
+      .then((cache) =>
+        cache
+          .keys()
+          .then((reqs) =>
+            Promise.all(
+              reqs
+                .filter((r) => new URL(r.url).pathname.startsWith('/assets/'))
+                .map((r) => cache.delete(r)),
+            ),
+          )
+          .catch(() => {}),
+      )
       .then(() => self.clients.claim()),
   );
 });

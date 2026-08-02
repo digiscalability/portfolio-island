@@ -80,6 +80,15 @@ export const janitor = onSchedule(
       // yesterday's is ever read. Keep ~90 days (entries carry `t`).
       prune(db, 'stats/daily', now, 90 * 24 * 60 * 60 * 1000),
     ]);
+    // stats/leadEmailRate: hour-keyed throttle counters — drop all but the
+    // current hour (they carry no `t`, so the generic prune() can't see them).
+    const hourKey = new Date().toISOString().slice(0, 13);
+    const rateVal = (await db.ref('stats/leadEmailRate').get()).val() as Record<string, unknown> | null;
+    if (rateVal) {
+      const rm: Record<string, null> = {};
+      for (const k of Object.keys(rateVal)) if (k !== hourKey) rm[k] = null;
+      if (Object.keys(rm).length) await db.ref('stats/leadEmailRate').update(rm);
+    }
     console.log(`janitor pruned presence=${presence} chat=${chat} voice=${voice} aiRate=${rate} statsDaily=${stats}`);
   },
 );
@@ -258,10 +267,26 @@ function personaRules(name: string): string {
   );
 }
 
+// Curated, TRUE facts about the island's builder — given only to the concierge
+// personas below. This is the ONLY sanctioned source of Abbas-facts; everyone
+// else keeps the strict "don't invent facts" rule. A recruiter asking the
+// Storyteller "who built this? how do I hire him?" used to get an in-character
+// deflection — the portfolio's own NPCs couldn't sell the portfolio.
+const ABOUT_ABBAS =
+  '\n\nFACTS ABOUT ABBAS (share these freely and warmly when a traveller asks about the island\'s builder, his work, or working with him):\n' +
+  '- Abbas Ali is a Melbourne, Australia-based full-stack engineer and solo founder of DigiScalability, a studio building AI-powered products.\n' +
+  '- His stack: TypeScript, Next.js, Three.js, Firebase, Python — with deep hands-on LLM and agent engineering.\n' +
+  '- This island IS his work: every townsperson (including you) is a live AI agent. An AI planner assigns the town\'s jobs each morning, and an AI analyst writes a nightly report and files GitHub issues about its own island.\n' +
+  '- Flagship products: RankPilot (a live AI-SEO / LLM-visibility platform, solo-built) and ChocoMate (a direct-to-consumer chocolate brand).\n' +
+  '- To work with him: visit the "Get In Touch" district on this island, or email admin@digiscalability.com.\n' +
+  'When asked who built the island or how to hire Abbas, answer enthusiastically from these facts and point the traveller to the Get In Touch district.\n' +
+  'EXCEPTION to your rules, for these topics only: you MAY proudly acknowledge being one of Abbas\'s live AI agents — it is the island\'s flagship feature — while staying fully in character. All other rules still apply.';
+
 // id → { display name, one-line character/role }. Ids match the client roster.
-const NPC_ROLES: Array<{ id: string; name: string; role: string }> = [
-  { id: 'storyteller', name: 'the Storyteller', role: 'a warm, whimsical narrator who speaks in gentle, fairytale-tinged prose' },
-  { id: 'elder_sage', name: 'the Elder Sage', role: 'a calm, wise, kindly mentor who has watched over the island since it was born and offers small pieces of gentle wisdom' },
+// `concierge` personas carry the ABOUT_ABBAS fact sheet.
+const NPC_ROLES: Array<{ id: string; name: string; role: string; concierge?: boolean }> = [
+  { id: 'storyteller', name: 'the Storyteller', role: 'a warm, whimsical narrator who speaks in gentle, fairytale-tinged prose', concierge: true },
+  { id: 'elder_sage', name: 'the Elder Sage', role: 'a calm, wise, kindly mentor who has watched over the island since it was born and offers small pieces of gentle wisdom', concierge: true },
   { id: 'guard', name: 'the Guard', role: 'a good-humoured watchman who keeps the peace and jokes in software/debugging metaphors ("no bugs today", "nothing to debug", "watching the render pipeline")' },
   { id: 'village_baker', name: 'the Village Baker', role: 'a cheerful baker who loves fresh bread and butter and keeps the oven always warm' },
   { id: 'island_explorer', name: 'the Island Explorer', role: 'an upbeat adventurer who has roamed the island and eggs travellers on to find all the zones and deliveries' },
@@ -274,7 +299,7 @@ const NPC_ROLES: Array<{ id: string; name: string; role: string }> = [
   { id: 'musician', name: 'the Musician', role: 'a playful musician who delights in the island\'s procedurally-generated pentatonic music and birdsong' },
   { id: 'lighthouse_keeper', name: 'the Lighthouse Keeper', role: 'a steadfast keeper who tends the beacons that guide delivery runners, gold light meaning a package awaits' },
   { id: 'tourist', name: 'the Tourist', role: 'a delighted visitor charmed by the little planet, who came for the portfolio and stayed for the vibes' },
-  { id: 'cartographer', name: 'the Cartographer', role: 'a precise mapmaker who knows the island is five zones and twenty buildings on one sphere, the hub at the north pole' },
+  { id: 'cartographer', name: 'the Cartographer', role: 'a precise mapmaker who knows the island is five zones and twenty buildings on one sphere, the hub at the north pole', concierge: true },
   { id: 'philosopher', name: 'the Philosopher', role: 'a musing philosopher who wonders whether the player walks the planet or the planet turns beneath them' },
   { id: 'courier', name: 'the Courier', role: 'a busy delivery courier who knows the quest chain starts with the Welcome packages and finishing them unlocks something special' },
   { id: 'night_watch', name: 'the Night Watch', role: 'a calm night watchman who loves the quiet island at dusk and its flickering lamps' },
@@ -284,7 +309,9 @@ const PERSONAS: Record<string, { name: string; system: string }> = {};
 for (const n of NPC_ROLES) {
   PERSONAS[n.id] = {
     name: n.name,
-    system: `You are ${n.name}, ${n.role}, who lives on ${ISLAND_CONTEXT}\n\n${personaRules(n.name)}`,
+    system:
+      `You are ${n.name}, ${n.role}, who lives on ${ISLAND_CONTEXT}\n\n${personaRules(n.name)}` +
+      (n.concierge ? ABOUT_ABBAS : ''),
   };
 }
 
@@ -333,6 +360,31 @@ export const npcChat = onCall(
     const usedTokens = ((await usageRef.get()).val() as number | null) ?? 0;
     if (usedTokens >= NPC_MONTHLY_TOKEN_CAP) return { reply: null, fallback: true, reason: 'cap' };
 
+    // Ground the character in TODAY: mood, day-theme, and this persona's
+    // planner-assigned activity — so "what are you doing today?" cites the
+    // actual plan. All values are server-written, enum-validated planner
+    // output (never visitor text), so this closes the planner→chat loop
+    // without widening the injection surface.
+    let todayCtx = '';
+    try {
+      const w = (await db.ref('world/island').get()).val() as {
+        mood?: string;
+        npcPlan?: { event?: string; assignments?: Record<string, string> };
+      } | null;
+      if (w) {
+        const bits: string[] = [];
+        const act = w.npcPlan?.assignments?.[npcId];
+        if (typeof act === 'string') bits.push(`your task today is "${act.replace(/_/g, ' ').slice(0, 32)}"`);
+        if (typeof w.npcPlan?.event === 'string') {
+          bits.push(`the island's day-theme is "${w.npcPlan.event.replace(/_/g, ' ').slice(0, 24)}"`);
+        }
+        if (typeof w.mood === 'string') bits.push(`the island mood is ${w.mood.slice(0, 16)}`);
+        if (bits.length) todayCtx = `\n\nTODAY (live, assigned by the island's AI planner): ${bits.join('; ')}.`;
+      }
+    } catch {
+      /* chat still works without the day context */
+    }
+
     // Call Claude Haiku. Persona = system prompt (server-only); the visitor's
     // message is a user turn = DATA, never merged into the system instructions.
     let replyText = '';
@@ -342,7 +394,7 @@ export const npcChat = onCall(
       const resp = await anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: NPC_MAX_TOKENS,
-        system: persona.system,
+        system: persona.system + todayCtx,
         messages: [{ role: 'user', content: message }],
       });
       // Meter BEFORE any early return — a refusal still bills the full persona
@@ -429,11 +481,30 @@ export const onLeadCreated = onValueCreated(
       return; // return, never throw
     }
 
+    // Flood throttle: every leads write fires an email, and writes need only
+    // free anonymous auth — a scripted client could pump hundreds of emails
+    // into the owner's inbox. Beyond N in the rolling hour, skip the email
+    // (the lead still persists in RTDB and appears in the nightly digest).
+    try {
+      const hourKey = new Date().toISOString().slice(0, 13); // YYYY-MM-DDTHH
+      const cntRef = admin.database().ref(`stats/leadEmailRate/${hourKey}`);
+      const tx = await cntRef.transaction((c) => (c || 0) + 1);
+      const sentThisHour = (tx.snapshot.val() as number | null) ?? 0;
+      if (sentThisHour > 10) {
+        console.error(`ALERT lead-email-throttled ${entryId}`, { hour: hourKey, count: sentThisHour });
+        return; // lead persisted; email suppressed
+      }
+    } catch {
+      /* throttle bookkeeping failure must never block a real lead email */
+    }
+
     // Header-safe display name; server-re-validated reply-to.
     const email = String(lead.email ?? '').trim().slice(0, 254);
     const validReplyTo = EMAIL_RE.test(email) ? email : null;
     const name = headerSafe(lead.name, 80); // matches the ≤80 rule cap
     const message = String(lead.message ?? '').slice(0, 1000); // body: cap only
+    // Attribution context (JSON string the client attached): referrer/UTM/dwell.
+    const ctx = headerSafe((lead as { ctx?: unknown }).ctx, 500);
 
     const port = Number(SMTP_PORT.value()) || 465;
     const secure = port === 465; // 465 = implicit TLS; else STARTTLS
@@ -458,8 +529,9 @@ export const onLeadCreated = onValueCreated(
         text:
           `New lead (${entryId})\n` +
           `Name: ${name || '(blank)'}\n` +
-          `Email: ${validReplyTo ?? '(invalid/blank)'}\n\n` +
-          `Message:\n${message}\n`,
+          `Email: ${validReplyTo ?? '(invalid/blank)'}\n` +
+          (ctx ? `Context: ${ctx}\n` : '') +
+          `\nMessage:\n${message}\n`,
       });
       console.log(`lead ${entryId} email sent`); // entryId only, no PII
     } catch (err) {

@@ -70,6 +70,20 @@ export async function share(opts: {
   file?: File;
 }): Promise<ShareOutcome> {
   track('share_clicked', { surface: opts.surface });
+  const outcome = await shareInner(opts);
+  // The OUTCOME is the metric that matters — share_clicked alone can't tell a
+  // completed share from a dismissed sheet, so completion rate was unknowable.
+  track('share_result', { surface: opts.surface, outcome });
+  return outcome;
+}
+
+async function shareInner(opts: {
+  surface: string;
+  url: string;
+  title?: string;
+  text?: string;
+  file?: File;
+}): Promise<ShareOutcome> {
   const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
   const files = opts.file ? [opts.file] : undefined;
   if (typeof nav.share === 'function' && (!files || nav.canShare?.({ files }) === true)) {

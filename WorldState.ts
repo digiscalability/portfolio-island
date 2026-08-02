@@ -49,6 +49,37 @@ export interface WorldState {
   updatedAt?: number;
   npcPlan?: NpcPlan; // soft-optional — never gates the mood/headline beat
   notice?: NoticeState; // soft-optional — the Island Times board data
+  noticeArchive?: Array<{ day: string; lines: number[]; visitors?: number }>; // past editions, newest first
+}
+
+/** Soft validation of the 14-day notice archive (same index-selection rules as
+ *  the notice). Malformed entries dropped; newest first. */
+function parseNoticeArchive(
+  v: unknown,
+): Array<{ day: string; lines: number[]; visitors?: number }> | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const out: Array<{ day: string; lines: number[]; visitors?: number }> = [];
+  for (const e of Object.values(v as Record<string, unknown>)) {
+    if (!e || typeof e !== 'object') continue;
+    const n = e as { day?: unknown; lines?: unknown; visitors?: unknown };
+    if (typeof n.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(n.day)) continue;
+    const lines = Array.isArray(n.lines)
+      ? n.lines
+          .filter(
+            (x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x < 64,
+          )
+          .slice(0, 6)
+      : [];
+    out.push({
+      day: n.day,
+      lines,
+      visitors:
+        typeof n.visitors === 'number' && Number.isFinite(n.visitors) ? n.visitors : undefined,
+    });
+  }
+  if (!out.length) return undefined;
+  out.sort((a, b) => (a.day < b.day ? 1 : -1));
+  return out.slice(0, 14);
 }
 
 /** Soft validation of the public notice: integer line indices + numeric counts
@@ -235,6 +266,7 @@ export function connectWorldState(onUpdate: (s: WorldState) => void): void {
           updatedAt: typeof v.updatedAt === 'number' ? v.updatedAt : undefined,
           npcPlan: parseNpcPlan((v as { npcPlan?: unknown }).npcPlan),
           notice: parseNotice((v as { notice?: unknown }).notice),
+          noticeArchive: parseNoticeArchive((v as { noticeArchive?: unknown }).noticeArchive),
         };
         current = s;
         onUpdate(s);

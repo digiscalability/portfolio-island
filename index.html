@@ -2,8 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- Fonts matching the mood: bold display and hand-drawn dialogue -->
-    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap" rel="stylesheet">
+    <!-- Fonts matching the mood: bold display and hand-drawn dialogue.
+         Preconnect first: this is the only third-party request on the critical
+         path, and without the handshake head-start it delays first paint of
+         the loading screen on cold mobile connections. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap"
+      rel="stylesheet"
+    />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- iOS ignores SVG apple-touch-icons; needs a real PNG for home-screen. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -117,13 +125,18 @@
       body {
         overflow: hidden;
         font-family: var(--font-body);
-        background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
+        background: linear-gradient(
+          135deg,
+          var(--bg-gradient-start) 0%,
+          var(--bg-gradient-end) 100%
+        );
       }
 
       /* No pull-to-refresh / rubber-banding: a downward camera drag must
          never reload the game (duplicated in style.css; this copy applies
          before the stylesheet module loads). */
-      html, body {
+      html,
+      body {
         overscroll-behavior: none;
       }
 
@@ -148,7 +161,11 @@
         width: 100vw;
         height: 100vh;
         height: 100dvh;
-        background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
+        background: linear-gradient(
+          135deg,
+          var(--bg-gradient-start) 0%,
+          var(--bg-gradient-end) 100%
+        );
         display: flex;
         flex-direction: column;
         justify-content: center;
@@ -180,7 +197,9 @@
       }
 
       @keyframes spin {
-        to { transform: rotate(360deg); }
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       /* Welcome Modal */
@@ -328,10 +347,17 @@
   <body>
     <canvas id="game-canvas"></canvas>
 
-    <!-- Loading Screen -->
+    <!-- Loading Screen: the wait is the first impression — pitch while it
+         loads, and narrate progress so a slow phone never reads as a hang. -->
     <div id="loading-screen">
       <h2>DIGISCALABILITY LIFE ISLAND</h2>
+      <p style="margin: 6px 0 2px; font-size: 14px; opacity: 0.85">
+        Abbas Ali's hand-built 3D portfolio — a living island run by AI agents.
+      </p>
       <div class="loading-spinner"></div>
+      <p id="load-phase" style="margin-top: 10px; font-size: 12.5px; opacity: 0.6">
+        Preparing the crossing…
+      </p>
     </div>
 
     <!--
@@ -350,12 +376,29 @@
     -->
     <div id="boot-fallback" hidden>
       <div class="bf-card">
-        <h1>DigiScalability</h1>
+        <h1>Abbas Ali — DigiScalability</h1>
         <p class="bf-lead">
-          A Melbourne-based venture studio building AI-powered products. This portfolio is
-          normally an explorable 3D island — <span id="bf-reason">but it can't run in this
-          browser.</span>
+          Melbourne-based full-stack engineer and solo founder building AI-powered products
+          (TypeScript · Next.js · Three.js · Firebase · Python · LLM/agent engineering). This
+          portfolio is normally an explorable 3D island —
+          <span id="bf-reason">but it can't run in this browser.</span>
         </p>
+        <h2 style="font-size: 15px; margin: 14px 0 6px">Selected work</h2>
+        <ul class="bf-links" style="text-align: left">
+          <li>
+            <strong>This island</strong> — a multiplayer Three.js world where every townsperson is a
+            live AI agent: an LLM planner assigns their daily jobs, and an autonomous analyst emails
+            a nightly report and files GitHub issues about its own world.
+          </li>
+          <li>
+            <strong>RankPilot</strong> — a live AI-SEO / LLM-visibility platform, solo-built:
+            <a href="https://rankpilot-h3jpc.web.app">rankpilot</a>
+          </li>
+          <li>
+            <strong>ChocoMate</strong> — direct-to-consumer chocolate brand:
+            <a href="https://chocomate.au">chocomate.au</a>
+          </li>
+        </ul>
         <ul class="bf-links">
           <li><a href="https://digiscalability.com">🌐 digiscalability.com</a></li>
           <li><a href="https://linkedin.com/in/digiscalability">🔗 LinkedIn</a></li>
@@ -364,8 +407,8 @@
         </ul>
         <button id="bf-retry" type="button">Try again</button>
         <p class="bf-foot">
-          The 3D island needs WebGL — it works in an up-to-date Chrome, Edge, Firefox or Safari
-          with hardware acceleration enabled. <a href="/privacy.html">Privacy</a>
+          The 3D island needs WebGL — it works in an up-to-date Chrome, Edge, Firefox or Safari with
+          hardware acceleration enabled. <a href="/privacy.html">Privacy</a>
         </p>
       </div>
     </div>
@@ -388,11 +431,15 @@
         max-width: 520px;
         width: 100%;
         color: #e6edf7;
-        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-family:
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
         text-align: center;
       }
       .bf-card h1 {
-        font-family: "Bebas Neue", system-ui, sans-serif;
+        font-family: 'Bebas Neue', system-ui, sans-serif;
         letter-spacing: 1px;
         font-size: 42px;
         margin: 0 0 10px;
@@ -446,14 +493,30 @@
     </style>
 
     <noscript>
-      <div style="position:fixed;inset:0;z-index:5000;background:#0b1220;color:#e6edf7;display:flex;align-items:center;justify-content:center;padding:24px;font-family:system-ui,sans-serif;text-align:center;">
-        <div style="max-width:520px;">
-          <h1 style="font-size:34px;margin:0 0 12px;">DigiScalability</h1>
-          <p style="color:#b8c6d9;line-height:1.6;">
+      <div
+        style="
+          position: fixed;
+          inset: 0;
+          z-index: 5000;
+          background: #0b1220;
+          color: #e6edf7;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          font-family: system-ui, sans-serif;
+          text-align: center;
+        "
+      >
+        <div style="max-width: 520px">
+          <h1 style="font-size: 34px; margin: 0 0 12px">DigiScalability</h1>
+          <p style="color: #b8c6d9; line-height: 1.6">
             A Melbourne-based venture studio building AI-powered products. This 3D portfolio needs
             JavaScript — meanwhile you can reach us at
-            <a style="color:#7fb2ff;" href="https://digiscalability.com">digiscalability.com</a> or
-            <a style="color:#7fb2ff;" href="mailto:admin@digiscalability.com">admin@digiscalability.com</a>.
+            <a style="color: #7fb2ff" href="https://digiscalability.com">digiscalability.com</a> or
+            <a style="color: #7fb2ff" href="mailto:admin@digiscalability.com"
+              >admin@digiscalability.com</a
+            >.
           </p>
         </div>
       </div>
@@ -474,9 +537,26 @@
         function booted() {
           return !!window.__lifeIslandReady;
         }
+        // Vercel Analytics queue stub: events pushed before the injected script
+        // loads are drained by it later. Lets this inline watchdog report boot
+        // failures/errors that used to be completely invisible to analytics.
+        window.va =
+          window.va ||
+          function () {
+            (window.vaq = window.vaq || []).push(arguments);
+          };
+        var errBudget = 2; // throttle: at most 2 client_error events per session
+        function vaEvent(name, data) {
+          try {
+            window.va('event', { name: name, data: data || {} });
+          } catch (e) {
+            /* analytics must never break the page */
+          }
+        }
         function showFallback(reason) {
           if (shown || booted()) return;
           shown = true;
+          vaEvent('boot_fallback', { reason: String(reason || '').slice(0, 120) });
           var el = document.getElementById('boot-fallback');
           if (!el) return;
           if (reason) {
@@ -492,14 +572,19 @@
             var c = document.createElement('canvas');
             return !!(
               window.WebGLRenderingContext &&
-              (c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl'))
+              (c.getContext('webgl2') ||
+                c.getContext('webgl') ||
+                c.getContext('experimental-webgl'))
             );
           } catch (e) {
             return false;
           }
         }
         var retry = document.getElementById('bf-retry');
-        if (retry) retry.addEventListener('click', function () { location.reload(); });
+        if (retry)
+          retry.addEventListener('click', function () {
+            location.reload();
+          });
 
         if (!hasWebGL()) {
           showFallback("but this browser doesn't support WebGL, which the island needs.");
@@ -514,14 +599,33 @@
           });
         }
         window.addEventListener('error', function (e) {
+          if (errBudget > 0) {
+            errBudget--;
+            vaEvent('client_error', {
+              msg: String((e && e.message) || 'unknown').slice(0, 140),
+              booted: booted() ? 1 : 0,
+            });
+          }
           if (!booted()) showFallback('but something went wrong loading it.');
           else if (window.console) {
             // Log the stack too — a bare message ("cannot read 'dispose' of
             // undefined") is unactionable when it fires during async init.
-            console.error('[island] runtime error', e && e.message, (e && e.error && e.error.stack) || '(no stack)');
+            console.error(
+              '[island] runtime error',
+              e && e.message,
+              (e && e.error && e.error.stack) || '(no stack)',
+            );
           }
         });
-        window.addEventListener('unhandledrejection', function () {
+        window.addEventListener('unhandledrejection', function (e) {
+          if (errBudget > 0) {
+            errBudget--;
+            var reason = e && e.reason;
+            vaEvent('client_error', {
+              msg: String((reason && reason.message) || reason || 'rejection').slice(0, 140),
+              booted: booted() ? 1 : 0,
+            });
+          }
           if (!booted()) showFallback('but something went wrong loading it.');
         });
         // Watchdog: a silent stall (slow CDN, blocked asset) is otherwise an

@@ -5080,6 +5080,12 @@ export class GameScene extends THREE.Scene {
     action: 'leave',
   };
 
+  /** World position of a named NPC (the "meet the AI townsfolk" guide), or null. */
+  public getNpcPosition(name: string): THREE.Vector3 | null {
+    const t = this.island.npcTargets.find((n) => n.name === name);
+    return t ? t.meshRef.position : null;
+  }
+
   /** Feed WASD/joystick input into the interior walk (from main-simple). */
   public setInteriorMove(forward: number, strafe: number): void {
     this.interiorMoveF = forward;

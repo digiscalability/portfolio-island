@@ -1,0 +1,30 @@
+# CI gate — this repo ships to a LIVE portfolio via overnight autonomous
+# sessions + manual `vercel --prod`; nothing enforced the existing check/test
+# suite on push until this file. One bad push = a broken public portfolio
+# with (previously) zero client error telemetry to notice it.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck + lint + format
+        run: npm run check
+      - name: Tests
+        run: npm test
+      - name: Client build
+        run: npm run build
+      - name: Functions install + build
+        run: cd functions && npm ci && npm run build

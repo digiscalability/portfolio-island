@@ -1,3 +1,4 @@
+import { inject } from '@vercel/analytics';
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
@@ -19,7 +20,38 @@ import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
 import { isRealTheme } from './Theme';
 import { connectWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
+
 import './style.css';
+
+// Analytics MUST fire at module evaluation, not after the world boots: the old
+// idle-deferred inject meant every visitor who bounced during the loading
+// screen (or hit the WebGL fallback) was invisible — the top of the funnel was
+// unmeasured. inject() is cookieless and failure-safe; custom events stay lazy.
+try {
+  inject({ mode: import.meta.env.PROD ? 'production' : 'development' });
+} catch {
+  /* ad-blocker / offline — never let analytics break the app */
+}
+
+// Capture the entry context ONCE for lead attribution: which channel and
+// campaign produced this session. Read back by Boards.submitLead so the lead
+// email can say "came from the Show HN link" instead of arriving anonymous.
+try {
+  if (!sessionStorage.getItem('ds_entry')) {
+    const sp = new URLSearchParams(location.search);
+    const utm: Record<string, string> = {};
+    for (const k of ['utm_source', 'utm_medium', 'utm_campaign']) {
+      const v = sp.get(k);
+      if (v) utm[k] = v.slice(0, 60);
+    }
+    sessionStorage.setItem(
+      'ds_entry',
+      JSON.stringify({ ref: document.referrer.slice(0, 200), utm, t: Date.now() }),
+    );
+  }
+} catch {
+  /* no storage — attribution is best-effort */
+}
 
 /**
  * SimpleApp
@@ -44,6 +76,8 @@ class SimpleApp {
   private multiplayer: Multiplayer | null = null;
   private chat?: Chat;
   private isRunning: boolean = false;
+  // "Meet the AI townsfolk" compass override (welcome CTA → cleared on AI chat)
+  private aiGuideTarget: THREE.Vector3 | null = null;
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
@@ -356,6 +390,7 @@ class SimpleApp {
         // cap/moderation/offline) askNpc returns a fallback and we cycle the
         // NPC's authored canned lines, so the NPC never appears broken.
         if (isAiNpc(npcData.name)) {
+          this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
           sfx.blip();
           const canned = npcData.dialogue;
           let ci = 1; // first fallback skips the opening line (canned[0])
@@ -389,9 +424,9 @@ class SimpleApp {
         track('world_beat_seen', { mood: s.mood });
         // Hand the day's NPC assignments to the activity engine (Phase 2).
         if (s.npcPlan) this.scene.setNpcActivities(s.npcPlan);
-        // Feed the "Island Times" board its notice + plan (Phase 4). Cached
-        // lazily — the board reads it only when the visitor opens it.
-        this.ui.setIslandTimes(s.notice ?? null, s.npcPlan ?? null);
+        // Feed the "Island Times" board its notice + plan + past editions.
+        // Cached lazily — the board reads it only when the visitor opens it.
+        this.ui.setIslandTimes(s.notice ?? null, s.npcPlan ?? null, s.noticeArchive ?? null);
       });
 
       // Restore the carried fish if a fetch quest was mid-delivery on reload
@@ -417,6 +452,21 @@ class SimpleApp {
       // ?hour= override: let a shared link show the island at a chosen time so
       // daytime visitors can see the night art (stars/moon/fireflies/windows).
       this.applyHourParam();
+
+      // First-ever visit lands in golden daylight regardless of local clock:
+      // an evening recruiter used to land on a near-black island that looked
+      // nothing like the sunny OG card they clicked. One session only — the
+      // live clock (and the night art) takes over from the second visit; an
+      // explicit ?hour= share link always wins.
+      try {
+        const env = this.scene.getEnvironmentCycle();
+        if (env && env.debugHour === null && !localStorage.getItem('ds_visited')) {
+          localStorage.setItem('ds_visited', '1');
+          env.debugHour = 10.5;
+        }
+      } catch {
+        /* no storage */
+      }
 
       // Coin counter (persisted across visits + mirrored to the cloud profile)
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
@@ -469,6 +519,18 @@ class SimpleApp {
       });
       this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
 
+      // "Meet the AI townsfolk" welcome CTA: compass-guide to the Storyteller
+      // until the visitor actually talks to an AI NPC (cleared there).
+      this.ui.setOnMeetAi(() => {
+        this.aiGuideTarget =
+          this.scene.getNpcPosition('Storyteller') ?? this.scene.getNpcPosition('Elder Sage');
+        if (this.aiGuideTarget) {
+          this.ui.flashMessage(
+            '🤖 Follow the compass — walk up to the Storyteller and ask anything',
+          );
+        }
+      });
+
       // 🎨 button / C key: toggle the appearance editor
       this.ui.setOnCustomizeToggle(() => {
         if (this.ui['customizeDiv']) this.ui.hideCustomize();
@@ -511,7 +573,9 @@ class SimpleApp {
       this.boundHandlers.chatKeydown = (e: KeyboardEvent) => {
         if (this.ui.isChatInputOpen()) return; // the input owns the keyboard while typing
         if (e.key === 'Enter') {
-          this.ui.openChatInput();
+          // First time a name becomes visible to OTHERS — ask for it here
+          // (lazily), not as a gate on the whole site.
+          this.ensureNamed(() => this.ui.openChatInput());
           return;
         }
         if ((e.key === 'v' || e.key === 'V') && !e.repeat) {
@@ -555,8 +619,10 @@ class SimpleApp {
         console.warn('Shader pre-compile skipped:', e);
       }
 
-      // Ask first-time visitors for their name (used everywhere instead of a
-      // random handle); returning visitors keep their saved one.
+      // Pitch FIRST: a recruiter learns who Abbas is before anything is asked
+      // of them. The name prompt used to gate the whole site ("name yourself
+      // for a multiplayer game" before the portfolio pitch) — it is now lazy,
+      // asked only when a social feature actually needs a name (ensureNamed).
       const afterIntro = () => {
         let saved: string | null = null;
         try {
@@ -564,17 +630,10 @@ class SimpleApp {
         } catch {
           /* no storage */
         }
-        if (saved) {
-          this.multiplayer?.setName(saved);
-          this.ui.showWelcome();
-        } else {
-          this.ui.promptName('', (name) => {
-            this.multiplayer?.setName(name);
-            saveProfile({ name });
-            this.ui.showWelcome();
-          });
-        }
-        this.openDeepLinkZone();
+        if (saved) this.multiplayer?.setName(saved);
+        // Deep-linked visitors came for shared content — open it directly; the
+        // persistent pills carry the pitch/CTAs (no stacked modals).
+        if (!this.openDeepLinkZone()) this.ui.showWelcome();
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -632,16 +691,7 @@ class SimpleApp {
       };
       idle(startMusic, 5000);
       idle(syncProfile, 4000);
-      // Visitor counts: Vercel Web Analytics is cookieless and collects no
-      // personal data, so it needs no consent banner. Deferred + failure-safe —
-      // analytics must never be able to break the app.
-      idle(() => {
-        void import('@vercel/analytics')
-          .then((m) => m.inject({ mode: import.meta.env.PROD ? 'production' : 'development' }))
-          .catch(() => {
-            /* blocked by an ad-blocker or offline — not a problem */
-          });
-      }, 3000);
+      // (Vercel Analytics inject() moved to module top — pre-boot pageviews.)
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
       // resumed it before, so music (and now SFX) stayed silent. Resume once
@@ -892,17 +942,44 @@ class SimpleApp {
   }
 
   /** Open a section directly from a /?zone=<id> deep link, if present + valid. */
-  private openDeepLinkZone(): void {
+  /** Open a ?zone= deep link. Returns true when a panel was opened (the
+   *  caller then skips the welcome modal — shared content comes first). */
+  private openDeepLinkZone(): boolean {
     try {
       const z = new URLSearchParams(location.search).get('zone');
-      if (!z) return;
+      if (!z) return false;
       if (['welcome', 'professional', 'projects', 'personal', 'contact'].includes(z)) {
         this.ui.hideWelcome();
         this.ui.showZonePanel({ id: z, name: z }, { source: 'deeplink' });
+        return true;
       }
     } catch {
       /* ignore */
     }
+    return false;
+  }
+
+  /**
+   * Lazy naming: run `then` once the visitor has a name, prompting only the
+   * first time a social feature (race leaderboard, chat) actually needs one.
+   * An empty name from the prompt (skip) proceeds anonymously without saving.
+   */
+  private ensureNamed(then: () => void): void {
+    try {
+      if (localStorage.getItem('ds_player_name')) {
+        then();
+        return;
+      }
+    } catch {
+      /* no storage — proceed to prompt */
+    }
+    this.ui.promptName('', (name) => {
+      if (name) {
+        this.multiplayer?.setName(name);
+        saveProfile({ name });
+      }
+      then();
+    });
   }
 
   private setupDebugShortcuts(): void {
@@ -1183,7 +1260,11 @@ class SimpleApp {
           } else if (nearby.type === 'house_door') {
             text = '🚪 Press <strong>E</strong> to enter';
           } else if (nearby.type === 'npc') {
-            text = `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong>`;
+            // AI townsfolk advertise free-text chat — "talk" alone reads as a
+            // canned dialogue tree, and visitors never discover the real LLM.
+            text = isAiNpc(nearby.npcData.name)
+              ? `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong> — ask anything`
+              : `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong>`;
           } else if (nearby.type === 'bench') {
             text = '🪑 Press <strong>E</strong> to sit down';
           }
@@ -1311,23 +1392,29 @@ class SimpleApp {
     const playerPos = this._qcPlayerPos.copy(player.getWorldPosition());
     const normal = this._qcNormal.copy(player.getSurfaceNormal());
 
-    // Priority 1: an active delivery. Priority 2 (the new bit): guide the visitor
-    // to the nearest UNSTAMPED zone, so the compass finally points at the
-    // PORTFOLIO — it used to only ever point at mailboxes, leaving zone discovery
-    // to the minimap + a 2.5u proximity prompt. Hidden once all four are stamped.
+    // PORTFOLIO first for new visitors: until the first district is stamped,
+    // the compass guides to the nearest unstamped zone even while the
+    // auto-active delivery chain runs (it used to read "📬 Delivery" from the
+    // very first frame, steering every new visitor to a mini-game before
+    // they'd seen a single piece of Abbas's work). After the first stamp,
+    // active deliveries take priority as before.
     const active = this.deliverySystem?.getActiveDeliveries?.() ?? [];
     const delivery = active.length > 0 ? active[0] : null;
+    const zone = this.nearestUnstampedZone(playerPos);
+    const portfolioFirst = (this.passport?.count() ?? 0) === 0;
     let targetPos: THREE.Vector3 | null = null;
     let label = '';
-    if (delivery?.destination) {
+    if (this.aiGuideTarget) {
+      // "Meet the AI townsfolk" welcome CTA — outranks everything until the
+      // visitor talks to an AI NPC (cleared in the chat-open branch).
+      targetPos = this.aiGuideTarget;
+      label = '🤖 The Storyteller';
+    } else if (zone && (portfolioFirst || !delivery?.destination)) {
+      targetPos = zone.pos;
+      label = `${PASSPORT_META[zone.id].icon} ${PASSPORT_META[zone.id].label}`;
+    } else if (delivery?.destination) {
       targetPos = delivery.destination.mesh.position;
       label = '📬 Delivery';
-    } else {
-      const zone = this.nearestUnstampedZone(playerPos);
-      if (zone) {
-        targetPos = zone.pos;
-        label = `${PASSPORT_META[zone.id].icon} ${PASSPORT_META[zone.id].label}`;
-      }
     }
     if (!targetPos) {
       this.ui.updateQuestCompass(null);

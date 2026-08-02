@@ -492,6 +492,20 @@ async function runAnalyst(): Promise<void> {
   try {
     const notice = buildNotice(m);
     await db.ref('world/island/notice').set({ day, lines: notice.lines, counts: notice.counts, updatedAt: now });
+    // Public 14-day archive — durable evidence the pipeline runs nightly ("Past
+    // editions" on the board). Keyed by day (re-runs idempotent), same
+    // index-selection safety as the notice itself; world/island .read cascades.
+    const archRef = db.ref('world/island/noticeArchive');
+    await archRef.child(day).set({ day, lines: notice.lines, visitors: m.activeDevices, t: now });
+    const all = (await archRef.get()).val() as Record<string, unknown> | null;
+    if (all) {
+      const keys = Object.keys(all).sort();
+      if (keys.length > 14) {
+        const rm: Record<string, null> = {};
+        for (const k of keys.slice(0, keys.length - 14)) rm[k] = null;
+        await archRef.update(rm);
+      }
+    }
   } catch (e) {
     console.error('ALERT analyst-notice-failed', { msg: (e as Error).message });
   }
