@@ -71,7 +71,7 @@ const TTS_MAX_CHARS = 500; // replies are 1-2 short sentences; hard ceiling
 // voice; nothing breaks (and 4xx logs WITHOUT the ALERT prefix so a config
 // gap can't page like an outage).
 const VOICES: Record<string, string> = {
-  storyteller: 'EXAVITQu4vr4xnSDxMaL', // Sarah — mature, reassuring narrator
+  storyteller: 'hLJPUGOEwHuUGuMZlUf5', // abbas_test1 — the owner's own cloned voice (his pick)
   elder_sage: 'JBFqnCBsd6RMkjVDRZzb', // George — warm, captivating storyteller
   guard: 'SOYHLrjzK2X1ezoPC6cr', // Harry — fierce warrior (good-humoured watchman)
   village_baker: 'XrExE9yKIg1WjnnlVkGX', // Matilda — knowledgeable, friendly
