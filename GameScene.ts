@@ -7,11 +7,12 @@ import { Island } from './Island';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
 import * as NpcActivities from './NpcActivities';
-import { AI_NPCS } from './NpcChat';
+import { AI_NPCS, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { OrbitCamera } from './OrbitCamera';
 import { RaceSystem, type RaceEvent, type RaceHudStatus } from './RaceSystem';
 import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
+import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
@@ -2527,6 +2528,78 @@ export class GameScene extends THREE.Scene {
     tag.tex.needsUpdate = true;
   }
 
+  // ── NPC speech bubble ──
+  // ONE shared in-world bubble (only one NPC speaks at a time): shown above an
+  // AI NPC when the visitor walks up, carrying the aware proximity greeting.
+  // Same CanvasTexture-sprite idiom as the name pins; positioned in the tag
+  // update loop; auto-hides after a few seconds.
+  private npcBubble: {
+    sprite: THREE.Sprite;
+    ctx: CanvasRenderingContext2D;
+    tex: THREE.CanvasTexture;
+  } | null = null;
+  private npcBubbleFor = -1;
+  private npcBubbleUntil = 0;
+
+  private showNpcSpeechBubble(i: number, text: string, time: number): void {
+    if (!this.npcBubble) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 160;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const tex = new THREE.CanvasTexture(canvas);
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
+      );
+      sprite.scale.set(3.4, 1.06, 1);
+      sprite.renderOrder = 3;
+      sprite.visible = false;
+      this.add(sprite);
+      this.npcBubble = { sprite, ctx, tex };
+    }
+    const { ctx, tex, sprite } = this.npcBubble;
+    ctx.clearRect(0, 0, 512, 160);
+    // Word-wrap into ≤3 lines of ~34 chars (the composer keeps lines short).
+    const words = text.split(' ');
+    const lines: string[] = [];
+    let cur = '';
+    for (const w of words) {
+      if ((cur + ' ' + w).trim().length > 34 && cur) {
+        lines.push(cur.trim());
+        cur = w;
+      } else cur = `${cur} ${w}`;
+      if (lines.length === 2) break;
+    }
+    if (cur.trim() && lines.length < 3) lines.push(cur.trim());
+    const lh = 34;
+    const h = 28 + lines.length * lh;
+    const top = (160 - h) / 2;
+    ctx.fillStyle = 'rgba(250,248,242,0.95)';
+    ctx.beginPath();
+    ctx.roundRect(16, top, 480, h, 18);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(60,50,40,0.4)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = '#2c2620';
+    ctx.font = '500 26px "Patrick Hand", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    lines.forEach((ln, k) => ctx.fillText(ln, 256, top + 24 + k * lh));
+    tex.needsUpdate = true;
+    sprite.visible = true;
+    this.npcBubbleFor = i;
+    this.npcBubbleUntil = time + 6.5;
+  }
+
+  /** The named NPC's current activity id (for the aware chat opening). */
+  public getNpcActivity(name: string): string | undefined {
+    const t = this.island.npcTargets.find((n) => n.name === name);
+    return (t?.meshRef.userData as { wander?: { activity?: string } } | undefined)?.wander
+      ?.activity;
+  }
+
   /** Hand the island's activity anchors to NpcActivities + map persona ids. */
   private setupNpcActivities(): void {
     const vistas = [
@@ -3496,6 +3569,7 @@ export class GameScene extends THREE.Scene {
         const data = npc.meshRef.userData as {
           greetT0?: number;
           lastGreetAt?: number;
+          lastSpokeAt?: number; // aware proximity-greeting throttle
           wander?: {
             home: THREE.Vector3;
             dir: THREE.Vector3;
@@ -3690,6 +3764,29 @@ export class GameScene extends THREE.Scene {
           ) {
             data.greetT0 = time;
             data.lastGreetAt = time;
+            // Aware proximity greeting: AI townsfolk SPEAK first — a bubble +
+            // voice line composed from live state (their planner-assigned
+            // activity, the hour, the day-theme). Throttled per NPC; one
+            // bubble at a time; skipped for sleepers and non-AI NPCs.
+            if (
+              isAiNpc(npc.name) &&
+              npc.meshRef.visible &&
+              (data.lastSpokeAt === undefined || time - data.lastSpokeAt > 120) &&
+              time > this.npcBubbleUntil
+            ) {
+              data.lastSpokeAt = time;
+              const ws = getWorldState();
+              const text = composeAwareGreeting({
+                activity: w.activity,
+                hour: this.envCycle ? this.envCycle.getHour() : 12,
+                event: ws?.npcPlan?.event,
+              });
+              this.showNpcSpeechBubble(i, text, time);
+              if (isSpeechEnabled()) {
+                const v = voiceProfileFor(npc.name);
+                speak(text, v.rate, v.pitch, v.variant);
+              }
+            }
           }
         }
 
@@ -4000,6 +4097,18 @@ export class GameScene extends THREE.Scene {
       mat.opacity = op;
       // No pin over an empty doorstep while its NPC sleeps "inside".
       tag.sprite.visible = op > 0.02 && tag.target.meshRef.visible;
+    }
+
+    // Speech bubble follows its speaker just above the name pin; auto-hides.
+    if (this.npcBubble && this.npcBubble.sprite.visible) {
+      const tag = this.nameTags[this.npcBubbleFor];
+      if (time > this.npcBubbleUntil || !tag || !tag.target.meshRef.visible) {
+        this.npcBubble.sprite.visible = false;
+      } else {
+        this.npcBubble.sprite.position
+          .copy(tag.sprite.position)
+          .addScaledVector(this._tagNormal.copy(tag.target.position).normalize(), 1.0);
+      }
     }
 
     // Drain colliders queued by async GLB placements (e.g. the orchard/

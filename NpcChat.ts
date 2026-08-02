@@ -63,6 +63,68 @@ export function voiceProfileFor(name: string): VoiceProfile {
   return VOICE_PROFILES[name] ?? { rate: 1, pitch: 1, variant: 0 };
 }
 
+// ── Aware proximity greetings ────────────────────────────────────────────────
+// Composed CLIENT-SIDE from live world state (the NPC's planner-assigned
+// activity, time of day, island mood, day-theme) — instant, $0, and safe:
+// every fragment is pre-authored; the "intelligence" is the live state
+// selecting them. The LLM engagement stays behind the chat send.
+
+const TIME_GREETS: Array<[number, number, string[]]> = [
+  [5, 11, ['Good morning', 'Fine morning', 'Morning, traveller']],
+  [11, 17, ['Good afternoon', 'Lovely afternoon', 'Afternoon, traveller']],
+  [17, 21, ['Good evening', 'Fine evening', 'Evening, traveller']],
+  [21, 29, ['Up late, are we', 'Quiet night tonight', 'The stars are out']],
+];
+
+const ACTIVITY_OPENERS: Record<string, string[]> = {
+  tend_flowers: ['these beds won’t tend themselves', 'the flowers are thirsty today'],
+  patrol: ['all quiet on my rounds so far', 'keeping an eye on the boulevard'],
+  mail_round: ['half a postbag still to deliver', 'letters wait for no one'],
+  play_music: ['I’ve a tune going in the plaza', 'the plaza wanted music today'],
+  lamp_round: ['just seeing to the lamps', 'a lamp untended is a corner unlit'],
+  paint_vista: ['trying to catch this light before it moves', 'the coast is posing for me today'],
+  keep_light: ['the light must never go out', 'watching over the lighthouse, as ever'],
+  shore_gaze: ['the tide has stories today', 'just watching the water roll in'],
+  market_visit: ['browsing the stalls for something good', 'market’s lively today'],
+  bench_rest: ['resting these old feet a moment', 'just enjoying the view from here'],
+  stroll: ['out stretching my legs', 'no better island for a stroll'],
+  plaza_gather: ['everyone’s gathering in the plaza', 'you can feel the buzz in the plaza'],
+  study: ['deep in my studies today', 'so much to learn about this world'],
+  muse: ['lost in thought, I’m afraid', 'pondering the big questions'],
+};
+const GENERIC_OPENERS = ['taking in the island air', 'a fine day to be on the island'];
+
+const EVENT_TAGS: Record<string, string> = {
+  festival: 'It’s festival day — the whole town’s buzzing!',
+  market_day: 'It’s market day on the island.',
+  music_day: 'It’s music day — listen close.',
+  mystery: 'Something mysterious is in the air today…',
+  launch_day: 'Word is something big launched today!',
+};
+
+const pick = (arr: string[]): string => arr[Math.floor(Math.random() * arr.length)] ?? arr[0];
+
+/**
+ * One or two short sentences an NPC says when the visitor walks up: aware of
+ * the hour, their current planner-assigned activity, and the day-theme. Also
+ * used as the chat opening so the bubble and the conversation flow as one.
+ */
+export function composeAwareGreeting(opts: {
+  activity?: string;
+  hour: number;
+  event?: string;
+}): string {
+  const band = TIME_GREETS.find(
+    ([from, to]) =>
+      (opts.hour >= from && opts.hour < to) || (opts.hour + 24 >= from && opts.hour + 24 < to),
+  );
+  const greet = pick(band ? band[2] : TIME_GREETS[1][2]);
+  const opener = pick((opts.activity && ACTIVITY_OPENERS[opts.activity]) || GENERIC_OPENERS);
+  const eventTag =
+    opts.event && EVENT_TAGS[opts.event] && Math.random() < 0.5 ? ` ${EVENT_TAGS[opts.event]}` : '';
+  return `${greet} — ${opener}.${eventTag}`;
+}
+
 export async function askNpc(npcName: string, message: string): Promise<NpcReply> {
   const npcId = AI_NPCS[npcName];
   if (!npcId) return { reply: null, fallback: true, reason: 'not-ai' };

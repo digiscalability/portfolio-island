@@ -9,7 +9,7 @@ import { DISTRICTS } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
 import { Multiplayer } from './Multiplayer';
-import { askNpc, isAiNpc, voiceProfileFor } from './NpcChat';
+import { askNpc, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, type PassportZone } from './Passport';
 import { loadProfile, saveProfile } from './profileSync';
@@ -19,7 +19,7 @@ import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
 import { isRealTheme } from './Theme';
-import { connectWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
+import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
 import './style.css';
 
@@ -394,9 +394,17 @@ class SimpleApp {
           sfx.blip();
           const canned = npcData.dialogue;
           let ci = 1; // first fallback skips the opening line (canned[0])
+          // Aware opening: same live-state composition as the proximity bubble
+          // (planner-assigned activity + hour + day-theme), so the walk-up line
+          // and the conversation flow as one — no more static canned[0].
+          const aware = composeAwareGreeting({
+            activity: this.scene.getNpcActivity(npcData.name),
+            hour: this.scene.getEnvironmentCycle()?.getHour() ?? 12,
+            event: getWorldState()?.npcPlan?.event,
+          });
           this.ui.showNpcChat(
             npcData.name,
-            canned[0] ?? 'Hello, traveller.',
+            aware || canned[0] || 'Hello, traveller.',
             async (text) => {
               track('npc_chat_sent', { npc: npcData.name });
               const res = await askNpc(npcData.name, text);
