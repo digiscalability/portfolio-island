@@ -467,7 +467,7 @@ export class GameScene extends THREE.Scene {
         [/^town_fountain$/, 2.3],
         [/^lighthouse$/, 2.0], // solid tower base — was walk-through
         [/^pillar_\d+$/, 0.45], // hub lantern pillars — were walk-through
-        [/^gatepost_\d+$/, 0.4], // district entry-gate posts (straddle the avenue)
+        [/^gatepost_\d+$/, 0.22], // district entry-gate posts (straddle the avenue; slimmed 2026-08)
       ];
       this.island.mesh.updateMatrixWorld(true);
       let colliderCount = 0;
@@ -3457,6 +3457,14 @@ export class GameScene extends THREE.Scene {
         vertexColors: mat.vertexColors,
         gradientMap,
       });
+      // Carry custom onBeforeCompile injections through the swap (currently
+      // just the terrain material's wet-sand band). The chunks they target
+      // (<common>, <begin_vertex>, <color_fragment>) exist in the toon shaders
+      // too, and Material.onBeforeCompile defaults to a no-op, so copying it
+      // is free for every uncustomised material — and the default
+      // customProgramCacheKey (onBeforeCompile.toString()) keeps the terrain
+      // toon clone on its own shader program without splitting the others.
+      toon.onBeforeCompile = mat.onBeforeCompile;
       cache.set(mat.uuid, toon);
       return toon;
     };

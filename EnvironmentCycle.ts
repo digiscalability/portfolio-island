@@ -98,6 +98,14 @@ export class EnvironmentCycle {
   // Dedupe across collection passes (constructor + the late rescan)
   private readonly seenGlow = new Set<THREE.Light>();
   private readonly seenEmissive = new Set<THREE.Material>();
+  // Pavement materials (street ribbons, plaza floors — tagged isPavement).
+  // Color-lerped toward asphalt-grey as dayFactor falls so pavement dims
+  // with the terrain instead of staying near-white under moonlight.
+  private pavementMats: Array<{
+    mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+    base: THREE.Color;
+  }> = [];
+  private readonly seenPavement = new Set<THREE.Material>();
   private rescanned = false;
 
   private baseSunIntensity: number;
@@ -271,12 +279,24 @@ export class EnvironmentCycle {
         isLampLight?: boolean;
         isHouseWarmLight?: boolean;
         isNightEmissive?: boolean;
+        isPavement?: boolean;
       };
       const l = obj as THREE.Light;
       if (l.isLight) {
         if ((data.isLampLight || data.isHouseWarmLight) && !this.seenGlow.has(l)) {
           this.seenGlow.add(l);
           this.glowLights.push({ light: l, base: l.intensity });
+        }
+        return;
+      }
+      if (data.isPavement) {
+        const pMesh = obj as THREE.Mesh;
+        if (pMesh.isMesh && !Array.isArray(pMesh.material)) {
+          const pMat = pMesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+          if (pMat.color && !this.seenPavement.has(pMat)) {
+            this.seenPavement.add(pMat);
+            this.pavementMats.push({ mat: pMat, base: pMat.color.clone() });
+          }
         }
         return;
       }
@@ -781,6 +801,15 @@ export class EnvironmentCycle {
       e.mat.emissive.copy(e.base).lerp(this._c2, nightF * 0.3);
     }
 
+    // Pavement: bright pavers by day → asphalt-grey after dark. Streets
+    // kept reading near-white at night because their pale albedo (plus the
+    // faint emissive floor) ignored the light dimming. Shared materials
+    // only (~a dozen entries), scratch color — no allocs, no traversal.
+    this._c2.set(0x3c3f48);
+    for (const p of this.pavementMats) {
+      p.mat.color.copy(p.base).lerp(this._c2, nightF * 0.85);
+    }
+
     // Precipitation: particles fall in the player's local frame
     if (this.precip && this.precipGeo && this.precipSpeeds) {
       this.precip.position.copy(playerPos);
@@ -820,8 +849,10 @@ export class EnvironmentCycle {
     this.starLayers.length = 0;
     this.nightEmissives.length = 0;
     this.glowLights.length = 0;
+    this.pavementMats.length = 0;
     this.seenGlow.clear();
     this.seenEmissive.clear();
+    this.seenPavement.clear();
     this.scene.remove(this.moon);
     this.moon.geometry.dispose();
     this.moonMat.dispose();

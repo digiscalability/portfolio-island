@@ -202,11 +202,28 @@ export class Zone {
     lamp.position.set(0, base + 2.05, bd / 2 + 0.16);
     lamp.userData.isNightEmissive = true;
     g.add(lamp);
-    for (const wx of [-bw * 0.3, bw * 0.3]) {
-      const win = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.8, 0.08), glowMat());
-      win.position.set(wx, base + bh * 0.62, bd / 2 + 0.02);
-      win.userData.isNightEmissive = true;
-      g.add(win);
+    // The tall office slab gets three storeys of glass so it reads inhabited
+    // at night; the low landmarks keep their single row. Rear + side windows
+    // dress the previously blank single-colour faces — same night-emissive
+    // idiom, boxes embed 0.02 into the wall / protrude 0.06 like the fronts.
+    const winRows = id === 'professional' ? [0.32, 0.55, 0.78] : [0.62];
+    for (const wy of winRows) {
+      for (const wx of [-bw * 0.3, bw * 0.3]) {
+        for (const wz of [bd / 2 + 0.02, -bd / 2 - 0.02]) {
+          const win = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.8, 0.08), glowMat());
+          win.position.set(wx, base + bh * wy, wz);
+          win.userData.isNightEmissive = true;
+          g.add(win);
+        }
+      }
+      for (const sx of [-1, 1]) {
+        for (const wz of [-bd * 0.24, bd * 0.24]) {
+          const win = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.66), glowMat());
+          win.position.set(sx * (bw / 2 + 0.02), base + bh * wy, wz);
+          win.userData.isNightEmissive = true;
+          g.add(win);
+        }
+      }
     }
 
     // Rooftop beacon — the far-read navigation cue that replaces the tall beam.

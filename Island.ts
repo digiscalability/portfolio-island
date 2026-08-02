@@ -963,6 +963,44 @@ export class Island {
       envMapIntensity: 0.5,
     });
     material.vertexColors = true;
+    // ── Wet-sand band + swash line (LAND half of the beach interface) ─────
+    // The sea shader draws the foam collar on the water; this tints the sand:
+    // a thin white swash line at the waterline and a darker damp band up the
+    // beach. Pure fragment maths keyed on object-space |position| (the island
+    // group sits at the origin, so that IS the terrain radius the colour pass
+    // used) vs the tide-following waterline. Shares seaTideUniform BY
+    // REFERENCE — no per-frame writes, no extra mesh, no raycasts. It is
+    // deliberately tide-only (no wave term): duplicating the wave sum here
+    // would create a third copy of the math the waveMirror parity test does
+    // not pin, free to drift. Chunks targeted (<common>, <begin_vertex>,
+    // <color_fragment>) exist in BOTH MeshStandardMaterial (?theme=real) and
+    // the MeshToonMaterial swap-in (toonifyIslandMaterials carries this over).
+    const shoreWaterline = this.seaLevel().toFixed(4);
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uTide = this.seaTideUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying float vShoreR;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvShoreR = length(position);');
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          '#include <common>\nvarying float vShoreR;\nuniform float uTide;',
+        )
+        .replace(
+          '#include <color_fragment>',
+          [
+            '#include <color_fragment>',
+            `float shoreAbove = vShoreR - (${shoreWaterline} + uTide);`,
+            // Damp sand: darkens from the waterline up ~0.45u, gone well before
+            // the grass line so meadows never read soggy.
+            'float wet = smoothstep(-0.35, 0.0, shoreAbove) * (1.0 - smoothstep(0.08, 0.45, shoreAbove));',
+            'diffuseColor.rgb *= 1.0 - wet * 0.22;',
+            // Swash line: a thin bright rim right where water meets sand.
+            'float swash = 1.0 - smoothstep(0.0, 0.16, abs(shoreAbove - 0.03));',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.94, 0.97, 0.99), swash * 0.55);',
+          ].join('\n'),
+        );
+    };
 
     const mesh = new THREE.Mesh(geometry, material);
     // keep a direct reference to the terrain mesh for raycasting / accurate placement
@@ -981,7 +1019,10 @@ export class Island {
     // separate mesh from surfaceMesh, so terrain sampling (raycasts
     // surfaceMesh only) and colliders never see it.
     const seaMat = new THREE.MeshStandardMaterial({
-      color: 0x1f6a9c,
+      // Deeper + more chroma than the old 0x1f6a9c: ACES lifts and desaturates,
+      // and the noon-sky fresnel/haze used to wash the flat base milky. The
+      // depth gradient in the fragment pass keys off this base.
+      color: 0x176ba8,
       // Was 0.84 — too see-through, the dark seafloor showed through and read
       // as murky glass. 0.92 kills the x-ray look while still letting fish
       // near the surface glimmer through faintly.
@@ -1065,6 +1106,15 @@ export class Island {
           '#include <color_fragment>',
           [
             '#include <color_fragment>',
+            // ── Radial depth gradient ─────────────────────────────────────
+            // aDepth (baked sea-surface minus analytic terrain) is already on
+            // every vertex, so a shore→ocean colour ramp is free. Open ocean
+            // bottoms out at d≈2.5 (seafloor -2.4 + SEA_OFFSET 0.1), so the
+            // ramp keys 0.5→2.3: near-shore water keeps the turquoise below,
+            // offshore saturates to deep azure instead of one flat milky tone.
+            // GLSL literals are LINEAR-space like every colour in this block.
+            'float d = vDepth - uTide;',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.006, 0.105, 0.32), smoothstep(0.5, 2.3, d) * 0.6);',
             // Deepen the wave troughs toward a dark teal for a sense of depth
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03,0.11,0.20), smoothstep(0.0,-1.4,vWave)*0.45);',
             // Whitecaps. Thresholds re-tuned for the new 1.8 wave peak; a
@@ -1082,9 +1132,12 @@ export class Island {
             // Ranges are generous because the shallowest water is HIDDEN under
             // the beach — only the depth beyond the visible waterline renders,
             // so a tight band collapses to a hairline.
-            'float d = vDepth - uTide;',
-            'float shallow = 1.0 - smoothstep(0.0, 5.0, d);',
-            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22,0.68,0.72), shallow*shallow*0.65);',
+            // Shallow turquoise tightened 5.0→2.4 (d is declared at the top of
+            // this block now): at the old range the open ocean (d≈2.5) still
+            // carried ~0.16 of this tint — a big part of the milky noon look.
+            // It now dies exactly where the depth gradient takes over.
+            'float shallow = 1.0 - smoothstep(0.0, 2.4, d);',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20,0.70,0.72), shallow*shallow*0.7);',
             'float edge = 1.0 - smoothstep(0.0, 3.2, d);',
             'float s1 = sin(d * 2.6 - uTime * 1.9);',
             'float s2 = sin(d * 4.3 - uTime * 2.7 + 1.7);',
@@ -1096,8 +1149,11 @@ export class Island {
             // phone DPR.
             'float fn = fract(sin(dot(floor(vFoamUv * 38.0), vec2(12.9898, 78.233))) * 43758.5453);',
             'float foam = edge * smoothstep(0.2, 0.9, surf + (fn - 0.5) * 0.45);',
-            // A permanent wet band right at the waterline under the moving foam
-            'foam = max(foam, (1.0 - smoothstep(0.0, 0.9, d)) * 0.8);',
+            // Permanent foam collar at the waterline, under the moving surf.
+            // The shallowest sea verts hide UNDER the beach, so the visible rim
+            // sits at d≈0.2–0.8 — the old 0.9 range faded to nothing exactly
+            // there and no line survived. 1.6 keeps an unbroken white edge.
+            'foam = max(foam, (1.0 - smoothstep(0.05, 1.6, d)) * 0.9);',
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95,0.98,1.0), clamp(foam, 0.0, 1.0) * 0.9);',
           ].join('\n'),
         )
@@ -1121,13 +1177,20 @@ export class Island {
             'float fres = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);',
             isRealTheme()
               ? '// real theme: envmap supplies the sky reflection'
-              : 'outgoingLight = mix(outgoingLight, uSkyHorizon, fres * 0.55);',
+              : 'outgoingLight = mix(outgoingLight, uSkyHorizon, fres * 0.4);',
             // Horizon haze: dissolve the distant sea into the LIVE sky-horizon
             // colour so the water no longer meets the sky as a hard line — the
             // single biggest "sells a world, not an object on a table" cue.
             // Distance-keyed so near water stays saturated. Applies to both themes.
-            'float horizonHaze = smoothstep(20.0, 52.0, length(vViewPosition));',
-            'outgoingLight = mix(outgoingLight, uSkyHorizon, horizonHaze * 0.75);',
+            // Pushed out (20→30) and nearly halved (0.75→0.45): the old ramp
+            // had most visible water 40-75% sky colour at typical camera
+            // heights (sea limb ≈ 24-30u away) — the sea *became* the sky
+            // instead of meeting it. Scene FogExp2 (density 0.009, colour =
+            // live horizon) still supplies the soft far blend, so this now
+            // just feathers the last band and the horizon reads as a LINE
+            // with colour depth behind it. Applies to both themes.
+            'float horizonHaze = smoothstep(30.0, 64.0, length(vViewPosition));',
+            'outgoingLight = mix(outgoingLight, uSkyHorizon, horizonHaze * 0.45);',
             'diffuseColor.a = mix(0.85, 0.97, fres);',
             '#include <opaque_fragment>',
           ].join('\n'),
@@ -1228,7 +1291,10 @@ export class Island {
     // generate procedural building textures and use them for PBR-like facades
     const buildingTex = TextureGenerator.createBuildingTextures(512, 512);
     const buildingMat = Materials.createPBRMaterial({
-      color: 0xd9c6b3,
+      color: 0xffffff, // WHITE: the albedo map carries the slate facade color.
+      // 0xd9c6b3 here MULTIPLIED the same-toned brick map (the near-black-grass
+      // class of bug) — with the toon shadow ramp on top, tower faces crushed
+      // to a black void at noon.
       map: buildingTex.albedo,
       normalMap: buildingTex.normal,
       roughnessMap: buildingTex.roughness,
@@ -1238,6 +1304,23 @@ export class Island {
     });
     const buildingPlaceholders: THREE.Mesh[] = [];
     const buildingSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
+    // Emissive office-window grids for the CBD towers — they were unlit black
+    // slabs at night while every cottage window glowed. ONE shared material +
+    // plane geometry across all towers/faces: EnvironmentCycle dedupes by
+    // material, so the whole CBD is a single isNightEmissive drive entry.
+    // transparent:true deliberately opts the panes OUT of toonify (GameScene
+    // skips transparent materials and would otherwise drop the emissiveMap).
+    const towerWinTex = TextureGenerator.createOfficeWindowTexture();
+    const towerWinMat = new THREE.MeshStandardMaterial({
+      map: towerWinTex,
+      emissive: 0xffe6a8,
+      emissiveMap: towerWinTex,
+      emissiveIntensity: 0.15, // day baseline; EnvironmentCycle raises to ~1.3 at night
+      transparent: true,
+      depthWrite: false,
+      roughness: 0.4,
+    });
+    const towerWinGeom = new THREE.PlaneGeometry(2.2, 4.2);
     // PROFESSIONAL district: two office rows forming a street wall along
     // the boulevard (planned CBD blocks, not a ring). North row lat 0.64,
     // south row lat 0.29 — ±0.175 rad from the boulevard centerline leaves
@@ -1285,6 +1368,18 @@ export class Island {
       b.castShadow = true;
       b.receiveShadow = true;
       b.name = `building_placeholder_${i}`;
+      // Window grid on all four faces, parented to the tower so it inherits
+      // the surface placement/orientation; +0.03 clears the wall (box face is
+      // at ±1.5 local) to avoid z-fighting.
+      for (let f = 0; f < 4; f++) {
+        const wa = (f * Math.PI) / 2;
+        const wp = new THREE.Mesh(towerWinGeom, towerWinMat);
+        wp.position.set(Math.sin(wa) * 1.53, 0.15, Math.cos(wa) * 1.53);
+        wp.rotation.y = wa;
+        wp.raycast = () => {}; // decoration only — keep out of interaction picks
+        wp.userData.isNightEmissive = true;
+        b.add(wp);
+      }
       buildings.add(b);
       buildingPlaceholders.push(b);
     }
@@ -2796,10 +2891,12 @@ export class Island {
     // pillars (4.6u) pavement to stand on.
     const plazaFloor = new THREE.Mesh(new THREE.CylinderGeometry(5.0, 5.1, 0.1, 48), plazaStone);
     plazaFloor.receiveShadow = true;
+    plazaFloor.userData.isPavement = true; // dims with the streets at night
     plazaBase.add(plazaFloor);
     const plazaRing = new THREE.Mesh(new THREE.TorusGeometry(4.55, 0.1, 8, 48), plazaTrim);
     plazaRing.rotation.x = Math.PI / 2;
     plazaRing.position.y = 0.06;
+    plazaRing.userData.isPavement = true;
     plazaBase.add(plazaRing);
     this.placeObjectOnSurface(
       plazaBase,
@@ -2862,16 +2959,16 @@ export class Island {
       gate.name = `district_gate_${gi}`;
       // Posts at local ±X. After the gate is faced down the avenue below, local
       // +X becomes "across the street", so the two posts straddle the path.
-      const postGeom = new THREE.CylinderGeometry(0.18, 0.26, 3.0, 8);
-      const capGeom = new THREE.BoxGeometry(0.5, 0.18, 0.5);
+      const postGeom = new THREE.CylinderGeometry(0.09, 0.12, 2.2, 8);
+      const capGeom = new THREE.BoxGeometry(0.3, 0.12, 0.3);
       for (let side = 0; side < 2; side++) {
         const post = new THREE.Group();
         const shaft = new THREE.Mesh(postGeom, gateStone);
-        shaft.position.y = 1.5;
+        shaft.position.y = 1.1;
         shaft.castShadow = true;
         post.add(shaft);
         const cap = new THREE.Mesh(capGeom, gateStone);
-        cap.position.y = 3.05;
+        cap.position.y = 2.26;
         post.add(cap);
         post.position.set(side === 0 ? -GATE_HALF_WIDTH : GATE_HALF_WIDTH, 0, 0);
         post.name = `gatepost_${gi * 2 + side}`; // GameScene registers a collider off this name
@@ -2879,10 +2976,10 @@ export class Island {
       }
       // Crossbeam spanning the posts
       const beam = new THREE.Mesh(
-        new THREE.BoxGeometry(GATE_HALF_WIDTH * 2 + 0.5, 0.4, 0.4),
+        new THREE.BoxGeometry(GATE_HALF_WIDTH * 2 + 0.3, 0.26, 0.26),
         gateStone,
       );
-      beam.position.set(0, 3.2, 0);
+      beam.position.set(0, 2.45, 0);
       beam.castShadow = true;
       gate.add(beam);
       // Name board on the beam — a DoubleSide CanvasTexture so it reads both
@@ -2906,12 +3003,12 @@ export class Island {
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
         const board = new THREE.Mesh(
-          new THREE.PlaneGeometry(3.0, 0.75),
+          new THREE.PlaneGeometry(1.8, 0.45),
           // Unlit so the name stays legible at any hour (matches the project
           // plaques' sprites); DoubleSide so it reads from both directions.
           new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }),
         );
-        board.position.set(0, 3.2, 0.22);
+        board.position.set(0, 2.45, 0.16);
         board.name = 'gate-board';
         board.raycast = () => {}; // decorative — skip interaction/camera rays
         gate.add(board);
@@ -2919,7 +3016,7 @@ export class Island {
       // Accent lantern crowning the gate — night-emissive, NO PointLight (the
       // rig is already at its 16-light budget).
       const lantern = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 12, 12),
+        new THREE.SphereGeometry(0.15, 12, 12),
         new THREE.MeshStandardMaterial({
           color: d.accent,
           emissive: d.accent,
@@ -2927,7 +3024,7 @@ export class Island {
           roughness: 0.4,
         }),
       );
-      lantern.position.set(0, 3.65, 0);
+      lantern.position.set(0, 2.72, 0);
       lantern.userData.isNightEmissive = true;
       gate.add(lantern);
       // Seat at the avenue head, then turn so +Z (and the ±X post span) line up
@@ -2935,14 +3032,16 @@ export class Island {
       const placed = this.placeObjectOnSurface(
         gate,
         this.dirAt(d.lon, ZONE_LAT + 0.16).multiplyScalar(this.radius),
-        0.0,
-        true,
+        -0.05,
+        false,
       );
-      this.faceObjectToward(
-        gate,
-        placed.normal,
-        this.dirAt(d.lon, ZONE_LAT).multiplyScalar(this.radius),
-      );
+      // Straight mount: align to RADIAL up, not the terrain normal — on the
+      // sloped poleward approach the normal leaned the whole gate (the
+      // "tilted billboard" playtest note). Sunk 0.05 so the downhill post
+      // still seats on the slope.
+      const gateUp = placed.position.clone().normalize();
+      gate.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), gateUp);
+      this.faceObjectToward(gate, gateUp, this.dirAt(d.lon, ZONE_LAT).multiplyScalar(this.radius));
       gates.add(gate);
     }
 
@@ -3866,6 +3965,13 @@ export class Island {
       // raycasts from the base radius, which starts INSIDE raised terrain
       // and falls back to r=base — burying street segments under hills
       const sampled = this.sampleSurfaceByDirection(midDir, 0.03);
+      // Shoreline clamp: never lay pavement below the waterline — a street
+      // running downhill into the sea with no terminus reads as a bug. Skip
+      // segments whose sampled ground sits at/under calm sea level (+0.05
+      // margin over the 0.03 sample offset). Build-time only; the street now
+      // ends at the beach. Keep-out registration is skipped too, so shore
+      // props can reclaim the strip.
+      if (sampled.position.length() < this.seaLevel() + 0.08) continue;
       const posA = a.multiplyScalar(this.radius);
       const posB = b.multiplyScalar(this.radius);
       const segLength = posA.distanceTo(posB);
@@ -3888,6 +3994,9 @@ export class Island {
       const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
       mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
       mesh.receiveShadow = true;
+      // EnvironmentCycle lerps this material toward asphalt-grey at night —
+      // the pale paver otherwise stays near-white while the world dims.
+      mesh.userData.isPavement = true;
       group.add(mesh);
       this.streetDirs.push({ dir: midDir, halfArc: keepOutArc });
       this.streetDirs.push({ dir: a, halfArc: keepOutArc });

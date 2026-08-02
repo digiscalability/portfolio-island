@@ -60,10 +60,10 @@ export class TextureGenerator {
     c.height = h;
     const ctx = c.getContext('2d')!;
     // base plaster/paint
-    ctx.fillStyle = '#d9c6b3';
+    ctx.fillStyle = '#b9c0c9'; // light slate mortar — reads as pale grout lines
     ctx.fillRect(0, 0, w, h);
     // add bricks/tiles rows
-    ctx.fillStyle = '#bfa28f';
+    ctx.fillStyle = '#8b95a1'; // mid slate/graphite brick
     const rowH = 28;
     for (let y = 0; y < h; y += rowH) {
       for (let x = 0; x < w; x += 48) {
@@ -71,11 +71,12 @@ export class TextureGenerator {
         ctx.fillRect(x + jitter, y + 6, 44, rowH - 10);
         ctx.fillStyle = `rgba(0,0,0,${(Math.random() * 0.06).toFixed(2)})`;
         ctx.fillRect(x + jitter + 1, y + rowH - 6, 42, 2);
-        ctx.fillStyle = '#bfa28f';
+        ctx.fillStyle = '#8b95a1';
       }
     }
 
     const albedo = new THREE.CanvasTexture(c);
+    albedo.colorSpace = THREE.SRGBColorSpace;
     albedo.wrapS = THREE.RepeatWrapping;
     albedo.wrapT = THREE.RepeatWrapping;
 
@@ -109,6 +110,36 @@ export class TextureGenerator {
     rough.wrapT = THREE.RepeatWrapping;
 
     return { albedo, normal, roughness: rough, ao };
+  }
+
+  // Emissive window grid for the CBD office towers: warm lit panes (plus a few
+  // dark "empty office" panes) on a transparent background. Used as both map
+  // and emissiveMap so one plane reads as glass by day and a lit grid after
+  // dark via the isNightEmissive drive in EnvironmentCycle. Deterministic
+  // pattern — no Math.random, so every load looks identical.
+  public static createOfficeWindowTexture(
+    cols = 3,
+    rows = 5,
+    w = 128,
+    h = 256,
+  ): THREE.CanvasTexture {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d')!;
+    ctx.clearRect(0, 0, w, h);
+    const cw = w / cols;
+    const ch = h / rows;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const lit = (x * 7 + y * 13) % 5 !== 0;
+        ctx.fillStyle = lit ? '#ffe6a8' : '#33414f';
+        ctx.fillRect(x * cw + cw * 0.18, y * ch + ch * 0.16, cw * 0.64, ch * 0.6);
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
   }
 
   // Create a normal map from a source canvas using a simple sobel-like operator.

@@ -235,10 +235,10 @@ const GENERIC: ScheduleRow[] = [
 const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
   // Heroes (deep routines)
   gardener: [
-    { from: 5, to: 7, activity: 'stroll' },
+    { from: 6, to: 7, activity: 'stroll' },
     { from: 7, to: 17, activity: 'tend_flowers' },
     { from: 17, to: 21, activity: 'bench_rest' },
-    { from: 21, to: 29, activity: 'sleep' },
+    { from: 21, to: 30, activity: 'sleep' },
   ],
   guard: [
     { from: 6, to: 20, activity: 'patrol' },
@@ -250,7 +250,8 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
     { from: 22, to: 32, activity: 'sleep' },
   ],
   musician: [
-    { from: 10, to: 21, activity: 'play_music', moods: { calm: 'stroll' } },
+    { from: 10, to: 20, activity: 'play_music', moods: { calm: 'stroll' } },
+    { from: 20, to: 21, activity: 'bench_rest' },
     { from: 21, to: 34, activity: 'sleep' },
   ],
   night_watch: [
@@ -580,7 +581,9 @@ export function getGoal(
   let activity: ActivityId = row ? row.activity : 'stroll';
   if (row?.moods && mood && row.moods[mood]) activity = row.moods[mood]!;
 
-  // Daily server plan overrides the day-time activity — but never INTO or OUT
+  // Daily server plan overrides the DAY-TIME activity only (hour-gated to
+  // 06:00–20:00, so the evening wind-down bands — bench_rest/stroll after
+  // 20:00 — can't be re-tasked back into day work) — and never INTO or OUT
   // of sleep: the schedule's sleep window always wins, and a planned 'sleep'
   // can't flatten the town at midday (setPlan validated ids via hasOwnProperty,
   // so the extra guard here is belt-and-braces).
@@ -589,13 +592,36 @@ export function getGoal(
     planned &&
     planned !== 'sleep' &&
     Object.prototype.hasOwnProperty.call(ACTIVITY_DEFS, planned) &&
-    activity !== 'sleep'
+    activity !== 'sleep' &&
+    hour >= 6 &&
+    hour < 20
   ) {
     activity = planned;
   }
 
   const def = ACTIVITY_DEFS[activity];
-  if (!pickAnchor(def.anchorSource, s, outDir, personaId)) {
+  // Evening bench_rest rests NEAR HOME: pick the bench closest to the NPC's
+  // home instead of rotating the island-wide bench list, so nobody hikes
+  // across the dark island to sit down at 21:00. Per-goal only (a few calls
+  // per NPC per minute) and allocation-free — mirrors the nearest-door loop.
+  let anchored = false;
+  if (activity === 'bench_rest' && (hour >= 20 || hour < 6)) {
+    const benches = ANCHORS?.benches;
+    if (benches && benches.length) {
+      let best = benches[0];
+      let bestAngle = Infinity;
+      for (const b of benches) {
+        const a = b.angleTo(s.home);
+        if (a < bestAngle) {
+          bestAngle = a;
+          best = b;
+        }
+      }
+      outDir.copy(best);
+      anchored = true;
+    }
+  }
+  if (!anchored && !pickAnchor(def.anchorSource, s, outDir, personaId)) {
     jitterDir(s.home, 0.06, outDir); // graceful fallback if anchors missing
   }
   return {
