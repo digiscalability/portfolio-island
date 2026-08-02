@@ -833,17 +833,27 @@ class SimpleApp {
     contact: ['Work with\nDigiScalability', 'admin@\ndigiscalability\n.com'],
   };
 
+  // Which themed furniture set each zone building opens into (houses → cottage).
+  private static readonly INTERIOR_THEMES: Record<string, string> = {
+    welcome: 'hall',
+    professional: 'office',
+    projects: 'workshop',
+    personal: 'home',
+    contact: 'post',
+  };
+
   private enterBuilding(id: string, isZone: boolean, zone?: { id: string; name: string }): void {
     if (this.scene.isInsideInterior()) return;
     const d = DISTRICTS.find((x) => x.id === id);
     const title = isZone ? (zone?.name ?? d?.name ?? id) : 'A cosy home';
     const wall = isZone ? (d?.accent ?? 0xcfc4ae) : 0xe0c9a8;
+    const theme = isZone ? (SimpleApp.INTERIOR_THEMES[id] ?? 'hall') : 'cottage';
     const [left, right] = isZone
       ? (SimpleApp.INTERIOR_CONTENT[id] ?? ['', ''])
       : ['A place to\nrest', 'Someone\nlives here'];
     sfx.blip();
     this.ui.fadeThrough(() => {
-      this.scene.enterInterior(title, wall, left, right);
+      this.scene.enterInterior(title, wall, left, right, theme);
       if (isZone && zone) {
         this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
       }

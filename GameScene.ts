@@ -4445,7 +4445,11 @@ export class GameScene extends THREE.Scene {
   private insideInterior = false;
   private interiorGroup: THREE.Group | null = null;
   private interiorWallMat: THREE.MeshStandardMaterial | null = null;
+  private interiorRugMat: THREE.MeshStandardMaterial | null = null;
   private interiorPosters: Array<{ ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
+  private interiorSets: Record<string, THREE.Group> = {};
+  private interiorFire: THREE.PointLight | null = null;
+  private interiorTime = 0;
   private interiorOrbitAngle = 0;
   private onHouseEnterCb: ((id: string) => void) | null = null;
   private static readonly INTERIOR_ORIGIN = new THREE.Vector3(0, -300, 0);
@@ -4464,47 +4468,276 @@ export class GameScene extends THREE.Scene {
     g.visible = false;
     const wallMat = new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.92 });
     this.interiorWallMat = wallMat;
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6b4a, roughness: 0.85 });
-    const add = (
-      geo: THREE.BufferGeometry,
-      mat: THREE.Material,
+    // Shared material cache: themed sets reuse one material per colour so the
+    // whole six-room wardrobe costs a handful of materials, not one per prop.
+    const mats = new Map<number, THREE.MeshStandardMaterial>();
+    const matFor = (color: number, rough = 0.85): THREE.MeshStandardMaterial => {
+      let m = mats.get(color);
+      if (!m) {
+        m = new THREE.MeshStandardMaterial({ color, roughness: rough });
+        mats.set(color, m);
+      }
+      return m;
+    };
+    const box = (
+      parent: THREE.Object3D,
+      w: number,
+      h: number,
+      d: number,
+      color: number,
       x: number,
       y: number,
       z: number,
       ry = 0,
-    ) => {
-      const m = new THREE.Mesh(geo, mat);
+      rx = 0,
+    ): THREE.Mesh => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), matFor(color));
       m.position.set(x, y, z);
-      m.rotation.y = ry;
-      g.add(m);
+      m.rotation.set(rx, ry, 0);
+      parent.add(m);
+      return m;
     };
-    add(new THREE.BoxGeometry(8, 0.2, 8), woodMat, 0, 0, 0); // floor
-    add(new THREE.BoxGeometry(8, 0.2, 8), wallMat, 0, 4, 0); // ceiling
-    add(
+    const cyl = (
+      parent: THREE.Object3D,
+      rTop: number,
+      rBot: number,
+      h: number,
+      color: number,
+      x: number,
+      y: number,
+      z: number,
+      rx = 0,
+    ): THREE.Mesh => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, h, 12), matFor(color));
+      m.position.set(x, y, z);
+      m.rotation.x = rx;
+      parent.add(m);
+      return m;
+    };
+
+    // ── Shell: plank floor, walls, ceiling with beams, skirting ──
+    // Wood-plank floor via a tiny CanvasTexture — reads as boards, not plastic.
+    const fcv = document.createElement('canvas');
+    fcv.width = 256;
+    fcv.height = 256;
+    const fx = fcv.getContext('2d');
+    if (fx) {
+      for (let r = 0; r < 8; r++) {
+        fx.fillStyle = r % 2 ? '#826140' : '#8f7050';
+        fx.fillRect(0, r * 32, 256, 32);
+        fx.fillStyle = 'rgba(56,40,24,0.55)';
+        fx.fillRect(0, r * 32, 256, 2); // plank seam
+        fx.fillRect((r * 96) % 256, r * 32, 2, 32); // staggered butt joint
+      }
+    }
+    const ftex = new THREE.CanvasTexture(fcv);
+    ftex.colorSpace = THREE.SRGBColorSpace;
+    ftex.wrapS = ftex.wrapT = THREE.RepeatWrapping;
+    ftex.repeat.set(2, 2);
+    const floor = new THREE.Mesh(
+      new THREE.BoxGeometry(8, 0.2, 8),
+      new THREE.MeshStandardMaterial({ map: ftex, roughness: 0.9 }),
+    );
+    g.add(floor);
+    box(g, 8, 0.2, 8, 0xe8e2d6, 0, 4, 0).material = wallMat; // ceiling (wall tint)
+    const rug = new THREE.Mesh(
       new THREE.BoxGeometry(4.6, 0.06, 3.4),
       new THREE.MeshStandardMaterial({ color: 0xb06a72, roughness: 0.9 }),
-      0,
-      0.13,
-      0.3,
-    ); // rug
-    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 0, 2, -4); // back
-    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 0, 2, 4); // front
-    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, -4, 2, 0, Math.PI / 2); // left
-    add(new THREE.BoxGeometry(8, 4, 0.2), wallMat, 4, 2, 0, Math.PI / 2); // right
-    add(
-      new THREE.BoxGeometry(2.4, 0.9, 0.9),
-      new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.7 }),
-      0,
-      0.55,
-      -3.2,
-    ); // desk
-    add(
-      new THREE.BoxGeometry(0.4, 2.6, 2.2),
-      new THREE.MeshStandardMaterial({ color: 0x7a5638, roughness: 0.8 }),
-      -3.6,
-      1.4,
-      0.6,
-    ); // shelf
+    );
+    rug.position.set(0, 0.13, 0.3);
+    g.add(rug);
+    this.interiorRugMat = rug.material as THREE.MeshStandardMaterial;
+    for (const [x, z, ry] of [
+      [0, -4, 0],
+      [0, 4, 0],
+      [-4, 0, Math.PI / 2],
+      [4, 0, Math.PI / 2],
+    ] as const) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(8, 4, 0.2), wallMat);
+      wall.position.set(x, 2, z);
+      wall.rotation.y = ry;
+      g.add(wall);
+    }
+    // Ceiling beams + skirting boards — the cheap trims that make a box a room.
+    for (const bz of [-2.4, 0, 2.4]) box(g, 7.6, 0.18, 0.3, 0x6e5236, 0, 3.78, bz);
+    box(g, 7.6, 0.25, 0.08, 0x74573a, 0, 0.23, -3.84);
+    box(g, 7.6, 0.25, 0.08, 0x74573a, 0, 0.23, 3.84);
+    box(g, 0.08, 0.25, 7.6, 0x74573a, -3.84, 0.23, 0);
+    box(g, 0.08, 0.25, 7.6, 0x74573a, 3.84, 0.23, 0);
+    // Front wall dressing (the wall with no poster): a glowing window + a door,
+    // so the orbit's "empty" quadrant reads lived-in instead of blank.
+    box(g, 1.9, 1.5, 0.1, 0x6e5236, 1.8, 2.3, 3.86);
+    const pane = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.6, 1.2),
+      new THREE.MeshBasicMaterial({ color: 0xcfe4ff }),
+    );
+    pane.position.set(1.8, 2.3, 3.79);
+    pane.rotation.y = Math.PI;
+    g.add(pane);
+    box(g, 0.06, 1.2, 0.06, 0x6e5236, 1.8, 2.3, 3.78); // mullion
+    box(g, 1.6, 0.06, 0.06, 0x6e5236, 1.8, 2.3, 3.78);
+    box(g, 1.1, 2.3, 0.1, 0x5c4127, -1.8, 1.15, 3.86); // door
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), matFor(0xc9a227, 0.4));
+    knob.position.set(-1.42, 1.15, 3.78);
+    g.add(knob);
+
+    // ── Themed furniture sets (built once, toggled per building) ──
+    const set = (name: string): THREE.Group => {
+      const s = new THREE.Group();
+      s.visible = false;
+      g.add(s);
+      this.interiorSets[name] = s;
+      return s;
+    };
+    const W = 0x6e5236; // trim wood
+    const D = 0x5c4127; // dark wood
+
+    // office — the Professional HQ: desk, monitor, chair, cabinet, plant, clock.
+    const office = set('office');
+    box(office, 2.4, 0.12, 1.0, D, 0, 0.95, -2.6);
+    for (const [lx, lz] of [
+      [-1.05, -2.25],
+      [1.05, -2.25],
+      [-1.05, -2.95],
+      [1.05, -2.95],
+    ] as const)
+      box(office, 0.12, 0.9, 0.12, D, lx, 0.45, lz);
+    box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.66, -2.75); // monitor
+    box(office, 0.12, 0.3, 0.12, 0x33383f, 0, 1.16, -2.75);
+    box(office, 0.6, 0.09, 0.35, 0xd7dbe0, 0.65, 1.06, -2.45); // keyboard? papers
+    box(office, 0.55, 0.1, 0.55, 0x3a3f47, 0, 0.62, -1.65); // chair seat
+    box(office, 0.55, 0.72, 0.09, 0x3a3f47, 0, 1.05, -1.94);
+    cyl(office, 0.06, 0.06, 0.5, 0x22262e, 0, 0.3, -1.65);
+    box(office, 0.65, 1.5, 0.6, 0x7d838c, 3.2, 0.85, -2.9); // filing cabinet
+    box(office, 0.5, 0.05, 0.05, 0xb9bec5, 3.2, 1.12, -2.58);
+    box(office, 0.5, 0.05, 0.05, 0xb9bec5, 3.2, 0.62, -2.58);
+    cyl(office, 0.22, 0.28, 0.42, 0xb0603e, -3.1, 0.31, -2.9); // plant
+    const leaves = new THREE.Mesh(new THREE.SphereGeometry(0.45, 10, 8), matFor(0x4c7a43));
+    leaves.position.set(-3.1, 0.95, -2.9);
+    office.add(leaves);
+    cyl(office, 0.3, 0.3, 0.06, 0xf2efe8, 2.7, 3.1, -3.86, Math.PI / 2); // clock
+    cyl(office, 0.05, 0.05, 0.02, 0x2c2c2c, 2.7, 3.1, -3.81, Math.PI / 2);
+
+    // workshop — Projects: workbench, pegboard + tools, blueprint table, crates.
+    const shop = set('workshop');
+    box(shop, 2.6, 0.14, 1.0, W, 0, 0.95, -2.6); // bench top
+    for (const lx of [-1.15, 1.15] as const) {
+      box(shop, 0.14, 0.9, 0.14, D, lx, 0.45, -2.25);
+      box(shop, 0.14, 0.9, 0.14, D, lx, 0.45, -2.95);
+    }
+    box(shop, 0.5, 0.22, 0.3, 0x7d838c, -0.6, 1.13, -2.6); // vice-ish block
+    box(shop, 1.8, 1.1, 0.06, 0xcdb289, -2.85, 2.1, -3.86); // pegboard
+    box(shop, 0.09, 0.5, 0.05, 0x8a2f2b, -3.35, 2.1, -3.8); // tools on it
+    box(shop, 0.4, 0.09, 0.05, 0x55595e, -2.85, 2.3, -3.8);
+    box(shop, 0.09, 0.4, 0.05, 0x2e6b8a, -2.35, 2.0, -3.8);
+    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.98, -1.7, 0, -0.35); // drafting table
+    const bp = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.8), matFor(0x2f5aa0, 0.95));
+    bp.position.set(2.6, 1.05, -1.68);
+    bp.rotation.x = -Math.PI / 2 - 0.35;
+    shop.add(bp);
+    for (const [lx, lz] of [
+      [2.0, -1.35],
+      [3.2, -1.35],
+      [2.0, -2.05],
+      [3.2, -2.05],
+    ] as const)
+      box(shop, 0.1, 0.95, 0.1, D, lx, 0.48, lz);
+    cyl(shop, 0.25, 0.28, 0.55, W, 1.1, 0.38, -1.4); // stool
+    box(shop, 0.85, 0.75, 0.85, 0xb5854e, -3.0, 0.48, -2.55); // crates
+    box(shop, 0.7, 0.6, 0.7, 0xc09055, -2.85, 1.16, -2.7);
+
+    // home — Personal: sofa, coffee table, fireplace, bookshelf, floor lamp.
+    const home = set('home');
+    box(home, 2.2, 0.5, 0.9, 0x9c5a63, 1.6, 0.42, 2.55); // sofa base
+    box(home, 2.2, 0.62, 0.28, 0x9c5a63, 1.6, 0.95, 2.94);
+    box(home, 0.28, 0.62, 0.9, 0x8c4f58, 0.56, 0.75, 2.55);
+    box(home, 0.28, 0.62, 0.9, 0x8c4f58, 2.64, 0.75, 2.55);
+    box(home, 1.0, 0.09, 0.6, W, 0.9, 0.5, 1.2); // coffee table
+    for (const [lx, lz] of [
+      [0.5, 0.98],
+      [1.3, 0.98],
+      [0.5, 1.42],
+      [1.3, 1.42],
+    ] as const)
+      box(home, 0.08, 0.42, 0.08, D, lx, 0.24, lz);
+    this.buildFireplace(home, -1); // left wall
+    box(home, 0.38, 2.2, 1.6, D, 3.6, 1.28, -2.2); // bookshelf
+    for (const [by, bc] of [
+      [0.7, 0xa54242],
+      [1.35, 0x3f6f8a],
+      [1.95, 0xc9a227],
+    ] as const)
+      box(home, 0.3, 0.34, 1.35, bc, 3.58, by, -2.2);
+    cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -1.7, 0.95, 2.8); // floor lamp
+    const shade = new THREE.Mesh(
+      new THREE.ConeGeometry(0.3, 0.35, 12, 1, true),
+      matFor(0xf0d9a8, 0.7),
+    );
+    shade.position.set(-1.7, 1.95, 2.8);
+    home.add(shade);
+
+    // post — Contact: service counter, pigeonhole wall, parcels, brass scale.
+    const post = set('post');
+    box(post, 2.8, 1.0, 0.7, W, 0, 0.6, -1.9); // counter
+    box(post, 3.1, 0.1, 0.95, D, 0, 1.13, -1.9);
+    box(post, 0.28, 1.75, 2.4, D, 3.8, 1.6, -2.2); // pigeonholes backing
+    for (const sy of [1.05, 1.6, 2.15] as const)
+      box(post, 0.3, 0.06, 2.4, 0xcdb289, 3.78, sy, -2.2);
+    for (const sz of [-3.2, -2.55, -1.85, -1.2] as const)
+      box(post, 0.3, 1.6, 0.06, 0xcdb289, 3.78, 1.6, sz);
+    box(post, 0.7, 0.55, 0.6, 0xb5854e, -2.9, 0.38, -2.7); // parcels
+    box(post, 0.55, 0.45, 0.5, 0xc09055, -2.75, 0.88, -2.85);
+    box(post, 0.45, 0.4, 0.45, 0xb5854e, -2.2, 0.3, -3.0);
+    cyl(post, 0.16, 0.2, 0.08, 0xc9a227, 0.8, 1.22, -1.9); // scale base
+    cyl(post, 0.03, 0.03, 0.4, 0xc9a227, 0.8, 1.45, -1.9);
+    cyl(post, 0.18, 0.18, 0.03, 0xc9a227, 0.8, 1.68, -1.9);
+
+    // hall — Welcome town hall: podium, banners, visitor benches, notice board.
+    const hall = set('hall');
+    box(hall, 1.2, 0.5, 1.2, D, 0, 0.35, -2.5); // dais
+    box(hall, 0.5, 1.05, 0.5, W, 0, 1.12, -2.5); // lectern
+    box(hall, 0.7, 0.08, 0.55, D, 0, 1.68, -2.42, 0, -0.3);
+    for (const bx of [-2.5, 2.5] as const) {
+      const banner = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 2.1), matFor(0x4caf50, 0.9));
+      banner.position.set(bx, 2.55, -3.78);
+      hall.add(banner);
+      box(hall, 0.9, 0.07, 0.07, W, bx, 3.66, -3.76);
+    }
+    for (const bz of [0.7, 1.9] as const) {
+      box(hall, 2.1, 0.12, 0.5, W, 0, 0.5, bz);
+      box(hall, 0.12, 0.5, 0.45, D, -0.9, 0.25, bz);
+      box(hall, 0.12, 0.5, 0.45, D, 0.9, 0.25, bz);
+    }
+    box(hall, 1.5, 1.05, 0.07, 0xcdb289, 3.8, 2.05, -2.2, Math.PI / 2); // notice board
+    for (const [py, pz] of [
+      [2.3, -2.6],
+      [2.05, -1.95],
+      [1.75, -2.35],
+    ] as const)
+      box(hall, 0.03, 0.34, 0.26, 0xf5f2ea, 3.74, py, pz);
+
+    // cottage — the houses: bed, round table + stools, hearth, kitchen shelf.
+    const cot = set('cottage');
+    box(cot, 1.1, 0.38, 2.0, D, -3.0, 0.3, -2.5); // bed frame
+    box(cot, 1.0, 0.16, 1.9, 0xefe9dc, -3.0, 0.57, -2.5);
+    box(cot, 0.8, 0.14, 0.42, 0xf7f3ea, -3.0, 0.68, -3.25);
+    box(cot, 1.02, 0.15, 1.05, 0xa54242, -3.0, 0.63, -2.05); // blanket
+    cyl(cot, 0.7, 0.7, 0.09, W, 1.6, 0.86, -1.6); // round table
+    cyl(cot, 0.09, 0.12, 0.82, D, 1.6, 0.41, -1.6);
+    cyl(cot, 0.24, 0.26, 0.5, D, 0.75, 0.29, -1.3); // stools
+    cyl(cot, 0.24, 0.26, 0.5, D, 2.45, 0.29, -1.9);
+    this.buildFireplace(cot, 1); // right wall
+    box(cot, 1.6, 0.08, 0.4, W, -2.4, 1.7, -3.78); // kitchen shelf
+    cyl(cot, 0.12, 0.12, 0.28, 0x8a9a5b, -2.9, 1.88, -3.78);
+    cyl(cot, 0.1, 0.1, 0.24, 0xb0603e, -2.45, 1.86, -3.78);
+    cyl(cot, 0.11, 0.11, 0.3, 0x7d6b8f, -2.0, 1.89, -3.78);
+
+    // Fireplace glow — one shared light, repositioned per themed set and only
+    // switched on for sets that have a hearth. Flicker runs in the interior
+    // camera update (zero cost while outside).
+    const fire = new THREE.PointLight(0xff9a3c, 0, 7, 1.4);
+    g.add(fire);
+    this.interiorFire = fire;
     // Three framed posters — a big title on the back wall + a content panel on
     // each side wall — all re-drawn per building on enter (so you SEE the
     // portfolio content inside the building, not just a title).
@@ -4541,12 +4774,70 @@ export class GameScene extends THREE.Scene {
     this.add(g);
   }
 
-  /** Teleport the CAMERA into the room + re-theme it. main-simple owns the fade,
-   *  the content panel (zones), and the Leave button. */
-  public enterInterior(title: string, wallColor: number, left = '', right = ''): void {
+  /** A brick hearth with a glowing firebox, against the left (side=-1) or
+   *  right (side=+1) wall at z≈-2 — clear of that wall's content poster. */
+  private buildFireplace(parent: THREE.Group, side: -1 | 1): void {
+    const brick = new THREE.MeshStandardMaterial({ color: 0x9a5a48, roughness: 0.95 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x1c1512, roughness: 1 });
+    const wood = new THREE.MeshStandardMaterial({ color: 0x6e5236, roughness: 0.85 });
+    const glow = new THREE.MeshBasicMaterial({ color: 0xff8c3a });
+    const addBox = (
+      geo: THREE.BoxGeometry,
+      mat: THREE.Material,
+      x: number,
+      y: number,
+      z: number,
+    ) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      parent.add(m);
+      return m;
+    };
+    addBox(new THREE.BoxGeometry(0.5, 2.6, 1.4), brick, side * 3.62, 1.3, -2.0); // chimney breast
+    addBox(new THREE.BoxGeometry(0.25, 0.85, 0.85), dark, side * 3.4, 0.55, -2.0); // firebox
+    addBox(new THREE.BoxGeometry(0.62, 0.1, 1.6), wood, side * 3.55, 1.72, -2.0); // mantel
+    const fire = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.5), glow);
+    fire.position.set(side * 3.32, 0.5, -2.0);
+    fire.rotation.y = side === -1 ? Math.PI / 2 : -Math.PI / 2;
+    parent.add(fire);
+    addBox(new THREE.BoxGeometry(0.16, 0.14, 0.7), dark, side * 3.34, 0.22, -2.0); // log
+  }
+
+  /** Rug tint + hearth-light anchor per themed set (hearth rooms only). */
+  private static readonly INTERIOR_RUGS: Record<string, number> = {
+    office: 0x51687d,
+    workshop: 0xa8793e,
+    home: 0xb06a72,
+    post: 0x7d6b8f,
+    hall: 0x5d8a58,
+    cottage: 0x9c5f4e,
+  };
+  private static readonly INTERIOR_FIRE_POS: Record<string, [number, number, number]> = {
+    home: [-3.05, 0.85, -2.0],
+    cottage: [3.05, 0.85, -2.0],
+  };
+
+  /** Teleport the CAMERA into the room + re-theme it: wall tint, the building's
+   *  themed furniture set, rug colour, hearth light, and the content posters.
+   *  main-simple owns the fade, the content panel (zones), and Leave. */
+  public enterInterior(
+    title: string,
+    wallColor: number,
+    left = '',
+    right = '',
+    theme = 'cottage',
+  ): void {
     this.buildInterior();
     if (this.interiorWallMat) {
       this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
+    }
+    const active = this.interiorSets[theme] ? theme : 'cottage';
+    for (const [name, s] of Object.entries(this.interiorSets)) s.visible = name === active;
+    this.interiorRugMat?.color.set(GameScene.INTERIOR_RUGS[active] ?? 0xb06a72);
+    if (this.interiorFire) {
+      const fp = GameScene.INTERIOR_FIRE_POS[active];
+      this.interiorFire.intensity = fp ? 1.6 : 0;
+      if (fp) this.interiorFire.position.set(fp[0], fp[1], fp[2]);
     }
     this.drawPoster(0, title, true);
     this.drawPoster(1, left, false);
@@ -4588,6 +4879,12 @@ export class GameScene extends THREE.Scene {
   private updateInteriorCamera(deltaTime: number): void {
     // Slow orbit inside the room so you see the whole space without input.
     this.interiorOrbitAngle += deltaTime * 0.28;
+    // Hearth flicker (only ever runs while inside; fire is 0 in hearthless rooms).
+    this.interiorTime += deltaTime;
+    if (this.interiorFire && this.interiorFire.intensity > 0) {
+      const t = this.interiorTime;
+      this.interiorFire.intensity = 1.55 + Math.sin(t * 11) * 0.22 + Math.sin(t * 23 + 1.7) * 0.14;
+    }
     const c = GameScene.INTERIOR_ORIGIN;
     this.camera.up.set(0, 1, 0);
     this.camera.position.set(
