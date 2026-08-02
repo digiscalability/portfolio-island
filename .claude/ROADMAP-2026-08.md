@@ -1,12 +1,16 @@
 # Roadmap — from deep audit + competitive analysis (2026-08-02)
 
-## STATUS (updated 2026-08-02, commit 49c92a4 — DEPLOYED):
-- ACT 1: ✅ ALL DONE (1-7 + spawn reframe; #8 digiscalability.com banner PENDING — other repo/domain)
+## STATUS (updated 2026-08-02 evening, commit c2e8d63 — DEPLOYED):
+- ACT 1: ✅ ALL DONE incl. #8 — digiscalability.com header banner → island LIVE (website repo)
 - ACT 2: ✅ ALL DONE (9-14; concierge verified live: Cartographer sells Abbas + routes to contact)
-- ACT 3: PARTIAL — crawlable HTML ✅, llms.txt ✅; STILL ABBAS'S CALL: GitHub repo public + pins,
-  photo/resume assets, per-zone OG route, launch posts, RankPilot domain, tour mode, completion meter
-- ACT 4: MOSTLY DONE — CI ✅, presence validators ✅, lead throttle ✅, SW eviction ✅, fonts ✅;
-  remaining: functions tests, wave-mirror test, voice kill-switch, PAT rotation (user)
+- ACT 3: ✅ MOSTLY DONE — repo PUBLIC (secret-scanned, main default, topics/homepage, profile
+  README at digiscalability/digiscalability), per-zone OG live (/z/:zone), tour mode (welcome CTA
+  + ?tour=1), completion meter, launch posts ready (.claude/LAUNCH-KIT.md).
+  STILL ABBAS: pin repos (no API — 30s manual), photo/resume assets, RankPilot domain,
+  record the 20-40s chat clip + actually post.
+- ACT 4: ✅ ALL DONE except PAT rotation — Abbas decided 2026-08-02: token stays as-is.
+  (functions pure-logic tests + wave-mirror parity + persisted voice kill-switch shipped; 71 tests)
+- Analyst issues #5 (Say Hi) + #6 (race discoverability): implemented, commented, closed.
 
 Source: 6-agent audit (product-ux, tech-health, growth, living-world, comp-landscape, comp-conversion).
 Full findings: session workflow wf_5ceeaef9-04c journal. Goal metric: visits → impressed → contact/hired.
