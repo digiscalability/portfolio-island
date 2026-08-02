@@ -30,6 +30,10 @@ import { containsSlur, scrubReply } from './moderation';
 
 admin.initializeApp();
 
+// The once-daily NPC day-planner lives in its own module; re-export so the
+// Firebase functions loader discovers it from this entrypoint.
+export { planner } from './npcPlanner';
+
 const STALE_PRESENCE_MS = 2 * 60 * 1000; // 2 min without a heartbeat ⇒ dead client
 const STALE_EPHEMERAL_MS = 60 * 1000; // chat/voice: client TTL is 12s, so 60s is safe
 
@@ -162,7 +166,20 @@ export const director = onSchedule(
     const weather = mood === 'mysterious' ? 'fog' : 'clear';
 
     // Admin SDK write bypasses rules; world/island is .write:false for clients.
-    await db.ref('world/island').set({ mood, headline, weather, online, updatedAt: now });
+    // UPDATE (not set) so the daily planner's sibling `npcPlan`/`notice` nodes
+    // survive the 6-hourly beat.
+    await db.ref('world/island').update({ mood, headline, weather, online, updatedAt: now });
+    // Small mood history (Admin-only node) for the planner + analyst; trim to 60.
+    await db.ref('worldHistory/island').push({ mood, online, t: now });
+    const hist = (await db.ref('worldHistory/island').orderByKey().get()).val() as Record<string, unknown> | null;
+    if (hist) {
+      const keys = Object.keys(hist);
+      if (keys.length > 60) {
+        const remove: Record<string, null> = {};
+        for (const k of keys.slice(0, keys.length - 60)) remove[k] = null;
+        await db.ref('worldHistory/island').update(remove);
+      }
+    }
     console.log(`director set mood=${mood} online=${online} headline="${headline}"`);
   },
 );

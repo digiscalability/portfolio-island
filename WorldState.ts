@@ -13,12 +13,42 @@
 
 export type Mood = 'festive' | 'busy' | 'calm' | 'mysterious' | 'proud';
 
+/** The daily NPC plan the server planner writes to world/island/npcPlan. */
+export interface NpcPlan {
+  day: string;
+  event?: string;
+  assignments: Record<string, string>; // personaId → activityId (validated client-side)
+  updatedAt?: number;
+}
+
 export interface WorldState {
   mood: Mood;
   headline: string;
   weather?: string;
   online?: number;
   updatedAt?: number;
+  npcPlan?: NpcPlan; // soft-optional — never gates the mood/headline beat
+}
+
+/** Soft, field-by-field validation of the server npcPlan. Malformed → undefined
+ *  (the beat still flows). Activity ids get a SECOND enum check in
+ *  NpcActivities.setPlan, so unknown ids only ever fall back to defaults. */
+function parseNpcPlan(v: unknown): NpcPlan | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const p = v as { day?: unknown; event?: unknown; assignments?: unknown; updatedAt?: unknown };
+  if (typeof p.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.day)) return undefined;
+  const assignments: Record<string, string> = {};
+  if (p.assignments && typeof p.assignments === 'object') {
+    for (const [id, act] of Object.entries(p.assignments as Record<string, unknown>)) {
+      if (id.length <= 32 && typeof act === 'string' && act.length <= 32) assignments[id] = act;
+    }
+  }
+  return {
+    day: p.day,
+    event: typeof p.event === 'string' ? p.event.slice(0, 24) : undefined,
+    assignments,
+    updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : undefined,
+  };
 }
 
 const MOODS: Mood[] = ['festive', 'busy', 'calm', 'mysterious', 'proud'];
@@ -129,6 +159,7 @@ export function connectWorldState(onUpdate: (s: WorldState) => void): void {
           weather: typeof v.weather === 'string' ? v.weather : undefined,
           online: typeof v.online === 'number' ? v.online : undefined,
           updatedAt: typeof v.updatedAt === 'number' ? v.updatedAt : undefined,
+          npcPlan: parseNpcPlan((v as { npcPlan?: unknown }).npcPlan),
         };
         current = s;
         onUpdate(s);

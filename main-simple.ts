@@ -384,6 +384,8 @@ class SimpleApp {
       connectWorldState((s) => {
         this.ui.showWorldBulletin(s.headline, MOOD_META[s.mood].accent);
         track('world_beat_seen', { mood: s.mood });
+        // Hand the day's NPC assignments to the activity engine (Phase 2).
+        if (s.npcPlan) this.scene.setNpcActivities(s.npcPlan);
       });
 
       // Restore the carried fish if a fetch quest was mid-delivery on reload
