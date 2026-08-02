@@ -26,10 +26,11 @@
 
 ## Open threads / next steps
 1. **Abbas**: narrow GITHUB_TOKEN to a fine-grained PAT (Issues RW on portfolio-island only) → `firebase functions:secrets:set GITHUB_TOKEN --project life-island`
-2. Multi-agent audit workflow of the feature FAILED on session usage limit (resets 2:50pm Syd) — inline verification was done instead (invariants + token races); re-run the audit workflow later if desired (script saved in session workflows dir)
+2. ✅ Audit DONE (re-run after limit reset): 31 findings, ALL fixed except 2 accepted nits — commit `5b1bef6`, deployed (functions+client) + verified in prod (planner assigned=18; analyst on Sonnet, proposals=3 in email w/ github=cooldown status; artist faces seaward; two-line badges; festival masthead). Analyst now emails proposals every night regardless of GitHub throttling.
 3. Prettier `format:check` fails repo-wide (55 files, pre-existing) — decide whether to do a one-shot `npm run format` commit
-4. Cost review in ~3 days via `aiUsage/2026-08` (expect ≈$0.03-0.06/day)
+4. Cost review in ~3 days via `aiUsage/2026-08` (expect ≈$0.04-0.08/day now that the analyst runs Sonnet)
 5. Review analyst issues #5 (Say Hi widget) + #6 (surface racing leaderboard) — its first real proposals
+6. Optional eyeball on device: two-line NPC badge pills + artist-facing-the-sea (numerically verified; pixel check skipped — base64 canvas round-trips corrupt through the shell)
 
 ## Gotchas worth remembering
 - `defineSecret` resolves for the WHOLE codebase on any functions deploy (that's why GITHUB_TOKEN needed a value before analyst existed in prod)
