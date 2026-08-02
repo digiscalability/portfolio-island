@@ -17,7 +17,7 @@ import { SimpleInputManager } from './SimpleInputManager';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
 import { connectWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
-import { askNpc, isAiNpc } from './NpcChat';
+import { askNpc, isAiNpc, voiceProfileFor } from './NpcChat';
 import { isRealTheme } from './Theme';
 import './style.css';
 
@@ -328,12 +328,17 @@ class SimpleApp {
           sfx.blip();
           const canned = npcData.dialogue;
           let ci = 1; // first fallback skips the opening line (canned[0])
-          this.ui.showNpcChat(npcData.name, canned[0] ?? 'Hello, traveller.', async (text) => {
-            track('npc_chat_sent', { npc: npcData.name });
-            const res = await askNpc(npcData.name, text);
-            if (res.reply && !res.fallback) return res.reply;
-            return canned[ci++ % canned.length] ?? '…';
-          });
+          this.ui.showNpcChat(
+            npcData.name,
+            canned[0] ?? 'Hello, traveller.',
+            async (text) => {
+              track('npc_chat_sent', { npc: npcData.name });
+              const res = await askNpc(npcData.name, text);
+              if (res.reply && !res.fallback) return res.reply;
+              return canned[ci++ % canned.length] ?? '…';
+            },
+            voiceProfileFor(npcData.name),
+          );
           return;
         }
 

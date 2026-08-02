@@ -5,6 +5,7 @@ import { DISTRICTS } from './Districts';
 import { checkName } from './Moderation';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { buildShareUrl, setUrlParam, share } from './Share';
+import { speak, cancelSpeech, isSpeechSupported, isSpeechEnabled, setSpeechEnabled } from './Speech';
 
 /**
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
@@ -3440,15 +3441,24 @@ export class SimpleUI {
    * Show dialogue panel with typewriter effect (Messenger-inspired)
    */
   private npcChatDiv: HTMLDivElement | null = null;
+  private npcTypeTimer = 0;
   /**
    * Free-text conversation panel for an AI-brained NPC. Shows an opening line, a
    * scrolling transcript and a text input; on send it calls `onSend(text)` —
    * which routes to the server brain and returns the line to display (a real
-   * reply, or a canned fallback) — showing a "…" thinking state meanwhile. Input
-   * keystrokes are stopped from reaching the game's movement handlers.
+   * reply, or a canned fallback) — showing a "…" thinking state meanwhile. NPC
+   * lines TYPE OUT character-by-character and are SPOKEN in the NPC's voice (per
+   * `voice` rate/pitch, free on-device TTS) unless muted. Input keystrokes are
+   * stopped from reaching the game's movement handlers.
    */
-  public showNpcChat(name: string, opening: string, onSend: (text: string) => Promise<string>): void {
+  public showNpcChat(
+    name: string,
+    opening: string,
+    onSend: (text: string) => Promise<string>,
+    voice: { rate: number; pitch: number } = { rate: 1, pitch: 1 },
+  ): void {
     this.closeNpcChat();
+    const reduce = a11y.reducedMotion; // respect reduced-motion: no typewriter
     const panel = document.createElement('div');
     Object.assign(panel.style, {
       position: 'absolute', left: '50%', bottom: '28px', transform: 'translateX(-50%)',
@@ -3458,17 +3468,33 @@ export class SimpleUI {
       fontFamily: 'system-ui, sans-serif', overflow: 'hidden', pointerEvents: 'auto',
     });
     const header = document.createElement('div');
-    header.textContent = name;
     Object.assign(header.style, {
       padding: '8px 16px', fontWeight: '600',
       background: 'linear-gradient(135deg, rgba(80,130,255,0.3), rgba(120,80,255,0.2))',
-      borderBottom: '1px solid rgba(120,160,255,0.2)', display: 'flex', justifyContent: 'space-between',
+      borderBottom: '1px solid rgba(120,160,255,0.2)', display: 'flex',
+      justifyContent: 'space-between', alignItems: 'center', gap: '10px',
     });
+    const title = document.createElement('span');
+    title.textContent = name;
+    header.appendChild(title);
+    const controls = document.createElement('span');
+    Object.assign(controls.style, { display: 'flex', gap: '12px', alignItems: 'center' });
+    // Voice mute toggle (only if the browser can speak).
+    if (isSpeechSupported()) {
+      const voiceBtn = document.createElement('span');
+      const render = () => { voiceBtn.textContent = isSpeechEnabled() ? '🔊' : '🔇'; };
+      render();
+      Object.assign(voiceBtn.style, { cursor: 'pointer', fontSize: '15px', userSelect: 'none' });
+      voiceBtn.title = 'Toggle NPC voice';
+      voiceBtn.addEventListener('click', () => { setSpeechEnabled(!isSpeechEnabled()); render(); });
+      controls.appendChild(voiceBtn);
+    }
     const closeBtn = document.createElement('span');
     closeBtn.textContent = '✕';
     Object.assign(closeBtn.style, { cursor: 'pointer', opacity: '0.7' });
     closeBtn.addEventListener('click', () => this.closeNpcChat());
-    header.appendChild(closeBtn);
+    controls.appendChild(closeBtn);
+    header.appendChild(controls);
     panel.appendChild(header);
     const log = document.createElement('div');
     Object.assign(log.style, {
@@ -3476,20 +3502,36 @@ export class SimpleUI {
       lineHeight: '1.4', display: 'flex', flexDirection: 'column', gap: '8px',
     });
     panel.appendChild(log);
-    const addLine = (who: 'npc' | 'you', text: string): HTMLDivElement => {
+    const playerLine = (text: string): void => {
       const row = document.createElement('div');
-      row.textContent = text; // textContent: NPC + player text never becomes markup
-      Object.assign(
-        row.style,
-        who === 'you'
-          ? { alignSelf: 'flex-end', background: 'rgba(90,140,255,0.25)', padding: '6px 10px', borderRadius: '10px', maxWidth: '80%' }
-          : { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' },
-      );
+      row.textContent = text; // textContent: player text never becomes markup
+      Object.assign(row.style, { alignSelf: 'flex-end', background: 'rgba(90,140,255,0.25)', padding: '6px 10px', borderRadius: '10px', maxWidth: '80%' });
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;
-      return row;
     };
-    addLine('npc', opening);
+    // NPC line: speak it, and type it out char-by-char (unless reduced motion).
+    const npcLine = (text: string): void => {
+      const row = document.createElement('div');
+      Object.assign(row.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
+      log.appendChild(row);
+      speak(text, voice.rate, voice.pitch);
+      if (reduce) {
+        row.textContent = text;
+        log.scrollTop = log.scrollHeight;
+        return;
+      }
+      let i = 0;
+      const step = (): void => {
+        row.textContent = text.slice(0, i); // textContent: no markup injection
+        log.scrollTop = log.scrollHeight;
+        if (i < text.length) {
+          i += 1;
+          this.npcTypeTimer = window.setTimeout(step, 18);
+        }
+      };
+      step();
+    };
+    npcLine(opening);
     const inputRow = document.createElement('div');
     Object.assign(inputRow.style, { display: 'flex', gap: '8px', padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,0.08)' });
     const input = document.createElement('input');
@@ -3516,14 +3558,20 @@ export class SimpleUI {
       input.value = '';
       send.disabled = true;
       input.disabled = true;
-      addLine('you', text);
-      const thinking = addLine('npc', '…');
-      try {
-        thinking.textContent = await onSend(text);
-      } catch {
-        thinking.textContent = '…';
-      }
+      playerLine(text);
+      const thinking = document.createElement('div');
+      thinking.textContent = '…';
+      Object.assign(thinking.style, { alignSelf: 'flex-start', color: '#8ea2d8' });
+      log.appendChild(thinking);
       log.scrollTop = log.scrollHeight;
+      let reply = '…';
+      try {
+        reply = await onSend(text);
+      } catch {
+        reply = '…';
+      }
+      thinking.remove();
+      npcLine(reply);
       busy = false;
       send.disabled = false;
       input.disabled = false;
@@ -3542,6 +3590,11 @@ export class SimpleUI {
   }
 
   public closeNpcChat(): void {
+    if (this.npcTypeTimer) {
+      clearTimeout(this.npcTypeTimer);
+      this.npcTypeTimer = 0;
+    }
+    cancelSpeech();
     if (this.npcChatDiv) {
       this.npcChatDiv.remove();
       this.npcChatDiv = null;

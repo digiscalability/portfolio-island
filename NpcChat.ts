@@ -13,12 +13,27 @@ export interface NpcReply {
 
 /** Which NPCs have an LLM brain wired up. Others use canned dialogue only. */
 export const AI_NPCS: Record<string, string> = {
-  // display name (as in NPC_PERSONALITIES) → server persona id
+  // display name (as in NPC_PERSONALITIES) → server persona id (PERSONAS in functions)
   Storyteller: 'storyteller',
+  'Elder Sage': 'elder_sage',
+  Guard: 'guard',
+};
+
+/** Per-NPC spoken-voice character (browser SpeechSynthesis rate/pitch). Gives
+ *  each NPC a recognisably different voice without any cloud TTS cost. */
+export interface VoiceProfile { rate: number; pitch: number }
+export const VOICE_PROFILES: Record<string, VoiceProfile> = {
+  Storyteller: { rate: 0.92, pitch: 1.05 }, // warm, unhurried
+  'Elder Sage': { rate: 0.82, pitch: 0.8 }, // slow, deep, wise
+  Guard: { rate: 1.06, pitch: 0.95 }, // brisk, firm
 };
 
 export function isAiNpc(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(AI_NPCS, name);
+}
+
+export function voiceProfileFor(name: string): VoiceProfile {
+  return VOICE_PROFILES[name] ?? { rate: 1, pitch: 1 };
 }
 
 export async function askNpc(npcName: string, message: string): Promise<NpcReply> {
