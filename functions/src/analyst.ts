@@ -36,6 +36,12 @@ const ANALYST_TO = defineString('ANALYST_TO', { default: '' });
 const GITHUB_REPO = 'digiscalability/portfolio-island';
 const ANALYST_TOKEN_CAP = 4_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Issue-filing throttles. Title-dedupe alone can't bound the backlog because the
+// LLM re-words equivalent proposals every night (the key drifts), so we bound the
+// EFFECT: never file within the cooldown window, and never exceed the open cap.
+// The digest email + public notice are unaffected — only issue creation throttles.
+const ISSUE_COOLDOWN_MS = 3 * DAY_MS; // ≤ one filing burst per 3 days
+const MAX_OPEN_ISSUES = 5; // hard ceiling on open island-analyst issues
 
 // Public board lines (indexable, pre-authored + safe). The client holds an
 // identical copy (SimpleUI); the analyst only ever sends indices into this list.
@@ -204,35 +210,67 @@ function plainDigest(m: Metrics, deltas: Record<string, number> | null): string 
   return lines.join('\n');
 }
 
+const normTitle = (t: string): string => t.toLowerCase().replace(/\s+/g, ' ').trim();
+
 async function fileGithubIssues(
+  db: admin.database.Database,
   token: string,
   proposals: Array<{ title: string; body: string }>,
+  now: number,
 ): Promise<number> {
   if (!token || !proposals.length) return 0;
+
+  // Cooldown: don't file if we filed within the window. This is the primary
+  // guard against nightly accretion — the LLM re-words equivalent proposals so
+  // title-dedupe can't catch them; a time gate bounds the rate regardless.
+  // (stats/* is unlisted ⇒ Admin-SDK-only, same as stats/daily.)
+  const metaRef = db.ref('stats/analystIssues/lastFiledTs');
+  const lastFiledTs = ((await metaRef.get()).val() as number | null) ?? 0;
+  if (now - lastFiledTs < ISSUE_COOLDOWN_MS) {
+    console.log(`analyst issues: cooldown (filed ${((now - lastFiledTs) / DAY_MS).toFixed(1)}d ago), skipped`);
+    return 0;
+  }
+
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
     'User-Agent': 'island-analyst',
     'X-GitHub-Api-Version': '2022-11-28',
   };
-  // Dedupe against currently-open analyst issues by normalised title.
+  // Fetch open analyst issues for BOTH the backlog cap and title-dedupe.
   let openTitles = new Set<string>();
+  let openCount = 0;
   try {
     const res = await fetch(
       `https://api.github.com/repos/${GITHUB_REPO}/issues?state=open&labels=island-analyst&per_page=100`,
       { headers },
     );
     if (res.ok) {
-      const list = (await res.json()) as Array<{ title?: string }>;
-      openTitles = new Set(list.map((i) => (i.title ?? '').toLowerCase().replace(/\s+/g, ' ').trim()));
+      const list = (await res.json()) as Array<{ title?: string; pull_request?: unknown }>;
+      const issuesOnly = list.filter((i) => !i.pull_request); // the issues API includes PRs
+      openCount = issuesOnly.length;
+      openTitles = new Set(issuesOnly.map((i) => normTitle(i.title ?? '')));
+    } else {
+      // Can't read the backlog ⇒ don't risk spamming; skip this run.
+      console.error('ALERT analyst-github-failed', { status: res.status, at: 'list' });
+      return 0;
     }
-  } catch {
-    /* if the list fails, we simply skip dedupe rather than spam */
+  } catch (e) {
+    console.error('ALERT analyst-github-failed', { msg: (e as Error).message, at: 'list' });
+    return 0;
   }
+
+  const slots = Math.max(0, MAX_OPEN_ISSUES - openCount);
+  if (slots === 0) {
+    console.log(`analyst issues: backlog at cap (${openCount}/${MAX_OPEN_ISSUES}), skipped`);
+    return 0;
+  }
+
   let filed = 0;
   for (const p of proposals.slice(0, 2)) {
+    if (filed >= slots) break;
     const title = `[island] ${headerSafe(p.title, 120)}`;
-    if (openTitles.has(title.toLowerCase().replace(/\s+/g, ' ').trim())) continue;
+    if (openTitles.has(normTitle(title))) continue;
     try {
       const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/issues`, {
         method: 'POST',
@@ -244,11 +282,13 @@ async function fileGithubIssues(
         }),
       });
       if (res.ok) filed++;
-      else console.error('ALERT analyst-github-failed', { status: res.status });
+      else console.error('ALERT analyst-github-failed', { status: res.status, at: 'create' });
     } catch (e) {
-      console.error('ALERT analyst-github-failed', { msg: (e as Error).message });
+      console.error('ALERT analyst-github-failed', { msg: (e as Error).message, at: 'create' });
     }
   }
+  // Record the filing so the cooldown starts from a SUCCESSFUL burst only.
+  if (filed > 0) await metaRef.set(now);
   return filed;
 }
 
@@ -339,8 +379,9 @@ export const analyst = onSchedule(
       console.error('ALERT analyst-email-failed', { msg: (e as Error).message });
     }
 
-    // File the top proposals as GitHub issues (never code edits).
-    const filed = await fileGithubIssues(GITHUB_TOKEN.value(), proposals);
+    // File the top proposals as GitHub issues (never code edits). Throttled by
+    // a cooldown + open-backlog cap so the repo never fills with re-worded dupes.
+    const filed = await fileGithubIssues(db, GITHUB_TOKEN.value(), proposals, now);
 
     // Publish the safe, counts-only public notice for the in-world board.
     const notice = buildNotice(m);
