@@ -1622,8 +1622,10 @@ class SimpleApp {
     addStop(
       this.scene.getNpcPosition('Gardener') ?? this.scene.getNpcPosition('Guard'),
       'Every townsperson is a live AI agent \u2014 planned each morning, reported on nightly. Talk to anyone.',
-      3.5,
-      6,
+      // High enough to clear tree canopies \u2014 NPC positions are live, so a low
+      // camera is occlusion roulette (a prod capture found a tree filling it).
+      6.5,
+      9,
     );
     addStop(
       zones.get('personal'),

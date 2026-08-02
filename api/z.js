@@ -1,7 +1,7 @@
 // api/z.js — per-zone Open Graph route. vercel.json rewrites /z/:zone here;
 // link scrapers (X, LinkedIn, Slack, Discord) read zone-specific OG/Twitter
 // meta, humans are bounced straight to /?zone=<zone> (carried params like
-// ?hour= ride along). Plain CommonJS — zero deps, no build step.
+// ?hour= ride along). ESM (the repo is "type": "module"), zero deps.
 const SITE = 'https://island.digiscalability.com';
 
 const ZONES = {
@@ -34,7 +34,7 @@ const esc = (s) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-module.exports = (req, res) => {
+export default function handler(req, res) {
   const q = req.query || {};
   const zone = Object.prototype.hasOwnProperty.call(ZONES, String(q.zone || '').toLowerCase())
     ? String(q.zone).toLowerCase()
@@ -75,4 +75,4 @@ module.exports = (req, res) => {
 <script>location.replace(${JSON.stringify(destUrl)});</script>
 <p><a href="${esc(destUrl)}">Enter the island →</a></p>
 </body></html>`);
-};
+}
