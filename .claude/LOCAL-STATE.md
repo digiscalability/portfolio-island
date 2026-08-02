@@ -27,7 +27,7 @@
 ## Open threads / next steps
 1. **Abbas**: narrow GITHUB_TOKEN to a fine-grained PAT (Issues RW on portfolio-island only) → `firebase functions:secrets:set GITHUB_TOKEN --project life-island`
 2. ✅ Audit DONE (re-run after limit reset): 31 findings, ALL fixed except 2 accepted nits — commit `5b1bef6`, deployed (functions+client) + verified in prod (planner assigned=18; analyst on Sonnet, proposals=3 in email w/ github=cooldown status; artist faces seaward; two-line badges; festival masthead). Analyst now emails proposals every night regardless of GitHub throttling.
-3. Prettier `format:check` fails repo-wide (55 files, pre-existing) — decide whether to do a one-shot `npm run format` commit
+3. ✅ Prettier DONE (commit `64b3920`): one-shot repo-wide format (46 files; functions/ is .prettierignore'd); Speech.ts suppression re-anchored as a block disable. `npm run check` passes end-to-end for the first time.
 4. Cost review in ~3 days via `aiUsage/2026-08` (expect ≈$0.04-0.08/day now that the analyst runs Sonnet)
 5. Review analyst issues #5 (Say Hi widget) + #6 (surface racing leaderboard) — its first real proposals
 6. Optional eyeball on device: two-line NPC badge pills + artist-facing-the-sea (numerically verified; pixel check skipped — base64 canvas round-trips corrupt through the shell)
