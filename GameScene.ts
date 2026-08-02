@@ -68,11 +68,14 @@ export class GameScene extends THREE.Scene {
   private radarNorth = new THREE.Vector3(0, 0, 1);
   private radarEast = new THREE.Vector3(1, 0, 0);
 
-  // Birds orbiting the planet with flapping wings
+  // Seagulls circling shoreline anchors with flapping wings
   private birds: Array<{
     pivot: THREE.Object3D;
+    bird: THREE.Group;
     wingL: THREE.Mesh;
     wingR: THREE.Mesh;
+    dirLocal: THREE.Vector3;
+    alt: number;
     speed: number;
     phase: number;
   }> = [];
@@ -102,6 +105,7 @@ export class GameScene extends THREE.Scene {
     tail: THREE.Object3D;
     dir: THREE.Vector3; // unit position on the sphere (over water)
     heading: THREE.Vector3; // unit tangent travel direction
+    home: THREE.Vector3; // school/solo anchor — a soft tether keeps fish visible
     speed: number;
     phase: number;
     turnAt: number;
@@ -109,6 +113,10 @@ export class GameScene extends THREE.Scene {
     jumpDur: number;
     depth: number; // metres the body sits below the wave surface
   }> = [];
+  private activeFishJumps = 0; // cap concurrent leaps so splash pools never starve
+  private _fishWakeAccum = 0; // dorsal-wake ripple throttle
+  private readonly _fishCam = new THREE.Vector3();
+  private readonly _fishHome = new THREE.Vector3();
   private readonly _fishAxis = new THREE.Vector3();
   private readonly _fishZ = new THREE.Vector3();
   private readonly _fishX = new THREE.Vector3();
@@ -451,7 +459,10 @@ export class GameScene extends THREE.Scene {
         [/^bench_\d+$/, 0.85],
         [/^construction_\d+$/, 0.8],
         [/^mailbox_\d+$/, 0.35],
-        [/^npc_placeholder_\d+$/, 0.5],
+        // npc_placeholder colliders removed: they froze at SPAWN positions
+        // while the live NPCs wander districts away — the player bumped into
+        // invisible walls at 20 empty plaza spots and ghosted through every
+        // actual townsperson. Live NPC collision runs in checkPlayerCollisions.
         [/^central_statue$/, 0.55],
         [/^town_fountain$/, 2.3],
         [/^lighthouse$/, 2.0], // solid tower base — was walk-through
@@ -493,11 +504,13 @@ export class GameScene extends THREE.Scene {
 
       // Checkpoint race circuits (land for cars, water for boats/jetskis). Gate
       // events/HUD forward through GameScene fields so main can wire them before
-      // or after this async init finishes.
+      // or after this async init finishes. NOTE: build() is deferred until the
+      // zone-building colliders are pushed (below) so gates avoid the 5
+      // landmark buildings — building at construction time seated gates
+      // inside footprints the car physically couldn't reach.
       this.races = new RaceSystem(this, this.island, this.colliders);
       this.races.onEvent = (e) => this.onRaceEventCb?.(e);
       this.races.onHud = (s) => this.onRaceHudCb?.(s);
-      this.races.build();
 
       // Create player on island surface with spherical physics
       this.player = new SimplePlayer();
@@ -521,7 +534,10 @@ export class GameScene extends THREE.Scene {
       // open plaza edge, clear of the hall's footprint, its collider, and the
       // door-prompt range. (Terrain-sampled: the ideal-sphere height can be
       // inside or above a terrain bump, which used to cause a slide at spawn.)
-      const spawnDir = new THREE.Vector3(0.14, 1, 0).normalize();
+      // Lon π/4 (0.10,1,0.10), not lon 0: the lon-0 meridian holds BOTH the
+      // hall door and a lantern pillar 3.6u dead ahead — spawning between
+      // avenues gives a clear walk in every direction.
+      const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize();
       const spawnSample = this.island.sampleSurfaceByDirection(spawnDir, 0);
       const spawnHeight = spawnSample.position.length() + 0.75;
       this.player.setWorldPosition(spawnDir.clone().multiplyScalar(spawnHeight));
@@ -561,6 +577,16 @@ export class GameScene extends THREE.Scene {
       for (const zone of this.zonesManager.getZones()) {
         this.colliders.push({ position: zone.getPosition(), radius: 1.7 });
       }
+      // Camera collision must ALSO see the zone buildings (they live under the
+      // scene, not island.mesh) — orbiting behind a hall used to swing the
+      // camera straight through its shell.
+      this.orbitCamera.setCollisionMesh(
+        this.island.mesh,
+        ...this.zonesManager.getZones().map((z) => z.marker),
+      );
+
+      // Now that every big footprint is registered, lay the race circuits.
+      this.races.build();
 
       // Place quest mailboxes (Island.ts owns the town proper)
       await this.placeAssets();
@@ -822,27 +848,32 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
-   * Small birds orbiting the planet below the cloud layer, wings
-   * flapping in update(). Pure ambient life — no interaction.
+   * Seagulls circling low over the shoreline in banked loops — three over
+   * each of two beach anchors plus one loner. They roost (fade out) at
+   * night; update() runs the orbit, soar, and flap/glide cycle.
    */
   private createBirds(): void {
-    const bodyMat = new THREE.MeshToonMaterial({ color: 0x4a4a55 });
-    const wingMat = new THREE.MeshToonMaterial({ color: 0x666677, side: THREE.DoubleSide });
+    const bodyMat = new THREE.MeshToonMaterial({ color: 0xf4f6f8 });
+    const wingMat = new THREE.MeshToonMaterial({ color: 0xdfe5ea, side: THREE.DoubleSide });
+    const beakMat = new THREE.MeshToonMaterial({ color: 0xf2b04a });
     const planetR = this.island ? this.island.getRadius() : 18;
-    for (let i = 0; i < 4; i++) {
+    // Longitudes of the shore points each gull circles: two flocks + a loner.
+    const ANCHOR_LONS = [5.0, 5.0, 5.0, 2.0, 2.0, 2.0, 3.6];
+    const up = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < ANCHOR_LONS.length; i++) {
       const pivot = new THREE.Object3D();
-      pivot.rotation.set(
-        Math.random() * Math.PI,
-        Math.random() * Math.PI * 2,
-        Math.random() * Math.PI,
-      );
+      // Aim the pivot's spin axis (+Y) at a point just above the shoreline
+      // so the gull traces a small circle over the beach instead of a
+      // great-circle orbit through the far hemisphere.
+      const anchor = this.island ? this.island.dirAt(ANCHOR_LONS[i], 0.24) : up.clone();
+      pivot.quaternion.setFromUnitVectors(up, anchor);
       const bird = new THREE.Group();
       // Body — small elongated sphere pointing along travel direction (-Z of pivot spin)
       const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), bodyMat);
       body.scale.set(1, 0.9, 1.9);
       bird.add(body);
       // Beak
-      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 4), wingMat);
+      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 4), beakMat);
       beak.rotation.x = -Math.PI / 2;
       beak.position.z = -0.2;
       bird.add(beak);
@@ -856,23 +887,26 @@ export class GameScene extends THREE.Scene {
       wingR.position.set(-0.06, 0.02, 0);
       wingR.rotation.y = Math.PI;
       bird.add(wingR);
-      // pivot.rotateY carries the bird along its local -Z, which is
-      // already the model's forward (beak at -Z) — no extra yaw needed.
-      bird.position.set(planetR + 3 + Math.random() * 2.5, 0, 0);
-      // Roll the bird upright. At its +X orbit position, radially-outward
-      // is +X but the model's up (+Y) points along the pivot's +Y (the
-      // orbit axis) — so it flew banked on its side, one wing toward the
-      // planet and one into space. Roll -90° about the forward (Z) axis so
-      // up → radial-out and the wings spread horizontally (level flight).
-      bird.rotation.z = -Math.PI / 2;
+      // Small polar offset from the spin axis = the loop's angular radius
+      // (~5-8u circle at this altitude). Near the pole the model's up (+Y)
+      // already points radially out, so unlike the old equatorial orbit no
+      // upright roll is needed — just a constant bank into the turn.
+      const theta = 0.1 + Math.random() * 0.06;
+      const alt = planetR + 0.1 + (2.5 + i * 0.7);
+      const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
+      bird.position.copy(dirLocal).multiplyScalar(alt);
+      bird.rotation.z = 0.28;
       pivot.add(bird);
       pivot.name = `bird_pivot_${i}`;
       this.add(pivot);
       this.birds.push({
         pivot,
+        bird,
         wingL,
         wingR,
-        speed: 0.12 + Math.random() * 0.08,
+        dirLocal,
+        alt,
+        speed: 0.25 + Math.random() * 0.1,
         phase: Math.random() * Math.PI * 2,
       });
     }
@@ -887,11 +921,28 @@ export class GameScene extends THREE.Scene {
     [0x415a68, 0xb0c8d4, 0.8], // big dark
   ];
 
+  // Fish materials are cached per colour: buildFish is ALSO called every
+  // fisherman catch cycle (~every 15-30s), which used to allocate two fresh
+  // MeshToonMaterials each time with no dispose — slow GPU-program churn.
+  private static fishMatCache = new Map<number, THREE.MeshToonMaterial>();
+  private static fishMat(color: number, doubleSide = false): THREE.MeshToonMaterial {
+    const key = color + (doubleSide ? 0x2000000 : 0);
+    let m = GameScene.fishMatCache.get(key);
+    if (!m) {
+      m = new THREE.MeshToonMaterial({
+        color,
+        side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
+      });
+      GameScene.fishMatCache.set(key, m);
+    }
+    return m;
+  }
+
   /** One low-poly fish: elongated body + dorsal fin + a rear tail pivot. */
   private buildFish(bodyC: number, finC: number): { group: THREE.Group; tail: THREE.Object3D } {
     const g = new THREE.Group();
-    const bodyMat = new THREE.MeshToonMaterial({ color: bodyC });
-    const finMat = new THREE.MeshToonMaterial({ color: finC, side: THREE.DoubleSide });
+    const bodyMat = GameScene.fishMat(bodyC);
+    const finMat = GameScene.fishMat(finC, true);
     const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.32, 0), bodyMat);
     body.scale.set(0.55, 0.72, 1.5); // elongated along −Z (forward)
     body.castShadow = true;
@@ -918,18 +969,43 @@ export class GameScene extends THREE.Scene {
    */
   private createFish(): void {
     if (!this.island) return;
+    // Shore-band SCHOOLS, not scattered loners: from the beach (eye ~2u up)
+    // the visible sea only reaches ~14u to the horizon, and the old spawn
+    // band spread 22 fish over most of the southern hemisphere — at any
+    // moment 2-4 were on screen. Three 6-fish schools tethered off the
+    // busiest beaches + 4 wide-roaming big solos keep the same headcount
+    // where people actually look. One colour per school (real fish school
+    // by species).
+    const SCHOOLS: Array<[number, number]> = [
+      [5.0, 0.14], // the fisherman's beach — the busiest shore
+      [1.26, 0.12],
+      [3.77, 0.15],
+    ];
     const N = 22;
     for (let i = 0; i < N; i++) {
-      const [bc, fc, sc] = GameScene.FISH_TYPES[i % GameScene.FISH_TYPES.length];
+      const solo = i >= 18;
+      const [bc, fc, sc] = solo
+        ? GameScene.FISH_TYPES[3 + (i % 2)]
+        : GameScene.FISH_TYPES[Math.floor(i / 6) % 3];
       const { group, tail } = this.buildFish(bc, fc);
-      group.scale.setScalar(sc);
-      // Place over open water (a random dir below the shoreline latitude)
-      let dir = new THREE.Vector3(0, -1, 0);
-      for (let attempt = 0; attempt < 12; attempt++) {
-        const lon = Math.random() * Math.PI * 2;
-        const lat = -0.28 + Math.random() * 0.5; // −0.28..0.22
-        dir = this.island.dirAt(lon, lat);
-        if (dir.y < Math.sin(0.22)) break;
+      group.scale.setScalar(solo ? sc * 1.15 : sc * 0.85);
+      let dir: THREE.Vector3 = new THREE.Vector3(0, -1, 0);
+      let home: THREE.Vector3;
+      if (solo) {
+        for (let attempt = 0; attempt < 12; attempt++) {
+          const lon = Math.random() * Math.PI * 2;
+          const lat = 0.02 + Math.random() * 0.16; // visible offshore band
+          dir = this.island.dirAt(lon, lat);
+          if (dir.y < Math.sin(0.22)) break;
+        }
+        home = dir.clone();
+      } else {
+        const [aLon, aLat] = SCHOOLS[Math.floor(i / 6)];
+        home = this.island.dirAt(aLon, aLat);
+        dir = this.island.dirAt(
+          aLon + (Math.random() - 0.5) * 0.06,
+          aLat + (Math.random() - 0.5) * 0.05,
+        );
       }
       // Initial tangent heading
       const ref = Math.abs(dir.y) > 0.9 ? GameScene._localForward : GameScene._localUp;
@@ -940,6 +1016,7 @@ export class GameScene extends THREE.Scene {
         tail,
         dir,
         heading,
+        home,
         speed: 1.1 + Math.random() * 1.5,
         phase: Math.random() * Math.PI * 2,
         turnAt: 0,
@@ -950,7 +1027,7 @@ export class GameScene extends THREE.Scene {
         depth: 0.02 + Math.random() * 0.07,
       });
     }
-    console.log(`🐟 ${this.fish.length} fish in the ocean`);
+    console.log(`🐟 ${this.fish.length} fish in the ocean (3 schools + 4 solos)`);
   }
 
   /** Swim + wiggle + jump the fish. Cheap: analytic wave surface, no raycasts. */
@@ -959,20 +1036,50 @@ export class GameScene extends THREE.Scene {
     const seaT = this.island.seaTimeUniform.value;
     const R = this.island.getRadius();
     const shoreY = Math.sin(0.24);
+    // Far-hemisphere cull: fish behind the horizon still burned full wave
+    // sampling + basis math (frustum culling only saves the draw).
+    this._fishCam.copy(this.camera.position).normalize();
+    let wakeBest: (typeof this.fish)[number] | null = null;
+    let wakeBestD2 = 400; // only wake fish within 20u of the camera
+    let wakeBestR = 0;
+    this._fishWakeAccum += deltaTime;
     for (const f of this.fish) {
+      if (f.dir.dot(this._fishCam) < -0.05) {
+        f.group.visible = false;
+        continue;
+      }
+      f.group.visible = true;
       // Occasional gentle turn, and a rare leap
       if (time > f.turnAt) {
         f.turnAt = time + 2 + Math.random() * 4;
         f.heading.applyAxisAngle(f.dir, (Math.random() - 0.5) * 1.4).normalize();
-        if (f.jumpT0 < 0 && Math.random() < 0.3) {
-          f.jumpT0 = time;
-          f.jumpDur = 0.85 + Math.random() * 0.4;
+        // Jumps launch off a RISING crest (sampled 0.2s ahead) with an entry
+        // splash — the old launch was silent/dry and wave-blind. Capped at 2
+        // concurrent jumpers so the ripple/spray pools never starve.
+        if (f.jumpT0 < 0 && Math.random() < 0.3 && this.activeFishJumps < 2) {
+          const wNow = this.island.waveHeightAt(f.dir, seaT);
+          const wNext = this.island.waveHeightAt(f.dir, seaT + 0.2);
+          if (wNext > wNow) {
+            f.jumpT0 = time;
+            f.jumpDur = 0.85 + Math.random() * 0.4;
+            this.activeFishJumps++;
+            this.spawnRipple(f.dir.clone().multiplyScalar(wNow), 0.9, 0.7);
+            this.spawnSpray(f.dir.clone().multiplyScalar(wNow), f.heading, 2, 2.2);
+          }
         }
       }
       // Steer back to open water if drifting up toward the beach
       if (f.dir.y > shoreY - 0.06) {
         this._fishDown.set(0, -1, 0).addScaledVector(f.dir, f.dir.y).normalize();
         f.heading.lerp(this._fishDown, 0.1);
+      }
+      // Soft school tether: drifting >0.12 rad (~6u) from home turns the fish
+      // back, so schools stay parked off their beach instead of dispersing.
+      if (f.dir.angleTo(f.home) > 0.12) {
+        this._fishHome.copy(f.home).addScaledVector(f.dir, -f.home.dot(f.dir));
+        if (this._fishHome.lengthSq() > 1e-8) {
+          f.heading.lerp(this._fishHome.normalize(), 0.08);
+        }
       }
       // Keep heading tangent, advance along the great circle
       f.heading.addScaledVector(f.dir, -f.heading.dot(f.dir)).normalize();
@@ -990,6 +1097,7 @@ export class GameScene extends THREE.Scene {
         const p = (time - f.jumpT0) / f.jumpDur;
         if (p >= 1) {
           f.jumpT0 = -1;
+          this.activeFishJumps = Math.max(0, this.activeFishJumps - 1);
           this.spawnRipple(f.dir.clone().multiplyScalar(waveR), 1.5, 0.9);
           this.spawnSpray(f.dir.clone().multiplyScalar(waveR), f.heading, 3, 3.2);
         } else {
@@ -998,6 +1106,15 @@ export class GameScene extends THREE.Scene {
         }
       }
       f.group.position.copy(f.dir).multiplyScalar(radius);
+      // Track the nearest surface fish for the dorsal wake (no extra pass)
+      if (f.jumpT0 < 0) {
+        const d2 = f.group.position.distanceToSquared(this.camera.position);
+        if (d2 < wakeBestD2) {
+          wakeBestD2 = d2;
+          wakeBest = f;
+          wakeBestR = waveR;
+        }
+      }
       // Orient: local +Y → up (dir), local −Z → heading
       this._fishZ.copy(f.heading).multiplyScalar(-1);
       this._fishX.crossVectors(f.dir, this._fishZ).normalize();
@@ -1007,6 +1124,12 @@ export class GameScene extends THREE.Scene {
       if (pitch !== 0) f.group.rotateX(pitch);
       // Tail swish
       f.tail.rotation.y = Math.sin(time * 10 + f.phase) * 0.5;
+    }
+    // Dorsal wake: the nearest surface fish cuts a small foam ring every
+    // 0.5s — between jumps they read as floating debris without one.
+    if (wakeBest && this._fishWakeAccum > 0.5) {
+      this._fishWakeAccum = 0;
+      this.spawnRipple(wakeBest.dir.clone().multiplyScalar(wakeBestR), 0.55, 0.6);
     }
   }
 
@@ -2607,7 +2730,9 @@ export class GameScene extends THREE.Scene {
   /** Hand the island's activity anchors to NpcActivities + map persona ids. */
   private setupNpcActivities(): void {
     const vistas = [
-      this.island.dirAt(5.4, 0.34),
+      // NOT the lighthouse's own coords (5.4, 0.34) — that put the Artist
+      // waist-deep in the tower's rock plinth. 4.5u SW, still coastal.
+      this.island.dirAt(5.32, 0.315),
       this.island.dirAt(2.2, 0.33),
       this.island.dirAt(4.6, 0.35),
       this.island.dirAt(0.9, 0.33),
@@ -2927,21 +3052,36 @@ export class GameScene extends THREE.Scene {
     this.vehicleMove.strafe = strafe;
   }
 
-  /** Nearest boardable vehicle to the player within range, or -1. */
-  public nearestBoardable(): number {
-    if (this.activeVehicle >= 0) return -1;
+  // Hop-off hysteresis: the vehicle you just left is suppressed until you've
+  // once been >3.4u away — disembarking drops you 1.8u beside the craft, so
+  // without this the very next frame re-prompted "Press E to drive".
+  private lastDisembarked = -1;
+
+  /** Nearest boardable vehicle within range: {idx, dist} (idx -1 = none).
+   *  Distance is exposed so the interaction chain can let the CLOSEST thing
+   *  win — the old boolean check let a parked car shadow every NPC/door/bench
+   *  within its 3.2u range. */
+  public nearestBoardable(): { idx: number; dist: number } {
+    if (this.activeVehicle >= 0) return { idx: -1, dist: Infinity };
     const p = this.player.getWorldPosition();
+    if (
+      this.lastDisembarked >= 0 &&
+      this.vehicles[this.lastDisembarked] &&
+      this.vehicles[this.lastDisembarked].group.position.distanceTo(p) > 3.4
+    ) {
+      this.lastDisembarked = -1;
+    }
     let best = -1;
     let bestD = 3.2; // board range
     this.vehicles.forEach((v, i) => {
-      if (v.occupied) return;
+      if (v.occupied || i === this.lastDisembarked) return;
       const d = v.group.position.distanceTo(p);
       if (d < bestD) {
         bestD = d;
         best = i;
       }
     });
-    return best;
+    return { idx: best, dist: best >= 0 ? bestD : Infinity };
   }
 
   public vehicleKind(index: number): 'boat' | 'jetski' | 'car' | null {
@@ -2968,6 +3108,7 @@ export class GameScene extends THREE.Scene {
     if (this.activeVehicle < 0) return;
     const v = this.vehicles[this.activeVehicle];
     v.occupied = false;
+    this.lastDisembarked = this.activeVehicle; // suppress instant re-prompt
     this.activeVehicle = -1;
     this.player.setRiding(false);
     this.orbitCamera?.setRideMode(false);
@@ -2993,6 +3134,10 @@ export class GameScene extends THREE.Scene {
   private _vehFwd = new THREE.Vector3();
   private _vehTangent = new THREE.Vector3();
   private _vehNext = new THREE.Vector3();
+  private _vehBank = 0; // eased bank angle, driven by the applied turn rate
+  // NPC obstacle-avoidance scratch (wander loop, allocation-free)
+  private _npcColWorld = new THREE.Vector3();
+  private _npcColPush = new THREE.Vector3();
   private _vehVel = new THREE.Vector3();
   private _carColWorld = new THREE.Vector3();
   private _carColPush = new THREE.Vector3();
@@ -3007,8 +3152,12 @@ export class GameScene extends THREE.Scene {
   private resolveCarCollision(dir: THREE.Vector3, surfaceR: number): void {
     const world = this._carColWorld.copy(dir).multiplyScalar(surfaceR);
     let pushed = false;
+    // ≥0.3 (was ≥1.2): the old filter let cars drive clean through all 48
+    // tree trunks, benches, gate posts, the statue and construction blocks —
+    // only lamp poles (0.2) stay pass-through. Gate posts remain drivable-
+    // between (4.2u spacing vs 1.4u exclusion per post).
     for (const c of this.colliders) {
-      if (c.radius >= 1.2 && this.pushCarOutOf(world, c.position, c.radius)) pushed = true;
+      if (c.radius >= 0.3 && this.pushCarOutOf(world, c.position, c.radius)) pushed = true;
     }
     for (const o of this.placedObstacles) {
       if (this.pushCarOutOf(world, o.pos, o.radius)) pushed = true;
@@ -3055,18 +3204,33 @@ export class GameScene extends THREE.Scene {
           .multiplyScalar(this.vehicleMove.forward)
           .addScaledVector(camR, this.vehicleMove.strafe);
         let moving = false;
-        const speed = v.kind === 'jetski' ? 10 : isCar ? 9 : 6.5;
+        // Real-metric speeds (1u≈1m): jetski 57.6km/h, car 46.8, boat 39.6 —
+        // all clearly faster than the 28.8km/h sprint. The old 6.5u/s boat
+        // was slower than running, so vehicles weren't worth boarding.
+        const speed = v.kind === 'jetski' ? 16 : isCar ? 13 : 11;
+        let appliedTurn = 0;
         if (this._vehFwd.length() > 0.02) {
           this._vehFwd.normalize();
           this._vehTangent
             .copy(this._vehFwd)
             .addScaledVector(v.dir, -this._vehFwd.dot(v.dir))
             .normalize();
+          // Rotational inertia: ease the craft heading toward the input
+          // tangent at a per-craft max turn rate instead of snapping — a
+          // stick reversal now carves a U-turn (radius speed/TURN ≈ 4-5u)
+          // instead of teleport-flipping the hull 180°.
+          const TURN = v.kind === 'jetski' ? 3.0 : isCar ? 3.5 : 2.2; // rad/s
+          const cross = this._vehNext.crossVectors(v.forward, this._vehTangent);
+          const ang = Math.atan2(cross.dot(v.dir), v.forward.dot(this._vehTangent));
+          appliedTurn = THREE.MathUtils.clamp(ang, -TURN * deltaTime, TURN * deltaTime);
+          v.forward.applyAxisAngle(v.dir, appliedTurn).normalize();
+          // Keep forward tangent to the sphere (numerical drift guard)
+          v.forward.addScaledVector(v.dir, -v.forward.dot(v.dir)).normalize();
           const theta = (speed * deltaTime) / R;
           this._vehNext
             .copy(v.dir)
             .multiplyScalar(Math.cos(theta))
-            .addScaledVector(this._vehTangent, Math.sin(theta))
+            .addScaledVector(v.forward, Math.sin(theta))
             .normalize();
           const onValidGround = isCar
             ? !this.island.isOverWater(this._vehNext) // cars keep off the sea
@@ -3074,7 +3238,6 @@ export class GameScene extends THREE.Scene {
               this._vehNext.y >= GameScene.SEA_EDGE_Y; // …but not past the sea edge
           if (onValidGround) {
             v.dir.copy(this._vehNext);
-            v.forward.copy(this._vehTangent);
             moving = true;
           }
         }
@@ -3099,8 +3262,13 @@ export class GameScene extends THREE.Scene {
           up = v.dir;
         }
         this.placeVehicle(v, surfaceR, up);
-        // Bank into turns + pitch (motion feel)
-        v.group.rotateOnAxis(GameScene._localForward, -this.vehicleMove.strafe * 0.35);
+        // Bank into turns + pitch (motion feel). Bank follows the ACTUAL
+        // applied turn rate (eased above), so it sweeps in and out with the
+        // carve instead of popping on raw digital strafe.
+        const turnRatio =
+          deltaTime > 0 ? THREE.MathUtils.clamp(appliedTurn / deltaTime / 3.5, -1, 1) : 0;
+        this._vehBank += (turnRatio * 0.35 - this._vehBank) * Math.min(1, 8 * deltaTime);
+        v.group.rotateOnAxis(GameScene._localForward, -this._vehBank);
         v.group.rotateOnAxis(GameScene._localRight, -Math.abs(this.vehicleMove.forward) * 0.1);
 
         // Cars: roll the wheels (visible spokes), steer the fronts, and kick
@@ -3542,12 +3710,24 @@ export class GameScene extends THREE.Scene {
       pivot.rotateY((pivot.userData.driftSpeed as number) * deltaTime);
     }
 
-    // Birds: orbit + wing flap
+    // Gulls: orbit + soar + flap/glide cycle + night roost
+    const birdDay = this.envCycle ? this.envCycle.getDayFactor() : 1;
     for (const b of this.birds) {
+      // Roost after dusk: shrink away in place, return at dawn.
+      const roostTarget = birdDay < 0.3 ? 0.001 : 1;
+      const s = THREE.MathUtils.lerp(b.bird.scale.x, roostTarget, 1 - Math.exp(-3 * deltaTime));
+      b.bird.scale.setScalar(s);
+      b.pivot.visible = s > 0.05;
+      if (!b.pivot.visible) continue;
       b.pivot.rotateY(b.speed * deltaTime);
-      const flap = Math.sin(time * 9 + b.phase) * 0.55;
+      // Real gulls flap in bursts and glide between them: flap for the
+      // first 35% of a ~4s cycle, then hold a slight dihedral.
+      const flapCycle = (time * 0.25 + b.phase) % 1;
+      const flap = flapCycle < 0.35 ? Math.sin(time * 10 + b.phase) * 0.6 : 0.12;
       b.wingL.rotation.z = flap;
       b.wingR.rotation.z = -flap;
+      // Slow soar: drift the loop altitude up and down as it circles.
+      b.bird.position.copy(b.dirLocal).multiplyScalar(b.alt + Math.sin(time * 0.5 + b.phase) * 0.5);
     }
 
     // Trees: gentle sway + a slow wind gust that rolls through every ~25s so
@@ -3592,6 +3772,7 @@ export class GameScene extends THREE.Scene {
             nextDwell?: number; // seconds to dwell on arrival at the goal
             faceDir?: THREE.Vector3; // lazily-allocated idle facing (reused)
             faceActive?: boolean; // faceDir holds a valid dir for this goal
+            blockedT?: number; // seconds spent grinding a footprint (give-up)
           };
         };
         if (!data.wander) {
@@ -3672,9 +3853,50 @@ export class GameScene extends THREE.Scene {
             this._wanderAxis.crossVectors(w.dir, w.target);
             if (this._wanderAxis.lengthSq() > 1e-10) {
               this._wanderAxis.normalize();
-              // ~0.5 u/s stroll on the R=18 sphere
+              // ~1.4 u/s stroll on the R=50 sphere (a 5 km/h human walk)
               const step = Math.min(0.028 * deltaTime, remaining);
               w.dir.applyAxisAngle(this._wanderAxis, step);
+              // Obstacle avoidance: slide the NPC's ground point out of the
+              // big structure footprints (houses/stalls/fountain/buildings)
+              // so townsfolk stop phasing through cottage walls. Same
+              // tangential push the car uses; NPC radius 0.3.
+              if (w.radius > 0) {
+                this._npcColWorld.copy(w.dir).multiplyScalar(w.radius);
+                let npcPushed = false;
+                for (const c of this.colliders) {
+                  if (c.radius < 1.2) continue;
+                  const dx = this._npcColWorld.x - c.position.x;
+                  const dy = this._npcColWorld.y - c.position.y;
+                  const dz = this._npcColWorld.z - c.position.z;
+                  const d2 = dx * dx + dy * dy + dz * dz;
+                  const min = c.radius + 0.3;
+                  if (d2 >= min * min || d2 < 1e-8) continue;
+                  const d = Math.sqrt(d2);
+                  this._npcColPush.set(dx, dy, dz);
+                  this._npcColPush.addScaledVector(
+                    this._npcColWorld,
+                    -this._npcColPush.dot(this._npcColWorld) / this._npcColWorld.lengthSq(),
+                  );
+                  if (this._npcColPush.lengthSq() < 1e-6) continue;
+                  this._npcColPush.normalize().multiplyScalar(min - d + 0.02);
+                  this._npcColWorld.add(this._npcColPush);
+                  npcPushed = true;
+                }
+                if (npcPushed) {
+                  w.dir.copy(this._npcColWorld).normalize();
+                  // Give-up guard: a goal INSIDE a footprint would grind the
+                  // wall forever — if pushes keep firing without progress,
+                  // drop to idle and re-pick after a beat.
+                  w.blockedT = (w.blockedT ?? 0) + deltaTime;
+                  if (w.blockedT > 2) {
+                    w.blockedT = 0;
+                    w.state = 'idle';
+                    w.until = time + 2;
+                  }
+                } else {
+                  w.blockedT = 0;
+                }
+              }
               // Gait phase = accumulated ground distance, so cadence tracks
               // actual motion. (radius is 0 until the first surface sample —
               // one frame of missed phase, invisible.)
@@ -3708,15 +3930,16 @@ export class GameScene extends THREE.Scene {
           else delete data.greetT0;
         }
         // Walk bob is faster/taller than the idle breathing bob. While
-        // walking it runs on the gait-distance phase (dist×18 ≈ the old
-        // time×9 at the 0.5 u/s stroll) so footfalls stop with the feet.
+        // walking it runs on the gait-distance phase: 2π/stepLength ≈ 8 rad/u
+        // for a 0.75u stroll step. (The old ×18 was tuned for the R=18-era
+        // 0.5u/s stroll; at today's 1.4u/s it vibrated every NPC at 4Hz.)
         let bob = moving
-          ? (Math.sin(w.dist * 18 + i * 1.7) + 1) * 0.03
+          ? (Math.sin(w.dist * 8 + i * 1.7) + 1) * 0.03
           : (Math.sin(time * 2 + i * 1.7) + 1) * 0.015;
         // Waddle: roll about the local forward axis at HALF the footfall
         // frequency (left step / right step), eased out on stopping so the
         // body settles upright instead of freezing mid-lean.
-        let rollTarget = moving ? Math.sin(w.dist * 9 + i * 1.7) * 0.07 : 0;
+        let rollTarget = moving ? Math.sin(w.dist * 4 + i * 1.7) * 0.07 : 0;
         // Activity pose: while standing at an anchor, the pose preset drives the
         // idle motion (kneel low + slow, play bouncy, sleep near-still) and a
         // vertical `lift` (a crouch/lie via the surface-normal offset — no extra
@@ -4215,30 +4438,80 @@ export class GameScene extends THREE.Scene {
     const playerPos = this.player.getWorldPosition();
     const playerRadius = 0.4; // Player collision radius
 
+    // Shared tangential push. Returns the push distance (0 = no overlap).
+    const pushOut = (center: THREE.Vector3, radius: number): number => {
+      const dist = playerPos.distanceTo(center);
+      const minDist = playerRadius + radius;
+      if (dist >= minDist) return 0;
+      // Push player away TANGENTIALLY: a radial component here shoves the
+      // player into the terrain (visible as being 'dug in' while walking
+      // past props) or launches them off it — grounding owns the radial axis.
+      const normal = playerPos.clone().normalize();
+      const direction = playerPos.clone().sub(center);
+      direction.sub(normal.clone().multiplyScalar(direction.dot(normal)));
+      if (direction.lengthSq() < 1e-6)
+        direction.copy(normal.clone().cross(new THREE.Vector3(0, 1, 0.001)));
+      direction.normalize();
+      const pushDistance = minDist - dist + 0.01; // Small buffer to prevent re-collision
+      playerPos.addScaledVector(direction, pushDistance);
+      this.player.setWorldPosition(playerPos);
+      this.player.updateWorldMatrix();
+      return pushDistance;
+    };
+
+    // Causation: running into something should FEEL like contact, not a
+    // silent teleport. Throttled dust puff + soft thud, plus a canopy shake
+    // when the thing you hit is a tree.
+    const bumpFeedback = (center: THREE.Vector3, push: number) => {
+      const now = performance.now() / 1000;
+      if (push < 0.06 || this.player.getTangentialSpeed() < 2) return;
+      if (now - this.lastBumpAt < 0.4) return;
+      this.lastBumpAt = now;
+      this._bumpScratch.copy(center).lerp(playerPos, 0.5);
+      this.spawnDust(this._bumpScratch, 2);
+      sfx.land();
+      for (const t of this.swayTrees) {
+        if (t.group.position.distanceToSquared(center) < 0.36) {
+          t.phase += 2.4; // one-shot kick — the canopy visibly shudders
+          break;
+        }
+      }
+    };
+
     for (const collider of this.colliders) {
-      const dist = playerPos.distanceTo(collider.position);
-      const minDist = playerRadius + collider.radius;
+      const push = pushOut(collider.position, collider.radius);
+      if (push > 0) bumpFeedback(collider.position, push);
+    }
 
-      // If player is overlapping with this collider
-      if (dist < minDist) {
-        // Push player away TANGENTIALLY: a radial component here shoves the
-        // player into the terrain (visible as being 'dug in' while walking
-        // past props) or launches them off it — grounding owns the radial axis.
-        const normal = playerPos.clone().normalize();
-        const direction = playerPos.clone().sub(collider.position);
-        direction.sub(normal.clone().multiplyScalar(direction.dot(normal)));
-        if (direction.lengthSq() < 1e-6)
-          direction.copy(normal.clone().cross(new THREE.Vector3(0, 1, 0.001)));
-        direction.normalize();
-        const pushDistance = minDist - dist + 0.01; // Small buffer to prevent re-collision
-        playerPos.addScaledVector(direction, pushDistance);
+    // Parked vehicles are solid on foot (the camera already treated them as
+    // solid — feet now agree). Positions are live, so a driven-then-parked
+    // car blocks at its NEW spot with no ghost wall at the old one.
+    for (let i = 0; i < this.vehicles.length; i++) {
+      if (i === this.activeVehicle || this.remoteHeldVehicles.has(i)) continue;
+      const v = this.vehicles[i];
+      const isCar = v.kind === 'car';
+      // Watercraft only block while the player is actually in the water.
+      if (!isCar && !this.player.isInWater()) continue;
+      const push = pushOut(v.group.position, isCar ? 1.1 : 0.9);
+      if (push > 0) bumpFeedback(v.group.position, push);
+    }
 
-        // Update player position
-        this.player.setWorldPosition(playerPos);
-        this.player.updateWorldMatrix();
+    // Live townsfolk are solid too — and being bumped triggers the existing
+    // greet hop/turn, so pushed NPCs visibly react instead of ghosting.
+    for (const npc of this.island.npcTargets) {
+      const mesh = npc.meshRef;
+      if (!mesh || !mesh.visible) continue; // sleepers/hidden skip
+      const push = pushOut(mesh.position, 0.45);
+      if (push > 0.02) {
+        const data = mesh.userData as { greetT0?: number };
+        if (typeof data.greetT0 !== 'number') data.greetT0 = performance.now() / 1000;
       }
     }
   }
+
+  // Throttle for collision bump feedback (dust/thud once per 0.4s)
+  private lastBumpAt = 0;
+  private readonly _bumpScratch = new THREE.Vector3();
 
   /**
    * Check if player is near any interactable and return interaction data
@@ -4261,7 +4534,24 @@ export class GameScene extends THREE.Scene {
       this.cachedNearby &&
       playerPos.distanceTo(this.lastPlayerPos) < this.cacheDistanceThreshold
     ) {
-      return this.cachedNearby;
+      // NPCs MOVE while the player stands still — revalidate cached NPC hits
+      // so the prompt can't say "talk to X" after X wandered away (and E
+      // can't open a chat across the map).
+      if (this.cachedNearby.type === 'npc') {
+        const name = this.cachedNearby.npcData.name;
+        const live = this.island.npcTargets.find((n) => n.name === name);
+        if (
+          !live ||
+          !live.meshRef.visible ||
+          live.meshRef.position.distanceTo(playerPos) > this.interactionRange
+        ) {
+          this.cachedNearby = null; // fall through to a fresh scan
+        } else {
+          return this.cachedNearby;
+        }
+      } else {
+        return this.cachedNearby;
+      }
     }
 
     // Update cache position
@@ -4288,11 +4578,15 @@ export class GameScene extends THREE.Scene {
       }
     }
 
-    // Check zones
+    // Check zones. Zone distance is CENTER-measured: the 1.7 collider + 0.4
+    // player radius means a visitor at the door is always ≥2.05u away, so
+    // benches/NPCs loitering at the plaza kept shadowing the portfolio's core
+    // "enter" prompt. A 0.9u bias makes the doorway win locally while distant
+    // zones still lose fairly.
     const nearbyZone = this.zonesManager.getNearbyZone(playerPos, this.interactionRange);
-    if (nearbyZone && nearbyZone.distance < nearestDist) {
+    if (nearbyZone && nearbyZone.distance - 0.9 < nearestDist) {
       nearest = { type: 'zone' as const, zone: nearbyZone.zone, distance: nearbyZone.distance };
-      nearestDist = nearbyZone.distance;
+      nearestDist = nearbyZone.distance - 0.9;
     }
 
     // Check NPCs (skip ones asleep "inside" — no talking to an empty doorstep)

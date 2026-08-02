@@ -84,8 +84,11 @@ export class RaceSystem {
   ) {
     this.scene = scene;
     this.island = island;
-    // Only the sizeable footprints matter — lamps/mailboxes are pass-through.
-    this.obstacles = obstacles.filter((o) => o.radius >= 1.2);
+    // LIVE reference (not a filtered snapshot): GameScene keeps pushing
+    // colliders after construction (zone buildings, quest mailboxes, async
+    // GLB props) — snapshotting here made gates blind to all of them. The
+    // size filter moved into obstacleClearance.
+    this.obstacles = obstacles;
     this.best.land = this.loadBest('land');
     this.best.water = this.loadBest('water');
   }
@@ -206,6 +209,9 @@ export class RaceSystem {
         const d = this.island.dirAt(lon, lat);
         if (this.island.isOverWater(d) !== wantWater) continue;
         if (wantWater) return d;
+        // Never park a land gate ON a road — the lat slide was street-blind
+        // and could seat a gate + posts mid-pavement.
+        if (this.island.isNearStreet(d)) continue;
         // Land: prefer reasonably flat ground (normal roughly radial).
         const sample = this.island.sampleSurfaceByDirection(d, 0);
         if (sample.normal.dot(d) <= 0.72) continue;
@@ -220,10 +226,12 @@ export class RaceSystem {
     return best ?? this.island.dirAt(lon, latTarget);
   }
 
-  /** Signed margin from the nearest structure footprint (negative = inside). */
+  /** Signed margin from the nearest structure footprint (negative = inside).
+   *  Only the sizeable footprints matter — lamps/mailboxes are pass-through. */
   private obstacleClearance(pos: THREE.Vector3): number {
     let margin = Infinity;
     for (const o of this.obstacles) {
+      if (o.radius < 1.2) continue;
       margin = Math.min(margin, pos.distanceTo(o.position) - o.radius);
     }
     return margin;
@@ -364,8 +372,15 @@ export class RaceSystem {
       const mat = c.rings[i].material as THREE.MeshStandardMaterial;
       if (forceDim) {
         // On foot / the other circuit: still a soft glowing ring (discoverable).
-        mat.emissive.setHex(0x2f6fb0);
-        mat.emissiveIntensity = 0.6;
+        // The START ring stays white so the compass-guided visitor arriving
+        // on foot sees THE start line, not undifferentiated scenery.
+        if (i === 0) {
+          mat.emissive.setHex(0xffffff);
+          mat.emissiveIntensity = 0.9;
+        } else {
+          mat.emissive.setHex(0x2f6fb0);
+          mat.emissiveIntensity = 0.6;
+        }
         continue;
       }
       let color = 0x3388dd; // pending (blue)
@@ -403,7 +418,7 @@ export class RaceSystem {
 
   private loadBest(kind: CircuitKind): number | null {
     try {
-      const v = localStorage.getItem(`ds_race_best_${kind}`);
+      const v = localStorage.getItem(`ds_race_best2_${kind}`);
       return v ? parseFloat(v) : null;
     } catch {
       return null;
@@ -412,7 +427,7 @@ export class RaceSystem {
 
   private saveBest(kind: CircuitKind, t: number): void {
     try {
-      localStorage.setItem(`ds_race_best_${kind}`, String(t));
+      localStorage.setItem(`ds_race_best2_${kind}`, String(t));
     } catch {
       /* ignore */
     }

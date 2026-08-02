@@ -61,12 +61,13 @@ export class OrbitCamera {
   private rideMode = false;
   private static readonly WALK_DISTANCE = 4.4;
   private static readonly WALK_HEIGHT = 1.5;
-  private static readonly RIDE_DISTANCE = 8.5;
+  private static readonly RIDE_DISTANCE = 10; // frames the faster craft (16u/s jetski)
   private static readonly RIDE_HEIGHT = 3.4;
 
-  // Optional collision root for the camera (terrain + props): pull the camera
-  // in whenever ANYTHING blocks the view ray to the player.
-  private collisionMesh: THREE.Object3D | null = null;
+  // Optional collision roots for the camera (terrain + props + the zone
+  // landmark buildings, which live under the SCENE, not island.mesh): pull
+  // the camera in whenever ANYTHING blocks the view ray to the player.
+  private collisionRoots: THREE.Object3D[] = [];
   private raycaster: THREE.Raycaster = new THREE.Raycaster();
 
   constructor(camera: THREE.Camera, player: SimplePlayer) {
@@ -78,10 +79,11 @@ export class OrbitCamera {
   }
 
   /**
-   * Provide the terrain mesh so the camera can avoid clipping through hills.
+   * Provide the terrain mesh (and any extra roots, e.g. zone buildings) so
+   * the camera can avoid clipping through them.
    */
-  public setCollisionMesh(root: THREE.Object3D | undefined): void {
-    this.collisionMesh = root ?? null;
+  public setCollisionMesh(...roots: Array<THREE.Object3D | undefined>): void {
+    this.collisionRoots = roots.filter((r): r is THREE.Object3D => !!r);
   }
 
   private _reducedVel = new THREE.Vector3();
@@ -160,13 +162,13 @@ export class OrbitCamera {
     // Target point: player + up*height (toward torso level)
     this.targetPosition.copy(playerPos).addScaledVector(surfaceNormal, this.height * 0.5);
 
-    // Camera collision: pull in when terrain blocks the view ray
+    // Camera collision: pull in when terrain or a building blocks the view ray
     let effectiveDistance = this.distance;
-    if (this.collisionMesh) {
+    if (this.collisionRoots.length > 0) {
       try {
         this.raycaster.set(this.targetPosition, cameraDir);
         this.raycaster.far = this.distance + 0.5;
-        const hits = this.raycaster.intersectObject(this.collisionMesh, true);
+        const hits = this.raycaster.intersectObjects(this.collisionRoots, true);
         if (hits.length > 0 && hits[0].distance < this.distance) {
           effectiveDistance = Math.max(this.minDistance, hits[0].distance * 0.9);
         }
@@ -202,9 +204,13 @@ export class OrbitCamera {
       this.pitchVelocity = scaledPitchInput * 2.5;
     }
 
-    // Apply damping to velocities for smooth motion
-    this.yawVelocity *= this.damping;
-    this.pitchVelocity *= this.damping;
+    // Apply damping to velocities for smooth motion. Time-based, not
+    // per-frame: `*= 0.9` each frame made the camera twice as stiff at 120Hz
+    // as at 60Hz (phones are 90/120Hz now). exp(ln(d)*60*dt) reproduces the
+    // 60Hz feel exactly at every refresh rate.
+    const dampK = Math.exp(Math.log(this.damping) * 60 * safeDeltaTime);
+    this.yawVelocity *= dampK;
+    this.pitchVelocity *= dampK;
 
     // Two-finger pinch (SimpleInputManager publishes a consumable ratio):
     // spreading zooms in, pinching zooms out. setDistance keeps the 2–12
@@ -234,7 +240,13 @@ export class OrbitCamera {
     if (!Number.isFinite(currentCamPos.x)) currentCamPos.copy(this.cameraPosition);
     if (!Number.isFinite(this.cameraPosition.x)) this.updateCameraPosition(0);
 
-    currentCamPos.lerp(this.cameraPosition, this.smoothness);
+    // Same Hz-independence for the position ease: convert the tuned per-frame
+    // factor (assumed 60Hz) into a rate, then apply it over the real dt.
+    const smoothK =
+      this.smoothness <= 0
+        ? 0
+        : 1 - Math.exp(Math.log(1 - Math.min(this.smoothness, 0.95)) * 60 * safeDeltaTime);
+    currentCamPos.lerp(this.cameraPosition, smoothK);
 
     // Apply to camera with safety checks
     if (Number.isFinite(currentCamPos.x)) {

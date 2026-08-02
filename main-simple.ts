@@ -1309,16 +1309,19 @@ class SimpleApp {
         // never become an XSS vector once they turn dynamic (multiplayer).
         const esc = (s: string) =>
           s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const boardable = this.scene.nearestBoardable();
+        const board = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
-        if (boardable >= 0) {
+        // Nearest thing wins: the vehicle only takes the prompt when it is
+        // actually the closest interactable — a parked car used to shadow
+        // every NPC, mailbox and cottage door within its 3.2u board range.
+        if (board.idx >= 0 && board.dist < (nearby?.distance ?? Infinity)) {
           // A vehicle is within reach (swim up to craft / walk up to a car)
-          const kind = this.scene.vehicleKind(boardable);
-          const icon = kind === 'jetski' ? '🛶' : kind === 'car' ? '🚗' : '⛵';
+          const kind = this.scene.vehicleKind(board.idx);
+          const icon = kind === 'jetski' ? '🌊' : kind === 'car' ? '🚗' : '⛵';
           const verb = kind === 'car' ? 'drive' : 'ride';
           this.ui.showInteractionPrompt(`${icon} Press <strong>E</strong> to ${verb}`);
           if (this.inputManager.consumeKeyPress('e')) {
-            this.scene.boardVehicle(boardable);
+            this.scene.boardVehicle(board.idx);
             sfx.blip();
             track('vehicle_enter', { kind });
           }
@@ -1329,7 +1332,13 @@ class SimpleApp {
           // Show interaction prompt
           let text = '⌨️ Press <strong>E</strong> to interact';
           if (nearby.type === 'mailbox') {
-            text = nearby.mailbox.bubbleText ? esc(nearby.mailbox.bubbleText) : text;
+            // State-aware copy: the glowing mailbox's prompt should CONFIRM
+            // "this is the one" — the old generic line never did.
+            text = nearby.mailbox.bubbleText
+              ? esc(nearby.mailbox.bubbleText)
+              : nearby.mailbox.hasDelivery
+                ? '📬 Press <strong>E</strong> to collect the delivery'
+                : '📭 Press <strong>E</strong> to check the mailbox';
           } else if (nearby.type === 'lamp') {
             text = '💡 Press <strong>E</strong> to toggle lamp';
           } else if (nearby.type === 'zone') {

@@ -1252,7 +1252,17 @@ export class SimplePlayer extends THREE.Group {
       return;
     }
 
-    // Clamp delta time to prevent large jumps
+    // Substep instead of truncating: the old hard clamp to 20ms silently
+    // DROPPED wall time below 50fps — the player ran in slow motion (8.0 →
+    // 4.8u/s at 30fps) while NPCs and vehicles, which integrate the raw dt,
+    // kept true speed. Recursing on the remainder in ≤20ms slices preserves
+    // every millisecond (max 3 slices at the renderer's 50ms cap), and the
+    // animation/pose code inside each slice sums to the same total time.
+    if (deltaTime > 0.021) {
+      this.update(0.02);
+      this.update(deltaTime - 0.02);
+      return;
+    }
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.02));
 
     // Ease heading onto targetYaw (shortest arc, ~12 rad/s exponential) so
@@ -1267,10 +1277,17 @@ export class SimplePlayer extends THREE.Group {
       this.yawVel = step / safeDeltaTime;
     }
 
-    // Apply gravity (spherical toward planet center, or flat -Y)
+    // Apply gravity (spherical toward planet center, or flat -Y).
+    // Descent is weighted 1.6× — a symmetric parabola reads as moon gravity
+    // on the way down; the apex (jumpForce²/2g = 1.28u) is unchanged, only
+    // the fall shortens (0.32s → 0.25s) for a snappier landing.
     if (this.planetRadius > 0) {
       const gravDir = this.planetCenter.clone().sub(this.playerPosition).normalize();
-      this.velocity.addScaledVector(gravDir, this.gravityStrength * safeDeltaTime);
+      const falling = !this.isGrounded && !this.inWater && this.velocity.dot(gravDir) > 0;
+      this.velocity.addScaledVector(
+        gravDir,
+        this.gravityStrength * (falling ? 1.6 : 1) * safeDeltaTime,
+      );
     } else {
       this.acceleration.set(0, -this.gravityStrength, 0);
       this.velocity.addScaledVector(this.acceleration, safeDeltaTime);
@@ -1622,7 +1639,10 @@ export class SimplePlayer extends THREE.Group {
       const normal = this.getSurfaceNormal();
       const vNormal = normal.clone().multiplyScalar(this.velocity.dot(normal));
       const vTangent = this.velocity.clone().sub(vNormal);
-      const target = moveDir.clone().multiplyScalar(this.speed); // moveDir already tangent-projected
+      // Swimming caps at 55% of run speed: an 8u/s front crawl would be 4×
+      // Olympic sprint pace and out-swim the boat. 4.4u/s is still heroic
+      // but keeps the water traversal hierarchy (feet < boat < jetski).
+      const target = moveDir.clone().multiplyScalar(this.speed * (this.swimming ? 0.55 : 1)); // moveDir already tangent-projected
       vTangent.lerp(target, t);
       this.velocity.copy(vTangent.add(vNormal));
     } else {

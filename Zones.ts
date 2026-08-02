@@ -103,7 +103,10 @@ export class Zone {
     // alignment + door-facing happen in one quaternion.
     try {
       const dir = this.position.clone().normalize();
-      const sampled = island.sampleSurfaceByDirection(dir, 0.4);
+      // Offset 0.05 (was 0.4): the old seat floated every landmark building
+      // 0.23-0.36u above the terrain with the door sill at knee height —
+      // the only structures violating the island's bury-not-float convention.
+      const sampled = island.sampleSurfaceByDirection(dir, 0.05);
       this.marker.position.copy(sampled.position);
       this.position.copy(sampled.position); // proximity matches the visual
 
@@ -135,12 +138,16 @@ export class Zone {
     const base = 0.1; // body sits just above the foundation slab
 
     // Foundation slab — hides the flat footprint intersecting the displaced
-    // sphere (the terrain note in CLAUDE.md), reused from the welcome-plaza idiom.
+    // sphere (the terrain note in CLAUDE.md), reused from the welcome-plaza
+    // idiom. Sunk (-0.15) so the bottom is buried like every other prop.
+    // The welcome hall's slab shrinks so it doesn't swallow the pole plaza
+    // floor + decorative ring the hub composition is built from.
+    const slabScale = id === 'welcome' ? [0.55, 0.62] : [0.82, 0.9];
     const slab = new THREE.Mesh(
-      new THREE.CylinderGeometry(bw * 0.82, bw * 0.9, 0.3, 24),
+      new THREE.CylinderGeometry(bw * slabScale[0], bw * slabScale[1], 0.3, 24),
       new THREE.MeshStandardMaterial({ color: 0xbdb3a4, roughness: 0.95 }),
     );
-    slab.position.y = -0.02;
+    slab.position.y = -0.15;
     slab.receiveShadow = true;
     g.add(slab);
 

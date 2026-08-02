@@ -366,8 +366,15 @@ export function setAnchors(a: {
     mailboxes: a.mailboxes.map(toDir),
     stalls: a.stalls.map(toDir),
     benches: a.benches.map(toDir),
-    lighthouse: a.lighthouseDir ? ringAround(a.lighthouseDir.clone().normalize(), 0.05, 4) : [],
-    plaza: DISTRICTS.map((d) => dirFor(d.lon, d.lat)),
+    // 0.075 rad (3.75u at R=50): the old 0.05 ring EQUALLED the plinth base
+    // radius, so all four keeper waypoints sat ON the rock wall.
+    lighthouse: a.lighthouseDir ? ringAround(a.lighthouseDir.clone().normalize(), 0.075, 4) : [],
+    // The welcome plaza anchor moves to the plaza APRON: the exact pole is
+    // where the town hall's solid body stands — musicians/gatherers routed
+    // there stood inside the box. (BOULEVARD_LONS solved this for patrol.)
+    plaza: DISTRICTS.map((d) =>
+      d.id === 'welcome' ? dirFor(0.9, Math.PI / 2 - 0.09) : dirFor(d.lon, d.lat),
+    ),
     vista: a.vistas.map(toDir),
     doors: (a.doors ?? []).map(toDir),
   };

@@ -22,6 +22,7 @@ import {
 } from './Districts';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
+import { SimplePlayer } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import TextureGenerator from './TextureGenerator';
 import { isRealTheme } from './Theme';
@@ -514,6 +515,11 @@ export class Island {
     if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
     grass.instanceMatrix.needsUpdate = true;
     grass.name = 'grass';
+    // Opt out of raycasting (mirrors the sea): the orbit camera's per-frame
+    // collision ray otherwise brute-forces all 32k-100k instances — multi-ms
+    // of main-thread time on mobile — and a BLADE crossing the eye-ray
+    // yanked the camera toward the player.
+    grass.raycast = () => {};
     grass.castShadow = false;
     // Coarse tier: 12k DoubleSide blades sampling the shadow map for shadows
     // nobody can see at phone DPR — skip the receive entirely there.
@@ -1189,7 +1195,12 @@ export class Island {
     for (const dLon of DISTRICT_LONS) {
       // Avenue: pole plaza → district plaza
       const avenue: THREE.Vector3[] = [];
-      for (let s = 0; s <= 12; s++) avenue.push(this.dirAt(dLon, 1.32 - (s / 12) * 0.82));
+      // Start at 4.2u from the pole (≈ the enlarged plaza rim) so pavement
+      // meets the plaza — the old 1.32 start left a 9u strip of bare grass
+      // between plaza edge and avenue that the spawn sat in the middle of.
+      const aStart = Math.PI / 2 - 4.2 / this.radius;
+      for (let s = 0; s <= 12; s++)
+        avenue.push(this.dirAt(dLon, aStart - (s / 12) * (aStart - 0.5)));
       pathGroup.add(this.createStreetPath(avenue, 0.8));
       // Connector: district plaza → coastal road
       const connector: THREE.Vector3[] = [];
@@ -1366,6 +1377,28 @@ export class Island {
       );
       knob.position.set(0.3, 1.0, d * 0.52);
       house.add(knob);
+      // Enterable invitation: a doormat + warm door lamp (the exact idiom the
+      // zone buildings use) — the cottages' interiors + sleeping NPCs were
+      // effectively hidden behind doors that looked purely decorative.
+      const doormat = new THREE.Mesh(
+        new THREE.BoxGeometry(0.9, 0.05, 0.5),
+        new THREE.MeshStandardMaterial({ color: 0xd9c48a, roughness: 1 }),
+      );
+      doormat.position.set(0, 0.03, d * 0.51 + 0.35);
+      doormat.receiveShadow = true;
+      house.add(doormat);
+      const doorLamp = new THREE.Mesh(
+        new THREE.SphereGeometry(0.09, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color: 0xffe6a8,
+          emissive: 0xffc966,
+          emissiveIntensity: 0.4,
+          roughness: 0.4,
+        }),
+      );
+      doorLamp.position.set(0, 2.05, d * 0.52);
+      doorLamp.userData.isNightEmissive = true; // EnvironmentCycle drives it
+      house.add(doorLamp);
       // Chimney (every other house)
       if (i % 2 === 0) {
         const chimney = new THREE.Mesh(
@@ -1695,12 +1728,15 @@ export class Island {
       top.scale.set(1, 0.5, 0.67);
       top.position.y = 0.64;
       mb.add(top);
-      // Flag
+      // Flag — DOWN (rotated flat): these six town mailboxes are decorative;
+      // a raised red flag is the interactive quest-mailbox signal, and lookal
+      // ikes with raised flags taught visitors that prompts are flaky.
       const flag = new THREE.Mesh(
         new THREE.BoxGeometry(0.02, 0.08, 0.06),
-        new THREE.MeshStandardMaterial({ color: 0xcc3333 }),
+        new THREE.MeshStandardMaterial({ color: 0x8a8378 }),
       );
-      flag.position.set(0.1, 0.6, 0);
+      flag.position.set(0.1, 0.52, 0);
+      flag.rotation.z = Math.PI / 2.3;
       mb.add(flag);
       mb.position.copy(placement.position);
       this.mailboxSites.push(placement.position.clone()); // NPC activity anchor (mail round)
@@ -2369,15 +2405,17 @@ export class Island {
     // CONTACT district: a market street — stalls line BOTH kerbs of the
     // boulevard through the plaza (staggered rows so counters don't face
     // each other head-on), the classic two-sided bazaar strip.
+    // Rows tightened to a ±3.5u kerb setback (0.535/0.39 vs the R=22-era
+    // 0.65/0.31): the counters used to sit 8-9u off the boulevard they face,
+    // so the "two-sided bazaar strip" read as scattered tents.
     const STALL_SITES: Array<[number, number]> = [
-      [3.51 + SHIFT_CONTACT, 0.65],
-      [3.73 + SHIFT_CONTACT, 0.65],
-      [3.95 + SHIFT_CONTACT, 0.65],
-      // south row at 0.31 — 0.28 was the shoreline band, and claimDir
-      // jitter kept nudging the end stall into the surf
-      [3.59 + SHIFT_CONTACT, 0.31],
-      [3.81 + SHIFT_CONTACT, 0.31],
-      [4.03 + SHIFT_CONTACT, 0.31],
+      [3.51 + SHIFT_CONTACT, 0.535],
+      [3.73 + SHIFT_CONTACT, 0.535],
+      [3.95 + SHIFT_CONTACT, 0.535],
+      // south row at 0.39 — 0.28 is the shoreline band; stay clear of the surf
+      [3.59 + SHIFT_CONTACT, 0.39],
+      [3.81 + SHIFT_CONTACT, 0.39],
+      [4.03 + SHIFT_CONTACT, 0.39],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
@@ -2411,7 +2449,10 @@ export class Island {
     const rivers = new THREE.Group();
     // Both on the island (the second used to sit at lat -0.38 — seafloor now)
     const RIVER_SITES: Array<[number, number]> = [
-      [4.62, 0.4],
+      // 0.28 rad clear of the Contact plaza pre-claim (the old [4.62, 0.4]
+      // was inside its claim arc, so claimDir always jittered it — sometimes
+      // onto the boulevard).
+      [4.45, 0.36],
       [0.72, 0.62],
     ];
     for (let i = 0; i < RIVER_SITES.length; i++) {
@@ -2524,7 +2565,9 @@ export class Island {
     const stemMat = Materials.createStandardMaterial({ color: 0x3d7a3d });
     const FLOWER_ANCHORS: Array<[number, number]> = [
       ...DISTRICT_LONS.map((l) => [l, ZONE_LAT] as [number, number]),
-      [0, 1.42],
+      // Welcome anchor sits on the plaza APRON (lon 0.9, lat 1.38), not at
+      // [0, 1.42] where the ring straddled the spawn point and the hall.
+      [0.9, 1.38],
     ];
     // NPC activity anchors (gardener) — two off-centre points on each plaza's
     // flower ring, nudged off the pavement so she kneels beside real blooms.
@@ -2534,7 +2577,10 @@ export class Island {
         [-0.2, 0.13],
       ] as Array<[number, number]>) {
         try {
-          const fd = this.pushOffStreet(this.dirAt(aLon + dl, aLat + dt));
+          // Divide the lon offset by cos(lat): near the pole a raw lon delta
+          // collapses to almost nothing, which used to park the gardener's
+          // bed 1u from the pole — inside the town hall.
+          const fd = this.pushOffStreet(this.dirAt(aLon + dl / Math.cos(aLat), aLat + dt));
           this.flowerBedSites.push(this.sampleSurfaceByDirection(fd, 0.0).position.clone());
         } catch {
           /* skip an unsamplable bed */
@@ -2548,7 +2594,12 @@ export class Island {
     for (let i = 0; i < 50; i++) {
       const [fLon, fLat] = FLOWER_ANCHORS[Math.floor(i / 10)];
       const ringA = ((i % 10) / 10) * Math.PI * 2;
-      const fDir = this.dirAt(fLon + Math.cos(ringA) * 0.2, fLat + Math.sin(ringA) * 0.15);
+      // cos(lat) correction keeps the ring CIRCULAR near the pole (raw lon
+      // deltas collapsed the welcome ring into a 3u-wide streak).
+      const fDir = this.dirAt(
+        fLon + (Math.cos(ringA) * 0.2) / Math.cos(fLat),
+        fLat + Math.sin(ringA) * 0.15,
+      );
       // Plaza flower rings cross the boulevard — keep blooms off the pavement
       if (this.isNearStreet(fDir)) continue;
       const pos = this.claimDir(fDir, 0.015).multiplyScalar(this.radius);
@@ -2667,8 +2718,10 @@ export class Island {
     const benches = new THREE.Group();
     // Benches at the plazas: [lon, lat, latOfPlazaTheyFace]
     const BENCH_SITES: Array<[number, number, number]> = [
-      [0.8, 1.36, 1.5708],
-      [3.9, 1.36, 1.5708], // welcome / spawn
+      // 4.6u from the pole (lat 1.478) at the enlarged plaza rim — the old
+      // 1.36 stranded the welcome benches 10.5u out facing a distant floor.
+      [0.8, 1.478, 1.5708],
+      [3.9, 1.478, 1.5708], // welcome / spawn
       [2.44 + SHIFT_PERSONAL, 0.4, 0.4636],
       [2.6 + SHIFT_PERSONAL, 0.4, 0.4636],
       [2.51 + SHIFT_PERSONAL, 0.56, 0.4636], // village
@@ -2737,10 +2790,14 @@ export class Island {
     const plazaStone = Materials.createTrimMaterial(0xb8b0a4);
     const plazaTrim = Materials.createTrimMaterial(0x9a9186);
     const plazaBase = new THREE.Group();
-    const plazaFloor = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.5, 0.1, 40), plazaStone);
+    // r5.0/5.1 (was 3.4/3.5): the town hall's own foundation slab spans
+    // ~r3.6, so the old floor was entirely swallowed by it and the pillars
+    // pierced the slab rim. The bigger apron also gives the moved-out
+    // pillars (4.6u) pavement to stand on.
+    const plazaFloor = new THREE.Mesh(new THREE.CylinderGeometry(5.0, 5.1, 0.1, 48), plazaStone);
     plazaFloor.receiveShadow = true;
     plazaBase.add(plazaFloor);
-    const plazaRing = new THREE.Mesh(new THREE.TorusGeometry(3.05, 0.1, 8, 40), plazaTrim);
+    const plazaRing = new THREE.Mesh(new THREE.TorusGeometry(4.55, 0.1, 8, 48), plazaTrim);
     plazaRing.rotation.x = Math.PI / 2;
     plazaRing.position.y = 0.06;
     plazaBase.add(plazaRing);
@@ -2780,7 +2837,7 @@ export class Island {
       pillar.add(lantern);
       this.placeObjectOnSurface(
         pillar,
-        this.dirAt(dLon, Math.PI / 2 - 3.3 / this.radius).multiplyScalar(this.radius), // ~3.3u from the pole at any radius, so pillars stay on the plaza floor
+        this.dirAt(dLon, Math.PI / 2 - 4.6 / this.radius).multiplyScalar(this.radius), // ~4.6u out: clear of the hall's slab, still on the enlarged plaza apron
         0.0,
         true,
       );
@@ -3209,15 +3266,159 @@ export class Island {
       dummy.position.copy(dir).multiplyScalar(a2.radius).addScaledVector(a2.normal, -0.14); // sink slightly: bury-not-float
       dummy.quaternion.setFromUnitVectors(up, a2.normal);
       dummy.rotateY(Math.random() * Math.PI * 2);
-      dummy.scale.setScalar(0.45 + Math.random() * (steep ? 1.5 : 0.85));
+      const rockScale = 0.45 + Math.random() * (steep ? 1.5 : 0.85);
+      dummy.scale.setScalar(rockScale);
       dummy.updateMatrix();
       inst.setMatrixAt(placed, dummy.matrix);
+      // Chest-height boulders block; small ones stay kickable-through. The
+      // camera ray already saw these (instanced child of island.mesh), so
+      // feet and camera finally agree.
+      if (rockScale >= 0.8) {
+        this.pendingColliders.push({
+          position: dummy.position.clone(),
+          radius: 0.55 * rockScale,
+        });
+      }
       placed++;
     }
     inst.count = placed;
     inst.instanceMatrix.needsUpdate = true;
     console.log(`🪨 Rock layer: ${placed} boulders (scree + shoreline)`);
     return placed > 0 ? inst : null;
+  }
+
+  // ── NPC dressing: variety + faces + persona flair ────────────────────────
+  // npc.glb ships ONE mesh with 4 shared materials (Shoe/Pants/Shirt/Skin) and
+  // clone(true) SHARES them — all ~20 villagers rendered as identical sage-
+  // green clones with featureless heads. Swap in per-persona palette materials
+  // (shared per colour — ~16 instances total, zero extra draw-call cost), add
+  // eyes + a hair cap so the front reads (the yaw-face-the-player logic was
+  // invisible without a face), and give hero personas their activity flair.
+  // Toon materials so NPCs join the cel-shaded world (the PBR GLB loads after
+  // toonify's traverse and was the only PBR-shaded figure on the island).
+  private static npcPaletteCache = new Map<number, THREE.MeshToonMaterial>();
+  private static npcEyeGeo: THREE.BufferGeometry | null = null;
+  private static npcEyeMat: THREE.MeshBasicMaterial | null = null;
+  private static npcHairGeo: THREE.SphereGeometry | null = null;
+
+  private static paletteMat(hex: number): THREE.MeshToonMaterial {
+    let m = Island.npcPaletteCache.get(hex);
+    if (!m) {
+      m = Materials.createToonMaterial(hex);
+      Island.npcPaletteCache.set(hex, m);
+    }
+    return m;
+  }
+
+  private dressNpc(group: THREE.Object3D, phIdx: number, personaName: string): void {
+    const SHIRTS = [0xe08a8a, 0x86b7e0, 0x8fd0a0, 0xe0c07a, 0xb598dd, 0x7fcfc4, 0xe09a5f, 0x9fb3c8];
+    const SKINS = [0xf3d3b3, 0xe8bb94, 0xc98d5f, 0xa06a42, 0x7c4e2e];
+    const PANTS = [0x5d6b7a, 0x7a6a55, 0x4e5d52];
+    const HAIRS = [0x2e2620, 0x4a3220, 0x7a5230, 0xb08d57, 0x8a8a8a, 0x5a4632];
+    // Decoupled indices so shirt/skin/hair don't repeat in lockstep.
+    group.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      const swapped = mats.map((m) => {
+        const n = ((m as THREE.Material)?.name ?? '').toLowerCase();
+        if (n.includes('shirt')) return Island.paletteMat(SHIRTS[phIdx % SHIRTS.length]);
+        if (n.includes('skin')) return Island.paletteMat(SKINS[(phIdx * 5 + 3) % SKINS.length]);
+        if (n.includes('pants')) return Island.paletteMat(PANTS[(phIdx * 7 + 1) % PANTS.length]);
+        return m;
+      });
+      o.material = Array.isArray(o.material) ? swapped : swapped[0];
+    });
+    // Silhouette variety (deterministic, ±6%)
+    group.scale.multiplyScalar(0.95 + (phIdx % 5) * 0.03);
+    // Eyes — one shared merged geometry, positioned on the +Z (walk-forward)
+    // face of the head box (raw model space; the group carries the 0.6 scale).
+    if (!Island.npcEyeGeo) {
+      const l = new THREE.SphereGeometry(0.045, 6, 6).translate(-0.08, 0, 0);
+      const r = new THREE.SphereGeometry(0.045, 6, 6).translate(0.08, 0, 0);
+      Island.npcEyeGeo = mergeGeometries([l, r]);
+      l.dispose();
+      r.dispose();
+      Island.npcEyeMat = new THREE.MeshBasicMaterial({ color: 0x1c1a18 });
+    }
+    const eyes = new THREE.Mesh(Island.npcEyeGeo, Island.npcEyeMat!);
+    eyes.position.set(0, 1.56, 0.19);
+    group.add(eyes);
+    // Hair cap — shared half-sphere, per-NPC colour from the shared palette.
+    if (!Island.npcHairGeo) {
+      Island.npcHairGeo = new THREE.SphereGeometry(0.21, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
+    }
+    const hair = new THREE.Mesh(Island.npcHairGeo, Island.paletteMat(HAIRS[phIdx % HAIRS.length]));
+    hair.position.set(0, 1.6, 0);
+    group.add(hair);
+    // Persona flair: hats reuse the player's procedural hat kit; held props
+    // are 2-3 primitives. Whole-group pose modulation animates them for free.
+    try {
+      const HAT_FOR: Record<string, 'wizard' | 'flower' | 'cap' | 'party'> = {
+        'Elder Sage': 'wizard',
+        Gardener: 'flower',
+        'Lighthouse Keeper': 'cap',
+        Tourist: 'party',
+      };
+      const hatId = HAT_FOR[personaName];
+      if (hatId) {
+        const hat = SimplePlayer.buildHat(hatId);
+        hat.position.y = 1.68;
+        hat.scale.setScalar(0.9);
+        group.add(hat);
+      }
+      if (personaName === 'Guard') {
+        const spear = new THREE.Group();
+        const shaft = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.025, 0.025, 1.5, 6),
+          Island.paletteMat(0x7a5a3a),
+        );
+        const tip = new THREE.Mesh(
+          new THREE.ConeGeometry(0.06, 0.18, 6),
+          Island.paletteMat(0xb9c2cc),
+        );
+        tip.position.y = 0.84;
+        spear.add(shaft, tip);
+        spear.position.set(0.34, 0.95, 0.05);
+        spear.rotation.z = 0.1;
+        group.add(spear);
+      } else if (personaName === 'Courier') {
+        const satchel = new THREE.Mesh(
+          new THREE.BoxGeometry(0.22, 0.18, 0.08),
+          Island.paletteMat(0x8a5a34),
+        );
+        satchel.position.set(-0.28, 0.95, 0.02);
+        group.add(satchel);
+      } else if (personaName === 'Night Watch') {
+        const lantern = new THREE.Mesh(
+          new THREE.BoxGeometry(0.12, 0.16, 0.12),
+          new THREE.MeshStandardMaterial({
+            color: 0x3a3630,
+            emissive: 0xffc966,
+            emissiveIntensity: 0.7,
+          }),
+        );
+        lantern.position.set(0.3, 0.85, 0.08);
+        group.add(lantern);
+      } else if (personaName === 'Musician') {
+        const lute = new THREE.Group();
+        const bodyM = new THREE.Mesh(
+          new THREE.SphereGeometry(0.16, 8, 6),
+          Island.paletteMat(0xa9743f),
+        );
+        bodyM.scale.set(1, 1.25, 0.35);
+        const neck = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.02, 0.42, 5),
+          Island.paletteMat(0x6d4426),
+        );
+        neck.position.y = 0.3;
+        lute.add(bodyM, neck);
+        lute.position.set(0.05, 1.05, 0.24);
+        lute.rotation.set(0.25, 0, -0.5);
+        group.add(lute);
+      }
+    } catch {
+      /* flair is a bonus, never fatal */
+    }
   }
 
   /**
@@ -3652,7 +3853,11 @@ export class Island {
     const mat = Materials.createTrimMaterial(0xcfc4ae);
     mat.emissive = new THREE.Color(0x2a241c);
     mat.emissiveIntensity = 1;
-    const keepOutArc = (width * 0.5 + 0.8) / this.radius;
+    // Keep-out circles must OVERLAP along the road: at R=50 the segment
+    // midpoints are 3.3-3.4u apart, so the old (width/2+0.8) radius left
+    // ~1u-wide unprotected stretches of centerline where trees/rocks could
+    // legally seed mid-pavement. Floor at 1.9u and also register endpoints.
+    const keepOutArc = Math.max(width * 0.5 + 0.8, 1.9) / this.radius;
     for (let i = 0; i < waypoints.length - 1; i++) {
       const a = waypoints[i].clone().normalize();
       const b = waypoints[i + 1].clone().normalize();
@@ -3685,6 +3890,8 @@ export class Island {
       mesh.receiveShadow = true;
       group.add(mesh);
       this.streetDirs.push({ dir: midDir, halfArc: keepOutArc });
+      this.streetDirs.push({ dir: a, halfArc: keepOutArc });
+      if (i === waypoints.length - 2) this.streetDirs.push({ dir: b, halfArc: keepOutArc });
     }
     return group;
   }
@@ -4661,6 +4868,8 @@ export class Island {
                     if (phIdx >= 0 && phIdx < this.npcTargets.length) {
                       this.npcTargets[phIdx].meshRef = npc.group;
                       this.npcTargets[phIdx].position = pos.clone();
+                      // Variety + faces + persona flair (colors, eyes, hair, props)
+                      this.dressNpc(npc.group, phIdx, this.npcTargets[phIdx].name);
                     }
                     npc.group.name = 'villager';
                   } catch {
