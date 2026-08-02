@@ -514,13 +514,17 @@ export class GameScene extends THREE.Scene {
       }));
       // Drowning: bounce the player back to dry land at the nearest shore
       this.player.setOnDrown(() => this.respawnFromDrown());
-      // Spawn ON the terrain at the north pole (the ideal-sphere height can be
-      // inside or above a terrain bump, which used to cause a slide at spawn)
-      const spawnDir = new THREE.Vector3(0, 1, 0);
+      // Spawn ON the terrain just OFF the pole: the Welcome Hub town hall sits
+      // exactly at the north pole, so a (0,1,0) spawn started the player
+      // INSIDE the building — physics then ejected them in an arbitrary
+      // direction with the camera clipping the walls. ~7u east lands on the
+      // open plaza edge, clear of the hall's footprint, its collider, and the
+      // door-prompt range. (Terrain-sampled: the ideal-sphere height can be
+      // inside or above a terrain bump, which used to cause a slide at spawn.)
+      const spawnDir = new THREE.Vector3(0.14, 1, 0).normalize();
       const spawnSample = this.island.sampleSurfaceByDirection(spawnDir, 0);
       const spawnHeight = spawnSample.position.length() + 0.75;
-      // Set playerPosition (internal field) so physics starts at the north pole
-      this.player.setWorldPosition(new THREE.Vector3(0, spawnHeight, 0));
+      this.player.setWorldPosition(spawnDir.clone().multiplyScalar(spawnHeight));
       this.player.updateWorldMatrix();
       this.add(this.player);
 

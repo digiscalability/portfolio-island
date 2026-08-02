@@ -111,12 +111,13 @@ export class OrbitCamera {
 
     // --- Maintain the tangent follow direction ---
     if (!this.followDir) {
-      // Seed (1,0,0), not (0,0,1): at the pole spawn the old seed parked the
-      // camera so the Welcome Hub's blank wall filled half the first frame —
-      // the single most screenshotted view. +x composes the meadow, trees and
-      // curved horizon with the hub reduced to an edge (verified by capture).
-      const seed = new THREE.Vector3(1, 0, 0);
-      if (Math.abs(surfaceNormal.dot(seed)) > 0.9) seed.set(0, 0, 1);
+      // Seed (0,0,1): the spawn now sits ~7u EAST of the pole (the town hall
+      // occupies the pole itself), so a +x seed would park the camera further
+      // east looking straight back INTO the hall. +z puts the camera south of
+      // the player — the first frame sweeps the open meadow with the hub
+      // reduced to the frame edge (verified by capture after the spawn move).
+      const seed = new THREE.Vector3(0, 0, 1);
+      if (Math.abs(surfaceNormal.dot(seed)) > 0.9) seed.set(1, 0, 0);
       this.followDir = seed;
     }
     // Parallel transport: re-project onto the current tangent plane
