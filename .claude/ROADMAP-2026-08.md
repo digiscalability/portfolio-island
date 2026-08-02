@@ -1,5 +1,13 @@
 # Roadmap — from deep audit + competitive analysis (2026-08-02)
 
+## STATUS (updated 2026-08-02, commit 49c92a4 — DEPLOYED):
+- ACT 1: ✅ ALL DONE (1-7 + spawn reframe; #8 digiscalability.com banner PENDING — other repo/domain)
+- ACT 2: ✅ ALL DONE (9-14; concierge verified live: Cartographer sells Abbas + routes to contact)
+- ACT 3: PARTIAL — crawlable HTML ✅, llms.txt ✅; STILL ABBAS'S CALL: GitHub repo public + pins,
+  photo/resume assets, per-zone OG route, launch posts, RankPilot domain, tour mode, completion meter
+- ACT 4: MOSTLY DONE — CI ✅, presence validators ✅, lead throttle ✅, SW eviction ✅, fonts ✅;
+  remaining: functions tests, wave-mirror test, voice kill-switch, PAT rotation (user)
+
 Source: 6-agent audit (product-ux, tech-health, growth, living-world, comp-landscape, comp-conversion).
 Full findings: session workflow wf_5ceeaef9-04c journal. Goal metric: visits → impressed → contact/hired.
 
