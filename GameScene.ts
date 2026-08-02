@@ -1,22 +1,22 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-import { EnvironmentCycle } from './EnvironmentCycle';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
+import { EnvironmentCycle } from './EnvironmentCycle';
 import { Island } from './Island';
-import { isRealTheme } from './Theme';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
+import * as NpcActivities from './NpcActivities';
+import { AI_NPCS } from './NpcChat';
 import { OrbitCamera } from './OrbitCamera';
 import { RaceSystem, type RaceEvent, type RaceHudStatus } from './RaceSystem';
 import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
+import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
-import { ZonesManager } from './ZonesManager';
-import * as NpcActivities from './NpcActivities';
 import { getWorldState } from './WorldState';
-import { AI_NPCS } from './NpcChat';
+import { ZonesManager } from './ZonesManager';
 
 /**
  * GameScene

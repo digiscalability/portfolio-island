@@ -63,8 +63,10 @@ function pickVoice(variant: number): SpeechSynthesisVoice | null {
 // Emoji + symbol/arrow blocks only. Deliberately does NOT include the General
 // Punctuation block (U+2000–206F): that holds em-dashes and smart quotes, which
 // TTS should keep ("don't", "Abbas—or") rather than mangle into "don t".
-const EMOJI_RE =
-  /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
+// The class intentionally includes ZWJ (200D) + variation-selector (FE0F) as
+// standalone code points to strip them; that's what the rule flags as "combined".
+// eslint-disable-next-line no-misleading-character-class
+const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
 export function sanitizeForSpeech(text: string): string {
   return text
     .replace(/\*[^*]*\*/g, ' ') // *adjusts cap and grins* → (silent)

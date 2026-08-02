@@ -13,7 +13,6 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-
 import { describe, expect, test } from 'vitest';
 
 const ROOT = process.cwd();

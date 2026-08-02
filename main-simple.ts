@@ -3,22 +3,22 @@ import * as THREE from 'three';
 import { a11y } from './Accessibility';
 import { startDwellTracking, track, trackOnce } from './Analytics';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
-import { DISTRICTS } from './Districts';
-import { Passport, PASSPORT_META, type PassportZone } from './Passport';
 import { DeliverySystem } from './DeliverySystem';
+import { DISTRICTS } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
 import { Multiplayer } from './Multiplayer';
+import { askNpc, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
+import { Passport, PASSPORT_META, type PassportZone } from './Passport';
 import { loadProfile, saveProfile } from './profileSync';
 import { sfx } from './Sfx';
-import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleInputManager } from './SimpleInputManager';
+import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
-import { connectWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
-import { askNpc, isAiNpc, voiceProfileFor } from './NpcChat';
 import { isRealTheme } from './Theme';
+import { connectWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 import './style.css';
 
 /**

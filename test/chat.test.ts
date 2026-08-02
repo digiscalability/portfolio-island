@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'vitest';
 import * as THREE from 'three';
+import { describe, expect, test } from 'vitest';
 
 import { withinProximity, voiceClipFits, distanceGain, PROXIMITY_RADIUS, VOICE_MAX_BYTES } from '../Chat';
 

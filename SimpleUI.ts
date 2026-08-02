@@ -3,11 +3,11 @@ import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
 import { checkName } from './Moderation';
+import { ACTIVITY_DEFS } from './NpcActivities';
+import { AI_NPCS } from './NpcChat';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { buildShareUrl, setUrlParam, share } from './Share';
 import { speak, cancelSpeech, isSpeechSupported, isSpeechEnabled, setSpeechEnabled, isSttSupported, startListening } from './Speech';
-import { ACTIVITY_DEFS } from './NpcActivities';
-import { AI_NPCS } from './NpcChat';
 import type { NoticeState, NpcPlan } from './WorldState';
 
 /**

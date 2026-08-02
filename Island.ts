@@ -13,12 +13,12 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-import { Materials } from './Materials';
-import { SimpleRenderer } from './SimpleRenderer';
-import { isRealTheme } from './Theme';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, DISTRICT_SHIFT, districtAccentAt } from './Districts';
+import { Materials } from './Materials';
 import { NPC } from './NPC';
+import { SimpleRenderer } from './SimpleRenderer';
 import TextureGenerator from './TextureGenerator';
+import { isRealTheme } from './Theme';
 
 type IslandMeshUserData = {
   _debug?: boolean;

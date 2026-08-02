@@ -12,6 +12,7 @@
 // (index-selection invariant); unknown ids fall back to the default schedule.
 
 import * as THREE from 'three';
+
 import { DISTRICTS, ZONE_LAT, dirFor } from './Districts';
 import type { Mood } from './WorldState';
 

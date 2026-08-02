@@ -3,8 +3,8 @@ import * as THREE from 'three';
 // bundle) and loaded lazily as a parallel chunk in initPostProcessing() — see
 // there. Keeps the ~40KB of postprocessing code out of the critical bundle that
 // blocks first paint; it's still fetched and warmed well before the reveal.
-import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import type { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 import { isRealTheme } from './Theme';
 
