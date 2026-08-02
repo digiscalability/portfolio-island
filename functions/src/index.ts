@@ -30,9 +30,10 @@ import { containsSlur, scrubReply } from './moderation';
 
 admin.initializeApp();
 
-// The once-daily NPC day-planner lives in its own module; re-export so the
-// Firebase functions loader discovers it from this entrypoint.
+// The once-daily NPC day-planner + the nightly analyst live in their own
+// modules; re-export so the Firebase functions loader discovers them here.
 export { planner } from './npcPlanner';
+export { analyst } from './analyst';
 
 const STALE_PRESENCE_MS = 2 * 60 * 1000; // 2 min without a heartbeat ⇒ dead client
 const STALE_EPHEMERAL_MS = 60 * 1000; // chat/voice: client TTL is 12s, so 60s is safe
@@ -67,12 +68,15 @@ export const janitor = onSchedule(
   async () => {
     const db = admin.database();
     const now = Date.now();
-    const [presence, chat, voice] = await Promise.all([
+    const [presence, chat, voice, rate] = await Promise.all([
       prune(db, 'presence/island', now, STALE_PRESENCE_MS),
       prune(db, 'chat/island', now, STALE_EPHEMERAL_MS),
       prune(db, 'voice/island', now, STALE_EPHEMERAL_MS),
+      // aiRate/* held one node per unique IP forever (never pruned) — drop IPs
+      // not seen in 24h so it can't grow unbounded. Entries carry `t` (last-seen).
+      prune(db, 'aiRate', now, 24 * 60 * 60 * 1000),
     ]);
-    console.log(`janitor pruned presence=${presence} chat=${chat} voice=${voice}`);
+    console.log(`janitor pruned presence=${presence} chat=${chat} voice=${voice} aiRate=${rate}`);
   },
 );
 
@@ -292,8 +296,11 @@ export const npcChat = onCall(
     await ipRef.set({ c: count, t: within ? prev?.t ?? now : now }).catch(() => {});
     if (count > NPC_IP_MAX_PER_WINDOW) return { reply: null, fallback: true, reason: 'rate' };
 
-    // Hard monthly spend cap (aiUsage/* is unlisted ⇒ Admin-SDK-only).
-    const monthKey = new Date(now).toISOString().slice(0, 7); // YYYY-MM
+    // Hard monthly spend cap (aiUsage/* is unlisted ⇒ Admin-SDK-only). Keyed to
+    // the Melbourne calendar month so the cap + daily buckets line up with the
+    // planner/analyst (which use the owner's timezone).
+    const dayKey = new Date(now).toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
+    const monthKey = dayKey.slice(0, 7); // YYYY-MM
     const usageRef = db.ref(`aiUsage/${monthKey}/tokens`);
     const usedTokens = ((await usageRef.get()).val() as number | null) ?? 0;
     if (usedTokens >= NPC_MONTHLY_TOKEN_CAP) return { reply: null, fallback: true, reason: 'cap' };
@@ -323,7 +330,12 @@ export const npcChat = onCall(
     }
 
     // Account the spend (best-effort; a lost increment only under-counts).
-    if (usedNow) usageRef.set(usedTokens + usedNow).catch(() => {});
+    if (usedNow) {
+      usageRef.set(usedTokens + usedNow).catch(() => {});
+      db.ref(`aiUsage/${monthKey}/calls`).transaction((c) => (c || 0) + 1).catch(() => {});
+      db.ref(`aiUsage/${monthKey}/daily/${dayKey}/tokens`).transaction((c) => (c || 0) + usedNow).catch(() => {});
+      db.ref(`aiUsage/${monthKey}/daily/${dayKey}/calls`).transaction((c) => (c || 0) + 1).catch(() => {});
+    }
 
     // Output moderation: scrub before any reply reaches a public brand site.
     // Empty ⇒ reject ⇒ client falls back to a canned line.
