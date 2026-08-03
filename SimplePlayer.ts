@@ -351,12 +351,6 @@ export class SimplePlayer extends THREE.Group {
       root.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh && !(mesh as THREE.SkinnedMesh).isSkinnedMesh) return;
-        // The hair cap we add follows the hair colour (it has no material name)
-        if (part === 'hair' && mesh.name === 'hair_cap') {
-          const hm = mesh.material as THREE.MeshStandardMaterial;
-          hm?.color?.setHex(hex);
-          return;
-        }
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         for (const m of mats) {
           const sm = m as THREE.MeshStandardMaterial;
@@ -490,20 +484,11 @@ export class SimplePlayer extends THREE.Group {
       }
     });
 
-    // Match the local player's added hair cap (the GLB's own patch is sparse).
-    // Named `hair_cap` so applyBodyColors can recolour it like the local one.
-    let hairCapGeom: THREE.BufferGeometry | null = null;
-    if (headBone) {
-      const hairMat = new THREE.MeshToonMaterial({ color: 0x6c594b });
-      clonedMats.push(hairMat);
-      hairCapGeom = new THREE.SphereGeometry(0.21, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
-      const hair = new THREE.Mesh(hairCapGeom, hairMat);
-      hair.name = 'hair_cap';
-      hair.position.set(0, 0.16, -0.02);
-      hair.rotation.x = 0.25;
-      hair.castShadow = true;
-      (headBone as THREE.Object3D).add(hair);
-    }
+    // No runtime hair cap: hair is authored in the GLB (fringe + helmet from
+    // scripts/reshape-avatar-face.py, both on the 'Hair' material, so custom
+    // hair colours recolour them through the normal material-name path). The
+    // old procedural hair_cap sphere could not hug the rounded head — its rim
+    // always poked out somewhere and read as a beard/band.
 
     // Idle/walk blend so peers never freeze in the bind (T) pose
     let mixer: THREE.AnimationMixer | null = null;
@@ -608,7 +593,6 @@ export class SimplePlayer extends THREE.Group {
       // Materials were cloned per-peer above, so disposing them here is safe
       // (geometry stays shared with the base and is NOT disposed).
       for (const m of clonedMats) m.dispose();
-      hairCapGeom?.dispose();
     };
 
     return { body, headBone, update, setPose, wave, dispose };
@@ -1076,9 +1060,9 @@ export class SimplePlayer extends THREE.Group {
 
   /**
    * Recolour a rigged body by material name (peers apply the owner's chosen
-   * colours here). Shares the local player's material-name mapping; also
-   * recolours the added `hair_cap` mesh. Static so Multiplayer can call it on a
-   * remote avatar whose materials were cloned per-peer.
+   * colours here). Shares the local player's material-name mapping. Static so
+   * Multiplayer can call it on a remote avatar whose materials were cloned
+   * per-peer.
    */
   public static applyBodyColors(
     root: THREE.Object3D,
@@ -1087,12 +1071,6 @@ export class SimplePlayer extends THREE.Group {
     root.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh && !(mesh as THREE.SkinnedMesh).isSkinnedMesh) return;
-      if (mesh.name === 'hair_cap') {
-        if (typeof cols.hair === 'number') {
-          (mesh.material as THREE.MeshStandardMaterial)?.color?.setHex(cols.hair);
-        }
-        return;
-      }
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const m of mats) {
         const sm = m as THREE.MeshStandardMaterial;
@@ -1222,29 +1200,10 @@ export class SimplePlayer extends THREE.Group {
           });
         }
 
-        // The GLB's own hair patch is tiny — from the follow camera the
-        // head reads as a bald egg. Hang a fuller toon hair cap off the
-        // head bone (tracks idle/walk animation for free). Sizing tuned
-        // live against the model (head bone at +0.63, world scale 1).
-        if (this.gltfModel) {
-          let headBone: THREE.Bone | null = null;
-          this.gltfModel.traverse((obj) => {
-            if ((obj as THREE.Bone).isBone && obj.name === 'head' && !headBone) {
-              headBone = obj as THREE.Bone;
-            }
-          });
-          if (headBone) {
-            const hairCap = new THREE.Mesh(
-              new THREE.SphereGeometry(0.21, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62),
-              new THREE.MeshToonMaterial({ color: 0x6c594b }),
-            );
-            hairCap.name = 'hair_cap';
-            hairCap.position.set(0, 0.16, -0.02);
-            hairCap.rotation.x = 0.25;
-            hairCap.castShadow = true;
-            (headBone as THREE.Bone).add(hairCap);
-          }
-        }
+        // Hair is authored in the GLB (fringe + helmet, both on the 'Hair'
+        // material) — no runtime cap. The old procedural hair_cap sphere
+        // could not hug the rounded head; its rim always poked out somewhere
+        // and read as a beard or a floating band.
 
         // Apply a hat equipped before the model finished loading
         if (this.pendingHatId) {

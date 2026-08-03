@@ -93,10 +93,49 @@ DISSOLVE_DEG = 0.5       # limited-dissolve angle for triangulation diagonals
 OUTLINE_INFLATE = 0.002  # push the beveled hull out to restore corner clearance
 FOOT_Z = -0.6716         # outline may not dip below the authored hull floor
 
+# SOFTEN V2 (researched + measured by the judge workflow): thicken the limbs
+# in X/Y only — the chamfer width derives from min-dim, so a thicker limb
+# automatically earns a proportionally bigger fillet, and the on-screen
+# chamfer goes ~2.6px -> ~4px on a 250px character. Z is NEVER scaled: foot
+# level and every height anchor stay bit-exact. Rules per (material, side):
+# factor = X/Y scale about the part's own centre; clamp = min |x| the part's
+# inner face must keep (translate outward if breached); sole = keep the
+# shoe's bottom-face edges sharp (flat grounded sole, 70/30 rule); scale3d =
+# uniform scale (the player's mitten hands: 25% of head height per the
+# mascot oversized-extremity rule).
+THICKEN = {
+    "player.glb": [
+        {"mat": "Jacket", "side": True, "factor": 1.55},
+        {"mat": "Pants", "factor": 1.35, "clamp": 0.050},
+        {"mat": "Shoe", "factor": 1.30, "clamp": 0.040, "sole": True},
+        {"mat": "Skin", "side": True, "scale3d": 2.0},
+    ],
+    "npc.glb": [
+        {"mat": "Shirt", "side": True, "factor": 1.50},
+        {"mat": "Pants", "factor": 1.65, "clamp": 0.0175},
+        {"mat": "Shoe", "factor": 1.55, "clamp": 0.0125, "sole": True},
+    ],
+}
+SIDE_X = 0.10  # |part centre x| beyond which a part counts as a side part
+
+# The villagers have NO hands — sleeves end in mid-air. Two cuboids on the
+# existing Skin slot (dressNpc recolours by lowercased includes('skin'), so
+# the slot must be reused, never renamed), weighted rigidly to the arm bones.
+NPC_HANDS = {
+    "size": (0.107, 0.120, 0.100),
+    "at": (0.170, 0.0, 0.735),
+    "bones": ("armL", "armR"),
+}
+
 TARGETS = {
     # file: (segments, expected box count, outline object or None)
     "player.glb": {"segments": 2, "expect_boxes": 10, "outline": "PlayerOutline", "body": "PlayerBody"},
-    "npc.glb": {"segments": 1, "expect_boxes": 7, "outline": None, "body": "Npc"},
+    # npc seg=2: dressNpc swaps villagers to MeshToonMaterial with a 12-step
+    # NearestFilter ramp; at seg=1 the chamfer's whole 90-degree normal sweep
+    # sits in one ~1px facet and the ramp aliases it into shimmer. (The raw
+    # GLB is MeshStandardMaterial and will not show this — trust the ramp.)
+    # expect_boxes 9 = 7 garment boxes + the 2 new hands.
+    "npc.glb": {"segments": 2, "expect_boxes": 9, "outline": None, "body": "Npc"},
 }
 
 
@@ -153,9 +192,28 @@ def is_box(faces, box_rad: float) -> bool:
     return hard == 12
 
 
-def soften_mesh(ob, segments: int) -> dict:
-    """Weld -> dissolve diagonals -> chamfer every box -> re-derive shading."""
+def part_rule(rules, mat_name, centre):
+    """The THICKEN rule matching a part, by material and side-ness."""
+    for r in rules:
+        if r["mat"] != mat_name:
+            continue
+        if r.get("side") and abs(centre.x if hasattr(centre, "x") else centre[0]) <= SIDE_X:
+            continue
+        return r
+    return None
+
+
+def soften_mesh(ob, segments: int, rules=None, body_parts=None) -> dict:
+    """Weld -> dissolve -> thicken -> chamfer every box -> re-derive shading.
+
+    rules: THICKEN entries for this model (or None).
+    body_parts: for the single-material outline hull, the body's measured
+    [(centre, mat_name)] list — each hull part inherits the rule of the
+    nearest body part, since the hull is a 1:1 positional duplicate.
+    Returns the body's own part list in the report for exactly that reuse.
+    """
     me = ob.data
+    mats = [m.name for m in me.materials]
     bm = bmesh.new()
     bm.from_mesh(me)
     verts_in = len(bm.verts)
@@ -176,6 +234,56 @@ def soften_mesh(ob, segments: int) -> dict:
     bm.faces.index_update()
     bm.edges.index_update()
 
+    def centre_of(faces):
+        vs = part_verts(faces)
+        lo = [min(v.co[i] for v in vs) for i in range(3)]
+        hi = [max(v.co[i] for v in vs) for i in range(3)]
+        return [(l + h) / 2 for l, h in zip(lo, hi)]
+
+    def mat_of(faces, centre):
+        if body_parts is not None:
+            # hull: single Outline slot — inherit from the nearest body part
+            best = min(body_parts, key=lambda bp: sum((a - b) ** 2 for a, b in zip(bp[0], centre)))
+            return best[1]
+        return mats[faces[0].material_index]
+
+    # ---- V2 thicken pass (before box detection: scaling keeps boxes boxes)
+    part_records = []
+    thickened = []
+    if rules:
+        for faces in loose_parts(bm):
+            centre = centre_of(faces)
+            mname = mat_of(faces, centre)
+            part_records.append((centre, mname))
+            rule = part_rule(rules, mname, type("C", (), {"x": centre[0]})())
+            if rule is None:
+                continue
+            vs = part_verts(faces)
+            if "scale3d" in rule:
+                s = rule["scale3d"]
+                for v in vs:
+                    for i in range(3):
+                        v.co[i] = centre[i] + (v.co[i] - centre[i]) * s
+                thickened.append(f"{mname}@{centre[0]:+.2f} x{s} (3d)")
+            else:
+                s = rule["factor"]
+                for v in vs:
+                    v.co.x = centre[0] + (v.co.x - centre[0]) * s
+                    v.co.y = centre[1] + (v.co.y - centre[1]) * s
+                # clamp: the inner face must keep clearance from the midline
+                clamp = rule.get("clamp")
+                if clamp is not None and abs(centre[0]) > 1e-4:
+                    inner = min(abs(v.co.x) for v in vs)
+                    if inner < clamp:
+                        shift = (clamp - inner) * (1 if centre[0] > 0 else -1)
+                        for v in vs:
+                            v.co.x += shift
+                thickened.append(f"{mname}@{centre[0]:+.2f} x{s}")
+        bm.normal_update()
+    else:
+        for faces in loose_parts(bm):
+            part_records.append((centre_of(faces), mats[faces[0].material_index]))
+
     box_rad = math.radians(BOX_ANGLE_DEG)
     boxes = [p for p in loose_parts(bm) if is_box(p, box_rad)]
 
@@ -187,10 +295,16 @@ def soften_mesh(ob, segments: int) -> dict:
         mn = min(h - l for h, l in zip(hi, lo))
         frac = WIDTH_FRAC_THICK if mn >= THICK_MIN_DIM else WIDTH_FRAC_THIN
         width = mn * frac
+        centre = [(l + h) / 2 for l, h in zip(lo, hi)]
+        rule = part_rule(rules or [], mat_of(faces, centre), type("C", (), {"x": centre[0]})())
+        sole_z = lo[2] if (rule and rule.get("sole")) else None
         edges = [
             e
             for e in {e for f in faces for e in f.edges}
             if len(e.link_faces) == 2 and e.calc_face_angle() >= box_rad
+            # keep the shoe's grounded sole a crisp flat: skip edges lying
+            # entirely in the bottom plane
+            and not (sole_z is not None and all(abs(v.co.z - sole_z) < 1e-6 for v in e.verts))
         ]
         bmesh.ops.bevel(
             bm,
@@ -215,9 +329,9 @@ def soften_mesh(ob, segments: int) -> dict:
     # it that way — a mixed part means bevel faces were dumped into the wrong
     # slot and the avatar renders in the wrong colours.
     for faces in loose_parts(bm):
-        mats = {f.material_index for f in faces}
-        assert len(mats) == 1, (
-            f"{ob.name}: a part carries material indices {sorted(mats)} after bevel — "
+        midx = {f.material_index for f in faces}
+        assert len(midx) == 1, (
+            f"{ob.name}: a part carries material indices {sorted(midx)} after bevel — "
             "chamfer faces landed in the wrong material slot"
         )
 
@@ -240,7 +354,41 @@ def soften_mesh(ob, segments: int) -> dict:
         "tris": (tris_in, tris_out),
         "boxes": len(boxes),
         "widths": beveled,
+        "parts": part_records,
+        "thickened": thickened,
     }
+
+
+def add_npc_hands(ob) -> int:
+    """Give a villager mitten hands: two chamfer-ready cuboids on the Skin
+    slot, rigidly weighted to the arm bones. Runs BEFORE soften_mesh so the
+    box detector picks them up and they get the same rounded treatment."""
+    mats = [m.name for m in ob.data.materials]
+    skin_i = next(i for i, m in enumerate(mats) if "skin" in m.lower())
+    sx, sy, sz = NPC_HANDS["size"]
+    ax, ay, az = NPC_HANDS["at"]
+
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    deform = bm.verts.layers.deform.verify()
+    added = 0
+    for sign, bone in ((-1, NPC_HANDS["bones"][0]), (1, NPC_HANDS["bones"][1])):
+        vg = ob.vertex_groups.get(bone)
+        assert vg is not None, f"{ob.name}: no vertex group {bone} — is the npc rigged yet?"
+        res = bmesh.ops.create_cube(bm, size=1.0)
+        verts = res["verts"]
+        for v in verts:
+            v.co.x = v.co.x * sx + sign * ax
+            v.co.y = v.co.y * sy + ay
+            v.co.z = v.co.z * sz + az
+            v[deform][vg.index] = 1.0
+        for f in {f for v in verts for f in v.link_faces}:
+            f.material_index = skin_i
+        added += len(verts)
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
+    return added
 
 
 def inflate_outline(outline):
@@ -302,11 +450,18 @@ def soften(name: str, cfg: dict) -> None:
 
     foot_before = min(v.co.z for v in body.data.vertices)
 
-    r = soften_mesh(body, cfg["segments"])
+    if name == "npc.glb":
+        added = add_npc_hands(body)
+        print(f"  {name} :: hands added ({added} verts, Skin slot, armL/armR)")
+
+    rules = THICKEN.get(name)
+    r = soften_mesh(body, cfg["segments"], rules=rules)
     print(
         f"  {name} :: {body.name:<14} verts {r['verts'][0]}->{r['verts'][1]} "
         f"tris {r['tris'][0]}->{r['tris'][1]} boxes={r['boxes']} widths={r['widths']}"
     )
+    if r["thickened"]:
+        print(f"  {name} :: thickened {r['thickened']}")
     assert r["boxes"] == cfg["expect_boxes"], (
         f"{body.name}: found {r['boxes']} boxes, expected {cfg['expect_boxes']} — "
         "geometry moved upstream; re-measure before beveling"
@@ -325,7 +480,7 @@ def soften(name: str, cfg: dict) -> None:
         assert not unweighted, f"{body.name}: {len(unweighted)} verts unweighted after bevel"
 
     if outline is not None:
-        ro = soften_mesh(outline, cfg["segments"])
+        ro = soften_mesh(outline, cfg["segments"], rules=rules, body_parts=r["parts"])
         print(
             f"  {name} :: {outline.name:<14} verts {ro['verts'][0]}->{ro['verts'][1]} "
             f"tris {ro['tris'][0]}->{ro['tris'][1]} boxes={ro['boxes']} (+{OUTLINE_INFLATE} inflate)"
