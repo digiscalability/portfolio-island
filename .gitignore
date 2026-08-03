@@ -59,3 +59,4 @@ _legacy/unused-assets/
 # Claude session-internal files (local only)
 .claude/LOCAL-STATE.md
 .claude/settings.local.json
+__pycache__/

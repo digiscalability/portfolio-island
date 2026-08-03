@@ -205,13 +205,16 @@ def shade(name: str) -> None:
             f"boundary={c['boundary']:>3} unweighted={c['unweighted']}"
         )
 
-    # Curved surfaces must have smoothed, and the box-shaped garments (whose
-    # every shared-vertex pair sits at exactly 90 deg) must have stayed sharp.
-    # A run that produced neither means the weld failed and the export would
-    # quietly ship an unchanged model — which is exactly how the first version
-    # of this script slipped through.
+    # Curved surfaces must have smoothed: zero smooth edges means the weld
+    # failed and the export would quietly ship an unchanged model — which is
+    # exactly how the first version of this script slipped through. There is
+    # deliberately NO "something stayed sharp" assert: how many edges exceed
+    # 60 deg is a fact about the INPUT (the raw npc had 84; after
+    # soften-avatar-silhouette.py chamfers it, its steepest dihedral is ~45
+    # and zero sharp is the correct outcome), and weld_and_smooth() marks
+    # sharp edges from the same measurement it smooths by, so a per-edge
+    # consistency assert would be a tautology.
     assert total_smooth > 0, f"{name}: no edge fell under {SMOOTH_ANGLE_DEG} deg"
-    assert total_sharp > 0, f"{name}: nothing stayed sharp — threshold too loose?"
     assert total_unweighted == 0, f"{name}: {total_unweighted} verts lost their skinning"
 
     export_glb(src)
