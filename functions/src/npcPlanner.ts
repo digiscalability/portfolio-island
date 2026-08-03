@@ -36,7 +36,7 @@ const PERSONA_IDS = [
 
 // Activity ids — must match the client's ActivityId union (NpcActivities.ts).
 const ACTIVITY_IDS = [
-  'tend_flowers', 'patrol', 'mail_round', 'play_music', 'lamp_round',
+  'tend_flowers', 'tend_crops', 'patrol', 'mail_round', 'play_music', 'lamp_round',
   'paint_vista', 'keep_light', 'shore_gaze', 'market_visit', 'bench_rest',
   'stroll', 'sleep', 'plaza_gather', 'study', 'muse',
 ] as const;

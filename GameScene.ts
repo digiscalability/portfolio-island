@@ -3668,6 +3668,13 @@ export class GameScene extends THREE.Scene {
     ].map((d) => this.island.sampleSurfaceByDirection(d, 0).position.clone());
     NpcActivities.setAnchors({
       flowers: this.island.flowerBedSites,
+      crops: this.island.cropRowSites,
+      // Stations fall back to the old anchor sets if a build was skipped
+      // (unsamplable terrain), so a missing prop can never strand an NPC.
+      bandstand: this.island.bandstandSites.length
+        ? this.island.bandstandSites
+        : NpcActivities.plazaFallback(),
+      easel: this.island.easelSites.length ? this.island.easelSites : vistas,
       lamps: this.island.lampSites,
       mailboxes: this.island.mailboxSites,
       stalls: this.island.stallSites,

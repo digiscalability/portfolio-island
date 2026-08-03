@@ -26,12 +26,25 @@ import type { Mood } from './WorldState';
  */
 const PLAZA_APRON = 0.055;
 
+/**
+ * The welcome-plaza apron as world-ish dirs — the fallback stage if the
+ * bandstand could not be placed, so play_music always has somewhere legal.
+ */
+export function plazaFallback(): THREE.Vector3[] {
+  return [
+    dirFor(0.9, Math.PI / 2 - 0.09)
+      .clone()
+      .multiplyScalar(50),
+  ];
+}
+
 // ── Activities + poses ───────────────────────────────────────────────────────
 
 export type PoseId = 'walk' | 'kneel' | 'inspect' | 'play' | 'paint' | 'sit' | 'sleep' | 'watch';
 
 export type ActivityId =
   | 'tend_flowers'
+  | 'tend_crops'
   | 'patrol'
   | 'mail_round'
   | 'play_music'
@@ -49,6 +62,9 @@ export type ActivityId =
 
 type AnchorSource =
   | 'flowers'
+  | 'crops'
+  | 'bandstand'
+  | 'easel'
   | 'lamps'
   | 'mailboxes'
   | 'stalls'
@@ -86,6 +102,14 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
     anchorSource: 'flowers',
     dwell: [18, 34],
   },
+  tend_crops: {
+    label: 'working the crop rows',
+    short: 'farming',
+    emoji: '🌾',
+    pose: 'kneel',
+    anchorSource: 'crops',
+    dwell: [20, 36],
+  },
   patrol: {
     label: 'on patrol along the boulevard',
     short: 'on patrol',
@@ -107,7 +131,7 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
     short: 'playing',
     emoji: '🎵',
     pose: 'play',
-    anchorSource: 'plaza',
+    anchorSource: 'bandstand',
     dwell: [50, 90],
   },
   lamp_round: {
@@ -123,7 +147,7 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
     short: 'painting',
     emoji: '🎨',
     pose: 'paint',
-    anchorSource: 'vista',
+    anchorSource: 'easel',
     dwell: [40, 80],
     face: 'sea',
   },
@@ -283,9 +307,9 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
   ],
   farmer: [
     { from: 5, to: 6, activity: 'stroll' },
-    { from: 6, to: 12, activity: 'tend_flowers' },
+    { from: 6, to: 12, activity: 'tend_crops' },
     { from: 12, to: 13, activity: 'bench_rest' },
-    { from: 13, to: 18, activity: 'tend_flowers' },
+    { from: 13, to: 18, activity: 'tend_crops' },
     { from: 18, to: 20, activity: 'stroll' },
     { from: 20, to: 29, activity: 'sleep' },
   ],
@@ -328,6 +352,9 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
 
 interface AnchorSet {
   flowers: THREE.Vector3[];
+  crops: THREE.Vector3[]; // the Farmer's furrows — his own land, not hers
+  bandstand: THREE.Vector3[]; // the Musician's stage
+  easel: THREE.Vector3[]; // the Artist's easel
   lamps: THREE.Vector3[];
   mailboxes: THREE.Vector3[];
   stalls: THREE.Vector3[];
@@ -384,6 +411,9 @@ function ringAround(centre: THREE.Vector3, arc: number, n: number): THREE.Vector
 
 export function setAnchors(a: {
   flowers: THREE.Vector3[];
+  crops: THREE.Vector3[];
+  bandstand: THREE.Vector3[];
+  easel: THREE.Vector3[];
   lamps: THREE.Vector3[];
   mailboxes: THREE.Vector3[];
   stalls: THREE.Vector3[];
@@ -394,6 +424,11 @@ export function setAnchors(a: {
 }): void {
   ANCHORS = {
     flowers: a.flowers.map(toDir),
+    crops: a.crops.map(toDir),
+    // Fall back to the old anchor if a station failed to place, so a missing
+    // prop degrades to the previous behaviour instead of a stuck NPC.
+    bandstand: (a.bandstand.length ? a.bandstand : []).map(toDir),
+    easel: (a.easel.length ? a.easel : []).map(toDir),
     lamps: a.lamps.map(toDir),
     mailboxes: a.mailboxes.map(toDir),
     stalls: a.stalls.map(toDir),

@@ -123,6 +123,12 @@ export class Island {
   public flowerBedSites: THREE.Vector3[] = [];
   /** Centre of the Gardener's walled garden (unit dir), null until built. */
   public gardenDir: THREE.Vector3 | null = null;
+  /** The Farmer's crop-row working spots, and his field centre. */
+  public cropRowSites: THREE.Vector3[] = [];
+  public farmDir: THREE.Vector3 | null = null;
+  /** The Musician's stage and the Artist's easel — their own stations. */
+  public bandstandSites: THREE.Vector3[] = [];
+  public easelSites: THREE.Vector3[] = [];
   public lighthouseDir: THREE.Vector3 | null = null;
   // Colliders for props placed ASYNCHRONOUSLY (GLB loads finish after
   // GameScene's registration pass) — GameScene drains this each frame
@@ -2710,6 +2716,16 @@ export class Island {
     // apart. She spent her life hiking; the owner's words were "the gardener
     // just wandering around... there is no garden".
     this.buildGarden(3.05, 0.52, flowers);
+    // The Farmer grows FOOD, on his own land. He used to run the very same
+    // `tend_flowers` activity against the very same anchors as the Gardener,
+    // so two people knelt at the same patches — "same thing with other npcs".
+    // His own dialogue already draws the line: the Gardener does flowers, he
+    // does honest crops.
+    this.buildFarm(2.72, 0.6, flowers);
+    // The Musician's stage sits on the welcome apron (where play_music already
+    // pointed) and the Artist's easel on the headland her vista already used.
+    this.buildBandstand(1.15, 1.3, flowers);
+    this.buildEasel(5.32, 0.315, flowers);
     // Pass 1: scatter valid placements (respecting street skips) + colour index
     const bloomUp = new THREE.Vector3(0, 1, 0);
     const bloomOne = new THREE.Vector3(1, 1, 1);
@@ -4057,7 +4073,10 @@ export class Island {
    * and the fence posts are one InstancedMesh.
    */
   private buildGarden(lon: number, lat: number, parent: THREE.Object3D): void {
-    const centre = this.dirAt(lon, lat);
+    // claimOffStreet, not a raw dirAt: slides off any pavement AND away from
+    // props already claimed (cottages, stalls, lamps), then registers the
+    // footprint so nothing later lands on the garden either.
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.1);
     let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
     try {
       seat = this.sampleSurfaceByDirection(centre, 0);
@@ -4165,6 +4184,208 @@ export class Island {
         this.flowerBedSites.push(spot);
       }
     }
+  }
+
+  /**
+   * The Farmer's croft: ploughed furrows of leafy crops, a scarecrow and a
+   * hay bale. Publishes three working spots (the furrow ends) as
+   * `cropRowSites` — his OWN anchors, so he stops shadowing the Gardener.
+   */
+  private buildFarm(lon: number, lat: number, parent: THREE.Object3D): void {
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.12);
+    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      seat = this.sampleSurfaceByDirection(centre, 0);
+    } catch {
+      return;
+    }
+    const g = new THREE.Group();
+    g.name = 'farm';
+    g.position.copy(seat.position);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
+
+    const soilMat = Materials.createStandardMaterial({ color: 0x6b4f34 });
+    const cropMat = Materials.createStandardMaterial({ color: 0x6f9c3f });
+    const woodMat = Materials.createStandardMaterial({ color: 0xb08a55 });
+
+    // Four ploughed ridges, merged into one mesh.
+    const ridges: THREE.BufferGeometry[] = [];
+    const ROWS = [-2.4, -0.8, 0.8, 2.4];
+    for (const rx of ROWS) {
+      ridges.push(new THREE.BoxGeometry(1.0, 0.18, 6.4).translate(rx, 0.09, 0));
+    }
+    const soil = new THREE.Mesh(mergeGeometries(ridges, false), soilMat);
+    soil.receiveShadow = true;
+    g.add(soil);
+    ridges.forEach((r) => r.dispose());
+
+    // Leafy crops standing in the furrows — one instanced batch.
+    const cropGeo = new THREE.ConeGeometry(0.17, 0.55, 5);
+    const CROPS = ROWS.length * 11;
+    const crops = new THREE.InstancedMesh(cropGeo, cropMat, CROPS);
+    const m = new THREE.Matrix4();
+    let ci = 0;
+    for (const rx of ROWS) {
+      for (let k = 0; k < 11; k++) {
+        m.makeTranslation(rx + (Math.random() - 0.5) * 0.3, 0.45, -2.9 + k * 0.58);
+        crops.setMatrixAt(ci++, m);
+      }
+    }
+    crops.instanceMatrix.needsUpdate = true;
+    crops.castShadow = true;
+    g.add(crops);
+
+    // Scarecrow: post, crossbar, straw head.
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.7, 0.12), woodMat);
+    post.position.set(0, 0.85, -3.4);
+    g.add(post);
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.1, 0.1), woodMat);
+    bar.position.set(0, 1.25, -3.4);
+    g.add(bar);
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 6, 5),
+      Materials.createStandardMaterial({ color: 0xd8bb6a }),
+    );
+    head.position.set(0, 1.85, -3.4);
+    head.castShadow = true;
+    g.add(head);
+
+    // A hay bale at the field edge.
+    const bale = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.55, 0.9, 8),
+      Materials.createStandardMaterial({ color: 0xd9c176 }),
+    );
+    bale.rotation.z = Math.PI / 2;
+    bale.position.set(3.6, 0.55, 2.2);
+    bale.castShadow = true;
+    g.add(bale);
+
+    parent.add(g);
+    this.farmDir = centre.clone();
+
+    // Working spots: the near end of three furrows, ~1.6u apart.
+    const up = seat.normal.clone();
+    let east = new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 1, 0));
+    if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0);
+    east.normalize();
+    const north = new THREE.Vector3().crossVectors(east, up).normalize();
+    for (const rx of [-1.6, 0, 1.6]) {
+      const spot = seat.position.clone().addScaledVector(east, rx).addScaledVector(north, 1.9);
+      try {
+        this.cropRowSites.push(
+          this.sampleSurfaceByDirection(spot.clone().normalize(), 0).position.clone(),
+        );
+      } catch {
+        this.cropRowSites.push(spot);
+      }
+    }
+  }
+
+  /**
+   * The Musician's bandstand: an octagonal deck with posts and a conical
+   * roof, on the welcome-plaza apron. Publishes two standing spots so
+   * `play_music` has a stage of its own instead of rotating the district
+   * plazas (which are the zone halls).
+   */
+  private buildBandstand(lon: number, lat: number, parent: THREE.Object3D): void {
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.09);
+    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      seat = this.sampleSurfaceByDirection(centre, 0);
+    } catch {
+      return;
+    }
+    const g = new THREE.Group();
+    g.name = 'bandstand';
+    g.position.copy(seat.position);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
+
+    const deckMat = Materials.createStandardMaterial({ color: 0xd8c39a });
+    const trimMat = Materials.createStandardMaterial({ color: 0x9c6b46 });
+    const deck = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.7, 0.35, 8), deckMat);
+    deck.position.y = 0.18;
+    deck.receiveShadow = true;
+    g.add(deck);
+    const postGeo = new THREE.CylinderGeometry(0.1, 0.1, 2.3, 6);
+    const posts = new THREE.InstancedMesh(postGeo, trimMat, 6);
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      m.makeTranslation(Math.cos(a) * 2.15, 1.5, Math.sin(a) * 2.15);
+      posts.setMatrixAt(i, m);
+    }
+    posts.instanceMatrix.needsUpdate = true;
+    posts.castShadow = true;
+    g.add(posts);
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(2.9, 1.1, 8), trimMat);
+    roof.position.y = 3.2;
+    roof.castShadow = true;
+    g.add(roof);
+    // A stool, so the stage reads as a working spot rather than a gazebo.
+    const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.45, 6), trimMat);
+    stool.position.set(0.9, 0.58, 0.5);
+    g.add(stool);
+
+    parent.add(g);
+    this.bandstandSites.push(seat.position.clone());
+    const up = seat.normal.clone();
+    let east = new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 1, 0));
+    if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0);
+    east.normalize();
+    this.bandstandSites.push(seat.position.clone().addScaledVector(east, 1.2));
+  }
+
+  /**
+   * The Artist's painting spot: an easel, canvas and stool on the headland.
+   * Publishes one standing anchor so `paint_vista` parks her AT the easel.
+   */
+  private buildEasel(lon: number, lat: number, parent: THREE.Object3D): void {
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.06);
+    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      seat = this.sampleSurfaceByDirection(centre, 0);
+    } catch {
+      return;
+    }
+    const g = new THREE.Group();
+    g.name = 'easel';
+    g.position.copy(seat.position);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
+
+    const woodMat = Materials.createStandardMaterial({ color: 0xb2854f });
+    const legs: THREE.BufferGeometry[] = [];
+    for (const [lx, lz] of [
+      [-0.35, 0.2],
+      [0.35, 0.2],
+      [0, -0.35],
+    ] as Array<[number, number]>) {
+      legs.push(new THREE.BoxGeometry(0.07, 1.5, 0.07).translate(lx, 0.75, lz));
+    }
+    legs.push(new THREE.BoxGeometry(0.85, 0.07, 0.07).translate(0, 0.85, 0.2));
+    const frame = new THREE.Mesh(mergeGeometries(legs, false), woodMat);
+    frame.castShadow = true;
+    g.add(frame);
+    legs.forEach((l) => l.dispose());
+    const canvas = new THREE.Mesh(
+      new THREE.BoxGeometry(0.95, 0.75, 0.05),
+      Materials.createStandardMaterial({ color: 0xf3ece0 }),
+    );
+    canvas.position.set(0, 1.32, 0.16);
+    canvas.rotation.x = -0.12;
+    canvas.castShadow = true;
+    g.add(canvas);
+    const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.42, 6), woodMat);
+    stool.position.set(0.75, 0.21, 0.8);
+    g.add(stool);
+
+    parent.add(g);
+    const up = seat.normal.clone();
+    let east = new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 1, 0));
+    if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0);
+    east.normalize();
+    const north = new THREE.Vector3().crossVectors(east, up).normalize();
+    // Stand BEHIND the canvas, facing it (and the sea beyond).
+    this.easelSites.push(seat.position.clone().addScaledVector(north, -1.0));
   }
 
   private createStall(): THREE.Group {
@@ -5115,28 +5336,9 @@ export class Island {
                   } catch {
                     /* ignore */
                   }
-                  // 30% of NPCs patrol between two nearby points
-                  try {
-                    if (Math.random() < 0.35) {
-                      const dir = ph.position.clone().sub(this.center).normalize();
-                      const right = new THREE.Vector3()
-                        .crossVectors(new THREE.Vector3(0, 1, 0), dir)
-                        .normalize();
-                      const p1 = ph.position.clone().add(right.clone().multiplyScalar(0.8));
-                      const p2 = ph.position.clone().add(right.clone().multiplyScalar(-0.8));
-                      // ensure projected to surface
-                      try {
-                        // sample patrol points to account for displacement
-                        const s1 = this.sampleSurfacePosition(p1, 0.58);
-                        const s2 = this.sampleSurfacePosition(p2, 0.58);
-                        npc.startPatrol([s1.position, s2.position]);
-                      } catch {
-                        /* ignore patrol placement issues */
-                      }
-                    }
-                  } catch {
-                    /* ignore patrol setup issues */
-                  }
+                  // (The old "35% of NPCs patrol between two points" setup is
+                  // gone with NPC.update(): GameScene's activity schedule is
+                  // the single source of where a villager goes.)
                   // update the npcTarget meshRef to point at the GLTF group
                   try {
                     const phIdx = parseInt(ph.name.replace('npc_placeholder_', ''), 10);
@@ -5536,14 +5738,17 @@ export class Island {
       }
     });
 
-    // Update NPC instances (state machines)
-    this.npcInstances.forEach((npcInstance) => {
-      try {
-        npcInstance.update(deltaTime);
-      } catch {
-        /* ignore NPC update issues */
-      }
-    });
+    // NPC.update() is deliberately NOT called any more.
+    //
+    // It was a SECOND writer of every villager's transform: it walked the
+    // group toward random targets picked around a frozen spawn position, with
+    // no collider awareness and no knowledge of the activity schedule, while
+    // GameScene's wander loop wrote the same object in the same frame with
+    // avoidance and goals. Two controllers fighting over one transform is why
+    // townsfolk twitched, drifted off their anchors and pushed into walls.
+    // GameScene's loop is the single owner now; NPC instances survive only as
+    // the group/mixer holder (see getNPCInstances).
+    void this.npcInstances;
   }
 
   /**
