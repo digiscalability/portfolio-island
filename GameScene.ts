@@ -81,25 +81,43 @@ export class GameScene extends THREE.Scene {
     altOff: number; // V-formation drop below the leader's altitude
     alt: number;
     speed: number;
+    size: number; // per-bird base scale — the night-roost lerp targets this
     phase: number;
     lead: boolean; // exactly one per flock — rotates the shared pivot
   }> = [];
 
-  // Ground birds pecking at fixed spots; walking up flushes them into the sky.
+  // Ground birds feeding around fixed spots; walking up flushes them into
+  // the sky. While pecking they run a little FSM: jab bursts → head-up
+  // scans → short tangent hops around the home spot.
   private groundBirds: Array<{
     bird: THREE.Group;
     wingL: THREE.Mesh;
     wingR: THREE.Mesh;
-    basePos: THREE.Vector3;
-    baseQuat: THREE.Quaternion;
+    tail: THREE.Mesh;
+    basePos: THREE.Vector3; // home spot (respawn + wander tether)
+    curPos: THREE.Vector3; // current perch — moves with hops
+    baseQuat: THREE.Quaternion; // pure surface alignment, NO yaw baked in
     up: THREE.Vector3;
     away: THREE.Vector3; // flushed flight direction (tangent, away from approach)
     mode: 'peck' | 'flee' | 'gone';
+    feed: 'jab' | 'scan' | 'hop';
+    feedUntil: number; // when the current feed sub-state ends
+    size: number; // species-rolled base scale — the night roost targets this
+    heading: number; // yaw about the surface normal (radians)
+    hopFrom: THREE.Vector3;
+    hopTo: THREE.Vector3;
+    hopT0: number;
+    analBase: number; // analytic radius at basePos — hop reseating reference
     t0: number;
     phase: number;
     respawnAt: number;
   }> = [];
   private readonly _gbScratch = new THREE.Vector3();
+  private readonly _gbScratch2 = new THREE.Vector3();
+  private readonly _gbQuat = new THREE.Quaternion();
+  private static readonly GROUND_HOP_DUR = 0.28;
+  private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
+  private static readonly AXIS_Y = new THREE.Vector3(0, 1, 0);
 
   // Trees swaying gently around their surface-aligned base orientation
   private swayTrees: Array<{
@@ -895,16 +913,53 @@ export class GameScene extends THREE.Scene {
     bodyMat: THREE.Material,
     wingMat: THREE.Material,
     beakMat: THREE.Material,
-  ): { bird: THREE.Group; wingL: THREE.Mesh; wingR: THREE.Mesh } {
+    extras?: { belly?: THREE.Material; shape?: [number, number, number] },
+  ): { bird: THREE.Group; wingL: THREE.Mesh; wingR: THREE.Mesh; tail: THREE.Mesh } {
     const bird = new THREE.Group();
-    // Body — small elongated sphere pointing along travel direction (-Z)
+    // Body — small elongated sphere pointing along travel direction (-Z);
+    // per-species shape squashes/stretches it (plump robin vs sleek gull).
     const body = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 5), bodyMat);
-    body.scale.set(1, 0.9, 1.9);
+    const shape = extras?.shape ?? [1, 0.9, 1.9];
+    body.scale.set(shape[0], shape[1], shape[2]);
     bird.add(body);
-    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.1, 4), beakMat);
+    // Distinct head — the old single-blob body read as a lump; a head sphere
+    // with eye dots gives every bird a real silhouette up close.
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.075, 6, 5), bodyMat);
+    head.position.set(0, 0.075, -0.155 * shape[2] * 0.6 - 0.06);
+    bird.add(head);
+    const eyeMat = GameScene.birdMat(0x1c1a18);
+    for (const ex of [-0.048, 0.048]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.014, 5, 4), eyeMat);
+      eye.position.set(ex, head.position.y + 0.02, head.position.z - 0.05);
+      bird.add(eye);
+    }
+    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.09, 4), beakMat);
     beak.rotation.x = -Math.PI / 2;
-    beak.position.z = -0.24;
+    beak.position.set(0, head.position.y - 0.005, head.position.z - 0.105);
     bird.add(beak);
+    // Belly/breast patch — cheap two-tone (robin red-breast, pigeon chest).
+    if (extras?.belly) {
+      const belly = new THREE.Mesh(new THREE.SphereGeometry(0.095, 6, 5), extras.belly);
+      belly.scale.set(shape[0] * 0.88, shape[1] * 0.72, shape[2] * 1.32);
+      belly.position.set(0, -0.045, -0.02);
+      bird.add(belly);
+    }
+    // Tail — small tapered fan at the rear, tip raised; completes the
+    // folded-wing silhouette on the ground and the cross in flight.
+    const tailGeo = new THREE.BoxGeometry(0.11, 0.012, 0.2);
+    tailGeo.translate(0, 0, 0.1); // hinge at the body end
+    {
+      const tp = tailGeo.attributes.position;
+      for (let vi = 0; vi < tp.count; vi++) {
+        if (tp.getZ(vi) > 0.15) tp.setX(vi, tp.getX(vi) * 0.45);
+      }
+      tp.needsUpdate = true;
+      tailGeo.computeVertexNormals();
+    }
+    const tail = new THREE.Mesh(tailGeo, wingMat);
+    tail.position.set(0, 0.03, 0.09 * shape[2]);
+    tail.rotation.x = -0.16; // NEGATIVE x lifts a +Z tail tip in this model
+    bird.add(tail);
     // Wings — LONG tapered panels hinged at the body sides. The old 0.34u
     // stubs were invisible from the ground: all you could read at flight
     // altitude was the body's bank, which looked like "tilting" instead of
@@ -928,7 +983,23 @@ export class GameScene extends THREE.Scene {
     wingR.position.set(-0.07, 0.02, 0);
     wingR.rotation.y = Math.PI;
     bird.add(wingR);
-    return { bird, wingL, wingR };
+    return { bird, wingL, wingR, tail };
+  }
+
+  // Bird materials cached per colour (fishMat pattern) — species mixing
+  // would otherwise allocate ~20 duplicate MeshToonMaterials.
+  private static birdMatCache = new Map<number, THREE.MeshToonMaterial>();
+  private static birdMat(color: number, doubleSide = false): THREE.MeshToonMaterial {
+    const key = color + (doubleSide ? 0x2000000 : 0);
+    let m = GameScene.birdMatCache.get(key);
+    if (!m) {
+      m = new THREE.MeshToonMaterial({
+        color,
+        side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
+      });
+      GameScene.birdMatCache.set(key, m);
+    }
+    return m;
   }
 
   /**
@@ -941,9 +1012,13 @@ export class GameScene extends THREE.Scene {
    * runs the orbit, soar, and flap/glide cycle.
    */
   private createBirds(): void {
-    const bodyMat = new THREE.MeshToonMaterial({ color: 0xf4f6f8 });
-    const wingMat = new THREE.MeshToonMaterial({ color: 0xdfe5ea, side: THREE.DoubleSide });
-    const beakMat = new THREE.MeshToonMaterial({ color: 0xf2b04a });
+    const bodyMat = GameScene.birdMat(0xf4f6f8);
+    const wingMat = GameScene.birdMat(0xdfe5ea, true);
+    const beakMat = GameScene.birdMat(0xf2b04a);
+    // Juvenile gull plumage — one mottled-grey wingman per trio so the
+    // flocks read as a mixed family, not three copies.
+    const juvBodyMat = GameScene.birdMat(0xd8d1c5);
+    const juvWingMat = GameScene.birdMat(0xb4aa9a, true);
     const planetR = this.island ? this.island.getRadius() : 18;
     const up = new THREE.Vector3(0, 1, 0);
     // Four full trios. The old layout (3+3+1, all anchored at shoreline
@@ -983,7 +1058,13 @@ export class GameScene extends THREE.Scene {
       const speed = 0.45 + Math.random() * 0.12;
       const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
       for (let j = 0; j < flock.count; j++) {
-        const { bird, wingL, wingR } = this.buildBird(bodyMat, wingMat, beakMat);
+        // Second wingman is a mottled juvenile; every bird gets size jitter.
+        const juv = j === 2;
+        const { bird, wingL, wingR } = this.buildBird(
+          juv ? juvBodyMat : bodyMat,
+          juv ? juvWingMat : wingMat,
+          beakMat,
+        );
         const slot = V_SLOTS[j];
         const tangentOff = new THREE.Vector3(slot.x, 0, slot.z);
         bird.position
@@ -995,9 +1076,11 @@ export class GameScene extends THREE.Scene {
         // the ground ("tilting instead of flapping"); the flutter carries
         // the motion now.
         bird.rotation.z = 0.16;
-        // Gulls are big birds: 1.55× makes the wingbeat legible from the
-        // beach below. The roost lerp scales toward this base, not 1.
-        bird.scale.setScalar(1.55);
+        // Gulls are big birds: ~1.55× makes the wingbeat legible from the
+        // beach below; jitter (juveniles run smaller) breaks the clone look.
+        // The roost lerp scales toward this per-bird size, not 1.
+        const size = (juv ? 1.3 : 1.55) * (0.92 + Math.random() * 0.16);
+        bird.scale.setScalar(size);
         pivot.add(bird);
         this.birds.push({
           pivot,
@@ -1009,13 +1092,14 @@ export class GameScene extends THREE.Scene {
           altOff: slot.y,
           alt,
           speed,
+          size,
           phase: Math.random() * Math.PI * 2,
           lead: j === 0,
         });
       }
       fi++;
     }
-    this.createGroundBirds(bodyMat, wingMat, beakMat);
+    this.createGroundBirds();
   }
 
   /**
@@ -1023,14 +1107,51 @@ export class GameScene extends THREE.Scene {
    * Approach within ~3.2u and they flush — a fast climbing flight away —
    * then land again at the same spot a while after the coast is clear.
    */
-  private createGroundBirds(
-    gullBody: THREE.Material,
-    gullWing: THREE.Material,
-    beakMat: THREE.Material,
-  ): void {
+  private createGroundBirds(): void {
     if (!this.island) return;
-    const sparrowBody = new THREE.MeshToonMaterial({ color: 0xa08a70 });
-    const sparrowWing = new THREE.MeshToonMaterial({ color: 0x84705a, side: THREE.DoubleSide });
+    // Mixed species — body/wing/beak/belly colours, body shape, size range.
+    // Cycled over the spots so every cluster of visited spots shows variety.
+    const SPECIES: Array<{
+      body: number;
+      wing: number;
+      beak: number;
+      belly?: number;
+      shape: [number, number, number];
+      size: [number, number];
+    }> = [
+      // sparrow — warm brown, buff belly, compact
+      {
+        body: 0xa08a70,
+        wing: 0x84705a,
+        beak: 0x6b5138,
+        belly: 0xcfbb9c,
+        shape: [1.05, 0.95, 1.6],
+        size: [0.8, 0.95],
+      },
+      // gull — white/pale grey, the beach classic
+      { body: 0xf4f6f8, wing: 0xdfe5ea, beak: 0xf2b04a, shape: [1, 0.9, 1.9], size: [1.0, 1.2] },
+      // pigeon — blue-grey with a lighter chest
+      {
+        body: 0x8a93a6,
+        wing: 0x6f7a90,
+        beak: 0x5a5f6e,
+        belly: 0xb9c0cf,
+        shape: [1.1, 1.0, 1.7],
+        size: [0.85, 1.0],
+      },
+      // blackbird — near-black with the orange beak
+      { body: 0x2e2b29, wing: 0x1f1d1c, beak: 0xf2a83a, shape: [1, 0.9, 1.75], size: [0.78, 0.95] },
+      // robin — brown back, red breast, plump and small (floor 0.72: the
+      // 0.5-0.62 band was screenshot-proven to vanish into the grass tufts)
+      {
+        body: 0x8c7663,
+        wing: 0x6f5d4e,
+        beak: 0x5c4a38,
+        belly: 0xd97b4a,
+        shape: [1.15, 1.05, 1.5],
+        size: [0.72, 0.85],
+      },
+    ];
     // [lon, lat] peck spots: plaza rim, park grass, beach sand — weighted
     // toward the hub/high latitudes where players actually walk (the old
     // set was mostly remote shores nobody visited: "no bird on the floor").
@@ -1051,23 +1172,30 @@ export class GameScene extends THREE.Scene {
       [4.4, 0.55],
     ];
     for (let i = 0; i < SPOTS.length; i++) {
-      const sparrow = i % 2 === 0;
-      const { bird, wingL, wingR } = this.buildBird(
-        sparrow ? sparrowBody : gullBody,
-        sparrow ? sparrowWing : gullWing,
-        beakMat,
+      const sp = SPECIES[i % SPECIES.length];
+      const { bird, wingL, wingR, tail } = this.buildBird(
+        GameScene.birdMat(sp.body),
+        GameScene.birdMat(sp.wing, true),
+        GameScene.birdMat(sp.beak),
+        {
+          belly: sp.belly !== undefined ? GameScene.birdMat(sp.belly) : undefined,
+          shape: sp.shape,
+        },
       );
-      // 0.85/1.0 (was 0.5/0.62) — at half scale they vanished into the grass.
-      bird.scale.setScalar(sparrow ? 0.85 : 1.0);
+      const size = sp.size[0] + Math.random() * (sp.size[1] - sp.size[0]);
+      bird.scale.setScalar(size);
       const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
       // Seat on the RAYCAST mesh, not the analytic field: where the two
       // diverge the analytic radius sat under the rendered terrain and the
       // birds were buried. Startup-only, so 12 raycasts is fine.
       const s = this.island.sampleSurfaceByDirection(dir, 0);
       bird.position.copy(s.position).addScaledVector(s.normal, 0.04);
+      // baseQuat = pure surface alignment; yaw lives in `heading` so the
+      // feeding FSM can turn/face freely without re-baking the quaternion.
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal);
       bird.quaternion.copy(q);
-      bird.rotateY(Math.random() * Math.PI * 2); // face a random way while pecking
+      const heading = Math.random() * Math.PI * 2;
+      bird.rotateY(heading);
       bird.name = `ground_bird_${i}`;
       this.add(bird);
       // Flushed flight heads along a fixed tangent (away from the island
@@ -1081,16 +1209,73 @@ export class GameScene extends THREE.Scene {
         bird,
         wingL,
         wingR,
+        tail,
         basePos: bird.position.clone(),
-        baseQuat: bird.quaternion.clone(),
+        curPos: bird.position.clone(),
+        baseQuat: q.clone(),
         up: s.normal.clone(),
         away,
         mode: 'peck',
+        feed: 'jab',
+        // The update clock is absolute performance.now()/1000, so the
+        // stagger must be too — a bare 1-3s constant is already in the past
+        // by the first frame after asset loading.
+        feedUntil: performance.now() / 1000 + 1 + Math.random() * 2,
+        size,
+        heading,
+        hopFrom: bird.position.clone(),
+        hopTo: bird.position.clone(),
+        hopT0: 0,
+        analBase: this.island.analyticSurface(dir).radius,
         t0: 0,
         phase: Math.random() * Math.PI * 2,
         respawnAt: 0,
       });
     }
+  }
+
+  /**
+   * Start a short tangent hop toward a random nearby point, tethered to
+   * ~1u around the bird's home spot. Reseats the landing height with the
+   * cheap analytic field applied as a DELTA from the raycast-accurate
+   * home height — no runtime raycasts.
+   */
+  private startGroundBirdHop(g: GameScene['groundBirds'][number], time: number): void {
+    if (!this.island) return;
+    // Tangent basis around the surface normal (fall back off the pole).
+    const ref = Math.abs(g.up.y) > 0.94 ? GameScene.AXIS_X : GameScene.AXIS_Y;
+    const t1 = this._gbScratch.crossVectors(g.up, ref).normalize();
+    const t2 = this._gbScratch2.crossVectors(g.up, t1).normalize();
+    const a = Math.random() * Math.PI * 2;
+    const dist = 0.25 + Math.random() * 0.3;
+    g.hopTo
+      .copy(g.curPos)
+      .addScaledVector(t1, Math.cos(a) * dist)
+      .addScaledVector(t2, Math.sin(a) * dist);
+    // Tether: never wander more than ~1u from home (spots are claimed
+    // off-street; drifting could walk a bird onto pavement or into a prop).
+    if (g.hopTo.distanceToSquared(g.basePos) > 1.0) {
+      g.hopTo.sub(g.basePos).setLength(0.55).add(g.basePos);
+    }
+    const dir = this._gbScratch.copy(g.hopTo).normalize();
+    const r = g.basePos.length() + (this.island.analyticSurface(dir).radius - g.analBase);
+    g.hopTo.copy(dir).multiplyScalar(r);
+    g.hopFrom.copy(g.curPos);
+    g.hopT0 = time;
+    g.feed = 'hop';
+    g.feedUntil = time + GameScene.GROUND_HOP_DUR;
+    g.heading = this.groundBirdHeadingFor(g, this._gbScratch.copy(g.hopTo).sub(g.hopFrom));
+  }
+
+  /** Yaw (about the bird's surface normal) that faces a world direction. */
+  private groundBirdHeadingFor(
+    g: GameScene['groundBirds'][number],
+    worldDir: THREE.Vector3,
+  ): number {
+    // Express the direction in the bird's surface frame; model forward = -Z.
+    this._gbQuat.copy(g.baseQuat).invert();
+    this._gbScratch2.copy(worldDir).applyQuaternion(this._gbQuat);
+    return Math.atan2(-this._gbScratch2.x, -this._gbScratch2.z);
   }
 
   // [bodyColour, finColour, scale] — shared by the ocean fish + the catch.
@@ -4095,8 +4280,8 @@ export class GameScene extends THREE.Scene {
     const birdDay = this.envCycle ? this.envCycle.getDayFactor() : 1;
     for (const b of this.birds) {
       // Roost after dusk: shrink away in place, return at dawn (toward the
-      // 1.55 base size, not 1 — gulls are big birds).
-      const roostTarget = birdDay < 0.3 ? 0.001 : 1.55;
+      // bird's own base size — gulls are big, juveniles smaller).
+      const roostTarget = birdDay < 0.3 ? 0.001 : b.size;
       const s = THREE.MathUtils.lerp(b.bird.scale.x, roostTarget, 1 - Math.exp(-3 * deltaTime));
       b.bird.scale.setScalar(s);
       b.bird.visible = s > 0.05;
@@ -4136,32 +4321,105 @@ export class GameScene extends THREE.Scene {
         .add(b.tangentOff);
     }
 
-    // Ground birds: peck → flush when the player closes in → land later.
+    // Ground birds: feeding FSM (jab → scan → hop) → flush when the player
+    // closes in → land again later.
     const gbPlayer = this.player ? this.player.getWorldPosition() : null;
     for (const g of this.groundBirds) {
       if (g.mode === 'peck') {
-        // Peck: rhythmic forward dips with idle pauses between bursts.
-        const burst = Math.sin(time * 0.7 + g.phase) > 0.2 ? 1 : 0;
-        const dip = burst * Math.max(0, Math.sin(time * 6 + g.phase)) * 0.55;
+        // Night roost, matching the flocks: shrink away after dusk and grow
+        // back at dawn (ground birds used to feed at 3am while gulls slept).
+        const gRoost = birdDay < 0.3 ? 0.001 : g.size;
+        const gScale = THREE.MathUtils.lerp(g.bird.scale.x, gRoost, 1 - Math.exp(-3 * deltaTime));
+        g.bird.scale.setScalar(gScale);
+        g.bird.visible = gScale > 0.05;
+        if (!g.bird.visible) continue;
+        // Advance the feed sub-state when its timer runs out.
+        if (time > g.feedUntil) {
+          // Leaving scan: fold the current wiggle offset into heading so
+          // the head doesn't snap back on exit.
+          if (g.feed === 'scan') g.heading += Math.sin((time - g.hopT0) * 1.1) * 0.45;
+          if (g.feed === 'hop') {
+            // Land, then maybe chain another hop (birds bounce in runs).
+            g.curPos.copy(g.hopTo);
+            if (Math.random() < 0.4) this.startGroundBirdHop(g, time);
+            else {
+              g.feed = Math.random() < 0.75 ? 'jab' : 'scan';
+              g.hopT0 = time; // doubles as the scan-entry wiggle anchor
+              g.feedUntil = time + 1.0 + Math.random() * 1.4;
+            }
+          } else {
+            const r = Math.random();
+            if (r < 0.3) this.startGroundBirdHop(g, time);
+            else if (r < 0.62) {
+              g.feed = 'scan';
+              g.hopT0 = time; // wiggle anchor — starts the look-around at 0
+              g.feedUntil = time + 0.8 + Math.random() * 1.2;
+            } else {
+              g.feed = 'jab';
+              g.feedUntil = time + 1.2 + Math.random() * 1.2;
+            }
+          }
+        }
+        // Pitch convention (proven by the beak's rotation.x = -PI/2):
+        // NEGATIVE rotateX = nose-down in this model.
+        let pitch = 0;
+        let yaw = g.heading;
+        if (g.feed === 'hop') {
+          // Little parabolic bounce between perches, nose dipped into it.
+          const ht = Math.min(1, (time - g.hopT0) / GameScene.GROUND_HOP_DUR);
+          g.bird.position
+            .lerpVectors(g.hopFrom, g.hopTo, ht)
+            .addScaledVector(g.up, Math.sin(Math.PI * ht) * 0.14);
+          pitch = -0.18 * Math.sin(Math.PI * ht);
+        } else if (g.feed === 'jab') {
+          // Sharp distinct DOWN-jabs (pow narrows the sine into pecks),
+          // not the old continuous nodding.
+          const s = Math.max(0, Math.sin(time * 9 + g.phase * 7));
+          pitch = -Math.pow(s, 0.65) * 0.6;
+          g.bird.position.copy(g.curPos);
+        } else {
+          // Vigilance: head UP, slowly looking around — real feeding birds
+          // alternate head-down pecking with head-up scanning. The wiggle
+          // is anchored at scan entry (hopT0) so it starts and stays smooth.
+          pitch = 0.1;
+          yaw = g.heading + Math.sin((time - g.hopT0) * 1.1) * 0.45;
+          g.bird.position.copy(g.curPos);
+        }
         g.bird.quaternion.copy(g.baseQuat);
-        g.bird.rotateX(dip);
+        g.bird.rotateY(yaw);
+        g.bird.rotateX(pitch);
         // Wings stay FOLDED along the body on the ground (screenshot-verified:
         // spread wings on a grounded bird read as a crashed glider, not a
         // bird). Occasional quick ruffle = feather shuffle between pecks.
         const ruffle =
-          Math.sin(time * 0.23 + g.phase) > 0.96 ? Math.sin(time * 26 + g.phase) * 0.35 : 0;
-        g.wingL.rotation.y = -1.25;
-        g.wingR.rotation.y = Math.PI + 1.25;
+          g.feed !== 'hop' && Math.sin(time * 0.23 + g.phase) > 0.96
+            ? Math.sin(time * 26 + g.phase) * 0.35
+            : 0;
+        // Folded = swept back, drooped over the body sides AND compacted:
+        // a full-span 0.65u panel can't hide behind a 0.4u body no matter
+        // the angle (screenshot: splayed "paper plane"), so the fold also
+        // shortens the wing — the flee branch restores full span.
+        g.wingL.scale.x = 0.55;
+        g.wingR.scale.x = 0.55;
+        g.wingL.rotation.y = -1.15;
+        g.wingR.rotation.y = Math.PI + 1.15;
         // Same z sign on both — the π-yawed right wing reverses z visually.
-        g.wingL.rotation.z = -0.18 + ruffle;
-        g.wingR.rotation.z = -0.18 + ruffle;
-        if (gbPlayer && gbPlayer.distanceToSquared(g.basePos) < 3.2 * 3.2) {
+        g.wingL.rotation.z = -0.32 + ruffle;
+        g.wingR.rotation.z = -0.32 + ruffle;
+        // Tail: resting raised tilt with the occasional quick flick.
+        g.tail.rotation.x =
+          -0.16 + (Math.sin(time * 0.37 + g.phase * 2) > 0.985 ? Math.sin(time * 30) * 0.3 : 0);
+        if (gbPlayer && gbPlayer.distanceToSquared(g.curPos) < 3.2 * 3.2) {
+          // Flushed mid-hop: sync curPos to the rendered spot first so the
+          // climb starts where the bird visibly IS, not its takeoff perch.
+          if (g.feed === 'hop') g.curPos.copy(g.bird.position);
           g.mode = 'flee';
           g.t0 = time;
           // Flee away from the player, tangent to the ground.
-          this._gbScratch.copy(g.basePos).sub(gbPlayer);
+          this._gbScratch.copy(g.curPos).sub(gbPlayer);
           this._gbScratch.addScaledVector(g.up, -this._gbScratch.dot(g.up));
           if (this._gbScratch.lengthSq() > 0.1) g.away.copy(this._gbScratch).normalize();
+          g.heading = this.groundBirdHeadingFor(g, g.away); // face the escape
           sfx.blip();
         }
       } else if (g.mode === 'flee') {
@@ -4174,29 +4432,40 @@ export class GameScene extends THREE.Scene {
           g.respawnAt = time + 8 + Math.random() * 8;
           continue;
         }
-        // Climb-out: accelerate up and away, nose lifted, fast flapping.
+        // Climb-out from the CURRENT perch: accelerate up and away, nose
+        // lifted, fast flapping.
         g.bird.position
-          .copy(g.basePos)
+          .copy(g.curPos)
           .addScaledVector(g.up, t * t * 1.6 + t * 0.8)
           .addScaledVector(g.away, t * 4.2);
         g.bird.quaternion.copy(g.baseQuat);
-        g.bird.rotateX(-0.35);
+        g.bird.rotateY(g.heading);
+        g.bird.rotateX(0.35); // POSITIVE = nose lifted into the climb
+        g.tail.rotation.x = -0.16;
         const fastFlap = Math.sin(time * 24 + g.phase) * 1.1; // panicked burst
+        g.wingL.scale.x = 1; // full span again
+        g.wingR.scale.x = 1;
         g.wingL.rotation.y = 0; // wings snap OPEN for the climb-out
         g.wingR.rotation.y = Math.PI;
         g.wingL.rotation.z = fastFlap;
         g.wingR.rotation.z = fastFlap; // same sign — π yaw flips z visually
       } else if (
         time > g.respawnAt &&
+        birdDay >= 0.3 && // no landings at night — they're roosting
         (!gbPlayer || gbPlayer.distanceToSquared(g.basePos) > 5 * 5)
       ) {
-        // Coast clear — settle back onto the same spot facing a new way.
+        // Coast clear — settle back onto the home spot facing a new way,
+        // growing in via the roost lerp instead of popping.
         g.mode = 'peck';
+        g.feed = 'jab';
+        g.feedUntil = time + 1 + Math.random();
+        g.heading = Math.random() * Math.PI * 2;
+        g.curPos.copy(g.basePos);
         g.bird.visible = true;
+        g.bird.scale.setScalar(0.06 * g.size);
         g.bird.position.copy(g.basePos);
         g.bird.quaternion.copy(g.baseQuat);
-        g.bird.rotateY(Math.random() * Math.PI * 2);
-        g.baseQuat.copy(g.bird.quaternion);
+        g.bird.rotateY(g.heading);
       }
     }
 
