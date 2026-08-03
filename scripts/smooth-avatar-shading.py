@@ -36,16 +36,20 @@ into real mesh data — every face smooth, edges above the threshold marked
 sharp — which the glTF exporter turns into split normals on its own.
 
 Vertices are never MOVED, but they are WELDED, and that part is load-bearing:
-a flat-shaded glTF stores one vertex per face-corner, so straight off the
-importer the body is a soup of disconnected faces (588 verts / 182 unique,
-only 78 of 666 edges with two faces). No edge has two faces to compare, so
-nothing can be smoothed. Welding at 1e-5 collapses it to 182 verts and 348
-two-face edges, leaving 48 genuinely open borders.
+a flat-shaded glTF stores one vertex per face-corner, so an unwelded import is
+a soup of disconnected faces with no edge carrying two faces to compare —
+nothing can be smoothed. The 1e-5 remove_doubles below fixes that. Exact
+before/after counts depend on which upstream passes already ran:
+fix-avatar-gaps.py now welds too, so by the time this script runs the weld
+here is usually a near-no-op (kept because this script must also work
+standalone on an unwelded model).
 
-NOTE the importer's `merge_vertices=True` does NOT do this on Blender 5.1 —
-measured, it is a no-op: importing with it True and False gives byte-identical
-topology. (fix-avatar-gaps.py's comment calling that flag load-bearing is
-stale for this version.) Hence the explicit bmesh remove_doubles below.
+NOTE the importer's `merge_vertices=True` does NOT weld these models on
+Blender 5.1 — it is topologically inert here because it "cannot combine verts
+with different normals" and the flat-shaded avatars split normals at every
+corner. Hence the explicit bmesh remove_doubles. (Full measurements live in
+fix-avatar-gaps.py's docstring, the pipeline's single source of truth on
+this.)
 
 Welding merges only vertices that already share a position, so JOINTS/WEIGHTS
 survive: co-located verts were split for normals, not for skinning. The script

@@ -25,10 +25,60 @@ small neck cylinder (Skin material, weighted 1.0 to `spine`) is added to the
 player body + a flipped-normal copy to the outline. The player collar slab is
 widened x2.48 into a shoulder yoke that bridges torso <-> sleeves.
 
-IMPORTANT: the glTF importer does NOT weld the flat-shaded cubes, so without
-merge_vertices=True every FACE is its own island (160 islands, not ~13) and
-the per-part classify/scale ops shred the mesh. Parts are spatially disjoint,
-so welding never fuses two parts, and rigid weights survive the weld.
+IMPORTANT: the glTF importer does NOT weld the flat-shaded cubes, so unless
+the mesh is welded every FACE is its own island (160 islands, not ~13) and the
+per-part classify/scale ops operate per face. Parts are spatially disjoint, so
+welding never fuses two parts, and rigid weights survive the weld.
+
+The importer's `merge_vertices=True` USED to be how that was achieved. On the
+installed Blender (5.1.2) it is TOPOLOGICALLY inert for these models —
+measured against these very backups, importing player.glb.bak with the flag
+True and False yields the same 540 verts, the same 160 islands and an
+identical set of vertex positions. The mechanism is in the option's own RNA
+description: it "cannot combine verts with different normals", and these
+flat-shaded avatars split normals at every corner, so nothing is eligible.
+(Positive control: the same flag removes 37 verts from a smooth-shaded
+sphere, so it is not broken — just inapplicable here.) The weld is therefore
+done explicitly by weld() below. KEEP passing merge_vertices=True regardless:
+the flag still deterministically changes imported vertex ORDER and per-polygon
+smooth/sharp flags, which ride through the weld into the exported bytes —
+flipping it produces a differently-shaded npc.glb.
+
+The missing weld mattered for exactly one op's vertex math. affine_z, scale_xy
+and shift_x_inward are all independent of the island centre (absolute,
+origin-relative, and sign-keyed respectively), so per-face islanding gives
+them identical POSITIONS — the npc position set is unchanged by welding. (Not
+identical FILES: welding also fuses the npc head's split normals, which
+smooth-avatar-shading.py was reaching downstream anyway; see weld()'s note.)
+But scale_about_centre() reads the centre, so the player's "hand" op was
+scaling each of the cube's 6 faces 1.15x about ITS OWN centroid instead of
+enlarging the hand as a unit: 48 distinct hand positions instead of 16, faces
+protruding 0.0037-0.0045 past one another at every edge, and six disconnected
+quads instead of a closed box. Cosmetically slight at hand scale on a 1.8-unit
+character — which is why it survived session 38's visual check — but not what
+the code says it does.
+
+PIPELINE HAZARD: every script here restores its OWN snapshot for idempotence
+(this one *.bak, fix-player-toes.py *.pretoes, rig-npc.py *.unrigged,
+smooth-avatar-shading.py *.preshade). The downstream snapshots were taken from
+THIS script's earlier output, so simply re-running this one and then the others
+does NOT propagate a change made here — each downstream script restores its
+stale snapshot over it. To roll a change in this script through the chain,
+delete scripts/backup/player.glb.pretoes, npc.glb.unrigged and *.preshade
+first so they re-snapshot, then run the FULL chain in order:
+this -> fix-player-toes -> rig-npc -> smooth-avatar-shading.
+
+Those two steps are ONE atomic procedure — delete the snapshots only
+immediately before running the whole chain FROM THE TOP, never piecemeal:
+  - With .pretoes deleted, running fix-player-toes.py against an
+    already-flipped player.glb snapshots the FLIPPED model as the new
+    "pristine" and mirrors it AGAIN — shoes silently back on backwards, and
+    every later run preserves the mistake. Running this script first is what
+    guarantees its input is unflipped.
+  - With .unrigged deleted, running rig-npc.py against an already-rigged
+    npc.glb snapshots the RIGGED model before its own "already rigged" assert
+    fires — poisoning the backup. Worse, headless Blender exits 0 on an
+    AssertionError, so a wrapper script would sail on.
 
 Runtime code needs NO changes: material names (Shoe/Pants/Jacket|Shirt/Skin/
 Hair/Outline), bone names, clip names, total height and foot level (bbox
@@ -77,6 +127,56 @@ def obj(name: str):
     ob = bpy.data.objects.get(name)
     assert ob is not None and ob.type == "MESH", f"expected mesh object {name!r} after import"
     return ob
+
+
+def weld(ob, expect_islands: int) -> tuple[int, int]:
+    """Fuse co-located verts so islands are PARTS, not faces.
+
+    The flat-shaded source stores one vertex per face-corner, so straight off
+    the importer nothing is connected across an edge and every face reads as
+    its own island. Parts are spatially disjoint (nearest cross-part vertex
+    pair: 0.023 player / 0.150 npc, thousands of times the 1e-5 threshold; a
+    sweep shows nothing fuses until ~0.03), and on the rigged player every
+    vert within a part is rigidly weighted, so the weld can only ever fuse
+    duplicates.
+
+    KNOWN SIDE EFFECT: remove_doubles discards the imported custom split
+    normals, so the npc head flips from its authored faceted shading to
+    smooth. Harmless in this pipeline — smooth-avatar-shading.py runs LAST and
+    re-derives all normals from its 60-degree rule anyway — but if that script
+    is ever dropped, the normals decision moves here.
+
+    Returns (vert_count, island_count). The island count is asserted EXACTLY:
+    the part inventory is known and stable (player body/outline = 2 shoes +
+    2 pants + 2 hands + 2 sleeves + torso + collar + head + hair = 12, npc =
+    6), so anything else means the weld mis-fired. Too many islands = still
+    per-face (which silently resurrects the per-face scale_about_centre bug);
+    too few = parts fused (measured: a dist of 1e-1 collapses the player to 10
+    islands and destroys the sleeves while a <=-style bound still passes).
+    """
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    before = len(bm.verts)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=1e-5)
+    after = len(bm.verts)
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
+
+    islands = len(mesh_islands(ob))
+    print(f"   weld {ob.name:<14} verts {before} -> {after}, islands {islands}")
+    assert islands == expect_islands, (
+        f"{ob.name}: {islands} islands after weld, expected exactly {expect_islands}; "
+        "too many = still per-face, too few = distinct parts fused"
+    )
+    # Welding must not strip skinning off any surviving vertex (checked here,
+    # not after remap(), so a failure points at the weld and nothing else).
+    # Only applicable to the player: at this pipeline stage npc.glb is still
+    # UNRIGGED (rig-npc.py binds it later), so it legitimately has no groups.
+    if ob.vertex_groups:
+        unweighted = [v.index for v in ob.data.vertices if not v.groups]
+        assert not unweighted, f"{ob.name}: weld left {len(unweighted)} verts unweighted"
+    return after, islands
 
 
 def mesh_islands(ob):
@@ -296,6 +396,13 @@ def fix_player() -> None:
     arm = next(o for o in bpy.data.objects if o.type == "ARMATURE")
     bones = {b.name for b in arm.data.bones}
     assert {"hips", "spine", "head", "armL", "armR", "legL", "legR"} <= bones, bones
+    # The outline is a 1:1 per-part duplicate of the body, so both must weld
+    # to the same shape; asymmetry here means the hull no longer matches the
+    # silhouette it is meant to outline.
+    welded = {ob.name: weld(ob, expect_islands=12) for ob in (body, outline)}
+    assert welded["PlayerBody"] == welded["PlayerOutline"], (
+        f"body/outline welded asymmetrically: {welded}"
+    )
     for ob in (body, outline):
         remap(ob, classify_player, PLAYER_OPS)
     add_neck(body, "Skin", flip=False, radius=0.070)
@@ -316,6 +423,7 @@ def fix_npc() -> None:
     wipe()
     bpy.ops.import_scene.gltf(filepath=str(src), merge_vertices=True)
     npc = obj("Npc")
+    weld(npc, expect_islands=6)
     remap(npc, classify_npc, NPC_OPS)
     print("npc.glb after remap:")
     s = report(npc, classify_npc)
