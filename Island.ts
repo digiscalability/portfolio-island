@@ -118,7 +118,8 @@ export class Island {
   // positions of props NPCs walk to and work at. Populated in the build loops.
   public lampSites: THREE.Vector3[] = [];
   public mailboxSites: THREE.Vector3[] = [];
-  public stallSites: THREE.Vector3[] = [];
+  public stallSites: THREE.Vector3[] = []; // shopper spots IN FRONT of counters
+  public stallProps: THREE.Vector3[] = []; // the stalls themselves
   public benchSites: THREE.Vector3[] = [];
   public flowerBedSites: THREE.Vector3[] = [];
   /** Centre of the Gardener's walled garden (unit dir), null until built. */
@@ -1964,9 +1965,15 @@ export class Island {
       [2.2, 1.32],
       [4.0, 1.3],
       [5.5, 1.33],
-      // villagers around the Personal hamlet
-      [2.36 + SHIFT_PERSONAL, 0.45],
-      [2.66 + SHIFT_PERSONAL, 0.45],
+      // NPC_SITES is zipped with NPC_PERSONALITIES by INDEX (see the pairing
+      // below), so a site is effectively that persona's home. Indices 4 and 5
+      // are the two Market Vendors: they used to live here in the Personal
+      // hamlet while every stall they are meant to run stands in Contact, so
+      // they wandered the wrong district and the bazaar was unstaffed. They
+      // now stand BEHIND the middle stall of each row (the counters face the
+      // street between the rows, so "behind" is away from it).
+      [3.73 + SHIFT_CONTACT, 0.575],
+      [3.81 + SHIFT_CONTACT, 0.35],
       [2.51 + SHIFT_PERSONAL, 0.32],
       [2.51 + SHIFT_PERSONAL, 0.6],
       [2.43 + SHIFT_PERSONAL, 0.53],
@@ -1977,7 +1984,11 @@ export class Island {
       [6.21, 0.58],
       // builders at the Projects work sites
       [1.15 + SHIFT_PROJECTS, 0.45],
-      [1.36 + SHIFT_PROJECTS, 0.5],
+      // Index 14 is the Lighthouse Keeper. He used to live here in Projects,
+      // the far side of the island from the tower he keeps at dirAt(5.4,
+      // 0.34) — so `keep_light` was a marathon commute he never finished. He
+      // lives at the foot of his own tower now, just off the rock plinth.
+      [5.4, 0.42],
       [1.26 + SHIFT_PROJECTS, 0.32],
       // market-goers at the Contact stalls
       [3.69 + SHIFT_CONTACT, 0.51],
@@ -2562,8 +2573,16 @@ export class Island {
       // NPC keep-out), so the raw seat was unreachable and every persona
       // scheduled `market_visit` spent midday shoving the canvas. Stepped
       // 2.3u toward the equator, which is the open street side for both rows.
-      const shopLat = Math.max(0.12, sLat - 2.3 / this.radius);
+      // Step toward the BOULEVARD, which runs between the two stall rows —
+      // not blindly toward the equator. The north row's street side is lower
+      // lat, the south row's is higher; using one direction for both put the
+      // south row's "shopper" behind its own counter (and then the vendor
+      // derived from it ended up on the customer side).
+      const shopLat = Math.max(0.12, sLat + Math.sign(ZONE_LAT - sLat) * (2.3 / this.radius));
       this.stallSites.push(this.dirAt(sLon, shopLat).multiplyScalar(sampled.position.length()));
+      // The stall's OWN seat, so the vendor can be stood behind this exact
+      // counter (claimOffStreet may have slid it, so a hardcoded lat drifts).
+      this.stallProps.push(sampled.position.clone());
       // Counter at ~0.66u working height for the 1.56u vendors
       stall.scale.setScalar(2.2); // ~3.7u incl. awning (~2.2x the 1.7u player) — already well-proportioned
       stall.quaternion.copy(

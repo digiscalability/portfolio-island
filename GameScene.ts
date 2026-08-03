@@ -240,6 +240,14 @@ export class GameScene extends THREE.Scene {
   private readonly _sailFwd = new THREE.Vector3();
   private readonly _sailTmp = new THREE.Vector3();
 
+  /** Market Vendors, pinned behind their stall counters (a minimal station). */
+  private vendors: Array<{
+    npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string; dialogue: string[] };
+    pos: THREE.Vector3; // world stand position
+    quat: THREE.Quaternion; // surface-aligned + facing the street
+    phase: number;
+  }> = [];
+
   // The Baker's routine: knead dough → bake it in the oven → lay the pie on the
   // counter, on a loop. A quest can inject a one-off "fish pie" bake. Props
   // (dough / pie / oven glow) are children of the bakery group (local space).
@@ -710,6 +718,8 @@ export class GameScene extends THREE.Scene {
       this.setupBaker();
       // The Sailor drifts on his rowboat just offshore
       this.setupSailor();
+      // The two Market Vendors mind their stall pitches
+      this.setupVendors();
     } finally {
       // Generation done — restore true randomness for runtime/FX.
       restoreRandom();
@@ -2286,6 +2296,93 @@ export class GameScene extends THREE.Scene {
         ang: 0,
       };
     });
+  }
+
+  /**
+   * Pin both Market Vendors behind their stall counters.
+   *
+   * They are the only personas the activity engine deliberately has no plan
+   * for (getGoal returns null ⇒ plain random wander), and they used to spawn
+   * in the Personal hamlet — a district away from every stall — so six market
+   * stalls stood unstaffed while two vendors drifted around the wrong
+   * neighbourhood. Island.ts now spawns them at their pitches; this pins them
+   * there and the wander loop skips them, exactly like the Fisherman/Baker.
+   */
+  private setupVendors(): void {
+    if (!this.island) return;
+    const found = this.island.npcTargets.filter((n) => n.name === 'Market Vendor');
+    const stalls = this.island.stallProps;
+    for (let vi = 0; vi < found.length; vi++) {
+      const npc = found[vi];
+      // Stand BEHIND a real stall: take the stall's own seat and step away
+      // from the shopper spot in front of it. Deriving from the actual prop
+      // (rather than a hardcoded lat) survives claimOffStreet sliding it.
+      let dir = npc.meshRef.position.clone().normalize();
+      const si = vi === 0 ? 1 : 4; // middle stall of each row
+      if (stalls[si] && this.island.stallSites[si]) {
+        const behind = stalls[si]
+          .clone()
+          .sub(this.island.stallSites[si]) // shopper → stall
+          .normalize()
+          .multiplyScalar(1.25);
+        dir = stalls[si].clone().add(behind).normalize();
+      }
+      let surf: { position: THREE.Vector3; normal: THREE.Vector3 };
+      try {
+        surf = this.island.sampleSurfaceByDirection(dir, 0);
+      } catch {
+        continue;
+      }
+      const quat = new THREE.Quaternion().setFromUnitVectors(GameScene.AXIS_Y, surf.normal);
+      npc.meshRef.position.copy(surf.position);
+      npc.meshRef.quaternion.copy(quat);
+      // Face the market street: the counter is between the two stall rows, so
+      // look along the tangent toward the nearest boulevard point.
+      const street = this.island.nearestStreetDir(dir, 0.6);
+      if (street) {
+        const target = street.multiplyScalar(this.island.getRadius());
+        this._sailTmp.subVectors(target, surf.position);
+        this._sailTmp.addScaledVector(surf.normal, -this._sailTmp.dot(surf.normal));
+        if (this._sailTmp.lengthSq() > 1e-6) {
+          npc.meshRef.quaternion.copy(this.orientQuat(surf.normal, this._sailTmp.normalize()));
+        }
+      }
+      npc.position.copy(surf.position);
+      this.vendors.push({
+        npc,
+        pos: surf.position.clone(),
+        quat: npc.meshRef.quaternion.clone(),
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
+  /** Vendors keep their pitch: a slow serving sway, arms working the counter. */
+  private updateVendors(time: number): void {
+    for (const v of this.vendors) {
+      const bob = (Math.sin(time * 1.6 + v.phase) + 1) * 0.02;
+      v.npc.meshRef.position.copy(v.pos).addScaledVector(v.pos.clone().normalize(), bob);
+      v.npc.meshRef.quaternion.copy(v.quat);
+      const limbs = (v.npc.meshRef.userData as { limbs?: NpcLimbCache | null }).limbs;
+      if (limbs === undefined) {
+        (v.npc.meshRef.userData as { limbs?: NpcLimbCache | null }).limbs = this.cacheNpcLimbs(
+          v.npc.meshRef,
+        );
+        continue;
+      }
+      if (!limbs) continue;
+      // Hands busy over the counter: arms swing gently out of phase.
+      const a = Math.sin(time * 1.9 + v.phase) * 0.4 - 0.35;
+      const b = Math.sin(time * 1.9 + v.phase + 1.1) * 0.4 - 0.35;
+      limbs[2].ang = a;
+      limbs[3].ang = b;
+      limbs[2].b.quaternion
+        .copy(limbs[2].rest)
+        .multiply(this._npcLimbQ.setFromAxisAngle(limbs[2].axis, a));
+      limbs[3].b.quaternion
+        .copy(limbs[3].rest)
+        .multiply(this._npcLimbQ.setFromAxisAngle(limbs[3].axis, b));
+    }
   }
 
   private updateFisherman(time: number, dt: number): void {
@@ -4933,6 +5030,8 @@ export class GameScene extends THREE.Scene {
         if (this.fisherman && npc === this.fisherman.npc) continue;
         if (this.baker && npc === this.baker.npc) continue;
         if (this.sailor && npc === this.sailor.npc) continue;
+        // Market Vendors mind their pitches — they don't wander off to shop.
+        if (this.vendors.some((v) => v.npc === npc)) continue;
         const data = npc.meshRef.userData as {
           greetT0?: number;
           lastGreetAt?: number;
@@ -5260,6 +5359,7 @@ export class GameScene extends THREE.Scene {
     this.updateFisherman(time, deltaTime);
     this.updateBaker(time, deltaTime);
     this.updateSailor(time, deltaTime);
+    this.updateVendors(time);
     // Carried quest fish: gentle wiggle in the player's hands
     if (this.carriedFish) this.carriedFish.rotation.z = Math.sin(time * 5) * 0.15;
     // Generic gold coin-pops
