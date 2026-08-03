@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
 export type NPCState = 'Idle' | 'Walk';
 
@@ -27,8 +28,11 @@ export class NPC {
     islandRadius: number,
     groundDist?: (dir: THREE.Vector3) => number,
   ) {
-    // deep clone the model for isolation
-    this.group = model.clone(true);
+    // npc.glb is RIGGED (armL/armR/legL/legR, per scripts/rig-npc.py), so it
+    // must be skeleton-cloned: a plain Object3D.clone(true) copies the bone
+    // nodes but leaves every villager bound to the SAME skeleton, so all of
+    // them would swing in lockstep with whichever one moved last.
+    this.group = cloneSkeleton(model);
     this.group.position.copy(position);
     this.group.quaternion.copy(quaternion);
     this.group.scale.setScalar(scale);
@@ -36,6 +40,9 @@ export class NPC {
       if (object instanceof THREE.Mesh) {
         object.castShadow = true;
         object.receiveShadow = true;
+        // Skinned bounds are computed in bind space, so a limb swung outside
+        // the bind box makes the whole villager pop out of view.
+        if ((object as THREE.SkinnedMesh).isSkinnedMesh) object.frustumCulled = false;
       }
     });
 

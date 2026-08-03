@@ -19,6 +19,14 @@ import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 import { getWorldState } from './WorldState';
 import { ZonesManager } from './ZonesManager';
 
+/** A villager's cached limb bones: rest pose, swing axis, current angle. */
+type NpcLimbCache = Array<{
+  b: THREE.Object3D;
+  rest: THREE.Quaternion;
+  axis: THREE.Vector3;
+  ang: number;
+}>;
+
 /**
  * GameScene
  *
@@ -117,6 +125,11 @@ export class GameScene extends THREE.Scene {
   private readonly _gbScratch2 = new THREE.Vector3();
   private readonly _gbQuat = new THREE.Quaternion();
   private static readonly GROUND_HOP_DUR = 0.28;
+  // Villager limb bones, in swing order: [legL, legR, armL, armR], and the
+  // amplitude each takes of the leg swing (arms counter-swing at 70%).
+  private static readonly NPC_LIMB_BONES = ['legL', 'legR', 'armL', 'armR'];
+  private static readonly NPC_LIMB_MIX = [1, -1, -0.7, 0.7];
+  private readonly _npcLimbQ = new THREE.Quaternion();
   private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
   private static readonly AXIS_Y = new THREE.Vector3(0, 1, 0);
 
@@ -1944,6 +1957,77 @@ export class GameScene extends THREE.Scene {
    * ~60% chance of a fish) → carry the catch to his stall → sell it (coin pop,
    * fish laid on the counter) → walk back → cast again.
    */
+  /**
+   * Swing a villager's arms and legs on the same walk cycle the player uses.
+   *
+   * npc.glb is rigged by scripts/rig-npc.py with the SAME bone names the
+   * player's rig uses (armL/armR/legL/legR), so this is the identical
+   * name-match + `rotation.x` swing as SimplePlayer's procedural cycle —
+   * contralateral (each arm opposes the same-side leg), arms at 70% of the
+   * leg amplitude, eased back to rest when the NPC stops.
+   *
+   * The phase is the wander loop's accumulated ground distance (`w.dist`, the
+   * same channel the bob and waddle ride) rather than wall time, so the stride
+   * stays locked to the feet at any speed, and `i * 1.7` keeps the crowd from
+   * marching in lockstep.
+   */
+  private swingNpcLimbs(
+    ref: THREE.Object3D,
+    w: { dist: number },
+    moving: boolean,
+    idx: number,
+    deltaTime: number,
+  ): void {
+    const ud = ref.userData as { limbs?: NpcLimbCache | null };
+    if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
+    const limbs = ud.limbs;
+    if (!limbs) return;
+    // Contralateral swing: each arm opposes the same-side leg, arms at 70% of
+    // the leg amplitude. 0.34 rad, not the player's 0.55 — villagers stroll at
+    // ~1.4u/s where the player's figure is sprinting, and screenshot-checked
+    // 0.55 put them in a near-splits stride.
+    const swing = Math.sin(w.dist * 8 + idx * 1.7) * 0.34;
+    const ease = 1 - Math.min(1, 8 * deltaTime);
+    for (let n = 0; n < limbs.length; n++) {
+      const l = limbs[n];
+      l.ang = moving ? swing * GameScene.NPC_LIMB_MIX[n] : l.ang * ease;
+      // Compose ONTO the rest pose. Writing bone.rotation.x directly (as the
+      // player does with its own rig) DESTROYS the rest orientation — these
+      // bones are authored pointing straight down and carry a non-identity
+      // rest rotation, so overwriting one Euler component threw the arms and
+      // legs upward. Rotating about the model's own side-axis, expressed in
+      // bone space, is also independent of however the exporter rolled them.
+      l.b.quaternion.copy(l.rest).multiply(this._npcLimbQ.setFromAxisAngle(l.axis, l.ang));
+    }
+  }
+
+  /**
+   * Cache the four limb bones with their REST orientation and the swing axis
+   * (the villager's local X — its side axis — expressed in each bone's own
+   * space). Returns null for unrigged villagers (the /assetKits fallback
+   * models have no bones) so they are never re-traversed.
+   */
+  private cacheNpcLimbs(ref: THREE.Object3D): NpcLimbCache | null {
+    const found: Record<string, THREE.Object3D> = {};
+    ref.traverse((o) => {
+      if ((o as THREE.Bone).isBone && GameScene.NPC_LIMB_BONES.includes(o.name)) found[o.name] = o;
+    });
+    if (!GameScene.NPC_LIMB_BONES.every((n) => found[n])) return null;
+    ref.updateMatrixWorld(true);
+    const groupQ = ref.getWorldQuaternion(new THREE.Quaternion());
+    const sideWorld = new THREE.Vector3(1, 0, 0).applyQuaternion(groupQ);
+    return GameScene.NPC_LIMB_BONES.map((n) => {
+      const b = found[n];
+      const boneQ = b.getWorldQuaternion(new THREE.Quaternion());
+      return {
+        b,
+        rest: b.quaternion.clone(),
+        axis: sideWorld.clone().applyQuaternion(boneQ.invert()).normalize(),
+        ang: 0,
+      };
+    });
+  }
+
   private updateFisherman(time: number, dt: number): void {
     const F = this.fisherman;
     if (!F || !this.island) return;
@@ -4712,8 +4796,8 @@ export class GameScene extends THREE.Scene {
         // Activity pose: while standing at an anchor, the pose preset drives the
         // idle motion (kneel low + slow, play bouncy, sleep near-still) and a
         // vertical `lift` (a crouch/lie via the surface-normal offset — no extra
-        // terrain sampling). npc.glb is unrigged, so this whole-group modulation
-        // is the pose vocabulary.
+        // terrain sampling). This whole-group modulation is the pose vocabulary
+        // on top of the limb swing below.
         let lift = 0;
         if (!moving && w.pose) {
           const p = NpcActivities.POSE_PRESETS[w.pose];
@@ -4724,6 +4808,7 @@ export class GameScene extends THREE.Scene {
           }
         }
         w.roll += (rollTarget - w.roll) * Math.min(1, 12 * deltaTime);
+        this.swingNpcLimbs(npc.meshRef, w, moving, i, deltaTime);
         // Night: an NPC that has ARRIVED at its sleep spot (the nearest cottage
         // door) steps "inside" — hidden until the schedule wakes it. The walk
         // home stays visible, so visitors see the townsfolk head in at dusk.
