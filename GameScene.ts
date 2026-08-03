@@ -6252,6 +6252,18 @@ export class GameScene extends THREE.Scene {
   private interiorViewLook = new THREE.Vector3();
   private interiorViewAccum = 0;
   private interiorRainNode: THREE.Object3D | null = null;
+  private shadowAutoUpdateWas: boolean | null = null;
+  /** Hand the shadow map back. Must run on EVERY exit path, or the world
+   *  outside silently keeps whatever shadows it had when you stepped in. */
+  private restoreShadowAutoUpdate(): void {
+    if (this.shadowAutoUpdateWas === null) return;
+    const r = this.rendererRef?.getRenderer();
+    if (r) {
+      r.shadowMap.autoUpdate = this.shadowAutoUpdateWas;
+      r.shadowMap.needsUpdate = true; // one refresh, or the first outdoor frame keeps the stale map
+    }
+    this.shadowAutoUpdateWas = null;
+  }
   private interiorVelF = 0;
   private interiorVelS = 0;
   private interiorStride = 0;
@@ -6854,7 +6866,15 @@ export class GameScene extends THREE.Scene {
   private interiorHotspot: { label: string; action: string; text?: string } | null = null;
   private static readonly INTERIOR_WALK_BOUND = 3.35; // wall clamp (inner face 3.9 − radius/skirting)
   private static readonly INTERIOR_PLAYER_R = 0.32;
-  private static readonly INTERIOR_PLAYER_Y = 0.68; // player origin above the floor top
+  // 0.80, not 0.68 — the feet were 0.12u UNDER the floorboards. Derived, not
+  // guessed: SimplePlayer normalises the GLB with `model.position.y +=
+  // -0.7 - box.min.y`, so the soles sit exactly 0.70 below the player origin,
+  // while the floor Box(8, 0.2, 8) at y=0 has its top face at +0.10.
+  // 0.68 - 0.70 = -0.02 against a floor at +0.10; 0.80 - 0.70 = 0.10, flush.
+  // Nothing downstream needs compensating: the camera is PLAYER_Y + 1.25 and
+  // looks at p.y + 0.85, so both rise together and the framing pitch is
+  // unchanged, and hotspot radii are x/z only.
+  private static readonly INTERIOR_PLAYER_Y = 0.8;
 
   /** Per-theme interaction hotspots (room-local x/z, trigger radius). The door
    *  "leave" spot is appended to every theme at lookup time. */
@@ -7136,6 +7156,17 @@ export class GameScene extends THREE.Scene {
     // re-syncs the group from it, dropping them back exactly where they were.
     this.interiorActiveTheme = active;
     this.buildInteriorColliders(active);
+    // Park the shadow map for the session. The world is provably frozen while
+    // inside (update() early-returns into updateInteriorMode), so nothing that
+    // casts a shadow can move, yet the renderer was re-rendering a 2048^2
+    // desktop / 1024^2 mobile depth pass on EVERY interior frame. The interior
+    // player sits at y=-300, far outside the shadow camera's ortho box parked
+    // on the outdoor position, so nothing indoors was being shadowed anyway.
+    const renderer = this.rendererRef?.getRenderer();
+    if (renderer) {
+      this.shadowAutoUpdateWas = renderer.shadowMap.autoUpdate;
+      renderer.shadowMap.autoUpdate = false;
+    }
     // Aim the window's camera BEFORE the player's visual group is teleported
     // into the room — getWorldPosition() is still the doorstep they walked to.
     this.aimInteriorOutlook();
@@ -7313,6 +7344,7 @@ export class GameScene extends THREE.Scene {
     this.insideInterior = false;
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
+    this.restoreShadowAutoUpdate();
     // Borrowed sleepers: hide now; the wander loop re-claims their position,
     // orientation, and visibility on the first world frame after exit.
     for (const m of this.interiorOccupants) m.visible = false;
@@ -7404,10 +7436,15 @@ export class GameScene extends THREE.Scene {
         this.player.quaternion.setFromAxisAngle(GameScene._localUp, this.interiorYaw);
       }
     }
-    // Step bob + weight-shift roll, both scaled by how fast we are ACTUALLY
-    // going, so they fade in and out with the input ramp instead of snapping.
+    // Drive the real walk clip. Until now the mixer was never ticked indoors —
+    // GameScene early-returns above SimplePlayer.update() — so the avatar slid
+    // about with dead legs and a hand-rolled body sine standing in for a gait.
+    // With the clip running, that sine would double up on the clip's own
+    // vertical motion, so it is gone; the weight-shift roll stays, because the
+    // clip does not lean into corners.
     const gait = Math.min(1, Math.hypot(f, s));
-    p.y = o.y + GameScene.INTERIOR_PLAYER_Y + Math.sin(this.interiorStride) * 0.045 * gait;
+    this.player.tickInteriorAnimation(deltaTime, gait * 2.6);
+    p.y = o.y + GameScene.INTERIOR_PLAYER_Y;
     if (gait > 0.001) {
       // Compose a small roll onto the heading — a walker's body tips into each
       // step. Half the bob's frequency so it is one lean per stride, not two.
@@ -7665,6 +7702,9 @@ export class GameScene extends THREE.Scene {
     if (this.player) {
       this.player.dispose();
     }
+    // Teardown can happen mid-visit (page unload while inside), so hand the
+    // shadow map back here too rather than only on the normal exit path.
+    this.restoreShadowAutoUpdate();
     // The window's render target owns a GPU texture and depth buffer; the
     // traverse below only reaches scene-graph descendants, and this is not one.
     this.interiorViewTarget?.dispose();

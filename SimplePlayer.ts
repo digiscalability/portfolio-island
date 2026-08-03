@@ -1033,6 +1033,38 @@ export class SimplePlayer extends THREE.Group {
    * distance accumulator that drifts as speed varies. Tracks the walk clip's
    * (speed-scaled) time, or the procedural walk phase in the fallback body.
    */
+  /**
+   * Drive the idle/walk blend and the mixer from an EXTERNAL ground speed.
+   *
+   * Indoors, GameScene early-returns before `update()` runs, so the mixer was
+   * never ticked and the avatar slid around the room in a frozen T-pose-ish
+   * idle — the legs simply did not move. This mirrors the blend in `update()`
+   * but takes speed as an argument, because `this.velocity` is zero in the
+   * room: the interior loop writes position directly and never touches the
+   * spherical physics. Deliberately does NOT run the air/wave pose, which
+   * writes these same bones after the mixer and assumes a grounded/airborne
+   * state that does not exist indoors.
+   */
+  public tickInteriorAnimation(deltaTime: number, speed: number): void {
+    const dt = Math.min(Math.max(deltaTime, 0), 0.1);
+    if (this.walkAction && this.idleAction) {
+      const target = speed > 0.4 ? 1 : 0;
+      const w = THREE.MathUtils.lerp(
+        this.walkAction.getEffectiveWeight(),
+        target,
+        Math.min(1, 10 * dt),
+      );
+      this.walkAction.setEffectiveWeight(w);
+      this.idleAction.setEffectiveWeight(1 - w);
+      this.walkAction.timeScale = THREE.MathUtils.clamp(
+        speed / SimplePlayer.WALK_REF_SPEED,
+        0.6,
+        2.1,
+      );
+    }
+    this.animationMixer?.update(dt);
+  }
+
   public getWalkCyclePhase(): number {
     if (this.walkAction) {
       const dur = this.walkAction.getClip().duration || 1;
