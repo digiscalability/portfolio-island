@@ -46,17 +46,25 @@ const ELEVENLABS_API_KEY = defineSecret('ELEVENLABS_API_KEY');
 const TTS_IP_WINDOW_MS = 60 * 60 * 1000; // 1h window (paid synths + all fetches)
 export const TTS_QUEUE_TTL_MS = 15 * 60 * 1000; // reply ids are short-lived
 export const TTS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // audio cache retention
-// Eleven v3: the expressive/conversational flagship — the reason the owner
-// bought the plan. 1 credit/char (2× turbo), latency ~3-5s (the client waits
-// out the typewriter animation), verified live on this account 2026-08-03.
-const TTS_MODEL = 'eleven_v3';
-// v3 stability is effectively an enum (0 creative / 0.5 natural / 1 robust);
-// Natural is the documented sweet spot for in-character dialogue. v3 derives
-// the rest of the delivery itself — extra knobs are turbo-era tuning.
-const TTS_VOICE_SETTINGS = { stability: 0.5 };
+// Turbo v2.5 — the researched end-state for one-shot short dialogue. The
+// docs are explicit that eleven_v3 (alpha) is "not suitable for real-time or
+// conversational use cases": on <250-char prompts it produces exactly the
+// variable pacing / weird gaps the owner reported (measured: 1.0s dead air
+// mid-line in a real prod render). Turbo is the sanctioned quality/latency
+// middle ground at 0.5 credits/char — and it was never actually heard at
+// full bitrate (its earlier stint shipped at the launch 32kbps setting).
+const TTS_MODEL = 'eleven_turbo_v2_5';
+// style MUST stay 0 for chat — style exaggeration reintroduces instability
+// (per the docs); expressiveness comes from the voice cast, not the knob.
+const TTS_VOICE_SETTINGS = {
+  stability: 0.5,
+  similarity_boost: 0.75,
+  style: 0,
+  use_speaker_boost: true,
+};
 // Bump when the model/settings/bitrate change so stale cached renders
 // re-synthesize (the cache key would otherwise keep serving old audio).
-const TTS_RENDER_VERSION = 'v3';
+const TTS_RENDER_VERSION = 'v4';
 // Full-quality audio: the launch 22kHz/32kbps setting was voicemail-grade and
 // read as "robotic" regardless of model. ~16KB/s; a reply is 100-250KB.
 const TTS_OUTPUT = 'mp3_44100_128';
@@ -91,22 +99,33 @@ const VOICES: Record<string, string> = {
 };
 const DEFAULT_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George — verified present
 
-// Server-side twin of the client's sanitizeForSpeech: the voice reads words,
-// not *stage directions*, markdown, or emoji (kept in sync with Speech.ts's
-// EMOJI_RE so the paid voice never vocalizes symbols the free voice skips —
-// and stripped symbols don't bill characters).
+// Server-side twin of the client's sanitizeForSpeech PLUS prosody
+// normalization: the voice reads words, not *stage directions*, markdown, or
+// emoji — and not the LLM's pause-punctuation either. Em/en-dashes and
+// ellipses are DOCUMENTED pause operators in ElevenLabs models ("punctuation
+// stops"), and Claude-style replies are full of both; commas and full stops
+// carry the same meaning without the dead air.
 /* eslint-disable no-misleading-character-class */
 const EMOJI_RE =
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
 /* eslint-enable no-misleading-character-class */
 function speakable(text: string): string {
-  return text
-    .replace(/\*[^*]*\*/g, ' ')
-    .replace(/[_~`*]/g, ' ')
+  const t = text
+    .replace(/\*[^*]*\*/g, ' ') // *stage directions* are silent
+    .replace(/\[[^\]]*\]/g, ' ') // bracketed text gets spoken on v2 models
+    .replace(/[_~`*#]/g, ' ')
     .replace(EMOJI_RE, ' ')
+    .replace(/…|\.{3,}/g, '.') // ellipsis = heavy hesitant stop → period
+    .replace(/\s*[–—]+\s*/g, ', ') // em/en-dash = audible beat stop → comma
+    .replace(/\s+--+\s+/g, ', ') // stacked ASCII dashes = longer stop
+    .replace(/([!?.,;:])\1+/g, '$1') // !!!, ??, ",," → single
+    .replace(/\s+([,.!?;:])/g, '$1')
+    .replace(/,\s*([.!?])/g, '$1') // ",." artifacts from the rewrites
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, TTS_MAX_CHARS);
+  // Unterminated text causes trailing artifacts — always end on a full stop.
+  return t && !/[.!?]$/.test(t) ? `${t}.` : t;
 }
 
 export const npcVoice = onCall(

@@ -125,10 +125,9 @@ export function cancelSpeech(): void {
 // a missed match just means the browser voice speaks, never a stuck line.
 const cloudOffers = new Map<string, { p: Promise<string | null>; t: number }>();
 const CLOUD_OFFER_TTL_MS = 30_000;
-// Max delay before giving up and speaking locally. Generous because the v3
-// model takes 3-5s to render — the reply text is already typing out while the
-// audio cooks, and a voice that starts a beat after the caption reads fine.
-const CLOUD_WAIT_MS = 9_000;
+// Max delay before giving up and speaking locally. Turbo renders in ~1-2s;
+// 6s covers cold function starts while the reply text types out.
+const CLOUD_WAIT_MS = 6_000;
 let cloudAudioEl: HTMLAudioElement | null = null;
 // Generation counter: every new spoken line (and every cancel/mute) bumps it,
 // and a playCloud that awoke from its fetch only proceeds if it is STILL the
@@ -185,7 +184,10 @@ async function playCloud(
         stopCloudAudio();
         if (ttsSupported()) window.speechSynthesis.cancel(); // never overlap voices
         const src = ctx.createBufferSource();
-        src.buffer = buf;
+        // Cap dead air before it plays: TTS models occasionally emit 0.8-1.2s
+        // mid-line stalls ("weird gaps"). We have the raw PCM right here, so
+        // clamp every internal silence to a natural beat, model be damned.
+        src.buffer = compressBufferSilences(ctx, buf);
         src.connect(ctx.destination);
         cloudSrc = src;
         src.onended = () => {
@@ -244,6 +246,87 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes.buffer;
+}
+
+// ── silence compression (pure — unit-tested in test/speech.test.ts) ──────────
+// Find sample ranges to DELETE so that: leading silence ≤ edgeKeepS, trailing
+// silence ≤ edgeKeepS, and every internal silence run ≥ minRunS is shortened
+// to maxKeepS. "Silent" = windowed peak below `threshold` (windowed so the
+// MP3 noise floor doesn't defeat a raw-sample test).
+export function silenceCutRanges(
+  mono: Float32Array,
+  sampleRate: number,
+  threshold = 0.012,
+  minRunS = 0.45,
+  maxKeepS = 0.3,
+  edgeKeepS = 0.15,
+): Array<[number, number]> {
+  const win = Math.max(1, Math.floor(sampleRate * 0.02)); // 20ms windows
+  const nWin = Math.ceil(mono.length / win);
+  const silent = new Array<boolean>(nWin);
+  for (let w = 0; w < nWin; w++) {
+    let peak = 0;
+    const end = Math.min(mono.length, (w + 1) * win);
+    for (let i = w * win; i < end; i++) {
+      const a = Math.abs(mono[i]);
+      if (a > peak) peak = a;
+    }
+    silent[w] = peak < threshold;
+  }
+  const cuts: Array<[number, number]> = [];
+  let runStart = -1;
+  for (let w = 0; w <= nWin; w++) {
+    const isSil = w < nWin && silent[w];
+    if (isSil && runStart < 0) runStart = w;
+    if (!isSil && runStart >= 0) {
+      const s0 = runStart * win;
+      const s1 = Math.min(mono.length, w * win);
+      const runS = (s1 - s0) / sampleRate;
+      const atStart = s0 === 0;
+      const atEnd = s1 >= mono.length;
+      const keepS = atStart || atEnd ? edgeKeepS : maxKeepS;
+      const minS = atStart || atEnd ? keepS : minRunS;
+      if (runS > minS) {
+        // Keep `keepS` of the run (split around the kept beat for internal
+        // runs; anchored for edges) and cut the rest.
+        const keep = Math.floor(keepS * sampleRate);
+        if (atStart) cuts.push([s0, s1 - keep]);
+        else if (atEnd) cuts.push([s0 + keep, s1]);
+        else cuts.push([s0 + keep, s1]);
+      }
+      runStart = -1;
+    }
+  }
+  return cuts;
+}
+
+/** Rebuild an AudioBuffer with the silence cut-ranges removed. Returns the
+ *  original buffer untouched when there is nothing worth cutting. */
+function compressBufferSilences(ctx: AudioContext, buf: AudioBuffer): AudioBuffer {
+  try {
+    const mono = buf.getChannelData(0);
+    const cuts = silenceCutRanges(mono, buf.sampleRate);
+    if (!cuts.length) return buf;
+    const removed = cuts.reduce((n, [a, b]) => n + (b - a), 0);
+    const outLen = buf.length - removed;
+    if (outLen <= 0 || removed < buf.sampleRate * 0.1) return buf;
+    const out = ctx.createBuffer(buf.numberOfChannels, outLen, buf.sampleRate);
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      const src = buf.getChannelData(ch);
+      const dst = out.getChannelData(ch);
+      let di = 0;
+      let si = 0;
+      for (const [a, b] of cuts) {
+        dst.set(src.subarray(si, a), di);
+        di += a - si;
+        si = b;
+      }
+      dst.set(src.subarray(si), di);
+    }
+    return out;
+  } catch {
+    return buf; // never let trimming break playback
+  }
 }
 
 function stopCloudAudio(): void {

@@ -4234,11 +4234,15 @@ export class SimpleUI {
       log.scrollTop = log.scrollHeight;
     };
     // NPC line: speak it, and type it out char-by-char (unless reduced motion).
-    const npcLine = (text: string): void => {
+    // `voiced=false` for the composed OPENING: it was already spoken by the
+    // walk-up greet bubble, and re-speaking it here in the on-device voice
+    // right before the cloud-voiced continuation arrives made the panel open
+    // with a jarring robot-then-premium voice switch.
+    const npcLine = (text: string, voiced = true): void => {
       const row = document.createElement('div');
       Object.assign(row.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
       log.appendChild(row);
-      speak(text, voice.rate, voice.pitch, voice.variant);
+      if (voiced) speak(text, voice.rate, voice.pitch, voice.variant);
       if (reduce) {
         row.textContent = text;
         log.scrollTop = log.scrollHeight;
@@ -4255,7 +4259,7 @@ export class SimpleUI {
       };
       step();
     };
-    npcLine(opening);
+    npcLine(opening, false);
     const inputRow = document.createElement('div');
     Object.assign(inputRow.style, {
       display: 'flex',
