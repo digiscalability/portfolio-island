@@ -146,6 +146,8 @@ export class GameScene extends THREE.Scene {
   // Angular slack (~4u of arc on R=50) within which a blocked NPC counts as
   // having arrived at its anchor rather than abandoning it.
   private static readonly NPC_ARRIVE_ENOUGH = 0.08;
+  /** How far behind its counter a vendor stands, in world units of arc. */
+  private static readonly VENDOR_STAND_BACK = 1.15;
   private static readonly NPC_LIMB_MIX = [1, -1, -0.7, 0.7];
   private readonly _npcLimbQ = new THREE.Quaternion();
   private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
@@ -2318,14 +2320,24 @@ export class GameScene extends THREE.Scene {
       // from the shopper spot in front of it. Deriving from the actual prop
       // (rather than a hardcoded lat) survives claimOffStreet sliding it.
       let dir = npc.meshRef.position.clone().normalize();
-      const si = vi === 0 ? 1 : 4; // middle stall of each row
+      // Both pitches on the NORTH kerb (indices 0..2), spread apart. The south
+      // row sits on the shoreline slope, where a 1.15u step back also drops
+      // ~2.5u of terrain — the vendor ended up correctly behind the counter
+      // but well below it. The north row is flat.
+      const si = vi === 0 ? 0 : 2;
       if (stalls[si] && this.island.stallSites[si]) {
-        const behind = stalls[si]
-          .clone()
-          .sub(this.island.stallSites[si]) // shopper → stall
-          .normalize()
-          .multiplyScalar(1.25);
-        dir = stalls[si].clone().add(behind).normalize();
+        // Rotate the stall's dir by a fixed ARC along the away-from-shopper
+        // tangent. Adding a chord to a radius-50 vector and re-normalising
+        // loses most of the offset to the radial component, which is why the
+        // first attempt landed a vendor ~3u out instead of just behind.
+        const up = stalls[si].clone().normalize();
+        const behind = stalls[si].clone().sub(this.island.stallSites[si]);
+        behind.addScaledVector(up, -behind.dot(up)); // tangent only
+        if (behind.lengthSq() > 1e-6) {
+          behind.normalize();
+          const ang = GameScene.VENDOR_STAND_BACK / this.island.getRadius();
+          dir = up.multiplyScalar(Math.cos(ang)).addScaledVector(behind, Math.sin(ang)).normalize();
+        }
       }
       let surf: { position: THREE.Vector3; normal: THREE.Vector3 };
       try {
@@ -4753,10 +4765,17 @@ export class GameScene extends THREE.Scene {
 
     // Gull flocks: V-formation orbit + soar + flap/glide cycle + night roost
     const birdDay = this.envCycle ? this.envCycle.getDayFactor() : 1;
+    // Birds shelter in bad weather. Gulls will ride out a squall in reality,
+    // but a sky full of circling birds through heavy rain reads as a bug, and
+    // "the sky empties before the rain" is a detail people recognise. Ground
+    // birds stay out (they forage in drizzle) but stop hopping about.
+    const wet = this.envCycle
+      ? this.envCycle.getWeather() === 'rain' || this.envCycle.getWeather() === 'snow'
+      : false;
     for (const b of this.birds) {
-      // Roost after dusk: shrink away in place, return at dawn (toward the
-      // bird's own base size — gulls are big, juveniles smaller).
-      const roostTarget = birdDay < 0.3 ? 0.001 : b.size;
+      // Roost after dusk — or take cover in rain: shrink away in place, and
+      // return at dawn / when it clears (toward the bird's own base size).
+      const roostTarget = birdDay < 0.3 || wet ? 0.001 : b.size;
       const s = THREE.MathUtils.lerp(b.bird.scale.x, roostTarget, 1 - Math.exp(-3 * deltaTime));
       b.bird.scale.setScalar(s);
       b.bird.visible = s > 0.05;
@@ -4823,7 +4842,9 @@ export class GameScene extends THREE.Scene {
               g.feedUntil = time + 1.0 + Math.random() * 1.4;
             }
           } else {
-            const r = Math.random();
+            // Hunkered down in the wet: keep pecking and scanning, but no
+            // hopping about the place.
+            const r = wet ? 0.5 + Math.random() * 0.5 : Math.random();
             if (r < 0.3) this.startGroundBirdHop(g, time);
             else if (r < 0.62) {
               g.feed = 'scan';

@@ -1972,8 +1972,8 @@ export class Island {
       // they wandered the wrong district and the bazaar was unstaffed. They
       // now stand BEHIND the middle stall of each row (the counters face the
       // street between the rows, so "behind" is away from it).
-      [3.73 + SHIFT_CONTACT, 0.575],
-      [3.81 + SHIFT_CONTACT, 0.35],
+      [3.51 + SHIFT_CONTACT, 0.575],
+      [3.95 + SHIFT_CONTACT, 0.575],
       [2.51 + SHIFT_PERSONAL, 0.32],
       [2.51 + SHIFT_PERSONAL, 0.6],
       [2.43 + SHIFT_PERSONAL, 0.53],
@@ -2573,13 +2573,25 @@ export class Island {
       // NPC keep-out), so the raw seat was unreachable and every persona
       // scheduled `market_visit` spent midday shoving the canvas. Stepped
       // 2.3u toward the equator, which is the open street side for both rows.
-      // Step toward the BOULEVARD, which runs between the two stall rows —
-      // not blindly toward the equator. The north row's street side is lower
-      // lat, the south row's is higher; using one direction for both put the
-      // south row's "shopper" behind its own counter (and then the vendor
-      // derived from it ended up on the customer side).
-      const shopLat = Math.max(0.12, sLat + Math.sign(ZONE_LAT - sLat) * (2.3 / this.radius));
-      this.stallSites.push(this.dirAt(sLon, shopLat).multiplyScalar(sampled.position.length()));
+      // Shopper spot = the stall's ACTUAL seat rotated toward the boulevard,
+      // which runs between the two rows. Two earlier versions of this were
+      // wrong: stepping toward the equator put the south row's shopper behind
+      // its own counter, and deriving from the raw lon/lat drifted whenever
+      // claimOffStreet slid the stall to resolve a conflict (which then threw
+      // the vendor derived from it ~3u off its own pitch).
+      const stallDir = sampled.position.clone().normalize();
+      const toStreet = this.dirAt(sLon, ZONE_LAT).sub(stallDir);
+      toStreet.addScaledVector(stallDir, -toStreet.dot(stallDir)); // tangent
+      const shopAng = 2.3 / this.radius;
+      const shopDir =
+        toStreet.lengthSq() > 1e-8
+          ? stallDir
+              .clone()
+              .multiplyScalar(Math.cos(shopAng))
+              .addScaledVector(toStreet.normalize(), Math.sin(shopAng))
+              .normalize()
+          : stallDir.clone();
+      this.stallSites.push(shopDir.multiplyScalar(sampled.position.length()));
       // The stall's OWN seat, so the vendor can be stood behind this exact
       // counter (claimOffStreet may have slid it, so a hardcoded lat drifts).
       this.stallProps.push(sampled.position.clone());
@@ -2740,7 +2752,10 @@ export class Island {
     // so two people knelt at the same patches — "same thing with other npcs".
     // His own dialogue already draws the line: the Gardener does flowers, he
     // does honest crops.
-    this.buildFarm(2.72, 0.6, flowers);
+    // Out past the hamlet's last cottage, not wedged between the houses and
+    // the garden: a 6.4u-long field needs real room, and a bigger claim arc
+    // makes claimOffStreet look further for a clear plot.
+    this.buildFarm(2.42, 0.68, flowers);
     // The Musician's stage sits on the welcome apron (where play_music already
     // pointed) and the Artist's easel on the headland her vista already used.
     this.buildBandstand(1.15, 1.3, flowers);
@@ -4159,19 +4174,63 @@ export class Island {
     g.add(soilMesh);
     soils.forEach((s) => s.dispose());
 
-    // Blooms in the beds — reuse the island bloom look, one batch.
-    const bloomGeo = new THREE.SphereGeometry(0.075, 5, 4);
-    const bloomMat = Materials.createStandardMaterial({ color: 0xff69b4 });
-    const BLOOMS = 36;
-    const blooms = new THREE.InstancedMesh(bloomGeo, bloomMat, BLOOMS);
-    for (let i = 0; i < BLOOMS; i++) {
-      const bx = bedX[i % 3] + (Math.random() - 0.5) * 1.1;
-      const bz = (Math.random() - 0.5) * 2.6;
-      m.makeTranslation(bx, 0.34, bz);
-      blooms.setMatrixAt(i, m);
+    // Proper flowers, not coloured dots: each bloom is a stem, a ring of five
+    // petals and a yellow centre — the island's own bloom recipe, but one
+    // colour PER BED so the plot reads as planted rather than sprinkled.
+    const BED_COLOURS = [0xff69b4, 0xf4e04d, 0xb46bd8];
+    const PER_BED = 14;
+    const spots: Array<[number, number, number]> = []; // x, z, bed index
+    for (let b = 0; b < bedX.length; b++) {
+      for (let i = 0; i < PER_BED; i++) {
+        spots.push([bedX[b] + (Math.random() - 0.5) * 1.0, (Math.random() - 0.5) * 2.5, b]);
+      }
     }
-    blooms.instanceMatrix.needsUpdate = true;
-    g.add(blooms);
+    const stemGeo = new THREE.CylinderGeometry(0.018, 0.022, 0.28, 4);
+    const stems = new THREE.InstancedMesh(
+      stemGeo,
+      Materials.createStandardMaterial({ color: 0x3d7a3d }),
+      spots.length,
+    );
+    const centres = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.045, 5, 4),
+      Materials.createStandardMaterial({ color: 0xf6d64a }),
+      spots.length,
+    );
+    for (let i = 0; i < spots.length; i++) {
+      const [x, z] = spots[i];
+      m.makeTranslation(x, 0.4, z);
+      stems.setMatrixAt(i, m);
+      m.makeTranslation(x, 0.56, z);
+      centres.setMatrixAt(i, m);
+    }
+    stems.instanceMatrix.needsUpdate = true;
+    centres.instanceMatrix.needsUpdate = true;
+    g.add(stems, centres);
+    // Petals: one instanced batch per bed colour, five per bloom.
+    const petalGeo = new THREE.SphereGeometry(0.055, 5, 4);
+    const petalScale = new THREE.Vector3(1.25, 0.55, 1.25);
+    for (let b = 0; b < BED_COLOURS.length; b++) {
+      const mine = spots.filter((s) => s[2] === b);
+      const petals = new THREE.InstancedMesh(
+        petalGeo,
+        Materials.createStandardMaterial({ color: BED_COLOURS[b] }),
+        mine.length * 5,
+      );
+      let pi = 0;
+      for (const [x, z] of mine) {
+        for (let k = 0; k < 5; k++) {
+          const a = (k / 5) * Math.PI * 2;
+          m.compose(
+            new THREE.Vector3(x + Math.cos(a) * 0.062, 0.56, z + Math.sin(a) * 0.062),
+            new THREE.Quaternion(),
+            petalScale,
+          );
+          petals.setMatrixAt(pi++, m);
+        }
+      }
+      petals.instanceMatrix.needsUpdate = true;
+      g.add(petals);
+    }
 
     // A water butt by the gate so the plot reads as worked, not decorative.
     const butt = new THREE.Mesh(
@@ -4211,7 +4270,10 @@ export class Island {
    * `cropRowSites` — his OWN anchors, so he stops shadowing the Gardener.
    */
   private buildFarm(lon: number, lat: number, parent: THREE.Object3D): void {
-    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.12);
+    // 0.2 rad of search arc (~10u): the field is 6.4u long, so it needs a
+    // wider berth than a cottage-sized prop before it stops shouldering into
+    // the neighbours.
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.2);
     let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
     try {
       seat = this.sampleSurfaceByDirection(centre, 0);
@@ -4238,21 +4300,92 @@ export class Island {
     g.add(soil);
     ridges.forEach((r) => r.dispose());
 
-    // Leafy crops standing in the furrows — one instanced batch.
-    const cropGeo = new THREE.ConeGeometry(0.17, 0.55, 5);
-    const CROPS = ROWS.length * 11;
-    const crops = new THREE.InstancedMesh(cropGeo, cropMat, CROPS);
+    // A real crop mix, one row per kind so the field reads as FOOD rather than
+    // green cones: cabbages (leafy globes), carrots (feathery tops with the
+    // orange shoulder showing), and staked beans.
     const m = new THREE.Matrix4();
-    let ci = 0;
-    for (const rx of ROWS) {
-      for (let k = 0; k < 11; k++) {
-        m.makeTranslation(rx + (Math.random() - 0.5) * 0.3, 0.45, -2.9 + k * 0.58);
-        crops.setMatrixAt(ci++, m);
-      }
+    const PER_ROW = 9;
+    const rowSpots = (rx: number) =>
+      Array.from({ length: PER_ROW }, (_, k) => [
+        rx + (Math.random() - 0.5) * 0.22,
+        -2.7 + k * 0.68,
+      ]) as Array<[number, number]>;
+
+    // Row 0 + 2 — cabbages: a squashed globe with a paler heart.
+    const cabbageSpots = [...rowSpots(ROWS[0]), ...rowSpots(ROWS[2])];
+    const cabbage = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.26, 6, 5),
+      Materials.createStandardMaterial({ color: 0x7fae4b }),
+      cabbageSpots.length,
+    );
+    const heart = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.15, 5, 4),
+      Materials.createStandardMaterial({ color: 0xb9d68a }),
+      cabbageSpots.length,
+    );
+    const sq = new THREE.Vector3(1, 0.72, 1);
+    for (let i = 0; i < cabbageSpots.length; i++) {
+      const [x, z] = cabbageSpots[i];
+      m.compose(new THREE.Vector3(x, 0.32, z), new THREE.Quaternion(), sq);
+      cabbage.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(x, 0.42, z), new THREE.Quaternion(), sq);
+      heart.setMatrixAt(i, m);
     }
-    crops.instanceMatrix.needsUpdate = true;
-    crops.castShadow = true;
-    g.add(crops);
+    cabbage.instanceMatrix.needsUpdate = true;
+    heart.instanceMatrix.needsUpdate = true;
+    cabbage.castShadow = true;
+    g.add(cabbage, heart);
+
+    // Row 1 — carrots: orange shoulder just proud of the soil + a leafy tuft.
+    const carrotSpots = rowSpots(ROWS[1]);
+    const shoulder = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.1, 5, 4),
+      Materials.createStandardMaterial({ color: 0xe2802f }),
+      carrotSpots.length,
+    );
+    const tuft = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(0.13, 0.42, 5),
+      cropMat,
+      carrotSpots.length,
+    );
+    for (let i = 0; i < carrotSpots.length; i++) {
+      const [x, z] = carrotSpots[i];
+      m.makeTranslation(x, 0.24, z);
+      shoulder.setMatrixAt(i, m);
+      m.makeTranslation(x, 0.46, z);
+      tuft.setMatrixAt(i, m);
+    }
+    shoulder.instanceMatrix.needsUpdate = true;
+    tuft.instanceMatrix.needsUpdate = true;
+    g.add(shoulder, tuft);
+
+    // Row 3 — beans up canes: a leaning stake with foliage climbing it.
+    const beanSpots = rowSpots(ROWS[3]);
+    const cane = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.025, 0.025, 1.1, 4),
+      woodMat,
+      beanSpots.length,
+    );
+    const foliage = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.19, 5, 4),
+      Materials.createStandardMaterial({ color: 0x5f9438 }),
+      beanSpots.length,
+    );
+    for (let i = 0; i < beanSpots.length; i++) {
+      const [x, z] = beanSpots[i];
+      m.makeTranslation(x, 0.62, z);
+      cane.setMatrixAt(i, m);
+      m.compose(
+        new THREE.Vector3(x, 0.72, z),
+        new THREE.Quaternion(),
+        new THREE.Vector3(1, 1.6, 1),
+      );
+      foliage.setMatrixAt(i, m);
+    }
+    cane.instanceMatrix.needsUpdate = true;
+    foliage.instanceMatrix.needsUpdate = true;
+    cane.castShadow = true;
+    g.add(cane, foliage);
 
     // Scarecrow: post, crossbar, straw head.
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.7, 0.12), woodMat);
