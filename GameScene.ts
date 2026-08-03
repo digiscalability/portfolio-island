@@ -153,6 +153,44 @@ export class GameScene extends THREE.Scene {
   private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
   private static readonly AXIS_Y = new THREE.Vector3(0, 1, 0);
 
+  // Cats prowling the grass near the villages: they sit, stroll to a nearby
+  // spot, step away if you crowd them, and trot in to eat thrown cat treats.
+  // Modelled on the ground-bird FSM but they WALK (no flight/roost).
+  private cats: Array<{
+    cat: THREE.Group;
+    legs: THREE.Group; // 4 legs, child order [FL, FR, BL, BR] for a diagonal trot
+    tail: THREE.Object3D; // pivot at the rump
+    basePos: THREE.Vector3; // home (respawn + roam tether)
+    curPos: THREE.Vector3; // current stance
+    baseQuat: THREE.Quaternion; // surface alignment, NO yaw baked in
+    up: THREE.Vector3;
+    away: THREE.Vector3; // flee tangent (away from the player)
+    homePos: THREE.Vector3; // restore point + surface frame after a feast
+    homeUp: THREE.Vector3;
+    homeQuat: THREE.Quaternion;
+    homeRadius: number; // raycast-true radius at home — the reseat reference
+    homeAnal: number; // analytic radius at home — reseat DELTA reference
+    analBase: number; // analytic radius at the CURRENT base (moves with feeding)
+    mode: 'sit' | 'walk' | 'trot' | 'eat' | 'flee';
+    walkFrom: THREE.Vector3;
+    walkTo: THREE.Vector3;
+    walkT0: number;
+    walkDur: number;
+    stateUntil: number; // when the current sit/eat/flee sub-state ends
+    heading: number; // yaw about the surface normal (radians)
+    size: number;
+    phase: number;
+    feastUntil: number;
+  }> = [];
+  private readonly _catScratch = new THREE.Vector3();
+  private readonly _catScratch2 = new THREE.Vector3();
+  private readonly _catQuat = new THREE.Quaternion();
+  private static readonly CAT_CALL_RADIUS = 22; // cats within this trot in to treats
+  private static readonly CAT_MAX = 5; // per throw
+  private static readonly CAT_FEAST_SECONDS = 24;
+  private static readonly CAT_WALK_SPEED = 1.1; // u/s stroll
+  private static readonly CAT_TROT_SPEED = 2.6; // u/s to food
+
   // Trees swaying gently around their surface-aligned base orientation
   private swayTrees: Array<{
     group: THREE.Object3D;
@@ -185,8 +223,24 @@ export class GameScene extends THREE.Scene {
     jumpT0: number; // -1 = swimming, else jump start time (s)
     jumpDur: number;
     depth: number; // metres the body sits below the wave surface
+    feedTarget: THREE.Vector3 | null; // unit dir of an active fish-feed pile
+    feedUntil: number; // eat-until timestamp (s); 0 = not feeding
   }> = [];
   private activeFishJumps = 0; // cap concurrent leaps so splash pools never starve
+  // Fish-feed: bread thrown ONTO the water; nearby fish swim to it and nibble.
+  private static readonly FISH_FEED_THROW_DIST = 6.0; // reach past the beach
+  private static readonly FISH_FEED_CALL_RADIUS = 26; // fish within this come in
+  private static readonly FISH_FEED_MAX = 7;
+  private static readonly FISH_FEED_FEAST_SECONDS = 20;
+  private static readonly FISH_FEED_PILE_LIFE = 24;
+  private fishFeedPiles: Array<{
+    pile: THREE.Group;
+    toss: THREE.Group;
+    from: THREE.Vector3;
+    dir: THREE.Vector3; // unit dir — the pile re-floats on the wave every frame
+    t0: number;
+    landed: boolean;
+  }> = [];
   private _fishWakeAccum = 0; // dorsal-wake ripple throttle
   private readonly _fishCam = new THREE.Vector3();
   private readonly _fishHome = new THREE.Vector3();
@@ -1054,6 +1108,89 @@ export class GameScene extends THREE.Scene {
     return { bird, wingL, wingR, tail, legs };
   }
 
+  /** One low-poly cat. Forward is -Z (same as the bird/fish). Materials shared
+   *  via the birdMat toon cache — no new allocations. ~0.4u long at size 1. */
+  private buildCat(
+    bodyMat: THREE.Material,
+    accentMat: THREE.Material,
+    darkMat: THREE.Material,
+  ): { cat: THREE.Group; tail: THREE.Object3D; legs: THREE.Group } {
+    const cat = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), bodyMat);
+    body.scale.set(1.05, 0.95, 2.0); // stretched along -Z
+    body.castShadow = true;
+    cat.add(body);
+    // Paler underside so the cat reads two-tone from the side.
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.085, 7, 5), accentMat);
+    belly.scale.set(0.9, 0.6, 1.85);
+    belly.position.set(0, -0.045, 0);
+    cat.add(belly);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.075, 7, 6), bodyMat);
+    head.position.set(0, 0.055, -0.2);
+    head.castShadow = true;
+    cat.add(head);
+    // Ears — cones tilted outward.
+    for (const ex of [-0.045, 0.045]) {
+      const ear = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.06, 4), bodyMat);
+      ear.position.set(ex, 0.115, -0.195);
+      ear.rotation.z = ex < 0 ? 0.4 : -0.4;
+      cat.add(ear);
+    }
+    // Muzzle + nose.
+    const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 5), accentMat);
+    muzzle.scale.set(1, 0.8, 0.9);
+    muzzle.position.set(0, 0.028, -0.262);
+    cat.add(muzzle);
+    const nose = new THREE.Mesh(new THREE.SphereGeometry(0.012, 5, 4), darkMat);
+    nose.position.set(0, 0.04, -0.29);
+    cat.add(nose);
+    // Eyes.
+    const eyeMat = GameScene.birdMat(0x1c1a18);
+    for (const ex of [-0.03, 0.03]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.013, 5, 4), eyeMat);
+      eye.position.set(ex, 0.078, -0.248);
+      cat.add(eye);
+    }
+    // Legs — a group of 4 thin cylinders in child order [FL, FR, BL, BR] so
+    // the trot can swing the diagonal pairs. Feet ~0.12 below the body origin.
+    const legs = new THREE.Group();
+    const legGeo = new THREE.CylinderGeometry(0.018, 0.016, 0.12, 5);
+    const LEGS: Array<[number, number]> = [
+      [-0.05, -0.13],
+      [0.05, -0.13],
+      [-0.05, 0.13],
+      [0.05, 0.13],
+    ];
+    for (const [lx, lz] of LEGS) {
+      const leg = new THREE.Mesh(legGeo, bodyMat);
+      leg.position.set(lx, -0.06, lz);
+      leg.castShadow = true;
+      legs.add(leg);
+    }
+    cat.add(legs);
+    // Tail — a pivot at the rump carrying three shrinking spheres that curve
+    // up and back; swished by rotating the pivot each frame.
+    const tail = new THREE.Object3D();
+    tail.position.set(0, 0.0, 0.17); // pivot at the rump, flush with the body
+    // Overlapping shrinking spheres on a gentle up-and-back curl (starts INSIDE
+    // the body so it reads as one furry tail, not a string of floating beads).
+    const seg: Array<[number, number, number]> = [
+      [0.032, 0.01, 0.01],
+      [0.028, 0.035, 0.035],
+      [0.024, 0.07, 0.05],
+      [0.019, 0.108, 0.05],
+      [0.014, 0.142, 0.036],
+    ];
+    for (const [r, y, z] of seg) {
+      const s = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 5), bodyMat);
+      s.position.set(0, y, z);
+      s.castShadow = true;
+      tail.add(s);
+    }
+    cat.add(tail);
+    return { cat, tail, legs };
+  }
+
   // Bird materials cached per colour (fishMat pattern) — species mixing
   // would otherwise allocate ~20 duplicate MeshToonMaterials.
   private static birdMatCache = new Map<number, THREE.MeshToonMaterial>();
@@ -1313,6 +1450,152 @@ export class GameScene extends THREE.Scene {
         respawnAt: 0,
       });
     }
+    this.createCats();
+  }
+
+  private createCats(): void {
+    if (!this.island) return;
+    // [body, accent (paler underside/muzzle), dark (nose)] per coat.
+    const SPECIES: Array<[number, number, number]> = [
+      [0xd98a3a, 0xf0d3a8, 0x2a1c12], // ginger
+      [0x8a8480, 0xc4beb4, 0x2a2622], // grey tabby
+      [0x2e2b29, 0x6a6560, 0x151311], // black
+      [0xf1efe9, 0xd8d2c8, 0x3a3530], // white
+      [0x4a4642, 0xf1efe9, 0x1a1714], // tuxedo (dark coat, white bib)
+    ];
+    // Grass near the plazas/streets where players actually walk.
+    const SPOTS: Array<[number, number]> = [
+      [0.9, 1.18],
+      [2.7, 1.06],
+      [4.7, 1.12],
+      [1.7, 0.82],
+      [3.9, 0.7],
+      [5.3, 0.5],
+    ];
+    for (let i = 0; i < SPOTS.length; i++) {
+      const sp = SPECIES[i % SPECIES.length];
+      const { cat, tail, legs } = this.buildCat(
+        GameScene.birdMat(sp[0]),
+        GameScene.birdMat(sp[1]),
+        GameScene.birdMat(sp[2]),
+      );
+      const size = 0.9 + Math.random() * 0.3;
+      cat.scale.setScalar(size);
+      const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
+      // Raycast seat (startup-only) — the analytic field sits under the mesh.
+      const s = this.island.sampleSurfaceByDirection(dir, 0);
+      cat.position.copy(s.position).addScaledVector(s.normal, 0.12 * size + 0.005);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal);
+      const heading = Math.random() * Math.PI * 2;
+      cat.quaternion.copy(q).multiply(this._catQuat.setFromAxisAngle(GameScene.AXIS_Y, heading));
+      cat.name = `cat_${i}`;
+      this.add(cat);
+      const anal = this.island.analyticSurface(dir).radius;
+      const away = new THREE.Vector3().crossVectors(s.normal, new THREE.Vector3(0, 1, 0));
+      if (away.lengthSq() < 0.5) away.set(1, 0, 0);
+      away.normalize().applyAxisAngle(s.normal, Math.random() * Math.PI * 2);
+      this.cats.push({
+        cat,
+        tail,
+        legs,
+        basePos: cat.position.clone(),
+        curPos: cat.position.clone(),
+        baseQuat: q.clone(),
+        up: s.normal.clone(),
+        away,
+        homePos: cat.position.clone(),
+        homeUp: s.normal.clone(),
+        homeQuat: q.clone(),
+        homeRadius: cat.position.length(),
+        homeAnal: anal,
+        analBase: anal,
+        mode: 'sit',
+        walkFrom: cat.position.clone(),
+        walkTo: cat.position.clone(),
+        walkT0: 0,
+        walkDur: 1,
+        // Absolute clock, like the ground birds — a bare constant is already
+        // in the past by the first frame after asset load.
+        stateUntil: performance.now() / 1000 + 1 + Math.random() * 3,
+        heading,
+        size,
+        phase: Math.random() * Math.PI * 2,
+        feastUntil: 0,
+      });
+    }
+    console.log(`🐈 ${this.cats.length} cats prowling the grass`);
+  }
+
+  /** Yaw (about the surface normal) that faces a world direction. Cat model
+   *  forward = -Z, same convention as the birds. */
+  private catHeadingFor(c: GameScene['cats'][number], worldDir: THREE.Vector3): number {
+    this._catQuat.copy(c.baseQuat).invert();
+    this._catScratch2.copy(worldDir).applyQuaternion(this._catQuat);
+    return Math.atan2(-this._catScratch2.x, -this._catScratch2.z);
+  }
+
+  /** Pick a stroll target tethered ~1.5u around home (or head back to it) and
+   *  put the cat into a timed walk. Reseats via the analytic delta. */
+  private startCatWalk(c: GameScene['cats'][number], time: number): void {
+    if (!this.island) return;
+    const ref = Math.abs(c.up.y) > 0.94 ? GameScene.AXIS_X : GameScene.AXIS_Y;
+    const t1 = this._catScratch.crossVectors(c.up, ref).normalize();
+    const t2 = this._catScratch2.crossVectors(c.up, t1).normalize();
+    const a = Math.random() * Math.PI * 2;
+    const dist = 0.7 + Math.random() * 1.1;
+    c.walkTo
+      .copy(c.curPos)
+      .addScaledVector(t1, Math.cos(a) * dist)
+      .addScaledVector(t2, Math.sin(a) * dist);
+    if (c.walkTo.distanceToSquared(c.basePos) > 2.6 * 2.6) {
+      c.walkTo.sub(c.basePos).setLength(1.4).add(c.basePos);
+    }
+    this.seatCatTarget(c, c.walkTo);
+    c.walkFrom.copy(c.curPos);
+    c.walkT0 = time;
+    c.walkDur = Math.max(0.6, c.walkFrom.distanceTo(c.walkTo) / GameScene.CAT_WALK_SPEED);
+    c.heading = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
+    c.mode = 'walk';
+  }
+
+  /** Snap a target point onto the surface using the raycast-true home radius +
+   *  the analytic delta at the target direction (no runtime raycasts). */
+  private seatCatTarget(c: GameScene['cats'][number], target: THREE.Vector3): void {
+    if (!this.island) return;
+    const dir = this._catScratch.copy(target).normalize();
+    const r = c.basePos.length() + (this.island.analyticSurface(dir).radius - c.analBase);
+    target.copy(dir).multiplyScalar(r + 0.12 * c.size + 0.005);
+  }
+
+  /** Send the nearest idle cats trotting in to a fresh treat pile. */
+  private callCatsToFeed(pos: THREE.Vector3, time: number): void {
+    if (!this.island) return;
+    const near = this.cats
+      .filter((c) => c.mode !== 'trot' && c.mode !== 'eat' && c.feastUntil <= time)
+      .map((c) => ({ c, d: c.curPos.distanceTo(pos) }))
+      .filter((e) => e.d < GameScene.CAT_CALL_RADIUS)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, GameScene.CAT_MAX);
+    const pileUp = this._catScratch.copy(pos).normalize();
+    const ref = Math.abs(pileUp.y) > 0.94 ? GameScene.AXIS_X : GameScene.AXIS_Y;
+    const t1 = new THREE.Vector3().crossVectors(pileUp, ref).normalize();
+    const t2 = new THREE.Vector3().crossVectors(pileUp, t1).normalize();
+    for (let i = 0; i < near.length; i++) {
+      const c = near[i].c;
+      const a = (i / Math.max(1, near.length)) * Math.PI * 2 + Math.random() * 0.4;
+      const r = 0.5 + Math.random() * 0.4;
+      c.walkTo
+        .copy(pos)
+        .addScaledVector(t1, Math.cos(a) * r)
+        .addScaledVector(t2, Math.sin(a) * r);
+      this.seatCatTarget(c, c.walkTo);
+      c.walkFrom.copy(c.curPos);
+      c.walkT0 = time;
+      c.walkDur = THREE.MathUtils.clamp(near[i].d / GameScene.CAT_TROT_SPEED, 0.6, 6);
+      c.mode = 'trot';
+      c.feastUntil = time + c.walkDur + GameScene.CAT_FEAST_SECONDS;
+      c.heading = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
+    }
   }
 
   /**
@@ -1406,11 +1689,69 @@ export class GameScene extends THREE.Scene {
     }
     if (surf.position.length() < this.island.seaLevel() + 0.15) return false; // in the sea
 
+    const time = performance.now() / 1000;
+    const pos = this.spawnFeedPile(origin, up, surf.position, surf.normal, 0xd9bd7a, 'bird_feed');
+    this.callBirdsToFeed(pos, time);
+    sfx.blip();
+    return true;
+  }
+
+  /**
+   * Toss a handful of cat treats onto the ground ahead and call every nearby
+   * cat in to eat. Land-only (same sea refusal as bird feed), but NO night
+   * guard — cats prowl day and night. Returns false to keep the charge.
+   */
+  public throwCatFeed(): boolean {
+    if (!this.island || !this.player) return false;
+    const origin = this.player.getWorldPosition();
+    const up = this._feedUp.copy(origin).normalize();
+    this._feedFwd.copy(this.orbitCamera.getForwardDirection());
+    this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    if (this._feedFwd.lengthSq() < 1e-4) {
+      this._feedFwd.copy(this.player.getForwardDirection());
+      this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    }
+    if (this._feedFwd.lengthSq() < 1e-4) return false;
+    this._feedFwd.normalize();
+    const ang = GameScene.FEED_THROW_DIST / Math.max(1, origin.length());
+    this._feedDir
+      .copy(up)
+      .multiplyScalar(Math.cos(ang))
+      .addScaledVector(this._feedFwd, Math.sin(ang))
+      .normalize();
+    let surf: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      surf = this.island.sampleSurfaceByDirection(this._feedDir, 0);
+    } catch {
+      return false;
+    }
+    if (surf.position.length() < this.island.seaLevel() + 0.15) return false; // in the sea
+    const time = performance.now() / 1000;
+    const pos = this.spawnFeedPile(origin, up, surf.position, surf.normal, 0xc98b6a, 'cat_feed');
+    this.callCatsToFeed(pos, time);
+    sfx.blip();
+    return true;
+  }
+
+  /**
+   * Build a grain pile (pops in) + a toss group (grains in flight) on a
+   * surface point, push a pile record, cap the shared array, return the pile
+   * world position. Shared by bird + cat feed (the pile is neutral food; the
+   * caller's call-to-feed decides which animal answers).
+   */
+  private spawnFeedPile(
+    origin: THREE.Vector3,
+    up: THREE.Vector3,
+    surfPos: THREE.Vector3,
+    surfNormal: THREE.Vector3,
+    colorHex: number,
+    name: string,
+  ): THREE.Vector3 {
     if (!GameScene.feedGrainGeo) GameScene.feedGrainGeo = new THREE.SphereGeometry(0.035, 4, 3);
-    const grainMat = GameScene.birdMat(0xd9bd7a);
+    const grainMat = GameScene.birdMat(colorHex);
     const pile = new THREE.Group();
-    pile.position.copy(surf.position).addScaledVector(surf.normal, 0.02);
-    pile.quaternion.setFromUnitVectors(GameScene.AXIS_Y, surf.normal);
+    pile.position.copy(surfPos).addScaledVector(surfNormal, 0.02);
+    pile.quaternion.setFromUnitVectors(GameScene.AXIS_Y, surfNormal);
     for (let i = 0; i < 16; i++) {
       const grain = new THREE.Mesh(GameScene.feedGrainGeo, grainMat);
       const a = Math.random() * Math.PI * 2;
@@ -1420,9 +1761,8 @@ export class GameScene extends THREE.Scene {
       pile.add(grain);
     }
     pile.scale.setScalar(0.001);
-    pile.name = 'bird_feed';
+    pile.name = name;
     this.add(pile);
-    // A few grains visibly leave the hand and arc over.
     const toss = new THREE.Group();
     for (let i = 0; i < 7; i++) {
       const grain = new THREE.Mesh(GameScene.feedGrainGeo, grainMat);
@@ -1434,22 +1774,203 @@ export class GameScene extends THREE.Scene {
       toss.add(grain);
     }
     this.add(toss);
-
     const time = performance.now() / 1000;
     this.feedPiles.push({
       pile,
       toss,
       from: origin.clone().addScaledVector(up, 1.1),
       to: pile.position.clone(),
-      up: surf.normal.clone(),
+      up: surfNormal.clone(),
       t0: time,
       landed: false,
     });
-    // Cap the number of live piles so a spammed key can't carpet the island.
+    // Cap live piles (bird + cat share this) so a spammed key can't carpet the
+    // island and leave animals miming at bare ground.
     while (this.feedPiles.length > 3) this.removeFeedPile(0);
-    this.callBirdsToFeed(pile.position, time);
+    return pile.position;
+  }
+
+  /**
+   * Toss bread ONTO the water ahead and call nearby fish in to nibble. This is
+   * the water counterpart of bird feed: the throw is REFUSED unless it lands
+   * over water (the inverse of the land feeds), the pile floats on the wave,
+   * and the fish rise to it. Returns false to keep the charge.
+   */
+  public throwFishFeed(): boolean {
+    if (!this.island || !this.player) return false;
+    const origin = this.player.getWorldPosition();
+    const up = this._feedUp.copy(origin).normalize();
+    this._feedFwd.copy(this.orbitCamera.getForwardDirection());
+    this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    if (this._feedFwd.lengthSq() < 1e-4) {
+      this._feedFwd.copy(this.player.getForwardDirection());
+      this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    }
+    if (this._feedFwd.lengthSq() < 1e-4) return false;
+    this._feedFwd.normalize();
+    const ang = GameScene.FISH_FEED_THROW_DIST / Math.max(1, origin.length());
+    this._feedDir
+      .copy(up)
+      .multiplyScalar(Math.cos(ang))
+      .addScaledVector(this._feedFwd, Math.sin(ang))
+      .normalize();
+    // Must land IN water (inverse of the land feeds). No raycast — the seabed
+    // would sample far below; the pile floats on the wave surface instead.
+    if (!this.island.isOverWater(this._feedDir)) return false;
+
+    if (!GameScene.feedGrainGeo) GameScene.feedGrainGeo = new THREE.SphereGeometry(0.035, 4, 3);
+    const seaT = this.island.seaTimeUniform.value;
+    const grainMat = GameScene.birdMat(0xe8dcbf); // pale bread
+    const pile = new THREE.Group();
+    pile.position.copy(this._feedDir).multiplyScalar(this.island.waveHeightAt(this._feedDir, seaT));
+    pile.quaternion.setFromUnitVectors(GameScene.AXIS_Y, this._feedDir);
+    for (let i = 0; i < 14; i++) {
+      const crumb = new THREE.Mesh(GameScene.feedGrainGeo, grainMat);
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * 0.5;
+      crumb.position.set(Math.cos(a) * r, 0.005, Math.sin(a) * r);
+      crumb.scale.set(1.2 + Math.random() * 0.9, 0.5, 1.2 + Math.random() * 0.9); // flat, floating
+      pile.add(crumb);
+    }
+    pile.scale.setScalar(0.001);
+    pile.name = 'fish_feed';
+    this.add(pile);
+    const toss = new THREE.Group();
+    for (let i = 0; i < 7; i++) {
+      const crumb = new THREE.Mesh(GameScene.feedGrainGeo, grainMat);
+      crumb.position.set(
+        (Math.random() - 0.5) * 0.3,
+        (Math.random() - 0.5) * 0.2,
+        (Math.random() - 0.5) * 0.3,
+      );
+      toss.add(crumb);
+    }
+    this.add(toss);
+    const time = performance.now() / 1000;
+    this.fishFeedPiles.push({
+      pile,
+      toss,
+      from: origin.clone().addScaledVector(up, 1.1),
+      dir: this._feedDir.clone(),
+      t0: time,
+      landed: false,
+    });
+    while (this.fishFeedPiles.length > 3) this.removeFishFeedPile(0);
+    this.callFishToFeed(this._feedDir, time);
     sfx.blip();
     return true;
+  }
+
+  /**
+   * What a feed throw would target right now, so one Feed control can pick the
+   * right feed by where you aim: 'water' → fish food; 'land' → the nearer of
+   * cats/birds to the land aim point. 'none' when there's nowhere sane to aim.
+   */
+  public classifyFeedAim(): { surface: 'water' | 'land' | 'none'; land: 'cat' | 'bird' } {
+    const fallback = { surface: 'none' as const, land: 'bird' as const };
+    if (!this.island || !this.player) return fallback;
+    const origin = this.player.getWorldPosition();
+    const up = this._feedUp.copy(origin).normalize();
+    this._feedFwd.copy(this.orbitCamera.getForwardDirection());
+    this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    if (this._feedFwd.lengthSq() < 1e-4) {
+      this._feedFwd.copy(this.player.getForwardDirection());
+      this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    }
+    if (this._feedFwd.lengthSq() < 1e-4) return fallback;
+    this._feedFwd.normalize();
+    const R = Math.max(1, origin.length());
+    // Look out at the fish-throw distance first: water is detected before the
+    // shorter land throw would land.
+    const ang = GameScene.FISH_FEED_THROW_DIST / R;
+    this._feedDir
+      .copy(up)
+      .multiplyScalar(Math.cos(ang))
+      .addScaledVector(this._feedFwd, Math.sin(ang))
+      .normalize();
+    if (this.island.isOverWater(this._feedDir)) return { surface: 'water', land: 'bird' };
+    // Land: pick whichever animal is nearer the land aim point.
+    const ang2 = GameScene.FEED_THROW_DIST / R;
+    const landDir = this._feedTmp
+      .copy(up)
+      .multiplyScalar(Math.cos(ang2))
+      .addScaledVector(this._feedFwd, Math.sin(ang2))
+      .normalize();
+    let landPt: THREE.Vector3;
+    try {
+      landPt = this.island.sampleSurfaceByDirection(landDir, 0).position;
+    } catch {
+      return { surface: 'none', land: 'bird' };
+    }
+    let catD = Infinity;
+    let birdD = Infinity;
+    for (const c of this.cats) catD = Math.min(catD, c.curPos.distanceToSquared(landPt));
+    for (const g of this.groundBirds) birdD = Math.min(birdD, g.homePos.distanceToSquared(landPt));
+    return { surface: 'land', land: catD < birdD ? 'cat' : 'bird' };
+  }
+
+  /** Set the nearest idle fish swimming toward a fresh bread pile. */
+  private callFishToFeed(dir: THREE.Vector3, time: number): void {
+    if (!this.island) return;
+    const maxAng = GameScene.FISH_FEED_CALL_RADIUS / this.island.getRadius();
+    const near = this.fish
+      .filter((f) => f.jumpT0 < 0 && (f.feedTarget === null || f.feedUntil <= time))
+      .map((f) => ({ f, a: f.dir.angleTo(dir) }))
+      .filter((e) => e.a < maxAng)
+      .sort((a, b) => a.a - b.a)
+      .slice(0, GameScene.FISH_FEED_MAX);
+    for (const { f } of near) {
+      f.feedTarget = dir.clone();
+      f.feedUntil = time + GameScene.FISH_FEED_FEAST_SECONDS;
+    }
+  }
+
+  private removeFishFeedPile(idx: number): void {
+    const p = this.fishFeedPiles[idx];
+    if (!p) return;
+    for (const f of this.fish) {
+      if (f.feedTarget && f.feedTarget.angleTo(p.dir) < 0.05) {
+        f.feedTarget = null;
+        f.feedUntil = 0;
+      }
+    }
+    this.remove(p.pile);
+    this.remove(p.toss);
+    this.fishFeedPiles.splice(idx, 1);
+  }
+
+  /** Arc the tossed bread over, then float + dwindle the pile on the waves. */
+  private updateFishFeedPiles(time: number): void {
+    if (!this.island) return;
+    const seaT = this.island.seaTimeUniform.value;
+    for (let i = this.fishFeedPiles.length - 1; i >= 0; i--) {
+      const p = this.fishFeedPiles[i];
+      const age = time - p.t0;
+      const FLIGHT = 0.5;
+      // Re-float on the wave every frame (same seaT the fish ride) so it bobs
+      // with the surface instead of sinking or hovering.
+      p.pile.position.copy(p.dir).multiplyScalar(this.island.waveHeightAt(p.dir, seaT));
+      if (!p.landed) {
+        const t = Math.min(1, age / FLIGHT);
+        p.toss.position
+          .lerpVectors(p.from, p.pile.position, t)
+          .addScaledVector(p.dir, Math.sin(Math.PI * t) * 0.5);
+        p.toss.rotation.y = t * 6;
+        if (t >= 1) {
+          p.landed = true;
+          p.toss.visible = false;
+        }
+      } else {
+        const life = age - FLIGHT;
+        const grow = Math.min(1, life / 0.25);
+        const left =
+          1 -
+          Math.max(0, life - GameScene.FISH_FEED_PILE_LIFE * 0.6) /
+            (GameScene.FISH_FEED_PILE_LIFE * 0.4);
+        p.pile.scale.setScalar(Math.max(0.001, grow * THREE.MathUtils.clamp(left, 0, 1)));
+        if (life > GameScene.FISH_FEED_PILE_LIFE) this.removeFishFeedPile(i);
+      }
+    }
   }
 
   /** Send the nearest ground birds flying in to a fresh pile. */
@@ -1543,6 +2064,25 @@ export class GameScene extends THREE.Scene {
           g.curPos.copy(g.bird.position);
           this.pickGroundBirdEscape(g, null);
         }
+      }
+    }
+    // Same for any cat committed to this pile: send it home so it doesn't
+    // trot to (or sit miming at) a pile that no longer exists.
+    for (const c of this.cats) {
+      if (c.mode !== 'trot' && c.mode !== 'eat') continue;
+      const anchor = c.mode === 'trot' ? c.walkTo : c.curPos;
+      if (anchor.distanceToSquared(p.to) < 9) {
+        c.up.copy(c.homeUp);
+        c.baseQuat.copy(c.homeQuat);
+        c.analBase = c.homeAnal;
+        c.basePos.copy(c.homePos);
+        c.feastUntil = 0;
+        c.walkFrom.copy(c.curPos);
+        c.walkTo.copy(c.homePos);
+        c.walkT0 = performance.now() / 1000;
+        c.walkDur = Math.max(0.8, c.walkFrom.distanceTo(c.walkTo) / GameScene.CAT_WALK_SPEED);
+        c.heading = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
+        c.mode = 'walk';
       }
     }
     this.remove(p.pile);
@@ -1705,9 +2245,128 @@ export class GameScene extends THREE.Scene {
         // Ride right at the surface so backs/fins break through the (now more
         // opaque) water and read clearly; jumps do the rest.
         depth: 0.02 + Math.random() * 0.07,
+        feedTarget: null,
+        feedUntil: 0,
       });
     }
     console.log(`🐟 ${this.fish.length} fish in the ocean (3 schools + 4 solos)`);
+  }
+
+  /** Prowl the cats: sit → stroll → (fed) trot in → eat → home, plus a calm
+   *  step-away if the player crowds them. Sole writer of cat transforms. */
+  private updateCats(_deltaTime: number, time: number): void {
+    if (this.cats.length === 0 || !this.island) return;
+    const player = this.player ? this.player.getWorldPosition() : null;
+    for (const c of this.cats) {
+      // Calm step-away if the player closes in while idle (feeding cats let
+      // you approach — that's the point of the treats).
+      if (player && (c.mode === 'sit' || c.mode === 'walk')) {
+        if (player.distanceToSquared(c.curPos) < 1.8 * 1.8) {
+          this._catScratch.copy(c.curPos).sub(player);
+          this._catScratch.addScaledVector(c.up, -this._catScratch.dot(c.up));
+          if (this._catScratch.lengthSq() > 0.05) c.away.copy(this._catScratch).normalize();
+          c.walkFrom.copy(c.curPos);
+          c.walkTo.copy(c.curPos).addScaledVector(c.away, 2.2);
+          this.seatCatTarget(c, c.walkTo);
+          c.walkT0 = time;
+          c.walkDur = Math.max(
+            0.5,
+            c.walkFrom.distanceTo(c.walkTo) / (GameScene.CAT_TROT_SPEED * 0.9),
+          );
+          c.heading = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
+          c.mode = 'flee';
+        }
+      }
+
+      let pitch = 0;
+      const legSwing =
+        c.mode === 'walk' || c.mode === 'trot' || c.mode === 'flee'
+          ? Math.sin(time * (c.mode === 'walk' ? 8 : 12) + c.phase) * 0.5
+          : 0;
+      // Diagonal leg pairs [FL,BR] vs [FR,BL].
+      c.legs.children[0].rotation.x = legSwing;
+      c.legs.children[3].rotation.x = legSwing;
+      c.legs.children[1].rotation.x = -legSwing;
+      c.legs.children[2].rotation.x = -legSwing;
+
+      if (c.mode === 'sit') {
+        c.cat.position.copy(c.curPos);
+        c.tail.rotation.y = Math.sin(time * 2 + c.phase) * 0.18;
+        c.tail.rotation.x = 0;
+        if (time > c.stateUntil) this.startCatWalk(c, time);
+      } else if (c.mode === 'walk' || c.mode === 'trot' || c.mode === 'flee') {
+        const t = Math.min(1, (time - c.walkT0) / c.walkDur);
+        // Reseat the interpolated point onto the surface each frame so the cat
+        // doesn't sink through the chord between two surface points.
+        this._catScratch.lerpVectors(c.walkFrom, c.walkTo, t);
+        const dir = this._catScratch2.copy(this._catScratch).normalize();
+        const r = c.basePos.length() + (this.island.analyticSurface(dir).radius - c.analBase);
+        c.cat.position
+          .copy(dir)
+          .multiplyScalar(r + 0.12 * c.size + 0.005)
+          .addScaledVector(dir, Math.abs(Math.sin(time * (c.mode === 'walk' ? 8 : 12))) * 0.012);
+        c.tail.rotation.y = Math.sin(time * 4 + c.phase) * 0.22;
+        c.tail.rotation.x = 0;
+        if (t >= 1) {
+          c.curPos.copy(c.walkTo);
+          if (c.mode === 'trot') {
+            // Arrived at the treats: rebase the surface frame onto the pile
+            // (up to ~45deg off on R=50) so the cat sits level while it eats.
+            const d = this._catScratch.copy(c.walkTo).normalize();
+            const s = this.island.analyticSurface(d);
+            c.up.copy(s.normal);
+            c.baseQuat.setFromUnitVectors(GameScene.AXIS_Y, s.normal);
+            c.basePos.copy(c.walkTo);
+            c.analBase = s.radius;
+            c.mode = 'eat';
+          } else {
+            c.mode = 'sit';
+            c.stateUntil = time + 2 + Math.random() * 4;
+          }
+        }
+      } else if (c.mode === 'eat') {
+        c.cat.position.copy(c.curPos);
+        // Head/shoulders dipped to the food: NEGATIVE rotateX = nose-down.
+        pitch = -0.4 + Math.sin(time * 6 + c.phase) * 0.08;
+        c.tail.rotation.y = Math.sin(time * 5 + c.phase) * 0.3;
+        c.tail.rotation.x = 0;
+        const feasting = c.feastUntil > time;
+        const flushR = 1.1;
+        if (!feasting) {
+          // Treats gone: restore the home surface frame and stroll home.
+          c.up.copy(c.homeUp);
+          c.baseQuat.copy(c.homeQuat);
+          c.analBase = c.homeAnal;
+          c.basePos.copy(c.homePos);
+          c.feastUntil = 0;
+          c.walkFrom.copy(c.curPos);
+          c.walkTo.copy(c.homePos);
+          c.walkT0 = time;
+          c.walkDur = Math.max(0.8, c.walkFrom.distanceTo(c.walkTo) / GameScene.CAT_WALK_SPEED);
+          c.heading = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
+          c.mode = 'walk';
+        } else if (player && player.distanceToSquared(c.curPos) < flushR * flushR) {
+          // Startled off its food: end the feast and bolt.
+          c.feastUntil = 0;
+          this._catScratch.copy(c.curPos).sub(player);
+          this._catScratch.addScaledVector(c.up, -this._catScratch.dot(c.up));
+          if (this._catScratch.lengthSq() > 0.05) c.away.copy(this._catScratch).normalize();
+          c.walkFrom.copy(c.curPos);
+          c.walkTo.copy(c.curPos).addScaledVector(c.away, 2.5);
+          this.seatCatTarget(c, c.walkTo);
+          c.walkT0 = time;
+          c.walkDur = 0.9;
+          c.heading = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
+          c.mode = 'flee';
+        }
+      }
+
+      // Orient: surface align + yaw, then the eat head-dip. baseQuat carries NO
+      // yaw — it lives in `heading` and is re-applied every frame.
+      c.cat.quaternion.copy(c.baseQuat);
+      c.cat.rotateY(c.heading);
+      if (pitch !== 0) c.cat.rotateX(pitch);
+    }
   }
 
   /** Swim + wiggle + jump the fish. Cheap: analytic wave surface, no raycasts. */
@@ -1729,10 +2388,13 @@ export class GameScene extends THREE.Scene {
         continue;
       }
       f.group.visible = true;
+      const feeding = f.feedTarget !== null && time < f.feedUntil;
       // Occasional gentle turn, and a rare leap
       if (time > f.turnAt) {
         f.turnAt = time + 2 + Math.random() * 4;
-        f.heading.applyAxisAngle(f.dir, (Math.random() - 0.5) * 1.4).normalize();
+        // Don't randomize heading while swimming to bread — the noise fights
+        // the feed steer and the fish never arrives. Jumps still allowed.
+        if (!feeding) f.heading.applyAxisAngle(f.dir, (Math.random() - 0.5) * 1.4).normalize();
         // Jumps launch off a RISING crest (sampled 0.2s ahead) with an entry
         // splash — the old launch was silent/dry and wave-blind. Capped at 2
         // concurrent jumpers so the ripple/spray pools never starve.
@@ -1748,17 +2410,34 @@ export class GameScene extends THREE.Scene {
           }
         }
       }
-      // Steer back to open water if drifting up toward the beach
-      if (f.dir.y > shoreY - 0.06) {
-        this._fishDown.set(0, -1, 0).addScaledVector(f.dir, f.dir.y).normalize();
-        f.heading.lerp(this._fishDown, 0.1);
-      }
-      // Soft school tether: drifting >0.12 rad (~6u) from home turns the fish
-      // back, so schools stay parked off their beach instead of dispersing.
-      if (f.dir.angleTo(f.home) > 0.12) {
-        this._fishHome.copy(f.home).addScaledVector(f.dir, -f.home.dot(f.dir));
-        if (this._fishHome.lengthSq() > 1e-8) {
-          f.heading.lerp(this._fishHome.normalize(), 0.08);
+      // Fish feed OVERRIDES the beach-avoid + school tether: swim to the bread
+      // floating on the surface and rise so the back breaks through. The great-
+      // circle advance below then carries the fish in; the wave-Y seats it.
+      if (feeding) {
+        if (f.dir.angleTo(f.feedTarget as THREE.Vector3) > 0.03) {
+          this._fishHome
+            .copy(f.feedTarget as THREE.Vector3)
+            .addScaledVector(f.dir, -(f.feedTarget as THREE.Vector3).dot(f.dir));
+          if (this._fishHome.lengthSq() > 1e-8) f.heading.lerp(this._fishHome.normalize(), 0.35);
+        }
+        f.depth += (0 - f.depth) * 0.05; // rise to the surface at the bread
+      } else {
+        if (f.feedTarget !== null) {
+          f.feedTarget = null; // feast timed out
+          f.depth = 0.05;
+        }
+        // Steer back to open water if drifting up toward the beach
+        if (f.dir.y > shoreY - 0.06) {
+          this._fishDown.set(0, -1, 0).addScaledVector(f.dir, f.dir.y).normalize();
+          f.heading.lerp(this._fishDown, 0.1);
+        }
+        // Soft school tether: drifting >0.12 rad (~6u) from home turns the fish
+        // back, so schools stay parked off their beach instead of dispersing.
+        if (f.dir.angleTo(f.home) > 0.12) {
+          this._fishHome.copy(f.home).addScaledVector(f.dir, -f.home.dot(f.dir));
+          if (this._fishHome.lengthSq() > 1e-8) {
+            f.heading.lerp(this._fishHome.normalize(), 0.08);
+          }
         }
       }
       // Keep heading tangent, advance along the great circle
@@ -5031,6 +5710,7 @@ export class GameScene extends THREE.Scene {
     }
 
     this.updateFeedPiles(time);
+    this.updateFishFeedPiles(time);
 
     // Trees: gentle sway + a slow wind gust that rolls through every ~25s so
     // the whole canopy leans together, not just idle jitter.
@@ -5379,6 +6059,7 @@ export class GameScene extends THREE.Scene {
     this.races?.update(deltaTime, this.player.getWorldPosition(), this.getActiveVehicleKind());
     this.updateWaterFX(deltaTime);
     this.updateFish(deltaTime, time);
+    this.updateCats(deltaTime, time);
     this.updateFisherman(time, deltaTime);
     this.updateBaker(time, deltaTime);
     this.updateSailor(time, deltaTime);

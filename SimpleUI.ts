@@ -3445,9 +3445,10 @@ export class SimpleUI {
    * createCustomizeButton), and a chip there paints straight over all three.
    * It shares the coin chip's row instead, to its left.
    */
-  updateFeedCounter(charges: number): void {
+  updateFeedCounters(bird: number, cat: number, fish: number): void {
+    const total = bird + cat + fish;
     if (!this.feedDiv) {
-      if (charges <= 0) return;
+      if (total <= 0) return;
       this.feedDiv = document.createElement('div');
       Object.assign(this.feedDiv.style, {
         position: 'absolute',
@@ -3461,13 +3462,22 @@ export class SimpleUI {
         fontFamily: 'system-ui, sans-serif',
         pointerEvents: 'none',
         transition: 'transform 0.12s ease',
+        whiteSpace: 'nowrap',
       });
       this.overlay.appendChild(this.feedDiv);
-      this.feedDiv.textContent = `🌾 ${charges}`;
+    }
+    if (total <= 0) {
+      this.feedDiv.style.display = 'none';
       return;
     }
-    this.feedDiv.style.display = charges > 0 ? 'block' : 'none';
-    this.feedDiv.textContent = `🌾 ${charges}  ·  F to throw`;
+    // Only show the types you actually hold; F throws the right one for where
+    // you aim (water → fish, land → the animal you're pointing at).
+    const parts: string[] = [];
+    if (bird > 0) parts.push(`🌾 ${bird}`);
+    if (cat > 0) parts.push(`🐈 ${cat}`);
+    if (fish > 0) parts.push(`🐟 ${fish}`);
+    this.feedDiv.style.display = 'block';
+    this.feedDiv.textContent = `${parts.join('  ')}  ·  F to feed`;
     this.feedDiv.style.transform = 'scale(1.35)';
     const el = this.feedDiv;
     window.setTimeout(() => {

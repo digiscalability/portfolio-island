@@ -131,6 +131,16 @@ class SimpleApp {
   private birdFeed = 0;
   /** True once this device owns a feed count, so the cloud can't re-grant. */
   private hasLocalBirdFeed = false;
+  private static readonly CAT_FEED_ID = 'catfeed';
+  private static readonly CAT_FEED_PRICE = 6;
+  private static readonly CAT_FEED_CHARGES = 5;
+  private catFeed = 0;
+  private hasLocalCatFeed = false;
+  private static readonly FISH_FEED_ID = 'fishfeed';
+  private static readonly FISH_FEED_PRICE = 6;
+  private static readonly FISH_FEED_CHARGES = 5;
+  private fishFeed = 0;
+  private hasLocalFishFeed = false;
   private ownedHats: Set<string> = new Set();
   private equippedHat: string | null = null;
   private passport: Passport | null = null;
@@ -311,10 +321,16 @@ class SimpleApp {
         const raw = localStorage.getItem('ds_bird_feed');
         this.hasLocalBirdFeed = raw !== null;
         this.birdFeed = Math.max(0, parseInt(raw ?? '0', 10) || 0);
+        const rawCat = localStorage.getItem('ds_cat_feed');
+        this.hasLocalCatFeed = rawCat !== null;
+        this.catFeed = Math.max(0, parseInt(rawCat ?? '0', 10) || 0);
+        const rawFish = localStorage.getItem('ds_fish_feed');
+        this.hasLocalFishFeed = rawFish !== null;
+        this.fishFeed = Math.max(0, parseInt(rawFish ?? '0', 10) || 0);
       } catch {
         this.birdFeed = 0;
       }
-      this.ui.updateFeedCounter(this.birdFeed);
+      this.refreshFeedHud();
 
       // Restore saved body colours (applied now; re-applied when the GLTF loads)
       try {
@@ -1272,7 +1288,7 @@ class SimpleApp {
         }
 
         // Scatter a handful of bird feed ahead of you; nearby birds fly in
-        if (this.inputManager.consumeKeyPress('f')) this.tossBirdFeed();
+        if (this.inputManager.consumeKeyPress('f')) this.tossFeed();
 
         // Footsteps while walking; thud when landing from a real jump/fall
         if (player) {
@@ -1921,6 +1937,24 @@ class SimpleApp {
               charges: SimpleApp.BIRD_FEED_CHARGES,
               held: this.birdFeed,
             },
+            {
+              id: SimpleApp.CAT_FEED_ID,
+              icon: '🐈',
+              name: 'Cat Feed',
+              price: SimpleApp.CAT_FEED_PRICE,
+              consumable: true,
+              charges: SimpleApp.CAT_FEED_CHARGES,
+              held: this.catFeed,
+            },
+            {
+              id: SimpleApp.FISH_FEED_ID,
+              icon: '🐟',
+              name: 'Fish Feed',
+              price: SimpleApp.FISH_FEED_PRICE,
+              consumable: true,
+              charges: SimpleApp.FISH_FEED_CHARGES,
+              held: this.fishFeed,
+            },
             ...this.hatCatalog.map((h) => ({
               ...h,
               owned: this.ownedHats.has(h.id),
@@ -1934,9 +1968,29 @@ class SimpleApp {
             if (!this.scene.spendCoins(SimpleApp.BIRD_FEED_PRICE)) return;
             this.birdFeed += SimpleApp.BIRD_FEED_CHARGES;
             this.persistBirdFeed();
-            this.ui.updateFeedCounter(this.birdFeed);
+            this.refreshFeedHud();
             sfx.coin();
             track('bird_feed_bought', { charges: this.birdFeed });
+            render();
+            return;
+          }
+          if (id === SimpleApp.CAT_FEED_ID) {
+            if (!this.scene.spendCoins(SimpleApp.CAT_FEED_PRICE)) return;
+            this.catFeed += SimpleApp.CAT_FEED_CHARGES;
+            this.persistCatFeed();
+            this.refreshFeedHud();
+            sfx.coin();
+            track('cat_feed_bought', { charges: this.catFeed });
+            render();
+            return;
+          }
+          if (id === SimpleApp.FISH_FEED_ID) {
+            if (!this.scene.spendCoins(SimpleApp.FISH_FEED_PRICE)) return;
+            this.fishFeed += SimpleApp.FISH_FEED_CHARGES;
+            this.persistFishFeed();
+            this.refreshFeedHud();
+            sfx.coin();
+            track('fish_feed_bought', { charges: this.fishFeed });
             render();
             return;
           }
@@ -1974,6 +2028,10 @@ class SimpleApp {
     render();
   }
 
+  private refreshFeedHud(): void {
+    this.ui.updateFeedCounters(this.birdFeed, this.catFeed, this.fishFeed);
+  }
+
   private persistBirdFeed(): void {
     this.hasLocalBirdFeed = true;
     try {
@@ -1984,27 +2042,78 @@ class SimpleApp {
     saveProfile({ birdFeed: this.birdFeed });
   }
 
+  private persistCatFeed(): void {
+    this.hasLocalCatFeed = true;
+    try {
+      localStorage.setItem('ds_cat_feed', String(this.catFeed));
+    } catch {
+      /* session-only */
+    }
+    saveProfile({ catFeed: this.catFeed });
+  }
+
+  private persistFishFeed(): void {
+    this.hasLocalFishFeed = true;
+    try {
+      localStorage.setItem('ds_fish_feed', String(this.fishFeed));
+    } catch {
+      /* session-only */
+    }
+    saveProfile({ fishFeed: this.fishFeed });
+  }
+
   /**
-   * Throw one charge of bird feed. The charge is only spent once the throw
-   * actually lands somewhere sane — the scene refuses water and unsampled
-   * ground — so a wasted press never costs seed.
+   * One Feed action (F / the FEED button). It looks at where you're aiming and
+   * throws the right feed: over water → fish food; over land → whichever of
+   * cats/birds you're pointing at (falling back to the other land feed if you
+   * only hold one). A charge is spent only once the scene confirms the throw
+   * landed somewhere sane, so a wasted press never costs feed.
    */
-  private tossBirdFeed(): void {
-    // Not through an open panel — F is the first binding that costs a
-    // consumable, so throwing blind behind the shop would burn a charge.
+  private tossFeed(): void {
     if (this.ui.isShopOpen() || this.ui['customizeDiv']) return;
-    if (this.birdFeed <= 0) {
-      this.ui.flashMessage('🌾 No bird feed — buy some at the Island Shop');
+    const aim = this.scene.classifyFeedAim();
+    if (aim.surface === 'water') {
+      if (this.fishFeed <= 0) {
+        this.ui.flashMessage('🐟 No fish feed — buy some at the Island Shop');
+        return;
+      }
+      if (!this.scene.throwFishFeed()) {
+        this.ui.flashMessage('🐟 Aim at the open water');
+        return;
+      }
+      this.fishFeed--;
+      this.persistFishFeed();
+      this.refreshFeedHud();
+      track('fish_feed_thrown', { left: this.fishFeed });
       return;
     }
-    if (!this.scene.throwBirdFeed()) {
-      this.ui.flashMessage('🌾 Not here — try throwing it over open ground');
-      return;
+    // Land: try the feed for the animal you're aiming at first, then the other.
+    const order: Array<'cat' | 'bird'> = aim.land === 'cat' ? ['cat', 'bird'] : ['bird', 'cat'];
+    for (const kind of order) {
+      if (kind === 'cat' && this.catFeed > 0) {
+        if (!this.scene.throwCatFeed()) {
+          this.ui.flashMessage('🐈 Not here — try over open ground');
+          return;
+        }
+        this.catFeed--;
+        this.persistCatFeed();
+        this.refreshFeedHud();
+        track('cat_feed_thrown', { left: this.catFeed });
+        return;
+      }
+      if (kind === 'bird' && this.birdFeed > 0) {
+        if (!this.scene.throwBirdFeed()) {
+          this.ui.flashMessage('🌾 Not here — try over open ground');
+          return;
+        }
+        this.birdFeed--;
+        this.persistBirdFeed();
+        this.refreshFeedHud();
+        track('bird_feed_thrown', { left: this.birdFeed });
+        return;
+      }
     }
-    this.birdFeed--;
-    this.persistBirdFeed();
-    this.ui.updateFeedCounter(this.birdFeed);
-    track('bird_feed_thrown', { left: this.birdFeed });
+    this.ui.flashMessage('🌾 No feed — buy Bird, Cat or Fish feed at the Island Shop');
   }
 
   /**
@@ -2099,7 +2208,29 @@ class SimpleApp {
         } catch {
           /* session-only */
         }
-        this.ui.updateFeedCounter(this.birdFeed);
+        this.refreshFeedHud();
+      }
+      // Same adopt-once guard for cat + fish feed — NEVER max-merge a
+      // consumable (it refunds every charge spent since boot).
+      if (!this.hasLocalCatFeed && typeof profile.catFeed === 'number') {
+        this.hasLocalCatFeed = true;
+        this.catFeed = Math.max(0, Math.floor(profile.catFeed));
+        try {
+          localStorage.setItem('ds_cat_feed', String(this.catFeed));
+        } catch {
+          /* session-only */
+        }
+        this.refreshFeedHud();
+      }
+      if (!this.hasLocalFishFeed && typeof profile.fishFeed === 'number') {
+        this.hasLocalFishFeed = true;
+        this.fishFeed = Math.max(0, Math.floor(profile.fishFeed));
+        try {
+          localStorage.setItem('ds_fish_feed', String(this.fishFeed));
+        } catch {
+          /* session-only */
+        }
+        this.refreshFeedHud();
       }
       // Body colours: apply the cloud choice for any part not set locally
       if (profile.colors) {
@@ -2119,6 +2250,8 @@ class SimpleApp {
       ownedHats: [...this.ownedHats],
       coins: this.scene.getCoinsCollected(),
       birdFeed: this.birdFeed,
+      catFeed: this.catFeed,
+      fishFeed: this.fishFeed,
       colors: this.currentColorsHex(),
     });
   }

@@ -12,8 +12,10 @@ export interface Profile {
   hat?: string | null;
   ownedHats?: string[];
   coins?: number;
-  /** Unspent bird-feed charges (a consumable, unlike the owned-once hats). */
+  /** Unspent feed charges (consumables, unlike the owned-once hats). */
   birdFeed?: number;
+  catFeed?: number;
+  fishFeed?: number;
   /** Body colours as hex strings, keyed by part (outfit/pants/hair/skin). */
   colors?: Record<string, string>;
 }
