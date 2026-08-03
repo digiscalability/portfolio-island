@@ -4433,45 +4433,113 @@ export class Island {
     // 0.2 rad of search arc (~10u): the field is 6.4u long, so it needs a
     // wider berth than a cottage-sized prop before it stops shouldering into
     // the neighbours.
-    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.2);
-    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    const centreDir = this.claimOffStreet(this.dirAt(lon, lat), 0.2);
+    let cr: number;
     try {
-      seat = this.sampleSurfaceByDirection(centre, 0);
+      cr = this.analyticSurface(centreDir).radius;
     } catch {
       return;
     }
+
+    // The hamlet is a hillside — the terrain rises ~1.1u across this 6.4u
+    // footprint and the only flat ground nearby is the coastal shelf, which
+    // would drag the farm to the beach. So the field CONFORMS to the slope
+    // rather than sitting as a rigid tangent slab (which floated its corners
+    // over a metre in the air). Every element is seated on the terrain it
+    // stands over via `surfAt`, and the soil is built from short segments that
+    // follow the ground with a skirt that reaches below it, so nothing floats.
+    const centre = centreDir.clone().multiplyScalar(cr);
+    let east = new THREE.Vector3().crossVectors(centreDir, new THREE.Vector3(0, 1, 0));
+    if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0);
+    east.normalize();
+    const north = new THREE.Vector3().crossVectors(east, centreDir).normalize();
+
+    // Field-local (east `e`, north `n`) offset in world units -> the terrain
+    // point and its up-normal directly below/above it.
+    const surfAt = (e: number, n: number): { pos: THREE.Vector3; up: THREE.Vector3 } => {
+      const dir = centre.clone().addScaledVector(east, e).addScaledVector(north, n).normalize();
+      const s = this.analyticSurface(dir);
+      return { pos: dir.clone().multiplyScalar(s.radius), up: s.normal.clone() };
+    };
+    // Orientation whose +Y is `up` and +Z runs along field-north (projected
+    // onto the local tangent), for seating oriented boxes on the slope.
+    const _x = new THREE.Vector3();
+    const _z = new THREE.Vector3();
+    const _mat = new THREE.Matrix4();
+    const basisQuat = (up: THREE.Vector3, out: THREE.Quaternion): THREE.Quaternion => {
+      _z.copy(north).addScaledVector(up, -north.dot(up)).normalize();
+      _x.crossVectors(up, _z).normalize();
+      _mat.makeBasis(_x, up, _z);
+      return out.setFromRotationMatrix(_mat);
+    };
+
     const g = new THREE.Group();
     g.name = 'farm';
-    g.position.copy(seat.position);
-    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
 
     const soilMat = Materials.createStandardMaterial({ color: 0x6b4f34 });
     const cropMat = Materials.createStandardMaterial({ color: 0x6f9c3f });
     const woodMat = Materials.createStandardMaterial({ color: 0xb08a55 });
 
-    // Four ploughed ridges, merged into one mesh.
-    const ridges: THREE.BufferGeometry[] = [];
     const ROWS = [-2.4, -0.8, 0.8, 2.4];
-    for (const rx of ROWS) {
-      ridges.push(new THREE.BoxGeometry(1.0, 0.18, 6.4).translate(rx, 0.09, 0));
-    }
-    const soil = new THREE.Mesh(mergeGeometries(ridges, false), soilMat);
-    soil.receiveShadow = true;
-    g.add(soil);
-    ridges.forEach((r) => r.dispose());
+    const N0 = -3.2;
+    const N1 = 3.2;
 
-    // A real crop mix, one row per kind so the field reads as FOOD rather than
-    // green cones: cabbages (leafy globes), carrots (feathery tops with the
-    // orange shoulder showing), and staked beans.
+    // Ploughed ridges as terrain-following segments. One tall box per step
+    // (crown ~0.16 above the soil, skirt ~0.84 below it), overlapped along the
+    // furrow so the seams close on a slope. All 4 rows share one InstancedMesh.
+    const SEG = 8;
+    const step = (N1 - N0) / SEG;
+    const ridgeH = 1.0; // 0.16 proud + 0.84 skirt
+    const soil = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1.0, ridgeH, step * 1.35),
+      soilMat,
+      ROWS.length * SEG,
+    );
+    soil.receiveShadow = true;
+    const q = new THREE.Quaternion();
+    const one = new THREE.Vector3(1, 1, 1);
     const m = new THREE.Matrix4();
+    let si = 0;
+    for (const rx of ROWS) {
+      for (let k = 0; k < SEG; k++) {
+        const n = N0 + (k + 0.5) * step;
+        const { pos, up } = surfAt(rx, n);
+        basisQuat(up, q);
+        // Sink so the crown sits 0.16 above ground and the skirt buries below.
+        pos.addScaledVector(up, 0.16 - ridgeH / 2);
+        m.compose(pos, q, one);
+        soil.setMatrixAt(si++, m);
+      }
+    }
+    soil.instanceMatrix.needsUpdate = true;
+    g.add(soil);
+
+    // Crop rows. Each plant is seated on the terrain under its own spot and
+    // lifted onto the ridge crown, so the rows drape over the slope with the
+    // soil instead of floating off it.
     const PER_ROW = 9;
     const rowSpots = (rx: number) =>
       Array.from({ length: PER_ROW }, (_, k) => [
         rx + (Math.random() - 0.5) * 0.22,
-        -2.7 + k * 0.68,
+        N0 + 0.5 + k * 0.68,
       ]) as Array<[number, number]>;
+    // Seat one instance: place at the crop's terrain spot + `lift` up the local
+    // normal, oriented so the plant stands up out of the slope.
+    const seatCrop = (
+      mesh: THREE.InstancedMesh,
+      i: number,
+      e: number,
+      n: number,
+      lift: number,
+      scale: THREE.Vector3,
+    ): void => {
+      const { pos, up } = surfAt(e, n);
+      q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      m.compose(pos.addScaledVector(up, lift), q, scale);
+      mesh.setMatrixAt(i, m);
+    };
 
-    // Row 0 + 2 — cabbages: a squashed globe with a paler heart.
+    // Rows 0 + 2 — cabbages: a squashed globe with a paler heart.
     const cabbageSpots = [...rowSpots(ROWS[0]), ...rowSpots(ROWS[2])];
     const cabbage = new THREE.InstancedMesh(
       new THREE.SphereGeometry(0.26, 6, 5),
@@ -4486,10 +4554,8 @@ export class Island {
     const sq = new THREE.Vector3(1, 0.72, 1);
     for (let i = 0; i < cabbageSpots.length; i++) {
       const [x, z] = cabbageSpots[i];
-      m.compose(new THREE.Vector3(x, 0.32, z), new THREE.Quaternion(), sq);
-      cabbage.setMatrixAt(i, m);
-      m.compose(new THREE.Vector3(x, 0.42, z), new THREE.Quaternion(), sq);
-      heart.setMatrixAt(i, m);
+      seatCrop(cabbage, i, x, z, 0.28, sq);
+      seatCrop(heart, i, x, z, 0.36, sq);
     }
     cabbage.instanceMatrix.needsUpdate = true;
     heart.instanceMatrix.needsUpdate = true;
@@ -4510,16 +4576,14 @@ export class Island {
     );
     for (let i = 0; i < carrotSpots.length; i++) {
       const [x, z] = carrotSpots[i];
-      m.makeTranslation(x, 0.24, z);
-      shoulder.setMatrixAt(i, m);
-      m.makeTranslation(x, 0.46, z);
-      tuft.setMatrixAt(i, m);
+      seatCrop(shoulder, i, x, z, 0.2, one);
+      seatCrop(tuft, i, x, z, 0.42, one);
     }
     shoulder.instanceMatrix.needsUpdate = true;
     tuft.instanceMatrix.needsUpdate = true;
     g.add(shoulder, tuft);
 
-    // Row 3 — beans up canes: a leaning stake with foliage climbing it.
+    // Row 3 — beans up canes: a stake with foliage climbing it.
     const beanSpots = rowSpots(ROWS[3]);
     const cane = new THREE.InstancedMesh(
       new THREE.CylinderGeometry(0.025, 0.025, 1.1, 4),
@@ -4533,63 +4597,53 @@ export class Island {
     );
     for (let i = 0; i < beanSpots.length; i++) {
       const [x, z] = beanSpots[i];
-      m.makeTranslation(x, 0.62, z);
-      cane.setMatrixAt(i, m);
-      m.compose(
-        new THREE.Vector3(x, 0.72, z),
-        new THREE.Quaternion(),
-        new THREE.Vector3(1, 1.6, 1),
-      );
-      foliage.setMatrixAt(i, m);
+      seatCrop(cane, i, x, z, 0.58, one);
+      seatCrop(foliage, i, x, z, 0.68, new THREE.Vector3(1, 1.6, 1));
     }
     cane.instanceMatrix.needsUpdate = true;
     foliage.instanceMatrix.needsUpdate = true;
     cane.castShadow = true;
     g.add(cane, foliage);
 
-    // Scarecrow: post, crossbar, straw head.
+    // Scarecrow (post + crossbar + straw head) and a hay bale, each seated on
+    // the terrain under it and stood up along the local normal.
+    const scarecrow = surfAt(0, -3.4);
+    basisQuat(scarecrow.up, q);
+    const scRoot = new THREE.Group();
+    scRoot.position.copy(scarecrow.pos);
+    scRoot.quaternion.copy(q);
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.7, 0.12), woodMat);
-    post.position.set(0, 0.85, -3.4);
-    g.add(post);
+    post.position.y = 0.85;
     const bar = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.1, 0.1), woodMat);
-    bar.position.set(0, 1.25, -3.4);
-    g.add(bar);
+    bar.position.y = 1.25;
     const head = new THREE.Mesh(
       new THREE.SphereGeometry(0.22, 6, 5),
       Materials.createStandardMaterial({ color: 0xd8bb6a }),
     );
-    head.position.set(0, 1.85, -3.4);
+    head.position.y = 1.85;
     head.castShadow = true;
-    g.add(head);
+    scRoot.add(post, bar, head);
+    g.add(scRoot);
 
-    // A hay bale at the field edge.
+    const baleSeat = surfAt(3.6, 2.2);
+    basisQuat(baleSeat.up, q);
     const bale = new THREE.Mesh(
       new THREE.CylinderGeometry(0.55, 0.55, 0.9, 8),
       Materials.createStandardMaterial({ color: 0xd9c176 }),
     );
-    bale.rotation.z = Math.PI / 2;
-    bale.position.set(3.6, 0.55, 2.2);
+    bale.position.copy(baleSeat.pos).addScaledVector(baleSeat.up, 0.55);
+    bale.quaternion
+      .copy(q)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2));
     bale.castShadow = true;
     g.add(bale);
 
     parent.add(g);
-    this.farmDir = centre.clone();
+    this.farmDir = centreDir.clone();
 
-    // Working spots: the near end of three furrows, ~1.6u apart.
-    const up = seat.normal.clone();
-    let east = new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 1, 0));
-    if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0);
-    east.normalize();
-    const north = new THREE.Vector3().crossVectors(east, up).normalize();
+    // Working spots: the near end of three furrows, ~1.6u apart, on the ground.
     for (const rx of [-1.6, 0, 1.6]) {
-      const spot = seat.position.clone().addScaledVector(east, rx).addScaledVector(north, 1.9);
-      try {
-        this.cropRowSites.push(
-          this.sampleSurfaceByDirection(spot.clone().normalize(), 0).position.clone(),
-        );
-      } catch {
-        this.cropRowSites.push(spot);
-      }
+      this.cropRowSites.push(surfAt(rx, 1.9).pos);
     }
   }
 
