@@ -94,6 +94,21 @@ MOUTH_MINOR = 0.010
 MOUTH_SEGS = 8   # arc segments
 MOUTH_RING = 6   # cross-section segments
 
+# Villager face: the player's face scaled by the head-size ratio (~0.87)
+# about the npc head centre. Same design language, one species.
+N_EYE_R = 0.031
+N_EYE_POS = 0.065, -0.178, 1.555
+N_SHINE_R = 0.011
+N_SHINE_POS = 0.053, -0.197, 1.567
+N_MOUTH_C = Vector((0.0, -0.184, 1.464))
+N_MOUTH_MAJOR = 0.037
+N_MOUTH_MINOR = 0.0087
+# npc has no authored fringe, so its helmet covers more of the crown: the
+# front hairline lands at z 1.52 + 0.45*0.20 = 1.61, clearing the eye tops
+# (1.586) by 0.024.
+N_HELMET_TOP_UZ = 0.45
+N_HELMET_OFFSET = 0.009
+
 
 def wipe() -> None:
     bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -174,8 +189,10 @@ def round_head(bm, centre: Vector, radii: Vector) -> int:
     return moved
 
 
-def add_hair_helmet(bm, centre: Vector, radii: Vector, hair_index: int) -> int:
-    """Duplicate the back-of-head faces outward as a hair shell."""
+def add_hair_helmet(bm, centre: Vector, radii: Vector, hair_index: int,
+                    top_uz: float = HELMET_TOP_UZ,
+                    offset: float = HELMET_OFFSET) -> int:
+    """Duplicate the back-of-head + crown faces outward as a hair shell."""
     def u_of(co):
         return Vector(((co.x - centre.x) / radii.x,
                        (co.y - centre.y) / radii.y,
@@ -188,7 +205,7 @@ def add_hair_helmet(bm, centre: Vector, radii: Vector, hair_index: int) -> int:
         if abs(u.length - 1.0) > 0.25:
             continue  # not on the head surface
         back = u.y > HELMET_UY_MIN and u.z > HELMET_UZ_MIN
-        crown = u.z > HELMET_TOP_UZ
+        crown = u.z > top_uz
         if back or crown:
             sel.append(f)
     assert sel, "no helmet faces selected"
@@ -201,7 +218,7 @@ def add_hair_helmet(bm, centre: Vector, radii: Vector, hair_index: int) -> int:
         L = u.length or 1.0
         n = Vector((u.x / L * radii.y, u.y / L * radii.x, u.z / L * radii.z))
         n.normalize()
-        v.co += n * HELMET_OFFSET
+        v.co += n * offset
     for f in new_faces:
         f.material_index = hair_index
         f.smooth = True
@@ -243,20 +260,21 @@ def add_icosphere(bm, centre: Vector, r: float, mat_index: int):
     return verts
 
 
-def add_smile(bm, mat_index: int):
+def add_smile(bm, mat_index: int, centre: Vector = MOUTH_C,
+              major: float = MOUTH_MAJOR, minor: float = MOUTH_MINOR):
     """Half-torus in the XZ-ish plane, arc opening upward, facing -Y."""
     verts_grid = []
     for i in range(MOUTH_SEGS + 1):
         # arc from left to right along the LOWER semicircle (smile)
         a = math.pi + (i / MOUTH_SEGS) * math.pi  # pi..2pi
-        ring_c = Vector((math.cos(a) * MOUTH_MAJOR, 0.0, math.sin(a) * MOUTH_MAJOR))
+        ring_c = Vector((math.cos(a) * major, 0.0, math.sin(a) * major))
         ring = []
         for j in range(MOUTH_RING):
             b = (j / MOUTH_RING) * 2 * math.pi
             # cross-section circle in the plane spanned by radial dir and Y
             radial = Vector((math.cos(a), 0.0, math.sin(a)))
-            p = ring_c + radial * (math.cos(b) * MOUTH_MINOR) + Vector((0.0, math.sin(b) * MOUTH_MINOR, 0.0))
-            ring.append(bm.verts.new(MOUTH_C + p))
+            p = ring_c + radial * (math.cos(b) * minor) + Vector((0.0, math.sin(b) * minor, 0.0))
+            ring.append(bm.verts.new(centre + p))
         verts_grid.append(ring)
     new_faces = []
     for i in range(MOUTH_SEGS):
@@ -374,6 +392,35 @@ def do_npc() -> None:
     print(f"  Npc: rounded {moved} midpoint verts, maxZ {z_before:.4f}->{z_after:.4f}")
     assert abs(z_after - z_before) < 1e-4, "Npc: head rounding moved the crown"
     assert moved > 100, f"Npc: only {moved} verts projected"
+
+    # Villager face + hair: same design as the player, scaled to this head.
+    # Materials: Eye/EyeShine stay OUT of Island.dressNpc's palette swap
+    # (matched by 'shirt'/'skin'/'pants'/'hair' substrings — 'eyeshine'
+    # contains none of them), so eyes stay dark on every persona. "Hair" IS
+    # swapped: dressNpc recolours it per persona, replacing the old runtime
+    # hair-sphere. NO vertex groups here — the npc must reach rig-npc.py
+    # unrigged (it asserts so); its classifier weights every non-garment
+    # material to the root bone, which is exactly what a head-mounted face
+    # needs.
+    eye_i = ensure_material(npc, "Eye", (0.024, 0.024, 0.028))
+    shine_i = ensure_material(npc, "EyeShine", (1.0, 1.0, 1.0))
+    hair_i = ensure_material(npc, "Hair", (0.29, 0.20, 0.13))
+    bm = bmesh.new()
+    bm.from_mesh(npc.data)
+    helmet_faces = add_hair_helmet(
+        bm, N_HEAD_C, N_HEAD_R, hair_i,
+        top_uz=N_HELMET_TOP_UZ, offset=N_HELMET_OFFSET,
+    )
+    for sx in (-1, 1):
+        add_icosphere(bm, Vector((sx * N_EYE_POS[0], N_EYE_POS[1], N_EYE_POS[2])), N_EYE_R, eye_i)
+        add_icosphere(bm, Vector((sx * N_SHINE_POS[0], N_SHINE_POS[1], N_SHINE_POS[2])), N_SHINE_R, shine_i)
+    add_smile(bm, eye_i, centre=N_MOUTH_C, major=N_MOUTH_MAJOR, minor=N_MOUTH_MINOR)
+    bm.to_mesh(npc.data)
+    bm.free()
+    npc.data.update()
+    assert not npc.vertex_groups, "npc gained vertex groups in the face pass — rig-npc will refuse it"
+    print(f"  Npc: hair helmet ({helmet_faces} faces) + face added")
+
     export_glb(src)
     print(f"wrote {src}")
 

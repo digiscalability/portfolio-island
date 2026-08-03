@@ -3567,9 +3567,6 @@ export class Island {
   // Toon materials so NPCs join the cel-shaded world (the PBR GLB loads after
   // toonify's traverse and was the only PBR-shaded figure on the island).
   private static npcPaletteCache = new Map<number, THREE.MeshToonMaterial>();
-  private static npcEyeGeo: THREE.BufferGeometry | null = null;
-  private static npcEyeMat: THREE.MeshBasicMaterial | null = null;
-  private static npcHairGeo: THREE.SphereGeometry | null = null;
 
   private static paletteMat(hex: number): THREE.MeshToonMaterial {
     let m = Island.npcPaletteCache.get(hex);
@@ -3594,32 +3591,20 @@ export class Island {
         if (n.includes('shirt')) return Island.paletteMat(SHIRTS[phIdx % SHIRTS.length]);
         if (n.includes('skin')) return Island.paletteMat(SKINS[(phIdx * 5 + 3) % SKINS.length]);
         if (n.includes('pants')) return Island.paletteMat(PANTS[(phIdx * 7 + 1) % PANTS.length]);
+        // Baked hair helmet (reshape-avatar-face.py) — per-persona colour via
+        // the same shared-palette path the old runtime hair-sphere used.
+        // Eye/EyeShine deliberately match nothing here and stay dark.
+        if (n.includes('hair')) return Island.paletteMat(HAIRS[phIdx % HAIRS.length]);
         return m;
       });
       o.material = Array.isArray(o.material) ? swapped : swapped[0];
     });
     // Silhouette variety (deterministic, ±6%)
     group.scale.multiplyScalar(0.95 + (phIdx % 5) * 0.03);
-    // Eyes — one shared merged geometry, positioned on the +Z (walk-forward)
-    // face of the head box (raw model space; the group carries the 0.6 scale).
-    if (!Island.npcEyeGeo) {
-      const l = new THREE.SphereGeometry(0.045, 6, 6).translate(-0.08, 0, 0);
-      const r = new THREE.SphereGeometry(0.045, 6, 6).translate(0.08, 0, 0);
-      Island.npcEyeGeo = mergeGeometries([l, r]);
-      l.dispose();
-      r.dispose();
-      Island.npcEyeMat = new THREE.MeshBasicMaterial({ color: 0x1c1a18 });
-    }
-    const eyes = new THREE.Mesh(Island.npcEyeGeo, Island.npcEyeMat!);
-    eyes.position.set(0, 1.56, 0.19);
-    group.add(eyes);
-    // Hair cap — shared half-sphere, per-NPC colour from the shared palette.
-    if (!Island.npcHairGeo) {
-      Island.npcHairGeo = new THREE.SphereGeometry(0.21, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
-    }
-    const hair = new THREE.Mesh(Island.npcHairGeo, Island.paletteMat(HAIRS[phIdx % HAIRS.length]));
-    hair.position.set(0, 1.6, 0);
-    group.add(hair);
+    // Face and hair are baked into npc.glb (eyes + highlights + smile on
+    // Eye/EyeShine materials, hair helmet on Hair) — the runtime eye spheres
+    // and hair half-sphere this used to add are gone. The baked face rides
+    // the root bone, so it follows the walk bob and yaw-face-the-player.
     // Persona flair: hats reuse the player's procedural hat kit; held props
     // are 2-3 primitives. Whole-group pose modulation animates them for free.
     try {
