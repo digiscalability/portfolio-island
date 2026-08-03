@@ -3993,19 +3993,30 @@ export class Island {
    * the Night Watch's brazier ended up underneath the fish stall. Walking
    * concentric rings finds the nearest genuinely free plot instead, so a
    * station stays beside its owner rather than landing wherever a lucky dart
-   * happened to fall. Falls back to the dart-throwing version only if nothing
-   * within ~14u is free at all.
+   * happened to fall.
+   *
+   * `maxDrift` is a HARD leash in radians. A workplace that wanders is as
+   * wrong as one that clips: unleashed, the Mayor's lectern ended up 16.4u
+   * from the plaza he holds court in and the Keeper's yard 11.8u from the
+   * tower he keeps. When nothing inside the leash fully clears, this returns
+   * the ROOMIEST spot it found rather than falling through to the dart
+   * thrower — a slightly tight fit beside the right person beats a perfect
+   * fit on the wrong side of the district.
    */
-  private claimClearSpot(rawDir: THREE.Vector3, clearArc: number): THREE.Vector3 {
+  private claimClearSpot(rawDir: THREE.Vector3, clearArc: number, maxDrift = 0.12): THREE.Vector3 {
     const centre = rawDir.clone().normalize();
     // Any tangent basis will do; we only need to sweep a full circle in it.
     let tangent = new THREE.Vector3(0, 1, 0).cross(centre);
     if (tangent.lengthSq() < 1e-6) tangent = new THREE.Vector3(1, 0, 0).cross(centre);
     tangent.normalize();
     const bitangent = centre.clone().cross(tangent).normalize();
-    for (let ring = 0; ring <= 8; ring++) {
-      const arc = ring * 0.035;
-      const steps = ring === 0 ? 1 : ring * 6;
+    const RING_STEP = 0.02;
+    const rings = Math.max(1, Math.round(maxDrift / RING_STEP));
+    let best: THREE.Vector3 | null = null;
+    let bestClearance = -Infinity;
+    for (let ring = 0; ring <= rings; ring++) {
+      const arc = ring * RING_STEP;
+      const steps = ring === 0 ? 1 : ring * 8;
       for (let k = 0; k < steps; k++) {
         const a = (k / steps) * Math.PI * 2;
         const out = tangent
@@ -4027,9 +4038,15 @@ export class Island {
           this.occupiedDirs.push({ dir, arc: clearArc });
           return dir;
         }
+        if (clearance > bestClearance) {
+          bestClearance = clearance;
+          best = dir.clone();
+        }
       }
     }
-    return this.claimOffStreet(rawDir, clearArc);
+    const pick = best ?? centre;
+    this.occupiedDirs.push({ dir: pick, arc: clearArc });
+    return pick;
   }
 
   public claimOffStreet(rawDir: THREE.Vector3, clearArc: number): THREE.Vector3 {
@@ -4609,8 +4626,9 @@ export class Island {
     name: string,
     parent: THREE.Object3D,
     build: (g: THREE.Group) => void,
+    maxDrift = 0.12,
   ): void {
-    const dir = this.claimClearSpot(this.dirAt(lon, lat), arc);
+    const dir = this.claimClearSpot(this.dirAt(lon, lat), arc, maxDrift);
     let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
     try {
       seat = this.sampleSurfaceByDirection(dir, 0);
@@ -4690,10 +4708,137 @@ export class Island {
       g.add(fire);
     };
 
-    const at = (i: number, name: string, arc: number, build: (g: THREE.Group) => void) => {
+    // ---- SHELTER KIT ----------------------------------------------------
+    // A desk standing in bare grass reads as dropped furniture, not a
+    // workplace. Three pieces fix that, all built to the island's own
+    // measured vernacular: a ground pad to say "this plot is claimed", posts
+    // at the canonical 0.06 radius, and one of the two roof forms that
+    // already exist here (raked cloth awning, or yawed 4-sided pyramid).
+    const CANOPY_Y = 2.45; // underside clears the 1.8u player everywhere
+    const RAKE = 0.22; // gentle: a steeper panel drops its front edge onto heads
+
+    /** Trodden ground under a workplace. Centred on the CLUSTER, not the origin. */
+    const pad = (
+      g: THREE.Group,
+      cx: number,
+      cz: number,
+      w: number,
+      d: number,
+      mat: THREE.Material,
+    ) => {
+      // A pad is seated only at the group origin, but the terrain moves ~0.25u
+      // across a 4u slab — a thin one either shows daylight under the low
+      // corner or gets swallowed at the high one. 0.4 thick, top standing
+      // 0.1 proud, reads as a laid plinth and survives both. Depth is free;
+      // the top face is all anyone sees.
+      const p = new THREE.Mesh(new THREE.BoxGeometry(w, 0.4, d), mat);
+      p.position.set(cx, -0.1, cz);
+      p.receiveShadow = true;
+      g.add(p);
+    };
+
+    /**
+     * A post whose foot is buried 0.4u.
+     *
+     * Props are seated ONLY at their group origin, but the terrain is a
+     * 128x128 sphere: a post 2u out sits on ground that has already fallen
+     * away, so a post cut off at y=0 hangs in the air. Burying the foot is
+     * cheaper and more robust than raycasting each one.
+     */
+    const post = (g: THREE.Group, x: number, z: number, top: number, mat: THREE.Material) => {
+      const h = top + 0.4;
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, h, 6), mat);
+      m.position.set(x, h / 2 - 0.4, z);
+      m.castShadow = true;
+      g.add(m);
+    };
+
+    /**
+     * Striped cloth awning on four posts — the market-stall idiom.
+     * Panels rake DOWN toward +Z because +Z is the street side on a station
+     * (the shops rake toward -Z; the rule is "front edge low", not a sign).
+     */
+    const canopy = (
+      g: THREE.Group,
+      cx: number,
+      cz: number,
+      w: number,
+      d: number,
+      accent: THREE.Material,
+    ) => {
+      for (const px of [cx - w / 2 + 0.12, cx + w / 2 - 0.12]) {
+        for (const pz of [cz - d / 2 + 0.12, cz + d / 2 - 0.12]) {
+          post(g, px, pz, CANOPY_Y - 0.1, darkWood);
+        }
+      }
+      // Beams along the tops of the posts, so the cloth has something to sit on.
+      for (const pz of [cz - d / 2 + 0.12, cz + d / 2 - 0.12]) {
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(w, 0.09, 0.09), darkWood);
+        beam.position.set(cx, CANOPY_Y - 0.14, pz);
+        beam.castShadow = true;
+        g.add(beam);
+      }
+      const n = Math.max(3, Math.round(w / 0.52));
+      const pw = w / n;
+      for (let i = 0; i < n; i++) {
+        const panel = new THREE.Mesh(
+          new THREE.BoxGeometry(pw, 0.05, d + 0.3),
+          i % 2 ? paper : accent,
+        );
+        panel.position.set(cx - w / 2 + pw * (i + 0.5), CANOPY_Y, cz);
+        panel.rotation.x = RAKE;
+        panel.castShadow = true;
+        g.add(panel);
+      }
+    };
+
+    /**
+     * Lean-to: a single sloping roof off two posts, for the clusters that
+     * only need their WORK SURFACE covered — a telescope under a roof is
+     * useless, and a brazier under one is a fire.
+     */
+    const leanTo = (
+      g: THREE.Group,
+      cx: number,
+      cz: number,
+      w: number,
+      d: number,
+      accent: THREE.Material,
+    ) => {
+      const back = cz - d / 2;
+      const front = cz + d / 2;
+      for (const px of [cx - w / 2 + 0.1, cx + w / 2 - 0.1]) {
+        post(g, px, back, 2.6, darkWood);
+        post(g, px, front, 2.25, darkWood);
+      }
+      const slope = Math.atan2(2.6 - 2.25, d);
+      const roof = new THREE.Mesh(
+        new THREE.BoxGeometry(w + 0.3, 0.07, Math.hypot(d, 0.35) + 0.25),
+        accent,
+      );
+      roof.position.set(cx, 2.43, cz);
+      roof.rotation.x = slope;
+      roof.castShadow = true;
+      g.add(roof);
+      // Rafters, so the roof plainly rests on the posts.
+      for (const px of [cx - w / 2 + 0.1, cx + w / 2 - 0.1]) {
+        const r = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, Math.hypot(d, 0.35)), darkWood);
+        r.position.set(px, 2.38, cz);
+        r.rotation.x = slope;
+        g.add(r);
+      }
+    };
+
+    const at = (
+      i: number,
+      name: string,
+      arc: number,
+      build: (g: THREE.Group) => void,
+      drift?: number,
+    ) => {
       const s = sites[i];
       if (!s) return;
-      this.stationAt(s[0], s[1], arc, name, parent, build);
+      this.stationAt(s[0], s[1], arc, name, parent, build, drift);
     };
 
     // 0 ELDER SAGE — a story circle the Storyteller and Philosopher share.
@@ -4726,6 +4871,8 @@ export class Island {
 
     // 3 YOUNG STUDENT — a study desk with a stack of books.
     at(3, 'study_desk', 0.06, (g) => {
+      pad(g, 0, 0.3, 2.5, 2.7, stone);
+      canopy(g, 0, 0.3, 2.3, 2.4, Materials.createStandardMaterial({ color: 0x4478a8 }));
       table(g, 1.3, 0.7, wood);
       // Stack of books, spines out and slightly askew as a real stack is.
       const covers = [cloth, paper, darkWood];
@@ -4754,6 +4901,8 @@ export class Island {
 
     // 8 GUARD — a sentry box and a brazier at his post.
     at(8, 'guard_post', 0.08, (g) => {
+      // Already roofed; it just needs the ground under it to look claimed.
+      pad(g, 0.13, 0, 3.8, 2.0, stone);
       // Built from PANELS with the front left open, so it reads as a shelter
       // you could stand in rather than a solid crate.
       box(g, 1.0, 0.1, 0.9, 0, 0.05, 0, darkWood); // floor
@@ -4783,6 +4932,8 @@ export class Island {
 
     // 12 ARCHITECT — a drafting table with rolled plans.
     at(12, 'drafting_table', 0.06, (g) => {
+      pad(g, -0.2, 0.3, 3.1, 2.7, stone);
+      canopy(g, -0.2, 0.3, 2.9, 2.5, Materials.createStandardMaterial({ color: 0xc47a2e }));
       table(g, 1.5, 0.9, wood);
       // A drafting board must be visibly RAKED — laid near-flat it just reads
       // as a tablecloth. Front edge rests on the table, back edge propped up.
@@ -4832,44 +4983,61 @@ export class Island {
     });
 
     // 14 LIGHTHOUSE KEEPER — the keeper's yard at the foot of his tower.
-    at(14, 'keeper_yard', 0.07, (g) => {
-      table(g, 1.2, 0.7, darkWood);
-      // Oil cans on the bench
-      for (const cx of [-0.3, 0, 0.3]) {
-        const can = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.26, 7), metal);
-        can.position.set(cx, 0.92, 0);
-        g.add(can);
-      }
-      // Brass telescope on a SPLAYED tripod, tipped seaward. Struts are placed
-      // apex-to-foot via setFromUnitVectors rather than stacked Euler angles —
-      // the length is the true distance, so nothing floats or overshoots.
-      const up = new THREE.Vector3(0, 1, 0);
-      const apex = new THREE.Vector3(1.5, 1.05, 0);
-      for (const a of [0, 2.094, 4.189]) {
-        const foot = new THREE.Vector3(1.5 + Math.cos(a) * 0.36, 0, Math.sin(a) * 0.36);
-        const span = apex.distanceTo(foot);
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.05, span, 0.05), darkWood);
-        leg.position.copy(apex).add(foot).multiplyScalar(0.5);
-        leg.quaternion.setFromUnitVectors(up, apex.clone().sub(foot).normalize());
-        leg.castShadow = true;
-        g.add(leg);
-      }
-      box(g, 0.11, 0.16, 0.11, apex.x, apex.y + 0.06, apex.z, metal); // yoke
-      const brass = Materials.createStandardMaterial({ color: 0xc9a227 });
-      const aim = new THREE.Vector3(0.9, 0.36, 0.22).normalize();
-      const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.085, 0.95, 8), brass);
-      scope.position.copy(apex).setY(apex.y + 0.16);
-      scope.quaternion.setFromUnitVectors(up, aim);
-      scope.castShadow = true;
-      g.add(scope);
-      const eyepiece = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.16, 7), metal);
-      eyepiece.position.copy(scope.position).addScaledVector(aim, -0.53);
-      eyepiece.quaternion.copy(scope.quaternion);
-      g.add(eyepiece);
-    });
+    // Short leash (0.05 rad ~ 2.5u): the tower he keeps stands at dirAt(5.4,
+    // 0.34) and his spawn is just off its plinth, so a yard allowed to drift
+    // the usual 6u stops reading as belonging to the lighthouse at all.
+    // NOTE the lighthouse is built AFTER this (createLighthouse, ~line 3200),
+    // so its footprint is NOT yet claimed — the leash is what keeps the yard
+    // beside the tower, and the arc is what keeps it off the plinth.
+    at(
+      14,
+      'keeper_yard',
+      0.07,
+      (g) => {
+        pad(g, 0.7, 0, 3.6, 1.9, stone);
+        // Lean-to over the BENCH only — a telescope under a roof is useless.
+        leanTo(g, 0, 0, 1.8, 1.3, Materials.createStandardMaterial({ color: 0xd44e3c }));
+        table(g, 1.2, 0.7, darkWood);
+        // Oil cans on the bench
+        for (const cx of [-0.3, 0, 0.3]) {
+          const can = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.26, 7), metal);
+          can.position.set(cx, 0.92, 0);
+          g.add(can);
+        }
+        // Brass telescope on a SPLAYED tripod, tipped seaward. Struts are placed
+        // apex-to-foot via setFromUnitVectors rather than stacked Euler angles —
+        // the length is the true distance, so nothing floats or overshoots.
+        const up = new THREE.Vector3(0, 1, 0);
+        const apex = new THREE.Vector3(1.5, 1.05, 0);
+        for (const a of [0, 2.094, 4.189]) {
+          const foot = new THREE.Vector3(1.5 + Math.cos(a) * 0.36, 0, Math.sin(a) * 0.36);
+          const span = apex.distanceTo(foot);
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.05, span, 0.05), darkWood);
+          leg.position.copy(apex).add(foot).multiplyScalar(0.5);
+          leg.quaternion.setFromUnitVectors(up, apex.clone().sub(foot).normalize());
+          leg.castShadow = true;
+          g.add(leg);
+        }
+        box(g, 0.11, 0.16, 0.11, apex.x, apex.y + 0.06, apex.z, metal); // yoke
+        const brass = Materials.createStandardMaterial({ color: 0xc9a227 });
+        const aim = new THREE.Vector3(0.9, 0.36, 0.22).normalize();
+        const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.085, 0.95, 8), brass);
+        scope.position.copy(apex).setY(apex.y + 0.16);
+        scope.quaternion.setFromUnitVectors(up, aim);
+        scope.castShadow = true;
+        g.add(scope);
+        const eyepiece = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.16, 7), metal);
+        eyepiece.position.copy(scope.position).addScaledVector(aim, -0.53);
+        eyepiece.quaternion.copy(scope.quaternion);
+        g.add(eyepiece);
+      },
+      0.05,
+    );
 
     // 16 CARTOGRAPHER — a map table with a globe.
     at(16, 'map_table', 0.06, (g) => {
+      pad(g, 0.03, 0, 2.9, 2.3, stone);
+      canopy(g, 0.03, 0, 2.7, 2.1, Materials.createStandardMaterial({ color: 0x3e8e6d }));
       table(g, 1.6, 1.0, wood);
       box(g, 1.45, 0.03, 0.9, 0, 0.81, 0, paper);
       const ocean = Materials.createStandardMaterial({ color: 0x5b8fb0 });
@@ -4913,6 +5081,9 @@ export class Island {
 
     // 18 COURIER — a handcart and a pigeonhole sorting rack.
     at(18, 'post_cart', 0.07, (g) => {
+      pad(g, -0.9, 0, 3.0, 1.7, stone); // shorter span: this plot rises sharply
+      // Roof the SORTING RACK, not the cart — the cart is meant to go out.
+      leanTo(g, -1.7, 0, 1.5, 1.2, Materials.createStandardMaterial({ color: 0x2f7fae }));
       box(g, 1.1, 0.12, 0.7, 0, 0.55, 0, wood); // tray
       box(g, 1.1, 0.28, 0.06, 0, 0.7, -0.32, wood);
       box(g, 1.1, 0.28, 0.06, 0, 0.7, 0.32, wood);
@@ -4951,6 +5122,9 @@ export class Island {
 
     // 19 NIGHT WATCH — a watch post: brazier, key board, oil crate.
     at(19, 'watch_post', 0.07, (g) => {
+      pad(g, -0.14, 0.08, 4.0, 1.8, stone);
+      // Roof the key board; the brazier stays under open sky, being a fire.
+      leanTo(g, -1.4, 0, 1.5, 1.2, Materials.createStandardMaterial({ color: 0xc0553f }));
       brazier(g, 0, 0);
       // Key board — on POSTS. Panel alone hung in mid-air.
       box(g, 0.9, 0.7, 0.06, -1.4, 0.9, 0, wood);
@@ -4977,6 +5151,11 @@ export class Island {
 
     // 21 MAYOR — a lectern and the town notice board.
     at(21, 'lectern', 0.07, (g) => {
+      pad(g, -1.2, 0.1, 4.4, 2.2, stone);
+      // A baldachin over the rostrum. It has to be WIDE relative to its
+      // height or 2.35u posts on a 1.3u span read as scaffolding round a
+      // 1.05u lectern; 2.0 x 1.8 gives it civic proportions.
+      canopy(g, 0, 0.15, 2.0, 1.8, Materials.createStandardMaterial({ color: 0x8b5a2b }));
       box(g, 0.5, 0.9, 0.4, 0, 0.45, 0, wood);
       const top = box(g, 0.66, 0.06, 0.5, 0, 0.95, 0, darkWood);
       top.rotation.x = -0.28;
@@ -4987,8 +5166,8 @@ export class Island {
       box(g, 1.6, 1.1, 0.08, -2.0, 1.15, 0, wood);
       box(g, 1.7, 0.09, 0.12, -2.0, 1.72, 0.02, darkWood); // top rail
       box(g, 1.7, 0.09, 0.12, -2.0, 0.58, 0.02, darkWood); // bottom rail
-      const canopy = box(g, 1.8, 0.07, 0.42, -2.0, 1.82, 0.12, darkWood);
-      canopy.rotation.x = -0.34;
+      const boardCanopy = box(g, 1.8, 0.07, 0.42, -2.0, 1.82, 0.12, darkWood);
+      boardCanopy.rotation.x = -0.34;
       box(g, 0.12, 1.2, 0.12, -2.7, 0.6, 0, darkWood);
       box(g, 0.12, 1.2, 0.12, -1.3, 0.6, 0, darkWood);
       for (const [px, py, tilt] of [
