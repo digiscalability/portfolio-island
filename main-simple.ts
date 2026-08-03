@@ -981,6 +981,10 @@ class SimpleApp {
   private runInteriorAction(hs: { action: string; text?: string }): void {
     if (hs.action === 'leave') {
       this.exitBuilding(this.insideIsZone);
+    } else if (hs.action === 'room') {
+      // Fixtures that change the room itself. GameScene owns the state and
+      // returns the line to flash, so the two stay in step.
+      this.ui.flashMessage(this.scene.toggleInteriorFixture(hs.text ?? ''));
     } else if (hs.action === 'times') {
       void this.ui.showIslandTimes();
     } else if (hs.action === 'panel' && this.insideZone) {

@@ -416,6 +416,8 @@ export class GameScene extends THREE.Scene {
   private static readonly NPC_FACE_RANGE = 4.5;
   private static readonly NPC_GREET_RANGE = 3.2;
   private static readonly _localUp = new THREE.Vector3(0, 1, 0);
+  /** Model-forward indoors (+z). The step roll tips about this axis. */
+  private static readonly _localFwd = new THREE.Vector3(0, 0, 1);
   private static readonly _localForward = new THREE.Vector3(0, 0, 1);
   private static readonly _localRight = new THREE.Vector3(1, 0, 0);
   // Sea edge: watercraft can't sail south of this (dir.y = sin latitude) into
@@ -6250,6 +6252,31 @@ export class GameScene extends THREE.Scene {
   private interiorViewLook = new THREE.Vector3();
   private interiorViewAccum = 0;
   private interiorRainNode: THREE.Object3D | null = null;
+  private interiorVelF = 0;
+  private interiorVelS = 0;
+  private interiorStride = 0;
+  private _interiorTiltQ = new THREE.Quaternion();
+  // Working fixtures. State lives here so the prompt, the visuals and the
+  // window all agree; it deliberately persists across buildings, because a
+  // visitor who prefers the light off should not have to say so eleven times.
+  private interiorCurtains: Array<{ mesh: THREE.Mesh; open: number; shut: number }> = [];
+  private interiorCurtainT = 0; // 0 = open, 1 = drawn
+  private interiorCurtainsShut = false;
+  private interiorLamp: THREE.PointLight | null = null;
+  private interiorBulb: THREE.Mesh | null = null;
+  private interiorLampOn = true;
+
+  /** Work a room fixture. Returns the line to flash. */
+  public toggleInteriorFixture(which: string): string {
+    if (which === 'curtains') {
+      this.interiorCurtainsShut = !this.interiorCurtainsShut;
+      return this.interiorCurtainsShut
+        ? 'You draw the curtains. 🪟'
+        : 'You draw the curtains back. ☀️';
+    }
+    this.interiorLampOn = !this.interiorLampOn;
+    return this.interiorLampOn ? 'The lamp comes on. 💡' : 'You switch the lamp off. 🌙';
+  }
   // 0.4s, not 0.25s. Measured 3.1ms per pass at 384x288 and 2.9ms at 512x384 —
   // near-identical, because the cost is CPU-side draw-call submission (102
   // calls) and not fill rate. Resolution is therefore not the lever; frequency
@@ -6393,6 +6420,53 @@ export class GameScene extends THREE.Scene {
     const knob = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), matFor(0xc9a227, 0.4));
     knob.position.set(-1.42, 1.15, 3.78);
     g.add(knob);
+
+    // ── Fixtures you can actually work ──
+    // Both live in the SHELL rather than a theme, so all six rooms and all
+    // eleven enterable buildings get them from one implementation. Both also
+    // exist to make the window matter: draw the curtains and the view is gone;
+    // kill the light and the window becomes the only thing lighting the room.
+    const curtainMat = matFor(0xb2564e, 0.95);
+    for (const side of [-1, 1]) {
+      // 0.82 wide, not 0.42: the pane is 1.6 across, so a pair of narrow
+      // panels met in the middle and still left daylight down both edges —
+      // "drawn" has to actually mean drawn. Each panel now covers exactly half.
+      const c = new THREE.Mesh(new THREE.BoxGeometry(0.82, 1.36, 0.07), curtainMat);
+      // Open, a curtain must clear the GLASS entirely or it reads as a blind
+      // stuck half-drawn. The pane spans x 1.0-2.6 and each panel is 0.82
+      // wide, so its centre sits at 1.8 +/- 1.21 to tuck its inner edge to the
+      // glass edge. Shut at +/- 0.41 the pair meet exactly in the middle and
+      // between them cover the full 1.6.
+      const open = 1.8 + side * 1.21;
+      c.position.set(open, 2.3, 3.74);
+      c.castShadow = false;
+      g.add(c);
+      this.interiorCurtains.push({ mesh: c, open, shut: 1.8 + side * 0.41 });
+    }
+    box(g, 2.75, 0.1, 0.12, 0x4a3a28, 1.8, 3.02, 3.74); // curtain rail, wider than the pull
+    // Pendant lamp over the middle of the room.
+    box(g, 0.04, 0.55, 0.04, 0x3a3a3a, 0, 3.7, 0);
+    const pendantShade = new THREE.Mesh(
+      new THREE.ConeGeometry(0.34, 0.3, 10, 1, true),
+      matFor(0x5c4127),
+    );
+    pendantShade.position.set(0, 3.4, 0);
+    pendantShade.rotation.x = Math.PI;
+    (pendantShade.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+    g.add(pendantShade);
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffe8b8 }),
+    );
+    bulb.position.set(0, 3.32, 0);
+    g.add(bulb);
+    this.interiorBulb = bulb;
+    const pendantLight = new THREE.PointLight(0xffd9a0, 1.35, 11, 2);
+    pendantLight.position.set(0, 3.25, 0);
+    g.add(pendantLight);
+    this.interiorLamp = pendantLight;
+    // Light switch by the door, at hand height.
+    box(g, 0.14, 0.2, 0.05, 0xf0ece2, -2.75, 1.35, 3.82);
 
     // ── Themed furniture sets (built once, toggled per building) ──
     const set = (name: string): THREE.Group => {
@@ -7192,9 +7266,24 @@ export class GameScene extends THREE.Scene {
 
     const o = GameScene.INTERIOR_ORIGIN;
     const p = this.player.position;
-    const f = this.interiorMoveF;
-    const s = this.interiorMoveS;
-    const moving = Math.abs(f) + Math.abs(s) > 0.05;
+    // WEIGHT. The keyboard hands us raw ±1 integers and the old code applied
+    // them straight to position: full 2.3 u/s on the first frame, dead stop on
+    // release. That is what made walking indoors feel like sliding a chess
+    // piece. Ramping the INPUT (not the position) keeps the collision resolve
+    // below untouched while giving the body a moment to lean into a step and a
+    // moment to settle out of one. Rise is quicker than fall so it still feels
+    // responsive rather than floaty.
+    const targetF = this.interiorMoveF;
+    const targetS = this.interiorMoveS;
+    const wantMove = Math.abs(targetF) + Math.abs(targetS) > 0.05;
+    const ramp = Math.min(1, (wantMove ? 9 : 12) * deltaTime);
+    this.interiorVelF += (targetF - this.interiorVelF) * ramp;
+    this.interiorVelS += (targetS - this.interiorVelS) * ramp;
+    if (Math.abs(this.interiorVelF) < 0.004) this.interiorVelF = 0;
+    if (Math.abs(this.interiorVelS) < 0.004) this.interiorVelS = 0;
+    const f = this.interiorVelF;
+    const s = this.interiorVelS;
+    const moving = Math.abs(f) + Math.abs(s) > 0.02;
     if (moving) {
       // Camera-relative move dir (model-forward = +z): fwd(yaw) = (sin, 0, cos).
       const cy = this.interiorCamYaw;
@@ -7202,7 +7291,7 @@ export class GameScene extends THREE.Scene {
       const dirZ = Math.cos(cy) * f + Math.sin(cy) * s;
       const len = Math.hypot(dirX, dirZ);
       if (len > 1e-4) {
-        const spd = (2.3 * Math.min(1, len)) / len;
+        const spd = (2.6 * Math.min(1, len)) / len;
         const nx = p.x - o.x + dirX * spd * deltaTime;
         const nz = p.z - o.z + dirZ * spd * deltaTime;
         // Axis-separated resolve → the player slides along walls + furniture.
@@ -7219,8 +7308,16 @@ export class GameScene extends THREE.Scene {
         const okZ =
           !this.interiorWallBlocked(midX, nz) &&
           (overlap || !this.interiorFurnitureBlocked(midX, nz));
+        const beforeX = p.x;
+        const beforeZ = p.z;
         if (okX) p.x = o.x + nx;
         if (okZ) p.z = o.z + nz;
+        // Advance the stride by DISTANCE walked, not by wall-clock. A fixed
+        // sin(time*9) keeps pumping at the same rate while you ease in, stop,
+        // or grind against a wall — the same 4Hz-vibration bug already fixed
+        // for the villagers outdoors. Tying phase to metres means the feet
+        // stop when you stop and slow when a chair slows you.
+        this.interiorStride += Math.hypot(p.x - beforeX, p.z - beforeZ) * 3.6;
         // Face travel, shortest-arc eased.
         const targetYaw = Math.atan2(dirX, dirZ);
         let dYaw = targetYaw - this.interiorYaw;
@@ -7230,9 +7327,21 @@ export class GameScene extends THREE.Scene {
         this.player.quaternion.setFromAxisAngle(GameScene._localUp, this.interiorYaw);
       }
     }
-    // Gentle step bob (the sphere gait is frozen with the rest of the world).
-    p.y =
-      o.y + GameScene.INTERIOR_PLAYER_Y + (moving ? Math.sin(this.interiorTime * 9) * 0.035 : 0);
+    // Step bob + weight-shift roll, both scaled by how fast we are ACTUALLY
+    // going, so they fade in and out with the input ramp instead of snapping.
+    const gait = Math.min(1, Math.hypot(f, s));
+    p.y = o.y + GameScene.INTERIOR_PLAYER_Y + Math.sin(this.interiorStride) * 0.045 * gait;
+    if (gait > 0.001) {
+      // Compose a small roll onto the heading — a walker's body tips into each
+      // step. Half the bob's frequency so it is one lean per stride, not two.
+      this._interiorTiltQ.setFromAxisAngle(
+        GameScene._localFwd,
+        Math.sin(this.interiorStride * 0.5) * 0.055 * gait,
+      );
+      this.player.quaternion
+        .setFromAxisAngle(GameScene._localUp, this.interiorYaw)
+        .multiply(this._interiorTiltQ);
+    }
 
     // Follow camera: eased behind the player's heading, clamped inside walls.
     let dCam = this.interiorYaw - this.interiorCamYaw;
@@ -7246,6 +7355,26 @@ export class GameScene extends THREE.Scene {
     this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
     this.camera.lookAt(p.x, p.y + 0.85, p.z);
 
+    // Fixtures: curtains slide, the lamp fades. Both eased rather than snapped
+    // so pressing E reads as working something, not as a state flip.
+    const curtainWant = this.interiorCurtainsShut ? 1 : 0;
+    if (Math.abs(this.interiorCurtainT - curtainWant) > 0.001) {
+      this.interiorCurtainT += (curtainWant - this.interiorCurtainT) * Math.min(1, 6 * deltaTime);
+      for (const c of this.interiorCurtains) {
+        c.mesh.position.x = c.open + (c.shut - c.open) * this.interiorCurtainT;
+      }
+    }
+    if (this.interiorLamp) {
+      const lampWant = this.interiorLampOn ? 1.35 : 0;
+      this.interiorLamp.intensity +=
+        (lampWant - this.interiorLamp.intensity) * Math.min(1, 9 * deltaTime);
+      if (this.interiorBulb) {
+        (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
+          this.interiorLampOn ? 0xffe8b8 : 0x6b6a63,
+        );
+      }
+    }
+
     // Floating 💤 bob while a sleeper occupies the bed.
     if (this.interiorZzz?.visible) {
       this.interiorZzz.position.y = 1.55 + Math.sin(this.interiorTime * 2.2) * 0.09;
@@ -7257,7 +7386,32 @@ export class GameScene extends THREE.Scene {
     let bestD = Infinity;
     const px = p.x - o.x;
     const pz = p.z - o.z;
-    for (const h of [...spots, GameScene.INTERIOR_DOOR_HOTSPOT]) {
+    // Shell fixtures are appended to EVERY theme, like the door — one
+    // implementation serving all six rooms. Labels reflect current state so
+    // the prompt never offers to do what you just did.
+    const shellSpots = [
+      {
+        x: -2.75,
+        z: 3.0,
+        r: 1.0,
+        label: this.interiorLampOn
+          ? '💡 Press <strong>E</strong> to switch the lamp off'
+          : '💡 Press <strong>E</strong> to switch the lamp on',
+        action: 'room',
+        text: 'lamp',
+      },
+      {
+        x: 1.8,
+        z: 2.95,
+        r: 1.05,
+        label: this.interiorCurtainsShut
+          ? '🪟 Press <strong>E</strong> to open the curtains'
+          : '🪟 Press <strong>E</strong> to draw the curtains',
+        action: 'room',
+        text: 'curtains',
+      },
+    ];
+    for (const h of [...spots, ...shellSpots, GameScene.INTERIOR_DOOR_HOTSPOT]) {
       const d = Math.hypot(px - h.x, pz - h.z);
       if (d < h.r && d < bestD) {
         bestD = d;
