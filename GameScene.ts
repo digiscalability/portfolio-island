@@ -6267,6 +6267,9 @@ export class GameScene extends THREE.Scene {
   private interiorVelF = 0;
   private interiorVelS = 0;
   private interiorStride = 0;
+  private interiorStepPhase = 0;
+  private interiorStepAt = 0;
+  private interiorStepAlt = false;
   private _interiorTiltQ = new THREE.Quaternion();
   // Working fixtures. State lives here so the prompt, the visuals and the
   // window all agree; it deliberately persists across buildings, because a
@@ -6289,12 +6292,17 @@ export class GameScene extends THREE.Scene {
     this.interiorLampOn = !this.interiorLampOn;
     return this.interiorLampOn ? 'The lamp comes on. 💡' : 'You switch the lamp off. 🌙';
   }
-  // 0.4s, not 0.25s. Measured 3.1ms per pass at 384x288 and 2.9ms at 512x384 —
-  // near-identical, because the cost is CPU-side draw-call submission (102
-  // calls) and not fill rate. Resolution is therefore not the lever; frequency
-  // is. At 2.5Hz this is ~8ms per second of wall time, and a villager strolling
-  // at 1.4u/s moves half a unit between frames — invisible in a 220px pane.
-  private static readonly INTERIOR_VIEW_INTERVAL = 0.4;
+  // 2.0s heartbeat, plus an immediate refresh whenever the clock crosses a
+  // five-minute bucket or the weather turns. Measured 3.1ms per pass at
+  // 384x288 and 2.9ms at 512x384 — near-identical, because the cost is
+  // CPU-side draw-call submission (102 calls) and not fill rate, so
+  // resolution was never the lever; frequency is. 2.5Hz cost ~8ms/sec to
+  // re-render a mostly unchanged view; 0.5Hz costs ~1.6ms/sec and still lets
+  // the world outside move.
+  private static readonly INTERIOR_VIEW_INTERVAL = 2.0;
+  private interiorViewBucket = -1;
+  private interiorViewWeather = '';
+  private interiorBlobMat: THREE.MeshBasicMaterial | null = null;
   /** Structural type, not the SimpleRenderer class: GameScene is imported BY
    *  the renderer's owner, and a real import here would close the cycle. */
   private rendererRef: { getRenderer(): THREE.WebGLRenderer } | null = null;
@@ -7106,6 +7114,65 @@ export class GameScene extends THREE.Scene {
     }
     set.visible = wasVisible;
     this.interiorColliders[theme] = boxes;
+
+    // CONTACT SHADOWS, for free, from the boxes we just measured.
+    // No interior mesh casts or receives a shadow and every interior light is
+    // an unshadowed point light, so all the furniture floats a little. A real
+    // shadow-casting point light would be a six-face cube depth render; a soft
+    // blob under each footprint reads almost as well for one unlit quad.
+    // The AABB pass above is already exactly the right filter — it skips
+    // sprites and skips anything mounted above head height.
+    if (!this.interiorBlobMat) {
+      const bcv = document.createElement('canvas');
+      bcv.width = 64;
+      bcv.height = 64;
+      const bx = bcv.getContext('2d');
+      if (bx) {
+        const grad = bx.createRadialGradient(32, 32, 2, 32, 32, 30);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(0.55, 'rgba(0,0,0,0.55)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        bx.fillStyle = grad;
+        bx.fillRect(0, 0, 64, 64);
+      }
+      const btex = new THREE.CanvasTexture(bcv);
+      this.interiorBlobMat = new THREE.MeshBasicMaterial({
+        map: btex,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.4,
+        // WHITE, not black. MeshBasicMaterial multiplies colour by the map,
+        // and the map is already black with a soft alpha falloff — tinting it
+        // black too just multiplies black by black and makes `color` a no-op
+        // that looks deliberate to the next reader.
+        color: 0xffffff,
+      });
+    }
+    for (const b of boxes) {
+      const w = b.maxX - b.minX;
+      const d = b.maxZ - b.minZ;
+      // Desk legs are 0.12 x 0.12 = 0.014 u^2 — one blob each would be four
+      // smudges under one desk instead of one shadow.
+      if (w * d < 0.1) continue;
+      // 1.7x the footprint, not 1.25x. A contact shadow is mostly HIDDEN by
+      // the thing casting it — at 1.25x almost the whole quad sat under the
+      // desk and only a hairline showed, which is why the first attempt looked
+      // like nothing had changed. The visible part is the fringe, so the
+      // fringe has to be wide enough to see.
+      const blob = new THREE.Mesh(new THREE.PlaneGeometry(w * 1.7, d * 1.7), this.interiorBlobMat);
+      // Sit just above whichever surface is actually underneath. The rug is
+      // Box(4.6, 0.06, 3.4) at (0, 0.13, 0.3), so its top face is 0.16 —
+      // a blob at the floor's 0.105 is BURIED by it, and the furniture
+      // standing on the rug was the furniture that looked most adrift.
+      const cx2 = (b.minX + b.maxX) / 2;
+      const cz2 = (b.minZ + b.maxZ) / 2;
+      const overRug = Math.abs(cx2) < 2.3 && Math.abs(cz2 - 0.3) < 1.7;
+      blob.position.set(cx2, overRug ? 0.17 : 0.105, cz2);
+      blob.rotation.x = -Math.PI / 2;
+      // Parented to the SET, so the existing per-theme visible toggle carries
+      // them and they never show under another room's furniture.
+      set.add(blob);
+    }
   }
 
   private interiorWallBlocked(x: number, z: number): boolean {
@@ -7361,8 +7428,22 @@ export class GameScene extends THREE.Scene {
    *  (+y up), so this never touches the spherical-physics machinery. */
   private updateInteriorMode(deltaTime: number): void {
     this.interiorTime += deltaTime;
-    // Keep the window alive: the sun moves, weather turns, villagers walk past.
+    // Window refresh, on CHANGE rather than on a clock. The old fixed 2.5Hz
+    // tick spent ~8ms of every second re-rendering a view that had usually not
+    // changed. Now it re-renders when the world outside actually differs: a
+    // new five-minute bucket of the clock (which is what moves the sun and the
+    // light), or a change of weather. The slow heartbeat underneath is
+    // deliberate and not free — it is what keeps villagers, birds and the sea
+    // moving out there, which is most of what sells the view as a window
+    // rather than a photograph. At 0.5Hz it costs a quarter of what it did.
     this.interiorViewAccum += deltaTime;
+    const bucket = this.envCycle ? Math.floor(this.envCycle.getHour() * 12) : -1;
+    const weather = this.envCycle ? this.envCycle.getWeather() : '';
+    if (bucket !== this.interiorViewBucket || weather !== this.interiorViewWeather) {
+      this.interiorViewBucket = bucket;
+      this.interiorViewWeather = weather;
+      this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL;
+    }
     if (this.interiorViewAccum >= GameScene.INTERIOR_VIEW_INTERVAL) {
       this.interiorViewAccum = 0;
       this.refreshInteriorView();
@@ -7445,6 +7526,31 @@ export class GameScene extends THREE.Scene {
     const gait = Math.min(1, Math.hypot(f, s));
     this.player.tickInteriorAnimation(deltaTime, gait * 2.6);
     p.y = o.y + GameScene.INTERIOR_PLAYER_Y;
+
+    // Footfalls, driven off the WALK CLIP's own phase rather than a distance
+    // accumulator — now that the mixer ticks indoors the clip is the honest
+    // source of when a foot actually lands. Fire on the two crossings per
+    // cycle, alternating timbre. No dust: these are floorboards.
+    if (gait > 0.25) {
+      const phase = this.player.getWalkCyclePhase();
+      for (const mark of [0.25, 0.75]) {
+        // Crossed this mark since the last frame (handles the 1->0 wrap).
+        const crossed =
+          this.interiorStepPhase < mark
+            ? phase >= mark
+            : phase < this.interiorStepPhase && phase >= mark;
+        if (crossed && this.interiorTime - this.interiorStepAt > 0.18) {
+          this.interiorStepAt = this.interiorTime;
+          this.interiorStepAlt = !this.interiorStepAlt;
+          // The rug is Box(4.6, 0.06, 3.4) at (0, 0.13, 0.3): stepping off the
+          // boards onto it should be audible, so it gets its own duller voice.
+          const onRug = Math.abs(p.x - o.x) < 2.3 && Math.abs(p.z - o.z - 0.3) < 1.7;
+          sfx.footstepWood(this.interiorStepAlt, onRug);
+          break;
+        }
+      }
+      this.interiorStepPhase = phase;
+    }
     if (gait > 0.001) {
       // Compose a small roll onto the heading — a walker's body tips into each
       // step. Half the bob's frequency so it is one lean per stride, not two.

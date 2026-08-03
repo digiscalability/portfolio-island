@@ -98,6 +98,16 @@ export class Sfx {
     this.hiss(0.055, 0.09, altFoot ? 680 : 520);
   }
 
+  /**
+   * Indoor footfall. Brighter and shorter than the grass scuff — boards have
+   * a click to them — and noticeably softer and duller on a rug, which is the
+   * whole point of having two: you can HEAR yourself step off the boards.
+   */
+  public footstepWood(altFoot: boolean, onRug: boolean): void {
+    if (onRug) this.hiss(0.045, 0.02, altFoot ? 520 : 420);
+    else this.hiss(0.045, 0.055, altFoot ? 900 : 720);
+  }
+
   /** Rising blip on takeoff. */
   public jump(): void {
     this.tone(280, 560, 0.14, 'sine', 0.11);
