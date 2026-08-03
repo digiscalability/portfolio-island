@@ -898,21 +898,34 @@ export class GameScene extends THREE.Scene {
   ): { bird: THREE.Group; wingL: THREE.Mesh; wingR: THREE.Mesh } {
     const bird = new THREE.Group();
     // Body — small elongated sphere pointing along travel direction (-Z)
-    const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), bodyMat);
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 5), bodyMat);
     body.scale.set(1, 0.9, 1.9);
     bird.add(body);
-    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 4), beakMat);
+    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.1, 4), beakMat);
     beak.rotation.x = -Math.PI / 2;
-    beak.position.z = -0.2;
+    beak.position.z = -0.24;
     bird.add(beak);
-    // Wings — thin flattened boxes hinged at the body sides
-    const wingGeo = new THREE.BoxGeometry(0.34, 0.015, 0.15);
-    wingGeo.translate(0.17, 0, 0); // hinge at inner edge
+    // Wings — LONG tapered panels hinged at the body sides. The old 0.34u
+    // stubs were invisible from the ground: all you could read at flight
+    // altitude was the body's bank, which looked like "tilting" instead of
+    // flapping. Span ~0.65 per wing (wingspan ≈ 3× body) makes every beat
+    // legible from below.
+    const wingGeo = new THREE.BoxGeometry(0.65, 0.015, 0.24);
+    wingGeo.translate(0.325, 0, 0); // hinge at inner edge
+    // Taper: pull the outer-edge rear corners forward for a swept tip.
+    {
+      const pos = wingGeo.attributes.position;
+      for (let vi = 0; vi < pos.count; vi++) {
+        if (pos.getX(vi) > 0.6 && pos.getZ(vi) > 0.1) pos.setZ(vi, 0.02);
+      }
+      pos.needsUpdate = true;
+      wingGeo.computeVertexNormals();
+    }
     const wingL = new THREE.Mesh(wingGeo, wingMat);
-    wingL.position.set(0.06, 0.02, 0);
+    wingL.position.set(0.07, 0.02, 0);
     bird.add(wingL);
     const wingR = new THREE.Mesh(wingGeo, wingMat);
-    wingR.position.set(-0.06, 0.02, 0);
+    wingR.position.set(-0.07, 0.02, 0);
     wingR.rotation.y = Math.PI;
     bird.add(wingR);
     return { bird, wingL, wingR };
@@ -933,17 +946,24 @@ export class GameScene extends THREE.Scene {
     const beakMat = new THREE.MeshToonMaterial({ color: 0xf2b04a });
     const planetR = this.island ? this.island.getRadius() : 18;
     const up = new THREE.Vector3(0, 1, 0);
-    const FLOCKS: Array<{ lon: number; count: number }> = [
-      { lon: 5.0, count: 3 },
-      { lon: 2.0, count: 3 },
-      { lon: 3.6, count: 1 },
+    // Four full trios. The old layout (3+3+1, all anchored at shoreline
+    // lat 0.24) meant the spawn plaza had NO birds overhead — from the hub
+    // you could only ever see one distant trio ("I only see 3"). The fourth
+    // flock circles high over the hub itself, visible the moment you spawn.
+    const FLOCKS: Array<{ lon: number; lat: number; count: number }> = [
+      { lon: 5.0, lat: 0.24, count: 3 },
+      { lon: 2.0, lat: 0.24, count: 3 },
+      { lon: 3.6, lat: 0.24, count: 3 },
+      { lon: 0.9, lat: 1.05, count: 3 },
     ];
     // Trailing V slots relative to the leader (x across, y altitude drop,
     // z BEHIND — the flock flies -Z in pivot-local space).
+    // Wide enough that the ~2.3u-wingspan birds never overlap: overlapped
+    // wingmen read as a single bird from the ground.
     const V_SLOTS = [
       new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(-1.0, -0.35, 1.3),
-      new THREE.Vector3(1.0, -0.35, 1.3),
+      new THREE.Vector3(-2.4, -0.5, 2.6),
+      new THREE.Vector3(2.4, -0.5, 2.6),
     ];
     let fi = 0;
     for (const flock of FLOCKS) {
@@ -951,7 +971,7 @@ export class GameScene extends THREE.Scene {
       // Aim the pivot's spin axis (+Y) at a point just above the shoreline
       // so the flock traces a small circle over the beach instead of a
       // great-circle orbit through the far hemisphere.
-      const anchor = this.island ? this.island.dirAt(flock.lon, 0.24) : up.clone();
+      const anchor = this.island ? this.island.dirAt(flock.lon, flock.lat) : up.clone();
       pivot.quaternion.setFromUnitVectors(up, anchor);
       pivot.name = `bird_pivot_${fi}`;
       this.add(pivot);
@@ -971,8 +991,13 @@ export class GameScene extends THREE.Scene {
           .multiplyScalar(alt + slot.y)
           .add(tangentOff);
         // Near the pivot pole the model's up (+Y) already points radially
-        // out — just a constant bank into the turn.
-        bird.rotation.z = 0.28;
+        // out. Gentle bank only — at 0.28 the lean dominated the read from
+        // the ground ("tilting instead of flapping"); the flutter carries
+        // the motion now.
+        bird.rotation.z = 0.16;
+        // Gulls are big birds: 1.55× makes the wingbeat legible from the
+        // beach below. The roost lerp scales toward this base, not 1.
+        bird.scale.setScalar(1.55);
         pivot.add(bird);
         this.birds.push({
           pivot,
@@ -1006,9 +1031,17 @@ export class GameScene extends THREE.Scene {
     if (!this.island) return;
     const sparrowBody = new THREE.MeshToonMaterial({ color: 0xa08a70 });
     const sparrowWing = new THREE.MeshToonMaterial({ color: 0x84705a, side: THREE.DoubleSide });
-    // [lon, lat] peck spots: plaza rim, park grass, beach sand.
+    // [lon, lat] peck spots: plaza rim, park grass, beach sand — weighted
+    // toward the hub/high latitudes where players actually walk (the old
+    // set was mostly remote shores nobody visited: "no bird on the floor").
     const SPOTS: Array<[number, number]> = [
-      [0.9, 1.38],
+      // First spot sits ~6u off spawn — inside the flush radius it would
+      // flee before the player ever saw a bird on the ground.
+      [0.55, 1.24],
+      [2.4, 1.32],
+      [4.2, 1.22],
+      [1.4, 1.05],
+      [5.6, 0.95],
       [0.35, 0.8],
       [1.9, 0.75],
       [3.4, 0.9],
@@ -1024,10 +1057,14 @@ export class GameScene extends THREE.Scene {
         sparrow ? sparrowWing : gullWing,
         beakMat,
       );
-      bird.scale.setScalar(sparrow ? 0.5 : 0.62);
+      // 0.85/1.0 (was 0.5/0.62) — at half scale they vanished into the grass.
+      bird.scale.setScalar(sparrow ? 0.85 : 1.0);
       const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
-      const s = this.island.analyticSurface(dir);
-      bird.position.copy(dir).multiplyScalar(s.radius + 0.02);
+      // Seat on the RAYCAST mesh, not the analytic field: where the two
+      // diverge the analytic radius sat under the rendered terrain and the
+      // birds were buried. Startup-only, so 12 raycasts is fine.
+      const s = this.island.sampleSurfaceByDirection(dir, 0);
+      bird.position.copy(s.position).addScaledVector(s.normal, 0.04);
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal);
       bird.quaternion.copy(q);
       bird.rotateY(Math.random() * Math.PI * 2); // face a random way while pecking
@@ -4057,8 +4094,9 @@ export class GameScene extends THREE.Scene {
     // Gull flocks: V-formation orbit + soar + flap/glide cycle + night roost
     const birdDay = this.envCycle ? this.envCycle.getDayFactor() : 1;
     for (const b of this.birds) {
-      // Roost after dusk: shrink away in place, return at dawn.
-      const roostTarget = birdDay < 0.3 ? 0.001 : 1;
+      // Roost after dusk: shrink away in place, return at dawn (toward the
+      // 1.55 base size, not 1 — gulls are big birds).
+      const roostTarget = birdDay < 0.3 ? 0.001 : 1.55;
       const s = THREE.MathUtils.lerp(b.bird.scale.x, roostTarget, 1 - Math.exp(-3 * deltaTime));
       b.bird.scale.setScalar(s);
       b.bird.visible = s > 0.05;
@@ -4081,16 +4119,20 @@ export class GameScene extends THREE.Scene {
       } else {
         flap = 0.15 + Math.sin(time * 6 + b.phase) * 0.05;
       }
+      // THE bug behind "tilting instead of flapping": wingR carries
+      // rotation.y = π, which already reverses how its z-rotation reads, so
+      // the old `-flap` "mirror" put the wings in ANTI-phase — left tip up
+      // while right tip down, the whole bird see-sawing like one rigid
+      // plank. Same sign on both = both tips beat up and down TOGETHER.
       b.wingL.rotation.z = flap;
-      b.wingR.rotation.z = -flap;
-      // Leading-edge twist follows the stroke — a flexible wing, not a panel.
-      b.wingL.rotation.x = flap * 0.22;
-      b.wingR.rotation.x = flap * 0.22;
+      b.wingR.rotation.z = flap;
       // Slow soar: the whole formation drifts up and down as it circles
       // (per-flock phase via the shared pivot id keeps the V together).
       b.bird.position
         .copy(b.dirLocal)
-        .multiplyScalar(b.alt + b.altOff + Math.sin(time * 0.5 + b.pivot.id) * 0.5)
+        // Soar bob trimmed ±0.5 → ±0.2: the big vertical wander was part of
+        // what read as "tilting around" instead of flying + flapping.
+        .multiplyScalar(b.alt + b.altOff + Math.sin(time * 0.5 + b.pivot.id) * 0.2)
         .add(b.tangentOff);
     }
 
@@ -4103,12 +4145,16 @@ export class GameScene extends THREE.Scene {
         const dip = burst * Math.max(0, Math.sin(time * 6 + g.phase)) * 0.55;
         g.bird.quaternion.copy(g.baseQuat);
         g.bird.rotateX(dip);
-        // Mostly folded wings with the occasional quick ruffle — ground birds
-        // shuffle their feathers between pecks, they don't sit statue-still.
+        // Wings stay FOLDED along the body on the ground (screenshot-verified:
+        // spread wings on a grounded bird read as a crashed glider, not a
+        // bird). Occasional quick ruffle = feather shuffle between pecks.
         const ruffle =
           Math.sin(time * 0.23 + g.phase) > 0.96 ? Math.sin(time * 26 + g.phase) * 0.35 : 0;
-        g.wingL.rotation.z = ruffle;
-        g.wingR.rotation.z = -ruffle;
+        g.wingL.rotation.y = -1.25;
+        g.wingR.rotation.y = Math.PI + 1.25;
+        // Same z sign on both — the π-yawed right wing reverses z visually.
+        g.wingL.rotation.z = -0.18 + ruffle;
+        g.wingR.rotation.z = -0.18 + ruffle;
         if (gbPlayer && gbPlayer.distanceToSquared(g.basePos) < 3.2 * 3.2) {
           g.mode = 'flee';
           g.t0 = time;
@@ -4123,7 +4169,9 @@ export class GameScene extends THREE.Scene {
         if (t > 2.6) {
           g.mode = 'gone';
           g.bird.visible = false;
-          g.respawnAt = time + 22 + Math.random() * 20;
+          // Short absence (was 22-42s): flushing every bird then finding the
+          // area empty for half a minute read as "no birds on the ground".
+          g.respawnAt = time + 8 + Math.random() * 8;
           continue;
         }
         // Climb-out: accelerate up and away, nose lifted, fast flapping.
@@ -4134,11 +4182,13 @@ export class GameScene extends THREE.Scene {
         g.bird.quaternion.copy(g.baseQuat);
         g.bird.rotateX(-0.35);
         const fastFlap = Math.sin(time * 24 + g.phase) * 1.1; // panicked burst
+        g.wingL.rotation.y = 0; // wings snap OPEN for the climb-out
+        g.wingR.rotation.y = Math.PI;
         g.wingL.rotation.z = fastFlap;
-        g.wingR.rotation.z = -fastFlap;
+        g.wingR.rotation.z = fastFlap; // same sign — π yaw flips z visually
       } else if (
         time > g.respawnAt &&
-        (!gbPlayer || gbPlayer.distanceToSquared(g.basePos) > 7 * 7)
+        (!gbPlayer || gbPlayer.distanceToSquared(g.basePos) > 5 * 5)
       ) {
         // Coast clear — settle back onto the same spot facing a new way.
         g.mode = 'peck';
