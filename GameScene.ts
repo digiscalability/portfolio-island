@@ -6400,6 +6400,76 @@ export class GameScene extends THREE.Scene {
     box(g, 7.6, 0.25, 0.08, 0x74573a, 0, 0.23, 3.84);
     box(g, 0.08, 0.25, 7.6, 0x74573a, -3.84, 0.23, 0);
     box(g, 0.08, 0.25, 7.6, 0x74573a, 3.84, 0.23, 0);
+
+    // ── Wall dressing ──
+    // Four 8x4 flats in a single flat tint read as the inside of a cardboard
+    // box, however nice the furniture is. Real rooms break the HEIGHT: a
+    // panelled wainscot below the hand, a dado rail capping it, a picture rail
+    // near the ceiling. That is three horizontals and a rhythm of verticals,
+    // and it costs a few boxes. In the SHELL, so all six themes inherit it.
+    const wcv = document.createElement('canvas');
+    wcv.width = 128;
+    wcv.height = 128;
+    const wx2 = wcv.getContext('2d');
+    if (wx2) {
+      // Near-white speckle: the material's colour is re-tinted per building
+      // and a map MULTIPLIES, so anything darker here would mute every room.
+      wx2.fillStyle = '#ffffff';
+      wx2.fillRect(0, 0, 128, 128);
+      for (let i = 0; i < 2400; i++) {
+        wx2.fillStyle = `rgba(122,112,98,${0.03 + Math.random() * 0.05})`;
+        wx2.fillRect(Math.random() * 128, Math.random() * 128, 1.5, 1.5);
+      }
+    }
+    const wtex = new THREE.CanvasTexture(wcv);
+    wtex.colorSpace = THREE.SRGBColorSpace;
+    wtex.wrapS = wtex.wrapT = THREE.RepeatWrapping;
+    wtex.repeat.set(3, 1.6);
+    wallMat.map = wtex;
+    wallMat.needsUpdate = true;
+
+    const panelMat = matFor(0xdcd5c7, 0.94);
+    const railMat = matFor(0x8a7355, 0.8);
+    // Built once facing +z and rotated onto each wall. Room-ward is DECREASING
+    // z here: the wall's inner face is 3.9, so the field sits at 3.875 and the
+    // stiles stand proud of it at 3.855.
+    const dressWall = (rotY: number, gap?: [number, number]): void => {
+      const w = new THREE.Group();
+      w.rotation.y = rotY;
+      g.add(w);
+      const spans: Array<[number, number]> = gap
+        ? [
+            [-3.88, gap[0]],
+            [gap[1], 3.88],
+          ]
+        : [[-3.88, 3.88]];
+      for (const [a, b] of spans) {
+        const width = b - a;
+        if (width < 0.25) continue;
+        const cx = (a + b) / 2;
+        const field = new THREE.Mesh(new THREE.BoxGeometry(width, 0.74, 0.03), panelMat);
+        field.position.set(cx, 0.66, 3.875);
+        w.add(field);
+        const dado = new THREE.Mesh(new THREE.BoxGeometry(width, 0.1, 0.09), railMat);
+        dado.position.set(cx, 1.08, 3.845);
+        w.add(dado);
+        const picture = new THREE.Mesh(new THREE.BoxGeometry(width, 0.07, 0.06), railMat);
+        picture.position.set(cx, 3.12, 3.86);
+        w.add(picture);
+        // Stiles roughly every metre, and always one at each end of the span
+        // so a run never stops in mid-air beside the doorway.
+        const n = Math.max(1, Math.round(width / 0.98));
+        for (let i = 0; i <= n; i++) {
+          const stile = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.74, 0.05), railMat);
+          stile.position.set(a + (width * i) / n, 0.66, 3.855);
+          w.add(stile);
+        }
+      }
+    };
+    dressWall(0, [-2.45, -1.15]); // front wall — leave the doorway clear
+    dressWall(Math.PI);
+    dressWall(Math.PI / 2);
+    dressWall(-Math.PI / 2);
     // Front wall dressing (the wall with no poster): a glowing window + a door,
     // so the orbit's "empty" quadrant reads lived-in instead of blank.
     box(g, 1.9, 1.5, 0.1, 0x6e5236, 1.8, 2.3, 3.86);
@@ -7150,7 +7220,14 @@ export class GameScene extends THREE.Scene {
         depthBuffer: true,
         stencilBuffer: false,
       });
-      this.interiorViewTarget.texture.colorSpace = THREE.SRGBColorSpace;
+      // LINEAR, not sRGB. three forces LinearSRGBColorSpace on every non-XR
+      // render target (WebGLRenderer, r180) and NoToneMapping with it, so
+      // tagging the texture sRGB made the sampler decode already-linear
+      // radiance a second time — the view came out roughly 2.3x too dark in
+      // the midtones and over-contrasted, reading as "it's gloomy outside"
+      // rather than as a bug. The pane's material keeps toneMapped=true so the
+      // main pass grades the sample exactly once.
+      this.interiorViewTarget.texture.colorSpace = THREE.LinearSRGBColorSpace;
       // far MUST reach the sky. SkyDome is radius 800 and the starfields sit at
       // ~700-770; at the 400 I first used, the whole sky was clipped away and
       // the window showed a pale void at midnight instead of stars.
