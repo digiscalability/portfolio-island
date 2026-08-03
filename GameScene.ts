@@ -6236,6 +6236,33 @@ export class GameScene extends THREE.Scene {
   private onHouseEnterCb: ((id: string) => void) | null = null;
   private static readonly INTERIOR_ORIGIN = new THREE.Vector3(0, -300, 0);
 
+  // ── The view out of the window ──
+  // The room is parked 300u under the island, so there is nothing outside it
+  // to see. Rather than fake a backdrop, a second camera is placed where the
+  // building REALLY stands and renders the island into a texture that becomes
+  // the window pane. Refreshed on a timer, not per frame: at 4Hz and quarter
+  // resolution this costs a fraction of a frame, and the outside world does
+  // not change fast enough for anyone to notice the difference.
+  private interiorWindowMat: THREE.MeshBasicMaterial | null = null;
+  private interiorViewTarget: THREE.WebGLRenderTarget | null = null;
+  private interiorViewCam: THREE.PerspectiveCamera | null = null;
+  private interiorViewFrom = new THREE.Vector3();
+  private interiorViewLook = new THREE.Vector3();
+  private interiorViewAccum = 0;
+  private interiorRainNode: THREE.Object3D | null = null;
+  // 0.4s, not 0.25s. Measured 3.1ms per pass at 384x288 and 2.9ms at 512x384 —
+  // near-identical, because the cost is CPU-side draw-call submission (102
+  // calls) and not fill rate. Resolution is therefore not the lever; frequency
+  // is. At 2.5Hz this is ~8ms per second of wall time, and a villager strolling
+  // at 1.4u/s moves half a unit between frames — invisible in a 220px pane.
+  private static readonly INTERIOR_VIEW_INTERVAL = 0.4;
+  /** Structural type, not the SimpleRenderer class: GameScene is imported BY
+   *  the renderer's owner, and a real import here would close the cycle. */
+  private rendererRef: { getRenderer(): THREE.WebGLRenderer } | null = null;
+  public setRendererRef(r: { getRenderer(): THREE.WebGLRenderer }): void {
+    this.rendererRef = r;
+  }
+
   public setOnHouseEnter(cb: (id: string) => void): void {
     this.onHouseEnterCb = cb;
   }
@@ -6349,10 +6376,14 @@ export class GameScene extends THREE.Scene {
     // Front wall dressing (the wall with no poster): a glowing window + a door,
     // so the orbit's "empty" quadrant reads lived-in instead of blank.
     box(g, 1.9, 1.5, 0.1, 0x6e5236, 1.8, 2.3, 3.86);
-    const pane = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.6, 1.2),
-      new THREE.MeshBasicMaterial({ color: 0xcfe4ff }),
-    );
+    // The pane used to be a flat 0xcfe4ff rectangle: identical at 2am in a
+    // storm and 1pm in sunshine, and showing nothing at all. It now carries a
+    // live render of the island taken from where this building actually
+    // stands, so the view out of it IS the real world outside — real terrain,
+    // real sea, real sky, real weather, real villagers walking past.
+    const paneMat = new THREE.MeshBasicMaterial({ color: 0xcfe4ff });
+    this.interiorWindowMat = paneMat;
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.2), paneMat);
     pane.position.set(1.8, 2.3, 3.79);
     pane.rotation.y = Math.PI;
     g.add(pane);
@@ -6961,6 +6992,9 @@ export class GameScene extends THREE.Scene {
     // re-syncs the group from it, dropping them back exactly where they were.
     this.interiorActiveTheme = active;
     this.buildInteriorColliders(active);
+    // Aim the window's camera BEFORE the player's visual group is teleported
+    // into the room — getWorldPosition() is still the doorstep they walked to.
+    this.aimInteriorOutlook();
     this.player.setPositionHold(this.player.getWorldPosition());
     const o = GameScene.INTERIOR_ORIGIN;
     this.player.position.set(o.x - 1.8, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + 2.6);
@@ -6992,6 +7026,112 @@ export class GameScene extends THREE.Scene {
     this.interiorOccupants = [];
     if (this.interiorZzz) this.interiorZzz.visible = false;
     if (active === 'cottage' && houseId) this.placeCottageOccupants(houseId);
+  }
+
+  /**
+   * Decide what this building actually looks out ON, and point the window's
+   * camera at it.
+   *
+   * Called while the player still stands on the doorstep, so their position is
+   * the building's real position on the sphere. They walked IN, so the camera
+   * behind them is looking at the building; reverse that and you are looking
+   * away from it — which is what a window in the front wall sees. Raised to
+   * first-floor height so the view clears the doorstep props.
+   */
+  private aimInteriorOutlook(): void {
+    const stand = this.player.getWorldPosition();
+    const up = stand.clone().normalize();
+    // The chase camera sits behind the player looking at them and on into the
+    // building; the outward look is its reverse, flattened to the ground plane
+    // so the window never stares at the sky or into the dirt.
+    const away = this.camera.getWorldDirection(new THREE.Vector3()).negate();
+    away.addScaledVector(up, -away.dot(up));
+    if (away.lengthSq() < 1e-6) {
+      // Degenerate (camera straight overhead): fall back to any tangent.
+      away.crossVectors(up, new THREE.Vector3(0, 1, 0));
+      if (away.lengthSq() < 1e-6) away.set(1, 0, 0);
+    }
+    away.normalize();
+    this.interiorViewFrom.copy(stand).addScaledVector(up, 2.2);
+    this.interiorViewLook.copy(this.interiorViewFrom).addScaledVector(away, 30);
+    this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL; // force a frame-1 refresh
+  }
+
+  /**
+   * Render the island from outside the building into the window pane.
+   *
+   * Costs one extra scene render at quarter resolution, four times a second.
+   * The interior group is hidden for the pass: the room is 300u below and out
+   * of frame anyway, but a stray near-plane clip would put the room inside its
+   * own window, and that is a cheap guarantee to buy.
+   */
+  private refreshInteriorView(): void {
+    const renderer = this.rendererRef?.getRenderer();
+    if (!renderer || !this.interiorWindowMat) return;
+    if (!this.interiorViewTarget) {
+      // 384x288, not 512x384: the pane is ~220px on screen at a normal viewing
+      // distance, so 512 was oversampled by more than 2x. Measured 2.85ms per
+      // pass at 512; this is ~44% fewer pixels for no visible difference.
+      this.interiorViewTarget = new THREE.WebGLRenderTarget(384, 288, {
+        depthBuffer: true,
+        stencilBuffer: false,
+      });
+      this.interiorViewTarget.texture.colorSpace = THREE.SRGBColorSpace;
+      // far MUST reach the sky. SkyDome is radius 800 and the starfields sit at
+      // ~700-770; at the 400 I first used, the whole sky was clipped away and
+      // the window showed a pale void at midnight instead of stars.
+      this.interiorViewCam = new THREE.PerspectiveCamera(55, 4 / 3, 0.3, 2000);
+      this.interiorWindowMat.color.set(0xffffff); // stop tinting the render
+      this.interiorWindowMat.map = this.interiorViewTarget.texture;
+      this.interiorWindowMat.needsUpdate = true;
+    }
+    const cam = this.interiorViewCam;
+    if (!cam) return;
+    cam.up.copy(this.interiorViewFrom).normalize();
+    cam.position.copy(this.interiorViewFrom);
+    cam.lookAt(this.interiorViewLook);
+    cam.updateMatrixWorld(true);
+    const roomWasVisible = this.interiorGroup?.visible ?? false;
+    if (this.interiorGroup) this.interiorGroup.visible = false;
+    // EnvironmentCycle parks the rain/snow volume on the PLAYER every frame
+    // (EnvironmentCycle.ts:815), and the player is indoors — so the weather
+    // was falling nowhere near the building and the window showed a dry night
+    // in a storm. Borrow the volume for the pass: nobody indoors can see it.
+    if (!this.interiorRainNode) {
+      this.traverse((o) => {
+        if (o.name === 'precipitation') this.interiorRainNode = o;
+      });
+    }
+    const rain = this.interiorRainNode;
+    const rainHome = rain ? this._goalScratch.copy(rain.position) : null;
+    if (rain) {
+      // Offset FORWARD, not onto the lens. Centred on the camera the nearest
+      // drops sit at arm's length and read as a white wall; the main camera
+      // never sees that because it trails the player. Six units ahead puts the
+      // lens at the volume's rear edge, which is the same view the chase
+      // camera gets.
+      rain.position
+        .copy(this.interiorViewFrom)
+        .addScaledVector(
+          this._npcNormal.copy(this.interiorViewLook).sub(this.interiorViewFrom).normalize(),
+          6,
+        );
+    }
+    // The sky gradient is oriented by a uUp uniform written every frame from
+    // the MAIN camera's position (see updateAmbient). Indoors that camera is
+    // 300u UNDER the island, so uUp points at the planet's core and the window
+    // would render the sky upside down — horizon colours overhead, top colour
+    // at the ground. Point it at the building's real up for the pass.
+    const skyUp = this.skyUpUniform;
+    const skyUpHome = skyUp ? this._npcColWorld.copy(skyUp.value) : null;
+    if (skyUp) skyUp.value.copy(cam.up);
+    const prevTarget = renderer.getRenderTarget();
+    renderer.setRenderTarget(this.interiorViewTarget);
+    renderer.render(this, cam);
+    renderer.setRenderTarget(prevTarget);
+    if (skyUp && skyUpHome) skyUp.value.copy(skyUpHome);
+    if (rain && rainHome) rain.position.copy(rainHome);
+    if (this.interiorGroup) this.interiorGroup.visible = roomWasVisible;
   }
 
   /** Draw a framed poster: title (big) or a content panel of \n-split lines. */
@@ -7038,6 +7178,12 @@ export class GameScene extends THREE.Scene {
    *  (+y up), so this never touches the spherical-physics machinery. */
   private updateInteriorMode(deltaTime: number): void {
     this.interiorTime += deltaTime;
+    // Keep the window alive: the sun moves, weather turns, villagers walk past.
+    this.interiorViewAccum += deltaTime;
+    if (this.interiorViewAccum >= GameScene.INTERIOR_VIEW_INTERVAL) {
+      this.interiorViewAccum = 0;
+      this.refreshInteriorView();
+    }
     // Hearth flicker (fire is 0 in hearthless rooms).
     if (this.interiorFire && this.interiorFire.intensity > 0) {
       const t = this.interiorTime;
@@ -7288,6 +7434,11 @@ export class GameScene extends THREE.Scene {
     if (this.player) {
       this.player.dispose();
     }
+    // The window's render target owns a GPU texture and depth buffer; the
+    // traverse below only reaches scene-graph descendants, and this is not one.
+    this.interiorViewTarget?.dispose();
+    this.interiorViewTarget = null;
+    this.interiorViewCam = null;
 
     // Dispose island resources. island.mesh is the island GROUP (dozens of
     // child meshes), NOT a Mesh — it has no geometry/material of its own, so the

@@ -238,6 +238,9 @@ class SimpleApp {
 
       // Create scene (this will also create planet and player)
       this.scene = new GameScene();
+      // The interior window renders the island into a texture, so the scene
+      // needs the WebGLRenderer. Structural handoff — no import either way.
+      this.scene.setRendererRef(this.renderer);
       this.ui.showLoading(60);
       await this.scene.ready();
       this.ui.showLoading(90);
