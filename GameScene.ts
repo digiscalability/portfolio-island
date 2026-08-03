@@ -143,6 +143,9 @@ export class GameScene extends THREE.Scene {
   // Villager limb bones, in swing order: [legL, legR, armL, armR], and the
   // amplitude each takes of the leg swing (arms counter-swing at 70%).
   private static readonly NPC_LIMB_BONES = ['legL', 'legR', 'armL', 'armR'];
+  // Angular slack (~4u of arc on R=50) within which a blocked NPC counts as
+  // having arrived at its anchor rather than abandoning it.
+  private static readonly NPC_ARRIVE_ENOUGH = 0.08;
   private static readonly NPC_LIMB_MIX = [1, -1, -0.7, 0.7];
   private readonly _npcLimbQ = new THREE.Quaternion();
   private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
@@ -5057,14 +5060,31 @@ export class GameScene extends THREE.Scene {
                 }
                 if (npcPushed) {
                   w.dir.copy(this._npcColWorld).normalize();
-                  // Give-up guard: a goal INSIDE a footprint would grind the
-                  // wall forever — if pushes keep firing without progress,
-                  // drop to idle and re-pick after a beat.
+                  // Give-up guard. Several activity anchors sit ON a building
+                  // footprint (the musician's plaza, the keeper's tower), and
+                  // the old guard just idled for 2s and re-picked the SAME
+                  // unreachable spot — measured live, five townsfolk were
+                  // walking 100% of the time while blocked 50% of it, shoving
+                  // a wall forever and never doing their job. Now a blocked
+                  // NPC ARRIVES where it stands: it keeps the activity and
+                  // pose and works from just outside the wall, which is what
+                  // a person would do. Only a goal it has barely approached
+                  // is abandoned outright.
                   w.blockedT = (w.blockedT ?? 0) + deltaTime;
-                  if (w.blockedT > 2) {
+                  if (w.blockedT > 1.5) {
                     w.blockedT = 0;
                     w.state = 'idle';
-                    w.until = time + 2;
+                    const nearGoal = w.dir.angleTo(w.target) < GameScene.NPC_ARRIVE_ENOUGH;
+                    if (nearGoal) {
+                      // Close enough — settle in and run the activity here.
+                      w.until = time + (w.nextDwell ?? 3 + Math.random() * 7);
+                      w.target.copy(w.dir);
+                    } else {
+                      // Genuinely walled off en route: give up on this anchor
+                      // and let the next pick rotate to a different one.
+                      w.rot += 1;
+                      w.until = time + 1.5;
+                    }
                   }
                 } else {
                   w.blockedT = 0;
