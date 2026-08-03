@@ -2004,6 +2004,82 @@ export class Island {
       // the Farmer works the hamlet's flower fields
       [2.9, 0.55],
     ];
+
+    // TUCK THREE WORKPLACES AGAINST THEIR DISTRICT HALL.
+    //
+    // The town's workplaces read as sheds alone in fields because they stood
+    // 10-13u from the nearest building. Measured distance to the nearest real
+    // structure, before this: Guard 9.9u, Architect 12.6u, Mayor 12.7u — while
+    // the Cartographer (4.0u), Courier (3.1u), Night Watch (3.1u) and Keeper
+    // (5.1u) already had a stall or the lighthouse at their back and read fine.
+    //
+    // This moves the SITE, not just the props. A station publishes no activity
+    // anchor — it is scenery placed where its persona already stands — so
+    // moving a station alone would leave its owner behind, staring at nothing
+    // from ten metres away. NPC_SITES is the shared origin for both the spawn
+    // (below) and buildTownStations, so editing it here moves villager and
+    // workplace together.
+    //
+    // Indices 0-3 are DELIBERATELY excluded: they are the welcome greeters at
+    // the spawn plaza, and pulling two of them onto a hall wall would strip the
+    // spot every visitor lands on.
+    //
+    // Hall wall radii are MEASURED from the built halls, because ZonesManager
+    // builds them after createIsland and they cannot be queried from here.
+    // They sit exactly at dirAt(district.lon, district.lat) — verified 0.00u
+    // offset for four of five, 0.01u for Contact.
+    const HALL_WALL_RADIUS: Record<string, number> = {
+      welcome: 3.7,
+      professional: 3.15,
+      projects: 2.72,
+      personal: 2.78,
+      contact: 2.98,
+    };
+    // Gap from the hall's wall to the station's centre. The hall's COLLIDER is
+    // only 1.7 and NPC avoidance triggers at radius+0.3, so the villager ends
+    // up 2.7u+ clear of the push zone — nowhere near the grinding that anchors
+    // authored on top of colliders used to cause.
+    const HALL_STANDOFF = 1.75;
+    const tuckAgainstHall = (siteIndex: number, districtId: string): void => {
+      const district = DISTRICTS.find((d) => d.id === districtId);
+      const site = NPC_SITES[siteIndex];
+      if (!district || !site) return;
+      const hall = this.dirAt(district.lon, district.lat).normalize();
+      const lived = this.dirAt(site[0], site[1]).normalize();
+      // Step off the hall along the tangent pointing at where this persona
+      // ALREADY lives, so they end up against their own hall's nearest flank
+      // rather than teleported to an arbitrary side of it.
+      const tangent = lived.clone().addScaledVector(hall, -lived.dot(hall));
+      if (tangent.lengthSq() < 1e-8) return; // already dead-centre on the hall
+      tangent.normalize();
+      const arc = ((HALL_WALL_RADIUS[districtId] ?? 3.2) + HALL_STANDOFF) / this.radius;
+      // Sweep BEARINGS around the hall at that fixed distance, stepping away
+      // from the persona's own side in alternating directions, and take the
+      // first that is not on a road. The hall's avenues radiate from its
+      // centre and are marked by lantern pillars at their departure points —
+      // the Mayor's own bearing was 0.17 rad off one, which put a pillar
+      // through the middle of his rostrum. Sweeping settles him BETWEEN two
+      // avenues, which is also where a rostrum belongs: not blocking a road.
+      let dir: THREE.Vector3 | null = null;
+      for (let k = 0; k <= 24 && !dir; k++) {
+        const offset = (k % 2 === 0 ? 1 : -1) * Math.ceil(k / 2) * 0.1;
+        const swept = tangent.clone().applyAxisAngle(hall, offset).normalize();
+        const cand = hall
+          .clone()
+          .multiplyScalar(Math.cos(arc))
+          .addScaledVector(swept, Math.sin(arc))
+          .normalize();
+        if (this.isNearStreet(cand)) continue;
+        dir = cand;
+      }
+      if (!dir) return; // hall ringed by roads — leave the persona where he was
+      site[0] = Math.atan2(dir.z, dir.x);
+      site[1] = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1));
+    };
+    tuckAgainstHall(8, 'personal'); // Guard -> Personal hall
+    tuckAgainstHall(12, 'professional'); // Architect -> Professional hall
+    tuckAgainstHall(21, 'welcome'); // Mayor -> the civic hall he holds court in
+
     const NPC_SHIRT_COLORS = [0x4488bb, 0xcc5544, 0x55aa55, 0xddaa33, 0x8866aa, 0xbb6644];
     const NPC_PERSONALITIES = [
       {
@@ -4005,6 +4081,16 @@ export class Island {
    */
   private claimClearSpot(rawDir: THREE.Vector3, clearArc: number, maxDrift = 0.12): THREE.Vector3 {
     const centre = rawDir.clone().normalize();
+    // maxDrift 0 = EXACT placement. Each district pre-claims a 6.5u disc round
+    // its hall, so searching for "clear ground" can never tuck anything against
+    // a hall wall — it shoves the station back out to the leash and into the
+    // field it was being rescued from. When the caller computed a spot from the
+    // hall's own measured geometry it knows something the search does not, so
+    // it wins. The footprint is still registered, so later props avoid it.
+    if (maxDrift <= 0) {
+      this.occupiedDirs.push({ dir: centre, arc: clearArc });
+      return centre;
+    }
     // Any tangent basis will do; we only need to sweep a full circle in it.
     let tangent = new THREE.Vector3(0, 1, 0).cross(centre);
     if (tangent.lengthSq() < 1e-6) tangent = new THREE.Vector3(1, 0, 0).cross(centre);
@@ -4936,87 +5022,103 @@ export class Island {
     });
 
     // 8 GUARD — a sentry box and a brazier at his post.
-    at(8, 'guard_post', 0.08, (g) => {
-      // Already roofed; it just needs the ground under it to look claimed.
-      pad(g, 0.13, 0, 3.8, 2.0, stone);
-      // Built from PANELS with the front left open, so it reads as a shelter
-      // you could stand in rather than a solid crate.
-      box(g, 1.0, 0.1, 0.9, 0, 0.05, 0, darkWood); // floor
-      box(g, 1.0, 1.9, 0.08, 0, 0.95, -0.41, wood); // back
-      box(g, 0.08, 1.9, 0.82, -0.46, 0.95, 0, wood); // left side
-      box(g, 0.08, 1.9, 0.82, 0.46, 0.95, 0, wood); // right side
-      box(g, 1.0, 0.3, 0.08, 0, 1.8, 0.41, wood); // lintel over the doorway
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(0.95, 0.5, 4), cloth);
-      roof.position.y = 2.15;
-      roof.rotation.y = Math.PI / 4;
-      roof.castShadow = true;
-      g.add(roof);
-      brazier(g, 1.5, 0.3);
-      // Weapon rack: two uprights, a crossbar, and spears — wooden shafts
-      // under steel heads, not solid metal poles.
-      box(g, 0.07, 1.0, 0.07, -1.5, 0.5, -0.3, darkWood);
-      box(g, 0.07, 1.0, 0.07, -1.5, 0.5, 0.5, darkWood);
-      box(g, 0.07, 0.07, 0.9, -1.5, 0.95, 0.1, darkWood);
-      for (const sz of [-0.15, 0.1, 0.35]) {
-        box(g, 0.045, 1.4, 0.045, -1.42, 0.7, sz, darkWood, 0.12);
-        const head = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.22, 5), metal);
-        head.position.set(-1.42, 1.42, sz + 0.17);
-        head.rotation.x = 0.12;
-        g.add(head);
-      }
-    });
+    at(
+      8,
+      'guard_post',
+      0.08,
+      (g) => {
+        // Already roofed; it just needs the ground under it to look claimed.
+        pad(g, 0.13, 0, 3.8, 2.0, stone);
+        // Built from PANELS with the front left open, so it reads as a shelter
+        // you could stand in rather than a solid crate.
+        box(g, 1.0, 0.1, 0.9, 0, 0.05, 0, darkWood); // floor
+        box(g, 1.0, 1.9, 0.08, 0, 0.95, -0.41, wood); // back
+        box(g, 0.08, 1.9, 0.82, -0.46, 0.95, 0, wood); // left side
+        box(g, 0.08, 1.9, 0.82, 0.46, 0.95, 0, wood); // right side
+        box(g, 1.0, 0.3, 0.08, 0, 1.8, 0.41, wood); // lintel over the doorway
+        const roof = new THREE.Mesh(new THREE.ConeGeometry(0.95, 0.5, 4), cloth);
+        roof.position.y = 2.15;
+        roof.rotation.y = Math.PI / 4;
+        roof.castShadow = true;
+        g.add(roof);
+        brazier(g, 1.5, 0.3);
+        // Weapon rack: two uprights, a crossbar, and spears — wooden shafts
+        // under steel heads, not solid metal poles.
+        box(g, 0.07, 1.0, 0.07, -1.5, 0.5, -0.3, darkWood);
+        box(g, 0.07, 1.0, 0.07, -1.5, 0.5, 0.5, darkWood);
+        box(g, 0.07, 0.07, 0.9, -1.5, 0.95, 0.1, darkWood);
+        for (const sz of [-0.15, 0.1, 0.35]) {
+          box(g, 0.045, 1.4, 0.045, -1.42, 0.7, sz, darkWood, 0.12);
+          const head = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.22, 5), metal);
+          head.position.set(-1.42, 1.42, sz + 0.17);
+          head.rotation.x = 0.12;
+          g.add(head);
+        }
+      },
+      // EXACT placement on the three hall-tucked stations. Any drift at all
+      // walks them back off the wall their site was just moved to, because the
+      // district pre-claims a 6.5u disc round its hall — so every ring near
+      // the wall reads as "occupied" and the search shoves the station out.
+      0,
+    );
 
     // 12 ARCHITECT — a drafting table with rolled plans.
-    at(12, 'drafting_table', 0.06, (g) => {
-      pad(g, -0.2, 0.3, 3.1, 2.7, stone);
-      canopy(g, -0.2, 0.3, 2.9, 2.5, Materials.createStandardMaterial({ color: 0xc47a2e }));
-      table(g, 1.5, 0.9, wood);
-      // A drafting board must be visibly RAKED — laid near-flat it just reads
-      // as a tablecloth. Front edge rests on the table, back edge propped up.
-      // +0.5 raises the FAR edge, so the drawing surface faces the street and
-      // the stool — raked the other way the architect would be reading the back
-      // of his own board.
-      const RAKE = 0.5;
-      const board = box(g, 1.35, 0.05, 0.8, 0, 0.95, 0, darkWood);
-      board.rotation.x = RAKE;
-      const sheet = box(g, 1.15, 0.02, 0.65, 0, 0.985, 0, paper);
-      sheet.rotation.x = RAKE;
-      // Blue plan lines lying ON the raked plane. A point `d` along the board
-      // from its centre lands at (z = d·cos, y = −d·sin) once rotated, so the
-      // offsets have to be resolved in the rotated frame, not stacked flat.
-      const ink = Materials.createStandardMaterial({ color: 0x5b8fb0 });
-      for (const [sx, sw, d] of [
-        [-0.3, 0.4, -0.12],
-        [0.05, 0.55, 0.06],
-        [0.3, 0.25, 0.2],
-      ] as Array<[number, number, number]>) {
-        const line = box(g, sw, 0.015, 0.03, sx, 0, 0, ink);
-        line.rotation.x = RAKE;
-        line.position.z = d * Math.cos(RAKE);
-        line.position.y = 0.995 - d * Math.sin(RAKE);
-      }
-      box(g, 0.09, 0.28, 0.09, 0, 0.93, -0.36, darkWood); // prop under the raised edge
-      // Rolled plans stood in a pail beside the table, where they read.
-      const pail = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.14, 0.4, 8), metal);
-      pail.position.set(-0.95, 0.2, 0.25);
-      pail.castShadow = true;
-      g.add(pail);
-      for (const [rx, rz, tilt] of [
-        [-0.99, 0.2, 0.12],
-        [-0.9, 0.3, -0.14],
-        [-0.97, 0.31, 0.05],
-      ] as Array<[number, number, number]>) {
-        const roll = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.75, 6), paper);
-        roll.position.set(rx, 0.55, rz);
-        roll.rotation.z = tilt;
-        roll.castShadow = true;
-        g.add(roll);
-      }
-      const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 6), darkWood);
-      stool.position.set(0, 0.25, 0.85);
-      stool.castShadow = true;
-      g.add(stool);
-    });
+    at(
+      12,
+      'drafting_table',
+      0.06,
+      (g) => {
+        pad(g, -0.2, 0.3, 3.1, 2.7, stone);
+        canopy(g, -0.2, 0.3, 2.9, 2.5, Materials.createStandardMaterial({ color: 0xc47a2e }));
+        table(g, 1.5, 0.9, wood);
+        // A drafting board must be visibly RAKED — laid near-flat it just reads
+        // as a tablecloth. Front edge rests on the table, back edge propped up.
+        // +0.5 raises the FAR edge, so the drawing surface faces the street and
+        // the stool — raked the other way the architect would be reading the back
+        // of his own board.
+        const RAKE = 0.5;
+        const board = box(g, 1.35, 0.05, 0.8, 0, 0.95, 0, darkWood);
+        board.rotation.x = RAKE;
+        const sheet = box(g, 1.15, 0.02, 0.65, 0, 0.985, 0, paper);
+        sheet.rotation.x = RAKE;
+        // Blue plan lines lying ON the raked plane. A point `d` along the board
+        // from its centre lands at (z = d·cos, y = −d·sin) once rotated, so the
+        // offsets have to be resolved in the rotated frame, not stacked flat.
+        const ink = Materials.createStandardMaterial({ color: 0x5b8fb0 });
+        for (const [sx, sw, d] of [
+          [-0.3, 0.4, -0.12],
+          [0.05, 0.55, 0.06],
+          [0.3, 0.25, 0.2],
+        ] as Array<[number, number, number]>) {
+          const line = box(g, sw, 0.015, 0.03, sx, 0, 0, ink);
+          line.rotation.x = RAKE;
+          line.position.z = d * Math.cos(RAKE);
+          line.position.y = 0.995 - d * Math.sin(RAKE);
+        }
+        box(g, 0.09, 0.28, 0.09, 0, 0.93, -0.36, darkWood); // prop under the raised edge
+        // Rolled plans stood in a pail beside the table, where they read.
+        const pail = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.14, 0.4, 8), metal);
+        pail.position.set(-0.95, 0.2, 0.25);
+        pail.castShadow = true;
+        g.add(pail);
+        for (const [rx, rz, tilt] of [
+          [-0.99, 0.2, 0.12],
+          [-0.9, 0.3, -0.14],
+          [-0.97, 0.31, 0.05],
+        ] as Array<[number, number, number]>) {
+          const roll = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.75, 6), paper);
+          roll.position.set(rx, 0.55, rz);
+          roll.rotation.z = tilt;
+          roll.castShadow = true;
+          g.add(roll);
+        }
+        const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 6), darkWood);
+        stool.position.set(0, 0.25, 0.85);
+        stool.castShadow = true;
+        g.add(stool);
+      },
+      0, // exact: tucked against the Professional/Welcome hall
+    );
 
     // 14 LIGHTHOUSE KEEPER — the keeper's yard at the foot of his tower.
     // Short leash (0.05 rad ~ 2.5u): the tower he keeps stands at dirAt(5.4,
@@ -5186,35 +5288,41 @@ export class Island {
     });
 
     // 21 MAYOR — a lectern and the town notice board.
-    at(21, 'lectern', 0.07, (g) => {
-      pad(g, -1.2, 0.1, 4.4, 2.2, stone);
-      // A baldachin over the rostrum. It has to be WIDE relative to its
-      // height or 2.35u posts on a 1.3u span read as scaffolding round a
-      // 1.05u lectern; 2.0 x 1.8 gives it civic proportions.
-      canopy(g, 0, 0.15, 2.0, 1.8, Materials.createStandardMaterial({ color: 0x8b5a2b }));
-      box(g, 0.5, 0.9, 0.4, 0, 0.45, 0, wood);
-      const top = box(g, 0.66, 0.06, 0.5, 0, 0.95, 0, darkWood);
-      top.rotation.x = -0.28;
-      const book = box(g, 0.3, 0.06, 0.22, 0, 1.0, 0.02, paper);
-      book.rotation.x = -0.28;
-      // Village notice board: framed, and roofed the way a real one is so the
-      // notices survive the weather.
-      box(g, 1.6, 1.1, 0.08, -2.0, 1.15, 0, wood);
-      box(g, 1.7, 0.09, 0.12, -2.0, 1.72, 0.02, darkWood); // top rail
-      box(g, 1.7, 0.09, 0.12, -2.0, 0.58, 0.02, darkWood); // bottom rail
-      const boardCanopy = box(g, 1.8, 0.07, 0.42, -2.0, 1.82, 0.12, darkWood);
-      boardCanopy.rotation.x = -0.34;
-      box(g, 0.12, 1.2, 0.12, -2.7, 0.6, 0, darkWood);
-      box(g, 0.12, 1.2, 0.12, -1.3, 0.6, 0, darkWood);
-      for (const [px, py, tilt] of [
-        [-0.4, 1.25, 0.06],
-        [0.1, 1.35, -0.09],
-        [0.35, 1.02, 0.03],
-      ] as Array<[number, number, number]>) {
-        const note = box(g, 0.3, 0.34, 0.02, -2.0 + px, py, 0.05, paper);
-        note.rotation.z = tilt; // pinned by hand, never quite square
-      }
-    });
+    at(
+      21,
+      'lectern',
+      0.07,
+      (g) => {
+        pad(g, -1.2, 0.1, 4.4, 2.2, stone);
+        // A baldachin over the rostrum. It has to be WIDE relative to its
+        // height or 2.35u posts on a 1.3u span read as scaffolding round a
+        // 1.05u lectern; 2.0 x 1.8 gives it civic proportions.
+        canopy(g, 0, 0.15, 2.0, 1.8, Materials.createStandardMaterial({ color: 0x8b5a2b }));
+        box(g, 0.5, 0.9, 0.4, 0, 0.45, 0, wood);
+        const top = box(g, 0.66, 0.06, 0.5, 0, 0.95, 0, darkWood);
+        top.rotation.x = -0.28;
+        const book = box(g, 0.3, 0.06, 0.22, 0, 1.0, 0.02, paper);
+        book.rotation.x = -0.28;
+        // Village notice board: framed, and roofed the way a real one is so the
+        // notices survive the weather.
+        box(g, 1.6, 1.1, 0.08, -2.0, 1.15, 0, wood);
+        box(g, 1.7, 0.09, 0.12, -2.0, 1.72, 0.02, darkWood); // top rail
+        box(g, 1.7, 0.09, 0.12, -2.0, 0.58, 0.02, darkWood); // bottom rail
+        const boardCanopy = box(g, 1.8, 0.07, 0.42, -2.0, 1.82, 0.12, darkWood);
+        boardCanopy.rotation.x = -0.34;
+        box(g, 0.12, 1.2, 0.12, -2.7, 0.6, 0, darkWood);
+        box(g, 0.12, 1.2, 0.12, -1.3, 0.6, 0, darkWood);
+        for (const [px, py, tilt] of [
+          [-0.4, 1.25, 0.06],
+          [0.1, 1.35, -0.09],
+          [0.35, 1.02, 0.03],
+        ] as Array<[number, number, number]>) {
+          const note = box(g, 0.3, 0.34, 0.02, -2.0 + px, py, 0.05, paper);
+          note.rotation.z = tilt; // pinned by hand, never quite square
+        }
+      },
+      0, // exact: tucked against the Professional/Welcome hall
+    );
   }
 
   private createStall(): THREE.Group {
