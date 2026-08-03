@@ -362,17 +362,35 @@ def soften_mesh(ob, segments: int, rules=None, body_parts=None) -> dict:
 def add_npc_hands(ob) -> int:
     """Give a villager mitten hands: two chamfer-ready cuboids on the Skin
     slot, rigidly weighted to the arm bones. Runs BEFORE soften_mesh so the
-    box detector picks them up and they get the same rounded treatment."""
+    box detector picks them up and they get the same rounded treatment.
+
+    Each hand is bound to the arm bone on ITS OWN SIDE, chosen by matching the
+    sign of the bone's rest X to the hand's X. A hardcoded sign->bone tuple
+    silently inverted this once: rig-npc puts armL at +X and armR at -X, but
+    the tuple bound the -X hand to armL, so every hand swung with the OPPOSITE
+    arm (contralateral, so opposite direction) and flailed off its own cuff
+    when the villager walked. Deriving the bone from the geometry removes the
+    assumption entirely."""
     mats = [m.name for m in ob.data.materials]
     skin_i = next(i for i, m in enumerate(mats) if "skin" in m.lower())
     sx, sy, sz = NPC_HANDS["size"]
     ax, ay, az = NPC_HANDS["at"]
 
+    armature = ob.find_armature()
+    assert armature is not None, f"{ob.name}: no armature — rig-npc must run first"
+    side_bone = {}
+    for name in NPC_HANDS["bones"]:
+        b = armature.data.bones.get(name)
+        assert b is not None, f"{ob.name}: missing arm bone {name}"
+        side_bone[1 if b.head_local.x >= 0 else -1] = name
+    assert set(side_bone) == {-1, 1}, f"{ob.name}: arm bones are not on opposite sides"
+
     bm = bmesh.new()
     bm.from_mesh(ob.data)
     deform = bm.verts.layers.deform.verify()
     added = 0
-    for sign, bone in ((-1, NPC_HANDS["bones"][0]), (1, NPC_HANDS["bones"][1])):
+    for sign in (-1, 1):
+        bone = side_bone[sign]
         vg = ob.vertex_groups.get(bone)
         assert vg is not None, f"{ob.name}: no vertex group {bone} — is the npc rigged yet?"
         res = bmesh.ops.create_cube(bm, size=1.0)

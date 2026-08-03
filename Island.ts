@@ -3582,19 +3582,38 @@ export class Island {
     const SKINS = [0xf3d3b3, 0xe8bb94, 0xc98d5f, 0xa06a42, 0x7c4e2e];
     const PANTS = [0x5d6b7a, 0x7a6a55, 0x4e5d52];
     const HAIRS = [0x2e2620, 0x4a3220, 0x7a5230, 0xb08d57, 0x8a8a8a, 0x5a4632];
-    // Decoupled indices so shirt/skin/hair don't repeat in lockstep.
+    // Decoupled indices so shirt/skin/hair don't repeat in lockstep. The skin
+    // stride MUST stay coprime to SKINS.length (5): the old (phIdx*5+3)%5 was
+    // identically 3, so every villager wore the same mid-tan — which is what
+    // the sandy/grey hairs clashed against.
+    const shirtHex = SHIRTS[phIdx % SHIRTS.length];
+    const skinHex = SKINS[(phIdx * 2 + 1) % SKINS.length];
+    const pantsHex = PANTS[(phIdx * 7 + 1) % PANTS.length];
+    // Hair: keep the per-persona pick when it reads clearly against this skin,
+    // otherwise take the maximally-contrasting hair. Guarantees a visible
+    // hairline on every skin tone (sandy hair on tan skin was invisible) while
+    // preserving variety wherever contrast already holds.
+    const lum = (hex: number): number =>
+      (0.2126 * ((hex >> 16) & 255) + 0.7152 * ((hex >> 8) & 255) + 0.0722 * (hex & 255)) / 255;
+    const skinL = lum(skinHex);
+    let hairHex = HAIRS[phIdx % HAIRS.length];
+    if (Math.abs(lum(hairHex) - skinL) < 0.22) {
+      hairHex = HAIRS.reduce((best, h) =>
+        Math.abs(lum(h) - skinL) > Math.abs(lum(best) - skinL) ? h : best,
+      );
+    }
     group.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
       const mats = Array.isArray(o.material) ? o.material : [o.material];
       const swapped = mats.map((m) => {
         const n = ((m as THREE.Material)?.name ?? '').toLowerCase();
-        if (n.includes('shirt')) return Island.paletteMat(SHIRTS[phIdx % SHIRTS.length]);
-        if (n.includes('skin')) return Island.paletteMat(SKINS[(phIdx * 5 + 3) % SKINS.length]);
-        if (n.includes('pants')) return Island.paletteMat(PANTS[(phIdx * 7 + 1) % PANTS.length]);
+        if (n.includes('shirt')) return Island.paletteMat(shirtHex);
+        if (n.includes('skin')) return Island.paletteMat(skinHex);
+        if (n.includes('pants')) return Island.paletteMat(pantsHex);
         // Baked hair helmet (reshape-avatar-face.py) — per-persona colour via
         // the same shared-palette path the old runtime hair-sphere used.
         // Eye/EyeShine deliberately match nothing here and stay dark.
-        if (n.includes('hair')) return Island.paletteMat(HAIRS[phIdx % HAIRS.length]);
+        if (n.includes('hair')) return Island.paletteMat(hairHex);
         return m;
       });
       o.material = Array.isArray(o.material) ? swapped : swapped[0];
