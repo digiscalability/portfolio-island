@@ -5086,8 +5086,12 @@ export class GameScene extends THREE.Scene {
                       w.until = time + 1.5;
                     }
                   }
-                } else {
-                  w.blockedT = 0;
+                } else if (w.blockedT) {
+                  // DECAY, never hard-reset. The push only re-fires on a frame
+                  // whose step re-consumes the 0.02u overshoot, which above
+                  // ~71fps is only every 2nd-4th frame — a hard reset here made
+                  // the whole give-up dead on any high-refresh display.
+                  w.blockedT = Math.max(0, w.blockedT - deltaTime * 0.5);
                 }
               }
               // Gait phase = accumulated ground distance, so cadence tracks

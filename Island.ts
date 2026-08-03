@@ -121,6 +121,8 @@ export class Island {
   public stallSites: THREE.Vector3[] = [];
   public benchSites: THREE.Vector3[] = [];
   public flowerBedSites: THREE.Vector3[] = [];
+  /** Centre of the Gardener's walled garden (unit dir), null until built. */
+  public gardenDir: THREE.Vector3 | null = null;
   public lighthouseDir: THREE.Vector3 | null = null;
   // Colliders for props placed ASYNCHRONOUSLY (GLB loads finish after
   // GameScene's registration pass) — GameScene drains this each frame
@@ -2549,7 +2551,13 @@ export class Island {
       const pos = this.claimOffStreet(this.dirAt(sLon, sLat), 0.06).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
-      this.stallSites.push(sampled.position.clone()); // NPC activity anchor (market visit)
+      // NPC activity anchor = a customer's spot IN FRONT of the counter, not
+      // the stall's own seat. The stall carries a 1.5-radius collider (1.8u
+      // NPC keep-out), so the raw seat was unreachable and every persona
+      // scheduled `market_visit` spent midday shoving the canvas. Stepped
+      // 2.3u toward the equator, which is the open street side for both rows.
+      const shopLat = Math.max(0.12, sLat - 2.3 / this.radius);
+      this.stallSites.push(this.dirAt(sLon, shopLat).multiplyScalar(sampled.position.length()));
       // Counter at ~0.66u working height for the 1.56u vendors
       stall.scale.setScalar(2.2); // ~3.7u incl. awning (~2.2x the 1.7u player) — already well-proportioned
       stall.quaternion.copy(
@@ -2695,24 +2703,13 @@ export class Island {
       // [0, 1.42] where the ring straddled the spawn point and the hall.
       [0.9, 1.38],
     ];
-    // NPC activity anchors (gardener) — two off-centre points on each plaza's
-    // flower ring, nudged off the pavement so she kneels beside real blooms.
-    for (const [aLon, aLat] of FLOWER_ANCHORS) {
-      for (const [dl, dt] of [
-        [0.22, 0.05],
-        [-0.2, 0.13],
-      ] as Array<[number, number]>) {
-        try {
-          // Divide the lon offset by cos(lat): near the pole a raw lon delta
-          // collapses to almost nothing, which used to park the gardener's
-          // bed 1u from the pole — inside the town hall.
-          const fd = this.pushOffStreet(this.dirAt(aLon + dl / Math.cos(aLat), aLat + dt));
-          this.flowerBedSites.push(this.sampleSurfaceByDirection(fd, 0.0).position.clone());
-        } catch {
-          /* skip an unsamplable bed */
-        }
-      }
-    }
+    // The Gardener works ONE real garden, not ten coordinates spread over the
+    // whole planet. The old anchors were two off-ring points per plaza — 11-12u
+    // out from each centre while the blooms only reach 7.5-10u, so she knelt in
+    // bare grass BESIDE the flowers, at sites in five districts up to 78u
+    // apart. She spent her life hiking; the owner's words were "the gardener
+    // just wandering around... there is no garden".
+    this.buildGarden(3.05, 0.52, flowers);
     // Pass 1: scatter valid placements (respecting street skips) + colour index
     const bloomUp = new THREE.Vector3(0, 1, 0);
     const bloomOne = new THREE.Vector3(1, 1, 1);
@@ -4047,6 +4044,127 @@ export class Island {
       if (i === waypoints.length - 2) this.streetDirs.push({ dir: b, halfArc: keepOutArc });
     }
     return group;
+  }
+
+  /**
+   * The Gardener's walled garden: a picket-fenced plot of raised beds she
+   * actually works, instead of ten bare coordinates scattered island-wide.
+   *
+   * Publishes THREE kneeling spots (one per bed) into `flowerBedSites`, all
+   * within ~3u of each other, so `tend_flowers` becomes a short shuffle
+   * between beds rather than a lap of the planet. Everything static is merged
+   * per material (the tree recipe) to keep this to a handful of draw calls,
+   * and the fence posts are one InstancedMesh.
+   */
+  private buildGarden(lon: number, lat: number, parent: THREE.Object3D): void {
+    const centre = this.dirAt(lon, lat);
+    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      seat = this.sampleSurfaceByDirection(centre, 0);
+    } catch {
+      return; // unsamplable spot — skip the garden rather than float it
+    }
+    const g = new THREE.Group();
+    g.name = 'garden';
+    g.position.copy(seat.position);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
+
+    const woodMat = Materials.createStandardMaterial({ color: 0xc9a978 });
+    const soilMat = Materials.createStandardMaterial({ color: 0x5b4230 });
+    const HALF = 3.2; // garden half-width
+
+    // Picket fence: one post geometry, instanced around the perimeter, with a
+    // gap on the plaza side for the gate.
+    const postGeo = new THREE.BoxGeometry(0.12, 0.7, 0.12);
+    const perimeter: Array<[number, number]> = [];
+    const STEP = 0.53;
+    for (let x = -HALF; x <= HALF + 1e-6; x += STEP) {
+      perimeter.push([x, -HALF]);
+      if (x < -0.9 || x > 0.9) perimeter.push([x, HALF]); // gate gap
+    }
+    for (let z = -HALF + STEP; z <= HALF - STEP + 1e-6; z += STEP) {
+      perimeter.push([-HALF, z]);
+      perimeter.push([HALF, z]);
+    }
+    const posts = new THREE.InstancedMesh(postGeo, woodMat, perimeter.length);
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < perimeter.length; i++) {
+      m.makeTranslation(perimeter[i][0], 0.35, perimeter[i][1]);
+      posts.setMatrixAt(i, m);
+    }
+    posts.instanceMatrix.needsUpdate = true;
+    posts.castShadow = true;
+    g.add(posts);
+
+    // Three raised beds + their soil, merged into two meshes.
+    const frames: THREE.BufferGeometry[] = [];
+    const soils: THREE.BufferGeometry[] = [];
+    const bedX = [-1.9, 0, 1.9];
+    for (const bx of bedX) {
+      for (const [dx, dz, w, d] of [
+        [0, -1.5, 1.5, 0.12],
+        [0, 1.5, 1.5, 0.12],
+        [-0.75, 0, 0.12, 3.0],
+        [0.75, 0, 0.12, 3.0],
+      ] as Array<[number, number, number, number]>) {
+        frames.push(new THREE.BoxGeometry(w, 0.28, d).translate(bx + dx, 0.14, dz));
+      }
+      soils.push(new THREE.BoxGeometry(1.4, 0.2, 2.9).translate(bx, 0.16, 0));
+    }
+    const frameMesh = new THREE.Mesh(mergeGeometries(frames, false), woodMat);
+    frameMesh.castShadow = true;
+    frameMesh.receiveShadow = true;
+    g.add(frameMesh);
+    frames.forEach((f) => f.dispose());
+    const soilMesh = new THREE.Mesh(mergeGeometries(soils, false), soilMat);
+    soilMesh.receiveShadow = true;
+    g.add(soilMesh);
+    soils.forEach((s) => s.dispose());
+
+    // Blooms in the beds — reuse the island bloom look, one batch.
+    const bloomGeo = new THREE.SphereGeometry(0.075, 5, 4);
+    const bloomMat = Materials.createStandardMaterial({ color: 0xff69b4 });
+    const BLOOMS = 36;
+    const blooms = new THREE.InstancedMesh(bloomGeo, bloomMat, BLOOMS);
+    for (let i = 0; i < BLOOMS; i++) {
+      const bx = bedX[i % 3] + (Math.random() - 0.5) * 1.1;
+      const bz = (Math.random() - 0.5) * 2.6;
+      m.makeTranslation(bx, 0.34, bz);
+      blooms.setMatrixAt(i, m);
+    }
+    blooms.instanceMatrix.needsUpdate = true;
+    g.add(blooms);
+
+    // A water butt by the gate so the plot reads as worked, not decorative.
+    const butt = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.34, 0.72, 8),
+      Materials.createStandardMaterial({ color: 0x6a5238 }),
+    );
+    butt.position.set(HALF - 0.7, 0.36, HALF - 0.7);
+    butt.castShadow = true;
+    g.add(butt);
+
+    // NOT this.mesh — the island root does not exist yet during the prop
+    // build; the caller passes the same group the blooms go into.
+    parent.add(g);
+    this.gardenDir = centre.clone();
+
+    // Kneeling spots: the aisle beside each bed, published as the ONLY
+    // tend_flowers anchors.
+    const up = seat.normal.clone();
+    let east = new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 1, 0));
+    if (east.lengthSq() < 1e-6) east = new THREE.Vector3(1, 0, 0);
+    east.normalize();
+    const north = new THREE.Vector3().crossVectors(east, up).normalize();
+    for (const bx of bedX) {
+      const spot = seat.position.clone().addScaledVector(east, bx).addScaledVector(north, -1.15);
+      try {
+        const d = spot.clone().normalize();
+        this.flowerBedSites.push(this.sampleSurfaceByDirection(d, 0).position.clone());
+      } catch {
+        this.flowerBedSites.push(spot);
+      }
+    }
   }
 
   private createStall(): THREE.Group {

@@ -16,6 +16,16 @@ import * as THREE from 'three';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, dirFor } from './Districts';
 import type { Mood } from './WorldState';
 
+/**
+ * How far OUT of a plaza centre an NPC stands, in radians of arc.
+ *
+ * Each district seats its landmark building at the plaza centre with a
+ * 1.7-radius collider, and the wander loop keeps NPCs 2.0u clear of it. At
+ * R=50, 0.055 rad ≈ 2.75u — comfortably outside the wall, still on the plaza
+ * apron rather than out on the grass.
+ */
+const PLAZA_APRON = 0.055;
+
 // ── Activities + poses ───────────────────────────────────────────────────────
 
 export type PoseId = 'walk' | 'kneel' | 'inspect' | 'play' | 'paint' | 'sit' | 'sleep' | 'watch';
@@ -391,11 +401,14 @@ export function setAnchors(a: {
     // 0.075 rad (3.75u at R=50): the old 0.05 ring EQUALLED the plinth base
     // radius, so all four keeper waypoints sat ON the rock wall.
     lighthouse: a.lighthouseDir ? ringAround(a.lighthouseDir.clone().normalize(), 0.075, 4) : [],
-    // The welcome plaza anchor moves to the plaza APRON: the exact pole is
-    // where the town hall's solid body stands — musicians/gatherers routed
-    // there stood inside the box. (BOULEVARD_LONS solved this for patrol.)
+    // EVERY plaza anchor is the APRON in front of the hall, never the hall.
+    // Each district seats its landmark building at exactly dirFor(d.lon,
+    // d.lat) with a 1.7-radius collider (2.0u NPC keep-out), so the raw
+    // centre is unreachable: the musician and the gatherers walked into the
+    // wall and stayed there, stride playing, for the whole 50-90s dwell.
+    // Only 'welcome' had been nudged; the four ring plazas had not.
     plaza: DISTRICTS.map((d) =>
-      d.id === 'welcome' ? dirFor(0.9, Math.PI / 2 - 0.09) : dirFor(d.lon, d.lat),
+      d.id === 'welcome' ? dirFor(0.9, Math.PI / 2 - 0.09) : dirFor(d.lon, d.lat - PLAZA_APRON),
     ),
     vista: a.vistas.map(toDir),
     doors: (a.doors ?? []).map(toDir),
@@ -496,10 +509,17 @@ interface GoalState {
 
 // Patrol waypoints: the 4 ring-plaza lons + the midpoint between each adjacent
 // pair, in ring order (hoisted — pickAnchor used to allocate this per pick).
-const BOULEVARD_LONS: number[] = RING_DISTRICT_LONS.flatMap((lon, i) => {
+// The plaza legs step OUT to the apron by PLAZA_APRON for the same reason the
+// plaza anchors do: dirFor(districtLon, ZONE_LAT) IS the zone hall's seat, so
+// half of the guard's eight waypoints were the insides of four buildings.
+// Midpoints keep ZONE_LAT — the street between plazas is clear.
+const BOULEVARD_WAYPOINTS: Array<[number, number]> = RING_DISTRICT_LONS.flatMap((lon, i) => {
   const next = RING_DISTRICT_LONS[(i + 1) % RING_DISTRICT_LONS.length];
   const half = lon + ((next - lon + Math.PI * 2) % (Math.PI * 2) || Math.PI * 2) / 2;
-  return [lon, half];
+  return [
+    [lon, ZONE_LAT - PLAZA_APRON],
+    [half, ZONE_LAT],
+  ] as Array<[number, number]>;
 });
 
 const _ja = new THREE.Vector3();
@@ -569,9 +589,9 @@ function pickAnchor(
     // 90° great-circle chords (which peaked well inland of the street). The
     // pole hub is excluded: its lon 0 duplicated the Professional plaza, so the
     // old list visited that plaza twice per loop.
-    const lon = BOULEVARD_LONS[s.rot % BOULEVARD_LONS.length];
+    const wp = BOULEVARD_WAYPOINTS[s.rot % BOULEVARD_WAYPOINTS.length];
     s.rot += 1;
-    outDir.copy(dirFor(lon, ZONE_LAT));
+    outDir.copy(dirFor(wp[0], wp[1]));
     clampShore(outDir);
     return true;
   }
