@@ -2982,8 +2982,8 @@ export class Island {
       beam.position.set(0, 2.45, 0);
       beam.castShadow = true;
       gate.add(beam);
-      // Name board on the beam — a DoubleSide CanvasTexture so it reads both
-      // approaching (from the pole) and leaving (from the plaza).
+      // Name board on the beam — two back-to-back FrontSide planes so the name
+      // reads correctly both approaching (from the pole) and leaving (from the plaza).
       const canvas = document.createElement('canvas');
       canvas.width = 512;
       canvas.height = 128;
@@ -3002,16 +3002,26 @@ export class Island {
         ctx.fillText(d.radar, 256, 68);
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
-        const board = new THREE.Mesh(
-          new THREE.PlaneGeometry(1.8, 0.45),
-          // Unlit so the name stays legible at any hour (matches the project
-          // plaques' sprites); DoubleSide so it reads from both directions.
-          new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }),
-        );
+        // Unlit so the name stays legible at any hour (matches the project
+        // plaques' sprites). Two back-to-back FrontSide planes replace the old
+        // single DoubleSide plane: DoubleSide shows the texture MIRRORED from
+        // behind, and the gate's +Z faces its PLAZA (faceObjectToward below),
+        // so the title read backwards to players arriving from the pole. The
+        // -Z face is the one the approach reads — same convention as the zone
+        // building's door (+Z toward the pole). Shared geometry + material.
+        const boardGeom = new THREE.PlaneGeometry(1.8, 0.45);
+        const boardMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+        const board = new THREE.Mesh(boardGeom, boardMat);
         board.position.set(0, 2.45, 0.16);
         board.name = 'gate-board';
         board.raycast = () => {}; // decorative — skip interaction/camera rays
         gate.add(board);
+        const boardBack = new THREE.Mesh(boardGeom, boardMat);
+        boardBack.position.set(0, 2.45, -0.16);
+        boardBack.rotation.y = Math.PI; // front toward the pole — read on approach
+        boardBack.name = 'gate-board';
+        boardBack.raycast = () => {}; // decorative — skip interaction/camera rays
+        gate.add(boardBack);
       }
       // Accent lantern crowning the gate — night-emissive, NO PointLight (the
       // rig is already at its 16-light budget).
@@ -3163,7 +3173,10 @@ export class Island {
       new THREE.CylinderGeometry(0.045, 0.06, 3.4, 8),
       new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 0.7 }),
     );
-    pole.position.set(-0.6, 1.9, -0.3);
+    // 0.83 from the beacon axis (was 0.67): the halo torus sweeps out to
+    // 0.665 (0.62 ring + 0.045 tube) and grazed the pole's flank by ~0.05.
+    // Clears it by ~0.1 now; still well inside the 1.15 platform top.
+    pole.position.set(-0.75, 1.9, -0.35);
     pole.castShadow = true;
     g.add(pole);
     const flagMat = new THREE.MeshStandardMaterial({
@@ -3181,7 +3194,7 @@ export class Island {
     );
     flagGeo.computeVertexNormals();
     const flag = new THREE.Mesh(flagGeo, flagMat);
-    flag.position.set(-0.6, 0, -0.3);
+    flag.position.set(-0.75, 0, -0.35); // rides its (moved) pole
     g.add(flag);
 
     // Beacon crystal — the glow. Very high emissive so the bloom halo carries.
@@ -4157,7 +4170,11 @@ export class Island {
           new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
         );
         sprite.name = 'project-plaque';
-        sprite.position.set(0, 3.95, 0);
+        // 4.5: the scaffold poles (h=4 cylinders at y=2 → tops at 4.0, only
+        // 1.27 from centre — inside the plaque's 1.4 half-width) poked
+        // through the old 3.95 band (3.64–4.27). Bottom now 4.19, clearing
+        // the pole tops by 0.19; the crane jib (y 6.2) stays well above.
+        sprite.position.set(0, 4.5, 0);
         sprite.scale.set(2.8, 0.63, 1);
         // Decorative label — opt out of raycasting (skip the interaction/camera
         // rays + the "Raycaster.camera not set" console spam).

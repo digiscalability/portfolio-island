@@ -361,7 +361,10 @@ export class Chat {
       }
     }
     const sprite = Chat.makeBubbleSprite(text);
-    sprite.position.set(0, 1.95, 0); // above the name label (which sits at 1.35)
+    // Bottom-anchored bubble: 2.05 is its BOTTOM edge, 0.1 above the name
+    // label's top (label centre 1.75 + 0.2 half-height); any number of
+    // wrapped lines grows upward, never down into the label or hat.
+    sprite.position.set(0, 2.05, 0);
     parent.add(sprite);
     this.bubbles.push({ sprite, until: performance.now() / 1000 + BUBBLE_TTL, parent });
   }
@@ -449,6 +452,10 @@ export class Chat {
     );
     const scale = 0.01; // canvas px → world units
     sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
+    // Bottom-anchored: bubble height varies with line count, and a centre-
+    // anchored multi-line bubble grew DOWN into the name label / head. The
+    // position now pins the bubble's bottom edge; extra lines grow upward.
+    sprite.center.set(0.5, 0);
     return sprite;
   }
 }

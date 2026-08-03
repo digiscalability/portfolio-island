@@ -147,6 +147,8 @@ export class GameScene extends THREE.Scene {
     waitDur: number;
     hasCatch: boolean;
     catchIdx: number; // FISH_TYPES index of the current catch
+    castLen: number; // seaward cast length, sized at setup so the bobber hangs over open water
+    dropBase: number; // bobber local -Y offset that seats it ON the calm sea surface
   } | null = null;
 
   // The Baker's routine: knead dough → bake it in the oven → lay the pie on the
@@ -1355,14 +1357,19 @@ export class GameScene extends THREE.Scene {
       ctx.fillText('🐟 Fresh Fish', 128, 50);
     }
     const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.5, 0.56),
+      // 1.0×0.375 keeps the 256×96 canvas aspect. The old 1.5×0.56 plane at
+      // y1.75 topped out at 2.03 — through the sloping awning, whose
+      // underside sits at ≈1.48 over the sign's z.
+      new THREE.PlaneGeometry(1.0, 0.375),
       new THREE.MeshBasicMaterial({
         map: new THREE.CanvasTexture(canvas),
         transparent: true,
         side: THREE.DoubleSide,
       }),
     );
-    sign.position.set(0, 1.75, -1.35);
+    // Hangs UNDER the awning: top 1.42 clears the panel underside (≈1.48 at
+    // z=−1.35), bottom 1.04 clears the counter top (0.99).
+    sign.position.set(0, 1.23, -1.35);
     sign.rotation.y = Math.PI; // face the beach/water side (front = −Z)
     g.add(sign);
     // Counter display slots
@@ -1407,6 +1414,58 @@ export class GameScene extends THREE.Scene {
     });
     if (!stallPlace) return;
 
+    // ── Hug the waterline ────────────────────────────────────────────────
+    // The placement band above (lat 0.285-0.33) is dry land: the continent
+    // mask makes everything above sinLat ~0.28+coastWarp FULL land with the
+    // 0.75 land floor, so the raw spot sits 0.65-1.5u ABOVE the waterline —
+    // and the real waterline (lat ~0.20 ± coast warp) is 4-6.5u further
+    // seaward, so a fixed 2.6u cast landed the bobber on dry sand. March
+    // seaward along the great circle with the ANALYTIC terrain (setup-only,
+    // zero per-frame cost) until his feet are ankle-deep, size the cast so
+    // the bobber hangs over open water, and solve the line drop that seats
+    // it exactly ON the calm sea surface. Wading is safe: the wander loop
+    // skips him and updateFisherman() re-anchors his position every frame.
+    const seaR = this.island.seaLevel();
+    const marchAxis = new THREE.Vector3().crossVectors(spotPlace.dir, seaward).normalize();
+    const probe = new THREE.Vector3();
+    const step = 0.004; // ~0.2u of arc at R=50
+    let spotDir = spotPlace.dir;
+    let spotR = spotPlace.position.length();
+    let spotN = spotPlace.normal;
+    for (let a = step; a <= 0.24; a += step) {
+      probe.copy(spotPlace.dir).applyAxisAngle(marchAxis, a);
+      const s = this.island.analyticSurface(probe);
+      if (s.radius < seaR - 0.06) {
+        spotDir = probe.clone();
+        spotR = s.radius;
+        spotN = s.normal;
+        break;
+      }
+    }
+    // Cast length: the first arc where the water is deep enough that wave
+    // troughs (~0.45 below mean sea) never expose the sand under the bobber;
+    // falls back to the deepest point within ~5u.
+    let castArc = step;
+    let bestDepth = -Infinity;
+    for (let a = step; a <= 0.1; a += step) {
+      probe.copy(spotDir).applyAxisAngle(marchAxis, a);
+      const depth = seaR - this.island.analyticSurface(probe).radius;
+      if (depth > bestDepth) {
+        bestDepth = depth;
+        castArc = a;
+      }
+      if (depth > 0.55) break;
+    }
+    const castLen = THREE.MathUtils.clamp(castArc * spotR + 0.4, 2.0, 4.0);
+    // Bobber local -Y at which it sits ON the sea surface (floored above the
+    // terrain in case a freak coast leaves the whole cast shallow).
+    const spotPos = spotDir.clone().multiplyScalar(spotR);
+    const bobW = new THREE.Vector3(0.12, 0, -castLen)
+      .applyQuaternion(this.orientQuat(spotN, seaward))
+      .add(spotPos);
+    const bobTerrain = this.island.analyticSurface(bobW.clone().normalize()).radius;
+    const dropBase = Math.min(bobW.length() - seaR, bobW.length() - bobTerrain - 0.06);
+
     // Rig (rod + line + bobber): world-placed each frame, children forward = −Z
     const rig = new THREE.Group();
     const rod = new THREE.Mesh(
@@ -1446,9 +1505,9 @@ export class GameScene extends THREE.Scene {
       bobber,
       caught: null,
       spot: {
-        dir: spotPlace.dir,
-        r: spotPlace.position.length(),
-        n: spotPlace.normal,
+        dir: spotDir,
+        r: spotR,
+        n: spotN,
         seaward,
       },
       stand: {
@@ -1466,8 +1525,12 @@ export class GameScene extends THREE.Scene {
       waitDur: 0,
       hasCatch: false,
       catchIdx: 0,
+      castLen,
+      dropBase,
     };
-    console.log('🎣 Fisherman routine set up (shore + stall)');
+    console.log(
+      `🎣 Fisherman set up: feet ${(seaR - spotR).toFixed(2)}u deep, cast ${castLen.toFixed(1)}u`,
+    );
   }
 
   /** A gold coin that pops above the stall on a sale, rising + spinning + fading. */
@@ -1523,13 +1586,16 @@ export class GameScene extends THREE.Scene {
 
       const st = time - F.t0;
       let theta = 0.85; // rod elevation over the water
-      let bobberFwd = 2.6;
-      let bobberDrop = 0.14;
+      let bobberFwd = F.castLen;
+      let bobberDrop = F.dropBase;
       if (F.state === 'cast') {
         // Whip the rod back then forward, then the line lands
         const p = Math.min(st / 1.0, 1);
         theta = 1.35 - Math.sin(p * Math.PI) * 0.85;
-        bobberFwd = 0.6 + p * 2.0;
+        bobberFwd = 0.6 + p * (F.castLen - 0.6);
+        // Arc the bobber over the water: dropBase sits AT the surface, so a
+        // straight slide would drag it submerged for the whole flight.
+        bobberDrop = F.dropBase - Math.sin(p * Math.PI) * 0.4;
         if (p >= 1) {
           F.state = 'wait';
           F.t0 = time;
@@ -1538,7 +1604,7 @@ export class GameScene extends THREE.Scene {
         }
       } else if (F.state === 'wait') {
         theta = 0.9 + Math.sin(time * 0.8) * 0.05;
-        bobberDrop = 0.14 - Math.sin(time * 1.6) * 0.05;
+        bobberDrop = F.dropBase - Math.sin(time * 1.6) * 0.05;
         if (st > F.waitDur) {
           F.state = 'reel';
           F.t0 = time;
@@ -1557,8 +1623,8 @@ export class GameScene extends THREE.Scene {
         // reel: pull the rod up, the bobber (and catch) lift out of the water
         const p = Math.min(st / 1.4, 1);
         theta = 0.9 + p * 0.7;
-        bobberFwd = 2.6 - p * 1.9;
-        bobberDrop = 0.14 - p * 0.7;
+        bobberFwd = F.castLen - p * (F.castLen - 0.7);
+        bobberDrop = F.dropBase - p * 0.7;
         if (p >= 1) {
           F.state = F.hasCatch ? 'toShop' : 'cast';
           F.t0 = time;
@@ -1600,7 +1666,13 @@ export class GameScene extends THREE.Scene {
       const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
       const pos = fromW.clone().lerp(toW, ease);
       const n = pos.clone().normalize();
-      pos.copy(n).multiplyScalar(THREE.MathUtils.lerp(from.r, to.r, ease));
+      // Endpoint radii are exact; mid-walk, blend toward the analytic terrain
+      // so the (now much lower) waterline spot doesn't leave him floating
+      // above or cutting into the beach slope on the way. Analytic terrain is
+      // ~0.003ms and this walk branch already allocates per frame.
+      const chordR = THREE.MathUtils.lerp(from.r, to.r, ease);
+      const terrR = this.island.analyticSurface(n).radius;
+      pos.copy(n).multiplyScalar(THREE.MathUtils.lerp(chordR, terrR, Math.sin(Math.PI * p)));
       const walkBob = Math.abs(Math.sin(time * 8)) * 0.04;
       F.npc.meshRef.position.copy(pos).addScaledVector(n, walkBob);
       F.npc.position.copy(F.npc.meshRef.position);
@@ -1773,14 +1845,19 @@ export class GameScene extends THREE.Scene {
       ctx.fillText('🥧 Bakery', 128, 50);
     }
     const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.5, 0.56),
+      // 1.0×0.375 keeps the canvas aspect; the old 1.5×0.56 plane at y1.75
+      // poked through the sloping awning (underside ≈1.48 at the sign's z) —
+      // same geometry and fix as the fish-stall sign.
+      new THREE.PlaneGeometry(1.0, 0.375),
       new THREE.MeshBasicMaterial({
         map: new THREE.CanvasTexture(canvas),
         transparent: true,
         side: THREE.DoubleSide,
       }),
     );
-    sign.position.set(0, 1.75, -1.35);
+    // Under the awning: top 1.42 vs awning underside ≈1.48; bottom 1.04 vs
+    // counter top 0.99.
+    sign.position.set(0, 1.23, -1.35);
     sign.rotation.y = Math.PI;
     g.add(sign);
     const ovenLocal = new THREE.Vector3(1.75, 0.55, -0.28);
@@ -2542,7 +2619,11 @@ export class GameScene extends THREE.Scene {
       marker.add(dot);
       const base = npc.meshRef.getWorldPosition(new THREE.Vector3());
       const normal = base.clone().normalize();
-      marker.position.copy(base).addScaledVector(normal, 2.1);
+      // 2.7: the "!" spans −0.165..+0.30 locally and bobs ±0.12, so its
+      // lowest point is offset−0.285 = 2.415 — 0.12 above the name pill's
+      // near-range top (bottom 1.60 + height 0.69 ≈ 2.29). At 2.1 it sat
+      // INSIDE the pill.
+      marker.position.copy(base).addScaledVector(normal, 2.7);
       marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
       this.add(marker);
       this.questMarkers.push({ mesh: marker, npcName: name, base, normal });
@@ -2591,6 +2672,11 @@ export class GameScene extends THREE.Scene {
       // 0.63 = 0.42 × (96/64): the canvas grew, the scale compensates, so a
       // single-line pill renders at exactly the pre-two-line world size.
       sprite.scale.set(1.7, 0.63, 1);
+      // Anchor the sprite's BOTTOM at its position: the constant-screen-size
+      // scaling in the tag loop grew the centre-anchored pill DOWNWARD into
+      // the dressed heads (hair/hats top out ≈1.33 world) past ~20u camera
+      // distance. Bottom-anchored, growth only ever goes upward.
+      sprite.center.set(0.5, 0);
       sprite.renderOrder = 2;
       this.add(sprite);
       this.nameTags.push({
@@ -2680,6 +2766,9 @@ export class GameScene extends THREE.Scene {
         new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
       );
       sprite.scale.set(3.4, 1.06, 1);
+      // Bottom-anchored so it stacks cleanly on top of the (also bottom-
+      // anchored) name pill without ever growing down into it.
+      sprite.center.set(0.5, 0);
       sprite.renderOrder = 3;
       sprite.visible = false;
       this.add(sprite);
@@ -4296,7 +4385,9 @@ export class GameScene extends THREE.Scene {
         m.base.copy(owner.meshRef.position);
         m.normal.copy(m.base).normalize();
       }
-      m.mesh.position.copy(m.base).addScaledVector(m.normal, 2.1 + Math.sin(time * 2.4) * 0.12);
+      // 2.7 matches setQuestMarkers: keeps the bobbing "!" clear of the
+      // bottom-anchored name pill below it.
+      m.mesh.position.copy(m.base).addScaledVector(m.normal, 2.7 + Math.sin(time * 2.4) * 0.12);
       m.mesh.rotateOnWorldAxis(m.normal, deltaTime * 1.8);
       // A sleeping quest-giver is "inside" — no marker floating over the doorstep.
       if (owner) m.mesh.visible = owner.meshRef.visible;
@@ -4308,9 +4399,12 @@ export class GameScene extends THREE.Scene {
     for (const tag of this.nameTags) {
       const pos = tag.target.position;
       this._tagNormal.copy(pos).normalize();
+      // Bottom-anchored (see createNameTags), so 1.55 IS the pill's bottom
+      // edge: 0.17 above the tallest dressed head (wizard hat ≈1.33 world
+      // after the 0.6×1.07 NPC group scale) at every camera distance.
       tag.sprite.position
         .copy(pos)
-        .addScaledVector(this._tagNormal, 1.82 + Math.sin(time * 2 + pos.x) * 0.05);
+        .addScaledVector(this._tagNormal, 1.55 + Math.sin(time * 2 + pos.x) * 0.05);
       const dist = this.camera.position.distanceTo(tag.sprite.position);
       // Constant-ish on-screen size: sprites attenuate ∝1/dist, so scale ∝dist.
       const s = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6);
@@ -4340,9 +4434,15 @@ export class GameScene extends THREE.Scene {
       if (time > this.npcBubbleUntil || !tag || !tag.target.meshRef.visible) {
         this.npcBubble.sprite.visible = false;
       } else {
+        // Both sprites are bottom-anchored, so the pill's current world
+        // height IS its scale.y — seat the bubble 0.12 above the pill's top
+        // so the distance-scaled pill can never grow up into it.
         this.npcBubble.sprite.position
           .copy(tag.sprite.position)
-          .addScaledVector(this._tagNormal.copy(tag.target.position).normalize(), 1.0);
+          .addScaledVector(
+            this._tagNormal.copy(tag.target.position).normalize(),
+            tag.sprite.scale.y + 0.12,
+          );
       }
     }
 

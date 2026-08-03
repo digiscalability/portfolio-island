@@ -136,6 +136,10 @@ export class Zone {
     const cfg = BUILDINGS[id] ?? BUILDINGS.welcome;
     const [bw, bh, bd] = cfg.body;
     const base = 0.1; // body sits just above the foundation slab
+    // Highest point of the roof: flat slab top (+0.3) vs gable apex (the 1.4-
+    // tall cone seats ON the wall top). Rooftop attachments (beacon, icon)
+    // must clear THIS, not just bh — gables rise 1.4 above the walls.
+    const roofPeakY = base + bh + (cfg.roof === 'flat' ? 0.3 : 1.4);
 
     // Foundation slab — hides the flat footprint intersecting the displaced
     // sphere (the terrain note in CLAUDE.md), reused from the welcome-plaza
@@ -233,15 +237,21 @@ export class Zone {
       new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.0 }),
     );
     beacon.name = 'zone-beacon';
-    beacon.position.y = base + bh + (cfg.roof === 'flat' ? 0.7 : 1.7);
+    // 0.5 = octahedron half-height 0.26 + bob amplitude 0.12 + 0.12 margin.
+    // The old (bh + 1.7) put the pitch-roof beacon only 0.3 over the apex —
+    // its bottom vertex dipped to apex−0.08 at the bob's low point.
+    beacon.position.y = roofPeakY + 0.5;
     beacon.userData.isNightEmissive = true;
     g.add(beacon);
 
     // Per-district accent prop
     this.addAccent(g, cfg, bw, bh, bd, base, color);
 
-    // Emoji shingle above the door (kept from the old marker — carries per-
-    // district identity from any angle, no bloom, opts out of raycasting).
+    // District emoji, floated on the roof axis ABOVE the bobbing beacon
+    // (carries per-district identity from any angle, no bloom, opts out of
+    // raycasting). It used to hang at bh+0.35 on the door face, where gable
+    // roofs (apex bh+1.4) sliced through it and camera-facing billboard swing
+    // pushed its edges into the roof cone from side angles.
     if (icon) {
       const canvas = document.createElement('canvas');
       canvas.width = 128;
@@ -258,7 +268,11 @@ export class Zone {
           new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
         );
         sprite.name = 'zone-icon';
-        sprite.position.set(0, base + bh + 0.35, bd / 2 + 0.05);
+        // 1.6 above the peak: bottom of the 1.1-scale sprite sits at
+        // roofPeakY+1.05, clearing the beacon's bob-top (roofPeakY+0.88) by
+        // 0.17. Centred on the axis so billboard swing can never reach the
+        // roof (the apex is the roof's highest point).
+        sprite.position.set(0, roofPeakY + 1.6, 0);
         sprite.scale.setScalar(1.1);
         sprite.raycast = () => {};
         g.add(sprite);

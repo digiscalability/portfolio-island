@@ -176,7 +176,10 @@ export class Multiplayer {
       (this.selfLabel.material as THREE.SpriteMaterial).map?.dispose();
     }
     this.selfLabel = Multiplayer.makeTextSprite(clean);
-    this.selfLabel.position.set(0, 1.35, 0);
+    // 1.75: label bottom (−0.2 half-height) sits at 1.55, clearing the
+    // tallest cosmetic hat (wizard top ≈1.41 above the avatar origin) —
+    // at 1.35 the label bottom (1.15) cut through every tall hat.
+    this.selfLabel.position.set(0, 1.75, 0);
     this.player.add(this.selfLabel);
     this.sendState();
   }
@@ -514,7 +517,9 @@ export class Multiplayer {
     if (!this.selfWaveSprite) {
       this.selfWaveSprite = Multiplayer.makeEmojiSprite('👋');
       this.player.add(this.selfWaveSprite);
-      this.selfWaveSprite.position.set(0, 1.55, 0);
+      // 2.35: above the raised name label (top 1.95) — at 1.55 the emoji
+      // sat straight through the label band.
+      this.selfWaveSprite.position.set(0, 2.35, 0);
     }
     this.selfWaveSprite.visible = true;
   }
@@ -661,12 +666,14 @@ export class Multiplayer {
 
     // Name label
     const label = Multiplayer.makeTextSprite(name);
-    label.position.set(0, 1.35, 0);
+    // 1.75 clears the tallest peer hat (wizard ≈1.41) — see setName.
+    label.position.set(0, 1.75, 0);
     avatar.add(label);
 
     // Wave emoji (hidden until they wave)
     const waveSprite = Multiplayer.makeEmojiSprite('👋');
-    waveSprite.position.set(0, 1.75, 0);
+    // 2.35: bottom (2.075) clears the raised label top (1.95) by 0.125.
+    waveSprite.position.set(0, 2.35, 0);
     waveSprite.visible = false;
     avatar.add(waveSprite);
 
