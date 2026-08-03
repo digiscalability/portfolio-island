@@ -2760,6 +2760,10 @@ export class Island {
     // pointed) and the Artist's easel on the headland her vista already used.
     this.buildBandstand(1.15, 1.3, flowers);
     this.buildEasel(5.32, 0.315, flowers);
+    // Everyone else gets their workplace too, built AT their spawn site so no
+    // activity or anchor has to change — the props simply appear where the
+    // persona already stands and works.
+    this.buildTownStations(NPC_SITES, flowers);
     // Pass 1: scatter valid placements (respecting street skips) + colour index
     const bloomUp = new THREE.Vector3(0, 1, 0);
     const bloomOne = new THREE.Vector3(1, 1, 1);
@@ -3979,6 +3983,55 @@ export class Island {
    * hand-placed structure goes through this so nothing lands on a road and
    * nothing double-claims a position. Returns a fresh unit direction.
    */
+  /**
+   * Spiral outward from `rawDir` for the CLOSEST direction that is off-street
+   * and clear of every claimed prop by `clearArc`.
+   *
+   * `claimOffStreet` throws fourteen random darts and takes the first that
+   * clears; in a dense district every dart misses, and it then silently
+   * returns its least-bad candidate and registers it anyway — which is how
+   * the Night Watch's brazier ended up underneath the fish stall. Walking
+   * concentric rings finds the nearest genuinely free plot instead, so a
+   * station stays beside its owner rather than landing wherever a lucky dart
+   * happened to fall. Falls back to the dart-throwing version only if nothing
+   * within ~14u is free at all.
+   */
+  private claimClearSpot(rawDir: THREE.Vector3, clearArc: number): THREE.Vector3 {
+    const centre = rawDir.clone().normalize();
+    // Any tangent basis will do; we only need to sweep a full circle in it.
+    let tangent = new THREE.Vector3(0, 1, 0).cross(centre);
+    if (tangent.lengthSq() < 1e-6) tangent = new THREE.Vector3(1, 0, 0).cross(centre);
+    tangent.normalize();
+    const bitangent = centre.clone().cross(tangent).normalize();
+    for (let ring = 0; ring <= 8; ring++) {
+      const arc = ring * 0.035;
+      const steps = ring === 0 ? 1 : ring * 6;
+      for (let k = 0; k < steps; k++) {
+        const a = (k / steps) * Math.PI * 2;
+        const out = tangent
+          .clone()
+          .multiplyScalar(Math.cos(a))
+          .addScaledVector(bitangent, Math.sin(a));
+        const dir = centre
+          .clone()
+          .multiplyScalar(Math.cos(arc))
+          .addScaledVector(out, Math.sin(arc))
+          .normalize();
+        if (dir.y < Math.sin(0.29)) continue; // below the habitable band
+        if (this.isNearStreet(dir)) continue;
+        let clearance = Infinity;
+        for (const o of this.occupiedDirs) {
+          clearance = Math.min(clearance, dir.angleTo(o.dir) - o.arc);
+        }
+        if (clearance >= clearArc) {
+          this.occupiedDirs.push({ dir, arc: clearArc });
+          return dir;
+        }
+      }
+    }
+    return this.claimOffStreet(rawDir, clearArc);
+  }
+
   public claimOffStreet(rawDir: THREE.Vector3, clearArc: number): THREE.Vector3 {
     // Street-aware claim: like claimDir, but every jittered candidate is first
     // slid off the pavement, and any that still lands on a road is rejected — so
@@ -4538,6 +4591,415 @@ export class Island {
     const north = new THREE.Vector3().crossVectors(east, up).normalize();
     // Stand BEHIND the canvas, facing it (and the sea beyond).
     this.easelSites.push(seat.position.clone().addScaledVector(north, -1.0));
+  }
+
+  /**
+   * Seat a small prop cluster on the surface near a persona's spawn.
+   *
+   * `claimOffStreet` slides it off pavement and away from anything already
+   * claimed, so a station can never land on another asset. Deliberately does
+   * NOT register a collider: these sit right where their owner works, and a
+   * solid footprint there would be an anchor-inside-a-wall — the exact bug
+   * that had five townsfolk grinding buildings.
+   */
+  private stationAt(
+    lon: number,
+    lat: number,
+    arc: number,
+    name: string,
+    parent: THREE.Object3D,
+    build: (g: THREE.Group) => void,
+  ): void {
+    const dir = this.claimClearSpot(this.dirAt(lon, lat), arc);
+    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      seat = this.sampleSurfaceByDirection(dir, 0);
+    } catch {
+      return; // unsamplable — skip rather than float a prop
+    }
+    const g = new THREE.Group();
+    g.name = name;
+    g.position.copy(seat.position);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
+    // Face the nearest street where there is one, so desks and carts address
+    // the road like the houses do.
+    const street = this.nearestStreetDir(dir, 0.5);
+    if (street) this.faceObjectToward(g, seat.normal, street.multiplyScalar(this.radius));
+    build(g);
+    parent.add(g);
+  }
+
+  /** Workplaces for the townsfolk who had none, each at its owner's spawn. */
+  private buildTownStations(sites: Array<[number, number]>, parent: THREE.Object3D): void {
+    const wood = Materials.createStandardMaterial({ color: 0xb08a55 });
+    const darkWood = Materials.createStandardMaterial({ color: 0x7a5738 });
+    // Warm greys. A blue-grey stone reads as WATER against this sky.
+    const stone = Materials.createStandardMaterial({ color: 0xa8a294 });
+    const earth = Materials.createStandardMaterial({ color: 0xb09a72 });
+    const paper = Materials.createStandardMaterial({ color: 0xf1e7d0 });
+    const cloth = Materials.createStandardMaterial({ color: 0xc0553f });
+    // No metalness: there is no environment map in this scene, so a metallic
+    // specular lobe has nothing to reflect and just soaks up the hemisphere
+    // light's blue sky term — steel ends up looking painted blue.
+    const metal = Materials.createStandardMaterial({ color: 0x847f78 });
+    const box = (
+      g: THREE.Group,
+      w: number,
+      h: number,
+      d: number,
+      x: number,
+      y: number,
+      z: number,
+      mat: THREE.Material,
+      rot = 0,
+    ) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(x, y, z);
+      m.rotation.x = rot;
+      m.castShadow = true;
+      g.add(m);
+      return m;
+    };
+    // A four-legged table top — the shared base of every desk here.
+    const table = (g: THREE.Group, w: number, d: number, mat: THREE.Material) => {
+      box(g, w, 0.08, d, 0, 0.75, 0, mat);
+      for (const [lx, lz] of [
+        [-w / 2 + 0.1, -d / 2 + 0.1],
+        [w / 2 - 0.1, -d / 2 + 0.1],
+        [-w / 2 + 0.1, d / 2 - 0.1],
+        [w / 2 - 0.1, d / 2 - 0.1],
+      ] as Array<[number, number]>) {
+        box(g, 0.08, 0.72, 0.08, lx, 0.36, lz, mat);
+      }
+    };
+    // A glowing brazier — the guard's and the night watch's warmth.
+    const brazier = (g: THREE.Group, x: number, z: number) => {
+      const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.22, 0.3, 8), metal);
+      bowl.position.set(x, 0.62, z);
+      bowl.castShadow = true;
+      g.add(bowl);
+      for (const a of [0, 2.1, 4.2]) {
+        box(g, 0.06, 0.55, 0.06, x + Math.cos(a) * 0.2, 0.28, z + Math.sin(a) * 0.2, metal);
+      }
+      const fire = new THREE.Mesh(
+        new THREE.ConeGeometry(0.2, 0.36, 6),
+        new THREE.MeshBasicMaterial({ color: 0xffa63a, transparent: true, opacity: 0.85 }),
+      );
+      fire.position.set(x, 0.86, z);
+      fire.name = 'brazier_fire';
+      g.add(fire);
+    };
+
+    const at = (i: number, name: string, arc: number, build: (g: THREE.Group) => void) => {
+      const s = sites[i];
+      if (!s) return;
+      this.stationAt(s[0], s[1], arc, name, parent, build);
+    };
+
+    // 0 ELDER SAGE — a story circle the Storyteller and Philosopher share.
+    at(0, 'story_circle', 0.09, (g) => {
+      // Packed-earth clearing, trodden flat by a generation of listeners.
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.6, 0.1, 12), earth);
+      ring.position.y = 0.05;
+      ring.receiveShadow = true;
+      g.add(ring);
+      // A kerb of individual stones round the fire, each a little different.
+      for (let k = 0; k < 9; k++) {
+        const a = (k / 9) * Math.PI * 2;
+        const s = 0.16 + (k % 3) * 0.04;
+        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), stone);
+        rock.position.set(Math.cos(a) * 0.62, 0.09, Math.sin(a) * 0.62);
+        rock.rotation.set(a, a * 1.7, 0);
+        rock.castShadow = true;
+        g.add(rock);
+      }
+      brazier(g, 0, 0);
+      for (const a of [0.4, 1.9, 3.4, 4.9]) {
+        const log = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.1, 7), darkWood);
+        log.position.set(Math.cos(a) * 1.9, 0.22, Math.sin(a) * 1.9);
+        log.rotation.z = Math.PI / 2;
+        log.rotation.y = -a;
+        log.castShadow = true;
+        g.add(log);
+      }
+    });
+
+    // 3 YOUNG STUDENT — a study desk with a stack of books.
+    at(3, 'study_desk', 0.06, (g) => {
+      table(g, 1.3, 0.7, wood);
+      // Stack of books, spines out and slightly askew as a real stack is.
+      const covers = [cloth, paper, darkWood];
+      for (let k = 0; k < 3; k++) {
+        const bk = box(g, 0.34, 0.07, 0.26, -0.34, 0.83 + k * 0.075, 0, covers[k]);
+        bk.rotation.y = (k - 1) * 0.12;
+      }
+      // An OPEN book: two leaves tented over a spine.
+      const spine = box(g, 0.06, 0.04, 0.3, 0.26, 0.82, 0, darkWood);
+      spine.rotation.y = -0.18;
+      for (const s of [-1, 1]) {
+        const leaf = box(g, 0.26, 0.02, 0.3, 0.26 + s * 0.15, 0.845, 0, paper);
+        leaf.rotation.set(0, -0.18, s * 0.14);
+      }
+      // Inkpot and quill.
+      const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 0.1, 7), metal);
+      pot.position.set(0.56, 0.84, -0.2);
+      g.add(pot);
+      const quill = box(g, 0.02, 0.3, 0.02, 0.56, 1.0, -0.2, paper);
+      quill.rotation.z = 0.3;
+      const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.45, 6), darkWood);
+      stool.position.set(0, 0.22, 0.75);
+      stool.castShadow = true;
+      g.add(stool);
+    });
+
+    // 8 GUARD — a sentry box and a brazier at his post.
+    at(8, 'guard_post', 0.08, (g) => {
+      // Built from PANELS with the front left open, so it reads as a shelter
+      // you could stand in rather than a solid crate.
+      box(g, 1.0, 0.1, 0.9, 0, 0.05, 0, darkWood); // floor
+      box(g, 1.0, 1.9, 0.08, 0, 0.95, -0.41, wood); // back
+      box(g, 0.08, 1.9, 0.82, -0.46, 0.95, 0, wood); // left side
+      box(g, 0.08, 1.9, 0.82, 0.46, 0.95, 0, wood); // right side
+      box(g, 1.0, 0.3, 0.08, 0, 1.8, 0.41, wood); // lintel over the doorway
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(0.95, 0.5, 4), cloth);
+      roof.position.y = 2.15;
+      roof.rotation.y = Math.PI / 4;
+      roof.castShadow = true;
+      g.add(roof);
+      brazier(g, 1.5, 0.3);
+      // Weapon rack: two uprights, a crossbar, and spears — wooden shafts
+      // under steel heads, not solid metal poles.
+      box(g, 0.07, 1.0, 0.07, -1.5, 0.5, -0.3, darkWood);
+      box(g, 0.07, 1.0, 0.07, -1.5, 0.5, 0.5, darkWood);
+      box(g, 0.07, 0.07, 0.9, -1.5, 0.95, 0.1, darkWood);
+      for (const sz of [-0.15, 0.1, 0.35]) {
+        box(g, 0.045, 1.4, 0.045, -1.42, 0.7, sz, darkWood, 0.12);
+        const head = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.22, 5), metal);
+        head.position.set(-1.42, 1.42, sz + 0.17);
+        head.rotation.x = 0.12;
+        g.add(head);
+      }
+    });
+
+    // 12 ARCHITECT — a drafting table with rolled plans.
+    at(12, 'drafting_table', 0.06, (g) => {
+      table(g, 1.5, 0.9, wood);
+      // A drafting board must be visibly RAKED — laid near-flat it just reads
+      // as a tablecloth. Front edge rests on the table, back edge propped up.
+      // +0.5 raises the FAR edge, so the drawing surface faces the street and
+      // the stool — raked the other way the architect would be reading the back
+      // of his own board.
+      const RAKE = 0.5;
+      const board = box(g, 1.35, 0.05, 0.8, 0, 0.95, 0, darkWood);
+      board.rotation.x = RAKE;
+      const sheet = box(g, 1.15, 0.02, 0.65, 0, 0.985, 0, paper);
+      sheet.rotation.x = RAKE;
+      // Blue plan lines lying ON the raked plane. A point `d` along the board
+      // from its centre lands at (z = d·cos, y = −d·sin) once rotated, so the
+      // offsets have to be resolved in the rotated frame, not stacked flat.
+      const ink = Materials.createStandardMaterial({ color: 0x5b8fb0 });
+      for (const [sx, sw, d] of [
+        [-0.3, 0.4, -0.12],
+        [0.05, 0.55, 0.06],
+        [0.3, 0.25, 0.2],
+      ] as Array<[number, number, number]>) {
+        const line = box(g, sw, 0.015, 0.03, sx, 0, 0, ink);
+        line.rotation.x = RAKE;
+        line.position.z = d * Math.cos(RAKE);
+        line.position.y = 0.995 - d * Math.sin(RAKE);
+      }
+      box(g, 0.09, 0.28, 0.09, 0, 0.93, -0.36, darkWood); // prop under the raised edge
+      // Rolled plans stood in a pail beside the table, where they read.
+      const pail = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.14, 0.4, 8), metal);
+      pail.position.set(-0.95, 0.2, 0.25);
+      pail.castShadow = true;
+      g.add(pail);
+      for (const [rx, rz, tilt] of [
+        [-0.99, 0.2, 0.12],
+        [-0.9, 0.3, -0.14],
+        [-0.97, 0.31, 0.05],
+      ] as Array<[number, number, number]>) {
+        const roll = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.75, 6), paper);
+        roll.position.set(rx, 0.55, rz);
+        roll.rotation.z = tilt;
+        roll.castShadow = true;
+        g.add(roll);
+      }
+      const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 6), darkWood);
+      stool.position.set(0, 0.25, 0.85);
+      stool.castShadow = true;
+      g.add(stool);
+    });
+
+    // 14 LIGHTHOUSE KEEPER — the keeper's yard at the foot of his tower.
+    at(14, 'keeper_yard', 0.07, (g) => {
+      table(g, 1.2, 0.7, darkWood);
+      // Oil cans on the bench
+      for (const cx of [-0.3, 0, 0.3]) {
+        const can = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.26, 7), metal);
+        can.position.set(cx, 0.92, 0);
+        g.add(can);
+      }
+      // Brass telescope on a SPLAYED tripod, tipped seaward. Struts are placed
+      // apex-to-foot via setFromUnitVectors rather than stacked Euler angles —
+      // the length is the true distance, so nothing floats or overshoots.
+      const up = new THREE.Vector3(0, 1, 0);
+      const apex = new THREE.Vector3(1.5, 1.05, 0);
+      for (const a of [0, 2.094, 4.189]) {
+        const foot = new THREE.Vector3(1.5 + Math.cos(a) * 0.36, 0, Math.sin(a) * 0.36);
+        const span = apex.distanceTo(foot);
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.05, span, 0.05), darkWood);
+        leg.position.copy(apex).add(foot).multiplyScalar(0.5);
+        leg.quaternion.setFromUnitVectors(up, apex.clone().sub(foot).normalize());
+        leg.castShadow = true;
+        g.add(leg);
+      }
+      box(g, 0.11, 0.16, 0.11, apex.x, apex.y + 0.06, apex.z, metal); // yoke
+      const brass = Materials.createStandardMaterial({ color: 0xc9a227 });
+      const aim = new THREE.Vector3(0.9, 0.36, 0.22).normalize();
+      const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.085, 0.95, 8), brass);
+      scope.position.copy(apex).setY(apex.y + 0.16);
+      scope.quaternion.setFromUnitVectors(up, aim);
+      scope.castShadow = true;
+      g.add(scope);
+      const eyepiece = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.16, 7), metal);
+      eyepiece.position.copy(scope.position).addScaledVector(aim, -0.53);
+      eyepiece.quaternion.copy(scope.quaternion);
+      g.add(eyepiece);
+    });
+
+    // 16 CARTOGRAPHER — a map table with a globe.
+    at(16, 'map_table', 0.06, (g) => {
+      table(g, 1.6, 1.0, wood);
+      box(g, 1.45, 0.03, 0.9, 0, 0.81, 0, paper);
+      const ocean = Materials.createStandardMaterial({ color: 0x5b8fb0 });
+      const land = Materials.createStandardMaterial({ color: 0x86a86a });
+      const ink = Materials.createStandardMaterial({ color: 0x3f5d78 });
+      // A CHART, not a blank sheet: a drawn coastline with the island on it,
+      // a compass rose, and two ruled lines of latitude.
+      for (const [mx, mz, mw, md] of [
+        [-0.28, -0.06, 0.34, 0.26],
+        [-0.05, 0.08, 0.26, 0.2],
+        [-0.36, 0.16, 0.18, 0.14],
+      ] as Array<[number, number, number, number]>) {
+        box(g, mw, 0.012, md, mx, 0.828, mz, land);
+      }
+      for (const lz of [-0.26, 0.24]) {
+        box(g, 1.25, 0.008, 0.014, 0, 0.827, lz, ink);
+      }
+      box(g, 0.02, 0.008, 0.24, 0.52, 0.827, 0.22, ink); // compass rose
+      box(g, 0.24, 0.008, 0.02, 0.52, 0.827, 0.22, ink);
+      // Globe with continents and a brass meridian — a bare blue sphere is a ball.
+      const globe = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 7), ocean);
+      globe.position.set(0.6, 1.05, -0.25);
+      globe.castShadow = true;
+      g.add(globe);
+      for (const [gx, gy, gz] of [
+        [0.13, 0.1, 0.08],
+        [-0.09, 0.05, 0.15],
+        [0.02, -0.12, -0.14],
+        [-0.14, -0.06, -0.08],
+      ] as Array<[number, number, number]>) {
+        const patch = new THREE.Mesh(new THREE.SphereGeometry(0.075, 6, 4), land);
+        patch.position.set(0.6 + gx, 1.05 + gy, -0.25 + gz);
+        g.add(patch);
+      }
+      const meridian = new THREE.Mesh(new THREE.TorusGeometry(0.25, 0.017, 4, 14), metal);
+      meridian.position.set(0.6, 1.05, -0.25);
+      meridian.rotation.set(0.38, 0, 0.22);
+      g.add(meridian);
+      box(g, 0.12, 0.2, 0.12, 0.6, 0.88, -0.25, darkWood); // stand
+    });
+
+    // 18 COURIER — a handcart and a pigeonhole sorting rack.
+    at(18, 'post_cart', 0.07, (g) => {
+      box(g, 1.1, 0.12, 0.7, 0, 0.55, 0, wood); // tray
+      box(g, 1.1, 0.28, 0.06, 0, 0.7, -0.32, wood);
+      box(g, 1.1, 0.28, 0.06, 0, 0.7, 0.32, wood);
+      for (const wz of [-0.42, 0.42]) {
+        // Rim + hub + spokes: a bare disc reads as a barrel lid at this size.
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.05, 4, 10), darkWood);
+        rim.position.set(-0.3, 0.34, wz);
+        rim.castShadow = true;
+        g.add(rim);
+        const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.1, 6), metal);
+        hub.position.set(-0.3, 0.34, wz);
+        hub.rotation.x = Math.PI / 2;
+        g.add(hub);
+        for (const a of [0, Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4]) {
+          const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.04, 0.03), wood);
+          spoke.position.set(-0.3, 0.34, wz);
+          spoke.rotation.z = a;
+          g.add(spoke);
+        }
+      }
+      // Two shafts running OUT from the tray along x — the original single
+      // "handle" was 0.9 deep in z, i.e. a crossbar lying across the cart.
+      for (const hz of [-0.25, 0.25]) {
+        box(g, 0.9, 0.06, 0.06, 0.78, 0.6, hz, darkWood);
+      }
+      box(g, 0.06, 0.06, 0.5, 1.15, 0.6, 0, darkWood); // grab bar across the shafts
+      // Sorting rack: a 3x3 grid of pigeonholes
+      box(g, 1.0, 1.0, 0.35, -1.7, 0.6, 0, wood);
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          box(g, 0.26, 0.26, 0.04, -1.7 + (c - 1) * 0.31, 0.3 + r * 0.3, 0.19, darkWood);
+        }
+      }
+      box(g, 0.3, 0.3, 0.3, 0.15, 0.75, 0, cloth); // a sack on the tray
+    });
+
+    // 19 NIGHT WATCH — a watch post: brazier, key board, oil crate.
+    at(19, 'watch_post', 0.07, (g) => {
+      brazier(g, 0, 0);
+      // Key board — on POSTS. Panel alone hung in mid-air.
+      box(g, 0.9, 0.7, 0.06, -1.4, 0.9, 0, wood);
+      box(g, 0.09, 1.25, 0.09, -1.82, 0.62, 0, darkWood);
+      box(g, 0.09, 1.25, 0.09, -0.98, 0.62, 0, darkWood);
+      box(g, 0.95, 0.08, 0.14, -1.4, 1.29, 0.02, darkWood); // capping rail
+      for (const kx of [-0.25, 0, 0.25]) {
+        box(g, 0.04, 0.06, 0.04, -1.4 + kx, 1.12, 0.06, metal); // hook
+        box(g, 0.05, 0.18, 0.03, -1.4 + kx, 0.98, 0.06, metal); // key
+      }
+      box(g, 0.6, 0.5, 0.5, 1.3, 0.25, 0.2, darkWood); // oil crate
+      box(g, 0.62, 0.06, 0.52, 1.3, 0.52, 0.2, wood);
+      const lantern = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.26, 0.2), metal);
+      lantern.position.set(1.3, 0.68, 0.2);
+      lantern.castShadow = true;
+      g.add(lantern);
+      const glow = new THREE.Mesh(
+        new THREE.BoxGeometry(0.14, 0.16, 0.14),
+        new THREE.MeshBasicMaterial({ color: 0xffd98a, transparent: true, opacity: 0.9 }),
+      );
+      glow.position.copy(lantern.position);
+      g.add(glow);
+    });
+
+    // 21 MAYOR — a lectern and the town notice board.
+    at(21, 'lectern', 0.07, (g) => {
+      box(g, 0.5, 0.9, 0.4, 0, 0.45, 0, wood);
+      const top = box(g, 0.66, 0.06, 0.5, 0, 0.95, 0, darkWood);
+      top.rotation.x = -0.28;
+      const book = box(g, 0.3, 0.06, 0.22, 0, 1.0, 0.02, paper);
+      book.rotation.x = -0.28;
+      // Village notice board: framed, and roofed the way a real one is so the
+      // notices survive the weather.
+      box(g, 1.6, 1.1, 0.08, -2.0, 1.15, 0, wood);
+      box(g, 1.7, 0.09, 0.12, -2.0, 1.72, 0.02, darkWood); // top rail
+      box(g, 1.7, 0.09, 0.12, -2.0, 0.58, 0.02, darkWood); // bottom rail
+      const canopy = box(g, 1.8, 0.07, 0.42, -2.0, 1.82, 0.12, darkWood);
+      canopy.rotation.x = -0.34;
+      box(g, 0.12, 1.2, 0.12, -2.7, 0.6, 0, darkWood);
+      box(g, 0.12, 1.2, 0.12, -1.3, 0.6, 0, darkWood);
+      for (const [px, py, tilt] of [
+        [-0.4, 1.25, 0.06],
+        [0.1, 1.35, -0.09],
+        [0.35, 1.02, 0.03],
+      ] as Array<[number, number, number]>) {
+        const note = box(g, 0.3, 0.34, 0.02, -2.0 + px, py, 0.05, paper);
+        note.rotation.z = tilt; // pinned by hand, never quite square
+      }
+    });
   }
 
   private createStall(): THREE.Group {
