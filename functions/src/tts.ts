@@ -96,6 +96,9 @@ const VOICES: Record<string, string> = {
   philosopher: 'SAz9YHcvj6GT2YYXdXww', // River — relaxed, musing
   courier: 'iP95p4xoKVk53GoZ742B', // Chris — charming, down-to-earth
   night_watch: 'CwhRBWXzGAHq8TQ4Fs17', // Roger — laid-back, resonant
+  sailor: 'pNInz6obpgDQGcFmaJgB', // Adam — dominant, firm (a captain's bark)
+  mayor: 'cjVigY5qzO86Huf0OWal', // Eric — smooth, trustworthy (a politician's polish)
+  farmer: '56AoDkrOh6qfVPDXZ7Pt', // Cassidy — plain-spoken, warm
 };
 const DEFAULT_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George — verified present
 

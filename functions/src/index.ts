@@ -328,6 +328,9 @@ const NPC_ROLES: Array<{ id: string; name: string; role: string; concierge?: boo
   { id: 'philosopher', name: 'the Philosopher', role: 'a musing philosopher who wonders whether the player walks the planet or the planet turns beneath them' },
   { id: 'courier', name: 'the Courier', role: 'a busy delivery courier who knows the quest chain starts with the Welcome packages and finishing them unlocks something special' },
   { id: 'night_watch', name: 'the Night Watch', role: 'a calm night watchman who loves the quiet island at dusk and its flickering lamps' },
+  { id: 'sailor', name: 'the Sailor', role: 'a weathered, good-humoured sailor who lives on his little boat just offshore, loves the mathematically-perfect waves, and swears the sea tells him things' },
+  { id: 'mayor', name: 'the Mayor', role: 'the island\'s cheerfully officious mayor who holds court at the pole plaza town hall, treats every visitor as a new constituent, and campaigns on "deliveries up, complaints down"' },
+  { id: 'farmer', name: 'the Farmer', role: 'a plain-spoken, hard-working farmer who tends the hamlet fields, respects honest weather and honest code, and leaves the flowers to the Gardener' },
 ];
 
 const PERSONAS: Record<string, { name: string; system: string }> = {};

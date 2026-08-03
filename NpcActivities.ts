@@ -258,6 +258,27 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
     { from: 20, to: 30, activity: 'lamp_round' }, // 20:00 → 06:00
     { from: 6, to: 20, activity: 'sleep' },
   ],
+  // The Sailor never enters the wander loop (GameScene anchors him to his
+  // boat, Fisherman-style) — this schedule only labels his badge/Island Times.
+  sailor: [
+    { from: 6, to: 20, activity: 'shore_gaze' },
+    { from: 20, to: 30, activity: 'sleep' },
+  ],
+  mayor: [
+    { from: 8, to: 12, activity: 'plaza_gather' },
+    { from: 12, to: 14, activity: 'stroll', moods: { festive: 'plaza_gather' } },
+    { from: 14, to: 18, activity: 'plaza_gather' },
+    { from: 18, to: 21, activity: 'bench_rest' },
+    { from: 21, to: 32, activity: 'sleep' },
+  ],
+  farmer: [
+    { from: 5, to: 6, activity: 'stroll' },
+    { from: 6, to: 12, activity: 'tend_flowers' },
+    { from: 12, to: 13, activity: 'bench_rest' },
+    { from: 13, to: 18, activity: 'tend_flowers' },
+    { from: 18, to: 20, activity: 'stroll' },
+    { from: 20, to: 29, activity: 'sleep' },
+  ],
   artist: [
     { from: 9, to: 18, activity: 'paint_vista' },
     { from: 18, to: 22, activity: 'stroll' },

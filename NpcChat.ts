@@ -47,6 +47,9 @@ const AI_NPC_DEFS: Array<{ name: string; id: string; rate: number; pitch: number
   { name: 'Philosopher', id: 'philosopher', rate: 0.88, pitch: 0.96 },
   { name: 'Courier', id: 'courier', rate: 1.16, pitch: 1.0 },
   { name: 'Night Watch', id: 'night_watch', rate: 0.9, pitch: 0.85 },
+  { name: 'Sailor', id: 'sailor', rate: 0.98, pitch: 0.88 },
+  { name: 'Mayor', id: 'mayor', rate: 1.06, pitch: 0.94 },
+  { name: 'Farmer', id: 'farmer', rate: 0.92, pitch: 0.9 },
 ];
 
 /** Display name → server persona id, for every NPC with an LLM brain. */

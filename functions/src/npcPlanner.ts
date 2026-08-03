@@ -31,7 +31,7 @@ const PERSONA_IDS = [
   'storyteller', 'elder_sage', 'guard', 'village_baker', 'island_explorer',
   'young_student', 'fisherman', 'artist', 'wanderer', 'gardener', 'architect',
   'musician', 'lighthouse_keeper', 'tourist', 'cartographer', 'philosopher',
-  'courier', 'night_watch',
+  'courier', 'night_watch', 'sailor', 'mayor', 'farmer',
 ] as const;
 
 // Activity ids — must match the client's ActivityId union (NpcActivities.ts).

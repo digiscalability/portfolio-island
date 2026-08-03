@@ -68,17 +68,38 @@ export class GameScene extends THREE.Scene {
   private radarNorth = new THREE.Vector3(0, 0, 1);
   private radarEast = new THREE.Vector3(1, 0, 0);
 
-  // Seagulls circling shoreline anchors with flapping wings
+  // Seagull flocks circling shoreline anchors in rigid V-formations: each
+  // flock shares ONE pivot (the leader entry rotates it), wingmen ride fixed
+  // trailing offsets — coordinated flight instead of stacked parallel circles.
   private birds: Array<{
     pivot: THREE.Object3D;
     bird: THREE.Group;
     wingL: THREE.Mesh;
     wingR: THREE.Mesh;
     dirLocal: THREE.Vector3;
+    tangentOff: THREE.Vector3; // V-formation offset in the pivot-local tangent plane
+    altOff: number; // V-formation drop below the leader's altitude
     alt: number;
     speed: number;
     phase: number;
+    lead: boolean; // exactly one per flock — rotates the shared pivot
   }> = [];
+
+  // Ground birds pecking at fixed spots; walking up flushes them into the sky.
+  private groundBirds: Array<{
+    bird: THREE.Group;
+    wingL: THREE.Mesh;
+    wingR: THREE.Mesh;
+    basePos: THREE.Vector3;
+    baseQuat: THREE.Quaternion;
+    up: THREE.Vector3;
+    away: THREE.Vector3; // flushed flight direction (tangent, away from approach)
+    mode: 'peck' | 'flee' | 'gone';
+    t0: number;
+    phase: number;
+    respawnAt: number;
+  }> = [];
+  private readonly _gbScratch = new THREE.Vector3();
 
   // Trees swaying gently around their surface-aligned base orientation
   private swayTrees: Array<{
@@ -150,6 +171,24 @@ export class GameScene extends THREE.Scene {
     castLen: number; // seaward cast length, sized at setup so the bobber hangs over open water
     dropBase: number; // bobber local -Y offset that seats it ON the calm sea surface
   } | null = null;
+
+  // The Sailor lives on a little rowboat just offshore, drifting a slow
+  // circle and riding the REAL wave math (waveHeightAt — the same surface
+  // the shader displaces). Anchored + animated in updateSailor(); the wander
+  // loop skips him like the Fisherman.
+  private sailor: {
+    npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string; dialogue: string[] };
+    boat: THREE.Group;
+    center: THREE.Vector3; // drift-circle centre (unit dir, open water)
+    t1: THREE.Vector3; // tangent basis at the centre
+    t2: THREE.Vector3;
+    angle: number;
+    radiusArc: number; // drift circle angular radius
+    driftRate: number; // rad/s along the circle
+  } | null = null;
+  private readonly _sailDir = new THREE.Vector3();
+  private readonly _sailFwd = new THREE.Vector3();
+  private readonly _sailTmp = new THREE.Vector3();
 
   // The Baker's routine: knead dough → bake it in the oven → lay the pie on the
   // counter, on a loop. A quest can inject a one-off "fish pie" bake. Props
@@ -619,6 +658,8 @@ export class GameScene extends THREE.Scene {
       this.setupFisherman();
       // The Baker works his oven at the village bakery
       this.setupBaker();
+      // The Sailor drifts on his rowboat just offshore
+      this.setupSailor();
     } finally {
       // Generation done — restore true randomness for runtime/FX.
       restoreRandom();
@@ -849,67 +890,165 @@ export class GameScene extends THREE.Scene {
     this.createFish();
   }
 
+  /** One low-poly gull; shared materials are passed in by the callers. */
+  private buildBird(
+    bodyMat: THREE.Material,
+    wingMat: THREE.Material,
+    beakMat: THREE.Material,
+  ): { bird: THREE.Group; wingL: THREE.Mesh; wingR: THREE.Mesh } {
+    const bird = new THREE.Group();
+    // Body — small elongated sphere pointing along travel direction (-Z)
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), bodyMat);
+    body.scale.set(1, 0.9, 1.9);
+    bird.add(body);
+    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 4), beakMat);
+    beak.rotation.x = -Math.PI / 2;
+    beak.position.z = -0.2;
+    bird.add(beak);
+    // Wings — thin flattened boxes hinged at the body sides
+    const wingGeo = new THREE.BoxGeometry(0.34, 0.015, 0.15);
+    wingGeo.translate(0.17, 0, 0); // hinge at inner edge
+    const wingL = new THREE.Mesh(wingGeo, wingMat);
+    wingL.position.set(0.06, 0.02, 0);
+    bird.add(wingL);
+    const wingR = new THREE.Mesh(wingGeo, wingMat);
+    wingR.position.set(-0.06, 0.02, 0);
+    wingR.rotation.y = Math.PI;
+    bird.add(wingR);
+    return { bird, wingL, wingR };
+  }
+
   /**
-   * Seagulls circling low over the shoreline in banked loops — three over
-   * each of two beach anchors plus one loner. They roost (fade out) at
-   * night; update() runs the orbit, soar, and flap/glide cycle.
+   * Seagull flocks circling low over the shoreline in banked loops — a
+   * V-FORMATION of three over each of two beach anchors plus one loner.
+   * Each flock shares one pivot: the leader flies the circle and the
+   * wingmen hold rigid behind-and-beside offsets (real formations are
+   * near-rigid), instead of the old stacked parallel circles that read as
+   * birds glued side by side. They roost (fade out) at night; update()
+   * runs the orbit, soar, and flap/glide cycle.
    */
   private createBirds(): void {
     const bodyMat = new THREE.MeshToonMaterial({ color: 0xf4f6f8 });
     const wingMat = new THREE.MeshToonMaterial({ color: 0xdfe5ea, side: THREE.DoubleSide });
     const beakMat = new THREE.MeshToonMaterial({ color: 0xf2b04a });
     const planetR = this.island ? this.island.getRadius() : 18;
-    // Longitudes of the shore points each gull circles: two flocks + a loner.
-    const ANCHOR_LONS = [5.0, 5.0, 5.0, 2.0, 2.0, 2.0, 3.6];
     const up = new THREE.Vector3(0, 1, 0);
-    for (let i = 0; i < ANCHOR_LONS.length; i++) {
+    const FLOCKS: Array<{ lon: number; count: number }> = [
+      { lon: 5.0, count: 3 },
+      { lon: 2.0, count: 3 },
+      { lon: 3.6, count: 1 },
+    ];
+    // Trailing V slots relative to the leader (x across, y altitude drop,
+    // z BEHIND — the flock flies -Z in pivot-local space).
+    const V_SLOTS = [
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(-1.0, -0.35, 1.3),
+      new THREE.Vector3(1.0, -0.35, 1.3),
+    ];
+    let fi = 0;
+    for (const flock of FLOCKS) {
       const pivot = new THREE.Object3D();
       // Aim the pivot's spin axis (+Y) at a point just above the shoreline
-      // so the gull traces a small circle over the beach instead of a
+      // so the flock traces a small circle over the beach instead of a
       // great-circle orbit through the far hemisphere.
-      const anchor = this.island ? this.island.dirAt(ANCHOR_LONS[i], 0.24) : up.clone();
+      const anchor = this.island ? this.island.dirAt(flock.lon, 0.24) : up.clone();
       pivot.quaternion.setFromUnitVectors(up, anchor);
-      const bird = new THREE.Group();
-      // Body — small elongated sphere pointing along travel direction (-Z of pivot spin)
-      const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), bodyMat);
-      body.scale.set(1, 0.9, 1.9);
-      bird.add(body);
-      // Beak
-      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 4), beakMat);
-      beak.rotation.x = -Math.PI / 2;
-      beak.position.z = -0.2;
-      bird.add(beak);
-      // Wings — thin flattened boxes hinged at the body sides
-      const wingGeo = new THREE.BoxGeometry(0.34, 0.015, 0.15);
-      wingGeo.translate(0.17, 0, 0); // hinge at inner edge
-      const wingL = new THREE.Mesh(wingGeo, wingMat);
-      wingL.position.set(0.06, 0.02, 0);
-      bird.add(wingL);
-      const wingR = new THREE.Mesh(wingGeo, wingMat);
-      wingR.position.set(-0.06, 0.02, 0);
-      wingR.rotation.y = Math.PI;
-      bird.add(wingR);
-      // Small polar offset from the spin axis = the loop's angular radius
-      // (~5-8u circle at this altitude). Near the pole the model's up (+Y)
-      // already points radially out, so unlike the old equatorial orbit no
-      // upright roll is needed — just a constant bank into the turn.
-      const theta = 0.1 + Math.random() * 0.06;
-      const alt = planetR + 0.1 + (2.5 + i * 0.7);
-      const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
-      bird.position.copy(dirLocal).multiplyScalar(alt);
-      bird.rotation.z = 0.28;
-      pivot.add(bird);
-      pivot.name = `bird_pivot_${i}`;
+      pivot.name = `bird_pivot_${fi}`;
       this.add(pivot);
-      this.birds.push({
-        pivot,
+      const theta = 0.11 + Math.random() * 0.04;
+      const alt = planetR + 0.1 + (2.8 + fi * 0.9);
+      const speed = 0.25 + Math.random() * 0.08;
+      const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
+      for (let j = 0; j < flock.count; j++) {
+        const { bird, wingL, wingR } = this.buildBird(bodyMat, wingMat, beakMat);
+        const slot = V_SLOTS[j];
+        const tangentOff = new THREE.Vector3(slot.x, 0, slot.z);
+        bird.position
+          .copy(dirLocal)
+          .multiplyScalar(alt + slot.y)
+          .add(tangentOff);
+        // Near the pivot pole the model's up (+Y) already points radially
+        // out — just a constant bank into the turn.
+        bird.rotation.z = 0.28;
+        pivot.add(bird);
+        this.birds.push({
+          pivot,
+          bird,
+          wingL,
+          wingR,
+          dirLocal,
+          tangentOff,
+          altOff: slot.y,
+          alt,
+          speed,
+          phase: Math.random() * Math.PI * 2,
+          lead: j === 0,
+        });
+      }
+      fi++;
+    }
+    this.createGroundBirds(bodyMat, wingMat, beakMat);
+  }
+
+  /**
+   * Small birds pecking at the ground around plazas, parks, and the shore.
+   * Approach within ~3.2u and they flush — a fast climbing flight away —
+   * then land again at the same spot a while after the coast is clear.
+   */
+  private createGroundBirds(
+    gullBody: THREE.Material,
+    gullWing: THREE.Material,
+    beakMat: THREE.Material,
+  ): void {
+    if (!this.island) return;
+    const sparrowBody = new THREE.MeshToonMaterial({ color: 0xa08a70 });
+    const sparrowWing = new THREE.MeshToonMaterial({ color: 0x84705a, side: THREE.DoubleSide });
+    // [lon, lat] peck spots: plaza rim, park grass, beach sand.
+    const SPOTS: Array<[number, number]> = [
+      [0.9, 1.38],
+      [0.35, 0.8],
+      [1.9, 0.75],
+      [3.4, 0.9],
+      [5.0, 0.34],
+      [2.0, 0.34],
+      [0.5, 0.6],
+      [4.4, 0.55],
+    ];
+    for (let i = 0; i < SPOTS.length; i++) {
+      const sparrow = i % 2 === 0;
+      const { bird, wingL, wingR } = this.buildBird(
+        sparrow ? sparrowBody : gullBody,
+        sparrow ? sparrowWing : gullWing,
+        beakMat,
+      );
+      bird.scale.setScalar(sparrow ? 0.5 : 0.62);
+      const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
+      const s = this.island.analyticSurface(dir);
+      bird.position.copy(dir).multiplyScalar(s.radius + 0.02);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal);
+      bird.quaternion.copy(q);
+      bird.rotateY(Math.random() * Math.PI * 2); // face a random way while pecking
+      bird.name = `ground_bird_${i}`;
+      this.add(bird);
+      // Flushed flight heads along a fixed tangent (away from the island
+      // interior reads best: use the local east tangent, varied per bird).
+      const away = new THREE.Vector3()
+        .crossVectors(s.normal, new THREE.Vector3(0, 1, 0))
+        .normalize();
+      if (away.lengthSq() < 0.5) away.set(1, 0, 0);
+      away.applyAxisAngle(s.normal, Math.random() * Math.PI * 2);
+      this.groundBirds.push({
         bird,
         wingL,
         wingR,
-        dirLocal,
-        alt,
-        speed: 0.25 + Math.random() * 0.1,
+        basePos: bird.position.clone(),
+        baseQuat: bird.quaternion.clone(),
+        up: s.normal.clone(),
+        away,
+        mode: 'peck',
+        t0: 0,
         phase: Math.random() * Math.PI * 2,
+        respawnAt: 0,
       });
     }
   }
@@ -1867,6 +2006,110 @@ export class GameScene extends THREE.Scene {
     return { group: g, ovenLocal, kneadLocal, slots, ovenGlow };
   }
 
+  /**
+   * Put the Sailor on a rowboat drifting a slow circle in open water off the
+   * hamlet coast. The boat rides waveHeightAt (the CPU mirror of the sea
+   * shader) so it bobs on the SAME swell the player sees; the Sailor is
+   * re-anchored to the deck every frame. Chat works the moment you swim or
+   * jetski alongside — same proximity interaction as every NPC.
+   */
+  private setupSailor(): void {
+    if (!this.island) return;
+    const npc = this.island.npcTargets.find((n) => n.name === 'Sailor');
+    if (!npc) return;
+
+    // Open water off the hamlet beach: lat 0.14 is well below the shoreline
+    // band (~0.2-0.3 with coast warp) — verified deep at setup, with a
+    // seaward nudge fallback if a freak coast warp makes it shallow.
+    const center = this.island.dirAt(2.6, 0.14);
+    const seaR = this.island.seaLevel();
+    if (this.island.analyticSurface(center).radius > seaR - 0.4) {
+      center.copy(this.island.dirAt(2.6, 0.09));
+    }
+    const t1 = new THREE.Vector3(0, 1, 0).cross(center).normalize();
+    if (t1.lengthSq() < 0.5) t1.set(1, 0, 0);
+    const t2 = new THREE.Vector3().crossVectors(center, t1).normalize();
+
+    // Rowboat: hull + rim + bench, toon browns matching the beached props.
+    const hullMat = new THREE.MeshToonMaterial({ color: 0x7a5230 });
+    const trimMat = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
+    const boat = new THREE.Group();
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.34, 2.0), hullMat);
+    hull.position.y = 0.17;
+    hull.castShadow = true;
+    boat.add(hull);
+    // Bow wedge (forward = -Z, matching orientQuat's convention)
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.7, 4), hullMat);
+    bow.rotation.x = -Math.PI / 2;
+    bow.rotation.y = Math.PI / 4;
+    bow.scale.set(1, 1, 0.68);
+    bow.position.set(0, 0.17, -1.3);
+    boat.add(bow);
+    for (const rz of [-0.6, 0.5]) {
+      const rib = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.06, 0.12), trimMat);
+      rib.position.set(0, 0.36, rz);
+      boat.add(rib);
+    }
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.3), trimMat);
+    bench.position.set(0, 0.28, 0.15);
+    boat.add(bench);
+    boat.name = 'sailor_boat';
+    this.add(boat);
+
+    this.sailor = {
+      npc: npc as {
+        position: THREE.Vector3;
+        meshRef: THREE.Object3D;
+        name: string;
+        dialogue: string[];
+      },
+      boat,
+      center,
+      t1,
+      t2,
+      angle: Math.random() * Math.PI * 2,
+      radiusArc: 0.02, // ~1u circle at R50
+      driftRate: 0.045, // one lazy lap every ~2.3 minutes
+    };
+    console.log('⛵ Sailor set up on his boat offshore');
+  }
+
+  /** Drift + wave-ride the Sailor's boat and keep him standing on the deck. */
+  private updateSailor(time: number, dt: number): void {
+    const S = this.sailor;
+    if (!S || !this.island) return;
+    S.angle += S.driftRate * dt;
+    // Drift-circle direction: centre tipped toward the rotating tangent.
+    const sinA = Math.sin(S.radiusArc);
+    this._sailDir
+      .copy(S.center)
+      .multiplyScalar(Math.cos(S.radiusArc))
+      .addScaledVector(S.t1, Math.cos(S.angle) * sinA)
+      .addScaledVector(S.t2, Math.sin(S.angle) * sinA)
+      .normalize();
+    // Ride the real swell (0.7 of full amplitude — a hull damps the chop).
+    const calm = this.island.seaLevel();
+    const surf = this.island.waveHeightAt(this._sailDir, this.island.seaTimeUniform.value);
+    const r = calm + (surf - calm) * 0.7 - 0.06; // hull sits slightly INTO the water
+    S.boat.position.copy(this._sailDir).multiplyScalar(r);
+    // Face along the drift (derivative of the circle), up = radial; then a
+    // gentle rock so it reads afloat even between swells.
+    this._sailFwd
+      .copy(S.t1)
+      .multiplyScalar(-Math.sin(S.angle))
+      .addScaledVector(S.t2, Math.cos(S.angle));
+    this._sailTmp
+      .copy(this._sailFwd)
+      .addScaledVector(this._sailDir, -this._sailFwd.dot(this._sailDir));
+    S.boat.quaternion.copy(this.orientQuat(this._sailDir, this._sailTmp.normalize()));
+    S.boat.rotateX(Math.sin(time * 0.9) * 0.05);
+    S.boat.rotateZ(Math.sin(time * 0.7 + 1.3) * 0.045);
+    // The Sailor stands amidships, riding every motion of the deck.
+    S.npc.meshRef.position.copy(S.boat.position).addScaledVector(this._sailDir, 0.36);
+    S.npc.meshRef.quaternion.copy(S.boat.quaternion);
+    S.npc.position.copy(S.npc.meshRef.position);
+  }
+
   /** Relocate the Baker to his bakery and start his baking routine. */
   private setupBaker(): void {
     if (!this.island) return;
@@ -2115,7 +2358,8 @@ export class GameScene extends THREE.Scene {
     });
     this.cloudMat = cloudMat;
     const planetR = this.island ? this.island.getRadius() : 18;
-    for (let i = 0; i < 10; i++) {
+    // 18 (was 10): the R50 sky read sparse — more cover, same tight ceiling.
+    for (let i = 0; i < 18; i++) {
       const pivot = new THREE.Object3D();
       // Random orbit plane
       pivot.rotation.set(
@@ -3807,24 +4051,85 @@ export class GameScene extends THREE.Scene {
       pivot.rotateY((pivot.userData.driftSpeed as number) * deltaTime);
     }
 
-    // Gulls: orbit + soar + flap/glide cycle + night roost
+    // Gull flocks: V-formation orbit + soar + flap/glide cycle + night roost
     const birdDay = this.envCycle ? this.envCycle.getDayFactor() : 1;
     for (const b of this.birds) {
       // Roost after dusk: shrink away in place, return at dawn.
       const roostTarget = birdDay < 0.3 ? 0.001 : 1;
       const s = THREE.MathUtils.lerp(b.bird.scale.x, roostTarget, 1 - Math.exp(-3 * deltaTime));
       b.bird.scale.setScalar(s);
-      b.pivot.visible = s > 0.05;
-      if (!b.pivot.visible) continue;
-      b.pivot.rotateY(b.speed * deltaTime);
-      // Real gulls flap in bursts and glide between them: flap for the
-      // first 35% of a ~4s cycle, then hold a slight dihedral.
+      b.bird.visible = s > 0.05;
+      if (!b.bird.visible) continue;
+      // One rotation per flock — the leader carries the shared pivot and the
+      // wingmen ride along in their rigid V slots.
+      if (b.lead) b.pivot.rotateY(b.speed * deltaTime);
+      // Real gulls flap in bursts and glide between them: flap for the first
+      // 35% of a ~4s cycle, then hold a slight dihedral. Downstroke-weighted
+      // (power stroke down, lazy recovery up) so it reads as WINGS, not two
+      // panels waggling symmetrically.
       const flapCycle = (time * 0.25 + b.phase) % 1;
-      const flap = flapCycle < 0.35 ? Math.sin(time * 10 + b.phase) * 0.6 : 0.12;
+      const raw = Math.sin(time * 10 + b.phase);
+      const flap = flapCycle < 0.35 ? (raw > 0 ? raw * 0.45 : raw * 0.8) : 0.12;
       b.wingL.rotation.z = flap;
       b.wingR.rotation.z = -flap;
-      // Slow soar: drift the loop altitude up and down as it circles.
-      b.bird.position.copy(b.dirLocal).multiplyScalar(b.alt + Math.sin(time * 0.5 + b.phase) * 0.5);
+      // Slow soar: the whole formation drifts up and down as it circles
+      // (per-flock phase via the shared pivot id keeps the V together).
+      b.bird.position
+        .copy(b.dirLocal)
+        .multiplyScalar(b.alt + b.altOff + Math.sin(time * 0.5 + b.pivot.id) * 0.5)
+        .add(b.tangentOff);
+    }
+
+    // Ground birds: peck → flush when the player closes in → land later.
+    const gbPlayer = this.player ? this.player.getWorldPosition() : null;
+    for (const g of this.groundBirds) {
+      if (g.mode === 'peck') {
+        // Peck: rhythmic forward dips with idle pauses between bursts.
+        const burst = Math.sin(time * 0.7 + g.phase) > 0.2 ? 1 : 0;
+        const dip = burst * Math.max(0, Math.sin(time * 6 + g.phase)) * 0.55;
+        g.bird.quaternion.copy(g.baseQuat);
+        g.bird.rotateX(dip);
+        g.wingL.rotation.z = 0;
+        g.wingR.rotation.z = 0;
+        if (gbPlayer && gbPlayer.distanceToSquared(g.basePos) < 3.2 * 3.2) {
+          g.mode = 'flee';
+          g.t0 = time;
+          // Flee away from the player, tangent to the ground.
+          this._gbScratch.copy(g.basePos).sub(gbPlayer);
+          this._gbScratch.addScaledVector(g.up, -this._gbScratch.dot(g.up));
+          if (this._gbScratch.lengthSq() > 0.1) g.away.copy(this._gbScratch).normalize();
+          sfx.blip();
+        }
+      } else if (g.mode === 'flee') {
+        const t = time - g.t0;
+        if (t > 2.6) {
+          g.mode = 'gone';
+          g.bird.visible = false;
+          g.respawnAt = time + 22 + Math.random() * 20;
+          continue;
+        }
+        // Climb-out: accelerate up and away, nose lifted, fast flapping.
+        g.bird.position
+          .copy(g.basePos)
+          .addScaledVector(g.up, t * t * 1.6 + t * 0.8)
+          .addScaledVector(g.away, t * 4.2);
+        g.bird.quaternion.copy(g.baseQuat);
+        g.bird.rotateX(-0.35);
+        const fastFlap = Math.sin(time * 22 + g.phase) * 0.9;
+        g.wingL.rotation.z = fastFlap;
+        g.wingR.rotation.z = -fastFlap;
+      } else if (
+        time > g.respawnAt &&
+        (!gbPlayer || gbPlayer.distanceToSquared(g.basePos) > 7 * 7)
+      ) {
+        // Coast clear — settle back onto the same spot facing a new way.
+        g.mode = 'peck';
+        g.bird.visible = true;
+        g.bird.position.copy(g.basePos);
+        g.bird.quaternion.copy(g.baseQuat);
+        g.bird.rotateY(Math.random() * Math.PI * 2);
+        g.baseQuat.copy(g.bird.quaternion);
+      }
     }
 
     // Trees: gentle sway + a slow wind gust that rolls through every ~25s so
@@ -3847,6 +4152,7 @@ export class GameScene extends THREE.Scene {
         // The Fisherman + Baker run their own routines — skip the wander for them
         if (this.fisherman && npc === this.fisherman.npc) continue;
         if (this.baker && npc === this.baker.npc) continue;
+        if (this.sailor && npc === this.sailor.npc) continue;
         const data = npc.meshRef.userData as {
           greetT0?: number;
           lastGreetAt?: number;
@@ -4151,6 +4457,7 @@ export class GameScene extends THREE.Scene {
     this.updateFish(deltaTime, time);
     this.updateFisherman(time, deltaTime);
     this.updateBaker(time, deltaTime);
+    this.updateSailor(time, deltaTime);
     // Carried quest fish: gentle wiggle in the player's hands
     if (this.carriedFish) this.carriedFish.rotation.z = Math.sin(time * 5) * 0.15;
     // Generic gold coin-pops

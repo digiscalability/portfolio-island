@@ -1977,6 +1977,13 @@ export class Island {
       [3.77 + SHIFT_CONTACT, 0.36],
       // one wanderer out on the coastal road (the equator is ocean now)
       [5.0, 0.28],
+      // the Sailor's LAND placeholder — GameScene.setupSailor() relocates him
+      // onto his boat offshore (same relocate pattern as the Fisherman)
+      [2.6, 0.31],
+      // the Mayor holds court at the pole plaza
+      [1.4, 1.36],
+      // the Farmer works the hamlet's flower fields
+      [2.9, 0.55],
     ];
     const NPC_SHIRT_COLORS = [0x4488bb, 0xcc5544, 0x55aa55, 0xddaa33, 0x8866aa, 0xbb6644];
     const NPC_PERSONALITIES = [
@@ -2138,6 +2145,30 @@ export class Island {
           'The lamps flicker at dusk. Have you noticed?',
           'Press E near a lamp to toggle it.',
           'I prefer the island at night. Quieter.',
+        ],
+      },
+      {
+        name: 'Sailor',
+        dialogue: [
+          'Ahoy! Finest little harbour on any sphere.',
+          'The waves here follow real maths, you know.',
+          'Swim out sometime — the water is warmer than it looks.',
+        ],
+      },
+      {
+        name: 'Mayor',
+        dialogue: [
+          'Welcome, welcome! Every visitor makes the island bigger.',
+          'The town hall is always open — that is a campaign promise.',
+          'Deliveries up, complaints down. A fine term so far.',
+        ],
+      },
+      {
+        name: 'Farmer',
+        dialogue: [
+          'These fields feed the whole island, you know.',
+          'Rain or shine — the code decides, and I adapt.',
+          'The Gardener does the flowers. I do the honest crops.',
         ],
       },
     ];
