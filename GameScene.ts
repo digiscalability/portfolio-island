@@ -94,6 +94,7 @@ export class GameScene extends THREE.Scene {
     wingL: THREE.Mesh;
     wingR: THREE.Mesh;
     tail: THREE.Mesh;
+    legs: THREE.Group;
     basePos: THREE.Vector3; // home spot (respawn + wander tether)
     curPos: THREE.Vector3; // current perch — moves with hops
     baseQuat: THREE.Quaternion; // pure surface alignment, NO yaw baked in
@@ -914,7 +915,13 @@ export class GameScene extends THREE.Scene {
     wingMat: THREE.Material,
     beakMat: THREE.Material,
     extras?: { belly?: THREE.Material; shape?: [number, number, number] },
-  ): { bird: THREE.Group; wingL: THREE.Mesh; wingR: THREE.Mesh; tail: THREE.Mesh } {
+  ): {
+    bird: THREE.Group;
+    wingL: THREE.Mesh;
+    wingR: THREE.Mesh;
+    tail: THREE.Mesh;
+    legs: THREE.Group;
+  } {
     const bird = new THREE.Group();
     // Body — small elongated sphere pointing along travel direction (-Z);
     // per-species shape squashes/stretches it (plump robin vs sleek gull).
@@ -960,6 +967,22 @@ export class GameScene extends THREE.Scene {
     tail.position.set(0, 0.03, 0.09 * shape[2]);
     tail.rotation.x = -0.16; // NEGATIVE x lifts a +Z tail tip in this model
     bird.add(tail);
+    // Legs — thin stilts so grounded birds STAND on the terrain instead of
+    // sitting belly-deep in the grass. Flying birds fold them back flat
+    // under the tail (rotation.x set by the caller).
+    const legs = new THREE.Group();
+    const legGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.1, 4);
+    for (const lx of [-0.045, 0.045]) {
+      const leg = new THREE.Mesh(legGeo, beakMat);
+      leg.position.set(lx, -0.05, 0.02);
+      legs.add(leg);
+      // Tiny forward foot nub
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.012, 0.05), beakMat);
+      foot.position.set(lx, -0.1, 0);
+      legs.add(foot);
+    }
+    legs.position.y = -0.08; // hang from the belly; feet ~0.185 below origin
+    bird.add(legs);
     // Wings — LONG tapered panels hinged at the body sides. The old 0.34u
     // stubs were invisible from the ground: all you could read at flight
     // altitude was the body's bank, which looked like "tilting" instead of
@@ -983,7 +1006,7 @@ export class GameScene extends THREE.Scene {
     wingR.position.set(-0.07, 0.02, 0);
     wingR.rotation.y = Math.PI;
     bird.add(wingR);
-    return { bird, wingL, wingR, tail };
+    return { bird, wingL, wingR, tail, legs };
   }
 
   // Bird materials cached per colour (fishMat pattern) — species mixing
@@ -1060,11 +1083,12 @@ export class GameScene extends THREE.Scene {
       for (let j = 0; j < flock.count; j++) {
         // Second wingman is a mottled juvenile; every bird gets size jitter.
         const juv = j === 2;
-        const { bird, wingL, wingR } = this.buildBird(
+        const { bird, wingL, wingR, legs } = this.buildBird(
           juv ? juvBodyMat : bodyMat,
           juv ? juvWingMat : wingMat,
           beakMat,
         );
+        legs.rotation.x = -1.25; // legs tucked back in flight
         const slot = V_SLOTS[j];
         const tangentOff = new THREE.Vector3(slot.x, 0, slot.z);
         bird.position
@@ -1173,7 +1197,7 @@ export class GameScene extends THREE.Scene {
     ];
     for (let i = 0; i < SPOTS.length; i++) {
       const sp = SPECIES[i % SPECIES.length];
-      const { bird, wingL, wingR, tail } = this.buildBird(
+      const { bird, wingL, wingR, tail, legs } = this.buildBird(
         GameScene.birdMat(sp.body),
         GameScene.birdMat(sp.wing, true),
         GameScene.birdMat(sp.beak),
@@ -1188,8 +1212,10 @@ export class GameScene extends THREE.Scene {
       // Seat on the RAYCAST mesh, not the analytic field: where the two
       // diverge the analytic radius sat under the rendered terrain and the
       // birds were buried. Startup-only, so 12 raycasts is fine.
+      // Lift = foot height (~0.185 local × scale): the bird STANDS on its
+      // legs instead of sitting belly-deep in the grass.
       const s = this.island.sampleSurfaceByDirection(dir, 0);
-      bird.position.copy(s.position).addScaledVector(s.normal, 0.04);
+      bird.position.copy(s.position).addScaledVector(s.normal, 0.185 * size + 0.005);
       // baseQuat = pure surface alignment; yaw lives in `heading` so the
       // feeding FSM can turn/face freely without re-baking the quaternion.
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal);
@@ -1210,6 +1236,7 @@ export class GameScene extends THREE.Scene {
         wingL,
         wingR,
         tail,
+        legs,
         basePos: bird.position.clone(),
         curPos: bird.position.clone(),
         baseQuat: q.clone(),
@@ -4442,6 +4469,7 @@ export class GameScene extends THREE.Scene {
         g.bird.rotateY(g.heading);
         g.bird.rotateX(0.35); // POSITIVE = nose lifted into the climb
         g.tail.rotation.x = -0.16;
+        g.legs.rotation.x = -Math.min(1.25, t * 2.5); // tuck legs after takeoff
         const fastFlap = Math.sin(time * 24 + g.phase) * 1.1; // panicked burst
         g.wingL.scale.x = 1; // full span again
         g.wingR.scale.x = 1;
@@ -4466,6 +4494,7 @@ export class GameScene extends THREE.Scene {
         g.bird.position.copy(g.basePos);
         g.bird.quaternion.copy(g.baseQuat);
         g.bird.rotateY(g.heading);
+        g.legs.rotation.x = 0; // legs back down for landing
       }
     }
 
