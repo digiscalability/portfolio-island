@@ -955,9 +955,12 @@ export class GameScene extends THREE.Scene {
       pivot.quaternion.setFromUnitVectors(up, anchor);
       pivot.name = `bird_pivot_${fi}`;
       this.add(pivot);
-      const theta = 0.11 + Math.random() * 0.04;
+      // Wider, quicker loops: at the old 0.25 rad/s the linear speed was a
+      // walking-pace ~1.8u/s hover. ~0.5 rad/s over a ~9u circle ≈ 4.5u/s —
+      // still a lazy thermal circle, but visibly FLYING.
+      const theta = 0.14 + Math.random() * 0.04;
       const alt = planetR + 0.1 + (2.8 + fi * 0.9);
-      const speed = 0.25 + Math.random() * 0.08;
+      const speed = 0.45 + Math.random() * 0.12;
       const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
       for (let j = 0; j < flock.count; j++) {
         const { bird, wingL, wingR } = this.buildBird(bodyMat, wingMat, beakMat);
@@ -4063,15 +4066,26 @@ export class GameScene extends THREE.Scene {
       // One rotation per flock — the leader carries the shared pivot and the
       // wingmen ride along in their rigid V slots.
       if (b.lead) b.pivot.rotateY(b.speed * deltaTime);
-      // Real gulls flap in bursts and glide between them: flap for the first
-      // 35% of a ~4s cycle, then hold a slight dihedral. Downstroke-weighted
-      // (power stroke down, lazy recovery up) so it reads as WINGS, not two
-      // panels waggling symmetrically.
-      const flapCycle = (time * 0.25 + b.phase) % 1;
-      const raw = Math.sin(time * 10 + b.phase);
-      const flap = flapCycle < 0.35 ? (raw > 0 ? raw * 0.45 : raw * 0.8) : 0.12;
+      // FLUTTER, not freeze: real birds beat their wings most of the time.
+      // The old cycle flapped 35% and held the wings rigid for the rest, so
+      // whenever you looked up you mostly caught a dead-winged glide. Now:
+      // ~2.2 beats/s for 75% of the cycle — a two-harmonic stroke (snappy,
+      // deep power stroke down; shallow, quick recovery up) — and the brief
+      // glide bouts keep a live tremor so the wings never look frozen.
+      const flapCycle = (time * 0.31 + b.phase) % 1;
+      let flap: number;
+      if (flapCycle < 0.75) {
+        const w = time * 14 + b.phase;
+        const stroke = Math.sin(w) + 0.3 * Math.sin(2 * w + 0.7);
+        flap = stroke > 0 ? stroke * 0.32 : stroke * 0.62;
+      } else {
+        flap = 0.15 + Math.sin(time * 6 + b.phase) * 0.05;
+      }
       b.wingL.rotation.z = flap;
       b.wingR.rotation.z = -flap;
+      // Leading-edge twist follows the stroke — a flexible wing, not a panel.
+      b.wingL.rotation.x = flap * 0.22;
+      b.wingR.rotation.x = flap * 0.22;
       // Slow soar: the whole formation drifts up and down as it circles
       // (per-flock phase via the shared pivot id keeps the V together).
       b.bird.position
@@ -4089,8 +4103,12 @@ export class GameScene extends THREE.Scene {
         const dip = burst * Math.max(0, Math.sin(time * 6 + g.phase)) * 0.55;
         g.bird.quaternion.copy(g.baseQuat);
         g.bird.rotateX(dip);
-        g.wingL.rotation.z = 0;
-        g.wingR.rotation.z = 0;
+        // Mostly folded wings with the occasional quick ruffle — ground birds
+        // shuffle their feathers between pecks, they don't sit statue-still.
+        const ruffle =
+          Math.sin(time * 0.23 + g.phase) > 0.96 ? Math.sin(time * 26 + g.phase) * 0.35 : 0;
+        g.wingL.rotation.z = ruffle;
+        g.wingR.rotation.z = -ruffle;
         if (gbPlayer && gbPlayer.distanceToSquared(g.basePos) < 3.2 * 3.2) {
           g.mode = 'flee';
           g.t0 = time;
@@ -4115,7 +4133,7 @@ export class GameScene extends THREE.Scene {
           .addScaledVector(g.away, t * 4.2);
         g.bird.quaternion.copy(g.baseQuat);
         g.bird.rotateX(-0.35);
-        const fastFlap = Math.sin(time * 22 + g.phase) * 0.9;
+        const fastFlap = Math.sin(time * 24 + g.phase) * 1.1; // panicked burst
         g.wingL.rotation.z = fastFlap;
         g.wingR.rotation.z = -fastFlap;
       } else if (
