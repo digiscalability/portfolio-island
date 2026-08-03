@@ -158,8 +158,11 @@ export class GameScene extends THREE.Scene {
   // Modelled on the ground-bird FSM but they WALK (no flight/roost).
   private cats: Array<{
     cat: THREE.Group;
-    legs: THREE.Group; // 4 legs, child order [FL, FR, BL, BR] for a diagonal trot
-    tail: THREE.Object3D; // pivot at the rump
+    legs: THREE.Group; // 4 hip pivots, child order [FL, FR, BL, BR]
+    tailJoints: THREE.Object3D[]; // nested chain, base→tip
+    head: THREE.Object3D; // neck pivot (dip/look)
+    gait: number; // 0 = still, 1 = full stride — eased so legs settle smoothly
+    headingTarget: number; // yaw the cat is turning toward (heading eases to it)
     basePos: THREE.Vector3; // home (respawn + roam tether)
     curPos: THREE.Vector3; // current stance
     baseQuat: THREE.Quaternion; // surface alignment, NO yaw baked in
@@ -1114,7 +1117,12 @@ export class GameScene extends THREE.Scene {
     bodyMat: THREE.Material,
     accentMat: THREE.Material,
     darkMat: THREE.Material,
-  ): { cat: THREE.Group; tail: THREE.Object3D; legs: THREE.Group } {
+  ): {
+    cat: THREE.Group;
+    tailJoints: THREE.Object3D[];
+    legs: THREE.Group;
+    head: THREE.Object3D;
+  } {
     const cat = new THREE.Group();
     const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), bodyMat);
     body.scale.set(1.05, 0.95, 2.0); // stretched along -Z
@@ -1125,34 +1133,37 @@ export class GameScene extends THREE.Scene {
     belly.scale.set(0.9, 0.6, 1.85);
     belly.position.set(0, -0.045, 0);
     cat.add(belly);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.075, 7, 6), bodyMat);
-    head.position.set(0, 0.055, -0.2);
-    head.castShadow = true;
+    // HEAD PIVOT at the neck so the head can dip/look independently of the
+    // body (face parts are children, positioned relative to the pivot).
+    const head = new THREE.Object3D();
+    head.position.set(0, 0.05, -0.15);
     cat.add(head);
-    // Ears — cones tilted outward.
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.075, 7, 6), bodyMat);
+    skull.position.set(0, 0.005, -0.05);
+    skull.castShadow = true;
+    head.add(skull);
     for (const ex of [-0.045, 0.045]) {
       const ear = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.06, 4), bodyMat);
-      ear.position.set(ex, 0.115, -0.195);
+      ear.position.set(ex, 0.065, -0.045);
       ear.rotation.z = ex < 0 ? 0.4 : -0.4;
-      cat.add(ear);
+      head.add(ear);
     }
-    // Muzzle + nose.
     const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 5), accentMat);
     muzzle.scale.set(1, 0.8, 0.9);
-    muzzle.position.set(0, 0.028, -0.262);
-    cat.add(muzzle);
+    muzzle.position.set(0, -0.022, -0.112);
+    head.add(muzzle);
     const nose = new THREE.Mesh(new THREE.SphereGeometry(0.012, 5, 4), darkMat);
-    nose.position.set(0, 0.04, -0.29);
-    cat.add(nose);
-    // Eyes.
+    nose.position.set(0, -0.01, -0.14);
+    head.add(nose);
     const eyeMat = GameScene.birdMat(0x1c1a18);
     for (const ex of [-0.03, 0.03]) {
       const eye = new THREE.Mesh(new THREE.SphereGeometry(0.013, 5, 4), eyeMat);
-      eye.position.set(ex, 0.078, -0.248);
-      cat.add(eye);
+      eye.position.set(ex, 0.028, -0.098);
+      head.add(eye);
     }
-    // Legs — a group of 4 thin cylinders in child order [FL, FR, BL, BR] so
-    // the trot can swing the diagonal pairs. Feet ~0.12 below the body origin.
+    // Legs — 4 HIP PIVOTS (child order [FL, FR, BL, BR]); each carries a
+    // cylinder hanging below it so a swing pivots from the hip like a real
+    // step, not a scissor about the leg's middle. Feet ~0.12 below the origin.
     const legs = new THREE.Group();
     const legGeo = new THREE.CylinderGeometry(0.018, 0.016, 0.12, 5);
     const LEGS: Array<[number, number]> = [
@@ -1162,33 +1173,34 @@ export class GameScene extends THREE.Scene {
       [0.05, 0.13],
     ];
     for (const [lx, lz] of LEGS) {
+      const hip = new THREE.Object3D();
+      hip.position.set(lx, 0.0, lz);
       const leg = new THREE.Mesh(legGeo, bodyMat);
-      leg.position.set(lx, -0.06, lz);
+      leg.position.set(0, -0.06, 0);
       leg.castShadow = true;
-      legs.add(leg);
+      hip.add(leg);
+      legs.add(hip);
     }
     cat.add(legs);
-    // Tail — a pivot at the rump carrying three shrinking spheres that curve
-    // up and back; swished by rotating the pivot each frame.
-    const tail = new THREE.Object3D();
-    tail.position.set(0, 0.0, 0.17); // pivot at the rump, flush with the body
-    // Overlapping shrinking spheres on a gentle up-and-back curl (starts INSIDE
-    // the body so it reads as one furry tail, not a string of floating beads).
-    const seg: Array<[number, number, number]> = [
-      [0.032, 0.01, 0.01],
-      [0.028, 0.035, 0.035],
-      [0.024, 0.07, 0.05],
-      [0.019, 0.108, 0.05],
-      [0.014, 0.142, 0.036],
-    ];
-    for (const [r, y, z] of seg) {
-      const s = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 5), bodyMat);
-      s.position.set(0, y, z);
+    // Tail — a NESTED CHAIN of pivots so it flows as a travelling wave (each
+    // joint parented to the last, animated with a phase-delayed sine) instead
+    // of the whole tail swinging as one rigid stick.
+    const tailJoints: THREE.Object3D[] = [];
+    const radii = [0.032, 0.028, 0.024, 0.019, 0.014];
+    let parent: THREE.Object3D = cat;
+    for (let i = 0; i < radii.length; i++) {
+      const joint = new THREE.Object3D();
+      joint.position.set(0, i === 0 ? 0.02 : 0, i === 0 ? 0.16 : 0.045);
+      joint.rotation.x = -0.28; // base curl-up per joint (compounds up the chain)
+      parent.add(joint);
+      const s = new THREE.Mesh(new THREE.SphereGeometry(radii[i], 6, 5), bodyMat);
+      s.position.set(0, 0, 0.022);
       s.castShadow = true;
-      tail.add(s);
+      joint.add(s);
+      tailJoints.push(joint);
+      parent = joint;
     }
-    cat.add(tail);
-    return { cat, tail, legs };
+    return { cat, tailJoints, legs, head };
   }
 
   // Bird materials cached per colour (fishMat pattern) — species mixing
@@ -1474,7 +1486,7 @@ export class GameScene extends THREE.Scene {
     ];
     for (let i = 0; i < SPOTS.length; i++) {
       const sp = SPECIES[i % SPECIES.length];
-      const { cat, tail, legs } = this.buildCat(
+      const { cat, tailJoints, legs, head } = this.buildCat(
         GameScene.birdMat(sp[0]),
         GameScene.birdMat(sp[1]),
         GameScene.birdMat(sp[2]),
@@ -1496,8 +1508,11 @@ export class GameScene extends THREE.Scene {
       away.normalize().applyAxisAngle(s.normal, Math.random() * Math.PI * 2);
       this.cats.push({
         cat,
-        tail,
+        tailJoints,
         legs,
+        head,
+        gait: 0,
+        headingTarget: heading,
         basePos: cat.position.clone(),
         curPos: cat.position.clone(),
         baseQuat: q.clone(),
@@ -1554,7 +1569,7 @@ export class GameScene extends THREE.Scene {
     c.walkFrom.copy(c.curPos);
     c.walkT0 = time;
     c.walkDur = Math.max(0.6, c.walkFrom.distanceTo(c.walkTo) / GameScene.CAT_WALK_SPEED);
-    c.heading = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
+    c.headingTarget = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
     c.mode = 'walk';
   }
 
@@ -1594,7 +1609,7 @@ export class GameScene extends THREE.Scene {
       c.walkDur = THREE.MathUtils.clamp(near[i].d / GameScene.CAT_TROT_SPEED, 0.6, 6);
       c.mode = 'trot';
       c.feastUntil = time + c.walkDur + GameScene.CAT_FEAST_SECONDS;
-      c.heading = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
+      c.headingTarget = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
     }
   }
 
@@ -2081,7 +2096,7 @@ export class GameScene extends THREE.Scene {
         c.walkTo.copy(c.homePos);
         c.walkT0 = performance.now() / 1000;
         c.walkDur = Math.max(0.8, c.walkFrom.distanceTo(c.walkTo) / GameScene.CAT_WALK_SPEED);
-        c.heading = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
+        c.headingTarget = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
         c.mode = 'walk';
       }
     }
@@ -2253,10 +2268,13 @@ export class GameScene extends THREE.Scene {
   }
 
   /** Prowl the cats: sit → stroll → (fed) trot in → eat → home, plus a calm
-   *  step-away if the player crowds them. Sole writer of cat transforms. */
-  private updateCats(_deltaTime: number, time: number): void {
+   *  step-away if the player crowds them. Sole writer of cat transforms. All
+   *  motion is eased (heading, gait, tail, head) so nothing snaps. */
+  private updateCats(deltaTime: number, time: number): void {
     if (this.cats.length === 0 || !this.island) return;
     const player = this.player ? this.player.getWorldPosition() : null;
+    const turnLerp = 1 - Math.exp(-9 * deltaTime); // heading easing
+    const gaitLerp = 1 - Math.exp(-7 * deltaTime); // stride fade-in/out
     for (const c of this.cats) {
       // Calm step-away if the player closes in while idle (feeding cats let
       // you approach — that's the point of the treats).
@@ -2273,40 +2291,27 @@ export class GameScene extends THREE.Scene {
             0.5,
             c.walkFrom.distanceTo(c.walkTo) / (GameScene.CAT_TROT_SPEED * 0.9),
           );
-          c.heading = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
+          c.headingTarget = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
           c.mode = 'flee';
         }
       }
 
-      let pitch = 0;
-      const legSwing =
-        c.mode === 'walk' || c.mode === 'trot' || c.mode === 'flee'
-          ? Math.sin(time * (c.mode === 'walk' ? 8 : 12) + c.phase) * 0.5
-          : 0;
-      // Diagonal leg pairs [FL,BR] vs [FR,BL].
-      c.legs.children[0].rotation.x = legSwing;
-      c.legs.children[3].rotation.x = legSwing;
-      c.legs.children[1].rotation.x = -legSwing;
-      c.legs.children[2].rotation.x = -legSwing;
+      const moving = c.mode === 'walk' || c.mode === 'trot' || c.mode === 'flee';
 
+      // ── Position + mode transitions ──────────────────────────────────────
       if (c.mode === 'sit') {
         c.cat.position.copy(c.curPos);
-        c.tail.rotation.y = Math.sin(time * 2 + c.phase) * 0.18;
-        c.tail.rotation.x = 0;
         if (time > c.stateUntil) this.startCatWalk(c, time);
-      } else if (c.mode === 'walk' || c.mode === 'trot' || c.mode === 'flee') {
+      } else if (moving) {
         const t = Math.min(1, (time - c.walkT0) / c.walkDur);
-        // Reseat the interpolated point onto the surface each frame so the cat
-        // doesn't sink through the chord between two surface points.
+        // Linear along the path (constant speed → the leg cadence matches), but
+        // reseated onto the surface each frame so it doesn't cut the chord.
         this._catScratch.lerpVectors(c.walkFrom, c.walkTo, t);
         const dir = this._catScratch2.copy(this._catScratch).normalize();
         const r = c.basePos.length() + (this.island.analyticSurface(dir).radius - c.analBase);
-        c.cat.position
-          .copy(dir)
-          .multiplyScalar(r + 0.12 * c.size + 0.005)
-          .addScaledVector(dir, Math.abs(Math.sin(time * (c.mode === 'walk' ? 8 : 12))) * 0.012);
-        c.tail.rotation.y = Math.sin(time * 4 + c.phase) * 0.22;
-        c.tail.rotation.x = 0;
+        const cadence = c.mode === 'walk' ? 7 : 11;
+        const bob = Math.abs(Math.sin(time * cadence + c.phase)) * 0.014 * c.gait;
+        c.cat.position.copy(dir).multiplyScalar(r + 0.12 * c.size + 0.005 + bob);
         if (t >= 1) {
           c.curPos.copy(c.walkTo);
           if (c.mode === 'trot') {
@@ -2326,12 +2331,7 @@ export class GameScene extends THREE.Scene {
         }
       } else if (c.mode === 'eat') {
         c.cat.position.copy(c.curPos);
-        // Head/shoulders dipped to the food: NEGATIVE rotateX = nose-down.
-        pitch = -0.4 + Math.sin(time * 6 + c.phase) * 0.08;
-        c.tail.rotation.y = Math.sin(time * 5 + c.phase) * 0.3;
-        c.tail.rotation.x = 0;
         const feasting = c.feastUntil > time;
-        const flushR = 1.1;
         if (!feasting) {
           // Treats gone: restore the home surface frame and stroll home.
           c.up.copy(c.homeUp);
@@ -2343,9 +2343,9 @@ export class GameScene extends THREE.Scene {
           c.walkTo.copy(c.homePos);
           c.walkT0 = time;
           c.walkDur = Math.max(0.8, c.walkFrom.distanceTo(c.walkTo) / GameScene.CAT_WALK_SPEED);
-          c.heading = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
+          c.headingTarget = this.catHeadingFor(c, this._catScratch.copy(c.walkTo).sub(c.walkFrom));
           c.mode = 'walk';
-        } else if (player && player.distanceToSquared(c.curPos) < flushR * flushR) {
+        } else if (player && player.distanceToSquared(c.curPos) < 1.1 * 1.1) {
           // Startled off its food: end the feast and bolt.
           c.feastUntil = 0;
           this._catScratch.copy(c.curPos).sub(player);
@@ -2356,16 +2356,47 @@ export class GameScene extends THREE.Scene {
           this.seatCatTarget(c, c.walkTo);
           c.walkT0 = time;
           c.walkDur = 0.9;
-          c.heading = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
+          c.headingTarget = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
           c.mode = 'flee';
         }
       }
 
-      // Orient: surface align + yaw, then the eat head-dip. baseQuat carries NO
-      // yaw — it lives in `heading` and is re-applied every frame.
+      // ── Eased gait + heading (nothing snaps) ─────────────────────────────
+      c.gait += ((moving ? 1 : 0) - c.gait) * gaitLerp;
+      let dh = c.headingTarget - c.heading;
+      dh = Math.atan2(Math.sin(dh), Math.cos(dh)); // shortest-path wrap
+      c.heading += dh * turnLerp;
+
+      // ── Legs: swing the hip pivots in diagonal pairs, amplitude by gait ──
+      const cadence = c.mode === 'trot' || c.mode === 'flee' ? 11 : 7;
+      const swing = Math.sin(time * cadence + c.phase) * 0.6 * c.gait;
+      c.legs.children[0].rotation.x = swing; // FL
+      c.legs.children[3].rotation.x = swing; // BR
+      c.legs.children[1].rotation.x = -swing; // FR
+      c.legs.children[2].rotation.x = -swing; // BL
+
+      // ── Tail: base curl-up + a travelling wave down the nested chain ─────
+      const active = Math.max(c.gait, c.mode === 'eat' ? 0.7 : 0);
+      const wagSpeed = c.mode === 'eat' ? 7 : 3 + c.gait * 3;
+      const ampY = 0.1 + 0.16 * active;
+      const ampX = 0.05 + 0.06 * active;
+      for (let j = 0; j < c.tailJoints.length; j++) {
+        const ph = time * wagSpeed - j * 0.7 + c.phase;
+        c.tailJoints[j].rotation.set(-0.28 + Math.sin(ph) * ampX, Math.sin(ph) * ampY, 0);
+      }
+
+      // ── Head: dip to the food while eating, gentle look-around when idle ─
+      if (c.mode === 'eat') {
+        c.head.rotation.set(-0.5 + Math.sin(time * 6 + c.phase) * 0.06, 0, 0); // nose-down
+      } else {
+        c.head.rotation.set(0, c.mode === 'sit' ? Math.sin(time * 0.7 + c.phase) * 0.18 : 0, 0);
+      }
+
+      // ── Orient the body: surface align + eased yaw + a gentle walking roll ─
       c.cat.quaternion.copy(c.baseQuat);
       c.cat.rotateY(c.heading);
-      if (pitch !== 0) c.cat.rotateX(pitch);
+      const roll = Math.sin(time * cadence * 0.5 + c.phase) * 0.05 * c.gait;
+      if (roll !== 0) c.cat.rotateZ(roll);
     }
   }
 
