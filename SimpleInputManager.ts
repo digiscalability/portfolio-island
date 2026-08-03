@@ -73,8 +73,14 @@ export class SimpleInputManager {
       const k = e.key.toLowerCase();
       this.keys.add(k);
       this.lastKeyEventAt.set(k, performance.now());
-      // Latch the press edge (ignore OS auto-repeat) for consumeKeyPress()
-      if (!e.repeat) {
+      // Latch the press edge (ignore OS auto-repeat) for consumeKeyPress().
+      // NOT while typing: the edge latch drives one-shot actions (interact,
+      // wave, throw feed), and typing "feed the birds" into an NPC chat box
+      // would otherwise fire them on every matching letter.
+      const el = e.target as HTMLElement | null;
+      const typing =
+        !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+      if (!e.repeat && !typing) {
         this.pressedSinceLastPoll.add(k);
       }
       // Debug: Log first few key presses

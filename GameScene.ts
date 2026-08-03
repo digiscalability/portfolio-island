@@ -108,10 +108,25 @@ export class GameScene extends THREE.Scene {
     baseQuat: THREE.Quaternion; // pure surface alignment, NO yaw baked in
     up: THREE.Vector3;
     away: THREE.Vector3; // flushed flight direction (tangent, away from approach)
-    mode: 'peck' | 'flee' | 'gone';
+    mode: 'peck' | 'flee' | 'gone' | 'flyto';
     feed: 'jab' | 'scan' | 'hop';
     feedUntil: number; // when the current feed sub-state ends
     size: number; // species-rolled base scale — the night roost targets this
+    // Feeding: while a thrown pile is active the bird's basePos is MOVED to a
+    // spot by the pile, so the existing tether/hop/flush logic just works;
+    // homePos restores it afterwards.
+    homePos: THREE.Vector3;
+    homeAnal: number;
+    // The home SURFACE FRAME. Landing at a pile rebases up/baseQuat onto the
+    // pile's normal, which can be ~45 deg away on a R=50 planet; without these
+    // the bird would stand tilted at home forever after one feed.
+    homeUp: THREE.Vector3;
+    homeQuat: THREE.Quaternion;
+    feastUntil: number;
+    flyFrom: THREE.Vector3;
+    flyTo: THREE.Vector3;
+    flyT0: number;
+    flyDur: number;
     heading: number; // yaw about the surface normal (radians)
     hopFrom: THREE.Vector3;
     hopTo: THREE.Vector3;
@@ -1267,6 +1282,15 @@ export class GameScene extends THREE.Scene {
         hopTo: bird.position.clone(),
         hopT0: 0,
         analBase: this.island.analyticSurface(dir).radius,
+        homePos: bird.position.clone(),
+        homeAnal: this.island.analyticSurface(dir).radius,
+        homeUp: s.normal.clone(),
+        homeQuat: q.clone(),
+        feastUntil: 0,
+        flyFrom: bird.position.clone(),
+        flyTo: bird.position.clone(),
+        flyT0: 0,
+        flyDur: 1,
         t0: 0,
         phase: Math.random() * Math.PI * 2,
         respawnAt: 0,
@@ -1305,6 +1329,239 @@ export class GameScene extends THREE.Scene {
     g.feed = 'hop';
     g.feedUntil = time + GameScene.GROUND_HOP_DUR;
     g.heading = this.groundBirdHeadingFor(g, this._gbScratch.copy(g.hopTo).sub(g.hopFrom));
+  }
+
+  // ── Bird feed ─────────────────────────────────────────────────────────
+  private static readonly FEED_THROW_DIST = 3.6; // how far ahead it lands
+  private static readonly FEED_CALL_RADIUS = 38; // birds within this fly in
+  private static readonly FEED_MAX_BIRDS = 8;
+  private static readonly FEED_FEAST_SECONDS = 26;
+  private static readonly FEED_PILE_LIFE = 30;
+  private static feedGrainGeo: THREE.BufferGeometry | null = null;
+  private feedPiles: Array<{
+    pile: THREE.Group; // grains lying on the ground
+    toss: THREE.Group; // grains in flight
+    from: THREE.Vector3;
+    to: THREE.Vector3;
+    up: THREE.Vector3;
+    t0: number;
+    landed: boolean;
+  }> = [];
+  private readonly _feedUp = new THREE.Vector3();
+  private readonly _feedFwd = new THREE.Vector3();
+  private readonly _feedDir = new THREE.Vector3();
+  private readonly _feedTmp = new THREE.Vector3();
+
+  /**
+   * Toss a handful of seed onto the ground a few metres ahead and call every
+   * nearby ground bird in to eat it. Returns false if there is nowhere sane
+   * to throw (no island/player yet, or the spot is under water), so the
+   * caller can keep the player's charge.
+   */
+  public throwBirdFeed(): boolean {
+    if (!this.island || !this.player) return false;
+    // Not at night: the ground birds are roosted (scaled to nothing and
+    // hidden), so they would pop in at full size, fly over and dissolve on
+    // landing. Returning false keeps the player's charge.
+    if (this.envCycle && this.envCycle.getDayFactor() < 0.3) return false;
+    const origin = this.player.getWorldPosition();
+    const up = this._feedUp.copy(origin).normalize();
+    // Aim along the camera's tangent forward so the feed lands where you look.
+    this._feedFwd.copy(this.orbitCamera.getForwardDirection());
+    this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    if (this._feedFwd.lengthSq() < 1e-4) {
+      this._feedFwd.copy(this.player.getForwardDirection());
+      this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
+    }
+    if (this._feedFwd.lengthSq() < 1e-4) return false;
+    this._feedFwd.normalize();
+    const ang = GameScene.FEED_THROW_DIST / Math.max(1, origin.length());
+    this._feedDir
+      .copy(up)
+      .multiplyScalar(Math.cos(ang))
+      .addScaledVector(this._feedFwd, Math.sin(ang))
+      .normalize();
+    let surf: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      surf = this.island.sampleSurfaceByDirection(this._feedDir, 0);
+    } catch {
+      return false;
+    }
+    if (surf.position.length() < this.island.seaLevel() + 0.15) return false; // in the sea
+
+    if (!GameScene.feedGrainGeo) GameScene.feedGrainGeo = new THREE.SphereGeometry(0.035, 4, 3);
+    const grainMat = GameScene.birdMat(0xd9bd7a);
+    const pile = new THREE.Group();
+    pile.position.copy(surf.position).addScaledVector(surf.normal, 0.02);
+    pile.quaternion.setFromUnitVectors(GameScene.AXIS_Y, surf.normal);
+    for (let i = 0; i < 16; i++) {
+      const grain = new THREE.Mesh(GameScene.feedGrainGeo, grainMat);
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * 0.42;
+      grain.position.set(Math.cos(a) * r, 0.012 + Math.random() * 0.02, Math.sin(a) * r);
+      grain.scale.setScalar(0.7 + Math.random() * 0.7);
+      pile.add(grain);
+    }
+    pile.scale.setScalar(0.001);
+    pile.name = 'bird_feed';
+    this.add(pile);
+    // A few grains visibly leave the hand and arc over.
+    const toss = new THREE.Group();
+    for (let i = 0; i < 7; i++) {
+      const grain = new THREE.Mesh(GameScene.feedGrainGeo, grainMat);
+      grain.position.set(
+        (Math.random() - 0.5) * 0.3,
+        (Math.random() - 0.5) * 0.2,
+        (Math.random() - 0.5) * 0.3,
+      );
+      toss.add(grain);
+    }
+    this.add(toss);
+
+    const time = performance.now() / 1000;
+    this.feedPiles.push({
+      pile,
+      toss,
+      from: origin.clone().addScaledVector(up, 1.1),
+      to: pile.position.clone(),
+      up: surf.normal.clone(),
+      t0: time,
+      landed: false,
+    });
+    // Cap the number of live piles so a spammed key can't carpet the island.
+    while (this.feedPiles.length > 3) this.removeFeedPile(0);
+    this.callBirdsToFeed(pile.position, time);
+    sfx.blip();
+    return true;
+  }
+
+  /** Send the nearest ground birds flying in to a fresh pile. */
+  private callBirdsToFeed(pos: THREE.Vector3, time: number): void {
+    if (!this.island) return;
+    const near = this.groundBirds
+      .filter((g) => g.mode !== 'flyto' && g.feastUntil <= time)
+      .map((g) => ({ g, d: g.curPos.distanceTo(pos) }))
+      .filter((e) => e.d < GameScene.FEED_CALL_RADIUS)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, GameScene.FEED_MAX_BIRDS);
+    for (let i = 0; i < near.length; i++) {
+      const g = near[i].g;
+      // Ring the pile so they don't all land on the same grain.
+      const a = (i / Math.max(1, near.length)) * Math.PI * 2 + Math.random() * 0.4;
+      const r = 0.45 + Math.random() * 0.5;
+      const ref =
+        Math.abs(this._feedUp.copy(pos).normalize().y) > 0.94 ? GameScene.AXIS_X : GameScene.AXIS_Y;
+      const t1 = this._feedTmp.crossVectors(this._feedUp, ref).normalize();
+      const t2 = this._feedDir.crossVectors(this._feedUp, t1).normalize();
+      const land = pos
+        .clone()
+        .addScaledVector(t1, Math.cos(a) * r)
+        .addScaledVector(t2, Math.sin(a) * r);
+      // Height from the pile's RAYCAST radius plus the analytic DELTA — the
+      // analytic radius used absolutely is what buried the birds when the two
+      // fields diverge (see the seating comment in createGroundBirds).
+      const landDir = this._feedFwd.copy(land).normalize();
+      const dr =
+        this.island.analyticSurface(landDir).radius -
+        this.island.analyticSurface(this._feedTmp.copy(pos).normalize()).radius;
+      land.copy(landDir).multiplyScalar(pos.length() + dr + 0.185 * g.size + 0.005);
+      g.flyFrom.copy(g.mode === 'gone' ? g.homePos : g.bird.position);
+      g.flyTo.copy(land);
+      g.flyT0 = time;
+      g.flyDur = THREE.MathUtils.clamp(near[i].d / 9, 0.9, 3.2);
+      g.mode = 'flyto';
+      g.feastUntil = time + g.flyDur + GameScene.FEED_FEAST_SECONDS;
+      g.bird.visible = true;
+      g.bird.scale.setScalar(g.size);
+    }
+  }
+
+  /**
+   * Point a fed bird's bookkeeping back at its home spot. The SURFACE FRAME
+   * (up/baseQuat) deliberately stays on the pile — the climb-out still has to
+   * launch off the ground the bird is standing on — and is restored when it
+   * lands back home.
+   */
+  private releaseFeastingBird(g: GameScene['groundBirds'][number]): void {
+    g.feastUntil = 0;
+    g.basePos.copy(g.homePos);
+    g.analBase = g.homeAnal;
+  }
+
+  /** Rebuild a bird's escape tangent for the surface it is standing on now. */
+  private pickGroundBirdEscape(
+    g: GameScene['groundBirds'][number],
+    player: THREE.Vector3 | null,
+  ): void {
+    if (player) {
+      this._gbScratch.copy(g.curPos).sub(player);
+      this._gbScratch.addScaledVector(g.up, -this._gbScratch.dot(g.up));
+      if (this._gbScratch.lengthSq() > 0.1) {
+        g.away.copy(this._gbScratch).normalize();
+        g.heading = this.groundBirdHeadingFor(g, g.away);
+        return;
+      }
+    }
+    const ref = Math.abs(g.up.y) > 0.94 ? GameScene.AXIS_X : GameScene.AXIS_Y;
+    g.away.crossVectors(g.up, ref).normalize();
+    g.away.applyAxisAngle(g.up, Math.random() * Math.PI * 2);
+    g.heading = this.groundBirdHeadingFor(g, g.away);
+  }
+
+  private removeFeedPile(idx: number): void {
+    const p = this.feedPiles[idx];
+    if (!p) return;
+    // Let go of any bird still committed to this pile, or it would land and
+    // mime eating at bare ground for the rest of its feast (and be excluded
+    // from the next throw's candidate list).
+    for (const g of this.groundBirds) {
+      if (g.feastUntil <= 0) continue;
+      const anchor = g.mode === 'flyto' ? g.flyTo : g.curPos;
+      if (anchor.distanceToSquared(p.to) < 9) {
+        this.releaseFeastingBird(g);
+        if (g.mode === 'flyto') {
+          // Mid-flight with nowhere to land: turn it into a scatter home.
+          g.mode = 'flee';
+          g.t0 = performance.now() / 1000;
+          g.curPos.copy(g.bird.position);
+          this.pickGroundBirdEscape(g, null);
+        }
+      }
+    }
+    this.remove(p.pile);
+    this.remove(p.toss);
+    this.feedPiles.splice(idx, 1);
+  }
+
+  /** Arc the tossed grains over, pop the pile in, then let it dwindle away. */
+  private updateFeedPiles(time: number): void {
+    for (let i = this.feedPiles.length - 1; i >= 0; i--) {
+      const p = this.feedPiles[i];
+      const age = time - p.t0;
+      const FLIGHT = 0.5;
+      if (!p.landed) {
+        const t = Math.min(1, age / FLIGHT);
+        p.toss.position
+          .lerpVectors(p.from, p.to, t)
+          .addScaledVector(p.up, Math.sin(Math.PI * t) * 0.5);
+        p.toss.rotation.y = t * 6;
+        if (t >= 1) {
+          p.landed = true;
+          p.toss.visible = false;
+        }
+      } else {
+        // Pop in, hold, then dwindle as it gets eaten.
+        const life = age - FLIGHT;
+        const grow = Math.min(1, life / 0.25);
+        const left =
+          1 - Math.max(0, life - GameScene.FEED_PILE_LIFE * 0.6) / (GameScene.FEED_PILE_LIFE * 0.4);
+        const s = grow * THREE.MathUtils.clamp(left, 0, 1);
+        p.pile.scale.setScalar(Math.max(0.001, s));
+        if (life > GameScene.FEED_PILE_LIFE) {
+          this.removeFeedPile(i);
+        }
+      }
+    }
   }
 
   /** Yaw (about the bird's surface normal) that faces a world direction. */
@@ -4520,10 +4777,28 @@ export class GameScene extends THREE.Scene {
         // Tail: resting raised tilt with the occasional quick flick.
         g.tail.rotation.x =
           -0.16 + (Math.sin(time * 0.37 + g.phase * 2) > 0.985 ? Math.sin(time * 30) * 0.3 : 0);
-        if (gbPlayer && gbPlayer.distanceToSquared(g.curPos) < 3.2 * 3.2) {
+        // Feeding birds tolerate a much closer approach — that's the point of
+        // throwing feed. When the pile is finished they scatter home.
+        const feasting = g.feastUntil > time;
+        if (!feasting && g.feastUntil > 0) {
+          // Pile finished: aim the bookkeeping home and scatter. The escape
+          // tangent must be rebuilt HERE — g.away was built against the home
+          // normal and is not tangent to the ground the bird is standing on.
+          this.releaseFeastingBird(g);
+          this.pickGroundBirdEscape(g, gbPlayer);
+          g.mode = 'flee';
+          g.t0 = time;
+          continue;
+        }
+        const flushR = feasting ? 1.4 : 3.2;
+        if (gbPlayer && gbPlayer.distanceToSquared(g.curPos) < flushR * flushR) {
           // Flushed mid-hop: sync curPos to the rendered spot first so the
           // climb starts where the bird visibly IS, not its takeoff perch.
           if (g.feed === 'hop') g.curPos.copy(g.bird.position);
+          // Flushed OFF a pile: end the feast too, or basePos stays parked on
+          // the pile and the respawn gate (player > 5u from basePos) keeps the
+          // bird invisible for as long as the player stands by their own feed.
+          if (feasting) this.releaseFeastingBird(g);
           g.mode = 'flee';
           g.t0 = time;
           // Flee away from the player, tangent to the ground.
@@ -4532,6 +4807,44 @@ export class GameScene extends THREE.Scene {
           if (this._gbScratch.lengthSq() > 0.1) g.away.copy(this._gbScratch).normalize();
           g.heading = this.groundBirdHeadingFor(g, g.away); // face the escape
           sfx.blip();
+        }
+      } else if (g.mode === 'flyto') {
+        // Answering thrown feed: arc across to the pile and land on it.
+        const ft = Math.min(1, (time - g.flyT0) / g.flyDur);
+        g.bird.position
+          .lerpVectors(g.flyFrom, g.flyTo, ft)
+          .addScaledVector(g.up, Math.sin(Math.PI * ft) * (1.2 + g.flyDur * 1.4));
+        const climbing = ft < 0.5;
+        this._gbScratch.copy(g.flyTo).sub(g.flyFrom);
+        if (this._gbScratch.lengthSq() > 1e-6) {
+          g.heading = this.groundBirdHeadingFor(g, this._gbScratch);
+        }
+        g.bird.quaternion.copy(g.baseQuat);
+        g.bird.rotateY(g.heading);
+        g.bird.rotateX(climbing ? 0.3 : -0.2); // nose up on the climb, down to land
+        g.legs.rotation.x = ft > 0.75 ? 0 : -1.25; // gear down on approach
+        g.wingL.scale.x = 1;
+        g.wingR.scale.x = 1;
+        g.wingL.rotation.y = 0;
+        g.wingR.rotation.y = Math.PI;
+        const wf = Math.sin(time * 18 + g.phase) * (climbing ? 1.0 : 0.7);
+        g.wingL.rotation.z = wf;
+        g.wingR.rotation.z = wf;
+        g.bird.scale.setScalar(g.size);
+        if (ft >= 1) {
+          // Touch down: the landing spot BECOMES the bird's base, so the
+          // existing tether/hop/flush logic feeds it here with no new cases.
+          g.mode = 'peck';
+          g.feed = 'jab';
+          g.feedUntil = time + 0.6;
+          g.curPos.copy(g.flyTo);
+          g.basePos.copy(g.flyTo);
+          const dir = this._gbScratch.copy(g.flyTo).normalize();
+          const s = this.island.analyticSurface(dir);
+          g.analBase = s.radius;
+          g.up.copy(s.normal);
+          g.baseQuat.setFromUnitVectors(GameScene.AXIS_Y, s.normal);
+          g.legs.rotation.x = 0;
         }
       } else if (g.mode === 'flee') {
         const t = time - g.t0;
@@ -4567,11 +4880,16 @@ export class GameScene extends THREE.Scene {
         (!gbPlayer || gbPlayer.distanceToSquared(g.basePos) > 5 * 5)
       ) {
         // Coast clear — settle back onto the home spot facing a new way,
-        // growing in via the roost lerp instead of popping.
+        // growing in via the roost lerp instead of popping. Landing home also
+        // restores the home SURFACE FRAME: a bird that fed at a pile has been
+        // flying with that pile's normal, which is up to ~45deg off here.
         g.mode = 'peck';
         g.feed = 'jab';
         g.feedUntil = time + 1 + Math.random();
         g.heading = Math.random() * Math.PI * 2;
+        g.up.copy(g.homeUp);
+        g.baseQuat.copy(g.homeQuat);
+        this.pickGroundBirdEscape(g, null);
         g.curPos.copy(g.basePos);
         g.bird.visible = true;
         g.bird.scale.setScalar(0.06 * g.size);
@@ -4581,6 +4899,8 @@ export class GameScene extends THREE.Scene {
         g.legs.rotation.x = 0; // legs back down for landing
       }
     }
+
+    this.updateFeedPiles(time);
 
     // Trees: gentle sway + a slow wind gust that rolls through every ~25s so
     // the whole canopy leans together, not just idle jitter.

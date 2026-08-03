@@ -123,6 +123,14 @@ class SimpleApp {
     { id: 'crown', icon: '👑', name: 'Golden Crown', price: 25 },
     { id: 'halo', icon: '😇', name: 'Halo', price: 40 },
   ];
+  // Consumables: re-buyable and spent by use, unlike hats (owned once, then
+  // equipped). Charges persist locally and in the cloud profile.
+  private static readonly BIRD_FEED_ID = 'birdfeed';
+  private static readonly BIRD_FEED_PRICE = 6;
+  private static readonly BIRD_FEED_CHARGES = 5;
+  private birdFeed = 0;
+  /** True once this device owns a feed count, so the cloud can't re-grant. */
+  private hasLocalBirdFeed = false;
   private ownedHats: Set<string> = new Set();
   private equippedHat: string | null = null;
   private passport: Passport | null = null;
@@ -288,7 +296,7 @@ class SimpleApp {
       this.npcQuests = new NpcQuestSystem();
       this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
 
-      // Restore the shop wardrobe (owned + equipped hats)
+      // Restore the shop wardrobe (owned + equipped hats) + consumables
       try {
         this.ownedHats = new Set(JSON.parse(localStorage.getItem('ds_owned_hats') ?? '[]'));
         this.equippedHat = localStorage.getItem('ds_hat');
@@ -296,6 +304,14 @@ class SimpleApp {
       } catch {
         /* fresh wardrobe */
       }
+      try {
+        const raw = localStorage.getItem('ds_bird_feed');
+        this.hasLocalBirdFeed = raw !== null;
+        this.birdFeed = Math.max(0, parseInt(raw ?? '0', 10) || 0);
+      } catch {
+        this.birdFeed = 0;
+      }
+      this.ui.updateFeedCounter(this.birdFeed);
 
       // Restore saved body colours (applied now; re-applied when the GLTF loads)
       try {
@@ -1248,6 +1264,9 @@ class SimpleApp {
           sfx.blip();
         }
 
+        // Scatter a handful of bird feed ahead of you; nearby birds fly in
+        if (this.inputManager.consumeKeyPress('f')) this.tossBirdFeed();
+
         // Footsteps while walking; thud when landing from a real jump/fall
         if (player) {
           const grounded = player.isOnGround();
@@ -1885,13 +1904,35 @@ class SimpleApp {
       this.ui.showShop(
         {
           coins: this.scene.getCoinsCollected(),
-          items: this.hatCatalog.map((h) => ({
-            ...h,
-            owned: this.ownedHats.has(h.id),
-            equipped: this.equippedHat === h.id,
-          })),
+          items: [
+            {
+              id: SimpleApp.BIRD_FEED_ID,
+              icon: '🌾',
+              name: 'Bird Feed',
+              price: SimpleApp.BIRD_FEED_PRICE,
+              consumable: true,
+              charges: SimpleApp.BIRD_FEED_CHARGES,
+              held: this.birdFeed,
+            },
+            ...this.hatCatalog.map((h) => ({
+              ...h,
+              owned: this.ownedHats.has(h.id),
+              equipped: this.equippedHat === h.id,
+            })),
+          ],
         },
         (id) => {
+          if (id === SimpleApp.BIRD_FEED_ID) {
+            // Consumable: buy another handful as often as you can afford it.
+            if (!this.scene.spendCoins(SimpleApp.BIRD_FEED_PRICE)) return;
+            this.birdFeed += SimpleApp.BIRD_FEED_CHARGES;
+            this.persistBirdFeed();
+            this.ui.updateFeedCounter(this.birdFeed);
+            sfx.coin();
+            track('bird_feed_bought', { charges: this.birdFeed });
+            render();
+            return;
+          }
           const item = this.hatCatalog.find((h) => h.id === id);
           if (!item) return;
           if (!this.ownedHats.has(id)) {
@@ -1924,6 +1965,39 @@ class SimpleApp {
       );
     };
     render();
+  }
+
+  private persistBirdFeed(): void {
+    this.hasLocalBirdFeed = true;
+    try {
+      localStorage.setItem('ds_bird_feed', String(this.birdFeed));
+    } catch {
+      /* session-only */
+    }
+    saveProfile({ birdFeed: this.birdFeed });
+  }
+
+  /**
+   * Throw one charge of bird feed. The charge is only spent once the throw
+   * actually lands somewhere sane — the scene refuses water and unsampled
+   * ground — so a wasted press never costs seed.
+   */
+  private tossBirdFeed(): void {
+    // Not through an open panel — F is the first binding that costs a
+    // consumable, so throwing blind behind the shop would burn a charge.
+    if (this.ui.isShopOpen() || this.ui['customizeDiv']) return;
+    if (this.birdFeed <= 0) {
+      this.ui.flashMessage('🌾 No bird feed — buy some at the Island Shop');
+      return;
+    }
+    if (!this.scene.throwBirdFeed()) {
+      this.ui.flashMessage('🌾 Not here — try throwing it over open ground');
+      return;
+    }
+    this.birdFeed--;
+    this.persistBirdFeed();
+    this.ui.updateFeedCounter(this.birdFeed);
+    track('bird_feed_thrown', { left: this.birdFeed });
   }
 
   /**
@@ -2005,6 +2079,21 @@ class SimpleApp {
       if (typeof profile.coins === 'number' && profile.coins > this.scene.getCoinsCollected()) {
         this.scene.setCoins(profile.coins);
       }
+      // Consumables must NOT max-merge the way coins do. Coins only go up, but
+      // feed is SPENT: this sync resolves seconds after boot and behind an
+      // 800ms-debounced write, so "take the higher" would hand back every
+      // charge thrown in the meantime (and infinitely, by reloading mid-throw).
+      // The cloud value is only adopted when this device has no count at all.
+      if (!this.hasLocalBirdFeed && typeof profile.birdFeed === 'number') {
+        this.hasLocalBirdFeed = true;
+        this.birdFeed = Math.max(0, Math.floor(profile.birdFeed));
+        try {
+          localStorage.setItem('ds_bird_feed', String(this.birdFeed));
+        } catch {
+          /* session-only */
+        }
+        this.ui.updateFeedCounter(this.birdFeed);
+      }
       // Body colours: apply the cloud choice for any part not set locally
       if (profile.colors) {
         const player = this.scene.getPlayer();
@@ -2022,6 +2111,7 @@ class SimpleApp {
       hat: this.equippedHat,
       ownedHats: [...this.ownedHats],
       coins: this.scene.getCoinsCollected(),
+      birdFeed: this.birdFeed,
       colors: this.currentColorsHex(),
     });
   }

@@ -2064,6 +2064,7 @@ export class SimpleUI {
       code: string,
       key: string,
       tint: string,
+      rightPx = 26,
     ) => {
       const btn = document.createElement('div');
       btn.innerHTML =
@@ -2071,7 +2072,7 @@ export class SimpleUI {
         `<div style="font-size:10px;font-weight:700;letter-spacing:1px;margin-top:2px;opacity:0.9;">${caption}</div>`;
       Object.assign(btn.style, {
         position: 'absolute',
-        right: 'calc(var(--sar, 0px) + 26px)',
+        right: `calc(var(--sar, 0px) + ${rightPx}px)`,
         bottom: `calc(var(--sab, 0px) + ${bottom})`,
         width: '74px',
         height: '74px',
@@ -2134,6 +2135,11 @@ export class SimpleUI {
     makeButton('👆', 'USE', '36px', 'KeyE', 'e', 'rgba(80,150,90,0.5)');
     makeButton('⤒', 'JUMP', '124px', 'Space', ' ', 'rgba(70,120,190,0.5)');
     makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', 'rgba(160,120,60,0.5)');
+    // FEED goes in a SECOND COLUMN beside USE rather than extending the stack
+    // to 374px: on a short landscape phone (the UI explicitly supports
+    // max-height 500px) a 4th row would sit over the coin chip and the icon
+    // row, and unlike those chips it captures taps.
+    makeButton('🌾', 'FEED', '36px', 'KeyF', 'f', 'rgba(150,130,70,0.5)', 112);
 
     // Proximity chat: 💬 opens the text input, 🎤 is press-hold-to-talk.
     // Stacked above the joystick (which spans bottom 26–136px here) so
@@ -3282,8 +3288,13 @@ export class SimpleUI {
         icon: string;
         name: string;
         price: number;
-        owned: boolean;
-        equipped: boolean;
+        // Hats are owned once and equipped; consumables are re-buyable and
+        // report how many charges the player is carrying.
+        owned?: boolean;
+        equipped?: boolean;
+        consumable?: boolean;
+        charges?: number;
+        held?: number;
       }>;
     },
     onAction: (id: string) => void,
@@ -3310,14 +3321,27 @@ export class SimpleUI {
     });
     const rows = state.items
       .map((it) => {
-        const btnLabel = it.equipped ? 'Equipped' : it.owned ? 'Equip' : `${it.price} 🪙`;
-        const disabled = it.equipped || (!it.owned && state.coins < it.price);
+        const btnLabel = it.consumable
+          ? `${it.price} 🪙`
+          : it.equipped
+            ? 'Equipped'
+            : it.owned
+              ? 'Equip'
+              : `${it.price} 🪙`;
+        const disabled = it.consumable
+          ? state.coins < it.price
+          : !!it.equipped || (!it.owned && state.coins < it.price);
+        const sub = it.consumable
+          ? `${it.price} coins · ${it.charges} throws${it.held ? ` · carrying ${it.held}` : ''}`
+          : it.owned
+            ? 'Owned'
+            : `${it.price} coins`;
         return `
         <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
           <div style="font-size:24px;">${it.icon}</div>
           <div style="flex:1;">
             <div style="font-weight:600;">${it.name}</div>
-            <div style="font-size:12px;color:#aaa;">${it.owned ? 'Owned' : `${it.price} coins`}</div>
+            <div style="font-size:12px;color:#aaa;">${sub}</div>
           </div>
           <button data-shop-id="${it.id}" ${disabled ? 'disabled' : ''} style="
             background:${it.equipped ? '#2e7d32' : '#ffd34a'};
@@ -3351,17 +3375,26 @@ export class SimpleUI {
       this.hideShop();
       onClose();
     });
+    // Torn down by hideShop, not just by Escape: showShop re-renders after
+    // every purchase (and bird feed is re-buyable), so a self-removing
+    // handler would stack one listener per buy.
     const escHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         this.hideShop();
         onClose();
-        document.removeEventListener('keydown', escHandler);
       }
     };
+    this.shopEsc = escHandler;
     document.addEventListener('keydown', escHandler);
   }
 
+  private shopEsc: ((e: KeyboardEvent) => void) | null = null;
+
   hideShop(): void {
+    if (this.shopEsc) {
+      document.removeEventListener('keydown', this.shopEsc);
+      this.shopEsc = null;
+    }
     if (this.shopDiv) {
       this.shopDiv.remove();
       this.shopDiv = null;
@@ -3397,6 +3430,46 @@ export class SimpleUI {
     // Bump: quick scale-up that springs back
     this.coinDiv.style.transform = 'scale(1.35)';
     const el = this.coinDiv;
+    window.setTimeout(() => {
+      el.style.transform = 'scale(1)';
+    }, 130);
+  }
+
+  private feedDiv: HTMLElement | null = null;
+
+  /**
+   * Bird-feed charges, as a chip beside the coin counter. Hidden at zero so
+   * players who never buy any never see it.
+   *
+   * NOT on the +88px row: that is the 🎨 ♿ 🔊 icon row (see
+   * createCustomizeButton), and a chip there paints straight over all three.
+   * It shares the coin chip's row instead, to its left.
+   */
+  updateFeedCounter(charges: number): void {
+    if (!this.feedDiv) {
+      if (charges <= 0) return;
+      this.feedDiv = document.createElement('div');
+      Object.assign(this.feedDiv.style, {
+        position: 'absolute',
+        top: 'calc(var(--sat, 0px) + 60px)',
+        right: 'calc(var(--sar, 0px) + 74px)',
+        background: 'rgba(0, 0, 0, 0.55)',
+        color: '#e8d9a0',
+        padding: '4px 10px',
+        borderRadius: '10px',
+        fontSize: '12px',
+        fontFamily: 'system-ui, sans-serif',
+        pointerEvents: 'none',
+        transition: 'transform 0.12s ease',
+      });
+      this.overlay.appendChild(this.feedDiv);
+      this.feedDiv.textContent = `🌾 ${charges}`;
+      return;
+    }
+    this.feedDiv.style.display = charges > 0 ? 'block' : 'none';
+    this.feedDiv.textContent = `🌾 ${charges}  ·  F to throw`;
+    this.feedDiv.style.transform = 'scale(1.35)';
+    const el = this.feedDiv;
     window.setTimeout(() => {
       el.style.transform = 'scale(1)';
     }, 130);
