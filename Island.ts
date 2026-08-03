@@ -4717,6 +4717,26 @@ export class Island {
     const CANOPY_Y = 2.45; // underside clears the 1.8u player everywhere
     const RAKE = 0.22; // gentle: a steeper panel drops its front edge onto heads
 
+    /**
+     * Opt a shelter part out of the chase camera's collision ray.
+     *
+     * OrbitCamera raycasts the whole island group and pulls in to 0.9x the
+     * first hit, so a 0.12u post crossing the view ray yanks the camera to
+     * its 2.0u minimum for no visual benefit — the post occludes nothing.
+     *
+     * Deliberately NOT applied to the roof panels. Opting a large roof out
+     * lets the camera settle ABOVE it, putting the awning between the lens
+     * and the player: trading a jerk for losing sight of your character. Big
+     * surfaces should keep pulling the camera in, exactly as every cottage
+     * and market stall on this island already does.
+     *
+     * (There is an `ignoreOcclusion` userData flag set in seven places for
+     * this intent — but nothing has ever read it, so it does nothing.)
+     */
+    const noCameraBlock = (m: THREE.Object3D) => {
+      m.raycast = () => {};
+    };
+
     /** Trodden ground under a workplace. Centred on the CLUSTER, not the origin. */
     const pad = (
       g: THREE.Group,
@@ -4731,8 +4751,8 @@ export class Island {
       // corner or gets swallowed at the high one. 0.4 thick, top standing
       // 0.1 proud, reads as a laid plinth and survives both. Depth is free;
       // the top face is all anyone sees.
-      const p = new THREE.Mesh(new THREE.BoxGeometry(w, 0.4, d), mat);
-      p.position.set(cx, -0.1, cz);
+      const p = new THREE.Mesh(new THREE.BoxGeometry(w, 0.7, d), mat);
+      p.position.set(cx, -0.25, cz);
       p.receiveShadow = true;
       g.add(p);
     };
@@ -4750,6 +4770,7 @@ export class Island {
       const m = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, h, 6), mat);
       m.position.set(x, h / 2 - 0.4, z);
       m.castShadow = true;
+      noCameraBlock(m);
       g.add(m);
     };
 
@@ -4766,19 +4787,31 @@ export class Island {
       d: number,
       accent: THREE.Material,
     ) => {
+      // RAKE THE STRUCTURE, NOT JUST THE CLOTH. The panels pivot about the
+      // canopy centre, so a level beam floats ~0.37u under the raised back
+      // edge and PUNCHES THROUGH the dropped front one. Beams and posts have
+      // to follow the same plane the cloth lies in — which is also why the
+      // back of a raked awning is legitimately taller, exactly as leanTo does.
+      const T = Math.tan(RAKE);
+      const clothY = (pz: number) => CANOPY_Y - (pz - cz) * T;
+      const zBack = cz - d / 2 + 0.12;
+      const zFront = cz + d / 2 - 0.12;
       for (const px of [cx - w / 2 + 0.12, cx + w / 2 - 0.12]) {
-        for (const pz of [cz - d / 2 + 0.12, cz + d / 2 - 0.12]) {
-          post(g, px, pz, CANOPY_Y - 0.1, darkWood);
+        for (const pz of [zBack, zFront]) {
+          post(g, px, pz, clothY(pz) - 0.13, darkWood);
         }
       }
-      // Beams along the tops of the posts, so the cloth has something to sit on.
-      for (const pz of [cz - d / 2 + 0.12, cz + d / 2 - 0.12]) {
+      for (const pz of [zBack, zFront]) {
         const beam = new THREE.Mesh(new THREE.BoxGeometry(w, 0.09, 0.09), darkWood);
-        beam.position.set(cx, CANOPY_Y - 0.14, pz);
+        beam.position.set(cx, clothY(pz) - 0.085, pz);
         beam.castShadow = true;
+        noCameraBlock(beam);
         g.add(beam);
       }
-      const n = Math.max(3, Math.round(w / 0.52));
+      // ODD panel count, always: `i % 2` only stripes symmetrically when the
+      // first and last panel share a colour.
+      let n = Math.max(3, Math.round(w / 0.52));
+      if (n % 2 === 0) n += 1;
       const pw = w / n;
       for (let i = 0; i < n; i++) {
         const panel = new THREE.Mesh(
@@ -4825,6 +4858,7 @@ export class Island {
         const r = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, Math.hypot(d, 0.35)), darkWood);
         r.position.set(px, 2.38, cz);
         r.rotation.x = slope;
+        noCameraBlock(r);
         g.add(r);
       }
     };
@@ -4844,8 +4878,10 @@ export class Island {
     // 0 ELDER SAGE — a story circle the Storyteller and Philosopher share.
     at(0, 'story_circle', 0.09, (g) => {
       // Packed-earth clearing, trodden flat by a generation of listeners.
-      const ring = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.6, 0.1, 12), earth);
-      ring.position.y = 0.05;
+      // r 2.55, not 1.5: the four seating logs sit out at r 1.35-2.45, so a
+      // 1.5 ring left every seat standing off the clearing in the grass.
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(2.55, 2.68, 0.5, 14), earth);
+      ring.position.y = -0.2;
       ring.receiveShadow = true;
       g.add(ring);
       // A kerb of individual stones round the fire, each a little different.
