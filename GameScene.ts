@@ -201,6 +201,16 @@ export class GameScene extends THREE.Scene {
   private readonly _catScratch = new THREE.Vector3();
   private readonly _catScratch2 = new THREE.Vector3();
   private readonly _catQuat = new THREE.Quaternion();
+
+  // Herons wading at the shoreline — mostly still, with a slow neck sway and
+  // the occasional slow fishing dip.
+  private herons: Array<{
+    neck: THREE.Object3D; // shoulder pivot (sway + dip)
+    neckRestX: number; // base forward lean the sway/dip compose onto
+    phase: number;
+    dipT0: number; // -1 = not dipping, else start time
+    nextDip: number; // time of the next fishing dip
+  }> = [];
   private static readonly CAT_CALL_RADIUS = 22; // cats within this trot in to treats
   private static readonly CAT_MAX = 5; // per throw
   private static readonly CAT_FEAST_SECONDS = 24;
@@ -1236,6 +1246,124 @@ export class GameScene extends THREE.Scene {
     return { cat, tailJoints, legs, head };
   }
 
+  /** One low-poly grey heron, standing (~1.15u tall). Returns the neck pivot
+   *  for the idle sway + fishing dip. Model forward = -Z (beak points -Z). */
+  private buildHeron(): { group: THREE.Group; neck: THREE.Object3D; neckRestX: number } {
+    const bodyMat = GameScene.birdMat(0x8b97a3); // slate blue-grey
+    const paleMat = GameScene.birdMat(0xc6ced6);
+    const legMat = GameScene.birdMat(0x3c3a36);
+    const beakMat = GameScene.birdMat(0xe0a83a);
+    const eyeMat = GameScene.birdMat(0x1a1a1a);
+    const g = new THREE.Group();
+    // Long stilt legs + flat feet.
+    for (const lx of [-0.055, 0.055]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.68, 5), legMat);
+      leg.position.set(lx, 0.34, 0.02);
+      leg.castShadow = true;
+      g.add(leg);
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.02, 0.12), legMat);
+      foot.position.set(lx, 0.005, -0.01);
+      g.add(foot);
+    }
+    // Body — a horizontal ovoid, tail lifted at the back.
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), bodyMat);
+    body.scale.set(1, 0.82, 1.7);
+    body.position.set(0, 0.74, 0);
+    body.castShadow = true;
+    g.add(body);
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.12, 7, 5), paleMat);
+    belly.scale.set(0.85, 0.5, 1.55);
+    belly.position.set(0, 0.7, 0.01);
+    g.add(belly);
+    const tail = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.24, 5), bodyMat);
+    tail.rotation.x = -Math.PI / 2 - 0.35;
+    tail.position.set(0, 0.79, 0.19);
+    g.add(tail);
+    // NECK pivot at the shoulder — leans up-and-forward; the head tips it into
+    // the classic heron S. This pivot carries the whole neck + head.
+    const neck = new THREE.Object3D();
+    neck.position.set(0, 0.82, -0.12);
+    const neckRestX = 0.45;
+    neck.rotation.x = neckRestX;
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.04, 0.42, 6), bodyMat);
+    col.position.set(0, 0.2, 0);
+    col.castShadow = true;
+    neck.add(col);
+    const headPivot = new THREE.Object3D();
+    headPivot.position.set(0, 0.41, 0);
+    headPivot.rotation.x = -0.85; // tip the head forward off the neck (the S)
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.048, 6, 5), bodyMat);
+    headPivot.add(skull);
+    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.24, 5), beakMat);
+    beak.rotation.x = -Math.PI / 2;
+    beak.position.set(0, 0.0, -0.15);
+    headPivot.add(beak);
+    for (const ex of [-0.026, 0.026]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.009, 4, 4), eyeMat);
+      eye.position.set(ex, 0.018, -0.03);
+      headPivot.add(eye);
+    }
+    neck.add(headPivot);
+    g.add(neck);
+    return { group: g, neck, neckRestX };
+  }
+
+  private createHerons(): void {
+    if (!this.island) return;
+    // Wade at the very edge of a couple of quiet beaches (lat just above the
+    // waterline so the feet are in the shallows).
+    const SPOTS: Array<[number, number]> = [
+      [2.1, 0.22],
+      [4.35, 0.2],
+    ];
+    for (let i = 0; i < SPOTS.length; i++) {
+      const { group, neck, neckRestX } = this.buildHeron();
+      const size = 0.95 + Math.random() * 0.2;
+      group.scale.setScalar(size);
+      const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
+      const s = this.island.sampleSurfaceByDirection(dir, 0);
+      // Seat the feet on the sand/shallows; if the spot sampled below sea, lift
+      // it to just above the waterline so the heron stands, not sinks.
+      const footR = Math.max(s.position.length(), this.island.seaLevel() + 0.02);
+      group.position.copy(dir).multiplyScalar(footR);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal);
+      group.quaternion
+        .copy(q)
+        .multiply(this._catQuat.setFromAxisAngle(GameScene.AXIS_Y, Math.random() * Math.PI * 2));
+      group.name = `heron_${i}`;
+      this.add(group);
+      this.herons.push({
+        neck,
+        neckRestX,
+        phase: Math.random() * Math.PI * 2,
+        dipT0: -1,
+        nextDip: performance.now() / 1000 + 4 + Math.random() * 8,
+      });
+    }
+    console.log(`🪶 ${this.herons.length} herons at the shore`);
+  }
+
+  /** Idle the herons: a slow neck sway, and every so often a slow fishing dip
+   *  (the neck swings the head down to the water and back up). */
+  private updateHerons(time: number): void {
+    for (const h of this.herons) {
+      let dip = 0;
+      if (h.dipT0 >= 0) {
+        const p = (time - h.dipT0) / 2.2; // 2.2s dip
+        if (p >= 1) {
+          h.dipT0 = -1;
+          h.nextDip = time + 6 + Math.random() * 10;
+        } else {
+          dip = Math.sin(p * Math.PI) * 0.7; // gentle forward-down reach and back
+        }
+      } else if (time > h.nextDip) {
+        h.dipT0 = time;
+      }
+      h.neck.rotation.x = h.neckRestX + dip;
+      h.neck.rotation.y = Math.sin(time * 0.4 + h.phase) * 0.12; // slow look
+    }
+  }
+
   // Bird materials cached per colour (fishMat pattern) — species mixing
   // would otherwise allocate ~20 duplicate MeshToonMaterials.
   private static birdMatCache = new Map<number, THREE.MeshToonMaterial>();
@@ -1496,6 +1624,7 @@ export class GameScene extends THREE.Scene {
       });
     }
     this.createCats();
+    this.createHerons();
   }
 
   private createCats(): void {
@@ -6183,6 +6312,7 @@ export class GameScene extends THREE.Scene {
     this.updateFish(deltaTime, time);
     this.updateCats(deltaTime, time);
     this.updateNpcShadows();
+    this.updateHerons(time);
     this.updateFisherman(time, deltaTime);
     this.updateBaker(time, deltaTime);
     this.updateSailor(time, deltaTime);
