@@ -68,6 +68,19 @@ export class GameScene extends THREE.Scene {
   // Fake pools of warm lamplight on the terrain (one InstancedMesh of
   // additive discs); update() fades them in as dayFactor falls
   private lampPoolMat: THREE.MeshBasicMaterial | null = null;
+  // The warm bulb materials of every street lamp — update() switches them on at
+  // dusk and off by day so the lamps read as actually lit, not always-glowing.
+  private lampBulbMats: THREE.MeshStandardMaterial[] = [];
+  // Moving contact shadows under the wandering villagers (the static
+  // grounding-shadow mesh only covers props). One InstancedMesh, re-placed
+  // each frame under each NPC's feet.
+  private npcShadowMesh: THREE.InstancedMesh | null = null;
+  private readonly _nsPos = new THREE.Vector3();
+  private readonly _nsDir = new THREE.Vector3();
+  private readonly _nsQuat = new THREE.Quaternion();
+  private readonly _nsScl = new THREE.Vector3();
+  private readonly _nsMat = new THREE.Matrix4();
+  private readonly _nsWorld = new THREE.Vector3();
 
   // Player-centred radar tangent basis (recomputed each minimap refresh).
   // The minimap is a GTA-style local radar: north-up, player at the centre.
@@ -877,6 +890,26 @@ export class GameScene extends THREE.Scene {
     });
     for (const lamp of this.lamps) anchors.push(lamp.group);
     if (anchors.length === 0) return;
+
+    // Collect the warm bulb materials (non-black emissive) so update() can dim
+    // them by day and light them at night, in lockstep with the light pools.
+    this.lampBulbMats = [];
+    const seenBulb = new Set<string>();
+    for (const a of anchors) {
+      a.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const mm of mats) {
+          const m = mm as THREE.MeshStandardMaterial;
+          if (!m || !m.emissive) continue;
+          if (m.emissive.r + m.emissive.g + m.emissive.b < 0.02) continue;
+          if (seenBulb.has(m.uuid)) continue;
+          seenBulb.add(m.uuid);
+          this.lampBulbMats.push(m);
+        }
+      });
+    }
 
     const size = 64;
     const cv = document.createElement('canvas');
@@ -2398,6 +2431,64 @@ export class GameScene extends THREE.Scene {
       const roll = Math.sin(time * cadence * 0.5 + c.phase) * 0.05 * c.gait;
       if (roll !== 0) c.cat.rotateZ(roll);
     }
+  }
+
+  /** Soft dark discs that follow the villagers' feet — the moving twin of the
+   *  static grounding shadows. One InstancedMesh; analytic normal (no raycasts),
+   *  radius taken from each NPC's own seated radius so it sits under the feet. */
+  private updateNpcShadows(): void {
+    if (!this.island) return;
+    const npcs = this.island.getNPCInstances();
+    if (npcs.length === 0) return;
+    if (!this.npcShadowMesh || this.npcShadowMesh.count !== npcs.length) {
+      if (this.npcShadowMesh) {
+        this.remove(this.npcShadowMesh);
+        (this.npcShadowMesh.material as THREE.Material).dispose();
+        this.npcShadowMesh.geometry.dispose();
+      }
+      const size = 64;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = size;
+      const ctx = cv.getContext('2d');
+      if (!ctx) return;
+      const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+      grad.addColorStop(0, 'rgba(0,0,0,0.6)');
+      grad.addColorStop(0.5, 'rgba(0,0,0,0.34)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+      this.npcShadowMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, npcs.length);
+      this.npcShadowMesh.name = 'npc_shadows';
+      this.npcShadowMesh.renderOrder = 1;
+      this.npcShadowMesh.frustumCulled = false;
+      (this.npcShadowMesh.userData as Record<string, unknown>).ignoreOcclusion = true;
+      this.add(this.npcShadowMesh);
+    }
+    const mesh = this.npcShadowMesh;
+    const PLANE_NORMAL = GameScene._localForward; // (0,0,1)
+    for (let i = 0; i < npcs.length; i++) {
+      const o = npcs[i].group;
+      o.getWorldPosition(this._nsWorld);
+      this._nsDir.copy(this._nsWorld).normalize();
+      const s = this.island.analyticSurface(this._nsDir);
+      // Radius = the NPC's own seated radius (its feet sit on the surface), so
+      // the disc lands under the feet regardless of analytic/raycast drift.
+      this._nsPos.copy(this._nsDir).multiplyScalar(this._nsWorld.length() + 0.03);
+      this._nsQuat.setFromUnitVectors(PLANE_NORMAL, s.normal);
+      this._nsScl.set(1.15, 1.15, 1);
+      mesh.setMatrixAt(i, this._nsMat.compose(this._nsPos, this._nsQuat, this._nsScl));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
   }
 
   /** Swim + wiggle + jump the fish. Cheap: analytic wave surface, no raycasts. */
@@ -6091,6 +6182,7 @@ export class GameScene extends THREE.Scene {
     this.updateWaterFX(deltaTime);
     this.updateFish(deltaTime, time);
     this.updateCats(deltaTime, time);
+    this.updateNpcShadows();
     this.updateFisherman(time, deltaTime);
     this.updateBaker(time, deltaTime);
     this.updateSailor(time, deltaTime);
@@ -6442,6 +6534,12 @@ export class GameScene extends THREE.Scene {
     }
     if (this.lampPoolMat) {
       this.lampPoolMat.opacity = 0.55 * (1 - day);
+    }
+    // Street lamps switch on at dusk: near-off by day, warm and bright at
+    // night (matches the light pools' 1-day fade).
+    if (this.lampBulbMats.length) {
+      const glow = 0.05 + 1.35 * (1 - day);
+      for (const m of this.lampBulbMats) m.emissiveIntensity = glow;
     }
     // Per-district atmosphere: nudge the fog toward the nearest plaza's accent by
     // proximity, so arriving in a district gives a subtle warm/cool shift (the
