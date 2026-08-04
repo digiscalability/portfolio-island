@@ -180,6 +180,20 @@ export class Zone {
       g.add(roof);
     }
 
+    // Cornice band — a slim overhanging eave where the walls meet the roof, so
+    // the roof reads as capping a finished building instead of sitting on a bare
+    // box. Roof colour (always darker than the body in BUILDINGS) contrasts on
+    // every district; it protrudes 0.1 all round and its top meets the wall top,
+    // tucking just under the pitch cone / the flat roof's parapet slab.
+    const cornice = new THREE.Mesh(
+      new THREE.BoxGeometry(bw + 0.2, 0.18, bd + 0.2),
+      new THREE.MeshStandardMaterial({ color: cfg.roofColor, roughness: 0.85 }),
+    );
+    cornice.position.y = base + bh - 0.1;
+    cornice.castShadow = true;
+    cornice.receiveShadow = true;
+    g.add(cornice);
+
     // Door on the +Z (pole-facing) wall
     const door = new THREE.Mesh(
       new THREE.BoxGeometry(1.0, 1.9, 0.14),
@@ -210,10 +224,19 @@ export class Zone {
     // at night; the low landmarks keep their single row. Rear + side windows
     // dress the previously blank single-colour faces — same night-emissive
     // idiom, boxes embed 0.02 into the wall / protrude 0.06 like the fronts.
+    // Dark reveal behind each glow pane so a window reads as framed glass, not a
+    // glowing hole — the frame sits flush in the wall (protrudes 0.03), the pane
+    // stays proud of it (0.06). Non-emissive on purpose: at night the warm glass
+    // pops against the dark surround.
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x4a3f30, roughness: 0.85 });
     const winRows = id === 'professional' ? [0.32, 0.55, 0.78] : [0.62];
     for (const wy of winRows) {
       for (const wx of [-bw * 0.3, bw * 0.3]) {
         for (const wz of [bd / 2 + 0.02, -bd / 2 - 0.02]) {
+          const sign = Math.sign(wz);
+          const frame = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.96, 0.05), frameMat);
+          frame.position.set(wx, base + bh * wy, sign * (bd / 2 + 0.005));
+          g.add(frame);
           const win = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.8, 0.08), glowMat());
           win.position.set(wx, base + bh * wy, wz);
           win.userData.isNightEmissive = true;
@@ -222,6 +245,9 @@ export class Zone {
       }
       for (const sx of [-1, 1]) {
         for (const wz of [-bd * 0.24, bd * 0.24]) {
+          const frame = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.96, 0.82), frameMat);
+          frame.position.set(sx * (bw / 2 + 0.005), base + bh * wy, wz);
+          g.add(frame);
           const win = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.66), glowMat());
           win.position.set(sx * (bw / 2 + 0.02), base + bh * wy, wz);
           win.userData.isNightEmissive = true;
@@ -246,6 +272,10 @@ export class Zone {
 
     // Per-district accent prop
     this.addAccent(g, cfg, bw, bh, bd, base, color);
+
+    // Civic entrance treatment — only the welcome hall (the island's pole-plaza
+    // centrepiece) earns the portico; the district halls stay simpler.
+    if (id === 'welcome') this.addPortico(g, bd, base);
 
     // District emoji, floated on the roof axis ABOVE the bobbing beacon
     // (carries per-district identity from any angle, no bloom, opts out of
@@ -330,6 +360,53 @@ export class Zone {
       awn.position.set(0, base + 2.0, bd / 2 + 0.4);
       awn.rotation.x = -0.28;
       g.add(awn);
+    }
+  }
+
+  /**
+   * Welcome-hall entrance: two pilasters framing the door, a shallow pediment
+   * gable, and a two-tread stoop. Everything lives BELOW the pitch cone's base
+   * (base+bh) — the cone's base radius overhangs the walls, so a taller/projecting
+   * portico would poke through the eave. The pediment also clears the door lamp
+   * (top ~base+2.26); the pilasters sit inboard of the accent columns (±bw*0.36).
+   */
+  private addPortico(g: THREE.Group, bd: number, base: number): void {
+    const frontZ = bd / 2;
+    const trimMat = new THREE.MeshStandardMaterial({ color: 0xd8cdb8, roughness: 0.85 });
+
+    // Pilasters flanking the doorway, rising to the pediment base.
+    for (const px of [-0.62, 0.62]) {
+      const pil = new THREE.Mesh(new THREE.BoxGeometry(0.16, 2.25, 0.12), trimMat);
+      pil.position.set(px, base + 1.125, frontZ + 0.06);
+      pil.castShadow = true;
+      g.add(pil);
+    }
+
+    // Shallow pediment gable: a triangle in XY extruded along Z, seated on the
+    // pilaster tops (base+2.25 → apex base+2.65, clearing the lamp top ~base+2.16
+    // and staying under the cone base at base+bh).
+    const tri = new THREE.Shape();
+    tri.moveTo(-0.82, 0);
+    tri.lineTo(0.82, 0);
+    tri.lineTo(0, 0.4);
+    tri.closePath();
+    const pedGeo = new THREE.ExtrudeGeometry(tri, { depth: 0.14, bevelEnabled: false });
+    pedGeo.translate(0, 0, -0.07); // centre the extrusion on its front face
+    const pediment = new THREE.Mesh(
+      pedGeo,
+      new THREE.MeshStandardMaterial({ color: 0x8a6d4f, roughness: 0.85 }),
+    );
+    pediment.position.set(0, base + 2.25, frontZ + 0.06);
+    pediment.castShadow = true;
+    g.add(pediment);
+
+    // Two-tread stoop at the threshold; bottoms buried like every island prop.
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0xbdb3a4, roughness: 0.95 });
+    for (let s = 0; s < 2; s++) {
+      const tread = new THREE.Mesh(new THREE.BoxGeometry(1.8 + s * 0.5, 0.16, 0.4), stoneMat);
+      tread.position.set(0, base - 0.02 - s * 0.12, frontZ + 0.25 + s * 0.32);
+      tread.receiveShadow = true;
+      g.add(tread);
     }
   }
 
