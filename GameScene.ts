@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+import { addGroupHulls, updateCelRim } from './CelLook';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { Island } from './Island';
@@ -489,6 +490,7 @@ export class GameScene extends THREE.Scene {
   // Day/night grading endpoints (lerped per frame — no allocations)
   private static readonly _ambientDay = new THREE.Color(0xfff6e8);
   private static readonly _ambientNight = new THREE.Color(0x2c3a5e);
+  private static readonly _celSunDir = new THREE.Vector3();
   private static readonly _cloudClear = new THREE.Color(0xffffff);
   private static readonly _cloudStorm = new THREE.Color(0x8a95a5);
   private static readonly _cloudDusk = new THREE.Color(0xffc9a0);
@@ -992,8 +994,11 @@ export class GameScene extends THREE.Scene {
     this.add(ambientLight);
     this.lights.ambient = ambientLight;
 
-    // Directional light (warm sun) — the key
-    const sunLight = new THREE.DirectionalLight(0xfff1d6, 1.6);
+    // Directional light (warm sun) — the key. The cel theme pushes the split
+    // further — warmer key, cooler sky fill (below) — so shadows TINT cool
+    // instead of just darkening (the Animal Crossing/BotW discipline; also
+    // the zero-risk alternative to tinted gradient ramps).
+    const sunLight = new THREE.DirectionalLight(isRealTheme() ? 0xfff1d6 : 0xffe9c0, 1.6);
     sunLight.position.set(30, 40, 30);
     sunLight.castShadow = true;
 
@@ -1030,7 +1035,11 @@ export class GameScene extends THREE.Scene {
     // Hemisphere light for natural gradual lighting (sky blue / warm ground).
     // Intensity lifted for the toon ramp — its stepped shading crushes
     // unlit undersides (tree canopies) to near-black without ambient fill.
-    const hemiLight = new THREE.HemisphereLight(0xbfe3ff, 0x4a6b32, 0.62);
+    const hemiLight = new THREE.HemisphereLight(
+      isRealTheme() ? 0xbfe3ff : 0xaacdf7, // cel: cooler sky fill vs the warmer key
+      0x4a6b32,
+      0.62,
+    );
     this.add(hemiLight);
     this.hemiLight = hemiLight;
 
@@ -1426,6 +1435,7 @@ export class GameScene extends THREE.Scene {
         .multiply(this._catQuat.setFromAxisAngle(GameScene.AXIS_Y, Math.random() * Math.PI * 2));
       group.name = `heron_${i}`;
       this.add(group);
+      addGroupHulls(group); // cel ink outline (no-op under ?theme=real)
       this.herons.push({
         neck,
         neckRestX,
@@ -1818,6 +1828,7 @@ export class GameScene extends THREE.Scene {
       cat.quaternion.copy(q).multiply(this._catQuat.setFromAxisAngle(GameScene.AXIS_Y, heading));
       cat.name = `cat_${i}`;
       this.add(cat);
+      addGroupHulls(cat); // cel ink outline (no-op under ?theme=real)
       const anal = this.island.analyticSurface(dir).radius;
       const away = new THREE.Vector3().crossVectors(s.normal, new THREE.Vector3(0, 1, 0));
       if (away.lengthSq() < 0.5) away.set(1, 0, 0);
@@ -6828,6 +6839,13 @@ export class GameScene extends THREE.Scene {
     }
     // ?look=soft: the composer's grade pass + bloom breathe with the cycle.
     this.rendererRef?.setGradeDayFactor?.(day);
+    // Cel rim: sun direction into view space for every registered cast shader.
+    if (this.lights.sun && this.camera) {
+      GameScene._celSunDir
+        .subVectors(this.lights.sun.position, this.lights.sun.target.position)
+        .normalize();
+      updateCelRim(GameScene._celSunDir, this.camera);
+    }
     // Per-district atmosphere: nudge the fog toward the nearest plaza's accent by
     // proximity, so arriving in a district gives a subtle warm/cool shift (the
     // "you have arrived somewhere" cue). Runs AFTER EnvironmentCycle writes

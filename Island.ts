@@ -13,6 +13,7 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
+import { addSkinnedHull, applyCelRim } from './CelLook';
 import {
   DISTRICTS,
   RING_DISTRICT_LONS,
@@ -3647,6 +3648,7 @@ export class Island {
     }
     group.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
+      if (o.userData.isCelHull) return; // ink hulls: never recolour, rim, or re-hull
       const mats = Array.isArray(o.material) ? o.material : [o.material];
       const swapped = mats.map((m) => {
         const n = ((m as THREE.Material)?.name ?? '').toLowerCase();
@@ -3660,6 +3662,28 @@ export class Island {
         return m;
       });
       o.material = Array.isArray(o.material) ? swapped : swapped[0];
+      // Cel kit: lit-side rim on the villager's palette materials (once per
+      // cached material — they're shared across villagers by colour), and an
+      // ink hull bound to THIS villager's skeleton. Both no-ops under
+      // ?theme=real.
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        const mat = m as THREE.Material;
+        if (mat && !mat.userData.celRim) {
+          mat.userData.celRim = true;
+          applyCelRim(mat);
+        }
+      }
+      // Hull the garment/skin/hair primitives only. The GLB splits into one
+      // SkinnedMesh per material — inflating the tiny Eye/EyeShine/Blush
+      // primitives left scratchy ink crescents on the face.
+      if ((o as unknown as { isSkinnedMesh?: boolean }).isSkinnedMesh) {
+        const matName = (
+          (Array.isArray(o.material) ? o.material[0] : o.material)?.name ?? ''
+        ).toLowerCase();
+        if (!/eye|blush/.test(matName)) {
+          addSkinnedHull(o as unknown as THREE.SkinnedMesh);
+        }
+      }
     });
     // Silhouette variety (deterministic, ±6%)
     group.scale.multiplyScalar(0.95 + (phIdx % 5) * 0.03);

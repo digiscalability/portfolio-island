@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
+import { applyCelRim } from './CelLook';
 import { Materials } from './Materials';
 import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
 
@@ -1190,12 +1191,21 @@ export class SimplePlayer extends THREE.Group {
           }
         }
 
-        // Enable shadows
+        // Enable shadows + the cel rim on the garment/skin materials.
+        // Rim SKIPS Eye/EyeShine/Blush (face accents would sparkle) and the
+        // authored PlayerOutline hull (rimming ink breaks the silhouette).
         if (this.gltfModel) {
+          const RIM_MATS = new Set(['Jacket', 'Pants', 'Skin', 'Shoe', 'Hair']);
           this.gltfModel.traverse((obj) => {
             if (obj instanceof THREE.Mesh) {
               obj.castShadow = true;
               obj.receiveShadow = true;
+              for (const m of Array.isArray(obj.material) ? obj.material : [obj.material]) {
+                if (m && RIM_MATS.has(m.name) && !m.userData.celRim) {
+                  m.userData.celRim = true;
+                  applyCelRim(m);
+                }
+              }
             }
           });
         }

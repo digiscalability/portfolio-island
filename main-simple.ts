@@ -3,6 +3,7 @@ import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
 import { startDwellTracking, track, trackOnce } from './Analytics';
+import { applyCelShadowPatch } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
@@ -200,8 +201,10 @@ class SimpleApp {
     try {
       console.log('🎮 Starting SimpleApp initialization...');
 
-      // ?look=soft experiment: mutate the fog shader chunks BEFORE any
-      // material compiles — the program cache never rebuilds compiled ones.
+      // Global shader-chunk patches, BEFORE any material compiles — the
+      // program cache never rebuilds compiled ones. Cel shadow edges for the
+      // default cel theme; the ?look=soft fog experiment for ?theme=real.
+      applyCelShadowPatch();
       applySoftLookFogPatch();
 
       // Get or create canvas
