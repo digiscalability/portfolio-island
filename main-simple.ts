@@ -664,6 +664,28 @@ class SimpleApp {
         return muted;
       });
 
+      // Volume slider → master volume (ramped + persisted by AudioManager).
+      this.ui.setOnVolumeChange((v) => {
+        const am = (window as unknown as { audioManager?: { setVolume(v: number): void } })
+          .audioManager;
+        if (am) {
+          am.setVolume(v);
+          return;
+        }
+        // Pre-audio-boot: persist directly; the AudioManager constructor
+        // reads it when the idle music start creates it (same pattern as
+        // the pre-boot mute path above).
+        try {
+          const s = JSON.parse(localStorage.getItem('ds_audio_settings') ?? '{}');
+          localStorage.setItem(
+            'ds_audio_settings',
+            JSON.stringify({ ...s, v: 2, volume: Math.max(0, Math.min(1, v)) }),
+          );
+        } catch {
+          /* no storage */
+        }
+      });
+
       // Initialize post-processing. Awaited so the lazily-loaded bloom addons
       // are constructed before warmUp() compiles their shaders ahead of reveal.
       // On the coarse/low-core tier this never constructs a composer (nor

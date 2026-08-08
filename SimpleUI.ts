@@ -1183,11 +1183,15 @@ export class SimpleUI {
   private createMuteButton(): void {
     this.muteBtn = document.createElement('div');
     let muted = false;
+    let volume = 0.7; // matches AudioManager's DEFAULT_VOLUME
     try {
-      muted = !!JSON.parse(localStorage.getItem('ds_audio_settings') ?? '{}').muted;
+      const s = JSON.parse(localStorage.getItem('ds_audio_settings') ?? '{}');
+      muted = !!s.muted;
+      if (s.v === 2 && typeof s.volume === 'number') volume = s.volume;
     } catch {
-      /* default unmuted */
+      /* defaults */
     }
+    this.hudMuted = muted;
     this.muteBtn.textContent = muted ? '🔇' : '🔊';
     Object.assign(this.muteBtn.style, {
       position: 'absolute',
@@ -1205,13 +1209,108 @@ export class SimpleUI {
       e.stopPropagation();
       if (!this.onMuteToggle || !this.muteBtn) return;
       const nowMuted = this.onMuteToggle();
+      this.hudMuted = nowMuted;
       this.muteBtn.textContent = nowMuted ? '🔇' : '🔊';
       this.muteBtn.setAttribute('aria-pressed', String(nowMuted));
+      // Tapping the button also surfaces the volume pill for a few seconds —
+      // the only mobile path to the slider (no hover on touch).
+      this.showVolumePill(3500);
     });
     this.makeHudButtonAccessible(this.muteBtn, 'Toggle all sound (music, effects, voices)', muted);
     this.overlay.appendChild(this.muteBtn);
+    this.createVolumePill(volume);
     this.createReducedMotionButton();
     this.createCustomizeButton();
+  }
+
+  /**
+   * Master-volume slider in a popover pill beside the 🔊 button. The icon row
+   * is fully packed (♿ at +56, 🎨 at +102, the wide Portfolio pill below at
+   * +126), so a permanently-visible slider has nowhere to live at 320px-wide
+   * viewports — instead the pill OVERLAYS the ♿/🎨 slots temporarily (opaque,
+   * higher z) while hovered/tapped, and vanishes after.
+   */
+  private volumePill: HTMLDivElement | null = null;
+  private hudMuted = false;
+  private volumePillHideTimer: number | undefined;
+
+  private createVolumePill(initialVolume: number): void {
+    const pill = document.createElement('div');
+    Object.assign(pill.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 88px)',
+      right: 'calc(var(--sar, 0px) + 52px)',
+      background: 'rgba(0, 0, 0, 0.85)',
+      padding: '8px 12px',
+      borderRadius: '10px',
+      display: 'none',
+      alignItems: 'center',
+      pointerEvents: 'auto',
+      zIndex: '10', // floats over the ♿/🎨 buttons while visible
+      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+    });
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '5';
+    slider.value = String(Math.round(initialVolume * 100));
+    slider.setAttribute('aria-label', 'Master volume');
+    Object.assign(slider.style, {
+      width: '96px',
+      height: '18px',
+      accentColor: '#5b6cff',
+      cursor: 'pointer',
+      margin: '0',
+    });
+    slider.addEventListener('input', () => {
+      const v = Math.max(0, Math.min(100, Number(slider.value))) / 100;
+      this.onVolumeChange?.(v);
+      // Raising the volume while muted unmutes (the expected convention);
+      // dragging to 0 hints 🔇 without flipping the stored muted flag.
+      if (v > 0 && this.hudMuted && this.onMuteToggle) {
+        this.hudMuted = this.onMuteToggle();
+      }
+      if (this.muteBtn) {
+        this.muteBtn.textContent = this.hudMuted || v === 0 ? '🔇' : '🔊';
+        this.muteBtn.setAttribute('aria-pressed', String(this.hudMuted));
+      }
+      this.showVolumePill(3500); // keep it up while adjusting
+    });
+    pill.appendChild(slider);
+    this.overlay.appendChild(pill);
+    this.volumePill = pill;
+
+    // Desktop: hover/focus over button or pill keeps it open.
+    const open = () => this.showVolumePill(900);
+    this.muteBtn?.addEventListener('mouseenter', open);
+    this.muteBtn?.addEventListener('focus', open);
+    pill.addEventListener('mouseenter', () => this.showVolumePill(900));
+    pill.addEventListener('mouseleave', () => this.showVolumePill(600));
+    slider.addEventListener('focus', () => this.showVolumePill(4000));
+    slider.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.hideVolumePill();
+    });
+  }
+
+  /** Show the pill and (re)arm its auto-hide. */
+  private showVolumePill(hideAfterMs: number): void {
+    if (!this.volumePill) return;
+    this.volumePill.style.display = 'flex';
+    if (this.volumePillHideTimer) clearTimeout(this.volumePillHideTimer);
+    this.volumePillHideTimer = window.setTimeout(() => this.hideVolumePill(), hideAfterMs);
+  }
+
+  private hideVolumePill(): void {
+    if (this.volumePillHideTimer) clearTimeout(this.volumePillHideTimer);
+    this.volumePillHideTimer = undefined;
+    if (this.volumePill) this.volumePill.style.display = 'none';
+  }
+
+  private onVolumeChange: ((v: number) => void) | null = null;
+  /** Wire the master-volume slider (0..1). */
+  setOnVolumeChange(cb: (v: number) => void): void {
+    this.onVolumeChange = cb;
   }
 
   private onCustomizeToggle: (() => void) | null = null;
