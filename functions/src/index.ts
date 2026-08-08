@@ -31,7 +31,7 @@ import * as admin from 'firebase-admin';
 import * as nodemailer from 'nodemailer';
 import Anthropic from '@anthropic-ai/sdk';
 import { containsSlur, scrubReply } from './moderation';
-import { MONTHLY_TOKEN_CAP, IP_MAX_PER_WINDOW } from './constants';
+import { MONTHLY_TOKEN_CAP, IP_MAX_PER_WINDOW, RUMORS, rumorIndexForDay } from './constants';
 import { TTS_QUEUE_TTL_MS, TTS_CACHE_TTL_MS } from './tts';
 import { seededPick, ipKey, nextIpWindow, pruneSelect, lastForwardedIp } from './pure';
 
@@ -433,6 +433,13 @@ export const npcChat = onCall(
     } catch {
       /* chat still works without the day context */
     }
+    // Rumor of the day — authored lore, deterministic from the Melbourne day
+    // key so every NPC (and the client's Island Times) agrees. The sentence is
+    // shared WORD-FOR-WORD: the model flavors around it but never invents
+    // directions. Server-authored constant text ⇒ zero injection surface.
+    todayCtx += `\n\nISLAND RUMOR OF THE DAY: "${
+      RUMORS[rumorIndexForDay(dayKey)]
+    }" — if the visitor asks about secrets, rumors, or island mysteries (or the talk drifts that way), share that sentence word-for-word; otherwise leave it unspoken.`;
 
     // Call Claude Haiku. Persona = system prompt (server-only); the visitor's
     // message is a user turn = DATA, never merged into the system instructions.

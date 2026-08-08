@@ -6,6 +6,7 @@ import { checkName } from './Moderation';
 import { ACTIVITY_DEFS } from './NpcActivities';
 import { AI_NPCS } from './NpcChat';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
+import { rumorOfTheDay } from './Secrets';
 import { buildShareUrl, setUrlParam, share } from './Share';
 import {
   speak,
@@ -952,6 +953,14 @@ export class SimpleUI {
          <div style="text-align:left;max-height:18vh;overflow:auto;">${rows}</div>`,
       );
     }
+    // Rumor corner: the SAME rumor-of-the-day the townsfolk are whispering
+    // (deterministic Melbourne-day pick, synced with the npcChat function) —
+    // the paper and the NPCs never disagree, and both point at a real secret.
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h3 style="margin:16px 0 4px;font-size:12px;color:#e0b04a;text-transform:uppercase;letter-spacing:0.5px;text-align:left;">🗝️ Rumor corner</h3>
+       <p style="margin:0;font-size:13px;color:#cbd;font-style:italic;text-align:left;">“${rumorOfTheDay()}”</p>`,
+    );
     // The byline is the proof-of-autonomy line — without it the board reads as
     // hand-authored flavour text instead of a nightly agent pipeline.
     modal.insertAdjacentHTML(

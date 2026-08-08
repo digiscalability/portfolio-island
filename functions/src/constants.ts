@@ -30,3 +30,31 @@ export const TTS_IP_MAX_PER_WINDOW = 12;
  *  RTDB-download/egress a cached-audio replay loop could drain. The real
  *  client calls npcVoice exactly once per reply, so this is ~15× headroom. */
 export const TTS_FETCH_MAX_PER_WINDOW = 120;
+
+/**
+ * The island's nine secret rumors — SYNC CONTRACT with the client's
+ * Secrets.ts SECRETS[].rumor (same nine sentences, same order). NPCs share
+ * the rumor-of-the-day WORD-FOR-WORD (authored lore the LLM flavors around
+ * but never generates), and the client's Island Times prints the same one:
+ * both sides pick RUMORS[rumorIndexForDay(melbourneDayKey)] so the paper and
+ * the townsfolk always agree.
+ */
+export const RUMORS = [
+  'They say the keeper tends a spark that has never once gone out.',
+  'Something glints where the trail runs out of mountain.',
+  'The Gardener hums to something hidden behind her walls.',
+  'Farmhands swear the scarecrow wears a different smile at dusk.',
+  'Listen close at the bandstand — the wind hums along.',
+  'The Artist never shows anyone what is on the canvas.',
+  'Old tales gather wherever the logs make a ring.',
+  'Two grey fishers know the quietest stretch of shore.',
+  'Every journey on this island is said to begin at the same door.',
+] as const;
+
+/** Deterministic rumor pick from a YYYY-MM-DD day key (char-code sum). Must
+ *  match the client-side formula in Secrets.ts rumorOfTheDay. */
+export function rumorIndexForDay(dayKey: string): number {
+  let h = 0;
+  for (let i = 0; i < dayKey.length; i++) h += dayKey.charCodeAt(i);
+  return h % RUMORS.length;
+}

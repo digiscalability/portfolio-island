@@ -70,6 +70,26 @@ export const SECRETS: SecretDef[] = [
   },
 ];
 
+/**
+ * Rumor of the day — SYNC CONTRACT with functions/src/constants.ts
+ * (RUMORS + rumorIndexForDay): same nine sentences, same order, same
+ * char-code-sum formula over the same Melbourne day key. The NPCs (server)
+ * and the Island Times (client) always tell the same rumor.
+ */
+export function melbourneDayKey(): string {
+  try {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+export function rumorOfTheDay(dayKey = melbourneDayKey()): string {
+  let h = 0;
+  for (let i = 0; i < dayKey.length; i++) h += dayKey.charCodeAt(i);
+  return SECRETS[h % SECRETS.length].rumor;
+}
+
 const KEY = 'ds_secrets';
 
 export class Secrets {
