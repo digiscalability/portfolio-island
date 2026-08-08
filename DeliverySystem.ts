@@ -316,6 +316,11 @@ export class DeliverySystem {
     return this.completedDeliveries.length;
   }
 
+  /** Total deliveries authored (for the journal's n-of-m meter). */
+  public getTotalCount(): number {
+    return this.deliveries.length;
+  }
+
   public getQuests(): Quest[] {
     return this.quests;
   }

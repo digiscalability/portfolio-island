@@ -11,6 +11,42 @@ import { track } from './Analytics';
 export interface ShareParams {
   zone?: string | null;
   hour?: number | null;
+  /** Postcard pose (encodePostcardPose) — the recipient lands on this view. */
+  pc?: string | null;
+}
+
+/**
+ * Encode a camera pose + hour into a compact URL-safe token for ?pc= links —
+ * the "state-carrying share" from the engagement research: a shared postcard
+ * drops the recipient onto the sender's exact view at the sender's hour.
+ * Format: base64url of "x~y~z~qx~qy~qz~qw~hour" (2dp — ±0.005u is invisible).
+ */
+export function encodePostcardPose(
+  pos: { x: number; y: number; z: number },
+  quat: { x: number; y: number; z: number; w: number },
+  hour: number,
+): string {
+  const r = (n: number): string => String(Math.round(n * 100) / 100);
+  const raw = [pos.x, pos.y, pos.z, quat.x, quat.y, quat.z, quat.w, hour].map(r).join('~');
+  return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Decode ?pc=; null on any malformed input (bad links must never throw). */
+export function decodePostcardPose(
+  token: string,
+): { pos: [number, number, number]; quat: [number, number, number, number]; hour: number } | null {
+  try {
+    const raw = atob(token.replace(/-/g, '+').replace(/_/g, '/'));
+    const n = raw.split('~').map(Number);
+    if (n.length !== 8 || n.some((v) => !Number.isFinite(v))) return null;
+    return {
+      pos: [n[0], n[1], n[2]],
+      quat: [n[3], n[4], n[5], n[6]],
+      hour: Math.max(0, Math.min(24, n[7])),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Params worth carrying into a shared link — they change what the visitor sees. */
@@ -33,6 +69,7 @@ export function buildShareUrl(params: ShareParams = {}): string {
     /* ignore */
   }
   if (params.hour != null) out.set('hour', String(Math.round(params.hour * 10) / 10));
+  if (params.pc != null) out.set('pc', params.pc);
   if (params.zone != null) {
     // Zone shares use the /z/<zone> path: a serverless route serves
     // zone-specific OG tags to link scrapers, then bounces humans to /?zone=.

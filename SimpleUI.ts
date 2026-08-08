@@ -37,6 +37,15 @@ export function hapticPulse(ms: number): void {
  * SimpleUI - Simplified UI manager for the basic app
  * Handles loading screen, welcome message, interaction prompts, and FPS display
  */
+/** Data contract for the Island Journal — main-simple supplies a provider. */
+export interface JournalData {
+  stamps: Array<{ icon: string; label: string; has: boolean }>;
+  hats: Array<{ icon: string; name: string; owned: boolean }>;
+  races: Array<{ label: string; best: number | null }>;
+  deliveries: { done: number; total: number };
+  coins: number;
+}
+
 export class SimpleUI {
   private overlay: HTMLElement;
   private loadingDiv: HTMLElement | null = null;
@@ -1180,6 +1189,67 @@ export class SimpleUI {
     });
   }
 
+  // ── Island Journal ────────────────────────────────────────────────────────
+  // (JournalData is declared at module scope below the class.)
+  // One overlay unifying every collection into n-of-m meters (the Zeigarnik
+  // pull the engagement research prescribed: visible incomplete sets bring
+  // visitors back). Data comes from a provider closure set by main-simple —
+  // the UI owns zero game state.
+  private journalProvider: (() => JournalData) | null = null;
+  setJournalProvider(fn: () => JournalData): void {
+    this.journalProvider = fn;
+  }
+
+  showJournal(): void {
+    const data = this.journalProvider?.();
+    if (!data) return;
+    const modal = this.buildCenteredModal('min(430px, calc(100vw - 32px))');
+    const meter = (label: string, n: number, m: number): string => {
+      const pct = m > 0 ? Math.round((n / m) * 100) : 0;
+      return `<div style="margin:10px 0 2px;display:flex;justify-content:space-between;font-size:13px;">
+          <span style="color:#ccd;">${label}</span><span style="color:#8a9bff;font-weight:600;">${n} / ${m}</span></div>
+        <div style="height:7px;border-radius:5px;background:rgba(255,255,255,0.1);overflow:hidden;">
+          <div style="width:${pct}%;height:100%;border-radius:5px;background:linear-gradient(90deg,#5b6cff,#8a4de0);"></div></div>`;
+    };
+    const stampRow = data.stamps
+      .map(
+        (s) =>
+          `<span title="${s.label}" style="font-size:22px;${s.has ? '' : 'filter:grayscale(1);opacity:0.35;'}">${s.icon}</span>`,
+      )
+      .join(' ');
+    const hatRow = data.hats
+      .map(
+        (h) =>
+          `<span title="${h.name}" style="font-size:20px;${h.owned ? '' : 'filter:grayscale(1);opacity:0.35;'}">${h.icon}</span>`,
+      )
+      .join(' ');
+    const raceRows = data.races
+      .map(
+        (r) =>
+          `<div style="display:flex;justify-content:space-between;font-size:13px;margin:4px 0;">
+            <span style="color:#ccd;">${r.label}</span>
+            <span style="color:${r.best != null ? '#4ade80' : '#667'};font-weight:600;">${
+              r.best != null ? r.best.toFixed(1) + 's' : 'not yet run'
+            }</span></div>`,
+      )
+      .join('');
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 2px;color:#8a9bff;">📔 Island Journal</h2>
+       <p style="margin:0 0 10px;font-size:12.5px;color:#aab;">Everything you've found so far — and what's still out there.</p>
+       ${meter('🛂 Zone stamps', data.stamps.filter((s) => s.has).length, data.stamps.length)}
+       <div style="margin:6px 0 2px;">${stampRow}</div>
+       ${meter('🎩 Hats collected', data.hats.filter((h) => h.owned).length, data.hats.length)}
+       <div style="margin:6px 0 2px;letter-spacing:2px;">${hatRow}</div>
+       ${meter('📬 Deliveries', data.deliveries.done, data.deliveries.total)}
+       <div style="margin:14px 0 4px;font-size:13px;color:#ccd;font-weight:600;">🏁 Race bests</div>
+       ${raceRows}
+       <div style="display:flex;justify-content:space-between;margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12);font-size:13px;">
+         <span style="color:#ccd;">🪙 Coins collected</span><span style="color:#ffd54a;font-weight:700;">${data.coins}</span></div>`,
+    );
+    this.overlay.appendChild(modal);
+  }
+
   private createMuteButton(): void {
     this.muteBtn = document.createElement('div');
     let muted = false;
@@ -1824,7 +1894,7 @@ export class SimpleUI {
    * The buttons are fresh user gestures, which keeps iOS's share-sheet
    * transient-activation requirement satisfied (capture happened frames ago).
    */
-  showPhotoPreview(card: Blob): void {
+  showPhotoPreview(card: Blob, postcardPose?: string): void {
     if (this.photoUrl) URL.revokeObjectURL(this.photoUrl);
     this.photoUrl = URL.createObjectURL(card);
     const modal = this.buildCenteredModal('min(440px, calc(100vw - 32px))');
@@ -1857,9 +1927,11 @@ export class SimpleUI {
     shareBtn.addEventListener('click', () => {
       void share({
         surface: 'photo',
-        url: buildShareUrl(),
+        // ?pc= carries the exact camera pose + hour: the recipient lands on
+        // the sender's view, not the homepage.
+        url: buildShareUrl(postcardPose ? { pc: postcardPose } : {}),
         title: 'DigiScalability Life Island',
-        text: 'Snapped on the DigiScalability Life Island 🏝️ — walk around it yourself:',
+        text: 'Snapped on the DigiScalability Life Island 🏝️ — stand where I stood:',
         file,
       }).then((outcome) => {
         if (outcome === 'copied') this.toast('🔗 Link copied — the photo saved via Download.');
@@ -1980,7 +2052,9 @@ export class SimpleUI {
           border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">✍️ Guestbook</button>
       </div>
       <button data-board="times" style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
-        border:1px solid rgba(255,215,121,0.28);border-radius:10px;font-size:14px;cursor:pointer;">📰 Island Times</button>`;
+        border:1px solid rgba(255,215,121,0.28);border-radius:10px;font-size:14px;cursor:pointer;">📰 Island Times</button>
+      <button data-journal style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
+        border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">📔 Island Journal</button>`;
     // close button
     const close = document.createElement('button');
     close.textContent = '×';
@@ -2006,6 +2080,10 @@ export class SimpleUI {
     menu.querySelector('button[data-passport]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
       this.showPassport();
+    });
+    menu.querySelector('button[data-journal]')?.addEventListener('click', () => {
+      this.togglePortfolioMenu();
+      this.showJournal();
     });
     menu.querySelectorAll('button[data-board]').forEach((b) => {
       b.addEventListener('click', () => {

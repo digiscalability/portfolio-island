@@ -13,9 +13,10 @@ import { tick as juiceTick } from './Juice';
 import { Multiplayer } from './Multiplayer';
 import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
-import { Passport, PASSPORT_META, type PassportZone } from './Passport';
+import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { loadProfile, saveProfile } from './profileSync';
 import { sfx } from './Sfx';
+import { decodePostcardPose } from './Share';
 import { SimpleInputManager } from './SimpleInputManager';
 import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
@@ -580,6 +581,49 @@ class SimpleApp {
         else if (total >= 50) trackOnce('coins_milestone', { n: 50 });
       });
 
+      // Arrival breadcrumb trail finished: the first-visit quick win lands.
+      this.scene.setOnArrivalTrail(() => {
+        this.markDone('ds_arrived');
+        this.ui.flashMessage('🏝️ Welcome to the island — you’ve got the hang of it!');
+        sfx.questComplete();
+        trackOnce('arrival_trail_done');
+      });
+
+      // Island Journal: one panel unifying every collection into n-of-m
+      // meters. Race bests read straight off their storage keys (the key IS
+      // RaceSystem's persistence contract) to avoid new plumbing.
+      this.ui.setJournalProvider(() => {
+        const best = (kind: string): number | null => {
+          try {
+            const v = parseFloat(localStorage.getItem(`ds_race_best2_${kind}`) ?? '');
+            return Number.isFinite(v) ? v : null;
+          } catch {
+            return null;
+          }
+        };
+        return {
+          stamps: PASSPORT_ZONES.map((z) => ({
+            icon: PASSPORT_META[z].icon,
+            label: PASSPORT_META[z].label,
+            has: this.passport?.has(z) ?? false,
+          })),
+          hats: this.hatCatalog.map((h) => ({
+            icon: h.icon,
+            name: h.name,
+            owned: this.ownedHats.has(h.id),
+          })),
+          races: [
+            { label: '🏞️ Land circuit', best: best('land') },
+            { label: '🌊 Water circuit', best: best('water') },
+          ],
+          deliveries: {
+            done: this.deliverySystem?.getCompletedCount() ?? 0,
+            total: this.deliverySystem?.getTotalCount() ?? 10,
+          },
+          coins: this.scene.getCoinsCollected(),
+        };
+      });
+
       // Drowning: washed back to shore with a splash message
       this.scene.setOnDrownRespawn(() => {
         this.ui.flashMessage('🌊 You nearly drowned! Washed ashore.');
@@ -784,11 +828,14 @@ class SimpleApp {
         }
         if (saved) this.multiplayer?.setName(saved);
         // ?tour=1 share links go straight into the cinematic rail (skippable);
-        // otherwise deep-linked visitors get their shared content directly and
-        // everyone else gets the pitch.
-        const wantTour = new URLSearchParams(window.location.search).get('tour') === '1';
+        // ?pc= postcard links land on the sender's exact view; other deep
+        // links get their shared content directly; everyone else, the pitch.
+        const sp = new URLSearchParams(window.location.search);
+        const wantTour = sp.get('tour') === '1';
         if (wantTour) this.startTour();
-        else if (!this.openDeepLinkZone()) this.ui.showWelcome();
+        else if (this.applyPostcardParam(sp.get('pc'))) {
+          /* postcard view active — welcome deferred to its dismiss */
+        } else if (!this.openDeepLinkZone()) this.ui.showWelcome();
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -944,11 +991,22 @@ class SimpleApp {
         this.ui.flashMessage('📸 Capture failed — try again.');
         return;
       }
-      const { composePhotoCard } = await import('./Share');
+      const { composePhotoCard, encodePostcardPose } = await import('./Share');
       const card = await composePhotoCard(shot);
       track('photo_captured');
       this.markDone('ds_photo_taken');
-      this.ui.showPhotoPreview(card);
+      // State-carrying link: the shared postcard drops its recipient onto
+      // THIS exact view at THIS hour (the Wordle-grade share from the
+      // engagement research — the link carries the moment, not the homepage).
+      let pc: string | undefined;
+      try {
+        const cam = this.scene.getCamera();
+        const hour = this.scene.getEnvironmentCycle()?.getHour() ?? 12;
+        pc = encodePostcardPose(cam.position, cam.quaternion, hour);
+      } catch {
+        /* pose is a bonus — share still works without it */
+      }
+      this.ui.showPhotoPreview(card, pc);
     } catch {
       if (overlay) overlay.style.visibility = prevVis;
       this.ui.flashMessage('📸 Capture failed — try again.');
@@ -986,6 +1044,47 @@ class SimpleApp {
       });
     } catch {
       /* ignore */
+    }
+  }
+
+  /**
+   * ?pc= postcard link: land the visitor on the SENDER'S exact view at the
+   * sender's hour (state-carrying share). Camera is suspended on the saved
+   * pose until they tap the pill to start exploring — which also skips the
+   * welcome modal (they came for a specific view, not the pitch).
+   * Returns true when a valid pose was applied.
+   */
+  private applyPostcardParam(token: string | null): boolean {
+    if (!token) return false;
+    try {
+      const pose = decodePostcardPose(token);
+      if (!pose) return false;
+      const env = this.scene.getEnvironmentCycle();
+      if (env) env.debugHour = pose.hour;
+      const cam = this.scene.getCamera();
+      this.scene.setCameraSuspended(true);
+      cam.position.set(pose.pos[0], pose.pos[1], pose.pos[2]);
+      cam.quaternion.set(pose.quat[0], pose.quat[1], pose.quat[2], pose.quat[3]);
+      cam.up.copy(cam.position).normalize(); // spherical world: up = radial
+      cam.updateMatrixWorld(true);
+      track('postcard_open');
+      // The pill helper appends its own "— tap to return" suffix; keep the
+      // label bare or the instruction doubles.
+      this.ui.showTimeOverridePill('📸 Postcard view', () => {
+        this.scene.setCameraSuspended(false);
+        if (env) env.debugHour = null;
+        try {
+          const sp = new URLSearchParams(location.search);
+          sp.delete('pc');
+          const q = sp.toString();
+          history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}`);
+        } catch {
+          /* ignore */
+        }
+      });
+      return true;
+    } catch {
+      return false;
     }
   }
 

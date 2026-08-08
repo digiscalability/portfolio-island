@@ -373,7 +373,7 @@ export class GameScene extends THREE.Scene {
   private guideRefreshAt: number = 0;
 
   // Collectible coins scattered across the meadows
-  private coins: Array<{ mesh: THREE.Mesh; respawnAt: number }> = [];
+  private coins: Array<{ mesh: THREE.Mesh; respawnAt: number; trail?: boolean }> = [];
   private coinsCollected = 0;
   private onCoinCollected?: (total: number) => void;
 
@@ -4977,6 +4977,59 @@ export class GameScene extends THREE.Scene {
       this.add(coin);
       this.coins.push({ mesh: coin, respawnAt: 0 });
     }
+    this.createArrivalTrail(geo, mat);
+  }
+
+  /**
+   * First-30-seconds quick win (engagement research: the highest-leverage,
+   * lowest-risk fix): a short breadcrumb of coins from the spawn point toward
+   * the nearest villager, so a brand-new visitor's very first minute is
+   * move → collect → arrive at a talking NPC. First visit only; trail coins
+   * never respawn; finishing the trail fires onArrivalTrail (flash + flag).
+   */
+  private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
+    try {
+      if (localStorage.getItem('ds_arrived') === '1') return; // returning visitor
+    } catch {
+      /* no storage — still show the trail */
+    }
+    const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
+    // Nearest villager to the spawn (npcTargets are seated by now).
+    let npcDir: THREE.Vector3 | null = null;
+    let best = Infinity;
+    for (const t of this.island.npcTargets ?? []) {
+      const d = t.position.clone().normalize().angleTo(spawnDir);
+      if (d > 0.04 && d < best) {
+        best = d;
+        npcDir = t.position.clone().normalize();
+      }
+    }
+    if (!npcDir) return;
+    const q = new THREE.Quaternion().setFromUnitVectors(spawnDir, npcDir);
+    const idQ = new THREE.Quaternion();
+    const step = new THREE.Quaternion();
+    const dir = new THREE.Vector3();
+    for (let i = 0; i < 5; i++) {
+      const t = 0.18 + (i / 4) * 0.6; // stop short of the NPC's toes
+      step.copy(idQ).slerp(q, t);
+      dir.copy(spawnDir).applyQuaternion(step).normalize();
+      const sampled = this.island.sampleSurfaceByDirection(dir, 0);
+      const coin = new THREE.Mesh(geo, mat);
+      coin.position.copy(sampled.position).addScaledVector(sampled.normal, 0.35);
+      coin.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
+      coin.rotateX(Math.PI / 2);
+      coin.castShadow = true;
+      coin.name = `trail_coin_${i}`;
+      this.add(coin);
+      this.coins.push({ mesh: coin, respawnAt: 0, trail: true });
+      this.trailCoinsLeft++;
+    }
+  }
+
+  private trailCoinsLeft = 0;
+  private onArrivalTrail: (() => void) | null = null;
+  public setOnArrivalTrail(cb: () => void): void {
+    this.onArrivalTrail = cb;
   }
 
   // ── Watercraft ────────────────────────────────────────────────────────
@@ -6670,8 +6723,10 @@ export class GameScene extends THREE.Scene {
         cu.collectT0 = time;
         // 120s (was 45s): a 45s cycle made the meadow an infinite coin farm, so
         // hat prices were a timer, not a choice. Slower respawn makes race +
-        // quest + delivery rewards the sane way to kit out.
-        c.respawnAt = time + 120;
+        // quest + delivery rewards the sane way to kit out. Arrival-trail
+        // coins are one-shot: respawnAt 0 means the respawn branch never fires.
+        c.respawnAt = c.trail ? 0 : time + 120;
+        if (c.trail && --this.trailCoinsLeft === 0) this.onArrivalTrail?.();
         // Streak-pitched chime: quick successive pickups climb a pentatonic
         // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
         // reward grammar. Only THIS site pitches; shop dings stay flat.
