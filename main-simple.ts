@@ -504,7 +504,11 @@ class SimpleApp {
           // instantly; when the persona's generated continuation arrives the
           // NPC simply keeps talking. Failures resolve silently — the
           // composed opening already stands on its own.
-          void askNpcOpening(npcData.name, aware).then((res) => {
+          // NPC memory: visitor facts ride the LLM-ONLY copy of the greeting
+          // (the displayed bubble stays clean) — the model naturally works
+          // "back after three days, still in that crown" into its reply.
+          // Facts are data inside the greeting quote, within the 300-char cap.
+          void askNpcOpening(npcData.name, this.withVisitorFacts(aware)).then((res) => {
             if (res.reply && !res.fallback) {
               this.ui.appendNpcChatLine(npcData.name, res.reply);
             }
@@ -568,6 +572,27 @@ class SimpleApp {
           localStorage.setItem('ds_visited', '1');
           env.debugHour = 10.5;
         }
+      } catch {
+        /* no storage */
+      }
+
+      // Last-seen heartbeat: read the PREVIOUS visit's timestamp before
+      // overwriting, then keep it fresh (60s interval + pagehide) so even a
+      // crashed tab records roughly when the visit ended. Powers the
+      // "while you were away" welcome delta; mirrored to the cloud profile
+      // (latest-wins) by syncProfile for future cross-device use.
+      try {
+        this.prevSeenAt = parseInt(localStorage.getItem('ds_last_seen') ?? '', 10) || 0;
+        const beat = () => {
+          try {
+            localStorage.setItem('ds_last_seen', String(Date.now()));
+          } catch {
+            /* no storage */
+          }
+        };
+        beat();
+        window.setInterval(beat, 60_000);
+        window.addEventListener('pagehide', beat);
       } catch {
         /* no storage */
       }
@@ -640,6 +665,28 @@ class SimpleApp {
           this.scene.addCoins(reward);
           this.ui.updateCoinCounter(this.scene.getCoinsCollected());
           this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
+          // ?race=&beat= challenge verdict (one-shot: cleared either way).
+          if (
+            this.raceChallenge &&
+            e.circuit === this.raceChallenge.kind &&
+            typeof e.timeSec === 'number'
+          ) {
+            const beaten = e.timeSec * 1000 < this.raceChallenge.ms;
+            window.setTimeout(
+              () =>
+                this.ui.flashMessage(
+                  beaten
+                    ? '🏆 Challenge beaten — send them YOUR time!'
+                    : '⚔️ Challenge stands — one more lap?',
+                ),
+              2000,
+            );
+            track('race_challenge_result', { beaten });
+            if (beaten) {
+              this.raceChallenge = null;
+              if (e.circuit) this.scene.setRaceChallenge(e.circuit, null);
+            }
+          }
           track('race_finish', {
             circuit: e.circuit ?? 'unknown',
             timeMs: Math.round((e.timeSec ?? 0) * 1000),
@@ -835,7 +882,9 @@ class SimpleApp {
         if (wantTour) this.startTour();
         else if (this.applyPostcardParam(sp.get('pc'))) {
           /* postcard view active — welcome deferred to its dismiss */
-        } else if (!this.openDeepLinkZone()) this.ui.showWelcome();
+        } else if (this.applyRaceChallengeParam(sp)) {
+          /* challenge accepted — guided straight to the start line */
+        } else if (!this.openDeepLinkZone()) this.ui.showWelcome(this.buildAwayDelta());
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -969,6 +1018,8 @@ class SimpleApp {
 
   /** True while a photo capture is composing, so P/📸 don't stack requests. */
   private capturing = false;
+  /** Previous visit's last heartbeat (epoch ms; 0 = first visit / unknown). */
+  private prevSeenAt = 0;
 
   /**
    * Photo mode: hide the HUD for one frame, capture the drawing buffer, brand
@@ -1086,6 +1137,82 @@ class SimpleApp {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * "While you were away" delta for the returning-visitor welcome card — the
+   * cheapest conversion of the already-living world into a felt reason to
+   * return. Built SYNCHRONOUSLY from what's cached (world state arrives via
+   * RTDB during the fly-in); the guestbook count patches in async. Null for
+   * first-timers and short gaps — the card stays as it was.
+   */
+  private buildAwayDelta(): import('./SimpleUI').AwayDelta | null {
+    const HOURS_12 = 12 * 3600 * 1000;
+    let welcomed = false;
+    try {
+      welcomed = localStorage.getItem('ds_welcomed') === '1';
+    } catch {
+      /* no storage */
+    }
+    if (!welcomed || !this.prevSeenAt || Date.now() - this.prevSeenAt < HOURS_12) return null;
+    const daysAway = Math.max(1, Math.round((Date.now() - this.prevSeenAt) / 86_400_000));
+    const ws = getWorldState();
+    // Island Times editions published since the last visit (YYYY-MM-DD days).
+    const sinceDay = new Date(this.prevSeenAt).toISOString().slice(0, 10);
+    const editions = (ws?.noticeArchive ?? []).filter((e) => e.day > sinceDay).length;
+    const prevSeen = this.prevSeenAt;
+    return {
+      daysAway,
+      editions,
+      headline: ws?.headline ?? null,
+      weather: ws?.weather ?? null,
+      guestbookSince: (async () => {
+        try {
+          const { getGuestbook } = await import('./Boards');
+          const entries = await getGuestbook(25);
+          return entries.filter((e) => e.t > prevSeen).length;
+        } catch {
+          return null;
+        }
+      })(),
+    };
+  }
+
+  /** ?race=land|water&beat=<ms> challenge link: guide straight to that start
+   *  line, arm a "beat their time" HUD target, and suppress the welcome pitch. */
+  private applyRaceChallengeParam(sp: URLSearchParams): boolean {
+    const kind = sp.get('race');
+    if (kind !== 'land' && kind !== 'water') return false;
+    const beat = parseInt(sp.get('beat') ?? '', 10);
+    this.raceChallenge = Number.isFinite(beat) && beat > 5000 ? { kind, ms: beat } : null;
+    this.scene.setRaceChallenge(kind, this.raceChallenge?.ms ?? null);
+    this.raceGuideTarget = this.scene.getRaceStartPosition(kind);
+    const label = kind === 'land' ? '🏞️ land circuit' : '🌊 water circuit';
+    this.ui.flashMessage(
+      this.raceChallenge
+        ? `🏁 Challenge: beat ${(this.raceChallenge.ms / 1000).toFixed(1)}s on the ${label}!`
+        : `🏁 Race challenge — follow the compass to the ${label}!`,
+    );
+    track('race_challenge_open');
+    return true;
+  }
+
+  private raceChallenge: { kind: 'land' | 'water'; ms: number } | null = null;
+
+  /** Append return-visit facts to an NPC greeting's LLM copy (never the
+   *  displayed text). Kept short — the server clamps openings to 300 chars. */
+  private withVisitorFacts(aware: string): string {
+    const facts: string[] = [];
+    if (this.prevSeenAt) {
+      const days = Math.round((Date.now() - this.prevSeenAt) / 86_400_000);
+      if (days >= 1) facts.push(`returning after ${days} day${days > 1 ? 's' : ''} away`);
+    }
+    if (this.equippedHat) {
+      const hat = this.hatCatalog.find((h) => h.id === this.equippedHat);
+      if (hat) facts.push(`wearing the ${hat.name}`);
+    }
+    if (!facts.length) return aware;
+    return `${aware} (The traveller is ${facts.join(', ')}.)`.slice(0, 300);
   }
 
   /**
@@ -2432,6 +2559,10 @@ class SimpleApp {
       catFeed: this.catFeed,
       fishFeed: this.fishFeed,
       colors: this.currentColorsHex(),
+      // Latest-wins by construction (this session IS the latest activity);
+      // the "away" card reads the local ds_last_seen — this field is for
+      // future cross-device deltas.
+      lastSeen: Date.now(),
     });
   }
 

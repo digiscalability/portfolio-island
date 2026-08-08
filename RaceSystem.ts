@@ -69,6 +69,11 @@ export class RaceSystem {
   private lastDir = new THREE.Vector3();
   private pulse = 0;
   private best: Record<CircuitKind, number | null> = { land: null, water: null };
+  /** ?race=&beat= challenge target — woven into the HUD lines while set. */
+  private challenge: { kind: CircuitKind; ms: number } | null = null;
+  public setChallenge(kind: CircuitKind, ms: number | null): void {
+    this.challenge = ms != null ? { kind, ms } : null;
+  }
 
   // scratch
   private _dir = new THREE.Vector3();
@@ -274,9 +279,15 @@ export class RaceSystem {
         this.arm(circuitKind);
       } else {
         const b = this.best[circuitKind];
+        const chal = this.challenge?.kind === circuitKind ? this.challenge.ms / 1000 : null;
         this.onHud?.({
           line1: `🏁 ${circuitKind === 'land' ? 'Land' : 'Water'} circuit — drive through the ring to start`,
-          line2: b != null ? `Best ${formatTime(b)}` : `${c.dirs.length} checkpoints`,
+          line2:
+            chal != null
+              ? `⚔️ Beat ${formatTime(chal)}${b != null ? ` · your best ${formatTime(b)}` : ''}`
+              : b != null
+                ? `Best ${formatTime(b)}`
+                : `${c.dirs.length} checkpoints`,
         });
       }
     } else if (this.state === 'running') {
@@ -299,9 +310,16 @@ export class RaceSystem {
       if (this.state === 'running') {
         const elapsed = (performance.now() - this.startT) / 1000;
         const cp = this.nextIdx === 0 ? c.dirs.length - 1 : this.nextIdx - 1;
+        const chal = this.challenge?.kind === circuitKind ? this.challenge.ms / 1000 : null;
         this.onHud?.({
           line1: `🏁 ${formatTime(elapsed)}`,
-          line2: `CP ${cp}/${c.dirs.length - 1}${this.best[circuitKind] != null ? ` · best ${formatTime(this.best[circuitKind]!)}` : ''}`,
+          line2: `CP ${cp}/${c.dirs.length - 1}${
+            chal != null
+              ? ` · ⚔️ beat ${formatTime(chal)}`
+              : this.best[circuitKind] != null
+                ? ` · best ${formatTime(this.best[circuitKind]!)}`
+                : ''
+          }`,
         });
       }
     }

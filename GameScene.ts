@@ -8912,6 +8912,11 @@ export class GameScene extends THREE.Scene {
     return this.races?.getStartPosition(kind) ?? null;
   }
 
+  /** Arm (or clear) a ?race=&beat= challenge target on the race HUD. */
+  public setRaceChallenge(kind: 'land' | 'water', ms: number | null): void {
+    this.races?.setChallenge(kind, ms);
+  }
+
   // Tour mode drives the camera directly along a cinematic rail; the orbit
   // follow-cam must not fight it, so its per-frame update is suspended while
   // the rail runs. The world (NPCs, sea, activities) keeps running throughout.

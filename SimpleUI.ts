@@ -37,6 +37,16 @@ export function hapticPulse(ms: number): void {
  * SimpleUI - Simplified UI manager for the basic app
  * Handles loading screen, welcome message, interaction prompts, and FPS display
  */
+/** "While you were away" payload for the returning-visitor welcome card. */
+export interface AwayDelta {
+  daysAway: number;
+  editions: number;
+  headline: string | null;
+  weather: string | null;
+  /** Resolves to the number of guestbook signatures since last visit. */
+  guestbookSince: Promise<number | null>;
+}
+
 /** Data contract for the Island Journal — main-simple supplies a provider. */
 export interface JournalData {
   stamps: Array<{ icon: string; label: string; has: boolean }>;
@@ -711,9 +721,13 @@ export class SimpleUI {
     const shareRow = document.createElement('div');
     shareRow.style.cssText = 'margin-top:14px;';
     shareRow.appendChild(
-      this.makeShareButton('📣 Share your time', {
+      this.makeShareButton('📣 Challenge a friend', {
         surface: 'race_finish',
-        url: buildShareUrl(),
+        // The link carries the gauntlet: recipients land guided to this
+        // circuit's start line with "beat <time>" on their race HUD.
+        url: buildShareUrl(
+          playerTimeMs != null ? { race: circuit, beat: playerTimeMs } : { race: circuit },
+        ),
         title: 'DigiScalability Life Island',
         text:
           playerTimeMs != null
@@ -2534,7 +2548,7 @@ export class SimpleUI {
   /**
    * Show welcome message
    */
-  showWelcome(): void {
+  showWelcome(awayDelta?: AwayDelta | null): void {
     if (!this.welcomeDiv) {
       this.welcomeDiv = document.createElement('div');
       Object.assign(this.welcomeDiv.style, {
@@ -2602,8 +2616,24 @@ export class SimpleUI {
           🏁 Beat the lap record</button>
       </div>`;
 
+    // "While you were away": the living world's deltas, so a return visit is
+    // GREETED with what changed rather than the same static card. Weather
+    // glyph + headline are whatever's cached; the guestbook count patches in
+    // asynchronously below.
+    const WGLYPH: Record<string, string> = { rain: '🌧️', snow: '❄️', cloudy: '⛅', clear: '☀️' };
+    const awayHtml = awayDelta
+      ? `<div style="margin:0 0 12px; padding:10px 12px; border-radius:10px;
+           background:rgba(80,130,255,0.10); border:1px solid rgba(120,160,255,0.25);
+           font-size:13px; line-height:1.55; text-align:left;">
+           <div style="font-weight:600; color:#8a9bff; margin-bottom:2px;">While you were away (${awayDelta.daysAway}d)</div>
+           ${awayDelta.editions > 0 ? `📰 ${awayDelta.editions} new edition${awayDelta.editions > 1 ? 's' : ''} of the Island Times<br>` : ''}
+           ${awayDelta.headline ? `🏝️ ${awayDelta.headline} ${awayDelta.weather ? (WGLYPH[awayDelta.weather] ?? '') : ''}<br>` : ''}
+           <span id="wlc-gb">✍️ checking the guestbook…</span>
+         </div>`
+      : '';
     this.welcomeDiv.innerHTML = returning
-      ? `<h2 style="margin: 0 0 14px 0; color: #4CAF50;">👋 Welcome back!</h2>
+      ? `<h2 style="margin: 0 0 12px 0; color: #4CAF50;">👋 Welcome back!</h2>
+         ${awayHtml}
          ${ctaRow}
          ${secondaryRow}
          <p style="margin:0; font-size:12px; color:#9aa;">Dive back in — this closes on its own.</p>`
@@ -2667,7 +2697,21 @@ export class SimpleUI {
     });
 
     document.addEventListener('keydown', onEscape);
-    if (returning) window.setTimeout(closeWelcome, 2600);
+    // The delta card earns a longer look; the plain welcome-back stays snappy.
+    if (returning) window.setTimeout(closeWelcome, awayDelta ? 5600 : 2600);
+    // Patch the guestbook line in when the async count lands (line vanishes on
+    // failure/zero — never show a broken stat).
+    if (awayDelta) {
+      void awayDelta.guestbookSince.then((n) => {
+        const el = this.welcomeDiv?.querySelector('#wlc-gb');
+        if (!el) return;
+        if (n != null && n > 0) {
+          el.textContent = `✍️ ${n} traveller${n > 1 ? 's' : ''} signed the guestbook`;
+        } else {
+          (el as HTMLElement).style.display = 'none';
+        }
+      });
+    }
   }
 
   /**

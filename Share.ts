@@ -13,6 +13,9 @@ export interface ShareParams {
   hour?: number | null;
   /** Postcard pose (encodePostcardPose) — the recipient lands on this view. */
   pc?: string | null;
+  /** Race-challenge link: circuit + the time (ms) the recipient must beat. */
+  race?: 'land' | 'water' | null;
+  beat?: number | null;
 }
 
 /**
@@ -70,6 +73,10 @@ export function buildShareUrl(params: ShareParams = {}): string {
   }
   if (params.hour != null) out.set('hour', String(Math.round(params.hour * 10) / 10));
   if (params.pc != null) out.set('pc', params.pc);
+  if (params.race != null) {
+    out.set('race', params.race);
+    if (params.beat != null) out.set('beat', String(Math.round(params.beat)));
+  }
   if (params.zone != null) {
     // Zone shares use the /z/<zone> path: a serverless route serves
     // zone-specific OG tags to link scrapers, then bounces humans to /?zone=.

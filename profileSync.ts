@@ -18,6 +18,8 @@ export interface Profile {
   fishFeed?: number;
   /** Body colours as hex strings, keyed by part (outfit/pants/hair/skin). */
   colors?: Record<string, string>;
+  /** Last visit epoch ms (latest-wins merge) — powers return-visit deltas. */
+  lastSeen?: number;
 }
 
 let saveTimer: number | undefined;
