@@ -94,12 +94,35 @@ export class OrbitCamera {
       v && a11y.reducedMotion ? this._reducedVel.copy(v).multiplyScalar(0.25) : v;
   }
 
-  /** Pull the camera back a little for driving; restore on foot. */
+  // Look-ahead state (see updateCameraPosition) + the ride FOV ease.
+  private lookAhead = new THREE.Vector3();
+  private _lookAheadTarget = new THREE.Vector3();
+  private baseFov = 0; // captured on first ride; 0 = fov untouched so far
+  private fovTarget = 0;
+
+  /** Pull the camera back a little for driving; restore on foot. Also eases
+   *  the FOV out a touch while riding (speed reads as speed) — skipped under
+   *  reduced motion, and a no-op for non-perspective cameras. */
   public setRideMode(on: boolean): void {
     if (on === this.rideMode) return;
     this.rideMode = on;
     this.distance = on ? OrbitCamera.RIDE_DISTANCE : OrbitCamera.WALK_DISTANCE;
     this.height = on ? OrbitCamera.RIDE_HEIGHT : OrbitCamera.WALK_HEIGHT;
+    const cam = this.camera as THREE.PerspectiveCamera;
+    if (!cam.isPerspectiveCamera || a11y.reducedMotion) return;
+    if (!this.baseFov) this.baseFov = cam.fov;
+    this.fovTarget = on ? this.baseFov + 6 : this.baseFov;
+  }
+
+  /** Per-frame FOV ease toward fovTarget (frame-rate independent). */
+  private updateFov(deltaTime: number): void {
+    const cam = this.camera as THREE.PerspectiveCamera;
+    if (!cam.isPerspectiveCamera || this.fovTarget === 0) return;
+    const next = this.fovTarget + (cam.fov - this.fovTarget) * Math.exp(-4 * deltaTime);
+    if (Math.abs(next - cam.fov) > 0.01) {
+      cam.fov = next;
+      cam.updateProjectionMatrix();
+    }
   }
 
   /**
@@ -147,11 +170,24 @@ export class OrbitCamera {
       const vel = this.externalVelocity ? this.externalVelocity.clone() : this.player.getVelocity();
       const vTangent = vel.sub(surfaceNormal.clone().multiplyScalar(vel.dot(surfaceNormal)));
       if (vTangent.lengthSq() > 0.25) {
-        const desired = vTangent.normalize().negate(); // behind the motion
+        const desired = vTangent.clone().normalize().negate(); // behind the motion
         const strength = this.rideMode ? this.followStrength * 1.8 : this.followStrength;
         const k = Math.min(1, strength * deltaTime);
         this.followDir.lerp(desired, k).normalize();
       }
+      // Velocity look-ahead: bias the look target along the (tangent-plane)
+      // motion so the camera frames where you're GOING, not where you are.
+      // Spring-smoothed via frame-rate-independent decay — raw velocity would
+      // twitch the frame on every collision nudge. Reduced motion trims it
+      // the same way setFollowVelocity does.
+      const aheadCap = this.rideMode ? 2.4 : 1.4;
+      const scale = a11y.reducedMotion ? 0.25 : 1;
+      this._lookAheadTarget
+        .copy(vTangent)
+        .multiplyScalar(0.16 * scale)
+        .clampLength(0, aheadCap * scale);
+      const lk = 1 - Math.exp(-3.5 * deltaTime);
+      this.lookAhead.lerp(this._lookAheadTarget, lk);
     }
 
     // --- Build the camera ray (pitch around the tangent right axis) ---
@@ -159,8 +195,11 @@ export class OrbitCamera {
     const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, this.pitch);
     const cameraDir = this.followDir.clone().applyQuaternion(pitchQuat).normalize();
 
-    // Target point: player + up*height (toward torso level)
-    this.targetPosition.copy(playerPos).addScaledVector(surfaceNormal, this.height * 0.5);
+    // Target point: player + up*height (toward torso level) + look-ahead
+    this.targetPosition
+      .copy(playerPos)
+      .addScaledVector(surfaceNormal, this.height * 0.5)
+      .add(this.lookAhead);
 
     // Camera collision: pull in when terrain or a building blocks the view ray
     let effectiveDistance = this.distance;
@@ -231,6 +270,9 @@ export class OrbitCamera {
 
     // Update camera position
     this.updateCameraPosition(safeDeltaTime);
+
+    // Ride FOV ease (no-op until the first ride; reduced-motion never arms it)
+    this.updateFov(safeDeltaTime);
 
     // Smooth transition of camera
     const currentCamPos = new THREE.Vector3();

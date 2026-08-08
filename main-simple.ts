@@ -9,6 +9,7 @@ import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
+import { tick as juiceTick } from './Juice';
 import { Multiplayer } from './Multiplayer';
 import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
@@ -1233,6 +1234,11 @@ class SimpleApp {
     // Update FPS counter
     this.updateFPS(deltaTime);
 
+    // Juice kernel: advance all micro-tweens (hat pops, squash-stretch,
+    // pickup ceremonies). Here, not GameScene.update — this always runs
+    // (interior mode early-returns would freeze a mid-pop tween).
+    juiceTick(deltaTime);
+
     // Completion meter: recompute on a slow cadence (plus immediately at each
     // flag site) so passport stamps landed elsewhere still surface here.
     this.completionAccum += deltaTime;
@@ -1504,7 +1510,18 @@ class SimpleApp {
     }
 
     // Rain ambience follows the live weather (no-op unless the level changes)
-    sfx.setRainLevel(this.scene.getEnvironmentCycle()?.getWeather() === 'rain' ? 1 : 0);
+    const envCycle = this.scene.getEnvironmentCycle();
+    const weather = envCycle?.getWeather() ?? 'clear';
+    sfx.setRainLevel(weather === 'rain' ? 1 : 0);
+
+    // Wind bed: always breathing faintly, stronger under weather. Birdsong:
+    // sparse chirps in fair daylight only — the missing ambience layer the
+    // deep-dive flagged (we had the rare voice layer and lacked the common one).
+    const day = envCycle?.getDayFactor() ?? 1;
+    const windByWeather =
+      weather === 'rain' ? 1 : weather === 'snow' ? 0.7 : weather === 'cloudy' ? 0.65 : 0.35;
+    sfx.setWindLevel(windByWeather);
+    sfx.setBirdsong(day > 0.35 && (weather === 'clear' || weather === 'cloudy'));
 
     // Ambient sea swell — a distant murmur inland, coastal near the shore,
     // full when in the water (quantised so setSeaLevel only fires on changes).

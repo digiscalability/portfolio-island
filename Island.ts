@@ -141,6 +141,10 @@ export class Island {
   // grass push-aside shader. Default at planet centre → every blade is ~radius
   // away → zero push until someone wires setGrassPlayerPosition.
   public grassPlayerUniform: { value: THREE.Vector3 } = { value: new THREE.Vector3() };
+  // A TRAILING copy of the player position (CPU-smoothed by GameScene, ~0.4s
+  // behind). The shader pushes blades away from BOTH points and takes the max,
+  // so a walked path stays parted briefly and recovers as the trail catches up.
+  public grassPlayerPrevUniform: { value: THREE.Vector3 } = { value: new THREE.Vector3() };
   // Sky-horizon colour for the sea's fresnel reflection. Defaults to the day
   // horizon blue; bindSeaSkyColor swaps in EnvironmentCycle's live Color so
   // the water tracks dusk/night with zero per-frame plumbing.
@@ -206,9 +210,11 @@ export class Island {
   }
 
   /** Per-frame: copy the player's world position into the grass push uniform
-   *  (island-local == world — the root group sits at origin). No allocation. */
-  public setGrassPlayerPosition(pos: THREE.Vector3): void {
+   *  (island-local == world — the root group sits at origin). `trail` is the
+   *  smoothed trailing point (recovery-over-time). No allocation. */
+  public setGrassPlayerPosition(pos: THREE.Vector3, trail?: THREE.Vector3): void {
     this.grassPlayerUniform.value.copy(pos);
+    if (trail) this.grassPlayerPrevUniform.value.copy(trail);
   }
 
   /** Share EnvironmentCycle's live horizon Color BY REFERENCE so the sea's
@@ -405,15 +411,16 @@ export class Island {
       : new THREE.MeshToonMaterial({
           vertexColors: true,
           side: THREE.DoubleSide,
-          gradientMap: Materials.createGradientMap(),
+          gradientMap: Materials.toonRamp(), // shared: the meadow bands like the world
         });
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.grassTimeUniform;
       shader.uniforms.uPlayerPos = this.grassPlayerUniform;
+      shader.uniforms.uPlayerPrev = this.grassPlayerPrevUniform;
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
-          '#include <common>\nuniform float uTime;\nuniform vec3 uPlayerPos;',
+          '#include <common>\nuniform float uTime;\nuniform vec3 uPlayerPos;\nuniform vec3 uPlayerPrev;',
         )
         .replace(
           '#include <begin_vertex>',
@@ -437,6 +444,12 @@ export class Island {
             // the instance scale only jitters the radius by ±20%, fine.
             '  vec3 gAway = transpose(mat3(instanceMatrix)) * (instanceMatrix[3].xyz - uPlayerPos);',
             '  float gPush = max(0.0, 1.0 - length(gAway) / 1.2);',
+            // Trailing push: same bend from the CPU-smoothed trail point (~0.4s
+            // behind). max() of the two = the walked path stays parted a beat
+            // and RECOVERS as the trail catches up — bend with a memory.
+            '  vec3 gAway2 = transpose(mat3(instanceMatrix)) * (instanceMatrix[3].xyz - uPlayerPrev);',
+            '  float gPush2 = max(0.0, 1.0 - length(gAway2) / 1.2) * 0.7;',
+            '  if (gPush2 > gPush) { gAway = gAway2; gPush = gPush2; }',
             `  transformed.xz += normalize(gAway.xz + vec2(1e-4)) * (gPush * gPush * 0.18) * (position.y / ${BLADE_H});`,
             '#endif',
           ].join('\n'),

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
 import { applyCelRim } from './CelLook';
+import { easeOutBack, tween as juiceTween } from './Juice';
 import { Materials } from './Materials';
 import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
 
@@ -403,10 +404,15 @@ export class SimplePlayer extends THREE.Group {
     if (!id) return;
     const hat = SimplePlayer.buildHat(id);
     // Head bone: crown of the head is ~0.34 above the bone origin.
-    // Fallback group: head sphere top is ~0.94.
+    // Fallback group: head sphere top is ~0.95.
     hat.position.set(0, this.gltfModel ? 0.36 : 0.95, 0);
     parent.add(hat);
     this.currentHat = hat;
+    // Equip ceremony: the hat scale-pops in with a settle (easeOutBack) —
+    // pure root-scale tween, no bones touched.
+    const base = hat.scale.x;
+    hat.scale.setScalar(0.01);
+    juiceTween(0.32, easeOutBack, (v) => hat.scale.setScalar(Math.max(0.01, base * v)));
   }
 
   // Base model loaded once, then skeleton-cloned per remote player.

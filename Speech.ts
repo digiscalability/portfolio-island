@@ -9,6 +9,8 @@
 // calls speak(text, ...) — whether that line gets a premium voice is decided
 // here, and the browser voice remains the permanent, free fallback.
 
+import { sfx } from './Sfx'; // duckForVoice: the sfx bus steps back under speech
+
 // ── shared ──────────────────────────────────────────────────────────────────
 function ttsSupported(): boolean {
   return (
@@ -139,6 +141,7 @@ export function setSpeechEnabled(on: boolean): void {
 }
 export function cancelSpeech(): void {
   speakGen++; // invalidate any playCloud still awaiting its fetch
+  sfx.duckForVoice(false); // whatever was speaking, the bed comes back
   stopCloudAudio();
   if (ttsSupported()) {
     try {
@@ -230,7 +233,9 @@ async function playCloud(
         cloudSrc = src;
         src.onended = () => {
           if (cloudSrc === src) cloudSrc = null;
+          sfx.duckForVoice(false);
         };
+        sfx.duckForVoice(true); // sfx bus steps back while the NPC speaks
         src.start();
         return;
       }
@@ -247,7 +252,9 @@ async function playCloud(
       cloudAudioEl = a;
       a.addEventListener('ended', () => {
         if (cloudAudioEl === a) cloudAudioEl = null;
+        sfx.duckForVoice(false);
       });
+      sfx.duckForVoice(true);
       await a.play();
       return;
     } catch {
@@ -370,6 +377,7 @@ function compressBufferSilences(ctx: AudioContext, buf: AudioBuffer): AudioBuffe
 }
 
 function stopCloudAudio(): void {
+  sfx.duckForVoice(false);
   if (cloudSrc) {
     try {
       cloudSrc.stop();
@@ -418,6 +426,10 @@ function speakLocal(text: string, rate = 1, pitch = 1, variant = 0): void {
     u.pitch = pitch;
     // speechSynthesis can't route through the master bus — mirror its volume.
     u.volume = Math.max(0, Math.min(1, masterVolume()));
+    // Duck the sfx bus for the utterance's duration (Chrome fires onend for
+    // cancelled utterances too; cancelSpeech unducks belt-and-braces).
+    u.onstart = () => sfx.duckForVoice(true);
+    u.onend = () => sfx.duckForVoice(false);
     window.speechSynthesis.speak(u);
   } catch {
     /* speech failure never breaks the chat */

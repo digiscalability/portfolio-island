@@ -5,6 +5,7 @@ import { addGroupHulls, updateCelRim } from './CelLook';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { Island } from './Island';
+import { expDecayV3, squash } from './Juice';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
 import * as NpcActivities from './NpcActivities';
@@ -491,6 +492,11 @@ export class GameScene extends THREE.Scene {
   private static readonly _ambientDay = new THREE.Color(0xfff6e8);
   private static readonly _ambientNight = new THREE.Color(0x2c3a5e);
   private static readonly _celSunDir = new THREE.Vector3();
+  private static readonly _grassLive = new THREE.Vector3();
+  private static readonly _grassTrail = new THREE.Vector3();
+  // Pickup-streak state for the pentatonic coin chime (see the collect site)
+  private coinStreak = 0;
+  private lastCoinAt = -10;
   private static readonly _cloudClear = new THREE.Color(0xffffff);
   private static readonly _cloudStorm = new THREE.Color(0x8a95a5);
   private static readonly _cloudDusk = new THREE.Color(0xffc9a0);
@@ -1687,6 +1693,10 @@ export class GameScene extends THREE.Scene {
       bird.rotateY(heading);
       bird.name = `ground_bird_${i}`;
       this.add(bird);
+      // Cel ink (no-op under ?theme=real). Ground birds only — they're the
+      // ones the player feeds up close; the flying flocks stay ink-less
+      // (distant, and their roost shrink reads cleaner without hull mass).
+      addGroupHulls(bird, 0.035);
       // Flushed flight heads along a fixed tangent (away from the island
       // interior reads best: use the local east tangent, varied per bird).
       const away = new THREE.Vector3()
@@ -6415,6 +6425,9 @@ export class GameScene extends THREE.Scene {
           ) {
             data.greetT0 = time;
             data.lastGreetAt = time;
+            // Greet ceremony: a happy squash-stretch rides the existing hop
+            // (root scale only — bones untouched, restores exactly).
+            squash(npc.meshRef, 0.14, 0.3);
             // Aware proximity greeting: AI townsfolk SPEAK first — a bubble +
             // voice line composed from live state (their planner-assigned
             // activity, the hour, the day-theme). Throttled per NPC; one
@@ -6462,6 +6475,16 @@ export class GameScene extends THREE.Scene {
 
       // Grass wind (GPU-side — just advance the shared uniform)
       this.island.grassTimeUniform.value = time;
+      // Grass push-aside: live player position + a smoothed trailing point
+      // (~0.4s behind, frame-rate-independent) so the walked path parts and
+      // recovers. This was authored in the shader but NEVER wired — the
+      // uniform sat at the planet centre, zero push.
+      this.player.getWorldPositionInto(GameScene._grassLive);
+      if (GameScene._grassTrail.lengthSq() < 1) {
+        GameScene._grassTrail.copy(GameScene._grassLive); // first frame: snap
+      }
+      expDecayV3(GameScene._grassTrail, GameScene._grassLive, 2.6, deltaTime);
+      this.island.setGrassPlayerPosition(GameScene._grassLive, GameScene._grassTrail);
     }
 
     // Sea waves (GPU-side + shared with the CPU swim/boat sampler) + the tide
@@ -6630,7 +6653,18 @@ export class GameScene extends THREE.Scene {
       }
       this._npcNormal.copy(c.mesh.position).normalize();
       c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 2.5);
-      if (c.mesh.position.distanceToSquared(playerPos) < 0.9) {
+      // Magnet: within ~2.1u the coin leans toward the player — the pickup
+      // starts ANSWERING before it lands (anticipation beat of the ceremony).
+      // Near-misses ease back to their seat so no coin is left stranded.
+      const d2 = c.mesh.position.distanceToSquared(playerPos);
+      if (d2 < 4.4 && d2 >= 0.9) {
+        if (!cu.homePos) cu.homePos = c.mesh.position.clone();
+        const pull = (1 - d2 / 4.4) * 4.5 * deltaTime;
+        c.mesh.position.lerp(playerPos, Math.min(0.25, pull));
+      } else if (d2 >= 4.4 && cu.homePos && c.mesh.position.distanceToSquared(cu.homePos) > 1e-4) {
+        c.mesh.position.lerp(cu.homePos, Math.min(1, 6 * deltaTime));
+      }
+      if (d2 < 0.9) {
         if (!cu.homePos) cu.homePos = c.mesh.position.clone();
         cu.homePos.copy(c.mesh.position);
         cu.collectT0 = time;
@@ -6638,7 +6672,12 @@ export class GameScene extends THREE.Scene {
         // hat prices were a timer, not a choice. Slower respawn makes race +
         // quest + delivery rewards the sane way to kit out.
         c.respawnAt = time + 120;
-        sfx.coin();
+        // Streak-pitched chime: quick successive pickups climb a pentatonic
+        // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
+        // reward grammar. Only THIS site pitches; shop dings stay flat.
+        this.coinStreak = time - this.lastCoinAt < 2.5 ? this.coinStreak + 1 : 0;
+        this.lastCoinAt = time;
+        sfx.coin(this.coinStreak);
         this.coinsCollected++;
         try {
           localStorage.setItem('ds_coins', String(this.coinsCollected));

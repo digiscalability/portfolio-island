@@ -100,9 +100,11 @@ export class Sfx {
     };
   }
 
-  /** Soft grass scuff, alternating left/right foot timbre. */
+  /** Soft grass scuff, alternating left/right foot timbre. ±8% frequency
+   *  jitter — identical repeated samples read as a machine, not feet. */
   public footstep(altFoot: boolean): void {
-    this.hiss(0.055, 0.09, altFoot ? 680 : 520);
+    const jitter = 0.92 + Math.random() * 0.16;
+    this.hiss(0.055, 0.09, (altFoot ? 680 : 520) * jitter);
   }
 
   /**
@@ -145,9 +147,13 @@ export class Sfx {
     this.tone(440, 480, 0.045, 'square', 0.04);
   }
 
-  /** Bright little ping for grabbing a meadow coin. */
-  public coin(): void {
-    this.tone(988, 1319, 0.09, 'sine', 0.1);
+  /** Bright little ping for grabbing a meadow coin. `step` climbs a
+   *  pentatonic ladder on pickup streaks (the classic collect-a-thon
+   *  ascending chime); flat callers (shop dings) pass nothing. */
+  private static readonly COIN_LADDER = [784, 880, 988, 1175, 1319, 1568, 1760, 1976];
+  public coin(step = 0): void {
+    const f = Sfx.COIN_LADDER[Math.min(step, Sfx.COIN_LADDER.length - 1)];
+    this.tone(f, f * 1.33, 0.09, 'sine', 0.1);
   }
 
   /** Water entry: a downward plip + a short foam hiss. */
@@ -201,6 +207,101 @@ export class Sfx {
     this.rainGain.gain.cancelScheduledValues(t);
     this.rainGain.gain.setValueAtTime(this.rainGain.gain.value, t);
     this.rainGain.gain.linearRampToValueAtTime(0.09 * level, t + 1.5);
+  }
+
+  private windGain: GainNode | null = null;
+  private windLevel = -1;
+
+  /**
+   * Looping wind bed: low band-passed noise with a slow gust LFO — the
+   * missing ambience layer every polished game in the class ships. Level
+   * 0..1; ramps over 1.5s. Safe to call every frame.
+   */
+  public setWindLevel(level: number): void {
+    if (level === this.windLevel) return;
+    const ctx = this.ctxOrNull;
+    if (!ctx) return;
+    if (!this.windGain) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.ensureNoise(ctx);
+      src.loop = true;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 420;
+      bp.Q.value = 0.55;
+      this.windGain = ctx.createGain();
+      this.windGain.gain.value = 0;
+      // Gust LFO: slow sine wobbles the bed gain so the wind breathes
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 0.07;
+      const lfoDepth = ctx.createGain();
+      lfoDepth.gain.value = 0.016;
+      lfo.connect(lfoDepth);
+      lfoDepth.connect(this.windGain.gain);
+      lfo.start();
+      src.connect(bp);
+      bp.connect(this.windGain);
+      this.windGain.connect(this.ensureMaster(ctx));
+      src.start();
+    }
+    this.windLevel = level;
+    const t = ctx.currentTime;
+    this.windGain.gain.cancelScheduledValues(t);
+    this.windGain.gain.setValueAtTime(this.windGain.gain.value, t);
+    this.windGain.gain.linearRampToValueAtTime(0.05 * level, t + 1.5);
+  }
+
+  private birdsongOn = false;
+  private birdsongTimer: number | undefined;
+
+  /**
+   * Sparse synthesized birdsong: random 2-4 note descending chirps every
+   * 3-10s while enabled (daytime, fair weather — the driver decides). The
+   * chirps are one-shot tones through the master bus, so mute/volume apply.
+   */
+  public setBirdsong(on: boolean): void {
+    if (on === this.birdsongOn) return;
+    this.birdsongOn = on;
+    if (!on) {
+      if (this.birdsongTimer) clearTimeout(this.birdsongTimer);
+      this.birdsongTimer = undefined;
+      return;
+    }
+    const schedule = () => {
+      this.birdsongTimer = window.setTimeout(
+        () => {
+          if (!this.birdsongOn) return;
+          const notes = 2 + Math.floor(Math.random() * 3);
+          const base = 2300 + Math.random() * 1100;
+          for (let i = 0; i < notes; i++) {
+            window.setTimeout(
+              () => {
+                if (this.birdsongOn) {
+                  const f = base * (1 - i * 0.12) * (0.96 + Math.random() * 0.08);
+                  this.tone(f, f * 0.82, 0.09, 'sine', 0.018);
+                }
+              },
+              i * (90 + Math.random() * 50),
+            );
+          }
+          schedule();
+        },
+        3000 + Math.random() * 7000,
+      );
+    };
+    schedule();
+  }
+
+  private ducked = false;
+
+  /** Duck the whole sfx bus (beds + one-shots) under NPC voice so speech
+   *  owns the foreground; restore when the line ends. Idempotent. */
+  public duckForVoice(on: boolean): void {
+    if (on === this.ducked) return;
+    this.ducked = on;
+    const ctx = this.ctxOrNull;
+    if (!ctx || !this.master) return; // nothing audible to duck yet
+    this.master.gain.setTargetAtTime(on ? 0.18 : 0.5, ctx.currentTime, on ? 0.1 : 0.35);
   }
 
   private seaGain: GainNode | null = null;
