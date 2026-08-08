@@ -777,8 +777,14 @@ export class GameScene extends THREE.Scene {
       // Warm light pools under the lamps (needs both lamp populations placed)
       this.createLampLightPools();
 
-      // Scatter low-poly toon props (Blender-exported glb) correctly onto the sphere
-      await this.scatterProps();
+      // Scatter low-poly toon props (Blender-exported glb) correctly onto the
+      // sphere. Fire-and-forget (was awaited): a network fetch + GLTF parse has
+      // no business blocking ready() — the rocks are decorative, register no
+      // colliders, and everything from here to restoreRandom() is synchronous,
+      // so the continuation always lands AFTER the seeded window closes (rock
+      // yaw/scale draw from true randomness — per-client variance on props
+      // that were never part of the shared deterministic world).
+      void this.scatterProps();
 
       // Handle window resize
       window.addEventListener('resize', () => this.onWindowResize());
@@ -1154,28 +1160,94 @@ export class GameScene extends THREE.Scene {
     return { bird, wingL, wingR, tail, legs };
   }
 
+  /** Tail geometry per joint, shared across every cat (6 cats × 5 joints — no
+   *  per-cat allocations, and CLAUDE.md flags GPU disposal as a live concern).
+   *  Each joint carries ONE merged mesh: a tapered cylinder spanning pivot to
+   *  pivot plus an "elbow" sphere centred exactly on the NEXT joint's pivot —
+   *  the sphere radius equals both adjoining segment radii, so bends stay
+   *  continuous (rotation happens about the sphere's centre). This replaces the
+   *  old bead spheres, which didn't even touch at the outer pairs. */
+  private static catTailGeos: THREE.BufferGeometry[] | null = null;
+  /** Shared sock cuff geometry (one per coat-contrasting paw, 4 per cat). */
+  private static readonly catSockGeo = new THREE.CylinderGeometry(0.019, 0.017, 0.032, 5);
+  private static tailGeos(): THREE.BufferGeometry[] {
+    if (GameScene.catTailGeos) return GameScene.catTailGeos;
+    // 6 radii bounding 5 segments, base→tip; last elbow doubles as a bulbed tip.
+    const R = [0.03, 0.026, 0.022, 0.017, 0.012, 0.009];
+    const geos: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < R.length - 1; i++) {
+      // radiusTop faces +Y; rotateX(+90°) maps +Y onto local +Z (tailward), so
+      // the NARROW end (R[i+1]) must be the top for the taper to point tipward.
+      const cyl = new THREE.CylinderGeometry(R[i + 1], R[i], 0.045, 6, 1);
+      cyl.rotateX(Math.PI / 2);
+      cyl.translate(0, 0, 0.0225); // span z 0 → 0.045, exactly pivot-to-pivot
+      const elbow = new THREE.SphereGeometry(R[i + 1], 6, 5);
+      elbow.translate(0, 0, 0.045); // centred ON the next joint's pivot
+      geos.push(mergeGeometries([cyl, elbow], false));
+      cyl.dispose();
+      elbow.dispose();
+    }
+    GameScene.catTailGeos = geos;
+    return geos;
+  }
+
   /** One low-poly cat. Forward is -Z (same as the bird/fish). Materials shared
    *  via the birdMat toon cache — no new allocations. ~0.4u long at size 1. */
-  private buildCat(
-    bodyMat: THREE.Material,
-    accentMat: THREE.Material,
-    darkMat: THREE.Material,
-  ): {
+  private buildCat(coat: {
+    body: number;
+    belly: number;
+    dark: number;
+    tailTip: number;
+    paws: number;
+    earInner: number;
+    eye: number;
+    muzzle?: number;
+    bib?: boolean;
+    patches?: number[];
+  }): {
     cat: THREE.Group;
     tailJoints: THREE.Object3D[];
     legs: THREE.Group;
     head: THREE.Object3D;
   } {
+    const bodyMat = GameScene.birdMat(coat.body);
+    const bellyMat = GameScene.birdMat(coat.belly);
+    const darkMat = GameScene.birdMat(coat.dark);
     const cat = new THREE.Group();
     const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), bodyMat);
     body.scale.set(1.05, 0.95, 2.0); // stretched along -Z
     body.castShadow = true;
     cat.add(body);
-    // Paler underside so the cat reads two-tone from the side.
-    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.085, 7, 5), accentMat);
-    belly.scale.set(0.9, 0.6, 1.85);
-    belly.position.set(0, -0.045, 0);
+    // Paler underside — or, on bib coats, pulled forward/up so it wraps the
+    // chest under the chin (the classic tuxedo/black-cat white bib).
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.085, 7, 5), bellyMat);
+    if (coat.bib) {
+      belly.scale.set(0.75, 0.7, 1.1);
+      belly.position.set(0, -0.035, -0.09);
+    } else {
+      belly.scale.set(0.9, 0.6, 1.85);
+      belly.position.set(0, -0.045, 0);
+    }
     cat.add(belly);
+    // Back patches — tabby banding / calico blotches: squashed spheres riding
+    // the spine (body top ~y 0.085; scale-z 2.0 on the body keeps them on it).
+    if (coat.patches) {
+      const PATCH_Z = [-0.06, 0.02, 0.1];
+      for (let p = 0; p < coat.patches.length; p++) {
+        const patch = new THREE.Mesh(
+          new THREE.SphereGeometry(0.02, 5, 4),
+          GameScene.birdMat(coat.patches[p]),
+        );
+        patch.scale.set(1.6, 0.5, 0.9);
+        // Calico blotches sit off-centre; a single-colour band list stays centred.
+        patch.position.set(
+          coat.patches.length > 1 ? (p % 2 === 0 ? 0.03 : -0.03) : 0,
+          0.075,
+          PATCH_Z[p % 3],
+        );
+        cat.add(patch);
+      }
+    }
     // HEAD PIVOT at the neck so the head can dip/look independently of the
     // body (face parts are children, positioned relative to the pivot).
     const head = new THREE.Object3D();
@@ -1185,24 +1257,38 @@ export class GameScene extends THREE.Scene {
     skull.position.set(0, 0.005, -0.05);
     skull.castShadow = true;
     head.add(skull);
+    const earInnerMat = GameScene.birdMat(coat.earInner);
     for (const ex of [-0.045, 0.045]) {
       const ear = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.06, 4), bodyMat);
       ear.position.set(ex, 0.065, -0.045);
       ear.rotation.z = ex < 0 ? 0.4 : -0.4;
       head.add(ear);
+      // Inner-ear cone, nudged toward the face — instant "alive" read up close.
+      const inner = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.045, 4), earInnerMat);
+      inner.position.set(ex, 0.065, -0.053);
+      inner.rotation.z = ear.rotation.z;
+      head.add(inner);
     }
-    const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 5), accentMat);
+    const muzzle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.032, 6, 5),
+      GameScene.birdMat(coat.muzzle ?? coat.belly),
+    );
     muzzle.scale.set(1, 0.8, 0.9);
     muzzle.position.set(0, -0.022, -0.112);
     head.add(muzzle);
     const nose = new THREE.Mesh(new THREE.SphereGeometry(0.012, 5, 4), darkMat);
     nose.position.set(0, -0.01, -0.14);
     head.add(nose);
-    const eyeMat = GameScene.birdMat(0x1c1a18);
+    // Coloured iris + proud black pupil (was a flat near-black bead).
+    const eyeMat = GameScene.birdMat(coat.eye);
+    const pupilMat = GameScene.birdMat(0x141210);
     for (const ex of [-0.03, 0.03]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.013, 5, 4), eyeMat);
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.015, 5, 4), eyeMat);
       eye.position.set(ex, 0.028, -0.098);
       head.add(eye);
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.006, 4, 3), pupilMat);
+      pupil.position.set(ex, 0.028, -0.11);
+      head.add(pupil);
     }
     // Legs — 4 HIP PIVOTS (child order [FL, FR, BL, BR]); each carries a
     // cylinder hanging below it so a swing pivots from the hip like a real
@@ -1215,6 +1301,7 @@ export class GameScene extends THREE.Scene {
       [-0.05, 0.13],
       [0.05, 0.13],
     ];
+    const sockMat = coat.paws !== coat.body ? GameScene.birdMat(coat.paws) : null;
     for (const [lx, lz] of LEGS) {
       const hip = new THREE.Object3D();
       hip.position.set(lx, 0.0, lz);
@@ -1222,24 +1309,31 @@ export class GameScene extends THREE.Scene {
       leg.position.set(0, -0.06, 0);
       leg.castShadow = true;
       hip.add(leg);
+      // White socks — a short contrast cuff at the foot; rides the hip swing.
+      if (sockMat) {
+        const sock = new THREE.Mesh(GameScene.catSockGeo, sockMat);
+        sock.position.set(0, -0.105, 0);
+        hip.add(sock);
+      }
       legs.add(hip);
     }
     cat.add(legs);
     // Tail — a NESTED CHAIN of pivots so it flows as a travelling wave (each
-    // joint parented to the last, animated with a phase-delayed sine) instead
-    // of the whole tail swinging as one rigid stick.
+    // joint parented to the last, animated with a phase-delayed sine). Each
+    // joint renders a shared tapered segment+elbow geometry (see tailGeos) so
+    // the tail reads as ONE smooth curve, with a contrast tip on the last joint.
     const tailJoints: THREE.Object3D[] = [];
-    const radii = [0.032, 0.028, 0.024, 0.019, 0.014];
+    const tailGeos = GameScene.tailGeos();
+    const tipMat = GameScene.birdMat(coat.tailTip);
     let parent: THREE.Object3D = cat;
-    for (let i = 0; i < radii.length; i++) {
+    for (let i = 0; i < tailGeos.length; i++) {
       const joint = new THREE.Object3D();
       joint.position.set(0, i === 0 ? 0.02 : 0, i === 0 ? 0.16 : 0.045);
       joint.rotation.x = -0.28; // base curl-up per joint (compounds up the chain)
       parent.add(joint);
-      const s = new THREE.Mesh(new THREE.SphereGeometry(radii[i], 6, 5), bodyMat);
-      s.position.set(0, 0, 0.022);
-      s.castShadow = true;
-      joint.add(s);
+      const seg = new THREE.Mesh(tailGeos[i], i === tailGeos.length - 1 ? tipMat : bodyMat);
+      seg.castShadow = true;
+      joint.add(seg);
       tailJoints.push(joint);
       parent = joint;
     }
@@ -1629,13 +1723,74 @@ export class GameScene extends THREE.Scene {
 
   private createCats(): void {
     if (!this.island) return;
-    // [body, accent (paler underside/muzzle), dark (nose)] per coat.
-    const SPECIES: Array<[number, number, number]> = [
-      [0xd98a3a, 0xf0d3a8, 0x2a1c12], // ginger
-      [0x8a8480, 0xc4beb4, 0x2a2622], // grey tabby
-      [0x2e2b29, 0x6a6560, 0x151311], // black
-      [0xf1efe9, 0xd8d2c8, 0x3a3530], // white
-      [0x4a4642, 0xf1efe9, 0x1a1714], // tuxedo (dark coat, white bib)
+    // Six DISTINCT coats, one per spot (the old `% 5` duplicated ginger).
+    // Brighter bodies + classic cat pattern reads: contrast tail tip, white
+    // bib/socks, inner ears, coloured eyes — cheap birdMat recolours only.
+    const SPECIES: Array<Parameters<GameScene['buildCat']>[0]> = [
+      // Ginger — white tip/paws, green eyes.
+      {
+        body: 0xe6862e,
+        belly: 0xf7e3c3,
+        dark: 0x2a1c12,
+        tailTip: 0xf6f3ec,
+        paws: 0xf6f3ec,
+        earInner: 0xf0a986,
+        eye: 0x5f9e3e,
+      },
+      // Grey tabby — dark tip + spine banding, amber eyes.
+      {
+        body: 0x7d8894,
+        belly: 0xd8dde2,
+        dark: 0x2a2622,
+        tailTip: 0x4a525c,
+        paws: 0x7d8894,
+        earInner: 0xcf9d92,
+        eye: 0xd9a13c,
+        patches: [0x4a525c, 0x4a525c, 0x4a525c],
+      },
+      // Black — white chest bib, green eyes, muzzle lifted so the face reads at night.
+      {
+        body: 0x1f1d1f,
+        belly: 0xfaf8f3,
+        dark: 0x151311,
+        tailTip: 0x1f1d1f,
+        paws: 0x1f1d1f,
+        earInner: 0x8a6a66,
+        eye: 0x8fc255,
+        muzzle: 0x6a6560,
+        bib: true,
+      },
+      // White with a ginger tail tip ("van" pattern), blue eyes.
+      {
+        body: 0xfaf8f3,
+        belly: 0xfaf8f3,
+        dark: 0x3a3530,
+        tailTip: 0xe6862e,
+        paws: 0xfaf8f3,
+        earInner: 0xf0b8a8,
+        eye: 0x6fb3d9,
+      },
+      // Tuxedo — white bib, tip and socks on near-black, yellow eyes.
+      {
+        body: 0x232022,
+        belly: 0xfaf8f3,
+        dark: 0x1a1714,
+        tailTip: 0xfaf8f3,
+        paws: 0xfaf8f3,
+        earInner: 0x8a6a66,
+        eye: 0xe3c04b,
+      },
+      // Calico — white body, black tip, ginger+black blotches, amber eyes.
+      {
+        body: 0xfaf8f3,
+        belly: 0xfaf8f3,
+        dark: 0x2a2624,
+        tailTip: 0x2a2624,
+        paws: 0xfaf8f3,
+        earInner: 0xf0b8a8,
+        eye: 0xd9a13c,
+        patches: [0xe6862e, 0x2a2624, 0xe6862e],
+      },
     ];
     // Grass near the plazas/streets where players actually walk.
     const SPOTS: Array<[number, number]> = [
@@ -1647,12 +1802,7 @@ export class GameScene extends THREE.Scene {
       [5.3, 0.5],
     ];
     for (let i = 0; i < SPOTS.length; i++) {
-      const sp = SPECIES[i % SPECIES.length];
-      const { cat, tailJoints, legs, head } = this.buildCat(
-        GameScene.birdMat(sp[0]),
-        GameScene.birdMat(sp[1]),
-        GameScene.birdMat(sp[2]),
-      );
+      const { cat, tailJoints, legs, head } = this.buildCat(SPECIES[i % SPECIES.length]);
       const size = 0.9 + Math.random() * 0.3;
       cat.scale.setScalar(size);
       const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);

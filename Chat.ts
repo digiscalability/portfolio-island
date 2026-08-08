@@ -281,7 +281,9 @@ export class Chat {
       const gameCtx = Chat.getGameAudioCtx();
       const ctx = gameCtx ?? this.ensureOwnCtx();
       if (!ctx) return; // no Web Audio → skip playback
-      if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+      // Don't resume a master-muted ctx — the HUD mute suspends it on purpose,
+      // and resuming here used to un-mute music+sfx as a side effect.
+      if (ctx.state === 'suspended' && !Chat.masterMuted()) void ctx.resume().catch(() => {});
       const buf = await ctx.decodeAudioData(Chat.base64ToArrayBuffer(audioB64));
       const src = ctx.createBufferSource();
       src.buffer = buf;
@@ -295,7 +297,8 @@ export class Chat {
         panner.maxDistance = PROXIMITY_RADIUS; // fully faded by the proximity edge
         panner.rolloffFactor = 1;
         Chat.setPannerPosition(panner, avatar ? avatar.getWorldPosition(Chat._vp) : speakerPos);
-        src.connect(panner).connect(ctx.destination);
+        // Through the master bus: the one HUD mute/volume covers peer voice too.
+        src.connect(panner).connect(Chat.getGameAudioDest() ?? ctx.destination);
         active = { panner, avatar };
         this.activeVoices.push(active);
       } else {
@@ -330,6 +333,27 @@ export class Chat {
       }
     }
     return null;
+  }
+
+  /** The AudioManager master bus (one mute/volume for everything), if up. */
+  private static getGameAudioDest(): AudioNode | null {
+    const am = (window as unknown as { audioManager?: { getDestination?: () => AudioNode } })
+      .audioManager;
+    try {
+      return am?.getDestination?.() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether the app-wide HUD mute is on (false when audio isn't up yet). */
+  private static masterMuted(): boolean {
+    const am = (window as unknown as { audioManager?: { isMuted?: () => boolean } }).audioManager;
+    try {
+      return am?.isMuted?.() ?? false;
+    } catch {
+      return false;
+    }
   }
 
   /** Lazily create Chat's own AudioContext (fallback playback path only). */

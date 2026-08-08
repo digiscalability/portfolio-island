@@ -12,10 +12,21 @@ type ExtendedAudioListener = AudioListener & {
   setOrientation?: (fx: number, fy: number, fz: number, ux: number, uy: number, uz: number) => void;
 };
 
+/** Default master volume. v2 of ds_audio_settings — quieter than the old 1.0
+ *  ("reduce default sound volume"); stored v1 profiles are migrated down. */
+const DEFAULT_VOLUME = 0.7;
+/** Music sits clearly under speech/sfx — it's a bed, not the show. */
+const MUSIC_LEVEL = 0.6;
+/** Spatial ambient loops (unused API today, kept for parity). */
+const AMBIENT_LEVEL = 0.7;
+
 export class AudioManager {
   private muted: boolean = false;
-  private volume: number = 1.0;
+  private volume: number = DEFAULT_VOLUME;
   private ctx: AudioContext | null = null;
+  /** THE master bus. Every sound in the app (music, sfx, NPC voice, peer voice)
+   *  routes through this gain via getDestination() — one mute, one volume. */
+  private masterGain: GainNode | null = null;
   private buffers: Map<string, AudioBuffer> = new Map();
   private playing: Map<
     string,
@@ -30,7 +41,11 @@ export class AudioManager {
       if (stored) {
         const parsed = JSON.parse(stored);
         this.muted = !!parsed.muted;
-        this.volume = typeof parsed.volume === 'number' ? parsed.volume : 1.0;
+        // v2 migration: v1 profiles carried volume 1.0 (the old default) —
+        // pull them down to the new quieter default; explicit v2 values stick.
+        if (parsed.v === 2 && typeof parsed.volume === 'number') {
+          this.volume = parsed.volume;
+        }
       }
     } catch {
       // ignore
@@ -46,7 +61,25 @@ export class AudioManager {
       }
       this.ctx = new AudioContextConstructor();
     }
+    if (!this.masterGain) {
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = this.muted ? 0 : this.volume;
+      this.masterGain.connect(this.ctx.destination);
+    }
     return this.ctx;
+  }
+
+  /** The node every sound source must connect to (never ctx.destination). */
+  public getDestination(): AudioNode {
+    this.ensureCtx();
+    return this.masterGain!;
+  }
+
+  /** Master volume with mute folded in — for non-WebAudio paths
+   *  (HTMLAudioElement fallback, speechSynthesis) that can't route
+   *  through the master bus and must mirror it numerically. */
+  public getEffectiveVolume(): number {
+    return this.muted ? 0 : this.volume;
   }
 
   public isMuted(): boolean {
@@ -60,32 +93,24 @@ export class AudioManager {
   public setVolume(v: number): void {
     this.volume = Math.max(0, Math.min(1, v));
     this.save();
-    // animate current playing sources to new volume
     try {
-      this.applyVolumeToPlaying();
+      if (this.masterGain && this.ctx && !this.muted) {
+        const now = this.ctx.currentTime;
+        this.masterGain.gain.cancelScheduledValues(now);
+        this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
+        this.masterGain.gain.linearRampToValueAtTime(this.volume, now + 0.2);
+      }
     } catch {
       /* ignore */
     }
   }
 
-  // animate current playing sources' gains to the new volume
-  private applyVolumeToPlaying() {
-    const ctx = this.ensureCtx();
-    const now = ctx.currentTime;
-    this.playing.forEach((item) => {
-      try {
-        item.gain.gain.cancelScheduledValues(now);
-        item.gain.gain.setValueAtTime(item.gain.gain.value, now);
-        item.gain.gain.linearRampToValueAtTime(this.volume, now + 0.2);
-      } catch {
-        /* ignore */
-      }
-    });
-  }
-
   public toggleMute(): boolean {
     this.muted = !this.muted;
     try {
+      // The master gain is the authority (covers sources that might resume the
+      // ctx behind our back); suspend/resume stays as a CPU saver on top.
+      if (this.masterGain) this.masterGain.gain.value = this.muted ? 0 : this.volume;
       if (this.muted) {
         void this.ctx?.suspend?.();
       } else {
@@ -102,7 +127,7 @@ export class AudioManager {
     try {
       localStorage.setItem(
         'ds_audio_settings',
-        JSON.stringify({ muted: this.muted, volume: this.volume }),
+        JSON.stringify({ v: 2, muted: this.muted, volume: this.volume }),
       );
     } catch {
       // ignore
@@ -129,8 +154,10 @@ export class AudioManager {
   }
 
   // Play a looping spatial source for ambient audio. If already playing, update its position instead of restarting.
+  // NOTE no muted early-return: sources always schedule; the master bus at 0
+  // keeps them silent. (The old early-return meant a muted-at-load page never
+  // scheduled anything and unmuting later restored only silence.)
   public playSpatial(key: string, position: { x: number; y: number; z: number }, maxDistance = 10) {
-    if (this.muted) return;
     const buf = this.buffers.get(key);
     if (!buf) return;
     const ctx = this.ensureCtx();
@@ -166,7 +193,7 @@ export class AudioManager {
 
     src.connect(panner);
     panner.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getDestination());
 
     const now = ctx.currentTime;
     try {
@@ -180,7 +207,7 @@ export class AudioManager {
       /* ignore */
     }
     try {
-      gain.gain.linearRampToValueAtTime(this.volume, now + this.fadeDuration);
+      gain.gain.linearRampToValueAtTime(AMBIENT_LEVEL, now + this.fadeDuration);
     } catch {
       /* ignore */
     }
@@ -258,9 +285,9 @@ export class AudioManager {
     this.playing.delete(key);
   }
 
-  // Play background music (non-spatial, looping)
+  // Play background music (non-spatial, looping). Always schedules — the
+  // master bus carries mute/volume, so unmuting later actually has music.
   public playBackground(key: string): void {
-    if (this.muted) return;
     const buf = this.buffers.get(key);
     if (!buf) return;
     const ctx = this.ensureCtx();
@@ -273,10 +300,10 @@ export class AudioManager {
     src.loop = true;
 
     const gain = ctx.createGain();
-    gain.gain.value = this.volume;
+    gain.gain.value = MUSIC_LEVEL;
 
     src.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getDestination());
 
     src.start(0);
     this.playing.set(key, { source: src, panner: null as any, gain });
@@ -343,6 +370,14 @@ export class AudioManager {
     this.playing.clear();
 
     // Close the audio context to release resources
+    if (this.masterGain) {
+      try {
+        this.masterGain.disconnect();
+      } catch {
+        // ignore errors during cleanup
+      }
+      this.masterGain = null;
+    }
     if (this.ctx) {
       try {
         this.ctx.close();

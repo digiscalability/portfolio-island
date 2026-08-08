@@ -8,10 +8,21 @@
          the loading screen on cold mobile connections. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Non-blocking load: preload-as-style flips to a stylesheet onload, so a
+         slow fonts CDN can no longer delay first paint of the loading screen
+         (both fonts already use display=swap — fallbacks render instantly). -->
     <link
+      rel="preload"
+      as="style"
       href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap"
-      rel="stylesheet"
+      onload="this.onload=null;this.rel='stylesheet'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- iOS ignores SVG apple-touch-icons; needs a real PNG for home-screen. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -161,11 +172,9 @@
         width: 100vw;
         height: 100vh;
         height: 100dvh;
-        background: linear-gradient(
-          135deg,
-          var(--bg-gradient-start) 0%,
-          var(--bg-gradient-end) 100%
-        );
+        /* Same backdrop as SimpleUI's loader (#0a121c) — the old purple
+           gradient snapping to dark navy mid-load read as a page restart. */
+        background: #0a121c;
         display: flex;
         flex-direction: column;
         justify-content: center;

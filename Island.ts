@@ -298,28 +298,49 @@ export class Island {
   }
 
   public analyticSurface(dir: THREE.Vector3): { radius: number; normal: THREE.Vector3 } {
-    const n = dir.clone().normalize();
+    const normal = new THREE.Vector3();
+    const radius = this.analyticSurfaceInto(dir, normal);
+    return { radius, normal };
+  }
+
+  // Scratch vectors for analyticSurfaceInto — module-lifetime, single-threaded,
+  // and terrainRadiusFor never re-enters, so reuse is safe.
+  private static readonly _asN = new THREE.Vector3();
+  private static readonly _asT1 = new THREE.Vector3();
+  private static readonly _asT2 = new THREE.Vector3();
+  private static readonly _asPA = new THREE.Vector3();
+  private static readonly _asPB = new THREE.Vector3();
+  private static readonly _asP0 = new THREE.Vector3();
+  private static readonly _asV = new THREE.Vector3();
+
+  /** Allocation-free analyticSurface: writes the surface normal into `outNormal`
+   *  and returns the terrain radius. Same maths as the object-returning wrapper —
+   *  use THIS on hot loops (the 100k-blade grass pass used to allocate ~900k
+   *  Vector3s through the wrapper's clones alone). */
+  public analyticSurfaceInto(dir: THREE.Vector3, outNormal: THREE.Vector3): number {
     if (!this.terrainRadiusFor) {
-      const s = this.sampleSurfaceByDirection(n, 0);
-      return { radius: s.position.length(), normal: s.normal };
+      const s = this.sampleSurfaceByDirection(dir, 0);
+      outNormal.copy(s.normal);
+      return s.position.length();
     }
+    const n = Island._asN.copy(dir).normalize();
     const at = (d: THREE.Vector3): number =>
-      this.terrainRadiusFor(d, d.clone().multiplyScalar(this.radius));
+      this.terrainRadiusFor(d, Island._asV.copy(d).multiplyScalar(this.radius));
     const r = at(n);
-    const t1 = new THREE.Vector3(0, 1, 0).cross(n);
+    const t1 = Island._asT1.set(0, 1, 0).cross(n);
     if (t1.lengthSq() < 1e-8) t1.set(1, 0, 0);
     t1.normalize();
-    const t2 = new THREE.Vector3().crossVectors(n, t1).normalize();
+    const t2 = Island._asT2.crossVectors(n, t1).normalize();
     const EPS = 0.02;
-    const pA = n.clone().addScaledVector(t1, EPS).normalize();
-    const pB = n.clone().addScaledVector(t2, EPS).normalize();
-    const p0 = n.clone().multiplyScalar(r);
+    const pA = Island._asPA.copy(n).addScaledVector(t1, EPS).normalize();
+    const pB = Island._asPB.copy(n).addScaledVector(t2, EPS).normalize();
+    const p0 = Island._asP0.copy(n).multiplyScalar(r);
     const vA = pA.multiplyScalar(at(pA)).sub(p0);
     const vB = pB.multiplyScalar(at(pB)).sub(p0);
-    const normal = new THREE.Vector3().crossVectors(vA, vB).normalize();
-    if (normal.dot(n) < 0) normal.negate();
-    if (!Number.isFinite(normal.x)) normal.copy(n);
-    return { radius: r, normal };
+    outNormal.crossVectors(vA, vB).normalize();
+    if (outNormal.dot(n) < 0) outNormal.negate();
+    if (!Number.isFinite(outNormal.x)) outNormal.copy(n);
+    return r;
   }
 
   private createGrass(): THREE.InstancedMesh {
@@ -449,6 +470,17 @@ export class Island {
     const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
     let stride = Math.max(1, Math.round(COUNT * 0.618));
     while (gcd(stride, COUNT) !== 1) stride++;
+    // Collapsed blades all share one pre-baked degenerate matrix (scale ~0 at
+    // the origin renders nothing; slot content is irrelevant — raycast is off
+    // and the budget governor counts slots, not positions).
+    dummy.position.set(0, 0, 0);
+    dummy.quaternion.identity();
+    dummy.scale.setScalar(0.0001);
+    dummy.updateMatrix();
+    const collapsedMatrix = dummy.matrix.clone();
+    const collapsedColor = new THREE.Color(1, 1, 1);
+    const bladeNormal = new THREE.Vector3(); // reused analytic normal out-param
+    const SHORE_Y = Math.sin(0.26);
     for (let k = 0; k < COUNT; k++) {
       const i = (k * stride) % COUNT;
       const y = 1 - (i / (COUNT - 1)) * 2;
@@ -465,17 +497,32 @@ export class Island {
       // (keeps full grass density on the island, none on the seafloor)
       dir.y = Math.abs(dir.y);
       dir.normalize();
-      // Analytic, not raycast: at 1.24ms per raycast these 6000 blades alone
-      // cost ~7.5s of startup — the single biggest item in a ~24s boot, which
-      // was tripping the 25s watchdog and showing the fallback on phones.
-      const sampled = this.analyticSurface(dir);
-      dummy.position.copy(dir).multiplyScalar(sampled.radius);
-      dummy.quaternion.setFromUnitVectors(up, sampled.normal);
+      // CHEAP GATES FIRST (dir-only): a third of the 100k candidates collapse
+      // (shore band, streets, summit trail) — skip the surface sample and all
+      // colour math for those. DETERMINISM: the skipped work consumed exactly 3
+      // Math.random() calls (rotate, colour lerp, shade), which are burned
+      // below so the seeded stream — and thus every downstream placement,
+      // including the index-networked vehicles — stays bit-identical to the
+      // unoptimized loop.
+      const belowShore = dir.y < SHORE_Y; // post-mirror latitude, same as before
+      // Keep the blades off the summit dirt track so it reads as bare earth.
+      const onTrail = this.trailAt ? this.trailAt(dir).w > 0.4 : false;
+      const cheapCollapse = belowShore || onTrail || this.isNearStreet(dir);
+      if (cheapCollapse) {
+        Math.random(); // burn: rotateOnAxis yaw
+        Math.random(); // burn: colour lerp jitter
+        Math.random(); // burn: per-blade shade
+        grass.setMatrixAt(k, collapsedMatrix);
+        grass.setColorAt(k, collapsedColor);
+        continue;
+      }
+      // Analytic, not raycast: at 1.24ms per raycast these blades alone used to
+      // cost seconds of phone startup and trip the boot watchdog. The Into
+      // variant also skips the wrapper's ~9 Vector3 allocations per call.
+      const sampledRadius = this.analyticSurfaceInto(dir, bladeNormal);
+      dummy.position.copy(dir).multiplyScalar(sampledRadius);
+      dummy.quaternion.setFromUnitVectors(up, bladeNormal);
       dummy.rotateOnAxis(up, Math.random() * Math.PI * 2);
-      // Blades landing on pavement collapse to nothing (instance count
-      // stays fixed — no index bookkeeping); below the shoreline they
-      // collapse too so the beach stays sandy-clean
-      const belowShore = dir.y < Math.sin(0.26);
       // Slope gate. Measured: the analytic normal tracks the mesh to ~2.7°
       // on ordinary ground but diverges up to ~50° on the mountain crags,
       // where ~2.9-unit rock detail is finer than the 1.08-unit terrain mesh
@@ -483,15 +530,11 @@ export class Island {
       // isn't the one you see, and leaning wildly. Lawn doesn't grow on
       // cliffs regardless, so collapse the blade past a slope threshold:
       // correct orientation everywhere it does appear, and none where the
-      // normal can't be trusted.
-      const slopeCos = sampled.normal.dot(dir);
+      // normal can't be trusted. (Needs the sample, so it can't join the
+      // cheap gates — but it only fires on the mountain, a small band.)
+      const slopeCos = bladeNormal.dot(dir);
       const tooSteep = slopeCos < 0.86; // ~31 degrees
-      // Keep the blades off the summit dirt track so it reads as bare earth.
-      const onTrail = this.trailAt ? this.trailAt(dir).w > 0.4 : false;
-      const sc =
-        this.isNearStreet(dir) || belowShore || tooSteep || onTrail
-          ? 0.0001
-          : 0.85 + Math.random() * 0.4;
+      const sc = tooSteep ? 0.0001 : 0.85 + Math.random() * 0.4;
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
       grass.setMatrixAt(k, dummy.matrix);
@@ -4010,11 +4053,41 @@ export class Island {
   // separate from claimDir's occupiedDirs — structures PLACED along a street
   // (buildings, cars, lamps) must be allowed closer than a claim would let.
   private streetDirs: Array<{ dir: THREE.Vector3; halfArc: number }> = [];
+  // Latitude-banded index over streetDirs. isNearStreet used to linear-scan
+  // hundreds of segments with angleTo (an acos) per query — and the grass pass
+  // alone makes 100k queries, order 10⁷ trig ops of pure boot time. Each entry
+  // is inserted into every band its keep-out arc can reach (|Δy| ≤ chord ≤ arc),
+  // so scanning ONLY the query's band is exact, and `angle < halfArc` is
+  // replaced by the equivalent squared-chord test (chord = 2·sin(halfArc/2),
+  // monotonic in angle for unit vectors — no acos, no sqrt).
+  private streetBuckets: Array<Array<{ dir: THREE.Vector3; chordSq: number }>> | null = null;
+  private static readonly STREET_BANDS = 24; // y ∈ [-1,1] → band width 1/12
+
+  private streetBandOf(y: number): number {
+    const b = Math.floor(((y + 1) / 2) * Island.STREET_BANDS);
+    return Math.min(Island.STREET_BANDS - 1, Math.max(0, b));
+  }
+
+  private ensureStreetBuckets(): Array<Array<{ dir: THREE.Vector3; chordSq: number }>> {
+    if (this.streetBuckets) return this.streetBuckets;
+    const buckets: Array<Array<{ dir: THREE.Vector3; chordSq: number }>> = [];
+    for (let b = 0; b < Island.STREET_BANDS; b++) buckets.push([]);
+    for (const s of this.streetDirs) {
+      const chord = 2 * Math.sin(s.halfArc / 2);
+      const entry = { dir: s.dir, chordSq: chord * chord };
+      const lo = this.streetBandOf(s.dir.y - s.halfArc);
+      const hi = this.streetBandOf(s.dir.y + s.halfArc);
+      for (let b = lo; b <= hi; b++) buckets[b].push(entry);
+    }
+    this.streetBuckets = buckets;
+    return buckets;
+  }
 
   /** True when a unit direction lands on (or within margin of) a street. */
   public isNearStreet(dir: THREE.Vector3): boolean {
-    for (const s of this.streetDirs) {
-      if (dir.angleTo(s.dir) < s.halfArc) return true;
+    const bucket = this.ensureStreetBuckets()[this.streetBandOf(dir.y)];
+    for (const s of bucket) {
+      if (dir.distanceToSquared(s.dir) < s.chordSq) return true;
     }
     return false;
   }
@@ -4253,6 +4326,7 @@ export class Island {
       this.streetDirs.push({ dir: a, halfArc: keepOutArc });
       if (i === waypoints.length - 2) this.streetDirs.push({ dir: b, halfArc: keepOutArc });
     }
+    this.streetBuckets = null; // new segments registered — rebuild the index lazily
     return group;
   }
 

@@ -22,17 +22,18 @@ fallback's proportions scaled to the GLB head (r 0.23 vs 0.22):
   eye highlights  icosphere r 0.013 at (+-0.061, -0.226, 0.934), new
                   "EyeShine" material (white) — offset toward the nose/top
                   like the fallback's
-  smile           half-torus (major 0.042, minor 0.010) at (0, -0.212, 0.816)
-                  opening upward, "Eye" material
+  smile           torus arc (major 0.055, minor 0.012, span ~112°) at
+                  (0, -0.216, 0.836), opening upward, "Eye" material
 Face geometry is weighted 1.0 to the `head` bone so it rides head-look and
 the walk bob. The face sits on the -Y side: the model faces glTF +Z and the
 importer maps that to Blender -Y (same convention fix-player-toes.py
 documents for the shoes).
 
-Materials "Eye"/"EyeShine" are NEW names: SimplePlayer.setBodyColor matches
-known names exactly (Jacket/Skin/Pants/Shoe/Hair) and ignores everything
-else, so the face never gets recoloured to skin tone. The NPC gets NO baked
-face — Island.dressNpc already gives villagers per-persona eyes at runtime.
+Materials "Eye"/"EyeShine"/"Blush" are NEW names: SimplePlayer.setBodyColor
+matches known names exactly (Jacket/Skin/Pants/Shoe/Hair) and ignores
+everything else, so the face never gets recoloured to skin tone. The NPC gets
+the SAME baked face via do_npc() (scaled ~0.87) — the old runtime dressNpc
+eyes are gone; this is the villagers' only face.
 
 The BEARD is not touched here because it is not in the GLB: it is the
 runtime hair_cap sphere in SimplePlayer.ts, whose sub-equator rim wraps the
@@ -84,25 +85,43 @@ HELMET_TOP_UZ = 0.55   # whole crown above this, any u_y — tucks UNDER the
                        # 0.010, so no z-fight) and fills its white notches
 HELMET_OFFSET = 0.010
 
-EYE_R = 0.036
-EYE_POS = 0.075, -0.205, 0.920   # +-x, y, z
-SHINE_R = 0.013
-SHINE_POS = 0.061, -0.226, 0.934
-MOUTH_C = Vector((0.0, -0.212, 0.816))
-MOUTH_MAJOR = 0.042
-MOUTH_MINOR = 0.010
+# FRIENDLY-FACE pass (baby-schema): bigger, slightly lower, slightly wider-set
+# eyes with a large catchlight; a wider-but-shallower smile placed higher (the
+# old full-180° semicircle read as a grimace); soft blush patches. Eye/head
+# radius ratio 0.157 -> 0.20 (mascot range).
+EYE_R = 0.046
+EYE_POS = 0.082, -0.203, 0.912   # +-x, y, z (wider-set, a touch lower)
+EYE_SQUASH = (1.0, 1.0, 1.15)    # taller-than-wide oval (player only — the
+                                 # npc hairline clearance is too thin for it)
+SHINE_R = 0.018
+SHINE_POS = 0.066, -0.227, 0.930
+MOUTH_C = Vector((0.0, -0.216, 0.836))
+MOUTH_MAJOR = 0.055
+MOUTH_MINOR = 0.012
+MOUTH_SPAN = 0.62 * math.pi      # ~112° gentle curve, not the old 180° grimace
 MOUTH_SEGS = 8   # arc segments
 MOUTH_RING = 6   # cross-section segments
+# Blush: flat ellipse patches against the cheeks. "Blush" is a SAFE material
+# name (contains none of shirt/skin/pants/hair, not exactly a player part).
+BLUSH_R = 0.020
+BLUSH_SQUASH = (1.0, 0.35, 0.75)
+BLUSH_POS = 0.118, -0.190, 0.845
+BLUSH_RGB = (0.95, 0.55, 0.55)
 
 # Villager face: the player's face scaled by the head-size ratio (~0.87)
 # about the npc head centre. Same design language, one species.
-N_EYE_R = 0.031
-N_EYE_POS = 0.065, -0.178, 1.555
-N_SHINE_R = 0.011
-N_SHINE_POS = 0.053, -0.197, 1.567
-N_MOUTH_C = Vector((0.0, -0.184, 1.464))
-N_MOUTH_MAJOR = 0.037
-N_MOUTH_MINOR = 0.0087
+# Friendly-face values = player × ~0.87 about the npc head centre. Round eyes
+# (no squash): the oval's taller top would thin the 1.61 hairline clearance
+# below 0.02. Eye top 1.548+0.040 = 1.588, clearance 0.022.
+N_EYE_R = 0.040
+N_EYE_POS = 0.071, -0.176, 1.548
+N_SHINE_R = 0.014
+N_SHINE_POS = 0.057, -0.197, 1.564
+N_MOUTH_C = Vector((0.0, -0.188, 1.482))
+N_MOUTH_MAJOR = 0.048
+N_MOUTH_MINOR = 0.010
+N_BLUSH_R = 0.017
+N_BLUSH_POS = 0.102, -0.166, 1.490
 # npc has no authored fringe, so its helmet covers more of the crown: the
 # front hairline lands at z 1.52 + 0.45*0.20 = 1.61, clearing the eye tops
 # (1.586) by 0.024.
@@ -249,9 +268,13 @@ def ensure_material(ob, name: str, color) -> int:
     return [m.name for m in ob.data.materials].index(mat.name)
 
 
-def add_icosphere(bm, centre: Vector, r: float, mat_index: int):
+def add_icosphere(bm, centre: Vector, r: float, mat_index: int, squash=None):
     res = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=r)
     verts = res["verts"]
+    # Scale about the origin BEFORE translating = scale about the sphere centre
+    # (ovals for cute eyes, flat ellipses for blush patches).
+    if squash is not None:
+        bmesh.ops.scale(bm, verts=verts, vec=Vector(squash))
     bmesh.ops.translate(bm, verts=verts, vec=centre)
     faces = {f for v in verts for f in v.link_faces}
     for f in faces:
@@ -261,12 +284,16 @@ def add_icosphere(bm, centre: Vector, r: float, mat_index: int):
 
 
 def add_smile(bm, mat_index: int, centre: Vector = MOUTH_C,
-              major: float = MOUTH_MAJOR, minor: float = MOUTH_MINOR):
-    """Half-torus in the XZ-ish plane, arc opening upward, facing -Y."""
+              major: float = MOUTH_MAJOR, minor: float = MOUTH_MINOR,
+              arc_span: float = math.pi):
+    """Torus arc in the XZ-ish plane, opening upward, facing -Y. arc_span=pi
+    reproduces the historical full lower semicircle; the friendly face passes
+    MOUTH_SPAN (~112°) so the corners stop climbing to eye level (grimace)."""
+    arc_start = 1.5 * math.pi - arc_span / 2  # centred on the bottom of the arc
     verts_grid = []
     for i in range(MOUTH_SEGS + 1):
-        # arc from left to right along the LOWER semicircle (smile)
-        a = math.pi + (i / MOUTH_SEGS) * math.pi  # pi..2pi
+        # arc from left to right along the LOWER portion (smile)
+        a = arc_start + (i / MOUTH_SEGS) * arc_span
         ring_c = Vector((math.cos(a) * major, 0.0, math.sin(a) * major))
         ring = []
         for j in range(MOUTH_RING):
@@ -349,6 +376,7 @@ def do_player() -> None:
     # Face + hair helmet on the body only.
     eye_i = ensure_material(body, "Eye", (0.024, 0.024, 0.028))
     shine_i = ensure_material(body, "EyeShine", (1.0, 1.0, 1.0))
+    blush_i = ensure_material(body, "Blush", BLUSH_RGB)
     hair_i = [m.name for m in body.data.materials].index("Hair")
     bm = bmesh.new()
     bm.from_mesh(body.data)
@@ -357,9 +385,16 @@ def do_player() -> None:
     print(f"  PlayerBody: hair helmet added ({helmet_faces} faces)")
     new = []
     for sx in (-1, 1):
-        new += add_icosphere(bm, Vector((sx * EYE_POS[0], EYE_POS[1], EYE_POS[2])), EYE_R, eye_i)
+        new += add_icosphere(
+            bm, Vector((sx * EYE_POS[0], EYE_POS[1], EYE_POS[2])), EYE_R, eye_i,
+            squash=EYE_SQUASH,
+        )
         new += add_icosphere(bm, Vector((sx * SHINE_POS[0], SHINE_POS[1], SHINE_POS[2])), SHINE_R, shine_i)
-    new += add_smile(bm, eye_i)
+        new += add_icosphere(
+            bm, Vector((sx * BLUSH_POS[0], BLUSH_POS[1], BLUSH_POS[2])), BLUSH_R, blush_i,
+            squash=BLUSH_SQUASH,
+        )
+    new += add_smile(bm, eye_i, arc_span=MOUTH_SPAN)
     bm.verts.index_update()
     new_indices = [v.index for v in bm.verts if v.index >= start]
     bm.to_mesh(body.data)
@@ -368,7 +403,7 @@ def do_player() -> None:
     weight_new_verts(body, new_indices, "head")
     unweighted = [v.index for v in body.data.vertices if not v.groups]
     assert not unweighted, f"face verts left unweighted: {len(unweighted)}"
-    print(f"  PlayerBody: face added ({len(new_indices)} verts: 2 eyes + 2 shines + smile)")
+    print(f"  PlayerBody: face added ({len(new_indices)} verts: 2 eyes + 2 shines + 2 blush + smile)")
 
     export_glb(src)
     print(f"wrote {src}")
@@ -404,6 +439,7 @@ def do_npc() -> None:
     # needs.
     eye_i = ensure_material(npc, "Eye", (0.024, 0.024, 0.028))
     shine_i = ensure_material(npc, "EyeShine", (1.0, 1.0, 1.0))
+    blush_i = ensure_material(npc, "Blush", BLUSH_RGB)
     hair_i = ensure_material(npc, "Hair", (0.29, 0.20, 0.13))
     bm = bmesh.new()
     bm.from_mesh(npc.data)
@@ -414,7 +450,12 @@ def do_npc() -> None:
     for sx in (-1, 1):
         add_icosphere(bm, Vector((sx * N_EYE_POS[0], N_EYE_POS[1], N_EYE_POS[2])), N_EYE_R, eye_i)
         add_icosphere(bm, Vector((sx * N_SHINE_POS[0], N_SHINE_POS[1], N_SHINE_POS[2])), N_SHINE_R, shine_i)
-    add_smile(bm, eye_i, centre=N_MOUTH_C, major=N_MOUTH_MAJOR, minor=N_MOUTH_MINOR)
+        add_icosphere(
+            bm, Vector((sx * N_BLUSH_POS[0], N_BLUSH_POS[1], N_BLUSH_POS[2])), N_BLUSH_R, blush_i,
+            squash=BLUSH_SQUASH,
+        )
+    add_smile(bm, eye_i, centre=N_MOUTH_C, major=N_MOUTH_MAJOR, minor=N_MOUTH_MINOR,
+              arc_span=MOUTH_SPAN)
     bm.to_mesh(npc.data)
     bm.free()
     npc.data.update()

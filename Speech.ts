@@ -28,6 +28,37 @@ try {
   /* no storage */
 }
 
+// ── master-bus coupling ──────────────────────────────────────────────────────
+// The HUD mute is the ONE switch for all sound. Speech historically ignored it
+// (speechSynthesis never touches an AudioContext, and the cloud path connected
+// straight to ctx.destination and even resumed a deliberately-suspended ctx,
+// un-muting music+sfx). All playback now consults the AudioManager master.
+type MasterLike = {
+  isMuted?: () => boolean;
+  getEffectiveVolume?: () => number;
+  getDestination?: () => AudioNode;
+};
+function master(): MasterLike | undefined {
+  return (window as unknown as { audioManager?: MasterLike }).audioManager;
+}
+function masterMuted(): boolean {
+  try {
+    return master()?.isMuted?.() ?? false;
+  } catch {
+    return false;
+  }
+}
+function masterVolume(): number {
+  try {
+    return master()?.getEffectiveVolume?.() ?? 1;
+  } catch {
+    return 1;
+  }
+}
+// ElevenLabs MP3s are mastered hot — was the loudest thing in the app, ungained.
+// 0.9 through the 0.7 master ≈ 0.63 effective: still the clearest channel.
+const SPEECH_LEVEL = 0.9;
+
 // ── TTS: voice selection ─────────────────────────────────────────────────────
 let cachedVoices: SpeechSynthesisVoice[] = [];
 function refreshVoices(): void {
@@ -167,7 +198,7 @@ async function playCloud(
     b64 = null;
   }
   // Muted, cancelled, or superseded by a newer line while we waited — drop it.
-  if (!enabled || gen !== speakGen) return;
+  if (!enabled || masterMuted() || gen !== speakGen) return;
   if (b64) {
     // WEB AUDIO FIRST (the mobile fix): an HTMLAudioElement.play() that fires
     // 1-2s after the Send tap is OUTSIDE the gesture window, and iOS/Android
@@ -178,9 +209,11 @@ async function playCloud(
     try {
       const ctx = cloudAudioCtx();
       if (ctx) {
-        if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+        // NEVER resume a master-muted ctx: the HUD mute suspends it on purpose,
+        // and resuming here used to un-mute music+sfx as a side effect.
+        if (ctx.state === 'suspended' && !masterMuted()) void ctx.resume().catch(() => {});
         const buf = await ctx.decodeAudioData(base64ToArrayBuffer(b64));
-        if (!enabled || gen !== speakGen) return; // re-check after the decode await
+        if (!enabled || masterMuted() || gen !== speakGen) return; // re-check after the decode await
         stopCloudAudio();
         if (ttsSupported()) window.speechSynthesis.cancel(); // never overlap voices
         const src = ctx.createBufferSource();
@@ -188,7 +221,12 @@ async function playCloud(
         // mid-line stalls ("weird gaps"). We have the raw PCM right here, so
         // clamp every internal silence to a natural beat, model be damned.
         src.buffer = compressBufferSilences(ctx, buf);
-        src.connect(ctx.destination);
+        // Route through the master bus (one mute/volume knob), levelled — the
+        // raw MP3 straight into ctx.destination was the loudest thing in the app.
+        const g = ctx.createGain();
+        g.gain.value = SPEECH_LEVEL;
+        src.connect(g);
+        g.connect(master()?.getDestination?.() ?? ctx.destination);
         cloudSrc = src;
         src.onended = () => {
           if (cloudSrc === src) cloudSrc = null;
@@ -199,11 +237,13 @@ async function playCloud(
     } catch {
       /* decode/context failure → element path below */
     }
-    // No Web Audio available — element playback (fine on desktop).
+    // No Web Audio available — element playback (fine on desktop). Mirrors the
+    // master volume numerically since it can't route through the bus.
     try {
       stopCloudAudio();
       if (ttsSupported()) window.speechSynthesis.cancel();
       const a = new Audio(`data:audio/mpeg;base64,${b64}`);
+      a.volume = Math.max(0, Math.min(1, SPEECH_LEVEL * masterVolume()));
       cloudAudioEl = a;
       a.addEventListener('ended', () => {
         if (cloudAudioEl === a) cloudAudioEl = null;
@@ -352,7 +392,7 @@ function stopCloudAudio(): void {
  *  as the fallback for timeouts/caps/failures. Everything else speaks locally.
  *  Reads only real words — stage directions + emoji are stripped. No-op if muted. */
 export function speak(text: string, rate = 1, pitch = 1, variant = 0): void {
-  if (!enabled) return;
+  if (!enabled || masterMuted()) return;
   const gen = ++speakGen; // this is now the newest line; stale fetches stand down
   const offer = cloudOffers.get(text);
   if (offer) {
@@ -364,7 +404,7 @@ export function speak(text: string, rate = 1, pitch = 1, variant = 0): void {
 }
 
 function speakLocal(text: string, rate = 1, pitch = 1, variant = 0): void {
-  if (!enabled || !ttsSupported()) return;
+  if (!enabled || masterMuted() || !ttsSupported()) return;
   const clean = sanitizeForSpeech(text);
   if (!clean) return;
   try {
@@ -376,7 +416,8 @@ function speakLocal(text: string, rate = 1, pitch = 1, variant = 0): void {
     if (v) u.voice = v;
     u.rate = rate;
     u.pitch = pitch;
-    u.volume = 1;
+    // speechSynthesis can't route through the master bus — mirror its volume.
+    u.volume = Math.max(0, Math.min(1, masterVolume()));
     window.speechSynthesis.speak(u);
   } catch {
     /* speech failure never breaks the chat */

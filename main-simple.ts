@@ -18,6 +18,7 @@ import { SimpleInputManager } from './SimpleInputManager';
 import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
+import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
@@ -246,13 +247,22 @@ class SimpleApp {
       this.ui.showLoading(50);
       console.log('✓ Renderer created');
 
-      // Create scene (this will also create planet and player)
+      // Create scene (this will also create planet and player).
+      // performance.mark bracketing: `world_gen` is the long synchronous block
+      // (the GameScene constructor runs Island + all placement inline) — the
+      // number to watch when tuning boot. Inspect via
+      // performance.getEntriesByType('measure') in the console.
+      performance.mark('boot:worldgen-start');
       this.scene = new GameScene();
+      performance.mark('boot:worldgen-end');
+      performance.measure('world_gen', 'boot:worldgen-start', 'boot:worldgen-end');
       // The interior window renders the island into a texture, so the scene
       // needs the WebGLRenderer. Structural handoff — no import either way.
       this.scene.setRendererRef(this.renderer);
       this.ui.showLoading(60);
       await this.scene.ready();
+      performance.mark('boot:scene-ready');
+      performance.measure('scene_ready', 'boot:worldgen-start', 'boot:scene-ready');
       this.ui.showLoading(90);
       console.log('✓ Scene initialized and ready');
 
@@ -630,10 +640,28 @@ class SimpleApp {
         else this.openCustomize();
       });
 
-      // Mute button → shared AudioManager (created by startBackgroundMusic)
+      // Mute button → THE one switch for all sound (music + sfx + NPC voice +
+      // peer voice — speech reads the master state inside Speech/Chat).
       this.ui.setOnMuteToggle(() => {
         const am = (window as unknown as { audioManager?: { toggleMute(): boolean } }).audioManager;
-        return am ? am.toggleMute() : false;
+        if (am) {
+          const muted = am.toggleMute();
+          if (muted) cancelSpeech(); // silence any line mid-sentence, immediately
+          return muted;
+        }
+        // Pre-audio-boot (the AudioManager is created on an idle timer ~5s in):
+        // the old handler returned false here — a silent no-op click. Flip the
+        // persisted flag instead; the constructor reads it moments later.
+        let muted = true;
+        try {
+          const s = JSON.parse(localStorage.getItem('ds_audio_settings') ?? '{}');
+          muted = !s.muted;
+          localStorage.setItem('ds_audio_settings', JSON.stringify({ ...s, muted }));
+        } catch {
+          /* no storage — still report muted so the icon gives feedback */
+        }
+        if (muted) cancelSpeech();
+        return muted;
       });
 
       // Initialize post-processing. Awaited so the lazily-loaded bloom addons
@@ -1137,9 +1165,14 @@ class SimpleApp {
     // Funnel denominator: pageviews vs world_ready shows how many visitors
     // actually got the 3D scene running (device/WebGL compatibility signal).
     // `ms` is time-to-interactive from navigation start — the cold-start cost.
+    performance.mark('boot:world-ready');
+    // world_gen measure exists whenever init() got as far as the GameScene.
+    const genMeasure = performance.getEntriesByName('world_gen')[0];
     trackOnce('world_ready', {
       touch: this.ui.isTouchDevice(),
       ms: Math.round(performance.now()),
+      // The synchronous world-generation slice of that total — the tunable part.
+      genMs: genMeasure ? Math.round(genMeasure.duration) : -1,
     });
     // Begin dwell tracking now that the world is up (fires session_end on leave).
     startDwellTracking();

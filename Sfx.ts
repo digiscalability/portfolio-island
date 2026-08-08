@@ -7,7 +7,11 @@
  * mute/suspend state silences SFX too. All nodes disconnect on end.
  */
 
-type AudioManagerLike = { ensureCtx(): AudioContext; isMuted(): boolean };
+type AudioManagerLike = {
+  ensureCtx(): AudioContext;
+  isMuted(): boolean;
+  getDestination?(): AudioNode;
+};
 
 export class Sfx {
   private noiseBuf: AudioBuffer | null = null;
@@ -29,7 +33,10 @@ export class Sfx {
     if (this.master && this.masterCtx === ctx) return this.master;
     this.master = ctx.createGain();
     this.master.gain.value = 0.5;
-    this.master.connect(ctx.destination);
+    // Route through the AudioManager master bus so the ONE mute/volume knob
+    // covers sfx too; fall back to the raw destination pre-audio-boot.
+    const am = (window as unknown as { audioManager?: AudioManagerLike }).audioManager;
+    this.master.connect(am?.getDestination?.() ?? ctx.destination);
     this.masterCtx = ctx;
     return this.master;
   }

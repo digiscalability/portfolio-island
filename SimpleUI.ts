@@ -1208,7 +1208,7 @@ export class SimpleUI {
       this.muteBtn.textContent = nowMuted ? '🔇' : '🔊';
       this.muteBtn.setAttribute('aria-pressed', String(nowMuted));
     });
-    this.makeHudButtonAccessible(this.muteBtn, 'Toggle sound', muted);
+    this.makeHudButtonAccessible(this.muteBtn, 'Toggle all sound (music, effects, voices)', muted);
     this.overlay.appendChild(this.muteBtn);
     this.createReducedMotionButton();
     this.createCustomizeButton();
@@ -2259,12 +2259,27 @@ export class SimpleUI {
     // Built ONCE. Re-writing innerHTML on every progress call (as before) threw
     // away the bar's CSS transition each time, so it jumped instead of filling.
     if (!this.loadingBar) {
+      // The orbiting moon + planet pulse are CSS transform keyframes on
+      // will-change layers: the compositor keeps them moving through the long
+      // synchronous world-generation block that freezes the JS-driven bar —
+      // WITHOUT them the whole screen sits dead for seconds on phones and
+      // reads as a hang.
       this.loadingDiv.innerHTML = `
+        <style>
+          @keyframes ld-spin { to { transform: rotate(360deg); } }
+          @keyframes ld-pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+        </style>
         <div style="display:flex;flex-direction:column;align-items:center;max-width:320px;padding:0 24px;">
-          <div id="ld-planet" style="width:76px;height:76px;border-radius:50%;
-               background:radial-gradient(circle at 34% 30%, #7fc96b 0 38%, #4e9e57 38% 52%, #2f7fbf 52% 100%);
-               box-shadow:0 0 34px rgba(80,170,220,0.45), inset -8px -10px 20px rgba(0,0,0,0.45);
-               margin-bottom:20px;"></div>
+          <div style="position:relative;width:104px;height:104px;margin-bottom:18px;">
+            <div id="ld-planet" style="position:absolute;inset:14px;border-radius:50%;
+                 background:radial-gradient(circle at 34% 30%, #7fc96b 0 38%, #4e9e57 38% 52%, #2f7fbf 52% 100%);
+                 box-shadow:0 0 34px rgba(80,170,220,0.45), inset -8px -10px 20px rgba(0,0,0,0.45);
+                 will-change:transform;animation:ld-pulse 2.6s ease-in-out infinite;"></div>
+            <div style="position:absolute;inset:0;will-change:transform;animation:ld-spin 1.8s linear infinite;">
+              <div style="position:absolute;top:0;left:50%;width:9px;height:9px;margin-left:-4.5px;
+                   border-radius:50%;background:#cfe4f7;box-shadow:0 0 10px rgba(160,200,240,0.8);"></div>
+            </div>
+          </div>
           <div style="font-family:'Bebas Neue',system-ui,sans-serif;font-size:25px;letter-spacing:1.5px;">
             DIGISCALABILITY LIFE ISLAND</div>
           <div style="color:#a9bdd4;font-size:12.5px;margin-top:3px;max-width:290px;">
