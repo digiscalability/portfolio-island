@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import { isRealTheme } from './Theme';
+
 type TextureWithEncoding = THREE.Texture & { colorSpace?: THREE.ColorSpace; encoding?: number };
 
 type MaterialWithOptionalMaps = THREE.Material & {
@@ -17,11 +19,40 @@ type MaterialWithOptionalMaps = THREE.Material & {
 };
 
 export class Materials {
+  // THE shared toon ramps — one DataTexture instance each, scene-wide.
+  // Sharing fixes the old per-call allocation (~16 duplicates via the NPC
+  // palette cache alone) AND makes every toon surface band identically.
+  private static sharedRamp12: THREE.DataTexture | null = null;
+  private static sharedRamp3: THREE.DataTexture | null = null;
+
+  /**
+   * The gradient ramp every toon material should share. Theme-scoped:
+   * - default (real) theme: the subtle 12-step ramp — reads near-smooth, sits
+   *   comfortably next to the graded MeshStandard world;
+   * - ?theme=toon: a true 3-step cel ramp with a lifted, slightly-cool dark
+   *   band (bands never crush to black — the Animal Crossing/BotW discipline).
+   * The theme is fixed per page load, so one cached texture per session.
+   */
+  public static toonRamp(): THREE.DataTexture {
+    if (isRealTheme()) {
+      if (!this.sharedRamp12) this.sharedRamp12 = this.createGradientMap();
+      return this.sharedRamp12;
+    }
+    if (!this.sharedRamp3) {
+      // Lifted cool dark → warm-neutral mid → near-white light.
+      this.sharedRamp3 = this.buildRamp([
+        [128, 134, 150],
+        [186, 188, 194],
+        [252, 252, 252],
+      ]);
+    }
+    return this.sharedRamp3;
+  }
+
   public static createToonMaterial(color: number): THREE.MeshToonMaterial {
-    const gradientMap = this.createGradientMap();
     return new THREE.MeshToonMaterial({
       color,
-      gradientMap,
+      gradientMap: this.toonRamp(),
       // keep emissive very low to avoid driving bloom; highlights rely on envMap/specular
       emissive: 0x000000,
       emissiveIntensity: 0.02,
@@ -61,14 +92,14 @@ export class Materials {
   }
 
   public static createGradientMap(): THREE.DataTexture {
-    // Create a slightly larger RGBA gradient texture (12 steps) to reduce banding artifacts
-    // NEUTRAL ramp. MeshToonMaterial treats this as irradiance, so any tint
-    // here multiplies into EVERY toonified prop's shading — the old
+    // 12-step NEUTRAL ramp. MeshToonMaterial treats this as irradiance, so any
+    // tint here multiplies into EVERY toonified prop's shading — the old
     // green-pastel ramp shifted red cottages and blue mailboxes toward olive
     // in their shadow bands. Grayscale (luminance-matched to the old ramp,
     // slightly cool dark end for the pastel feel) keeps hue on the material
-    // colour where it belongs.
-    const colors = [
+    // colour where it belongs. Prefer Materials.toonRamp() over calling this
+    // directly — the ramp should be SHARED, not re-allocated per material.
+    return this.buildRamp([
       [40, 44, 52],
       [70, 74, 81],
       [101, 104, 110],
@@ -81,7 +112,10 @@ export class Materials {
       [232, 232, 232],
       [243, 243, 243],
       [251, 251, 251],
-    ];
+    ]);
+  }
+
+  private static buildRamp(colors: number[][]): THREE.DataTexture {
     const width = colors.length;
     const data = new Uint8Array(width * 4);
     for (let i = 0; i < colors.length; i++) {

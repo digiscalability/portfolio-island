@@ -1467,6 +1467,10 @@ export class GameScene extends THREE.Scene {
     if (!m) {
       m = new THREE.MeshToonMaterial({
         color,
+        // Shared scene-wide ramp — without one these props fell back to the
+        // harsh built-in two-band toon and banded differently from everything
+        // the toonify pass touches (the "mixed shading" tell).
+        gradientMap: Materials.toonRamp(),
         side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
       });
       GameScene.birdMatCache.set(key, m);
@@ -2478,6 +2482,7 @@ export class GameScene extends THREE.Scene {
     if (!m) {
       m = new THREE.MeshToonMaterial({
         color,
+        gradientMap: Materials.toonRamp(), // shared scene-wide ramp (see birdMat)
         side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
       });
       GameScene.fishMatCache.set(key, m);
@@ -5569,7 +5574,7 @@ export class GameScene extends THREE.Scene {
   }
 
   private toonifyIslandMaterials(): void {
-    const gradientMap = Materials.createGradientMap();
+    const gradientMap = Materials.toonRamp(); // shared: island bands like the props
     const cache = new Map<string, THREE.MeshToonMaterial>();
     const convert = (mat: THREE.Material): THREE.Material => {
       if (!(mat instanceof THREE.MeshStandardMaterial)) return mat;
@@ -6821,6 +6826,8 @@ export class GameScene extends THREE.Scene {
       const glow = 0.05 + 1.35 * (1 - day);
       for (const m of this.lampBulbMats) m.emissiveIntensity = glow;
     }
+    // ?look=soft: the composer's grade pass + bloom breathe with the cycle.
+    this.rendererRef?.setGradeDayFactor?.(day);
     // Per-district atmosphere: nudge the fog toward the nearest plaza's accent by
     // proximity, so arriving in a district gives a subtle warm/cool shift (the
     // "you have arrived somewhere" cue). Runs AFTER EnvironmentCycle writes
@@ -7394,9 +7401,16 @@ export class GameScene extends THREE.Scene {
   private interiorViewWeather = '';
   private interiorBlobMat: THREE.MeshBasicMaterial | null = null;
   /** Structural type, not the SimpleRenderer class: GameScene is imported BY
-   *  the renderer's owner, and a real import here would close the cycle. */
-  private rendererRef: { getRenderer(): THREE.WebGLRenderer } | null = null;
-  public setRendererRef(r: { getRenderer(): THREE.WebGLRenderer }): void {
+   *  the renderer's owner, and a real import here would close the cycle.
+   *  setGradeDayFactor is optional so tests/minimal callers stay valid. */
+  private rendererRef: {
+    getRenderer(): THREE.WebGLRenderer;
+    setGradeDayFactor?(day: number): void;
+  } | null = null;
+  public setRendererRef(r: {
+    getRenderer(): THREE.WebGLRenderer;
+    setGradeDayFactor?(day: number): void;
+  }): void {
     this.rendererRef = r;
   }
 

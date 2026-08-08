@@ -4,8 +4,10 @@ import * as THREE from 'three';
 // there. Keeps the ~40KB of postprocessing code out of the critical bundle that
 // blocks first paint; it's still fetched and warmed well before the reveal.
 import type { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import type { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
+import { GradeShader, isSoftLook } from './SoftLook';
 import { isRealTheme } from './Theme';
 
 /**
@@ -22,6 +24,7 @@ export class SimpleRenderer {
   private renderer: THREE.WebGLRenderer;
   private composer?: EffectComposer;
   private bloomPass?: UnrealBloomPass;
+  private gradePass?: ShaderPass; // ?look=soft time-of-day grade
   private postProcessingEnabled: boolean = false;
 
   // Hard ceiling on rendered pixels (width·height·dpr²). Without it a retina
@@ -97,10 +100,18 @@ export class SimpleRenderer {
     this.renderer.setPixelRatio(this.dprCap);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // Tone mapping is theme-scoped: ACES suits the continuous PBR default,
+    // but it desaturates/skews the flat authored colors a cel look depends on
+    // (the documented "ACES fights cel" problem) — the toon theme runs the
+    // color-preserving Neutral curve instead. Renderer-level on purpose:
+    // per-material toneMapped=false is ignored under the composer but honored
+    // on the mobile direct path, which would fork the look between devices.
+    this.renderer.toneMapping = isRealTheme()
+      ? THREE.ACESFilmicToneMapping
+      : THREE.NeutralToneMapping;
     // Real theme runs a touch hotter: continuous PBR + the soft sky PMREM
     // read dimmer than the toon ramp at the same exposure.
-    this.renderer.toneMappingExposure = isRealTheme() ? 1.14 : 1.08;
+    this.renderer.toneMappingExposure = isRealTheme() ? 1.14 : 1.0;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.shadowMap.autoUpdate = true;
@@ -184,12 +195,13 @@ export class SimpleRenderer {
     // Lazy-load the postprocessing addons as a parallel chunk (kept out of the
     // critical bundle via the type-only imports above). Awaited by the caller
     // before warmUp(), so bloom is still fully compiled ahead of the reveal.
-    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }] =
+    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }, shaderPassMod] =
       await Promise.all([
         import('three/addons/postprocessing/EffectComposer.js'),
         import('three/addons/postprocessing/RenderPass.js'),
         import('three/addons/postprocessing/UnrealBloomPass.js'),
         import('three/addons/postprocessing/OutputPass.js'),
+        import('three/addons/postprocessing/ShaderPass.js'),
       ]);
 
     // Explicit MSAA render target: EffectComposer's default target has
@@ -225,6 +237,32 @@ export class SimpleRenderer {
     // Output pass (tone mapping, gamma)
     const outputPass = new OutputPass();
     this.composer.addPass(outputPass);
+
+    // ?look=soft experiment: taste-tuned bloom + a time-of-day grade AFTER
+    // OutputPass (display-referred sRGB — the space grades are authored in).
+    if (isSoftLook()) {
+      // Soft knee on the bloom high-pass kills sea-specular sparkle pop;
+      // strength is re-modulated per frame by setGradeDayFactor below.
+      const highPass = (
+        bloomPass as unknown as {
+          highPassUniforms?: Record<string, { value: number }>;
+        }
+      ).highPassUniforms;
+      if (highPass?.smoothWidth) highPass.smoothWidth.value = 0.15;
+      const gradePass = new shaderPassMod.ShaderPass(GradeShader);
+      this.gradePass = gradePass;
+      this.composer.addPass(gradePass);
+      console.log('🎞️ SoftLook: day-graded composer chain active');
+    }
+  }
+
+  /** Per-frame hook for the ?look=soft grade: 0 = night, 1 = full day.
+   *  Also breathes the bloom with the cycle (subtle by day, warm at night). */
+  public setGradeDayFactor(day: number): void {
+    if (this.gradePass) {
+      this.gradePass.uniforms.uDay.value = day;
+      if (this.bloomPass) this.bloomPass.strength = 0.15 + (1 - day) * 0.35;
+    }
   }
 
   /**

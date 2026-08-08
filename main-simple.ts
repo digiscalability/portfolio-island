@@ -18,6 +18,7 @@ import { SimpleInputManager } from './SimpleInputManager';
 import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
+import { applySoftLookFogPatch } from './SoftLook';
 import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
@@ -198,6 +199,10 @@ class SimpleApp {
   private async init(): Promise<void> {
     try {
       console.log('🎮 Starting SimpleApp initialization...');
+
+      // ?look=soft experiment: mutate the fog shader chunks BEFORE any
+      // material compiles — the program cache never rebuilds compiled ones.
+      applySoftLookFogPatch();
 
       // Get or create canvas
       let canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
