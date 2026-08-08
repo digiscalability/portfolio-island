@@ -292,6 +292,62 @@ export class Sfx {
     schedule();
   }
 
+  private bandLevel = 0;
+  private bandTimer: number | undefined;
+  // C-major pentatonic, one octave above the ambient bed's melody register —
+  // the theme HARMONIZES with the global loop instead of fighting it.
+  private static readonly BAND_NOTES = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5];
+
+  /**
+   * Diegetic bandstand theme: a gentle music-box phrase every few seconds
+   * while the Musician is actually playing, faded by the caller with distance
+   * (level 0..1 scales note velocity; 0 stops the scheduler). Routed through
+   * the master sfx bus, so it ducks under NPC voice and obeys the mute/volume
+   * controls for free.
+   */
+  public setBandstandLevel(level: number): void {
+    const q = Math.round(Math.max(0, Math.min(1, level)) * 10) / 10; // dequantise churn
+    if (q === this.bandLevel) return;
+    this.bandLevel = q;
+    if (q <= 0) {
+      if (this.bandTimer) clearTimeout(this.bandTimer);
+      this.bandTimer = undefined;
+      return;
+    }
+    if (this.bandTimer) return; // scheduler already running; new level applies per note
+    const phrase = () => {
+      this.bandTimer = window.setTimeout(
+        () => {
+          if (this.bandLevel <= 0) {
+            this.bandTimer = undefined;
+            return;
+          }
+          // A short rising-falling music-box phrase: walk the pentatonic with
+          // small steps, occasional rests, soft triangle voice.
+          const N = Sfx.BAND_NOTES;
+          let idx = Math.floor(Math.random() * 3);
+          const steps = 5 + Math.floor(Math.random() * 4);
+          for (let i = 0; i < steps; i++) {
+            const restRoll = Math.random();
+            idx = Math.max(0, Math.min(N.length - 1, idx + (Math.random() < 0.6 ? 1 : -1)));
+            const f = N[idx];
+            window.setTimeout(
+              () => {
+                if (this.bandLevel > 0 && restRoll > 0.15) {
+                  this.tone(f, f, 0.42, 'triangle', 0.035 * this.bandLevel);
+                }
+              },
+              i * (250 + Math.random() * 60),
+            );
+          }
+          phrase();
+        },
+        3500 + Math.random() * 4000,
+      );
+    };
+    phrase();
+  }
+
   private ducked = false;
 
   /** Duck the whole sfx bus (beds + one-shots) under NPC voice so speech

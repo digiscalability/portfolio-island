@@ -54,6 +54,10 @@ export interface JournalData {
   races: Array<{ label: string; best: number | null }>;
   deliveries: { done: number; total: number };
   coins: number;
+  /** Rumor-driven discovery ledger: cryptic lines for what's still out there. */
+  secrets?: { found: number; total: number; rumors: string[] };
+  /** Visit ledger: distinct days + current no-punishment streak. */
+  visits?: { days: number; streak: number };
 }
 
 export class SimpleUI {
@@ -1256,10 +1260,28 @@ export class SimpleUI {
        ${meter('🎩 Hats collected', data.hats.filter((h) => h.owned).length, data.hats.length)}
        <div style="margin:6px 0 2px;letter-spacing:2px;">${hatRow}</div>
        ${meter('📬 Deliveries', data.deliveries.done, data.deliveries.total)}
+       ${
+         data.secrets
+           ? `${meter('🗝️ Island secrets', data.secrets.found, data.secrets.total)}
+              ${
+                data.secrets.rumors.length
+                  ? `<div style="margin:6px 0 0;font-size:12px;color:#9aa;font-style:italic;line-height:1.5;">
+                       ${data.secrets.rumors.map((r) => `“${r}”`).join('<br>')}</div>`
+                  : `<div style="margin:6px 0 0;font-size:12px;color:#4ade80;">Every secret found — true islander.</div>`
+              }`
+           : ''
+       }
        <div style="margin:14px 0 4px;font-size:13px;color:#ccd;font-weight:600;">🏁 Race bests</div>
        ${raceRows}
        <div style="display:flex;justify-content:space-between;margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12);font-size:13px;">
-         <span style="color:#ccd;">🪙 Coins collected</span><span style="color:#ffd54a;font-weight:700;">${data.coins}</span></div>`,
+         <span style="color:#ccd;">🪙 Coins collected</span><span style="color:#ffd54a;font-weight:700;">${data.coins}</span></div>
+       ${
+         data.visits
+           ? `<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:13px;">
+                <span style="color:#ccd;">📅 Days visited</span>
+                <span style="color:#8a9bff;font-weight:600;">${data.visits.days}${data.visits.streak > 1 ? ` · ${data.visits.streak}-day streak` : ''}</span></div>`
+           : ''
+       }`,
     );
     this.overlay.appendChild(modal);
   }
@@ -1478,6 +1500,10 @@ export class SimpleUI {
   private onTour: (() => void) | null = null;
   public setOnTour(cb: () => void): void {
     this.onTour = cb;
+  }
+  private onRecruitTour: (() => void) | null = null;
+  public setOnRecruitTour(cb: () => void): void {
+    this.onRecruitTour = cb;
   }
   private onRaceGuide: (() => void) | null = null;
   public setOnRaceGuide(cb: () => void): void {
@@ -2650,6 +2676,10 @@ export class SimpleUI {
       ${exploreBtn}
       ${secondaryRow}
       <p style="margin: 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
+      <p style="margin: 8px 0 0; font-size: 12px;">
+        <button data-recruit style="background:none;border:none;padding:0;color:#8a9bff;
+          font-size:12px;cursor:pointer;text-decoration:underline;">
+          ⏱️ Hiring? 60-second highlights</button></p>
     `;
 
     // Dismiss only on an explicit choice — a CTA, the Explore button, or
@@ -2688,6 +2718,12 @@ export class SimpleUI {
       track('welcome_cta', { cta: 'tour' });
       closeWelcome();
       this.onTour?.();
+    });
+    this.welcomeDiv.querySelector('button[data-recruit]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('welcome_cta', { cta: 'recruit' });
+      closeWelcome();
+      this.onRecruitTour?.();
     });
     this.welcomeDiv.querySelector('button[data-race]')?.addEventListener('click', (e) => {
       e.stopPropagation();

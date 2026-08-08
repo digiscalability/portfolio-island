@@ -15,6 +15,7 @@ import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor }
 import { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { loadProfile, saveProfile } from './profileSync';
+import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
 import { SimpleInputManager } from './SimpleInputManager';
@@ -593,6 +594,21 @@ class SimpleApp {
         beat();
         window.setInterval(beat, 60_000);
         window.addEventListener('pagehide', beat);
+        // Daily date-stamp: one entry per distinct day (no-punishment streak —
+        // the journal celebrates presence, never scolds absence).
+        const today = new Date().toISOString().slice(0, 10);
+        const days: string[] = JSON.parse(localStorage.getItem('ds_visit_days') ?? '[]');
+        if (!days.includes(today)) {
+          days.push(today);
+          localStorage.setItem('ds_visit_days', JSON.stringify(days.slice(-120)));
+          const ledger = this.visitLedger();
+          if (ledger.streak >= 2) {
+            window.setTimeout(
+              () => this.ui.toast(`📅 Day ${ledger.streak} in a row — the island kept a light on.`),
+              6000,
+            );
+          }
+        }
       } catch {
         /* no storage */
       }
@@ -646,6 +662,14 @@ class SimpleApp {
             total: this.deliverySystem?.getTotalCount() ?? 10,
           },
           coins: this.scene.getCoinsCollected(),
+          secrets: {
+            found: this.secrets.count(),
+            total: this.secrets.total(),
+            // Up to three cryptic pulls — a full list would read as a checklist,
+            // not a mystery.
+            rumors: this.secrets.unfoundRumors().slice(0, 3),
+          },
+          visits: this.visitLedger(),
         };
       });
 
@@ -730,6 +754,7 @@ class SimpleApp {
       // Cinematic tour + race guide CTAs (welcome modal / leaderboards) and the
       // UI-side completion flags (guestbook, Times, say-hi) refreshing the pill.
       this.ui.setOnTour(() => this.startTour());
+      this.ui.setOnRecruitTour(() => this.startTour(true));
       this.ui.setOnRaceGuide(() => this.guideToRace());
       this.ui.setOnProgressMade(() => this.refreshCompletion());
       this.refreshCompletion();
@@ -879,7 +904,8 @@ class SimpleApp {
         // links get their shared content directly; everyone else, the pitch.
         const sp = new URLSearchParams(window.location.search);
         const wantTour = sp.get('tour') === '1';
-        if (wantTour) this.startTour();
+        if (sp.get('recruit') === '1') this.startTour(true);
+        else if (wantTour) this.startTour();
         else if (this.applyPostcardParam(sp.get('pc'))) {
           /* postcard view active — welcome deferred to its dismiss */
         } else if (this.applyRaceChallengeParam(sp)) {
@@ -1020,6 +1046,44 @@ class SimpleApp {
   private capturing = false;
   /** Previous visit's last heartbeat (epoch ms; 0 = first visit / unknown). */
   private prevSeenAt = 0;
+  /** The rumor-driven discovery loop (see Secrets.ts). */
+  private secrets = new Secrets();
+  private secretSpots: Array<{ id: string; pos: THREE.Vector3 }> = [];
+
+  /** Resolve the nine secret spots to world positions (once; the landmarks
+   *  all exist by the time the first proximity sweep runs). */
+  private resolveSecretSpots(): void {
+    if (this.secretSpots.length) return;
+    const island = this.scene.getIsland();
+    const add = (id: string, pos: THREE.Vector3 | null | undefined) => {
+      if (pos) this.secretSpots.push({ id, pos: pos.clone() });
+    };
+    const surf = (dir: THREE.Vector3 | null | undefined): THREE.Vector3 | null => {
+      if (!dir) return null;
+      try {
+        return island.sampleSurfaceByDirection(dir, 0).position;
+      } catch {
+        return null;
+      }
+    };
+    add('lighthouse', surf(island.lighthouseDir));
+    add('summit', surf(island.trailSummitDir));
+    add('garden', surf(island.gardenDir));
+    add('scarecrow', surf(island.farmDir));
+    add('bandstand', island.bandstandSites[0]);
+    add('easel', island.easelSites[0]);
+    const sc = this.scene.getObjectByName('story_circle');
+    if (sc) add('story-circle', sc.getWorldPosition(new THREE.Vector3()));
+    add('heron-shore', surf(island.dirAt(2.1, 0.22)));
+    add(
+      'hall',
+      this.scene
+        .getZonesManager()
+        .getZones()
+        .find((z) => z.id === 'welcome')
+        ?.getPosition(),
+    );
+  }
 
   /**
    * Photo mode: hide the HUD for one frame, capture the drawing buffer, brand
@@ -1199,9 +1263,12 @@ class SimpleApp {
 
   private raceChallenge: { kind: 'land' | 'water'; ms: number } | null = null;
 
-  /** Append return-visit facts to an NPC greeting's LLM copy (never the
-   *  displayed text). Kept short — the server clamps openings to 300 chars. */
+  /** Append return-visit facts and (sometimes) an island rumor to an NPC
+   *  greeting's LLM copy (never the displayed text). The rumor sentence is
+   *  authored and injected VERBATIM — the model flavors around it but cannot
+   *  corrupt directions it never generates. Server clamps openings to 300. */
   private withVisitorFacts(aware: string): string {
+    let out = aware;
     const facts: string[] = [];
     if (this.prevSeenAt) {
       const days = Math.round((Date.now() - this.prevSeenAt) / 86_400_000);
@@ -1211,8 +1278,13 @@ class SimpleApp {
       const hat = this.hatCatalog.find((h) => h.id === this.equippedHat);
       if (hat) facts.push(`wearing the ${hat.name}`);
     }
-    if (!facts.length) return aware;
-    return `${aware} (The traveller is ${facts.join(', ')}.)`.slice(0, 300);
+    if (facts.length) out = `${out} (The traveller is ${facts.join(', ')}.)`;
+    const rumors = this.secrets.unfoundRumors();
+    if (rumors.length && Math.random() < 0.45) {
+      const r = rumors[Math.floor(Math.random() * rumors.length)];
+      out = `${out} (If it fits, mention this island rumor word-for-word: "${r}")`;
+    }
+    return out.slice(0, 300);
   }
 
   /**
@@ -1467,10 +1539,13 @@ class SimpleApp {
 
     // Completion meter: recompute on a slow cadence (plus immediately at each
     // flag site) so passport stamps landed elsewhere still surface here.
+    // The secret-spot proximity sweep rides the same 2.5s cadence — nine
+    // distance checks against static points, effectively free.
     this.completionAccum += deltaTime;
     if (this.completionAccum > 2.5) {
       this.completionAccum = 0;
       this.refreshCompletion();
+      this.sweepSecrets();
     }
 
     // Only process input once the loader and welcome screen are gone
@@ -1758,6 +1833,12 @@ class SimpleApp {
       let sea = lat < 0.5 ? 0.45 : 0.15;
       if (audioPlayer.isInWater()) sea = 1;
       sfx.setSeaLevel(sea);
+      // Diegetic bandstand theme: audible only near the stage AND only while
+      // the Musician is actually playing (his LIVE activity, not the clock —
+      // moods and daily plans can reroute him). Fades over ~18u.
+      const stage = this.scene.getIsland().bandstandSites[0];
+      const playing = stage && this.scene.getNpcActivity('Musician') === 'play_music';
+      sfx.setBandstandLevel(playing ? Math.max(0, 1 - wp.distanceTo(stage) / 18) : 0);
     }
     // Vehicle engine loop while driving; silent on foot
     if (this.scene.isRidingVehicle()) {
@@ -1929,8 +2010,9 @@ class SimpleApp {
    * world state (zone plazas + a working NPC), so the tour survives layout
    * changes for free. No-op if already touring or inside a building.
    */
-  private startTour(): void {
+  private startTour(recruiter = false): void {
     if (this.tour || this.scene.isInsideInterior()) return;
+    this.tourRecruiter = recruiter;
     const zones = new Map(
       this.scene
         .getZonesManager()
@@ -1958,46 +2040,76 @@ class SimpleApp {
         r: camPos.length(),
       });
     };
-    addStop(
-      zones.get('welcome'),
-      "Welcome to Life Island \u2014 Abbas Ali's portfolio, built as a living planet you can walk around.",
-      24,
-      8,
-    );
-    addStop(
-      zones.get('professional'),
-      'The Professional District \u2014 full-stack and AI engineering. Step inside the office for the story.',
-      9.5,
-      14,
-    );
-    addStop(
-      zones.get('projects'),
-      'The Projects District \u2014 ventures under construction: RankPilot, ChocoMate, and friends.',
-      9.5,
-      14,
-    );
-    addStop(
-      this.scene.getNpcPosition('Gardener') ?? this.scene.getNpcPosition('Guard'),
-      'Every townsperson is a live AI agent \u2014 planned each morning, reported on nightly. Talk to anyone.',
-      // High enough to clear tree canopies \u2014 NPC positions are live, so a low
-      // camera is occlusion roulette (a prod capture found a tree filling it).
-      6.5,
-      9,
-    );
-    addStop(
-      zones.get('personal'),
-      'The Personal District \u2014 the human behind the code, and the cottages the townsfolk sleep in.',
-      9.5,
-      14,
-    );
-    addStop(
-      zones.get('contact'),
-      'Get In Touch \u2014 the Post Office sends Abbas a real email. The island is yours from here.',
-      8.5,
-      13,
-    );
+    if (recruiter) {
+      // RECRUITER MODE \u2014 the 60-second play-to-hire path (the deep-dive
+      // critic's top flag: nothing routed a visitor from playing to hiring).
+      // Four punchy stops, shorter dwell, and it ENDS on the contact panel.
+      addStop(
+        zones.get('welcome'),
+        'Abbas Ali \u2014 full-stack + AI engineer. This whole planet is his hand-built portfolio.',
+        24,
+        8,
+      );
+      addStop(
+        zones.get('professional'),
+        'The engineering: Three.js, TypeScript, Firebase, real-time multiplayer \u2014 all custom.',
+        9.5,
+        14,
+      );
+      addStop(
+        this.scene.getNpcPosition('Storyteller') ?? this.scene.getNpcPosition('Gardener'),
+        'Every villager is a live AI agent with a voice \u2014 planned, scheduled, and reported on by LLMs.',
+        6.5,
+        9,
+      );
+      addStop(
+        zones.get('contact'),
+        "That's the 60-second version \u2014 the contact form sends Abbas a real email.",
+        8.5,
+        13,
+      );
+    } else {
+      addStop(
+        zones.get('welcome'),
+        "Welcome to Life Island \u2014 Abbas Ali's portfolio, built as a living planet you can walk around.",
+        24,
+        8,
+      );
+      addStop(
+        zones.get('professional'),
+        'The Professional District \u2014 full-stack and AI engineering. Step inside the office for the story.',
+        9.5,
+        14,
+      );
+      addStop(
+        zones.get('projects'),
+        'The Projects District \u2014 ventures under construction: RankPilot, ChocoMate, and friends.',
+        9.5,
+        14,
+      );
+      addStop(
+        this.scene.getNpcPosition('Gardener') ?? this.scene.getNpcPosition('Guard'),
+        'Every townsperson is a live AI agent \u2014 planned each morning, reported on nightly. Talk to anyone.',
+        // High enough to clear tree canopies \u2014 NPC positions are live, so a low
+        // camera is occlusion roulette (a prod capture found a tree filling it).
+        6.5,
+        9,
+      );
+      addStop(
+        zones.get('personal'),
+        'The Personal District \u2014 the human behind the code, and the cottages the townsfolk sleep in.',
+        9.5,
+        14,
+      );
+      addStop(
+        zones.get('contact'),
+        'Get In Touch \u2014 the Post Office sends Abbas a real email. The island is yours from here.',
+        8.5,
+        13,
+      );
+    }
     if (stops.length === 0) return;
-    track('tour_start');
+    track(recruiter ? 'recruit_tour_start' : 'tour_start');
     const cam = this.scene.getCamera();
     this.scene.setCameraSuspended(true);
     this.ui.hideInteractionPrompt();
@@ -2070,9 +2182,27 @@ class SimpleApp {
     this.tour = null;
     this.ui.hideTourOverlay();
     this.scene.setCameraSuspended(false);
-    track(skipped ? 'tour_skip' : 'tour_complete');
+    const recruiter = this.tourRecruiter;
+    this.tourRecruiter = false;
+    track(
+      recruiter
+        ? skipped
+          ? 'recruit_tour_skip'
+          : 'recruit_tour_complete'
+        : skipped
+          ? 'tour_skip'
+          : 'tour_complete',
+    );
+    if (recruiter && !skipped) {
+      // The play-to-hire path CONVERTS: the highlights end on the contact
+      // panel with the lead form ready, not on an empty meadow.
+      this.ui.showZonePanel({ id: 'contact', name: 'Get In Touch' }, { source: 'cta' });
+      return;
+    }
     this.ui.flashMessage('\ud83e\udded The island is yours \u2014 walk anywhere, talk to anyone');
   }
+
+  private tourRecruiter = false;
 
   /**
    * Constant-speed rotation from direction `a` to `b` (unit vectors) by
@@ -2104,6 +2234,50 @@ class SimpleApp {
     this.ui.flashMessage(
       '\ud83c\udfc1 Follow the compass to the start gate \u2014 grab a car and drive through the glowing rings',
     );
+  }
+
+  /** Discovery sweep: standing within ~5.5u of an unfound secret finds it —
+   *  flash with its revealed name, chime, a few coins, journal tick. */
+  private sweepSecrets(): void {
+    if (this.secrets.count() >= this.secrets.total()) return;
+    this.resolveSecretSpots();
+    const p = this.scene.getPlayer()?.getWorldPosition();
+    if (!p) return;
+    for (const s of this.secretSpots) {
+      if (this.secrets.has(s.id) || p.distanceToSquared(s.pos) > 30) continue;
+      if (!this.secrets.discover(s.id)) continue;
+      const def = SECRETS.find((d) => d.id === s.id);
+      this.ui.flashMessage(`🔍 Secret found: ${def?.title ?? s.id}!`);
+      sfx.collect();
+      this.scene.addCoins(3);
+      this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+      track('secret_found', { id: s.id, n: this.secrets.count() });
+      if (this.secrets.count() === this.secrets.total()) {
+        window.setTimeout(
+          () => this.ui.flashMessage('🗝️ All nine island secrets found — true islander!'),
+          2200,
+        );
+        trackOnce('secrets_complete');
+      }
+    }
+  }
+
+  /** Distinct visit days + the current consecutive-day streak ending today. */
+  private visitLedger(): { days: number; streak: number } {
+    try {
+      const days: string[] = JSON.parse(localStorage.getItem('ds_visit_days') ?? '[]');
+      const set = new Set(days);
+      let streak = 0;
+      const d = new Date();
+      for (;;) {
+        if (!set.has(d.toISOString().slice(0, 10))) break;
+        streak++;
+        d.setDate(d.getDate() - 1);
+      }
+      return { days: set.size, streak };
+    } catch {
+      return { days: 1, streak: 1 };
+    }
   }
 
   /** Set a one-shot completion flag + refresh the meter immediately. */
