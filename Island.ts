@@ -2123,19 +2123,13 @@ export class Island {
       // boulevard centerline, then back off 90° so +X takes its place
       this.faceObjectToward(lampGroup, sampled.normal, faceTarget);
       lampGroup.rotateOnAxis(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
-      if (withLight) {
-        // The old light was distance 3 while the bulb sits 3.26u up (the group
-        // scales 2.2x) — it physically could not reach the road it was meant
-        // to light, which is why the street read as black between the poles.
-        // Only the primary lamps carry one: real lights cost per fragment, so
-        // the count stays where it was and each one now actually works.
-        // Distance is world-space and is NOT scaled by the group's 2.9x, so it
-        // has to clear the new 4.3u bulb height plus the pool radius by hand.
-        const lampLight = new THREE.PointLight(0xffeeaa, 3.4, 15, 2);
-        lampLight.position.set(0.35, 1.48, 0);
-        lampLight.userData = { isLampLight: true };
-        lampGroup.add(lampLight);
-      }
+      // No per-lamp light. Ten static lights meant the other twenty-seven
+      // lamps were pure decoration — you could walk directly under one and
+      // nothing touched you. GameScene roams THREE lights onto whichever
+      // lamps are nearest the player instead (updateLampFollowLights), so
+      // every lamp on the island lights you when you stand under it, at a
+      // third of the fragment cost of the old arrangement.
+      void withLight;
       lamps.add(lampGroup);
       lampPositions.push(sampled.position.clone().add(new THREE.Vector3(0, 1.48, 0)));
     };
@@ -3748,6 +3742,65 @@ export class Island {
     roof.position.y = galleryY + 1.85;
     roof.castShadow = true;
     g.add(roof);
+
+    // THE BEAM. The lantern glowed but threw nothing — a lighthouse that does
+    // not sweep is just a striped tower. Two opposed cones of additive haze
+    // (apex at the lantern, laid on their sides so they point out to sea)
+    // plus ONE real spotlight riding the same pivot, so the sweep actually
+    // lands on the rocks and the water as it passes. GameScene spins the
+    // pivot and fades the whole thing in as the light goes.
+    const beam = new THREE.Group();
+    beam.name = 'lighthouse_beam';
+    beam.position.y = galleryY + 0.85;
+    // A flat additive cone renders as a solid pipe across the sky (it was
+    // unmistakably two beige tubes on the first pass). The fix is a gradient
+    // down the cone's V axis — bright at the lantern, gone by the far end —
+    // plus FrontSide, since DoubleSide adds the far wall's contribution on
+    // top of the near one and doubles everything.
+    const gcv = document.createElement('canvas');
+    gcv.width = 4;
+    gcv.height = 64;
+    const gctx = gcv.getContext('2d');
+    if (gctx) {
+      // Canvas y=0 is the TOP, and textures sample with flipY, so canvas-top
+      // lands at v=1 — which on a three.js cone is the APEX. The bright stop
+      // therefore belongs at canvas y=0, or the beam glows at the wrong end
+      // (it did, on the first pass: solid at the horizon, invisible at the
+      // lamp that was supposed to be casting it).
+      const grad = gctx.createLinearGradient(0, 0, 0, 64);
+      grad.addColorStop(0, 'rgba(255,240,200,1)'); // apex — at the lantern
+      grad.addColorStop(0.45, 'rgba(255,233,168,0.35)');
+      grad.addColorStop(1, 'rgba(255,233,168,0)'); // far end — nothing
+      gctx.fillStyle = grad;
+      gctx.fillRect(0, 0, 4, 64);
+    }
+    const beamTex = new THREE.CanvasTexture(gcv);
+    beamTex.colorSpace = THREE.SRGBColorSpace;
+    const beamMat = new THREE.MeshBasicMaterial({
+      map: beamTex,
+      color: 0xffe9a8,
+      transparent: true,
+      opacity: 0, // GameScene ramps this at dusk
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.FrontSide,
+    });
+    beam.userData.beamMat = beamMat;
+    const BEAM_LEN = 26;
+    for (const s of [1, -1]) {
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(1.05, BEAM_LEN, 12, 1, true), beamMat);
+      // Cones are built along +Y: tip it onto the horizontal and push it out
+      // so the narrow apex sits at the lantern, not the fat end.
+      cone.rotation.z = (s * Math.PI) / 2;
+      cone.position.set((s * BEAM_LEN) / 2, 0, 0);
+      beam.add(cone);
+    }
+    const beamLight = new THREE.SpotLight(0xffe4a0, 0, 34, 0.2, 0.6, 1.4);
+    beamLight.position.set(0, 0, 0);
+    beamLight.target.position.set(12, -3.5, 0); // out and down toward the water
+    beam.add(beamLight, beamLight.target);
+    beam.userData.beamLight = beamLight;
+    g.add(beam);
 
     console.log('🗼 Lighthouse placed on the coast');
     return g;

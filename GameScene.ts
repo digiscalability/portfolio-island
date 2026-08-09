@@ -74,6 +74,12 @@ export class GameScene extends THREE.Scene {
   // The warm bulb materials of every street lamp — update() switches them on at
   // dusk and off by day so the lamps read as actually lit, not always-glowing.
   private lampBulbMats: THREE.MeshStandardMaterial[] = [];
+  // Three lights that roam to whichever lamps you are nearest, instead of one
+  // static light per lamp. 37 lamps cannot each afford a real light, but you
+  // are only ever under one or two at a time — so the lights follow you.
+  private lampFollowLights: Array<{ light: THREE.PointLight; siteIndex: number }> = [];
+  private lampFollowAccum = 0;
+  private lighthouseBeam: THREE.Object3D | null = null;
   // Moving contact shadows under the wandering villagers (the static
   // grounding-shadow mesh only covers props). One InstancedMesh, re-placed
   // each frame under each NPC's feet.
@@ -1004,7 +1010,70 @@ export class GameScene extends THREE.Scene {
     mesh.instanceMatrix.needsUpdate = true;
     this.add(mesh);
     this.lampPoolMat = mat;
-    console.log(`💡 ${anchors.length} lamp light pools (1 draw call)`);
+
+    // Roaming lamp lights: three real point lights that re-park themselves on
+    // the lamps nearest the player. Distance 16 with decay 2 clears the 4.3u
+    // bulb height with reach to spare over the pool.
+    for (let i = 0; i < 3; i++) {
+      const l = new THREE.PointLight(0xffeeaa, 0, 16, 2);
+      l.name = `lamp_follow_${i}`;
+      this.add(l);
+      this.lampFollowLights.push({ light: l, siteIndex: -1 });
+    }
+    console.log(`💡 ${anchors.length} lamp light pools (1 draw call) + 3 roaming lights`);
+  }
+
+  /**
+   * Park the roaming lights on the lamps nearest the player and fade them with
+   * the night. Re-picked on a 0.2s cadence (37 distance checks — nothing), and
+   * intensity always EASES, so a light changing which lamp it serves reads as
+   * one lamp fading up rather than a pop.
+   */
+  private updateLampFollowLights(deltaTime: number, dayFactor: number): void {
+    if (!this.lampFollowLights.length) return;
+    const sites = this.island.lampSites;
+    const night = Math.max(0, 1 - dayFactor * 1.35);
+    this.lampFollowAccum += deltaTime;
+    if (this.lampFollowAccum > 0.2 && sites.length) {
+      this.lampFollowAccum = 0;
+      const p = this.player.getWorldPosition();
+      // Partial selection: the three nearest sites, no sort of the whole list.
+      const best = [-1, -1, -1];
+      const bestD = [Infinity, Infinity, Infinity];
+      for (let i = 0; i < sites.length; i++) {
+        const d = sites[i].distanceToSquared(p);
+        if (d < bestD[0]) {
+          bestD[2] = bestD[1];
+          best[2] = best[1];
+          bestD[1] = bestD[0];
+          best[1] = best[0];
+          bestD[0] = d;
+          best[0] = i;
+        } else if (d < bestD[1]) {
+          bestD[2] = bestD[1];
+          best[2] = best[1];
+          bestD[1] = d;
+          best[1] = i;
+        } else if (d < bestD[2]) {
+          bestD[2] = d;
+          best[2] = i;
+        }
+      }
+      for (let i = 0; i < this.lampFollowLights.length; i++) {
+        const slot = this.lampFollowLights[i];
+        const idx = best[i];
+        if (idx < 0 || idx === slot.siteIndex) continue;
+        slot.siteIndex = idx;
+        // Bulb height: the lamp group scales 2.9x and the bulb sits at 1.48.
+        const site = sites[idx];
+        slot.light.position.copy(site).addScaledVector(site.clone().normalize(), 4.29);
+        slot.light.intensity = 0; // ease up from dark on a re-park
+      }
+    }
+    for (const slot of this.lampFollowLights) {
+      const want = slot.siteIndex >= 0 ? 3.4 * night : 0;
+      slot.light.intensity += (want - slot.light.intensity) * Math.min(1, 3 * deltaTime);
+    }
   }
 
   private setupLighting(): void {
@@ -7544,6 +7613,22 @@ export class GameScene extends THREE.Scene {
     if (this.lampBulbMats.length) {
       const glow = 0.05 + 1.35 * (1 - day);
       for (const m of this.lampBulbMats) m.emissiveIntensity = glow;
+    }
+    this.updateLampFollowLights(deltaTime, day);
+    // Lighthouse sweep: one slow revolution every ~17s, hazy cones and the
+    // spotlight fading up together as the light goes.
+    if (this.lighthouseBeam === null && this.island) {
+      this.lighthouseBeam = this.getObjectByName('lighthouse_beam') ?? null;
+    }
+    if (this.lighthouseBeam) {
+      this.lighthouseBeam.rotation.y += deltaTime * 0.37;
+      const nightBeam = Math.max(0, 1 - day * 1.25);
+      const ud = this.lighthouseBeam.userData as {
+        beamMat?: THREE.MeshBasicMaterial;
+        beamLight?: THREE.SpotLight;
+      };
+      if (ud.beamMat) ud.beamMat.opacity = 0.5 * nightBeam;
+      if (ud.beamLight) ud.beamLight.intensity = 26 * nightBeam;
     }
     // ?look=soft: the composer's grade pass + bloom breathe with the cycle.
     this.rendererRef?.setGradeDayFactor?.(day);
