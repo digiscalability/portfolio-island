@@ -1775,10 +1775,12 @@ export class Island {
       // Slope gate: no trees on cliff faces (mirrors the grass gate 60 lines
       // down) so trees stop growing on crags and accent the peaks instead.
       if (sampled.normal.dot(dir) < 0.84) continue;
-      const q = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        sampled.normal,
-      );
+      // Trees grow RADIALLY (straight "up" against gravity, like real trees
+      // reaching for light) — NOT tilted with the slope. Playtest-locked:
+      // slope-normal trees on hillsides read as falling over. The ring-min
+      // seat below still buries the trunk base properly on uneven ground;
+      // only the growth direction is vertical.
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
 
       // Real tree scale: ~4-6u tall so they read as TREES, not shrubs, beside
       // the ~1.7u player (were 2.4-3.6u — barely taller than the person).
@@ -6681,6 +6683,20 @@ export class Island {
                 copy.position.setLength(
                   Math.min(copy.position.length(), this.ringMinRadius(treeDir, 0.5)) - 0.18,
                 );
+                // Trees grow RADIALLY, never tilted with the slope (same
+                // playtest-locked rule as the procedural family): override
+                // the placement's surface-normal alignment with straight-up,
+                // plus a random yaw so the one model doesn't march in step.
+                // (Safe random: this async loop already lands after
+                // restoreRandom — usedScale above draws from the same clock.)
+                copy.quaternion
+                  .setFromUnitVectors(new THREE.Vector3(0, 1, 0), treeDir)
+                  .multiply(
+                    new THREE.Quaternion().setFromAxisAngle(
+                      new THREE.Vector3(0, 1, 0),
+                      Math.random() * Math.PI * 2,
+                    ),
+                  );
                 this.mesh.add(copy);
                 // These trees land after GameScene's collider registration —
                 // queue a trunk collider for it to drain (canopy stays
