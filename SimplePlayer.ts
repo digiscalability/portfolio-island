@@ -555,10 +555,11 @@ export class SimplePlayer extends THREE.Group {
           const s2 = Math.sin(swimClock * 2);
           model.rotation.x = 1.35 * poseW;
           model.rotation.z = s * 0.18 * poseW;
-          if (armLBone)
-            armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -1.4 + s * 1.3, poseW);
-          if (armRBone)
-            armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -1.4 - s * 1.3, poseW);
+          // Same rest-relative crawl as the local player (see applySwimPose):
+          // blend out from -PI rather than from the live value, which flips
+          // sign across +/-PI between frames.
+          if (armLBone) armLBone.rotation.x = -Math.PI + (1.4 + s * 1.3) * poseW;
+          if (armRBone) armRBone.rotation.x = -Math.PI + (1.4 - s * 1.3) * poseW;
           // legL/legR rest at PI (bone +Y runs down the limb). Anchor the
           // trailing bias to PI or the legs fold up toward the head, and
           // blend with poseW from PI itself rather than from the live value,
@@ -922,9 +923,28 @@ export class SimplePlayer extends THREE.Group {
       // Face-down along the water, rolling with the stroke only while prone
       this.gltfModel.rotation.x = this.swimPitch;
       this.gltfModel.rotation.z = s * 0.18 * prone;
-      // Alternating overhead crawl while stroking; soft sculling tread idle
-      if (this.armLBone) this.armLBone.rotation.x = moving ? -1.4 + s * 1.3 : -1.1 + s * 0.5;
-      if (this.armRBone) this.armRBone.rotation.x = moving ? -1.4 - s * 1.3 : -1.1 - s * 0.5;
+      // Alternating front-crawl while stroking; soft sculling tread idle.
+      // REST-RELATIVE, like the wave and the legs: the arm bones hang at
+      // ~-PI, so writing -1.4 absolutely ran the whole stroke in the wrong
+      // frame — the hands swept back-to-front, which is a backstroke on a
+      // face-down body. Anchored to -PI, +delta reaches FORWARD past the
+      // head and the arm pulls back through the water, which is the crawl.
+      // A crawl is a WINDMILL, not an oscillation. The arm direction in parent
+      // space is (0, cos t, sin t), so a swinging range that never lets sin go
+      // positive keeps both hands behind the shoulder for the whole cycle —
+      // measured on the old code, hand z ran -0.05 -> -0.49 -> -0.21, i.e. a
+      // permanent backstroke. Rotating continuously carries each hand forward
+      // past the head (z > 0), down, back through the pull (z < 0) and over
+      // the top again. The two arms sit half a revolution apart.
+      const REST_X = -Math.PI;
+      if (moving) {
+        if (this.armLBone) this.armLBone.rotation.x = REST_X - this.swimPhase;
+        if (this.armRBone) this.armRBone.rotation.x = REST_X - this.swimPhase + Math.PI;
+      } else {
+        // Treading: gentle sculling either side of straight-down.
+        if (this.armLBone) this.armLBone.rotation.x = REST_X + 0.55 + s * 0.35;
+        if (this.armRBone) this.armRBone.rotation.x = REST_X + 0.55 - s * 0.35;
+      }
       // Flutter kick behind the travel direction
       if (this.legLBone) this.legLBone.rotation.x = legBase + s2 * 0.35;
       if (this.legRBone) this.legRBone.rotation.x = legBase - s2 * 0.35;

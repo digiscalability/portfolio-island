@@ -3616,8 +3616,20 @@ export class GameScene extends THREE.Scene {
    * behind him (terrain radius 48.65 astern, 50.69 ahead, sea level 50.10).
    */
   private orientAvatar(obj: THREE.Object3D, up: THREE.Vector3, fwd: THREE.Vector3): void {
-    obj.quaternion.copy(this.orientQuat(up, fwd)).multiply(GameScene._flipYaw);
+    // WORLD LAW — THINGS THAT STAND, STAND PLUMB.
+    // The `up` argument is deliberately IGNORED for the tilt. People stand
+    // against gravity, never square to the hillside: a villager raked over to
+    // match a 25-degree slope reads as a body propped against the scenery,
+    // which is exactly what the Market Vendor was doing outside the shop.
+    // The parameter is kept so call sites stay symmetric with orientObj (and
+    // so the surface normal remains available if a future pose wants it), but
+    // the up-axis always comes from the object's own position: radial = up.
+    void up;
+    const plumb = GameScene._plumbUp.copy(obj.position).normalize();
+    obj.quaternion.copy(this.orientQuat(plumb, fwd)).multiply(GameScene._flipYaw);
   }
+
+  private static readonly _plumbUp = new THREE.Vector3();
 
   /** Half turn about the model's own up — converts a −Z-forward prop basis
    *  into the +Z-forward one the villager avatars are authored with. */

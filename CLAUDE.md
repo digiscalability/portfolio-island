@@ -38,6 +38,46 @@ When I arrive, assume I'm resuming. Never ask "what would you like to work on to
 - **Deploy:** Vercel — LIVE at island.digiscalability.com via `vercel --prod --yes`. Branch pushed to GitHub (`digiscalability/portfolio-island`). (Firebase Hosting / Google Cloud VM are no longer used.)
 - **Dev env:** `npm run dev` (Vite, pinned to port 5173). Windows: stop leaked servers by PID, never `pkill` (a no-op here).
 
+## World laws (non-negotiable — check EVERY new asset against these)
+
+These are not style preferences. Each one was learned by shipping the
+opposite and having it reported as broken.
+
+1. **THINGS THAT STAND, STAND PLUMB.** Trees, palms, buildings, market
+   stalls, lamp posts, towers, houses, parked cars and *people* all take a
+   RADIAL up-axis (`position.clone().normalize()`), never the terrain's
+   slope normal. Only the POSITION follows the ground. A rigid object raked
+   over to match a hillside reads as collapsed, not planted — and a villager
+   raked over reads as a corpse propped against the scenery.
+   - Seat with `setFromUnitVectors(AXIS_Y, plumbUp)`.
+   - `GameScene.orientAvatar()` enforces this for every villager; use it for
+     people and `orientObj` only for props whose forward is −Z.
+   - **`faceObjectToward` PREMULTIPLIES about the axis you hand it** — pass
+     the plumb axis, or it quietly re-tilts what you just made vertical.
+   - The exception is genuinely soft/organic ground clutter (grass, rocks,
+     feed piles), which may follow the normal.
+
+2. **THE AVATAR RIGS HAVE NON-IDENTITY REST POSES.** On `player.glb` and
+   `npc.glb` the limb bones hang at ~±π (the limb axis is local +Y, so
+   `rotation.x = 0` points a limb straight UP). Any constant written
+   ABSOLUTELY to `bone.rotation.x` wipes that rest and flips the limb 180°.
+   - Anchor absolute writes to `-Math.PI` (the wave, the swim stroke, the
+     swim legs were all shipped broken this way), or compose onto a cached
+     rest quaternion (`l.b.quaternion.copy(l.rest).multiply(...)`) — which
+     is MANDATORY on `npc.glb`.
+   - Never lerp from the live `rotation.x` near ±π: three.js reports +3.13
+     one frame and −3.13 the next, so the limb picks a new direction each
+     frame.
+   - Remote peers keep their OWN copies of these poses in `SimplePlayer` —
+     fix both or other players stay broken.
+
+3. **MEASURE THE RIG, DON'T REASON ABOUT IT.** Every "floating" or
+   "backwards" bug this project has had was a clearance applied twice or an
+   offset taken from the wrong anchor. Probe the actual world position of
+   the bone/vertex and work backwards from the number before touching a
+   constant. The avatar's ROOT is at its FEET; joint heights are not
+   guessable.
+
 ## Recurring concerns (read before touching)
 
 - **Terrain is a raycast/analytic hybrid.** `terrainRadiusFor` / `analyticSurface` are raycast-free and cheap (~0.003ms); `sampleSurfaceByDirection` raycasts the mesh (~1.24ms — expensive). Prefer analytic on hot/startup paths. Mesh is a 128×128 sphere (~1.08-unit vertex spacing): features narrower than that can't be resolved (the summit-trail width constraint).
