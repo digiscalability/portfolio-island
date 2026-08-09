@@ -1674,11 +1674,32 @@ export class Island {
       // Houses are already positioned by sampleSurfacePosition - no additional offset needed
       house.name = `house_${i}`;
       houses.add(house);
-      // Add a small warm point light near the house to simulate local ambient warmth / light-probe
+      // Porch light. This used to sit at z = d*0.35 — INSIDE the walls — with
+      // a 2u radius, so it lit precisely nothing and every house read as a
+      // black slab with two lit windows after dark. It now hangs just proud
+      // of the facade (half-depth + 0.6) with the reach to actually wash the
+      // front wall and the doorstep. Still ONE light per house, the same one
+      // EnvironmentCycle already ramps at dusk via isHouseWarmLight.
       const warmColor = 0xffd6a5;
-      const light = new THREE.PointLight(warmColor, 0.55, 2.0, 2);
-      // place the light slightly above the door/windows so it softly lights nearby surfaces
-      light.position.set(0, h * 0.6, d * 0.35);
+      const light = new THREE.PointLight(warmColor, 1.9, 8, 2);
+      light.position.set(0, h * 0.62, d * 0.5 + 0.6);
+      // A sconce beside the door so the glow has a visible source rather than
+      // coming from thin air. Tagged isNightEmissive, so it is dark by day.
+      const sconceMat = new THREE.MeshStandardMaterial({
+        color: 0xfff2d0,
+        emissive: 0xffdc9a,
+        emissiveIntensity: 0.9,
+      });
+      const sconce = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), sconceMat);
+      sconce.position.set(w * 0.3, h * 0.66, d * 0.5 + 0.1);
+      sconce.userData.isNightEmissive = true;
+      house.add(sconce);
+      const hood = new THREE.Mesh(
+        new THREE.ConeGeometry(0.24, 0.2, 7),
+        Materials.createTrimMaterial(0x33291f),
+      );
+      hood.position.set(w * 0.3, h * 0.66 + 0.22, d * 0.5 + 0.1);
+      house.add(hood);
       // don't cast shadows by default (expensive); user can toggle in renderer settings if desired
       light.castShadow = false;
       // tag so the renderer or debug UI can find and tweak these
@@ -2086,8 +2107,11 @@ export class Island {
       bulb.position.set(0.35, 1.48, 0);
       bulb.userData.isNightEmissive = true;
       lampGroup.add(bulb);
-      // Real street-lamp height ~3.9u — was ~1.7u, the same height as the player.
-      lampGroup.scale.setScalar(2.2);
+      // Lamp height ~4.3u at the bulb. Height is the lever on pool size: a
+      // higher source throws a wider, softer circle, so this and the pool
+      // scales below move together — raising one without the other gives you
+      // either a tall lamp lighting a dot or a floating puddle of light.
+      lampGroup.scale.setScalar(2.9);
 
       const q = new THREE.Quaternion().setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
@@ -2105,7 +2129,9 @@ export class Island {
         // to light, which is why the street read as black between the poles.
         // Only the primary lamps carry one: real lights cost per fragment, so
         // the count stays where it was and each one now actually works.
-        const lampLight = new THREE.PointLight(0xffeeaa, 1.5, 9, 2);
+        // Distance is world-space and is NOT scaled by the group's 2.9x, so it
+        // has to clear the new 4.3u bulb height plus the pool radius by hand.
+        const lampLight = new THREE.PointLight(0xffeeaa, 3.4, 15, 2);
         lampLight.position.set(0.35, 1.48, 0);
         lampLight.userData = { isLampLight: true };
         lampGroup.add(lampLight);
@@ -2117,11 +2143,11 @@ export class Island {
       // claimOffStreet, not claimDir: a couple of boulevard lamps landed on the
       // ribbon where an avenue meets the boulevard; this keeps them at the kerb.
       const pos = this.claimOffStreet(this.dirAt(lon, lat), 0.05).multiplyScalar(this.radius);
-      buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), true, 4.2);
+      buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), true, 5.8);
     }
     for (const [lon, lat] of LAMP_INFILL) {
       const pos = this.claimOffStreet(this.dirAt(lon, lat), 0.05).multiplyScalar(this.radius);
-      buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), false, 4.2);
+      buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), false, 5.8);
     }
     // PORCH lamps: one beside every house door, so homes read as lived-in
     // after dark instead of black cutouts with two lit windows. Offset along
@@ -2139,7 +2165,7 @@ export class Island {
         door.position.clone().addScaledVector(tangentAt(door.position), 1.6),
         door.position,
         false,
-        3.4,
+        4.6,
       );
     }
     // PLAZA lamps: a pair flanking each district building. The halls are the
@@ -2148,7 +2174,7 @@ export class Island {
     for (const b of buildingSamples) {
       const side = tangentAt(b.position);
       for (const s of [-1, 1]) {
-        buildLamp(b.position.clone().addScaledVector(side, s * 5.2), b.position, false, 4.2);
+        buildLamp(b.position.clone().addScaledVector(side, s * 5.2), b.position, false, 5.4);
       }
     }
     // ROADSIDE lamps: every other mailbox gets one. Mailboxes already stand
@@ -2157,7 +2183,7 @@ export class Island {
     // gaps of dark between them.
     for (let i = 0; i < this.mailboxSites.length; i += 2) {
       const p = this.mailboxSites[i];
-      buildLamp(p.clone().addScaledVector(tangentAt(p), 1.5), p, false, 3.6);
+      buildLamp(p.clone().addScaledVector(tangentAt(p), 1.5), p, false, 4.8);
     }
     // (Electric wires removed: straight chord lines between lamps cut through
     // the planet and pierced props — they were designed for a flat town.)
