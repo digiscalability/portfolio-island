@@ -258,10 +258,23 @@ export class SimpleInputManager {
 
   /**
    * Drop keys that stopped sending events (phantom keydowns with no keyup).
-   * Held keys are kept alive by OS auto-repeat.
+   *
+   * This USED to purge on a timer, on the premise that "held keys are kept
+   * alive by OS auto-repeat". They are not: auto-repeat only repeats the
+   * MOST RECENTLY pressed key. Hold W and then press anything else — another
+   * key, or a modifier — and W's repeat stops while the key is still
+   * physically down, so the timer purged it and the player stopped walking
+   * mid-stride. That is the "can't hold W for long" bug.
+   *
+   * A held key is only ever really lost when the window stops receiving its
+   * keyup, which happens on focus loss — and the blur/visibilitychange
+   * handlers already clear all input state for that case. So the purge now
+   * only runs when the document does NOT have focus, which is the one
+   * situation the timer was ever right about.
    */
   private purgeStaleKeys(): void {
     if (this.keys.size === 0) return;
+    if (typeof document !== 'undefined' && document.hasFocus && document.hasFocus()) return;
     const now = performance.now();
     for (const k of [...this.keys]) {
       const last = this.lastKeyEventAt.get(k);

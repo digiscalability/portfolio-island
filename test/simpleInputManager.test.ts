@@ -52,15 +52,36 @@ describe('SimpleInputManager', () => {
     im.dispose();
   });
 
-  test('stale-key watchdog drops phantom keydowns after 2s without events', () => {
+  test('a held key survives silence while the window has focus', () => {
+    // The watchdog used to purge on a timer, assuming auto-repeat keeps held
+    // keys alive. It does not: the OS only repeats the MOST RECENTLY pressed
+    // key, so holding W and then pressing anything else stopped W's repeats
+    // and the timer cut movement mid-stride.
     const now = vi.spyOn(performance, 'now');
     now.mockReturnValue(1000);
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     const im = new SimpleInputManager();
-    key('keydown', 'w'); // phantom: no keyup will ever arrive
+    key('keydown', 'w');
     expect(im.isKeyPressed('w')).toBe(true);
 
-    now.mockReturnValue(3500); // 2.5s later, no repeats seen
-    expect(im.isKeyPressed('w')).toBe(false); // purged
+    now.mockReturnValue(3500); // 2.5s of silence — still held
+    expect(im.isKeyPressed('w')).toBe(true);
+    hasFocus.mockRestore();
+    im.dispose();
+  });
+
+  test('the watchdog still clears stale keys once the window loses focus', () => {
+    const now = vi.spyOn(performance, 'now');
+    now.mockReturnValue(1000);
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    const im = new SimpleInputManager();
+    key('keydown', 'w');
+    expect(im.isKeyPressed('w')).toBe(true);
+
+    hasFocus.mockReturnValue(false); // alt-tabbed: the keyup will never come
+    now.mockReturnValue(3500);
+    expect(im.isKeyPressed('w')).toBe(false);
+    hasFocus.mockRestore();
     im.dispose();
   });
 

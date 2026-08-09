@@ -3562,8 +3562,14 @@ export class GameScene extends THREE.Scene {
       const scale = 0.85 + ((i * 13) % 7) * 0.07;
       const palm = this.buildPalm(scale, i % 2 === 0 ? 1 : -1);
       palm.position.copy(s.position);
+      // RADIAL, not slope-normal — same rule as every other tree on the
+      // island: trunks grow against gravity, they do not lean with the
+      // hillside. The palm's own authored lean supplies all the character
+      // it needs. (I shipped these on the slope normal an hour ago; this is
+      // that regression.)
+      const palmUp = s.position.clone().normalize();
       palm.quaternion
-        .setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal)
+        .setFromUnitVectors(new THREE.Vector3(0, 1, 0), palmUp)
         .multiply(
           new THREE.Quaternion().setFromAxisAngle(GameScene.AXIS_Y, (i * 2.399963) % (Math.PI * 2)),
         );
@@ -3579,7 +3585,7 @@ export class GameScene extends THREE.Scene {
         off.applyQuaternion(palm.quaternion);
         fern.position.copy(s.position).add(off).addScaledVector(s.normal, 0.22);
         fern.quaternion
-          .setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal)
+          .setFromUnitVectors(new THREE.Vector3(0, 1, 0), palmUp)
           .multiply(new THREE.Quaternion().setFromAxisAngle(GameScene.AXIS_Y, fa));
         fern.rotateX(0.18);
         fern.castShadow = true;
