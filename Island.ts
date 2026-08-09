@@ -887,7 +887,29 @@ export class Island {
         landDisp = rock * (1 - trailW) + rampH * trailW;
       }
       const oceanDisp = -2.4 + noiseDisp * 0.15; // gently rolling seafloor
-      const displacement = oceanDisp + (landDisp - oceanDisp) * mask;
+      let displacement = oceanDisp + (landDisp - oceanDisp) * mask;
+
+      // ── The ISLET: a second small landmass out in the southern sea.
+      // Centre lon 5.9 / lat -0.02 (hardcoded unit dir), reach 0.1 rad
+      // (~10u across — several mesh vertices, resolvable). Chosen clear of
+      // the lat-0.12 water-race ring (coast tops out at lat ~0.08), the
+      // sailor circles, fish schools, watercraft spawns and the fisherman.
+      // Influence stays far below sinLat 0.25, so no lat-gated build loop's
+      // random draws shift (the seeded-stream stays bit-identical). Same
+      // 0.75+ land floor idea as the continent: crown ~+2.1 keeps the beach
+      // above waves+tide.
+      {
+        const ig = Math.acos(
+          THREE.MathUtils.clamp(normal.x * 0.92728 - normal.y * 0.02 - normal.z * 0.3738, -1, 1),
+        );
+        if (ig < 0.1) {
+          const it = THREE.MathUtils.clamp((0.1 - ig) / 0.055, 0, 1);
+          const im = it * it * (3 - 2 * it); // smoothstep dome
+          // Gentle dome + a pinch of the shared noise so it isn't a cap.
+          const isletLand = 0.85 + im * (1.05 + Math.max(0, noiseDisp) * 0.35);
+          displacement = Math.max(displacement, oceanDisp + (isletLand - oceanDisp) * im);
+        }
+      }
 
       // Clamp radius to prevent terrain from going inside the sphere
       const rawRadius = this.radius + displacement;
@@ -2114,6 +2136,11 @@ export class Island {
       [1.4, 1.36],
       // the Farmer works the hamlet's flower fields
       [2.9, 0.55],
+      // the sailing crew's LAND placeholders — GameScene.setupSailors()
+      // relocates each onto his own rowboat offshore. APPENDED at the end:
+      // sites+personalities are zipped BY INDEX, never insert mid-list.
+      [0.85, 0.31], // First Mate
+      [4.15, 0.31], // Deckhand
     ];
 
     // TUCK THREE WORKPLACES AGAINST THEIR DISTRICT HALL.
@@ -2375,6 +2402,23 @@ export class Island {
           'These fields feed the whole island, you know.',
           'Rain or shine — the code decides, and I adapt.',
           'The Gardener does the flowers. I do the honest crops.',
+        ],
+      },
+      // Sailing crew — appended with their placeholder sites (index-zipped).
+      {
+        name: 'First Mate',
+        dialogue: [
+          'The Sailor taught me everything — except how to stay ashore.',
+          'Watch the big liner out south. She never stops for anyone.',
+          'A calm sea never made a good rower.',
+        ],
+      },
+      {
+        name: 'Deckhand',
+        dialogue: [
+          'First week on the water. The gulls still laugh at my rowing.',
+          'One day I will crew that cruise ship. For now — this bucket.',
+          'If you see fish jumping, throw them some feed. They remember.',
         ],
       },
     ];
@@ -3915,13 +3959,10 @@ export class Island {
   /**
    * Yaw an already surface-aligned object so its local +Z faces a target
    * point (projected onto the tangent plane). Used to face houses/stalls
-   * toward the road/plaza instead of random spins.
+   * toward the road/plaza instead of random spins. Public: GameScene's
+   * islet beach house aims its door with it too.
    */
-  private faceObjectToward(
-    obj: THREE.Object3D,
-    normal: THREE.Vector3,
-    target: THREE.Vector3,
-  ): void {
+  public faceObjectToward(obj: THREE.Object3D, normal: THREE.Vector3, target: THREE.Vector3): void {
     const proj = (v: THREE.Vector3) => v.clone().sub(normal.clone().multiplyScalar(v.dot(normal)));
     const current = proj(new THREE.Vector3(0, 0, 1).applyQuaternion(obj.quaternion));
     const desired = proj(target.clone().sub(obj.position));
@@ -4097,7 +4138,12 @@ export class Island {
         {
           const radial = point.clone().sub(this.center).normalize();
           if (normal.dot(radial) < 0) normal.negate();
-          const MAX_TILT = 0.21; // ~12 degrees
+          // 0.42 (~24°) — raised from 0.21: the old 12° cap made every prop
+          // read RADIAL on ordinary hillsides ("trees growing straight up on
+          // slopes"). 24° still guards the original failure (raw single-
+          // triangle normals laying big props on their sides on crags) while
+          // letting assets visibly follow the ground they stand on.
+          const MAX_TILT = 0.42;
           const tilt = radial.angleTo(normal);
           if (tilt > MAX_TILT) {
             const axis = new THREE.Vector3().crossVectors(radial, normal);
@@ -6765,10 +6811,11 @@ export class Island {
           }
           normal.normalize();
 
-          // Clamp tilt away from radial "up" (see sampleSurfacePosition)
+          // Clamp tilt away from radial "up" (see sampleSurfacePosition —
+          // same 0.21→0.42 raise, both clamps must always match)
           {
             const radial = toHit.clone().normalize();
-            const MAX_TILT = 0.21; // ~12 degrees
+            const MAX_TILT = 0.42;
             const tilt = radial.angleTo(normal);
             if (tilt > MAX_TILT) {
               const axis = new THREE.Vector3().crossVectors(radial, normal);

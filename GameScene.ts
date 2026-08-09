@@ -268,6 +268,7 @@ export class GameScene extends THREE.Scene {
     dir: THREE.Vector3; // unit dir — the pile re-floats on the wave every frame
     t0: number;
     landed: boolean;
+    eaten: number; // extra life-seconds consumed by feeding fish (dt × eaters)
   }> = [];
   private _fishWakeAccum = 0; // dorsal-wake ripple throttle
   private readonly _fishCam = new THREE.Vector3();
@@ -306,11 +307,11 @@ export class GameScene extends THREE.Scene {
     dropBase: number; // bobber local -Y offset that seats it ON the calm sea surface
   } | null = null;
 
-  // The Sailor lives on a little rowboat just offshore, drifting a slow
-  // circle and riding the REAL wave math (waveHeightAt — the same surface
-  // the shader displaces). Anchored + animated in updateSailor(); the wander
-  // loop skips him like the Fisherman.
-  private sailor: {
+  // The sailing crew: each lives on a little rowboat offshore, drifting a
+  // slow circle and riding the REAL wave math (waveHeightAt — the same
+  // surface the shader displaces). Anchored + animated in updateSailors();
+  // the wander loop skips them like the Fisherman.
+  private sailors: Array<{
     npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string; dialogue: string[] };
     boat: THREE.Group;
     center: THREE.Vector3; // drift-circle centre (unit dir, open water)
@@ -319,10 +320,20 @@ export class GameScene extends THREE.Scene {
     angle: number;
     radiusArc: number; // drift circle angular radius
     driftRate: number; // rad/s along the circle
-  } | null = null;
+  }> = [];
   private readonly _sailDir = new THREE.Vector3();
   private readonly _sailFwd = new THREE.Vector3();
   private readonly _sailTmp = new THREE.Vector3();
+
+  // The cruise liner: a purely decorative big ship on a stately lap of the
+  // southern sea. Not in `vehicles` (zero network footprint), no colliders,
+  // castShadow off (the sun shadow box is ±17u around the player).
+  private cruise: {
+    ship: THREE.Group;
+    angle: number;
+    lat: number; // fixed cruise latitude (radians, negative = southern sea)
+    rate: number; // rad/s of longitude
+  } | null = null;
 
   /** Market Vendors, pinned behind their stall counters (a minimal station). */
   private vendors: Array<{
@@ -815,7 +826,9 @@ export class GameScene extends THREE.Scene {
       // The Baker works his oven at the village bakery
       this.setupBaker();
       // The Sailor drifts on his rowboat just offshore
-      this.setupSailor();
+      this.setupSailors();
+      this.setupCruise();
+      this.setupIsletBeachHouse();
       // The two Market Vendors mind their stall pitches
       this.setupVendors();
     } finally {
@@ -1219,6 +1232,7 @@ export class GameScene extends THREE.Scene {
     muzzle?: number;
     bib?: boolean;
     patches?: number[];
+    fluffy?: boolean; // Persian-style long-hair: fuller body + neck ruff + plume tail
   }): {
     cat: THREE.Group;
     tailJoints: THREE.Object3D[];
@@ -1230,9 +1244,18 @@ export class GameScene extends THREE.Scene {
     const darkMat = GameScene.birdMat(coat.dark);
     const cat = new THREE.Group();
     const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), bodyMat);
-    body.scale.set(1.05, 0.95, 2.0); // stretched along -Z
+    // Fluffy coats read as one round mass of fur, not a sleek tube.
+    if (coat.fluffy) body.scale.set(1.3, 1.12, 2.0);
+    else body.scale.set(1.05, 0.95, 2.0); // stretched along -Z
     body.castShadow = true;
     cat.add(body);
+    if (coat.fluffy) {
+      // Neck ruff — the Persian mane around the head base.
+      const ruff = new THREE.Mesh(new THREE.SphereGeometry(0.075, 7, 5), bodyMat);
+      ruff.scale.set(1.25, 1.0, 1.0);
+      ruff.position.set(0, 0.02, -0.13);
+      cat.add(ruff);
+    }
     // Paler underside — or, on bib coats, pulled forward/up so it wraps the
     // chest under the chin (the classic tuxedo/black-cat white bib).
     const belly = new THREE.Mesh(new THREE.SphereGeometry(0.085, 7, 5), bellyMat);
@@ -1352,6 +1375,9 @@ export class GameScene extends THREE.Scene {
       tailJoints.push(joint);
       parent = joint;
     }
+    // Plume tail on long-hair coats: scaling the base joint compounds down
+    // the nested chain, thickening the whole tail into a Persian brush.
+    if (coat.fluffy && tailJoints.length) tailJoints[0].scale.setScalar(1.35);
     return { cat, tailJoints, legs, head };
   }
 
@@ -1621,8 +1647,10 @@ export class GameScene extends THREE.Scene {
         shape: [1.05, 0.95, 1.6],
         size: [0.8, 0.95],
       },
-      // gull — white/pale grey, the beach classic
-      { body: 0xf4f6f8, wing: 0xdfe5ea, beak: 0xf2b04a, shape: [1, 0.9, 1.9], size: [1.0, 1.2] },
+      // gull — white/pale grey, the beach classic (ceiling trimmed 1.2→1.05
+      // in the size-ratio pass: the biggest gulls out-bulked the smallest
+      // cats, and cats must always read bigger than birds)
+      { body: 0xf4f6f8, wing: 0xdfe5ea, beak: 0xf2b04a, shape: [1, 0.9, 1.9], size: [1.0, 1.05] },
       // pigeon — blue-grey with a lighter chest
       {
         body: 0x8a93a6,
@@ -1643,6 +1671,24 @@ export class GameScene extends THREE.Scene {
         belly: 0xd97b4a,
         shape: [1.15, 1.05, 1.5],
         size: [0.72, 0.85],
+      },
+      // collared dove — soft pale grey-pink, slender
+      {
+        body: 0xd6cdc6,
+        wing: 0xbfb4ac,
+        beak: 0x5a5450,
+        belly: 0xe8ddd4,
+        shape: [1.0, 0.92, 1.75],
+        size: [0.82, 0.95],
+      },
+      // goldfinch — gold body, dark wings, the smallest of the cast
+      {
+        body: 0xd9b23a,
+        wing: 0x3a3428,
+        beak: 0xcfc3a8,
+        belly: 0xe8d9a8,
+        shape: [1.08, 1.0, 1.45],
+        size: [0.72, 0.82],
       },
     ];
     // [lon, lat] peck spots: plaza rim, park grass, beach sand — weighted
@@ -1815,6 +1861,30 @@ export class GameScene extends THREE.Scene {
         eye: 0xd9a13c,
         patches: [0xe6862e, 0x2a2624, 0xe6862e],
       },
+      // Bengal — warm gold coat under DARK ROSETTE spotting, green eyes.
+      {
+        body: 0xc98f3f,
+        belly: 0xe9d3ae,
+        dark: 0x241a10,
+        tailTip: 0x3a2a18,
+        paws: 0xc98f3f,
+        earInner: 0xd9a586,
+        eye: 0x7fb350,
+        patches: [0x3a2a18, 0x241a10, 0x3a2a18],
+      },
+      // Persian — cream-smoke long-hair (fluffy silhouette), copper eyes,
+      // flat face (muzzle blends into the coat).
+      {
+        body: 0xdcd2c6,
+        belly: 0xefe8dd,
+        dark: 0x4a4038,
+        tailTip: 0xcabfae,
+        paws: 0xdcd2c6,
+        earInner: 0xe8c4b4,
+        eye: 0xcf7a35,
+        muzzle: 0xdcd2c6,
+        fluffy: true,
+      },
     ];
     // Grass near the plazas/streets where players actually walk.
     const SPOTS: Array<[number, number]> = [
@@ -1824,10 +1894,14 @@ export class GameScene extends THREE.Scene {
       [1.7, 0.82],
       [3.9, 0.7],
       [5.3, 0.5],
+      [0.35, 0.95], // bengal — meadow west of the hub
+      [5.75, 0.74], // persian — lawn near the shore road
     ];
     for (let i = 0; i < SPOTS.length; i++) {
       const { cat, tailJoints, legs, head } = this.buildCat(SPECIES[i % SPECIES.length]);
-      const size = 0.9 + Math.random() * 0.3;
+      // 1.0-1.35 (was 0.9-1.2): cats must read clearly BIGGER than the
+      // ground birds (whose spread now tops out ~0.44u vs a 0.4-0.54u cat).
+      const size = 1.0 + Math.random() * 0.35;
       cat.scale.setScalar(size);
       const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
       // Raycast seat (startup-only) — the analytic field sits under the mesh.
@@ -1998,6 +2072,7 @@ export class GameScene extends THREE.Scene {
     up: THREE.Vector3;
     t0: number;
     landed: boolean;
+    eaten: number; // extra life-seconds consumed by feasting animals (dt × eaters)
   }> = [];
   private readonly _feedUp = new THREE.Vector3();
   private readonly _feedFwd = new THREE.Vector3();
@@ -2196,6 +2271,7 @@ export class GameScene extends THREE.Scene {
       up: surfNormal.clone(),
       t0: time,
       landed: false,
+      eaten: 0,
     });
     // Cap live piles (bird + cat share this) so a spammed key can't carpet the
     // island and leave animals miming at bare ground.
@@ -2267,6 +2343,7 @@ export class GameScene extends THREE.Scene {
       dir: this._feedDir.clone(),
       t0: time,
       landed: false,
+      eaten: 0,
     });
     while (this.fishFeedPiles.length > 3) this.removeFishFeedPile(0);
     this.callFishToFeed(this._feedDir, time);
@@ -2356,7 +2433,7 @@ export class GameScene extends THREE.Scene {
   }
 
   /** Arc the tossed bread over, then float + dwindle the pile on the waves. */
-  private updateFishFeedPiles(time: number): void {
+  private updateFishFeedPiles(time: number, dt: number): void {
     if (!this.island) return;
     const seaT = this.island.seaTimeUniform.value;
     for (let i = this.fishFeedPiles.length - 1; i >= 0; i--) {
@@ -2377,13 +2454,35 @@ export class GameScene extends THREE.Scene {
           p.toss.visible = false;
         }
       } else {
-        const life = age - FLIGHT;
+        // Eaters drain the pile: every ARRIVED feeding fish burns extra
+        // life-seconds, so a mobbed pile dwindles fast and a lonely one
+        // lingers — the diminish now reads as consumption, not a timer.
+        let eaters = 0;
+        for (const f of this.fish) {
+          if (
+            f.feedTarget &&
+            time < f.feedUntil &&
+            f.feedTarget.angleTo(p.dir) < 0.05 &&
+            f.dir.angleTo(f.feedTarget) <= 0.05
+          ) {
+            eaters++;
+          }
+        }
+        p.eaten += dt * eaters * 1.2;
+        const life = age - FLIGHT + p.eaten;
         const grow = Math.min(1, life / 0.25);
         const left =
           1 -
           Math.max(0, life - GameScene.FISH_FEED_PILE_LIFE * 0.6) /
             (GameScene.FISH_FEED_PILE_LIFE * 0.4);
-        p.pile.scale.setScalar(Math.max(0.001, grow * THREE.MathUtils.clamp(left, 0, 1)));
+        const frac = THREE.MathUtils.clamp(left, 0, 1);
+        // Crumb-by-crumb: the grain COUNT carries the diminish (children are
+        // just toggled — geometry/materials are shared, never disposed);
+        // scale only softens toward the end instead of vanishing the pile.
+        p.pile.scale.setScalar(Math.max(0.001, grow * (0.55 + 0.45 * frac)));
+        const kids = p.pile.children;
+        const vis = Math.max(1, Math.ceil(frac * kids.length));
+        for (let k = 0; k < kids.length; k++) kids[k].visible = k < vis;
         if (life > GameScene.FISH_FEED_PILE_LIFE) this.removeFishFeedPile(i);
       }
     }
@@ -2506,8 +2605,10 @@ export class GameScene extends THREE.Scene {
     this.feedPiles.splice(idx, 1);
   }
 
-  /** Arc the tossed grains over, pop the pile in, then let it dwindle away. */
-  private updateFeedPiles(time: number): void {
+  /** Arc the tossed grains over, pop the pile in, then let it be EATEN away:
+   *  every arrived feaster (pecking bird / eating cat) burns extra life, and
+   *  the grain count drops one by one — consumption, not a timer. */
+  private updateFeedPiles(time: number, dt: number): void {
     for (let i = this.feedPiles.length - 1; i >= 0; i--) {
       const p = this.feedPiles[i];
       const age = time - p.t0;
@@ -2525,13 +2626,29 @@ export class GameScene extends THREE.Scene {
           this.spawnDust(p.pile.position, 2);
         }
       } else {
-        // Pop in, hold, then dwindle as it gets eaten.
-        const life = age - FLIGHT;
+        let eaters = 0;
+        for (const g of this.groundBirds) {
+          if (g.feastUntil > time && g.mode === 'peck' && g.curPos.distanceToSquared(p.to) < 9) {
+            eaters++;
+          }
+        }
+        for (const c of this.cats) {
+          if (c.mode === 'eat' && c.feastUntil > time && c.curPos.distanceToSquared(p.to) < 9) {
+            eaters++;
+          }
+        }
+        p.eaten += dt * eaters;
+        const life = age - FLIGHT + p.eaten;
         const grow = Math.min(1, life / 0.25);
         const left =
           1 - Math.max(0, life - GameScene.FEED_PILE_LIFE * 0.6) / (GameScene.FEED_PILE_LIFE * 0.4);
-        const s = grow * THREE.MathUtils.clamp(left, 0, 1);
-        p.pile.scale.setScalar(Math.max(0.001, s));
+        const frac = THREE.MathUtils.clamp(left, 0, 1);
+        // Grain count carries the diminish (visibility toggles only — the
+        // geometry/materials are shared statics, never disposed).
+        p.pile.scale.setScalar(Math.max(0.001, grow * (0.55 + 0.45 * frac)));
+        const kids = p.pile.children;
+        const vis = Math.max(1, Math.ceil(frac * kids.length));
+        for (let k = 0; k < kids.length; k++) kids[k].visible = k < vis;
         if (life > GameScene.FEED_PILE_LIFE) {
           this.removeFeedPile(i);
         }
@@ -2551,12 +2668,17 @@ export class GameScene extends THREE.Scene {
   }
 
   // [bodyColour, finColour, scale] — shared by the ocean fish + the catch.
+  // Indices 0-2 are the schooling smalls, 3+ the solo cast — a real size
+  // ladder now (0.34 dartfish → 1.0 grouper ≈ 0.4u → 1.2u long).
   private static readonly FISH_TYPES: Array<[number, number, number]> = [
     [0xff7a33, 0xffe0b0, 0.5], // clownfish orange
     [0x39a6e6, 0xa6e6ff, 0.5], // blue tang
     [0xccd4dc, 0xf0f6fa, 0.42], // silver
     [0xd98a3a, 0xf2c48a, 0.55], // koi gold
     [0x415a68, 0xb0c8d4, 0.8], // big dark
+    [0xd94a4a, 0xf2b0a8, 0.66], // red snapper — mid-large solo
+    [0x6a4f8f, 0xcdb9ea, 0.34], // violet dartfish — the tiniest
+    [0x2f6f4f, 0x9fd9b4, 1.0], // green grouper — the giant of the reef
   ];
 
   // Fish materials are cached per colour: buildFish is ALSO called every
@@ -2620,11 +2742,13 @@ export class GameScene extends THREE.Scene {
       [1.26, 0.12],
       [3.77, 0.15],
     ];
-    const N = 22;
+    const N = 27; // 18 schooling + 9 solos (was 22/4 — the solo cast doubled)
     for (let i = 0; i < N; i++) {
       const solo = i >= 18;
+      // Solos cycle the whole large cast (koi/big-dark/snapper/dartfish/
+      // grouper) instead of just two — real variety AND a real size spread.
       const [bc, fc, sc] = solo
-        ? GameScene.FISH_TYPES[3 + (i % 2)]
+        ? GameScene.FISH_TYPES[3 + ((i - 18) % 5)]
         : GameScene.FISH_TYPES[Math.floor(i / 6) % 3];
       const { group, tail } = this.buildFish(bc, fc);
       group.scale.setScalar(solo ? sc * 1.15 : sc * 0.85);
@@ -2792,8 +2916,21 @@ export class GameScene extends THREE.Scene {
       }
 
       // ── Head: dip to the food while eating, gentle look-around when idle ─
+      let eatCrouch = 0;
       if (c.mode === 'eat') {
-        c.head.rotation.set(-0.5 + Math.sin(time * 6 + c.phase) * 0.06, 0, 0); // nose-down
+        // A real meal, not a metronome: chew-bob at the bowl, an occasional
+        // wary look-up (cats always check the room), tiny side nibbles.
+        const lookUp = Math.max(0, Math.sin(time * 0.45 + c.phase) - 0.8) * 3.2; // 0..~0.6
+        c.head.rotation.set(
+          -0.55 + Math.sin(time * 6 + c.phase) * 0.07 + lookUp * 0.8,
+          Math.sin(time * 2.3 + c.phase * 2) * 0.08,
+          0,
+        );
+        // Shoulders drop into the meal; front hips knead alternately.
+        eatCrouch = 0.1 * (1 - lookUp);
+        const knead = Math.sin(time * 3.1 + c.phase);
+        c.legs.children[0].rotation.x = -0.14 * (1 - lookUp) + knead * 0.06;
+        c.legs.children[1].rotation.x = -0.14 * (1 - lookUp) - knead * 0.06;
       } else {
         c.head.rotation.set(0, c.mode === 'sit' ? Math.sin(time * 0.7 + c.phase) * 0.18 : 0, 0);
       }
@@ -2801,6 +2938,7 @@ export class GameScene extends THREE.Scene {
       // ── Orient the body: surface align + eased yaw + a gentle walking roll ─
       c.cat.quaternion.copy(c.baseQuat);
       c.cat.rotateY(c.heading);
+      if (eatCrouch > 0) c.cat.rotateX(eatCrouch); // nose-down body pitch into the food
       const roll = Math.sin(time * cadence * 0.5 + c.phase) * 0.05 * c.gait;
       if (roll !== 0) c.cat.rotateZ(roll);
     }
@@ -2813,7 +2951,11 @@ export class GameScene extends THREE.Scene {
     if (!this.island) return;
     const npcs = this.island.getNPCInstances();
     if (npcs.length === 0) return;
-    if (!this.npcShadowMesh || this.npcShadowMesh.count !== npcs.length) {
+    // Cats join the disc set: they had NO grounding shadow at all (only
+    // shadow-map casters, whose box is tight around the player) — the main
+    // reason they read as floating.
+    const total = npcs.length + this.cats.length;
+    if (!this.npcShadowMesh || this.npcShadowMesh.count !== total) {
       if (this.npcShadowMesh) {
         this.remove(this.npcShadowMesh);
         (this.npcShadowMesh.material as THREE.Material).dispose();
@@ -2840,7 +2982,7 @@ export class GameScene extends THREE.Scene {
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
       });
-      this.npcShadowMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, npcs.length);
+      this.npcShadowMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, total);
       this.npcShadowMesh.name = 'npc_shadows';
       this.npcShadowMesh.renderOrder = 1;
       this.npcShadowMesh.frustumCulled = false;
@@ -2860,6 +3002,22 @@ export class GameScene extends THREE.Scene {
       this._nsQuat.setFromUnitVectors(PLANE_NORMAL, s.normal);
       this._nsScl.set(1.15, 1.15, 1);
       mesh.setMatrixAt(i, this._nsMat.compose(this._nsPos, this._nsQuat, this._nsScl));
+    }
+    for (let c = 0; c < this.cats.length; c++) {
+      const cat = this.cats[c];
+      this._nsWorld.copy(cat.cat.position);
+      this._nsDir.copy(this._nsWorld).normalize();
+      const s = this.island.analyticSurface(this._nsDir);
+      // Under the paws: the cat's origin floats 0.12*size above ground, so
+      // seat the disc at the surface itself (its own analytic base).
+      this._nsPos.copy(this._nsDir).multiplyScalar(s.radius + 0.03);
+      this._nsQuat.setFromUnitVectors(PLANE_NORMAL, s.normal);
+      const d = 0.62 * cat.size;
+      this._nsScl.set(d, d, 1);
+      mesh.setMatrixAt(
+        npcs.length + c,
+        this._nsMat.compose(this._nsPos, this._nsQuat, this._nsScl),
+      );
     }
     mesh.instanceMatrix.needsUpdate = true;
   }
@@ -3912,24 +4070,9 @@ export class GameScene extends THREE.Scene {
    * re-anchored to the deck every frame. Chat works the moment you swim or
    * jetski alongside — same proximity interaction as every NPC.
    */
-  private setupSailor(): void {
-    if (!this.island) return;
-    const npc = this.island.npcTargets.find((n) => n.name === 'Sailor');
-    if (!npc) return;
-
-    // Open water off the hamlet beach: lat 0.14 is well below the shoreline
-    // band (~0.2-0.3 with coast warp) — verified deep at setup, with a
-    // seaward nudge fallback if a freak coast warp makes it shallow.
-    const center = this.island.dirAt(2.6, 0.14);
-    const seaR = this.island.seaLevel();
-    if (this.island.analyticSurface(center).radius > seaR - 0.4) {
-      center.copy(this.island.dirAt(2.6, 0.09));
-    }
-    const t1 = new THREE.Vector3(0, 1, 0).cross(center).normalize();
-    if (t1.lengthSq() < 0.5) t1.set(1, 0, 0);
-    const t2 = new THREE.Vector3().crossVectors(center, t1).normalize();
-
-    // Rowboat: hull + rim + bench, toon browns matching the beached props.
+  /** One rowboat: hull + rim + bench, toon browns matching the beached
+   *  props. Bow wedge points -Z (orientQuat's forward convention). */
+  private buildRowboat(): THREE.Group {
     const hullMat = new THREE.MeshToonMaterial({ color: 0x7a5230 });
     const trimMat = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
     const boat = new THREE.Group();
@@ -3937,7 +4080,6 @@ export class GameScene extends THREE.Scene {
     hull.position.y = 0.17;
     hull.castShadow = true;
     boat.add(hull);
-    // Bow wedge (forward = -Z, matching orientQuat's convention)
     const bow = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.7, 4), hullMat);
     bow.rotation.x = -Math.PI / 2;
     bow.rotation.y = Math.PI / 4;
@@ -3952,61 +4094,293 @@ export class GameScene extends THREE.Scene {
     const bench = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.3), trimMat);
     bench.position.set(0, 0.28, 0.15);
     boat.add(bench);
-    boat.name = 'sailor_boat';
-    this.add(boat);
-
-    this.sailor = {
-      npc: npc as {
-        position: THREE.Vector3;
-        meshRef: THREE.Object3D;
-        name: string;
-        dialogue: string[];
-      },
-      boat,
-      center,
-      t1,
-      t2,
-      angle: Math.random() * Math.PI * 2,
-      radiusArc: 0.02, // ~1u circle at R50
-      driftRate: 0.045, // one lazy lap every ~2.3 minutes
-    };
-    console.log('⛵ Sailor set up on his boat offshore');
+    return boat;
   }
 
-  /** Drift + wave-ride the Sailor's boat and keep him standing on the deck. */
-  private updateSailor(time: number, dt: number): void {
-    const S = this.sailor;
-    if (!S || !this.island) return;
-    S.angle += S.driftRate * dt;
-    // Drift-circle direction: centre tipped toward the rotating tangent.
-    const sinA = Math.sin(S.radiusArc);
+  private setupSailors(): void {
+    if (!this.island) return;
+    // Each crew member gets his own patch of open water and his own drift
+    // tempo — three lazy circles instead of one lonely rower.
+    const CREW: Array<{ name: string; lon: number; lat: number; arc: number; rate: number }> = [
+      { name: 'Sailor', lon: 2.6, lat: 0.14, arc: 0.02, rate: 0.045 },
+      { name: 'First Mate', lon: 0.85, lat: 0.13, arc: 0.026, rate: 0.036 },
+      { name: 'Deckhand', lon: 4.15, lat: 0.15, arc: 0.017, rate: 0.055 },
+    ];
+    const seaR = this.island.seaLevel();
+    for (const cfg of CREW) {
+      const npc = this.island.npcTargets.find((n) => n.name === cfg.name);
+      if (!npc) continue;
+      // Open water below the shoreline band — verified deep at setup, with a
+      // seaward nudge fallback if a freak coast warp makes it shallow.
+      const center = this.island.dirAt(cfg.lon, cfg.lat);
+      if (this.island.analyticSurface(center).radius > seaR - 0.4) {
+        center.copy(this.island.dirAt(cfg.lon, Math.max(0.06, cfg.lat - 0.05)));
+      }
+      const t1 = new THREE.Vector3(0, 1, 0).cross(center).normalize();
+      if (t1.lengthSq() < 0.5) t1.set(1, 0, 0);
+      const t2 = new THREE.Vector3().crossVectors(center, t1).normalize();
+      const boat = this.buildRowboat();
+      boat.name = `sailor_boat_${this.sailors.length}`;
+      this.add(boat);
+      this.sailors.push({
+        npc: npc as {
+          position: THREE.Vector3;
+          meshRef: THREE.Object3D;
+          name: string;
+          dialogue: string[];
+        },
+        boat,
+        center,
+        t1,
+        t2,
+        angle: Math.random() * Math.PI * 2,
+        radiusArc: cfg.arc,
+        driftRate: cfg.rate,
+      });
+    }
+    console.log(`⛵ ${this.sailors.length} sailors afloat offshore`);
+  }
+
+  /** Drift + wave-ride every sailor's boat and keep each on his deck. */
+  private updateSailors(time: number, dt: number): void {
+    if (!this.island) return;
+    for (const S of this.sailors) {
+      S.angle += S.driftRate * dt;
+      // Drift-circle direction: centre tipped toward the rotating tangent.
+      const sinA = Math.sin(S.radiusArc);
+      this._sailDir
+        .copy(S.center)
+        .multiplyScalar(Math.cos(S.radiusArc))
+        .addScaledVector(S.t1, Math.cos(S.angle) * sinA)
+        .addScaledVector(S.t2, Math.sin(S.angle) * sinA)
+        .normalize();
+      // Ride the real swell (0.7 of full amplitude — a hull damps the chop).
+      const calm = this.island.seaLevel();
+      const surf = this.island.waveHeightAt(this._sailDir, this.island.seaTimeUniform.value);
+      const r = calm + (surf - calm) * 0.7 - 0.06; // hull sits slightly INTO the water
+      S.boat.position.copy(this._sailDir).multiplyScalar(r);
+      // Face along the drift (derivative of the circle), up = radial; then a
+      // gentle rock so it reads afloat even between swells.
+      this._sailFwd
+        .copy(S.t1)
+        .multiplyScalar(-Math.sin(S.angle))
+        .addScaledVector(S.t2, Math.cos(S.angle));
+      this._sailTmp
+        .copy(this._sailFwd)
+        .addScaledVector(this._sailDir, -this._sailFwd.dot(this._sailDir));
+      S.boat.quaternion.copy(this.orientQuat(this._sailDir, this._sailTmp.normalize()));
+      S.boat.rotateX(Math.sin(time * 0.9 + S.radiusArc * 90) * 0.05);
+      S.boat.rotateZ(Math.sin(time * 0.7 + 1.3 + S.radiusArc * 70) * 0.045);
+      // The sailor stands amidships, riding every motion of the deck.
+      S.npc.meshRef.position.copy(S.boat.position).addScaledVector(this._sailDir, 0.36);
+      S.npc.meshRef.quaternion.copy(S.boat.quaternion);
+      S.npc.position.copy(S.npc.meshRef.position);
+    }
+  }
+
+  /** Build + launch the cruise liner on its southern-sea lap. Big, white,
+   *  multi-deck, portholes that light at night — pure scenery. */
+  private setupCruise(): void {
+    if (!this.island) return;
+    const white = new THREE.MeshToonMaterial({ color: 0xf2f4f6 });
+    const navy = new THREE.MeshToonMaterial({ color: 0x24384c });
+    const deckMat = new THREE.MeshToonMaterial({ color: 0xd9dee4 });
+    const funnelMat = new THREE.MeshToonMaterial({ color: 0xd94a3a });
+    const glowMat = new THREE.MeshStandardMaterial({
+      color: 0xffe6a8,
+      emissive: 0xffc966,
+      emissiveIntensity: 0.35,
+    });
+    glowMat.userData.isNightEmissive = true; // EnvironmentCycle ramps it at dusk
+    const ship = new THREE.Group();
+    // Lower hull (navy) + main hull (white); bow tapers toward -Z.
+    const lower = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.0, 13), navy);
+    lower.position.y = 0.2;
+    ship.add(lower);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.2, 12.4), white);
+    hull.position.y = 1.25;
+    ship.add(hull);
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(1.35, 3.2, 4), white);
+    bow.rotation.x = -Math.PI / 2;
+    bow.rotation.y = Math.PI / 4;
+    bow.scale.set(1, 1, 0.62);
+    bow.position.set(0, 0.95, -7.6);
+    ship.add(bow);
+    // Two stepped decks + bridge.
+    const deckA = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.9, 9.4), deckMat);
+    deckA.position.set(0, 2.3, 0.6);
+    ship.add(deckA);
+    const deckB = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.85, 6.6), white);
+    deckB.position.set(0, 3.15, 1.0);
+    ship.add(deckB);
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.7, 1.4), deckMat);
+    bridge.position.set(0, 3.0, -3.4);
+    ship.add(bridge);
+    // Funnel with a pale band.
+    const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.55, 1.5, 8), funnelMat);
+    funnel.position.set(0, 4.3, 2.2);
+    ship.add(funnel);
+    // Porthole strips — one glowing box per side per deck level.
+    for (const y of [1.4, 2.35]) {
+      for (const x of [-1.42, 1.42]) {
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.28, 9.0), glowMat);
+        strip.position.set(x, y, 0.4);
+        ship.add(strip);
+      }
+    }
+    // Offshore scenery: outside the ±17u sun shadow box — shadow flags off.
+    ship.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = false;
+    });
+    ship.name = 'cruise_ship';
+    this.add(ship);
+    this.cruise = {
+      ship,
+      angle: Math.random() * Math.PI * 2,
+      lat: -0.16, // southern sea: south of the lat-0.12 water-race ring,
+      // comfortably inside the SEA_EDGE_Y=-0.45 jetski envelope
+      rate: 0.012, // one stately lap in ~8.7 minutes (~0.6 u/s)
+    };
+  }
+
+  /**
+   * Brother's Beach House on the islet: a timber shack with a porch deck,
+   * a palm and a couple of rocks — and a real DOOR wired into the interior
+   * system (theme 'beach'). The islet is outside every prop-scatter gate,
+   * so it is dressed by hand here.
+   */
+  private setupIsletBeachHouse(): void {
+    if (!this.island) return;
+    const dir = this.island.dirAt(5.9, -0.02);
+    const s = this.island.sampleSurfaceByDirection(dir, 0);
+    const up = s.normal;
+
+    const timber = new THREE.MeshToonMaterial({ color: 0xe6d7b8 });
+    const trim = new THREE.MeshToonMaterial({ color: 0x8a6a42 });
+    const roofMat = new THREE.MeshToonMaterial({ color: 0x4a8ea6 });
+    const stone = new THREE.MeshToonMaterial({ color: 0x7a7168 });
+    const glow = new THREE.MeshStandardMaterial({
+      color: 0xffe6a8,
+      emissive: 0xffc966,
+      emissiveIntensity: 0.4,
+    });
+    glow.userData.isNightEmissive = true;
+
+    const house = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(3.6, 2.3, 3.0), timber);
+    body.position.y = 1.15;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    house.add(body);
+    // Foundation plinth — the farm grounding rule, islet edition.
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(3.52, 1.7, 2.92), stone);
+    plinth.position.y = -0.81;
+    house.add(plinth);
+    // Flat roof slab with an overhang + trim fascia.
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.22, 3.6), roofMat);
+    roof.position.y = 2.45;
+    roof.castShadow = true;
+    house.add(roof);
+    // Door (faces +Z — the interact anchor steps out along it).
+    const door = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.9), trim);
+    door.position.set(0, 0.95, 1.51);
+    house.add(door);
+    // Windows either side, warm at night.
+    for (const wx of [-1.15, 1.15]) {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.7), glow);
+      win.position.set(wx, 1.35, 1.51);
+      win.userData.isNightEmissive = true;
+      house.add(win);
+    }
+    // Porch deck — a wide buried board so the doorstep meets the sand.
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.5, 1.6), trim);
+    deck.position.set(0, -0.18, 2.2);
+    deck.receiveShadow = true;
+    house.add(deck);
+
+    house.position.copy(s.position);
+    house.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+    // Door faces the main island (north), greeting arrivals from the water.
+    this.island.faceObjectToward(house, up, this.island.dirAt(5.9, 0.5).multiplyScalar(50));
+    house.name = 'islet_beach_house';
+    this.add(house);
+
+    // Door anchor OUTSIDE the collider (the cottage convention: +Z * 2.7).
+    const doorFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(house.quaternion);
+    this.island.houseDoors.push({
+      position: house.position.clone().addScaledVector(doorFwd, 2.7),
+      id: 'islet_beach_house',
+    });
+    this.island.pendingColliders.push({ position: house.position.clone(), radius: 2.4 });
+
+    // A hand-planted palm + two rocks — the islet sits outside every scatter
+    // gate (they all clamp to the main island's latitudes), so it would be
+    // bare sand otherwise.
+    const palmDir = this.island.dirAt(5.83, 0.015);
+    const ps = this.island.sampleSurfaceByDirection(palmDir, 0);
+    const palm = new THREE.Group();
+    const trunkMat = new THREE.MeshToonMaterial({ color: 0x8a6a42 });
+    const frondMat = new THREE.MeshToonMaterial({ color: 0x3e8e5a });
+    for (let t = 0; t < 3; t++) {
+      const seg = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09 - t * 0.015, 0.11 - t * 0.015, 0.85, 6),
+        trunkMat,
+      );
+      seg.position.set(t * 0.1, 0.4 + t * 0.8, 0);
+      seg.rotation.z = -0.12 * (t + 1);
+      seg.castShadow = true;
+      palm.add(seg);
+    }
+    for (let f = 0; f < 5; f++) {
+      const a = (f / 5) * Math.PI * 2;
+      const frond = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.05, 0.4), frondMat);
+      frond.position.set(0.3 + Math.cos(a) * 0.55, 2.35, Math.sin(a) * 0.55);
+      frond.rotation.set(Math.sin(a) * 0.4, a, -0.35);
+      frond.castShadow = true;
+      palm.add(frond);
+    }
+    palm.position.copy(ps.position);
+    palm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), ps.normal);
+    this.add(palm);
+    this.island.pendingColliders.push({ position: palm.position.clone(), radius: 0.4 });
+    const rockMat = new THREE.MeshToonMaterial({ color: 0x8b8378 });
+    for (const [rl, rt, rs] of [
+      [5.96, -0.055, 0.5],
+      [5.845, -0.045, 0.34],
+    ] as Array<[number, number, number]>) {
+      const rd = this.island.dirAt(rl, rt);
+      const rsurf = this.island.sampleSurfaceByDirection(rd, 0);
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(rs, 0), rockMat);
+      rock.position.copy(rsurf.position).addScaledVector(rsurf.normal, rs * 0.35);
+      rock.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), rsurf.normal);
+      rock.castShadow = true;
+      this.add(rock);
+    }
+    console.log('🏝️ Islet beach house raised at lon 5.9');
+  }
+
+  /** Sail the liner along its latitude ring, riding a heavily damped swell. */
+  private updateCruise(time: number, dt: number): void {
+    const C = this.cruise;
+    if (!C || !this.island) return;
+    C.angle += C.rate * dt;
+    const cosLat = Math.cos(C.lat);
     this._sailDir
-      .copy(S.center)
-      .multiplyScalar(Math.cos(S.radiusArc))
-      .addScaledVector(S.t1, Math.cos(S.angle) * sinA)
-      .addScaledVector(S.t2, Math.sin(S.angle) * sinA)
+      .set(Math.cos(C.angle) * cosLat, Math.sin(C.lat), Math.sin(C.angle) * cosLat)
       .normalize();
-    // Ride the real swell (0.7 of full amplitude — a hull damps the chop).
     const calm = this.island.seaLevel();
     const surf = this.island.waveHeightAt(this._sailDir, this.island.seaTimeUniform.value);
-    const r = calm + (surf - calm) * 0.7 - 0.06; // hull sits slightly INTO the water
-    S.boat.position.copy(this._sailDir).multiplyScalar(r);
-    // Face along the drift (derivative of the circle), up = radial; then a
-    // gentle rock so it reads afloat even between swells.
-    this._sailFwd
-      .copy(S.t1)
-      .multiplyScalar(-Math.sin(S.angle))
-      .addScaledVector(S.t2, Math.cos(S.angle));
+    // A liner barely notices the chop (0.2 damping), draft sits deep.
+    C.ship.position.copy(this._sailDir).multiplyScalar(calm + (surf - calm) * 0.2 - 0.25);
+    // Forward = the longitude-ring derivative; -Z bow matches orientQuat.
+    this._sailFwd.set(-Math.sin(C.angle) * cosLat, 0, Math.cos(C.angle) * cosLat);
     this._sailTmp
       .copy(this._sailFwd)
       .addScaledVector(this._sailDir, -this._sailFwd.dot(this._sailDir));
-    S.boat.quaternion.copy(this.orientQuat(this._sailDir, this._sailTmp.normalize()));
-    S.boat.rotateX(Math.sin(time * 0.9) * 0.05);
-    S.boat.rotateZ(Math.sin(time * 0.7 + 1.3) * 0.045);
-    // The Sailor stands amidships, riding every motion of the deck.
-    S.npc.meshRef.position.copy(S.boat.position).addScaledVector(this._sailDir, 0.36);
-    S.npc.meshRef.quaternion.copy(S.boat.quaternion);
-    S.npc.position.copy(S.npc.meshRef.position);
+    C.ship.quaternion.copy(this.orientQuat(this._sailDir, this._sailTmp.normalize()));
+    // The long slow breathe of a big hull.
+    C.ship.rotateX(Math.sin(time * 0.32) * 0.016);
+    C.ship.rotateZ(Math.sin(time * 0.26 + 0.9) * 0.02);
   }
 
   /** Relocate the Baker to his bakery and start his baking routine. */
@@ -4991,6 +5365,17 @@ export class GameScene extends THREE.Scene {
     this.heldNpcName = name;
   }
 
+  /** Distance from `pos` to the nearest cat (Infinity when none) — drives
+   *  the ambient meow proximity level. Cats never despawn, so live curPos. */
+  public getNearestCatDistance(pos: THREE.Vector3): number {
+    let best = Infinity;
+    for (const c of this.cats) {
+      const d2 = c.curPos.distanceToSquared(pos);
+      if (d2 < best) best = d2;
+    }
+    return Math.sqrt(best);
+  }
+
   /** The named NPC's current activity id (for the aware chat opening). */
   public getNpcActivity(name: string): string | undefined {
     const t = this.island.npcTargets.find((n) => n.name === name);
@@ -5023,7 +5408,9 @@ export class GameScene extends THREE.Scene {
       benches: this.island.benchSites,
       lighthouseDir: this.island.lighthouseDir,
       vistas,
-      doors: this.island.houseDoors.map((d) => d.position),
+      // Cottage doors only: the islet beach house's door is across open
+      // water — clampShore(sin 0.3) would strand any NPC that targeted it.
+      doors: this.island.houseDoors.filter((d) => d.id.startsWith('house_')).map((d) => d.position),
     });
     NpcActivities.applyPlanOverrideFromUrl();
     this.npcPersonaIds = this.island.npcTargets.map((n) => AI_NPCS[n.name] ?? null);
@@ -5031,7 +5418,9 @@ export class GameScene extends THREE.Scene {
     // so the town spreads across the cottages instead of piling behind one
     // popular door (14 sleepers once shared a single house). Computed ONCE —
     // sleep re-picks goals all night, so assignments must be stable.
-    const doorDirs = this.island.houseDoors.map((d) => d.position.clone().normalize());
+    const doorDirs = this.island.houseDoors
+      .filter((d) => d.id.startsWith('house_')) // sleepers never cross the sea
+      .map((d) => d.position.clone().normalize());
     if (doorDirs.length) {
       const personas: Array<{ id: string; home: THREE.Vector3 }> = [];
       this.island.npcTargets.forEach((n, i) => {
@@ -5955,13 +6344,16 @@ export class GameScene extends THREE.Scene {
       // Shared spacing registry + keep OFF the streets (roadside is fine, on-road isn't)
       dir = this.island.claimOffStreet(dir, clearArc);
       let R = this.island.getRadius();
+      let up = dir.clone();
       try {
-        R = this.island.sampleSurfaceByDirection(dir, 0).position.length();
+        const s = this.island.sampleSurfaceByDirection(dir, 0);
+        R = s.position.length();
+        up = s.normal; // tilt with the ground — was radial (grounding pass)
       } catch {
         /* ideal-sphere fallback */
       }
       mesh.position.copy(dir.clone().multiplyScalar(R + radiusOffset));
-      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
     };
 
     // Quest mailboxes: spread across the ISLAND's habitable latitude bands
@@ -6015,13 +6407,16 @@ export class GameScene extends THREE.Scene {
       dir = this.island.claimOffStreet(dir, clearArc); // shared anti-cluster registry + off streets
       // Seat on the displaced terrain, not the ideal sphere
       let R = this.island.getRadius();
+      let up = dir.clone();
       try {
-        R = this.island.sampleSurfaceByDirection(dir, 0).position.length();
+        const s = this.island.sampleSurfaceByDirection(dir, 0);
+        R = s.position.length();
+        up = s.normal; // tilt with the ground — was radial (grounding pass)
       } catch {
         /* ideal-sphere fallback */
       }
       obj.position.copy(dir.clone().multiplyScalar(R - 0.07)); // roots sunk: bury-not-float
-      obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
       obj.rotateY(Math.random() * Math.PI * 2); // random yaw around the surface normal
     };
 
@@ -6377,8 +6772,8 @@ export class GameScene extends THREE.Scene {
       }
     }
 
-    this.updateFeedPiles(time);
-    this.updateFishFeedPiles(time);
+    this.updateFeedPiles(time, deltaTime);
+    this.updateFishFeedPiles(time, deltaTime);
 
     // Trees: gentle sway + a slow wind gust that rolls through every ~25s so
     // the whole canopy leans together, not just idle jitter.
@@ -6400,7 +6795,7 @@ export class GameScene extends THREE.Scene {
         // The Fisherman + Baker run their own routines — skip the wander for them
         if (this.fisherman && npc === this.fisherman.npc) continue;
         if (this.baker && npc === this.baker.npc) continue;
-        if (this.sailor && npc === this.sailor.npc) continue;
+        if (this.sailors.some((s) => s.npc === npc)) continue;
         // Market Vendors mind their pitches — they don't wander off to shop.
         if (this.vendors.some((v) => v.npc === npc)) continue;
         const data = npc.meshRef.userData as {
@@ -6768,7 +7163,8 @@ export class GameScene extends THREE.Scene {
     this.updateHerons(time);
     this.updateFisherman(time, deltaTime);
     this.updateBaker(time, deltaTime);
-    this.updateSailor(time, deltaTime);
+    this.updateSailors(time, deltaTime);
+    this.updateCruise(time, deltaTime);
     this.updateVendors(time);
     // Carried quest fish: gentle wiggle in the player's hands
     if (this.carriedFish) this.carriedFish.rotation.z = Math.sin(time * 5) * 0.15;
@@ -8154,6 +8550,27 @@ export class GameScene extends THREE.Scene {
       box(hall, 0.03, 0.34, 0.26, 0xf5f2ea, 3.74, py, pz);
 
     // cottage — the houses: bed, round table + stools, hearth, kitchen shelf.
+    // beach — Brother's Beach House on the islet: surf gear, driftwood
+    // furniture, sandy colours. No fireplace (it's a warm-water shack).
+    const bch = set('beach');
+    box(bch, 0.52, 2.5, 0.14, 0x3fa9c9, 2.9, 1.25, -3.55); // surfboard on the wall
+    box(bch, 0.4, 1.9, 0.1, 0xf2b04a, 2.3, 0.95, -3.6); // second board
+    box(bch, 1.2, 0.34, 2.0, 0xb89a6a, -3.0, 0.28, -2.4); // driftwood daybed
+    box(bch, 1.1, 0.16, 1.9, 0xf4ead6, -3.0, 0.53, -2.4); // pale mattress
+    box(bch, 1.05, 0.14, 0.9, 0x5fb3c9, -3.0, 0.62, -1.95); // sea-blue throw
+    cyl(bch, 0.72, 0.72, 0.1, 0xcbb086, 1.4, 0.5, -1.3); // low driftwood table
+    cyl(bch, 0.1, 0.13, 0.44, D, 1.4, 0.22, -1.3);
+    cyl(bch, 0.3, 0.34, 0.22, 0xd97b4a, 0.5, 0.12, -0.9); // floor cushions
+    cyl(bch, 0.3, 0.34, 0.22, 0x5fb3c9, 2.3, 0.12, -1.7);
+    cyl(bch, 0.3, 0.3, 0.4, 0xa8583a, -2.6, 0.2, 1.6); // potted palm
+    cyl(bch, 0.08, 0.1, 0.9, 0x8a6a42, -2.6, 0.85, 1.6);
+    box(bch, 1.1, 0.08, 0.34, 0x3e8e5a, -2.6, 1.35, 1.6); // fronds (crossed)
+    box(bch, 0.34, 0.08, 1.1, 0x4aa668, -2.6, 1.42, 1.6);
+    box(bch, 1.5, 0.08, 0.36, W, 0.6, 1.75, -3.72); // shell shelf
+    cyl(bch, 0.09, 0.12, 0.16, 0xf4ead6, 0.2, 1.87, -3.72); // shells + bottle
+    cyl(bch, 0.07, 0.09, 0.14, 0xe8a89a, 0.7, 1.86, -3.72);
+    cyl(bch, 0.06, 0.06, 0.3, 0x9fd9d4, 1.1, 1.94, -3.72);
+
     const cot = set('cottage');
     box(cot, 1.1, 0.38, 2.0, D, -3.0, 0.3, -2.5); // bed frame
     box(cot, 1.0, 0.16, 1.9, 0xefe9dc, -3.0, 0.57, -2.5);
@@ -8311,6 +8728,7 @@ export class GameScene extends THREE.Scene {
     post: 0x7d6b8f,
     hall: 0x5d8a58,
     cottage: 0x9c5f4e,
+    beach: 0xd9c48a, // woven sand-mat
   };
   private static readonly INTERIOR_FIRE_POS: Record<string, [number, number, number]> = {
     home: [-3.05, 0.85, -2.0],
@@ -8358,6 +8776,24 @@ export class GameScene extends THREE.Scene {
       text?: string;
     }>
   > = {
+    beach: [
+      {
+        x: 2.6,
+        z: -3.0,
+        r: 1.3,
+        label: '🏄 Press <strong>E</strong> to check the boards',
+        action: 'toast',
+        text: 'Waxed and ready. The waves out there are calling. 🏄',
+      },
+      {
+        x: -3.0,
+        z: -2.2,
+        r: 1.2,
+        label: '🌊 Press <strong>E</strong> to listen to the sea',
+        action: 'toast',
+        text: 'From here you can hear every wave that rolls toward the big island. 🌊',
+      },
+    ],
     office: [
       {
         x: 0,

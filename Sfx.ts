@@ -354,6 +354,48 @@ export class Sfx {
     phrase();
   }
 
+  private meowLevel = 0;
+  private meowTimer: number | undefined;
+
+  /** One synthesized meow: a rise-then-fall glide with a soft second
+   *  formant — reads unmistakably "cat" at toy fidelity. */
+  private meow(gain: number): void {
+    const base = 470 + Math.random() * 120;
+    // rising "m-eh" then the falling "ow"
+    this.tone(base * 0.75, base * 1.25, 0.16, 'triangle', gain);
+    window.setTimeout(() => this.tone(base * 1.25, base * 0.55, 0.3, 'triangle', gain * 0.85), 150);
+    window.setTimeout(() => this.tone(base * 2.4, base * 1.1, 0.22, 'sine', gain * 0.25), 160);
+  }
+
+  /** Ambient meows while near a cat (0..1 proximity level, bandstand
+   *  pattern: quantised level, one lazy scheduler, per-meow gain reads the
+   *  LIVE level so walking away fades the next call). */
+  public setMeowLevel(level: number): void {
+    const q = Math.round(Math.max(0, Math.min(1, level)) * 10) / 10;
+    if (q === this.meowLevel) return;
+    this.meowLevel = q;
+    if (q <= 0) {
+      if (this.meowTimer) clearTimeout(this.meowTimer);
+      this.meowTimer = undefined;
+      return;
+    }
+    if (this.meowTimer) return; // scheduler already running
+    const call = () => {
+      this.meowTimer = window.setTimeout(
+        () => {
+          if (this.meowLevel <= 0) {
+            this.meowTimer = undefined;
+            return;
+          }
+          this.meow(0.055 * this.meowLevel);
+          call();
+        },
+        6000 + Math.random() * 9000,
+      );
+    };
+    call();
+  }
+
   private ducked = false;
 
   /** Duck the whole sfx bus (beds + one-shots) under NPC voice so speech

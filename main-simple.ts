@@ -1380,14 +1380,21 @@ class SimpleApp {
   private enterBuilding(id: string, isZone: boolean, zone?: { id: string; name: string }): void {
     if (this.scene.isInsideInterior()) return;
     const d = DISTRICTS.find((x) => x.id === id);
-    const title = isZone ? (zone?.name ?? d?.name ?? id) : 'A cosy home';
-    const wall = isZone ? (d?.accent ?? 0xcfc4ae) : 0xe0c9a8;
-    const theme = isZone ? (SimpleApp.INTERIOR_THEMES[id] ?? 'hall') : 'cottage';
+    const islet = !isZone && id.startsWith('islet_');
+    const title = isZone
+      ? (zone?.name ?? d?.name ?? id)
+      : islet
+        ? "Brother's Beach House"
+        : 'A cosy home';
+    const wall = isZone ? (d?.accent ?? 0xcfc4ae) : islet ? 0x9fd0dc : 0xe0c9a8;
+    const theme = isZone ? (SimpleApp.INTERIOR_THEMES[id] ?? 'hall') : islet ? 'beach' : 'cottage';
     this.insideZone = isZone ? (zone ?? { id, name: title }) : null;
     this.insideIsZone = isZone;
     const [left, right] = isZone
       ? (SimpleApp.INTERIOR_CONTENT[id] ?? ['', ''])
-      : ['A place to\nrest', 'Someone\nlives here'];
+      : islet
+        ? ['Across the\nwater', 'Waves at\nthe door']
+        : ['A place to\nrest', 'Someone\nlives here'];
     sfx.blip();
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
@@ -1880,6 +1887,8 @@ class SimpleApp {
       const stage = this.scene.getIsland().bandstandSites[0];
       const playing = stage && this.scene.getNpcActivity('Musician') === 'play_music';
       sfx.setBandstandLevel(playing ? Math.max(0, 1 - wp.distanceTo(stage) / 18) : 0);
+      // Ambient meows near cats: occasional calls, fading over ~9u.
+      sfx.setMeowLevel(Math.max(0, 1 - this.scene.getNearestCatDistance(wp) / 9));
     }
     // Vehicle engine loop while driving; silent on foot
     if (this.scene.isRidingVehicle()) {

@@ -1029,6 +1029,7 @@ export class SimplePlayer extends THREE.Group {
     let tossEnv = 0;
     let tossAng = 0;
     let tossLean = 0;
+    let tossCrouch = 0;
     if (this.feedTossTime > 0) {
       this.feedTossTime = Math.max(0, this.feedTossTime - dt);
       const te = SimplePlayer.FEED_TOSS_DURATION - this.feedTossTime;
@@ -1039,6 +1040,9 @@ export class SimplePlayer extends THREE.Group {
       tossEnv = Math.min(1, this.feedTossTime / 0.26); // settle-out ease
       // Opposite arm counterweights slightly during the swing.
       tossLean = te > 0.14 ? 0.35 * tossEnv : 0;
+      // Whole-body windup: knees bend + the body dips into the throw, then
+      // releases through the scatter — the gesture reads from the legs up.
+      tossCrouch = (te < 0.14 ? te / 0.14 : Math.max(0, 1 - (te - 0.14) / 0.22)) * tossEnv;
     }
     if (this.gltfModel) {
       this.ensureLimbBones();
@@ -1060,6 +1064,17 @@ export class SimplePlayer extends THREE.Group {
           );
         }
         if (this.armLBone) this.armLBone.rotation.x += tossLean;
+        if (this.legLBone) this.legLBone.rotation.x += 0.5 * tossCrouch;
+        if (this.legRBone) this.legRBone.rotation.x += 0.5 * tossCrouch;
+      }
+      // Body dip rides a CACHED base — gltfModel.position.y is written once
+      // at load (foot seating), so an additive per-frame offset would
+      // accumulate. Once cached, always rewrite (dip = 0 when idle).
+      if (this.tossCrouchBaseY === undefined && tossCrouch > 0) {
+        this.tossCrouchBaseY = this.gltfModel.position.y;
+      }
+      if (this.tossCrouchBaseY !== undefined) {
+        this.gltfModel.position.y = this.tossCrouchBaseY - 0.09 * tossCrouch;
       }
     } else if (this.armPivots.length === 2 && this.legPivots.length === 2) {
       if (aw > 0.001) {
@@ -1077,9 +1092,16 @@ export class SimplePlayer extends THREE.Group {
         const arm = this.armPivots[1];
         arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, tossAng, tossEnv);
         this.armPivots[0].rotation.x += tossLean;
+        // Knees only on the fallback body — its mesh.position.y is rewritten
+        // per frame by the walk bounce, so no cached dip is needed or safe.
+        this.legPivots[0].rotation.x += 0.5 * tossCrouch;
+        this.legPivots[1].rotation.x += 0.5 * tossCrouch;
       }
     }
   }
+
+  // Cached base for the toss-crouch body dip (GLTF path only — see above).
+  private tossCrouchBaseY?: number;
 
   /**
    * Normalised walk-cycle phase (0..1 across one full gait cycle) so footstep
