@@ -1474,18 +1474,15 @@ export class Island {
         .add(sampled.normal.clone().multiplyScalar(buildingHeight * 0.5));
       b.position.copy(offsetPos);
 
-      const q = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        sampled.normal,
-      );
+      // PLUMB. A tower is the least forgiving thing on the island to lean —
+      // its verticals are the eye's reference for "upright" in the whole
+      // scene. Position follows the terrain; the up-axis is radial.
+      const bUp = sampled.position.clone().normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bUp);
       b.quaternion.copy(q);
       // Face the boulevard — each tower addresses the street, so the two
       // rows front each other across the pavement like a real CBD block
-      this.faceObjectToward(
-        b,
-        sampled.normal,
-        this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius),
-      );
+      this.faceObjectToward(b, bUp, this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius));
       b.castShadow = true;
       b.receiveShadow = true;
       b.name = `building_placeholder_${i}`;
@@ -1642,18 +1639,14 @@ export class Island {
         house.add(chimney);
       }
 
-      // align to surface
-      const q = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        sampled.normal,
-      );
+      // Plumb, like every other built structure — houses sit ON the terrain
+      // but stand vertical. Their foundations are buried deep enough to
+      // absorb the gap on the downhill side.
+      const hUp = sampled.position.clone().normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), hUp);
       house.quaternion.copy(q);
       // Front door faces the village street (nearest boulevard point)
-      this.faceObjectToward(
-        house,
-        sampled.normal,
-        this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius),
-      );
+      this.faceObjectToward(house, hUp, this.dirAt(lon, ZONE_LAT).multiplyScalar(this.radius));
       house.position.copy(sampled.position);
       // Record the chimney tip (post-alignment) for GameScene's smoke puffs
       if (i % 2 === 0) {
@@ -2113,15 +2106,18 @@ export class Island {
       // either a tall lamp lighting a dot or a floating puddle of light.
       lampGroup.scale.setScalar(2.9);
 
-      const q = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        sampled.normal,
-      );
+      // Lamp posts stand PLUMB. Their foot follows the ground, but a post
+      // raked over to match a slope looks knocked down, not planted.
+      const lampUp = sampled.position.clone().normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), lampUp);
       lampGroup.position.copy(sampled.position);
       lampGroup.quaternion.copy(q);
       // Swing the arm (local +X) out over the roadway: yaw +Z toward the
       // boulevard centerline, then back off 90° so +X takes its place
-      this.faceObjectToward(lampGroup, sampled.normal, faceTarget);
+      // Yaw about the PLUMB axis, not the slope normal: faceObjectToward
+      // premultiplies a rotation about whatever axis it is handed, so passing
+      // the slope normal here quietly tilted the post straight back over.
+      this.faceObjectToward(lampGroup, lampUp, faceTarget);
       lampGroup.rotateOnAxis(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
       // No per-lamp light. Ten static lights meant the other twenty-seven
       // lamps were pure decoration — you could walk directly under one and
@@ -2859,14 +2855,18 @@ export class Island {
       // person can plausibly get into (1.55 read oversized next to the
       // shrunk player).
       carGroup.scale.setScalar(1.45); // ~1.3u tall vs the 1.7u player (was 0.99u, toy-sized)
+      // Plumb like the rest of the built world. A car does legitimately sit
+      // on its road's slope, but the kerb sites are not all road: car_7 came
+      // out at 38 degrees, which reads as crashed rather than parked.
+      const carUp = sampled.position.clone().normalize();
       carGroup.quaternion.copy(
-        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
+        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), carUp),
       );
       // Nose ALONG the street (tangent of the boulevard), direction matching
       // the side of the road it's parked on — reads as kerbside parking
       this.faceObjectToward(
         carGroup,
-        sampled.normal,
+        carUp,
         this.dirAt(carLon + (i % 2 === 0 ? 0.4 : -0.4), carLat).multiplyScalar(this.radius),
       );
       carGroup.castShadow = true;
@@ -2926,15 +2926,18 @@ export class Island {
       this.stallProps.push(sampled.position.clone());
       // Counter at ~0.66u working height for the 1.56u vendors
       stall.scale.setScalar(2.2); // ~3.7u incl. awning (~2.2x the 1.7u player) — already well-proportioned
+      // PLUMB, not slope-normal. A market stall is a rigid built structure:
+      // real ones stand vertical and their skirt hides the gap downhill (the
+      // 0.9-deep ground skirt exists for exactly this). Leaning the whole
+      // frame 24 degrees to match a hillside reads as a collapsing tent —
+      // same rule the trees follow. The POSITION still tracks the terrain;
+      // only the up-axis is radial.
+      const stallUp = sampled.position.clone().normalize();
       stall.quaternion.copy(
-        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
+        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), stallUp),
       );
       // Counters face the market street (nearest boulevard point)
-      this.faceObjectToward(
-        stall,
-        sampled.normal,
-        this.dirAt(sLon, ZONE_LAT).multiplyScalar(this.radius),
-      );
+      this.faceObjectToward(stall, stallUp, this.dirAt(sLon, ZONE_LAT).multiplyScalar(this.radius));
       stall.castShadow = true;
       stall.receiveShadow = true;
       stall.name = `stall_${i}`;

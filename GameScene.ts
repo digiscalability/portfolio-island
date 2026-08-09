@@ -832,6 +832,8 @@ export class GameScene extends THREE.Scene {
       this.setupFisherman();
       // A campfire on the open ground above the shore, lit from dusk.
       this.setupCampfire();
+      // Palms + ferns along the waterline, so the coast reads tropical.
+      this.setupCoastalPalms();
       // The Baker works his oven at the village bakery
       this.setupBaker();
       // The Sailor drifts on his rowboat just offshore
@@ -3490,6 +3492,102 @@ export class GameScene extends THREE.Scene {
       }
       this.campfireGuests.length = 0;
     }
+  }
+
+  /** One coconut palm: a leaning segmented trunk and a crown of fronds.
+   *  `lean` tips it away from the shore the way real coastal palms grow. */
+  private buildPalm(scale: number, lean: number): THREE.Group {
+    const palm = new THREE.Group();
+    const trunkMat = GameScene.birdMat(0x8a6a42);
+    const frondMat = GameScene.birdMat(0x3e8e5a);
+    for (let t = 0; t < 3; t++) {
+      const seg = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09 - t * 0.015, 0.11 - t * 0.015, 0.85, 6),
+        trunkMat,
+      );
+      seg.position.set(t * 0.1 * lean, 0.4 + t * 0.8, 0);
+      seg.rotation.z = -0.12 * (t + 1) * lean;
+      seg.castShadow = true;
+      palm.add(seg);
+    }
+    for (let f = 0; f < 6; f++) {
+      const a = (f / 6) * Math.PI * 2;
+      const frond = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.05, 0.4), frondMat);
+      frond.position.set(0.3 * lean + Math.cos(a) * 0.55, 2.35, Math.sin(a) * 0.55);
+      frond.rotation.set(Math.sin(a) * 0.4, a, -0.35);
+      frond.castShadow = true;
+      palm.add(frond);
+    }
+    // Coconuts under the crown — three little spheres read unmistakably.
+    const nutMat = GameScene.birdMat(0x6b4a2a);
+    for (let n = 0; n < 3; n++) {
+      const a = (n / 3) * Math.PI * 2 + 0.5;
+      const nut = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), nutMat);
+      nut.position.set(0.3 * lean + Math.cos(a) * 0.16, 2.2, Math.sin(a) * 0.16);
+      palm.add(nut);
+    }
+    palm.scale.setScalar(scale);
+    return palm;
+  }
+
+  /**
+   * A palm belt around the shoreline, with fern clumps at their feet. The
+   * island read as temperate parkland — oaks and pines to the waterline —
+   * because every scatter pass plants the same two tree types everywhere.
+   * This claims the coastal band (lat 0.27-0.37, the dry strip just above
+   * the waterline) for tropical planting instead.
+   */
+  private setupCoastalPalms(): void {
+    if (!this.island) return;
+    const fernMat = GameScene.birdMat(0x4f9a52);
+    let planted = 0;
+    const N = 46;
+    for (let i = 0; i < N; i++) {
+      // Golden-angle march around the coast so the belt never clumps.
+      const lon = (i * 2.399963) % (Math.PI * 2);
+      const lat = 0.27 + ((i * 7) % 10) * 0.01;
+      const dir = this.island.dirAt(lon, lat);
+      if (this.island.isOverWater(dir)) continue;
+      if (this.island.isNearStreet(dir)) continue;
+      let s: { position: THREE.Vector3; normal: THREE.Vector3 };
+      try {
+        s = this.island.sampleSurfaceByDirection(dir, 0);
+      } catch {
+        continue;
+      }
+      if (s.normal.angleTo(dir) > 0.5) continue; // too steep to have grown there
+      // Keep clear of anything already standing here.
+      if (this.island.pendingColliders.some((c) => c.position.distanceTo(s.position) < 2.2))
+        continue;
+      const scale = 0.85 + ((i * 13) % 7) * 0.07;
+      const palm = this.buildPalm(scale, i % 2 === 0 ? 1 : -1);
+      palm.position.copy(s.position);
+      palm.quaternion
+        .setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal)
+        .multiply(
+          new THREE.Quaternion().setFromAxisAngle(GameScene.AXIS_Y, (i * 2.399963) % (Math.PI * 2)),
+        );
+      this.add(palm);
+      addGroupHulls(palm);
+      this.island.pendingColliders.push({ position: palm.position.clone(), radius: 0.4 });
+      // Fern clumps at the base: three splayed cones, no collider (you can
+      // walk through undergrowth).
+      for (let f = 0; f < 3; f++) {
+        const fa = (f / 3) * Math.PI * 2 + i;
+        const fern = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.6, 5), fernMat);
+        const off = new THREE.Vector3(Math.cos(fa) * 0.9, 0, Math.sin(fa) * 0.9);
+        off.applyQuaternion(palm.quaternion);
+        fern.position.copy(s.position).add(off).addScaledVector(s.normal, 0.22);
+        fern.quaternion
+          .setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal)
+          .multiply(new THREE.Quaternion().setFromAxisAngle(GameScene.AXIS_Y, fa));
+        fern.rotateX(0.18);
+        fern.castShadow = true;
+        this.add(fern);
+      }
+      planted++;
+    }
+    console.log(`🌴 ${planted} coastal palms planted`);
   }
 
   private orientQuat(up: THREE.Vector3, fwd: THREE.Vector3): THREE.Quaternion {
