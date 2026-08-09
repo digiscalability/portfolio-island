@@ -2044,7 +2044,7 @@ export class GameScene extends THREE.Scene {
     const time = performance.now() / 1000;
     const pos = this.spawnFeedPile(origin, up, surf.position, surf.normal, 0xd9bd7a, 'bird_feed');
     this.callBirdsToFeed(pos, time);
-    sfx.blip();
+    this.feedThrowCeremony(pos, time);
     return true;
   }
 
@@ -2081,8 +2081,41 @@ export class GameScene extends THREE.Scene {
     const time = performance.now() / 1000;
     const pos = this.spawnFeedPile(origin, up, surf.position, surf.normal, 0xc98b6a, 'cat_feed');
     this.callCatsToFeed(pos, time);
-    sfx.blip();
+    this.feedThrowCeremony(pos, time);
     return true;
+  }
+
+  // Feed-moment camera interest: while fresh, the orbit camera biases its
+  // look target toward the last pile so the little feeding scene is
+  // acknowledged without taking control (see the setFocusPoint feed in
+  // update). Scratch is also the fish-throw ceremony's position buffer.
+  private feedFocusPos: THREE.Vector3 | null = null;
+  private feedFocusUntil = 0;
+  private readonly _feedFocusScratch = new THREE.Vector3();
+
+  /**
+   * The shared throw ceremony for all three feeds: the player's underhand
+   * toss gesture + a body pop, the swish, and ~10s of soft camera interest
+   * on the pile. Called only on CONFIRMED throws (refusals return earlier).
+   */
+  private feedThrowCeremony(pilePos: THREE.Vector3, time: number): void {
+    this.player?.triggerFeedToss();
+    if (this.player) squash(this.player, 0.07, 0.16);
+    sfx.toss();
+    (this.feedFocusPos ??= new THREE.Vector3()).copy(pilePos);
+    this.feedFocusUntil = time + 10;
+  }
+
+  /** The active feed-focus point for the camera, or null once stale/far. */
+  public getFeedFocus(): THREE.Vector3 | null {
+    if (!this.feedFocusPos || performance.now() / 1000 > this.feedFocusUntil) return null;
+    if (
+      this.player &&
+      this.feedFocusPos.distanceToSquared(this.player.getWorldPosition()) > 14 * 14
+    ) {
+      return null;
+    }
+    return this.feedFocusPos;
   }
 
   /**
@@ -2209,7 +2242,10 @@ export class GameScene extends THREE.Scene {
     });
     while (this.fishFeedPiles.length > 3) this.removeFishFeedPile(0);
     this.callFishToFeed(this._feedDir, time);
-    sfx.blip();
+    this.feedThrowCeremony(
+      this._feedFocusScratch.copy(this._feedDir).multiplyScalar(this.island.seaLevel()),
+      time,
+    );
     return true;
   }
 
@@ -2457,6 +2493,8 @@ export class GameScene extends THREE.Scene {
         if (t >= 1) {
           p.landed = true;
           p.toss.visible = false;
+          // The grains patter into the grass — a tiny puff sells the landing.
+          this.spawnDust(p.pile.position, 2);
         }
       } else {
         // Pop in, hold, then dwindle as it gets eaten.
@@ -2662,6 +2700,8 @@ export class GameScene extends THREE.Scene {
             c.basePos.copy(c.walkTo);
             c.analBase = s.radius;
             c.mode = 'eat';
+            // A happy little arrival pounce (root scale only, restores exactly)
+            squash(c.cat, 0.16, 0.22);
           } else {
             c.mode = 'sit';
             c.stateUntil = time + 2 + Math.random() * 4;
@@ -3357,6 +3397,7 @@ export class GameScene extends THREE.Scene {
     moving: boolean,
     idx: number,
     deltaTime: number,
+    talkTime = -1,
   ): void {
     const ud = ref.userData as { limbs?: NpcLimbCache | null };
     if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
@@ -3370,7 +3411,18 @@ export class GameScene extends THREE.Scene {
     const ease = 1 - Math.min(1, 8 * deltaTime);
     for (let n = 0; n < limbs.length; n++) {
       const l = limbs[n];
-      l.ang = moving ? swing * GameScene.NPC_LIMB_MIX[n] : l.ang * ease;
+      if (moving) {
+        l.ang = swing * GameScene.NPC_LIMB_MIX[n];
+      } else if (talkTime >= 0 && n >= 2) {
+        // Dialogue-hold gesticulation: a slow asymmetric arm sway (bones
+        // 2-3 are armL/armR per NPC_LIMB_BONES). Legs stay at rest; the
+        // sway eases in/out through the same per-limb angle so releasing
+        // the hold settles limbs exactly like a walk stop does.
+        const talk = Math.sin(talkTime * 1.7 + idx * 2.1 + n * 2.4) * 0.11 - 0.05;
+        l.ang += (talk - l.ang) * Math.min(1, 5 * deltaTime);
+      } else {
+        l.ang = l.ang * ease;
+      }
       // Compose ONTO the rest pose. Writing bone.rotation.x directly (as the
       // player does with its own rig) DESTROYS the rest orientation — these
       // bones are authored pointing straight down and carry a non-identity
@@ -4866,6 +4918,21 @@ export class GameScene extends THREE.Scene {
     this.npcBubbleUntil = time + 6.5;
   }
 
+  // ── Dialogue hold ──────────────────────────────────────────────────
+  private heldNpcName: string | null = null;
+
+  /**
+   * Hold the named villager in place for an in-person dialogue: the wander
+   * loop stops walk-offs and goal re-picks while the chat panel is open,
+   * keeps the breathing/facing tail running, and layers a gentle talk sway
+   * + occasional hop. Pass null to release — the NPC lingers ~0.6s, then
+   * picks its next goal. Station NPCs (Fisherman/Baker/Sailor/Vendors) run
+   * their own routines and stay at their posts, so they need no hold.
+   */
+  public setNpcDialogueHold(name: string | null): void {
+    this.heldNpcName = name;
+  }
+
   /** The named NPC's current activity id (for the aware chat opening). */
   public getNpcActivity(name: string): string | undefined {
     const t = this.island.npcTargets.find((n) => n.name === name);
@@ -5962,6 +6029,8 @@ export class GameScene extends THREE.Scene {
 
     // Update camera (suspended while the tour rail drives it directly)
     if (this.orbitCamera && !this.cameraSuspended) {
+      // Soft camera interest in an active feed pile (null fades it back out)
+      this.orbitCamera.setFocusPoint(this.getFeedFocus());
       this.orbitCamera.update(deltaTime);
     }
 
@@ -6191,6 +6260,9 @@ export class GameScene extends THREE.Scene {
           g.up.copy(s.normal);
           g.baseQuat.setFromUnitVectors(GameScene.AXIS_Y, s.normal);
           g.legs.rotation.x = 0;
+          // A wisp of dust on touchdown (no squash here — peck mode owns
+          // g.bird.scale every frame and would fight it).
+          this.spawnDust(g.curPos, 2);
         }
       } else if (g.mode === 'flee') {
         const t = time - g.t0;
@@ -6276,6 +6348,7 @@ export class GameScene extends THREE.Scene {
           greetT0?: number;
           lastGreetAt?: number;
           lastSpokeAt?: number; // aware proximity-greeting throttle
+          nextTalkHopAt?: number; // dialogue-hold conversational hop cadence
           wander?: {
             home: THREE.Vector3;
             dir: THREE.Vector3;
@@ -6315,6 +6388,27 @@ export class GameScene extends THREE.Scene {
           };
         }
         const w = data.wander;
+        // Dialogue hold: while a chat panel is open with this villager, stop
+        // them mid-stride where they stand (dir×radius is always valid
+        // ground) and keep pushing w.until forward so the goal re-pick never
+        // fires — villagers used to stroll away mid-conversation. The whole
+        // tail below (breathing, facing, position apply) keeps running so a
+        // held NPC stays alive, and the existing player-facing override
+        // already turns them toward the player at chat range.
+        const held = this.heldNpcName === npc.name;
+        if (held) {
+          if (w.state === 'walk') w.state = 'idle';
+          w.until = Math.max(w.until, time + 0.6);
+          // Conversational body language: an occasional cheerful hop.
+          if (data.nextTalkHopAt === undefined) {
+            data.nextTalkHopAt = time + 4 + Math.random() * 5;
+          } else if (time > data.nextTalkHopAt) {
+            data.greetT0 = time;
+            data.nextTalkHopAt = time + 6 + Math.random() * 7;
+          }
+        } else if (data.nextTalkHopAt !== undefined) {
+          data.nextTalkHopAt = undefined;
+        }
         let moving = false;
         if (w.state === 'idle') {
           if (time > w.until) {
@@ -6498,7 +6592,7 @@ export class GameScene extends THREE.Scene {
           }
         }
         w.roll += (rollTarget - w.roll) * Math.min(1, 12 * deltaTime);
-        this.swingNpcLimbs(npc.meshRef, w, moving, i, deltaTime);
+        this.swingNpcLimbs(npc.meshRef, w, moving, i, deltaTime, held ? time : -1);
         // Night: an NPC that has ARRIVED at its sleep spot (the nearest cottage
         // door) steps "inside" — hidden until the schedule wakes it. The walk
         // home stays visible, so visitors see the townsfolk head in at dusk.
@@ -6543,6 +6637,7 @@ export class GameScene extends THREE.Scene {
             // activity, the hour, the day-theme). Throttled per NPC; one
             // bubble at a time; skipped for sleepers and non-AI NPCs.
             if (
+              !held && // the chat panel is open — a bubble would talk over it
               isAiNpc(npc.name) &&
               npc.meshRef.visible &&
               (data.lastSpokeAt === undefined || time - data.lastSpokeAt > 120) &&
@@ -7439,10 +7534,11 @@ export class GameScene extends THREE.Scene {
     }
 
     if (interactable.type === 'npc') {
-      // Little greeting hop from the NPC being addressed
+      // Little greeting hop + delighted pop from the NPC being addressed
       const target = this.island.npcTargets.find((n) => n.name === interactable.npcData.name);
       if (target) {
         (target.meshRef.userData as { greetT0?: number }).greetT0 = performance.now() / 1000;
+        squash(target.meshRef, 0.12, 0.26);
       }
       if (this.onNPCInteractCallback) {
         this.onNPCInteractCallback(interactable.npcData);
@@ -8980,6 +9076,12 @@ export class GameScene extends THREE.Scene {
   private cameraSuspended = false;
   public setCameraSuspended(on: boolean): void {
     this.cameraSuspended = on;
+  }
+
+  /** Whether some cinematic rail (tour / postcard / dialogue) owns the camera.
+   *  The flag is not refcounted — a would-be second owner must check first. */
+  public isCameraSuspended(): boolean {
+    return this.cameraSuspended;
   }
 
   // setPlayerMovement scratch — called every input frame, keep allocation-free

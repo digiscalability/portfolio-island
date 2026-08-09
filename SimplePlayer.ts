@@ -63,7 +63,7 @@ export class SimplePlayer extends THREE.Group {
   private yawVel: number = 0; // yaw rad/s actually applied this frame — drives the turn lean
   private leanRoll: number = 0; // eased roll into turns (on-foot only)
 
-  private speed: number = 8.0; // movement speed. Bumped 5.5→7.0→8.0 alongside the R30→40→50 grows so crossing the (now much bigger) island stays ~22s — a roomier world, not a tediously long walk.
+  private speed: number = 5.6; // movement speed. Was 8.0 (bumped 5.5→7.0→8.0 with the R30→40→50 grows — but 8.0 is a 28.8km/h SPRINT next to the 1.4u/s villagers). Calmed to 5.6 (~20km/h brisk walk, island crossing ~31s): relaxed pacing IS the product now, and vehicles exist for distance.
   private jumpForce: number = 8;
   private gravityStrength: number = 25; // gravitational acceleration
 
@@ -133,6 +133,9 @@ export class SimplePlayer extends THREE.Group {
   // Arm-wave gesture: seconds of the ~1.2s wave remaining (0 = idle).
   private waveTime = 0;
   private static readonly WAVE_DURATION = 1.2;
+  // Feed-toss gesture: windup → underhand scatter → settle (0 = idle).
+  private feedTossTime = 0;
+  private static readonly FEED_TOSS_DURATION = 0.7;
   // Ground speed at which the walk clip reads natural at timeScale 1; the clip
   // rate is scaled by tangentialSpeed / this so slow walks don't moonwalk and
   // runs don't foot-slide.
@@ -971,6 +974,15 @@ export class SimplePlayer extends THREE.Group {
     this.waveTime = SimplePlayer.WAVE_DURATION;
   }
 
+  /** Start the feed-toss gesture (windup, underhand scatter, settle). Called
+   *  only AFTER the scene confirms the throw — a refused throw (night, over
+   *  sea) must not wind up an arm for nothing. The wave owns armR while it
+   *  plays, so a mid-wave toss skips the gesture rather than fight it. */
+  public triggerFeedToss(): void {
+    if (this.waveTime > 0) return;
+    this.feedTossTime = SimplePlayer.FEED_TOSS_DURATION;
+  }
+
   /**
    * Jump/air pose + arm-wave, applied on top of the mixer output (which has
    * already written these bones this frame). Air: arms up + knees tucked,
@@ -990,6 +1002,23 @@ export class SimplePlayer extends THREE.Group {
       waveEnv = Math.min(Math.min(1, waveElapsed / 0.15), Math.min(1, this.waveTime / 0.25));
     }
     const wag = Math.sin(waveElapsed * 14) * 0.4;
+    // Feed toss: a quick windup behind the hip, an underhand scatter swing
+    // forward-up, then the mixer reclaims the arm as the envelope fades. The
+    // whole pose is post-mixer like the wave, so it self-heals every frame.
+    let tossEnv = 0;
+    let tossAng = 0;
+    let tossLean = 0;
+    if (this.feedTossTime > 0) {
+      this.feedTossTime = Math.max(0, this.feedTossTime - dt);
+      const te = SimplePlayer.FEED_TOSS_DURATION - this.feedTossTime;
+      tossAng =
+        te < 0.14
+          ? (te / 0.14) * 0.6 // windup: arm swings back
+          : 0.6 - Math.min(1, (te - 0.14) / 0.16) * 2.1; // scatter: swing to -1.5
+      tossEnv = Math.min(1, this.feedTossTime / 0.26); // settle-out ease
+      // Opposite arm counterweights slightly during the swing.
+      tossLean = te > 0.14 ? 0.35 * tossEnv : 0;
+    }
     if (this.gltfModel) {
       this.ensureLimbBones();
       if (aw > 0.001) {
@@ -1001,6 +1030,15 @@ export class SimplePlayer extends THREE.Group {
       if (waveEnv > 0 && this.armRBone) {
         this.armRBone.rotation.x = THREE.MathUtils.lerp(this.armRBone.rotation.x, -2.6, waveEnv);
         this.armRBone.rotation.z = wag * waveEnv;
+      } else if (tossEnv > 0) {
+        if (this.armRBone) {
+          this.armRBone.rotation.x = THREE.MathUtils.lerp(
+            this.armRBone.rotation.x,
+            tossAng,
+            tossEnv,
+          );
+        }
+        if (this.armLBone) this.armLBone.rotation.x += tossLean;
       }
     } else if (this.armPivots.length === 2 && this.legPivots.length === 2) {
       if (aw > 0.001) {
@@ -1014,6 +1052,10 @@ export class SimplePlayer extends THREE.Group {
         arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, -2.6, waveEnv);
         // Blend back to the rest splay (-0.12) as the wave eases out.
         arm.rotation.z = wag * waveEnv + -0.12 * (1 - waveEnv);
+      } else if (tossEnv > 0) {
+        const arm = this.armPivots[1];
+        arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, tossAng, tossEnv);
+        this.armPivots[0].rotation.x += tossLean;
       }
     }
   }
@@ -1306,12 +1348,14 @@ export class SimplePlayer extends THREE.Group {
       this.velocity.normalize().multiplyScalar(maxVelocity);
     }
 
-    // Apply movement input or stop immediately if no input
+    // Apply movement input, or settle to rest: a short eased deceleration
+    // (~0.5u of drift) instead of the old zero-inertia stop — releasing the
+    // stick reads as settling, not freezing. Hard stops (bench seat,
+    // teleports, degenerate input) still call stopMovement() directly.
     if (this.moveInput && this.moveInput.length() > 0.01) {
       this.applyMovement(safeDeltaTime);
     } else {
-      // No input: stop immediately with zero inertia
-      this.stopMovement();
+      this.settleMovement(safeDeltaTime);
     }
 
     // Integrate position
@@ -1632,7 +1676,7 @@ export class SimplePlayer extends THREE.Group {
       return;
     }
 
-    const accelRate = 12; // units per second to blend towards target
+    const accelRate = 8; // blend rate toward target — was 12; the softer ramp (~0.4s to full stride) is part of the calm-locomotion pass
     const t = Math.min(1, accelRate * Math.max(0.001, _deltaTime));
 
     if (this.planetRadius > 0) {
@@ -1646,10 +1690,11 @@ export class SimplePlayer extends THREE.Group {
       const normal = this.getSurfaceNormal();
       const vNormal = normal.clone().multiplyScalar(this.velocity.dot(normal));
       const vTangent = this.velocity.clone().sub(vNormal);
-      // Swimming caps at 55% of run speed: an 8u/s front crawl would be 4×
-      // Olympic sprint pace and out-swim the boat. 4.4u/s is still heroic
-      // but keeps the water traversal hierarchy (feet < boat < jetski).
-      const target = moveDir.clone().multiplyScalar(this.speed * (this.swimming ? 0.55 : 1)); // moveDir already tangent-projected
+      // Swimming stays at ~4.4u/s (multiplier retuned 0.55→0.79 when walk
+      // speed calmed 8.0→5.6): the shoreline current pushes back at up to
+      // 4.0u/s, so a slower crawl would turn the swim limit into a hard
+      // wall. Hierarchy holds: feet(4.4) < boat(11) < jetski(16).
+      const target = moveDir.clone().multiplyScalar(this.speed * (this.swimming ? 0.79 : 1)); // moveDir already tangent-projected
       vTangent.lerp(target, t);
       this.velocity.copy(vTangent.add(vNormal));
     } else {
@@ -1657,6 +1702,27 @@ export class SimplePlayer extends THREE.Group {
       this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, moveDir.x * this.speed, t);
       this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, moveDir.z * this.speed, t);
     }
+  }
+
+  /**
+   * Eased stop: decay the tangential velocity toward zero (exp rate 10/s —
+   * Hz-independent, composes correctly across the 20ms substeps) and snap
+   * the last 0.15 u/s so the walk-blend and footstep gates (0.8) aren't
+   * grazed forever by an asymptotic tail.
+   */
+  private settleMovement(dt: number): void {
+    if (this.planetRadius > 0) {
+      const normal = this.getSurfaceNormal();
+      const vN = normal.multiplyScalar(this.velocity.dot(normal));
+      this.velocity.sub(vN); // tangential part, in place
+      const sp = this.velocity.length();
+      this.velocity.multiplyScalar(sp < 0.15 ? 0 : Math.exp(-10 * dt));
+      this.velocity.add(vN);
+    } else {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+    }
+    this.moveInput.set(0, 0, 0);
   }
 
   /**

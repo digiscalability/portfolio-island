@@ -9,7 +9,7 @@ import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
-import { tick as juiceTick } from './Juice';
+import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { Multiplayer } from './Multiplayer';
 import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
@@ -18,7 +18,7 @@ import { loadProfile, saveProfile } from './profileSync';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
-import { SimpleInputManager } from './SimpleInputManager';
+import { SimpleInputManager, consumePinchZoomFactor } from './SimpleInputManager';
 import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import { SimpleUI } from './SimpleUI';
@@ -449,6 +449,7 @@ class SimpleApp {
         const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
         if (talk) {
           this.ui.showDialogue(npcData.name, talk.lines);
+          this.beginNpcDialogue(npcData.name);
           if (talk.accepted) {
             sfx.blip();
             this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
@@ -501,6 +502,7 @@ class SimpleApp {
             },
             voiceProfileFor(npcData.name),
           );
+          this.beginNpcDialogue(npcData.name);
           // Deepen the opening in the background: the composed line shows
           // instantly; when the persona's generated continuation arrives the
           // NPC simply keeps talking. Failures resolve silently — the
@@ -521,7 +523,12 @@ class SimpleApp {
         const flavor = moodNpcFlavor();
         if (flavor) lines = [flavor, ...lines];
         this.ui.showDialogue(npcData.name, lines);
+        this.beginNpcDialogue(npcData.name);
       });
+      // Release the hold + camera the moment the chat panel closes by any
+      // path (✕, Escape, replaced by a new chat) — the per-frame poll below
+      // is the belt for the canned-dialogue panel, this is the braces.
+      this.ui.setOnNpcChatClosed(() => this.endNpcDialogue());
 
       // Living world: subscribe to the server-owned world/island beat (a mood +
       // pre-authored headline the scheduled director evolves every few hours).
@@ -1550,6 +1557,13 @@ class SimpleApp {
 
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
+      // In-person dialogue upkeep: release the hold when every conversation
+      // panel is gone (covers the canned panel, which has no close callback),
+      // and drive the push-in/release camera rail while it owns the camera.
+      if (this.npcDialogueName && !this.ui.isNpcChatOpen() && !this.ui.isDialogueActive()) {
+        this.endNpcDialogue();
+      }
+      if (this.npcCine) this.updateNpcCine(deltaTime);
       // Cinematic tour: the rail owns the camera and the player stands still.
       // Everything else in the world keeps running (that's the point of it).
       if (this.tour) {
@@ -1575,22 +1589,49 @@ class SimpleApp {
         } else {
           this.ui.hideInteractionPrompt();
         }
-      } else if (this.ui.isDialogueActive()) {
-        // If dialogue is active, E advances/closes it; suppress movement
+      } else if (this.ui.isDialogueActive() || this.ui.isNpcChatOpen()) {
+        // A conversation is open (canned panel or AI chat): you're standing
+        // WITH someone — movement is suppressed, the villager is held, and
+        // the camera two-shot completes the in-person framing.
         this.scene.setPlayerMovement(0, 0);
         this.ui.hideInteractionPrompt();
         const cameraInput = this.inputManager.getCameraInput();
         this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
 
-        if (this.inputManager.consumeKeyPress('e')) {
-          sfx.blip();
-          this.ui.advanceDialogue();
-        }
-
-        // Walking away from the NPC closes dialogue
-        const nearby = this.scene.getNearbyInteractable();
-        if (!nearby || nearby.type !== 'npc') {
-          this.ui.hideDialogue();
+        if (this.ui.isDialogueActive()) {
+          if (this.inputManager.consumeKeyPress('e')) {
+            sfx.blip();
+            this.ui.advanceDialogue();
+          }
+          // Drifting apart closes dialogue. Track the ACTUAL conversation
+          // partner by name, not getNearbyInteractable — the old nearest-
+          // interactable check closed the panel whenever a bench/lamp stood
+          // marginally closer than the (now held-in-place) villager.
+          if (this.npcDialogueName) {
+            const npcPos = this.scene.getNpcPosition(this.npcDialogueName);
+            const playerPos = this.scene.getPlayer()?.getWorldPosition();
+            if (!npcPos || !playerPos || npcPos.distanceTo(playerPos) > 4.5) {
+              this.ui.hideDialogue();
+            }
+          } else {
+            const nearby = this.scene.getNearbyInteractable();
+            if (!nearby || nearby.type !== 'npc') {
+              this.ui.hideDialogue();
+            }
+          }
+        } else {
+          // AI chat: sustained walk intent (joystick, or WASD with the input
+          // unfocused) steps out of the conversation — the mobile escape
+          // hatch, since suppressed movement can't trigger a walk-away.
+          const moveInput = this.inputManager.getMovementInput();
+          const joy = this.ui.getJoystick();
+          const mag =
+            Math.abs(moveInput.forward + joy.forward) + Math.abs(moveInput.strafe + joy.strafe);
+          this.chatWalkAwayT = mag > 0.4 ? this.chatWalkAwayT + deltaTime : 0;
+          if (this.chatWalkAwayT > 0.45) {
+            this.chatWalkAwayT = 0;
+            this.ui.closeNpcChat();
+          }
         }
       } else if (this.scene.isPlayerSeated()) {
         // Seated on a bench: movement suppressed, E stands back up
@@ -2203,6 +2244,129 @@ class SimpleApp {
   }
 
   private tourRecruiter = false;
+
+  // \u2500\u2500 In-person dialogue: NPC hold + camera push-in \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // While a conversation panel is open the villager is held in place
+  // (GameScene wander loop) and, motion allowing, the camera glides into a
+  // two-shot over the player's shoulder. Closing by ANY path releases both.
+  private npcDialogueName: string | null = null;
+  private npcCine: {
+    name: string;
+    pos: THREE.Vector3; // eased camera position (the rail state)
+    look: THREE.Vector3; // eased look target
+    prevFov: number;
+    ending: number; // <0 = active; >=0 = seconds into the release glide
+  } | null = null;
+  private chatWalkAwayT = 0; // sustained walk intent closes the chat
+  private readonly _cineUp = new THREE.Vector3();
+  private readonly _cineAxis = new THREE.Vector3();
+  private readonly _cineSide = new THREE.Vector3();
+  private readonly _cineDesired = new THREE.Vector3();
+  private readonly _cineLookT = new THREE.Vector3();
+  private readonly _cineTmp = new THREE.Vector3();
+
+  private beginNpcDialogue(name: string): void {
+    this.npcDialogueName = name;
+    this.chatWalkAwayT = 0;
+    this.scene.setNpcDialogueHold(name);
+    // The camera push-in is optional flavor on top of the hold: skip it under
+    // reduced motion, during the tour, or when another rail (postcard hold /
+    // an ending cine) already owns the suspended camera.
+    if (this.tour || this.npcCine || a11y.reducedMotion || this.scene.isCameraSuspended()) return;
+    const cam = this.scene.getCamera();
+    const player = this.scene.getPlayer();
+    if (!cam || !player) return;
+    this.npcCine = {
+      name,
+      pos: cam.position.clone(),
+      look: player.getWorldPosition().clone(),
+      prevFov: cam.fov,
+      ending: -1,
+    };
+    this.scene.setCameraSuspended(true);
+  }
+
+  private endNpcDialogue(): void {
+    if (!this.npcDialogueName && !this.npcCine) return;
+    this.npcDialogueName = null;
+    this.scene.setNpcDialogueHold(null);
+    if (this.npcCine && this.npcCine.ending < 0) this.npcCine.ending = 0;
+  }
+
+  private updateNpcCine(dt: number): void {
+    const c = this.npcCine;
+    if (!c) return;
+    const cam = this.scene.getCamera();
+    // Pinch accumulates while the orbit camera is suspended and would land as
+    // one distance jump on resume \u2014 drain and discard it every rail frame.
+    consumePinchZoomFactor();
+    const playerPos = this.scene.getPlayer()?.getWorldPosition() ?? null;
+    const npcPos = this.scene.getNpcPosition(c.name);
+    // Any close path (\u2715 / Escape / walk-away / panel replaced) or a lost
+    // subject \u2192 glide home.
+    if (
+      c.ending < 0 &&
+      (!playerPos || !npcPos || (!this.ui.isNpcChatOpen() && !this.ui.isDialogueActive()))
+    ) {
+      c.ending = 0;
+    }
+    if (c.ending < 0 && playerPos && npcPos) {
+      // Two-shot: slightly behind + beside the player, looking past their
+      // shoulder at the villager's face. Recomputed from LIVE positions each
+      // frame (the held NPC still breathes/hops); expDecay soaks it into a
+      // slow push-in. All eases are exp-based \u2014 Hz-independent.
+      const up = this._cineUp.copy(playerPos).normalize();
+      const axis = this._cineAxis.subVectors(playerPos, npcPos);
+      axis.addScaledVector(up, -axis.dot(up));
+      // Degenerate (player atop the NPC): any tangent will do — up.y is
+      // always > sin(0.29) on the island, so X never parallels up.
+      if (axis.lengthSq() < 1e-6) axis.set(1, 0, 0).addScaledVector(up, -up.x);
+      axis.normalize();
+      const side = this._cineSide.crossVectors(up, axis);
+      const desired = this._cineDesired
+        .copy(playerPos)
+        .addScaledVector(axis, 2.05)
+        .addScaledVector(side, 1.25)
+        .addScaledVector(up, 1.6);
+      // Never sink the shot into a hillside: clamp above the analytic surface.
+      const island = this.scene.getIsland();
+      if (island) {
+        const cd = this._cineTmp.copy(desired).normalize();
+        const minR = island.analyticSurface(cd).radius + 0.5;
+        if (desired.length() < minR) desired.setLength(minR);
+      }
+      const desiredLook = this._cineLookT
+        .copy(npcPos)
+        .addScaledVector(up, 1.35)
+        .lerp(this._cineTmp.copy(playerPos).addScaledVector(up, 1.4), 0.3);
+      expDecayV3(c.pos, desired, 3.2, dt);
+      expDecayV3(c.look, desiredLook, 4.5, dt);
+      cam.fov = expDecay(cam.fov, c.prevFov - 8, 3.0, dt);
+      cam.updateProjectionMatrix();
+    } else {
+      // Release glide: look eases back onto the player and FOV restores, THEN
+      // the orbit camera resumes \u2014 its own position ease carries the camera
+      // home without a whip-pan (rotation snaps on resume, so the final look
+      // target must already be near the player).
+      c.ending += dt;
+      if (playerPos) {
+        const up = this._cineUp.copy(playerPos).normalize();
+        expDecayV3(c.look, this._cineTmp.copy(playerPos).addScaledVector(up, 1.4), 10, dt);
+      }
+      cam.fov = expDecay(cam.fov, c.prevFov, 12, dt);
+      cam.updateProjectionMatrix();
+      if (c.ending > 0.35) {
+        cam.fov = c.prevFov; // exact restore \u2014 updateFov may never run (pre-ride)
+        cam.updateProjectionMatrix();
+        this.scene.setCameraSuspended(false);
+        this.npcCine = null;
+        return;
+      }
+    }
+    cam.position.copy(c.pos);
+    cam.up.copy(this._cineUp.copy(c.pos).normalize());
+    cam.lookAt(c.look);
+  }
 
   /**
    * Constant-speed rotation from direction `a` to `b` (unit vectors) by

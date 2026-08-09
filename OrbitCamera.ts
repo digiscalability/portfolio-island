@@ -36,7 +36,7 @@ export class OrbitCamera {
   private yawInput: number = 0;
   private pitchInput: number = 0;
 
-  private smoothness: number = 0.2; // interpolation factor for smooth camera
+  private smoothness: number = 0.16; // interpolation factor for smooth camera — was 0.2; the slightly lazier follow is part of the calm-locomotion pass (pairs with the 8.0→5.6 walk speed)
   private damping: number = 0.9; // velocity damping (higher = more responsive)
   private mouseSensitivity: number = 0.005; // mouse input multiplier (raw pixels -> radians)
 
@@ -201,6 +201,21 @@ export class OrbitCamera {
       .addScaledVector(surfaceNormal, this.height * 0.5)
       .add(this.lookAhead);
 
+    // Point-of-interest bias (feed piles etc): ease a bounded fraction of
+    // the look target toward the focus point so the camera acknowledges the
+    // little scene without taking control. Eases in AND out (the amount
+    // keeps decaying to the target 0/1), reduced-motion-trimmed like the
+    // look-ahead above.
+    if (deltaTime > 0) {
+      const fk = 1 - Math.exp(-2.5 * deltaTime);
+      this.focusAmt += ((this.focusActive ? 1 : 0) - this.focusAmt) * fk;
+      if (this.focusAmt > 0.001) {
+        this._focusBias.subVectors(this.focusTarget, this.targetPosition).clampLength(0, 2.4);
+        const fScale = a11y.reducedMotion ? 0.25 : 1;
+        this.targetPosition.addScaledVector(this._focusBias, 0.38 * this.focusAmt * fScale);
+      }
+    }
+
     // Camera collision: pull in when terrain or a building blocks the view ray
     let effectiveDistance = this.distance;
     if (this.collisionRoots.length > 0) {
@@ -221,6 +236,23 @@ export class OrbitCamera {
 
     // Set camera up to match surface normal for correct lookAt()
     this.camera.up.copy(surfaceNormal);
+  }
+
+  // Point-of-interest state: the last focus point sticks around while the
+  // bias fades out, so clearing the focus never snaps the frame.
+  private readonly focusTarget = new THREE.Vector3();
+  private focusActive = false;
+  private focusAmt = 0;
+  private readonly _focusBias = new THREE.Vector3();
+
+  /** Soft camera interest in a world point (null = fade back out). */
+  public setFocusPoint(p: THREE.Vector3 | null): void {
+    if (p) {
+      this.focusTarget.copy(p);
+      this.focusActive = true;
+    } else {
+      this.focusActive = false;
+    }
   }
 
   /**

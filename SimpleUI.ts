@@ -4710,6 +4710,11 @@ export class SimpleUI {
       if (e.key === 'Enter') {
         e.preventDefault();
         void doSend();
+      } else if (e.key === 'Escape') {
+        // Step out of the conversation from the keyboard — same as ✕. The
+        // stopPropagation listeners above keep this from reaching the game.
+        e.preventDefault();
+        this.closeNpcChat();
       }
     });
     // Speech-to-text: click 🎤 to dictate; interim text streams into the input,
@@ -4777,7 +4782,21 @@ export class SimpleUI {
     const stopStt = this.npcSttStop;
     this.npcSttStop = null;
     if (stopStt) stopStt();
-    if (div) div.remove();
+    if (div) {
+      div.remove();
+      // Fire only on a real close (div existed) — showNpcChat's defensive
+      // closeNpcChat() on a fresh open must not ping the app, and the app's
+      // safety poll must not double-release.
+      this.onNpcChatClosed?.();
+    }
+  }
+
+  private onNpcChatClosed: (() => void) | null = null;
+
+  /** App hook: release the NPC dialogue hold + camera when the chat closes
+   *  by ANY path (✕, Escape, replacement by a new chat). */
+  public setOnNpcChatClosed(cb: (() => void) | null): void {
+    this.onNpcChatClosed = cb;
   }
 
   public isNpcChatOpen(): boolean {

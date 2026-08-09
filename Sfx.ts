@@ -156,6 +156,12 @@ export class Sfx {
     this.tone(f, f * 1.33, 0.09, 'sine', 0.1);
   }
 
+  /** Feed toss: a soft underhand swish (air, not tone) + a grain rustle. */
+  public toss(): void {
+    this.hiss(0.16, 0.06, 1400);
+    setTimeout(() => this.hiss(0.08, 0.045, 2400), 90);
+  }
+
   /** Water entry: a downward plip + a short foam hiss. */
   public splash(): void {
     this.tone(520, 180, 0.16, 'sine', 0.13);
