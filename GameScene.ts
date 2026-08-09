@@ -2005,8 +2005,13 @@ export class GameScene extends THREE.Scene {
         head,
         gait: 0,
         headingTarget: heading,
-        basePos: cat.position.clone(),
-        curPos: cat.position.clone(),
+        // GROUND level, NOT cat.position — cat.position already carries the
+        // 0.12*size paw clearance, and both seatCatTarget() and the walk
+        // update add that clearance again on top of basePos. Storing the
+        // lifted point made every cat hover a full clearance off the turf
+        // (measured: paws 0.19-0.22 above the mesh across all five).
+        basePos: s.position.clone(),
+        curPos: s.position.clone(),
         baseQuat: q.clone(),
         up: s.normal.clone(),
         away,
