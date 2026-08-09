@@ -8591,6 +8591,29 @@ export class GameScene extends THREE.Scene {
     cyl(bch, 0.09, 0.12, 0.16, 0xf4ead6, 0.2, 1.87, -3.72); // shells + bottle
     cyl(bch, 0.07, 0.09, 0.14, 0xe8a89a, 0.7, 1.86, -3.72);
     cyl(bch, 0.06, 0.06, 0.3, 0x9fd9d4, 1.1, 1.94, -3.72);
+    // Wall screen — the watch-anything TV. This mesh is only the dark idle
+    // panel; the 'watch' hotspot overlays a real (sandboxed) browser frame
+    // positioned over its projected rect (see getInteriorScreenRect).
+    {
+      const T = GameScene.INTERIOR_TV;
+      const tvFrame = new THREE.Mesh(
+        new THREE.BoxGeometry(T.hw * 2 + 0.16, T.hh * 2 + 0.16, 0.07),
+        GameScene.birdMat(0x2a2a30),
+      );
+      tvFrame.position.set(T.x, T.y, T.z - 0.045);
+      bch.add(tvFrame);
+      const tvScreen = new THREE.Mesh(
+        new THREE.PlaneGeometry(T.hw * 2, T.hh * 2),
+        new THREE.MeshStandardMaterial({
+          color: 0x0b0e14,
+          emissive: 0x101722,
+          emissiveIntensity: 0.35,
+          roughness: 0.35,
+        }),
+      );
+      tvScreen.position.set(T.x, T.y, T.z);
+      bch.add(tvScreen);
+    }
 
     const cot = set('cottage');
     box(cot, 1.1, 0.38, 2.0, D, -3.0, 0.3, -2.5); // bed frame
@@ -8771,6 +8794,47 @@ export class GameScene extends THREE.Scene {
     Array<{ minX: number; maxX: number; minZ: number; maxZ: number }>
   > = {};
   private interiorHotspot: { label: string; action: string; text?: string } | null = null;
+  // The beach-house wall screen (room-local centre + half extents). The
+  // watch overlay is a DOM iframe that SimpleApp pins to this plane's
+  // projected rect every frame while interiorWatching.
+  private static readonly INTERIOR_TV = { x: -1.4, y: 1.7, z: -3.73, hw: 1.1, hh: 0.62 };
+  private interiorWatching = false;
+  private readonly _tvC1 = new THREE.Vector3();
+  private readonly _tvC2 = new THREE.Vector3();
+  private readonly _interiorCamPos = new THREE.Vector3();
+
+  /** Cinema mode for the beach-house wall screen: the interior camera eases
+   *  to a straight-on shot and SimpleApp overlays the browser frame. */
+  public startInteriorWatch(): void {
+    this.interiorWatching = true;
+  }
+
+  public stopInteriorWatch(): void {
+    this.interiorWatching = false;
+  }
+
+  /** The wall screen's projected CSS-pixel rect (null unless watching) —
+   *  two opposite corners suffice because the cinema shot is straight-on. */
+  public getInteriorScreenRect(): { x: number; y: number; w: number; h: number } | null {
+    if (!this.insideInterior || !this.interiorWatching) return null;
+    const o = GameScene.INTERIOR_ORIGIN;
+    const T = GameScene.INTERIOR_TV;
+    this._tvC1.set(o.x + T.x - T.hw, o.y + T.y + T.hh, o.z + T.z).project(this.camera);
+    this._tvC2.set(o.x + T.x + T.hw, o.y + T.y - T.hh, o.z + T.z).project(this.camera);
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const x1 = (this._tvC1.x * 0.5 + 0.5) * W;
+    const y1 = (-this._tvC1.y * 0.5 + 0.5) * H;
+    const x2 = (this._tvC2.x * 0.5 + 0.5) * W;
+    const y2 = (-this._tvC2.y * 0.5 + 0.5) * H;
+    return {
+      x: Math.min(x1, x2),
+      y: Math.min(y1, y2),
+      w: Math.abs(x2 - x1),
+      h: Math.abs(y2 - y1),
+    };
+  }
+
   private static readonly INTERIOR_WALK_BOUND = 3.35; // wall clamp (inner face 3.9 − radius/skirting)
   private static readonly INTERIOR_PLAYER_R = 0.32;
   // 0.80, not 0.68 — the feet were 0.12u UNDER the floorboards. Derived, not
@@ -8798,6 +8862,13 @@ export class GameScene extends THREE.Scene {
     }>
   > = {
     beach: [
+      {
+        x: -1.4,
+        z: -2.3,
+        r: 1.5,
+        label: '📺 Press <strong>E</strong> to watch the wall screen',
+        action: 'watch',
+      },
       {
         x: 2.6,
         z: -3.0,
@@ -9326,6 +9397,7 @@ export class GameScene extends THREE.Scene {
 
   public exitInterior(): void {
     this.insideInterior = false;
+    this.interiorWatching = false; // never leave the cinema shot armed
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
     this.restoreShadowAutoUpdate();
@@ -9484,17 +9556,29 @@ export class GameScene extends THREE.Scene {
         .multiply(this._interiorTiltQ);
     }
 
-    // Follow camera: eased behind the player's heading, clamped inside walls.
-    let dCam = this.interiorYaw - this.interiorCamYaw;
-    while (dCam > Math.PI) dCam -= Math.PI * 2;
-    while (dCam < -Math.PI) dCam += Math.PI * 2;
-    this.interiorCamYaw += dCam * Math.min(1, 3 * deltaTime);
-    const cy = this.interiorCamYaw;
-    const camX = THREE.MathUtils.clamp(p.x - o.x - Math.sin(cy) * 2.4, -3.6, 3.6);
-    const camZ = THREE.MathUtils.clamp(p.z - o.z - Math.cos(cy) * 2.4, -3.6, 3.6);
-    this.camera.up.set(0, 1, 0);
-    this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
-    this.camera.lookAt(p.x, p.y + 0.85, p.z);
+    if (this.interiorWatching) {
+      // Cinema shot: ease straight-on to the wall screen (same slow-bloom
+      // language as every other camera move); the DOM watch frame tracks
+      // the projected rect per frame, so the glide stays pixel-locked.
+      const T = GameScene.INTERIOR_TV;
+      const k = 1 - Math.exp(-2.5 * deltaTime);
+      this._interiorCamPos.set(o.x + T.x, o.y + T.y - 0.05, o.z + T.z + 3.05);
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.lerp(this._interiorCamPos, k);
+      this.camera.lookAt(o.x + T.x, o.y + T.y, o.z + T.z);
+    } else {
+      // Follow camera: eased behind the player's heading, clamped inside walls.
+      let dCam = this.interiorYaw - this.interiorCamYaw;
+      while (dCam > Math.PI) dCam -= Math.PI * 2;
+      while (dCam < -Math.PI) dCam += Math.PI * 2;
+      this.interiorCamYaw += dCam * Math.min(1, 3 * deltaTime);
+      const cy = this.interiorCamYaw;
+      const camX = THREE.MathUtils.clamp(p.x - o.x - Math.sin(cy) * 2.4, -3.6, 3.6);
+      const camZ = THREE.MathUtils.clamp(p.z - o.z - Math.cos(cy) * 2.4, -3.6, 3.6);
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
+      this.camera.lookAt(p.x, p.y + 0.85, p.z);
+    }
 
     // Fixtures: curtains slide, the lamp fades. Both eased rather than snapped
     // so pressing E reads as working something, not as a state flip.

@@ -4805,6 +4805,253 @@ export class SimpleUI {
     this.onNpcChatClosed = cb;
   }
 
+  // ── Beach-house wall screen: watch web content in-game ─────────────────
+  // The picker asks WHAT to watch; the frame is a sandboxed iframe that
+  // SimpleApp pins over the in-world TV's projected rect every frame, so
+  // the page plays ON the wall. Sites that refuse embedding get the ↗
+  // escape hatch to a real tab (their block, not ours).
+  private watchDiv: HTMLElement | null = null;
+  private watchPickerDiv: HTMLElement | null = null;
+  private onWatchClosed: (() => void) | null = null;
+
+  /** youtube watch/short/shortlink → embed form; other https URLs pass
+   *  through untouched; anything else (http, garbage) is rejected. */
+  private static toEmbedUrl(raw: string): string | null {
+    try {
+      const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw.trim()}`);
+      const yt = /(^|\.)youtube\.com$/i.test(u.hostname);
+      const v = yt && u.pathname === '/watch' ? u.searchParams.get('v') : null;
+      if (v) return `https://www.youtube.com/embed/${v}?autoplay=1`;
+      if (u.hostname === 'youtu.be' && u.pathname.length > 1) {
+        return `https://www.youtube.com/embed/${u.pathname.slice(1)}?autoplay=1`;
+      }
+      if (yt && u.pathname.startsWith('/shorts/')) {
+        return `https://www.youtube.com/embed/${u.pathname.split('/')[2]}?autoplay=1`;
+      }
+      if (u.protocol !== 'https:') return null;
+      return u.href;
+    } catch {
+      return null;
+    }
+  }
+
+  public showWatchPicker(onPick: (url: string) => void): void {
+    this.closeWatchPicker();
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+      position: 'absolute',
+      left: '50%',
+      top: '50%',
+      transform: 'translate(-50%, -50%)',
+      width: 'min(380px, 92%)',
+      background: 'rgba(12,12,20,0.96)',
+      border: '1px solid rgba(255,255,255,0.15)',
+      borderRadius: '14px',
+      boxShadow: '0 10px 28px rgba(0,0,0,0.4)',
+      padding: '18px',
+      zIndex: '1640',
+      pointerEvents: 'auto',
+      color: '#f0f0f0',
+    });
+    panel.innerHTML = `
+      <div style="font-weight:600; font-size:15px; margin-bottom:4px;">📺 The wall screen</div>
+      <div style="font-size:12.5px; color:#aab; margin-bottom:12px;">What shall we watch? Paste a YouTube link (or any https page).</div>
+    `;
+    const presets = document.createElement('div');
+    Object.assign(presets.style, { display: 'flex', gap: '8px', marginBottom: '10px' });
+    const preset = (label: string, url: string): void => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      Object.assign(b.style, {
+        flex: '1',
+        padding: '9px 10px',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.15)',
+        background: 'rgba(80,130,255,0.14)',
+        color: '#dfe6ff',
+        fontSize: '13px',
+        cursor: 'pointer',
+      });
+      b.addEventListener('click', () => {
+        this.closeWatchPicker();
+        onPick(url);
+      });
+      presets.appendChild(b);
+    };
+    // A regular upload, NOT a live stream — live-stream embeds die with
+    // "recording not available" once the stream rotates (playtest-caught).
+    preset('📻 Lofi beats', 'https://www.youtube.com/embed/lTRiuFIWV54?autoplay=1');
+    panel.appendChild(presets);
+    const row = document.createElement('div');
+    Object.assign(row.style, { display: 'flex', gap: '8px' });
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'youtube.com/watch?v=… or any https link';
+    Object.assign(input.style, {
+      flex: '1',
+      padding: '9px 11px',
+      borderRadius: '10px',
+      border: '1px solid rgba(255,255,255,0.15)',
+      background: 'rgba(255,255,255,0.06)',
+      color: '#fff',
+      fontSize: '13.5px',
+    });
+    for (const ev of ['keydown', 'keyup', 'keypress'])
+      input.addEventListener(ev, (e) => e.stopPropagation()); // typing must not walk the room
+    const go = document.createElement('button');
+    go.textContent = 'Watch';
+    Object.assign(go.style, {
+      padding: '9px 16px',
+      borderRadius: '10px',
+      border: 'none',
+      background: '#5a8cff',
+      color: '#fff',
+      fontWeight: '600',
+      fontSize: '13.5px',
+      cursor: 'pointer',
+    });
+    const submit = (): void => {
+      const url = SimpleUI.toEmbedUrl(input.value);
+      if (!url) {
+        input.style.border = '1px solid rgba(230,90,90,0.7)';
+        input.placeholder = 'https links only — try a YouTube URL';
+        input.value = '';
+        return;
+      }
+      this.closeWatchPicker();
+      onPick(url);
+    };
+    go.addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      else if (e.key === 'Escape') this.closeWatchPicker();
+    });
+    row.appendChild(input);
+    row.appendChild(go);
+    panel.appendChild(row);
+    const close = document.createElement('button');
+    close.textContent = '✕';
+    Object.assign(close.style, {
+      position: 'absolute',
+      top: '8px',
+      right: '10px',
+      background: 'none',
+      border: 'none',
+      color: '#99a',
+      fontSize: '16px',
+      cursor: 'pointer',
+    });
+    close.addEventListener('click', () => this.closeWatchPicker());
+    panel.appendChild(close);
+    this.overlay.appendChild(panel);
+    this.watchPickerDiv = panel;
+    window.setTimeout(() => input.focus(), 50);
+  }
+
+  public closeWatchPicker(): void {
+    this.watchPickerDiv?.remove();
+    this.watchPickerDiv = null;
+  }
+
+  /** The playing frame. `onClose` fires exactly once, on ANY close path. */
+  public showWatchFrame(url: string, onClose: () => void): void {
+    this.closeWatchFrame();
+    this.onWatchClosed = onClose;
+    const wrap = document.createElement('div');
+    Object.assign(wrap.style, {
+      position: 'absolute',
+      left: '0px',
+      top: '0px',
+      width: '320px',
+      height: '180px',
+      background: '#000',
+      borderRadius: '4px',
+      overflow: 'visible',
+      zIndex: '1580', // under touch buttons (1650) + Leave (1900)
+      pointerEvents: 'auto',
+      boxShadow: '0 0 0 2px rgba(20,22,28,0.9)',
+    });
+    const iframe = document.createElement('iframe');
+    iframe.src = url;
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+    iframe.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+    // NO referrerpolicy override: YouTube's player REQUIRES the embedding
+    // origin in the referrer and throws "Error 153 — player configuration
+    // error" under no-referrer (playtest-caught). The browser default
+    // (strict-origin-when-cross-origin) sends exactly the origin, no path.
+    Object.assign(iframe.style, {
+      width: '100%',
+      height: '100%',
+      border: '0',
+      borderRadius: '4px',
+      background: '#000',
+    });
+    wrap.appendChild(iframe);
+    // Chrome row floats ABOVE the frame so it never covers the content.
+    const chrome = document.createElement('div');
+    Object.assign(chrome.style, {
+      position: 'absolute',
+      top: '-34px',
+      right: '0',
+      display: 'flex',
+      gap: '6px',
+      alignItems: 'center',
+    });
+    const hint = document.createElement('span');
+    hint.textContent = 'blank? that site refuses embedding →';
+    Object.assign(hint.style, { fontSize: '11px', color: 'rgba(255,255,255,0.55)' });
+    chrome.appendChild(hint);
+    const mkChip = (label: string): HTMLElement => {
+      const c = document.createElement('a');
+      c.textContent = label;
+      Object.assign(c.style, {
+        padding: '5px 10px',
+        borderRadius: '8px',
+        background: 'rgba(12,12,20,0.9)',
+        border: '1px solid rgba(255,255,255,0.2)',
+        color: '#dfe6ff',
+        fontSize: '12.5px',
+        cursor: 'pointer',
+        textDecoration: 'none',
+      });
+      chrome.appendChild(c);
+      return c;
+    };
+    const open = mkChip('↗ tab') as HTMLAnchorElement;
+    open.href = url;
+    open.target = '_blank';
+    open.rel = 'noopener noreferrer';
+    const x = mkChip('✕ stop');
+    x.addEventListener('click', () => this.closeWatchFrame());
+    wrap.appendChild(chrome);
+    this.overlay.appendChild(wrap);
+    this.watchDiv = wrap;
+  }
+
+  /** Pin the frame over the in-world screen's projected rect (per frame). */
+  public positionWatchFrame(rect: { x: number; y: number; w: number; h: number }): void {
+    if (!this.watchDiv) return;
+    this.watchDiv.style.left = `${rect.x.toFixed(1)}px`;
+    this.watchDiv.style.top = `${rect.y.toFixed(1)}px`;
+    this.watchDiv.style.width = `${rect.w.toFixed(1)}px`;
+    this.watchDiv.style.height = `${rect.h.toFixed(1)}px`;
+  }
+
+  public isWatchOpen(): boolean {
+    return !!this.watchDiv || !!this.watchPickerDiv;
+  }
+
+  public closeWatchFrame(): void {
+    this.closeWatchPicker();
+    if (this.watchDiv) {
+      this.watchDiv.remove();
+      this.watchDiv = null;
+      const cb = this.onWatchClosed;
+      this.onWatchClosed = null;
+      cb?.();
+    }
+  }
+
   public isNpcChatOpen(): boolean {
     return !!this.npcChatDiv;
   }

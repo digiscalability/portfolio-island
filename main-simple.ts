@@ -1367,6 +1367,20 @@ class SimpleApp {
       this.ui.flashMessage(this.scene.toggleInteriorFixture(hs.text ?? ''));
     } else if (hs.action === 'times') {
       void this.ui.showIslandTimes();
+    } else if (hs.action === 'watch') {
+      // The beach-house wall screen: ask what to watch, then hand the wall
+      // to a sandboxed browser frame while the interior camera takes the
+      // cinema shot. Game audio ducks under whatever plays.
+      this.watchOpenedAt = performance.now();
+      this.ui.showWatchPicker((url) => {
+        this.watchOpenedAt = performance.now();
+        this.scene.startInteriorWatch();
+        sfx.duckForVoice(true);
+        this.ui.showWatchFrame(url, () => {
+          this.scene.stopInteriorWatch();
+          sfx.duckForVoice(false);
+        });
+      });
     } else if (hs.action === 'panel' && this.insideZone) {
       this.ui.showZonePanel(
         { id: this.insideZone.id, name: this.insideZone.name },
@@ -1407,6 +1421,7 @@ class SimpleApp {
   }
 
   private exitBuilding(isZone: boolean): void {
+    this.ui.closeWatchFrame(); // stop any wall-screen playback (fires onClose)
     this.ui.fadeThrough(() => {
       this.scene.exitInterior();
       this.ui.hideLeaveButton();
@@ -1578,23 +1593,41 @@ class SimpleApp {
         this.ui.hideInteractionPrompt();
         this.updateTour(deltaTime);
       } else if (this.scene.isInsideInterior()) {
-        // Inside a building: the world is frozen; WASD/joystick walks the room
-        // (GameScene's interior mode) and E interacts with the nearby hotspot.
-        const moveInput = this.inputManager.getMovementInput();
-        const joy = this.ui.getJoystick();
-        this.scene.setInteriorMove(
-          Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
-          Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
-        );
-        const hs = this.scene.getInteriorHotspot();
-        if (hs) {
-          this.ui.showInteractionPrompt(hs.label);
-          if (this.inputManager.consumeKeyPress('e')) {
+        if (this.ui.isWatchOpen()) {
+          // Watching the wall screen (or picking): the room holds still, the
+          // frame stays pinned to the in-world TV, and E steps away from it.
+          // The 0.5s guard means the press that OPENED the screen can never
+          // be the press that closes it, however the frames interleave.
+          this.scene.setInteriorMove(0, 0);
+          this.ui.hideInteractionPrompt();
+          const rect = this.scene.getInteriorScreenRect();
+          if (rect) this.ui.positionWatchFrame(rect);
+          if (
+            performance.now() - this.watchOpenedAt > 500 &&
+            this.inputManager.consumeKeyPress('e')
+          ) {
             sfx.blip();
-            this.runInteriorAction(hs);
+            this.ui.closeWatchFrame();
           }
         } else {
-          this.ui.hideInteractionPrompt();
+          // Inside a building: the world is frozen; WASD/joystick walks the
+          // room (GameScene's interior mode) and E interacts with the hotspot.
+          const moveInput = this.inputManager.getMovementInput();
+          const joy = this.ui.getJoystick();
+          this.scene.setInteriorMove(
+            Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
+            Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
+          );
+          const hs = this.scene.getInteriorHotspot();
+          if (hs) {
+            this.ui.showInteractionPrompt(hs.label);
+            if (this.inputManager.consumeKeyPress('e')) {
+              sfx.blip();
+              this.runInteriorAction(hs);
+            }
+          } else {
+            this.ui.hideInteractionPrompt();
+          }
         }
       } else if (this.ui.isDialogueActive() || this.ui.isNpcChatOpen()) {
         // A conversation is open (canned panel or AI chat): you're standing
@@ -2267,6 +2300,7 @@ class SimpleApp {
     ending: number; // <0 = active; >=0 = seconds into the release glide
   } | null = null;
   private chatWalkAwayT = 0; // sustained walk intent closes the chat
+  private watchOpenedAt = 0; // wall-screen open time — same-press close guard
   private readonly _cineUp = new THREE.Vector3();
   private readonly _cineAxis = new THREE.Vector3();
   private readonly _cineSide = new THREE.Vector3();
