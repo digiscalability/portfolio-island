@@ -8176,14 +8176,17 @@ export class GameScene extends THREE.Scene {
   private partyProps: {
     group: THREE.Group;
     ball: THREE.Mesh;
+    ballLight: THREE.PointLight;
     tiles: THREE.Mesh[];
     spots: THREE.SpotLight[];
+    confetti: Array<{ m: THREE.Mesh; speed: number; phase: number }>;
   } | null = null;
   private partyGuests: Array<{
     npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string };
     wasVisible: boolean;
-    seat: THREE.Vector3; // room-space dance spot
+    seat: THREE.Vector3; // world-space dance spot
     phase: number;
+    style: number; // 0 = pumps, 1 = disco point, 2 = spinner
   }> = [];
 
   private buildPartyProps(): void {
@@ -8210,6 +8213,59 @@ export class GameScene extends THREE.Scene {
     );
     ball.position.set(0.9, 2.95, 0.6);
     group.add(ball);
+    // Sparkle ring — children of the ball, so they orbit as it spins.
+    const sparkMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: 1.4,
+    });
+    const sparkGeo = new THREE.PlaneGeometry(0.05, 0.05);
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      const sp = new THREE.Mesh(sparkGeo, sparkMat);
+      sp.position.set(Math.cos(a) * 0.48, (i % 3) * 0.12 - 0.12, Math.sin(a) * 0.48);
+      sp.rotation.y = -a;
+      ball.add(sp);
+    }
+    // Beat-pulsed glitter light at the ball.
+    const ballLight = new THREE.PointLight(0xffffff, 0, 9, 1.6);
+    ballLight.position.set(0.9, 2.8, 0.6);
+    group.add(ballLight);
+    // Fairy-light strands along the two far walls.
+    const strandGeo = new THREE.SphereGeometry(0.045, 6, 5);
+    const strandMats = [0xff6a7a, 0x6ad0ff, 0xffd36a].map(
+      (c) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9 }),
+    );
+    for (let i = 0; i < 10; i++) {
+      const bulbA = new THREE.Mesh(strandGeo, strandMats[i % 3]);
+      bulbA.position.set(-3.4 + i * 0.75, 2.65 + Math.sin(i * 1.1) * 0.1, -3.62);
+      group.add(bulbA);
+      const bulbB = new THREE.Mesh(strandGeo, strandMats[(i + 1) % 3]);
+      bulbB.position.set(-3.62, 2.65 + Math.sin(i * 1.4) * 0.1, -3.4 + i * 0.75);
+      group.add(bulbB);
+    }
+    // Drifting confetti pool — respawns at the ceiling forever.
+    const confetti: Array<{ m: THREE.Mesh; speed: number; phase: number }> = [];
+    const confGeo = new THREE.PlaneGeometry(0.07, 0.07);
+    const confMats = [0xff6a7a, 0x6ad0ff, 0xffd36a, 0x8affc1, 0xd9a0ff].map(
+      (c) =>
+        new THREE.MeshStandardMaterial({
+          color: c,
+          emissive: c,
+          emissiveIntensity: 0.5,
+          side: THREE.DoubleSide,
+        }),
+    );
+    for (let i = 0; i < 22; i++) {
+      const m = new THREE.Mesh(confGeo, confMats[i % confMats.length]);
+      m.position.set(
+        0.9 + (Math.random() - 0.5) * 4,
+        0.4 + Math.random() * 3,
+        0.6 + (Math.random() - 0.5) * 4,
+      );
+      group.add(m);
+      confetti.push({ m, speed: 0.35 + Math.random() * 0.4, phase: Math.random() * Math.PI * 2 });
+    }
     // 4×4 lit dance floor.
     const tiles: THREE.Mesh[] = [];
     const tileGeo = new THREE.PlaneGeometry(0.6, 0.6);
@@ -8247,7 +8303,7 @@ export class GameScene extends THREE.Scene {
     }
     group.visible = false;
     this.interiorGroup.add(group);
-    this.partyProps = { group, ball, tiles, spots };
+    this.partyProps = { group, ball, ballLight, tiles, spots, confetti };
   }
 
   private togglePartyMode(): string {
@@ -8276,7 +8332,14 @@ export class GameScene extends THREE.Scene {
         'Deckhand',
         'Market Vendor',
       ]);
-      const preferred = ['Gardener', 'Artist', 'Musician', 'Storyteller'];
+      const preferred = [
+        'Gardener',
+        'Artist',
+        'Musician',
+        'Storyteller',
+        'Cartographer',
+        'Courier',
+      ];
       const pool = [
         ...preferred
           .map((n) => this.island.npcTargets.find((t) => t.name === n))
@@ -8286,18 +8349,20 @@ export class GameScene extends THREE.Scene {
         ),
       ];
       const o = GameScene.INTERIOR_ORIGIN;
-      for (let i = 0; i < Math.min(4, pool.length); i++) {
+      const N = Math.min(6, pool.length);
+      for (let i = 0; i < N; i++) {
         const npc = pool[i];
-        const a = (i / 4) * Math.PI * 2 + 0.6;
+        const a = (i / N) * Math.PI * 2 + 0.6;
         this.partyGuests.push({
           npc,
           wasVisible: npc.meshRef.visible,
           seat: new THREE.Vector3(
-            o.x + 0.9 + Math.cos(a) * 1.35,
+            o.x + 0.9 + Math.cos(a) * 1.55,
             o.y + GameScene.INTERIOR_PLAYER_Y,
-            o.z + 0.6 + Math.sin(a) * 1.35,
+            o.z + 0.6 + Math.sin(a) * 1.55,
           ),
           phase: i * 1.7,
+          style: i % 3, // pumps / disco point / spinner
         });
         npc.meshRef.visible = true;
       }
@@ -8320,6 +8385,15 @@ export class GameScene extends THREE.Scene {
     }
     const beat = time * BPS * Math.PI; // half-turn per beat
     P.ball.rotation.y = time * 0.9;
+    // Glitter light breathes with the beat; confetti drifts down forever.
+    P.ballLight.intensity = 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
+    for (const c of P.confetti) {
+      c.m.position.y -= c.speed * deltaTime;
+      if (c.m.position.y < 0.25) c.m.position.y = 3.4;
+      c.m.position.x += Math.sin(time * 1.7 + c.phase) * 0.35 * deltaTime;
+      c.m.rotation.x = time * 2.1 + c.phase;
+      c.m.rotation.y = time * 1.6 + c.phase * 2;
+    }
     for (let i = 0; i < P.tiles.length; i++) {
       const m = P.tiles[i].material as THREE.MeshStandardMaterial;
       m.emissive.setHSL((i * 0.09 + time * 0.12) % 1, 0.85, 0.5);
@@ -8341,19 +8415,33 @@ export class GameScene extends THREE.Scene {
     for (const g of this.partyGuests) {
       const ref = g.npc.meshRef;
       const b = beat + g.phase;
-      const hop = Math.abs(Math.sin(b * 0.5)) * 0.08;
-      ref.position.set(g.seat.x, g.seat.y + hop, g.seat.z);
+      const hop = Math.abs(Math.sin(b * 0.5)) * (g.style === 2 ? 0.05 : 0.08);
+      // Disco-pointers shuffle side to side along their spot; spinners hold.
+      const slide = g.style === 1 ? Math.sin(b * 0.5) * 0.22 : 0;
+      ref.position.set(g.seat.x + slide, g.seat.y + hop, g.seat.z);
       const face = Math.atan2(o.x + 0.9 - g.seat.x, o.z + 0.6 - g.seat.z);
-      ref.quaternion.setFromAxisAngle(GameScene._localUp, face + Math.sin(b * 0.25) * 0.35);
+      // Spinners turn full circles; everyone else sways on the beat.
+      const yaw = g.style === 2 ? face + time * 2.4 : face + Math.sin(b * 0.25) * 0.35;
+      ref.quaternion.setFromAxisAngle(GameScene._localUp, yaw);
       const ud = ref.userData as { limbs?: NpcLimbCache | null };
       if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
       const limbs = ud.limbs;
       if (!limbs) continue;
       for (let n = 0; n < limbs.length; n++) {
         const l = limbs[n];
-        // Legs (0-1): light alternating step; arms (2-3): raised pumps.
-        l.ang =
-          n < 2 ? Math.sin(b + n * Math.PI) * 0.18 : -0.7 + Math.sin(b + (n - 2) * Math.PI) * 0.55;
+        if (n < 2) {
+          // Legs: light alternating step (all styles).
+          l.ang = Math.sin(b + n * Math.PI) * 0.18;
+        } else if (g.style === 1) {
+          // Disco point: one arm punches high on the beat, the other rests.
+          l.ang = n === 2 ? -0.25 : -1.3 - Math.sin(b) * 0.55;
+        } else if (g.style === 2) {
+          // Spinner: both arms held out mid-raise while turning.
+          l.ang = -1.0 + Math.sin(b * 0.5 + n) * 0.15;
+        } else {
+          // Pumps: contralateral raised arm pumps.
+          l.ang = -0.7 + Math.sin(b + (n - 2) * Math.PI) * 0.55;
+        }
         l.b.quaternion.copy(l.rest).multiply(this._npcLimbQ.setFromAxisAngle(l.axis, l.ang));
       }
     }
@@ -9725,6 +9813,18 @@ export class GameScene extends THREE.Scene {
     const gait = Math.min(1, Math.hypot(f, s));
     this.player.tickInteriorAnimation(deltaTime, gait * 2.6);
     p.y = o.y + GameScene.INTERIOR_PLAYER_Y;
+    // Party: step onto the lit floor and you dance too — a beat hop plus a
+    // post-mixer arm groove (applied AFTER tickInteriorAnimation so the
+    // mixer reclaims the bones the moment you step off).
+    if (this.partyMode) {
+      const fdx = p.x - o.x - 0.9;
+      const fdz = p.z - o.z - 0.6;
+      if (gait < 0.15 && fdx * fdx + fdz * fdz < 2.1 * 2.1) {
+        const b = this.interiorTime * 2 * Math.PI;
+        p.y += Math.abs(Math.sin(b * 0.5)) * 0.07;
+        this.player.applyPartyDance(this.interiorTime);
+      }
+    }
 
     // Footfalls, driven off the WALK CLIP's own phase rather than a distance
     // accumulator — now that the mixer ticks indoors the clip is the honest

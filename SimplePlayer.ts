@@ -995,6 +995,21 @@ export class SimplePlayer extends THREE.Group {
     this.waveTime = SimplePlayer.WAVE_DURATION;
   }
 
+  /** Party groove — post-mixer arm pumps for the beach-house dance floor.
+   *  Call AFTER tickInteriorAnimation each frame; the clips self-heal the
+   *  bones the frame this stops being called. 120bpm to match the room. */
+  public applyPartyDance(t: number): void {
+    const b = t * 2 * Math.PI;
+    if (this.gltfModel) {
+      this.ensureLimbBones();
+      if (this.armLBone) this.armLBone.rotation.x = -0.9 + Math.sin(b) * 0.6;
+      if (this.armRBone) this.armRBone.rotation.x = -0.9 - Math.sin(b) * 0.6;
+    } else if (this.armPivots.length === 2) {
+      this.armPivots[0].rotation.x = -0.9 + Math.sin(b) * 0.6;
+      this.armPivots[1].rotation.x = -0.9 - Math.sin(b) * 0.6;
+    }
+  }
+
   /** Start the feed-toss gesture (windup, underhand scatter, settle). Called
    *  only AFTER the scene confirms the throw — a refused throw (night, over
    *  sea) must not wind up an arm for nothing. The wave owns armR while it
