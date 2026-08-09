@@ -559,10 +559,12 @@ export class SimplePlayer extends THREE.Group {
             armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -1.4 + s * 1.3, poseW);
           if (armRBone)
             armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -1.4 - s * 1.3, poseW);
-          if (legLBone)
-            legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, 0.3 + s2 * 0.35, poseW);
-          if (legRBone)
-            legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, 0.3 - s2 * 0.35, poseW);
+          // legL/legR rest at PI (bone +Y runs down the limb). Anchor the
+          // trailing bias to PI or the legs fold up toward the head, and
+          // blend with poseW from PI itself rather than from the live value,
+          // which flips sign across +/-PI between frames.
+          if (legLBone) legLBone.rotation.x = Math.PI + (0.3 + s2 * 0.35) * poseW;
+          if (legRBone) legRBone.rotation.x = Math.PI + (0.3 - s2 * 0.35) * poseW;
         } else if (activePose === 2) {
           // Riding: forward lean, hands forward, knees up.
           model.rotation.set(0.12 * poseW, 0, 0);
@@ -590,7 +592,10 @@ export class SimplePlayer extends THREE.Group {
         const elapsed = SimplePlayer.WAVE_DURATION - waveT;
         const env = Math.min(Math.min(1, elapsed / 0.15), Math.min(1, waveT / 0.25));
         if (armRBone) {
-          armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -2.6, env);
+          // Same rest-relative rule as the local player: the arm hangs at
+          // -PI, and -2.6 is a delta from it. Written raw it swung the hand
+          // down and behind the hip — peers waved backwards too.
+          armRBone.rotation.x = -Math.PI + -2.6 * env;
           armRBone.rotation.z = Math.sin(elapsed * 14) * 0.4 * env;
         }
       }
@@ -892,10 +897,17 @@ export class SimplePlayer extends THREE.Group {
     const pitchTarget = moving ? SimplePlayer.SWIM_PRONE : SimplePlayer.SWIM_TREAD;
     this.swimPitch += (pitchTarget - this.swimPitch) * Math.min(1, 6 * dt);
     const prone = this.swimPitch / SimplePlayer.SWIM_PRONE; // 0..1 how flat
-    // Legs trail BEHIND the body as it flattens (positive bone x = foot
-    // back, proven by the sit pose's -1.35 = legs forward), flutter riding
-    // on top; treading keeps them nearly under the body.
-    const kick = 0.3 * prone;
+    // Legs trail BEHIND the body as it flattens, flutter riding on top.
+    //
+    // legL/legR have a NON-identity rest of exactly R_x(PI) (the bone's +Y
+    // runs DOWN the limb), so rotation.x reads PI when the leg hangs neutral
+    // and the Walk clip swings PI +/- 0.65. The old base of 0.3 was an
+    // absolute write that wiped that PI and flipped each leg 180 degrees to
+    // point up along the body — which the face-down swimPitch then aimed
+    // straight at the head. Anchor to PI and the authored +0.3 trailing bias
+    // is correct as written: measured on the rig, PI+0.3 moves the foot to
+    // model z -0.15 (BACK) and PI-0.3 to +0.15 (forward).
+    const legBase = Math.PI + 0.3 * prone;
     if (this.gltfModel) {
       if (!this.armLBone || !this.legLBone) {
         this.gltfModel.traverse((o) => {
@@ -914,15 +926,19 @@ export class SimplePlayer extends THREE.Group {
       if (this.armLBone) this.armLBone.rotation.x = moving ? -1.4 + s * 1.3 : -1.1 + s * 0.5;
       if (this.armRBone) this.armRBone.rotation.x = moving ? -1.4 - s * 1.3 : -1.1 - s * 0.5;
       // Flutter kick behind the travel direction
-      if (this.legLBone) this.legLBone.rotation.x = kick + s2 * 0.35;
-      if (this.legRBone) this.legRBone.rotation.x = kick - s2 * 0.35;
+      if (this.legLBone) this.legLBone.rotation.x = legBase + s2 * 0.35;
+      if (this.legRBone) this.legRBone.rotation.x = legBase - s2 * 0.35;
     } else if (this.legPivots.length === 2 && this.armPivots.length === 2) {
       this.mesh.rotation.x = this.swimPitch;
       this.mesh.rotation.z = s * 0.18 * prone;
       this.armPivots[0].rotation.x = moving ? -1.4 + s * 1.3 : -1.1 + s * 0.5;
       this.armPivots[1].rotation.x = moving ? -1.4 - s * 1.3 : -1.1 - s * 0.5;
-      this.legPivots[0].rotation.x = kick + s2 * 0.35;
-      this.legPivots[1].rotation.x = kick - s2 * 0.35;
+      // Procedural fallback avatar: its pivots have an IDENTITY rest (0 is
+      // already legs-down), so this path keeps the small offset and must NOT
+      // take the GLB's PI base — the two rigs genuinely differ here.
+      const pivotKick = 0.3 * prone;
+      this.legPivots[0].rotation.x = pivotKick + s2 * 0.35;
+      this.legPivots[1].rotation.x = pivotKick - s2 * 0.35;
     }
   }
 
@@ -1068,7 +1084,20 @@ export class SimplePlayer extends THREE.Group {
         if (this.legRBone) this.legRBone.rotation.x += -0.45 * aw;
       }
       if (waveEnv > 0 && this.armRBone) {
-        this.armRBone.rotation.x = THREE.MathUtils.lerp(this.armRBone.rotation.x, -2.6, waveEnv);
+        // Bone convention, measured on the live rig: rotation.x = 0 points the
+        // limb UP, +/-PI points it DOWN (that IS the arm's rest), and -1.6 is
+        // forward-horizontal. The old target of -2.6 therefore sat 0.17rad off
+        // hanging — the arm never rose, it just wagged backwards at the hip,
+        // which is the "inverse wave". -0.55 raises it up and slightly forward.
+        // Interpolate from an explicit PI base rather than from the live value:
+        // near PI the Euler flips between +3.13 and -3.13 frame to frame, and
+        // lerping from a value whose SIGN flips makes the arm pick a different
+        // direction each frame.
+        // -2.6 was authored as a delta FROM that rest (the air pose just above
+        // correctly uses +=); written raw it is a +0.54 swing, so the arm went
+        // down-and-back. Applied to the rest it lands up-and-forward.
+        const REST_X = -Math.PI;
+        this.armRBone.rotation.x = REST_X + -2.6 * waveEnv;
         this.armRBone.rotation.z = wag * waveEnv;
       } else if (tossEnv > 0) {
         if (this.armRBone) {

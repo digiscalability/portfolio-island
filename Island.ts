@@ -4392,9 +4392,17 @@ export class Island {
         // Small epsilon to prevent z-fighting, actual object offsets handled separately
         const epsilon = 0.02;
         const outPos = point.clone().add(normal.clone().multiplyScalar(epsilon + desiredOffset));
-        // debug: draw helper sphere + ray
-        const meshData = this.mesh.userData as IslandMeshUserData;
-        if (meshData._debug) {
+        // debug: draw helper sphere + ray.
+        // `this.mesh` is assigned only AFTER createIsland() RETURNS, and every
+        // prop is placed inside it — so during world generation this read threw
+        // TypeError, the outer catch swallowed it, and the method silently
+        // returned the base-sphere fallback (RADIAL normal, no terrain height)
+        // for all 569 calls. That is why stalls, cars and lamps stood bolt
+        // upright on 29-degree ground while houses (which use the OTHER
+        // sampler) followed it correctly.
+        const rootMesh = this.mesh as THREE.Group | undefined;
+        const meshData = (rootMesh?.userData ?? {}) as IslandMeshUserData;
+        if (meshData._debug && rootMesh) {
           const helpers = meshData._debugHelpers ?? new THREE.Group();
           if (!meshData._debugHelpers) {
             meshData._debugHelpers = helpers;
@@ -4412,7 +4420,7 @@ export class Island {
           helpers.add(sph);
           helpers.add(line);
           // attach helpers if not attached
-          if (!helpers.parent) this.mesh.add(helpers);
+          if (!helpers.parent) rootMesh.add(helpers);
           // remove helpers shortly to avoid memory growth
           setTimeout(() => {
             helpers.remove(sph);

@@ -3233,6 +3233,24 @@ export class GameScene extends THREE.Scene {
     obj.quaternion.copy(this.orientQuat(up, fwd));
   }
 
+  /**
+   * Same, for a VILLAGER: the avatars face +Z, not the −Z that orientQuat
+   * builds for props (boat bows, carts, the fishing rig). Orienting a person
+   * with orientObj turns their back on the target — which is exactly why the
+   * Fisherman stood casting over his shoulder, measured live with the water
+   * behind him (terrain radius 48.65 astern, 50.69 ahead, sea level 50.10).
+   */
+  private orientAvatar(obj: THREE.Object3D, up: THREE.Vector3, fwd: THREE.Vector3): void {
+    obj.quaternion.copy(this.orientQuat(up, fwd)).multiply(GameScene._flipYaw);
+  }
+
+  /** Half turn about the model's own up — converts a −Z-forward prop basis
+   *  into the +Z-forward one the villager avatars are authored with. */
+  private static readonly _flipYaw = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    Math.PI,
+  );
+
   // Footprints of things placed via findPlacement (kept separate from the
   // player-collision `colliders`, though it also reads those) so later
   // placements avoid earlier ones.
@@ -3779,7 +3797,7 @@ export class GameScene extends THREE.Scene {
         this._sailTmp.subVectors(target, surf.position);
         this._sailTmp.addScaledVector(surf.normal, -this._sailTmp.dot(surf.normal));
         if (this._sailTmp.lengthSq() > 1e-6) {
-          npc.meshRef.quaternion.copy(this.orientQuat(surf.normal, this._sailTmp.normalize()));
+          this.orientAvatar(npc.meshRef, surf.normal, this._sailTmp.normalize());
         }
       }
       npc.position.copy(surf.position);
@@ -3847,7 +3865,7 @@ export class GameScene extends THREE.Scene {
         .multiplyScalar(F.spot.r)
         .addScaledVector(F.spot.n, bob);
       F.npc.position.copy(F.npc.meshRef.position);
-      this.orientObj(F.npc.meshRef, F.spot.n, F.spot.seaward);
+      this.orientAvatar(F.npc.meshRef, F.spot.n, F.spot.seaward);
       F.rig.position.copy(F.npc.meshRef.position);
       F.rig.quaternion.copy(F.npc.meshRef.quaternion);
 
@@ -3945,7 +3963,7 @@ export class GameScene extends THREE.Scene {
       F.npc.position.copy(F.npc.meshRef.position);
       const travel = toW.clone().sub(fromW);
       travel.addScaledVector(n, -travel.dot(n)).normalize();
-      this.orientObj(F.npc.meshRef, n, travel);
+      this.orientAvatar(F.npc.meshRef, n, travel);
       // Carry the catch overhead on the way to the stall
       if (F.caught && F.state === 'toShop') {
         F.caught.position.copy(pos).addScaledVector(n, 1.15).addScaledVector(travel, 0.25);
@@ -3966,7 +3984,7 @@ export class GameScene extends THREE.Scene {
       .multiplyScalar(F.stand.r)
       .addScaledVector(F.stand.n, bob);
     F.npc.position.copy(F.npc.meshRef.position);
-    this.orientObj(F.npc.meshRef, F.stand.n, F.stand.face);
+    this.orientAvatar(F.npc.meshRef, F.stand.n, F.stand.face);
     const sp2 = Math.min((time - F.t0) / 1.4, 1);
     const slot = F.slots[F.sold.length % F.slots.length];
     if (F.caught) {
@@ -4575,7 +4593,7 @@ export class GameScene extends THREE.Scene {
       faceDir = ovenW.clone().sub(standW);
       faceDir.addScaledVector(B.stand.n, -faceDir.dot(B.stand.n)).normalize();
     }
-    this.orientObj(B.npc.meshRef, B.stand.n, faceDir);
+    this.orientAvatar(B.npc.meshRef, B.stand.n, faceDir);
 
     const st = time - B.t0;
     const glow = (v: number) => {
