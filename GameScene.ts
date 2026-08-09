@@ -830,6 +830,8 @@ export class GameScene extends THREE.Scene {
 
       // The Fisherman stands at the shore and casts a line
       this.setupFisherman();
+      // A campfire on the open ground above the shore, lit from dusk.
+      this.setupCampfire();
       // The Baker works his oven at the village bakery
       this.setupBaker();
       // The Sailor drifts on his rowboat just offshore
@@ -1795,7 +1797,10 @@ export class GameScene extends THREE.Scene {
           shape: sp.shape,
         },
       );
-      const size = sp.size[0] + Math.random() * (sp.size[1] - sp.size[0]);
+      // 0.72x the authored species spread: birds should read as SMALL next
+      // to a cat. The species' relative sizes (a gull still out-measures a
+      // sparrow) are preserved — the whole range just moves down together.
+      const size = (sp.size[0] + Math.random() * (sp.size[1] - sp.size[0])) * 0.72;
       bird.scale.setScalar(size);
       const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
       // Seat on the RAYCAST mesh, not the analytic field: where the two
@@ -1973,9 +1978,11 @@ export class GameScene extends THREE.Scene {
     ];
     for (let i = 0; i < SPOTS.length; i++) {
       const { cat, tailJoints, legs, head } = this.buildCat(SPECIES[i % SPECIES.length]);
-      // 1.0-1.35 (was 0.9-1.2): cats must read clearly BIGGER than the
-      // ground birds (whose spread now tops out ~0.44u vs a 0.4-0.54u cat).
-      const size = 1.0 + Math.random() * 0.35;
+      // 1.45-1.95 (was 1.0-1.35). The two populations kept reading as one
+      // size class because a big bird (1.05) and a small cat (1.0) were the
+      // same scalar. Cats now start above where birds END, so the silhouette
+      // difference survives any roll of the dice, at any distance.
+      const size = 1.45 + Math.random() * 0.5;
       cat.scale.setScalar(size);
       const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
       // Raycast seat (startup-only) — the analytic field sits under the mesh.
@@ -3221,6 +3228,259 @@ export class GameScene extends THREE.Scene {
 
   /** Surface radius + normal along a direction (raycast, ideal-sphere fallback). */
   /** Quaternion orienting local +Y → up and model-forward (−Z) → fwd. */
+  // ── Campfire ─────────────────────────────────────────────────────────────
+  private campfire: {
+    group: THREE.Group;
+    flames: THREE.Mesh[];
+    light: THREE.PointLight;
+    embers: Array<{ m: THREE.Mesh; speed: number; phase: number }>;
+    logs: THREE.Mesh[];
+    pos: THREE.Vector3;
+    up: THREE.Vector3;
+    seats: Array<{ pos: THREE.Vector3; face: THREE.Vector3 }>;
+  } | null = null;
+  private campfireGuests: Array<{
+    npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string };
+    seat: THREE.Vector3;
+    face: THREE.Vector3;
+    wasVisible: boolean;
+  }> = [];
+  private campfireLit = false;
+
+  /** A stone-ringed campfire on the open ground above the shore, with four
+   *  seating logs around it. Lights itself at dusk (updateCampfire) and draws
+   *  a few villagers in to sit. */
+  private setupCampfire(): void {
+    if (!this.island) return;
+    const place = this.findPlacement({
+      anchor: this.island.dirAt(5.0, 0.42),
+      footprint: 3.2,
+      searchArc: 0.16,
+      minLat: 0.34,
+      maxLat: 0.56,
+      avoidStreet: true,
+      face: 'inland',
+    });
+    if (!place) return;
+    const group = new THREE.Group();
+    group.position.copy(place.position);
+    group.quaternion.copy(
+      new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), place.normal),
+    );
+    group.name = 'campfire';
+
+    // Stone ring
+    const stoneMat = GameScene.birdMat(0x8b857a);
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2;
+      const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.16 + (i % 3) * 0.03, 0), stoneMat);
+      st.position.set(Math.cos(a) * 0.72, 0.06, Math.sin(a) * 0.72);
+      st.rotation.set(i * 0.7, i * 1.3, i * 0.4);
+      st.scale.y = 0.7;
+      group.add(st);
+    }
+    // Logs stacked into a teepee
+    const logMat = GameScene.birdMat(0x5c4128);
+    const logs: THREE.Mesh[] = [];
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const lg = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.075, 0.95, 6), logMat);
+      lg.position.set(Math.cos(a) * 0.2, 0.42, Math.sin(a) * 0.2);
+      lg.rotation.set(Math.cos(a) * 0.42, 0, -Math.sin(a) * 0.42);
+      group.add(lg);
+      logs.push(lg);
+    }
+    // Flame cones: additive, no depth write, so they read as light not plastic.
+    const flames: THREE.Mesh[] = [];
+    const flameCols = [0xffb43a, 0xff7a26, 0xffe08a];
+    for (let i = 0; i < 3; i++) {
+      const m = new THREE.Mesh(
+        new THREE.ConeGeometry(0.24 - i * 0.05, 0.8 - i * 0.16, 7, 1, true),
+        new THREE.MeshBasicMaterial({
+          color: flameCols[i],
+          transparent: true,
+          opacity: 0.75 - i * 0.12,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        }),
+      );
+      m.position.set(0, 0.5 + i * 0.09, 0);
+      group.add(m);
+      flames.push(m);
+    }
+    // Embers drifting up out of the fire
+    const embers: Array<{ m: THREE.Mesh; speed: number; phase: number }> = [];
+    const emberGeo = new THREE.SphereGeometry(0.028, 5, 4);
+    const emberMat = new THREE.MeshBasicMaterial({ color: 0xffb257, transparent: true });
+    for (let i = 0; i < 14; i++) {
+      const m = new THREE.Mesh(emberGeo, emberMat.clone());
+      m.position.set(0, 0.5, 0);
+      group.add(m);
+      embers.push({ m, speed: 0.5 + Math.random() * 0.7, phase: Math.random() * Math.PI * 2 });
+    }
+    const light = new THREE.PointLight(0xff9a3c, 0, 14, 1.4);
+    light.position.set(0, 0.75, 0);
+    group.add(light);
+
+    // Four seating logs, and the world-space seat/facing pairs for the NPCs.
+    const seats: Array<{ pos: THREE.Vector3; face: THREE.Vector3 }> = [];
+    const tanA = new THREE.Vector3(0, 1, 0).cross(place.normal);
+    if (tanA.lengthSq() < 1e-6) tanA.set(1, 0, 0).cross(place.normal);
+    tanA.normalize();
+    const tanB = new THREE.Vector3().crossVectors(place.normal, tanA).normalize();
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.4;
+      const R = 1.6;
+      const seatLog = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.1, 7), logMat);
+      seatLog.position.set(Math.cos(a) * R, 0.16, Math.sin(a) * R);
+      seatLog.rotation.set(Math.PI / 2, 0, 0);
+      seatLog.rotation.z = -a; // lie the log along the ring
+      group.add(seatLog);
+      // World seat: the log's spot, and a facing vector pointing at the fire.
+      const off = tanA
+        .clone()
+        .multiplyScalar(Math.cos(a) * R)
+        .addScaledVector(tanB, Math.sin(a) * R);
+      // Ground each seat on the ACTUAL terrain: the ring is 1.6u across a
+      // sloping shoulder, so offsetting in the fire's tangent plane leaves
+      // the uphill logs buried and the downhill ones floating.
+      const seatDir = place.position.clone().add(off).normalize();
+      const seatSurf = this.island.sampleSurfaceByDirection(seatDir, 0);
+      seatLog.position.copy(
+        seatSurf.position
+          .clone()
+          .sub(place.position)
+          .applyQuaternion(group.quaternion.clone().invert()),
+      );
+      seatLog.position.y += 0.16;
+      seats.push({
+        pos: seatSurf.position.clone(),
+        face: off.clone().negate().normalize(),
+      });
+    }
+    this.add(group);
+    addGroupHulls(group);
+    this.campfire = {
+      group,
+      flames,
+      light,
+      embers,
+      logs,
+      pos: place.position.clone(),
+      up: place.normal.clone(),
+      seats,
+    };
+    console.log('🔥 campfire placed');
+  }
+
+  /**
+   * Burn the fire and hold the circle. Lit from dusk to dawn; the flames
+   * flicker on three different sine rates so no two agree, embers rise and
+   * respawn, and the light breathes with them. While it burns, up to three
+   * villagers are borrowed onto the logs (the party-guest pattern: take over
+   * meshRef only, and the wander loop reclaims them on the first frame after
+   * they are released).
+   */
+  private updateCampfire(deltaTime: number, time: number, dayFactor: number): void {
+    const C = this.campfire;
+    if (!C) return;
+    const night = Math.max(0, 1 - dayFactor * 1.3);
+    const lit = night > 0.15;
+    if (lit !== this.campfireLit) {
+      this.campfireLit = lit;
+      this.setCampfireCircle(lit);
+    }
+    C.group.visible = true;
+    for (let i = 0; i < C.flames.length; i++) {
+      const f = C.flames[i];
+      // Three incommensurate rates — a single sine reads as a pulsing lamp.
+      const flick =
+        0.82 + Math.sin(time * (9 + i * 3.1) + i) * 0.13 + Math.sin(time * (23 + i * 5)) * 0.06;
+      f.scale.set(flick, (0.9 + (flick - 0.82) * 1.6) * night, flick);
+      f.rotation.y = time * (0.7 + i * 0.5);
+      const m = f.material as THREE.MeshBasicMaterial;
+      m.opacity = (0.75 - i * 0.12) * night;
+      f.visible = night > 0.02;
+    }
+    for (const e of C.embers) {
+      e.m.position.y += e.speed * deltaTime;
+      const life = (e.m.position.y - 0.5) / 2.2;
+      if (life > 1) {
+        e.m.position.set(0, 0.5, 0);
+        e.phase = Math.random() * Math.PI * 2;
+      } else {
+        const drift = Math.sin(time * 1.6 + e.phase) * 0.22 * life;
+        e.m.position.x = Math.cos(e.phase) * 0.12 + drift;
+        e.m.position.z = Math.sin(e.phase) * 0.12 + drift * 0.6;
+      }
+      const em = e.m.material as THREE.MeshBasicMaterial;
+      em.opacity = Math.max(0, 1 - life) * night;
+      e.m.visible = night > 0.02;
+    }
+    C.light.intensity =
+      night * (2.6 + Math.sin(time * 11) * 0.35 + Math.sin(time * 23 + 1.7) * 0.22);
+
+    // Hold the seated villagers in place and give them a fireside sway.
+    for (const g of this.campfireGuests) {
+      const ref = g.npc.meshRef;
+      ref.position.copy(g.seat).addScaledVector(C.up, 0.3); // perched on the log
+      this.orientAvatar(ref, C.up, g.face);
+      const ud = ref.userData as { limbs?: NpcLimbCache | null };
+      if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
+      const limbs = ud.limbs;
+      if (!limbs) continue;
+      for (let n = 0; n < limbs.length; n++) {
+        const l = limbs[n];
+        // Legs forward over the log edge; arms resting, with a slow breath.
+        l.ang = n < 2 ? -1.15 : -0.12 + Math.sin(time * 0.9 + n) * 0.05;
+        l.b.quaternion.copy(l.rest).multiply(this._npcLimbQ.setFromAxisAngle(l.axis, l.ang));
+      }
+    }
+  }
+
+  /** Borrow (or release) the villagers who sit at the fire. */
+  private setCampfireCircle(on: boolean): void {
+    const C = this.campfire;
+    if (!C) return;
+    if (on) {
+      const station = new Set([
+        'Fisherman',
+        'Sailor',
+        'First Mate',
+        'Deckhand',
+        'Market Vendor',
+        'Lighthouse Keeper',
+      ]);
+      const preferred = ['Storyteller', 'Wanderer', 'Philosopher', 'Island Explorer'];
+      const pool = [
+        ...preferred
+          .map((n) => this.island.npcTargets.find((t) => t.name === n))
+          .filter((t): t is (typeof this.island.npcTargets)[number] => !!t),
+        ...this.island.npcTargets.filter(
+          (t) => !station.has(t.name) && !preferred.includes(t.name),
+        ),
+      ];
+      const N = Math.min(3, pool.length, C.seats.length);
+      for (let i = 0; i < N; i++) {
+        this.campfireGuests.push({
+          npc: pool[i],
+          seat: C.seats[i].pos.clone(),
+          face: C.seats[i].face.clone(),
+          wasVisible: pool[i].meshRef.visible,
+        });
+      }
+    } else {
+      for (const g of this.campfireGuests) {
+        g.npc.meshRef.visible = g.wasVisible;
+        // Sync the logical position so the wander loop resumes from the log,
+        // not from wherever it last thought the villager was standing.
+        g.npc.position.copy(g.npc.meshRef.position);
+      }
+      this.campfireGuests.length = 0;
+    }
+  }
+
   private orientQuat(up: THREE.Vector3, fwd: THREE.Vector3): THREE.Quaternion {
     const z = fwd.clone().multiplyScalar(-1);
     const x = new THREE.Vector3().crossVectors(up, z).normalize();
@@ -6892,6 +7152,10 @@ export class GameScene extends THREE.Scene {
         if (this.sailors.some((s) => s.npc === npc)) continue;
         // Market Vendors mind their pitches — they don't wander off to shop.
         if (this.vendors.some((v) => v.npc === npc)) continue;
+        // Whoever is sitting at the fire is held by updateCampfire. Without
+        // this the wander loop keeps writing their transform and limbs every
+        // frame, and they stand up and walk off their own log.
+        if (this.campfireGuests.some((g) => g.npc === npc)) continue;
         const data = npc.meshRef.userData as {
           greetT0?: number;
           lastGreetAt?: number;
@@ -7633,6 +7897,7 @@ export class GameScene extends THREE.Scene {
       for (const m of this.lampBulbMats) m.emissiveIntensity = glow;
     }
     this.updateLampFollowLights(deltaTime, day);
+    this.updateCampfire(deltaTime, performance.now() / 1000, day);
     // Lighthouse sweep: one slow revolution every ~17s, hazy cones and the
     // spotlight fading up together as the light goes.
     if (this.lighthouseBeam === null && this.island) {
