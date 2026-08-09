@@ -8159,8 +8159,204 @@ export class GameScene extends THREE.Scene {
         ? 'You draw the curtains. 🪟'
         : 'You draw the curtains back. ☀️';
     }
+    if (which === 'party') {
+      return this.togglePartyMode();
+    }
     this.interiorLampOn = !this.interiorLampOn;
     return this.interiorLampOn ? 'The lamp comes on. 💡' : 'You switch the lamp off. 🌙';
+  }
+
+  // ── Party mode (beach house) ───────────────────────────────────────────
+  // Disco ball + colour-cycling dance floor + two sweeping spotlights + four
+  // villagers borrowed onto the floor, all driven on a fixed 120bpm beat
+  // (iframe audio is cross-origin — the beat can't read the music, so it
+  // fakes confidence and most tracks agree). The wall screen is the jukebox.
+  private partyMode = false;
+  private partyBeatClock = 0;
+  private partyProps: {
+    group: THREE.Group;
+    ball: THREE.Mesh;
+    tiles: THREE.Mesh[];
+    spots: THREE.SpotLight[];
+  } | null = null;
+  private partyGuests: Array<{
+    npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string };
+    wasVisible: boolean;
+    seat: THREE.Vector3; // room-space dance spot
+    phase: number;
+  }> = [];
+
+  private buildPartyProps(): void {
+    if (this.partyProps || !this.interiorGroup) return;
+    // LOCAL room coordinates throughout: the group is a CHILD of
+    // interiorGroup, which already carries INTERIOR_ORIGIN — baking the
+    // origin in here put the whole rig 300u under the room (found live).
+    const group = new THREE.Group();
+    // Disco ball on a rod over the floor.
+    const rod = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02, 0.02, 0.5, 5),
+      GameScene.birdMat(0x3a3a40),
+    );
+    rod.position.set(0.9, 3.35, 0.6);
+    group.add(rod);
+    const ball = new THREE.Mesh(
+      new THREE.SphereGeometry(0.32, 12, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0xd8dce4,
+        metalness: 0.9,
+        roughness: 0.18,
+        flatShading: true, // faceted = mirror tiles at this poly count
+      }),
+    );
+    ball.position.set(0.9, 2.95, 0.6);
+    group.add(ball);
+    // 4×4 lit dance floor.
+    const tiles: THREE.Mesh[] = [];
+    const tileGeo = new THREE.PlaneGeometry(0.6, 0.6);
+    for (let ty = 0; ty < 4; ty++) {
+      for (let tx = 0; tx < 4; tx++) {
+        const tile = new THREE.Mesh(
+          tileGeo,
+          new THREE.MeshStandardMaterial({
+            color: 0x101018,
+            emissive: 0xffffff,
+            emissiveIntensity: 0.5,
+            roughness: 0.4,
+          }),
+        );
+        tile.rotation.x = -Math.PI / 2;
+        // 0.19: the rug is a BOX topping ~0.16 (proven live by a lifted-tile
+        // probe) — the grid reads as a slightly raised light-up platform.
+        tile.position.set(0.9 + (tx - 1.5) * 0.66, 0.19, 0.6 + (ty - 1.5) * 0.66);
+        group.add(tile);
+        tiles.push(tile);
+      }
+    }
+    // Two coloured spotlights sweeping the floor.
+    const spots: THREE.SpotLight[] = [];
+    for (const [sx, sz, hex] of [
+      [-2.4, -2.2, 0xff4fd8],
+      [2.6, 2.4, 0x39d8ff],
+    ] as Array<[number, number, number]>) {
+      const spot = new THREE.SpotLight(hex, 0, 12, Math.PI / 5, 0.55, 1.2);
+      spot.position.set(sx, 3.5, sz);
+      spot.target.position.set(0.9, 0.1, 0.6);
+      group.add(spot);
+      group.add(spot.target);
+      spots.push(spot);
+    }
+    group.visible = false;
+    this.interiorGroup.add(group);
+    this.partyProps = { group, ball, tiles, spots };
+  }
+
+  private togglePartyMode(): string {
+    this.setPartyMode(!this.partyMode);
+    return this.partyMode ? 'The beat drops — party on! 🪩' : 'The lights come up. Party over. 🌙';
+  }
+
+  private setPartyMode(on: boolean): void {
+    if (on === this.partyMode) return;
+    this.partyMode = on;
+    this.buildPartyProps();
+    if (this.partyProps) {
+      this.partyProps.group.visible = on;
+      for (const s of this.partyProps.spots) s.intensity = on ? 2.6 : 0;
+    }
+    if (on) {
+      // Borrow four villagers onto the floor (the cottage-occupant pattern:
+      // move meshRef only; the wander loop re-claims transforms on the
+      // first outdoor frame). Gardener/Artist/Musician/Storyteller first,
+      // any wander villager as fallback; station NPCs stay at their posts.
+      const station = new Set([
+        'Fisherman',
+        'Village Baker',
+        'Sailor',
+        'First Mate',
+        'Deckhand',
+        'Market Vendor',
+      ]);
+      const preferred = ['Gardener', 'Artist', 'Musician', 'Storyteller'];
+      const pool = [
+        ...preferred
+          .map((n) => this.island.npcTargets.find((t) => t.name === n))
+          .filter((t): t is (typeof this.island.npcTargets)[number] => !!t),
+        ...this.island.npcTargets.filter(
+          (t) => !station.has(t.name) && !preferred.includes(t.name),
+        ),
+      ];
+      const o = GameScene.INTERIOR_ORIGIN;
+      for (let i = 0; i < Math.min(4, pool.length); i++) {
+        const npc = pool[i];
+        const a = (i / 4) * Math.PI * 2 + 0.6;
+        this.partyGuests.push({
+          npc,
+          wasVisible: npc.meshRef.visible,
+          seat: new THREE.Vector3(
+            o.x + 0.9 + Math.cos(a) * 1.35,
+            o.y + GameScene.INTERIOR_PLAYER_Y,
+            o.z + 0.6 + Math.sin(a) * 1.35,
+          ),
+          phase: i * 1.7,
+        });
+        npc.meshRef.visible = true;
+      }
+    } else {
+      for (const g of this.partyGuests) g.npc.meshRef.visible = g.wasVisible;
+      this.partyGuests = [];
+    }
+  }
+
+  /** Per-frame party drive: ball spin, tile colour cycle, spot sweep, and
+   *  the guests dancing on the beat. Interior-only (outdoor world frozen). */
+  private updateInteriorParty(deltaTime: number, time: number): void {
+    const P = this.partyProps;
+    if (!this.partyMode || !P) return;
+    const BPS = 2; // 120bpm
+    this.partyBeatClock += deltaTime;
+    if (this.partyBeatClock >= 1 / BPS) {
+      this.partyBeatClock -= 1 / BPS;
+      sfx.partyThump();
+    }
+    const beat = time * BPS * Math.PI; // half-turn per beat
+    P.ball.rotation.y = time * 0.9;
+    for (let i = 0; i < P.tiles.length; i++) {
+      const m = P.tiles[i].material as THREE.MeshStandardMaterial;
+      m.emissive.setHSL((i * 0.09 + time * 0.12) % 1, 0.85, 0.5);
+      m.emissiveIntensity = 0.45 + Math.max(0, Math.sin(beat + i * 0.8)) * 0.5;
+    }
+    for (let s = 0; s < P.spots.length; s++) {
+      const spot = P.spots[s];
+      const sw = time * (s === 0 ? 0.8 : -0.65) + s * 2.1;
+      // Local room coords — targets are children of the party group.
+      spot.target.position.set(0.9 + Math.cos(sw) * 1.6, 0.1, 0.6 + Math.sin(sw) * 1.6);
+      spot.color.setHSL((s * 0.45 + time * 0.05) % 1, 0.9, 0.6);
+    }
+    // The guests: bounce + arm pumps composed onto the cached rest quats
+    // (never .rotation on npc.glb bones), facing the floor centre with a
+    // beat-timed sway. Same compose rule as swingNpcLimbs.
+    // Guests are scene-root meshRefs — WORLD coordinates here (unlike the
+    // props above, which live inside the origin-carrying interior group).
+    const o = GameScene.INTERIOR_ORIGIN;
+    for (const g of this.partyGuests) {
+      const ref = g.npc.meshRef;
+      const b = beat + g.phase;
+      const hop = Math.abs(Math.sin(b * 0.5)) * 0.08;
+      ref.position.set(g.seat.x, g.seat.y + hop, g.seat.z);
+      const face = Math.atan2(o.x + 0.9 - g.seat.x, o.z + 0.6 - g.seat.z);
+      ref.quaternion.setFromAxisAngle(GameScene._localUp, face + Math.sin(b * 0.25) * 0.35);
+      const ud = ref.userData as { limbs?: NpcLimbCache | null };
+      if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
+      const limbs = ud.limbs;
+      if (!limbs) continue;
+      for (let n = 0; n < limbs.length; n++) {
+        const l = limbs[n];
+        // Legs (0-1): light alternating step; arms (2-3): raised pumps.
+        l.ang =
+          n < 2 ? Math.sin(b + n * Math.PI) * 0.18 : -0.7 + Math.sin(b + (n - 2) * Math.PI) * 0.55;
+        l.b.quaternion.copy(l.rest).multiply(this._npcLimbQ.setFromAxisAngle(l.axis, l.ang));
+      }
+    }
   }
   // 2.0s heartbeat, plus an immediate refresh whenever the clock crosses a
   // five-minute bucket or the weather turns. Measured 3.1ms per pass at
@@ -8870,6 +9066,14 @@ export class GameScene extends THREE.Scene {
         action: 'watch',
       },
       {
+        x: 0.9,
+        z: 0.6,
+        r: 1.6,
+        label: '🪩 Press <strong>E</strong> to toggle the party',
+        action: 'room',
+        text: 'party',
+      },
+      {
         x: 2.6,
         z: -3.0,
         r: 1.3,
@@ -9398,6 +9602,7 @@ export class GameScene extends THREE.Scene {
   public exitInterior(): void {
     this.insideInterior = false;
     this.interiorWatching = false; // never leave the cinema shot armed
+    this.setPartyMode(false); // guests go home; the wander loop re-claims them
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
     this.restoreShadowAutoUpdate();
@@ -9421,6 +9626,7 @@ export class GameScene extends THREE.Scene {
    *  (+y up), so this never touches the spherical-physics machinery. */
   private updateInteriorMode(deltaTime: number): void {
     this.interiorTime += deltaTime;
+    this.updateInteriorParty(deltaTime, this.interiorTime);
     // Window refresh, on CHANGE rather than on a clock. The old fixed 2.5Hz
     // tick spent ~8ms of every second re-rendering a view that had usually not
     // changed. Now it re-renders when the world outside actually differs: a

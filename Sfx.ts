@@ -156,6 +156,12 @@ export class Sfx {
     this.tone(f, f * 1.33, 0.09, 'sine', 0.1);
   }
 
+  /** Party kick: a soft sub thump on the beat (quiet — the wall screen's
+   *  music is the star; this just gives the room a pulse). */
+  public partyThump(): void {
+    this.tone(110, 42, 0.13, 'sine', 0.055);
+  }
+
   /** Feed toss: a soft underhand swish (air, not tone) + a grain rustle. */
   public toss(): void {
     this.hiss(0.16, 0.06, 1400);
