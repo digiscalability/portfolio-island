@@ -2339,9 +2339,12 @@ class SimpleApp {
         .copy(npcPos)
         .addScaledVector(up, 1.35)
         .lerp(this._cineTmp.copy(playerPos).addScaledVector(up, 1.4), 0.3);
-      expDecayV3(c.pos, desired, 3.2, dt);
-      expDecayV3(c.look, desiredLook, 4.5, dt);
-      cam.fov = expDecay(cam.fov, c.prevFov - 8, 3.0, dt);
+      // Slow, savoured push-in (~2s to settle — was k 3.2/4.5/3.0, which
+      // read as a snap zoom): the look leads the dolly slightly, the FOV
+      // narrows last, like a camera operator leaning in.
+      expDecayV3(c.pos, desired, 1.5, dt);
+      expDecayV3(c.look, desiredLook, 2.1, dt);
+      cam.fov = expDecay(cam.fov, c.prevFov - 8, 1.3, dt);
       cam.updateProjectionMatrix();
     } else {
       // Release glide: look eases back onto the player and FOV restores, THEN
