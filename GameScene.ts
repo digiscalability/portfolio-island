@@ -7625,10 +7625,12 @@ export class GameScene extends THREE.Scene {
       const nightBeam = Math.max(0, 1 - day * 1.25);
       const ud = this.lighthouseBeam.userData as {
         beamMat?: THREE.MeshBasicMaterial;
-        beamLight?: THREE.SpotLight;
+        beamLights?: THREE.SpotLight[];
       };
       if (ud.beamMat) ud.beamMat.opacity = 0.5 * nightBeam;
-      if (ud.beamLight) ud.beamLight.intensity = 26 * nightBeam;
+      // Bright enough that the sweep visibly rakes whatever it crosses. At
+      // decay 1.1 over a 44u range this is ~4 at the far end, ~35 at the base.
+      if (ud.beamLights) for (const l of ud.beamLights) l.intensity = 95 * nightBeam;
     }
     // ?look=soft: the composer's grade pass + bloom breathe with the cycle.
     this.rendererRef?.setGradeDayFactor?.(day);

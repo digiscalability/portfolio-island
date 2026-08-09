@@ -3787,19 +3787,40 @@ export class Island {
     });
     beam.userData.beamMat = beamMat;
     const BEAM_LEN = 26;
+    // TILT. A horizontal beam is wrong on a sphere: the surface curves away
+    // beneath it, so it climbs. The lantern sits ~10u above the sea, and over
+    // 26u of arc the R=50 surface drops another R(1-cos(26/50)) = 6.6u — so a
+    // level beam finishes ~17u in the air, which is exactly how it read.
+    // Measured live: the lantern sits 12.1u over the sea and the surface falls
+    // another ~3.9u across the beam's horizontal run, so the far end has 16u
+    // to lose. 26*sin(t) >= 16 needs t >= 0.66; 0.72 lands it with margin, so
+    // the beam meets the water around 22u out and rakes the ground sooner on
+    // the landward sweep, where the terrain rises to meet it.
+    const BEAM_TILT = 0.72;
+    const beamLights: THREE.SpotLight[] = [];
     for (const s of [1, -1]) {
+      // The arm carries the downward tilt so the cone keeps its simple local
+      // geometry: rotating about Z by -s*t swings the +/-X axis toward -Y.
+      const arm = new THREE.Group();
+      arm.rotation.z = -s * BEAM_TILT;
       const cone = new THREE.Mesh(new THREE.ConeGeometry(1.05, BEAM_LEN, 12, 1, true), beamMat);
       // Cones are built along +Y: tip it onto the horizontal and push it out
       // so the narrow apex sits at the lantern, not the fat end.
       cone.rotation.z = (s * Math.PI) / 2;
       cone.position.set((s * BEAM_LEN) / 2, 0, 0);
-      beam.add(cone);
+      arm.add(cone);
+      // One spotlight per beam, aimed straight down the arm, so BOTH sweeps
+      // wash the rocks, trees and water they cross instead of only glowing in
+      // the air. decay 1.1 rather than the physical 2: a squared falloff is
+      // spent within a few units and would light nothing but the gallery.
+      const sl = new THREE.SpotLight(0xffe4a0, 0, 44, 0.3, 0.55, 1.1);
+      sl.position.set(0, 0, 0);
+      sl.target.position.set(s * BEAM_LEN, 0, 0);
+      arm.add(sl, sl.target);
+      beamLights.push(sl);
+      beam.add(arm);
     }
-    const beamLight = new THREE.SpotLight(0xffe4a0, 0, 34, 0.2, 0.6, 1.4);
-    beamLight.position.set(0, 0, 0);
-    beamLight.target.position.set(12, -3.5, 0); // out and down toward the water
-    beam.add(beamLight, beamLight.target);
-    beam.userData.beamLight = beamLight;
+    beam.userData.beamLights = beamLights;
     g.add(beam);
 
     console.log('🗼 Lighthouse placed on the coast');
