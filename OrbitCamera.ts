@@ -26,6 +26,11 @@ export class OrbitCamera {
 
   private distance: number = 4.4; // tight third-person frame — player always reads
   private height: number = 1.5; // height above player (lowered for a grounded, near-eye POV)
+  // Bloom targets: distance/height ease toward these each frame (the slow-
+  // bloom camera language) — ride swaps and pinch both write the TARGET, so
+  // mode changes breathe instead of snapping and pinch gets a soft landing.
+  private distanceTarget: number = 4.4;
+  private heightTarget: number = 1.5;
 
   private yaw: number = 0; // horizontal rotation around player
   private pitch: number = -0.12; // vertical tilt: near eye-level (was -0.35, a downward/aerial look)
@@ -106,19 +111,27 @@ export class OrbitCamera {
   public setRideMode(on: boolean): void {
     if (on === this.rideMode) return;
     this.rideMode = on;
-    this.distance = on ? OrbitCamera.RIDE_DISTANCE : OrbitCamera.WALK_DISTANCE;
-    this.height = on ? OrbitCamera.RIDE_HEIGHT : OrbitCamera.WALK_HEIGHT;
+    // Bloom, don't snap: write the TARGETS and let update() breathe the
+    // frame out/in over ~1.5s (reduced motion keeps the old instant swap).
+    this.distanceTarget = on ? OrbitCamera.RIDE_DISTANCE : OrbitCamera.WALK_DISTANCE;
+    this.heightTarget = on ? OrbitCamera.RIDE_HEIGHT : OrbitCamera.WALK_HEIGHT;
+    if (a11y.reducedMotion) {
+      this.distance = this.distanceTarget;
+      this.height = this.heightTarget;
+    }
     const cam = this.camera as THREE.PerspectiveCamera;
     if (!cam.isPerspectiveCamera || a11y.reducedMotion) return;
     if (!this.baseFov) this.baseFov = cam.fov;
     this.fovTarget = on ? this.baseFov + 6 : this.baseFov;
   }
 
-  /** Per-frame FOV ease toward fovTarget (frame-rate independent). */
+  /** Per-frame FOV ease toward fovTarget (frame-rate independent). Rate 1.6
+   *  — slowed from 4 alongside the ride bloom so speed swells in rather
+   *  than kicking. */
   private updateFov(deltaTime: number): void {
     const cam = this.camera as THREE.PerspectiveCamera;
     if (!cam.isPerspectiveCamera || this.fovTarget === 0) return;
-    const next = this.fovTarget + (cam.fov - this.fovTarget) * Math.exp(-4 * deltaTime);
+    const next = this.fovTarget + (cam.fov - this.fovTarget) * Math.exp(-1.6 * deltaTime);
     if (Math.abs(next - cam.fov) > 0.01) {
       cam.fov = next;
       cam.updateProjectionMatrix();
@@ -207,7 +220,9 @@ export class OrbitCamera {
     // keeps decaying to the target 0/1), reduced-motion-trimmed like the
     // look-ahead above.
     if (deltaTime > 0) {
-      const fk = 1 - Math.exp(-2.5 * deltaTime);
+      // Slow bloom in (~2s to full interest), slightly quicker fade out —
+      // the camera drifts its attention over rather than flicking it.
+      const fk = 1 - Math.exp(-(this.focusActive ? 1.1 : 2.0) * deltaTime);
       this.focusAmt += ((this.focusActive ? 1 : 0) - this.focusAmt) * fk;
       if (this.focusAmt > 0.001) {
         this._focusBias.subVectors(this.focusTarget, this.targetPosition).clampLength(0, 2.4);
@@ -244,6 +259,15 @@ export class OrbitCamera {
   private focusActive = false;
   private focusAmt = 0;
   private readonly _focusBias = new THREE.Vector3();
+
+  /** Hard-cut the camera to its computed follow pose (no ease) — used when
+   *  returning from the interior room 300u below the island, where the
+   *  position lerp would visibly swoop up through the terrain. */
+  public snapToPlayer(): void {
+    this.updateCameraPosition(0);
+    if (Number.isFinite(this.cameraPosition.x)) this.camera.position.copy(this.cameraPosition);
+    if (Number.isFinite(this.targetPosition.x)) this.camera.lookAt(this.targetPosition);
+  }
 
   /** Soft camera interest in a world point (null = fade back out). */
   public setFocusPoint(p: THREE.Vector3 | null): void {
@@ -287,7 +311,7 @@ export class OrbitCamera {
     // spreading zooms in, pinching zooms out. setDistance keeps the 2–12
     // clamp, and the per-frame collision pull-in below is unaffected.
     const pinch = consumePinchZoomFactor();
-    if (pinch !== 1) this.setDistance(this.distance * pinch);
+    if (pinch !== 1) this.setDistance(this.distanceTarget * pinch);
 
     // Yaw is applied to the follow direction inside updateCameraPosition;
     // pitch accumulates here as before.
@@ -295,6 +319,13 @@ export class OrbitCamera {
 
     // Clamp pitch to valid range
     this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
+
+    // Slow-bloom frame: distance/height breathe toward their targets (ride
+    // boards, pinch) at ~1.5s to settle. Pinch still lands quickly enough to
+    // feel direct; the collision pull-in downstream stays instant.
+    const bloomK = 1 - Math.exp(-1.6 * safeDeltaTime);
+    this.distance += (this.distanceTarget - this.distance) * bloomK;
+    this.height += (this.heightTarget - this.height) * bloomK;
 
     // Validate distance and height with safeguards
     this.distance = Math.max(this.minDistance, Math.min(this.maxDistance, this.distance));
@@ -352,7 +383,7 @@ export class OrbitCamera {
    * Set orbit distance from player
    */
   public setDistance(distance: number): void {
-    this.distance = Math.max(this.minDistance, Math.min(this.maxDistance, distance || 6));
+    this.distanceTarget = Math.max(this.minDistance, Math.min(this.maxDistance, distance || 6));
   }
 
   /**
@@ -366,7 +397,7 @@ export class OrbitCamera {
    * Set camera height above player
    */
   public setHeight(height: number): void {
-    this.height = Math.max(this.minHeight, Math.min(this.maxHeight, height || 1.5));
+    this.heightTarget = Math.max(this.minHeight, Math.min(this.maxHeight, height || 1.5));
   }
 
   /**

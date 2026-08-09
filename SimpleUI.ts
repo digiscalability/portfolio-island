@@ -115,7 +115,9 @@ export class SimpleUI {
         inset: '0',
         background: '#000',
         opacity: '0',
-        transition: 'opacity 0.28s ease',
+        // Gentle door bloom — was a brisk 0.28s cut; timings below (470ms
+        // mid, 520ms release) are coupled to this duration.
+        transition: 'opacity 0.45s ease',
         pointerEvents: 'none',
         zIndex: '2000',
       });
@@ -135,8 +137,8 @@ export class SimpleUI {
       });
       window.setTimeout(() => {
         d.style.pointerEvents = 'none';
-      }, 320);
-    }, 300);
+      }, 520);
+    }, 470);
   }
 
   private leaveBtn: HTMLElement | null = null;
@@ -190,7 +192,9 @@ export class SimpleUI {
       height: '100%',
       pointerEvents: 'none',
       zIndex: '1000',
-      fontFamily: 'Arial, sans-serif',
+      // Match the site's own stack (style.css) — the old 'Arial' here
+      // overrode it for every HUD child and read dated next to system-ui.
+      fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
     });
     // Safe-area insets published as inheriting custom properties so every
     // edge-anchored HUD child can offset itself off notches / home
@@ -1078,7 +1082,7 @@ export class SimpleUI {
       fontFamily: 'system-ui, sans-serif',
       background: 'rgba(12,12,20,0.92)',
       color: '#fff',
-      outline: '2px solid rgba(120,170,255,0.9)',
+      outline: '1px solid rgba(120,170,255,0.55)', // was 2px @ 0.9 — the brightest glow in the HUD
       pointerEvents: 'auto',
       zIndex: '1700',
     });
@@ -1670,7 +1674,7 @@ export class SimpleUI {
       left: '50%',
       bottom: 'calc(var(--sab, 0px) + 46px)',
       transform: 'translateX(-50%)',
-      maxWidth: 'min(620px, calc(100vw - 40px))',
+      maxWidth: 'min(560px, calc(100vw - 40px))',
       background: 'rgba(6, 10, 20, 0.78)',
       color: '#fff',
       padding: '13px 22px',
@@ -2020,7 +2024,7 @@ export class SimpleUI {
       left: '50%',
       transform: 'translateX(-50%)',
       background: 'rgba(10, 14, 30, 0.82)',
-      border: '1px solid rgba(140,160,255,0.4)',
+      border: '1px solid rgba(140,160,255,0.26)',
       color: '#dbe4ff',
       padding: '8px 16px',
       borderRadius: '999px',
@@ -2304,7 +2308,7 @@ export class SimpleUI {
         height: '74px',
         borderRadius: '50%',
         background: tint,
-        border: '2px solid rgba(255,255,255,0.4)',
+        border: '1.5px solid rgba(255,255,255,0.28)', // quieter touch-button rim
         boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
         color: 'white',
         display: 'flex',
@@ -2333,7 +2337,7 @@ export class SimpleUI {
           e.preventDefault();
           e.stopPropagation();
           btn.style.transform = 'scale(0.9)';
-          btn.style.filter = 'brightness(1.35)';
+          btn.style.filter = 'brightness(1.15)';
           hapticPulse(8);
           fire('keydown');
           if (holdRepeat === null) {
@@ -2499,7 +2503,7 @@ export class SimpleUI {
           <div style="position:relative;width:104px;height:104px;margin-bottom:18px;">
             <div id="ld-planet" style="position:absolute;inset:14px;border-radius:50%;
                  background:radial-gradient(circle at 34% 30%, #7fc96b 0 38%, #4e9e57 38% 52%, #2f7fbf 52% 100%);
-                 box-shadow:0 0 34px rgba(80,170,220,0.45), inset -8px -10px 20px rgba(0,0,0,0.45);
+                 box-shadow:0 0 22px rgba(80,170,220,0.32), inset -8px -10px 20px rgba(0,0,0,0.45);
                  will-change:transform;animation:ld-pulse 2.6s ease-in-out infinite;"></div>
             <div style="position:absolute;inset:0;will-change:transform;animation:ld-spin 1.8s linear infinite;">
               <div style="position:absolute;top:0;left:50%;width:9px;height:9px;margin-left:-4.5px;
@@ -2593,7 +2597,7 @@ export class SimpleUI {
         transform: 'translate(-50%, -50%)',
         background: 'rgba(0, 0, 0, 0.9)',
         color: 'white',
-        padding: '30px',
+        padding: '22px',
         borderRadius: '15px',
         textAlign: 'center',
         pointerEvents: 'auto',
@@ -2890,10 +2894,10 @@ export class SimpleUI {
     input.placeholder = 'Your name';
     input.value = defaultName || '';
     Object.assign(input.style, {
-      padding: '12px 16px',
-      fontSize: '18px',
+      padding: '11px 14px',
+      fontSize: '16px',
       borderRadius: '12px',
-      border: '2px solid rgba(120,160,255,0.5)',
+      border: '1px solid rgba(120,160,255,0.35)',
       background: 'rgba(255,255,255,0.1)',
       color: 'white',
       textAlign: 'center',
@@ -2987,12 +2991,12 @@ export class SimpleUI {
         maxWidth: 'calc(100vw - 32px)',
         background: 'rgba(0, 0, 0, 0.8)',
         color: 'white',
-        padding: '15px 25px',
-        borderRadius: '25px',
+        padding: '10px 18px', // was 15px 25px — the prompt is a hint, not a card
+        borderRadius: '22px',
         textAlign: 'center',
         pointerEvents: 'auto',
         cursor: 'pointer',
-        fontSize: '16px',
+        fontSize: '14px',
         // Pop-in: created hidden/short, springs to place on the next frame
         opacity: '0',
         transform: 'translateX(-50%) translateY(10px) scale(0.9)',
@@ -3594,7 +3598,7 @@ export class SimpleUI {
       background: 'rgba(12, 12, 24, 0.95)',
       color: 'white',
       borderRadius: '16px',
-      border: '2px solid rgba(255, 211, 74, 0.5)',
+      border: '1px solid rgba(255, 211, 74, 0.3)', // shop gold, dimmed
       padding: '18px 20px',
       pointerEvents: 'auto',
       zIndex: '1700',
@@ -3912,9 +3916,9 @@ export class SimpleUI {
       transform: 'translate(-50%, -50%) scale(0.9)',
       background: 'rgba(0,0,0,0.78)',
       color: 'white',
-      padding: '14px 22px',
-      borderRadius: '14px',
-      fontSize: '18px',
+      padding: '10px 18px',
+      borderRadius: '12px',
+      fontSize: '15px',
       fontFamily: 'system-ui, sans-serif',
       pointerEvents: 'none',
       zIndex: '2000',
@@ -4078,12 +4082,12 @@ export class SimpleUI {
       transform: 'translateX(-50%)',
       background: 'rgba(0, 0, 0, 0.9)',
       color: 'white',
-      padding: '20px 30px',
-      borderRadius: '15px',
+      padding: '14px 22px',
+      borderRadius: '14px',
       textAlign: 'center',
       pointerEvents: 'none',
-      fontSize: '18px',
-      border: '2px solid #4CAF50',
+      fontSize: '15px',
+      border: '1px solid rgba(76,175,80,0.55)', // was 2px full-alpha green
       zIndex: '1500',
       transition: 'opacity 0.5s',
     });
@@ -4180,13 +4184,15 @@ export class SimpleUI {
       transform: 'translate(-50%, -50%)',
       background: 'rgba(0, 0, 0, 0.9)',
       color: 'white',
-      padding: '30px',
-      borderRadius: '15px',
+      padding: '20px',
+      borderRadius: '14px',
       textAlign: 'center',
       pointerEvents: 'auto',
-      fontSize: '16px',
+      fontSize: '14.5px',
       zIndex: '1500',
-      border: `3px solid ${this.getZoneColor(zone.id)}`,
+      // 1px accent, not the old 3px full-alpha frame — the zone hue should
+      // sign the panel, not floodlight it.
+      border: `1px solid ${this.getZoneColor(zone.id)}`,
       maxWidth: '500px',
       maxHeight: '70vh',
       overflowY: 'auto',
@@ -4511,8 +4517,8 @@ export class SimpleUI {
       background: 'rgba(10,10,20,0.94)',
       color: '#f0f0f0',
       borderRadius: '16px',
-      border: '2px solid rgba(120,160,255,0.4)',
-      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+      border: '1px solid rgba(120,160,255,0.22)', // de-glow: was 2px @ 0.4
+      boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
       zIndex: '1620',
       fontFamily: 'system-ui, sans-serif',
       overflow: 'hidden',
@@ -4522,7 +4528,7 @@ export class SimpleUI {
     Object.assign(header.style, {
       padding: '8px 16px',
       fontWeight: '600',
-      background: 'linear-gradient(135deg, rgba(80,130,255,0.3), rgba(120,80,255,0.2))',
+      background: 'linear-gradient(135deg, rgba(80,130,255,0.16), rgba(120,80,255,0.10))',
       borderBottom: '1px solid rgba(120,160,255,0.2)',
       display: 'flex',
       justifyContent: 'space-between',
@@ -4826,7 +4832,7 @@ export class SimpleUI {
           }
         : {
             left: '50%',
-            width: 'min(600px, 90%)',
+            width: 'min(520px, 90%)', // was 600 — dialogue reads, not looms
             bottom: '30px',
           };
       Object.assign(this.dialogueDiv.style, {
@@ -4836,9 +4842,9 @@ export class SimpleUI {
         padding: '0',
         borderRadius: '16px',
         pointerEvents: 'auto',
-        fontSize: '16px',
-        border: '2px solid rgba(120, 160, 255, 0.4)',
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+        fontSize: '14.5px',
+        border: '1px solid rgba(120, 160, 255, 0.22)', // de-glow twin of the chat panel
+        boxShadow: '0 6px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
         opacity: '0',
         transform: `${centerX}translateY(16px) scale(0.96)`,
         transition: 'opacity 0.3s ease, transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1)',
@@ -4870,7 +4876,7 @@ export class SimpleUI {
     this.dialogueDiv.innerHTML = `
       <div style="
         padding: clamp(4px, 1vh, 6px) clamp(12px, 4vw, 16px);
-        background: linear-gradient(135deg, rgba(80, 130, 255, 0.3), rgba(120, 80, 255, 0.2));
+        background: linear-gradient(135deg, rgba(80, 130, 255, 0.16), rgba(120, 80, 255, 0.10));
         border-bottom: 1px solid rgba(120, 160, 255, 0.2);
         font-size: clamp(11px, 2.9vw, 13px);
         font-weight: 700;

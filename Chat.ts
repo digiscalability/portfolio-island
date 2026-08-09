@@ -456,25 +456,33 @@ export class Chat {
     }
     if (line) lines.push(line);
     const textW = Math.min(maxW, Math.max(...lines.map((l) => ctx.measureText(l).width)));
-    canvas.width = textW + pad * 2;
-    canvas.height = lines.length * lineH + pad * 2;
+    // Physical canvas at 2× the logical size for retina-sharp text; the
+    // world-units multiplier below is halved to keep the bubble the SAME
+    // world size (scale couples world size to canvas px).
+    const logicalW = textW + pad * 2;
+    const logicalH = lines.length * lineH + pad * 2;
+    canvas.width = logicalW * 2;
+    canvas.height = logicalH * 2;
     // Resizing the canvas resets its 2D state, so font must be re-applied
     // before drawing (measurements above already used it once, pre-resize).
+    ctx.setTransform(2, 0, 0, 2, 0, 0);
     ctx.font = font;
     ctx.fillStyle = 'rgba(20,20,28,0.82)';
     ctx.beginPath();
-    ctx.roundRect(0, 0, canvas.width, canvas.height, 14);
+    ctx.roundRect(0, 0, logicalW, logicalH, 14);
     ctx.fill();
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    lines.forEach((l, i) => ctx.fillText(l, canvas.width / 2, pad + lineH / 2 + i * lineH));
+    lines.forEach((l, i) => ctx.fillText(l, logicalW / 2, pad + lineH / 2 + i * lineH));
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
     const sprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
     );
-    const scale = 0.01; // canvas px → world units
+    const scale = 0.005; // canvas px → world units (halved for the 2× canvas)
     sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
     // Bottom-anchored: bubble height varies with line count, and a centre-
     // anchored multi-line bubble grew DOWN into the name label / head. The

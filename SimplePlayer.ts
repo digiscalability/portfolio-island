@@ -546,20 +546,23 @@ export class SimplePlayer extends THREE.Group {
       poseW += ((overriding ? 1 : 0) - poseW) * k;
       if (poseW > 0.001 && activePose !== 0) {
         if (activePose === 1) {
-          // Swimming: face-down tilt + alternating overhead crawl + flutter kick.
+          // Swimming: face-down tilt + alternating overhead crawl + flutter
+          // kick. 1.35 prone + 0.3 trailing-leg bias match the local swim
+          // pose (the byte carries no moving/idle split, so peers always
+          // read as stroking — the common case).
           swimClock += dt * 6;
           const s = Math.sin(swimClock);
           const s2 = Math.sin(swimClock * 2);
-          model.rotation.x = 1.15 * poseW;
+          model.rotation.x = 1.35 * poseW;
           model.rotation.z = s * 0.18 * poseW;
           if (armLBone)
             armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -1.4 + s * 1.3, poseW);
           if (armRBone)
             armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -1.4 - s * 1.3, poseW);
           if (legLBone)
-            legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, s2 * 0.35, poseW);
+            legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, 0.3 + s2 * 0.35, poseW);
           if (legRBone)
-            legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -s2 * 0.35, poseW);
+            legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, 0.3 - s2 * 0.35, poseW);
         } else if (activePose === 2) {
           // Riding: forward lean, hands forward, knees up.
           model.rotation.set(0.12 * poseW, 0, 0);
@@ -873,10 +876,26 @@ export class SimplePlayer extends THREE.Group {
    * procedural pivots. dt advances the stroke clock; `moving` picks the
    * cadence (a gentle tread when holding station).
    */
+  // Eased body pitch while in water: → PRONE when stroking, → TREAD when
+  // holding station. Zeroed by clearSwimPose so every exit path resets it.
+  private swimPitch = 0;
+  private static readonly SWIM_PRONE = 1.35; // near-flat crawl
+  private static readonly SWIM_TREAD = 0.45; // upright-ish water tread
+
   private applySwimPose(dt: number, moving: boolean): void {
     this.swimPhase += dt * (moving ? 7 : 3.2);
     const s = Math.sin(this.swimPhase);
     const s2 = Math.sin(this.swimPhase * 2);
+    // The body LIES DOWN into the stroke and rights itself to tread — the
+    // old fixed 1.15 pitch read as "standing at a lean" in both states.
+    // min(1,k·dt) composes across the ≤20ms physics substeps.
+    const pitchTarget = moving ? SimplePlayer.SWIM_PRONE : SimplePlayer.SWIM_TREAD;
+    this.swimPitch += (pitchTarget - this.swimPitch) * Math.min(1, 6 * dt);
+    const prone = this.swimPitch / SimplePlayer.SWIM_PRONE; // 0..1 how flat
+    // Legs trail BEHIND the body as it flattens (positive bone x = foot
+    // back, proven by the sit pose's -1.35 = legs forward), flutter riding
+    // on top; treading keeps them nearly under the body.
+    const kick = 0.3 * prone;
     if (this.gltfModel) {
       if (!this.armLBone || !this.legLBone) {
         this.gltfModel.traverse((o) => {
@@ -888,21 +907,22 @@ export class SimplePlayer extends THREE.Group {
           if (o.name === 'armR') this.armRBone = b;
         });
       }
-      // Face-down along the water, rolling slightly with each stroke
-      this.gltfModel.rotation.x = 1.15;
-      this.gltfModel.rotation.z = s * 0.18;
-      // Alternating overhead crawl
-      if (this.armLBone) this.armLBone.rotation.x = -1.4 + s * 1.3;
-      if (this.armRBone) this.armRBone.rotation.x = -1.4 - s * 1.3;
-      // Small flutter kick
-      if (this.legLBone) this.legLBone.rotation.x = s2 * 0.35;
-      if (this.legRBone) this.legRBone.rotation.x = -s2 * 0.35;
+      // Face-down along the water, rolling with the stroke only while prone
+      this.gltfModel.rotation.x = this.swimPitch;
+      this.gltfModel.rotation.z = s * 0.18 * prone;
+      // Alternating overhead crawl while stroking; soft sculling tread idle
+      if (this.armLBone) this.armLBone.rotation.x = moving ? -1.4 + s * 1.3 : -1.1 + s * 0.5;
+      if (this.armRBone) this.armRBone.rotation.x = moving ? -1.4 - s * 1.3 : -1.1 - s * 0.5;
+      // Flutter kick behind the travel direction
+      if (this.legLBone) this.legLBone.rotation.x = kick + s2 * 0.35;
+      if (this.legRBone) this.legRBone.rotation.x = kick - s2 * 0.35;
     } else if (this.legPivots.length === 2 && this.armPivots.length === 2) {
-      this.mesh.rotation.x = 1.15;
-      this.armPivots[0].rotation.x = -1.4 + s * 1.3;
-      this.armPivots[1].rotation.x = -1.4 - s * 1.3;
-      this.legPivots[0].rotation.x = s2 * 0.35;
-      this.legPivots[1].rotation.x = -s2 * 0.35;
+      this.mesh.rotation.x = this.swimPitch;
+      this.mesh.rotation.z = s * 0.18 * prone;
+      this.armPivots[0].rotation.x = moving ? -1.4 + s * 1.3 : -1.1 + s * 0.5;
+      this.armPivots[1].rotation.x = moving ? -1.4 - s * 1.3 : -1.1 - s * 0.5;
+      this.legPivots[0].rotation.x = kick + s2 * 0.35;
+      this.legPivots[1].rotation.x = kick - s2 * 0.35;
     }
   }
 
@@ -946,6 +966,7 @@ export class SimplePlayer extends THREE.Group {
 
   /** Undo the swim tilt when leaving the water (mixer resumes on land). */
   private clearSwimPose(): void {
+    this.swimPitch = 0; // next water entry eases in from upright again
     if (this.gltfModel) {
       this.gltfModel.rotation.x = 0;
       this.gltfModel.rotation.z = 0;

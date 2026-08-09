@@ -3275,6 +3275,9 @@ export class Island {
         ctx.fillText(d.radar, 256, 68);
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
+        // Gate boards are read OBLIQUELY while walking past — anisotropy 4
+        // keeps the 64px lettering crisp at an angle (default 1 smears it).
+        tex.anisotropy = 4;
         // Unlit so the name stays legible at any hour (matches the project
         // plaques' sprites). Two back-to-back FrontSide planes replace the old
         // single DoubleSide plane: DoubleSide shows the texture MIRRORED from
@@ -5689,8 +5692,8 @@ export class Island {
       if (ctx) {
         ctx.fillStyle = 'rgba(15,20,32,0.82)';
         ctx.fillRect(0, 0, 320, 72);
-        ctx.strokeStyle = 'rgba(150,185,255,0.65)';
-        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(150,185,255,0.42)'; // was 0.65 — quieter rim
+        ctx.lineWidth = 2;
         ctx.strokeRect(2, 2, 316, 68);
         let fs = 34;
         ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
@@ -5704,6 +5707,7 @@ export class Island {
         ctx.fillText(label, 160, 38);
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = 4;
         const sprite = new THREE.Sprite(
           new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
         );

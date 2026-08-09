@@ -2104,6 +2104,7 @@ export class GameScene extends THREE.Scene {
     sfx.toss();
     (this.feedFocusPos ??= new THREE.Vector3()).copy(pilePos);
     this.feedFocusUntil = time + 10;
+    this.feedFocusAt = time;
   }
 
   /** The active feed-focus point for the camera, or null once stale/far. */
@@ -2116,6 +2117,33 @@ export class GameScene extends THREE.Scene {
       return null;
     }
     return this.feedFocusPos;
+  }
+
+  // Interaction focus (shop counter, mailbox, …): same soft camera-interest
+  // mechanism as feeding, separate slot so a feed pile and a shop visit
+  // don't overwrite each other — the camera follows the NEWEST interest.
+  private interactFocusPos: THREE.Vector3 | null = null;
+  private interactFocusUntil = 0;
+  private interactFocusAt = 0;
+  private feedFocusAt = 0;
+
+  /** Point the camera's soft interest at a world position for `seconds`. */
+  public setInteractionFocus(pos: THREE.Vector3, seconds: number): void {
+    const now = performance.now() / 1000;
+    (this.interactFocusPos ??= new THREE.Vector3()).copy(pos);
+    this.interactFocusUntil = now + seconds;
+    this.interactFocusAt = now;
+  }
+
+  /** Merged camera focus: the newest still-valid interest wins. */
+  private getCameraFocus(): THREE.Vector3 | null {
+    const feed = this.getFeedFocus();
+    const inter =
+      this.interactFocusPos && performance.now() / 1000 <= this.interactFocusUntil
+        ? this.interactFocusPos
+        : null;
+    if (feed && inter) return this.feedFocusAt > this.interactFocusAt ? feed : inter;
+    return feed ?? inter;
   }
 
   /**
@@ -3180,13 +3208,16 @@ export class GameScene extends THREE.Scene {
       ctx.textBaseline = 'middle';
       ctx.fillText('🐟 Fresh Fish', 128, 50);
     }
+    const signTex = new THREE.CanvasTexture(canvas);
+    signTex.colorSpace = THREE.SRGBColorSpace; // canvas IS sRGB — was washed
+    signTex.anisotropy = 4; // read obliquely from the beach path
     const sign = new THREE.Mesh(
       // 1.0×0.375 keeps the 256×96 canvas aspect. The old 1.5×0.56 plane at
       // y1.75 topped out at 2.03 — through the sloping awning, whose
       // underside sits at ≈1.48 over the sign's z.
       new THREE.PlaneGeometry(1.0, 0.375),
       new THREE.MeshBasicMaterial({
-        map: new THREE.CanvasTexture(canvas),
+        map: signTex,
         transparent: true,
         side: THREE.DoubleSide,
       }),
@@ -3848,13 +3879,16 @@ export class GameScene extends THREE.Scene {
       ctx.textBaseline = 'middle';
       ctx.fillText('🥧 Bakery', 128, 50);
     }
+    const bakeryTex = new THREE.CanvasTexture(canvas);
+    bakeryTex.colorSpace = THREE.SRGBColorSpace;
+    bakeryTex.anisotropy = 4;
     const sign = new THREE.Mesh(
       // 1.0×0.375 keeps the canvas aspect; the old 1.5×0.56 plane at y1.75
       // poked through the sloping awning (underside ≈1.48 at the sign's z) —
       // same geometry and fix as the fish-stall sign.
       new THREE.PlaneGeometry(1.0, 0.375),
       new THREE.MeshBasicMaterial({
-        map: new THREE.CanvasTexture(canvas),
+        map: bakeryTex,
         transparent: true,
         side: THREE.DoubleSide,
       }),
@@ -4768,11 +4802,21 @@ export class GameScene extends THREE.Scene {
     for (const npc of this.island.npcTargets) {
       const info = GameScene.NPC_ROLES[npc.name] ?? { emoji: '📍', role: npc.name };
       const canvas = document.createElement('canvas');
-      canvas.width = 256;
-      canvas.height = 96; // room for the two-line role+activity pill
+      // 2× the logical 256×96 (drawNamePill scales its transform to match):
+      // the old canvas was visibly mushy once the constant-screen-size loop
+      // stretched it to 3.6× world scale at distance.
+      canvas.width = 512;
+      canvas.height = 192; // room for the two-line role+activity pill
       const ctx = canvas.getContext('2d');
       GameScene.drawNamePill(ctx, info.emoji, info.role);
       const tex = new THREE.CanvasTexture(canvas);
+      // sRGB (canvas pixels ARE sRGB — sampling as linear washed the pills
+      // bright, part of the perceived glow) + plain Linear filtering: the
+      // distance-scaling keeps screen size ~constant, so mipmaps only
+      // smeared the stroke and cost a full chain rebuild per redraw.
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
       const sprite = new THREE.Sprite(
         // depthWrite:false so pills never occlude each other; depthTest stays TRUE
         // so terrain hides pins on the far side of the planet (no x-ray labels).
@@ -4811,7 +4855,11 @@ export class GameScene extends THREE.Scene {
     sub?: string,
   ): void {
     if (!ctx) return;
-    ctx.clearRect(0, 0, 256, 96);
+    // Physical canvas is 512×192; draw at 2× so all logical coords below
+    // stay in the original 256×96 space.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, 512, 192);
+    ctx.setTransform(2, 0, 0, 2, 0, 0);
     const text = `${emoji} ${label}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -4826,8 +4874,10 @@ export class GameScene extends THREE.Scene {
     ctx.beginPath();
     ctx.roundRect(128 - w / 2, top, w, h, 20);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(170,205,255,0.7)';
-    ctx.lineWidth = 2.5;
+    // Quieter rim — the old 0.7-alpha 2.5px stroke was the brightest halo
+    // in the world-UI set.
+    ctx.strokeStyle = 'rgba(170,205,255,0.4)';
+    ctx.lineWidth = 2;
     ctx.stroke();
     ctx.fillStyle = '#ffffff';
     ctx.font = '600 30px system-ui, sans-serif';
@@ -4866,11 +4916,17 @@ export class GameScene extends THREE.Scene {
   private showNpcSpeechBubble(i: number, text: string, time: number): void {
     if (!this.npcBubble) {
       const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 160;
+      // 2× the logical 512×160 (draw code scales its transform): on retina
+      // the 1.06wu bubble covered ~2.6× more device px than the old canvas
+      // had — the handwriting font read soft at normal chat range.
+      canvas.width = 1024;
+      canvas.height = 320;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.generateMipmaps = false; // redrawn per message — skip mip rebuilds
+      tex.minFilter = THREE.LinearFilter;
       const sprite = new THREE.Sprite(
         new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
       );
@@ -4884,7 +4940,9 @@ export class GameScene extends THREE.Scene {
       this.npcBubble = { sprite, ctx, tex };
     }
     const { ctx, tex, sprite } = this.npcBubble;
-    ctx.clearRect(0, 0, 512, 160);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, 1024, 320);
+    ctx.setTransform(2, 0, 0, 2, 0, 0); // logical 512×160 coords below
     // Word-wrap into ≤3 lines of ~34 chars (the composer keeps lines short).
     const words = text.split(' ');
     const lines: string[] = [];
@@ -4900,12 +4958,12 @@ export class GameScene extends THREE.Scene {
     const lh = 34;
     const h = 28 + lines.length * lh;
     const top = (160 - h) / 2;
-    ctx.fillStyle = 'rgba(250,248,242,0.95)';
+    ctx.fillStyle = 'rgba(250,248,242,0.93)';
     ctx.beginPath();
     ctx.roundRect(16, top, 480, h, 18);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(60,50,40,0.4)';
-    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(60,50,40,0.3)';
+    ctx.lineWidth = 2;
     ctx.stroke();
     ctx.fillStyle = '#2c2620';
     ctx.font = '500 26px "Patrick Hand", system-ui, sans-serif';
@@ -6029,8 +6087,9 @@ export class GameScene extends THREE.Scene {
 
     // Update camera (suspended while the tour rail drives it directly)
     if (this.orbitCamera && !this.cameraSuspended) {
-      // Soft camera interest in an active feed pile (null fades it back out)
-      this.orbitCamera.setFocusPoint(this.getFeedFocus());
+      // Soft camera interest: feed pile, shop counter, mailbox… (null fades
+      // the bias back out; the newest still-valid interest wins)
+      this.orbitCamera.setFocusPoint(this.getCameraFocus());
       this.orbitCamera.update(deltaTime);
     }
 
@@ -7506,6 +7565,17 @@ export class GameScene extends THREE.Scene {
     this.lastPlayerPos.set(Infinity, Infinity, Infinity);
 
     if (interactable.type === 'mailbox') {
+      // Soft camera interest at the box head (~0.94u above base at 0.55
+      // scale) while the mail moment plays out.
+      this.setInteractionFocus(
+        this._feedFocusScratch
+          .copy(interactable.mailbox.mesh.position)
+          .addScaledVector(
+            this._npcNormal.copy(interactable.mailbox.mesh.position).normalize(),
+            0.9,
+          ),
+        5,
+      );
       this.interactWithMailbox(interactable.mailbox);
       return;
     }
@@ -7534,11 +7604,32 @@ export class GameScene extends THREE.Scene {
     }
 
     if (interactable.type === 'npc') {
-      // Little greeting hop + delighted pop from the NPC being addressed
-      const target = this.island.npcTargets.find((n) => n.name === interactable.npcData.name);
+      // Little greeting hop + delighted pop from the NPC being addressed.
+      // NEAREST same-named match, not .find(): 'Market Vendor' names TWO
+      // NPCs and the first-match lookup greeted (and focused) the wrong
+      // stall half the time.
+      const pw = this.player.getWorldPosition();
+      let target: (typeof this.island.npcTargets)[number] | null = null;
+      let bestD2 = Infinity;
+      for (const n of this.island.npcTargets) {
+        if (n.name !== interactable.npcData.name) continue;
+        const d2 = n.meshRef.position.distanceToSquared(pw);
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          target = n;
+        }
+      }
       if (target) {
         (target.meshRef.userData as { greetT0?: number }).greetT0 = performance.now() / 1000;
         squash(target.meshRef, 0.12, 0.26);
+        // Soft camera interest toward whoever you addressed — carries the
+        // shop moment (chat NPCs suspend the orbit cam a beat later anyway).
+        this.setInteractionFocus(
+          this._feedFocusScratch
+            .copy(target.meshRef.position)
+            .addScaledVector(this._npcNormal.copy(target.meshRef.position).normalize(), 1.1),
+          6,
+        );
       }
       if (this.onNPCInteractCallback) {
         this.onNPCInteractCallback(interactable.npcData);
@@ -8790,6 +8881,10 @@ export class GameScene extends THREE.Scene {
     // untouched physics state — the player reappears at the door they entered.
     this.player.setPositionHold(null);
     this.player.updateWorldMatrix();
+    // Hard-cut the camera home under the door veil: the first outdoor frame
+    // used to LERP from the interior camera (~300u below the island) — a
+    // visible underground swoop racing the fade-out.
+    this.orbitCamera?.snapToPlayer();
   }
 
   /** The interior frame: walk the player, follow with the camera, flicker the

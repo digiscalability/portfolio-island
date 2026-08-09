@@ -731,10 +731,13 @@ export class Multiplayer {
 
   private static makeTextSprite(text: string): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 64;
+    // 2× render (logical 256×64 via the scaled transform) — the old canvas
+    // read soft on retina at conversation range.
+    canvas.width = 512;
+    canvas.height = 128;
     const ctx = canvas.getContext('2d');
     if (ctx) {
+      ctx.setTransform(2, 0, 0, 2, 0, 0);
       ctx.font = '600 30px system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
@@ -746,6 +749,9 @@ export class Multiplayer {
       ctx.fillText(text, 128, 41);
     }
     const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
     const sprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
     );
@@ -755,16 +761,20 @@ export class Multiplayer {
 
   private static makeEmojiSprite(emoji: string): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 96;
-    canvas.height = 96;
+    canvas.width = 192; // 2× (logical 96 via scaled transform)
+    canvas.height = 192;
     const ctx = canvas.getContext('2d');
     if (ctx) {
+      ctx.setTransform(2, 0, 0, 2, 0, 0);
       ctx.font = '72px system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(emoji, 48, 54);
     }
     const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
     const sprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
     );
