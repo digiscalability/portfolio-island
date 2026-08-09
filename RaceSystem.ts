@@ -119,6 +119,34 @@ export class RaceSystem {
     return c.dirs[0].clone().multiplyScalar(c.surfaceR[0]);
   }
 
+  /**
+   * Total obstacle penetration along the straight legs between gates: for
+   * every sample on every leg, how far inside an obstacle's keep-out the
+   * racing line passes. Zero means a clean lap.
+   */
+  private scoreLegs(dirs: THREE.Vector3[]): number {
+    const CORRIDOR = 1.6; // half-width a vehicle needs to pass comfortably
+    const p = new THREE.Vector3();
+    const d = new THREE.Vector3();
+    let score = 0;
+    for (let k = 0; k < dirs.length; k++) {
+      const a = dirs[k];
+      const b = dirs[(k + 1) % dirs.length];
+      for (let t = 0; t <= 1.0001; t += 0.05) {
+        d.copy(a)
+          .multiplyScalar(1 - t)
+          .addScaledVector(b, t)
+          .normalize();
+        p.copy(d).multiplyScalar(this.island.analyticSurface(d).radius);
+        for (const o of this.obstacles) {
+          const gap = p.distanceTo(o.position) - (o.radius + CORRIDOR);
+          if (gap < 0) score -= gap;
+        }
+      }
+    }
+    return score;
+  }
+
   private buildCircuit(
     kind: CircuitKind,
     count: number,
@@ -126,14 +154,40 @@ export class RaceSystem {
     wantWater: boolean,
     phase: number,
   ): Circuit {
+    // Pick the CLEAREST rotation of the ring. findValidDir already steers each
+    // GATE clear of obstacles, but nothing ever checked the LINE BETWEEN them
+    // — measured on the land circuit, props sat as close as 0.43u to the
+    // racing line, including a 1.7-radius structure, so a lap meant swerving
+    // through the furniture. Rotating the whole ring and keeping the
+    // best-scoring offset clears the route without moving a single building.
+    // Water needs no search: the open sea scored zero obstructions already.
     const dirs: THREE.Vector3[] = [];
     const surfaceR: number[] = [];
-    for (let k = 0; k < count; k++) {
-      const lon = (Math.PI * 2 * k) / count + phase;
-      const dir = this.findValidDir(lon, latTarget, wantWater);
-      dirs.push(dir);
-      surfaceR.push(this.surfaceRadiusFor(dir, wantWater));
+    const TRIES = wantWater ? 1 : 12;
+    let bestDirs: THREE.Vector3[] | null = null;
+    let bestR: number[] | null = null;
+    let bestScore = Infinity;
+    for (let a = 0; a < TRIES; a++) {
+      const ph = phase + (a / TRIES) * ((Math.PI * 2) / count);
+      const ds: THREE.Vector3[] = [];
+      const rs: number[] = [];
+      for (let k = 0; k < count; k++) {
+        const lon = (Math.PI * 2 * k) / count + ph;
+        const dir = this.findValidDir(lon, latTarget, wantWater);
+        ds.push(dir);
+        rs.push(this.surfaceRadiusFor(dir, wantWater));
+      }
+      const sc = wantWater ? 0 : this.scoreLegs(ds);
+      if (sc < bestScore) {
+        bestScore = sc;
+        bestDirs = ds;
+        bestR = rs;
+      }
+      if (bestScore <= 0) break;
     }
+    dirs.push(...(bestDirs ?? []));
+    surfaceR.push(...(bestR ?? []));
+    if (!wantWater) console.log(`🏁 ${kind} circuit leg clearance score ${bestScore.toFixed(2)}`);
 
     const gates: THREE.Group[] = [];
     const rings: THREE.Mesh[] = [];
