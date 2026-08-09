@@ -994,7 +994,11 @@ export class GameScene extends THREE.Scene {
       const s = this.island.sampleSurfaceByDirection(dir, 0);
       pos.copy(dir).multiplyScalar(s.position.length() + 0.03);
       q.setFromUnitVectors(PLANE_NORMAL, s.normal);
-      scl.set(2.6, 2.6, 1);
+      // Per-lamp pool size: boulevard lamps throw a wide pool, porch lamps a
+      // tighter one. 2.6 was the old single value and left the road dark
+      // between poles even where a lamp stood.
+      const ps = (anchors[i].userData.poolScale as number | undefined) ?? 4.2;
+      scl.set(ps, ps, 1);
       mesh.setMatrixAt(i, m.compose(pos, q, scl));
     }
     mesh.instanceMatrix.needsUpdate = true;
@@ -8176,6 +8180,7 @@ export class GameScene extends THREE.Scene {
   // fakes confidence and most tracks agree). The wall screen is the jukebox.
   private partyMode = false;
   private partyBeatClock = 0;
+  private partyBeatIndex = -1;
   private partyProps: {
     group: THREE.Group;
     ball: THREE.Mesh;
@@ -8356,6 +8361,11 @@ export class GameScene extends THREE.Scene {
       this.partyProps.group.visible = on;
       for (const s of this.partyProps.spots) s.intensity = on ? 2.6 : 0;
     }
+    // The track owns the beat from here: the loop's own clock drives the
+    // kick, and updateInteriorParty reads its beat count so the lights and
+    // the dancers land ON it rather than near it.
+    if (on) sfx.startPartyMusic();
+    else sfx.stopPartyMusic();
     if (on) {
       // Borrow four villagers onto the floor (the cottage-occupant pattern:
       // move meshRef only; the wander loop re-claims transforms on the
@@ -8425,14 +8435,31 @@ export class GameScene extends THREE.Scene {
     // the strobe out of it: beams drift instead of sweeping, and the flash
     // becomes a slow swell rather than a pop on every beat.
     const calm = a11y.reducedMotion;
-    this.partyBeatClock += deltaTime;
-    if (this.partyBeatClock >= 1 / BPS) {
-      this.partyBeatClock -= 1 / BPS;
-      sfx.partyThump();
-      P.flash.intensity = calm ? 0.55 : 3.4; // one pop per beat = 2Hz
+    // Beat source: the music's own audio clock when it is playing, so every
+    // flash, sweep and dance step is locked to the kick. Muted or pre-gesture
+    // there is no clock, so fall back to the frame timer and the lone thump —
+    // the room keeps moving in silence rather than freezing.
+    const beats = sfx.partyBeats();
+    let onBeat = false;
+    if (beats >= 0) {
+      const idx = Math.floor(beats);
+      if (idx !== this.partyBeatIndex) {
+        this.partyBeatIndex = idx;
+        onBeat = true;
+      }
+    } else {
+      this.partyBeatIndex = -1;
+      this.partyBeatClock += deltaTime;
+      if (this.partyBeatClock >= 1 / BPS) {
+        this.partyBeatClock -= 1 / BPS;
+        sfx.partyThump();
+        onBeat = true;
+      }
     }
+    if (onBeat) P.flash.intensity = calm ? 0.55 : 3.4; // one pop per beat = 2Hz
     P.flash.intensity *= Math.max(0, 1 - deltaTime * (calm ? 3 : 9));
-    const beat = time * BPS * Math.PI; // half-turn per beat
+    // Half-turn per beat, counted off the music when there is music to count.
+    const beat = (beats >= 0 ? beats : time * BPS) * Math.PI;
     P.ball.rotation.y = time * 0.9;
     // Glitter light breathes with the beat; confetti drifts down forever.
     P.ballLight.intensity = 0.5 + Math.max(0, Math.sin(beat)) * 1.3;

@@ -156,10 +156,197 @@ export class Sfx {
     this.tone(f, f * 1.33, 0.09, 'sine', 0.1);
   }
 
-  /** Party kick: a soft sub thump on the beat (quiet — the wall screen's
-   *  music is the star; this just gives the room a pulse). */
+  /** Party kick: a soft sub thump on the beat. Only used as the SILENT-audio
+   *  fallback pulse now — when the context is live, startPartyMusic() owns
+   *  the beat and this would double the kick. */
   public partyThump(): void {
     this.tone(110, 42, 0.13, 'sine', 0.055);
+  }
+
+  // ── Party music: a 120bpm house loop on the audio clock ──────────────────
+  //
+  // One-shots fired from the render loop inherit frame jitter — unnoticeable
+  // on a footstep, audibly drunk on a beat. This uses the standard WebAudio
+  // lookahead instead: a 25ms timer schedules every sixteenth-note event up
+  // to 120ms ahead at exact ctx.currentTime offsets, so the groove stays
+  // sample-accurate however the frame rate behaves. Routed through the sfx
+  // master, so it obeys mute/volume and ducks under NPC voice for free.
+  private static readonly PARTY_BPM = 120;
+  private static readonly PARTY_STEPS = 64; // four bars of sixteenths
+  /** vi–IV–I–V in A minor, one bar each — the progression every dance floor
+   *  already knows. Triads voiced tight around A3, roots two octaves down. */
+  private static readonly PARTY_CHORDS: Array<{ bass: number; triad: number[] }> = [
+    { bass: 110.0, triad: [220.0, 261.63, 329.63] }, // Am
+    { bass: 87.31, triad: [174.61, 220.0, 261.63] }, // F
+    { bass: 130.81, triad: [196.0, 261.63, 329.63] }, // C/G
+    { bass: 98.0, triad: [196.0, 246.94, 293.66] }, // G
+  ];
+  private partyMusicOn = false;
+  private partyTimer: number | undefined;
+  private partyStep = 0;
+  private partyNextTime = 0;
+  private partyStartTime = 0;
+  private partyBus: GainNode | null = null;
+  private partyBusCtx: AudioContext | null = null;
+
+  /** The loop gets its own sub-bus rather than louder individual voices: one
+   *  knob for "how loud is the party", and no clipping when a kick, a bass
+   *  note and three stab partials land on the same sixteenth. Measured at
+   *  unity the track sat near -54dBFS — audible on headphones, invisible on
+   *  laptop speakers. It still feeds the sfx master, so mute, the volume
+   *  slider and the duck under NPC voice / the wall screen all still apply. */
+  private ensurePartyBus(ctx: AudioContext): GainNode {
+    if (this.partyBus && this.partyBusCtx === ctx) return this.partyBus;
+    this.partyBus = ctx.createGain();
+    this.partyBus.gain.value = 3.2;
+    this.partyBus.connect(this.ensureMaster(ctx));
+    this.partyBusCtx = ctx;
+    return this.partyBus;
+  }
+
+  /** Start the club loop. Safe to call when audio is muted or pre-gesture:
+   *  the scheduler idles and picks up the moment a context is available. */
+  public startPartyMusic(): void {
+    if (this.partyMusicOn) return;
+    this.partyMusicOn = true;
+    this.partyStep = 0;
+    this.partyNextTime = 0;
+    this.tickPartyMusic();
+  }
+
+  public stopPartyMusic(): void {
+    this.partyMusicOn = false;
+    if (this.partyTimer) clearTimeout(this.partyTimer);
+    this.partyTimer = undefined;
+    this.partyNextTime = 0;
+  }
+
+  /** Beats elapsed since the loop started, as a continuous float, or -1 when
+   *  nothing is playing. The lights read this so the flash lands ON the kick
+   *  instead of on its own approximate timer. */
+  public partyBeats(): number {
+    const ctx = this.partyMusicOn ? this.ctxOrNull : null;
+    if (!ctx || this.partyNextTime === 0) return -1;
+    return (ctx.currentTime - this.partyStartTime) * (Sfx.PARTY_BPM / 60);
+  }
+
+  private tickPartyMusic(): void {
+    if (!this.partyMusicOn) return;
+    const ctx = this.ctxOrNull;
+    if (ctx) {
+      const stepDur = 60 / Sfx.PARTY_BPM / 4;
+      if (this.partyNextTime === 0) {
+        // First live tick (or the first after an unmute): anchor the clock.
+        this.partyNextTime = ctx.currentTime + 0.06;
+        this.partyStartTime = this.partyNextTime;
+        this.partyStep = 0;
+      }
+      while (this.partyNextTime < ctx.currentTime + 0.12) {
+        this.playPartyStep(ctx, this.partyStep % Sfx.PARTY_STEPS, this.partyNextTime);
+        this.partyStep++;
+        this.partyNextTime += stepDur;
+      }
+    } else {
+      this.partyNextTime = 0; // muted or suspended — re-anchor when it returns
+    }
+    this.partyTimer = window.setTimeout(() => this.tickPartyMusic(), 25);
+  }
+
+  /** One sixteenth of the loop, scheduled at absolute audio time t. */
+  private playPartyStep(ctx: AudioContext, step: number, t: number): void {
+    const bar = Math.floor(step / 16);
+    const s = step % 16;
+    const ch = Sfx.PARTY_CHORDS[bar];
+    const eighth = s % 2 === 0;
+    // Four on the floor.
+    if (s % 4 === 0) this.oscAt(ctx, t, 132, 44, 0.17, 'sine', 0.26);
+    // Clap on 2 and 4: two bursts 12ms apart read as hands, one reads as static.
+    if (s === 4 || s === 12) {
+      this.noiseAt(ctx, t, 0.06, 0.07, 1600, 0.8, 'bandpass');
+      this.noiseAt(ctx, t + 0.012, 0.1, 0.05, 1900, 0.8, 'bandpass');
+    }
+    // Hats: eighths accented, sixteenths as ghosts, open hat before the bar turns.
+    const openHat = s === 6 || s === 14;
+    this.noiseAt(
+      ctx,
+      t,
+      openHat ? 0.11 : eighth ? 0.032 : 0.022,
+      openHat ? 0.026 : eighth ? 0.022 : 0.008,
+      9000,
+      0.7,
+      'highpass',
+    );
+    // Offbeat bass — the pump that makes it house rather than a march.
+    if (s % 4 === 2) this.oscAt(ctx, t, ch.bass, ch.bass, 0.19, 'triangle', 0.11);
+    // Chord stabs twice a bar, so the harmony lands without crowding the kick.
+    if (s === 2 || s === 10) {
+      for (const f of ch.triad) this.oscAt(ctx, t, f, f, 0.15, 'sawtooth', 0.028);
+    }
+    // Arp on the odd bars only: the loop needs somewhere to go and come back from.
+    if (bar % 2 === 1 && eighth) {
+      const f = ch.triad[(s / 2) % 3] * 2;
+      this.oscAt(ctx, t, f, f, 0.12, 'square', 0.016);
+    }
+  }
+
+  /** Oscillator voice at an absolute audio time (tone() plays immediately). */
+  private oscAt(
+    ctx: AudioContext,
+    t: number,
+    f0: number,
+    f1: number,
+    dur: number,
+    type: OscillatorType,
+    peak: number,
+  ): void {
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(Math.max(1, f0), t);
+    if (f1 !== f0) osc.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g);
+    g.connect(this.ensurePartyBus(ctx));
+    osc.start(t);
+    osc.stop(t + dur + 0.03);
+    osc.onended = () => {
+      osc.disconnect();
+      g.disconnect();
+    };
+  }
+
+  /** Filtered-noise voice at an absolute audio time (hiss() plays immediately). */
+  private noiseAt(
+    ctx: AudioContext,
+    t: number,
+    dur: number,
+    peak: number,
+    hz: number,
+    q: number,
+    type: BiquadFilterType,
+  ): void {
+    const src = ctx.createBufferSource();
+    src.buffer = this.ensureNoise(ctx);
+    const f = ctx.createBiquadFilter();
+    f.type = type;
+    f.frequency.value = hz;
+    f.Q.value = q;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f);
+    f.connect(g);
+    g.connect(this.ensurePartyBus(ctx));
+    src.start(t);
+    src.stop(t + dur + 0.03);
+    src.onended = () => {
+      src.disconnect();
+      f.disconnect();
+      g.disconnect();
+    };
   }
 
   /** Feed toss: a soft underhand swish (air, not tone) + a grain rustle. */

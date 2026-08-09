@@ -2022,17 +2022,39 @@ export class Island {
       [5.34, 0.412],
       [5.97, 0.515],
     ];
-    for (let i = 0; i < LAMP_SITES.length; i++) {
-      // claimOffStreet, not claimDir: a couple of boulevard lamps landed on the
-      // ribbon where an avenue meets the boulevard; this keeps them at the kerb.
-      const pos = this.claimOffStreet(
-        this.dirAt(LAMP_SITES[i][0], LAMP_SITES[i][1]),
-        0.05,
-      ).multiplyScalar(this.radius);
+    // INFILL: the ten original lamps sat ~0.63rad apart, which left the road
+    // between them genuinely black. These drop a lamp at each midpoint on the
+    // OPPOSITE kerb, so the boulevard reads as a lit street rather than a
+    // chain of separate glows. They carry no real light (see buildLamp) —
+    // bulb plus ground pool is enough at this spacing and costs no fragment
+    // work. Nothing else on the island gets lamps: the hills, the shore and
+    // the outer paths stay dark on purpose, and the contrast is the point.
+    const LAMP_INFILL: Array<[number, number]> = [
+      [0.595, 0.515],
+      [1.225, 0.412],
+      [1.855, 0.515],
+      [2.485, 0.412],
+      [3.115, 0.515],
+      [3.745, 0.412],
+      [4.385, 0.515],
+      [5.025, 0.412],
+      [5.655, 0.515],
+      [6.25, 0.412],
+    ];
+    let lampIndex = 0;
+    const buildLamp = (
+      pos: THREE.Vector3,
+      faceTarget: THREE.Vector3,
+      withLight: boolean,
+      poolScale: number,
+    ): void => {
+      const i = lampIndex++;
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       this.lampSites.push(sampled.position.clone()); // NPC activity anchor (lamp round)
       const lampGroup = new THREE.Group();
       lampGroup.name = `lamp_${i}`;
+      // GameScene.createLampLightPools() reads this when it sizes each pool.
+      lampGroup.userData.poolScale = poolScale;
       const poleMat = Materials.createTrimMaterial(0x3a3a3a);
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.6, 8), poleMat);
       pole.position.y = 0.8;
@@ -2075,18 +2097,67 @@ export class Island {
       lampGroup.quaternion.copy(q);
       // Swing the arm (local +X) out over the roadway: yaw +Z toward the
       // boulevard centerline, then back off 90° so +X takes its place
-      this.faceObjectToward(
-        lampGroup,
-        sampled.normal,
-        this.dirAt(LAMP_SITES[i][0], 0.4636).multiplyScalar(this.radius),
-      );
+      this.faceObjectToward(lampGroup, sampled.normal, faceTarget);
       lampGroup.rotateOnAxis(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
-      const lampLight = new THREE.PointLight(0xffeeaa, 0.8, 3, 2);
-      lampLight.position.set(0.35, 1.48, 0);
-      lampLight.userData = { isLampLight: true };
-      lampGroup.add(lampLight);
+      if (withLight) {
+        // The old light was distance 3 while the bulb sits 3.26u up (the group
+        // scales 2.2x) — it physically could not reach the road it was meant
+        // to light, which is why the street read as black between the poles.
+        // Only the primary lamps carry one: real lights cost per fragment, so
+        // the count stays where it was and each one now actually works.
+        const lampLight = new THREE.PointLight(0xffeeaa, 1.5, 9, 2);
+        lampLight.position.set(0.35, 1.48, 0);
+        lampLight.userData = { isLampLight: true };
+        lampGroup.add(lampLight);
+      }
       lamps.add(lampGroup);
       lampPositions.push(sampled.position.clone().add(new THREE.Vector3(0, 1.48, 0)));
+    };
+    for (const [lon, lat] of LAMP_SITES) {
+      // claimOffStreet, not claimDir: a couple of boulevard lamps landed on the
+      // ribbon where an avenue meets the boulevard; this keeps them at the kerb.
+      const pos = this.claimOffStreet(this.dirAt(lon, lat), 0.05).multiplyScalar(this.radius);
+      buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), true, 4.2);
+    }
+    for (const [lon, lat] of LAMP_INFILL) {
+      const pos = this.claimOffStreet(this.dirAt(lon, lat), 0.05).multiplyScalar(this.radius);
+      buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), false, 4.2);
+    }
+    // PORCH lamps: one beside every house door, so homes read as lived-in
+    // after dark instead of black cutouts with two lit windows. Offset along
+    // the local tangent (the door already sits proud of the facade, so a
+    // sideways step keeps the pole clear of the wall) and aimed back at the
+    // doorstep, which is what the arm then reaches over.
+    const tangentAt = (p: THREE.Vector3): THREE.Vector3 => {
+      const up = p.clone().normalize();
+      let side = new THREE.Vector3(0, 1, 0).cross(up);
+      if (side.lengthSq() < 1e-4) side = new THREE.Vector3(1, 0, 0).cross(up);
+      return side.normalize();
+    };
+    for (const door of this.houseDoors) {
+      buildLamp(
+        door.position.clone().addScaledVector(tangentAt(door.position), 1.6),
+        door.position,
+        false,
+        3.4,
+      );
+    }
+    // PLAZA lamps: a pair flanking each district building. The halls are the
+    // largest silhouettes on the island and were reading as black slabs after
+    // dark; two lamps apiece light the approach without lighting the hall.
+    for (const b of buildingSamples) {
+      const side = tangentAt(b.position);
+      for (const s of [-1, 1]) {
+        buildLamp(b.position.clone().addScaledVector(side, s * 5.2), b.position, false, 4.2);
+      }
+    }
+    // ROADSIDE lamps: every other mailbox gets one. Mailboxes already stand
+    // where a path meets a home, so they are the cheapest correct answer to
+    // "light the paths" — and taking every SECOND one is what leaves the
+    // gaps of dark between them.
+    for (let i = 0; i < this.mailboxSites.length; i += 2) {
+      const p = this.mailboxSites[i];
+      buildLamp(p.clone().addScaledVector(tangentAt(p), 1.5), p, false, 3.6);
     }
     // (Electric wires removed: straight chord lines between lamps cut through
     // the planet and pierced props — they were designed for a flat town.)
@@ -3744,22 +3815,20 @@ export class Island {
 
   /** Villagers who read as women. npc.glb ships ONE unisex body, so the cues
    *  are procedural primitives parented to the group — the same pattern the
-   *  persona hats already use — and they apply everywhere on the island, not
-   *  just indoors: a villager who is a woman at the market is the same person
-   *  on the beach-house dance floor. GameScene reads this set to pick party
-   *  guests. Station personas (Fisherman, Sailor, crew) are left out because
-   *  they are relocated onto boats and never join the floor. */
+   *  persona hats already use.
+   *
+   *  This is deliberately SIX of the twenty-five, not the whole cast: the
+   *  island stays a mix, and these six are exactly the ones the beach-house
+   *  party borrows. That keeps both halves true — everyone on that dance
+   *  floor is a woman, and each of them is the same person you meet out on
+   *  the island, rather than a costume that only exists behind the door. */
   public static readonly WOMEN_PERSONAS = new Set([
-    'Village Baker',
-    'Island Explorer',
+    'Gardener',
     'Artist',
     'Storyteller',
-    'Gardener',
     'Cartographer',
     'Musician',
     'Courier',
-    'Tourist',
-    'Farmer',
   ]);
 
   /** Dress fabric: its own cache because the skirt needs DoubleSide, and the
