@@ -9526,6 +9526,9 @@ export class GameScene extends THREE.Scene {
     this.interiorMoveF = 0;
     this.interiorMoveS = 0;
     this.interiorHotspot = null;
+    // The Brother's Beach House IS the party: it's already going when the
+    // door opens. The 🪩 spot still toggles it off for a quiet watch.
+    if (houseId?.startsWith('islet_')) this.setPartyMode(true);
     // Cottage variation: deterministic per-house decor from the house number —
     // blanket/rug/wall palettes + a 2-of-4 subset of the optional prop groups,
     // so the six cottages read as different homes, stable across visits.
