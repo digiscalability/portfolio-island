@@ -3424,7 +3424,12 @@ export class GameScene extends THREE.Scene {
     // Hold the seated villagers in place and give them a fireside sway.
     for (const g of this.campfireGuests) {
       const ref = g.npc.meshRef;
-      ref.position.copy(g.seat).addScaledVector(C.up, 0.3); // perched on the log
+      // Seat height. The avatar's ROOT is at its feet, but the sit pose
+      // swings the legs forward and the foot tips rise to about +0.3 in
+      // model space — so putting the root 0.3 above the ground floated the
+      // whole body ~0.6 clear of the log. Sinking it 0.18 lands the hips on
+      // the log top (0.32) with the feet just off the grass.
+      ref.position.copy(g.seat).addScaledVector(C.up, -0.18);
       this.orientAvatar(ref, C.up, g.face);
       const ud = ref.userData as { limbs?: NpcLimbCache | null };
       if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
