@@ -5052,6 +5052,111 @@ export class SimpleUI {
     }
   }
 
+  // ── Door PIN pad (the beach house's coded lock) ────────────────────────
+  // A game mechanic, not security: the code ships in the client bundle.
+  private pinDiv: HTMLElement | null = null;
+
+  public showPinPad(expected: string, onSuccess: () => void): void {
+    this.closePinPad();
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+      position: 'absolute',
+      left: '50%',
+      top: '50%',
+      transform: 'translate(-50%, -50%)',
+      width: '240px',
+      background: 'rgba(12,12,20,0.96)',
+      border: '1px solid rgba(255,255,255,0.15)',
+      borderRadius: '14px',
+      boxShadow: '0 10px 28px rgba(0,0,0,0.4)',
+      padding: '16px',
+      zIndex: '1640',
+      pointerEvents: 'auto',
+      color: '#f0f0f0',
+      textAlign: 'center',
+    });
+    panel.innerHTML = `
+      <div style="font-weight:600; font-size:14.5px; margin-bottom:2px;">🔒 The door is locked</div>
+      <div style="font-size:12px; color:#aab; margin-bottom:10px;">Enter the door code</div>
+      <div id="pin-dots" style="letter-spacing:8px; font-size:22px; min-height:28px; margin-bottom:10px;">····</div>
+    `;
+    const dots = panel.querySelector('#pin-dots') as HTMLElement;
+    let entered = '';
+    const paint = (): void => {
+      dots.textContent = (entered.replace(/./g, '●') + '····').slice(0, 4);
+    };
+    const press = (d: string): void => {
+      if (entered.length >= 4) return;
+      entered += d;
+      paint();
+      if (entered.length === 4) {
+        if (entered === expected) {
+          this.closePinPad();
+          onSuccess();
+        } else {
+          dots.style.color = '#ff8a8a';
+          panel.style.transform = 'translate(-50%, -50%) translateX(6px)';
+          window.setTimeout(() => {
+            panel.style.transform = 'translate(-50%, -50%)';
+            dots.style.color = '';
+            entered = '';
+            paint();
+          }, 320);
+        }
+      }
+    };
+    const grid = document.createElement('div');
+    Object.assign(grid.style, {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(3, 1fr)',
+      gap: '8px',
+    });
+    for (const d of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', '✕']) {
+      const b = document.createElement('button');
+      b.textContent = d;
+      Object.assign(b.style, {
+        padding: '10px 0',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.15)',
+        background: 'rgba(255,255,255,0.06)',
+        color: '#fff',
+        fontSize: '16px',
+        cursor: 'pointer',
+      });
+      b.addEventListener('click', () => {
+        if (d === '⌫') {
+          entered = entered.slice(0, -1);
+          paint();
+        } else if (d === '✕') {
+          this.closePinPad();
+        } else {
+          press(d);
+        }
+      });
+      grid.appendChild(b);
+    }
+    panel.appendChild(grid);
+    // Keyboard digits work too (stopPropagation keeps them out of the game)
+    const keyHandler = (e: KeyboardEvent): void => {
+      if (/^[0-9]$/.test(e.key)) press(e.key);
+      else if (e.key === 'Backspace') {
+        entered = entered.slice(0, -1);
+        paint();
+      } else if (e.key === 'Escape') this.closePinPad();
+      e.stopPropagation();
+    };
+    panel.tabIndex = -1;
+    panel.addEventListener('keydown', keyHandler);
+    this.overlay.appendChild(panel);
+    this.pinDiv = panel;
+    panel.focus();
+  }
+
+  public closePinPad(): void {
+    this.pinDiv?.remove();
+    this.pinDiv = null;
+  }
+
   public isNpcChatOpen(): boolean {
     return !!this.npcChatDiv;
   }

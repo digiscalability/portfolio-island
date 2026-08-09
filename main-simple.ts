@@ -324,7 +324,19 @@ class SimpleApp {
         this.enterBuilding(zone.id, true, zone);
       });
       // Cottage doors: walk up + E → step inside a cosy room.
-      this.scene.setOnHouseEnter((id) => this.enterBuilding(id, false));
+      this.scene.setOnHouseEnter((id) => {
+        // The beach house has a coded lock (a mechanic, not security — the
+        // code ships client-side). Unlocks stay for the session.
+        if (id.startsWith('islet_') && !this.isletUnlocked) {
+          this.ui.showPinPad('5673', () => {
+            this.isletUnlocked = true;
+            sfx.collect();
+            this.enterBuilding(id, false);
+          });
+          return;
+        }
+        this.enterBuilding(id, false);
+      });
 
       // NPC quests: stateful dialogue + rewards layered over ambient lines
       this.npcQuests = new NpcQuestSystem();
@@ -2301,6 +2313,7 @@ class SimpleApp {
   } | null = null;
   private chatWalkAwayT = 0; // sustained walk intent closes the chat
   private watchOpenedAt = 0; // wall-screen open time — same-press close guard
+  private isletUnlocked = false; // beach-house door code accepted this session
   private readonly _cineUp = new THREE.Vector3();
   private readonly _cineAxis = new THREE.Vector3();
   private readonly _cineSide = new THREE.Vector3();
