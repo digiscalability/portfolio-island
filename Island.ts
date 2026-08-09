@@ -3742,6 +3742,42 @@ export class Island {
     return m;
   }
 
+  /** Villagers who read as women. npc.glb ships ONE unisex body, so the cues
+   *  are procedural primitives parented to the group — the same pattern the
+   *  persona hats already use — and they apply everywhere on the island, not
+   *  just indoors: a villager who is a woman at the market is the same person
+   *  on the beach-house dance floor. GameScene reads this set to pick party
+   *  guests. Station personas (Fisherman, Sailor, crew) are left out because
+   *  they are relocated onto boats and never join the floor. */
+  public static readonly WOMEN_PERSONAS = new Set([
+    'Village Baker',
+    'Island Explorer',
+    'Artist',
+    'Storyteller',
+    'Gardener',
+    'Cartographer',
+    'Musician',
+    'Courier',
+    'Tourist',
+    'Farmer',
+  ]);
+
+  /** Dress fabric: its own cache because the skirt needs DoubleSide, and the
+   *  shirt materials it shares a colour with are used on closed geometry. */
+  private static dressCache = new Map<number, THREE.MeshToonMaterial>();
+
+  private static dressMat(hex: number): THREE.MeshToonMaterial {
+    let m = Island.dressCache.get(hex);
+    if (!m) {
+      m = Materials.createToonMaterial(hex);
+      m.side = THREE.DoubleSide;
+      m.userData.celRim = true;
+      applyCelRim(m);
+      Island.dressCache.set(hex, m);
+    }
+    return m;
+  }
+
   private dressNpc(group: THREE.Object3D, phIdx: number, personaName: string): void {
     const SHIRTS = [0xe08a8a, 0x86b7e0, 0x8fd0a0, 0xe0c07a, 0xb598dd, 0x7fcfc4, 0xe09a5f, 0x9fb3c8];
     const SKINS = [0xf3d3b3, 0xe8bb94, 0xc98d5f, 0xa06a42, 0x7c4e2e];
@@ -3815,6 +3851,33 @@ export class Island {
     // Persona flair: hats reuse the player's procedural hat kit; held props
     // are 2-3 primitives. Whole-group pose modulation animates them for free.
     try {
+      if (Island.WOMEN_PERSONAS.has(personaName)) {
+        // Long hair: a mass behind the authored helmet plus two side locks.
+        // Everything sits at z <= 0 or outside the head radius, so the baked
+        // face (eyes/highlights/smile on Eye/EyeShine) is never covered — the
+        // 1.68 hat anchor puts the crown there, so the skull centre is ~1.46.
+        const hair = Island.paletteMat(hairHex);
+        const back = new THREE.Mesh(new THREE.SphereGeometry(0.23, 10, 8), hair);
+        back.scale.set(1, 1.1, 0.75);
+        back.position.set(0, 1.46, -0.09);
+        group.add(back);
+        for (const sx of [-1, 1]) {
+          const lock = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.26, 3, 6), hair);
+          lock.position.set(sx * 0.2, 1.26, -0.02);
+          lock.rotation.z = sx * 0.07;
+          group.add(lock);
+        }
+        // Dress: an open truncated cone from waist to just above the knee, in
+        // the shirt colour so top and skirt read as one garment. Open-ended
+        // and DoubleSide so the swinging legs pass through it cleanly — the
+        // 0.42 hem clears the widest thigh swing with room to spare.
+        const dress = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.17, 0.42, 0.55, 12, 1, true),
+          Island.dressMat(shirtHex),
+        );
+        dress.position.set(0, 0.72, 0);
+        group.add(dress);
+      }
       const HAT_FOR: Record<string, 'wizard' | 'flower' | 'cap' | 'party'> = {
         'Elder Sage': 'wizard',
         Gardener: 'flower',

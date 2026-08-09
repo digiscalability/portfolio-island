@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+import { a11y } from './Accessibility';
 import { addGroupHulls, updateCelRim } from './CelLook';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
@@ -8150,6 +8151,8 @@ export class GameScene extends THREE.Scene {
   private interiorLamp: THREE.PointLight | null = null;
   private interiorBulb: THREE.Mesh | null = null;
   private interiorLampOn = true;
+  private interiorRoomLamp: THREE.PointLight | null = null;
+  private interiorRoomFill: THREE.PointLight | null = null;
 
   /** Work a room fixture. Returns the line to flash. */
   public toggleInteriorFixture(which: string): string {
@@ -8180,6 +8183,8 @@ export class GameScene extends THREE.Scene {
     tiles: THREE.Mesh[];
     spots: THREE.SpotLight[];
     confetti: Array<{ m: THREE.Mesh; speed: number; phase: number }>;
+    lasers: Array<{ pivot: THREE.Group; mat: THREE.MeshBasicMaterial; hue: number }>;
+    flash: THREE.PointLight;
   } | null = null;
   private partyGuests: Array<{
     npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string };
@@ -8301,9 +8306,41 @@ export class GameScene extends THREE.Scene {
       group.add(spot.target);
       spots.push(spot);
     }
+    // Laser fan: six beams hung off the ball's rig point, each on its own
+    // pivot. YXZ order matters — the tilt (X) has to be applied BEFORE the
+    // spin (Y) or the beams wobble on a world axis instead of sweeping a
+    // cone. Additive + depthWrite:false so they read as light in the air and
+    // never z-fight the props they cross.
+    const lasers: Array<{ pivot: THREE.Group; mat: THREE.MeshBasicMaterial; hue: number }> = [];
+    const beamGeo = new THREE.CylinderGeometry(0.016, 0.055, 6, 6, 1, true);
+    for (let i = 0; i < 6; i++) {
+      const pivot = new THREE.Group();
+      pivot.rotation.order = 'YXZ';
+      pivot.position.set(0.9, 3.3, 0.6);
+      const hue = i / 6;
+      const mat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color().setHSL(hue, 0.95, 0.6),
+        transparent: true,
+        opacity: 0.35,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const beam = new THREE.Mesh(beamGeo, mat);
+      beam.position.y = -3; // hang the cylinder below its pivot
+      pivot.add(beam);
+      group.add(pivot);
+      lasers.push({ pivot, mat, hue });
+    }
+    // Beat flash: one hard white pop per beat, decayed over ~110ms. At 120bpm
+    // that is 2Hz — deliberately under the 3Hz photosensitivity threshold —
+    // and reduced motion drops it to a gentle swell (see updateInteriorParty).
+    const flash = new THREE.PointLight(0xffffff, 0, 15, 1.1);
+    flash.position.set(0.9, 3, 0.6);
+    group.add(flash);
     group.visible = false;
     this.interiorGroup.add(group);
-    this.partyProps = { group, ball, ballLight, tiles, spots, confetti };
+    this.partyProps = { group, ball, ballLight, tiles, spots, confetti, lasers, flash };
   }
 
   private togglePartyMode(): string {
@@ -8332,6 +8369,9 @@ export class GameScene extends THREE.Scene {
         'Deckhand',
         'Market Vendor',
       ]);
+      // The floor is the island's women (Island.WOMEN_PERSONAS — they read as
+      // women everywhere, not just in here). Six named regulars first, any
+      // other woman as fallback; nobody is drafted off a station post.
       const preferred = [
         'Gardener',
         'Artist',
@@ -8345,7 +8385,10 @@ export class GameScene extends THREE.Scene {
           .map((n) => this.island.npcTargets.find((t) => t.name === n))
           .filter((t): t is (typeof this.island.npcTargets)[number] => !!t),
         ...this.island.npcTargets.filter(
-          (t) => !station.has(t.name) && !preferred.includes(t.name),
+          (t) =>
+            !station.has(t.name) &&
+            !preferred.includes(t.name) &&
+            Island.WOMEN_PERSONAS.has(t.name),
         ),
       ];
       const o = GameScene.INTERIOR_ORIGIN;
@@ -8378,11 +8421,17 @@ export class GameScene extends THREE.Scene {
     const P = this.partyProps;
     if (!this.partyMode || !P) return;
     const BPS = 2; // 120bpm
+    // Reduced motion keeps the club — dim room, lasers, colour — but takes
+    // the strobe out of it: beams drift instead of sweeping, and the flash
+    // becomes a slow swell rather than a pop on every beat.
+    const calm = a11y.reducedMotion;
     this.partyBeatClock += deltaTime;
     if (this.partyBeatClock >= 1 / BPS) {
       this.partyBeatClock -= 1 / BPS;
       sfx.partyThump();
+      P.flash.intensity = calm ? 0.55 : 3.4; // one pop per beat = 2Hz
     }
+    P.flash.intensity *= Math.max(0, 1 - deltaTime * (calm ? 3 : 9));
     const beat = time * BPS * Math.PI; // half-turn per beat
     P.ball.rotation.y = time * 0.9;
     // Glitter light breathes with the beat; confetti drifts down forever.
@@ -8398,6 +8447,17 @@ export class GameScene extends THREE.Scene {
       const m = P.tiles[i].material as THREE.MeshStandardMaterial;
       m.emissive.setHSL((i * 0.09 + time * 0.12) % 1, 0.85, 0.5);
       m.emissiveIntensity = 0.45 + Math.max(0, Math.sin(beat + i * 0.8)) * 0.5;
+    }
+    // Laser fan: each beam tilts on its own slow wobble while the whole rig
+    // spins, so the beams cross rather than marching in formation. Opacity
+    // rides the beat — that is what sells them as pulsing with the music.
+    for (let i = 0; i < P.lasers.length; i++) {
+      const L = P.lasers[i];
+      const tilt = 0.86 + Math.sin(time * (calm ? 0.22 : 0.75) + i * 1.3) * 0.2;
+      L.pivot.rotation.x = tilt;
+      L.pivot.rotation.y = time * (calm ? 0.22 : 0.95) + (i / P.lasers.length) * Math.PI * 2;
+      L.mat.color.setHSL((L.hue + time * 0.06) % 1, 0.95, 0.6);
+      L.mat.opacity = calm ? 0.3 : 0.22 + Math.max(0, Math.sin(beat + i * 0.6)) * 0.4;
     }
     for (let s = 0; s < P.spots.length; s++) {
       const spot = P.spots[s];
@@ -9015,6 +9075,10 @@ export class GameScene extends THREE.Scene {
     const fill = new THREE.PointLight(0xd8e2ff, 1.2, 20, 1);
     fill.position.set(2.5, 1.6, 2.5);
     g.add(fill);
+    // Held so party mode can pull the house lights down to a club level and
+    // ease them back up afterwards (updateInteriorMode owns the easing).
+    this.interiorRoomLamp = lamp;
+    this.interiorRoomFill = fill;
     this.interiorGroup = g;
     this.add(g);
   }
@@ -9898,15 +9962,28 @@ export class GameScene extends THREE.Scene {
         c.mesh.position.x = c.open + (c.shut - c.open) * this.interiorCurtainT;
       }
     }
+    // House lights. Party mode pulls them right down so the disco ball, the
+    // lasers and the lit floor are what you actually see — a fully lit room
+    // washes all three out. Everything eases rather than snapping, and the
+    // same easing carries them back up when the party stops.
+    const clubK = Math.min(1, 3.5 * deltaTime);
     if (this.interiorLamp) {
-      const lampWant = this.interiorLampOn ? 1.35 : 0;
+      const lampWant = this.partyMode ? 0.1 : this.interiorLampOn ? 1.35 : 0;
       this.interiorLamp.intensity +=
         (lampWant - this.interiorLamp.intensity) * Math.min(1, 9 * deltaTime);
       if (this.interiorBulb) {
         (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
-          this.interiorLampOn ? 0xffe8b8 : 0x6b6a63,
+          this.interiorLampOn && !this.partyMode ? 0xffe8b8 : 0x6b6a63,
         );
       }
+    }
+    if (this.interiorRoomLamp) {
+      const want = this.partyMode ? 0.35 : 3.2;
+      this.interiorRoomLamp.intensity += (want - this.interiorRoomLamp.intensity) * clubK;
+    }
+    if (this.interiorRoomFill) {
+      const want = this.partyMode ? 0.14 : 1.2;
+      this.interiorRoomFill.intensity += (want - this.interiorRoomFill.intensity) * clubK;
     }
 
     // Floating 💤 bob while a sleeper occupies the bed.
