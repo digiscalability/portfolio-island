@@ -21,6 +21,7 @@
  */
 import * as THREE from 'three';
 
+import { SimpleRenderer } from './SimpleRenderer';
 import { isRealTheme } from './Theme';
 
 /** The cel kit runs whenever the real theme ISN'T forced. */
@@ -180,6 +181,10 @@ const _wScale = new THREE.Vector3();
  */
 export function addGroupHulls(root: THREE.Object3D, minWorldRadius = 0.045): void {
   if (!isCelTheme()) return;
+  // Ink is a draw-call DOUBLER on every hulled part (~300+ extra draws with
+  // the full cast). Phones are draw-call-bound, not fill-bound — low-tier
+  // devices get the clean cel look without outlines. Desktop unchanged.
+  if (SimpleRenderer.isLowTierDevice()) return;
   const targets: THREE.Mesh[] = [];
   root.traverse((o) => {
     const m = o as THREE.Mesh;
@@ -207,6 +212,7 @@ export function addGroupHulls(root: THREE.Object3D, minWorldRadius = 0.045): voi
  */
 export function addSkinnedHull(src: THREE.SkinnedMesh, thickness = 0.014): void {
   if (!isCelTheme() || !src.parent) return;
+  if (SimpleRenderer.isLowTierDevice()) return; // same phone gate as group hulls
   // NEVER hull a hull: sibling-inserting during a caller's traverse means the
   // new hull itself gets visited by that same traverse.
   if (src.userData.isCelHull || src.userData.hasCelHull) return;

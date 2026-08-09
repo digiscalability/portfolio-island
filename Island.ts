@@ -2385,6 +2385,7 @@ export class Island {
         dialogue: [
           'Ahoy! Finest little harbour on any sphere.',
           'The waves here follow real maths, you know.',
+          'My brother keeps a beach house on the islet out south — tell him I said hello.',
           'Swim out sometime — the water is warmer than it looks.',
         ],
       },

@@ -4073,8 +4073,10 @@ export class GameScene extends THREE.Scene {
   /** One rowboat: hull + rim + bench, toon browns matching the beached
    *  props. Bow wedge points -Z (orientQuat's forward convention). */
   private buildRowboat(): THREE.Group {
-    const hullMat = new THREE.MeshToonMaterial({ color: 0x7a5230 });
-    const trimMat = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
+    // Shared toon cache — the old per-call materials made 2 fresh instances
+    // per boat (×3 boats) for colours the cache already holds.
+    const hullMat = GameScene.birdMat(0x7a5230);
+    const trimMat = GameScene.birdMat(0x5c3d22);
     const boat = new THREE.Group();
     const hull = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.34, 2.0), hullMat);
     hull.position.y = 0.17;
@@ -4182,10 +4184,10 @@ export class GameScene extends THREE.Scene {
    *  multi-deck, portholes that light at night — pure scenery. */
   private setupCruise(): void {
     if (!this.island) return;
-    const white = new THREE.MeshToonMaterial({ color: 0xf2f4f6 });
-    const navy = new THREE.MeshToonMaterial({ color: 0x24384c });
-    const deckMat = new THREE.MeshToonMaterial({ color: 0xd9dee4 });
-    const funnelMat = new THREE.MeshToonMaterial({ color: 0xd94a3a });
+    const white = GameScene.birdMat(0xf2f4f6); // shared toon cache
+    const navy = GameScene.birdMat(0x24384c);
+    const deckMat = GameScene.birdMat(0xd9dee4);
+    const funnelMat = GameScene.birdMat(0xd94a3a);
     const glowMat = new THREE.MeshStandardMaterial({
       color: 0xffe6a8,
       emissive: 0xffc966,
@@ -4255,10 +4257,10 @@ export class GameScene extends THREE.Scene {
     const s = this.island.sampleSurfaceByDirection(dir, 0);
     const up = s.normal;
 
-    const timber = new THREE.MeshToonMaterial({ color: 0xe6d7b8 });
-    const trim = new THREE.MeshToonMaterial({ color: 0x8a6a42 });
-    const roofMat = new THREE.MeshToonMaterial({ color: 0x4a8ea6 });
-    const stone = new THREE.MeshToonMaterial({ color: 0x7a7168 });
+    const timber = GameScene.birdMat(0xe6d7b8); // shared toon cache
+    const trim = GameScene.birdMat(0x8a6a42);
+    const roofMat = GameScene.birdMat(0x4a8ea6);
+    const stone = GameScene.birdMat(0x7a7168);
     const glow = new THREE.MeshStandardMaterial({
       color: 0xffe6a8,
       emissive: 0xffc966,
@@ -4319,8 +4321,8 @@ export class GameScene extends THREE.Scene {
     const palmDir = this.island.dirAt(5.83, 0.015);
     const ps = this.island.sampleSurfaceByDirection(palmDir, 0);
     const palm = new THREE.Group();
-    const trunkMat = new THREE.MeshToonMaterial({ color: 0x8a6a42 });
-    const frondMat = new THREE.MeshToonMaterial({ color: 0x3e8e5a });
+    const trunkMat = GameScene.birdMat(0x8a6a42);
+    const frondMat = GameScene.birdMat(0x3e8e5a);
     for (let t = 0; t < 3; t++) {
       const seg = new THREE.Mesh(
         new THREE.CylinderGeometry(0.09 - t * 0.015, 0.11 - t * 0.015, 0.85, 6),
@@ -4343,7 +4345,7 @@ export class GameScene extends THREE.Scene {
     palm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), ps.normal);
     this.add(palm);
     this.island.pendingColliders.push({ position: palm.position.clone(), radius: 0.4 });
-    const rockMat = new THREE.MeshToonMaterial({ color: 0x8b8378 });
+    const rockMat = GameScene.birdMat(0x8b8378);
     for (const [rl, rt, rs] of [
       [5.96, -0.055, 0.5],
       [5.845, -0.045, 0.34],
@@ -7912,12 +7914,31 @@ export class GameScene extends THREE.Scene {
       })),
       // Labels are short by necessity — the radar disc is only 172px, so
       // anything longer than ~8 characters collides with its neighbours.
-      // Dots come from the shared DISTRICTS source of truth (Districts.ts).
-      zones: DISTRICTS.map((d) => ({
-        ...this.worldToRadar(this.island.dirAt(d.lon, d.lat)),
-        color: '#' + d.color.toString(16).padStart(6, '0'),
-        label: d.radar,
-      })),
+      // Dots come from the shared DISTRICTS source of truth (Districts.ts),
+      // plus the islet beach house and the (moving) cruise liner — without
+      // radar presence the whole southern sea reads as empty and nobody
+      // ever discovers them.
+      zones: [
+        ...DISTRICTS.map((d) => ({
+          ...this.worldToRadar(this.island.dirAt(d.lon, d.lat)),
+          color: '#' + d.color.toString(16).padStart(6, '0'),
+          label: d.radar,
+        })),
+        {
+          ...this.worldToRadar(this.island.dirAt(5.9, -0.02).multiplyScalar(52)),
+          color: '#4a8ea6',
+          label: 'Islet',
+        },
+        ...(this.cruise
+          ? [
+              {
+                ...this.worldToRadar(this.cruise.ship.position),
+                color: '#d94a3a',
+                label: 'Cruise',
+              },
+            ]
+          : []),
+      ],
       delivery: this.guideTarget ? this.worldToRadar(this.guideTarget) : null,
     };
   }
