@@ -350,6 +350,39 @@ export class Island {
     return r;
   }
 
+  // Scratch vectors for ringMinRadius (same single-threaded reuse contract
+  // as the analyticSurfaceInto scratch set above).
+  private static readonly _rmT1 = new THREE.Vector3();
+  private static readonly _rmT2 = new THREE.Vector3();
+  private static readonly _rmP = new THREE.Vector3();
+  private static readonly _rmN = new THREE.Vector3();
+
+  /**
+   * Lowest analytic terrain radius on a small ring around `dir` — the farm
+   * grounding rule generalised: a rigid base must seat at the LOWEST ground
+   * under its footprint, not the centre tangent point, or its downhill edge
+   * hangs in mid-air on slopes. `ringRadius` is in world units (the base's
+   * footprint radius). Analytic probes only — safe on the world-gen path.
+   */
+  private ringMinRadius(dir: THREE.Vector3, ringRadius: number, samples = 4): number {
+    const t1 = Island._rmT1.set(0, 1, 0).cross(dir);
+    if (t1.lengthSq() < 1e-8) t1.set(1, 0, 0);
+    t1.normalize();
+    const t2 = Island._rmT2.crossVectors(dir, t1).normalize();
+    let min = Infinity;
+    for (let s = 0; s < samples; s++) {
+      const ang = (s / samples) * Math.PI * 2;
+      const probe = Island._rmP
+        .copy(dir)
+        .multiplyScalar(this.radius)
+        .addScaledVector(t1, Math.cos(ang) * ringRadius)
+        .addScaledVector(t2, Math.sin(ang) * ringRadius)
+        .normalize();
+      min = Math.min(min, this.analyticSurfaceInto(probe, Island._rmN));
+    }
+    return min;
+  }
+
   private createGrass(): THREE.InstancedMesh {
     // Two crossed blades, base at origin.
     //
@@ -1509,6 +1542,19 @@ export class Island {
       house.add(body);
       house.add(roof);
 
+      // Foundation plinth (the farm grounding rule): the walls end at y=0, so
+      // on sloped lots the downhill wall edge hung over falling terrain. A
+      // stone course slightly INSET behind the wall faces runs 1.7u down into
+      // the hill — the 0.04 recess reads as a shadow line under the walls, and
+      // the door/window planes (at z·0.51) stay proud of it.
+      const plinth = new THREE.Mesh(
+        new THREE.BoxGeometry(w - 0.08, 1.7, d - 0.08),
+        Materials.createTrimMaterial(0x7a6f63),
+      );
+      plinth.position.set(0, -0.81, 0); // top at y=+0.04, bottom at y=-1.66
+      plinth.receiveShadow = true;
+      house.add(plinth);
+
       // Windows as emissive planes
       const winMat = new THREE.MeshStandardMaterial({
         color: 0xffffcc,
@@ -1541,11 +1587,14 @@ export class Island {
       // Enterable invitation: a doormat + warm door lamp (the exact idiom the
       // zone buildings use) — the cottages' interiors + sleeping NPCs were
       // effectively hidden behind doors that looked purely decorative.
+      // Doormat is a tall buried box, not a 0.05 slab: it sits OUTSIDE the
+      // plinth footprint, so on a downhill door approach the old slab floated.
+      // Top face stays at the same height (~0.055); the extra 0.3u is berm.
       const doormat = new THREE.Mesh(
-        new THREE.BoxGeometry(0.9, 0.05, 0.5),
+        new THREE.BoxGeometry(0.9, 0.35, 0.5),
         new THREE.MeshStandardMaterial({ color: 0xd9c48a, roughness: 1 }),
       );
-      doormat.position.set(0, 0.03, d * 0.51 + 0.35);
+      doormat.position.set(0, -0.12, d * 0.51 + 0.35);
       doormat.receiveShadow = true;
       house.add(doormat);
       const doorLamp = new THREE.Mesh(
@@ -1814,7 +1863,12 @@ export class Island {
       treeMesh.castShadow = true;
       treeGroup.add(treeMesh);
 
-      treeGroup.position.copy(sampled.position);
+      // Farm-rule seat: the trunk base sits at the LOWEST ground under its
+      // footprint (0.45u ring) minus a 0.12 sink — centre-seated trunks ended
+      // mid-air on the downhill side of slopes (the grounding audit's
+      // floating-tree defect). The uphill side simply buries a little deeper.
+      const seatR = Math.min(sampled.position.length(), this.ringMinRadius(dir, 0.45)) - 0.12;
+      treeGroup.position.copy(dir).multiplyScalar(seatR);
       treeGroup.quaternion.copy(q);
       treeGroup.name = `tree_${placed}`;
       const treeData = treeGroup.userData as Record<string, unknown>;
@@ -2657,7 +2711,11 @@ export class Island {
       // off their kerb site onto the middle of the boulevard ribbon. This keeps
       // them at the roadside, clear of the walkable path.
       const pos = this.claimOffStreet(this.dirAt(carLon, carLat), 0.08).multiplyScalar(this.radius);
-      const sampled = this.sampleSurfacePosition(pos, 0.33);
+      // +0.06 matches GameScene's drive-seat convention (wheel bottoms sit at
+      // local −0.0725 after the pivot rework — the old +0.33 predates it and
+      // hovered every car 0.26u even on flat ground). GameScene.initVehicles
+      // re-seats parked cars on their four wheel contacts at scene init.
+      const sampled = this.sampleSurfacePosition(pos, 0.06);
       carGroup.position.copy(sampled.position);
       // Scaled to the ~1.6u player: roof ~1.06u, length ~2.9u — a car the
       // person can plausibly get into (1.55 read oversized next to the
@@ -5496,11 +5554,15 @@ export class Island {
 
   private createStall(): THREE.Group {
     const group = new THREE.Group();
-    // ground skirt so slope gaps under the stall read as a wooden deck
-    const skirtGeom = new THREE.BoxGeometry(1.35, 0.5, 0.95);
+    // ground skirt so slope gaps under the stall read as a wooden deck.
+    // 0.9 deep (≈2.0u at the 2.2 stall scale): the old 0.5 skirt bottomed
+    // out ~1.0u below the seat while the market slope falls up to ~1.2u
+    // under a downhill corner — the audit caught its bottom face hanging
+    // visibly in mid-air. Top stays at local +0.05 (under the table).
+    const skirtGeom = new THREE.BoxGeometry(1.35, 0.9, 0.95);
     const skirtMat = Materials.createTrimMaterial(0x8a7355);
     const skirt = new THREE.Mesh(skirtGeom, skirtMat);
-    skirt.position.set(0, -0.2, 0);
+    skirt.position.set(0, -0.4, 0);
     group.add(skirt);
     // Base table
     const tableGeom = new THREE.BoxGeometry(1.2, 0.3, 0.8);
@@ -6559,6 +6621,15 @@ export class Island {
                 } catch {
                   /* ignore placement */
                 }
+                // Farm-rule seat on top of the centre placement: drop to the
+                // LOWEST ground on a 0.5u ring minus 0.18 — centre-seated GLB
+                // trees hung their downhill roots mid-air on slopes (and the
+                // audit caught one floating +0.21 outright). The model's root
+                // flare is authored to bury, so the extra sink is free.
+                const treeDir = copy.position.clone().normalize();
+                copy.position.setLength(
+                  Math.min(copy.position.length(), this.ringMinRadius(treeDir, 0.5)) - 0.18,
+                );
                 this.mesh.add(copy);
                 // These trees land after GameScene's collider registration —
                 // queue a trunk collider for it to drain (canopy stays

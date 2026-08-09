@@ -5147,9 +5147,61 @@ export class GameScene extends THREE.Scene {
         normal: sampled.normal.clone(),
         wheels,
       };
+      this.fitParkedCarSeat(v); // wheels on the ground, not the tangent plane
       this.vehicles.push(v);
       this.placeVehicle(v, v.radius, v.normal);
     }
+  }
+
+  /**
+   * Seat a PARKED car on its four wheel contact points instead of the centre
+   * tangent plane: probe the terrain under each wheel, park at the mean
+   * contact height with the plane fitted through them (diagonal cross). The
+   * centre-normal seat left downhill wheels hanging in mid-air whenever a car
+   * parked across a crest — the grounding audit's floating-car defect.
+   * Raycast probes: call at init/disembark only, never per-frame (driving
+   * keeps the cheap centre sample; motion hides the crest hang).
+   */
+  private fitParkedCarSeat(v: {
+    dir: THREE.Vector3;
+    forward: THREE.Vector3;
+    radius: number;
+    normal: THREE.Vector3;
+  }): void {
+    const right = new THREE.Vector3().crossVectors(v.normal, v.forward);
+    if (right.lengthSq() < 1e-8) return;
+    right.normalize();
+    // wheel pivots (±0.6, ·, ±0.75) × car scale 1.45 → world contact offsets
+    const OFFS: Array<[number, number]> = [
+      [-0.87, 1.09], // FL
+      [0.87, 1.09], // FR
+      [-0.87, -1.09], // RL
+      [0.87, -1.09], // RR
+    ];
+    const base = this.island.sampleSurfaceByDirection(v.dir, 0).position.length();
+    const pts: THREE.Vector3[] = [];
+    let mean = 0;
+    for (const [sx, sz] of OFFS) {
+      const pd = v.dir
+        .clone()
+        .multiplyScalar(base)
+        .addScaledVector(right, sx)
+        .addScaledVector(v.forward, sz)
+        .normalize();
+      const h = this.island.sampleSurfaceByDirection(pd, 0).position.length();
+      mean += h * 0.25;
+      pts.push(pd.multiplyScalar(h));
+    }
+    const n = new THREE.Vector3().crossVectors(
+      pts[1].clone().sub(pts[2]), // FR − RL
+      pts[0].clone().sub(pts[3]), // FL − RR
+    );
+    if (n.lengthSq() > 1e-8) {
+      n.normalize();
+      if (n.dot(v.dir) < 0) n.negate();
+      v.normal.copy(n);
+    }
+    v.radius = mean + 0.06;
   }
 
   /** Place a water craft at the live wave surface (up = radial). */
@@ -5329,6 +5381,11 @@ export class GameScene extends THREE.Scene {
     if (v.kind === 'car') {
       const s = this.island.sampleSurfaceByDirection(dropDir, 0);
       this.player.setWorldPosition(dropDir.multiplyScalar(s.position.length() + 0.75));
+      // Re-park on the wheel contacts: while driven the seat is the cheap
+      // centre sample, so a car left across a crest would keep its wheels
+      // hanging in mid-air for the rest of the session.
+      this.fitParkedCarSeat(v);
+      this.placeVehicle(v, v.radius, v.normal);
     } else {
       const surf = this.island.waveHeightAt(dropDir, this.island.seaTimeUniform.value);
       this.player.setWorldPosition(dropDir.multiplyScalar(surf + 0.55));
