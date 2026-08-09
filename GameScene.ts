@@ -496,6 +496,7 @@ export class GameScene extends THREE.Scene {
   // Scratch objects for per-frame ambient animation (no allocations in update)
   private static readonly _swayAxis = new THREE.Vector3(1, 0, 0);
   private readonly _swayQuat = new THREE.Quaternion();
+  private readonly _npcPlumb = new THREE.Vector3();
   private readonly _npcNormal = new THREE.Vector3();
   private readonly _wanderAxis = new THREE.Vector3();
   private readonly _wanderFwd = new THREE.Vector3();
@@ -7600,7 +7601,14 @@ export class GameScene extends THREE.Scene {
 
         // Orientation: surface-aligned, yaw eased toward the desired facing
         // (the player when close, otherwise the travel direction)
-        this._swayQuat.setFromUnitVectors(GameScene._localUp, this._npcNormal);
+        // WORLD LAW 1: people stand PLUMB. The wander loop builds its own
+        // quaternion rather than going through orientAvatar, so the law has
+        // to be honoured here too — this used to use the terrain normal and
+        // left villagers leaning up to 9.4 degrees on slopes.
+        this._swayQuat.setFromUnitVectors(
+          GameScene._localUp,
+          this._npcPlumb.copy(npc.meshRef.position).normalize(),
+        );
         if (faceFwd) {
           this._wanderZ.set(0, 0, 1).applyQuaternion(this._swayQuat);
           const cosA = THREE.MathUtils.clamp(this._wanderZ.dot(faceFwd), -1, 1);
@@ -10355,11 +10363,15 @@ export class GameScene extends THREE.Scene {
     if (moving) {
       // Camera-relative move dir (model-forward = +z): fwd(yaw) = (sin, 0, cos).
       const cy = this.interiorCamYaw;
-      const dirX = Math.sin(cy) * f + -Math.cos(cy) * s;
-      const dirZ = Math.cos(cy) * f + Math.sin(cy) * s;
+      // Sideways is SLOWER than forward. A person side-steps at roughly
+      // 60% of walking pace; matching them made indoor strafing read as
+      // skating, and the same ratio is applied outdoors in SimplePlayer.
+      const sideS = s * 0.6;
+      const dirX = Math.sin(cy) * f + -Math.cos(cy) * sideS;
+      const dirZ = Math.cos(cy) * f + Math.sin(cy) * sideS;
       const len = Math.hypot(dirX, dirZ);
       if (len > 1e-4) {
-        const spd = (2.6 * Math.min(1, len)) / len;
+        const spd = (2.15 * Math.min(1, len)) / len; // was 2.6 — indoors read hurried
         const nx = p.x - o.x + dirX * spd * deltaTime;
         const nz = p.z - o.z + dirZ * spd * deltaTime;
         // Axis-separated resolve → the player slides along walls + furniture.

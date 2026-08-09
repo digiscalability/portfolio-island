@@ -1852,7 +1852,10 @@ export class SimplePlayer extends THREE.Group {
    * Set movement input (-1 to 1)
    */
   public setMovement(forward: number, strafe: number): void {
-    this.moveInput.set(strafe, 0, forward);
+    // Sideways is SLOWER than forward — a person side-steps at roughly 60%
+    // of walking pace. Driving strafe at full speed made crabbing sideways
+    // as fast as running, which reads as skating rather than walking.
+    this.moveInput.set(strafe * 0.6, 0, forward);
     this.moveInput.clampLength(0, 1);
   }
 
