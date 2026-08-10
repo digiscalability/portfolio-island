@@ -651,6 +651,13 @@ function pickAnchor(
   if (!list || !list.length) return false;
   outDir.copy(list[s.rot % list.length]);
   s.rot += 1;
+  // Shared-anchor separation: two NPCs whose rotation seeds collide mod the
+  // list length land on the SAME anchor and used to stand coincident — the
+  // "villagers clustering" read. A ~1u jitter spreads same-anchor visitors
+  // like people at a counter. STALLS ONLY: every other anchor set (aprons,
+  // bandstand, easel, lighthouse ring) is precision-placed against collider
+  // walls, and jittering those re-opens the anchor-inside-a-wall bug class.
+  if (source === 'stalls') jitterDir(outDir, arc(1.0), outDir);
   return true;
 }
 
