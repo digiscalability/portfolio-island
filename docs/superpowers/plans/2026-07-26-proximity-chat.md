@@ -1,5 +1,11 @@
 # Proximity Chat Implementation Plan
 
+> ⚠️ **SUPERSEDED — SHIPPED. Do not copy constants out of this document.**
+> Written when the world was R=22. Every world-scale number below is frozen at
+> that era: `PROXIMITY_RADIUS = 14` in particular is NOT the live value. Chat
+> reach is now `PROXIMITY_FRACTION (0.35) × WORLD_RADIUS` — see `Chat.ts` and
+> `WorldScale.ts`. The behaviour described here is accurate; the numbers are history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add player-to-player communication to the Life Island world — proximity text speech-bubbles and push-to-talk voice clips — riding the existing multiplayer transport.

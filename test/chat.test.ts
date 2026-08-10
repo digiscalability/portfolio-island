@@ -6,10 +6,24 @@ import {
   voiceClipFits,
   distanceGain,
   PROXIMITY_RADIUS,
+  PROXIMITY_FRACTION,
   VOICE_MAX_BYTES,
 } from '../Chat';
+import { WORLD_RADIUS } from '../WorldScale';
 
 const v = (x: number, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+
+describe('proximity reach tracks the world size', () => {
+  // Every other assertion in this file feeds PROXIMITY_RADIUS back into a
+  // function that takes it as a parameter, so they hold at ANY value — they
+  // would pass with chat reaching 2u or the whole planet. This is the only one
+  // that pins the constant itself.
+  test('chat reaches a fixed fraction of the world, not a fixed distance', () => {
+    expect(PROXIMITY_RADIUS).toBeCloseTo(PROXIMITY_FRACTION * WORLD_RADIUS, 6);
+    // The ratio the R40->50 grow was hand-tuned to preserve.
+    expect(PROXIMITY_FRACTION).toBeCloseTo(0.35, 6);
+  });
+});
 
 describe('withinProximity', () => {
   test('true when peer is inside the radius', () => {

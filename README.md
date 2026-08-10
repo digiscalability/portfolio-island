@@ -50,7 +50,7 @@ P photo mode · Esc closes panels.
 
 ## How the world is put together
 
-The planet is a displaced sphere (radius 50) with elevation- and
+The planet is a displaced sphere (radius 75) with elevation- and
 district-tinted vertex colors. Five zone plazas sit evenly on the equator, so
 the equator road is "Main Street" and the districts hang off it:
 

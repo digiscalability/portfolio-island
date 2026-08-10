@@ -19,8 +19,36 @@ import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
+import { WORLD_RADIUS, areaScale, beltScale } from './WorldScale';
 import { getWorldState } from './WorldState';
 import { ZonesManager } from './ZonesManager';
+
+/** Fog density is tuned as a product with the radius — see the FogExp2 below. */
+const FOG_DENSITY_X_RADIUS = 0.45;
+
+/**
+ * Grow a hand-authored [lon, lat] site list to `target` entries.
+ *
+ * These lists are NOT arithmetic — the bird spots are "weighted toward the
+ * hub/high latitudes where players actually walk (the old set was mostly remote
+ * shores nobody visited)". Inventing new coordinates would throw that judgement
+ * away. So extras reuse an authored spot's LATITUDE (keeping the band, and the
+ * intent) and offset only the LONGITUDE by a golden angle, which spreads them
+ * around the ring without clumping.
+ *
+ * Returns the original array untouched when it is already long enough, so the
+ * reference world is bit-identical.
+ */
+function growSiteRing(sites: Array<[number, number]>, target: number): Array<[number, number]> {
+  if (target <= sites.length) return sites;
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  const out = sites.slice();
+  for (let i = sites.length; i < target; i++) {
+    const [lon, lat] = sites[i % sites.length];
+    out.push([(lon + golden * (1 + Math.floor(i / sites.length))) % (Math.PI * 2), lat]);
+  }
+  return out;
+}
 
 /** A villager's cached limb bones: rest pose, swing axis, current angle. */
 type NpcLimbCache = Array<{
@@ -165,9 +193,11 @@ export class GameScene extends THREE.Scene {
   // Villager limb bones, in swing order: [legL, legR, armL, armR], and the
   // amplitude each takes of the leg swing (arms counter-swing at 70%).
   private static readonly NPC_LIMB_BONES = ['legL', 'legR', 'armL', 'armR'];
-  // Angular slack (~4u of arc on R=50) within which a blocked NPC counts as
-  // having arrived at its anchor rather than abandoning it.
-  private static readonly NPC_ARRIVE_ENOUGH = 0.08;
+  // Slack within which a blocked NPC counts as having arrived at its anchor
+  // rather than abandoning it. 4u of ARC — as a bare angle it becomes 6u at
+  // R=75, which re-opens the "NPC does its job in the wrong place" class of bug
+  // this constant exists to close.
+  private static readonly NPC_ARRIVE_ENOUGH = 4 / WORLD_RADIUS;
   /** How far behind its counter a vendor stands, in world units of arc. */
   private static readonly VENDOR_STAND_BACK = 1.15;
   private static readonly NPC_LIMB_MIX = [1, -1, -0.7, 0.7];
@@ -220,11 +250,16 @@ export class GameScene extends THREE.Scene {
     dipT0: number; // -1 = not dipping, else start time
     nextDip: number; // time of the next fishing dip
   }> = [];
-  private static readonly CAT_CALL_RADIUS = 22; // cats within this trot in to treats
+  // Reach radii are a FRACTION of the world: the animals they call spread out
+  // as the planet grows, so a fixed distance quietly stops reaching them — and
+  // these three gate PAID consumables, which spend the coin either way.
+  private static readonly CAT_CALL_RADIUS = 0.44 * WORLD_RADIUS; // cats within this trot in to treats
   private static readonly CAT_MAX = 5; // per throw
   private static readonly CAT_FEAST_SECONDS = 24;
   private static readonly CAT_WALK_SPEED = 1.1; // u/s stroll
   private static readonly CAT_TROT_SPEED = 2.6; // u/s to food
+  /** Villager stroll, u/s. A real walking speed — must NOT scale with the world. */
+  private static readonly NPC_WALK_SPEED = 1.4;
 
   // Trees swaying gently around their surface-aligned base orientation
   private swayTrees: Array<{
@@ -264,7 +299,7 @@ export class GameScene extends THREE.Scene {
   private activeFishJumps = 0; // cap concurrent leaps so splash pools never starve
   // Fish-feed: bread thrown ONTO the water; nearby fish swim to it and nibble.
   private static readonly FISH_FEED_THROW_DIST = 6.0; // reach past the beach
-  private static readonly FISH_FEED_CALL_RADIUS = 26; // fish within this come in
+  private static readonly FISH_FEED_CALL_RADIUS = 0.52 * WORLD_RADIUS; // fish within this come in
   private static readonly FISH_FEED_MAX = 7;
   private static readonly FISH_FEED_FEAST_SECONDS = 20;
   private static readonly FISH_FEED_PILE_LIFE = 24;
@@ -571,7 +606,12 @@ export class GameScene extends THREE.Scene {
     super();
     this.name = 'GameScene';
     this.background = null; // sky dome handles it
-    this.fog = new THREE.FogExp2(0xa8d8f0, 0.009); // atmospheric depth. Keep density×R ≈ 0.45 (0.02@R22, 0.015@R30, 0.009@R50) so the far side of the bigger island stays visible instead of washing to fog — a fixed 0.015 hid exactly the extra world the grow was meant to reveal. EnvironmentCycle reads this as baseFogDensity.
+    // Atmospheric depth. The rule its own history establishes is density×R ≈ 0.45
+    // (0.02@R22, 0.015@R30, 0.009@R50), so the far side of the island stays
+    // visible instead of washing out — a fixed 0.015 once hid exactly the extra
+    // world a grow was meant to reveal. Now derived, so it can't go stale again.
+    // EnvironmentCycle reads this as baseFogDensity.
+    this.fog = new THREE.FogExp2(0xa8d8f0, FOG_DENSITY_X_RADIUS / WORLD_RADIUS);
 
     // Create ready promise
     this.readyPromise = new Promise((resolve) => {
@@ -624,7 +664,10 @@ export class GameScene extends THREE.Scene {
       // ~1.58u the world reads noticeably bigger — longer blocks, gentler
       // horizon. All placement is lon/lat-based so the districts spread
       // automatically; physical spacing grows with the radius.
-      this.island = new Island(50); // grown 30→40→50: bigger walkable world + all lon/lat placement spreads further apart, de-clustering the districts. setPlanet below reads getRadius() so it follows automatically.
+      // Grown 30→40→50→75. The radius now lives in WorldScale.ts, not here:
+      // declaring it at this call site is what let SoftLook bake a stale copy
+      // into a shader chunk. setPlanet below reads getRadius() so it follows.
+      this.island = new Island(WORLD_RADIUS);
       this.add(this.island.mesh);
       // Unify the art direction. Toon (?theme=toon): stepped shading on every
       // prop (abeto-style). Real (default): materials stay MeshStandardMaterial
@@ -1622,12 +1665,16 @@ export class GameScene extends THREE.Scene {
     // lat 0.24) meant the spawn plaza had NO birds overhead — from the hub
     // you could only ever see one distant trio ("I only see 3"). The fourth
     // flock circles high over the hub itself, visible the moment you spawn.
-    const FLOCKS: Array<{ lon: number; lat: number; count: number }> = [
-      { lon: 5.0, lat: 0.24, count: 3 },
-      { lon: 2.0, lat: 0.24, count: 3 },
-      { lon: 3.6, lat: 0.24, count: 3 },
-      { lon: 0.9, lat: 1.05, count: 3 },
+    const FLOCK_ANCHORS: Array<[number, number]> = [
+      [5.0, 0.24],
+      [2.0, 0.24],
+      [3.6, 0.24],
+      [0.9, 1.05],
     ];
+    const FLOCKS: Array<{ lon: number; lat: number; count: number }> = growSiteRing(
+      FLOCK_ANCHORS,
+      Math.round(FLOCK_ANCHORS.length * areaScale()),
+    ).map(([lon, lat]) => ({ lon, lat, count: 3 }));
     // Trailing V slots relative to the leader (x across, y altitude drop,
     // z BEHIND — the flock flies -Z in pivot-local space).
     // Wide enough that the ~2.3u-wingspan birds never overlap: overlapped
@@ -1652,7 +1699,9 @@ export class GameScene extends THREE.Scene {
       // still a lazy thermal circle, but visibly FLYING.
       const theta = 0.14 + Math.random() * 0.04;
       const alt = planetR + 0.1 + (2.8 + fi * 0.9);
-      const speed = 0.45 + Math.random() * 0.12;
+      // Angular rate over a fixed-metre circle, so it must shrink as the world
+      // grows to hold the same ~4.5 u/s glide the comment above describes.
+      const speed = (22.5 + Math.random() * 6) / WORLD_RADIUS;
       const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
       for (let j = 0; j < flock.count; j++) {
         // Second wingman is a mottled juvenile; every bird gets size jitter.
@@ -1789,7 +1838,10 @@ export class GameScene extends THREE.Scene {
       [0.5, 0.6],
       [4.4, 0.55],
     ];
-    for (let i = 0; i < SPOTS.length; i++) {
+    // Also the pool the bird-feed FSM draws its "nearest 8" from, so thinning
+    // it out would quietly weaken a paid consumable as well as the ambience.
+    const GROUND_BIRD_SPOTS = growSiteRing(SPOTS, Math.round(SPOTS.length * areaScale()));
+    for (let i = 0; i < GROUND_BIRD_SPOTS.length; i++) {
       const sp = SPECIES[i % SPECIES.length];
       const { bird, wingL, wingR, tail, legs } = this.buildBird(
         GameScene.birdMat(sp.body),
@@ -1805,7 +1857,7 @@ export class GameScene extends THREE.Scene {
       // sparrow) are preserved — the whole range just moves down together.
       const size = (sp.size[0] + Math.random() * (sp.size[1] - sp.size[0])) * 0.72;
       bird.scale.setScalar(size);
-      const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
+      const dir = this.island.dirAt(GROUND_BIRD_SPOTS[i][0], GROUND_BIRD_SPOTS[i][1]);
       // Seat on the RAYCAST mesh, not the analytic field: where the two
       // diverge the analytic radius sat under the rendered terrain and the
       // birds were buried. Startup-only, so 12 raycasts is fine.
@@ -1979,7 +2031,9 @@ export class GameScene extends THREE.Scene {
       [0.35, 0.95], // bengal — meadow west of the hub
       [5.75, 0.74], // persian — lawn near the shore road
     ];
-    for (let i = 0; i < SPOTS.length; i++) {
+    // SPECIES[i % len] already handles repeats, so extra spots just cycle the cast.
+    const CAT_SPOTS = growSiteRing(SPOTS, Math.round(SPOTS.length * areaScale()));
+    for (let i = 0; i < CAT_SPOTS.length; i++) {
       const { cat, tailJoints, legs, head } = this.buildCat(SPECIES[i % SPECIES.length]);
       // 1.45-1.95 (was 1.0-1.35). The two populations kept reading as one
       // size class because a big bird (1.05) and a small cat (1.0) were the
@@ -1987,7 +2041,7 @@ export class GameScene extends THREE.Scene {
       // difference survives any roll of the dice, at any distance.
       const size = 1.45 + Math.random() * 0.5;
       cat.scale.setScalar(size);
-      const dir = this.island.dirAt(SPOTS[i][0], SPOTS[i][1]);
+      const dir = this.island.dirAt(CAT_SPOTS[i][0], CAT_SPOTS[i][1]);
       // Raycast seat (startup-only) — the analytic field sits under the mesh.
       const s = this.island.sampleSurfaceByDirection(dir, 0);
       cat.position.copy(s.position).addScaledVector(s.normal, 0.12 * size + 0.005);
@@ -2106,7 +2160,15 @@ export class GameScene extends THREE.Scene {
       this.seatCatTarget(c, c.walkTo);
       c.walkFrom.copy(c.curPos);
       c.walkT0 = time;
-      c.walkDur = THREE.MathUtils.clamp(near[i].d / GameScene.CAT_TROT_SPEED, 0.6, 6);
+      // Ceiling DERIVED from the call radius, not a literal: at 2.6 u/s a 6s cap
+      // only covers 15.6u, so a cat summoned from the far edge of a 33u call
+      // radius would cross the gap at ~5.5 u/s under a walk-gait animation —
+      // visibly skating. These two constants have to move together.
+      c.walkDur = THREE.MathUtils.clamp(
+        near[i].d / GameScene.CAT_TROT_SPEED,
+        0.6,
+        GameScene.CAT_CALL_RADIUS / GameScene.CAT_TROT_SPEED,
+      );
       c.mode = 'trot';
       c.feastUntil = time + c.walkDur + GameScene.CAT_FEAST_SECONDS;
       c.headingTarget = this.catHeadingFor(c, this._catScratch2.copy(c.walkTo).sub(c.walkFrom));
@@ -2148,7 +2210,7 @@ export class GameScene extends THREE.Scene {
 
   // ── Bird feed ─────────────────────────────────────────────────────────
   private static readonly FEED_THROW_DIST = 3.6; // how far ahead it lands
-  private static readonly FEED_CALL_RADIUS = 38; // birds within this fly in
+  private static readonly FEED_CALL_RADIUS = 0.76 * WORLD_RADIUS; // birds within this fly in
   private static readonly FEED_MAX_BIRDS = 8;
   private static readonly FEED_FEAST_SECONDS = 26;
   private static readonly FEED_PILE_LIFE = 30;
@@ -2511,7 +2573,7 @@ export class GameScene extends THREE.Scene {
     const p = this.fishFeedPiles[idx];
     if (!p) return;
     for (const f of this.fish) {
-      if (f.feedTarget && f.feedTarget.angleTo(p.dir) < 0.05) {
+      if (f.feedTarget && f.feedTarget.angleTo(p.dir) < 2.5 / WORLD_RADIUS) {
         f.feedTarget = null;
         f.feedUntil = 0;
       }
@@ -2551,8 +2613,8 @@ export class GameScene extends THREE.Scene {
           if (
             f.feedTarget &&
             time < f.feedUntil &&
-            f.feedTarget.angleTo(p.dir) < 0.05 &&
-            f.dir.angleTo(f.feedTarget) <= 0.05
+            f.feedTarget.angleTo(p.dir) < 2.5 / WORLD_RADIUS &&
+            f.dir.angleTo(f.feedTarget) <= 2.5 / WORLD_RADIUS
           ) {
             eaters++;
           }
@@ -2831,9 +2893,13 @@ export class GameScene extends THREE.Scene {
       [1.26, 0.12],
       [3.77, 0.15],
     ];
-    const N = 27; // 18 schooling + 9 solos (was 22/4 — the solo cast doubled)
+    // Schoolers stay at 18: they're ANCHORED to fixed school sites, so more of
+    // them would just crowd the same water. Solos roam the whole shoreline, so
+    // they scale with its circumference.
+    const SOLO_START = 18;
+    const N = SOLO_START + Math.round(9 * beltScale());
     for (let i = 0; i < N; i++) {
-      const solo = i >= 18;
+      const solo = i >= SOLO_START;
       // Solos cycle the whole large cast (koi/big-dark/snapper/dartfish/
       // grouper) instead of just two — real variety AND a real size spread.
       const [bc, fc, sc] = solo
@@ -3156,7 +3222,7 @@ export class GameScene extends THREE.Scene {
       // floating on the surface and rise so the back breaks through. The great-
       // circle advance below then carries the fish in; the wave-Y seats it.
       if (feeding) {
-        if (f.dir.angleTo(f.feedTarget as THREE.Vector3) > 0.03) {
+        if (f.dir.angleTo(f.feedTarget as THREE.Vector3) > 1.5 / WORLD_RADIUS) {
           this._fishHome
             .copy(f.feedTarget as THREE.Vector3)
             .addScaledVector(f.dir, -(f.feedTarget as THREE.Vector3).dot(f.dir));
@@ -3173,9 +3239,10 @@ export class GameScene extends THREE.Scene {
           this._fishDown.set(0, -1, 0).addScaledVector(f.dir, f.dir.y).normalize();
           f.heading.lerp(this._fishDown, 0.1);
         }
-        // Soft school tether: drifting >0.12 rad (~6u) from home turns the fish
-        // back, so schools stay parked off their beach instead of dispersing.
-        if (f.dir.angleTo(f.home) > 0.12) {
+        // Soft school tether: drifting >6u from home turns the fish back, so
+        // schools stay parked off their beach instead of dispersing. A real
+        // distance — as an angle the school would sprawl to 9u at R=75.
+        if (f.dir.angleTo(f.home) > 6 / WORLD_RADIUS) {
           this._fishHome.copy(f.home).addScaledVector(f.dir, -f.home.dot(f.dir));
           if (this._fishHome.lengthSq() > 1e-8) {
             f.heading.lerp(this._fishHome.normalize(), 0.08);
@@ -3542,7 +3609,11 @@ export class GameScene extends THREE.Scene {
     if (!this.island) return;
     const fernMat = GameScene.birdMat(0x4f9a52);
     let planted = 0;
-    const N = 46;
+    // A BELT along the shoreline (300u round at R=50, 450u at R=75), so this
+    // tracks circumference, not area. Note only ~25 of these 46 actually plant
+    // even at R=50 — the rest are rejected by the water/street/slope/clearance
+    // filters — so this is the candidate count, not the palm count.
+    const N = Math.round(46 * beltScale());
     for (let i = 0; i < N; i++) {
       // Golden-angle march around the coast so the belt never clumps.
       const lon = (i * 2.399963) % (Math.PI * 2);
@@ -3719,7 +3790,7 @@ export class GameScene extends THREE.Scene {
       if (mode === 'anchor') return proj(anchor.clone().multiplyScalar(R).sub(pos));
       if (mode === 'point' && intent.facePoint) return proj(intent.facePoint.clone().sub(pos));
       // 'street': face the nearest pathway, else fall back to inland
-      const sd = island.nearestStreetDir(dir, 0.4);
+      const sd = island.nearestStreetDir(dir, island.arc(20));
       if (sd) return proj(sd.multiplyScalar(R).sub(pos));
       return seaward.negate();
     };
@@ -3921,11 +3992,11 @@ export class GameScene extends THREE.Scene {
     const seaR = this.island.seaLevel();
     const marchAxis = new THREE.Vector3().crossVectors(spotPlace.dir, seaward).normalize();
     const probe = new THREE.Vector3();
-    const step = 0.004; // ~0.2u of arc at R=50
+    const step = 0.2 / WORLD_RADIUS; // 0.2u of arc at any radius
     let spotDir = spotPlace.dir;
     let spotR = spotPlace.position.length();
     let spotN = spotPlace.normal;
-    for (let a = step; a <= 0.24; a += step) {
+    for (let a = step; a <= 12 / WORLD_RADIUS; a += step) {
       probe.copy(spotPlace.dir).applyAxisAngle(marchAxis, a);
       const s = this.island.analyticSurface(probe);
       if (s.radius < seaR - 0.06) {
@@ -4179,7 +4250,7 @@ export class GameScene extends THREE.Scene {
       npc.meshRef.quaternion.copy(quat);
       // Face the market street: the counter is between the two stall rows, so
       // look along the tangent toward the nearest boulevard point.
-      const street = this.island.nearestStreetDir(dir, 0.6);
+      const street = this.island.nearestStreetDir(dir, this.island.arc(30));
       if (street) {
         const target = street.multiplyScalar(this.island.getRadius());
         this._sailTmp.subVectors(target, surf.position);
@@ -4783,7 +4854,11 @@ export class GameScene extends THREE.Scene {
     house.position.copy(s.position);
     house.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
     // Door faces the main island (north), greeting arrivals from the water.
-    this.island.faceObjectToward(house, up, this.island.dirAt(5.9, 0.5).multiplyScalar(50));
+    this.island.faceObjectToward(
+      house,
+      up,
+      this.island.dirAt(5.9, 0.5).multiplyScalar(this.island.getRadius()),
+    );
     house.name = 'islet_beach_house';
     this.add(house);
 
@@ -5113,8 +5188,9 @@ export class GameScene extends THREE.Scene {
     });
     this.cloudMat = cloudMat;
     const planetR = this.island ? this.island.getRadius() : 18;
-    // 18 (was 10): the R50 sky read sparse — more cover, same tight ceiling.
-    for (let i = 0; i < 18; i++) {
+    // 18 at R=50 (was 10): the sky read sparse. Scaled by area so a bigger
+    // planet doesn't go back to reading empty.
+    for (let i = 0; i < Math.round(18 * areaScale()); i++) {
       const pivot = new THREE.Object3D();
       // Random orbit plane
       pivot.rotation.set(
@@ -5949,8 +6025,11 @@ export class GameScene extends THREE.Scene {
     mat.emissive = new THREE.Color(0x554411);
     const golden = Math.PI * (3 - Math.sqrt(5));
     const dir = new THREE.Vector3();
-    for (let i = 0; i < 20; i++) {
-      const y = 1 - ((i + 0.5) / 20) * 2;
+    // Coins set the traversal REWARD CADENCE — how often you find one while
+    // crossing the island — so the count tracks area, not a fixed number.
+    const COIN_COUNT = Math.round(20 * areaScale());
+    for (let i = 0; i < COIN_COUNT; i++) {
+      const y = 1 - ((i + 0.5) / COIN_COUNT) * 2;
       const rAt = Math.sqrt(Math.max(0, 1 - y * y));
       const th = golden * i * 7.3;
       dir
@@ -6815,7 +6894,7 @@ export class GameScene extends THREE.Scene {
       angle: number,
       latitude: number, // radians from equator, positive = north
       radiusOffset: number,
-      clearArc: number = 0.2,
+      clearArc: number = this.island.arc(10),
     ) => {
       const cosLat = Math.cos(latitude);
       let dir = new THREE.Vector3(
@@ -6848,7 +6927,9 @@ export class GameScene extends THREE.Scene {
       const mailbox = new Mailbox();
       this.add(mailbox.mesh);
       mailbox.mesh.scale.setScalar(0.55); // real-scale: roadside mailbox, not a monument
-      placeOnSphere(mailbox.mesh, i * 2.399963, MAILBOX_LATS[i], -0.02, 0.3);
+      // 15u: a mailbox is 0.55 scale, so this disc is about siting the DELIVERY
+      // CHAIN across the map, not about the prop's own footprint.
+      placeOnSphere(mailbox.mesh, i * 2.399963, MAILBOX_LATS[i], -0.02, this.island.arc(15));
       mailboxes.push(mailbox);
     }
 
@@ -6878,7 +6959,7 @@ export class GameScene extends THREE.Scene {
       obj: THREE.Object3D,
       angle: number,
       latitude: number,
-      clearArc = 0.22,
+      clearArc = this.island.arc(11),
     ) => {
       const cosLat = Math.cos(latitude);
       let dir = new THREE.Vector3(
@@ -7386,7 +7467,7 @@ export class GameScene extends THREE.Scene {
               const role = GameScene.NPC_ROLES[npc.name]?.role ?? npc.name;
               this.setNpcBadge(i, role, NpcActivities.ACTIVITY_DEFS[goal.activity].short);
             } else {
-              w.target.copy(this.randomDirNear(w.home, 0.1));
+              w.target.copy(this.randomDirNear(w.home, 5 / WORLD_RADIUS));
               w.activity = undefined;
               w.pose = undefined;
               w.faceActive = false;
@@ -7402,15 +7483,23 @@ export class GameScene extends THREE.Scene {
           }
         } else {
           const remaining = w.dir.angleTo(w.target);
-          if (remaining < 0.004) {
+          if (remaining < 0.2 / WORLD_RADIUS) {
             w.state = 'idle';
             w.until = time + (w.nextDwell ?? 3 + Math.random() * 7);
           } else {
             this._wanderAxis.crossVectors(w.dir, w.target);
             if (this._wanderAxis.lengthSq() > 1e-10) {
               this._wanderAxis.normalize();
-              // ~1.4 u/s stroll on the R=50 sphere (a 5 km/h human walk)
-              const step = Math.min(0.028 * deltaTime, remaining);
+              // 1.4 u/s stroll — a 5 km/h human walk. THE ONLY locomotion rate
+              // in the codebase expressed as an angle: a bare 0.028 rad/s is
+              // 1.4 u/s at R=50 but 2.1 u/s (7.6 km/h) at R=75, so the whole
+              // village would break into a jog on a bigger planet while the
+              // player's 5.6 u/s stayed put, collapsing the 4:1 pacing contrast
+              // the "calm town" reading depends on.
+              const step = Math.min(
+                (GameScene.NPC_WALK_SPEED / WORLD_RADIUS) * deltaTime,
+                remaining,
+              );
               w.dir.applyAxisAngle(this._wanderAxis, step);
               // Obstacle avoidance: slide the NPC's ground point out of the
               // big structure footprints (houses/stalls/fountain/buildings)
@@ -7723,7 +7812,7 @@ export class GameScene extends THREE.Scene {
       const totalAngle = this._playerDir.angleTo(this._targetDir);
       this._guideAxis.crossVectors(this._playerDir, this._targetDir);
       const R = playerPos.length();
-      if (totalAngle > 0.08 && this._guideAxis.lengthSq() > 1e-8) {
+      if (totalAngle > 4 / WORLD_RADIUS && this._guideAxis.lengthSq() > 1e-8) {
         guideVisible = true;
         const refresh = time > this.guideRefreshAt;
         if (refresh) this.guideRefreshAt = time + 0.15;
@@ -8435,7 +8524,9 @@ export class GameScene extends THREE.Scene {
           label: d.radar,
         })),
         {
-          ...this.worldToRadar(this.island.dirAt(5.9, -0.02).multiplyScalar(52)),
+          ...this.worldToRadar(
+            this.island.dirAt(5.9, -0.02).multiplyScalar(this.island.getRadius() + 2),
+          ),
           color: '#4a8ea6',
           label: 'Islet',
         },
@@ -9946,7 +10037,7 @@ export class GameScene extends THREE.Scene {
       const w = (npc.meshRef.userData as { wander?: { activity?: string; target: THREE.Vector3 } })
         .wander;
       if (!w || npc.meshRef.visible || w.activity !== 'sleep') continue;
-      if (w.target.angleTo(doorDir) > 0.05) continue; // asleep behind a different door
+      if (w.target.angleTo(doorDir) > 2.5 / WORLD_RADIUS) continue; // asleep behind a different door
       const spot = SPOTS[this.interiorOccupants.length];
       if (!spot) break;
       npc.meshRef.visible = true;

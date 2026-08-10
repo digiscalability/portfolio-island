@@ -1,8 +1,19 @@
 import * as THREE from 'three';
 
 import { cleanChatText } from './Moderation';
+import { WORLD_RADIUS } from './WorldScale';
 
-export const PROXIMITY_RADIUS = 17.5; // scaled 14→17.5 with the R40→50 grow (×50/40) so voice/text proximity + the coach-mark keep the same fraction of the (now bigger) world's reach
+/**
+ * How far voice/text chat and the coach-mark reach.
+ *
+ * A FRACTION of the world, not a fixed distance: 0.35 x radius. Scaled by hand
+ * once already (14 -> 17.5 on the R40->50 grow) with the note that it must keep
+ * "the same fraction of the (now bigger) world's reach" — so the rule was known,
+ * it just wasn't written down anywhere a compiler could see. Pinned by
+ * test/chat.test.ts.
+ */
+export const PROXIMITY_FRACTION = 0.35;
+export const PROXIMITY_RADIUS = PROXIMITY_FRACTION * WORLD_RADIUS;
 export const BUBBLE_TTL = 6;
 export const TEXT_MAX = 120;
 export const VOICE_MAX_MS = 8000;

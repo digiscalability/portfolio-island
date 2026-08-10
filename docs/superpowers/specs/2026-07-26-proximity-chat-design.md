@@ -1,5 +1,9 @@
 # Proximity chat — text bubbles + push-to-talk voice clips
 
+> ⚠️ **SUPERSEDED — SHIPPED.** World-scale constants here are frozen at the R=22
+> era; chat reach is now `0.35 × WORLD_RADIUS` (`Chat.ts` / `WorldScale.ts`).
+> Design intent still applies — the numbers do not.
+
 **Date:** 2026-07-26
 **Status:** Approved (design) — ready for implementation plan
 **Scope:** Add player-to-player communication (text + audio) to the Life Island

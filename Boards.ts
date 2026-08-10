@@ -5,6 +5,7 @@
  * a blocked/offline backend must never break the game.
  */
 import { cleanChatText, safePeerName } from './Moderation';
+import { WORLD_ERA } from './WorldScale';
 
 export type CircuitKind = 'land' | 'water';
 export interface LeaderEntry {
@@ -27,7 +28,7 @@ export async function submitRaceTime(
     const { getFirebaseRealtime } = await import('./firebaseClient');
     const { ref, get, set } = await import('firebase/database');
     const { db, uid } = await getFirebaseRealtime();
-    const path = `leaderboard/island/${circuit}/${uid}`;
+    const path = `leaderboard/island/${WORLD_ERA}/${circuit}/${uid}`;
     const timeMs = Math.round(timeSec * 1000);
     const existing = await get(ref(db, path));
     const prev = existing.val()?.timeMs;
@@ -44,7 +45,7 @@ export async function getLeaderboard(circuit: CircuitKind, topN = 10): Promise<L
     const { getFirebaseRealtime } = await import('./firebaseClient');
     const { ref, get } = await import('firebase/database');
     const { db } = await getFirebaseRealtime();
-    const snap = await get(ref(db, `leaderboard/island/${circuit}`));
+    const snap = await get(ref(db, `leaderboard/island/${WORLD_ERA}/${circuit}`));
     const val = snap.val() as Record<string, { name?: string; timeMs?: number }> | null;
     if (!val) return [];
     return Object.values(val)

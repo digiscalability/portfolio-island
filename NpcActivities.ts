@@ -14,17 +14,29 @@
 import * as THREE from 'three';
 
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, dirFor } from './Districts';
+import { WORLD_RADIUS } from './WorldScale';
 import type { Mood } from './WorldState';
 
 /**
- * How far OUT of a plaza centre an NPC stands, in radians of arc.
+ * Metres of surface distance -> geodesic angle. Same contract as Island.arc(),
+ * but this module is function-level with no island instance, so it reads the
+ * world radius directly. Never write a bare radian here — every anchor spacing
+ * below is a real distance a villager walks.
+ */
+function arc(metres: number): number {
+  return metres / WORLD_RADIUS;
+}
+
+/**
+ * How far OUT of a plaza centre an NPC stands.
  *
  * Each district seats its landmark building at the plaza centre with a
- * 1.7-radius collider, and the wander loop keeps NPCs 2.0u clear of it. At
- * R=50, 0.055 rad ≈ 2.75u — comfortably outside the wall, still on the plaza
- * apron rather than out on the grass.
+ * 1.7-radius collider, and the wander loop keeps NPCs 2.0u clear of it. 2.75u
+ * is comfortably outside the wall and still on the plaza apron rather than out
+ * on the grass — bounded on BOTH sides, which is why it must stay a real
+ * distance rather than an angle that grows with the world.
  */
-const PLAZA_APRON = 0.055;
+const PLAZA_APRON = arc(2.75);
 
 /**
  * The welcome-plaza apron as world-ish dirs — the fallback stage if the
@@ -32,9 +44,9 @@ const PLAZA_APRON = 0.055;
  */
 export function plazaFallback(): THREE.Vector3[] {
   return [
-    dirFor(0.9, Math.PI / 2 - 0.09)
+    dirFor(0.9, Math.PI / 2 - arc(4.5))
       .clone()
-      .multiplyScalar(50),
+      .multiplyScalar(WORLD_RADIUS),
   ];
 }
 
@@ -433,9 +445,13 @@ export function setAnchors(a: {
     mailboxes: a.mailboxes.map(toDir),
     stalls: a.stalls.map(toDir),
     benches: a.benches.map(toDir),
-    // 0.075 rad (3.75u at R=50): the old 0.05 ring EQUALLED the plinth base
-    // radius, so all four keeper waypoints sat ON the rock wall.
-    lighthouse: a.lighthouseDir ? ringAround(a.lighthouseDir.clone().normalize(), 0.075, 4) : [],
+    // 3.75u: the old 2.5u ring EQUALLED the plinth base radius, so all four
+    // keeper waypoints sat ON the rock wall. Must stay a real distance —
+    // as an angle it would have re-created that bug at a smaller radius and
+    // walked the keeper off the headland at a larger one.
+    lighthouse: a.lighthouseDir
+      ? ringAround(a.lighthouseDir.clone().normalize(), arc(3.75), 4)
+      : [],
     // EVERY plaza anchor is the APRON in front of the hall, never the hall.
     // Each district seats its landmark building at exactly dirFor(d.lon,
     // d.lat) with a 1.7-radius collider (2.0u NPC keep-out), so the raw
@@ -590,7 +606,7 @@ function pickAnchor(
   personaId?: string | null,
 ): boolean {
   if (source === 'home') {
-    jitterDir(s.home, 0.06, outDir);
+    jitterDir(s.home, arc(3), outDir);
     return true;
   }
   if (source === 'door') {
@@ -698,7 +714,7 @@ export function getGoal(
     }
   }
   if (!anchored && !pickAnchor(def.anchorSource, s, outDir, personaId)) {
-    jitterDir(s.home, 0.06, outDir); // graceful fallback if anchors missing
+    jitterDir(s.home, arc(3), outDir); // graceful fallback if anchors missing
   }
   return {
     activity,

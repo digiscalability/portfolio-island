@@ -25,6 +25,7 @@ import { SimpleUI } from './SimpleUI';
 import { applySoftLookFogPatch } from './SoftLook';
 import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
+import { WORLD_ERA } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
 import './style.css';
@@ -655,7 +656,7 @@ class SimpleApp {
       this.ui.setJournalProvider(() => {
         const best = (kind: string): number | null => {
           try {
-            const v = parseFloat(localStorage.getItem(`ds_race_best2_${kind}`) ?? '');
+            const v = parseFloat(localStorage.getItem(`ds_race_best_${WORLD_ERA}_${kind}`) ?? '');
             return Number.isFinite(v) ? v : null;
           } catch {
             return null;

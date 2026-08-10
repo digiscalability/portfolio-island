@@ -66,7 +66,7 @@ photo mode won't do video — use OBS/Xbox Game Bar (Win+Alt+R).
 
 > Live: https://island.digiscalability.com · Source: https://github.com/digiscalability/portfolio-island
 >
-> A spherical-planet portfolio (R=50 displaced sphere, ~1MB build, custom sea
+> A spherical-planet portfolio (R=75 displaced sphere, ~1MB build, custom sea
 > shader with a CPU mirror so boats ride the visible waves). The showcase-y
 > bits for this crowd:
 >
@@ -76,7 +76,7 @@ photo mode won't do video — use OBS/Xbox Game Bar (Win+Alt+R).
 >   trig executes it at 60fps (no per-frame model calls)
 > - Enterable buildings via a hidden-room teleport trick (no hollowed meshes,
 >   no second scene — the spherical physics never notices)
-> - InstancedMesh grass (~100k blades) with a load-governor, batched ambient
+> - InstancedMesh grass (~180k blades on desktop, 32k on phones) with a load-governor, batched ambient
 >   particles, draw-call budget kept mobile-friendly
 >
 > Assets are Blender-headless-Python generated, ~200KB of glb total.

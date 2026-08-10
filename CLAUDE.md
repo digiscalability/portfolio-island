@@ -80,7 +80,8 @@ opposite and having it reported as broken.
 
 ## Recurring concerns (read before touching)
 
-- **Terrain is a raycast/analytic hybrid.** `terrainRadiusFor` / `analyticSurface` are raycast-free and cheap (~0.003ms); `sampleSurfaceByDirection` raycasts the mesh (~1.24ms — expensive). Prefer analytic on hot/startup paths. Mesh is a 128×128 sphere (~1.08-unit vertex spacing): features narrower than that can't be resolved (the summit-trail width constraint).
+- **Terrain is a raycast/analytic hybrid.** `terrainRadiusFor` / `analyticSurface` are raycast-free and cheap (~0.003ms); `sampleSurfaceByDirection` raycasts the mesh (~1.24ms — expensive). Prefer analytic on hot/startup paths. Mesh is `round(radius × 5.8)²` (435² = 190k verts at R=75), so **vertex spacing is pinned at 2π/5.8 = 1.083u at ANY radius** — only the vertex COUNT scales with R². Features narrower than 1.083u still can't be resolved (the summit-trail width constraint). The old "128×128" claim here was false and made a radius grow look far more dangerous than it is.
+- **The world radius lives in `WorldScale.ts`, not at a call site.** `WORLD_RADIUS` plus `reliefScale` / `areaScale` / `beltScale` / `WORLD_ERA`. Two unit systems exist and radius is the exchange rate between them: ANGULAR quantities (lon/lat, claim arcs, wander steps) scale for free; ABSOLUTE ones (buildings, colliders, speeds, relief heights, reach radii) do not. Write spacing as `island.arc(metres)`, never as a radian you worked out by hand — `test/radiusUnits.test.ts` fails the build on a bare literal.
 - **Sea shader.** Wave displacement is injected via `onBeforeCompile`; the CPU `waveHeightAt` MUST mirror the shader math exactly, and normals are perturbed analytically. `seaLevel()` / `isOverWater()` stay pinned to MEAN sea level — tide is visual-only.
 - **Three.js disposal.** Dispose geometries / materials / textures on teardown to avoid GPU leaks (there's a known LIVE-only dispose warning still being chased).
 - **`instanceColor` multiplies `vertexColor`** in three.js — the cause of the earlier near-black grass.
@@ -98,7 +99,7 @@ Before claiming a visual fix worked, capture a fresh screenshot of the affected 
 
 ## Cross-venture awareness
 
-Life Island + Planet Messenger share architecture (`Integrated Project Requirements_ DigiScalability Life Island & Planet Messenger.md`). If a change affects Planet Messenger's contract, note it in the Sessions DB handoff; don't edit cross-repo.
+Life Island + Planet Messenger share architecture (`Integrated Project Requirements_ DigiScalability Life Island & Planet Messenger.md`). If a change affects Planet Messenger's contract, note it in `.claude/LOCAL-STATE.md`; don't edit cross-repo.
 
 ## Checkpoint protocol
 
@@ -106,8 +107,9 @@ When I say "checkpoint", when you hit an error/limit, or when we wrap:
 
 1. Summarize session in ≤6 bullets
 2. Write to `.claude/LOCAL-STATE.md` (replace entire file — branch, files in flight, visual state captured, next step)
-3. Update the Notion State page "Last session summary" via MCP
-4. Create a row in the Notion Sessions DB (Venture=PortfolioIsland, Surface="code", Status=Checkpointed, What I was doing, Next step, Blockers)
-5. Confirm in chat: "Checkpointed. See Notion [URL]."
+3. Confirm in chat: "Checkpointed."
 
-Do ALL FIVE steps — Notion writes must complete. If MCP fails, save locally and flag loudly.
+`.claude/LOCAL-STATE.md` is the ONLY handoff surface — it must stand alone for a
+session that has no other context. The Notion State page and Sessions DB were
+dropped from this protocol (2026-08-09): the State page URL was never set up, so
+the steps only ever produced a failure to flag.

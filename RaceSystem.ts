@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
 import type { Island } from './Island';
+import { WORLD_ERA } from './WorldScale';
 
 /**
  * RaceSystem — checkpoint time-trials that give the vehicles a purpose.
@@ -490,7 +491,7 @@ export class RaceSystem {
 
   private loadBest(kind: CircuitKind): number | null {
     try {
-      const v = localStorage.getItem(`ds_race_best2_${kind}`);
+      const v = localStorage.getItem(`ds_race_best_${WORLD_ERA}_${kind}`);
       return v ? parseFloat(v) : null;
     } catch {
       return null;
@@ -499,7 +500,7 @@ export class RaceSystem {
 
   private saveBest(kind: CircuitKind, t: number): void {
     try {
-      localStorage.setItem(`ds_race_best2_${kind}`, String(t));
+      localStorage.setItem(`ds_race_best_${WORLD_ERA}_${kind}`, String(t));
     } catch {
       /* ignore */
     }

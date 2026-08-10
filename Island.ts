@@ -27,6 +27,12 @@ import { SimplePlayer } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import TextureGenerator from './TextureGenerator';
 import { isRealTheme } from './Theme';
+import {
+  REFERENCE_RADIUS as WORLD_REFERENCE_RADIUS,
+  SEA_OFFSET as WORLD_SEA_OFFSET,
+  areaScale,
+  beltScale,
+} from './WorldScale';
 
 type IslandMeshUserData = {
   _debug?: boolean;
@@ -172,7 +178,51 @@ export class Island {
   // Land sits >= base+0.3 (continent mask floor); the calm surface at +0.1
   // with wave crests to +0.25 stays just under the beach so waves lap the
   // shore without flooding the districts.
-  public static readonly SEA_OFFSET = 0.1;
+  public static readonly SEA_OFFSET = WORLD_SEA_OFFSET;
+  /**
+   * The radius every absolute relief constant in this file was authored against.
+   * Terrain displacement, the beach floor, the sea offset and the displacement
+   * ceiling are all world-unit heights tuned by eye at R=50.
+   *
+   * Both re-exported from WorldScale so the shader patch in SoftLook — which
+   * runs before any Island exists — reads the same numbers these do.
+   */
+  public static readonly REFERENCE_RADIUS = WORLD_REFERENCE_RADIUS;
+  // Minimum land displacement (the beach floor) in createIsland(). Named so the
+  // sea-vs-land headroom invariant described just below is TESTABLE rather than
+  // only asserted in prose — see test/islandRadius.test.ts. Raised 0.3 -> 0.75
+  // when the ocean's crests + tide broke through the beach.
+  public static readonly LAND_FLOOR = 0.75;
+  // Ceiling on terrain displacement above the base sphere. MUST stay above the
+  // tallest landform (floor + peak + crag) or summits clip flat into a mesa,
+  // and the surface sampler's ray must start ABOVE this or raycasts begin
+  // INSIDE the summit and miss it. That second ordering used to be maintained
+  // by hand via a comment; SAMPLE_RAY_DISP now derives from it so the two
+  // cannot drift apart. Both are absolute world units and scale with the world.
+  public static readonly MAX_DISPLACEMENT = 9.2;
+  /** Ray-start headroom for sampleSurfacePosition — always clears MAX_DISPLACEMENT. */
+  public static readonly SAMPLE_RAY_DISP = Island.MAX_DISPLACEMENT + 1.8;
+
+  /**
+   * Multiplier on every ABSOLUTE relief height, so the world's silhouette is
+   * radius-invariant.
+   *
+   * Landform EXTENTS are angular (peak reach, trail reach, the islet mask, the
+   * shore band), so they stretch with the world for free. Landform HEIGHTS are
+   * absolute. Grow the radius without this and the same 7.3u summit sits on a
+   * 1.5x wider base: the steepest flank falls from 41.8 deg to 30.8 deg and the
+   * island reads flat and pastoral instead of dramatic.
+   *
+   * Scaling here rather than at ~20 individual constants keeps height/radius —
+   * i.e. the ANGULAR profile you actually see — fixed at any size, and is 1.0 at
+   * the reference radius, so R=50 output is bit-identical.
+   *
+   * NOT applied to WAVE_AMP / TIDE_AMP: waves are ridden by boats and swimmers,
+   * which do not scale. Swell is a human-scale phenomenon like a door or a cat.
+   */
+  private get reliefScale(): number {
+    return this.radius / Island.REFERENCE_RADIUS;
+  }
   // Wave field constants (shared by the sea shader AND the analytic sampler
   // that floats swimmers/boats, so the mesh and the physics agree exactly).
   // NB: the wave sum peaks at 1.8, so the real displacement is AMP * 1.8.
@@ -497,7 +547,26 @@ export class Island {
     // Tripled now that each blade is half the height — 18000 x 4 tris = 72k,
     // still one draw call, and the blades are small enough that the extra
     // vertex work is cheap. Phones keep a lower count.
-    const COUNT = lowTier ? 32000 : 100000; // scaled again for R=50 (~1.56× the R=40 area) so the meadow keeps its carpet density; the governor still draws only a prefix under load
+    // Grass is the single biggest lever in the world and the one place "correct
+    // area maths" and "runs on a phone" disagree, so the two tiers diverge
+    // DELIBERATELY:
+    //
+    //  - Desktop ships 80% of proportional density (100k -> 180k at R=75). Blade
+    //    geometry is 12 non-indexed verts, so full proportional would be 2.7M
+    //    verts every frame, and this is ONE planet-spanning InstancedMesh whose
+    //    bounding sphere always intersects the frustum — none of it is ever
+    //    culled. The adaptive governor can't rescue it either: its first and
+    //    largest lever is render RESOLUTION (fragment-side) while everything the
+    //    grow adds is vertex-side.
+    //  - Low tier deliberately does NOT grow. Phones keep today's 32k and accept
+    //    thinner grass; a device that shipped fine at R=50 has no headroom for
+    //    2.25x the vertices. This is a decision, not an oversight.
+    //
+    // max(1, ...) keeps the reference world exactly as authored.
+    const GRASS_DENSITY_FRACTION = 0.8;
+    const COUNT = lowTier
+      ? 32000
+      : Math.round(100000 * Math.max(1, areaScale() * GRASS_DENSITY_FRACTION));
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -804,6 +873,8 @@ export class Island {
      * seconds; this is pure maths). `v` is the direction scaled to the base
      * radius, which is the domain the noise was authored in.
      */
+    // Hoisted out of the closure: this runs once per vertex (190k at R=75).
+    const reliefScale = this.reliefScale;
     const terrainRadiusFor = (normal: THREE.Vector3, v: THREE.Vector3): number => {
       // Enhanced terrain generation with better geographic features
       // Large-scale continents/mountains using multi-octave noise
@@ -849,9 +920,9 @@ export class Island {
       const shoreT = THREE.MathUtils.clamp((sinLat - shoreLo) / (shoreHi - shoreLo), 0, 1);
       const mask = shoreT * shoreT * (3 - 2 * shoreT); // smoothstep
       // Ridged noise on the flanks breaks the smooth dome into crags. Two
-      // octaves, and the fine one is pitched near the mesh limit: at 128
-      // segments on r=22 the vertex spacing is ~1.08 units, so features below
-      // ~2.5 units can't be resolved. The old scale of 0.5 was a ~12.6-unit
+      // octaves, and the fine one is pitched near the mesh limit: vertex
+      // spacing is 2*PI/5.8 = 1.083u at ANY radius, so features below ~2.5
+      // units can't be resolved. The old scale of 0.5 was a ~12.6-unit
       // wavelength — a gentle swell, which is exactly why the peaks read as
       // smooth domes rather than rock.
       const highland = highlandAt(normal);
@@ -874,7 +945,7 @@ export class Island {
       }
       // Land floor raised 0.3 -> 0.75 so the ocean's crests + tide can't break
       // through the beach.
-      const rock = Math.max(noiseDisp, 0.75) + highland + crag;
+      const rock = Math.max(noiseDisp, Island.LAND_FLOOR) + highland + crag;
       let landDisp = rock;
       if (trailW > 0.001) {
         // EXPLICIT monotonic ramp: height falls smoothly from a summit landing
@@ -912,7 +983,7 @@ export class Island {
       }
 
       // Clamp radius to prevent terrain from going inside the sphere
-      const rawRadius = this.radius + displacement;
+      const rawRadius = this.radius + displacement * reliefScale;
       const minRadius = this.radius * 0.86; // deep enough for the seafloor
       // Headroom for the highland range (base floor 0.75 + peak 3.3 + crag
       // ~1.65). At +4.2 the peaks clipped flat into a pale mesa. Keep this
@@ -920,7 +991,7 @@ export class Island {
       // Headroom for the taller range: main peak 7.3 + floor 0.75 + crag ~0.8
       // ≈ 8.85. Kept below the sampler's ray start (radius + maxDisp 11), or
       // raycasts begin inside the summit and miss it.
-      const maxRadius = this.radius + 9.2;
+      const maxRadius = this.radius + Island.MAX_DISPLACEMENT * reliefScale;
       return THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
     };
     this.terrainRadiusFor = terrainRadiusFor;
@@ -1322,14 +1393,23 @@ export class Island {
     // Coarse tier gets 64 segments instead of 96 — pure tessellation (~19k vs
     // ~55k tris of per-frame wave displacement); the wave MATH is untouched,
     // so the CPU waveHeightAt mirror stays exact.
-    const seaSegs = SimpleRenderer.isLowTierDevice() ? 80 : 120; // bumped 64/96→80/120 so each sea face spans ~the same world area at R50 (crest/foam bands stay crisp on the bigger sphere); wave MATH unchanged so the waveHeightAt mirror stays exact
-    const seaGeo = new THREE.SphereGeometry(this.radius + Island.SEA_OFFSET, seaSegs, seaSegs);
+    // Tessellation is tracked to the radius for the same reason the terrain's is:
+    // the foam/shallow bands baked into aDepth are WORLD-METRE features, so a
+    // fixed segment count makes each sea face span more world as the planet grows
+    // and the shoreline collar goes blocky. The wave MATH is untouched either way,
+    // so the CPU waveHeightAt mirror stays exact.
+    const seaSegs = Math.round(
+      (SimpleRenderer.isLowTierDevice() ? 80 : 120) * (this.radius / Island.REFERENCE_RADIUS),
+    );
+    // Built AT seaLevel() rather than re-deriving it, so what you SEE and what
+    // boats RIDE cannot drift apart (test/islandRadius.test.ts pins this).
+    const seaGeo = new THREE.SphereGeometry(this.seaLevel(), seaSegs, seaSegs);
     {
       const sp = seaGeo.attributes.position;
       const depth = new Float32Array(sp.count);
       const sn = new THREE.Vector3();
       const sv = new THREE.Vector3();
-      const seaR = this.radius + Island.SEA_OFFSET;
+      const seaR = this.seaLevel();
       for (let i = 0; i < sp.count; i++) {
         sn.set(sp.getX(i), sp.getY(i), sp.getZ(i)).normalize();
         sv.copy(sn).multiplyScalar(this.radius); // noise domain = base radius
@@ -1366,7 +1446,13 @@ export class Island {
     const SHIFT_PERSONAL = DISTRICT_SHIFT[2];
     const SHIFT_CONTACT = DISTRICT_SHIFT[3];
     const boulevardPts: THREE.Vector3[] = [];
-    const BOULEVARD_SEGS = 84;
+    // Radius-tracked: segment MIDPOINTS must stay closer together than the
+    // keepOutArc used when scattering props (see createStreetPath's caller), or
+    // trees and rocks seed straight through the road between samples. A fixed 84
+    // spaces midpoints 3.35u at R=50 but 5.02u at R=75, which clears the 1.9u
+    // floor and lets the scatter in. Also keeps the rigid PlaneGeometry chords
+    // short enough not to clip through curving terrain.
+    const BOULEVARD_SEGS = Math.round(84 * (this.radius / Island.REFERENCE_RADIUS));
     for (let i = 0; i <= BOULEVARD_SEGS; i++) {
       boulevardPts.push(this.dirAt((i / BOULEVARD_SEGS) * Math.PI * 2, 0.4636));
     }
@@ -1402,10 +1488,10 @@ export class Island {
     //   Welcome      (north pole) → spawn plaza, benches, flowers
     // Pre-claim the plaza sites so no props squat on the zone markers.
     // ZONE_LAT is imported from Districts.ts (shared). Pre-claim each plaza + pole.
-    for (const dLon of DISTRICT_LONS) this.claimDir(this.dirAt(dLon, ZONE_LAT), 0.13);
-    this.claimDir(new THREE.Vector3(0, 1, 0), 0.13);
+    for (const dLon of DISTRICT_LONS) this.claimDir(this.dirAt(dLon, ZONE_LAT), this.arc(6.5));
+    this.claimDir(new THREE.Vector3(0, 1, 0), this.arc(6.5));
     // Reserve the coastal lighthouse footprint so trees/props keep clear of it.
-    this.claimDir(this.dirAt(5.4, 0.34), 0.3);
+    this.claimDir(this.dirAt(5.4, 0.34), this.arc(15));
 
     // Add a few low-poly buildings aligned to the surface (placeholders). We'll attempt to replace them with GLTF models if present.
     const buildings = new THREE.Group();
@@ -1443,20 +1529,22 @@ export class Island {
     });
     const towerWinGeom = new THREE.PlaneGeometry(2.2, 4.2);
     // PROFESSIONAL district: two office rows forming a street wall along
-    // the boulevard (planned CBD blocks, not a ring). North row lat 0.64,
-    // south row lat 0.29 — ±0.175 rad from the boulevard centerline leaves
-    // pavement + sidewalk. Small claim arcs keep the rows exact.
+    // the boulevard (planned CBD blocks, not a ring). The rows sit 8.8u either
+    // side of the boulevard centreline — pavement + sidewalk — which is a REAL
+    // WIDTH, not an angle: as a bare latitude it became 13.2u at R=75 and the
+    // "street wall" stopped reading as a street at all.
     // Thinned from 8 → 4 towers (one per corner) and spread wider so the CBD
     // reads as a couple of blocks, not a wall — the island felt congested.
+    const CBD_ROW_OFFSET = this.arc(8.8);
     const BUILDING_SITES: Array<[number, number]> = [
-      [5.8, 0.64],
-      [0.48, 0.64],
-      [5.8, 0.29],
-      [0.48, 0.29],
+      [5.8, ZONE_LAT + CBD_ROW_OFFSET],
+      [0.48, ZONE_LAT + CBD_ROW_OFFSET],
+      [5.8, ZONE_LAT - CBD_ROW_OFFSET],
+      [0.48, ZONE_LAT - CBD_ROW_OFFSET],
     ];
     for (let i = 0; i < BUILDING_SITES.length; i++) {
       const [lon, lat] = BUILDING_SITES[i];
-      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.11); // roomier: was 0.09
+      const dir = this.claimOffStreet(this.dirAt(lon, lat), this.arc(5.5)); // roomier: was 4.5u
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -1506,26 +1594,31 @@ export class Island {
     const houses = new THREE.Group();
     const houseSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
     // PERSONAL district: a village street — two staggered cottage rows
-    // flanking the boulevard (lat 0.66 / 0.27), garden gaps between lots,
-    // rows offset in lon so no cottage stares straight into another.
-    // Near-plaza columns keep ≥0.2 rad from the plaza claim.
+    // flanking the boulevard 9.8u either side, garden gaps between lots, rows
+    // offset in lon so no cottage stares straight into another.
     // Thinned from 8 → 6 cottages and spread wider (roomier village street).
+    //
+    // Both the row offset and the along-street spread are REAL DISTANCES. Left
+    // as bare radians they became 14.7u and 45u at R=75: six cottages 45u apart
+    // is not a village street, it is six houses in a field. (Lon deltas are
+    // authored as raw radians here, as they always were — the cos(lat) foreshortening
+    // is absorbed into the tuned number, same as before.)
+    const HOUSE_ROW_OFFSET = this.arc(9.8);
+    const HOUSE_LON_SPREAD = this.arc(30);
+    const HOUSE_LON = 2.52 + SHIFT_PERSONAL;
     const HOUSE_SITES: Array<[number, number]> = [
-      // Widened the row spread (was ±0.44 rad about the plaza, now ±0.60) so the
-      // cottages read as a roomy village street, not a packed terrace — the
-      // R40 grow already pushed them ~33% further apart; this opens the gaps
-      // more. Still well clear of the neighbouring districts (1.57 rad away).
-      [1.92 + SHIFT_PERSONAL, 0.66],
-      [2.52 + SHIFT_PERSONAL, 0.66],
-      [3.12 + SHIFT_PERSONAL, 0.66],
-      [1.92 + SHIFT_PERSONAL, 0.27],
-      [2.54 + SHIFT_PERSONAL, 0.27],
-      [3.12 + SHIFT_PERSONAL, 0.27],
+      [HOUSE_LON - HOUSE_LON_SPREAD, ZONE_LAT + HOUSE_ROW_OFFSET],
+      [HOUSE_LON, ZONE_LAT + HOUSE_ROW_OFFSET],
+      [HOUSE_LON + HOUSE_LON_SPREAD, ZONE_LAT + HOUSE_ROW_OFFSET],
+      [HOUSE_LON - HOUSE_LON_SPREAD, ZONE_LAT - HOUSE_ROW_OFFSET],
+      // +0.02 stagger so facing cottages don't stare straight at each other.
+      [HOUSE_LON + 0.02, ZONE_LAT - HOUSE_ROW_OFFSET],
+      [HOUSE_LON + HOUSE_LON_SPREAD, ZONE_LAT - HOUSE_ROW_OFFSET],
     ];
     const houseCount = HOUSE_SITES.length;
     for (let i = 0; i < houseCount; i++) {
       const [lon, lat] = HOUSE_SITES[i];
-      const dir = this.claimOffStreet(this.dirAt(lon, lat), 0.12); // roomier: was 0.1
+      const dir = this.claimOffStreet(this.dirAt(lon, lat), this.arc(6)); // roomier: was 5u
 
       // Sample actual terrain surface along this direction
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
@@ -1761,8 +1854,11 @@ export class Island {
     // so the eye reads distinct biomes instead of a uniform sprinkle. (The
     // Math.random here is seeded via GameScene.installSeededRandom, so the
     // whole layout is reproducible across reloads.)
-    const TREE_CANDIDATES = 290;
-    const TREE_CAP = 96; // grown with the R40→50 area (~×1.56) so groves don't thin out on the bigger sphere; kept below full-proportional to protect the draw-call budget the ambient batching reclaimed
+    // CANDIDATES is also the angular sampling rate against the ~21u moistureAt
+    // wavelength, so it has to grow with the sphere or the grove field gets
+    // under-sampled and groves land in the wrong places, not just fewer of them.
+    const TREE_CANDIDATES = Math.round(290 * areaScale());
+    const TREE_CAP = Math.round(96 * areaScale()); // a HARD cap (`placed < TREE_CAP`), so without this the island silently thins
     let placed = 0;
     for (let i = 0; i < TREE_CANDIDATES && placed < TREE_CAP; i++) {
       const y = 1 - (i / (TREE_CANDIDATES - 1)) * 2;
@@ -1781,7 +1877,7 @@ export class Island {
       // groves and open up meadows between — clumping AND negative space.
       const groveP = 0.36 + moist * 0.7 - Math.max(0, candidate.y - Math.sin(0.92)) * 1.7;
       if (Math.random() > groveP) continue; // a clearing
-      const dir = this.claimDir(candidate, 0.07);
+      const dir = this.claimDir(candidate, this.arc(3.5));
       if (dir.y < Math.sin(0.29)) continue;
       // No trees through the pavement — skip candidates on a street
       if (this.isNearStreet(dir)) continue;
@@ -1933,7 +2029,10 @@ export class Island {
       [3.8 + SHIFT_CONTACT, 0.42], // contact
     ];
     const mailboxSources = MAILBOX_SITES.map(([lon, lat]) => {
-      const s = this.sampleSurfaceByDirection(this.claimOffStreet(this.dirAt(lon, lat), 0.1), 0.0);
+      const s = this.sampleSurfaceByDirection(
+        this.claimOffStreet(this.dirAt(lon, lat), this.arc(5)),
+        0.0,
+      );
       return { position: s.position.clone(), normal: s.normal.clone() };
     });
     const mailboxCount = mailboxSources.length;
@@ -1945,7 +2044,7 @@ export class Island {
       // sits inside the walls — the old 0.8-1.2u offset buried it in the house),
       // then slide off the pavement and claim the spot so it can't collide.
       const houseDir = sampled.position.clone().normalize();
-      const street = this.nearestStreetDir(houseDir, 0.7);
+      const street = this.nearestStreetDir(houseDir, this.arc(35));
       const tangent = new THREE.Vector3();
       if (street) tangent.copy(street).addScaledVector(houseDir, -street.dot(houseDir));
       if (tangent.lengthSq() < 1e-6) {
@@ -1959,7 +2058,7 @@ export class Island {
         .addScaledVector(tangent, 2.6 / this.radius)
         .normalize();
       mbDir = this.pushOffStreet(mbDir);
-      mbDir = this.claimDir(mbDir, 0.05);
+      mbDir = this.claimDir(mbDir, this.arc(2.5));
       const placement = this.sampleSurfaceByDirection(mbDir, 0.03);
 
       const mb = new THREE.Group();
@@ -2024,18 +2123,21 @@ export class Island {
     // Street lighting: lamps march along the boulevard at regular
     // intervals, alternating kerbs (odd = north lat 0.515, even = south
     // lat 0.412) — mid-block lons chosen clear of building/house columns.
-    const LAMP_SITES: Array<[number, number]> = [
-      [0.28, 0.412],
-      [0.91, 0.515],
-      [1.54, 0.412],
-      [2.17, 0.515],
-      [2.8, 0.412],
-      [3.43, 0.515],
-      [4.06, 0.412],
-      [4.71, 0.515],
-      [5.34, 0.412],
-      [5.97, 0.515],
-    ];
+    // GENERATED, not hand-listed. Lamps are a BELT population: the boulevard
+    // is 281u round at R=50 and 421u at R=75, so a fixed ten would sit 28u
+    // apart — the spacing already judged "genuinely black" and fixed by the
+    // infill pass below. Count tracks the circumference; the alternating-kerb
+    // pattern and the 2.57u kerb offset are preserved exactly.
+    const LAMP_RING_COUNT = Math.round(10 * beltScale());
+    const LAMP_KERB = this.arc(2.57);
+    const LAMP_LON_0 = 0.28;
+    const LAMP_SITES: Array<[number, number]> = Array.from(
+      { length: LAMP_RING_COUNT },
+      (_, i): [number, number] => [
+        LAMP_LON_0 + (i * Math.PI * 2) / LAMP_RING_COUNT,
+        ZONE_LAT + (i % 2 === 0 ? -LAMP_KERB : LAMP_KERB),
+      ],
+    );
     // INFILL: the ten original lamps sat ~0.63rad apart, which left the road
     // between them genuinely black. These drop a lamp at each midpoint on the
     // OPPOSITE kerb, so the boulevard reads as a lit street rather than a
@@ -2043,18 +2145,13 @@ export class Island {
     // bulb plus ground pool is enough at this spacing and costs no fragment
     // work. Nothing else on the island gets lamps: the hills, the shore and
     // the outer paths stay dark on purpose, and the contrast is the point.
-    const LAMP_INFILL: Array<[number, number]> = [
-      [0.595, 0.515],
-      [1.225, 0.412],
-      [1.855, 0.515],
-      [2.485, 0.412],
-      [3.115, 0.515],
-      [3.745, 0.412],
-      [4.385, 0.515],
-      [5.025, 0.412],
-      [5.655, 0.515],
-      [6.25, 0.412],
-    ];
+    const LAMP_INFILL: Array<[number, number]> = Array.from(
+      { length: LAMP_RING_COUNT },
+      (_, i): [number, number] => [
+        LAMP_LON_0 + ((i + 0.5) * Math.PI * 2) / LAMP_RING_COUNT,
+        ZONE_LAT + (i % 2 === 0 ? LAMP_KERB : -LAMP_KERB),
+      ],
+    );
     let lampIndex = 0;
     const buildLamp = (
       pos: THREE.Vector3,
@@ -2132,11 +2229,15 @@ export class Island {
     for (const [lon, lat] of LAMP_SITES) {
       // claimOffStreet, not claimDir: a couple of boulevard lamps landed on the
       // ribbon where an avenue meets the boulevard; this keeps them at the kerb.
-      const pos = this.claimOffStreet(this.dirAt(lon, lat), 0.05).multiplyScalar(this.radius);
+      const pos = this.claimOffStreet(this.dirAt(lon, lat), this.arc(2.5)).multiplyScalar(
+        this.radius,
+      );
       buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), true, 5.8);
     }
     for (const [lon, lat] of LAMP_INFILL) {
-      const pos = this.claimOffStreet(this.dirAt(lon, lat), 0.05).multiplyScalar(this.radius);
+      const pos = this.claimOffStreet(this.dirAt(lon, lat), this.arc(2.5)).multiplyScalar(
+        this.radius,
+      );
       buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), false, 5.8);
     }
     // PORCH lamps: one beside every house door, so homes read as lived-in
@@ -2516,7 +2617,7 @@ export class Island {
     const npcShoeMat = Materials.createStandardMaterial({ color: 0x3d2b1a, roughness: 0.8 });
     const HAIR_COLORS = [0x3a2a1a, 0x8b6b3a, 0x222222, 0xcc8844, 0x5a3a2a, 0x1a1a2a];
     for (let i = 0; i < NPC_SITES.length; i++) {
-      const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), 0.05);
+      const dir = this.claimDir(this.dirAt(NPC_SITES[i][0], NPC_SITES[i][1]), this.arc(2.5));
       const npcGroup = new THREE.Group();
       const shirtMat = new THREE.MeshStandardMaterial({
         color: NPC_SHIRT_COLORS[i % NPC_SHIRT_COLORS.length],
@@ -2600,7 +2701,7 @@ export class Island {
     // positions bake straight into instance matrices. frustumCulled=false: the
     // instances wrap the entire planet shell, so all-or-nothing culling would
     // only ever flicker the layer on/off — cheaper to just always draw it.
-    const SPARKLE_COUNT = 47; // scaled ×1.56 with the R40→50 area so the ambient shimmer keeps its density over the bigger shell (near-free — it's one InstancedMesh)
+    const SPARKLE_COUNT = Math.round(47 * areaScale()); // near-free — one InstancedMesh
     const sparkleMat = new THREE.MeshBasicMaterial({
       color: 0xffffee,
       transparent: true,
@@ -2676,7 +2777,9 @@ export class Island {
     // (the old raw world coords stranded it near the north pole)
     this.placeObjectOnSurface(
       fountain,
-      this.claimDir(this.dirAt(2.32 + SHIFT_PERSONAL, 0.5), 0.12).multiplyScalar(this.radius),
+      this.claimDir(this.dirAt(2.32 + SHIFT_PERSONAL, 0.5), this.arc(6)).multiplyScalar(
+        this.radius,
+      ),
       0.02,
       true,
     );
@@ -2712,7 +2815,7 @@ export class Island {
     // pole by raw world coords, same as the fountain)
     this.placeObjectOnSurface(
       statue,
-      this.claimDir(this.dirAt(0.18, 0.52), 0.08).multiplyScalar(this.radius),
+      this.claimDir(this.dirAt(0.18, 0.52), this.arc(4)).multiplyScalar(this.radius),
       0.02,
       true,
     );
@@ -2828,23 +2931,34 @@ export class Island {
       }
 
       // Parallel-parked along the boulevard: kerbside spots in the blocks
-      // between districts, alternating sides of the street (odd index =
-      // north kerb lat 0.512, even = south kerb lat 0.415).
+      // between districts, alternating sides of the street. 2.43u off the
+      // centreline IS the kerb — the boulevard is 1.0u wide plus verge, so this
+      // is the tightest tolerance in the whole migration. At R=75 a bare
+      // latitude puts them 3.6u out, parked in the grass beside the road.
+      const KERB = this.arc(2.43);
       const CAR_SITES: Array<[number, number]> = [
-        [0.72, 0.415],
-        [1.02, 0.512],
-        [1.62, 0.415],
-        [2.21, 0.512],
-        [3.1, 0.415],
-        [3.35, 0.512],
-        [4.3, 0.415],
-        [5.55, 0.512],
+        [0.72, ZONE_LAT - KERB],
+        [1.02, ZONE_LAT + KERB],
+        [1.62, ZONE_LAT - KERB],
+        [2.21, ZONE_LAT + KERB],
+        [3.1, ZONE_LAT - KERB],
+        [3.35, ZONE_LAT + KERB],
+        [4.3, ZONE_LAT - KERB],
+        [5.55, ZONE_LAT + KERB],
       ];
       const [carLon, carLat] = CAR_SITES[i % CAR_SITES.length];
       // claimOffStreet, not claimDir: claimDir's jitter was nudging parked cars
       // off their kerb site onto the middle of the boulevard ribbon. This keeps
       // them at the roadside, clear of the walkable path.
-      const pos = this.claimOffStreet(this.dirAt(carLon, carLat), 0.08).multiplyScalar(this.radius);
+      // 2.1u = the car's OWN footprint radius (1.89 x 3.77 after the 1.45 scale),
+      // not the 4u it used to ask for. Clearance is mutual, so 2.1 still leaves
+      // 4.2u between adjacent cars — a real parallel-parking gap. Asking for
+      // double its own size meant a kerb spot almost never satisfied the claim,
+      // and since the search reach is proportional to the clearance, it also
+      // doubled how far the retry could throw the car from its kerb.
+      const pos = this.claimOffStreet(this.dirAt(carLon, carLat), this.arc(2.1)).multiplyScalar(
+        this.radius,
+      );
       // +0.06 matches GameScene's drive-seat convention (wheel bottoms sit at
       // local −0.0725 after the pivot rework — the old +0.33 predates it and
       // hovered every car 0.26u even on flat ground). GameScene.initVehicles
@@ -2879,22 +2993,27 @@ export class Island {
     // CONTACT district: a market street — stalls line BOTH kerbs of the
     // boulevard through the plaza (staggered rows so counters don't face
     // each other head-on), the classic two-sided bazaar strip.
-    // Rows tightened to a ±3.5u kerb setback (0.535/0.39 vs the R=22-era
-    // 0.65/0.31): the counters used to sit 8-9u off the boulevard they face,
-    // so the "two-sided bazaar strip" read as scattered tents.
+    // Rows tightened to a ±3.5u kerb setback: the counters used to sit 8-9u off
+    // the boulevard they face, so the "two-sided bazaar strip" read as scattered
+    // tents. That regression comes straight back as a bare latitude — 3.5u
+    // becomes 5.4u at R=75, most of the way back to the spacing this fixed.
+    const STALL_SETBACK = this.arc(3.5);
     const STALL_SITES: Array<[number, number]> = [
-      [3.51 + SHIFT_CONTACT, 0.535],
-      [3.73 + SHIFT_CONTACT, 0.535],
-      [3.95 + SHIFT_CONTACT, 0.535],
-      // south row at 0.39 — 0.28 is the shoreline band; stay clear of the surf
-      [3.59 + SHIFT_CONTACT, 0.39],
-      [3.81 + SHIFT_CONTACT, 0.39],
-      [4.03 + SHIFT_CONTACT, 0.39],
+      [3.51 + SHIFT_CONTACT, ZONE_LAT + STALL_SETBACK],
+      [3.73 + SHIFT_CONTACT, ZONE_LAT + STALL_SETBACK],
+      [3.95 + SHIFT_CONTACT, ZONE_LAT + STALL_SETBACK],
+      // South row staggered in lon so counters don't face each other head-on.
+      // Keep clear of the shoreline band (sin-lat 0.28) as the setback grows.
+      [3.59 + SHIFT_CONTACT, ZONE_LAT - STALL_SETBACK],
+      [3.81 + SHIFT_CONTACT, ZONE_LAT - STALL_SETBACK],
+      [4.03 + SHIFT_CONTACT, ZONE_LAT - STALL_SETBACK],
     ];
     for (let i = 0; i < STALL_SITES.length; i++) {
       const stall = this.createStall();
       const [sLon, sLat] = STALL_SITES[i];
-      const pos = this.claimOffStreet(this.dirAt(sLon, sLat), 0.06).multiplyScalar(this.radius);
+      const pos = this.claimOffStreet(this.dirAt(sLon, sLat), this.arc(3)).multiplyScalar(
+        this.radius,
+      );
       const sampled = this.sampleSurfacePosition(pos, -0.08); // sunk slightly: bury-not-float
       stall.position.copy(sampled.position);
       // NPC activity anchor = a customer's spot IN FRONT of the counter, not
@@ -2962,7 +3081,7 @@ export class Island {
       const river = this.createRiver();
       const pos = this.claimDir(
         this.dirAt(RIVER_SITES[i][0], RIVER_SITES[i][1]),
-        0.2,
+        this.arc(10),
       ).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       river.position.copy(sampled.position);
@@ -3002,7 +3121,7 @@ export class Island {
     for (let i = 0; i < MOUNTAIN_SITES.length; i++) {
       const mountain = this.createMountain();
       const [mLon, mLat] = MOUNTAIN_SITES[i];
-      const pos = this.claimDir(this.dirAt(mLon, mLat), 0.3).multiplyScalar(this.radius);
+      const pos = this.claimDir(this.dirAt(mLon, mLat), this.arc(15)).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.35); // bedded into terrain
       mountain.position.copy(sampled.position);
       mountain.quaternion.copy(
@@ -3039,7 +3158,7 @@ export class Island {
       const block = this.createConstructionBlock(PROJECT_LABELS[i], i === 0);
       const pos = this.claimOffStreet(
         this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]),
-        0.12,
+        this.arc(6),
       ).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
@@ -3105,13 +3224,16 @@ export class Island {
       const ringA = ((i % 10) / 10) * Math.PI * 2;
       // cos(lat) correction keeps the ring CIRCULAR near the pole (raw lon
       // deltas collapsed the welcome ring into a 3u-wide streak).
+      // A 10u x 7.5u bed, not an angular one: these anchor every butterfly and
+      // three fireflies each, so the ring growing to 15u would scatter the
+      // insects that are supposed to be hovering over it.
       const fDir = this.dirAt(
-        fLon + (Math.cos(ringA) * 0.2) / Math.cos(fLat),
-        fLat + Math.sin(ringA) * 0.15,
+        fLon + (Math.cos(ringA) * this.arc(10)) / Math.cos(fLat),
+        fLat + Math.sin(ringA) * this.arc(7.5),
       );
       // Plaza flower rings cross the boulevard — keep blooms off the pavement
       if (this.isNearStreet(fDir)) continue;
-      const pos = this.claimDir(fDir, 0.015).multiplyScalar(this.radius);
+      const pos = this.claimDir(fDir, this.arc(0.75)).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, 0.1);
       const quat = new THREE.Quaternion().setFromUnitVectors(bloomUp, sampled.normal);
       blooms.push({
@@ -3194,7 +3316,7 @@ export class Island {
     // Add dust/pollen particles for ambiance — ONE InstancedMesh (was 80
     // separate meshes). Same rationale as the sparkles above: decorative,
     // never animated, whole-object visibility toggle keyed off the name.
-    const DUST_COUNT = 125; // scaled ×1.56 with the R40→50 area to hold pollen density over the bigger shell (near-free — one InstancedMesh)
+    const DUST_COUNT = Math.round(125 * areaScale()); // near-free — one InstancedMesh
     const dustMat = new THREE.MeshBasicMaterial({
       color: 0xeeddaa,
       transparent: true,
@@ -3226,20 +3348,24 @@ export class Island {
     // Park benches near zone plazas
     const benches = new THREE.Group();
     // Benches at the plazas: [lon, lat, latOfPlazaTheyFace]
+    // 4.6u from the pole at the plaza rim — the old 10.5u stranded the welcome
+    // benches out facing a distant floor. The literal 1.478 was the FROZEN
+    // EVALUATION of exactly this expression at R=50; the lantern pillars beside
+    // these benches already derive theirs, so at R=75 the two drifted 2u apart
+    // and the benches stepped off the (fixed 5.0u) plaza floor entirely.
+    const POLE_BENCH_LAT = Math.PI / 2 - this.arc(4.6);
     const BENCH_SITES: Array<[number, number, number]> = [
-      // 4.6u from the pole (lat 1.478) at the enlarged plaza rim — the old
-      // 1.36 stranded the welcome benches 10.5u out facing a distant floor.
-      [0.8, 1.478, 1.5708],
-      [3.9, 1.478, 1.5708], // welcome / spawn
-      [2.44 + SHIFT_PERSONAL, 0.4, 0.4636],
-      [2.6 + SHIFT_PERSONAL, 0.4, 0.4636],
-      [2.51 + SHIFT_PERSONAL, 0.56, 0.4636], // village
-      [6.16, 0.4, 0.4636],
-      [0.13, 0.42, 0.4636], // professional
-      [1.18 + SHIFT_PROJECTS, 0.42, 0.4636],
-      [1.32 + SHIFT_PROJECTS, 0.42, 0.4636], // projects (was benchless)
-      [3.7 + SHIFT_CONTACT, 0.42, 0.4636],
-      [3.85 + SHIFT_CONTACT, 0.42, 0.4636], // market
+      [0.8, POLE_BENCH_LAT, 1.5708],
+      [3.9, POLE_BENCH_LAT, 1.5708], // welcome / spawn
+      [2.44 + SHIFT_PERSONAL, ZONE_LAT - this.arc(3.2), ZONE_LAT],
+      [2.6 + SHIFT_PERSONAL, ZONE_LAT - this.arc(3.2), ZONE_LAT],
+      [2.51 + SHIFT_PERSONAL, ZONE_LAT + this.arc(4.8), ZONE_LAT], // village
+      [6.16, ZONE_LAT - this.arc(3.2), ZONE_LAT],
+      [0.13, ZONE_LAT - this.arc(2.2), ZONE_LAT], // professional
+      [1.18 + SHIFT_PROJECTS, ZONE_LAT - this.arc(2.2), ZONE_LAT],
+      [1.32 + SHIFT_PROJECTS, ZONE_LAT - this.arc(2.2), ZONE_LAT], // projects (was benchless)
+      [3.7 + SHIFT_CONTACT, ZONE_LAT - this.arc(2.2), ZONE_LAT],
+      [3.85 + SHIFT_CONTACT, ZONE_LAT - this.arc(2.2), ZONE_LAT], // market
     ];
     const benchWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b6b42, roughness: 0.7 });
     const benchLegMat = Materials.createTrimMaterial(0x444444);
@@ -3248,7 +3374,7 @@ export class Island {
       // FIRST, then slide off any pavement — doing it the other way round let
       // claimDir's jitter shove the bench back onto the street.
       const bDir = this.pushOffStreet(
-        this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), 0.1),
+        this.claimDir(this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][1]), this.arc(5)),
       );
       const bSampled = this.sampleSurfaceByDirection(bDir, 0.0);
       const bench = new THREE.Group();
@@ -3360,7 +3486,7 @@ export class Island {
     // carries the district name, and an accent lantern crowns it. Same stone
     // kit as the hub pillars, so the town reads as one set of streets with
     // signed neighbourhoods rather than four disconnected clusters. Placed a
-    // little POLEWARD of each plaza (lat ZONE_LAT + 0.16) so you walk UNDER the
+    // little POLEWARD of each plaza (8u) so you walk UNDER the
     // sign entering a district — and well north of the race lines (lat 0.38 /
     // 0.12) so a gate never fouls a lap.
     const gates = new THREE.Group();
@@ -3458,7 +3584,10 @@ export class Island {
       // with the street: face the gate toward its plaza.
       const placed = this.placeObjectOnSurface(
         gate,
-        this.dirAt(d.lon, ZONE_LAT + 0.16).multiplyScalar(this.radius),
+        // 8u poleward of the plaza. GATE_HALF_WIDTH (2.1u) is absolute and must
+        // stay that way — the gate frames a ~2u avenue — so the STANDOFF has to
+        // be absolute too, or the gate walks away from the avenue it frames.
+        this.dirAt(d.lon, ZONE_LAT + this.arc(8)).multiplyScalar(this.radius),
         -0.05,
         false,
       );
@@ -3799,6 +3928,12 @@ export class Island {
     // to lose. 26*sin(t) >= 16 needs t >= 0.66; 0.72 lands it with margin, so
     // the beam meets the water around 22u out and rakes the ground sooner on
     // the landward sweep, where the terrain rises to meet it.
+    //
+    // R=75 CHECKED — LEAVE IT. The constraint is set by the HORIZONTAL RUN
+    // (19.5u), not by BEAM_LEN, and a bigger sphere curves away more GENTLY, so
+    // the minimum tilt FALLS from 0.657 to 0.598. 0.72 satisfies it with MORE
+    // margin than at R=50 and drifts in the safe direction (~2u across a ~24u
+    // sweep). Recorded so the next auditor doesn't re-derive this and "fix" it.
     const BEAM_TILT = 0.72;
     const beamLights: THREE.SpotLight[] = [];
     for (const s of [1, -1]) {
@@ -3843,7 +3978,10 @@ export class Island {
       roughness: 0.96,
       flatShading: true,
     }); // warm neutral rock grey
-    const MAX = 128;
+    // NOTE: MAX is NOT the binding constraint — the scatter only ever placed 59
+    // of 128 at R=50, so raising the cap alone would have changed nothing.
+    // CANDIDATES is what actually gates the count.
+    const MAX = Math.round(128 * areaScale());
     const inst = new THREE.InstancedMesh(geo, mat, MAX);
     inst.name = 'rocks';
     inst.castShadow = true;
@@ -3851,7 +3989,7 @@ export class Island {
     const up = new THREE.Vector3(0, 1, 0);
     const dummy = new THREE.Object3D();
     const golden = Math.PI * (3 - Math.sqrt(5));
-    const CANDIDATES = 400;
+    const CANDIDATES = Math.round(400 * areaScale());
     let placed = 0;
     for (let i = 0; i < CANDIDATES && placed < MAX; i++) {
       const y = 1 - (i / (CANDIDATES - 1)) * 2;
@@ -3870,7 +4008,7 @@ export class Island {
       const shoreBand = candidate.y < Math.sin(0.4); // boulders just above the surf
       // Rocks belong on scree + shorelines; only an occasional erratic elsewhere.
       if (!steep && !shoreBand && Math.random() > 0.1) continue;
-      const dir = this.claimDir(candidate, 0.03); // tight — scree clusters
+      const dir = this.claimDir(candidate, this.arc(1.5)); // tight — scree clusters
       const a2 = this.analyticSurface(dir);
       dummy.position.copy(dir).multiplyScalar(a2.radius).addScaledVector(a2.normal, -0.14); // sink slightly: bury-not-float
       dummy.quaternion.setFromUnitVectors(up, a2.normal);
@@ -4138,7 +4276,7 @@ export class Island {
 
   /** Radius of the calm water surface (matches the sea mesh). */
   public seaLevel(): number {
-    return this.radius + Island.SEA_OFFSET;
+    return this.radius + Island.SEA_OFFSET * this.reliefScale;
   }
 
   /**
@@ -4220,28 +4358,56 @@ export class Island {
   private occupiedDirs: Array<{ dir: THREE.Vector3; arc: number }> = [];
 
   /**
+   * Metres of surface distance -> the geodesic angle that spans them.
+   *
+   * ALWAYS use this for a clearance, a keep-out or a search radius. Writing the
+   * radian directly bakes in today's radius: a bare 0.13 means 6.5u at R=50 and
+   * 9.75u at R=75, so the town silently spreads while the buildings, roads and
+   * people in it stay the same size. That is the entire reason the R50->R75
+   * migration was a migration and not an edit.
+   *
+   * Guarded by test/radiusUnits.test.ts, which fails on any bare-literal arc.
+   */
+  public arc(metres: number): number {
+    return metres / this.radius;
+  }
+
+  /**
    * Claim a surface direction with a minimum angular clearance. If the
    * candidate is too close to something already placed, jitter around it
    * (up to 10 tries) before accepting the least-bad candidate.
    */
   public claimDir(candidate: THREE.Vector3, minArc: number, maxSlopeRad?: number): THREE.Vector3 {
-    let best = candidate.clone().normalize();
+    const base = candidate.clone().normalize();
+    let best = base.clone();
     let bestClearance = -1;
+    const scratchT = new THREE.Vector3();
     for (let attempt = 0; attempt < 10; attempt++) {
-      const dir =
-        attempt === 0
-          ? candidate.clone().normalize()
-          : candidate
-              .clone()
-              .normalize()
-              .add(
-                new THREE.Vector3(
-                  (Math.random() - 0.5) * 0.5,
-                  (Math.random() - 0.5) * 0.35,
-                  (Math.random() - 0.5) * 0.5,
-                ),
-              )
-              .normalize();
+      let dir: THREE.Vector3;
+      if (attempt === 0) {
+        dir = base.clone();
+      } else {
+        // Search a neighbourhood PROPORTIONAL to the clearance we need, spiralling
+        // outward as attempts fail.
+        //
+        // This used to add a fixed Vector3 of up to (0.25, 0.175, 0.25) to a UNIT
+        // direction — an angle of ~0.25 rad, i.e. 12u at R=50 and 19u at R=75. So a
+        // parked car that could not fit at its kerb got thrown a fifth of the way
+        // across the district and kept the least-bad result: measured kerb offsets
+        // were 14.92u against a 2.43u target. An object should look for space NEAR
+        // where it belongs, and the size of "near" is its own footprint, not a
+        // fixed slice of the planet.
+        scratchT.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+        scratchT.addScaledVector(base, -scratchT.dot(base)); // project into the tangent plane
+        if (scratchT.lengthSq() < 1e-8) continue;
+        scratchT.normalize();
+        const reach = minArc * (0.6 + (1.4 * attempt) / 9); // 0.6x -> 2.0x of minArc
+        dir = base
+          .clone()
+          .multiplyScalar(Math.cos(reach))
+          .addScaledVector(scratchT, Math.sin(reach))
+          .normalize();
+      }
       // Island-only world: every claim stays above the shoreline. The
       // jitter used to shove crowded losers south of the shore, parking
       // stalls/NPCs on the seafloor.
@@ -4484,10 +4650,16 @@ export class Island {
 
   /** If `dir` sits on a street, slide it sideways off the pavement (benches,
    * props that belong BESIDE a path, not on it). Returns the nudged direction. */
-  public pushOffStreet(dir: THREE.Vector3, step = 0.03, tries = 10): THREE.Vector3 {
+  public pushOffStreet(dir: THREE.Vector3, step = -1, tries = 10): THREE.Vector3 {
+    // A metre step, not an angle. This is the one place the two unit systems
+    // actively fight: keepOutArc SHRINKS in radians as the world grows while a
+    // fixed radian step GROWS in metres, so at R=75 a 0.03 step overshot to
+    // 2.25u from a 1.0u-wide road and every prop routed through claimOffStreet
+    // inherited the extra setback.
+    if (step < 0) step = this.arc(1.5);
     const d = dir.clone().normalize();
     for (let i = 0; i < tries && this.isNearStreet(d); i++) {
-      const s = this.nearestStreetDir(d, 0.6);
+      const s = this.nearestStreetDir(d, this.arc(30));
       if (!s) break;
       // Tangent pointing away from the street point (project d−s onto d's plane)
       const away = d.clone().sub(s);
@@ -4505,7 +4677,8 @@ export class Island {
 
   /** The nearest street-segment direction (for orienting shops/houses to face
    * the pathway), or null if there are no streets or the nearest is > maxArc. */
-  public nearestStreetDir(dir: THREE.Vector3, maxArc = 0.35): THREE.Vector3 | null {
+  public nearestStreetDir(dir: THREE.Vector3, maxArc = -1): THREE.Vector3 | null {
+    if (maxArc < 0) maxArc = this.arc(17.5); // "how far away a street may still be MY street"
     let best: THREE.Vector3 | null = null;
     let bestAng = maxArc;
     for (const s of this.streetDirs) {
@@ -4546,7 +4719,8 @@ export class Island {
    * thrower — a slightly tight fit beside the right person beats a perfect
    * fit on the wrong side of the district.
    */
-  private claimClearSpot(rawDir: THREE.Vector3, clearArc: number, maxDrift = 0.12): THREE.Vector3 {
+  private claimClearSpot(rawDir: THREE.Vector3, clearArc: number, maxDrift = -1): THREE.Vector3 {
+    if (maxDrift < 0) maxDrift = this.arc(6); // leash: 6u of search, not 6u-at-R50
     const centre = rawDir.clone().normalize();
     // maxDrift 0 = EXACT placement. Each district pre-claims a 6.5u disc round
     // its hall, so searching for "clear ground" can never tuck anything against
@@ -4563,7 +4737,7 @@ export class Island {
     if (tangent.lengthSq() < 1e-6) tangent = new THREE.Vector3(1, 0, 0).cross(centre);
     tangent.normalize();
     const bitangent = centre.clone().cross(tangent).normalize();
-    const RING_STEP = 0.02;
+    const RING_STEP = this.arc(1); // 1u between search rings at any radius
     const rings = Math.max(1, Math.round(maxDrift / RING_STEP));
     let best: THREE.Vector3 | null = null;
     let bestClearance = -Infinity;
@@ -4613,20 +4787,28 @@ export class Island {
     if (this.isNearStreet(base)) base = this.pushOffStreet(base);
     let best = base.clone();
     let bestClearance = -Infinity;
+    const scratchT = new THREE.Vector3();
     for (let attempt = 0; attempt < 14; attempt++) {
-      let dir =
-        attempt === 0
-          ? base.clone()
-          : base
-              .clone()
-              .add(
-                new THREE.Vector3(
-                  (Math.random() - 0.5) * 0.5,
-                  (Math.random() - 0.5) * 0.35,
-                  (Math.random() - 0.5) * 0.5,
-                ),
-              )
-              .normalize();
+      let dir: THREE.Vector3;
+      if (attempt === 0) {
+        dir = base.clone();
+      } else {
+        // Neighbourhood search scaled to the clearance sought — see claimDir for
+        // the full rationale. This was a SECOND verbatim copy of the fixed
+        // unit-sphere jitter, so fixing claimDir alone left every street-aware
+        // placement (cars, stalls, houses, towers, stations) still throwing
+        // props up to 19u off their site at R=75.
+        scratchT.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+        scratchT.addScaledVector(base, -scratchT.dot(base));
+        if (scratchT.lengthSq() < 1e-8) continue;
+        scratchT.normalize();
+        const reach = clearArc * (0.6 + (1.4 * attempt) / 13); // 0.6x -> 2.0x of clearArc
+        dir = base
+          .clone()
+          .multiplyScalar(Math.cos(reach))
+          .addScaledVector(scratchT, Math.sin(reach))
+          .normalize();
+      }
       if (dir.y < Math.sin(0.29)) {
         dir.y = Math.sin(0.29) + Math.random() * 0.03;
         dir.normalize();
@@ -4734,7 +4916,7 @@ export class Island {
     // claimOffStreet, not a raw dirAt: slides off any pavement AND away from
     // props already claimed (cottages, stalls, lamps), then registers the
     // footprint so nothing later lands on the garden either.
-    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.1);
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), this.arc(5));
     let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
     try {
       seat = this.sampleSurfaceByDirection(centre, 0);
@@ -4897,7 +5079,7 @@ export class Island {
     // 0.2 rad of search arc (~10u): the field is 6.4u long, so it needs a
     // wider berth than a cottage-sized prop before it stops shouldering into
     // the neighbours.
-    const centreDir = this.claimOffStreet(this.dirAt(lon, lat), 0.2);
+    const centreDir = this.claimOffStreet(this.dirAt(lon, lat), this.arc(10));
     let cr: number;
     try {
       cr = this.analyticSurface(centreDir).radius;
@@ -5118,7 +5300,7 @@ export class Island {
    * plazas (which are the zone halls).
    */
   private buildBandstand(lon: number, lat: number, parent: THREE.Object3D): void {
-    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.09);
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), this.arc(4.5));
     let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
     try {
       seat = this.sampleSurfaceByDirection(centre, 0);
@@ -5170,7 +5352,7 @@ export class Island {
    * Publishes one standing anchor so `paint_vista` parks her AT the easel.
    */
   private buildEasel(lon: number, lat: number, parent: THREE.Object3D): void {
-    const centre = this.claimOffStreet(this.dirAt(lon, lat), 0.06);
+    const centre = this.claimOffStreet(this.dirAt(lon, lat), this.arc(3));
     let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
     try {
       seat = this.sampleSurfaceByDirection(centre, 0);
@@ -5234,8 +5416,9 @@ export class Island {
     name: string,
     parent: THREE.Object3D,
     build: (g: THREE.Group) => void,
-    maxDrift = 0.12,
+    maxDrift = -1,
   ): void {
+    if (maxDrift < 0) maxDrift = this.arc(6);
     const dir = this.claimClearSpot(this.dirAt(lon, lat), arc, maxDrift);
     let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
     try {
@@ -5249,7 +5432,7 @@ export class Island {
     g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
     // Face the nearest street where there is one, so desks and carts address
     // the road like the houses do.
-    const street = this.nearestStreetDir(dir, 0.5);
+    const street = this.nearestStreetDir(dir, this.arc(25));
     if (street) this.faceObjectToward(g, seat.normal, street.multiplyScalar(this.radius));
     build(g);
     parent.add(g);
@@ -5368,10 +5551,12 @@ export class Island {
     /**
      * A post whose foot is buried 0.4u.
      *
-     * Props are seated ONLY at their group origin, but the terrain is a
-     * 128x128 sphere: a post 2u out sits on ground that has already fallen
-     * away, so a post cut off at y=0 hangs in the air. Burying the foot is
-     * cheaper and more robust than raycasting each one.
+     * Props are seated ONLY at their group origin, but the terrain CURVES: a
+     * post 2u out sits on ground that has already fallen away, so a post cut
+     * off at y=0 hangs in the air. Burying the foot is cheaper and more robust
+     * than raycasting each one. (Curvature-derived, so a BIGGER planet is
+     * strictly safer — the drop over 2u falls from 0.027u at R=50 to 0.018u
+     * at R=75.)
      */
     const post = (g: THREE.Group, x: number, z: number, top: number, mat: THREE.Material) => {
       const h = top + 0.4;
@@ -5484,7 +5669,7 @@ export class Island {
     };
 
     // 0 ELDER SAGE — a story circle the Storyteller and Philosopher share.
-    at(0, 'story_circle', 0.09, (g) => {
+    at(0, 'story_circle', this.arc(4.5), (g) => {
       // Packed-earth clearing, trodden flat by a generation of listeners.
       // r 2.55, not 1.5: the four seating logs sit out at r 1.35-2.45, so a
       // 1.5 ring left every seat standing off the clearing in the grass.
@@ -5514,7 +5699,7 @@ export class Island {
     });
 
     // 3 YOUNG STUDENT — a study desk with a stack of books.
-    at(3, 'study_desk', 0.06, (g) => {
+    at(3, 'study_desk', this.arc(3), (g) => {
       pad(g, 0, 0.3, 2.5, 2.7, stone);
       canopy(g, 0, 0.3, 2.3, 2.4, Materials.createStandardMaterial({ color: 0x4478a8 }));
       table(g, 1.3, 0.7, wood);
@@ -5547,7 +5732,7 @@ export class Island {
     at(
       8,
       'guard_post',
-      0.08,
+      this.arc(4),
       (g) => {
         // Already roofed; it just needs the ground under it to look claimed.
         pad(g, 0.13, 0, 3.8, 2.0, stone);
@@ -5588,7 +5773,7 @@ export class Island {
     at(
       12,
       'drafting_table',
-      0.06,
+      this.arc(3),
       (g) => {
         pad(g, -0.2, 0.3, 3.1, 2.7, stone);
         canopy(g, -0.2, 0.3, 2.9, 2.5, Materials.createStandardMaterial({ color: 0xc47a2e }));
@@ -5652,7 +5837,7 @@ export class Island {
     at(
       14,
       'keeper_yard',
-      0.07,
+      this.arc(3.5),
       (g) => {
         pad(g, 0.7, 0, 3.6, 1.9, stone);
         // Lean-to over the BENCH only — a telescope under a roof is useless.
@@ -5695,7 +5880,7 @@ export class Island {
     );
 
     // 16 CARTOGRAPHER — a map table with a globe.
-    at(16, 'map_table', 0.06, (g) => {
+    at(16, 'map_table', this.arc(3), (g) => {
       pad(g, 0.03, 0, 2.9, 2.3, stone);
       canopy(g, 0.03, 0, 2.7, 2.1, Materials.createStandardMaterial({ color: 0x3e8e6d }));
       table(g, 1.6, 1.0, wood);
@@ -5740,7 +5925,7 @@ export class Island {
     });
 
     // 18 COURIER — a handcart and a pigeonhole sorting rack.
-    at(18, 'post_cart', 0.07, (g) => {
+    at(18, 'post_cart', this.arc(3.5), (g) => {
       pad(g, -0.9, 0, 3.0, 1.7, stone); // shorter span: this plot rises sharply
       // Roof the SORTING RACK, not the cart — the cart is meant to go out.
       leanTo(g, -1.7, 0, 1.5, 1.2, Materials.createStandardMaterial({ color: 0x2f7fae }));
@@ -5781,7 +5966,7 @@ export class Island {
     });
 
     // 19 NIGHT WATCH — a watch post: brazier, key board, oil crate.
-    at(19, 'watch_post', 0.07, (g) => {
+    at(19, 'watch_post', this.arc(3.5), (g) => {
       pad(g, -0.14, 0.08, 4.0, 1.8, stone);
       // Roof the key board; the brazier stays under open sky, being a fire.
       leanTo(g, -1.4, 0, 1.5, 1.2, Materials.createStandardMaterial({ color: 0xc0553f }));
@@ -5813,7 +5998,7 @@ export class Island {
     at(
       21,
       'lectern',
-      0.07,
+      this.arc(3.5),
       (g) => {
         pad(g, -1.2, 0.1, 4.4, 2.2, stone);
         // A baldachin over the rostrum. It has to be WIDE relative to its
@@ -6908,7 +7093,7 @@ export class Island {
               const treeCount = TREE_SITES.length;
               for (let i = 0; i < treeCount; i++) {
                 const [tLon, tLat] = TREE_SITES[i];
-                const dir = this.claimDir(this.dirAt(tLon, tLat), 0.07);
+                const dir = this.claimDir(this.dirAt(tLon, tLat), this.arc(3.5));
                 const p = dir.clone().multiplyScalar(this.radius);
                 const usedScale = 0.6 + Math.random() * 0.22; // 3.4-4.6u tall — planet-scale trees
                 const copy = prepareClone(model, usedScale, overrides);
@@ -7042,7 +7227,7 @@ export class Island {
         // createIsland), or the ray STARTS INSIDE a peak and misses it — the
         // sampler then silently returns a fallback, which broke placement,
         // NPC walking and grounding shadows on the highland summits.
-        const maxDisp = 11;
+        const maxDisp = Island.SAMPLE_RAY_DISP * this.reliefScale;
         const startPos = this.center
           .clone()
           .add(dir.clone().multiplyScalar(this.radius + maxDisp + 1));

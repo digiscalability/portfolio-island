@@ -22,6 +22,8 @@
  */
 import * as THREE from 'three';
 
+import { seaLevelFor } from './WorldScale';
+
 let cached: boolean | null = null;
 
 /** True when the soft-real display experiment is active (?look=soft). */
@@ -77,14 +79,20 @@ export function applySoftLookFogPatch(): void {
 	#endif
 #endif`;
 
-  // Altitude above the sea shell (planet R=50, sea ~50.1; max(0,·) also stops
-  // the displaced sea's swell from shimmering the haze). Height fog: density
-  // boosted near sea level, fading out by +4u so the mountain rises above the
-  // haze. Aerial perspective: with distance, desaturate then pull toward the
-  // horizon color BEFORE the final fog mix — the classic depth cue.
+  // Altitude above the sea shell (max(0,·) also stops the displaced sea's swell
+  // from shimmering the haze). Height fog: density boosted near sea level,
+  // fading out by +4u so the mountain rises above the haze. Aerial perspective:
+  // with distance, desaturate then pull toward the horizon color BEFORE the
+  // final fog mix — the classic depth cue.
+  //
+  // The shell radius MUST track the world. This was hardcoded `50.35`; at any
+  // other radius `fogAltitude` saturates the smoothstep below and sea-level
+  // height fog silently stops existing — no error, no console warning, the
+  // feature is just gone. Pinned by test/islandRadius.test.ts.
+  const fogSeaShell = (seaLevelFor() + 0.25).toFixed(4);
   THREE.ShaderChunk.fog_fragment = /* glsl */ `
 #ifdef USE_FOG
-	float fogAltitude = max( 0.0, length( vFogWorldPos ) - 50.35 );
+	float fogAltitude = max( 0.0, length( vFogWorldPos ) - ${fogSeaShell} );
 	float fogHeightBoost = 1.0 + 1.5 * ( 1.0 - smoothstep( 0.0, 4.0, fogAltitude ) );
 	#ifdef FOG_EXP2
 		float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * fogHeightBoost );
