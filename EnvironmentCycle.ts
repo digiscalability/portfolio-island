@@ -1,6 +1,16 @@
 import * as THREE from 'three';
 
 import { isRealTheme } from './Theme';
+import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
+
+// Weather fog was authored as flat +0.010 (rain) / +0.005 (grey) ON TOP of the
+// R=50 base density (FOG_DENSITY_X_RADIUS / REFERENCE_RADIUS = 0.009). As the
+// base scales with the world those flat deltas silently changed the WEATHER
+// LOOK — rain at R=75 was 26% optically thicker than the rain that was tuned.
+// Expressed as ratios of the base they reproduce R=50 output exactly and keep
+// density x radius weather-invariant at any size.
+const WEATHER_FOG_RAIN_RATIO = 0.01 / (FOG_DENSITY_X_RADIUS / REFERENCE_RADIUS);
+const WEATHER_FOG_GREY_RATIO = 0.005 / (FOG_DENSITY_X_RADIUS / REFERENCE_RADIUS);
 
 /**
  * EnvironmentCycle — day/night + weather matched to the visitor.
@@ -743,12 +753,13 @@ export class EnvironmentCycle {
     if (this.fog) {
       this.fog.color.copy(this.sky.horizonColor.value);
       this.fog.density =
-        this.baseFogDensity +
-        (this.weather === 'rain'
-          ? 0.01
-          : this.weather === 'cloudy' || this.weather === 'snow'
-            ? 0.005
-            : 0);
+        this.baseFogDensity *
+        (1 +
+          (this.weather === 'rain'
+            ? WEATHER_FOG_RAIN_RATIO
+            : this.weather === 'cloudy' || this.weather === 'snow'
+              ? WEATHER_FOG_GREY_RATIO
+              : 0));
     }
 
     // Stars: night only, hidden by bad weather. Twinkle is a per-LAYER

@@ -25,6 +25,15 @@ export const REFERENCE_RADIUS = 50;
 export const WORLD_RADIUS = 75;
 
 /**
+ * Atmospheric fog is tuned as a PRODUCT with the radius (density x R = 0.45,
+ * established over three grows: 0.02@R22, 0.015@R30, 0.009@R50) so the far
+ * side of the island stays visible at any size. Lives here (leaf) so both
+ * GameScene (base density) and EnvironmentCycle (weather multipliers) derive
+ * from one number without a circular import.
+ */
+export const FOG_DENSITY_X_RADIUS = 0.45;
+
+/**
  * Namespace for anything PERSISTED that is only comparable within one world size.
  *
  * Race times are the case that forced this: a lap at R=75 is ~50% longer, and

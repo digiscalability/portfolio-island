@@ -19,36 +19,18 @@ import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
-import { WORLD_RADIUS, areaScale, beltScale } from './WorldScale';
+import {
+  BIRD_SPOTS,
+  CAT_SPOTS_AUTHORED,
+  FLOCK_ANCHORS,
+  camNearThreshold,
+  faunaElevOk,
+  faunaGroundSpotOk,
+  growSiteRing,
+} from './WorldPlacement';
+import { FOG_DENSITY_X_RADIUS, WORLD_RADIUS, areaScale, beltScale } from './WorldScale';
 import { getWorldState } from './WorldState';
 import { ZonesManager } from './ZonesManager';
-
-/** Fog density is tuned as a product with the radius — see the FogExp2 below. */
-const FOG_DENSITY_X_RADIUS = 0.45;
-
-/**
- * Grow a hand-authored [lon, lat] site list to `target` entries.
- *
- * These lists are NOT arithmetic — the bird spots are "weighted toward the
- * hub/high latitudes where players actually walk (the old set was mostly remote
- * shores nobody visited)". Inventing new coordinates would throw that judgement
- * away. So extras reuse an authored spot's LATITUDE (keeping the band, and the
- * intent) and offset only the LONGITUDE by a golden angle, which spreads them
- * around the ring without clumping.
- *
- * Returns the original array untouched when it is already long enough, so the
- * reference world is bit-identical.
- */
-function growSiteRing(sites: Array<[number, number]>, target: number): Array<[number, number]> {
-  if (target <= sites.length) return sites;
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const out = sites.slice();
-  for (let i = sites.length; i < target; i++) {
-    const [lon, lat] = sites[i % sites.length];
-    out.push([(lon + golden * (1 + Math.floor(i / sites.length))) % (Math.PI * 2), lat]);
-  }
-  return out;
-}
 
 /** A villager's cached limb bones: rest pose, swing axis, current angle. */
 type NpcLimbCache = Array<{
@@ -830,19 +812,22 @@ export class GameScene extends THREE.Scene {
       for (const zone of this.zonesManager.getZones()) {
         this.colliders.push({ position: zone.getPosition(), radius: 1.7 });
       }
-      // Camera collision must ALSO see the zone buildings (they live under the
-      // scene, not island.mesh) — orbiting behind a hall used to swing the
-      // camera straight through its shell.
-      this.orbitCamera.setCollisionMesh(
-        this.island.mesh,
-        ...this.zonesManager.getZones().map((z) => z.marker),
-      );
-
       // Now that every big footprint is registered, lay the race circuits.
       this.races.build();
 
       // Place quest mailboxes (Island.ts owns the town proper)
       await this.placeAssets();
+
+      // Camera collision must ALSO see the zone buildings (they live under the
+      // scene, not island.mesh) — orbiting behind a hall used to swing the
+      // camera straight through its shell. Called AFTER placeAssets so the
+      // flattened collider list (setCollisionMesh walks the graph ONCE now,
+      // instead of a recursive intersectObjects every frame) is built against
+      // the finished world.
+      this.orbitCamera.setCollisionMesh(
+        this.island.mesh,
+        ...this.zonesManager.getZones().map((z) => z.marker),
+      );
 
       // Warm light pools under the lamps (needs both lamp populations placed)
       this.createLampLightPools();
@@ -1665,15 +1650,15 @@ export class GameScene extends THREE.Scene {
     // lat 0.24) meant the spawn plaza had NO birds overhead — from the hub
     // you could only ever see one distant trio ("I only see 3"). The fourth
     // flock circles high over the hub itself, visible the moment you spawn.
-    const FLOCK_ANCHORS: Array<[number, number]> = [
-      [5.0, 0.24],
-      [2.0, 0.24],
-      [3.6, 0.24],
-      [0.9, 1.05],
-    ];
+    // FLOCK_ANCHORS authored in WorldPlacement.ts (shared with tests)
+    // beltScale, not areaScale: gulls are experienced along the shoreline (a
+    // line), and every flock bird is ~12 per-part draw calls — the x2.25 area
+    // scaling was a major slice of the +1,000-draw regression. Elevation-gated
+    // so a generated anchor can't orbit a flock through the summit.
     const FLOCKS: Array<{ lon: number; lat: number; count: number }> = growSiteRing(
       FLOCK_ANCHORS,
-      Math.round(FLOCK_ANCHORS.length * areaScale()),
+      Math.round(FLOCK_ANCHORS.length * beltScale()),
+      (lon, lat) => faunaElevOk(this.island, this.island.dirAt(lon, lat)),
     ).map(([lon, lat]) => ({ lon, lat, count: 3 }));
     // Trailing V slots relative to the leader (x across, y altitude drop,
     // z BEHIND — the flock flies -Z in pivot-local space).
@@ -1822,25 +1807,17 @@ export class GameScene extends THREE.Scene {
     // [lon, lat] peck spots: plaza rim, park grass, beach sand — weighted
     // toward the hub/high latitudes where players actually walk (the old
     // set was mostly remote shores nobody visited: "no bird on the floor").
-    const SPOTS: Array<[number, number]> = [
-      // First spot sits ~6u off spawn — inside the flush radius it would
-      // flee before the player ever saw a bird on the ground.
-      [0.55, 1.24],
-      [2.4, 1.32],
-      [4.2, 1.22],
-      [1.4, 1.05],
-      [5.6, 0.95],
-      [0.35, 0.8],
-      [1.9, 0.75],
-      [3.4, 0.9],
-      [5.0, 0.34],
-      [2.0, 0.34],
-      [0.5, 0.6],
-      [4.4, 0.55],
-    ];
+    const SPOTS = BIRD_SPOTS; // authored in WorldPlacement.ts (shared with tests)
     // Also the pool the bird-feed FSM draws its "nearest 8" from, so thinning
     // it out would quietly weaken a paid consumable as well as the ambience.
-    const GROUND_BIRD_SPOTS = growSiteRing(SPOTS, Math.round(SPOTS.length * areaScale()));
+    // beltScale + gated: fauna is met along the walking path, and each bird is
+    // ~13 meshes + ink hulls. Ungated area scaling put spot #17 INSIDE the
+    // summit at R=75 and cost ~half the +1,000-draw regression.
+    const GROUND_BIRD_SPOTS = growSiteRing(
+      SPOTS,
+      Math.round(SPOTS.length * beltScale()),
+      (lon, lat) => faunaGroundSpotOk(this.island, lon, lat),
+    );
     for (let i = 0; i < GROUND_BIRD_SPOTS.length; i++) {
       const sp = SPECIES[i % SPECIES.length];
       const { bird, wingL, wingR, tail, legs } = this.buildBird(
@@ -2021,18 +1998,14 @@ export class GameScene extends THREE.Scene {
       },
     ];
     // Grass near the plazas/streets where players actually walk.
-    const SPOTS: Array<[number, number]> = [
-      [0.9, 1.18],
-      [2.7, 1.06],
-      [4.7, 1.12],
-      [1.7, 0.82],
-      [3.9, 0.7],
-      [5.3, 0.5],
-      [0.35, 0.95], // bengal — meadow west of the hub
-      [5.75, 0.74], // persian — lawn near the shore road
-    ];
-    // SPECIES[i % len] already handles repeats, so extra spots just cycle the cast.
-    const CAT_SPOTS = growSiteRing(SPOTS, Math.round(SPOTS.length * areaScale()));
+    const SPOTS = CAT_SPOTS_AUTHORED; // authored in WorldPlacement.ts (shared with tests)
+    // SPECIES[i % len] already handles repeats, so extra spots just cycle the
+    // cast. beltScale + gated: a cat is 22-29 meshes + ~15 ink hulls (~40
+    // draws); the x2.25 area scaling of the animal cast was the single biggest
+    // slice of the R=75 draw-call regression.
+    const CAT_SPOTS = growSiteRing(SPOTS, Math.round(SPOTS.length * beltScale()), (lon, lat) =>
+      faunaGroundSpotOk(this.island, lon, lat),
+    );
     for (let i = 0; i < CAT_SPOTS.length; i++) {
       const { cat, tailJoints, legs, head } = this.buildCat(SPECIES[i % SPECIES.length]);
       // 1.45-1.95 (was 1.0-1.35). The two populations kept reading as one
@@ -7780,12 +7753,13 @@ export class GameScene extends THREE.Scene {
     // Close-range ambience only exists near the ground: while the camera
     // is far (cinematic fly-in), dust/sparkles/smoke/butterflies read as
     // debris hovering around the planet
-    // Threshold tracks radius (R + ~5u): the chase cam orbits a few units above
-    // the surface, so |cam| ≈ R+5 in play and ≫ that on the fly-in. A hardcoded
-    // 45 (tuned at R40) went PERMANENTLY false at R50 — |cam|≈55 — silently
-    // hiding ambient life, chimney smoke AND the delivery guide sparkles.
+    // Threshold DERIVED in WorldPlacement.camNearThreshold: max terrain + max
+    // camera zoom/height + margin. This gate has now gone stale TWICE as
+    // literals — a hardcoded 45 (tuned at R40) went permanently false at R50,
+    // and `radius + 6` went false on hills at R=75 when relief scaled — each
+    // time silently hiding ambient life, chimney smoke AND the guide sparkles.
     const camNear = this.camera
-      ? this.camera.position.length() < this.island.getRadius() + 6
+      ? this.camera.position.length() < camNearThreshold(this.island)
       : true;
     for (const g of this.ambientGroups) g.visible = camNear;
 

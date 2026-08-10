@@ -47,10 +47,15 @@ export class OrbitCamera {
 
   private minPitch: number = -0.18; // Don't look too far down (prevents ground clipping)
   private maxPitch: number = Math.PI * 0.25; // Don't look too far up
+  // Public statics so world-size-derived formulas (camNearThreshold in
+  // WorldPlacement.ts) can reason about the chase cam's worst-case reach
+  // without a live camera instance.
+  public static readonly MAX_DISTANCE = 12;
+  public static readonly MAX_HEIGHT = 8;
   private minDistance: number = 2;
-  private maxDistance: number = 12;
+  private maxDistance: number = OrbitCamera.MAX_DISTANCE;
   private minHeight: number = 0.8; // Minimum height to keep ground visible
-  private maxHeight: number = 8;
+  private maxHeight: number = OrbitCamera.MAX_HEIGHT;
 
   // World-space unit vector pointing from the player BACK toward the camera,
   // kept tangent to the sphere via parallel transport each frame. This replaces
@@ -86,10 +91,40 @@ export class OrbitCamera {
   /**
    * Provide the terrain mesh (and any extra roots, e.g. zone buildings) so
    * the camera can avoid clipping through them.
+   *
+   * Flattened ONCE here rather than walked recursively per frame: the island
+   * group holds thousands of children at R=75 and `intersectObjects(...,
+   * recursive)` was a full-graph traversal every frame. Meshes that opted out
+   * of raycasting via an own-property no-op `raycast` (grass chunks, sea) are
+   * skipped, as is anything too small to meaningfully block a view ray —
+   * except the FIRST root (the terrain), which is always included.
    */
   public setCollisionMesh(...roots: Array<THREE.Object3D | undefined>): void {
     this.collisionRoots = roots.filter((r): r is THREE.Object3D => !!r);
+    const flat: THREE.Mesh[] = [];
+    const MIN_BLOCKING_RADIUS = 1.2;
+    this.collisionRoots.forEach((root, rootIndex) => {
+      root.traverse((o: THREE.Object3D) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || !m.geometry) return;
+        // Own-property raycast = an explicit opt-out (the prototype's raycast
+        // is the BVH-accelerated real one).
+        if (Object.prototype.hasOwnProperty.call(m, 'raycast')) return;
+        if (rootIndex > 0 || m !== root) {
+          if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
+          const r = m.geometry.boundingSphere?.radius ?? 0;
+          const s = m.getWorldScale(this._flattenScale);
+          if (r * Math.max(s.x, s.y, s.z) < MIN_BLOCKING_RADIUS && rootIndex !== 0) return;
+        }
+        flat.push(m);
+      });
+    });
+    this.collisionMeshes = flat;
+    this.raycaster.firstHitOnly = true; // BVH fast path on the terrain leg
   }
+
+  private collisionMeshes: THREE.Mesh[] = [];
+  private _flattenScale = new THREE.Vector3();
 
   private _reducedVel = new THREE.Vector3();
   /** Feed an external motion vector for the chase-cam to trail (riding). */
@@ -233,11 +268,11 @@ export class OrbitCamera {
 
     // Camera collision: pull in when terrain or a building blocks the view ray
     let effectiveDistance = this.distance;
-    if (this.collisionRoots.length > 0) {
+    if (this.collisionMeshes.length > 0) {
       try {
         this.raycaster.set(this.targetPosition, cameraDir);
         this.raycaster.far = this.distance + 0.5;
-        const hits = this.raycaster.intersectObjects(this.collisionRoots, true);
+        const hits = this.raycaster.intersectObjects(this.collisionMeshes, false);
         if (hits.length > 0 && hits[0].distance < this.distance) {
           effectiveDistance = Math.max(this.minDistance, hits[0].distance * 0.9);
         }

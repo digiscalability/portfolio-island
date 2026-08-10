@@ -4,8 +4,9 @@ import type { GLTF, GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
 // Accelerate terrain raycasts with a bounds tree (BVH). The island surface is a
-// ~32k-triangle sphere that gets raycast thousands of times at boot (prop / path
-// / shadow placement) and every frame (player grounding, camera collision).
+// round(radius*5.8)^2 sphere (~378k triangles at R=75, ~168k at R=50) that gets
+// raycast hundreds of times at boot (prop / path / shadow placement) and every
+// frame (player grounding, camera collision).
 // Plain intersectObject is O(triangles) per ray; a BVH makes it O(log n) with
 // IDENTICAL hit results. Patched onto THREE's prototypes once — meshes without a
 // boundsTree are unaffected (acceleratedRaycast falls back to the stock raycast).
@@ -202,6 +203,8 @@ export class Island {
   public static readonly MAX_DISPLACEMENT = 9.2;
   /** Ray-start headroom for sampleSurfacePosition — always clears MAX_DISPLACEMENT. */
   public static readonly SAMPLE_RAY_DISP = Island.MAX_DISPLACEMENT + 1.8;
+  /** Shared scratch raycaster for the surface samplers (never allocate per call). */
+  private static readonly _scratchRaycaster = new THREE.Raycaster();
 
   /**
    * Multiplier on every ABSOLUTE relief height, so the world's silhouette is
@@ -330,8 +333,9 @@ export class Island {
    * driven by the shared grassTimeUniform — zero per-frame CPU cost.
    */
   /**
-   * Surface sample WITHOUT a raycast — ~200x cheaper than
-   * sampleSurfaceByDirection (measured 1.24ms per raycast against the 32k-tri
+   * Surface sample WITHOUT a raycast — orders of magnitude cheaper than
+   * sampleSurfaceByDirection (the oft-quoted 1.24ms/raycast figure predates
+   * the BVH; with firstHitOnly a ray is tens of microseconds against the
    * terrain, versus a few analytic noise evaluations here). Use this for bulk
    * placement of thousands of items; keep the raycast version for anything
    * that must hit the real mesh (e.g. props placed after GLB swaps).
@@ -576,7 +580,11 @@ export class Island {
     const GRASS_DENSITY_FRACTION = 0.55;
     const COUNT = lowTier
       ? 32000
-      : Math.round(100000 * Math.max(1, areaScale() * GRASS_DENSITY_FRACTION));
+      : // NB: every scale call in this file passes THIS island's radius — the
+        // module-level default (WORLD_RADIUS) builds the wrong world when a
+        // test constructs Island(50). Caught by the headless suite: lamps came
+        // out identical at both radii.
+        Math.round(100000 * Math.max(1, areaScale(this.radius) * GRASS_DENSITY_FRACTION));
     const grass = new THREE.InstancedMesh(geo, mat, COUNT);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
@@ -1001,7 +1009,7 @@ export class Island {
       // Headroom for the taller range: main peak 7.3 + floor 0.75 + crag ~0.8
       // ≈ 8.85. Kept below the sampler's ray start (radius + maxDisp 11), or
       // raycasts begin inside the summit and miss it.
-      const maxRadius = this.radius + Island.MAX_DISPLACEMENT * reliefScale;
+      const maxRadius = this.maxTerrainRadius();
       return THREE.MathUtils.clamp(rawRadius, minRadius, maxRadius);
     };
     this.terrainRadiusFor = terrainRadiusFor;
@@ -1311,7 +1319,9 @@ export class Island {
             // ── Radial depth gradient ─────────────────────────────────────
             // aDepth (baked sea-surface minus analytic terrain) is already on
             // every vertex, so a shore→ocean colour ramp is free. Open ocean
-            // bottoms out at d≈2.5 (seafloor -2.4 + SEA_OFFSET 0.1), so the
+            // bottoms out at d≈2.5*reliefScale (3.75 at R=75; depth values
+            // scale with relief but the shore band widens by the same factor,
+            // so depth-per-metre at the waterline is unchanged), so the
             // ramp keys 0.5→2.3: near-shore water keeps the turquoise below,
             // offshore saturates to deep azure instead of one flat milky tone.
             // GLSL literals are LINEAR-space like every colour in this block.
@@ -1867,8 +1877,8 @@ export class Island {
     // CANDIDATES is also the angular sampling rate against the ~21u moistureAt
     // wavelength, so it has to grow with the sphere or the grove field gets
     // under-sampled and groves land in the wrong places, not just fewer of them.
-    const TREE_CANDIDATES = Math.round(290 * areaScale());
-    const TREE_CAP = Math.round(96 * areaScale()); // a HARD cap (`placed < TREE_CAP`), so without this the island silently thins
+    const TREE_CANDIDATES = Math.round(290 * areaScale(this.radius));
+    const TREE_CAP = Math.round(96 * areaScale(this.radius)); // a HARD cap (`placed < TREE_CAP`), so without this the island silently thins
     let placed = 0;
     for (let i = 0; i < TREE_CANDIDATES && placed < TREE_CAP; i++) {
       const y = 1 - (i / (TREE_CANDIDATES - 1)) * 2;
@@ -2138,7 +2148,10 @@ export class Island {
     // apart — the spacing already judged "genuinely black" and fixed by the
     // infill pass below. Count tracks the circumference; the alternating-kerb
     // pattern and the 2.57u kerb offset are preserved exactly.
-    const LAMP_RING_COUNT = Math.round(10 * beltScale());
+    // 2*round(N/2 * belt), NOT round(N * belt): the i%2 alternating-kerb
+    // pattern must survive the wrap, and an odd count (15 at R=75) put two
+    // consecutive lamps on the same kerb at the seam.
+    const LAMP_RING_COUNT = 2 * Math.round(5 * beltScale(this.radius));
     const LAMP_KERB = this.arc(2.57);
     const LAMP_LON_0 = 0.28;
     const LAMP_SITES: Array<[number, number]> = Array.from(
@@ -2243,12 +2256,14 @@ export class Island {
         this.radius,
       );
       buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), true, 5.8);
+      lamps.children[lamps.children.length - 1].userData.boulevardRing = 'sites';
     }
     for (const [lon, lat] of LAMP_INFILL) {
       const pos = this.claimOffStreet(this.dirAt(lon, lat), this.arc(2.5)).multiplyScalar(
         this.radius,
       );
       buildLamp(pos, this.dirAt(lon, 0.4636).multiplyScalar(this.radius), false, 5.8);
+      lamps.children[lamps.children.length - 1].userData.boulevardRing = 'infill';
     }
     // PORCH lamps: one beside every house door, so homes read as lived-in
     // after dark instead of black cutouts with two lit windows. Offset along
@@ -2711,7 +2726,7 @@ export class Island {
     // positions bake straight into instance matrices. frustumCulled=false: the
     // instances wrap the entire planet shell, so all-or-nothing culling would
     // only ever flicker the layer on/off — cheaper to just always draw it.
-    const SPARKLE_COUNT = Math.round(47 * areaScale()); // near-free — one InstancedMesh
+    const SPARKLE_COUNT = Math.round(47 * areaScale(this.radius)); // near-free — one InstancedMesh
     const sparkleMat = new THREE.MeshBasicMaterial({
       color: 0xffffee,
       transparent: true,
@@ -3326,7 +3341,7 @@ export class Island {
     // Add dust/pollen particles for ambiance — ONE InstancedMesh (was 80
     // separate meshes). Same rationale as the sparkles above: decorative,
     // never animated, whole-object visibility toggle keyed off the name.
-    const DUST_COUNT = Math.round(125 * areaScale()); // near-free — one InstancedMesh
+    const DUST_COUNT = Math.round(125 * areaScale(this.radius)); // near-free — one InstancedMesh
     const dustMat = new THREE.MeshBasicMaterial({
       color: 0xeeddaa,
       transparent: true,
@@ -3991,7 +4006,7 @@ export class Island {
     // NOTE: MAX is NOT the binding constraint — the scatter only ever placed 59
     // of 128 at R=50, so raising the cap alone would have changed nothing.
     // CANDIDATES is what actually gates the count.
-    const MAX = Math.round(128 * areaScale());
+    const MAX = Math.round(128 * areaScale(this.radius));
     const inst = new THREE.InstancedMesh(geo, mat, MAX);
     inst.name = 'rocks';
     inst.castShadow = true;
@@ -3999,7 +4014,7 @@ export class Island {
     const up = new THREE.Vector3(0, 1, 0);
     const dummy = new THREE.Object3D();
     const golden = Math.PI * (3 - Math.sqrt(5));
-    const CANDIDATES = Math.round(400 * areaScale());
+    const CANDIDATES = Math.round(400 * areaScale(this.radius));
     let placed = 0;
     for (let i = 0; i < CANDIDATES && placed < MAX; i++) {
       const y = 1 - (i / (CANDIDATES - 1)) * 2;
@@ -4470,8 +4485,13 @@ export class Island {
 
       // direction from center to approx position
       const dir = approxPos.clone().normalize();
-      // guess the maximum displacement we might find on the terrain (mountains/hills)
-      const maxExpectedDisplacement = 4.5; // Increased from 3.0 to account for higher peaks
+      // DERIVED, not guessed: this was a literal 4.5 while the terrain clamp
+      // allows MAX_DISPLACEMENT * reliefScale (13.8 at R=75) — every ray that
+      // starts below the peaks begins INSIDE the mountain, misses the front
+      // face, and this function silently seats the prop on the bare base
+      // sphere (lamps/stalls/rivers/flowers buried or floating on every hill).
+      // Same derivation as the twin sampler at sampleSurfaceByDirection.
+      const maxExpectedDisplacement = Island.SAMPLE_RAY_DISP * this.reliefScale;
 
       // Try multiple raycast strategies to robustly hit displaced geometry
       const strategies = [] as { start: THREE.Vector3; dir: THREE.Vector3; far: number }[];
@@ -4483,7 +4503,7 @@ export class Island {
       strategies.push({
         start: primaryStart,
         dir: this.center.clone().sub(primaryStart).normalize(),
-        far: maxExpectedDisplacement + 3.0 + this.radius + 15,
+        far: maxExpectedDisplacement + 3.0 + this.radius,
       });
 
       // secondary: cast a short ray outward from a point on the base radius toward the sky (handles cases with overhangs)
@@ -4502,7 +4522,7 @@ export class Island {
         strategies.push({
           start: s,
           dir: this.center.clone().sub(s).normalize(),
-          far: maxExpectedDisplacement + 3.0 + this.radius + 15,
+          far: maxExpectedDisplacement + 3.0 + this.radius,
         });
       }
 
@@ -4511,9 +4531,16 @@ export class Island {
 
       let hit: THREE.Intersection | null = null;
       let usedStrategyStart: THREE.Vector3 | null = null;
+      // ONE reused raycaster (was a fresh allocation per strategy — 9 per
+      // call), and firstHitOnly so the BVH stops at the nearest face like the
+      // twin sampler does.
+      const raycaster = Island._scratchRaycaster;
+      raycaster.firstHitOnly = true;
       for (const strat of strategies) {
         try {
-          const raycaster = new THREE.Raycaster(strat.start, strat.dir, 0, strat.far);
+          raycaster.set(strat.start, strat.dir);
+          raycaster.near = 0;
+          raycaster.far = strat.far;
           const intersects = raycaster.intersectObject(this.surfaceMesh, true);
           if (intersects && intersects.length) {
             hit = intersects[0];
@@ -7208,6 +7235,17 @@ export class Island {
 
   public getRadius(): number {
     return this.radius;
+  }
+
+  /**
+   * Highest possible terrain point — the createIsland() displacement clamp.
+   * ANYTHING that asks "is this above/near the terrain?" (camera-proximity
+   * gates, sampler ray starts, prop seating headroom) must derive from this,
+   * not from a literal: two shipped bugs (camNear +6, sampler ray +5.5) were
+   * exactly such literals going stale when relief scaled with the radius.
+   */
+  public maxTerrainRadius(): number {
+    return this.radius + Island.MAX_DISPLACEMENT * this.reliefScale;
   }
 
   /**
