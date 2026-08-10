@@ -132,6 +132,13 @@ class SimpleApp {
   ];
   // Consumables: re-buyable and spent by use, unlike hats (owned once, then
   // equipped). Charges persist locally and in the cloud profile.
+  private static readonly ROD_ID = 'fishingrod';
+  private static readonly ROD_PRICE = 40;
+  private static readonly FISH_SELL_PRICE = 3;
+  // Local truth like the feed consumables (LOCAL-STATE law: never max-merge a
+  // consumable from the cloud). Rod is a boolean own-flag; fish are inventory.
+  private ownedRod = false;
+  private fishCaught = 0;
   private static readonly BIRD_FEED_ID = 'birdfeed';
   private static readonly BIRD_FEED_PRICE = 6;
   private static readonly BIRD_FEED_CHARGES = 5;
@@ -354,6 +361,11 @@ class SimpleApp {
       try {
         const raw = localStorage.getItem('ds_bird_feed');
         this.hasLocalBirdFeed = raw !== null;
+        this.ownedRod = localStorage.getItem('ds_rod') === '1';
+        this.fishCaught = Math.max(
+          0,
+          parseInt(localStorage.getItem('ds_fish_caught') ?? '0', 10) || 0,
+        );
         this.birdFeed = Math.max(0, parseInt(raw ?? '0', 10) || 0);
         const rawCat = localStorage.getItem('ds_cat_feed');
         this.hasLocalCatFeed = rawCat !== null;
@@ -940,7 +952,25 @@ class SimpleApp {
       if (a11y.reducedMotion) {
         afterIntro();
       } else {
-        this.scene.getOrbitCamera().flyInFromDistant(2500).then(afterIntro);
+        // INTRO-LITE: the fly-in is the single heaviest view in the game — the
+        // whole planet in frustum, so chunk culling recovers nothing and every
+        // tree/cloud/blade renders at once. At the resulting frame rate the
+        // orbiting planet judders ("feels doubled" — classic low-fps double
+        // image, plus half-res bloom ghosting on the bright rim). Half the
+        // grass and skip bloom for the 2.5s swoop; nobody can see blades or
+        // bloom detail from 280u anyway. Restored the frame the intro settles
+        // (governor conflict window is ~0: rungs need 4s+ at the scale floor
+        // before they touch either lever).
+        this.scene.getIsland().setGrassBudget(0.5);
+        this.renderer.setPostProcessingEnabled(false);
+        this.scene
+          .getOrbitCamera()
+          .flyInFromDistant(2500)
+          .then(() => {
+            this.scene.getIsland().setGrassBudget(1);
+            this.renderer.setPostProcessingEnabled(true);
+            afterIntro();
+          });
       }
 
       // Warm the post-processing + shadow shaders on a hidden frame (camera is
@@ -1834,6 +1864,42 @@ class SimpleApp {
         } else if (player && player.isInWater() && !player.isSwimming()) {
           // In the water and sinking: tell them how to swim
           this.ui.showInteractionPrompt('🏊 Hold <strong>Space</strong> to swim');
+        } else if (this.scene.isFishingActive()) {
+          // Line is in the water: reeling outranks every other interaction.
+          this.ui.showInteractionPrompt(
+            this.scene.isFishBiting()
+              ? '❗ Press <strong>E</strong> — something is biting!'
+              : '🎣 Press <strong>E</strong> to reel in',
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            if (this.scene.reelLine() === 'fish') {
+              this.fishCaught++;
+              this.persistFish();
+              sfx.coin();
+              this.ui.toast(`🐟 Caught one! (${this.fishCaught} in the basket)`);
+              track('fish_caught', { held: this.fishCaught });
+            } else {
+              sfx.blip();
+              this.ui.toast('…nothing yet. Wait for the float to dip.');
+            }
+          }
+        } else if (this.fishCaught > 0 && this.scene.isNearFisherman()) {
+          // Selling to the fisherman: the economy's first coin SOURCE. Wins
+          // over the generic NPC prompt only while there's fish to sell.
+          this.ui.showInteractionPrompt(
+            `🐟 Press <strong>E</strong> to sell ${this.fishCaught} fish (${
+              this.fishCaught * SimpleApp.FISH_SELL_PRICE
+            } 🪙)`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            const earned = this.fishCaught * SimpleApp.FISH_SELL_PRICE;
+            this.scene.addCoins(earned);
+            track('fish_sold', { count: this.fishCaught, earned });
+            this.fishCaught = 0;
+            this.persistFish();
+            sfx.coin();
+            this.ui.toast(`🪙 +${earned} — the fisherman tips his hat.`);
+          }
         } else if (nearby) {
           // Show interaction prompt
           let text = '⌨️ Press <strong>E</strong> to interact';
@@ -1864,6 +1930,13 @@ class SimpleApp {
 
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.interactWith(nearby);
+          }
+        } else if (this.ownedRod && this.scene.canCastHere()) {
+          // Lowest interaction priority: NPCs, mailboxes and doors all win
+          // over casting, so the shore never shadows a conversation.
+          this.ui.showInteractionPrompt('🎣 Press <strong>E</strong> to cast');
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.tryCastLine(performance.now() / 1000);
           }
         } else if (this.multiplayer && this.multiplayer.nearestPeerDistance() < 4) {
           // Another visitor is close: offer a wave
@@ -2659,6 +2732,13 @@ class SimpleApp {
               charges: SimpleApp.FISH_FEED_CHARGES,
               held: this.fishFeed,
             },
+            {
+              id: SimpleApp.ROD_ID,
+              icon: '🎣',
+              name: 'Fishing Rod',
+              price: SimpleApp.ROD_PRICE,
+              owned: this.ownedRod,
+            },
             ...this.hatCatalog.map((h) => ({
               ...h,
               owned: this.ownedHats.has(h.id),
@@ -2667,6 +2747,21 @@ class SimpleApp {
           ],
         },
         (id) => {
+          if (id === SimpleApp.ROD_ID) {
+            if (this.ownedRod) return;
+            if (!this.scene.spendCoins(SimpleApp.ROD_PRICE)) return;
+            this.ownedRod = true;
+            try {
+              localStorage.setItem('ds_rod', '1');
+            } catch {
+              /* no storage */
+            }
+            sfx.coin();
+            track('rod_bought', {});
+            this.ui.toast('🎣 Fishing rod! Stand at the shore and press E to cast.');
+            render();
+            return;
+          }
           if (id === SimpleApp.BIRD_FEED_ID) {
             // Consumable: buy another handful as often as you can afford it.
             if (!this.scene.spendCoins(SimpleApp.BIRD_FEED_PRICE)) return;
@@ -2734,6 +2829,14 @@ class SimpleApp {
 
   private refreshFeedHud(): void {
     this.ui.updateFeedCounters(this.birdFeed, this.catFeed, this.fishFeed);
+  }
+
+  private persistFish(): void {
+    try {
+      localStorage.setItem('ds_fish_caught', String(this.fishCaught));
+    } catch {
+      /* no storage */
+    }
   }
 
   private persistBirdFeed(): void {

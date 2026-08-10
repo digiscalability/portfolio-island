@@ -235,7 +235,13 @@ export class GameScene extends THREE.Scene {
   // Reach radii are a FRACTION of the world: the animals they call spread out
   // as the planet grows, so a fixed distance quietly stops reaching them — and
   // these three gate PAID consumables, which spend the coin either way.
-  private static readonly CAT_CALL_RADIUS = 0.44 * WORLD_RADIUS; // cats within this trot in to treats
+  // LOCAL feeding model (playtest: "feeding the cats is not realistic"). The
+  // fraction-of-world radius (0.44R = 33u) summoned cats from off-screen on a
+  // 12.7s cross-town sprint. Realism = the cats NEAR you respond; the paid
+  // throw is protected instead by the nearest-cat fallback in callCatsToFeed,
+  // which brings one cat from up to CAT_CALL_MAX even when none are close.
+  private static readonly CAT_CALL_RADIUS = 14; // cats within this trot in to treats
+  private static readonly CAT_CALL_MAX = 30; // nearest-cat fallback ceiling
   private static readonly CAT_MAX = 5; // per throw
   private static readonly CAT_FEAST_SECONDS = 24;
   private static readonly CAT_WALK_SPEED = 1.1; // u/s stroll
@@ -281,7 +287,10 @@ export class GameScene extends THREE.Scene {
   private activeFishJumps = 0; // cap concurrent leaps so splash pools never starve
   // Fish-feed: bread thrown ONTO the water; nearby fish swim to it and nibble.
   private static readonly FISH_FEED_THROW_DIST = 6.0; // reach past the beach
-  private static readonly FISH_FEED_CALL_RADIUS = 0.52 * WORLD_RADIUS; // fish within this come in
+  // Local model, same reasoning as CAT_CALL_RADIUS: bread thrown off one beach
+  // should feed THAT water, not summon a school from around the headland.
+  private static readonly FISH_FEED_CALL_RADIUS = 16; // fish within this come in
+  private static readonly FISH_CALL_MAX = 32; // nearest-fish fallback ceiling
   private static readonly FISH_FEED_MAX = 7;
   private static readonly FISH_FEED_FEAST_SECONDS = 20;
   private static readonly FISH_FEED_PILE_LIFE = 24;
@@ -2112,12 +2121,16 @@ export class GameScene extends THREE.Scene {
   /** Send the nearest idle cats trotting in to a fresh treat pile. */
   private callCatsToFeed(pos: THREE.Vector3, time: number): void {
     if (!this.island) return;
-    const near = this.cats
+    const eligible = this.cats
       .filter((c) => c.mode !== 'trot' && c.mode !== 'eat' && c.feastUntil <= time)
       .map((c) => ({ c, d: c.curPos.distanceTo(pos) }))
-      .filter((e) => e.d < GameScene.CAT_CALL_RADIUS)
-      .sort((a, b) => a.d - b.d)
-      .slice(0, GameScene.CAT_MAX);
+      .sort((a, b) => a.d - b.d);
+    let near = eligible.filter((e) => e.d < GameScene.CAT_CALL_RADIUS).slice(0, GameScene.CAT_MAX);
+    // Paid-throw protection: no cat nearby → the single nearest one still
+    // comes (within reason), so the treat is never a silent dead spend.
+    if (!near.length && eligible.length && eligible[0].d < GameScene.CAT_CALL_MAX) {
+      near = [eligible[0]];
+    }
     const pileUp = this._catScratch.copy(pos).normalize();
     const ref = Math.abs(pileUp.y) > 0.94 ? GameScene.AXIS_X : GameScene.AXIS_Y;
     const t1 = new THREE.Vector3().crossVectors(pileUp, ref).normalize();
@@ -2133,14 +2146,14 @@ export class GameScene extends THREE.Scene {
       this.seatCatTarget(c, c.walkTo);
       c.walkFrom.copy(c.curPos);
       c.walkT0 = time;
-      // Ceiling DERIVED from the call radius, not a literal: at 2.6 u/s a 6s cap
-      // only covers 15.6u, so a cat summoned from the far edge of a 33u call
-      // radius would cross the gap at ~5.5 u/s under a walk-gait animation —
-      // visibly skating. These two constants have to move together.
+      // Ceiling DERIVED from the FURTHEST possible responder — the nearest-cat
+      // fallback at CAT_CALL_MAX, not the local radius — or the fallback cat
+      // crosses its longer gap at sprint speed under a walk-gait animation
+      // (visibly skating). These constants have to move together.
       c.walkDur = THREE.MathUtils.clamp(
         near[i].d / GameScene.CAT_TROT_SPEED,
         0.6,
-        GameScene.CAT_CALL_RADIUS / GameScene.CAT_TROT_SPEED,
+        GameScene.CAT_CALL_MAX / GameScene.CAT_TROT_SPEED,
       );
       c.mode = 'trot';
       c.feastUntil = time + c.walkDur + GameScene.CAT_FEAST_SECONDS;
@@ -2530,12 +2543,16 @@ export class GameScene extends THREE.Scene {
   private callFishToFeed(dir: THREE.Vector3, time: number): void {
     if (!this.island) return;
     const maxAng = GameScene.FISH_FEED_CALL_RADIUS / this.island.getRadius();
-    const near = this.fish
+    const eligible = this.fish
       .filter((f) => f.jumpT0 < 0 && (f.feedTarget === null || f.feedUntil <= time))
       .map((f) => ({ f, a: f.dir.angleTo(dir) }))
-      .filter((e) => e.a < maxAng)
-      .sort((a, b) => a.a - b.a)
-      .slice(0, GameScene.FISH_FEED_MAX);
+      .sort((a, b) => a.a - b.a);
+    let near = eligible.filter((e) => e.a < maxAng).slice(0, GameScene.FISH_FEED_MAX);
+    // Paid-throw protection: nothing local → the nearest few still come.
+    if (!near.length && eligible.length) {
+      const cap = GameScene.FISH_CALL_MAX / this.island.getRadius();
+      near = eligible.filter((e) => e.a < cap).slice(0, 3);
+    }
     for (const { f } of near) {
       f.feedTarget = dir.clone();
       f.feedUntil = time + GameScene.FISH_FEED_FEAST_SECONDS;
@@ -4267,6 +4284,137 @@ export class GameScene extends THREE.Scene {
       limbs[3].b.quaternion
         .copy(limbs[3].rest)
         .multiply(this._npcLimbQ.setFromAxisAngle(limbs[3].axis, b));
+    }
+  }
+
+  // ── Player fishing (the economy's first production loop: rod = coin sink,
+  // fish = resource, selling to the fisherman = coin source). Mirrors the
+  // fisherman NPC's own bobber-on-the-waves pattern one function up. ──
+  private playerFishing: {
+    phase: 'idle' | 'wait' | 'bite';
+    dir: THREE.Vector3;
+    castFrom: THREE.Vector3;
+    bobber: THREE.Mesh | null;
+    biteAt: number;
+    biteUntil: number;
+  } = {
+    phase: 'idle',
+    dir: new THREE.Vector3(),
+    castFrom: new THREE.Vector3(),
+    bobber: null,
+    biteAt: 0,
+    biteUntil: 0,
+  };
+
+  /** Water within casting reach of the player's feet? (shore-adjacent check) */
+  public canCastHere(): boolean {
+    if (!this.player || !this.island) return false;
+    if (this.player.isInWater() || !this.player.isOnGround()) return false;
+    return this.findCastWater(null) !== null;
+  }
+
+  /** Nearest water dir 2-8u ahead-ish of the player, or null. Scans a fan of
+   *  forward arcs so standing parallel to the shore still finds the sea. */
+  private findCastWater(out: THREE.Vector3 | null): THREE.Vector3 | null {
+    const p = this.player.getWorldPosition();
+    const up = this._fishCastUp.copy(p).normalize();
+    const fwd = this._fishCastFwd.copy(this.player.getForwardDirection());
+    fwd.addScaledVector(up, -fwd.dot(up)).normalize(); // tangent-plane forward
+    // Reach up to 11u: the beach RAMP is wide (the shore band spans ~10u of
+    // walkable sand above actual sub-sea-level water), so a short cast from
+    // the shore edge lands on wet-looking land, not water.
+    for (const reach of [4, 7, 11]) {
+      for (const side of [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6]) {
+        const dir = this._fishCastScan
+          .copy(fwd)
+          .applyAxisAngle(up, side)
+          .multiplyScalar(reach / this.island.getRadius());
+        const cand = this._fishCastCand.copy(up).add(dir).normalize();
+        if (this.island.isOverWater(cand)) {
+          return out ? out.copy(cand) : cand;
+        }
+      }
+    }
+    return null;
+  }
+
+  private _fishCastUp = new THREE.Vector3();
+  private _fishCastFwd = new THREE.Vector3();
+  private _fishCastScan = new THREE.Vector3();
+  private _fishCastCand = new THREE.Vector3();
+
+  public isFishingActive(): boolean {
+    return this.playerFishing.phase !== 'idle';
+  }
+
+  public isFishBiting(): boolean {
+    return this.playerFishing.phase === 'bite';
+  }
+
+  public tryCastLine(time: number): boolean {
+    const F = this.playerFishing;
+    if (F.phase !== 'idle' || !this.canCastHere()) return false;
+    const water = this.findCastWater(F.dir);
+    if (!water) return false;
+    F.castFrom.copy(this.player.getWorldPosition());
+    if (!F.bobber) {
+      // Two-tone float, same silhouette language as the fisherman's.
+      const b = new THREE.Mesh(
+        new THREE.SphereGeometry(0.11, 8, 8),
+        new THREE.MeshToonMaterial({ color: 0xd6402a, gradientMap: Materials.toonRamp() }),
+      );
+      b.castShadow = false;
+      F.bobber = b;
+      this.add(b);
+    }
+    F.bobber.visible = true;
+    F.phase = 'wait';
+    F.biteAt = time + 3 + Math.random() * 5;
+    F.biteUntil = 0;
+    sfx.blip();
+    return true;
+  }
+
+  /** Reel in: 'fish' during the bite window, 'nothing' otherwise. */
+  public reelLine(): 'fish' | 'nothing' {
+    const F = this.playerFishing;
+    const got = F.phase === 'bite' ? 'fish' : 'nothing';
+    F.phase = 'idle';
+    if (F.bobber) F.bobber.visible = false;
+    return got;
+  }
+
+  public isNearFisherman(maxDist = 4): boolean {
+    if (!this.fisherman || !this.player) return false;
+    const stand = this._fishCastScan
+      .copy(this.fisherman.stand.dir)
+      .multiplyScalar(this.fisherman.stand.r);
+    return this.player.getWorldPosition().distanceTo(stand) < maxDist;
+  }
+
+  private updatePlayerFishing(time: number): void {
+    const F = this.playerFishing;
+    if (F.phase === 'idle' || !F.bobber) return;
+    // Walking off cancels the cast (no free idle-fishing from across the map).
+    if (this.player.getWorldPosition().distanceTo(F.castFrom) > 5) {
+      F.phase = 'idle';
+      F.bobber.visible = false;
+      return;
+    }
+    // Ride the real waves, exactly like the fisherman's bobber.
+    const wave = this.island.waveHeightAt(F.dir, this.island.seaTimeUniform.value);
+    F.bobber.position.copy(F.dir).multiplyScalar(wave);
+    if (F.phase === 'wait' && time >= F.biteAt) {
+      F.phase = 'bite';
+      F.biteUntil = time + 1.6;
+      sfx.blip();
+    } else if (F.phase === 'bite') {
+      // The dip that says NOW: pull the float under between wave crests.
+      F.bobber.position.addScaledVector(F.dir, -0.22);
+      if (time >= F.biteUntil) {
+        F.phase = 'wait'; // missed it — the fish loses interest, bait survives
+        F.biteAt = time + 3 + Math.random() * 5;
+      }
     }
   }
 
@@ -7717,6 +7865,7 @@ export class GameScene extends THREE.Scene {
     this.updateNpcShadows();
     this.updateHerons(time);
     this.updateFisherman(time, deltaTime);
+    this.updatePlayerFishing(time);
     this.updateBaker(time, deltaTime);
     this.updateSailors(time, deltaTime);
     this.updateCruise(time, deltaTime);

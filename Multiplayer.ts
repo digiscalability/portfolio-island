@@ -295,11 +295,20 @@ export class Multiplayer {
       }).catch(() => {});
     };
 
+    // Freshness gate: presence nodes whose writer died without a clean
+    // onDisconnect linger on the server, and the attach replay used to spawn a
+    // full avatar for each until the 3.5s reaper caught up — "several players"
+    // materializing for one user at every join. State writes at 10Hz (1s
+    // heartbeat hidden), so anything silent for 30s is a corpse; the window is
+    // generous because `t` is the SENDER's clock (see the chat filter's
+    // cross-device-skew lesson).
+    const fresh = (v: { t?: unknown }): boolean =>
+      Math.abs(Date.now() - (Number(v.t) || 0)) < 30_000;
     onChildAdded(room, (snap) => {
       const key = snap.key;
       if (!key || key === uid) return;
       const v = snap.val();
-      if (!v) return;
+      if (!v || !fresh(v)) return;
       this.peerWave.set(key, v.wave || 0); // baseline: don't wave on first sight
       this.routeRtdbState(key, v);
     });
@@ -307,7 +316,7 @@ export class Multiplayer {
       const key = snap.key;
       if (!key || key === uid) return;
       const v = snap.val();
-      if (!v) return;
+      if (!v || !fresh(v)) return;
       this.routeRtdbState(key, v);
       const w = v.wave || 0;
       if (w > (this.peerWave.get(key) || 0)) {
