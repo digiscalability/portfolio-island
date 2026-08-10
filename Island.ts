@@ -563,7 +563,17 @@ export class Island {
     //    2.25x the vertices. This is a decision, not an oversight.
     //
     // max(1, ...) keeps the reference world exactly as authored.
-    const GRASS_DENSITY_FRACTION = 0.8;
+    //
+    // 0.8 -> 0.55 (2026-08-10): 0.8 shipped and the live world went jittery+
+    // laggy on desktop. Measured: grass was the largest single render-time
+    // slice (~21% at the fly-in viewpoint, 180k->45k blades), and the added
+    // load is vertex-side, which the governor cannot shed until its LAST rung —
+    // so it hunted resolution once a second (each step reallocates the composer
+    // targets = the jitter) without ever recovering (the lag). 0.55 keeps the
+    // grass verts within ~25% of the load the R=50 world proved out.
+    // If still heavy: 0.4 next, then the real fix — give the governor a
+    // vertex-side lever EARLIER than rung 3 (see LOCAL-STATE item 7).
+    const GRASS_DENSITY_FRACTION = 0.55;
     const COUNT = lowTier
       ? 32000
       : Math.round(100000 * Math.max(1, areaScale() * GRASS_DENSITY_FRACTION));
