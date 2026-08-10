@@ -535,6 +535,142 @@ export class SimpleUI {
   private shortLandscapeMql: MediaQueryList | null = null;
   private onShortLandscapeChange: (() => void) | null = null;
   private mapDpr = 1; // minimap backing-store scale (min(devicePixelRatio, 2))
+  private onMinimapClick: (() => void) | null = null;
+
+  /** App hook: tapping the minimap (or pressing M) opens the island map. */
+  public setOnMinimapClick(cb: () => void): void {
+    this.onMinimapClick = cb;
+  }
+
+  /**
+   * Full island map (expansion: "make the map clickable and expandable").
+   * Top-down polar view from the pole — every shop, provider and free build
+   * plot, each clickable to set the compass. `onPick` receives the chosen POI.
+   */
+  public showIslandMap(
+    pois: Array<{ icon: string; label: string; pos: { x: number; y: number; z: number } }>,
+    onPick: (poi: {
+      icon: string;
+      label: string;
+      pos: { x: number; y: number; z: number };
+    }) => void,
+  ): void {
+    const modal = this.buildCenteredModal('min(92vw, 520px)', 'island-map');
+    const title = document.createElement('h2');
+    title.textContent = '🗺️ Island map';
+    Object.assign(title.style, { margin: '0 0 8px', color: '#8a9bff', fontSize: '18px' });
+    modal.appendChild(title);
+    const hint = document.createElement('p');
+    hint.textContent = 'Tap anything to set your compass to it.';
+    Object.assign(hint.style, { margin: '0 0 10px', fontSize: '12.5px', color: '#aab' });
+    modal.appendChild(hint);
+
+    const D = Math.min(430, Math.floor(window.innerWidth * 0.8));
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // the minimap DPR lesson
+    const canvas = document.createElement('canvas');
+    canvas.width = D * dpr;
+    canvas.height = D * dpr;
+    Object.assign(canvas.style, {
+      width: `${D}px`,
+      height: `${D}px`,
+      borderRadius: '50%',
+      cursor: 'pointer',
+      display: 'block',
+      margin: '0 auto',
+    });
+    modal.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const cx = D / 2;
+    const cy = D / 2;
+    const R = D / 2 - 6;
+    // Polar projection from the pole: r grows with distance from the pole
+    // (lat π/2 = centre, shore lat ~0.24 = rim).
+    const SHORE_LAT = 0.2;
+    const project = (pos: { x: number; y: number; z: number }): { x: number; y: number } => {
+      const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
+      const lat = Math.asin(Math.max(-1, Math.min(1, pos.y / len)));
+      const lon = Math.atan2(pos.z, pos.x);
+      const r = (R * (Math.PI / 2 - lat)) / (Math.PI / 2 - SHORE_LAT);
+      return { x: cx + Math.cos(lon) * Math.min(r, R), y: cy + Math.sin(lon) * Math.min(r, R) };
+    };
+    // Sea, land, plaza ring.
+    ctx.fillStyle = '#17435e';
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#4d8a46';
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * 0.94, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(232, 217, 184, 0.5)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, (R * (Math.PI / 2 - 0.4636)) / (Math.PI / 2 - SHORE_LAT), 0, Math.PI * 2);
+    ctx.stroke();
+    // POIs.
+    const hits: Array<{ x: number; y: number; poi: (typeof pois)[number] }> = [];
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const poi of pois) {
+      const p = project(poi.pos);
+      ctx.fillText(poi.icon, p.x, p.y);
+      hits.push({ x: p.x, y: p.y, poi });
+    }
+    const pick = (poi: (typeof pois)[number]): void => {
+      modal.remove();
+      this.panels.notifyClosed('island-map');
+      onPick(poi);
+    };
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      let best: (typeof hits)[number] | null = null;
+      let bestD = 22;
+      for (const h of hits) {
+        const d = Math.hypot(h.x - mx, h.y - my);
+        if (d < bestD) {
+          bestD = d;
+          best = h;
+        }
+      }
+      if (best) pick(best.poi);
+    });
+    // Legend — every provider as a tappable chip (works even where map dots
+    // crowd each other).
+    const legend = document.createElement('div');
+    Object.assign(legend.style, {
+      display: 'flex',
+      flexWrap: 'wrap',
+      gap: '6px',
+      justifyContent: 'center',
+      marginTop: '10px',
+      maxHeight: '150px',
+      overflowY: 'auto',
+    });
+    for (const poi of pois) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = `${poi.icon} ${poi.label}`;
+      Object.assign(chip.style, {
+        padding: '5px 9px',
+        borderRadius: '999px',
+        border: '1px solid rgba(255,255,255,0.18)',
+        background: 'rgba(255,255,255,0.06)',
+        color: '#dfe6ff',
+        fontSize: '12px',
+        cursor: 'pointer',
+      });
+      chip.addEventListener('click', () => pick(poi));
+      legend.appendChild(chip);
+    }
+    modal.appendChild(legend);
+    this.overlay.appendChild(modal);
+    trackOnce('island_map_opened');
+  }
 
   /** Wire the mute button to the audio system (returns new muted state). */
   setOnMuteToggle(cb: () => boolean): void {
@@ -3720,6 +3856,11 @@ export class SimpleUI {
       });
       this.overlay.appendChild(this.mapCanvas);
       this.panels.registerLayer('ambient-info', this.mapCanvas);
+      // Expandable map: tapping the radar opens the full island map.
+      this.mapCanvas.style.pointerEvents = 'auto';
+      this.mapCanvas.style.cursor = 'pointer';
+      this.mapCanvas.title = 'Open the island map (M)';
+      this.mapCanvas.addEventListener('click', () => this.onMinimapClick?.());
       // A canvas created while already in short-landscape must adopt the
       // shrunk layout immediately (the media listener only fires on changes).
       this.applyResponsiveHud();

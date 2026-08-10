@@ -5454,6 +5454,63 @@ export class GameScene extends THREE.Scene {
     im.computeBoundingSphere();
   }
 
+  // ── Island-map data (expansion: clickable/expandable map) ─────────────
+  public kioskPos(): THREE.Vector3 | null {
+    return this.island?.kioskSite ?? null;
+  }
+
+  public noticeBoardPos(): THREE.Vector3 | null {
+    return this.island?.noticeBoardSite ?? null;
+  }
+
+  public carpenterRackPos(): THREE.Vector3 | null {
+    if (!this._carpenterPos && this.island) {
+      try {
+        this._carpenterPos = this.island
+          .sampleSurfaceByDirection(this.island.dirAt(0.35, 0.56), 0)
+          .position.clone();
+      } catch {
+        return null;
+      }
+    }
+    return this._carpenterPos;
+  }
+
+  public farmPos(): THREE.Vector3 | null {
+    const d = this.island?.farmDir;
+    if (!d || !this.island) return null;
+    return d.clone().multiplyScalar(this.island.analyticSurface(d).radius);
+  }
+
+  public fishermanPos(): THREE.Vector3 | null {
+    const F = this.fisherman;
+    if (!F) return null;
+    return F.npc.meshRef.position.clone();
+  }
+
+  /** Every FREE plot (bench + structures) with kind and world position —
+   *  the map's build-spot layer. Cached seats, no raycasts. */
+  public freePlotSummary(): Array<{
+    kind: 'bench' | 'signpost' | 'lantern' | 'gazebo';
+    pos: THREE.Vector3;
+  }> {
+    const out: Array<{ kind: 'bench' | 'signpost' | 'lantern' | 'gazebo'; pos: THREE.Vector3 }> =
+      [];
+    if (!this.island) return out;
+    for (let i = 0; i < GameScene.BENCH_PLOTS.length; i++) {
+      if (this.builtPlots.has(i)) continue;
+      const s = this.plotSample(`b${i}`, GameScene.BENCH_PLOTS[i][0], GameScene.BENCH_PLOTS[i][1]);
+      if (s) out.push({ kind: 'bench', pos: s.position });
+    }
+    for (let i = 0; i < GameScene.BUILD_PLOTS.length; i++) {
+      if (this.builtBuildPlots.has(i)) continue;
+      const site = GameScene.BUILD_PLOTS[i];
+      const s = this.plotSample(`s${i}`, site.lon, site.lat);
+      if (s) out.push({ kind: site.kind, pos: s.position });
+    }
+    return out;
+  }
+
   /** Nearest UNBUILT bench plot within reach (cached seats — no raycasts). */
   public nearestFreePlot(maxDist = 3.5): number | null {
     if (!this.player || !this.island) return null;

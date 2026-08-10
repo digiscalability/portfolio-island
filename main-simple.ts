@@ -92,6 +92,10 @@ class SimpleApp {
   private isRunning: boolean = false;
   // "Meet the AI townsfolk" compass override (welcome CTA → cleared on AI chat)
   private aiGuideTarget: THREE.Vector3 | null = null;
+  // Island-map pick: explicit user intent, outranks every other compass
+  // source; cleared on arrival (<6u) or a fresh pick.
+  private mapGuideTarget: THREE.Vector3 | null = null;
+  private mapGuideLabel = '';
   // "Beat the lap record" CTA → compass points at the start gate until a race starts
   private raceGuideTarget: THREE.Vector3 | null = null;
 
@@ -460,6 +464,8 @@ class SimpleApp {
       this.chat = new Chat(this.multiplayer);
       // DOM twins live in the overlay so photo mode hides them for free.
       this.hudLabels = new HudLabels(this.ui.getOverlay());
+      // Expandable island map: tap the radar (or press M) for the full map.
+      this.ui.setOnMinimapClick(() => this.openIslandMap());
       this.ui.setVoiceSupported(this.chat.voiceSupported);
       this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
@@ -1862,6 +1868,9 @@ class SimpleApp {
         // Scatter a handful of bird feed ahead of you; nearby birds fly in
         if (this.inputManager.consumeKeyPress('f')) this.tossFeed();
 
+        // Full island map (same as tapping the radar)
+        if (this.inputManager.consumeKeyPress('m')) this.openIslandMap();
+
         // Footsteps while walking; thud when landing from a real jump/fall
         if (player) {
           const grounded = player.isOnGround();
@@ -2033,12 +2042,19 @@ class SimpleApp {
               track('lesson_done', { id: next[0], total: this.lessons.length });
             }
           }
-        } else if (this.timber >= 3 && this.nearestAffordableBuild() !== null) {
-          const b = this.nearestAffordableBuild()!;
-          this.ui.showInteractionPrompt(
-            `${b.icon} Press <strong>E</strong> to build a ${b.name} here (${b.timber} 🪵 + ${b.coins} 🪙) — everyone will see it`,
-          );
-          if (this.inputManager.consumeKeyPress('e')) void this.buildHere(b);
+        } else if (this.nearestBuildOpportunity() !== null) {
+          const b = this.nearestBuildOpportunity()!;
+          if (b.affordable) {
+            this.ui.showInteractionPrompt(
+              `${b.icon} Press <strong>E</strong> to build a ${b.name} here (${b.timber} 🪵 + ${b.coins} 🪙) — everyone will see it`,
+            );
+            if (this.inputManager.consumeKeyPress('e')) void this.buildHere(b);
+          } else {
+            // The stake explains itself even when you can't pay yet.
+            this.ui.showInteractionPrompt(
+              `${b.icon} A ${b.name} could go here — needs ${b.timber} 🪵 + ${b.coins} 🪙 (you have ${this.timber} 🪵, ${this.scene.getCoinsCollected()} 🪙)`,
+            );
+          }
         } else if (this.scene.isNearHospital()) {
           this.ui.showInteractionPrompt(
             '🏥 Press <strong>E</strong> — checkup, 10 🪙 (60s of spring in your step)',
@@ -2297,9 +2313,18 @@ class SimpleApp {
     const delivery = active.length > 0 ? active[0] : null;
     const zone = this.nearestUnstampedZone(playerPos);
     const portfolioFirst = (this.passport?.count() ?? 0) === 0;
+    // Map-pick arrival check: the guide fulfils itself.
+    if (this.mapGuideTarget && playerPos.distanceTo(this.mapGuideTarget) < 6) {
+      this.mapGuideTarget = null;
+      this.ui.toast('🧭 You have arrived.');
+    }
     let targetPos: THREE.Vector3 | null = null;
     let label = '';
-    if (this.aiGuideTarget) {
+    if (this.mapGuideTarget) {
+      // Island-map pick — explicit intent, outranks everything until reached.
+      targetPos = this.mapGuideTarget;
+      label = this.mapGuideLabel;
+    } else if (this.aiGuideTarget) {
       // "Meet the AI townsfolk" welcome CTA — outranks everything until the
       // visitor talks to an AI NPC (cleared in the chat-open branch).
       targetPos = this.aiGuideTarget;
@@ -2363,6 +2388,36 @@ class SimpleApp {
    * or before the passport exists. Only the four stamp zones count \u2014 the pole
    * Welcome hub is the intro, not a destination.
    */
+  /** Assemble every shop/provider/build-spot POI and open the island map.
+   *  Picking one sets the compass (mapGuideTarget — top of the chain). */
+  private openIslandMap(): void {
+    const pois: Array<{ icon: string; label: string; pos: THREE.Vector3 }> = [];
+    const add = (icon: string, label: string, pos: THREE.Vector3 | null): void => {
+      if (pos) pois.push({ icon, label, pos });
+    };
+    for (const z of this.scene.getZonesManager().getZones()) {
+      add('🏛️', z.name, z.getPosition());
+    }
+    add('🛒', 'Shop kiosk', this.scene.kioskPos());
+    add('📰', 'Notice board', this.scene.noticeBoardPos());
+    add('🏦', 'Bank', this.scene.bankPos());
+    add('🏫', 'School', this.scene.schoolPos());
+    add('🏥', 'Hospital', this.scene.hospitalPos());
+    add('🪚', "Carpenter's rack (sell timber)", this.scene.carpenterRackPos());
+    add('🌾', 'Farm', this.scene.farmPos());
+    add('🎣', 'Fisherman (sell fish)', this.scene.fishermanPos());
+    const PLOT_ICONS = { bench: '🪑', signpost: '🪧', lantern: '🏮', gazebo: '⛩️' } as const;
+    for (const p of this.scene.freePlotSummary()) {
+      add(PLOT_ICONS[p.kind], `Free ${p.kind} plot`, p.pos);
+    }
+    this.ui.showIslandMap(pois, (poi) => {
+      this.mapGuideTarget = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
+      this.mapGuideLabel = `${poi.icon} ${poi.label}`;
+      this.ui.toast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
+      track('map_guide_set', { label: poi.label });
+    });
+  }
+
   private nearestUnstampedZone(
     playerPos: THREE.Vector3,
   ): { pos: THREE.Vector3; id: PassportZone } | null {
@@ -3146,32 +3201,44 @@ class SimpleApp {
   }
 
   /** Charge first, refund on any non-ack — same shape as the vault. */
-  /** The nearest free plot (bench OR structure) the player can AFFORD, with
-   *  its costs — one prompt for the whole construction catalog. Cheap: plot
-   *  seats are cached in GameScene (no raycasts on this per-frame path). */
-  private nearestAffordableBuild(): {
+  /**
+   * The nearest free plot (bench OR structure) with its costs and an
+   * AFFORDABLE flag. The first version silently skipped plots the player
+   * couldn't pay for — with 5 timber, lantern and gazebo stakes showed NO
+   * prompt at all, which read as "all I can build is signposts" (Abbas's
+   * report). Now the stake always explains itself. Cheap: plot seats are
+   * cached in GameScene (no raycasts on this per-frame path).
+   */
+  private nearestBuildOpportunity(): {
     system: 'bench' | 'build';
     plot: number;
     icon: string;
     name: string;
     timber: number;
     coins: number;
+    affordable: boolean;
   } | null {
     const coins = this.scene.getCoinsCollected();
     const benchPlot = this.scene.nearestFreePlot();
     if (benchPlot !== null) {
       const c = SimpleApp.BUILD_COSTS.bench;
-      if (this.timber >= c.timber && coins >= c.coins) {
-        return { system: 'bench', plot: benchPlot, ...c };
-      }
+      return {
+        system: 'bench',
+        plot: benchPlot,
+        ...c,
+        affordable: this.timber >= c.timber && coins >= c.coins,
+      };
     }
     const buildPlot = this.scene.nearestFreeBuildPlot();
     if (buildPlot !== null) {
       const kind = GameScene.BUILD_PLOTS[buildPlot].kind;
       const c = SimpleApp.BUILD_COSTS[kind];
-      if (this.timber >= c.timber && coins >= c.coins) {
-        return { system: 'build', plot: buildPlot, ...c };
-      }
+      return {
+        system: 'build',
+        plot: buildPlot,
+        ...c,
+        affordable: this.timber >= c.timber && coins >= c.coins,
+      };
     }
     return null;
   }
