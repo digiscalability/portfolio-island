@@ -282,8 +282,12 @@ export class GameScene extends THREE.Scene {
     chopHits: number; // E-press progress, resets after 6s idle
     lastChopAt: number;
     stump: THREE.Mesh | null; // lazy, shared geometry
+    pendingFell?: boolean; // 3rd hit landed logically; visual fell fires at axe impact
   }> = [];
   private static _stumpGeo: THREE.CylinderGeometry | null = null;
+  // Chop impacts deferred to the axe's STRIKE moment (~0.22s into the swing
+  // gesture) so chips/shudder/fall land when the blade visually does.
+  private pendingChopFx: Array<{ at: number; index: number; fell: boolean }> = [];
 
   // Butterflies fluttering around flower clusters
   private butterflies: Array<{
@@ -4361,12 +4365,20 @@ export class GameScene extends THREE.Scene {
   // fish = resource, selling to the fisherman = coin source). Mirrors the
   // fisherman NPC's own bobber-on-the-waves pattern one function up. ──
   private playerFishing: {
-    phase: 'idle' | 'wait' | 'bite';
+    phase: 'idle' | 'fly' | 'wait' | 'bite';
     dir: THREE.Vector3;
     castFrom: THREE.Vector3;
     bobber: THREE.Mesh | null;
     biteAt: number;
     biteUntil: number;
+    // Juice pass: the bobber FLIES to the water in an arc (fly phase), idle
+    // ripple rings while waiting, and a silver catch arcs back on a reel.
+    castAt: number;
+    flyFrom: THREE.Vector3;
+    lastRippleAt: number;
+    catchFish: THREE.Mesh | null;
+    catchT0: number;
+    catchFrom: THREE.Vector3;
   } = {
     phase: 'idle',
     dir: new THREE.Vector3(),
@@ -4374,6 +4386,12 @@ export class GameScene extends THREE.Scene {
     bobber: null,
     biteAt: 0,
     biteUntil: 0,
+    castAt: 0,
+    flyFrom: new THREE.Vector3(),
+    lastRippleAt: 0,
+    catchFish: null,
+    catchT0: 0,
+    catchFrom: new THREE.Vector3(),
   };
 
   /** Water within casting reach of the player's feet? (shore-adjacent check) */
@@ -4437,11 +4455,24 @@ export class GameScene extends THREE.Scene {
       F.bobber = b;
       this.add(b);
     }
+    // Launch from the rod hand, not the water: the bobber ARCS out over the
+    // ~0.55s flight (updatePlayerFishing), landing with a real splash.
+    const up = F.castFrom.clone().normalize();
+    const fwd = this.player.getForwardDirection().clone();
+    fwd.addScaledVector(up, -fwd.dot(up)).normalize();
+    F.flyFrom.copy(F.castFrom).addScaledVector(up, 1.35).addScaledVector(fwd, 0.4);
+    F.bobber.position.copy(F.flyFrom);
     F.bobber.visible = true;
-    F.phase = 'wait';
-    F.biteAt = time + 3 + Math.random() * 5;
+    F.phase = 'fly';
+    F.castAt = time;
     F.biteUntil = 0;
-    sfx.blip();
+    // Rod flick + the camera's soft interest follows the cast to the water.
+    this.player.triggerCastGesture();
+    this.setInteractionFocus(
+      this._fishCastCand.copy(F.dir).multiplyScalar(this.island.seaLevel()),
+      4,
+    );
+    sfx.toss();
     return true;
   }
 
@@ -4449,6 +4480,34 @@ export class GameScene extends THREE.Scene {
   public reelLine(): 'fish' | 'nothing' {
     const F = this.playerFishing;
     const got = F.phase === 'bite' ? 'fish' : 'nothing';
+    if (F.phase !== 'idle' && F.phase !== 'fly' && F.bobber) {
+      // Hook-set yank (the cast flick doubles as the pull) + water burst.
+      this.player.triggerCastGesture();
+      const bp = F.bobber.position;
+      if (got === 'fish') {
+        this.spawnRipple(bp.clone(), 1.6, 1.0);
+        this.spawnSpray(bp.clone(), F.dir.clone(), 8, 5);
+        sfx.splash();
+        // A silver catch arcs from the water to the player's hands.
+        if (!F.catchFish) {
+          const fish = new THREE.Mesh(
+            new THREE.SphereGeometry(0.16, 8, 6),
+            new THREE.MeshToonMaterial({ color: 0x9fc4d8, gradientMap: Materials.toonRamp() }),
+          );
+          fish.scale.set(1.6, 0.7, 0.55);
+          fish.castShadow = false;
+          F.catchFish = fish;
+          this.add(fish);
+        }
+        F.catchFish.visible = true;
+        F.catchFish.position.copy(bp);
+        F.catchFrom.copy(bp);
+        F.catchT0 = performance.now() / 1000;
+        this.setInteractionFocus(bp, 1.4);
+      } else {
+        this.spawnRipple(bp.clone(), 0.8, 0.8);
+      }
+    }
     F.phase = 'idle';
     if (F.bobber) F.bobber.visible = false;
     return got;
@@ -4464,7 +4523,7 @@ export class GameScene extends THREE.Scene {
     let bestD = maxDist;
     for (let i = 0; i < this.swayTrees.length; i++) {
       const t = this.swayTrees[i];
-      if (t.felled) continue;
+      if (t.felled || t.pendingFell) continue;
       const d = t.group.position.distanceTo(p);
       if (d < bestD) {
         bestD = d;
@@ -4486,27 +4545,65 @@ export class GameScene extends THREE.Scene {
     const tr = this.swayTrees[near.index];
     tr.chopHits++;
     tr.lastChopAt = time;
-    tr.phase += 2.4; // the shudder kick — same one-shot the bump feedback uses
-    sfx.blip();
-    if (tr.chopHits < 3) return { hits: tr.chopHits, felled: false, timber: 0 };
-    // FELL
-    tr.chopHits = 0;
-    tr.felled = true;
-    tr.group.userData.felled = true;
-    tr.fallT0 = time;
-    tr.regrowAt = time + 300;
+    // Juice pass: the LOGIC lands now (counter, return value for the toast),
+    // but every visible/audible consequence — shudder, chips, the fell — is
+    // deferred to the axe's STRIKE moment (~0.22s into the swing gesture),
+    // so the tree reacts when the blade visually lands, not on the keypress.
+    this.player.triggerChopGesture();
     const up = tr.group.position.clone().normalize();
-    // Fall direction: away from the player, projected to the tangent plane;
-    // the rotation axis is perpendicular to it.
-    const away = tr.group.position
-      .clone()
-      .sub(this.player.getWorldPosition())
-      .addScaledVector(up, -tr.group.position.clone().sub(this.player.getWorldPosition()).dot(up));
-    if (away.lengthSq() < 1e-6) away.crossVectors(up, GameScene.AXIS_X);
-    tr.fallAxis = new THREE.Vector3().crossVectors(up, away.normalize()).normalize().negate();
-    sfx.land();
-    this.spawnDust(tr.group.position, 3);
-    return { hits: 3, felled: true, timber: 2 };
+    this.setInteractionFocus(
+      this._fishCastScan.copy(tr.group.position).addScaledVector(up, 1.2),
+      1.5,
+    );
+    const felled = tr.chopHits >= 3;
+    if (felled) {
+      tr.chopHits = 0;
+      tr.pendingFell = true; // nearestChoppableTree stops offering it NOW
+    }
+    this.pendingChopFx.push({ at: time + 0.22, index: near.index, fell: felled });
+    return { hits: felled ? 3 : tr.chopHits, felled, timber: felled ? 2 : 0 };
+  }
+
+  /** Fire deferred chop impacts at their strike time (see chopNearestTree). */
+  private processPendingChopFx(time: number): void {
+    for (let i = this.pendingChopFx.length - 1; i >= 0; i--) {
+      const fx = this.pendingChopFx[i];
+      if (time < fx.at) continue;
+      this.pendingChopFx.splice(i, 1);
+      const tr = this.swayTrees[fx.index];
+      if (!tr) continue;
+      const up = tr.group.position.clone().normalize();
+      // Impact: trunk shudder + a burst of chips at axe height.
+      tr.phase += 2.4; // same one-shot kick the bump feedback uses
+      this.spawnDust(tr.group.position.clone().addScaledVector(up, 0.8), 4);
+      sfx.blip();
+      if (!fx.fell) continue;
+      // FELL — at the strike, so the topple grows out of the blow.
+      tr.pendingFell = false;
+      tr.felled = true;
+      tr.group.userData.felled = true;
+      tr.fallT0 = time;
+      tr.regrowAt = time + 300;
+      // Fall direction: away from the player, projected to the tangent plane;
+      // the rotation axis is perpendicular to it.
+      const away = tr.group.position
+        .clone()
+        .sub(this.player.getWorldPosition())
+        .addScaledVector(
+          up,
+          -tr.group.position.clone().sub(this.player.getWorldPosition()).dot(up),
+        );
+      if (away.lengthSq() < 1e-6) away.crossVectors(up, GameScene.AXIS_X);
+      tr.fallAxis = new THREE.Vector3().crossVectors(up, away.normalize()).normalize().negate();
+      sfx.land();
+      this.spawnDust(tr.group.position.clone().addScaledVector(up, 0.3), 5);
+      // Watch it topple: the fall is the payoff, keep the camera's interest
+      // on the tree through the 0.9s tip-over.
+      this.setInteractionFocus(
+        this._fishCastScan.copy(tr.group.position).addScaledVector(up, 1.0),
+        2.6,
+      );
+    }
   }
 
   /** The Carpenter's home site (index-zipped append; he strolls near it). */
@@ -4717,6 +4814,23 @@ export class GameScene extends THREE.Scene {
 
   private updatePlayerFishing(time: number): void {
     const F = this.playerFishing;
+    // Caught-fish flight runs INDEPENDENT of phase (reel sets phase idle).
+    if (F.catchFish && F.catchFish.visible) {
+      const p = (time - F.catchT0) / 0.6;
+      if (p >= 1) {
+        F.catchFish.visible = false;
+        sfx.blip();
+      } else {
+        const pp = this.player.getWorldPosition();
+        const up = this._fishCastUp.copy(pp).normalize();
+        this._fishCastScan.copy(pp).addScaledVector(up, 1.1); // to the hands
+        F.catchFish.position
+          .lerpVectors(F.catchFrom, this._fishCastScan, p)
+          .addScaledVector(up, Math.sin(p * Math.PI) * 1.1);
+        F.catchFish.rotation.x += 0.31; // tumbling flash of silver
+        F.catchFish.rotation.z += 0.17;
+      }
+    }
     if (F.phase === 'idle' || !F.bobber) return;
     // Walking off cancels the cast (no free idle-fishing from across the map).
     if (this.player.getWorldPosition().distanceTo(F.castFrom) > 5) {
@@ -4724,13 +4838,39 @@ export class GameScene extends THREE.Scene {
       F.bobber.visible = false;
       return;
     }
-    // Ride the real waves, exactly like the fisherman's bobber.
     const wave = this.island.waveHeightAt(F.dir, this.island.seaTimeUniform.value);
+    if (F.phase === 'fly') {
+      // Parabolic flight from the rod hand to the water (~0.55s), then the
+      // landing splash starts the wait clock.
+      const p = Math.min(1, (time - F.castAt) / 0.55);
+      this._fishCastCand.copy(F.dir).multiplyScalar(wave);
+      F.bobber.position
+        .lerpVectors(F.flyFrom, this._fishCastCand, p)
+        .addScaledVector(this._fishCastUp.copy(F.dir), Math.sin(p * Math.PI) * 0.9);
+      if (p >= 1) {
+        F.phase = 'wait';
+        F.biteAt = time + 3 + Math.random() * 5;
+        F.lastRippleAt = time;
+        this.spawnRipple(F.bobber.position.clone(), 1.2, 1.0);
+        this.spawnSpray(F.bobber.position.clone(), F.dir.clone(), 5, 3);
+        sfx.splash();
+      }
+      return;
+    }
+    // Ride the real waves, exactly like the fisherman's bobber.
     F.bobber.position.copy(F.dir).multiplyScalar(wave);
     if (F.phase === 'wait' && time >= F.biteAt) {
       F.phase = 'bite';
       F.biteUntil = time + 1.6;
+      // The bite announces itself: a ring on the water and the camera's soft
+      // interest glances at the dipping float.
+      this.spawnRipple(F.bobber.position.clone(), 0.8, 0.7);
+      this.setInteractionFocus(F.bobber.position, 2.2);
       sfx.blip();
+    } else if (F.phase === 'wait' && time - F.lastRippleAt > 2.4) {
+      // Idle rings keep the water alive while you wait.
+      F.lastRippleAt = time;
+      this.spawnRipple(F.bobber.position.clone(), 0.45, 0.9);
     } else if (F.phase === 'bite') {
       // The dip that says NOW: pull the float under between wave crests.
       F.bobber.position.addScaledVector(F.dir, -0.22);
@@ -8370,6 +8510,7 @@ export class GameScene extends THREE.Scene {
     this.updateHerons(time);
     this.updateFisherman(time, deltaTime);
     this.updatePlayerFishing(time);
+    this.processPendingChopFx(time);
     this.updatePlayground(time);
     this.updateBaker(time, deltaTime);
     this.updateSailors(time, deltaTime);

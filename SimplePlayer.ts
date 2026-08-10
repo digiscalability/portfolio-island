@@ -148,6 +148,14 @@ export class SimplePlayer extends THREE.Group {
   // Feed-toss gesture: windup → underhand scatter → settle (0 = idle).
   private feedTossTime = 0;
   private static readonly FEED_TOSS_DURATION = 0.7;
+  // Rod-cast gesture (fishing): over-shoulder windup → forward snap → settle.
+  // Doubles as the hook-set yank on reel — the same flick reads as both.
+  private castTime = 0;
+  private static readonly CAST_DURATION = 0.8;
+  // Axe-chop gesture (timber): BOTH arms overhead → down-strike → settle.
+  // GameScene syncs the tree shudder/chips to the strike at ~0.22s.
+  private chopTime = 0;
+  private static readonly CHOP_DURATION = 0.55;
   // Ground speed at which the walk clip reads natural at timeScale 1; the clip
   // rate is scaled by tangentialSpeed / this so slow walks don't moonwalk and
   // runs don't foot-slide.
@@ -1067,6 +1075,21 @@ export class SimplePlayer extends THREE.Group {
     this.feedTossTime = SimplePlayer.FEED_TOSS_DURATION;
   }
 
+  /** Rod flick for cast/hook-set. Same arm-ownership rule as the toss: the
+   *  wave owns armR while it plays, so skip rather than fight it. */
+  public triggerCastGesture(): void {
+    if (this.waveTime > 0 || this.feedTossTime > 0) return;
+    this.castTime = SimplePlayer.CAST_DURATION;
+    this.chopTime = 0; // newest tool gesture wins
+  }
+
+  /** Two-hand overhead axe swing (timber loop). */
+  public triggerChopGesture(): void {
+    if (this.waveTime > 0 || this.feedTossTime > 0) return;
+    this.chopTime = SimplePlayer.CHOP_DURATION;
+    this.castTime = 0;
+  }
+
   /**
    * Jump/air pose + arm-wave, applied on top of the mixer output (which has
    * already written these bones this frame). Air: arms up + knees tucked,
@@ -1107,6 +1130,42 @@ export class SimplePlayer extends THREE.Group {
       // releases through the scatter — the gesture reads from the legs up.
       tossCrouch = (te < 0.14 ? te / 0.14 : Math.max(0, 1 - (te - 0.14) / 0.22)) * tossEnv;
     }
+    // Rod cast: over-shoulder windup (arm toward straight-up-back), then the
+    // forward snap, settling out while the line flies. Same absolute-target +
+    // lerp-by-envelope scheme as the toss (targets sit far from ±PI, so the
+    // Euler sign-flip trap the wave dodges does not apply here).
+    let castEnv = 0;
+    let castAng = 0;
+    if (this.castTime > 0) {
+      this.castTime = Math.max(0, this.castTime - dt);
+      const ce = SimplePlayer.CAST_DURATION - this.castTime;
+      castAng =
+        ce < 0.18
+          ? (ce / 0.18) * 0.35 // windup: rod arm rises up-and-back
+          : 0.35 - Math.min(1, (ce - 0.18) / 0.2) * 2.2; // snap: whip to -1.85
+      castEnv = Math.min(1, this.castTime / 0.3);
+    }
+    // Axe chop: BOTH arms overhead, then a hard down-strike with a body dip —
+    // the strike lands at ~0.22s, which GameScene syncs chips/shudder to.
+    let chopEnv = 0;
+    let chopAng = 0;
+    let chopCrouch = 0;
+    if (this.chopTime > 0) {
+      this.chopTime = Math.max(0, this.chopTime - dt);
+      const he = SimplePlayer.CHOP_DURATION - this.chopTime;
+      chopAng =
+        he < 0.16
+          ? (he / 0.16) * 0.25 // overhead windup (up, slightly back)
+          : // Strike ENDS forward-DOWN (-2.2 measured: limb f 0.7, u -0.7) —
+            // the blade swings THROUGH the trunk, not to a forward salute.
+            0.25 - Math.min(1, (he - 0.16) / 0.12) * 2.45;
+      chopEnv = Math.min(1, this.chopTime / 0.22);
+      // Dip INTO the strike, release through it — weight behind the axe.
+      // The dip is the ONLY lower-body write: additive knee bends were
+      // measured ACCUMULATING on this rig (legR drifted +2.29 rad in 14
+      // frames — the leg pointed at the sky), so legs stay mixer-owned.
+      chopCrouch = (he < 0.16 ? he / 0.16 : Math.max(0, 1 - (he - 0.16) / 0.24)) * chopEnv;
+    }
     if (this.gltfModel) {
       this.ensureLimbBones();
       if (aw > 0.001) {
@@ -1142,15 +1201,34 @@ export class SimplePlayer extends THREE.Group {
         if (this.armLBone) this.armLBone.rotation.x += tossLean;
         if (this.legLBone) this.legLBone.rotation.x += 0.5 * tossCrouch;
         if (this.legRBone) this.legRBone.rotation.x += 0.5 * tossCrouch;
+      } else if (castEnv > 0 && this.armRBone) {
+        this.armRBone.rotation.x = THREE.MathUtils.lerp(this.armRBone.rotation.x, castAng, castEnv);
+      } else if (chopEnv > 0) {
+        // Two-hand grip: both arms track the same swing.
+        if (this.armRBone) {
+          this.armRBone.rotation.x = THREE.MathUtils.lerp(
+            this.armRBone.rotation.x,
+            chopAng,
+            chopEnv,
+          );
+        }
+        if (this.armLBone) {
+          this.armLBone.rotation.x = THREE.MathUtils.lerp(
+            this.armLBone.rotation.x,
+            chopAng,
+            chopEnv,
+          );
+        }
       }
       // Body dip rides a CACHED base — gltfModel.position.y is written once
       // at load (foot seating), so an additive per-frame offset would
       // accumulate. Once cached, always rewrite (dip = 0 when idle).
-      if (this.tossCrouchBaseY === undefined && tossCrouch > 0) {
+      const dip = Math.max(tossCrouch, chopCrouch);
+      if (this.tossCrouchBaseY === undefined && dip > 0) {
         this.tossCrouchBaseY = this.gltfModel.position.y;
       }
       if (this.tossCrouchBaseY !== undefined) {
-        this.gltfModel.position.y = this.tossCrouchBaseY - 0.09 * tossCrouch;
+        this.gltfModel.position.y = this.tossCrouchBaseY - 0.09 * dip;
       }
     } else if (this.armPivots.length === 2 && this.legPivots.length === 2) {
       if (aw > 0.001) {
@@ -1172,6 +1250,20 @@ export class SimplePlayer extends THREE.Group {
         // per frame by the walk bounce, so no cached dip is needed or safe.
         this.legPivots[0].rotation.x += 0.5 * tossCrouch;
         this.legPivots[1].rotation.x += 0.5 * tossCrouch;
+      } else if (castEnv > 0) {
+        const arm = this.armPivots[1];
+        arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, castAng, castEnv);
+      } else if (chopEnv > 0) {
+        this.armPivots[0].rotation.x = THREE.MathUtils.lerp(
+          this.armPivots[0].rotation.x,
+          chopAng,
+          chopEnv,
+        );
+        this.armPivots[1].rotation.x = THREE.MathUtils.lerp(
+          this.armPivots[1].rotation.x,
+          chopAng,
+          chopEnv,
+        );
       }
     }
   }
