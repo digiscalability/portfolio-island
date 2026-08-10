@@ -5,6 +5,7 @@ import { DISTRICTS } from './Districts';
 import { checkName } from './Moderation';
 import { ACTIVITY_DEFS } from './NpcActivities';
 import { AI_NPCS } from './NpcChat';
+import { PanelManager } from './PanelManager';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { rumorOfTheDay } from './Secrets';
 import { buildShareUrl, setUrlParam, share } from './Share';
@@ -85,6 +86,9 @@ export class SimpleUI {
   private typewriterText: string = '';
   private typewriterPos: number = 0;
   private dialogueActive: boolean = false;
+  // One registry for every panel (mobile-HUD Round 3): exclusivity, scrim,
+  // Escape, and the chip/touch-control hide policy. See PanelManager.ts.
+  public panels!: PanelManager;
   // Touch device? Drives on-screen buttons + rewrites key-name prompts
   // ("Press E") into tap language ("Tap USE") pointing at those buttons.
   private readonly isTouch: boolean =
@@ -204,6 +208,7 @@ export class SimpleUI {
     this.overlay.style.setProperty('--sab', 'env(safe-area-inset-bottom, 0px)');
     this.overlay.style.setProperty('--sal', 'env(safe-area-inset-left, 0px)');
 
+    if (!this.panels) this.panels = new PanelManager(this.overlay, this.isTouch);
     this.createFPSDisplay();
     this.createMuteButton();
     this.createPortfolioButton();
@@ -240,13 +245,282 @@ export class SimpleUI {
     if (this.mapCanvas) {
       const short = this.shortLandscape;
       // Shrink the 172px disc to ~60% and raise it so its lower arc clears the
-      // 🎤 button (bottom+198); portrait ('' + 40px) restores the tuned layout.
-      this.mapCanvas.style.width = short ? '104px' : '';
+      // 🎤 button (bottom+198). Restore is the EXPLICIT '172px' — '' used to
+      // fall back to the attribute size, which the DPR backing store made 344.
+      this.mapCanvas.style.width = short ? '104px' : '172px';
       this.mapCanvas.style.height = 'auto';
       this.mapCanvas.style.top = short
         ? 'calc(var(--sat, 0px) + 8px)'
         : 'calc(var(--sat, 0px) + 40px)';
     }
+  }
+
+  // ── Mobile chip drawer (mobile-HUD Round 3, Phase 3) ──────────────────
+  // Touch only. Desktop keeps the authored top-right chip column untouched.
+  // Genre synthesis: one ☰ owns all secondary functions (Genshin), fan-out
+  // with auto-collapse (Pocket Camp), ambient info stays while actions hide
+  // (Sky:CotL). Tier 1 row: [👥][🪙][☰]. Tier 2: 😀 alone. Everything else
+  // fans out of ☰ as labeled pills.
+
+  private tier1Row: HTMLElement | null = null;
+  private drawerListEl: HTMLElement | null = null;
+  private drawerToggleEl: HTMLElement | null = null;
+  private drawerCatcher: HTMLElement | null = null;
+  private drawerOpen = false;
+  private drawerIdleTimer: number | undefined;
+  private emoteBtnEl: HTMLElement | null = null;
+
+  /** Tier-1 host row (touch): one flex row, registered ONCE as nav-chips. */
+  private getTier1Row(): HTMLElement {
+    if (this.tier1Row) return this.tier1Row;
+    const row = document.createElement('div');
+    Object.assign(row.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 35px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      display: 'flex',
+      gap: '8px',
+      alignItems: 'center',
+      pointerEvents: 'none', // chips carry their own pointerEvents:auto
+      zIndex: '1500',
+    });
+    this.overlay.appendChild(row);
+    this.panels.registerLayer('nav-chips', row);
+    this.tier1Row = row;
+    return row;
+  }
+
+  /** Move a chip into the tier-1 row (touch). The 🪙/feed chips are created
+   *  lazily AFTER ☰, so they insert BEFORE the toggle to keep [👥][🪙][☰]. */
+  private tierChip(el: HTMLElement): void {
+    Object.assign(el.style, { position: 'static', top: '', right: '', left: '', bottom: '' });
+    const row = this.getTier1Row();
+    if (this.drawerToggleEl && this.drawerToggleEl.parentElement === row) {
+      row.insertBefore(el, this.drawerToggleEl);
+    } else {
+      row.appendChild(el);
+    }
+  }
+
+  /**
+   * Home a secondary chip. Desktop: authored absolute spot + nav-chips layer
+   * (zero change from today). Touch: re-homed into the ☰ drawer as a labeled
+   * 40px pill row. `label` wraps chips whose own textContent is icon-only or
+   * DYNAMIC (mute swaps 🔇/🔊, completion rewrites '🏝 n%') — a label span
+   * INSIDE those would be wiped by their textContent writes, so it lives in
+   * a wrapper row that forwards taps to the chip.
+   */
+  private chipHost(
+    el: HTMLElement,
+    opts: { drawer?: boolean; label?: string; order?: number } = {},
+  ): void {
+    if (!this.isTouch || !opts.drawer) {
+      this.overlay.appendChild(el);
+      this.panels.registerLayer('nav-chips', el);
+      return;
+    }
+    Object.assign(el.style, {
+      position: 'static',
+      top: '',
+      right: '',
+      left: '',
+      bottom: '',
+      boxSizing: 'border-box',
+      minHeight: '40px',
+      display: 'flex',
+      alignItems: 'center',
+      borderRadius: '10px',
+      fontSize: '13px',
+    });
+    let item: HTMLElement = el;
+    if (opts.label) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        minHeight: '40px',
+        padding: '0 4px',
+        borderRadius: '10px',
+        cursor: 'pointer',
+        pointerEvents: 'auto',
+      });
+      const span = document.createElement('span');
+      span.textContent = opts.label;
+      Object.assign(span.style, { fontSize: '13px', fontWeight: '600', color: '#fff' });
+      row.appendChild(el);
+      row.appendChild(span);
+      // Tapping the label fires the chip. composedPath guard: el.click()
+      // bubbles back through this row — without it, infinite recursion.
+      row.addEventListener('click', (e) => {
+        if (!e.composedPath().includes(el)) el.click();
+      });
+      item = row;
+    } else {
+      Object.assign(el.style, { width: '100%' });
+    }
+    // Business priority beats creation order: flex `order` puts Work-with-me
+    // in slot #1 regardless of which create* ran first.
+    if (opts.order !== undefined) item.style.order = String(opts.order);
+    this.getDrawerList().appendChild(item);
+  }
+
+  /** The drawer's (initially hidden) pill column + the ☰ toggle that owns it. */
+  private getDrawerList(): HTMLElement {
+    if (this.drawerListEl) return this.drawerListEl;
+    const list = document.createElement('div');
+    Object.assign(list.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 84px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      display: 'none',
+      flexDirection: 'column',
+      gap: '6px',
+      padding: '10px',
+      background: 'rgba(12,12,20,0.94)',
+      border: '1px solid rgba(255,255,255,0.15)',
+      borderRadius: '14px',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+      pointerEvents: 'auto',
+      zIndex: '1510',
+      // Short-landscape phones: scroll instead of running off the screen.
+      maxHeight: 'calc(100dvh - var(--sat, 0px) - var(--sab, 0px) - 140px)',
+      overflowY: 'auto',
+    });
+    // Selection auto-collapse. Chips that open a PANEL already collapse the
+    // drawer for free (the open() exclusivity sweep closes it); this covers
+    // the stateless chips (mute, reduced motion, photo). Deferred a tick so
+    // the chip's own handler runs against a live DOM.
+    list.addEventListener('click', () => {
+      window.setTimeout(() => this.closeDrawer(), 0);
+    });
+    this.overlay.appendChild(list);
+    this.drawerListEl = list;
+
+    const t = document.createElement('div');
+    t.textContent = '☰';
+    Object.assign(t.style, {
+      width: '44px',
+      height: '44px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(0, 0, 0, 0.55)',
+      borderRadius: '10px',
+      fontSize: '18px',
+      color: '#fff',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      position: 'relative',
+    });
+    // One-time discoverability pulse: "Work with me" moved a tap deep, the
+    // dot says where it went. Cleared forever on first open.
+    let dot: HTMLElement | null = null;
+    try {
+      if (!localStorage.getItem('ds_drawer_seen')) {
+        dot = document.createElement('span');
+        Object.assign(dot.style, {
+          position: 'absolute',
+          top: '4px',
+          right: '4px',
+          width: '9px',
+          height: '9px',
+          borderRadius: '50%',
+          background: '#12b76a',
+          boxShadow: '0 0 6px rgba(18,183,106,0.9)',
+          animation: a11y.reducedMotion ? '' : 'ds-drawer-pulse 1.6s ease-in-out infinite',
+        });
+        t.appendChild(dot);
+        const style = document.createElement('style');
+        style.textContent =
+          '@keyframes ds-drawer-pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.45); } }';
+        document.head.appendChild(style);
+      }
+    } catch {
+      /* no storage — no dot */
+    }
+    t.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (dot) {
+        dot.remove();
+        dot = null;
+        try {
+          localStorage.setItem('ds_drawer_seen', '1');
+        } catch {
+          /* fine */
+        }
+      }
+      this.toggleDrawer();
+    });
+    this.makeHudButtonAccessible(t, 'Open island menu');
+    this.drawerToggleEl = t;
+    this.getTier1Row().appendChild(t);
+    return list;
+  }
+
+  private toggleDrawer(): void {
+    if (this.drawerOpen) {
+      this.closeDrawer();
+      return;
+    }
+    const list = this.getDrawerList();
+    this.drawerOpen = true;
+    track('drawer_opened');
+    // Registered as a panel so ANY panel opening collapses the drawer free
+    // via the exclusivity sweep. hides:[] — the world and tier-1 row stay.
+    this.panels.open('drawer', {
+      kind: 'sheet',
+      hides: [],
+      close: () => this.closeDrawer(),
+    });
+    list.style.display = 'flex';
+    // 😀 tier-2 chip yields its spot while the drawer occupies it.
+    if (this.emoteBtnEl) this.emoteBtnEl.style.visibility = 'hidden';
+    // Staggered 22ms slide-in per row; instant under reduced motion.
+    const rows = Array.from(list.children) as HTMLElement[];
+    rows.forEach((r, i) => {
+      if (a11y.reducedMotion) {
+        r.style.opacity = '1';
+        r.style.transform = '';
+        return;
+      }
+      r.style.opacity = '0';
+      r.style.transform = 'translateX(14px)';
+      r.style.transition = 'opacity 0.16s ease, transform 0.16s ease';
+      window.setTimeout(() => {
+        r.style.opacity = '1';
+        r.style.transform = '';
+      }, 22 * i);
+    });
+    // Outside tap closes (transparent catcher UNDER the drawer's z).
+    const catcher = document.createElement('div');
+    Object.assign(catcher.style, {
+      position: 'fixed',
+      inset: '0',
+      zIndex: '1505',
+      pointerEvents: 'auto',
+      background: 'transparent',
+    });
+    catcher.addEventListener('click', () => this.closeDrawer());
+    this.overlay.appendChild(catcher);
+    this.drawerCatcher = catcher;
+    // 8s idle auto-collapse.
+    this.drawerIdleTimer = window.setTimeout(() => this.closeDrawer(), 8000);
+  }
+
+  private closeDrawer(): void {
+    if (!this.drawerOpen) return;
+    this.drawerOpen = false;
+    if (this.drawerIdleTimer) {
+      clearTimeout(this.drawerIdleTimer);
+      this.drawerIdleTimer = undefined;
+    }
+    this.drawerCatcher?.remove();
+    this.drawerCatcher = null;
+    if (this.drawerListEl) this.drawerListEl.style.display = 'none';
+    if (this.emoteBtnEl) this.emoteBtnEl.style.visibility = '';
+    this.panels.notifyClosed('drawer'); // no-op during a sweep
   }
 
   // ── UX chrome ─────────────────────────────────────────────────────────
@@ -260,6 +534,7 @@ export class SimpleUI {
   private shortLandscape = false;
   private shortLandscapeMql: MediaQueryList | null = null;
   private onShortLandscapeChange: (() => void) | null = null;
+  private mapDpr = 1; // minimap backing-store scale (min(devicePixelRatio, 2))
 
   /** Wire the mute button to the audio system (returns new muted state). */
   setOnMuteToggle(cb: () => boolean): void {
@@ -449,7 +724,7 @@ export class SimpleUI {
   /** The passport "stamp book": the four zones, stamped or not, + the reward. */
   showPassport(): void {
     const pp = this.passport;
-    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'passport');
     const stamps = PASSPORT_ZONES.map((z) => {
       const meta = PASSPORT_META[z];
       const done = !!pp?.has(z);
@@ -476,7 +751,7 @@ export class SimpleUI {
 
   /** Reward celebration fired when the last stamp lands (see Passport.onComplete). */
   showPassportComplete(): void {
-    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))', 'passport-complete');
     modal.style.border = '1px solid rgba(255,213,74,0.55)';
     modal.insertAdjacentHTML(
       'beforeend',
@@ -498,7 +773,10 @@ export class SimpleUI {
       fontWeight: '700',
       cursor: 'pointer',
     });
-    cta.addEventListener('click', () => modal.remove());
+    cta.addEventListener('click', () => {
+      modal.remove();
+      this.panels.notifyClosed('passport-complete');
+    });
     modal.appendChild(cta);
     // The single highest-intent share moment in the app — the visitor just
     // finished the whole tour and is being congratulated. Hand them the link.
@@ -535,7 +813,7 @@ export class SimpleUI {
     on: { deposit: () => void; withdraw: () => void },
   ): void {
     this.vaultDiv?.remove();
-    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'vault');
     this.vaultDiv = modal;
     const h = document.createElement('div');
     h.innerHTML = `<div style="font-size:28px">🏦</div>
@@ -570,10 +848,23 @@ export class SimpleUI {
   public closeVaultPanel(): void {
     this.vaultDiv?.remove();
     this.vaultDiv = null;
+    this.panels.notifyClosed('vault');
   }
 
-  private buildCenteredModal(width: string): HTMLElement {
+  /**
+   * Shared centred-modal shell. Every call site passes a distinguishing `id`
+   * so the PanelManager gives all of them exclusivity (no more stacked
+   * modals), a scrim, Escape, and the chip-hide policy — in one place.
+   * A modal that removes itself outside the ✕ path (timed success screens)
+   * must call `this.panels.notifyClosed(id)` alongside its remove().
+   */
+  private buildCenteredModal(width: string, id = 'modal'): HTMLElement {
     const modal = document.createElement('div');
+    this.panels.open(id, {
+      kind: 'modal',
+      hides: ['nav-chips', 'touch-controls'],
+      close: () => modal.remove(),
+    });
     Object.assign(modal.style, {
       position: 'fixed',
       top: '50%',
@@ -605,7 +896,10 @@ export class SimpleUI {
       fontSize: '24px',
       cursor: 'pointer',
     });
-    close.addEventListener('click', () => modal.remove());
+    close.addEventListener('click', () => {
+      modal.remove();
+      this.panels.notifyClosed(id);
+    });
     modal.appendChild(close);
     return modal;
   }
@@ -699,7 +993,7 @@ export class SimpleUI {
 
   /** Global race leaderboard: fastest laps per circuit. */
   async showLeaderboard(): Promise<void> {
-    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'leaderboard');
     modal.insertAdjacentHTML(
       'beforeend',
       `<h2 style="margin:0 0 4px;color:#8a9bff;">🏁 Leaderboard</h2>
@@ -748,6 +1042,7 @@ export class SimpleUI {
     go.addEventListener('click', () => {
       track('race_guide', { from });
       modal.remove();
+      this.panels.notifyClosed('race-leaderboard');
       this.onRaceGuide?.();
     });
     return go;
@@ -764,7 +1059,7 @@ export class SimpleUI {
     playerTimeMs: number | null,
     playerName: string,
   ): Promise<void> {
-    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'race-leaderboard');
     const title = circuit === 'land' ? '🚗 Land Circuit' : '⛵ Water Circuit';
     const fmt = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
     modal.insertAdjacentHTML(
@@ -826,7 +1121,7 @@ export class SimpleUI {
 
   /** Guestbook: read recent notes + leave one. */
   async showGuestbook(): Promise<void> {
-    const modal = this.buildCenteredModal('min(400px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(400px, calc(100vw - 32px))', 'guestbook');
     modal.insertAdjacentHTML(
       'beforeend',
       `<h2 style="margin:0 0 4px;color:#8a9bff;">✍️ Guestbook</h2>
@@ -915,7 +1210,7 @@ export class SimpleUI {
    * it can never carry injected text — but we still escapeHtml defensively.
    */
   async showIslandTimes(): Promise<void> {
-    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'island-times');
     try {
       localStorage.setItem('ds_read_times', '1');
     } catch {
@@ -1051,15 +1346,35 @@ export class SimpleUI {
       this.toggleEmoteWheel();
     });
     this.makeHudButtonAccessible(btn, 'Send an emote');
+    if (this.isTouch) {
+      // Tier 2: the one-tap social action sits alone under the tier-1 row
+      // (high frequency — one tap, never buried in the drawer). Yields its
+      // spot via visibility while the drawer fans out over it.
+      Object.assign(btn.style, {
+        top: 'calc(var(--sat, 0px) + 84px)',
+        right: 'calc(var(--sar, 0px) + 10px)',
+      });
+    }
+    this.emoteBtnEl = btn;
     this.overlay.appendChild(btn);
+    this.panels.registerLayer('nav-chips', btn);
   }
 
   private toggleEmoteWheel(): void {
     if (this.emoteWheel) {
       this.emoteWheel.remove();
       this.emoteWheel = null;
+      this.panels.notifyClosed('emote-wheel');
       return;
     }
+    this.panels.open('emote-wheel', {
+      kind: 'sheet',
+      hides: ['nav-chips'], // the wheel opens exactly over the chip column
+      close: () => {
+        this.emoteWheel?.remove();
+        this.emoteWheel = null;
+      },
+    });
     const wheel = document.createElement('div');
     Object.assign(wheel.style, {
       position: 'absolute',
@@ -1125,11 +1440,14 @@ export class SimpleUI {
       left: '50%',
       bottom: 'calc(var(--sab, 0px) + 96px)',
       transform: 'translateX(-50%)',
-      width: 'min(70vw, 420px)',
+      // Touch: wider (nothing else competes — the panel hides touch-controls)
+      // and 16px, which kills iOS's focus auto-zoom even where
+      // user-scalable=no is ignored.
+      width: this.isTouch ? 'min(92vw, 420px)' : 'min(70vw, 420px)',
       padding: '10px 14px',
       borderRadius: '12px',
       border: 'none',
-      fontSize: '15px',
+      fontSize: this.isTouch ? '16px' : '15px',
       fontFamily: 'system-ui, sans-serif',
       background: 'rgba(12,12,20,0.92)',
       color: '#fff',
@@ -1154,7 +1472,18 @@ export class SimpleUI {
         window.visualViewport.removeEventListener('resize', vvHandler);
         window.visualViewport.removeEventListener('scroll', vvHandler);
       }
+      // Blur-race safe: during another panel's open sweep this is a no-op.
+      this.panels.notifyClosed('chat-input');
     };
+    // Hiding touch-controls is what STRUCTURALLY kills the chips-over-JUMP
+    // collision: while typing, JUMP isn't there to collide with. The input's
+    // own Escape handler (stopPropagation) owns the key.
+    this.panels.open('chat-input', {
+      kind: 'sheet',
+      hides: ['touch-controls'],
+      ownEscape: true,
+      close,
+    });
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
       if (e.key === 'Enter') {
@@ -1191,7 +1520,9 @@ export class SimpleUI {
         gap: '8px',
         flexWrap: 'wrap',
         justifyContent: 'center',
-        width: 'min(86vw, 460px)',
+        // 92vw is safe now: the chat panel's policy hides touch-controls,
+        // so JUMP isn't there to collide with.
+        width: 'min(92vw, 460px)',
         pointerEvents: 'auto',
         zIndex: '1700',
       });
@@ -1205,7 +1536,7 @@ export class SimpleUI {
           border: '1px solid rgba(255,255,255,0.2)',
           background: 'rgba(12,12,20,0.9)',
           color: '#fff',
-          fontSize: '14px',
+          fontSize: '16px', // match the input: no iOS zoom, bigger tap targets
           cursor: 'pointer',
         });
         // pointerdown + preventDefault: fire before the input's blur→close and
@@ -1285,7 +1616,7 @@ export class SimpleUI {
   showJournal(): void {
     const data = this.journalProvider?.();
     if (!data) return;
-    const modal = this.buildCenteredModal('min(430px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(430px, calc(100vw - 32px))', 'journal');
     const meter = (label: string, n: number, m: number): string => {
       const pct = m > 0 ? Math.round((n / m) * 100) : 0;
       return `<div style="margin:10px 0 2px;display:flex;justify-content:space-between;font-size:13px;">
@@ -1387,7 +1718,7 @@ export class SimpleUI {
       this.showVolumePill(3500);
     });
     this.makeHudButtonAccessible(this.muteBtn, 'Toggle all sound (music, effects, voices)', muted);
-    this.overlay.appendChild(this.muteBtn);
+    this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 7 });
     this.createVolumePill(volume);
     this.createReducedMotionButton();
     this.createCustomizeButton();
@@ -1449,6 +1780,7 @@ export class SimpleUI {
     });
     pill.appendChild(slider);
     this.overlay.appendChild(pill);
+    this.panels.registerLayer('nav-chips', pill);
     this.volumePill = pill;
 
     // Desktop: hover/focus over button or pill keeps it open.
@@ -1513,7 +1845,7 @@ export class SimpleUI {
       this.onCustomizeToggle?.();
     });
     this.makeHudButtonAccessible(btn, 'Customize appearance');
-    this.overlay.appendChild(btn);
+    this.chipHost(btn, { drawer: true, label: 'Customize', order: 5 });
   }
 
   /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
@@ -1546,7 +1878,7 @@ export class SimpleUI {
     });
     this.makeHudButtonAccessible(btn, 'Toggle reduced motion', a11y.reducedMotion);
     render();
-    this.overlay.appendChild(btn);
+    this.chipHost(btn, { drawer: true, label: 'Reduce motion', order: 8 });
   }
 
   private portfolioMenuDiv: HTMLElement | null = null;
@@ -1635,7 +1967,7 @@ export class SimpleUI {
       this.togglePortfolioMenu();
     });
     this.makeHudButtonAccessible(btn, 'Open portfolio menu');
-    this.overlay.appendChild(btn);
+    this.chipHost(btn, { drawer: true, order: 2 });
   }
 
   /**
@@ -1671,7 +2003,10 @@ export class SimpleUI {
       this.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'cta' });
     });
     this.makeHudButtonAccessible(btn, 'Work with me — open contact');
-    this.overlay.appendChild(btn);
+    // Drawer slot #1 (Abbas's ruling): the business CTA leads the fan-out,
+    // with the ☰ pulse dot covering discoverability. Watch contact/portfolio
+    // analytics for a week; promoting it back to tier 1 is a 3-line revert.
+    this.chipHost(btn, { drawer: true, order: 1 });
   }
 
   /** Photo mode entry — the game loop owns the actual capture (renderer flag). */
@@ -1706,7 +2041,7 @@ export class SimpleUI {
       this.onPhotoRequest?.();
     });
     this.makeHudButtonAccessible(btn, 'Take a photo of the island');
-    this.overlay.appendChild(btn);
+    this.chipHost(btn, { drawer: true, label: 'Photo', order: 4 });
   }
 
   // ── Tour mode overlay (caption bar + skip) ───────────────────────────────
@@ -1833,11 +2168,11 @@ export class SimpleUI {
       this.showSayHi();
     });
     this.makeHudButtonAccessible(btn, 'Say hi — leave a quick note');
-    this.overlay.appendChild(btn);
+    this.chipHost(btn, { drawer: true, order: 3 });
   }
 
   showSayHi(): void {
-    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'say-hi');
     const savedName = (() => {
       try {
         return localStorage.getItem('ds_player_name') || '';
@@ -1904,7 +2239,10 @@ export class SimpleUI {
                 ? "It's on its way to Abbas — he'll reply by email."
                 : 'Your note is in the island guestbook. Thanks for stopping by!'
             }</p>`;
-          window.setTimeout(() => modal.remove(), 2200);
+          window.setTimeout(() => {
+            modal.remove();
+            this.panels.notifyClosed('say-hi');
+          }, 2200);
         } else {
           sendBtn.disabled = false;
           sendBtn.textContent = 'Send 👋';
@@ -1947,7 +2285,7 @@ export class SimpleUI {
       this.showCompletionModal();
     });
     this.makeHudButtonAccessible(btn, 'Island completion checklist');
-    this.overlay.appendChild(btn);
+    this.chipHost(btn, { drawer: true, label: 'Progress', order: 6 });
     this.completionBtn = btn;
   }
 
@@ -1962,7 +2300,7 @@ export class SimpleUI {
   }
 
   showCompletionModal(): void {
-    const modal = this.buildCenteredModal('min(390px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(390px, calc(100vw - 32px))', 'completion');
     trackOnce('completion_opened');
     const rows = this.completionItems
       .map(
@@ -2001,7 +2339,7 @@ export class SimpleUI {
   showPhotoPreview(card: Blob, postcardPose?: string): void {
     if (this.photoUrl) URL.revokeObjectURL(this.photoUrl);
     this.photoUrl = URL.createObjectURL(card);
-    const modal = this.buildCenteredModal('min(440px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(440px, calc(100vw - 32px))', 'photo-preview');
     const closeX = modal.querySelector('button');
     closeX?.addEventListener('click', () => {
       if (this.photoUrl) URL.revokeObjectURL(this.photoUrl);
@@ -2099,10 +2437,19 @@ export class SimpleUI {
     if (this.portfolioMenuDiv) {
       this.portfolioMenuDiv.remove();
       this.portfolioMenuDiv = null;
+      this.panels.notifyClosed('portfolio-menu');
       return;
     }
     trackOnce('portfolio_opened');
     this.hideZonePanel();
+    this.panels.open('portfolio-menu', {
+      kind: 'sheet',
+      hides: ['nav-chips'],
+      close: () => {
+        this.portfolioMenuDiv?.remove();
+        this.portfolioMenuDiv = null;
+      },
+    });
     const menu = document.createElement('div');
     Object.assign(menu.style, {
       position: 'fixed',
@@ -2251,6 +2598,7 @@ export class SimpleUI {
     base.appendChild(thumb);
     hit.appendChild(base);
     this.overlay.appendChild(hit);
+    this.panels.registerLayer('touch-controls', hit);
 
     const moveThumb = (dx: number, dy: number) => {
       thumb.style.left = `${31 + dx}px`;
@@ -2410,6 +2758,7 @@ export class SimpleUI {
       btn.addEventListener('touchend', release);
       btn.addEventListener('touchcancel', release);
       this.overlay.appendChild(btn);
+      this.panels.registerLayer('touch-controls', btn);
     };
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
@@ -2448,6 +2797,7 @@ export class SimpleUI {
     });
     this.makeHudButtonAccessible(chatBtn, 'Open chat');
     this.overlay.appendChild(chatBtn);
+    this.panels.registerLayer('touch-controls', chatBtn);
 
     const micBtn = document.createElement('div');
     this.micBtn = micBtn;
@@ -2507,6 +2857,7 @@ export class SimpleUI {
       }
     });
     this.overlay.appendChild(micBtn);
+    this.panels.registerLayer('touch-controls', micBtn);
   }
 
   /**
@@ -3142,7 +3493,12 @@ export class SimpleUI {
       this.showRoster();
     });
     this.makeHudButtonAccessible(this.playerCountDiv, 'Show who is online');
-    this.overlay.appendChild(this.playerCountDiv);
+    if (this.isTouch) {
+      this.tierChip(this.playerCountDiv); // tier-1 row: [👥][🪙][☰]
+    } else {
+      this.overlay.appendChild(this.playerCountDiv);
+      this.panels.registerLayer('nav-chips', this.playerCountDiv);
+    }
     this.updatePlayerCount(1); // Start with 1 (self)
   }
 
@@ -3158,7 +3514,7 @@ export class SimpleUI {
   /** Roster panel: who's on the island right now, with a per-peer mute toggle. */
   showRoster(): void {
     const peers = this.rosterProvider?.() ?? [];
-    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))');
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'roster');
     let rowsHtml: string;
     if (peers.length === 0) {
       // This copy begged visitors to share for months without giving them a
@@ -3341,15 +3697,20 @@ export class SimpleUI {
     peers?: Array<{ rx: number; ry: number; dist: number; waving: boolean }>;
     online?: number;
   }): void {
-    const D = 172; // square canvas (the radar disc)
+    const D = 172; // square canvas (the radar disc), in CSS px
     if (!this.mapCanvas) {
       this.mapCanvas = document.createElement('canvas');
-      this.mapCanvas.width = D;
-      this.mapCanvas.height = D;
+      // DPR-sized backing store (capped ×2): a 172-texel canvas CSS-scaled
+      // onto a DPR-3 phone was the blurry-minimap report. All draw code stays
+      // in D-space via the per-frame setTransform below.
+      this.mapDpr = Math.min(window.devicePixelRatio || 1, 2);
+      this.mapCanvas.width = D * this.mapDpr;
+      this.mapCanvas.height = D * this.mapDpr;
       Object.assign(this.mapCanvas.style, {
         position: 'absolute',
         top: 'calc(var(--sat, 0px) + 40px)',
         left: 'calc(var(--sal, 0px) + 10px)',
+        width: `${D}px`, // explicit CSS size — was attribute-implied
         maxWidth: 'calc(100vw - var(--sal, 0px) - var(--sar, 0px) - 20px)',
         height: 'auto',
         borderRadius: '50%',
@@ -3358,12 +3719,16 @@ export class SimpleUI {
         pointerEvents: 'none',
       });
       this.overlay.appendChild(this.mapCanvas);
+      this.panels.registerLayer('ambient-info', this.mapCanvas);
       // A canvas created while already in short-landscape must adopt the
       // shrunk layout immediately (the media listener only fires on changes).
       this.applyResponsiveHud();
     }
     const ctx = this.mapCanvas.getContext('2d');
     if (!ctx) return;
+    // Re-assert every frame (cheap): a stray save/restore imbalance anywhere
+    // in the draw code must never silently drop the DPR transform.
+    ctx.setTransform(this.mapDpr, 0, 0, this.mapDpr, 0, 0);
     const t = performance.now();
     const peers = data.peers ?? [];
     const cx = D / 2;
@@ -3700,6 +4065,20 @@ export class SimpleUI {
       ${rows}
     `;
     this.overlay.appendChild(this.shopDiv);
+    // Panel registry: exclusivity + chip/touch-control hiding. ownEscape —
+    // the document-level Esc handler below already owns the key (letting the
+    // manager also act would double-fire onClose). The SAME-ID RE-OPEN rule
+    // is load-bearing here: showShop re-renders itself after every purchase,
+    // and the sweep firing onClose mid-refresh would unpause the game.
+    this.panels.open('shop', {
+      kind: 'modal',
+      hides: ['nav-chips', 'touch-controls'],
+      ownEscape: true,
+      close: () => {
+        this.hideShop();
+        onClose();
+      },
+    });
     this.shopDiv.querySelectorAll('button[data-shop-id]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -3734,6 +4113,7 @@ export class SimpleUI {
     if (this.shopDiv) {
       this.shopDiv.remove();
       this.shopDiv = null;
+      this.panels.notifyClosed('shop'); // no-op during a manager sweep
     }
   }
 
@@ -3758,7 +4138,12 @@ export class SimpleUI {
         pointerEvents: 'none',
         transition: 'transform 0.12s ease',
       });
-      this.overlay.appendChild(this.coinDiv);
+      if (this.isTouch) {
+        this.tierChip(this.coinDiv); // inserts BEFORE ☰ to keep [👥][🪙][☰]
+      } else {
+        this.overlay.appendChild(this.coinDiv);
+        this.panels.registerLayer('nav-chips', this.coinDiv);
+      }
       this.coinDiv.textContent = `🪙 ${total}`;
       return; // no bump on first render
     }
@@ -3800,7 +4185,14 @@ export class SimpleUI {
         transition: 'transform 0.12s ease',
         whiteSpace: 'nowrap',
       });
-      this.overlay.appendChild(this.feedDiv);
+      if (this.isTouch) {
+        // Into the tier-1 row (registered as a unit) — NOT layer-registered
+        // itself: this chip toggles its own display at zero charges, and the
+        // manager's touch policy writes the same property.
+        this.tierChip(this.feedDiv);
+      } else {
+        this.overlay.appendChild(this.feedDiv);
+      }
     }
     if (total <= 0) {
       this.feedDiv.style.display = 'none';
@@ -4087,6 +4479,15 @@ export class SimpleUI {
       }
       this.overlay.appendChild(this.customizeDiv);
     }
+    // Sheet, NOT modal, and touch-controls stay: "preview while moving" is the
+    // point of this panel (see the touch-layout comment above) — hiding the
+    // joystick would trap the player mid-recolour. Re-renders itself on every
+    // swatch tap → protected by the same-id re-open rule.
+    this.panels.open('customize', {
+      kind: 'sheet',
+      hides: ['nav-chips'],
+      close: () => this.hideCustomize(),
+    });
 
     const hexStr = (h: number) => `#${h.toString(16).padStart(6, '0')}`;
     const swatchRow = (part: string): string => {
@@ -4144,6 +4545,7 @@ export class SimpleUI {
     if (this.customizeDiv) {
       this.customizeDiv.remove();
       this.customizeDiv = null;
+      this.panels.notifyClosed('customize');
     }
   }
 
@@ -4266,13 +4668,20 @@ export class SimpleUI {
       textAlign: 'center',
       pointerEvents: 'auto',
       fontSize: '14.5px',
-      zIndex: '1500',
+      // 1650 (was 1500): the modal band. At 1500 the manager's scrim (1640)
+      // would grey out and swallow the panel's own clicks.
+      zIndex: '1650',
       // 1px accent, not the old 3px full-alpha frame — the zone hue should
       // sign the panel, not floodlight it.
       border: `1px solid ${this.getZoneColor(zone.id)}`,
       maxWidth: '500px',
       maxHeight: '70vh',
       overflowY: 'auto',
+    });
+    this.panels.open('zone', {
+      kind: 'modal',
+      hides: ['nav-chips'],
+      close: () => this.hideZonePanel(),
     });
 
     const content = this.getZoneContent(zone);
@@ -4388,6 +4797,7 @@ export class SimpleUI {
     if (this.zonePanelDiv) {
       this.zonePanelDiv.remove();
       this.zonePanelDiv = null;
+      this.panels.notifyClosed('zone');
       // Drop ONLY the ?zone= deep link when the panel closes — the old
       // whole-search wipe also destroyed ?hour=/?theme=.
       setUrlParam('zone', null);
@@ -4596,10 +5006,21 @@ export class SimpleUI {
       borderRadius: '16px',
       border: '1px solid rgba(120,160,255,0.22)', // de-glow: was 2px @ 0.4
       boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
-      zIndex: '1620',
+      // 1660: above the touch buttons (1650). Belt-and-braces — the panel
+      // policy hides them on touch anyway; this covers ?touch-on-desktop.
+      zIndex: '1660',
       fontFamily: 'system-ui, sans-serif',
       overflow: 'hidden',
       pointerEvents: 'auto',
+    });
+    // Sheet, not modal: the world (and the NPC you're talking to) stays
+    // visible behind the conversation. The input's own Escape handler owns
+    // the key (stopPropagation), so ownEscape.
+    this.panels.open('npc-chat', {
+      kind: 'sheet',
+      hides: ['nav-chips', 'touch-controls'],
+      ownEscape: true,
+      close: () => this.closeNpcChat(),
     });
     const header = document.createElement('div');
     Object.assign(header.style, {
@@ -4725,7 +5146,7 @@ export class SimpleUI {
       border: '1px solid rgba(255,255,255,0.15)',
       background: 'rgba(255,255,255,0.06)',
       color: '#fff',
-      fontSize: '15px',
+      fontSize: this.isTouch ? '16px' : '15px', // 16px kills iOS focus zoom
       outline: 'none',
     });
     const send = document.createElement('button');
@@ -4867,6 +5288,7 @@ export class SimpleUI {
     if (stopStt) stopStt();
     if (div) {
       div.remove();
+      this.panels.notifyClosed('npc-chat');
       // Fire only on a real close (div existed) — showNpcChat's defensive
       // closeNpcChat() on a fresh open must not ping the app, and the app's
       // safety poll must not double-release.
@@ -4926,9 +5348,14 @@ export class SimpleUI {
       borderRadius: '14px',
       boxShadow: '0 10px 28px rgba(0,0,0,0.4)',
       padding: '18px',
-      zIndex: '1640',
+      zIndex: '1650', // was 1640 — level with the scrim, which greyed it out
       pointerEvents: 'auto',
       color: '#f0f0f0',
+    });
+    this.panels.open('watch-picker', {
+      kind: 'modal',
+      hides: ['nav-chips'],
+      close: () => this.closeWatchPicker(),
     });
     panel.innerHTML = `
       <div style="font-weight:600; font-size:15px; margin-bottom:4px;">📺 The wall screen</div>
@@ -5026,8 +5453,11 @@ export class SimpleUI {
   }
 
   public closeWatchPicker(): void {
-    this.watchPickerDiv?.remove();
-    this.watchPickerDiv = null;
+    if (this.watchPickerDiv) {
+      this.watchPickerDiv.remove();
+      this.watchPickerDiv = null;
+      this.panels.notifyClosed('watch-picker');
+    }
   }
 
   /** The playing frame. `onClose` fires exactly once, on ANY close path. */
@@ -5147,10 +5577,17 @@ export class SimpleUI {
       borderRadius: '14px',
       boxShadow: '0 10px 28px rgba(0,0,0,0.4)',
       padding: '16px',
-      zIndex: '1640',
+      zIndex: '1650', // was 1640 — level with the scrim, which greyed it out
       pointerEvents: 'auto',
       color: '#f0f0f0',
       textAlign: 'center',
+    });
+    // Digits come from the on-screen grid (or real keyboard) — the synthetic
+    // touch buttons aren't needed here, so hiding them kills mis-taps.
+    this.panels.open('pin-pad', {
+      kind: 'modal',
+      hides: ['nav-chips', 'touch-controls'],
+      close: () => this.closePinPad(),
     });
     panel.innerHTML = `
       <div style="font-weight:600; font-size:14.5px; margin-bottom:2px;">🔒 The door is locked</div>
@@ -5230,8 +5667,11 @@ export class SimpleUI {
   }
 
   public closePinPad(): void {
-    this.pinDiv?.remove();
-    this.pinDiv = null;
+    if (this.pinDiv) {
+      this.pinDiv.remove();
+      this.pinDiv = null;
+      this.panels.notifyClosed('pin-pad');
+    }
   }
 
   public isNpcChatOpen(): boolean {
@@ -5242,6 +5682,15 @@ export class SimpleUI {
     this.dialogueLines = lines;
     this.dialogueIndex = 0;
     this.dialogueActive = true;
+    // THE policy exception: touch-controls STAY — mobile dialogue advance
+    // re-fires the USE button's synthetic KeyE (see the click handler below),
+    // so hiding the buttons would strand the conversation. Sheet: the NPC
+    // you're talking to must stay visible.
+    this.panels.open('dialogue', {
+      kind: 'sheet',
+      hides: ['nav-chips'],
+      close: () => this.hideDialogue(),
+    });
 
     if (!this.dialogueDiv) {
       this.dialogueDiv = document.createElement('div');
@@ -5390,6 +5839,7 @@ export class SimpleUI {
       const div = this.dialogueDiv;
       setTimeout(() => div.remove(), 300);
       this.dialogueDiv = null;
+      this.panels.notifyClosed('dialogue');
     }
     if (this.typewriterTimer) {
       cancelAnimationFrame(this.typewriterTimer);

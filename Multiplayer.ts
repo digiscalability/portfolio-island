@@ -764,7 +764,13 @@ export class Multiplayer {
     const sprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
     );
-    sprite.scale.set(1.6, 0.4, 1);
+    // Touch: +20% — bigger and SHARPER (lower minification ratio on phones
+    // whose framebuffer is DPR-capped; see the mobile-HUD Round 3 design).
+    const touch =
+      typeof window !== 'undefined' &&
+      ('ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0);
+    const s = touch ? 1.2 : 1;
+    sprite.scale.set(1.6 * s, 0.4 * s, 1);
     return sprite;
   }
 

@@ -6269,7 +6269,10 @@ export class GameScene extends THREE.Scene {
       );
       // 0.63 = 0.42 × (96/64): the canvas grew, the scale compensates, so a
       // single-line pill renders at exactly the pre-two-line world size.
-      sprite.scale.set(1.7, 0.63, 1);
+      // Touch: +20% — bigger AND sharper (a larger on-screen pill lowers the
+      // LinearFilter minification ratio toward 1:1 on DPR-capped phones).
+      const pillScale = GameScene.isCoarsePointer() ? 1.2 : 1;
+      sprite.scale.set(1.7 * pillScale, 0.63 * pillScale, 1);
       // Anchor the sprite's BOTTOM at its position: the constant-screen-size
       // scaling in the tag loop grew the centre-anchored pill DOWNWARD into
       // the dressed heads (hair/hats top out ≈1.33 world) past ~20u camera
@@ -6293,6 +6296,16 @@ export class GameScene extends THREE.Scene {
   /** Draw the identity pill onto a name-tag canvas (redrawable). One centred
    *  line (emoji + role); with `sub` (the current activity), a second smaller
    *  gold line below it — identity stays readable while the badge shows work. */
+  /** Touch/phone check for HUD sprite sizing (matches SimpleUI's isTouch). */
+  private static isCoarsePointer(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      ('ontouchstart' in window ||
+        (navigator.maxTouchPoints ?? 0) > 0 ||
+        (typeof location !== 'undefined' && location.search.includes('touch')))
+    );
+  }
+
   private static drawNamePill(
     ctx: CanvasRenderingContext2D | null,
     emoji: string,
