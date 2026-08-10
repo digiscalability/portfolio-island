@@ -99,7 +99,9 @@ export class GameScene extends THREE.Scene {
   private lampPoolMat: THREE.MeshBasicMaterial | null = null;
   // The warm bulb materials of every street lamp — update() switches them on at
   // dusk and off by day so the lamps read as actually lit, not always-glowing.
-  private lampBulbMats: THREE.MeshStandardMaterial[] = [];
+  // Standard on authored street lamps; toon on player-built lanterns. The
+  // night ramp writes ONLY emissiveIntensity, which both carry.
+  private lampBulbMats: Array<THREE.MeshStandardMaterial | THREE.MeshToonMaterial> = [];
   // Three lights that roam to whichever lamps you are nearest, instead of one
   // static light per lamp. 37 lamps cannot each afford a real light, but you
   // are only ever under one or two at a time — so the lights follow you.
@@ -4758,17 +4760,68 @@ export class GameScene extends THREE.Scene {
   ];
   private builtPlots = new Map<number, THREE.Group>();
 
+  // ── Timber construction catalog (expansion slice 1) ────────────────────
+  // Fixed plots, same philosophy as BENCH_PLOTS: pre-authored spots are the
+  // whole grief surface. The plot INDEX fixes the structure kind (append-only
+  // — the cloud stores only the index).
+  public static readonly BUILD_PLOTS: Array<{
+    kind: 'signpost' | 'lantern' | 'gazebo';
+    lon: number;
+    lat: number;
+    yaw: number;
+  }> = [
+    // 0-5 signposts — junction band between the bench ring and the districts
+    { kind: 'signpost', lon: 0.4, lat: 1.0, yaw: 2.1 },
+    { kind: 'signpost', lon: 1.52, lat: 0.97, yaw: -0.6 },
+    { kind: 'signpost', lon: 2.7, lat: 1.0, yaw: 1.2 },
+    { kind: 'signpost', lon: 3.95, lat: 0.95, yaw: -1.8 },
+    { kind: 'signpost', lon: 5.0, lat: 1.0, yaw: 0.4 },
+    { kind: 'signpost', lon: 6.05, lat: 0.9, yaw: 2.8 },
+    // 6-11 lanterns — dark stretches between the lamp rings
+    { kind: 'lantern', lon: 0.95, lat: 0.9, yaw: 0 },
+    { kind: 'lantern', lon: 2.35, lat: 0.88, yaw: 0 },
+    { kind: 'lantern', lon: 3.08, lat: 0.93, yaw: 0 },
+    { kind: 'lantern', lon: 4.05, lat: 0.88, yaw: 0 },
+    { kind: 'lantern', lon: 5.35, lat: 0.9, yaw: 0 },
+    { kind: 'lantern', lon: 6.1, lat: 0.85, yaw: 0 },
+    // 12-13 gazebos — flat aprons only (the slope vitest is the authority)
+    { kind: 'gazebo', lon: 3.9, lat: 1.32, yaw: 0.8 },
+    { kind: 'gazebo', lon: 1.75, lat: 0.78, yaw: -0.4 },
+  ];
+  private builtBuildPlots = new Map<number, THREE.Group>();
+  // Cache-once plot seats: the per-frame prompt scan used to RAYCAST every
+  // unbuilt plot (~1.24ms each, up to ~10ms/frame with timber+coins in
+  // pocket) — the P0 find of the expansion audit. Seats never move.
+  private plotSamples = new Map<
+    string,
+    { position: THREE.Vector3; normal: THREE.Vector3 } | null
+  >();
+
+  private plotSample(
+    key: string,
+    lon: number,
+    lat: number,
+  ): { position: THREE.Vector3; normal: THREE.Vector3 } | null {
+    let s = this.plotSamples.get(key);
+    if (s === undefined) {
+      try {
+        const seat = this.island.sampleSurfaceByDirection(this.island.dirAt(lon, lat), 0);
+        s = { position: seat.position.clone(), normal: seat.normal.clone() };
+      } catch {
+        s = null;
+      }
+      this.plotSamples.set(key, s);
+    }
+    return s;
+  }
+
   /** Render a shared bench on a plot (idempotent — one mesh per plot). */
   public renderWorldBench(plot: number): void {
     if (this.builtPlots.has(plot) || !this.island) return;
     const site = GameScene.BENCH_PLOTS[plot];
     if (!site) return;
-    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
-    try {
-      seat = this.island.sampleSurfaceByDirection(this.island.dirAt(site[0], site[1]), 0);
-    } catch {
-      return;
-    }
+    const seat = this.plotSample(`b${plot}`, site[0], site[1]);
+    if (!seat) return;
     const g = new THREE.Group();
     const wood = new THREE.MeshToonMaterial({ color: 0x9a7648 });
     const plank = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.09, 0.45), wood);
@@ -4783,22 +4836,162 @@ export class GameScene extends THREE.Scene {
     g.quaternion.setFromUnitVectors(GameScene.AXIS_Y, seat.normal);
     g.rotateY(Math.random() * Math.PI * 2);
     this.add(g);
+    // Player-built benches join the sit interaction (boot traverse only
+    // catches authored bench_N names — this was the missing registration).
+    this.benchGroups.push(g);
     this.builtPlots.set(plot, g);
   }
 
-  /** Nearest UNBUILT plot within reach, for the build prompt. */
+  /**
+   * Render a shared structure on a BUILD_PLOTS plot (idempotent). All toon
+   * prims, plumb (radial up + authored yaw), DETERMINISTIC — no Math.random
+   * anywhere in here (unlike the bench's cosmetic yaw, these have authored
+   * yaws so every client renders the identical structure).
+   */
+  public renderWorldBuild(plot: number): void {
+    if (this.builtBuildPlots.has(plot) || !this.island) return;
+    const site = GameScene.BUILD_PLOTS[plot];
+    if (!site) return;
+    const seat = this.plotSample(`s${plot}`, site.lon, site.lat);
+    if (!seat) return;
+    // SHIELD (the clump-builder law): three.js mints uuids via Math.random —
+    // ~200 draws per structure. Subscribe callbacks land at runtime today,
+    // but shielding makes this builder safe to call from ANY window forever.
+    const stashedRandom = Math.random;
+    let seed = (0x9e37c0de ^ plot) >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.renderWorldBuildShielded(plot, site, seat);
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private renderWorldBuildShielded(
+    plot: number,
+    site: (typeof GameScene.BUILD_PLOTS)[number],
+    seat: { position: THREE.Vector3; normal: THREE.Vector3 },
+  ): void {
+    const g = new THREE.Group();
+    const ramp = Materials.toonRamp();
+    const wood = new THREE.MeshToonMaterial({ color: 0x8a6238, gradientMap: ramp });
+    const darkWood = new THREE.MeshToonMaterial({ color: 0x4b3a28, gradientMap: ramp });
+    if (site.kind === 'signpost') {
+      const parts: THREE.BufferGeometry[] = [
+        new THREE.BoxGeometry(0.12, 1.6, 0.12).translate(0, 0.8, 0),
+        new THREE.BoxGeometry(0.7, 0.22, 0.05).translate(0.2, 1.35, 0),
+        new THREE.BoxGeometry(0.16, 0.22, 0.05).rotateZ(Math.PI / 4).translate(0.62, 1.35, 0),
+      ];
+      const body = new THREE.Mesh(mergeGeometries(parts, false) as THREE.BufferGeometry, wood);
+      body.castShadow = true;
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.16), darkWood);
+      cap.position.y = 1.62;
+      g.add(body, cap);
+    } else if (site.kind === 'lantern') {
+      const parts: THREE.BufferGeometry[] = [
+        new THREE.CylinderGeometry(0.06, 0.06, 1.9, 6).translate(0, 0.95, 0).toNonIndexed(),
+        new THREE.BoxGeometry(0.28, 0.06, 0.06).translate(0.12, 1.86, 0).toNonIndexed(),
+      ];
+      const post = new THREE.Mesh(mergeGeometries(parts, false) as THREE.BufferGeometry, darkWood);
+      post.castShadow = true;
+      const bulbMat = new THREE.MeshToonMaterial({
+        color: 0x3a3630,
+        gradientMap: ramp,
+        emissive: 0xffc86e,
+        emissiveIntensity: 0,
+      });
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), bulbMat);
+      bulb.position.set(0.24, 1.78, 0);
+      // Joins the street-lamp night dimmer — the ramp loop writes ONLY
+      // emissiveIntensity, which MeshToonMaterial carries too.
+      this.lampBulbMats.push(bulbMat);
+      g.add(post, bulb);
+    } else {
+      // gazebo
+      const deck = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.4, 0.12, 8), wood);
+      deck.position.y = 0.06;
+      deck.castShadow = true;
+      const frameParts: THREE.BufferGeometry[] = [];
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        const px = Math.cos(a) * 1.0;
+        const pz = Math.sin(a) * 1.0;
+        frameParts.push(new THREE.BoxGeometry(0.14, 2.0, 0.14).translate(px, 0.65, pz));
+      }
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 2;
+        frameParts.push(
+          new THREE.BoxGeometry(1.35, 0.08, 0.08)
+            .rotateY(a)
+            .translate(Math.cos(a + Math.PI / 2) * 1.0, 0.75, Math.sin(a + Math.PI / 2) * 1.0),
+        );
+      }
+      const frame = new THREE.Mesh(
+        mergeGeometries(frameParts, false) as THREE.BufferGeometry,
+        darkWood,
+      );
+      const roofParts: THREE.BufferGeometry[] = [
+        new THREE.ConeGeometry(1.7, 0.7, 8).translate(0, 2.0, 0).toNonIndexed(),
+        new THREE.SphereGeometry(0.09, 6, 5).translate(0, 2.42, 0).toNonIndexed(),
+      ];
+      const roof = new THREE.Mesh(
+        mergeGeometries(roofParts, false) as THREE.BufferGeometry,
+        new THREE.MeshToonMaterial({ color: 0xa8503c, gradientMap: ramp }),
+      );
+      roof.castShadow = true;
+      g.add(deck, frame, roof);
+    }
+    // Plumb: radial up, authored yaw — never the slope normal for a structure.
+    const up = seat.position.clone().normalize();
+    g.position.copy(seat.position);
+    g.quaternion.setFromUnitVectors(GameScene.AXIS_Y, up);
+    g.rotateY(site.yaw);
+    this.add(g);
+    if (site.kind === 'gazebo') {
+      // Post-foot colliders AFTER the final orientation is set.
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        const foot = seat.position
+          .clone()
+          .add(
+            new THREE.Vector3(Math.cos(a), 0, Math.sin(a))
+              .applyQuaternion(g.quaternion)
+              .setLength(1.0),
+          );
+        this.colliders.push({ position: foot, radius: 0.15 });
+      }
+      addGroupHulls(g, 0.12, () => true);
+    }
+    this.builtBuildPlots.set(plot, g);
+  }
+
+  /** Nearest UNBUILT bench plot within reach (cached seats — no raycasts). */
   public nearestFreePlot(maxDist = 3.5): number | null {
     if (!this.player || !this.island) return null;
     const p = this.player.getWorldPosition();
     for (let i = 0; i < GameScene.BENCH_PLOTS.length; i++) {
       if (this.builtPlots.has(i)) continue;
       const [lon, lat] = GameScene.BENCH_PLOTS[i];
-      try {
-        const pos = this.island.sampleSurfaceByDirection(this.island.dirAt(lon, lat), 0).position;
-        if (pos.distanceTo(p) < maxDist) return i;
-      } catch {
-        /* unsampleable plot — skip */
-      }
+      const s = this.plotSample(`b${i}`, lon, lat);
+      if (s && s.position.distanceTo(p) < maxDist) return i;
+    }
+    return null;
+  }
+
+  /** Nearest UNBUILT structure plot within reach (cached seats). */
+  public nearestFreeBuildPlot(maxDist = 3.5): number | null {
+    if (!this.player || !this.island) return null;
+    const p = this.player.getWorldPosition();
+    for (let i = 0; i < GameScene.BUILD_PLOTS.length; i++) {
+      if (this.builtBuildPlots.has(i)) continue;
+      const site = GameScene.BUILD_PLOTS[i];
+      const s = this.plotSample(`s${i}`, site.lon, site.lat);
+      if (s && s.position.distanceTo(p) < maxDist) return i;
     }
     return null;
   }

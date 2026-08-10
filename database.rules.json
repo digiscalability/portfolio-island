@@ -129,6 +129,22 @@
       "benchHidden": {
         ".read": "auth != null",
         ".write": false
+      },
+      "builds": {
+        ".read": "auth != null",
+        "$buildId": {
+          ".write": "auth != null && $buildId.beginsWith(auth.uid + '_') && !data.exists()",
+          ".validate": "newData.hasChildren(['plot', 't']) && ($buildId === auth.uid + '_0' || $buildId === auth.uid + '_1' || $buildId === auth.uid + '_2' || $buildId === auth.uid + '_3' || $buildId === auth.uid + '_4' || $buildId === auth.uid + '_5')",
+          "plot": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 13"
+          },
+          "t": { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        }
+      },
+      "buildHidden": {
+        ".read": "auth != null",
+        ".write": false
       }
     }
   }

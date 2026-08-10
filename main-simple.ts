@@ -27,6 +27,7 @@ import { applySoftLookFogPatch } from './SoftLook';
 import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
 import { placeBench, subscribeBenches } from './worldBenches';
+import { placeBuild, subscribeBuilds } from './worldBuilds';
 import { WORLD_ERA } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
@@ -143,6 +144,16 @@ class SimpleApp {
   private static readonly TIMBER_SELL_PRICE = 5;
   private static readonly TIMBER_SATIATED_PRICE = 1;
   private static readonly DAILY_SELL_CAP = 10; // icebox + timber rack satiation
+  // Construction catalog costs (timber + coins), keyed by BUILD_PLOTS kind.
+  private static readonly BUILD_COSTS: Record<
+    'bench' | 'signpost' | 'lantern' | 'gazebo',
+    { timber: number; coins: number; icon: string; name: string }
+  > = {
+    bench: { timber: 4, coins: 10, icon: '🪑', name: 'bench' },
+    signpost: { timber: 3, coins: 5, icon: '🪧', name: 'signpost' },
+    lantern: { timber: 8, coins: 15, icon: '🏮', name: 'lantern' },
+    gazebo: { timber: 20, coins: 40, icon: '⛩️', name: 'gazebo' },
+  };
   private ownedAxe = false;
   private lessons: string[] = [];
   private vaultBusy = false;
@@ -968,6 +979,7 @@ class SimpleApp {
       // Shared benches: render every visitor's builds as they stream in
       // (write path is charged + rules-capped; see worldBenches.ts).
       void subscribeBenches((b) => this.scene.renderWorldBench(b.plot));
+      void subscribeBuilds((b) => this.scene.renderWorldBuild(b.plot));
       this.scene.onDrownFee = (fee) => {
         this.ui.toast(`🚑 Fished out by the shore patrol — ${fee} 🪙 for the trouble.`);
         this.ui.updateCoinCounter(this.scene.getCoinsCollected());
@@ -2021,15 +2033,12 @@ class SimpleApp {
               track('lesson_done', { id: next[0], total: this.lessons.length });
             }
           }
-        } else if (
-          this.timber >= 4 &&
-          this.scene.getCoinsCollected() >= 10 &&
-          this.scene.nearestFreePlot() !== null
-        ) {
+        } else if (this.timber >= 3 && this.nearestAffordableBuild() !== null) {
+          const b = this.nearestAffordableBuild()!;
           this.ui.showInteractionPrompt(
-            '🪑 Press <strong>E</strong> to build a bench here (4 🪵 + 10 🪙) — everyone will see it',
+            `${b.icon} Press <strong>E</strong> to build a ${b.name} here (${b.timber} 🪵 + ${b.coins} 🪙) — everyone will see it`,
           );
-          if (this.inputManager.consumeKeyPress('e')) void this.buildBenchHere();
+          if (this.inputManager.consumeKeyPress('e')) void this.buildHere(b);
         } else if (this.scene.isNearHospital()) {
           this.ui.showInteractionPrompt(
             '🏥 Press <strong>E</strong> — checkup, 10 🪙 (60s of spring in your step)',
@@ -3128,28 +3137,67 @@ class SimpleApp {
   }
 
   /** Charge first, refund on any non-ack — same shape as the vault. */
-  private async buildBenchHere(): Promise<void> {
-    const plot = this.scene.nearestFreePlot();
-    if (plot === null) return;
-    if (this.timber < 4 || !this.scene.spendCoins(10)) return;
-    this.timber -= 4;
+  /** The nearest free plot (bench OR structure) the player can AFFORD, with
+   *  its costs — one prompt for the whole construction catalog. Cheap: plot
+   *  seats are cached in GameScene (no raycasts on this per-frame path). */
+  private nearestAffordableBuild(): {
+    system: 'bench' | 'build';
+    plot: number;
+    icon: string;
+    name: string;
+    timber: number;
+    coins: number;
+  } | null {
+    const coins = this.scene.getCoinsCollected();
+    const benchPlot = this.scene.nearestFreePlot();
+    if (benchPlot !== null) {
+      const c = SimpleApp.BUILD_COSTS.bench;
+      if (this.timber >= c.timber && coins >= c.coins) {
+        return { system: 'bench', plot: benchPlot, ...c };
+      }
+    }
+    const buildPlot = this.scene.nearestFreeBuildPlot();
+    if (buildPlot !== null) {
+      const kind = GameScene.BUILD_PLOTS[buildPlot].kind;
+      const c = SimpleApp.BUILD_COSTS[kind];
+      if (this.timber >= c.timber && coins >= c.coins) {
+        return { system: 'build', plot: buildPlot, ...c };
+      }
+    }
+    return null;
+  }
+
+  /** Charge first, refund on any non-ack — same shape as the vault. */
+  private async buildHere(b: {
+    system: 'bench' | 'build';
+    plot: number;
+    icon: string;
+    name: string;
+    timber: number;
+    coins: number;
+  }): Promise<void> {
+    if (this.timber < b.timber || !this.scene.spendCoins(b.coins)) return;
+    this.timber -= b.timber;
     this.persistTimber();
-    const res = await placeBench(plot);
+    const res = b.system === 'bench' ? await placeBench(b.plot) : await placeBuild(b.plot);
     if (typeof res !== 'number') {
-      this.timber += 4;
+      this.timber += b.timber;
       this.persistTimber();
-      this.scene.addCoins(10);
+      this.scene.addCoins(b.coins);
       this.ui.toast(
         res === 'full'
-          ? '🪑 "Four benches is plenty for one visitor," says the carpenter.'
-          : '🪑 The build cart is stuck — materials returned.',
+          ? `${b.icon} "That's plenty of building for one visitor," says the carpenter.`
+          : `${b.icon} The build cart is stuck — materials returned.`,
       );
       return;
     }
-    this.scene.renderWorldBench(plot);
+    if (b.system === 'bench') this.scene.renderWorldBench(b.plot);
+    else this.scene.renderWorldBuild(b.plot);
     sfx.coin();
-    track('bench_built', { plot, slot: res });
-    this.ui.toast("🪑 Built! Reload the page — it will still be here. So will everyone else's.");
+    track('build_placed', { system: b.system, kind: b.name, plot: b.plot, slot: res });
+    this.ui.toast(
+      `${b.icon} Built! Reload the page — it will still be here. So will everyone else's.`,
+    );
   }
 
   private persistLessons(): void {
