@@ -7,6 +7,27 @@
  * clear and is the foundation for true cross-device sync once an account is
  * linked (anonymous auth is per-device on its own).
  */
+/**
+ * Adopt-once merge for CURRENCY (the Consumable Law applied to coins).
+ *
+ * Coins used to max-merge from the cloud ("coins only go up") — but coins are
+ * SPENT: the profile sync resolves seconds after boot, behind an 800ms
+ * debounced save, so "take the higher" refunded every purchase made in that
+ * window (buy the rod, reload before the save lands, keep rod AND balance —
+ * a live exploit until Phase 0 of the economy). Same rule the feed
+ * consumables established: the cloud value is adopted ONLY when this device
+ * has no local record at all (fresh device / cleared storage), and never
+ * again after.
+ *
+ * Returns the value to adopt, or null to keep local truth. Pure — pinned by
+ * test/profileSync.test.ts.
+ */
+export function coinAdoptValue(hasLocalRecord: boolean, cloudCoins: unknown): number | null {
+  if (hasLocalRecord) return null;
+  if (typeof cloudCoins !== 'number' || !Number.isFinite(cloudCoins)) return null;
+  return Math.max(0, Math.floor(cloudCoins));
+}
+
 export interface Profile {
   name?: string;
   hat?: string | null;

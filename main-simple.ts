@@ -14,7 +14,7 @@ import { Multiplayer } from './Multiplayer';
 import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
-import { loadProfile, saveProfile } from './profileSync';
+import { coinAdoptValue, loadProfile, saveProfile } from './profileSync';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
@@ -2999,8 +2999,13 @@ class SimpleApp {
         this.scene.equipPlayerHat(profile.hat as HatId);
         this.multiplayer?.setHat(profile.hat as HatId);
       }
-      if (typeof profile.coins === 'number' && profile.coins > this.scene.getCoinsCollected()) {
-        this.scene.setCoins(profile.coins);
+      // ADOPT-ONCE, not max-merge: the old "take the higher" refunded every
+      // purchase made before the debounced save landed (the rod exploit).
+      // Cross-device coin sync is intentionally dead until the bank vault
+      // ships — see docs/superpowers/specs/2026-08-10-economy-design.md P0.
+      {
+        const adopt = coinAdoptValue(this.scene.hasLocalCoins(), profile.coins);
+        if (adopt !== null) this.scene.setCoins(adopt);
       }
       // Consumables must NOT max-merge the way coins do. Coins only go up, but
       // feed is SPENT: this sync resolves seconds after boot and behind an

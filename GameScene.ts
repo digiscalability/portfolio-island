@@ -419,6 +419,9 @@ export class GameScene extends THREE.Scene {
   // Collectible coins scattered across the meadows
   private coins: Array<{ mesh: THREE.Mesh; respawnAt: number; trail?: boolean }> = [];
   private coinsCollected = 0;
+  // True once ds_coins has ever been written on this device — gates the
+  // profile sync's adopt-once (see coinAdoptValue in profileSync.ts).
+  private hasLocalCoinRecord = false;
   private onCoinCollected?: (total: number) => void;
 
   // Rideable watercraft: boats + jetskis that float on the waves offshore.
@@ -5741,7 +5744,12 @@ export class GameScene extends THREE.Scene {
   }
 
   /** Grant coins directly (quest rewards) — persists and updates the HUD. */
+  public hasLocalCoins(): boolean {
+    return this.hasLocalCoinRecord;
+  }
+
   public addCoins(n: number): void {
+    this.hasLocalCoinRecord = true;
     this.coinsCollected += n;
     try {
       localStorage.setItem('ds_coins', String(this.coinsCollected));
@@ -5761,6 +5769,7 @@ export class GameScene extends THREE.Scene {
   /** Set the coin total absolutely (applying a synced cloud profile). */
   public setCoins(total: number): void {
     this.coinsCollected = Math.max(0, Math.floor(total));
+    this.hasLocalCoinRecord = true;
     try {
       localStorage.setItem('ds_coins', String(this.coinsCollected));
     } catch {
@@ -6142,7 +6151,12 @@ export class GameScene extends THREE.Scene {
    */
   private createCoins(): void {
     try {
-      this.coinsCollected = parseInt(localStorage.getItem('ds_coins') ?? '0', 10) || 0;
+      const raw = localStorage.getItem('ds_coins');
+      // null vs '0' matters: the profile sync adopts the cloud balance ONLY
+      // when this device has never recorded coins (coinAdoptValue in
+      // profileSync.ts — the Consumable Law applied to currency).
+      this.hasLocalCoinRecord = raw !== null;
+      this.coinsCollected = parseInt(raw ?? '0', 10) || 0;
     } catch {
       /* counter starts at 0 */
     }
