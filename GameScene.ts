@@ -4496,13 +4496,18 @@ export class GameScene extends THREE.Scene {
         }
       }
 
-      // Rig geometry (rod up + seaward = −Z; line to the bobber)
-      const hand = new THREE.Vector3(0.12, 0.9, -0.05);
-      const rodDir = new THREE.Vector3(0, Math.sin(theta), -Math.cos(theta));
+      // Rig geometry. The rig uses the AVATAR convention (villagers face +Z,
+      // see orientVillager) — but this block was written for the PROP
+      // convention (orientQuat, forward = −Z), so the rod and bobber rendered
+      // at rig −Z: the fisherman faced the sea perfectly (measured +Z·seaward
+      // = 1.0) while casting directly inland over his shoulder (bobber·seaward
+      // = −0.996, float sitting on the sand). Seaward in rig space is +Z.
+      const hand = new THREE.Vector3(0.12, 0.9, 0.05);
+      const rodDir = new THREE.Vector3(0, Math.sin(theta), Math.cos(theta));
       F.rod.quaternion.setFromUnitVectors(GameScene._localUp, rodDir);
       F.rod.position.copy(hand).addScaledVector(rodDir, 0.7);
       F.rodTip.position.copy(hand).addScaledVector(rodDir, 1.4);
-      const bobberLocal = new THREE.Vector3(0.12, -bobberDrop, -bobberFwd);
+      const bobberLocal = new THREE.Vector3(0.12, -bobberDrop, bobberFwd);
       F.bobber.position.copy(bobberLocal);
       const delta = bobberLocal.clone().sub(F.rodTip.position);
       const len = delta.length() || 0.001;
