@@ -2365,6 +2365,7 @@ export class GameScene extends THREE.Scene {
     this.createHerons();
     this.createCrabs();
     this.createDeepFauna();
+    this.refreshPlotMarkers();
   }
 
   private createCats(): void {
@@ -5073,9 +5074,18 @@ export class GameScene extends THREE.Scene {
     }
   }
 
-  /** The Carpenter's home site (index-zipped append; he strolls near it). */
+  /**
+   * Near the Carpenter — the RACK SITE or the NPC HIMSELF. He's a living
+   * villager whose planner walks him island-wide (measured 34u off-site),
+   * so a site-only check meant "stand next to the Carpenter, get no sell
+   * prompt" — the findability report. Selling to the person is the natural
+   * reading; the rack stays valid for when he's home.
+   */
   public isNearCarpenter(maxDist = 6): boolean {
     if (!this.player || !this.island) return false;
+    const p = this.player.getWorldPosition();
+    const npc = this.getNpcPosition('Carpenter');
+    if (npc && npc.distanceTo(p) < 4) return true;
     if (!this._carpenterPos) {
       const dir = this.island.dirAt(0.35, 0.56);
       try {
@@ -5084,7 +5094,7 @@ export class GameScene extends THREE.Scene {
         return false;
       }
     }
-    return this.player.getWorldPosition().distanceTo(this._carpenterPos) < maxDist;
+    return p.distanceTo(this._carpenterPos) < maxDist;
   }
 
   private _carpenterPos: THREE.Vector3 | null = null;
@@ -5220,6 +5230,7 @@ export class GameScene extends THREE.Scene {
     // catches authored bench_N names — this was the missing registration).
     this.benchGroups.push(g);
     this.builtPlots.set(plot, g);
+    this.refreshPlotMarkers(); // the stake yields to the bench
   }
 
   /**
@@ -5348,6 +5359,99 @@ export class GameScene extends THREE.Scene {
       addGroupHulls(g, 0.12, () => true);
     }
     this.builtBuildPlots.set(plot, g);
+    this.refreshPlotMarkers(); // the stake yields to the structure
+  }
+
+  // Wooden "build here" stakes at every FREE plot — the plots were invisible
+  // 3.5u circles, which read as "build prompts don't show" (findability
+  // report). ONE InstancedMesh, refreshed whenever anything is built.
+  private plotMarkers: THREE.InstancedMesh | null = null;
+
+  public refreshPlotMarkers(): void {
+    if (!this.island) return;
+    if (!this.plotMarkers) {
+      // SHIELD the one-time geometry build (uuid mints — this runs inside
+      // the seeded window at boot).
+      const stashedRandom = Math.random;
+      let seed = 0x51a4e5 >>> 0;
+      Math.random = () => {
+        seed = (seed + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      try {
+        const noIdx = (g: THREE.BufferGeometry): THREE.BufferGeometry =>
+          g.index ? g.toNonIndexed() : g;
+        const parts = [
+          noIdx(new THREE.BoxGeometry(0.07, 0.9, 0.07)).translate(0, 0.45, 0),
+          noIdx(new THREE.BoxGeometry(0.44, 0.24, 0.04))
+            .rotateZ(0.1)
+            .translate(0.08, 0.8, 0),
+          // A little hammer glyph on the board so it reads as "build here".
+          noIdx(new THREE.BoxGeometry(0.05, 0.14, 0.05))
+            .rotateZ(0.7)
+            .translate(0.06, 0.8, 0.03),
+          noIdx(new THREE.BoxGeometry(0.12, 0.06, 0.06))
+            .rotateZ(0.7)
+            .translate(0.11, 0.86, 0.03),
+        ] as THREE.BufferGeometry[];
+        const geo = mergeGeometries(parts, false) as THREE.BufferGeometry;
+        // Bake: pale board + darker post/glyph (vertex colors, toon).
+        const pos = geo.getAttribute('position');
+        const cols = new Float32Array(pos.count * 3);
+        const post = new THREE.Color(0x8a6238);
+        const board = new THREE.Color(0xe8d9b8);
+        for (let i = 0; i < pos.count; i++) {
+          const onBoard =
+            Math.abs(pos.getY(i) - 0.8) < 0.16 &&
+            Math.abs(pos.getZ(i)) < 0.025 &&
+            pos.getX(i) > -0.2;
+          const c = onBoard ? board : post;
+          cols[i * 3] = c.r;
+          cols[i * 3 + 1] = c.g;
+          cols[i * 3 + 2] = c.b;
+        }
+        geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+        const im = new THREE.InstancedMesh(
+          geo,
+          new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: Materials.toonRamp() }),
+          GameScene.BENCH_PLOTS.length + GameScene.BUILD_PLOTS.length,
+        );
+        im.raycast = () => {};
+        im.castShadow = false;
+        this.add(im);
+        this.plotMarkers = im;
+      } finally {
+        Math.random = stashedRandom;
+      }
+    }
+    const im = this.plotMarkers;
+    if (!im) return;
+    const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
+    let count = 0;
+    const place = (seat: { position: THREE.Vector3 } | null, yaw: number): void => {
+      if (!seat) return;
+      dummy.position.copy(seat.position);
+      dummy.quaternion.setFromUnitVectors(up, seat.position.clone().normalize());
+      dummy.rotateY(yaw); // deterministic — index-derived, no RNG
+      dummy.updateMatrix();
+      im.setMatrixAt(count++, dummy.matrix);
+    };
+    for (let i = 0; i < GameScene.BENCH_PLOTS.length; i++) {
+      if (this.builtPlots.has(i)) continue;
+      const [lon, lat] = GameScene.BENCH_PLOTS[i];
+      place(this.plotSample(`b${i}`, lon, lat), i * 2.4);
+    }
+    for (let i = 0; i < GameScene.BUILD_PLOTS.length; i++) {
+      if (this.builtBuildPlots.has(i)) continue;
+      const site = GameScene.BUILD_PLOTS[i];
+      place(this.plotSample(`s${i}`, site.lon, site.lat), i * 1.7);
+    }
+    im.count = count;
+    im.instanceMatrix.needsUpdate = true;
+    im.computeBoundingSphere();
   }
 
   /** Nearest UNBUILT bench plot within reach (cached seats — no raycasts). */

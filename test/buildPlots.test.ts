@@ -105,6 +105,7 @@ describe('renderWorldBuild determinism', () => {
       colliders: [],
       plotSample: proto['plotSample'],
       renderWorldBuildShielded: proto['renderWorldBuildShielded'],
+      refreshPlotMarkers: () => {}, // stake refresh not under test
     });
     const render = (GameScene.prototype as unknown as Record<string, (p: number) => void>)[
       'renderWorldBuild'
