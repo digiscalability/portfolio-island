@@ -3042,6 +3042,8 @@ export class SimpleUI {
     // max-height 500px) a 4th row would sit over the coin chip and the icon
     // row, and unlike those chips it captures taps.
     makeButton('🌾', 'FEED', '36px', 'KeyF', 'f', 'rgba(150,130,70,0.5)', 112);
+    // EAT stacks over FEED in the second column (124px over 36px, same 112 inset)
+    makeButton('🍽️', 'EAT', '124px', 'KeyG', 'g', 'rgba(150,90,70,0.5)', 112);
 
     // Proximity chat: 💬 opens the text input, 🎤 is press-hold-to-talk.
     // Stacked above the joystick (which spans bottom 26–136px here) so
@@ -4489,8 +4491,8 @@ export class SimpleUI {
    * createCustomizeButton), and a chip there paints straight over all three.
    * It shares the coin chip's row instead, to its left.
    */
-  updateFeedCounters(bird: number, cat: number, fish: number): void {
-    const total = bird + cat + fish;
+  updateFeedCounters(bird: number, cat: number, fish: number, meals = 0): void {
+    const total = bird + cat + fish + meals;
     if (!this.feedDiv) {
       if (total <= 0) return;
       this.feedDiv = document.createElement('div');
@@ -4527,8 +4529,13 @@ export class SimpleUI {
     if (bird > 0) parts.push(`🌾 ${bird}`);
     if (cat > 0) parts.push(`🐈 ${cat}`);
     if (fish > 0) parts.push(`🐟 ${fish}`);
+    if (meals > 0) parts.push(`🍽️ ${meals}`);
+    // Two verbs share this chip now — show only the ones you can actually do.
+    const hints: string[] = [];
+    if (bird + cat + fish > 0) hints.push('F feed');
+    if (meals > 0) hints.push('G eat');
     this.feedDiv.style.display = 'block';
-    this.feedDiv.textContent = `${parts.join('  ')}  ·  F to feed`;
+    this.feedDiv.textContent = `${parts.join('  ')}  ·  ${hints.join(' · ')}`;
     this.feedDiv.style.transform = 'scale(1.35)';
     const el = this.feedDiv;
     window.setTimeout(() => {

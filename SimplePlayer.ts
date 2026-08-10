@@ -93,6 +93,21 @@ export class SimplePlayer extends THREE.Group {
     return this.stamina;
   }
 
+  /** Eat/refill: add a fraction of a full bar (0..1), clamped. Returns the
+   *  actual gain (0 when already full) so the caller can react. */
+  public addStamina(frac: number): number {
+    const before = this.stamina;
+    this.stamina = THREE.MathUtils.clamp(this.stamina + frac, 0, 1);
+    return this.stamina - before;
+  }
+
+  /** Extend the speed buff, NEVER shortening a longer active one — the pie's
+   *  well-fed stroll shares the sprintUntil channel with the hospital checkup,
+   *  and setSprintUntil(now+20) would truncate a live 60s checkup. */
+  public boostSprint(sec: number): void {
+    this.sprintUntil = Math.max(this.sprintUntil, performance.now() / 1000 + sec);
+  }
+
   public isRunning(): boolean {
     return this.running;
   }

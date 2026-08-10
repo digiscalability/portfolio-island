@@ -15,3 +15,22 @@ export function saleSplit(
   const full = Math.max(0, Math.min(n, cap - soldToday));
   return { full, earn: full * fullPrice + (n - full) * satiatedPrice };
 }
+
+/** The providers a daily special can feature (grocer deliberately excluded —
+ *  it shares the canteen's produce cap, so specialing it would double-dip). */
+export type ProviderKey = 'fisherman' | 'baker' | 'canteen' | 'bank' | 'carpenter';
+const FEATURED_CYCLE: ProviderKey[] = ['fisherman', 'baker', 'canteen', 'bank', 'carpenter'];
+
+/** Deterministic daily special: one provider pays a premium, rotating by day.
+ *  The premium multiplies ONLY the full price (the caller keeps the satiated
+ *  tail at 1c), so the faucet stays hard-capped at cap × fullPrice × mult and
+ *  can never become uncapped. Pure + seedless so every client agrees on the
+ *  day's special from the date alone (no backend required). */
+export function featuredSell(
+  dayKey: string,
+  marketDay = false,
+): { provider: ProviderKey; mult: number } {
+  let h = 0;
+  for (let i = 0; i < dayKey.length; i++) h = (h * 31 + dayKey.charCodeAt(i)) >>> 0;
+  return { provider: FEATURED_CYCLE[h % FEATURED_CYCLE.length], mult: marketDay ? 2.5 : 2 };
+}

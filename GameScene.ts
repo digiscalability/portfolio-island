@@ -2777,6 +2777,51 @@ export class GameScene extends THREE.Scene {
     this.feedFocusAt = time;
   }
 
+  /** A sale becomes a diegetic HAND-OFF (wave 5): give gesture + coin arc(s)
+   *  toward the provider + a camera nod, and (for a named provider with a
+   *  name pin) a one-line reaction bubble. ~95% reuse of shipped primitives;
+   *  zero coin-value change. Providers WITHOUT a name pin (fisherman, canteen)
+   *  pass providerName: null and keep their own toast reaction. */
+  public sellHandoff(
+    providerPos: THREE.Vector3,
+    opts: { coins: number; providerName?: string | null; line?: string },
+  ): void {
+    const up = providerPos.clone().normalize();
+    if (!a11y.reducedMotion) {
+      this.player?.triggerFeedToss();
+      if (this.player) squash(this.player, 0.06, 0.15);
+      const pops = Math.min(1 + Math.floor(opts.coins / 12), 3);
+      for (let k = 0; k < pops; k++) {
+        window.setTimeout(
+          () => this.spawnCoinPop(providerPos.clone().addScaledVector(up, 0.55 + k * 0.12), up),
+          k * 70,
+        );
+      }
+    } else {
+      this.spawnCoinPop(providerPos.clone().addScaledVector(up, 0.6), up);
+    }
+    this.setInteractionFocus(providerPos, 2.5);
+    if (opts.providerName && opts.line) {
+      // Resolve name -> nameTag index THROUGH npcTargets: nameTags[i].target
+      // is {position, meshRef} (no .name), so match on the shared meshRef.
+      const nt = this.island.npcTargets.find((n) => n.name === opts.providerName);
+      const i = nt ? this.nameTags.findIndex((t) => t.target.meshRef === nt.meshRef) : -1;
+      if (i >= 0) this.showNpcSpeechBubble(i, opts.line, performance.now() / 1000);
+    }
+  }
+
+  /** Eating a meal (wave 5): a body "gulp" squash + crumb dust at head height
+   *  + a soft self-nod. Bone-free and disposal-free on purpose — no rest-pose
+   *  corruption (World Laws 2/3), no minted geometry (RNG-stream safe). */
+  public showEatGesture(): void {
+    if (!this.player) return;
+    const p = this.player.getWorldPosition();
+    if (!a11y.reducedMotion) squash(this.player, 0.06, 0.15);
+    const head = p.clone().addScaledVector(p.clone().normalize(), 1.5);
+    this.spawnDust(head, 3);
+    this.setInteractionFocus(p, 1.6);
+  }
+
   /** The active feed-focus point for the camera, or null once stale/far. */
   public getFeedFocus(): THREE.Vector3 | null {
     if (!this.feedFocusPos || performance.now() / 1000 > this.feedFocusUntil) return null;
@@ -6273,6 +6318,18 @@ export class GameScene extends THREE.Scene {
 
   public canteenPos(): THREE.Vector3 | null {
     return this.island?.canteenSite ?? null;
+  }
+
+  /** Near a Market Vendor — the grocer, a SECOND produce outlet. Reuses the
+   *  only non-chat NPC (excluded from AI chat) so E-buy/sell never steals a
+   *  villager's dialogue. */
+  public isNearMarketVendor(maxDist = 4): boolean {
+    const v = this.getNpcPosition('Market Vendor');
+    return !!v && !!this.player && v.distanceTo(this.player.getWorldPosition()) < maxDist;
+  }
+
+  public marketVendorPos(): THREE.Vector3 | null {
+    return this.getNpcPosition('Market Vendor');
   }
 
   public isNearBank(maxDist = 5): boolean {

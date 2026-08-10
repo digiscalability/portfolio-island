@@ -62,6 +62,22 @@ export function coinAdoptValue(hasLocalRecord: boolean, cloudCoins: unknown): nu
   return Math.max(0, Math.floor(cloudCoins));
 }
 
+/** Cooked-food adopt-once (Consumable Law): the cloud value is taken ONLY when
+ *  this device has no local record; each field is floored to a non-negative
+ *  integer; anything non-object returns null (keep the local zeros). Never a
+ *  max-merge — that would refund every meal eaten on this device. */
+export function mealsAdoptValue(
+  hasLocalRecord: boolean,
+  cloudMeals: unknown,
+): { pie: number; fish: number; soup: number } | null {
+  if (hasLocalRecord) return null;
+  if (!cloudMeals || typeof cloudMeals !== 'object') return null;
+  const m = cloudMeals as Record<string, unknown>;
+  const clamp = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0;
+  return { pie: clamp(m.pie), fish: clamp(m.fish), soup: clamp(m.soup) };
+}
+
 export interface Profile {
   /** Completed school lesson ids — UNION-merged (per-account, additive). */
   lessons?: string[];
@@ -73,6 +89,8 @@ export interface Profile {
   birdFeed?: number;
   catFeed?: number;
   fishFeed?: number;
+  /** Uneaten cooked-food meals (consumables — adopt-once, never max-merged). */
+  meals?: { pie: number; fish: number; soup: number };
   /** Body colours as hex strings, keyed by part (outfit/pants/hair/skin). */
   colors?: Record<string, string>;
   /** Last visit epoch ms (latest-wins merge) — powers return-visit deltas. */

@@ -7,7 +7,7 @@ import { applyCelShadowPatch } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
-import { saleSplit } from './economy';
+import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
@@ -240,6 +240,19 @@ class SimpleApp {
   private static readonly FISH_FEED_CHARGES = 5;
   private fishFeed = 0;
   private hasLocalFishFeed = false;
+  // Cooked-food consumables (wave 5): BUY at a provider, press G to EAT —
+  // restores a fraction of the 0..1 stamina bar. Coin SINK only (never sold),
+  // and a Consumable-Law localStorage item: adopt-once from the cloud, NEVER
+  // max-merged (max-merge would refund every meal eaten).
+  private static readonly SOUP_PRICE = 3;
+  private static readonly FISHMEAL_PRICE = 5;
+  private static readonly PIE_PRICE = 8;
+  private static readonly MEAL_STAMINA = { soup: 0.45, fish: 0.65, pie: 1.0 } as const;
+  private meals = { pie: 0, fish: 0, soup: 0 };
+  private hasLocalMeals = false;
+  // Daily special: one provider pays a premium today (rotates by date; market
+  // day lifts it 2→2.5). Boosts ONLY the full price so the faucet stays capped.
+  private featured: { provider: ProviderKey | ''; mult: number } = { provider: '', mult: 2 };
   private ownedHats: Set<string> = new Set();
   private equippedHat: string | null = null;
   private passport: Passport | null = null;
@@ -469,6 +482,9 @@ class SimpleApp {
         const rawFish = localStorage.getItem('ds_fish_feed');
         this.hasLocalFishFeed = rawFish !== null;
         this.fishFeed = Math.max(0, parseInt(rawFish ?? '0', 10) || 0);
+        const rawMeals = localStorage.getItem('ds_meals');
+        this.hasLocalMeals = rawMeals !== null;
+        if (rawMeals) Object.assign(this.meals, JSON.parse(rawMeals));
       } catch {
         this.birdFeed = 0;
       }
@@ -661,9 +677,13 @@ class SimpleApp {
       // Surface it as a bulletin banner; it also colours NPC tone via
       // moodNpcFlavor() above. Degrades to silence if the backend/beat is
       // absent (e.g. before the director is deployed). ?mood=festive previews.
+      // Today's special from the local date first (works with zero backend).
+      this.refreshFeatured(false);
       connectWorldState((s) => {
         this.ui.showWorldBulletin(s.headline, MOOD_META[s.mood].accent);
         track('world_beat_seen', { mood: s.mood });
+        // Market day (world beat) lifts the special's premium 2 → 2.5.
+        if (s.npcPlan?.event === 'market_day') this.refreshFeatured(true);
         // Hand the day's NPC assignments to the activity engine (Phase 2).
         if (s.npcPlan) this.scene.setNpcActivities(s.npcPlan);
         // Feed the "Island Times" board its notice + plan + past editions.
@@ -834,6 +854,11 @@ class SimpleApp {
               icon: '🏗️',
               title: 'Building',
               detail: `your builds ${this.ownBuilds.size}/6 — choose at any 🔨 stake: signposts & planters 3🪵, campfires 6🪵, lanterns 8🪵, gazebos 20🪵`,
+            },
+            {
+              icon: '🍽️',
+              title: 'Food & rest',
+              detail: `meals refill stamina — Canteen Soup ${SimpleApp.SOUP_PRICE}🪙, Grilled Fish ${SimpleApp.FISHMEAL_PRICE}🪙, Baker's Pie ${SimpleApp.PIE_PRICE}🪙 (full + a 20s stroll). Press G to eat.`,
             },
           ],
           secrets: {
@@ -1969,6 +1994,20 @@ class SimpleApp {
             Math.abs(moveInput.forward + joy.forward) + Math.abs(moveInput.strafe + joy.strafe);
           player.setRunIntent(jumpInput && runMag > 0.3);
           this.ui.updateStamina(player.getStamina(), player.isRunning());
+          // One-time nudge: winded while carrying food → teach the G/eat verb.
+          if (
+            player.getStamina() < 0.15 &&
+            this.meals.pie + this.meals.fish + this.meals.soup > 0
+          ) {
+            try {
+              if (!localStorage.getItem('ds_hint_eat')) {
+                localStorage.setItem('ds_hint_eat', '1');
+                this.ui.toast('😮‍💨 Winded? Press G to eat and restore stamina.');
+              }
+            } catch {
+              /* no storage */
+            }
+          }
         }
         if (jumpInput && player && !player.isInWater()) {
           // Edge-triggered: one blip per press, only from the ground
@@ -1999,6 +2038,9 @@ class SimpleApp {
 
         // Scatter a handful of bird feed ahead of you; nearby birds fly in
         if (this.inputManager.consumeKeyPress('f')) this.tossFeed();
+
+        // Eat a cooked meal to restore stamina (G — the new food verb)
+        if (this.inputManager.consumeKeyPress('g')) this.eatMeal();
 
         // Full island map (same as tapping the radar)
         if (this.inputManager.consumeKeyPress('m')) this.openIslandMap();
@@ -2110,11 +2152,11 @@ class SimpleApp {
             this.fishCaught,
             this.dailySold('ds_fish_day', 0),
             SimpleApp.DAILY_SELL_CAP,
-            SimpleApp.FISH_SELL_PRICE,
+            this.featuredPrice('fisherman', SimpleApp.FISH_SELL_PRICE),
             SimpleApp.FISH_SATIATED_PRICE,
           );
           this.ui.showInteractionPrompt(
-            `🐟 Press <strong>E</strong> to sell ${this.fishCaught} fish (+${fEarn} 🪙)${fFull === 0 ? ' · icebox full' : ''}`,
+            `${this.featuredStar('fisherman')}🐟 Press <strong>E</strong> to sell ${this.fishCaught} fish (+${fEarn} 🪙)${fFull === 0 ? ' · icebox full' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
             // Icebox satiation (approved economy spec): first 10/day at full
@@ -2125,6 +2167,8 @@ class SimpleApp {
             this.scene.addCoins(earned);
             this.dailySold('ds_fish_day', this.fishCaught);
             track('fish_sold', { count: this.fishCaught, earned, satiated: overflow > 0 });
+            const fpos = this.scene.fishermanPos();
+            if (fpos) this.scene.sellHandoff(fpos, { coins: earned, providerName: null });
             this.fishCaught = 0;
             this.persistFish();
             sfx.coin();
@@ -2149,14 +2193,14 @@ class SimpleApp {
           const tranche = fullPriced > 0 ? fullPriced : this.timber;
           const trancheEarn =
             fullPriced > 0
-              ? fullPriced * SimpleApp.TIMBER_SELL_PRICE
+              ? fullPriced * this.featuredPrice('carpenter', SimpleApp.TIMBER_SELL_PRICE)
               : this.timber * SimpleApp.TIMBER_SATIATED_PRICE;
           const couldBuild = this.timber >= 3 && this.scene.freePlotSummary().length > 0;
           const needsArm = couldBuild || fullPriced === 0;
           const armed = performance.now() / 1000 - this.timberSellArmedAt < 3;
           this.ui.showInteractionPrompt(
             needsArm && !armed
-              ? `🪵 Press <strong>E</strong> to sell ${tranche} timber (+${trancheEarn} 🪙)${fullPriced === 0 ? ' · rack stocked' : ''} — or keep it: 🔨 builds start at 3 🪵`
+              ? `${this.featuredStar('carpenter')}🪵 Press <strong>E</strong> to sell ${tranche} timber (+${trancheEarn} 🪙)${fullPriced === 0 ? ' · rack stocked' : ''} — or keep it: 🔨 builds start at 3 🪵`
               : `🪵 Press <strong>E</strong>${needsArm ? ' again' : ''} to sell ${tranche} timber (+${trancheEarn} 🪙)${fullPriced === 0 ? ' · rack stocked' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
@@ -2167,6 +2211,13 @@ class SimpleApp {
               this.timberSellArmedAt = 0;
               this.scene.addCoins(trancheEarn);
               this.dailySold('ds_timber_day', tranche);
+              const cpos = this.scene.carpenterRackPos();
+              if (cpos)
+                this.scene.sellHandoff(cpos, {
+                  coins: trancheEarn,
+                  providerName: 'Carpenter',
+                  line: 'Fine timber — much obliged.',
+                });
               track('timber_sold', {
                 count: tranche,
                 earned: trancheEarn,
@@ -2190,16 +2241,23 @@ class SimpleApp {
             this.wheat,
             this.dailySold('ds_wheat_day', 0),
             SimpleApp.DAILY_SELL_CAP,
-            SimpleApp.WHEAT_SELL_PRICE,
+            this.featuredPrice('baker', SimpleApp.WHEAT_SELL_PRICE),
             SimpleApp.WHEAT_SATIATED_PRICE,
           );
           this.ui.showInteractionPrompt(
-            `🌾 Press <strong>E</strong> to sell ${this.wheat} wheat (+${wEarn} 🪙)${wFull === 0 ? ' · ovens full' : ''}`,
+            `${this.featuredStar('baker')}🌾 Press <strong>E</strong> to sell ${this.wheat} wheat (+${wEarn} 🪙)${wFull === 0 ? ' · ovens full' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(wEarn);
             this.dailySold('ds_wheat_day', this.wheat);
             track('wheat_sold', { count: this.wheat, earned: wEarn });
+            const bpos = this.scene.bakerPos();
+            if (bpos)
+              this.scene.sellHandoff(bpos, {
+                coins: wEarn,
+                providerName: 'Village Baker',
+                line: 'Fresh sheaves! Straight to the oven.',
+              });
             this.wheat = 0;
             this.persistHarvest();
             sfx.coin();
@@ -2214,16 +2272,18 @@ class SimpleApp {
             this.produce,
             this.dailySold('ds_produce_day', 0),
             SimpleApp.DAILY_SELL_CAP,
-            SimpleApp.PRODUCE_SELL_PRICE,
+            this.featuredPrice('canteen', SimpleApp.PRODUCE_SELL_PRICE),
             SimpleApp.PRODUCE_SATIATED_PRICE,
           );
           this.ui.showInteractionPrompt(
-            `🥬 Press <strong>E</strong> to sell ${this.produce} produce (+${pEarn} 🪙)${pFull === 0 ? ' · pot brimming' : ''}`,
+            `${this.featuredStar('canteen')}🥬 Press <strong>E</strong> to sell ${this.produce} produce (+${pEarn} 🪙)${pFull === 0 ? ' · pot brimming' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(pEarn);
             this.dailySold('ds_produce_day', this.produce);
             track('produce_sold', { count: this.produce, earned: pEarn });
+            const cpos2 = this.scene.canteenPos();
+            if (cpos2) this.scene.sellHandoff(cpos2, { coins: pEarn, providerName: null });
             this.produce = 0;
             this.persistHarvest();
             sfx.coin();
@@ -2233,21 +2293,81 @@ class SimpleApp {
                 : `🪙 +${pEarn} — the canteen crew cheers the fresh veg.`,
             );
           }
+        } else if (this.produce > 0 && this.scene.isNearMarketVendor()) {
+          // Grocer: a SECOND produce outlet across the districts — SHARES the
+          // canteen's ds_produce_day cap (two locations, one faucet: farm
+          // output stays 60c/day, never doubled).
+          const { full: gFull, earn: gEarn } = saleSplit(
+            this.produce,
+            this.dailySold('ds_produce_day', 0),
+            SimpleApp.DAILY_SELL_CAP,
+            SimpleApp.PRODUCE_SELL_PRICE,
+            SimpleApp.PRODUCE_SATIATED_PRICE,
+          );
+          this.ui.showInteractionPrompt(
+            `🥕 Press <strong>E</strong> to sell ${this.produce} produce (+${gEarn} 🪙)${gFull === 0 ? ' · stall stocked' : ''}`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.addCoins(gEarn);
+            this.dailySold('ds_produce_day', this.produce);
+            track('produce_sold', { count: this.produce, earned: gEarn, at: 'grocer' });
+            const gpos = this.scene.marketVendorPos();
+            if (gpos)
+              this.scene.sellHandoff(gpos, {
+                coins: gEarn,
+                providerName: 'Market Vendor',
+                line: 'Lovely veg — the stall thanks you.',
+              });
+            this.produce = 0;
+            this.persistHarvest();
+            sfx.coin();
+            this.ui.toast(
+              gFull === 0
+                ? `🪙 +${gEarn} — "Stall's stocked — 1 coin each now."`
+                : `🪙 +${gEarn} — the grocer weighs your basket and smiles.`,
+            );
+          }
+        } else if (this.scene.isNearCanteen()) {
+          // Empty-handed at the canteen: BUY a bowl of soup (the faceless cart
+          // is now two-way). Reachable only when produce === 0 (the sell
+          // branch above consumes that case).
+          this.ui.showInteractionPrompt(
+            '🥣 Press <strong>E</strong> to buy soup (3 🪙) — eat with G',
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            if (!this.scene.spendCoins(SimpleApp.SOUP_PRICE)) {
+              this.ui.toast('🪙 Soup is 3 coins.');
+            } else {
+              this.meals.soup++;
+              this.persistMeals();
+              this.refreshFeedHud();
+              sfx.coin();
+              track('meal_bought', { kind: 'soup', at: 'canteen' });
+              this.ui.toast('🥣 A warm bowl — press G when your legs need it.');
+            }
+          }
         } else if (this.ore > 0 && this.scene.isNearBank()) {
           const { full: oFull, earn: oEarn } = saleSplit(
             this.ore,
             this.dailySold('ds_ore_day', 0),
             SimpleApp.DAILY_SELL_CAP,
-            SimpleApp.ORE_SELL_PRICE,
+            this.featuredPrice('bank', SimpleApp.ORE_SELL_PRICE),
             SimpleApp.ORE_SATIATED_PRICE,
           );
           this.ui.showInteractionPrompt(
-            `⛏️ Press <strong>E</strong> to assay ${this.ore} ore (+${oEarn} 🪙)${oFull === 0 ? ' · assay stocked' : ''}`,
+            `${this.featuredStar('bank')}⛏️ Press <strong>E</strong> to assay ${this.ore} ore (+${oEarn} 🪙)${oFull === 0 ? ' · assay stocked' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(oEarn);
             this.dailySold('ds_ore_day', this.ore);
             track('ore_sold', { count: this.ore, earned: oEarn });
+            const opos = this.scene.bankPos();
+            if (opos)
+              this.scene.sellHandoff(opos, {
+                coins: oEarn,
+                providerName: 'Teller',
+                line: 'Assayed and weighed — good ore.',
+              });
             this.ore = 0;
             this.persistOre();
             sfx.coin();
@@ -2710,7 +2830,8 @@ class SimpleApp {
     add('🌾', 'Farm', this.scene.farmPos());
     add('🎣', 'Fisherman (sell fish)', this.scene.fishermanPos());
     add('🥧', 'Bakery (sell wheat)', this.scene.bakerPos());
-    add('🍲', 'Canteen (sell produce)', this.scene.canteenPos());
+    add('🍲', 'Canteen (sell produce · buy soup)', this.scene.canteenPos());
+    add('🥕', 'Grocer (sell produce)', this.scene.marketVendorPos());
     for (const n of this.scene.oreNodeSummary()) {
       add('⛏️', n.rich ? 'Ore vein' : 'Ore vein (depleted)', n.pos);
     }
@@ -3355,6 +3476,39 @@ class SimpleApp {
               held: this.fishFeed,
             },
             {
+              id: 'canteensoup',
+              icon: '🥣',
+              name: 'Canteen Soup',
+              price: SimpleApp.SOUP_PRICE,
+              category: 'supplies' as const,
+              desc: 'Warm bowl from the canteen — press G to eat, restores stamina',
+              consumable: true,
+              charges: 1,
+              held: this.meals.soup,
+            },
+            {
+              id: 'grilledfish',
+              icon: '🍤',
+              name: 'Grilled Fish',
+              price: SimpleApp.FISHMEAL_PRICE,
+              category: 'supplies' as const,
+              desc: "Off the fisherman's grill — a hearty bite of energy (press G)",
+              consumable: true,
+              charges: 1,
+              held: this.meals.fish,
+            },
+            {
+              id: 'bakerspie',
+              icon: '🥧',
+              name: "Baker's Pie",
+              price: SimpleApp.PIE_PRICE,
+              category: 'supplies' as const,
+              desc: 'Fresh from the oven — press G: full stamina + a 20s well-fed stroll',
+              consumable: true,
+              charges: 1,
+              held: this.meals.pie,
+            },
+            {
               id: SimpleApp.ROD_ID,
               icon: '🎣',
               name: 'Fishing Rod',
@@ -3492,6 +3646,23 @@ class SimpleApp {
             render();
             return;
           }
+          // Cooked-food meals: pure coin sink, +1 charge each, eaten with G.
+          const mealBuy: Record<string, { price: number; key: 'soup' | 'fish' | 'pie' }> = {
+            canteensoup: { price: SimpleApp.SOUP_PRICE, key: 'soup' },
+            grilledfish: { price: SimpleApp.FISHMEAL_PRICE, key: 'fish' },
+            bakerspie: { price: SimpleApp.PIE_PRICE, key: 'pie' },
+          };
+          if (mealBuy[id]) {
+            const { price, key } = mealBuy[id];
+            if (!this.scene.spendCoins(price)) return;
+            this.meals[key]++;
+            this.persistMeals();
+            this.refreshFeedHud();
+            sfx.coin();
+            track('meal_bought', { kind: key, at: 'shop' });
+            render();
+            return;
+          }
           const item = this.hatCatalog.find((h) => h.id === id);
           if (!item) return;
           if (!this.ownedHats.has(id)) {
@@ -3527,7 +3698,12 @@ class SimpleApp {
   }
 
   private refreshFeedHud(): void {
-    this.ui.updateFeedCounters(this.birdFeed, this.catFeed, this.fishFeed);
+    this.ui.updateFeedCounters(
+      this.birdFeed,
+      this.catFeed,
+      this.fishFeed,
+      this.meals.pie + this.meals.fish + this.meals.soup,
+    );
   }
 
   /**
@@ -3882,6 +4058,53 @@ class SimpleApp {
     saveProfile({ fishFeed: this.fishFeed });
   }
 
+  private persistMeals(): void {
+    this.hasLocalMeals = true;
+    try {
+      localStorage.setItem('ds_meals', JSON.stringify(this.meals));
+    } catch {
+      /* session-only */
+    }
+    saveProfile({ meals: { ...this.meals } });
+  }
+
+  /** The full price for a sale, doubled (×2.5 on market day) when this
+   *  provider is today's special. Satiated tail is unaffected (kept at 1c by
+   *  the caller), so the extra faucet is bounded by cap × base × (mult-1). */
+  private featuredPrice(provider: ProviderKey, base: number): number {
+    return this.featured.provider === provider ? Math.round(base * this.featured.mult) : base;
+  }
+
+  /** One-time-per-day nudge + a ⭐ prompt prefix for the featured provider. */
+  private featuredStar(provider: ProviderKey): string {
+    return this.featured.provider === provider ? "⭐ Today's special! " : '';
+  }
+
+  /** Recompute today's special from the local date (offline-safe); market day
+   *  from the world beat lifts the multiplier. */
+  private refreshFeatured(marketDay = false): void {
+    const dayKey = new Date().toISOString().slice(0, 10);
+    this.featured = featuredSell(dayKey, marketDay);
+    try {
+      const key = `ds_hint_special_${dayKey}`;
+      if (!localStorage.getItem(key)) {
+        localStorage.setItem(key, '1');
+        const label: Record<ProviderKey, string> = {
+          fisherman: 'the fisherman',
+          baker: 'the Baker',
+          canteen: 'the canteen',
+          bank: 'the bank',
+          carpenter: 'the Carpenter',
+        };
+        this.ui.toast(
+          `⭐ ${marketDay ? 'Market day! ' : ''}${label[this.featured.provider as ProviderKey]} is paying extra today.`,
+        );
+      }
+    } catch {
+      /* no storage */
+    }
+  }
+
   /**
    * One Feed action (F / the FEED button). It looks at where you're aiming and
    * throws the right feed: over water → fish food; over land → whichever of
@@ -3889,6 +4112,35 @@ class SimpleApp {
    * only hold one). A charge is spent only once the scene confirms the throw
    * landed somewhere sane, so a wasted press never costs feed.
    */
+  /** Eat one cooked meal (G / the EAT button): restore stamina, smallest
+   *  sufficient first so a pie is never wasted topping off a near-full bar. */
+  private eatMeal(): void {
+    if (this.ui.isShopOpen() || this.ui['customizeDiv']) return;
+    const player = this.scene.getPlayer();
+    if (player && player.getStamina() > 0.95) {
+      this.ui.flashMessage('😋 Still full of energy');
+      return;
+    }
+    const pick = (['soup', 'fish', 'pie'] as const).find((k) => this.meals[k] > 0);
+    if (!pick) {
+      this.ui.flashMessage('🍽️ No food — buy soup, grilled fish or a pie at the Island Shop');
+      return;
+    }
+    this.meals[pick]--;
+    this.persistMeals();
+    this.refreshFeedHud();
+    const gained = player?.addStamina(SimpleApp.MEAL_STAMINA[pick]) ?? 0;
+    if (pick === 'pie') player?.boostSprint(20); // well-fed stroll (1.35 passive)
+    this.scene.showEatGesture();
+    sfx.blip();
+    track('meal_eaten', { kind: pick, gained: +gained.toFixed(2) });
+    this.ui.toast(
+      pick === 'pie'
+        ? '🥧 Delicious — fully rested, with a spring in your step (20s)'
+        : '🍽️ Tasty — stamina restored',
+    );
+  }
+
   private tossFeed(): void {
     if (this.ui.isShopOpen() || this.ui['customizeDiv']) return;
     const aim = this.scene.classifyFeedAim();
@@ -4060,6 +4312,20 @@ class SimpleApp {
         this.fishFeed = Math.max(0, Math.floor(profile.fishFeed));
         try {
           localStorage.setItem('ds_fish_feed', String(this.fishFeed));
+        } catch {
+          /* session-only */
+        }
+        this.refreshFeedHud();
+      }
+      // Cooked-food meals: adopt-once (never max-merge — that would refund
+      // every meal already eaten on this device).
+      if (!this.hasLocalMeals && profile.meals && typeof profile.meals === 'object') {
+        this.hasLocalMeals = true;
+        for (const k of ['pie', 'fish', 'soup'] as const) {
+          this.meals[k] = Math.max(0, Math.floor(profile.meals[k] ?? 0));
+        }
+        try {
+          localStorage.setItem('ds_meals', JSON.stringify(this.meals));
         } catch {
           /* session-only */
         }

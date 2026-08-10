@@ -8,7 +8,7 @@
 // never recorded any.
 import { describe, expect, test } from 'vitest';
 
-import { coinAdoptValue, mergeLessons } from '../profileSync';
+import { coinAdoptValue, mealsAdoptValue, mergeLessons } from '../profileSync';
 
 describe('coinAdoptValue', () => {
   test('THE EXPLOIT: a stale higher cloud balance must NOT override local truth', () => {
@@ -35,6 +35,31 @@ describe('coinAdoptValue', () => {
   test('adopted values are floored and clamped non-negative', () => {
     expect(coinAdoptValue(false, 12.9)).toBe(12);
     expect(coinAdoptValue(false, -5)).toBe(0);
+  });
+});
+
+describe('mealsAdoptValue (cooked-food adopt-once — Consumable Law)', () => {
+  test('local record present → never adopt (would refund eaten meals)', () => {
+    expect(mealsAdoptValue(true, { pie: 3, fish: 2, soup: 1 })).toBeNull();
+  });
+  test('no local record → adopt the cloud struct', () => {
+    expect(mealsAdoptValue(false, { pie: 3, fish: 2, soup: 1 })).toEqual({
+      pie: 3,
+      fish: 2,
+      soup: 1,
+    });
+  });
+  test('negatives and floats floored to non-negative ints; missing keys → 0', () => {
+    expect(mealsAdoptValue(false, { pie: 2.9, fish: -4, soup: undefined })).toEqual({
+      pie: 2,
+      fish: 0,
+      soup: 0,
+    });
+  });
+  test('non-object garbage → null (keep local zeros)', () => {
+    expect(mealsAdoptValue(false, undefined)).toBeNull();
+    expect(mealsAdoptValue(false, 5 as unknown)).toBeNull();
+    expect(mealsAdoptValue(false, null)).toBeNull();
   });
 });
 
