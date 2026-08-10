@@ -7,6 +7,7 @@ import { applyCelShadowPatch } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
+import { saleSplit } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
@@ -148,6 +149,26 @@ class SimpleApp {
   private static readonly TIMBER_SELL_PRICE = 5;
   private static readonly TIMBER_SATIATED_PRICE = 1;
   private static readonly DAILY_SELL_CAP = 10; // icebox + timber rack satiation
+  // Harvest loop (wave 3): sickle cuts crops at the farm; wheat goes to the
+  // Baker (two-stop route pays more), veg to the canteen cart. Produce priced
+  // BELOW fish so the densest loop can't dominate (merge ruling K1).
+  private static readonly SICKLE_ID = 'harvestsickle';
+  private static readonly SICKLE_PRICE = 25;
+  private static readonly WHEAT_SELL_PRICE = 4;
+  private static readonly WHEAT_SATIATED_PRICE = 1;
+  private static readonly PRODUCE_SELL_PRICE = 2;
+  private static readonly PRODUCE_SATIATED_PRICE = 1;
+  private ownedSickle = false;
+  private wheat = 0;
+  private produce = 0;
+  // Mining loop (wave 3): pickaxe cracks highland ore veins; the bank assays
+  // ore — a resource with satiation, never raw coins at the rock.
+  private static readonly PICKAXE_ID = 'pickaxe';
+  private static readonly PICKAXE_PRICE = 80;
+  private static readonly ORE_SELL_PRICE = 5;
+  private static readonly ORE_SATIATED_PRICE = 1;
+  private ownedPickaxe = false;
+  private ore = 0;
   // Construction catalog costs (timber + coins), keyed by BUILD_PLOTS kind.
   private static readonly BUILD_COSTS: Record<
     'bench' | 'signpost' | 'lantern' | 'gazebo',
@@ -421,6 +442,11 @@ class SimpleApp {
           JSON.parse(localStorage.getItem('ds_lessons') ?? '[]') as unknown,
         );
         this.timber = Math.max(0, parseInt(localStorage.getItem('ds_timber') ?? '0', 10) || 0);
+        this.ownedSickle = localStorage.getItem('ds_sickle') === '1';
+        this.wheat = Math.max(0, parseInt(localStorage.getItem('ds_wheat') ?? '0', 10) || 0);
+        this.produce = Math.max(0, parseInt(localStorage.getItem('ds_produce') ?? '0', 10) || 0);
+        this.ownedPickaxe = localStorage.getItem('ds_pickaxe') === '1';
+        this.ore = Math.max(0, parseInt(localStorage.getItem('ds_ore') ?? '0', 10) || 0);
         this.fishCaught = Math.max(
           0,
           parseInt(localStorage.getItem('ds_fish_caught') ?? '0', 10) || 0,
@@ -466,6 +492,7 @@ class SimpleApp {
       this.hudLabels = new HudLabels(this.ui.getOverlay());
       // Expandable island map: tap the radar (or press M) for the full map.
       this.ui.setOnMinimapClick(() => this.openIslandMap());
+      this.ui.setOnOpenMap(() => this.openIslandMap());
       this.ui.setVoiceSupported(this.chat.voiceSupported);
       this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
@@ -715,6 +742,15 @@ class SimpleApp {
         saveProfile({ coins: total });
         if (total >= 100) trackOnce('coins_milestone', { n: 100 });
         else if (total >= 50) trackOnce('coins_milestone', { n: 50 });
+        // One-time pointer at the earning guide, on the first coin.
+        try {
+          if (!localStorage.getItem('ds_hint_earn')) {
+            localStorage.setItem('ds_hint_earn', '1');
+            this.ui.toast('🪙 Coins! The 📔 Journal (Portfolio menu) lists every way to earn.');
+          }
+        } catch {
+          /* no storage */
+        }
       });
 
       // Arrival breadcrumb trail finished: the first-visit quick win lands.
@@ -757,6 +793,38 @@ class SimpleApp {
             total: this.deliverySystem?.getTotalCount() ?? 10,
           },
           coins: this.scene.getCoinsCollected(),
+          loops: [
+            {
+              icon: '🎣',
+              title: `Fishing (rod ${SimpleApp.ROD_PRICE} 🪙)`,
+              detail: `cast at the shore, sell to the fisherman — ${SimpleApp.FISH_SELL_PRICE} 🪙/fish, first ${SimpleApp.DAILY_SELL_CAP}/day`,
+            },
+            {
+              icon: '🪓',
+              title: `Timber (axe ${SimpleApp.AXE_PRICE} 🪙)`,
+              detail: `fell trees, sell to the Carpenter (${SimpleApp.TIMBER_SELL_PRICE} 🪙/log) or build at the stakes`,
+            },
+            {
+              icon: '🪚',
+              title: `Farming (sickle ${SimpleApp.SICKLE_PRICE} 🪙)`,
+              detail: `cut crops at the farm — Baker pays ${SimpleApp.WHEAT_SELL_PRICE} 🪙/wheat, canteen ${SimpleApp.PRODUCE_SELL_PRICE} 🪙/veg`,
+            },
+            {
+              icon: '⛏️',
+              title: `Mining (pickaxe ${SimpleApp.PICKAXE_PRICE} 🪙)`,
+              detail: `crack highland ore veins, the bank assays ore — ${SimpleApp.ORE_SELL_PRICE} 🪙 each`,
+            },
+            {
+              icon: '📚',
+              title: 'School',
+              detail: 'five lessons, 10 🪙 each — one-time',
+            },
+            {
+              icon: '🏗️',
+              title: 'Building',
+              detail: 'benches 4🪵, signposts 3🪵, lanterns 8🪵, gazebos 20🪵 — everyone sees them',
+            },
+          ],
           secrets: {
             found: this.secrets.count(),
             total: this.secrets.total(),
@@ -1973,23 +2041,22 @@ class SimpleApp {
         } else if (this.fishCaught > 0 && this.scene.isNearFisherman()) {
           // Selling to the fisherman: the economy's first coin SOURCE. Wins
           // over the generic NPC prompt only while there's fish to sell.
+          const { full: fFull, earn: fEarn } = saleSplit(
+            this.fishCaught,
+            this.dailySold('ds_fish_day', 0),
+            SimpleApp.DAILY_SELL_CAP,
+            SimpleApp.FISH_SELL_PRICE,
+            SimpleApp.FISH_SATIATED_PRICE,
+          );
           this.ui.showInteractionPrompt(
-            `🐟 Press <strong>E</strong> to sell ${this.fishCaught} fish (${
-              this.fishCaught * SimpleApp.FISH_SELL_PRICE
-            } 🪙)`,
+            `🐟 Press <strong>E</strong> to sell ${this.fishCaught} fish (+${fEarn} 🪙)${fFull === 0 ? ' · icebox full' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
             // Icebox satiation (approved economy spec): first 10/day at full
             // price, the rest at 1c — surfaced diegetically so it never reads
             // as a bug.
-            const soldToday = this.dailySold('ds_fish_day', 0);
-            const fullPriced = Math.max(
-              0,
-              Math.min(this.fishCaught, SimpleApp.DAILY_SELL_CAP - soldToday),
-            );
-            const overflow = this.fishCaught - fullPriced;
-            const earned =
-              fullPriced * SimpleApp.FISH_SELL_PRICE + overflow * SimpleApp.FISH_SATIATED_PRICE;
+            const overflow = this.fishCaught - fFull;
+            const earned = fEarn;
             this.scene.addCoins(earned);
             this.dailySold('ds_fish_day', this.fishCaught);
             track('fish_sold', { count: this.fishCaught, earned, satiated: overflow > 0 });
@@ -2003,16 +2070,16 @@ class SimpleApp {
             );
           }
         } else if (this.timber > 0 && this.scene.isNearCarpenter()) {
-          const soldToday = this.dailySold('ds_timber_day', 0);
-          const fullPriced = Math.max(
-            0,
-            Math.min(this.timber, SimpleApp.DAILY_SELL_CAP - soldToday),
+          const { full: fullPriced, earn: earned } = saleSplit(
+            this.timber,
+            this.dailySold('ds_timber_day', 0),
+            SimpleApp.DAILY_SELL_CAP,
+            SimpleApp.TIMBER_SELL_PRICE,
+            SimpleApp.TIMBER_SATIATED_PRICE,
           );
           const overflow = this.timber - fullPriced;
-          const earned =
-            fullPriced * SimpleApp.TIMBER_SELL_PRICE + overflow * SimpleApp.TIMBER_SATIATED_PRICE;
           this.ui.showInteractionPrompt(
-            `🪵 Press <strong>E</strong> to sell ${this.timber} timber (${earned} 🪙)`,
+            `🪵 Press <strong>E</strong> to sell ${this.timber} timber (+${earned} 🪙)${fullPriced === 0 ? ' · rack stocked' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(earned);
@@ -2027,11 +2094,83 @@ class SimpleApp {
                 : `🪙 +${earned} — the carpenter nods approvingly.`,
             );
           }
+        } else if (this.wheat > 0 && this.scene.isNearBaker()) {
+          const { full: wFull, earn: wEarn } = saleSplit(
+            this.wheat,
+            this.dailySold('ds_wheat_day', 0),
+            SimpleApp.DAILY_SELL_CAP,
+            SimpleApp.WHEAT_SELL_PRICE,
+            SimpleApp.WHEAT_SATIATED_PRICE,
+          );
+          this.ui.showInteractionPrompt(
+            `🌾 Press <strong>E</strong> to sell ${this.wheat} wheat (+${wEarn} 🪙)${wFull === 0 ? ' · ovens full' : ''}`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.addCoins(wEarn);
+            this.dailySold('ds_wheat_day', this.wheat);
+            track('wheat_sold', { count: this.wheat, earned: wEarn });
+            this.wheat = 0;
+            this.persistHarvest();
+            sfx.coin();
+            this.ui.toast(
+              wFull === 0
+                ? `🪙 +${wEarn} — "Ovens are full — 1 coin a sheaf now."`
+                : `🪙 +${wEarn} — the baker beams at the fresh sheaves.`,
+            );
+          }
+        } else if (this.produce > 0 && this.scene.isNearCanteen()) {
+          const { full: pFull, earn: pEarn } = saleSplit(
+            this.produce,
+            this.dailySold('ds_produce_day', 0),
+            SimpleApp.DAILY_SELL_CAP,
+            SimpleApp.PRODUCE_SELL_PRICE,
+            SimpleApp.PRODUCE_SATIATED_PRICE,
+          );
+          this.ui.showInteractionPrompt(
+            `🥬 Press <strong>E</strong> to sell ${this.produce} produce (+${pEarn} 🪙)${pFull === 0 ? ' · pot brimming' : ''}`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.addCoins(pEarn);
+            this.dailySold('ds_produce_day', this.produce);
+            track('produce_sold', { count: this.produce, earned: pEarn });
+            this.produce = 0;
+            this.persistHarvest();
+            sfx.coin();
+            this.ui.toast(
+              pFull === 0
+                ? `🪙 +${pEarn} — "Pot's already brimming — 1 coin each."`
+                : `🪙 +${pEarn} — the canteen crew cheers the fresh veg.`,
+            );
+          }
+        } else if (this.ore > 0 && this.scene.isNearBank()) {
+          const { full: oFull, earn: oEarn } = saleSplit(
+            this.ore,
+            this.dailySold('ds_ore_day', 0),
+            SimpleApp.DAILY_SELL_CAP,
+            SimpleApp.ORE_SELL_PRICE,
+            SimpleApp.ORE_SATIATED_PRICE,
+          );
+          this.ui.showInteractionPrompt(
+            `⛏️ Press <strong>E</strong> to assay ${this.ore} ore (+${oEarn} 🪙)${oFull === 0 ? ' · assay stocked' : ''}`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.addCoins(oEarn);
+            this.dailySold('ds_ore_day', this.ore);
+            track('ore_sold', { count: this.ore, earned: oEarn });
+            this.ore = 0;
+            this.persistOre();
+            sfx.coin();
+            this.ui.toast(
+              oFull === 0
+                ? `🪙 +${oEarn} — "Assay office is stocked — 1 coin each now."`
+                : `🪙 +${oEarn} — the teller weighs the ore approvingly.`,
+            );
+          }
         } else if (this.lessons.length < SimpleApp.LESSONS.length && this.scene.isNearSchool()) {
           const next = SimpleApp.LESSONS.find(([id]) => !this.lessons.includes(id));
           if (next) {
             this.ui.showInteractionPrompt(
-              `📚 Press <strong>E</strong> — lesson ${this.lessons.length + 1}/5 (earn 10 🪙)`,
+              `📚 Press <strong>E</strong> to take lesson ${this.lessons.length + 1}/5 (+10 🪙)`,
             );
             if (this.inputManager.consumeKeyPress('e')) {
               this.lessons.push(next[0]);
@@ -2042,7 +2181,18 @@ class SimpleApp {
               track('lesson_done', { id: next[0], total: this.lessons.length });
             }
           }
-        } else if (this.nearestBuildOpportunity() !== null) {
+        } else if (
+          this.nearestBuildOpportunity() !== null &&
+          // An unaffordable stake is only an ADVERT — never let it shadow an
+          // actionable tool prompt (the farm's edge stake was eclipsing
+          // "Press E to harvest" for sickle owners standing in the crops).
+          (this.nearestBuildOpportunity()!.affordable ||
+            !(
+              (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
+              (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
+              (this.ownedPickaxe && this.scene.nearestOreNode() !== null)
+            ))
+        ) {
           const b = this.nearestBuildOpportunity()!;
           if (b.affordable) {
             this.ui.showInteractionPrompt(
@@ -2057,7 +2207,7 @@ class SimpleApp {
           }
         } else if (this.scene.isNearHospital()) {
           this.ui.showInteractionPrompt(
-            '🏥 Press <strong>E</strong> — checkup, 10 🪙 (60s of spring in your step)',
+            '🏥 Press <strong>E</strong> to get a checkup (10 🪙 · 60s speed boost)',
           );
           if (this.inputManager.consumeKeyPress('e')) {
             if (!this.scene.spendCoins(10)) {
@@ -2070,7 +2220,7 @@ class SimpleApp {
             }
           }
         } else if (this.scene.isNearBank()) {
-          this.ui.showInteractionPrompt('🏦 Press <strong>E</strong> to see the teller');
+          this.ui.showInteractionPrompt('🏦 Press <strong>E</strong> to visit the vault');
           if (this.inputManager.consumeKeyPress('e')) void this.openVault();
         } else if (this.scene.isNearKiosk()) {
           this.ui.showInteractionPrompt('🛒 Press <strong>E</strong> to browse the kiosk');
@@ -2093,7 +2243,7 @@ class SimpleApp {
                 ? '📬 Press <strong>E</strong> to collect the delivery'
                 : '📭 Press <strong>E</strong> to check the mailbox';
           } else if (nearby.type === 'lamp') {
-            text = '💡 Press <strong>E</strong> to toggle lamp';
+            text = '💡 Press <strong>E</strong> to toggle the lamp';
           } else if (nearby.type === 'zone') {
             text = `🚪 Press <strong>E</strong> to enter ${esc(nearby.zone.name)}`;
           } else if (nearby.type === 'house_door') {
@@ -2127,13 +2277,54 @@ class SimpleApp {
               track('tree_felled', { timber: this.timber });
             }
           }
+        } else if (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) {
+          const idx = this.scene.nearestHarvestableCrop()!;
+          const kind = this.scene.getIslandFarmCropKind(idx);
+          this.ui.showInteractionPrompt(
+            kind === 'wheat'
+              ? '🌾 Press <strong>E</strong> to cut wheat'
+              : `🥬 Press <strong>E</strong> to harvest ${kind}`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            const r = this.scene.harvestNearestCrop(performance.now() / 1000);
+            if (r) {
+              if (r.yieldKind === 'wheat') this.wheat += r.yieldN;
+              else this.produce += r.yieldN;
+              this.persistHarvest();
+              track('crop_harvested', { kind: r.kind });
+              this.ui.toast(
+                r.yieldKind === 'wheat'
+                  ? `🌾 Wheat! +${r.yieldN} (${this.wheat} in the pack) — the Baker buys these.`
+                  : `🥬 ${r.kind}! +${r.yieldN} (${this.produce} in the pack) — the canteen buys these.`,
+              );
+            }
+          }
+        } else if (this.ownedPickaxe && this.scene.nearestOreNode() !== null) {
+          const hits = this.scene.getOreNodeHits();
+          this.ui.showInteractionPrompt(
+            `⛏️ Press <strong>E</strong> to mine (${Math.min(hits + 1, 4)}/4)`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            const r = this.scene.mineNearestNode(performance.now() / 1000);
+            if (r && r.ore > 0) {
+              this.ore += r.ore;
+              this.persistOre();
+              track('ore_mined', { total: this.ore });
+              this.ui.toast(`⛏️ Ore! +${r.ore} (${this.ore} in the pack) — the bank assays these.`);
+            }
+          }
         } else if (this.ownedRod && this.scene.canCastHere()) {
           // Lowest interaction priority: NPCs, mailboxes and doors all win
           // over casting, so the shore never shadows a conversation.
-          this.ui.showInteractionPrompt('🎣 Press <strong>E</strong> to cast');
+          this.ui.showInteractionPrompt('🎣 Press <strong>E</strong> to cast a line');
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.tryCastLine(performance.now() / 1000);
           }
+        } else if (!this.ownedPickaxe && this.scene.nearestOreNode() !== null) {
+          // Advert only — AFTER the cast branch so it never shadows an action.
+          this.ui.showInteractionPrompt('⛏️ An ore vein — needs a Pickaxe (80 🪙 at the kiosk)');
+        } else if (!this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) {
+          this.ui.showInteractionPrompt('🪚 Ripe crops — needs a Sickle (25 🪙 at the kiosk)');
         } else if (this.multiplayer && this.multiplayer.nearestPeerDistance() < 4) {
           // Another visitor is close: offer a wave
           this.ui.showInteractionPrompt('👋 Press <strong>Q</strong> to wave');
@@ -2406,6 +2597,11 @@ class SimpleApp {
     add('🪚', "Carpenter's rack (sell timber)", this.scene.carpenterRackPos());
     add('🌾', 'Farm', this.scene.farmPos());
     add('🎣', 'Fisherman (sell fish)', this.scene.fishermanPos());
+    add('🥧', 'Bakery (sell wheat)', this.scene.bakerPos());
+    add('🍲', 'Canteen (sell produce)', this.scene.canteenPos());
+    for (const n of this.scene.oreNodeSummary()) {
+      add('⛏️', n.rich ? 'Ore vein' : 'Ore vein (depleted)', n.pos);
+    }
     const PLOT_ICONS = { bench: '🪑', signpost: '🪧', lantern: '🏮', gazebo: '⛩️' } as const;
     for (const p of this.scene.freePlotSummary()) {
       add(PLOT_ICONS[p.kind], `Free ${p.kind} plot`, p.pos);
@@ -2976,6 +3172,8 @@ class SimpleApp {
               icon: '🌾',
               name: 'Bird Feed',
               price: SimpleApp.BIRD_FEED_PRICE,
+              category: 'supplies' as const,
+              desc: 'Press F to scatter — nearby birds fly in to eat',
               consumable: true,
               charges: SimpleApp.BIRD_FEED_CHARGES,
               held: this.birdFeed,
@@ -2985,6 +3183,8 @@ class SimpleApp {
               icon: '🐈',
               name: 'Cat Feed',
               price: SimpleApp.CAT_FEED_PRICE,
+              category: 'supplies' as const,
+              desc: 'Aim near a cat and press F — it trots over for dinner',
               consumable: true,
               charges: SimpleApp.CAT_FEED_CHARGES,
               held: this.catFeed,
@@ -2994,6 +3194,8 @@ class SimpleApp {
               icon: '🐟',
               name: 'Fish Feed',
               price: SimpleApp.FISH_FEED_PRICE,
+              category: 'supplies' as const,
+              desc: 'Throw onto the water — the school comes to nibble',
               consumable: true,
               charges: SimpleApp.FISH_FEED_CHARGES,
               held: this.fishFeed,
@@ -3003,6 +3205,8 @@ class SimpleApp {
               icon: '🎣',
               name: 'Fishing Rod',
               price: SimpleApp.ROD_PRICE,
+              category: 'tools' as const,
+              desc: 'Cast at the shore — the fisherman pays 3 🪙 a fish',
               owned: this.ownedRod,
             },
             {
@@ -3010,10 +3214,33 @@ class SimpleApp {
               icon: '🪓',
               name: 'Wood Axe',
               price: SimpleApp.AXE_PRICE,
+              category: 'tools' as const,
+              desc: 'Three swings fell a tree — sell timber or build at the stakes',
               owned: this.ownedAxe,
+            },
+            {
+              id: SimpleApp.SICKLE_ID,
+              icon: '🪚',
+              name: 'Harvest Sickle',
+              price: SimpleApp.SICKLE_PRICE,
+              category: 'tools' as const,
+              desc: 'Cut crops at the farm — wheat to the Baker, veg to the canteen',
+              owned: this.ownedSickle,
+            },
+            {
+              id: SimpleApp.PICKAXE_ID,
+              icon: '⛏️',
+              name: 'Pickaxe',
+              price: SimpleApp.PICKAXE_PRICE,
+              category: 'tools' as const,
+              desc: 'Four solid swings crack an ore vein — the bank assays ore, 5 🪙 each',
+              owned: this.ownedPickaxe,
             },
             ...this.hatCatalog.map((h) => ({
               ...h,
+              category: 'hats' as const,
+              desc: 'Wear it well — hats persist and other visitors see them',
+              equippable: true,
               owned: this.ownedHats.has(h.id),
               equipped: this.equippedHat === h.id,
             })),
@@ -3032,6 +3259,36 @@ class SimpleApp {
             sfx.coin();
             track('axe_bought', {});
             this.ui.toast('🪓 Wood axe! Three good swings fell a tree.');
+            render();
+            return;
+          }
+          if (id === SimpleApp.SICKLE_ID) {
+            if (this.ownedSickle) return;
+            if (!this.scene.spendCoins(SimpleApp.SICKLE_PRICE)) return;
+            this.ownedSickle = true;
+            try {
+              localStorage.setItem('ds_sickle', '1');
+            } catch {
+              /* no storage */
+            }
+            sfx.coin();
+            track('sickle_bought', {});
+            this.ui.toast('🪚 Sickle! Crops at the farm are yours to cut.');
+            render();
+            return;
+          }
+          if (id === SimpleApp.PICKAXE_ID) {
+            if (this.ownedPickaxe) return;
+            if (!this.scene.spendCoins(SimpleApp.PICKAXE_PRICE)) return;
+            this.ownedPickaxe = true;
+            try {
+              localStorage.setItem('ds_pickaxe', '1');
+            } catch {
+              /* no storage */
+            }
+            sfx.coin();
+            track('pickaxe_bought', {});
+            this.ui.toast('⛏️ Pickaxe! Ore veins glint on the highland scree.');
             render();
             return;
           }
@@ -3283,6 +3540,23 @@ class SimpleApp {
       /* no storage */
     }
     saveProfile({ lessons: this.lessons });
+  }
+
+  private persistHarvest(): void {
+    try {
+      localStorage.setItem('ds_wheat', String(this.wheat));
+      localStorage.setItem('ds_produce', String(this.produce));
+    } catch {
+      /* no storage */
+    }
+  }
+
+  private persistOre(): void {
+    try {
+      localStorage.setItem('ds_ore', String(this.ore));
+    } catch {
+      /* no storage */
+    }
   }
 
   private persistTimber(): void {

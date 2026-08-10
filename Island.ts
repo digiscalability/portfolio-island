@@ -219,6 +219,22 @@ export class Island {
   /** The Farmer's crop-row working spots, and his field centre. */
   public cropRowSites: THREE.Vector3[] = [];
   public farmDir: THREE.Vector3 | null = null;
+  // Harvest registry (wave 3): pure post-capture of every crop instance's
+  // BUILT matrix — zero RNG, zero new geometry inside the seeded window.
+  // GameScene scales instances to near-zero on harvest and ramps them back
+  // through these captured matrices (regrow must target the BUILT matrix:
+  // pumpkins/wheat carry random size factors a recomputed stage can't know).
+  public farmHarvest: Array<{
+    kind: string;
+    yieldKind: 'produce' | 'wheat';
+    yieldN: number;
+    index: number;
+    layers: Array<{ mesh: THREE.InstancedMesh; built: THREE.Matrix4 }>;
+    pos: THREE.Vector3;
+    state: 'ripe' | 'regrowing';
+    regrowStart: number;
+    regrowEnd: number;
+  }> = [];
   /** The Musician's stage and the Artist's easel — their own stations. */
   public bandstandSites: THREE.Vector3[] = [];
   public easelSites: THREE.Vector3[] = [];
@@ -3975,6 +3991,10 @@ export class Island {
     const rocks = this.createRocks();
     if (rocks) root.add(rocks);
 
+    // Ore veins (wave 3 mining) — mineral-rich highland spots, shielded.
+    const ore = this.createOreNodes();
+    if (ore) root.add(ore);
+
     // Seafloor life — kelp beds + coral on the underwater skirt. Decoration
     // only; deterministic from its own local RNG (see createSeafloorLife).
     const seafloor = this.createSeafloorLife();
@@ -4341,6 +4361,126 @@ export class Island {
     inst.instanceMatrix.needsUpdate = true;
     console.log(`🪨 Rock layer: ${placed} boulders (scree + shoreline)`);
     return placed > 0 ? inst : null;
+  }
+
+  // ── Ore veins (wave 3 mining) ─────────────────────────────────────────
+  // Four mineral-rich nodes on the highland scree: a boulder cluster with
+  // gold-glinting studs. The pickaxe cracks them; GameScene owns the state
+  // machine (charges, depletion tint, regen). Published SEATED (claim law).
+  public oreNodeSites: THREE.Vector3[] = [];
+  public oreStuds: THREE.InstancedMesh | null = null;
+  public static readonly ORE_STUDS_PER_NODE = 6;
+
+  private createOreNodes(): THREE.Group | null {
+    const stashedRandom = Math.random;
+    let seed = 0x5eedc0a1 >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      return this.createOreNodesShielded();
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private createOreNodesShielded(): THREE.Group | null {
+    const SITES: Array<[number, number]> = [
+      [4.92, 0.7],
+      [5.78, 0.66],
+      [5.3, 0.52],
+      [2.36, 0.3],
+    ];
+    const g = new THREE.Group();
+    g.name = 'ore_nodes';
+    const boulderGeo = new THREE.IcosahedronGeometry(0.5, 0);
+    boulderGeo.scale(1.0, 0.72, 1.12);
+    const boulders = new THREE.InstancedMesh(
+      boulderGeo,
+      new THREE.MeshToonMaterial({ color: 0x7d7468, gradientMap: Materials.toonRamp() }),
+      SITES.length * 3,
+    );
+    boulders.castShadow = true;
+    boulders.raycast = () => {};
+    const studs = new THREE.InstancedMesh(
+      new THREE.OctahedronGeometry(0.14, 0),
+      // WHITE base — the gold/grey lives in instanceColor (which MULTIPLIES
+      // vertex color; a colored base would square down to mud).
+      new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: Materials.toonRamp() }),
+      SITES.length * Island.ORE_STUDS_PER_NODE,
+    );
+    studs.raycast = () => {};
+    const gold = new THREE.Color(0xe0b13f);
+    const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
+    let bi = 0;
+    let si = 0;
+    for (const [lon, lat] of SITES) {
+      let dir = this.claimOffStreet(this.dirAt(lon, lat), this.arc(3));
+      // Guard: never on the summit trail, never on a street (site 3 sits
+      // 0.27 rad from the summit — this loop is load-bearing, vitest-pinned).
+      for (let pass = 0; pass < 4; pass++) {
+        const onTrail = this.trailAt ? this.trailAt(dir).w > 0.02 : false;
+        if (!onTrail && !this.isNearStreet(dir)) break;
+        const away = this.trailSummitDir
+          ? dir.clone().addScaledVector(this.trailSummitDir, -0.04).normalize()
+          : dir.clone();
+        dir = this.claimOffStreet(away, this.arc(3));
+      }
+      const a = this.analyticSurface(dir);
+      const centre = dir.clone().multiplyScalar(a.radius);
+      this.oreNodeSites.push(centre.clone());
+      for (let b = 0; b < 3; b++) {
+        const ang = (b / 3) * Math.PI * 2 + Math.random();
+        dummy.position
+          .copy(centre)
+          .addScaledVector(a.normal, -0.14)
+          .add(
+            new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang))
+              .addScaledVector(dir, -Math.cos(ang) * dir.x - Math.sin(ang) * dir.z)
+              .normalize()
+              .multiplyScalar(0.35 + Math.random() * 0.3),
+          );
+        dummy.quaternion.setFromUnitVectors(up, a.normal);
+        dummy.rotateY(Math.random() * Math.PI * 2);
+        dummy.scale.setScalar(0.6 + Math.random() * 0.5);
+        dummy.updateMatrix();
+        boulders.setMatrixAt(bi++, dummy.matrix);
+      }
+      for (let s = 0; s < Island.ORE_STUDS_PER_NODE; s++) {
+        const ang = Math.random() * Math.PI * 2;
+        const r = 0.15 + Math.random() * 0.45;
+        dummy.position
+          .copy(centre)
+          .addScaledVector(a.normal, 0.1 + Math.random() * 0.35)
+          .add(
+            new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang))
+              .addScaledVector(dir, -Math.cos(ang) * dir.x - Math.sin(ang) * dir.z)
+              .normalize()
+              .multiplyScalar(r),
+          );
+        dummy.quaternion.setFromUnitVectors(up, a.normal);
+        dummy.rotateY(Math.random() * Math.PI * 2);
+        dummy.scale.setScalar(0.7 + Math.random() * 0.5);
+        dummy.updateMatrix();
+        studs.setMatrixAt(si, dummy.matrix);
+        studs.setColorAt(si, gold);
+        si++;
+      }
+      this.pendingColliders.push({ position: centre.clone(), radius: 0.6 });
+    }
+    boulders.instanceMatrix.needsUpdate = true;
+    studs.instanceMatrix.needsUpdate = true;
+    if (studs.instanceColor) studs.instanceColor.needsUpdate = true;
+    boulders.computeBoundingSphere();
+    studs.computeBoundingSphere();
+    g.add(boulders, studs);
+    this.oreStuds = studs;
+    console.log(`⛏️ ${SITES.length} ore veins on the highlands`);
+    return g;
   }
 
   /**
@@ -5457,6 +5597,7 @@ export class Island {
   // re-seater skips), stands PLUMB, and faces the nearest street.
   public kioskSite: THREE.Vector3 | null = null;
   public noticeBoardSite: THREE.Vector3 | null = null;
+  public canteenSite: THREE.Vector3 | null = null; // produce buyer (wave 3)
 
   private buildDistrictAmenities(parent: THREE.Group): void {
     // SHIELD (the clump-builder law): the seeded window spans ALL Island
@@ -5500,7 +5641,7 @@ export class Island {
       lat: number,
       clearM: number,
       build: (g: THREE.Group) => void,
-      publish?: 'kiosk' | 'board',
+      publish?: 'kiosk' | 'board' | 'canteen',
     ): void => {
       const dir = this.claimOffStreet(this.dirAt(lon, lat), this.arc(clearM));
       // STRUCTURAL apron guarantee: claimOffStreet can slide a prop toward a
@@ -5546,6 +5687,7 @@ export class Island {
       // Publish the SEATED position — claimOffStreet slides props, so the
       // authored lon/lat must never be read back for proximity checks.
       if (publish === 'kiosk') this.kioskSite = seat.position.clone();
+      if (publish === 'canteen') this.canteenSite = seat.position.clone();
       if (publish === 'board') this.noticeBoardSite = seat.position.clone();
     };
 
@@ -5656,33 +5798,39 @@ export class Island {
       'board',
     );
     // Site canteen cart for the construction-yard corner of Projects.
-    seatAmenity(1.81, 0.55, 3.5, (g) => {
-      g.add(
-        merge(
-          [
-            new THREE.BoxGeometry(1.2, 0.5, 0.75).translate(0, 0.62, 0), // tray
-            new THREE.BoxGeometry(0.08, 0.08, 1.0).translate(-0.45, 0.42, 0.75), // shaft
-            new THREE.BoxGeometry(0.08, 0.08, 1.0).translate(0.45, 0.42, 0.75),
-            new THREE.BoxGeometry(0.45, 0.3, 0.45).translate(-0.25, 1.02, 0), // crates
-            new THREE.BoxGeometry(0.4, 0.26, 0.4).translate(0.28, 1.0, 0.1),
-          ],
-          wood,
-        ),
-        merge(
-          [
-            new THREE.CylinderGeometry(0.26, 0.26, 0.08, 10)
-              .rotateZ(Math.PI / 2)
-              .translate(-0.62, 0.26, 0),
-            new THREE.CylinderGeometry(0.26, 0.26, 0.08, 10)
-              .rotateZ(Math.PI / 2)
-              .translate(0.62, 0.26, 0),
-          ],
-          darkWood,
-        ),
-        merge([new THREE.BoxGeometry(1.4, 0.06, 1.0).rotateX(0.18).translate(0, 1.62, 0)], cloth),
-      );
-      addGroupHulls(g, 0.7, () => true);
-    });
+    seatAmenity(
+      1.81,
+      0.55,
+      3.5,
+      (g) => {
+        g.add(
+          merge(
+            [
+              new THREE.BoxGeometry(1.2, 0.5, 0.75).translate(0, 0.62, 0), // tray
+              new THREE.BoxGeometry(0.08, 0.08, 1.0).translate(-0.45, 0.42, 0.75), // shaft
+              new THREE.BoxGeometry(0.08, 0.08, 1.0).translate(0.45, 0.42, 0.75),
+              new THREE.BoxGeometry(0.45, 0.3, 0.45).translate(-0.25, 1.02, 0), // crates
+              new THREE.BoxGeometry(0.4, 0.26, 0.4).translate(0.28, 1.0, 0.1),
+            ],
+            wood,
+          ),
+          merge(
+            [
+              new THREE.CylinderGeometry(0.26, 0.26, 0.08, 10)
+                .rotateZ(Math.PI / 2)
+                .translate(-0.62, 0.26, 0),
+              new THREE.CylinderGeometry(0.26, 0.26, 0.08, 10)
+                .rotateZ(Math.PI / 2)
+                .translate(0.62, 0.26, 0),
+            ],
+            darkWood,
+          ),
+          merge([new THREE.BoxGeometry(1.4, 0.06, 1.0).rotateX(0.18).translate(0, 1.62, 0)], cloth),
+        );
+        addGroupHulls(g, 0.7, () => true);
+      },
+      'canteen',
+    );
     // Farm stand near the food farm.
     seatAmenity(2.72, 0.6, 3, (g) => {
       g.add(
@@ -6328,6 +6476,39 @@ export class Island {
     }
     cane.instanceMatrix.needsUpdate = true;
     foliage.instanceMatrix.needsUpdate = true;
+
+    // Harvest capture (wave 3): read back BUILT matrices — pure capture,
+    // no RNG draws, so the ambient stream stays byte-identical.
+    const captureCrop = (
+      kind: string,
+      yieldKind: 'produce' | 'wheat',
+      yieldN: number,
+      meshes: THREE.InstancedMesh[],
+      count: number,
+    ): void => {
+      for (let ci = 0; ci < count; ci++) {
+        const layers = meshes.map((mm) => {
+          const built = new THREE.Matrix4();
+          mm.getMatrixAt(ci, built);
+          return { mesh: mm, built };
+        });
+        this.farmHarvest.push({
+          kind,
+          yieldKind,
+          yieldN,
+          index: ci,
+          layers,
+          pos: new THREE.Vector3().setFromMatrixPosition(layers[0].built),
+          state: 'ripe',
+          regrowStart: 0,
+          regrowEnd: 0,
+        });
+      }
+    };
+    captureCrop('cabbage', 'produce', 1, [cabbage, heart], cabbageSpots.length);
+    captureCrop('carrot', 'produce', 1, [shoulder, tuft], carrotSpots.length);
+    // Bean canes stand after picking — only the foliage is harvested.
+    captureCrop('bean', 'produce', 1, [foliage], beanSpots.length);
     cane.castShadow = true;
     g.add(cane, foliage);
 
@@ -6419,6 +6600,7 @@ export class Island {
         }
         pumpkins.instanceMatrix.needsUpdate = true;
         g.add(pumpkins);
+        captureCrop('pumpkin', 'produce', 2, [pumpkins], 6);
         // Sunflower row (7) along the west edge, heads facing field-south.
         const sunGeo = mergeGeometries(
           [
@@ -6539,6 +6721,7 @@ export class Island {
         wheat.instanceMatrix.needsUpdate = true;
         wheat.raycast = () => {};
         g.add(wheat);
+        captureCrop('wheat', 'wheat', 1, [wheat], 24);
       } finally {
         Math.random = stashedRandom;
       }

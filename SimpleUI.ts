@@ -60,6 +60,9 @@ export interface JournalData {
   secrets?: { found: number; total: number; rumors: string[] };
   /** Visit ledger: distinct days + current no-punishment streak. */
   visits?: { days: number; streak: number };
+  /** Earning & building guide (wave 3): each economy loop, built from the
+   *  REAL constants in main-simple — never hand-copied numbers. */
+  loops?: Array<{ icon: string; title: string; detail: string }>;
 }
 
 export class SimpleUI {
@@ -1802,6 +1805,21 @@ export class SimpleUI {
               }`
            : ''
        }
+       ${
+         data.loops
+           ? `<div style="margin:14px 0 4px;font-size:13px;color:#ccd;font-weight:600;">💰 Earning &amp; building</div>
+              ${data.loops
+                .map(
+                  (l) =>
+                    `<div style="display:flex;gap:8px;margin:5px 0;font-size:12.5px;line-height:1.45;">
+                       <span style="font-size:15px;">${l.icon}</span>
+                       <span><strong style="color:#dfe6ff;">${l.title}</strong> — <span style="color:#9ab;">${l.detail}</span></span></div>`,
+                )
+                .join('')}
+              <button id="journal-map" style="display:block;width:100%;margin:8px 0 2px;padding:9px;background:#26263340;color:#cfe0ff;
+                border:1px solid rgba(120,160,255,0.35);border-radius:10px;font-size:13px;cursor:pointer;">🗺️ Open the island map (M)</button>`
+           : ''
+       }
        <div style="margin:14px 0 4px;font-size:13px;color:#ccd;font-weight:600;">🏁 Race bests</div>
        ${raceRows}
        <div style="display:flex;justify-content:space-between;margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12);font-size:13px;">
@@ -1814,7 +1832,19 @@ export class SimpleUI {
            : ''
        }`,
     );
+    modal.querySelector('#journal-map')?.addEventListener('click', () => {
+      modal.remove();
+      this.panels.notifyClosed('journal');
+      this.onOpenMap?.();
+    });
     this.overlay.appendChild(modal);
+  }
+
+  private onOpenMap: (() => void) | null = null;
+
+  /** App hook: the journal's map button routes here (openIslandMap). */
+  public setOnOpenMap(cb: () => void): void {
+    this.onOpenMap = cb;
   }
 
   private createMuteButton(): void {
@@ -4122,6 +4152,10 @@ export class SimpleUI {
    * catalog + owned/equipped state); button clicks call `onAction(id)`
    * and the caller re-renders by calling showShop again.
    */
+  // Session-sticky shop tab — deliberately NOT reset in hideShop: showShop
+  // calls hideShop() on every purchase re-render, and the tab must survive.
+  private shopTab: 'tools' | 'supplies' | 'hats' = 'tools';
+
   showShop(
     state: {
       coins: number;
@@ -4131,7 +4165,11 @@ export class SimpleUI {
         name: string;
         price: number;
         // Hats are owned once and equipped; consumables are re-buyable and
-        // report how many charges the player is carrying.
+        // report how many charges the player is carrying. `desc` is the
+        // one-line "what it does"; `category` drives the tabs.
+        desc?: string;
+        category?: 'tools' | 'supplies' | 'hats';
+        equippable?: boolean;
         owned?: boolean;
         equipped?: boolean;
         consumable?: boolean;
@@ -4161,51 +4199,96 @@ export class SimpleUI {
       zIndex: '1700',
       fontFamily: 'system-ui, sans-serif',
     });
-    const rows = state.items
-      .map((it) => {
-        const btnLabel = it.consumable
-          ? `${it.price} 🪙`
-          : it.equipped
-            ? 'Equipped'
-            : it.owned
-              ? 'Equip'
-              : `${it.price} 🪙`;
-        const disabled = it.consumable
-          ? state.coins < it.price
-          : !!it.equipped || (!it.owned && state.coins < it.price);
-        const sub = it.consumable
-          ? `${it.price} coins · ${it.charges} throws${it.held ? ` · carrying ${it.held}` : ''}`
-          : it.owned
-            ? 'Owned'
-            : `${it.price} coins`;
-        return `
+    const rowsFor = (tab: 'tools' | 'supplies' | 'hats'): string =>
+      state.items
+        .filter((it) => (it.category ?? 'hats') === tab)
+        .map((it) => {
+          // Owned non-equippable tools get a quiet "Owned ✓" — the old code
+          // showed a live dead-end Equip button on the rod and axe.
+          const ownedTool = it.owned && !it.equippable && !it.consumable;
+          const btnLabel = it.consumable
+            ? `${it.price} 🪙`
+            : it.equipped
+              ? 'Equipped'
+              : ownedTool
+                ? 'Owned ✓'
+                : it.owned
+                  ? 'Equip'
+                  : `${it.price} 🪙`;
+          const disabled = it.consumable
+            ? state.coins < it.price
+            : !!it.equipped || ownedTool || (!it.owned && state.coins < it.price);
+          const short = state.coins < it.price && !it.owned;
+          const subBits = [
+            it.desc ?? '',
+            it.consumable && it.held ? `carrying ${it.held}` : '',
+            it.consumable ? `${it.charges} uses` : '',
+            short && !it.owned ? `need ${it.price - state.coins} more 🪙` : '',
+          ].filter(Boolean);
+          return `
         <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
           <div style="font-size:24px;">${it.icon}</div>
           <div style="flex:1;">
             <div style="font-weight:600;">${it.name}</div>
-            <div style="font-size:12px;color:#aaa;">${sub}</div>
+            <div style="font-size:12px;color:${short && !it.owned ? '#e0a0a0' : '#aab'};line-height:1.35;">${subBits.join(' · ')}</div>
           </div>
           <button data-shop-id="${it.id}" ${disabled ? 'disabled' : ''} style="
-            background:${it.equipped ? '#2e7d32' : '#ffd34a'};
-            color:${it.equipped ? 'white' : '#332200'};
-            border:none;padding:10px 16px;border-radius:8px;font-weight:700;min-height:40px;
-            cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled && !it.equipped ? 0.45 : 1};
+            background:${it.equipped || ownedTool ? '#2e7d32' : '#ffd34a'};
+            color:${it.equipped || ownedTool ? 'white' : '#332200'};
+            border:none;padding:10px 16px;border-radius:8px;font-weight:700;min-height:40px;white-space:nowrap;
+            cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled && !it.equipped && !ownedTool ? 0.45 : 1};
           ">${btnLabel}</button>
         </div>`;
-      })
-      .join('');
+        })
+        .join('');
+    const tabBtn = (tab: 'tools' | 'supplies' | 'hats', label: string): string =>
+      `<button data-shop-tab="${tab}" style="flex:1;padding:8px 4px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;
+        border:1px solid ${this.shopTab === tab ? 'rgba(255,211,74,0.7)' : 'rgba(255,255,255,0.12)'};
+        background:${this.shopTab === tab ? 'rgba(255,211,74,0.14)' : 'transparent'};
+        color:${this.shopTab === tab ? '#ffd34a' : 'rgba(255,255,255,0.55)'};">${label}</button>`;
     this.shopDiv.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
         <h3 style="margin:0;color:#ffd34a;">🛒 Island Shop</h3>
         <div style="display:flex;gap:12px;align-items:center;">
-          <span style="color:#ffd34a;font-weight:700;">🪙 ${state.coins}</span>
+          <span style="color:#ffd34a;font-weight:800;font-size:16px;background:rgba(255,211,74,0.12);padding:4px 12px;border-radius:999px;">🪙 ${state.coins}</span>
           <span id="shop-close" style="cursor:pointer;font-size:18px;padding:2px 8px;">✕</span>
         </div>
       </div>
-      <div style="font-size:12px;color:#9ab;margin-bottom:6px;">Hats for the well-dressed courier. Purchases persist.</div>
-      ${rows}
+      <div id="shop-tabs" style="display:flex;gap:6px;margin-bottom:8px;">
+        ${tabBtn('tools', '🛠️ Tools')}${tabBtn('supplies', '🌾 Supplies')}${tabBtn('hats', '🎩 Hats')}
+      </div>
+      <div id="shop-rows">${rowsFor(this.shopTab)}</div>
     `;
+    // Tab switch re-renders ONLY the rows container — never panels.open,
+    // never hideShop (the same-id re-open rule stays untouched).
+    const bindRows = (): void => {
+      this.shopDiv!.querySelectorAll('button[data-shop-id]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const id = (btn as HTMLElement).getAttribute('data-shop-id');
+          if (id) onAction(id);
+        });
+      });
+    };
+    this.shopDiv.querySelectorAll('button[data-shop-tab]').forEach((tb) => {
+      tb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.shopTab = (tb as HTMLElement).getAttribute('data-shop-tab') as typeof this.shopTab;
+        const rows = this.shopDiv!.querySelector('#shop-rows');
+        if (rows) rows.innerHTML = rowsFor(this.shopTab);
+        this.shopDiv!.querySelectorAll('button[data-shop-tab]').forEach((b) => {
+          const active = (b as HTMLElement).getAttribute('data-shop-tab') === this.shopTab;
+          (b as HTMLElement).style.border = active
+            ? '1px solid rgba(255,211,74,0.7)'
+            : '1px solid rgba(255,255,255,0.12)';
+          (b as HTMLElement).style.background = active ? 'rgba(255,211,74,0.14)' : 'transparent';
+          (b as HTMLElement).style.color = active ? '#ffd34a' : 'rgba(255,255,255,0.55)';
+        });
+        bindRows();
+      });
+    });
     this.overlay.appendChild(this.shopDiv);
+    bindRows();
     // Panel registry: exclusivity + chip/touch-control hiding. ownEscape —
     // the document-level Esc handler below already owns the key (letting the
     // manager also act would double-fire onClose). The SAME-ID RE-OPEN rule
@@ -4219,13 +4302,6 @@ export class SimpleUI {
         this.hideShop();
         onClose();
       },
-    });
-    this.shopDiv.querySelectorAll('button[data-shop-id]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const id = (btn as HTMLElement).getAttribute('data-shop-id');
-        if (id) onAction(id);
-      });
     });
     this.shopDiv.querySelector('#shop-close')?.addEventListener('click', () => {
       this.hideShop();

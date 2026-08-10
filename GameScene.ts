@@ -4784,6 +4784,10 @@ export class GameScene extends THREE.Scene {
   private playerRod: THREE.Group | null = null;
   private playerRodTip: THREE.Object3D | null = null;
   private playerAxe: THREE.Group | null = null;
+  private playerSickle: THREE.Group | null = null;
+  private sickleVisibleUntil = 0;
+  private playerPickaxe: THREE.Group | null = null;
+  private pickVisibleUntil = 0;
   private fishLine: THREE.Line | null = null;
   private axeVisibleUntil = 0;
 
@@ -4840,6 +4844,45 @@ export class GameScene extends THREE.Scene {
     axe.visible = false;
     anchor.add(axe);
     this.playerAxe = axe;
+    // SICKLE (wave 3) — short handle + a curved blade arc in the swing plane.
+    const sickle = new THREE.Group();
+    const sHandle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.028, 0.3, 6),
+      new THREE.MeshToonMaterial({ color: 0x7a5230, gradientMap: Materials.toonRamp() }),
+    );
+    sHandle.position.y = 0.12;
+    sHandle.castShadow = false;
+    const sBlade = new THREE.Mesh(
+      new THREE.TorusGeometry(0.14, 0.018, 5, 10, Math.PI * 1.1),
+      new THREE.MeshToonMaterial({ color: 0xb8bec6, gradientMap: Materials.toonRamp() }),
+    );
+    sBlade.position.set(0, 0.3, 0.06);
+    sBlade.rotation.y = Math.PI / 2;
+    sBlade.castShadow = false;
+    sickle.add(sHandle, sBlade);
+    sickle.position.y = 0.42;
+    sickle.visible = false;
+    anchor.add(sickle);
+    this.playerSickle = sickle;
+    // PICKAXE (wave 3) — long handle + crossed head with tapered tips.
+    const pick = new THREE.Group();
+    const pHandle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.026, 0.032, 0.66, 6),
+      new THREE.MeshToonMaterial({ color: 0x7a5230, gradientMap: Materials.toonRamp() }),
+    );
+    pHandle.position.y = 0.28;
+    pHandle.castShadow = false;
+    const pHead = new THREE.Mesh(
+      new THREE.BoxGeometry(0.05, 0.05, 0.5),
+      new THREE.MeshToonMaterial({ color: 0x9aa0a8, gradientMap: Materials.toonRamp() }),
+    );
+    pHead.position.y = 0.56;
+    pHead.castShadow = false;
+    pick.add(pHandle, pHead);
+    pick.position.y = 0.42;
+    pick.visible = false;
+    anchor.add(pick);
+    this.playerPickaxe = pick;
   }
 
   /** Water within casting reach of the player's feet? (shore-adjacent check) */
@@ -5072,6 +5115,230 @@ export class GameScene extends THREE.Scene {
         2.6,
       );
     }
+  }
+
+  // ── Harvest machinery (wave 3) ─────────────────────────────────────────
+  private pendingHarvestFx: Array<{ at: number; entry: number }> = [];
+  private harvestScanAt = 0;
+  private harvestScanResult: number | null = null;
+
+  /** Nearest ripe crop within reach — 5 Hz scan gated FIRST by the farm-arc
+   *  dot (free outside the farm), then a ≤66-element distance scan. */
+  public nearestHarvestableCrop(maxDist = 2.6): number | null {
+    if (!this.player || !this.island || !this.island.farmDir) return null;
+    const now = performance.now() / 1000;
+    if (now - this.harvestScanAt < 0.2) return this.harvestScanResult;
+    this.harvestScanAt = now;
+    this.harvestScanResult = null;
+    const p = this.player.getWorldPosition();
+    const dir = this._fishCastUp.copy(p).normalize();
+    if (dir.dot(this.island.farmDir) < Math.cos(this.island.arc(12))) return null;
+    let best = -1;
+    let bestD = maxDist * maxDist;
+    const crops = this.island.farmHarvest;
+    for (let i = 0; i < crops.length; i++) {
+      if (crops[i].state !== 'ripe') continue;
+      const d = crops[i].pos.distanceToSquared(p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    this.harvestScanResult = best >= 0 ? best : null;
+    return this.harvestScanResult;
+  }
+
+  /** One sickle cut: gesture now, crop vanishes at the strike (+0.22s),
+   *  regrows through the CAPTURED built matrix (+240..300s). Returns the
+   *  yield immediately for the pack/toast. */
+  public harvestNearestCrop(
+    time: number,
+  ): { kind: string; yieldKind: 'produce' | 'wheat'; yieldN: number } | null {
+    const idx = this.nearestHarvestableCrop();
+    if (idx === null || !this.island) return null;
+    const entry = this.island.farmHarvest[idx];
+    entry.state = 'regrowing';
+    entry.regrowStart = time + 240;
+    entry.regrowEnd = time + 300;
+    this.ensureHandTools();
+    if (this.playerSickle) this.playerSickle.visible = true;
+    this.sickleVisibleUntil = time + 0.6;
+    this.player.triggerChopGesture();
+    this.setInteractionFocus(entry.pos, 1.2);
+    this.pendingHarvestFx.push({ at: time + 0.22, entry: idx });
+    this.harvestScanResult = null; // instant re-scan for the next prompt
+    return { kind: entry.kind, yieldKind: entry.yieldKind, yieldN: entry.yieldN };
+  }
+
+  private static readonly _harvestZero = new THREE.Matrix4().makeScale(0.001, 0.001, 0.001);
+  private _harvestMat = new THREE.Matrix4();
+  private harvestRegrowAt = 0;
+
+  private processPendingHarvestFx(time: number): void {
+    if (this.playerSickle && this.playerSickle.visible && time >= this.sickleVisibleUntil) {
+      this.playerSickle.visible = false;
+    }
+    if (!this.island) return;
+    for (let i = this.pendingHarvestFx.length - 1; i >= 0; i--) {
+      const fx = this.pendingHarvestFx[i];
+      if (time < fx.at) continue;
+      this.pendingHarvestFx.splice(i, 1);
+      const entry = this.island.farmHarvest[fx.entry];
+      if (!entry) continue;
+      for (const layer of entry.layers) {
+        this._harvestMat.copy(layer.built).multiply(GameScene._harvestZero);
+        layer.mesh.setMatrixAt(entry.index, this._harvestMat);
+        layer.mesh.instanceMatrix.needsUpdate = true;
+      }
+      this.spawnDust(entry.pos.clone(), 3);
+      sfx.blip();
+    }
+    // Regrow ramp at 1 Hz — 0.35×built → built between regrowStart and End.
+    if (time - this.harvestRegrowAt < 1) return;
+    this.harvestRegrowAt = time;
+    const dirty = new Set<THREE.InstancedMesh>();
+    for (const entry of this.island.farmHarvest) {
+      if (entry.state !== 'regrowing' || time < entry.regrowStart) continue;
+      const k = Math.min(1, (time - entry.regrowStart) / (entry.regrowEnd - entry.regrowStart));
+      const s = 0.35 + 0.65 * k;
+      for (const layer of entry.layers) {
+        this._harvestMat.copy(layer.built).multiply(this._fishCastMat.makeScale(s, s, s));
+        layer.mesh.setMatrixAt(entry.index, this._harvestMat);
+        dirty.add(layer.mesh);
+      }
+      if (k >= 1) entry.state = 'ripe';
+    }
+    for (const m of dirty) m.instanceMatrix.needsUpdate = true;
+  }
+
+  private _fishCastMat = new THREE.Matrix4();
+
+  // ── Mining machinery (wave 3) ──────────────────────────────────────────
+  // Runtime node state over Island's published sites: charges, depletion
+  // tint (gold → grey via instanceColor), 240s regen. Plain objects only —
+  // safe to init inside or outside the seeded window.
+  private oreNodes: Array<{
+    pos: THREE.Vector3;
+    charges: number;
+    hits: number;
+    regrowAt: number;
+  }> = [];
+  private pendingMineFx: Array<{ at: number; node: number; depleted: boolean }> = [];
+  private static readonly ORE_NODE_CHARGES = 3;
+  private static readonly _oreGold = new THREE.Color(0xe0b13f);
+  private static readonly _oreGrey = new THREE.Color(0x6f6a60);
+
+  private ensureOreNodes(): void {
+    if (this.oreNodes.length || !this.island) return;
+    for (const p of this.island.oreNodeSites) {
+      this.oreNodes.push({
+        pos: p.clone(),
+        charges: GameScene.ORE_NODE_CHARGES,
+        hits: 0,
+        regrowAt: 0,
+      });
+    }
+  }
+
+  public nearestOreNode(maxDist = 2.6): number | null {
+    if (!this.player || !this.island) return null;
+    this.ensureOreNodes();
+    const p = this.player.getWorldPosition();
+    let best = -1;
+    let bestD = maxDist * maxDist;
+    for (let i = 0; i < this.oreNodes.length; i++) {
+      if (this.oreNodes[i].charges <= 0) continue;
+      const d = this.oreNodes[i].pos.distanceToSquared(p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best >= 0 ? best : null;
+  }
+
+  /** One pickaxe swing. Four hits crack a charge (+2 ore); 3 charges then
+   *  the vein greys out for 240s. Gesture now, fx at the strike. */
+  public mineNearestNode(time: number): { hits: number; ore: number } | null {
+    const idx = this.nearestOreNode();
+    if (idx === null) return null;
+    const node = this.oreNodes[idx];
+    node.hits++;
+    this.ensureHandTools();
+    if (this.playerPickaxe) this.playerPickaxe.visible = true;
+    this.pickVisibleUntil = time + 0.6;
+    this.player.triggerChopGesture();
+    this.setInteractionFocus(node.pos, 1.2);
+    const cracked = node.hits >= 4;
+    let ore = 0;
+    if (cracked) {
+      node.hits = 0;
+      node.charges--;
+      ore = 2;
+      if (node.charges <= 0) node.regrowAt = time + 240;
+    }
+    this.pendingMineFx.push({ at: time + 0.22, node: idx, depleted: cracked && node.charges <= 0 });
+    return { hits: cracked ? 4 : node.hits, ore };
+  }
+
+  /** Kind label for a farmHarvest entry (prompt copy). */
+  public getIslandFarmCropKind(idx: number): string {
+    return this.island?.farmHarvest[idx]?.kind ?? 'crop';
+  }
+
+  /** Current hit count on the nearest ore node (prompt k/4 display). */
+  public getOreNodeHits(): number {
+    const idx = this.nearestOreNode();
+    return idx === null ? 0 : this.oreNodes[idx].hits;
+  }
+
+  /** Ore-vein summary for the island map (⛏️ POIs). */
+  public oreNodeSummary(): Array<{ pos: THREE.Vector3; rich: boolean }> {
+    this.ensureOreNodes();
+    return this.oreNodes.map((n) => ({ pos: n.pos, rich: n.charges > 0 }));
+  }
+
+  private _mineTint = new THREE.Color();
+
+  private processPendingMineFx(time: number): void {
+    if (this.playerPickaxe && this.playerPickaxe.visible && time >= this.pickVisibleUntil) {
+      this.playerPickaxe.visible = false;
+    }
+    for (let i = this.pendingMineFx.length - 1; i >= 0; i--) {
+      const fx = this.pendingMineFx[i];
+      if (time < fx.at) continue;
+      this.pendingMineFx.splice(i, 1);
+      const node = this.oreNodes[fx.node];
+      if (!node) continue;
+      this.spawnDust(node.pos.clone(), 4);
+      sfx.blip();
+      this.tintOreNode(fx.node);
+      if (fx.depleted) sfx.land();
+    }
+    // Regen sweep (cheap, 4 nodes).
+    for (let i = 0; i < this.oreNodes.length; i++) {
+      const n = this.oreNodes[i];
+      if (n.charges <= 0 && n.regrowAt > 0 && time >= n.regrowAt) {
+        n.charges = GameScene.ORE_NODE_CHARGES;
+        n.regrowAt = 0;
+        this.tintOreNode(i);
+      }
+    }
+  }
+
+  /** Studs shrink per spent charge and grey out when depleted. */
+  private tintOreNode(idx: number): void {
+    const studs = this.island?.oreStuds;
+    if (!studs) return;
+    const node = this.oreNodes[idx];
+    const per = Island.ORE_STUDS_PER_NODE;
+    const frac = node.charges / GameScene.ORE_NODE_CHARGES;
+    this._mineTint.copy(node.charges > 0 ? GameScene._oreGold : GameScene._oreGrey);
+    for (let s = idx * per; s < (idx + 1) * per; s++) {
+      studs.setColorAt(s, this._mineTint);
+    }
+    if (studs.instanceColor) studs.instanceColor.needsUpdate = true;
+    void frac;
   }
 
   /**
@@ -5628,6 +5895,32 @@ export class GameScene extends THREE.Scene {
   public isNearNoticeBoard(maxDist = 4): boolean {
     const p = this.island?.noticeBoardSite;
     return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
+  /** Near the Village Baker — the bakery stand OR the NPC (carpenter rule). */
+  public isNearBaker(maxDist = 5): boolean {
+    if (!this.player) return false;
+    const p = this.player.getWorldPosition();
+    const npc = this.getNpcPosition('Village Baker');
+    if (npc && npc.distanceTo(p) < 4) return true;
+    const b = this.bakerPos();
+    return !!b && b.distanceTo(p) < maxDist;
+  }
+
+  public bakerPos(): THREE.Vector3 | null {
+    const B = this.baker;
+    if (!B) return null;
+    return B.stand.dir.clone().multiplyScalar(B.stand.r);
+  }
+
+  /** Near the site-canteen cart (produce buyer, wave 3). */
+  public isNearCanteen(maxDist = 4): boolean {
+    const p = this.island?.canteenSite;
+    return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
+  public canteenPos(): THREE.Vector3 | null {
+    return this.island?.canteenSite ?? null;
   }
 
   public isNearBank(maxDist = 5): boolean {
@@ -9356,6 +9649,8 @@ export class GameScene extends THREE.Scene {
     this.updateFisherman(time, deltaTime);
     this.updatePlayerFishing(time);
     this.processPendingChopFx(time);
+    this.processPendingHarvestFx(time);
+    this.processPendingMineFx(time);
     this.updatePlayground(time);
     this.updateBaker(time, deltaTime);
     this.updateSailors(time, deltaTime);
