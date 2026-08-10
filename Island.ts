@@ -530,12 +530,14 @@ export class Island {
     return min;
   }
 
-  /** True under the ?grass=clump A/B experiment (grass clump-asset prototype). */
+  /** Clump tufts are the DEFAULT since Abbas's A/B verdict (2026-08-10);
+   *  ?grass=blades remains as the escape hatch back to the blade-pair
+   *  stipple (same pattern as the sky's ?sky=smooth). */
   private static isClumpGrass(): boolean {
     try {
-      return new URLSearchParams(window.location.search).get('grass') === 'clump';
+      return new URLSearchParams(window.location.search).get('grass') !== 'blades';
     } catch {
-      return false;
+      return true;
     }
   }
 
