@@ -73,8 +73,51 @@ export class SimplePlayer extends THREE.Group {
     this.sprintUntil = t;
   }
 
+  // ── Stamina + run (hold Space while moving on ground) ──────────────────
+  // Tap Space = jump (edge-triggered, unchanged); HOLDING it while moving
+  // engages the run — compatible because held Space never re-jumps. Water
+  // keeps Space = stay-afloat (run never engages while swimming).
+  private stamina = 1; // 0..1
+  private runIntent = false;
+  private running = false;
+  private static readonly RUN_MULT = 1.45;
+  private static readonly STAMINA_DRAIN = 0.22; // /s → ~4.5s of full sprint
+  private static readonly STAMINA_REGEN = 0.16; // /s → ~6s to refill
+  private static readonly STAMINA_REENGAGE = 0.25; // hysteresis: no flicker at 0
+
+  public setRunIntent(on: boolean): void {
+    this.runIntent = on;
+  }
+
+  public getStamina(): number {
+    return this.stamina;
+  }
+
+  public isRunning(): boolean {
+    return this.running;
+  }
+
+  /** Per-frame stamina bookkeeping — called from update() with the frame dt. */
+  private updateStamina(dt: number): void {
+    const moving = this.velocity.lengthSq() > 1.2;
+    const wantRun = this.runIntent && this.isGrounded && !this.swimming && moving;
+    if (this.running) {
+      this.running = wantRun && this.stamina > 0;
+    } else {
+      this.running = wantRun && this.stamina > SimplePlayer.STAMINA_REENGAGE;
+    }
+    this.stamina = THREE.MathUtils.clamp(
+      this.stamina + (this.running ? -SimplePlayer.STAMINA_DRAIN : SimplePlayer.STAMINA_REGEN) * dt,
+      0,
+      1,
+    );
+  }
+
   private effectiveSpeed(): number {
-    return performance.now() / 1000 < this.sprintUntil ? this.speed * 1.35 : this.speed;
+    const buff = performance.now() / 1000 < this.sprintUntil ? 1.35 : 1;
+    // Run and the checkup buff don't stack — the stronger one wins (a
+    // multiplicative 1.96x broke the walk-clip cadence ceiling).
+    return this.speed * Math.max(buff, this.running ? SimplePlayer.RUN_MULT : 1);
   }
   private jumpForce: number = 8;
   private gravityStrength: number = 25; // gravitational acceleration
@@ -1531,6 +1574,9 @@ export class SimplePlayer extends THREE.Group {
    */
   public update(deltaTime: number): void {
     if (deltaTime <= 0) return;
+    // Stamina ticks in every mobile state (drains only while the run is
+    // actually engaged; regenerates seated/riding/idle for free).
+    this.updateStamina(Math.min(deltaTime, 0.1));
 
     // Seated on a bench: physics + animation mixer paused, sit pose held
     if (this.seated) {

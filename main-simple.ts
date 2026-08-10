@@ -1812,6 +1812,14 @@ class SimpleApp {
         const player = this.scene.getPlayer();
         // Swim: hold Space to stay afloat in water (same key jumps on land)
         if (player) player.setSwimIntent(jumpInput);
+        // HOLD Space while moving = run (stamina-gated). Tap stays jump —
+        // held Space never re-jumps, so the two share the key cleanly.
+        if (player) {
+          const runMag =
+            Math.abs(moveInput.forward + joy.forward) + Math.abs(moveInput.strafe + joy.strafe);
+          player.setRunIntent(jumpInput && runMag > 0.3);
+          this.ui.updateStamina(player.getStamina(), player.isRunning());
+        }
         if (jumpInput && player && !player.isInWater()) {
           // Edge-triggered: one blip per press, only from the ground
           if (player.isOnGround() && !this.prevJumpHeld) sfx.jump();

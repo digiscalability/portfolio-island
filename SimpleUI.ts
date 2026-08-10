@@ -4275,6 +4275,63 @@ export class SimpleUI {
   private breathWrap: HTMLDivElement | null = null;
   private breathFill: HTMLDivElement | null = null;
   private waterVignette: HTMLDivElement | null = null;
+  private staminaWrap: HTMLDivElement | null = null;
+  private staminaFill: HTMLDivElement | null = null;
+
+  /**
+   * Stamina meter (run = hold Space/JUMP while moving). Same visual language
+   * as the breath meter, one row above it; hidden while full and not running
+   * so the HUD stays quiet during normal walking.
+   */
+  updateStamina(stamina: number, running: boolean): void {
+    const show = running || stamina < 0.999;
+    if (!this.staminaWrap) {
+      if (!show) return; // never build the DOM for a full, idle meter
+      this.staminaWrap = document.createElement('div');
+      Object.assign(this.staminaWrap.style, {
+        position: 'absolute',
+        bottom: 'calc(var(--sab, 0px) + 170px)',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: '160px',
+        height: '10px',
+        borderRadius: '6px',
+        background: 'rgba(0,0,0,0.5)',
+        border: '1px solid rgba(255,255,255,0.35)',
+        overflow: 'hidden',
+        opacity: '0',
+        transition: 'opacity 0.3s ease',
+        pointerEvents: 'none',
+        zIndex: '1100',
+      });
+      this.staminaFill = document.createElement('div');
+      Object.assign(this.staminaFill.style, {
+        height: '100%',
+        width: '100%',
+        borderRadius: '5px',
+        transition: 'width 0.12s linear, background 0.3s ease',
+      });
+      const label = document.createElement('div');
+      label.textContent = '⚡';
+      Object.assign(label.style, {
+        position: 'absolute',
+        left: '-20px',
+        top: '-4px',
+        fontSize: '13px',
+      });
+      this.staminaWrap.appendChild(this.staminaFill);
+      this.staminaWrap.appendChild(label);
+      this.overlay.appendChild(this.staminaWrap);
+      this.panels.registerLayer('ambient-info', this.staminaWrap);
+    }
+    this.staminaWrap.style.opacity = show ? '1' : '0';
+    if (this.staminaFill) {
+      this.staminaFill.style.width = `${Math.max(0, Math.min(1, stamina)) * 100}%`;
+      // amber while healthy, red when nearly spent
+      const hue = 12 + 30 * Math.max(0, Math.min(1, stamina));
+      this.staminaFill.style.background = `hsl(${hue}, 85%, 52%)`;
+    }
+  }
 
   /**
    * Swim UX: a breath meter (bottom-centre) + an underwater vignette that
