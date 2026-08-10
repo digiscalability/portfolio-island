@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { a11y } from './Accessibility';
 import { addGroupHulls, updateCelRim } from './CelLook';
+import { buildCloudFormations } from './CloudFormations';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { Island } from './Island';
@@ -79,8 +80,11 @@ export class GameScene extends THREE.Scene {
   private cloudPivots: THREE.Object3D[] = [];
   // Shared cloud material — every cloud's blobs are merged into one mesh, so
   // weather/time-of-day tinting is a single material write per frame
-  private cloudMat: THREE.MeshStandardMaterial | null = null;
+  private cloudMat: THREE.MeshToonMaterial | null = null; // fair set
+  private stormCloudMat: THREE.MeshToonMaterial | null = null; // storm set
   private cloudWet = 0; // smoothed 0-1 overcast mix (weather flips are discrete)
+  private towerMesh: THREE.Object3D | null = null;
+  private towerGrow = 0; // its OWN slow ease — the 2s cloudWet constant would pop it in
   // Fake pools of warm lamplight on the terrain (one InstancedMesh of
   // additive discs); update() fades them in as dayFactor falls
   private lampPoolMat: THREE.MeshBasicMaterial | null = null;
@@ -5588,73 +5592,51 @@ export class GameScene extends THREE.Scene {
    * the terrain.
    */
   private createClouds(): void {
-    const cloudMat = new THREE.MeshStandardMaterial({
+    // Approved sky design, Slice A: FORMATIONS from the pure CloudFormations
+    // builder (tested headlessly), not a uniform scatter. Shared 12-step
+    // toonRamp per Abbas's ruling; vertexColors carry the baked underside
+    // shading, so material.color still multiplies and the tuned weather-tint
+    // pipeline below survives unchanged.
+    const fairMat = new THREE.MeshToonMaterial({
       color: 0xffffff,
-      roughness: 1.0,
+      gradientMap: Materials.toonRamp(),
+      vertexColors: true,
       transparent: true,
       opacity: 0.92,
     });
-    this.cloudMat = cloudMat;
+    const stormMat = new THREE.MeshToonMaterial({
+      color: 0xffffff, // tinted by the same weather pipeline as the fair set
+      gradientMap: Materials.toonRamp(),
+      vertexColors: true,
+      transparent: true,
+      opacity: 0,
+    });
+    this.cloudMat = fairMat;
+    this.stormCloudMat = stormMat;
     const planetR = this.island ? this.island.getRadius() : 18;
-    // 18 at R=50 (was 10): the sky read sparse. Scaled by area so a bigger
-    // planet doesn't go back to reading empty.
-    for (let i = 0; i < Math.round(18 * areaScale()); i++) {
+    const specs = buildCloudFormations(planetR);
+    for (let i = 0; i < specs.length; i++) {
+      const spec = specs[i];
       const pivot = new THREE.Object3D();
-      // Random orbit plane
-      pivot.rotation.set(
-        Math.random() * Math.PI,
-        Math.random() * Math.PI * 2,
-        Math.random() * Math.PI,
-      );
+      pivot.rotation.set(...spec.orbitEuler);
       const cloud = new THREE.Group();
-      // Classic cartoon cloud: one big smooth dome + smaller overlapping
-      // flanks, bottoms aligned to a flat base, all flattened along the SAME
-      // axis with no random tilt. (The old version random-rotated each
-      // already-flattened faceted blob — squashing every one along a
-      // different axis, which read as a stack of stones.)
-      const coreR = 0.9 + Math.random() * 0.5;
-      const flanks = 2 + Math.floor(Math.random() * 3); // 2-4 per side pattern
-      const radii: number[] = [coreR];
-      for (let f = 0; f < flanks; f++) radii.push(coreR * (0.5 + Math.random() * 0.3));
-      let xCursor = 0;
-      // Blobs baked into ONE geometry per cloud (the per-tree merge pattern):
-      // ~40 blob meshes → 10 draws, and none in the shadow pass — with the
-      // ±17u player-following shadow box clouds almost never intersected it
-      // but were submitted to the depth pass every frame.
-      const parts: THREE.BufferGeometry[] = [];
-      radii.forEach((r, idx) => {
-        const blobGeo = new THREE.SphereGeometry(r, 9, 7);
-        blobGeo.scale(1, 0.6, 1);
-        blobGeo.rotateY(Math.random() * Math.PI); // yaw only — never tilt
-        if (idx === 0) {
-          blobGeo.translate(0, r * 0.35, 0);
-        } else {
-          const side = idx % 2 === 1 ? 1 : -1;
-          if (idx % 2 === 1) xCursor += r * 0.9;
-          blobGeo.translate(
-            side * (coreR * 0.55 + xCursor * 0.6),
-            r * 0.32,
-            (Math.random() - 0.5) * 0.5,
-          );
-        }
-        parts.push(blobGeo);
-      });
-      cloud.add(new THREE.Mesh(mergeGeometries(parts, false), cloudMat));
-      // One consistent cloud ceiling (tight altitude band) — a wide random
-      // band read as clouds "stacked" vertically instead of a sky layer
-      cloud.position.set(planetR + 6.5 + Math.random() * 1.2, 0, 0);
-      // Lie flat relative to the planet: the cloud sits on the pivot's +X
-      // (radial), but its flat-bottom/spread axes were pivot-tangent, so
-      // clouds stood on their side depending on the pivot's random
-      // orientation. Rotating 90° maps the cloud's local "up" onto the
-      // radial axis — flat base toward the ground, spread along the sky.
+      const mesh = new THREE.Mesh(spec.geometry, spec.set === 'fair' ? fairMat : stormMat);
+      cloud.add(mesh);
+      cloud.position.set(spec.altitude, 0, 0);
+      // Map cloud-local up onto the radial axis (flat base toward the ground).
       cloud.rotation.z = -Math.PI / 2;
-      const cloudData = cloud.userData as Record<string, unknown>;
-      cloudData.ignoreOcclusion = true;
+      (cloud.userData as Record<string, unknown>).ignoreOcclusion = true;
       pivot.add(cloud);
       const pivotData = pivot.userData as Record<string, unknown>;
-      pivotData.driftSpeed = 0.01 + Math.random() * 0.02;
+      pivotData.driftSpeed = spec.driftSpeed;
+      pivotData.cloudSet = spec.set;
       pivot.name = `cloud_pivot_${i}`;
+      pivot.visible = spec.set === 'fair'; // storm set hidden until weather
+      if (spec.kind === 'tower') {
+        this.towerMesh = cloud;
+        cloud.scale.setScalar(1);
+        cloud.scale.y = 0.2; // grows with towerGrow
+      }
       this.add(pivot);
       this.cloudPivots.push(pivot);
     }
@@ -8588,7 +8570,26 @@ export class GameScene extends THREE.Scene {
         .copy(GameScene._cloudClear)
         .lerp(GameScene._cloudDusk, dusk * 0.6 * (1 - this.cloudWet))
         .lerp(GameScene._cloudStorm, this.cloudWet);
-      this.cloudMat.opacity = 0.92 + 0.06 * this.cloudWet;
+      // Formation crossfade (Slice A): fair set yields to the storm set on the
+      // SAME eased wet value, with visible-gating so a faded set costs zero.
+      this.cloudMat.opacity = 0.92 * (1 - this.cloudWet * 0.85);
+      if (this.stormCloudMat) this.stormCloudMat.opacity = 0.95 * this.cloudWet;
+      for (const pivot of this.cloudPivots) {
+        const set = (pivot.userData as Record<string, unknown>).cloudSet;
+        pivot.visible =
+          set === 'fair' ? this.cloudMat.opacity > 0.02 : (this.stormCloudMat?.opacity ?? 0) > 0.02;
+      }
+      if (this.stormCloudMat) {
+        // 0.9, not lower: the fair color is ALREADY storm-slate at high wet, so
+        // a deep second multiply read as coal-black from beneath (verified in
+        // the Slice A render pass).
+        this.stormCloudMat.color.copy(this.cloudMat.color).multiplyScalar(0.9);
+      }
+      // The cumulonimbus grows over ~40s once real rain sets in — a visible
+      // SOURCE for the weather rather than a pop-in.
+      const towerTarget = this.cloudWet > 0.6 ? 1 : 0;
+      this.towerGrow += (towerTarget - this.towerGrow) * Math.min(1, deltaTime * 0.025);
+      if (this.towerMesh) this.towerMesh.scale.y = 0.2 + 0.8 * this.towerGrow;
     }
     if (this.lampPoolMat) {
       this.lampPoolMat.opacity = 0.55 * (1 - day);
