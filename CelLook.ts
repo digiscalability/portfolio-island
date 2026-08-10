@@ -179,7 +179,11 @@ const _wScale = new THREE.Vector3();
  * inherit the part's animated transform (tail joints, head pivots) for free.
  * Small detail parts (eyes, socks, noses) are skipped by world size.
  */
-export function addGroupHulls(root: THREE.Object3D, minWorldRadius = 0.045): void {
+export function addGroupHulls(
+  root: THREE.Object3D,
+  minWorldRadius = 0.045,
+  filter?: (m: THREE.Mesh) => boolean,
+): void {
   if (!isCelTheme()) return;
   // Ink is a draw-call DOUBLER on every hulled part (~300+ extra draws with
   // the full cast). Phones are draw-call-bound, not fill-bound — low-tier
@@ -190,13 +194,31 @@ export function addGroupHulls(root: THREE.Object3D, minWorldRadius = 0.045): voi
     const m = o as THREE.Mesh;
     if (!m.isMesh || (m as unknown as { isSkinnedMesh?: boolean }).isSkinnedMesh) return;
     if (m.userData.isCelHull) return;
+    if (filter) {
+      // Guarded path — ACTIVE ONLY when a filter arg is passed. Legacy 2-arg
+      // call sites (cats/herons/palms/birds/campfire) take the untouched code
+      // path above, keeping their shipped output byte-identical (the
+      // never-re-author-the-outline law). New architecture call sites pass
+      // `() => true` to opt in to these guards without a name filter.
+      if ((m as unknown as { isInstancedMesh?: boolean }).isInstancedMesh) return;
+      const mat = m.material as THREE.Material | THREE.Material[];
+      if (!Array.isArray(mat) && mat?.transparent === true) return; // glass, glow cones
+      if (m.geometry.type === 'PlaneGeometry') return; // windows, decals — a hull z-fights
+      if (!filter(m)) return;
+    }
     targets.push(m);
   });
   for (const m of targets) {
     if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
     const r = (m.geometry.boundingSphere?.radius ?? 0) * m.getWorldScale(_wScale).x;
     if (r < minWorldRadius) continue;
-    const t = Math.min(0.016, Math.max(0.006, r * 0.045));
+    // Guarded (architecture) path: the fauna cap of 0.016u is SUB-PIXEL on a
+    // 3u building past ~15u — 111 draws for invisible lines. Buildings carry
+    // thicker ink (capped 0.05u), gated on `filter` so every legacy call site
+    // keeps its shipped thickness byte-identical.
+    const t = filter
+      ? Math.min(0.05, Math.max(0.008, r * 0.03))
+      : Math.min(0.016, Math.max(0.006, r * 0.045));
     const hull = new THREE.Mesh(bakeHullGeometry(m.geometry, t), getInkMat());
     hull.userData.isCelHull = true;
     hull.raycast = () => {}; // camera collision + feed aim must never hit ink

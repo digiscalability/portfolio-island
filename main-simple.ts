@@ -1789,6 +1789,7 @@ class SimpleApp {
           this.ui.hideInteractionPrompt();
         }
         this.ui.updateBreath(1, false);
+        this.ui.setUnderwater(this.scene.getSubmergedFactor());
       } else {
         // Get input
         const moveInput = this.inputManager.getMovementInput();
@@ -1812,6 +1813,9 @@ class SimpleApp {
         this.prevJumpHeld = jumpInput;
         // Breath meter + underwater vignette
         if (player) this.ui.updateBreath(player.getOxygen(), player.isInWater());
+        // Camera-submersion wash (independent of the player: the chase cam can
+        // dip under a wave while the swimmer's head is still above it)
+        this.ui.setUnderwater(this.scene.getSubmergedFactor());
         // Shoreline barrier: nudge the swimmer back with a throttled hint
         if (player && player.isBeyondSwimLimit()) {
           const now = performance.now();

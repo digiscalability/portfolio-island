@@ -16,6 +16,7 @@ import { OrbitCamera } from './OrbitCamera';
 import { RaceSystem, type RaceEvent, type RaceHudStatus } from './RaceSystem';
 import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
+import { isSoftLook } from './SoftLook';
 import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
@@ -83,6 +84,14 @@ export class GameScene extends THREE.Scene {
   private cloudMat: THREE.MeshToonMaterial | null = null; // fair set
   private stormCloudMat: THREE.MeshToonMaterial | null = null; // storm set
   private cloudWet = 0; // smoothed 0-1 overcast mix (weather flips are discrete)
+  // Eased CAMERA-submersion factor (0 dry .. 1 fully under) — drives the
+  // underwater grade. Eased so wave-crossing never strobes the fog.
+  private submergedF = 0;
+  private readonly _camDirScratch = new THREE.Vector3();
+  // Hemi base colors cached at setupLighting: EnvironmentCycle never owns the
+  // hemi tint, so the submerged grade must restore these EXACT values at f=0.
+  private hemiBaseSky: THREE.Color | null = null;
+  private hemiBaseGround: THREE.Color | null = null;
   private towerMesh: THREE.Object3D | null = null;
   private towerGrow = 0; // its OWN slow ease — the 2s cloudWet constant would pop it in
   // Fake pools of warm lamplight on the terrain (one InstancedMesh of
@@ -523,6 +532,21 @@ export class GameScene extends THREE.Scene {
     vel: THREE.Vector3;
   }> = [];
   private _fxScratch = new THREE.Vector3();
+  // Underwater bubbles: one pooled Points (48 slots, ring cursor) — 1 draw,
+  // preallocated buffers, zero per-frame allocation. Inactive slots park at
+  // the origin (inside the planet — depth-hidden for free).
+  private bubblePoints: THREE.Points | null = null;
+  private bubblePos: Float32Array | null = null;
+  private readonly bubbleSlots: Array<{
+    dir: THREE.Vector3;
+    r: number;
+    phase: number;
+    active: boolean;
+  }> = [];
+  private bubbleCursor = 0;
+  private _bubbleAccumPlayer = 0;
+  private _bubbleAccumFish = 0;
+  private readonly _bubbleScratch = new THREE.Vector3();
 
   // Sky-dome "up" uniform so the gradient follows the camera around the sphere
   private skyUpUniform: { value: THREE.Vector3 } | null = null;
@@ -572,6 +596,10 @@ export class GameScene extends THREE.Scene {
   private static readonly _cloudClear = new THREE.Color(0xffffff);
   private static readonly _cloudStorm = new THREE.Color(0x8a95a5);
   private static readonly _cloudDusk = new THREE.Color(0xffc9a0);
+  // Submerged grade endpoints (underwater slice): fog murk + hemi water tint
+  private static readonly _underTeal = new THREE.Color(0x0b3d55);
+  private static readonly _underHemiSky = new THREE.Color(0x1e5c74);
+  private static readonly _underHemiGround = new THREE.Color(0x0d3a4a);
   // NPCs turn to face the player within FACE_RANGE and greet within GREET_RANGE
   private static readonly NPC_FACE_RANGE = 4.5;
   private static readonly NPC_GREET_RANGE = 3.2;
@@ -1216,6 +1244,9 @@ export class GameScene extends THREE.Scene {
     );
     this.add(hemiLight);
     this.hemiLight = hemiLight;
+    // Snapshot the authored tint for the underwater grade's explicit restore.
+    this.hemiBaseSky = hemiLight.color.clone();
+    this.hemiBaseGround = hemiLight.groundColor.clone();
 
     // Soft fill from below-opposite so the planet's far side isn't pure black
     const fillLight = new THREE.DirectionalLight(0xd4e8ff, 0.18);
@@ -4658,6 +4689,9 @@ export class GameScene extends THREE.Scene {
     base.add(seesaw);
     this.playgroundParts.push({ mesh: seesaw, kind: 'seesaw', phase: 0.7 });
     this.add(base);
+    // Outline Tier 1: ink the play structures (hulls ride the animated parts
+    // as children — same mechanism as the cat tails).
+    addGroupHulls(base, 0.12, () => true);
   }
 
   private updatePlayground(time: number): void {
@@ -5825,6 +5859,36 @@ export class GameScene extends THREE.Scene {
         vel: new THREE.Vector3(),
       });
     }
+    // Underwater bubbles (slice D): pooled Points, ring-cursor reuse.
+    this.bubblePos = new Float32Array(48 * 3);
+    const bubbleGeo = new THREE.BufferGeometry();
+    bubbleGeo.setAttribute('position', new THREE.BufferAttribute(this.bubblePos, 3));
+    const bubbleMat = new THREE.PointsMaterial({
+      color: 0xcfeaf5,
+      size: 0.06,
+      transparent: true,
+      opacity: 0.75,
+      depthWrite: false,
+    });
+    this.bubblePoints = new THREE.Points(bubbleGeo, bubbleMat);
+    this.bubblePoints.name = 'bubbles';
+    this.bubblePoints.frustumCulled = false; // 48 verts — culling costs more than drawing
+    this.bubblePoints.raycast = () => {};
+    this.add(this.bubblePoints);
+    for (let i = 0; i < 48; i++) {
+      this.bubbleSlots.push({ dir: new THREE.Vector3(), r: 0, phase: 0, active: false });
+    }
+  }
+
+  /** Claim the next pool slot for a bubble rising from `pos` (world). */
+  private spawnBubble(pos: THREE.Vector3): void {
+    const s = this.bubbleSlots[this.bubbleCursor];
+    if (!s) return;
+    this.bubbleCursor = (this.bubbleCursor + 1) % this.bubbleSlots.length;
+    s.dir.copy(pos).normalize();
+    s.r = pos.length();
+    s.phase = Math.random() * Math.PI * 2; // cosmetic only — runtime, stream-safe
+    s.active = true;
   }
 
   /** Expanding foam ring flat on the water at `center` (normal = radial). */
@@ -5927,6 +5991,56 @@ export class GameScene extends THREE.Scene {
         const back = v.forward.clone().multiplyScalar(-1);
         this.spawnSpray(stern, back, v.kind === 'jetski' ? 3 : 1, v.kind === 'jetski' ? 6 : 4);
       }
+    }
+
+    // Underwater bubbles: swimmer exhale (2/s) + a soft trickle from the
+    // nearest fish within 20u (0.5/s — the _fishWakeAccum throttle pattern).
+    // Rise 0.8u/s along the radial with a sine wobble; die at the live wave
+    // surface so they never pop into open air.
+    if (this.bubblePoints && this.bubblePos) {
+      const seaT = this.island.seaTimeUniform.value;
+      const playerPos = this.player.getWorldPosition();
+      if (this.player.isSwimming()) {
+        this._bubbleAccumPlayer += deltaTime;
+        if (this._bubbleAccumPlayer > 0.5) {
+          this._bubbleAccumPlayer = 0;
+          // Exhale from a hand-depth below the swimmer, not at the surface
+          this._bubbleScratch.copy(playerPos).multiplyScalar(1 - 0.4 / playerPos.length());
+          this.spawnBubble(this._bubbleScratch);
+        }
+      }
+      this._bubbleAccumFish += deltaTime;
+      if (this._bubbleAccumFish > 2.0) {
+        this._bubbleAccumFish = 0;
+        let best: THREE.Group | null = null;
+        let bestD = 20 * 20;
+        for (const f of this.fish) {
+          if (f.jumpT0 >= 0) continue; // airborne fish don't bubble
+          const d = f.group.position.distanceToSquared(playerPos);
+          if (d < bestD) {
+            bestD = d;
+            best = f.group;
+          }
+        }
+        if (best) this.spawnBubble(this._bubbleScratch.copy(best.position));
+      }
+      for (let i = 0; i < this.bubbleSlots.length; i++) {
+        const s = this.bubbleSlots[i];
+        if (!s.active) continue;
+        s.r += 0.8 * deltaTime;
+        if (s.r >= this.island.waveHeightAt(s.dir, seaT)) {
+          s.active = false;
+          this.bubblePos[i * 3] = 0;
+          this.bubblePos[i * 3 + 1] = 0;
+          this.bubblePos[i * 3 + 2] = 0;
+          continue;
+        }
+        this.bubblePos[i * 3] = s.dir.x * s.r + Math.sin(time * 3 + s.phase) * 0.05;
+        this.bubblePos[i * 3 + 1] = s.dir.y * s.r;
+        this.bubblePos[i * 3 + 2] = s.dir.z * s.r + Math.cos(time * 2.6 + s.phase) * 0.05;
+      }
+      (this.bubblePoints.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate =
+        true;
     }
 
     // Animate rings: expand + fade
@@ -8676,6 +8790,36 @@ export class GameScene extends THREE.Scene {
       const w = districtAccentAt(this._atmDir, this._atmAccent) * 0.12 * day;
       if (w > 0) (this.fog as THREE.FogExp2).color.lerp(this._atmAccent, w);
     }
+    // Submerged look: when the CAMERA dips below the live wave surface, grade
+    // the frame into teal murk. Fog color/density are rewritten by
+    // EnvironmentCycle at the top of every frame, so this override MUST stay
+    // in this post-envCycle block — restore is automatic. The hemi tint has
+    // no per-frame owner, so at f=0 the exact cached bases are written back.
+    if (this.island && this.camera && this.fog) {
+      this._camDirScratch.copy(this.camera.position).normalize();
+      const waveR = this.island.waveHeightAt(this._camDirScratch, this.island.seaTimeUniform.value);
+      const target = this.camera.position.length() < waveR - 0.05 ? 1 : 0;
+      this.submergedF += (target - this.submergedF) * Math.min(1, 8 * deltaTime);
+      if (Math.abs(target - this.submergedF) < 0.004) this.submergedF = target;
+      const f = this.submergedF;
+      if (f > 0) {
+        const fog = this.fog as THREE.FogExp2;
+        fog.color.lerp(GameScene._underTeal, f);
+        // ?look=soft already boosts sea-level fog height ×2.5 and that factor
+        // MULTIPLIES in — soft look takes the gentler ramp (verified target
+        // ≈0.12 density fully under on both paths).
+        fog.density *= 1 + f * (isSoftLook() ? 11 : 19);
+      }
+      if (this.hemiLight && this.hemiBaseSky && this.hemiBaseGround) {
+        this.hemiLight.color.copy(this.hemiBaseSky).lerp(GameScene._underHemiSky, f);
+        this.hemiLight.groundColor.copy(this.hemiBaseGround).lerp(GameScene._underHemiGround, f);
+      }
+    }
+  }
+
+  /** Camera-submersion factor (0 dry .. 1 under) for the DOM vignette hook. */
+  public getSubmergedFactor(): number {
+    return this.submergedF;
   }
 
   /**

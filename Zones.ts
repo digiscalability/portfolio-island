@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { addGroupHulls } from './CelLook';
 import { Island } from './Island';
 
 export interface ZoneData {
@@ -96,6 +97,12 @@ export class Zone {
     this.marker = this.createBuilding(data.id, data.color, data.icon);
     this.beacon = this.marker.getObjectByName('zone-beacon') ?? null;
     if (this.beacon) this.beaconBaseY = this.beacon.position.y;
+    // Outline Tier 1: ink the landmark masses; the beacon stays clean (its
+    // emissive bob would drag a black shell through the glow). Floor 0.7 is
+    // MEASURED, not guessed: window boxes cluster at world radius 0.52/0.63,
+    // real masses start at 0.8 — 0.5 hulled every window and blew the +126
+    // draw ledger (147 hulls across the five halls; 0.7 keeps ~35).
+    addGroupHulls(this.marker, 0.7, (m) => m.name !== 'zone-beacon');
 
     // Seat the building on the displaced surface and orient it so its DOOR
     // (local +Z) faces the pole — i.e. addresses the avenue the player arrives

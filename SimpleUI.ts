@@ -3956,6 +3956,32 @@ export class SimpleUI {
     }
   }
 
+  private underwaterWash: HTMLDivElement | null = null;
+
+  /**
+   * CAMERA-submersion wash (distinct from the swim vignette above, which keys
+   * on the PLAYER). The sea surface is backface-culled, so looking up from
+   * below shows bare sky — this full-screen teal is what sells "under the
+   * water" for zero GPU cost (no new render pass, per the post-crisis ban).
+   */
+  setUnderwater(f: number): void {
+    if (f <= 0 && !this.underwaterWash) return; // never build the div dry
+    if (!this.underwaterWash) {
+      this.underwaterWash = document.createElement('div');
+      Object.assign(this.underwaterWash.style, {
+        position: 'absolute',
+        inset: '0',
+        pointerEvents: 'none',
+        zIndex: '890', // under the swim vignette (900) and all HUD
+        background:
+          'linear-gradient(rgba(16,74,102,0.55) 0%, rgba(9,48,68,0.62) 55%, rgba(6,34,50,0.7) 100%)',
+        opacity: '0',
+      });
+      this.overlay.appendChild(this.underwaterWash);
+    }
+    this.underwaterWash.style.opacity = String(Math.max(0, Math.min(1, f)) * 0.85);
+  }
+
   /** Brief centred splash message (used for the drown/rescue). */
   flashMessage(text: string): void {
     const el = document.createElement('div');

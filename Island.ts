@@ -14,7 +14,7 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-import { addSkinnedHull, applyCelRim } from './CelLook';
+import { addGroupHulls, addSkinnedHull, applyCelRim } from './CelLook';
 import {
   DISTRICTS,
   RING_DISTRICT_LONS,
@@ -1175,6 +1175,13 @@ export class Island {
         if (above < -0.3) {
           // Submerged: fades from sand at the water's edge down to seabed
           tmp.copy(seabed).lerp(sand, THREE.MathUtils.clamp((above + 2.4) / 2.1, 0, 1));
+          // Seabed dapple (underwater slice): broad light/dark patches so the
+          // floor isn't one flat tone. Deterministic from direction — no RNG,
+          // one-time CPU like the rest of this color pass.
+          const dap =
+            Math.sin(vDir.x * 41.0) * Math.sin(vDir.z * 37.0) +
+            0.5 * Math.sin((vDir.x + vDir.z) * 23.0);
+          tmp.offsetHSL(0, 0, dap * 0.028);
         } else if (above < BEACH_TOP) {
           tmp.copy(sand);
         } else {
@@ -1266,13 +1273,22 @@ export class Island {
     const shoreWaterline = this.seaLevel().toFixed(4);
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uTide = this.seaTideUniform;
+      // Caustic clock: the SAME object as the sea shader's uTime — shared by
+      // reference, so the flicker stays phase-locked to the waves for free.
+      shader.uniforms.uSeaT = this.seaTimeUniform;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying float vShoreR;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvShoreR = length(position);');
+        .replace(
+          '#include <common>',
+          '#include <common>\nvarying float vShoreR;\nvarying vec3 vShoreP;',
+        )
+        .replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\nvShoreR = length(position);\nvShoreP = position;',
+        );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
-          '#include <common>\nvarying float vShoreR;\nuniform float uTide;',
+          '#include <common>\nvarying float vShoreR;\nvarying vec3 vShoreP;\nuniform float uTide;\nuniform float uSeaT;',
         )
         .replace(
           '#include <color_fragment>',
@@ -1286,6 +1302,12 @@ export class Island {
             // Swash line: a thin bright rim right where water meets sand.
             'float swash = 1.0 - smoothstep(0.0, 0.16, abs(shoreAbove - 0.03));',
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.94, 0.97, 0.99), swash * 0.55);',
+            // Caustics (underwater slice): two drifting sine sheets, alive only
+            // below the waterline and gone by ~2.5u depth. Cell size ~3u.
+            'float caust = sin(vShoreP.x * 2.1 + vShoreP.y * 1.3 + uSeaT * 1.1) * sin(vShoreP.z * 2.3 - uSeaT * 0.9);',
+            'float cOn = 1.0 - smoothstep(-0.5, -0.15, shoreAbove);',
+            'float cDeep = smoothstep(-2.5, -1.6, shoreAbove);',
+            'diffuseColor.rgb += vec3(0.10, 0.14, 0.13) * max(0.0, caust) * cOn * cDeep;',
           ].join('\n'),
         );
     };
@@ -1685,6 +1707,9 @@ export class Island {
         b.add(wp);
       }
       buildings.add(b);
+      // Outline Tier 1: ink the tower masses. Guarded path (see addGroupHulls)
+      // auto-skips the emissive window planes and any transparent glass.
+      addGroupHulls(b, 1.0, () => true);
       buildingPlaceholders.push(b);
     }
 
@@ -1858,6 +1883,9 @@ export class Island {
       // Houses are already positioned by sampleSurfacePosition - no additional offset needed
       house.name = `house_${i}`;
       houses.add(house);
+      // Outline Tier 1: body/roof/plinth/chimney get ink; the doormat, knob
+      // and porch lamp fall under the 0.6 size floor, windows plane-guard out.
+      addGroupHulls(house, 0.6, () => true);
       // Porch light. This used to sit at z = d*0.35 — INSIDE the walls — with
       // a 2u radius, so it lit precisely nothing and every house read as a
       // black slab with two lit windows after dark. It now hangs just proud
@@ -3194,6 +3222,9 @@ export class Island {
       stall.receiveShadow = true;
       stall.name = `stall_${i}`;
       stalls.add(stall);
+      // Outline Tier 1: skirt/table/roof only — posts and goods sit under the
+      // 1.0 world-size floor (group scale 2.2 is already applied above).
+      addGroupHulls(stall, 1.0, () => true);
     }
 
     // Signboards removed: unsupported flat planes floating at 0.8u read as
@@ -3543,6 +3574,8 @@ export class Island {
       bench.name = `bench_${i}`;
       bench.castShadow = true;
       benches.add(bench);
+      // Outline Tier 1: seat + back (legs fall under the 0.4 size floor).
+      addGroupHulls(bench, 0.4, () => true);
     }
 
     // Instanced wind-blown grass across the whole planet
@@ -3732,6 +3765,10 @@ export class Island {
       gate.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), gateUp);
       this.faceObjectToward(gate, gateUp, this.dirAt(d.lon, ZONE_LAT).multiplyScalar(this.radius));
       gates.add(gate);
+      // Outline Tier 1: posts + lintel; the district board keeps its clean
+      // face (text legibility) — the lantern is emissive-but-opaque so its
+      // ink cap is fine.
+      addGroupHulls(gate, 0.3, (m) => m.name !== 'gate-board');
     }
 
     // Group everything and attach to the main mesh as children so the island remains dominant
@@ -3803,6 +3840,11 @@ export class Island {
     // geometry to back the terrain's rock/steep shading. One draw call.
     const rocks = this.createRocks();
     if (rocks) root.add(rocks);
+
+    // Seafloor life — kelp beds + coral on the underwater skirt. Decoration
+    // only; deterministic from its own local RNG (see createSeafloorLife).
+    const seafloor = this.createSeafloorLife();
+    if (seafloor) root.add(seafloor);
 
     // (The old equator ring road + its decal conversion are gone — the
     // street network is built entirely from createStreetPath segments.)
@@ -4165,6 +4207,272 @@ export class Island {
     inst.instanceMatrix.needsUpdate = true;
     console.log(`🪨 Rock layer: ${placed} boulders (scree + shoreline)`);
     return placed > 0 ? inst : null;
+  }
+
+  /**
+   * Seafloor life — kelp beds + a coral/starfish layer on the underwater
+   * skirt (underwater slice). Everything here is DECORATION: no colliders,
+   * raycast no-ops, no shadows, exactly 5 draws (4 kelp chunks + 1 merged
+   * coral mesh). Determinism: a LOCAL mulberry32 stream with a fixed seed —
+   * this consumes NOTHING from the shared Math.random stream, so the
+   * multiplayer vehicle-placement contract is untouched by construction.
+   */
+  private createSeafloorLife(): THREE.Group | null {
+    let seed = 0x5eaf100d >>> 0;
+    const rng = (): number => {
+      // mulberry32 (same generator as GameScene.installSeededRandom, own state)
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const group = new THREE.Group();
+    group.name = 'seafloor_life';
+    const sea = this.seaLevel();
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    const dummy = new THREE.Object3D();
+
+    // ── Kelp: instanced strands in 4 longitude chunks ────────────────────
+    // Strand = 2 crossed ribbons × 4 stacked segments (16 tris / 48 verts),
+    // olive→yellow-green tip gradient, base at origin, KELP_H tall.
+    const KELP_H = 1.6;
+    const kelpPositions: number[] = [];
+    const kelpColors: number[] = [];
+    const kelpBase = new THREE.Color(0x2f4d22);
+    const kelpTip = new THREE.Color(0x93a844);
+    const kc = new THREE.Color();
+    const addRibbon = (rotY: number): void => {
+      const c = Math.cos(rotY);
+      const s = Math.sin(rotY);
+      const v = (x: number, y: number): void => {
+        kelpPositions.push(x * c, y, x * s);
+        kc.copy(kelpBase).lerp(kelpTip, y / KELP_H);
+        kelpColors.push(kc.r, kc.g, kc.b);
+      };
+      // Frond tapers toward the tip; a gentle mid bulge reads as a blade
+      const w = (y: number): number =>
+        0.085 * (1 - (y / KELP_H) * 0.55) * (0.8 + 0.4 * Math.sin((y / KELP_H) * Math.PI));
+      const SEGS = 4;
+      for (let i = 0; i < SEGS; i++) {
+        const y0 = (KELP_H * i) / SEGS;
+        const y1 = (KELP_H * (i + 1)) / SEGS;
+        const w0 = w(y0);
+        const w1 = w(y1);
+        v(-w0, y0);
+        v(w0, y0);
+        v(w1, y1);
+        v(-w0, y0);
+        v(w1, y1);
+        v(-w1, y1);
+      }
+    };
+    addRibbon(0);
+    addRibbon(Math.PI / 2);
+    const kelpGeo = new THREE.BufferGeometry();
+    kelpGeo.setAttribute('position', new THREE.Float32BufferAttribute(kelpPositions, 3));
+    kelpGeo.setAttribute('color', new THREE.Float32BufferAttribute(kelpColors, 3));
+    kelpGeo.computeVertexNormals();
+
+    const kelpMat = isRealTheme()
+      ? new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          roughness: 0.85,
+          metalness: 0,
+        })
+      : new THREE.MeshToonMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          gradientMap: Materials.toonRamp(), // shared 12-step ramp, like the meadow
+        });
+    kelpMat.onBeforeCompile = (shader) => {
+      // Grass wind recipe re-tuned for water: slower (×0.6 of the grass
+      // clock), stronger (0.25), bend ∝ (y/H)² so the holdfast stays planted
+      // while the tip streams. Shares the public grassTimeUniform — zero new
+      // per-frame uniform writes. No player-push terms: nothing walks here.
+      shader.uniforms.uTime = this.grassTimeUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <begin_vertex>',
+          [
+            '#include <begin_vertex>',
+            '#ifdef USE_INSTANCING',
+            '  float kPhase = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3 + instanceMatrix[3].y * 1.1;',
+            '  float kSway = sin(uTime * 1.26 + kPhase) + 0.5 * sin(uTime * 2.16 + kPhase * 1.4);',
+            `  float kT = position.y / ${KELP_H.toFixed(3)};`,
+            '  transformed.x += kSway * 0.25 * kT * kT;',
+            '  transformed.z += cos(uTime * 0.96 + kPhase) * 0.12 * kT * kT;',
+            '#endif',
+          ].join('\n'),
+        );
+    };
+
+    // Placement: depth band 1.2–3.2 on the underwater skirt (the open ocean
+    // bottoms out deeper, so the band self-limits kelp to the island's rim).
+    // 60% of strands cluster into 3 beds off the busiest beaches (fisherman
+    // lon 5.0, school shores 1.26/3.77); the rest thinly ring the island.
+    // Counts scale with world area (160 → 360 at R=75).
+    const KELP_TARGET = Math.round(160 * areaScale(this.radius));
+    const beds = [5.0, 1.26, 3.77];
+    const chunkMatrices: number[][] = [[], [], [], []];
+    let kelpPlaced = 0;
+    for (let i = 0; i < KELP_TARGET * 8 && kelpPlaced < KELP_TARGET; i++) {
+      let lon: number;
+      let lat: number;
+      if (rng() < 0.6) {
+        const bed = beds[Math.floor(rng() * beds.length) % beds.length];
+        lon = bed + (rng() - 0.5) * 0.5;
+        lat = 0.02 + rng() * 0.16;
+      } else {
+        lon = rng() * Math.PI * 2;
+        lat = -0.1 + rng() * 0.3;
+      }
+      if (lat >= 0.22) continue; // stay below the waterline latitude
+      dir.set(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
+      const a = this.analyticSurface(dir);
+      const depth = sea - a.radius;
+      if (depth < 1.2 || depth > 3.2) continue;
+      // Never breach the surface: cap strand height to 85% of the water column
+      const scale = Math.min(0.75 + rng() * 0.55, (depth * 0.85) / KELP_H);
+      dummy.position.copy(dir).multiplyScalar(a.radius - 0.05); // rooted, not floating
+      dummy.quaternion.setFromUnitVectors(up, dir); // buoyant — rises radially
+      dummy.rotateY(rng() * Math.PI * 2);
+      dummy.scale.setScalar(scale);
+      dummy.updateMatrix();
+      const q = ((Math.atan2(dir.z, dir.x) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 2);
+      chunkMatrices[Math.min(3, Math.floor(q))].push(...dummy.matrix.elements);
+      kelpPlaced++;
+    }
+    for (let s = 0; s < 4; s++) {
+      const count = chunkMatrices[s].length / 16;
+      if (count === 0) continue;
+      const chunk = new THREE.InstancedMesh(kelpGeo, kelpMat, count);
+      chunk.instanceMatrix.array.set(chunkMatrices[s]);
+      chunk.instanceMatrix.needsUpdate = true;
+      chunk.name = `kelp_chunk_${s}`;
+      chunk.raycast = () => {}; // camera/feed rays must never hit a frond
+      chunk.castShadow = false;
+      chunk.receiveShadow = false;
+      chunk.computeBoundingSphere(); // tight per-chunk sphere (grass sector lesson)
+      group.add(chunk);
+    }
+
+    // ── Coral + starfish: ONE merged static mesh, vertex colors ──────────
+    // Shallow band (0.3–1.8) so the warm accents read from the surface and
+    // the shore. MeshStandardMaterial → rides the toonify pass like the rest
+    // of the island.
+    const warm = [0xe8735a, 0xd8a04a, 0xe86a4f].map((c) => new THREE.Color(c));
+    const partCol = new THREE.Color();
+    const bakeColor = (g: THREE.BufferGeometry, col: THREE.Color): void => {
+      const n = g.getAttribute('position').count;
+      const arr = new Float32Array(n * 3);
+      for (let vi = 0; vi < n; vi++) {
+        arr[vi * 3] = col.r;
+        arr[vi * 3 + 1] = col.g;
+        arr[vi * 3 + 2] = col.b;
+      }
+      g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    };
+    // 5-point star prism template for the starfish (extruded flat).
+    const starShape = new THREE.Shape();
+    for (let p = 0; p < 10; p++) {
+      const ang = (p / 10) * Math.PI * 2;
+      const r = p % 2 === 0 ? 0.16 : 0.065;
+      if (p === 0) starShape.moveTo(Math.cos(ang) * r, Math.sin(ang) * r);
+      else starShape.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+    }
+    // mergeGeometries refuses to mix indexed + non-indexed parts (it returns
+    // null) — Cone is indexed, Icosahedron/Extrude are not. Flatten everything.
+    const noIdx = (g: THREE.BufferGeometry): THREE.BufferGeometry =>
+      g.index ? g.toNonIndexed() : g;
+    const starGeoTemplate = noIdx(
+      new THREE.ExtrudeGeometry(starShape, {
+        depth: 0.05,
+        bevelEnabled: false,
+      }),
+    );
+    starGeoTemplate.rotateX(-Math.PI / 2); // flat on the seabed, points out
+    const parts: THREE.BufferGeometry[] = [];
+    const seatPart = (
+      g: THREE.BufferGeometry,
+      surfDepthMin: number,
+      surfDepthMax: number,
+    ): boolean => {
+      // Shared scatter: pick a shoreline-band direction, gate by depth.
+      for (let tries = 0; tries < 24; tries++) {
+        const lon = rng() * Math.PI * 2;
+        const lat = -0.05 + rng() * 0.27;
+        dir.set(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
+        const a = this.analyticSurface(dir);
+        const depth = sea - a.radius;
+        if (depth < surfDepthMin || depth > surfDepthMax) continue;
+        // Organic ground clutter — the World Law 1 exception: follows the
+        // slope normal like rocks and feed piles do.
+        dummy.position.copy(dir).multiplyScalar(a.radius - 0.02);
+        dummy.quaternion.setFromUnitVectors(up, a.normal);
+        dummy.rotateY(rng() * Math.PI * 2);
+        dummy.updateMatrix();
+        g.applyMatrix4(dummy.matrix);
+        parts.push(g);
+        return true;
+      }
+      return false;
+    };
+    const CORAL_CLUMPS = Math.round(40 * areaScale(this.radius));
+    for (let i = 0; i < CORAL_CLUMPS; i++) {
+      const nubs = 3 + Math.floor(rng() * 2);
+      const clump: THREE.BufferGeometry[] = [];
+      partCol.copy(warm[Math.floor(rng() * warm.length) % warm.length]);
+      partCol.offsetHSL((rng() - 0.5) * 0.03, 0, (rng() - 0.5) * 0.08);
+      for (let n = 0; n < nubs; n++) {
+        const nub = noIdx(new THREE.IcosahedronGeometry(0.1 + rng() * 0.12, 0));
+        nub.scale(1, 0.6 + rng() * 0.5, 1); // squashed knob
+        nub.translate((rng() - 0.5) * 0.4, 0.05, (rng() - 0.5) * 0.4);
+        bakeColor(nub, partCol);
+        clump.push(nub);
+      }
+      const merged = mergeGeometries(clump, false) as THREE.BufferGeometry;
+      const scale = 0.8 + rng() * 0.9;
+      merged.scale(scale, scale, scale);
+      seatPart(merged, 0.3, 1.8);
+    }
+    const STARFISH = Math.round(18 * areaScale(this.radius));
+    for (let i = 0; i < STARFISH; i++) {
+      const star = starGeoTemplate.clone();
+      partCol.copy(warm[Math.floor(rng() * warm.length) % warm.length]);
+      partCol.offsetHSL((rng() - 0.5) * 0.05, 0.05, 0.05 + rng() * 0.06);
+      bakeColor(star, partCol);
+      const scale = 0.7 + rng() * 0.8;
+      star.scale(scale, scale, scale);
+      seatPart(star, 0.25, 1.4);
+    }
+    const FANS = Math.round(3 * areaScale(this.radius));
+    for (let i = 0; i < FANS; i++) {
+      const fan = noIdx(new THREE.ConeGeometry(0.32, 0.55, 6));
+      fan.scale(1, 1, 0.16); // sea fan: a cone flattened into a blade
+      fan.translate(0, 0.27, 0);
+      partCol.copy(warm[1]).offsetHSL((rng() - 0.5) * 0.06, 0, 0.04);
+      bakeColor(fan, partCol);
+      seatPart(fan, 0.6, 2.2);
+    }
+    if (parts.length) {
+      const coralGeo = mergeGeometries(parts, false) as THREE.BufferGeometry;
+      const coralMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.9,
+        metalness: 0,
+      });
+      const coral = new THREE.Mesh(coralGeo, coralMat);
+      coral.name = 'coral_layer';
+      coral.raycast = () => {};
+      coral.castShadow = false;
+      coral.receiveShadow = false;
+      group.add(coral);
+    }
+    console.log(`🪸 Seafloor life: ${kelpPlaced} kelp strands, ${parts.length} coral parts`);
+    return group.children.length > 0 ? group : null;
   }
 
   // ── NPC dressing: variety + faces + persona flair ────────────────────────

@@ -277,6 +277,61 @@ describe('island radius invariants', () => {
     });
   });
 
+  describe.each(RADII)('seafloor life at R=%i', (r) => {
+    test('exactly ≤5 draws: 4 kelp chunks + 1 coral mesh, spheres tight', () => {
+      const island = islandAt(r);
+      const sf = island.mesh.getObjectByName('seafloor_life');
+      expect(sf, 'seafloor_life group missing').toBeTruthy();
+      const kids = (sf as THREE.Group).children;
+      expect(kids.length).toBeLessThanOrEqual(5); // the audit's draw ledger
+      const kelp = kids.filter((c) => c.name.startsWith('kelp_chunk_')) as THREE.InstancedMesh[];
+      expect(kelp.length).toBeGreaterThanOrEqual(3); // tolerate one empty octant
+      for (const c of kelp) {
+        // Same invariant as grass: a sphere reaching the core = culling dead.
+        expect(c.boundingSphere, `${c.name} has no bounding sphere`).toBeTruthy();
+        expect(c.boundingSphere!.center.length()).toBeGreaterThan(0.5 * r);
+      }
+      expect(kids.some((c) => c.name === 'coral_layer')).toBe(true);
+    });
+
+    test('no kelp strand can breach the sea surface', () => {
+      const island = islandAt(r);
+      const sf = island.mesh.getObjectByName('seafloor_life') as THREE.Group;
+      const sea = island.seaLevel();
+      const KELP_H = 1.6;
+      const m = new THREE.Matrix4();
+      const pos = new THREE.Vector3();
+      const q = new THREE.Quaternion();
+      const s = new THREE.Vector3();
+      for (const c of sf.children) {
+        if (!c.name.startsWith('kelp_chunk_')) continue;
+        const inst = c as THREE.InstancedMesh;
+        for (let i = 0; i < inst.count; i++) {
+          inst.getMatrixAt(i, m);
+          m.decompose(pos, q, s);
+          // Root radius + full strand height must stay below MEAN sea level
+          // (waves add ±WAVE_AMP, hence the placement's 0.85 headroom factor).
+          expect(pos.length() + s.y * KELP_H).toBeLessThan(sea + 0.4);
+        }
+      }
+    });
+
+    test('kelp population scales with world area', () => {
+      const counts = RADII.map((rr) => {
+        const sf = islandAt(rr).mesh.getObjectByName('seafloor_life') as THREE.Group;
+        let n = 0;
+        for (const c of sf.children) {
+          if (c.name.startsWith('kelp_chunk_')) n += (c as THREE.InstancedMesh).count;
+        }
+        return n;
+      });
+      expect(counts[0]).toBeGreaterThan(50);
+      // R=75 carries ~2.25× the surface of R=50 — the bed should grow with it
+      // (placement rejection makes it inexact; 1.5× is the floor).
+      expect(counts[1]).toBeGreaterThan(counts[0] * 1.5);
+    });
+  });
+
   test('the land/sea split holds its shape across radii', () => {
     // The continent mask is latitude-driven and therefore angular, so growing
     // the world must not drown or beach the island. Catches a coastline
