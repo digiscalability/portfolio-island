@@ -4591,6 +4591,33 @@ export class Island {
       bakeColor(fan, partCol);
       seatPart(fan, 0.6, 2.2);
     }
+    // Lobsters (expansion slice 5) — merged into the coral layer, +0 draws.
+    // Body + tail fan + claw knobs + antennae, rust red, near the rocks in
+    // the shallower band.
+    for (let i = 0; i < 2; i++) {
+      const lobParts: THREE.BufferGeometry[] = [
+        noIdx(new THREE.SphereGeometry(0.09, 6, 5)).scale(0.9, 0.6, 1.8),
+        noIdx(new THREE.SphereGeometry(0.05, 5, 4))
+          .scale(1.6, 0.35, 1)
+          .translate(0, 0.01, 0.2),
+        noIdx(new THREE.SphereGeometry(0.035, 5, 4))
+          .scale(1.2, 0.8, 1)
+          .translate(-0.07, 0, -0.14),
+        noIdx(new THREE.SphereGeometry(0.035, 5, 4))
+          .scale(1.2, 0.8, 1)
+          .translate(0.07, 0, -0.14),
+        noIdx(new THREE.CylinderGeometry(0.004, 0.006, 0.22, 3))
+          .rotateX(1.2)
+          .translate(-0.03, 0.05, -0.2),
+        noIdx(new THREE.CylinderGeometry(0.004, 0.006, 0.22, 3))
+          .rotateX(1.2)
+          .translate(0.03, 0.05, -0.2),
+      ];
+      const lobster = mergeGeometries(lobParts, false) as THREE.BufferGeometry;
+      partCol.set(0x8a3a28).offsetHSL((rng() - 0.5) * 0.04, 0, (rng() - 0.5) * 0.05);
+      bakeColor(lobster, partCol);
+      seatPart(lobster, 0.4, 1.2);
+    }
     if (parts.length) {
       const coralGeo = mergeGeometries(parts, false) as THREE.BufferGeometry;
       const coralMat = new THREE.MeshStandardMaterial({
@@ -5480,9 +5507,15 @@ export class Island {
       // plaza (its clearances know streets and props, not halls). If it did,
       // slide directly AWAY from that plaza back onto the apron ring —
       // amenities must never end up inside a district hall.
-      // Two passes: the street push after a slide can eat the margin, and a
-      // slide away from one plaza can drift toward another.
-      for (let guardPass = 0; guardPass < 2; guardPass++) {
+      // Converge: a street push can re-encroach a plaza and vice versa, so
+      // iterate until BOTH constraints hold (4 passes always suffice with a
+      // 1m slack between the 5.5m slide target and the 4.5m trigger).
+      for (let guardPass = 0; guardPass < 4; guardPass++) {
+        let moved = false;
+        if (this.isNearStreet(dir)) {
+          dir.copy(this.pushOffStreet(dir));
+          moved = true;
+        }
         for (const dLon of RING_DISTRICT_LONS) {
           const plaza = this.dirAt(dLon, ZONE_LAT);
           if (dir.angleTo(plaza) >= this.arc(4.5)) continue;
@@ -5492,8 +5525,9 @@ export class Island {
             .multiplyScalar(Math.cos(this.arc(5.5)))
             .addScaledVector(away, Math.sin(this.arc(5.5)))
             .normalize();
-          if (this.isNearStreet(dir)) dir.copy(this.pushOffStreet(dir));
+          moved = true;
         }
+        if (!moved) break;
       }
       let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
       try {
@@ -6206,6 +6240,12 @@ export class Island {
       ]) as Array<[number, number]>;
     // Seat one instance: place at the crop's terrain spot + `lift` up the local
     // normal, oriented so the plant stands up out of the slope.
+    // Growth stages (expansion slice 4): every crop reads at a different
+    // point of its life — seedling to full — via PURE index math (no RNG,
+    // so the ambient stream stays byte-identical). Young crops sit lower in
+    // the soil; the lift eases up with the scale.
+    const stageOf = (i: number): number => 0.35 + 0.65 * (((i * 37) % 96) / 95);
+    const _stagedScale = new THREE.Vector3();
     const seatCrop = (
       mesh: THREE.InstancedMesh,
       i: number,
@@ -6216,7 +6256,12 @@ export class Island {
     ): void => {
       const { pos, up } = surfAt(e, n);
       q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
-      m.compose(pos.addScaledVector(up, lift), q, scale);
+      const s = stageOf(i);
+      m.compose(
+        pos.addScaledVector(up, 0.16 + (lift - 0.16) * s),
+        q,
+        _stagedScale.copy(scale).multiplyScalar(s),
+      );
       mesh.setMatrixAt(i, m);
     };
 
@@ -6318,6 +6363,186 @@ export class Island {
       .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2));
     bale.castShadow = true;
     g.add(bale);
+
+    // ── New crop variety (expansion slice 4): pumpkins, sunflowers, wheat ─
+    // SHIELDED additions: local rng for the cosmetic jitter + uuid mints, so
+    // the ambient stream (which still feeds the boat anchors downstream) is
+    // untouched. Everything seats through surfAt like the rest of the farm.
+    {
+      const stashedRandom = Math.random;
+      let seed = 0xfa43c09b >>> 0;
+      Math.random = () => {
+        seed = (seed + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      try {
+        const noIdx = (geo: THREE.BufferGeometry): THREE.BufferGeometry =>
+          geo.index ? geo.toNonIndexed() : geo;
+        // Pumpkin patch (6): squashed orange globes + a stub stem, one IM.
+        const pumpkinGeo = mergeGeometries(
+          [
+            noIdx(new THREE.SphereGeometry(0.22, 7, 5)).scale(1, 0.68, 1),
+            noIdx(new THREE.CylinderGeometry(0.03, 0.045, 0.09, 5)).translate(0, 0.17, 0),
+          ],
+          false,
+        ) as THREE.BufferGeometry;
+        // Bake the two-tone: orange body, green stem (vertex colors).
+        {
+          const pos = pumpkinGeo.getAttribute('position');
+          const cols = new Float32Array(pos.count * 3);
+          const body = new THREE.Color(0xe07b2a);
+          const stem = new THREE.Color(0x6a8a3a);
+          for (let i = 0; i < pos.count; i++) {
+            const c = pos.getY(i) > 0.14 ? stem : body;
+            cols[i * 3] = c.r;
+            cols[i * 3 + 1] = c.g;
+            cols[i * 3 + 2] = c.b;
+          }
+          pumpkinGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+        }
+        const pumpkins = new THREE.InstancedMesh(
+          pumpkinGeo,
+          new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: Materials.toonRamp() }),
+          6,
+        );
+        pumpkins.castShadow = true;
+        for (let i = 0; i < 6; i++) {
+          const e = 3.2 + Math.random() * 1.2;
+          const n = -2.6 + Math.random() * 2.0;
+          const { pos, up } = surfAt(e, n);
+          q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+          const sc = (0.8 + Math.random() * 0.35) * stageOf(i * 17);
+          m.compose(pos.addScaledVector(up, 0.15 * sc), q, new THREE.Vector3(sc, sc, sc));
+          pumpkins.setMatrixAt(i, m);
+        }
+        pumpkins.instanceMatrix.needsUpdate = true;
+        g.add(pumpkins);
+        // Sunflower row (7) along the west edge, heads facing field-south.
+        const sunGeo = mergeGeometries(
+          [
+            noIdx(new THREE.CylinderGeometry(0.028, 0.034, 1.15, 5)).translate(0, 0.57, 0),
+            noIdx(new THREE.CylinderGeometry(0.14, 0.14, 0.05, 8))
+              .rotateX(0.5)
+              .translate(0, 1.18, 0.04),
+            ...Array.from({ length: 10 }, (_, p) => {
+              const ang = (p / 10) * Math.PI * 2;
+              return noIdx(new THREE.SphereGeometry(0.05, 5, 4))
+                .scale(1.5, 0.4, 0.9)
+                .translate(
+                  Math.cos(ang) * 0.17,
+                  1.18 + Math.sin(0.5) * 0.02,
+                  0.05 + Math.sin(ang) * 0.15,
+                );
+            }),
+          ],
+          false,
+        ) as THREE.BufferGeometry;
+        {
+          const pos = sunGeo.getAttribute('position');
+          const cols = new Float32Array(pos.count * 3);
+          const stem = new THREE.Color(0x4a7a34);
+          const disc = new THREE.Color(0x5a4326);
+          const petal = new THREE.Color(0xf2c435);
+          for (let i = 0; i < pos.count; i++) {
+            const y = pos.getY(i);
+            const rr = Math.hypot(pos.getX(i), pos.getZ(i) - 0.05);
+            const c = y < 1.05 ? stem : rr < 0.15 ? disc : petal;
+            cols[i * 3] = c.r;
+            cols[i * 3 + 1] = c.g;
+            cols[i * 3 + 2] = c.b;
+          }
+          sunGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+        }
+        const sunflowers = new THREE.InstancedMesh(
+          sunGeo,
+          new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: Materials.toonRamp() }),
+          7,
+        );
+        sunflowers.castShadow = true;
+        for (let i = 0; i < 7; i++) {
+          const { pos, up } = surfAt(-3.1, -2.8 + i * 0.93);
+          basisQuat(up, q); // +Z field-north; heads authored leaning +Z-ish
+          const sc = 0.85 + Math.random() * 0.25;
+          m.compose(pos, q, new THREE.Vector3(sc, sc, sc));
+          sunflowers.setMatrixAt(i, m);
+        }
+        sunflowers.instanceMatrix.needsUpdate = true;
+        g.add(sunflowers);
+        // Wheat (24 clumps in 2 rows) — golden tufts swaying on the shared
+        // grass clock (zero new per-frame uniform writes).
+        const wheatPos: number[] = [];
+        const wheatCol: number[] = [];
+        const wBase = new THREE.Color(0xb99a4e);
+        const wTip = new THREE.Color(0xe8d38a);
+        const wc = new THREE.Color();
+        const WHEAT_H = 0.55;
+        for (let b = 0; b < 7; b++) {
+          const ang = (b / 7) * Math.PI * 2 + Math.random() * 0.8;
+          const ring = b === 0 ? 0 : 0.04 + Math.random() * 0.1;
+          const ox = Math.cos(ang) * ring;
+          const oz = Math.sin(ang) * ring;
+          const h = (b === 0 ? 1 : 0.6 + Math.random() * 0.35) * WHEAT_H;
+          const w0 = 0.05;
+          const yaw = Math.random() * Math.PI * 2;
+          const c = Math.cos(yaw);
+          const s2 = Math.sin(yaw);
+          const v = (x: number, y: number): void => {
+            wheatPos.push(x * c + ox, y, x * s2 + oz);
+            wc.copy(wBase).lerp(wTip, y / WHEAT_H);
+            wheatCol.push(wc.r, wc.g, wc.b);
+          };
+          v(-w0, 0);
+          v(w0, 0);
+          v(w0 * 0.5, h);
+          v(-w0, 0);
+          v(w0 * 0.5, h);
+          v(-w0 * 0.5, h);
+        }
+        const wheatGeo = new THREE.BufferGeometry();
+        wheatGeo.setAttribute('position', new THREE.Float32BufferAttribute(wheatPos, 3));
+        wheatGeo.setAttribute('color', new THREE.Float32BufferAttribute(wheatCol, 3));
+        wheatGeo.computeVertexNormals();
+        const wheatMat = new THREE.MeshToonMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          gradientMap: Materials.toonRamp(),
+        });
+        wheatMat.onBeforeCompile = (shader) => {
+          shader.uniforms.uTime = this.grassTimeUniform;
+          shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nuniform float uTime;')
+            .replace(
+              '#include <begin_vertex>',
+              [
+                '#include <begin_vertex>',
+                '#ifdef USE_INSTANCING',
+                '  float wPhase = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3;',
+                '  float wSway = sin(uTime * 1.9 + wPhase) + 0.4 * sin(uTime * 3.1 + wPhase * 1.3);',
+                `  float wT = position.y / ${WHEAT_H.toFixed(2)};`,
+                '  transformed.x += wSway * 0.06 * wT * wT;',
+                '#endif',
+              ].join('\n'),
+            );
+        };
+        const wheat = new THREE.InstancedMesh(wheatGeo, wheatMat, 24);
+        for (let i = 0; i < 24; i++) {
+          const e = i < 12 ? 3.3 : 3.9;
+          const n = 0.2 + (i % 12) * 0.245;
+          const { pos, up } = surfAt(e, n);
+          q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+          const sc = 0.85 + Math.random() * 0.3;
+          m.compose(pos, q, new THREE.Vector3(sc, sc, sc));
+          wheat.setMatrixAt(i, m);
+        }
+        wheat.instanceMatrix.needsUpdate = true;
+        wheat.raycast = () => {};
+        g.add(wheat);
+      } finally {
+        Math.random = stashedRandom;
+      }
+    }
 
     parent.add(g);
     this.farmDir = centreDir.clone();

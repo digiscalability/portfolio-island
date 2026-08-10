@@ -24,6 +24,7 @@ import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 import {
   BIRD_SPOTS,
   CAT_SPOTS_AUTHORED,
+  CRAB_SPOTS_AUTHORED,
   FLOCK_ANCHORS,
   camNearThreshold,
   faunaElevOk,
@@ -249,6 +250,31 @@ export class GameScene extends THREE.Scene {
     phase: number;
     dipT0: number; // -1 = not dipping, else start time
     nextDip: number; // time of the next fishing dip
+  }> = [];
+  // Shore crabs (expansion slice 5): scuttling primitive groups, one per
+  // quiet beach. Pivots are identity-rest, so ABSOLUTE rotation writes are
+  // correct here (World Law 2 is a GLB-rig law, not a pivot law).
+  private crabs: Array<{
+    group: THREE.Group;
+    clawL: THREE.Object3D;
+    clawR: THREE.Object3D;
+    home: THREE.Vector3; // unit dir of the authored beach spot
+    dir: THREE.Vector3; // current unit dir
+    target: THREE.Vector3; // scuttle goal (unit dir)
+    state: 'idle' | 'scuttle' | 'flee';
+    until: number; // state deadline
+    phase: number;
+  }> = [];
+  // Deep fauna (expansion slice 6): angelfish circling the kelp beds +
+  // drifting jellyfish. All analytic — no raycasts, no waveHeightAt.
+  private deepFauna: Array<{
+    group: THREE.Group;
+    kind: 'angelfish' | 'jelly';
+    anchor: THREE.Vector3; // unit dir of the bed / drift centre
+    tail: THREE.Object3D | null;
+    dome: THREE.Mesh | null;
+    phase: number;
+    ringR: number;
   }> = [];
   // Reach radii are a FRACTION of the world: the animals they call spread out
   // as the planet grows, so a fixed distance quietly stops reaching them — and
@@ -1671,6 +1697,358 @@ export class GameScene extends THREE.Scene {
     console.log(`🪶 ${this.herons.length} herons at the shore`);
   }
 
+  /** Shore crabs (expansion slice 5). Construction runs inside the seeded
+   *  window, so the builder SHIELDS the stream (local rng for jitter + uuid
+   *  mints). ~3 draws each (merged shell + 2 claws), cel hulls via the
+   *  legacy 2-arg path. */
+  private createCrabs(): void {
+    const stashedRandom = Math.random;
+    let seed = 0xc2ab5ea1 >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.createCrabsShielded();
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private createCrabsShielded(): void {
+    const noIdx = (g: THREE.BufferGeometry): THREE.BufferGeometry =>
+      g.index ? g.toNonIndexed() : g;
+    const bake = (g: THREE.BufferGeometry, hex: number): THREE.BufferGeometry => {
+      const c = new THREE.Color(hex);
+      const n = g.getAttribute('position').count;
+      const arr = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        arr[i * 3] = c.r;
+        arr[i * 3 + 1] = c.g;
+        arr[i * 3 + 2] = c.b;
+      }
+      g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+      return g;
+    };
+    const mat = new THREE.MeshToonMaterial({
+      vertexColors: true,
+      gradientMap: Materials.toonRamp(),
+    });
+    for (const [lon, lat] of CRAB_SPOTS_AUTHORED) {
+      const crab = new THREE.Group();
+      const shellParts: THREE.BufferGeometry[] = [
+        bake(noIdx(new THREE.SphereGeometry(0.09, 7, 5)).scale(1.5, 0.62, 1.1), 0xd9603a),
+        bake(
+          noIdx(new THREE.SphereGeometry(0.07, 6, 4))
+            .scale(1.3, 0.4, 1)
+            .translate(0, -0.015, 0),
+          0xc25232,
+        ),
+        bake(noIdx(new THREE.SphereGeometry(0.016, 4, 3)).translate(-0.05, 0.075, -0.1), 0x2a2a30),
+        bake(noIdx(new THREE.SphereGeometry(0.016, 4, 3)).translate(0.05, 0.075, -0.1), 0x2a2a30),
+      ];
+      for (let l = 0; l < 6; l++) {
+        const side = l < 3 ? -1 : 1;
+        const zi = (l % 3) - 1;
+        shellParts.push(
+          bake(
+            noIdx(new THREE.CylinderGeometry(0.009, 0.012, 0.1, 4))
+              .rotateZ(side * 1.1)
+              .translate(side * 0.14, 0.0, zi * 0.06),
+            0xb84c2e,
+          ),
+        );
+      }
+      const shell = new THREE.Mesh(mergeGeometries(shellParts, false) as THREE.BufferGeometry, mat);
+      shell.castShadow = false;
+      shell.raycast = () => {};
+      crab.add(shell);
+      const mkClaw = (side: number): THREE.Object3D => {
+        const pivot = new THREE.Object3D();
+        pivot.position.set(side * 0.12, 0.01, -0.07);
+        const claw = new THREE.Mesh(
+          mergeGeometries(
+            [
+              bake(noIdx(new THREE.SphereGeometry(0.035, 5, 4)).scale(1.3, 0.9, 1), 0xd9603a),
+              bake(
+                noIdx(new THREE.SphereGeometry(0.02, 4, 3)).translate(side * 0.02, 0.01, -0.035),
+                0xc25232,
+              ),
+            ],
+            false,
+          ) as THREE.BufferGeometry,
+          mat,
+        );
+        claw.position.set(side * 0.02, 0, -0.03);
+        claw.raycast = () => {};
+        pivot.add(claw);
+        crab.add(pivot);
+        return pivot;
+      };
+      const clawL = mkClaw(-1);
+      const clawR = mkClaw(1);
+      const dir = this.island.dirAt(lon, lat);
+      let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+      try {
+        seat = this.island.sampleSurfaceByDirection(dir, 0);
+      } catch {
+        continue;
+      }
+      const footR = Math.max(seat.position.length(), this.island.seaLevel() + 0.02);
+      crab.position.copy(dir).multiplyScalar(footR);
+      // Ground-hugger: follows the sand normal (World Law 1's organic
+      // exception, same as the cats), −Z faces the sea.
+      crab.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
+      crab.scale.setScalar(1.4);
+      this.add(crab);
+      addGroupHulls(crab); // legacy 2-arg path — 0.045 floor skips legs/stalks
+      this.crabs.push({
+        group: crab,
+        clawL,
+        clawR,
+        home: dir.clone(),
+        dir: dir.clone(),
+        target: dir.clone(),
+        state: 'idle',
+        until: Math.random() * 4,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+    console.log(`🦀 ${this.crabs.length} crabs on the beaches`);
+  }
+
+  /** Crab FSM — the SOLE writer of crab transforms. Sideways scuttle along
+   *  the beach band, claw idle, flee from close players. */
+  private updateCrabs(deltaTime: number, time: number): void {
+    if (!this.crabs.length) return;
+    const playerPos = this.player ? this.player.getWorldPosition() : null;
+    const LOW = Math.sin(0.222);
+    const HIGH = Math.sin(0.245); // stay on the sand (0.25+ is lawn)
+    for (const c of this.crabs) {
+      // Claw idle: slow alternating waves, snappier when fleeing.
+      const clawAng =
+        c.state === 'flee' ? -0.6 : Math.sin(time * 1.2 * Math.PI * 2 * 0.16 + c.phase) * 0.18;
+      c.clawL.rotation.x = clawAng;
+      c.clawR.rotation.x = -clawAng;
+      const pDist = playerPos ? c.group.position.distanceTo(playerPos) : 99;
+      if (c.state !== 'flee' && pDist < 2.5) {
+        c.state = 'flee';
+        // Seaward = down the latitude gradient: subtract the pole component.
+        c.target
+          .copy(c.dir)
+          .addScaledVector(new THREE.Vector3(0, 1, 0), -0.08)
+          .normalize();
+      } else if (c.state === 'flee' && pDist > 6) {
+        c.state = 'idle';
+        c.until = time + 1 + Math.sin(c.phase) * 0.5 + 1.5;
+      }
+      if (c.state === 'idle' && time >= c.until) {
+        c.state = 'scuttle';
+        // Along-the-beach target: rotate the home dir a little in longitude.
+        const swing =
+          (Math.sin(time * 0.7 + c.phase) > 0 ? 1 : -1) *
+          (0.015 + 0.01 * Math.abs(Math.sin(c.phase + time)));
+        c.target
+          .copy(c.home)
+          .applyAxisAngle(new THREE.Vector3(0, 1, 0), swing)
+          .normalize();
+        c.until = time + 3;
+      }
+      if (c.state === 'scuttle' || c.state === 'flee') {
+        const speed = c.state === 'flee' ? 1.8 : 0.9;
+        const step = (speed * deltaTime) / this.island.getRadius();
+        const toTarget = c.target.angleTo(c.dir);
+        if (toTarget < step * 1.5 || (c.state === 'scuttle' && time >= c.until)) {
+          c.state = 'idle';
+          c.until = time + 2 + (Math.sin(c.phase * 3 + time) + 1) * 2;
+        } else {
+          // Slerp the unit dir toward the target by the step arc.
+          c.dir.lerp(c.target, Math.min(1, step / toTarget)).normalize();
+          // Clamp to the beach band so the crab never wanders inland or drowns.
+          if (c.dir.y < LOW || c.dir.y > HIGH) {
+            const y = THREE.MathUtils.clamp(c.dir.y, LOW, HIGH);
+            const xz = Math.sqrt(Math.max(1e-8, 1 - y * y));
+            const lon = Math.atan2(c.dir.z, c.dir.x);
+            c.dir.set(Math.cos(lon) * xz, y, Math.sin(lon) * xz);
+          }
+        }
+      }
+      // Reseat analytically every frame (cheap) + scuttle bob.
+      const a = this.island.analyticSurface(c.dir);
+      const footR = Math.max(a.radius, this.island.seaLevel() + 0.02);
+      const bob = c.state === 'idle' ? 0 : 0.012 * Math.abs(Math.sin(time * 16 + c.phase));
+      c.group.position.copy(c.dir).multiplyScalar(footR + bob);
+      const q = this._catQuat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), a.normal);
+      c.group.quaternion.copy(q);
+      // SIDEWAYS travel: face the sea (−Z seaward) regardless of direction
+      // of motion — that's the crab walk.
+      const seaward = c.dir
+        .clone()
+        .addScaledVector(new THREE.Vector3(0, 1, 0), -c.dir.y)
+        .normalize();
+      this.island.faceObjectToward(
+        c.group,
+        a.normal,
+        c.group.position.clone().addScaledVector(seaward, 5),
+      );
+    }
+  }
+
+  /** Deep fauna (expansion slice 6): angelfish circling the kelp beds +
+   *  drifting jellyfish. Visibility-gated — the coral lesson: nothing under
+   *  the surface is visible from above, so hide unless the camera is
+   *  submerged or close. */
+  private createDeepFauna(): void {
+    const stashedRandom = Math.random;
+    let seed = 0xdee9f15b >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.createDeepFaunaShielded();
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private createDeepFaunaShielded(): void {
+    const ramp = Materials.toonRamp();
+    // Angelfish — two per kelp bed (beds authored in createSeafloorLife).
+    const bodyMat = new THREE.MeshToonMaterial({ color: 0xf2c744, gradientMap: ramp });
+    const finMat = new THREE.MeshToonMaterial({ color: 0x2a2a30, gradientMap: ramp });
+    for (const lon of [5.0, 1.26, 3.77]) {
+      for (let k = 0; k < 2; k++) {
+        const g = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.32, 0), bodyMat);
+        body.scale.set(0.22, 1.05, 0.85);
+        body.raycast = () => {};
+        const dorsal = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.3, 3), finMat);
+        dorsal.position.y = 0.36;
+        dorsal.raycast = () => {};
+        const ventral = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.3, 3), finMat);
+        ventral.position.y = -0.36;
+        ventral.rotation.z = Math.PI;
+        ventral.raycast = () => {};
+        const tailPivot = new THREE.Object3D();
+        tailPivot.position.z = 0.28;
+        const tail = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.22, 3), finMat);
+        tail.rotation.x = -Math.PI / 2;
+        tail.position.z = 0.1;
+        tail.raycast = () => {};
+        tailPivot.add(tail);
+        g.add(body, dorsal, ventral, tailPivot);
+        g.visible = false;
+        this.add(g);
+        const lat = 0.06 + Math.random() * 0.04;
+        this.deepFauna.push({
+          group: g,
+          kind: 'angelfish',
+          anchor: this.island.dirAt(lon, lat),
+          tail: tailPivot,
+          dome: null,
+          phase: Math.random() * Math.PI * 2 + k * Math.PI,
+          ringR: 1.2 + Math.random() * 0.8,
+        });
+      }
+    }
+    // Jellyfish — translucent drifting bells with line tentacles.
+    for (const [lon, lat] of [
+      [5.2, 0.08],
+      [1.1, 0.09],
+      [3.6, 0.07],
+    ]) {
+      const g = new THREE.Group();
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.16, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2),
+        new THREE.MeshToonMaterial({
+          color: 0xd8a8e8,
+          gradientMap: ramp,
+          transparent: true,
+          opacity: 0.55,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      dome.raycast = () => {};
+      const tentaclePts: THREE.Vector3[] = [];
+      for (let tIdx = 0; tIdx < 5; tIdx++) {
+        const a = (tIdx / 5) * Math.PI * 2;
+        const x = Math.cos(a) * 0.08;
+        const z = Math.sin(a) * 0.08;
+        tentaclePts.push(new THREE.Vector3(x, 0, z), new THREE.Vector3(x * 1.6, -0.34, z * 1.6));
+      }
+      const tentacles = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(tentaclePts),
+        new THREE.LineBasicMaterial({ color: 0xc9a0e0, transparent: true, opacity: 0.4 }),
+      );
+      tentacles.raycast = () => {};
+      g.add(dome, tentacles);
+      g.visible = false;
+      this.add(g);
+      this.deepFauna.push({
+        group: g,
+        kind: 'jelly',
+        anchor: this.island.dirAt(lon, lat),
+        tail: null,
+        dome,
+        phase: Math.random() * Math.PI * 2,
+        ringR: 0,
+      });
+    }
+    console.log(`🐠 deep fauna: ${this.deepFauna.length} (angelfish + jellies)`);
+  }
+
+  private updateDeepFauna(time: number): void {
+    if (!this.deepFauna.length) return;
+    const sea = this.island.seaLevel();
+    const camPos = this.camera ? this.camera.position : null;
+    for (const f of this.deepFauna) {
+      // Gate: hemisphere cull + only visible when submerged or close by.
+      if (camPos) {
+        const d2 = f.group.position.distanceToSquared(camPos);
+        const hemi = f.anchor.dot(camPos) / camPos.length();
+        f.group.visible = hemi > -0.05 && (this.submergedF > 0.01 || d2 < 900);
+        if (!f.group.visible) continue;
+      }
+      if (f.kind === 'angelfish') {
+        const ang = time * 0.25 + f.phase;
+        const east = new THREE.Vector3(-f.anchor.z, 0, f.anchor.x).normalize();
+        const north = new THREE.Vector3().crossVectors(f.anchor, east).normalize();
+        const dir = f.anchor
+          .clone()
+          .addScaledVector(east, (Math.cos(ang) * f.ringR) / this.island.getRadius())
+          .addScaledVector(north, (Math.sin(ang) * f.ringR) / this.island.getRadius())
+          .normalize();
+        const r = sea - (1.0 + 0.4 * Math.sin(0.5 * time + f.phase));
+        f.group.position.copy(dir).multiplyScalar(r);
+        // Face along the travel tangent (derivative of the ring).
+        const tangent = east
+          .multiplyScalar(-Math.sin(ang))
+          .addScaledVector(north, Math.cos(ang))
+          .normalize();
+        f.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tangent);
+        if (f.tail) f.tail.rotation.y = 0.4 * Math.sin(8 * time + f.phase);
+      } else {
+        const r = sea - (1.1 + 0.5 * Math.sin(0.3 * time + f.phase));
+        f.group.position
+          .copy(f.anchor)
+          .multiplyScalar(r)
+          .addScaledVector(
+            new THREE.Vector3(-f.anchor.z, 0, f.anchor.x).normalize(),
+            Math.sin(0.17 * time + f.phase) * 1.2,
+          );
+        f.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), f.anchor);
+        const p = Math.max(0, Math.sin(0.8 * Math.PI * 2 * time * 0.1 + f.phase));
+        if (f.dome) f.dome.scale.set(1 + 0.08 * p, 1 - 0.12 * p, 1 + 0.08 * p);
+      }
+    }
+  }
+
   /** Idle the herons: a slow neck sway, and every so often a slow fishing dip
    *  (the neck swings the head down to the water and back up). */
   private updateHerons(time: number): void {
@@ -1985,6 +2363,8 @@ export class GameScene extends THREE.Scene {
     }
     this.createCats();
     this.createHerons();
+    this.createCrabs();
+    this.createDeepFauna();
   }
 
   private createCats(): void {
@@ -8810,6 +9190,8 @@ export class GameScene extends THREE.Scene {
     this.updateCats(deltaTime, time);
     this.updateNpcShadows();
     this.updateHerons(time);
+    this.updateCrabs(deltaTime, time);
+    this.updateDeepFauna(time);
     this.updateFisherman(time, deltaTime);
     this.updatePlayerFishing(time);
     this.processPendingChopFx(time);

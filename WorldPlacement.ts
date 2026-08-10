@@ -45,6 +45,18 @@ export const CAT_SPOTS_AUTHORED: Array<[number, number]> = [
   [5.75, 0.74], // persian — lawn near the shore road
 ];
 
+/** Shore crabs (expansion slice 5): beach spots just above the waterline,
+ *  kept ≥~10u of arc from the herons, the fisherman and the flock anchors so
+ *  every beach has ONE headline animal. */
+export const CRAB_SPOTS_AUTHORED: Array<[number, number]> = [
+  // Lat 0.23-0.235: ON the sand. 0.25 rendered on the lawn above the beach
+  // (screenshot-caught — the shore band tops out around lat 0.26 but this
+  // coast's sand narrows well before that).
+  [5.18, 0.235],
+  [2.28, 0.23],
+  [4.22, 0.235],
+];
+
 export const FLOCK_ANCHORS: Array<[number, number]> = [
   [5.0, 0.24],
   [2.0, 0.24],

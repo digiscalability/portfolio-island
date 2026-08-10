@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { beforeAll, describe, expect, test } from 'vitest';
 
+import { RING_DISTRICT_LONS, ZONE_LAT } from '../Districts';
 import { Island } from '../Island';
 import { WORLD_RADIUS } from '../WorldScale';
 import { installHeadlessCanvas } from './helpers/headlessDom';
@@ -31,11 +32,13 @@ describe('functional amenity sites', () => {
   });
 
   test('amenities keep clear of the plaza centres (aprons, not halls)', () => {
-    const plazaLons = [0.34, 1.72, 2.9, 4.6];
+    // The REAL plaza lons (RING_DISTRICT_LONS) — the first version hardcoded
+    // the design doc's assumed lons, which aren't where the plazas are, and
+    // flaked against phantom points the placement guard rightly ignores.
     for (const p of [island.kioskSite!, island.noticeBoardSite!]) {
       const dir = p.clone().normalize();
-      for (const lon of plazaLons) {
-        const plaza = island.dirAt(lon, 0.4636);
+      for (const lon of RING_DISTRICT_LONS) {
+        const plaza = island.dirAt(lon, ZONE_LAT);
         // Never INSIDE a hall: at least ~4m of arc from any plaza centre.
         expect(dir.angleTo(plaza)).toBeGreaterThan(island.arc(4));
       }
