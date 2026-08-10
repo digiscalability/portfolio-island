@@ -132,9 +132,17 @@ class SimpleApp {
   ];
   // Consumables: re-buyable and spent by use, unlike hats (owned once, then
   // equipped). Charges persist locally and in the cloud profile.
+  private static readonly AXE_ID = 'woodaxe';
+  private static readonly AXE_PRICE = 60;
+  private static readonly TIMBER_SELL_PRICE = 5;
+  private static readonly TIMBER_SATIATED_PRICE = 1;
+  private static readonly DAILY_SELL_CAP = 10; // icebox + timber rack satiation
+  private ownedAxe = false;
+  private timber = 0;
   private static readonly ROD_ID = 'fishingrod';
   private static readonly ROD_PRICE = 40;
   private static readonly FISH_SELL_PRICE = 3;
+  private static readonly FISH_SATIATED_PRICE = 1;
   // Local truth like the feed consumables (LOCAL-STATE law: never max-merge a
   // consumable from the cloud). Rod is a boolean own-flag; fish are inventory.
   private ownedRod = false;
@@ -362,6 +370,8 @@ class SimpleApp {
         const raw = localStorage.getItem('ds_bird_feed');
         this.hasLocalBirdFeed = raw !== null;
         this.ownedRod = localStorage.getItem('ds_rod') === '1';
+        this.ownedAxe = localStorage.getItem('ds_axe') === '1';
+        this.timber = Math.max(0, parseInt(localStorage.getItem('ds_timber') ?? '0', 10) || 0);
         this.fishCaught = Math.max(
           0,
           parseInt(localStorage.getItem('ds_fish_caught') ?? '0', 10) || 0,
@@ -1892,13 +1902,53 @@ class SimpleApp {
             } 🪙)`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
-            const earned = this.fishCaught * SimpleApp.FISH_SELL_PRICE;
+            // Icebox satiation (approved economy spec): first 10/day at full
+            // price, the rest at 1c — surfaced diegetically so it never reads
+            // as a bug.
+            const soldToday = this.dailySold('ds_fish_day', 0);
+            const fullPriced = Math.max(
+              0,
+              Math.min(this.fishCaught, SimpleApp.DAILY_SELL_CAP - soldToday),
+            );
+            const overflow = this.fishCaught - fullPriced;
+            const earned =
+              fullPriced * SimpleApp.FISH_SELL_PRICE + overflow * SimpleApp.FISH_SATIATED_PRICE;
             this.scene.addCoins(earned);
-            track('fish_sold', { count: this.fishCaught, earned });
+            this.dailySold('ds_fish_day', this.fishCaught);
+            track('fish_sold', { count: this.fishCaught, earned, satiated: overflow > 0 });
             this.fishCaught = 0;
             this.persistFish();
             sfx.coin();
-            this.ui.toast(`🪙 +${earned} — the fisherman tips his hat.`);
+            this.ui.toast(
+              overflow > 0
+                ? `🪙 +${earned} — "Icebox is full — ${SimpleApp.FISH_SATIATED_PRICE} coin each now."`
+                : `🪙 +${earned} — the fisherman tips his hat.`,
+            );
+          }
+        } else if (this.timber > 0 && this.scene.isNearCarpenter()) {
+          const soldToday = this.dailySold('ds_timber_day', 0);
+          const fullPriced = Math.max(
+            0,
+            Math.min(this.timber, SimpleApp.DAILY_SELL_CAP - soldToday),
+          );
+          const overflow = this.timber - fullPriced;
+          const earned =
+            fullPriced * SimpleApp.TIMBER_SELL_PRICE + overflow * SimpleApp.TIMBER_SATIATED_PRICE;
+          this.ui.showInteractionPrompt(
+            `🪵 Press <strong>E</strong> to sell ${this.timber} timber (${earned} 🪙)`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.scene.addCoins(earned);
+            this.dailySold('ds_timber_day', this.timber);
+            track('timber_sold', { count: this.timber, earned, satiated: overflow > 0 });
+            this.timber = 0;
+            this.persistTimber();
+            sfx.coin();
+            this.ui.toast(
+              overflow > 0
+                ? `🪙 +${earned} — "Rack's stocked — ${SimpleApp.TIMBER_SATIATED_PRICE} coin each now."`
+                : `🪙 +${earned} — the carpenter nods approvingly.`,
+            );
           }
         } else if (nearby) {
           // Show interaction prompt
@@ -1930,6 +1980,21 @@ class SimpleApp {
 
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.interactWith(nearby);
+          }
+        } else if (this.ownedAxe && this.scene.nearestChoppableTree()) {
+          const t = this.scene.nearestChoppableTree();
+          const swing = (t?.hits ?? 0) + 1;
+          this.ui.showInteractionPrompt(
+            `🪓 Press <strong>E</strong> to chop (${Math.min(swing, 3)}/3)`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            const r = this.scene.chopNearestTree(performance.now() / 1000);
+            if (r?.felled) {
+              this.timber += r.timber;
+              this.persistTimber();
+              this.ui.toast(`🪵 Timber! +${r.timber} (${this.timber} in the pack)`);
+              track('tree_felled', { timber: this.timber });
+            }
           }
         } else if (this.ownedRod && this.scene.canCastHere()) {
           // Lowest interaction priority: NPCs, mailboxes and doors all win
@@ -2739,6 +2804,13 @@ class SimpleApp {
               price: SimpleApp.ROD_PRICE,
               owned: this.ownedRod,
             },
+            {
+              id: SimpleApp.AXE_ID,
+              icon: '🪓',
+              name: 'Wood Axe',
+              price: SimpleApp.AXE_PRICE,
+              owned: this.ownedAxe,
+            },
             ...this.hatCatalog.map((h) => ({
               ...h,
               owned: this.ownedHats.has(h.id),
@@ -2747,6 +2819,21 @@ class SimpleApp {
           ],
         },
         (id) => {
+          if (id === SimpleApp.AXE_ID) {
+            if (this.ownedAxe) return;
+            if (!this.scene.spendCoins(SimpleApp.AXE_PRICE)) return;
+            this.ownedAxe = true;
+            try {
+              localStorage.setItem('ds_axe', '1');
+            } catch {
+              /* no storage */
+            }
+            sfx.coin();
+            track('axe_bought', {});
+            this.ui.toast('🪓 Wood axe! Three good swings fell a tree.');
+            render();
+            return;
+          }
           if (id === SimpleApp.ROD_ID) {
             if (this.ownedRod) return;
             if (!this.scene.spendCoins(SimpleApp.ROD_PRICE)) return;
@@ -2829,6 +2916,35 @@ class SimpleApp {
 
   private refreshFeedHud(): void {
     this.ui.updateFeedCounters(this.birdFeed, this.catFeed, this.fishFeed);
+  }
+
+  /**
+   * Daily sell counter (icebox / timber rack satiation). Local-date keyed;
+   * returns how many of today's cap remain. Soft-trust: clock changes only
+   * cheat the player's own island.
+   */
+  private dailySold(key: string, add: number): number {
+    const today = new Date().toISOString().slice(0, 10);
+    let n = 0;
+    try {
+      const raw = JSON.parse(localStorage.getItem(key) ?? 'null') as {
+        d?: string;
+        n?: number;
+      } | null;
+      if (raw && raw.d === today) n = Math.max(0, raw.n ?? 0);
+      if (add > 0) localStorage.setItem(key, JSON.stringify({ d: today, n: n + add }));
+    } catch {
+      /* no storage — satiation just never kicks in */
+    }
+    return n;
+  }
+
+  private persistTimber(): void {
+    try {
+      localStorage.setItem('ds_timber', String(this.timber));
+    } catch {
+      /* no storage */
+    }
   }
 
   private persistFish(): void {

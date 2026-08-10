@@ -2434,6 +2434,10 @@ export class Island {
       // sites+personalities are zipped BY INDEX, never insert mid-list.
       [0.85, 0.31], // First Mate
       [4.15, 0.31], // Deckhand
+      // Economy P1: the Carpenter — timber buyer (see the approved economy
+      // spec). Sited in the Professional district off the boulevard; stays a
+      // plain dialogue villager until Phase 2 wires his server persona+voice.
+      [0.35, 0.56], // Carpenter
     ];
 
     // TUCK THREE WORKPLACES AGAINST THEIR DISTRICT HALL.
@@ -2713,6 +2717,14 @@ export class Island {
           'First week on the water. The gulls still laugh at my rowing.',
           'One day I will crew that cruise ship. For now — this bucket.',
           'If you see fish jumping, throw them some feed. They remember.',
+        ],
+      },
+      {
+        name: 'Carpenter',
+        dialogue: [
+          'Good timber is worth more than gold out here. Well. Worth five coins.',
+          'Fell a tree, bring me the wood. The rack takes ten a day before I am stocked.',
+          'Stumps grow back. Give them five minutes and the island forgets the axe.',
         ],
       },
     ];

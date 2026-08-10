@@ -67,6 +67,9 @@ export class GameScene extends THREE.Scene {
   private colliders: Array<{
     position: THREE.Vector3;
     radius: number;
+    /** Back-reference for LIVE state: a felled tree's collider switches off
+     *  via owner.userData.felled (economy P1) instead of list surgery. */
+    owner?: THREE.Object3D;
   }> = [];
 
   // Animation mixers for GLTF models
@@ -254,7 +257,20 @@ export class GameScene extends THREE.Scene {
     group: THREE.Object3D;
     baseQuat: THREE.Quaternion;
     phase: number;
+    // Economy P1 lifecycle. ONE flag (mirrored to group.userData.felled for
+    // cross-system consumers) gates sway, bump-shudder, placement clearance
+    // and the walk collider. The grounding shadow deliberately STAYS — a soft
+    // blob under the stump reads correctly.
+    felled: boolean;
+    fallT0: number; // fell animation start (0.9s tip-over), then mesh hides
+    fallAxis: THREE.Vector3 | null; // tangent axis — the tree falls AWAY from the chopper
+    regrowAt: number; // absolute time the stump becomes a tree again
+    regrowT0: number; // scale-in start (2s)
+    chopHits: number; // E-press progress, resets after 6s idle
+    lastChopAt: number;
+    stump: THREE.Mesh | null; // lazy, shared geometry
   }> = [];
+  private static _stumpGeo: THREE.CylinderGeometry | null = null;
 
   // Butterflies fluttering around flower clusters
   private butterflies: Array<{
@@ -679,6 +695,14 @@ export class GameScene extends THREE.Scene {
             group: obj,
             baseQuat: obj.quaternion.clone(),
             phase: Math.random() * Math.PI * 2,
+            felled: false,
+            fallT0: 0,
+            fallAxis: null,
+            regrowAt: 0,
+            regrowT0: 0,
+            chopHits: 0,
+            lastChopAt: 0,
+            stump: null,
           });
         }
       });
@@ -732,6 +756,9 @@ export class GameScene extends THREE.Scene {
             this.colliders.push({
               position: obj.getWorldPosition(new THREE.Vector3()),
               radius,
+              // Only trees change state at runtime; everything else stays
+              // ownerless (cheap truthy check in the hot collision loop).
+              owner: /^tree_\d+$/.test(obj.name) ? obj : undefined,
             });
             colliderCount++;
             break;
@@ -3760,7 +3787,7 @@ export class GameScene extends THREE.Scene {
     // canopy is much wider, so avoid clipping foliage by keeping clear of the
     // tree centres.
     const treeCanopy = 1.4;
-    const trees = this.swayTrees.map((t) => t.group.position);
+    const trees = this.swayTrees.filter((t) => !t.felled).map((t) => t.group.position);
     const clearOf = (pos: THREE.Vector3): number => {
       let min = Infinity;
       for (const c of this.colliders)
@@ -4386,6 +4413,77 @@ export class GameScene extends THREE.Scene {
     if (F.bobber) F.bobber.visible = false;
     return got;
   }
+
+  // ── Timber (economy P1) — same grammar as fishing, on land ─────────────
+
+  /** Nearest standing tree within reach of the player, or null. */
+  public nearestChoppableTree(maxDist = 2.8): { index: number; hits: number } | null {
+    if (!this.player) return null;
+    const p = this.player.getWorldPosition();
+    let best = -1;
+    let bestD = maxDist;
+    for (let i = 0; i < this.swayTrees.length; i++) {
+      const t = this.swayTrees[i];
+      if (t.felled) continue;
+      const d = t.group.position.distanceTo(p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best >= 0 ? { index: best, hits: this.swayTrees[best].chopHits } : null;
+  }
+
+  /**
+   * One axe swing at the nearest tree. Third hit fells it: the trunk tips
+   * AWAY from the chopper about a tangent axis, the collider/sway/shudder/
+   * clearance consumers all switch off via ONE flag, and a stump takes the
+   * spot until regrow (300s). Returns timber yielded (0 until the fell).
+   */
+  public chopNearestTree(time: number): { hits: number; felled: boolean; timber: number } | null {
+    const near = this.nearestChoppableTree();
+    if (!near) return null;
+    const tr = this.swayTrees[near.index];
+    tr.chopHits++;
+    tr.lastChopAt = time;
+    tr.phase += 2.4; // the shudder kick — same one-shot the bump feedback uses
+    sfx.blip();
+    if (tr.chopHits < 3) return { hits: tr.chopHits, felled: false, timber: 0 };
+    // FELL
+    tr.chopHits = 0;
+    tr.felled = true;
+    tr.group.userData.felled = true;
+    tr.fallT0 = time;
+    tr.regrowAt = time + 300;
+    const up = tr.group.position.clone().normalize();
+    // Fall direction: away from the player, projected to the tangent plane;
+    // the rotation axis is perpendicular to it.
+    const away = tr.group.position
+      .clone()
+      .sub(this.player.getWorldPosition())
+      .addScaledVector(up, -tr.group.position.clone().sub(this.player.getWorldPosition()).dot(up));
+    if (away.lengthSq() < 1e-6) away.crossVectors(up, GameScene.AXIS_X);
+    tr.fallAxis = new THREE.Vector3().crossVectors(up, away.normalize()).normalize().negate();
+    sfx.land();
+    this.spawnDust(tr.group.position, 3);
+    return { hits: 3, felled: true, timber: 2 };
+  }
+
+  /** The Carpenter's home site (index-zipped append; he strolls near it). */
+  public isNearCarpenter(maxDist = 6): boolean {
+    if (!this.player || !this.island) return false;
+    if (!this._carpenterPos) {
+      const dir = this.island.dirAt(0.35, 0.56);
+      try {
+        this._carpenterPos = this.island.sampleSurfaceByDirection(dir, 0).position.clone();
+      } catch {
+        return false;
+      }
+    }
+    return this.player.getWorldPosition().distanceTo(this._carpenterPos) < maxDist;
+  }
+
+  private _carpenterPos: THREE.Vector3 | null = null;
 
   public isNearFisherman(maxDist = 4): boolean {
     if (!this.fisherman || !this.player) return false;
@@ -7482,6 +7580,51 @@ export class GameScene extends THREE.Scene {
     // the whole canopy leans together, not just idle jitter.
     const gust = 1 + 0.7 * Math.max(0, Math.sin(time * 0.25));
     for (const tr of this.swayTrees) {
+      // ── Felled lifecycle (economy P1) ─────────────────────────────────
+      if (tr.felled) {
+        const sinceFall = time - tr.fallT0;
+        if (sinceFall < 0.9 && tr.fallAxis) {
+          // Tip over: ease into ~80° about the tangent axis, away from the
+          // chopper. Quaternion composed onto baseQuat — never absolute
+          // writes (World Law 2).
+          const k = sinceFall / 0.9;
+          const ang = k * k * 1.4; // ease-in quadratic to ~80°
+          this._swayQuat.setFromAxisAngle(tr.fallAxis, ang);
+          tr.group.quaternion.copy(tr.baseQuat).multiply(this._swayQuat);
+        } else if (tr.group.visible) {
+          // Grounded: swap mesh for the shared stump.
+          tr.group.visible = false;
+          if (!tr.stump) {
+            GameScene._stumpGeo ??= new THREE.CylinderGeometry(0.22, 0.3, 0.42, 8);
+            const mat = new THREE.MeshToonMaterial({ color: 0x6b4a2a });
+            tr.stump = new THREE.Mesh(GameScene._stumpGeo, mat);
+            tr.stump.castShadow = false;
+            this.add(tr.stump);
+          }
+          const up = tr.group.position.clone().normalize();
+          tr.stump.position.copy(tr.group.position).addScaledVector(up, 0.18);
+          tr.stump.quaternion.setFromUnitVectors(GameScene.AXIS_Y, up);
+          tr.stump.visible = true;
+        }
+        if (time >= tr.regrowAt) {
+          // Regrow: restore everything the fell disabled, scale in over 2s.
+          tr.felled = false;
+          tr.group.userData.felled = false;
+          tr.regrowT0 = time;
+          tr.group.visible = true;
+          tr.group.quaternion.copy(tr.baseQuat);
+          if (tr.stump) tr.stump.visible = false;
+        }
+        continue; // no sway while down
+      }
+      if (tr.regrowT0 > 0 && time - tr.regrowT0 < 2) {
+        const k = (time - tr.regrowT0) / 2;
+        tr.group.scale.setScalar(0.05 + 0.95 * k * k);
+      } else if (tr.regrowT0 > 0) {
+        tr.group.scale.setScalar(1);
+        tr.regrowT0 = 0;
+      }
+      if (tr.chopHits > 0 && time - tr.lastChopAt > 6) tr.chopHits = 0; // walked away
       this._swayQuat.setFromAxisAngle(
         GameScene._swayAxis,
         Math.sin(time * 1.1 + tr.phase) * 0.018 * gust,
@@ -8370,6 +8513,7 @@ export class GameScene extends THREE.Scene {
       this.spawnDust(this._bumpScratch, 2);
       sfx.land();
       for (const t of this.swayTrees) {
+        if (t.felled) continue; // a stump does not shudder
         if (t.group.position.distanceToSquared(center) < 0.36) {
           t.phase += 2.4; // one-shot kick — the canopy visibly shudders
           break;
@@ -8378,6 +8522,7 @@ export class GameScene extends THREE.Scene {
     };
 
     for (const collider of this.colliders) {
+      if (collider.owner?.userData.felled) continue; // stump: walk through the spot the trunk held
       const push = pushOut(collider.position, collider.radius);
       if (push > 0) bumpFeedback(collider.position, push);
     }
