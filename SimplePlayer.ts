@@ -156,6 +156,18 @@ export class SimplePlayer extends THREE.Group {
   // GameScene syncs the tree shudder/chips to the strike at ~0.22s.
   private chopTime = 0;
   private static readonly CHOP_DURATION = 0.55;
+  // While the line is out, the rod arm holds forward-up (~the fisherman's
+  // theta) instead of hanging — the bone-parented rod points over the water.
+  // rodHoldW is the eased 0..1 weight: the WRITE must be absolute-by-weight
+  // (like the wave), because the mixer rewrites the bone every frame and an
+  // incremental per-frame lerp loses that fight (measured: arm stayed at
+  // rest −2.93 with the hold "active").
+  private rodHold = false;
+  private rodHoldW = 0;
+
+  public setRodHold(on: boolean): void {
+    this.rodHold = on;
+  }
   // Ground speed at which the walk clip reads natural at timeScale 1; the clip
   // rate is scaled by tangentialSpeed / this so slow walks don't moonwalk and
   // runs don't foot-slide.
@@ -1051,6 +1063,17 @@ export class SimplePlayer extends THREE.Group {
     this.waveTime = SimplePlayer.WAVE_DURATION;
   }
 
+  /** The right-hand attachment point for held tools (rod, axe). Props parented
+   *  here ride the swing gestures for free. GLTF bone on the real avatar,
+   *  shoulder pivot on the fallback body; null before either exists. */
+  public getHandAnchor(): THREE.Object3D | null {
+    if (this.gltfModel) {
+      this.ensureLimbBones();
+      return this.armRBone;
+    }
+    return this.armPivots.length === 2 ? this.armPivots[1] : null;
+  }
+
   /** Party groove — post-mixer arm pumps for the beach-house dance floor.
    *  Call AFTER tickInteriorAnimation each frame; the clips self-heal the
    *  bones the frame this stops being called. 120bpm to match the room. */
@@ -1166,6 +1189,8 @@ export class SimplePlayer extends THREE.Group {
       // frames — the leg pointed at the sky), so legs stay mixer-owned.
       chopCrouch = (he < 0.16 ? he / 0.16 : Math.max(0, 1 - (he - 0.16) / 0.24)) * chopEnv;
     }
+    // Rod-hold weight eases toward its flag so entry/exit never pop.
+    this.rodHoldW += ((this.rodHold ? 1 : 0) - this.rodHoldW) * Math.min(1, 6 * dt);
     if (this.gltfModel) {
       this.ensureLimbBones();
       if (aw > 0.001) {
@@ -1203,6 +1228,13 @@ export class SimplePlayer extends THREE.Group {
         if (this.legRBone) this.legRBone.rotation.x += 0.5 * tossCrouch;
       } else if (castEnv > 0 && this.armRBone) {
         this.armRBone.rotation.x = THREE.MathUtils.lerp(this.armRBone.rotation.x, castAng, castEnv);
+      } else if (this.rodHoldW > 0.01 && this.armRBone) {
+        // Held rod: absolute-by-weight (mixer-proof) at forward-up-30°.
+        this.armRBone.rotation.x = THREE.MathUtils.lerp(
+          this.armRBone.rotation.x,
+          -1.15,
+          this.rodHoldW,
+        );
       } else if (chopEnv > 0) {
         // Two-hand grip: both arms track the same swing.
         if (this.armRBone) {
@@ -1253,6 +1285,9 @@ export class SimplePlayer extends THREE.Group {
       } else if (castEnv > 0) {
         const arm = this.armPivots[1];
         arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, castAng, castEnv);
+      } else if (this.rodHoldW > 0.01) {
+        const arm = this.armPivots[1];
+        arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, -1.15, this.rodHoldW);
       } else if (chopEnv > 0) {
         this.armPivots[0].rotation.x = THREE.MathUtils.lerp(
           this.armPivots[0].rotation.x,

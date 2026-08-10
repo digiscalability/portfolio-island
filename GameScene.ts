@@ -4394,6 +4394,71 @@ export class GameScene extends THREE.Scene {
     catchFrom: new THREE.Vector3(),
   };
 
+  // ── Held tools (rod + axe) — the props the gestures were miming ────────
+  // Parented to the player's right-hand anchor so they ride the swing bones
+  // for free; visibility toggles per activity. The line is scene-level (it
+  // spans hand→bobber in world space, so it can't live under the bone).
+  private playerRod: THREE.Group | null = null;
+  private playerRodTip: THREE.Object3D | null = null;
+  private playerAxe: THREE.Group | null = null;
+  private fishLine: THREE.Line | null = null;
+  private axeVisibleUntil = 0;
+
+  private ensureHandTools(): void {
+    if (this.playerRod || !this.player) return;
+    const anchor = this.player.getHandAnchor();
+    if (!anchor) return;
+    // ROD — tapered cane along the limb's +Y (the arm's own axis), butt at
+    // the hand, so an arm at "forward" points the rod out over the water.
+    const rod = new THREE.Group();
+    const cane = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.024, 1.15, 6),
+      new THREE.MeshToonMaterial({ color: 0x6b4a2a, gradientMap: Materials.toonRamp() }),
+    );
+    cane.position.y = 0.5; // butt in the palm, tip 1.07 past it
+    cane.castShadow = false;
+    rod.add(cane);
+    const tip = new THREE.Object3D();
+    tip.position.y = 1.07;
+    rod.add(tip);
+    this.playerRodTip = tip;
+    rod.position.y = 0.42; // hand offset along the limb from the shoulder
+    rod.visible = false;
+    anchor.add(rod);
+    this.playerRod = rod;
+    // LINE — two world-space points, rewritten per frame while fishing.
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(),
+      new THREE.Vector3(),
+    ]);
+    const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x2a2a30 }));
+    line.frustumCulled = false;
+    line.visible = false;
+    this.add(line);
+    this.fishLine = line;
+    // AXE — handle continues the limb, wedge head lying in the swing plane
+    // (the swing rotates about the bone's X, so the blade sweeps edge-first).
+    const axe = new THREE.Group();
+    const handle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.034, 0.62, 6),
+      new THREE.MeshToonMaterial({ color: 0x7a5230, gradientMap: Materials.toonRamp() }),
+    );
+    handle.position.y = 0.26;
+    handle.castShadow = false;
+    axe.add(handle);
+    const head = new THREE.Mesh(
+      new THREE.BoxGeometry(0.05, 0.16, 0.3),
+      new THREE.MeshToonMaterial({ color: 0x9aa0a8, gradientMap: Materials.toonRamp() }),
+    );
+    head.position.set(0, 0.52, 0.12);
+    head.castShadow = false;
+    axe.add(head);
+    axe.position.y = 0.42;
+    axe.visible = false;
+    anchor.add(axe);
+    this.playerAxe = axe;
+  }
+
   /** Water within casting reach of the player's feet? (shore-adjacent check) */
   public canCastHere(): boolean {
     if (!this.player || !this.island) return false;
@@ -4467,7 +4532,11 @@ export class GameScene extends THREE.Scene {
     F.castAt = time;
     F.biteUntil = 0;
     // Rod flick + the camera's soft interest follows the cast to the water.
+    this.ensureHandTools();
+    if (this.playerRod) this.playerRod.visible = true;
+    if (this.fishLine) this.fishLine.visible = true;
     this.player.triggerCastGesture();
+    this.player.setRodHold(true); // arm holds the rod out once the flick settles
     this.setInteractionFocus(
       this._fishCastCand.copy(F.dir).multiplyScalar(this.island.seaLevel()),
       4,
@@ -4510,6 +4579,16 @@ export class GameScene extends THREE.Scene {
     }
     F.phase = 'idle';
     if (F.bobber) F.bobber.visible = false;
+    this.player.setRodHold(false);
+    // The rod lingers half a second through the yank, then stows.
+    if (this.playerRod) {
+      const rod = this.playerRod;
+      const line = this.fishLine;
+      if (line) line.visible = false;
+      window.setTimeout(() => {
+        rod.visible = false;
+      }, 500);
+    }
     return got;
   }
 
@@ -4549,6 +4628,9 @@ export class GameScene extends THREE.Scene {
     // but every visible/audible consequence — shudder, chips, the fell — is
     // deferred to the axe's STRIKE moment (~0.22s into the swing gesture),
     // so the tree reacts when the blade visually lands, not on the keypress.
+    this.ensureHandTools();
+    this.axeVisibleUntil = time + 0.6; // in hand for the swing, stowed after
+    if (this.playerAxe) this.playerAxe.visible = true;
     this.player.triggerChopGesture();
     const up = tr.group.position.clone().normalize();
     this.setInteractionFocus(
@@ -4566,6 +4648,9 @@ export class GameScene extends THREE.Scene {
 
   /** Fire deferred chop impacts at their strike time (see chopNearestTree). */
   private processPendingChopFx(time: number): void {
+    if (this.playerAxe && this.playerAxe.visible && time >= this.axeVisibleUntil) {
+      this.playerAxe.visible = false;
+    }
     for (let i = this.pendingChopFx.length - 1; i >= 0; i--) {
       const fx = this.pendingChopFx[i];
       if (time < fx.at) continue;
@@ -4836,7 +4921,19 @@ export class GameScene extends THREE.Scene {
     if (this.player.getWorldPosition().distanceTo(F.castFrom) > 5) {
       F.phase = 'idle';
       F.bobber.visible = false;
+      if (this.playerRod) this.playerRod.visible = false;
+      if (this.fishLine) this.fishLine.visible = false;
+      this.player.setRodHold(false);
       return;
+    }
+    // The line spans rod tip → bobber in world space, every frame — during
+    // the flight it follows the arcing float, after it drapes to the water.
+    if (this.fishLine && this.playerRodTip && this.fishLine.visible) {
+      const pos = this.fishLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+      this.playerRodTip.getWorldPosition(this._fishCastFwd);
+      pos.setXYZ(0, this._fishCastFwd.x, this._fishCastFwd.y, this._fishCastFwd.z);
+      pos.setXYZ(1, F.bobber.position.x, F.bobber.position.y, F.bobber.position.z);
+      pos.needsUpdate = true;
     }
     const wave = this.island.waveHeightAt(F.dir, this.island.seaTimeUniform.value);
     if (F.phase === 'fly') {
