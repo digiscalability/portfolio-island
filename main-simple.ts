@@ -2056,6 +2056,15 @@ class SimpleApp {
         } else if (this.scene.isNearBank()) {
           this.ui.showInteractionPrompt('🏦 Press <strong>E</strong> to see the teller');
           if (this.inputManager.consumeKeyPress('e')) void this.openVault();
+        } else if (this.scene.isNearKiosk()) {
+          this.ui.showInteractionPrompt('🛒 Press <strong>E</strong> to browse the kiosk');
+          if (this.inputManager.consumeKeyPress('e')) {
+            sfx.blip();
+            this.openShop();
+          }
+        } else if (this.scene.isNearNoticeBoard()) {
+          this.ui.showInteractionPrompt('📰 Press <strong>E</strong> to read the Island Times');
+          if (this.inputManager.consumeKeyPress('e')) void this.ui.showIslandTimes();
         } else if (nearby) {
           // Show interaction prompt
           let text = '⌨️ Press <strong>E</strong> to interact';

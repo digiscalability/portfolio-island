@@ -3709,6 +3709,12 @@ export class Island {
     // Instanced wind-blown grass across the whole planet
     const grass = this.createGrass();
 
+    // District amenities + building planters (expansion slices 2-3). Parented
+    // to `flowers` DELIBERATELY: that group is skipped by seatGroupsOnTerrain,
+    // and both builders self-seat every piece. Both shield the RNG stream.
+    this.buildDistrictAmenities(flowers);
+    this.buildBuildingPlanters(flowers, houses, buildings, stalls);
+
     // ── Welcome Plaza: the hub centerpiece ────────────────────────────
     // All four avenues radiate from the north-pole spawn, but the hub held
     // only benches + the zone marker — a hub-and-spoke plan with an empty
@@ -5411,6 +5417,454 @@ export class Island {
     }
     this.occupiedDirs.push({ dir: best, arc: clearArc });
     return best;
+  }
+
+  // ── District amenities (expansion slice 2) ───────────────────────────
+  // "Spread shops and social amenities across zones that make sense": each
+  // district gets street furniture matching its identity — a coffee kiosk +
+  // cafe tables by the Professional hall, a notice board + canteen cart in
+  // Projects, a farm stand near the food farm, market tables with parasols
+  // in Contact, drinking fountains on the long walks. Two are FUNCTIONAL
+  // (kiosk opens the shop, board opens the Island Times); the rest are
+  // dressing. Everything self-seats (parented to a group the terrain
+  // re-seater skips), stands PLUMB, and faces the nearest street.
+  public kioskSite: THREE.Vector3 | null = null;
+  public noticeBoardSite: THREE.Vector3 | null = null;
+
+  private buildDistrictAmenities(parent: THREE.Group): void {
+    // SHIELD (the clump-builder law): the seeded window spans ALL Island
+    // construction and the boat anchors draw from the stream AFTER us —
+    // claimOffStreet jitter AND uuid mints must route to a local stream.
+    const stashedRandom = Math.random;
+    let seed = 0xa3e17a5d >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.buildDistrictAmenitiesShielded(parent);
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private buildDistrictAmenitiesShielded(parent: THREE.Group): void {
+    const wood = Materials.createStandardMaterial({ color: 0xb08a55 });
+    const darkWood = Materials.createStandardMaterial({ color: 0x7a5738 });
+    const cloth = Materials.createStandardMaterial({ color: 0xc0553f });
+    const stone = Materials.createStandardMaterial({ color: 0xa8a294 });
+    const metal = Materials.createStandardMaterial({ color: 0x847f78 });
+    const paper = Materials.createStandardMaterial({ color: 0xf1e7d0 });
+    const AXIS_Y = new THREE.Vector3(0, 1, 0);
+    const noIdx = (g: THREE.BufferGeometry): THREE.BufferGeometry =>
+      g.index ? g.toNonIndexed() : g;
+    const merge = (parts: THREE.BufferGeometry[], mat: THREE.Material): THREE.Mesh => {
+      const m = new THREE.Mesh(
+        mergeGeometries(parts.map(noIdx), false) as THREE.BufferGeometry,
+        mat,
+      );
+      m.castShadow = true;
+      return m;
+    };
+    const seatAmenity = (
+      lon: number,
+      lat: number,
+      clearM: number,
+      build: (g: THREE.Group) => void,
+      publish?: 'kiosk' | 'board',
+    ): void => {
+      const dir = this.claimOffStreet(this.dirAt(lon, lat), this.arc(clearM));
+      // STRUCTURAL apron guarantee: claimOffStreet can slide a prop toward a
+      // plaza (its clearances know streets and props, not halls). If it did,
+      // slide directly AWAY from that plaza back onto the apron ring —
+      // amenities must never end up inside a district hall.
+      // Two passes: the street push after a slide can eat the margin, and a
+      // slide away from one plaza can drift toward another.
+      for (let guardPass = 0; guardPass < 2; guardPass++) {
+        for (const dLon of RING_DISTRICT_LONS) {
+          const plaza = this.dirAt(dLon, ZONE_LAT);
+          if (dir.angleTo(plaza) >= this.arc(4.5)) continue;
+          const away = dir.clone().addScaledVector(plaza, -dir.dot(plaza)).normalize();
+          dir
+            .copy(plaza)
+            .multiplyScalar(Math.cos(this.arc(5.5)))
+            .addScaledVector(away, Math.sin(this.arc(5.5)))
+            .normalize();
+          if (this.isNearStreet(dir)) dir.copy(this.pushOffStreet(dir));
+        }
+      }
+      let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+      try {
+        seat = this.sampleSurfaceByDirection(dir, 0);
+      } catch {
+        return; // unsamplable — skip rather than float a prop
+      }
+      const g = new THREE.Group();
+      g.position.copy(seat.position);
+      const up = seat.position.clone().normalize(); // PLUMB — never the slope
+      g.quaternion.setFromUnitVectors(AXIS_Y, up);
+      const street = this.nearestStreetDir(dir, this.arc(25));
+      if (street) this.faceObjectToward(g, up, street.multiplyScalar(this.radius));
+      build(g);
+      parent.add(g);
+      // Publish the SEATED position — claimOffStreet slides props, so the
+      // authored lon/lat must never be read back for proximity checks.
+      if (publish === 'kiosk') this.kioskSite = seat.position.clone();
+      if (publish === 'board') this.noticeBoardSite = seat.position.clone();
+    };
+
+    // Coffee kiosk (FUNCTIONAL — opens the shop) on the Professional apron.
+    seatAmenity(
+      0.34,
+      ZONE_LAT - this.arc(6),
+      3.5,
+      (g) => {
+        g.add(
+          merge(
+            [
+              new THREE.BoxGeometry(1.3, 0.8, 0.9).translate(0, 0.4, 0), // skirt
+              new THREE.BoxGeometry(1.5, 0.08, 1.0).translate(0, 0.86, 0), // counter
+            ],
+            wood,
+          ),
+          merge(
+            [0, 1, 2, 3].map((i) =>
+              new THREE.BoxGeometry(0.1, 1.5, 0.1).translate(
+                i % 2 === 0 ? -0.65 : 0.65,
+                0.75,
+                i < 2 ? -0.4 : 0.4,
+              ),
+            ),
+            darkWood,
+          ),
+          merge([new THREE.BoxGeometry(1.7, 0.07, 1.3).rotateX(0.22).translate(0, 1.58, 0)], cloth),
+          merge(
+            [
+              new THREE.CylinderGeometry(0.14, 0.14, 0.35, 8).translate(-0.3, 1.05, 0), // urn
+              new THREE.CylinderGeometry(0.05, 0.04, 0.08, 6).translate(0.2, 0.94, 0.15),
+              new THREE.CylinderGeometry(0.05, 0.04, 0.08, 6).translate(0.42, 0.94, -0.1),
+            ],
+            metal,
+          ),
+        );
+        addGroupHulls(g, 0.7, () => true);
+      },
+      'kiosk',
+    );
+    // Cafe tables beside it.
+    for (const [lon, lat] of [
+      [0.3, ZONE_LAT - this.arc(5.9)],
+      [0.385, ZONE_LAT - this.arc(6.2)],
+    ]) {
+      seatAmenity(lon, lat, 2.5, (g) => {
+        g.add(
+          merge(
+            [
+              new THREE.CylinderGeometry(0.09, 0.12, 0.75, 6).translate(0, 0.37, 0),
+              new THREE.CylinderGeometry(0.45, 0.45, 0.05, 8).translate(0, 0.78, 0),
+              new THREE.CylinderGeometry(0.16, 0.18, 0.42, 6).translate(0.7, 0.21, 0.2),
+              new THREE.CylinderGeometry(0.16, 0.18, 0.42, 6).translate(-0.6, 0.21, -0.35),
+            ],
+            wood,
+          ),
+        );
+      });
+    }
+    // Drinking fountains on the long walks.
+    for (const [lon, lat] of [
+      [6.18, ZONE_LAT - this.arc(3.8)],
+      [1.61, ZONE_LAT + this.arc(4)],
+    ]) {
+      seatAmenity(lon, lat, 2, (g) => {
+        g.add(
+          merge(
+            [
+              new THREE.CylinderGeometry(0.4, 0.45, 0.5, 8).translate(0, 0.25, 0),
+              new THREE.CylinderGeometry(0.12, 0.14, 0.9, 6).translate(0, 0.85, 0),
+              new THREE.CylinderGeometry(0.05, 0.03, 0.12, 6)
+                .rotateZ(Math.PI / 2)
+                .translate(0.14, 1.22, 0),
+            ],
+            stone,
+          ),
+        );
+      });
+    }
+    // Projects notice board (FUNCTIONAL — opens the Island Times).
+    seatAmenity(
+      1.72,
+      ZONE_LAT - this.arc(6),
+      3,
+      (g) => {
+        g.add(
+          merge(
+            [
+              new THREE.BoxGeometry(0.12, 1.7, 0.12).translate(-0.75, 0.85, 0),
+              new THREE.BoxGeometry(0.12, 1.7, 0.12).translate(0.75, 0.85, 0),
+              new THREE.BoxGeometry(1.8, 0.08, 0.5).rotateX(0.35).translate(0, 1.78, -0.08),
+            ],
+            darkWood,
+          ),
+          merge([new THREE.BoxGeometry(1.6, 1.1, 0.08).translate(0, 1.1, 0)], wood),
+          merge(
+            [
+              new THREE.BoxGeometry(0.42, 0.55, 0.02).rotateZ(0.06).translate(-0.45, 1.12, 0.06),
+              new THREE.BoxGeometry(0.42, 0.4, 0.02).rotateZ(-0.09).translate(0.1, 1.2, 0.06),
+              new THREE.BoxGeometry(0.35, 0.5, 0.02).rotateZ(0.04).translate(0.55, 1.0, 0.06),
+            ],
+            paper,
+          ),
+        );
+        addGroupHulls(g, 0.7, () => true);
+      },
+      'board',
+    );
+    // Site canteen cart for the construction-yard corner of Projects.
+    seatAmenity(1.81, 0.55, 3.5, (g) => {
+      g.add(
+        merge(
+          [
+            new THREE.BoxGeometry(1.2, 0.5, 0.75).translate(0, 0.62, 0), // tray
+            new THREE.BoxGeometry(0.08, 0.08, 1.0).translate(-0.45, 0.42, 0.75), // shaft
+            new THREE.BoxGeometry(0.08, 0.08, 1.0).translate(0.45, 0.42, 0.75),
+            new THREE.BoxGeometry(0.45, 0.3, 0.45).translate(-0.25, 1.02, 0), // crates
+            new THREE.BoxGeometry(0.4, 0.26, 0.4).translate(0.28, 1.0, 0.1),
+          ],
+          wood,
+        ),
+        merge(
+          [
+            new THREE.CylinderGeometry(0.26, 0.26, 0.08, 10)
+              .rotateZ(Math.PI / 2)
+              .translate(-0.62, 0.26, 0),
+            new THREE.CylinderGeometry(0.26, 0.26, 0.08, 10)
+              .rotateZ(Math.PI / 2)
+              .translate(0.62, 0.26, 0),
+          ],
+          darkWood,
+        ),
+        merge([new THREE.BoxGeometry(1.4, 0.06, 1.0).rotateX(0.18).translate(0, 1.62, 0)], cloth),
+      );
+      addGroupHulls(g, 0.7, () => true);
+    });
+    // Farm stand near the food farm.
+    seatAmenity(2.72, 0.6, 3, (g) => {
+      g.add(
+        merge(
+          [
+            new THREE.BoxGeometry(1.4, 0.08, 0.7).translate(0, 0.7, 0),
+            new THREE.BoxGeometry(0.1, 0.7, 0.1).translate(-0.6, 0.35, -0.25),
+            new THREE.BoxGeometry(0.1, 0.7, 0.1).translate(0.6, 0.35, -0.25),
+            new THREE.BoxGeometry(0.1, 0.7, 0.1).translate(-0.6, 0.35, 0.25),
+            new THREE.BoxGeometry(0.1, 0.7, 0.1).translate(0.6, 0.35, 0.25),
+            new THREE.BoxGeometry(0.5, 0.28, 0.45).translate(-0.35, 0.9, 0),
+            new THREE.BoxGeometry(0.45, 0.24, 0.4).translate(0.3, 0.88, 0.05),
+          ],
+          wood,
+        ),
+        merge([new THREE.BoxGeometry(1.6, 0.06, 0.9).rotateX(0.2).translate(0, 1.5, 0)], cloth),
+      );
+      addGroupHulls(g, 0.7, () => true);
+    });
+    // Market tables with parasols for the Contact plaza approach.
+    for (const [lon, lat] of [
+      [4.6, ZONE_LAT + this.arc(6.5)],
+      [4.82, ZONE_LAT + this.arc(7)],
+    ]) {
+      seatAmenity(lon, lat, 2.5, (g) => {
+        g.add(
+          merge(
+            [
+              new THREE.CylinderGeometry(0.1, 0.13, 0.75, 6).translate(0, 0.37, 0),
+              new THREE.CylinderGeometry(0.5, 0.5, 0.05, 8).translate(0, 0.78, 0),
+              new THREE.CylinderGeometry(0.16, 0.18, 0.42, 6).translate(0.72, 0.21, 0.15),
+              new THREE.CylinderGeometry(0.16, 0.18, 0.42, 6).translate(-0.55, 0.21, -0.4),
+              new THREE.CylinderGeometry(0.035, 0.035, 1.5, 6).translate(0, 1.5, 0),
+            ],
+            wood,
+          ),
+          merge(
+            [new THREE.ConeGeometry(0.9, 0.4, 8).translate(0, 2.25, 0)],
+            Materials.createStandardMaterial({ color: 0xb46bd8 }),
+          ),
+        );
+      });
+    }
+  }
+
+  // ── Building planters (expansion slice 3 — flowers near buildings) ───
+  // 30+ planter boxes derived from the BUILT transforms of houses, towers,
+  // stalls and the three civic sites — 5 instanced draws total (box, soil,
+  // stems, centres, petals with per-instance district hue; instanceColor
+  // MULTIPLIES vertexColor, so petals are authored white).
+  private buildBuildingPlanters(
+    parent: THREE.Group,
+    houses: THREE.Group,
+    buildings: THREE.Group,
+    stalls: THREE.Group,
+  ): void {
+    const stashedRandom = Math.random;
+    let seed = 0xb10c0e5a >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.buildBuildingPlantersShielded(parent, houses, buildings, stalls);
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private buildBuildingPlantersShielded(
+    parent: THREE.Group,
+    houses: THREE.Group,
+    buildings: THREE.Group,
+    stalls: THREE.Group,
+  ): void {
+    // Candidate spots from BUILT transforms (claimOffStreet slid everything;
+    // authored coords are stale by metres).
+    const spots: THREE.Vector3[] = [];
+    const fwd = new THREE.Vector3();
+    const side = new THREE.Vector3();
+    const addPair = (obj: THREE.Object3D, fwdDist: number, lateral: number): void => {
+      fwd.set(0, 0, 1).applyQuaternion(obj.quaternion);
+      side.crossVectors(obj.position.clone().normalize(), fwd).normalize();
+      for (const s of [1, -1]) {
+        spots.push(
+          obj.position
+            .clone()
+            .addScaledVector(fwd, fwdDist)
+            .addScaledVector(side, lateral * s),
+        );
+      }
+    };
+    for (const h of houses.children) if (h.name.startsWith('house_')) addPair(h, 2.0, 1.5);
+    for (const b of buildings.children) addPair(b, 2.3, 1.4);
+    // Stalls face the street with -Z (faceObjectToward prop convention) —
+    // beds go BEHIND the counters, clear of the street-side shopper spots.
+    for (const st of stalls.children) {
+      fwd.set(0, 0, 1).applyQuaternion(st.quaternion); // +Z = behind
+      spots.push(st.position.clone().addScaledVector(fwd, 1.6));
+    }
+    // Civic sites (school, bank, hospital): a pair each, east-west lateral.
+    for (const [lon, lat] of [
+      [2.3, 0.62],
+      [5.95, 1.22],
+      [0.15, 0.68],
+    ]) {
+      const dir = this.dirAt(lon, lat);
+      const a = this.analyticSurface(dir);
+      const pos = dir.clone().multiplyScalar(a.radius);
+      const east = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+      spots.push(pos.clone().addScaledVector(east, 1.5));
+      spots.push(pos.clone().addScaledVector(east, -1.5));
+    }
+
+    // Instanced parts. Petals are WHITE geometry + per-instance hue.
+    const boxGeo = new THREE.BoxGeometry(0.9, 0.3, 0.32);
+    const soilGeo = new THREE.BoxGeometry(0.78, 0.06, 0.24);
+    const stemGeo = new THREE.CylinderGeometry(0.018, 0.022, 0.28, 4);
+    const centreGeo = new THREE.SphereGeometry(0.045, 5, 4);
+    const petalGeo = new THREE.SphereGeometry(0.055, 5, 4);
+    petalGeo.scale(1.25, 0.55, 1.25);
+    const BLOOMS = 4;
+    const PETALS = 5;
+    const n = spots.length;
+    const boxIM = new THREE.InstancedMesh(
+      boxGeo,
+      Materials.createStandardMaterial({ color: 0xc9a978 }),
+      n,
+    );
+    boxIM.castShadow = true;
+    const soilIM = new THREE.InstancedMesh(
+      soilGeo,
+      Materials.createStandardMaterial({ color: 0x5b4230 }),
+      n,
+    );
+    const stemIM = new THREE.InstancedMesh(
+      stemGeo,
+      Materials.createStandardMaterial({ color: 0x3d7a3d }),
+      n * BLOOMS,
+    );
+    const centreIM = new THREE.InstancedMesh(
+      centreGeo,
+      Materials.createStandardMaterial({ color: 0xf6d64a }),
+      n * BLOOMS,
+    );
+    const petalIM = new THREE.InstancedMesh(
+      petalGeo,
+      Materials.createStandardMaterial({ color: 0xffffff }),
+      n * BLOOMS * PETALS,
+    );
+    const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    const hue = new THREE.Color();
+    const fallbackHue = new THREE.Color(0xf4e04d);
+    let placed = 0;
+    let bloomI = 0;
+    let petalI = 0;
+    for (const raw of spots) {
+      dir.copy(raw).normalize();
+      if (this.isNearStreet(dir)) continue; // never block a pavement
+      const a = this.analyticSurface(dir);
+      const base = dir.clone().multiplyScalar(a.radius + 0.12);
+      dummy.position.copy(base);
+      dummy.quaternion.setFromUnitVectors(up, dir); // planters stand plumb
+      dummy.rotateY(Math.random() * Math.PI * 2);
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      boxIM.setMatrixAt(placed, dummy.matrix);
+      soilIM.setMatrixAt(
+        placed,
+        dummy.matrix.clone().multiply(new THREE.Matrix4().makeTranslation(0, 0.16, 0)),
+      );
+      // District hue for this planter's blooms (falls back to daisy yellow).
+      const w = districtAccentAt(dir, hue);
+      const bloomHue = w > 0 ? hue.clone() : fallbackHue;
+      for (let b = 0; b < BLOOMS; b++) {
+        const bx = (Math.random() - 0.5) * 0.6;
+        const bz = (Math.random() - 0.5) * 0.14;
+        const bloomBase = new THREE.Matrix4()
+          .makeTranslation(bx, 0.19, bz)
+          .premultiply(dummy.matrix);
+        const stemM = bloomBase.clone().multiply(new THREE.Matrix4().makeTranslation(0, 0.14, 0));
+        stemIM.setMatrixAt(bloomI, stemM);
+        const headM = bloomBase.clone().multiply(new THREE.Matrix4().makeTranslation(0, 0.3, 0));
+        centreIM.setMatrixAt(bloomI, headM);
+        bloomI++;
+        for (let p = 0; p < PETALS; p++) {
+          const ang = (p / PETALS) * Math.PI * 2;
+          const petalM = headM
+            .clone()
+            .multiply(
+              new THREE.Matrix4().makeTranslation(Math.cos(ang) * 0.07, 0, Math.sin(ang) * 0.07),
+            );
+          petalIM.setMatrixAt(petalI, petalM);
+          petalIM.setColorAt(petalI, bloomHue);
+          petalI++;
+        }
+      }
+      placed++;
+    }
+    boxIM.count = placed;
+    soilIM.count = placed;
+    stemIM.count = bloomI;
+    centreIM.count = bloomI;
+    petalIM.count = petalI;
+    for (const im of [boxIM, soilIM, stemIM, centreIM, petalIM]) {
+      im.instanceMatrix.needsUpdate = true;
+      im.raycast = () => {};
+      im.computeBoundingSphere();
+      parent.add(im);
+    }
+    if (petalIM.instanceColor) petalIM.instanceColor.needsUpdate = true;
+    console.log(`🪴 Building planters: ${placed} beds, ${bloomI} blooms`);
   }
 
   /**

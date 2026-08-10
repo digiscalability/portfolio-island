@@ -5077,6 +5077,18 @@ export class GameScene extends THREE.Scene {
     }
   }
 
+  /** Near the Professional coffee kiosk (opens the shop — expansion s2). */
+  public isNearKiosk(maxDist = 4): boolean {
+    const p = this.island?.kioskSite;
+    return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
+  /** Near the Projects notice board (opens the Island Times — expansion s2). */
+  public isNearNoticeBoard(maxDist = 4): boolean {
+    const p = this.island?.noticeBoardSite;
+    return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
   public isNearBank(maxDist = 5): boolean {
     const p = this.bankPos();
     return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
