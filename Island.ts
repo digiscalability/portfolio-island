@@ -2439,6 +2439,7 @@ export class Island {
       // plain dialogue villager until Phase 2 wires his server persona+voice.
       [0.35, 0.56], // Carpenter
       [5.95, 1.22], // Teller — the bank site in the Welcome Hub (economy P2)
+      [0.15, 0.66], // Nurse — beside the hospital site (economy P3)
     ];
 
     // TUCK THREE WORKPLACES AGAINST THEIR DISTRICT HALL.
@@ -2734,6 +2735,14 @@ export class Island {
           'Welcome to the Island Bank. Your vault survives any device — the pocket does not.',
           'Deposits go in on your word. Withdrawals come out on mine. That is the whole trick.',
           'No, we do not pay interest. Time is not a coin faucet here.',
+        ],
+      },
+      {
+        name: 'Nurse',
+        dialogue: [
+          'Checkups are ten coins and worth every one — sixty seconds of spring in your step.',
+          'Drowning costs five. Swimming lessons are free: hold Space.',
+          'The sea patrol fishes out more visitors than you would think.',
         ],
       },
     ];

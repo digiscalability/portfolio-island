@@ -25,6 +25,7 @@ import { SimpleUI } from './SimpleUI';
 import { applySoftLookFogPatch } from './SoftLook';
 import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
+import { placeBench, subscribeBenches } from './worldBenches';
 import { WORLD_ERA } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
@@ -956,6 +957,14 @@ class SimpleApp {
       } catch (e) {
         console.warn('Shader pre-compile skipped:', e);
       }
+
+      // Shared benches: render every visitor's builds as they stream in
+      // (write path is charged + rules-capped; see worldBenches.ts).
+      void subscribeBenches((b) => this.scene.renderWorldBench(b.plot));
+      this.scene.onDrownFee = (fee) => {
+        this.ui.toast(`🚑 Fished out by the shore patrol — ${fee} 🪙 for the trouble.`);
+        this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+      };
 
       // Pitch FIRST: a recruiter learns who Abbas is before anything is asked
       // of them. The name prompt used to gate the whole site ("name yourself
@@ -1991,6 +2000,29 @@ class SimpleApp {
               sfx.coin();
               this.ui.toast(next[1]);
               track('lesson_done', { id: next[0], total: this.lessons.length });
+            }
+          }
+        } else if (
+          this.timber >= 4 &&
+          this.scene.getCoinsCollected() >= 10 &&
+          this.scene.nearestFreePlot() !== null
+        ) {
+          this.ui.showInteractionPrompt(
+            '🪑 Press <strong>E</strong> to build a bench here (4 🪵 + 10 🪙) — everyone will see it',
+          );
+          if (this.inputManager.consumeKeyPress('e')) void this.buildBenchHere();
+        } else if (this.scene.isNearHospital()) {
+          this.ui.showInteractionPrompt(
+            '🏥 Press <strong>E</strong> — checkup, 10 🪙 (60s of spring in your step)',
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            if (!this.scene.spendCoins(10)) {
+              this.ui.toast('🪙 Checkups are 10 coins.');
+            } else {
+              this.scene.getPlayer()?.setSprintUntil(performance.now() / 1000 + 60);
+              sfx.coin();
+              track('checkup', {});
+              this.ui.toast('🏥 "All clear! Off you go — briskly, now."');
             }
           }
         } else if (this.scene.isNearBank()) {
@@ -3043,6 +3075,31 @@ class SimpleApp {
       });
     };
     render(res.balance);
+  }
+
+  /** Charge first, refund on any non-ack — same shape as the vault. */
+  private async buildBenchHere(): Promise<void> {
+    const plot = this.scene.nearestFreePlot();
+    if (plot === null) return;
+    if (this.timber < 4 || !this.scene.spendCoins(10)) return;
+    this.timber -= 4;
+    this.persistTimber();
+    const res = await placeBench(plot);
+    if (typeof res !== 'number') {
+      this.timber += 4;
+      this.persistTimber();
+      this.scene.addCoins(10);
+      this.ui.toast(
+        res === 'full'
+          ? '🪑 "Four benches is plenty for one visitor," says the carpenter.'
+          : '🪑 The build cart is stuck — materials returned.',
+      );
+      return;
+    }
+    this.scene.renderWorldBench(plot);
+    sfx.coin();
+    track('bench_built', { plot, slot: res });
+    this.ui.toast("🪑 Built! Reload the page — it will still be here. So will everyone else's.");
   }
 
   private persistLessons(): void {

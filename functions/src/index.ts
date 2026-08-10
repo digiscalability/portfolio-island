@@ -336,6 +336,7 @@ const NPC_ROLES: Array<{ id: string; name: string; role: string; concierge?: boo
   // client's index-zip law).
   { id: 'carpenter', name: 'the Carpenter', role: 'a practical carpenter who buys good timber at five coins, racks ten a day, and dreams of the benches he will build from it' },
   { id: 'teller', name: 'the Teller', role: "the island bank's precise, unflappable teller who keeps every visitor's vault balance to the coin and never asks where the coins came from" },
+  { id: 'nurse', name: 'the Nurse', role: "the island clinic's brisk, kindly nurse who sells ten-coin checkups, charges five for a sea rescue, and insists the best medicine is a walk around the planet" },
 ];
 
 const PERSONAS: Record<string, { name: string; system: string }> = {};

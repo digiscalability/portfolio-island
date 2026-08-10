@@ -64,6 +64,18 @@ export class SimplePlayer extends THREE.Group {
   private leanRoll: number = 0; // eased roll into turns (on-foot only)
 
   private speed: number = 5.6; // movement speed. Was 8.0 (bumped 5.5→7.0→8.0 with the R30→40→50 grows — but 8.0 is a 28.8km/h SPRINT next to the 1.4u/s villagers). Calmed to 5.6 (~20km/h brisk walk, island crossing ~31s): relaxed pacing IS the product now, and vehicles exist for distance.
+  // Hospital checkup buff (economy P3): multiplies the base speed until the
+  // deadline passes. Applied where `speed` is READ so the tuned base never
+  // mutates (no drift if buffs overlap or the tab sleeps through the expiry).
+  private sprintUntil = 0;
+
+  public setSprintUntil(t: number): void {
+    this.sprintUntil = t;
+  }
+
+  private effectiveSpeed(): number {
+    return performance.now() / 1000 < this.sprintUntil ? this.speed * 1.35 : this.speed;
+  }
   private jumpForce: number = 8;
   private gravityStrength: number = 25; // gravitational acceleration
 
@@ -1801,13 +1813,15 @@ export class SimplePlayer extends THREE.Group {
       // speed calmed 8.0→5.6): the shoreline current pushes back at up to
       // 4.0u/s, so a slower crawl would turn the swim limit into a hard
       // wall. Hierarchy holds: feet(4.4) < boat(11) < jetski(16).
-      const target = moveDir.clone().multiplyScalar(this.speed * (this.swimming ? 0.79 : 1)); // moveDir already tangent-projected
+      const target = moveDir
+        .clone()
+        .multiplyScalar(this.effectiveSpeed() * (this.swimming ? 0.79 : 1)); // moveDir already tangent-projected
       vTangent.lerp(target, t);
       this.velocity.copy(vTangent.add(vNormal));
     } else {
       // Flat ground: steer horizontal components, gravity owns Y
-      this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, moveDir.x * this.speed, t);
-      this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, moveDir.z * this.speed, t);
+      this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, moveDir.x * this.effectiveSpeed(), t);
+      this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, moveDir.z * this.effectiveSpeed(), t);
     }
   }
 

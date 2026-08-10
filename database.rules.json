@@ -116,6 +116,19 @@
       "island": {
         ".read": "auth != null",
         ".write": false
+      },
+      "benches": {
+        ".read": "auth != null",
+        "$benchId": {
+          ".write": "auth != null && $benchId.beginsWith(auth.uid + '_') && !data.exists()",
+          ".validate": "newData.hasChildren(['plot', 't']) && ($benchId === auth.uid + '_0' || $benchId === auth.uid + '_1' || $benchId === auth.uid + '_2' || $benchId === auth.uid + '_3')",
+          "plot": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 7" },
+          "t": { ".validate": "newData.isNumber()" }
+        }
+      },
+      "benchHidden": {
+        ".read": "auth != null",
+        ".write": false
       }
     }
   }

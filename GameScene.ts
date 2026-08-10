@@ -439,6 +439,7 @@ export class GameScene extends THREE.Scene {
   // profile sync's adopt-once (see coinAdoptValue in profileSync.ts).
   private hasLocalCoinRecord = false;
   private onCoinCollected?: (total: number) => void;
+  public onDrownFee?: (fee: number) => void;
 
   // Rideable watercraft: boats + jetskis that float on the waves offshore.
   // `dir` is the unit surface direction (position); `forward` is the last
@@ -902,6 +903,7 @@ export class GameScene extends THREE.Scene {
       this.setupCampfire();
       // Palms + ferns along the waterline, so the coast reads tropical.
       this.setupCoastalPalms();
+      this.setupPlayground();
       // The Baker works his oven at the village bakery
       this.setupBaker();
       // The Sailor drifts on his rowboat just offshore
@@ -4490,7 +4492,11 @@ export class GameScene extends THREE.Scene {
   private _schoolPos: THREE.Vector3 | null = null;
   private _bankPos: THREE.Vector3 | null = null;
 
-  private siteAt(cache: '_schoolPos' | '_bankPos', lon: number, lat: number): THREE.Vector3 | null {
+  private siteAt(
+    cache: '_schoolPos' | '_bankPos' | '_hospitalPos',
+    lon: number,
+    lat: number,
+  ): THREE.Vector3 | null {
     if (!this[cache] && this.island) {
       try {
         this[cache] = this.island
@@ -4514,6 +4520,145 @@ export class GameScene extends THREE.Scene {
   public isNearSchool(maxDist = 5): boolean {
     const p = this.schoolPos();
     return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
+  // ── Economy P3 ─────────────────────────────────────────────────────────
+
+  /** 8 pre-authored bench plots along walked paths — the ONLY places a shared
+   *  bench can exist (vandalism surface = "a bench exists"). [lon, lat]. */
+  public static readonly BENCH_PLOTS: Array<[number, number]> = [
+    [0.7, 1.15],
+    [2.0, 1.1],
+    [3.5, 1.12],
+    [5.1, 1.08],
+    [1.3, 0.72],
+    [2.9, 0.68],
+    [4.4, 0.7],
+    [5.7, 0.75],
+  ];
+  private builtPlots = new Map<number, THREE.Group>();
+
+  /** Render a shared bench on a plot (idempotent — one mesh per plot). */
+  public renderWorldBench(plot: number): void {
+    if (this.builtPlots.has(plot) || !this.island) return;
+    const site = GameScene.BENCH_PLOTS[plot];
+    if (!site) return;
+    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      seat = this.island.sampleSurfaceByDirection(this.island.dirAt(site[0], site[1]), 0);
+    } catch {
+      return;
+    }
+    const g = new THREE.Group();
+    const wood = new THREE.MeshToonMaterial({ color: 0x9a7648 });
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.09, 0.45), wood);
+    plank.position.y = 0.42;
+    const back = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 0.07), wood);
+    back.position.set(0, 0.66, -0.2);
+    const legs = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.42, 0.35), wood);
+    legs.position.y = 0.2;
+    legs.scale.set(1, 1, 0.8);
+    g.add(plank, back, legs);
+    g.position.copy(seat.position);
+    g.quaternion.setFromUnitVectors(GameScene.AXIS_Y, seat.normal);
+    g.rotateY(Math.random() * Math.PI * 2);
+    this.add(g);
+    this.builtPlots.set(plot, g);
+  }
+
+  /** Nearest UNBUILT plot within reach, for the build prompt. */
+  public nearestFreePlot(maxDist = 3.5): number | null {
+    if (!this.player || !this.island) return null;
+    const p = this.player.getWorldPosition();
+    for (let i = 0; i < GameScene.BENCH_PLOTS.length; i++) {
+      if (this.builtPlots.has(i)) continue;
+      const [lon, lat] = GameScene.BENCH_PLOTS[i];
+      try {
+        const pos = this.island.sampleSurfaceByDirection(this.island.dirAt(lon, lat), 0).position;
+        if (pos.distanceTo(p) < maxDist) return i;
+      } catch {
+        /* unsampleable plot — skip */
+      }
+    }
+    return null;
+  }
+
+  public hospitalPos(): THREE.Vector3 | null {
+    return this.siteAt('_hospitalPos', 0.15, 0.68);
+  }
+
+  private _hospitalPos: THREE.Vector3 | null = null;
+
+  public isNearHospital(maxDist = 5): boolean {
+    const p = this.hospitalPos();
+    return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
+  /** Playground beside the school: three self-animating props, ~6 draw calls,
+   *  no state — children implied without a single kid rig (spec section 5). */
+  private playgroundParts: Array<{
+    mesh: THREE.Object3D;
+    kind: 'spin' | 'swing' | 'seesaw';
+    phase: number;
+  }> = [];
+
+  private setupPlayground(): void {
+    if (!this.island) return;
+    let seat: { position: THREE.Vector3; normal: THREE.Vector3 };
+    try {
+      seat = this.island.sampleSurfaceByDirection(this.island.dirAt(2.45, 0.6), 0);
+    } catch {
+      return;
+    }
+    const base = new THREE.Group();
+    base.position.copy(seat.position);
+    base.quaternion.setFromUnitVectors(GameScene.AXIS_Y, seat.normal);
+    const steel = new THREE.MeshToonMaterial({ color: 0x8a93a6 });
+    const bright = new THREE.MeshToonMaterial({ color: 0xd4574a });
+    // Merry-go-round: disc + 4 spokes, one rotating group.
+    const spin = new THREE.Group();
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.08, 12), bright);
+    spin.add(disc);
+    for (let i = 0; i < 4; i++) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.5, 0.06), steel);
+      bar.position.set(Math.cos((i * Math.PI) / 2) * 0.7, 0.28, Math.sin((i * Math.PI) / 2) * 0.7);
+      spin.add(bar);
+    }
+    spin.position.set(1.6, 0.12, 0);
+    base.add(spin);
+    this.playgroundParts.push({ mesh: spin, kind: 'spin', phase: 0 });
+    // Two swings, phase-offset.
+    for (let i = 0; i < 2; i++) {
+      const frame = new THREE.Group();
+      const barTop = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.06), steel);
+      barTop.position.y = 1.1;
+      frame.add(barTop);
+      const swing = new THREE.Group();
+      const rope = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.85, 0.03), steel);
+      rope.position.y = -0.45;
+      const seatP = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, 0.2), bright);
+      seatP.position.y = -0.88;
+      swing.add(rope, seatP);
+      swing.position.y = 1.1;
+      frame.add(swing);
+      frame.position.set(-1.4, 0, i * 1.1 - 0.5);
+      base.add(frame);
+      this.playgroundParts.push({ mesh: swing, kind: 'swing', phase: i * 1.4 });
+    }
+    // Seesaw.
+    const seesaw = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.07, 0.3), bright);
+    seesaw.position.set(0, 0.3, 1.5);
+    base.add(seesaw);
+    this.playgroundParts.push({ mesh: seesaw, kind: 'seesaw', phase: 0.7 });
+    this.add(base);
+  }
+
+  private updatePlayground(time: number): void {
+    for (const p of this.playgroundParts) {
+      if (p.kind === 'spin') p.mesh.rotation.y = time * 0.9;
+      else if (p.kind === 'swing') p.mesh.rotation.x = Math.sin(time * 1.6 + p.phase) * 0.55;
+      else p.mesh.rotation.z = Math.sin(time * 1.1 + p.phase) * 0.12;
+    }
   }
 
   public isNearBank(maxDist = 5): boolean {
@@ -6927,6 +7072,14 @@ export class GameScene extends THREE.Scene {
   }
 
   private respawnFromDrown(): void {
+    // Economy P3: the 5c ambulance fee, floored at zero — a broke player is
+    // never gated, the fee just narrates. (Spec kept nearest-shore respawn:
+    // it is good UX; the hospital only sells the checkup buff.)
+    if (this.coinsCollected > 0) {
+      const fee = Math.min(5, this.coinsCollected);
+      this.addCoins(-fee);
+      this.onDrownFee?.(fee);
+    }
     const p = this.player.getWorldPosition();
     const lon = Math.atan2(p.z, p.x);
     // nearest dry beach at this longitude
@@ -8068,6 +8221,7 @@ export class GameScene extends THREE.Scene {
     this.updateHerons(time);
     this.updateFisherman(time, deltaTime);
     this.updatePlayerFishing(time);
+    this.updatePlayground(time);
     this.updateBaker(time, deltaTime);
     this.updateSailors(time, deltaTime);
     this.updateCruise(time, deltaTime);

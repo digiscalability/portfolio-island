@@ -32,7 +32,7 @@ const PERSONA_IDS = [
   'young_student', 'fisherman', 'artist', 'wanderer', 'gardener', 'architect',
   'musician', 'lighthouse_keeper', 'tourist', 'cartographer', 'philosopher',
   'courier', 'night_watch', 'sailor', 'mayor', 'farmer',
-  'carpenter', 'teller', // economy P2 — append-only
+  'carpenter', 'teller', 'nurse', // economy P2/P3 — append-only
 ] as const;
 
 // Activity ids — must match the client's ActivityId union (NpcActivities.ts).

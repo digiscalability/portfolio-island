@@ -390,6 +390,11 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
     { from: 8, to: 19, activity: 'teller_shift' },
     { from: 21, to: 31, activity: 'sleep' },
   ],
+  // Nurse strolls her hospital-side home (a dedicated anchor is P3 polish).
+  nurse: [
+    { from: 7, to: 20, activity: 'stroll' },
+    { from: 21, to: 31, activity: 'sleep' },
+  ],
 };
 
 // ── Anchors (populated once by GameScene after island build) ─────────────────

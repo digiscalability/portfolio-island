@@ -102,6 +102,7 @@ const VOICES: Record<string, string> = {
   // Economy P2 — premade library picks (no clones):
   carpenter: 'pqHfZKP75CvOlQylNhV4', // Bill — trustworthy older craftsman
   teller: 'cjVigY5qzO86Huf0OWal', // Eric — smooth, professional counter voice
+  nurse: 'Xb7hH8MSUJpSbSDYk0k2', // Alice — clear, brisk, warm
 };
 const DEFAULT_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George — verified present
 
