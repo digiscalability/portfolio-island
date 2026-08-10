@@ -14,7 +14,7 @@ import { Multiplayer } from './Multiplayer';
 import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
-import { coinAdoptValue, loadProfile, saveProfile } from './profileSync';
+import { coinAdoptValue, mergeLessons, vaultOp, loadProfile, saveProfile } from './profileSync';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
@@ -138,6 +138,30 @@ class SimpleApp {
   private static readonly TIMBER_SATIATED_PRICE = 1;
   private static readonly DAILY_SELL_CAP = 10; // icebox + timber rack satiation
   private ownedAxe = false;
+  private lessons: string[] = [];
+  private vaultBusy = false;
+  private static readonly LESSONS: Array<[string, string]> = [
+    [
+      'move',
+      '🏃 Lesson 1 — WASD or the joystick to walk; Space to jump. The island is round: keep walking and you come home.',
+    ],
+    [
+      'fish',
+      '🎣 Lesson 2 — buy the rod at the shop, stand at any shore, E to cast. Reel when the float dips.',
+    ],
+    [
+      'chop',
+      '🪓 Lesson 3 — the axe fells trees in three swings. Timber sells at the carpenter. Stumps regrow.',
+    ],
+    [
+      'feed',
+      '🌾 Lesson 4 — feeds from the shop call nearby birds, cats or fish. They remember kindness.',
+    ],
+    [
+      'chat',
+      '💬 Lesson 5 — walk up to any villager and press E. Eighteen of them will really talk with you.',
+    ],
+  ];
   private timber = 0;
   private static readonly ROD_ID = 'fishingrod';
   private static readonly ROD_PRICE = 40;
@@ -371,6 +395,10 @@ class SimpleApp {
         this.hasLocalBirdFeed = raw !== null;
         this.ownedRod = localStorage.getItem('ds_rod') === '1';
         this.ownedAxe = localStorage.getItem('ds_axe') === '1';
+        this.lessons = mergeLessons(
+          [],
+          JSON.parse(localStorage.getItem('ds_lessons') ?? '[]') as unknown,
+        );
         this.timber = Math.max(0, parseInt(localStorage.getItem('ds_timber') ?? '0', 10) || 0);
         this.fishCaught = Math.max(
           0,
@@ -1950,6 +1978,24 @@ class SimpleApp {
                 : `🪙 +${earned} — the carpenter nods approvingly.`,
             );
           }
+        } else if (this.lessons.length < SimpleApp.LESSONS.length && this.scene.isNearSchool()) {
+          const next = SimpleApp.LESSONS.find(([id]) => !this.lessons.includes(id));
+          if (next) {
+            this.ui.showInteractionPrompt(
+              `📚 Press <strong>E</strong> — lesson ${this.lessons.length + 1}/5 (earn 10 🪙)`,
+            );
+            if (this.inputManager.consumeKeyPress('e')) {
+              this.lessons.push(next[0]);
+              this.persistLessons();
+              this.scene.addCoins(10);
+              sfx.coin();
+              this.ui.toast(next[1]);
+              track('lesson_done', { id: next[0], total: this.lessons.length });
+            }
+          }
+        } else if (this.scene.isNearBank()) {
+          this.ui.showInteractionPrompt('🏦 Press <strong>E</strong> to see the teller');
+          if (this.inputManager.consumeKeyPress('e')) void this.openVault();
         } else if (nearby) {
           // Show interaction prompt
           let text = '⌨️ Press <strong>E</strong> to interact';
@@ -2939,6 +2985,75 @@ class SimpleApp {
     return n;
   }
 
+  /**
+   * The vault panel — the only shared money (economy spec Decision 1).
+   * Deposit: coins leave the LOCAL balance first, then the server ack
+   * confirms; a failed/unapplied call refunds. Withdraw: server first,
+   * local credit only on applied ack. Both are idempotency-keyed.
+   */
+  private async openVault(): Promise<void> {
+    if (this.vaultBusy) return;
+    this.vaultBusy = true;
+    const res = await vaultOp('balance');
+    this.vaultBusy = false;
+    if (!res) {
+      this.ui.toast('🏦 "Vault link is down — try again in a moment."');
+      return;
+    }
+    const step = 10;
+    const render = (balance: number): void => {
+      this.ui.showVaultPanel(balance, this.scene.getCoinsCollected(), step, {
+        deposit: async () => {
+          if (this.vaultBusy) return;
+          if (!this.scene.spendCoins(step)) {
+            this.ui.toast(`🪙 You need ${step} coins on you to deposit.`);
+            return;
+          }
+          this.vaultBusy = true;
+          const r = await vaultOp('deposit', step);
+          this.vaultBusy = false;
+          if (!r || !r.applied) {
+            this.scene.addCoins(step); // refund — the vault never took it
+            this.ui.toast('🏦 "Hm, the ledger jammed. Your coins are safe."');
+            return;
+          }
+          sfx.coin();
+          track('vault_deposit', { amount: step, balance: r.balance });
+          render(r.balance);
+        },
+        withdraw: async () => {
+          if (this.vaultBusy) return;
+          this.vaultBusy = true;
+          const r = await vaultOp('withdraw', step);
+          this.vaultBusy = false;
+          if (!r) {
+            this.ui.toast('🏦 "Vault link is down — try again in a moment."');
+            return;
+          }
+          if (!r.applied) {
+            this.ui.toast('🏦 "Your vault has less than that in it."');
+            render(r.balance);
+            return;
+          }
+          this.scene.addCoins(step); // credit ONLY on ack
+          sfx.coin();
+          track('vault_withdraw', { amount: step, balance: r.balance });
+          render(r.balance);
+        },
+      });
+    };
+    render(res.balance);
+  }
+
+  private persistLessons(): void {
+    try {
+      localStorage.setItem('ds_lessons', JSON.stringify(this.lessons));
+    } catch {
+      /* no storage */
+    }
+    saveProfile({ lessons: this.lessons });
+  }
+
   private persistTimber(): void {
     try {
       localStorage.setItem('ds_timber', String(this.timber));
@@ -3122,6 +3237,14 @@ class SimpleApp {
       {
         const adopt = coinAdoptValue(this.scene.hasLocalCoins(), profile.coins);
         if (adopt !== null) this.scene.setCoins(adopt);
+      }
+      // Lessons are per-ACCOUNT: union both ways, save back if the union grew.
+      {
+        const merged = mergeLessons(this.lessons, profile.lessons);
+        if (merged.length !== this.lessons.length) {
+          this.lessons = merged;
+          this.persistLessons();
+        }
       }
       // Consumables must NOT max-merge the way coins do. Coins only go up, but
       // feed is SPENT: this sync resolves seconds after boot and behind an

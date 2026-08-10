@@ -2438,6 +2438,7 @@ export class Island {
       // spec). Sited in the Professional district off the boulevard; stays a
       // plain dialogue villager until Phase 2 wires his server persona+voice.
       [0.35, 0.56], // Carpenter
+      [5.95, 1.22], // Teller — the bank site in the Welcome Hub (economy P2)
     ];
 
     // TUCK THREE WORKPLACES AGAINST THEIR DISTRICT HALL.
@@ -2725,6 +2726,14 @@ export class Island {
           'Good timber is worth more than gold out here. Well. Worth five coins.',
           'Fell a tree, bring me the wood. The rack takes ten a day before I am stocked.',
           'Stumps grow back. Give them five minutes and the island forgets the axe.',
+        ],
+      },
+      {
+        name: 'Teller',
+        dialogue: [
+          'Welcome to the Island Bank. Your vault survives any device — the pocket does not.',
+          'Deposits go in on your word. Withdrawals come out on mine. That is the whole trick.',
+          'No, we do not pay interest. Time is not a coin faucet here.',
         ],
       },
     ];

@@ -22,6 +22,40 @@
  * Returns the value to adopt, or null to keep local truth. Pure — pinned by
  * test/profileSync.test.ts.
  */
+/** Union merge for lesson completion — additive, never regresses (pure, tested). */
+export function mergeLessons(local: string[], cloud: unknown): string[] {
+  const set = new Set(local);
+  if (Array.isArray(cloud)) for (const l of cloud) if (typeof l === 'string') set.add(l);
+  return [...set].sort();
+}
+
+/**
+ * Bank vault ops — the ONLY shared money (economy spec Decision 1). Server
+ * validates via a Cloud Function transaction; the client credits coins ONLY
+ * on an applied ack. Every call carries a fresh idempotency key so replays
+ * (double-tap, reload mid-request) can never mutate twice.
+ */
+export async function vaultOp(
+  op: 'deposit' | 'withdraw' | 'balance',
+  amount = 0,
+): Promise<{ balance: number; applied: boolean } | null> {
+  try {
+    const fns = await import('firebase/functions');
+    const { getFirebaseRealtime } = await import('./firebaseClient');
+    const { app } = await getFirebaseRealtime();
+    const call = fns.httpsCallable(fns.getFunctions(app, 'us-central1'), 'vaultOp');
+    const key =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const res = await call({ op, amount, key });
+    const d = res.data as { balance?: number; applied?: boolean };
+    return { balance: Math.max(0, Number(d.balance) || 0), applied: !!d.applied };
+  } catch {
+    return null; // offline / unauthenticated — caller refunds on deposit
+  }
+}
+
 export function coinAdoptValue(hasLocalRecord: boolean, cloudCoins: unknown): number | null {
   if (hasLocalRecord) return null;
   if (typeof cloudCoins !== 'number' || !Number.isFinite(cloudCoins)) return null;
@@ -29,6 +63,8 @@ export function coinAdoptValue(hasLocalRecord: boolean, cloudCoins: unknown): nu
 }
 
 export interface Profile {
+  /** Completed school lesson ids — UNION-merged (per-account, additive). */
+  lessons?: string[];
   name?: string;
   hat?: string | null;
   ownedHats?: string[];

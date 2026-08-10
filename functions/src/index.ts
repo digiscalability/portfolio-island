@@ -34,6 +34,7 @@ import { containsSlur, scrubReply } from './moderation';
 import { MONTHLY_TOKEN_CAP, IP_MAX_PER_WINDOW, RUMORS, rumorIndexForDay } from './constants';
 import { TTS_QUEUE_TTL_MS, TTS_CACHE_TTL_MS } from './tts';
 import { seededPick, ipKey, nextIpWindow, pruneSelect, lastForwardedIp } from './pure';
+export { vaultOp } from './vault';
 
 admin.initializeApp();
 
@@ -331,6 +332,10 @@ const NPC_ROLES: Array<{ id: string; name: string; role: string; concierge?: boo
   { id: 'sailor', name: 'the Sailor', role: 'a weathered, good-humoured sailor who lives on his little boat just offshore, loves the mathematically-perfect waves, and swears the sea tells him things' },
   { id: 'mayor', name: 'the Mayor', role: 'the island\'s cheerfully officious mayor who holds court at the pole plaza town hall, treats every visitor as a new constituent, and campaigns on "deliveries up, complaints down"' },
   { id: 'farmer', name: 'the Farmer', role: 'a plain-spoken, hard-working farmer who tends the hamlet fields, respects honest weather and honest code, and leaves the flowers to the Gardener' },
+  // Economy P2 — appended (persona lists are append-only, mirroring the
+  // client's index-zip law).
+  { id: 'carpenter', name: 'the Carpenter', role: 'a practical carpenter who buys good timber at five coins, racks ten a day, and dreams of the benches he will build from it' },
+  { id: 'teller', name: 'the Teller', role: "the island bank's precise, unflappable teller who keeps every visitor's vault balance to the coin and never asks where the coins came from" },
 ];
 
 const PERSONAS: Record<string, { name: string; system: string }> = {};

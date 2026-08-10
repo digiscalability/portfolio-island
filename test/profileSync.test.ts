@@ -8,7 +8,7 @@
 // never recorded any.
 import { describe, expect, test } from 'vitest';
 
-import { coinAdoptValue } from '../profileSync';
+import { coinAdoptValue, mergeLessons } from '../profileSync';
 
 describe('coinAdoptValue', () => {
   test('THE EXPLOIT: a stale higher cloud balance must NOT override local truth', () => {
@@ -35,5 +35,19 @@ describe('coinAdoptValue', () => {
   test('adopted values are floored and clamped non-negative', () => {
     expect(coinAdoptValue(false, 12.9)).toBe(12);
     expect(coinAdoptValue(false, -5)).toBe(0);
+  });
+});
+
+describe('mergeLessons (union — per-account, additive)', () => {
+  test('unions across devices and never regresses', () => {
+    expect(mergeLessons(['move', 'fish'], ['chop', 'move'])).toEqual(['chop', 'fish', 'move']);
+  });
+  test('garbage cloud values are ignored', () => {
+    expect(mergeLessons(['move'], undefined)).toEqual(['move']);
+    expect(mergeLessons(['move'], 'chop' as unknown)).toEqual(['move']);
+    expect(mergeLessons(['move'], [1, null, 'fish'] as unknown)).toEqual(['fish', 'move']);
+  });
+  test('empty local adopts cloud wholesale', () => {
+    expect(mergeLessons([], ['a', 'b'])).toEqual(['a', 'b']);
   });
 });

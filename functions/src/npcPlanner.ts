@@ -32,6 +32,7 @@ const PERSONA_IDS = [
   'young_student', 'fisherman', 'artist', 'wanderer', 'gardener', 'architect',
   'musician', 'lighthouse_keeper', 'tourist', 'cartographer', 'philosopher',
   'courier', 'night_watch', 'sailor', 'mayor', 'farmer',
+  'carpenter', 'teller', // economy P2 — append-only
 ] as const;
 
 // Activity ids — must match the client's ActivityId union (NpcActivities.ts).
@@ -39,6 +40,7 @@ const ACTIVITY_IDS = [
   'tend_flowers', 'tend_crops', 'patrol', 'mail_round', 'play_music', 'lamp_round',
   'paint_vista', 'keep_light', 'shore_gaze', 'market_visit', 'bench_rest',
   'stroll', 'sleep', 'plaza_gather', 'study', 'muse',
+  'teach_class', 'teller_shift', // economy P2 — must match client ActivityId union
 ] as const;
 type ActivityId = (typeof ACTIVITY_IDS)[number];
 const ACTIVITY_SET = new Set<string>(ACTIVITY_IDS);

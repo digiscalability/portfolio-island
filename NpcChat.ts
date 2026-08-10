@@ -50,6 +50,9 @@ const AI_NPC_DEFS: Array<{ name: string; id: string; rate: number; pitch: number
   { name: 'Sailor', id: 'sailor', rate: 0.98, pitch: 0.88 },
   { name: 'Mayor', id: 'mayor', rate: 1.06, pitch: 0.94 },
   { name: 'Farmer', id: 'farmer', rate: 0.92, pitch: 0.9 },
+  // Economy P2 — appended (lockstep-tested against the server planner list):
+  { name: 'Carpenter', id: 'carpenter', rate: 0.94, pitch: 0.9 },
+  { name: 'Teller', id: 'teller', rate: 1.02, pitch: 0.96 },
 ];
 
 /** Display name → server persona id, for every NPC with an LLM brain. */

@@ -4485,6 +4485,42 @@ export class GameScene extends THREE.Scene {
 
   private _carpenterPos: THREE.Vector3 | null = null;
 
+  // Economy P2 fixed sites (buildings arrive in P3). School: Personal Life
+  // district; Bank: Welcome Hub within sight of the shop spawn approach.
+  private _schoolPos: THREE.Vector3 | null = null;
+  private _bankPos: THREE.Vector3 | null = null;
+
+  private siteAt(cache: '_schoolPos' | '_bankPos', lon: number, lat: number): THREE.Vector3 | null {
+    if (!this[cache] && this.island) {
+      try {
+        this[cache] = this.island
+          .sampleSurfaceByDirection(this.island.dirAt(lon, lat), 0)
+          .position.clone();
+      } catch {
+        return null;
+      }
+    }
+    return this[cache];
+  }
+
+  public schoolPos(): THREE.Vector3 | null {
+    return this.siteAt('_schoolPos', 2.3, 0.62);
+  }
+
+  public bankPos(): THREE.Vector3 | null {
+    return this.siteAt('_bankPos', 5.95, 1.22);
+  }
+
+  public isNearSchool(maxDist = 5): boolean {
+    const p = this.schoolPos();
+    return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
+  public isNearBank(maxDist = 5): boolean {
+    const p = this.bankPos();
+    return !!p && !!this.player && this.player.getWorldPosition().distanceTo(p) < maxDist;
+  }
+
   public isNearFisherman(maxDist = 4): boolean {
     if (!this.fisherman || !this.player) return false;
     const stand = this._fishCastScan
@@ -6199,6 +6235,10 @@ export class GameScene extends THREE.Scene {
       benches: this.island.benchSites,
       lighthouseDir: this.island.lighthouseDir,
       vistas,
+      // Economy P2: fixed sites until the buildings land in P3. Same pattern
+      // as the Carpenter — functional first, dressing later.
+      school: [this.schoolPos()].filter((v): v is THREE.Vector3 => !!v),
+      bank: [this.bankPos()].filter((v): v is THREE.Vector3 => !!v),
       // Cottage doors only: the islet beach house's door is across open
       // water — clampShore(sin 0.3) would strand any NPC that targeted it.
       doors: this.island.houseDoors.filter((d) => d.id.startsWith('house_')).map((d) => d.position),

@@ -521,6 +521,57 @@ export class SimpleUI {
    * Build a centered, dismissible modal shell (backdrop click + × close). Shared
    * by the passport views; content is appended by the caller.
    */
+  /**
+   * The bank vault panel (economy P2). Rebuilt in place on every balance
+   * change — the same re-render-on-action pattern the shop uses. Coins shown
+   * are the LOCAL pocket; balance is the server's last ack.
+   */
+  private vaultDiv: HTMLElement | null = null;
+
+  public showVaultPanel(
+    balance: number,
+    pocket: number,
+    step: number,
+    on: { deposit: () => void; withdraw: () => void },
+  ): void {
+    this.vaultDiv?.remove();
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))');
+    this.vaultDiv = modal;
+    const h = document.createElement('div');
+    h.innerHTML = `<div style="font-size:28px">🏦</div>
+      <div style="font-weight:600;margin:6px 0 2px">Island Bank</div>
+      <div style="opacity:.75;font-size:13px">The teller keeps your vault to the coin.</div>
+      <div style="margin:14px 0;font-size:15px">Vault: <strong>${balance} 🪙</strong>
+        &nbsp;·&nbsp; Pocket: <strong>${pocket} 🪙</strong></div>`;
+    modal.appendChild(h);
+    const row = document.createElement('div');
+    Object.assign(row.style, { display: 'flex', gap: '10px', justifyContent: 'center' });
+    const mk = (label: string, fn: () => void): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      Object.assign(b.style, {
+        padding: '10px 14px',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.25)',
+        background: 'rgba(255,255,255,0.08)',
+        color: 'white',
+        cursor: 'pointer',
+        fontSize: '14px',
+      });
+      b.addEventListener('click', fn);
+      return b;
+    };
+    row.appendChild(mk(`⬇️ Deposit ${step}`, on.deposit));
+    row.appendChild(mk(`⬆️ Withdraw ${step}`, on.withdraw));
+    modal.appendChild(row);
+    this.overlay.appendChild(modal);
+  }
+
+  public closeVaultPanel(): void {
+    this.vaultDiv?.remove();
+    this.vaultDiv = null;
+  }
+
   private buildCenteredModal(width: string): HTMLElement {
     const modal = document.createElement('div');
     Object.assign(modal.style, {

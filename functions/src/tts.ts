@@ -99,6 +99,9 @@ const VOICES: Record<string, string> = {
   sailor: 'pNInz6obpgDQGcFmaJgB', // Adam — dominant, firm (a captain's bark)
   mayor: 'cjVigY5qzO86Huf0OWal', // Eric — smooth, trustworthy (a politician's polish)
   farmer: '56AoDkrOh6qfVPDXZ7Pt', // Cassidy — plain-spoken, warm
+  // Economy P2 — premade library picks (no clones):
+  carpenter: 'pqHfZKP75CvOlQylNhV4', // Bill — trustworthy older craftsman
+  teller: 'cjVigY5qzO86Huf0OWal', // Eric — smooth, professional counter voice
 };
 const DEFAULT_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George — verified present
 

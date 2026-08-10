@@ -70,7 +70,9 @@ export type ActivityId =
   | 'sleep'
   | 'plaza_gather'
   | 'study'
-  | 'muse';
+  | 'muse'
+  | 'teach_class'
+  | 'teller_shift';
 
 type AnchorSource =
   | 'flowers'
@@ -86,7 +88,9 @@ type AnchorSource =
   | 'boulevard'
   | 'vista'
   | 'home'
-  | 'door';
+  | 'door'
+  | 'school'
+  | 'bank';
 
 export interface ActivityDef {
   /** Full pre-authored line for the Island Times board ("tending the flower beds"). */
@@ -236,6 +240,23 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
     anchorSource: 'home',
     dwell: [25, 45],
   },
+  // Economy P2 (append-only — this table is the server plan whitelist):
+  teach_class: {
+    label: 'teaching a lesson at the school',
+    short: 'teaching',
+    emoji: '📚',
+    pose: 'inspect',
+    anchorSource: 'school',
+    dwell: [40, 70],
+  },
+  teller_shift: {
+    label: 'keeping the vault at the bank',
+    short: 'at the bank',
+    emoji: '🏦',
+    pose: 'watch',
+    anchorSource: 'bank',
+    dwell: [50, 90],
+  },
 };
 
 // Poses are whole-group modulation of the existing bob/roll/lift channels
@@ -349,6 +370,8 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
     { from: 20, to: 32, activity: 'sleep' },
   ],
   philosopher: [
+    // P2 recast: the Philosopher teaches at the school through the day
+    { from: 9, to: 15, activity: 'teach_class' },
     { from: 8, to: 20, activity: 'muse' },
     { from: 20, to: 32, activity: 'sleep' },
   ],
@@ -357,6 +380,15 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
     { from: 6, to: 16, activity: 'market_visit' },
     { from: 16, to: 22, activity: 'bench_rest' },
     { from: 22, to: 30, activity: 'sleep' },
+  ],
+  // Economy P2 — appended personas:
+  carpenter: [
+    { from: 8, to: 18, activity: 'stroll' },
+    { from: 20, to: 30, activity: 'sleep' },
+  ],
+  teller: [
+    { from: 8, to: 19, activity: 'teller_shift' },
+    { from: 21, to: 31, activity: 'sleep' },
   ],
 };
 
@@ -375,6 +407,8 @@ interface AnchorSet {
   plaza: THREE.Vector3[]; // the 5 district plazas
   vista: THREE.Vector3[]; // coastal viewpoints
   doors: THREE.Vector3[]; // cottage doorsteps — sleep walks here, then hides
+  school: THREE.Vector3[];
+  bank: THREE.Vector3[];
 }
 let ANCHORS: AnchorSet | null = null;
 // The lighthouse tower's unit dir — the look-at target for face:'center'.
@@ -433,6 +467,8 @@ export function setAnchors(a: {
   lighthouseDir: THREE.Vector3 | null;
   vistas: THREE.Vector3[];
   doors?: THREE.Vector3[];
+  school?: THREE.Vector3[];
+  bank?: THREE.Vector3[];
 }): void {
   ANCHORS = {
     flowers: a.flowers.map(toDir),
@@ -445,6 +481,8 @@ export function setAnchors(a: {
     mailboxes: a.mailboxes.map(toDir),
     stalls: a.stalls.map(toDir),
     benches: a.benches.map(toDir),
+    school: (a.school ?? []).map(toDir),
+    bank: (a.bank ?? []).map(toDir),
     // 3.75u: the old 2.5u ring EQUALLED the plinth base radius, so all four
     // keeper waypoints sat ON the rock wall. Must stay a real distance —
     // as an angle it would have re-created that bug at a smaller radius and
