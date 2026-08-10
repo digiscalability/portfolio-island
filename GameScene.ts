@@ -532,6 +532,9 @@ export class GameScene extends THREE.Scene {
     topColor: { value: THREE.Color };
     bottomColor: { value: THREE.Color };
     horizonColor: { value: THREE.Color };
+    zenithColor: { value: THREE.Color };
+    sunDir: { value: THREE.Vector3 };
+    sunWarmth: { value: number };
   } | null = null;
   private hemiLight: THREE.HemisphereLight | null = null;
   private envCycle: EnvironmentCycle | null = null;
@@ -7251,6 +7254,17 @@ export class GameScene extends THREE.Scene {
         // player around the sphere instead of being world-Y locked, so the
         // sky doesn't wash out on the far side of the planet
         uUp: { value: new THREE.Vector3(0, 1, 0) },
+        // Slice B (approved sky design): a deep-zenith stop above topColor, a
+        // warmth lobe around the TRUE sun direction (EnvironmentCycle writes
+        // uSunDir from the disc math — NEVER the clamped shadow light, which
+        // would paint dusk warmth around the moon), and soft posterization
+        // behind ?sky=band (Abbas's A/B ruling: judge dusk screenshots).
+        zenithColor: { value: new THREE.Color(0x1c4fa8) },
+        uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+        uSunWarmth: { value: 0 }, // 0 by day, ramps toward dusk; 0 below horizon
+        uBands: {
+          value: new URLSearchParams(window.location.search).get('sky') === 'band' ? 5.0 : 0.0,
+        },
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -7264,16 +7278,38 @@ export class GameScene extends THREE.Scene {
         uniform vec3 topColor;
         uniform vec3 bottomColor;
         uniform vec3 horizonColor;
+        uniform vec3 zenithColor;
+        uniform vec3 uSunDir;
+        uniform float uSunWarmth;
+        uniform float uBands;
         uniform float offset;
         uniform float exponent;
         uniform vec3 uUp;
         varying vec3 vWorldPosition;
         void main() {
-          float h = dot(normalize(vWorldPosition + offset), uUp);
+          vec3 dir = normalize(vWorldPosition + offset);
+          float h = dot(dir, uUp);
           float t = max(h, 0.0);
+          // Soft posterization: quantize the gradient coordinate, then smooth
+          // the band edges so they paint rather than alias. uBands=0 -> smooth.
+          if (uBands > 0.5) {
+            float steps = uBands;
+            float q = floor(t * steps) / steps;
+            float f = smoothstep(0.0, 1.0, fract(t * steps));
+            t = q + (f / steps) * 0.35 + (0.325 / steps);
+          }
           vec3 sky = mix(horizonColor, topColor, pow(t, exponent));
+          // Deep-zenith stop: the last 40% of elevation eases into a darker
+          // blue, which is what makes noon skies read painted instead of flat.
+          sky = mix(sky, zenithColor, smoothstep(0.55, 1.0, t));
           float b = max(-h, 0.0);
           sky = mix(sky, bottomColor, pow(b, 0.8));
+          // Dawn/dusk warmth lobe around the TRUE sun direction. Guarded by
+          // the h=0 CONTRACT: the warmth must vanish at the horizon band so
+          // sea + fog (which consume horizonColor) never desync from the dome.
+          float sunAmt = pow(max(dot(dir, uSunDir), 0.0), 3.0) * uSunWarmth;
+          sunAmt *= smoothstep(0.0, 0.12, abs(h)); // exactly horizonColor at h=0
+          sky = mix(sky, horizonColor * vec3(1.25, 1.02, 0.82), sunAmt * 0.55);
           gl_FragColor = vec4(sky, 1.0);
         }
       `,
@@ -7287,6 +7323,9 @@ export class GameScene extends THREE.Scene {
       topColor: skyMat.uniforms.topColor as { value: THREE.Color },
       bottomColor: skyMat.uniforms.bottomColor as { value: THREE.Color },
       horizonColor: skyMat.uniforms.horizonColor as { value: THREE.Color },
+      zenithColor: skyMat.uniforms.zenithColor as { value: THREE.Color },
+      sunDir: skyMat.uniforms.uSunDir as { value: THREE.Vector3 },
+      sunWarmth: skyMat.uniforms.uSunWarmth as { value: number },
     };
   }
 

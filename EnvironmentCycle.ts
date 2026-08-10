@@ -29,6 +29,10 @@ interface SkyUniforms {
   topColor: { value: THREE.Color };
   bottomColor: { value: THREE.Color };
   horizonColor: { value: THREE.Color };
+  // Slice B (optional so older callers/tests remain valid):
+  zenithColor?: { value: THREE.Color };
+  sunDir?: { value: THREE.Vector3 };
+  sunWarmth?: { value: number };
 }
 
 // Sky palettes. Day blues are deliberately deeper than the target look:
@@ -233,8 +237,13 @@ export class EnvironmentCycle {
     makeStars(50, 3.4, 0.85, 2.6);
     makeStars(900, 2.0, 0.38, 0, new THREE.Vector3(0.42, 0.55, 0.72).normalize(), 0xd8e6ff);
 
-    // Moon disc: position and brightness follow the real lunar phase
+    // Moon disc: position and brightness follow the real lunar phase.
+    // Slice C: a canvas terminator (two-arc crescent + flat maria) drawn ONCE
+    // per session from today's phase — the "offset dark circle" variant was
+    // rejected in design review (coplanar sort instability, dark bites over
+    // the starfield).
     this.moonMat = new THREE.MeshBasicMaterial({
+      map: EnvironmentCycle.moonTexture(),
       color: 0xf2ecdc,
       transparent: true,
       opacity: 0,
@@ -541,6 +550,41 @@ export class EnvironmentCycle {
 
   /** Soft-edged sun: hot core feathering into a wide warm glow. The falloff
    * IS the golden-hour halo, so the read survives without the bloom pass. */
+  private static _moonTex: THREE.Texture | null = null;
+
+  /** Crescent moon with flat maria, phase-correct, drawn once per session. */
+  private static moonTexture(): THREE.Texture {
+    if (EnvironmentCycle._moonTex) return EnvironmentCycle._moonTex;
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const ctx = c.getContext('2d') as CanvasRenderingContext2D;
+    // Days since a known new moon -> phase 0..1 (same epoch the arc uses).
+    const phase = ((Date.now() / 86400000 - 10957.5 + 5.73) / 29.53) % 1;
+    const lit = 1 - Math.abs(phase - 0.5) * 2; // 0 new .. 1 full
+    ctx.clearRect(0, 0, 128, 128);
+    ctx.fillStyle = '#f2ecdc';
+    ctx.beginPath();
+    ctx.arc(64, 64, 60, -Math.PI / 2, Math.PI / 2); // lit limb (right half)
+    // Terminator: an ellipse arc whose x-radius sweeps with the phase —
+    // the classic two-arc crescent, no overlay circles.
+    ctx.ellipse(64, 64, Math.abs(60 * (1 - lit * 2)), 60, 0, Math.PI / 2, -Math.PI / 2, lit < 0.5);
+    ctx.fill();
+    // Flat maria: three darker blots, toon-flat, only on the lit side.
+    ctx.fillStyle = 'rgba(180, 172, 150, 0.55)';
+    for (const [mx, my, mr] of [
+      [82, 48, 11],
+      [74, 80, 8],
+      [92, 68, 6],
+    ]) {
+      ctx.beginPath();
+      ctx.arc(mx, my, mr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    EnvironmentCycle._moonTex = tex;
+    return tex;
+  }
+
   private static sunTexture(): THREE.Texture {
     if (this._sunTex) return this._sunTex;
     const c = document.createElement('canvas');
@@ -752,6 +796,25 @@ export class EnvironmentCycle {
     // Fog follows the horizon color; thicker in bad weather
     if (this.fog) {
       this.fog.color.copy(this.sky.horizonColor.value);
+      // Slice B: deep-zenith stop derived from topColor (no new palette keys —
+      // a fixed darkening tracks every weather/day mix for free), and the
+      // dawn/dusk warmth lobe keyed to the TRUE sun direction. sunWarmth dies
+      // with the sun below the horizon and under overcast, mirroring the disc.
+      if (this.sky.zenithColor && this.sky.sunDir && this.sky.sunWarmth) {
+        this.sky.zenithColor.value.copy(this.sky.topColor.value).multiplyScalar(0.68);
+        const se2 = Math.max(elev, -0.05);
+        this.sky.sunDir.value
+          .set(
+            Math.cos(azimuth) * Math.sqrt(1 - se2 * se2),
+            se2,
+            Math.sin(azimuth) * Math.sqrt(1 - se2 * se2),
+          )
+          .normalize();
+        this.sky.sunWarmth.value =
+          Math.max(0, Math.min(1, duskFactor * 1.2)) *
+          Math.max(0, Math.min(1, (elev + 0.02) * 12)) *
+          (1 - overcastMix);
+      }
       this.fog.density =
         this.baseFogDensity *
         (1 +
