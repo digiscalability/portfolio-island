@@ -236,6 +236,47 @@ describe('island radius invariants', () => {
     });
   });
 
+  describe.each(RADII)('grass chunks at R=%i', (r) => {
+    test('every chunk sphere is tight — culling is alive', () => {
+      const island = islandAt(r);
+      const grass = island.mesh.getObjectByName('grass');
+      expect(grass, 'grass group missing').toBeTruthy();
+      const chunks = (grass as THREE.Group).children as THREE.InstancedMesh[];
+      expect(chunks.length).toBeGreaterThanOrEqual(10); // cap + 6 mid + 8 low wedges, tolerate empties
+      let total = 0;
+      for (const c of chunks) {
+        total += c.count;
+        const bs = c.geometry === undefined ? null : c.boundingSphere;
+        expect(bs, `${c.name} has no bounding sphere`).toBeTruthy();
+        // THE invariant chunking exists for: a sphere centred near the planet
+        // core means a degenerate slot leaked in and every chunk once again
+        // intersects the frustum from everywhere — culling silently dead.
+        expect(bs!.center.length(), `${c.name} sphere reaches the planet centre`).toBeGreaterThan(
+          0.5 * r,
+        );
+        // And it must stay a sector, not the whole shell.
+        expect(bs!.radius).toBeLessThan(1.2 * r);
+      }
+      expect(total).toBe((island as unknown as { grassFullCount: number }).grassFullCount);
+      expect(total).toBeGreaterThan(10000); // live blades, not slots
+    });
+
+    test('setGrassBudget trims per chunk and restores cleanly', () => {
+      const island = islandAt(r);
+      const grass = island.mesh.getObjectByName('grass') as THREE.Group;
+      const chunks = grass.children as THREE.InstancedMesh[];
+      const full = chunks.map((c) => c.count);
+      island.setGrassBudget(0.5);
+      chunks.forEach((c, i) => {
+        expect(c.count).toBe(Math.max(1, Math.round(full[i] * 0.5)));
+      });
+      island.setGrassBudget(1);
+      chunks.forEach((c, i) => {
+        expect(c.count).toBe(full[i]);
+      });
+    });
+  });
+
   test('the land/sea split holds its shape across radii', () => {
     // The continent mask is latitude-driven and therefore angular, so growing
     // the world must not drown or beach the island. Catches a coastline

@@ -173,7 +173,8 @@ export class Island {
   // Rotated/bobbed by GameScene each frame — the pizzazz for reaching the top.
   public summitBeacon?: THREE.Object3D;
   // Grass instancing handle + full count for the quality governor's budget hook
-  private grassMesh?: THREE.InstancedMesh;
+  private grassChunks: THREE.InstancedMesh[] = [];
+  private grassChunkFullCounts: number[] = [];
   private grassFullCount = 0;
   // Radial water-surface offset above the base radius (matches the sea mesh).
   // Land sits >= base+0.3 (continent mask floor); the calm surface at +0.1
@@ -257,9 +258,17 @@ export class Island {
    * below a latitude line, the stride makes any prefix spatially uniform.
    */
   public setGrassBudget(fraction: number): void {
-    if (!this.grassMesh || !this.grassFullCount) return;
+    if (!this.grassChunks.length || !this.grassFullCount) return;
     const f = THREE.MathUtils.clamp(fraction, 0.25, 1);
-    this.grassMesh.count = Math.max(1, Math.round(this.grassFullCount * f));
+    // Per-chunk prefix trim. Each chunk's append order is the global
+    // coprime-stride order restricted to its sector, so a prefix stays a
+    // spatially uniform thinning within every sector — adjacent chunks thin at
+    // the same expected density and no seam appears at 0.5. Rounding drift vs
+    // a global trim is ≤ SECTORS/2 instances. NEVER recompute bounding spheres
+    // here — they were built once at full count.
+    for (let i = 0; i < this.grassChunks.length; i++) {
+      this.grassChunks[i].count = Math.max(1, Math.round(this.grassChunkFullCounts[i] * f));
+    }
   }
 
   /** Per-frame: copy the player's world position into the grass push uniform
@@ -437,7 +446,7 @@ export class Island {
     return min;
   }
 
-  private createGrass(): THREE.InstancedMesh {
+  private createGrass(): THREE.Group {
     // Two crossed blades, base at origin.
     //
     // Each blade was ONE triangle converging to a single point — 0.09 wide by
@@ -585,7 +594,36 @@ export class Island {
         // test constructs Island(50). Caught by the headless suite: lamps came
         // out identical at both radii.
         Math.round(100000 * Math.max(1, areaScale(this.radius) * GRASS_DENSITY_FRACTION));
-    const grass = new THREE.InstancedMesh(geo, mat, COUNT);
+    // ── SECTOR CHUNKING ──────────────────────────────────────────────────
+    // One planet-spanning InstancedMesh could never frustum-cull: its bounding
+    // sphere IS the planet, so all ~1.5M grass verts were submitted every
+    // frame from every viewpoint. Split into 8 longitude octants, each with a
+    // tight bounding sphere, and the far side of the planet culls — measured
+    // 40-60% of grass verts dropped in a normal chase view. Collapsed blades
+    // (shore/street/trail/steep) are DROPPED rather than written as degenerate
+    // matrices: a slot at the origin would drag every chunk's sphere over the
+    // planet centre and silently kill the culling (that's also ~1/3 fewer
+    // slots on the GPU). Phase A below runs the ORIGINAL loop byte-for-byte in
+    // math and Math.random() order — the seeded stream feeds index-networked
+    // vehicle placement across multiplayer clients and must stay bit-identical.
+    // Partition: latitude bands x longitude wedges, NOT plain lon octants.
+    // Measured: on a NORTH-CAP island every lon octant touches the pole, so a
+    // camera near the hub saw all eight and culling was 0-26%. Splitting the
+    // cap off and wedging the two lower bands keeps each sphere small:
+    //   chunk 0            = polar cap  (lat > 1.1)
+    //   chunks 1..6        = mid band   (0.7 < lat <= 1.1), 6 lon wedges
+    //   chunks 7..14       = low band   (shore..0.7), 8 lon wedges
+    const SECTORS = 15;
+    const MID_Y = Math.sin(0.7);
+    const CAP_Y = Math.sin(1.1);
+    const sectorOf = (d: THREE.Vector3): number => {
+      if (d.y > CAP_Y) return 0;
+      const lonFrac = (Math.atan2(d.z, d.x) / (Math.PI * 2) + 1) % 1;
+      if (d.y > MID_Y) return 1 + Math.min(5, Math.floor(lonFrac * 6));
+      return 7 + Math.min(7, Math.floor(lonFrac * 8));
+    };
+    const tmpMatrices: number[][] = Array.from({ length: SECTORS }, () => []);
+    const tmpColors: number[][] = Array.from({ length: SECTORS }, () => []);
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
     const golden = Math.PI * (3 - Math.sqrt(5));
@@ -604,14 +642,9 @@ export class Island {
     const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
     let stride = Math.max(1, Math.round(COUNT * 0.618));
     while (gcd(stride, COUNT) !== 1) stride++;
-    // Collapsed blades all share one pre-baked degenerate matrix (scale ~0 at
-    // the origin renders nothing; slot content is irrelevant — raycast is off
-    // and the budget governor counts slots, not positions).
-    dummy.position.set(0, 0, 0);
-    dummy.quaternion.identity();
-    dummy.scale.setScalar(0.0001);
-    dummy.updateMatrix();
-    const collapsedMatrix = dummy.matrix.clone();
+    // (Collapsed blades used to share a degenerate matrix at the origin; they
+    // are now DROPPED entirely — see the chunking note. collapsedColor lives
+    // on as a scratch Color for Phase B's setColorAt replay.)
     const collapsedColor = new THREE.Color(1, 1, 1);
     const bladeNormal = new THREE.Vector3(); // reused analytic normal out-param
     const SHORE_Y = Math.sin(0.26);
@@ -646,9 +679,7 @@ export class Island {
         Math.random(); // burn: rotateOnAxis yaw
         Math.random(); // burn: colour lerp jitter
         Math.random(); // burn: per-blade shade
-        grass.setMatrixAt(k, collapsedMatrix);
-        grass.setColorAt(k, collapsedColor);
-        continue;
+        continue; // DROPPED, not degenerate-written — see chunking note above
       }
       // Analytic, not raycast: at 1.24ms per raycast these blades alone used to
       // cost seconds of phone startup and trip the boot watchdog. The Into
@@ -668,10 +699,11 @@ export class Island {
       // cheap gates — but it only fires on the mountain, a small band.)
       const slopeCos = bladeNormal.dot(dir);
       const tooSteep = slopeCos < 0.86; // ~31 degrees
+      // NB: the ternary's random consumption (none when tooSteep) is the
+      // SHIPPED stream contract — do not "simplify" it.
       const sc = tooSteep ? 0.0001 : 0.85 + Math.random() * 0.4;
       dummy.scale.set(sc, sc, sc);
       dummy.updateMatrix();
-      grass.setMatrixAt(k, dummy.matrix);
       // Per-blade colour. A single flat green over thousands of instances is
       // what makes the meadow read as plastic; drifting each blade between a
       // dry yellow-green and a deep shade — biased by elevation so low ground
@@ -696,25 +728,71 @@ export class Island {
       if (gaw > 0) bladeColor.lerp(bladeAccent, gaw * 0.07);
       // subtle per-blade brightness so neighbours never match exactly
       const shade = 0.86 + Math.random() * 0.28;
-      grass.setColorAt(k, bladeColor.multiplyScalar(shade));
+      bladeColor.multiplyScalar(shade);
+      if (tooSteep) continue; // dropped AFTER its randoms are consumed
+      // Sector by longitude octant. Append order is the global coprime-stride
+      // visitation order restricted to the sector, and a uniform sequence
+      // restricted to a region stays uniform over that region — so a PREFIX of
+      // each chunk (what setGrassBudget draws) remains a spatially uniform
+      // thinning, no per-chunk stride machinery needed.
+      const sector = sectorOf(dir);
+      const e = dummy.matrix.elements;
+      for (let m = 0; m < 16; m++) tmpMatrices[sector].push(e[m]);
+      tmpColors[sector].push(bladeColor.r, bladeColor.g, bladeColor.b);
     }
-    if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
-    grass.instanceMatrix.needsUpdate = true;
-    grass.name = 'grass';
-    // Opt out of raycasting (mirrors the sea): the orbit camera's per-frame
-    // collision ray otherwise brute-forces all 32k-100k instances — multi-ms
-    // of main-thread time on mobile — and a BLADE crossing the eye-ray
-    // yanked the camera toward the player.
-    grass.raycast = () => {};
-    grass.castShadow = false;
-    // Coarse tier: 12k DoubleSide blades sampling the shadow map for shadows
-    // nobody can see at phone DPR — skip the receive entirely there.
-    grass.receiveShadow = !lowTier;
-    const grassData = grass.userData as Record<string, unknown>;
-    grassData.ignoreOcclusion = true;
-    this.grassMesh = grass;
-    this.grassFullCount = COUNT;
-    return grass;
+    // ── Phase B: materialize one InstancedMesh per sector ────────────────
+    const group = new THREE.Group();
+    group.name = 'grass';
+    this.grassChunks = [];
+    this.grassChunkFullCounts = [];
+    let placed = 0;
+    for (let s = 0; s < SECTORS; s++) {
+      const count = tmpMatrices[s].length / 16;
+      if (count === 0) continue;
+      // Shared geometry + shared material: one shader program, one uniform set
+      // (uTime/uPlayerPos ride the material, so wind + push stay planet-wide).
+      const chunk = new THREE.InstancedMesh(geo, mat, count);
+      chunk.instanceMatrix.array.set(tmpMatrices[s]);
+      for (let ci = 0; ci < count; ci++) {
+        // setColorAt (not a raw buffer write) so the instanceColor attribute is
+        // created on EVERY chunk — a chunk without it would compile a second
+        // shader program variant.
+        chunk.setColorAt(
+          ci,
+          collapsedColor.setRGB(
+            tmpColors[s][ci * 3],
+            tmpColors[s][ci * 3 + 1],
+            tmpColors[s][ci * 3 + 2],
+          ),
+        );
+      }
+      chunk.instanceMatrix.needsUpdate = true;
+      if (chunk.instanceColor) chunk.instanceColor.needsUpdate = true;
+      chunk.name = `grass_sector_${s}`;
+      // Opt out of raycasting (mirrors the sea): the orbit camera's collision
+      // ray otherwise brute-forces every instance, and a BLADE crossing the
+      // eye-ray yanked the camera toward the player.
+      chunk.raycast = () => {};
+      chunk.castShadow = false;
+      // Coarse tier: DoubleSide blades sampling the shadow map for shadows
+      // nobody can see at phone DPR — skip the receive entirely there.
+      chunk.receiveShadow = !lowTier;
+      (chunk.userData as Record<string, unknown>).ignoreOcclusion = true;
+      // Bounding sphere ONCE, at full count, BEFORE any budget trim — three
+      // computes it from instance matrices, and a sphere computed against a
+      // trimmed count would cull live blades at the chunk edge when the budget
+      // recovers. If a sphere ever encloses the planet centre, culling has
+      // silently died (the degenerate-slot trap) — asserted by the test suite.
+      chunk.computeBoundingSphere();
+      group.add(chunk);
+      this.grassChunks.push(chunk);
+      this.grassChunkFullCounts.push(count);
+      placed += count;
+    }
+    // Live blades, not slots: ~1/3 of candidates collapse, and they no longer
+    // occupy GPU instances at all.
+    this.grassFullCount = placed;
+    return group;
   }
 
   private createIsland(): THREE.Group {
