@@ -14,6 +14,15 @@ import * as THREE from 'three';
 import { describe, expect, test, beforeAll } from 'vitest';
 
 import { Island } from '../Island';
+import { OrbitCamera } from '../OrbitCamera';
+import {
+  BIRD_SPOTS,
+  CAT_SPOTS_AUTHORED,
+  camNearThreshold,
+  faunaElevOk,
+  faunaGroundSpotOk,
+  growSiteRing,
+} from '../WorldPlacement';
 import { installHeadlessCanvas } from './helpers/headlessDom';
 
 /** Private tuning constants, read for the headroom law they participate in. */
@@ -71,6 +80,106 @@ describe('island radius invariants', () => {
     // If this inverts, raycasts start INSIDE the summits and grounding fails
     // silently on high terrain — no error, NPCs and shadows just stop seating.
     expect(Island.SAMPLE_RAY_DISP).toBeGreaterThan(Island.MAX_DISPLACEMENT);
+  });
+
+  describe.each(RADII)('surface sampler at R=%i', (r) => {
+    test('ray start clears the highest terrain', () => {
+      const island = islandAt(r);
+      const s = r / Island.REFERENCE_RADIUS;
+      expect(r + Island.SAMPLE_RAY_DISP * s).toBeGreaterThan(island.maxTerrainRadius());
+    });
+
+    test('the raycast sampler seats ON the peaks, not on the base sphere', () => {
+      // The shipped bug: sampleSurfacePosition's rays started at radius+5.5
+      // while terrain reached radius+13.8 — on high ground every ray began
+      // INSIDE the mountain and the function silently fell back to base-sphere
+      // seating (~10u low on the summit). A behavioral pin, not a formula pin.
+      const island = islandAt(r);
+      let peakDir = goldenSpiral(2000)[0];
+      let peakR = 0;
+      for (const d of goldenSpiral(2000)) {
+        const rr = island.analyticSurface(d).radius;
+        if (rr > peakR) {
+          peakR = rr;
+          peakDir = d;
+        }
+      }
+      const sampled = (
+        island as unknown as {
+          sampleSurfacePosition(p: THREE.Vector3, o: number): { position: THREE.Vector3 };
+        }
+      ).sampleSurfacePosition(peakDir.clone().multiplyScalar(r), 0);
+      expect(sampled.position.length()).toBeGreaterThan(r + (peakR - r) * 0.7);
+    });
+
+    test('lamp ring parity: alternating kerbs survive the wrap', () => {
+      const island = islandAt(r);
+      let total = 0;
+      let sites = 0;
+      let infill = 0;
+      island.mesh.traverse((o: THREE.Object3D) => {
+        if (!/^lamp_\d+$/.test(o.name)) return;
+        total++;
+        if (o.userData.boulevardRing === 'sites') sites++;
+        if (o.userData.boulevardRing === 'infill') infill++;
+      });
+      // 37 at R=50 is the historical "💡 37 lamp light pools" boot log —
+      // external validation that the generated ring reproduces the hand list
+      // (20 boulevard + 17 porch/plaza/tower lamps).
+      expect(total).toBe(r === Island.REFERENCE_RADIUS ? 37 : 49);
+      // The invariant the odd count broke: each ring's i%2 kerb pattern must
+      // survive the wrap, which requires an even count per ring. (Strict
+      // by-longitude alternation across BOTH rings interleaved never held —
+      // the original hand list didn't have it either.)
+      expect(sites % 2).toBe(0);
+      expect(infill).toBe(sites);
+    });
+  });
+
+  describe.each(RADII)('placement gates at R=%i', (r) => {
+    test('every authored fauna spot is on land at fauna-plausible elevation', () => {
+      // Authored spots are NEVER gated in production (hand-vetted), so this
+      // asserts the parts that would indicate real data rot — water/elevation —
+      // and deliberately NOT isNearStreet: cat #2 legitimately lounges beside
+      // the avenue (measured: on-street at both radii, and always has been).
+      const island = islandAt(r);
+      for (const [lon, lat] of [...BIRD_SPOTS, ...CAT_SPOTS_AUTHORED]) {
+        const dir = island.dirAt(lon, lat);
+        expect(island.isOverWater(dir), `authored (${lon}, ${lat}) in water`).toBe(false);
+        expect(faunaElevOk(island, dir), `authored (${lon}, ${lat}) too high`).toBe(true);
+      }
+    });
+
+    test('growSiteRing never emits a generated spot the gate rejects', () => {
+      const island = islandAt(r);
+      const accept = (lon: number, lat: number): boolean => faunaGroundSpotOk(island, lon, lat);
+      const grown = growSiteRing(BIRD_SPOTS, 27, accept);
+      for (let i = BIRD_SPOTS.length; i < grown.length; i++) {
+        expect(accept(grown[i][0], grown[i][1])).toBe(true);
+      }
+    });
+
+    test('regression: the summit bird spot fails the gate', () => {
+      // Ungated generation put bird spot #17 on the summit flank — measured
+      // 5.25u above sea at R=75 (elevFrac 0.38-0.40 at both radii), well past
+      // the 0.35 ceiling. (Cat #13, flagged in review as street-tight, was
+      // MEASURED legal: 2.73u from the centreline vs a 1.9u keep-out — it
+      // passes the gate and should.)
+      const island = islandAt(r);
+      const birds = growSiteRing(BIRD_SPOTS, 27); // NO gate — reproduce the bug
+      expect(faunaGroundSpotOk(island, birds[17][0], birds[17][1])).toBe(false);
+      const cats = growSiteRing(CAT_SPOTS_AUTHORED, 18);
+      expect(faunaGroundSpotOk(island, cats[13][0], cats[13][1])).toBe(true);
+    });
+
+    test('camNearThreshold: summit chase pose is near, fly-in is far', () => {
+      const island = islandAt(r);
+      const t = camNearThreshold(island);
+      // Highest possible in-play camera: summit + max zoom.
+      expect(t).toBeGreaterThan(island.maxTerrainRadius() + OrbitCamera.MAX_DISTANCE);
+      // The cinematic fly-in orbits at ~3.7x the radius — must always read far.
+      expect(t).toBeLessThan(r * 2);
+    });
   });
 
   test.each(RADII)('headroom: the sea can never reach the beach floor at R=%i', (r) => {
