@@ -66,6 +66,20 @@ export function applySoftLookFogPatch(): void {
 	#endif
 #endif`;
 
+  // The sprite vertex shader includes fog_vertex but never defines
+  // `transformed`, so the chunk above fails ITS compile — SpriteMaterial has
+  // fog:true by default, which silently blanked every name pin / chat bubble
+  // under ?look=soft (three skips objects whose program failed). A sprite's
+  // fog anchor is simply its world translation (the billboard offset is
+  // view-space), so give ShaderLib.sprite its own exact, zero-cost line.
+  THREE.ShaderLib.sprite.vertexShader = THREE.ShaderLib.sprite.vertexShader.replace(
+    '#include <fog_vertex>',
+    /* glsl */ `#ifdef USE_FOG
+	vFogDepth = - mvPosition.z;
+	vFogWorldPos = ( modelMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+#endif`,
+  );
+
   THREE.ShaderChunk.fog_pars_fragment = /* glsl */ `
 #ifdef USE_FOG
 	uniform vec3 fogColor;
