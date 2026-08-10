@@ -45,6 +45,7 @@ interface Bubble {
   sprite: THREE.Sprite;
   until: number;
   parent: THREE.Object3D;
+  text: string; // kept for the HudLabels DOM twin (sprite text is baked pixels)
 }
 
 /** A voice clip currently playing, spatialised via a PannerNode that tracks the
@@ -401,7 +402,13 @@ export class Chat {
     // wrapped lines grows upward, never down into the label or hat.
     sprite.position.set(0, 2.05, 0);
     parent.add(sprite);
-    this.bubbles.push({ sprite, until: performance.now() / 1000 + BUBBLE_TTL, parent });
+    this.bubbles.push({ sprite, until: performance.now() / 1000 + BUBBLE_TTL, parent, text });
+  }
+
+  /** Live sentence bubbles for the HudLabels DOM-twin pass (Round 3 P5).
+   *  Keyed by the speaker object's uuid — stable while the bubble lives. */
+  public getLiveBubbles(): Array<{ key: string; text: string; sprite: THREE.Sprite }> {
+    return this.bubbles.map((b) => ({ key: b.parent.uuid, text: b.text, sprite: b.sprite }));
   }
 
   /** Detach a bubble from its parent and free its texture/material. */

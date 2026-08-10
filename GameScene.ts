@@ -6370,6 +6370,13 @@ export class GameScene extends THREE.Scene {
   } | null = null;
   private npcBubbleFor = -1;
   private npcBubbleUntil = 0;
+  private npcBubbleText = ''; // for the HudLabels DOM twin (pixels aren't text)
+
+  /** The live NPC speech bubble, if any (HudLabels DOM-twin pass, R3 P5). */
+  public getNpcBubbleInfo(): { text: string; sprite: THREE.Sprite } | null {
+    if (!this.npcBubble || !this.npcBubble.sprite.visible) return null;
+    return { text: this.npcBubbleText, sprite: this.npcBubble.sprite };
+  }
 
   private showNpcSpeechBubble(i: number, text: string, time: number): void {
     if (!this.npcBubble) {
@@ -6432,6 +6439,7 @@ export class GameScene extends THREE.Scene {
     sprite.visible = true;
     this.npcBubbleFor = i;
     this.npcBubbleUntil = time + 6.5;
+    this.npcBubbleText = text;
   }
 
   // ── Dialogue hold ──────────────────────────────────────────────────

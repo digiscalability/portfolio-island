@@ -9,6 +9,7 @@ import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
+import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { Multiplayer } from './Multiplayer';
 import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
@@ -83,6 +84,10 @@ class SimpleApp {
   private npcQuests!: NpcQuestSystem;
   private multiplayer: Multiplayer | null = null;
   private chat?: Chat;
+  // Hybrid DOM bubble labels (mobile-HUD Round 3 P5) + reusable per-frame pools
+  private hudLabels: HudLabels | null = null;
+  private readonly hudCandidates: BubbleCandidate[] = [];
+  private readonly hudScratch: THREE.Vector3[] = [];
   private isRunning: boolean = false;
   // "Meet the AI townsfolk" compass override (welcome CTA → cleared on AI chat)
   private aiGuideTarget: THREE.Vector3 | null = null;
@@ -442,6 +447,8 @@ class SimpleApp {
       // Enter/V(oice) on desktop (see setupDebugShortcuts-adjacent binding
       // below, near the input manager setup).
       this.chat = new Chat(this.multiplayer);
+      // DOM twins live in the overlay so photo mode hides them for free.
+      this.hudLabels = new HudLabels(this.ui.getOverlay());
       this.ui.setVoiceSupported(this.chat.voiceSupported);
       this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
@@ -2170,6 +2177,41 @@ class SimpleApp {
     this.multiplayer?.setVehicle(this.scene.getActiveVehicleState());
     this.multiplayer?.update(deltaTime);
     this.chat?.update(deltaTime);
+
+    // HudLabels (R3 P5): the ≤4 nearest sentence bubbles inside 14u swap to
+    // crisp DOM twins — sprite text can't beat the DPR-capped framebuffer.
+    // Candidates only exist while someone is actually speaking, so this whole
+    // block is ~free on quiet frames. ?domlabels=0 kills it inside update().
+    if (this.hudLabels) {
+      this.hudCandidates.length = 0;
+      let scratchIdx = 0;
+      const grabScratch = (): THREE.Vector3 => {
+        while (this.hudScratch.length <= scratchIdx) this.hudScratch.push(new THREE.Vector3());
+        return this.hudScratch[scratchIdx++];
+      };
+      if (this.chat) {
+        for (const b of this.chat.getLiveBubbles()) {
+          this.hudCandidates.push({
+            key: b.key,
+            text: b.text,
+            sprite: b.sprite,
+            worldPos: b.sprite.getWorldPosition(grabScratch()),
+            theme: 'chat',
+          });
+        }
+      }
+      const npcBubble = this.scene.getNpcBubbleInfo();
+      if (npcBubble) {
+        this.hudCandidates.push({
+          key: 'npc',
+          text: npcBubble.text,
+          sprite: npcBubble.sprite,
+          worldPos: npcBubble.sprite.getWorldPosition(grabScratch()),
+          theme: 'npc',
+        });
+      }
+      this.hudLabels.update(this.scene.getCamera(), this.hudCandidates);
+    }
 
     // First time a real visitor comes within chat range, surface how to
     // interact (idempotent + persisted, so this is effectively free after once).
