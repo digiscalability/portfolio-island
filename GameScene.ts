@@ -7371,13 +7371,14 @@ export class GameScene extends THREE.Scene {
         // Slice B (approved sky design): a deep-zenith stop above topColor, a
         // warmth lobe around the TRUE sun direction (EnvironmentCycle writes
         // uSunDir from the disc math — NEVER the clamped shadow light, which
-        // would paint dusk warmth around the moon), and soft posterization
-        // behind ?sky=band (Abbas's A/B ruling: judge dusk screenshots).
+        // would paint dusk warmth around the moon), and soft posterization —
+        // DEFAULT ON since Abbas's dusk A/B verdict (2026-08-10); ?sky=smooth
+        // remains as the escape hatch back to the unbanded gradient.
         zenithColor: { value: new THREE.Color(0x1c4fa8) },
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uSunWarmth: { value: 0 }, // 0 by day, ramps toward dusk; 0 below horizon
         uBands: {
-          value: new URLSearchParams(window.location.search).get('sky') === 'band' ? 5.0 : 0.0,
+          value: new URLSearchParams(window.location.search).get('sky') === 'smooth' ? 0.0 : 5.0,
         },
       },
       vertexShader: `
