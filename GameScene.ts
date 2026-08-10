@@ -21,6 +21,7 @@ import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
+import { BUILD_KIND_IDS } from './worldBuilds';
 import {
   BIRD_SPOTS,
   CAT_SPOTS_AUTHORED,
@@ -5426,31 +5427,50 @@ export class GameScene extends THREE.Scene {
   // Fixed plots, same philosophy as BENCH_PLOTS: pre-authored spots are the
   // whole grief surface. The plot INDEX fixes the structure kind (append-only
   // — the cloud stores only the index).
+  // `defaultKind` renders when the cloud record carries no kind (every
+  // pre-chooser build, forever); `size` gates the chooser — gazebos (the only
+  // collider-bearing build) fit only 'L' plots, which the slope vitest keeps
+  // near-flat. APPEND-ONLY: the index is the wire value.
   public static readonly BUILD_PLOTS: Array<{
-    kind: 'signpost' | 'lantern' | 'gazebo';
+    defaultKind: 'signpost' | 'lantern' | 'gazebo' | 'planter' | 'campfire';
+    size: 'S' | 'L';
     lon: number;
     lat: number;
     yaw: number;
   }> = [
     // 0-5 signposts — junction band between the bench ring and the districts
-    { kind: 'signpost', lon: 0.4, lat: 1.0, yaw: 2.1 },
-    { kind: 'signpost', lon: 1.52, lat: 0.97, yaw: -0.6 },
-    { kind: 'signpost', lon: 2.7, lat: 1.0, yaw: 1.2 },
-    { kind: 'signpost', lon: 3.95, lat: 0.95, yaw: -1.8 },
-    { kind: 'signpost', lon: 5.0, lat: 1.0, yaw: 0.4 },
-    { kind: 'signpost', lon: 6.05, lat: 0.9, yaw: 2.8 },
+    { defaultKind: 'signpost', size: 'S', lon: 0.4, lat: 1.0, yaw: 2.1 },
+    { defaultKind: 'signpost', size: 'S', lon: 1.52, lat: 0.97, yaw: -0.6 },
+    { defaultKind: 'signpost', size: 'S', lon: 2.7, lat: 1.0, yaw: 1.2 },
+    { defaultKind: 'signpost', size: 'S', lon: 3.95, lat: 0.95, yaw: -1.8 },
+    { defaultKind: 'signpost', size: 'S', lon: 5.0, lat: 1.0, yaw: 0.4 },
+    { defaultKind: 'signpost', size: 'S', lon: 6.05, lat: 0.9, yaw: 2.8 },
     // 6-11 lanterns — dark stretches between the lamp rings
-    { kind: 'lantern', lon: 0.95, lat: 0.9, yaw: 0 },
-    { kind: 'lantern', lon: 2.35, lat: 0.88, yaw: 0 },
-    { kind: 'lantern', lon: 3.08, lat: 0.93, yaw: 0 },
-    { kind: 'lantern', lon: 4.05, lat: 0.88, yaw: 0 },
-    { kind: 'lantern', lon: 5.35, lat: 0.9, yaw: 0 },
-    { kind: 'lantern', lon: 6.1, lat: 0.85, yaw: 0 },
+    { defaultKind: 'lantern', size: 'S', lon: 0.95, lat: 0.9, yaw: 0 },
+    { defaultKind: 'lantern', size: 'S', lon: 2.35, lat: 0.88, yaw: 0 },
+    { defaultKind: 'lantern', size: 'S', lon: 3.08, lat: 0.93, yaw: 0 },
+    { defaultKind: 'lantern', size: 'S', lon: 4.05, lat: 0.88, yaw: 0 },
+    { defaultKind: 'lantern', size: 'S', lon: 5.35, lat: 0.9, yaw: 0 },
+    { defaultKind: 'lantern', size: 'S', lon: 6.1, lat: 0.85, yaw: 0 },
     // 12-13 gazebos — flat aprons only (the slope vitest is the authority)
-    { kind: 'gazebo', lon: 3.9, lat: 1.32, yaw: 0.8 },
-    { kind: 'gazebo', lon: 1.75, lat: 0.78, yaw: -0.4 },
+    { defaultKind: 'gazebo', size: 'L', lon: 3.9, lat: 1.32, yaw: 0.8 },
+    { defaultKind: 'gazebo', size: 'L', lon: 1.75, lat: 0.78, yaw: -0.4 },
+    // 14-17 (wave 4 append): two S along walking routes, two L on aprons —
+    // lon/lats sited by the buildPlots vitest (off-street, spaced, L flat).
+    { defaultKind: 'planter', size: 'S', lon: 1.15, lat: 0.82, yaw: 0.9 },
+    { defaultKind: 'campfire', size: 'S', lon: 4.6, lat: 0.95, yaw: 0 },
+    { defaultKind: 'gazebo', size: 'L', lon: 0.28, lat: 1.2, yaw: 1.4 },
+    { defaultKind: 'gazebo', size: 'L', lon: 5.7, lat: 1.05, yaw: -0.7 },
   ];
-  private builtBuildPlots = new Map<number, THREE.Group>();
+  private builtBuildPlots = new Map<
+    number,
+    {
+      group: THREE.Group;
+      colliders: Array<{ position: THREE.Vector3; radius: number; owner?: THREE.Object3D }>;
+      bulbMat?: THREE.MeshToonMaterial;
+      kindRendered?: (typeof GameScene.BUILD_PLOTS)[number]['defaultKind'];
+    }
+  >();
   // Cache-once plot seats: the per-frame prompt scan used to RAYCAST every
   // unbuilt plot (~1.24ms each, up to ~10ms/frame with timber+coins in
   // pocket) — the P0 find of the expansion audit. Seats never move.
@@ -5511,12 +5531,35 @@ export class GameScene extends THREE.Scene {
    * anywhere in here (unlike the bench's cosmetic yaw, these have authored
    * yaws so every client renders the identical structure).
    */
-  public renderWorldBuild(plot: number): void {
+  /** Resolve a cloud record's optional kind index to the kind that renders:
+   *  a valid index wins unless it asks a collider-bearing gazebo onto an 'S'
+   *  plot; anything else (absent, out of range, hand-written junk) degrades
+   *  to the plot's defaultKind — exactly what pre-chooser records render. */
+  public static resolveKind(
+    plot: number,
+    wireKind?: number,
+  ): (typeof GameScene.BUILD_PLOTS)[number]['defaultKind'] {
+    const site = GameScene.BUILD_PLOTS[plot];
+    if (!site) return 'signpost';
+    if (
+      wireKind !== undefined &&
+      Number.isInteger(wireKind) &&
+      wireKind >= 0 &&
+      wireKind < BUILD_KIND_IDS.length
+    ) {
+      const kind = BUILD_KIND_IDS[wireKind];
+      if (kind !== 'gazebo' || site.size === 'L') return kind;
+    }
+    return site.defaultKind;
+  }
+
+  public renderWorldBuild(plot: number, wireKind?: number, celebrate = false): void {
     if (this.builtBuildPlots.has(plot) || !this.island) return;
     const site = GameScene.BUILD_PLOTS[plot];
     if (!site) return;
     const seat = this.plotSample(`s${plot}`, site.lon, site.lat);
     if (!seat) return;
+    const kind = GameScene.resolveKind(plot, wireKind);
     // SHIELD (the clump-builder law): three.js mints uuids via Math.random —
     // ~200 draws per structure. Subscribe callbacks land at runtime today,
     // but shielding makes this builder safe to call from ANY window forever.
@@ -5529,7 +5572,7 @@ export class GameScene extends THREE.Scene {
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
     try {
-      this.renderWorldBuildShielded(plot, site, seat);
+      this.renderWorldBuildShielded(plot, site, seat, kind, celebrate);
     } finally {
       Math.random = stashedRandom;
     }
@@ -5539,12 +5582,15 @@ export class GameScene extends THREE.Scene {
     plot: number,
     site: (typeof GameScene.BUILD_PLOTS)[number],
     seat: { position: THREE.Vector3; normal: THREE.Vector3 },
+    kind: (typeof GameScene.BUILD_PLOTS)[number]['defaultKind'] = site.defaultKind,
+    celebrate = false,
   ): void {
     const g = new THREE.Group();
     const ramp = Materials.toonRamp();
     const wood = new THREE.MeshToonMaterial({ color: 0x8a6238, gradientMap: ramp });
     const darkWood = new THREE.MeshToonMaterial({ color: 0x4b3a28, gradientMap: ramp });
-    if (site.kind === 'signpost') {
+    let buildBulbMat: THREE.MeshToonMaterial | undefined;
+    if (kind === 'signpost') {
       const parts: THREE.BufferGeometry[] = [
         new THREE.BoxGeometry(0.12, 1.6, 0.12).translate(0, 0.8, 0),
         new THREE.BoxGeometry(0.7, 0.22, 0.05).translate(0.2, 1.35, 0),
@@ -5555,7 +5601,7 @@ export class GameScene extends THREE.Scene {
       const cap = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.16), darkWood);
       cap.position.y = 1.62;
       g.add(body, cap);
-    } else if (site.kind === 'lantern') {
+    } else if (kind === 'lantern') {
       const parts: THREE.BufferGeometry[] = [
         new THREE.CylinderGeometry(0.06, 0.06, 1.9, 6).translate(0, 0.95, 0).toNonIndexed(),
         new THREE.BoxGeometry(0.28, 0.06, 0.06).translate(0.12, 1.86, 0).toNonIndexed(),
@@ -5573,7 +5619,72 @@ export class GameScene extends THREE.Scene {
       // Joins the street-lamp night dimmer — the ramp loop writes ONLY
       // emissiveIntensity, which MeshToonMaterial carries too.
       this.lampBulbMats.push(bulbMat);
+      buildBulbMat = bulbMat;
       g.add(post, bulb);
+    } else if (kind === 'planter') {
+      // Low bed + a handful of blooms — the garden's stem+petals recipe,
+      // colour keyed off the plot index (deterministic, per-plot distinct).
+      const bedMat = new THREE.MeshToonMaterial({ color: 0x6d4a2f, gradientMap: ramp });
+      const soil = new THREE.MeshToonMaterial({ color: 0x3d2f22, gradientMap: ramp });
+      const bed = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.26, 0.55), bedMat);
+      bed.position.y = 0.13;
+      bed.castShadow = true;
+      const fill = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.45), soil);
+      fill.position.y = 0.27;
+      const hue = (((plot * 0.37) % 1) + 1) % 1;
+      const petalMat = new THREE.MeshToonMaterial({
+        color: new THREE.Color().setHSL(hue, 0.7, 0.62),
+        gradientMap: ramp,
+      });
+      const stemMat = new THREE.MeshToonMaterial({ color: 0x3f7a3a, gradientMap: ramp });
+      const centreMat = new THREE.MeshToonMaterial({ color: 0xf5d76e, gradientMap: ramp });
+      for (let f = 0; f < 4; f++) {
+        const fx = -0.32 + f * 0.21;
+        const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.02, 0.3, 5), stemMat);
+        stem.position.set(fx, 0.44, f % 2 === 0 ? 0.08 : -0.08);
+        g.add(stem);
+        const centre = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 5), centreMat);
+        centre.position.set(fx, 0.6, stem.position.z);
+        g.add(centre);
+        for (let pt = 0; pt < 5; pt++) {
+          const pa = (pt / 5) * Math.PI * 2;
+          const petal = new THREE.Mesh(new THREE.SphereGeometry(0.032, 5, 4), petalMat);
+          petal.position.set(fx + Math.cos(pa) * 0.06, 0.6 + Math.sin(pa) * 0.06, stem.position.z);
+          g.add(petal);
+        }
+      }
+      g.add(bed, fill);
+    } else if (kind === 'campfire') {
+      // Stone ring + crossed logs + an ember that glows with the night ramp
+      // (zero new per-frame work — the ember material joins lampBulbMats).
+      const stoneMat = new THREE.MeshToonMaterial({ color: 0x8b8578, gradientMap: ramp });
+      for (let st = 0; st < 7; st++) {
+        const a = (st / 7) * Math.PI * 2;
+        const stone = new THREE.Mesh(new THREE.IcosahedronGeometry(0.11, 0), stoneMat);
+        stone.position.set(Math.cos(a) * 0.42, 0.08, Math.sin(a) * 0.42);
+        stone.castShadow = true;
+        g.add(stone);
+      }
+      for (let lg = 0; lg < 3; lg++) {
+        const a = (lg / 3) * Math.PI;
+        const log = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.62, 6), wood);
+        log.rotation.z = Math.PI / 2 - 0.35;
+        log.rotation.y = a;
+        log.position.y = 0.16;
+        log.castShadow = true;
+        g.add(log);
+      }
+      const emberMat = new THREE.MeshToonMaterial({
+        color: 0x5a3020,
+        gradientMap: ramp,
+        emissive: 0xff7a30,
+        emissiveIntensity: 0,
+      });
+      const ember = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), emberMat);
+      ember.position.y = 0.14;
+      this.lampBulbMats.push(emberMat);
+      buildBulbMat = emberMat;
+      g.add(ember);
     } else {
       // gazebo
       const deck = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.4, 0.12, 8), wood);
@@ -5615,7 +5726,8 @@ export class GameScene extends THREE.Scene {
     g.quaternion.setFromUnitVectors(GameScene.AXIS_Y, up);
     g.rotateY(site.yaw);
     this.add(g);
-    if (site.kind === 'gazebo') {
+    const buildColliders: Array<{ position: THREE.Vector3; radius: number }> = [];
+    if (kind === 'gazebo') {
       // Post-foot colliders AFTER the final orientation is set.
       for (let i = 0; i < 4; i++) {
         const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
@@ -5626,12 +5738,199 @@ export class GameScene extends THREE.Scene {
               .applyQuaternion(g.quaternion)
               .setLength(1.0),
           );
-        this.colliders.push({ position: foot, radius: 0.15 });
+        const col = { position: foot, radius: 0.15 };
+        this.colliders.push(col);
+        buildColliders.push(col);
       }
       addGroupHulls(g, 0.12, () => true);
     }
-    this.builtBuildPlots.set(plot, g);
+    this.builtBuildPlots.set(plot, {
+      group: g,
+      colliders: buildColliders,
+      bulbMat: buildBulbMat,
+      kindRendered: kind,
+    });
+    if (celebrate) {
+      // Staged reveal: pop in with an ease-out-back overshoot (GROUP scale,
+      // not a bone — the mixer-fight law does not apply), dust ring + fanfare
+      // + a camera glance at the fresh build.
+      g.scale.setScalar(0.02);
+      this.revealAnims.push({ group: g, start: -1 });
+      const up = seat.position.clone().normalize();
+      const ringR = kind === 'gazebo' ? 1.5 : 0.8;
+      for (let d = 0; d < 6; d++) {
+        const a = (d / 6) * Math.PI * 2;
+        const at = seat.position
+          .clone()
+          .add(
+            new THREE.Vector3(Math.cos(a), 0, Math.sin(a))
+              .applyQuaternion(g.quaternion)
+              .setLength(ringR),
+          )
+          .addScaledVector(up, 0.2);
+        this.spawnDust(at, 1);
+      }
+      sfx.questComplete();
+      this.setInteractionFocus(seat.position.clone().addScaledVector(up, 1.2), 2.6);
+    }
     this.refreshPlotMarkers(); // the stake yields to the structure
+  }
+
+  /** Reveal-pop animations for freshly built structures (group scale only). */
+  private revealAnims: Array<{ group: THREE.Group; start: number }> = [];
+
+  private processRevealAnims(time: number): void {
+    for (let i = this.revealAnims.length - 1; i >= 0; i--) {
+      const a = this.revealAnims[i];
+      if (a.start < 0) a.start = time;
+      const k = Math.min(1, (time - a.start) / 0.7);
+      // ease-out-back: ~8% overshoot before settling to 1
+      const c1 = 1.70158;
+      const e = 1 + (c1 + 1) * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2);
+      a.group.scale.setScalar(Math.max(0.02, e));
+      if (k >= 1) {
+        a.group.scale.setScalar(1);
+        this.revealAnims.splice(i, 1);
+      }
+    }
+  }
+
+  /** Tear down a built structure (reclaim/remote-removal): remove + dispose
+   *  the group, splice its colliders and any glow material back out, and
+   *  bring the stake marker back. The disposal law: geometries/materials
+   *  must be freed or the GPU leaks per reclaim. */
+  public removeWorldBuild(plot: number): void {
+    const entry = this.builtBuildPlots.get(plot);
+    if (!entry) return;
+    this.remove(entry.group);
+    entry.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.geometry?.dispose();
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      for (const mat of mats) mat?.dispose();
+    });
+    for (const col of entry.colliders) {
+      const at = this.colliders.indexOf(col);
+      if (at >= 0) this.colliders.splice(at, 1);
+    }
+    if (entry.bulbMat) {
+      const at = this.lampBulbMats.indexOf(entry.bulbMat);
+      if (at >= 0) this.lampBulbMats.splice(at, 1);
+    }
+    this.builtBuildPlots.delete(plot);
+    this.refreshPlotMarkers(); // the stake visibly returns — that IS the feedback
+  }
+
+  // ── Construction moment: scaffold + three hammer beats before the reveal ──
+  private constructionSites = new Map<number, { group: THREE.Group; pulseAt: number }>();
+  private pendingBuildFx: Array<{ at: number; plot: number }> = [];
+
+  /** Raise a scaffold on the plot and queue three hammer strikes (the axe IS
+   *  the hammer — no new held tool, no rig risk). Purely visual: no
+   *  colliders, no raycast, torn down by finish/cancelConstruction. */
+  public beginConstruction(plot: number, time: number): void {
+    if (this.constructionSites.has(plot) || !this.island) return;
+    const site = GameScene.BUILD_PLOTS[plot];
+    if (!site) return;
+    const seat = this.plotSample(`s${plot}`, site.lon, site.lat);
+    if (!seat) return;
+    // Shield: uuid mints draw from Math.random; runtime call today, but the
+    // clump-builder law says every builder shields so it stays safe forever.
+    const stashedRandom = Math.random;
+    let seedv = (0x5caff01d ^ plot) >>> 0;
+    Math.random = () => {
+      seedv = (seedv + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seedv ^ (seedv >>> 15), 1 | seedv);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      const ramp = Materials.toonRamp();
+      const poleMat = new THREE.MeshToonMaterial({ color: 0xa07c4e, gradientMap: ramp });
+      const parts: THREE.BufferGeometry[] = [];
+      for (let c = 0; c < 4; c++) {
+        const px = c % 2 === 0 ? -0.55 : 0.55;
+        const pz = c < 2 ? -0.55 : 0.55;
+        parts.push(new THREE.BoxGeometry(0.07, 1.5, 0.07).translate(px, 0.75, pz));
+      }
+      parts.push(new THREE.BoxGeometry(1.24, 0.06, 0.1).translate(0, 1.15, -0.55));
+      parts.push(new THREE.BoxGeometry(0.1, 0.06, 1.24).translate(0.55, 0.85, 0));
+      const scaffold = new THREE.Mesh(
+        mergeGeometries(parts, false) as THREE.BufferGeometry,
+        poleMat,
+      );
+      scaffold.castShadow = true;
+      scaffold.raycast = () => {};
+      const g = new THREE.Group();
+      g.add(scaffold);
+      const up = seat.position.clone().normalize();
+      g.position.copy(seat.position);
+      g.quaternion.setFromUnitVectors(GameScene.AXIS_Y, up);
+      this.add(g);
+      this.constructionSites.set(plot, { group: g, pulseAt: -1 });
+      for (const dt of [0.3, 0.9, 1.5]) this.pendingBuildFx.push({ at: time + dt, plot });
+      this.setInteractionFocus(seat.position.clone().addScaledVector(up, 1.2), 2.4);
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  /** The build was acked — drop the scaffold silently (the reveal owns the
+   *  celebration) and render the real structure with the pop-in. */
+  public finishConstruction(plot: number, wireKind?: number): void {
+    this.teardownConstruction(plot);
+    this.renderWorldBuild(plot, wireKind, true);
+  }
+
+  /** Network refused — scaffold collapses with a dust puff (refund toast is
+   *  the caller's job). */
+  public cancelConstruction(plot: number): void {
+    const site = this.constructionSites.get(plot);
+    if (site) this.spawnDust(site.group.position.clone(), 5);
+    this.teardownConstruction(plot);
+  }
+
+  private teardownConstruction(plot: number): void {
+    const site = this.constructionSites.get(plot);
+    if (!site) return;
+    this.remove(site.group);
+    site.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.geometry?.dispose();
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      for (const mat of mats) mat?.dispose();
+    });
+    this.constructionSites.delete(plot);
+    for (let i = this.pendingBuildFx.length - 1; i >= 0; i--) {
+      if (this.pendingBuildFx[i].plot === plot) this.pendingBuildFx.splice(i, 1);
+    }
+  }
+
+  private processPendingBuildFx(time: number): void {
+    for (let i = this.pendingBuildFx.length - 1; i >= 0; i--) {
+      const fx = this.pendingBuildFx[i];
+      if (time < fx.at) continue;
+      this.pendingBuildFx.splice(i, 1);
+      const site = this.constructionSites.get(fx.plot);
+      if (!site) continue;
+      // Hammer beat: chop gesture with the axe in hand, dust + wooden knock.
+      this.ensureHandTools();
+      if (this.playerAxe) this.playerAxe.visible = true;
+      this.axeVisibleUntil = time + 0.6;
+      this.player?.triggerChopGesture();
+      const up = site.group.position.clone().normalize();
+      this.spawnDust(site.group.position.clone().addScaledVector(up, 0.5), 3);
+      sfx.knock();
+      site.pulseAt = time;
+    }
+    // Scaffold strike pulse: a quick 10% y-stretch that settles in ~0.18s.
+    for (const site of this.constructionSites.values()) {
+      if (site.pulseAt < 0) continue;
+      const k = (time - site.pulseAt) / 0.18;
+      site.group.scale.y = k >= 1 ? 1 : 1 + 0.1 * (1 - k);
+    }
   }
 
   // Wooden "build here" stakes at every FREE plot — the plots were invisible
@@ -5763,11 +6062,13 @@ export class GameScene extends THREE.Scene {
   /** Every FREE plot (bench + structures) with kind and world position —
    *  the map's build-spot layer. Cached seats, no raycasts. */
   public freePlotSummary(): Array<{
-    kind: 'bench' | 'signpost' | 'lantern' | 'gazebo';
+    kind: 'bench' | (typeof GameScene.BUILD_PLOTS)[number]['defaultKind'];
     pos: THREE.Vector3;
   }> {
-    const out: Array<{ kind: 'bench' | 'signpost' | 'lantern' | 'gazebo'; pos: THREE.Vector3 }> =
-      [];
+    const out: Array<{
+      kind: 'bench' | (typeof GameScene.BUILD_PLOTS)[number]['defaultKind'];
+      pos: THREE.Vector3;
+    }> = [];
     if (!this.island) return out;
     for (let i = 0; i < GameScene.BENCH_PLOTS.length; i++) {
       if (this.builtPlots.has(i)) continue;
@@ -5778,9 +6079,55 @@ export class GameScene extends THREE.Scene {
       if (this.builtBuildPlots.has(i)) continue;
       const site = GameScene.BUILD_PLOTS[i];
       const s = this.plotSample(`s${i}`, site.lon, site.lat);
-      if (s) out.push({ kind: site.kind, pos: s.position });
+      if (s) out.push({ kind: site.defaultKind, pos: s.position });
     }
     return out;
+  }
+
+  /** BUILT structures + benches (cached seats) — map POIs + journal tally. */
+  public builtPlotSummary(): Array<{
+    kind: 'bench' | (typeof GameScene.BUILD_PLOTS)[number]['defaultKind'];
+    plot: number;
+    system: 'bench' | 'build';
+    pos: THREE.Vector3;
+  }> {
+    const out: Array<{
+      kind: 'bench' | (typeof GameScene.BUILD_PLOTS)[number]['defaultKind'];
+      plot: number;
+      system: 'bench' | 'build';
+      pos: THREE.Vector3;
+    }> = [];
+    if (!this.island) return out;
+    for (const plot of this.builtPlots.keys()) {
+      const site = GameScene.BENCH_PLOTS[plot];
+      if (!site) continue;
+      const s = this.plotSample(`b${plot}`, site[0], site[1]);
+      if (s) out.push({ kind: 'bench', plot, system: 'bench', pos: s.position });
+    }
+    for (const [plot, entry] of this.builtBuildPlots) {
+      const site = GameScene.BUILD_PLOTS[plot];
+      if (!site) continue;
+      const s = this.plotSample(`s${plot}`, site.lon, site.lat);
+      if (s)
+        out.push({
+          kind: entry.kindRendered ?? site.defaultKind,
+          plot,
+          system: 'build',
+          pos: s.position,
+        });
+    }
+    return out;
+  }
+
+  /** Cached seat position of a plot (bench or build system). */
+  public plotSeat(system: 'bench' | 'build', plot: number): THREE.Vector3 | null {
+    if (!this.island) return null;
+    if (system === 'bench') {
+      const site = GameScene.BENCH_PLOTS[plot];
+      return site ? (this.plotSample(`b${plot}`, site[0], site[1])?.position ?? null) : null;
+    }
+    const site = GameScene.BUILD_PLOTS[plot];
+    return site ? (this.plotSample(`s${plot}`, site.lon, site.lat)?.position ?? null) : null;
   }
 
   /** Nearest UNBUILT bench plot within reach (cached seats — no raycasts). */
@@ -9658,6 +10005,8 @@ export class GameScene extends THREE.Scene {
     this.processPendingChopFx(time);
     this.processPendingHarvestFx(time);
     this.processPendingMineFx(time);
+    this.processPendingBuildFx(time);
+    this.processRevealAnims(time);
     this.updatePlayground(time);
     this.updateBaker(time, deltaTime);
     this.updateSailors(time, deltaTime);

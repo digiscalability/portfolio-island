@@ -156,6 +156,16 @@ export class Sfx {
     this.tone(f, f * 1.33, 0.09, 'sine', 0.1);
   }
 
+  /** Two wooden mallet taps — the construction-strike knock. Same two-burst
+   *  filtered-noise trick as partyThump/hiss, ~1.4kHz so it reads as wood. */
+  public knock(): void {
+    const ctx = this.ctxOrNull;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    this.noiseAt(ctx, t, 0.05, 0.14, 1400, 2.2, 'bandpass');
+    this.noiseAt(ctx, t + 0.012, 0.04, 0.09, 1150, 2.0, 'bandpass');
+  }
+
   /** Party kick: a soft sub thump on the beat. Only used as the SILENT-audio
    *  fallback pulse now — when the context is live, startPartyMusic() owns
    *  the beat and this would double the kick. */

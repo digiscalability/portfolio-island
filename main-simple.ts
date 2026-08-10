@@ -28,7 +28,7 @@ import { applySoftLookFogPatch } from './SoftLook';
 import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
 import { placeBench, subscribeBenches } from './worldBenches';
-import { placeBuild, subscribeBuilds } from './worldBuilds';
+import { BUILD_KIND_IDS, placeBuild, removeBuild, subscribeBuilds } from './worldBuilds';
 import { WORLD_ERA } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
@@ -171,14 +171,21 @@ class SimpleApp {
   private ore = 0;
   // Construction catalog costs (timber + coins), keyed by BUILD_PLOTS kind.
   private static readonly BUILD_COSTS: Record<
-    'bench' | 'signpost' | 'lantern' | 'gazebo',
+    'bench' | 'signpost' | 'lantern' | 'gazebo' | 'planter' | 'campfire',
     { timber: number; coins: number; icon: string; name: string }
   > = {
     bench: { timber: 4, coins: 10, icon: '🪑', name: 'bench' },
     signpost: { timber: 3, coins: 5, icon: '🪧', name: 'signpost' },
     lantern: { timber: 8, coins: 15, icon: '🏮', name: 'lantern' },
     gazebo: { timber: 20, coins: 40, icon: '⛩️', name: 'gazebo' },
+    planter: { timber: 3, coins: 5, icon: '🌸', name: 'planter' },
+    campfire: { timber: 6, coins: 12, icon: '🔥', name: 'campfire' },
   };
+  /** My own cloud builds: plot → slot, maintained from the subscribe stream
+   *  (`own` flag) + placeBuild acks. Cloud is truth on a fresh device. */
+  private ownBuilds = new Map<number, number>();
+  private timberSellArmedAt = 0;
+  private freshBuildToasts = 0;
   private ownedAxe = false;
   private lessons: string[] = [];
   private vaultBusy = false;
@@ -202,6 +209,10 @@ class SimpleApp {
     [
       'chat',
       '💬 Lesson 5 — walk up to any villager and press E. Eighteen of them will really talk with you.',
+    ],
+    [
+      'build',
+      '🔨 Lesson 6 — hammer-stakes mark free plots. Chop timber, bring coins, press E at a stake to raise something everyone sees — forever.',
     ],
   ];
   private timber = 0;
@@ -817,12 +828,12 @@ class SimpleApp {
             {
               icon: '📚',
               title: 'School',
-              detail: 'five lessons, 10 🪙 each — one-time',
+              detail: `${SimpleApp.LESSONS.length} lessons, 10 🪙 each — one-time`,
             },
             {
               icon: '🏗️',
               title: 'Building',
-              detail: 'benches 4🪵, signposts 3🪵, lanterns 8🪵, gazebos 20🪵 — everyone sees them',
+              detail: `your builds ${this.ownBuilds.size}/6 — choose at any 🔨 stake: signposts & planters 3🪵, campfires 6🪵, lanterns 8🪵, gazebos 20🪵`,
             },
           ],
           secrets: {
@@ -1053,7 +1064,60 @@ class SimpleApp {
       // Shared benches: render every visitor's builds as they stream in
       // (write path is charged + rules-capped; see worldBenches.ts).
       void subscribeBenches((b) => this.scene.renderWorldBench(b.plot));
-      void subscribeBuilds((b) => this.scene.renderWorldBuild(b.plot));
+      {
+        // Builds stream: render + own-map + fresh-build discovery pulse +
+        // away digest (count compared to last visit, after the replay burst).
+        let totalBuilds = 0;
+        const subscribedAt = Date.now();
+        void subscribeBuilds(
+          (b) => {
+            this.scene.renderWorldBuild(b.plot, b.kind);
+            totalBuilds++;
+            this.ui.setBuildCount(totalBuilds);
+            if (b.own) this.ownBuilds.set(b.plot, b.slot);
+            // A build raised in the last two minutes by SOMEONE ELSE gets a
+            // one-toast pulse (session cap 2 — discovery, not spam).
+            if (
+              !b.own &&
+              b.t &&
+              Date.now() - b.t < 120_000 &&
+              Date.now() - subscribedAt > 3000 &&
+              this.freshBuildToasts < 2
+            ) {
+              this.freshBuildToasts++;
+              const seat = this.scene.plotSeat('build', b.plot);
+              if (seat) this.scene.spawnDust(seat.clone(), 4);
+              const kindName =
+                BUILD_KIND_IDS[b.kind ?? -1] ??
+                GameScene.BUILD_PLOTS[b.plot]?.defaultKind ??
+                'structure';
+              this.ui.toast(`🔨 A visitor just raised a ${kindName} — it's on your map.`);
+            }
+          },
+          (r) => {
+            // Remote (or my own from another tab) reclaim: tear down live.
+            this.scene.removeWorldBuild(r.plot);
+            if (this.ownBuilds.get(r.plot) === r.slot) this.ownBuilds.delete(r.plot);
+            totalBuilds = Math.max(0, totalBuilds - 1);
+            this.ui.setBuildCount(totalBuilds);
+          },
+        );
+        // Away digest: 3s after subscribe (past the child-added replay burst)
+        // compare the total to the last visit's count.
+        window.setTimeout(() => {
+          try {
+            const seen = parseInt(localStorage.getItem('ds_seen_builds') ?? '0', 10) || 0;
+            if (totalBuilds > seen && seen > 0) {
+              this.ui.toast(
+                `🏘️ Visitors raised ${totalBuilds - seen} structure${totalBuilds - seen > 1 ? 's' : ''} while you were away.`,
+              );
+            }
+            localStorage.setItem('ds_seen_builds', String(totalBuilds));
+          } catch {
+            /* no storage */
+          }
+        }, 3000);
+      }
       this.scene.onDrownFee = (fee) => {
         this.ui.toast(`🚑 Fished out by the shore patrol — ${fee} 🪙 for the trouble.`);
         this.ui.updateCoinCounter(this.scene.getCoinsCollected());
@@ -2000,6 +2064,7 @@ class SimpleApp {
         // never become an XSS vector once they turn dynamic (multiplayer).
         const esc = (s: string) =>
           s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        let buildOpp: ReturnType<SimpleApp['nearestBuildOpportunity']> = null;
         const board = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
         // Nearest thing wins: the vehicle only takes the prompt when it is
@@ -2070,29 +2135,55 @@ class SimpleApp {
             );
           }
         } else if (this.timber > 0 && this.scene.isNearCarpenter()) {
-          const { full: fullPriced, earn: earned } = saleSplit(
+          const { full: fullPriced } = saleSplit(
             this.timber,
             this.dailySold('ds_timber_day', 0),
             SimpleApp.DAILY_SELL_CAP,
             SimpleApp.TIMBER_SELL_PRICE,
             SimpleApp.TIMBER_SATIATED_PRICE,
           );
-          const overflow = this.timber - fullPriced;
+          // Tranche: while full-price allowance remains, one press sells ONLY
+          // the full-priced logs — one tap used to launder a whole gazebo's
+          // savings into the 1-coin satiated bin. The satiated tail (and any
+          // sale while a build is within reach) needs an armed second press.
+          const tranche = fullPriced > 0 ? fullPriced : this.timber;
+          const trancheEarn =
+            fullPriced > 0
+              ? fullPriced * SimpleApp.TIMBER_SELL_PRICE
+              : this.timber * SimpleApp.TIMBER_SATIATED_PRICE;
+          const couldBuild = this.timber >= 3 && this.scene.freePlotSummary().length > 0;
+          const needsArm = couldBuild || fullPriced === 0;
+          const armed = performance.now() / 1000 - this.timberSellArmedAt < 3;
           this.ui.showInteractionPrompt(
-            `🪵 Press <strong>E</strong> to sell ${this.timber} timber (+${earned} 🪙)${fullPriced === 0 ? ' · rack stocked' : ''}`,
+            needsArm && !armed
+              ? `🪵 Press <strong>E</strong> to sell ${tranche} timber (+${trancheEarn} 🪙)${fullPriced === 0 ? ' · rack stocked' : ''} — or keep it: 🔨 builds start at 3 🪵`
+              : `🪵 Press <strong>E</strong>${needsArm ? ' again' : ''} to sell ${tranche} timber (+${trancheEarn} 🪙)${fullPriced === 0 ? ' · rack stocked' : ''}`,
           );
           if (this.inputManager.consumeKeyPress('e')) {
-            this.scene.addCoins(earned);
-            this.dailySold('ds_timber_day', this.timber);
-            track('timber_sold', { count: this.timber, earned, satiated: overflow > 0 });
-            this.timber = 0;
-            this.persistTimber();
-            sfx.coin();
-            this.ui.toast(
-              overflow > 0
-                ? `🪙 +${earned} — "Rack's stocked — ${SimpleApp.TIMBER_SATIATED_PRICE} coin each now."`
-                : `🪙 +${earned} — the carpenter nods approvingly.`,
-            );
+            if (needsArm && !armed) {
+              this.timberSellArmedAt = performance.now() / 1000;
+              sfx.blip();
+            } else {
+              this.timberSellArmedAt = 0;
+              this.scene.addCoins(trancheEarn);
+              this.dailySold('ds_timber_day', tranche);
+              track('timber_sold', {
+                count: tranche,
+                earned: trancheEarn,
+                satiated: fullPriced === 0,
+              });
+              this.timber -= tranche;
+              this.persistTimber();
+              sfx.coin();
+              this.ui.toast(
+                fullPriced === 0
+                  ? `🪙 +${trancheEarn} — "Rack's stocked — ${SimpleApp.TIMBER_SATIATED_PRICE} coin each now."`
+                  : `🪙 +${trancheEarn} — the carpenter nods approvingly.`,
+              );
+              if (this.timber >= 3) {
+                this.ui.toast(`🪧 "That'd make a fine signpost," the carpenter says.`);
+              }
+            }
           }
         } else if (this.wheat > 0 && this.scene.isNearBaker()) {
           const { full: wFull, earn: wEarn } = saleSplit(
@@ -2170,7 +2261,7 @@ class SimpleApp {
           const next = SimpleApp.LESSONS.find(([id]) => !this.lessons.includes(id));
           if (next) {
             this.ui.showInteractionPrompt(
-              `📚 Press <strong>E</strong> to take lesson ${this.lessons.length + 1}/5 (+10 🪙)`,
+              `📚 Press <strong>E</strong> to take lesson ${this.lessons.length + 1}/${SimpleApp.LESSONS.length} (+10 🪙)`,
             );
             if (this.inputManager.consumeKeyPress('e')) {
               this.lessons.push(next[0]);
@@ -2182,27 +2273,48 @@ class SimpleApp {
             }
           }
         } else if (
-          this.nearestBuildOpportunity() !== null &&
-          // An unaffordable stake is only an ADVERT — never let it shadow an
-          // actionable tool prompt (the farm's edge stake was eclipsing
+          (buildOpp = this.nearestBuildOpportunity()) !== null &&
+          // A far/unaffordable stake is only an ADVERT — never let it shadow
+          // an actionable tool prompt (the farm's edge stake was eclipsing
           // "Press E to harvest" for sickle owners standing in the crops).
-          (this.nearestBuildOpportunity()!.affordable ||
+          (buildOpp.dist < 3.5 ||
             !(
               (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
               (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
               (this.ownedPickaxe && this.scene.nearestOreNode() !== null)
             ))
         ) {
-          const b = this.nearestBuildOpportunity()!;
-          if (b.affordable) {
+          const b = buildOpp;
+          if (b.own) {
+            // Your own structure: reclaim/replace options.
             this.ui.showInteractionPrompt(
-              `${b.icon} Press <strong>E</strong> to build a ${b.name} here (${b.timber} 🪵 + ${b.coins} 🪙) — everyone will see it`,
+              `${b.icon} Your ${b.name} — press <strong>E</strong> for options`,
             );
-            if (this.inputManager.consumeKeyPress('e')) void this.buildHere(b);
-          } else {
-            // The stake explains itself even when you can't pay yet.
+            if (this.inputManager.consumeKeyPress('e')) this.openBuildOptions(b.plot);
+          } else if (b.system === 'build' && b.dist < 3.5) {
+            // The chooser IS the confirm: E opens it whether or not anything
+            // is affordable — the rows explain themselves (shortfall lines).
             this.ui.showInteractionPrompt(
-              `${b.icon} A ${b.name} could go here — needs ${b.timber} 🪵 + ${b.coins} 🪙 (you have ${this.timber} 🪵, ${this.scene.getCoinsCollected()} 🪙)`,
+              `🔨 Press <strong>E</strong> to build here — choose what to raise`,
+            );
+            if (this.inputManager.consumeKeyPress('e')) this.openBuildChooser(b.plot);
+          } else if (b.system === 'bench' && b.dist < 3.5) {
+            if (b.affordable) {
+              this.ui.showInteractionPrompt(
+                `${b.icon} Press <strong>E</strong> to build a ${b.name} here (${b.timber} 🪵 + ${b.coins} 🪙) — everyone will see it`,
+              );
+              if (this.inputManager.consumeKeyPress('e')) void this.buildHere(b);
+            } else {
+              this.ui.showInteractionPrompt(
+                `${b.icon} A ${b.name} could go here — needs ${b.timber} 🪵 + ${b.coins} 🪙 (you have ${this.timber} 🪵, ${this.scene.getCoinsCollected()} 🪙)`,
+              );
+            }
+          } else {
+            // 3.5-6u: the stake advertises itself from a distance.
+            this.ui.showInteractionPrompt(
+              b.system === 'build'
+                ? `🔨 A build stake is just ahead — walk up to choose what to raise`
+                : `${b.icon} A ${b.name} plot is just ahead (${b.timber} 🪵 + ${b.coins} 🪙)`,
             );
           }
         } else if (this.scene.isNearHospital()) {
@@ -2602,9 +2714,51 @@ class SimpleApp {
     for (const n of this.scene.oreNodeSummary()) {
       add('⛏️', n.rich ? 'Ore vein' : 'Ore vein (depleted)', n.pos);
     }
-    const PLOT_ICONS = { bench: '🪑', signpost: '🪧', lantern: '🏮', gazebo: '⛩️' } as const;
-    for (const p of this.scene.freePlotSummary()) {
-      add(PLOT_ICONS[p.kind], `Free ${p.kind} plot`, p.pos);
+    const PLOT_ICONS = {
+      bench: '🪑',
+      signpost: '🪧',
+      lantern: '🏮',
+      gazebo: '⛩️',
+      planter: '🌸',
+      campfire: '🔥',
+    } as const;
+    // Grouped: one entry per kind pointing at the NEAREST free plot (22 raw
+    // stake pins drowned the map), plus every BUILT structure as a real POI.
+    {
+      const playerPos = this.scene.getPlayer()?.getWorldPosition() ?? null;
+      const nearestOf = (items: Array<{ pos: THREE.Vector3 }>) => {
+        let best = items[0];
+        let bestD = Infinity;
+        for (const it of items) {
+          const d = playerPos ? it.pos.distanceTo(playerPos) : 0;
+          if (d < bestD) {
+            bestD = d;
+            best = it;
+          }
+        }
+        return best;
+      };
+      const free = this.scene.freePlotSummary();
+      const freeBenches = free.filter((f) => f.kind === 'bench');
+      const freeBuilds = free.filter((f) => f.kind !== 'bench');
+      if (freeBenches.length) {
+        add('🪑', `Free bench plots (${freeBenches.length}) — nearest`, nearestOf(freeBenches).pos);
+      }
+      if (freeBuilds.length) {
+        add(
+          '🔨',
+          `Free build plots (${freeBuilds.length}) — choose what to raise`,
+          nearestOf(freeBuilds).pos,
+        );
+      }
+      for (const b of this.scene.builtPlotSummary()) {
+        if (b.system !== 'build') continue;
+        add(
+          PLOT_ICONS[b.kind as keyof typeof PLOT_ICONS] ?? '🔨',
+          `Visitor-built ${b.kind}`,
+          b.pos,
+        );
+      }
     }
     this.ui.showIslandMap(pois, (poi) => {
       this.mapGuideTarget = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
@@ -3474,9 +3628,39 @@ class SimpleApp {
     timber: number;
     coins: number;
     affordable: boolean;
+    dist: number;
+    own: boolean;
   } | null {
     const coins = this.scene.getCoinsCollected();
-    const benchPlot = this.scene.nearestFreePlot();
+    const playerPos = this.scene.getPlayer()?.getWorldPosition();
+    const distTo = (system: 'bench' | 'build', plot: number): number => {
+      const seat = this.scene.plotSeat(system, plot);
+      return seat && playerPos ? seat.distanceTo(playerPos) : 99;
+    };
+    // My own nearby build wins the slot (reclaim/replace options).
+    if (playerPos) {
+      for (const [plot] of this.ownBuilds) {
+        const d = distTo('build', plot);
+        if (d < 3.5) {
+          const kind = GameScene.resolveKind(plot, undefined);
+          const rendered = this.scene
+            .builtPlotSummary()
+            .find((s) => s.system === 'build' && s.plot === plot);
+          const c =
+            SimpleApp.BUILD_COSTS[rendered?.kind === 'bench' ? 'bench' : (rendered?.kind ?? kind)];
+          return {
+            system: 'build',
+            plot,
+            ...c,
+            affordable: false,
+            dist: d,
+            own: true,
+          };
+        }
+      }
+    }
+    // 6u scan: <3.5u is actionable, 3.5-6u renders as a walk-up advert.
+    const benchPlot = this.scene.nearestFreePlot(6);
     if (benchPlot !== null) {
       const c = SimpleApp.BUILD_COSTS.bench;
       return {
@@ -3484,23 +3668,30 @@ class SimpleApp {
         plot: benchPlot,
         ...c,
         affordable: this.timber >= c.timber && coins >= c.coins,
+        dist: distTo('bench', benchPlot),
+        own: false,
       };
     }
-    const buildPlot = this.scene.nearestFreeBuildPlot();
+    const buildPlot = this.scene.nearestFreeBuildPlot(6);
     if (buildPlot !== null) {
-      const kind = GameScene.BUILD_PLOTS[buildPlot].kind;
+      const kind = GameScene.BUILD_PLOTS[buildPlot].defaultKind;
       const c = SimpleApp.BUILD_COSTS[kind];
       return {
         system: 'build',
         plot: buildPlot,
         ...c,
         affordable: this.timber >= c.timber && coins >= c.coins,
+        dist: distTo('build', buildPlot),
+        own: false,
       };
     }
     return null;
   }
 
-  /** Charge first, refund on any non-ack — same shape as the vault. */
+  /** Charge first, refund on any non-ack — same shape as the vault. For the
+   *  build system this also owns the CONSTRUCTION MOMENT: scaffold + three
+   *  hammer beats while the cloud write is in flight (min 1.6s so fast
+   *  networks still get the moment), then the pop-in reveal. */
   private async buildHere(b: {
     system: 'bench' | 'build';
     plot: number;
@@ -3508,29 +3699,115 @@ class SimpleApp {
     name: string;
     timber: number;
     coins: number;
+    kind?: number;
   }): Promise<void> {
     if (this.timber < b.timber || !this.scene.spendCoins(b.coins)) return;
     this.timber -= b.timber;
     this.persistTimber();
-    const res = b.system === 'bench' ? await placeBench(b.plot) : await placeBuild(b.plot);
+    if (b.system === 'build') {
+      this.scene.beginConstruction(b.plot, performance.now() / 1000);
+      sfx.blip();
+    }
+    const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+    const [res] =
+      b.system === 'bench'
+        ? [await placeBench(b.plot)]
+        : await Promise.all([placeBuild(b.plot, b.kind), sleep(1600)]);
     if (typeof res !== 'number') {
+      if (b.system === 'build') this.scene.cancelConstruction(b.plot);
       this.timber += b.timber;
       this.persistTimber();
       this.scene.addCoins(b.coins);
       this.ui.toast(
         res === 'full'
-          ? `${b.icon} "That's plenty of building for one visitor," says the carpenter.`
+          ? `${b.icon} "That's plenty of building for one visitor," says the carpenter — reclaim timber at one of your builds.`
           : `${b.icon} The build cart is stuck — materials returned.`,
       );
       return;
     }
-    if (b.system === 'bench') this.scene.renderWorldBench(b.plot);
-    else this.scene.renderWorldBuild(b.plot);
+    if (b.system === 'bench') {
+      this.scene.renderWorldBench(b.plot);
+    } else {
+      this.ownBuilds.set(b.plot, res);
+      this.scene.finishConstruction(b.plot, b.kind);
+    }
     sfx.coin();
     track('build_placed', { system: b.system, kind: b.name, plot: b.plot, slot: res });
-    this.ui.toast(
-      `${b.icon} Built! Reload the page — it will still be here. So will everyone else's.`,
+    const PAYOFF: Record<string, string> = {
+      signpost: '🪧 Raised! Travellers will read it forever.',
+      lantern: '🏮 Raised! Watch it light when night falls.',
+      gazebo: "⛩️ The island's grandest visitor build — and it's yours.",
+      planter: '🌸 Raised! Fresh blooms for every passer-by.',
+      campfire: '🔥 Raised! The embers glow after dark.',
+      bench: '🪑 Built! Reload the page — it will still be here.',
+    };
+    this.ui.toast(PAYOFF[b.name] ?? `${b.icon} Built! Everyone sees it — forever.`);
+  }
+
+  /** Build chooser at a free plot: rows = allowed kinds for the plot size,
+   *  the explicit labeled cost button IS the purchase confirm. */
+  private openBuildChooser(plot: number): void {
+    const site = GameScene.BUILD_PLOTS[plot];
+    if (!site) return;
+    const kinds = (['signpost', 'lantern', 'gazebo', 'planter', 'campfire'] as const).filter(
+      (k) => k !== 'gazebo' || site.size === 'L',
     );
+    const coins = this.scene.getCoinsCollected();
+    this.ui.showBuildChooser(
+      kinds.map((k) => {
+        const c = SimpleApp.BUILD_COSTS[k];
+        const wire = BUILD_KIND_IDS.indexOf(k);
+        const shortTimber = Math.max(0, c.timber - this.timber);
+        const shortCoins = Math.max(0, c.coins - coins);
+        return {
+          icon: c.icon,
+          name: c.name,
+          timber: c.timber,
+          coins: c.coins,
+          affordable: shortTimber === 0 && shortCoins === 0,
+          shortfall:
+            shortTimber > 0
+              ? `need ${shortTimber} more 🪵 (chop ${Math.ceil(shortTimber / 3)} tree${Math.ceil(shortTimber / 3) > 1 ? 's' : ''})`
+              : shortCoins > 0
+                ? `need ${shortCoins} more 🪙`
+                : '',
+          kind: wire,
+        };
+      }),
+      { timber: this.timber, coins, built: this.ownBuilds.size, cap: 6 },
+      (choice) => {
+        const c = SimpleApp.BUILD_COSTS[BUILD_KIND_IDS[choice] ?? 'signpost'];
+        void this.buildHere({ system: 'build', plot, ...c, kind: choice });
+      },
+    );
+    track('build_chooser_open', { plot });
+  }
+
+  /** Options on your OWN build: reclaim the timber (coins stay spent — the
+   *  carpenter keeps his labour fee) or replace via reclaim + chooser. */
+  private openBuildOptions(plot: number): void {
+    const slot = this.ownBuilds.get(plot);
+    if (slot === undefined) return;
+    const rendered = this.scene
+      .builtPlotSummary()
+      .find((s) => s.system === 'build' && s.plot === plot);
+    const kindName = rendered && rendered.kind !== 'bench' ? rendered.kind : 'signpost';
+    const c = SimpleApp.BUILD_COSTS[kindName];
+    this.ui.showBuildOptions({ icon: c.icon, name: c.name, timber: c.timber }, async (action) => {
+      const ok = await removeBuild(slot);
+      if (!ok) {
+        this.ui.toast('🔨 The carpenter is busy — try again shortly.');
+        return;
+      }
+      this.ownBuilds.delete(plot);
+      this.scene.removeWorldBuild(plot);
+      this.timber += c.timber;
+      this.persistTimber();
+      sfx.blip();
+      track('build_reclaimed', { plot, kind: c.name, replace: action === 'replace' });
+      this.ui.toast(`🪵 +${c.timber} reclaimed — the carpenter keeps his labour fee.`);
+      if (action === 'replace') this.openBuildChooser(plot);
+    });
   }
 
   private persistLessons(): void {

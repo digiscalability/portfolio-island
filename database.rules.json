@@ -133,12 +133,15 @@
       "builds": {
         ".read": "auth != null",
         "$buildId": {
-          ".write": "auth != null && $buildId.beginsWith(auth.uid + '_') && !data.exists()",
+          ".write": "auth != null && $buildId.beginsWith(auth.uid + '_') && (!data.exists() || !newData.exists())",
           ".validate": "newData.hasChildren(['plot', 't']) && ($buildId === auth.uid + '_0' || $buildId === auth.uid + '_1' || $buildId === auth.uid + '_2' || $buildId === auth.uid + '_3' || $buildId === auth.uid + '_4' || $buildId === auth.uid + '_5')",
           "plot": {
-            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 13"
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 17"
           },
           "t": { ".validate": "newData.isNumber()" },
+          "kind": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 4"
+          },
           "$other": { ".validate": false }
         }
       },
