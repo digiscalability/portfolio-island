@@ -101,6 +101,90 @@ const extractTexture = (material: MaterialWithTextureProps): THREE.Texture | und
 
 type GLTFLoaderConstructor = new () => GLTFLoader;
 
+/**
+ * Grass CLUMP prototype geometry (?grass=clump A/B — Abbas's "bigger patches
+ * instead of so many instances" ask). One authored TUFT: a tall centre blade
+ * ringed by shorter, outward-leaning skirt blades, all single-plane quads at
+ * varied yaws (7 yaws supply the multi-angle coverage the old crossed pair
+ * bought with double geometry). Ledger per 4 candidates: blade-pair path =
+ * 4 instances × 12 verts = 48; clump path = 1 instance × 42 verts — ~12%
+ * fewer verts and 75% fewer instances (less per-instance matrix bandwidth,
+ * fatter reads-as-carpet silhouette).
+ *
+ * DETERMINISM: runs BEFORE the Phase-A scatter, so it must not consume
+ * Math.random — the seeded stream feeds index-networked vehicle placement.
+ * Local mulberry32 with a fixed seed; two calls return identical geometry
+ * (pinned by test/grassClump.test.ts).
+ */
+export function buildGrassClumpGeometry(): { geometry: THREE.BufferGeometry; height: number } {
+  let seed = 0x6c04d5 >>> 0;
+  const rng = (): number => {
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  // SHIELD: three.js mints uuids for every BufferGeometry/BufferAttribute via
+  // Math.random — inside the seeded-construction window those draws would
+  // SHIFT the stream, desyncing this client's vehicle placement from clients
+  // on the other grass mode (the test caught exactly this). Route them into
+  // the local generator for the duration.
+  const stashedRandom = Math.random;
+  Math.random = rng;
+  try {
+    return buildClumpShielded(rng);
+  } finally {
+    Math.random = stashedRandom;
+  }
+}
+
+function buildClumpShielded(rng: () => number): {
+  geometry: THREE.BufferGeometry;
+  height: number;
+} {
+  const positions: number[] = [];
+  const colors: number[] = [];
+  // Same luminance-only gradient contract as the blade pair: instanceColor
+  // MULTIPLIES vertexColor, so hue lives on the instance, shading here.
+  const baseC = new THREE.Color(0xa8a8a8); // hair darker at the crowded base
+  const tipC = new THREE.Color(0xffffff);
+  const col = new THREE.Color();
+  const CLUMP_H = 0.15;
+  const BLADES = 7;
+  for (let b = 0; b < BLADES; b++) {
+    const ring = b === 0 ? 0 : 0.045 + rng() * 0.13; // centre blade + skirt ring
+    const ang = (b / BLADES) * Math.PI * 2 + rng() * 0.8;
+    const ox = Math.cos(ang) * ring;
+    const oz = Math.sin(ang) * ring;
+    const h = (b === 0 ? 1 : 0.55 + rng() * 0.4) * CLUMP_H; // tall heart, low skirt
+    const baseW = 0.03 + rng() * 0.014;
+    const tipW = baseW * 0.52; // blunt tip — the un-spiky rule from the pair
+    const yaw = rng() * Math.PI * 2;
+    const c = Math.cos(yaw);
+    const s = Math.sin(yaw);
+    // Skirt blades lean outward from the heart — the tuft silhouette.
+    const lean = (ring / 0.175) * 0.38 * h;
+    const lx = Math.cos(ang) * lean;
+    const lz = Math.sin(ang) * lean;
+    const v = (x: number, y: number, tip: boolean): void => {
+      positions.push(x * c + ox + (tip ? lx : 0), y, x * s + oz + (tip ? lz : 0));
+      col.copy(baseC).lerp(tipC, y / CLUMP_H);
+      colors.push(col.r, col.g, col.b);
+    };
+    v(-baseW, 0, false);
+    v(baseW, 0, false);
+    v(tipW, h, true);
+    v(-baseW, 0, false);
+    v(tipW, h, true);
+    v(-tipW, h, true);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  return { geometry, height: CLUMP_H };
+}
+
 export class Island {
   /** The island root GROUP (terrain, sea, props…). Not a Mesh — the terrain
    *  itself is `surfaceMesh`. Was mistyped as THREE.Mesh, which hid a crash in
@@ -446,6 +530,15 @@ export class Island {
     return min;
   }
 
+  /** True under the ?grass=clump A/B experiment (grass clump-asset prototype). */
+  private static isClumpGrass(): boolean {
+    try {
+      return new URLSearchParams(window.location.search).get('grass') === 'clump';
+    } catch {
+      return false;
+    }
+  }
+
   private createGrass(): THREE.Group {
     // Two crossed blades, base at origin.
     //
@@ -488,10 +581,23 @@ export class Island {
     };
     addBlade(0);
     addBlade(Math.PI / 2);
-    const geo = new THREE.BufferGeometry();
+    let geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geo.computeVertexNormals();
+
+    // ?grass=clump A/B: swap the blade-pair for the authored 7-blade tuft and
+    // (in Phase B below) materialize every 4th candidate. Phase A runs
+    // UNCHANGED either way — its Math.random order is the vehicle-placement
+    // wire protocol. SWAY_H feeds the wind shader's bend divisor so the
+    // taller tuft bends by the same normalized amount as a blade.
+    const clumpMode = Island.isClumpGrass();
+    let SWAY_H = BLADE_H;
+    if (clumpMode) {
+      const clump = buildGrassClumpGeometry();
+      geo = clump.geometry;
+      SWAY_H = clump.height;
+    }
 
     // Grass is the one material authored directly as toon (everything else is
     // MeshStandardMaterial + the toonify pass). Under ?theme=real it becomes
@@ -533,7 +639,7 @@ export class Island {
             // blade height above, or the sway scales wrong.
             // Gentler now the blades are half as tall — a short tuft that
             // swings as far as a long blade did just looks like it's twitching.
-            `  transformed.x += gBend * gGust * 0.026 * (position.y / ${BLADE_H});`,
+            `  transformed.x += gBend * gGust * 0.026 * (position.y / ${SWAY_H});`,
             // Player push: bend away within ~1.2u. `transformed` is blade-local
             // (instanceMatrix applies later), so rotate the world-space "away"
             // into the blade frame — transpose ≈ inverse for the rotation part;
@@ -546,7 +652,7 @@ export class Island {
             '  vec3 gAway2 = transpose(mat3(instanceMatrix)) * (instanceMatrix[3].xyz - uPlayerPrev);',
             '  float gPush2 = max(0.0, 1.0 - length(gAway2) / 1.2) * 0.7;',
             '  if (gPush2 > gPush) { gAway = gAway2; gPush = gPush2; }',
-            `  transformed.xz += normalize(gAway.xz + vec2(1e-4)) * (gPush * gPush * 0.18) * (position.y / ${BLADE_H});`,
+            `  transformed.xz += normalize(gAway.xz + vec2(1e-4)) * (gPush * gPush * 0.18) * (position.y / ${SWAY_H});`,
             '#endif',
           ].join('\n'),
         );
@@ -741,6 +847,26 @@ export class Island {
       tmpColors[sector].push(bladeColor.r, bladeColor.g, bladeColor.b);
     }
     // ── Phase B: materialize one InstancedMesh per sector ────────────────
+    // Clump mode: keep every 4th candidate (deterministic stride — zero RNG).
+    // The per-sector lists are the coprime-stride visitation order, i.e. a
+    // spatially uniform sequence, and a stride of a uniform sequence is still
+    // uniform — so both the thinning AND setGrassBudget's prefix trims stay
+    // even across the island.
+    if (clumpMode) {
+      for (let s = 0; s < SECTORS; s++) {
+        const srcM = tmpMatrices[s];
+        const srcC = tmpColors[s];
+        const n = srcM.length / 16;
+        const outM: number[] = [];
+        const outC: number[] = [];
+        for (let ci = 0; ci < n; ci += 4) {
+          for (let m = 0; m < 16; m++) outM.push(srcM[ci * 16 + m]);
+          outC.push(srcC[ci * 3], srcC[ci * 3 + 1], srcC[ci * 3 + 2]);
+        }
+        tmpMatrices[s] = outM;
+        tmpColors[s] = outC;
+      }
+    }
     const group = new THREE.Group();
     group.name = 'grass';
     this.grassChunks = [];
