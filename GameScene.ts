@@ -4897,7 +4897,10 @@ export class GameScene extends THREE.Scene {
   private findCastWater(out: THREE.Vector3 | null): THREE.Vector3 | null {
     const p = this.player.getWorldPosition();
     const up = this._fishCastUp.copy(p).normalize();
-    const fwd = this._fishCastFwd.copy(this.player.getForwardDirection());
+    // VISUAL forward (+Z of the avatar), not getForwardDirection(): that API
+    // returns -Z, the exact opposite of where the model faces (measured
+    // dot -0.995) — it made the water fan prefer the sea BEHIND the player.
+    const fwd = this._fishCastFwd.set(0, 0, 1).applyQuaternion(this.player.quaternion);
     fwd.addScaledVector(up, -fwd.dot(up)).normalize(); // tangent-plane forward
     // Reach up to 11u: the beach RAMP is wide (the shore band spans ~10u of
     // walkable sand above actual sub-sea-level water), so a short cast from
@@ -4949,7 +4952,9 @@ export class GameScene extends THREE.Scene {
     // Launch from the rod hand, not the water: the bobber ARCS out over the
     // ~0.55s flight (updatePlayerFishing), landing with a real splash.
     const up = F.castFrom.clone().normalize();
-    const fwd = this.player.getForwardDirection().clone();
+    // Visual forward (+Z), matching findCastWater — the launch point sits in
+    // front of the avatar's chest, not 0.4u behind its back.
+    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.player.quaternion);
     fwd.addScaledVector(up, -fwd.dot(up)).normalize();
     F.flyFrom.copy(F.castFrom).addScaledVector(up, 1.35).addScaledVector(fwd, 0.4);
     F.bobber.position.copy(F.flyFrom);
@@ -8761,11 +8766,13 @@ export class GameScene extends THREE.Scene {
       // Shared spacing registry + keep OFF the streets (roadside is fine, on-road isn't)
       dir = this.island.claimOffStreet(dir, clearArc);
       let R = this.island.getRadius();
-      let up = dir.clone();
+      // World Law 1: standing props (mailboxes) stand PLUMB — radial up, only
+      // the position follows the ground. The old "tilt with the ground" pass
+      // raked quest mailboxes up to 18.2° (measured), reading as knocked over.
+      const up = dir.clone();
       try {
         const s = this.island.sampleSurfaceByDirection(dir, 0);
         R = s.position.length();
-        up = s.normal; // tilt with the ground — was radial (grounding pass)
       } catch {
         /* ideal-sphere fallback */
       }

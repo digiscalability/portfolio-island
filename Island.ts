@@ -2362,17 +2362,20 @@ export class Island {
       mb.add(flag);
       mb.position.copy(placement.position);
       this.mailboxSites.push(placement.position.clone()); // NPC activity anchor (mail round)
-      const q = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        placement.normal,
-      );
+      // World Law 1: mailboxes STAND, so they stand PLUMB — radial up, never
+      // the sample's tilted normal (measured up to 4.6° of rake). The lamps
+      // thirty lines below always did this correctly.
+      const mbUp = placement.position.clone().normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), mbUp);
       mb.quaternion.copy(q);
-      // Face the mailbox toward the road (a roadside mailbox addresses the street).
+      // Face the mailbox toward the road (a roadside mailbox addresses the
+      // street). faceObjectToward premultiplies about the axis it is handed —
+      // pass the plumb axis or it quietly re-tilts the box (CLAUDE.md law 1).
       if (street) {
-        this.faceObjectToward(mb, placement.normal, street.clone().multiplyScalar(this.radius));
+        this.faceObjectToward(mb, mbUp, street.clone().multiplyScalar(this.radius));
       } else {
         mb.quaternion.premultiply(
-          new THREE.Quaternion().setFromAxisAngle(placement.normal, Math.random() * Math.PI * 2),
+          new THREE.Quaternion().setFromAxisAngle(mbUp, Math.random() * Math.PI * 2),
         );
       }
       mb.name = `mailbox_${i}`;
@@ -3760,6 +3763,35 @@ export class Island {
       0.03,
       true,
     );
+    // Conform the plaza slab to the sphere: a flat r5.1 disc on a R=75 ball
+    // floats its rim by d²/2R ≈ 0.17u of pure tangent sag (measured
+    // +0.15..0.19 — a visible lip where the avenues meet the pavement).
+    // Bend every vertex so its height ABOVE THE TANGENT PLANE becomes its
+    // height above the real terrain along its own radial. In-place vertex
+    // edit — no new allocations, so the seeded ambient stream is untouched.
+    {
+      plazaBase.updateMatrixWorld(true);
+      const seatPos = plazaBase.getWorldPosition(new THREE.Vector3());
+      const polarUp = seatPos.clone().normalize();
+      const v = new THREE.Vector3();
+      const n = new THREE.Vector3();
+      for (const m of [plazaFloor, plazaRing]) {
+        const pos = m.geometry.attributes.position as THREE.BufferAttribute;
+        for (let vi = 0; vi < pos.count; vi++) {
+          v.fromBufferAttribute(pos, vi);
+          m.localToWorld(v);
+          const h = v.clone().sub(seatPos).dot(polarUp);
+          const dirV = v.clone().normalize();
+          const r = this.analyticSurfaceInto(dirV, n);
+          v.copy(dirV).multiplyScalar(r + 0.03 + Math.max(0, h));
+          m.worldToLocal(v);
+          pos.setXYZ(vi, v.x, v.y, v.z);
+        }
+        pos.needsUpdate = true;
+        m.geometry.computeVertexNormals();
+        m.geometry.computeBoundingSphere();
+      }
+    }
     welcomePlaza.add(plazaBase);
     // Four lantern pillars at the avenue departure points — they mark the
     // roads out and frame the central marker beam. Placed toward each
@@ -3968,6 +4000,20 @@ export class Island {
       constructions,
       benches,
     ]);
+
+    // Re-anchor the published lamp sites to the SEATED meshes: buildLamp
+    // records its pre-seat sample (+0.62 float so the seat pass has room to
+    // drop it), and the seat pass moves only the meshes — the stale anchors
+    // parked the three roaming night lights ~0.67u ABOVE every bulb
+    // (measured on all 49 lamps), reading as lamps defying gravity.
+    // Children order matches the lampSites push order, so indices hold —
+    // guarded so a future lamp parented elsewhere can't scramble the mapping.
+    if (lamps.children.length === this.lampSites.length) {
+      this.lampSites.length = 0;
+      for (const l of lamps.children) {
+        this.lampSites.push(l.getWorldPosition(new THREE.Vector3()));
+      }
+    }
 
     this.tryLoadModels(buildings, npcs, buildingPlaceholders, npcPlaceholders).catch(() => {
       /* swallow errors */
@@ -6089,8 +6135,16 @@ export class Island {
       const posB = b.multiplyScalar(this.radius);
       const segLength = posA.distanceTo(posB);
       // 1.3x overlap: consecutive planes tilt with the terrain, and at 1.12
-      // the joins opened visible gaps on bumpy stretches ("panel" look)
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(segLength * 1.3, width, 1, 1), mat);
+      // the joins opened visible gaps on bumpy stretches ("panel" look).
+      // Length-subdivided at ≤0.9u pitch (under the terrain's 1.083u vertex
+      // pitch) so the per-vertex conform below can hug every bump — a rigid
+      // 1×1 quad seated at its midpoint buried its ends up to -0.35u and
+      // floated them to +0.54u (measured over 20k ribbon samples). Same
+      // allocation count as before (one geometry/mesh per segment), so the
+      // seeded ambient RNG stream — the vehicle wire protocol — is untouched.
+      const planeLen = segLength * 1.3;
+      const lenSegs = Math.max(4, Math.ceil(planeLen / 0.9));
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(planeLen, width, lenSegs, 1), mat);
       mesh.position.copy(sampled.position);
       // Orient with an explicit basis so the ribbon lies FLAT. A
       // PlaneGeometry spans local X (length) × local Y (width) and faces
@@ -6106,6 +6160,29 @@ export class Island {
       const xAxis = along.sub(zAxis.clone().multiplyScalar(along.dot(zAxis))).normalize();
       const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
       mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
+      // Conform the ribbon to the terrain: re-seat EVERY vertex radially on
+      // the analytic surface. The lift alternates by segment parity so the
+      // 1.3x overlap zones sit on two distinct shells instead of z-fighting
+      // (once conformed, overlapping planes are exactly parallel).
+      {
+        const lift = i % 2 === 0 ? 0.04 : 0.055;
+        mesh.updateMatrixWorld(true);
+        const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+        const v = new THREE.Vector3();
+        const n = new THREE.Vector3();
+        for (let vi = 0; vi < pos.count; vi++) {
+          v.fromBufferAttribute(pos, vi);
+          mesh.localToWorld(v);
+          const dirV = v.clone().normalize();
+          const r = this.analyticSurfaceInto(dirV, n);
+          v.copy(dirV).multiplyScalar(r + lift);
+          mesh.worldToLocal(v);
+          pos.setXYZ(vi, v.x, v.y, v.z);
+        }
+        pos.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+        mesh.geometry.computeBoundingSphere();
+      }
       mesh.receiveShadow = true;
       // EnvironmentCycle lerps this material toward asphalt-grey at night —
       // the pale paver otherwise stays near-white while the world dims.

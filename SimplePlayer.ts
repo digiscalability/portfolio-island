@@ -1205,10 +1205,13 @@ export class SimplePlayer extends THREE.Group {
     if (this.castTime > 0) {
       this.castTime = Math.max(0, this.castTime - dt);
       const ce = SimplePlayer.CAST_DURATION - this.castTime;
+      // MIRRORED 2026-08-11: the model faces +Z, so positive rotation.x is the
+      // visually-FORWARD side (measured; the old -1.85 snap whipped the rod
+      // down-BEHIND the avatar — the reported "inversed" rod).
       castAng =
         ce < 0.18
-          ? (ce / 0.18) * 0.35 // windup: rod arm rises up-and-back
-          : 0.35 - Math.min(1, (ce - 0.18) / 0.2) * 2.2; // snap: whip to -1.85
+          ? -(ce / 0.18) * 0.35 // windup: rod arm rises up-and-back (real back)
+          : -0.35 + Math.min(1, (ce - 0.18) / 0.2) * 2.2; // snap: whip to +1.85 (forward-down)
       castEnv = Math.min(1, this.castTime / 0.3);
     }
     // Axe chop: BOTH arms overhead, then a hard down-strike with a body dip —
@@ -1273,9 +1276,12 @@ export class SimplePlayer extends THREE.Group {
         this.armRBone.rotation.x = THREE.MathUtils.lerp(this.armRBone.rotation.x, castAng, castEnv);
       } else if (this.rodHoldW > 0.01 && this.armRBone) {
         // Held rod: absolute-by-weight (mixer-proof) at forward-up-30°.
+        // +1.15, not -1.15: the model faces +Z, so the positive side is the
+        // visually-forward one (at -1.15 the rod jutted over the shoulder
+        // into the chase camera with the tip 1.18u BEHIND the player).
         this.armRBone.rotation.x = THREE.MathUtils.lerp(
           this.armRBone.rotation.x,
-          -1.15,
+          1.15,
           this.rodHoldW,
         );
       } else if (chopEnv > 0) {
@@ -1330,7 +1336,7 @@ export class SimplePlayer extends THREE.Group {
         arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, castAng, castEnv);
       } else if (this.rodHoldW > 0.01) {
         const arm = this.armPivots[1];
-        arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, -1.15, this.rodHoldW);
+        arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, 1.15, this.rodHoldW);
       } else if (chopEnv > 0) {
         this.armPivots[0].rotation.x = THREE.MathUtils.lerp(
           this.armPivots[0].rotation.x,
