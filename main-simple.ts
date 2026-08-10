@@ -2200,16 +2200,12 @@ class SimpleApp {
           });
         }
       }
-      const npcBubble = this.scene.getNpcBubbleInfo();
-      if (npcBubble) {
-        this.hudCandidates.push({
-          key: 'npc',
-          text: npcBubble.text,
-          sprite: npcBubble.sprite,
-          worldPos: npcBubble.sprite.getWorldPosition(grabScratch()),
-          theme: 'npc',
-        });
-      }
+      // NPC speech bubbles are DELIBERATELY not twinned (Abbas's call — he
+      // prefers the smaller sprite look). It also removes a feedback loop:
+      // the NPC candidate was gated on sprite.visible, which HudLabels
+      // itself clears on promote — the representation flipped every frame
+      // (the reported flicker/double). Chat bubbles can't loop: their
+      // source is the bubble lifetime list, not visibility.
       this.hudLabels.update(this.scene.getCamera(), this.hudCandidates);
     }
 
