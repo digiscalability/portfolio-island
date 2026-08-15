@@ -9009,6 +9009,33 @@ export class GameScene extends THREE.Scene {
   }
 
   private toonifyIslandMaterials(): void {
+    // SHIELD: this is THEME-gated at the call site (`if (!isRealTheme())`) and
+    // runs inside initialize()'s seeded window, but it mints one
+    // MeshToonMaterial per unique opaque material — and every three.js uuid
+    // costs 4 Math.random draws. Unshielded, a ?theme=real client and a
+    // default client consumed different numbers of ambient draws and every
+    // GameScene placement AFTER this line diverged (race gates, quest
+    // mailboxes, NPC anchors, sailor/boat anchors). Parked cars are safe —
+    // they are sited during Island construction, BEFORE this runs — which is
+    // why this leak was scenery-only rather than a vehicle desync. Same law
+    // as createGrass / createOreNodes / buildDistrictAmenities / the cel ink:
+    // each builder owns a LOCAL generator so the shared stream pays nothing.
+    const stashedRandom = Math.random;
+    let tseed = 0x700f1ed0 >>> 0;
+    Math.random = (): number => {
+      tseed = (tseed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(tseed ^ (tseed >>> 15), 1 | tseed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.toonifyIslandMaterialsShielded();
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private toonifyIslandMaterialsShielded(): void {
     const gradientMap = Materials.toonRamp(); // shared: island bands like the props
     const cache = new Map<string, THREE.MeshToonMaterial>();
     const convert = (mat: THREE.Material): THREE.Material => {
