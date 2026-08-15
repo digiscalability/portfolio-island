@@ -325,7 +325,14 @@ describe('island radius invariants', () => {
       }
     });
 
-    test('kelp population scales with world area', () => {
+    test('kelp population scales with the SHORELINE, not the surface area', () => {
+      // CORRECTED 2026-08-16. This test used to assert area scaling (`> 1.5x`
+      // between R=50 and R=75) — but the kelp bed is a depth-gated RING
+      // (1.2-3.2u deep), so its habitat grows with the CIRCUMFERENCE. Area
+      // scaling inflated density 1.67x on a ring that widens only ~6.5%: the
+      // R=75->100 flip took kelp 360 -> 640 strands for the same strip of
+      // seabed. The counts are now belt-based and re-based so R=75 is
+      // byte-identical (160*areaScale == 240*beltScale at R=75).
       const counts = RADII.map((rr) => {
         const sf = islandAt(rr).mesh.getObjectByName('seafloor_life') as THREE.Group;
         let n = 0;
@@ -335,9 +342,11 @@ describe('island radius invariants', () => {
         return n;
       });
       expect(counts[0]).toBeGreaterThan(50);
-      // R=75 carries ~2.25× the surface of R=50 — the bed should grow with it
-      // (placement rejection makes it inexact; 1.5× is the floor).
-      expect(counts[1]).toBeGreaterThan(counts[0] * 1.5);
+      // The bed still GROWS with the world — just linearly, not quadratically.
+      expect(counts[1]).toBeGreaterThan(counts[0]);
+      // Density per unit of shoreline is what must hold constant.
+      const perShore = counts.map((n, i) => n / RADII[i]);
+      expect(perShore[1]).toBeCloseTo(perShore[0], 1);
     });
   });
 

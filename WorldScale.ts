@@ -58,6 +58,22 @@ export function faunaBelt(radius: number = WORLD_RADIUS): number {
 export const FOG_DENSITY_X_RADIUS = 0.45;
 
 /**
+ * Submerged fog density — an ABSOLUTE value, deliberately NOT radius-derived.
+ *
+ * Island-visibility fog is tuned as a product with the radius (above) so the
+ * far side of the island stays visible as the world grows. Underwater murk is
+ * the opposite: how far you can see through water is a HUMAN-scale property,
+ * like WAVE_AMP, and has nothing to do with how big the planet is.
+ *
+ * It used to be written as a MULTIPLIER on the island fog (`density *= 1 + f*19`),
+ * which silently coupled it to the radius: the R=75->100 flip dropped it from
+ * 0.120 to 0.090 (-25%) and opened underwater sight distance from ~14.4u to
+ * ~19.2u (+33%) — while the seabed simultaneously got DEEPER. The murk that had
+ * been verified at 0.12 quietly stopped being 0.12.
+ */
+export const UNDERWATER_FOG_DENSITY = 0.12;
+
+/**
  * Namespace for anything PERSISTED that is only comparable within one world size.
  *
  * Race times are the case that forced this: a lap at R=75 is ~50% longer, and

@@ -4708,7 +4708,12 @@ export class Island {
     // 60% of strands cluster into 3 beds off the busiest beaches (fisherman
     // lon 5.0, school shores 1.26/3.77); the rest thinly ring the island.
     // Counts scale with world area (160 → 360 at R=75).
-    const KELP_TARGET = Math.round(160 * areaScale(this.radius));
+    // beltScale, NOT areaScale: kelp/coral/starfish/fans live in a depth-gated
+    // SHORELINE RING (kelp 1.2-3.2 deep), so their habitat grows with the
+    // CIRCUMFERENCE, not the surface area. Scaling by area inflated density
+    // 1.67x on a ring that only widened ~6.5% — measured kelp 360 -> 640 at
+    // R=100. Re-based so R=75 is byte-identical (160*2.25 == 240*1.5).
+    const KELP_TARGET = Math.round(240 * beltScale(this.radius));
     const beds = [5.0, 1.26, 3.77];
     const chunkMatrices: number[][] = [[], [], [], []];
     let kelpPlaced = 0;
@@ -4814,7 +4819,7 @@ export class Island {
       }
       return false;
     };
-    const CORAL_CLUMPS = Math.round(40 * areaScale(this.radius));
+    const CORAL_CLUMPS = Math.round(60 * beltScale(this.radius)); // ring, not area — see KELP_TARGET
     for (let i = 0; i < CORAL_CLUMPS; i++) {
       const nubs = 3 + Math.floor(rng() * 2);
       const clump: THREE.BufferGeometry[] = [];
@@ -4832,7 +4837,7 @@ export class Island {
       merged.scale(scale, scale, scale);
       seatPart(merged, 0.3, 1.8);
     }
-    const STARFISH = Math.round(18 * areaScale(this.radius));
+    const STARFISH = Math.round(27 * beltScale(this.radius)); // ring, not area
     for (let i = 0; i < STARFISH; i++) {
       const star = starGeoTemplate.clone();
       partCol.copy(warm[Math.floor(rng() * warm.length) % warm.length]);
@@ -4842,7 +4847,7 @@ export class Island {
       star.scale(scale, scale, scale);
       seatPart(star, 0.25, 1.4);
     }
-    const FANS = Math.round(3 * areaScale(this.radius));
+    const FANS = Math.round(4.5 * beltScale(this.radius)); // ring, not area
     for (let i = 0; i < FANS; i++) {
       const fan = noIdx(new THREE.ConeGeometry(0.32, 0.55, 6));
       fan.scale(1, 1, 0.16); // sea fan: a cone flattened into a blade

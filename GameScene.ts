@@ -17,7 +17,6 @@ import { OrbitCamera } from './OrbitCamera';
 import { RaceSystem, type RaceEvent, type RaceHudStatus } from './RaceSystem';
 import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
-import { isSoftLook } from './SoftLook';
 import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
@@ -33,7 +32,14 @@ import {
   faunaGroundSpotOk,
   growSiteRing,
 } from './WorldPlacement';
-import { FOG_DENSITY_X_RADIUS, WORLD_RADIUS, areaScale, beltScale, faunaBelt } from './WorldScale';
+import {
+  FOG_DENSITY_X_RADIUS,
+  UNDERWATER_FOG_DENSITY,
+  WORLD_RADIUS,
+  areaScale,
+  beltScale,
+  faunaBelt,
+} from './WorldScale';
 import { getWorldState } from './WorldState';
 import { ZonesManager } from './ZonesManager';
 
@@ -10634,10 +10640,14 @@ export class GameScene extends THREE.Scene {
       if (f > 0) {
         const fog = this.fog as THREE.FogExp2;
         fog.color.lerp(GameScene._underTeal, f);
-        // ?look=soft already boosts sea-level fog height ×2.5 and that factor
-        // MULTIPLIES in — soft look takes the gentler ramp (verified target
-        // ≈0.12 density fully under on both paths).
-        fog.density *= 1 + f * (isSoftLook() ? 11 : 19);
+        // LERP to an absolute target, never multiply. The old
+        // `density *= 1 + f * (soft ? 11 : 19)` reached ~0.12 only because the
+        // island fog it multiplied happened to be 0.45/75 — so the R=100 flip
+        // silently dropped the murk to 0.090 (-25%). Both look paths were
+        // verified at ~0.12; one absolute constant reproduces that and is
+        // radius- AND look-proof, which is why the two magic multipliers are
+        // gone — which also retired this file's last isSoftLook use.
+        fog.density += (UNDERWATER_FOG_DENSITY - fog.density) * f;
       }
       if (this.hemiLight && this.hemiBaseSky && this.hemiBaseGround) {
         this.hemiLight.color.copy(this.hemiBaseSky).lerp(GameScene._underHemiSky, f);
