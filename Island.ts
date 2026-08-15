@@ -575,6 +575,40 @@ export class Island {
   }
 
   private createGrass(): THREE.Group {
+    // ── SHIELD (2026-08-16) ────────────────────────────────────────────────
+    // Phase A below takes great care to keep its Math.random ORDER identical
+    // (see the "burn" calls) because the seeded stream feeds index-networked
+    // vehicle placement. But the COUNT was never tier-independent: COUNT is
+    // `lowTier ? 32000 : ~124k`, so a phone consumed ~600k FEWER ambient draws
+    // than a desktop and every scatter AFTER the grass diverged. Measured
+    // before this shield: 157 vs 160 rock instances in an entirely different
+    // boulder field — and rocks push COLLIDERS, so a phone player was blocked
+    // where a desktop player walked free.
+    //
+    // Preserving the order was never enough; the fix is to stop spending the
+    // SHARED stream here at all. Routing the whole build into a local
+    // generator makes grass cost exactly ZERO ambient draws on every tier and
+    // every theme, so downstream placement is identical for all clients —
+    // the same law as buildGrassClumpGeometry, createOreNodes,
+    // buildDistrictAmenities and the cel ink. The alternative (make phones
+    // iterate the desktop count and throw the extra away) would buy parity
+    // with startup CPU on exactly the devices that can least afford it.
+    const stashedRandom = Math.random;
+    let gseed = 0x6a55eed0 >>> 0;
+    Math.random = (): number => {
+      gseed = (gseed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(gseed ^ (gseed >>> 15), 1 | gseed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      return this.createGrassShielded();
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private createGrassShielded(): THREE.Group {
     // Two crossed blades, base at origin.
     //
     // Each blade was ONE triangle converging to a single point — 0.09 wide by
