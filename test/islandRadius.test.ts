@@ -258,7 +258,16 @@ describe('island radius invariants', () => {
         expect(bs!.radius).toBeLessThan(1.2 * r);
       }
       expect(total).toBe((island as unknown as { grassFullCount: number }).grassFullCount);
-      expect(total).toBeGreaterThan(10000); // live blades, not slots
+      // Floor on live BLADES, not instances: an instance is a whole tuft now
+      // (11 blades in clump mode, 2 in blade mode), so an instance-count floor
+      // silently measured the wrong thing when the tuft got fatter and the
+      // scatter stride doubled to pay for it. Derive blades-per-instance from
+      // the shared geometry (6 verts per single-plane blade).
+      const bladesPerInstance = Math.max(
+        1,
+        Math.round(chunks[0].geometry.getAttribute('position').count / 6),
+      );
+      expect(total * bladesPerInstance, 'not enough live grass blades').toBeGreaterThan(10000);
     });
 
     test('setGrassBudget trims per chunk and restores cleanly', () => {

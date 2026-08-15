@@ -151,20 +151,36 @@ function buildClumpShielded(rng: () => number): {
   const tipC = new THREE.Color(0xffffff);
   const col = new THREE.Color();
   const CLUMP_H = 0.15;
-  const BLADES = 7;
+  // FATTER TUFT (2026-08-16, Abbas's ask): 11 blades in a two-ring dome
+  // instead of 7 in one skirt — a centre heart, a 4-blade inner ring and a
+  // 6-blade outer skirt. Paired with a HARDER stride in the scatter (every
+  // 8th candidate, was every 4th) the net is ~21% FEWER grass verts and half
+  // the instances, while each surviving tuft reads visibly fuller — the point
+  // of the trade. Blade COUNT only costs draws inside this shielded builder,
+  // so it can change freely without touching the ambient RNG stream.
+  const BLADES = 11;
+  const INNER = 5; // b 1..4 inner ring, b 5..10 outer skirt
+  const RING_MAX = 0.22;
   for (let b = 0; b < BLADES; b++) {
-    const ring = b === 0 ? 0 : 0.045 + rng() * 0.13; // centre blade + skirt ring
+    // Two rings give the dome its shoulder; one wide skirt read as a spider.
+    const ring =
+      b === 0
+        ? 0
+        : b < INNER
+          ? 0.05 + rng() * 0.06 // inner ring, close to the heart
+          : 0.125 + rng() * 0.095; // outer skirt, out to RING_MAX
+    // Angles advance per RING so neither ring combs into a line.
     const ang = (b / BLADES) * Math.PI * 2 + rng() * 0.8;
     const ox = Math.cos(ang) * ring;
     const oz = Math.sin(ang) * ring;
-    const h = (b === 0 ? 1 : 0.55 + rng() * 0.4) * CLUMP_H; // tall heart, low skirt
+    const h = (b === 0 ? 1 : b < INNER ? 0.72 + rng() * 0.23 : 0.5 + rng() * 0.28) * CLUMP_H;
     const baseW = 0.03 + rng() * 0.014;
     const tipW = baseW * 0.52; // blunt tip — the un-spiky rule from the pair
     const yaw = rng() * Math.PI * 2;
     const c = Math.cos(yaw);
     const s = Math.sin(yaw);
     // Skirt blades lean outward from the heart — the tuft silhouette.
-    const lean = (ring / 0.175) * 0.38 * h;
+    const lean = (ring / RING_MAX) * 0.38 * h;
     const lx = Math.cos(ang) * lean;
     const lz = Math.sin(ang) * lean;
     const v = (x: number, y: number, tip: boolean): void => {
@@ -691,7 +707,7 @@ export class Island {
     //
     //  - Desktop ships 55% of proportional density — GRASS_DENSITY_FRACTION
     //    below, i.e. 100k * areaScale(75)=2.25 * 0.55 = ~124k slots (and clump
-    //    mode then materialises every 4th, ~31k tufts). Blade
+    //    mode then materialises every 8th, ~15.5k tufts). Blade
     //    geometry is 12 non-indexed verts, so full proportional would be 2.7M
     //    verts every frame, and this is ONE planet-spanning InstancedMesh whose
     //    bounding sphere always intersects the frustum — none of it is ever
@@ -869,7 +885,9 @@ export class Island {
       tmpColors[sector].push(bladeColor.r, bladeColor.g, bladeColor.b);
     }
     // ── Phase B: materialize one InstancedMesh per sector ────────────────
-    // Clump mode: keep every 4th candidate (deterministic stride — zero RNG).
+    // Clump mode: keep every 8th candidate (deterministic stride — zero RNG).
+    // Was every 4th; the tuft got fatter (11 blades) so half as many still
+    // cover the ground, and the pair nets ~21% fewer verts overall.
     // The per-sector lists are the coprime-stride visitation order, i.e. a
     // spatially uniform sequence, and a stride of a uniform sequence is still
     // uniform — so both the thinning AND setGrassBudget's prefix trims stay
@@ -881,7 +899,7 @@ export class Island {
         const n = srcM.length / 16;
         const outM: number[] = [];
         const outC: number[] = [];
-        for (let ci = 0; ci < n; ci += 4) {
+        for (let ci = 0; ci < n; ci += 8) {
           for (let m = 0; m < 16; m++) outM.push(srcM[ci * 16 + m]);
           outC.push(srcC[ci * 3], srcC[ci * 3 + 1], srcC[ci * 3 + 2]);
         }

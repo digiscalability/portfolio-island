@@ -28,18 +28,23 @@ describe('grass clump geometry', () => {
     }
   });
 
-  test('ledger: 7 blades = 42 verts, all finite, inside the clump envelope', () => {
+  test('ledger: 11 blades = 66 verts, all finite, inside the clump envelope', () => {
     const { geometry, height } = buildGrassClumpGeometry();
     const pos = geometry.getAttribute('position');
-    expect(pos.count).toBe(42); // 7 single-plane blades × 2 tris × 3 verts
+    // 11 = centre heart + 4 inner ring + 6 outer skirt (the fatter tuft).
+    // The scatter's stride went 4 -> 8 to more than pay for the extra blades.
+    expect(pos.count).toBe(66); // 11 single-plane blades × 2 tris × 3 verts
     expect(geometry.getAttribute('color')).toBeTruthy();
     expect(height).toBeGreaterThan(0.088); // taller than one blade of the pair
     for (let i = 0; i < pos.count; i++) {
       expect(Number.isFinite(pos.getX(i) + pos.getY(i) + pos.getZ(i))).toBe(true);
       expect(pos.getY(i)).toBeGreaterThanOrEqual(0); // rooted, nothing underground
       expect(pos.getY(i)).toBeLessThanOrEqual(height + 1e-6);
-      // Footprint stays a tuft, not a bush: lateral reach under ~0.25u.
-      expect(Math.hypot(pos.getX(i), pos.getZ(i))).toBeLessThan(0.25);
+      // Footprint stays a tuft, not a bush. The fatter dome reaches further
+      // than the old 7-blade skirt (RING_MAX 0.22 + outward lean + half a
+      // blade width), so the envelope is 0.34 — still well under the ~0.5u
+      // spacing a thinned tuft has to cover.
+      expect(Math.hypot(pos.getX(i), pos.getZ(i))).toBeLessThan(0.34);
     }
   });
 
