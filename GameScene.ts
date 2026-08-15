@@ -6,6 +6,7 @@ import { addGroupHulls, updateCelRim } from './CelLook';
 import { buildCloudFormations } from './CloudFormations';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle } from './EnvironmentCycle';
+import { framingFov } from './Framing';
 import { Island } from './Island';
 import { expDecayV3, squash } from './Juice';
 import { Mailbox } from './Mailbox';
@@ -731,9 +732,14 @@ export class GameScene extends THREE.Scene {
     const restoreRandom = GameScene.installSeededRandom();
     try {
       // Create camera with extended far plane
+      // BASE_VFOV (50) narrowed from 60: flatter perspective, straighter
+      // horizon — reads as a bigger world. framingFov keeps that exactly on
+      // 16:10 and wider, and only opens up when the window is narrow enough
+      // that the HORIZONTAL field would otherwise collapse (portrait phones).
+      const initialAspect = window.innerWidth / Math.max(1, window.innerHeight);
       this.camera = new THREE.PerspectiveCamera(
-        50, // narrowed from 60: flatter perspective, straighter horizon — reads as a bigger world
-        window.innerWidth / window.innerHeight,
+        framingFov(initialAspect),
+        initialAspect,
         0.1,
         2000,
       );
@@ -950,8 +956,12 @@ export class GameScene extends THREE.Scene {
       // that were never part of the shared deterministic world).
       void this.scatterProps();
 
-      // Handle window resize
-      window.addEventListener('resize', () => this.onWindowResize());
+      // NOTE: no resize listener here. SimpleRenderer owns the single,
+      // DEBOUNCED resize path (it also reallocates the composer targets, which
+      // is why it must be debounced). A second un-debounced listener here used
+      // to write camera.aspect on every resize event during a window drag,
+      // fighting the debounced one and — now that framing is aspect-aware —
+      // would also stomp the fov that path sets.
 
       // Debug scene state
       console.log('🏝️ GameScene initialized (spherical island):', {
@@ -1322,34 +1332,53 @@ export class GameScene extends THREE.Scene {
     legs: THREE.Group;
   } {
     const bird = new THREE.Group();
-    // Body — small elongated sphere pointing along travel direction (-Z);
-    // per-species shape squashes/stretches it (plump robin vs sleek gull).
-    const body = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 5), bodyMat);
     const shape = extras?.shape ?? [1, 0.9, 1.9];
-    body.scale.set(shape[0], shape[1], shape[2]);
-    bird.add(body);
+    // ── MERGED CORE ────────────────────────────────────────────────────────
+    // Body + head + both eyes + beak + belly were SIX separate meshes, i.e.
+    // six draws per bird before the ink hulls doubled the animated ones. None
+    // of them move relative to each other, so they bake into ONE vertex-
+    // coloured mesh = ONE draw. Only the parts that actually animate (wings,
+    // tail, legs) stay separate below.
+    // Every transform must be applied to the GEOMETRY, not a mesh: the beak's
+    // `rotation.x = -PI/2` in particular becomes a geometry rotateX, or the
+    // merged beak points at the sky.
+    // mergeGeometries(parts, FALSE) — `true` produces geometry GROUPS and a
+    // material array, which three.js still submits as one draw PER GROUP,
+    // which would defeat the entire exercise.
+    const coreParts: THREE.BufferGeometry[] = [];
+    const bodyGeo = new THREE.SphereGeometry(0.11, 6, 5);
+    bodyGeo.scale(shape[0], shape[1], shape[2]);
+    coreParts.push(GameScene.tintGeo(bodyGeo, bodyMat));
     // Distinct head — the old single-blob body read as a lump; a head sphere
     // with eye dots gives every bird a real silhouette up close.
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.075, 6, 5), bodyMat);
-    head.position.set(0, 0.075, -0.155 * shape[2] * 0.6 - 0.06);
-    bird.add(head);
+    const headY = 0.075;
+    const headZ = -0.155 * shape[2] * 0.6 - 0.06;
+    const headGeo = new THREE.SphereGeometry(0.075, 6, 5);
+    headGeo.translate(0, headY, headZ);
+    coreParts.push(GameScene.tintGeo(headGeo, bodyMat));
     const eyeMat = GameScene.birdMat(0x1c1a18);
     for (const ex of [-0.048, 0.048]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.014, 5, 4), eyeMat);
-      eye.position.set(ex, head.position.y + 0.02, head.position.z - 0.05);
-      bird.add(eye);
+      const eyeGeo = new THREE.SphereGeometry(0.014, 5, 4);
+      eyeGeo.translate(ex, headY + 0.02, headZ - 0.05);
+      coreParts.push(GameScene.tintGeo(eyeGeo, eyeMat));
     }
-    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.09, 4), beakMat);
-    beak.rotation.x = -Math.PI / 2;
-    beak.position.set(0, head.position.y - 0.005, head.position.z - 0.105);
-    bird.add(beak);
+    const beakGeo = new THREE.ConeGeometry(0.032, 0.09, 4);
+    beakGeo.rotateX(-Math.PI / 2); // GEOMETRY rotate — see note above
+    beakGeo.translate(0, headY - 0.005, headZ - 0.105);
+    coreParts.push(GameScene.tintGeo(beakGeo, beakMat));
     // Belly/breast patch — cheap two-tone (robin red-breast, pigeon chest).
     if (extras?.belly) {
-      const belly = new THREE.Mesh(new THREE.SphereGeometry(0.095, 6, 5), extras.belly);
-      belly.scale.set(shape[0] * 0.88, shape[1] * 0.72, shape[2] * 1.32);
-      belly.position.set(0, -0.045, -0.02);
-      bird.add(belly);
+      const bellyGeo = new THREE.SphereGeometry(0.095, 6, 5);
+      bellyGeo.scale(shape[0] * 0.88, shape[1] * 0.72, shape[2] * 1.32);
+      bellyGeo.translate(0, -0.045, -0.02);
+      coreParts.push(GameScene.tintGeo(bellyGeo, extras.belly));
     }
+    const core = new THREE.Mesh(
+      mergeGeometries(coreParts, false) as THREE.BufferGeometry,
+      GameScene.birdVertexMat(),
+    );
+    core.name = 'bird_core';
+    bird.add(core);
     // Tail — small tapered fan at the rear, tip raised; completes the
     // folded-wing silhouette on the ground and the cross in flight.
     const tailGeo = new THREE.BoxGeometry(0.11, 0.012, 0.2);
@@ -1370,16 +1399,23 @@ export class GameScene extends THREE.Scene {
     // sitting belly-deep in the grass. Flying birds fold them back flat
     // under the tail (rotation.x set by the caller).
     const legs = new THREE.Group();
-    const legGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.1, 4);
+    // Four parts (2 stilts + 2 foot nubs) that never move relative to each
+    // other — the GROUP is what the flight code rotates — so they merge to one.
+    const legParts: THREE.BufferGeometry[] = [];
     for (const lx of [-0.045, 0.045]) {
-      const leg = new THREE.Mesh(legGeo, beakMat);
-      leg.position.set(lx, -0.05, 0.02);
-      legs.add(leg);
+      const legGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.1, 4);
+      legGeo.translate(lx, -0.05, 0.02);
+      legParts.push(GameScene.tintGeo(legGeo, beakMat));
       // Tiny forward foot nub
-      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.012, 0.05), beakMat);
-      foot.position.set(lx, -0.1, 0);
-      legs.add(foot);
+      const footGeo = new THREE.BoxGeometry(0.035, 0.012, 0.05);
+      footGeo.translate(lx, -0.1, 0);
+      legParts.push(GameScene.tintGeo(footGeo, beakMat));
     }
+    const legMesh = new THREE.Mesh(
+      mergeGeometries(legParts, false) as THREE.BufferGeometry,
+      GameScene.birdVertexMat(),
+    );
+    legs.add(legMesh);
     legs.position.y = -0.08; // hang from the belly; feet ~0.185 below origin
     bird.add(legs);
     // Wings — LONG tapered panels hinged at the body sides. The old 0.34u
@@ -2074,6 +2110,34 @@ export class GameScene extends THREE.Scene {
 
   // Bird materials cached per colour (fishMat pattern) — species mixing
   // would otherwise allocate ~20 duplicate MeshToonMaterials.
+  /** ONE material for every merged bird part. The parts carry their colour in
+   *  a vertex-colour attribute instead, so a whole bird body is a single draw.
+   *  NOTE (CLAUDE.md): instanceColor MULTIPLIES vertexColor — if birds are ever
+   *  instanced, leave instanceColor null or pure white or they go black. */
+  private static birdVertexMatCache: THREE.MeshToonMaterial | null = null;
+  private static birdVertexMat(): THREE.MeshToonMaterial {
+    GameScene.birdVertexMatCache ??= new THREE.MeshToonMaterial({
+      vertexColors: true,
+      gradientMap: Materials.toonRamp(),
+    });
+    return GameScene.birdVertexMatCache;
+  }
+
+  /** Bake a material's colour into `geo` as a vertex-colour attribute. Mutates
+   *  and returns the geometry it is handed (callers pass freshly-built ones). */
+  private static tintGeo(geo: THREE.BufferGeometry, mat: THREE.Material): THREE.BufferGeometry {
+    const col = (mat as THREE.MeshToonMaterial).color ?? new THREE.Color(0xffffff);
+    const n = geo.attributes.position.count;
+    const arr = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      arr[i * 3] = col.r;
+      arr[i * 3 + 1] = col.g;
+      arr[i * 3 + 2] = col.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    return geo;
+  }
+
   private static birdMatCache = new Map<number, THREE.MeshToonMaterial>();
   private static birdMat(color: number, doubleSide = false): THREE.MeshToonMaterial {
     const key = color + (doubleSide ? 0x2000000 : 0);
@@ -13207,11 +13271,14 @@ export class GameScene extends THREE.Scene {
   /**
    * Handle window resize
    */
-  private onWindowResize(): void {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-
-    this.camera.aspect = width / height;
+  /** Aspect-aware base fov, applied by SimpleRenderer's debounced resize path.
+   *  Routed through OrbitCamera because THREE writers to camera.fov already
+   *  exist (its own updateFov, setRideMode, and the NPC push-in) — writing fov
+   *  straight from the resize path would fight all three. */
+  public applyFraming(aspect: number): void {
+    if (!this.camera) return;
+    this.camera.aspect = aspect;
+    this.orbitCamera?.setBaseFov(framingFov(aspect));
     this.camera.updateProjectionMatrix();
   }
 

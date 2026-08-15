@@ -674,8 +674,16 @@ export class SimpleRenderer {
     }
 
     if (this.camera && 'aspect' in this.camera) {
-      (this.camera as THREE.PerspectiveCamera).aspect = width / height;
-      (this.camera as THREE.PerspectiveCamera).updateProjectionMatrix();
+      const aspect = width / height;
+      // Aspect-aware framing lives in GameScene (it owns the OrbitCamera that
+      // owns fov). Fall back to the plain aspect write if no scene is wired.
+      const scene = this.scene as unknown as { applyFraming?: (a: number) => void };
+      if (typeof scene?.applyFraming === 'function') {
+        scene.applyFraming(aspect);
+      } else {
+        (this.camera as THREE.PerspectiveCamera).aspect = aspect;
+        (this.camera as THREE.PerspectiveCamera).updateProjectionMatrix();
+      }
     }
 
     // The setPixelRatio/setSize calls above reallocate (blank) the canvas AND the

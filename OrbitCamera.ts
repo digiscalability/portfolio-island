@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
+import { BASE_VFOV } from './Framing';
 import { consumePinchZoomFactor } from './SimpleInputManager';
 import type { SimplePlayer } from './SimplePlayer';
 
@@ -156,8 +157,44 @@ export class OrbitCamera {
     }
     const cam = this.camera as THREE.PerspectiveCamera;
     if (!cam.isPerspectiveCamera || a11y.reducedMotion) return;
+    // baseFov used to be captured HERE, on the first ride only — so a resize
+    // before you ever boarded anything baked the wrong base in forever. It is
+    // seeded from the live camera on first use instead, and setBaseFov (the
+    // aspect-aware framing path) is now its owner.
     if (!this.baseFov) this.baseFov = cam.fov;
     this.fovTarget = on ? this.baseFov + 6 : this.baseFov;
+  }
+
+  /** Live base fov, for callers that need to snapshot it (the NPC push-in)
+   *  rather than reading the momentary animated cam.fov. */
+  public getBaseFov(): number {
+    const cam = this.camera as THREE.PerspectiveCamera;
+    if (!this.baseFov && cam.isPerspectiveCamera) this.baseFov = cam.fov;
+    return this.baseFov || BASE_VFOV;
+  }
+
+  /**
+   * SINGLE OWNER of the resting fov (aspect-aware framing calls this).
+   * Re-derives fovTarget rather than snapping cam.fov, so it composes with the
+   * ride bloom and the NPC push-in instead of fighting them: if the camera is
+   * currently offset from its base (riding), the same offset is preserved
+   * against the new base.
+   */
+  public setBaseFov(deg: number): void {
+    const cam = this.camera as THREE.PerspectiveCamera;
+    if (!cam.isPerspectiveCamera) return;
+    const prevBase = this.getBaseFov();
+    if (Math.abs(prevBase - deg) < 0.01) return;
+    const offset = this.fovTarget ? this.fovTarget - prevBase : 0;
+    this.baseFov = deg;
+    if (this.fovTarget) {
+      this.fovTarget = deg + offset;
+    } else {
+      // Nothing is animating fov — apply immediately so the first frame after
+      // a resize is already correctly framed.
+      cam.fov = deg;
+      cam.updateProjectionMatrix();
+    }
   }
 
   /** Per-frame FOV ease toward fovTarget (frame-rate independent). Rate 1.6
