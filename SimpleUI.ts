@@ -1087,6 +1087,10 @@ export class SimpleUI {
    *  "get in touch" path beyond the mailto link. Email is used only to reply. */
   private appendLeadForm(container: HTMLElement): void {
     const form = document.createElement('div');
+    // Anchor id: ReceptionDesk inserts itself BEFORE this block. It loads via a
+    // dynamic import, so it always resolves after this synchronous append and
+    // cannot rely on append order for placement.
+    form.id = 'lead-form-block';
     form.style.cssText =
       'margin-top:18px;text-align:left;border-top:1px solid rgba(255,255,255,0.12);padding-top:16px;';
     const field =
@@ -5095,6 +5099,11 @@ export class SimpleUI {
     }
     if (zone?.id === 'contact') {
       trackOnce('contact_opened');
+      // Voice desk goes ABOVE the written form — the lead form's own heading
+      // ("Or send a message") already reads as the secondary option.
+      void import('./ReceptionDesk').then(({ appendReceptionDesk }) => {
+        if (this.zonePanelDiv) appendReceptionDesk(this.zonePanelDiv);
+      });
       this.appendLeadForm(this.zonePanelDiv);
     }
 
@@ -5183,6 +5192,11 @@ export class SimpleUI {
    */
   hideZonePanel(): void {
     if (this.zonePanelDiv) {
+      // Hang up first: removing the panel DOM does not close the agent's
+      // WebSocket, so a visitor who walks away mid-call would otherwise leave
+      // it listening — and billing — until the 300s agent-side ceiling.
+      // Import only if the module was already loaded (contact panel opened).
+      void import('./ReceptionDesk').then((m) => m.stopReceptionCall());
       this.zonePanelDiv.remove();
       this.zonePanelDiv = null;
       this.panels.notifyClosed('zone');
