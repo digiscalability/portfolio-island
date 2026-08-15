@@ -274,6 +274,23 @@ export class Island {
   // the water tracks dusk/night with zero per-frame plumbing.
   public seaSkyHorizonUniform: { value: THREE.Color } = { value: new THREE.Color(0x79b7e6) };
   // Shared time uniform driving the sea wave vertex shader
+  /**
+   * Surf band DEPTHS (collar, shallow, edge), solved per-radius.
+   *
+   * These were three literals — 1.6 / 2.4 / 3.2 — and they are DEPTHS, but
+   * what the eye reads is how many METRES of water the bands cover. Those are
+   * not the same thing at different radii: the continental shelf steepens as
+   * the world grows, so a fixed depth sits CLOSER to shore. MEASURED from the
+   * waterline outward, the R=75->100 flip compressed the visible surf zone:
+   * collar 3.75m -> 3.25m, shallow 6.00m -> 5.25m (both about -13%), in the
+   * most-looked-at 25 metres of the world.
+   *
+   * calibrateSurfBands() solves for the depth that lands each band at its
+   * authored METRE offset on THIS island, so the surf reads the same at any
+   * radius — and reproduces 1.6/2.4/3.2 at R=75 by construction.
+   */
+  private seaBandsUniform = { value: new THREE.Vector3(1.6, 2.4, 3.2) };
+
   public seaTimeUniform: { value: number } = { value: 0 };
   // Slow rise/fall of the whole sea surface, shared by the shader and the CPU
   // wave sampler. Amplitude is kept under the ~0.19 height where land begins,
@@ -1561,6 +1578,7 @@ export class Island {
       shader.uniforms.uAmp = { value: Island.WAVE_AMP };
       shader.uniforms.uTide = this.seaTideUniform;
       shader.uniforms.uSkyHorizon = this.seaSkyHorizonUniform;
+      shader.uniforms.uBands = this.seaBandsUniform;
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
@@ -1619,7 +1637,7 @@ export class Island {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
-          '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uSkyHorizon;',
+          '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uBands;\nuniform vec3 uSkyHorizon;',
         )
         .replace(
           '#include <color_fragment>',
@@ -1657,9 +1675,9 @@ export class Island {
             // this block now): at the old range the open ocean (d≈2.5) still
             // carried ~0.16 of this tint — a big part of the milky noon look.
             // It now dies exactly where the depth gradient takes over.
-            'float shallow = 1.0 - smoothstep(0.0, 2.4, d);',
+            'float shallow = 1.0 - smoothstep(0.0, uBands.y, d);',
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20,0.70,0.72), shallow*shallow*0.7);',
-            'float edge = 1.0 - smoothstep(0.0, 3.2, d);',
+            'float edge = 1.0 - smoothstep(0.0, uBands.z, d);',
             'float s1 = sin(d * 2.6 - uTime * 1.9);',
             'float s2 = sin(d * 4.3 - uTime * 2.7 + 1.7);',
             'float s3 = sin(d * 1.5 - uTime * 1.2 + 3.4);',
@@ -1674,7 +1692,7 @@ export class Island {
             // The shallowest sea verts hide UNDER the beach, so the visible rim
             // sits at d≈0.2–0.8 — the old 0.9 range faded to nothing exactly
             // there and no line survived. 1.6 keeps an unbroken white edge.
-            'foam = max(foam, (1.0 - smoothstep(0.05, 1.6, d)) * 0.9);',
+            'foam = max(foam, (1.0 - smoothstep(0.05, uBands.x, d)) * 0.9);',
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95,0.98,1.0), clamp(foam, 0.0, 1.0) * 0.9);',
           ].join('\n'),
         )
@@ -1746,6 +1764,10 @@ export class Island {
       }
       seaGeo.setAttribute('aDepth', new THREE.BufferAttribute(depth, 1));
     }
+    // Solve the surf-band depths for THIS radius, once, right after the depth
+    // attribute exists. Without this the bands stay at their authored R=75
+    // depths and the visible surf zone compresses as the shelf steepens.
+    this.seaBandsUniform.value.copy(this.calibrateSurfBands());
     const sea = new THREE.Mesh(seaGeo, seaMat);
     sea.name = 'sea';
     sea.receiveShadow = true;
@@ -5142,6 +5164,65 @@ export class Island {
   }
 
   /** Radius of the calm water surface (matches the sea mesh). */
+  /** Authored surf-band offsets in METRES from the waterline. Measured at
+   *  R=75, where they correspond to depths 1.6 / 2.4 / 3.2. */
+  private static readonly SURF_BAND_METRES = [3.75, 6.0, 8.0] as const;
+
+  /**
+   * Solve the depth at each authored metre-offset offshore, so the surf bands
+   * cover the same WIDTH OF WATER at any radius. ~16 headings x <=48 steps of
+   * analyticSurface (~0.003ms each) = a few ms, once, at build.
+   */
+  private calibrateSurfBands(): THREE.Vector3 {
+    const sea = this.seaLevel();
+    const acc: number[][] = [[], [], []];
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const probe = new THREE.Vector3();
+    const axis = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < 160; i++) {
+      const y = 1 - (i / 159) * 2;
+      const rad = Math.sqrt(Math.max(0, 1 - y * y));
+      const th = golden * i;
+      probe.set(Math.cos(th) * rad, y, Math.sin(th) * rad).normalize();
+      if (this.isOverWater(probe)) continue; // must start on LAND
+      axis.copy(up).cross(probe);
+      if (axis.lengthSq() < 1e-6) continue;
+      axis.normalize();
+      const start = probe.clone();
+      let waterline = -1;
+      for (let step = 0; step <= 48; step++) {
+        const m = step * 0.5;
+        probe
+          .copy(start)
+          .applyAxisAngle(axis, m / this.radius)
+          .normalize();
+        const depth = sea - this.analyticSurface(probe).radius;
+        if (waterline < 0) {
+          if (depth > 0) waterline = m;
+          continue;
+        }
+        const off = m - waterline;
+        for (let k = 0; k < 3; k++) {
+          if (Math.abs(off - Island.SURF_BAND_METRES[k]) < 0.26 && depth > 0) acc[k].push(depth);
+        }
+        if (off > Island.SURF_BAND_METRES[2] + 1) break;
+      }
+    }
+    const median = (a: number[], fallback: number): number => {
+      if (a.length < 4) return fallback;
+      a.sort((x, y) => x - y);
+      return a[Math.floor(a.length / 2)];
+    };
+    // Fallbacks are the authored R=75 depths, so a pathological island (or a
+    // radius where the shelf never reaches these depths) degrades to today.
+    const b = new THREE.Vector3(median(acc[0], 1.6), median(acc[1], 2.4), median(acc[2], 3.2));
+    // Keep them ordered and sane whatever the sampler returned.
+    b.y = Math.max(b.y, b.x + 0.2);
+    b.z = Math.max(b.z, b.y + 0.2);
+    return b;
+  }
+
   public seaLevel(): number {
     return this.radius + Island.SEA_OFFSET * this.reliefScale;
   }
