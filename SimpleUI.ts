@@ -241,21 +241,62 @@ export class SimpleUI {
       this.applyResponsiveHud();
     };
     this.shortLandscapeMql.addEventListener?.('change', this.onShortLandscapeChange);
+    // Narrow portrait (iPhone SE class, 375x667): the 172px radar is 46% of
+    // the screen width, and the top bar's three tenants (compass pill /
+    // tier-1 chips / radar) measured three overlapping pairs. Recompose, not
+    // scale: smaller radar, chips drop to a second row below the compass.
+    this.narrowPortraitMql = window.matchMedia('(max-width: 400px) and (orientation: portrait)');
+    this.narrowPortrait = this.narrowPortraitMql.matches;
+    this.onNarrowPortraitChange = () => {
+      const v = this.narrowPortraitMql!.matches;
+      if (v === this.narrowPortrait) return;
+      this.narrowPortrait = v;
+      this.applyResponsiveHud();
+    };
+    this.narrowPortraitMql.addEventListener?.('change', this.onNarrowPortraitChange);
+    this.applyResponsiveHud();
   }
 
-  /** Apply the current short-landscape state to reflowable HUD elements. */
+  /** Apply the current breakpoint state to reflowable HUD elements. */
   private applyResponsiveHud(): void {
+    const short = this.shortLandscape;
+    const narrow = this.narrowPortrait && !short;
     if (this.mapCanvas) {
-      const short = this.shortLandscape;
-      // Shrink the 172px disc to ~60% and raise it so its lower arc clears the
-      // 🎤 button (bottom+198). Restore is the EXPLICIT '172px' — '' used to
-      // fall back to the attribute size, which the DPR backing store made 344.
-      this.mapCanvas.style.width = short ? '104px' : '172px';
+      // Shrink the 172px disc (60% short-landscape, 70% narrow-portrait) and
+      // seat it clear of its neighbours. Restore is the EXPLICIT '172px' —
+      // '' used to fall back to the attribute size, which the DPR backing
+      // store made 344.
+      this.mapCanvas.style.width = short ? '104px' : narrow ? '120px' : '172px';
       this.mapCanvas.style.height = 'auto';
       this.mapCanvas.style.top = short
         ? 'calc(var(--sat, 0px) + 8px)'
-        : 'calc(var(--sat, 0px) + 40px)';
+        : 'calc(var(--sat, 0px) + 44px)';
     }
+    // Tier-1 chips drop below the compass line on narrow portrait (top 35
+    // overlapped the compass pill's y14-53 band by 18px); the emote chip and
+    // drawer follow, keeping their 8px rhythm.
+    if (this.tier1Row) {
+      this.tier1Row.style.top = narrow
+        ? 'calc(var(--sat, 0px) + 58px)'
+        : 'calc(var(--sat, 0px) + 35px)';
+    }
+    if (this.emoteBtnEl) {
+      this.emoteBtnEl.style.top = narrow
+        ? 'calc(var(--sat, 0px) + 110px)'
+        : 'calc(var(--sat, 0px) + 88px)';
+    }
+    if (this.drawerListEl) {
+      this.drawerListEl.style.top = narrow
+        ? 'calc(var(--sat, 0px) + 106px)'
+        : 'calc(var(--sat, 0px) + 84px)';
+    }
+    if (this.interactionDiv) this.interactionDiv.style.bottom = this.promptBottom();
+  }
+
+  /** Interaction-prompt anchor per breakpoint (see showInteractionPrompt). */
+  private promptBottom(): string {
+    if (!this.isTouch) return 'calc(var(--sab, 0px) + 100px)';
+    return this.shortLandscape ? 'calc(var(--sab, 0px) + 148px)' : 'calc(var(--sab, 0px) + 300px)';
   }
 
   // ── Mobile chip drawer (mobile-HUD Round 3, Phase 3) ──────────────────
@@ -296,7 +337,11 @@ export class SimpleUI {
   /** Move a chip into the tier-1 row (touch). The 🪙/feed chips are created
    *  lazily AFTER ☰, so they insert BEFORE the toggle to keep [👥][🪙][☰]. */
   private tierChip(el: HTMLElement): void {
-    Object.assign(el.style, { position: 'static', top: '', right: '', left: '', bottom: '' });
+    // relative, NOT static: it flows in the flex row the same, but keeps the
+    // chip a containing block so the .hud-btn::after 44px tap pad anchors to
+    // THE CHIP — static re-anchored every pad to the whole row and scrambled
+    // hit-testing across it (verified on the SE audit).
+    Object.assign(el.style, { position: 'relative', top: '', right: '', left: '', bottom: '' });
     const row = this.getTier1Row();
     if (this.drawerToggleEl && this.drawerToggleEl.parentElement === row) {
       row.insertBefore(el, this.drawerToggleEl);
@@ -323,7 +368,9 @@ export class SimpleUI {
       return;
     }
     Object.assign(el.style, {
-      position: 'static',
+      // relative, NOT static — same in-flow layout, but the chip stays a
+      // containing block for its .hud-btn::after tap pad (see tierChip).
+      position: 'relative',
       top: '',
       right: '',
       left: '',
@@ -471,10 +518,13 @@ export class SimpleUI {
     this.drawerOpen = true;
     track('drawer_opened');
     // Registered as a panel so ANY panel opening collapses the drawer free
-    // via the exclusivity sweep. hides:[] — the world and tier-1 row stay.
+    // via the exclusivity sweep. Hides the touch controls while open: the
+    // WAVE/JUMP column (z1650) otherwise paints OVER the drawer list (z1510)
+    // and steals its taps — on an iPhone SE the last two rows (Sound, Reduce
+    // motion) were half-covered by WAVE.
     this.panels.open('drawer', {
       kind: 'sheet',
-      hides: [],
+      hides: ['touch-controls', 'aux-controls'],
       close: () => this.closeDrawer(),
     });
     list.style.display = 'flex';
@@ -537,6 +587,9 @@ export class SimpleUI {
   private shortLandscape = false;
   private shortLandscapeMql: MediaQueryList | null = null;
   private onShortLandscapeChange: (() => void) | null = null;
+  private narrowPortrait = false;
+  private narrowPortraitMql: MediaQueryList | null = null;
+  private onNarrowPortraitChange: (() => void) | null = null;
   private mapDpr = 1; // minimap backing-store scale (min(devicePixelRatio, 2))
   private onMinimapClick: (() => void) | null = null;
 
@@ -712,29 +765,61 @@ export class SimpleUI {
 
   private toastEl: HTMLDivElement | null = null;
   private toastTimer = 0;
-  /** Brief auto-dismissing status toast (bottom-centre) — e.g. "Muted <name>". */
+  private toastQueue: string[] = [];
+  private toastBusy = false;
+  /**
+   * Brief auto-dismissing status toast — e.g. "Muted <name>".
+   *
+   * Mobile-finish rules, each fixing a shipped defect found on the SE audit:
+   * - WRAPS with a max width (the old nowrap clipped 25-60px off BOTH edges
+   *   of a 375px screen on any long message);
+   * - QUEUES instead of silently overwriting (away-digest, streak, first-coin
+   *   and featured-special all funnel here and clobbered each other mid-read);
+   * - DEFERS while the loader or welcome modal is up (the once-per-day
+   *   featured toast fired under the opaque loader and burned its
+   *   localStorage key without ever being seen).
+   */
   public toast(message: string): void {
+    // Drop exact duplicates already waiting — a queue of three "+1 🪙" adds
+    // nothing.
+    if (this.toastQueue.includes(message)) return;
+    this.toastQueue.push(message);
+    this.pumpToasts();
+  }
+
+  private pumpToasts(): void {
+    if (this.toastBusy || this.toastQueue.length === 0) return;
+    // Not while an opaque loader or the welcome/name modal owns the screen —
+    // re-checked on a short poll so deferred messages surface right after.
+    if (this.isLoadingVisible() || this.isWelcomeVisible()) {
+      window.setTimeout(() => this.pumpToasts(), 700);
+      return;
+    }
+    const message = this.toastQueue.shift()!;
+    this.toastBusy = true;
     if (!this.toastEl) {
       this.toastEl = document.createElement('div');
       // Bottom-centre lane, stacked so concurrent notices don't overlap:
-      // chat-input 96 · interaction-prompt 100 · breath 150 · recording 200 ·
-      // toast 250 (highest — it can co-occur with any of the others).
+      // chat-input 96 · breath 150 · recording 200 · toast 250 · prompt 300.
       Object.assign(this.toastEl.style, {
         position: 'absolute',
         left: '50%',
         bottom: 'calc(var(--sab, 0px) + 250px)',
         transform: 'translateX(-50%)',
+        maxWidth: 'min(92vw, 440px)',
+        width: 'max-content',
+        textAlign: 'center',
         background: 'rgba(12,12,20,0.92)',
         color: '#fff',
         padding: '9px 16px',
         borderRadius: '12px',
         fontSize: '14px',
+        lineHeight: '1.35',
         fontFamily: 'system-ui, sans-serif',
         pointerEvents: 'none',
         zIndex: '1750',
         opacity: '0',
         transition: 'opacity 0.2s ease',
-        whiteSpace: 'nowrap',
       });
       this.overlay.appendChild(this.toastEl);
     }
@@ -743,6 +828,9 @@ export class SimpleUI {
     if (this.toastTimer) clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => {
       if (this.toastEl) this.toastEl.style.opacity = '0';
+      this.toastBusy = false;
+      // 250ms gap between queued toasts so consecutive ones read as separate.
+      window.setTimeout(() => this.pumpToasts(), 250);
     }, 2000);
   }
 
@@ -757,6 +845,13 @@ export class SimpleUI {
    * textContent (never innerHTML) so no markup can ever reach the DOM.
    */
   public showWorldBulletin(headline: string, accent: string): void {
+    // The RTDB doc typically lands within the first seconds — right on top
+    // of the first-run welcome modal (z1700 beats it). Hold the banner until
+    // the visitor has actually arrived; it re-checks until the modal closes.
+    if (this.isLoadingVisible() || this.isWelcomeVisible()) {
+      window.setTimeout(() => this.showWorldBulletin(headline, accent), 1500);
+      return;
+    }
     if (!this.bulletinEl) {
       this.bulletinEl = document.createElement('div');
       Object.assign(this.bulletinEl.style, {
@@ -1001,7 +1096,7 @@ export class SimpleUI {
     const modal = document.createElement('div');
     this.panels.open(id, {
       kind: 'modal',
-      hides: ['nav-chips', 'touch-controls'],
+      hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => modal.remove(),
     });
     Object.assign(modal.style, {
@@ -1628,7 +1723,7 @@ export class SimpleUI {
     // own Escape handler (stopPropagation) owns the key.
     this.panels.open('chat-input', {
       kind: 'sheet',
-      hides: ['touch-controls'],
+      hides: ['touch-controls', 'aux-controls'],
       ownEscape: true,
       close,
     });
@@ -1741,6 +1836,13 @@ export class SimpleUI {
     el.setAttribute('tabindex', '0');
     el.setAttribute('aria-label', label);
     el.classList.add('hud-btn');
+    // The 44px tap pad is a ::after anchored to .hud-btn's own box — which
+    // requires the chip to BE a containing block. tierChip/chipHost write
+    // inline position:'static' (beating the stylesheet's .hud-btn
+    // position:relative), which re-anchored every drawer chip's pad to the
+    // whole drawer LIST and scrambled hit-testing across it. Enforce a
+    // positioned box here, preserving inline absolute where a chip set one.
+    if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
     if (pressed !== undefined) el.setAttribute('aria-pressed', String(pressed));
     el.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -2325,6 +2427,16 @@ export class SimpleUI {
 
   showTourOverlay(onSkip: () => void): void {
     this.hideTourOverlay();
+    // The tour was the OTHER surface bypassing PanelManager: for its whole
+    // ~90s the full touch suite stayed painted (dead — movement is zeroed —
+    // but visible, and captions rendered across the button columns). A
+    // scrimless sheet that clears every HUD layer: the island IS the show.
+    this.panels.open('tour', {
+      kind: 'sheet',
+      hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
+      close: () => onSkip(),
+      ownEscape: true, // tour has its own Escape → skip handler below
+    });
     const cap = document.createElement('div');
     Object.assign(cap.style, {
       position: 'absolute',
@@ -2398,6 +2510,7 @@ export class SimpleUI {
       window.clearTimeout(this.tourCaptionSwap);
       this.tourCaptionSwap = null;
     }
+    const hadOverlay = this.tourCaptionDiv !== null;
     this.tourCaptionDiv?.remove();
     this.tourCaptionDiv = null;
     this.tourSkipBtn?.remove();
@@ -2406,6 +2519,10 @@ export class SimpleUI {
       document.removeEventListener('keydown', this.tourEscHandler);
       this.tourEscHandler = null;
     }
+    // Restore the HUD layers (no-op during a sweep). Guarded so the
+    // defensive hideTourOverlay() at the top of showTourOverlay never pops
+    // an unrelated panel.
+    if (hadOverlay) this.panels.notifyClosed('tour');
   }
 
   /**
@@ -2678,11 +2795,15 @@ export class SimpleUI {
   showTimeOverridePill(label: string, onRevert: () => void): void {
     const pill = document.createElement('div');
     pill.textContent = `${label} — tap to return to live time`;
+    // Touch: tucked under the minimap on the left — the old bottom-centre
+    // anchor sat this persistent pill ON the FEED button (100% covered) and
+    // across the joystick zone on a 667px screen. Desktop keeps the centre.
+    const anchor = this.isTouch
+      ? { top: 'calc(var(--sat, 0px) + 228px)', left: '10px', transform: '', maxWidth: '46vw' }
+      : { bottom: 'calc(var(--sab, 0px) + 64px)', left: '50%', transform: 'translateX(-50%)' };
     Object.assign(pill.style, {
       position: 'absolute',
-      bottom: 'calc(var(--sab, 0px) + 64px)',
-      left: '50%',
-      transform: 'translateX(-50%)',
+      ...anchor,
       background: 'rgba(10, 14, 30, 0.82)',
       border: '1px solid rgba(140,160,255,0.26)',
       color: '#dbe4ff',
@@ -2965,7 +3086,8 @@ export class SimpleUI {
       key: string,
       tint: string,
       rightPx = 26,
-    ) => {
+      layer: 'touch-controls' | 'aux-controls' = 'touch-controls',
+    ): HTMLElement => {
       const btn = document.createElement('div');
       btn.innerHTML =
         `<div style="font-size:24px;line-height:1;">${icon}</div>` +
@@ -3029,7 +3151,8 @@ export class SimpleUI {
       btn.addEventListener('touchend', release);
       btn.addEventListener('touchcancel', release);
       this.overlay.appendChild(btn);
-      this.panels.registerLayer('touch-controls', btn);
+      this.panels.registerLayer(layer, btn);
+      return btn;
     };
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
@@ -3040,9 +3163,36 @@ export class SimpleUI {
     // to 374px: on a short landscape phone (the UI explicitly supports
     // max-height 500px) a 4th row would sit over the coin chip and the icon
     // row, and unlike those chips it captures taps.
-    makeButton('🌾', 'FEED', '36px', 'KeyF', 'f', 'rgba(150,130,70,0.5)', 112);
+    // FEED/EAT are 'aux-controls' AND contextual (mobile-finish pass): a
+    // fresh visitor owns no feed and no meals, so a first boot on an iPhone
+    // SE showed five permanent buttons for a three-action game — the FTUE
+    // budget is 5-6 controls TOTAL and HUD should appear when it becomes
+    // relevant. main-simple flips these via setAuxActionAvailable as
+    // inventory changes; visibility (not display) so PanelManager's layer
+    // display toggling and this contextual gate never fight over one prop.
+    this.feedBtnEl = makeButton(
+      '🌾',
+      'FEED',
+      '36px',
+      'KeyF',
+      'f',
+      'rgba(150,130,70,0.5)',
+      112,
+      'aux-controls',
+    );
     // EAT stacks over FEED in the second column (124px over 36px, same 112 inset)
-    makeButton('🍽️', 'EAT', '124px', 'KeyG', 'g', 'rgba(150,90,70,0.5)', 112);
+    this.eatBtnEl = makeButton(
+      '🍽️',
+      'EAT',
+      '124px',
+      'KeyG',
+      'g',
+      'rgba(150,90,70,0.5)',
+      112,
+      'aux-controls',
+    );
+    this.feedBtnEl.style.visibility = 'hidden';
+    this.eatBtnEl.style.visibility = 'hidden';
 
     // Proximity chat: 💬 opens the text input, 🎤 is press-hold-to-talk.
     // Stacked above the joystick (which spans bottom 26–136px here) so
@@ -3070,7 +3220,7 @@ export class SimpleUI {
     });
     this.makeHudButtonAccessible(chatBtn, 'Open chat');
     this.overlay.appendChild(chatBtn);
-    this.panels.registerLayer('touch-controls', chatBtn);
+    this.panels.registerLayer('aux-controls', chatBtn);
 
     const micBtn = document.createElement('div');
     this.micBtn = micBtn;
@@ -3130,7 +3280,20 @@ export class SimpleUI {
       }
     });
     this.overlay.appendChild(micBtn);
-    this.panels.registerLayer('touch-controls', micBtn);
+    this.panels.registerLayer('aux-controls', micBtn);
+  }
+
+  private feedBtnEl: HTMLElement | null = null;
+  private eatBtnEl: HTMLElement | null = null;
+  /**
+   * Contextual FEED/EAT (mobile-finish): the buttons exist only while the
+   * action is actually possible (owns feed / owns meals). Uses visibility so
+   * it composes with PanelManager's display-based layer hiding. Desktop is
+   * untouched — these buttons are touch-only to begin with.
+   */
+  setAuxActionAvailable(kind: 'feed' | 'eat', available: boolean): void {
+    const el = kind === 'feed' ? this.feedBtnEl : this.eatBtnEl;
+    if (el) el.style.visibility = available ? '' : 'hidden';
   }
 
   /**
@@ -3283,8 +3446,24 @@ export class SimpleUI {
       this.welcomeDiv.setAttribute('role', 'dialog');
       this.welcomeDiv.setAttribute('aria-modal', 'true');
       this.welcomeDiv.setAttribute('aria-label', 'Welcome to DigiScalability Life Island');
+      // Above the touch buttons' 1650: on the SE audit the welcome (z:auto)
+      // rendered UNDER five z1650 buttons that stole its taps. Belt to the
+      // layer-hiding braces below — desktop dims layers instead of hiding.
+      this.welcomeDiv.style.zIndex = '1655';
       this.overlay.appendChild(this.welcomeDiv);
     }
+
+    // THE onboarding surface routes through PanelManager like every other
+    // panel — this was one of only two surfaces that bypassed it, so the
+    // touch policy that clears the HUD for panels never ran at the single
+    // most crowded moment of the whole product (fresh boot on a phone:
+    // welcome + minimap + chips + 7 touch controls + pills, 9 surfaces).
+    this.panels.open('welcome', {
+      kind: 'modal',
+      hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
+      close: () => this.hideWelcome(),
+      ownEscape: true, // welcome keeps its own Escape listener below
+    });
 
     trackOnce('welcome_shown');
 
@@ -3356,10 +3535,17 @@ export class SimpleUI {
       <p style="margin: 0 0 12px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI-powered products. This is my portfolio,
         hand-built in Three.js, that you can actually walk through.</p>
-      <p style="margin: 0 0 16px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
+      ${
+        // Progressive disclosure on short phones (SE 667px): the AI-agent
+        // detail paragraph is the "Meet the AI townsfolk" button's job — on
+        // a screen this size the full pitch pushed the CTAs below the fold.
+        this.isTouch && window.innerHeight < 700
+          ? ''
+          : `<p style="margin: 0 0 16px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
         Every townsperson is a <strong>live AI agent</strong> — an AI planner assigns their
         jobs each morning, and an AI analyst reports on the island nightly.
-        Walk up and ask them anything.</p>
+        Walk up and ask them anything.</p>`
+      }
       ${ctaRow}
       ${exploreBtn}
       ${secondaryRow}
@@ -3520,6 +3706,7 @@ export class SimpleUI {
     if (this.welcomeDiv) {
       this.welcomeDiv.remove();
       this.welcomeDiv = null;
+      this.panels.notifyClosed('welcome'); // no-op during a sweep
       try {
         localStorage.setItem('ds_welcomed', '1');
       } catch {
@@ -3660,8 +3847,12 @@ export class SimpleUI {
       this.interactionDiv = document.createElement('div');
       Object.assign(this.interactionDiv.style, {
         position: 'absolute',
-        // Clear the touch buttons / home indicator on phones
-        bottom: 'calc(var(--sab, 0px) + 100px)',
+        // Touch: ABOVE the whole control band — on a 667px-tall SE the old
+        // +100px anchor sat the prompt inside the EAT/USE columns, where it
+        // was both covered and mis-tapped. Desktop keeps the low anchor
+        // (nothing lives down there without touch controls). Short landscape
+        // caps the lift (300 on a 375-tall screen is the compass's lane).
+        bottom: this.promptBottom(),
         left: '50%',
         maxWidth: 'calc(100vw - 32px)',
         background: 'rgba(0, 0, 0, 0.8)',
@@ -4409,7 +4600,7 @@ export class SimpleUI {
     // and the sweep firing onClose mid-refresh would unpause the game.
     this.panels.open('shop', {
       kind: 'modal',
-      hides: ['nav-chips', 'touch-controls'],
+      hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       ownEscape: true,
       close: () => {
         this.hideShop();
@@ -4767,13 +4958,21 @@ export class SimpleUI {
   }
 
   /** Brief centred splash message (used for the drown/rescue). */
+  private flashEl: HTMLDivElement | null = null;
   flashMessage(text: string): void {
+    // Single slot: each call used to append a NEW div at the identical
+    // anchor, so two flashes within ~2s superimposed their text (reachable
+    // first-session: ?race= landing + arrival trail). Replace, don't stack.
+    this.flashEl?.remove();
     const el = document.createElement('div');
+    this.flashEl = el;
     el.textContent = text;
     Object.assign(el.style, {
       position: 'absolute',
       top: '38%',
       left: '50%',
+      maxWidth: 'min(92vw, 440px)',
+      textAlign: 'center',
       transform: 'translate(-50%, -50%) scale(0.9)',
       background: 'rgba(0,0,0,0.78)',
       color: 'white',
@@ -4793,7 +4992,10 @@ export class SimpleUI {
     });
     window.setTimeout(() => {
       el.style.opacity = '0';
-      window.setTimeout(() => el.remove(), 300);
+      window.setTimeout(() => {
+        el.remove();
+        if (this.flashEl === el) this.flashEl = null;
+      }, 300);
     }, 1800);
   }
 
@@ -5401,7 +5603,9 @@ export class SimpleUI {
     Object.assign(panel.style, {
       position: 'absolute',
       left: '50%',
-      bottom: '28px',
+      // --sab: the only bottom-anchored surface that omitted it — on
+      // home-indicator phones the panel bottomed into the unsafe swipe zone.
+      bottom: 'calc(var(--sab, 0px) + 28px)',
       transform: 'translateX(-50%)',
       width: 'min(560px, 92%)',
       background: 'rgba(10,10,20,0.94)',
@@ -5421,7 +5625,7 @@ export class SimpleUI {
     // the key (stopPropagation), so ownEscape.
     this.panels.open('npc-chat', {
       kind: 'sheet',
-      hides: ['nav-chips', 'touch-controls'],
+      hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       ownEscape: true,
       close: () => this.closeNpcChat(),
     });
@@ -5658,6 +5862,24 @@ export class SimpleUI {
     }
     this.overlay.appendChild(panel);
     this.npcChatDiv = panel;
+    // Keyboard lift (same mechanism as openChatInput): iOS overlays the
+    // keyboard without resizing the layout viewport, so without this the
+    // bottom-anchored panel — input included — sits under ~260px of keyboard
+    // and typing is blind. visualViewport is the only honest signal.
+    if (this.isTouch && window.visualViewport) {
+      const vv = window.visualViewport;
+      const lift = () => {
+        if (this.npcChatDiv !== panel) {
+          vv.removeEventListener('resize', lift);
+          vv.removeEventListener('scroll', lift);
+          return;
+        }
+        const keyboardInset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        panel.style.bottom = `calc(var(--sab, 0px) + ${28 + keyboardInset}px)`;
+      };
+      vv.addEventListener('resize', lift);
+      vv.addEventListener('scroll', lift);
+    }
     // Expose this panel's NPC-line appender so the app can deepen the opening
     // in the background (composed greeting → generated continuation).
     this.npcChatAppend = { name, npcLine };
@@ -5989,7 +6211,7 @@ export class SimpleUI {
     // touch buttons aren't needed here, so hiding them kills mis-taps.
     this.panels.open('pin-pad', {
       kind: 'modal',
-      hides: ['nav-chips', 'touch-controls'],
+      hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.closePinPad(),
     });
     panel.innerHTML = `
@@ -6091,7 +6313,10 @@ export class SimpleUI {
     // you're talking to must stay visible.
     this.panels.open('dialogue', {
       kind: 'sheet',
-      hides: ['nav-chips'],
+      // touch-controls STAY (mobile advance re-fires USE) but the aux rank
+      // hides: the 💬 chip painted over this panel's bottom-left text on the
+      // SE, and EAT sat inside its tap-to-advance region firing KeyG.
+      hides: ['nav-chips', 'aux-controls'],
       close: () => this.hideDialogue(),
     });
 

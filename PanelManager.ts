@@ -23,7 +23,10 @@
  *     the sweep (the sweep owns the stack while it runs).
  */
 
-export type HudLayer = 'nav-chips' | 'touch-controls' | 'ambient-info';
+/** 'aux-controls' = the second-rank touch controls (FEED/EAT/💬/🎤): panels
+ *  that must keep USE/JUMP visible (NPC dialogue advances on USE) can hide
+ *  just these instead of the whole touch suite. */
+export type HudLayer = 'nav-chips' | 'touch-controls' | 'aux-controls' | 'ambient-info';
 
 export interface PanelSpec {
   /** 'modal' → shared scrim + manager-owned Escape; 'sheet' → no scrim

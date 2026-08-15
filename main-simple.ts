@@ -258,6 +258,8 @@ class SimpleApp {
   private static readonly PIE_PRICE = 8;
   private static readonly MEAL_STAMINA = { soup: 0.45, fish: 0.65, pie: 1.0 } as const;
   private meals = { pie: 0, fish: 0, soup: 0 };
+  /** Drown fee buffered between onDrownFee and the respawn flash (one message). */
+  private pendingDrownFee = 0;
   private hasLocalMeals = false;
   /** True once this device owns a raw-inventory record (blocks cloud adopt). */
   private hasLocalInventory = false;
@@ -892,9 +894,21 @@ class SimpleApp {
         };
       });
 
-      // Drowning: washed back to shore with a splash message
+      // Drowning: washed back to shore. The teleport is a hard cut across
+      // potentially half the map, so it gets the same 0.45s veil doors use —
+      // with the camera snapped UNDER the veil (otherwise the orbit cam
+      // visibly whips from the drowning spot to the shore). One message, not
+      // two: the fee (buffered from onDrownFee, which fires first in
+      // respawnFromDrown) rides the same line instead of a separate toast.
       this.scene.setOnDrownRespawn(() => {
-        this.ui.flashMessage('🌊 You nearly drowned! Washed ashore.');
+        const fee = this.pendingDrownFee;
+        this.pendingDrownFee = 0;
+        this.ui.fadeThrough(() => this.scene.snapCameraToPlayer());
+        this.ui.flashMessage(
+          fee > 0
+            ? `🌊 You nearly drowned! Washed ashore — ${fee} 🪙 to the shore patrol.`
+            : '🌊 You nearly drowned! Washed ashore.',
+        );
         sfx.land();
       });
 
@@ -1164,7 +1178,9 @@ class SimpleApp {
         }, 3000);
       }
       this.scene.onDrownFee = (fee) => {
-        this.ui.toast(`🚑 Fished out by the shore patrol — ${fee} 🪙 for the trouble.`);
+        // Buffered into the respawn flash (one message per event, not two
+        // simultaneous surfaces) — see setOnDrownRespawn.
+        this.pendingDrownFee = fee;
         this.ui.updateCoinCounter(this.scene.getCoinsCollected());
       };
 
@@ -1485,11 +1501,13 @@ class SimpleApp {
       // The pill helper appends its own "— tap to return" suffix; keep the
       // label bare or the instruction doubles.
       this.ui.showTimeOverridePill('📸 Postcard view', () => {
-        this.scene.setCameraSuspended(false);
         // The saved pose is the SENDER'S view anywhere on the planet, so the
         // release glide back to the visitor's spawn is unbounded in length —
-        // cut instead of swoop under reduced motion.
-        if (a11y.reducedMotion) this.scene.snapCameraToPlayer();
+        // door grammar for everyone: veil, cut underneath.
+        this.ui.fadeThrough(() => {
+          this.scene.setCameraSuspended(false);
+          this.scene.snapCameraToPlayer();
+        });
         if (env) env.debugHour = null;
         try {
           const sp = new URLSearchParams(location.search);
@@ -3128,11 +3146,15 @@ class SimpleApp {
     if (!this.tour) return;
     this.tour = null;
     this.ui.hideTourOverlay();
-    this.scene.setCameraSuspended(false);
-    // Reduced motion: without this, releasing suspension lets the orbit cam
-    // position-lerp from the final tour stop back to the follow pose — a
-    // whip across the map. exitInterior already cuts for the same reason.
-    if (a11y.reducedMotion) this.scene.snapCameraToPlayer();
+    // The return from the last tour stop to the follow pose is a
+    // planet-scale camera lerp — the door grammar (0.45s veil, hard cut
+    // underneath) is the scene-transition language everywhere else, so the
+    // tour ends the same way for EVERYONE (reduced motion included; the
+    // veil is an opacity fade, the accessibility-recommended replacement).
+    this.ui.fadeThrough(() => {
+      this.scene.setCameraSuspended(false);
+      this.scene.snapCameraToPlayer();
+    });
     const recruiter = this.tourRecruiter;
     this.tourRecruiter = false;
     track(
@@ -3753,6 +3775,10 @@ class SimpleApp {
       this.fishFeed,
       this.meals.pie + this.meals.fish + this.meals.soup,
     );
+    // Contextual touch buttons (mobile-finish): FEED/EAT exist only while
+    // the action is possible — a fresh visitor sees three buttons, not five.
+    this.ui.setAuxActionAvailable('feed', this.birdFeed + this.catFeed + this.fishFeed > 0);
+    this.ui.setAuxActionAvailable('eat', this.meals.pie + this.meals.fish + this.meals.soup > 0);
   }
 
   /**
