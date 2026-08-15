@@ -764,7 +764,16 @@ export class Island {
     // If still heavy: 0.4 next, then the real fix — give the governor a
     // vertex-side lever EARLIER than rung 3 (LOCAL-STATE "Deferred" list:
     // animal instancing / terrain LOD / governor vertex-rung).
-    const GRASS_DENSITY_FRACTION = 0.55;
+    // Owner decision (2026-08-16, R=100 flip): HOLD TOTAL VERTS, not density.
+    // A proportional 0.55 at areaScale(100)=4.0 would be 220,000 slots and
+    // ~1.19M grass verts (+85%) — close to the config that shipped the R=75
+    // lag. Expressing the budget as SLOTS instead of a fraction makes the
+    // intent radius-proof: the meadow reads ~56% as dense per square metre on
+    // the bigger island (more open, more walkable) and costs what it does now.
+    // To go back to proportional density, set this to
+    // 100000 * areaScale(this.radius) * 0.55.
+    const GRASS_SLOT_BUDGET = 123750; // == the measured R=75 slot count
+    const GRASS_DENSITY_FRACTION = GRASS_SLOT_BUDGET / (100000 * areaScale(this.radius));
     const COUNT = lowTier
       ? 32000
       : // NB: every scale call in this file passes THIS island's radius — the

@@ -21,8 +21,32 @@
 export const REFERENCE_RADIUS = 50;
 
 /** The live world radius. Changing this is a migration, not an edit — see §3 of
- *  the R50→R75 plan and test/radiusUnits.test.ts before touching it. */
-export const WORLD_RADIUS = 75;
+ *  the R50→R75 plan and test/radiusUnits.test.ts before touching it.
+ *
+ *  75 -> 100 (2026-08-16). Measured cost of the naive flip: total island verts
+ *  1.21M -> 2.11M (+75%), terrain 190k -> 338k, grass tufts 9.7k -> 18.0k,
+ *  colliders 102 -> 193, synchronous island build 1.11s -> 3.88s (3.5x). Two
+ *  levers land WITH the flip to pay for it: GRASS_SLOT_BUDGET holds grass verts
+ *  flat (Island.createGrass) and FAUNA_BELT_CAP freezes the animal cast
+ *  (GameScene), because scaling fauna is exactly what blew the draw budget on
+ *  the R=50->75 migration. */
+export const WORLD_RADIUS = 100;
+
+/**
+ * Ceiling on beltScale() for the ANIMAL CAST specifically.
+ *
+ * Cats/birds/gulls are 12-40 draws EACH — the single most expensive thing per
+ * unit of population in the world, and scaling them by the belt is what blew
+ * the draw budget on the last migration. Freezing the cast at its R=75 size
+ * means creatures sit further apart on a bigger island; the answer to that is
+ * making them REACT to you (cheap) rather than adding more of them (expensive).
+ */
+export const FAUNA_BELT_CAP = 1.5;
+
+/** beltScale clamped for fauna — see FAUNA_BELT_CAP. */
+export function faunaBelt(radius: number = WORLD_RADIUS): number {
+  return Math.min(beltScale(radius), FAUNA_BELT_CAP);
+}
 
 /**
  * Atmospheric fog is tuned as a PRODUCT with the radius (density x R = 0.45,

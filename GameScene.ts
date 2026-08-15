@@ -32,7 +32,7 @@ import {
   faunaGroundSpotOk,
   growSiteRing,
 } from './WorldPlacement';
-import { FOG_DENSITY_X_RADIUS, WORLD_RADIUS, areaScale, beltScale } from './WorldScale';
+import { FOG_DENSITY_X_RADIUS, WORLD_RADIUS, areaScale, beltScale, faunaBelt } from './WorldScale';
 import { getWorldState } from './WorldState';
 import { ZonesManager } from './ZonesManager';
 
@@ -2122,7 +2122,7 @@ export class GameScene extends THREE.Scene {
     // so a generated anchor can't orbit a flock through the summit.
     const FLOCKS: Array<{ lon: number; lat: number; count: number }> = growSiteRing(
       FLOCK_ANCHORS,
-      Math.round(FLOCK_ANCHORS.length * beltScale()),
+      Math.round(FLOCK_ANCHORS.length * faunaBelt()),
       (lon, lat) => faunaElevOk(this.island, this.island.dirAt(lon, lat)),
     ).map(([lon, lat]) => ({ lon, lat, count: 3 }));
     // Trailing V slots relative to the leader (x across, y altitude drop,
@@ -2280,7 +2280,7 @@ export class GameScene extends THREE.Scene {
     // summit at R=75 and cost ~half the +1,000-draw regression.
     const GROUND_BIRD_SPOTS = growSiteRing(
       SPOTS,
-      Math.round(SPOTS.length * beltScale()),
+      Math.round(SPOTS.length * faunaBelt()),
       (lon, lat) => faunaGroundSpotOk(this.island, lon, lat),
     );
     for (let i = 0; i < GROUND_BIRD_SPOTS.length; i++) {
@@ -2471,7 +2471,7 @@ export class GameScene extends THREE.Scene {
     // cast. beltScale + gated: a cat is 22-29 meshes + ~15 ink hulls (~40
     // draws); the x2.25 area scaling of the animal cast was the single biggest
     // slice of the R=75 draw-call regression.
-    const CAT_SPOTS = growSiteRing(SPOTS, Math.round(SPOTS.length * beltScale()), (lon, lat) =>
+    const CAT_SPOTS = growSiteRing(SPOTS, Math.round(SPOTS.length * faunaBelt()), (lon, lat) =>
       faunaGroundSpotOk(this.island, lon, lat),
     );
     for (let i = 0; i < CAT_SPOTS.length; i++) {
