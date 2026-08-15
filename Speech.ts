@@ -117,6 +117,14 @@ const EMOJI_RE =
 export function sanitizeForSpeech(text: string): string {
   return text
     .replace(/\*[^*]*\*/g, ' ') // *adjusts cap and grins* → (silent)
+    // NPC replies may carry ElevenLabs v3 audio tags ([warmly], [chuckles]) —
+    // the server strips these for non-v3 models but PRESERVES them for v3
+    // (tts.ts MODEL_SUPPORTS_AUDIO_TAGS), since v3 reads them as performance
+    // direction. This is the free on-device SpeechSynthesis fallback, which
+    // never understands that syntax — it must ALWAYS strip brackets,
+    // unconditionally, or a cloud failure makes the browser voice literally
+    // say "warmly" out loud instead of just sounding warm.
+    .replace(/\[[^\]]*\]/g, ' ')
     .replace(/[_~`*]/g, ' ') // stray markdown emphasis
     .replace(EMOJI_RE, ' ')
     .replace(/\s+/g, ' ')

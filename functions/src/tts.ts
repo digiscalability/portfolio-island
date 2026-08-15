@@ -46,16 +46,24 @@ const ELEVENLABS_API_KEY = defineSecret('ELEVENLABS_API_KEY');
 const TTS_IP_WINDOW_MS = 60 * 60 * 1000; // 1h window (paid synths + all fetches)
 export const TTS_QUEUE_TTL_MS = 15 * 60 * 1000; // reply ids are short-lived
 export const TTS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // audio cache retention
-// Turbo v2.5 — the researched end-state for one-shot short dialogue. The
-// docs are explicit that eleven_v3 (alpha) is "not suitable for real-time or
-// conversational use cases": on <250-char prompts it produces exactly the
-// variable pacing / weird gaps the owner reported (measured: 1.0s dead air
-// mid-line in a real prod render). Turbo is the sanctioned quality/latency
-// middle ground at 0.5 credits/char — and it was never actually heard at
-// full bitrate (its earlier stint shipped at the launch 32kbps setting).
-const TTS_MODEL = 'eleven_turbo_v2_5';
+// eleven_v3 — REVISITED 2026-08-16. The turbo v2.5 pick above was made when
+// v3 was alpha and explicitly unfit for real-time use, which measured as
+// "weird gaps" (dead air mid-line). Two things changed since: (1) v3 shipped
+// GA (Feb 2026) and ElevenLabs now positions it specifically for game
+// voiceover; (2) Speech.ts's compressBufferSilences() was later built to
+// clamp exactly that dead-air defect client-side, "model be damned" per its own
+// comment — the original objection to v3 is now independently mitigated.
+// Turbo is flat/fast BY DESIGN (optimized for latency, not expressiveness) —
+// that design tradeoff is the actual source of "robotic" NPC voice, not a
+// settings mistake. v3 costs 2x (1 credit/char vs turbo's 0.5) — the TTS
+// char caps in constants.ts were halved to hold the same $ ceiling.
+// UNVERIFIED: v3's real generation latency against Speech.ts's CLOUD_WAIT_MS
+// (6s, sized for turbo's ~1-2s render). Watch the fallback-to-browser-voice
+// rate after deploy; raise CLOUD_WAIT_MS if v3 is tripping it.
+const TTS_MODEL = 'eleven_v3';
 // style MUST stay 0 for chat — style exaggeration reintroduces instability
-// (per the docs); expressiveness comes from the voice cast, not the knob.
+// (per the docs); expressiveness now comes from v3 audio tags in the reply
+// text itself (see AUDIO_TAG_GUIDANCE in index.ts), not this knob.
 const TTS_VOICE_SETTINGS = {
   stability: 0.5,
   similarity_boost: 0.75,
@@ -64,7 +72,7 @@ const TTS_VOICE_SETTINGS = {
 };
 // Bump when the model/settings/bitrate change so stale cached renders
 // re-synthesize (the cache key would otherwise keep serving old audio).
-const TTS_RENDER_VERSION = 'v4';
+const TTS_RENDER_VERSION = 'v5';
 // Full-quality audio: the launch 22kHz/32kbps setting was voicemail-grade and
 // read as "robotic" regardless of model. ~16KB/s; a reply is 100-250KB.
 const TTS_OUTPUT = 'mp3_44100_128';
@@ -112,6 +120,19 @@ const DEFAULT_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George — verified present
 // ellipses are DOCUMENTED pause operators in ElevenLabs models ("punctuation
 // stops"), and Claude-style replies are full of both; commas and full stops
 // carry the same meaning without the dead air.
+//
+// Bracketed text is model-dependent: on v2/turbo models ElevenLabs reads
+// "[warmly]" as literal words, so it must be stripped — but v3 treats
+// bracketed text as an AUDIO TAG (performance direction: [warmly], [chuckles],
+// [pause]), which is the actual mechanism for non-robotic delivery and must
+// be PRESERVED. Gated on the model so a future model swap can't silently
+// reintroduce either bug. The client-side sanitizeForSpeech in Speech.ts
+// still ALWAYS strips brackets — the free browser-voice fallback never
+// understands tags no matter what model npcVoice used.
+// Exported so npcChat's system prompt can gate its audio-tag instruction on
+// the SAME condition — telling the LLM to write tags a stripped-model build
+// would silently delete is just wasted tokens.
+export const MODEL_SUPPORTS_AUDIO_TAGS = TTS_MODEL.startsWith('eleven_v3');
 /* eslint-disable no-misleading-character-class */
 const EMOJI_RE =
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
@@ -119,7 +140,7 @@ const EMOJI_RE =
 function speakable(text: string): string {
   const t = text
     .replace(/\*[^*]*\*/g, ' ') // *stage directions* are silent
-    .replace(/\[[^\]]*\]/g, ' ') // bracketed text gets spoken on v2 models
+    .replace(MODEL_SUPPORTS_AUDIO_TAGS ? /(?!)/ : /\[[^\]]*\]/g, ' ') // strip only off v3
     .replace(/[_~`*#]/g, ' ')
     .replace(EMOJI_RE, ' ')
     .replace(/…|\.{3,}/g, '.') // ellipsis = heavy hesitant stop → period
@@ -130,7 +151,9 @@ function speakable(text: string): string {
     .replace(/,\s*([.!?])/g, '$1') // ",." artifacts from the rewrites
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, TTS_MAX_CHARS);
+    .slice(0, TTS_MAX_CHARS)
+    .replace(/\[[^\]]*$/, '') // a hard slice can truncate mid-tag ("[cheer") — drop it, don't speak it literally
+    .trim();
   // Unterminated text causes trailing artifacts — always end on a full stop.
   return t && !/[.!?]$/.test(t) ? `${t}.` : t;
 }
