@@ -72,11 +72,11 @@ photo mode won't do video — use OBS/Xbox Game Bar (Win+Alt+R).
 >
 > - Sphere-walking character controller (tangent/normal velocity split) with a
 >   parallel-transported follow camera
-> - 18 NPCs on a goal-driven activity engine — an LLM plans the day, cheap
+> - 24 NPCs on a goal-driven activity engine — an LLM plans the day, cheap
 >   trig executes it at 60fps (no per-frame model calls)
 > - Enterable buildings via a hidden-room teleport trick (no hollowed meshes,
 >   no second scene — the spherical physics never notices)
-> - InstancedMesh grass (~180k blades on desktop, 32k on phones) with a load-governor, batched ambient
+> - InstancedMesh grass (~124k slots on desktop, materialised as ~31k 7-blade tufts; fewer on phones) with a load-governor, batched ambient
 >   particles, draw-call budget kept mobile-friendly
 >
 > Assets are Blender-headless-Python generated, ~200KB of glb total.

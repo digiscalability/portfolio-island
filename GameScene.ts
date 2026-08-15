@@ -748,13 +748,14 @@ export class GameScene extends THREE.Scene {
       // into a shader chunk. setPlanet below reads getRadius() so it follows.
       this.island = new Island(WORLD_RADIUS);
       this.add(this.island.mesh);
-      // Unify the art direction. Toon (?theme=toon): stepped shading on every
-      // prop (abeto-style). Real (default): materials stay MeshStandardMaterial
-      // (they're authored that way) + a saturation grade — continuous PBR
-      // lighting reads more muted than the toon ramp, so colors get a one-time
-      // punch-up to keep the island's candy palette. The grade runs on the
-      // FIRST update (see update()), not here: zones/NPCs/town props don't
-      // exist yet at this point and would be missed.
+      // Unify the art direction. The CEL/TOON look is the DEFAULT (owner
+      // verdict 2026-08-09): stepped shading on every prop, applied here.
+      // `?theme=real` is the ONLY recognised override (Theme.ts) and keeps
+      // materials as authored MeshStandardMaterial + a saturation grade —
+      // continuous PBR reads muted next to the toon ramp, so colours get a
+      // one-time punch-up. That grade runs on the FIRST update (see update()),
+      // not here: zones/NPCs/town props don't exist yet and would be missed.
+      // (There is no `?theme=toon` — toon needs no flag.)
       if (!isRealTheme()) this.toonifyIslandMaterials();
 
       // Register trees for the gentle ambient sway in update()

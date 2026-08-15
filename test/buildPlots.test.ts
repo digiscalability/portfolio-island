@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, test, vi } from 'vitest';
 
 import { GameScene } from '../GameScene';
 import { Island } from '../Island';
+import { BUILD_KIND_IDS, MAX_PLOT } from '../worldBuilds';
 import { WORLD_RADIUS } from '../WorldScale';
 import { installHeadlessCanvas } from './helpers/headlessDom';
 
@@ -107,6 +108,25 @@ describe('BUILD_PLOTS placement', () => {
       'L',
       'L',
     ]);
+  });
+
+  test('MAX_PLOT covers every authored plot (wire bound, duplicated in 3 places)', () => {
+    // The same bound lives in worldBuilds.ts (MAX_PLOT), GameScene.BUILD_PLOTS
+    // and database.rules.json. Appending a plot without bumping MAX_PLOT makes
+    // subscribeBuilds silently DROP that plot's cloud records — the build
+    // renders for the person who placed it and for nobody else.
+    expect(MAX_PLOT).toBe(GameScene.BUILD_PLOTS.length - 1);
+  });
+
+  test('every BUILD_KIND_IDS entry has a builder branch reachable from some plot', () => {
+    // A kind on the wire with no plot that permits it is unreachable; gazebo
+    // is the only size-gated one, so it needs at least one 'L' plot.
+    expect(BUILD_KIND_IDS.length).toBeGreaterThan(0);
+    expect(GameScene.BUILD_PLOTS.some((p) => p.size === 'L')).toBe(true);
+    for (let i = 0; i < BUILD_KIND_IDS.length; i++) {
+      const plot = BUILD_KIND_IDS[i] === 'gazebo' ? 12 : 0;
+      expect(GameScene.resolveKind(plot, i)).toBe(BUILD_KIND_IDS[i]);
+    }
   });
 
   test('resolveKind: valid wins, gazebo clamps to L plots, junk degrades to default', () => {

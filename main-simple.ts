@@ -19,6 +19,7 @@ import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Pa
 import {
   coinAdoptValue,
   inventoryAdoptValue,
+  mealsAdoptValue,
   mergeLessons,
   mergeTools,
   vaultOp,
@@ -216,7 +217,7 @@ class SimpleApp {
     ],
     [
       'chat',
-      '💬 Lesson 5 — walk up to any villager and press E. Eighteen of them will really talk with you.',
+      '💬 Lesson 5 — walk up to any villager and press E. Two dozen of them will really talk with you.',
     ],
     [
       'build',
@@ -1131,10 +1132,10 @@ class SimpleApp {
               this.freshBuildToasts++;
               const seat = this.scene.plotSeat('build', b.plot);
               if (seat) this.scene.spawnDust(seat.clone(), 4);
-              const kindName =
-                BUILD_KIND_IDS[b.kind ?? -1] ??
-                GameScene.BUILD_PLOTS[b.plot]?.defaultKind ??
-                'structure';
+              // resolveKind, not the raw wire index: the renderer clamps a
+              // gazebo request on a small plot back to the plot default, and
+              // the toast must name what actually appeared.
+              const kindName = GameScene.resolveKind(b.plot, b.kind) ?? 'structure';
               this.ui.toast(`🔨 A visitor just raised a ${kindName} — it's on your map.`);
             }
           },
@@ -4140,7 +4141,10 @@ class SimpleApp {
     const dayKey = new Date().toISOString().slice(0, 10);
     this.featured = featuredSell(dayKey, marketDay);
     try {
-      const key = `ds_hint_special_${dayKey}`;
+      // Keyed by day AND tier: boot calls this with marketDay=false before the
+      // world beat lands, so a day-only key burned the one-shot and the
+      // "Market day!" upgrade could never announce itself.
+      const key = `ds_hint_special_${dayKey}${marketDay ? '_market' : ''}`;
       if (!localStorage.getItem(key)) {
         localStorage.setItem(key, '1');
         const label: Record<ProviderKey, string> = {
@@ -4289,11 +4293,17 @@ class SimpleApp {
 
   /**
    * Pull the cloud profile once Firebase auth settles and reconcile it with
-   * the local state: owned hats are unioned, an equipped hat is restored if the
-   * local wardrobe has none, and coins take the higher of the two (progress is
-   * never lost). The current name is written back but never overridden — name
-   * stays owned by localStorage / the on-visit prompt. Then the merged state is
-   * pushed back so the cloud reflects this device.
+   * local state. Each field merges by the contract its DATA TYPE demands:
+   *   - UNION (monotonic, can never regress): owned hats, lessons, owned tools.
+   *   - ADOPT-ONCE (only on a device with no local record): coins, feed
+   *     charges, meals, raw inventory. NEVER max-merge these — "take the
+   *     higher" was a live exploit (buy the rod, reload before the debounced
+   *     save lands, keep both the rod and the balance), so it was removed;
+   *     see coinAdoptValue / mealsAdoptValue / inventoryAdoptValue.
+   *   - Equipped hat is restored only when NO hat is currently equipped.
+   *   - Name is written back but never overridden — it stays owned by
+   *     localStorage / the on-visit prompt.
+   * Then the merged state is pushed back so the cloud reflects this device.
    */
   private async syncProfile(): Promise<void> {
     const res = await loadProfile();
@@ -4419,18 +4429,22 @@ class SimpleApp {
         }
       }
       // Cooked-food meals: adopt-once (never max-merge — that would refund
-      // every meal already eaten on this device).
-      if (!this.hasLocalMeals && profile.meals && typeof profile.meals === 'object') {
-        this.hasLocalMeals = true;
-        for (const k of ['pie', 'fish', 'soup'] as const) {
-          this.meals[k] = Math.max(0, Math.floor(profile.meals[k] ?? 0));
+      // every meal already eaten on this device). Routed through the TESTED
+      // helper: the inline copy this replaced skipped its Number.isFinite
+      // gate, so a non-numeric cloud value (the rules validate only name and
+      // coins) turned this.meals into NaN and poisoned the HUD total.
+      {
+        const adoptedMeals = mealsAdoptValue(this.hasLocalMeals, profile.meals);
+        if (adoptedMeals) {
+          this.hasLocalMeals = true;
+          this.meals = adoptedMeals;
+          try {
+            localStorage.setItem('ds_meals', JSON.stringify(this.meals));
+          } catch {
+            /* session-only */
+          }
+          this.refreshFeedHud();
         }
-        try {
-          localStorage.setItem('ds_meals', JSON.stringify(this.meals));
-        } catch {
-          /* session-only */
-        }
-        this.refreshFeedHud();
       }
       // Body colours: apply the cloud choice for any part not set locally
       if (profile.colors) {

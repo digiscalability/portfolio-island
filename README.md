@@ -14,7 +14,7 @@ DigiScalability.
 
 Every townsperson is a **live AI agent**, and the island runs itself:
 
-- **18 chat NPCs** — walk up and one greets you aware of the time of day and
+- **24 chat NPCs** — walk up and one greets you aware of the time of day and
   what it's doing; press E and talk to a server-side Claude persona (each with
   its own voice, schedule, and personality).
 - **A daily AI planner** — every morning at 6am one small LLM call assigns the
@@ -40,7 +40,7 @@ limits, and moderation on both directions.
 ```bash
 npm install
 npm run dev        # Vite dev server on :5173
-npm test           # vitest — 53 unit + parity tests
+npm test           # vitest — 188 unit + parity tests
 npm run build      # production build into dist/
 npm run check      # typecheck + lint (zero-warning) + format check
 ```

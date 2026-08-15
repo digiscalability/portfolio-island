@@ -1882,7 +1882,6 @@ export class SimpleUI {
          <div style="display:flex;gap:8px;align-items:center;">
            <span style="background:#3a2f1acc;border:1px solid #8a6238;border-radius:999px;padding:3px 10px;font-size:12.5px;">🪵 ${wallet.timber}</span>
            <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;padding:3px 10px;font-size:12.5px;">🪙 ${wallet.coins}</span>
-           <button id="chooser-close" style="background:none;border:none;color:#889;font-size:19px;cursor:pointer;padding:2px 6px;">✕</button>
          </div>
        </div>
        <div id="chooser-rows">
@@ -1908,10 +1907,6 @@ export class SimpleUI {
        </div>
        <div style="margin-top:10px;font-size:12px;color:#89a;">Your builds: ${wallet.built}/${wallet.cap} · Everyone sees what you build.</div>`,
     );
-    modal.querySelector('#chooser-close')?.addEventListener('click', () => {
-      modal.remove();
-      this.panels.notifyClosed('build-chooser');
-    });
     modal.querySelectorAll('button[data-build-kind]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const kind = Number((btn as HTMLElement).dataset.buildKind);

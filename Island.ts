@@ -102,8 +102,9 @@ const extractTexture = (material: MaterialWithTextureProps): THREE.Texture | und
 type GLTFLoaderConstructor = new () => GLTFLoader;
 
 /**
- * Grass CLUMP prototype geometry (?grass=clump A/B — Abbas's "bigger patches
- * instead of so many instances" ask). One authored TUFT: a tall centre blade
+ * Grass CLUMP geometry — the DEFAULT since the A/B was decided (Abbas's
+ * "bigger patches instead of so many instances" ask). `?grass=blades` is the
+ * escape hatch back to the old blade pair; there is no `?grass=clump`. One authored TUFT: a tall centre blade
  * ringed by shorter, outward-leaning skirt blades, all single-plane quads at
  * varied yaws (7 yaws supply the multi-angle coverage the old crossed pair
  * bought with double geometry). Ledger per 4 candidates: blade-pair path =
@@ -604,7 +605,7 @@ export class Island {
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geo.computeVertexNormals();
 
-    // ?grass=clump A/B: swap the blade-pair for the authored 7-blade tuft and
+    // CLUMP (default; `?grass=blades` opts out): the authored 7-blade tuft and
     // (in Phase B below) materialize every 4th candidate. Phase A runs
     // UNCHANGED either way — its Math.random order is the vehicle-placement
     // wire protocol. SWAY_H feeds the wind shader's bend divisor so the
@@ -688,7 +689,9 @@ export class Island {
     // area maths" and "runs on a phone" disagree, so the two tiers diverge
     // DELIBERATELY:
     //
-    //  - Desktop ships 80% of proportional density (100k -> 180k at R=75). Blade
+    //  - Desktop ships 55% of proportional density — GRASS_DENSITY_FRACTION
+    //    below, i.e. 100k * areaScale(75)=2.25 * 0.55 = ~124k slots (and clump
+    //    mode then materialises every 4th, ~31k tufts). Blade
     //    geometry is 12 non-indexed verts, so full proportional would be 2.7M
     //    verts every frame, and this is ONE planet-spanning InstancedMesh whose
     //    bounding sphere always intersects the frustum — none of it is ever
@@ -709,7 +712,8 @@ export class Island {
     // targets = the jitter) without ever recovering (the lag). 0.55 keeps the
     // grass verts within ~25% of the load the R=50 world proved out.
     // If still heavy: 0.4 next, then the real fix — give the governor a
-    // vertex-side lever EARLIER than rung 3 (see LOCAL-STATE item 7).
+    // vertex-side lever EARLIER than rung 3 (LOCAL-STATE "Deferred" list:
+    // animal instancing / terrain LOD / governor vertex-rung).
     const GRASS_DENSITY_FRACTION = 0.55;
     const COUNT = lowTier
       ? 32000
