@@ -112,6 +112,37 @@ function getInkMat(): THREE.MeshBasicMaterial {
 
 const hullGeoCache = new Map<string, THREE.BufferGeometry>();
 
+// ── SHIELD ──────────────────────────────────────────────────────────────────
+// three.js mints a uuid from Math.random for every BufferGeometry / Material /
+// Object3D. The ink is theme- AND tier-GATED (see the early returns in
+// addGroupHulls), so every ambient draw it consumed built a DIFFERENT world on
+// a phone or a ?theme=real client than on desktop-cel — and Island
+// construction runs inside GameScene.initialize's seeded window. MEASURED
+// before this shield: all 8 parked cars displaced (car_0 by 4.85deg = 6.35u of
+// arc at R=75), and parked cars become drivable vehicles that are networked BY
+// INDEX (Multiplayer.ts vehIdx "same on every client"), so boarding one
+// teleported it for the other player. Shielding converges desktop-cel onto the
+// layout phones and ?theme=real clients already build.
+// Same law as buildGrassClumpGeometry / createOreNodes / buildDistrictAmenities.
+let _inkSeed = 0x5ec7104f >>> 0;
+function inkRandom(): number {
+  _inkSeed = (_inkSeed + 0x6d2b79f5) >>> 0;
+  let t = Math.imul(_inkSeed ^ (_inkSeed >>> 15), 1 | _inkSeed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+/** Run `fn` with Math.random routed into the ink generator. Stash/restore (not
+ *  a saved global) so nesting inside another shield is safe. */
+function withInkRng<T>(fn: () => T): T {
+  const stashed = Math.random;
+  Math.random = inkRandom;
+  try {
+    return fn();
+  } finally {
+    Math.random = stashed;
+  }
+}
+
 /** Smoothed normals via position-hash weld: average the normals of every
  *  vertex sharing a position, so displacement can't tear at split (hard)
  *  edges. Returns a Float32Array parallel to the position attribute. */
@@ -189,6 +220,15 @@ export function addGroupHulls(
   // the full cast). Phones are draw-call-bound, not fill-bound — low-tier
   // devices get the clean cel look without outlines. Desktop unchanged.
   if (SimpleRenderer.isLowTierDevice()) return;
+  // Both gates sit OUTSIDE the shield so the early-return path stays free.
+  withInkRng(() => addGroupHullsInner(root, minWorldRadius, filter));
+}
+
+function addGroupHullsInner(
+  root: THREE.Object3D,
+  minWorldRadius: number,
+  filter?: (m: THREE.Mesh) => boolean,
+): void {
   const targets: THREE.Mesh[] = [];
   root.traverse((o) => {
     const m = o as THREE.Mesh;
@@ -209,6 +249,11 @@ export function addGroupHulls(
     targets.push(m);
   });
   for (const m of targets) {
+    // Idempotence, mirroring addSkinnedHull's existing hasCelHull guard: a
+    // second call on the same group would otherwise stack a SECOND hull on
+    // every source mesh (measured 3 -> 6). Byte-identical for the single-call
+    // sites that ship today; it just makes a re-render safe.
+    if (m.userData.hasCelHull) continue;
     if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
     const r = (m.geometry.boundingSphere?.radius ?? 0) * m.getWorldScale(_wScale).x;
     if (r < minWorldRadius) continue;
@@ -221,6 +266,7 @@ export function addGroupHulls(
       : Math.min(0.016, Math.max(0.006, r * 0.045));
     const hull = new THREE.Mesh(bakeHullGeometry(m.geometry, t), getInkMat());
     hull.userData.isCelHull = true;
+    m.userData.hasCelHull = true;
     hull.raycast = () => {}; // camera collision + feed aim must never hit ink
     hull.castShadow = false;
     m.add(hull); // identity transform: rides the part's animation
@@ -239,14 +285,16 @@ export function addSkinnedHull(src: THREE.SkinnedMesh, thickness = 0.014): void 
   // new hull itself gets visited by that same traverse.
   if (src.userData.isCelHull || src.userData.hasCelHull) return;
   src.userData.hasCelHull = true;
-  const hull = new THREE.SkinnedMesh(bakeHullGeometry(src.geometry, thickness), getInkMat());
-  hull.userData.isCelHull = true;
-  hull.raycast = () => {};
-  hull.castShadow = false;
-  hull.frustumCulled = false; // skinned bounds don't follow bones
-  hull.position.copy(src.position);
-  hull.quaternion.copy(src.quaternion);
-  hull.scale.copy(src.scale);
-  src.parent.add(hull);
-  hull.bind(src.skeleton, src.bindMatrix);
+  withInkRng(() => {
+    const hull = new THREE.SkinnedMesh(bakeHullGeometry(src.geometry, thickness), getInkMat());
+    hull.userData.isCelHull = true;
+    hull.raycast = () => {};
+    hull.castShadow = false;
+    hull.frustumCulled = false; // skinned bounds don't follow bones
+    hull.position.copy(src.position);
+    hull.quaternion.copy(src.quaternion);
+    hull.scale.copy(src.scale);
+    src.parent!.add(hull);
+    hull.bind(src.skeleton, src.bindMatrix);
+  });
 }

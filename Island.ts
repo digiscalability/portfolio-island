@@ -2299,6 +2299,15 @@ export class Island {
       treeGroup.name = `tree_${placed}`;
       const treeData = treeGroup.userData as Record<string, unknown>;
       treeData.ignoreOcclusion = true;
+      // Ink the canopy — the user-reported gap: every coastal palm
+      // (GameScene.setupPalms) and even the cats standing under these trees
+      // carried the cel nib while the trees themselves did not. LEGACY 2-arg
+      // form ON PURPOSE so a tree and the palm beside it share the identical
+      // 0.016u nib; the filter path's heavier building cap would read as a
+      // third pen in the same frame. One merged OPAQUE mesh per tree, so the
+      // guarded path's instanced/transparent/plane skips have nothing to do.
+      // RNG-free at this call site: the shield lives inside CelLook.
+      addGroupHulls(treeGroup);
       trees.add(treeGroup);
       placed++;
     }

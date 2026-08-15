@@ -9630,6 +9630,9 @@ export class GameScene extends THREE.Scene {
             tr.stump = new THREE.Mesh(GameScene._stumpGeo, mat);
             tr.stump.castShadow = false;
             this.add(tr.stump);
+            // Without this a chopped tree leaves an un-inked stump beside an
+            // inked world. _stumpGeo is shared+static: one bake serves all.
+            addGroupHulls(tr.stump);
           }
           const up = tr.group.position.clone().normalize();
           tr.stump.position.copy(tr.group.position).addScaledVector(up, 0.18);
