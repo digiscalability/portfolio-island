@@ -289,13 +289,40 @@ body {
   box-shadow: 0 6px 18px rgba(20, 24, 44, 0.12);
 }
 
-/* Respect users who prefer reduced motion */
+/* Respect users who prefer reduced motion. Two routes into the same rules:
+   the OS preference (media query) and the in-app ♿ toggle, which
+   Accessibility.ts mirrors onto <html> as .reduced-motion — a media query
+   cannot see the app toggle, and JS-written inline animations cannot be
+   reached any other way. Keep the two blocks identical. */
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+html.reduced-motion * {
+  transition: none !important;
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+}
+/* Essential-liveness carve-out (WCAG 2.3.3 "essential"): the boot spinner and
+   the loader's orbiting moon are the ONLY signal the app is alive during the
+   ~15s synchronous world-gen block that freezes all JS (including the progress
+   bar's interval). Freezing them recreates a shipped reads-as-a-hang bug —
+   so they slow to a crawl instead. A 3s orbit of a dot is not a vestibular
+   trigger; a dead screen is a real UX failure. */
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner,
+  #ld-orbit {
+    animation-duration: 3s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+html.reduced-motion .loading-spinner,
+html.reduced-motion #ld-orbit {
+  animation-duration: 3s !important;
+  animation-iteration-count: infinite !important;
 }
 
 /* Ensure interactive hit targets meet the 44px accessible minimum. The live

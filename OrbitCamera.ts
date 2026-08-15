@@ -560,6 +560,15 @@ export class OrbitCamera {
     targetOffset?: THREE.Vector3,
   ): Promise<void> {
     return new Promise((resolve) => {
+      // Defence-in-depth: the caller gates the fly-in behind reducedMotion
+      // today (main-simple intro), but the primitive itself must never fly
+      // under the setting either — the gate should not live one file away
+      // from the motion it guards.
+      if (a11y.reducedMotion) {
+        this.snapToPlayer();
+        resolve();
+        return;
+      }
       const startPos = this.cameraPosition.clone();
 
       // Start from far away

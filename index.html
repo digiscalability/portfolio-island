@@ -211,6 +211,16 @@
         }
       }
 
+      /* This inline block is all the CSS that exists until the JS bundle (and
+         style.css with it) arrives, so the OS reduced-motion preference must
+         be honoured HERE for the boot window. Slowed, not stopped: the
+         spinner is the only liveness signal while the bundle downloads. */
+      @media (prefers-reduced-motion: reduce) {
+        .loading-spinner {
+          animation-duration: 3s;
+        }
+      }
+
       /* Welcome Modal */
       #welcome-modal {
         position: fixed;

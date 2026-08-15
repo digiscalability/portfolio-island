@@ -16,6 +16,7 @@ class Accessibility {
       const stored = localStorage.getItem('ds_reduced_motion');
       if (stored !== null) {
         this.reducedMotion = stored === '1';
+        this.syncRootClass();
         return;
       }
     } catch {
@@ -27,16 +28,30 @@ class Accessibility {
     } catch {
       this.reducedMotion = false;
     }
+    this.syncRootClass();
   }
 
   public setReducedMotion(v: boolean): void {
     this.reducedMotion = v;
+    this.syncRootClass();
     try {
       localStorage.setItem('ds_reduced_motion', v ? '1' : '0');
     } catch {
       /* ignore */
     }
     for (const l of this.listeners) l(v);
+  }
+
+  /** Mirror the flag onto <html> so CSS can honour the IN-APP toggle the same
+   *  way @media (prefers-reduced-motion) honours the OS preference. Inline
+   *  styles and injected keyframes are unreachable from a media query, but
+   *  not from `html.reduced-motion` rules (see style.css). */
+  private syncRootClass(): void {
+    try {
+      document.documentElement.classList.toggle('reduced-motion', this.reducedMotion);
+    } catch {
+      /* no DOM (headless tests) */
+    }
   }
 
   /** Subscribe to changes (e.g. to re-tune a live system). */

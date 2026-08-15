@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { a11y } from './Accessibility';
 import { Materials } from './Materials';
 
 export class Mailbox {
@@ -123,8 +124,10 @@ export class Mailbox {
 
   public update(time: number): void {
     if (this.hasDelivery && this.glowMaterial) {
-      // Pulse effect
-      this.glowMaterial.opacity = 0.3 + Math.sin(time * 3) * 0.3;
+      // Pulse effect — a delivery can sit pending for minutes, so under
+      // reduced motion the glow holds steady instead of looping (the beam
+      // stays; the information survives, the attention loop doesn't).
+      this.glowMaterial.opacity = a11y.reducedMotion ? 0.5 : 0.3 + Math.sin(time * 3) * 0.3;
     }
   }
 

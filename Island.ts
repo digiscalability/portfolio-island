@@ -9023,97 +9023,18 @@ export class Island {
     scene.add(this.mesh);
   }
 
-  // Update animations for whimsical feel
-  public update(deltaTime: number): void {
-    const time = performance.now() * 0.001; // seconds
-
-    // Sway tree foliage gently
-    this.mesh.traverse((object) => {
-      if (typeof object.name === 'string' && object.name.startsWith('tree_')) {
-        const idx = parseInt(object.name.split('_')[1] || '0', 10);
-        const sway = Math.sin(time * 1.5 + idx * 0.7) * 0.015;
-        object.rotation.z = sway;
-      }
-    });
-
-    // Animate water surfaces (fountain + river shimmer)
-    this.mesh.traverse((object) => {
-      if (object instanceof THREE.Mesh && object.material instanceof THREE.MeshStandardMaterial) {
-        const mat = object.material;
-        if (mat.opacity > 0 && mat.opacity < 1 && mat.transparent && mat.color.b > 0.5) {
-          mat.emissiveIntensity = 0.1 + Math.sin(time * 3) * 0.05;
-        }
-      }
-    });
-
-    // Blink lamp lights at night (simulate time-based)
-    const timeOfDay = time % 24;
-    const isNight = timeOfDay > 18 || timeOfDay < 6;
-    this.mesh.traverse((object) => {
-      const data = object.userData as { isLampLight?: boolean };
-      if (data?.isLampLight) {
-        object.visible = isNight && Math.sin(time * 3) > -0.5;
-      }
-    });
-
-    // Idle NPC animations (subtle bobbing)
-    this.mesh.traverse((object) => {
-      if (typeof object.name === 'string' && object.name.startsWith('npc_placeholder_')) {
-        const parts = object.name.split('_');
-        const idx = Number.parseInt(parts[2] ?? '0', 10);
-        const placeholderOccupied = this.npcInstances.some(
-          (npcInstance) => npcInstance.group.position.distanceTo(object.position) < 0.01,
-        );
-        if (!placeholderOccupied) {
-          object.position.y += Math.sin(time * 2 + idx) * 0.005;
-        }
-      }
-    });
-
-    // Animate ambient particles (floating sparkles)
-    this.mesh.traverse((object) => {
-      const data = object.userData as { baseY?: number; phase?: number };
-      if (typeof data?.baseY === 'number' && typeof data.phase === 'number') {
-        object.position.y = data.baseY + Math.sin(time * 1.5 + data.phase) * 0.1;
-        object.rotation.y += deltaTime * 0.5;
-      }
-    });
-
-    // Animate dust particles
-    this.mesh.traverse((object) => {
-      const data = object.userData as { baseY?: number; phase?: number };
-      if (
-        object.name === 'dust' &&
-        typeof data?.baseY === 'number' &&
-        typeof data.phase === 'number'
-      ) {
-        object.position.y = data.baseY + Math.sin(time * 0.5 + data.phase) * 0.5;
-        object.position.x += Math.sin(time * 0.3 + data.phase) * 0.01;
-        object.position.z += Math.cos(time * 0.3 + data.phase) * 0.01;
-      }
-    });
-
-    // Advance any animation mixers created for loaded GLTF clones (NPCs, props, trees)
-    this.animationMixers.forEach((mixer) => {
-      try {
-        mixer.update(deltaTime);
-      } catch {
-        /* ignore animation update issues */
-      }
-    });
-
-    // NPC.update() is deliberately NOT called any more.
-    //
-    // It was a SECOND writer of every villager's transform: it walked the
-    // group toward random targets picked around a frozen spawn position, with
-    // no collider awareness and no knowledge of the activity schedule, while
-    // GameScene's wander loop wrote the same object in the same frame with
-    // avoidance and goals. Two controllers fighting over one transform is why
-    // townsfolk twitched, drifted off their anchors and pushed into walls.
-    // GameScene's loop is the single owner now; NPC instances survive only as
-    // the group/mixer holder (see getNPCInstances).
-    void this.npcInstances;
-  }
+  // NOTE: the old Island.update() per-frame animation method was DELETED
+  // (2026-08-16). It was dead code — no call site existed; GameScene drives
+  // grassTimeUniform / seaTimeUniform / updateTide directly — and it carried
+  // a landmine: a hard lamp on/off blink (`visible = isNight && sin(t*3) >
+  // -0.5`) keyed to `time % 24` where time was SECONDS SINCE PAGE LOAD, so
+  // reviving it would set every lamp in town strobing on a ~2s cycle with no
+  // reduced-motion gate. Two lessons it recorded live on:
+  //   - NPC transforms have a SINGLE owner (GameScene's wander loop). The
+  //     old second writer here is why townsfolk twitched and pushed into
+  //     walls; NPC instances survive only as group/mixer holders
+  //     (see getNPCInstances).
+  //   - animationMixers are still collected for disposal (see dispose()).
 
   /**
    * Cleanup method to dispose all Three.js resources (geometries, materials, textures).

@@ -1486,6 +1486,10 @@ class SimpleApp {
       // label bare or the instruction doubles.
       this.ui.showTimeOverridePill('📸 Postcard view', () => {
         this.scene.setCameraSuspended(false);
+        // The saved pose is the SENDER'S view anywhere on the planet, so the
+        // release glide back to the visitor's spawn is unbounded in length —
+        // cut instead of swoop under reduced motion.
+        if (a11y.reducedMotion) this.scene.snapCameraToPlayer();
         if (env) env.debugHour = null;
         try {
           const sp = new URLSearchParams(location.search);
@@ -3060,6 +3064,19 @@ class SimpleApp {
     const stop = tour.stops[tour.idx];
     tour.t += dt;
     if (tour.phase === 'fly') {
+      // Reduced motion: the tour becomes a slideshow — hard-cut to the stop
+      // pose and start the dwell. Captions, pacing, the recruiter ending and
+      // the E2E rail all behave identically; only the flight is gone. (The
+      // fly phase is the game's single largest uninitiated camera move, and
+      // ?tour=1 / ?recruit=1 share links auto-start it on page load.)
+      if (a11y.reducedMotion) {
+        cam.position.copy(stop.dir).multiplyScalar(stop.r);
+        cam.up.copy(this._tourUp.copy(cam.position).normalize());
+        cam.lookAt(stop.look);
+        tour.phase = 'dwell';
+        tour.t = 0;
+        return;
+      }
       const k = Math.min(1, tour.t / SimpleApp.TOUR_FLY_S);
       const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
       this.slerpDirs(this._tourDir, tour.fromDir, stop.dir, e);
@@ -3074,10 +3091,14 @@ class SimpleApp {
         tour.t = 0;
       }
     } else {
-      // Gentle drift around the stop while the caption is read
+      // Gentle drift around the stop while the caption is read — held static
+      // under reduced motion (a rotation the user cannot stop, however slow,
+      // is still uninitiated full-viewport motion).
       const up = this._tourUp.copy(stop.look).normalize();
-      this._tourQ.setFromAxisAngle(up, 0.045 * dt);
-      stop.dir.applyQuaternion(this._tourQ);
+      if (!a11y.reducedMotion) {
+        this._tourQ.setFromAxisAngle(up, 0.045 * dt);
+        stop.dir.applyQuaternion(this._tourQ);
+      }
       cam.position.copy(stop.dir).multiplyScalar(stop.r);
       cam.up.copy(up);
       cam.lookAt(stop.look);
@@ -3108,6 +3129,10 @@ class SimpleApp {
     this.tour = null;
     this.ui.hideTourOverlay();
     this.scene.setCameraSuspended(false);
+    // Reduced motion: without this, releasing suspension lets the orbit cam
+    // position-lerp from the final tour stop back to the follow pose — a
+    // whip across the map. exitInterior already cuts for the same reason.
+    if (a11y.reducedMotion) this.scene.snapCameraToPlayer();
     const recruiter = this.tourRecruiter;
     this.tourRecruiter = false;
     track(

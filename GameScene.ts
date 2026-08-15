@@ -2840,8 +2840,12 @@ export class GameScene extends THREE.Scene {
    * on the pile. Called only on CONFIRMED throws (refusals return earlier).
    */
   private feedThrowCeremony(pilePos: THREE.Vector3, time: number): void {
-    this.player?.triggerFeedToss();
-    if (this.player) squash(this.player, 0.07, 0.16);
+    // Same gate as its two siblings (sellHandoff, showEatGesture) — this one
+    // shipped without it. The swish and the camera interest stay.
+    if (!a11y.reducedMotion) {
+      this.player?.triggerFeedToss();
+      if (this.player) squash(this.player, 0.07, 0.16);
+    }
     sfx.toss();
     (this.feedFocusPos ??= new THREE.Vector3()).copy(pilePos);
     this.feedFocusUntil = time + 10;
@@ -4034,8 +4038,12 @@ export class GameScene extends THREE.Scene {
     for (let i = 0; i < C.flames.length; i++) {
       const f = C.flames[i];
       // Three incommensurate rates — a single sine reads as a pulsing lamp.
+      // The 23+ rad/s term is the only ambient modulator above the 3 Hz
+      // photosensitivity line; reduced motion drops it and keeps the rest.
       const flick =
-        0.82 + Math.sin(time * (9 + i * 3.1) + i) * 0.13 + Math.sin(time * (23 + i * 5)) * 0.06;
+        0.82 +
+        Math.sin(time * (9 + i * 3.1) + i) * 0.13 +
+        (a11y.reducedMotion ? 0 : Math.sin(time * (23 + i * 5)) * 0.06);
       f.scale.set(flick, (0.9 + (flick - 0.82) * 1.6) * night, flick);
       f.rotation.y = time * (0.7 + i * 0.5);
       const m = f.material as THREE.MeshBasicMaterial;
@@ -4058,7 +4066,10 @@ export class GameScene extends THREE.Scene {
       e.m.visible = night > 0.02;
     }
     C.light.intensity =
-      night * (2.6 + Math.sin(time * 11) * 0.35 + Math.sin(time * 23 + 1.7) * 0.22);
+      night *
+      (2.6 +
+        Math.sin(time * 11) * 0.35 +
+        (a11y.reducedMotion ? 0 : Math.sin(time * 23 + 1.7) * 0.22));
 
     // Hold the seated villagers in place and give them a fireside sway.
     for (const g of this.campfireGuests) {
@@ -5869,9 +5880,12 @@ export class GameScene extends THREE.Scene {
     if (celebrate) {
       // Staged reveal: pop in with an ease-out-back overshoot (GROUP scale,
       // not a bone — the mixer-fight law does not apply), dust ring + fanfare
-      // + a camera glance at the fresh build.
-      g.scale.setScalar(0.02);
-      this.revealAnims.push({ group: g, start: -1 });
+      // + a camera glance at the fresh build. Reduced motion skips the
+      // scale-pop (the structure appears complete) and keeps the rest.
+      if (!a11y.reducedMotion) {
+        g.scale.setScalar(0.02);
+        this.revealAnims.push({ group: g, start: -1 });
+      }
       const up = seat.position.clone().normalize();
       const ringR = kind === 'gazebo' ? 1.5 : 0.8;
       for (let d = 0; d < 6; d++) {
@@ -6347,8 +6361,11 @@ export class GameScene extends THREE.Scene {
 
   private updatePlayground(time: number): void {
     for (const p of this.playgroundParts) {
-      if (p.kind === 'spin') p.mesh.rotation.y = time * 0.9;
-      else if (p.kind === 'swing') p.mesh.rotation.x = Math.sin(time * 1.6 + p.phase) * 0.55;
+      // The roundabout is the ambient layer's one perpetual spinner — held
+      // still under reduced motion; swings and seesaw sway gently and stay.
+      if (p.kind === 'spin') {
+        if (!a11y.reducedMotion) p.mesh.rotation.y = time * 0.9;
+      } else if (p.kind === 'swing') p.mesh.rotation.x = Math.sin(time * 1.6 + p.phase) * 0.55;
       else p.mesh.rotation.z = Math.sin(time * 1.1 + p.phase) * 0.12;
     }
   }
@@ -10276,11 +10293,19 @@ export class GameScene extends THREE.Scene {
             sData.base = (sData.base ?? new THREE.Vector3()).copy(sampled.position);
             sData.normal = (sData.normal ?? new THREE.Vector3()).copy(sampled.normal);
           }
+          // Reduced motion: the breadcrumbs stay (they are wayfinding, i.e.
+          // information) but render static — a delivery lasts minutes, and
+          // an indefinitely spinning/pulsing attention loop is exactly what
+          // WCAG 2.2.2 is about. Static sparkles still read as a trail.
+          const calmGuide = a11y.reducedMotion;
           s.position
             .copy(sData.base as THREE.Vector3)
-            .addScaledVector(sData.normal as THREE.Vector3, 0.45 + Math.sin(time * 2.5 + i) * 0.08);
-          s.rotation.y = time * 2 + i;
-          const sc = 0.85 + Math.sin(time * 3 + i * 0.8) * 0.15;
+            .addScaledVector(
+              sData.normal as THREE.Vector3,
+              calmGuide ? 0.45 : 0.45 + Math.sin(time * 2.5 + i) * 0.08,
+            );
+          s.rotation.y = calmGuide ? i : time * 2 + i;
+          const sc = calmGuide ? 0.85 : 0.85 + Math.sin(time * 3 + i * 0.8) * 0.15;
           s.scale.set(sc, sc, sc);
           s.visible = camNear;
         }
@@ -11562,18 +11587,23 @@ export class GameScene extends THREE.Scene {
     const beat = (beats >= 0 ? beats : time * BPS) * Math.PI;
     P.ball.rotation.y = time * 0.9;
     // Glitter light breathes with the beat; confetti drifts down forever.
-    P.ballLight.intensity = 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
+    // Calm completes what the flash gate above started: the club keeps its
+    // colour and dim, loses every beat-locked luminance pulse, and the
+    // confetti falls slow and untumbling like ash instead of a storm.
+    P.ballLight.intensity = calm ? 0.9 : 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
     for (const c of P.confetti) {
-      c.m.position.y -= c.speed * deltaTime;
+      c.m.position.y -= c.speed * (calm ? 0.25 : 1) * deltaTime;
       if (c.m.position.y < 0.25) c.m.position.y = 3.4;
       c.m.position.x += Math.sin(time * 1.7 + c.phase) * 0.35 * deltaTime;
-      c.m.rotation.x = time * 2.1 + c.phase;
-      c.m.rotation.y = time * 1.6 + c.phase * 2;
+      if (!calm) {
+        c.m.rotation.x = time * 2.1 + c.phase;
+        c.m.rotation.y = time * 1.6 + c.phase * 2;
+      }
     }
     for (let i = 0; i < P.tiles.length; i++) {
       const m = P.tiles[i].material as THREE.MeshStandardMaterial;
       m.emissive.setHSL((i * 0.09 + time * 0.12) % 1, 0.85, 0.5);
-      m.emissiveIntensity = 0.45 + Math.max(0, Math.sin(beat + i * 0.8)) * 0.5;
+      m.emissiveIntensity = calm ? 0.6 : 0.45 + Math.max(0, Math.sin(beat + i * 0.8)) * 0.5;
     }
     // Laser fan: each beam tilts on its own slow wobble while the whole rig
     // spins, so the beams cross rather than marching in formation. Opacity
@@ -11588,7 +11618,9 @@ export class GameScene extends THREE.Scene {
     }
     for (let s = 0; s < P.spots.length; s++) {
       const spot = P.spots[s];
-      const sw = time * (s === 0 ? 0.8 : -0.65) + s * 2.1;
+      // Calm slows the floor sweep the same way the laser rig above slows.
+      const swSpeed = (s === 0 ? 0.8 : -0.65) * (calm ? 0.25 : 1);
+      const sw = time * swSpeed + s * 2.1;
       // Local room coords — targets are children of the party group.
       spot.target.position.set(0.9 + Math.cos(sw) * 1.6, 0.1, 0.6 + Math.sin(sw) * 1.6);
       spot.color.setHSL((s * 0.45 + time * 0.05) % 1, 0.9, 0.6);
@@ -11607,8 +11639,10 @@ export class GameScene extends THREE.Scene {
       const slide = g.style === 1 ? Math.sin(b * 0.5) * 0.22 : 0;
       ref.position.set(g.seat.x + slide, g.seat.y + hop, g.seat.z);
       const face = Math.atan2(o.x + 0.9 - g.seat.x, o.z + 0.6 - g.seat.z);
-      // Spinners turn full circles; everyone else sways on the beat.
-      const yaw = g.style === 2 ? face + time * 2.4 : face + Math.sin(b * 0.25) * 0.35;
+      // Spinners turn full circles; everyone else sways on the beat. Calm
+      // routes spinners through the sway too — an endlessly rotating figure
+      // two units from the camera is the room's one true "spinning" trigger.
+      const yaw = g.style === 2 && !calm ? face + time * 2.4 : face + Math.sin(b * 0.25) * 0.35;
       ref.quaternion.setFromAxisAngle(GameScene._localUp, yaw);
       const ud = ref.userData as { limbs?: NpcLimbCache | null };
       if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
@@ -12932,7 +12966,10 @@ export class GameScene extends THREE.Scene {
     // Hearth flicker (fire is 0 in hearthless rooms).
     if (this.interiorFire && this.interiorFire.intensity > 0) {
       const t = this.interiorTime;
-      this.interiorFire.intensity = 1.55 + Math.sin(t * 11) * 0.22 + Math.sin(t * 23 + 1.7) * 0.14;
+      // Same recipe as the campfire — and the same reduced-motion trim of
+      // the >3 Hz term; here it is a primary room light at close range.
+      this.interiorFire.intensity =
+        1.55 + Math.sin(t * 11) * 0.22 + (a11y.reducedMotion ? 0 : Math.sin(t * 23 + 1.7) * 0.14);
     }
 
     const o = GameScene.INTERIOR_ORIGIN;
@@ -13065,7 +13102,8 @@ export class GameScene extends THREE.Scene {
       // language as every other camera move); the DOM watch frame tracks
       // the projected rect per frame, so the glide stays pixel-locked.
       const T = GameScene.INTERIOR_TV;
-      const k = 1 - Math.exp(-2.5 * deltaTime);
+      // Reduced motion cuts straight to the cinema framing (k=1).
+      const k = a11y.reducedMotion ? 1 : 1 - Math.exp(-2.5 * deltaTime);
       this._interiorCamPos.set(o.x + T.x, o.y + T.y - 0.05, o.z + T.z + 3.05);
       this.camera.up.set(0, 1, 0);
       this.camera.position.lerp(this._interiorCamPos, k);
@@ -13233,6 +13271,13 @@ export class GameScene extends THREE.Scene {
 
   /** Whether some cinematic rail (tour / postcard / dialogue) owns the camera.
    *  The flag is not refcounted — a would-be second owner must check first. */
+  /** Hard-cut the chase cam to its settled follow pose. Used by reduced-motion
+   *  resumes (tour end, postcard release) where the alternative is a
+   *  position-lerp across a potentially planet-scale gap. */
+  public snapCameraToPlayer(): void {
+    this.orbitCamera?.snapToPlayer();
+  }
+
   public isCameraSuspended(): boolean {
     return this.cameraSuspended;
   }

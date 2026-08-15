@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { a11y } from './Accessibility';
 import { isRealTheme } from './Theme';
 import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
 
@@ -164,6 +165,10 @@ export class EnvironmentCycle {
     this.baseSunIntensity = sun.intensity;
     this.baseHemiIntensity = hemi.intensity;
     this.baseFogDensity = this.fog ? this.fog.density : 0.012;
+
+    // Rebuild live precipitation when the ♿ toggle flips mid-storm — the
+    // calm rain parameters are baked into the particle buffers at build.
+    a11y.onChange(() => this.rebuildPrecipitation());
 
     this.collectNightAssets();
 
@@ -634,7 +639,14 @@ export class EnvironmentCycle {
     if (this.weather !== 'rain' && this.weather !== 'snow') return;
 
     const snow = this.weather === 'snow';
-    const count = snow ? 550 : 650;
+    // Rain is fast, coherent, full-viewport downward optic flow in a column
+    // that TRACKS THE CAMERA — the vestibular problem is the amount of
+    // coherent flow, not the per-drop realism. Reduced motion halves the
+    // count and roughly halves the speed (~7-9 u/s, still visibly rain, not
+    // drifting ash); the sky/fog dimming carries the weather read with zero
+    // motion. Snow already falls at 1.1-2.4 u/s and needs nothing.
+    const calm = a11y.reducedMotion && !snow;
+    const count = snow ? 550 : calm ? 325 : 650;
     const pos = new Float32Array(count * 3);
     this.precipSpeeds = new Float32Array(count);
     // Taller spawn column: with size-attenuation, the spread in depth gives a
@@ -643,7 +655,11 @@ export class EnvironmentCycle {
       pos[i * 3] = (Math.random() - 0.5) * 14;
       pos[i * 3 + 1] = Math.random() * 11;
       pos[i * 3 + 2] = (Math.random() - 0.5) * 14;
-      this.precipSpeeds[i] = snow ? 1.1 + Math.random() * 1.3 : 13 + Math.random() * 8;
+      this.precipSpeeds[i] = snow
+        ? 1.1 + Math.random() * 1.3
+        : calm
+          ? 7 + Math.random() * 2
+          : 13 + Math.random() * 8;
     }
     this.precipGeo = new THREE.BufferGeometry();
     this.precipGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));

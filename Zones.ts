@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { a11y } from './Accessibility';
 import { addGroupHulls } from './CelLook';
 import { Island } from './Island';
 
@@ -425,8 +426,16 @@ export class Zone {
     // Animate ONLY the rooftop beacon — spinning/bobbing the whole building
     // (as the old marker did) would look absurd. Null-guarded.
     if (this.beacon) {
-      this.beacon.position.y = this.beaconBaseY + Math.sin(time * 2) * 0.12; // absolute bob (no drift)
-      this.beacon.rotation.y += 0.02;
+      if (a11y.reducedMotion) {
+        // Held plumb-still: the beacon's colour and silhouette carry the
+        // nav cue on their own.
+        this.beacon.position.y = this.beaconBaseY;
+      } else {
+        this.beacon.position.y = this.beaconBaseY + Math.sin(time * 2) * 0.12; // absolute bob (no drift)
+        // Absolute, time-derived spin — the old `+= 0.02` per frame doubled
+        // the speed on 120 Hz displays. 1.2 rad/s matches 60 fps behaviour.
+        this.beacon.rotation.y = time * 1.2;
+      }
     }
   }
 

@@ -3176,7 +3176,7 @@ export class SimpleUI {
                  background:radial-gradient(circle at 34% 30%, #7fc96b 0 38%, #4e9e57 38% 52%, #2f7fbf 52% 100%);
                  box-shadow:0 0 22px rgba(80,170,220,0.32), inset -8px -10px 20px rgba(0,0,0,0.45);
                  will-change:transform;animation:ld-pulse 2.6s ease-in-out infinite;"></div>
-            <div style="position:absolute;inset:0;will-change:transform;animation:ld-spin 1.8s linear infinite;">
+            <div id="ld-orbit" style="position:absolute;inset:0;will-change:transform;animation:ld-spin 1.8s linear infinite;">
               <div style="position:absolute;top:0;left:50%;width:9px;height:9px;margin-left:-4.5px;
                    border-radius:50%;background:#cfe4f7;box-shadow:0 0 10px rgba(160,200,240,0.8);"></div>
             </div>
@@ -4100,9 +4100,12 @@ export class SimpleUI {
         ctx.beginPath();
         ctx.arc(x, y, 3, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = `rgba(255, 211, 74, ${0.35 + 0.25 * Math.sin(t / 260)})`;
+        // Quest halo: phase frozen (not hidden) under reduced motion — canvas
+        // drawing is unreachable by the CSS blanket, so the gate lives here.
+        const qp = a11y.reducedMotion ? 0 : Math.sin(t / 260);
+        ctx.strokeStyle = `rgba(255, 211, 74, ${0.35 + 0.25 * qp})`;
         ctx.beginPath();
-        ctx.arc(x, y, 5 + 1.2 * Math.sin(t / 260), 0, Math.PI * 2);
+        ctx.arc(x, y, 5 + 1.2 * qp, 0, Math.PI * 2);
         ctx.stroke();
       } else {
         ctx.fillStyle = 'rgba(255, 190, 130, 0.8)';
@@ -4158,8 +4161,11 @@ export class SimpleUI {
         ctx.fill();
         ctx.restore();
       } else {
-        const pulse = 3 + Math.sin(t / 250) * 1.4;
-        ctx.strokeStyle = `rgba(255, 82, 82, ${0.5 + 0.3 * Math.sin(t / 250)})`;
+        // Delivery crosshair: same phase-freeze as the quest halo — it can
+        // pulse for an entire multi-minute delivery otherwise.
+        const dp = a11y.reducedMotion ? 0 : Math.sin(t / 250);
+        const pulse = 3 + dp * 1.4;
+        ctx.strokeStyle = `rgba(255, 82, 82, ${0.5 + 0.3 * dp})`;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(p.x, p.y, pulse + 3, 0, Math.PI * 2);
@@ -5375,7 +5381,8 @@ export class SimpleUI {
     voice: { rate: number; pitch: number; variant: number } = { rate: 1, pitch: 1, variant: 0 },
   ): void {
     this.closeNpcChat();
-    const reduce = a11y.reducedMotion; // respect reduced-motion: no typewriter
+    // (reduced-motion is read per line inside npcLine, not cached here — a
+    // cached copy left the ♿ toggle stale for the life of the panel)
     const panel = document.createElement('div');
     Object.assign(panel.style, {
       position: 'absolute',
@@ -5493,7 +5500,7 @@ export class SimpleUI {
       Object.assign(row.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
       log.appendChild(row);
       if (voiced) speak(text, voice.rate, voice.pitch, voice.variant);
-      if (reduce) {
+      if (a11y.reducedMotion) {
         row.textContent = text;
         log.scrollTop = log.scrollHeight;
         return;
@@ -6166,8 +6173,17 @@ export class SimpleUI {
 
   private startTypewriter(text: string): void {
     this.typewriterText = text;
-    this.typewriterPos = 0;
     if (this.typewriterTimer) cancelAnimationFrame(this.typewriterTimer);
+    // Reduced motion: full line instantly — the same rule the free-chat
+    // panel's typewriter has always had (npcLine). Read per line, so the ♿
+    // toggle takes effect mid-dialogue.
+    if (a11y.reducedMotion) {
+      this.typewriterPos = text.length;
+      const textEl = this.dialogueDiv?.querySelector('#dialogue-text');
+      if (textEl) textEl.textContent = text;
+      return;
+    }
+    this.typewriterPos = 0;
     this.tickTypewriter();
   }
 
