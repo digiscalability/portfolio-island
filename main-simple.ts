@@ -16,7 +16,15 @@ import { Multiplayer } from './Multiplayer';
 import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
-import { coinAdoptValue, mergeLessons, vaultOp, loadProfile, saveProfile } from './profileSync';
+import {
+  coinAdoptValue,
+  inventoryAdoptValue,
+  mergeLessons,
+  mergeTools,
+  vaultOp,
+  loadProfile,
+  saveProfile,
+} from './profileSync';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
@@ -250,6 +258,8 @@ class SimpleApp {
   private static readonly MEAL_STAMINA = { soup: 0.45, fish: 0.65, pie: 1.0 } as const;
   private meals = { pie: 0, fish: 0, soup: 0 };
   private hasLocalMeals = false;
+  /** True once this device owns a raw-inventory record (blocks cloud adopt). */
+  private hasLocalInventory = false;
   // Daily special: one provider pays a premium today (rotates by date; market
   // day lifts it 2→2.5). Boosts ONLY the full price so the faucet stays capped.
   private featured: { provider: ProviderKey | ''; mult: number } = { provider: '', mult: 2 };
@@ -485,6 +495,15 @@ class SimpleApp {
         const rawMeals = localStorage.getItem('ds_meals');
         this.hasLocalMeals = rawMeals !== null;
         if (rawMeals) Object.assign(this.meals, JSON.parse(rawMeals));
+        // Any raw-inventory key present = this device already has a record,
+        // so the cloud must not re-grant (Consumable Law).
+        this.hasLocalInventory = [
+          'ds_fish_caught',
+          'ds_timber',
+          'ds_wheat',
+          'ds_produce',
+          'ds_ore',
+        ].some((k) => localStorage.getItem(k) !== null);
       } catch {
         this.birdFeed = 0;
       }
@@ -3565,6 +3584,7 @@ class SimpleApp {
               /* no storage */
             }
             sfx.coin();
+            this.syncTools();
             track('axe_bought', {});
             this.ui.toast('🪓 Wood axe! Three good swings fell a tree.');
             render();
@@ -3580,6 +3600,7 @@ class SimpleApp {
               /* no storage */
             }
             sfx.coin();
+            this.syncTools();
             track('sickle_bought', {});
             this.ui.toast('🪚 Sickle! Crops at the farm are yours to cut.');
             render();
@@ -3595,6 +3616,7 @@ class SimpleApp {
               /* no storage */
             }
             sfx.coin();
+            this.syncTools();
             track('pickaxe_bought', {});
             this.ui.toast('⛏️ Pickaxe! Ore veins glint on the highland scree.');
             render();
@@ -3610,6 +3632,7 @@ class SimpleApp {
               /* no storage */
             }
             sfx.coin();
+            this.syncTools();
             track('rod_bought', {});
             this.ui.toast('🎣 Fishing rod! Stand at the shore and press E to cast.');
             render();
@@ -4002,6 +4025,7 @@ class SimpleApp {
     } catch {
       /* no storage */
     }
+    this.syncInventory();
   }
 
   private persistOre(): void {
@@ -4010,6 +4034,7 @@ class SimpleApp {
     } catch {
       /* no storage */
     }
+    this.syncInventory();
   }
 
   private persistTimber(): void {
@@ -4018,6 +4043,7 @@ class SimpleApp {
     } catch {
       /* no storage */
     }
+    this.syncInventory();
   }
 
   private persistFish(): void {
@@ -4026,6 +4052,34 @@ class SimpleApp {
     } catch {
       /* no storage */
     }
+    this.syncInventory();
+  }
+
+  /** Mirror the raw inventory to the cloud profile. Consumable Law: this is
+   *  a one-way PUSH — the pull side (inventoryAdoptValue) only ever adopts on
+   *  a device that has no local record, so a sale is never refunded. */
+  private syncInventory(): void {
+    this.hasLocalInventory = true;
+    saveProfile({
+      inventory: {
+        fish: this.fishCaught,
+        timber: this.timber,
+        wheat: this.wheat,
+        produce: this.produce,
+        ore: this.ore,
+      },
+    });
+  }
+
+  /** Owned tools are monotonic own-flags — union-merged, so buying a rod on
+   *  one device makes it owned everywhere and nothing can revoke it. */
+  private syncTools(): void {
+    const owned: string[] = [];
+    if (this.ownedRod) owned.push(SimpleApp.ROD_ID);
+    if (this.ownedAxe) owned.push(SimpleApp.AXE_ID);
+    if (this.ownedSickle) owned.push(SimpleApp.SICKLE_ID);
+    if (this.ownedPickaxe) owned.push(SimpleApp.PICKAXE_ID);
+    saveProfile({ tools: owned });
   }
 
   private persistBirdFeed(): void {
@@ -4105,13 +4159,6 @@ class SimpleApp {
     }
   }
 
-  /**
-   * One Feed action (F / the FEED button). It looks at where you're aiming and
-   * throws the right feed: over water → fish food; over land → whichever of
-   * cats/birds you're pointing at (falling back to the other land feed if you
-   * only hold one). A charge is spent only once the scene confirms the throw
-   * landed somewhere sane, so a wasted press never costs feed.
-   */
   /** Eat one cooked meal (G / the EAT button): restore stamina, smallest
    *  sufficient first so a pie is never wasted topping off a near-full bar. */
   private eatMeal(): void {
@@ -4141,6 +4188,13 @@ class SimpleApp {
     );
   }
 
+  /**
+   * One Feed action (F / the FEED button). It looks at where you're aiming and
+   * throws the right feed: over water → fish food; over land → whichever of
+   * cats/birds you're pointing at (falling back to the other land feed if you
+   * only hold one). A charge is spent only once the scene confirms the throw
+   * landed somewhere sane, so a wasted press never costs feed.
+   */
   private tossFeed(): void {
     if (this.ui.isShopOpen() || this.ui['customizeDiv']) return;
     const aim = this.scene.classifyFeedAim();
@@ -4316,6 +4370,53 @@ class SimpleApp {
           /* session-only */
         }
         this.refreshFeedHud();
+      }
+      // Owned tools: UNION merge (monotonic own-flags — a stale device can
+      // never revoke a tool you bought elsewhere).
+      {
+        const before = [
+          this.ownedRod && SimpleApp.ROD_ID,
+          this.ownedAxe && SimpleApp.AXE_ID,
+          this.ownedSickle && SimpleApp.SICKLE_ID,
+          this.ownedPickaxe && SimpleApp.PICKAXE_ID,
+        ].filter((v): v is string => typeof v === 'string');
+        const merged = mergeTools(before, profile.tools);
+        if (merged.length > before.length) {
+          const has = (id: string) => merged.includes(id);
+          this.ownedRod = has(SimpleApp.ROD_ID);
+          this.ownedAxe = has(SimpleApp.AXE_ID);
+          this.ownedSickle = has(SimpleApp.SICKLE_ID);
+          this.ownedPickaxe = has(SimpleApp.PICKAXE_ID);
+          try {
+            if (this.ownedRod) localStorage.setItem('ds_rod', '1');
+            if (this.ownedAxe) localStorage.setItem('ds_axe', '1');
+            if (this.ownedSickle) localStorage.setItem('ds_sickle', '1');
+            if (this.ownedPickaxe) localStorage.setItem('ds_pickaxe', '1');
+          } catch {
+            /* session-only */
+          }
+        }
+      }
+      // Raw inventory: adopt-once, same contract as meals.
+      {
+        const adopted = inventoryAdoptValue(this.hasLocalInventory, profile.inventory);
+        if (adopted) {
+          this.hasLocalInventory = true;
+          this.fishCaught = adopted.fish;
+          this.timber = adopted.timber;
+          this.wheat = adopted.wheat;
+          this.produce = adopted.produce;
+          this.ore = adopted.ore;
+          try {
+            localStorage.setItem('ds_fish_caught', String(this.fishCaught));
+            localStorage.setItem('ds_timber', String(this.timber));
+            localStorage.setItem('ds_wheat', String(this.wheat));
+            localStorage.setItem('ds_produce', String(this.produce));
+            localStorage.setItem('ds_ore', String(this.ore));
+          } catch {
+            /* session-only */
+          }
+        }
       }
       // Cooked-food meals: adopt-once (never max-merge — that would refund
       // every meal already eaten on this device).

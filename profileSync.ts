@@ -62,6 +62,36 @@ export function coinAdoptValue(hasLocalRecord: boolean, cloudCoins: unknown): nu
   return Math.max(0, Math.floor(cloudCoins));
 }
 
+/** Owned-tool union merge. Tools are monotonic own-flags (you never lose a
+ *  rod), so union is safe and a stale device can't revoke one — the same
+ *  contract as lessons. NEVER use this for consumables. */
+export function mergeTools(local: string[], cloud: unknown): string[] {
+  const set = new Set(local);
+  if (Array.isArray(cloud)) for (const t of cloud) if (typeof t === 'string') set.add(t);
+  return [...set].sort();
+}
+
+/** Raw-inventory adopt-once (Consumable Law), same contract as meals: the
+ *  cloud value is taken ONLY on a device with no local record. Max-merging
+ *  these would refund every fish/log/ore already sold. */
+export function inventoryAdoptValue(
+  hasLocalRecord: boolean,
+  cloudInventory: unknown,
+): { fish: number; timber: number; wheat: number; produce: number; ore: number } | null {
+  if (hasLocalRecord) return null;
+  if (!cloudInventory || typeof cloudInventory !== 'object') return null;
+  const m = cloudInventory as Record<string, unknown>;
+  const clamp = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0;
+  return {
+    fish: clamp(m.fish),
+    timber: clamp(m.timber),
+    wheat: clamp(m.wheat),
+    produce: clamp(m.produce),
+    ore: clamp(m.ore),
+  };
+}
+
 /** Cooked-food adopt-once (Consumable Law): the cloud value is taken ONLY when
  *  this device has no local record; each field is floored to a non-negative
  *  integer; anything non-object returns null (keep the local zeros). Never a
@@ -91,6 +121,13 @@ export interface Profile {
   fishFeed?: number;
   /** Uneaten cooked-food meals (consumables — adopt-once, never max-merged). */
   meals?: { pie: number; fish: number; soup: number };
+  /** Owned tool ids (rod/axe/sickle/pickaxe) — UNION-merged like lessons:
+   *  owning a tool is monotonic, so it can never be un-owned by a stale
+   *  device. Do NOT put consumables here. */
+  tools?: string[];
+  /** Unsold raw inventory (fish/timber/wheat/produce/ore) — consumables, so
+   *  adopt-once, never max-merged (a max-merge refunds everything sold). */
+  inventory?: { fish: number; timber: number; wheat: number; produce: number; ore: number };
   /** Body colours as hex strings, keyed by part (outfit/pants/hair/skin). */
   colors?: Record<string, string>;
   /** Last visit epoch ms (latest-wins merge) — powers return-visit deltas. */

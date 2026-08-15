@@ -8,7 +8,13 @@
 // never recorded any.
 import { describe, expect, test } from 'vitest';
 
-import { coinAdoptValue, mealsAdoptValue, mergeLessons } from '../profileSync';
+import {
+  coinAdoptValue,
+  inventoryAdoptValue,
+  mealsAdoptValue,
+  mergeLessons,
+  mergeTools,
+} from '../profileSync';
 
 describe('coinAdoptValue', () => {
   test('THE EXPLOIT: a stale higher cloud balance must NOT override local truth', () => {
@@ -60,6 +66,45 @@ describe('mealsAdoptValue (cooked-food adopt-once — Consumable Law)', () => {
     expect(mealsAdoptValue(false, undefined)).toBeNull();
     expect(mealsAdoptValue(false, 5 as unknown)).toBeNull();
     expect(mealsAdoptValue(false, null)).toBeNull();
+  });
+});
+
+describe('mergeTools (owned tools — monotonic union, like lessons)', () => {
+  test('unions across devices; a stale device cannot revoke a tool', () => {
+    expect(mergeTools(['woodaxe'], ['fishingrod'])).toEqual(['fishingrod', 'woodaxe']);
+    // Cloud missing the local axe must NOT drop it.
+    expect(mergeTools(['woodaxe'], [])).toEqual(['woodaxe']);
+  });
+  test('garbage cloud values ignored', () => {
+    expect(mergeTools(['woodaxe'], undefined)).toEqual(['woodaxe']);
+    expect(mergeTools(['woodaxe'], 'fishingrod' as unknown)).toEqual(['woodaxe']);
+    expect(mergeTools(['woodaxe'], [1, null, 'pickaxe'] as unknown)).toEqual([
+      'pickaxe',
+      'woodaxe',
+    ]);
+  });
+});
+
+describe('inventoryAdoptValue (raw inventory — adopt-once, Consumable Law)', () => {
+  const full = { fish: 3, timber: 9, wheat: 2, produce: 5, ore: 1 };
+  test('local record present → never adopt (would refund sold goods)', () => {
+    expect(inventoryAdoptValue(true, full)).toBeNull();
+  });
+  test('fresh device adopts the cloud inventory', () => {
+    expect(inventoryAdoptValue(false, full)).toEqual(full);
+  });
+  test('negatives/floats floored, missing keys → 0', () => {
+    expect(inventoryAdoptValue(false, { fish: 2.9, timber: -4 })).toEqual({
+      fish: 2,
+      timber: 0,
+      wheat: 0,
+      produce: 0,
+      ore: 0,
+    });
+  });
+  test('non-object garbage → null', () => {
+    expect(inventoryAdoptValue(false, undefined)).toBeNull();
+    expect(inventoryAdoptValue(false, 7 as unknown)).toBeNull();
   });
 });
 

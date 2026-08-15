@@ -214,6 +214,10 @@ export class SimplePlayer extends THREE.Group {
   // GameScene syncs the tree shudder/chips to the strike at ~0.22s.
   private chopTime = 0;
   private static readonly CHOP_DURATION = 0.55;
+  /** The hanging rest pose expressed on the POSITIVE side (+PI == -PI). Used
+   *  as the blend base for gestures whose payload sits forward (positive
+   *  rotation.x), so the envelope settle never sweeps back over the head. */
+  private static readonly SETTLE_REST = Math.PI;
   // While the line is out, the rod arm holds forward-up (~the fisherman's
   // theta) instead of hanging — the bone-parented rod points over the water.
   // rodHoldW is the eased 0..1 weight: the WRITE must be absolute-by-weight
@@ -1200,10 +1204,14 @@ export class SimplePlayer extends THREE.Group {
     if (this.feedTossTime > 0) {
       this.feedTossTime = Math.max(0, this.feedTossTime - dt);
       const te = SimplePlayer.FEED_TOSS_DURATION - this.feedTossTime;
+      // MIRRORED 2026-08-11 (same inversion as the rod/chop): positive
+      // rotation.x is visually forward on this +Z-facing model, so the old
+      // windup swung toward the face and the scatter threw BEHIND — while the
+      // feed pile lands in front.
       tossAng =
         te < 0.14
-          ? (te / 0.14) * 0.6 // windup: arm swings back
-          : 0.6 - Math.min(1, (te - 0.14) / 0.16) * 2.1; // scatter: swing to -1.5
+          ? -(te / 0.14) * 0.6 // windup: arm swings back (behind the hip)
+          : -0.6 + Math.min(1, (te - 0.14) / 0.16) * 2.1; // scatter: underhand to +1.5, forward
       tossEnv = Math.min(1, this.feedTossTime / 0.26); // settle-out ease
       // Opposite arm counterweights slightly during the swing.
       tossLean = te > 0.14 ? 0.35 * tossEnv : 0;
@@ -1237,12 +1245,17 @@ export class SimplePlayer extends THREE.Group {
     if (this.chopTime > 0) {
       this.chopTime = Math.max(0, this.chopTime - dt);
       const he = SimplePlayer.CHOP_DURATION - this.chopTime;
+      // MIRRORED 2026-08-11 (same front/back inversion as the rod): the model
+      // faces +Z, so POSITIVE rotation.x is the visually-forward side. Measured
+      // live before the flip: the strike ended at limb.fwd -0.78 — the blade
+      // swung down BEHIND the avatar while the tree stood in front (the impact
+      // FX spawn at the tree independently, which is why it still read "fine").
       chopAng =
         he < 0.16
-          ? (he / 0.16) * 0.25 // overhead windup (up, slightly back)
-          : // Strike ENDS forward-DOWN (-2.2 measured: limb f 0.7, u -0.7) —
-            // the blade swings THROUGH the trunk, not to a forward salute.
-            0.25 - Math.min(1, (he - 0.16) / 0.12) * 2.45;
+          ? -(he / 0.16) * 0.25 // overhead windup (up, slightly back — really back now)
+          : // Strike ENDS forward-DOWN at +2.2 — the blade swings THROUGH the
+            // trunk in front, not to a forward salute.
+            -0.25 + Math.min(1, (he - 0.16) / 0.12) * 2.45;
       chopEnv = Math.min(1, this.chopTime / 0.22);
       // Dip INTO the strike, release through it — weight behind the axe.
       // The dip is the ONLY lower-body write: additive knee bends were
@@ -1278,8 +1291,10 @@ export class SimplePlayer extends THREE.Group {
         this.armRBone.rotation.z = wag * waveEnv;
       } else if (tossEnv > 0) {
         if (this.armRBone) {
+          // Blended against +PI — see SETTLE_REST (forward targets must not
+          // settle through the overhead windmill).
           this.armRBone.rotation.x = THREE.MathUtils.lerp(
-            this.armRBone.rotation.x,
+            SimplePlayer.SETTLE_REST,
             tossAng,
             tossEnv,
           );
@@ -1288,29 +1303,34 @@ export class SimplePlayer extends THREE.Group {
         if (this.legLBone) this.legLBone.rotation.x += 0.5 * tossCrouch;
         if (this.legRBone) this.legRBone.rotation.x += 0.5 * tossCrouch;
       } else if (castEnv > 0 && this.armRBone) {
-        this.armRBone.rotation.x = THREE.MathUtils.lerp(this.armRBone.rotation.x, castAng, castEnv);
+        this.armRBone.rotation.x = THREE.MathUtils.lerp(SimplePlayer.SETTLE_REST, castAng, castEnv);
       } else if (this.rodHoldW > 0.01 && this.armRBone) {
         // Held rod: absolute-by-weight (mixer-proof) at forward-up-30°.
         // +1.15, not -1.15: the model faces +Z, so the positive side is the
         // visually-forward one (at -1.15 the rod jutted over the shoulder
         // into the chase camera with the tip 1.18u BEHIND the player).
         this.armRBone.rotation.x = THREE.MathUtils.lerp(
-          this.armRBone.rotation.x,
+          SimplePlayer.SETTLE_REST,
           1.15,
           this.rodHoldW,
         );
       } else if (chopEnv > 0) {
-        // Two-hand grip: both arms track the same swing.
+        // Two-hand grip: both arms track the same swing. Blended against
+        // +PI (SETTLE_REST), not the mixer's live -PI: the strike target is
+        // on the POSITIVE (forward) side now, and lerping it against -PI
+        // passes through 0 — a full windmill over the head as the envelope
+        // fades (measured: +2.14 → +0.45 → -2.27). +PI is the SAME hanging
+        // pose, so the settle stays short and reads as a follow-through.
         if (this.armRBone) {
           this.armRBone.rotation.x = THREE.MathUtils.lerp(
-            this.armRBone.rotation.x,
+            SimplePlayer.SETTLE_REST,
             chopAng,
             chopEnv,
           );
         }
         if (this.armLBone) {
           this.armLBone.rotation.x = THREE.MathUtils.lerp(
-            this.armLBone.rotation.x,
+            SimplePlayer.SETTLE_REST,
             chopAng,
             chopEnv,
           );
