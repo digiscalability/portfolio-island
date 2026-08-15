@@ -9612,15 +9612,34 @@ export class GameScene extends THREE.Scene {
         }
         g.bird.quaternion.copy(g.baseQuat);
         g.bird.rotateY(g.heading);
-        g.bird.rotateX(climbing ? 0.3 : -0.2); // nose up on the climb, down to land
+        // LANDING FLARE. The approach used to hold a single nose-DOWN pitch all
+        // the way to the ground and then snap upright — birds do the opposite:
+        // in the last moment they rotate nose-UP, swing their feet forward and
+        // cup the wings to kill speed. This is the one landing a player is
+        // guaranteed to study, since feed is a paid consumable and up to eight
+        // birds converge in front of you.
+        // Positive rotateX is nose-UP on this model (documented trap).
+        const FLARE_AT = 0.8;
+        const flare = ft <= FLARE_AT ? 0 : (ft - FLARE_AT) / (1 - FLARE_AT);
+        const ease = flare * flare * (3 - 2 * flare); // smoothstep
+        g.bird.rotateX(climbing ? 0.3 : -0.2 + ease * 0.86); // -0.2 -> +0.66
         g.legs.rotation.x = ft > 0.75 ? 0 : -1.25; // gear down on approach
         g.wingL.scale.x = 1;
         g.wingR.scale.x = 1;
-        g.wingL.rotation.y = 0;
-        g.wingR.rotation.y = Math.PI;
-        const wf = Math.sin(time * 18 + g.phase) * (climbing ? 1.0 : 0.7);
+        // Wings sweep FORWARD as they cup — both the same sign, because the
+        // pi-yawed right wing visually reverses z (the recurring trap).
+        const cup = ease * 0.55;
+        g.wingL.rotation.y = -cup;
+        g.wingR.rotation.y = Math.PI + cup;
+        // Braking beats: faster and shallower through the flare.
+        const beatHz = 18 + ease * 10;
+        const amp = (climbing ? 1.0 : 0.7) * (1 - ease * 0.45);
+        const wf = Math.sin(time * beatHz + g.phase) * amp + ease * 0.5; // held high
         g.wingL.rotation.z = wf;
         g.wingR.rotation.z = wf;
+        // Tail fans DOWN as an airbrake (negative x lifts a +Z tail tip here,
+        // so positive drops it).
+        g.tail.rotation.x = -0.16 + ease * 0.5;
         g.bird.scale.setScalar(g.size);
         if (ft >= 1) {
           // Touch down: the landing spot BECOMES the bird's base, so the
@@ -9636,6 +9655,13 @@ export class GameScene extends THREE.Scene {
           g.up.copy(s.normal);
           g.baseQuat.setFromUnitVectors(GameScene.AXIS_Y, s.normal);
           g.legs.rotation.x = 0;
+          // Clear the flare pose. The tail reset also fixes a pre-existing
+          // bug: a bird called away mid-tail-flick kept the flicked tail for
+          // the whole flight and after landing, because nothing ever restored
+          // it. -0.16 is the authored rest from buildBird.
+          g.tail.rotation.x = -0.16;
+          g.wingL.rotation.y = 0;
+          g.wingR.rotation.y = Math.PI;
           // A wisp of dust on touchdown (no squash here — peck mode owns
           // g.bird.scale every frame and would fight it).
           this.spawnDust(g.curPos, 2);
