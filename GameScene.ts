@@ -1380,7 +1380,7 @@ export class GameScene extends THREE.Scene {
       coreParts.push(GameScene.tintGeo(bellyGeo, extras.belly));
     }
     const core = new THREE.Mesh(
-      mergeGeometries(coreParts, false) as THREE.BufferGeometry,
+      GameScene.mergeOrThrow(coreParts, 'core'),
       GameScene.birdVertexMat(),
     );
     core.name = 'bird_core';
@@ -1418,7 +1418,7 @@ export class GameScene extends THREE.Scene {
       legParts.push(GameScene.tintGeo(footGeo, beakMat));
     }
     const legMesh = new THREE.Mesh(
-      mergeGeometries(legParts, false) as THREE.BufferGeometry,
+      GameScene.mergeOrThrow(legParts, 'leg'),
       GameScene.birdVertexMat(),
     );
     legs.add(legMesh);
@@ -1819,7 +1819,7 @@ export class GameScene extends THREE.Scene {
           ),
         );
       }
-      const shell = new THREE.Mesh(mergeGeometries(shellParts, false) as THREE.BufferGeometry, mat);
+      const shell = new THREE.Mesh(GameScene.mergeOrThrow(shellParts, 'shell'), mat);
       shell.castShadow = false;
       shell.raycast = () => {};
       crab.add(shell);
@@ -2070,11 +2070,153 @@ export class GameScene extends THREE.Scene {
   private baitAnchor = new THREE.Vector3();
   private baitBase = 0;
   private waterCeiling: THREE.Mesh | null = null;
+  private manta: THREE.Mesh | null = null;
+  private mantaUniforms: { uFlapT: { value: number }; uFlapA: { value: number } } | null = null;
+  private mantaPhase = 0;
+  private mantaAngle = 0;
+  private readonly _mantaDir = new THREE.Vector3();
+  private readonly _mantaEast = new THREE.Vector3();
+  private readonly _mantaNorth = new THREE.Vector3();
+  private readonly _mantaFwd = new THREE.Vector3();
+  private readonly _mantaRight = new THREE.Vector3();
+  private readonly _mantaBasis = new THREE.Matrix4();
   private readonly _baitM = new THREE.Matrix4();
   private readonly _baitQ = new THREE.Quaternion();
   private readonly _baitP = new THREE.Vector3();
   private readonly _baitS = new THREE.Vector3(1, 1, 1);
   private readonly _baitAxis = new THREE.Vector3();
+
+  /**
+   * The manta — the one LARGE silhouette down there, and the thing that makes
+   * a dive memorable. Seven parts merged into ONE mesh, so the biggest animal
+   * in the world costs a single draw.
+   *
+   * No rig and no bones: the flap is procedural vertex displacement in the
+   * shader, weighted by pow(s, 1.6) so the wing ROOT is pinned at zero and
+   * only the tip swings. (The ±pi absolute-write law is about avatar bones
+   * and doesn't apply here — but the same discipline does: anchor the root,
+   * move the tip.) Two scalar uniform writes per frame, zero CPU geometry
+   * work.
+   */
+  private buildManta(): {
+    mesh: THREE.Mesh;
+    uniforms: { uFlapT: { value: number }; uFlapA: { value: number } };
+  } {
+    const SPAN = 2.6;
+    const LEN = 3.0;
+    const parts: THREE.BufferGeometry[] = [];
+
+    // 1. WING PLATE. 24x6 is the MINIMUM that carries a smooth flap wave —
+    // at 12x4 the beat visibly creases. This is the one part that needs
+    // segments; economise on the tail and horns instead.
+    const wing = new THREE.PlaneGeometry(2 * SPAN, LEN, 24, 6);
+    wing.rotateX(-Math.PI / 2); // lie flat in XZ
+    {
+      const pos = wing.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const s = Math.min(1, Math.abs(x) / SPAN);
+        // Chord narrows toward the tip, tips sweep back, gentle camber.
+        const chord = 1 - Math.pow(s, 1.5);
+        pos.setZ(i, pos.getZ(i) * chord + s * s * 0.55);
+        pos.setY(i, pos.getY(i) + (1 - s * s) * 0.1);
+      }
+      pos.needsUpdate = true;
+      wing.computeVertexNormals();
+    }
+    parts.push(wing);
+
+    // 2. BODY RIDGE
+    const ridge = new THREE.SphereGeometry(0.5, 8, 6);
+    ridge.scale(0.34, 0.22, 1.0);
+    ridge.translate(0, 0, -0.15);
+    parts.push(ridge);
+
+    // 3-4. CEPHALIC HORNS — the giveaway that reads "manta" at a glance.
+    for (const sx of [-1, 1]) {
+      const horn = new THREE.ConeGeometry(0.055, 0.34, 4);
+      horn.rotateX(-Math.PI / 2);
+      horn.rotateY(sx * 0.22);
+      horn.translate(sx * 0.26, 0.02, -1.55);
+      parts.push(horn);
+    }
+
+    // 5. TAIL
+    const tail = new THREE.CylinderGeometry(0.012, 0.055, 2.4, 4);
+    tail.rotateX(Math.PI / 2);
+    tail.translate(0, 0, 2.35);
+    parts.push(tail);
+
+    const merged = GameScene.mergeOrThrow(parts, 'manta');
+    // COUNTER-SHADING, the real manta colouring, for free: slate on top,
+    // cream underneath, written straight into the colour attribute by vertex
+    // sign. No extra material, no extra draw.
+    {
+      const pos = merged.attributes.position;
+      const nrm = merged.attributes.normal;
+      const col = new Float32Array(pos.count * 3);
+      const top = new THREE.Color(0x2f3d4a);
+      const belly = new THREE.Color(0xe4e9ec);
+      for (let i = 0; i < pos.count; i++) {
+        const c = nrm.getY(i) >= 0 ? top : belly;
+        col[i * 3] = c.r;
+        col[i * 3 + 1] = c.g;
+        col[i * 3 + 2] = c.b;
+      }
+      merged.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    }
+
+    const uniforms = { uFlapT: { value: 0 }, uFlapA: { value: 0.6 } };
+    const mat = new THREE.MeshToonMaterial({
+      vertexColors: true,
+      gradientMap: Materials.toonRamp(),
+      // DoubleSide is mandatory: a single-sided wing plate vanishes when seen
+      // from below, which is the ONLY angle a diver ever gets.
+      side: THREE.DoubleSide,
+    });
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uFlapT = uniforms.uFlapT;
+      shader.uniforms.uFlapA = uniforms.uFlapA;
+      shader.vertexShader = shader.vertexShader
+        .replace('void main() {', 'uniform float uFlapT;\nuniform float uFlapA;\nvoid main() {')
+        .replace(
+          '#include <begin_vertex>',
+          [
+            '#include <begin_vertex>',
+            'float mSpan = abs(position.x) / 2.6;',
+            // 3.1 rad of tip lag ≈ half a beat — the LAG is what reads as a
+            // manta rather than a flapping bedsheet.
+            'float mWave = sin(uFlapT - mSpan * 3.1);',
+            'float mW = pow(mSpan, 1.6);',
+            'transformed.y += mWave * uFlapA * 0.62 * mW;',
+            'transformed.z += (1.0 - cos(mWave)) * 0.05 * mW;',
+          ].join('\n'),
+        )
+        // Bend the normal with the wing or the toon banding stays flat and
+        // the beat reads as a sliding texture instead of a moving surface.
+        .replace(
+          '#include <beginnormal_vertex>',
+          [
+            '#include <beginnormal_vertex>',
+            'float nSpan = abs(position.x) / 2.6;',
+            'objectNormal = normalize(objectNormal + vec3(0.0,',
+            '  cos(uFlapT - nSpan * 3.1) * uFlapA * 0.5 * pow(nSpan, 1.6), 0.0));',
+          ].join('\n'),
+        );
+    };
+    // Distinct cache key so this never shares a compiled program with the
+    // other toon materials (they have no uFlap uniforms).
+    mat.customProgramCacheKey = () => 'manta-flap';
+
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.name = 'manta';
+    mesh.raycast = () => {}; // never a camera-collision or interaction target
+    mesh.frustumCulled = false;
+    // Deliberately NOT ink-hulled: addGroupHulls DOUBLES the geometry, and the
+    // shell would need this same flap injection or the outline visibly
+    // detaches from the wings mid-beat. createDeepFauna doesn't hull either.
+    return { mesh, uniforms };
+  }
 
   /** Local mulberry32 shield — same contract as createDeepFauna: this runs
    *  INSIDE initialize's seeded window (setupLighting -> createBirds ->
@@ -2111,7 +2253,12 @@ export class GameScene extends THREE.Scene {
     const sprTail = new THREE.ConeGeometry(0.038, 0.075, 3);
     sprTail.rotateX(Math.PI / 2); // cone +Y -> -Z, i.e. pointing astern
     sprTail.translate(0, 0, 0.125);
-    const body = mergeGeometries([sprBody, sprTail], false) as THREE.BufferGeometry;
+    // toNonIndexed on the CONE: Octahedron (a PolyhedronGeometry) is
+    // NON-indexed while Cone is indexed, and mergeGeometries returns NULL for
+    // a mixed-index set. See mergeOrThrow — a silent null here nulls the
+    // mesh's geometry and three.js then dies on `.id` every frame the shoal
+    // is visible.
+    const body = GameScene.mergeOrThrow([sprBody, sprTail.toNonIndexed()], 'sprat');
     const mat = new THREE.MeshToonMaterial({
       color: 0xbfd8e8,
       gradientMap: Materials.toonRamp(),
@@ -2166,11 +2313,68 @@ export class GameScene extends THREE.Scene {
     ceil.visible = false; // gated on the dive in updateDeepFauna
     this.add(ceil);
     this.waterCeiling = ceil;
+
+    // The manta, circling the same open water as the shoal.
+    const { mesh: manta, uniforms } = this.buildManta();
+    manta.visible = false;
+    this.add(manta);
+    this.manta = manta;
+    this.mantaUniforms = uniforms;
+    this.mantaPhase = Math.random() * Math.PI * 2;
+    this.mantaAngle = Math.random() * Math.PI * 2;
   }
 
   /** Swirl the shoal and show the ceiling — both gated so they cost nothing
    *  above water. Called from updateDeepFauna, which already runs per frame
    *  and already has camPos in scope. */
+  /** Glide the manta: a slow circuit of a wide ring, depth breathing on its
+   *  own clock, hugging the bottom contour where the reef shelves up. */
+  private updateManta(time: number, deltaTime: number, under: boolean): void {
+    const manta = this.manta;
+    if (!manta || !this.island) return;
+    const camPos = this.camera?.position;
+    const near = camPos ? manta.position.distanceToSquared(camPos) < 3600 : false;
+    manta.visible = under || near;
+    if (!manta.visible) return;
+    if (this.mantaUniforms) {
+      this.mantaUniforms.uFlapT.value += deltaTime * 1.35;
+      // Alternates gliding and beating on a ~9s clock, so it isn't a metronome.
+      this.mantaUniforms.uFlapA.value =
+        0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time * 0.698 + this.mantaPhase));
+    }
+    // One circuit of a 7.5u ring every ~75s.
+    this.mantaAngle += deltaTime * 0.084;
+    const anchor = this.baitAnchor;
+    this._mantaEast.set(-anchor.z, 0, anchor.x).normalize();
+    this._mantaNorth.crossVectors(anchor, this._mantaEast).normalize();
+    const RING = 7.5;
+    this._mantaDir
+      .copy(anchor)
+      .addScaledVector(this._mantaEast, (Math.cos(this.mantaAngle) * RING) / 100)
+      .addScaledVector(this._mantaNorth, (Math.sin(this.mantaAngle) * RING) / 100)
+      .normalize();
+    const sea = this.island.seaLevel();
+    const want = sea - (2.4 + 0.8 * Math.sin(time * 0.273 + this.mantaPhase));
+    // The ring crosses the shelving reef skirt, so clamp to the real bottom.
+    // analyticSurface is raycast-free (~0.003ms) — one call per frame.
+    const floorR = this.island.analyticSurface(this._mantaDir).radius;
+    const r = Math.max(floorR + 1.4, Math.min(sea - 1.3, want));
+    manta.position.copy(this._mantaDir).multiplyScalar(r);
+    // Basis: local +Y radial (World Law 1 — plumb, never a terrain normal),
+    // local -Z along the tangent heading. Same makeBasis idiom as the fish.
+    this._mantaFwd
+      .copy(this._mantaEast)
+      .multiplyScalar(-Math.sin(this.mantaAngle))
+      .addScaledVector(this._mantaNorth, Math.cos(this.mantaAngle))
+      .normalize();
+    this._mantaRight.crossVectors(this._mantaDir, this._mantaFwd).normalize();
+    this._mantaBasis.makeBasis(this._mantaRight, this._mantaDir, this._mantaFwd);
+    manta.quaternion.setFromRotationMatrix(this._mantaBasis);
+    // Bank into the turn — composed AFTER the basis, the trick the fish pitch
+    // already uses.
+    manta.rotateZ(0.18 + 0.1 * Math.sin(time * 0.21 + this.mantaPhase));
+  }
+
   private updateMidwater(time: number, under: boolean): void {
     if (this.waterCeiling) this.waterCeiling.visible = under;
     const mesh = this.baitBall;
@@ -2215,7 +2419,7 @@ export class GameScene extends THREE.Scene {
   private readonly _baitFrameQ = new THREE.Quaternion();
   private static readonly _baitScale = new THREE.Vector3(1, 1, 1);
 
-  private updateDeepFauna(time: number): void {
+  private updateDeepFauna(time: number, deltaTime: number): void {
     // isDiving() as well as submergedF: the chase camera trails ~1.5u ABOVE
     // the swimmer, so submergedF is still 0 for the first ~0.8s of a descent
     // — the diver's head would drop into an empty ocean, and the murk would
@@ -2223,6 +2427,7 @@ export class GameScene extends THREE.Scene {
     // whether the dive reads as intentional.
     const underNow = this.player?.isDiving() === true || this.submergedF > 0.01;
     this.updateMidwater(time, underNow);
+    this.updateManta(time, deltaTime, underNow);
     if (!this.deepFauna.length) return;
     const sea = this.island.seaLevel();
     const camPos = this.camera ? this.camera.position : null;
@@ -2306,6 +2511,30 @@ export class GameScene extends THREE.Scene {
 
   /** Bake a material's colour into `geo` as a vertex-colour attribute. Mutates
    *  and returns the geometry it is handed (callers pass freshly-built ones). */
+  /**
+   * mergeGeometries with the failure made LOUD.
+   *
+   * It returns `null` when the inputs disagree — most commonly a mixed
+   * INDEX state (PolyhedronGeometry/Octahedron are non-indexed; Cone,
+   * Sphere, Plane, Cylinder are indexed). Casting that null with `as
+   * THREE.BufferGeometry` type-checks fine and then hands the Mesh a null
+   * geometry, and three.js dies reading `.id` on EVERY frame the object is
+   * visible — a whole-scene freeze that only fires once the thing comes into
+   * view, so it can pass a dry playthrough and a typecheck and still ship.
+   * That exact bug shipped once; this is why it cannot again.
+   */
+  private static mergeOrThrow(parts: THREE.BufferGeometry[], label: string): THREE.BufferGeometry {
+    const merged = mergeGeometries(parts, false);
+    if (!merged) {
+      const idx = parts.map((p) => (p.index ? 'indexed' : 'non-indexed')).join(', ');
+      throw new Error(
+        `mergeGeometries returned null for "${label}" — inputs disagree (${idx}). ` +
+          'Make the index state uniform (.toNonIndexed()) before merging.',
+      );
+    }
+    return merged;
+  }
+
   private static tintGeo(geo: THREE.BufferGeometry, mat: THREE.Material): THREE.BufferGeometry {
     const col = (mat as THREE.MeshToonMaterial).color ?? new THREE.Color(0xffffff);
     const n = geo.attributes.position.count;
@@ -5940,7 +6169,7 @@ export class GameScene extends THREE.Scene {
         new THREE.BoxGeometry(0.7, 0.22, 0.05).translate(0.2, 1.35, 0),
         new THREE.BoxGeometry(0.16, 0.22, 0.05).rotateZ(Math.PI / 4).translate(0.62, 1.35, 0),
       ];
-      const body = new THREE.Mesh(mergeGeometries(parts, false) as THREE.BufferGeometry, wood);
+      const body = new THREE.Mesh(GameScene.mergeOrThrow(parts, 'geo'), wood);
       body.castShadow = true;
       const cap = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.16), darkWood);
       cap.position.y = 1.62;
@@ -5950,7 +6179,7 @@ export class GameScene extends THREE.Scene {
         new THREE.CylinderGeometry(0.06, 0.06, 1.9, 6).translate(0, 0.95, 0).toNonIndexed(),
         new THREE.BoxGeometry(0.28, 0.06, 0.06).translate(0.12, 1.86, 0).toNonIndexed(),
       ];
-      const post = new THREE.Mesh(mergeGeometries(parts, false) as THREE.BufferGeometry, darkWood);
+      const post = new THREE.Mesh(GameScene.mergeOrThrow(parts, 'geo'), darkWood);
       post.castShadow = true;
       const bulbMat = new THREE.MeshToonMaterial({
         color: 0x3a3630,
@@ -6049,16 +6278,13 @@ export class GameScene extends THREE.Scene {
             .translate(Math.cos(a + Math.PI / 2) * 1.0, 0.75, Math.sin(a + Math.PI / 2) * 1.0),
         );
       }
-      const frame = new THREE.Mesh(
-        mergeGeometries(frameParts, false) as THREE.BufferGeometry,
-        darkWood,
-      );
+      const frame = new THREE.Mesh(GameScene.mergeOrThrow(frameParts, 'frame'), darkWood);
       const roofParts: THREE.BufferGeometry[] = [
         new THREE.ConeGeometry(1.7, 0.7, 8).translate(0, 2.0, 0).toNonIndexed(),
         new THREE.SphereGeometry(0.09, 6, 5).translate(0, 2.42, 0).toNonIndexed(),
       ];
       const roof = new THREE.Mesh(
-        mergeGeometries(roofParts, false) as THREE.BufferGeometry,
+        GameScene.mergeOrThrow(roofParts, 'roof'),
         new THREE.MeshToonMaterial({ color: 0xa8503c, gradientMap: ramp }),
       );
       roof.castShadow = true;
@@ -6203,10 +6429,7 @@ export class GameScene extends THREE.Scene {
       }
       parts.push(new THREE.BoxGeometry(1.24, 0.06, 0.1).translate(0, 1.15, -0.55));
       parts.push(new THREE.BoxGeometry(0.1, 0.06, 1.24).translate(0.55, 0.85, 0));
-      const scaffold = new THREE.Mesh(
-        mergeGeometries(parts, false) as THREE.BufferGeometry,
-        poleMat,
-      );
+      const scaffold = new THREE.Mesh(GameScene.mergeOrThrow(parts, 'geo'), poleMat);
       scaffold.castShadow = true;
       scaffold.raycast = () => {};
       const g = new THREE.Group();
@@ -6314,7 +6537,7 @@ export class GameScene extends THREE.Scene {
             .rotateZ(0.7)
             .translate(0.11, 0.86, 0.03),
         ] as THREE.BufferGeometry[];
-        const geo = mergeGeometries(parts, false) as THREE.BufferGeometry;
+        const geo = GameScene.mergeOrThrow(parts, 'geo');
         // Bake: pale board + darker post/glyph (vertex colors, toon).
         const pos = geo.getAttribute('position');
         const cols = new Float32Array(pos.count * 3);
@@ -10427,7 +10650,7 @@ export class GameScene extends THREE.Scene {
     this.updateNpcShadows();
     this.updateHerons(time);
     this.updateCrabs(deltaTime, time);
-    this.updateDeepFauna(time);
+    this.updateDeepFauna(time, deltaTime);
     this.updateFisherman(time, deltaTime);
     this.updatePlayerFishing(time);
     this.processPendingChopFx(time);

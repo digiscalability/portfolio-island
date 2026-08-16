@@ -97,6 +97,35 @@ describe('mid-water life is cheap and RNG-safe', () => {
     expect(fn('GameScene.ts', 'private updateDeepFauna', 1200)).toContain('isDiving()');
   });
 
+  test('geometry merges fail LOUDLY, never as a null cast', () => {
+    // mergeGeometries returns null when inputs disagree — most often a mixed
+    // INDEX state (Octahedron is non-indexed; Cone/Sphere/Plane/Cylinder are
+    // indexed). `as THREE.BufferGeometry` type-checks that null happily, then
+    // three.js dies reading `.id` EVERY frame the object is visible. That is
+    // a whole-scene freeze that passes a dry playthrough and a typecheck —
+    // and it shipped once, in the sprat body+tail merge.
+    const s = src('GameScene.ts');
+    expect(s).toContain('mergeOrThrow');
+    // No un-guarded cast of a merge result anywhere.
+    expect(s).not.toMatch(/mergeGeometries\([^)]*\)\s+as\s+THREE\.BufferGeometry/);
+  });
+
+  test('the sprat merge has a uniform index state', () => {
+    expect(fn('GameScene.ts', 'const sprBody', 900)).toContain('toNonIndexed()');
+  });
+
+  test('the manta is one merged mesh, shader-flapped, and un-hulled', () => {
+    const m = fn('GameScene.ts', 'private buildManta', 6000);
+    expect(m).toContain('mergeOrThrow');
+    expect(m).toContain('uFlapT'); // GPU flap, no per-frame geometry work
+    expect(m).toContain('DoubleSide'); // or it vanishes when seen from below
+    // addGroupHulls DOUBLES geometry and the shell would need the same flap
+    // injection, or the ink outline detaches from the wings mid-beat.
+    // Match the CALL, not the word — the code comment explaining the choice
+    // legitimately names the function.
+    expect(m).not.toMatch(/addGroupHulls\s*\(/);
+  });
+
   test('a diver stops stamping foam on the surface overhead', () => {
     expect(
       fn('GameScene.ts', 'if (this.player.isSwimming() && !this.player.isDiving())', 400),
