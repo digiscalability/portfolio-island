@@ -359,9 +359,30 @@ export class GameScene extends THREE.Scene {
     depth: number; // metres the body sits below the wave surface
     feedTarget: THREE.Vector3 | null; // unit dir of an active fish-feed pile
     feedUntil: number; // eat-until timestamp (s); 0 = not feeding
+    /**
+     * Startle burst, in u/s, ADDED to `speed` — never written into it.
+     *
+     * THE INVARIANT that makes this safe: the flee reaction NEVER mutates
+     * `speed`, `depth` or `home`, and this term decays every frame OUTSIDE any
+     * conditional, so it always returns to 0 on its own. An earlier attempt at
+     * fish-flee was rejected in review precisely because it overwrote speed and
+     * depth and put the restore inside an `if (swim)` branch — leaving the
+     * water then stranded every fish at its fleeing values, permanently. A
+     * reaction with no restore step cannot have a missing one.
+     */
+    dash: number;
   }> = [];
   private activeFishJumps = 0; // cap concurrent leaps so splash pools never starve
   // Fish-feed: bread thrown ONTO the water; nearby fish swim to it and nibble.
+  /**
+   * Startle burst added to a fish's cruising speed, in u/s.
+   *
+   * Fish cruise at 1.1-2.6 u/s and a swimmer makes 4.4, so a fish that only
+   * turned would still be run down — the point of a flee is that it gets away.
+   * 2.4 roughly doubles the slowest fish and outpaces a swimmer for the second
+   * or so the burst lasts (it decays at 2.2/s, i.e. ~1.1s to nothing).
+   */
+  private static readonly FISH_DASH = 2.4;
   private static readonly FISH_FEED_THROW_DIST = 6.0; // reach past the beach
   // Local model, same reasoning as CAT_CALL_RADIUS: bread thrown off one beach
   // should feed THAT water, not summon a school from around the headland.
@@ -383,6 +404,10 @@ export class GameScene extends THREE.Scene {
   private readonly _fishCam = new THREE.Vector3();
   private readonly _fishHome = new THREE.Vector3();
   private readonly _fishAxis = new THREE.Vector3();
+  private readonly _fishFlee = new THREE.Vector3(); // player position, once per frame
+  private readonly _fishAway = new THREE.Vector3(); // escape tangent
+  private readonly _fishProbe = new THREE.Vector3(); // is-that-land lookahead
+  private readonly _fishSide = new THREE.Vector3(); // alongshore fallback
   private readonly _fishZ = new THREE.Vector3();
   private readonly _fishX = new THREE.Vector3();
   private readonly _fishMat = new THREE.Matrix4();
@@ -2444,6 +2469,14 @@ export class GameScene extends THREE.Scene {
     // _baitFrameQ so the per-fish facing quaternion can use _baitQ without
     // clobbering it, and so nothing allocates inside the loop.
     this._baitFrameQ.setFromUnitVectors(GameScene._localUp, this.baitAnchor);
+    // THE SHOAL PARTS around a diver. Completely STATELESS: the displacement is
+    // recomputed from the diver's position every frame, so the ball closes
+    // behind them on its own and there is nothing that can be left corrupted —
+    // the failure mode that killed the first attempt at fish-flee.
+    // One distance check gates all 240 instances.
+    const diver = this.player ? this.player.getWorldPositionInto(this._baitFlee) : null;
+    const partReach = GameScene.BAIT_PART_R + 1.7; // + the shoal's own radius
+    const parting = diver ? centre.distanceToSquared(diver) < partReach * partReach : false;
     for (let i = 0; i < seeds.length; i++) {
       const s = seeds[i];
       const ang = s.a + time * 0.42 * s.sp;
@@ -2452,6 +2485,17 @@ export class GameScene extends THREE.Scene {
         .set(Math.cos(ang) * s.r, s.b + bob, Math.sin(ang) * s.r)
         .applyQuaternion(this._baitFrameQ);
       this._baitP.copy(this.baitAnchor).multiplyScalar(this.baitBase).add(this._baitS);
+      if (parting && diver) {
+        // Shove this sprat out to the surface of a bubble around the diver.
+        // Scaled by (1 - d/R) rather than snapped to the shell, so the hole
+        // has a soft edge and the fish nearest the diver move furthest — the
+        // shoal bulges instead of stamping a clean sphere out of itself.
+        this._baitAway.copy(this._baitP).sub(diver);
+        const d = this._baitAway.length();
+        if (d < GameScene.BAIT_PART_R && d > 1e-4) {
+          this._baitP.addScaledVector(this._baitAway, ((GameScene.BAIT_PART_R - d) * 0.85) / d);
+        }
+      }
       // Face along the swirl tangent so the shoal reads as circling, not
       // hanging — derived from the angle already in hand.
       this._baitAxis
@@ -2466,7 +2510,20 @@ export class GameScene extends THREE.Scene {
   }
 
   private readonly _baitFrameQ = new THREE.Quaternion();
+  private readonly _baitFlee = new THREE.Vector3();
+  private readonly _baitAway = new THREE.Vector3();
   private static readonly _baitScale = new THREE.Vector3(1, 1, 1);
+  /**
+   * Radius of the hole a diver opens in the bait ball, in metres.
+   *
+   * The shoal's own seeded radius tops out at 1.69u, so a 1.6u bubble is big
+   * enough to be unmistakable — you push a visible cavity through it — without
+   * turning the ball inside out. The avatar is 1.58u tall, so this is roughly
+   * "a body's width of clear water".
+   */
+  private static readonly BAIT_PART_R = 1.6;
+  /** How close a diver gets before a reef fish slides aside, in metres. */
+  private static readonly REEF_SHY_R = 2.2;
 
   private updateDeepFauna(time: number, deltaTime: number): void {
     // isDiving() as well as submergedF: the chase camera trails ~1.5u ABOVE
@@ -2480,6 +2537,12 @@ export class GameScene extends THREE.Scene {
     if (!this.deepFauna.length) return;
     const sea = this.island.seaLevel();
     const camPos = this.camera ? this.camera.position : null;
+    // Reef fish shy away from a diver too — stateless, like the bait ball, and
+    // applied AFTER each animal's path so the path itself stays a pure
+    // function of time. The JELLIES are deliberately left out below: drifting
+    // straight through a jellyfish and having it ignore you is characterful,
+    // and it is the same reason the manta does not flee either.
+    const diver = this.player ? this.player.getWorldPositionInto(this._fishFlee) : null;
     for (const f of this.deepFauna) {
       // Gate: hemisphere cull + only visible when submerged or close by.
       if (camPos) {
@@ -2499,6 +2562,16 @@ export class GameScene extends THREE.Scene {
           .normalize();
         const r = sea - (1.0 + 0.4 * Math.sin(0.5 * time + f.phase));
         f.group.position.copy(dir).multiplyScalar(r);
+        if (diver) {
+          this._fishAway.copy(f.group.position).sub(diver);
+          const d = this._fishAway.length();
+          if (d < GameScene.REEF_SHY_R && d > 1e-4) {
+            f.group.position.addScaledVector(
+              this._fishAway,
+              ((GameScene.REEF_SHY_R - d) * 0.8) / d,
+            );
+          }
+        }
         // Face along the travel tangent (derivative of the ring).
         const tangent = east
           .multiplyScalar(-Math.sin(ang))
@@ -4008,6 +4081,7 @@ export class GameScene extends THREE.Scene {
         depth: i % 3 === 2 ? 0.6 + Math.random() * 1.6 : 0.02 + Math.random() * 0.07,
         feedTarget: null,
         feedUntil: 0,
+        dash: 0,
       });
     }
     console.log(`🐟 ${this.fish.length} fish in the ocean (3 schools + 4 solos)`);
@@ -4246,6 +4320,7 @@ export class GameScene extends THREE.Scene {
     const seaT = this.island.seaTimeUniform.value;
     const R = this.island.getRadius();
     const shoreY = Math.sin(0.24);
+    const seaR = this.island.seaLevel(); // for the flee's is-that-land probe
     // Far-hemisphere cull: fish behind the horizon still burned full wave
     // sampling + basis math (frustum culling only saves the draw).
     this._fishCam.copy(this.camera.position).normalize();
@@ -4253,13 +4328,91 @@ export class GameScene extends THREE.Scene {
     let wakeBestD2 = 400; // only wake fish within 20u of the camera
     let wakeBestR = 0;
     this._fishWakeAccum += deltaTime;
+    const fleeFrom = this.player ? this.player.getWorldPositionInto(this._fishFlee) : null;
     for (const f of this.fish) {
+      // DECAY FIRST, above every gate and every `continue`. This is the whole
+      // safety argument for the startle: the burst always bleeds away on its
+      // own, so there is no restore step that a branch can skip. Putting it
+      // below the hemisphere cull would strand a culled fish at full dash.
+      if (f.dash > 0) {
+        f.dash -= f.dash * Math.min(1, 2.2 * deltaTime);
+        // Exponential decay only ASYMPTOTES to zero — measured 1.5e-26 still
+        // sitting on a fish long after it settled. Physically nothing, but
+        // snapping makes "the startle always returns to rest" an exact
+        // invariant a test can assert rather than an approximate one.
+        if (f.dash < 1e-4) f.dash = 0;
+      }
       if (f.dir.dot(this._fishCam) < -0.05) {
         f.group.visible = false;
         continue;
       }
       f.group.visible = true;
       const feeding = f.feedTarget !== null && time < f.feedUntil;
+      // STARTLE. Deliberately the ground birds' numbers (flush 3.2u, and 1.4u
+      // once they are feeding) so the sea reads as the same world rather than
+      // a different game. Feeding fish holding their nerve is also the point of
+      // throwing bread — and the bread lands FISH_FEED_THROW_DIST (6u) out, so
+      // a 3.2u flush can never stop a fish reaching it in the first place.
+      //
+      // TWO CEILINGS on the idle 3.2, both worth knowing before anyone tunes
+      // it up: the feed pile only DRAINS while a feeding fish is within 2.5u
+      // of it (so the 1.4 must stay under that, or standing on your own bread
+      // starves the loop you paid for), and the shortest cast puts the bobber
+      // 4.0u out — past 4.0 the water visibly clears around the float while
+      // the bite timer, which is pure chance and reads no fish at all, carries
+      // on regardless. That would teach anglers a mechanic that is not there.
+      //
+      // Note what this does NOT touch: speed, depth, home, feedTarget. It only
+      // bends `heading`, which the tether and the beach-avoid steering below
+      // re-aim every frame anyway — so the fish self-heals the moment you
+      // leave, with nothing to put back.
+      if (fleeFrom && f.jumpT0 < 0) {
+        const flushR = feeding ? 1.4 : 3.2;
+        const d2 = f.group.position.distanceToSquared(fleeFrom);
+        if (d2 < flushR * flushR) {
+          this._fishAway.copy(f.group.position).sub(fleeFrom);
+          // Tangent-project: a fish cannot swim radially, and dir/heading are
+          // strictly tangent to the sphere. Skipping this tilts the heading
+          // off the surface and the re-normalise below eats the turn.
+          this._fishAway.addScaledVector(f.dir, -this._fishAway.dot(f.dir));
+          if (this._fishAway.lengthSq() > 1e-6) {
+            this._fishAway.normalize();
+            // NEVER FLEE ONTO THE BEACH. A swimmer seaward of a fish pushes it
+            // shoreward, and this steer is stronger than the beach-avoid lerp
+            // further down (up to 0.167/frame against 0.1) — so it wins, and a
+            // fish driven up the ramp renders at waveR-depth INSIDE the
+            // terrain. MEASURED while herding a shore school: baseline 0 land
+            // samples in 7224, ungated flee 11, and a latitude-based "seaward"
+            // guard still left 3 — because the coast BULGES, so "away from the
+            // beach" is not "toward the equator" anywhere the shoreline bends.
+            //
+            // Ask the terrain instead. Probe 1.5u along the escape; if that is
+            // land, bolt ALONGSHORE (either tangent, whichever is water), and
+            // if a cornered fish has nowhere at all, keep its current heading
+            // rather than steer it into the sand. Up to 3 analytic samples for
+            // a fish that is both inside 3.2u and against a shore — raycast
+            // free, ~0.003ms each.
+            const swimmable = (cand: THREE.Vector3): boolean => {
+              this._fishProbe.copy(f.dir).addScaledVector(cand, this.island.arc(1.5)).normalize();
+              return this.island.analyticSurface(this._fishProbe).radius < seaR - 0.15;
+            };
+            let steer = true;
+            if (!swimmable(this._fishAway)) {
+              this._fishSide.crossVectors(f.dir, this._fishAway).normalize();
+              if (swimmable(this._fishSide)) this._fishAway.copy(this._fishSide);
+              else if (swimmable(this._fishSide.negate())) this._fishAway.copy(this._fishSide);
+              else steer = false;
+            }
+            if (steer) {
+              // Squared falloff: calm at the edge of the radius, sharp when the
+              // player is on top of them.
+              const near = 1 - Math.sqrt(d2) / flushR;
+              f.heading.lerp(this._fishAway, Math.min(1, 10 * near * deltaTime));
+              f.dash = Math.max(f.dash, GameScene.FISH_DASH * near * near);
+            }
+          }
+        }
+      }
       // Occasional gentle turn, and a rare leap
       if (time > f.turnAt) {
         f.turnAt = time + 2 + Math.random() * 4;
@@ -4317,7 +4470,9 @@ export class GameScene extends THREE.Scene {
       this._fishAxis.crossVectors(f.dir, f.heading);
       if (this._fishAxis.lengthSq() > 1e-8) {
         this._fishAxis.normalize();
-        f.dir.applyAxisAngle(this._fishAxis, (f.speed * deltaTime) / R).normalize();
+        // speed + dash, never speed = dash: the burst is additive so the fish's
+        // own cruising speed is still whatever it was born with.
+        f.dir.applyAxisAngle(this._fishAxis, ((f.speed + f.dash) * deltaTime) / R).normalize();
         f.heading.crossVectors(this._fishAxis, f.dir).normalize();
       }
       // Radius: swim near the surface, or arc up for a jump

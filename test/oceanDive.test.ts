@@ -125,6 +125,80 @@ describe('remote peers see the dive too (world law 2)', () => {
   });
 });
 
+describe('fish flee without leaving anything behind', () => {
+  // The FIRST attempt at this was rejected in review because it overwrote
+  // speed/depth and put the restore inside an `if (swim)` branch — leaving the
+  // water stranded every fish at its fleeing values, permanently. These lock
+  // the structure that makes that impossible, not the tuning.
+
+  // 10700 ≈ the whole of updateFish (the next member starts at 10786). The
+  // advance line sits 8429 chars in, so a shorter window silently stops
+  // testing the thing these assertions are about.
+  test('the startle is ADDITIVE — speed is never written', () => {
+    const u = fn('GameScene.ts', 'private updateFish(deltaTime', 10700);
+    // The burst rides on top of the fish's own cruising speed.
+    expect(u).toMatch(/\(f\.speed \+ f\.dash\)/);
+    // ...and the FLEE BLOCK itself assigns neither speed nor depth. Scoped to
+    // the block, not the whole function: the feed loop legitimately writes
+    // depth (`f.depth = 0.05` when a feast times out), so asserting over all
+    // of updateFish would be asserting something untrue about the file.
+    const flee = fn('GameScene.ts', 'if (fleeFrom && f.jumpT0 < 0)', 2800);
+    expect(flee).not.toMatch(/f\.speed\s*=[^=]/);
+    expect(flee).not.toMatch(/f\.depth\s*=[^=]/);
+    // The only fish field it writes at all is the additive one.
+    expect(flee).toMatch(/f\.dash = Math\.max\(/);
+  });
+
+  test('the decay sits ABOVE the hemisphere cull', () => {
+    // This is the exact shape of the original bug: the loop `continue`s for
+    // every fish behind the horizon, so anything below that gate is skipped
+    // and a culled fish would keep its fled state forever.
+    const u = fn('GameScene.ts', 'private updateFish(deltaTime', 10700);
+    const decay = u.indexOf('f.dash -= f.dash');
+    const cull = u.indexOf('f.group.visible = false');
+    expect(decay).toBeGreaterThan(-1);
+    expect(cull).toBeGreaterThan(-1);
+    expect(decay).toBeLessThan(cull);
+  });
+
+  test('feeding fish hold their nerve', () => {
+    // The pile only drains while a feeding fish is within 2.5u of it, so a
+    // flush radius at or above that would let a player standing on their own
+    // bread starve the loop they just paid for. 1.4 < 2.5 leaves a 1.1u
+    // annulus of eating water even when the player floats right on the pile.
+    const u = fn('GameScene.ts', 'private updateFish(deltaTime', 10700);
+    expect(u).toMatch(/feeding \? 1\.4 : 3\.2/);
+  });
+
+  test('airborne fish are exempt', () => {
+    // activeFishJumps is only decremented on the natural landing branch, so
+    // anything that cut a jump short would leak the counter and permanently
+    // stop every fish in the world from jumping again.
+    const u = fn('GameScene.ts', 'private updateFish(deltaTime', 10700);
+    expect(u).toMatch(/fleeFrom && f\.jumpT0 < 0/);
+  });
+
+  test('the escape is checked against the TERRAIN, not a latitude', () => {
+    // A swimmer seaward pushes a fish shoreward, and this steer out-muscles
+    // the beach-avoid lerp. Measured while herding a shore school: baseline 0
+    // land samples in 7224, ungated 11, a latitude-based guard still 3 —
+    // because the coast bulges. Probing the real surface got it back to 0.
+    const u = fn('GameScene.ts', 'private updateFish(deltaTime', 10700);
+    expect(u).toContain('analyticSurface(this._fishProbe)');
+    expect(u).toContain('_fishSide'); // the alongshore fallback
+  });
+
+  test('the shoal and the reef fish part STATELESSLY', () => {
+    // Recomputed from the diver's position every frame, so the ball closes
+    // behind them on its own and there is no stored state to corrupt.
+    const m = fn('GameScene.ts', 'private updateMidwater', 4000);
+    expect(m).toContain('BAIT_PART_R');
+    expect(m).not.toContain('parted'); // no per-instance memory
+    const d = fn('GameScene.ts', 'private updateDeepFauna', 3000);
+    expect(d).toContain('REEF_SHY_R');
+  });
+});
+
 describe('the dive key does not fight the browser', () => {
   test('Shift only — never Control', () => {
     // The keydown handler never calls preventDefault, so teaching the player
