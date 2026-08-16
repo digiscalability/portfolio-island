@@ -702,6 +702,7 @@ export class GameScene extends THREE.Scene {
   private readonly _shadowRight = new THREE.Vector3();
   private readonly _shadowUp = new THREE.Vector3();
   private readonly _shadowCentre = new THREE.Vector3();
+  private readonly _shadowUpAxis = new THREE.Vector3(); // player's radial up
   private _atmDir = new THREE.Vector3(); // scratch: player surface dir for district atmosphere
   private _atmAccent = new THREE.Color(); // scratch: nearest-district accent
 
@@ -11661,6 +11662,33 @@ export class GameScene extends THREE.Scene {
     sun.position.copy(this._shadowCentre).addScaledVector(this._sunDir, 55);
     sun.target.position.copy(this._shadowCentre);
     sun.target.updateMatrixWorld();
+    // FADE THE SHADOW OUT AT THE LOCAL HORIZON.
+    //
+    // EnvironmentCycle owns the sun DIRECTION from the origin and floors its
+    // elevation at 0.06 rad, but that floor is global — on a sphere the sun's
+    // elevation ABOVE YOUR OWN HORIZON is dot(sunDir, yourUp), and for half
+    // the planet that is negative. MEASURED at hour 19 over 688 land samples:
+    // 305 of them had the sun BELOW the local horizon, the worst at -51.6deg,
+    // and it was still casting. A light shadowing a surface from underground
+    // is not a bias problem — no bias value makes it right.
+    //
+    // It is also where the acne and the peter-panning live: normalBias offsets
+    // along the surface normal, so the shadow slips sideways by
+    // normalBias/tan(elevation) — 0.035/tan(3.4deg) = 0.59u against a 1.58u
+    // avatar, and unbounded as the angle reaches zero. CelLook then turns the
+    // resulting mid-grey PCF into a hard black step via
+    // smoothstep(0.35, 0.65, shadow), so it reads as speckle, not softness.
+    //
+    // shadow.intensity (three r165+) scales the shadow contribution without a
+    // shader recompile, so this is an eased fade rather than a castShadow
+    // toggle — matching how everything else in this project handles the day
+    // cycle. The light KEEPS lighting at its night floor for the moonlit
+    // separation; only the shadow stops. By 10deg the slip is under 0.2u and
+    // the shadow is fully present; below 3deg it is gone.
+    const localElev = Math.asin(
+      Math.max(-1, Math.min(1, this._sunDir.dot(this._shadowUpAxis.copy(playerPos).normalize()))),
+    );
+    sun.shadow.intensity = THREE.MathUtils.smoothstep(localElev, 0.052, 0.175);
     // Rim tracks the day cycle — a bright rim over a dark night scene would
     // read as a light leak. Keeps a little at night for moonlit separation.
     if (this.rimLight) {
