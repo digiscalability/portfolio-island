@@ -1330,12 +1330,35 @@ class SimpleApp {
         // before they touch either lever).
         this.scene.getIsland().setGrassBudget(0.5);
         this.renderer.setPostProcessingEnabled(false);
+        // RESTORE MID-SWOOP, NOT ON ARRIVAL. Both levers are whole-IMAGE
+        // changes, and firing them on the frame the camera settles put the
+        // biggest visual discontinuity in the game at the exact moment the
+        // player first looks at the island — read as the screen "glitching".
+        //
+        // MEASURED: toggling post-processing moves 51% of the frame and lifts
+        // mean luminance 100.4 -> 122.3, i.e. +22%, in ONE frame. And that is
+        // NOT bloom — with the bloom AND grade passes both disabled the
+        // composer path still reads 122.3, so the whole jump is the composer
+        // being a linear-HDR pipeline tone-mapped once at the end versus
+        // direct-to-canvas being tone-mapped per material. The two paths
+        // genuinely render different images; the only real fix is to not
+        // switch between them while anyone is watching. Grass 0.5 -> 1.0 pops
+        // on the same frame for good measure.
+        //
+        // At 1.5s of a 2.5s flight the camera is still sweeping, so the change
+        // rides in under the motion and the arrival is clean. The heavy part
+        // of the swoop — the whole planet in frustum — is the FIRST second,
+        // which still runs lean, so the judder this was protecting is intact.
+        const restoreIntroQuality = (): void => {
+          this.scene.getIsland().setGrassBudget(1);
+          this.renderer.setPostProcessingEnabled(true);
+        };
+        window.setTimeout(restoreIntroQuality, 1500);
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
           .then(() => {
-            this.scene.getIsland().setGrassBudget(1);
-            this.renderer.setPostProcessingEnabled(true);
+            restoreIntroQuality(); // idempotent — covers a skipped/short flight
             afterIntro();
           });
       }
