@@ -334,6 +334,19 @@ export class SimpleInputManager {
   }
 
   /**
+   * Free-dive hold. Shift ONLY — deliberately NOT Control: this handler never
+   * calls preventDefault, so teaching the player to hold Ctrl while pressing
+   * WASD means Ctrl+W closes the browser tab (and Ctrl+S, Ctrl+D, Ctrl+A all
+   * fire their browser actions). Space is already triple-booked (tap = jump,
+   * hold in water = float, hold + WASD = run), so the free modifier it is.
+   * purgeStaleKeys only runs while the document is UNFOCUSED, so a held
+   * modifier is never purged despite modifiers having no OS auto-repeat.
+   */
+  public getDiveInput(): boolean {
+    return this.isKeyPressed('shift');
+  }
+
+  /**
    * Get camera input (mouse or touch delta)
    */
   public getCameraInput(): { deltaX: number; deltaY: number } {

@@ -2131,6 +2131,13 @@ class SimpleApp {
         const player = this.scene.getPlayer();
         // Swim: hold Space to stay afloat in water (same key jumps on land)
         if (player) player.setSwimIntent(jumpInput);
+        // Free dive: hold Shift in water to swim DOWN. Independent of Space,
+        // so you can hold both; the dive branch outranks the float branch.
+        if (player) {
+          player.setDiveIntent(this.inputManager.getDiveInput());
+          // The touch DIVE button appears only while actually swimming.
+          this.ui.setAuxActionAvailable('dive', player.isSwimming());
+        }
         // HOLD Space while moving = run (stamina-gated). Tap stays jump —
         // held Space never re-jumps, so the two share the key cleanly.
         if (player) {

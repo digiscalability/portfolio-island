@@ -2061,7 +2061,168 @@ export class GameScene extends THREE.Scene {
     console.log(`🐠 deep fauna: ${this.deepFauna.length} (angelfish + jellies)`);
   }
 
+  // ── Mid-water: the bait ball + the water ceiling ────────────────────────
+  // The column is 5u deep and everything lived at its two extremes — surface
+  // fish above, seabed props below — so a diver passed through nothing. And
+  // the sea is FrontSide, i.e. backface-culled, so from underneath there was
+  // no surface at all: you looked up into bare sky. Both are fixed here.
+  private baitBall: THREE.InstancedMesh | null = null;
+  private baitAnchor = new THREE.Vector3();
+  private baitBase = 0;
+  private waterCeiling: THREE.Mesh | null = null;
+  private readonly _baitM = new THREE.Matrix4();
+  private readonly _baitQ = new THREE.Quaternion();
+  private readonly _baitP = new THREE.Vector3();
+  private readonly _baitS = new THREE.Vector3(1, 1, 1);
+  private readonly _baitAxis = new THREE.Vector3();
+
+  /** Local mulberry32 shield — same contract as createDeepFauna: this runs
+   *  INSIDE initialize's seeded window (setupLighting -> createBirds ->
+   *  createGroundBirds -> here), and three.js mints 4 Math.random draws per
+   *  geometry/material/object. Consuming them from the world stream would
+   *  relocate index-networked vehicles and desync multiplayer. */
+  private createMidwater(): void {
+    const stashedRandom = Math.random;
+    let seed = 0xba17ba11 >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.createMidwaterShielded();
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private createMidwaterShielded(): void {
+    if (!this.island) return;
+    const sea = this.island.seaLevel();
+    // ONE InstancedMesh, one draw — a shoal of 240 sprats. Per-part animated
+    // creatures are this scene's biggest draw-call mass, so the single most
+    // legible "the ocean is alive" beat has to cost one draw, not 240.
+    // Body + a forked tail, MERGED into one geometry so the shoal is still a
+    // single draw. Without the tail the octahedron reads as a drifting leaf;
+    // the silhouette is what sells 240 specks as fish.
+    const sprBody = new THREE.OctahedronGeometry(0.06, 0);
+    sprBody.scale(0.4, 0.55, 1.6);
+    const sprTail = new THREE.ConeGeometry(0.038, 0.075, 3);
+    sprTail.rotateX(Math.PI / 2); // cone +Y -> -Z, i.e. pointing astern
+    sprTail.translate(0, 0, 0.125);
+    const body = mergeGeometries([sprBody, sprTail], false) as THREE.BufferGeometry;
+    const mat = new THREE.MeshToonMaterial({
+      color: 0xbfd8e8,
+      gradientMap: Materials.toonRamp(),
+    });
+    const COUNT = 240;
+    const mesh = new THREE.InstancedMesh(body, mat, COUNT);
+    mesh.name = 'bait_ball';
+    mesh.raycast = () => {}; // never a camera-collision or interaction target
+    mesh.frustumCulled = false; // one object, moves as a group
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    // Seated in open water off the reef, mid-column.
+    this.baitAnchor.copy(this.island.dirAt(2.2, 0.06));
+    this.baitBase = sea - 2.1;
+    // Give every sprat a stable spot on a fuzzy sphere; the swirl is applied
+    // per frame around the shoal's own axis.
+    const seeds: Array<{ r: number; a: number; b: number; sp: number }> = [];
+    for (let i = 0; i < COUNT; i++) {
+      seeds.push({
+        r: 0.55 + Math.random() * 1.15,
+        a: Math.random() * Math.PI * 2,
+        b: (Math.random() - 0.5) * 1.5,
+        sp: 0.5 + Math.random() * 0.7,
+      });
+    }
+    (mesh.userData as { seeds?: typeof seeds }).seeds = seeds;
+    this.add(mesh);
+    this.baitBall = mesh;
+
+    // THE WATER CEILING. A separate inward-facing shell rather than flipping
+    // the sea to DoubleSide: the sea's alpha is overwritten in its own shader
+    // (diffuseColor.a = mix(0.85,0.97,fres)) and that whole material was
+    // tuned single-sided, so flipping it is a coin flip on the most
+    // regression-prone material in the codebase. This is one draw, only ever
+    // visible while diving.
+    const ceilGeo = new THREE.SphereGeometry(sea - 0.02, 24, 16);
+    const ceilMat = new THREE.MeshBasicMaterial({
+      // Bright and thin, not a navy lid: from below, a shallow water surface
+      // is the BRIGHTEST thing in view — it is where the daylight comes from.
+      // depthWrite:false + the default depthTest means opaque terrain still
+      // occludes it correctly, so it only ever shows where you are actually
+      // looking up through water.
+      color: 0x5ec2e8,
+      side: THREE.BackSide, // seen only from inside, i.e. from underwater
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      fog: true,
+    });
+    const ceil = new THREE.Mesh(ceilGeo, ceilMat);
+    ceil.name = 'water_ceiling';
+    ceil.raycast = () => {};
+    ceil.visible = false; // gated on the dive in updateDeepFauna
+    this.add(ceil);
+    this.waterCeiling = ceil;
+  }
+
+  /** Swirl the shoal and show the ceiling — both gated so they cost nothing
+   *  above water. Called from updateDeepFauna, which already runs per frame
+   *  and already has camPos in scope. */
+  private updateMidwater(time: number, under: boolean): void {
+    if (this.waterCeiling) this.waterCeiling.visible = under;
+    const mesh = this.baitBall;
+    if (!mesh) return;
+    // Only animate when it can be seen: 240 matrix writes per frame is cheap
+    // but not free, and above water nobody is looking.
+    const camPos = this.camera?.position;
+    const centre = this._baitP.copy(this.baitAnchor).multiplyScalar(this.baitBase);
+    const near = camPos ? centre.distanceToSquared(camPos) < 1600 : false;
+    mesh.visible = under || near;
+    if (!mesh.visible) return;
+    const seeds = (
+      mesh.userData as { seeds?: Array<{ r: number; a: number; b: number; sp: number }> }
+    ).seeds;
+    if (!seeds) return;
+    // ONE frame quaternion for the whole loop: the shoal's local +Y is the
+    // radial up-axis (World Law 1 — radial, never a terrain normal). Held in
+    // _baitFrameQ so the per-fish facing quaternion can use _baitQ without
+    // clobbering it, and so nothing allocates inside the loop.
+    this._baitFrameQ.setFromUnitVectors(GameScene._localUp, this.baitAnchor);
+    for (let i = 0; i < seeds.length; i++) {
+      const s = seeds[i];
+      const ang = s.a + time * 0.42 * s.sp;
+      const bob = Math.sin(time * 0.8 + s.a * 3) * 0.22;
+      this._baitS
+        .set(Math.cos(ang) * s.r, s.b + bob, Math.sin(ang) * s.r)
+        .applyQuaternion(this._baitFrameQ);
+      this._baitP.copy(this.baitAnchor).multiplyScalar(this.baitBase).add(this._baitS);
+      // Face along the swirl tangent so the shoal reads as circling, not
+      // hanging — derived from the angle already in hand.
+      this._baitAxis
+        .set(-Math.sin(ang), 0, Math.cos(ang))
+        .applyQuaternion(this._baitFrameQ)
+        .normalize();
+      this._baitQ.setFromUnitVectors(GameScene._localForward, this._baitAxis);
+      this._baitM.compose(this._baitP, this._baitQ, GameScene._baitScale);
+      mesh.setMatrixAt(i, this._baitM);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private readonly _baitFrameQ = new THREE.Quaternion();
+  private static readonly _baitScale = new THREE.Vector3(1, 1, 1);
+
   private updateDeepFauna(time: number): void {
+    // isDiving() as well as submergedF: the chase camera trails ~1.5u ABOVE
+    // the swimmer, so submergedF is still 0 for the first ~0.8s of a descent
+    // — the diver's head would drop into an empty ocean, and the murk would
+    // lift again while they were still well under. That first second decides
+    // whether the dive reads as intentional.
+    const underNow = this.player?.isDiving() === true || this.submergedF > 0.01;
+    this.updateMidwater(time, underNow);
     if (!this.deepFauna.length) return;
     const sea = this.island.seaLevel();
     const camPos = this.camera ? this.camera.position : null;
@@ -2070,7 +2231,7 @@ export class GameScene extends THREE.Scene {
       if (camPos) {
         const d2 = f.group.position.distanceToSquared(camPos);
         const hemi = f.anchor.dot(camPos) / camPos.length();
-        f.group.visible = hemi > -0.05 && (this.submergedF > 0.01 || d2 < 900);
+        f.group.visible = hemi > -0.05 && (underNow || d2 < 900);
         if (!f.group.visible) continue;
       }
       if (f.kind === 'angelfish') {
@@ -2485,6 +2646,7 @@ export class GameScene extends THREE.Scene {
     this.createHerons();
     this.createCrabs();
     this.createDeepFauna();
+    this.createMidwater();
     this.refreshPlotMarkers();
   }
 
@@ -7795,7 +7957,9 @@ export class GameScene extends THREE.Scene {
 
     // NB: spawnRipple/spawnSpray use this._fxScratch internally, so callers
     // pass their OWN fresh vectors (never _fxScratch) to avoid aliasing.
-    if (this.player.isSwimming()) {
+    // `swimming` stays true underwater, so without the dive check a diver 4u
+    // down kept stamping foam rings on the surface above their head.
+    if (this.player.isSwimming() && !this.player.isDiving()) {
       const p = this.player.getWorldPosition();
       const dir = p.clone().normalize();
       const surf = this.island.waveHeightAt(dir, this.island.seaTimeUniform.value);

@@ -174,6 +174,37 @@ export class SimplePlayer extends THREE.Group {
   private _swimTangent = new THREE.Vector3();
   private beyondSwimLimit = false; // true while the swim-back current is active
 
+  // ── Free dive ──────────────────────────────────────────────────────────
+  // Going under used to be ONLY the failure state: release the swim button
+  // and gravity pulled you down while the breath drained to a drown. So the
+  // entire seafloor — kelp, coral, the schools, the caustics — was content
+  // you could only reach by dying. This turns the existing sink into a
+  // DELIBERATE descent, reusing the oxygen, the drown, the breath bar, the
+  // swim pose and the submerged camera grade that all already exist.
+  private diveIntent = false; // dive key/button held this frame
+  private diving = false; // MEASURED: the head is genuinely under
+  private lastTerrainDist = 0; // seabed radius, cached by updateGroundState
+  private static readonly DIVE_SPEED = 2.6; // u/s descent
+  private static readonly DIVE_MAX_DEPTH = 4.2; // u below the live wave surface
+  private static readonly DIVE_FLOOR_GAP = 0.85; // playerHeight 0.7 + 0.15 skin
+  // 0.055/s ≈ 18s under. The column is only 4.2u and swim speed is 4.42 u/s,
+  // so a shorter breath than this ends the dive before you have looked at
+  // anything — the whole point of the feature. The drown at 0.16/s stays
+  // exactly as it was for the accidental case.
+  private static readonly DIVE_DRAIN = 0.055;
+  private static readonly ASCEND_SPEED = 3.4; // u/s back toward the surface
+  // Clears the wave envelope (WAVE_AMP 0.2 x max|w| 1.8 + tide 0.09 = 0.45)
+  // with margin, so surfacing never leaves you bobbing half-under.
+  private static readonly ASCEND_SNAP = 0.6;
+
+  public setDiveIntent(held: boolean): void {
+    this.diveIntent = held;
+  }
+  /** True while the head is actually below the surface under a held dive. */
+  public isDiving(): boolean {
+    return this.diving;
+  }
+
   private moveInput: THREE.Vector3 = new THREE.Vector3(); // (x=strafe, y=unused, z=forward)
   private wantJump: boolean = false;
   private rideActive = false; // physics suspended while riding a boat/jetski
@@ -1876,6 +1907,10 @@ export class SimplePlayer extends THREE.Group {
         }
       }
       const groundDist = terrainDist + playerHeight;
+      // The dive's floor clamp needs the seabed radius, and it is already in
+      // hand here — updateGroundState runs immediately before updateWaterState
+      // every frame, so this is same-frame fresh and costs no extra sampling.
+      this.lastTerrainDist = terrainDist;
 
       if (dist <= groundDist) {
         this.isGrounded = true;
@@ -1912,6 +1947,7 @@ export class SimplePlayer extends THREE.Group {
     this.inWater = false;
     this.swimming = false;
     this.beyondSwimLimit = false;
+    this.diving = false;
     if (this.planetRadius <= 0 || !this.waterSampler) {
       this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
       return;
@@ -1937,33 +1973,63 @@ export class SimplePlayer extends THREE.Group {
     this.wasInWater = true;
     const floatDist = water.surface + SimplePlayer.SWIM_FLOAT;
 
-    if (this.swimIntent) {
+    // DIVE FIRST. A dive must work with the swim button also held (the two
+    // are independent inputs), so this branch has to outrank the float arm or
+    // it would be swallowed by it.
+    if (this.diveIntent) {
+      this.swimming = true; // keeps the swim pose, the 0.79x swim speed, ripples
+      this.isGrounded = false;
+      const vRad = this.velocity.dot(dir);
+      this.velocity.addScaledVector(dir, -vRad * 0.9); // gravity must not compound the descent
+      this.applyShorelineCurrent(dir, dt);
+      // Hover clear of the seabed, and never past the column.
+      const deepest = Math.max(
+        this.lastTerrainDist + SimplePlayer.DIVE_FLOOR_GAP,
+        water.surface - SimplePlayer.DIVE_MAX_DEPTH,
+      );
+      const newDist = Math.max(deepest, dist - SimplePlayer.DIVE_SPEED * dt);
+      // setLength, NOT copy(center).addScaledVector(dir, …): the latter
+      // rebuilds the position from the PRE-push direction and so erases the
+      // shoreline current applied two lines up — the leash would silently do
+      // nothing for the whole descent, turning the dive into a barrier bypass.
+      if (newDist < dist) this.playerPosition.setLength(newDist);
+      // Derived from the REAL post-write radius, not from `newDist`: in
+      // shallow water the clamp can leave newDist below the surface without
+      // any write happening, and the breath would drain for a dive that never
+      // occurred.
+      this.diving = this.playerPosition.length() < water.surface - 0.15;
+      this.oxygen = this.diving
+        ? Math.max(0, this.oxygen - dt * SimplePlayer.DIVE_DRAIN)
+        : Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
+      // Oxygen 0 under a held dive is still the ordinary drown — one failure
+      // path, not a new one.
+      if (this.oxygen <= 0 && this.onDrown) this.onDrown();
+    } else if (this.swimIntent) {
       // Afloat: ease the body to the wave surface, kill the radial velocity
       // so gravity can't drag it under, and refill the breath.
       this.swimming = true;
       this.isGrounded = false;
+      // Rate-limited ascent: after a dive the body is up to 4.7u down, and a
+      // 9*dt lerp toward the float line reads as being yanked up by a winch.
+      // Rise at a swimmer's pace, then snap the last stretch.
       const target = dir.clone().multiplyScalar(floatDist);
-      this.playerPosition.lerp(target, Math.min(1, 9 * dt));
+      if (floatDist - dist > SimplePlayer.ASCEND_SNAP) {
+        this.playerPosition.setLength(Math.min(floatDist, dist + SimplePlayer.ASCEND_SPEED * dt));
+      } else {
+        this.playerPosition.lerp(target, Math.min(1, 9 * dt));
+      }
       const vRad = this.velocity.dot(dir);
       this.velocity.addScaledVector(dir, -vRad * 0.9);
-      this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
-      // Shoreline barrier — past the swim limit a current nudges you back toward
-      // the island. It composes with your own strokes, so you can still swim
-      // along the shore; you just can't make headway into the deep ocean.
-      const overshoot = SimplePlayer.SWIM_LIMIT_Y - dir.y;
-      if (overshoot > 0) {
-        this.beyondSwimLimit = true;
-        this._swimTangent
-          .copy(SimplePlayer._poleUp)
-          .addScaledVector(dir, -SimplePlayer._poleUp.dot(dir));
-        if (this._swimTangent.lengthSq() > 1e-6) {
-          this._swimTangent.normalize();
-          const strength = Math.min(1, overshoot / 0.1);
-          this.playerPosition.addScaledVector(this._swimTangent, 4.0 * strength * dt);
-        }
+      // Refill ONLY at the surface. Without this gate, alternating dive and
+      // float holds station 4u down while the breath REFILLS at 0.5/s against
+      // a 0.055/s drain — infinite air, discoverable by mashing two keys.
+      if (this.playerPosition.length() >= water.surface - 0.15) {
+        this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
       } else {
-        this.beyondSwimLimit = false;
+        this.oxygen = Math.max(0, this.oxygen - dt * SimplePlayer.DIVE_DRAIN);
+        if (this.oxygen <= 0 && this.onDrown) this.onDrown();
       }
+      this.applyShorelineCurrent(dir, dt);
     } else {
       // Drowning: let gravity pull the player under and drain the breath.
       // (updateGroundState will still catch them on the seafloor.)
@@ -1971,6 +2037,29 @@ export class SimplePlayer extends THREE.Group {
       if (this.oxygen <= 0 && this.onDrown) {
         this.onDrown();
       }
+    }
+  }
+
+  /**
+   * Shoreline barrier — past the swim limit a current nudges you back toward
+   * the island. It composes with your own strokes, so you can still swim
+   * along the shore; you just can't make headway into the deep ocean.
+   * Hoisted out of the float arm so a DIVE cannot be used to slip past it.
+   */
+  private applyShorelineCurrent(dir: THREE.Vector3, dt: number): void {
+    const overshoot = SimplePlayer.SWIM_LIMIT_Y - dir.y;
+    if (overshoot <= 0) {
+      this.beyondSwimLimit = false;
+      return;
+    }
+    this.beyondSwimLimit = true;
+    this._swimTangent
+      .copy(SimplePlayer._poleUp)
+      .addScaledVector(dir, -SimplePlayer._poleUp.dot(dir));
+    if (this._swimTangent.lengthSq() > 1e-6) {
+      this._swimTangent.normalize();
+      const strength = Math.min(1, overshoot / 0.1);
+      this.playerPosition.addScaledVector(this._swimTangent, 4.0 * strength * dt);
     }
   }
 

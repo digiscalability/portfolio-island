@@ -3445,6 +3445,22 @@ export class SimpleUI {
     makeButton('👆', 'USE', '36px', 'KeyE', 'e', 'rgba(80,150,90,0.5)');
     makeButton('⤒', 'JUMP', '124px', 'Space', ' ', 'rgba(70,120,190,0.5)');
     makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', 'rgba(160,120,60,0.5)');
+    // DIVE — touch's only route to the free dive (Shift is desktop-only).
+    // Contextual like FEED/EAT: it exists only while actually SWIMMING, so a
+    // walker never sees it. Gated on isSwimming(), NOT isInWater(): the
+    // latter is true within 1.2u of a surface that swings +/-0.45 with the
+    // waves, so a player standing at the waterline would watch it strobe.
+    this.diveBtnEl = makeButton(
+      '🤿',
+      'DIVE',
+      '300px',
+      'ShiftLeft',
+      'Shift',
+      'rgba(60,140,175,0.5)',
+      26,
+      'aux-controls',
+    );
+    this.diveBtnEl.style.visibility = 'hidden';
     // FEED goes in a SECOND COLUMN beside USE rather than extending the stack
     // to 374px: on a short landscape phone (the UI explicitly supports
     // max-height 500px) a 4th row would sit over the coin chip and the icon
@@ -3575,14 +3591,15 @@ export class SimpleUI {
 
   private feedBtnEl: HTMLElement | null = null;
   private eatBtnEl: HTMLElement | null = null;
+  private diveBtnEl: HTMLElement | null = null;
   /**
    * Contextual FEED/EAT (mobile-finish): the buttons exist only while the
    * action is actually possible (owns feed / owns meals). Uses visibility so
    * it composes with PanelManager's display-based layer hiding. Desktop is
    * untouched — these buttons are touch-only to begin with.
    */
-  setAuxActionAvailable(kind: 'feed' | 'eat', available: boolean): void {
-    const el = kind === 'feed' ? this.feedBtnEl : this.eatBtnEl;
+  setAuxActionAvailable(kind: 'feed' | 'eat' | 'dive', available: boolean): void {
+    const el = kind === 'feed' ? this.feedBtnEl : kind === 'eat' ? this.eatBtnEl : this.diveBtnEl;
     if (el) el.style.visibility = available ? '' : 'hidden';
   }
 
