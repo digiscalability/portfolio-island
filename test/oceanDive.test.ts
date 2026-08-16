@@ -199,6 +199,71 @@ describe('fish flee without leaving anything behind', () => {
   });
 });
 
+describe('marine snow is one cheap draw that stays in the water', () => {
+  test('NO shader injection — that is what killed the first spec', () => {
+    // The specced version replaced project_vertex with hand-written code that
+    // named its view-space vec4 `mv`, so the later fog_vertex referenced an
+    // `mvPosition` that no longer existed and the program failed to compile.
+    // A stock PointsMaterial needs no injection at all: three's points shader
+    // already includes fog_pars_vertex/fog_vertex after project_vertex, and
+    // both fog and sizeAttenuation default to true.
+    const b = fn('GameScene.ts', 'private buildMarineSnow', 2600);
+    expect(b).toContain('THREE.Points');
+    expect(b).not.toContain('onBeforeCompile');
+  });
+
+  test('ONE draw, not a quad per mote', () => {
+    // The other rejected half of the spec was 380 blended QUADS on the tier
+    // that already sheds ink hulls. Measured live: +1 draw call, +500 points,
+    // +0 triangles.
+    const b = fn('GameScene.ts', 'private buildMarineSnow', 2600);
+    expect(b).toContain('new THREE.Points(geo, mat)');
+    expect(b).not.toMatch(/InstancedMesh|new THREE\.Mesh\(/);
+  });
+
+  test('the tier/a11y-gated count is RNG-shielded', () => {
+    // The count varies by device tier and by the reduced-motion toggle, so an
+    // unshielded builder draws a client-dependent number of values from the
+    // seeded window and desyncs every placement after it — the cel-ink and
+    // grass failure mode.
+    const c = fn('GameScene.ts', 'private createMarineSnow', 900);
+    expect(c).toContain('const stashedRandom = Math.random');
+    expect(c).toContain('finally');
+    expect(c).toContain('Math.random = stashedRandom');
+  });
+
+  test('the field wraps against the WATER SURFACE, not the box', () => {
+    // The box is 5.5u tall but a diver only reaches 4.2u down, and from below
+    // nothing occludes upward (the sea is backface-culled, the ceiling is
+    // depthWrite:false) while the fog is 15x thinner in air — so motes above
+    // the waterline render as crisp specks against the sky. Measured before
+    // the clamp: 64 of 500 airborne, highest +1.37u.
+    const u = fn('GameScene.ts', 'private updateMarineSnow', 3800);
+    expect(u).toContain('waveHeightAt');
+    expect(u).toMatch(/const ceilY = Math\.min\(/);
+    // ...and the wrap uses the BAND. Wrapping a shortened band by the full 2H
+    // overshoots below -H and the mote ping-pongs every frame: that mistake
+    // measured +4.67u, worse than the bug it was fixing.
+    expect(u).toMatch(/arr\[o \+ 1\] -= band/);
+    expect(u).toMatch(/arr\[o \+ 1\] \+= band/);
+  });
+
+  test('one wave sample per FRAME, not per mote', () => {
+    // The bubble pool samples waveHeightAt per particle; at 500 motes that
+    // would be 500 analytic evaluations a frame for a scalar that barely
+    // varies across a 5.5u box.
+    const u = fn('GameScene.ts', 'private updateMarineSnow', 3800);
+    const body = u.slice(u.indexOf('for (let i = 0'));
+    expect(body).not.toContain('waveHeightAt');
+  });
+
+  test('it costs nothing above water', () => {
+    const u = fn('GameScene.ts', 'private updateMarineSnow', 3800);
+    expect(u).toMatch(/pts\.visible = under/);
+    expect(u).toMatch(/if \(!under \|\| !this\.player\) return/);
+  });
+});
+
 describe('the dive key does not fight the browser', () => {
   test('Shift only — never Control', () => {
     // The keydown handler never calls preventDefault, so teaching the player

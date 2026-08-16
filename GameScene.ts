@@ -17,6 +17,9 @@ import { OrbitCamera } from './OrbitCamera';
 import { RaceSystem, type RaceEvent, type RaceHudStatus } from './RaceSystem';
 import { sfx } from './Sfx';
 import { SimplePlayer } from './SimplePlayer';
+// Tier gate for the marine-snow count. Safe to import: SimpleRenderer pulls in
+// only SoftLook and Theme, so this adds no cycle.
+import { SimpleRenderer } from './SimpleRenderer';
 import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
@@ -2359,6 +2362,8 @@ export class GameScene extends THREE.Scene {
     this.mantaUniforms = uniforms;
     this.mantaPhase = Math.random() * Math.PI * 2;
     this.mantaAngle = Math.random() * Math.PI * 2;
+    this.createMarineSnow();
+
     // SOLVED, not authored. A ring centred on the bait anchor crosses a reef
     // shelf that rises to 0.80u below the surface, and a 5.2u animal does not
     // fit in 0.80u of water — it was being pushed clean out of the sea. The
@@ -2367,6 +2372,179 @@ export class GameScene extends THREE.Scene {
     // stream (it is inside the shield, but it must be RNG-free regardless).
     this.mantaRing = solveMantaRing(this.island, BAIT_LON, BAIT_LAT);
     this._mantaCentre.copy(this.island.dirAt(this.mantaRing.lon, this.mantaRing.lat));
+  }
+
+  /**
+   * MARINE SNOW — the drifting particulate that makes water read as water
+   * rather than as empty blue. One THREE.Points, one draw, invisible above the
+   * surface.
+   *
+   * Built on the RAIN pattern (EnvironmentCycle.rebuildPrecip) rather than a
+   * new one: Points + PointsMaterial + a soft round sprite, positions in a
+   * local box, frustumCulled off, CPU-stepped. An earlier spec proposed 380
+   * blended QUADS and an injected vertex shader; the quads landed on the tier
+   * that already sheds ink hulls, and the shader would not have compiled — it
+   * declared a local named `mv` while three's fog_vertex chunk works on
+   * `mvPosition`. There is no injection here at all, so that cannot recur.
+   *
+   * SHIELDED ON ITS OWN SEED even though the caller is already shielded. The
+   * count is TIER- AND a11y-GATED, so two clients draw different numbers of
+   * scatter values from whatever stream is live — and the law learned from the
+   * cel-ink and grass leaks is that a gated builder inside the seeded window
+   * must consume ZERO of the surrounding stream, not merely "usually be last".
+   * This way the ordering inside createMidwaterShielded stays free to change.
+   */
+  private createMarineSnow(): void {
+    const stashedRandom = Math.random;
+    let seed = 0x5eaf10e5 >>> 0;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      this.buildMarineSnow();
+    } finally {
+      Math.random = stashedRandom;
+    }
+  }
+
+  private buildMarineSnow(): void {
+    const calm = a11y.reducedMotion;
+    // The rain's own reasoning applies: the vestibular problem is the AMOUNT
+    // of coherent flow. Marine snow is already 40x slower than rain, so calm
+    // only thins it; nothing here needs freezing.
+    const count = SimpleRenderer.isLowTierDevice() ? 240 : calm ? 320 : 500;
+    const pos = new Float32Array(count * 3);
+    const drift = new Float32Array(count);
+    const H = GameScene.SNOW_BOX;
+    for (let i = 0; i < count; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 2 * H;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * 2 * H;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 2 * H;
+      // Sink rate. Real marine snow falls at centimetres per second; this is
+      // slow enough to read as suspended rather than as rain underwater.
+      drift[i] = (calm ? 0.06 : 0.11) + Math.random() * (calm ? 0.06 : 0.14);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xd8e9f2,
+      size: 0.06,
+      map: GameScene.snowMoteTexture(),
+      transparent: true,
+      opacity: 0.5,
+      // depthWrite off so motes never punch holes in the water ceiling or the
+      // sea; depthTest stays ON so the seabed still occludes them.
+      depthWrite: false,
+      sizeAttenuation: true,
+      // Fogged on purpose: the murk is what gives the field its depth, and
+      // FogExp2 at 0.07 fades the far side of the box to nothing.
+      fog: true,
+    });
+    const pts = new THREE.Points(geo, mat);
+    pts.name = 'marine_snow';
+    pts.frustumCulled = false; // it is always centred on the diver
+    pts.raycast = () => {};
+    pts.visible = false; // gated on the dive, like the water ceiling
+    this.add(pts);
+    this.marineSnow = pts;
+    this.snowDrift = drift;
+  }
+
+  /** Tiny soft round mote — turns the square default point into a speck. */
+  private static snowMoteTexture(): THREE.Texture {
+    if (this._snowMoteTex) return this._snowMoteTex;
+    const c = document.createElement('canvas');
+    c.width = 16;
+    c.height = 16;
+    const g = c.getContext('2d');
+    if (g) {
+      const grad = g.createRadialGradient(8, 8, 0, 8, 8, 8);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 16, 16);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this._snowMoteTex = tex;
+    return tex;
+  }
+
+  /**
+   * Drift the motes and keep the field around the diver.
+   *
+   * THE TRAP this avoids: the rain simply parks its Points object on the
+   * player every frame, which is invisible at 13-21 u/s but would pin slow
+   * motes to the viewer like dirt on the lens. So the diver's frame-to-frame
+   * displacement is SUBTRACTED from every mote in local space before the sink
+   * is applied — the field stays put in the world while the box follows you —
+   * and each axis wraps by modulo rather than re-scattering, so motes stream
+   * past continuously instead of popping to new spots.
+   */
+  private updateMarineSnow(deltaTime: number, under: boolean): void {
+    const pts = this.marineSnow;
+    if (!pts || !this.snowDrift) return;
+    pts.visible = under;
+    if (!under || !this.player) return;
+    const H = GameScene.SNOW_BOX;
+    const now = this.player.getWorldPositionInto(this._snowPos);
+    // Orient local +Y to the radial up so "down" is toward the planet centre.
+    this._snowUp.copy(now).normalize();
+    pts.position.copy(now);
+    pts.quaternion.setFromUnitVectors(GameScene._localUp, this._snowUp);
+    // Diver displacement since last frame, expressed in the box's local frame.
+    this._snowStep.copy(now).sub(this._snowPrev);
+    this._snowPrev.copy(now);
+    // A step bigger than the box is not swimming — it is the first frame, a
+    // respawn, or the walk between two dives (the early return above leaves
+    // _snowPrev at wherever you last surfaced). Counter-moving by a 200u
+    // journey would drag the whole field through the wrap for a quarter of a
+    // second, so treat any such jump as "re-seat the field where you are".
+    if (this._snowStep.lengthSq() > H * H) this._snowStep.set(0, 0, 0);
+    this._snowInv.copy(pts.quaternion).invert();
+    this._snowStep.applyQuaternion(this._snowInv);
+    // THE CEILING. The box is 5.5u tall but a diver only reaches 4.2u down, so
+    // its top pokes out of the sea — and from below NOTHING occludes upward:
+    // the sea is FrontSide (backface-culled, no colour and no depth write) and
+    // the water ceiling is depthWrite:false. Above water the fog is 0.0045
+    // against 0.07 below, 15x thinner, so those motes render as crisp white
+    // specks against the sky. MEASURED at a 4.13u dive: 64 of 500 motes
+    // airborne, the highest 1.37u clear of the surface.
+    //
+    // One analytic wave sample per FRAME, not per mote (the bubble pool
+    // samples per particle; at 500 motes that would be 500 evaluations).
+    const surf = this.island.waveHeightAt(this._snowUp, this.island.seaTimeUniform.value);
+    const ceilY = Math.min(H, surf - now.length() - 0.06);
+    // Wrap by the BAND, not by the box. The vertical band is [-H, ceilY] and
+    // shrinks as the diver nears the surface; wrapping a shortened band by the
+    // full 2H overshoots below -H, and the mote then ping-pongs between the
+    // two wraps every frame. Measured when I got this wrong: motes 4.67u out
+    // of the water, worse than the bug being fixed.
+    const band = Math.max(0.5, ceilY + H);
+    const attr = pts.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const arr = attr.array as Float32Array;
+    const sway = Math.sin(this._snowClock) * 0.03;
+    this._snowClock += deltaTime * 0.35;
+    for (let i = 0; i < this.snowDrift.length; i++) {
+      const o = i * 3;
+      arr[o] += sway * deltaTime - this._snowStep.x;
+      arr[o + 1] -= this.snowDrift[i] * deltaTime + this._snowStep.y;
+      arr[o + 2] -= this._snowStep.z;
+      // Wrap by modulo: continuity is what keeps a slow field from twinkling.
+      if (arr[o] > H) arr[o] -= 2 * H;
+      else if (arr[o] < -H) arr[o] += 2 * H;
+      // Wraps against the WATER SURFACE, not the box, so no mote is ever in
+      // the air; the band just gets shorter as you approach the surface.
+      if (arr[o + 1] > ceilY) arr[o + 1] -= band;
+      else if (arr[o + 1] < -H) arr[o + 1] += band;
+      if (arr[o + 2] > H) arr[o + 2] -= 2 * H;
+      else if (arr[o + 2] < -H) arr[o + 2] += 2 * H;
+    }
+    attr.needsUpdate = true;
   }
 
   /** Swirl the shoal and show the ceiling — both gated so they cost nothing
@@ -2496,6 +2674,19 @@ export class GameScene extends THREE.Scene {
           this._baitP.addScaledVector(this._baitAway, ((GameScene.BAIT_PART_R - d) * 0.85) / d);
         }
       }
+      // ...and a second, tighter bubble around the LENS. The bubble above is
+      // centred on the swimmer's body, which is the physically right place for
+      // fish to avoid — but the chase camera sits ~1.0u away from it, outside
+      // that hole, so a sprat can sit on the near plane and fill the screen.
+      // MEASURED: nearest sprat 0.583u from the camera, and its 0.066u body at
+      // that range projects to ~62px — the grey slab in the dive screenshots.
+      if (camPos) {
+        this._baitAway.copy(this._baitP).sub(camPos);
+        const dc = this._baitAway.length();
+        if (dc < GameScene.BAIT_LENS_R && dc > 1e-4) {
+          this._baitP.addScaledVector(this._baitAway, (GameScene.BAIT_LENS_R - dc) / dc);
+        }
+      }
       // Face along the swirl tangent so the shoal reads as circling, not
       // hanging — derived from the angle already in hand.
       this._baitAxis
@@ -2512,6 +2703,31 @@ export class GameScene extends THREE.Scene {
   private readonly _baitFrameQ = new THREE.Quaternion();
   private readonly _baitFlee = new THREE.Vector3();
   private readonly _baitAway = new THREE.Vector3();
+  private marineSnow: THREE.Points | null = null;
+  private snowDrift: Float32Array | null = null;
+  private static _snowMoteTex: THREE.Texture | null = null;
+  private readonly _snowPos = new THREE.Vector3();
+  private readonly _snowPrev = new THREE.Vector3();
+  private readonly _snowStep = new THREE.Vector3();
+  private readonly _snowUp = new THREE.Vector3();
+  private readonly _snowInv = new THREE.Quaternion();
+  private _snowClock = 0;
+  /**
+   * Half-extent of the mote box, in metres.
+   *
+   * Sized to the murk, not to the world, and then to DENSITY. At
+   * UNDERWATER_FOG_DENSITY 0.07 the fog is 39% opaque at 10u, so a 7u half-box
+   * was already wider than a diver can see — but 260 motes across 2744u^3 is
+   * 0.095 per cubic metre, which rendered as a handful of specks rather than
+   * as water. Volume is cubic, so pulling the box in is far cheaper than
+   * pushing the count up: 5.5u holds 1331u^3, and 500 motes there is 0.38 per
+   * cubic metre — 4x the density for less than 2x the points.
+   *
+   * Not smaller than this: the box corner sits at 9.5u, where the fog is 33%
+   * opaque, and that is what hides the edge of the field. Shrink it further
+   * and a diver can see the snow stop.
+   */
+  private static readonly SNOW_BOX = 5.5;
   private static readonly _baitScale = new THREE.Vector3(1, 1, 1);
   /**
    * Radius of the hole a diver opens in the bait ball, in metres.
@@ -2522,6 +2738,15 @@ export class GameScene extends THREE.Scene {
    * "a body's width of clear water".
    */
   private static readonly BAIT_PART_R = 1.6;
+  /**
+   * Minimum distance a sprat may sit from the CAMERA, in metres.
+   *
+   * Not art direction — a projection bound. A sprat body is 0.066u tall, the
+   * frame is 712px at fov 66, so it covers 0.066/d * 548 pixels: 62px at
+   * 0.58u, 25px at 1.4u, 12px at 3u. 1.5 keeps every sprat under ~24px, i.e.
+   * reading as a fish rather than as a slab across the lens.
+   */
+  private static readonly BAIT_LENS_R = 1.5;
   /** How close a diver gets before a reef fish slides aside, in metres. */
   private static readonly REEF_SHY_R = 2.2;
 
@@ -2534,6 +2759,7 @@ export class GameScene extends THREE.Scene {
     const underNow = this.player?.isDiving() === true || this.submergedF > 0.01;
     this.updateMidwater(time, underNow);
     this.updateManta(time, deltaTime, underNow);
+    this.updateMarineSnow(deltaTime, underNow);
     if (!this.deepFauna.length) return;
     const sea = this.island.seaLevel();
     const camPos = this.camera ? this.camera.position : null;
