@@ -697,6 +697,11 @@ export class GameScene extends THREE.Scene {
   private static readonly SHADOW_EXTENT = 17;
   private rimLight?: THREE.DirectionalLight;
   private _sunDir = new THREE.Vector3();
+  // Shadow-box texel snapping (updateSunShadow) — the basis three's shadow
+  // camera uses, plus the rounded box centre.
+  private readonly _shadowRight = new THREE.Vector3();
+  private readonly _shadowUp = new THREE.Vector3();
+  private readonly _shadowCentre = new THREE.Vector3();
   private _atmDir = new THREE.Vector3(); // scratch: player surface dir for district atmosphere
   private _atmAccent = new THREE.Color(); // scratch: nearest-district accent
 
@@ -11617,8 +11622,44 @@ export class GameScene extends THREE.Scene {
     if (!sun) return;
     this._sunDir.copy(sun.position).normalize();
     if (this._sunDir.lengthSq() < 1e-6) return;
-    sun.position.copy(playerPos).addScaledVector(this._sunDir, 55);
-    sun.target.position.copy(playerPos);
+    // SNAP THE BOX TO SHADOW-MAP TEXELS.
+    //
+    // The box follows the player, and dragging it by a fraction of a texel
+    // re-quantises every shadow edge in the map to a different sub-texel
+    // phase each frame — the depth test flips along whole boundaries and the
+    // edges boil. At SHADOW_EXTENT 17 over a 2048 map that is 34/2048 =
+    // 0.0166 u/texel (0.0332 on the 1024 phone map), and walking at 5.6 u/s
+    // slides the box 0.093 u/frame — about 5.6 texels of pure phase noise
+    // every frame. Cel shading makes it worse, not better: CelLook replaces
+    // the PCF gradient with smoothstep(0.35, 0.65, shadow), so the soft ramp
+    // that would have hidden the wobble becomes a hard two-step edge.
+    //
+    // Rounding the box centre to whole texels means the grid lands on the
+    // same world positions frame to frame, so an edge only moves when it
+    // really moves. This is the standard fix and it costs three dot products.
+    // Raising the bias instead would only trade the crawl for peter-panning.
+    const res = sun.shadow.mapSize.width || 2048;
+    const texel = (2 * GameScene.SHADOW_EXTENT) / res;
+    // Basis MUST match the one three builds for the shadow camera, or the
+    // rounding aligns to a grid the depth map does not use: Object3D.lookAt
+    // takes z = normalize(eye - target) = sunDir, x = cross(camera.up, z),
+    // y = cross(z, x), with shadow.camera.up left at world +Y. It also turns
+    // only with the SUN — a basis that turned with the player would carry the
+    // walk back into the grid and undo the whole thing.
+    const ref = Math.abs(this._sunDir.y) > 0.99 ? GameScene._localRight : GameScene._localUp;
+    this._shadowRight.crossVectors(ref, this._sunDir).normalize();
+    this._shadowUp.crossVectors(this._sunDir, this._shadowRight).normalize();
+    const sx = Math.round(playerPos.dot(this._shadowRight) / texel) * texel;
+    const sy = Math.round(playerPos.dot(this._shadowUp) / texel) * texel;
+    // Depth along the light needs no snapping — it does not quantise the map.
+    const sz = playerPos.dot(this._sunDir);
+    this._shadowCentre
+      .set(0, 0, 0)
+      .addScaledVector(this._shadowRight, sx)
+      .addScaledVector(this._shadowUp, sy)
+      .addScaledVector(this._sunDir, sz);
+    sun.position.copy(this._shadowCentre).addScaledVector(this._sunDir, 55);
+    sun.target.position.copy(this._shadowCentre);
     sun.target.updateMatrixWorld();
     // Rim tracks the day cycle — a bright rim over a dark night scene would
     // read as a light leak. Keeps a little at night for moonlit separation.
