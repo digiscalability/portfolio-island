@@ -50,8 +50,23 @@ describe('seafloor life scales with the shore, not the surface', () => {
 
 describe('underwater murk is human-scale', () => {
   test('the submerged density is an absolute constant, not radius-derived', () => {
-    // The old code reached ~0.12 only by multiplying the island fog (0.45/R),
-    // so the radius silently owned it: R=100 gave 0.090 (-25%).
-    expect(UNDERWATER_FOG_DENSITY).toBeCloseTo(0.12, 5);
+    // THE POINT OF THIS TEST is that the radius must not own this value. The
+    // old code reached ~0.12 only by multiplying the island fog (0.45/R), so
+    // the R=75->100 flip silently dropped it to 0.090 (-25%). Assert the
+    // INVARIANT (a bare constant in a sane band), not one blessed literal —
+    // the value itself is art direction and was retuned to 0.07 once the
+    // dive, the bait ball and the manta gave the murk something to hide.
+    expect(UNDERWATER_FOG_DENSITY).toBeGreaterThan(0.02);
+    expect(UNDERWATER_FOG_DENSITY).toBeLessThan(0.2);
+  });
+
+  test('a diver can see the biggest animal whole', () => {
+    // The manta spans 5.2u, so framing it needs ~10u of standoff. FogExp2 is
+    // 1 - exp(-(d*x)^2); at 0.12 that was 76% fogged — the murk was hiding
+    // the one thing worth diving for.
+    const fogAt = (d: number): number => 1 - Math.exp(-Math.pow(d * UNDERWATER_FOG_DENSITY, 2));
+    expect(fogAt(10)).toBeLessThan(0.5);
+    // ...but the sea must still FADE, or it reads as an aquarium.
+    expect(fogAt(25)).toBeGreaterThan(0.85);
   });
 });

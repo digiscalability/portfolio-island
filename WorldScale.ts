@@ -71,7 +71,28 @@ export const FOG_DENSITY_X_RADIUS = 0.45;
  * ~19.2u (+33%) — while the seabed simultaneously got DEEPER. The murk that had
  * been verified at 0.12 quietly stopped being 0.12.
  */
-export const UNDERWATER_FOG_DENSITY = 0.12;
+/**
+ * THINNED 0.12 -> 0.07 once there was finally something down there to look at.
+ *
+ * 0.12 was tuned when the only underwater content was a shore ring of kelp
+ * and coral you could nearly touch, so a ~7u sight line was plenty. With the
+ * free dive, the bait ball and the manta, it became the thing HIDING them:
+ * FogExp2 is `1 - exp(-(d*x)^2)`, and the manta is 5.2u across, so framing it
+ * whole means standing ~10u off — where 0.12 leaves it 76% fogged. Measured
+ * across the curve:
+ *
+ *   dist    0.12     0.07
+ *    4u    20.6%     7.5%
+ *   10u    76.3%    38.7%   <- the manta's natural viewing distance
+ *   20u    99.7%    85.9%
+ *   25u   100.0%    95.3%
+ *
+ * 0.07 puts the 50% line at ~12u instead of ~6.9u. It is deliberately NOT
+ * clearer than that: the reef still fades with distance and full murk still
+ * arrives by ~25u, so the ocean keeps its depth cueing and its "you cannot
+ * see the whole sea" feel rather than turning into an aquarium.
+ */
+export const UNDERWATER_FOG_DENSITY = 0.07;
 
 /**
  * Namespace for anything PERSISTED that is only comparable within one world size.
