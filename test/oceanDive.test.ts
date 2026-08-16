@@ -126,6 +126,35 @@ describe('mid-water life is cheap and RNG-safe', () => {
     expect(m).not.toMatch(/addGroupHulls\s*\(/);
   });
 
+  test('the manta heading comes from the PATH, not a second basis', () => {
+    // Two parameterisations of one circle WILL drift apart. The heading used a
+    // hand-built `east/north` basis where `north = centre x east` points SOUTH
+    // at the equator — harmless only while the position used the same flipped
+    // basis. The moment the position moved to true lon/lat the animal swam
+    // sideways and backwards (measured nose-vs-velocity: 1.7 -> 92.8 -> 178.4
+    // deg round the lap). The heading is now sampled from the circuit itself.
+    // 4190 ≈ the whole of updateManta; updateMidwater begins at 4199, so this
+    // stays inside the function and cannot match the next one's calls.
+    const m = fn('GameScene.ts', 'private updateManta', 4190);
+    expect((m.match(/mantaCircuitLonLat\(/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(m).not.toContain('_mantaNorth');
+  });
+
+  test('the seabed is sampled under the WINGTIPS, not just the origin', () => {
+    // The lowest point of a banked ray is a tip 2.4u out to the side, and the
+    // bank never reverses, so an origin-only sample tolerates just 2.1deg of
+    // upslope before a wing goes through the reef.
+    // 4190 ≈ the whole of updateManta; updateMidwater begins at 4199, so this
+    // stays inside the function and cannot match the next one's calls.
+    const m = fn('GameScene.ts', 'private updateManta', 4190);
+    // THREE samples per frame, but only TWO call sites: the tips share one
+    // inside a two-sided loop. Assert the shape, not a call count — counting
+    // occurrences was this test's own first bug.
+    expect(m).toContain('_mantaTip');
+    expect(m).toMatch(/for \(const side of \[-1, 1\]\)/);
+    expect(m).toMatch(/floorR = Math\.max\(floorR/);
+  });
+
   test('a diver stops stamping foam on the surface overhead', () => {
     expect(
       fn('GameScene.ts', 'if (this.player.isSwimming() && !this.player.isDiving())', 400),

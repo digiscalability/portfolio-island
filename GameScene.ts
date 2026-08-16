@@ -27,10 +27,17 @@ import {
   CAT_SPOTS_AUTHORED,
   CRAB_SPOTS_AUTHORED,
   FLOCK_ANCHORS,
+  MANTA_DEPTH_MID,
+  MANTA_DEPTH_SWING,
+  MANTA_GLIDE,
+  type MantaRing,
   camNearThreshold,
   faunaElevOk,
   faunaGroundSpotOk,
   growSiteRing,
+  mantaCircuitLonLat,
+  mantaDepthFor,
+  solveMantaRing,
 } from './WorldPlacement';
 import {
   FOG_DENSITY_X_RADIUS,
@@ -2074,10 +2081,13 @@ export class GameScene extends THREE.Scene {
   private mantaUniforms: { uFlapT: { value: number }; uFlapA: { value: number } } | null = null;
   private mantaPhase = 0;
   private mantaAngle = 0;
+  /** Solved once at build — the circuit is sited over deep water rather than
+   *  centred on the bait ball, which put a quarter of it on a reef shelf. */
+  private mantaRing: MantaRing | null = null;
+  private readonly _mantaCentre = new THREE.Vector3();
   private readonly _mantaDir = new THREE.Vector3();
-  private readonly _mantaEast = new THREE.Vector3();
-  private readonly _mantaNorth = new THREE.Vector3();
   private readonly _mantaFwd = new THREE.Vector3();
+  private readonly _mantaTip = new THREE.Vector3();
   private readonly _mantaRight = new THREE.Vector3();
   private readonly _mantaBasis = new THREE.Matrix4();
   private readonly _baitM = new THREE.Matrix4();
@@ -2270,7 +2280,9 @@ export class GameScene extends THREE.Scene {
     mesh.frustumCulled = false; // one object, moves as a group
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     // Seated in open water off the reef, mid-column.
-    this.baitAnchor.copy(this.island.dirAt(2.2, 0.06));
+    const BAIT_LON = 2.2;
+    const BAIT_LAT = 0.06;
+    this.baitAnchor.copy(this.island.dirAt(BAIT_LON, BAIT_LAT));
     this.baitBase = sea - 2.1;
     // Give every sprat a stable spot on a fuzzy sphere; the swirl is applied
     // per frame around the shoal's own axis.
@@ -2314,7 +2326,7 @@ export class GameScene extends THREE.Scene {
     this.add(ceil);
     this.waterCeiling = ceil;
 
-    // The manta, circling the same open water as the shoal.
+    // The manta, sweeping the deep pocket next to the shoal.
     const { mesh: manta, uniforms } = this.buildManta();
     manta.visible = false;
     this.add(manta);
@@ -2322,13 +2334,21 @@ export class GameScene extends THREE.Scene {
     this.mantaUniforms = uniforms;
     this.mantaPhase = Math.random() * Math.PI * 2;
     this.mantaAngle = Math.random() * Math.PI * 2;
+    // SOLVED, not authored. A ring centred on the bait anchor crosses a reef
+    // shelf that rises to 0.80u below the surface, and a 5.2u animal does not
+    // fit in 0.80u of water — it was being pushed clean out of the sea. The
+    // solver walks outward until the whole circuit is over deep water. Costs
+    // ~2k analytic samples once, and consumes ZERO draws from the seeded
+    // stream (it is inside the shield, but it must be RNG-free regardless).
+    this.mantaRing = solveMantaRing(this.island, BAIT_LON, BAIT_LAT);
+    this._mantaCentre.copy(this.island.dirAt(this.mantaRing.lon, this.mantaRing.lat));
   }
 
   /** Swirl the shoal and show the ceiling — both gated so they cost nothing
    *  above water. Called from updateDeepFauna, which already runs per frame
    *  and already has camPos in scope. */
-  /** Glide the manta: a slow circuit of a wide ring, depth breathing on its
-   *  own clock, hugging the bottom contour where the reef shelves up. */
+  /** Glide the manta: a slow circuit of the deep pocket beside the shoal,
+   *  depth breathing on its own clock, contour-aware but never breaching. */
   private updateManta(time: number, deltaTime: number, under: boolean): void {
     const manta = this.manta;
     if (!manta || !this.island) return;
@@ -2342,32 +2362,61 @@ export class GameScene extends THREE.Scene {
       this.mantaUniforms.uFlapA.value =
         0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time * 0.698 + this.mantaPhase));
     }
-    // One circuit of a 7.5u ring every ~75s.
-    this.mantaAngle += deltaTime * 0.084;
-    const anchor = this.baitAnchor;
-    this._mantaEast.set(-anchor.z, 0, anchor.x).normalize();
-    this._mantaNorth.crossVectors(anchor, this._mantaEast).normalize();
-    const RING = 7.5;
+    // Angular rate DERIVED from a linear glide speed — authoring the rate
+    // directly bakes the ring radius into the feel, so retuning the circuit
+    // silently changes how fast the animal swims (the same class of bug that
+    // inflated cloud drift 33% on the R=75->100 flip).
+    const ring = this.mantaRing;
+    if (!ring) return;
+    this.mantaAngle += (deltaTime * MANTA_GLIDE) / ring.radius;
+    // ONE definition of the circuit, shared with the solver and the tests.
+    // Expanded into a scratch vector here (this is dirAt's body) so the per
+    // frame path stays allocation-free.
+    const p = mantaCircuitLonLat(this.island, ring, this.mantaAngle);
+    const cosLat = Math.cos(p.lat);
     this._mantaDir
-      .copy(anchor)
-      .addScaledVector(this._mantaEast, (Math.cos(this.mantaAngle) * RING) / 100)
-      .addScaledVector(this._mantaNorth, (Math.sin(this.mantaAngle) * RING) / 100)
+      .set(cosLat * Math.cos(p.lon), Math.sin(p.lat), cosLat * Math.sin(p.lon))
       .normalize();
-    const sea = this.island.seaLevel();
-    const want = sea - (2.4 + 0.8 * Math.sin(time * 0.273 + this.mantaPhase));
-    // The ring crosses the shelving reef skirt, so clamp to the real bottom.
-    // analyticSurface is raycast-free (~0.003ms) — one call per frame.
-    const floorR = this.island.analyticSurface(this._mantaDir).radius;
-    const r = Math.max(floorR + 1.4, Math.min(sea - 1.3, want));
-    manta.position.copy(this._mantaDir).multiplyScalar(r);
-    // Basis: local +Y radial (World Law 1 — plumb, never a terrain normal),
-    // local -Z along the tangent heading. Same makeBasis idiom as the fish.
+    // HEADING FROM THE PATH ITSELF — a point a hair further round the lap —
+    // never from a separately-built east/north basis. Those are two
+    // parameterisations of the same circle and they can silently disagree:
+    // `north = centre x east` is SOUTH-pointing at the equator, which was
+    // invisible while the position used the same flipped basis, and became a
+    // manta swimming sideways (measured: nose-vs-velocity cycling
+    // 1.7deg -> 92.8deg -> 178.4deg round the lap) the moment the position
+    // moved to true lon/lat. Deriving the heading from the path makes that
+    // whole class of bug impossible.
+    const q = mantaCircuitLonLat(this.island, ring, this.mantaAngle + 0.01);
+    const cosLatQ = Math.cos(q.lat);
     this._mantaFwd
-      .copy(this._mantaEast)
-      .multiplyScalar(-Math.sin(this.mantaAngle))
-      .addScaledVector(this._mantaNorth, Math.cos(this.mantaAngle))
-      .normalize();
+      .set(cosLatQ * Math.cos(q.lon), Math.sin(q.lat), cosLatQ * Math.sin(q.lon))
+      .sub(this._mantaDir);
+    // Drop the radial part so the heading is a true tangent, then negate: the
+    // basis puts local +Z on this axis while the NOSE is local -Z (horns sit at
+    // z=-1.55, tail at z=+2.35), so +Z has to point astern.
+    this._mantaFwd
+      .addScaledVector(this._mantaDir, -this._mantaFwd.dot(this._mantaDir))
+      .normalize()
+      .negate();
     this._mantaRight.crossVectors(this._mantaDir, this._mantaFwd).normalize();
+    const sea = this.island.seaLevel();
+    const want = MANTA_DEPTH_MID + MANTA_DEPTH_SWING * Math.sin(time * 0.273 + this.mantaPhase);
+    // Contour-aware, but the SURFACE wins the clamp. Sampled under both
+    // WINGTIPS as well as the origin: the lowest point of a banked ray is a
+    // tip 2.4u out to the side, and the bank never reverses (0.18 + 0.1*sin is
+    // always positive), so with only an origin sample an upslope steeper than
+    // atan(0.085/2.33) = 2.1deg would put a wing through the reef.
+    // analyticSurface is raycast-free (~0.003ms); three taps is ~0.01ms.
+    let floorR = this.island.analyticSurface(this._mantaDir).radius;
+    for (const side of [-1, 1]) {
+      this._mantaTip
+        .copy(this._mantaDir)
+        .addScaledVector(this._mantaRight, this.island.arc(side * 2.4))
+        .normalize();
+      floorR = Math.max(floorR, this.island.analyticSurface(this._mantaTip).radius);
+    }
+    manta.position.copy(this._mantaDir).multiplyScalar(sea - mantaDepthFor(sea - floorR, want));
+    // Basis: local +Y radial (World Law 1 — plumb, never a terrain normal).
     this._mantaBasis.makeBasis(this._mantaRight, this._mantaDir, this._mantaFwd);
     manta.quaternion.setFromRotationMatrix(this._mantaBasis);
     // Bank into the turn — composed AFTER the basis, the trick the fish pitch
