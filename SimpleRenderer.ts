@@ -73,11 +73,14 @@ export class SimpleRenderer {
   private fpsHighThreshold = 57; // recover quality above this
 
   // Quality governor: when renderScale is pinned at its floor and the frame
-  // rate is still under budget, engage discrete rungs in order — R1 bloom off
-  // (desktop only; the low tier never builds a composer), R2 shadow map at
+  // rate is still under budget, engage discrete rungs in order — R1 bloom PASS
+  // off (desktop only; the low tier never builds a composer), R2 shadow map at
   // half rate, R3 half the grass — and release them in REVERSE as headroom
   // returns. Per-direction cooldowns on top of the low/high hysteresis stop
-  // it oscillating.
+  // it oscillating; rung 3 additionally waits 3x as long to release.
+  // NONE of these rungs may switch RENDERING PATH: composer vs direct-to-canvas
+  // tone-map in different places and differ by 21% mean luminance, so a governor
+  // that toggled the composer was strobing the whole image (see engageRung).
   private qualityRung = 0;
   private static readonly MAX_QUALITY_RUNG = 3;
   private static readonly RUNG_ENGAGE_COOLDOWN_S = 4;
@@ -90,7 +93,7 @@ export class SimpleRenderer {
     // Create WebGL renderer with anti-aliasing
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true, // native MSAA: the whole image on the low tier (no composer) and the bloom-off path elsewhere
+      antialias: true, // native MSAA for the low tier (no composer) and any direct-path frame; the composer carries its own samples:4 target
       alpha: false,
       powerPreference: 'high-performance',
       precision: 'highp',
@@ -473,18 +476,26 @@ export class SimpleRenderer {
       this.lowStreak = 0;
       if (this.qualityRung > 0) {
         // Headroom is back: release rungs first (reverse order)... but keep the
-        // GRASS rung (rung 3, the deepest + most visible) STICKY — release it
-        // only with clear EXTRA headroom, so grass doesn't pop 44k<->22k on a
-        // borderline device that holds FPS at half-grass but not full ("grass
-        // going less and more randomly").
-        const releaseBar =
+        // GRASS rung (rung 3, the deepest + most visible) STICKY, so grass
+        // doesn't pop 44k<->22k on a borderline device that holds FPS at
+        // half-grass but not full ("grass going less and more randomly").
+        //
+        // STICKY IN TIME, NOT IN RATE. This used to demand `fpsHighThreshold + 8`.
+        // applyRefreshEstimate caps the adaptive target at 60 on EVERY display, so
+        // fpsHighThreshold is 57 and that bar was 65 — ABOVE VSYNC on the commonest
+        // panel there is, and unreachable no matter how healthy the machine got.
+        // Because releases are strictly reverse-order and the resolution claw-back
+        // below is gated on `qualityRung === 0`, one bad dip that walked the ladder
+        // to rung 3 pinned the WHOLE session at floor resolution + no bloom +
+        // half-rate shadows + half grass, permanently. There is only 3fps of room
+        // between the release bar and the cap, so no rate margin can work here;
+        // asking for the SAME rate sustained 3x longer expresses "don't pop grass
+        // on a borderline device" without asking for a frame rate that cannot exist.
+        const releaseCooldown =
           this.qualityRung === SimpleRenderer.MAX_QUALITY_RUNG
-            ? this.fpsHighThreshold + 8
-            : this.fpsHighThreshold;
-        if (
-          this.fpsEma > releaseBar &&
-          this.rungCooldown >= SimpleRenderer.RUNG_RELEASE_COOLDOWN_S
-        ) {
+            ? SimpleRenderer.RUNG_RELEASE_COOLDOWN_S * 3
+            : SimpleRenderer.RUNG_RELEASE_COOLDOWN_S;
+        if (this.fpsEma > this.fpsHighThreshold && this.rungCooldown >= releaseCooldown) {
           this.setQualityRung(this.qualityRung - 1);
         }
       } else if (this.renderScale < 1) {
@@ -521,11 +532,37 @@ export class SimpleRenderer {
   private engageRung(rung: number): void {
     switch (rung) {
       case 1:
-        // Bloom off. Remember whether it was actually on so release doesn't
-        // force bloom onto someone who toggled it off themselves (Ctrl+B).
-        // On the low tier (no composer) both calls are inert no-ops.
-        this.bloomSuspendedByGovernor = this.postProcessingEnabled;
-        this.setPostProcessingEnabled(false);
+        // Bloom off — the BLOOM PASS, not the whole composer.
+        //
+        // This used to call setPostProcessingEnabled(false), which does not turn
+        // bloom off so much as switch RENDERING PATHS: composer.render() draws to
+        // a linear-HDR target and tone-maps ONCE in OutputPass, while the direct
+        // path tone-maps per material inside every fragment shader. The two
+        // genuinely render different images. MEASURED here, 12 readings, whole
+        // frame: composer 127.8 mean luminance vs direct 100.5 — the governor's
+        // FIRST and supposedly gentlest lever was a 21% full-screen brightness
+        // DROP, engaged ahead of shadows and grass, on machines already struggling.
+        //
+        // Disabling the pass instead leaves RenderPass -> OutputPass intact, so
+        // tone mapping still happens once in the same place. MEASURED: 127.70 ->
+        // 127.57, a 0.11% change, which is just bloom's own additive light going
+        // away. Nothing else about the image moves.
+        //
+        // HONEST COST: this is a WEAKER rung. Interleaved GPU timing, 150 rounds:
+        // composer+bloom 10.48ms, bloom pass off 9.85ms, composer off 9.11ms — so
+        // the pass is 0.63ms of the 1.37ms that composer-off used to save, i.e.
+        // 46%. The other 54% is the HDR target, the MSAA resolve and the OutputPass
+        // blit, which are fixed costs of being in a composer at all. Machines that
+        // used to recover on R1 will now walk to R2/R3 — which is exactly why the
+        // rung-3 release fix above is part of this change and not a follow-up.
+        if (this.bloomPass) {
+          // Snapshot the SAME field the release restores, or a governor engage
+          // taken while bloom is already off would re-enable it on release.
+          this.bloomSuspendedByGovernor = this.bloomPass.enabled;
+          this.bloomPass.enabled = false;
+        } else {
+          this.bloomSuspendedByGovernor = false; // low tier: no composer was built
+        }
         break;
       case 2:
         // Shadow half-rate: render() re-arms needsUpdate every 2nd frame.
@@ -554,7 +591,10 @@ export class SimpleRenderer {
         this.renderer.shadowMap.autoUpdate = true;
         break;
       case 1:
-        if (this.bloomSuspendedByGovernor) this.setPostProcessingEnabled(true);
+        // Restores the pass, never the render path — see engageRung. Keyed to the
+        // same field it snapshotted, so a user who turned bloom off themselves
+        // does not get it forced back on.
+        if (this.bloomSuspendedByGovernor && this.bloomPass) this.bloomPass.enabled = true;
         this.bloomSuspendedByGovernor = false;
         break;
     }
