@@ -8,6 +8,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
+import { SWIM_DIVE_MAX, SWIM_PRONE, SWIM_TREAD, swimPitchTarget } from '../SimplePlayer';
+
 const src = (f: string): string => readFileSync(join(process.cwd(), f), 'utf8');
 
 const fn = (file: string, marker: string, span = 3500): string => {
@@ -50,6 +52,76 @@ describe('the dive is reachable and bounded', () => {
     const w = fn('SimplePlayer.ts', 'private updateWaterState', 5000);
     // dive arm, float-at-depth arm, and the original sink arm
     expect((w.match(/this\.onDrown\(\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('the swimmer points where they are going', () => {
+  // The complaint was that a descent "reads as falling". MEASURED on a real
+  // dive, the body sat 104-123 degrees away from its direction of travel — it
+  // descended broadside-on. These lock the shape of the fix, not its tuning.
+
+  test('level swimming is EXACTLY as it was authored', () => {
+    // The surface poses were tuned by eye and must not move: any drift here is
+    // a regression in the common case, which is 99% of swimming.
+    expect(swimPitchTarget(0, 4.4, true, false)).toBe(SWIM_PRONE);
+    expect(swimPitchTarget(0, 0, false, false)).toBe(SWIM_TREAD);
+  });
+
+  test('a descent takes the body past horizontal, head-down', () => {
+    // PI/2 is exactly horizontal; past it the head leads downward.
+    const p = swimPitchTarget(-2.6, 4.4, true, true);
+    expect(p).toBeGreaterThan(Math.PI / 2);
+    expect(p).toBeLessThanOrEqual(SWIM_DIVE_MAX);
+  });
+
+  test('the steepest dive is capped, not a handstand', () => {
+    // Straight down with no stroke aligns to PI. The cap is what keeps the
+    // avatar inside DIVE_FLOOR_GAP as well as looking like a swimmer.
+    expect(swimPitchTarget(-2.6, 0, false, true)).toBeCloseTo(SWIM_DIVE_MAX, 6);
+    expect(SWIM_DIVE_MAX).toBeLessThan(Math.PI);
+  });
+
+  test('HOLDING at depth stays committed, never stands upright', () => {
+    // THE BUG this pass introduced and caught: the pitch is derived from the
+    // vertical RATE, and a diver parked on the floor has a rate of zero — so
+    // the body eased all the way back to TREAD and stood bolt upright 4u down
+    // while the player was still holding the dive key.
+    expect(swimPitchTarget(0, 0, false, true)).toBe(SWIM_PRONE);
+    expect(swimPitchTarget(0, 0, false, true)).toBeGreaterThan(SWIM_TREAD);
+  });
+
+  test('rising brings the head back up', () => {
+    expect(swimPitchTarget(3.4, 0, false, false)).toBeLessThan(SWIM_TREAD);
+  });
+
+  test('the wave bob does not tilt a floating swimmer', () => {
+    // The float easing and the swell both move the radius; without a deadband
+    // a swimmer bobbing on the surface would pitch back and forth.
+    expect(swimPitchTarget(0.2, 0, false, false)).toBe(SWIM_TREAD);
+    expect(swimPitchTarget(-0.2, 4.4, true, false)).toBe(SWIM_PRONE);
+  });
+});
+
+describe('remote peers see the dive too (world law 2)', () => {
+  test('the remote pose shares the LOCAL function, not a copied constant', () => {
+    // "Remote peers keep their OWN copies of these poses — fix both or other
+    // players stay broken." The remote branch used to hardcode 1.35, which had
+    // already drifted from the local pose.
+    const s = src('SimplePlayer.ts');
+    const remote = s.slice(s.indexOf('activePose === 1'), s.indexOf('activePose === 2'));
+    expect(remote).toContain('swimPitchTarget(');
+    // Match the ASSIGNMENT, not the number — the comment above the fix
+    // legitimately names the old constant, and matching the word made this
+    // test fail on its own documentation.
+    expect(remote).not.toMatch(/rotation\.x = 1\.35/);
+  });
+
+  test('the peer dive is DERIVED from the position stream, not a wire change', () => {
+    // A new wire field would need a rules deploy and would break against
+    // clients that never update. The radius delta is already on the wire.
+    const m = src('Multiplayer.ts');
+    expect(m).toContain('setSwimMotion');
+    expect(m).toMatch(/swimRadial = \(nextR - prevR\) \/ dt/);
   });
 });
 

@@ -60,6 +60,12 @@ interface Peer {
   targetPos: THREE.Vector3;
   targetQuat: THREE.Quaternion;
   lastSeen: number;
+  // Swim motion derived from the position stream (see handleMessage): vertical
+  // rate in u/s (negative = descending) and horizontal speed, so a DIVING peer
+  // strikes the dive pose. 0 = never sampled.
+  swimRadial: number;
+  swimTang: number;
+  motionAt: number;
   waveSprite: THREE.Sprite | null;
   waveUntil: number;
   // Procedural body shown instantly; swapped for the shared GLTF model when
@@ -116,6 +122,7 @@ export class Multiplayer {
   private peerWave = new Map<string, number>(); // last wave value seen per peer
   private chatHandler?: (msg: WireMessage) => void;
   private _selfPos = new THREE.Vector3(); // scratch for the 10Hz state write
+  private _peerMotion = new THREE.Vector3(); // scratch for the peer swim-rate derive
 
   constructor(scene: THREE.Scene, player: SimplePlayer) {
     this.scene = scene;
@@ -565,8 +572,36 @@ export class Multiplayer {
       return;
     }
     // state
-    if (msg.p) peer.targetPos.set(msg.p[0], msg.p[1], msg.p[2]);
+    if (msg.p) {
+      // DERIVE the peer's swim motion from the position stream — no new wire
+      // field, so this works against clients that never update, in both
+      // directions, with no rules deploy. The pose byte only says "in water";
+      // a diving visitor would otherwise replay a flat surface crawl while
+      // their broadcast position sank past you.
+      //
+      // Measured at ARRIVAL, not per frame: packets land at ~10Hz, so dividing
+      // a per-frame delta by the frame dt reads zero on five frames out of six.
+      // And from targetPos, never avatar.position, which lags through the
+      // 12*dt interpolation below.
+      const t = performance.now() / 1000;
+      const next = this._peerMotion.set(msg.p[0], msg.p[1], msg.p[2]);
+      const dt = t - peer.motionAt;
+      if (peer.motionAt > 0 && dt > 0.02 && dt < 1 && peer.targetPos.lengthSq() > 1) {
+        const prevR = peer.targetPos.length();
+        const nextR = next.length();
+        peer.swimRadial = (nextR - prevR) / dt;
+        // Horizontal component: total step with the radial part removed. p is
+        // sent at toFixed(2), which is <0.01u of radius noise — ~0.09 u/s at
+        // 10Hz, well inside the 0.25 u/s deadband.
+        const step = next.distanceTo(peer.targetPos);
+        const flat = Math.sqrt(Math.max(0, step * step - (nextR - prevR) ** 2));
+        peer.swimTang = flat / dt;
+      }
+      peer.motionAt = t;
+      peer.targetPos.copy(next);
+    }
     if (msg.q) peer.targetQuat.set(msg.q[0], msg.q[1], msg.q[2], msg.q[3]);
+    peer.remote?.setSwimMotion(peer.swimRadial, peer.swimTang);
     if (msg.name) {
       const clean = safePeerName(msg.name);
       if (clean !== peer.name) {
@@ -699,6 +734,9 @@ export class Multiplayer {
       targetPos: new THREE.Vector3(),
       targetQuat: new THREE.Quaternion(),
       lastSeen: performance.now() / 1000,
+      swimRadial: 0,
+      swimTang: 0,
+      motionAt: 0,
       waveSprite,
       waveUntil: 0,
       fallbackParts,

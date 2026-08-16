@@ -15,9 +15,97 @@ export interface RemoteAvatar {
   // Pose byte broadcast by the owner (0 on-foot, 1 swimming, 2 riding, 3 airborne)
   // so peers strike the right pose instead of always walk-cycling upright.
   setPose: (pose: number) => void;
+  // Vertical + horizontal speed of the peer, so a DIVING visitor reads as
+  // diving rather than as a flat surface swimmer. Derived by Multiplayer from
+  // the position stream — see swimPitchTarget.
+  setSwimMotion: (radialRate: number, tangSpeed: number) => void;
   // Play the arm-raise wave gesture (mirrors the local player's Q wave).
   wave: () => void;
   dispose: () => void;
+}
+
+/* --------------------------------------------------------------------------
+ * SWIM PITCH — one definition, used by the local player AND by every remote
+ * peer. Kept as a pure module function on purpose: a pose written twice and
+ * fixed once is this codebase's single most repeated defect (CLAUDE.md world
+ * law 2, "fix both or other players stay broken"), and the remote copy had
+ * already drifted to a hardcoded 1.35.
+ * ----------------------------------------------------------------------- */
+
+/** Near-flat crawl. */
+export const SWIM_PRONE = 1.35;
+/** Upright-ish water tread. */
+export const SWIM_TREAD = 0.45;
+/**
+ * Ceiling on the travel-aligned dive pitch, in radians.
+ *
+ * A player holding dive with no forward input descends straight down, and a
+ * perfectly aligned body there (PI) would be a literal handstand. Bounded by
+ * TWO independent limits, which very nearly agree:
+ *
+ * READABILITY, chosen by staging three pitches on the real avatar: 2.45 rad
+ * (140 deg) is a head-first plunge with the legs vertical — readable, but it
+ * stops looking like swimming; 2.04 (117 deg) is what an ordinary dive settles
+ * into and looks right; 2.2 (126 deg) is head-down and angled with the legs
+ * trailing up behind, still a swimmer at the steepest descent the game allows.
+ *
+ * THE SEABED. Pitch rotates the model about its own origin, which sits at the
+ * FEET, so a head-down body reaches further below the player root than an
+ * upright one and DIVE_FLOOR_GAP (0.85) stops being enough. Measured on the
+ * rig, lowest vertex below the root: pitch 0 -> 0.700 (exactly playerHeight,
+ * which validates the probe), 1.35 -> 0.443, 2.04 -> 0.751, 2.15 -> 0.835,
+ * 2.20 -> 0.870, 2.45 -> 1.017. Anything past ~2.17 pokes the head through the
+ * floor at the clamp; 2.15 keeps the whole body inside the existing gap with
+ * 0.015u to spare and costs no dive depth.
+ *
+ * NOTE this is the OPPOSITE correction to the one an earlier review guessed at.
+ * It rejected a proposed fixed SWIM_DIVE = 1.85 as "reads as falling" and
+ * suggested ~1.6 — i.e. LESS pitch. Measured on a real descent, the body was
+ * already 104-123 degrees away from its direction of travel at pitch 0.65,
+ * descending broadside-on. It reads as falling because it is not aligned with
+ * where it is going; the fix is MORE pitch, tracked to the travel direction,
+ * not a smaller constant.
+ */
+export const SWIM_DIVE_MAX = 2.15;
+/** Vertical rate (u/s) below which the pose ignores the water's own motion. */
+export const SWIM_VERT_DEADBAND = 0.25;
+/** Descent rate a full dive holds; the alignment weight is normalised by it. */
+export const SWIM_DIVE_SPEED = 2.6;
+
+/**
+ * The body pitch a swimmer should hold, in radians.
+ *
+ * rotation.x = theta puts the feet->head axis at (0, cos theta, sin theta):
+ * 0 upright, PI/2 horizontal head-forward, past that head-DOWN. Travel in the
+ * same frame is (0, radialRate, tangSpeed), so the pitch that points the body
+ * where it is going is just the atan2 of the two — no forward vector needed,
+ * because the avatar already faces its horizontal heading.
+ *
+ * @param radialRate u/s away from the planet centre — NEGATIVE while descending
+ * @param tangSpeed  u/s across the surface
+ * @param moving     stroking rather than holding station
+ * @param diving     the dive is being held (local: isDiving; remote: inferred)
+ */
+export function swimPitchTarget(
+  radialRate: number,
+  tangSpeed: number,
+  moving: boolean,
+  diving: boolean,
+): number {
+  let target = moving ? SWIM_PRONE : SWIM_TREAD;
+  const vertical = Math.abs(radialRate);
+  if (vertical > SWIM_VERT_DEADBAND) {
+    const align = Math.min(SWIM_DIVE_MAX, Math.atan2(Math.max(0, tangSpeed), radialRate));
+    const w = Math.min(1, (vertical - SWIM_VERT_DEADBAND) / (SWIM_DIVE_SPEED - SWIM_VERT_DEADBAND));
+    target += (align - target) * w;
+  }
+  // HOLDING AT DEPTH IS STILL DIVING. The pitch above is derived from the
+  // vertical RATE, and a diver who has reached the floor — or the 4.2u depth
+  // ceiling — has a rate of zero. Without this floor the body eases all the
+  // way back to TREAD and stands bolt upright 4u down while the player is
+  // still holding the dive key. Face-down and streamlined is what hovering at
+  // the bottom should look like.
+  return diving ? Math.max(target, SWIM_PRONE) : target;
 }
 
 /** Cosmetic hats sold in the island shop. */
@@ -655,6 +743,12 @@ export class SimplePlayer extends THREE.Group {
     let poseW = 0;
     let swimClock = 0;
     let waveT = 0;
+    // Peer swim motion, fed by Multiplayer from the position stream, plus the
+    // eased pitch — eased here rather than sent, so a 10Hz packet rate can't
+    // make a visitor's body snap between attitudes.
+    let swimRadial = 0;
+    let swimTang = 0;
+    let swimPitchR = 0;
 
     const update = (dt: number, speed: number): void => {
       if (mixer) mixer.update(dt);
@@ -672,14 +766,29 @@ export class SimplePlayer extends THREE.Group {
       if (poseW > 0.001 && activePose !== 0) {
         if (activePose === 1) {
           // Swimming: face-down tilt + alternating overhead crawl + flutter
-          // kick. 1.35 prone + 0.3 trailing-leg bias match the local swim
-          // pose (the byte carries no moving/idle split, so peers always
-          // read as stroking — the common case).
+          // kick. The pitch comes from the SHARED swimPitchTarget, driven by
+          // the peer's own vertical/horizontal speed (Multiplayer derives both
+          // from the position stream), so a DIVING visitor reads as diving.
+          // This used to be a hardcoded 1.35 that had already drifted from the
+          // local pose — the exact failure world law 2 exists to prevent.
           swimClock += dt * 6;
           const s = Math.sin(swimClock);
           const s2 = Math.sin(swimClock * 2);
-          model.rotation.x = 1.35 * poseW;
-          model.rotation.z = s * 0.18 * poseW;
+          // The byte carries no moving/idle split, so peers always read as
+          // stroking — the common case. A descending peer is "diving" by the
+          // same deadband the local player uses.
+          const target = swimPitchTarget(
+            swimRadial,
+            swimTang,
+            true,
+            swimRadial < -SWIM_VERT_DEADBAND,
+          );
+          swimPitchR += (target - swimPitchR) * Math.min(1, 6 * dt);
+          model.rotation.x = swimPitchR * poseW;
+          // Clamped exactly as the local pose is: past PRONE this stops being
+          // "how flat" and would over-drive the roll and the leg trail.
+          const prone = Math.min(1, swimPitchR / SWIM_PRONE);
+          model.rotation.z = s * 0.18 * prone * poseW;
           // Same rest-relative crawl as the local player (see applySwimPose):
           // blend out from -PI rather than from the live value, which flips
           // sign across +/-PI between frames.
@@ -729,6 +838,10 @@ export class SimplePlayer extends THREE.Group {
     const setPose = (pose: number): void => {
       curPose = pose;
     };
+    const setSwimMotion = (radialRate: number, tangSpeed: number): void => {
+      swimRadial = radialRate;
+      swimTang = tangSpeed;
+    };
     const wave = (): void => {
       waveT = SimplePlayer.WAVE_DURATION;
     };
@@ -739,7 +852,7 @@ export class SimplePlayer extends THREE.Group {
       for (const m of clonedMats) m.dispose();
     };
 
-    return { body, headBone, update, setPose, wave, dispose };
+    return { body, headBone, update, setPose, setSwimMotion, wave, dispose };
   }
 
   /** Procedural toon hats sold in the island shop (also used by remote avatars). */
@@ -946,6 +1059,13 @@ export class SimplePlayer extends THREE.Group {
   public sitDown(seatPos: THREE.Vector3, faceDir: THREE.Vector3): void {
     this.seated = true;
     this.velocity.set(0, 0, 0);
+    // Drop any swim tilt, exactly as setRiding does. update() returns at the
+    // seated branch BEFORE the swimPoseActive self-heal, and applySitPose only
+    // writes limb bones — never the model root — so sitting on the frame you
+    // leave the water used to hold the tilt for the whole seated period. It
+    // was a one-frame race at 1.35; a head-down dive pitch makes it obvious.
+    this.clearSwimPose();
+    this.swimPoseActive = false;
     this.playerPosition.copy(seatPos);
     // Orient: up = surface normal, forward (+Z of the model) = faceDir
     const up = this.getSurfaceNormal();
@@ -1008,21 +1128,44 @@ export class SimplePlayer extends THREE.Group {
    * cadence (a gentle tread when holding station).
    */
   // Eased body pitch while in water: → PRONE when stroking, → TREAD when
-  // holding station. Zeroed by clearSwimPose so every exit path resets it.
+  // holding station, → along the DIRECTION OF TRAVEL while descending or
+  // rising. Zeroed by clearSwimPose so every exit path resets it.
   private swimPitch = 0;
-  private static readonly SWIM_PRONE = 1.35; // near-flat crawl
-  private static readonly SWIM_TREAD = 0.45; // upright-ish water tread
 
-  private applySwimPose(dt: number, moving: boolean): void {
+  /**
+   * Last radius, so the pose can see the vertical motion the VELOCITY HIDES.
+   *
+   * The dive does not move the body through `this.velocity` — it writes the
+   * radius directly (`playerPosition.setLength`) and then actively KILLS the
+   * radial velocity so gravity can't compound the descent. So a pitch derived
+   * from `this.velocity` would be blind to the entire dive. The frame-to-frame
+   * radius is the only honest source, and it also picks up the float, the
+   * rate-limited ascent and the wave bob for free.
+   *
+   * 0 means "no previous sample" — first frame in the water reports no vertical
+   * rate rather than a garbage one, which also absorbs teleports and respawns.
+   */
+  private poseDist = 0;
+
+  private applySwimPose(dt: number, moving: boolean, tangSpeed = 0): void {
     this.swimPhase += dt * (moving ? 7 : 3.2);
     const s = Math.sin(this.swimPhase);
     const s2 = Math.sin(this.swimPhase * 2);
     // The body LIES DOWN into the stroke and rights itself to tread — the
     // old fixed 1.15 pitch read as "standing at a lean" in both states.
     // min(1,k·dt) composes across the ≤20ms physics substeps.
-    const pitchTarget = moving ? SimplePlayer.SWIM_PRONE : SimplePlayer.SWIM_TREAD;
+    // POINT THE BODY WHERE IT IS GOING. The surface poses stay exactly as
+    // authored for horizontal swimming; swimPitchTarget only bends them once
+    // the swimmer is genuinely moving up or down. Shared with remote peers.
+    const dist = this.playerPosition.length();
+    const radialRate = this.poseDist > 0 ? (dist - this.poseDist) / Math.max(dt, 1e-4) : 0;
+    this.poseDist = dist;
+    const pitchTarget = swimPitchTarget(radialRate, tangSpeed, moving, this.diving);
     this.swimPitch += (pitchTarget - this.swimPitch) * Math.min(1, 6 * dt);
-    const prone = this.swimPitch / SimplePlayer.SWIM_PRONE; // 0..1 how flat
+    // CLAMPED at 1: past PRONE this is no longer "how flat" but "how far past
+    // flat", and it drives the leg trail and the roll. Unclamped, a 2.15 dive
+    // pitch would push it to 1.59 and swing the legs 0.48 rad instead of 0.3.
+    const prone = Math.min(1, this.swimPitch / SWIM_PRONE); // 0..1 how flat
     // Legs trail BEHIND the body as it flattens, flutter riding on top.
     //
     // legL/legR have a NON-identity rest of exactly R_x(PI) (the bone's +Y
@@ -1128,6 +1271,9 @@ export class SimplePlayer extends THREE.Group {
   /** Undo the swim tilt when leaving the water (mixer resumes on land). */
   private clearSwimPose(): void {
     this.swimPitch = 0; // next water entry eases in from upright again
+    // Drop the radius sample too, or the first frame of the NEXT swim measures
+    // a vertical rate across the whole walk between the two swims.
+    this.poseDist = 0;
     if (this.gltfModel) {
       this.gltfModel.rotation.x = 0;
       this.gltfModel.rotation.z = 0;
@@ -1756,7 +1902,7 @@ export class SimplePlayer extends THREE.Group {
         .copy(this.velocity)
         .addScaledVector(surfN, -this.velocity.dot(surfN))
         .length();
-      this.applySwimPose(safeDeltaTime, this.swimming && tang > 0.4);
+      this.applySwimPose(safeDeltaTime, this.swimming && tang > 0.4, tang);
       this.swimPoseActive = true;
       this.updateWorldMatrix();
       return;
