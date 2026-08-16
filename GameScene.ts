@@ -11484,7 +11484,27 @@ export class GameScene extends THREE.Scene {
         .lerp(GameScene._cloudStorm, this.cloudWet);
       // Formation crossfade (Slice A): fair set yields to the storm set on the
       // SAME eased wet value, with visible-gating so a faded set costs zero.
-      this.cloudMat.opacity = 0.92 * (1 - this.cloudWet * 0.85);
+      //
+      // 1 - wet, NOT 0.92 * (1 - wet * 0.85) — TWO BUGS IN ONE EXPRESSION, both
+      // of which this line quietly caused every frame:
+      //
+      // (a) THE 0.92 KILLED A SHIPPED FIX. `5c632dd` set the constructor's
+      //     opacity to 1 with nine lines explaining why: a formation is
+      //     overlapping puffs merged into ONE mesh, three.js sorts transparency
+      //     per-MESH, so at any alpha below 1 a cloud blends its own BACK puffs
+      //     through its front ones and the interior reads as mottled — which is
+      //     exactly what "clouds are blurry" was. That commit only touched the
+      //     constructor. This line re-imposed 0.92 on frame 1 and every frame
+      //     after, so the fix has never once been visible. Verified live before
+      //     this change: cloudMat.opacity read 0.92, not 1.
+      //
+      // (b) THE * 0.85 MEANT THE FAIR SET NEVER HIDES. It floored fair opacity
+      //     at 0.92 * 0.15 = 0.138, always above the 0.02 gate below — so in
+      //     full rain all 24 fair cumulus still drew, see-through, ghosting
+      //     through the 12 storm slabs in the same altitude band. The comment
+      //     directly above ("visible-gating so a faded set costs zero") was
+      //     false in both halves. Reaching a true 0 makes it true.
+      this.cloudMat.opacity = 1 - this.cloudWet;
       if (this.stormCloudMat) this.stormCloudMat.opacity = 0.95 * this.cloudWet;
       for (const pivot of this.cloudPivots) {
         const set = (pivot.userData as Record<string, unknown>).cloudSet;
