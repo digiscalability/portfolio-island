@@ -264,6 +264,20 @@ describe('marine snow is one cheap draw that stays in the water', () => {
   });
 });
 
+describe('no underwater transparent writes depth', () => {
+  test('the jellyfish tentacles match their own dome', () => {
+    // A transparent material that writes depth occludes everything drawn
+    // after it while being see-through. The dome sets depthWrite:false; the
+    // tentacles two lines below it were left on the default true — the only
+    // underwater transparent in the scene that did (audited live: the sea is
+    // the sole other one, and that is deliberate).
+    const j = fn('GameScene.ts', 'Jellyfish — translucent drifting bells', 2600);
+    expect(j).toContain('LineBasicMaterial');
+    const line = j.slice(j.indexOf('new THREE.LineBasicMaterial'));
+    expect(line.slice(0, 220)).toContain('depthWrite: false');
+  });
+});
+
 describe('the dive key does not fight the browser', () => {
   test('Shift only — never Control', () => {
     // The keydown handler never calls preventDefault, so teaching the player

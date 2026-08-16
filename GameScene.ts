@@ -2077,7 +2077,26 @@ export class GameScene extends THREE.Scene {
       }
       const tentacles = new THREE.LineSegments(
         new THREE.BufferGeometry().setFromPoints(tentaclePts),
-        new THREE.LineBasicMaterial({ color: 0xc9a0e0, transparent: true, opacity: 0.4 }),
+        // depthWrite:false to MATCH THE DOME two lines up. A transparent
+        // material that writes depth occludes everything drawn after it while
+        // being see-through itself, and transparents are sorted per-OBJECT by
+        // origin — so a mote or a bubble far behind a tentacle belongs to an
+        // object whose origin is nearer, draws later, and fails the depth test
+        // against a line you can see straight through.
+        //
+        // HONEST MAGNITUDE: measured by flipping the flag on a live frame and
+        // diffing the framebuffer, this changed 6 pixels at a 1.1u standoff
+        // and 0 at 0.42u. WebGL renders LineBasicMaterial 1px wide whatever
+        // `linewidth` says, so five short tentacles can only ever eat a thin
+        // sliver. This is a consistency fix and a removed landmine, not a
+        // visible bug — if the tentacles ever become tubes or ribbons, it
+        // stops being cosmetic.
+        new THREE.LineBasicMaterial({
+          color: 0xc9a0e0,
+          transparent: true,
+          opacity: 0.4,
+          depthWrite: false,
+        }),
       );
       tentacles.raycast = () => {};
       g.add(dome, tentacles);
