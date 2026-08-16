@@ -3118,6 +3118,11 @@ export class Island {
       color: 0xffffee,
       transparent: true,
       opacity: 0.55,
+      // See the dust material below for the full reasoning: a transparent that
+      // writes depth occludes whatever is drawn after it while being
+      // see-through, and every other particle system here (bubbles, rain,
+      // marine snow, the jelly bell) already sets this.
+      depthWrite: false,
     });
     const particles = new THREE.InstancedMesh(
       new THREE.SphereGeometry(0.04, 4, 4),
@@ -3736,6 +3741,30 @@ export class Island {
       color: 0xeeddaa,
       transparent: true,
       opacity: 0.35,
+      /*
+       * A transparent material that WRITES DEPTH occludes everything drawn
+       * after it while being see-through itself. Both ambient shells have
+       * their object origin at the planet centre, so they sort at ~103u and
+       * draw early among the transparents — before every pooled effect,
+       * bubble, sprite label and chat pin, all of which were created later and
+       * sort by their own real distance.
+       *
+       * MEASURED IMPACT: none. Flipping this flag on a live frame and diffing
+       * the framebuffer gave 0 changed pixels at spawn, 0 across a 10-pose
+       * sweep around the island, 0 with a sprite deliberately staged behind a
+       * mote, and 0 with the camera 0.4u from a mote (41px on screen). The
+       * reason is structural: the motes are scattered at radius+0.3..4.5 over
+       * the WHOLE sphere while the terrain rises to radius+18, so most of them
+       * are buried in opaque ground that already occludes them correctly, and
+       * the transparents they could clip are mostly inactive pool slots at
+       * opacity 0.
+       *
+       * So this is a consistency fix and a removed landmine, not a bug fix —
+       * every other particle system in the project (bubbles, rain/snow, marine
+       * snow, the jellyfish bell) already sets depthWrite:false, and these two
+       * were the last exceptions.
+       */
+      depthWrite: false,
     });
     const dustParticles = new THREE.InstancedMesh(
       new THREE.SphereGeometry(0.03, 4, 4),
