@@ -1073,9 +1073,17 @@ export class SimplePlayer extends THREE.Group {
       .clone()
       .sub(up.clone().multiplyScalar(faceDir.dot(up)))
       .normalize();
-    const right = up.clone().cross(fwd).normalize();
-    const m = new THREE.Matrix4().makeBasis(right, up, fwd);
-    this.quaternion.setFromRotationMatrix(m);
+    // Write the seat facing into YAW, not into the quaternion. Writing the
+    // quaternion here was DEAD CODE: updateWorldMatrix (below, and again on
+    // every seated frame) unconditionally rebuilds it as
+    // `yawQuat(surfaceNormal, this.yaw) * alignQuat`, and sitDown never set
+    // this.yaw — so the carefully built seat basis was discarded on the same
+    // line that applied it, and you sat facing whichever way you happened to
+    // walk up. Solving for yaw instead means the one owner of the transform
+    // keeps owning it.
+    const align = this._alignQuat.setFromUnitVectors(SimplePlayer._poleUp, up);
+    const ref = new THREE.Vector3(0, 0, 1).applyQuaternion(align); // model +Z at yaw 0
+    this.yaw = Math.atan2(up.dot(ref.clone().cross(fwd)), ref.dot(fwd));
     this.updateWorldMatrix();
   }
 
@@ -1103,8 +1111,15 @@ export class SimplePlayer extends THREE.Group {
           if (o.name === 'legR') this.legRBone = bone;
         });
       }
-      if (this.legLBone) this.legLBone.rotation.x = -1.35;
-      if (this.legRBone) this.legRBone.rotation.x = -1.35;
+      // REST-ANCHORED (world law 2), same conversion as the ride pose: the
+      // GLB's legs rest at R_x(PI), so a raw -1.35 wiped it and gave a limb
+      // axis of (0, 0.22, -0.98) — thighs up and BACK, through the bench.
+      // PI - 1.35 = 1.79 -> (0, -0.22, 0.98): forward over the seat edge.
+      // The procedural values below are NOT touched; that rig's rest is
+      // identity, which is why the same constant sent the two rigs opposite
+      // ways and is the tell that this branch was wrong.
+      if (this.legLBone) this.legLBone.rotation.x = Math.PI - 1.35;
+      if (this.legRBone) this.legRBone.rotation.x = Math.PI - 1.35;
     } else if (this.legPivots.length === 2) {
       this.legPivots[0].rotation.x = -1.45;
       this.legPivots[1].rotation.x = -1.45;
@@ -1255,10 +1270,27 @@ export class SimplePlayer extends THREE.Group {
         });
       }
       this.gltfModel.rotation.set(lean, 0, sway);
-      if (this.legLBone) this.legLBone.rotation.x = legX;
-      if (this.legRBone) this.legRBone.rotation.x = legX;
-      if (this.armLBone) this.armLBone.rotation.x = armX;
-      if (this.armRBone) this.armRBone.rotation.x = armX;
+      // REST-ANCHORED, like the swim/wave/chop poses. legX/armX below were
+      // authored for the PROCEDURAL rig, whose pivots have an IDENTITY rest,
+      // and this branch reused them raw — wiping the GLB's non-identity rest
+      // exactly as world law 2 warns. MEASURED on the live rig before the fix:
+      // legL.rotation.x = 0 gave a limb axis of (0, 1, 0), i.e. BOTH LEGS
+      // POINTING STRAIGHT UP the torso, and armR = -0.5 gave (0, 0.88, -0.48),
+      // up and BACKWARD off the helm. Every second of every ride, dead centre
+      // of the chase frame.
+      //
+      // The two rigs differ by exactly their rest, so the conversion is
+      // GLB = REST + procedural, the same relation the swim legs already use
+      // (`Math.PI + 0.3 * prone` there against `0.3 * prone` here). Limb axis
+      // is (0, cos t, sin t) with +Z forward, which makes the results:
+      //   boat legs   PI + 0.0  = 3.14 -> (0,-1.00, 0.00) straight down, standing
+      //   jetski legs PI - 1.15 = 1.99 -> (0,-0.41, 0.91) knees up and forward
+      //   boat arms  -PI - 0.5  = -3.64 -> (0,-0.88, 0.48) down and forward, at the helm
+      //   jetski arms -PI - 0.95 = -4.09 -> (0,-0.59, 0.81) forward onto the bars
+      if (this.legLBone) this.legLBone.rotation.x = Math.PI + legX;
+      if (this.legRBone) this.legRBone.rotation.x = Math.PI + legX;
+      if (this.armLBone) this.armLBone.rotation.x = -Math.PI + armX;
+      if (this.armRBone) this.armRBone.rotation.x = -Math.PI + armX;
     } else if (this.legPivots.length === 2 && this.armPivots.length === 2) {
       this.mesh.rotation.set(lean, 0, sway);
       this.legPivots[0].rotation.x = legX;
