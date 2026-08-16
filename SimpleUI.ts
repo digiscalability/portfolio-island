@@ -50,6 +50,33 @@ export interface AwayDelta {
 }
 
 /** Data contract for the Island Journal — main-simple supplies a provider. */
+/** One inventory line: what you hold, and what it's for. */
+export interface InventoryRow {
+  icon: string;
+  label: string;
+  count: number;
+  /** What to do with it — kept short; rendered muted beside the count. */
+  hint: string;
+}
+/**
+ * What the player currently HOLDS. Deliberately NOT the Journal (which is
+ * progress: n-of-m collections) and NOT the Shop (which is what you can buy).
+ * Sections mirror the economy's own groupings.
+ */
+export interface InventoryData {
+  coins: number;
+  /** Sellable raw resources: catch, harvest, materials. */
+  goods: InventoryRow[];
+  /** Re-buyable charges: feed and meals. */
+  supplies: InventoryRow[];
+  /** Tool ownership — a strip, not rows (4 booleans is not 4 lines). */
+  tools: Array<{ icon: string; name: string; owned: boolean }>;
+  /** Equipped hat + how many of the set are owned. */
+  hats: { equipped: string | null; owned: number; total: number };
+  /** A quest item physically in hand, if any (the Baker's fish). */
+  carrying?: { icon: string; label: string; hint: string } | null;
+}
+
 export interface JournalData {
   stamps: Array<{ icon: string; label: string; has: boolean }>;
   hats: Array<{ icon: string; name: string; owned: boolean }>;
@@ -219,6 +246,7 @@ export class SimpleUI {
     this.createPhotoButton();
     this.createSayHiButton();
     this.createCompletionButton();
+    this.createInventoryButton();
     this.createEmoteButton();
     this.createTouchControls();
     this.initResponsiveHud();
@@ -2040,6 +2068,139 @@ export class SimpleUI {
     this.overlay.appendChild(modal);
   }
 
+  // ── Inventory ("Your Pack") ───────────────────────────────────────────────
+  // The Journal answers "what have I found"; the Shop answers "what can I
+  // buy". Neither answered "what am I carrying" — and five of the raw
+  // resources (fish, timber, wheat, produce, ore) had NO on-screen home at
+  // all: the feed chip shows only feed/meals, and timber appeared solely in
+  // the build chooser while standing at a stake. Same provider convention as
+  // the journal: the UI owns zero game state.
+  private inventoryProvider: (() => InventoryData) | null = null;
+  setInventoryProvider(fn: () => InventoryData): void {
+    this.inventoryProvider = fn;
+  }
+
+  /** True while the pack is on screen — main-simple uses this to re-render it
+   *  on change (the game does NOT pause behind a modal). */
+  isInventoryOpen(): boolean {
+    return this.panels.isOpen('inventory');
+  }
+
+  /** Escape before interpolating into any HTML template. Every string in the
+   *  pack is game-authored today (catalogue names, fixed hints), but a panel
+   *  that renders "what the player holds" is exactly the kind of surface a
+   *  future feature bolts a player-named item onto — so escape at the sink. */
+  private static esc(s: string): string {
+    return s.replace(
+      /[&<>"']/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
+    );
+  }
+
+  private packDiv: HTMLElement | null = null;
+
+  showInventory(): void {
+    const data = this.inventoryProvider?.();
+    if (!data) return;
+    // Drop the previous element FIRST. Same-id re-open replaces the panel
+    // SPEC in place and deliberately never fires close() (the rule the shop
+    // depends on), so the old DOM node would survive and the re-render would
+    // stack a second modal on top of a stale one — measured: the stale copy
+    // still read "4 fish" after the value moved to 9. Same guard showShop
+    // uses via hideShop().
+    this.packDiv?.remove();
+    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'inventory');
+    this.packDiv = modal;
+
+    const E = SimpleUI.esc;
+    const row = (r: InventoryRow, dim: boolean): string =>
+      `<div style="display:flex;align-items:center;gap:10px;margin:7px 0;min-height:40px;
+         ${dim ? 'opacity:0.42;' : ''}">
+         <span style="font-size:20px;width:24px;text-align:center;">${E(r.icon)}</span>
+         <span style="flex:1;text-align:left;font-size:13px;">
+           <strong style="color:#dfe6ff;">${E(r.label)}</strong>
+           <span style="display:block;color:#9ab;font-size:11.5px;line-height:1.35;">${E(r.hint)}</span>
+         </span>
+         <span style="color:${r.count > 0 ? '#8a9bff' : '#667'};font-weight:700;font-size:15px;
+           min-width:2.2em;text-align:right;">${r.count}</span>
+       </div>`;
+
+    const section = (title: string, rows: InventoryRow[]): string => {
+      if (!rows.length) return '';
+      // Held first, empties after — the pack should lead with what you have,
+      // but still show the empties so the loops stay discoverable.
+      const sorted = [...rows].sort((a, b) => (b.count > 0 ? 1 : 0) - (a.count > 0 ? 1 : 0));
+      return `<div style="margin:14px 0 2px;font-size:13px;color:#ccd;font-weight:600;">${title}</div>
+              ${sorted.map((r) => row(r, r.count === 0)).join('')}`;
+    };
+
+    const toolStrip = data.tools
+      .map(
+        (t) =>
+          `<span title="${SimpleUI.esc(t.name)}" style="font-size:22px;${t.owned ? '' : 'filter:grayscale(1);opacity:0.35;'}">${SimpleUI.esc(t.icon)}</span>`,
+      )
+      .join(' ');
+
+    const held = data.goods.reduce((n, r) => n + r.count, 0);
+
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 2px;color:#8a9bff;">🎒 Your Pack</h2>
+       <p style="margin:0 0 8px;font-size:12.5px;color:#aab;">Everything you're carrying right now.</p>
+       <div style="display:flex;justify-content:center;gap:8px;margin:0 0 4px;">
+         <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;
+           padding:4px 12px;font-size:13px;color:#ffd54a;font-weight:700;">🪙 ${data.coins}</span>
+         ${
+           held > 0
+             ? `<span style="background:#3a2f1acc;border:1px solid #8a6238;border-radius:999px;
+                  padding:4px 12px;font-size:13px;color:#e8d5a8;font-weight:600;">📦 ${held} to sell</span>`
+             : ''
+         }
+       </div>
+       <div style="max-height:52vh;overflow:auto;text-align:left;">
+         ${
+           data.carrying
+             ? `<div style="margin:12px 0 2px;font-size:13px;color:#ccd;font-weight:600;">🤲 In hand</div>
+                <div style="display:flex;align-items:center;gap:10px;margin:7px 0;min-height:40px;
+                  background:rgba(90,130,255,0.10);border:1px solid rgba(120,160,255,0.3);
+                  border-radius:10px;padding:6px 10px;">
+                  <span style="font-size:20px;">${E(data.carrying.icon)}</span>
+                  <span style="flex:1;font-size:13px;"><strong style="color:#dfe6ff;">${E(data.carrying.label)}</strong>
+                    <span style="display:block;color:#9ab;font-size:11.5px;">${E(data.carrying.hint)}</span></span>
+                </div>`
+             : ''
+         }
+         ${section('📦 Goods to sell', data.goods)}
+         ${section('🧺 Supplies', data.supplies)}
+         <div style="margin:14px 0 4px;font-size:13px;color:#ccd;font-weight:600;">🧰 Tools</div>
+         <div style="letter-spacing:3px;margin:2px 0 4px;">${toolStrip}</div>
+         <div style="display:flex;justify-content:space-between;margin-top:12px;padding-top:10px;
+           border-top:1px solid rgba(255,255,255,0.12);font-size:13px;">
+           <span style="color:#ccd;">🎩 Hats</span>
+           <span style="color:#8a9bff;font-weight:600;">${
+             data.hats.equipped ? `${E(data.hats.equipped)} equipped · ` : ''
+           }${data.hats.owned} of ${data.hats.total}</span></div>
+       </div>
+       <button id="pack-shop" style="display:block;width:100%;margin:12px 0 0;padding:10px;
+         background:#26263340;color:#cfe0ff;border:1px solid rgba(120,160,255,0.35);
+         border-radius:10px;font-size:13px;cursor:pointer;min-height:40px;">🛒 Open the Island Shop</button>`,
+    );
+    modal.querySelector('#pack-shop')?.addEventListener('click', () => {
+      modal.remove();
+      this.packDiv = null;
+      this.panels.notifyClosed('inventory');
+      this.onOpenShop?.();
+    });
+    this.overlay.appendChild(modal);
+    trackOnce('inventory_opened');
+  }
+
+  private onOpenShop: (() => void) | null = null;
+  /** App hook: the pack's shop button routes here. */
+  setOnOpenShop(fn: () => void): void {
+    this.onOpenShop = fn;
+  }
+
   private onOpenMap: (() => void) | null = null;
 
   /** App hook: the journal's map button routes here (openIslandMap). */
@@ -2180,7 +2341,7 @@ export class SimpleUI {
       this.showVolumePill(3500);
     });
     this.makeHudButtonAccessible(this.muteBtn, 'Toggle all sound (music, effects, voices)', muted);
-    this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 7 });
+    this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 8 });
     this.createVolumePill(volume);
     this.createReducedMotionButton();
     this.createCustomizeButton();
@@ -2307,7 +2468,7 @@ export class SimpleUI {
       this.onCustomizeToggle?.();
     });
     this.makeHudButtonAccessible(btn, 'Customize appearance');
-    this.chipHost(btn, { drawer: true, label: 'Customize', order: 5 });
+    this.chipHost(btn, { drawer: true, label: 'Customize', order: 6 });
   }
 
   /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
@@ -2340,7 +2501,7 @@ export class SimpleUI {
     });
     this.makeHudButtonAccessible(btn, 'Toggle reduced motion', a11y.reducedMotion);
     render();
-    this.chipHost(btn, { drawer: true, label: 'Reduce motion', order: 8 });
+    this.chipHost(btn, { drawer: true, label: 'Reduce motion', order: 9 });
   }
 
   private portfolioMenuDiv: HTMLElement | null = null;
@@ -2503,7 +2664,7 @@ export class SimpleUI {
       this.onPhotoRequest?.();
     });
     this.makeHudButtonAccessible(btn, 'Take a photo of the island');
-    this.chipHost(btn, { drawer: true, label: 'Photo', order: 4 });
+    this.chipHost(btn, { drawer: true, label: 'Photo', order: 5 });
   }
 
   // ── Tour mode overlay (caption bar + skip) ───────────────────────────────
@@ -2737,6 +2898,36 @@ export class SimpleUI {
   private completionPct = 0;
   private completionItems: Array<{ icon: string; label: string; done: boolean; hint: string }> = [];
 
+  /** 🎒 Your Pack — the held-inventory panel. Desktop gets its own chip under
+   *  the completion pill; touch re-homes it into the ☰ drawer. */
+  private createInventoryButton(): void {
+    const btn = document.createElement('div');
+    btn.textContent = '🎒';
+    Object.assign(btn.style, {
+      position: 'absolute',
+      top: 'calc(var(--sat, 0px) + 316px)',
+      right: 'calc(var(--sar, 0px) + 10px)',
+      background: 'rgba(12, 16, 28, 0.72)',
+      border: '1px solid rgba(255,255,255,0.22)',
+      color: 'white',
+      padding: '7px 12px',
+      borderRadius: '999px',
+      fontSize: '13px',
+      fontWeight: '600',
+      fontFamily: 'system-ui, sans-serif',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showInventory();
+    });
+    this.makeHudButtonAccessible(btn, 'Your pack (inventory)');
+    this.chipHost(btn, { drawer: true, label: 'Your Pack', order: 4 });
+  }
+
   private createCompletionButton(): void {
     const btn = document.createElement('div');
     btn.textContent = '🏝 …';
@@ -2762,7 +2953,7 @@ export class SimpleUI {
       this.showCompletionModal();
     });
     this.makeHudButtonAccessible(btn, 'Island completion checklist');
-    this.chipHost(btn, { drawer: true, label: 'Progress', order: 6 });
+    this.chipHost(btn, { drawer: true, label: 'Progress', order: 7 });
     this.completionBtn = btn;
   }
 
@@ -2985,6 +3176,8 @@ export class SimpleUI {
       </div>
       <button data-board="times" style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
         border:1px solid rgba(255,215,121,0.28);border-radius:10px;font-size:14px;cursor:pointer;">📰 Island Times</button>
+      <button data-pack style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
+        border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">🎒 Your Pack</button>
       <button data-journal style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
         border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">📔 Island Journal</button>`;
     // close button
@@ -3012,6 +3205,10 @@ export class SimpleUI {
     menu.querySelector('button[data-passport]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
       this.showPassport();
+    });
+    menu.querySelector('button[data-pack]')?.addEventListener('click', () => {
+      this.togglePortfolioMenu();
+      this.showInventory();
     });
     menu.querySelector('button[data-journal]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();

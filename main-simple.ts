@@ -495,11 +495,17 @@ class SimpleApp {
         const rawFish = localStorage.getItem('ds_fish_feed');
         this.hasLocalFishFeed = rawFish !== null;
         this.fishFeed = Math.max(0, parseInt(rawFish ?? '0', 10) || 0);
-        const rawMeals = localStorage.getItem('ds_meals');
-        this.hasLocalMeals = rawMeals !== null;
-        if (rawMeals) Object.assign(this.meals, JSON.parse(rawMeals));
         // Any raw-inventory key present = this device already has a record,
         // so the cloud must not re-grant (Consumable Law).
+        //
+        // THIS MUST RUN BEFORE THE ds_meals PARSE BELOW. It used to sit after
+        // it, inside the same try: a corrupt ds_meals blob threw in
+        // JSON.parse, control jumped to the catch, and this assignment never
+        // ran — leaving hasLocalInventory at its `false` default. syncProfile
+        // then saw "no local record", passed inventoryAdoptValue's guard, and
+        // OVERWROTE the fish/timber/wheat/produce/ore loaded twenty lines
+        // earlier with the cloud basket. One bad meals blob refunded every
+        // resource sold since the last cloud push.
         this.hasLocalInventory = [
           'ds_fish_caught',
           'ds_timber',
@@ -507,6 +513,18 @@ class SimpleApp {
           'ds_produce',
           'ds_ore',
         ].some((k) => localStorage.getItem(k) !== null);
+        const rawMeals = localStorage.getItem('ds_meals');
+        this.hasLocalMeals = rawMeals !== null;
+        // Own try: a corrupt blob must cost only the meals, never the flags
+        // set above it.
+        if (rawMeals) {
+          try {
+            Object.assign(this.meals, JSON.parse(rawMeals));
+          } catch {
+            /* keep the zeroed defaults; hasLocalMeals stays true so the
+               cloud does not re-grant meals either */
+          }
+        }
       } catch {
         this.birdFeed = 0;
       }
@@ -792,6 +810,7 @@ class SimpleApp {
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
       this.scene.setOnCoinCollected((total) => {
         this.ui.updateCoinCounter(total);
+        this.refreshPackIfOpen(); // coins need NO keypress — walking into one counts
         saveProfile({ coins: total });
         if (total >= 100) trackOnce('coins_milestone', { n: 100 });
         else if (total >= 50) trackOnce('coins_milestone', { n: 50 });
@@ -893,6 +912,89 @@ class SimpleApp {
           visits: this.visitLedger(),
         };
       });
+
+      // The pack: what you're CARRYING (the journal is what you've found, the
+      // shop is what you can buy). Same provider convention — read live, cache
+      // nothing, and never write a ds_* key from the UI layer: main-simple is
+      // the sole author of every value here, which is the whole safety
+      // argument behind the Consumable Law.
+      this.ui.setInventoryProvider(() => ({
+        coins: this.scene.getCoinsCollected(),
+        goods: [
+          {
+            icon: '🐟',
+            label: 'Fish',
+            count: this.fishCaught,
+            hint: `sell at the jetty — ${SimpleApp.FISH_SELL_PRICE}🪙 each, first ${SimpleApp.DAILY_SELL_CAP}/day`,
+          },
+          {
+            icon: '🪵',
+            label: 'Timber',
+            count: this.timber,
+            hint: `sell to the Carpenter (${SimpleApp.TIMBER_SELL_PRICE}🪙), or build at any 🔨 stake`,
+          },
+          {
+            icon: '🌾',
+            label: 'Wheat',
+            count: this.wheat,
+            hint: `sell to the Baker — ${SimpleApp.WHEAT_SELL_PRICE}🪙 each`,
+          },
+          {
+            icon: '🥬',
+            label: 'Produce',
+            count: this.produce,
+            hint: `canteen cart or market grocer — ${SimpleApp.PRODUCE_SELL_PRICE}🪙 each`,
+          },
+          {
+            icon: '🪨',
+            label: 'Ore',
+            count: this.ore,
+            hint: `assayed at the bank — ${SimpleApp.ORE_SELL_PRICE}🪙 each`,
+          },
+        ],
+        supplies: [
+          // 🐦, not 🌾: the wheat row above already owns 🌾, and two rows with
+          // the same glyph in one panel is a mis-read waiting to happen.
+          { icon: '🐦', label: 'Bird feed', count: this.birdFeed, hint: 'press F near birds' },
+          { icon: '🐈', label: 'Cat feed', count: this.catFeed, hint: 'press F near cats' },
+          { icon: '🐠', label: 'Fish feed', count: this.fishFeed, hint: 'press F over water' },
+          {
+            icon: '🥧',
+            label: "Baker's pie",
+            count: this.meals.pie,
+            hint: 'press G — refills stamina',
+          },
+          {
+            icon: '🍤',
+            label: 'Grilled fish',
+            count: this.meals.fish,
+            hint: 'press G — refills stamina',
+          },
+          {
+            icon: '🍲',
+            label: 'Canteen soup',
+            count: this.meals.soup,
+            hint: 'press G — refills stamina',
+          },
+        ],
+        tools: [
+          { icon: '🎣', name: 'Fishing rod', owned: this.ownedRod },
+          { icon: '🪓', name: 'Axe', owned: this.ownedAxe },
+          { icon: '🌾', name: 'Sickle', owned: this.ownedSickle },
+          { icon: '⛏️', name: 'Pickaxe', owned: this.ownedPickaxe },
+        ],
+        hats: {
+          equipped: this.hatCatalog.find((h) => h.id === this.equippedHat)?.name ?? null,
+          owned: this.ownedHats.size,
+          total: this.hatCatalog.length,
+        },
+        // The one holding with no other UI anywhere: nothing tells you you're
+        // carrying the Fisherman's snapper, or who wants it.
+        carrying: this.npcQuests.isCarryingFetchItem()
+          ? { icon: '🐟', label: "The Fisherman's snapper", hint: 'take it to the Village Baker' }
+          : null,
+      }));
+      this.ui.setOnOpenShop(() => this.openShop());
 
       // Drowning: washed back to shore. The teleport is a hard cut across
       // potentially half the map, so it gets the same 0.45s veil doors use —
@@ -3768,6 +3870,17 @@ class SimpleApp {
     render();
   }
 
+  /**
+   * Re-render the pack if it is open. The game does NOT pause behind a modal
+   * — loose coins are picked up by PROXIMITY ALONE (no keypress), and E/F/G
+   * keep firing — so a static panel goes stale while you read it. Cheap
+   * because PanelManager's same-id re-open replaces in place without firing
+   * close(). Called from the funnels every mutation already passes through.
+   */
+  private refreshPackIfOpen(): void {
+    if (this.ui.isInventoryOpen()) this.ui.showInventory();
+  }
+
   private refreshFeedHud(): void {
     this.ui.updateFeedCounters(
       this.birdFeed,
@@ -3779,6 +3892,7 @@ class SimpleApp {
     // the action is possible — a fresh visitor sees three buttons, not five.
     this.ui.setAuxActionAvailable('feed', this.birdFeed + this.catFeed + this.fishFeed > 0);
     this.ui.setAuxActionAvailable('eat', this.meals.pie + this.meals.fish + this.meals.soup > 0);
+    this.refreshPackIfOpen();
   }
 
   /**
@@ -4112,6 +4226,7 @@ class SimpleApp {
    *  a device that has no local record, so a sale is never refunded. */
   private syncInventory(): void {
     this.hasLocalInventory = true;
+    this.refreshPackIfOpen(); // fish/timber/wheat/produce/ore all persist through here
     saveProfile({
       inventory: {
         fish: this.fishCaught,

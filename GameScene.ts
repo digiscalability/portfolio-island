@@ -2232,11 +2232,45 @@ export class GameScene extends THREE.Scene {
       // walking-pace ~1.8u/s hover. ~0.5 rad/s over a ~9u circle ≈ 4.5u/s —
       // still a lazy thermal circle, but visibly FLYING.
       const theta = 0.14 + Math.random() * 0.04;
-      const alt = planetR + 0.1 + (2.8 + fi * 0.9);
+      const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
+      // FLIGHT ALTITUDE IS MEASURED FROM THE GROUND THE FLOCK ACTUALLY FLIES
+      // OVER — not from the base sphere.
+      //
+      // The old `planetR + 0.1 + (2.8 + fi*0.9)` offset the base sphere, but
+      // terrain rises to planetR + MAX_DISPLACEMENT*reliefScale (18.4u at
+      // R=100), so real clearance collapsed wherever the ground lifted.
+      // MEASURED before this change: flock 0 cruised 1.58u over the terrain —
+      // barely above a 1.4u-tall player's head — while flock 5 got 10.11u.
+      // Gulls skimming the grass at head height, inconsistently.
+      //
+      // A flock traces a CONE of half-angle theta about its anchor (a ring
+      // ~17u across), so the anchor's own height isn't enough: sample the
+      // whole ring and clear the HIGHEST ground on it. analyticSurface is
+      // raycast-free (~0.003ms) and this runs 8x per flock ONCE at build.
+      // No Math.random() here — the seeded draw order (theta, then speed) is
+      // untouched, so index-networked placement is unaffected.
+      const RING_SAMPLES = 8;
+      let maxGround = planetR;
+      if (this.island) {
+        const probe = new THREE.Vector3();
+        const ringQ = new THREE.Quaternion();
+        for (let k = 0; k < RING_SAMPLES; k++) {
+          ringQ.setFromAxisAngle(GameScene._localUp, (k / RING_SAMPLES) * Math.PI * 2);
+          probe.copy(dirLocal).applyQuaternion(ringQ).applyQuaternion(pivot.quaternion).normalize();
+          maxGround = Math.max(maxGround, this.island.analyticSurface(probe).radius);
+        }
+      }
+      // 7.0-12.5u of TRUE clearance, tiered so the flocks stack in the sky
+      // instead of sharing one plane. Capped under the cloud deck (which
+      // starts at radius*1.13 = 113 at R=100) so gulls fly below the clouds,
+      // and the wingbeat still reads at this range against a 1.77u wingspan.
+      const alt = Math.min(
+        maxGround + 7 + fi * 1.1,
+        planetR * 1.125, // stay under the cloud band
+      );
       // Angular rate over a fixed-metre circle, so it must shrink as the world
       // grows to hold the same ~4.5 u/s glide the comment above describes.
       const speed = (22.5 + Math.random() * 6) / WORLD_RADIUS;
-      const dirLocal = new THREE.Vector3(Math.sin(theta), Math.cos(theta), 0);
       for (let j = 0; j < flock.count; j++) {
         // Second wingman is a mottled juvenile; every bird gets size jitter.
         const juv = j === 2;
