@@ -79,6 +79,28 @@ describe('touch layout recomposition', () => {
     expect(r).toContain('narrow');
     expect(r).toContain("'120px'");
   });
+
+  test('landscape SE re-lanes the surfaces that collide there', () => {
+    // 667x375 was the audit's biggest miss: nothing but the minimap ever
+    // reflowed for it. Each of these was MEASURED as a real overlap.
+    const r = fn('SimpleUI.ts', 'private applyResponsiveHud', 2600);
+    expect(r).toContain('emoteBtnEl'); // was 27x33 into the WAVE button (tap conflict)
+    expect(r).toContain('envBadgeDiv'); // was 64x26 into the raised radar
+    // The bulletin/toast lanes must be breakpoint-aware: bottom+250 on a
+    // 375-tall screen is y88-125, inside the bulletin's own y66-126 band.
+    const t = fn('SimpleUI.ts', 'private applyToastAnchor');
+    expect(t).toContain('shortLandscape');
+    expect(fn('SimpleUI.ts', 'private bulletinTop')).toContain('shortLandscape');
+  });
+
+  test('the chat/mic stack clears the joystick hit square', () => {
+    // The joystick's INVISIBLE hit region is 166px tall from the bottom
+    // edge; the chat button at bottom+152 put its lower 14px inside it, so
+    // a drag starting there opened chat instead of moving. Both orientations.
+    const s = src('SimpleUI.ts');
+    expect(s).toContain("bottom: 'calc(var(--sab, 0px) + 174px)'");
+    expect(s).not.toContain("bottom: 'calc(var(--sab, 0px) + 152px)'");
+  });
 });
 
 describe('scene-transition grammar is unified (veil + cut)', () => {

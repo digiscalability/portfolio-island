@@ -290,13 +290,103 @@ export class SimpleUI {
         ? 'calc(var(--sat, 0px) + 106px)'
         : 'calc(var(--sat, 0px) + 84px)';
     }
-    if (this.interactionDiv) this.interactionDiv.style.bottom = this.promptBottom();
+    if (this.interactionDiv) this.applyPromptAnchor(this.interactionDiv);
+    if (this.toastEl) this.applyToastAnchor(this.toastEl);
+    if (this.bulletinEl) this.bulletinEl.style.top = this.bulletinTop();
+    // Short landscape (SE on its side, 667x375): the emote chip sits at
+    // right+10 and the 74px action column at right+26 — in PORTRAIT they
+    // never meet (WAVE is 300px lower), but landscape lifts WAVE into the
+    // emote's row and the two MEASURED a 27x33 overlap with both taking
+    // taps. Push the emote clear of the column.
+    if (this.emoteBtnEl) {
+      this.emoteBtnEl.style.right = short
+        ? 'calc(var(--sar, 0px) + 108px)'
+        : 'calc(var(--sar, 0px) + 10px)';
+    }
+    // Same class of bug on the left: short-landscape raises the radar to
+    // top+8, straight under the day/weather badge at top+10 (measured 64x26).
+    if (this.envBadgeDiv) {
+      this.envBadgeDiv.style.left = short
+        ? 'calc(var(--sal, 0px) + 122px)'
+        : 'calc(var(--sal, 0px) + 10px)';
+    }
   }
 
-  /** Interaction-prompt anchor per breakpoint (see showInteractionPrompt). */
-  private promptBottom(): string {
-    if (!this.isTouch) return 'calc(var(--sab, 0px) + 100px)';
-    return this.shortLandscape ? 'calc(var(--sab, 0px) + 148px)' : 'calc(var(--sab, 0px) + 300px)';
+  /**
+   * Interaction-prompt placement per breakpoint. It is TAPPABLE (fires the
+   * synthetic KeyE), so unlike the purely visual lanes it must clear the
+   * joystick's 166px hit square and the action column outright — a prompt
+   * over either one steals the input.
+   */
+  private applyPromptAnchor(el: HTMLElement): void {
+    if (!this.isTouch) {
+      Object.assign(el.style, {
+        bottom: 'calc(var(--sab, 0px) + 100px)',
+        left: '50%',
+        maxWidth: 'calc(100vw - 32px)',
+      });
+      return;
+    }
+    if (this.shortLandscape) {
+      // The free band in landscape is the horizontal centre, between the
+      // joystick (x<=166) and the action column (x>=567 at 667 wide).
+      // Nudged right of true centre so the pill sits inside it.
+      Object.assign(el.style, {
+        bottom: 'calc(var(--sab, 0px) + 36px)',
+        left: 'calc(50% + 30px)',
+        maxWidth: 'min(56vw, 340px)',
+      });
+      return;
+    }
+    // Portrait: above the whole control band.
+    Object.assign(el.style, {
+      bottom: 'calc(var(--sab, 0px) + 300px)',
+      left: '50%',
+      maxWidth: 'calc(100vw - 32px)',
+    });
+  }
+
+  /**
+   * Toast placement. The bottom lane is stacked (chat-input 96 · breath 150 ·
+   * recording 200 · toast 250), but 250 from the bottom of a 375-tall
+   * LANDSCAPE screen is y88-125 — inside the top-centre bulletin's y66-126.
+   * The two "opposite ends of the screen" lanes literally intersect there,
+   * so landscape drops the toast into the lower half.
+   */
+  /**
+   * Bulletin lane. The default top+66 sits between the radar and the chip
+   * row on a roomy screen; on both small-phone breakpoints it lands ON one
+   * of them, so each gets its own clearance (all three measured):
+   * - short landscape: below the tier-1 chips (top+35, 44 tall) — 53x13.
+   * - narrow portrait: below BOTH the pushed-down chips (top+58, ending
+   *   y102) and the radar (top+44, 120px, ending y164) — 36x36 and 36x98.
+   *   A centred full-width banner can never clear a left-hand radar
+   *   sideways, so it clears it vertically.
+   */
+  private bulletinTop(): string {
+    if (!this.isTouch) return 'calc(var(--sat, 0px) + 66px)';
+    if (this.shortLandscape) return 'calc(var(--sat, 0px) + 88px)';
+    if (this.narrowPortrait) return 'calc(var(--sat, 0px) + 172px)';
+    return 'calc(var(--sat, 0px) + 66px)';
+  }
+
+  private applyToastAnchor(el: HTMLElement): void {
+    const short = this.isTouch && this.shortLandscape;
+    Object.assign(el.style, {
+      // Portrait touch: 350, not 250 — the action column starts at y381 on a
+      // 667-tall screen, so the 250 lane put toast text straight across the
+      // WAVE button (measured 74x36). 350 clears it and still sits below the
+      // prompt's 300 lane.
+      bottom: short
+        ? 'calc(var(--sab, 0px) + 96px)'
+        : this.isTouch
+          ? 'calc(var(--sab, 0px) + 350px)'
+          : 'calc(var(--sab, 0px) + 250px)',
+      maxWidth: short ? 'min(56vw, 360px)' : 'min(92vw, 440px)',
+      // Landscape: nudged into the free centre band like the prompt, so the
+      // pill clears the joystick ring instead of grazing it.
+      left: short ? 'calc(50% + 30px)' : '50%',
+    });
   }
 
   // ── Mobile chip drawer (mobile-HUD Round 3, Phase 3) ──────────────────
@@ -804,9 +894,7 @@ export class SimpleUI {
       Object.assign(this.toastEl.style, {
         position: 'absolute',
         left: '50%',
-        bottom: 'calc(var(--sab, 0px) + 250px)',
         transform: 'translateX(-50%)',
-        maxWidth: 'min(92vw, 440px)',
         width: 'max-content',
         textAlign: 'center',
         background: 'rgba(12,12,20,0.92)',
@@ -821,6 +909,7 @@ export class SimpleUI {
         opacity: '0',
         transition: 'opacity 0.2s ease',
       });
+      this.applyToastAnchor(this.toastEl);
       this.overlay.appendChild(this.toastEl);
     }
     this.toastEl.textContent = message;
@@ -857,7 +946,7 @@ export class SimpleUI {
       Object.assign(this.bulletinEl.style, {
         position: 'absolute',
         left: '50%',
-        top: 'calc(var(--sat, 0px) + 66px)',
+        top: this.bulletinTop(),
         transform: 'translateX(-50%) translateY(-8px)',
         maxWidth: 'min(90vw, 520px)',
         background: 'rgba(12,14,22,0.9)',
@@ -3202,7 +3291,11 @@ export class SimpleUI {
     Object.assign(chatBtn.style, {
       position: 'absolute',
       left: 'calc(var(--sal, 0px) + 26px)',
-      bottom: 'calc(var(--sab, 0px) + 152px)',
+      // 174, not 152: the joystick's INVISIBLE hit square is 166px tall from
+      // the bottom edge, so 152 put the lower 14px of this button inside it
+      // (measured, both orientations) — a drag starting there opened chat
+      // instead of moving. 166 + 8px gap.
+      bottom: 'calc(var(--sab, 0px) + 174px)',
       background: 'rgba(0,0,0,0.55)',
       padding: '7px 11px',
       borderRadius: '10px',
@@ -3228,7 +3321,7 @@ export class SimpleUI {
     Object.assign(micBtn.style, {
       position: 'absolute',
       left: 'calc(var(--sal, 0px) + 26px)',
-      bottom: 'calc(var(--sab, 0px) + 198px)',
+      bottom: 'calc(var(--sab, 0px) + 220px)', // rides 46px above 💬 (see there)
       background: 'rgba(0,0,0,0.55)',
       padding: '7px 11px',
       borderRadius: '10px',
@@ -3847,14 +3940,8 @@ export class SimpleUI {
       this.interactionDiv = document.createElement('div');
       Object.assign(this.interactionDiv.style, {
         position: 'absolute',
-        // Touch: ABOVE the whole control band — on a 667px-tall SE the old
-        // +100px anchor sat the prompt inside the EAT/USE columns, where it
-        // was both covered and mis-tapped. Desktop keeps the low anchor
-        // (nothing lives down there without touch controls). Short landscape
-        // caps the lift (300 on a 375-tall screen is the compass's lane).
-        bottom: this.promptBottom(),
-        left: '50%',
-        maxWidth: 'calc(100vw - 32px)',
+        // bottom/left/maxWidth come from applyPromptAnchor (breakpoint-aware,
+        // and re-applied on rotation) right after this style block.
         background: 'rgba(0, 0, 0, 0.8)',
         color: 'white',
         padding: '10px 18px', // was 15px 25px — the prompt is a hint, not a card
@@ -3868,6 +3955,7 @@ export class SimpleUI {
         transform: 'translateX(-50%) translateY(10px) scale(0.9)',
         transition: 'transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.16s ease',
       });
+      this.applyPromptAnchor(this.interactionDiv);
       // Tap the prompt itself to trigger it — the natural phone instinct.
       // Same synthetic 'e' the USE button and dialogue panel fire, so every
       // interaction path (talk / board / sit / stand / zone) runs unchanged.
