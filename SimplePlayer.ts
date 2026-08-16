@@ -73,6 +73,19 @@ export const SWIM_VERT_DEADBAND = 0.25;
 export const SWIM_DIVE_SPEED = 2.6;
 
 /**
+ * Limb deltas for a REMOTE peer's riding pose, as offsets from the rig rest
+ * (world law 2: arms rest at -PI, legs at +PI).
+ *
+ * The pose byte says only "riding" — it carries no boat/jetski split — so one
+ * blended attitude has to serve both. These sit between the local player's two
+ * variants in applyRidePose (arms -0.5 boat / -0.95 jetski, legs 0.0 / -1.15),
+ * which is what they were originally chosen for; they were just never anchored
+ * to the rest, so they landed 180 degrees out.
+ */
+export const RIDE_PEER_ARM_X = -0.7;
+export const RIDE_PEER_LEG_X = -0.6;
+
+/**
  * The body pitch a swimmer should hold, in radians.
  *
  * rotation.x = theta puts the feet->head axis at (0, cos theta, sin theta):
@@ -801,16 +814,33 @@ export class SimplePlayer extends THREE.Group {
           if (legLBone) legLBone.rotation.x = Math.PI + (0.3 + s2 * 0.35) * poseW;
           if (legRBone) legRBone.rotation.x = Math.PI + (0.3 - s2 * 0.35) * poseW;
         } else if (activePose === 2) {
-          // Riding: forward lean, hands forward, knees up.
+          // Riding: forward lean, hands forward onto the helm, knees up.
           model.rotation.set(0.12 * poseW, 0, 0);
-          if (armLBone)
-            armLBone.rotation.x = THREE.MathUtils.lerp(armLBone.rotation.x, -0.7, poseW);
-          if (armRBone)
-            armRBone.rotation.x = THREE.MathUtils.lerp(armRBone.rotation.x, -0.7, poseW);
-          if (legLBone)
-            legLBone.rotation.x = THREE.MathUtils.lerp(legLBone.rotation.x, -0.6, poseW);
-          if (legRBone)
-            legRBone.rotation.x = THREE.MathUtils.lerp(legRBone.rotation.x, -0.6, poseW);
+          // REST-ANCHORED (world law 2), exactly like the swim block above and
+          // like applyRidePose does for the local player. This used to lerp
+          // FROM the live rotation.x TO a raw -0.7 / -0.6, which broke twice
+          // over. MEASURED on the shipped build, settled (poseW = 1):
+          //   arms (0.12,  0.81, -0.57)  legs (0,  0.89, -0.46)
+          // i.e. all four limbs pointing UP over the head and BACKWARD, for
+          // the whole ride — against the local rider's arms (0, -0.88, 0.48)
+          // and legs (0, -1, 0). The raw target was the 180-degree flip the
+          // law names; -PI/+PI + delta puts it back.
+          //
+          // The lerp FROM the live value was the second half. MEASURED over a
+          // 4s walk cycle, the mixer swings armL.rotation.x across -3.115 ..
+          // +3.133 and CROSSES the +/-PI boundary 6 times, so the arc taken on
+          // mount depended on which frame you happened to mount. Worse, the
+          // shortest path from +PI to a raw -0.6 runs THROUGH ZERO: the legs
+          // measured (0,-0.82,0.57) -> (0,-0.03,1.00) -> (0,0.76,0.65) ->
+          // (0,1.00,0.07) in four frames, sweeping up through the torso and
+          // over the head every single time a peer got on a boat.
+          //
+          // The byte carries no vehicle kind (boat vs jetski), so one blended
+          // attitude serves both; the local deltas straddle these values.
+          if (armLBone) armLBone.rotation.x = -Math.PI + RIDE_PEER_ARM_X * poseW;
+          if (armRBone) armRBone.rotation.x = -Math.PI + RIDE_PEER_ARM_X * poseW;
+          if (legLBone) legLBone.rotation.x = Math.PI + RIDE_PEER_LEG_X * poseW;
+          if (legRBone) legRBone.rotation.x = Math.PI + RIDE_PEER_LEG_X * poseW;
         } else {
           // Airborne: arms up, knees tucked (additive on top of the mixer).
           model.rotation.set(0, 0, 0);

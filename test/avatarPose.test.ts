@@ -48,6 +48,53 @@ describe('the ride pose respects the rig rest', () => {
   });
 });
 
+describe('the REMOTE peer ride pose respects the rig rest', () => {
+  // World law 2 has a second clause: "Never lerp from the live rotation.x near
+  // +/-PI — three.js reports +3.13 one frame and -3.13 the next." The peer ride
+  // pose broke BOTH clauses at once, and outlived the local fix above because
+  // remote peers keep their own copy of every pose.
+  //
+  // MEASURED on the shipped build, settled: arms (0.12, 0.81, -0.57), legs
+  // (0, 0.89, -0.46) — all four limbs UP over the head and BACKWARD, against
+  // the local rider's arms (0, -0.88, 0.48) and legs (0, -1, 0). And over a 4s
+  // walk cycle the mixer swings armL.rotation.x across -3.115..+3.133, CROSSING
+  // +/-PI six times, so the mount arc depended on the frame you mounted: the
+  // legs measured (0,-0.82,0.57) -> (0,-0.03,1.00) -> (0,0.76,0.65) ->
+  // (0,1.00,0.07) in four frames, sweeping through the torso and over the head.
+  const ride = (): string => fn('SimplePlayer.ts', '} else if (activePose === 2) {', 2400);
+
+  test('peer limbs are anchored to the rest, never to a raw constant', () => {
+    const r = ride();
+    expect(r).toMatch(/armLBone\.rotation\.x = -Math\.PI \+ RIDE_PEER_ARM_X \* poseW/);
+    expect(r).toMatch(/armRBone\.rotation\.x = -Math\.PI \+ RIDE_PEER_ARM_X \* poseW/);
+    expect(r).toMatch(/legLBone\.rotation\.x = Math\.PI \+ RIDE_PEER_LEG_X \* poseW/);
+    expect(r).toMatch(/legRBone\.rotation\.x = Math\.PI \+ RIDE_PEER_LEG_X \* poseW/);
+  });
+
+  test('nothing in the peer pose blends FROM a live limb rotation', () => {
+    // The whole remote update(), not just the ride branch: swim and airborne
+    // are already clean (airborne uses += , a pure delta, which survives the
+    // sign flip because the two readings differ by exactly 2*PI).
+    const all = fn('SimplePlayer.ts', 'const update = (dt: number, speed: number)', 3400);
+    expect(all).not.toMatch(/lerp\(\s*(arm|leg)[LR]Bone\.rotation/);
+  });
+
+  test('the peer deltas sit between the local boat and jetski variants', () => {
+    // One byte, no vehicle kind — so a single blended attitude serves both.
+    const s = src('SimplePlayer.ts');
+    expect(s).toMatch(/export const RIDE_PEER_ARM_X = -0\.7;/);
+    expect(s).toMatch(/export const RIDE_PEER_LEG_X = -0\.6;/);
+    const local = fn('SimplePlayer.ts', 'private applyRidePose', 900);
+    expect(local).toMatch(/const legX = jetski \? -1\.15 : 0\.0;/);
+    expect(local).toMatch(/const armX = jetski \? -0\.95 : -0\.5;/);
+    // -0.7 is inside [-0.95, -0.5] and -0.6 inside [-1.15, 0.0].
+    expect(-0.7).toBeGreaterThan(-0.95);
+    expect(-0.7).toBeLessThan(-0.5);
+    expect(-0.6).toBeGreaterThan(-1.15);
+    expect(-0.6).toBeLessThan(0.0);
+  });
+});
+
 describe('the sit pose respects the rig rest', () => {
   test('seated GLB legs are anchored to PI', () => {
     // Raw -1.35 gave (0, 0.22, -0.98) — thighs up and BACK through the bench.
