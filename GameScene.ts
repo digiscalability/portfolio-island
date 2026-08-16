@@ -1429,13 +1429,27 @@ export class GameScene extends THREE.Scene {
     // altitude was the body's bank, which looked like "tilting" instead of
     // flapping. Span ~0.65 per wing (wingspan ≈ 3× body) makes every beat
     // legible from below.
-    const wingGeo = new THREE.BoxGeometry(0.65, 0.015, 0.24);
-    wingGeo.translate(0.325, 0, 0); // hinge at inner edge
+    // WINGSPAN. Measured span was 1.44u tip-to-tip against a body length of
+    // 0.70-0.76u — a ratio of 1.9-2.1, i.e. gull proportions on every
+    // songbird ("wings are a bit too big"). Real songbirds run ~1.5-1.8.
+    // 0.50 per wing gives span 1.14 and a ratio of ~1.55-1.65: still fully
+    // legible mid-beat from the ground (the reason it was widened in the
+    // first place), no longer an albatross on a robin.
+    const WING_SPAN = 0.5;
+    const WING_CHORD = 0.21;
+    const wingGeo = new THREE.BoxGeometry(WING_SPAN, 0.015, WING_CHORD);
+    wingGeo.translate(WING_SPAN / 2, 0, 0); // hinge at inner edge
     // Taper: pull the outer-edge rear corners forward for a swept tip.
+    // Thresholds are RELATIVE to the span/chord. They used to be the literals
+    // 0.6 and 0.1, which only matched the old 0.65x0.24 box — shrinking the
+    // wing under absolute thresholds selects NO vertices and silently ships a
+    // blunt rectangle instead of a swept tip.
     {
       const pos = wingGeo.attributes.position;
+      const xEdge = WING_SPAN * 0.92;
+      const zEdge = WING_CHORD * 0.42;
       for (let vi = 0; vi < pos.count; vi++) {
-        if (pos.getX(vi) > 0.6 && pos.getZ(vi) > 0.1) pos.setZ(vi, 0.02);
+        if (pos.getX(vi) > xEdge && pos.getZ(vi) > zEdge) pos.setZ(vi, 0.02);
       }
       pos.needsUpdate = true;
       wingGeo.computeVertexNormals();
@@ -3508,9 +3522,16 @@ export class GameScene extends THREE.Scene {
         turnAt: 0,
         jumpT0: -1,
         jumpDur: 0,
-        // Ride right at the surface so backs/fins break through the (now more
-        // opaque) water and read clearly; jumps do the rest.
-        depth: 0.02 + Math.random() * 0.07,
+        // DEPTH TIERS. Every fish used to sit in the top 0.09u of a water
+        // column that is now 5.0u deep at R=100 (the ocean floor displacement
+        // is radius-scaled; the depth GATES were never re-authored from
+        // R=75), so the entire mid-water column was empty and the ocean read
+        // as a flat painted surface. Two thirds still ride the surface — that
+        // is what makes backs and fins break through, and what jumps need —
+        // and a third now cruises the mid-water at 0.6-2.2u, where a swimmer
+        // actually meets them. One Math.random() draw either way, so the
+        // seeded placement stream is untouched.
+        depth: i % 3 === 2 ? 0.6 + Math.random() * 1.6 : 0.02 + Math.random() * 0.07,
         feedTarget: null,
         feedUntil: 0,
       });
@@ -7411,8 +7432,16 @@ export class GameScene extends THREE.Scene {
       color: 0xffffff,
       gradientMap: Materials.toonRamp(),
       vertexColors: true,
+      // transparent stays TRUE (the weather crossfade drives opacity), but
+      // the resting value is 1.0: a formation is several OVERLAPPING puffs
+      // merged into one mesh, and three.js sorts transparency per-MESH, never
+      // per-triangle — so at 0.92 each cloud blended its own back puffs
+      // through its front puffs in geometry order. That unsorted intra-mesh
+      // alpha is a double-exposed interior that reads as blur at ANY
+      // resolution, and it is the only cloud-side softness that isn't just
+      // the renderer's upscale.
       transparent: true,
-      opacity: 0.92,
+      opacity: 1,
     });
     const stormMat = new THREE.MeshToonMaterial({
       color: 0xffffff, // tinted by the same weather pipeline as the fair set
@@ -9578,8 +9607,8 @@ export class GameScene extends THREE.Scene {
             ? Math.sin(time * 26 + g.phase) * 0.35
             : 0;
         // Folded = swept back, drooped over the body sides AND compacted:
-        // a full-span 0.65u panel can't hide behind a 0.4u body no matter
-        // the angle (screenshot: splayed "paper plane"), so the fold also
+        // a full-span panel can't hide behind a 0.4u body no matter the
+        // angle (screenshot: splayed "paper plane"), so the fold also
         // shortens the wing — the flee branch restores full span.
         g.wingL.scale.x = 0.55;
         g.wingR.scale.x = 0.55;

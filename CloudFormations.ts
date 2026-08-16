@@ -45,6 +45,11 @@ export function orbitMaxLat(euler: [number, number, number]): number {
 
 const EQUATORIAL_MAX_LAT = 0.7; // summit band starts at 0.73
 const MAX_DISPLACEMENT = 9.2; // Island.MAX_DISPLACEMENT (leaf can't import Island)
+// Cloud drift authored in WORLD UNITS PER SECOND, not radians — see the
+// conversion at the push() below. This range is the shipped R=75 feel
+// (omega 0.01-0.03 rad/s at a mean altitude of ~85.65u).
+const CLOUD_LINEAR_MIN = 0.86;
+const CLOUD_LINEAR_SPAN = 1.71;
 
 /** Underside-darkened vertex colors: white tops, ~18% darker flat bottoms. */
 function bakeCloudColors(geo: THREE.BufferGeometry): void {
@@ -174,13 +179,33 @@ export function buildCloudFormations(
     polar: boolean,
   ): void => {
     bakeCloudColors(geometry);
+    // Hoisted so driftSpeed can divide by it. The rng() ORDER is unchanged —
+    // altitude, then orbitEuler, then drift — so the seeded stream still
+    // hands out the same draws in the same sequence.
+    const altitude = radius + (polar ? polarFloor + rng() * 0.8 : bandFloor + rng() * bandSpan);
     specs.push({
       kind,
       set,
       geometry,
-      altitude: radius + (polar ? polarFloor + rng() * 0.8 : bandFloor + rng() * bandSpan),
+      altitude,
       orbitEuler: polar ? polarEuler(rng) : equatorialEuler(rng),
-      driftSpeed: 0.01 + rng() * 0.02,
+      // AUTHORED AS A LINEAR SPEED, then converted to the angular rate this
+      // shell needs — because what a viewer perceives is metres per second
+      // across the sky, not radians.
+      //
+      // The bug: driftSpeed was a bare angular constant on a shell whose
+      // altitude is fully radius-proportional (radius * (1.13 + u*0.024), no
+      // absolute term). Linear speed = omega*r, so 0.02 rad/s meant 1.71 u/s
+      // at R=75 but 2.28 u/s at R=100 — clouds got 33% faster for free in
+      // the radius flip. Same trap as the surf bands, and it hid because at
+      // the ZENITH the apparent rate is omega*Rc/(Rc-Robs) = 8.04*omega,
+      // which is independent of R by construction: looking straight up
+      // looked identical, so nobody caught it in review.
+      //
+      // The range below reproduces the shipped R=75 feel (omega 0.01-0.03 at
+      // altitude ~85.65). Dividing by THIS island's altitude makes it hold at
+      // any radius, so the next world-size change cannot re-inflate it.
+      driftSpeed: (CLOUD_LINEAR_MIN + rng() * CLOUD_LINEAR_SPAN) / altitude,
       polar,
     });
   };

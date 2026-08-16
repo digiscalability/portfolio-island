@@ -21,6 +21,7 @@
  */
 
 import { track } from './Analytics';
+import { sfx } from './Sfx';
 
 type Conversation = {
   endSession: () => Promise<void>;
@@ -37,11 +38,13 @@ export function isCallActive(): boolean {
 /** Duck the game while the caller is on the line; returns the restore fn. */
 function duckGame(): () => void {
   const w = window as unknown as {
-    sfx?: { duckForVoice?: (on: boolean) => void };
     audioManager?: { getVolume?: () => number; setVolume?: (v: number) => void };
   };
+  // sfx is IMPORTED, not read off window: nothing ever assigns window.sfx, so
+  // the optional-chained `w.sfx?.duckForVoice?.()` this replaced was a silent
+  // no-op — the game never actually stepped back during a call.
   try {
-    w.sfx?.duckForVoice?.(true);
+    sfx.duckForVoice(true);
   } catch {
     /* audio not booted yet — nothing to duck */
   }
@@ -50,7 +53,7 @@ function duckGame(): () => void {
   if (am?.setVolume && typeof prev === 'number') am.setVolume(Math.min(prev, 0.15));
   return () => {
     try {
-      w.sfx?.duckForVoice?.(false);
+      sfx.duckForVoice(false);
     } catch {
       /* ignore */
     }

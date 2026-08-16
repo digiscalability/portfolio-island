@@ -105,6 +105,18 @@ export class AudioManager {
     }
   }
 
+  private muteCbs: Array<(muted: boolean) => void> = [];
+  /**
+   * Subscribe to mute changes. For the sound paths that CANNOT be routed
+   * through the master bus and so can't be silenced by zeroing it — an
+   * HTMLAudioElement already playing, speechSynthesis, a private
+   * AudioContext. Zeroing the bus is instant for everything on it; these
+   * have to be told.
+   */
+  public onMuteChange(cb: (muted: boolean) => void): void {
+    this.muteCbs.push(cb);
+  }
+
   public toggleMute(): boolean {
     this.muted = !this.muted;
     try {
@@ -120,6 +132,13 @@ export class AudioManager {
       // ignore
     }
     this.save();
+    for (const cb of this.muteCbs) {
+      try {
+        cb(this.muted);
+      } catch {
+        /* one bad listener must not strand the mute */
+      }
+    }
     return this.muted;
   }
 

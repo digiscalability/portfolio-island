@@ -39,9 +39,39 @@ type MasterLike = {
   isMuted?: () => boolean;
   getEffectiveVolume?: () => number;
   getDestination?: () => AudioNode;
+  onMuteChange?: (cb: (muted: boolean) => void) => void;
 };
 function master(): MasterLike | undefined {
-  return (window as unknown as { audioManager?: MasterLike }).audioManager;
+  const am = (window as unknown as { audioManager?: MasterLike }).audioManager;
+  if (am) ensureMuteHook(am);
+  return am;
+}
+
+/**
+ * Muting zeroes the master bus, which is instant for everything routed
+ * through it — but an HTMLAudioElement already playing, a private
+ * AudioContext, and speechSynthesis all live OUTSIDE that bus and would keep
+ * talking over a muted game until the line ended. Hitting mute means silence
+ * NOW, so the mute has to reach them explicitly. Registered once, lazily,
+ * because the AudioManager boots ~5s after this module loads.
+ */
+let muteHookInstalled = false;
+function ensureMuteHook(am: MasterLike): void {
+  if (muteHookInstalled || !am.onMuteChange) return;
+  muteHookInstalled = true;
+  try {
+    am.onMuteChange((muted) => {
+      if (!muted) return;
+      stopCloudAudio();
+      try {
+        if (ttsSupported()) window.speechSynthesis.cancel();
+      } catch {
+        /* no speechSynthesis */
+      }
+    });
+  } catch {
+    muteHookInstalled = false; // retry on the next line
+  }
 }
 function masterMuted(): boolean {
   try {
@@ -115,20 +145,22 @@ const EMOJI_RE =
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
 /* eslint-enable no-misleading-character-class */
 export function sanitizeForSpeech(text: string): string {
-  return text
-    .replace(/\*[^*]*\*/g, ' ') // *adjusts cap and grins* → (silent)
-    // NPC replies may carry ElevenLabs v3 audio tags ([warmly], [chuckles]) —
-    // the server strips these for non-v3 models but PRESERVES them for v3
-    // (tts.ts MODEL_SUPPORTS_AUDIO_TAGS), since v3 reads them as performance
-    // direction. This is the free on-device SpeechSynthesis fallback, which
-    // never understands that syntax — it must ALWAYS strip brackets,
-    // unconditionally, or a cloud failure makes the browser voice literally
-    // say "warmly" out loud instead of just sounding warm.
-    .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/[_~`*]/g, ' ') // stray markdown emphasis
-    .replace(EMOJI_RE, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return (
+    text
+      .replace(/\*[^*]*\*/g, ' ') // *adjusts cap and grins* → (silent)
+      // NPC replies may carry ElevenLabs v3 audio tags ([warmly], [chuckles]) —
+      // the server strips these for non-v3 models but PRESERVES them for v3
+      // (tts.ts MODEL_SUPPORTS_AUDIO_TAGS), since v3 reads them as performance
+      // direction. This is the free on-device SpeechSynthesis fallback, which
+      // never understands that syntax — it must ALWAYS strip brackets,
+      // unconditionally, or a cloud failure makes the browser voice literally
+      // say "warmly" out loud instead of just sounding warm.
+      .replace(/\[[^\]]*\]/g, ' ')
+      .replace(/[_~`*]/g, ' ') // stray markdown emphasis
+      .replace(EMOJI_RE, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 // ── TTS: public API ──────────────────────────────────────────────────────────
@@ -237,7 +269,12 @@ async function playCloud(
         const g = ctx.createGain();
         g.gain.value = SPEECH_LEVEL;
         src.connect(g);
-        g.connect(master()?.getDestination?.() ?? ctx.destination);
+        // Only join the master bus when it lives in THIS context — a
+        // cross-context connect throws InvalidAccessError, which the outer
+        // catch would swallow, silently demoting every line to the element
+        // path for the rest of the session.
+        const busNode = master()?.getDestination?.();
+        g.connect(busNode && busNode.context === ctx ? busNode : ctx.destination);
         cloudSrc = src;
         src.onended = () => {
           if (cloudSrc === src) cloudSrc = null;
@@ -282,7 +319,22 @@ function cloudAudioCtx(): AudioContext | null {
     .audioManager;
   if (am?.ensureCtx) {
     try {
-      return am.ensureCtx();
+      const shared = am.ensureCtx();
+      // Once the shared context exists, ABANDON any private one we made
+      // earlier. The AudioManager boots on a ~5s idle timer, so an early
+      // line could strand this module on a context that the HUD mute can
+      // never reach — and worse, the connect below would then try to join
+      // two different contexts (illegal in Web Audio) and silently fall
+      // through to the element path on every line thereafter.
+      if (ownAudioCtx && ownAudioCtx !== shared) {
+        try {
+          void ownAudioCtx.close();
+        } catch {
+          /* already closed */
+        }
+        ownAudioCtx = null;
+      }
+      return shared;
     } catch {
       /* fall through */
     }

@@ -1400,7 +1400,10 @@ export class Island {
 
         if (above < -0.3) {
           // Submerged: fades from sand at the water's edge down to seabed
-          tmp.copy(seabed).lerp(sand, THREE.MathUtils.clamp((above + 2.4) / 2.1, 0, 1));
+          // Sand→seabed gradient re-authored for the deeper column: it used
+          // to complete by 2.4u, so everything below that was ONE flat tone
+          // across the whole floor. /4.6 spreads it over the real depth.
+          tmp.copy(seabed).lerp(sand, THREE.MathUtils.clamp((above + 4.6) / 4.3, 0, 1));
           // Seabed dapple (underwater slice): broad light/dark patches so the
           // floor isn't one flat tone. Deterministic from direction — no RNG,
           // one-time CPU like the rest of this color pass.
@@ -1532,7 +1535,12 @@ export class Island {
             // below the waterline and gone by ~2.5u depth. Cell size ~3u.
             'float caust = sin(vShoreP.x * 2.1 + vShoreP.y * 1.3 + uSeaT * 1.1) * sin(vShoreP.z * 2.3 - uSeaT * 0.9);',
             'float cOn = 1.0 - smoothstep(-0.5, -0.15, shoreAbove);',
-            'float cDeep = smoothstep(-2.5, -1.6, shoreAbove);',
+            // Falloff re-authored for the R=100 water column. The ocean floor
+            // sits 5.0u down now (it was 3.75u at R=75 — the displacement is
+            // radius-scaled), but this gate still died at 2.5u, so the deeper
+            // HALF of the sea was flat unlit colour. Reaching -5.2 keeps light
+            // playing all the way to the floor. Shader-only: no draws, no RNG.
+            'float cDeep = smoothstep(-5.2, -1.6, shoreAbove);',
             'diffuseColor.rgb += vec3(0.10, 0.14, 0.13) * max(0.0, caust) * cOn * cDeep;',
           ].join('\n'),
         );
@@ -4754,7 +4762,12 @@ export class Island {
       dir.set(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
       const a = this.analyticSurface(dir);
       const depth = sea - a.radius;
-      if (depth < 1.2 || depth > 3.2) continue;
+      // Upper bound re-authored for the R=100 column (floor is 5.0u down, was
+      // 3.75u): the 3.2 ceiling was an R=75 number that kept every frond in a
+      // narrow shore ring while the water around it got a third deeper.
+      // A gate widening only — the candidate loop and its rng() draws are
+      // unchanged, so the seeded stream (and index-networked vehicles) is safe.
+      if (depth < 1.2 || depth > 4.3) continue;
       // Never breach the surface: cap strand height to 85% of the water column
       const scale = Math.min(0.75 + rng() * 0.55, (depth * 0.85) / KELP_H);
       dummy.position.copy(dir).multiplyScalar(a.radius - 0.05); // rooted, not floating

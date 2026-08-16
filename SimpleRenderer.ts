@@ -53,6 +53,7 @@ export class SimpleRenderer {
   private renderScale = 1; // current multiplier applied on top of dprCap
   private fpsEma = 60; // smoothed frame rate driving the controller
   private qualityAccum = 0; // seconds since the last quality adjustment
+  private lowStreak = 0; // consecutive 1Hz decisions under the low bar
   private contextLost = false; // true between webglcontextlost and ...restored
 
   // Frame limiter + refresh-derived thresholds. The first ~60 rAF callbacks
@@ -344,7 +345,16 @@ export class SimpleRenderer {
         const interval = 1 / this.frameCapFps;
         if (this.frameAccum < interval - 0.001) return;
         wallDt = this.frameAccum;
-        this.frameAccum %= interval;
+        // ZERO, not `%= interval`: wallDt above consumed the WHOLE
+        // accumulator, so keeping the remainder re-injected it into the next
+        // frame and simulated time ran ahead of the wall clock. The 1ms
+        // tolerance lets a frame render while frameAccum is a hair BELOW
+        // interval, and `%=` then returns the entire accumulator — so on a
+        // 120Hz phone the deltas came out 16.6/24.9/16.5/24.8ms, ~2.5x real
+        // time. That inflated BOTH player movement and cloud drift (and the
+        // 16/25 cadence is itself the judder that reads as "blurry").
+        // The comment above always described this behaviour; the code did not.
+        this.frameAccum = 0;
       }
 
       // Clamp dt: after a stall (alt-tab, GC pause) getDelta can be huge and
@@ -397,7 +407,13 @@ export class SimpleRenderer {
     // shimmer regardless). 90fps is smooth and actually reachable, so pin the
     // ceiling there — true 60Hz is unaffected (60 < 90), and a genuine 120/165Hz
     // display simply stops shedding to chase a rate it wasn't sustaining anyway.
-    const ADAPTIVE_TARGET_CAP = 90;
+    // 60, not 90. At 90 the shed bar is 67.5fps and the recovery bar 85.5 —
+    // a scene with 2.1M verts, a per-frame 2048² shadow pass and a 13-pass
+    // bloom chain never satisfies that, so every 90/120/144Hz display parked
+    // at the resolution FLOOR permanently and rendered soft forever. A true
+    // 60Hz panel is unaffected (min(60,60) === min(60,90)); this only stops
+    // the faster displays chasing a rate they were never sustaining.
+    const ADAPTIVE_TARGET_CAP = 60;
     const capped = Math.min(hz, ADAPTIVE_TARGET_CAP);
     const target = this.frameCapFps > 0 ? Math.min(capped, this.frameCapFps) : capped;
     this.fpsLowThreshold = target * 0.75; // = 45 at 60Hz, same ratio as before
@@ -416,20 +432,37 @@ export class SimpleRenderer {
     if (deltaTime <= 0) return;
     // Exponential moving average of instantaneous FPS
     const instFps = 1 / deltaTime;
-    this.fpsEma += (instFps - this.fpsEma) * 0.1;
+    // Time-based, like every other smoother in this codebase. A per-FRAME
+    // 0.1 is a ~10-frame window, i.e. 0.17s at 60fps but 0.08s at 120 — the
+    // same hitch was judged differently on different hardware, and a single
+    // GC pause could drag the EMA under the bar before the next 1Hz decision.
+    const emaAlpha = 1 - Math.exp(-deltaTime / 0.75);
+    this.fpsEma += (instFps - this.fpsEma) * emaAlpha;
 
     this.rungCooldown += deltaTime;
     this.qualityAccum += deltaTime;
     if (this.qualityAccum < 1) return;
     this.qualityAccum = 0;
 
-    const scaleFloor = this.dprFloor / this.dprCap;
+    // Capped at 0.9 so the lever can never become a NO-OP: dprFloor doubles
+    // as a floor on dprCap (budgetedDpr), so on a 4K panel both land on 0.6,
+    // scaleFloor computes to exactly 1.0, and then `renderScale > scaleFloor`
+    // and `renderScale < 1` are BOTH false — the governor is frozen while the
+    // machine sits permanently at 0.6 effective DPR.
+    const scaleFloor = Math.min(0.9, this.dprFloor / this.dprCap);
     const prev = this.renderScale;
     if (this.fpsEma < this.fpsLowThreshold) {
-      if (this.renderScale > scaleFloor) {
-        // Struggling: shed ~15% of the pixels
-        this.renderScale = Math.max(scaleFloor, this.renderScale - 0.15);
+      this.lowStreak += 1;
+      if (this.renderScale > scaleFloor && this.lowStreak >= 2) {
+        // Struggling, and for a SECOND consecutive decision — one bad second
+        // (a shader compile, walking into a dense district) is not a reason
+        // to drop resolution. Shed 0.08/decision against a 0.1 restore, so
+        // the ratio now favours RECOVERY; at 0.15-down/0.1-up the scale sat
+        // near the floor whenever load oscillated around the threshold,
+        // which is exactly "sharp when I stand still, soft when I walk".
+        this.renderScale = Math.max(scaleFloor, this.renderScale - 0.08);
       } else if (
+        this.renderScale <= scaleFloor &&
         this.qualityRung < SimpleRenderer.MAX_QUALITY_RUNG &&
         this.rungCooldown >= SimpleRenderer.RUNG_ENGAGE_COOLDOWN_S
       ) {
@@ -437,6 +470,7 @@ export class SimpleRenderer {
         this.setQualityRung(this.qualityRung + 1);
       }
     } else if (this.fpsEma > this.fpsHighThreshold) {
+      this.lowStreak = 0;
       if (this.qualityRung > 0) {
         // Headroom is back: release rungs first (reverse order)... but keep the
         // GRASS rung (rung 3, the deepest + most visible) STICKY — release it
