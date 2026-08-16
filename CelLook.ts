@@ -33,13 +33,42 @@ export function isCelTheme(): boolean {
 
 let shadowPatched = false;
 
-/** Threshold every getShadow variant so soft penumbras read as crisp cel
- *  edges. Call before ANY material compiles (program cache never rebuilds). */
+/**
+ * Threshold every getShadow variant so soft penumbras read as crisp cel edges.
+ * Call before ANY material compiles (the program cache never rebuilds).
+ *
+ * FAILS LOUDLY NOW, because it had already stopped working silently. It splits
+ * on `return shadow;`, and three moved that line to
+ * `return mix( 1.0, shadow, shadowIntensity );` in r165 when per-light shadow
+ * intensity landed. Verified against the installed 0.180: `return shadow;`
+ * occurs ZERO times in shadowmap_pars_fragment. split().join() with no match
+ * returns the string unchanged, so the patch has been a no-op — while still
+ * logging that it applied, which is how it survived. Two commit messages in
+ * this repo went on to explain shadow artefacts as "CelLook turns the mid-grey
+ * PCF into a hard black step"; that was never true on this version.
+ *
+ * DELIBERATELY NOT REPOINTED at shadowmask_pars_fragment, which is where
+ * `return shadow;` now lives. shadowIntensity is mixed in INSIDE getShadow,
+ * before the mask is returned, so thresholding the mask would distort every
+ * intermediate value of the horizon fade in GameScene.updateSunShadow — an
+ * eased ramp would become a snap that never reaches a clean off. If the crisp
+ * cel edge is wanted back, it has to be applied to `shadow` before that mix,
+ * which means patching the chunk body rather than its return.
+ */
 export function applyCelShadowPatch(): void {
   if (shadowPatched || !isCelTheme()) return;
   shadowPatched = true;
+  const chunk = THREE.ShaderChunk.shadowmap_pars_fragment;
+  if (!chunk.includes('return shadow;')) {
+    console.warn(
+      '✒️ CelLook: cel shadow-edge patch SKIPPED — three no longer returns `shadow;` ' +
+        'from shadowmap_pars_fragment (moved to the shadowIntensity mix in r165). ' +
+        'Shadow edges are three’s stock PCF, not cel-thresholded.',
+    );
+    return;
+  }
   // split/join = replaceAll without needing the es2021 lib target.
-  THREE.ShaderChunk.shadowmap_pars_fragment = THREE.ShaderChunk.shadowmap_pars_fragment
+  THREE.ShaderChunk.shadowmap_pars_fragment = chunk
     .split('return shadow;')
     .join('return smoothstep( 0.35, 0.65, shadow );');
   console.log('✒️ CelLook: cel shadow-edge patch applied');
