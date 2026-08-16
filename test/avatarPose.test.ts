@@ -48,6 +48,37 @@ describe('the ride pose respects the rig rest', () => {
   });
 });
 
+describe('the party dance respects the rig rest', () => {
+  // MEASURED across a full beat before the fix, on the live rig: the arm axis y
+  // stayed in +0.203..+0.943 and z in -0.62..-0.33 — BOTH arms locked up over the
+  // head and behind it for the whole dance. After: y in -0.970..-0.141 and z in
+  // +0.230..+0.976, i.e. never above horizontal and always forward. For scale, the
+  // npc.glb GUESTS dancing in the same room measure y in -0.99..+0.27 — the fixed
+  // player sits inside their band, the broken one was entirely above it.
+  const dance = (): string => fn('SimplePlayer.ts', 'public applyPartyDance', 1200);
+
+  test('the GLB arms are anchored to -PI', () => {
+    const d = dance();
+    expect(d).toMatch(/armLBone\.rotation\.x = -Math\.PI \+ \(-0\.9 \+ pump\)/);
+    expect(d).toMatch(/armRBone\.rotation\.x = -Math\.PI \+ \(-0\.9 - pump\)/);
+  });
+
+  test('the identity-rest fallback still gets the RAW value', () => {
+    const d = dance();
+    expect(d).toMatch(/armPivots\[0\]\.rotation\.x = -0\.9 \+ Math\.sin\(b\) \* 0\.6/);
+    expect(d).toMatch(/armPivots\[1\]\.rotation\.x = -0\.9 - Math\.sin\(b\) \* 0\.6/);
+  });
+
+  test('the npc.glb guests compose onto the cached rest quaternion instead', () => {
+    // Different rig, different rule: on npc.glb .rotation must not be written at
+    // all. The guests were already correct — the stale note that sent me here
+    // blamed them, and the raw constants were the PLAYER's.
+    const guests = fn('GameScene.ts', 'The guests: bounce + arm pumps', 2300);
+    expect(guests).toMatch(/l\.b\.quaternion\.copy\(l\.rest\)\.multiply\(/);
+    expect(guests).not.toMatch(/l\.b\.rotation\./);
+  });
+});
+
 describe('the REMOTE peer ride pose respects the rig rest', () => {
   // World law 2 has a second clause: "Never lerp from the live rotation.x near
   // +/-PI — three.js reports +3.13 one frame and -3.13 the next." The peer ride

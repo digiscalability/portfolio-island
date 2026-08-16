@@ -1382,8 +1382,16 @@ export class SimplePlayer extends THREE.Group {
     const b = t * 2 * Math.PI;
     if (this.gltfModel) {
       this.ensureLimbBones();
-      if (this.armLBone) this.armLBone.rotation.x = -0.9 + Math.sin(b) * 0.6;
-      if (this.armRBone) this.armRBone.rotation.x = -0.9 - Math.sin(b) * 0.6;
+      // REST-ANCHORED (world law 2). The -0.9 +/- sin*0.6 below was authored for
+      // the PROCEDURAL rig (identity rest) and this branch reused it raw, so it
+      // wiped the GLB's -PI arm rest. MEASURED across a full beat before the fix:
+      // the arm axis y stayed in +0.203..+0.943 and z in -0.62..-0.33 — BOTH arms
+      // locked up over the head and BEHIND it for the entire dance, oscillating
+      // between up-back and further-up-back. Same conversion as the ride, swim
+      // and wave poses: GLB = REST + procedural.
+      const pump = Math.sin(b) * 0.6;
+      if (this.armLBone) this.armLBone.rotation.x = -Math.PI + (-0.9 + pump);
+      if (this.armRBone) this.armRBone.rotation.x = -Math.PI + (-0.9 - pump);
     } else if (this.armPivots.length === 2) {
       this.armPivots[0].rotation.x = -0.9 + Math.sin(b) * 0.6;
       this.armPivots[1].rotation.x = -0.9 - Math.sin(b) * 0.6;
