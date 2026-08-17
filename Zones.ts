@@ -118,7 +118,13 @@ export class Zone {
       this.marker.position.copy(sampled.position);
       this.position.copy(sampled.position); // proximity matches the visual
 
-      const normal = sampled.normal.clone().normalize();
+      // WORLD LAW 1: buildings stand PLUMB — the radial axis, never the
+      // terrain face normal. This used the slope normal, so every landmark
+      // hall raked over with its plot (MEASURED: the welcome hub hall at
+      // 10.2 deg — the owner screenshotted it listing). Position (above)
+      // keeps following the terrain; only the up-axis changes, and the whole
+      // door-faces-pole basis below derives from it.
+      const normal = this.marker.position.clone().normalize();
       const up = new THREE.Vector3(0, 1, 0);
       // Tangent pointing toward the north pole; at the pole itself fall back to
       // a fixed longitude so the door still faces a sensible way.

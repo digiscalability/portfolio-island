@@ -7923,7 +7923,10 @@ export class GameScene extends THREE.Scene {
     if (!this.island) return;
     const dir = this.island.dirAt(5.9, -0.02);
     const s = this.island.sampleSurfaceByDirection(dir, 0);
-    const up = s.normal;
+    // WORLD LAW 1: the house stands PLUMB — radial, not the beach's slope
+    // normal (which raked it 3.2 deg and fed faceObjectToward the same tilted
+    // axis, locking it in). The plinth handles the ground contact.
+    const up = s.position.clone().normalize();
 
     const timber = GameScene.birdMat(0xe6d7b8); // shared toon cache
     const trim = GameScene.birdMat(0x8a6a42);
@@ -9445,18 +9448,22 @@ export class GameScene extends THREE.Scene {
       };
       this.fitParkedCarSeat(v); // wheels on the ground, not the tangent plane
       this.vehicles.push(v);
-      this.placeVehicle(v, v.radius, v.normal);
+      // v.dir, not v.normal: WORLD LAW 1 lists parked cars as plumb. Island
+      // seats them plumb with a comment saying exactly that — this call used
+      // to clobber it with the wheel-plane normal (measured 21.1 deg of rake).
+      this.placeVehicle(v, v.radius, v.dir);
     }
   }
 
   /**
-   * Seat a PARKED car on its four wheel contact points instead of the centre
-   * tangent plane: probe the terrain under each wheel, park at the mean
-   * contact height with the plane fitted through them (diagonal cross). The
-   * centre-normal seat left downhill wheels hanging in mid-air whenever a car
-   * parked across a crest — the grounding audit's floating-car defect.
-   * Raycast probes: call at init/disembark only, never per-frame (driving
-   * keeps the cheap centre sample; motion hides the crest hang).
+   * Seat a PARKED car at its four wheel contact points instead of the centre
+   * tangent plane: probe the terrain under each wheel and park at the LOWEST
+   * contact, so no wheel hangs in mid-air when a car parks across a crest —
+   * the grounding audit's floating-car defect, resolved the island's
+   * bury-not-float way (uphill wheels may sink a touch; downhill never float).
+   * The body stays PLUMB (World Law 1 — the old plane-fit normal raked parked
+   * cars up to 21 deg). Raycast probes: call at init/disembark only, never
+   * per-frame (driving keeps the cheap centre sample; motion hides the hang).
    */
   private fitParkedCarSeat(v: {
     dir: THREE.Vector3;
@@ -9475,8 +9482,7 @@ export class GameScene extends THREE.Scene {
       [0.87, -1.09], // RR
     ];
     const base = this.island.sampleSurfaceByDirection(v.dir, 0).position.length();
-    const pts: THREE.Vector3[] = [];
-    let mean = 0;
+    let minH = Infinity;
     for (const [sx, sz] of OFFS) {
       const pd = v.dir
         .clone()
@@ -9485,19 +9491,9 @@ export class GameScene extends THREE.Scene {
         .addScaledVector(v.forward, sz)
         .normalize();
       const h = this.island.sampleSurfaceByDirection(pd, 0).position.length();
-      mean += h * 0.25;
-      pts.push(pd.multiplyScalar(h));
+      minH = Math.min(minH, h);
     }
-    const n = new THREE.Vector3().crossVectors(
-      pts[1].clone().sub(pts[2]), // FR − RL
-      pts[0].clone().sub(pts[3]), // FL − RR
-    );
-    if (n.lengthSq() > 1e-8) {
-      n.normalize();
-      if (n.dot(v.dir) < 0) n.negate();
-      v.normal.copy(n);
-    }
-    v.radius = mean + 0.06;
+    if (Number.isFinite(minH)) v.radius = minH + 0.06;
   }
 
   /** Place a water craft at the live wave surface (up = radial). */
@@ -9679,9 +9675,10 @@ export class GameScene extends THREE.Scene {
       this.player.setWorldPosition(dropDir.multiplyScalar(s.position.length() + 0.75));
       // Re-park on the wheel contacts: while driven the seat is the cheap
       // centre sample, so a car left across a crest would keep its wheels
-      // hanging in mid-air for the rest of the session.
+      // hanging in mid-air for the rest of the session. Plumb (v.dir), same
+      // as the boot seat — parked cars never rake with the slope.
       this.fitParkedCarSeat(v);
-      this.placeVehicle(v, v.radius, v.normal);
+      this.placeVehicle(v, v.radius, v.dir);
     } else {
       const surf = this.island.waveHeightAt(dropDir, this.island.seaTimeUniform.value);
       this.player.setWorldPosition(dropDir.multiplyScalar(surf + 0.55));

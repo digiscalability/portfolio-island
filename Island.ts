@@ -3582,8 +3582,13 @@ export class Island {
       ).multiplyScalar(this.radius);
       const sampled = this.sampleSurfacePosition(pos, -0.1); // block base sunk slightly
       block.position.copy(sampled.position);
+      // WORLD LAW 1: a multi-storey work-site block stands PLUMB (measured up
+      // to 5.5 deg of rake on the slope normal before this).
       block.quaternion.copy(
-        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal),
+        new THREE.Quaternion().setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0),
+          sampled.position.clone().normalize(),
+        ),
       );
       block.castShadow = true;
       block.receiveShadow = true;
@@ -3840,15 +3845,15 @@ export class Island {
       }
       bench.position.copy(bSampled.position);
       this.benchSites.push(bSampled.position.clone()); // NPC activity anchor (bench rest)
-      const bq = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        bSampled.normal,
-      );
+      // WORLD LAW 1: rigid furniture stands PLUMB — and faceObjectToward takes
+      // the SAME axis, or its premultiply re-tilts what was just made vertical.
+      const bPlumb = bSampled.position.clone().normalize();
+      const bq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bPlumb);
       bench.quaternion.copy(bq);
       // Face the plaza this bench belongs to (seat toward it, backrest away)
       this.faceObjectToward(
         bench,
-        bSampled.normal,
+        bPlumb,
         this.dirAt(BENCH_SITES[i][0], BENCH_SITES[i][2]).multiplyScalar(this.radius),
       );
       bench.name = `bench_${i}`;
@@ -7151,11 +7156,17 @@ export class Island {
     const g = new THREE.Group();
     g.name = name;
     g.position.copy(seat.position);
-    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seat.normal);
+    // WORLD LAW 1: stations stand PLUMB (radial), never on the slope normal —
+    // the watch post measured 12.3 deg of rake before this. BOTH calls take
+    // the same axis: faceObjectToward premultiplies about the axis you hand
+    // it, so passing the slope normal here would re-tilt the plumb seat.
+    // (The amenity seater ~5930 already does exactly this.)
+    const plumb = seat.position.clone().normalize();
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), plumb);
     // Face the nearest street where there is one, so desks and carts address
     // the road like the houses do.
     const street = this.nearestStreetDir(dir, this.arc(25));
-    if (street) this.faceObjectToward(g, seat.normal, street.multiplyScalar(this.radius));
+    if (street) this.faceObjectToward(g, plumb, street.multiplyScalar(this.radius));
     build(g);
     parent.add(g);
   }
