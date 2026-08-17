@@ -118,3 +118,53 @@ describe('a phone and a desktop build the same world', () => {
     expect(desktop.tufts).toBeGreaterThan(phone.tufts * 2);
   });
 });
+
+// FNV-1a over a census string — a stable, machine-independent digest.
+const fnv1a = (s: string): string => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+};
+
+// GOLDEN WORLD — the absolute pin the five tier-parity tests above CANNOT
+// provide. Those compare phone-vs-desktop, so a change that re-rolls the
+// seeded RNG stream UNIFORMLY (any new THREE allocation in Island
+// construction — generateUUID spends 4 Math.random draws each) moves both
+// tiers together and every relative test stays green while the whole world
+// silently slides. And `draws` is the RNG state handed to createVehicles, so
+// a shift here relocates the 8 parked cars multiplayer addresses BY INDEX.
+//
+// This pins the desktop census to fixed values. It fails on ANY world-moving
+// change — which is the point: the failure is the review gate. When you MEANT
+// to move the world (a radius migration, a deliberate placement change), read
+// the printed actuals below and re-bless these four constants in the same
+// commit. Never "fix" this by loosening it.
+//
+// Captured 2026-08-18 at WORLD_RADIUS=100, HEAD 2c98d6c.
+const GOLDEN = {
+  draws: 49771,
+  propCount: 527,
+  propHash: 'd3b590b9',
+  colliderHash: 'd3c2796c',
+  instancedHash: '8cf7f2bd',
+  tufts: 10117,
+};
+
+describe('the world has not silently moved (golden RNG census)', () => {
+  test('desktop census matches the blessed golden', () => {
+    const actual = {
+      draws: desktop.draws,
+      propCount: desktop.props.length,
+      propHash: fnv1a(desktop.props.join('|')),
+      colliderHash: fnv1a(desktop.colliders),
+      instancedHash: fnv1a(desktop.instanced.slice().sort().join(',')),
+      tufts: desktop.tufts,
+    };
+    // One assertion on the whole object so a mismatch prints every actual at
+    // once — copy them into GOLDEN above, intentionally, to re-bless.
+    expect(actual).toEqual(GOLDEN);
+  });
+});
