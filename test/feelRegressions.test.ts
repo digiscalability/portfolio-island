@@ -139,6 +139,22 @@ describe('no quality rung may switch RENDERING PATH', () => {
     expect(ladder()).toContain('this.bloomSuspendedByGovernor = this.bloomPass.enabled');
   });
 
+  test('the intro fly-in does not switch it either', () => {
+    // The governor was the RARE path; intro-lite ran on every non-reduced-motion
+    // load. Measured back-to-back at fixed camera poses, the old lever stepped
+    // +8.0% at the 1500ms restore point (+26.9% settled, +16.6% at the distant
+    // start); the bloom pass measures 0.039% worst-case across the same poses.
+    const m = src('main-simple.ts');
+    expect(m).toContain('this.renderer.setBloomEnabled(false)');
+    expect(m).toContain('this.renderer.setBloomEnabled(true)');
+    // Exactly one setPostProcessingEnabled call survives in the app, and it
+    // turns the composer ON at boot. Nothing may ever turn it off again —
+    // that is what makes warmUp compile the bloom/output programs behind the
+    // loader instead of mid-swoop.
+    const calls = m.match(/this\.renderer\.setPostProcessingEnabled\((true|false)\)/g) ?? [];
+    expect(calls).toEqual(['this.renderer.setPostProcessingEnabled(true)']);
+  });
+
   test('the low tier, which never builds a composer, is guarded not asserted', () => {
     // bloomPass is undefined wherever initPostProcessing early-returns. A `!`
     // here throws inside setQualityRung's while-loop AFTER the rung counter has

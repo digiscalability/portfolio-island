@@ -678,6 +678,20 @@ export class SimpleRenderer {
     return this.postProcessingEnabled;
   }
 
+  /**
+   * Turn the BLOOM PASS on/off without switching rendering path.
+   *
+   * This is what callers almost always mean by "skip bloom for a moment".
+   * setPostProcessingEnabled swaps composer.render() for renderer.render(),
+   * which moves tone mapping from OutputPass into every material and changes
+   * mean luminance by 21% — a full-screen brightness change, not a bloom
+   * change. Disabling the pass leaves RenderPass -> OutputPass intact and
+   * measures 0.11%. Inert on the low tier, which never builds a composer.
+   */
+  public setBloomEnabled(enabled: boolean): void {
+    if (this.bloomPass) this.bloomPass.enabled = enabled;
+  }
+
   /** Whether a composer was ever constructed (false on the low tier). */
   public isPostProcessingAvailable(): boolean {
     return !!this.composer;

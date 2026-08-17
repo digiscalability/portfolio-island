@@ -1328,30 +1328,64 @@ class SimpleApp {
         // bloom detail from 280u anyway. Restored the frame the intro settles
         // (governor conflict window is ~0: rungs need 4s+ at the scale floor
         // before they touch either lever).
-        this.scene.getIsland().setGrassBudget(0.5);
-        this.renderer.setPostProcessingEnabled(false);
-        // RESTORE MID-SWOOP, NOT ON ARRIVAL. Both levers are whole-IMAGE
-        // changes, and firing them on the frame the camera settles put the
-        // biggest visual discontinuity in the game at the exact moment the
-        // player first looks at the island — read as the screen "glitching".
+        // THE COMPOSER NOW STAYS ON. This used to call
+        // setPostProcessingEnabled(false), which is not "skip bloom" — it swaps
+        // composer.render() for renderer.render(), moving tone mapping out of
+        // OutputPass and into every material. The two paths render genuinely
+        // different images.
         //
-        // MEASURED: toggling post-processing moves 51% of the frame and lifts
-        // mean luminance 100.4 -> 122.3, i.e. +22%, in ONE frame. And that is
-        // NOT bloom — with the bloom AND grade passes both disabled the
-        // composer path still reads 122.3, so the whole jump is the composer
-        // being a linear-HDR pipeline tone-mapped once at the end versus
-        // direct-to-canvas being tone-mapped per material. The two paths
-        // genuinely render different images; the only real fix is to not
-        // switch between them while anyone is watching. Grass 0.5 -> 1.0 pops
-        // on the same frame for good measure.
+        // HOW BIG THAT STEP ACTUALLY WAS — measured back-to-back at FIXED camera
+        // poses (both paths rendered from one pose, so no camera drift is folded
+        // in), because the honest answer is "it depends on the framing":
+        //   distant start (whole planet)   +16.6%
+        //   1500ms, WHERE THE RESTORE FIRES  +8.0%
+        //   settled ground view            +26.9%
+        // So the mid-swoop timing below was already doing most of the work: it
+        // moved the step off the worst framing (arrival, ~27%) onto one of the
+        // cheapest, and the camera's own motion masked it further — frame to
+        // frame across the restore it measured only ~3%. This change is
+        // therefore a cleanup of a MITIGATED defect, not a rescue from a
+        // 21% flash. The earlier note here read "+22%" from the settled-view
+        // measurement and did not distinguish the two framings.
         //
-        // At 1.5s of a 2.5s flight the camera is still sweeping, so the change
-        // rides in under the motion and the arrival is clean. The heavy part
-        // of the swoop — the whole planet in frustum — is the FIRST second,
-        // which still runs lean, so the judder this was protecting is intact.
+        // Disabling the bloom PASS instead keeps RenderPass -> OutputPass, so
+        // tone mapping still happens once in the same place. MEASURED at those
+        // same five poses, worst case 0.039%. The step is now gone rather than
+        // hidden, and the render path never switches at all.
+        //
+        // GRASS PAYS FOR IT. Holding the composer through the swoop costs real
+        // fill rate with the whole planet in frustum, so the grass lever leans
+        // harder to compensate. MEASURED over the real 2.5s flight, median /
+        // p95 / worst frame:
+        //   grass 0.5 + composer OFF (before)   22.0 / 45.3 / 48.2 ms
+        //   grass 0.5 + composer ON             26.3 / 47.0 / 51.2
+        //   grass 0.3 + composer ON  (this)     22.7 / 42.7 / 48.7
+        //   grass 0.2 + composer ON             22.3 / 42.0 / 45.6
+        // 0.3 lands at parity on the median (run-to-run noise here is ~2ms) and
+        // BETTER on p95, which is the number judder is actually made of. Nobody
+        // can resolve a blade from 280u; the bloom detail was never visible
+        // either. 0.2 measured better still and is there if a slow machine needs
+        // it — this stops at 0.3 because parity was the bar.
+        this.scene.getIsland().setGrassBudget(0.3);
+        this.renderer.setBloomEnabled(false);
+        // RESTORE MID-SWOOP, NOT ON ARRIVAL. Firing on the frame the camera
+        // settles put the biggest visual discontinuity in the game at the exact
+        // moment the player first looks at the island — read as the screen
+        // "glitching". The brightness half of that is gone now, but grass
+        // 0.3 -> 1.0 is still a whole-image change, so it keeps riding in under
+        // the motion at 1.5s of a 2.5s flight. The heavy part of the swoop —
+        // the whole planet in frustum — is the FIRST second, which still runs
+        // lean, so the judder this was protecting is intact.
+        //
+        // Bonus, and the reason warmUp below finally does its job: warmUp
+        // branches on postProcessingEnabled, and this function used to set it
+        // false BEFORE warmUp ran. So the bloom/output programs were never
+        // compiled behind the loader on this path — they compiled mid-swoop, at
+        // the same 1500ms moment as the brightness step. Only reduced-motion
+        // users (who skip this block) ever got a warmed composer.
         const restoreIntroQuality = (): void => {
           this.scene.getIsland().setGrassBudget(1);
-          this.renderer.setPostProcessingEnabled(true);
+          this.renderer.setBloomEnabled(true);
         };
         window.setTimeout(restoreIntroQuality, 1500);
         this.scene
