@@ -10172,13 +10172,45 @@ export class GameScene extends THREE.Scene {
           vec3 dir = normalize(vWorldPosition + offset);
           float h = dot(dir, uUp);
           float t = max(h, 0.0);
-          // Soft posterization: quantize the gradient coordinate, then smooth
-          // the band edges so they paint rather than alias. uBands=0 -> smooth.
+          // Soft posterization: every band is a FLAT PLATEAU and the transition
+          // is centred ON the boundary, so a band edge is where the colour
+          // MOVES rather than where it JUMPS. uBands = 0 -> smooth (?sky=smooth).
+          //
+          // The block this replaces promised exactly this and did the opposite.
+          // It smoothstepped fract(t*steps) — a value that RESETS at every
+          // boundary — then scaled it by 0.35, so the S-curve was spent in the
+          // band INTERIOR (t crawled 0.07 across a whole band) and the leftover
+          // 0.13 discharged instantly at each multiple of 1/steps. Measured on
+          // the framebuffer: a 22/255 seam at noon, and a visible hard line
+          // across the dusk sky. It was wrong at BOTH ends too — t(0) came out
+          // 0.065 and t(1) came out 1.065, i.e. the zenith EXTRAPOLATED past
+          // topColor.
+          //
+          // THE HALF-BAND PHASE IS LOAD-BEARING, not cosmetic. floor()/fract()
+          // of (t*steps) put the plateaus ON the multiples of 1/steps, pinning
+          // T(k/steps) = k/steps for every k — in particular T(0) = 0, so the
+          // horizon resolves to exactly horizonColor and the dome stays in sync
+          // with the fog (EnvironmentCycle copies horizonColor into fog.color)
+          // and the sea fresnel (bindSeaSkyColor binds the same Color by
+          // reference). The old form floated the horizon to 38% of the way
+          // toward topColor — a MEASURED 43/255 desync in red at dusk — so the
+          // h=0 contract has been broken for the whole banded default; only
+          // ?sky=smooth ever honoured it.
+          //
+          // SOFT is the transition half-width as a fraction of ONE band, so it
+          // is independent of the band COUNT: 0 = hard step, 0.5 = no plateau
+          // left (the smooth sky again). 0.25 is where two bounds meet — the
+          // largest value that still leaves half of every band dead flat, and
+          // small enough that the ramp never approaches a pixel (0.1 of t
+          // ~= 5.7 deg ~= 100px at the shipped framing). Peak slope is
+          // 0.75/SOFT = 3x the unbanded gradient, independent of uBands.
+          // uBands stays the taste lever; the phase is not adjustable.
           if (uBands > 0.5) {
-            float steps = uBands;
-            float q = floor(t * steps) / steps;
-            float f = smoothstep(0.0, 1.0, fract(t * steps));
-            t = q + (f / steps) * 0.35 + (0.325 / steps);
+            const float SOFT = 0.25;
+            float s = t * uBands;
+            float band = floor(s);
+            float f = s - band;
+            t = (band + smoothstep(0.5 - SOFT, 0.5 + SOFT, f)) / uBands;
           }
           vec3 sky = mix(horizonColor, topColor, pow(t, exponent));
           // Deep-zenith stop: the last 40% of elevation eases into a darker

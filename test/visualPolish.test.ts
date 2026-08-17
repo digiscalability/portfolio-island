@@ -169,6 +169,75 @@ describe('clouds — stable compositing + non-degenerate shapes', () => {
   });
 });
 
+describe('sky — soft posterization with a hard horizon contract', () => {
+  // The shipped transfer, mirrored here so the CONTRACT is pinned as maths,
+  // not just as source text. Any edit to the GLSL must keep these properties.
+  const SOFT = 0.25;
+  const smoothstep = (a: number, b: number, x: number): number => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const transfer = (t: number, bands = 5): number => {
+    if (bands <= 0.5) return t;
+    const s = t * bands;
+    const band = Math.floor(s);
+    const f = s - band;
+    return (band + smoothstep(0.5 - SOFT, 0.5 + SOFT, f)) / bands;
+  };
+
+  test('the h=0 horizon contract holds EXACTLY (fog + sea consume horizonColor)', () => {
+    // The old form returned 0.065 here, so pow(0.065, 0.35) = 0.384 put the
+    // dome 38% toward topColor at the waterline while fog and the sea fresnel
+    // sat on pure horizonColor — a MEASURED 43/255 desync in red at dusk.
+    expect(transfer(0)).toBe(0);
+    // ...and every band boundary is pinned, which is WHY the horizon is: the
+    // half-band phase puts plateaus on the multiples of 1/bands.
+    for (let k = 0; k <= 5; k++) expect(transfer(k / 5)).toBeCloseTo(k / 5, 10);
+  });
+
+  test('the zenith does not overshoot topColor', () => {
+    // The old form returned 1.065 at t=1 — pow(1.065, 0.35) = 1.022, i.e. the
+    // mix EXTRAPOLATED past topColor.
+    expect(transfer(1)).toBe(1);
+  });
+
+  test('no discontinuity anywhere — the seam is gone', () => {
+    let worst = 0;
+    let prev = transfer(0);
+    for (let i = 1; i <= 20000; i++) {
+      const v = transfer(i / 20000);
+      worst = Math.max(worst, Math.abs(v - prev));
+      prev = v;
+    }
+    // Old form: a 0.13 JUMP at every multiple of 1/bands (measured 22/255 on
+    // the framebuffer at noon). Peak slope here is 0.75/SOFT = 3x identity,
+    // so across a 5e-5 sample step the largest legal delta is ~1.5e-4.
+    expect(worst).toBeLessThan(1e-3);
+  });
+
+  test('the painted BAND look survives — half of every band stays flat', () => {
+    // Abbas A/B-chose the banded sky; this must not quietly become smooth.
+    let flat = 0;
+    for (let i = 1; i <= 20000; i++) {
+      if (Math.abs(transfer(i / 20000) - transfer((i - 1) / 20000)) < 1e-9) flat++;
+    }
+    expect(flat / 20000).toBeGreaterThan(0.45);
+    // ?sky=smooth still bypasses banding entirely.
+    expect(transfer(0.37, 0)).toBe(0.37);
+  });
+
+  test('the shader ships that transfer, and the broken one cannot come back', () => {
+    const scene = src('GameScene.ts');
+    expect(scene).toContain('const float SOFT = 0.25');
+    expect(scene).toContain('t = (band + smoothstep(0.5 - SOFT, 0.5 + SOFT, f)) / uBands');
+    // The old block, in any form.
+    expect(scene).not.toContain('(f / steps) * 0.35');
+    expect(scene).not.toContain('(0.325 / steps)');
+    // uBands stays the taste lever and ?sky=smooth the escape hatch.
+    expect(scene).toContain("get('sky') === 'smooth' ? 0.0 : 5.0");
+  });
+});
+
 describe('HUD — one chip recipe for the top-right column', () => {
   test('CHIP/CHIP_ICON exist and every column chip spreads them', () => {
     const ui = src('SimpleUI.ts');
