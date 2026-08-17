@@ -1823,12 +1823,12 @@ export class Island {
     for (let i = 0; i <= BOULEVARD_SEGS; i++) {
       boulevardPts.push(this.dirAt((i / BOULEVARD_SEGS) * Math.PI * 2, 0.4636));
     }
-    pathGroup.add(this.createStreetPath(boulevardPts, 1.0));
+    pathGroup.add(this.createStreetPath(boulevardPts, 1.7));
     const coastalPts: THREE.Vector3[] = [];
     for (let i = 0; i <= BOULEVARD_SEGS; i++) {
       coastalPts.push(this.dirAt((i / BOULEVARD_SEGS) * Math.PI * 2, 0.28));
     }
-    pathGroup.add(this.createStreetPath(coastalPts, 0.8));
+    pathGroup.add(this.createStreetPath(coastalPts, 1.3));
     for (const dLon of DISTRICT_LONS) {
       // Avenue: pole plaza → district plaza
       const avenue: THREE.Vector3[] = [];
@@ -1838,11 +1838,11 @@ export class Island {
       const aStart = Math.PI / 2 - 4.2 / this.radius;
       for (let s = 0; s <= 12; s++)
         avenue.push(this.dirAt(dLon, aStart - (s / 12) * (aStart - 0.5)));
-      pathGroup.add(this.createStreetPath(avenue, 0.8));
+      pathGroup.add(this.createStreetPath(avenue, 1.5));
       // Connector: district plaza → coastal road
       const connector: THREE.Vector3[] = [];
       for (let s = 0; s <= 5; s++) connector.push(this.dirAt(dLon, 0.43 - (s / 5) * 0.15));
-      pathGroup.add(this.createStreetPath(connector, 0.8));
+      pathGroup.add(this.createStreetPath(connector, 1.3));
       // Keep the ARTERY centrelines: the lamp pass below lights these, and
       // measurement is why — against 5238 samples of the street network, 48.8%
       // sat >12u from any lamp, and effectively all of it was here. The
@@ -6511,6 +6511,13 @@ export class Island {
     const mat = Materials.createTrimMaterial(0xcfc4ae);
     mat.emissive = new THREE.Color(0x2a241c);
     mat.emissiveIntensity = 1;
+    // Cross-section detail rides in a vertex COLOUR attribute (kerb bands, and
+    // a centre line on the wide roads), so the whole hierarchy costs one
+    // material and zero extra draws. A BufferAttribute mints no uuid and
+    // PlaneGeometry costs the same 4 Math.random draws at any resolution, so
+    // none of this shifts the seeded stream — which is exactly why the road
+    // could be detailed without the flag-day re-roll the width rewrite needs.
+    mat.vertexColors = true;
     // Keep-out circles must OVERLAP along the road: at R=50 the segment
     // midpoints are 3.3-3.4u apart, so the old (width/2+0.8) radius left
     // ~1u-wide unprotected stretches of centerline where trees/rocks could
@@ -6544,7 +6551,11 @@ export class Island {
       // seeded ambient RNG stream — the vehicle wire protocol — is untouched.
       const planeLen = segLength * 1.3;
       const lenSegs = Math.max(4, Math.ceil(planeLen / 0.9));
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(planeLen, width, lenSegs, 1), mat);
+      // 6 transverse rows instead of 1: the extra rows are what the kerb and
+      // centre-line colour bands are painted onto. Same ONE geometry per
+      // segment, so the allocation count — and therefore the seeded stream —
+      // is untouched.
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(planeLen, width, lenSegs, 6), mat);
       mesh.position.copy(sampled.position);
       // Orient with an explicit basis so the ribbon lies FLAT. A
       // PlaneGeometry spans local X (length) × local Y (width) and faces
@@ -6583,9 +6594,42 @@ export class Island {
         mesh.geometry.computeVertexNormals();
         mesh.geometry.computeBoundingSphere();
       }
+      // CROSS-SECTION. Paint the transverse rows so a road reads as a road
+      // rather than a ribbon: darker kerb bands at the edges, and a pale
+      // centre line down the wide roads only (a footpath with a centre line
+      // looks like a runway). The band is chosen from the vertex's ORIGINAL
+      // transverse coordinate, captured before the conform moved it.
+      {
+        const geo = mesh.geometry;
+        const pos2 = geo.attributes.position as THREE.BufferAttribute;
+        const n = pos2.count;
+        const col = new Float32Array(n * 3);
+        const marked = width >= 1.5; // boulevard-class only
+        // PlaneGeometry lays out rows in order, so the transverse band of a
+        // vertex is its index within the row grid — read it off the layout
+        // rather than the (now conformed) position.
+        const cols = lenSegs + 1;
+        for (let vi = 0; vi < n; vi++) {
+          const row = Math.floor(vi / cols); // 0..6 across the width
+          const t = Math.abs(row / 6 - 0.5) * 2; // 0 centre → 1 kerb
+          let shade = 0.88; // road body
+          if (t > 0.82)
+            shade = 0.6; // kerb band
+          else if (marked && t < 0.12) shade = 1.0; // centre line
+          col[vi * 3] = shade;
+          col[vi * 3 + 1] = shade;
+          col[vi * 3 + 2] = shade * 0.985; // a hair warm, matches the paver
+        }
+        geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      }
       mesh.receiveShadow = true;
-      // EnvironmentCycle lerps this material toward asphalt-grey at night —
-      // the pale paver otherwise stays near-white while the world dims.
+      // A ground-hugging ribbon can never block a camera ray, and the chase
+      // camera raycasts its collision list EVERY frame. OrbitCamera treats an
+      // own-property raycast as an explicit opt-out (grass and the sea use the
+      // same trick) — this drops ~401 bounding-sphere tests per frame.
+      mesh.raycast = () => {};
+      // EnvironmentCycle lifts this material toward moonlit stone at night —
+      // the road is what a visitor navigates by after dark.
       mesh.userData.isPavement = true;
       group.add(mesh);
       this.streetDirs.push({ dir: midDir, halfArc: keepOutArc });

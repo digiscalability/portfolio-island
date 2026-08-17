@@ -210,6 +210,42 @@ describe('night legibility — lit roads, dark shore and highlands', () => {
   });
 });
 
+describe('roads read as roads — kerbs, centre line, and off the camera ray', () => {
+  test('cross-section rides in vertex colour, at no allocation cost', () => {
+    const island = src('Island.ts');
+    // A BufferAttribute mints no uuid and PlaneGeometry costs the same 4
+    // Math.random draws at any resolution — which is why the road could be
+    // detailed WITHOUT the flag-day world re-roll a width rewrite needs.
+    expect(island).toContain('mat.vertexColors = true');
+    expect(island).toMatch(/new THREE\.PlaneGeometry\(planeLen, width, lenSegs, 6\)/);
+    expect(island).toContain("geo.setAttribute('color'");
+    // Kerb band + body + a centre line on wide roads only (a footpath with a
+    // centre line looks like a runway).
+    expect(island).toContain('const marked = width >= 1.5');
+    expect(island).toContain('shade = 0.6');
+  });
+
+  test('widened only as far as the MEASURED clear width allows', () => {
+    const island = src('Island.ts');
+    expect(island).toContain('createStreetPath(boulevardPts, 1.7)');
+    expect(island).toContain('createStreetPath(avenue, 1.5)');
+    // The keep-out floor must stay 1.9: max(1.7*0.5+0.8, 1.9) = 1.9, so no
+    // prop placement shifts and the seeded world is untouched. Anything
+    // wider than 1.80u needs the streetDirs endpoint fix first.
+    expect(island).toContain('Math.max(width * 0.5 + 0.8, 1.9)');
+  });
+
+  test('pavement is opted out of the per-frame camera raycast', () => {
+    const island = src('Island.ts');
+    // OrbitCamera treats an own-property raycast as an explicit opt-out and
+    // ray-tests its whole collision list every frame; a ground-hugging
+    // ribbon can never block the camera. ~401 sphere tests/frame removed.
+    const at = island.indexOf('mesh.userData.isPavement = true');
+    expect(at).toBeGreaterThan(-1);
+    expect(island.slice(Math.max(0, at - 600), at)).toContain('mesh.raycast = () => {}');
+  });
+});
+
 describe('ring traffic — alive, but structurally unable to break the world', () => {
   test('constructed OUTSIDE the seeded window, and never networked', () => {
     const scene = src('GameScene.ts');
