@@ -1801,6 +1801,9 @@ export class Island {
     // ocean now that the island occupies the north cap.
     const pathGroup = new THREE.Group();
     pathGroup.name = 'street_network';
+    // Artery centrelines (avenues + connectors), collected as they are built
+    // and consumed by the lamp pass — see the push below createStreetPath.
+    const arteryLines: THREE.Vector3[][] = [];
     // Districts are evenly spaced on the cardinal points now (Districts.ts is the
     // single source of truth, shared with the zone markers + minimap). Each
     // district's hand-authored site arrays below add SHIFT_* so the buildings and
@@ -1840,6 +1843,18 @@ export class Island {
       const connector: THREE.Vector3[] = [];
       for (let s = 0; s <= 5; s++) connector.push(this.dirAt(dLon, 0.43 - (s / 5) * 0.15));
       pathGroup.add(this.createStreetPath(connector, 0.8));
+      // Keep the ARTERY centrelines: the lamp pass below lights these, and
+      // measurement is why — against 5238 samples of the street network, 48.8%
+      // sat >12u from any lamp, and effectively all of it was here. The
+      // boulevard carries 40 of the 57 lamps but is only ~34% of the road
+      // length; the pole↔district avenues and their connectors had ZERO.
+      // The coastal ring is deliberately NOT collected — the shore stays dark
+      // on purpose (see the LAMP_INFILL note), which is the contrast Abbas
+      // asked to keep.
+      arteryLines.push(
+        avenue.map((v) => v.clone()),
+        connector.map((v) => v.clone()),
+      );
     }
 
     // ── Urban planning ──────────────────────────────────────────────────
@@ -2676,6 +2691,85 @@ export class Island {
       const p = this.mailboxSites[i];
       buildLamp(p.clone().addScaledVector(tangentAt(p), 1.5), p, false, 4.8);
     }
+
+    // ARTERY lamps: light the pole↔district avenues and their connectors.
+    //
+    // ⚠️ RNG SHIELD, and it is not optional. three's generateUUID() burns FOUR
+    // Math.random draws per Object3D/Material/Geometry, so buildLamp — which
+    // mints a Group per lamp — consumes from the seeded stream. This pass runs
+    // UPSTREAM of the parked-car claimOffStreet, and multiplayer addresses
+    // vehicles BY INDEX, so an unshielded pass here would silently re-roll
+    // every car (and every prop placed after) for anyone on a fresh bundle.
+    // A local mulberry32 + try/finally makes the pass stream-neutral no matter
+    // how many lamps it ends up building — same guard createGrass uses.
+    {
+      const stashedRandom = Math.random;
+      let lseed = 0x9e3779b1 >>> 0;
+      Math.random = (): number => {
+        lseed = (lseed + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(lseed ^ (lseed >>> 15), 1 | lseed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      try {
+        const PITCH = 14; // metres between stations — matches the boulevard's 14.05u
+        const KERB = this.arc(2.5);
+        const DEDUPE = 9; // skip a station already served by an existing lamp
+        let station = 0;
+        for (const line of arteryLines) {
+          // Walk the centreline by arc length so spacing is even regardless of
+          // how coarsely the path itself was sampled (avenues step 8.6u,
+          // connectors 3.0u).
+          let carry = PITCH * 0.5; // half-pitch in so lamps don't stack on the plaza
+          for (let i = 1; i < line.length; i++) {
+            const a = line[i - 1];
+            const b = line[i];
+            const segLen = a.angleTo(b) * this.radius;
+            if (segLen < 1e-3) continue;
+            for (let d = carry; d < segLen; d += PITCH) {
+              const dir = a
+                .clone()
+                .lerp(b, d / segLen)
+                .normalize();
+              // DARK ZONES, authored as a rule rather than by omission: no
+              // lamp on the beach band or up the highland shoulder. The
+              // Contact avenue climbs past a peak, so this genuinely fires.
+              const surf = this.analyticSurface(dir).radius;
+              const elevAboveSea = surf - this.seaLevel();
+              if (dir.y < Math.sin(0.32)) continue; // shore band stays dark
+              if (elevAboveSea > Island.MAX_DISPLACEMENT * 0.42 * this.reliefScale) continue;
+              // Already lit? (the boulevard's 40 cover the plaza ends)
+              let served = false;
+              for (const s of this.lampSites) {
+                if (s.distanceTo(dir.clone().multiplyScalar(surf)) < DEDUPE) {
+                  served = true;
+                  break;
+                }
+              }
+              if (served) continue;
+              // Kerb offset alternates side by station, like the boulevard.
+              const tangent = b.clone().sub(a).normalize();
+              const kerb = tangent.clone().cross(dir).normalize();
+              const side = station++ % 2 === 0 ? 1 : -1;
+              const site = dir
+                .clone()
+                .addScaledVector(kerb, KERB * side)
+                .normalize()
+                .multiplyScalar(this.radius);
+              // Face the centreline so the arm reaches over the roadway.
+              buildLamp(site, dir.clone().multiplyScalar(this.radius), false, 5.2);
+              // Tagged so the ring-parity test can assert the HISTORICAL
+              // populations are untouched and this pass is purely additive.
+              lamps.children[lamps.children.length - 1].userData.boulevardRing = 'artery';
+            }
+            carry = (((carry - segLen) % PITCH) + PITCH) % PITCH;
+          }
+        }
+      } finally {
+        Math.random = stashedRandom;
+      }
+    }
+
     // The two instanced draws for the whole fleet (see the block above
     // buildLamp). frustumCulled=false on both: the ring wraps the planet, so
     // all-or-nothing culling of the single object could only ever flicker

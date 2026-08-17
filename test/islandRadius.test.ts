@@ -117,16 +117,23 @@ describe('island radius invariants', () => {
       let total = 0;
       let sites = 0;
       let infill = 0;
+      let artery = 0;
       island.mesh.traverse((o: THREE.Object3D) => {
         if (!/^lamp_\d+$/.test(o.name)) return;
         total++;
         if (o.userData.boulevardRing === 'sites') sites++;
         if (o.userData.boulevardRing === 'infill') infill++;
+        if (o.userData.boulevardRing === 'artery') artery++;
       });
       // 37 at R=50 is the historical "💡 37 lamp light pools" boot log —
       // external validation that the generated ring reproduces the hand list
-      // (20 boulevard + 17 porch/plaza/tower lamps).
-      expect(total).toBe(r === Island.REFERENCE_RADIUS ? 37 : 49);
+      // (20 boulevard + 17 porch/plaza/tower lamps). The artery pass (which
+      // lights the pole↔district avenues + connectors, measured at 48.8% of
+      // the road network sitting >12u from any lamp) is PURELY ADDITIVE, so
+      // the historical populations must still come out at exactly 37/49.
+      expect(total - artery).toBe(r === Island.REFERENCE_RADIUS ? 37 : 49);
+      // ...and the artery pass must actually have fired.
+      expect(artery).toBeGreaterThan(0);
       // The invariant the odd count broke: each ring's i%2 kerb pattern must
       // survive the wrap, which requires an even count per ring. (Strict
       // by-longitude alternation across BOTH rings interleaved never held —

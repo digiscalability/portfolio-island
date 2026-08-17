@@ -5002,6 +5002,11 @@ export class GameScene extends THREE.Scene {
       (2.6 +
         Math.sin(time * 11) * 0.35 +
         (a11y.reducedMotion ? 0 : Math.sin(time * 23 + 1.7) * 0.22));
+    // WebGLLights counts a point light whatever its intensity, and the count
+    // is a #define — so an always-present zero-intensity campfire kept every
+    // lit program compiled for one more light all day. Same shared cutoff as
+    // the rest of the exterior set, so the day/night flip stays ONE relink.
+    C.light.visible = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF;
 
     // Hold the seated villagers in place and give them a fireside sway.
     for (const g of this.campfireGuests) {

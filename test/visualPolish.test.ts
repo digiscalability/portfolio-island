@@ -169,6 +169,47 @@ describe('clouds — stable compositing + non-degenerate shapes', () => {
   });
 });
 
+describe('night legibility — lit roads, dark shore and highlands', () => {
+  test('pavement LIFTS at night instead of dimming to asphalt', () => {
+    const env = src('EnvironmentCycle.ts');
+    // The ribbon used to be lerped 85% toward 0x3c3f48 while its authored
+    // emissive was ~0.019 linear — visually nil. Measured night read was
+    // ~2.4:1 against grass, i.e. you could not tell where the path went.
+    expect(env).toContain('this._c2.set(0x6a7183)');
+    expect(env).toContain('p.mat.color.copy(p.base).lerp(this._c2, nightF * 0.6)');
+    expect(env).toContain('p.mat.emissiveIntensity = 0.15 + 0.75 * nightF');
+    expect(env).not.toContain('lerp(this._c2, nightF * 0.85)');
+    // The emissive drive must lerp from the AUTHORED value, not overwrite it.
+    expect(env).toContain('emBase');
+  });
+
+  test('the dark patches are authored by scope, not by omission', () => {
+    const island = src('Island.ts');
+    // Beach band and highland shoulder are explicit rejections in the artery
+    // lamp pass — Abbas asked to KEEP the dark beaches and mountains.
+    expect(island).toContain('if (dir.y < Math.sin(0.32)) continue');
+    expect(island).toContain('Island.MAX_DISPLACEMENT * 0.42 * this.reliefScale');
+    // The coastal ring is never collected for lighting at all.
+    expect(island).toContain('arteryLines.push(');
+  });
+
+  test('the artery lamp pass is RNG-SHIELDED (multiplayer world must not re-roll)', () => {
+    const island = src('Island.ts');
+    // CODE anchor, not a comment — src() strips comments, so a comment anchor
+    // silently yields an empty slice (this suite has been bitten before).
+    const at = island.indexOf('let lseed = 0x9e3779b1');
+    expect(at).toBeGreaterThan(-1);
+    const body = island.slice(Math.max(0, at - 300), at + 3000);
+    // three's generateUUID burns 4 Math.random draws per Object3D/Material/
+    // Geometry, and buildLamp mints a Group per lamp — upstream of the parked
+    // cars, which multiplayer addresses BY INDEX. Verified live: car_0 and
+    // house_0 are bit-identical to prod with 28 extra lamps built.
+    expect(body).toContain('const stashedRandom = Math.random');
+    expect(body).toContain('Math.random = stashedRandom');
+    expect(body).toMatch(/finally\s*\{/);
+  });
+});
+
 describe('sky — soft posterization with a hard horizon contract', () => {
   // The shipped transfer, mirrored here so the CONTRACT is pinned as maths,
   // not just as source text. Any edit to the GLSL must keep these properties.

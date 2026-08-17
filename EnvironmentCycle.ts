@@ -128,11 +128,14 @@ export class EnvironmentCycle {
   private readonly seenGlow = new Set<THREE.Light>();
   private readonly seenEmissive = new Set<THREE.Material>();
   // Pavement materials (street ribbons, plaza floors — tagged isPavement).
-  // Color-lerped toward asphalt-grey as dayFactor falls so pavement dims
-  // with the terrain instead of staying near-white under moonlight.
+  // At night the ribbon LIFTS toward moonlit stone and picks up a gentle
+  // emissive floor, so the road itself is what you navigate by. `emBase` is
+  // the authored emissive, kept so the drive is a lerp from truth rather
+  // than an absolute write (the material is shared across a whole path).
   private pavementMats: Array<{
     mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
     base: THREE.Color;
+    emBase: THREE.Color;
   }> = [];
   private readonly seenPavement = new Set<THREE.Material>();
   private rescanned = false;
@@ -333,7 +336,11 @@ export class EnvironmentCycle {
           const pMat = pMesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
           if (pMat.color && !this.seenPavement.has(pMat)) {
             this.seenPavement.add(pMat);
-            this.pavementMats.push({ mat: pMat, base: pMat.color.clone() });
+            this.pavementMats.push({
+              mat: pMat,
+              base: pMat.color.clone(),
+              emBase: (pMat.emissive ?? new THREE.Color(0x000000)).clone(),
+            });
           }
         }
         return;
@@ -911,13 +918,28 @@ export class EnvironmentCycle {
       e.mat.emissive.copy(e.base).lerp(this._c2, nightF * 0.3);
     }
 
-    // Pavement: bright pavers by day → asphalt-grey after dark. Streets
-    // kept reading near-white at night because their pale albedo (plus the
-    // faint emissive floor) ignored the light dimming. Shared materials
-    // only (~a dozen entries), scratch color — no allocs, no traversal.
-    this._c2.set(0x3c3f48);
+    // Pavement at night: MOONLIT STONE, not asphalt. The road is the thing a
+    // visitor navigates by after dark, and it used to be the thing that
+    // disappeared — the ribbon was lerped 85% toward 0x3c3f48 while its
+    // authored emissive (0x2a241c @ 1) is only ~0.019 linear, i.e. visually
+    // nil. Measured result: night road ~0.050 linear against ~0.021 grass,
+    // a 2.4:1 read — which is exactly why you could not tell where the path
+    // went. Lifting the target to pale stone and driving the emissive that is
+    // already on these materials takes it to ~9:1 without a single new light.
+    //
+    // THIS IS ALSO WHAT KEEPS THE DARK PATCHES DARK, for free: it is scoped to
+    // isPavement materials, and there is no pavement on the beaches, the
+    // scree or the summit — so the contrast Abbas asked to keep is authored by
+    // where the ribbon ISN'T, not by a special case. Held under the 0.85 bloom
+    // threshold so it reads as wet stone rather than neon.
+    this._c2.set(0x6a7183);
+    this._c1.set(0x555f70);
     for (const p of this.pavementMats) {
-      p.mat.color.copy(p.base).lerp(this._c2, nightF * 0.85);
+      p.mat.color.copy(p.base).lerp(this._c2, nightF * 0.6);
+      if (p.mat.emissive) {
+        p.mat.emissive.copy(p.emBase).lerp(this._c1, nightF);
+        p.mat.emissiveIntensity = 0.15 + 0.75 * nightF;
+      }
     }
 
     // Precipitation: particles fall in the player's local frame
