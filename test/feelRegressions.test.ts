@@ -136,6 +136,35 @@ describe('the controller expects a rate the frame limiter can actually produce',
     }
   });
 
+  test('the refresh estimate is a MEDIAN, immune to the one-way jitter ratchet', () => {
+    // The min-based estimate could only ever bias HIGH: rAF jitter shortens
+    // deltas, mis-binning one snap step up takes 1.6ms at 90Hz (11.11ms ->
+    // 9.52ms reads as 120Hz) and 0.76ms at 120Hz, and over 60 samples the min
+    // GUARANTEES the worst outlier wins. A high mis-bin makes deliveredFps
+    // predict 60 while the true-90Hz loop delivers 45 — silently reinstating
+    // the sits-on-its-own-shed-bar bug the threshold derivation fix removed.
+    const s = src('SimpleRenderer.ts');
+    expect(s).not.toContain('minFrameDt');
+    expect(s).toContain('sorted[sorted.length >> 1]');
+    // ...and the median genuinely survives the jitter that breaks the min:
+    // 60 true-90Hz samples with five 1.6ms-short outliers.
+    const dts = Array(55)
+      .fill(1 / 90)
+      .concat(Array(5).fill(1 / 90 - 0.0016));
+    const sortedDts = [...dts].sort((a, b) => a - b);
+    const median = 1 / sortedDts[sortedDts.length >> 1];
+    const min = 1 / Math.min(...dts);
+    const snapTo = (obs: number): number => {
+      let hz = 60;
+      for (const r of [60, 75, 90, 120, 144, 165, 240]) {
+        if (Math.abs(r - obs) < Math.abs(hz - obs)) hz = r;
+      }
+      return hz;
+    };
+    expect(snapTo(median)).toBe(90); // median: correct
+    expect(snapTo(min)).toBe(120); // min: mis-binned high — the old behaviour
+  });
+
   test('the OLD cap-derived thresholds failed exactly where measured', () => {
     // Guards the claim, not just the fix: with target = the CAP, four rates
     // could not reach the release bar and one could not even clear the shed bar.

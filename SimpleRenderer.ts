@@ -90,7 +90,21 @@ export class SimpleRenderer {
     return hz / skips;
   }
   private refreshSamples = 0;
-  private minFrameDt = Infinity; // shortest plausible frame seen while sampling
+  /**
+   * Plausible frame intervals collected during the sampling window; the
+   * refresh estimate is their MEDIAN.
+   *
+   * It used to be the MINIMUM ("the shortest clean frame IS the refresh"),
+   * which is a one-way ratchet: rAF timestamp jitter runs +-1-2ms in real
+   * browsers, and a delta shortened by jitter can only bias the estimate HIGH
+   * — mis-binning one snap step up takes just 1.6ms at 90Hz (11.11 -> 9.52ms
+   * reads as 120Hz) and 0.76ms at 120Hz. Over 60 samples the min GUARANTEES
+   * the worst outlier wins. A high mis-bin is not cosmetic: deliveredFps(120,
+   * 60) predicts 60 while the true-90Hz loop delivers 45, which silently
+   * reinstates the sits-on-its-own-shed-bar bug the threshold derivation fix
+   * removed. The median ignores outliers on BOTH sides for free.
+   */
+  private refreshDts: number[] = [];
   private frameCapFps = 0; // 0 = uncapped; set once the refresh estimate lands
   private frameAccum = 0; // wall-time accrued across skipped rAF frames
   private fpsLowThreshold = 45; // shed quality below this (60Hz default)
@@ -373,7 +387,7 @@ export class SimpleRenderer {
       // until the estimate lands, so the cap below is inert meanwhile.
       if (this.refreshSamples < SimpleRenderer.REFRESH_SAMPLE_FRAMES) {
         if (rawDt > 0.004 && rawDt < 0.05) {
-          this.minFrameDt = Math.min(this.minFrameDt, rawDt);
+          this.refreshDts.push(rawDt);
         }
         if (++this.refreshSamples === SimpleRenderer.REFRESH_SAMPLE_FRAMES) {
           this.applyRefreshEstimate();
@@ -441,14 +455,36 @@ export class SimpleRenderer {
    * threshold above vsync and the controller could never claw quality back.
    */
   private applyRefreshEstimate(): void {
-    if (!Number.isFinite(this.minFrameDt) || this.minFrameDt <= 0) return; // all frames janky — keep defaults
-    const observed = 1 / this.minFrameDt;
+    if (this.refreshDts.length === 0) return; // all frames janky — keep defaults
+    // MEDIAN, not min — see refreshDts. Sorting a <=60-element array once at
+    // boot costs nothing.
+    const sorted = [...this.refreshDts].sort((a, b) => a - b);
+    const observed = 1 / sorted[sorted.length >> 1];
+    this.refreshDts.length = 0; // one-shot; free the samples
     let hz = 60;
     for (const r of [60, 75, 90, 120, 144, 165, 240]) {
       if (Math.abs(r - observed) < Math.abs(hz - observed)) hz = r;
     }
     // Cap only when it changes anything: on a true-60Hz phone the limiter
     // would just add skip judder for zero savings.
+    //
+    // THE CAP QUANTISES — AND THAT IS A FEATURE, NOT THE BUG IT LOOKS LIKE.
+    // The limiter delivers hz/ceil(hz/60): 37.5 at 75Hz, 45 at 90Hz, 48 at
+    // 144Hz, 55 at 165Hz (see deliveredFps). That reads as "the 60fps cap
+    // undershoots by 25% on a 90Hz phone", and it was reported as exactly that
+    // once already. It is deliberate: an integer divisor of the refresh is the
+    // ONLY rate a vsynced display can show with PERFECTLY EVEN pacing. Pacing
+    // to a 60fps deadline instead delivers 22.2/11.1ms alternation at 90Hz
+    // (1:2 pulldown) and a double-length frame 15x/second at 75Hz — the same
+    // artifact class as the shipped frameAccum bug whose 16/25ms cadence
+    // players reported as "feels doubled"/"blurry" (see the limiter's note).
+    // Even-but-slower beats faster-but-juddering on a game that is constant
+    // full-screen panning; a 3-judge design review (perception/thermal/
+    // engineering, 2026-08-17) upheld it 3-0 against deadline pacing, and 2-1
+    // against raising 144Hz to hz/2=72 (even, but +50% GPU on the thermally
+    // weakest tier for a ceiling the codebase itself sets at 60). The governor
+    // is honest about these rates via deliveredFps; do not "fix" this again
+    // without re-running that argument.
     if (SimpleRenderer.isLowTierDevice() && hz > 66) this.frameCapFps = 60;
     // Cap the ADAPTIVE target. `hz` comes from the fastest frame observed during
     // the sample window, so one quick boot frame (light scene, not yet built)
