@@ -8337,6 +8337,11 @@ export class GameScene extends THREE.Scene {
       pivot.rotation.set(...spec.orbitEuler);
       const cloud = new THREE.Group();
       const mesh = new THREE.Mesh(spec.geometry, spec.set === 'fair' ? fairMat : stormMat);
+      // FIXED cross-set compositing order (storm always over fair): the
+      // transparent pass otherwise re-sorts by origin distance every frame,
+      // and two co-banded sets flipping blend order as they drift is the
+      // slow background shimmer during any crossfade.
+      mesh.renderOrder = spec.set === 'fair' ? 10 : 11;
       cloud.add(mesh);
       cloud.position.set(spec.altitude, 0, 0);
       // Map cloud-local up onto the radial axis (flat base toward the ground).
@@ -11517,6 +11522,17 @@ export class GameScene extends THREE.Scene {
       //     false in both halves. Reaching a true 0 makes it true.
       this.cloudMat.opacity = 1 - this.cloudWet;
       if (this.stormCloudMat) this.stormCloudMat.opacity = 0.95 * this.cloudWet;
+      // depthWrite FOLLOWS opacity: fully-opaque clouds keep correct
+      // self-occlusion of their merged puffs, while any semi-transparent
+      // cloud stops writing depth so it can't punch holes in the ones behind
+      // it. three's transparent pass sorts by ORIGIN distance only, and these
+      // formations extend 5-7u from their origins — the sort key misrepresents
+      // the geometry (the documented condition where depthWrite bites), which
+      // was the crossfade flicker. Pure renderer state: no recompile.
+      this.cloudMat.depthWrite = this.cloudMat.opacity >= 0.999;
+      if (this.stormCloudMat) {
+        this.stormCloudMat.depthWrite = this.stormCloudMat.opacity >= 0.999;
+      }
       for (const pivot of this.cloudPivots) {
         const set = (pivot.userData as Record<string, unknown>).cloudSet;
         pivot.visible =
@@ -11529,10 +11545,17 @@ export class GameScene extends THREE.Scene {
         this.stormCloudMat.color.copy(this.cloudMat.color).multiplyScalar(0.9);
       }
       // The cumulonimbus grows over ~40s once real rain sets in — a visible
-      // SOURCE for the weather rather than a pop-in.
+      // SOURCE for the weather rather than a pop-in. HIDDEN until it is
+      // actually growing: at towerGrow 0 the ~7u tower is squashed to a 1.4u
+      // pancake, and 'cloudy' weather (wet 0.55 > the 0.02 pivot gate but
+      // < the 0.6 grow trigger) kept that pancake permanently on screen —
+      // one of the owner's "weird shapes".
       const towerTarget = this.cloudWet > 0.6 ? 1 : 0;
       this.towerGrow += (towerTarget - this.towerGrow) * Math.min(1, deltaTime * 0.025);
-      if (this.towerMesh) this.towerMesh.scale.y = 0.2 + 0.8 * this.towerGrow;
+      if (this.towerMesh) {
+        this.towerMesh.scale.y = 0.2 + 0.8 * this.towerGrow;
+        this.towerMesh.visible = this.towerGrow > 0.05;
+      }
     }
     if (this.lampPoolMat) {
       this.lampPoolMat.opacity = 0.55 * (1 - day);

@@ -68,7 +68,14 @@ function bakeCloudColors(geo: THREE.BufferGeometry): void {
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 }
 
-/** One flat-bottomed cumulus: blob spheres merged, undersides clamped. */
+/** One flat-bottomed cumulus: blob spheres merged, undersides clamped.
+ *
+ *  PER-BLOB floors, staggered 0.05u apart — clamping the whole merged puff to
+ *  one shared y=0 plane put every blob's base EXACTLY coplanar, and coplanar
+ *  transparent faces z-fight: the clear-sky shimmer was the puffs' own
+ *  undersides flickering against each other. 0.05u exceeds 24-bit depth
+ *  precision at any cloud viewing distance and is invisible from 13u below,
+ *  while the flat painted-cloud read survives. Zero rng() calls touched. */
 function puffGeometry(rng: () => number, coreR: number, blobCount: number): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   let xCursor = 0;
@@ -83,13 +90,14 @@ function puffGeometry(rng: () => number, coreR: number, blobCount: number): THRE
       if (idx % 2 === 1) xCursor += r * 0.9;
       blob.translate(side * (coreR * 0.55 + xCursor * 0.6), r * 0.32, (rng() - 0.5) * 0.5);
     }
+    // Flat base per blob (the painted-cloud signature), at ITS OWN floor.
+    const floor = idx * 0.05;
+    const bp = blob.getAttribute('position');
+    for (let i = 0; i < bp.count; i++) if (bp.getY(i) < floor) bp.setY(i, floor);
+    bp.needsUpdate = true;
     parts.push(blob);
   }
   const merged = mergeGeometries(parts, false) as THREE.BufferGeometry;
-  // Flat base: clamp everything below y=0 (the painted-cloud signature).
-  const pos = merged.getAttribute('position');
-  for (let i = 0; i < pos.count; i++) if (pos.getY(i) < 0) pos.setY(i, 0);
-  pos.needsUpdate = true;
   merged.computeVertexNormals();
   return merged;
 }
@@ -103,19 +111,28 @@ function clusterGeometry(rng: () => number): THREE.BufferGeometry {
   for (let sIdx = 0; sIdx < sats; sIdx++) {
     const sat = puffGeometry(rng, 0.7 + rng() * 0.4, 2 + Math.floor(rng() * 2));
     const ang = rng() * Math.PI * 2;
-    const d = 2.6 + rng() * 2.2;
-    sat.translate(Math.cos(ang) * d, (rng() - 0.5) * 0.3, Math.sin(ang) * d);
+    // Satellites HUG the hero (was 2.6 + rng()*2.2, spreading to 4.8u): the
+    // far spread read as a thin smear from below, and the near-coplanar bases
+    // shimmered. Taller vertical jitter (±0.4, was ±0.15) staggers them into
+    // a heap silhouette AND separates their base planes. Same rng() draws.
+    const d = 2.2 + rng() * 1.4;
+    sat.translate(Math.cos(ang) * d, (rng() - 0.5) * 0.8, Math.sin(ang) * d);
     parts.push(sat);
   }
   return mergeGeometries(parts, false) as THREE.BufferGeometry;
 }
 
-/** Five thin stretched streaks, one merged mesh — high, lit, never additive. */
+/** Five stretched streaks, one merged mesh — high, lit, never additive.
+ *
+ *  Thickness is a FIXED 0.26 (was 0.1 on half-extents up to 3.5u — a 70:1
+ *  razor that read as a rendering artefact edge-on, the owner's "too thin
+ *  and stretched"). Max aspect is now ~21:1: still unmistakably cirrus.
+ *  Length trimmed to match. rng() count per streak unchanged (2). */
 function cirrusGeometry(rng: () => number): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < 5; i++) {
-    const s = new THREE.SphereGeometry(0.5, 6, 4);
-    s.scale(4.5 + rng() * 2.5, 0.1, 0.7 + rng() * 0.4);
+    const s = new THREE.SphereGeometry(0.5, 8, 5);
+    s.scale(3.5 + rng() * 2.0, 0.26, 0.7 + rng() * 0.4);
     s.translate((rng() - 0.5) * 10, (rng() - 0.5) * 0.6, (rng() - 0.5) * 8);
     parts.push(s);
   }
@@ -124,9 +141,11 @@ function cirrusGeometry(rng: () => number): THREE.BufferGeometry {
 
 function slabGeometry(rng: () => number): THREE.BufferGeometry {
   const s = new THREE.SphereGeometry(1.6, 10, 6);
-  s.scale(2.4 + rng() * 0.8, 0.32, 1.5 + rng() * 0.5);
+  // y 0.48 (was 0.32) + a deeper base clamp: ~0.95u of body against up to
+  // 10u of width — a flat storm deck, no longer paper. Same rng() draws.
+  s.scale(2.4 + rng() * 0.8, 0.48, 1.5 + rng() * 0.5);
   const pos = s.getAttribute('position');
-  for (let i = 0; i < pos.count; i++) if (pos.getY(i) < -0.1) pos.setY(i, -0.1);
+  for (let i = 0; i < pos.count; i++) if (pos.getY(i) < -0.15) pos.setY(i, -0.15);
   pos.needsUpdate = true;
   s.computeVertexNormals();
   return s;
