@@ -3981,12 +3981,19 @@ export class SimpleUI {
            <span id="wlc-gb">✍️ checking the guestbook…</span>
          </div>`
       : '';
+    // The returning card is a HELLO, not a menu: delta + the two primary CTAs
+    // + an explicit way in. The tour/race/meet-AI chips were five same-moment
+    // choices on a card that auto-closes in seconds — and a returning visitor
+    // already knows those exist. (The trim was gated on returning-session
+    // welcome_cta data; Web Analytics turned out to be DISABLED on the Vercel
+    // project, so no data was ever recorded — owner called the trim.) The
+    // Explore button matters here now: intent (hover/focus/touch) cancels the
+    // auto-close, so the card needs an obvious manual way to dismiss it.
     this.welcomeDiv.innerHTML = returning
       ? `<h2 style="margin: 0 0 12px 0; color: #4CAF50;">👋 Welcome back!</h2>
          ${awayHtml}
          ${ctaRow}
-         ${secondaryRow}
-         <p style="margin:0; font-size:12px; color:#9aa;">Dive back in — this closes on its own.</p>`
+         ${exploreBtn}`
       : `
       <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
       <p style="margin: 0 0 12px 0; font-size:15px; line-height:1.5;">

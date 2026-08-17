@@ -210,4 +210,19 @@ describe('the welcome card hierarchy matches the audience', () => {
   test('the card names the compass pill', () => {
     expect(welcome()).toContain('points to your next stop');
   });
+
+  test('the returning card is a hello, not a menu', () => {
+    // Trimmed to delta + primary CTAs + an explicit Explore (needed since
+    // intent cancels the auto-close). The guided-experience chips stay on
+    // the FIRST-RUN card only — a returning visitor already knows they exist.
+    const w = welcome();
+    const returningBranch = w.slice(w.indexOf('returning\n      ?'), w.indexOf(': `'));
+    expect(returningBranch).toContain('${awayHtml}');
+    expect(returningBranch).toContain('${ctaRow}');
+    expect(returningBranch).toContain('${exploreBtn}');
+    expect(returningBranch).not.toContain('${secondaryRow}');
+    // ...while the first-run branch keeps all three chips
+    const firstRun = w.slice(w.indexOf(': `'));
+    expect(firstRun).toContain('${secondaryRow}');
+  });
 });
