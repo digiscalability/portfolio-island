@@ -335,6 +335,11 @@ export class SimpleRenderer {
       // heartbeat, so nothing is lost by going fully idle here.
       if (typeof document !== 'undefined' && document.hidden) {
         this.clock.getDelta(); // drain so the resume frame isn't a huge dt
+        // Forget any stall run in progress. Without this a tab hidden mid-dip
+        // resumes with stallRun already >= 3, so the first slow resume frame
+        // (texture re-upload) counts as a RATE rather than the isolated stall
+        // it is, and drags the EMA down before a single healthy frame lands.
+        this.stallRun = 0;
         return;
       }
 
