@@ -235,6 +235,22 @@ describe('roads read as roads — kerbs, centre line, and off the camera ray', (
     expect(island).toContain('Math.max(width * 0.5 + 0.8, 1.9)');
   });
 
+  test('pedestrian crossings lie FLAT and clear the ribbon lift', () => {
+    const scene = src('GameScene.ts');
+    expect(scene).toContain("mesh.name = 'road_markings_instanced'");
+    // Built after restoreRandom() alongside the traffic fleet, so it cannot
+    // consume from the seeded stream.
+    const restore = scene.indexOf('restoreRandom();');
+    expect(scene.indexOf('this.createRoadMarkings()')).toBeGreaterThan(restore);
+    // RIGHT-HANDED basis (X x Y = Z). crossVectors(nrm, tan) gives an
+    // improper matrix and stands every bar on edge like a fence panel —
+    // measured face-dot-up 0.14 instead of 1.0 before this was fixed.
+    expect(scene).toContain('crossVectors(tan, nrm)');
+    // Paint must clear the road's own alternating parity lift (0.04/0.055).
+    expect(scene).toContain('s.position.length() + 0.09');
+    expect(scene).toContain('polygonOffsetFactor: -4');
+  });
+
   test('pavement is opted out of the per-frame camera raycast', () => {
     const island = src('Island.ts');
     // OrbitCamera treats an own-property raycast as an explicit opt-out and

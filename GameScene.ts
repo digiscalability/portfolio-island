@@ -1069,6 +1069,7 @@ export class GameScene extends THREE.Scene {
     // parked cars are addressed BY INDEX over the multiplayer wire. Out here
     // it cannot touch the world however much it allocates.
     this.traffic = new TrafficSystem(this.island, this);
+    this.createRoadMarkings();
 
     // Mark as ready
     this.readyResolve();
@@ -1144,6 +1145,73 @@ export class GameScene extends THREE.Scene {
     mesh.instanceMatrix.needsUpdate = true;
     this.add(mesh);
     console.log(`🌑 ${props.length} grounding shadows (1 draw call)`);
+  }
+
+  /**
+   * Pedestrian crossings where each district avenue meets the boulevard —
+   * the cheapest prop on the island that says "town" rather than "terrain".
+   *
+   * ONE InstancedMesh for all four crossings (28 bars), no collider, no
+   * light, no per-frame work. Built here, AFTER restoreRandom(), so it
+   * cannot consume from the seeded stream — the same anchor the traffic
+   * fleet uses, and the reason neither needs an RNG shield.
+   *
+   * The 0.09 lift is not a taste number: the road ribbon itself alternates
+   * its own parity lift between 0.04 and 0.055 to stop overlapping segments
+   * z-fighting, so paint has to clear 0.055, and polygonOffset then keeps it
+   * from shimmering at grazing angles.
+   */
+  private createRoadMarkings(): void {
+    if (!this.island) return;
+    const BARS = 7;
+    const mesh = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshStandardMaterial({
+        color: 0xe8e2d2,
+        roughness: 0.9,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
+      }),
+      RING_DISTRICT_LONS.length * BARS,
+    );
+    mesh.name = 'road_markings_instanced';
+    mesh.receiveShadow = true;
+    mesh.raycast = () => {}; // paint never blocks the chase camera
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    const pos = new THREE.Vector3();
+    const nrm = new THREE.Vector3();
+    const tan = new THREE.Vector3();
+    let i = 0;
+    for (const lon of RING_DISTRICT_LONS) {
+      for (let b = 0; b < BARS; b++) {
+        // Bars march ALONG the boulevard; each bar spans ACROSS it.
+        const dLon = lon + (b - (BARS - 1) / 2) * (0.62 / this.island.getRadius());
+        const dir = this.island.dirAt(dLon, ZONE_LAT);
+        const s = this.island.sampleSurfaceByDirection(dir, 0);
+        nrm.copy(s.normal).normalize();
+        pos.copy(dir).multiplyScalar(s.position.length() + 0.09);
+        // Road tangent = east along the ring, projected onto the surface.
+        tan.copy(this.island.dirAt(dLon + 0.001, ZONE_LAT)).sub(dir);
+        tan.addScaledVector(nrm, -tan.dot(nrm)).normalize();
+        // A PlaneGeometry faces +Z and spans X×Y: put +Z on the ground
+        // normal and +Y along the road so the bar lies ACROSS it.
+        // ORDER MATTERS: the basis must be RIGHT-handed (X×Y = Z), so
+        // right = tan × nrm. Using nrm × tan gives X×Y = −Z, an improper
+        // matrix, and setFromRotationMatrix then stands every bar on edge
+        // like a fence panel — measured as face·up = 0.14 instead of ~1.
+        const right = new THREE.Vector3().crossVectors(tan, nrm).normalize();
+        q.setFromRotationMatrix(m.makeBasis(right, tan, nrm));
+        scl.set(1.55, 0.26, 1);
+        mesh.setMatrixAt(i++, m.compose(pos, q, scl));
+      }
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.frustumCulled = false;
+    this.add(mesh);
+    console.log(`🚸 ${RING_DISTRICT_LONS.length} pedestrian crossings (1 draw call)`);
   }
 
   /**
