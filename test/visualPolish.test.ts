@@ -275,6 +275,79 @@ describe('HUD — one chip recipe for the top-right column', () => {
     expect(ui).not.toMatch(/radial-gradient\(circle at 50% 45%[^`]*\$\{edge\}/);
   });
 
+  test('per-frame position reads use the Into variant (sweep round 3)', () => {
+    const scene = src('GameScene.ts');
+    // Each per-frame consumer owns its scratch; collisions keep a DEDICATED
+    // buffer because they mutate it in place as the write-back.
+    for (const s of [
+      'getWorldPositionInto(this._collidePos)',
+      'getWorldPositionInto(this._npcPlayerPos)',
+      'getWorldPositionInto(this._puffPlayerPos)',
+      'getWorldPositionInto(this._radarPos)',
+      'getWorldPositionInto(this._gbPlayerPos)',
+      'getWorldPositionInto(this._nearPos)',
+    ]) {
+      expect(scene).toContain(s);
+    }
+    const main = src('main-simple.ts');
+    // The audio/compass scratches must be FED by Into, not by copy(clone()).
+    expect(main).toContain('getWorldPositionInto(this._listenerPos)');
+    expect(main).toContain('getWorldPositionInto(this._qcPlayerPos)');
+    expect(main).not.toContain('.copy(player.getWorldPosition())');
+  });
+
+  test('startup: Firebase deferred, postprocessing preloaded, honest measures (round 4)', () => {
+    const main = src('main-simple.ts');
+    // The three boot-window Firebase touches run from idle slots (1.5s max
+    // keeps the world beat arriving during the fly-in for buildAwayDelta).
+    expect(main).toMatch(/idleDefer\(\s*\(\)\s*=>\s*connectWorldState/);
+    expect(main).toMatch(/idleDefer\(\(\)\s*=>\s*\{\s*void subscribeBenches/);
+    // The postprocessing fetch starts BEFORE world gen so the RTT overlaps it.
+    expect(main).toContain('SimpleRenderer.preloadPostProcessing()');
+    expect(main.indexOf('SimpleRenderer.preloadPostProcessing()')).toBeLessThan(
+      main.indexOf("performance.mark('boot:worldgen-start')"),
+    );
+    // Paint yields are visibility-guarded — rAF never fires in a hidden tab.
+    expect(main).toContain("document.visibilityState !== 'visible'");
+    // world_gen measures through scene-ready (the builder passes after the
+    // constructor's first await used to be mis-attributed to scene_ready).
+    expect(main).toContain(
+      "performance.measure('world_gen', 'boot:worldgen-start', 'boot:scene-ready')",
+    );
+    expect(main).not.toContain("'boot:worldgen-end'");
+
+    const r = src('SimpleRenderer.ts');
+    expect(r).toContain('public static preloadPostProcessing');
+    // Idempotent cache + swallowed preload rejection (real errors re-surface
+    // at initPostProcessing's await); null on the low tier — never fetched.
+    expect(r).toContain('if (SimpleRenderer.isLowTierDevice()) return null');
+    expect(r).toMatch(/await \(SimpleRenderer\.preloadPostProcessing\(\) \?\?/);
+  });
+
+  test('exterior lights + zero-alpha overlays leave the pipeline by day (round 4)', () => {
+    const env = src('EnvironmentCycle.ts');
+    expect(env).toContain('EXTERIOR_LIGHTS_DAY_CUTOFF = 0.85');
+    // ONE shared cutoff: the light count flips once per dusk/dawn instead of
+    // stepping through permutations as per-light curves cross zero.
+    expect(env).toContain('g.light.visible = exteriorLightsOn && !off');
+    const scene = src('GameScene.ts');
+    expect(scene).toContain('slot.light.visible = on');
+    expect(scene).toContain('this.lampPoolMat.visible = this.lampPoolMat.opacity > 0.01');
+    expect(scene).toContain('ud.beamMat.visible = ud.beamMat.opacity > 0.01');
+    // The intensity formulas are deliberately untouched (night look pinned).
+    expect(env).toContain('const glow = 0.25 + (1 - dayFactor) * 1.05');
+  });
+
+  test('villagers cull with an inflated pose-proof sphere (round 4)', () => {
+    const npc = src('NPC.ts');
+    // frustumCulled=false kept ~28 skinned draws in BOTH passes from
+    // anywhere on the planet. The OBJECT-level sphere (the one Frustum
+    // prefers on SkinnedMesh) inflated 2.5x keeps the pop-out fix.
+    expect(npc).toContain('sm.computeBoundingSphere()');
+    expect(npc).toContain('sm.boundingSphere.radius *= 2.5');
+    expect(npc).not.toContain('object.frustumCulled = false');
+  });
+
   test('chip-recipe regressions from the follow-up review stay fixed', () => {
     const ui = src('SimpleUI.ts');
     // The feed chip re-shows as FLEX — a block re-show drops the CHIP

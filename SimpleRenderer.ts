@@ -245,27 +245,57 @@ export class SimpleRenderer {
   /**
    * Initialize post-processing effects
    */
+  /** The cached postprocessing-chunk fetch. Idempotent: the Promise.all is
+   *  created once and reused; a no-op catch is attached so a network failure
+   *  during the gap before initPostProcessing awaits it can never surface as
+   *  an unhandled rejection (real error handling stays at the await site).
+   *  Tier-gated like initPostProcessing so phones never fetch the chunk —
+   *  which is also why this is a guarded runtime preload and not a
+   *  <link rel="modulepreload"> (that cannot be tier-gated). */
+  private static postChunk: ReturnType<typeof SimpleRenderer.fetchPostChunk> | null = null;
+
+  private static fetchPostChunk() {
+    return Promise.all([
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+      import('three/addons/postprocessing/OutputPass.js'),
+      import('three/addons/postprocessing/ShaderPass.js'),
+    ]);
+  }
+
+  public static preloadPostProcessing(): ReturnType<typeof SimpleRenderer.fetchPostChunk> | null {
+    // Null (no fetch, no rejection to leak) on the low tier — matches
+    // initPostProcessing's early return, and callers can fire-and-forget.
+    if (SimpleRenderer.isLowTierDevice()) return null;
+    if (!SimpleRenderer.postChunk) {
+      SimpleRenderer.postChunk = SimpleRenderer.fetchPostChunk();
+      SimpleRenderer.postChunk.catch(() => {
+        /* swallowed here; initPostProcessing's await re-surfaces real errors */
+      });
+    }
+    return SimpleRenderer.postChunk;
+  }
+
   public async initPostProcessing(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
     if (this.composer) return; // Already initialized
 
     // Coarse/low-core tier: no composer at all. On tile GPUs the ~13 bloom
     // passes and the two full-canvas HalfFloat targets cost more than bloom
     // is worth, and the direct path renders into the natively antialiased
-    // canvas — faster AND sharper. Returning before the imports also keeps
-    // the postprocessing chunk from ever being fetched.
+    // canvas — faster AND sharper. Returning BEFORE touching the preload
+    // also keeps the postprocessing chunk from ever being fetched on this
+    // tier (preloadPostProcessing carries the same gate).
     if (SimpleRenderer.isLowTierDevice()) return;
 
-    // Lazy-load the postprocessing addons as a parallel chunk (kept out of the
-    // critical bundle via the type-only imports above). Awaited by the caller
-    // before warmUp(), so bloom is still fully compiled ahead of the reveal.
+    // Lazy-load the postprocessing addons as a parallel chunk (kept out of
+    // the critical bundle via the type-only imports above) — via the cached
+    // preload, which main-simple kicks off right after construction so the
+    // RTT overlaps the multi-second world-gen block instead of following it.
+    // Works standalone too: a direct call without a prior preload just
+    // starts the fetch here.
     const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }, shaderPassMod] =
-      await Promise.all([
-        import('three/addons/postprocessing/EffectComposer.js'),
-        import('three/addons/postprocessing/RenderPass.js'),
-        import('three/addons/postprocessing/UnrealBloomPass.js'),
-        import('three/addons/postprocessing/OutputPass.js'),
-        import('three/addons/postprocessing/ShaderPass.js'),
-      ]);
+      await (SimpleRenderer.preloadPostProcessing() ?? SimpleRenderer.fetchPostChunk());
 
     // Explicit MSAA render target: EffectComposer's default target has
     // samples: 0, which routed every frame around the canvas's native MSAA —

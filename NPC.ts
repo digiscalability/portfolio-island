@@ -41,8 +41,20 @@ export class NPC {
         object.castShadow = true;
         object.receiveShadow = true;
         // Skinned bounds are computed in bind space, so a limb swung outside
-        // the bind box makes the whole villager pop out of view.
-        if ((object as THREE.SkinnedMesh).isSkinnedMesh) object.frustumCulled = false;
+        // the bind box makes the whole villager pop out of view. The old fix
+        // (frustumCulled = false) kept ~28 skinned draws in BOTH the main
+        // and shadow passes from anywhere on the planet — skinning is the
+        // most expensive vertex path in the scene. Instead: keep culling ON
+        // and inflate the OBJECT-level bounding sphere 2.5x, which covers
+        // any pose (limbs reach well under 2.5x the bind radius). Must be
+        // the mesh's sphere, not the geometry's — Frustum.intersectsObject
+        // prefers the object-level one when a SkinnedMesh defines it, and
+        // it is local-space, so it tracks the wandering NPC via matrixWorld.
+        if ((object as THREE.SkinnedMesh).isSkinnedMesh) {
+          const sm = object as THREE.SkinnedMesh;
+          sm.computeBoundingSphere();
+          if (sm.boundingSphere) sm.boundingSphere.radius *= 2.5;
+        }
       }
     });
 

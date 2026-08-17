@@ -197,6 +197,40 @@ class SimpleApp {
   /** My own cloud builds: plot → slot, maintained from the subscribe stream
    *  (`own` flag) + placeBuild acks. Cloud is truth on a fresh device. */
   private ownBuilds = new Map<number, number>();
+
+  /** Double-rAF paint yield for the boot narration: lets the loader's last
+   *  showLoading(n) actually render before a long synchronous block. Races a
+   *  100ms timeout because rAF NEVER fires in a hidden tab — a bare rAF
+   *  await would stall boot indefinitely for a background-tab visitor. */
+  private static paintYield(): Promise<void> {
+    if (document.visibilityState !== 'visible') return Promise.resolve();
+    return new Promise((resolve) => {
+      const t = window.setTimeout(resolve, 100); // hidden-mid-yield safety
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          clearTimeout(t);
+          resolve();
+        }),
+      );
+    });
+  }
+
+  /** Post-first-paint scheduler: run `cb` in an idle slot, no later than
+   *  `timeout` ms. Used to keep fire-and-forget work (Firebase subscriptions,
+   *  music synthesis, profile sync) OFF the boot window — the Firebase chunk
+   *  alone is ~270KB raw whose fetch+eval+anonymous-auth contended with the
+   *  world-gen block and the postprocessing fetch. */
+  private idleDefer(cb: () => void, timeout: number): void {
+    if ('requestIdleCallback' in window) {
+      (
+        window as unknown as {
+          requestIdleCallback: (c: () => void, o?: { timeout: number }) => void;
+        }
+      ).requestIdleCallback(cb, { timeout });
+    } else {
+      setTimeout(cb, timeout / 3);
+    }
+  }
   private timberSellArmedAt = 0;
   private freshBuildToasts = 0;
   private ownedAxe = false;
@@ -373,6 +407,11 @@ class SimpleApp {
 
       // Create renderer
       this.renderer = new SimpleRenderer(canvas);
+      // Start the postprocessing-chunk fetch NOW so its round trip overlaps
+      // the multi-second world-gen block below instead of following it
+      // (initPostProcessing awaits the same cached promise). Tier-gated
+      // inside — phones still never fetch the chunk.
+      SimpleRenderer.preloadPostProcessing();
       console.log('🎨 SimpleRenderer created:', {
         canvas: this.renderer.getCanvas(),
         renderer: this.renderer.getRenderer(),
@@ -380,22 +419,31 @@ class SimpleApp {
       });
       this.ui.showLoading(50);
       console.log('✓ Renderer created');
+      // Let the 50% actually PAINT before the longest synchronous block —
+      // without a yield the 10→95 narration collapses into one jump at the
+      // first await. Guarded: rAF never fires in a hidden tab, so a bare
+      // rAF await would stall boot for a background-tab visitor.
+      await SimpleApp.paintYield();
 
       // Create scene (this will also create planet and player).
-      // performance.mark bracketing: `world_gen` is the long synchronous block
-      // (the GameScene constructor runs Island + all placement inline) — the
-      // number to watch when tuning boot. Inspect via
+      // performance.mark bracketing: `world_gen_sync` is the long synchronous
+      // constructor block (Island + all placement inline); `world_gen` is the
+      // TRUE generation total through scene.ready() — the builder passes
+      // after the constructor's first await used to be silently attributed
+      // to scene_ready, steering tuning at the wrong phase. Inspect via
       // performance.getEntriesByType('measure') in the console.
       performance.mark('boot:worldgen-start');
       this.scene = new GameScene();
-      performance.mark('boot:worldgen-end');
-      performance.measure('world_gen', 'boot:worldgen-start', 'boot:worldgen-end');
+      performance.mark('boot:worldgen-sync');
+      performance.measure('world_gen_sync', 'boot:worldgen-start', 'boot:worldgen-sync');
       // The interior window renders the island into a texture, so the scene
       // needs the WebGLRenderer. Structural handoff — no import either way.
       this.scene.setRendererRef(this.renderer);
       this.ui.showLoading(60);
+      await SimpleApp.paintYield();
       await this.scene.ready();
       performance.mark('boot:scene-ready');
+      performance.measure('world_gen', 'boot:worldgen-start', 'boot:scene-ready');
       performance.measure('scene_ready', 'boot:worldgen-start', 'boot:scene-ready');
       this.ui.showLoading(90);
       console.log('✓ Scene initialized and ready');
@@ -730,17 +778,24 @@ class SimpleApp {
       // absent (e.g. before the director is deployed). ?mood=festive previews.
       // Today's special from the local date first (works with zero backend).
       this.refreshFeatured(false);
-      connectWorldState((s) => {
-        this.ui.showWorldBulletin(s.headline, MOOD_META[s.mood].accent);
-        track('world_beat_seen', { mood: s.mood });
-        // Market day (world beat) lifts the special's premium 2 → 2.5.
-        if (s.npcPlan?.event === 'market_day') this.refreshFeatured(true);
-        // Hand the day's NPC assignments to the activity engine (Phase 2).
-        if (s.npcPlan) this.scene.setNpcActivities(s.npcPlan);
-        // Feed the "Island Times" board its notice + plan + past editions.
-        // Cached lazily — the board reads it only when the visitor opens it.
-        this.ui.setIslandTimes(s.notice ?? null, s.npcPlan ?? null, s.noticeArchive ?? null);
-      });
+      // Deferred to an idle slot: this is the first Firebase touch, and the
+      // chunk's fetch+eval+auth used to land inside the boot window. 1.5s max
+      // keeps the world beat arriving during the fly-in (buildAwayDelta).
+      this.idleDefer(
+        () =>
+          connectWorldState((s) => {
+            this.ui.showWorldBulletin(s.headline, MOOD_META[s.mood].accent);
+            track('world_beat_seen', { mood: s.mood });
+            // Market day (world beat) lifts the special's premium 2 → 2.5.
+            if (s.npcPlan?.event === 'market_day') this.refreshFeatured(true);
+            // Hand the day's NPC assignments to the activity engine (Phase 2).
+            if (s.npcPlan) this.scene.setNpcActivities(s.npcPlan);
+            // Feed the "Island Times" board its notice + plan + past editions.
+            // Cached lazily — the board reads it only when the visitor opens.
+            this.ui.setIslandTimes(s.notice ?? null, s.npcPlan ?? null, s.noticeArchive ?? null);
+          }),
+        1500,
+      );
 
       // Restore the carried fish if a fetch quest was mid-delivery on reload
       if (this.npcQuests.isCarryingFetchItem()) {
@@ -1235,10 +1290,13 @@ class SimpleApp {
         console.warn('Shader pre-compile skipped:', e);
       }
 
-      // Shared benches: render every visitor's builds as they stream in
-      // (write path is charged + rules-capped; see worldBenches.ts).
-      void subscribeBenches((b) => this.scene.renderWorldBench(b.plot));
-      {
+      // Shared benches + builds: rendered as they stream in — but SUBSCRIBED
+      // from an idle slot, not the boot window (the second/third of the three
+      // Firebase touches that defeated Multiplayer's deliberate deferral).
+      // subscribedAt is stamped when the subscription actually starts, so the
+      // 3s replay-burst guard and the away digest keep their semantics.
+      this.idleDefer(() => {
+        void subscribeBenches((b) => this.scene.renderWorldBench(b.plot));
         // Builds stream: render + own-map + fresh-build discovery pulse +
         // away digest (count compared to last visit, after the replay burst).
         let totalBuilds = 0;
@@ -1291,7 +1349,7 @@ class SimpleApp {
             /* no storage */
           }
         }, 3000);
-      }
+      }, 1500);
       this.scene.onDrownFee = (fee) => {
         // Buffered into the respawn flash (one message per event, not two
         // simultaneous surfaces) — see setOnDrownRespawn.
@@ -1452,19 +1510,8 @@ class SimpleApp {
       const startMusic = () => void this.startBackgroundMusic();
       // Cloud profile: reconcile name/hat/coins once Firebase auth has settled.
       const syncProfile = () => void this.syncProfile();
-      const idle = (cb: () => void, timeout: number) => {
-        if ('requestIdleCallback' in window) {
-          (
-            window as unknown as {
-              requestIdleCallback: (c: () => void, o?: { timeout: number }) => void;
-            }
-          ).requestIdleCallback(cb, { timeout });
-        } else {
-          setTimeout(cb, timeout / 3);
-        }
-      };
-      idle(startMusic, 5000);
-      idle(syncProfile, 4000);
+      this.idleDefer(startMusic, 5000);
+      this.idleDefer(syncProfile, 4000);
       // (Vercel Analytics inject() moved to module top — pre-boot pageviews.)
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
@@ -3048,7 +3095,7 @@ class SimpleApp {
     if (am?.updateListener && this.scene) {
       // Vector3 satisfies the {x,y,z} shape updateListener reads, and it copies
       // the values out synchronously, so reusing these scratches is safe.
-      const lp = this._listenerPos.copy(this.scene.getPlayer().getWorldPosition());
+      const lp = this.scene.getPlayer().getWorldPositionInto(this._listenerPos);
       const fwd = this.scene.getCamera().getWorldDirection(this._listenerFwd);
       am.updateListener(lp, fwd, this._listenerUp);
     }
@@ -3071,10 +3118,10 @@ class SimpleApp {
       this.ui.updateQuestCompass(null);
       return;
     }
-    // Copy into scratch (getWorldPosition/getSurfaceNormal return fresh clones)
-    // so the active-delivery path allocates nothing.
-    const playerPos = this._qcPlayerPos.copy(player.getWorldPosition());
-    const normal = this._qcNormal.copy(player.getSurfaceNormal());
+    // Into-variants write the scratches directly — the old .copy(clone())
+    // pattern kept the scratch but still paid the allocation each frame.
+    const playerPos = player.getWorldPositionInto(this._qcPlayerPos);
+    const normal = player.getSurfaceNormalInto(this._qcNormal);
 
     // PORTFOLIO first for new visitors: until the first district is stamped,
     // the compass guides to the nearest unstamped zone even while the

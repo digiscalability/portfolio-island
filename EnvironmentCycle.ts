@@ -63,6 +63,20 @@ const PALETTE = {
   },
 };
 
+/**
+ * One shared day-factor cutoff above which EVERY exterior dynamic light goes
+ * `visible = false`. The 12 lights (10 lamp/house points + 2 lighthouse
+ * spots) used to stay in the renderer's light list all day at visually-nil
+ * intensities, so every lit fragment paid the full light loop for zero
+ * contribution. ONE shared threshold means the light count changes exactly
+ * once per dusk/dawn (a single shader-permutation flip), instead of stepping
+ * through intermediate counts as per-light curves cross zero at different
+ * times. 0.85 sits past every curve's zero (lamp-follow 1-d*1.35 → 0.741,
+ * beams 1-d*1.25 → 0.8) and the glow floor's 0.41·base residue is invisible
+ * against full daylight — so the flip never pops.
+ */
+export const EXTERIOR_LIGHTS_DAY_CUTOFF = 0.85;
+
 export class EnvironmentCycle {
   private scene: THREE.Scene;
   private sun: THREE.DirectionalLight;
@@ -875,9 +889,15 @@ export class EnvironmentCycle {
     // lamps (TownPlanner) carry isOn on their group — a lamp the player
     // switched off must stay dark instead of being re-lit every frame.
     const glow = 0.25 + (1 - dayFactor) * 1.05;
+    const exteriorLightsOn = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF;
     for (const g of this.glowLights) {
       const host = g.light.parent as ({ isOn?: boolean } & THREE.Object3D) | null;
-      g.light.intensity = host && host.isOn === false ? 0 : g.base * glow;
+      const off = host && host.isOn === false;
+      g.light.intensity = off ? 0 : g.base * glow;
+      // visible AFTER the isOn zeroing so a switched-off lamp stays dark;
+      // by day the whole set leaves the renderer's light list (see the
+      // cutoff's doc — the intensity formula is deliberately untouched).
+      g.light.visible = exteriorLightsOn && !off;
     }
 
     // Window panes + lamp bulbs: dim by day, glowing after dark, emissive

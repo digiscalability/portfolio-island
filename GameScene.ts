@@ -5,7 +5,7 @@ import { a11y } from './Accessibility';
 import { addGroupHulls, updateCelRim } from './CelLook';
 import { buildCloudFormations } from './CloudFormations';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
-import { EnvironmentCycle } from './EnvironmentCycle';
+import { EnvironmentCycle, EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle';
 import { framingFov } from './Framing';
 import { Island } from './Island';
 import { expDecayV3, squash } from './Juice';
@@ -705,6 +705,22 @@ export class GameScene extends THREE.Scene {
   private readonly _shadowUpAxis = new THREE.Vector3(); // player's radial up
   private _atmDir = new THREE.Vector3(); // scratch: player surface dir for district atmosphere
   private _atmAccent = new THREE.Color(); // scratch: nearest-district accent
+  // Per-frame player-position scratches — one field per consumer method so no
+  // value can be clobbered while a loop still reads it (the allocating
+  // getWorldPosition() was called ~11x/frame producing the identical vector).
+  // checkPlayerCollisions gets its OWN buffer on purpose: it mutates the
+  // vector in place as the collision write-back before setWorldPosition.
+  private readonly _gbPlayerPos = new THREE.Vector3();
+  private readonly _npcPlayerPos = new THREE.Vector3();
+  private readonly _racePos = new THREE.Vector3();
+  private readonly _puffPlayerPos = new THREE.Vector3();
+  private readonly _collidePos = new THREE.Vector3();
+  private readonly _nearNpcPos = new THREE.Vector3();
+  private readonly _nearPos = new THREE.Vector3();
+  private readonly _radarPos = new THREE.Vector3();
+  private readonly _crabPlayerPos = new THREE.Vector3();
+  private readonly _catPlayerPos = new THREE.Vector3();
+  private readonly _lampPos = new THREE.Vector3();
 
   // Mailbox instances for interaction tracking
   private mailboxes: Mailbox[] = [];
@@ -1236,7 +1252,7 @@ export class GameScene extends THREE.Scene {
     this.lampFollowAccum += deltaTime;
     if (this.lampFollowAccum > 0.2 && sites.length) {
       this.lampFollowAccum = 0;
-      const p = this.player.getWorldPosition();
+      const p = this.player.getWorldPositionInto(this._lampPos);
       // Partial selection: the three nearest sites, no sort of the whole list.
       const best = [-1, -1, -1];
       const bestD = [Infinity, Infinity, Infinity];
@@ -1270,9 +1286,13 @@ export class GameScene extends THREE.Scene {
         slot.light.intensity = 0; // ease up from dark on a re-park
       }
     }
+    const on = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF;
     for (const slot of this.lampFollowLights) {
       const want = slot.siteIndex >= 0 ? 3.4 * night : 0;
       slot.light.intensity += (want - slot.light.intensity) * Math.min(1, 3 * deltaTime);
+      // Off the renderer's light list by day (night is 0 past d=0.741 anyway,
+      // so the shared 0.85 flip never pops — see the cutoff's doc).
+      slot.light.visible = on;
     }
   }
 
@@ -1922,7 +1942,7 @@ export class GameScene extends THREE.Scene {
    *  the beach band, claw idle, flee from close players. */
   private updateCrabs(deltaTime: number, time: number): void {
     if (!this.crabs.length) return;
-    const playerPos = this.player ? this.player.getWorldPosition() : null;
+    const playerPos = this.player ? this.player.getWorldPositionInto(this._crabPlayerPos) : null;
     const LOW = Math.sin(0.222);
     const HIGH = Math.sin(0.245); // stay on the sand (0.25+ is lawn)
     for (const c of this.crabs) {
@@ -4343,7 +4363,7 @@ export class GameScene extends THREE.Scene {
    *  motion is eased (heading, gait, tail, head) so nothing snaps. */
   private updateCats(deltaTime: number, time: number): void {
     if (this.cats.length === 0 || !this.island) return;
-    const player = this.player ? this.player.getWorldPosition() : null;
+    const player = this.player ? this.player.getWorldPositionInto(this._catPlayerPos) : null;
     const turnLerp = 1 - Math.exp(-9 * deltaTime); // heading easing
     const gaitLerp = 1 - Math.exp(-7 * deltaTime); // stride fade-in/out
     for (const c of this.cats) {
@@ -10430,7 +10450,7 @@ export class GameScene extends THREE.Scene {
 
     // Ground birds: feeding FSM (jab → scan → hop) → flush when the player
     // closes in → land again later.
-    const gbPlayer = this.player ? this.player.getWorldPosition() : null;
+    const gbPlayer = this.player ? this.player.getWorldPositionInto(this._gbPlayerPos) : null;
     for (const g of this.groundBirds) {
       if (g.mode === 'peck') {
         // Night roost, matching the flocks: shrink away after dusk and grow
@@ -10735,7 +10755,7 @@ export class GameScene extends THREE.Scene {
     // NPCs: wander their district (stroll → pause → stroll) with a walk
     // bob, facing eased toward the travel direction, plus the greet hop
     if (this.island) {
-      const npcPlayerW = this.player.getWorldPosition();
+      const npcPlayerW = this.player.getWorldPositionInto(this._npcPlayerPos);
       for (let i = 0; i < this.island.npcTargets.length; i++) {
         const npc = this.island.npcTargets[i];
         // The Fisherman + Baker run their own routines — skip the wander for them
@@ -11118,7 +11138,11 @@ export class GameScene extends THREE.Scene {
       this.island.summitBeacon.position.y = 1.35 + Math.sin(time * 1.6) * 0.12;
     }
     this.updateVehicles(deltaTime);
-    this.races?.update(deltaTime, this.player.getWorldPosition(), this.getActiveVehicleKind());
+    this.races?.update(
+      deltaTime,
+      this.player.getWorldPositionInto(this._racePos), // RaceSystem copies
+      this.getActiveVehicleKind(),
+    );
     this.updateWaterFX(deltaTime);
     this.updateFish(deltaTime, time);
     this.updateCats(deltaTime, time);
@@ -11191,7 +11215,7 @@ export class GameScene extends THREE.Scene {
       puff.material.opacity = 0.4 * Math.sin(ph * Math.PI);
     }
 
-    const playerPos = this.player.getWorldPosition();
+    const playerPos = this.player.getWorldPositionInto(this._puffPlayerPos);
 
     // Guide sparkles: arc ahead of the player along the great circle to
     // the delivery target. Terrain resampling runs on a 0.15s throttle;
@@ -11573,6 +11597,11 @@ export class GameScene extends THREE.Scene {
     }
     if (this.lampPoolMat) {
       this.lampPoolMat.opacity = 0.55 * (1 - day);
+      // At zero alpha the additive blend pipeline still ran for ~57
+      // several-unit ground quads every daytime frame. material.visible is
+      // checked in projectObject, skipping the same GPU work as mesh.visible
+      // without needing the mesh refs here.
+      this.lampPoolMat.visible = this.lampPoolMat.opacity > 0.01;
     }
     // Street lamps switch on at dusk: near-off by day, warm and bright at
     // night (matches the light pools' 1-day fade).
@@ -11594,10 +11623,23 @@ export class GameScene extends THREE.Scene {
         beamMat?: THREE.MeshBasicMaterial;
         beamLights?: THREE.SpotLight[];
       };
-      if (ud.beamMat) ud.beamMat.opacity = 0.5 * nightBeam;
+      if (ud.beamMat) {
+        ud.beamMat.opacity = 0.5 * nightBeam;
+        // Two 26u additive cones drawn at zero alpha all day otherwise.
+        // Material-level, NOT lighthouse_beam.visible — the group also
+        // carries the SpotLights, and re-parenting lights in/out of the
+        // graph churns the renderer's lights hash (program re-selection).
+        ud.beamMat.visible = ud.beamMat.opacity > 0.01;
+      }
       // Bright enough that the sweep visibly rakes whatever it crosses. At
       // decay 1.1 over a 44u range this is ~4 at the far end, ~35 at the base.
-      if (ud.beamLights) for (const l of ud.beamLights) l.intensity = 95 * nightBeam;
+      if (ud.beamLights) {
+        const on = day < EXTERIOR_LIGHTS_DAY_CUTOFF;
+        for (const l of ud.beamLights) {
+          l.intensity = 95 * nightBeam;
+          l.visible = on; // nightBeam is 0 past d=0.8 — the 0.85 flip never pops
+        }
+      }
     }
     // ?look=soft: the composer's grade pass + bloom breathe with the cycle.
     this.rendererRef?.setGradeDayFactor?.(day);
@@ -11613,7 +11655,7 @@ export class GameScene extends THREE.Scene {
     // "you have arrived somewhere" cue). Runs AFTER EnvironmentCycle writes
     // fog.color from the sky horizon; faded by daylight so night stays true.
     if (this.player && this.fog) {
-      this._atmDir.copy(this.player.getWorldPosition()).normalize();
+      this.player.getWorldPositionInto(this._atmDir).normalize();
       const w = districtAccentAt(this._atmDir, this._atmAccent) * 0.12 * day;
       if (w > 0) (this.fog as THREE.FogExp2).color.lerp(this._atmAccent, w);
     }
@@ -11749,7 +11791,7 @@ export class GameScene extends THREE.Scene {
   private checkPlayerCollisions(): void {
     // Seated players sit INSIDE the bench's collider by design
     if (this.player.isSeated()) return;
-    const playerPos = this.player.getWorldPosition();
+    const playerPos = this.player.getWorldPositionInto(this._collidePos);
     const playerRadius = 0.4; // Player collision radius
 
     // Shared tangential push. Returns the push distance (0 = no overlap).
@@ -11844,7 +11886,7 @@ export class GameScene extends THREE.Scene {
    *  "live AI villager" hint never advertises someone indoors or hidden. */
   public hasVillagerWithin(radius: number): boolean {
     if (!this.player) return false;
-    const p = this.player.getWorldPosition();
+    const p = this.player.getWorldPositionInto(this._nearNpcPos);
     return this.island.npcTargets.some(
       (n) => n.meshRef.visible && n.meshRef.position.distanceTo(p) < radius,
     );
@@ -11860,7 +11902,7 @@ export class GameScene extends THREE.Scene {
     | null {
     if (!this.player) return null;
 
-    const playerPos = this.player.getWorldPosition();
+    const playerPos = this.player.getWorldPositionInto(this._nearPos);
 
     // Check if player has moved far enough to invalidate cache
     if (
@@ -12029,7 +12071,7 @@ export class GameScene extends THREE.Scene {
    * north = +Y pole projected onto the tangent plane, east = up × north.
    */
   private updateRadarBasis(): void {
-    const pos = this.player.getWorldPosition();
+    const pos = this.player.getWorldPositionInto(this._radarPos);
     this.radarUp.copy(pos).normalize();
     // North: world +Y projected off the radial, then normalized. Degenerates
     // only at the exact poles, where we fall back to a fixed tangent.
