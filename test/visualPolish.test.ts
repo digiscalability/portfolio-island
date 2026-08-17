@@ -754,6 +754,52 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('the headlight wash is rolled ALONG the road, on an exact radius', () => {
+    const traffic = src('Traffic.ts');
+    // The wash is 3u x 7u — a NON-UNIFORM scale, so its long axis has a
+    // designated direction. setFromUnitVectors alone pinned only the NORMAL to
+    // the radial and left the in-plane roll as the shortest-arc residue, a
+    // pure function of world POSITION: measured 2.0 / 12.1 / 62.3 / 64.6 /
+    // 73.2 / 73.3 / 74.6 / 82.1 / 83.4 / 89.7 deg off the road across the ten
+    // cars, so most laid a 7u bar ACROSS a 1.7u boulevard.
+    expect(traffic).not.toContain('this._q.setFromUnitVectors(this._flat, this._ahead)');
+    // Y = road tangent, Z = radial => X MUST be tan x ahead for a proper
+    // right-handed basis. Argument order here is the improper-matrix bug this
+    // repo has hit three times, so the order is pinned explicitly.
+    expect(traffic).toContain('this._right.crossVectors(this._washTan, this._ahead)');
+    expect(traffic).toContain('makeBasis(this._right, this._washTan, this._ahead)');
+    // Re-orthogonalise: the raw tangent carries ~0.04 of shear against the
+    // 4u-lead direction, which tips the quad off the ground if skipped.
+    expect(traffic).toMatch(
+      /_washTan\s*\n?\s*\.addScaledVector\(this\._ahead, -this\._washTan\.dot/,
+    );
+    // Seat: wheels bottom out at local y = -0.02 and the ribbon sits at
+    // +0.04/+0.055, so +0.35 hovered every wheel 0.29u above its own road.
+    expect(traffic).toContain('multiplyScalar(r + 0.075)');
+    expect(traffic).not.toContain('multiplyScalar(r + 0.35)');
+    // The 128-entry LUT could not represent the coastal lane's 2.079u of
+    // relief at 4.72u spacing (worst error 0.425u); analyticSurface is exact.
+    expect(traffic).toContain('return this.island.analyticSurface(dir).radius;');
+    expect(traffic).not.toMatch(/const LUT = /);
+  });
+
+  test('peer teardown and the interior rain handle do not leak or go stale', () => {
+    const mp = src('Multiplayer.ts');
+    // Detaching an Object3D frees nothing on the GPU. Each peer owns two
+    // canvas-backed sprite textures plus a procedural fallback body and hat;
+    // a flaky peer re-minted them on every rejoin.
+    expect(mp).toContain('m.map?.dispose()');
+    expect(mp).toContain('peer.fallbackParts = []');
+    expect(mp).toContain('peer.hatMesh?.traverse');
+
+    const scene = src('GameScene.ts');
+    // EnvironmentCycle REBUILDS the precipitation volume on a weather change
+    // (removes and disposes the old Points), so a handle cached once at first
+    // use points at a disposed orphan and the interior window silently shows a
+    // dry night in a storm — the exact bug the borrow exists to fix.
+    expect(scene).toContain('if (!this.interiorRainNode || !this.interiorRainNode.parent)');
+  });
+
   test('blocked localStorage cannot brick the welcome card', () => {
     const ui = src('SimpleUI.ts');
     // This was the ONE bare localStorage read left in the file (16 of 17

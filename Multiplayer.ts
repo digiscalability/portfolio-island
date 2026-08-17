@@ -910,7 +910,34 @@ export class Multiplayer {
   private removePeer(id: string): void {
     const peer = this.peers.get(id);
     if (!peer) return;
-    peer.remote?.dispose();
+    peer.remote?.dispose(); // stops the mixer + disposes the cloned materials
+    // ...but NOT these. Detaching an Object3D frees nothing on the GPU, and a
+    // peer's name label and wave sprite each own a canvas-backed texture. A
+    // flaky peer that drops and rejoins re-mints them every time, so the leak
+    // is unbounded over a long session rather than a one-off.
+    for (const s of [peer.label, peer.waveSprite]) {
+      if (!s) continue;
+      const m = s.material as THREE.SpriteMaterial;
+      m.map?.dispose();
+      m.dispose();
+    }
+    // The procedural fallback body (used until player.glb resolves) and the
+    // hat are built per peer, so they are this peer's to free.
+    const freeMaterial = (mm: THREE.Material | THREE.Material[] | undefined): void => {
+      if (Array.isArray(mm)) mm.forEach((m) => m?.dispose());
+      else mm?.dispose();
+    };
+    for (const part of peer.fallbackParts) {
+      const mesh = part as THREE.Mesh;
+      mesh.geometry?.dispose();
+      freeMaterial(mesh.material);
+    }
+    peer.fallbackParts = [];
+    peer.hatMesh?.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      mesh.geometry?.dispose();
+      freeMaterial(mesh.material);
+    });
     this.scene.remove(peer.avatar);
     this.peers.delete(id);
     this.onCountChange?.(1 + this.peers.size);

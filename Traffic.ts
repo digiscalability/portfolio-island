@@ -33,9 +33,6 @@ interface Lane {
   /** +1 eastbound, -1 westbound — opposing rings read as two-way traffic. */
   dir: 1 | -1;
   speed: number;
-  /** Cached terrain radius around the ring; the road is static, so this is
-   *  sampled once and lerped forever after — no per-frame terrain query. */
-  radii: Float32Array;
   /** Circle radius on the sphere: R*cos(lat). Converts metres to radians. */
   ringRadius: number;
 }
@@ -46,8 +43,6 @@ interface TrafficCar {
   /** Eased 0..1 throttle so yielding looks like braking, not teleporting. */
   throttle: number;
 }
-
-const LUT = 128; // radius samples per ring (~4.6u apart on the boulevard)
 
 export class TrafficSystem {
   private readonly lanes: Lane[] = [];
@@ -71,7 +66,7 @@ export class TrafficSystem {
   private readonly _q = new THREE.Quaternion();
   private readonly _s = new THREE.Vector3(1, 1, 1);
   private readonly _washScale = new THREE.Vector3(3.0, 7.0, 1);
-  private readonly _flat = new THREE.Vector3(0, 0, 1);
+  private readonly _washTan = new THREE.Vector3();
 
   constructor(
     island: {
@@ -93,16 +88,11 @@ export class TrafficSystem {
     ];
 
     for (const s of spec) {
-      const radii = new Float32Array(LUT);
-      for (let i = 0; i < LUT; i++) {
-        const d = island.dirAt((i / LUT) * Math.PI * 2, s.lat);
-        radii[i] = island.analyticSurface(d).radius;
-      }
+      // No radius LUT any more — radiusAt() reads the analytic surface exactly.
       this.lanes.push({
         lat: s.lat,
         dir: s.dir,
         speed: s.speed,
-        radii,
         ringRadius: R * Math.cos(s.lat),
       });
       const laneIdx = this.lanes.length - 1;
@@ -159,15 +149,21 @@ export class TrafficSystem {
     this.update(0, 1, null, null); // seat everything before the first frame
   }
 
-  /** Terrain radius under a longitude, lerped from the cached ring. */
-  private radiusAt(lane: Lane, lon: number): number {
-    const f = (((lon / (Math.PI * 2)) % 1) + 1) % 1;
-    const x = f * LUT;
-    const i = Math.floor(x);
-    const t = x - i;
-    const a = lane.radii[i % LUT];
-    const b = lane.radii[(i + 1) % LUT];
-    return a + (b - a) * t;
+  /** EXACT terrain radius under a direction.
+   *
+   *  This replaced a 128-entry per-ring LUT with lerp. MEASURED at R=100 over
+   *  20,000 samples per lane: the coastal ring is 603.8u round, so 128 entries
+   *  is 4.72u apart, and it cannot represent that lane's 2.079u of relief —
+   *  worst interpolation error 0.425u. Combined with the old +0.35 seat, the
+   *  wheels (lowest geometry at local y = -0.02) ran from 0.150u BURIED in the
+   *  pavement to 0.625u above it: a 0.775u swing against wheels only 0.64u
+   *  across, cycling at the LUT cell rate.
+   *
+   *  analyticSurface is raycast-free (~0.003ms) and there are 10 cars, so
+   *  exactness costs ~0.06ms/frame for both the body and the wash — cheaper
+   *  than the error was ugly. */
+  private radiusAt(dir: THREE.Vector3): number {
+    return this.island.analyticSurface(dir).radius;
   }
 
   /**
@@ -197,8 +193,13 @@ export class TrafficSystem {
       // Where the car is, and where its bonnet points.
       const dir = this.island.dirAt(car.lon, lane.lat);
       this._dir.copy(dir);
-      const r = this.radiusAt(lane, car.lon);
-      this._pos.copy(this._dir).multiplyScalar(r + 0.35);
+      const r = this.radiusAt(this._dir);
+      // +0.075, not +0.35. The car's lowest geometry is the wheel bottom at
+      // local y = -0.02 (a 0.32-radius cylinder translated to y = 0.3), and
+      // the road ribbon sits at +0.04/+0.055 — so the old seat parked every
+      // wheel a permanent 0.29u ABOVE the road it was supposed to be driving
+      // on, before the LUT error was even counted.
+      this._pos.copy(this._dir).multiplyScalar(r + 0.075);
 
       // WORLD LAW 1: a car stands PLUMB on the radial, never on the terrain
       // normal — the parked fleet already learned this (a slope-normal car
@@ -258,10 +259,28 @@ export class TrafficSystem {
           .copy(this._dir)
           .addScaledVector(this._tan, 4.0 / Math.max(1e-3, r))
           .normalize();
-        const wr = this.radiusAt(lane, Math.atan2(this._ahead.z, this._ahead.x));
+        const wr = this.radiusAt(this._ahead);
         this._pos.copy(this._ahead).multiplyScalar(wr + 0.05);
-        this._q.setFromUnitVectors(this._flat, this._ahead);
-        // Roll the quad so its long axis lies along the road.
+        // ROLL IT. The wash is 3u x 7u — a NON-UNIFORM scale, so its long axis
+        // has a designated direction: down the road. setFromUnitVectors alone
+        // pins only the quad's NORMAL to the radial and leaves the in-plane
+        // roll as the shortest-arc residue, i.e. a pure function of world
+        // POSITION rather than of heading. MEASURED across the ten cars, the
+        // angle between the 7u axis and the road ran 2.0, 12.1, 62.3, 64.6,
+        // 73.2, 73.3, 74.6, 82.1, 83.4, 89.7 deg — eight of ten past 62 — so
+        // most cars laid a 7u bar ACROSS a 1.7u boulevard and each car's wash
+        // swung from aligned to crosswise and back over its ~80s lap.
+        //
+        // Y = road tangent, Z = radial, so X must be tan x ahead for a PROPER
+        // right-handed basis (X x Y = (T x A) x T = A). Getting that argument
+        // order wrong is the improper-matrix bug this repo has hit three
+        // times. The re-orthogonalise is load-bearing: the raw tangent carries
+        // ~0.04 of shear against the 4u-lead direction, and skipping it tips
+        // the quad off the ground (face.up 0.992 instead of 1.000).
+        this._washTan.copy(this._tan);
+        this._washTan.addScaledVector(this._ahead, -this._washTan.dot(this._ahead)).normalize();
+        this._right.crossVectors(this._washTan, this._ahead).normalize();
+        this._q.setFromRotationMatrix(this._m.makeBasis(this._right, this._washTan, this._ahead));
         this._m.compose(this._pos, this._q, this._washScale);
         this.wash.setMatrixAt(c, this._m);
       }

@@ -14206,7 +14206,16 @@ export class GameScene extends THREE.Scene {
     // (EnvironmentCycle.ts:815), and the player is indoors — so the weather
     // was falling nowhere near the building and the window showed a dry night
     // in a storm. Borrow the volume for the pass: nobody indoors can see it.
-    if (!this.interiorRainNode) {
+    // VALIDATE the handle, don't just trust it. EnvironmentCycle rebuilds the
+    // precipitation volume on a weather change — it removes AND disposes the
+    // old THREE.Points and makes a new one — so a handle cached once at first
+    // use goes stale and points at a disposed orphan. The window then borrows
+    // nothing and silently shows a dry night in a storm, which is the exact
+    // bug this borrow was written to fix. `scene.remove` nulls `.parent`, so
+    // that is the cheap liveness test; the re-traverse then costs one walk per
+    // REBUILD rather than one per frame.
+    if (!this.interiorRainNode || !this.interiorRainNode.parent) {
+      this.interiorRainNode = null;
       this.traverse((o) => {
         if (o.name === 'precipitation') this.interiorRainNode = o;
       });
