@@ -119,6 +119,82 @@ describe('dispose unhooks the lifecycle', () => {
   });
 });
 
+describe('the sfx duck survives a mute during a voice line', () => {
+  // The wedge: voice ducks the bus to 0.18 -> user mutes -> toggleMute flips
+  // muted FIRST, then fires callbacks -> Speech's unduck runs duckForVoice(false)
+  // with ctxOrNull already null. The old code committed the flag and skipped
+  // the gain write, and its idempotence guard made every later unduck a no-op:
+  // every sound for the rest of the session played at 18%.
+  const sfxRig = async () => {
+    const { Sfx } = await import('../Sfx');
+    let muted = false;
+    const gainWrites: number[] = [];
+    const ctx = {
+      state: 'running' as AudioContextState,
+      currentTime: 0,
+      destination: {},
+      createGain: () => ({
+        gain: {
+          value: 0.5,
+          setTargetAtTime: (v: number) => gainWrites.push(v),
+        },
+        connect: () => undefined,
+      }),
+    };
+    (window as unknown as { audioManager: unknown }).audioManager = {
+      isMuted: () => muted,
+      ensureCtx: () => ctx,
+      getDestination: () => ({}),
+    };
+    const s = new Sfx() as unknown as {
+      duckForVoice(on: boolean): void;
+      ensureMaster(c: unknown): { gain: { value: number } };
+      ctxOrNull: unknown;
+      ducked: boolean;
+      duckApplied: boolean;
+    };
+    const master = s.ensureMaster(ctx); // bus exists, as it would mid-session
+    return { s, master, gainWrites, setMuted: (m: boolean) => (muted = m) };
+  };
+
+  test('THE REGRESSION: unduck while muted heals on the next reachable frame', async () => {
+    const { s, gainWrites, setMuted } = await sfxRig();
+    s.duckForVoice(true); // voice line starts
+    expect(gainWrites.at(-1)).toBe(0.18);
+    setMuted(true); // user hits mute; Speech's cleanup unducks while muted
+    s.duckForVoice(false);
+    expect(gainWrites.at(-1)).toBe(0.18); // write skipped — bus unreachable
+    setMuted(false); // user unmutes later
+    void s.ctxOrNull; // any bed tick / one-shot observes a usable ctx...
+    expect(gainWrites.at(-1)).toBe(0.5); // ...and the bus heals to full
+  });
+
+  test('a bus (re)built mid-voice is born ducked', async () => {
+    const { s } = await sfxRig();
+    s.duckForVoice(true);
+    const ctx2 = {
+      state: 'running',
+      currentTime: 0,
+      destination: {},
+      createGain: () => ({
+        gain: { value: -1, setTargetAtTime: () => undefined },
+        connect: () => undefined,
+      }),
+    };
+    const rebuilt = s.ensureMaster(ctx2); // ctx swap during the line
+    expect(rebuilt.gain.value).toBe(0.18); // derived, not the 0.5 constant
+  });
+
+  test('repeat duck calls do not spam gain writes', async () => {
+    const { s, gainWrites } = await sfxRig();
+    s.duckForVoice(true);
+    const n = gainWrites.length;
+    s.duckForVoice(true);
+    void s.ctxOrNull;
+    expect(gainWrites.length).toBe(n); // applied state matches intent — no-op
+  });
+});
+
 describe('the boot unlock stays armed until there is something to unlock', () => {
   test('resumeAudio checks for the manager BEFORE detaching its listeners', () => {
     // The old order — removeEventListener first, look for window.audioManager

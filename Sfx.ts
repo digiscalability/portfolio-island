@@ -14,6 +14,10 @@ type AudioManagerLike = {
 };
 
 export class Sfx {
+  /** Full-throat sfx bus level, and the level speech ducks it to. */
+  private static readonly BUS_LEVEL = 0.5;
+  private static readonly DUCK_LEVEL = 0.18;
+
   private noiseBuf: AudioBuffer | null = null;
   private master: GainNode | null = null;
   private masterCtx: AudioContext | null = null;
@@ -23,7 +27,13 @@ export class Sfx {
     if (!am || am.isMuted()) return null;
     try {
       const ctx = am.ensureCtx();
-      return ctx.state === 'running' ? ctx : null;
+      if (ctx.state !== 'running') return null;
+      // Observing a usable context HEALS any duck level that went stale while
+      // the bus was unreachable — see syncDuck. Beds call this every frame and
+      // every one-shot calls it on fire, so the bus recovers within one frame
+      // of an unmute instead of holding 18% forever.
+      this.syncDuck(ctx);
+      return ctx;
     } catch {
       return null;
     }
@@ -32,7 +42,11 @@ export class Sfx {
   private ensureMaster(ctx: AudioContext): GainNode {
     if (this.master && this.masterCtx === ctx) return this.master;
     this.master = ctx.createGain();
-    this.master.gain.value = 0.5;
+    // DERIVED from the duck flag, not a constant: a bus (re)built mid-voice
+    // must be born ducked, or the first sfx after a ctx swap shouts over the
+    // NPC.
+    this.master.gain.value = this.ducked ? Sfx.DUCK_LEVEL : Sfx.BUS_LEVEL;
+    this.duckApplied = this.ducked;
     // Route through the AudioManager master bus so the ONE mute/volume knob
     // covers sfx too; fall back to the raw destination pre-audio-boot.
     const am = (window as unknown as { audioManager?: AudioManagerLike }).audioManager;
@@ -599,16 +613,39 @@ export class Sfx {
     call();
   }
 
+  /** What the bus SHOULD be (speech wants it ducked) ... */
   private ducked = false;
+  /** ...and what the gain LAST HAD WRITTEN to it. The two desync whenever a
+   *  write is skipped because the bus is unreachable (muted / suspended ctx),
+   *  and syncDuck reconciles them on the next reachable frame. */
+  private duckApplied = false;
+
+  /** The SOLE writer of the bus level after creation. */
+  private syncDuck(ctx: AudioContext): void {
+    if (!this.master || this.duckApplied === this.ducked) return;
+    this.master.gain.setTargetAtTime(
+      this.ducked ? Sfx.DUCK_LEVEL : Sfx.BUS_LEVEL,
+      ctx.currentTime,
+      this.ducked ? 0.1 : 0.35,
+    );
+    this.duckApplied = this.ducked;
+  }
 
   /** Duck the whole sfx bus (beds + one-shots) under NPC voice so speech
-   *  owns the foreground; restore when the line ends. Idempotent. */
+   *  owns the foreground; restore when the line ends. Idempotent.
+   *
+   *  RECORDS INTENT, DERIVES THE GAIN. This used to commit the flag and then
+   *  early-return if the ctx was unreachable — and muting DURING a voice line
+   *  reaches exactly that state: toggleMute flips muted first, THEN fires the
+   *  callbacks, so Speech's unduck ran with ctxOrNull already null. The flag
+   *  said "unducked", the gain stayed 0.18, and the idempotence guard turned
+   *  every later unduck into a no-op — every sound for the rest of the
+   *  session played at 18%. Now the flag is only intent; syncDuck reconciles
+   *  the gain on the next frame the bus is reachable (any bed tick or
+   *  one-shot), so an unmute heals the bus before anything plays through it. */
   public duckForVoice(on: boolean): void {
-    if (on === this.ducked) return;
     this.ducked = on;
-    const ctx = this.ctxOrNull;
-    if (!ctx || !this.master) return; // nothing audible to duck yet
-    this.master.gain.setTargetAtTime(on ? 0.18 : 0.5, ctx.currentTime, on ? 0.1 : 0.35);
+    void this.ctxOrNull; // reachable now? sync immediately (getter heals)
   }
 
   private seaGain: GainNode | null = null;
