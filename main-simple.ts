@@ -5096,13 +5096,17 @@ class SimpleApp {
           // the time budget switched itself OFF on exactly the busiest frames
           // and ran the full 40k-sample slice inline. Fall back to a wall
           // clock there instead of surrendering the budget.
+          // The wall clock is the DEFAULT, not the exception: it covers both
+          // didTimeout and the no-deadline setTimeout fallback (browsers
+          // without requestIdleCallback). An earlier pass guarded didTimeout
+          // but left `deadline === undefined` returning false, which kept the
+          // original unbounded 40k-sample slice alive on exactly the weakest
+          // browsers. Only a LIVE idle deadline is trusted to time itself.
           const started = performance.now();
           const outOfTime = () =>
-            deadline
-              ? deadline.didTimeout
-                ? performance.now() - started >= 6
-                : deadline.timeRemaining() <= 3
-              : false;
+            deadline && !deadline.didTimeout
+              ? deadline.timeRemaining() <= 3
+              : performance.now() - started >= 6;
           while (ch < 2) {
             let budget = SLICE;
             // The clock is read once per CHECK block, not once per sample:

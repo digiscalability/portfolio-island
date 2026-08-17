@@ -13979,6 +13979,15 @@ export class GameScene extends THREE.Scene {
    *  old lazy path still works, just as slowly as before. */
   public async warmInterior(): Promise<void> {
     if (this.interiorWarmed) return;
+    // `idleDefer(cb, 9000)` is a CEILING, not a delay — the callback can fire
+    // early, and a player can reach a door inside that window. A real entry
+    // already does all of this work for real, so there is nothing left to
+    // warm; more importantly `warm(false)` would hide the room they are
+    // standing in across an awaited frame. enterInterior sets the same flag.
+    if (this.insideInterior) {
+      this.interiorWarmed = true;
+      return;
+    }
     this.interiorWarmed = true;
     this.buildInterior();
     const g = this.interiorGroup;
@@ -14022,6 +14031,9 @@ export class GameScene extends THREE.Scene {
     houseId?: string,
   ): void {
     this.buildInterior();
+    // A real visit warms everything the idle pass would have, so retire the
+    // pending warm — otherwise it can fire mid-visit and blink the room.
+    this.interiorWarmed = true;
     if (this.interiorWallMat) {
       this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
     }

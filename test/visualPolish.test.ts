@@ -747,6 +747,24 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // guard cost more than the synthesis it guarded. The counter also
     // guarantees forward progress, which a pure time test does not.
     expect(main).toContain('if (++sinceCheck >= 4096)');
+    // The wall clock is the DEFAULT branch. The first pass at this fix
+    // guarded didTimeout but left `deadline === undefined` returning false,
+    // so the setTimeout fallback — every browser without
+    // requestIdleCallback — still ran the original unbounded 40k slice.
+    expect(main).toContain('deadline && !deadline.didTimeout');
+  });
+
+  test('the idle warm can never blink a room the player is standing in', () => {
+    const scene = src('GameScene.ts');
+    // idleDefer(cb, 9000) is a CEILING, not a delay: the callback can fire
+    // early and a player can reach a door inside that window. warm(false)
+    // would then hide the room they are in across an awaited frame.
+    expect(scene).toMatch(
+      /if \(this\.insideInterior\) \{\s*this\.interiorWarmed = true;\s*return;/,
+    );
+    // And a real entry retires the pending warm — it has already done all of
+    // the same work for real, so the idle pass has nothing left to warm.
+    expect(scene).toMatch(/this\.buildInterior\(\);\s*this\.interiorWarmed = true;/);
   });
 
   test('the interior is built and compiled in idle time, not on the first E', () => {
