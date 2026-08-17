@@ -80,6 +80,52 @@ describe('the resolution governor can actually recover', () => {
     expect(src('SimpleRenderer.ts')).toContain('Math.min(0.9, this.dprFloor / this.dprCap)');
   });
 
+  test('the governor measures WALL time, not the physics-clamped dt', () => {
+    // animate() clamps dt to 0.05 so a stall cannot teleport the player. That
+    // clamp is 20fps, and handing it to a controller that measures FRAME RATE
+    // floored its whole view at 20fps and stretched every clock it owns: the
+    // "1Hz" decision became 2.0s of wall at a true 10fps, the 4s engage
+    // cooldown 8s, the 12s release 24s. SIMULATED: a true 1.5fps device reached
+    // rung 3 at 22.7s instead of never (old code stopped at rung 1 at 106.7s);
+    // a true 0.8fps device engaged NOTHING in 120s before, full ladder by 42.5s
+    // now. Above 20fps the clamp never bound, so nothing changes there.
+    const s = src('SimpleRenderer.ts');
+    expect(s).toContain('this.updateAdaptiveResolution(wallDt)');
+    expect(s).not.toContain('this.updateAdaptiveResolution(deltaTime)');
+  });
+
+  test('a stall is excluded as an EVENT but a RUN of them is a rate', () => {
+    // Excluding every frame over the threshold looks right and is a regression
+    // on the worst machines: a device at 1.5fps has EVERY frame over it, so the
+    // EMA would sit at its 60 initializer forever and the governor would never
+    // act — and if the EMA froze above the high bar it would keep ADDING
+    // resolution to a dying machine. Run length is what separates the two.
+    const s = src('SimpleRenderer.ts');
+    expect(s).toContain('this.stallRun = overLong ? this.stallRun + 1 : 0');
+    expect(s).toContain('const isolatedStall = overLong && this.stallRun < 3');
+    // ...and an excluded frame must not buy a DECISION either, or the first
+    // visible frame after a 60s alt-tab sheds on a 60-second-old EMA.
+    expect(s).toContain('if (isolatedStall) return;');
+  });
+
+  test('lowStreak resets on any decision that is not low', () => {
+    // It used to reset only ABOVE the high bar, so a machine parked in the
+    // 45-57 hysteresis dead band kept a stale streak of 1 forever and the next
+    // isolated hitch — minutes later — sheds. Latent before, reachable once dt
+    // is honest: one 150ms hitch moves a 50fps EMA to 42.1 (the clamped dt
+    // could only reach 48.07). SIMULATED 15 minutes at 50fps with a hitch a
+    // minute: 0 sheds after the fix.
+    const s = src('SimpleRenderer.ts');
+    const i = s.indexOf('private updateAdaptiveResolution');
+    const body = s.slice(i, s.indexOf('private setQualityRung'));
+    // the reset must NOT be the first statement of the high-threshold branch
+    expect(body).not.toMatch(
+      /else if \(this\.fpsEma > this\.fpsHighThreshold\) \{\s*this\.lowStreak = 0;/,
+    );
+    expect(body).toContain('this.qualityAccum -= 1;'); // not `= 0`, which discarded up to 0.5s
+    expect(body).not.toContain('this.qualityAccum = 0;');
+  });
+
   test('the top rung is sticky in TIME, never behind an impossible frame rate', () => {
     // The sticky release bar used to be `fpsHighThreshold + 8`. applyRefreshEstimate
     // caps the adaptive target at 60 on EVERY display, so fpsHighThreshold is 57 and
