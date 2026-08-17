@@ -754,6 +754,22 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('a felled stump is drivable, not merely walkable', () => {
+    const scene = src('GameScene.ts');
+    // The felled-tree lifecycle switches a collider OFF through the `owner`
+    // back-reference instead of removing it from the list, so EVERY consumer
+    // has to honour that flag. checkPlayerCollisions did; resolveCarCollision
+    // did not. REPRODUCED in-game before the fix: after chopping a tree, the
+    // stump shoved the car 0.97u — bit-identical to the standing tree's push —
+    // so the player could walk through a spot their own car bounced off.
+    const start = scene.indexOf('private resolveCarCollision');
+    expect(start).toBeGreaterThan(-1); // indexOf(-1) would slice the whole file
+    const body = scene.slice(start, scene.indexOf('\n  }', start));
+    expect(body).toContain('if (c.owner?.userData.felled) continue;');
+    // ...and the player path keeps its own guard, so the two agree.
+    expect(scene).toContain('if (collider.owner?.userData.felled) continue;');
+  });
+
   test('the headlight wash is rolled ALONG the road, on an exact radius', () => {
     const traffic = src('Traffic.ts');
     // The wash is 3u x 7u — a NON-UNIFORM scale, so its long axis has a

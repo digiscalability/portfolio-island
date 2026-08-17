@@ -9872,6 +9872,14 @@ export class GameScene extends THREE.Scene {
     // only lamp poles (0.2) stay pass-through. Gate posts remain drivable-
     // between (4.2u spacing vs 1.4u exclusion per post).
     for (const c of this.colliders) {
+      // Stumps are drivable, exactly as they are walkable. The felled-tree
+      // lifecycle switches a collider OFF through this owner back-reference
+      // rather than by list surgery (see the `owner` field's own note), so
+      // every consumer has to honour it — and this one did not, while
+      // checkPlayerCollisions did. MEASURED before the fix: a felled stump
+      // shoved the car 0.97u, bit-identical to a standing tree, so the player
+      // could walk through a spot their own car bounced off.
+      if (c.owner?.userData.felled) continue;
       if (c.radius >= 0.3 && this.pushCarOutOf(world, c.position, c.radius)) pushed = true;
     }
     for (const o of this.placedObstacles) {
