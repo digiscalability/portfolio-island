@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { persistedAudioMuted } from './audioPrefs';
 import { cleanChatText } from './Moderation';
 import { WORLD_RADIUS } from './WorldScale';
 
@@ -291,6 +292,15 @@ export class Chat {
     };
     try {
       const gameCtx = Chat.getGameAudioCtx();
+      // Pre-boot + muted: SKIP, don't play-silently. Post-boot the master bus
+      // at 0 silences a muted clip for free (and the speaking indicator still
+      // shows), but the pre-boot fallback context routes straight to
+      // ctx.destination with no bus in between — the only mute it can honour
+      // is not playing at all.
+      if (!gameCtx && Chat.masterMuted()) {
+        cleanup();
+        return;
+      }
       const ctx = gameCtx ?? this.ensureOwnCtx();
       if (!ctx) return; // no Web Audio → skip playback
       // Don't resume a master-muted ctx — the HUD mute suspends it on purpose,
@@ -358,13 +368,17 @@ export class Chat {
     }
   }
 
-  /** Whether the app-wide HUD mute is on (false when audio isn't up yet). */
+  /** Whether the app-wide HUD mute is on. Falls back to the PERSISTED flag
+   *  when the AudioManager hasn't booted yet (~5s after first paint): this
+   *  used to default to "not muted", so a visitor who muted last session
+   *  heard peer voice during the boot window — through the private fallback
+   *  context below, which has no master bus to silence it. */
   private static masterMuted(): boolean {
     const am = (window as unknown as { audioManager?: { isMuted?: () => boolean } }).audioManager;
     try {
-      return am?.isMuted?.() ?? false;
+      return am?.isMuted?.() ?? persistedAudioMuted();
     } catch {
-      return false;
+      return persistedAudioMuted();
     }
   }
 

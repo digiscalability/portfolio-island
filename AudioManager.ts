@@ -12,9 +12,8 @@ type ExtendedAudioListener = AudioListener & {
   setOrientation?: (fx: number, fy: number, fz: number, ux: number, uy: number, uz: number) => void;
 };
 
-/** Default master volume. v2 of ds_audio_settings — quieter than the old 1.0
- *  ("reduce default sound volume"); stored v1 profiles are migrated down. */
-const DEFAULT_VOLUME = 0.7;
+import { DEFAULT_VOLUME, persistedAudioMuted, persistedAudioVolume } from './audioPrefs';
+
 /** Music sits clearly under speech/sfx — it's a bed, not the show. */
 const MUSIC_LEVEL = 0.6;
 /** Spatial ambient loops (unused API today, kept for parity). */
@@ -36,20 +35,10 @@ export class AudioManager {
 
   // allow injecting an AudioContext (useful for tests)
   constructor(ctx?: AudioContext) {
-    try {
-      const stored = localStorage.getItem('ds_audio_settings');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        this.muted = !!parsed.muted;
-        // v2 migration: v1 profiles carried volume 1.0 (the old default) —
-        // pull them down to the new quieter default; explicit v2 values stick.
-        if (parsed.v === 2 && typeof parsed.volume === 'number') {
-          this.volume = parsed.volume;
-        }
-      }
-    } catch {
-      // ignore
-    }
+    // Shared readers with the pre-boot consumers (Chat/Speech mute gates, the
+    // HUD's pre-boot controls) so the persisted preference has ONE parse.
+    this.muted = persistedAudioMuted();
+    this.volume = persistedAudioVolume();
     if (ctx) this.ctx = ctx;
   }
 

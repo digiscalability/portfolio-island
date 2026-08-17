@@ -9,6 +9,7 @@
 // calls speak(text, ...) — whether that line gets a premium voice is decided
 // here, and the browser voice remains the permanent, free fallback.
 
+import { persistedAudioMuted, persistedAudioVolume } from './audioPrefs';
 import { sfx } from './Sfx'; // duckForVoice: the sfx bus steps back under speech
 
 // ── shared ──────────────────────────────────────────────────────────────────
@@ -73,18 +74,21 @@ function ensureMuteHook(am: MasterLike): void {
     muteHookInstalled = false; // retry on the next line
   }
 }
+/** Falls back to the PERSISTED flag pre-boot (the manager arrives ~5s after
+ *  first paint, and the element/speechSynthesis paths need no manager) — a
+ *  muted-last-session visitor used to hear NPC speech in that window. */
 function masterMuted(): boolean {
   try {
-    return master()?.isMuted?.() ?? false;
+    return master()?.isMuted?.() ?? persistedAudioMuted();
   } catch {
-    return false;
+    return persistedAudioMuted();
   }
 }
 function masterVolume(): number {
   try {
-    return master()?.getEffectiveVolume?.() ?? 1;
+    return master()?.getEffectiveVolume?.() ?? persistedAudioVolume();
   } catch {
-    return 1;
+    return persistedAudioVolume();
   }
 }
 // ElevenLabs MP3s are mastered hot — was the loudest thing in the app, ungained.

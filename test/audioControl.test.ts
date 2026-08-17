@@ -143,6 +143,57 @@ describe('dispose unhooks the lifecycle', () => {
   });
 });
 
+describe('the persisted mute reaches the voice paths BEFORE the manager boots', () => {
+  // The manager arrives ~5s after first paint, but Chat/Speech are live from
+  // init and both have manager-free playback routes (Chat's private fallback
+  // context, Speech's element/speechSynthesis). Their gates defaulted to
+  // "not muted" when the manager was absent — a muted-last-session visitor
+  // heard peer voice and NPC speech during the boot window.
+  test('persistedAudioMuted reads the same key the manager boots from', async () => {
+    const { persistedAudioMuted, persistedAudioVolume } = await import('../audioPrefs');
+    localStorage.removeItem('ds_audio_settings');
+    expect(persistedAudioMuted()).toBe(false);
+    expect(persistedAudioVolume()).toBe(0.7); // shared DEFAULT_VOLUME
+    localStorage.setItem('ds_audio_settings', JSON.stringify({ v: 2, muted: true, volume: 0.3 }));
+    expect(persistedAudioMuted()).toBe(true);
+    expect(persistedAudioVolume()).toBe(0.3);
+    // the v2 gate holds: a v1 profile's volume is ignored, its mute honoured
+    localStorage.setItem('ds_audio_settings', JSON.stringify({ muted: true, volume: 1 }));
+    expect(persistedAudioMuted()).toBe(true);
+    expect(persistedAudioVolume()).toBe(0.7);
+    localStorage.removeItem('ds_audio_settings');
+  });
+
+  test('both voice gates fall back to the persisted flag, not to false', () => {
+    for (const f of ['Chat.ts', 'Speech.ts']) {
+      const s = src(f)
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
+      expect(s, f).toContain('?? persistedAudioMuted()');
+      expect(s, f).not.toMatch(/isMuted\?\.\(\)\s*\?\?\s*false/);
+    }
+    // Speech's browser-TTS volume mirrors the persisted slider pre-boot too
+    expect(src('Speech.ts')).toContain('?? persistedAudioVolume()');
+  });
+
+  test('Chat SKIPS pre-boot playback while muted — the fallback ctx has no bus', () => {
+    const s = src('Chat.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(s).toContain('if (!gameCtx && Chat.masterMuted())');
+  });
+
+  test('the manager itself boots from the shared readers (one parse)', () => {
+    const s = src('AudioManager.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(s).toContain('this.muted = persistedAudioMuted()');
+    expect(s).toContain('this.volume = persistedAudioVolume()');
+    // and audioPrefs stays a leaf — no import of the manager it serves
+    expect(src('audioPrefs.ts')).not.toContain("from './AudioManager'");
+  });
+});
+
 describe('the reception-call duck never touches the persisted volume', () => {
   // duckGame used to route through setVolume(0.15) — the user-preference API,
   // which unconditionally saves. A tab closed mid-call persisted 0.15 into
