@@ -92,6 +92,46 @@ export interface JournalData {
   loops?: Array<{ icon: string; title: string; detail: string }>;
 }
 
+/**
+ * The ONE chip recipe for the top-right HUD column. Every persistent chip
+ * (online, coin, feed, Say hi, completion) spreads this and overrides only
+ * what genuinely differs (accent color, pointerEvents) — the column used to
+ * be five hand-rolled recipes with four backgrounds, three radii and two
+ * font sizes, which is exactly how it drifted into the screenshotted mess.
+ * Height is FIXED (30px + 38px row pitch = 8px gutters) so the column reads
+ * as one designed unit; fontFamily is deliberately absent — the overlay's
+ * Inter cascades (see createOverlay).
+ */
+const CHIP: Partial<CSSStyleDeclaration> = {
+  position: 'absolute',
+  boxSizing: 'border-box',
+  height: '30px',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  padding: '0 12px',
+  borderRadius: '999px',
+  fontSize: '13px',
+  fontWeight: '600',
+  background: 'rgba(12, 16, 28, 0.72)',
+  border: '1px solid rgba(255,255,255,0.18)',
+  color: '#fff',
+  boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+  cursor: 'pointer',
+  pointerEvents: 'auto',
+  userSelect: 'none',
+};
+
+/** Round icon-only variant (🔊 ♿ 🎨 😀 📸 🎒): same skin, 30px circle. */
+const CHIP_ICON: Partial<CSSStyleDeclaration> = {
+  ...CHIP,
+  width: '30px',
+  padding: '0',
+  justifyContent: 'center',
+  borderRadius: '50%',
+  fontSize: '15px',
+};
+
 export class SimpleUI {
   private overlay: HTMLElement;
   private loadingDiv: HTMLElement | null = null;
@@ -327,9 +367,14 @@ export class SimpleUI {
     // emote's row and the two MEASURED a 27x33 overlap with both taking
     // taps. Push the emote clear of the column.
     if (this.emoteBtnEl) {
+      // Restore branches by surface: touch tier-2 lives at right+10, desktop
+      // sits in the icon row at +124 — restoring both to +10 stacked the 😀
+      // on the 🔊 after any breakpoint flip.
       this.emoteBtnEl.style.right = short
         ? 'calc(var(--sar, 0px) + 108px)'
-        : 'calc(var(--sar, 0px) + 10px)';
+        : this.isTouch
+          ? 'calc(var(--sar, 0px) + 10px)'
+          : 'calc(var(--sar, 0px) + 124px)';
     }
     // Same class of bug on the left: short-landscape raises the radar to
     // top+8, straight under the day/weather badge at top+10 (measured 64x26).
@@ -493,6 +538,7 @@ export class SimpleUI {
       right: '',
       left: '',
       bottom: '',
+      height: '', // clear the CHIP recipe's fixed 30px — drawer rows are 40px
       boxSizing: 'border-box',
       minHeight: '40px',
       display: 'flex',
@@ -1759,16 +1805,9 @@ export class SimpleUI {
     const btn = document.createElement('div');
     btn.textContent = '😀';
     Object.assign(btn.style, {
-      position: 'absolute',
+      ...CHIP_ICON,
       top: 'calc(var(--sat, 0px) + 88px)',
-      right: 'calc(var(--sar, 0px) + 148px)',
-      background: 'rgba(0, 0, 0, 0.55)',
-      padding: '7px 11px',
-      borderRadius: '10px',
-      fontSize: '15px',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
+      right: 'calc(var(--sar, 0px) + 124px)', // icon row slot 4 (38px pitch)
     });
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2400,16 +2439,9 @@ export class SimpleUI {
     // volume of 0 booted showing 🔊 over a silent game.
     this.muteBtn.textContent = muted || volume === 0 ? '🔇' : '🔊';
     Object.assign(this.muteBtn.style, {
-      position: 'absolute',
+      ...CHIP_ICON,
       top: 'calc(var(--sat, 0px) + 88px)',
-      right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'rgba(0, 0, 0, 0.55)',
-      padding: '7px 11px',
-      borderRadius: '10px',
-      fontSize: '15px',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
+      right: 'calc(var(--sar, 0px) + 10px)', // icon row slot 1 (38px pitch)
     });
     this.muteBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2442,10 +2474,10 @@ export class SimpleUI {
 
   /**
    * Master-volume slider in a popover pill beside the 🔊 button. The icon row
-   * is fully packed (♿ at +56, 🎨 at +102, the wide Portfolio pill below at
-   * +126), so a permanently-visible slider has nowhere to live at 320px-wide
-   * viewports — instead the pill OVERLAYS the ♿/🎨 slots temporarily (opaque,
-   * higher z) while hovered/tapped, and vanishes after.
+   * is fully packed (♿ at +48, 🎨 at +86, 😀/📸/🎒 beyond, the wide Portfolio
+   * pill below at +126), so a permanently-visible slider has nowhere to live
+   * at 320px-wide viewports — instead the pill OVERLAYS the ♿/🎨 slots
+   * temporarily (opaque, higher z) while hovered/tapped, and vanishes after.
    */
   private volumePill: HTMLDivElement | null = null;
   private hudMuted = false;
@@ -2459,7 +2491,7 @@ export class SimpleUI {
     Object.assign(pill.style, {
       position: 'absolute',
       top: 'calc(var(--sat, 0px) + 88px)',
-      right: 'calc(var(--sar, 0px) + 52px)',
+      right: 'calc(var(--sar, 0px) + 48px)', // opens at the ♿ slot's edge
       background: 'rgba(0, 0, 0, 0.85)',
       padding: '8px 12px',
       borderRadius: '10px',
@@ -2546,19 +2578,12 @@ export class SimpleUI {
     btn.textContent = '🎨';
     btn.title = 'Customize appearance (C)';
     Object.assign(btn.style, {
-      position: 'absolute',
-      // Icon row (see createMuteButton): 🎨 ♿ 🔊 sit side by side so the wide
-      // "📖 Portfolio" pill below them has a clear row of its own. They used to
-      // stack vertically at the same right edge and the pill covered them.
+      ...CHIP_ICON,
+      // Icon row (see createMuteButton): 🔊 ♿ 🎨 😀 📸 🎒 sit side by side at
+      // a 38px pitch so the wide "📖 Portfolio" pill below has a clear row of
+      // its own. They used to stack vertically and the pill covered them.
       top: 'calc(var(--sat, 0px) + 88px)',
-      right: 'calc(var(--sar, 0px) + 102px)',
-      background: 'rgba(0, 0, 0, 0.55)',
-      padding: '7px 11px',
-      borderRadius: '10px',
-      fontSize: '15px',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
+      right: 'calc(var(--sar, 0px) + 86px)', // icon row slot 3
     });
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2574,21 +2599,21 @@ export class SimpleUI {
     btn.textContent = '♿';
     btn.title = 'Reduced motion — dampens the fly-in, camera swoop, and pulsing effects';
     Object.assign(btn.style, {
-      position: 'absolute',
+      ...CHIP_ICON,
       top: 'calc(var(--sat, 0px) + 88px)',
-      right: 'calc(var(--sar, 0px) + 56px)', // 46px pitch; the buttons are 43px wide
-      padding: '7px 11px',
-      borderRadius: '10px',
-      fontSize: '15px',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
-      transition: 'background 0.15s ease',
+      right: 'calc(var(--sar, 0px) + 48px)', // icon row slot 2 (38px pitch)
+      transition: 'background 0.15s ease, border-color 0.15s ease',
     });
     const render = () => {
+      // Active = the HUD's indigo accent, not green — green is reserved for
+      // the Work-with-me conversion pill, and a second green chip in the
+      // same column made them read as siblings.
       btn.style.background = a11y.reducedMotion
-        ? 'rgba(80, 180, 120, 0.75)'
-        : 'rgba(0, 0, 0, 0.55)';
+        ? 'rgba(91, 108, 255, 0.35)'
+        : (CHIP.background as string);
+      btn.style.borderColor = a11y.reducedMotion
+        ? 'rgba(91, 108, 255, 0.85)'
+        : 'rgba(255,255,255,0.18)';
       btn.setAttribute('aria-pressed', String(a11y.reducedMotion));
     };
     btn.addEventListener('click', (e) => {
@@ -2673,10 +2698,9 @@ export class SimpleUI {
       background: 'linear-gradient(135deg, #5b6cff, #8a4de0)',
       color: 'white',
       padding: '7px 12px',
-      borderRadius: '10px',
+      borderRadius: '999px', // pill like every other chip in the column
       fontSize: '13px',
-      fontWeight: '600',
-      fontFamily: 'system-ui, sans-serif',
+      fontWeight: '700',
       cursor: 'pointer',
       pointerEvents: 'auto',
       userSelect: 'none',
@@ -2710,7 +2734,6 @@ export class SimpleUI {
       borderRadius: '999px',
       fontSize: '13px',
       fontWeight: '700',
-      fontFamily: 'system-ui, sans-serif',
       cursor: 'pointer',
       pointerEvents: 'auto',
       userSelect: 'none',
@@ -2735,33 +2758,22 @@ export class SimpleUI {
     this.onPhotoRequest = fn;
   }
 
-  /** 📸 pill in the top-right conversion column (below Work-with-me). */
+  /** 📸 icon in the utility row — demoted from its own full-width pill row
+   *  (a camera is a utility, not a conversion CTA; the tall right-edge stack
+   *  was the screenshotted clutter). The P shortcut lives in the tooltip. */
   private createPhotoButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = this.isTouch ? '📸' : '📸 P';
+    btn.textContent = '📸';
+    btn.title = 'Take a photo (P)';
     Object.assign(btn.style, {
-      position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 202px)',
-      right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'rgba(12, 16, 28, 0.72)',
-      border: '1px solid rgba(255,255,255,0.22)',
-      color: 'white',
-      padding: '7px 12px',
-      borderRadius: '999px',
-      fontSize: '13px',
-      fontWeight: '600',
-      fontFamily: 'system-ui, sans-serif',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
-      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+      ...CHIP_ICON,
+      top: 'calc(var(--sat, 0px) + 88px)',
+      right: 'calc(var(--sar, 0px) + 162px)', // icon row slot 5
     });
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.onPhotoRequest?.();
     });
-    // The chip reads "📸 P" — the bare P is a keyboard shortcut nothing else
-    // explains, so the label (now also the hover tooltip) names it.
     this.makeHudButtonAccessible(btn, 'Take a photo of the island (P)');
     this.chipHost(btn, { drawer: true, label: 'Photo', order: 5 });
   }
@@ -2884,21 +2896,9 @@ export class SimpleUI {
     const btn = document.createElement('div');
     btn.textContent = '👋 Say hi';
     Object.assign(btn.style, {
-      position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 240px)',
+      ...CHIP,
+      top: 'calc(var(--sat, 0px) + 202px)', // row below Work-with-me (38px pitch)
       right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'rgba(12, 16, 28, 0.72)',
-      border: '1px solid rgba(255,255,255,0.22)',
-      color: 'white',
-      padding: '7px 12px',
-      borderRadius: '999px',
-      fontSize: '13px',
-      fontWeight: '600',
-      fontFamily: 'system-ui, sans-serif',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
-      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
     });
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2997,27 +2997,16 @@ export class SimpleUI {
   private completionPct = 0;
   private completionItems: Array<{ icon: string; label: string; done: boolean; hint: string }> = [];
 
-  /** 🎒 Your Pack — the held-inventory panel. Desktop gets its own chip under
-   *  the completion pill; touch re-homes it into the ☰ drawer. */
+  /** 🎒 Your Pack — the held-inventory panel. Desktop: icon-row slot (demoted
+   *  from its own pill row with 📸); touch re-homes it into the ☰ drawer. */
   private createInventoryButton(): void {
     const btn = document.createElement('div');
     btn.textContent = '🎒';
+    btn.title = 'Your pack (inventory)';
     Object.assign(btn.style, {
-      position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 316px)',
-      right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'rgba(12, 16, 28, 0.72)',
-      border: '1px solid rgba(255,255,255,0.22)',
-      color: 'white',
-      padding: '7px 12px',
-      borderRadius: '999px',
-      fontSize: '13px',
-      fontWeight: '600',
-      fontFamily: 'system-ui, sans-serif',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
-      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+      ...CHIP_ICON,
+      top: 'calc(var(--sat, 0px) + 88px)',
+      right: 'calc(var(--sar, 0px) + 200px)', // icon row slot 6
     });
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -3031,21 +3020,9 @@ export class SimpleUI {
     const btn = document.createElement('div');
     btn.textContent = '🏝 …';
     Object.assign(btn.style, {
-      position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 278px)',
+      ...CHIP,
+      top: 'calc(var(--sat, 0px) + 240px)', // last row of the column
       right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'rgba(12, 16, 28, 0.72)',
-      border: '1px solid rgba(255,255,255,0.22)',
-      color: 'white',
-      padding: '7px 12px',
-      borderRadius: '999px',
-      fontSize: '13px',
-      fontWeight: '600',
-      fontFamily: 'system-ui, sans-serif',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
-      boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
     });
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -4420,7 +4397,9 @@ export class SimpleUI {
       this.fpsDiv = document.createElement('div');
       Object.assign(this.fpsDiv.style, {
         position: 'absolute',
-        top: 'calc(var(--sat, 0px) + 10px)',
+        // Bottom-right: a dev readout has no business leading the top-right
+        // column (it read as the first chip of the HUD in ?debug screenshots).
+        bottom: 'calc(var(--sab, 0px) + 10px)',
         right: 'calc(var(--sar, 0px) + 10px)',
         background: 'rgba(0, 0, 0, 0.7)',
         color: 'white',
@@ -4437,17 +4416,9 @@ export class SimpleUI {
     // Create player count display
     this.playerCountDiv = document.createElement('div');
     Object.assign(this.playerCountDiv.style, {
-      position: 'absolute',
-      top: 'calc(var(--sat, 0px) + 35px)',
+      ...CHIP,
+      top: 'calc(var(--sat, 0px) + 12px)', // column row 1 (38px pitch)
       right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'rgba(0, 0, 0, 0.7)',
-      color: 'white',
-      padding: '5px 10px',
-      borderRadius: '5px',
-      fontSize: '12px',
-      fontFamily: 'monospace',
-      pointerEvents: 'auto',
-      cursor: 'pointer',
     });
     this.playerCountDiv.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -5166,16 +5137,11 @@ export class SimpleUI {
     if (!this.coinDiv) {
       this.coinDiv = document.createElement('div');
       Object.assign(this.coinDiv.style, {
-        position: 'absolute',
-        top: 'calc(var(--sat, 0px) + 60px)',
+        ...CHIP,
+        top: 'calc(var(--sat, 0px) + 50px)', // column row 2 (38px pitch)
         right: 'calc(var(--sar, 0px) + 10px)',
-        background: 'rgba(0, 0, 0, 0.55)',
-        color: '#ffd34a',
-        padding: '4px 10px',
-        borderRadius: '10px',
-        fontSize: '12px',
-        fontFamily: 'system-ui, sans-serif',
-        pointerEvents: 'none',
+        color: '#ffd34a', // the coin accent survives the shared recipe
+        pointerEvents: 'none', // read-only counter — clicks fall through
         transition: 'transform 0.12s ease',
       });
       if (this.isTouch) {
@@ -5212,15 +5178,10 @@ export class SimpleUI {
       if (total <= 0) return;
       this.feedDiv = document.createElement('div');
       Object.assign(this.feedDiv.style, {
-        position: 'absolute',
-        top: 'calc(var(--sat, 0px) + 60px)',
-        right: 'calc(var(--sar, 0px) + 74px)',
-        background: 'rgba(0, 0, 0, 0.55)',
+        ...CHIP,
+        top: 'calc(var(--sat, 0px) + 50px)', // shares the coin row
+        right: 'calc(var(--sar, 0px) + 90px)', // clear of a 4-digit coin chip
         color: '#e8d9a0',
-        padding: '4px 10px',
-        borderRadius: '10px',
-        fontSize: '12px',
-        fontFamily: 'system-ui, sans-serif',
         pointerEvents: 'none',
         transition: 'transform 0.12s ease',
         whiteSpace: 'nowrap',
