@@ -655,7 +655,8 @@ export class SimpleRenderer {
         this.rungCooldown >= SimpleRenderer.RUNG_ENGAGE_COOLDOWN_S
       ) {
         // Resolution is at the floor and it's still not enough: next rung
-        this.setQualityRung(this.qualityRung + 1);
+        // (rungStep skips the inert rung 1 on the low tier — see its doc)
+        this.setQualityRung(this.rungStep(1));
       }
     } else {
       // RESET ON ANY DECISION THAT IS NOT LOW, not only on one above the HIGH
@@ -692,7 +693,7 @@ export class SimpleRenderer {
             ? SimpleRenderer.RUNG_RELEASE_COOLDOWN_S * 3
             : SimpleRenderer.RUNG_RELEASE_COOLDOWN_S;
         if (this.fpsEma > this.fpsHighThreshold && this.rungCooldown >= releaseCooldown) {
-          this.setQualityRung(this.qualityRung - 1);
+          this.setQualityRung(this.rungStep(-1));
         }
       } else if (this.fpsEma > this.fpsHighThreshold && this.renderScale < 1) {
         // ...then claw resolution back gently
@@ -781,6 +782,24 @@ export class SimpleRenderer {
     while (this.qualityRung < target) this.engageRung(++this.qualityRung);
     while (this.qualityRung > target) this.releaseRung(this.qualityRung--);
     this.rungCooldown = 0;
+  }
+
+  /**
+   * The next rung one decision away, stepping OVER rung 1 where it is inert.
+   *
+   * On the low tier no composer (and so no bloomPass) is ever built, but the
+   * ladder still stopped at rung 1: the engage shed NOTHING yet reset the
+   * cooldown, so a drowning low-tier machine waited a full extra engage
+   * window (4s) before the first lever that actually works there (rung 2,
+   * shadow half-rate) — and on the way back up, releasing 2 -> 1 parked a
+   * healthy machine at an inert rung for a full release window (12s) before
+   * the rung could clear and the resolution claw-back (gated on rung 0)
+   * could begin. Walking THROUGH 1 inside one setQualityRung call is free —
+   * engageRung(1)/releaseRung(1) are explicit no-ops without the pass.
+   */
+  private rungStep(dir: 1 | -1): number {
+    const next = this.qualityRung + dir;
+    return next === 1 && !this.bloomPass ? this.qualityRung + 2 * dir : next;
   }
 
   private engageRung(rung: number): void {

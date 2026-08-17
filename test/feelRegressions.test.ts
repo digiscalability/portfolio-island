@@ -291,6 +291,26 @@ describe('the resolution governor can actually recover', () => {
     expect(body).not.toContain('this.qualityAccum = 0;');
   });
 
+  test('the ladder steps OVER rung 1 where it is inert (low tier)', () => {
+    // The low tier never builds a composer, so bloomPass is undefined and
+    // rung 1 sheds nothing — yet engaging it reset the cooldown, making a
+    // drowning low-tier machine wait a full extra engage window (4s) before
+    // the first lever that works there (rung 2), and a recovering one park
+    // at the inert rung for a release window (12s) before the claw-back
+    // (gated on rung 0) could start. Both decision sites route through
+    // rungStep, which skips 1 in either direction when the pass is absent.
+    const s = src('SimpleRenderer.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(s).toContain('private rungStep(dir: 1 | -1): number');
+    expect(s).toContain('next === 1 && !this.bloomPass ? this.qualityRung + 2 * dir : next');
+    expect(s).toContain('this.setQualityRung(this.rungStep(1))');
+    expect(s).toContain('this.setQualityRung(this.rungStep(-1))');
+    // the raw ±1 decisions must be gone (setQualityRung's internal walk stays)
+    expect(s).not.toContain('this.setQualityRung(this.qualityRung + 1)');
+    expect(s).not.toContain('this.setQualityRung(this.qualityRung - 1)');
+  });
+
   test('the top rung is sticky in TIME, never behind an impossible frame rate', () => {
     // The sticky release bar used to be `fpsHighThreshold + 8`. applyRefreshEstimate
     // caps the adaptive target at 60 on EVERY display, so fpsHighThreshold is 57 and
