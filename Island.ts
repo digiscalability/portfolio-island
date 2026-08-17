@@ -8935,11 +8935,22 @@ export class Island {
         randomYaw: true,
         heightOffset: -0.03,
         scaleJitter: 0.2,
+        // MEASURED on prod: 11 clones / 22 meshes sharing just 2
+        // geometry+material pairs. Per-clone yaw and scale jitter ride in the
+        // instance matrix. The bench_<i> ANCHORS carry the sit interaction
+        // (benchGroups is read-only — distance checks, never moved), so the
+        // clones are pure visuals.
+        collapseToInstances: true,
       });
       loadAndReplace(basePath + 'mailbox.glb', 'mailbox_', {
         scale: 1,
         randomYaw: true,
         heightOffset: -0.02,
+        // Decorative roadside mailboxes only. The QUEST mailboxes are a
+        // different population entirely — `new Mailbox()` groups added to
+        // GameScene, unnamed, outside island.mesh — so wiggleMailbox (the one
+        // thing that animates a mailbox) can never touch these clones.
+        collapseToInstances: true,
       });
       // Cars stay PROCEDURAL now: they're drivable vehicles whose wheels the
       // driving code spins/steers, and GameScene moves the car_N group. The

@@ -389,7 +389,13 @@ describe('HUD — one chip recipe for the top-right column', () => {
     // clones are N draws of the same buffers. The collapse re-packs the
     // RESULT of the existing placement logic, so transforms are preserved.
     expect(island).toContain('const collapseClonesToInstances =');
-    expect(island).toContain('collapseToInstances: true'); // lamps opt in
+    // Opted in: lamps, benches, decorative mailboxes — all static, cloned
+    // per placeholder, with anchors (not clones) carrying every interaction.
+    expect((island.match(/collapseToInstances: true/g) ?? []).length).toBe(3);
+    // Cars and TREES must NOT opt in: cars are driven (GameScene moves the
+    // group) and trees sway per frame + can be felled.
+    const treeCall = island.slice(island.indexOf('tryTree'));
+    expect(treeCall).not.toContain('collapseToInstances');
     // CONSERVATIVE bail: skinned (per-clone skeleton), nested instanced,
     // points/lines, hidden sub-meshes, or a DEGENERATE split (prepareClone
     // mints per-clone materials for non-standard sources → one single-
