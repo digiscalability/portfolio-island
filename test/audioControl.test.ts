@@ -20,21 +20,45 @@ import { AudioManager } from '../AudioManager';
 
 const src = (f: string): string => readFileSync(join(process.cwd(), f), 'utf8');
 
-/** Minimal AudioContext double: state machinery + the nodes ensureCtx touches. */
+type MockGain = {
+  value: number;
+  cancels: number;
+  lastSetValue?: number;
+  lastRampTarget?: number;
+  cancelScheduledValues: (t: number) => void;
+  setValueAtTime: (v: number, t: number) => void;
+  linearRampToValueAtTime: (v: number, t: number) => void;
+};
+
+/** Minimal AudioContext double: state machinery + the nodes ensureCtx touches.
+ *  The gain RECORDS its automation calls so tests can assert on targets. */
 const mockCtx = () => {
   const calls = { resume: 0, suspend: 0 };
+  const mkGain = (): MockGain => {
+    const g: MockGain = {
+      value: 0,
+      cancels: 0,
+      cancelScheduledValues: () => {
+        g.cancels += 1;
+      },
+      setValueAtTime: (v: number) => {
+        g.lastSetValue = v;
+        g.value = v;
+      },
+      linearRampToValueAtTime: (v: number) => {
+        g.lastRampTarget = v;
+        g.value = v; // settle instantly — tests care about the target
+      },
+    };
+    return g;
+  };
   const ctx = {
     state: 'suspended' as AudioContextState,
     currentTime: 0,
     destination: {},
     onstatechange: null as (() => void) | null,
     createGain: () => ({
-      gain: {
-        value: 0,
-        cancelScheduledValues: () => undefined,
-        setValueAtTime: () => undefined,
-        linearRampToValueAtTime: () => undefined,
-      },
+      gain: mkGain(),
       connect: () => undefined,
       disconnect: () => undefined,
     }),
@@ -116,6 +140,50 @@ describe('dispose unhooks the lifecycle', () => {
     window.dispatchEvent(new Event('pageshow'));
     window.dispatchEvent(new Event('pointerdown'));
     expect(ctx.calls.resume).toBe(0);
+  });
+});
+
+describe('the reception-call duck never touches the persisted volume', () => {
+  // duckGame used to route through setVolume(0.15) — the user-preference API,
+  // which unconditionally saves. A tab closed mid-call persisted 0.15 into
+  // ds_audio_settings, and the next session booted at 15% with the slider
+  // showing it.
+  test('setDuckFactor attenuates the gain but persists NOTHING', () => {
+    const { ctx, am } = fresh();
+    am.setVolume(0.7); // establishes a persisted baseline
+    const saved = () => JSON.parse(localStorage.getItem('ds_audio_settings') ?? '{}');
+    expect(saved().volume).toBe(0.7);
+    (am as unknown as { setDuckFactor(f: number): void }).setDuckFactor(0.2);
+    expect(saved().volume).toBe(0.7); // preference untouched by the duck
+    expect(am.getVolume()).toBe(0.7); // slider still reads the true preference
+    // ...but the master gain heads to volume x factor
+    const gain = (am as unknown as { masterGain: { gain: { lastRampTarget?: number } } }).masterGain
+      .gain;
+    expect(gain.lastRampTarget).toBeCloseTo(0.7 * 0.2, 5);
+    void ctx;
+  });
+
+  test('a volume change DURING the call composes instead of being clobbered', () => {
+    const { am } = fresh();
+    const a = am as unknown as {
+      setDuckFactor(f: number): void;
+      masterGain: { gain: { lastRampTarget?: number } };
+    };
+    a.setDuckFactor(0.2); // call up
+    am.setVolume(1.0); // user raises volume mid-call
+    expect(a.masterGain.gain.lastRampTarget).toBeCloseTo(0.2, 5); // 1.0 x 0.2
+    a.setDuckFactor(1); // hang up
+    expect(a.masterGain.gain.lastRampTarget).toBeCloseTo(1.0, 5); // user's NEW volume wins
+  });
+
+  test('toggleMute cancels an in-flight volume ramp (the slider-drag race)', () => {
+    const { am } = fresh();
+    const gain = (am as unknown as { masterGain: { gain: MockGain } }).masterGain.gain;
+    am.setVolume(0.9); // schedules a 0.2s ramp
+    const cancelsBefore = gain.cancels;
+    am.toggleMute(); // mute mid-ramp
+    expect(gain.cancels).toBeGreaterThan(cancelsBefore); // ramp cancelled...
+    expect(gain.lastSetValue).toBe(0); // ...and the gain pinned to 0
   });
 });
 

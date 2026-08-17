@@ -35,10 +35,14 @@ export function isCallActive(): boolean {
   return active !== null;
 }
 
+/** How far the game steps back while the caller is on the line, as a FACTOR
+ *  of the user's volume (0.2 × the 0.7 default ≈ the old absolute 0.15). */
+const CALL_DUCK_FACTOR = 0.2;
+
 /** Duck the game while the caller is on the line; returns the restore fn. */
 function duckGame(): () => void {
   const w = window as unknown as {
-    audioManager?: { getVolume?: () => number; setVolume?: (v: number) => void };
+    audioManager?: { setDuckFactor?: (f: number) => void };
   };
   // sfx is IMPORTED, not read off window: nothing ever assigns window.sfx, so
   // the optional-chained `w.sfx?.duckForVoice?.()` this replaced was a silent
@@ -48,16 +52,21 @@ function duckGame(): () => void {
   } catch {
     /* audio not booted yet — nothing to duck */
   }
-  const am = w.audioManager;
-  const prev = am?.getVolume?.();
-  if (am?.setVolume && typeof prev === 'number') am.setVolume(Math.min(prev, 0.15));
+  // setDuckFactor, NOT setVolume. setVolume is the user-preference API and it
+  // PERSISTS: a tab closed mid-call saved 0.15 into ds_audio_settings and the
+  // next session booted at 15% volume with the slider showing it. It also
+  // snapshot-restored the pre-call volume on hang-up, clobbering any change
+  // the user made during the call. The duck factor is transient (dies with
+  // the session), invisible to the slider, and composes with live volume
+  // changes instead of overwriting them.
+  w.audioManager?.setDuckFactor?.(CALL_DUCK_FACTOR);
   return () => {
     try {
       sfx.duckForVoice(false);
     } catch {
       /* ignore */
     }
-    if (am?.setVolume && typeof prev === 'number') am.setVolume(prev);
+    w.audioManager?.setDuckFactor?.(1);
   };
 }
 

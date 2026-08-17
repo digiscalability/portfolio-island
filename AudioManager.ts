@@ -64,10 +64,61 @@ export class AudioManager {
     this.hookLifecycle();
     if (!this.masterGain) {
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = this.muted ? 0 : this.volume;
+      // Derived, including duckFactor: a reception call CAN be up before the
+      // audio system boots, and the bus must be born ducked in that case.
+      this.masterGain.gain.value = this.targetGain();
       this.masterGain.connect(this.ctx.destination);
     }
     return this.ctx;
+  }
+
+  /**
+   * Transient attenuation multiplied into the master gain — the reception
+   * call's duck. NOT a user preference: never persisted, never shown on the
+   * volume slider, dies with the session.
+   *
+   * The call used to duck via setVolume(0.15) — the user-preference API —
+   * which unconditionally SAVES. A tab closed mid-call persisted 0.15 into
+   * ds_audio_settings, and the next session booted at 15% volume with the
+   * slider innocently showing it. It also snapshot-restored the pre-call
+   * volume on hang-up, clobbering any adjustment the user made during the
+   * call. A multiplier has neither problem: the preference is untouched, a
+   * crash leaves nothing behind, and it scales with whatever volume the user
+   * picks mid-call.
+   */
+  private duckFactor = 1;
+  public setDuckFactor(f: number): void {
+    this.duckFactor = Math.max(0, Math.min(1, f));
+    this.applyMasterGain(0.25);
+  }
+
+  /** What the master gain should currently be. */
+  private targetGain(): number {
+    return this.muted ? 0 : this.volume * this.duckFactor;
+  }
+
+  /**
+   * THE writer of the master gain after creation. Always cancels pending
+   * automation first: toggleMute used to assign gain.value directly, and a
+   * ramp still in flight from setVolume (0.2s) would keep running past the
+   * assignment — a mute clicked during a slider drag could land un-muted in
+   * the graph (masked only by the ctx suspend).
+   */
+  private applyMasterGain(rampS: number): void {
+    if (!this.masterGain || !this.ctx) return;
+    try {
+      const g = this.masterGain.gain;
+      const now = this.ctx.currentTime;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      if (rampS > 0) {
+        g.linearRampToValueAtTime(this.targetGain(), now + rampS);
+      } else {
+        g.setValueAtTime(this.targetGain(), now);
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   /** True while the deliberate mute-suspend should stand — every automatic
@@ -152,17 +203,8 @@ export class AudioManager {
 
   public setVolume(v: number): void {
     this.volume = Math.max(0, Math.min(1, v));
-    this.save();
-    try {
-      if (this.masterGain && this.ctx && !this.muted) {
-        const now = this.ctx.currentTime;
-        this.masterGain.gain.cancelScheduledValues(now);
-        this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
-        this.masterGain.gain.linearRampToValueAtTime(this.volume, now + 0.2);
-      }
-    } catch {
-      /* ignore */
-    }
+    this.save(); // a USER preference — persisting is the point (unlike the duck)
+    this.applyMasterGain(0.2);
   }
 
   private muteCbs: Array<(muted: boolean) => void> = [];
@@ -182,7 +224,9 @@ export class AudioManager {
     try {
       // The master gain is the authority (covers sources that might resume the
       // ctx behind our back); suspend/resume stays as a CPU saver on top.
-      if (this.masterGain) this.masterGain.gain.value = this.muted ? 0 : this.volume;
+      // Instant (ramp 0), and via applyMasterGain so any in-flight setVolume
+      // ramp is CANCELLED rather than allowed to run past the mute.
+      this.applyMasterGain(0);
       if (this.muted) {
         void this.ctx?.suspend?.();
       } else {
