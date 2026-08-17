@@ -99,6 +99,72 @@ describe('one golden breadcrumb system at a time', () => {
   });
 });
 
+describe('phase 2: the map teaches the island’s shape', () => {
+  test('zone POIs carry real passport icons + district accents, not five 🏛️', () => {
+    const m = stripped('main-simple.ts');
+    const i = m.indexOf('private openIslandMap');
+    const body = m.slice(i, i + 1200);
+    expect(body).toContain('PASSPORT_META');
+    expect(body).toContain('DISTRICTS.find');
+    expect(body).not.toMatch(/add\('🏛️', z\.name/);
+  });
+
+  test('the island map shows you-are-here, heading, and the pill’s target', () => {
+    const s = stripped('SimpleUI.ts');
+    const i = s.indexOf('public showIslandMap');
+    const body = s.slice(i, i + 9000);
+    expect(body).toContain('opts?.playerPos');
+    expect(body).toContain('opts?.targetPos');
+    expect(body).toContain('opts.playerFwd'); // heading via ε-projection
+    // ...and the caller passes all three
+    const m = stripped('main-simple.ts');
+    expect(m).toContain('targetPos: this.lastCompassTarget');
+  });
+
+  test('edge-clamped districts get rim labels on the radar', () => {
+    // RADAR_RANGE (1.35 rad) < district spacing (1.57 rad) means neighbours
+    // are ALWAYS edge-clamped — they were anonymous coloured dots.
+    const s = stripped('SimpleUI.ts');
+    expect(s).toContain('rimLabels');
+    expect(s).toMatch(/rimLabels\.some\(/); // overlap-skip
+  });
+
+  test('district entries introduce themselves once, after minute one', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain('ds_hint_district_');
+    expect(m).toContain('DISTRICT_INTRO');
+    // the minute-one toast budget guard
+    expect(m).toMatch(/!this\.scene\.hasTrailCoins\(\)/);
+    expect(m).toContain('bestDot > 0.9');
+  });
+});
+
+describe('phase 2: progression surfaces know about each other', () => {
+  test('the completion pill says "explored" on desktop and introduces itself at the first tick', () => {
+    const s = stripped('SimpleUI.ts');
+    expect(s).toContain('% explored');
+    expect(s).toContain('ds_hint_checklist');
+    // seeded-baseline guard: a returning visitor's boot value is NOT an increment
+    expect(s).toContain('completionSeeded');
+    expect(s).toMatch(/seeded && pct > prev/);
+  });
+
+  test('the completion modal bridges to the Journal, and the Journal is finally measured', () => {
+    const s = stripped('SimpleUI.ts');
+    expect(s).toContain('completion-journal');
+    const i = s.indexOf('showJournal(): void');
+    expect(s.slice(i, i + 300)).toContain("trackOnce('journal_opened')");
+  });
+
+  test('the lost-visitor recovery fires only for the truly lost', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain('ds_hint_map');
+    expect(m).toContain('this.lostAccum > 60');
+    expect(m).toContain('!this.ui.hasSeenInteractionPrompt()');
+    expect(m).toContain('(this.passport?.count() ?? 0) === 0');
+  });
+});
+
 describe('the welcome card hierarchy matches the audience', () => {
   const welcome = (): string => {
     const s = src('SimpleUI.ts');

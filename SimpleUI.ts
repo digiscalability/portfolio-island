@@ -722,12 +722,26 @@ export class SimpleUI {
    * plot, each clickable to set the compass. `onPick` receives the chosen POI.
    */
   public showIslandMap(
-    pois: Array<{ icon: string; label: string; pos: { x: number; y: number; z: number } }>,
+    pois: Array<{
+      icon: string;
+      label: string;
+      pos: { x: number; y: number; z: number };
+      /** District accent (zone POIs only) — halo + legend chip border. */
+      color?: string;
+    }>,
     onPick: (poi: {
       icon: string;
       label: string;
       pos: { x: number; y: number; z: number };
     }) => void,
+    opts?: {
+      /** You-are-here marker + heading arrow. */
+      playerPos?: { x: number; y: number; z: number } | null;
+      playerFwd?: { x: number; y: number; z: number } | null;
+      /** The compass pill's current target — haloed so the map visibly
+       *  agrees with the pill that opened it. */
+      targetPos?: { x: number; y: number; z: number } | null;
+    },
   ): void {
     const modal = this.buildCenteredModal('min(92vw, 520px)', 'island-map');
     const title = document.createElement('h2');
@@ -790,8 +804,61 @@ export class SimpleUI {
     ctx.textBaseline = 'middle';
     for (const poi of pois) {
       const p = project(poi.pos);
+      // District POIs get their accent as a soft halo — the map used to
+      // render five identical glyphs with nothing tying them to the coloured
+      // beacons the radar and the 3D world already use.
+      if (poi.color) {
+        ctx.fillStyle = poi.color;
+        ctx.globalAlpha = 0.28;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
       ctx.fillText(poi.icon, p.x, p.y);
       hits.push({ x: p.x, y: p.y, poi });
+    }
+    // The compass pill's current target: a gold halo, so the map a visitor
+    // opened FROM the pill visibly agrees with it. Static ring on purpose —
+    // the modal canvas draws once, and reduced-motion needs no special case.
+    if (opts?.targetPos) {
+      const tp = project(opts.targetPos);
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(tp.x, tp.y, 12.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // You-are-here + heading. The heading arrow's screen direction comes from
+    // projecting a point a step ahead — the polar projection's own math, so
+    // it is correct at any longitude without a tangent-frame derivation.
+    if (opts?.playerPos) {
+      const pp = project(opts.playerPos);
+      if (opts.playerFwd) {
+        const ahead = project({
+          x: opts.playerPos.x + opts.playerFwd.x * 3,
+          y: opts.playerPos.y + opts.playerFwd.y * 3,
+          z: opts.playerPos.z + opts.playerFwd.z * 3,
+        });
+        const dx = ahead.x - pp.x;
+        const dy = ahead.y - pp.y;
+        const len = Math.hypot(dx, dy);
+        if (len > 0.01) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(pp.x, pp.y);
+          ctx.lineTo(pp.x + (dx / len) * 11, pp.y + (dy / len) * 11);
+          ctx.stroke();
+        }
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pp.x, pp.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
     const pick = (poi: (typeof pois)[number]): void => {
       modal.remove();
@@ -832,7 +899,9 @@ export class SimpleUI {
       Object.assign(chip.style, {
         padding: '5px 9px',
         borderRadius: '999px',
-        border: '1px solid rgba(255,255,255,0.18)',
+        // District chips wear their accent — same colour as the map halo,
+        // the radar beacon and the in-world plaza tint.
+        border: `1px solid ${poi.color ?? 'rgba(255,255,255,0.18)'}`,
         background: 'rgba(255,255,255,0.06)',
         color: '#dfe6ff',
         fontSize: '12px',
@@ -1986,6 +2055,10 @@ export class SimpleUI {
   }
 
   showJournal(): void {
+    // The Journal is the "every way to earn" home, buried two layers deep —
+    // and until now UNMEASURED (completion/inventory/portfolio all track,
+    // this didn't), so there was no way to see that nobody finds it.
+    trackOnce('journal_opened');
     const data = this.journalProvider?.();
     if (!data) return;
     const modal = this.buildCenteredModal('min(430px, calc(100vw - 32px))', 'journal');
@@ -2983,14 +3056,37 @@ export class SimpleUI {
     this.completionBtn = btn;
   }
 
+  /** True after the first setCompletion — so the boot call (which reports a
+   *  returning visitor's standing total) reads as BASELINE, not progress. */
+  private completionSeeded = false;
+
   /** App-computed progress: percentage + the checklist items behind it. */
   public setCompletion(
     pct: number,
     items: Array<{ icon: string; label: string; done: boolean; hint: string }>,
   ): void {
+    const prev = this.completionPct;
+    const seeded = this.completionSeeded;
+    this.completionSeeded = true;
     this.completionPct = pct;
     this.completionItems = items;
-    if (this.completionBtn) this.completionBtn.textContent = `🏝 ${pct}%`;
+    // Desktop gets words — a bare "🏝 0%" reads as a loading artifact on a
+    // first visit. Touch keeps the compact form (the drawer already labels
+    // it "Progress", and the tier-1 row has no room for prose).
+    if (this.completionBtn) {
+      this.completionBtn.textContent = this.isTouch ? `🏝 ${pct}%` : `🏝 ${pct}% explored`;
+    }
+    // Introduce the checklist at the FIRST increment — the moment the number
+    // visibly moves is the discovery moment; a welcome-close toast would
+    // have been documentation (and that slot is the orientation hint's).
+    try {
+      if (seeded && pct > prev && !localStorage.getItem('ds_hint_checklist')) {
+        localStorage.setItem('ds_hint_checklist', '1');
+        this.toast('🏝 That ticked up — tap the percentage for everything worth doing here.');
+      }
+    } catch {
+      /* no storage */
+    }
   }
 
   showCompletionModal(): void {
@@ -3017,8 +3113,20 @@ export class SimpleUI {
            ? 'You have seen it all. Abbas would genuinely love to hear from you. 💚'
            : 'Everything worth doing on the island, in one list.'
        }</p>
-       <div style="max-height:56vh;overflow:auto;">${rows}</div>`,
+       <div style="max-height:56vh;overflow:auto;">${rows}</div>
+       <button id="completion-journal" style="width:100%;margin-top:10px;padding:10px 12px;border-radius:10px;
+         background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);
+         font-size:13px;cursor:pointer;">
+         📔 Island Journal — collections &amp; every way to earn</button>`,
     );
+    // The checklist says WHAT there is; the Journal says HOW it's going.
+    // They never referenced each other — same panel-hop pattern as the
+    // journal's own map button.
+    modal.querySelector('#completion-journal')?.addEventListener('click', () => {
+      modal.remove();
+      this.panels.notifyClosed('completion');
+      this.showJournal();
+    });
     this.overlay.appendChild(modal);
   }
 
@@ -3964,7 +4072,9 @@ export class SimpleUI {
     // under the visitor's cursor mid-reach for a button. First hover / focus /
     // touch means they're reading it; from then on it closes only by choice.
     if (returning) {
-      const autoClose = window.setTimeout(closeWelcome, awayDelta ? 5600 : 2600);
+      // 7000 (was 5600) with a delta card: the guestbook line patches in
+      // ASYNC and could appear with under a second left to read it.
+      const autoClose = window.setTimeout(closeWelcome, awayDelta ? 7000 : 2600);
       const cancelAuto = () => window.clearTimeout(autoClose);
       this.welcomeDiv.addEventListener('pointerenter', cancelAuto, { once: true });
       this.welcomeDiv.addEventListener('focusin', cancelAuto, { once: true });
@@ -4219,7 +4329,15 @@ export class SimpleUI {
   /**
    * Show interaction prompt
    */
+  /** Has ANY proximity prompt ever shown this session? The lost-visitor
+   *  recovery hint keys off its absence — an engaged player has seen dozens. */
+  private promptEverShown = false;
+  hasSeenInteractionPrompt(): boolean {
+    return this.promptEverShown;
+  }
+
   showInteractionPrompt(text: string): void {
+    this.promptEverShown = true;
     if (!this.interactionDiv) {
       this.interactionDiv = document.createElement('div');
       Object.assign(this.interactionDiv.style, {
@@ -4616,6 +4734,12 @@ export class SimpleUI {
     };
 
     // ── District plazas: glowing beacons (clamp to ring if off-radar) ───
+    // Rim labels carry the NAME too: RADAR_RANGE (1.35 rad) is narrower than
+    // the 1.57 rad district spacing, so neighbouring districts are ALWAYS
+    // edge-clamped — anonymous coloured dots taught nobody the island's
+    // shape. Overlap-skip keeps crossings (two rim dots close together)
+    // from smearing text over text.
+    const rimLabels: Array<{ x: number; y: number }> = [];
     for (const z of data.zones) {
       const p = place(z);
       if (p.edge) {
@@ -4625,6 +4749,22 @@ export class SimpleUI {
         ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
+        if (z.label && !rimLabels.some((r) => Math.hypot(r.x - p.x, r.y - p.y) < 26)) {
+          rimLabels.push({ x: p.x, y: p.y });
+          // Nudge the text toward the centre so it stays inside the disc.
+          const nx = p.x + (cx - p.x) * 0.16;
+          const ny = p.y + (cy - p.y) * 0.16;
+          ctx.save();
+          ctx.font = '600 8px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+          ctx.strokeText(z.label, nx, ny);
+          ctx.fillStyle = 'rgba(255,255,255,0.85)';
+          ctx.fillText(z.label, nx, ny);
+          ctx.restore();
+        }
         continue;
       }
       ctx.save();

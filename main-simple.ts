@@ -105,6 +105,9 @@ class SimpleApp {
   // Island-map pick: explicit user intent, outranks every other compass
   // source; cleared on arrival (<6u) or a fresh pick.
   private mapGuideTarget: THREE.Vector3 | null = null;
+  /** Whatever the compass pill currently points at — the island map halos it
+   *  so the two wayfinding surfaces visibly agree. */
+  private lastCompassTarget: THREE.Vector3 | null = null;
   private mapGuideLabel = '';
   // "Beat the lap record" CTA → compass points at the start gate until a race starts
   private raceGuideTarget: THREE.Vector3 | null = null;
@@ -137,6 +140,7 @@ class SimpleApp {
   // Completion meter recompute throttle (localStorage reads are cheap; 2.5s
   // keeps the pill fresh without touching storage every frame)
   private completionAccum = 0;
+  private lostAccum = 0; // in-world seconds, for the lost-visitor recovery hint
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
@@ -2083,11 +2087,80 @@ class SimpleApp {
     // flag site) so passport stamps landed elsewhere still surface here.
     // The secret-spot proximity sweep rides the same 2.5s cadence — nine
     // distance checks against static points, effectively free.
+    // Wall time spent actually IN the world (welcome dismissed) — feeds the
+    // lost-visitor recovery hint below.
+    if (!this.ui.isWelcomeVisible()) this.lostAccum += deltaTime;
     this.completionAccum += deltaTime;
     if (this.completionAccum > 2.5) {
       this.completionAccum = 0;
       this.refreshCompletion();
       this.sweepSecrets();
+      // DISTRICT-ENTRY CARDS: one toast, once ever per district, at the
+      // boundary (dot > 0.90 = inside the accent tint, same threshold the
+      // terrain colouring uses). The crossing was silent — the ground tint
+      // was the only signal a visitor had entered anywhere. Five once-ever
+      // keys cap this at five toasts, lifetime.
+      try {
+        // hasTrailCoins guard: minute one's toast budget belongs to the
+        // orientation + talk hints — district cards start after the arrival
+        // trail is done.
+        if (!this.ui.isWelcomeVisible() && !this.tour && !this.scene.hasTrailCoins()) {
+          const p = this.scene.getPlayer()?.getWorldPosition();
+          if (p) {
+            const len = p.length() || 1;
+            let bestDot = -Infinity;
+            let bestId = '';
+            for (const d of DISTRICTS) {
+              const cl = Math.cos(d.lat ?? Math.PI / 2);
+              const dx = Math.cos(d.lon) * cl;
+              const dy = Math.sin(d.lat ?? Math.PI / 2);
+              const dz = Math.sin(d.lon) * cl;
+              const dot = (p.x * dx + p.y * dy + p.z * dz) / len;
+              if (dot > bestDot) {
+                bestDot = dot;
+                bestId = d.id;
+              }
+            }
+            const DISTRICT_INTRO: Record<string, string> = {
+              welcome: '🏝️ The Hub — the town square. Every avenue starts here.',
+              professional: '💼 Professional — what I do, my experience, and how to work with me.',
+              projects: '🚀 Projects — the shipped work. Walk up to a building to open it.',
+              personal: '🎨 Personal — the human behind the code.',
+              contact: '📬 Contact — message me, or talk to my AI receptionist.',
+            };
+            const key = `ds_hint_district_${bestId}`;
+            if (bestDot > 0.9 && DISTRICT_INTRO[bestId] && !localStorage.getItem(key)) {
+              localStorage.setItem(key, '1');
+              this.ui.toast(DISTRICT_INTRO[bestId]);
+            }
+          }
+        }
+      } catch {
+        /* no storage */
+      }
+      // LOST-VISITOR RECOVERY: a full minute in the world with zero proximity
+      // prompts ever shown and zero passport stamps means they walked the
+      // wrong way off spawn and have been in silence since. Strict conditions
+      // — an engaged player has seen dozens of prompts — so this fires for
+      // exactly the visitor who needs it, once ever.
+      try {
+        if (
+          this.lostAccum > 60 &&
+          !this.tour &&
+          !localStorage.getItem('ds_hint_map') &&
+          !this.ui.hasSeenInteractionPrompt() &&
+          (this.passport?.count() ?? 0) === 0
+        ) {
+          localStorage.setItem('ds_hint_map', '1');
+          this.ui.toast(
+            this.ui.isTouchDevice()
+              ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the ➤ compass guides you.'
+              : '🗺️ Lost? Tap the radar (or press M) for the island map — pick a spot and the ➤ compass guides you.',
+          );
+        }
+      } catch {
+        /* no storage */
+      }
       // One-time "that's a live AI villager" discovery hint, fired while
       // APPROACHING (4x the E-prompt range, derived not hand-written) — the
       // product's differentiator otherwise only announces itself inside 2.5u.
@@ -3033,6 +3106,7 @@ class SimpleApp {
       targetPos = delivery.destination.mesh.position;
       label = '📬 Delivery';
     }
+    this.lastCompassTarget = targetPos ?? null;
     if (!targetPos) {
       this.ui.updateQuestCompass(null);
       this.scene.setGuideTarget(null);
@@ -3090,12 +3164,22 @@ class SimpleApp {
   /** Assemble every shop/provider/build-spot POI and open the island map.
    *  Picking one sets the compass (mapGuideTarget — top of the chain). */
   private openIslandMap(): void {
-    const pois: Array<{ icon: string; label: string; pos: THREE.Vector3 }> = [];
-    const add = (icon: string, label: string, pos: THREE.Vector3 | null): void => {
-      if (pos) pois.push({ icon, label, pos });
+    const pois: Array<{ icon: string; label: string; pos: THREE.Vector3; color?: string }> = [];
+    const add = (icon: string, label: string, pos: THREE.Vector3 | null, color?: string): void => {
+      if (pos) pois.push({ icon, label, pos, color });
     };
     for (const z of this.scene.getZonesManager().getZones()) {
-      add('🏛️', z.name, z.getPosition());
+      // Real district identity, not five identical 🏛️: the passport icon the
+      // rest of the app already uses, haloed in the district's own accent
+      // (same single source of truth as the radar beacons and plaza tints).
+      const meta = (PASSPORT_META as Record<string, { icon: string }>)[z.id];
+      const d = DISTRICTS.find((x) => x.id === z.id);
+      add(
+        meta?.icon ?? '🏝️',
+        z.name,
+        z.getPosition(),
+        d ? `#${d.color.toString(16).padStart(6, '0')}` : undefined,
+      );
     }
     add('🛒', 'Shop kiosk', this.scene.kioskPos());
     add('📰', 'Notice board', this.scene.noticeBoardPos());
@@ -3157,12 +3241,21 @@ class SimpleApp {
         );
       }
     }
-    this.ui.showIslandMap(pois, (poi) => {
-      this.mapGuideTarget = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
-      this.mapGuideLabel = `${poi.icon} ${poi.label}`;
-      this.ui.toast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
-      track('map_guide_set', { label: poi.label });
-    });
+    this.ui.showIslandMap(
+      pois,
+      (poi) => {
+        this.mapGuideTarget = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
+        this.mapGuideLabel = `${poi.icon} ${poi.label}`;
+        this.ui.toast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
+        track('map_guide_set', { label: poi.label });
+      },
+      {
+        playerPos: this.scene.getPlayer()?.getWorldPosition() ?? null,
+        playerFwd: this.scene.getOrbitCamera().getForwardDirection(),
+        // Halo the pill's current target so map and pill visibly agree.
+        targetPos: this.lastCompassTarget,
+      },
+    );
   }
 
   private nearestUnstampedZone(
