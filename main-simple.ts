@@ -2353,8 +2353,10 @@ class SimpleApp {
           }
         }
         if (jumpInput && player && !player.isInWater()) {
-          // Edge-triggered: one blip per press, only from the ground
-          if (player.isOnGround() && !this.prevJumpHeld) sfx.jump();
+          // Edge-triggered: one blip per press — gated on the SAME predicate
+          // the physics uses (canJump: grounded OR coyote), so the sound can
+          // never fire without a jump or a jump go silent on a slope crest.
+          if (player.canJump() && !this.prevJumpHeld) sfx.jump();
           this.scene.playerJump();
         }
         this.prevJumpHeld = jumpInput;

@@ -2128,12 +2128,26 @@ export class SimplePlayer extends THREE.Group {
       // every frame, so this is same-frame fresh and costs no extra sampling.
       this.lastTerrainDist = terrainDist;
 
-      if (dist <= groundDist) {
+      // SNAP-DOWN while walking downhill: the check used to be binary
+      // (dist <= groundDist), so every substep the terrain fell away faster
+      // than gravity closed the gap went AIRBORNE — then fast-fell (1.6x),
+      // caught the slope, landed, and repeated. MEASURED on a 1.31-gradient
+      // slope: height scalloped +0.67u above ground with speed spiking
+      // 6.4 -> 15.4 u/s, and every micro-landing fired the squash pulse,
+      // half-raised the air-pose arms, muted footsteps and dropped jump
+      // inputs. A grounded player moving downward within 0.35u of the ground
+      // now STAYS grounded (0.35 covers a 20ms substep at run speed on
+      // slopes to ~65 deg; real cliff edges exceed it within a frame or
+      // two). The vRad <= 0.5 guard exempts the jump impulse (+8 radial), so
+      // jumping still leaves the ground; water runs after and overrides.
+      const gap = dist - groundDist;
+      const vRad = this.velocity.dot(surfaceNormal);
+      if (gap <= 0 || (this.isGrounded && vRad <= 0.5 && gap < 0.35)) {
         this.isGrounded = true;
+        this.lastGroundedAtMs = performance.now();
         // Cancel velocity component going into the planet
-        const velInto = this.velocity.dot(surfaceNormal);
-        if (velInto < 0) {
-          this.velocity.addScaledVector(surfaceNormal, -velInto);
+        if (vRad < 0) {
+          this.velocity.addScaledVector(surfaceNormal, -vRad);
         }
         // Snap exactly to surface
         this.playerPosition.copy(surfaceNormal.multiplyScalar(groundDist));
@@ -2332,9 +2346,31 @@ export class SimplePlayer extends THREE.Group {
       // speed calmed 8.0→5.6): the shoreline current pushes back at up to
       // 4.0u/s, so a slower crawl would turn the swim limit into a hard
       // wall. Hierarchy holds: feet(4.4) < boat(11) < jetski(16).
+      //
+      // UPHILL COSTS: grade ahead read from the ground sampler (analytic,
+      // ~0.003ms) scales the target down to 55% on the steepest climbs, so a
+      // hill reads as effort instead of a free escalator (the ground snap is
+      // unlimited, so speed was previously slope-independent). GATED to
+      // grounded-and-dry: while swimming this would sample the SEABED and cut
+      // swim speed below the 4.0 u/s shoreline current, and it must not
+      // touch air control mid-jump. Downhill (grade < 0) is unchanged.
+      let slopeCost = 1;
+      if (this.isGrounded && !this.swimming && this.groundSampler && moveDir.lengthSq() > 1e-6) {
+        try {
+          const here = this.getSurfaceNormal();
+          const ahead = SimplePlayer._slopeAhead
+            .copy(this.playerPosition)
+            .addScaledVector(moveDir, 0.6)
+            .normalize();
+          const grade = (this.groundSampler(ahead) - this.groundSampler(here)) / 0.6;
+          slopeCost = THREE.MathUtils.clamp(1 / (1 + Math.max(0, grade) * 0.9), 0.55, 1);
+        } catch {
+          /* sampler unavailable — full speed */
+        }
+      }
       const target = moveDir
         .clone()
-        .multiplyScalar(this.effectiveSpeed() * (this.swimming ? 0.79 : 1)); // moveDir already tangent-projected
+        .multiplyScalar(this.effectiveSpeed() * (this.swimming ? 0.79 : 1) * slopeCost); // moveDir already tangent-projected
       vTangent.lerp(target, t);
       this.velocity.copy(vTangent.add(vNormal));
     } else {
@@ -2407,13 +2443,42 @@ export class SimplePlayer extends THREE.Group {
   /**
    * Request jump
    */
+  /** Last wall-clock ms the ground check passed — the coyote window's clock. */
+  private lastGroundedAtMs = 0;
+  private static readonly _slopeAhead = new THREE.Vector3();
+  private static readonly COYOTE_MS = 120;
+
+  /**
+   * Whether a jump pressed NOW would fire. Shared with the jump SFX gate so
+   * sound and physics can never disagree. Coyote time (120ms) covers slope
+   * crests and step edges where the binary ground check blinked airborne on
+   * the exact frame of the keypress; the radial-velocity guard (< 2) keeps a
+   * real jump (which sets +8 radial) from double-firing inside the window.
+   */
+  public canJump(): boolean {
+    if (this.isGrounded) return true;
+    if (this.planetRadius <= 0) return false;
+    return (
+      performance.now() - this.lastGroundedAtMs < SimplePlayer.COYOTE_MS &&
+      this.velocity.dot(this.getSurfaceNormal()) < 2
+    );
+  }
+
   public jump(): void {
-    if (this.isGrounded) {
+    if (this.canJump()) {
       if (this.planetRadius > 0) {
-        // Jump away from planet surface
         const surfaceNormal = this.getSurfaceNormal();
+        // A coyote jump starts mid-fall: cancel the accumulated downward
+        // radial velocity FIRST, or the impulse fights up to ~-4.8 u/s of
+        // fall (g x 120ms at the 1.6x fall rate) and the jump tops out at a
+        // fraction of its height. Grounded jumps never see this because the
+        // ground snap already zeroed the inward component.
+        const vRad = this.velocity.dot(surfaceNormal);
+        if (vRad < 0) this.velocity.addScaledVector(surfaceNormal, -vRad);
         this.velocity.addScaledVector(surfaceNormal, this.jumpForce);
         this.isGrounded = false;
+        // Burn the window: one coyote jump per fall.
+        this.lastGroundedAtMs = 0;
       } else {
         this.wantJump = true;
       }
