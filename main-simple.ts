@@ -685,6 +685,13 @@ class SimpleApp {
             voiceProfileFor(npcData.name),
           );
           this.beginNpcDialogue(npcData.name);
+          try {
+            // Found the feature themselves — the discovery hint would only
+            // teach what they already know.
+            localStorage.setItem('ds_hint_talk', '1');
+          } catch {
+            /* no storage */
+          }
           // Deepen the opening in the background: the composed line shows
           // instantly; when the persona's generated continuation arrives the
           // NPC simply keeps talking. Failures resolve silently — the
@@ -828,7 +835,9 @@ class SimpleApp {
       // Arrival breadcrumb trail finished: the first-visit quick win lands.
       this.scene.setOnArrivalTrail(() => {
         this.markDone('ds_arrived');
-        this.ui.flashMessage('🏝️ Welcome to the island — you’ve got the hang of it!');
+        // Hand off to the NEXT thing, not a dead-end congratulation — the
+        // old copy celebrated and left the visitor standing there.
+        this.ui.flashMessage('🏝️ You’ve got the hang of it — follow the ➤ arrow to 🚀 Projects.');
         sfx.questComplete();
         trackOnce('arrival_trail_done');
       });
@@ -2079,6 +2088,28 @@ class SimpleApp {
       this.completionAccum = 0;
       this.refreshCompletion();
       this.sweepSecrets();
+      // One-time "that's a live AI villager" discovery hint, fired while
+      // APPROACHING (4x the E-prompt range, derived not hand-written) — the
+      // product's differentiator otherwise only announces itself inside 2.5u.
+      // The key is also set where NPC chat opens, so a visitor who found the
+      // feature themselves never gets taught what they already know.
+      try {
+        if (
+          !localStorage.getItem('ds_hint_talk') &&
+          !this.ui.isWelcomeVisible() &&
+          !this.tour &&
+          this.scene.hasVillagerWithin(4 * this.scene.getInteractionRange())
+        ) {
+          localStorage.setItem('ds_hint_talk', '1');
+          this.ui.toast(
+            this.ui.isTouchDevice()
+              ? '💬 That’s a live AI villager — walk up and tap USE to ask anything.'
+              : '💬 That’s a live AI villager — walk up and press E to ask anything.',
+          );
+        }
+      } catch {
+        /* no storage */
+      }
     }
 
     // Only process input once the loader and welcome screen are gone
@@ -3008,8 +3039,14 @@ class SimpleApp {
       return;
     }
 
-    // Feed the in-world breadcrumb trail the same target as the HUD compass
-    this.scene.setGuideTarget(targetPos);
+    // Feed the in-world breadcrumb trail the same target as the HUD compass —
+    // EXCEPT while the first-visit arrival coins are still down: two golden
+    // trails pointing different ways is a fork, not a path. The coins lead to
+    // the nearest villager (where the talk hint fires), the completion flash
+    // hands off to the ➤ arrow, and THEN the sparkles resume toward Projects
+    // — a chain. Target-based suppression (null), never visibility-based:
+    // reduced-motion users keep their breadcrumbs by design.
+    this.scene.setGuideTarget(this.scene.hasTrailCoins() ? null : targetPos);
 
     // Bearing vectors projected onto the player's tangent plane (reused scratch).
     const toTarget = this.projectTangent(
@@ -4406,7 +4443,11 @@ class SimpleApp {
       // world beat lands, so a day-only key burned the one-shot and the
       // "Market day!" upgrade could never announce itself.
       const key = `ds_hint_special_${dayKey}${marketDay ? '_market' : ''}`;
-      if (!localStorage.getItem(key)) {
+      // Never on a FIRST visit: this used to be the first text a brand-new
+      // visitor read after the welcome — a fish-price note, before they knew
+      // what a coin was. The orientation toast owns that slot now; the daily
+      // key means the special fires normally from their next visit.
+      if (!localStorage.getItem(key) && localStorage.getItem('ds_welcomed')) {
         localStorage.setItem(key, '1');
         const label: Record<ProviderKey, string> = {
           fisherman: 'the fisherman',

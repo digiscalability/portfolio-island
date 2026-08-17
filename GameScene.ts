@@ -9315,6 +9315,14 @@ export class GameScene extends THREE.Scene {
   }
 
   private trailCoinsLeft = 0;
+  /** First-visit arrival coins still on the ground? While true, the guide
+   *  sparkles yield — minute one shows ONE golden breadcrumb system, not two
+   *  competing trails (coins to the nearest villager vs sparkles to
+   *  Projects). Returning visitors never spawn the trail, so this is false
+   *  and behaviour is identical for them. */
+  public hasTrailCoins(): boolean {
+    return this.trailCoinsLeft > 0;
+  }
   private onArrivalTrail: (() => void) | null = null;
   public setOnArrivalTrail(cb: () => void): void {
     this.onArrivalTrail = cb;
@@ -11791,6 +11799,23 @@ export class GameScene extends THREE.Scene {
    * Check if player is near any interactable and return interaction data
    * Uses caching to avoid expensive distance calculations every frame
    */
+  /** The E/USE prompt radius — exported so hint timing can be DERIVED from it
+   *  (the talk hint fires at 4x this range, while approaching). */
+  public getInteractionRange(): number {
+    return this.interactionRange;
+  }
+
+  /** Any visible villager within `radius` of the player? Same visibility rule
+   *  as the cached-NPC revalidation in getNearbyInteractable, so the one-time
+   *  "live AI villager" hint never advertises someone indoors or hidden. */
+  public hasVillagerWithin(radius: number): boolean {
+    if (!this.player) return false;
+    const p = this.player.getWorldPosition();
+    return this.island.npcTargets.some(
+      (n) => n.meshRef.visible && n.meshRef.position.distanceTo(p) < radius,
+    );
+  }
+
   public getNearbyInteractable():
     | { type: 'mailbox'; mailbox: Mailbox; distance: number }
     | { type: 'lamp'; lamp: TownPlanResult['lamps'][number]; distance: number }

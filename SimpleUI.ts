@@ -1952,6 +1952,11 @@ export class SimpleUI {
     el.setAttribute('role', 'button');
     el.setAttribute('tabindex', '0');
     el.setAttribute('aria-label', label);
+    // Surface the same copy to SIGHTED mouse users. The HUD was aria-labeled
+    // but visually mute: touch gets labelled drawer pills, screen readers get
+    // aria, and desktop — the recruiter surface — got bare emoji (🎒 😀 🏝 0%).
+    // The guard keeps the two chips that set richer titles before calling this.
+    if (!el.title) el.title = label;
     el.classList.add('hud-btn');
     // The 44px tap pad is a ::after anchored to .hud-btn's own box — which
     // requires the chip to BE a containing block. tierChip/chipHost write
@@ -2682,7 +2687,9 @@ export class SimpleUI {
       e.stopPropagation();
       this.onPhotoRequest?.();
     });
-    this.makeHudButtonAccessible(btn, 'Take a photo of the island');
+    // The chip reads "📸 P" — the bare P is a keyboard shortcut nothing else
+    // explains, so the label (now also the hover tooltip) names it.
+    this.makeHudButtonAccessible(btn, 'Take a photo of the island (P)');
     this.chipHost(btn, { drawer: true, label: 'Photo', order: 5 });
   }
 
@@ -3799,9 +3806,8 @@ export class SimpleUI {
       ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
       : 'WASD to move · mouse to look · space to jump · Q to wave.';
 
-    // Three CTAs: the work, the contact path, and the differentiator — meeting
-    // the live-AI townsfolk (guided; no competitor portfolio has them). A
-    // recruiter who won't explore still reaches everything in one click.
+    // Primary CTAs: the work and the contact path. A recruiter who won't
+    // explore still reaches everything in one click.
     const ctaRow = `
       <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 10px;">
         <button data-cta="projects" style="flex:1 1 140px; padding:12px 14px; border:none; border-radius:10px;
@@ -3810,29 +3816,46 @@ export class SimpleUI {
         <button data-cta="contact" style="flex:1 1 140px; padding:12px 14px; border-radius:10px;
           background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
           📬 Get in touch</button>
-      </div>
-      <button data-meet-ai="1" style="width:100%; padding:11px 14px; margin:0 0 16px; border-radius:10px;
-        background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,212,121,0.45); font-size:14.5px; font-weight:600; cursor:pointer;">
-        🤖 Meet the AI townsfolk</button>`;
+      </div>`;
+
+    // The recruiter pill — PROMOTED from a 12px footnote link below the
+    // controls line. The primary audience got the least visible control on
+    // the card while "Beat the lap record" had a real button: hierarchy
+    // exactly inverted from the audience priority. Same data-recruit
+    // contract; amber border borrowed from the old meet-AI button.
+    const recruiterPill = `
+      <button data-recruit style="width:100%; padding:10px 14px; margin:0 0 12px; border-radius:10px;
+        background:rgba(38,38,51,0.5); color:#ffe3a3; border:1px solid rgba(255,212,121,0.45); font-size:13.5px; font-weight:600; cursor:pointer;">
+        ⏱️ Hiring? Watch the 60-second highlights</button>`;
 
     // Explicit dismiss button so the pitch stays put until the visitor chooses
-    // to leave it (moving with WASD no longer evaporates it).
+    // to leave it (moving with WASD no longer evaporates it). The line under
+    // it names the compass pill — the card's one pointer at the persistent
+    // wayfinding surface that is literally on screen behind it.
     const exploreBtn = `
-      <button data-dismiss="1" style="width:100%; padding:11px 14px; margin:0 0 12px; border:none; border-radius:10px;
+      <button data-dismiss="1" style="width:100%; padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
         background:linear-gradient(135deg,#12b76a,#0e9f6e); color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
-        🧭 Explore the island →</button>`;
+        🧭 Explore the island →</button>
+      <p style="margin:0 0 12px; font-size:11px; color:#8fa0b5;">
+        The gold ➤ pill at the top of your screen points to your next stop.</p>`;
 
-    // Secondary row: the guided 90-second camera tour (for the recruiter who
-    // won't touch WASD) and the race CTA (analyst issue #6 — the circuits were
-    // invisible unless you stumbled into a gate).
+    // Tertiary chip row: three near-duplicate "guided experiences" (meet-AI /
+    // tour / race) collapsed from two full-width tiers into one 13px line —
+    // seven same-weight buttons was choice overload, and two of these call
+    // the same tour rail anyway. Same data-* analytics contracts. 44px-tall
+    // touch targets via padding despite the small type.
+    const chipPad = this.isTouch ? 'padding:12px 8px;' : 'padding:8px 8px;';
     const secondaryRow = `
       <div style="display:flex; gap:8px; margin:0 0 12px;">
-        <button data-tour="1" style="flex:1; padding:9px 10px; border-radius:10px;
+        <button data-meet-ai="1" style="flex:1; ${chipPad} border-radius:10px;
           background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🎬 90-second tour</button>
-        <button data-race="1" style="flex:1; padding:9px 10px; border-radius:10px;
+          🤖 Ask the townsfolk</button>
+        <button data-tour="1" style="flex:1; ${chipPad} border-radius:10px;
           background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🏁 Beat the lap record</button>
+          🎬 Full tour</button>
+        <button data-race="1" style="flex:1; ${chipPad} border-radius:10px;
+          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
+          🏁 Try a race</button>
       </div>`;
 
     // "While you were away": the living world's deltas, so a return visit is
@@ -3859,27 +3882,25 @@ export class SimpleUI {
       : `
       <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
       <p style="margin: 0 0 12px 0; font-size:15px; line-height:1.5;">
-        I'm <strong>Abbas</strong> — I build AI-powered products. This is my portfolio,
-        hand-built in Three.js, that you can actually walk through.</p>
+        I'm <strong>Abbas</strong> — I build AI-powered products, and this island is my
+        portfolio. Every building holds a real project: walk up to open it, or jump
+        straight there below.</p>
       ${
         // Progressive disclosure on short phones (SE 667px): the AI-agent
-        // detail paragraph is the "Meet the AI townsfolk" button's job — on
-        // a screen this size the full pitch pushed the CTAs below the fold.
+        // detail paragraph is the "Ask the townsfolk" chip's job — on a
+        // screen this size the full pitch pushed the CTAs below the fold.
         this.isTouch && window.innerHeight < 700
           ? ''
-          : `<p style="margin: 0 0 16px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
-        Every townsperson is a <strong>live AI agent</strong> — an AI planner assigns their
-        jobs each morning, and an AI analyst reports on the island nightly.
-        Walk up and ask them anything.</p>`
+          : `<p style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
+        The townsfolk are <strong>live AI agents</strong> — a planner sets their jobs
+        each morning, an analyst files a nightly report. Walk up to anyone and ask
+        them anything.</p>`
       }
+      ${recruiterPill}
       ${ctaRow}
       ${exploreBtn}
       ${secondaryRow}
       <p style="margin: 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
-      <p style="margin: 8px 0 0; font-size: 12px;">
-        <button data-recruit style="background:none;border:none;padding:0;color:#8a9bff;
-          font-size:12px;cursor:pointer;text-decoration:underline;">
-          ⏱️ Hiring? 60-second highlights</button></p>
     `;
 
     // Dismiss only on an explicit choice — a CTA, the Explore button, or
@@ -3892,6 +3913,11 @@ export class SimpleUI {
       this.hideWelcome();
       document.removeEventListener('keydown', onEscape);
     };
+
+    // Move focus INTO the dialog: aria-modal was set but focus never
+    // followed, so keyboard/screen-reader users started outside their own
+    // welcome card.
+    (this.welcomeDiv.querySelector('button[data-cta="projects"]') as HTMLElement | null)?.focus();
 
     this.welcomeDiv.querySelectorAll('button[data-cta]').forEach((b) => {
       b.addEventListener('click', (e) => {
@@ -3934,7 +3960,16 @@ export class SimpleUI {
 
     document.addEventListener('keydown', onEscape);
     // The delta card earns a longer look; the plain welcome-back stays snappy.
-    if (returning) window.setTimeout(closeWelcome, awayDelta ? 5600 : 2600);
+    // But INTENT cancels the clock: the card used to vanish unconditionally —
+    // under the visitor's cursor mid-reach for a button. First hover / focus /
+    // touch means they're reading it; from then on it closes only by choice.
+    if (returning) {
+      const autoClose = window.setTimeout(closeWelcome, awayDelta ? 5600 : 2600);
+      const cancelAuto = () => window.clearTimeout(autoClose);
+      this.welcomeDiv.addEventListener('pointerenter', cancelAuto, { once: true });
+      this.welcomeDiv.addEventListener('focusin', cancelAuto, { once: true });
+      this.welcomeDiv.addEventListener('touchstart', cancelAuto, { once: true, passive: true });
+    }
     // Patch the guestbook line in when the async count lands (line vanishes on
     // failure/zero — never show a broken stat).
     if (awayDelta) {
@@ -4033,10 +4068,26 @@ export class SimpleUI {
       this.welcomeDiv.remove();
       this.welcomeDiv = null;
       this.panels.notifyClosed('welcome'); // no-op during a sweep
+      let wasFirstEver = false;
       try {
+        wasFirstEver = !localStorage.getItem('ds_welcomed');
         localStorage.setItem('ds_welcomed', '1');
       } catch {
         /* full welcome every visit */
+      }
+      // The FIRST post-welcome moment belongs to orientation, not economy —
+      // it used to belong to nothing (the "Today's special" fish-price toast
+      // was the first text a fresh visitor read). One toast, once ever,
+      // naming the one persistent wayfinding surface. The toast queue defers
+      // under the welcome/loader, so this lands the second the island shows.
+      // Copy says "tap" only: works as click on desktop, no key names.
+      try {
+        if (wasFirstEver && !localStorage.getItem('ds_hint_compass')) {
+          localStorage.setItem('ds_hint_compass', '1');
+          this.toast('🧭 The gold ➤ up top points to your next stop — tap it for the island map.');
+        }
+      } catch {
+        /* no storage — skip the one-time hint rather than repeat it forever */
       }
     }
   }
@@ -5528,8 +5579,34 @@ export class SimpleUI {
         borderRadius: '20px',
         padding: '6px 14px',
         zIndex: '1200',
-        pointerEvents: 'none',
+        // The one ALWAYS-visible wayfinding element used to be inert
+        // (pointerEvents none) \u2014 it pointed at things but could never hand
+        // off to the map. Now it's the map's front door. The hit area stays
+        // the pill's own box (no ::after pad) so camera-drag touches beside
+        // it are never intercepted.
+        pointerEvents: 'auto',
+        cursor: 'pointer',
         fontFamily: 'sans-serif',
+      });
+      this.compassDiv.setAttribute('role', 'button');
+      this.compassDiv.setAttribute('tabindex', '0');
+      this.compassDiv.setAttribute('aria-label', 'Open the island map');
+      this.compassDiv.title = 'Open the island map';
+      const openMap = (): void => {
+        track('compass_pill_tap');
+        // The existing map seam (journal's map button uses it too) \u2014 one
+        // entry path into openIslandMap, multiple callers.
+        this.onOpenMap?.();
+      };
+      this.compassDiv.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openMap();
+      });
+      this.compassDiv.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openMap();
+        }
       });
       this.compassArrow = document.createElement('div');
       this.compassArrow.textContent = '\u27A4';
@@ -5538,12 +5615,14 @@ export class SimpleUI {
         color: '#ffd54a',
         transition: 'transform 0.12s linear',
         transformOrigin: '50% 50%',
+        pointerEvents: 'none', // one hit target: the pill itself
       });
       this.compassLabel = document.createElement('div');
       Object.assign(this.compassLabel.style, {
         color: 'white',
         fontSize: '13px',
         whiteSpace: 'nowrap',
+        pointerEvents: 'none',
       });
       this.compassDiv.appendChild(this.compassArrow);
       this.compassDiv.appendChild(this.compassLabel);
@@ -5556,12 +5635,12 @@ export class SimpleUI {
       this.compassArrow.style.transform = `rotate(${deg.toFixed(1)}deg)`;
     }
     if (this.compassLabel) {
-      // Narrow screens: drop the label (the arrow already shows direction),
-      // keep only the distance so the centered pill stays compact and clear
-      // of the top-left env badge.
+      // Narrow screens: drop the WORDS but keep the destination's icon (the
+      // label's first token) \u2014 a bare "103m" was direction with no subject,
+      // the least useful string a compass can show.
       const compact = window.innerWidth < 480;
       this.compassLabel.textContent = compact
-        ? `${Math.round(state.distance)}m`
+        ? `${state.label.split(' ')[0]} ${Math.round(state.distance)}m`
         : `${state.label} \u2022 ${Math.round(state.distance)}m`;
     }
   }
