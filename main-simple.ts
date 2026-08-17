@@ -1455,18 +1455,35 @@ class SimpleApp {
       // (Vercel Analytics inject() moved to module top — pre-boot pageviews.)
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
-      // resumed it before, so music (and now SFX) stayed silent. Resume once
-      // on the first key/click, unless the user has muted.
+      // resumed it before, so music (and now SFX) stayed silent. Resume on the
+      // first key/click AFTER the audio system exists, unless the user muted.
+      //
+      // STAY ARMED UNTIL THERE IS SOMETHING TO UNLOCK. This used to detach
+      // both listeners FIRST and look for window.audioManager second — but the
+      // manager is created ~5s later (idle(startMusic, 5000) + a dynamic
+      // import), so any tap or keypress during the load window burned the
+      // one-shot on nothing. The context was then created 'suspended' outside
+      // any gesture: Chrome self-heals via sticky activation, Safari/iOS do
+      // NOT — the whole session stayed silent (music, sfx, voice) while the
+      // HUD showed 🔊, and the only rescue was toggling mute on and off.
       const resumeAudio = () => {
-        window.removeEventListener('keydown', resumeAudio);
-        window.removeEventListener('pointerdown', resumeAudio);
         try {
           const am = (
             window as unknown as {
               audioManager?: { ensureCtx(): AudioContext; isMuted(): boolean };
             }
           ).audioManager;
-          if (am && !am.isMuted()) void am.ensureCtx().resume();
+          if (!am) return; // not booted yet — keep the listeners armed
+          window.removeEventListener('keydown', resumeAudio);
+          window.removeEventListener('pointerdown', resumeAudio);
+          // ensureCtx() INSIDE the gesture handler: if the context does not
+          // exist yet this creates it mid-gesture, which WebKit treats as
+          // unlocked from birth. When muted, do nothing — mute's deliberate
+          // suspend stands, and unmute resumes in its own click gesture.
+          // (AudioManager also keeps its own lightweight always-on fallback
+          // for OS interruptions later in the session; this listener only
+          // covers the boot window.)
+          if (!am.isMuted()) void am.ensureCtx().resume();
         } catch {
           /* ignore */
         }
@@ -4737,6 +4754,18 @@ class SimpleApp {
       // Create audio manager if not exists
       if (!(window as any).audioManager) {
         (window as any).audioManager = new (await import('./AudioManager')).AudioManager();
+        // If the user already gestured during the boot window, sticky
+        // activation lets this late resume succeed immediately (Chrome et
+        // al). On WebKit, which ignores non-gesture resumes, it is a no-op —
+        // the still-armed unlock listener above covers the next gesture.
+        const am = (window as any).audioManager;
+        if (!am.isMuted()) {
+          try {
+            void am.ensureCtx().resume();
+          } catch {
+            /* no audio support — playBackground below will surface it */
+          }
+        }
       }
       const audioManager = (window as any).audioManager;
 

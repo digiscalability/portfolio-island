@@ -61,12 +61,72 @@ export class AudioManager {
       }
       this.ctx = new AudioContextConstructor();
     }
+    this.hookLifecycle();
     if (!this.masterGain) {
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = this.muted ? 0 : this.volume;
       this.masterGain.connect(this.ctx.destination);
     }
     return this.ctx;
+  }
+
+  /** True while the deliberate mute-suspend should stand — every automatic
+   *  resume path below must check this, or resuming would defeat the mute. */
+  private wantsRunning(): boolean {
+    return !this.muted;
+  }
+
+  /** Resume the context if the USER wants sound and the OS took it away. */
+  private resumeIfWanted(): void {
+    try {
+      if (this.ctx && this.ctx.state !== 'running' && this.wantsRunning()) {
+        void this.ctx.resume();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private lifecycleHooked = false;
+  private onVisible = (): void => {
+    if (document.visibilityState === 'visible') this.resumeIfWanted();
+  };
+  private onPageShow = (): void => {
+    this.resumeIfWanted();
+  };
+  /** Always-on gesture fallback: iOS can refuse a NON-gesture resume after an
+   *  'interrupted' state (screen lock, phone call, Siri), so a resume inside
+   *  the next tap is the reliable recovery. One state check per pointerdown —
+   *  cheap — and unlike the boot unlock in main-simple this never detaches. */
+  private onGesture = (): void => {
+    this.resumeIfWanted();
+  };
+
+  /**
+   * The context does not stay running by itself. iOS Safari moves it to
+   * 'interrupted'/'suspended' on screen lock, app switch or an incoming call,
+   * and desktop browsers can suspend after long background stretches — and
+   * NOTHING resumed it before: the boot unlock is one-shot, and the only other
+   * resume paths needed a peer voice clip or an NPC cloud line. A phone
+   * visitor who locked their screen came back to a silent session with the
+   * HUD still showing 🔊. Registered once, on the context's own events plus
+   * the page's, all funnelled through resumeIfWanted so mute's deliberate
+   * suspend is never overridden.
+   */
+  private hookLifecycle(): void {
+    if (this.lifecycleHooked || !this.ctx) return;
+    this.lifecycleHooked = true;
+    try {
+      document.addEventListener('visibilitychange', this.onVisible);
+      window.addEventListener('pageshow', this.onPageShow);
+      window.addEventListener('pointerdown', this.onGesture);
+      this.ctx.onstatechange = () => {
+        // Our own mute-suspend also lands here; wantsRunning stops the loop.
+        if (document.visibilityState === 'visible') this.resumeIfWanted();
+      };
+    } catch {
+      /* non-browser environment (tests) — lifecycle stays manual */
+    }
   }
 
   /** The node every sound source must connect to (never ctx.destination). */
@@ -387,6 +447,20 @@ export class AudioManager {
       }
     });
     this.playing.clear();
+
+    // Unhook the lifecycle listeners so a disposed manager can't resurrect
+    // its own (closed) context from a stray tab-show or tap.
+    if (this.lifecycleHooked) {
+      try {
+        document.removeEventListener('visibilitychange', this.onVisible);
+        window.removeEventListener('pageshow', this.onPageShow);
+        window.removeEventListener('pointerdown', this.onGesture);
+        if (this.ctx) this.ctx.onstatechange = null;
+      } catch {
+        /* ignore */
+      }
+      this.lifecycleHooked = false;
+    }
 
     // Close the audio context to release resources
     if (this.masterGain) {
