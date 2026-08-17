@@ -178,6 +178,56 @@ describe('the controller expects a rate the frame limiter can actually produce',
   });
 });
 
+describe('shadowMap.autoUpdate has exactly one owner', () => {
+  // The governor's rung 2 and GameScene's interior mode both used to write the
+  // raw field, the interior via save-on-enter/restore-on-exit. Save/restore
+  // does not compose with a second writer: a governor RELEASE while indoors
+  // was overwritten by the stale saved `false` on exit — freezing the OUTDOOR
+  // shadow map for the rest of the session while the sun kept moving (rung < 2
+  // means render()'s half-rate re-arm never fires, so nothing ever heals it) —
+  // and an ENGAGE while indoors was overwritten by the stale `true`, silently
+  // discarding the rung's saving. The renderer now derives the field from
+  // freeze + rung in ONE place.
+  test('GameScene requests the freeze; it never writes the raw field', () => {
+    // Comments stripped: the prose explaining WHY GameScene must not touch the
+    // field necessarily names the field.
+    const g = src('GameScene.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(g).not.toContain('shadowMap.autoUpdate');
+    expect(g).not.toContain('shadowAutoUpdateWas');
+    expect(g).toContain('setShadowFreeze?.(true)');
+    expect(g).toContain('setShadowFreeze?.(false)');
+  });
+
+  test('the renderer has exactly two writers: construction and the policy', () => {
+    const s = src('SimpleRenderer.ts');
+    const writes = s.match(/shadowMap\.autoUpdate =/g) ?? [];
+    expect(writes).toHaveLength(2); // constructor default + applyShadowPolicy
+    expect(s).toContain(
+      'this.renderer.shadowMap.autoUpdate = !this.shadowFrozen && this.qualityRung < 2',
+    );
+  });
+
+  test('the half-rate re-arm and the engage refresh both respect the freeze', () => {
+    // Otherwise rung >= 2 indoors still runs a depth pass every other frame —
+    // exactly the waste the interior freeze exists to stop.
+    const s = src('SimpleRenderer.ts');
+    expect(s).toContain('if (this.qualityRung >= 2 && !this.shadowFrozen) {');
+    expect(s).toContain('if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;');
+  });
+
+  test('unfreezing refreshes the map once, whatever the rung', () => {
+    // The sun kept moving while indoors; without this the first outdoor frame
+    // shows a map minutes stale (and at rung >= 2 the next re-arm is 2 frames
+    // away).
+    const s = src('SimpleRenderer.ts');
+    const i = s.indexOf('public setShadowFreeze');
+    const body = s.slice(i, i + 900);
+    expect(body).toContain('if (!frozen) this.renderer.shadowMap.needsUpdate = true;');
+  });
+});
+
 describe('the resolution governor can actually recover', () => {
   test('restore is not slower than shed, and shedding needs a sustained dip', () => {
     const s = src('SimpleRenderer.ts');

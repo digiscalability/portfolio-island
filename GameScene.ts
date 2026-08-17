@@ -12240,17 +12240,20 @@ export class GameScene extends THREE.Scene {
   private interiorViewLook = new THREE.Vector3();
   private interiorViewAccum = 0;
   private interiorRainNode: THREE.Object3D | null = null;
-  private shadowAutoUpdateWas: boolean | null = null;
   /** Hand the shadow map back. Must run on EVERY exit path, or the world
-   *  outside silently keeps whatever shadows it had when you stepped in. */
+   *  outside silently keeps whatever shadows it had when you stepped in.
+   *
+   *  A REQUEST, not a raw write. This used to save shadowMap.autoUpdate on
+   *  entry and restore the saved value here — but the quality governor's
+   *  rung 2 writes the same field, and either interleaving broke: a release
+   *  while indoors was overwritten by a stale saved `false` (outdoor shadows
+   *  frozen for the session), an engage while indoors was overwritten by a
+   *  stale `true` (the rung's saving silently gone). The renderer now owns
+   *  the field and derives it from freeze + rung; see
+   *  SimpleRenderer.applyShadowPolicy. setShadowFreeze(false) is idempotent,
+   *  so every exit path may call this unconditionally. */
   private restoreShadowAutoUpdate(): void {
-    if (this.shadowAutoUpdateWas === null) return;
-    const r = this.rendererRef?.getRenderer();
-    if (r) {
-      r.shadowMap.autoUpdate = this.shadowAutoUpdateWas;
-      r.shadowMap.needsUpdate = true; // one refresh, or the first outdoor frame keeps the stale map
-    }
-    this.shadowAutoUpdateWas = null;
+    this.rendererRef?.setShadowFreeze?.(false);
   }
   private interiorVelF = 0;
   private interiorVelS = 0;
@@ -12668,14 +12671,20 @@ export class GameScene extends THREE.Scene {
   private interiorBlobMat: THREE.MeshBasicMaterial | null = null;
   /** Structural type, not the SimpleRenderer class: GameScene is imported BY
    *  the renderer's owner, and a real import here would close the cycle.
-   *  setGradeDayFactor is optional so tests/minimal callers stay valid. */
+   *  The extra methods are optional so tests/minimal callers stay valid —
+   *  and deliberately: a mock WITHOUT setShadowFreeze simply keeps rendering
+   *  shadows (safe, wasteful), rather than falling back to a raw
+   *  shadowMap.autoUpdate write that would recreate the two-writer conflict
+   *  the method exists to end. */
   private rendererRef: {
     getRenderer(): THREE.WebGLRenderer;
     setGradeDayFactor?(day: number): void;
+    setShadowFreeze?(frozen: boolean): void;
   } | null = null;
   public setRendererRef(r: {
     getRenderer(): THREE.WebGLRenderer;
     setGradeDayFactor?(day: number): void;
+    setShadowFreeze?(frozen: boolean): void;
   }): void {
     this.rendererRef = r;
   }
@@ -13716,17 +13725,16 @@ export class GameScene extends THREE.Scene {
     // re-syncs the group from it, dropping them back exactly where they were.
     this.interiorActiveTheme = active;
     this.buildInteriorColliders(active);
-    // Park the shadow map for the session. The world is provably frozen while
+    // Park the shadow map for the visit. The world is provably frozen while
     // inside (update() early-returns into updateInteriorMode), so nothing that
     // casts a shadow can move, yet the renderer was re-rendering a 2048^2
     // desktop / 1024^2 mobile depth pass on EVERY interior frame. The interior
     // player sits at y=-300, far outside the shadow camera's ortho box parked
     // on the outdoor position, so nothing indoors was being shadowed anyway.
-    const renderer = this.rendererRef?.getRenderer();
-    if (renderer) {
-      this.shadowAutoUpdateWas = renderer.shadowMap.autoUpdate;
-      renderer.shadowMap.autoUpdate = false;
-    }
+    // A REQUEST to the renderer, which owns shadowMap.autoUpdate and composes
+    // the freeze with the quality governor's rung 2 — the old save/restore of
+    // the raw field fought the governor (see restoreShadowAutoUpdate).
+    this.rendererRef?.setShadowFreeze?.(true);
     // Aim the window's camera BEFORE the player's visual group is teleported
     // into the room — getWorldPosition() is still the doorstep they walked to.
     this.aimInteriorOutlook();

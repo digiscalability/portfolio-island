@@ -140,6 +140,9 @@ export class SimpleRenderer {
   private stallRun = 0;
   private bloomSuspendedByGovernor = false;
   private shadowFramePhase = 0;
+  /** Interior mode holds this true: the outdoor world is provably frozen while
+   *  indoors, so every depth pass there is pure waste. See setShadowFreeze. */
+  private shadowFrozen = false;
 
   constructor(canvas: HTMLCanvasElement) {
     // Create WebGL renderer with anti-aliasing
@@ -693,6 +696,43 @@ export class SimpleRenderer {
     }
   }
 
+  /**
+   * SOLE writer of shadowMap.autoUpdate after construction.
+   *
+   * Two systems used to write the raw field: the governor's rung 2
+   * (autoUpdate=false at engage, =true at release) and GameScene's interior
+   * mode (save on enter, blind restore on exit). Save/restore does not compose
+   * with a second writer — the interleavings both broke:
+   *   enter at rung 2 -> saved `false`; the cheap frozen interior lifts fpsEma,
+   *   the governor RELEASES rung 2 (autoUpdate=true, silently defeating the
+   *   interior freeze); exit restores the stale `false` — and with rung < 2
+   *   render()'s half-rate re-arm never fires, so the OUTDOOR shadow map stays
+   *   frozen for the rest of the session while the sun keeps moving.
+   *   enter at rung 0 -> saved `true`; governor ENGAGES rung 2 indoors; exit
+   *   restores `true` — the governor believes rung 2 is engaged while shadows
+   *   run at full rate, and the saving is silently gone.
+   * Deriving the field from BOTH inputs makes every interleaving converge.
+   */
+  private applyShadowPolicy(): void {
+    this.renderer.shadowMap.autoUpdate = !this.shadowFrozen && this.qualityRung < 2;
+  }
+
+  /**
+   * Interior mode: park the depth pass while the outdoor world is provably
+   * frozen (GameScene.update early-returns into updateInteriorMode, so nothing
+   * that casts a shadow can move). Replaces GameScene's save/restore of the
+   * raw field — see applyShadowPolicy for why that broke.
+   */
+  public setShadowFreeze(frozen: boolean): void {
+    if (this.shadowFrozen === frozen) return;
+    this.shadowFrozen = frozen;
+    this.applyShadowPolicy();
+    // Unfreezing: refresh once immediately, whatever the rung — the sun kept
+    // moving while indoors, and at rung >= 2 the next half-rate re-arm is
+    // otherwise up to 2 frames away with a map that is minutes stale.
+    if (!frozen) this.renderer.shadowMap.needsUpdate = true;
+  }
+
   /** Step the governor to `next`, applying/releasing each rung in order. */
   private setQualityRung(next: number): void {
     const target = Math.max(0, Math.min(SimpleRenderer.MAX_QUALITY_RUNG, next));
@@ -738,8 +778,11 @@ export class SimpleRenderer {
         break;
       case 2:
         // Shadow half-rate: render() re-arms needsUpdate every 2nd frame.
-        this.renderer.shadowMap.autoUpdate = false;
-        this.renderer.shadowMap.needsUpdate = true;
+        this.applyShadowPolicy();
+        // One last full refresh before dropping to half rate — unless the
+        // interior freeze holds, where a depth pass is exactly the waste the
+        // freeze exists to stop.
+        if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;
         break;
       case 3:
         // Grass density 0.5 — Island's golden-spiral scatter keeps any prefix
@@ -760,7 +803,13 @@ export class SimpleRenderer {
           ?.setGrassBudget?.(1);
         break;
       case 2:
-        this.renderer.shadowMap.autoUpdate = true;
+        // Recompute, don't assign: while the interior freeze holds, a governor
+        // release must NOT switch the depth pass back on. The old raw
+        // `autoUpdate = true` here did exactly that — and then the interior's
+        // exit path restored the stale `false` it had saved on entry, freezing
+        // the OUTDOOR shadow map for the rest of the session while the sun
+        // kept moving. See applyShadowPolicy.
+        this.applyShadowPolicy();
         break;
       case 1:
         // Restores the pass, never the render path — see engageRung. Keyed to the
@@ -815,8 +864,10 @@ export class SimpleRenderer {
     }
 
     // Governor rung 2+: refresh the shadow map every OTHER frame. The sun
-    // moves slowly enough that a one-frame-stale map is invisible.
-    if (this.qualityRung >= 2) {
+    // moves slowly enough that a one-frame-stale map is invisible. Suspended
+    // by the interior freeze — a half-rate depth pass indoors is still a
+    // depth pass indoors.
+    if (this.qualityRung >= 2 && !this.shadowFrozen) {
       this.shadowFramePhase ^= 1;
       if (this.shadowFramePhase === 1) this.renderer.shadowMap.needsUpdate = true;
     }
