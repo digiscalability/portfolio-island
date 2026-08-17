@@ -99,7 +99,25 @@ export class RaceSystem {
     this.best.water = this.loadBest('water');
   }
 
-  /** Build both circuits + their gate meshes and add them to the scene. */
+  /** Build both circuits + their gate meshes and add them to the scene.
+   *
+   *  RNG STREAM LAW — this builder runs INSIDE GameScene's seeded window
+   *  (installSeededRandom -> races.build() at GameScene ~998 -> placeAssets(),
+   *  which seats the 8 parked cars multiplayer addresses BY INDEX). Every
+   *  THREE object allocated here spends 4 Math.random draws via generateUUID,
+   *  so this builder's allocation count MUST stay data- and tier-independent,
+   *  or it re-rolls every later placement and clients disagree about the cars.
+   *  It is safe today because: (1) the gate counts are the HARDCODED 5 and 6
+   *  below — a fixed 68 THREE objects total, 272 draws; (2) the placement
+   *  search (buildCircuit/findValidDir/scoreLegs) is data-dependent in
+   *  ITERATION count but allocates only Vector3s and calls only pure math +
+   *  BVH raycasts, none of which mint a uuid; (3) there is no Math.random
+   *  anywhere in this file. KEEP IT THAT WAY: do not add a THREE allocation
+   *  whose count varies with terrain/tier, and do not introduce Math.random
+   *  in the search. NOTE the tierParity golden census only covers `new
+   *  Island`, NOT this GameScene-window builder — see LOCAL-STATE's coverage
+   *  gap — so this invariant is currently guarded by this comment, not CI.
+   */
   public build(): void {
     // Land ring sits on the open grass between town and beach, phase-shifted so
     // gate 0 doesn't land on the town centre; gates nudge clear of buildings.
