@@ -210,6 +210,42 @@ describe('night legibility — lit roads, dark shore and highlands', () => {
   });
 });
 
+describe('ring traffic — alive, but structurally unable to break the world', () => {
+  test('constructed OUTSIDE the seeded window, and never networked', () => {
+    const scene = src('GameScene.ts');
+    // three spends 4 Math.random draws per object on uuids, so a fleet built
+    // during generation would re-roll every later placement — and the parked
+    // cars are addressed BY INDEX over the multiplayer wire. Building after
+    // restoreRandom() makes that structurally impossible.
+    const restore = scene.indexOf('restoreRandom();');
+    const build = scene.indexOf('new TrafficSystem(');
+    expect(restore).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(restore);
+    // Decorative only: never pushed into the networked vehicle array.
+    expect(scene).not.toMatch(/vehicles\.push\([^)]*traffic/i);
+    // Fed the villagers + player so it brakes instead of driving through.
+    expect(scene).toContain('this.traffic?.update(');
+    expect(scene).toContain('this.island ? this.island.npcTargets : null');
+  });
+
+  test('cars stand PLUMB and the headlights are fake', () => {
+    const t = src('Traffic.ts');
+    // WORLD LAW 1 — radial up, never the terrain normal (a slope-normal car
+    // reads as crashed; the parked fleet already learned this).
+    expect(t).toContain('this._up.copy(this._dir)');
+    expect(t).toContain('makeBasis(this._right, this._up, this._tan)');
+    // No real lights anywhere: MeshBasic never enters the fragment light loop.
+    expect(t).toContain('MeshBasicMaterial');
+    expect(t).not.toContain('PointLight');
+    expect(t).not.toContain('SpotLight');
+    // Night-only, on the SHARED cutoff so the day flip stays one relink.
+    expect(t).toContain('dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF');
+    expect(t).toContain('this.wash.visible = lit');
+    // The yield exists and is directional (ahead only, not merely nearby).
+    expect(t).toContain('brakeAt');
+  });
+});
+
 describe('sky — soft posterization with a hard horizon contract', () => {
   // The shipped transfer, mirrored here so the CONTRACT is pinned as maths,
   // not just as source text. Any edit to the GLSL must keep these properties.

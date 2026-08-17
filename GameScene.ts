@@ -6,6 +6,7 @@ import { addGroupHulls, updateCelRim } from './CelLook';
 import { buildCloudFormations } from './CloudFormations';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle, EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle';
+import { TrafficSystem } from './Traffic';
 import { framingFov } from './Framing';
 import { Island } from './Island';
 import { expDecayV3, squash } from './Juice';
@@ -116,6 +117,9 @@ export class GameScene extends THREE.Scene {
   // Fake pools of warm lamplight on the terrain (one InstancedMesh of
   // additive discs); update() fades them in as dayFactor falls
   private lampPoolMat: THREE.MeshBasicMaterial | null = null;
+  /** Ring traffic — decorative, never networked (see Traffic.ts). */
+  private traffic: TrafficSystem | null = null;
+  private readonly _trafficPlayerPos = new THREE.Vector3();
   // The warm bulb materials of every street lamp — update() switches them on at
   // dusk and off by day so the lamps read as actually lit, not always-glowing.
   // Standard on authored street lamps; toon on player-built lanterns. The
@@ -1058,6 +1062,13 @@ export class GameScene extends THREE.Scene {
       // Generation done — restore true randomness for runtime/FX.
       restoreRandom();
     }
+
+    // Ring traffic. Deliberately constructed HERE, outside the seeded window:
+    // three spends 4 Math.random draws per object on uuids, so building a
+    // fleet inside generation would re-roll every later placement — and the
+    // parked cars are addressed BY INDEX over the multiplayer wire. Out here
+    // it cannot touch the world however much it allocates.
+    this.traffic = new TrafficSystem(this.island, this);
 
     // Mark as ready
     this.readyResolve();
@@ -11182,6 +11193,14 @@ export class GameScene extends THREE.Scene {
       this.island.summitBeacon.position.y = 1.35 + Math.sin(time * 1.6) * 0.12;
     }
     this.updateVehicles(deltaTime);
+    // Ring traffic. Fed the villagers and the player so cars BRAKE for them
+    // rather than driving through — 10 x ~28 squared-distance tests a frame.
+    this.traffic?.update(
+      deltaTime,
+      this.envCycle ? this.envCycle.getDayFactor() : 1,
+      this.island ? this.island.npcTargets : null,
+      this.player ? this.player.getWorldPositionInto(this._trafficPlayerPos) : null,
+    );
     this.races?.update(
       deltaTime,
       this.player.getWorldPositionInto(this._racePos), // RaceSystem copies
@@ -14538,6 +14557,9 @@ export class GameScene extends THREE.Scene {
     this.interiorViewTarget?.dispose();
     this.interiorViewTarget = null;
     this.interiorViewCam = null;
+
+    this.traffic?.dispose();
+    this.traffic = null;
 
     // Dispose island resources. island.mesh is the island GROUP (dozens of
     // child meshes), NOT a Mesh — it has no geometry/material of its own, so the
