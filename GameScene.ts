@@ -10241,7 +10241,6 @@ export class GameScene extends THREE.Scene {
         topColor: { value: new THREE.Color(0x2a6fd6) },
         bottomColor: { value: new THREE.Color(0xc0def2) },
         horizonColor: { value: new THREE.Color(0x79b7e6) },
-        offset: { value: 0 },
         // Lower exponent = the top-sky blue arrives at lower elevations;
         // the follow camera mostly frames 0-30 deg where 0.5 left the sky
         // horizon-pale (washed near-white after ACES tone mapping)
@@ -10279,12 +10278,27 @@ export class GameScene extends THREE.Scene {
         uniform vec3 uSunDir;
         uniform float uSunWarmth;
         uniform float uBands;
-        uniform float offset;
         uniform float exponent;
         uniform vec3 uUp;
         varying vec3 vWorldPosition;
         void main() {
-          vec3 dir = normalize(vWorldPosition + offset);
+          // Elevation is measured from the EYE, not the world origin. The dome
+          // is STATIC at the origin with R=800 while the camera orbits at
+          // r=100-120, so an origin-relative direction is off by asin(r/800).
+          // MEASURED on prod: 6.35-8.58 deg across the frame, and altitude
+          // dependent — 7.34 deg at the town vs 8.52 deg on the summit, which
+          // is exactly the band ladder creeping as you climb. Worse, the old
+          // formula put screen centre at +0.69 deg on the summit (i.e. ABOVE
+          // the horizon) when the true elevation was -7.83 deg, so the horizon
+          // band never lined up with the sea line that bindSeaSkyColor tints
+          // from the very same colour.
+          //
+          // The old "+ offset" went with it: a float added to a vec3
+          // BROADCASTS, so it translated the dome diagonally by
+          // (offset,offset,offset) rather than lifting it. Nothing in the repo
+          // ever wrote that uniform (it sat at 0), so the bug was latent — but
+          // the line read as if the horizon were tunable, and it was not.
+          vec3 dir = normalize(vWorldPosition - cameraPosition);
           float h = dot(dir, uUp);
           float t = max(h, 0.0);
           // Soft posterization: every band is a FLAT PLATEAU and the transition

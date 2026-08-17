@@ -754,6 +754,24 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('the sky measures elevation from the eye, not the world origin', () => {
+    const scene = src('GameScene.ts');
+    // The dome is STATIC at the origin with R=800 while the camera orbits at
+    // r=100-120, so an origin-relative direction is wrong by asin(r/800).
+    // MEASURED on prod: 6.35-8.58 deg across the frame, and ALTITUDE
+    // DEPENDENT (7.34 deg in town vs 8.52 deg on the summit) — the band
+    // ladder crept as you climbed. Confirmed a second way by pixel diff:
+    // the fixed gradient is the old one shifted down 91px of 910, i.e. the
+    // same ~7.4 deg, and 52.8% of the frame changed.
+    expect(scene).toContain('normalize(vWorldPosition - cameraPosition)');
+    expect(scene).not.toContain('normalize(vWorldPosition + offset)');
+    // `offset` was a float added to a VEC3, which broadcasts — it translated
+    // the dome diagonally rather than lifting it. Nothing ever wrote it, so
+    // the uniform is deleted rather than left looking like a tuning knob.
+    expect(scene).not.toMatch(/uniform float offset;/);
+    expect(scene).not.toMatch(/offset: \{ value: 0 \}/);
+  });
+
   test('the idle warm can never blink a room the player is standing in', () => {
     const scene = src('GameScene.ts');
     // idleDefer(cb, 9000) is a CEILING, not a delay: the callback can fire
