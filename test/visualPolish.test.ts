@@ -338,6 +338,51 @@ describe('HUD — one chip recipe for the top-right column', () => {
     expect(env).toContain('const glow = 0.25 + (1 - dayFactor) * 1.05');
   });
 
+  test('the lamp fleet is two instanced draws, discovery contract intact', () => {
+    const island = src('Island.ts');
+    // Anchors keep the whole discovery contract: name lamp_<i> (colliders,
+    // pool anchors, both parity tests), poolScale, and the byte-identical
+    // transform math (plumb + faceObjectToward + arm swing on the GROUP,
+    // whose matrix becomes the instance matrix).
+    expect(island).toContain('lampGroup.name = `lamp_${i}`');
+    expect(island).toContain('lampGroup.userData.poolScale = poolScale');
+    expect(island).toContain('lampMatrices.push(lampGroup.matrix.clone())');
+    // The fleet renders as exactly two InstancedMesh (~228 meshes + ~171
+    // materials before — all built and toonified at EVERY boot even though
+    // lamp.glb hides them, which is where the always-paid win actually is).
+    expect(island).toContain("bodyMesh.name = 'streetlamp_bodies_instanced'");
+    expect(island).toContain("bulbMesh.name = 'streetlamp_bulbs_instanced'");
+    // The names must NOT start with 'lamp': findPlaceholders matches by
+    // PREFIX, so 'lamp_*_instanced' made the fleet its own placeholder —
+    // hidden, materials zeroed, two junk GLB clones at the planet core.
+    expect(island).not.toContain("'lamp_posts_instanced'");
+    expect(island).not.toContain("'lamp_bulbs_instanced'");
+    expect(island).toContain("loadAndReplace(basePath + 'lamp.glb', 'lamp_'");
+    // The fleet is the FALLBACK: retired by flag when the authored model
+    // lands, so a failed GLB load still lights the boulevard.
+    expect(island).toContain('for (const m of this.lampFleet) m.visible = false');
+    // Empty anchors are invisible to seatGroupsOnTerrain's bbox pass, so the
+    // anchors are seated by hand and the matrices REWRITTEN from them —
+    // without this the whole fleet floats at buildLamp's +0.62 sample.
+    expect(island).toContain('fleet.setMatrixAt(i, anchors[i].matrix)');
+    expect(island).toContain('sampled.position.dot(dir) - SINK - anchor.position.dot(dir)');
+    // ...and the lampSites re-anchor guard counts ANCHORS, not children.
+    expect(island).toMatch(/anchors\.length === this\.lampSites\.length/);
+    // ONE night-drive entry for all bulbs (EnvironmentCycle dedupes by mat).
+    expect(island).toContain('bulbMesh.userData.isNightEmissive = true');
+    // No per-lamp mesh/material mints inside buildLamp any more.
+    const start = island.indexOf('const buildLamp');
+    const body = island.slice(start, island.indexOf('};', start));
+    expect(body).not.toContain('new THREE.Mesh(');
+    expect(body).not.toContain('createTrimMaterial');
+    // GameScene fetches the single shared bulb material by name (the anchor
+    // traversal finds nothing on the island lamps now).
+    expect(src('GameScene.ts')).toContain("getObjectByName('streetlamp_bulbs_instanced')");
+    // InstancedMesh owns a GPU instanceMatrix the geometry/material disposal
+    // does not release.
+    expect(island).toContain('if (inst.isInstancedMesh) inst.dispose()');
+  });
+
   test('villagers cull with an inflated pose-proof sphere (round 4)', () => {
     const npc = src('NPC.ts');
     // frustumCulled=false kept ~28 skinned draws in BOTH passes from

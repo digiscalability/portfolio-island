@@ -1153,22 +1153,29 @@ export class GameScene extends THREE.Scene {
 
     // Collect the warm bulb materials (non-black emissive) so update() can dim
     // them by day and light them at night, in lockstep with the light pools.
+    // Island lamps are ONE InstancedMesh now (its 57 anchors are empty
+    // transform carriers), so its single shared material is fetched by name;
+    // TownPlanner lamps still carry per-mesh bulbs and come via the anchor
+    // traversal. Runs after toonify, so both reads see the live toon clones.
     this.lampBulbMats = [];
     const seenBulb = new Set<string>();
+    const collectBulbMat = (mesh: THREE.Mesh | null): void => {
+      if (!mesh || !mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const mm of mats) {
+        const m = mm as THREE.MeshStandardMaterial;
+        if (!m || !m.emissive) continue;
+        if (m.emissive.r + m.emissive.g + m.emissive.b < 0.02) continue;
+        if (seenBulb.has(m.uuid)) continue;
+        seenBulb.add(m.uuid);
+        this.lampBulbMats.push(m);
+      }
+    };
+    collectBulbMat(
+      this.island.mesh.getObjectByName('streetlamp_bulbs_instanced') as THREE.Mesh | null,
+    );
     for (const a of anchors) {
-      a.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const mm of mats) {
-          const m = mm as THREE.MeshStandardMaterial;
-          if (!m || !m.emissive) continue;
-          if (m.emissive.r + m.emissive.g + m.emissive.b < 0.02) continue;
-          if (seenBulb.has(m.uuid)) continue;
-          seenBulb.add(m.uuid);
-          this.lampBulbMats.push(m);
-        }
-      });
+      a.traverse((o) => collectBulbMat(o as THREE.Mesh));
     }
 
     const size = 64;

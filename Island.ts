@@ -226,6 +226,11 @@ export class Island {
   // Activity anchors for the NPC schedule engine (NpcActivities.ts) — world
   // positions of props NPCs walk to and work at. Populated in the build loops.
   public lampSites: THREE.Vector3[] = [];
+  /** The two InstancedMesh carrying every street lamp (bodies + bulbs). Held
+   *  so the seat pass can rewrite their matrices and so the lamp.glb load can
+   *  hide the whole fleet in one line — they are the FALLBACK visual, shown
+   *  only until (or unless) the authored model replaces the lamps. */
+  private lampFleet: THREE.InstancedMesh[] = [];
   public mailboxSites: THREE.Vector3[] = [];
   public stallSites: THREE.Vector3[] = []; // shopper spots IN FRONT of counters
   public stallProps: THREE.Vector3[] = []; // the stalls themselves
@@ -2532,6 +2537,45 @@ export class Island {
         ZONE_LAT + (i % 2 === 0 ? LAMP_KERB : -LAMP_KERB),
       ],
     );
+    // THE FLEET IS TWO DRAWS. buildLamp used to mint 4 meshes + 3 materials
+    // PER LAMP (~228 meshes / ~171 materials at R=100, ~114 of them shadow
+    // casters, every one cloned again by toonify) — the same shape the trees
+    // (one merged vertex-coloured mesh) and rocks (one InstancedMesh) already
+    // solved. The body (pole+arm+shade) bakes into ONE vertex-coloured
+    // geometry via the trees' bakePart, the bulbs share ONE emissive
+    // material, and the per-lamp anchor Groups below carry ONLY the
+    // transform + discovery contract: name lamp_<i> (colliders), poolScale +
+    // boulevardRing (light pools, tests), position/quaternion/scale (the
+    // instance matrix is read straight off the anchor, so the transform math
+    // — plumb, faceObjectToward, arm swing — is byte-identical).
+    const lampBodyParts: THREE.BufferGeometry[] = [];
+    bakePart(lampBodyParts, new THREE.CylinderGeometry(0.06, 0.08, 1.6, 8), 0x3a3a3a, [0, 0.8, 0]);
+    bakePart(
+      lampBodyParts,
+      new THREE.CylinderGeometry(0.04, 0.04, 0.5, 6),
+      0x3a3a3a,
+      [0.2, 1.55, 0],
+      [0, 0, -Math.PI / 4],
+    );
+    bakePart(
+      lampBodyParts,
+      new THREE.ConeGeometry(0.2, 0.15, 8),
+      0x2a2a2a,
+      [0.35, 1.55, 0],
+      [0, 0, Math.PI],
+    );
+    // One material each — trim params mirror Materials.createTrimMaterial.
+    const lampBodyMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      metalness: 0.12,
+      roughness: 0.35,
+    });
+    const lampBulbMat = new THREE.MeshStandardMaterial({
+      color: 0xfff4cc,
+      emissive: 0xffe8a0,
+      emissiveIntensity: 0.8,
+    });
+    const lampMatrices: THREE.Matrix4[] = [];
     let lampIndex = 0;
     const buildLamp = (
       pos: THREE.Vector3,
@@ -2542,41 +2586,11 @@ export class Island {
       const i = lampIndex++;
       const sampled = this.sampleSurfacePosition(pos, 0.6);
       this.lampSites.push(sampled.position.clone()); // NPC activity anchor (lamp round)
+      // ANCHOR only — the geometry lives in the two InstancedMesh below.
       const lampGroup = new THREE.Group();
       lampGroup.name = `lamp_${i}`;
       // GameScene.createLampLightPools() reads this when it sizes each pool.
       lampGroup.userData.poolScale = poolScale;
-      const poleMat = Materials.createTrimMaterial(0x3a3a3a);
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.6, 8), poleMat);
-      pole.position.y = 0.8;
-      pole.castShadow = true;
-      lampGroup.add(pole);
-      // Curved arm
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 6), poleMat);
-      arm.position.set(0.2, 1.55, 0);
-      arm.rotation.z = -Math.PI / 4;
-      lampGroup.add(arm);
-      // Lamp shade (cone)
-      const shade = new THREE.Mesh(
-        new THREE.ConeGeometry(0.2, 0.15, 8),
-        Materials.createTrimMaterial(0x2a2a2a),
-      );
-      shade.position.set(0.35, 1.55, 0);
-      shade.rotation.z = Math.PI;
-      shade.castShadow = true;
-      lampGroup.add(shade);
-      // Glowing bulb
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.1, 8, 8),
-        new THREE.MeshStandardMaterial({
-          color: 0xfff4cc,
-          emissive: 0xffe8a0,
-          emissiveIntensity: 0.8,
-        }),
-      );
-      bulb.position.set(0.35, 1.48, 0);
-      bulb.userData.isNightEmissive = true;
-      lampGroup.add(bulb);
       // Lamp height ~4.3u at the bulb. Height is the lever on pool size: a
       // higher source throws a wider, softer circle, so this and the pool
       // scales below move together — raising one without the other gives you
@@ -2604,6 +2618,10 @@ export class Island {
       // third of the fragment cost of the old arrangement.
       void withLight;
       lamps.add(lampGroup);
+      // The anchor's local matrix IS the instance matrix (lamps sits at
+      // identity under the island root).
+      lampGroup.updateMatrix();
+      lampMatrices.push(lampGroup.matrix.clone());
       lampPositions.push(sampled.position.clone().add(new THREE.Vector3(0, 1.48, 0)));
     };
     for (const [lon, lat] of LAMP_SITES) {
@@ -2657,6 +2675,50 @@ export class Island {
     for (let i = 0; i < this.mailboxSites.length; i += 2) {
       const p = this.mailboxSites[i];
       buildLamp(p.clone().addScaledVector(tangentAt(p), 1.5), p, false, 4.8);
+    }
+    // The two instanced draws for the whole fleet (see the block above
+    // buildLamp). frustumCulled=false on both: the ring wraps the planet, so
+    // all-or-nothing culling of the single object could only ever flicker
+    // the fleet — the ~11k body verts are trivial next to 228 draw calls.
+    {
+      // NAMES MUST NOT START WITH "lamp": tryLoadModels replaces placeholders
+      // by NAME PREFIX (findPlaceholders('lamp')), so 'lamp_*_instanced'
+      // meshes were themselves treated as placeholders — the loader hid the
+      // whole fleet, drove its SHARED materials to opacity 0, and dropped two
+      // junk lamp.glb clones at the planet core (both measured live).
+      const bodyMesh = new THREE.InstancedMesh(
+        mergeGeometries(lampBodyParts, false),
+        lampBodyMat,
+        lampMatrices.length,
+      );
+      bodyMesh.name = 'streetlamp_bodies_instanced';
+      // NOTE: the merged body makes the ARM a shadow caster (it was not one
+      // when the parts were separate meshes). At 0.04u radius the extra
+      // diagonal sliver is invisible; splitting the merge to preserve it
+      // would cost a third draw call.
+      bodyMesh.castShadow = true; // one instanced depth draw replaces ~114 casters
+      bodyMesh.frustumCulled = false;
+      const bulbMesh = new THREE.InstancedMesh(
+        new THREE.SphereGeometry(0.1, 8, 8).translate(0.35, 1.48, 0),
+        lampBulbMat,
+        lampMatrices.length,
+      );
+      bulbMesh.name = 'streetlamp_bulbs_instanced';
+      // EnvironmentCycle's collectNightAssets dedupes by material, so the
+      // whole fleet becomes ONE night-drive entry (it was 57).
+      bulbMesh.userData.isNightEmissive = true;
+      bulbMesh.frustumCulled = false;
+      for (let k = 0; k < lampMatrices.length; k++) {
+        bodyMesh.setMatrixAt(k, lampMatrices[k]);
+        bulbMesh.setMatrixAt(k, lampMatrices[k]);
+      }
+      bodyMesh.instanceMatrix.needsUpdate = true;
+      bulbMesh.instanceMatrix.needsUpdate = true;
+      // Parented to the island ROOT, not to `lamps`: the lampSites re-anchor
+      // guard downstream compares lamps.children.length to lampSites.length,
+      // and two extra children would silently disable it (leaving the roaming
+      // night lights parked ~0.67u above every bulb).
+      this.lampFleet = [bodyMesh, bulbMesh];
     }
     // (Electric wires removed: straight chord lines between lamps cut through
     // the planet and pierced props — they were designed for a flat town.)
@@ -4139,6 +4201,40 @@ export class Island {
       benches,
     ]);
 
+    // SEAT THE LAMP ANCHORS BY HAND, then republish the instance matrices.
+    // seatGroupsOnTerrain measures each child's bounding box to find how far
+    // its geometry hangs below the group origin — and the lamp anchors are
+    // EMPTY groups now (their geometry lives in the instanced fleet), so
+    // `box.isEmpty()` skipped every one and the whole fleet floated at the
+    // +0.62 sample offset buildLamp deliberately leaves for the seat pass.
+    // The pole base is local y=0 by construction, so minY is a known 0 and
+    // the same arithmetic applies without a box.
+    {
+      const dir = new THREE.Vector3();
+      const SINK = 0.05;
+      for (const anchor of lamps.children) {
+        if (!/^lamp_\d+$/.test(anchor.name)) continue;
+        dir.copy(anchor.position).normalize();
+        const sampled = this.sampleSurfaceByDirection(dir, 0);
+        const delta = sampled.position.dot(dir) - SINK - anchor.position.dot(dir);
+        if (Math.abs(delta) > 0.02) {
+          anchor.position.addScaledVector(dir, delta);
+          anchor.updateMatrixWorld(true);
+        }
+      }
+      // Instance matrices are snapshots — they MUST be rewritten from the
+      // seated anchors, or the fleet keeps the pre-seat float regardless.
+      const anchors = lamps.children.filter((c) => /^lamp_\d+$/.test(c.name));
+      for (const fleet of this.lampFleet) {
+        for (let i = 0; i < anchors.length && i < fleet.count; i++) {
+          anchors[i].updateMatrix();
+          fleet.setMatrixAt(i, anchors[i].matrix);
+        }
+        fleet.instanceMatrix.needsUpdate = true;
+        root.add(fleet); // added post-seat, outside `lamps` (see the build block)
+      }
+    }
+
     // Re-anchor the published lamp sites to the SEATED meshes: buildLamp
     // records its pre-seat sample (+0.62 float so the seat pass has room to
     // drop it), and the seat pass moves only the meshes — the stale anchors
@@ -4146,10 +4242,13 @@ export class Island {
     // (measured on all 49 lamps), reading as lamps defying gravity.
     // Children order matches the lampSites push order, so indices hold —
     // guarded so a future lamp parented elsewhere can't scramble the mapping.
-    if (lamps.children.length === this.lampSites.length) {
-      this.lampSites.length = 0;
-      for (const l of lamps.children) {
-        this.lampSites.push(l.getWorldPosition(new THREE.Vector3()));
+    {
+      const anchors = lamps.children.filter((c) => /^lamp_\d+$/.test(c.name));
+      if (anchors.length === this.lampSites.length) {
+        this.lampSites.length = 0;
+        for (const l of anchors) {
+          this.lampSites.push(l.getWorldPosition(new THREE.Vector3()));
+        }
       }
     }
 
@@ -8454,6 +8553,10 @@ export class Island {
         randomYaw?: boolean;
         scaleJitter?: number;
         candidates?: string[];
+        /** Fired once the authored model has replaced every placeholder —
+         *  lets a caller retire the procedural fallback it just superseded
+         *  (street lamps hide their instanced fleet here). */
+        onReplaced?: (count: number) => void;
       };
 
       // Generic loader & replacer: load url and replace placeholders (by name prefix)
@@ -8619,6 +8722,13 @@ export class Island {
                   };
                   requestAnimationFrame(step);
                 });
+                // The authored model is in: let the caller retire whatever
+                // procedural stand-in it just superseded.
+                try {
+                  options.onReplaced?.(placeholders.length);
+                } catch {
+                  /* a fallback that refuses to hide is not fatal */
+                }
               },
               undefined,
               () => {
@@ -8657,11 +8767,20 @@ export class Island {
       // GLB replacement hid the procedural car and dropped a STATIC mesh on
       // top — so a driven car appeared to stay parked while the rider drove
       // off. (car.glb replacement removed.)
-      loadAndReplace(basePath + 'lamp.glb', 'lamp', {
+      // 'lamp_' (with the underscore), NOT 'lamp': a bare prefix also matched
+      // the instanced fallback fleet, which the loader then treated as two
+      // more placeholders — hiding the fleet, zeroing its shared materials
+      // and dropping two junk lamp.glb clones at the planet core.
+      loadAndReplace(basePath + 'lamp.glb', 'lamp_', {
         scale: 1,
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Lantern_Wall.gltf'],
         heightOffset: -0.04,
         randomYaw: true,
+        // The authored lamps ARE the lamps now — retire the fallback fleet
+        // (one flag each, materials untouched, so a failed load keeps it).
+        onReplaced: () => {
+          for (const m of this.lampFleet) m.visible = false;
+        },
       });
       // Houses and towers stay PROCEDURAL. house.glb used to replace both
       // the village cottages and the office placeholders, but it renders
@@ -9111,6 +9230,11 @@ export class Island {
         } else if (material) {
           this.disposeMaterial(material);
         }
+        // InstancedMesh also owns a GPU instanceMatrix buffer that the
+        // geometry/material disposal above does NOT release (lamps, grass,
+        // rocks, flowers all land here).
+        const inst = obj as THREE.InstancedMesh;
+        if (inst.isInstancedMesh) inst.dispose();
       }
     });
 
