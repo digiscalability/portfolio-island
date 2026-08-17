@@ -1856,6 +1856,7 @@ export class Island {
         connector.map((v) => v.clone()),
       );
     }
+    this.mergeStreetNetwork(pathGroup);
 
     // ── Urban planning ──────────────────────────────────────────────────
     // Each content zone anchors a district spread around the sphere (the
@@ -6493,6 +6494,91 @@ export class Island {
     }
     if (petalIM.instanceColor) petalIM.instanceColor.needsUpdate = true;
     console.log(`🪴 Building planters: ${placed} beds, ${bloomI} blooms`);
+  }
+
+  /**
+   * Collapse the street network's ~401 per-segment ribbons into 8 longitude
+   * sectors — the single largest draw-call population on the island, and
+   * 29% of every frame's draw calls.
+   *
+   * The per-segment BUILD LOOP is left byte-for-byte alone, because its 401
+   * PlaneGeometry + 401 Mesh allocations ARE seeded-RNG currency: removing
+   * them would re-roll every later placement and move the index-addressed
+   * parked cars. Only the tail is new, and it is wrapped in a local
+   * mulberry32 so its own ~64 draws (8 geometries + 8 meshes) cannot leak
+   * into the world stream either.
+   *
+   * EIGHT sectors, not one mesh: frustum culling and the camera's collision
+   * list both key off bounding spheres, and a single planet-spanning road
+   * mesh would never cull. Sectors keep roughly an octant each.
+   *
+   * SAFE ONLY BECAUSE the ribbons are already opted out of the camera
+   * raycast (see createStreetPath) — merged geometry has no BVH, so
+   * `firstHitOnly` would degrade to brute-force triangle tests without it.
+   */
+  private mergeStreetNetwork(pathGroup: THREE.Group): void {
+    const stashedRandom = Math.random;
+    let sseed = 0x51ed270b >>> 0;
+    Math.random = (): number => {
+      sseed = (sseed + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(sseed ^ (sseed >>> 15), 1 | sseed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try {
+      const SECTORS = 8;
+      const bins: THREE.BufferGeometry[][] = Array.from({ length: SECTORS }, () => []);
+      const segments: THREE.Mesh[] = [];
+      pathGroup.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.geometry) segments.push(m);
+      });
+      if (segments.length === 0) return;
+      // One material for the whole network (all 10 paths built identical
+      // ones), which also collapses EnvironmentCycle's pavement drive from
+      // 10 entries to 1.
+      const shared = segments[0].material as THREE.MeshStandardMaterial;
+      const centre = new THREE.Vector3();
+      for (const m of segments) {
+        m.updateMatrixWorld(true);
+        const g = m.geometry.clone();
+        g.applyMatrix4(m.matrixWorld); // bake to world; the merged mesh sits at identity
+        g.computeBoundingSphere();
+        centre.copy(g.boundingSphere?.center ?? new THREE.Vector3(0, 1, 0));
+        const lon = Math.atan2(centre.z, centre.x); // -PI..PI
+        const bin = Math.min(
+          SECTORS - 1,
+          Math.max(0, Math.floor(((lon + Math.PI) / (Math.PI * 2)) * SECTORS)),
+        );
+        bins[bin].push(g);
+      }
+      // Drop the originals (their geometries are cloned above; the shared
+      // material survives on the merged meshes).
+      for (const m of segments) {
+        m.geometry.dispose();
+        m.removeFromParent();
+      }
+      for (const mat of new Set(segments.map((m) => m.material as THREE.Material))) {
+        if (mat !== shared) mat.dispose();
+      }
+      let made = 0;
+      for (let b = 0; b < SECTORS; b++) {
+        if (bins[b].length === 0) continue;
+        const merged = mergeGeometries(bins[b], false);
+        for (const g of bins[b]) g.dispose();
+        if (!merged) continue;
+        const mesh = new THREE.Mesh(merged, shared);
+        mesh.name = `street_sector_${b}`;
+        mesh.receiveShadow = true;
+        mesh.raycast = () => {}; // pavement never blocks the chase camera
+        mesh.userData.isPavement = true; // keeps the night drive
+        pathGroup.add(mesh);
+        made++;
+      }
+      console.log(`🛣️ street network merged: ${segments.length} meshes → ${made} sectors`);
+    } finally {
+      Math.random = stashedRandom;
+    }
   }
 
   /**

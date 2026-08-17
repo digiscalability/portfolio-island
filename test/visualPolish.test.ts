@@ -235,6 +235,26 @@ describe('roads read as roads — kerbs, centre line, and off the camera ray', (
     expect(island).toContain('Math.max(width * 0.5 + 0.8, 1.9)');
   });
 
+  test('the street network merges into sectors, RNG-shielded', () => {
+    const island = src('Island.ts');
+    expect(island).toContain('private mergeStreetNetwork(');
+    expect(island).toContain('this.mergeStreetNetwork(pathGroup)');
+    // 8 sectors, not 1 mesh: frustum culling keys off bounding spheres and a
+    // single planet-spanning road would never cull. MEASURED at one fixed
+    // camera pose: 1390 -> 1243 draw calls (-147) with triangles unchanged.
+    expect(island).toContain('const SECTORS = 8');
+    expect(island).toContain('street_sector_');
+    // The build loop's 401 allocations are seeded-RNG currency and must stay;
+    // only the merge tail is new, and it is shielded so its own ~64 draws
+    // cannot leak into the world stream.
+    const at = island.indexOf('let sseed = 0x51ed270b');
+    expect(at).toBeGreaterThan(-1);
+    expect(island.slice(at - 200, at + 2600)).toContain('Math.random = stashedRandom');
+    // Contracts the merged mesh must carry forward.
+    expect(island).toContain('mesh.name = `street_sector_${b}`');
+    expect(island).toMatch(/mesh\.userData\.isPavement = true;[\s\S]{0,80}pathGroup\.add/);
+  });
+
   test('pedestrian crossings lie FLAT and clear the ribbon lift', () => {
     const scene = src('GameScene.ts');
     expect(scene).toContain("mesh.name = 'road_markings_instanced'");
