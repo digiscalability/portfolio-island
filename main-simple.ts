@@ -1291,6 +1291,16 @@ class SimpleApp {
       // for a multiplayer game" before the portfolio pitch) — it is now lazy,
       // asked only when a social feature actually needs a name (ensureNamed).
       const afterIntro = () => {
+        // The governor starts measuring only NOW. The fly-in is the single
+        // heaviest, least representative view in the game (whole planet in
+        // frustum, intro-lite quality), and with the governor's clocks on true
+        // wall time it could walk the rung ladder off those 2.5 atypical
+        // seconds. Arming here — both branches funnel through afterIntro —
+        // discards everything it saw during the intro and starts the decision
+        // clocks from zero on the world it will actually govern. If this call
+        // is somehow never reached, the governor self-arms after 10s of
+        // visible wall time (see SimpleRenderer.armGovernor).
+        this.renderer.armGovernor();
         let saved: string | null = null;
         try {
           saved = localStorage.getItem('ds_player_name');

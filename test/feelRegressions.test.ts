@@ -280,7 +280,9 @@ describe('the resolution governor can actually recover', () => {
     // minute: 0 sheds after the fix.
     const s = src('SimpleRenderer.ts');
     const i = s.indexOf('private updateAdaptiveResolution');
-    const body = s.slice(i, s.indexOf('private setQualityRung'));
+    // Ends at armGovernor: its RESET legitimately zeroes qualityAccum (it is
+    // discarding the disarmed period, not truncating a live decision cycle).
+    const body = s.slice(i, s.indexOf('public armGovernor'));
     // the reset must NOT be the first statement of the high-threshold branch
     expect(body).not.toMatch(
       /else if \(this\.fpsEma > this\.fpsHighThreshold\) \{\s*this\.lowStreak = 0;/,
@@ -362,6 +364,40 @@ describe('no quality rung may switch RENDERING PATH', () => {
     // loader instead of mid-swoop.
     const calls = m.match(/this\.renderer\.setPostProcessingEnabled\((true|false)\)/g) ?? [];
     expect(calls).toEqual(['this.renderer.setPostProcessingEnabled(true)']);
+  });
+
+  test('the governor is DISARMED until the intro resolves', () => {
+    // The render loop starts immediately before the 2.5s whole-planet fly-in,
+    // and with the clocks on true wall time, time-to-rung-1 is a constant ~9s
+    // — so a heavy intro could walk the ladder off the least representative
+    // seconds the game has. The gate must sit BEFORE the decision block, arm
+    // from afterIntro (both intro branches funnel through it), self-arm after
+    // 10s as a fallback, and DISCARD everything measured while disarmed.
+    const s = src('SimpleRenderer.ts');
+    const gov = s.slice(
+      s.indexOf('private updateAdaptiveResolution'),
+      s.indexOf('public armGovernor'),
+    );
+    expect(gov).toContain('if (!this.governorArmed) {');
+    // the gate comes before the decision accumulator, not after
+    expect(gov.indexOf('governorArmed')).toBeLessThan(gov.indexOf('this.qualityAccum += dt'));
+    const arm = s.slice(s.indexOf('public armGovernor'), s.indexOf('private setQualityRung'));
+    for (const reset of [
+      'this.fpsEma = 60',
+      'this.qualityAccum = 0',
+      'this.rungCooldown = 0',
+      'this.lowStreak = 0',
+      'this.stallRun = 0',
+    ]) {
+      expect(arm, `armGovernor must reset ${reset}`).toContain(reset);
+    }
+    expect(arm).toContain('if (this.governorArmed) return;'); // idempotent
+    expect(s).toContain('GOVERNOR_ARM_FALLBACK_S = 10');
+    // ...and main-simple actually arms it where both intro branches converge.
+    const m = src('main-simple.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(m).toContain('this.renderer.armGovernor()');
   });
 
   test('Ctrl+B toggles the bloom PASS and tells the truth about it', () => {

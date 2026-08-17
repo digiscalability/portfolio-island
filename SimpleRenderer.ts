@@ -138,6 +138,10 @@ export class SimpleRenderer {
   /** Consecutive frames longer than GOVERNOR_MAX_DT. 1-2 is an event and is
    *  ignored; 3+ is this machine's actual frame rate. */
   private stallRun = 0;
+  /** The governor makes NO decisions until armed — see armGovernor. */
+  private governorArmed = false;
+  private governorArmAccum = 0; // visible wall time toward the self-arm fallback
+  private static readonly GOVERNOR_ARM_FALLBACK_S = 10;
   private bloomSuspendedByGovernor = false;
   private shadowFramePhase = 0;
   /** Interior mode holds this true: the outdoor world is provably frozen while
@@ -595,6 +599,23 @@ export class SimpleRenderer {
 
     this.rungCooldown += dt; // genuinely elapsed, and bounded
 
+    // NOT ARMED: measure, but decide NOTHING. The render loop starts
+    // immediately before the 2.5s whole-planet fly-in — the single heaviest,
+    // least representative view in the game, already quality-managed by its
+    // own intro-lite mode — and with the clocks on true wall time the ladder
+    // could walk rungs off those atypical seconds (time-to-rung-1 is a
+    // constant ~9s now, where the old clamped clock made it 180 RENDERED
+    // frames, i.e. 45s of slack at 4fps). main-simple arms on the fly-in
+    // resolve (both intro branches); armGovernor then DISCARDS everything
+    // measured here. The wall-clock fallback exists so a caller that never
+    // arms — an error path, a minimal harness — degrades to a 10s-delayed
+    // governor rather than a permanently absent one.
+    if (!this.governorArmed) {
+      this.governorArmAccum += dt;
+      if (this.governorArmAccum >= SimpleRenderer.GOVERNOR_ARM_FALLBACK_S) this.armGovernor();
+      return;
+    }
+
     // NO DECISION ON A SAMPLE WE JUST REFUSED TO TRUST. The excluded frame's
     // time must not buy a decision either: banking it on qualityAccum let the
     // FIRST VISIBLE FRAME after a 60s alt-tab tip the accumulator over 1 and
@@ -731,6 +752,27 @@ export class SimpleRenderer {
     // moving while indoors, and at rung >= 2 the next half-rate re-arm is
     // otherwise up to 2 frames away with a map that is minutes stale.
     if (!frozen) this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  /**
+   * Start governing. Called by main-simple when the intro fly-in resolves
+   * (both branches funnel through afterIntro), or by the 10s wall-clock
+   * fallback in updateAdaptiveResolution if that call never arrives.
+   *
+   * Resets the EMA and every decision clock: whatever was measured before
+   * this moment was the intro — the heaviest, least representative seconds
+   * the game has — and a stale-low EMA carried across the arm would shed on
+   * the very first decision, which is the exact behaviour arming exists to
+   * prevent. Idempotent; the reset must not fire twice.
+   */
+  public armGovernor(): void {
+    if (this.governorArmed) return;
+    this.governorArmed = true;
+    this.fpsEma = 60;
+    this.qualityAccum = 0;
+    this.rungCooldown = 0;
+    this.lowStreak = 0;
+    this.stallRun = 0;
   }
 
   /** Step the governor to `next`, applying/releasing each rung in order. */
