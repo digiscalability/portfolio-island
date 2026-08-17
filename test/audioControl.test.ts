@@ -143,6 +143,32 @@ describe('dispose unhooks the lifecycle', () => {
   });
 });
 
+describe('the audio review lows', () => {
+  test('AudioManager.dispose() is actually called on app teardown', () => {
+    // It was documented, correct, and DEAD — zero callers. Since the
+    // lifecycle hooks landed that also meant leaked visibilitychange/
+    // pageshow/pointerdown listeners that could poke a closed context.
+    const m = src('main-simple.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(m).toContain('w.audioManager?.dispose?.()');
+    expect(m).toContain('w.audioManager = undefined'); // HMR re-boot gets a fresh manager
+  });
+
+  test('the mute button tells the truth', () => {
+    const s = src('SimpleUI.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    // the label no longer claims coverage of the reception call
+    expect(s).not.toContain('Toggle all sound');
+    expect(s).toContain('live calls excluded');
+    // and the icon reflects EFFECTIVE silence on every update path:
+    expect(s).toMatch(/muted \|\| volume === 0 \? '🔇' : '🔊'/); // boot
+    expect(s).toMatch(/nowMuted \|\| this\.hudVolume === 0 \? '🔇' : '🔊'/); // mute click
+    expect(s).toMatch(/this\.hudMuted \|\| v === 0 \? '🔇' : '🔊'/); // slider (pre-existing)
+  });
+});
+
 describe('a late opening-deepening never interrupts an engaged conversation', () => {
   // speak() strict-cancels whatever is in flight, so a background continuation
   // landing after the user asked a question cut off the NPC's direct ANSWER

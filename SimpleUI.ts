@@ -2316,7 +2316,11 @@ export class SimpleUI {
       /* defaults */
     }
     this.hudMuted = muted;
-    this.muteBtn.textContent = muted ? '🔇' : '🔊';
+    this.hudVolume = volume;
+    // 🔇 whenever the game is EFFECTIVELY silent — muted OR volume 0. The
+    // slider path already hinted 🔇 at zero, but a reload with a persisted
+    // volume of 0 booted showing 🔊 over a silent game.
+    this.muteBtn.textContent = muted || volume === 0 ? '🔇' : '🔊';
     Object.assign(this.muteBtn.style, {
       position: 'absolute',
       top: 'calc(var(--sat, 0px) + 88px)',
@@ -2334,13 +2338,24 @@ export class SimpleUI {
       if (!this.onMuteToggle || !this.muteBtn) return;
       const nowMuted = this.onMuteToggle();
       this.hudMuted = nowMuted;
-      this.muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+      // Volume 0 keeps the 🔇 even when unmuted — unmuting a zero-volume game
+      // produces no sound, and an icon that claims otherwise is the same
+      // lying-control class Ctrl+B just got fixed for.
+      this.muteBtn.textContent = nowMuted || this.hudVolume === 0 ? '🔇' : '🔊';
       this.muteBtn.setAttribute('aria-pressed', String(nowMuted));
       // Tapping the button also surfaces the volume pill for a few seconds —
       // the only mobile path to the slider (no hover on touch).
       this.showVolumePill(3500);
     });
-    this.makeHudButtonAccessible(this.muteBtn, 'Toggle all sound (music, effects, voices)', muted);
+    // "game sound", not "all sound": the live reception call deliberately
+    // plays outside the master bus (you don't mute a phone call you started
+    // with the music knob — see ReceptionDesk's header), so a label claiming
+    // "all" was untrue for exactly that surface.
+    this.makeHudButtonAccessible(
+      this.muteBtn,
+      'Toggle game sound (music, effects, voices — live calls excluded)',
+      muted,
+    );
     this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 8 });
     this.createVolumePill(volume);
     this.createReducedMotionButton();
@@ -2356,6 +2371,9 @@ export class SimpleUI {
    */
   private volumePill: HTMLDivElement | null = null;
   private hudMuted = false;
+  /** Mirrors the slider so the mute icon can reflect EFFECTIVE silence
+   *  (muted OR volume 0) from every update path, not just the slider's. */
+  private hudVolume = 0.7;
   private volumePillHideTimer: number | undefined;
 
   private createVolumePill(initialVolume: number): void {
@@ -2389,6 +2407,7 @@ export class SimpleUI {
     });
     slider.addEventListener('input', () => {
       const v = Math.max(0, Math.min(100, Number(slider.value))) / 100;
+      this.hudVolume = v;
       this.onVolumeChange?.(v);
       // Raising the volume while muted unmutes (the expected convention);
       // dragging to 0 hints 🔇 without flipping the stored muted flag.

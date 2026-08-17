@@ -5050,6 +5050,21 @@ class SimpleApp {
       this.renderer.dispose();
     }
 
+    // The audio manager's documented teardown was DEAD CODE — nothing called
+    // it, so on teardown/hot-reload the context, its nodes and (since the
+    // lifecycle hooks landed) its visibilitychange/pageshow/pointerdown
+    // listeners all leaked, and a stray tab-show could poke a manager whose
+    // world was gone. Nulling the global matters for the HMR double-boot
+    // guard: a re-created app must build a fresh manager, not adopt one
+    // whose context is closed.
+    const w = window as unknown as { audioManager?: { dispose?: () => void } };
+    try {
+      w.audioManager?.dispose?.();
+    } catch {
+      /* best-effort teardown */
+    }
+    w.audioManager = undefined;
+
     if (this.boundHandlers.beforeUnload) {
       window.removeEventListener('beforeunload', this.boundHandlers.beforeUnload);
     }
