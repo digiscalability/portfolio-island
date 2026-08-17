@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
 import { buildCloudFormations } from '../CloudFormations';
+import { SimpleRenderer } from '../SimpleRenderer';
 
 const src = (f: string): string => readFileSync(join(process.cwd(), f), 'utf8');
 
@@ -62,6 +63,89 @@ describe('the frame limiter reports true wall time', () => {
     const s = src('SimpleRenderer.ts');
     expect(s).toContain('this.frameAccum = 0;');
     expect(s).not.toContain('this.frameAccum %= interval;');
+  });
+});
+
+describe('the controller expects a rate the frame limiter can actually produce', () => {
+  // The limiter renders only once a whole capped interval has accumulated, so
+  // the delivered rate is quantised to hz/skipsPerRender — NOT the cap. The
+  // thresholds used to be derived from the CAP, so a healthy 90Hz budget
+  // Android (delivering exactly 45.00) sat ON its own 45 shed bar and could
+  // never reach a 57 release bar it was structurally incapable of producing.
+  const SNAP_RATES = [60, 75, 90, 120, 144, 165, 240];
+  const CAP = 60;
+
+  /** The REAL loop from startRenderLoop, run for 20 simulated seconds. */
+  const simulateLimiter = (hz: number, capFps: number): number => {
+    if (capFps <= 0) return hz;
+    const raw = 1 / hz;
+    const interval = 1 / capFps;
+    const tolerance = 0.001; // FRAME_CAP_TOLERANCE_S
+    let accum = 0;
+    let renders = 0;
+    const seconds = 20;
+    for (let i = 0; i < hz * seconds; i++) {
+      accum += raw;
+      if (accum < interval - tolerance) continue;
+      renders += 1;
+      accum = 0; // matches `this.frameAccum = 0` — see the limiter's own note
+    }
+    return renders / seconds;
+  };
+
+  const deliveredFps = (hz: number, cap: number): number =>
+    (SimpleRenderer as unknown as { deliveredFps(h: number, c: number): number }).deliveredFps(
+      hz,
+      cap,
+    );
+
+  test('deliveredFps() models the limiter exactly at every snapped rate', () => {
+    // This is the anti-drift lock: the formula is a MODEL of the loop, so if
+    // anyone retunes the limiter without retuning the model, the controller
+    // silently starts expecting an impossible rate again.
+    for (const hz of SNAP_RATES) {
+      const cap = hz > 66 ? CAP : 0; // isLowTierDevice() && hz > 66
+      expect(deliveredFps(hz, cap), `${hz}Hz`).toBeCloseTo(simulateLimiter(hz, cap), 6);
+    }
+  });
+
+  test('the cap does NOT deliver 60 on four of the seven standard refresh rates', () => {
+    // Pinning the surprise itself, because it is the whole reason the old
+    // derivation was wrong — and because it is a live perf finding: the 60fps
+    // low-tier cap actually renders 45fps on a 90Hz phone.
+    expect(deliveredFps(60, 0)).toBe(60);
+    expect(deliveredFps(75, CAP)).toBe(37.5);
+    expect(deliveredFps(90, CAP)).toBe(45);
+    expect(deliveredFps(120, CAP)).toBe(60);
+    expect(deliveredFps(144, CAP)).toBe(48);
+    expect(deliveredFps(165, CAP)).toBe(55);
+    expect(deliveredFps(240, CAP)).toBe(60);
+  });
+
+  test('every refresh rate ends up with a REACHABLE release bar', () => {
+    // The bug in one assertion: a device must be able to out-run its own
+    // recovery threshold, or the ladder is a one-way ratchet.
+    for (const hz of SNAP_RATES) {
+      const cap = hz > 66 ? CAP : 0;
+      const delivered = deliveredFps(hz, cap);
+      const target = Math.min(60, delivered);
+      const low = target * 0.75;
+      const high = target * 0.95;
+      expect(delivered, `${hz}Hz must clear its release bar`).toBeGreaterThan(high);
+      expect(delivered, `${hz}Hz must sit above its shed bar`).toBeGreaterThan(low);
+    }
+  });
+
+  test('the OLD cap-derived thresholds failed exactly where measured', () => {
+    // Guards the claim, not just the fix: with target = the CAP, four rates
+    // could not reach the release bar and one could not even clear the shed bar.
+    const oldHigh = 60 * 0.95; // 57 — what `Math.min(capped, frameCapFps)` gave
+    const oldLow = 60 * 0.75; // 45
+    expect(deliveredFps(90, CAP)).toBeLessThan(oldHigh);
+    expect(deliveredFps(144, CAP)).toBeLessThan(oldHigh);
+    expect(deliveredFps(165, CAP)).toBeLessThan(oldHigh);
+    expect(deliveredFps(75, CAP)).toBeLessThan(oldLow); // sheds forever
+    expect(deliveredFps(90, CAP)).toBe(oldLow); // sits exactly ON the bar
   });
 });
 

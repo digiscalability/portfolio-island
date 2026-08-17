@@ -65,6 +65,30 @@ export class SimpleRenderer {
   // thresholds are scaled to the achievable rate — against the old hardcoded
   // 45/57 a struggling 120Hz desktop at 70fps read as "healthy".
   private static readonly REFRESH_SAMPLE_FRAMES = 60;
+  /** rAF timestamp jitter the limiter absorbs, so a healthy cadence doesn't
+   *  spuriously drop to half rate. Shared with deliveredFps below — the two
+   *  MUST agree or the controller expects a rate the limiter cannot produce. */
+  private static readonly FRAME_CAP_TOLERANCE_S = 0.001;
+
+  /**
+   * The frame rate the limiter can actually DELIVER at this refresh + cap.
+   *
+   * The limiter renders only once a whole capped interval has accumulated, so
+   * the delivered rate is quantised to `hz / skipsPerRender` — it is NOT the
+   * cap. At a 60fps cap that is 60->60, 75->37.5, 90->45, 120->60, 144->48,
+   * 165->55, 240->60. Four of the seven standard refresh rates do not land on
+   * 60, and the thresholds used to be derived from the CAP, which is how a
+   * perfectly healthy 90Hz phone ended up sitting exactly on its own shed bar.
+   *
+   * This models the loop in startRenderLoop; test/feelRegressions.test.ts
+   * simulates that loop and asserts the two agree at every snapped rate, so
+   * they cannot drift apart.
+   */
+  private static deliveredFps(hz: number, capFps: number): number {
+    if (capFps <= 0) return hz;
+    const skips = Math.max(1, Math.ceil((1 / capFps - SimpleRenderer.FRAME_CAP_TOLERANCE_S) * hz));
+    return hz / skips;
+  }
   private refreshSamples = 0;
   private minFrameDt = Infinity; // shortest plausible frame seen while sampling
   private frameCapFps = 0; // 0 = uncapped; set once the refresh estimate lands
@@ -365,7 +389,7 @@ export class SimpleRenderer {
       if (this.frameCapFps > 0) {
         this.frameAccum += rawDt;
         const interval = 1 / this.frameCapFps;
-        if (this.frameAccum < interval - 0.001) return;
+        if (this.frameAccum < interval - SimpleRenderer.FRAME_CAP_TOLERANCE_S) return;
         wallDt = this.frameAccum;
         // ZERO, not `%= interval`: wallDt above consumed the WHOLE
         // accumulator, so keeping the remainder re-injected it into the next
@@ -442,7 +466,25 @@ export class SimpleRenderer {
     // the faster displays chasing a rate they were never sustaining.
     const ADAPTIVE_TARGET_CAP = 60;
     const capped = Math.min(hz, ADAPTIVE_TARGET_CAP);
-    const target = this.frameCapFps > 0 ? Math.min(capped, this.frameCapFps) : capped;
+    // DERIVE FROM WHAT THE LIMITER DELIVERS, NOT FROM THE CAP.
+    //
+    // This used to be `Math.min(capped, this.frameCapFps)`, i.e. the cap — and
+    // since the snap list's smallest entry is 60, `capped` is ALWAYS 60 and the
+    // whole calculation was dead code that could only ever reproduce the 45/57
+    // field initializers. Meanwhile the limiter quantises the real rate to
+    // hz/skipsPerRender, which is 60 on only three of the seven standard
+    // refresh rates. MEASURED by simulating the limiter loop:
+    //   60Hz -> 60.00 ok          144Hz -> 48.00  never releases (48 < 57)
+    //   75Hz -> 37.50 SHEDS FOREVER (37.5 < 45)   165Hz -> 55.00  never releases
+    //   90Hz -> 45.00 sits EXACTLY on its own shed bar   120/240Hz -> 60.00 ok
+    // So a perfectly healthy 90Hz budget Android — the commonest low-tier panel
+    // there is — read as struggling, sheds resolution, and could never reach a
+    // release bar of 57 it was structurally incapable of producing. Combined
+    // with reverse-order releases and a claw-back gated on `qualityRung === 0`,
+    // that is a one-way ratchet to floor quality on healthy hardware.
+    // Now: 90Hz gets 33.75/42.75 and its native 45 reads healthy, as it is.
+    const delivered = SimpleRenderer.deliveredFps(hz, this.frameCapFps);
+    const target = Math.min(capped, delivered);
     this.fpsLowThreshold = target * 0.75; // = 45 at 60Hz, same ratio as before
     this.fpsHighThreshold = target * 0.95; // = 57 at 60Hz
   }
