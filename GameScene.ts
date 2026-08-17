@@ -6,7 +6,6 @@ import { addGroupHulls, updateCelRim } from './CelLook';
 import { buildCloudFormations } from './CloudFormations';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle, EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle';
-import { TrafficSystem } from './Traffic';
 import { framingFov } from './Framing';
 import { Island } from './Island';
 import { expDecayV3, squash } from './Juice';
@@ -24,6 +23,7 @@ import { SimpleRenderer } from './SimpleRenderer';
 import { isSpeechEnabled, speak } from './Speech';
 import { isRealTheme } from './Theme';
 import type { TownPlanResult } from './TownPlanner'; // type-only: the TownPlanner class is no longer used (Island.ts owns the town); this keeps the lamp typing
+import { TrafficSystem } from './Traffic';
 import { loadGLTFWithFallbacks } from './utils/GLTFModelLoader';
 import { BUILD_KIND_IDS } from './worldBuilds';
 import {
@@ -13958,6 +13958,55 @@ export class GameScene extends THREE.Scene {
       if (x > c.minX - R && x < c.maxX + R && z > c.minZ - R && z < c.maxZ + R) return true;
     }
     return false;
+  }
+
+  private interiorWarmed = false;
+
+  /** Build the room and compile its shaders in an idle slot, so the player's
+   *  first E-press doesn't pay for them.
+   *
+   *  MEASURED on prod 2026-08-17: buildInterior() constructs 219 meshes / 74
+   *  materials / 219 geometries in 16.3ms — a dropped frame by itself — and
+   *  the first frame that SHOWS the room compiles 39 new shader programs
+   *  (103 → 142). Most of that 39 is NOT the room's own materials: the room
+   *  carries 4 PointLights, and three.js bakes light COUNTS into every lit
+   *  program's cache key, so opening a door re-keys the whole scene. It is
+   *  one-time (programs sit at 142 across every later toggle), but untreated
+   *  it lands squarely on the player's first interaction with a building.
+   *
+   *  Both permutations are warmed — leaving costs compiles too, because the
+   *  light count drops back. Idempotent and best-effort: on any failure the
+   *  old lazy path still works, just as slowly as before. */
+  public async warmInterior(): Promise<void> {
+    if (this.interiorWarmed) return;
+    this.interiorWarmed = true;
+    this.buildInterior();
+    const g = this.interiorGroup;
+    const gl = this.rendererRef?.getRenderer() as unknown as
+      | {
+          compile?: (s: unknown, c: unknown) => void;
+          compileAsync?: (s: unknown, c: unknown) => Promise<unknown>;
+        }
+      | undefined;
+    if (!g || !gl || !this.camera) return;
+    const wasVisible = g.visible;
+    const warm = async (visible: boolean): Promise<void> => {
+      g.visible = visible;
+      if (typeof gl.compileAsync === 'function') await gl.compileAsync(this, this.camera);
+      else gl.compile?.(this, this.camera);
+    };
+    try {
+      // Visible for the first pass: the light count IS the cache key, so a
+      // hidden group would warm the wrong permutation and change nothing.
+      // Nothing can flash on screen — the room sits at INTERIOR_ORIGIN,
+      // 200u below the south pole, behind the planet from any play camera.
+      await warm(true);
+      await warm(false);
+    } catch {
+      // Warm-up is an optimisation, never a requirement.
+    } finally {
+      g.visible = wasVisible;
+    }
   }
 
   /** Step inside: re-theme the room (wall tint, themed furniture set, rug,

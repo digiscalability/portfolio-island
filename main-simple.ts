@@ -1518,6 +1518,11 @@ class SimpleApp {
       const syncProfile = () => void this.syncProfile();
       this.idleDefer(startMusic, 5000);
       this.idleDefer(syncProfile, 4000);
+      // The room behind every door — 219 meshes plus 39 shader programs — is
+      // otherwise built and compiled on the frame the player first presses E.
+      // Warm it in idle time instead. Scheduled last: music and profile sync
+      // both surface sooner. See GameScene.warmInterior for the measurements.
+      this.idleDefer(() => void this.scene.warmInterior(), 9000);
       // (Vercel Analytics inject() moved to module top — pre-boot pageviews.)
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
@@ -5085,11 +5090,32 @@ class SimpleApp {
         const SLICE = 40000; // samples per slice (~a few ms) — caps each task
 
         const fill = (deadline?: { timeRemaining: () => number; didTimeout: boolean }) => {
-          const hasTime = () =>
-            deadline ? deadline.timeRemaining() > 3 || deadline.didTimeout : true;
+          // `didTimeout` means the page NEVER went idle for 500ms — i.e. the
+          // fly-in, the one window this deferral exists to protect. The old
+          // guard read it as "unlimited time" (`|| deadline.didTimeout`), so
+          // the time budget switched itself OFF on exactly the busiest frames
+          // and ran the full 40k-sample slice inline. Fall back to a wall
+          // clock there instead of surrendering the budget.
+          const started = performance.now();
+          const outOfTime = () =>
+            deadline
+              ? deadline.didTimeout
+                ? performance.now() - started >= 6
+                : deadline.timeRemaining() <= 3
+              : false;
           while (ch < 2) {
             let budget = SLICE;
-            while (i < N && budget-- > 0 && hasTime()) {
+            // The clock is read once per CHECK block, not once per sample:
+            // timeRemaining() is a real call, and at 5.3M samples it cost more
+            // than the synthesis it was guarding. The counter also guarantees
+            // forward progress — a pure time test can stop at zero samples and
+            // reschedule forever on a permanently busy page.
+            let sinceCheck = 0;
+            while (i < N && budget-- > 0) {
+              if (++sinceCheck >= 4096) {
+                sinceCheck = 0;
+                if (outOfTime()) break;
+              }
               const t = i / sr;
 
               // --- Chord pad: warm triangle blend, breathing ---

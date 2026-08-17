@@ -730,3 +730,43 @@ describe('HUD — one chip recipe for the top-right column', () => {
     expect(ui).toContain('this.emoteBtnEl.style.right = this.isTouch');
   });
 });
+
+describe('smoothness round 2 — the two measured hitches', () => {
+  test('music slices keep a time budget when the page never goes idle', () => {
+    const main = src('main-simple.ts');
+    // THE BUG: `deadline.timeRemaining() > 3 || deadline.didTimeout` treated a
+    // TIMED-OUT idle callback as unlimited time. requestIdleCallback sets
+    // didTimeout precisely when the page has been too busy to go idle for
+    // 500ms — i.e. the fly-in — so the budget switched itself off on exactly
+    // the frames it existed to protect, and ran the whole 40k-sample slice.
+    expect(main).not.toMatch(/timeRemaining\(\) > 3 \|\| deadline\.didTimeout/);
+    // The timed-out path falls back to a wall clock instead of surrendering.
+    expect(main).toContain('performance.now() - started >= 6');
+    expect(main).toContain('deadline.timeRemaining() <= 3');
+    // And the clock is read per BLOCK, not per sample: at 5.3M samples the
+    // guard cost more than the synthesis it guarded. The counter also
+    // guarantees forward progress, which a pure time test does not.
+    expect(main).toContain('if (++sinceCheck >= 4096)');
+  });
+
+  test('the interior is built and compiled in idle time, not on the first E', () => {
+    const scene = src('GameScene.ts');
+    // MEASURED on prod: 219 meshes / 74 materials in 16.3ms, plus 39 shader
+    // programs (103 -> 142) on the first frame that shows the room — the room
+    // carries 4 PointLights and three.js bakes light COUNTS into every lit
+    // program's cache key, so opening a door re-keys the entire scene.
+    expect(scene).toContain('public async warmInterior()');
+    expect(scene).toContain('if (this.interiorWarmed) return;');
+    // BOTH permutations: leaving costs compiles too, because the light count
+    // drops back when the group is hidden again.
+    expect(scene).toContain('await warm(true)');
+    expect(scene).toContain('await warm(false)');
+    // Restores whatever visibility it found — warming must never leave the
+    // room showing, nor hide a room the player is standing in.
+    expect(scene).toContain('g.visible = wasVisible');
+    // Off the boot window AND off the interaction: scheduled through the same
+    // idle deferral that already carries music and profile sync.
+    const main = src('main-simple.ts');
+    expect(main).toContain('this.idleDefer(() => void this.scene.warmInterior()');
+  });
+});
