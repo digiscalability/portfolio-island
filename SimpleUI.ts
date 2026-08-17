@@ -367,14 +367,16 @@ export class SimpleUI {
     // emote's row and the two MEASURED a 27x33 overlap with both taking
     // taps. Push the emote clear of the column.
     if (this.emoteBtnEl) {
-      // Restore branches by surface: touch tier-2 lives at right+10, desktop
-      // sits in the icon row at +124 — restoring both to +10 stacked the 😀
-      // on the 🔊 after any breakpoint flip.
-      this.emoteBtnEl.style.right = short
-        ? 'calc(var(--sar, 0px) + 108px)'
-        : this.isTouch
-          ? 'calc(var(--sar, 0px) + 10px)'
-          : 'calc(var(--sar, 0px) + 124px)';
+      // Restore branches by surface: touch tier-2 lives at right+10 (108 in
+      // short landscape, clear of the action column), desktop sits in the
+      // icon row at +124 at EVERY height — the short branch must be gated on
+      // isTouch too, or a short DESKTOP window (max-height 500 is just a
+      // resized browser) parks 😀 on the 🎨 slot.
+      this.emoteBtnEl.style.right = this.isTouch
+        ? short
+          ? 'calc(var(--sar, 0px) + 108px)'
+          : 'calc(var(--sar, 0px) + 10px)'
+        : 'calc(var(--sar, 0px) + 124px)';
     }
     // Same class of bug on the left: short-landscape raises the radar to
     // top+8, straight under the day/weather badge at top+10 (measured 64x26).
@@ -5210,7 +5212,9 @@ export class SimpleUI {
     const hints: string[] = [];
     if (bird + cat + fish > 0) hints.push('F feed');
     if (meals > 0) hints.push('G eat');
-    this.feedDiv.style.display = 'block';
+    // 'flex', not 'block' — the CHIP recipe centers its content with flex;
+    // a block re-show dropped the icon/text baseline out of center.
+    this.feedDiv.style.display = 'flex';
     this.feedDiv.textContent = `${parts.join('  ')}  ·  ${hints.join(' · ')}`;
     this.feedDiv.style.transform = 'scale(1.35)';
     const el = this.feedDiv;

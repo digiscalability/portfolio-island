@@ -2353,11 +2353,16 @@ class SimpleApp {
           }
         }
         if (jumpInput && player && !player.isInWater()) {
-          // Edge-triggered: one blip per press — gated on the SAME predicate
-          // the physics uses (canJump: grounded OR coyote), so the sound can
-          // never fire without a jump or a jump go silent on a slope crest.
-          if (player.canJump() && !this.prevJumpHeld) sfx.jump();
-          this.scene.playerJump();
+          // Edge-triggered — SOUND AND PHYSICS TOGETHER, one jump per
+          // physical press. The sound was edge-gated but playerJump() still
+          // ran every held frame, so holding Space bunny-hopped SILENTLY on
+          // each landing (snap-down makes landings frequent on slopes) while
+          // the run-share comment claims held Space never re-jumps. Both now
+          // share the same edge and the same canJump predicate.
+          if (player.canJump() && !this.prevJumpHeld) {
+            sfx.jump();
+            this.scene.playerJump();
+          }
         }
         this.prevJumpHeld = jumpInput;
         // Breath meter + underwater vignette

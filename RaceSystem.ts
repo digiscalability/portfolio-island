@@ -204,6 +204,10 @@ export class RaceSystem {
         roughness: 0.5,
         transparent: true,
         opacity: 0.9,
+        // Semi-transparent + depthWrite is the punch-holes-behind-it class
+        // (see the cloud materials): at 0.9 the ring occluded spray, bubbles
+        // and name pills seen through it.
+        depthWrite: false,
       });
       const ring = new THREE.Mesh(ringGeo, mat);
       g.add(ring);

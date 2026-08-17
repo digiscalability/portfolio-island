@@ -75,7 +75,7 @@ describe('touch layout recomposition', () => {
   });
 
   test('narrow-portrait recompose exists (SE-class radar + chip row)', () => {
-    const r = fn('SimpleUI.ts', 'private applyResponsiveHud', 2600);
+    const r = fn('SimpleUI.ts', 'private applyResponsiveHud', 3800);
     expect(r).toContain('narrow');
     expect(r).toContain("'120px'");
   });
@@ -83,7 +83,7 @@ describe('touch layout recomposition', () => {
   test('landscape SE re-lanes the surfaces that collide there', () => {
     // 667x375 was the audit's biggest miss: nothing but the minimap ever
     // reflowed for it. Each of these was MEASURED as a real overlap.
-    const r = fn('SimpleUI.ts', 'private applyResponsiveHud', 2600);
+    const r = fn('SimpleUI.ts', 'private applyResponsiveHud', 3800);
     expect(r).toContain('emoteBtnEl'); // was 27x33 into the WAVE button (tap conflict)
     expect(r).toContain('envBadgeDiv'); // was 64x26 into the raised radar
     // The bulletin/toast lanes must be breakpoint-aware: bottom+250 on a

@@ -8341,7 +8341,11 @@ export class GameScene extends THREE.Scene {
       // transparent pass otherwise re-sorts by origin distance every frame,
       // and two co-banded sets flipping blend order as they drift is the
       // slow background shimmer during any crossfade.
-      mesh.renderOrder = spec.set === 'fair' ? 10 : 11;
+      // FRACTIONAL on purpose: 10/11 sat ABOVE the ground transparents —
+      // name pills (2) and chat bubbles (3) silhouetted against the sky were
+      // painted over by clouds. 0.1/0.2 keeps the fair<storm pin while
+      // staying below shadow blobs/pills/bubbles and above the -1 sky discs.
+      mesh.renderOrder = spec.set === 'fair' ? 0.1 : 0.2;
       cloud.add(mesh);
       cloud.position.set(spec.altitude, 0, 0);
       // Map cloud-local up onto the radial axis (flat base toward the ground).
@@ -11521,7 +11525,11 @@ export class GameScene extends THREE.Scene {
       //     directly above ("visible-gating so a faded set costs zero") was
       //     false in both halves. Reaching a true 0 makes it true.
       this.cloudMat.opacity = 1 - this.cloudWet;
-      if (this.stormCloudMat) this.stormCloudMat.opacity = 0.95 * this.cloudWet;
+      // min(1, 1.06*wet): the old flat 0.95 ceiling meant the storm set could
+      // NEVER satisfy the >= 0.999 depthWrite gate below — permanent full-rain
+      // skies kept semi-transparent storm slabs with no self-occlusion. The
+      // 1.06 slope reaches 1.0 at wet ~0.94, matching "full rain" visually.
+      if (this.stormCloudMat) this.stormCloudMat.opacity = Math.min(1, 1.06 * this.cloudWet);
       // depthWrite FOLLOWS opacity: fully-opaque clouds keep correct
       // self-occlusion of their merged puffs, while any semi-transparent
       // cloud stops writing depth so it can't punch holes in the ones behind

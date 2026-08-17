@@ -73,6 +73,9 @@ export class Mailbox {
       emissiveIntensity: 0.6,
       transparent: true,
       opacity: 0,
+      // Like the beam below: a transparent that writes depth is an invisible
+      // mask at opacity 0 — it clipped the delivery beam rising behind it.
+      depthWrite: false,
     });
     const glow = new THREE.Mesh(glowGeometry, this.glowMaterial);
     glow.position.y = 2.2;

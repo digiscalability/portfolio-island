@@ -106,7 +106,7 @@ describe('slope feel — snap-down, uphill cost, coyote jump', () => {
     expect(player).toMatch(/clamp\(1 \/ \(1 \+ Math\.max\(0, grade\) \* 0\.9\), 0\.55, 1\)/);
   });
 
-  test('coyote jump: 120ms grace, and the SFX gate shares the predicate', () => {
+  test('coyote jump: 120ms grace, and SOUND AND PHYSICS share one edge', () => {
     const player = src('SimplePlayer.ts');
     expect(player).toContain('COYOTE_MS = 120');
     expect(player).toContain('public canJump()');
@@ -115,6 +115,12 @@ describe('slope feel — snap-down, uphill cost, coyote jump', () => {
     // keypress frame and went silent on exactly the crest-jumps coyote saves.
     expect(main).toContain('player.canJump() && !this.prevJumpHeld');
     expect(main).not.toContain('player.isOnGround() && !this.prevJumpHeld');
+    // ...and playerJump() must live INSIDE that edge block: outside it, a
+    // held Space re-jumped silently on every snap-down landing while the
+    // edge-gated sound stayed quiet — physics and audio disagreed per frame.
+    const edge = main.slice(main.indexOf('player.canJump() && !this.prevJumpHeld'));
+    const block = edge.slice(0, edge.indexOf('}'));
+    expect(block).toContain('this.scene.playerJump()');
   });
 });
 
@@ -135,14 +141,31 @@ describe('clouds — stable compositing + non-degenerate shapes', () => {
   test('cross-set compositing is pinned and depthWrite tracks opacity', () => {
     const scene = src('GameScene.ts');
     // Fair under storm always — renderOrder beats the origin-distance sort
-    // that flipped per camera step.
-    expect(scene).toMatch(/renderOrder = spec\.set === 'fair' \? 10 : 11/);
+    // that flipped per camera step. FRACTIONAL (0.1/0.2, not 10/11): the pin
+    // must stay BELOW the ground transparents (shadow blobs 1, name pills 2,
+    // chat bubbles 3) or clouds paint over pills silhouetted against the sky.
+    expect(scene).toMatch(/renderOrder = spec\.set === 'fair' \? 0\.1 : 0\.2/);
     // depthWrite only when fully opaque: a half-faded cloud writing depth
     // punched holes in everything sorted behind it.
     expect(scene).toContain('this.cloudMat.depthWrite = this.cloudMat.opacity >= 0.999');
     // The storm tower hides until it actually grows — 'cloudy' (wet 0.55)
     // left it a permanently visible squashed pancake before.
     expect(scene).toContain('this.towerMesh.visible = this.towerGrow > 0.05');
+    // The storm set must be ABLE to reach the depthWrite gate: a flat 0.95
+    // ceiling meant full-rain skies never regained self-occlusion.
+    expect(scene).toContain('this.stormCloudMat.opacity = Math.min(1, 1.06 * this.cloudWet)');
+  });
+
+  test('the depthWrite class is closed at the other flagged sites', () => {
+    // Same failure shape as the clouds, found by the follow-up sweep: a
+    // transparent material that writes depth is an invisible mask at low
+    // opacity and punches holes behind itself at partial opacity.
+    const mailbox = src('Mailbox.ts');
+    const glow = mailbox.slice(mailbox.indexOf('glowMaterial = new'), mailbox.length);
+    expect(glow.slice(0, 400)).toContain('depthWrite: false');
+    const race = src('RaceSystem.ts');
+    const ring = race.slice(race.indexOf('emissive: 0x2266aa'));
+    expect(ring.slice(0, 400)).toContain('depthWrite: false');
   });
 });
 
@@ -192,5 +215,17 @@ describe('HUD — one chip recipe for the top-right column', () => {
     const fps = ui.slice(start, ui.indexOf('this.playerCountDiv = document.createElement', start));
     expect(fps).toContain('bottom:');
     expect(fps).not.toMatch(/top: 'calc/);
+  });
+
+  test('chip-recipe regressions from the follow-up review stay fixed', () => {
+    const ui = src('SimpleUI.ts');
+    // The feed chip re-shows as FLEX — a block re-show drops the CHIP
+    // recipe's centering the first time charges go 0 -> nonzero.
+    expect(ui).toContain("this.feedDiv.style.display = 'flex'");
+    expect(ui).not.toContain("this.feedDiv.style.display = 'block'");
+    // The emote responsive restore is gated by SURFACE first: the short-
+    // landscape media query also matches a short DESKTOP window, which
+    // parked the desktop emote on the customize slot.
+    expect(ui).toContain('this.emoteBtnEl.style.right = this.isTouch');
   });
 });
