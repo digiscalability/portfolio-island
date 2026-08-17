@@ -383,6 +383,52 @@ describe('HUD — one chip recipe for the top-right column', () => {
     expect(island).toContain('if (inst.isInstancedMesh) inst.dispose()');
   });
 
+  test('GLB clones collapse to instanced draws, and the fade stops leaking transparency', () => {
+    const island = src('Island.ts');
+    // Object3D.clone() SHARES geometry+materials, so N identical static
+    // clones are N draws of the same buffers. The collapse re-packs the
+    // RESULT of the existing placement logic, so transforms are preserved.
+    expect(island).toContain('const collapseClonesToInstances =');
+    expect(island).toContain('collapseToInstances: true'); // lamps opt in
+    // CONSERVATIVE bail: skinned (per-clone skeleton), nested instanced,
+    // points/lines, hidden sub-meshes, or a DEGENERATE split (prepareClone
+    // mints per-clone materials for non-standard sources → one single-
+    // instance mesh per clone, strictly worse) all leave the clones alone.
+    expect(island).toContain('(m as THREE.SkinnedMesh).isSkinnedMesh ||');
+    expect(island).toContain('!m.visible');
+    expect(island).toContain('buckets.size >= clones.length');
+    // An animated model must never collapse — mixers are bound per clone.
+    expect(island).toContain('options.collapseToInstances && animations.length === 0');
+    // Instances must not be named with a placeholder prefix, or the loader
+    // would treat them as replaceable stand-ins (the bug that hid the
+    // procedural fleet and dropped junk clones at the planet core).
+    expect(island).toContain('inst.name = `glbfleet_${label}${idx++}`');
+    // The clones are DETACHED, never disposed: the instances now own their
+    // geometry and materials, and the fade still animates those materials.
+    expect(island).toContain('for (const clone of clones) clone.parent?.remove(clone)');
+
+    // The fade forced transparent=true (via prepareClone's opacity-0 start)
+    // and never put it back, leaving every GLB-replaced prop in the
+    // transparent pass forever. The authored value must be snapshotted from
+    // the SOURCE model — clones share its materials, so by the time a clone
+    // exists the flag has already been overwritten.
+    expect(island).toContain('const snapshotAuthoredMaterials =');
+    expect(island).toContain('const restoreAuthoredMaterials =');
+    expect(island).toContain('mat.transparent = authored.transparent');
+    // A material prepareClone REPLACED has a uuid the snapshot never saw —
+    // it is authored opaque by construction, so default rather than skip.
+    expect(island).toContain('snap.get(mat.uuid) ?? { transparent: false, opacity: 1 }');
+    // BOTH GLB loaders must restore — the tree fade had no terminal branch
+    // at all, leaving 4 DOUBLE-SIDED materials per tree in the sorted
+    // transparent pass for the whole session.
+    expect(island).toContain('restoreAuthoredMaterials(fadeMats, authoredMats)');
+    expect(island).toContain('restoreAuthoredMaterials(treeFadeMats, authoredTreeMats)');
+    // GameScene owns the island teardown (Island.dispose has no callers), so
+    // the instanceMatrix release has to live there too.
+    const scene = src('GameScene.ts');
+    expect(scene).toContain('if (inst.isInstancedMesh) inst.dispose()');
+  });
+
   test('villagers cull with an inflated pose-proof sphere (round 4)', () => {
     const npc = src('NPC.ts');
     // frustumCulled=false kept ~28 skinned draws in BOTH passes from

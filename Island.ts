@@ -8557,6 +8557,157 @@ export class Island {
          *  lets a caller retire the procedural fallback it just superseded
          *  (street lamps hide their instanced fleet here). */
         onReplaced?: (count: number) => void;
+        /** Re-pack the placed clones into InstancedMesh (one per distinct
+         *  geometry+material). Only for STATIC props — anything animated,
+         *  skinned, or individually moved/hidden later must stay a clone. */
+        collapseToInstances?: boolean;
+      };
+
+      /**
+       * The GLB fade-in's two halves, shared by every loader below.
+       *
+       * `prepareClone` forces `transparent=true; opacity=0` so a clone can
+       * fade up — and clones SHARE the source model's materials, so by the
+       * time any clone exists the authored values are already gone. Snapshot
+       * from the MODEL, before the first prepareClone call; restore when the
+       * fade lands. Nothing restored them before, so every GLB-replaced prop
+       * on the island sat in the sorted transparent pass with no early-Z
+       * forever, purely as a leftover of a 600ms animation.
+       */
+      type AuthoredMat = { transparent: boolean; opacity: number };
+      const snapshotAuthoredMaterials = (model: THREE.Object3D): Map<string, AuthoredMat> => {
+        const snap = new Map<string, AuthoredMat>();
+        model.traverse((o) => {
+          if (!(o instanceof THREE.Mesh)) return;
+          const list = Array.isArray(o.material) ? o.material : [o.material];
+          for (const mat of list) {
+            if (mat && !snap.has(mat.uuid)) {
+              snap.set(mat.uuid, { transparent: mat.transparent, opacity: mat.opacity });
+            }
+          }
+        });
+        return snap;
+      };
+      /** Collect a placed clone's materials so the fade can hand them back. */
+      const collectFadeMaterials = (clone: THREE.Object3D): THREE.Material[] => {
+        const out: THREE.Material[] = [];
+        clone.traverse((o) => {
+          if (!(o instanceof THREE.Mesh)) return;
+          const list = Array.isArray(o.material) ? o.material : [o.material];
+          for (const mat of list) if (mat) out.push(mat);
+        });
+        return out;
+      };
+      const restoreAuthoredMaterials = (
+        mats: THREE.Material[],
+        snap: Map<string, AuthoredMat>,
+      ): void => {
+        for (const mat of mats) {
+          // prepareClone REPLACES some source materials with fresh
+          // MeshStandardMaterials (non-standard/physical sources), whose
+          // uuid the snapshot has never seen — those are authored opaque by
+          // construction, so fall back to that rather than skipping them.
+          const authored = snap.get(mat.uuid) ?? { transparent: false, opacity: 1 };
+          if (mat.transparent !== authored.transparent) {
+            mat.transparent = authored.transparent;
+            mat.needsUpdate = true;
+          }
+          if (mat.opacity !== authored.opacity) mat.opacity = authored.opacity;
+        }
+      };
+
+      /**
+       * Re-pack a set of identical, STATIC GLB clones into InstancedMesh —
+       * one per distinct geometry+material pair.
+       *
+       * Object3D.clone() SHARES geometry and materials, so N clones of the
+       * same model are N draw calls of the same two buffers: exactly what
+       * instancing exists for. The clones' own placement logic (surface
+       * seating, inherited yaw, random spin, fitHeight, overrides) runs
+       * untouched first and this only re-packs the RESULT, so the world
+       * transform of every part is preserved bit for bit.
+       *
+       * The clones are detached but NOT disposed: the instances now hold
+       * their geometry and materials, and the fade-in closure still animates
+       * those same shared materials (so the fade still reads correctly).
+       */
+      const collapseClonesToInstances = (clones: THREE.Object3D[], label: string): number => {
+        if (clones.length < 2) return 0;
+        this.mesh.updateMatrixWorld(true);
+        const toLocal = new THREE.Matrix4().copy(this.mesh.matrixWorld).invert();
+        type Bucket = {
+          geometry: THREE.BufferGeometry;
+          material: THREE.Material | THREE.Material[];
+          castShadow: boolean;
+          receiveShadow: boolean;
+          matrices: THREE.Matrix4[];
+        };
+        const buckets = new Map<string, Bucket>();
+        let skipped = 0;
+        for (const clone of clones) {
+          clone.updateWorldMatrix(true, true);
+          clone.traverse((node) => {
+            const m = node as THREE.Mesh & {
+              isPoints?: boolean;
+              isLine?: boolean;
+              isInstancedMesh?: boolean;
+            };
+            if (!m.geometry) return; // pure transform node
+            // CONSERVATIVE: anything carrying geometry that is not a plain,
+            // visible Mesh makes the whole collapse bail (skinned = per-clone
+            // skeleton; instanced = would flatten to one; points/lines draw
+            // differently; hidden = would become permanently visible).
+            if (
+              !m.isMesh ||
+              m.isInstancedMesh ||
+              m.isPoints ||
+              m.isLine ||
+              (m as THREE.SkinnedMesh).isSkinnedMesh ||
+              !m.visible
+            ) {
+              skipped++;
+              return;
+            }
+            const matKey = Array.isArray(m.material)
+              ? m.material.map((x) => x.uuid).join(',')
+              : m.material.uuid;
+            const key = `${m.geometry.uuid}|${matKey}`;
+            let b = buckets.get(key);
+            if (!b) {
+              b = {
+                geometry: m.geometry,
+                material: m.material,
+                castShadow: m.castShadow,
+                receiveShadow: m.receiveShadow,
+                matrices: [],
+              };
+              buckets.set(key, b);
+            }
+            b.matrices.push(new THREE.Matrix4().multiplyMatrices(toLocal, m.matrixWorld));
+          });
+        }
+        // Bail (leaving the clones untouched) on anything non-collapsible, and
+        // on a DEGENERATE split: prepareClone mints a fresh material per clone
+        // for non-standard sources, which would yield one single-instance mesh
+        // per clone — the same draw count plus N instanceMatrix buffers.
+        if (skipped > 0 || buckets.size === 0 || buckets.size >= clones.length) return 0;
+        let idx = 0;
+        for (const b of buckets.values()) {
+          const inst = new THREE.InstancedMesh(b.geometry, b.material, b.matrices.length);
+          // NEVER name these with a placeholder prefix — findPlaceholders
+          // matches by prefix and would treat them as replaceable stand-ins.
+          inst.name = `glbfleet_${label}${idx++}`;
+          inst.castShadow = b.castShadow;
+          inst.receiveShadow = b.receiveShadow;
+          // The fleets ring the planet, so one bounding sphere spans the whole
+          // world and culling could only ever be all-or-nothing.
+          inst.frustumCulled = false;
+          for (let i = 0; i < b.matrices.length; i++) inst.setMatrixAt(i, b.matrices[i]);
+          inst.instanceMatrix.needsUpdate = true;
+          this.mesh.add(inst);
+        }
+        for (const clone of clones) clone.parent?.remove(clone);
+        return buckets.size;
       };
 
       // Generic loader & replacer: load url and replace placeholders (by name prefix)
@@ -8573,6 +8724,10 @@ export class Island {
                 const animations = gltf.animations || [];
                 if (!model) return;
                 const placeholders = findPlaceholders(prefix);
+                const placedClones: THREE.Object3D[] = [];
+                // Authored transparency, read before prepareClone overwrites
+                // it on the shared materials (see snapshotAuthoredMaterials).
+                const authoredMats = snapshotAuthoredMaterials(model);
                 const base = url.replace(/^.*[\\/]/, '');
                 const overridesFromManifest = modelOverrides[base] || {};
                 placeholders.forEach((ph) => {
@@ -8660,6 +8815,7 @@ export class Island {
                     clone.scale.multiplyScalar(jitter);
                   }
                   parent.add(clone);
+                  placedClones.push(clone);
 
                   // If the GLTF contains animations, create mixer for this clone and play a sensible default (Idle/first)
                   try {
@@ -8684,6 +8840,7 @@ export class Island {
                   // fade in/out
                   const duration = 600;
                   const start = performance.now();
+                  const fadeMats = collectFadeMaterials(clone);
                   const step = () => {
                     const now = performance.now();
                     const t = Math.min(1, (now - start) / duration);
@@ -8713,6 +8870,7 @@ export class Island {
                     }
                     if (t < 1) requestAnimationFrame(step);
                     else {
+                      restoreAuthoredMaterials(fadeMats, authoredMats);
                       try {
                         ph.visible = false;
                       } catch {
@@ -8722,6 +8880,27 @@ export class Island {
                   };
                   requestAnimationFrame(step);
                 });
+                // Re-pack the freshly placed clones into instanced draws
+                // (static props only — see collapseClonesToInstances).
+                // NEVER collapse an animated model: the mixers created above
+                // are bound to the individual clones, and collapsing would
+                // detach them — freezing the pose while the mixer keeps
+                // ticking and pinning every clone alive for the session.
+                if (options.collapseToInstances && animations.length === 0) {
+                  try {
+                    const n = collapseClonesToInstances(
+                      placedClones,
+                      base.replace(/\.(glb|gltf)$/i, '_'),
+                    );
+                    if (n > 0) {
+                      console.log(
+                        `🔦 ${placedClones.length} ${base} clones collapsed into ${n} instanced draw(s)`,
+                      );
+                    }
+                  } catch (e) {
+                    console.warn('[Island] instance collapse skipped:', e);
+                  }
+                }
                 // The authored model is in: let the caller retire whatever
                 // procedural stand-in it just superseded.
                 try {
@@ -8776,6 +8955,10 @@ export class Island {
         candidates: [ak + '/Fantasy Props MegaKit[Standard]/Exports/glTF/Lantern_Wall.gltf'],
         heightOffset: -0.04,
         randomYaw: true,
+        // 57 identical static clones = 114 draws of the same two buffers.
+        // They never move, animate or hide individually (the anchors carry
+        // the colliders and light pools), so they re-pack into 2 draws.
+        collapseToInstances: true,
         // The authored lamps ARE the lamps now — retire the fallback fleet
         // (one flag each, materials untouched, so a failed load keeps it).
         onReplaced: () => {
@@ -8888,6 +9071,9 @@ export class Island {
                 return;
               }
               const overrides = modelOverrides['tree.glb'] ?? modelOverrides['tree.gltf'];
+              // Same snapshot the other loader takes — the tree fade below
+              // has the identical prepareClone start state.
+              const authoredTreeMats = snapshotAuthoredMaterials(model);
               // remove instanced meshes (if present)
               const toRemove: THREE.Object3D[] = [];
               this.mesh.traverse((object) => {
@@ -8899,6 +9085,16 @@ export class Island {
                 }
               });
               toRemove.forEach((object) => {
+                // Detaching alone leaked the procedural trees' geometry,
+                // materials AND instanceMatrix — nothing else references
+                // them once they are out of the graph.
+                const m = object as THREE.Mesh;
+                m.geometry?.dispose?.();
+                const mat = m.material;
+                if (Array.isArray(mat)) mat.forEach((x) => this.disposeMaterial(x));
+                else if (mat) this.disposeMaterial(mat);
+                const inst = object as THREE.InstancedMesh;
+                if (inst.isInstancedMesh) inst.dispose();
                 if (object.parent) object.parent.remove(object);
               });
               // Trees: even golden-spiral spread through the shared spacing
@@ -8997,25 +9193,22 @@ export class Island {
                 // quick fade-in
                 const duration = 800;
                 const start = performance.now();
+                const treeFadeMats = collectFadeMaterials(copy);
                 const step = () => {
                   const now = performance.now();
                   const t = Math.min(1, (now - start) / duration);
-                  copy.traverse((object) => {
-                    if (object instanceof THREE.Mesh) {
-                      const materials = Array.isArray(object.material)
-                        ? object.material
-                        : [object.material];
-                      materials.forEach((material) => {
-                        if (!material) return;
-                        material.opacity = t;
-                        if (t < 1) {
-                          material.transparent = true;
-                        }
-                        material.needsUpdate = true;
-                      });
-                    }
-                  });
+                  for (const material of treeFadeMats) {
+                    material.opacity = t;
+                    if (t < 1) material.transparent = true;
+                    material.needsUpdate = true;
+                  }
                   if (t < 1) requestAnimationFrame(step);
+                  // This branch did not exist: the tree fade never handed the
+                  // materials back, so every GLB tree (4 DOUBLE-SIDED leaf/
+                  // trunk materials) stayed in the sorted transparent pass
+                  // for the whole session — the same leak the other loader
+                  // had, on the worse geometry.
+                  else restoreAuthoredMaterials(treeFadeMats, authoredTreeMats);
                 };
                 requestAnimationFrame(step);
               }

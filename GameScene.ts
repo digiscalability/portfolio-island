@@ -14517,6 +14517,12 @@ export class GameScene extends THREE.Scene {
         const mat = (obj as THREE.Mesh).material;
         if (Array.isArray(mat)) mat.forEach((m) => m?.dispose?.());
         else mat?.dispose?.();
+        // InstancedMesh owns a GPU instanceMatrix buffer on top of its
+        // geometry/material — grass, rocks, flowers and both lamp fleets.
+        // (Island.dispose() does this too, but nothing calls it: this
+        // hand-rolled traversal IS the island teardown path.)
+        const inst = obj as THREE.InstancedMesh;
+        if (inst.isInstancedMesh) inst.dispose();
       });
     }
 
