@@ -1148,6 +1148,37 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
+   * Put every exterior light on the side of the day/night gate that the FIRST
+   * rendered frame will put it on — before shaders are pre-compiled.
+   *
+   * three bakes NUM_POINT_LIGHTS / NUM_SPOT_LIGHTS into every lit material's
+   * program cache key, gathering them with traverseVisible(). Lights are
+   * constructed visible, and the four writers that gate them
+   * (EnvironmentCycle's glow loop, the roaming lamp lights, the campfire and
+   * the lighthouse beams) all run from GameScene.update — i.e. inside the rAF
+   * loop, AFTER the boot precompile. So the precompile baked the NIGHT
+   * permutation (10 point + 2 spot), and the first daylight frame dropped it
+   * to 0/0 — invalidating the cache key of EVERY lit material at once and
+   * recompiling the lot in a single frame, mid fly-in. That is precisely the
+   * stall the precompile exists to prevent; it was simply compiling the wrong
+   * side of the gate.
+   *
+   * Writes only booleans: no allocation, no uuid, no Math.random — safe to
+   * call from anywhere, including before restoreRandom.
+   */
+  public primeExteriorLightGate(): void {
+    const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
+    const on = day < EXTERIOR_LIGHTS_DAY_CUTOFF;
+    this.traverse((o) => {
+      const l = o as THREE.PointLight & { isPointLight?: boolean; isSpotLight?: boolean };
+      if (!l.isPointLight && !l.isSpotLight) return;
+      // The interior room's own lights live under a group that is hidden
+      // while outdoors, so traverseVisible never counts them either way.
+      l.visible = on;
+    });
+  }
+
+  /**
    * Pedestrian crossings where each district avenue meets the boulevard —
    * the cheapest prop on the island that says "town" rather than "terrain".
    *
@@ -10868,11 +10899,18 @@ export class GameScene extends THREE.Scene {
         tr.regrowT0 = 0;
       }
       if (tr.chopHits > 0 && time - tr.lastChopAt > 6) tr.chopHits = 0; // walked away
+      // Compose in the SCRATCH, then write the Object3D once. Every write to
+      // an Object3D.quaternion fires three's onChange, which back-converts to
+      // Euler (asin + 2 atan2); doing `.copy(base).multiply(sway)` on the
+      // live quaternion paid that TWICE per tree per frame. Across 384 trees
+      // that is 768 back-conversions a frame for an effect whose amplitude is
+      // under 2 degrees. Same result, half the cost.
       this._swayQuat.setFromAxisAngle(
         GameScene._swayAxis,
         Math.sin(time * 1.1 + tr.phase) * 0.018 * gust,
       );
-      tr.group.quaternion.copy(tr.baseQuat).multiply(this._swayQuat);
+      this._swayQuat.premultiply(tr.baseQuat);
+      tr.group.quaternion.copy(this._swayQuat);
     }
 
     // NPCs: wander their district (stroll → pause → stroll) with a walk
@@ -14179,7 +14217,16 @@ export class GameScene extends THREE.Scene {
     // deliberate and not free — it is what keeps villagers, birds and the sea
     // moving out there, which is most of what sells the view as a window
     // rather than a photograph. At 0.5Hz it costs a quarter of what it did.
-    this.interiorViewAccum += deltaTime;
+    // NO unconditional heartbeat. The comment above used to claim the periodic
+    // re-render "keeps villagers, birds and the sea moving out there" — that is
+    // stale: update() early-returns into updateInteriorMode while inside, which
+    // explicitly "freeze[s] the island world (player physics, camera follow,
+    // NPCs, everything)". Nothing the window can see moves, so every 2s it was
+    // re-rendering the whole ~1300-draw scene into a BYTE-IDENTICAL texture for
+    // the entire visit. The refresh now fires only when the image could
+    // actually differ: on entry (aimInteriorOutlook seeds the accumulator, so
+    // re-entering a second building still repaints) and on a time-bucket or
+    // weather change below.
     const bucket = this.envCycle ? Math.floor(this.envCycle.getHour() * 12) : -1;
     const weather = this.envCycle ? this.envCycle.getWeather() : '';
     if (bucket !== this.interiorViewBucket || weather !== this.interiorViewWeather) {

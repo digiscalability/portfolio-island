@@ -115,7 +115,14 @@ export class OrbitCamera {
           if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
           const r = m.geometry.boundingSphere?.radius ?? 0;
           const s = m.getWorldScale(this._flattenScale);
-          if (r * Math.max(s.x, s.y, s.z) < MIN_BLOCKING_RADIUS && rootIndex !== 0) return;
+          // The size filter applies to EVERY root. The old `&& rootIndex !== 0`
+          // escape hatch was meant to exempt "the FIRST root (the terrain)",
+          // but roots[0] is the island GROUP, so it exempted every descendant
+          // — houses, stalls, coins, flowers, fauna — and left ~1,600 meshes
+          // being bounding-sphere tested EVERY frame by the chase camera.
+          // Nothing under 1.2u can meaningfully block a view ray, and the
+          // terrain's own sphere (~109u at R=100) passes on its own merits.
+          if (r * Math.max(s.x, s.y, s.z) < MIN_BLOCKING_RADIUS) return;
         }
         flat.push(m);
       });

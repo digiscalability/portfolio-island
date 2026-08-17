@@ -1280,6 +1280,12 @@ class SimpleApp {
           compile: (scene: unknown, camera: unknown) => void;
           compileAsync?: (scene: unknown, camera: unknown) => Promise<unknown>;
         };
+        // Compile the permutation the FIRST FRAME will actually use. Lights
+        // are born visible and only get gated once update() runs — i.e. after
+        // this — so without priming we compiled the night permutation and the
+        // first daylight frame invalidated every lit program at once, mid
+        // fly-in. See GameScene.primeExteriorLightGate.
+        this.scene.primeExteriorLightGate();
         if (typeof gl.compileAsync === 'function') {
           await gl.compileAsync(this.scene, this.scene.getCamera());
         } else {

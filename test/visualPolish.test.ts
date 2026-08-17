@@ -282,6 +282,61 @@ describe('roads read as roads — kerbs, centre line, and off the camera ray', (
   });
 });
 
+describe('engine smoothness — no mid-flight recompile, no wasted frames', () => {
+  test('the boot precompile bakes the permutation frame 1 will use', () => {
+    const main = src('main-simple.ts');
+    const scene = src('GameScene.ts');
+    // three bakes NUM_POINT_LIGHTS/NUM_SPOT_LIGHTS into every lit material's
+    // program key. Lights are born visible and are only gated once update()
+    // runs — after this compile — so the precompile used to bake the NIGHT
+    // permutation and the first daylight frame invalidated EVERY lit program
+    // at once, mid fly-in. Measured after priming: 174 -> 103 programs and
+    // ZERO programs added by the first render.
+    expect(scene).toContain('public primeExteriorLightGate()');
+    const prime = main.indexOf('primeExteriorLightGate()');
+    const compile = main.indexOf('compileAsync(this.scene');
+    expect(prime).toBeGreaterThan(-1);
+    expect(prime).toBeLessThan(compile);
+    // Booleans only — safe before restoreRandom, no uuid, no Math.random.
+    const start = scene.indexOf('public primeExteriorLightGate()');
+    const body = scene.slice(start, scene.indexOf('\n  }', start));
+    expect(body).toContain('l.visible = on');
+    expect(body).not.toContain('new THREE.');
+  });
+
+  test('the interior window stops re-rendering a frozen world', () => {
+    const scene = src('GameScene.ts');
+    // update() early-returns into updateInteriorMode while inside, which
+    // freezes the island — so the 2s heartbeat was re-rendering the whole
+    // ~1300-draw scene into a byte-identical texture for the whole visit.
+    expect(scene).not.toContain('this.interiorViewAccum += deltaTime');
+    // Re-entry must still repaint: aimInteriorOutlook seeds the accumulator.
+    expect(scene).toContain('this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL');
+  });
+
+  test('the camera size filter applies to every root', () => {
+    const cam = src('OrbitCamera.ts');
+    // `&& rootIndex !== 0` exempted every DESCENDANT of the island group, not
+    // just the terrain — ~1,600 bounding-sphere tests per frame. Measured
+    // after: 555.
+    expect(cam).toContain('if (r * Math.max(s.x, s.y, s.z) < MIN_BLOCKING_RADIUS) return;');
+    expect(cam).not.toContain('MIN_BLOCKING_RADIUS && rootIndex !== 0');
+  });
+
+  test('tree sway writes the quaternion once, not twice', () => {
+    const scene = src('GameScene.ts');
+    // Every Object3D.quaternion write fires three's onChange -> Euler
+    // back-conversion (asin + 2 atan2). copy().multiply() on the LIVE
+    // quaternion paid it twice per tree per frame, 768 times across 384 trees.
+    expect(scene).toContain('this._swayQuat.premultiply(tr.baseQuat)');
+    // Exactly ONE double-write may remain, and it is the FELLING branch (a
+    // chopped tree tipping over — at most one tree at a time, not per-frame
+    // work across the whole population).
+    const doubles = scene.match(/tr\.group\.quaternion\.copy\(tr\.baseQuat\)\.multiply\(/g) ?? [];
+    expect(doubles.length).toBe(1);
+  });
+});
+
 describe('ring traffic — alive, but structurally unable to break the world', () => {
   test('constructed OUTSIDE the seeded window, and never networked', () => {
     const scene = src('GameScene.ts');
