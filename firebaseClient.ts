@@ -65,6 +65,18 @@ export function getFirebaseRealtime(): Promise<{ app: FirebaseApp; db: Database;
       const cred = await signInAnonymously(getAuth(app));
       return { app, db: getDatabase(app), uid: cred.user.uid };
     })();
+    // DO NOT CACHE A REJECTION. `if (!ready)` is false for a rejected promise,
+    // so one transient failure — a blip during the idle subscribe window, an
+    // anonymous-auth rate limit, a privacy blocker on the RTDB host — used to
+    // disable the backend for the ENTIRE session: every later call re-rejected
+    // instantly off the cached rejection, with no retry and no 'online'
+    // re-arm. The visible symptom was the contact form failing forever. Clear
+    // the cache on failure so the next caller gets a real attempt, and
+    // re-throw so this attempt still reports the error.
+    ready = ready.catch((e: unknown) => {
+      ready = null;
+      throw e;
+    });
   }
   return ready;
 }

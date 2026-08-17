@@ -754,6 +754,53 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('blocked localStorage cannot brick the welcome card', () => {
+    const ui = src('SimpleUI.ts');
+    // This was the ONE bare localStorage read left in the file (16 of 17
+    // siblings already catch). On iOS Safari with "Block All Cookies" it threw
+    // AFTER the card was appended and panels.open() had raised the scrim and
+    // hidden the touch controls, but BEFORE innerHTML filled it and before the
+    // Escape listener was attached — and welcomeDiv stayed non-null, so
+    // isWelcomeVisible() gated out movement, camera, jump and interaction for
+    // the entire session. Empty black box, no controls, no Escape.
+    expect(ui).toMatch(/let returning = false;\s*try \{\s*returning = localStorage\.getItem/);
+    expect(ui).not.toMatch(/const returning = localStorage\.getItem/);
+  });
+
+  test('page teardown does not burn the first-run welcome unread', () => {
+    const ui = src('SimpleUI.ts');
+    // beforeunload -> dispose() -> hideWelcome() persisted ds_welcomed for a
+    // visitor who closed the tab with the card still on screen. They returned
+    // to the trimmed "Welcome back!" branch and permanently lost the pitch,
+    // the recruiter highlights pill, the secondary CTAs and the compass hint.
+    // On a portfolio, first-visit bounce is most of the traffic.
+    expect(ui).toContain('hideWelcome(persist = true)');
+    expect(ui).toContain('if (!persist) return;');
+    expect(ui).toContain('this.hideWelcome(false)');
+    // The PanelManager sweep IS a dismissal and must still persist.
+    expect(ui).toContain('close: () => this.hideWelcome(),');
+  });
+
+  test('the contact form cannot strand itself or blame a good email', () => {
+    const ui = src('SimpleUI.ts');
+    // submitLead returns false for BOTH a malformed address and any backend
+    // failure, and the caller mapped both to "Please check your email
+    // address." — sending a recruiter with a valid address into a retype loop.
+    expect(ui).toContain("track('lead_failed')");
+    expect(ui).toContain('Could not send — try again, or email admin@digiscalability.com.');
+    // Boards is lazy-loaded and statically imported nowhere, so a failed chunk
+    // fetch used to escape the async handler and leave the site's primary
+    // conversion control disabled on "Sending…" forever. Import inside try.
+    expect(ui).toMatch(/try \{\s*const \{ submitLead \} = await import\('\.\/Boards'\);/);
+    expect(ui).toMatch(/try \{\s*const boards = await import\('\.\/Boards'\);/);
+
+    const fb = src('firebaseClient.ts');
+    // `if (!ready)` is false for a REJECTED promise, so one transient auth or
+    // network failure disabled the backend for the whole session with no retry.
+    expect(fb).toMatch(/ready = ready\.catch\(/);
+    expect(fb).toMatch(/ready = null;\s*throw e;/);
+  });
+
   test('the sky measures elevation from the eye, not the world origin', () => {
     const scene = src('GameScene.ts');
     // The dome is STATIC at the origin with R=800 while the camera orbits at

@@ -49,7 +49,10 @@ describe('the compass pill is the map’s front door', () => {
 describe('the first post-welcome moment belongs to orientation', () => {
   test('one first-ever compass toast fires on welcome close', () => {
     const s = stripped('SimpleUI.ts');
-    const i = s.indexOf('hideWelcome(): void');
+    // hideWelcome took a `persist` flag so page teardown stops burning
+    // ds_welcomed on an unread card; the anchor follows the signature.
+    const i = s.indexOf('hideWelcome(persist');
+    expect(i).toBeGreaterThan(-1); // indexOf(-1) would slice the WHOLE file
     const body = s.slice(i, i + 1600);
     expect(body).toContain("!localStorage.getItem('ds_welcomed')"); // first-ever capture
     expect(body).toContain('ds_hint_compass');
@@ -169,7 +172,12 @@ describe('the welcome card hierarchy matches the audience', () => {
   const welcome = (): string => {
     const s = src('SimpleUI.ts');
     const i = s.indexOf('showWelcome(awayDelta');
-    return s.slice(i, i + 12000);
+    expect(i).toBeGreaterThan(-1);
+    // 14000, not 12000: this slice is taken from the RAW source (comments
+    // included), so documenting a fix inside showWelcome pushes the tail of
+    // the method out of the window and silently drops assertions. Third time
+    // this suite has been bitten by a fixed-length slice.
+    return s.slice(i, i + 14000);
   };
 
   test('the recruiter pill is promoted above the CTAs, footnote gone', () => {

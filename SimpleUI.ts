@@ -1448,8 +1448,18 @@ export class SimpleUI {
       }
       btn.disabled = true;
       btn.textContent = 'Sending…';
-      const { submitLead } = await import('./Boards');
-      const ok = await submitLead(name, email, msg);
+      // The import is INSIDE the try. Boards is lazy-loaded at five sites and
+      // imported statically nowhere, so it is always a separate chunk; on a
+      // flaky connection the rejection used to escape this async handler,
+      // leaving the site's primary conversion control disabled on "Sending…"
+      // forever with the typed message stranded.
+      let ok = false;
+      try {
+        const { submitLead } = await import('./Boards');
+        ok = await submitLead(name, email, msg);
+      } catch {
+        ok = false;
+      }
       if (ok) {
         track('lead_submitted');
         form.innerHTML = `<p style="font-size:15px;color:#a5d6a7;text-align:center;padding:12px 0;">✓ Thanks${
@@ -1458,7 +1468,17 @@ export class SimpleUI {
       } else {
         btn.disabled = false;
         btn.textContent = 'Send message';
-        this.toast('Please check your email address.');
+        // submitLead returns false for BOTH a malformed email and any backend
+        // failure (auth, rules, offline, blocked domain). Blaming the address
+        // for a network fault sends a recruiter with a perfectly good email
+        // into a retype loop and then away. Re-test client-side and only
+        // accuse the address when it is actually wrong.
+        track('lead_failed'); // the missing half of the funnel — success was tracked, failure never
+        this.toast(
+          /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())
+            ? 'Could not send — try again, or email admin@digiscalability.com.'
+            : 'Please check your email address.',
+        );
       }
     });
   }
@@ -2960,10 +2980,17 @@ export class SimpleUI {
         if (!sendBtn) return;
         sendBtn.disabled = true;
         sendBtn.textContent = 'Sending…';
-        const boards = await import('./Boards');
-        const ok = email
-          ? await boards.submitLead(name, email, msg)
-          : await boards.signGuestbook(name, msg);
+        // Import inside the try, same as the contact form: a failed chunk
+        // fetch used to escape this handler and strand the button disabled.
+        let ok = false;
+        try {
+          const boards = await import('./Boards');
+          ok = email
+            ? await boards.submitLead(name, email, msg)
+            : await boards.signGuestbook(name, msg);
+        } catch {
+          ok = false;
+        }
         if (ok) {
           try {
             localStorage.setItem('ds_said_hi', '1');
@@ -3888,7 +3915,24 @@ export class SimpleUI {
     trackOnce('welcome_shown');
 
     // Returning visitors get a brief hello; first-timers get the pitch + CTAs.
-    const returning = localStorage.getItem('ds_welcomed') === '1';
+    //
+    // GUARDED, and it is not paranoia: this was the ONE bare localStorage read
+    // left in this file (16 of 17 siblings already catch). On iOS Safari with
+    // "Block All Cookies" it throws SecurityError HERE — after the card has
+    // been appended and panels.open() has raised the scrim and hidden the
+    // touch controls, but BEFORE innerHTML fills the card and before the
+    // Escape listener is attached. The visitor got a dimmed screen with an
+    // empty black box, no controls, and no Escape; and because welcomeDiv
+    // stayed non-null, isWelcomeVisible() gated out movement, camera, jump and
+    // interaction for the whole session. Default to the FULL pitch: showing a
+    // returning visitor the pitch twice is a far cheaper failure than bricking
+    // a first-time one.
+    let returning = false;
+    try {
+      returning = localStorage.getItem('ds_welcomed') === '1';
+    } catch {
+      /* storage blocked — show the full pitch */
+    }
     const controlsLine = this.isTouch
       ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
       : 'WASD to move · mouse to look · space to jump · Q to wave.';
@@ -4159,11 +4203,23 @@ export class SimpleUI {
   /**
    * Hide welcome message
    */
-  hideWelcome(): void {
+  /** @param persist false ONLY for page teardown — see dispose(). Every other
+   *  caller is a real dismissal and must burn the key. */
+  hideWelcome(persist = true): void {
     if (this.welcomeDiv) {
       this.welcomeDiv.remove();
       this.welcomeDiv = null;
       this.panels.notifyClosed('welcome'); // no-op during a sweep
+      // TEARDOWN IS NOT DISMISSAL. beforeunload -> dispose() -> hideWelcome()
+      // used to burn ds_welcomed for a visitor who closed the tab while the
+      // card was still on screen, unread. They came back to the trimmed
+      // "Welcome back!" branch and permanently lost the pitch, the recruiter
+      // "60-second highlights" pill, the secondary CTA row and the one-time
+      // compass hint. On a portfolio, first-visit bounce is most of the
+      // traffic, so this was burning the pitch for the majority of visitors.
+      // Same class as the featured toast that fired under the opaque loader
+      // and burned its key unseen (see the toast queue notes above).
+      if (!persist) return;
       let wasFirstEver = false;
       try {
         wasFirstEver = !localStorage.getItem('ds_welcomed');
@@ -7097,7 +7153,9 @@ export class SimpleUI {
       this.compassDiv = null;
     }
     this.hideLoading();
-    this.hideWelcome();
+    // false: this is page teardown, not a dismissal. The card may still be on
+    // screen unread — do not burn ds_welcomed on a first-visit bounce.
+    this.hideWelcome(false);
     this.hideInteractionPrompt();
     this.hideCustomize();
     this.hideZonePanel();
