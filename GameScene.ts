@@ -4790,6 +4790,10 @@ export class GameScene extends THREE.Scene {
     wasVisible: boolean;
   }> = [];
   private campfireLit = false;
+  /** NPCs held by a dedicated routine (sailor boats, vendor pitches,
+   *  campfire seats) — the wander loop must skip them. Reference-keyed Set:
+   *  one O(1) lookup replaces three per-NPC-per-frame .some() closures. */
+  private readonly pinnedNpcs = new Set<object>();
 
   /** A stone-ringed campfire on the open ground above the shore, with four
    *  seating logs around it. Lights itself at dusk (updateCampfire) and draws
@@ -5026,6 +5030,7 @@ export class GameScene extends THREE.Scene {
           face: C.seats[i].face.clone(),
           wasVisible: pool[i].meshRef.visible,
         });
+        this.pinnedNpcs.add(pool[i]); // wander loop hands-off while seated
       }
     } else {
       for (const g of this.campfireGuests) {
@@ -5033,6 +5038,7 @@ export class GameScene extends THREE.Scene {
         // Sync the logical position so the wander loop resumes from the log,
         // not from wherever it last thought the villager was standing.
         g.npc.position.copy(g.npc.meshRef.position);
+        this.pinnedNpcs.delete(g.npc); // released back to the wander loop
       }
       this.campfireGuests.length = 0;
     }
@@ -5742,6 +5748,7 @@ export class GameScene extends THREE.Scene {
         quat: npc.meshRef.quaternion.clone(),
         phase: Math.random() * Math.PI * 2,
       });
+      this.pinnedNpcs.add(npc); // vendors mind their pitches — never wander
     }
   }
 
@@ -7807,6 +7814,7 @@ export class GameScene extends THREE.Scene {
         radiusArc: cfg.arc,
         driftRate: cfg.rate,
       });
+      this.pinnedNpcs.add(npc); // afloat — the wander loop never touches them
     }
     console.log(`⛵ ${this.sailors.length} sailors afloat offshore`);
   }
@@ -10733,13 +10741,11 @@ export class GameScene extends THREE.Scene {
         // The Fisherman + Baker run their own routines — skip the wander for them
         if (this.fisherman && npc === this.fisherman.npc) continue;
         if (this.baker && npc === this.baker.npc) continue;
-        if (this.sailors.some((s) => s.npc === npc)) continue;
-        // Market Vendors mind their pitches — they don't wander off to shop.
-        if (this.vendors.some((v) => v.npc === npc)) continue;
-        // Whoever is sitting at the fire is held by updateCampfire. Without
-        // this the wander loop keeps writing their transform and limbs every
-        // frame, and they stand up and walk off their own log.
-        if (this.campfireGuests.some((g) => g.npc === npc)) continue;
+        // Sailors, vendors and campfire guests are all pinned by their own
+        // routines (the guests would stand up and walk off their own log).
+        // One Set lookup — the three .some() scans this replaces allocated
+        // three closures per NPC per frame.
+        if (this.pinnedNpcs.has(npc)) continue;
         const data = npc.meshRef.userData as {
           greetT0?: number;
           lastGreetAt?: number;

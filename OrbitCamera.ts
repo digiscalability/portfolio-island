@@ -138,6 +138,18 @@ export class OrbitCamera {
   // Look-ahead state (see updateCameraPosition) + the ride FOV ease.
   private lookAhead = new THREE.Vector3();
   private _lookAheadTarget = new THREE.Vector3();
+
+  // Per-frame scratch (updateCameraPosition + update ran ~10 heap
+  // allocations per frame — the densest cluster in the codebase; same
+  // convention as SimplePlayer's _normalScratch/_vecScratch).
+  private _camPlayerPos = new THREE.Vector3();
+  private _camNormal = new THREE.Vector3();
+  private _camVel = new THREE.Vector3();
+  private _camRight = new THREE.Vector3();
+  private _camDir = new THREE.Vector3();
+  private _desired = new THREE.Vector3();
+  private _currentCamPos = new THREE.Vector3();
+  private _quat = new THREE.Quaternion();
   private baseFov = 0; // captured on first ride; 0 = fov untouched so far
   private fovTarget = 0;
 
@@ -216,8 +228,8 @@ export class OrbitCamera {
    * parallel-transported follow direction so the camera trails the player.
    */
   private updateCameraPosition(deltaTime: number): void {
-    const playerPos = this.player.getWorldPosition();
-    const surfaceNormal = this.player.getSurfaceNormal(); // "up" at player's location
+    const playerPos = this.player.getWorldPositionInto(this._camPlayerPos);
+    const surfaceNormal = this.player.getSurfaceNormalInto(this._camNormal); // "up" here
 
     // --- Maintain the tangent follow direction ---
     if (!this.followDir) {
@@ -231,20 +243,18 @@ export class OrbitCamera {
       this.followDir = seed;
     }
     // Parallel transport: re-project onto the current tangent plane
-    this.followDir.sub(surfaceNormal.clone().multiplyScalar(this.followDir.dot(surfaceNormal)));
+    // (addScaledVector(n, -v·n) — the allocation-free projection idiom).
+    this.followDir.addScaledVector(surfaceNormal, -this.followDir.dot(surfaceNormal));
     if (this.followDir.lengthSq() < 1e-6) {
-      // Degenerate after projection — re-seed
+      // Degenerate after projection — re-seed (cold path, alloc is fine)
       const seed = new THREE.Vector3(1, 0, 0);
-      this.followDir.copy(seed).sub(surfaceNormal.clone().multiplyScalar(seed.dot(surfaceNormal)));
+      this.followDir.copy(seed).addScaledVector(surfaceNormal, -seed.dot(surfaceNormal));
     }
     this.followDir.normalize();
 
     // Manual orbit: user yaw input rotates the follow direction around "up"
     if (Math.abs(this.yawVelocity) > 1e-5 && deltaTime > 0) {
-      const yawQuat = new THREE.Quaternion().setFromAxisAngle(
-        surfaceNormal,
-        this.yawVelocity * deltaTime,
-      );
+      const yawQuat = this._quat.setFromAxisAngle(surfaceNormal, this.yawVelocity * deltaTime);
       this.followDir.applyQuaternion(yawQuat);
     }
 
@@ -252,10 +262,14 @@ export class OrbitCamera {
     // the vehicle's velocity (the player's own is zero); a stronger pull so
     // the chase cam keeps up with the faster craft.
     if (deltaTime > 0) {
-      const vel = this.externalVelocity ? this.externalVelocity.clone() : this.player.getVelocity();
-      const vTangent = vel.sub(surfaceNormal.clone().multiplyScalar(vel.dot(surfaceNormal)));
+      // COPY into scratch, never mutate in place: setFollowVelocity stores
+      // GameScene's vector by REFERENCE, and the projection below mutates.
+      const vTangent = this.externalVelocity
+        ? this._camVel.copy(this.externalVelocity)
+        : this.player.getVelocityInto(this._camVel);
+      vTangent.addScaledVector(surfaceNormal, -vTangent.dot(surfaceNormal));
       if (vTangent.lengthSq() > 0.25) {
-        const desired = vTangent.clone().normalize().negate(); // behind the motion
+        const desired = this._desired.copy(vTangent).normalize().negate(); // behind the motion
         const strength = this.rideMode ? this.followStrength * 1.8 : this.followStrength;
         const k = Math.min(1, strength * deltaTime);
         this.followDir.lerp(desired, k).normalize();
@@ -276,9 +290,10 @@ export class OrbitCamera {
     }
 
     // --- Build the camera ray (pitch around the tangent right axis) ---
-    const right = surfaceNormal.clone().cross(this.followDir).normalize();
-    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, this.pitch);
-    const cameraDir = this.followDir.clone().applyQuaternion(pitchQuat).normalize();
+    // (_quat is safe to reuse here — its yaw use above is fully consumed.)
+    const right = this._camRight.copy(surfaceNormal).cross(this.followDir).normalize();
+    const pitchQuat = this._quat.setFromAxisAngle(right, this.pitch);
+    const cameraDir = this._camDir.copy(this.followDir).applyQuaternion(pitchQuat).normalize();
 
     // Target point: player + up*height (toward torso level) + look-ahead
     this.targetPosition
@@ -410,7 +425,7 @@ export class OrbitCamera {
     this.updateFov(safeDeltaTime);
 
     // Smooth transition of camera
-    const currentCamPos = new THREE.Vector3();
+    const currentCamPos = this._currentCamPos;
     this.camera.getWorldPosition(currentCamPos);
 
     // Safety check: ensure values are finite

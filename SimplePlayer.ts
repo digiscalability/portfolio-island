@@ -370,6 +370,14 @@ export class SimplePlayer extends THREE.Group {
   // Per-frame scratch (avoid allocating in update()/updateWorldMatrix hot paths)
   private _normalScratch = new THREE.Vector3();
   private _vecScratch = new THREE.Vector3();
+  // Physics-path scratch (gravity dir / ground radial / water radial — the
+  // three consumers run strictly in sequence inside update(), so one field
+  // serves all without aliasing). _moveScratch/_vNormScratch belong to
+  // applyMovement, which previously cloned ~6 vectors per substep — doubled
+  // by the substep split exactly when the frame budget was already blown.
+  private _radialScratch = new THREE.Vector3();
+  private _moveScratch = new THREE.Vector3();
+  private _vNormScratch = new THREE.Vector3();
   private _alignQuat = new THREE.Quaternion();
   private _yawQuat = new THREE.Quaternion();
 
@@ -1723,7 +1731,7 @@ export class SimplePlayer extends THREE.Group {
   }
 
   /** Allocation-free surface normal into a caller-owned vector (hot paths). */
-  private getSurfaceNormalInto(out: THREE.Vector3): THREE.Vector3 {
+  public getSurfaceNormalInto(out: THREE.Vector3): THREE.Vector3 {
     if (this.planetRadius <= 0) return out.set(0, 1, 0);
     out.copy(this.playerPosition).sub(this.planetCenter);
     const len = out.length();
@@ -1911,7 +1919,10 @@ export class SimplePlayer extends THREE.Group {
     // on the way down; the apex (jumpForce²/2g = 1.28u) is unchanged, only
     // the fall shortens (0.32s → 0.25s) for a snappier landing.
     if (this.planetRadius > 0) {
-      const gravDir = this.planetCenter.clone().sub(this.playerPosition).normalize();
+      const gravDir = this._radialScratch
+        .copy(this.planetCenter)
+        .sub(this.playerPosition)
+        .normalize();
       const falling = !this.isGrounded && !this.inWater && this.velocity.dot(gravDir) > 0;
       this.velocity.addScaledVector(
         gravDir,
@@ -2110,9 +2121,9 @@ export class SimplePlayer extends THREE.Group {
       // Spherical ground: keep player on the terrain surface. When a ground
       // sampler is attached, follow the actual displaced terrain (hills and
       // valleys); otherwise fall back to the ideal sphere radius.
-      const toPlayer = this.playerPosition.clone().sub(this.planetCenter);
-      const dist = toPlayer.length();
-      const surfaceNormal = toPlayer.clone().divideScalar(dist);
+      const surfaceNormal = this._radialScratch.copy(this.playerPosition).sub(this.planetCenter);
+      const dist = surfaceNormal.length();
+      surfaceNormal.divideScalar(dist);
       let terrainDist = this.planetRadius;
       if (this.groundSampler) {
         try {
@@ -2182,9 +2193,9 @@ export class SimplePlayer extends THREE.Group {
       this.oxygen = Math.min(1, this.oxygen + dt * SimplePlayer.RECOVER_RATE);
       return;
     }
-    const toPlayer = this.playerPosition.clone().sub(this.planetCenter);
-    const dist = toPlayer.length();
-    const dir = toPlayer.divideScalar(dist);
+    const dir = this._radialScratch.copy(this.playerPosition).sub(this.planetCenter);
+    const dist = dir.length();
+    dir.divideScalar(dist);
     let water: { surface: number; isWater: boolean };
     try {
       water = this.waterSampler(dir);
@@ -2312,12 +2323,15 @@ export class SimplePlayer extends THREE.Group {
     }
 
     // moveInput is already in world space (from GameScene.setPlayerMovement)
-    const moveDir = this.moveInput.clone();
+    const moveDir = this._moveScratch.copy(this.moveInput);
+
+    // The normal is invariant for this whole substep (playerPosition doesn't
+    // move here) — compute it ONCE; three sites used to each allocate one.
+    const normal = this.planetRadius > 0 ? this.getSurfaceNormalInto(this._normalScratch) : null;
 
     // For spherical world, project move direction onto tangent plane
-    if (this.planetRadius > 0) {
-      const normal = this.getSurfaceNormal();
-      moveDir.sub(normal.clone().multiplyScalar(moveDir.dot(normal)));
+    if (normal) {
+      moveDir.addScaledVector(normal, -moveDir.dot(normal));
     }
 
     const moveLength = moveDir.length();
@@ -2331,7 +2345,7 @@ export class SimplePlayer extends THREE.Group {
     const accelRate = 8; // blend rate toward target — was 12; the softer ramp (~0.4s to full stride) is part of the calm-locomotion pass
     const t = Math.min(1, accelRate * Math.max(0.001, _deltaTime));
 
-    if (this.planetRadius > 0) {
+    if (normal) {
       // Spherical world: the tangent direction is a full 3D vector (it has a
       // Y component almost everywhere on the sphere). Decompose velocity into
       // normal + tangential parts, steer ONLY the tangential part toward the
@@ -2339,9 +2353,8 @@ export class SimplePlayer extends THREE.Group {
       // (The old code lerped velocity.x/z only, which is not tangent to the
       // sphere away from the poles — walking used to launch the player off
       // the planet and bend paths into orbits.)
-      const normal = this.getSurfaceNormal();
-      const vNormal = normal.clone().multiplyScalar(this.velocity.dot(normal));
-      const vTangent = this.velocity.clone().sub(vNormal);
+      const vNormal = this._vNormScratch.copy(normal).multiplyScalar(this.velocity.dot(normal));
+      const vTangent = this._vecScratch.copy(this.velocity).sub(vNormal);
       // Swimming stays at ~4.4u/s (multiplier retuned 0.55→0.79 when walk
       // speed calmed 8.0→5.6): the shoreline current pushes back at up to
       // 4.0u/s, so a slower crawl would turn the swim limit into a hard
@@ -2357,20 +2370,20 @@ export class SimplePlayer extends THREE.Group {
       let slopeCost = 1;
       if (this.isGrounded && !this.swimming && this.groundSampler && moveDir.lengthSq() > 1e-6) {
         try {
-          const here = this.getSurfaceNormal();
           const ahead = SimplePlayer._slopeAhead
             .copy(this.playerPosition)
             .addScaledVector(moveDir, 0.6)
             .normalize();
-          const grade = (this.groundSampler(ahead) - this.groundSampler(here)) / 0.6;
+          const grade = (this.groundSampler(ahead) - this.groundSampler(normal)) / 0.6;
           slopeCost = THREE.MathUtils.clamp(1 / (1 + Math.max(0, grade) * 0.9), 0.55, 1);
         } catch {
           /* sampler unavailable — full speed */
         }
       }
-      const target = moveDir
-        .clone()
-        .multiplyScalar(this.effectiveSpeed() * (this.swimming ? 0.79 : 1) * slopeCost); // moveDir already tangent-projected
+      // moveDir is not read again — scale it in place as the steer target.
+      const target = moveDir.multiplyScalar(
+        this.effectiveSpeed() * (this.swimming ? 0.79 : 1) * slopeCost,
+      ); // moveDir already tangent-projected
       vTangent.lerp(target, t);
       this.velocity.copy(vTangent.add(vNormal));
     } else {
@@ -2388,8 +2401,8 @@ export class SimplePlayer extends THREE.Group {
    */
   private settleMovement(dt: number): void {
     if (this.planetRadius > 0) {
-      const normal = this.getSurfaceNormal();
-      const vN = normal.multiplyScalar(this.velocity.dot(normal));
+      const normal = this.getSurfaceNormalInto(this._normalScratch);
+      const vN = normal.multiplyScalar(this.velocity.dot(normal)); // aliases the scratch — nothing reads the unit normal after
       this.velocity.sub(vN); // tangential part, in place
       const sp = this.velocity.length();
       this.velocity.multiplyScalar(sp < 0.15 ? 0 : Math.exp(-10 * dt));
@@ -2407,8 +2420,8 @@ export class SimplePlayer extends THREE.Group {
    */
   private stopMovement(): void {
     if (this.planetRadius > 0) {
-      const normal = this.getSurfaceNormal();
-      const vNormal = normal.multiplyScalar(this.velocity.dot(normal));
+      const normal = this.getSurfaceNormalInto(this._normalScratch);
+      const vNormal = normal.multiplyScalar(this.velocity.dot(normal)); // aliases the scratch, consumed here
       this.velocity.copy(vNormal);
     } else {
       this.velocity.x = 0;
@@ -2522,6 +2535,12 @@ export class SimplePlayer extends THREE.Group {
    */
   public getVelocity(): THREE.Vector3 {
     return this.velocity.clone();
+  }
+
+  /** Allocation-free velocity into a caller-owned vector (hot paths). The
+   *  live field is never handed out — callers mutate their copy freely. */
+  public getVelocityInto(out: THREE.Vector3): THREE.Vector3 {
+    return out.copy(this.velocity);
   }
 
   /**

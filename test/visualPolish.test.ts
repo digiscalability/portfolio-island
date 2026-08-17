@@ -217,6 +217,64 @@ describe('HUD — one chip recipe for the top-right column', () => {
     expect(fps).not.toMatch(/top: 'calc/);
   });
 
+  test('per-frame hot paths stay allocation-free (sweep round 2)', () => {
+    // The sweep measured the camera + player physics as the two densest
+    // per-frame allocation clusters (~20 heap objects/frame combined, the
+    // player's doubled by the substep split exactly on slow frames). These
+    // pin the scratch-field conversions; `.clone()` reappearing in either
+    // body is the regression.
+    const cam = src('OrbitCamera.ts');
+    // End anchor must be CODE — src() strips comments before slicing, so a
+    // comment anchor silently extends the slice to the end of the file.
+    const camBody = cam.slice(
+      cam.indexOf('private updateCameraPosition'),
+      cam.indexOf('private readonly focusTarget'),
+    );
+    expect(camBody).not.toContain('.clone()');
+    // Only the two cold-path seeds may allocate (first frame / degenerate).
+    expect((camBody.match(/new THREE\./g) ?? []).length).toBeLessThanOrEqual(2);
+    expect(cam).toContain('getWorldPositionInto(this._camPlayerPos)');
+    expect(cam).toContain('getSurfaceNormalInto(this._camNormal)');
+
+    const player = src('SimplePlayer.ts');
+    const applyBody = player.slice(
+      player.indexOf('private applyMovement'),
+      player.indexOf('private settleMovement'),
+    );
+    expect(applyBody).not.toContain('.clone()');
+    expect(applyBody).not.toContain('this.getSurfaceNormal()');
+    expect(player).toContain('public getSurfaceNormalInto');
+    expect(player).toContain('public getVelocityInto');
+
+    // The NPC wander loop: one Set lookup, not three per-NPC closures.
+    const scene = src('GameScene.ts');
+    expect(scene).toContain('this.pinnedNpcs.has(npc)');
+    expect(scene).not.toContain('this.sailors.some((s) => s.npc === npc)');
+    expect(scene).not.toContain('this.vendors.some((v) => v.npc === npc)');
+    expect(scene).not.toContain('this.campfireGuests.some((g) => g.npc === npc)');
+
+    // The per-frame NPC-shadow pass reads a VIEW, not a fresh copy.
+    const island = src('Island.ts');
+    expect(island).toContain('public getNPCInstances(): readonly NPC[]');
+    expect(island).not.toContain('return this.npcInstances.slice()');
+  });
+
+  test('per-frame HUD writers skip unchanged values (sweep round 2)', () => {
+    const ui = src('SimpleUI.ts');
+    // Interaction prompt: innerHTML parse only when the TEXT changes.
+    expect(ui).toContain('if (text === this.lastPromptText && this.interactionDiv) return');
+    // Race panel: null-first so on-foot visitors never get the DOM built,
+    // and show/hide writes only on the transition.
+    const race = ui.slice(ui.indexOf('updateRaceHud(status'));
+    expect(race.indexOf('if (!status)')).toBeLessThan(race.indexOf('if (!this.raceDiv)'));
+    expect(ui).toContain('this.raceVisible');
+    // Breath: dry sessions never build the meter+vignette DOM, and the two
+    // vignette gradients are prebuilt constants, not per-frame templates.
+    expect(ui).toContain('VIGNETTE_DEEP');
+    expect(ui).toContain('VIGNETTE_SHALLOW');
+    expect(ui).not.toMatch(/radial-gradient\(circle at 50% 45%[^`]*\$\{edge\}/);
+  });
+
   test('chip-recipe regressions from the follow-up review stay fixed', () => {
     const ui = src('SimpleUI.ts');
     // The feed chip re-shows as FLEX — a block re-show drops the CHIP

@@ -4324,6 +4324,11 @@ export class SimpleUI {
 
   showInteractionPrompt(text: string): void {
     this.promptEverShown = true;
+    // Called every frame while a target is in range — skip the innerHTML
+    // parse/replace when the prompt hasn't changed (it changes only when the
+    // TARGET changes). Cleared in hideInteractionPrompt.
+    if (text === this.lastPromptText && this.interactionDiv) return;
+    this.lastPromptText = text;
     if (!this.interactionDiv) {
       this.interactionDiv = document.createElement('div');
       Object.assign(this.interactionDiv.style, {
@@ -4383,6 +4388,7 @@ export class SimpleUI {
    * Hide interaction prompt
    */
   hideInteractionPrompt(): void {
+    this.lastPromptText = null;
     if (this.interactionDiv) {
       this.interactionDiv.remove();
       this.interactionDiv = null;
@@ -5233,6 +5239,17 @@ export class SimpleUI {
    * (on foot / not near a circuit).
    */
   updateRaceHud(status: { line1: string; line2?: string } | null): void {
+    // Null first, BEFORE the lazy build: this runs every frame, and a
+    // visitor who never rides used to get the whole panel appended (hidden)
+    // on their first frame on foot.
+    if (!status) {
+      if (this.raceDiv && this.raceVisible) {
+        this.raceDiv.style.opacity = '0';
+        this.raceDiv.style.display = 'none';
+        this.raceVisible = false;
+      }
+      return;
+    }
     if (!this.raceDiv) {
       this.raceDiv = document.createElement('div');
       Object.assign(this.raceDiv.style, {
@@ -5268,17 +5285,23 @@ export class SimpleUI {
       this.raceDiv.appendChild(this.raceLine2);
       this.overlay.appendChild(this.raceDiv);
     }
-    if (!status) {
-      this.raceDiv.style.opacity = '0';
-      this.raceDiv.style.display = 'none';
-      return;
+    if (!this.raceVisible) {
+      this.raceDiv.style.display = 'block';
+      this.raceDiv.style.opacity = '1';
+      this.raceVisible = true;
     }
-    this.raceDiv.style.display = 'block';
-    this.raceDiv.style.opacity = '1';
-    if (this.raceLine1) this.raceLine1.textContent = status.line1;
-    if (this.raceLine2) {
-      this.raceLine2.textContent = status.line2 ?? '';
-      this.raceLine2.style.display = status.line2 ? 'block' : 'none';
+    // textContent only on change — line1 still updates per frame during a
+    // running race (the timer string differs each frame), so nothing visible
+    // changes; the win is the idle "drive through the ring" state.
+    if (this.raceLine1 && status.line1 !== this.raceLastLine1) {
+      this.raceLastLine1 = status.line1;
+      this.raceLine1.textContent = status.line1;
+    }
+    const line2 = status.line2 ?? '';
+    if (this.raceLine2 && line2 !== this.raceLastLine2) {
+      this.raceLastLine2 = line2;
+      this.raceLine2.textContent = line2;
+      this.raceLine2.style.display = line2 ? 'block' : 'none';
     }
   }
 
@@ -5287,6 +5310,31 @@ export class SimpleUI {
   private waterVignette: HTMLDivElement | null = null;
   private staminaWrap: HTMLDivElement | null = null;
   private staminaFill: HTMLDivElement | null = null;
+
+  // Last-written caches for the per-frame HUD writers (prompt, race panel,
+  // meters, vignettes). Style/text writes are skipped when the value hasn't
+  // changed — these are called EVERY frame and used to rewrite identical
+  // strings (including a rebuilt radial-gradient) into the style engine.
+  // Percentages quantize to 1% — imperceptible on a 160px bar behind a
+  // 0.12s width transition; opacities compare by exact string (they vary
+  // continuously while swimming, and quantizing would step the fade).
+  private lastPromptText: string | null = null;
+  private raceVisible = false;
+  private raceLastLine1: string | null = null;
+  private raceLastLine2: string | null = null;
+  private lastStaminaShow: boolean | null = null;
+  private lastStaminaPct = -1;
+  private lastBreathShow: boolean | null = null;
+  private lastBreathPct = -1;
+  private lastVignetteOpacity = '';
+  private lastVignetteDeep: boolean | null = null;
+  private lastWashOpacity = '';
+  // The two vignette states, prebuilt (the template literal was rebuilt and
+  // re-parsed by the style engine every frame while swimming).
+  private static readonly VIGNETTE_DEEP =
+    'radial-gradient(circle at 50% 45%, rgba(60,140,190,0.05) 30%, rgba(20,40,60,0.85) 100%)';
+  private static readonly VIGNETTE_SHALLOW =
+    'radial-gradient(circle at 50% 45%, rgba(60,140,190,0.05) 30%, rgba(10,40,70,0.85) 100%)';
 
   /**
    * Stamina meter (run = hold Space/JUMP while moving). Same visual language
@@ -5334,11 +5382,16 @@ export class SimpleUI {
       this.overlay.appendChild(this.staminaWrap);
       this.panels.registerLayer('ambient-info', this.staminaWrap);
     }
-    this.staminaWrap.style.opacity = show ? '1' : '0';
-    if (this.staminaFill) {
-      this.staminaFill.style.width = `${Math.max(0, Math.min(1, stamina)) * 100}%`;
+    if (show !== this.lastStaminaShow) {
+      this.lastStaminaShow = show;
+      this.staminaWrap.style.opacity = show ? '1' : '0';
+    }
+    const pct = Math.round(Math.max(0, Math.min(1, stamina)) * 100);
+    if (this.staminaFill && pct !== this.lastStaminaPct) {
+      this.lastStaminaPct = pct;
+      this.staminaFill.style.width = `${pct}%`;
       // amber while healthy, red when nearly spent
-      const hue = 12 + 30 * Math.max(0, Math.min(1, stamina));
+      const hue = 12 + 30 * (pct / 100);
       this.staminaFill.style.background = `hsl(${hue}, 85%, 52%)`;
     }
   }
@@ -5348,7 +5401,11 @@ export class SimpleUI {
    * closes in and reddens as oxygen runs out. Both fade away on dry land.
    */
   updateBreath(oxygen: number, inWater: boolean): void {
+    const show = inWater || oxygen < 0.999;
     if (!this.breathWrap) {
+      // Never build the meter+vignette DOM for a session that stays dry
+      // (mirrors updateStamina's guard) — this runs every frame from boot.
+      if (!show) return;
       this.waterVignette = document.createElement('div');
       Object.assign(this.waterVignette.style, {
         position: 'absolute',
@@ -5397,21 +5454,33 @@ export class SimpleUI {
       this.overlay.appendChild(this.breathWrap);
     }
     const danger = 1 - Math.max(0, Math.min(1, oxygen));
-    // Meter only matters in water (or briefly while recovering)
-    const show = inWater || oxygen < 0.999;
-    this.breathWrap!.style.opacity = show ? '1' : '0';
-    if (this.breathFill) {
-      this.breathFill.style.width = `${Math.max(0, oxygen) * 100}%`;
+    if (show !== this.lastBreathShow) {
+      this.lastBreathShow = show;
+      this.breathWrap!.style.opacity = show ? '1' : '0';
+    }
+    const pct = Math.round(Math.max(0, Math.min(1, oxygen)) * 100);
+    if (this.breathFill && pct !== this.lastBreathPct) {
+      this.lastBreathPct = pct;
+      this.breathFill.style.width = `${pct}%`;
       // green → amber → red as it drains
-      const hue = 120 * Math.max(0, oxygen);
+      const hue = 120 * (pct / 100);
       this.breathFill.style.background = `hsl(${hue}, 80%, 50%)`;
     }
     if (this.waterVignette) {
-      const strength = inWater ? 0.35 + danger * 0.55 : 0;
-      this.waterVignette.style.opacity = String(strength);
-      // deepen from teal to a drowning red-tinged dark as oxygen falls
-      const edge = danger > 0.5 ? '20,40,60' : '10,40,70';
-      this.waterVignette.style.background = `radial-gradient(circle at 50% 45%, rgba(60,140,190,0.05) 30%, rgba(${edge},0.85) 100%)`;
+      const strength = inWater ? String(0.35 + danger * 0.55) : '0';
+      if (strength !== this.lastVignetteOpacity) {
+        this.lastVignetteOpacity = strength;
+        this.waterVignette.style.opacity = strength;
+      }
+      // deepen from teal to a drowning red-tinged dark as oxygen falls —
+      // two prebuilt states, written only when the state flips
+      const deep = danger > 0.5;
+      if (deep !== this.lastVignetteDeep) {
+        this.lastVignetteDeep = deep;
+        this.waterVignette.style.background = deep
+          ? SimpleUI.VIGNETTE_DEEP
+          : SimpleUI.VIGNETTE_SHALLOW;
+      }
     }
   }
 
@@ -5438,7 +5507,11 @@ export class SimpleUI {
       });
       this.overlay.appendChild(this.underwaterWash);
     }
-    this.underwaterWash.style.opacity = String(Math.max(0, Math.min(1, f)) * 0.85);
+    const op = String(Math.max(0, Math.min(1, f)) * 0.85);
+    if (op !== this.lastWashOpacity) {
+      this.lastWashOpacity = op;
+      this.underwaterWash.style.opacity = op;
+    }
   }
 
   /** Brief centred splash message (used for the drown/rescue). */

@@ -9067,9 +9067,13 @@ export class Island {
     }
   }
 
-  // Expose NPC instances so other systems (Engine, InteractionSystem) can register or query them
-  public getNPCInstances(): NPC[] {
-    return this.npcInstances.slice();
+  // Expose NPC instances so other systems (Engine, InteractionSystem) can register or query them.
+  // Readonly VIEW, not a copy: the only call site (GameScene's per-frame NPC
+  // shadow pass) re-fetched a fresh .slice() every frame. The readonly type
+  // keeps the mutation guard at compile time; dispose()'s array reassignment
+  // stays safe because callers re-fetch each frame.
+  public getNPCInstances(): readonly NPC[] {
+    return this.npcInstances;
   }
 
   public addToScene(scene: THREE.Scene): void {
