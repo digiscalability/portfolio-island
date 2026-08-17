@@ -143,6 +143,23 @@ describe('dispose unhooks the lifecycle', () => {
   });
 });
 
+describe('a late opening-deepening never interrupts an engaged conversation', () => {
+  // speak() strict-cancels whatever is in flight, so a background continuation
+  // landing after the user asked a question cut off the NPC's direct ANSWER
+  // mid-sentence and appended stale greeting flavour below it.
+  test('appendNpcChatLine drops once the user has sent a message', () => {
+    const s = src('SimpleUI.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    // the append gate checks engagement...
+    expect(s).toMatch(/npcChatAppend\?\.name === name && !this\.npcChatAppend\.engaged/);
+    // ...and the send path is what sets it
+    expect(s).toContain('this.npcChatAppend.engaged = true');
+    // fresh panels start un-engaged, so the pre-question deepening still lands
+    expect(s).toContain('{ name, npcLine, engaged: false }');
+  });
+});
+
 describe('the persisted mute reaches the voice paths BEFORE the manager boots', () => {
   // The manager arrives ~5s after first paint, but Chat/Speech are live from
   // init and both have manager-free playback routes (Chat's private fallback

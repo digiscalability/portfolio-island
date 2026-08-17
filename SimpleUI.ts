@@ -6099,6 +6099,9 @@ export class SimpleUI {
       input.value = '';
       send.disabled = true;
       input.disabled = true;
+      // The user has spoken: any still-pending opening-deepening is stale
+      // from here on (see appendNpcChatLine).
+      if (this.npcChatAppend?.name === name) this.npcChatAppend.engaged = true;
       playerLine(text);
       const thinking = document.createElement('div');
       thinking.textContent = '…';
@@ -6184,17 +6187,29 @@ export class SimpleUI {
     }
     // Expose this panel's NPC-line appender so the app can deepen the opening
     // in the background (composed greeting → generated continuation).
-    this.npcChatAppend = { name, npcLine };
+    this.npcChatAppend = { name, npcLine, engaged: false };
     window.setTimeout(() => input.focus(), 50);
   }
 
-  private npcChatAppend: { name: string; npcLine: (text: string) => void } | null = null;
+  private npcChatAppend: {
+    name: string;
+    npcLine: (text: string) => void;
+    /** True once the user has SENT a message in this panel — the point where
+     *  a late opening-deepening stops being "the NPC keeps talking" and
+     *  becomes an interruption. */
+    engaged: boolean;
+  } | null = null;
 
   /** Append an NPC-side line to the OPEN chat panel for `name` (typewriter +
    *  voice, same as a reply). No-ops if the panel closed or switched NPCs —
-   *  a late background continuation must never resurrect a dismissed chat. */
+   *  a late background continuation must never resurrect a dismissed chat —
+   *  and DROPS once the user has engaged: speak() strict-cancels whatever is
+   *  in flight, so a continuation landing after a question cut off the NPC's
+   *  direct ANSWER mid-sentence and then appended stale greeting flavour
+   *  below it. The composed opening already stands on its own; the moment
+   *  the user asks something, the conversation has moved past it. */
   public appendNpcChatLine(name: string, text: string): void {
-    if (this.npcChatDiv && this.npcChatAppend?.name === name) {
+    if (this.npcChatDiv && this.npcChatAppend?.name === name && !this.npcChatAppend.engaged) {
       this.npcChatAppend.npcLine(text);
     }
   }
