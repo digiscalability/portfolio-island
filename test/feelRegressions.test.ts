@@ -364,6 +364,29 @@ describe('no quality rung may switch RENDERING PATH', () => {
     expect(calls).toEqual(['this.renderer.setPostProcessingEnabled(true)']);
   });
 
+  test('Ctrl+B toggles the bloom PASS and tells the truth about it', () => {
+    // It used to call togglePostProcessing — flipping the whole COMPOSER, the
+    // one remaining user-reachable render-path switch (the 21% luminance
+    // step) — and printed "Bloom enabled/disabled" from the composer flag.
+    // With the governor holding rung 1 that message lied: composer back on
+    // printed "Bloom enabled" while zero bloom rendered, and the brightness
+    // jump got attributed to bloom.
+    const m = src('main-simple.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(m).toContain('this.renderer.toggleBloom()');
+    expect(m).not.toContain('togglePostProcessing');
+    // The composer-toggle API is GONE, not merely unused — nothing may switch
+    // rendering path after boot. (setPostProcessingEnabled(true) at boot is
+    // pinned by the intro test above.)
+    const s = src('SimpleRenderer.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(s).not.toContain('togglePostProcessing');
+    expect(s).not.toContain('isPostProcessingEnabled');
+    expect(s).toContain('public toggleBloom()');
+  });
+
   test('the low tier, which never builds a composer, is guarded not asserted', () => {
     // bloomPass is undefined wherever initPostProcessing early-returns. A `!`
     // here throws inside setQualityRung's while-loop AFTER the rung counter has

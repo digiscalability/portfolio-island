@@ -897,10 +897,6 @@ export class SimpleRenderer {
     this.postProcessingEnabled = enabled && !!this.composer;
   }
 
-  public isPostProcessingEnabled(): boolean {
-    return this.postProcessingEnabled;
-  }
-
   /**
    * Turn the BLOOM PASS on/off without switching rendering path.
    *
@@ -915,15 +911,24 @@ export class SimpleRenderer {
     if (this.bloomPass) this.bloomPass.enabled = enabled;
   }
 
+  /** Ctrl+B. Toggles the BLOOM PASS and reports its true state — see
+   *  setBloomEnabled. This used to flip postProcessingEnabled, i.e. the whole
+   *  COMPOSER: the one remaining user-reachable render-path switch (the 21%
+   *  luminance step), and a lying label besides — with the governor holding
+   *  rung 1 (bloom pass off), switching the composer back on printed "Bloom
+   *  enabled" while zero bloom rendered, and attributed the brightness jump
+   *  to bloom. A user toggle deliberately overrides a governor rung-1 hold:
+   *  explicit intent wins, and the suspend flag snapshots at engage time so
+   *  a later release does not fight it. */
+  public toggleBloom(): boolean {
+    if (!this.bloomPass) return false; // low tier: nothing to toggle
+    this.bloomPass.enabled = !this.bloomPass.enabled;
+    return this.bloomPass.enabled;
+  }
+
   /** Whether a composer was ever constructed (false on the low tier). */
   public isPostProcessingAvailable(): boolean {
     return !!this.composer;
-  }
-
-  public togglePostProcessing(): boolean {
-    if (!this.composer) return false; // low tier: nothing to toggle
-    this.postProcessingEnabled = !this.postProcessingEnabled;
-    return this.postProcessingEnabled;
   }
 
   /**

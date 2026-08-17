@@ -123,7 +123,10 @@ renderer.startRenderLoop(scene, camera, (deltaTime) => {
 });
 
 // Control
-renderer.setPostProcessingEnabled(enabled);
+// STALE (2026-08-17): setPostProcessingEnabled switches RENDERING PATH — the
+// composer tone-maps once in OutputPass, direct tone-maps per material, and
+// the two differ by ~21% mean luminance. For "skip bloom" use
+// renderer.setBloomEnabled(false) / toggleBloom() instead (0.1% change).
 renderer.stopRenderLoop();
 
 // Cleanup
@@ -277,7 +280,7 @@ console.log(player.getWorldPosition());
 
 1. **Reduce complexity**: Fewer objects on planet = faster raycasts
 2. **Simplify terrain**: Lower icosphere subdivision (5 → 4)
-3. **Disable post-processing**: `renderer.setPostProcessingEnabled(false)`
+3. **Disable bloom**: `renderer.setBloomEnabled(false)` (NOT setPostProcessingEnabled — that switches rendering path and shifts the whole image ~21% darker)
 4. **Batch similar objects**: Use THREE.BatchedMesh
 5. **Use LOD**: Different mesh details based on distance
 

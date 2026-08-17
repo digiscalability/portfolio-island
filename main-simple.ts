@@ -1953,7 +1953,11 @@ class SimpleApp {
           console.log('✨ Bloom unavailable on this device tier (no composer).');
           return;
         }
-        const enabled = this.renderer.togglePostProcessing();
+        // toggleBloom, not the old togglePostProcessing: that flipped the whole
+        // COMPOSER — the render-path switch whose 21% brightness step this
+        // message then attributed to "bloom". The composer now stays resident
+        // for the whole session everywhere; Ctrl+B toggles the pass it names.
+        const enabled = this.renderer.toggleBloom();
         console.log(
           enabled
             ? '✨ Bloom enabled (Ctrl+B to toggle).'
