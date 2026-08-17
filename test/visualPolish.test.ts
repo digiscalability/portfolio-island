@@ -830,6 +830,17 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // And a real entry retires the pending warm — it has already done all of
     // the same work for real, so the idle pass has nothing left to warm.
     expect(scene).toMatch(/this\.buildInterior\(\);\s*this\.interiorWarmed = true;/);
+    // THE ENTRY GUARD ALONE IS NOT ENOUGH, and shipping it that way was a bug.
+    // compileAsync yields for 100-500ms; a player pressing E inside that
+    // window sets visible=true, then the resumed warm set it back to false and
+    // NOTHING re-arms visibility mid-visit (interiorGroup.visible = true
+    // appears exactly once, in enterInterior). They stood in a building with
+    // no walls, floor or furniture for the whole visit. So every visibility
+    // write re-checks the flag on the far side of every await.
+    expect(scene).toMatch(
+      /const warm = async \(visible: boolean\): Promise<void> => \{\s*if \(this\.insideInterior\) return;/,
+    );
+    expect(scene).toContain('if (!this.insideInterior) g.visible = wasVisible;');
   });
 
   test('the interior is built and compiled in idle time, not on the first E', () => {

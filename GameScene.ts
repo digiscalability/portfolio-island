@@ -14013,7 +14013,17 @@ export class GameScene extends THREE.Scene {
       | undefined;
     if (!g || !gl || !this.camera) return;
     const wasVisible = g.visible;
+    // EVERY visibility write is re-gated on insideInterior, not just the one
+    // before the first await. compileAsync yields for 100-500ms while it
+    // compiles the room's programs, and a player can press E inside that
+    // window: enterInterior would set visible=true, then this resumed and set
+    // it back to false, leaving them inside a building with NO room — camera
+    // at (0,-300,0) staring at their own avatar against empty sky, with
+    // prompts and Leave still working. Nothing re-arms visibility during a
+    // visit (interiorGroup.visible = true appears exactly once, in
+    // enterInterior), so that state was terminal until they left and re-entered.
     const warm = async (visible: boolean): Promise<void> => {
+      if (this.insideInterior) return; // a real entry took over mid-await
       g.visible = visible;
       if (typeof gl.compileAsync === 'function') await gl.compileAsync(this, this.camera);
       else gl.compile?.(this, this.camera);
@@ -14028,7 +14038,8 @@ export class GameScene extends THREE.Scene {
     } catch {
       // Warm-up is an optimisation, never a requirement.
     } finally {
-      g.visible = wasVisible;
+      // Never restore a stale snapshot over a live entry.
+      if (!this.insideInterior) g.visible = wasVisible;
     }
   }
 
