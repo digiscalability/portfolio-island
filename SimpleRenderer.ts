@@ -375,7 +375,21 @@ export class SimpleRenderer {
       // heavy sea shader (wave normals + surf) made this much more visible.
       this.renderer.compile(scene, camera);
       if (this.postProcessingEnabled && this.composer) {
+        // Force bloom ON for the throwaway render, whatever the caller left it
+        // at. EffectComposer skips a disabled pass entirely (`if (pass.enabled
+        // === false) continue`), so its ~8 fullscreen-quad programs (the
+        // high-pass + five KERNEL_RADIUS blur materials + composite + copy)
+        // never compile here — and renderer.compile() only walks the SCENE
+        // graph, never the composer's internal quads, so it can't cover them
+        // either. main-simple disables bloom for the intro-lite swoop BEFORE
+        // calling warmUp, then re-enables it ~1.5s in, so those programs were
+        // cold-compiling mid-reveal — exactly the hitch this method exists to
+        // prevent, on every non-reduced-motion desktop visitor. Snapshot and
+        // restore so this stays correct no matter how the caller is ordered.
+        const bloomWas = this.bloomPass?.enabled;
+        if (this.bloomPass) this.bloomPass.enabled = true;
         this.composer.render();
+        if (this.bloomPass && bloomWas !== undefined) this.bloomPass.enabled = bloomWas;
       } else {
         this.renderer.render(scene, camera);
       }

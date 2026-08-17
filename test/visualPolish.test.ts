@@ -754,6 +754,44 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('warmUp compiles the bloom pass, not just the output pass', () => {
+    const r = src('SimpleRenderer.ts');
+    // warmUp renders a throwaway frame behind the loader to compile the
+    // post-processing programs. But main-simple disables bloom for the
+    // intro-lite swoop BEFORE warmUp runs, and EffectComposer skips a disabled
+    // pass entirely — so bloom's ~8 fullscreen-quad programs never compiled
+    // here and cold-compiled ~1.5s into the visible reveal when bloom came
+    // back on. warmUp now forces bloom on for the throwaway render and
+    // restores the caller's setting. `bloomWas` is unique to this fix (the
+    // governor snapshots into bloomSuspendedByGovernor instead).
+    expect(r).toContain('const bloomWas = this.bloomPass?.enabled');
+    expect(r).toContain('this.bloomPass.enabled = bloomWas');
+  });
+
+  test('remote peers swim a windmill, matching the local crawl (world law 2)', () => {
+    const player = src('SimplePlayer.ts');
+    // Commit 9ba63d5 turned the LOCAL swim stroke from a bounded oscillation
+    // into a continuous windmill (a real front crawl), but left the REMOTE
+    // peer copy on the old oscillation. MEASURED: the old remote arm kept
+    // z=sin(rot.x) in [-0.985, -0.100] — negative all cycle, both hands behind
+    // the shoulder = a permanent BACKSTROKE. So a swimming peer looked correct
+    // to themselves and swam backwards to everyone else. This is the exact
+    // "fix one side, leave the other broken" that World Law 2 exists to stop.
+    const remote = player.slice(
+      player.indexOf('activePose === 1'),
+      player.indexOf('activePose === 2'),
+    );
+    expect(remote.length).toBeGreaterThan(100); // both anchors resolved
+    expect(remote).toContain('armLBone.rotation.x = -Math.PI - swimClock');
+    expect(remote).toContain('armRBone.rotation.x = -Math.PI - swimClock + Math.PI');
+    // The old oscillation is gone (this exact form was the backstroke).
+    expect(remote).not.toContain('(1.4 + s * 1.3)');
+    // And the LOCAL player is the windmill it must match — pin both so they
+    // cannot drift a third time.
+    expect(player).toContain('this.armLBone.rotation.x = REST_X - this.swimPhase');
+    expect(player).toContain('this.armRBone.rotation.x = REST_X - this.swimPhase + Math.PI');
+  });
+
   test('a felled stump is drivable, not merely walkable', () => {
     const scene = src('GameScene.ts');
     // The felled-tree lifecycle switches a collider OFF through the `owner`

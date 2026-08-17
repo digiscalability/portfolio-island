@@ -810,11 +810,22 @@ export class SimplePlayer extends THREE.Group {
           // "how flat" and would over-drive the roll and the leg trail.
           const prone = Math.min(1, swimPitchR / SWIM_PRONE);
           model.rotation.z = s * 0.18 * prone * poseW;
-          // Same rest-relative crawl as the local player (see applySwimPose):
-          // blend out from -PI rather than from the live value, which flips
-          // sign across +/-PI between frames.
-          if (armLBone) armLBone.rotation.x = -Math.PI + (1.4 + s * 1.3) * poseW;
-          if (armRBone) armRBone.rotation.x = -Math.PI + (1.4 - s * 1.3) * poseW;
+          // A crawl is a WINDMILL, not an oscillation — the SAME correction the
+          // local player got in 9ba63d5, which this remote copy was left out of.
+          // The old `-PI + (1.4 ± s*1.3)*poseW` kept armL.rotation.x in
+          // [-3.04, -0.44], where the limb forward axis z=sin(rot.x) stays in
+          // [-0.985, -0.100] — negative for the ENTIRE cycle, i.e. both hands
+          // behind the shoulder: a permanent BACKSTROKE on a face-down body. So
+          // a swimming peer looked fine to themselves and swam backwards to
+          // everyone else. Rotating continuously from -PI (like applySwimPose's
+          // `REST_X - swimPhase`) carries each hand forward past the head (z>0),
+          // down through the pull (z<0) and over the top. The two arms sit half
+          // a revolution apart. NOT poseW-scaled: swimClock is an unbounded
+          // accumulator, so scaling it by a ramping poseW would spin the arm
+          // wildly during the pose fade — the local player doesn't blend it
+          // either. See test/oceanDive swim-arm windmill lock.
+          if (armLBone) armLBone.rotation.x = -Math.PI - swimClock;
+          if (armRBone) armRBone.rotation.x = -Math.PI - swimClock + Math.PI;
           // legL/legR rest at PI (bone +Y runs down the limb). Anchor the
           // trailing bias to PI or the legs fold up toward the head, and
           // blend with poseW from PI itself rather than from the live value,
