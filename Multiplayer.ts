@@ -862,8 +862,26 @@ export class Multiplayer {
     // Body colours ride along only when the visitor has customised (small).
     const cols = this.player.getAppearance();
     if (Object.keys(cols).length) msg.cols = cols;
+
+    // DIRTY-CHECK: skip the write when this packet is byte-identical to the
+    // last one AND we sent within the last second. A stationary/AFK visitor
+    // (p and q are already rounded to 2/3 dp) otherwise floods the whole-room
+    // presence node 10x/s with identical state — and presence delivery is
+    // O(N²), so at scale that idle spam is the first thing to blow the RTDB
+    // egress budget (measured ceiling ~N=20-30). A byte-identical packet
+    // carries zero new information for peers, so suppressing it is lossless;
+    // the ≤1Hz keepalive keeps us well inside every peer's 3.5s prune window.
+    // Any real change — a step, a turn, a pose/vehicle/hat/name/colour edit —
+    // changes the packet and sends immediately, exactly as before.
+    const packet = JSON.stringify(msg);
+    const now = performance.now() / 1000;
+    if (packet === this._lastPacket && now - this._lastPacketAt < 1) return;
+    this._lastPacket = packet;
+    this._lastPacketAt = now;
     this.send(msg);
   }
+  private _lastPacket = '';
+  private _lastPacketAt = 0;
 
   /** Call every frame: sends state at 10Hz, interpolates and prunes peers. */
   public update(deltaTime: number): void {

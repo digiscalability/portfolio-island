@@ -754,6 +754,31 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('remote peers cull like NPCs, and idle presence writes are suppressed (scale)', () => {
+    const sp = src('SimplePlayer.ts');
+    // Peers used a blunt frustumCulled=false, so each peer's ~13 skinned parts
+    // rendered + skinned from anywhere on the planet — O(total peers). Same
+    // 2.5x-sphere cull as NPC.ts → O(peers on-screen). Verified: 9/9 peer
+    // skinned parts get a valid boundingSphere (clone is bound at traverse).
+    expect(sp).not.toContain(
+      'if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false;',
+    );
+    expect(sp).toMatch(
+      /isSkinnedMesh\) \{\s*const sm = o as THREE\.SkinnedMesh;\s*sm\.computeBoundingSphere\(\);\s*if \(sm\.boundingSphere\) sm\.boundingSphere\.radius \*= 2\.5;/,
+    );
+
+    const mp = src('Multiplayer.ts');
+    // Presence delivery is O(N²); a stationary/AFK visitor otherwise floods the
+    // whole-room node 10x/s with byte-identical packets — the first thing to
+    // blow the RTDB egress budget at scale. Suppress identical packets, keep a
+    // <=1Hz keepalive so peers (3.5s prune) never drop us. Verified: 97% idle
+    // write reduction, moving sends every packet.
+    expect(mp).toContain(
+      'if (packet === this._lastPacket && now - this._lastPacketAt < 1) return;',
+    );
+    expect(mp).toContain('const packet = JSON.stringify(msg);');
+  });
+
   test('villager ink hulls cull with their body, not from anywhere on the planet', () => {
     const cel = src('CelLook.ts');
     // The body got the pose-proof 2.5x-sphere cull (NPC.ts) but the hull kept

@@ -715,7 +715,20 @@ export class SimplePlayer extends THREE.Group {
     let legLBone: THREE.Object3D | null = null;
     let legRBone: THREE.Object3D | null = null;
     model.traverse((o) => {
-      if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false;
+      if ((o as THREE.SkinnedMesh).isSkinnedMesh) {
+        // Cull the peer like an NPC, not from anywhere on the planet. A skinned
+        // mesh's bind-pose bounds don't follow the bones, so — exactly as
+        // NPC.ts does — inflate the object-level boundingSphere 2.5x (it rides
+        // matrixWorld and Frustum.intersectsObject prefers it) instead of the
+        // blunt frustumCulled=false. Peers use player.glb (~13 skinned parts,
+        // heavier than a villager's), so at N peers this turns each client's
+        // peer render + skinning + shadow cost from O(total peers) into
+        // O(peers on-screen). The clone is already skeleton-bound here
+        // (SkeletonUtils.clone), so computeBoundingSphere skins correctly.
+        const sm = o as THREE.SkinnedMesh;
+        sm.computeBoundingSphere();
+        if (sm.boundingSphere) sm.boundingSphere.radius *= 2.5;
+      }
       if (o instanceof THREE.Mesh) {
         o.castShadow = true;
         // Peers get the same treatment as the local player (World Law 2): no
