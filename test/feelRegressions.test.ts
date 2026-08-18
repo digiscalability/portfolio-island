@@ -487,3 +487,36 @@ describe('the intro fly-in owns the camera alone (no follow-update fighting it)'
     expect(guardAt).toBeLessThan(bodyAt);
   });
 });
+
+describe('the intro-lite swoop sheds the dominant scene cost, then restores it', () => {
+  // The whole-planet fly-in is the heaviest frame in the game (nothing culls);
+  // the judder that survives the flyingIn camera fix is raw scene-render cost.
+  // Two levers shed it for the heavy first ~1.5s and restore under motion.
+  // Losing the SHED strands the judder; losing the RESTORE strands a permanent
+  // low-res / shadowless world — both are regressions.
+  test('main-simple lowers resolution + freezes shadows for the swoop and restores both', () => {
+    const s = src('main-simple.ts');
+    expect(s).toContain('this.renderer.setIntroResolution(0.7)');
+    expect(s).toContain('this.renderer.setShadowFreeze(true)');
+    expect(s).toContain('this.renderer.setIntroResolution(null)');
+    expect(s).toContain('this.renderer.setShadowFreeze(false)');
+    // Restore is scheduled mid-swoop (under motion) AND repeated on arrival.
+    expect(s).toContain('window.setTimeout(restoreIntroQuality, 1500)');
+  });
+
+  test('setIntroResolution changes pixel density only — never the render path', () => {
+    // Switching setPostProcessingEnabled would move tone mapping and shift
+    // luminance 8-27% (a brightness step); the intro lever must not do that.
+    const fn = src('SimpleRenderer.ts');
+    const i = fn.indexOf('public setIntroResolution');
+    const body = fn.slice(i, i + 700);
+    expect(body).toContain('setPixelRatio');
+    expect(body).not.toContain('setPostProcessingEnabled');
+  });
+
+  test('the loader blanks its planet graphic before fading (no double planet)', () => {
+    const s = src('SimpleUI.ts');
+    expect(s).toContain("querySelector('#ld-planet')?.remove()");
+    expect(s).toContain("querySelector('#ld-orbit')?.remove()");
+  });
+});

@@ -865,8 +865,15 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // ghost at intro-lite fps — the "world first-loading bloom flicker". Grass
     // restores under motion (1500ms, pop hidden); bloom waits for the still
     // camera at arrival (the flyIn .then()).
-    expect(m).toContain('window.setTimeout(restoreGrass, 1500)');
-    expect(m).not.toContain('window.setTimeout(restoreIntroQuality');
+    // The mid-swoop 1500ms timer restores the intro-lite quality levers (grass,
+    // resolution, shadows) under camera motion. Bloom is deliberately NOT among
+    // them — it waits for the still arrival camera (fadeBloomIn) to avoid the
+    // half-res rim ghosting.
+    expect(m).toContain('window.setTimeout(restoreIntroQuality, 1500)');
+    const restoreStart = m.indexOf('const restoreIntroQuality');
+    const restoreBody = m.slice(restoreStart, restoreStart + 400);
+    expect(restoreBody).not.toContain('setBloomEnabled(true)');
+    expect(restoreBody).not.toContain('fadeBloomIn');
     // Bloom comes on in the arrival callback (now via fadeBloomIn), AFTER the
     // fly-in — never in the 1500ms mid-swoop timer.
     const fly = m.indexOf('flyInFromDistant');

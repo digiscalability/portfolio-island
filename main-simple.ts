@@ -1465,6 +1465,18 @@ class SimpleApp {
         // it — this stops at 0.3 because parity was the bar.
         this.scene.getIsland().setGrassBudget(0.3);
         this.renderer.setBloomEnabled(false);
+        // DOMINANT fly-in cost is the scene render itself (whole planet in
+        // frustum, nothing culls) — confirmed by the judder root-cause
+        // investigation. Two more levers for the heavy first ~1.5s, both
+        // imperceptible from ~280u and both restored mid-swoop under motion:
+        //   • drop the effective resolution — sheds fragments across the whole
+        //     heavy scene, not just the composer;
+        //   • freeze the shadow pass — skips a full-scene 2048² depth render
+        //     EVERY frame while contact shadows are invisible from orbit anyway.
+        //     warmUp's renderer.compile() still warms the depth shader (compile
+        //     is independent of the freeze), so the 1.5s unfreeze never hitches.
+        this.renderer.setIntroResolution(0.7);
+        this.renderer.setShadowFreeze(true);
         // RESTORE MID-SWOOP, NOT ON ARRIVAL. Firing on the frame the camera
         // settles put the biggest visual discontinuity in the game at the exact
         // moment the player first looks at the island — read as the screen
@@ -1491,13 +1503,23 @@ class SimpleApp {
         //   on for ~1s of motion. So bloom waits for ARRIVAL, when the camera is
         //   still and there is nothing to ghost (the on-step itself is
         //   imperceptible — measured mean +0.24/255 at the settled view).
-        const restoreGrass = (): void => this.scene.getIsland().setGrassBudget(1);
-        window.setTimeout(restoreGrass, 1500);
+        // Restores ALL three intro-lite levers at once (grass, resolution,
+        // shadows). Fired at 1500ms — under camera motion, ~74% of the way in
+        // (ease-in-out), where the whole-image change hides and the frame has
+        // lightened enough (closer camera, more culled) to afford full quality
+        // for the final approach. Idempotent, so the arrival .then can call it
+        // again to cover a skipped/short flight.
+        const restoreIntroQuality = (): void => {
+          this.scene.getIsland().setGrassBudget(1);
+          this.renderer.setIntroResolution(null);
+          this.renderer.setShadowFreeze(false);
+        };
+        window.setTimeout(restoreIntroQuality, 1500);
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
           .then(() => {
-            restoreGrass(); // idempotent — covers a skipped/short flight
+            restoreIntroQuality(); // idempotent — covers a skipped/short flight
             // FADE bloom in, don't snap it. Enabling at arrival avoids the
             // rim-ghosting-during-motion, but a hard enable is a bloom POP right
             // as the reveal settles and the eye lands on the scene — read as a

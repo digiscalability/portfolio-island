@@ -1048,6 +1048,29 @@ export class SimpleRenderer {
   }
 
   /**
+   * Intro-only render-resolution lever. The 2.5s fly-in shows the WHOLE planet
+   * in frustum — nothing culls, so it is the single heaviest frame in the game,
+   * and the synthesis of the fly-in-judder investigation found the DOMINANT cost
+   * is the scene render itself (not the composer, ~1.37ms, nor the camera). A
+   * lower effective DPR sheds fragments across the ENTIRE heavy scene render,
+   * and from ~280u the softness is imperceptible. `scale` = fraction of dprCap
+   * for the swoop; `null` restores the governor's current effective DPR (called
+   * mid-swoop under camera motion, where the sharpen is hidden). NOT
+   * setPostProcessingEnabled — that switches render paths and tone mapping
+   * (measured 8-27% luminance step); this only changes pixel density.
+   */
+  public setIntroResolution(scale: number | null): void {
+    const eff = this.dprCap * (scale ?? this.renderScale);
+    this.renderer.setPixelRatio(eff);
+    if (this.composer) {
+      this.composer.setPixelRatio(eff);
+      // Composer resize resets bloom to full res — keep it at half (mirrors
+      // updateAdaptiveResolution's pixel-ratio block).
+      this.bloomPass?.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
+    }
+  }
+
+  /**
    * Enable bloom by RAMPING its strength from 0 to the authored value over
    * `durationMs`, instead of snapping it on. The intro disables bloom for the
    * fly-in (rim ghosting), then re-enables it at arrival — and a hard enable

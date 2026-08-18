@@ -3856,6 +3856,16 @@ export class SimpleUI {
     }
     if (this.loadingDiv) {
       const el = this.loadingDiv;
+      // Blank the CSS planet + orbiting moon BEFORE the fade. The loader is
+      // opaque and fades out (0.45s) ON TOP of the already-running 3D fly-in, so
+      // its planet-shaped graphic crossfades over the real planet flying in
+      // behind it — a transient "double planet" at the reveal (a confirmed
+      // secondary contributor to the reported doubling). Removing them makes the
+      // fade a plain dark-to-scene wipe with nothing planet-shaped to double
+      // against; it also stops two will-change CSS animations compositing over
+      // the heaviest frames.
+      el.querySelector('#ld-planet')?.remove();
+      el.querySelector('#ld-orbit')?.remove();
       this.loadingDiv = null;
       this.loadingBar = null;
       this.loadingPct = null;
