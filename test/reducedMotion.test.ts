@@ -98,7 +98,7 @@ describe('load-bearing gates exist at their call sites', () => {
   });
 
   test('the fly-in primitive early-outs on its own (defence in depth)', () => {
-    expect(fn('OrbitCamera.ts', 'flyInFromDistant')).toContain('a11y.reducedMotion');
+    expect(fn('OrbitCamera.ts', 'public async flyInFromDistant')).toContain('a11y.reducedMotion');
   });
 
   test('reduced motion still SEATS the camera in the follow view', () => {

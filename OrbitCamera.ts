@@ -45,6 +45,15 @@ export class OrbitCamera {
   private smoothness: number = 0.16; // interpolation factor for smooth camera — was 0.2; the slightly lazier follow is part of the calm-locomotion pass (pairs with the 8.0→5.6 walk speed)
   private damping: number = 0.9; // velocity damping (higher = more responsive)
   private mouseSensitivity: number = 0.005; // mouse input multiplier (raw pixels -> radians)
+  // True only while flyInFromDistant owns the camera. The intro fly-in runs on
+  // its OWN requestAnimationFrame loop and writes camera.position directly; the
+  // main render loop still calls update() every frame (cameraSuspended is false
+  // during the intro), so WITHOUT this guard the follow-camera drags each
+  // fly-in pose toward the settled follow pose by a variable per-frame amount —
+  // two writers on two rAF loops, i.e. the frame-to-frame pose noise that reads
+  // as the "juddery / feels-doubled" reveal. update() no-ops while this holds so
+  // the swoop is the fly-in's alone.
+  private flyingIn = false;
 
   private minPitch: number = -0.18; // Don't look too far down (prevents ground clipping)
   private maxPitch: number = Math.PI * 0.25; // Don't look too far up
@@ -378,6 +387,10 @@ export class OrbitCamera {
    */
   public update(deltaTime: number, _input?: { moveX?: number; moveY?: number }): void {
     if (deltaTime <= 0) return;
+    // The intro fly-in owns the camera on its own rAF loop; the follow-update
+    // must stand down or the two fight every frame (see flyingIn). Resumes
+    // seamlessly — the fly-in ends exactly on the follow pose it started from.
+    if (this.flyingIn) return;
 
     // Safely validate inputs
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.05)); // Clamp to prevent jumps
@@ -603,6 +616,11 @@ export class OrbitCamera {
       this.cameraPosition.copy(farAwayPos);
       this.camera.position.copy(farAwayPos);
 
+      // Take the camera off the follow-update for the duration of the swoop —
+      // update() no-ops while this holds, so the fly-in is the SOLE writer and
+      // its smooth lerp is what renders (not a lerp fighting the follow).
+      this.flyingIn = true;
+
       // Stall-immune clock: elapsed accrues from the FIRST animation frame
       // with per-frame deltas clamped to 100ms. A wall clock from call time
       // let first-render work (texture uploads, GLB decode) consume the
@@ -629,6 +647,9 @@ export class OrbitCamera {
         if (progress < 1) {
           requestAnimationFrame(animate);
         } else {
+          // Hand the camera back to the follow-update on the pose the swoop
+          // ended on (== startPos, the settled follow pose) — seamless resume.
+          this.flyingIn = false;
           resolve();
         }
       };

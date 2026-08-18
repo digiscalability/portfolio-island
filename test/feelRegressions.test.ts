@@ -460,3 +460,30 @@ describe('no quality rung may switch RENDERING PATH', () => {
     expect(l).not.toContain('this.bloomPass!');
   });
 });
+
+describe('the intro fly-in owns the camera alone (no follow-update fighting it)', () => {
+  // The fly-in runs on its OWN requestAnimationFrame loop and writes
+  // camera.position directly, but the main render loop still calls
+  // OrbitCamera.update() every frame during the intro (cameraSuspended is false
+  // then). Two writers on two rAF loops drag each fly-in pose toward the follow
+  // pose by a variable per-frame amount — the frame-to-frame pose noise the user
+  // reported as the reveal "juddering / feeling doubled" on desktop, every load.
+  // update() must stand down while the fly-in owns the camera.
+  test('update() no-ops while flyingIn, and flyInFromDistant sets+clears the flag', () => {
+    const s = src('OrbitCamera.ts');
+    // The guard sits in update() so the follow-camera cannot fight the swoop.
+    expect(s).toContain('if (this.flyingIn) return;');
+    // The flag is raised for the swoop and lowered when it resolves — a swoop
+    // that never lowered it would kill the follow camera for the whole session.
+    expect(s).toContain('this.flyingIn = true;');
+    expect(s).toContain('this.flyingIn = false;');
+    // The guard must be INSIDE update(): between its signature and the body that
+    // writes the camera. (A guard anywhere else would not stop the fight.)
+    const u = s.indexOf('public update(');
+    expect(u).toBeGreaterThan(-1);
+    const guardAt = s.indexOf('if (this.flyingIn) return;', u);
+    const bodyAt = s.indexOf('this.yawVelocity', u);
+    expect(guardAt).toBeGreaterThan(u);
+    expect(guardAt).toBeLessThan(bodyAt);
+  });
+});
