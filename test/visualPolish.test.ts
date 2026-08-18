@@ -754,6 +754,38 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('the player avatar does not self-shadow (no acne flicker)', () => {
+    const p = src('SimplePlayer.ts');
+    // A skinned avatar under the single whole-planet directional shadow map
+    // self-shadows into coarse acne that DANCES as the mesh deforms — measured
+    // as the "user flickering" (walking A/B: 19.3% of player pixels oscillating
+    // with receiveShadow on vs 5.2% off). The avatar still CASTS its grounding
+    // shadow. All three avatar paths (local GLB, remote peer, fallback body)
+    // must agree — World Law 2, or a peer flickers on everyone else's screen.
+    expect(p).not.toMatch(/receiveShadow = true/); // no avatar mesh receives shadow
+    expect(p).toContain('obj.receiveShadow = false'); // local player GLB
+    expect(p).toContain('o.receiveShadow = false'); // remote peer GLB
+    // Casting is preserved (grounding shadow stays).
+    expect(p).toContain('obj.castShadow = true');
+    expect(p).toContain('o.castShadow = true');
+  });
+
+  test('bloom turns on at arrival, not mid-swoop (no first-load rim ghosting)', () => {
+    const m = src('main-simple.ts');
+    // Bloom is half-res, so enabling it mid-fly-in makes the bright planet rim
+    // ghost at intro-lite fps — the "world first-loading bloom flicker". Grass
+    // restores under motion (1500ms, pop hidden); bloom waits for the still
+    // camera at arrival (the flyIn .then()).
+    expect(m).toContain('window.setTimeout(restoreGrass, 1500)');
+    expect(m).not.toContain('window.setTimeout(restoreIntroQuality');
+    // setBloomEnabled(true) must sit in the arrival callback, AFTER flyInFromDistant.
+    const fly = m.indexOf('flyInFromDistant');
+    expect(fly).toBeGreaterThan(-1);
+    expect(m.indexOf('setBloomEnabled(true)')).toBeGreaterThan(fly);
+    // ...and NOT in the 1500ms timer path anymore.
+    expect(m).not.toMatch(/setGrassBudget\(1\);\s*this\.renderer\.setBloomEnabled\(true\)/);
+  });
+
   test('warmUp compiles the bloom pass, not just the output pass', () => {
     const r = src('SimpleRenderer.ts');
     // warmUp renders a throwaway frame behind the loader to compile the

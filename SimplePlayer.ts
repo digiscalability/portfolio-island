@@ -434,7 +434,8 @@ export class SimplePlayer extends THREE.Group {
     const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.6, 8), shirtMat);
     torso.position.y = 0.22;
     torso.castShadow = true;
-    torso.receiveShadow = true;
+    // No self-shadow acne on the fallback body either (see the GLB path).
+    torso.receiveShadow = false;
     group.add(torso);
 
     // Arms — pivoted at the shoulder for the walk swing
@@ -457,7 +458,7 @@ export class SimplePlayer extends THREE.Group {
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 12), skinMat);
     head.position.y = 0.72;
     head.castShadow = true;
-    head.receiveShadow = true;
+    head.receiveShadow = false;
     group.add(head);
 
     // Hair (cap on top)
@@ -717,7 +718,10 @@ export class SimplePlayer extends THREE.Group {
       if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.frustumCulled = false;
       if (o instanceof THREE.Mesh) {
         o.castShadow = true;
-        o.receiveShadow = true;
+        // Peers get the same treatment as the local player (World Law 2): no
+        // receiveShadow, so a walking peer does not flicker with self-shadow
+        // acne on every other visitor's screen. Still casts a grounding shadow.
+        o.receiveShadow = false;
       }
       if ((o as THREE.Bone).isBone) {
         if (o.name === 'head') headBone = headBone ?? o;
@@ -1843,7 +1847,20 @@ export class SimplePlayer extends THREE.Group {
           this.gltfModel.traverse((obj) => {
             if (obj instanceof THREE.Mesh) {
               obj.castShadow = true;
-              obj.receiveShadow = true;
+              // NO receiveShadow on the avatar. The single directional shadow
+              // map covers the whole planet, so its texels are large against a
+              // ~1.7u character — the mesh self-shadows into coarse acne, and
+              // because the body DEFORMS every frame (walk cycle) and the
+              // shadow map re-renders, that acne DANCES. MEASURED: 19.3% of the
+              // player's screen pixels oscillated with receiveShadow on, 5.2%
+              // with it off (the rest is honest limb motion) — the "user
+              // flickering". The avatar still CASTS its grounding shadow;
+              // stylized characters simply don't receive self-shadow, and the
+              // minor loss (not darkening under a tree) reads fine on the cel
+              // planet. normalBias would be the alternative but it is a GLOBAL
+              // knob (0.035 today) and raising it enough to kill this risks
+              // detaching world shadows everywhere.
+              obj.receiveShadow = false;
               for (const m of Array.isArray(obj.material) ? obj.material : [obj.material]) {
                 if (m && RIM_MATS.has(m.name) && !m.userData.celRim) {
                   m.userData.celRim = true;

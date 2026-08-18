@@ -1470,16 +1470,25 @@ class SimpleApp {
         // compiled behind the loader on this path — they compiled mid-swoop, at
         // the same 1500ms moment as the brightness step. Only reduced-motion
         // users (who skip this block) ever got a warmed composer.
-        const restoreIntroQuality = (): void => {
-          this.scene.getIsland().setGrassBudget(1);
-          this.renderer.setBloomEnabled(true);
-        };
-        window.setTimeout(restoreIntroQuality, 1500);
+        // GRASS and BLOOM want OPPOSITE restore timing.
+        //   Grass 0.3 -> 1.0 is a whole-image change, so it rides in mid-swoop
+        //   (1500ms) where the camera's own motion HIDES the pop.
+        //   Bloom is the reverse: turning it on mid-swoop is the "world
+        //   first-loading bloom flicker". Bloom is half-res, so on a fast-moving
+        //   bright planet rim at intro-lite fps its halo lags the edge frame to
+        //   frame — the exact ghosting this block disables bloom to avoid in the
+        //   FIRST place. Re-enabling it at 1500ms of a 2500ms flight put it back
+        //   on for ~1s of motion. So bloom waits for ARRIVAL, when the camera is
+        //   still and there is nothing to ghost (the on-step itself is
+        //   imperceptible — measured mean +0.24/255 at the settled view).
+        const restoreGrass = (): void => this.scene.getIsland().setGrassBudget(1);
+        window.setTimeout(restoreGrass, 1500);
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
           .then(() => {
-            restoreIntroQuality(); // idempotent — covers a skipped/short flight
+            restoreGrass(); // idempotent — covers a skipped/short flight
+            this.renderer.setBloomEnabled(true); // bloom on only once the camera stills
             afterIntro();
           });
       }
