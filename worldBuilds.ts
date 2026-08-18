@@ -16,7 +16,6 @@
 /** Wire values for the record's optional `kind` — APPEND-ONLY, order is the
  *  contract (database.rules.json validates 0..BUILD_KIND_IDS.length-1). */
 export const BUILD_KIND_IDS = ['signpost', 'lantern', 'gazebo', 'planter', 'campfire'] as const;
-export type BuildKindId = (typeof BUILD_KIND_IDS)[number];
 
 /** Highest valid plot index on the wire (mirrored in database.rules.json). */
 export const MAX_PLOT = 17;

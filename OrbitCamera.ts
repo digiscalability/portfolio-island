@@ -501,34 +501,6 @@ export class OrbitCamera {
   }
 
   /**
-   * Set camera height above player
-   */
-  public setHeight(height: number): void {
-    this.heightTarget = Math.max(this.minHeight, Math.min(this.maxHeight, height || 1.5));
-  }
-
-  /**
-   * Set side offset (shoulder offset)
-   */
-  public setSideOffset(_offset: number): void {
-    // No longer used in simplified camera, but kept for API compatibility
-  }
-
-  /**
-   * Set smoothness/responsiveness
-   */
-  public setSmoothness(smoothness: number): void {
-    this.smoothness = Math.max(0.01, Math.min(0.5, smoothness || 0.15));
-  }
-
-  /**
-   * Set mouse sensitivity
-   */
-  public setMouseSensitivity(sensitivity: number): void {
-    this.mouseSensitivity = Math.max(0.0001, Math.min(0.01, sensitivity || 0.002));
-  }
-
-  /**
    * Get current camera world position
    */
   public getCameraPosition(): THREE.Vector3 {

@@ -30,11 +30,6 @@ type Conversation = {
 let active: Conversation | null = null;
 let restoreAudio: (() => void) | null = null;
 
-/** True while a call is up — SimpleUI checks this before tearing the panel down. */
-export function isCallActive(): boolean {
-  return active !== null;
-}
-
 /** How far the game steps back while the caller is on the line, as a FACTOR
  *  of the user's volume (0.2 × the 0.7 default ≈ the old absolute 0.15). */
 const CALL_DUCK_FACTOR = 0.2;

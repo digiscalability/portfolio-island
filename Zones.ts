@@ -71,10 +71,6 @@ const BUILDINGS: Record<string, BuildingCfg> = {
   },
 };
 
-/** Footprint collider radius pushed by GameScene — kept small so a player at
- *  the wall is still inside interactionRange (2.5) to open the panel. */
-export const ZONE_BUILDING_COLLIDER_RADIUS = 1.7;
-
 export class Zone {
   public id: string;
   public name: string;
