@@ -1103,6 +1103,13 @@ export class Island {
       { dir: this.dirAt(4.22, 0.62), height: 1.2, reach: 0.13 },
       { dir: this.dirAt(3.83, 0.8), height: 1.4, reach: 0.14 },
     ];
+    // cos(reach) per peak, so highlandAt can reject a vertex with one dot
+    // product instead of an acos. Monotonic: acos is decreasing, so
+    // `ang >= reach` ⟺ `dot <= cos(reach)`. Boot runs highlandAt for every
+    // one of ~338k vertices × ~20 peaks; the vast majority are far from any
+    // summit and never needed the acos at all.
+    const peakCosReach = PEAKS.map((p) => Math.cos(p.reach));
+    const ISLET_COS_REACH = Math.cos(0.1); // acos-gate for the southern islet
 
     // ── Summit trail ──────────────────────────────────────────────────────
     // A spiral switchback carved up the tallest peak, so the summit is
@@ -1128,6 +1135,7 @@ export class Island {
     trailA.normalize();
     const trailB = new THREE.Vector3().crossVectors(trailUp, trailA).normalize();
     const TRAIL_REACH = 0.3; // rad — starts on the meadow below the flank
+    const COS_TRAIL_REACH = Math.cos(TRAIL_REACH); // acos-gate threshold
     // ONE wrap, not several. The hard constraint is mesh resolution: the band
     // must be several units wide for vertices to actually fall in its full
     // core (~1.08u vertex spacing), or the terrain never samples the ramp and
@@ -1139,9 +1147,14 @@ export class Island {
     const _tProj = new THREE.Vector3();
     const trailInfo = { w: 0, t: 1 }; // w: 1 on centreline→0 at edge; t: 0 summit→1 base
     const trailAt = (normal: THREE.Vector3): { w: number; t: number } => {
-      const ang = Math.acos(THREE.MathUtils.clamp(normal.dot(trailUp), -1, 1));
+      const dot = normal.dot(trailUp);
       trailInfo.w = 0;
       trailInfo.t = 1;
+      // acos-gate: a vertex clearly below cos(reach) is clearly past the reach
+      // angle — skip the acos. The -1e-6 leaves a hair of margin so anything
+      // near the boundary still takes the exact acos path below.
+      if (dot < COS_TRAIL_REACH - 1e-6) return trailInfo;
+      const ang = Math.acos(THREE.MathUtils.clamp(dot, -1, 1));
       if (ang > TRAIL_REACH) return trailInfo;
       trailInfo.t = ang / TRAIL_REACH;
       if (ang < 1e-4) {
@@ -1181,9 +1194,15 @@ export class Island {
     const TRAIL_BASE_H = 1.0;
     const highlandAt = (normal: THREE.Vector3): number => {
       let boost = 0;
-      for (const p of PEAKS) {
+      for (let i = 0; i < PEAKS.length; i++) {
+        const p = PEAKS[i];
+        // acos-gate: skip peaks this vertex is clearly outside without paying
+        // the acos. -1e-6 keeps a margin so boundary vertices fall through to
+        // the exact geodesic path below (see peakCosReach).
+        const dot = normal.dot(p.dir);
+        if (dot < peakCosReach[i] - 1e-6) continue;
         // Angular distance on the sphere, so the falloff is geodesic
-        const ang = Math.acos(THREE.MathUtils.clamp(normal.dot(p.dir), -1, 1));
+        const ang = Math.acos(THREE.MathUtils.clamp(dot, -1, 1));
         if (ang >= p.reach) continue;
         const t = 1 - ang / p.reach;
         // smoothstep² gives a broad shoulder with a sharper summit
@@ -1297,15 +1316,23 @@ export class Island {
       // 0.75+ land floor idea as the continent: crown ~+2.1 keeps the beach
       // above waves+tide.
       {
-        const ig = Math.acos(
-          THREE.MathUtils.clamp(normal.x * 0.92728 - normal.y * 0.02 - normal.z * 0.3738, -1, 1),
+        // acos-gate: the islet reaches only 0.1 rad, so almost every vertex is
+        // outside it. Compare the dot against cos(0.1) first (+1e-6 margin) and
+        // skip the acos entirely for the ~99% that can't be within reach.
+        const c = THREE.MathUtils.clamp(
+          normal.x * 0.92728 - normal.y * 0.02 - normal.z * 0.3738,
+          -1,
+          1,
         );
-        if (ig < 0.1) {
-          const it = THREE.MathUtils.clamp((0.1 - ig) / 0.055, 0, 1);
-          const im = it * it * (3 - 2 * it); // smoothstep dome
-          // Gentle dome + a pinch of the shared noise so it isn't a cap.
-          const isletLand = 0.85 + im * (1.05 + Math.max(0, noiseDisp) * 0.35);
-          displacement = Math.max(displacement, oceanDisp + (isletLand - oceanDisp) * im);
+        if (c > ISLET_COS_REACH - 1e-6) {
+          const ig = Math.acos(c);
+          if (ig < 0.1) {
+            const it = THREE.MathUtils.clamp((0.1 - ig) / 0.055, 0, 1);
+            const im = it * it * (3 - 2 * it); // smoothstep dome
+            // Gentle dome + a pinch of the shared noise so it isn't a cap.
+            const isletLand = 0.85 + im * (1.05 + Math.max(0, noiseDisp) * 0.35);
+            displacement = Math.max(displacement, oceanDisp + (isletLand - oceanDisp) * im);
+          }
         }
       }
 
