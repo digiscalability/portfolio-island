@@ -1079,7 +1079,7 @@ export class Island {
     };
 
     // Enhanced multi-octave noise for more natural terrain
-    const multiOctaveNoise = (x: number, y: number, z: number) => {
+    const multiOctaveNoise = (x: number, y: number, z: number, n016: number) => {
       let total = 0;
       let frequency = 1.0;
       let amplitude = 1.0;
@@ -1087,7 +1087,13 @@ export class Island {
 
       // 4 octaves for rich detail
       for (let i = 0; i < 4; i++) {
-        total += noise3D(x, y, z, 0.08 * frequency) * amplitude;
+        // Octave 1 is noise3D(x,y,z, 0.08*2.0) = noise3D(x,y,z, 0.16) — the SAME
+        // value coastWarp needs below (0.16 === 0.08*2.0 exactly in f64: same
+        // 1.28 mantissa, exponent +1). Take it precomputed instead of evaluating
+        // it a second time, saving one noise3D per vertex. Bit-identical: the
+        // accumulation order and every other octave are unchanged.
+        const nv = i === 1 ? n016 : noise3D(x, y, z, 0.08 * frequency);
+        total += nv * amplitude;
         maxValue += amplitude;
         amplitude *= 0.5; // each octave half as strong
         frequency *= 2.0; // each octave double frequency
@@ -1259,8 +1265,11 @@ export class Island {
     const reliefScale = this.reliefScale;
     const terrainRadiusFor = (normal: THREE.Vector3, v: THREE.Vector3): number => {
       // Enhanced terrain generation with better geographic features
-      // Large-scale continents/mountains using multi-octave noise
-      const largeTerrain = multiOctaveNoise(v.x, v.y, v.z) * 3.2;
+      // Large-scale continents/mountains using multi-octave noise.
+      // n016 is evaluated ONCE and threaded into both the octave sum (octave 1)
+      // and coastWarp below — it was computed twice per vertex.
+      const n016 = noise3D(v.x, v.y, v.z, 0.16);
+      const largeTerrain = multiOctaveNoise(v.x, v.y, v.z, n016) * 3.2;
 
       // Medium-scale hills and valleys with variation
       const mediumTerrain = noise3D(v.x, v.y, v.z, 0.15) * 1.5;
@@ -1296,7 +1305,7 @@ export class Island {
       // narrower than ±1 — the first pass at ±0.062 moved the coast by under
       // 1 world unit, which reads as a circle. These amplitudes are tuned
       // empirically against the measured shoreline spread.
-      const coastWarp = noise3D(v.x, v.y, v.z, 0.16) * 0.105 + noise3D(v.x, v.y, v.z, 0.42) * 0.05;
+      const coastWarp = n016 * 0.105 + noise3D(v.x, v.y, v.z, 0.42) * 0.05;
       const shoreLo = 0.05 + coastWarp;
       const shoreHi = 0.28 + coastWarp;
       const shoreT = THREE.MathUtils.clamp((sinLat - shoreLo) / (shoreHi - shoreLo), 0, 1);
