@@ -831,8 +831,19 @@ export class Island {
       if (d.y > MID_Y) return 1 + Math.min(5, Math.floor(lonFrac * 6));
       return 7 + Math.min(7, Math.floor(lonFrac * 8));
     };
-    const tmpMatrices: number[][] = Array.from({ length: SECTORS }, () => []);
-    const tmpColors: number[][] = Array.from({ length: SECTORS }, () => []);
+    // Marshal into preallocated typed arrays instead of growing number[][].
+    // Phase A writes every surviving blade to a single staging buffer in the
+    // coprime-stride VISITATION order (16 matrix floats + 3 colour floats),
+    // tagging its sector; a no-RNG bucket pass after the loop distributes that
+    // into exact-size per-sector Float32Arrays. Preserves the exact float values
+    // (Float32 truncation lands identically whether at push or here) AND the
+    // per-sector append order that setGrassBudget's prefix trim depends on.
+    const gMat = new Float32Array(COUNT * 16);
+    const gCol = new Float32Array(COUNT * 3);
+    const gSec = new Uint8Array(COUNT);
+    let gN = 0;
+    let secMat: Float32Array[] = [];
+    let secCol: Float32Array[] = [];
     const dummy = new THREE.Object3D();
     const up = new THREE.Vector3(0, 1, 0);
     const golden = Math.PI * (3 - Math.sqrt(5));
@@ -945,9 +956,28 @@ export class Island {
       // each chunk (what setGrassBudget draws) remains a spatially uniform
       // thinning, no per-chunk stride machinery needed.
       const sector = sectorOf(dir);
-      const e = dummy.matrix.elements;
-      for (let m = 0; m < 16; m++) tmpMatrices[sector].push(e[m]);
-      tmpColors[sector].push(bladeColor.r, bladeColor.g, bladeColor.b);
+      gMat.set(dummy.matrix.elements, gN * 16);
+      gCol[gN * 3] = bladeColor.r;
+      gCol[gN * 3 + 1] = bladeColor.g;
+      gCol[gN * 3 + 2] = bladeColor.b;
+      gSec[gN] = sector;
+      gN++;
+    }
+    // ── Bucket: staging (visitation order) → exact-size per-sector arrays ──
+    const secCount = new Int32Array(SECTORS);
+    for (let i = 0; i < gN; i++) secCount[gSec[i]]++;
+    for (let s = 0; s < SECTORS; s++) {
+      secMat.push(new Float32Array(secCount[s] * 16));
+      secCol.push(new Float32Array(secCount[s] * 3));
+    }
+    const secCur = new Int32Array(SECTORS);
+    for (let i = 0; i < gN; i++) {
+      const s = gSec[i];
+      const c = secCur[s]++;
+      secMat[s].set(gMat.subarray(i * 16, i * 16 + 16), c * 16);
+      secCol[s][c * 3] = gCol[i * 3];
+      secCol[s][c * 3 + 1] = gCol[i * 3 + 1];
+      secCol[s][c * 3 + 2] = gCol[i * 3 + 2];
     }
     // ── Phase B: materialize one InstancedMesh per sector ────────────────
     // Clump mode: keep every 8th candidate (deterministic stride — zero RNG).
@@ -958,19 +988,28 @@ export class Island {
     // uniform — so both the thinning AND setGrassBudget's prefix trims stay
     // even across the island.
     if (clumpMode) {
+      const clMat: Float32Array[] = [];
+      const clCol: Float32Array[] = [];
       for (let s = 0; s < SECTORS; s++) {
-        const srcM = tmpMatrices[s];
-        const srcC = tmpColors[s];
+        const srcM = secMat[s];
+        const srcC = secCol[s];
         const n = srcM.length / 16;
-        const outM: number[] = [];
-        const outC: number[] = [];
+        const outN = Math.ceil(n / 8);
+        const outM = new Float32Array(outN * 16);
+        const outC = new Float32Array(outN * 3);
+        let j = 0;
         for (let ci = 0; ci < n; ci += 8) {
-          for (let m = 0; m < 16; m++) outM.push(srcM[ci * 16 + m]);
-          outC.push(srcC[ci * 3], srcC[ci * 3 + 1], srcC[ci * 3 + 2]);
+          outM.set(srcM.subarray(ci * 16, ci * 16 + 16), j * 16);
+          outC[j * 3] = srcC[ci * 3];
+          outC[j * 3 + 1] = srcC[ci * 3 + 1];
+          outC[j * 3 + 2] = srcC[ci * 3 + 2];
+          j++;
         }
-        tmpMatrices[s] = outM;
-        tmpColors[s] = outC;
+        clMat.push(outM);
+        clCol.push(outC);
       }
+      secMat = clMat;
+      secCol = clCol;
     }
     const group = new THREE.Group();
     group.name = 'grass';
@@ -978,23 +1017,19 @@ export class Island {
     this.grassChunkFullCounts = [];
     let placed = 0;
     for (let s = 0; s < SECTORS; s++) {
-      const count = tmpMatrices[s].length / 16;
+      const count = secMat[s].length / 16;
       if (count === 0) continue;
       // Shared geometry + shared material: one shader program, one uniform set
       // (uTime/uPlayerPos ride the material, so wind + push stay planet-wide).
       const chunk = new THREE.InstancedMesh(geo, mat, count);
-      chunk.instanceMatrix.array.set(tmpMatrices[s]);
+      chunk.instanceMatrix.array.set(secMat[s]);
       for (let ci = 0; ci < count; ci++) {
         // setColorAt (not a raw buffer write) so the instanceColor attribute is
         // created on EVERY chunk — a chunk without it would compile a second
         // shader program variant.
         chunk.setColorAt(
           ci,
-          collapsedColor.setRGB(
-            tmpColors[s][ci * 3],
-            tmpColors[s][ci * 3 + 1],
-            tmpColors[s][ci * 3 + 2],
-          ),
+          collapsedColor.setRGB(secCol[s][ci * 3], secCol[s][ci * 3 + 1], secCol[s][ci * 3 + 2]),
         );
       }
       chunk.instanceMatrix.needsUpdate = true;
@@ -1814,7 +1849,13 @@ export class Island {
     this.seaBandsUniform.value.copy(this.calibrateSurfBands());
     const sea = new THREE.Mesh(seaGeo, seaMat);
     sea.name = 'sea';
-    sea.receiveShadow = true;
+    // NOT receiveShadow: it compiles USE_SHADOWMAP into the ocean fragment
+    // shader, so every fragment of the largest, most fill-heavy surface runs a
+    // PCF shadow-map fetch — and land casters sit above sea level, shadowing the
+    // LAND, not open water. Dropping it is a direct fill-rate win (biggest on
+    // DPR-capped, fragment-bound phones). Trade-off: a boat/coastal swimmer no
+    // longer casts its (barely-visible) shadow onto the water.
+    sea.receiveShadow = false;
     sea.position.copy(this.center);
     // Keep the sea out of ALL raycasts: the camera-collision ray must not
     // catch the water sphere (it would jam the chase cam at the waterline),
