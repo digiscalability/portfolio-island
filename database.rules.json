@@ -5,7 +5,7 @@
         ".read": "auth != null",
         "$uid": {
           ".write": "auth != null && auth.uid == $uid",
-          ".validate": "newData.hasChildren(['name', 'p', 'q', 't'])",
+          ".validate": "newData.hasChildren(['p', 'q', 't'])",
           "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
           "hat": { ".validate": "newData.isString() && newData.val().length <= 20" },
           "p": { "$i": { ".validate": "newData.isNumber()" } },
@@ -19,6 +19,21 @@
           "founder": { ".validate": "newData.isBoolean()" },
           "pose": { ".validate": "newData.isNumber()" },
           "cols": { "$part": { ".validate": "newData.isNumber()" } },
+          "$other": { ".validate": false }
+        }
+      }
+    },
+    "meta": {
+      "$room": {
+        ".read": "auth != null",
+        "$uid": {
+          ".write": "auth != null && auth.uid == $uid",
+          ".validate": "newData.hasChildren(['name', 't'])",
+          "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
+          "hat": { ".validate": "newData.isString() && newData.val().length <= 20" },
+          "founder": { ".validate": "newData.isBoolean()" },
+          "cols": { "$part": { ".validate": "newData.isNumber()" } },
+          "t": { ".validate": "newData.isNumber()" },
           "$other": { ".validate": false }
         }
       }

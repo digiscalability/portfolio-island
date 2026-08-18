@@ -815,6 +815,17 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(mp).toContain('if (this.sendAccum > sendInterval) {');
     expect(mp).toContain('n === 0 ? 1.0 : n <= 12 ? 0.1 : n >= 24 ? 0.2');
     expect(mp).not.toContain('if (this.sendAccum > 0.1) {');
+    // Cold meta (name/hat/founder/cols) is split onto meta/island so it stops
+    // riding every 10Hz delivery. The HOT write must carry NO cold fields; the
+    // meta node is written on change; the reader merges meta with an old-client
+    // fallback to the hot node's own fields.
+    const hotWrite = mp.slice(mp.indexOf('set(myNode, {'), mp.indexOf('}).catch(() => {});'));
+    expect(hotWrite).not.toContain('name:');
+    expect(hotWrite).not.toContain('founder:');
+    expect(hotWrite).not.toContain('cols:');
+    expect(mp).toContain("const metaRoomPath = 'meta/island';");
+    expect(mp).toContain('set(myMetaNode, {');
+    expect(mp).toContain('name: m?.name ?? v.name,'); // reader merge + fallback
   });
 
   test('villager ink hulls cull with their body, not from anywhere on the planet', () => {

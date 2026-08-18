@@ -120,6 +120,20 @@ export class Multiplayer {
   // Firebase RTDB transport state
   private selfWaveMs = 0; // last time WE waved (ms); rides along in state writes
   private peerWave = new Map<string, number>(); // last wave value seen per peer
+  // Cold presence META (name/hat/founder/cols), split off the 10Hz hot node
+  // onto meta/island/{uid} so RTDB stops delivering ~58-113 rarely-changing
+  // bytes on every hot tick (O(N²) at scale). peerMeta caches each peer's cold
+  // fields; peerLastState remembers each peer's last HOT node so a meta update
+  // (or an old-client fallback) can be re-merged. _lastMeta dirty-checks our own
+  // meta write so it lands only on change (+ once at connect).
+  private peerMeta = new Map<
+    string,
+    { name?: string; hat?: string | null; founder?: boolean; cols?: Record<string, number> }
+  >();
+  private peerLastState = new Map<string, Record<string, unknown>>();
+  private _lastMeta = '';
+  /** Set in connect() when the transport is Firebase; a no-op otherwise. */
+  private writeMeta: () => void = () => {};
   private chatHandler?: (msg: WireMessage) => void;
   private _selfPos = new THREE.Vector3(); // scratch for the 10Hz state write
   private _peerMotion = new THREE.Vector3(); // scratch for the peer swim-rate derive
@@ -253,6 +267,32 @@ export class Multiplayer {
     const myNode = ref(db, `${roomPath}/${uid}`);
     const room = ref(db, roomPath);
     onDisconnect(myNode).remove();
+    // Cold-meta node (name/hat/founder/cols), written on connect + on change.
+    const metaRoomPath = 'meta/island';
+    const myMetaNode = ref(db, `${metaRoomPath}/${uid}`);
+    const metaRoom = ref(db, metaRoomPath);
+    onDisconnect(myMetaNode).remove();
+    this.writeMeta = (): void => {
+      const cols = this.player.getAppearance();
+      const hasCols = Object.keys(cols).length > 0;
+      // Dirty-check the COLD fields only — this fires from the same 10Hz loop as
+      // the hot write but must land a meta write solely when one actually edits.
+      const sig = JSON.stringify([
+        this.selfName,
+        this.selfHat,
+        this.selfFounder,
+        hasCols ? cols : 0,
+      ]);
+      if (sig === this._lastMeta) return;
+      this._lastMeta = sig;
+      set(myMetaNode, {
+        name: this.selfName,
+        hat: this.selfHat ?? null, // null => key absent (rules validate only if present)
+        founder: this.selfFounder,
+        cols: hasCols ? cols : null,
+        t: Date.now(),
+      }).catch(() => {});
+    };
 
     this.transportName = 'firebase';
     this.send = (msg) => {
@@ -284,10 +324,9 @@ export class Multiplayer {
         }, 12000);
         return;
       }
-      // state
+      // state — HOT fields only. name/hat/founder/cols live on the meta node
+      // (writeMeta), so they no longer ride every 10Hz delivery.
       set(myNode, {
-        name: msg.name ?? this.selfName,
-        hat: msg.hat ?? null,
         p: msg.p,
         q: msg.q,
         veh: msg.veh ?? null,
@@ -296,9 +335,7 @@ export class Multiplayer {
         vq: msg.vq ?? null,
         t: Date.now(),
         wave: this.selfWaveMs,
-        founder: this.selfFounder,
         pose: msg.pose ?? 0,
-        cols: msg.cols ?? null,
       }).catch(() => {});
     };
 
@@ -328,15 +365,51 @@ export class Multiplayer {
       const w = v.wave || 0;
       if (w > (this.peerWave.get(key) || 0)) {
         this.peerWave.set(key, w);
-        this.handleMessage(JSON.stringify({ kind: 'wave', id: key, name: v.name, hat: v.hat }));
+        const wm = this.peerMeta.get(key);
+        this.handleMessage(
+          JSON.stringify({
+            kind: 'wave',
+            id: key,
+            name: wm?.name ?? v.name,
+            hat: wm?.hat ?? v.hat,
+          }),
+        );
       }
     });
     onChildRemoved(room, (snap) => {
       const key = snap.key;
       if (!key || key === uid) return;
       this.peerWave.delete(key);
+      this.peerLastState.delete(key);
       this.handleMessage(JSON.stringify({ kind: 'leave', id: key }));
     });
+
+    // Cold-meta room: cache each peer's name/hat/founder/cols and re-merge onto
+    // their live avatar. A peer's hot node and meta node arrive independently, so
+    // whichever lands second triggers the merge (routeRtdbState reads peerMeta).
+    const onMeta = (snap: {
+      key: string | null;
+      val: () => Record<string, unknown> | null;
+    }): void => {
+      const key = snap.key;
+      if (!key || key === uid) return;
+      const m = snap.val();
+      if (!m) return;
+      this.peerMeta.set(key, {
+        name: typeof m.name === 'string' ? m.name : undefined,
+        hat: typeof m.hat === 'string' ? m.hat : null,
+        founder: !!m.founder,
+        cols: (m.cols as Record<string, number>) ?? undefined,
+      });
+      const last = this.peerLastState.get(key);
+      if (last) this.routeRtdbState(key, last); // re-apply with fresh meta
+    };
+    onChildAdded(metaRoom, onMeta);
+    onChildChanged(metaRoom, onMeta);
+    onChildRemoved(metaRoom, (snap) => {
+      if (snap.key) this.peerMeta.delete(snap.key);
+    });
+    this.writeMeta(); // publish our own cold fields once, up front
 
     for (const kind of ['chat', 'voice'] as const) {
       const path = kind === 'chat' ? 'chat/island' : 'voice/island';
@@ -384,21 +457,25 @@ export class Multiplayer {
 
   /** Translate an RTDB presence node into a wire 'state' message. */
   private routeRtdbState(key: string, v: Record<string, unknown>): void {
+    this.peerLastState.set(key, v); // so a later meta update can re-merge
+    // Cold fields come from the meta cache (new clients) and fall back to the
+    // hot node's own fields (old clients still writing the flat schema).
+    const m = this.peerMeta.get(key);
     this.handleMessage(
       JSON.stringify({
         kind: 'state',
         id: key,
-        name: v.name,
-        hat: v.hat,
+        name: m?.name ?? v.name,
+        hat: m ? (m.hat ?? undefined) : v.hat,
         p: v.p,
         q: v.q,
         veh: v.veh ?? null,
         vehIdx: v.vehIdx ?? -1,
         vp: v.vp ?? undefined,
         vq: v.vq ?? undefined,
-        founder: !!v.founder,
+        founder: m ? !!m.founder : !!v.founder,
+        cols: m ? (m.cols ?? undefined) : (v.cols ?? undefined),
         pose: v.pose ?? 0,
-        cols: v.cols ?? undefined,
       }),
     );
   }
@@ -858,23 +935,22 @@ export class Multiplayer {
     if (this.selfVehicle) pose = 2;
     else if (this.player.isInWater()) pose = 1;
     else if (!this.player.isOnGround()) pose = 3;
+    // Cold fields (name/hat/founder/cols) go to the meta node, not this hot
+    // packet — writeMeta dirty-checks and publishes them only on change. Called
+    // BEFORE the hot dirty-check's early-return so a cold edit still lands even
+    // while the player is stationary.
+    this.writeMeta();
     const msg: WireMessage = {
       kind: 'state',
       id: this.selfId,
-      name: this.selfName,
-      hat: this.selfHat,
       p: [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)],
       q: [+q.x.toFixed(3), +q.y.toFixed(3), +q.z.toFixed(3), +q.w.toFixed(3)],
       veh: this.selfVehicle?.kind ?? null,
       vehIdx: this.selfVehicle?.idx ?? -1,
       vp: this.selfVehicle?.pos,
       vq: this.selfVehicle?.quat,
-      founder: this.selfFounder,
       pose,
     };
-    // Body colours ride along only when the visitor has customised (small).
-    const cols = this.player.getAppearance();
-    if (Object.keys(cols).length) msg.cols = cols;
 
     // DIRTY-CHECK: skip the write when this packet is byte-identical to the
     // last one AND we sent within the last second. A stationary/AFK visitor
