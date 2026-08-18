@@ -808,6 +808,13 @@ describe('smoothness round 2 — the two measured hitches', () => {
       'if (packet === this._lastPacket && now - this._lastPacketAt < 1) return;',
     );
     expect(mp).toContain('const packet = JSON.stringify(msg);');
+    // Peer-count-adaptive broadcast: a MOVING solo visitor (dirty-check can't
+    // help — the packet changes every step) drops from 10Hz to 1Hz uplink;
+    // crowds ramp toward 5Hz to bend the O(N²) curve. The send gate must be the
+    // computed interval, NOT a hardcoded 0.1.
+    expect(mp).toContain('if (this.sendAccum > sendInterval) {');
+    expect(mp).toContain('n === 0 ? 1.0 : n <= 12 ? 0.1 : n >= 24 ? 0.2');
+    expect(mp).not.toContain('if (this.sendAccum > 0.1) {');
   });
 
   test('villager ink hulls cull with their body, not from anywhere on the planet', () => {

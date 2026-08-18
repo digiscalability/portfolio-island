@@ -896,13 +896,24 @@ export class Multiplayer {
   private _lastPacket = '';
   private _lastPacketAt = 0;
 
-  /** Call every frame: sends state at 10Hz, interpolates and prunes peers. */
+  /** Call every frame: sends state at a peer-count-adaptive rate, interpolates
+   *  and prunes peers. */
   public update(deltaTime: number): void {
     const now = performance.now() / 1000;
 
-    // Outgoing state @10Hz
+    // Peer-count-adaptive broadcast rate. The dirty-check above already collapses
+    // an IDLE solo visitor to ~1Hz, but a solo visitor who is MOVING changes the
+    // packet every step and would fire 10Hz uplink to nobody — the dominant
+    // session type for a portfolio site. So: alone -> 1Hz (nobody is watching;
+    // a joiner sees a <=1s-stale first position, then live 10Hz); normal crowds
+    // (<=12) keep the full 10Hz; large crowds ramp toward 5Hz by N>=24 to bend
+    // the O(N^2) delivery curve at the ~20-30 concurrency ceiling. The 12*dt peer
+    // interpolation and the swim-motion derive both tolerate 5Hz.
+    const n = this.peers.size;
+    const sendInterval =
+      n === 0 ? 1.0 : n <= 12 ? 0.1 : n >= 24 ? 0.2 : 0.1 + ((n - 12) / 12) * 0.1;
     this.sendAccum += deltaTime;
-    if (this.sendAccum > 0.1) {
+    if (this.sendAccum > sendInterval) {
       this.sendAccum = 0;
       this.sendState();
     }
