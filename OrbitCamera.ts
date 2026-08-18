@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
 import { BASE_VFOV } from './Framing';
+import { expDecay } from './Juice';
 import { consumePinchZoomFactor } from './SimpleInputManager';
 import type { SimplePlayer } from './SimplePlayer';
 
@@ -231,7 +232,11 @@ export class OrbitCamera {
   private updateFov(deltaTime: number): void {
     const cam = this.camera as THREE.PerspectiveCamera;
     if (!cam.isPerspectiveCamera || this.fovTarget === 0) return;
-    const next = this.fovTarget + (cam.fov - this.fovTarget) * Math.exp(-1.6 * deltaTime);
+    // Bit-identical to the old inline `fovTarget + (fov-fovTarget)*exp(-1.6*dt)`
+    // — expDecay IS that Form-A expression (Juice.ts). The other camera easings
+    // stay inline: they use the 1-exp lerp FACTOR form, which rounds differently
+    // and would nudge feel if force-fit onto this helper.
+    const next = expDecay(cam.fov, this.fovTarget, 1.6, deltaTime);
     if (Math.abs(next - cam.fov) > 0.01) {
       cam.fov = next;
       cam.updateProjectionMatrix();

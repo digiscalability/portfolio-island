@@ -1,8 +1,9 @@
 /**
  * Juice — the game-feel kernel (Wave 3 of the uplift roadmap).
  *
- * Three primitives every feel moment consumes (researched: Swink/Holmér/
- * Vlambeer canon, adversarially verified for this stack):
+ * Three feel primitives (researched: Swink/Holmér/Vlambeer canon, adversarially
+ * verified for this stack). They are AVAILABLE to callers, not force-adopted —
+ * several hand-rolled easings stay inline on purpose (see expDecay's note):
  *   1. expDecay — frame-rate-INDEPENDENT smoothing. Critical here because the
  *      adaptive-resolution governor makes dt genuinely variable: a naive
  *      `a = lerp(a, b, 0.1)` feels different on every quality rung.
@@ -20,7 +21,10 @@
 import * as THREE from 'three';
 
 /** Frame-rate-independent exponential approach: returns the new value of `a`
- *  moving toward `b` with rate `k` (higher = snappier; ~5-15 typical). */
+ *  moving toward `b` with rate `k` (higher = snappier; ~5-15 typical).
+ *  NOTE the exact form: `b + (a-b)*exp(-k*dt)`. Sites written as the lerp-FACTOR
+ *  form `lerp(a, b, 1 - exp(-k*dt))` are algebraically the same but round
+ *  differently — do NOT swap them onto this helper, or the feel shifts a hair. */
 export function expDecay(a: number, b: number, k: number, dt: number): number {
   return b + (a - b) * Math.exp(-k * dt);
 }
