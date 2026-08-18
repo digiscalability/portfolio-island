@@ -101,6 +101,18 @@ describe('load-bearing gates exist at their call sites', () => {
     expect(fn('OrbitCamera.ts', 'flyInFromDistant')).toContain('a11y.reducedMotion');
   });
 
+  test('reduced motion still SEATS the camera in the follow view', () => {
+    // The swoop is skipped, but flyInFromDistant is ALSO what initialises the
+    // camera pose (its own reduced-motion guard snapToPlayer()s). Skipping the
+    // whole else-branch left the camera at the distant pre-placement position —
+    // MEASURED 243u from the player — so a reduced-motion visitor got a
+    // washed-out distant planet that never came in. The branch must snap.
+    const branch = fn('main-simple.ts', 'if (a11y.reducedMotion) {', 1000);
+    expect(branch).toContain('this.scene.getOrbitCamera().snapToPlayer()');
+    // snap must precede afterIntro so the first governed frame is the follow view.
+    expect(branch.indexOf('snapToPlayer()')).toBeLessThan(branch.indexOf('afterIntro()'));
+  });
+
   test('the dead Island.update() lamp-blink landmine stays deleted', () => {
     // The old method was dead code whose lamp blink (`sin(t*3) > -0.5`
     // visibility toggle) would strobe every lamp in town if revived.

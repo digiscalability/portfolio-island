@@ -1404,6 +1404,16 @@ class SimpleApp {
       // out over the already-moving cinematic. Reduced-motion skips the
       // swoop entirely and drops straight into the settled follow view.
       if (a11y.reducedMotion) {
+        // Reduced motion skips the swoop — but the camera STILL needs placing
+        // in the follow pose. The non-reduced path does that via
+        // flyInFromDistant (whose own reduced-motion guard just snapToPlayer()s
+        // and resolves); this branch never called it, so the camera was left at
+        // its distant pre-placement position. MEASURED: 243u from the player,
+        // cameraSuspended=false — every reduced-motion visitor got a washed-out
+        // distant planet that never came in, and it never self-corrected
+        // (update() lerps distance toward distanceTarget, not the whole pose).
+        // snapToPlayer is the exact init flyInFromDistant ends on.
+        this.scene.getOrbitCamera().snapToPlayer();
         afterIntro();
       } else {
         // INTRO-LITE: the fly-in is the single heaviest view in the game — the
