@@ -319,11 +319,23 @@ export function addSkinnedHull(src: THREE.SkinnedMesh, thickness = 0.014): void 
     hull.userData.isCelHull = true;
     hull.raycast = () => {};
     hull.castShadow = false;
-    hull.frustumCulled = false; // skinned bounds don't follow bones
     hull.position.copy(src.position);
     hull.quaternion.copy(src.quaternion);
     hull.scale.copy(src.scale);
     src.parent!.add(hull);
     hull.bind(src.skeleton, src.bindMatrix);
+    // Cull the hull WITH its villager, not from anywhere on the planet. The
+    // body already got the pose-proof cull (NPC.ts inflates the object-level
+    // boundingSphere 2.5x — Frustum.intersectsObject prefers it and it rides
+    // matrixWorld), but the hull kept a blunt frustumCulled=false, so all
+    // villager hull SkinnedMeshes (5/villager x 28) were GPU-skinned AND drawn
+    // in the main pass EVERY frame regardless of camera while their bodies
+    // culled. Same 2.5x sphere here makes hull and body cull together. MUST run
+    // AFTER bind(): SkinnedMesh.computeBoundingSphere skins the vertices
+    // through the skeleton, so with no skeleton bound it yields a null sphere
+    // (measured: hulls then fell back to bind-pose geometry bounds — the exact
+    // pop the old frustumCulled=false was avoiding).
+    hull.computeBoundingSphere();
+    if (hull.boundingSphere) hull.boundingSphere.radius *= 2.5;
   });
 }

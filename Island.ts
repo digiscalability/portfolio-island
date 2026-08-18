@@ -5279,6 +5279,14 @@ export class Island {
         ).toLowerCase();
         if (!/eye|blush/.test(matName)) {
           addSkinnedHull(o as unknown as THREE.SkinnedMesh);
+        } else {
+          // The tiny eye/eyeshine/blush face decals sit INSIDE the head's own
+          // silhouette, so their sub-texel contribution to the whole-planet
+          // 2048 shadow map is invisible — yet NPC.ts blanket-set castShadow on
+          // every part, so with autoUpdate they are re-skinned + drawn into the
+          // depth pass every frame (~3 parts x 28 villagers). Drop them from
+          // the shadow pass; this runs after NPC.ts so it wins.
+          (o as THREE.Mesh).castShadow = false;
         }
       }
     });

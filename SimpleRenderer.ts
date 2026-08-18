@@ -152,7 +152,17 @@ export class SimpleRenderer {
     // Create WebGL renderer with anti-aliasing
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true, // native MSAA for the low tier (no composer) and any direct-path frame; the composer carries its own samples:4 target
+      // Native MSAA only where it is actually used: the LOW tier renders the
+      // direct path (no composer). On desktop the steady state is always
+      // composer.render(), whose own samples:4 HalfFloat target does the scene
+      // AA — so `antialias:true` there only allocated a full-canvas 4x MSAA
+      // default framebuffer (~tens of MB at dpr>=2) that is the destination of
+      // OutputPass's fullscreen blit, where MSAA does nothing. Freeing it lowers
+      // GPU-memory pressure (and context-loss risk on many-tab / low-VRAM
+      // machines) with ZERO change to the composed image. If the post chunk
+      // ever permanently fails to fetch, desktop falls back to an aliased
+      // direct path — rare and graceful.
+      antialias: SimpleRenderer.isLowTierDevice(),
       alpha: false,
       powerPreference: 'high-performance',
       precision: 'highp',

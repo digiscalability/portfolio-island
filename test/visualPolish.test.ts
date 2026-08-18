@@ -754,6 +754,39 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('villager ink hulls cull with their body, not from anywhere on the planet', () => {
+    const cel = src('CelLook.ts');
+    // The body got the pose-proof 2.5x-sphere cull (NPC.ts) but the hull kept
+    // frustumCulled=false, so all 140 villager hull SkinnedMeshes were
+    // GPU-skinned + drawn every frame regardless of camera. Same sphere now.
+    expect(cel).not.toContain('hull.frustumCulled = false');
+    expect(cel).toContain('hull.computeBoundingSphere()');
+    expect(cel).toContain('hull.boundingSphere.radius *= 2.5');
+    // ORDER MATTERS: computeBoundingSphere skins through the skeleton, so it
+    // MUST run AFTER hull.bind() or it returns a null sphere and the hull falls
+    // back to bind-pose bounds (which pop as the villager walks).
+    expect(cel.indexOf('hull.bind(')).toBeGreaterThan(-1);
+    expect(cel.indexOf('hull.computeBoundingSphere()')).toBeGreaterThan(cel.indexOf('hull.bind('));
+  });
+
+  test('desktop drops the unused canvas MSAA buffer (composer does the AA)', () => {
+    // On desktop the steady state is composer.render(), whose samples:4 target
+    // does the scene AA — so antialias:true only allocated a ~60MB full-canvas
+    // MSAA buffer used as the OutputPass blit destination (where MSAA is inert).
+    expect(src('SimpleRenderer.ts')).toContain('antialias: SimpleRenderer.isLowTierDevice()');
+  });
+
+  test('villager face decals do not cast shadow (invisible, but re-skinned every frame)', () => {
+    const island = src('Island.ts');
+    // eye/eyeshine/blush sit inside the head's own silhouette — sub-texel in the
+    // 2048 shadow map — yet NPC.ts blanket-set castShadow, so they were
+    // re-skinned + drawn into the depth pass every frame. The else-branch of the
+    // hull regex drops them from the shadow pass.
+    expect(island).toMatch(
+      /if \(!\/eye\|blush\/\.test\(matName\)\) \{\s*addSkinnedHull[\s\S]{0,120}\} else \{[\s\S]{0,260}castShadow = false/,
+    );
+  });
+
   test('the player avatar does not self-shadow (no acne flicker)', () => {
     const p = src('SimplePlayer.ts');
     // A skinned avatar under the single whole-planet directional shadow map
