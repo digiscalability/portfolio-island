@@ -520,3 +520,23 @@ describe('the intro-lite swoop sheds the dominant scene cost, then restores it',
     expect(s).toContain("querySelector('#ld-orbit')?.remove()");
   });
 });
+
+describe('the daily sell cap resets at the PLAYER local midnight, not UTC', () => {
+  // dailySold is documented "local-date keyed" but used new Date().toISOString()
+  // (always UTC), so the cap reset at ~10-11am in Melbourne — an evening + next-
+  // morning session read as the same day. It must key off LOCAL date parts.
+  test('dailySold builds its day key from local Date parts, not toISOString', () => {
+    const s = src('main-simple.ts');
+    const i = s.indexOf('private dailySold(');
+    expect(i).toBeGreaterThan(-1);
+    // Strip comments — the method's OWN comment names the UTC trap it avoids.
+    const body = s
+      .slice(i, i + 700)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(body).toContain('d.getFullYear()');
+    expect(body).toContain('d.getDate()');
+    // The UTC trap must not come back inside this method's CODE.
+    expect(body).not.toContain('toISOString');
+  });
+});

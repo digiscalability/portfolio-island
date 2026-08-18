@@ -4237,7 +4237,13 @@ class SimpleApp {
    * cheat the player's own island.
    */
   private dailySold(key: string, add: number): number {
-    const today = new Date().toISOString().slice(0, 10);
+    // LOCAL date, not toISOString() (which is UTC): the cap is meant to reset at
+    // the player's own midnight. toISOString reset it at UTC midnight — ~10-11am
+    // in Melbourne — so an evening + next-morning session read as the same day.
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+      d.getDate(),
+    ).padStart(2, '0')}`;
     let n = 0;
     try {
       const raw = JSON.parse(localStorage.getItem(key) ?? 'null') as {
