@@ -345,7 +345,11 @@ export class Multiplayer {
       // ~24-53KB of base64 each, so cap voice far tighter than text. The replay
       // is discarded anyway (the `ready` gate below), so this is pure bandwidth
       // savings — live messages still arrive as new child_added events.
-      const listRef = query(ref(db, path), limitToLast(kind === 'voice' ? 8 : 30));
+      // Voice replay is discarded by the `ready` gate below and live voice
+      // arrives as fresh child_added regardless of window size, so the window
+      // only needs to ARM the live listener — 2 (not 8) still covers a join-time
+      // burst while cutting ~6 throwaway 24-53KB blobs of egress per visitor.
+      const listRef = query(ref(db, path), limitToLast(kind === 'voice' ? 2 : 30));
       // Ignore the initial burst of existing children (RTDB replays them on
       // attach); only act on entries that arrive AFTER the current list has
       // loaded. onValue(onlyOnce) fires right after that initial replay, so
@@ -571,8 +575,10 @@ export class Multiplayer {
       peer.remote?.wave(); // animate the peer's arm, not just the emoji
       return;
     }
-    // state
-    if (msg.p) {
+    // state — p/q/vp/vq come straight off the wire (untrusted RTDB); shape-check
+    // them like safePeerName does for names, or a malformed node (e.g. `p: 5`)
+    // indexes to undefined and sets NaN positions that vanish/teleport the peer.
+    if (Array.isArray(msg.p) && msg.p.length >= 3) {
       // DERIVE the peer's swim motion from the position stream — no new wire
       // field, so this works against clients that never update, in both
       // directions, with no rules deploy. The pose byte only says "in water";
@@ -600,7 +606,8 @@ export class Multiplayer {
       peer.motionAt = t;
       peer.targetPos.copy(next);
     }
-    if (msg.q) peer.targetQuat.set(msg.q[0], msg.q[1], msg.q[2], msg.q[3]);
+    if (Array.isArray(msg.q) && msg.q.length >= 4)
+      peer.targetQuat.set(msg.q[0], msg.q[1], msg.q[2], msg.q[3]);
     peer.remote?.setSwimMotion(peer.swimRadial, peer.swimTang);
     if (msg.name) {
       const clean = safePeerName(msg.name);
@@ -623,8 +630,9 @@ export class Multiplayer {
     // shared world vehicle by GameScene (see getRemoteVehicleStates).
     peer.veh = msg.veh ?? null;
     peer.vehIdx = msg.vehIdx ?? -1;
-    if (msg.vp) peer.vp.set(msg.vp[0], msg.vp[1], msg.vp[2]);
-    if (msg.vq) peer.vq.set(msg.vq[0], msg.vq[1], msg.vq[2], msg.vq[3]);
+    if (Array.isArray(msg.vp) && msg.vp.length >= 3) peer.vp.set(msg.vp[0], msg.vp[1], msg.vp[2]);
+    if (Array.isArray(msg.vq) && msg.vq.length >= 4)
+      peer.vq.set(msg.vq[0], msg.vq[1], msg.vq[2], msg.vq[3]);
     // Broadcast pose byte → the remote avatar strikes swim/ride/air poses
     // instead of always walk-cycling upright (applied each frame in update()).
     peer.pose = typeof msg.pose === 'number' ? msg.pose : 0;
@@ -663,7 +671,12 @@ export class Multiplayer {
   private refreshPeerLabel(peer: Peer): void {
     const y = peer.label.position.y;
     peer.avatar.remove(peer.label);
-    (peer.label.material as THREE.SpriteMaterial).map?.dispose();
+    // Dispose BOTH the texture and the material — makeTextSprite mints a fresh
+    // SpriteMaterial per call, so disposing only .map orphaned the old material
+    // on every rename/founder-flip/mute (matches removePeer's teardown).
+    const oldMat = peer.label.material as THREE.SpriteMaterial;
+    oldMat.map?.dispose();
+    oldMat.dispose();
     peer.label = Multiplayer.makeTextSprite(
       (peer.muted ? '🔇 ' : '') + (peer.founder ? '👑 ' : '') + peer.name,
     );

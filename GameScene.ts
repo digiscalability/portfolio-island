@@ -2420,7 +2420,12 @@ export class GameScene extends THREE.Scene {
     const mesh = new THREE.Mesh(merged, mat);
     mesh.name = 'manta';
     mesh.raycast = () => {}; // never a camera-collision or interaction target
-    mesh.frustumCulled = false;
+    // Let three frustum-cull it: a regular Mesh culls via geometry.boundingSphere
+    // transformed by the live matrixWorld, so it tracks the moving manta. +0.7
+    // margin covers the shader wing-flap poking a wingtip past the rest sphere.
+    merged.computeBoundingSphere();
+    if (merged.boundingSphere) merged.boundingSphere.radius += 0.7;
+    mesh.frustumCulled = true;
     // Deliberately NOT ink-hulled: addGroupHulls DOUBLES the geometry, and the
     // shell would need this same flap injection or the outline visibly
     // detaches from the wings mid-beat. createDeepFauna doesn't hull either.
@@ -10570,16 +10575,13 @@ export class GameScene extends THREE.Scene {
       this.orbitCamera.update(deltaTime);
     }
 
-    // Update GLTF animations
-    this.animationMixers.forEach((mixer) => {
-      mixer.update(deltaTime);
-    });
+    // Update GLTF animations (for-of, not forEach — no per-frame closure alloc,
+    // matching cloudPivots/birds/swayTrees below)
+    for (const mixer of this.animationMixers) mixer.update(deltaTime);
 
     // Update mailboxes (for pulse animation)
     const time = performance.now() / 1000;
-    this.mailboxes.forEach((mailbox) => {
-      mailbox.update(time);
-    });
+    for (const mailbox of this.mailboxes) mailbox.update(time);
 
     // Drift clouds around the planet
     for (const pivot of this.cloudPivots) {
@@ -12007,11 +12009,11 @@ export class GameScene extends THREE.Scene {
       // Push player away TANGENTIALLY: a radial component here shoves the
       // player into the terrain (visible as being 'dug in' while walking
       // past props) or launches them off it — grounding owns the radial axis.
-      const normal = playerPos.clone().normalize();
-      const direction = playerPos.clone().sub(center);
-      direction.sub(normal.clone().multiplyScalar(direction.dot(normal)));
-      if (direction.lengthSq() < 1e-6)
-        direction.copy(normal.clone().cross(new THREE.Vector3(0, 1, 0.001)));
+      const normal = this._colNormal.copy(playerPos).normalize();
+      const direction = this._colDir.copy(playerPos).sub(center);
+      // In-place tangential projection (the file's own idiom): dir -= normal·(dir·normal).
+      direction.addScaledVector(normal, -direction.dot(normal));
+      if (direction.lengthSq() < 1e-6) direction.copy(normal).cross(GameScene._COL_FALLBACK);
       direction.normalize();
       const pushDistance = minDist - dist + 0.01; // Small buffer to prevent re-collision
       playerPos.addScaledVector(direction, pushDistance);
@@ -12075,6 +12077,14 @@ export class GameScene extends THREE.Scene {
   // Throttle for collision bump feedback (dust/thud once per 0.4s)
   private lastBumpAt = 0;
   private readonly _bumpScratch = new THREE.Vector3();
+  // Reusable scratch for the per-overlap push math (was 3-5 Vector3 clones per
+  // overlapping collider per frame in dense town). Vector3 has no uuid — RNG-neutral.
+  private readonly _colNormal = new THREE.Vector3();
+  private readonly _colDir = new THREE.Vector3();
+  private static readonly _COL_FALLBACK = new THREE.Vector3(0, 1, 0.001);
+  // Reusable scratch for the nearby-interactable scan (re-runs ~10x/sec while
+  // walking; was a fresh Vector3 per NPC + per bench each scan).
+  private readonly _niScratch = new THREE.Vector3();
 
   /**
    * Check if player is near any interactable and return interaction data
@@ -12172,7 +12182,7 @@ export class GameScene extends THREE.Scene {
     // Check NPCs (skip ones asleep "inside" — no talking to an empty doorstep)
     for (const npc of this.island.npcTargets) {
       if (!npc.meshRef.visible) continue;
-      const d = npc.meshRef.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
+      const d = npc.meshRef.getWorldPosition(this._niScratch).distanceTo(playerPos);
       if (d < nearestDist) {
         nearest = {
           type: 'npc' as const,
@@ -12185,7 +12195,7 @@ export class GameScene extends THREE.Scene {
 
     // Check benches (sit down)
     for (const bench of this.benchGroups) {
-      const d = bench.getWorldPosition(new THREE.Vector3()).distanceTo(playerPos);
+      const d = bench.getWorldPosition(this._niScratch).distanceTo(playerPos);
       if (d < nearestDist && d < 2.2) {
         nearest = { type: 'bench' as const, benchGroup: bench, distance: d };
         nearestDist = d;

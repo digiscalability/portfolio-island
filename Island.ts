@@ -1033,6 +1033,7 @@ export class Island {
     // Displace vertices along their normals to create varied hills and valleys on the sphere surface.
     const vertices = geometry.attributes.position.array as Float32Array;
     const v = new THREE.Vector3();
+    const n = new THREE.Vector3(); // scratch normal for the displacement loop
 
     // Simple Perlin-like noise function for more organic terrain
     const noise3D = (x: number, y: number, z: number, scale: number) => {
@@ -1352,11 +1353,14 @@ export class Island {
 
     for (let i = 0; i < vertices.length; i += 3) {
       v.set(vertices[i], vertices[i + 1], vertices[i + 2]);
-      const normal = v.clone().normalize();
-      const newPos = normal.multiplyScalar(terrainRadiusFor(normal, v));
-      vertices[i] = newPos.x;
-      vertices[i + 1] = newPos.y;
-      vertices[i + 2] = newPos.z;
+      // Reuse one scratch normal instead of v.clone() per vertex — ~337k boot
+      // allocations gone (R²-scaling). Vector3 has no uuid, so no Math.random
+      // draw is consumed: the tierParity golden census stays bit-identical.
+      n.copy(v).normalize();
+      const R = terrainRadiusFor(n, v);
+      vertices[i] = n.x * R;
+      vertices[i + 1] = n.y * R;
+      vertices[i + 2] = n.z * R;
     }
     geometry.attributes.position.needsUpdate = true;
     geometry.computeVertexNormals();

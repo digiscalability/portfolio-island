@@ -77,6 +77,11 @@ const PALETTE = {
  */
 export const EXTERIOR_LIGHTS_DAY_CUTOFF = 0.85;
 
+// Hoisted out of update() — both were re-created every frame (object literal +
+// array literal) in the unconditional day/night tick. Pure constants now.
+const WEATHER_DIM: Record<WeatherKind, number> = { clear: 1, cloudy: 0.55, rain: 0.35, snow: 0.5 };
+const SKY_KEYS: Array<keyof typeof PALETTE.day> = ['top', 'horizon', 'bottom'];
+
 export class EnvironmentCycle {
   private scene: THREE.Scene;
   private sun: THREE.DirectionalLight;
@@ -775,7 +780,7 @@ export class EnvironmentCycle {
     this.sun.position.copy(this._v1).multiplyScalar(60);
 
     // Weather dimming
-    const wDim = { clear: 1, cloudy: 0.55, rain: 0.35, snow: 0.5 }[this.weather];
+    const wDim = WEATHER_DIM[this.weather];
     const overcastMix =
       this.weather === 'cloudy'
         ? 0.45
@@ -816,8 +821,7 @@ export class EnvironmentCycle {
 
     // Sky palette: night → day, pushed toward dusk at the horizon crossing,
     // then washed toward overcast by weather
-    const skyKeys: Array<keyof typeof PALETTE.day> = ['top', 'horizon', 'bottom'];
-    for (const key of skyKeys) {
+    for (const key of SKY_KEYS) {
       this._c1.copy(PALETTE.night[key]).lerp(PALETTE.day[key], dayFactor);
       this._c1.lerp(PALETTE.dusk[key], duskFactor * 0.75);
       this._c1.lerp(PALETTE.overcast[key], overcastMix * dayFactor);

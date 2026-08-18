@@ -336,6 +336,7 @@ class SimpleApp {
   private readonly _qcNormal = new THREE.Vector3();
   private readonly _qcToTarget = new THREE.Vector3();
   private readonly _qcCamFwd = new THREE.Vector3();
+  private readonly _audioPos = new THREE.Vector3(); // per-frame ambient sea-swell probe
   private readonly _qcCross = new THREE.Vector3();
   private readonly _qcTmp = new THREE.Vector3();
 
@@ -3067,7 +3068,7 @@ class SimpleApp {
     // full when in the water (quantised so setSeaLevel only fires on changes).
     const audioPlayer = this.scene.getPlayer();
     if (audioPlayer) {
-      const wp = audioPlayer.getWorldPosition();
+      const wp = audioPlayer.getWorldPositionInto(this._audioPos);
       const lat = Math.asin(Math.max(-1, Math.min(1, wp.y / (wp.length() || 1))));
       let sea = lat < 0.5 ? 0.45 : 0.15;
       if (audioPlayer.isInWater()) sea = 1;
