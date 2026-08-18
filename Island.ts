@@ -3790,6 +3790,10 @@ export class Island {
     // as a single InstancedMesh: 1 stem batch + 1 center batch + one petal
     // batch per colour (~7 draw calls total). Petals bucket by colour so each
     // keeps its own emissive tint (instanceColor can't drive emissive).
+    // ⚠️ FROZEN AT BUILD END: the whole `flowers` subtree gets matrixAutoUpdate
+    // off (see the static-matrix-freeze pass before `return root`). Anything
+    // added here that ANIMATES ITS TRANSFORM must set userData.animated = true
+    // (or .dynamic) on that object, or it will be pinned in place.
     const flowers = new THREE.Group();
     flowers.name = 'flowers';
     // One flower hue PER DISTRICT (anchors below are the 4 plazas + the pole),
@@ -4411,6 +4415,48 @@ export class Island {
 
     // (The old equator ring road + its decal conversion are gone — the
     // street network is built entirely from createStreetPath segments.)
+
+    // ── Static matrix freeze ────────────────────────────────────────────────
+    // These groups are placed once and NEVER transformed again — proven by an
+    // exhaustive per-object mutation-site audit (NOT a name/window classifier;
+    // that heuristic is what leaked swaying trees / walking NPCs / the moving
+    // sun into the static set in the reverted first attempt). Baking their world
+    // matrices once and disabling per-frame matrix auto-update stops three
+    // recomputing + propagating them every frame (the scene otherwise walks
+    // ~1,600 static prop meshes per frame — see OrbitCamera's collision note).
+    //
+    // ORDER IS LOAD-BEARING: bake via root.updateMatrixWorld(true) while the
+    // flags are still default-true, THEN flip them. Flip-first makes the bake
+    // skip the multiply and everything renders at the origin. BOTH flags per
+    // node (three r0.180): the Scene self-dirties each frame and force-cascades
+    // into descendants, so matrixAutoUpdate=false alone still pays the world
+    // multiply; matrixWorldAutoUpdate=false skips it too. RNG-neutral (boolean
+    // writes + one in-place updateMatrix; no alloc, no Math.random, no draw).
+    root.updateMatrixWorld(true);
+    const freezeStatic = (o: THREE.Object3D): void =>
+      o.traverse((c) => {
+        // GUARD: flowers is the designated home for FUTURE animated props — a
+        // child that animates its transform MUST set userData.animated (or
+        // .dynamic) to opt out, or it will be pinned. See the note at `flowers`.
+        if (c.userData && (c.userData.animated || c.userData.dynamic)) return;
+        c.matrixAutoUpdate = false;
+        c.matrixWorldAutoUpdate = false;
+      });
+    for (const g of [
+      buildings,
+      houses,
+      gates,
+      welcomePlaza,
+      pathGroup,
+      constructions,
+      flowers,
+      sea,
+    ])
+      freezeStatic(g);
+    // Terrain: compose-only. KEEP matrixWorldAutoUpdate=true — the BVH raycast
+    // and GameScene's collider snapshots call updateMatrixWorld(true) on it.
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
 
     return root;
   }
