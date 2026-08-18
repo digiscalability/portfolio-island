@@ -24,6 +24,7 @@ export class SimpleRenderer {
   private renderer: THREE.WebGLRenderer;
   private composer?: EffectComposer;
   private bloomPass?: UnrealBloomPass;
+  private bloomTargetStrength = 0.4; // authored bloom strength; fadeBloomIn ramps up to it
   private gradePass?: ShaderPass; // ?look=soft time-of-day grade
   private postProcessingEnabled: boolean = false;
 
@@ -335,6 +336,7 @@ export class SimpleRenderer {
     );
     bloomPass.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
     this.bloomPass = bloomPass;
+    this.bloomTargetStrength = bloomPass.strength; // authored value, for fadeBloomIn
     this.composer.addPass(bloomPass);
 
     // Output pass (tone mapping, gamma)
@@ -1024,6 +1026,34 @@ export class SimpleRenderer {
    */
   public setBloomEnabled(enabled: boolean): void {
     if (this.bloomPass) this.bloomPass.enabled = enabled;
+  }
+
+  /**
+   * Enable bloom by RAMPING its strength from 0 to the authored value over
+   * `durationMs`, instead of snapping it on. The intro disables bloom for the
+   * fly-in (rim ghosting), then re-enables it at arrival — and a hard enable
+   * there is a visible bloom POP right as the reveal settles and the eye is on
+   * the scene ("a flicker during the fly-in"). A short fade makes bloom arrive
+   * instead of blink. rAF/perf-clock driven and self-contained; if the governor
+   * disables the pass mid-fade the strength still lands at the target (the pass
+   * just isn't drawn), so nothing is left half-bright.
+   */
+  public fadeBloomIn(durationMs = 600): void {
+    const bloom = this.bloomPass;
+    if (!bloom) return;
+    const target = this.bloomTargetStrength; // the authored strength, snapshotted at build
+    bloom.strength = 0;
+    bloom.enabled = true;
+    const startedAt = performance.now();
+    const step = (): void => {
+      if (!this.bloomPass) return;
+      const t = Math.min(1, (performance.now() - startedAt) / durationMs);
+      // ease-out so it settles gently rather than arriving at full slope.
+      this.bloomPass.strength = target * (1 - (1 - t) * (1 - t));
+      if (t < 1) requestAnimationFrame(step);
+      else this.bloomPass.strength = target;
+    };
+    requestAnimationFrame(step);
   }
 
   /** Ctrl+B. Toggles the BLOOM PASS and reports its true state — see

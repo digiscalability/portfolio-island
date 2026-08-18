@@ -1498,7 +1498,11 @@ class SimpleApp {
           .flyInFromDistant(2500)
           .then(() => {
             restoreGrass(); // idempotent — covers a skipped/short flight
-            this.renderer.setBloomEnabled(true); // bloom on only once the camera stills
+            // FADE bloom in, don't snap it. Enabling at arrival avoids the
+            // rim-ghosting-during-motion, but a hard enable is a bloom POP right
+            // as the reveal settles and the eye lands on the scene — read as a
+            // flicker at the tail of the fly-in. A short ramp makes bloom arrive.
+            this.renderer.fadeBloomIn(650);
             afterIntro();
           });
       }

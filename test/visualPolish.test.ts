@@ -754,6 +754,37 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(main).toContain('deadline && !deadline.didTimeout');
   });
 
+  test('the market vendor faces its shopper spot, not the nearest street', () => {
+    const scene = src('GameScene.ts');
+    const start = scene.indexOf('private setupVendors');
+    expect(start).toBeGreaterThan(-1);
+    const body = scene.slice(start, scene.indexOf('private ', start + 20));
+    // MEASURED: for stall 2 the nearest street is 76deg off the counter-front,
+    // so the vendor stood sideways to shoppers at its own stall. Face the
+    // shopper spot (the counter-front it stepped back from) instead.
+    expect(body).toContain('const shopperSpot = this.island.stallSites[si]');
+    expect(body).toContain(
+      'this.orientAvatar(npc.meshRef, surf.normal, this._sailTmp.normalize())',
+    );
+    expect(body).not.toMatch(
+      /const street = this\.island\.nearestStreetDir\(dir[\s\S]{0,200}orientAvatar/,
+    );
+  });
+
+  test('bloom FADES in at the reveal instead of snapping (no arrival pop)', () => {
+    const r = src('SimpleRenderer.ts');
+    // Enabling bloom at arrival avoids rim-ghosting during the swoop, but a hard
+    // enable is a visible pop right as the reveal settles — "a flicker during
+    // the fly-in". Ramp its strength up from 0 instead.
+    expect(r).toContain('public fadeBloomIn(');
+    expect(r).toContain('bloom.strength = 0;');
+    expect(r).toContain('this.bloomTargetStrength = bloomPass.strength;'); // authored value snapshot
+    const m = src('main-simple.ts');
+    // the intro's arrival callback fades, it no longer hard-enables.
+    expect(m).toContain('this.renderer.fadeBloomIn(');
+    expect(m).not.toMatch(/\.then\(\(\) => \{[\s\S]{0,200}setBloomEnabled\(true\)/);
+  });
+
   test('remote peers cull like NPCs, and idle presence writes are suppressed (scale)', () => {
     const sp = src('SimplePlayer.ts');
     // Peers used a blunt frustumCulled=false, so each peer's ~13 skinned parts
@@ -836,11 +867,11 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // camera at arrival (the flyIn .then()).
     expect(m).toContain('window.setTimeout(restoreGrass, 1500)');
     expect(m).not.toContain('window.setTimeout(restoreIntroQuality');
-    // setBloomEnabled(true) must sit in the arrival callback, AFTER flyInFromDistant.
+    // Bloom comes on in the arrival callback (now via fadeBloomIn), AFTER the
+    // fly-in — never in the 1500ms mid-swoop timer.
     const fly = m.indexOf('flyInFromDistant');
     expect(fly).toBeGreaterThan(-1);
-    expect(m.indexOf('setBloomEnabled(true)')).toBeGreaterThan(fly);
-    // ...and NOT in the 1500ms timer path anymore.
+    expect(m.indexOf('fadeBloomIn(')).toBeGreaterThan(fly);
     expect(m).not.toMatch(/setGrassBudget\(1\);\s*this\.renderer\.setBloomEnabled\(true\)/);
   });
 

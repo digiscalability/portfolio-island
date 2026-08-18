@@ -5872,11 +5872,16 @@ export class GameScene extends THREE.Scene {
       const quat = new THREE.Quaternion().setFromUnitVectors(GameScene.AXIS_Y, surf.normal);
       npc.meshRef.position.copy(surf.position);
       npc.meshRef.quaternion.copy(quat);
-      // Face the market street: the counter is between the two stall rows, so
-      // look along the tangent toward the nearest boulevard point.
-      const street = this.island.nearestStreetDir(dir, this.island.arc(30));
-      if (street) {
-        const target = street.multiplyScalar(this.island.getRadius());
+      // Face the SHOPPER SPOT — the counter-front this vendor just stepped BACK
+      // from — not the nearest boulevard point. MEASURED: for stall 2 the
+      // nearest street is 76deg off the counter-front, so that vendor stood
+      // sideways to anyone at its own stall (facing the shopper spot at only
+      // 0.24 instead of ~1.0). stallSites[si] IS that spot; for stall 0 it
+      // already coincided with the street (2deg), so this only corrects the
+      // broken one and leaves the good one unchanged.
+      const shopperSpot = this.island.stallSites[si];
+      if (shopperSpot) {
+        const target = shopperSpot.clone().multiplyScalar(this.island.getRadius());
         this._sailTmp.subVectors(target, surf.position);
         this._sailTmp.addScaledVector(surf.normal, -this._sailTmp.dot(surf.normal));
         if (this._sailTmp.lengthSq() > 1e-6) {

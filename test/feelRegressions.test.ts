@@ -377,7 +377,9 @@ describe('no quality rung may switch RENDERING PATH', () => {
     // start); the bloom pass measures 0.039% worst-case across the same poses.
     const m = src('main-simple.ts');
     expect(m).toContain('this.renderer.setBloomEnabled(false)');
-    expect(m).toContain('this.renderer.setBloomEnabled(true)');
+    // Bloom is turned back on at arrival via fadeBloomIn (a strength ramp, not a
+    // path switch) — the intro must still re-enable bloom, just without the pop.
+    expect(m).toContain('this.renderer.fadeBloomIn(');
     // Exactly one setPostProcessingEnabled call survives in the app, and it
     // turns the composer ON at boot. Nothing may ever turn it off again —
     // that is what makes warmUp compile the bloom/output programs behind the
