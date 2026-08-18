@@ -200,20 +200,25 @@ describe('shadowMap.autoUpdate has exactly one owner', () => {
     expect(g).toContain('setShadowFreeze?.(false)');
   });
 
-  test('the renderer has exactly two writers: construction and the policy', () => {
+  test('the renderer writes the raw field in exactly one place: the policy', () => {
     const s = src('SimpleRenderer.ts');
     const writes = s.match(/shadowMap\.autoUpdate =/g) ?? [];
-    expect(writes).toHaveLength(2); // constructor default + applyShadowPolicy
-    expect(s).toContain(
-      'this.renderer.shadowMap.autoUpdate = !this.shadowFrozen && this.qualityRung < 2',
-    );
+    // ONE raw writer now: applyShadowPolicy. Construction routes THROUGH the
+    // policy (not a second raw write) so ?halfshadow=1 takes effect from frame
+    // 1 — a single owner is even cleaner than the old construction+policy pair.
+    expect(writes).toHaveLength(1);
+    expect(s).toContain('this.applyShadowPolicy();');
+    // The policy derives the field from freeze + rung + the always-half lever.
+    expect(s).toContain('!this.shadowFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow');
   });
 
   test('the half-rate re-arm and the engage refresh both respect the freeze', () => {
-    // Otherwise rung >= 2 indoors still runs a depth pass every other frame —
-    // exactly the waste the interior freeze exists to stop.
+    // Otherwise rung >= 2 (or the ?halfshadow lever) indoors still runs a depth
+    // pass every other frame — exactly the waste the interior freeze stops.
     const s = src('SimpleRenderer.ts');
-    expect(s).toContain('if (this.qualityRung >= 2 && !this.shadowFrozen) {');
+    expect(s).toContain(
+      'if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.shadowFrozen) {',
+    );
     expect(s).toContain('if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;');
   });
 

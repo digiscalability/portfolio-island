@@ -1437,7 +1437,16 @@ export class GameScene extends THREE.Scene {
     // GPUs, so phones/tablets and low-core machines drop to 1024².
     const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
     const lowCore = (navigator.hardwareConcurrency || 8) <= 4;
-    const shadowRes = coarse || lowCore ? 1024 : 2048;
+    // ?shadow1536=1 — A/B lever: drop the high-tier map 2048→1536 (~44% less
+    // shadow-map fill) to weigh softer contact shadows against the GPU saving.
+    // Default OFF, so the live look is unchanged until the winner is blessed.
+    let hiRes = 2048;
+    try {
+      if (new URLSearchParams(window.location.search).get('shadow1536') === '1') hiRes = 1536;
+    } catch {
+      /* no window (tests) — keep 2048 */
+    }
+    const shadowRes = coarse || lowCore ? 1024 : hiRes;
     sunLight.shadow.mapSize.width = shadowRes;
     sunLight.shadow.mapSize.height = shadowRes;
     // The box used to be a fixed ±50 around the origin so it could cover the

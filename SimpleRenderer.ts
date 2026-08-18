@@ -148,6 +148,18 @@ export class SimpleRenderer {
   /** Interior mode holds this true: the outdoor world is provably frozen while
    *  indoors, so every depth pass there is pure waste. See setShadowFreeze. */
   private shadowFrozen = false;
+  /** ?halfshadow=1 — A/B lever: run the every-2nd-frame shadow refresh on ALL
+   *  tiers (today it engages only at governor rung 2). Halves the depth-pass
+   *  cost for a one-frame shadow lag during fast movement. Default OFF so the
+   *  live look is unchanged; composes with the rung-2 path and the interior
+   *  freeze (both still gate on !shadowFrozen). */
+  private readonly alwaysHalfShadow = (() => {
+    try {
+      return new URLSearchParams(window.location.search).get('halfshadow') === '1';
+    } catch {
+      return false;
+    }
+  })();
 
   constructor(canvas: HTMLCanvasElement) {
     // Create WebGL renderer with anti-aliasing
@@ -188,7 +200,10 @@ export class SimpleRenderer {
     this.renderer.toneMappingExposure = isRealTheme() ? 1.14 : 1.0;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.shadowMap.autoUpdate = true;
+    // Derive the initial autoUpdate from the shadow policy so ?halfshadow=1
+    // takes effect from frame 1, not only after the governor first acts. With
+    // the flag off this is identical to the old `= true`.
+    this.applyShadowPolicy();
 
     // Set a clear background color for debugging
     this.renderer.setClearColor(0xa8d8f0, 1);
@@ -792,7 +807,11 @@ export class SimpleRenderer {
    * Deriving the field from BOTH inputs makes every interleaving converge.
    */
   private applyShadowPolicy(): void {
-    this.renderer.shadowMap.autoUpdate = !this.shadowFrozen && this.qualityRung < 2;
+    // alwaysHalfShadow forces the manual every-2nd-frame path (autoUpdate off)
+    // at every rung, exactly as rung 2 does — render()'s re-arm keeps the map
+    // fresh. Interior freeze still wins (autoUpdate off, no re-arm).
+    this.renderer.shadowMap.autoUpdate =
+      !this.shadowFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow;
   }
 
   /**
@@ -984,7 +1003,7 @@ export class SimpleRenderer {
     // moves slowly enough that a one-frame-stale map is invisible. Suspended
     // by the interior freeze — a half-rate depth pass indoors is still a
     // depth pass indoors.
-    if (this.qualityRung >= 2 && !this.shadowFrozen) {
+    if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.shadowFrozen) {
       this.shadowFramePhase ^= 1;
       if (this.shadowFramePhase === 1) this.renderer.shadowMap.needsUpdate = true;
     }
