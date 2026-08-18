@@ -160,6 +160,9 @@ export class SimpleRenderer {
       return false;
     }
   })();
+  // Stable handler ref so dispose() can actually detach the resize listener
+  // (an inline arrow at addEventListener cannot be removed).
+  private readonly _onResize = (): void => this.onWindowResize();
 
   constructor(canvas: HTMLCanvasElement) {
     // Create WebGL renderer with anti-aliasing
@@ -216,7 +219,7 @@ export class SimpleRenderer {
     });
 
     // Responsive resize
-    window.addEventListener('resize', () => this.onWindowResize());
+    window.addEventListener('resize', this._onResize);
 
     // WebGL context-loss resilience. Under GPU memory pressure a mobile browser
     // can drop the context: the canvas goes black while the DOM HUD stays on
@@ -1210,6 +1213,7 @@ export class SimpleRenderer {
    */
   public dispose(): void {
     this.stopRenderLoop();
+    window.removeEventListener('resize', this._onResize);
 
     if (this.composer) {
       this.composer.dispose();
