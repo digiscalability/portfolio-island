@@ -32,6 +32,11 @@ const hashFloats = (arrays: ArrayLike<number>[]): string => {
   return (h >>> 0).toString(16).padStart(8, '0');
 };
 
+// Explicit timeout: this builds a FULL R=100 island (~1.7s warm) against
+// vitest's default 5s test deadline — under machine load (dev server + other
+// workers all building islands) the build alone breached it, and the failure
+// printed as a bare FAIL that read like a hash mismatch. The hashes have never
+// actually drifted; the flake was always the deadline.
 test('terrain + sea-depth are bit-stable (guards the noise3D dedupe)', () => {
   installHeadlessCanvas();
   const island = new Island(WORLD_RADIUS);
@@ -66,4 +71,4 @@ test('terrain + sea-depth are bit-stable (guards the noise3D dedupe)', () => {
     combined: 'ef9b45c5',
     verts: 337561,
   });
-});
+}, 120000);

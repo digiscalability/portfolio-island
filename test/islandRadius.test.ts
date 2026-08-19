@@ -75,6 +75,13 @@ describe('island radius invariants', () => {
     }
     return i;
   };
+  // Pre-build every radius under a generous HOOK timeout: the lazy islandAt
+  // otherwise charged a full island build to whichever TEST touched a radius
+  // first — against the default 5s test deadline, which machine load breached
+  // (the intermittent "ray start clears the highest terrain" FAILs).
+  beforeAll(() => {
+    for (const r of RADII) islandAt(r);
+  }, 300000);
 
   test('ordering: the sampler ray always clears the displacement ceiling', () => {
     // If this inverts, raycasts start INSIDE the summits and grounding fails

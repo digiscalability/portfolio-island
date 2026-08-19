@@ -58,6 +58,10 @@ describe('grass instance marshaling is byte-stable (guards the typed-array rewri
   // GOLDEN — captured from the number[]-push implementation before the rewrite.
   // If a legitimate grass-generation change lands, re-bless from the printed
   // actuals in the SAME commit; never loosen this to hide a marshaling drift.
+  //
+  // Explicit timeouts: each test builds a FULL island in its body against the
+  // default 5s deadline — machine load made these the flakiest tests in the
+  // suite (a timeout FAIL that read like a hash drift; see terrainNoise).
   test('desktop grass matches the blessed golden', () => {
     const c = grassCensus(false);
     expect({ hash: c.hash, blades: c.blades, chunks: c.chunks }).toEqual({
@@ -65,7 +69,7 @@ describe('grass instance marshaling is byte-stable (guards the typed-array rewri
       blades: 10117,
       chunks: 15,
     });
-  });
+  }, 120000);
 
   test('low-tier grass matches the blessed golden', () => {
     const c = grassCensus(true);
@@ -74,5 +78,5 @@ describe('grass instance marshaling is byte-stable (guards the typed-array rewri
       blades: 2623,
       chunks: 15,
     });
-  });
+  }, 120000);
 });

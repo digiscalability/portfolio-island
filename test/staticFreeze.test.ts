@@ -30,10 +30,12 @@ const byName = (re: RegExp): THREE.Object3D[] => {
   return out;
 };
 
+// Explicit hook timeout (project idiom — see tierParity/surfBands): a full
+// island build under machine load can breach the 10s default hookTimeout.
 beforeAll(() => {
   installHeadlessCanvas();
   island = new Island(WORLD_RADIUS);
-});
+}, 120000);
 
 describe('static matrix freeze — the proven-static subtrees are frozen', () => {
   test('the flowers subtree is fully frozen (both flags off on every node)', () => {

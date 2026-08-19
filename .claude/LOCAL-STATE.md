@@ -15,11 +15,17 @@ Branch merged to `main` last session; now working on `main` directly. Prod = `43
   replies (disabling a focused field collapses the phone keyboard); 16px-on-touch on all remaining
   inputs; toast dwell scales 50ms/char (2–6s); radar text scales up at shrunk display sizes; compass
   DOM writes change-guarded; touchify covers "eat with G" + plain-text toasts + completion hints.
-  ⚠️ KNOWN FLAKE (pre-existing, surfaced under load): the golden byte-stability tests (terrainNoise,
-  grassMarshal) intermittently fail when vitest runs WHILE the dev server + browser pane are up —
-  different test each run, each passes in isolation, 441/441 twice clean after stopping the server.
-  Worker-scheduling/warm-cache sensitivity (tierParity's own harness notes). Don't chase it as a real
-  regression; consider vitest worker isolation if it starts biting in CI.
+  ✅ FLAKE FIXED + ROOT-CAUSED (supersedes the earlier "worker-scheduling/warm-cache" theory, which
+  was WRONG): the intermittent golden-test failures were **vitest's default 5s test timeout**, never a
+  hash drift. terrainNoise/grassMarshal build a FULL island in the TEST BODY (~1.7–2.5s warm) and
+  islandRadius's lazy islandAt() charged a build to whichever test touched a radius first — machine
+  load (dev server + workers all building islands) pushed them past 5s, and the timeout FAIL read
+  like a bit-stability break. PROVEN by controlled experiment: `--testTimeout=1500` reproduced the
+  exact failing set (grassMarshal×2, terrainNoise, islandRadius×2, all "Test timed out"; tierParity
+  immune via its explicit 300s). FIX: explicit 120s timeouts on the island-building test bodies,
+  pre-build islandRadius's radii in a 300s beforeAll, 120s hook on staticFreeze. Post-fix the same
+  1500ms experiment runs 441/441 (explicit timeouts override the default). NOT pool isolation — the
+  data was always deterministic; only the deadline was wrong.
 ⚠️ NOTE: `.claude/LOCAL-STATE.md` is NOW GIT-TRACKED (un-ignored 2026-08-19, commit 2cdb53e) — it
 shows in `git status` and must be committed deliberately; `git add`-ing it is correct, not forbidden.
 ⚠️ RESUME GOTCHA: the session-resume re-checked-out the tree with CRLF (74 .ts + json/css) — breaks
