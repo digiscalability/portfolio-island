@@ -508,6 +508,25 @@ export class GameScene extends THREE.Scene {
   private carriedFish: THREE.Group | null = null;
   // Generic gold coin-pops (sales / rewards), rising + spinning + fading.
   private popCoins: Array<{ mesh: THREE.Mesh; t0: number; n: THREE.Vector3 }> = [];
+  // Coin-pop pool: the old spawnCoinPop minted a geometry + material per pop and
+  // only remove()d on expiry — a steady GPU leak. Now one shared geometry + a
+  // reused mesh pool (materials kept for the independent opacity fade).
+  private coinPopPool: THREE.Mesh[] = [];
+  private static _coinPopGeo: THREE.CylinderGeometry | null = null;
+  // Floating "+N 🪙" transaction numbers — pooled canvas-texture sprites that
+  // rise + fade at the point of a coin event. Reused (never orphaned).
+  private floatTexts: Array<{
+    sprite: THREE.Sprite;
+    canvas: HTMLCanvasElement;
+    tex: THREE.CanvasTexture;
+    t0: number;
+    up: THREE.Vector3;
+  }> = [];
+  private floatTextPool: Array<{
+    sprite: THREE.Sprite;
+    canvas: HTMLCanvasElement;
+    tex: THREE.CanvasTexture;
+  }> = [];
 
   // Looping smoke puffs rising from house chimneys
   private smokePuffs: Array<{
@@ -3825,6 +3844,8 @@ export class GameScene extends THREE.Scene {
     opts: { coins: number; providerName?: string | null; line?: string },
   ): void {
     const up = providerPos.clone().normalize();
+    // The transaction number: a floating "+N 🪙" that rises out of the sale.
+    this.floatCoins(providerPos.clone().addScaledVector(up, 1.0), opts.coins);
     if (!a11y.reducedMotion) {
       this.player?.triggerFeedToss();
       if (this.player) squash(this.player, 0.06, 0.15);
@@ -8282,17 +8303,91 @@ export class GameScene extends THREE.Scene {
     console.log('🥧 Bakery + baker routine set up');
   }
 
-  /** A gold coin-pop rising + spinning + fading (sales / quest rewards). */
+  /** A gold coin-pop rising + spinning + fading (sales / quest rewards).
+   *  Pooled: reuses a mesh (shared geometry) instead of minting + orphaning. */
   private spawnCoinPop(pos: THREE.Vector3, up: THREE.Vector3): void {
-    const mesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.12, 0.03, 12),
-      new THREE.MeshBasicMaterial({ color: 0xffd34a, transparent: true, opacity: 1 }),
-    );
+    if (!GameScene._coinPopGeo) {
+      GameScene._coinPopGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.03, 12);
+    }
+    let mesh = this.coinPopPool.pop();
+    if (!mesh) {
+      mesh = new THREE.Mesh(
+        GameScene._coinPopGeo,
+        new THREE.MeshBasicMaterial({ color: 0xffd34a, transparent: true, opacity: 1 }),
+      );
+    } else {
+      (mesh.material as THREE.MeshBasicMaterial).opacity = 1;
+    }
     mesh.position.copy(pos);
     mesh.quaternion.setFromUnitVectors(GameScene._localUp, up);
     this.add(mesh);
     this.popCoins.push({ mesh, t0: performance.now() / 1000, n: up.clone() });
   }
+
+  /** A world-space text pop that rises + fades — the coin transaction number.
+   *  Pooled (canvas + texture reused, redrawn per use). Gated on reduced-motion. */
+  public spawnFloatText(pos: THREE.Vector3, up: THREE.Vector3, text: string, color: string): void {
+    if (a11y.reducedMotion) return; // a rising number is decorative motion
+    let rec = this.floatTextPool.pop();
+    if (!rec) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 128;
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: tex,
+          transparent: true,
+          depthWrite: false,
+          depthTest: false,
+        }),
+      );
+      sprite.renderOrder = 3;
+      rec = { sprite, canvas, tex };
+    }
+    const ctx = rec.canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, 256, 128);
+      ctx.font = 'bold 60px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.strokeText(text, 128, 64);
+      ctx.fillStyle = color;
+      ctx.fillText(text, 128, 64);
+      rec.tex.needsUpdate = true;
+    }
+    rec.sprite.position.copy(pos);
+    rec.sprite.scale.set(1.15, 0.58, 1);
+    (rec.sprite.material as THREE.SpriteMaterial).opacity = 1;
+    this.add(rec.sprite);
+    this.floatTexts.push({ ...rec, t0: performance.now() / 1000, up: up.clone() });
+  }
+
+  /** Convenience: a gold "+N 🪙" (earn) or coral "-N 🪙" (spend) at a world point. */
+  public floatCoins(pos: THREE.Vector3, n: number, spend = false): void {
+    if (n <= 0) return;
+    this.spawnFloatText(
+      pos,
+      pos.clone().normalize(),
+      `${spend ? '-' : '+'}${n} 🪙`,
+      spend ? '#ff9a7a' : '#ffe08a',
+    );
+  }
+
+  /** Float a coin number above the local player — for rewards/spends that happen
+   *  at the player (racing, quests, lessons, vault) rather than at an NPC counter. */
+  public floatCoinsAtPlayer(n: number, spend = false): void {
+    if (!this.player || n <= 0) return;
+    const pos = this.player.getWorldPositionInto(this._floatAtPlayerPos);
+    pos.addScaledVector(this._floatAtPlayerPos.clone().normalize(), 1.5);
+    this.floatCoins(pos, n, spend);
+  }
+  private readonly _floatAtPlayerPos = new THREE.Vector3();
 
   /** Show/hide a fish carried in the player's hands (Baker fetch quest). */
   public setPlayerCarryingFish(on: boolean): void {
@@ -11377,12 +11472,26 @@ export class GameScene extends THREE.Scene {
       const p = (time - c.t0) / 1.0;
       if (p >= 1) {
         this.remove(c.mesh);
+        this.coinPopPool.push(c.mesh); // reuse, don't orphan (was the GPU leak)
         this.popCoins.splice(i, 1);
         continue;
       }
       c.mesh.position.addScaledVector(c.n, deltaTime * 0.9);
       c.mesh.rotation.y += deltaTime * 6;
       (c.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - p;
+    }
+    // Floating transaction numbers: rise + ease-out fade, then back to the pool.
+    for (let i = this.floatTexts.length - 1; i >= 0; i--) {
+      const f = this.floatTexts[i];
+      const p = (time - f.t0) / 1.15;
+      if (p >= 1) {
+        this.remove(f.sprite);
+        this.floatTextPool.push({ sprite: f.sprite, canvas: f.canvas, tex: f.tex });
+        this.floatTexts.splice(i, 1);
+        continue;
+      }
+      f.sprite.position.addScaledVector(f.up, deltaTime * 0.8);
+      (f.sprite.material as THREE.SpriteMaterial).opacity = 1 - p * p;
     }
 
     // Butterflies: slow figure-8 drift + fast wing flap

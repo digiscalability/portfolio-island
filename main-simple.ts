@@ -699,6 +699,7 @@ class SimpleApp {
             // Delivering the fish → the Baker bakes it into a pie before your eyes
             if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
             this.scene.addCoins(q.rewardCoins);
+            this.scene.floatCoinsAtPlayer(q.rewardCoins);
             sfx.questComplete();
             this.ui.showQuestComplete({
               name: `${q.giverName}'s request`,
@@ -1091,6 +1092,7 @@ class SimpleApp {
           // no reward. Every finish now pays out (bigger on a PB).
           const reward = e.improved ? 15 : 5;
           this.scene.addCoins(reward);
+          this.scene.floatCoinsAtPlayer(reward);
           this.ui.updateCoinCounter(this.scene.getCoinsCollected());
           this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
           // ?race=&beat= challenge verdict (one-shot: cleared either way).
@@ -1924,6 +1926,7 @@ class SimpleApp {
       /* storage blocked — still grant for this session */
     }
     this.scene.addCoins(25);
+    this.scene.floatCoinsAtPlayer(25);
     this.ui.updateCoinCounter(this.scene.getCoinsCollected());
     const hat: HatId = 'halo';
     if (!this.ownedHats.has(hat)) {
@@ -2841,6 +2844,7 @@ class SimpleApp {
               this.lessons.push(next[0]);
               this.persistLessons();
               this.scene.addCoins(10);
+              this.scene.floatCoinsAtPlayer(10);
               sfx.coin();
               this.ui.toast(next[1]);
               track('lesson_done', { id: next[0], total: this.lessons.length });
@@ -4291,6 +4295,7 @@ class SimpleApp {
             return;
           }
           sfx.coin();
+          this.scene.floatCoinsAtPlayer(step, true);
           track('vault_deposit', { amount: step, balance: r.balance });
           render(r.balance);
         },
@@ -4309,6 +4314,7 @@ class SimpleApp {
             return;
           }
           this.scene.addCoins(step); // credit ONLY on ack
+          this.scene.floatCoinsAtPlayer(step);
           sfx.coin();
           track('vault_withdraw', { amount: step, balance: r.balance });
           render(r.balance);
