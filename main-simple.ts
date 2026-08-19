@@ -2808,7 +2808,9 @@ class SimpleApp {
               this.meals.soup++;
               this.persistMeals();
               this.refreshFeedHud();
-              sfx.coin();
+              sfx.spend();
+              this.scene.logTransaction('Bought soup', -SimpleApp.SOUP_PRICE);
+              this.scene.floatCoinsAtPlayer(SimpleApp.SOUP_PRICE, true);
               track('meal_bought', { kind: 'soup', at: 'canteen' });
               this.ui.toast('🥣 A warm bowl — press G when your legs need it.');
             }
@@ -2916,7 +2918,9 @@ class SimpleApp {
               this.ui.toast('🪙 Checkups are 10 coins.');
             } else {
               this.scene.getPlayer()?.setSprintUntil(performance.now() / 1000 + 60);
-              sfx.coin();
+              sfx.spend();
+              this.scene.logTransaction('Checkup', -10);
+              this.scene.floatCoinsAtPlayer(10, true);
               track('checkup', {});
               this.ui.toast('🏥 "All clear! Off you go — briskly, now."');
             }
@@ -4085,7 +4089,8 @@ class SimpleApp {
             } catch {
               /* no storage */
             }
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction('Bought axe', -SimpleApp.AXE_PRICE);
             this.syncTools();
             track('axe_bought', {});
             this.ui.toast('🪓 Wood axe! Three good swings fell a tree.');
@@ -4101,7 +4106,8 @@ class SimpleApp {
             } catch {
               /* no storage */
             }
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction('Bought sickle', -SimpleApp.SICKLE_PRICE);
             this.syncTools();
             track('sickle_bought', {});
             this.ui.toast('🪚 Sickle! Crops at the farm are yours to cut.');
@@ -4117,7 +4123,8 @@ class SimpleApp {
             } catch {
               /* no storage */
             }
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction('Bought pickaxe', -SimpleApp.PICKAXE_PRICE);
             this.syncTools();
             track('pickaxe_bought', {});
             this.ui.toast('⛏️ Pickaxe! Ore veins glint on the highland scree.');
@@ -4133,7 +4140,8 @@ class SimpleApp {
             } catch {
               /* no storage */
             }
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction('Bought rod', -SimpleApp.ROD_PRICE);
             this.syncTools();
             track('rod_bought', {});
             this.ui.toast('🎣 Fishing rod! Stand at the shore and press E to cast.');
@@ -4146,7 +4154,8 @@ class SimpleApp {
             this.birdFeed += SimpleApp.BIRD_FEED_CHARGES;
             this.persistBirdFeed();
             this.refreshFeedHud();
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction('Bird feed', -SimpleApp.BIRD_FEED_PRICE);
             track('bird_feed_bought', { charges: this.birdFeed });
             render();
             return;
@@ -4156,7 +4165,8 @@ class SimpleApp {
             this.catFeed += SimpleApp.CAT_FEED_CHARGES;
             this.persistCatFeed();
             this.refreshFeedHud();
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction('Cat feed', -SimpleApp.CAT_FEED_PRICE);
             track('cat_feed_bought', { charges: this.catFeed });
             render();
             return;
@@ -4166,7 +4176,8 @@ class SimpleApp {
             this.fishFeed += SimpleApp.FISH_FEED_CHARGES;
             this.persistFishFeed();
             this.refreshFeedHud();
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction('Fish feed', -SimpleApp.FISH_FEED_PRICE);
             track('fish_feed_bought', { charges: this.fishFeed });
             render();
             return;
@@ -4183,7 +4194,8 @@ class SimpleApp {
             this.meals[key]++;
             this.persistMeals();
             this.refreshFeedHud();
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction(`Bought ${key}`, -price);
             track('meal_bought', { kind: key, at: 'shop' });
             render();
             return;
@@ -4198,7 +4210,8 @@ class SimpleApp {
             } catch {
               /* session-only */
             }
-            sfx.coin();
+            sfx.spend();
+            this.scene.logTransaction(`Bought ${item.name}`, -item.price);
           } else {
             sfx.blip();
           }

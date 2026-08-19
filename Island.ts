@@ -6575,7 +6575,29 @@ export class Island {
       );
       addGroupHulls(g, 0.7, () => true);
     });
-    // Market tables with parasols for the Contact plaza approach.
+    // Market tables with parasols for the Contact plaza approach. The canopy
+    // rim breathes in the wind on the shared grass clock. `parasolSway` only
+    // ASSIGNS onBeforeCompile and returns the same material, so the
+    // createStandardMaterial call stays in its exact allocation slot — the RNG
+    // census is byte-identical (no new draws, no reorder).
+    const parasolSway = (mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial => {
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uTime = this.grassTimeUniform;
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform float uTime;')
+          .replace(
+            '#include <begin_vertex>',
+            [
+              '#include <begin_vertex>',
+              // Cone: apex at y≈2.45, rim at y≈2.05. Lift the rim, hold the apex.
+              '  float umRim = clamp((2.45 - position.y) / 0.4, 0.0, 1.0);',
+              '  float umW = sin(uTime * 1.6 + position.x * 3.0 + position.z * 3.0);',
+              '  transformed.y += umW * 0.03 * umRim * umRim;',
+            ].join('\n'),
+          );
+      };
+      return mat;
+    };
     for (const [lon, lat] of [
       [4.6, ZONE_LAT + this.arc(6.5)],
       [4.82, ZONE_LAT + this.arc(7)],
@@ -6594,7 +6616,7 @@ export class Island {
           ),
           merge(
             [new THREE.ConeGeometry(0.9, 0.4, 8).translate(0, 2.25, 0)],
-            Materials.createStandardMaterial({ color: 0xb46bd8 }),
+            parasolSway(Materials.createStandardMaterial({ color: 0xb46bd8 })),
           ),
         );
       });
@@ -7605,11 +7627,33 @@ export class Island {
           }
           sunGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
         }
-        const sunflowers = new THREE.InstancedMesh(
-          sunGeo,
-          new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: Materials.toonRamp() }),
-          7,
-        );
+        // Heavy-headed nod on the shared grass clock — same idiom as the wheat
+        // below, but height-keyed to the sunflower's own ~1.2u stalk so the disc
+        // head sways and the base stays planted. Zero new per-frame uniforms;
+        // injecting into the (already-allocated, shielded) material is census-safe.
+        const sunMat = new THREE.MeshToonMaterial({
+          vertexColors: true,
+          gradientMap: Materials.toonRamp(),
+        });
+        sunMat.onBeforeCompile = (shader) => {
+          shader.uniforms.uTime = this.grassTimeUniform;
+          shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nuniform float uTime;')
+            .replace(
+              '#include <begin_vertex>',
+              [
+                '#include <begin_vertex>',
+                '#ifdef USE_INSTANCING',
+                '  float sfPhase = instanceMatrix[3].x * 1.6 + instanceMatrix[3].z * 2.2;',
+                '  float sfSway = sin(uTime * 1.25 + sfPhase) + 0.35 * sin(uTime * 2.3 + sfPhase * 1.4);',
+                '  float sfT = clamp(position.y / 1.2, 0.0, 1.0);',
+                '  transformed.x += sfSway * 0.055 * sfT * sfT;',
+                '  transformed.z += sfSway * 0.022 * sfT * sfT;',
+                '#endif',
+              ].join('\n'),
+            );
+        };
+        const sunflowers = new THREE.InstancedMesh(sunGeo, sunMat, 7);
         sunflowers.castShadow = true;
         for (let i = 0; i < 7; i++) {
           const { pos, up } = surfAt(-3.1, -2.8 + i * 0.93);
