@@ -170,6 +170,12 @@ export class Sfx {
     this.tone(f, f * 1.33, 0.09, 'sine', 0.1);
   }
 
+  /** Spending: a DESCENDING triangle chime so money leaving reads differently
+   *  from earning's rising coin() — a soft "clink out". */
+  public spend(): void {
+    this.tone(540, 330, 0.12, 'triangle', 0.09);
+  }
+
   /** Two wooden mallet taps — the construction-strike knock. Same two-burst
    *  filtered-noise trick as partyThump/hiss, ~1.4kHz so it reads as wood. */
   public knock(): void {

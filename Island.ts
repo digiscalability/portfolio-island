@@ -3869,6 +3869,34 @@ export class Island {
     // blooms around each plaza reinforces that district's identity.
     const FLOWER_COLORS = [0x6f9fe0, 0xf4a940, 0xff69b4, 0xb46bd8, 0xf4e04d];
     const stemMat = Materials.createStandardMaterial({ color: 0x3d7a3d });
+    // Instanced grass-style sway for the blooms — per-flower phase from the
+    // instance position, keyed by height so the stem base stays planted and the
+    // head bobs. Injected into the EXISTING materials (no new alloc → census-safe)
+    // and reuses the shared grass clock (zero per-frame CPU). Works while the
+    // flowers subtree is matrix-frozen (shader never touches the transform).
+    const flowerSway = (mat: THREE.Material, headOnly: boolean): void => {
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uTime = this.grassTimeUniform;
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform float uTime;')
+          .replace(
+            '#include <begin_vertex>',
+            [
+              '#include <begin_vertex>',
+              '#ifdef USE_INSTANCING',
+              '  float fPh = instanceMatrix[3].x * 1.6 + instanceMatrix[3].z * 2.1;',
+              '  float fBend = sin(uTime * 1.7 + fPh) + 0.4 * sin(uTime * 2.9 + fPh);',
+              headOnly
+                ? '  float fH = 1.0;'
+                : '  float fH = clamp((position.y + 0.125) / 0.25, 0.0, 1.0);',
+              '  transformed.x += fBend * 0.022 * fH;',
+              '  transformed.z += fBend * 0.012 * fH;',
+              '#endif',
+            ].join('\n'),
+          );
+      };
+    };
+    flowerSway(stemMat, false);
     const FLOWER_ANCHORS: Array<[number, number]> = [
       ...DISTRICT_LONS.map((l) => [l, ZONE_LAT] as [number, number]),
       // Welcome anchor sits on the plaza APRON (lon 0.9, lat 1.38), not at
@@ -3957,17 +3985,15 @@ export class Island {
         new THREE.Matrix4().makeTranslation(0, 0.125, 0),
       ]);
       // Center: yellow sphere at local y=0.27
-      addBatch(
-        new THREE.SphereGeometry(0.04, 6, 6),
-        new THREE.MeshStandardMaterial({
-          color: 0xffdd44,
-          emissive: 0xffdd44,
-          emissiveIntensity: 0.3,
-        }),
-        'flower_centers',
-        all,
-        [new THREE.Matrix4().makeTranslation(0, 0.27, 0)],
-      );
+      const centerMat = new THREE.MeshStandardMaterial({
+        color: 0xffdd44,
+        emissive: 0xffdd44,
+        emissiveIntensity: 0.3,
+      });
+      flowerSway(centerMat, true); // rides the flower head
+      addBatch(new THREE.SphereGeometry(0.04, 6, 6), centerMat, 'flower_centers', all, [
+        new THREE.Matrix4().makeTranslation(0, 0.27, 0),
+      ]);
       // Petals: 5 spheres in a ring, scaled flat, one batch per colour
       const petalGeo = new THREE.SphereGeometry(0.05, 6, 6);
       const petalLocals: THREE.Matrix4[] = [];
@@ -3983,13 +4009,13 @@ export class Island {
         const picks = all.filter((i) => blooms[i].c === c);
         if (!picks.length) continue;
         const color = FLOWER_COLORS[c];
-        addBatch(
-          petalGeo,
-          new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.15 }),
-          `flower_petals_${c}`,
-          picks,
-          petalLocals,
-        );
+        const petalMat = new THREE.MeshStandardMaterial({
+          color,
+          emissive: color,
+          emissiveIntensity: 0.15,
+        });
+        flowerSway(petalMat, true); // petals ride the flower head with the center
+        addBatch(petalGeo, petalMat, `flower_petals_${c}`, picks, petalLocals);
       }
     }
 

@@ -1278,7 +1278,12 @@ export class SimpleUI {
     balance: number,
     pocket: number,
     step: number,
-    on: { deposit: () => void; withdraw: () => void },
+    on: {
+      deposit: () => void;
+      withdraw: () => void;
+      depositAll?: () => void;
+      withdrawAll?: () => void;
+    },
   ): void {
     this.vaultDiv?.remove();
     const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'vault');
@@ -1310,6 +1315,18 @@ export class SimpleUI {
     row.appendChild(mk(`⬇️ Deposit ${step}`, on.deposit));
     row.appendChild(mk(`⬆️ Withdraw ${step}`, on.withdraw));
     modal.appendChild(row);
+    if (on.depositAll || on.withdrawAll) {
+      const row2 = document.createElement('div');
+      Object.assign(row2.style, {
+        display: 'flex',
+        gap: '10px',
+        justifyContent: 'center',
+        marginTop: '8px',
+      });
+      if (on.depositAll) row2.appendChild(mk('⬇️ Deposit all', on.depositAll));
+      if (on.withdrawAll) row2.appendChild(mk('⬆️ Withdraw all', on.withdrawAll));
+      modal.appendChild(row2);
+    }
     this.overlay.appendChild(modal);
   }
 
@@ -4680,6 +4697,8 @@ export class SimpleUI {
   }
 
   private coinDiv: HTMLElement | null = null;
+  private _coinShown = 0; // the number the counter is currently displaying
+  private _coinAnim = 0; // rAF id for the count-up tween
   private shopDiv: HTMLElement | null = null;
   private mapCanvas: HTMLCanvasElement | null = null;
 
@@ -5225,15 +5244,46 @@ export class SimpleUI {
         this.panels.registerLayer('nav-chips', this.coinDiv);
       }
       this.coinDiv.textContent = `🪙 ${total}`;
+      this._coinShown = total;
       return; // no bump on first render
     }
-    this.coinDiv.textContent = `🪙 ${total}`;
-    // Bump: quick scale-up that springs back
-    this.coinDiv.style.transform = 'scale(1.35)';
+    const from = this._coinShown;
+    const delta = total - from;
+    // Reduced motion: no count-up, no pop — just the value.
+    if (a11y.reducedMotion || delta === 0) {
+      this.coinDiv.textContent = `🪙 ${total}`;
+      this._coinShown = total;
+      return;
+    }
     const el = this.coinDiv;
+    // Amount-aware pop: bigger change → bigger pop (capped). Green flash on a
+    // gain, coral on a spend — earning and spending now read differently.
+    const mag = Math.min(Math.abs(delta), 50);
+    const scale = 1.15 + (mag / 50) * 0.4; // 1.15 .. 1.55
+    el.style.transform = `scale(${scale.toFixed(2)})`;
+    el.style.color = delta > 0 ? '#7fe08a' : '#ff9a7a';
     window.setTimeout(() => {
       el.style.transform = 'scale(1)';
-    }, 130);
+      el.style.color = '#ffd34a';
+    }, 170);
+    // Count the number UP (or down) instead of snapping — the change is legible.
+    if (this._coinAnim) cancelAnimationFrame(this._coinAnim);
+    const dur = Math.min(650, 140 + Math.abs(delta) * 12);
+    const start = performance.now();
+    const step = (): void => {
+      const p = Math.min(1, (performance.now() - start) / dur);
+      const v = Math.round(from + delta * (1 - (1 - p) * (1 - p)));
+      el.textContent = `🪙 ${v}`;
+      this._coinShown = v;
+      if (p < 1) {
+        this._coinAnim = requestAnimationFrame(step);
+      } else {
+        el.textContent = `🪙 ${total}`;
+        this._coinShown = total;
+        this._coinAnim = 0;
+      }
+    };
+    this._coinAnim = requestAnimationFrame(step);
   }
 
   private feedDiv: HTMLElement | null = null;

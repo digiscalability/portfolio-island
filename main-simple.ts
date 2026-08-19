@@ -4278,47 +4278,64 @@ class SimpleApp {
       return;
     }
     const step = 10;
+    const MAX_OP = 500; // matches the per-op cap in functions/src/vault.ts
     const render = (balance: number): void => {
-      this.ui.showVaultPanel(balance, this.scene.getCoinsCollected(), step, {
-        deposit: async () => {
-          if (this.vaultBusy) return;
-          if (!this.scene.spendCoins(step)) {
-            this.ui.toast(`🪙 You need ${step} coins on you to deposit.`);
-            return;
-          }
-          this.vaultBusy = true;
-          const r = await vaultOp('deposit', step);
-          this.vaultBusy = false;
-          if (!r || !r.applied) {
-            this.scene.addCoins(step); // refund — the vault never took it
-            this.ui.toast('🏦 "Hm, the ledger jammed. Your coins are safe."');
-            return;
-          }
-          sfx.coin();
-          this.scene.floatCoinsAtPlayer(step, true);
-          track('vault_deposit', { amount: step, balance: r.balance });
+      const pocket = this.scene.getCoinsCollected();
+      // Amount-parametrized so the same server-ack discipline backs the fixed
+      // step AND the new "all" buttons: deposit charges local-first + refunds on
+      // non-ack; withdraw credits only on applied ack; both idempotency-keyed.
+      const doDeposit = (amount: number) => async (): Promise<void> => {
+        if (this.vaultBusy) return;
+        if (amount <= 0) {
+          this.ui.toast('🪙 Nothing in your pocket to deposit.');
+          return;
+        }
+        if (!this.scene.spendCoins(amount)) {
+          this.ui.toast(`🪙 You need ${amount} coins on you to deposit.`);
+          return;
+        }
+        this.vaultBusy = true;
+        const r = await vaultOp('deposit', amount);
+        this.vaultBusy = false;
+        if (!r || !r.applied) {
+          this.scene.addCoins(amount); // refund — the vault never took it
+          this.ui.toast('🏦 "Hm, the ledger jammed. Your coins are safe."');
+          return;
+        }
+        sfx.spend();
+        this.scene.floatCoinsAtPlayer(amount, true);
+        track('vault_deposit', { amount, balance: r.balance });
+        render(r.balance);
+      };
+      const doWithdraw = (amount: number) => async (): Promise<void> => {
+        if (this.vaultBusy) return;
+        if (amount <= 0) {
+          this.ui.toast('🏦 "Your vault is empty."');
+          return;
+        }
+        this.vaultBusy = true;
+        const r = await vaultOp('withdraw', amount);
+        this.vaultBusy = false;
+        if (!r) {
+          this.ui.toast('🏦 "Vault link is down — try again in a moment."');
+          return;
+        }
+        if (!r.applied) {
+          this.ui.toast('🏦 "Your vault has less than that in it."');
           render(r.balance);
-        },
-        withdraw: async () => {
-          if (this.vaultBusy) return;
-          this.vaultBusy = true;
-          const r = await vaultOp('withdraw', step);
-          this.vaultBusy = false;
-          if (!r) {
-            this.ui.toast('🏦 "Vault link is down — try again in a moment."');
-            return;
-          }
-          if (!r.applied) {
-            this.ui.toast('🏦 "Your vault has less than that in it."');
-            render(r.balance);
-            return;
-          }
-          this.scene.addCoins(step); // credit ONLY on ack
-          this.scene.floatCoinsAtPlayer(step);
-          sfx.coin();
-          track('vault_withdraw', { amount: step, balance: r.balance });
-          render(r.balance);
-        },
+          return;
+        }
+        this.scene.addCoins(amount); // credit ONLY on ack
+        this.scene.floatCoinsAtPlayer(amount);
+        sfx.coin();
+        track('vault_withdraw', { amount, balance: r.balance });
+        render(r.balance);
+      };
+      this.ui.showVaultPanel(balance, pocket, step, {
+        deposit: doDeposit(step),
+        withdraw: doWithdraw(step),
+        depositAll: doDeposit(Math.min(pocket, MAX_OP)),
+        withdrawAll: doWithdraw(Math.min(balance, MAX_OP)),
       });
     };
     render(res.balance);
