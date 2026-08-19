@@ -1,7 +1,25 @@
 # LOCAL-STATE — Portfolio Island handoff
 
 ## ⭐ LATEST (scarecrow + economy juice + animations) — on `main`, deployed, prod-verified
-Branch merged to `main` last session; now working on `main` directly. Prod = `882c0ac`.
+Branch merged to `main` last session; now working on `main` directly. Prod = `436ec9b`.
+- **`436ec9b` MOBILE UX DEEP-DIVE — 21 verified fixes** (31-agent audit: 6 surface readers +
+  adversarial verify per finding; plus hands-on 375×812/667×375 passes; ALL fixes prod-verified by
+  DOM/behavior probes on island.digiscalability.com). Highlights: pointer-lock no longer requested on
+  touch taps; camera swipe/pinch BANKING during rails (tour/interiors/postcard) drained — was one
+  violent whip on exit; DIVE moved off the tier-1 chip row collision to column-2 212px (emote →194 in
+  short landscape); centered modals clamp to 100dvh−32 + scroll; zone panels got explicit width (CSS
+  shrink-to-fit had them at HALF width on phones); every dismiss control now a 44px thumb box; emote
+  wheel got an outside-tap catcher (was undismissable on touch); volume pill self-manages (nav-chips
+  layer snapshot was re-hiding it instantly); drawer idle timer re-arms on interaction; touch 💬 now
+  runs the ensureNamed gate (phones chatted anonymous forever); NPC-chat input stays enabled during
+  replies (disabling a focused field collapses the phone keyboard); 16px-on-touch on all remaining
+  inputs; toast dwell scales 50ms/char (2–6s); radar text scales up at shrunk display sizes; compass
+  DOM writes change-guarded; touchify covers "eat with G" + plain-text toasts + completion hints.
+  ⚠️ KNOWN FLAKE (pre-existing, surfaced under load): the golden byte-stability tests (terrainNoise,
+  grassMarshal) intermittently fail when vitest runs WHILE the dev server + browser pane are up —
+  different test each run, each passes in isolation, 441/441 twice clean after stopping the server.
+  Worker-scheduling/warm-cache sensitivity (tierParity's own harness notes). Don't chase it as a real
+  regression; consider vitest worker isolation if it starts biting in CI.
 ⚠️ NOTE: `.claude/LOCAL-STATE.md` is NOW GIT-TRACKED (un-ignored 2026-08-19, commit 2cdb53e) — it
 shows in `git status` and must be committed deliberately; `git add`-ing it is correct, not forbidden.
 ⚠️ RESUME GOTCHA: the session-resume re-checked-out the tree with CRLF (74 .ts + json/css) — breaks
