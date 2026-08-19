@@ -149,6 +149,7 @@ export class SimpleUI {
   private envBadgeDiv: HTMLElement | null = null;
   private customizeDiv: HTMLElement | null = null;
   private zonePanelDiv: HTMLElement | null = null;
+  private zoneEscapeHandler: ((e: KeyboardEvent) => void) | null = null;
   private dialogueDiv: HTMLElement | null = null;
   private dialogueLines: string[] = [];
   private dialogueIndex: number = 0;
@@ -374,7 +375,10 @@ export class SimpleUI {
       // resized browser) parks 😀 on the 🎨 slot.
       this.emoteBtnEl.style.right = this.isTouch
         ? short
-          ? 'calc(var(--sar, 0px) + 108px)'
+          ? // 194, not 108: DIVE now tops the SECOND column (right 112-186,
+            // y≈89-163 while swimming in short landscape) — 108 parked the
+            // emote inside that box. 194 clears both columns.
+            'calc(var(--sar, 0px) + 194px)'
           : 'calc(var(--sar, 0px) + 10px)'
         : 'calc(var(--sar, 0px) + 124px)';
     }
@@ -724,8 +728,20 @@ export class SimpleUI {
     catcher.addEventListener('click', () => this.closeDrawer());
     this.overlay.appendChild(catcher);
     this.drawerCatcher = catcher;
-    // 8s idle auto-collapse.
-    this.drawerIdleTimer = window.setTimeout(() => this.closeDrawer(), 8000);
+    // 8s IDLE auto-collapse — idle meaning untouched. The timer re-arms on
+    // any interaction with the list (scroll, touch, press), otherwise the
+    // drawer vanished mid-read under a slow reader's finger.
+    const arm = (): void => {
+      if (this.drawerIdleTimer) clearTimeout(this.drawerIdleTimer);
+      this.drawerIdleTimer = window.setTimeout(() => this.closeDrawer(), 8000);
+    };
+    if (!list.dataset.idleRearm) {
+      list.dataset.idleRearm = '1';
+      for (const ev of ['pointerdown', 'scroll', 'touchmove'] as const) {
+        list.addEventListener(ev, () => this.drawerOpen && arm(), { passive: true });
+      }
+    }
+    arm();
   }
 
   private closeDrawer(): void {
@@ -801,7 +817,14 @@ export class SimpleUI {
     Object.assign(hint.style, { margin: '0 0 10px', fontSize: '12.5px', color: '#aab' });
     modal.appendChild(hint);
 
-    const D = Math.min(430, Math.floor(window.innerWidth * 0.8));
+    // Height-aware: width-only sizing produced a 430px disc on a 375px-tall
+    // landscape phone — taller than the screen. 0.62×height leaves room for
+    // the modal's title/hint/legend, so the whole round map fits unscrolled.
+    const D = Math.min(
+      430,
+      Math.floor(window.innerWidth * 0.8),
+      Math.floor(window.innerHeight * 0.62),
+    );
     const dpr = Math.min(window.devicePixelRatio || 1, 2); // the minimap DPR lesson
     const canvas = document.createElement('canvas');
     canvas.width = D * dpr;
@@ -1015,6 +1038,7 @@ export class SimpleUI {
    *   localStorage key without ever being seen).
    */
   public toast(message: string): void {
+    message = this.touchifyPlain(message);
     // Drop exact duplicates already waiting — a queue of three "+1 🪙" adds
     // nothing.
     if (this.toastQueue.includes(message)) return;
@@ -1060,12 +1084,16 @@ export class SimpleUI {
     this.toastEl.textContent = message;
     this.toastEl.style.opacity = '1';
     if (this.toastTimer) clearTimeout(this.toastTimer);
+    // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
+    // a 120-char school lesson (shown only via toast, key already spent)
+    // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
+    const dwell = Math.min(6000, Math.max(2000, message.length * 50));
     this.toastTimer = window.setTimeout(() => {
       if (this.toastEl) this.toastEl.style.opacity = '0';
       this.toastBusy = false;
       // 250ms gap between queued toasts so consecutive ones read as separate.
       window.setTimeout(() => this.pumpToasts(), 250);
-    }, 2000);
+    }, dwell);
   }
 
   private bulletinEl: HTMLDivElement | null = null;
@@ -1411,6 +1439,13 @@ export class SimpleUI {
       textAlign: 'center',
       border: '1px solid rgba(255,255,255,0.15)',
       boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+      // A centered modal taller than the screen (island map in phone
+      // landscape: 430px canvas + legend on a 375px viewport) clipped its ×,
+      // title and legend with NO scroll path — body overflow is hidden and
+      // position:fixed escapes the page. Clamp + scroll inside instead.
+      maxHeight: 'calc(100dvh - 32px)',
+      overflowY: 'auto',
+      boxSizing: 'border-box',
     });
     modal.setAttribute('role', 'dialog');
     modal.setAttribute('aria-modal', 'true');
@@ -1419,13 +1454,22 @@ export class SimpleUI {
     close.setAttribute('aria-label', 'Close');
     Object.assign(close.style, {
       position: 'absolute',
-      top: '8px',
-      right: '14px',
+      top: '2px',
+      right: '4px',
       background: 'transparent',
       color: 'white',
       border: 'none',
       fontSize: '24px',
       cursor: 'pointer',
+      // A bare '×' was a ~26×30px target — this is the ONLY explicit dismiss
+      // on all the centered modals, so give it the full 44px thumb box
+      // (glyph stays visually where it was; the box grew around it).
+      width: '44px',
+      height: '44px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '0',
     });
     close.addEventListener('click', () => {
       modal.remove();
@@ -1485,8 +1529,10 @@ export class SimpleUI {
     form.id = 'lead-form-block';
     form.style.cssText =
       'margin-top:18px;text-align:left;border-top:1px solid rgba(255,255,255,0.12);padding-top:16px;';
-    const field =
-      'width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-size:14px;outline:1px solid rgba(255,255,255,0.15);';
+    // 16px on touch: same anti-focus-zoom defense the chat inputs carry — iOS
+    // zooms any focused field under 16px even where user-scalable=no is ignored
+    // (in-app webviews), and this is the site's primary conversion form.
+    const field = `width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-size:${this.isTouch ? '16px' : '14px'};outline:1px solid rgba(255,255,255,0.15);`;
     form.innerHTML = `
       <h3 style="margin:0 0 4px;font-size:15px;">Or send a message</h3>
       <p style="margin:0 0 10px;font-size:12px;color:#9aa;">Straight to my inbox — I'll reply personally.</p>
@@ -1683,7 +1729,7 @@ export class SimpleUI {
        <p style="margin:0 0 12px;font-size:13px;color:#aab;">Leave a note for the next visitor.</p>
        <div style="display:flex;gap:8px;margin-bottom:12px;">
          <input id="gb-msg" maxlength="200" placeholder="Say hi…" style="flex:1;padding:9px 12px;border-radius:10px;
-           border:none;font-size:14px;background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
+           border:none;font-size:${this.isTouch ? '16px' : '14px'};background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
          <button id="gb-sign" style="padding:9px 16px;border:none;border-radius:10px;background:linear-gradient(135deg,#5b6cff,#8a4de0);
            color:#fff;font-size:14px;font-weight:600;cursor:pointer;">Sign</button>
        </div>
@@ -1883,6 +1929,7 @@ export class SimpleUI {
   }
 
   private emoteWheel: HTMLElement | null = null;
+  private emoteWheelCatcher: HTMLElement | null = null;
   /** 😀 button in the top-right icon row: opens a small emote wheel. Emotes are
    *  sent through the normal chat pipeline, so they get proximity bubbles,
    *  moderation and muting for free — no separate protocol. */
@@ -1917,6 +1964,8 @@ export class SimpleUI {
     if (this.emoteWheel) {
       this.emoteWheel.remove();
       this.emoteWheel = null;
+      this.emoteWheelCatcher?.remove();
+      this.emoteWheelCatcher = null;
       this.panels.notifyClosed('emote-wheel');
       return;
     }
@@ -1926,8 +1975,24 @@ export class SimpleUI {
       close: () => {
         this.emoteWheel?.remove();
         this.emoteWheel = null;
+        this.emoteWheelCatcher?.remove();
+        this.emoteWheelCatcher = null;
       },
     });
+    // Outside tap dismisses (drawer's catcher pattern). Without it, touch had
+    // NO dismissal: hides:['nav-chips'] hides the 😀 toggle itself and phones
+    // have no Escape — the only way out was sending an emote you didn't want.
+    const catcher = document.createElement('div');
+    Object.assign(catcher.style, {
+      position: 'fixed',
+      inset: '0',
+      zIndex: '1690', // under the wheel's 1700
+      pointerEvents: 'auto',
+      background: 'transparent',
+    });
+    catcher.addEventListener('click', () => this.toggleEmoteWheel());
+    this.overlay.appendChild(catcher);
+    this.emoteWheelCatcher = catcher;
     const wheel = document.createElement('div');
     Object.assign(wheel.style, {
       position: 'absolute',
@@ -2617,7 +2682,12 @@ export class SimpleUI {
     });
     pill.appendChild(slider);
     this.overlay.appendChild(pill);
-    this.panels.registerLayer('nav-chips', pill);
+    // NOT registered as a nav-chips layer member: registerLayer snapshots
+    // baseDisplay at registration — 'none' for this popover — so the very
+    // panel transition that SURFACES it on touch (the drawer's selection
+    // auto-collapse right after tapping Sound) re-applied 'none' and the
+    // slider vanished before a finger could reach it. It manages its own
+    // visibility (showVolumePill/hideVolumePill timers).
     this.volumePill = pill;
 
     // Desktop: hover/focus over button or pill keeps it open.
@@ -3002,9 +3072,11 @@ export class SimpleUI {
         return '';
       }
     })();
+    // 16px on touch: the textarea below AUTOFOCUSES, so an under-16px size
+    // fires iOS's focus zoom the instant the panel opens (see chat inputs).
     const field =
       'width:100%;box-sizing:border-box;padding:9px 12px;border-radius:10px;border:none;' +
-      'font-size:14px;background:rgba(255,255,255,0.1);color:#fff;' +
+      `font-size:${this.isTouch ? '16px' : '14px'};background:rgba(255,255,255,0.1);color:#fff;` +
       'outline:1px solid rgba(120,170,255,0.4);margin:0 0 8px;font-family:inherit;';
     modal.insertAdjacentHTML(
       'beforeend',
@@ -3169,7 +3241,7 @@ export class SimpleUI {
              <span style="font-size:15px;line-height:1.3;">${it.done ? '✅' : '⬜'}</span>
              <div style="flex:1;">
                <div style="font-size:13.5px;font-weight:600;color:${it.done ? '#9fd8b8' : '#e8edf5'};">${it.icon} ${this.escapeHtml(it.label)}</div>
-               ${it.done ? '' : `<div style="font-size:12px;color:#93a;color:#8fa0b8;margin-top:1px;">${this.escapeHtml(it.hint)}</div>`}
+               ${it.done ? '' : `<div style="font-size:12px;color:#93a;color:#8fa0b8;margin-top:1px;">${this.escapeHtml(this.touchifyPlain(it.hint))}</div>`}
              </div>
            </div>`,
       )
@@ -3653,14 +3725,19 @@ export class SimpleUI {
     // walker never sees it. Gated on isSwimming(), NOT isInWater(): the
     // latter is true within 1.2u of a surface that swings +/-0.45 with the
     // waves, so a player standing at the waterline would watch it strobe.
+    // SECOND COLUMN top slot, not a 4th primary row at 300px: that row put
+    // its top at y≈1-16 on short-landscape phones — directly over the tier-1
+    // chip row — and its preventDefault ate coin/drawer taps while swimming
+    // (the exact collision the FEED comment below documents). It also sat in
+    // the tappable prompt lane (bottom+300) in portrait.
     this.diveBtnEl = makeButton(
       '🤿',
       'DIVE',
-      '300px',
+      '212px',
       'ShiftLeft',
       'Shift',
       'rgba(60,140,175,0.5)',
-      26,
+      112,
       'aux-controls',
     );
     this.diveBtnEl.style.visibility = 'hidden';
@@ -3725,7 +3802,12 @@ export class SimpleUI {
     });
     chatBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.openChatInput();
+      // Route through the app when wired: desktop's Enter path wraps chat in
+      // ensureNamed (lazy one-time name ask). This button is the ONLY chat
+      // entry on phones — calling openChatInput() directly skipped the gate,
+      // so every mobile visitor chatted as the anonymous default forever.
+      if (this.onChatOpenRequest) this.onChatOpenRequest();
+      else this.openChatInput();
     });
     this.makeHudButtonAccessible(chatBtn, 'Open chat');
     this.overlay.appendChild(chatBtn);
@@ -4506,11 +4588,28 @@ export class SimpleUI {
    */
   private touchify(html: string): string {
     if (!this.isTouch) return html;
-    return html
-      .replace(/Press <strong>E<\/strong>/g, 'Tap <strong>👆 USE</strong>')
-      .replace(/Press <strong>Space<\/strong>/g, 'Tap <strong>⤒ JUMP</strong>')
-      .replace(/Hold <strong>Space<\/strong>/g, 'Hold <strong>⤒ JUMP</strong>')
-      .replace(/Press <strong>Q<\/strong>/g, 'Tap <strong>👋 WAVE</strong>');
+    return (
+      html
+        .replace(/Press <strong>E<\/strong>/g, 'Tap <strong>👆 USE</strong>')
+        .replace(/Press <strong>Space<\/strong>/g, 'Tap <strong>⤒ JUMP</strong>')
+        .replace(/Hold <strong>Space<\/strong>/g, 'Hold <strong>⤒ JUMP</strong>')
+        .replace(/Press <strong>Q<\/strong>/g, 'Tap <strong>👋 WAVE</strong>')
+        // The eat verb: G on a keyboard, the contextual 🍽 EAT button on touch
+        // (it exists whenever a meal is held — exactly when this copy shows).
+        .replace(/eat with G\b/g, 'eat with <strong>🍽 EAT</strong>')
+    );
+  }
+
+  /**
+   * Plain-text sibling of touchify for surfaces that render via textContent
+   * (toast, flashMessage) — markup would leak there as literal angle brackets.
+   */
+  private touchifyPlain(text: string): string {
+    if (!this.isTouch) return text;
+    return text
+      .replace(/[Pp]ress G\b/g, 'tap 🍽 EAT')
+      .replace(/[Pp]ress E\b/g, 'tap 👆 USE')
+      .replace(/[Pp]ress Q\b/g, 'tap 👋 WAVE');
   }
 
   /**
@@ -4747,6 +4846,9 @@ export class SimpleUI {
   private _coinAnim = 0; // rAF id for the count-up tween
   /** Set by main-simple: opens the coin receipt when the HUD chip is tapped. */
   public onCoinChipClick?: () => void;
+  /** Set by main-simple: routes the touch 💬 button through the same
+   *  ensureNamed wrapper as desktop's Enter (lazy name ask before first chat). */
+  public onChatOpenRequest?: () => void;
   private receiptDiv: HTMLElement | null = null;
   private shopDiv: HTMLElement | null = null;
   private mapCanvas: HTMLCanvasElement | null = null;
@@ -4813,6 +4915,12 @@ export class SimpleUI {
     const cx = D / 2;
     const cy = D / 2;
     const R = D / 2 - 3; // radar radius
+    // Text-boost when the DISPLAY is smaller than the 172px draw space
+    // (applyResponsiveHud shrinks the disc to 104/120px on small phones):
+    // fixed 8px fonts rendered at ~5px effective there. Geometry stays in
+    // D-space; only the type grows to hold its on-screen size.
+    const shownW = parseFloat(this.mapCanvas.style.width) || D;
+    const ts = Math.min(1.7, Math.max(1, D / shownW));
     // normalized radar coords → screen; ry is +north so it draws UP
     const sx = (rx: number) => cx + rx * R;
     const sy = (ry: number) => cy - ry * R;
@@ -4875,7 +4983,7 @@ export class SimpleUI {
           const nx = p.x + (cx - p.x) * 0.16;
           const ny = p.y + (cy - p.y) * 0.16;
           ctx.save();
-          ctx.font = '600 8px system-ui, sans-serif';
+          ctx.font = `600 ${(8 * ts).toFixed(1)}px system-ui, sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.lineWidth = 2.5;
@@ -4899,7 +5007,7 @@ export class SimpleUI {
       // both the dark disc and a bright marker.
       if (z.label) {
         ctx.save();
-        ctx.font = '600 8.5px system-ui, sans-serif';
+        ctx.font = `600 ${(8.5 * ts).toFixed(1)}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.lineWidth = 2.5;
@@ -5050,10 +5158,28 @@ export class SimpleUI {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const dirs: Array<[string, number, number, string, string]> = [
-      ['N', cx, cy - R + 9, '700 10px system-ui, sans-serif', '#ff6b6b'],
-      ['E', cx + R - 8, cy, '600 8px system-ui, sans-serif', 'rgba(255,255,255,0.6)'],
-      ['S', cx, cy + R - 8, '600 8px system-ui, sans-serif', 'rgba(255,255,255,0.6)'],
-      ['W', cx - R + 8, cy, '600 8px system-ui, sans-serif', 'rgba(255,255,255,0.6)'],
+      ['N', cx, cy - R + 9, `700 ${(10 * ts).toFixed(1)}px system-ui, sans-serif`, '#ff6b6b'],
+      [
+        'E',
+        cx + R - 8,
+        cy,
+        `600 ${(8 * ts).toFixed(1)}px system-ui, sans-serif`,
+        'rgba(255,255,255,0.6)',
+      ],
+      [
+        'S',
+        cx,
+        cy + R - 8,
+        `600 ${(8 * ts).toFixed(1)}px system-ui, sans-serif`,
+        'rgba(255,255,255,0.6)',
+      ],
+      [
+        'W',
+        cx - R + 8,
+        cy,
+        `600 ${(8 * ts).toFixed(1)}px system-ui, sans-serif`,
+        'rgba(255,255,255,0.6)',
+      ],
     ];
     for (const [ch, tx, ty, font, color] of dirs) {
       ctx.font = font;
@@ -5064,10 +5190,10 @@ export class SimpleUI {
     // ── Online count pill along the bottom of the ring ──────────────────
     const online = data.online ?? peers.length + 1;
     const label = `${online} ONLINE`;
-    ctx.font = '700 9px system-ui, sans-serif';
+    ctx.font = `700 ${(9 * ts).toFixed(1)}px system-ui, sans-serif`;
     const tw = ctx.measureText(label).width;
     const pillW = tw + 22;
-    const pillH = 15;
+    const pillH = 15 * ts;
     const pillX = cx - pillW / 2;
     const pillY = D - pillH - 1;
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -5288,9 +5414,11 @@ export class SimpleUI {
         transition: 'transform 0.12s ease',
       });
       this.coinDiv.title = 'Coin history';
-      this.coinDiv.setAttribute('role', 'button');
-      this.coinDiv.setAttribute('aria-label', 'Open coin history');
       this.coinDiv.addEventListener('click', () => this.onCoinChipClick?.());
+      // The full recipe, not hand-rolled role/aria: this also brings the
+      // .hud-btn 44px tap pad (the visual chip is 30px tall) plus keyboard
+      // focus + Enter/Space activation. Title above survives its guard.
+      this.makeHudButtonAccessible(this.coinDiv, 'Open coin history');
       if (this.isTouch) {
         this.tierChip(this.coinDiv); // inserts BEFORE ☰ to keep [👥][🪙][☰]
       } else {
@@ -5693,7 +5821,7 @@ export class SimpleUI {
     this.flashEl?.remove();
     const el = document.createElement('div');
     this.flashEl = el;
-    el.textContent = text;
+    el.textContent = this.touchifyPlain(text);
     Object.assign(el.style, {
       position: 'absolute',
       top: '38%',
@@ -5908,6 +6036,8 @@ export class SimpleUI {
    */
   private compassDiv: HTMLDivElement | null = null;
   private compassArrow: HTMLDivElement | null = null;
+  private _compassTf = ''; // last-written transform (change-guard)
+  private _compassText = ''; // last-written label (change-guard)
   private compassLabel: HTMLDivElement | null = null;
 
   /**
@@ -5983,20 +6113,31 @@ export class SimpleUI {
       this.compassDiv.appendChild(this.compassLabel);
       this.overlay.appendChild(this.compassDiv);
     }
-    this.compassDiv.style.display = 'flex';
+    // Change-guards on every write: this runs EVERY FRAME, and unconditional
+    // style/textContent writes invalidate layout 60\u00d7/s on phones for values
+    // (rounded degrees / whole metres) that change a few times a second.
+    if (this.compassDiv.style.display !== 'flex') this.compassDiv.style.display = 'flex';
     if (this.compassArrow) {
       // arrow glyph points right at 0deg; screen-up (camera forward) is -90deg
       const deg = (state.angleRad * 180) / Math.PI - 90;
-      this.compassArrow.style.transform = `rotate(${deg.toFixed(1)}deg)`;
+      const tf = `rotate(${deg.toFixed(1)}deg)`;
+      if (this._compassTf !== tf) {
+        this._compassTf = tf;
+        this.compassArrow.style.transform = tf;
+      }
     }
     if (this.compassLabel) {
       // Narrow screens: drop the WORDS but keep the destination's icon (the
       // label's first token) \u2014 a bare "103m" was direction with no subject,
       // the least useful string a compass can show.
       const compact = window.innerWidth < 480;
-      this.compassLabel.textContent = compact
+      const text = compact
         ? `${state.label.split(' ')[0]} ${Math.round(state.distance)}m`
         : `${state.label} \u2022 ${Math.round(state.distance)}m`;
+      if (this._compassText !== text) {
+        this._compassText = text;
+        this.compassLabel.textContent = text;
+      }
     }
   }
 
@@ -6023,7 +6164,12 @@ export class SimpleUI {
       // 1px accent, not the old 3px full-alpha frame — the zone hue should
       // sign the panel, not floodlight it.
       border: `1px solid ${this.getZoneColor(zone.id)}`,
-      maxWidth: '500px',
+      // Explicit width, not just maxWidth: an absolutely-positioned box with
+      // no width shrinks-to-fit at HALF its containing block (CSS2 §10.3.7
+      // preferred width vs available), so phones rendered the portfolio —
+      // the site's core content — in a skinny ~180px ribbon of wrapped text.
+      width: 'min(500px, calc(100vw - 24px))',
+      boxSizing: 'border-box',
       maxHeight: '70vh',
       overflowY: 'auto',
     });
@@ -6117,13 +6263,14 @@ export class SimpleUI {
       fontSize: '24px',
       cursor: 'pointer',
       padding: '0',
-      width: '30px',
-      height: '30px',
+      width: '44px', // thumb-sized (was 30px)
+      height: '44px',
       borderRadius: '50%',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
     });
+    closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.addEventListener('click', () => this.hideZonePanel());
     this.zonePanelDiv.appendChild(closeBtn);
 
@@ -6134,14 +6281,13 @@ export class SimpleUI {
     // clobbers ?hour=/?theme=.
     setUrlParam('zone', zid);
 
-    // Add keyboard listener for escape
-    const escapeHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        this.hideZonePanel();
-        document.removeEventListener('keydown', escapeHandler);
-      }
+    // Escape closes. Removed in hideZonePanel — the old self-removing handler
+    // only cleaned up on the Escape path, so every ×/scrim close leaked one
+    // document listener per open.
+    this.zoneEscapeHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.hideZonePanel();
     };
-    document.addEventListener('keydown', escapeHandler);
+    document.addEventListener('keydown', this.zoneEscapeHandler);
   }
 
   /**
@@ -6156,6 +6302,10 @@ export class SimpleUI {
       void import('./ReceptionDesk').then((m) => m.stopReceptionCall());
       this.zonePanelDiv.remove();
       this.zonePanelDiv = null;
+      if (this.zoneEscapeHandler) {
+        document.removeEventListener('keydown', this.zoneEscapeHandler);
+        this.zoneEscapeHandler = null;
+      }
       this.panels.notifyClosed('zone');
       // Drop ONLY the ?zone= deep link when the panel closes — the old
       // whole-search wipe also destroyed ?hour=/?theme=.
@@ -6433,7 +6583,19 @@ export class SimpleUI {
     }
     const closeBtn = document.createElement('span');
     closeBtn.textContent = '✕';
-    Object.assign(closeBtn.style, { cursor: 'pointer', opacity: '0.7' });
+    // Was a bare ~16×18px glyph — the panel's only explicit dismiss. Pad to a
+    // real thumb box (negative margin keeps the header's visual rhythm).
+    Object.assign(closeBtn.style, {
+      cursor: 'pointer',
+      opacity: '0.7',
+      padding: '13px',
+      margin: '-13px',
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+    });
+    closeBtn.setAttribute('role', 'button');
+    closeBtn.setAttribute('aria-label', 'Close chat');
     closeBtn.addEventListener('click', () => this.closeNpcChat());
     controls.appendChild(closeBtn);
     header.appendChild(controls);
@@ -6551,7 +6713,11 @@ export class SimpleUI {
       busy = true;
       input.value = '';
       send.disabled = true;
-      input.disabled = true;
+      // The input stays ENABLED: disabling a focused field blurs it, which
+      // collapses the phone keyboard on every message — and the later
+      // programmatic focus() can't reopen it without a user gesture. The
+      // `busy` guard above already prevents double-sends; the user just
+      // composes their next line while the villager thinks.
       // The user has spoken: any still-pending opening-deepening is stale
       // from here on (see appendNpcChatLine).
       if (this.npcChatAppend?.name === name) this.npcChatAppend.engaged = true;
@@ -6571,8 +6737,10 @@ export class SimpleUI {
       npcLine(reply);
       busy = false;
       send.disabled = false;
-      input.disabled = false;
-      input.focus();
+      // Only re-focus if focus was actually lost (desktop click on Send blurs
+      // the field) — refocusing an already-focused input is a no-op anyway,
+      // and on touch the field never blurred, keeping the keyboard up.
+      if (document.activeElement !== input) input.focus();
     };
     send.addEventListener('click', () => void doSend());
     input.addEventListener('keydown', (e) => {
@@ -6793,7 +6961,8 @@ export class SimpleUI {
       border: '1px solid rgba(255,255,255,0.15)',
       background: 'rgba(255,255,255,0.06)',
       color: '#fff',
-      fontSize: '13.5px',
+      // 16px on touch: this input autofocuses — under 16px iOS zooms on open.
+      fontSize: this.isTouch ? '16px' : '13.5px',
     });
     for (const ev of ['keydown', 'keyup', 'keypress'])
       input.addEventListener(ev, (e) => e.stopPropagation()); // typing must not walk the room
@@ -6830,15 +6999,23 @@ export class SimpleUI {
     panel.appendChild(row);
     const close = document.createElement('button');
     close.textContent = '✕';
+    close.setAttribute('aria-label', 'Close');
     Object.assign(close.style, {
       position: 'absolute',
-      top: '8px',
-      right: '10px',
+      top: '0',
+      right: '0',
       background: 'none',
       border: 'none',
       color: '#99a',
       fontSize: '16px',
       cursor: 'pointer',
+      // 44px thumb box around the small glyph (same fix as the modal ×).
+      width: '44px',
+      height: '44px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '0',
     });
     close.addEventListener('click', () => this.closeWatchPicker());
     panel.appendChild(close);

@@ -879,6 +879,10 @@ class SimpleApp {
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
       // Tap the coin HUD chip → the coin receipt (recent transactions).
       this.ui.onCoinChipClick = () => this.ui.showReceipt(this.scene.getTransactionLog());
+      // Touch 💬 goes through the SAME lazy-naming gate as desktop's Enter —
+      // without this, phones (whose only chat entry is that button) chatted
+      // under the anonymous default name forever.
+      this.ui.onChatOpenRequest = () => this.ensureNamed(() => this.ui.openChatInput());
       this.scene.setOnCoinCollected((total) => {
         this.ui.updateCoinCounter(total);
         this.refreshPackIfOpen(); // coins need NO keypress — walking into one counts
@@ -1814,6 +1818,11 @@ class SimpleApp {
         // release glide back to the visitor's spawn is unbounded in length —
         // door grammar for everyone: veil, cut underneath.
         this.ui.fadeThrough(() => {
+          // Pinches banked while the orbit camera was suspended (look is
+          // drained by the free-roam branch; pinch only drains inside
+          // OrbitCamera.update, which suspension skips) — discard before
+          // resuming or they land as one distance jump.
+          consumePinchZoomFactor();
           this.scene.setCameraSuspended(false);
           this.scene.snapCameraToPlayer();
         });
@@ -2311,8 +2320,17 @@ class SimpleApp {
       if (this.tour) {
         this.scene.setPlayerMovement(0, 0);
         this.ui.hideInteractionPrompt();
+        // Swipes/pinches on the canvas bank into touchDelta/pinchState while
+        // the rail owns the camera, then fire as ONE whip on exit — drain and
+        // discard every frame (same failure mode the npcCine drain names).
+        this.inputManager.getCameraInput();
+        consumePinchZoomFactor();
         this.updateTour(deltaTime);
       } else if (this.scene.isInsideInterior()) {
+        // Interiors never feed the orbit camera either — same banking, same
+        // whip on stepping out the door. Drain both interior branches.
+        this.inputManager.getCameraInput();
+        consumePinchZoomFactor();
         if (this.ui.isWatchOpen()) {
           // Watching the wall screen (or picking): the room holds still, the
           // frame stays pinned to the in-world TV, and E steps away from it.

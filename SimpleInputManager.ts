@@ -250,8 +250,14 @@ export class SimpleInputManager {
     this.canvas = canvas;
 
     canvas.addEventListener('click', () => {
+      // Touch-primary devices have no pointer to lock — every world tap fired
+      // a doomed request plus an unhandled promise rejection. Same coarse
+      // check the renderer tier uses.
+      if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) return;
       if (document.pointerLockElement !== canvas) {
-        canvas.requestPointerLock?.();
+        // requestPointerLock returns a promise on modern Chrome — an expired
+        // user gesture (or an embedded/browser-pane doc) rejects it; benign.
+        (canvas.requestPointerLock?.() as Promise<void> | undefined)?.catch?.(() => {});
       }
     });
   }
