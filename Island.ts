@@ -1434,6 +1434,7 @@ export class Island {
       const ridge = new THREE.Color(0xb5c98a);
       const peak = new THREE.Color(0xc8cca0);
       const rock = new THREE.Color(0x8d8878);
+      const cliff = new THREE.Color(0x776d5f); // bare rock on the high massif
       const snow = new THREE.Color(0xf2f6fa);
       const dirt = new THREE.Color(0x9a7550); // the worn summit path
       // Lateral moisture targets — sun-dried and rain-shadow patches that
@@ -1526,16 +1527,32 @@ export class Island {
         // threshold catches every ordinary hill and greys out the meadows.
         tmp.lerp(rock, THREE.MathUtils.smoothstep(slope, 0.26, 0.62) * 0.65);
 
+        // High massif reads as bare rock in the band just BELOW the snow line —
+        // the green foothills give way to grey-brown cliff before the white
+        // caps, so the range looks alpine instead of pale-green going straight
+        // to snow. Colour only (no displacement), so colliders/props don't move.
+        // Gated near the snow line, so it never touches the rolling foothills.
+        const altRock = THREE.MathUtils.smoothstep(above, snowLine * 0.7, snowLine * 0.95);
+        if (altRock > 0) {
+          // A rocky TINT, not a repaint — enough to grey the high ground without
+          // going muddy at low light, and light enough that the snow still reads.
+          const expose = 0.25 + 0.35 * THREE.MathUtils.smoothstep(slope, 0.15, 0.55);
+          tmp.lerp(cliff, altRock * expose);
+        }
+
         // Snow line on the highland peaks. Gated on elevation AND flatness so
         // it settles on summits and shelves but not on sheer rock faces.
         if (above > snowLine) {
           const alt = THREE.MathUtils.clamp(
-            (above - snowLine) / Math.max(0.4, snowLine * 0.45),
+            (above - snowLine) / Math.max(0.4, snowLine * 0.3),
             0,
             1,
           );
-          const settles = 1 - THREE.MathUtils.smoothstep(slope, 0.42, 0.85);
-          tmp.lerp(snow, alt * (0.45 + 0.55 * settles));
+          // High summits hold snow even on moderate pitches — only genuinely
+          // sheer faces (slope > ~0.55) shed it to bare rock. Without this the
+          // pointed crag stays 100% rock and never earns a white cap.
+          const settles = 1 - THREE.MathUtils.smoothstep(slope, 0.55, 0.95);
+          tmp.lerp(snow, alt * (0.55 + 0.45 * settles));
         }
 
         // Dirt path: tint the summit trail so the switchback reads as a worn
@@ -7494,8 +7511,18 @@ export class Island {
             [
               new THREE.ConeGeometry(0.26, 0.3, 8).translate(0, 2.16, 0),
               new THREE.CylinderGeometry(0.4, 0.42, 0.04, 10).translate(0, 2.0, 0),
-              new THREE.ConeGeometry(0.1, 0.26, 5).rotateZ(0.5).translate(-0.62, 1.12, 0),
-              new THREE.ConeGeometry(0.1, 0.26, 5).rotateZ(-0.5).translate(0.62, 1.12, 0),
+              // Straw hands: a splayed spray poking from each crossbar END (bar
+              // top y≈1.3, tips x=±0.6). Laid just past horizontal (1.78 > π/2)
+              // so the straw droops outward-and-down out of the sleeve, and
+              // fanned in yaw so it reads as a bundle, not a single spike.
+              ...[-1, 1].flatMap((s) =>
+                [-0.34, 0, 0.34].map((yaw, k) =>
+                  new THREE.ConeGeometry(0.05, 0.3 - 0.05 * Math.abs(k - 1), 4)
+                    .rotateZ(-s * 1.78)
+                    .rotateY(yaw)
+                    .translate(s * 0.6, 1.24, Math.sin(yaw) * 0.13),
+                ),
+              ),
             ].map((geo) => geo.toNonIndexed()),
             false,
           ) as THREE.BufferGeometry,
@@ -7592,41 +7619,53 @@ export class Island {
         g.add(pumpkins);
         captureCrop('pumpkin', 'produce', 2, [pumpkins], 6);
         // Sunflower row (7) along the west edge, heads facing field-south.
+        const stemC = new THREE.Color(0x4a7a34);
+        const discC = new THREE.Color(0x5a4326);
+        const petalC = new THREE.Color(0xf2c435);
+        const paintGeo = (geo: THREE.BufferGeometry, c: THREE.Color): THREE.BufferGeometry => {
+          const n = geo.getAttribute('position').count;
+          const arr = new Float32Array(n * 3);
+          for (let i = 0; i < n; i++) {
+            arr[i * 3] = c.r;
+            arr[i * 3 + 1] = c.g;
+            arr[i * 3 + 2] = c.b;
+          }
+          geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+          return geo;
+        };
+        // Head built FACING OUT: the disc + petal ring lie in a plane whose
+        // normal is +Z, then the whole face tilts ~20° up (rotateX(-0.35)) and
+        // sits on the stem top — so the flower looks out at the horizon like a
+        // real sunflower instead of straight up at the sky (the old petal ring
+        // was horizontal). Colours are baked per-part so they survive the
+        // reorientation (the old position heuristic assumed the flat daisy).
         const sunGeo = mergeGeometries(
           [
-            noIdx(new THREE.CylinderGeometry(0.028, 0.034, 1.15, 5)).translate(0, 0.57, 0),
-            noIdx(new THREE.CylinderGeometry(0.14, 0.14, 0.05, 8))
-              .rotateX(0.5)
-              .translate(0, 1.18, 0.04),
-            ...Array.from({ length: 10 }, (_, p) => {
-              const ang = (p / 10) * Math.PI * 2;
-              return noIdx(new THREE.SphereGeometry(0.05, 5, 4))
-                .scale(1.5, 0.4, 0.9)
-                .translate(
-                  Math.cos(ang) * 0.17,
-                  1.18 + Math.sin(0.5) * 0.02,
-                  0.05 + Math.sin(ang) * 0.15,
-                );
+            paintGeo(
+              noIdx(new THREE.CylinderGeometry(0.028, 0.034, 1.15, 5)).translate(0, 0.57, 0),
+              stemC,
+            ),
+            paintGeo(
+              noIdx(new THREE.CylinderGeometry(0.15, 0.15, 0.06, 10))
+                .rotateX(Math.PI / 2 - 0.35)
+                .translate(0, 1.14, 0.05),
+              discC,
+            ),
+            ...Array.from({ length: 12 }, (_, p) => {
+              const ang = (p / 12) * Math.PI * 2;
+              return paintGeo(
+                noIdx(new THREE.SphereGeometry(0.05, 5, 4))
+                  .scale(1.7, 0.5, 0.32)
+                  .translate(0.2, 0, 0)
+                  .rotateZ(ang)
+                  .rotateX(-0.35)
+                  .translate(0, 1.14, 0.05),
+                petalC,
+              );
             }),
           ],
           false,
         ) as THREE.BufferGeometry;
-        {
-          const pos = sunGeo.getAttribute('position');
-          const cols = new Float32Array(pos.count * 3);
-          const stem = new THREE.Color(0x4a7a34);
-          const disc = new THREE.Color(0x5a4326);
-          const petal = new THREE.Color(0xf2c435);
-          for (let i = 0; i < pos.count; i++) {
-            const y = pos.getY(i);
-            const rr = Math.hypot(pos.getX(i), pos.getZ(i) - 0.05);
-            const c = y < 1.05 ? stem : rr < 0.15 ? disc : petal;
-            cols[i * 3] = c.r;
-            cols[i * 3 + 1] = c.g;
-            cols[i * 3 + 2] = c.b;
-          }
-          sunGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-        }
         // Heavy-headed nod on the shared grass clock — same idiom as the wheat
         // below, but height-keyed to the sunflower's own ~1.2u stalk so the disc
         // head sways and the base stays planted. Zero new per-frame uniforms;

@@ -7936,6 +7936,7 @@ export class GameScene extends THREE.Scene {
     // per boat (×3 boats) for colours the cache already holds.
     const hullMat = GameScene.birdMat(0x7a5230);
     const trimMat = GameScene.birdMat(0x5c3d22);
+    const oarMat = GameScene.birdMat(0xc9a86a);
     const boat = new THREE.Group();
     const hull = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.34, 2.0), hullMat);
     hull.position.y = 0.17;
@@ -7947,14 +7948,32 @@ export class GameScene extends THREE.Scene {
     bow.scale.set(1, 1, 0.68);
     bow.position.set(0, 0.17, -1.3);
     boat.add(bow);
+    // Gunwale ribs + two thwarts a rower sits between.
     for (const rz of [-0.6, 0.5]) {
       const rib = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.06, 0.12), trimMat);
       rib.position.set(0, 0.36, rz);
       boat.add(rib);
     }
-    const bench = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.3), trimMat);
-    bench.position.set(0, 0.28, 0.15);
-    boat.add(bench);
+    for (const bz of [0.15, -0.55]) {
+      const bench = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.28), trimMat);
+      bench.position.set(0, 0.28, bz);
+      boat.add(bench);
+    }
+    // A pair of oars angled out over the rims — the crew actually rows.
+    for (const s of [-1, 1]) {
+      const oar = new THREE.Group();
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.5, 6), oarMat);
+      shaft.rotation.z = Math.PI / 2;
+      oar.add(shaft);
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.02, 0.14), oarMat);
+      blade.position.x = s * 0.82;
+      oar.add(blade);
+      oar.position.set(s * 0.12, 0.4, 0.1);
+      oar.rotation.y = s * 0.5;
+      oar.rotation.x = 0.14;
+      oar.traverse((o) => ((o as THREE.Mesh).castShadow = true));
+      boat.add(oar);
+    }
     return boat;
   }
 
@@ -8082,6 +8101,19 @@ export class GameScene extends THREE.Scene {
     const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.55, 1.5, 8), funnelMat);
     funnel.position.set(0, 4.3, 2.2);
     ship.add(funnel);
+    // Mast + pennant above the bridge, and deck-edge railings so the top deck
+    // reads as a promenade rather than a bare slab.
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 1.7, 6), deckMat);
+    mast.position.set(0, 4.0, -3.4);
+    ship.add(mast);
+    const pennant = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.42, 0.72), funnelMat);
+    pennant.position.set(0, 4.6, -3.0);
+    ship.add(pennant);
+    for (const x of [-1.16, 1.16]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.3, 9.0), deckMat);
+      rail.position.set(x, 2.9, 0.6);
+      ship.add(rail);
+    }
     // Porthole strips — one glowing box per side per deck level.
     for (const y of [1.4, 2.35]) {
       for (const x of [-1.42, 1.42]) {
@@ -9623,25 +9655,51 @@ export class GameScene extends THREE.Scene {
 
   private buildBoat(): THREE.Group {
     const g = new THREE.Group();
-    const hullMat = new THREE.MeshToonMaterial({ color: 0xb5532f });
-    const woodMat = new THREE.MeshToonMaterial({ color: 0xe0c08a });
-    // Hull: a tapered box with a raised bow
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.5, 3.2), hullMat);
-    hull.position.y = 0.25;
+    // Shared toon cache (birdMat) — a runabout, not a shoebox: shaped hull with
+    // a dark waterline, pointed bow, gunwale rim, raked windshield, stern bench
+    // and an outboard. Cockpit centre kept clear for the standing rider.
+    const hullMat = GameScene.birdMat(0xc65a34);
+    const hullDark = GameScene.birdMat(0x8f3f22);
+    const woodMat = GameScene.birdMat(0xe6caa0);
+    const glassMat = GameScene.birdMat(0x9fd0e0);
+    const trimMat = GameScene.birdMat(0x2c3540);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.5, 2.6), hullMat);
+    hull.position.set(0, 0.3, -0.2);
     g.add(hull);
-    const bow = new THREE.Mesh(new THREE.ConeGeometry(0.7, 1.0, 4), hullMat);
+    const waterline = new THREE.Mesh(new THREE.BoxGeometry(1.46, 0.18, 2.64), hullDark);
+    waterline.position.set(0, 0.08, -0.2);
+    g.add(waterline);
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(0.74, 1.5, 4), hullMat);
     bow.rotation.x = -Math.PI / 2;
     bow.rotation.z = Math.PI / 4;
-    bow.scale.set(1, 0.7, 1);
-    bow.position.set(0, 0.25, 2.0);
+    bow.scale.set(1, 0.68, 1);
+    bow.position.set(0, 0.3, 1.55);
     g.add(bow);
-    // Deck + a little cabin
-    const deck = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.08, 2.6), woodMat);
-    deck.position.y = 0.5;
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(1.24, 0.08, 2.5), woodMat);
+    deck.position.set(0, 0.54, -0.1);
     g.add(deck);
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.9), woodMat);
-    cabin.position.set(0, 0.85, -0.7);
-    g.add(cabin);
+    for (const [w, d, x, z] of [
+      [1.34, 0.12, 0, 1.02],
+      [0.12, 2.5, 0.64, -0.1],
+      [0.12, 2.5, -0.64, -0.1],
+    ] as const) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(w, 0.12, d), hullMat);
+      rail.position.set(x, 0.58, z);
+      g.add(rail);
+    }
+    const wind = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.34, 0.05), glassMat);
+    wind.position.set(0, 0.82, 0.42);
+    wind.rotation.x = -0.42;
+    g.add(wind);
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.14, 0.36), trimMat);
+    bench.position.set(0, 0.66, -1.05);
+    g.add(bench);
+    const motor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.52, 0.3), trimMat);
+    motor.position.set(0, 0.52, -1.5);
+    g.add(motor);
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.4, 6), trimMat);
+    shaft.position.set(0, 0.16, -1.55);
+    g.add(shaft);
     g.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
@@ -9650,21 +9708,36 @@ export class GameScene extends THREE.Scene {
 
   private buildJetski(): THREE.Group {
     const g = new THREE.Group();
-    const bodyMat = new THREE.MeshToonMaterial({ color: 0x27c2d6 });
-    const seatMat = new THREE.MeshToonMaterial({ color: 0x223344 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 2.0), bodyMat);
-    hull.position.y = 0.2;
+    // Sleeker: dark belly under a bright hull, lifted pointed nose, a pale deck
+    // stripe, a saddle and handlebars on a small column.
+    const bodyMat = GameScene.birdMat(0x1fb6cc);
+    const accentMat = GameScene.birdMat(0xf5f7fa);
+    const seatMat = GameScene.birdMat(0x21303a);
+    const trimMat = GameScene.birdMat(0x18242c);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.34, 1.9), bodyMat);
+    hull.position.y = 0.24;
     g.add(hull);
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.36, 0.8, 4), bodyMat);
+    const belly = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 1.7), trimMat);
+    belly.position.y = 0.08;
+    g.add(belly);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.38, 0.95, 4), bodyMat);
     nose.rotation.x = -Math.PI / 2;
     nose.rotation.z = Math.PI / 4;
-    nose.position.set(0, 0.24, 1.3);
+    nose.scale.set(1, 0.6, 1);
+    nose.position.set(0, 0.26, 1.2);
     g.add(nose);
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.9), seatMat);
-    seat.position.set(0, 0.42, -0.2);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 1.3), accentMat);
+    stripe.position.set(0, 0.42, 0.15);
+    g.add(stripe);
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.18, 0.85), seatMat);
+    seat.position.set(0, 0.46, -0.35);
     g.add(seat);
-    const bars = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.1), seatMat);
-    bars.position.set(0, 0.5, 0.45);
+    const column = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.24, 0.2), trimMat);
+    column.position.set(0, 0.5, 0.42);
+    g.add(column);
+    const bars = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.56, 6), trimMat);
+    bars.rotation.z = Math.PI / 2;
+    bars.position.set(0, 0.62, 0.46);
     g.add(bars);
     g.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
