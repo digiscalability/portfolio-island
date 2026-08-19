@@ -1,7 +1,9 @@
 # LOCAL-STATE — Portfolio Island handoff
 
 ## ⭐ LATEST (scarecrow + economy juice + animations) — on `main`, deployed, prod-verified
-Branch merged to `main` last session; now working on `main` directly. Prod = `194928e`.
+Branch merged to `main` last session; now working on `main` directly. Prod = `882c0ac`.
+⚠️ NOTE: `.claude/LOCAL-STATE.md` is NOW GIT-TRACKED (un-ignored 2026-08-19, commit 2cdb53e) — it
+shows in `git status` and must be committed deliberately; `git add`-ing it is correct, not forbidden.
 ⚠️ RESUME GOTCHA: the session-resume re-checked-out the tree with CRLF (74 .ts + json/css) — breaks
 prettier + char-slice source-locks (onboarding.test.ts). Fixed by normalizing to LF (`prettier
 --write "**/*.ts"` + `sed -i 's/\r$//'` on json/css). core.autocrlf=true, no .gitattributes, so a
@@ -67,6 +69,26 @@ future resume may re-CRLF — just re-normalize. git content-diff is unaffected 
   `getOrbitCamera().{distance,distanceTarget,height,yaw}` + `snapToPlayer()`; find the sway meshes by
   `material.onBeforeCompile.toString().includes('sfSway'|'umRim')`; farm is `island.farmDir`, parasols
   at world z≈-85 Contact plaza; grass/sway clock is `island.grassTimeUniform`, NOT on the scene.)
+- **`882c0ac` sunflower/scarecrow orientation + alpine mountains + reshaped sea vehicles**
+  (dev-verified on the same committed code; 441/441 green, census + freeze UNCHANGED): (1) SUNFLOWER
+  ORIENTATION — the petal ring was HORIZONTAL (flat daisy facing straight up); rebuilt the head to
+  face OUT (disc+petal ring in a +Z-normal plane, tilted ~20° up onto the stem), colours BAKED
+  per-part (old position heuristic assumed the flat daisy). (2) SCARECROW HANDS — tufts sat at y=1.12
+  BELOW the crossbar (top y≈1.3) so they dangled detached; now a splayed straw spray from each sleeve
+  END at the bar line, laid past horizontal (rotateZ ±1.78) to droop out+down. (3) MOUNTAINS —
+  colour-only (positions/colliders/props untouched): grey-brown `cliff` (0x776d5f) rock band just
+  below the self-tuned snowLine + snow now holds on moderate summit pitches (settles gate raised to
+  slope 0.55–0.95) so the steep crag earns a white cap. Sampled summit snow 0→29% above 14u; foothills
+  stay green (only top ~3.6u caps). TUNING TRAP: first pass over-darkened (cliff expose 0.4–0.9 →
+  near-black raw colours + 0 snow); softened to 0.25–0.6 and boosted snow. (4) SEA VEHICLES (GameScene,
+  post-seed → zero census risk): buildBoat = runabout (waterline stripe, bow, gunwale rim, raked
+  windshield, stern bench + outboard; cockpit clear for the rider); buildJetski sleeker (dark belly,
+  lifted nose, deck stripe, saddle + bars); buildRowboat + two thwarts + a pair of oars; cruise +
+  mast/pennant + deck railings. All via GameScene.birdMat cache.
+  VERIFY HANDLES USED: teleport via setWorldPosition + orbit-cam {distance,height,pitch}+snapToPlayer;
+  find sway/vehicle meshes by onBeforeCompile.toString().includes('sfSway'|'scSway'|'umRim') or
+  material.color.getHexString(); vehicles are named `vehicle_N`; summit at island.dirAt(5.35,0.79)
+  (top ~18u above sea); sample terrain colours off the largest color-bearing mesh under island.mesh.
 BOX MARKET-STALL AWNINGS stay rigid ON PURPOSE: the canopy() cloth panels share the GLOBAL
 `paper`/`accent` materials with book covers + lean-to roofs, so a material-level sway would ripple
 those too; per-panel materials would shift the census for near-zero gain. Loose meadow coins still
