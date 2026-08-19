@@ -1336,6 +1336,52 @@ export class SimpleUI {
     this.panels.notifyClosed('vault');
   }
 
+  /** Coin receipt / history — the last transactions with their source + amount.
+   *  Opened by tapping the coin HUD chip. Labels are trusted fixed strings, but
+   *  escaped defensively since some carry a provider name. */
+  public showReceipt(entries: ReadonlyArray<{ label: string; amount: number; t: number }>): void {
+    this.receiptDiv?.remove();
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'receipt');
+    this.receiptDiv = modal;
+    const now = Date.now();
+    const esc = (s: string): string =>
+      s.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'));
+    const ago = (t: number): string => {
+      const s = Math.max(0, Math.round((now - t) / 1000));
+      if (s < 60) return `${s}s ago`;
+      const m = Math.round(s / 60);
+      return m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`;
+    };
+    const rows = entries.length
+      ? entries
+          .slice()
+          .reverse()
+          .map((e) => {
+            const gain = e.amount > 0;
+            const amt = `${gain ? '+' : '−'}${Math.abs(e.amount)} 🪙`;
+            return `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 2px;border-top:1px solid rgba(255,255,255,0.08);font-size:13.5px;">
+              <span style="opacity:.9">${esc(e.label)}</span>
+              <span style="white-space:nowrap"><strong style="color:${gain ? '#7fe08a' : '#ff9a7a'}">${amt}</strong>
+                <span style="opacity:.5;font-size:11.5px;margin-left:8px">${ago(e.t)}</span></span>
+            </div>`;
+          })
+          .join('')
+      : '<div style="opacity:.6;font-size:13px;padding:14px 0">No coin activity yet — sell, race, or run an errand.</div>';
+    const h = document.createElement('div');
+    h.innerHTML = `<div style="font-size:26px">📜</div>
+      <div style="font-weight:600;margin:6px 0 2px">Coin history</div>
+      <div style="opacity:.7;font-size:12.5px;margin-bottom:8px">Your last ${entries.length} transactions</div>
+      <div style="text-align:left;max-height:min(50vh,320px);overflow-y:auto">${rows}</div>`;
+    modal.appendChild(h);
+    this.overlay.appendChild(modal);
+  }
+
+  public closeReceipt(): void {
+    this.receiptDiv?.remove();
+    this.receiptDiv = null;
+    this.panels.notifyClosed('receipt');
+  }
+
   /**
    * Shared centred-modal shell. Every call site passes a distinguishing `id`
    * so the PanelManager gives all of them exclusivity (no more stacked
@@ -4699,6 +4745,9 @@ export class SimpleUI {
   private coinDiv: HTMLElement | null = null;
   private _coinShown = 0; // the number the counter is currently displaying
   private _coinAnim = 0; // rAF id for the count-up tween
+  /** Set by main-simple: opens the coin receipt when the HUD chip is tapped. */
+  public onCoinChipClick?: () => void;
+  private receiptDiv: HTMLElement | null = null;
   private shopDiv: HTMLElement | null = null;
   private mapCanvas: HTMLCanvasElement | null = null;
 
@@ -5234,9 +5283,14 @@ export class SimpleUI {
         top: 'calc(var(--sat, 0px) + 50px)', // column row 2 (38px pitch)
         right: 'calc(var(--sar, 0px) + 10px)',
         color: '#ffd34a', // the coin accent survives the shared recipe
-        pointerEvents: 'none', // read-only counter — clicks fall through
+        pointerEvents: 'auto', // tap the chip to open the coin receipt
+        cursor: 'pointer',
         transition: 'transform 0.12s ease',
       });
+      this.coinDiv.title = 'Coin history';
+      this.coinDiv.setAttribute('role', 'button');
+      this.coinDiv.setAttribute('aria-label', 'Open coin history');
+      this.coinDiv.addEventListener('click', () => this.onCoinChipClick?.());
       if (this.isTouch) {
         this.tierChip(this.coinDiv); // inserts BEFORE ☰ to keep [👥][🪙][☰]
       } else {

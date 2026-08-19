@@ -700,6 +700,7 @@ class SimpleApp {
             if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
             this.scene.addCoins(q.rewardCoins);
             this.scene.floatCoinsAtPlayer(q.rewardCoins);
+            this.scene.logTransaction('Quest reward', q.rewardCoins);
             sfx.questComplete();
             this.ui.showQuestComplete({
               name: `${q.giverName}'s request`,
@@ -876,6 +877,8 @@ class SimpleApp {
 
       // Coin counter (persisted across visits + mirrored to the cloud profile)
       this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+      // Tap the coin HUD chip → the coin receipt (recent transactions).
+      this.ui.onCoinChipClick = () => this.ui.showReceipt(this.scene.getTransactionLog());
       this.scene.setOnCoinCollected((total) => {
         this.ui.updateCoinCounter(total);
         this.refreshPackIfOpen(); // coins need NO keypress — walking into one counts
@@ -1093,6 +1096,7 @@ class SimpleApp {
           const reward = e.improved ? 15 : 5;
           this.scene.addCoins(reward);
           this.scene.floatCoinsAtPlayer(reward);
+          this.scene.logTransaction(e.improved ? 'Race — new best!' : 'Race finish', reward);
           this.ui.updateCoinCounter(this.scene.getCoinsCollected());
           this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
           // ?race=&beat= challenge verdict (one-shot: cleared either way).
@@ -1927,6 +1931,7 @@ class SimpleApp {
     }
     this.scene.addCoins(25);
     this.scene.floatCoinsAtPlayer(25);
+    this.scene.logTransaction('Courier finale', 25);
     this.ui.updateCoinCounter(this.scene.getCoinsCollected());
     const hat: HatId = 'halo';
     if (!this.ownedHats.has(hat)) {
@@ -2622,6 +2627,7 @@ class SimpleApp {
             const overflow = this.fishCaught - fFull;
             const earned = fEarn;
             this.scene.addCoins(earned);
+            this.scene.logTransaction('Sold fish', earned);
             this.dailySold('ds_fish_day', this.fishCaught);
             track('fish_sold', { count: this.fishCaught, earned, satiated: overflow > 0 });
             const fpos = this.scene.fishermanPos();
@@ -2667,6 +2673,7 @@ class SimpleApp {
             } else {
               this.timberSellArmedAt = 0;
               this.scene.addCoins(trancheEarn);
+              this.scene.logTransaction('Sold timber', trancheEarn);
               this.dailySold('ds_timber_day', tranche);
               const cpos = this.scene.carpenterRackPos();
               if (cpos)
@@ -2706,6 +2713,7 @@ class SimpleApp {
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(wEarn);
+            this.scene.logTransaction('Sold wheat', wEarn);
             this.dailySold('ds_wheat_day', this.wheat);
             track('wheat_sold', { count: this.wheat, earned: wEarn });
             const bpos = this.scene.bakerPos();
@@ -2737,6 +2745,7 @@ class SimpleApp {
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(pEarn);
+            this.scene.logTransaction('Sold produce', pEarn);
             this.dailySold('ds_produce_day', this.produce);
             track('produce_sold', { count: this.produce, earned: pEarn });
             const cpos2 = this.scene.canteenPos();
@@ -2766,6 +2775,7 @@ class SimpleApp {
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(gEarn);
+            this.scene.logTransaction('Sold produce', gEarn);
             this.dailySold('ds_produce_day', this.produce);
             track('produce_sold', { count: this.produce, earned: gEarn, at: 'grocer' });
             const gpos = this.scene.marketVendorPos();
@@ -2816,6 +2826,7 @@ class SimpleApp {
           );
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.addCoins(oEarn);
+            this.scene.logTransaction('Sold ore', oEarn);
             this.dailySold('ds_ore_day', this.ore);
             track('ore_sold', { count: this.ore, earned: oEarn });
             const opos = this.scene.bankPos();
@@ -2845,6 +2856,7 @@ class SimpleApp {
               this.persistLessons();
               this.scene.addCoins(10);
               this.scene.floatCoinsAtPlayer(10);
+              this.scene.logTransaction('School lesson', 10);
               sfx.coin();
               this.ui.toast(next[1]);
               track('lesson_done', { id: next[0], total: this.lessons.length });
@@ -4304,6 +4316,7 @@ class SimpleApp {
         }
         sfx.spend();
         this.scene.floatCoinsAtPlayer(amount, true);
+        this.scene.logTransaction('Vault deposit', -amount);
         track('vault_deposit', { amount, balance: r.balance });
         render(r.balance);
       };
@@ -4327,6 +4340,7 @@ class SimpleApp {
         }
         this.scene.addCoins(amount); // credit ONLY on ack
         this.scene.floatCoinsAtPlayer(amount);
+        this.scene.logTransaction('Vault withdraw', amount);
         sfx.coin();
         track('vault_withdraw', { amount, balance: r.balance });
         render(r.balance);

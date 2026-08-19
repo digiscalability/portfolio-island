@@ -240,6 +240,9 @@ export class Island {
   public gardenDir: THREE.Vector3 | null = null;
   /** The Farmer's crop-row working spots, and his field centre. */
   public cropRowSites: THREE.Vector3[] = [];
+  // Hanging shop-sign boards + their swing phase — ticked by GameScene.update
+  // (the signs live on `root`, never matrix-frozen, so a transform swing works).
+  public hangSigns: Array<{ group: THREE.Object3D; phase: number }> = [];
   public farmDir: THREE.Vector3 | null = null;
   // Harvest registry (wave 3): pure post-capture of every crop instance's
   // BUILT matrix — zero RNG, zero new geometry inside the seeded window.
@@ -4022,6 +4025,85 @@ export class Island {
     // Add signs for shops/buildings
     const signs = new THREE.Group();
     // (small floating sign planes removed for the same reason)
+    // Hanging shop signs at the plaza approaches — a plumb post + a side arm + a
+    // board that swings in the wind. SHIELDED (local rng → shared stream + golden
+    // census unchanged). The board GROUPS are registered on this.hangSigns; the
+    // per-frame swing lives in GameScene.update (signs sit on `root`, never
+    // matrix-frozen). Plumb radial up (World Law 1: signposts STAND).
+    {
+      const stashedRandom = Math.random;
+      let hseed = 0x51617a3b >>> 0;
+      Math.random = () => {
+        hseed = (hseed + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(hseed ^ (hseed >>> 15), 1 | hseed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      try {
+        const ramp = Materials.toonRamp();
+        const postMat = new THREE.MeshToonMaterial({ color: 0x7a5a38, gradientMap: ramp });
+        const boardMat = new THREE.MeshToonMaterial({
+          color: 0xcaa367,
+          gradientMap: ramp,
+          side: THREE.DoubleSide,
+        });
+        const SIGN_LABELS = ['🛖 Market', '☕ Café', '🍞 Bakery', '🎨 Studio', '✉ Post'];
+        const AXIS_Y = new THREE.Vector3(0, 1, 0);
+        for (let s = 0; s < DISTRICT_LONS.length && s < SIGN_LABELS.length; s++) {
+          const dir = this.dirAt(
+            DISTRICT_LONS[s] + this.arc(6) / Math.cos(ZONE_LAT),
+            ZONE_LAT - this.arc(4.5),
+          );
+          if (this.isNearStreet(dir)) continue;
+          const cd = this.claimDir(dir, this.arc(1.2)).multiplyScalar(this.radius);
+          const sampled = this.sampleSurfacePosition(cd, 0.0);
+          const scRoot = new THREE.Group();
+          scRoot.position.copy(sampled.position);
+          scRoot.quaternion.setFromUnitVectors(AXIS_Y, sampled.position.clone().normalize());
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 2.4, 6), postMat);
+          post.position.y = 1.2;
+          post.castShadow = true;
+          const arm = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.08, 0.08), postMat);
+          arm.position.set(0.36, 2.28, 0);
+          arm.castShadow = true;
+          // Board hangs from the arm END and swings about local X (the arm axis).
+          const board = new THREE.Group();
+          board.position.set(0.7, 2.24, 0);
+          const plank = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.44, 0.05), boardMat);
+          plank.position.y = -0.32;
+          plank.castShadow = true;
+          const linkGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.16, 4);
+          const linkL = new THREE.Mesh(linkGeo, postMat);
+          linkL.position.set(-0.22, -0.04, 0);
+          const linkR = new THREE.Mesh(linkGeo, postMat);
+          linkR.position.set(0.22, -0.04, 0);
+          const cv = document.createElement('canvas');
+          cv.width = 160;
+          cv.height = 96;
+          const ctx = cv.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#3a2a17';
+            ctx.font = 'bold 30px system-ui, -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(SIGN_LABELS[s], 80, 48);
+          }
+          const tex = new THREE.CanvasTexture(cv);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          const face = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.62, 0.38),
+            new THREE.MeshBasicMaterial({ map: tex, transparent: true }),
+          );
+          face.position.set(0, -0.32, 0.03);
+          board.add(plank, linkL, linkR, face);
+          scRoot.add(post, arm, board);
+          signs.add(scRoot);
+          this.hangSigns.push({ group: board, phase: Math.random() * Math.PI * 2 });
+        }
+      } finally {
+        Math.random = stashedRandom;
+      }
+    }
 
     // Add dust/pollen particles for ambiance — ONE InstancedMesh (was 80
     // separate meshes). Same rationale as the sparkles above: decorative,

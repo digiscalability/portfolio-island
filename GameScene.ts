@@ -546,6 +546,8 @@ export class GameScene extends THREE.Scene {
   // Collectible coins scattered across the meadows
   private coins: Array<{ mesh: THREE.Mesh; respawnAt: number; trail?: boolean }> = [];
   private coinsCollected = 0;
+  // Recent coin transactions for the receipt panel (last 24, newest last).
+  private readonly txLog: Array<{ label: string; amount: number; t: number }> = [];
   // True once ds_coins has ever been written on this device — gates the
   // profile sync's adopt-once (see coinAdoptValue in profileSync.ts).
   private hasLocalCoinRecord = false;
@@ -9098,6 +9100,19 @@ export class GameScene extends THREE.Scene {
     return true;
   }
 
+  /** Record a coin transaction for the receipt panel. `amount` signed
+   *  (+earn / -spend). Keeps the last 24, newest last. */
+  public logTransaction(label: string, amount: number): void {
+    if (amount === 0) return;
+    this.txLog.push({ label, amount, t: Date.now() });
+    if (this.txLog.length > 24) this.txLog.shift();
+  }
+
+  /** The recent coin transactions (newest last) for the receipt UI. */
+  public getTransactionLog(): ReadonlyArray<{ label: string; amount: number; t: number }> {
+    return this.txLog;
+  }
+
   /** Set the coin total absolutely (applying a synced cloud profile). */
   public setCoins(total: number): void {
     this.coinsCollected = Math.max(0, Math.floor(total));
@@ -11430,6 +11445,12 @@ export class GameScene extends THREE.Scene {
     if (this.island.summitBeacon) {
       this.island.summitBeacon.rotation.y = time * 0.7;
       this.island.summitBeacon.position.y = 1.35 + Math.sin(time * 1.6) * 0.12;
+    }
+    // Hanging shop signs: a gentle pendulum swing (reduced-motion holds them).
+    if (!a11y.reducedMotion) {
+      for (const s of this.island.hangSigns) {
+        s.group.rotation.x = Math.sin(time * 1.3 + s.phase) * 0.13;
+      }
     }
     this.updateVehicles(deltaTime);
     // Ring traffic. Fed the villagers and the player so cars BRAKE for them
