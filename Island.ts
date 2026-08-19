@@ -3407,6 +3407,23 @@ export class Island {
       emissive: 0x1155aa,
       emissiveIntensity: 0.1,
     });
+    // Ripple the two water discs' top surface — reuses the shared grass clock
+    // (already ticked once/frame), so it's zero per-frame CPU and mints no new
+    // material (census-safe). The fountain was dead static in the town square.
+    fWaterMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = this.grassTimeUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <begin_vertex>',
+          [
+            '#include <begin_vertex>',
+            '  if (position.y > 0.0) {',
+            '    transformed.y += 0.018 * sin(uTime * 3.0 + position.x * 4.2) * cos(uTime * 2.3 + position.z * 4.2);',
+            '  }',
+          ].join('\n'),
+        );
+    };
     const water = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, 0.08, 16), fWaterMat);
     water.position.y = 0.5;
     fountain.add(water);
@@ -4566,6 +4583,24 @@ export class Island {
       side: THREE.DoubleSide,
       roughness: 0.6,
     });
+    // Flutter the pennant out of its plane — pinned at the pole (x=0), free at
+    // the tip (x=1.25). Reuses the shared grass clock: zero per-frame CPU, no new
+    // material (census-safe). Its sibling beacon already spins/bobs.
+    flagMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = this.grassTimeUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <begin_vertex>',
+          [
+            '#include <begin_vertex>',
+            '  float flT = position.x / 1.25;',
+            '  float flW = sin(uTime * 4.0 + position.x * 3.0) + 0.4 * sin(uTime * 6.5);',
+            '  transformed.z += flW * 0.12 * flT * flT;',
+            '  transformed.y += flW * 0.03 * flT;',
+          ].join('\n'),
+        );
+    };
     const flagGeo = new THREE.BufferGeometry();
     // Triangular pennant off the top of the pole (+X), in the local XY plane
     flagGeo.setAttribute(
@@ -7272,6 +7307,89 @@ export class Island {
     head.position.y = 1.85;
     head.castShadow = true;
     scRoot.add(post, bar, head);
+    // ── Dress the scarecrow (SHIELDED): a straw hat, a burlap sack body that
+    // flutters, straw-tuft hands, and a stitched face. Local rng so the uuid
+    // mints never touch the ambient stream — the post/bar/head above stay on the
+    // shared stream, so the golden census (draws/placement) is UNCHANGED. The
+    // burlap sways via an onBeforeCompile height-keyed vertex displacement
+    // (RNG-neutral, and it works while `flowers` is matrix-frozen — the shader
+    // never touches the pinned transform).
+    {
+      const stashedRandom = Math.random;
+      let sseed = 0x5caec204 >>> 0;
+      Math.random = () => {
+        sseed = (sseed + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(sseed ^ (sseed >>> 15), 1 | sseed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      try {
+        const ramp = Materials.toonRamp();
+        const strawMat = new THREE.MeshToonMaterial({ color: 0xc9a24a, gradientMap: ramp });
+        const threadMat = new THREE.MeshToonMaterial({ color: 0x2e2117, gradientMap: ramp });
+        const TORSO_H = 0.86;
+        const burlapMat = new THREE.MeshToonMaterial({
+          color: 0xb59a5e,
+          gradientMap: ramp,
+          side: THREE.DoubleSide,
+        });
+        // Height-keyed flutter: pinned at the crossbar (local y=0), free at the
+        // hem (local y=-TORSO_H). Non-instanced, so NO USE_INSTANCING gate.
+        burlapMat.onBeforeCompile = (shader) => {
+          shader.uniforms.uTime = this.grassTimeUniform;
+          shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nuniform float uTime;')
+            .replace(
+              '#include <begin_vertex>',
+              [
+                '#include <begin_vertex>',
+                '  float scSway = sin(uTime * 1.5 + 1.3) + 0.35 * sin(uTime * 2.9);',
+                `  float scT = clamp(-position.y / ${TORSO_H.toFixed(2)}, 0.0, 1.0);`,
+                '  transformed.x += scSway * 0.055 * scT * scT;',
+                '  transformed.z += scSway * 0.022 * scT * scT;',
+              ].join('\n'),
+            );
+        };
+        // Burlap sack body hung from the crossbar (top at local 0 → hem at -H).
+        const torso = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.25, 0.31, TORSO_H, 8, 1).translate(0, -TORSO_H / 2, 0),
+          burlapMat,
+        );
+        torso.position.y = 1.24;
+        torso.castShadow = true;
+        // Straw: a conical hat (crown + brim) on the head + a spiky tuft "hand"
+        // poking from each crossbar end — one merged mesh, one draw.
+        const straw = new THREE.Mesh(
+          mergeGeometries(
+            [
+              new THREE.ConeGeometry(0.26, 0.3, 8).translate(0, 2.16, 0),
+              new THREE.CylinderGeometry(0.4, 0.42, 0.04, 10).translate(0, 2.0, 0),
+              new THREE.ConeGeometry(0.1, 0.26, 5).rotateZ(0.5).translate(-0.62, 1.12, 0),
+              new THREE.ConeGeometry(0.1, 0.26, 5).rotateZ(-0.5).translate(0.62, 1.12, 0),
+            ].map((geo) => geo.toNonIndexed()),
+            false,
+          ) as THREE.BufferGeometry,
+          strawMat,
+        );
+        straw.castShadow = true;
+        // Stitched face on the head's field-facing (+Z) side — two button eyes
+        // and a mouth stitch, merged into one dark mesh.
+        const face = new THREE.Mesh(
+          mergeGeometries(
+            [
+              new THREE.BoxGeometry(0.05, 0.05, 0.04).translate(-0.08, 1.9, 0.2),
+              new THREE.BoxGeometry(0.05, 0.05, 0.04).translate(0.08, 1.9, 0.2),
+              new THREE.BoxGeometry(0.16, 0.025, 0.03).translate(0, 1.8, 0.21),
+            ].map((geo) => geo.toNonIndexed()),
+            false,
+          ) as THREE.BufferGeometry,
+          threadMat,
+        );
+        scRoot.add(torso, straw, face);
+      } finally {
+        Math.random = stashedRandom;
+      }
+    }
     g.add(scRoot);
 
     const baleSeat = surfAt(3.6, 2.2);
