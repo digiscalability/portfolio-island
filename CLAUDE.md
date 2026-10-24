@@ -1,17 +1,10 @@
 # Portfolio Island (Life Island) — Claude Code context
 
-This repo is part of a multi-venture operator setup. **Portfolio Island / "DigiScalability Life Island" is a product under DigiScalability** (parent holding co). Live state and decisions are tracked in Notion, not in this file. **Read Notion FIRST.**
+This repo is part of a multi-venture operator setup. **Portfolio Island / "DigiScalability Life Island" is a product under DigiScalability** (parent holding co).
 
-## Live state (read this before anything else)
+## Status
 
-Fetch via Notion MCP: _State page URL was never set up._ Until it is, skip step 1 and use `.claude/LOCAL-STATE.md` plus Claude's memory (`project_portfolio_island_revival.md`) for last-session context.
-
-Before answering my first prompt in any session:
-
-1. Fetch the State page above
-2. Read "Last session summary", "Open threads", "Decisions locked in"
-3. Also read `.claude/LOCAL-STATE.md` for local-only context from the last Code session
-4. Acknowledge where we left off in ≤20 words, then wait for my prompt.
+Venture status lives only in the Ventures register (`C:\claudeSessions\SoloBro\Home.md`); what is next is in `TASKS.md` › Portfolio Island beside it.
 
 ## Operator context
 
@@ -35,7 +28,7 @@ When I arrive, assume I'm resuming. Never ask "what would you like to work on to
 - **Runtime:** Three.js spherical-world scene — island planet, interactive props, orbit camera, player movement, real-time multiplayer.
 - **Language:** TypeScript. Live entry is `main-simple.ts`. The active stack is the `Simple*` + scene files at repo root — the two big ones are `GameScene.ts` (light rig, shadows, update loop, input glue) and `Island.ts` (terrain, sea shader, grass, trail); plus `SimpleUI.ts`, `SimplePlayer.ts`, `SimpleRenderer.ts`, `SimpleInputManager.ts`, `Multiplayer.ts`, `EnvironmentCycle.ts`, `RaceSystem.ts`, `DeliverySystem.ts`, `NpcQuests.ts`, `Accessibility.ts`, `Analytics.ts`, `Moderation.ts`. (The old scattered Camera/Environment/InputManager/etc. files are gone — they lived in `_legacy/`, now removed.)
 - **Backend:** Firebase — anonymous Auth + Realtime Database (RTDB) for multiplayer presence and cloud player profiles (`firebaseClient.ts`, `profileSync.ts`, `Multiplayer.ts`). Loaded **lazily**, off the startup critical path — keep it that way (import `firebaseClient` dynamically, never statically from an eager module). `functions/` holds Cloud Functions.
-- **Deploy:** Vercel — LIVE at island.digiscalability.com via `vercel --prod --yes`. Branch pushed to GitHub (`digiscalability/portfolio-island`). (Firebase Hosting / Google Cloud VM are no longer used.)
+- **Deploy:** Vercel, `vercel --prod --yes`. Firebase Hosting is unused, but `firebase.json` still carries a `hosting` block, so give any `firebase deploy` an `--only`.
 - **Dev env:** `npm run dev` (Vite, pinned to port 5173). Windows: stop leaked servers by PID, never `pkill` (a no-op here).
 
 ## World laws (non-negotiable — check EVERY new asset against these)
@@ -110,6 +103,5 @@ When I say "checkpoint", when you hit an error/limit, or when we wrap:
 3. Confirm in chat: "Checkpointed."
 
 `.claude/LOCAL-STATE.md` is the ONLY handoff surface — it must stand alone for a
-session that has no other context. The Notion State page and Sessions DB were
-dropped from this protocol (2026-08-09): the State page URL was never set up, so
-the steps only ever produced a failure to flag.
+session that has no other context. A new session reads it first, says where we
+left off in ≤20 words, and waits for my prompt.
