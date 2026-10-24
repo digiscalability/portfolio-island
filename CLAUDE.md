@@ -99,7 +99,7 @@ Life Island + Planet Messenger share architecture (`Integrated Project Requireme
 When I say "checkpoint", when you hit an error/limit, or when we wrap:
 
 1. Summarize session in ≤6 bullets
-2. Write to `.claude/LOCAL-STATE.md` (replace entire file — branch, files in flight, visual state captured, next step)
+2. Write to `.claude/LOCAL-STATE.md` (replace entire file — branch, files in flight, visual state captured, next step). It holds one handoff; move anything worth keeping from the previous one into `docs/history/`.
 3. Confirm in chat: "Checkpointed."
 
 `.claude/LOCAL-STATE.md` is the ONLY handoff surface — it must stand alone for a
