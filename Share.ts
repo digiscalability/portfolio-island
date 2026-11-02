@@ -105,12 +105,35 @@ export function setUrlParam(name: string, value: string | null): void {
   }
 }
 
+/**
+ * Attribution for links a visitor shares: utm_source=island, utm_medium=share.
+ * The tags ride through /z/<zone> (api/z.js keeps utm_*) into the landing URL
+ * and the entry context saved with leads (main-simple.ts, ds_entry), so a
+ * visit from a shared link no longer looks like direct traffic. Only links to
+ * this origin are tagged, and tags already on a link win. buildShareUrl()
+ * itself stays untagged: it is also the canonical form.
+ */
+const SHARE_UTM = { utm_source: 'island', utm_medium: 'share' } as const;
+
+export function tagShareUrl(url: string): string {
+  try {
+    const u = new URL(url, location.href);
+    if (u.origin !== location.origin) return url;
+    for (const [k, v] of Object.entries(SHARE_UTM)) {
+      if (!u.searchParams.has(k)) u.searchParams.set(k, v);
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 export type ShareOutcome = 'shared' | 'dismissed' | 'copied' | 'prompted' | 'failed';
 
 /**
  * Native share sheet → clipboard → copyable prompt. A user closing the sheet
  * (AbortError) is respected as "no thanks", NOT funnelled into the clipboard.
- * Never throws.
+ * The link that leaves is tagged with tagShareUrl(). Never throws.
  */
 export async function share(opts: {
   surface: string;
@@ -120,7 +143,7 @@ export async function share(opts: {
   file?: File;
 }): Promise<ShareOutcome> {
   track('share_clicked', { surface: opts.surface });
-  const outcome = await shareInner(opts);
+  const outcome = await shareInner({ ...opts, url: tagShareUrl(opts.url) });
   // The OUTCOME is the metric that matters — share_clicked alone can't tell a
   // completed share from a dismissed sheet, so completion rate was unknowable.
   track('share_result', { surface: opts.surface, outcome });
