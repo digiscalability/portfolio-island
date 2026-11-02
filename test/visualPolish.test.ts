@@ -914,29 +914,12 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(r).toContain('this.bloomPass.enabled = bloomWas');
   });
 
-  test('remote peers swim a windmill, matching the local crawl (world law 2)', () => {
-    const player = src('SimplePlayer.ts');
-    // Commit 9ba63d5 turned the LOCAL swim stroke from a bounded oscillation
-    // into a continuous windmill (a real front crawl), but left the REMOTE
-    // peer copy on the old oscillation. MEASURED: the old remote arm kept
-    // z=sin(rot.x) in [-0.985, -0.100] — negative all cycle, both hands behind
-    // the shoulder = a permanent BACKSTROKE. So a swimming peer looked correct
-    // to themselves and swam backwards to everyone else. This is the exact
-    // "fix one side, leave the other broken" that World Law 2 exists to stop.
-    const remote = player.slice(
-      player.indexOf('activePose === 1'),
-      player.indexOf('activePose === 2'),
-    );
-    expect(remote.length).toBeGreaterThan(100); // both anchors resolved
-    expect(remote).toContain('armLBone.rotation.x = -Math.PI - swimClock');
-    expect(remote).toContain('armRBone.rotation.x = -Math.PI - swimClock + Math.PI');
-    // The old oscillation is gone (this exact form was the backstroke).
-    expect(remote).not.toContain('(1.4 + s * 1.3)');
-    // And the LOCAL player is the windmill it must match — pin both so they
-    // cannot drift a third time.
-    expect(player).toContain('this.armLBone.rotation.x = REST_X - this.swimPhase');
-    expect(player).toContain('this.armRBone.rotation.x = REST_X - this.swimPhase + Math.PI');
-  });
+  // The swim-stroke lock (local AND remote-peer copies) lives in
+  // test/swimStroke.test.ts. It used to be a source pin here, and the pinned
+  // text was itself the bug: `REST_X - swimPhase` / `-Math.PI - swimClock`
+  // measured as a REVERSED crawl. Text cannot tell a crawl from its mirror
+  // image, so that suite drives both pose paths on player.glb and checks
+  // where the hand actually goes.
 
   test('a felled stump is drivable, not merely walkable', () => {
     const scene = src('GameScene.ts');
