@@ -67,3 +67,95 @@ export function pruneSelect(
   }
   return updates;
 }
+
+/** The fields of a GitHub issue (from the list endpoint) the analyst reads. */
+export interface IssueLite {
+  number?: number;
+  title?: string;
+  state?: string;
+  updated_at?: string;
+  created_at?: string;
+  labels?: Array<{ name?: string } | string>;
+  assignee?: unknown;
+  assignees?: unknown[];
+  pull_request?: unknown;
+}
+
+/**
+ * Open analyst issues the analyst may close itself, so its open-issue cap can't
+ * stall filing for good. An issue qualifies only when it carries `label` and
+ * NO other label (a label a human adds, such as accepted or keep, exempts it),
+ * has no assignee, is not a pull request, and has had no activity (GitHub's
+ * updated_at: comments, edits, label changes) for at least `idleMs`. An issue
+ * with no readable date is never closed. Returns issue numbers, least recently
+ * active first, at most `max`.
+ */
+export function staleAnalystIssues(
+  issues: readonly IssueLite[],
+  label: string,
+  now: number,
+  idleMs: number,
+  max: number,
+): number[] {
+  const stale: Array<{ n: number; at: number }> = [];
+  for (const i of issues) {
+    if (!i || i.pull_request || (i.state !== undefined && i.state !== 'open')) continue;
+    if (typeof i.number !== 'number') continue;
+    const names = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : (l?.name ?? '')));
+    if (names.length !== 1 || names[0] !== label) continue;
+    if (i.assignee || (i.assignees?.length ?? 0) > 0) continue;
+    const at = Date.parse(i.updated_at ?? i.created_at ?? '');
+    if (!Number.isFinite(at) || now - at < idleMs) continue;
+    stale.push({ n: i.number, at });
+  }
+  return stale
+    .sort((a, b) => a.at - b.at)
+    .slice(0, Math.max(0, max))
+    .map((s) => s.n);
+}
+
+/** The analyst files proposals under this prefix. */
+const PROPOSAL_PREFIX = /^\s*\[island\]\s*/i;
+
+/** The de-duplication key for an analyst proposal title: case, spacing and the
+ *  "[island] " filing prefix are ignored. */
+export function proposalKey(title: unknown): string {
+  return String(title ?? '')
+    .replace(PROPOSAL_PREFIX, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Titles of closed analyst issues (closed as stale, declined or done), for the
+ * analyst's prompt and its de-duplication: issues only (no pull requests) that
+ * carry `label`, without the filing prefix, whitespace collapsed, each cut to
+ * `maxChars`, repeats dropped, in the order given (the API's newest first), at
+ * most `max`.
+ */
+export function closedProposalTitles(
+  issues: readonly IssueLite[],
+  label: string,
+  max: number,
+  maxChars = 120,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const i of issues) {
+    if (out.length >= max) break;
+    if (!i || i.pull_request || (i.state !== undefined && i.state !== 'closed')) continue;
+    const names = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : (l?.name ?? '')));
+    if (!names.includes(label)) continue;
+    const title = String(i.title ?? '')
+      .replace(PROPOSAL_PREFIX, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxChars);
+    const key = proposalKey(title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(title);
+  }
+  return out;
+}

@@ -1,100 +1,201 @@
-# DigiScalability Life Island
+# Life Island
+
+[![CI](https://github.com/digiscalability/portfolio-island/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/digiscalability/portfolio-island/actions/workflows/ci.yml)
 
 **Live: [island.digiscalability.com](https://island.digiscalability.com)**
 
-A living 3D portfolio: a miniature planet you walk around as a third-person
-character — five content districts, a working town of NPCs, multiplayer
-presence, races, deliveries, and enterable buildings. Built by
-[Abbas Ali](https://digiscalability.com) (Melbourne, AU), solo founder of
-DigiScalability.
+A living 3D world (Three.js + TypeScript) where 24 villagers talk through
+Claude Haiku 4.5. You walk a small planet as a third-person character: a hub
+town at the north pole, four districts around it, 28 villagers going about
+their day, other visitors in real time, races, deliveries and buildings you can
+walk into.
 
-![Life Island](public/og-cover-v2.jpg)
+Built and run by Abbas Ali, AI & software engineer, Melbourne
+([LinkedIn](https://www.linkedin.com/in/-abbas-ali) ·
+[admin@digiscalability.com](mailto:admin@digiscalability.com)).
+I build AI products end to end and make them safe to put in front of the
+public: the model call and its guardrails, the realtime client, the cloud
+functions and the tests. This repo has all four.
 
-## The part nobody else has
+![Life Island, a low-poly 3D island planet with a village, sea and a snow-capped mountain, captioned Abbas Ali, AI & software engineer](public/og-cover-v3.jpg)
 
-Every townsperson is a **live AI agent**, and the island runs itself:
+Inspiration: [Messenger](https://messenger.abeto.co) by Abeto.
 
-- **24 chat NPCs** — walk up and one greets you aware of the time of day and
-  what it's doing; press E and talk to a server-side Claude persona (each with
-  its own voice, schedule, and personality).
-- **A daily AI planner** — every morning at 6am one small LLM call assigns the
-  day's activities and event; a 60fps client engine executes them (gardening,
-  patrols, mail rounds, music, lamp-lighting… NPCs walk home and sleep at night).
-- **A nightly AI analyst** — at 9pm it aggregates real usage from the database,
-  emails the owner a digest, and **files GitHub issues about its own island**
-  ([see them](https://github.com/digiscalability/portfolio-island/issues?q=label%3Aisland-analyst)).
-- **The Island Times** — an in-world newspaper the agents compile nightly,
-  with a public 14-day archive.
+## For reviewers (10 min)
 
-### The safety invariant that makes this shippable
+Six stops, in order. Each one is short and says why it is built that way.
 
-The LLM **never writes free prose to any world-visible surface**. It only
-index-selects activity/event/notice IDs from pre-authored pools, validated
-independently on the server and the client. Free prose is confined to
-owner-only surfaces (email, GitHub issue bodies). Visitor chat text is treated
-as data, never instructions; spend is metered per-month with hard caps, rate
-limits, and moderation on both directions.
+1. **[npcChat's guardrails](https://github.com/digiscalability/portfolio-island/blob/main/functions/src/index.ts#L329-L466)**
+   (`functions/src/index.ts`). The villager chat endpoint: App Check, a per-IP
+   burst limit, a hard monthly token cap, moderation before and after the
+   model, the visitor's text sent as data and never as instructions. When any
+   check trips, the villager answers with a scripted line and the fallback is
+   counted by reason.
+2. **[The money logic and its tests](https://github.com/digiscalability/portfolio-island/blob/main/test/functionsPure.test.ts)**
+   (`test/functionsPure.test.ts`). The rate window, the prune selection and
+   the seeded fallback pick, pulled out into `functions/src/pure.ts` so they
+   run in plain Vitest without a Firebase emulator.
+3. **[The planner invariant](https://github.com/digiscalability/portfolio-island/blob/main/functions/src/plannerPrompt.ts#L48-L74)**
+   (`parsePlanReply`). The daily planner may only pick ids from fixed lists;
+   whatever the model writes, only pool ids reach the world, so no planner text
+   reaches a public surface.
+4. **[The agentSession gate](https://github.com/digiscalability/portfolio-island/blob/main/functions/src/agentSession.ts#L1-L34)**
+   (`functions/src/agentSession.ts`). A voice agent connects the browser
+   straight to the vendor, so this function mints the short-lived signed URL
+   the browser needs. Its header lists the five defence layers in order and
+   the incident that prompted them.
+5. **[The tierParity census](https://github.com/digiscalability/portfolio-island/blob/main/test/tierParity.test.ts#L98-L170)**
+   (`test/tierParity.test.ts`). A phone and a desktop must build the same
+   seeded world, because multiplayer addresses parked cars by index. A golden
+   census fails on any change that moves the world.
+6. **[ci.yml](https://github.com/digiscalability/portfolio-island/blob/main/.github/workflows/ci.yml)**.
+   Typecheck, lint, Prettier, the tests, both builds, and the offline evals,
+   on every push and pull request.
 
-## Quick start
+Then [ARCHITECTURE.md](ARCHITECTURE.md) for a reading path through the rest.
+
+## The AI parts
+
+- **24 villagers on Claude Haiku 4.5.** Walk up to one and press E. The
+  `npcChat` Cloud Function (a Firebase callable) answers as that villager,
+  from a persona that never leaves the server. The Anthropic key lives in
+  Secret Manager. Anonymous sign-in IDs are free to mint, so the burst limit
+  is keyed by IP. When the monthly cap is hit, or anything else trips, the
+  villager falls back to scripted lines.
+- **A daily planner.** At 6am Melbourne time one Claude Haiku 4.5 call gives
+  each villager a job and picks the day's event, choosing only from fixed
+  lists. If the call fails or the cap is reached, a seeded fallback still
+  writes a valid plan.
+- **A nightly analyst.** At 9pm a Claude Sonnet call turns the day's database
+  counts into a private email digest and proposes small improvements, which
+  it files as GitHub issues (label `island-analyst`). Before filing, it
+  replaces traffic figures with `[n]`; filing has a three-day cooldown and a cap
+  of five open issues, and analyst issues idle for 14 days are closed. A
+  proposal closed in the last 90 days is never filed again, and the model is
+  shown those titles so it does not re-word one.
+- **Voice.** A villager's reply can be spoken by ElevenLabs through
+  `npcVoice`, a capped function that only voices text `npcChat` just produced;
+  the browser's own speech is the fallback. Visitors can also speak to
+  villagers (speech-to-text in the browser). The reception desk's voice agent
+  gets its session from `agentSession`.
+- **No model in the world's mood.** A rule-based `director` picks the island's
+  mood and headline every six hours from pre-written lists.
+
+## Evals
+
+[evals/](evals/) tests the shipped guardrails from Python (3.11, uv, pytest),
+against the built Cloud Functions rather than a copy of their rules.
+
+- **Offline suites** (no network, no API key): moderation precision and recall
+  over a labelled corpus, the injection fence and facts rules in every villager
+  prompt, adversarial planner replies through the real validator, and a scan
+  of the public pages for claims they must not make. CI's `offline-evals` job
+  runs them on every push.
+- **Live suites** (injection and role-break attempts, facts about Abbas, planner
+  id validity) call the API under a hard token budget and run only by manual
+  dispatch. They have not been run yet.
+
+Scores, including the known gaps and known costs of a word list:
+[evals/RESULTS.md](evals/RESULTS.md).
+
+## Numbers
+
+Checked against the code on 2026-11-02.
+
+| Item | Value |
+| --- | --- |
+| Tests | 832 Vitest tests in 48 files (`CI=true npx vitest run`), plus the offline evals |
+| World | `WORLD_RADIUS` 100 (`WorldScale.ts`): the Welcome hub at the north pole and four districts on a ring at 26.6°N, 90° apart (`Districts.ts`) |
+| Villagers | 28; 24 talk through Claude Haiku 4.5 (`AI_NPCS` in `NpcChat.ts`), and the two market vendors, the first mate and the deckhand use scripted lines |
+| Cloud Functions | 9: `npcChat`, `npcVoice`, `agentSession`, `planner`, `analyst`, `director`, `janitor`, `onLeadCreated`, `vaultOp` |
+| 3D models | 7 `.glb` files, 289 KiB on disk, about 86 KiB as served (brotli) |
+
+## Run it locally
+
+Node 22.
 
 ```bash
-npm install
-npm run dev        # Vite dev server on :5173
-npm test           # vitest — 188 unit + parity tests
+npm ci
+npm run dev        # Vite on http://localhost:5173
+npm test           # Vitest
+npm run check      # typecheck, lint (zero warnings), Prettier check
 npm run build      # production build into dist/
-npm run check      # typecheck + lint (zero-warning) + format check
+cd functions && npm ci && npm run build    # the Cloud Functions
 ```
 
-**Controls:** WASD move · mouse look · Space jump · **E** interact ·
-P photo mode · Esc closes panels.
+Without an App Check site key (`VITE_APPCHECK_SITE_KEY`), `npcChat` refuses
+the call and the villagers use their scripted lines. The tests make no network
+calls: fetch and model loads are stubbed in `test/helpers/networkStubs.ts`. To
+run the evals, see [evals/README.md](evals/README.md).
 
-## How the world is put together
+## Controls
 
-The planet is a displaced sphere (radius 75) with elevation- and
-district-tinted vertex colors. Five zone plazas sit evenly on the equator, so
-the equator road is "Main Street" and the districts hang off it:
+| Key | Action |
+| --- | --- |
+| W A S D or arrow keys | Move |
+| Mouse | Look (click the world to lock the pointer; Esc releases it) |
+| Space | Tap to jump; hold while moving to run (uses stamina); hold in water to stay afloat |
+| Shift | Hold in water to dive |
+| E | Talk, enter, sit or use, whatever the on-screen prompt says |
+| Q | Wave (nearby villagers wave back) |
+| F | Scatter bird feed |
+| G | Eat a cooked meal (restores stamina) |
+| M | Island map |
+| Enter | Type a message to visitors nearby |
+| V | Hold to talk to visitors nearby |
+| P | Take a photo postcard |
+| C | Change your look |
+| Esc | Close panels |
 
-```
-Welcome ─VILLAGE─ Professional ─ORCHARD─ Projects ─MARKET─ Personal ─COUNTRY─ Contact ─FOREST─ (loop)
-```
+On a phone: a joystick and on-screen buttons.
 
-Mountains, woods, and rolling hills fill the higher latitudes. Placement goes
-through a shared spacing registry (`Island.claimDir`) with per-category
-clearance and slope limits; everything samples the *displaced* terrain and
-sinks slightly (bury-not-float) so nothing hovers. Buildings and cottages are
-enterable — one reusable interior room hidden under the map, themed per
-building, with free-walk collision.
+## How it is built
 
-## Architecture (live modules)
+- **Client:** Three.js + TypeScript + Vite. The entry is `main-simple.ts`;
+  `GameScene.ts`, `Island.ts` and `SimpleUI.ts` hold the scene, the planet and
+  the HUD. World generation is seeded, so every device builds the same world.
+- **Backend:** Firebase. Anonymous Auth and the Realtime Database carry
+  presence, profiles, the guestbook, leaderboards and the bank vault; nine
+  Cloud Functions (Node 22) hold every key and enforce every spending limit.
+  The client loads Firebase lazily, off the startup path.
+- **Deploys:** Vercel for the client; `firebase deploy --only functions:<name>`
+  for the server.
+- **Operations:** [docs/runbook.md](docs/runbook.md) lists every `ALERT`
+  marker the functions log and what to do about it.
 
-| Module | Role |
-|---|---|
-| `main-simple.ts` | App entry: boot, render loop, input→scene wiring, compass |
-| `GameScene.ts` | Scene composition, colliders, NPC wander/activity engine, interiors |
-| `Island.ts` | Planet generation: terrain, district layout, prop placement |
-| `NpcActivities.ts` | Activity schedules + goal resolver (the 60fps half of the planner) |
-| `NpcChat.ts` | Client bridge to the server NPC brain + aware greetings |
-| `SimplePlayer.ts` | Sphere-walking physics (tangent/normal split), rigged glb |
-| `OrbitCamera.ts` | Follow-behind camera (parallel-transported), collision |
-| `Multiplayer.ts` | Realtime presence via Firebase RTDB |
-| `SimpleUI.ts` | DOM HUD: panels, guestbook, Island Times, photo mode |
-| `functions/src/` | Cloud Functions: `npcChat`, daily `planner`, nightly `analyst`, world `director`, `janitor`, lead email |
+## How I work with coding agents
 
-## Backend
+Most commits here were made with Claude Code (they carry a Claude co-author
+line), and the repo is set up for that way of working:
 
-Firebase — anonymous Auth + Realtime Database for presence, profiles,
-guestbook, leaderboards; Cloud Functions (Node 22) hold the Anthropic key and
-every guardrail. The client loads Firebase lazily, off the startup critical
-path. Deploys: Vercel (client), `firebase deploy --only functions` (server).
+- **Rules the agent reads first.** [CLAUDE.md](CLAUDE.md) holds the stack, the
+  recurring traps and three World Laws: things that stand, stand plumb; the
+  avatar rigs have non-identity rest poses; measure the rig, don't reason about
+  it. Each was learned by shipping the opposite and having it reported as
+  broken, so it is written where the next session reads it before touching an
+  asset.
+- **One handoff between sessions.** [.claude/LOCAL-STATE.md](.claude/LOCAL-STATE.md)
+  is rewritten at every checkpoint (the branch, the files in flight, what was
+  verified, the next step) so that a session with no other context can resume.
+  Older handoffs move to [docs/history/](docs/history/).
+- **Tests as pins.** A fix that could regress silently lands with a test that
+  fails on the regression: the golden census in `tierParity.test.ts`,
+  `radiusUnits.test.ts` failing the build on a hand-written radian, the
+  client and server lists kept in lockstep by `livingNpcs.test.ts`. Some pins
+  read source text instead of running it (shader strings, DOM wiring, lists
+  that live in two build roots); 23 of the 48 test files do that at least once.
+- **Verify before claiming.** A visual fix isn't done until a fresh screenshot
+  of the affected state shows it, and the numbers in this README were measured,
+  not remembered.
 
-## Asset pipeline
+## Licence
 
-Models live in `public/assets/models/*.glb`, authored by Blender headless
-scripts (see `README-asset-workflow.md`). Assets are joined to single meshes
-with applied transforms; the whole model set ships as ~200KB of `.glb`.
+The code is open source under the MIT License: see [LICENSE](LICENSE).
+Third-party models, textures, fonts and other assets keep their own licences,
+listed in [CREDITS.md](CREDITS.md).
 
-## Built with
+## More
 
-Three.js · TypeScript · Vite · Firebase · Anthropic Claude (Haiku for the
-planner + chat, Sonnet for the analyst) — and the development itself was
-pair-built with [Claude Code](https://claude.com/claude-code).
+- [ARCHITECTURE.md](ARCHITECTURE.md): the reading path and the subsystems.
+- [CREDITS.md](CREDITS.md): where the models, fonts and sounds come from.
+- [SECURITY.md](SECURITY.md): how to report a problem, and how secrets are kept.

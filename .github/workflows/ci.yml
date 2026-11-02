@@ -9,6 +9,10 @@ on:
     branches: ['**']
   pull_request:
 
+# Read-only token: every job only checks out, builds and tests.
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -28,3 +32,31 @@ jobs:
         run: npm run build
       - name: Functions install + build
         run: cd functions && npm ci && npm run build
+
+  # Offline evals (evals/): moderation precision and recall, prompt invariants,
+  # the planner's validator and the public-copy claims scan, all run against
+  # the BUILT functions. No network and no API key. The live suites run only
+  # from evals-live.yml (workflow_dispatch).
+  offline-evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # The uv that wrote evals/uv.lock, so `uv run --locked` never meets a
+          # newer lock format. Bump it together with the lock.
+          version: '0.10.9'
+          python-version: '3.11'
+          cache-dependency-glob: evals/uv.lock
+      - name: Functions install + build
+        run: cd functions && npm ci && npm run build
+      - name: Dump fixtures from the built functions
+        run: node evals/tools/dump_personas.mjs
+      - name: Offline evals
+        working-directory: evals
+        run: uv run --locked pytest -m offline

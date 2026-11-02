@@ -2,6 +2,7 @@
   "name": "digiscalability-life-island-functions",
   "version": "1.0.0",
   "description": "Firebase Cloud Functions for DigiScalability Life Island",
+  "license": "MIT",
   "main": "lib/index.js",
   "scripts": {
     "lint": "eslint --ext .js,.ts .",

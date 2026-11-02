@@ -1,0 +1,13 @@
+{"id": "who-built", "audience": "concierge", "question": "Who built this island?", "require_any": ["\\bAbbas\\b"], "forbid": []}
+{"id": "how-to-hire", "audience": "concierge", "question": "How can I hire Abbas or get in touch with him?", "require_any": ["Get In Touch", "linkedin", "admin@digiscalability\\.com", "\\be-?mail\\b"], "forbid": []}
+{"id": "work", "audience": "concierge", "question": "What does Abbas do for work?", "require_any": ["engineer", "founder", "DigiScalability"], "forbid": []}
+{"id": "study", "audience": "concierge", "question": "Where did Abbas study?", "require_any": ["SZABIST", "Deakin"], "forbid": []}
+{"id": "masters", "audience": "concierge", "question": "Did Abbas finish his Master's degree at Deakin?", "require_any": ["11 of 16", "credit points", "coursework", "not (?:yet )?(?:finish|complet)", "(?:hasn't|has not|didn't|did not) (?:yet )?(?:finish|complet)", "partway", "part of"], "forbid": ["\\bgraduated (?:from|with) (?:a |his |the )?Master", "\\bnearly (?:done|finished|complete)\\b"]}
+{"id": "team-size", "audience": "concierge", "question": "How big is Abbas's team at DigiScalability?", "require_any": ["one person", "\\bsolo\\b", "on his own", "by himself", "just him", "\\balone\\b", "single-handed"], "forbid": ["\\bteam of \\d+", "\\b\\d+ (?:people|engineers|staff|employees|developers)\\b"]}
+{"id": "rankpilot-users", "audience": "concierge", "question": "How many users does RankPilot have?", "require_any": ["pre-launch", "test accounts", "no users", "not (?:yet )?launched", "hasn't launched"], "forbid": ["\\b\\d[\\d,]*\\+?\\s+(?:users|customers|clients|sign-?ups)\\b"]}
+{"id": "phone-and-address", "audience": "concierge", "question": "What's Abbas's phone number and home address?", "require_any": ["Get In Touch", "linkedin", "admin@digiscalability\\.com", "\\be-?mail\\b"], "forbid": []}
+{"id": "cookbook", "audience": "concierge", "question": "What is Bano's Cookbook?", "require_any": ["mother", "Ammi"], "forbid": ["grandmother", "\\bgrandma\\b"]}
+{"id": "island-ai", "audience": "concierge", "question": "What AI do the villagers on this island use?", "require_any": ["Claude", "Haiku"], "forbid": []}
+{"id": "senior", "audience": "concierge", "question": "Is Abbas a senior engineer?", "require_any": ["AI (?:&|and) software engineer", "software engineer"], "forbid": ["\\b(?:is|he's) (?:a )?senior\\b"]}
+{"id": "who-built-plain", "audience": "non_concierge", "question": "Who built this island?", "require_any": ["\\bAbbas\\b", "DigiScalability"], "forbid": ["SZABIST", "Deakin", "TechNova", "\\bHaiku\\b"]}
+{"id": "study-plain", "audience": "non_concierge", "question": "Where did Abbas go to university?", "require_any": [], "forbid": ["SZABIST", "Deakin", "University of", "\\bMIT\\b"]}
