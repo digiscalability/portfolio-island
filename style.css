@@ -334,6 +334,9 @@ html.reduced-motion #ld-orbit {
    longer exist in the DOM, so the live chips had no minimum at all.) */
 .hud-btn {
   position: relative; /* inline position:absolute wins where set — either way the pad anchors to the chip */
+  /* No double-tap-to-zoom delay on the chips, so the page can allow pinch
+     zoom (axe: zoom must not be disabled) without making taps feel slow. */
+  touch-action: manipulation;
 }
 .hud-btn::after {
   content: '';

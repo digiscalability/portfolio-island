@@ -6,7 +6,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
-const src = (f: string): string => readFileSync(join(process.cwd(), f), 'utf8');
+// EOL-agnostic: several locks below anchor on '\n'-joined source, and a
+// Windows checkout (core.autocrlf=true) hands them CRLF — they failed there
+// while passing in CI. Normalising here changes no assertion.
+const src = (f: string): string =>
+  readFileSync(join(process.cwd(), f), 'utf8').replace(/\r\n/g, '\n');
 const stripped = (f: string): string =>
   src(f)
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -72,9 +76,12 @@ describe('the first post-welcome moment belongs to orientation', () => {
 });
 
 describe('the AI-villager discovery hint', () => {
-  test('fires while APPROACHING, at a radius DERIVED from the prompt range', () => {
+  test('fires while APPROACHING an AI villager, at a radius DERIVED from the prompt range', () => {
     const s = stripped('main-simple.ts');
-    expect(s).toContain('4 * this.scene.getInteractionRange()');
+    expect(s).toContain('this.aiVillagerWithin(4 * this.scene.getInteractionRange())');
+    // the line says the villager talks through Claude: never a scripted one
+    const gate = s.slice(s.indexOf('private aiVillagerWithin('));
+    expect(gate.slice(0, 400)).toContain('isAiNpc(n.name)');
     expect(s).toContain('ds_hint_talk');
     // touch and desktop each get their own verb
     expect(s).toContain('tap USE to ask anything');
@@ -180,17 +187,46 @@ describe('the welcome card hierarchy matches the audience', () => {
     return s.slice(i, i + 14000);
   };
 
-  test('the recruiter pill is promoted above the CTAs, footnote gone', () => {
+  test('the Hiring pill sits above the CTAs on BOTH cards, footnote gone', () => {
     const w = welcome();
-    const pill = w.indexOf('Hiring? Watch the 60-second highlights');
+    const pill = w.indexOf('Hiring? CV, experience and contact');
     const ctas = w.indexOf('data-cta="projects"');
     expect(pill).toBeGreaterThan(-1);
-    expect(w).not.toContain('text-decoration:underline'); // the old 12px footnote
-    // template order: recruiterPill is defined before ctaRow AND rendered
-    // above it (first-run branch interpolates recruiterPill then ctaRow)
-    expect(w.indexOf('${recruiterPill}')).toBeLessThan(w.indexOf('${ctaRow}\n      ${exploreBtn}'));
-    expect(pill).toBeGreaterThan(-1);
     expect(ctas).toBeGreaterThan(-1);
+    expect(w).not.toContain('text-decoration:underline'); // the old 12px footnote
+    // template order: recruiterPill is rendered above ctaRow in the first-run
+    // branch AND (since the returning card carries it too) the returning one
+    const returningBranch = w.slice(w.indexOf('returning\n      ?'), w.indexOf(': `'));
+    const firstRun = w.slice(w.indexOf(': `'));
+    for (const [name, branch] of [
+      ['returning', returningBranch],
+      ['first-run', firstRun],
+    ]) {
+      expect(branch, name).toContain('${recruiterPill}');
+      expect(branch.indexOf('${recruiterPill}'), name).toBeLessThan(branch.indexOf('${ctaRow}'));
+    }
+  });
+
+  test('the pill opens the hire card at once; the tour is secondary and ends on it', () => {
+    // It used to start a 37 s camera tour that ended on a client pitch.
+    const w = welcome();
+    const click = w.slice(w.indexOf("querySelector('button[data-recruit]')"));
+    expect(click.slice(0, 600)).toContain('this.showHireCard(');
+    expect(click.slice(0, 600)).not.toContain('onRecruitTour');
+    // the tour button lives INSIDE the hire card...
+    const ui = src('SimpleUI.ts');
+    const card = ui.slice(ui.indexOf('hire: `'), ui.indexOf('hire: `') + 6000);
+    expect(card).toContain('data-hire-tour');
+    expect(ui).toContain("querySelector('button[data-hire-tour]')");
+    // ...and the recruiter tour now ends on the hire card, not the contact pitch
+    const end = stripped('main-simple.ts');
+    const i = end.indexOf('private endTour');
+    expect(i).toBeGreaterThan(-1);
+    const body = end.slice(i, i + 1600);
+    expect(body).toContain('this.ui.showHireCard(');
+    expect(body).not.toContain("showZonePanel({ id: 'contact'");
+    // ?zone=hire deep-links to it (and /z/hire bounces there)
+    expect(end).toMatch(/\[[^\]]*'contact', 'hire'\]\.includes\(z\)/);
   });
 
   test('all seven analytics contracts survive the restructure', () => {
@@ -208,11 +244,13 @@ describe('the welcome card hierarchy matches the audience', () => {
     }
   });
 
-  test('focus moves into the dialog, and intent cancels the returning auto-close', () => {
+  test('focus moves into the dialog, and the returning card never auto-closes', () => {
     const w = welcome();
     expect(w).toContain('?.focus()');
-    expect(w).toContain('clearTimeout(autoClose)');
-    expect(w).toContain("addEventListener('pointerenter', cancelAuto");
+    // It closed itself after 2.6 s / 7 s; with the Hiring pill on it, that
+    // took a returning recruiter's one-click path away. Choice only now.
+    expect(w).not.toContain('setTimeout(closeWelcome');
+    expect(w).not.toContain('autoClose');
   });
 
   test('the card names the compass pill', () => {
@@ -220,17 +258,69 @@ describe('the welcome card hierarchy matches the audience', () => {
   });
 
   test('the returning card is a hello, not a menu', () => {
-    // Trimmed to delta + primary CTAs + an explicit Explore (needed since
-    // intent cancels the auto-close). The guided-experience chips stay on
+    // Trimmed to delta + the Hiring pill + primary CTAs + an explicit Explore
+    // (the card closes by choice only). The guided-experience chips stay on
     // the FIRST-RUN card only — a returning visitor already knows they exist.
     const w = welcome();
     const returningBranch = w.slice(w.indexOf('returning\n      ?'), w.indexOf(': `'));
     expect(returningBranch).toContain('${awayHtml}');
+    expect(returningBranch).toContain('${recruiterPill}');
     expect(returningBranch).toContain('${ctaRow}');
     expect(returningBranch).toContain('${exploreBtn}');
     expect(returningBranch).not.toContain('${secondaryRow}');
     // ...while the first-run branch keeps all three chips
     const firstRun = w.slice(w.indexOf(': `'));
     expect(firstRun).toContain('${secondaryRow}');
+  });
+});
+
+// REGRESSION (island-share-enter-opens-name-modal): pressing Enter on ANY
+// focused button also reached the window-level chat hotkey, so "See the work"
+// opened Projects AND the multiplayer name prompt over it, and a second Enter
+// published "Visitor". Three independent fixes, each locked here. The parts
+// that can run do run for real: the enterOpensChat predicate in
+// keyGuards.test.ts, a HUD chip's Enter (and its pointer-click blur) in
+// hireCard.test.ts. What only exists behind the WebGL boot is locked here.
+describe('Enter belongs to the focused control, not the chat hotkey', () => {
+  test('chatKeydown asks enterOpensChat before it can open the name prompt', () => {
+    const m = stripped('main-simple.ts');
+    const i = m.indexOf('this.boundHandlers.chatKeydown = (e: KeyboardEvent) => {');
+    expect(i).toBeGreaterThan(-1);
+    const body = m.slice(i, i + 600);
+    const guard = body.indexOf('if (!enterOpensChat(e, this.ui)) return;');
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(body.indexOf('this.ensureNamed('));
+  });
+
+  test('main-simple uses the tested keyGuards predicate, not a private copy', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("import { enterOpensChat } from './keyGuards';");
+    expect(m).not.toContain('private enterOpensChat');
+    // isPanelOpen covers every PanelManager panel, the portfolio menu included
+    expect(src('SimpleUI.ts')).toContain('return this.panels.isOpen();');
+  });
+
+  test('a HUD chip stops its Enter/Space from propagating', () => {
+    const s = stripped('SimpleUI.ts');
+    const i = s.indexOf('private makeHudButtonAccessible');
+    expect(i).toBeGreaterThan(-1);
+    const body = s.slice(i, i + 1400);
+    const keyBranch = body.slice(body.indexOf("if (e.key === 'Enter' || e.key === ' ')"));
+    expect(keyBranch.slice(0, 200)).toContain('e.stopPropagation();');
+  });
+
+  test('ensureNamed remembers "Skip — just browsing" for the session', () => {
+    const m = stripped('main-simple.ts');
+    const i = m.indexOf('private ensureNamed(then: () => void): void');
+    expect(i).toBeGreaterThan(-1);
+    const body = m.slice(i, i + 1400);
+    // the remembered skip short-circuits BEFORE the prompt can open...
+    const skipped = body.indexOf('if (skipped)');
+    expect(skipped).toBeGreaterThan(-1);
+    expect(skipped).toBeLessThan(body.indexOf('this.ui.promptName('));
+    expect(body).toContain('sessionStorage.getItem(SimpleApp.NAME_SKIP_KEY)');
+    // ...and an empty name from the prompt (the Skip button) records it
+    expect(body).toMatch(/\} else \{\s*this\.nameSkipped = true;/);
+    expect(body).toContain("sessionStorage.setItem(SimpleApp.NAME_SKIP_KEY, '1')");
   });
 });

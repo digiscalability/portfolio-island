@@ -4,7 +4,10 @@
 // the caller shows the NPC's canned lines instead. It NEVER throws to the
 // caller: any failure (offline, App Check missing, rate/cap tripped, moderation)
 // resolves to { fallback: true } and the NPC gracefully drops to canned dialogue.
+// Every such fallback is now COUNTED (npc_fallback): with App Check failing,
+// "live AI" villagers used to answer in written lines and nothing recorded it.
 
+import { track } from './Analytics';
 import { offerCloudVoice } from './Speech';
 
 export interface NpcReply {
@@ -136,6 +139,19 @@ export function composeAwareGreeting(opts: {
   return `${greet} — ${opener}.${eventTag}`;
 }
 
+/**
+ * A degraded answer: the caller shows the villager's written lines instead
+ * (reply stage), or keeps the composed greeting (opening stage). Counted as
+ * npc_fallback {reason, stage}. reason is the server's ('rate', 'cap',
+ * 'input', 'output', 'refusal', 'error') or client:<code> for a call that
+ * never got a reply: client:functions/unauthenticated is what App Check
+ * enforcement returns, client:auth/... a sign-in that failed first.
+ */
+function fallbackReply(reason: string, opening: boolean): NpcReply {
+  track('npc_fallback', { reason, stage: opening ? 'opening' : 'reply' });
+  return { reply: null, fallback: true, reason };
+}
+
 export async function askNpc(npcName: string, message: string, opening = false): Promise<NpcReply> {
   const npcId = AI_NPCS[npcName];
   if (!npcId) return { reply: null, fallback: true, reason: 'not-ai' };
@@ -157,20 +173,26 @@ export async function askNpc(npcName: string, message: string, opening = false):
     );
     const d = res.data;
     if (d && typeof d.fallback === 'boolean') {
+      if (d.fallback) return fallbackReply(String(d.reason ?? 'unknown').slice(0, 40), opening);
+      // A "success" with no text is still a written line on screen.
+      if (!d.reply) return fallbackReply('empty-reply', opening);
       // Cloud voice: start fetching the ElevenLabs audio NOW (it synthesizes
       // while the typewriter animates) and offer it to Speech keyed by the
       // exact reply text — speak() will play it instead of the browser voice.
       // Any failure quietly resolves null and the on-device voice takes over.
-      if (!d.fallback && d.reply && typeof d.voiceKey === 'string') {
-        offerCloudVoice(d.reply, fetchNpcVoice(d.voiceKey));
-      }
+      if (typeof d.voiceKey === 'string') offerCloudVoice(d.reply, fetchNpcVoice(d.voiceKey));
       return d;
     }
-    return { reply: null, fallback: true, reason: 'bad-shape' };
-  } catch {
-    // Offline, App Check not configured yet, function not deployed, timeout —
-    // all degrade to canned lines. The NPC never appears broken.
-    return { reply: null, fallback: true, reason: 'client-error' };
+    return fallbackReply('bad-shape', opening);
+  } catch (e) {
+    // Offline, App Check rejected or not configured, function not deployed,
+    // timeout — all degrade to canned lines. The NPC never appears broken,
+    // and the error code says which it was.
+    const code = (e as { code?: unknown } | null)?.code;
+    return fallbackReply(
+      typeof code === 'string' ? `client:${code}`.slice(0, 60) : 'client-error',
+      opening,
+    );
   }
 }
 

@@ -96,8 +96,9 @@ export function appendReceptionDesk(container: HTMLElement): void {
     'margin-top:18px;text-align:left;border-top:1px solid rgba(255,255,255,0.12);padding-top:16px;';
   box.innerHTML = `
     <h3 style="margin:0 0 4px;font-size:15px;">Talk to my AI receptionist</h3>
-    <p style="margin:0 0 10px;font-size:12px;color:#9aa;">A live voice agent I built — ask it what I do, what things cost, or how I'd approach your project.</p>
+    <p style="margin:0 0 10px;font-size:12px;color:#9aa;">A live voice agent I built — ask it about my work, or your project.</p>
     <button id="rd-start" style="width:100%;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#26a69a,#00695c);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">🎙 Start voice call</button>
+    <p style="margin:6px 0 0;font-size:11px;color:#889;">During a call your voice streams live to ElevenLabs, the voice provider. <a href="/privacy.html" style="color:#80cbc4;">Privacy</a></p>
     <div id="rd-status" role="status" aria-live="polite" style="margin:8px 0 0;font-size:12px;color:#9aa;min-height:16px;"></div>
     <div id="rd-log" style="margin:8px 0 0;font-size:13px;line-height:1.45;max-height:150px;overflow-y:auto;display:none;"></div>`;
   // Sit ABOVE the written form — its heading ("Or send a message") reads as the
