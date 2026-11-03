@@ -2261,15 +2261,18 @@ export class Island {
       // Outline Tier 1: body/roof/plinth/chimney get ink; the doormat, knob
       // and porch lamp fall under the 0.6 size floor, windows plane-guard out.
       addGroupHulls(house, 0.6, () => true);
-      // Porch light. This used to sit at z = d*0.35 — INSIDE the walls — with
-      // a 2u radius, so it lit precisely nothing and every house read as a
-      // black slab with two lit windows after dark. It now hangs just proud
-      // of the facade (half-depth + 0.6) with the reach to actually wash the
-      // front wall and the doorstep. Still ONE light per house, the same one
-      // EnvironmentCycle already ramps at dusk via isHouseWarmLight.
-      const warmColor = 0xffd6a5;
-      const light = new THREE.PointLight(warmColor, 1.9, 8, 2);
-      light.position.set(0, h * 0.62, d * 0.5 + 0.6);
+      // Porch light: CONSTRUCTED, NEVER ADDED (decision P2-1: no exterior
+      // point lights). three bakes the light COUNT into every lit program,
+      // so six porch lights joining the scene at dusk re-linked the whole
+      // world (a measured 2.4-3.6 s freeze) and made every night boot
+      // 3.4-4.4 s slower. The constructor still runs, here, with the same
+      // arguments: a PointLight mints two uuids (the light and its shadow
+      // camera), 8 seeded draws, and new Island() runs inside GameScene's
+      // seeded window, so dropping it would re-roll every placement after it
+      // (test/drawNeutral.test.ts pins the counts). The sconce below, the lit
+      // windows and the porch lamp beside every door, with its warm pool,
+      // carry the doorstep instead.
+      new THREE.PointLight(0xffd6a5, 1.9, 8, 2);
       // A sconce beside the door so the glow has a visible source rather than
       // coming from thin air. Tagged isNightEmissive, so it is dark by day.
       const sconceMat = new THREE.MeshStandardMaterial({
@@ -2287,13 +2290,6 @@ export class Island {
       );
       hood.position.set(w * 0.3, h * 0.66 + 0.22, d * 0.5 + 0.1);
       house.add(hood);
-      // don't cast shadows by default (expensive); user can toggle in renderer settings if desired
-      light.castShadow = false;
-      // tag so the renderer or debug UI can find and tweak these
-      const lightData = light.userData as Record<string, unknown>;
-      lightData.isHouseWarmLight = true;
-      // attach to house so it follows rotation/position on the sphere
-      house.add(light);
     }
 
     // Trees: stylized low-poly trees with clustered dodecahedron canopies.
@@ -4890,10 +4886,10 @@ export class Island {
 
     // THE BEAM. The lantern glowed but threw nothing — a lighthouse that does
     // not sweep is just a striped tower. Two opposed cones of additive haze
-    // (apex at the lantern, laid on their sides so they point out to sea)
-    // plus ONE real spotlight riding the same pivot, so the sweep actually
-    // lands on the rocks and the water as it passes. GameScene spins the
-    // pivot and fades the whole thing in as the light goes.
+    // (apex at the lantern, laid on their sides so they point out to sea).
+    // A real spotlight used to ride each arm too; it no longer enters the
+    // scene (see the arm loop). GameScene spins the pivot and fades the
+    // cones in as the light goes.
     const beam = new THREE.Group();
     beam.name = 'lighthouse_beam';
     beam.position.y = galleryY + 0.85;
@@ -4948,7 +4944,6 @@ export class Island {
     // margin than at R=50 and drifts in the safe direction (~2u across a ~24u
     // sweep). Recorded so the next auditor doesn't re-derive this and "fix" it.
     const BEAM_TILT = 0.72;
-    const beamLights: THREE.SpotLight[] = [];
     for (const s of [1, -1]) {
       // The arm carries the downward tilt so the cone keeps its simple local
       // geometry: rotating about Z by -s*t swings the +/-X axis toward -Y.
@@ -4960,18 +4955,20 @@ export class Island {
       cone.rotation.z = (s * Math.PI) / 2;
       cone.position.set((s * BEAM_LEN) / 2, 0, 0);
       arm.add(cone);
-      // One spotlight per beam, aimed straight down the arm, so BOTH sweeps
-      // wash the rocks, trees and water they cross instead of only glowing in
-      // the air. decay 1.1 rather than the physical 2: a squared falloff is
-      // spent within a few units and would light nothing but the gallery.
+      // The beam's spotlight: CONSTRUCTED, NEVER ADDED (decision P2-1). Two
+      // spots joining at dusk re-linked every lit program with the porch
+      // lights; the additive cones above carry the sweep on their own. The
+      // constructor still runs, here: a SpotLight mints three uuids (the
+      // light, its target and its shadow camera), 12 seeded draws inside the
+      // seeded window. Its target stays aimed down the arm.
       const sl = new THREE.SpotLight(0xffe4a0, 0, 44, 0.3, 0.55, 1.1);
-      sl.position.set(0, 0, 0);
       sl.target.position.set(s * BEAM_LEN, 0, 0);
-      arm.add(sl, sl.target);
-      beamLights.push(sl);
+      arm.add(sl.target);
       beam.add(arm);
     }
-    beam.userData.beamLights = beamLights;
+    // No light rides the beam, so GameScene's sweep loop, which drives this
+    // list, does nothing; the cones still turn and fade with the dusk ramp.
+    beam.userData.beamLights = [];
     g.add(beam);
 
     console.log('🗼 Lighthouse placed on the coast');

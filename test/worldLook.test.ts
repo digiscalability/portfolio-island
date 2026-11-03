@@ -21,6 +21,8 @@
 // out of view. A few tests gained an assertion the AST makes cheap; each one
 // says so where it is added.
 //
+// C's own stage-2 locks follow the adopted ones, at the end of the file.
+//
 // Comments are stripped before matching (from the AST's comment ranges), so a
 // lock can never be satisfied by its own explanatory prose.
 import { readFileSync } from 'node:fs';
@@ -631,5 +633,43 @@ describe('the fly-in hides the ink through the material', () => {
     // (its name survives in a CelLook comment, for anyone searching history)
     expect(stripped('CelLook.ts')).not.toContain('applyCelShadowPatch');
     expect(stripped('CelLook.ts')).not.toContain('console.warn');
+  });
+});
+
+// ---- C's own stage-2 locks ---------------------------------------------------
+
+describe('the light count never changes at runtime (decision P2-1, P2-C4)', () => {
+  // three bakes the light COUNT into every lit program, so a light joining the
+  // scene at dusk re-links the world: the six porch lights and the two
+  // lighthouse spots froze the island for 2.4-3.6 s at dusk and made a night
+  // boot 3.4-4.4 s slower. Both are still CONSTRUCTED where they were, because
+  // their uuids are seeded draws (drawNeutral pins the counts), but neither
+  // enters the scene graph. test/drawNeutral.test.ts checks the built island.
+
+  test('the porch light is constructed bare: nothing can add it to a house', () => {
+    const porch = statementNode('Island.ts', 'new THREE.PointLight(0xffd6a5, 1.9, 8, 2)');
+    // An expression statement whose whole expression is the constructor: no
+    // binding exists to hand to house.add().
+    expect(ts.isExpressionStatement(porch)).toBe(true);
+    expect(ts.isNewExpression((porch as ts.ExpressionStatement).expression)).toBe(true);
+    expect(stripped('Island.ts')).not.toContain('isHouseWarmLight');
+  });
+
+  test('the lighthouse spots stay out of the beam, and the sweep list is empty', () => {
+    const lighthouse = decl('Island.ts', 'createLighthouse');
+    expect(lighthouse).toContain('new THREE.SpotLight(0xffe4a0, 0, 44, 0.3, 0.55, 1.1)');
+    // The target stays in the arm; the light itself is never added.
+    expect(lighthouse).toContain('arm.add(sl.target)');
+    expect(lighthouse).not.toMatch(/\.add\([^)]*\bsl\b(?!\.)/);
+    // GameScene's sweep loop drives beam.userData.beamLights: empty, it idles.
+    expect(lighthouse).toContain('beam.userData.beamLights = []');
+  });
+
+  test('Island constructs no other light (the perf budget: no new THREE lights)', () => {
+    const island = stripped('Island.ts');
+    expect(island.match(/new THREE\.\w*Light\(/g)).toEqual([
+      'new THREE.PointLight(',
+      'new THREE.SpotLight(',
+    ]);
   });
 });

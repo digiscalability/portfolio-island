@@ -70,7 +70,7 @@ const CHECKPOINTS = [
 ];
 
 /** One new Island() on a fresh seeded stream, counted, with a recorder. */
-const build = (): Census => {
+const build = (): { census: Census; island: Island } => {
   const gen = seeded();
   let draws = 0;
   const marks: Record<string, number> = {};
@@ -83,13 +83,14 @@ const build = (): Census => {
   g.__dsSeedMark = (label) => {
     marks[label] = draws;
   };
+  let island: Island;
   try {
-    new Island(WORLD_RADIUS);
+    island = new Island(WORLD_RADIUS);
   } finally {
     Math.random = real;
     delete g.__dsSeedMark;
   }
-  return { marks, total: draws };
+  return { census: { marks, total: draws }, island };
 };
 
 interface Fixture {
@@ -104,11 +105,14 @@ const fixture = JSON.parse(
 
 let cold: Census;
 let warm: Census;
+let warmIsland: Island;
 
 beforeAll(() => {
   installHeadlessCanvas();
-  cold = build(); // this file's FIRST Island: the caches start empty
-  warm = build();
+  cold = build().census; // this file's FIRST Island: the caches start empty
+  const second = build();
+  warm = second.census;
+  warmIsland = second.island;
 }, 300000);
 
 describe('new Island() takes a fixed share of the seeded stream', () => {
@@ -145,5 +149,19 @@ describe('new Island() takes a fixed share of the seeded stream', () => {
     // tierParity.test.ts GOLDEN.draws, also a warm build from the same seed:
     // both suites measure the same world.
     expect(warm.total).toBe(49771);
+  });
+});
+
+describe('what new Island() builds', () => {
+  test('no light enters its scene graph (decision P2-1)', () => {
+    // three bakes the light COUNT into every lit program, so a light that
+    // joins at dusk re-links the world. The porch lights and the lighthouse
+    // spots are still constructed for their seeded draws (the counts above),
+    // but none of them is added. worldLook pins how; this pins the result.
+    const lights: string[] = [];
+    warmIsland.mesh.traverse((o) => {
+      if ((o as { isLight?: boolean }).isLight) lights.push(o.type);
+    });
+    expect(lights).toEqual([]);
   });
 });
