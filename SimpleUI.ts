@@ -2983,6 +2983,10 @@ export class SimpleUI {
   private createContactCTA(): void {
     const btn = document.createElement('div');
     btn.textContent = '💼 Work with me';
+    // The one element that is this pill, on the HUD and re-hosted in the phone
+    // drawer: icon sweeps and DOM censuses exempt it by this hook, and
+    // test/uiLocks.test.ts pins the ruling it carries.
+    btn.dataset.cta = 'work-with-me';
     Object.assign(btn.style, {
       position: 'absolute',
       // Stacked just below the 📖 Portfolio pill (top-right conversion column),

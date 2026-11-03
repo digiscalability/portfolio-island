@@ -62,63 +62,16 @@ describe('the first post-welcome moment belongs to orientation', () => {
     expect(body).toContain('ds_hint_compass');
     expect(body).toContain('tap it for the island map');
   });
-
-  test('the fish-price special never opens a first visit', () => {
-    const s = stripped('main-simple.ts');
-    const i = s.indexOf('private refreshFeatured');
-    const body = s.slice(i, i + 1200);
-    expect(body).toContain("localStorage.getItem('ds_welcomed')");
-  });
-
-  test('the arrival trail hands off instead of congratulating into silence', () => {
-    expect(src('main-simple.ts')).toContain('follow the ➤ arrow to 🚀 Projects');
-  });
 });
 
-describe('the AI-villager discovery hint', () => {
-  test('fires while APPROACHING an AI villager, at a radius DERIVED from the prompt range', () => {
-    const s = stripped('main-simple.ts');
-    expect(s).toContain('this.aiVillagerWithin(4 * this.scene.getInteractionRange())');
-    // the line says the villager talks through Claude: never a scripted one
-    const gate = s.slice(s.indexOf('private aiVillagerWithin('));
-    expect(gate.slice(0, 400)).toContain('isAiNpc(n.name)');
-    expect(s).toContain('ds_hint_talk');
-    // touch and desktop each get their own verb
-    expect(s).toContain('tap USE to ask anything');
-    expect(s).toContain('press E to ask anything');
-  });
-
-  test('self-discovery burns the hint (chat open sets the key)', () => {
-    // Anchor on the AI-chat branch's unique voiceProfileFor call — the plain
-    // beginNpcDialogue marker also matches the canned-dialogue branch.
-    const s = stripped('main-simple.ts');
-    const i = s.indexOf('voiceProfileFor(npcData.name)');
-    expect(i).toBeGreaterThan(-1);
-    expect(s.slice(i, i + 400)).toContain("localStorage.setItem('ds_hint_talk', '1')");
-  });
-});
-
-describe('one golden breadcrumb system at a time', () => {
-  test('guide sparkles yield to the arrival coins by TARGET, not visibility', () => {
-    // Target-based (null) suppression keeps reduced-motion users their
-    // breadcrumbs by design; a visibility hack would strip them.
-    const s = stripped('main-simple.ts');
-    expect(s).toContain('this.scene.hasTrailCoins() ? null : targetPos');
-    const g = stripped('GameScene.ts');
-    expect(g).toContain('public hasTrailCoins()');
-  });
-});
+// The main-simple.ts locks of this suite (the fish-price special, the trail
+// hand-off, the AI-villager hint, the breadcrumb yield, the map POIs, the
+// district intros, the lost-visitor recovery, the tour's end and Enter's
+// guards) moved to package A's test/mainLocks.test.ts, and the GameScene.ts
+// half of the breadcrumb yield to package B's test/sceneLocks.test.ts
+// (testOwnership rule 1). What stays here pins SimpleUI.ts.
 
 describe('phase 2: the map teaches the island’s shape', () => {
-  test('zone POIs carry real passport icons + district accents, not five 🏛️', () => {
-    const m = stripped('main-simple.ts');
-    const i = m.indexOf('private openIslandMap');
-    const body = m.slice(i, i + 1200);
-    expect(body).toContain('PASSPORT_META');
-    expect(body).toContain('DISTRICTS.find');
-    expect(body).not.toMatch(/add\('🏛️', z\.name/);
-  });
-
   test('the island map shows you-are-here, heading, and the pill’s target', () => {
     const s = stripped('SimpleUI.ts');
     const i = s.indexOf('public showIslandMap');
@@ -126,9 +79,6 @@ describe('phase 2: the map teaches the island’s shape', () => {
     expect(body).toContain('opts?.playerPos');
     expect(body).toContain('opts?.targetPos');
     expect(body).toContain('opts.playerFwd'); // heading via ε-projection
-    // ...and the caller passes all three
-    const m = stripped('main-simple.ts');
-    expect(m).toContain('targetPos: this.lastCompassTarget');
   });
 
   test('edge-clamped districts get rim labels on the radar', () => {
@@ -137,15 +87,6 @@ describe('phase 2: the map teaches the island’s shape', () => {
     const s = stripped('SimpleUI.ts');
     expect(s).toContain('rimLabels');
     expect(s).toMatch(/rimLabels\.some\(/); // overlap-skip
-  });
-
-  test('district entries introduce themselves once, after minute one', () => {
-    const m = stripped('main-simple.ts');
-    expect(m).toContain('ds_hint_district_');
-    expect(m).toContain('DISTRICT_INTRO');
-    // the minute-one toast budget guard
-    expect(m).toMatch(/!this\.scene\.hasTrailCoins\(\)/);
-    expect(m).toContain('bestDot > 0.9');
   });
 });
 
@@ -164,14 +105,6 @@ describe('phase 2: progression surfaces know about each other', () => {
     expect(s).toContain('completion-journal');
     const i = s.indexOf('showJournal(): void');
     expect(s.slice(i, i + 300)).toContain("trackOnce('journal_opened')");
-  });
-
-  test('the lost-visitor recovery fires only for the truly lost', () => {
-    const m = stripped('main-simple.ts');
-    expect(m).toContain('ds_hint_map');
-    expect(m).toContain('this.lostAccum > 60');
-    expect(m).toContain('!this.ui.hasSeenInteractionPrompt()');
-    expect(m).toContain('(this.passport?.count() ?? 0) === 0');
   });
 });
 
@@ -207,26 +140,19 @@ describe('the welcome card hierarchy matches the audience', () => {
     }
   });
 
-  test('the pill opens the hire card at once; the tour is secondary and ends on it', () => {
-    // It used to start a 37 s camera tour that ended on a client pitch.
+  test('the pill opens the hire card at once; the tour is secondary, inside the card', () => {
+    // It used to start a 37 s camera tour that ended on a client pitch. (That
+    // the tour now ends on the hire card, and ?zone=hire deep-links to it, is
+    // main-simple.ts code: package A's mainLocks pins it.)
     const w = welcome();
     const click = w.slice(w.indexOf("querySelector('button[data-recruit]')"));
     expect(click.slice(0, 600)).toContain('this.showHireCard(');
     expect(click.slice(0, 600)).not.toContain('onRecruitTour');
-    // the tour button lives INSIDE the hire card...
+    // the tour button lives INSIDE the hire card
     const ui = src('SimpleUI.ts');
     const card = ui.slice(ui.indexOf('hire: `'), ui.indexOf('hire: `') + 6000);
     expect(card).toContain('data-hire-tour');
     expect(ui).toContain("querySelector('button[data-hire-tour]')");
-    // ...and the recruiter tour now ends on the hire card, not the contact pitch
-    const end = stripped('main-simple.ts');
-    const i = end.indexOf('private endTour');
-    expect(i).toBeGreaterThan(-1);
-    const body = end.slice(i, i + 1600);
-    expect(body).toContain('this.ui.showHireCard(');
-    expect(body).not.toContain("showZonePanel({ id: 'contact'");
-    // ?zone=hire deep-links to it (and /z/hire bounces there)
-    expect(end).toMatch(/\[[^\]]*'contact', 'hire'\]\.includes\(z\)/);
   });
 
   test('all seven analytics contracts survive the restructure', () => {
@@ -277,26 +203,14 @@ describe('the welcome card hierarchy matches the audience', () => {
 // REGRESSION (island-share-enter-opens-name-modal): pressing Enter on ANY
 // focused button also reached the window-level chat hotkey, so "See the work"
 // opened Projects AND the multiplayer name prompt over it, and a second Enter
-// published "Visitor". Three independent fixes, each locked here. The parts
-// that can run do run for real: the enterOpensChat predicate in
-// keyGuards.test.ts, a HUD chip's Enter (and its pointer-click blur) in
-// hireCard.test.ts. What only exists behind the WebGL boot is locked here.
+// published "Visitor". Three independent fixes. The parts that can run do run
+// for real: the enterOpensChat predicate in keyGuards.test.ts, a HUD chip's
+// Enter (and its pointer-click blur) in hireCard.test.ts. What only exists
+// behind the WebGL boot is source-locked: the main-simple.ts half (chatKeydown's
+// guard, the keyGuards import, ensureNamed's remembered skip) in package A's
+// mainLocks, the SimpleUI.ts half here.
 describe('Enter belongs to the focused control, not the chat hotkey', () => {
-  test('chatKeydown asks enterOpensChat before it can open the name prompt', () => {
-    const m = stripped('main-simple.ts');
-    const i = m.indexOf('this.boundHandlers.chatKeydown = (e: KeyboardEvent) => {');
-    expect(i).toBeGreaterThan(-1);
-    const body = m.slice(i, i + 600);
-    const guard = body.indexOf('if (!enterOpensChat(e, this.ui)) return;');
-    expect(guard).toBeGreaterThan(-1);
-    expect(guard).toBeLessThan(body.indexOf('this.ensureNamed('));
-  });
-
-  test('main-simple uses the tested keyGuards predicate, not a private copy', () => {
-    const m = stripped('main-simple.ts');
-    expect(m).toContain("import { enterOpensChat } from './keyGuards';");
-    expect(m).not.toContain('private enterOpensChat');
-    // isPanelOpen covers every PanelManager panel, the portfolio menu included
+  test('isPanelOpen covers every PanelManager panel, the portfolio menu included', () => {
     expect(src('SimpleUI.ts')).toContain('return this.panels.isOpen();');
   });
 
@@ -307,20 +221,5 @@ describe('Enter belongs to the focused control, not the chat hotkey', () => {
     const body = s.slice(i, i + 1400);
     const keyBranch = body.slice(body.indexOf("if (e.key === 'Enter' || e.key === ' ')"));
     expect(keyBranch.slice(0, 200)).toContain('e.stopPropagation();');
-  });
-
-  test('ensureNamed remembers "Skip — just browsing" for the session', () => {
-    const m = stripped('main-simple.ts');
-    const i = m.indexOf('private ensureNamed(then: () => void): void');
-    expect(i).toBeGreaterThan(-1);
-    const body = m.slice(i, i + 1400);
-    // the remembered skip short-circuits BEFORE the prompt can open...
-    const skipped = body.indexOf('if (skipped)');
-    expect(skipped).toBeGreaterThan(-1);
-    expect(skipped).toBeLessThan(body.indexOf('this.ui.promptName('));
-    expect(body).toContain('sessionStorage.getItem(SimpleApp.NAME_SKIP_KEY)');
-    // ...and an empty name from the prompt (the Skip button) records it
-    expect(body).toMatch(/\} else \{\s*this\.nameSkipped = true;/);
-    expect(body).toContain("sessionStorage.setItem(SimpleApp.NAME_SKIP_KEY, '1')");
   });
 });
