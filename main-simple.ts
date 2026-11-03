@@ -1298,9 +1298,13 @@ class SimpleApp {
 
       this.setupDebugShortcuts();
 
-      // Create input manager
+      // Create input manager. Look is press-and-drag; the pointer lock is an
+      // opt-in setting (ds_mouse_lock) and never engages while a panel is
+      // open, so it can never strand an open sheet or card under a captured
+      // cursor.
       this.inputManager = new SimpleInputManager();
       this.inputManager.attachToCanvas(canvas);
+      this.inputManager.setPointerLockGuard(() => !this.ui.panels.isOpen());
       console.log('✓ Input manager created');
 
       // Chat keybindings: Enter opens the text input; V is push-to-talk
@@ -2407,6 +2411,9 @@ class SimpleApp {
         /* no storage */
       }
     }
+
+    // Any open panel needs the cursor: let go of the opt-in pointer lock.
+    if (this.ui.panels.isOpen()) this.inputManager.releasePointerLock();
 
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {

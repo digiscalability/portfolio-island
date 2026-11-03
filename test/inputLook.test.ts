@@ -172,3 +172,215 @@ describe('a focused control keeps the keys it uses (A2)', () => {
     expect(im.isKeyPressed('w')).toBe(false);
   });
 });
+
+// ---- A3: press and drag to look, pointer lock only when asked for -------
+
+/** The world canvas, with the capture API happy-dom lacks recorded. */
+const worldCanvas = (): HTMLCanvasElement & { captured: number[]; released: number[] } => {
+  const c = mount<HTMLCanvasElement>('<canvas id="game-canvas"></canvas>') as HTMLCanvasElement & {
+    captured: number[];
+    released: number[];
+  };
+  c.captured = [];
+  c.released = [];
+  c.setPointerCapture = (id: number) => void c.captured.push(id);
+  c.releasePointerCapture = (id: number) => void c.released.push(id);
+  c.hasPointerCapture = (id: number) => c.captured.includes(id) && !c.released.includes(id);
+  im.attachToCanvas(c);
+  return c;
+};
+const pointer = (el: EventTarget, type: string, init: PointerEventInit = {}): PointerEvent => {
+  const e = new PointerEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    pointerId: 1,
+    pointerType: 'mouse',
+    button: 0,
+    ...init,
+  });
+  el.dispatchEvent(e);
+  return e;
+};
+/** A drag from (x0, y) through the given x positions, left button unless stated. */
+const dragAcross = (c: HTMLCanvasElement, xs: number[], init: PointerEventInit = {}) => {
+  pointer(c, 'pointerdown', { clientX: 100, clientY: 300, ...init });
+  for (const x of xs) pointer(c, 'pointermove', { clientX: x, clientY: 300, ...init });
+  pointer(c, 'pointerup', { clientX: xs[xs.length - 1] ?? 100, clientY: 300, ...init });
+};
+const setLock = (on: boolean) => {
+  if (on) localStorage.setItem('ds_mouse_lock', '1');
+  else localStorage.removeItem('ds_mouse_lock');
+  window.dispatchEvent(new CustomEvent('ds:settings', { detail: { key: 'ds_mouse_lock' } }));
+};
+
+describe('press and drag to look (A3)', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test('a drag captures the pointer and looks with every pixel it moved', () => {
+    const c = worldCanvas();
+    expect(c.style.cursor).toBe('grab');
+    pointer(c, 'pointerdown', { clientX: 100, clientY: 300 });
+    expect(c.captured).toEqual([1]);
+    expect(c.style.cursor).toBe('grabbing');
+    pointer(c, 'pointermove', { clientX: 103, clientY: 300 }); // still could be a click
+    expect(im.getCameraInput().deltaX).toBe(0);
+    pointer(c, 'pointermove', { clientX: 110, clientY: 302 }); // now a drag
+    pointer(c, 'pointermove', { clientX: 400, clientY: 302 });
+    const look = im.getCameraInput();
+    // the first 10 px are not lost to the click threshold
+    expect(look.deltaX).toBe(300);
+    expect(look.deltaY).toBe(2);
+    pointer(c, 'pointerup', { clientX: 400, clientY: 302 });
+    expect(c.style.cursor).toBe('grab');
+    expect(c.released).toEqual([1]);
+  });
+
+  test('the right button drags too', () => {
+    const c = worldCanvas();
+    dragAcross(c, [120, 250], { button: 2 });
+    expect(im.getCameraInput().deltaX).toBe(150);
+  });
+
+  test('a press under 6 px and 300 ms stays a click: no look at all', () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    const c = worldCanvas();
+    pointer(c, 'pointerdown', { clientX: 100, clientY: 300 });
+    now.mockReturnValue(1120);
+    pointer(c, 'pointermove', { clientX: 104, clientY: 302 });
+    pointer(c, 'pointerup', { clientX: 104, clientY: 302 });
+    expect(im.getCameraInput()).toMatchObject({ deltaX: 0, deltaY: 0 });
+  });
+
+  test('a press held past 300 ms is a drag even before 6 px', () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    const c = worldCanvas();
+    pointer(c, 'pointerdown', { clientX: 100, clientY: 300 });
+    now.mockReturnValue(1350);
+    pointer(c, 'pointermove', { clientX: 103, clientY: 300 });
+    expect(im.getCameraInput().deltaX).toBe(3);
+  });
+
+  test('moving with no button pressed never looks', () => {
+    worldCanvas();
+    for (let x = 0; x <= 600; x += 20) {
+      document.dispatchEvent(
+        new MouseEvent('mousemove', { clientX: x, clientY: 300, movementX: 20 }),
+      );
+    }
+    expect(im.getCameraInput()).toMatchObject({ deltaX: 0, deltaY: 0 });
+  });
+
+  test('the drag ends on pointerup, on lost capture and on blur', () => {
+    const c = worldCanvas();
+    for (const end of ['pointerup', 'lostpointercapture', 'blur'] as const) {
+      pointer(c, 'pointerdown', { clientX: 100, clientY: 300 });
+      pointer(c, 'pointermove', { clientX: 140, clientY: 300 });
+      if (end === 'blur') window.dispatchEvent(new Event('blur'));
+      else pointer(c, end, { clientX: 140, clientY: 300 });
+      im.getCameraInput();
+      pointer(c, 'pointermove', { clientX: 300, clientY: 300 });
+      expect(im.getCameraInput().deltaX, end).toBe(0);
+    }
+  });
+
+  test('touch pointers are left to the touch path', () => {
+    const c = worldCanvas();
+    dragAcross(c, [200, 300], { pointerType: 'touch' });
+    expect(c.captured).toEqual([]);
+    expect(im.getCameraInput().deltaX).toBe(0);
+  });
+
+  test('a right-drag swallows the context menu; a right-click keeps it', () => {
+    const c = worldCanvas();
+    dragAcross(c, [130], { button: 2 });
+    const afterDrag = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    c.dispatchEvent(afterDrag);
+    expect(afterDrag.defaultPrevented).toBe(true);
+    dragAcross(c, [102], { button: 2 });
+    const afterClick = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    c.dispatchEvent(afterClick);
+    expect(afterClick.defaultPrevented).toBe(false);
+  });
+});
+
+describe('the pointer lock is opt-in (A3)', () => {
+  let lockedTo: Element | null = null;
+  beforeEach(() => {
+    lockedTo = null;
+    Object.defineProperty(document, 'pointerLockElement', {
+      configurable: true,
+      get: () => lockedTo,
+    });
+  });
+  afterEach(() => {
+    localStorage.clear();
+    delete (document as { pointerLockElement?: unknown }).pointerLockElement;
+  });
+  const lockable = () => {
+    const c = worldCanvas();
+    const requests: number[] = [];
+    c.requestPointerLock = (() => {
+      requests.push(1);
+      return Promise.resolve();
+    }) as unknown as HTMLCanvasElement['requestPointerLock'];
+    return { c, requests };
+  };
+
+  test('by default a click never captures the cursor, and the page says drag', () => {
+    const { c, requests } = lockable();
+    expect(document.documentElement.getAttribute('data-look-mode')).toBe('drag');
+    dragAcross(c, [101]);
+    c.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(requests).toHaveLength(0);
+  });
+
+  test('with ds_mouse_lock = 1 a click locks, re-read on ds:settings', () => {
+    const { c, requests } = lockable();
+    setLock(true);
+    expect(document.documentElement.getAttribute('data-look-mode')).toBe('lock');
+    dragAcross(c, [101]);
+    c.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(requests).toHaveLength(1);
+    setLock(false);
+    expect(document.documentElement.getAttribute('data-look-mode')).toBe('drag');
+  });
+
+  test('never while a panel is open, and never as the tail of a drag', () => {
+    const { c, requests } = lockable();
+    setLock(true);
+    let panelOpen = true;
+    im.setPointerLockGuard(() => !panelOpen);
+    dragAcross(c, [101]);
+    c.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(requests).toHaveLength(0);
+    panelOpen = false;
+    dragAcross(c, [180]); // a real drag: its click is not a request
+    c.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(requests).toHaveLength(0);
+  });
+
+  test('when it engages, a 12 px pill says how to leave, for 3 s', () => {
+    vi.useFakeTimers();
+    try {
+      const { c } = lockable();
+      setLock(true);
+      lockedTo = c;
+      document.dispatchEvent(new Event('pointerlockchange'));
+      const pill = document.getElementById('ds-lock-pill')!;
+      expect(pill.textContent).toBe('Mouse locked — Esc to release');
+      expect(pill.style.fontSize).toBe('12px');
+      expect(pill.style.display).toBe('block');
+      vi.advanceTimersByTime(2900);
+      expect(pill.style.display).toBe('block');
+      vi.advanceTimersByTime(200);
+      expect(pill.style.display).toBe('none');
+      // while locked, plain movement looks
+      document.dispatchEvent(new MouseEvent('mousemove', { movementX: 40, movementY: -10 }));
+      expect(im.getCameraInput()).toMatchObject({ deltaX: 40, deltaY: -10 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
