@@ -1024,3 +1024,67 @@ describe('A6: First steps, wired into main-simple', () => {
     );
   });
 });
+
+describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
+  test('a stall trigger beside the once-ever lost clause: 10 u in 30 s, twice a visit at most', () => {
+    const m = stripped('main-simple.ts');
+    // the once-ever clause stays (onboarding's lock above pins its terms)
+    expect(blockOf(bodyOf(m, 'private update('), 'this.lostAccum > 60 &&')).toContain(
+      'this.showLostHint();',
+    );
+    expect(bodyOf(m, 'private update(')).toContain('this.checkLostStall(hintsHeld);');
+    expect(m).toContain('private static readonly LOST_STALL_SAMPLES = 12;'); // x 2.5 s = 30 s
+    expect(m).toContain('private static readonly LOST_STALL_U = 10;');
+    expect(m).toContain('private static readonly LOST_STALL_MAX = 2;');
+    const stall = bodyOf(m, 'private checkLostStall(');
+    for (const term of [
+      '!this.scene.isInsideInterior()',
+      'travelled >= SimpleApp.LOST_STALL_U',
+      'hintsHeld ||',
+      '(this.passport?.count() ?? 0) > 0',
+      'this.lostStallHints++;',
+    ]) {
+      expect(stall, term).toContain(term);
+    }
+    const copy = bodyOf(m, 'private showLostHint(');
+    expect(copy).toContain(
+      'Lost? Click the radar or press M for the island map — pick a spot and the gold arrow guides you.',
+    );
+    expect(copy).toContain(
+      'Lost? Tap the radar for the island map — pick a spot and the gold arrow guides you.',
+    );
+  });
+
+  test('the specials toast opens with a capital: no provider label starts lower-case', () => {
+    const body = bodyOf(stripped('main-simple.ts'), 'private refreshFeatured');
+    const labels = [...body.matchAll(/^\s+(\w+): '([^']*)',$/gm)].map((x) => x[2]);
+    expect(labels).toEqual([
+      'The fisherman',
+      'The Baker',
+      'The canteen',
+      'The bank',
+      'The Carpenter',
+    ]);
+    for (const l of labels) expect(l[0], l).toBe(l[0].toUpperCase());
+  });
+
+  test("'ds:intro': one start as the fly-in or the calm entry begins, one settled in afterIntro", () => {
+    const m = stripped('main-simple.ts');
+    const start =
+      "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));";
+    const settled =
+      "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'settled' } }));";
+    expect(m.split(start).length - 1).toBe(2);
+    expect(m.split(settled).length - 1).toBe(1);
+    expect(bodyOf(m, 'const afterIntro = () =>')).toContain(settled);
+    // the calm entry: start before the snap and afterIntro
+    const calm = blockOf(m, 'if (a11y.reducedMotion) {', m.indexOf('const afterIntro'));
+    expect(calm.indexOf(start)).toBeGreaterThan(-1);
+    expect(calm.indexOf(start)).toBeLessThan(calm.indexOf('afterIntro()'));
+    // the fly-in: start right before the swoop
+    const fly = m.indexOf('.flyInFromDistant(2500)');
+    expect(m.lastIndexOf(start, fly)).toBeGreaterThan(
+      m.lastIndexOf('const restoreIntroQuality', fly),
+    );
+  });
+});

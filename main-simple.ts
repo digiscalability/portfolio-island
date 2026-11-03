@@ -1534,6 +1534,9 @@ export class SimpleApp {
       // asked only when a social feature actually needs a name (ensureNamed).
       const afterIntro = () => {
         this.introSettled = true; // the welcome card (if any) opens below
+        // The intro is over (A8): D holds its toasts and staggers the HUD in
+        // on this. Exactly one settled per load, after exactly one start.
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'settled' } }));
         // The governor starts measuring only NOW. The fly-in is the single
         // heaviest, least representative view in the game (whole planet in
         // frustum, intro-lite quality), and with the governor's clocks on true
@@ -1589,6 +1592,7 @@ export class SimpleApp {
         // distant planet that never came in, and it never self-corrected
         // (update() lerps distance toward distanceTarget, not the whole pose).
         // snapToPlayer is the exact init flyInFromDistant ends on.
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene.getOrbitCamera().snapToPlayer();
         afterIntro();
       } else {
@@ -1707,6 +1711,7 @@ export class SimpleApp {
         // levers were restored before the visitor saw the swoop: the
         // intro-lite never engaged.
         requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500));
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
@@ -2519,16 +2524,16 @@ export class SimpleApp {
           (this.passport?.count() ?? 0) === 0
         ) {
           localStorage.setItem('ds_hint_map', '1');
-          this.ui.toast(
-            this.ui.isTouchDevice()
-              ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the ➤ compass guides you.'
-              : '🗺️ Lost? Tap the radar (or press M) for the island map — pick a spot and the ➤ compass guides you.',
-            { hint: true },
-          );
+          this.showLostHint();
         }
       } catch {
         /* no storage */
       }
+      // ...and the stall trigger beside it (A8): no stamp yet and under 10 u
+      // travelled in the last 30 s, at most twice a visit, never while the
+      // guide is active and never indoors. The once-ever clause above needs a
+      // minute with no prompt at all; an idle visitor heard nothing for 54-59 s.
+      this.checkLostStall(hintsHeld);
       // One-time "a villager nearby talks through Claude Haiku 4.5" discovery
       // hint, fired while APPROACHING (4x the E-prompt range, derived not
       // hand-written) — the product's differentiator otherwise only announces
@@ -3895,6 +3900,65 @@ export class SimpleApp {
     if (to.lengthSq() < 1e-6 || fwd.lengthSq() < 1e-6) return;
     const bearing = compassBearing(fwd.normalize(), to.normalize(), n);
     cam.setYaw(cam.getYaw() - bearing);
+  }
+
+  /** The 30 s travel window for the stall trigger: one sample per 2.5 s. */
+  private readonly lostTrail: THREE.Vector3[] = [];
+  private lostStallHints = 0;
+  private static readonly LOST_STALL_SAMPLES = 12; // 12 x 2.5 s = 30 s
+  private static readonly LOST_STALL_U = 10;
+  private static readonly LOST_STALL_MAX = 2;
+
+  /** The lost-visitor hint, one line for both triggers. */
+  private showLostHint(): void {
+    this.ui.toast(
+      this.ui.isTouchDevice()
+        ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the gold arrow guides you.'
+        : '🗺️ Lost? Click the radar or press M for the island map — pick a spot and the gold arrow guides you.',
+      { hint: true },
+    );
+  }
+
+  /**
+   * The stall trigger, sampled on the 2.5 s cadence: under 10 u travelled
+   * in the last 30 s in the open world, with no passport stamp. Fires at
+   * most twice a visit, never while the guide holds hints, never indoors,
+   * and the window starts over after it fires.
+   */
+  private checkLostStall(hintsHeld: boolean): void {
+    const trail = this.lostTrail;
+    const p = this.scene.getPlayer()?.getWorldPosition();
+    const inWorld =
+      !!p &&
+      !this.ui.isWelcomeVisible() &&
+      !this.ui.isLoadingVisible() &&
+      !this.tour &&
+      !this.scene.isInsideInterior();
+    if (!inWorld || this.lostStallHints >= SimpleApp.LOST_STALL_MAX) {
+      trail.length = 0;
+      return;
+    }
+    trail.push(p);
+    if (trail.length > SimpleApp.LOST_STALL_SAMPLES + 1) trail.shift();
+    if (trail.length <= SimpleApp.LOST_STALL_SAMPLES) return;
+    let travelled = 0;
+    for (let i = 1; i < trail.length; i++) travelled += trail[i].distanceTo(trail[i - 1]);
+    if (
+      travelled >= SimpleApp.LOST_STALL_U ||
+      hintsHeld ||
+      (this.passport?.count() ?? 0) > 0 ||
+      this.ui.panels.isOpen()
+    ) {
+      return;
+    }
+    this.lostStallHints++;
+    trail.length = 0;
+    try {
+      localStorage.setItem('ds_hint_map', '1'); // the same hint: the once-ever clause stands down
+    } catch {
+      /* no storage */
+    }
+    this.showLostHint();
   }
 
   /** Point the pill at a picked place: top of the chain until it is reached. */
@@ -5743,12 +5807,13 @@ export class SimpleApp {
       // key means the special fires normally from their next visit.
       if (!localStorage.getItem(key) && localStorage.getItem('ds_welcomed')) {
         localStorage.setItem(key, '1');
+        // Each label opens the sentence: capitalised.
         const label: Record<ProviderKey, string> = {
-          fisherman: 'the fisherman',
-          baker: 'the Baker',
-          canteen: 'the canteen',
-          bank: 'the bank',
-          carpenter: 'the Carpenter',
+          fisherman: 'The fisherman',
+          baker: 'The Baker',
+          canteen: 'The canteen',
+          bank: 'The bank',
+          carpenter: 'The Carpenter',
         };
         this.hintLater(
           `⭐ ${marketDay ? 'Market day! ' : ''}${label[this.featured.provider as ProviderKey]} is paying extra today.`,
