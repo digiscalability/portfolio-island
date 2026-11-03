@@ -78,6 +78,17 @@ declare global {
   }
 }
 
+/** A room hotspot: room-local x/z, trigger radius, and what E does there. */
+interface InteriorHotspot {
+  id?: string;
+  x: number;
+  z: number;
+  r: number;
+  label: string;
+  action: string;
+  text?: string;
+}
+
 /** The slice of three's WebGLProgram the interior warm drives. */
 interface WarmProgram {
   isReady(): boolean;
@@ -13808,12 +13819,15 @@ export class GameScene extends THREE.Scene {
       [1.95, 0xc9a227],
     ] as const)
       box(home, 0.3, 0.34, 1.35, bc, 3.58, by, -2.2);
-    cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -1.7, 0.95, 2.8); // floor lamp
+    // Floor lamp, in the corner beside the door. At (-1.7, 2.8) its pole (and
+    // so its collider) stood in the doorway, through the arriving avatar,
+    // with the shade filling the middle of the entry shot.
+    cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -3.3, 0.95, 3.3);
     const shade = new THREE.Mesh(
       new THREE.ConeGeometry(0.3, 0.35, 12, 1, true),
       matFor(0xf0d9a8, 0.7),
     );
-    shade.position.set(-1.7, 1.95, 2.8);
+    shade.position.set(-3.3, 1.95, 3.3);
     home.add(shade);
 
     // post — Contact: service counter, pigeonhole wall, parcels, brass scale.
@@ -14146,18 +14160,7 @@ export class GameScene extends THREE.Scene {
 
   /** Per-theme interaction hotspots (room-local x/z, trigger radius). The door
    *  "leave" spot is appended to every theme at lookup time. */
-  private static readonly INTERIOR_HOTSPOTS: Record<
-    string,
-    Array<{
-      id?: string;
-      x: number;
-      z: number;
-      r: number;
-      label: string;
-      action: string;
-      text?: string;
-    }>
-  > = {
+  private static readonly INTERIOR_HOTSPOTS: Record<string, InteriorHotspot[]> = {
     beach: [
       {
         x: -1.4,
@@ -14320,6 +14323,27 @@ export class GameScene extends THREE.Scene {
     label: '🚪 Press <strong>E</strong> to head outside',
     action: 'leave',
   };
+  /** Where a visit starts, room-local: 1.4 u in from the door spot and clear
+   *  of every theme's furniture, so the first prompt is never 'head
+   *  outside'. (The old (-1.8, 2.6) stood 0.7 u from the door spot, inside
+   *  its 1.0 u reach, in every room: the first E or USE walked straight back
+   *  out, and the Personal room put the avatar inside its floor lamp.) */
+  public static readonly INTERIOR_SPAWN = { x: -1.5, z: 1.9 };
+  /** The door arms (offers 'head outside') after this much walking, or
+   *  this long inside, whichever comes first. */
+  private static readonly INTERIOR_DOOR_ARM_WALK = 0.6;
+  private static readonly INTERIOR_DOOR_ARM_S = 1.5;
+  /** The curtains spot per theme, where the room's furniture keeps the
+   *  visitor from the shell's (1.8, 2.95). The home theme's sofa stands under
+   *  the window, so its spot comes forward to z 2.7, reachable in front of
+   *  the sofa, and over to the window's right half: MEASURED at x 1.8, the
+   *  sofa's own spot won every reachable cell, so the curtains never showed. */
+  private static readonly INTERIOR_CURTAINS_AT: Record<string, { x: number; z: number }> = {
+    home: { x: 2.4, z: 2.7 },
+  };
+  private interiorDoorArmed = true;
+  private interiorDoorArmWalked = 0;
+  private interiorDoorArmT = 0;
 
   /** World position of a named NPC (the "meet the AI townsfolk" guide), or null. */
   public getNpcPosition(name: string): THREE.Vector3 | null {
@@ -14378,6 +14402,57 @@ export class GameScene extends THREE.Scene {
    *  shows the prompt and executes the action on E. */
   public getInteriorHotspot(): { label: string; action: string; text?: string } | null {
     return this.interiorHotspot;
+  }
+
+  /**
+   * Every hotspot in a theme's room, in scan order: the theme's own, then the
+   * shell fixtures every room shares (lamp switch, curtains), then the door.
+   * One implementation serves all the rooms. Labels follow the fixtures'
+   * state, so the prompt never offers to do what you just did. (The room
+   * survey reads it too, with INTERIOR_SPAWN.)
+   */
+  public interiorHotspotsFor(theme: string): InteriorHotspot[] {
+    const curtains = GameScene.INTERIOR_CURTAINS_AT[theme] ?? { x: 1.8, z: 2.95 };
+    return [
+      ...(GameScene.INTERIOR_HOTSPOTS[theme] ?? []),
+      {
+        x: -2.75,
+        z: 3.0,
+        r: 1.0,
+        label: this.interiorLampOn
+          ? '💡 Press <strong>E</strong> to switch the lamp off'
+          : '💡 Press <strong>E</strong> to switch the lamp on',
+        action: 'room',
+        text: 'lamp',
+      },
+      {
+        x: curtains.x,
+        z: curtains.z,
+        r: 1.05,
+        label: this.interiorCurtainsShut
+          ? '🪟 Press <strong>E</strong> to open the curtains'
+          : '🪟 Press <strong>E</strong> to draw the curtains',
+        action: 'room',
+        text: 'curtains',
+      },
+      GameScene.INTERIOR_DOOR_HOTSPOT,
+    ];
+  }
+
+  /** The hotspot a visitor at room-local (px, pz) is prompted for: the
+   *  nearest in reach, skipping the door until it arms. */
+  private nearestInteriorHotspot(px: number, pz: number): InteriorHotspot | null {
+    let found: InteriorHotspot | null = null;
+    let bestD = Infinity;
+    for (const h of this.interiorHotspotsFor(this.interiorActiveTheme)) {
+      if (h === GameScene.INTERIOR_DOOR_HOTSPOT && !this.interiorDoorArmed) continue;
+      const d = Math.hypot(px - h.x, pz - h.z);
+      if (d < h.r && d < bestD) {
+        bestD = d;
+        found = h;
+      }
+    }
+    return found;
   }
 
   /** The contact-shadow blob material, shared by every themed set. Built on
@@ -14891,13 +14966,19 @@ export class GameScene extends THREE.Scene {
     this.aimInteriorOutlook();
     this.player.setPositionHold(this.player.getWorldPosition());
     const o = GameScene.INTERIOR_ORIGIN;
-    this.player.position.set(o.x - 1.8, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + 2.6);
+    const spawn = GameScene.INTERIOR_SPAWN;
+    this.player.position.set(o.x + spawn.x, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + spawn.z);
     this.interiorYaw = Math.PI; // facing into the room (model +z convention)
     this.interiorCamYaw = Math.PI;
     this.player.quaternion.setFromAxisAngle(GameScene._localUp, Math.PI);
     this.interiorMoveF = 0;
     this.interiorMoveS = 0;
     this.interiorHotspot = null;
+    // The door stays quiet until the visitor has taken a step or a moment:
+    // the press that opened it, or a reflex tap, cannot walk them back out.
+    this.interiorDoorArmed = false;
+    this.interiorDoorArmWalked = 0;
+    this.interiorDoorArmT = 0;
     // The Brother's Beach House IS the party: it's already going when the
     // door opens. The 🪩 spot still toggles it off for a quiet watch.
     if (houseId?.startsWith('islet_')) this.setPartyMode(true);
@@ -15251,12 +15332,14 @@ export class GameScene extends THREE.Scene {
         const beforeZ = p.z;
         if (okX) p.x = o.x + nx;
         if (okZ) p.z = o.z + nz;
+        const stepped = Math.hypot(p.x - beforeX, p.z - beforeZ);
         // Advance the stride by DISTANCE walked, not by wall-clock. A fixed
         // sin(time*9) keeps pumping at the same rate while you ease in, stop,
         // or grind against a wall — the same 4Hz-vibration bug already fixed
         // for the villagers outdoors. Tying phase to metres means the feet
         // stop when you stop and slow when a chair slows you.
-        this.interiorStride += Math.hypot(p.x - beforeX, p.z - beforeZ) * 3.6;
+        this.interiorStride += stepped * 3.6;
+        this.interiorDoorArmWalked += stepped;
         // Face travel, shortest-arc eased.
         const targetYaw = Math.atan2(dirX, dirZ);
         let dYaw = targetYaw - this.interiorYaw;
@@ -15396,44 +15479,19 @@ export class GameScene extends THREE.Scene {
       this.interiorZzz.position.y = 1.55 + Math.sin(this.interiorTime * 2.2) * 0.09;
     }
 
-    // Nearest hotspot (theme spots + the door), for the prompt + E action.
-    const spots = GameScene.INTERIOR_HOTSPOTS[this.interiorActiveTheme] ?? [];
-    let found: { id?: string; label: string; action: string; text?: string } | null = null;
-    let bestD = Infinity;
-    const px = p.x - o.x;
-    const pz = p.z - o.z;
-    // Shell fixtures are appended to EVERY theme, like the door — one
-    // implementation serving all six rooms. Labels reflect current state so
-    // the prompt never offers to do what you just did.
-    const shellSpots = [
-      {
-        x: -2.75,
-        z: 3.0,
-        r: 1.0,
-        label: this.interiorLampOn
-          ? '💡 Press <strong>E</strong> to switch the lamp off'
-          : '💡 Press <strong>E</strong> to switch the lamp on',
-        action: 'room',
-        text: 'lamp',
-      },
-      {
-        x: 1.8,
-        z: 2.95,
-        r: 1.05,
-        label: this.interiorCurtainsShut
-          ? '🪟 Press <strong>E</strong> to open the curtains'
-          : '🪟 Press <strong>E</strong> to draw the curtains',
-        action: 'room',
-        text: 'curtains',
-      },
-    ];
-    for (const h of [...spots, ...shellSpots, GameScene.INTERIOR_DOOR_HOTSPOT]) {
-      const d = Math.hypot(px - h.x, pz - h.z);
-      if (d < h.r && d < bestD) {
-        bestD = d;
-        found = h;
-      }
+    // The door arms after a step or a moment (enterInterior disarms it).
+    this.interiorDoorArmT += deltaTime;
+    if (
+      !this.interiorDoorArmed &&
+      (this.interiorDoorArmWalked >= GameScene.INTERIOR_DOOR_ARM_WALK ||
+        this.interiorDoorArmT >= GameScene.INTERIOR_DOOR_ARM_S)
+    ) {
+      this.interiorDoorArmed = true;
     }
+
+    // Nearest hotspot (theme spots + the door), for the prompt + E action.
+    let found: { id?: string; label: string; action: string; text?: string } | null =
+      this.nearestInteriorHotspot(p.x - o.x, p.z - o.z);
     // An occupied bed changes the interaction — you don't "test" someone's bed.
     if (found?.id === 'bed' && this.interiorOccupants.length > 0) {
       found = {
