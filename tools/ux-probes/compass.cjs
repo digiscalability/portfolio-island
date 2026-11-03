@@ -124,8 +124,27 @@ async function arrow(t) {
   }
 }
 
+// How the follower gets round when the target is behind (|rel| > 120°).
+// The audit's follower pressed A or D alone there. That arrived only because
+// main's camera spun with a strafe, the bug A5 removes: with A5 a bare A or D
+// sidesteps with the target pinned at ±180°. A keyboard visitor holds W with
+// the side key instead, a diagonal the camera swings behind, so the walk
+// curves round (wasd, the default), or turns the view with J/L, A4's keyboard
+// look (--turn jl). Main has no J/L.
+const FOLLOW_TURNS = { wasd: 'W + the side key', jl: 'J or L alone (keyboard look)' };
+
+/** The keys held for an arrow bearing `rel` (deg, + = right of screen-up). */
+function followKeys(rel, turn) {
+  const ab = Math.abs(rel);
+  if (ab < 25) return ['w'];
+  if (ab > 120 && turn === 'jl') return [rel > 0 ? 'l' : 'j'];
+  return ['w', rel > 0 ? 'd' : 'a'];
+}
+
 async function follow(t) {
   const RUN_MS = 25000;
+  const turn = t.args.turn === undefined ? 'wasd' : String(t.args.turn).toLowerCase();
+  if (!FOLLOW_TURNS[turn]) throw new lib.HarnessError(`--turn takes wasd or jl, got ${t.args.turn}`);
   for (const prof of t.profiles(['desktop'])) {
     const { page, boot, target } = await setup(t, prof);
     const held = new Set();
@@ -149,11 +168,14 @@ async function follow(t) {
         };
       });
     const samples = [];
+    const heldS = {}; // seconds each key set was held
     const t0 = Date.now();
     let next = 0;
     let reached = null;
     let lastLabel = null;
     let flips = 0;
+    let keysNow = null;
+    let keysSince = t0;
     const prompts = new Set();
     while (Date.now() - t0 < RUN_MS) {
       const st = await state();
@@ -165,27 +187,28 @@ async function follow(t) {
       if (st.explicit && base && lastLabel && base !== lastLabel) flips++;
       if (st.explicit && base) lastLabel = base;
       if (reached === null && st.d <= 5) reached = +((Date.now() - t0) / 1000).toFixed(1);
-      if (st.rel === null) await set(new Set());
-      else {
-        // --mirror steers by the arrow's mirror image: a self-test of the
-        // follower on a build whose arrow is known to be mirrored (main).
-        const rel = t.args.mirror ? -st.rel : st.rel;
-        const ab = Math.abs(rel);
-        const side = rel > 0 ? 'd' : 'a';
-        await set(new Set(ab < 25 ? ['w'] : ab > 120 ? [side] : ['w', side]));
-      }
-      const el = Date.now() - t0;
+      // --mirror steers by the arrow's mirror image: a self-test of the
+      // follower on a build whose arrow is known to be mirrored (main).
+      const keys = st.rel === null ? [] : followKeys(t.args.mirror ? -st.rel : st.rel, turn);
+      await set(new Set(keys));
+      const now = Date.now();
+      if (keysNow !== null) heldS[keysNow] = (heldS[keysNow] || 0) + (now - keysSince) / 1000;
+      keysNow = keys.join('+') || 'none';
+      keysSince = now;
+      const el = now - t0;
       if (el >= next) {
-        samples.push({ s: Math.round(el / 1000), d: st.d, label: st.label, explicit: st.explicit });
+        samples.push({ s: Math.round(el / 1000), d: st.d, rel: st.rel === null ? null : Math.round(st.rel), keys: keysNow, label: st.label, explicit: st.explicit });
         next += 1000;
       }
       await lib.sleep(150);
     }
+    if (keysNow !== null) heldS[keysNow] = (heldS[keysNow] || 0) + (Date.now() - keysSince) / 1000;
     await set(new Set());
     const end = await state();
     await t.shot(page, `follow-${prof}-end.png`);
     const startD = samples.length ? samples[0].d : null;
-    t.data[prof] = { boot, target, steering: t.args.mirror ? 'mirror image (self-test)' : 'arrow as drawn', startDistance: startD, distanceAt25s: end.d, minDistance: Math.min(...samples.map((x) => x.d), end.d), reachedWithin5mAtS: reached, labelFlips: flips, prompts: [...prompts], samples };
+    const heldSeconds = Object.fromEntries(Object.entries(heldS).map(([k, v]) => [k, lib.round(v, 1)]));
+    t.data[prof] = { boot, target, steering: t.args.mirror ? 'mirror image (self-test)' : 'arrow as drawn', turn, whenBehind: FOLLOW_TURNS[turn], startDistance: startD, distanceAt25s: end.d, minDistance: Math.min(...samples.map((x) => x.d), end.d), reachedWithin5mAtS: reached, labelFlips: flips, heldSeconds, prompts: [...prompts], samples };
     t.check(`${prof}: within 5 m of the Projects zone in <= 25 s`, reached !== null, reached === null ? `closest ${t.data[prof].minDistance} m` : `${reached} s`, '<= 25 s');
     t.check(`${prof}: label flips while the explicit target is active`, flips === 0, flips, 0);
   }
@@ -193,5 +216,5 @@ async function follow(t) {
 
 module.exports = {
   arrow: { item: 'A1', title: '24 off-axis yaws: arrow side vs target side, |error|', profiles: ['desktop'], run: arrow },
-  follow: { item: 'A1', title: 'keyboard follower steers by the arrow to the Projects zone', profiles: ['desktop'], run: follow },
+  follow: { item: 'A1', title: 'keyboard follower steers by the arrow to the Projects zone (--turn wasd|jl when it is behind)', profiles: ['desktop'], run: follow },
 };

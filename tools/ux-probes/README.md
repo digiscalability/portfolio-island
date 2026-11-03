@@ -100,7 +100,7 @@ the JSON), and a run counts only if that log shows the boot
 | Probe | Item | What it measures | Main baseline (this rig) |
 |---|---|---|---|
 | `arrow` | A1 | 24 off-axis bearings (the audit's set): arrow side vs target side, mean \|error\| | 0/24 same side; unwrapped mean error 148.8° (audit 148.1°) |
-| `follow` | A1 | keyboard follower steering by the arrow toward the Projects zone; distance at 25 s, label flips | walks away, 103 → 121 m; `--mirror` (self-test) arrives in 18.7 s |
+| `follow` | A1 | keyboard follower steering by the arrow toward the Projects zone: W ahead, W + the side key to a side and behind, or J/L behind with `--turn jl` (see the note below); distance at 25 s, label flips | walks away, 103 → 208 m; `--mirror` (self-test) arrives in 19.3 s; `--turn jl` stands at 103 m (main has no J/L) |
 | `clash` | A2 | Ctrl/Meta+C with the email selected; ↓ and W behind Projects; M, C, P in a panel; E at a bench behind a panel; Space on a panel button; ← on the volume slider; sendThenWalk | Ctrl+C → `customize`; ↓ walks 8.4 u; P takes a photo; E seats; slider walks 4.5 u |
 | `cardkeys` | A2 | C, P, M and E on a fresh card, then Explore; panel 0.9 s later and `ds_welcomed` | C replaces the card; `ds_welcomed=1`; the island map is open |
 | `sheet-lock` | A3 | a world click beside the open Portfolio menu, then its Projects row | the click locks the pointer; the row does nothing |
@@ -115,6 +115,17 @@ the JSON), and a run counts only if that log shows the boot
 | `contrast` | D3 | filled-button labels at `?hour=6/12/18/21` on 1440 and 390, touch captions over grass/sand/sky, the focus ring | Work with me 2.97:1, Explore 2.97:1, Send 3.17:1, USE 3.16:1 over grass |
 | `axe` | D3, D4, D8 | axe-core 4.10.3 on the welcome card, HUD, hire card, Projects and NPC chat | 0 color-contrast violations (gradients land in `incomplete`, which is why `contrast` samples pixels) |
 | `lock-census` | EL, AL, BL, DL | every literal source read in `test/*.test.ts`, owners, rules, vs the relocation table (static, no browser; `--ref <git ref>`) | reproduces the relocation table on `origin/main` |
+
+**Follower.** The follower holds W while the arrow is within 25° of
+screen-up, and W plus the side key out to 120°. Behind that it holds the
+same diagonal by default (`--turn wasd`): the camera swings behind the
+motion, so the walk curves round. `--turn jl` turns the view with J or L
+alone instead (A4's keyboard look). The audit's follower pressed A or D
+alone there, which arrived only because main's camera spun with a strafe,
+the bug A5 removes: on A's branch it sidesteps with the target pinned at
+±180° (closest 102.8 m in 25 s). On A's a2f882a the default arrives in
+20.1 s (two runs) and `--turn jl` in 19.8 and 20.4 s. `heldSeconds` in the
+JSON is the time spent on each key set.
 
 **Hitch note.** On main the warm's frame-to-frame program jump is the
 audit's 93, but it is split: `warmInterior`'s `compileAsync` adds 55
