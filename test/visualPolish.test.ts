@@ -857,16 +857,28 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // the same work for real, so the idle pass has nothing left to warm.
     expect(scene).toMatch(/this\.buildInterior\(\);\s*this\.interiorWarmed = true;/);
     // THE ENTRY GUARD ALONE IS NOT ENOUGH, and shipping it that way was a bug.
-    // compileAsync yields for 100-500ms; a player pressing E inside that
-    // window sets visible=true, then the resumed warm set it back to false and
-    // NOTHING re-arms visibility mid-visit (interiorGroup.visible = true
-    // appears exactly once, in enterInterior). They stood in a building with
-    // no walls, floor or furniture for the whole visit. So every visibility
-    // write re-checks the flag on the far side of every await.
+    // The warm yields between slices and while it polls; a player pressing E
+    // inside that window sets visible=true, then a resumed warm set it back
+    // to false and NOTHING re-arms visibility mid-visit (interiorGroup.visible
+    // = true appears exactly once, in enterInterior). They stood in a building
+    // with no walls, floor or furniture for the whole visit. So every
+    // visibility write re-checks the flag on the far side of every await.
     expect(scene).toMatch(
       /const warm = async \(visible: boolean\): Promise<void> => \{\s*if \(this\.insideInterior\) return;/,
     );
     expect(scene).toContain('if (!this.insideInterior) g.visible = wasVisible;');
+    // And no frame ever draws the room-lit variants while they compile (B2):
+    // each slice shows the room, compiles and hides it again in ONE task.
+    // MEASURED on main, awaiting compileAsync with the room shown let the next
+    // frame block 2,043 ms finishing them.
+    const pass = bodyOf(scene, 'private async compileInteriorPass(');
+    const slice = pass.slice(
+      pass.indexOf('g.visible = roomVisible;'),
+      pass.indexOf('if (!this.insideInterior) g.visible = wasVisible;'),
+    );
+    expect(slice).toContain('gl.compile(chunk, camera, proxy)');
+    expect(slice).not.toContain('await');
+    expect(bodyOf(scene, 'private async warmInteriorPasses(')).not.toContain('compileAsync');
   });
 
   test('the interior is built and compiled in idle time, not on the first E', () => {
@@ -886,5 +898,41 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(scene).toContain('g.visible = wasVisible');
     // (Off the boot window AND off the interaction: main-simple's idleDefer
     // trigger is pinned in A's mainLocks.)
+  });
+
+  test('the warm compiles what the frame will draw, off the render path (B2)', () => {
+    const scene = src('GameScene.ts');
+    const pass = bodyOf(scene, 'private async compileInteriorPass(');
+    // Against the frame's OWN render target: three keys programs on it, and
+    // compiling against the canvas while desktop frames draw into the
+    // composer's buffer left 38 programs for a frame to create (measured).
+    expect(scene).toContain(
+      'this.compileInteriorPass(gl, g, items, visible, this.lastSceneTarget)',
+    );
+    expect(pass).toContain('gl.setRenderTarget(target)');
+    // Through a proxy scene (its own render state in three), so the live
+    // frame's lights version never moves and no frame re-keys.
+    expect(pass).toContain('const proxy = new THREE.Scene();');
+    // Polled ready, then first-used, in idle time: the first getUniforms() is
+    // a synchronous shader check that took 121 ms of the first room frame.
+    const settle = bodyOf(scene, 'private async settleWarmPrograms(');
+    expect(settle).toContain('p.isReady()');
+    expect(settle).toContain('performance.now() + 10000');
+    expect(settle).toContain('p.getUniforms();');
+    // Without KHR_parallel_shader_compile the idle warm stands down…
+    expect(bodyOf(scene, 'public async warmInterior()')).toContain(
+      "!gl.extensions.has('KHR_parallel_shader_compile')",
+    );
+    // …and the measured fallback runs instead: still for 1 s within 12 u of
+    // a door (the no-extension veil held black 1.60 s without it).
+    expect(scene).toContain('private static readonly NEAR_DOOR_RANGE = 12;');
+    expect(scene).toContain('private static readonly NEAR_DOOR_STILL_S = 1.0;');
+    expect(bodyOf(scene, 'public update(deltaTime: number)')).toContain(
+      'this.updateNearDoorWarm(deltaTime);',
+    );
+    // No new lights, ever: the room's own four are the whole problem.
+    for (const body of [pass, settle, bodyOf(scene, 'private async warmInteriorNearDoor(')]) {
+      expect(body).not.toMatch(/new THREE\.\w*Light\(/);
+    }
   });
 });
