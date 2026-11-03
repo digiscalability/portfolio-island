@@ -3,6 +3,8 @@
 // meta, humans are bounced straight to /?zone=<zone> (carried params like
 // ?hour= and any utm_* tags ride along). ESM (the repo is "type": "module"),
 // zero deps.
+import { createHash } from 'node:crypto';
+
 const SITE = 'https://island.digiscalability.com';
 
 // og-cover-v3.jpg is rendered from the current build. Keep this alt text in
@@ -81,9 +83,18 @@ export default function handler(req, res) {
   }
   const destUrl = `/?${dest.toString()}`;
   const canonical = `${SITE}/z/${zone}`;
+  // The page's only script is this redirect, so its own policy allows exactly
+  // that script by hash and nothing else. The meta refresh still redirects if
+  // a browser blocks the script. vercel.json leaves /z/ out of the site policy.
+  const redirect = `location.replace(${JSON.stringify(destUrl)});`;
+  const redirectHash = createHash('sha256').update(redirect).digest('base64');
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
+  res.setHeader(
+    'Content-Security-Policy',
+    `default-src 'none'; script-src 'sha256-${redirectHash}'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+  );
   res.status(200).send(`<!doctype html>
 <html lang="en-AU"><head>
 <meta charset="utf-8" />
@@ -109,7 +120,7 @@ export default function handler(req, res) {
 <meta name="twitter:image:alt" content="${esc(OG_IMAGE_ALT)}" />
 <meta http-equiv="refresh" content="0;url=${esc(destUrl)}" />
 </head><body>
-<script>location.replace(${JSON.stringify(destUrl)});</script>
+<script>${redirect}</script>
 <p><a href="${esc(destUrl)}">Enter the island →</a></p>
 </body></html>`);
 }

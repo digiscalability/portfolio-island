@@ -33,7 +33,13 @@ import * as admin from 'firebase-admin';
 import * as nodemailer from 'nodemailer';
 import Anthropic from '@anthropic-ai/sdk';
 
-import { ANALYST_MODEL, FALLBACK_REASONS, MONTHLY_TOKEN_CAP, IP_MAX_PER_WINDOW } from './constants';
+import {
+  ANALYST_MODEL,
+  FALLBACK_REASONS,
+  LEADERBOARD_ERA,
+  MONTHLY_TOKEN_CAP,
+  IP_MAX_PER_WINDOW,
+} from './constants';
 import { redactCounts } from './moderation';
 import { closedProposalTitles, proposalKey, staleAnalystIssues, type IssueLite } from './pure';
 
@@ -76,9 +82,9 @@ const STALE_NOTE =
   'fresh proposals as the island changes; reopen this if it is still useful.';
 const REDACTED_NOTE = '_Traffic figures stay in the private nightly report; issues show them as [n]._';
 
-// The race circuits that actually exist (RaceSystem's CircuitKind). The
-// leaderboard node's $circuit key is client-writable, so anything outside this
-// whitelist is attacker-controlled text and never enters metrics or prompts.
+// The race circuits that actually exist (RaceSystem's CircuitKind). The rules
+// now accept only these, but the $circuit key is still client-written, so the
+// whitelist stays: nothing else ever enters metrics or prompts.
 const KNOWN_CIRCUITS = new Set(['land', 'water']);
 
 // Public board lines (indexable, pre-authored + safe). The client holds an
@@ -139,7 +145,7 @@ async function gather(db: admin.database.Database, now: number, month: string, d
   const [leads, gb, lb, profiles, world, aiTok, aiCalls, aiDay, aiRate, aiFallbacks] = await Promise.all([
     db.ref('leads/island').get(),
     db.ref('guestbook/island').get(),
-    db.ref('leaderboard/island').get(),
+    db.ref(`leaderboard/island/${LEADERBOARD_ERA}`).get(),
     db.ref('profiles').get(),
     db.ref('world/island').get(),
     db.ref(`aiUsage/${month}/tokens`).get(),
