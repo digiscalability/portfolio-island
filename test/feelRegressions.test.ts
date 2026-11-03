@@ -187,19 +187,9 @@ describe('shadowMap.autoUpdate has exactly one owner', () => {
   // means render()'s half-rate re-arm never fires, so nothing ever heals it) —
   // and an ENGAGE while indoors was overwritten by the stale `true`, silently
   // discarding the rung's saving. The renderer now derives the field from
-  // freeze + rung in ONE place.
-  test('GameScene requests the freeze; it never writes the raw field', () => {
-    // Comments stripped: the prose explaining WHY GameScene must not touch the
-    // field necessarily names the field.
-    const g = src('GameScene.ts')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-    expect(g).not.toContain('shadowMap.autoUpdate');
-    expect(g).not.toContain('shadowAutoUpdateWas');
-    expect(g).toContain('setShadowFreeze?.(true)');
-    expect(g).toContain('setShadowFreeze?.(false)');
-  });
-
+  // freeze + rung in ONE place. GameScene's half of this lock (it requests the
+  // freeze and never writes the raw field) lives with GameScene's owner in
+  // test/sceneLocks.test.ts.
   test('the renderer writes the raw field in exactly one place: the policy', () => {
     const s = src('SimpleRenderer.ts');
     const writes = s.match(/shadowMap\.autoUpdate =/g) ?? [];
@@ -375,23 +365,9 @@ describe('no quality rung may switch RENDERING PATH', () => {
     expect(ladder()).toContain('this.bloomSuspendedByGovernor = this.bloomPass.enabled');
   });
 
-  test('the intro fly-in does not switch it either', () => {
-    // The governor was the RARE path; intro-lite ran on every non-reduced-motion
-    // load. Measured back-to-back at fixed camera poses, the old lever stepped
-    // +8.0% at the 1500ms restore point (+26.9% settled, +16.6% at the distant
-    // start); the bloom pass measures 0.039% worst-case across the same poses.
-    const m = src('main-simple.ts');
-    expect(m).toContain('this.renderer.setBloomEnabled(false)');
-    // Bloom is turned back on at arrival via fadeBloomIn (a strength ramp, not a
-    // path switch) — the intro must still re-enable bloom, just without the pop.
-    expect(m).toContain('this.renderer.fadeBloomIn(');
-    // Exactly one setPostProcessingEnabled call survives in the app, and it
-    // turns the composer ON at boot. Nothing may ever turn it off again —
-    // that is what makes warmUp compile the bloom/output programs behind the
-    // loader instead of mid-swoop.
-    const calls = m.match(/this\.renderer\.setPostProcessingEnabled\((true|false)\)/g) ?? [];
-    expect(calls).toEqual(['this.renderer.setPostProcessingEnabled(true)']);
-  });
+  // The intro fly-in's own lock (it never switches the rendering path either)
+  // pins main-simple.ts, so it lives with that file's owner in
+  // test/mainLocks.test.ts.
 
   test('the governor is DISARMED until the intro resolves', () => {
     // The render loop starts immediately before the 2.5s whole-planet fly-in,
@@ -400,6 +376,8 @@ describe('no quality rung may switch RENDERING PATH', () => {
     // seconds the game has. The gate must sit BEFORE the decision block, arm
     // from afterIntro (both intro branches funnel through it), self-arm after
     // 10s as a fallback, and DISCARD everything measured while disarmed.
+    // (That main-simple arms it where both intro branches converge is pinned
+    // in test/mainLocks.test.ts.)
     const s = src('SimpleRenderer.ts');
     const gov = s.slice(
       s.indexOf('private updateAdaptiveResolution'),
@@ -420,11 +398,6 @@ describe('no quality rung may switch RENDERING PATH', () => {
     }
     expect(arm).toContain('if (this.governorArmed) return;'); // idempotent
     expect(s).toContain('GOVERNOR_ARM_FALLBACK_S = 10');
-    // ...and main-simple actually arms it where both intro branches converge.
-    const m = src('main-simple.ts')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-    expect(m).toContain('this.renderer.armGovernor()');
   });
 
   test('Ctrl+B toggles the bloom PASS and tells the truth about it', () => {
@@ -433,15 +406,11 @@ describe('no quality rung may switch RENDERING PATH', () => {
     // step) — and printed "Bloom enabled/disabled" from the composer flag.
     // With the governor holding rung 1 that message lied: composer back on
     // printed "Bloom enabled" while zero bloom rendered, and the brightness
-    // jump got attributed to bloom.
-    const m = src('main-simple.ts')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-    expect(m).toContain('this.renderer.toggleBloom()');
-    expect(m).not.toContain('togglePostProcessing');
+    // jump got attributed to bloom. (The main-simple half, Ctrl+B calling
+    // toggleBloom, is pinned in test/mainLocks.test.ts.)
     // The composer-toggle API is GONE, not merely unused — nothing may switch
     // rendering path after boot. (setPostProcessingEnabled(true) at boot is
-    // pinned by the intro test above.)
+    // pinned by the intro lock in test/mainLocks.test.ts.)
     const s = src('SimpleRenderer.ts')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
@@ -461,49 +430,18 @@ describe('no quality rung may switch RENDERING PATH', () => {
   });
 });
 
-describe('the intro fly-in owns the camera alone (no follow-update fighting it)', () => {
-  // The fly-in runs on its OWN requestAnimationFrame loop and writes
-  // camera.position directly, but the main render loop still calls
-  // OrbitCamera.update() every frame during the intro (cameraSuspended is false
-  // then). Two writers on two rAF loops drag each fly-in pose toward the follow
-  // pose by a variable per-frame amount — the frame-to-frame pose noise the user
-  // reported as the reveal "juddering / feeling doubled" on desktop, every load.
-  // update() must stand down while the fly-in owns the camera.
-  test('update() no-ops while flyingIn, and flyInFromDistant sets+clears the flag', () => {
-    const s = src('OrbitCamera.ts');
-    // The guard sits in update() so the follow-camera cannot fight the swoop.
-    expect(s).toContain('if (this.flyingIn) return;');
-    // The flag is raised for the swoop and lowered when it resolves — a swoop
-    // that never lowered it would kill the follow camera for the whole session.
-    expect(s).toContain('this.flyingIn = true;');
-    expect(s).toContain('this.flyingIn = false;');
-    // The guard must be INSIDE update(): between its signature and the body that
-    // writes the camera. (A guard anywhere else would not stop the fight.)
-    const u = s.indexOf('public update(');
-    expect(u).toBeGreaterThan(-1);
-    const guardAt = s.indexOf('if (this.flyingIn) return;', u);
-    const bodyAt = s.indexOf('this.yawVelocity', u);
-    expect(guardAt).toBeGreaterThan(u);
-    expect(guardAt).toBeLessThan(bodyAt);
-  });
-});
+// The intro fly-in's camera lock (OrbitCamera.update stands down while
+// flyingIn) and the daily sell-cap lock (dailySold keys off local date parts)
+// pin OrbitCamera.ts and main-simple.ts; they live in test/mainLocks.test.ts.
 
 describe('the intro-lite swoop sheds the dominant scene cost, then restores it', () => {
   // The whole-planet fly-in is the heaviest frame in the game (nothing culls);
   // the judder that survives the flyingIn camera fix is raw scene-render cost.
   // Two levers shed it for the heavy first ~1.5s and restore under motion.
   // Losing the SHED strands the judder; losing the RESTORE strands a permanent
-  // low-res / shadowless world — both are regressions.
-  test('main-simple lowers resolution + freezes shadows for the swoop and restores both', () => {
-    const s = src('main-simple.ts');
-    expect(s).toContain('this.renderer.setIntroResolution(0.7)');
-    expect(s).toContain('this.renderer.setShadowFreeze(true)');
-    expect(s).toContain('this.renderer.setIntroResolution(null)');
-    expect(s).toContain('this.renderer.setShadowFreeze(false)');
-    // Restore is scheduled mid-swoop (under motion) AND repeated on arrival.
-    expect(s).toContain('window.setTimeout(restoreIntroQuality, 1500)');
-  });
-
+  // low-res / shadowless world — both are regressions. The main-simple half
+  // (shed and restore are both scheduled) is pinned in test/mainLocks.test.ts,
+  // and the loader's no-double-planet lock in test/uiLocks.test.ts.
   test('setIntroResolution changes pixel density only — never the render path', () => {
     // Switching setPostProcessingEnabled would move tone mapping and shift
     // luminance 8-27% (a brightness step); the intro lever must not do that.
@@ -512,31 +450,5 @@ describe('the intro-lite swoop sheds the dominant scene cost, then restores it',
     const body = fn.slice(i, i + 700);
     expect(body).toContain('setPixelRatio');
     expect(body).not.toContain('setPostProcessingEnabled');
-  });
-
-  test('the loader blanks its planet graphic before fading (no double planet)', () => {
-    const s = src('SimpleUI.ts');
-    expect(s).toContain("querySelector('#ld-planet')?.remove()");
-    expect(s).toContain("querySelector('#ld-orbit')?.remove()");
-  });
-});
-
-describe('the daily sell cap resets at the PLAYER local midnight, not UTC', () => {
-  // dailySold is documented "local-date keyed" but used new Date().toISOString()
-  // (always UTC), so the cap reset at ~10-11am in Melbourne — an evening + next-
-  // morning session read as the same day. It must key off LOCAL date parts.
-  test('dailySold builds its day key from local Date parts, not toISOString', () => {
-    const s = src('main-simple.ts');
-    const i = s.indexOf('private dailySold(');
-    expect(i).toBeGreaterThan(-1);
-    // Strip comments — the method's OWN comment names the UTC trap it avoids.
-    const body = s
-      .slice(i, i + 700)
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-    expect(body).toContain('d.getFullYear()');
-    expect(body).toContain('d.getDate()');
-    // The UTC trap must not come back inside this method's CODE.
-    expect(body).not.toContain('toISOString');
   });
 });
