@@ -24,6 +24,18 @@ export function consumePinchZoomFactor(): number {
  */
 export type LookMode = 'drag' | 'lock';
 
+/** One frame of look input, already in radians (sensitivity and invert applied). */
+export interface CameraInput {
+  /** > 0 turns the view right. */
+  deltaX: number;
+  /** > 0 moves the camera as a downward drag does (ds_look_invert flips it). */
+  deltaY: number;
+  /** The device that produced it: the camera eases a finger a little slower. */
+  source: 'mouse' | 'touch';
+  /** A touch fling released this frame, rad/s, > 0 turning right (0 = none). */
+  fling: number;
+}
+
 /** One press of a mouse or pen button on the world, from pointerdown to up. */
 interface DragState {
   pointerId: number;
@@ -82,10 +94,21 @@ export class SimpleInputManager {
   // never qualify — only touches whose target is the canvas.
   private pinchTouchId: number | null = null;
   private pinchLastDist = 0;
-  // Touch feeds the same raw-pixel pipeline as the mouse; a small boost
-  // compensates for a phone swipe covering far fewer CSS pixels than a
-  // desktop mouse motion.
-  private static readonly TOUCH_SENSITIVITY = 1.3;
+
+  // ---- Look sensitivity: radians per CSS pixel ----------------------------
+  // Mouse 90° ≈ 450 px; touch 90° ≈ 260 px (a swipe covers far fewer CSS
+  // pixels than a desk-wide mouse sweep). Both scale by ds_look_sens
+  // (0.5-2.0, the settings sheet's slider); ds_look_invert = '1' flips pitch.
+  public static readonly MOUSE_K = 0.0035;
+  public static readonly TOUCH_K = 0.006;
+  private lookSens = 1;
+  private lookInvert = false;
+  // Touch fling: the camera finger's recent positions; at finger-up, a swipe
+  // averaging over FLING_MIN_PX_S across its last FLING_WINDOW_MS flings.
+  private touchTrail: Array<{ t: number; x: number }> = [];
+  private pendingFling = 0; // rad/s, + = turning right
+  private static readonly FLING_WINDOW_MS = 80;
+  private static readonly FLING_MIN_PX_S = 500;
 
   // ---- Press-and-drag look (the desktop default) -------------------------
   // A press on the world captures the pointer and drags look while a button
@@ -244,6 +267,7 @@ export class SimpleInputManager {
             // (not clientX - 0, which snapped the camera on gesture start)
             this.touchLast.x = t.clientX;
             this.touchLast.y = t.clientY;
+            this.touchTrail = [{ t: performance.now(), x: t.clientX }];
           } else if (this.pinchTouchId === null && t.identifier !== this.cameraTouchId) {
             // Second canvas finger: the look gesture becomes a pinch-zoom.
             this.pinchTouchId = t.identifier;
@@ -252,6 +276,7 @@ export class SimpleInputManager {
             // Suspend look: drop any delta accumulated but not yet consumed
             this.touchDelta.x = 0;
             this.touchDelta.y = 0;
+            this.touchTrail = []; // a pinch never flings
           }
         }
       },
@@ -288,6 +313,15 @@ export class SimpleInputManager {
             this.touchDelta.y += t.clientY - this.touchLast.y;
             this.touchLast.x = t.clientX;
             this.touchLast.y = t.clientY;
+            const now = performance.now();
+            this.touchTrail.push({ t: now, x: t.clientX });
+            // keep only what the fling window can still use
+            while (
+              this.touchTrail.length > 2 &&
+              now - this.touchTrail[0].t > 2 * SimpleInputManager.FLING_WINDOW_MS
+            ) {
+              this.touchTrail.shift();
+            }
             break;
           }
         }
@@ -321,8 +355,11 @@ export class SimpleInputManager {
               this.touchLast.x = b.clientX;
               this.touchLast.y = b.clientY;
             }
+            this.touchTrail = [];
           } else {
             this.cameraTouchId = null;
+            if (e.type === 'touchend') this.releaseFling();
+            this.touchTrail = [];
           }
         }
       }
@@ -337,6 +374,29 @@ export class SimpleInputManager {
       if (list[i].identifier === id) return list[i];
     }
     return null;
+  }
+
+  /**
+   * The camera finger lifted: if its last 80 ms averaged over 500 px/s
+   * sideways, hand the camera a fling at ω = v·k. The average runs over the
+   * moves inside the window (the finger may rest a frame before it lifts);
+   * a finger that stopped moving earlier than that never flings.
+   */
+  private releaseFling(): void {
+    const trail = this.touchTrail;
+    if (trail.length < 2) return;
+    const now = performance.now();
+    const last = trail[trail.length - 1];
+    if (now - last.t > SimpleInputManager.FLING_WINDOW_MS) return;
+    let first = trail.length - 1;
+    while (first > 0 && last.t - trail[first - 1].t <= SimpleInputManager.FLING_WINDOW_MS) {
+      first--;
+    }
+    if (first === trail.length - 1) first = trail.length - 2; // one move: from the sample before it
+    const dtMs = Math.max(last.t - trail[first].t, 4);
+    const v = ((last.x - trail[first].x) / dtMs) * 1000; // px/s, + = rightward
+    if (Math.abs(v) <= SimpleInputManager.FLING_MIN_PX_S) return;
+    this.pendingFling = v * SimpleInputManager.TOUCH_K * this.lookSens;
   }
 
   /**
@@ -492,11 +552,17 @@ export class SimpleInputManager {
    */
   private readLookSettings(): void {
     let lock = false;
+    let sens = Number.NaN;
+    let invert = false;
     try {
       lock = localStorage.getItem('ds_mouse_lock') === '1';
+      sens = Number.parseFloat(localStorage.getItem('ds_look_sens') ?? '');
+      invert = localStorage.getItem('ds_look_invert') === '1';
     } catch {
-      /* storage blocked: the default, press and drag */
+      /* storage blocked: the defaults (press and drag, 1×, not inverted) */
     }
+    this.lookSens = Number.isFinite(sens) ? Math.min(2, Math.max(0.5, sens)) : 1;
+    this.lookInvert = invert;
     this.lockOptIn = lock;
     if (!lock) this.releasePointerLock();
     document.documentElement.setAttribute('data-look-mode', this.getLookMode());
@@ -641,26 +707,34 @@ export class SimpleInputManager {
   }
 
   /**
-   * Get camera input (mouse drag or lock, or touch delta)
+   * Consume this frame's look: the mouse (drag, or movement under the
+   * opt-in lock) plus the camera finger, in radians, with the sensitivity
+   * and invert settings applied, and any fling released since last time.
    */
-  public getCameraInput(): { deltaX: number; deltaY: number } {
+  public getCameraInput(): CameraInput {
+    const kSens = this.lookSens;
+    const pitchSign = this.lookInvert ? -1 : 1;
+    let deltaX = 0;
+    let deltaY = 0;
+    let source: CameraInput['source'] = 'mouse';
     if (this.mouseDelta.x !== 0 || this.mouseDelta.y !== 0) {
-      const deltaX = this.mouseDelta.x;
-      const deltaY = this.mouseDelta.y;
+      deltaX += this.mouseDelta.x * SimpleInputManager.MOUSE_K * kSens;
+      deltaY += this.mouseDelta.y * SimpleInputManager.MOUSE_K * kSens * pitchSign;
       this.mouseDelta.x = 0;
       this.mouseDelta.y = 0;
-      // Return raw mouse delta - OrbitCamera applies its own sensitivity multiplier
-      return { deltaX, deltaY };
-    } else if (this.touchDelta.x !== 0 || this.touchDelta.y !== 0) {
+    }
+    if (this.touchDelta.x !== 0 || this.touchDelta.y !== 0) {
       // Consume-and-zero, same contract as the mouse path above
-      const deltaX = this.touchDelta.x * SimpleInputManager.TOUCH_SENSITIVITY;
-      const deltaY = this.touchDelta.y * SimpleInputManager.TOUCH_SENSITIVITY;
+      deltaX += this.touchDelta.x * SimpleInputManager.TOUCH_K * kSens;
+      deltaY += this.touchDelta.y * SimpleInputManager.TOUCH_K * kSens * pitchSign;
       this.touchDelta.x = 0;
       this.touchDelta.y = 0;
-      return { deltaX, deltaY };
+      source = 'touch';
     }
-
-    return { deltaX: 0, deltaY: 0 };
+    const fling = this.pendingFling;
+    this.pendingFling = 0;
+    if (fling !== 0) source = 'touch';
+    return { deltaX, deltaY, source, fling };
   }
 
   /**
@@ -692,6 +766,8 @@ export class SimpleInputManager {
     this.touchDelta = { x: 0, y: 0 };
     this.pinchTouchId = null;
     this.pinchLastDist = 0;
+    this.touchTrail = [];
+    this.pendingFling = 0;
     pinchState.factor = 1;
   }
 

@@ -2500,8 +2500,7 @@ class SimpleApp {
         // the camera two-shot completes the in-person framing.
         this.scene.setPlayerMovement(0, 0);
         this.ui.hideInteractionPrompt();
-        const cameraInput = this.inputManager.getCameraInput();
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        this.applyLook(deltaTime);
 
         if (this.ui.isDialogueActive()) {
           if (this.inputManager.consumeKeyPress('e')) {
@@ -2542,8 +2541,7 @@ class SimpleApp {
         // Seated on a bench: movement suppressed, E stands back up
         this.scene.setPlayerMovement(0, 0);
         this.ui.showInteractionPrompt('🪑 Press <strong>E</strong> to stand up');
-        const cameraInput = this.inputManager.getCameraInput();
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        this.applyLook(deltaTime);
         if (this.inputManager.consumeKeyPress('e')) {
           this.scene.standUpFromBench();
           this.ui.hideInteractionPrompt();
@@ -2556,8 +2554,7 @@ class SimpleApp {
         const vStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
         this.scene.setVehicleMove(vFwd, vStrafe);
         this.currentThrottle = Math.max(Math.abs(vFwd), Math.abs(vStrafe) * 0.5);
-        const cameraInput = this.inputManager.getCameraInput();
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        this.applyLook(deltaTime);
         this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
         if (this.inputManager.consumeKeyPress('e')) {
           this.scene.disembarkVehicle();
@@ -2568,7 +2565,6 @@ class SimpleApp {
       } else {
         // Get input
         const moveInput = this.inputManager.getMovementInput();
-        const cameraInput = this.inputManager.getCameraInput();
         const jumpInput = this.inputManager.getJumpInput();
 
         // Apply player input (keyboard merged with the touch joystick)
@@ -2716,8 +2712,8 @@ class SimpleApp {
           }
         }
 
-        // Apply camera input (mouse/touch)
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        // Apply camera input (drag, swipe, keyboard look)
+        this.applyLook(deltaTime);
 
         // Check for nearby interactable and handle interaction.
         // Interpolated values are HTML-escaped: the prompt renders via
@@ -3356,10 +3352,26 @@ class SimpleApp {
       this.currentThrottle = 0;
     }
     if (this.scene.isInsideInterior()) this.scene.setInteriorMove(0, 0);
-    this.scene.setCameraInput(0, 0);
     this.inputManager.clearLatched();
     this.inputManager.getCameraInput();
     consumePinchZoomFactor();
+  }
+
+  /**
+   * This frame's look, wherever the camera follows the visitor (on foot,
+   * driving, seated, in a conversation): the drag or swipe in radians from
+   * SimpleInputManager, with any fling it released; J/L to turn and I/K to
+   * tilt; R to recentre behind the player. Typing never gets here: a focused
+   * field keeps its keys (keyGuards.ts), and blocked frames drain instead.
+   */
+  private applyLook(deltaTime: number): void {
+    const cam = this.scene.getOrbitCamera();
+    const look = this.inputManager.getCameraInput();
+    cam.setInput(look.deltaX, look.deltaY, look.source);
+    if (look.fling !== 0) cam.fling(look.fling);
+    const held = (k: string): number => (this.inputManager.isKeyPressed(k) ? 1 : 0);
+    cam.keyLook(held('l') - held('j'), held('i') - held('k'), deltaTime);
+    if (this.inputManager.consumeKeyPress('r')) cam.recentre();
   }
 
   /**

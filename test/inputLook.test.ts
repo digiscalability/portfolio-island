@@ -230,8 +230,8 @@ describe('press and drag to look (A3)', () => {
     pointer(c, 'pointermove', { clientX: 400, clientY: 302 });
     const look = im.getCameraInput();
     // the first 10 px are not lost to the click threshold
-    expect(look.deltaX).toBe(300);
-    expect(look.deltaY).toBe(2);
+    expect(look.deltaX).toBeCloseTo(300 * SimpleInputManager.MOUSE_K, 12);
+    expect(look.deltaY).toBeCloseTo(2 * SimpleInputManager.MOUSE_K, 12);
     pointer(c, 'pointerup', { clientX: 400, clientY: 302 });
     expect(c.style.cursor).toBe('grab');
     expect(c.released).toEqual([1]);
@@ -240,7 +240,7 @@ describe('press and drag to look (A3)', () => {
   test('the right button drags too', () => {
     const c = worldCanvas();
     dragAcross(c, [120, 250], { button: 2 });
-    expect(im.getCameraInput().deltaX).toBe(150);
+    expect(im.getCameraInput().deltaX).toBeCloseTo(150 * SimpleInputManager.MOUSE_K, 12);
   });
 
   test('a press under 6 px and 300 ms stays a click: no look at all', () => {
@@ -259,7 +259,7 @@ describe('press and drag to look (A3)', () => {
     pointer(c, 'pointerdown', { clientX: 100, clientY: 300 });
     now.mockReturnValue(1350);
     pointer(c, 'pointermove', { clientX: 103, clientY: 300 });
-    expect(im.getCameraInput().deltaX).toBe(3);
+    expect(im.getCameraInput().deltaX).toBeCloseTo(3 * SimpleInputManager.MOUSE_K, 12);
   });
 
   test('moving with no button pressed never looks', () => {
@@ -378,9 +378,177 @@ describe('the pointer lock is opt-in (A3)', () => {
       expect(pill.style.display).toBe('none');
       // while locked, plain movement looks
       document.dispatchEvent(new MouseEvent('mousemove', { movementX: 40, movementY: -10 }));
-      expect(im.getCameraInput()).toMatchObject({ deltaX: 40, deltaY: -10 });
+      const locked = im.getCameraInput();
+      expect(locked.deltaX).toBeCloseTo(40 * SimpleInputManager.MOUSE_K, 12);
+      expect(locked.deltaY).toBeCloseTo(-10 * SimpleInputManager.MOUSE_K, 12);
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---- A4: look in radians, the settings, and the touch fling --------------
+
+const setting = (key: string, value: string | null) => {
+  if (value === null) localStorage.removeItem(key);
+  else localStorage.setItem(key, value);
+  window.dispatchEvent(new CustomEvent('ds:settings', { detail: { key } }));
+};
+/** A one-finger swipe on the canvas: `xs` positions at the given times (ms). */
+const swipe = (
+  c: HTMLCanvasElement,
+  steps: Array<[number, number]>,
+  endAt: number,
+  now: { mockReturnValue: (v: number) => unknown },
+) => {
+  const at = (x: number) => new Touch({ identifier: 7, target: c, clientX: x, clientY: 400 });
+  const [t0, x0] = steps[0];
+  now.mockReturnValue(t0);
+  document.dispatchEvent(
+    new TouchEvent('touchstart', { changedTouches: [at(x0)], touches: [at(x0)] }),
+  );
+  for (const [t, x] of steps.slice(1)) {
+    now.mockReturnValue(t);
+    document.dispatchEvent(
+      new TouchEvent('touchmove', { changedTouches: [at(x)], touches: [at(x)] }),
+    );
+  }
+  now.mockReturnValue(endAt);
+  const last = steps[steps.length - 1][1];
+  document.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at(last)], touches: [] }));
+};
+/** 150 px rightward over n frames at 60 Hz, lifting one frame after the last move. */
+const frames150 = (n: number): { steps: Array<[number, number]>; endAt: number } => {
+  const steps: Array<[number, number]> = [[1000, 100]];
+  for (let i = 1; i <= n; i++) steps.push([1000 + (i - 1) * (1000 / 60) + 1, 100 + (150 * i) / n]);
+  return { steps, endAt: 1000 + n * (1000 / 60) };
+};
+
+describe('look deltas are radians (A4)', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test('mouse 0.0035 rad/px (90° ≈ 450 px), touch 0.006 rad/px (90° ≈ 260 px)', () => {
+    expect(SimpleInputManager.MOUSE_K * 450).toBeCloseTo(Math.PI / 2, 2);
+    expect(SimpleInputManager.TOUCH_K * 260).toBeCloseTo(Math.PI / 2, 1);
+    const c = worldCanvas();
+    dragAcross(c, [550]); // 450 px
+    const mouse = im.getCameraInput();
+    expect(mouse.deltaX).toBeCloseTo(450 * 0.0035, 12);
+    expect(mouse.source).toBe('mouse');
+    const now = vi.spyOn(performance, 'now');
+    swipe(
+      c,
+      [
+        [0, 300],
+        [400, 40],
+      ],
+      2000,
+      now,
+    ); // 260 px, slowly: no fling
+    const touch = im.getCameraInput();
+    expect(touch.deltaX).toBeCloseTo(-260 * 0.006, 12);
+    expect(touch.source).toBe('touch');
+    expect(touch.fling).toBe(0);
+  });
+
+  test('ds_look_sens scales both (0.5-2.0) and ds_look_invert flips pitch only', () => {
+    const c = worldCanvas();
+    setting('ds_look_sens', '2');
+    pointer(c, 'pointerdown', { clientX: 100, clientY: 300 });
+    pointer(c, 'pointermove', { clientX: 200, clientY: 340 });
+    let look = im.getCameraInput();
+    expect(look.deltaX).toBeCloseTo(100 * 0.0035 * 2, 12);
+    expect(look.deltaY).toBeCloseTo(40 * 0.0035 * 2, 12);
+    setting('ds_look_invert', '1');
+    pointer(c, 'pointermove', { clientX: 300, clientY: 380 });
+    look = im.getCameraInput();
+    expect(look.deltaX).toBeCloseTo(100 * 0.0035 * 2, 12);
+    expect(look.deltaY).toBeCloseTo(-40 * 0.0035 * 2, 12);
+    setting('ds_look_sens', '9'); // clamped to 2.0
+    setting('ds_look_invert', null);
+    pointer(c, 'pointermove', { clientX: 400, clientY: 380 });
+    expect(im.getCameraInput().deltaX).toBeCloseTo(100 * 0.0035 * 2, 12);
+    setting('ds_look_sens', '0.1'); // clamped to 0.5
+    pointer(c, 'pointermove', { clientX: 500, clientY: 380 });
+    expect(im.getCameraInput().deltaX).toBeCloseTo(100 * 0.0035 * 0.5, 12);
+    setting('ds_look_sens', null); // back to 1×
+    pointer(c, 'pointermove', { clientX: 600, clientY: 380 });
+    expect(im.getCameraInput().deltaX).toBeCloseTo(100 * 0.0035, 12);
+  });
+});
+
+describe('the touch fling (A4)', () => {
+  test('1-, 5- and 15-frame swipes fling at v·k; a 45-frame swipe does not', () => {
+    const c = worldCanvas();
+    const now = vi.spyOn(performance, 'now');
+    const flings: number[] = [];
+    for (const n of [1, 5, 15, 45]) {
+      const { steps, endAt } = frames150(n);
+      swipe(c, steps, endAt, now);
+      const look = im.getCameraInput();
+      expect(look.deltaX, `${n} frames`).toBeCloseTo(150 * 0.006, 9);
+      flings.push(look.fling);
+    }
+    // 150 px rightward: the fling turns right (> 0), at v × 0.006 rad/px, v
+    // averaged over the moves inside the last 80 ms (the finger rests one
+    // frame before it lifts, so that frame does not dilute the average).
+    const k = SimpleInputManager.TOUCH_K;
+    expect(flings[0]).toBeGreaterThan(9000 * k);
+    expect(flings[1]).toBeGreaterThan(1800 * k);
+    expect(flings[1]).toBeLessThan(2400 * k);
+    expect(flings[2]).toBeCloseTo(600 * k, 1);
+    expect(flings[3]).toBe(0); // 200 px/s
+  });
+
+  test('a finger that rests before lifting, or a pinch, never flings', () => {
+    const c = worldCanvas();
+    const now = vi.spyOn(performance, 'now');
+    swipe(
+      c,
+      [
+        [0, 100],
+        [16, 200],
+        [33, 300],
+      ],
+      200,
+      now,
+    ); // fast, then a 167 ms rest
+    expect(im.getCameraInput().fling).toBe(0);
+    // a second canvas finger turns the gesture into a pinch
+    const a = (x: number) => new Touch({ identifier: 1, target: c, clientX: x, clientY: 400 });
+    const b = (x: number) => new Touch({ identifier: 2, target: c, clientX: x, clientY: 500 });
+    now.mockReturnValue(1000);
+    document.dispatchEvent(
+      new TouchEvent('touchstart', { changedTouches: [a(100)], touches: [a(100)] }),
+    );
+    now.mockReturnValue(1010);
+    document.dispatchEvent(
+      new TouchEvent('touchstart', { changedTouches: [b(300)], touches: [a(100), b(300)] }),
+    );
+    now.mockReturnValue(1020);
+    document.dispatchEvent(
+      new TouchEvent('touchend', { changedTouches: [b(300)], touches: [a(100)] }),
+    );
+    now.mockReturnValue(1030);
+    document.dispatchEvent(
+      new TouchEvent('touchmove', { changedTouches: [a(300)], touches: [a(300)] }),
+    );
+    now.mockReturnValue(1040);
+    document.dispatchEvent(new TouchEvent('touchend', { changedTouches: [a(300)], touches: [] }));
+    expect(im.getCameraInput().fling).toBe(0);
+  });
+
+  test('the fling scales with ds_look_sens too', () => {
+    const c = worldCanvas();
+    const now = vi.spyOn(performance, 'now');
+    setting('ds_look_sens', '0.5');
+    const { steps, endAt } = frames150(5);
+    swipe(c, steps, endAt, now);
+    const half = im.getCameraInput().fling;
+    expect(half).toBeGreaterThan(1800 * 0.006 * 0.5);
+    expect(half).toBeLessThan(2400 * 0.006 * 0.5);
+    localStorage.clear();
   });
 });

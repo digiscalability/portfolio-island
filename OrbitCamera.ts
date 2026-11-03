@@ -34,18 +34,41 @@ export class OrbitCamera {
   private distanceTarget: number = 4.4;
   private heightTarget: number = 1.5;
 
-  private yaw: number = 0; // horizontal rotation around player
-  private pitch: number = -0.12; // vertical tilt: near eye-level (was -0.35, a downward/aerial look)
+  private pitch: number = OrbitCamera.DEFAULT_PITCH; // vertical tilt: near eye-level (was -0.35, a downward/aerial look)
+  private static readonly DEFAULT_PITCH = -0.12;
 
+  // ---- Look: displacement, not velocity ---------------------------------
+  // Drag, swipe and keyboard look ACCUMULATE into a target, in radians, and
+  // update() closes the gap with a = 1 − exp(−dt/τ). The turn therefore
+  // depends only on how far the pointer moved, never on how many frames it
+  // took: the old model set a velocity from each frame's pixels and decayed
+  // it per frame, so 300 px turned anything from 0° to ~21° depending on
+  // frame timing, and a 1-frame flick barely turned at all.
+  // Yaw convention (three.js): + turns the follow direction counter-clockwise
+  // about the local up, i.e. the VIEW turns LEFT.
+  private yawTarget = 0;
+  private yawApplied = 0;
+  // Applied yaw that followDir has not turned through yet (updateCameraPosition).
+  private yawStepPending = 0;
+  private pitchTarget = OrbitCamera.DEFAULT_PITCH;
+  private lookTau = OrbitCamera.MOUSE_TAU;
+  private static readonly MOUSE_TAU = 0.04; // s
+  private static readonly TOUCH_TAU = 0.07; // s
+  private static readonly RECENTRE_TAU = 0.06; // s: R lands behind the player in ~0.3 s
+  private static readonly PITCH_SCALE = 0.8;
+  // Touch fling: after a fast swipe the view keeps turning at ω (rad/s, same
+  // sign convention as yaw), decaying by exp(−dt/0.15 s), 30° at most in all.
   private yawVelocity: number = 0;
-  private pitchVelocity: number = 0;
-
-  private yawInput: number = 0;
-  private pitchInput: number = 0;
+  private flingLeft = 0;
+  private static readonly FLING_TAU = 0.15;
+  private static readonly FLING_CAP = (30 * Math.PI) / 180;
+  // Auto-follow stands down after any manual look: 0 for 1.0 s, then ramps
+  // back over 0.8 s, so a look around is never dragged back mid-glance.
+  private sinceManualLook = Number.POSITIVE_INFINITY;
+  private static readonly FOLLOW_HOLD_S = 1.0;
+  private static readonly FOLLOW_RAMP_S = 0.8;
 
   private smoothness: number = 0.16; // interpolation factor for smooth camera — was 0.2; the slightly lazier follow is part of the calm-locomotion pass (pairs with the 8.0→5.6 walk speed)
-  private damping: number = 0.9; // velocity damping (higher = more responsive)
-  private mouseSensitivity: number = 0.005; // mouse input multiplier (raw pixels -> radians)
   // True only while flyInFromDistant owns the camera. The intro fly-in runs on
   // its OWN requestAnimationFrame loop and writes camera.position directly; the
   // main render loop still calls update() every frame (cameraSuspended is false
@@ -167,6 +190,14 @@ export class OrbitCamera {
   private _desired = new THREE.Vector3();
   private _currentCamPos = new THREE.Vector3();
   private _quat = new THREE.Quaternion();
+  // Look scratch (orbitLive, recentre): declared here, outside the
+  // allocation-free updateCameraPosition body.
+  private _orbitOff = new THREE.Vector3();
+  private _orbitQuat = new THREE.Quaternion();
+  private _rcNormal = new THREE.Vector3();
+  private _rcFacing = new THREE.Vector3();
+  private _rcFollow = new THREE.Vector3();
+  private _rcCross = new THREE.Vector3();
   private baseFov = 0; // captured on first ride; 0 = fov untouched so far
   private fovTarget = 0;
 
@@ -273,10 +304,12 @@ export class OrbitCamera {
     }
     this.followDir.normalize();
 
-    // Manual orbit: user yaw input rotates the follow direction around "up"
-    if (Math.abs(this.yawVelocity) > 1e-5 && deltaTime > 0) {
-      const yawQuat = this._quat.setFromAxisAngle(surfaceNormal, this.yawVelocity * deltaTime);
-      this.followDir.applyQuaternion(yawQuat);
+    // Manual look: turn the follow direction about "up" through the yaw that
+    // update() applied this frame (parallel transport is kept above).
+    if (this.yawStepPending !== 0) {
+      const yawQuat = this._quat.setFromAxisAngle(surfaceNormal, this.yawStepPending);
+      this.followDir.applyQuaternion(yawQuat).normalize();
+      this.yawStepPending = 0;
     }
 
     // Auto-follow: swing behind the tangential motion. While riding, use
@@ -291,9 +324,10 @@ export class OrbitCamera {
       vTangent.addScaledVector(surfaceNormal, -vTangent.dot(surfaceNormal));
       if (vTangent.lengthSq() > 0.25) {
         const desired = this._desired.copy(vTangent).normalize().negate(); // behind the motion
-        const strength = this.rideMode ? this.followStrength * 1.8 : this.followStrength;
+        const strength =
+          (this.rideMode ? this.followStrength * 1.8 : this.followStrength) * this.followGain();
         const k = Math.min(1, strength * deltaTime);
-        this.followDir.lerp(desired, k).normalize();
+        if (k > 0) this.followDir.lerp(desired, k).normalize();
       }
       // Velocity look-ahead: bias the look target along the (tangent-plane)
       // motion so the camera frames where you're GOING, not where you are.
@@ -400,24 +434,37 @@ export class OrbitCamera {
     // Safely validate inputs
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.05)); // Clamp to prevent jumps
 
-    // Apply mouse sensitivity to input for smooth look
-    const scaledYawInput = (this.yawInput || 0) * this.mouseSensitivity;
-    const scaledPitchInput = (this.pitchInput || 0) * this.mouseSensitivity;
-
-    // Update velocities from input
-    if (scaledYawInput !== 0 || scaledPitchInput !== 0) {
-      // Slightly higher rotational speed for snappier feel
-      this.yawVelocity = scaledYawInput * 2.5;
-      this.pitchVelocity = scaledPitchInput * 2.5;
+    // Touch fling: keep turning after a fast swipe, ω decaying by
+    // exp(−dt/0.15 s), never more than 30° in all. It feeds the yaw TARGET,
+    // so the same easing below carries it.
+    if (this.yawVelocity !== 0) {
+      let step = this.yawVelocity * safeDeltaTime;
+      if (Math.abs(step) >= this.flingLeft) step = Math.sign(step) * this.flingLeft;
+      this.flingLeft -= Math.abs(step);
+      this.yawTarget += step;
+      this.yawVelocity *= Math.exp(-safeDeltaTime / OrbitCamera.FLING_TAU);
+      if (this.flingLeft <= 1e-6 || Math.abs(this.yawVelocity) < 0.01) {
+        this.yawVelocity = 0;
+        this.flingLeft = 0;
+      }
+      this.sinceManualLook = 0;
+    } else {
+      this.sinceManualLook += safeDeltaTime;
     }
 
-    // Apply damping to velocities for smooth motion. Time-based, not
-    // per-frame: `*= 0.9` each frame made the camera twice as stiff at 120Hz
-    // as at 60Hz (phones are 90/120Hz now). exp(ln(d)*60*dt) reproduces the
-    // 60Hz feel exactly at every refresh rate.
-    const dampK = Math.exp(Math.log(this.damping) * 60 * safeDeltaTime);
-    this.yawVelocity *= dampK;
-    this.pitchVelocity *= dampK;
+    // Close the gap to the look target. a = 1 − exp(−dt/τ) is frame-rate
+    // independent: the same drag ends on the same yaw at 30, 60 or 120 Hz.
+    const a = 1 - Math.exp(-safeDeltaTime / this.lookTau);
+    // Within 1e-5 rad (0.0006°) the step lands exactly: no endless tail.
+    let yawStep = (this.yawTarget - this.yawApplied) * a;
+    if (Math.abs(this.yawTarget - this.yawApplied - yawStep) < 1e-5) {
+      yawStep = this.yawTarget - this.yawApplied;
+    }
+    this.yawApplied += yawStep;
+    this.yawStepPending += yawStep; // updateCameraPosition turns followDir through it
+    const pitchBefore = this.pitch;
+    this.pitch += (this.pitchTarget - this.pitch) * a;
+    if (Math.abs(this.pitchTarget - this.pitch) < 1e-5) this.pitch = this.pitchTarget;
 
     // Two-finger pinch (SimpleInputManager publishes a consumable ratio):
     // spreading zooms in, pinching zooms out. setDistance keeps the 2–12
@@ -425,12 +472,9 @@ export class OrbitCamera {
     const pinch = consumePinchZoomFactor();
     if (pinch !== 1) this.setDistance(this.distanceTarget * pinch);
 
-    // Yaw is applied to the follow direction inside updateCameraPosition;
-    // pitch accumulates here as before.
-    this.pitch += this.pitchVelocity * safeDeltaTime;
-
     // Clamp pitch to valid range
     this.pitch = Math.max(this.minPitch, Math.min(this.maxPitch, this.pitch));
+    const pitchStep = this.pitch - pitchBefore;
 
     // Slow-bloom frame: distance/height breathe toward their targets (ride
     // boards, pinch) at ~1.5s to settle. Pinch still lands quickly enough to
@@ -457,6 +501,12 @@ export class OrbitCamera {
     if (!Number.isFinite(currentCamPos.x)) currentCamPos.copy(this.cameraPosition);
     if (!Number.isFinite(this.cameraPosition.x)) this.updateCameraPosition(0);
 
+    // Manual look turns the live camera RIGIDLY with the pose, about the look
+    // target. Left to the position ease below, a quick turn cut the chord of
+    // the orbit (the camera swung in toward the avatar) and trailed the
+    // applied yaw by ~0.1 s.
+    if (yawStep !== 0 || pitchStep !== 0) this.orbitLive(currentCamPos, yawStep, pitchStep);
+
     // Same Hz-independence for the position ease: convert the tuned per-frame
     // factor (assumed 60Hz) into a rate, then apply it over the real dt.
     const smoothK =
@@ -474,21 +524,116 @@ export class OrbitCamera {
     if (Number.isFinite(this.targetPosition.x)) {
       this.camera.lookAt(this.targetPosition);
     }
+  }
 
-    // Clear input
-    this.yawInput = 0;
-    this.pitchInput = 0;
+  /** Rotate a live camera position about the look target: yaw about the
+   *  surface normal, then pitch about the camera's right (both as
+   *  updateCameraPosition just left them in _camNormal and _camRight). */
+  private orbitLive(p: THREE.Vector3, yawStep: number, pitchStep: number): void {
+    const off = this._orbitOff.subVectors(p, this.targetPosition);
+    if (yawStep !== 0)
+      off.applyQuaternion(this._orbitQuat.setFromAxisAngle(this._camNormal, yawStep));
+    if (pitchStep !== 0) {
+      off.applyQuaternion(this._orbitQuat.setFromAxisAngle(this._camRight, pitchStep));
+    }
+    p.copy(this.targetPosition).add(off);
+  }
+
+  /** 0 for 1.0 s after any manual look, then a linear ramp back to 1 over 0.8 s. */
+  private followGain(): number {
+    const t = this.sinceManualLook - OrbitCamera.FOLLOW_HOLD_S;
+    return t <= 0 ? 0 : Math.min(1, t / OrbitCamera.FOLLOW_RAMP_S);
   }
 
   /**
-   * Set camera input (from mouse/gamepad)
+   * Look input, in RADIANS: deltaYaw > 0 turns the view right, deltaPitch > 0
+   * moves the camera as a downward drag does (pitch × 0.8). It accumulates
+   * into the look target; update() eases onto it with τ = 40 ms for a mouse
+   * (or keys) and 70 ms for a finger. Ignored during the intro fly-in, so a
+   * drag there cannot land as one whip when it ends.
    */
-  public setInput(deltaYaw: number, deltaPitch: number): void {
-    // Validate inputs
-    // Invert yaw so moving mouse right rotates view right
-    this.yawInput = Number.isFinite(deltaYaw) ? -deltaYaw : 0;
-    // DO NOT invert pitch - moving mouse up should look down (FPS standard)
-    this.pitchInput = Number.isFinite(deltaPitch) ? deltaPitch : 0;
+  public setInput(deltaYaw: number, deltaPitch: number, source: 'mouse' | 'touch' = 'mouse'): void {
+    if (this.flyingIn) return;
+    const dYaw = Number.isFinite(deltaYaw) ? deltaYaw : 0;
+    const dPitch = Number.isFinite(deltaPitch) ? deltaPitch : 0;
+    if (dYaw === 0 && dPitch === 0) return;
+    // + deltaYaw turns the view right: the follow direction turns clockwise
+    // about up, which is negative in this file's (three.js) convention.
+    this.yawTarget -= dYaw;
+    this.pitchTarget = Math.max(
+      this.minPitch,
+      Math.min(this.maxPitch, this.pitchTarget + dPitch * OrbitCamera.PITCH_SCALE),
+    );
+    this.lookTau = source === 'touch' ? OrbitCamera.TOUCH_TAU : OrbitCamera.MOUSE_TAU;
+    // A finger back on the glass catches a fling, as on any touch list.
+    this.yawVelocity = 0;
+    this.flingLeft = 0;
+    this.sinceManualLook = 0;
+  }
+
+  /**
+   * Keyboard look, per frame while the keys are held: `turn` > 0 (L) turns
+   * right at 90°/s, `tilt` > 0 (I) tilts the view up at 60°/s, inside the
+   * same pitch clamp. Counts as a manual look.
+   */
+  public keyLook(turn: number, tilt: number, dt: number): void {
+    if (this.flyingIn || (turn === 0 && tilt === 0) || !(dt > 0)) return;
+    const step = Math.min(dt, 0.1);
+    this.yawTarget -= turn * OrbitCamera.KEY_TURN_RATE * step;
+    this.pitchTarget = Math.max(
+      this.minPitch,
+      Math.min(this.maxPitch, this.pitchTarget + tilt * OrbitCamera.KEY_TILT_RATE * step),
+    );
+    this.lookTau = OrbitCamera.MOUSE_TAU;
+    this.yawVelocity = 0;
+    this.flingLeft = 0;
+    this.sinceManualLook = 0;
+  }
+  private static readonly KEY_TURN_RATE = Math.PI / 2; // 90°/s
+  private static readonly KEY_TILT_RATE = Math.PI / 3; // 60°/s
+
+  /**
+   * Start a touch fling at `rate` rad/s (> 0 keeps turning right). No fling
+   * under reduced motion, or with the lookFling effect switched off
+   * (globalThis.__dsFx.lookFling === false; FxBudget registers it later).
+   */
+  public fling(rate: number): void {
+    if (!Number.isFinite(rate) || rate === 0 || this.flyingIn || a11y.reducedMotion) return;
+    const fx = (globalThis as { __dsFx?: { lookFling?: boolean } }).__dsFx;
+    if (fx?.lookFling === false) return;
+    this.yawVelocity = -rate;
+    this.flingLeft = OrbitCamera.FLING_CAP;
+    this.sinceManualLook = 0;
+  }
+
+  /**
+   * R: put the camera back behind the player's facing, at the default tilt,
+   * over ~0.3 s (a hard cut under reduced motion). Counts as a manual look.
+   */
+  public recentre(): void {
+    if (!this.followDir || this.flyingIn) return;
+    const n = this.player.getSurfaceNormalInto(this._rcNormal);
+    const behind = this.player.getWorldDirection(this._rcFacing);
+    behind.addScaledVector(n, -behind.dot(n));
+    if (behind.lengthSq() < 1e-8) return;
+    behind.normalize().negate(); // the camera sits opposite the facing
+    const fd = this._rcFollow.copy(this.followDir).addScaledVector(n, -this.followDir.dot(n));
+    fd.normalize();
+    const angle = Math.atan2(this._rcCross.copy(fd).cross(behind).dot(n), fd.dot(behind));
+    // Aim the TARGET so the camera ends behind, whatever was still pending.
+    this.yawTarget = this.yawApplied + angle;
+    this.pitchTarget = OrbitCamera.DEFAULT_PITCH;
+    this.yawVelocity = 0;
+    this.flingLeft = 0;
+    this.sinceManualLook = 0;
+    if (a11y.reducedMotion) {
+      this.yawStepPending += this.yawTarget - this.yawApplied;
+      this.yawApplied = this.yawTarget;
+      this.pitch = this.pitchTarget;
+      this.snapToPlayer();
+    } else {
+      this.lookTau = OrbitCamera.RECENTRE_TAU;
+    }
   }
 
   /**
@@ -543,25 +688,35 @@ export class OrbitCamera {
   }
 
   /**
-   * Get current yaw angle
+   * The manual yaw applied so far, in radians: the sum of every look turn
+   * (drag, swipe, keys, fling, R), + counter-clockwise about the local up
+   * (the view turned LEFT). Auto-follow does not count. A sphere has no
+   * global heading, so only differences mean anything (probe hook).
    */
   public getYaw(): number {
-    return this.yaw;
+    return this.yawApplied;
+  }
+
+  /** Where the manual yaw is heading (same units as getYaw); at finger-up it
+   *  already holds the whole swipe, before the easing lands it (probe hook). */
+  public getYawTarget(): number {
+    return this.yawTarget;
   }
 
   /**
-   * Set yaw directly
+   * Turn to this manual yaw at once (same units as getYaw), e.g.
+   * setYaw(getYaw() + Math.PI / 12) for 15° to the left: the probes' way to
+   * turn the camera without a pointer. Hard-cuts like snapToPlayer.
    */
   public setYaw(yaw: number): void {
-    this.yaw = yaw;
-  }
-
-  /**
-   * Orient camera to match a specific direction
-   */
-  public lookInDirection(direction: THREE.Vector3): void {
-    const targetYaw = Math.atan2(direction.x, direction.z);
-    this.setYaw(targetYaw);
+    if (!Number.isFinite(yaw) || this.flyingIn) return;
+    this.yawStepPending += yaw - this.yawApplied;
+    this.yawTarget = yaw;
+    this.yawApplied = yaw;
+    this.yawVelocity = 0;
+    this.flingLeft = 0;
+    this.sinceManualLook = 0;
+    this.snapToPlayer();
   }
 
   /**
