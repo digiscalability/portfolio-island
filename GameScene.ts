@@ -4962,8 +4962,19 @@ export class GameScene extends THREE.Scene {
     seat: THREE.Vector3;
     face: THREE.Vector3;
     wasVisible: boolean;
+    /** campfireSit, measured on the guest's first seated frame; null if unrigged. */
+    sit?: { drop: number; lift: number } | null;
   }> = [];
   private campfireLit = false;
+  /** Seating-log radius: the 7-sided CylinderGeometry's, and the lift that
+   *  rests the log's bottom corner on the ground in setupCampfire. */
+  private static readonly CAMPFIRE_LOG_R = 0.16;
+  /** Top of a seating log above the ground at its seat. setupCampfire rolls
+   *  each log so a FLAT face is on top, one apothem (r cos(PI/7)) above the
+   *  axis, with the opposite corner on the ground: 0.304. */
+  private static readonly CAMPFIRE_LOG_TOP =
+    GameScene.CAMPFIRE_LOG_R + GameScene.CAMPFIRE_LOG_R * Math.cos(Math.PI / 7);
+  private static readonly _seatPlumb = new THREE.Vector3();
   /** NPCs held by a dedicated routine (sailor boats, vendor pitches,
    *  campfire seats) — the wander loop must skip them. Reference-keyed Set:
    *  one O(1) lookup replaces three per-NPC-per-frame .some() closures. */
@@ -5051,13 +5062,13 @@ export class GameScene extends THREE.Scene {
     if (tanA.lengthSq() < 1e-6) tanA.set(1, 0, 0).cross(place.normal);
     tanA.normalize();
     const tanB = new THREE.Vector3().crossVectors(place.normal, tanA).normalize();
+    const groupInv = group.quaternion.clone().invert();
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + 0.4;
       const R = 1.6;
-      const seatLog = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.1, 7), logMat);
-      seatLog.position.set(Math.cos(a) * R, 0.16, Math.sin(a) * R);
-      seatLog.rotation.set(Math.PI / 2, 0, 0);
-      seatLog.rotation.z = -a; // lie the log along the ring
+      const logR = GameScene.CAMPFIRE_LOG_R;
+      const seatLog = new THREE.Mesh(new THREE.CylinderGeometry(logR, logR, 1.1, 7), logMat);
+      seatLog.position.set(Math.cos(a) * R, logR, Math.sin(a) * R);
       group.add(seatLog);
       // World seat: the log's spot, and a facing vector pointing at the fire.
       const off = tanA
@@ -5070,12 +5081,41 @@ export class GameScene extends THREE.Scene {
       const seatDir = place.position.clone().add(off).normalize();
       const seatSurf = this.island.sampleSurfaceByDirection(seatDir, 0);
       seatLog.position.copy(
-        seatSurf.position
-          .clone()
-          .sub(place.position)
-          .applyQuaternion(group.quaternion.clone().invert()),
+        seatSurf.position.clone().sub(place.position).applyQuaternion(groupInv),
       );
-      seatLog.position.y += 0.16;
+      seatLog.position.y += logR;
+      // Lie the log ALONG the ring: level about the seat's own plumb and
+      // square to the line to the fire, built in WORLD space and then carried
+      // into the group frame. The old `rotation.z = -a` read `a` in the
+      // group's local XZ, but the seats are laid out in (tanA, tanB), a basis
+      // twisted against the group's by setFromUnitVectors, so every log lay
+      // 18.9 deg off its tangent (measured on all four).
+      const seatUp = seatSurf.position.clone().normalize();
+      const inward = place.position.clone().sub(seatSurf.position);
+      inward.addScaledVector(seatUp, -inward.dot(seatUp));
+      const along = new THREE.Vector3().crossVectors(seatUp, inward).normalize();
+      seatLog.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), // CylinderGeometry's axis
+        along.applyQuaternion(groupInv),
+      );
+      // ...then roll it about that axis until a FLAT face is on top.
+      // setFromUnitVectors leaves the roll to chance, and on a 7-sided log the
+      // roll IS the seat height: a corner up is r above the axis, a face up
+      // r cos(PI/7). Unrolled, the four tops measured 0.309-0.321 against the
+      // 0.32 every guest was seated for. Face up, the opposite corner rests
+      // on the ground and all four tops measure CAMPFIRE_LOG_TOP (0.304).
+      // `along` is in the group frame now; the first face's normal is
+      // (sin, 0, cos)(PI/7).
+      const upL = seatUp.clone().applyQuaternion(groupInv);
+      upL.addScaledVector(along, -upL.dot(along)).normalize();
+      const faceN = new THREE.Vector3(Math.sin(Math.PI / 7), 0, Math.cos(Math.PI / 7));
+      faceN.applyQuaternion(seatLog.quaternion);
+      seatLog.quaternion.premultiply(
+        new THREE.Quaternion().setFromAxisAngle(
+          along,
+          Math.atan2(along.dot(faceN.clone().cross(upL)), faceN.dot(upL)),
+        ),
+      );
       seats.push({
         pos: seatSurf.position.clone(),
         face: off.clone().negate().normalize(),
@@ -5158,25 +5198,61 @@ export class GameScene extends THREE.Scene {
     // Hold the seated villagers in place and give them a fireside sway.
     for (const g of this.campfireGuests) {
       const ref = g.npc.meshRef;
-      // Seat height, measured on the live rig rather than reasoned about.
-      // The hip joint sits 0.99 above the avatar's root, and the seating log
-      // tops out 0.32 above the ground — so to put a backside ON that log the
-      // root has to go 0.63 BELOW it. Earlier guesses (+0.3, then -0.18) left
-      // the hips at 1.29 and 0.81 respectively, i.e. perched half a metre
-      // above the log with the feet dangling in mid-air.
-      ref.position.copy(g.seat).addScaledVector(C.up, -0.63);
-      this.orientAvatar(ref, C.up, g.face);
       const ud = ref.userData as { limbs?: NpcLimbCache | null };
       if (ud.limbs === undefined) ud.limbs = this.cacheNpcLimbs(ref);
       const limbs = ud.limbs;
-      if (!limbs) continue;
+      if (g.sit === undefined) g.sit = limbs ? this.campfireSit(ref, limbs[0].b) : null;
+      // Lower the root along the seat's own PLUMB (world law 1), by this
+      // guest's measured drop. An unrigged villager keeps the old offset.
+      const plumb = GameScene._seatPlumb.copy(g.seat).normalize();
+      ref.position.copy(g.seat).addScaledVector(plumb, g.sit ? g.sit.drop : -0.63);
+      this.orientAvatar(ref, plumb, g.face);
+      if (!limbs || !g.sit) continue;
       for (let n = 0; n < limbs.length; n++) {
         const l = limbs[n];
-        // Legs forward over the log edge; arms resting, with a slow breath.
-        l.ang = n < 2 ? -1.15 : -0.12 + Math.sin(time * 0.9 + n) * 0.05;
+        // Legs out until the heels reach the ground; hands forward toward
+        // the knees, with a slow breath. Composed onto the cached rest pose
+        // (world law 2: mandatory on npc.glb).
+        l.ang = n < 2 ? -g.sit.lift : -0.9 + Math.sin(time * 0.9 + n) * 0.05;
         l.b.quaternion.copy(l.rest).multiply(this._npcLimbQ.setFromAxisAngle(l.axis, l.ang));
       }
     }
+  }
+
+  /**
+   * How one campfire guest sits, measured on its OWN rig (world law 3).
+   * Returns how far to move the root along the plumb from the seat ground
+   * (negative = below it) and the leg lift in radians.
+   *
+   * The guests are scaled villagers (0.95-1.07), and every height here
+   * scales with them, so the old single root offset (-0.63) sat each one at
+   * a different depth. Measured on the live build: hips 4.5 cm above the log
+   * top, 6.6 cm and 1.1 cm below it, and 64-74 shoe vertices underground per
+   * guest, with every log 18.9 deg off the ring.
+   *  - hip: the hip joint above the root (the feet), read off the legL bone.
+   *    On npc.glb it is 0.93 x scale.
+   *  - The backside is NOT the hip joint: with the legs out, the pelvis hangs
+   *    0.10 x scale below it. With the hip ON the log's top face, 132-138
+   *    pelvis and thigh vertices sat inside the log, up to 10.7 cm deep, and
+   *    118-122 still did 2 cm above it. 0.10 x scale higher, the lowest of
+   *    them is 0.3-0.6 mm above the top face and no vertex is inside a log.
+   *    So the hip joint sits 9.5-10.7 cm over the log ON PURPOSE: anchoring
+   *    it to the log top is the sunk-guest bug.
+   *  - npc.glb has no knees, so straight legs lift until the HEEL meets the
+   *    ground. The lowest shoe vertex sits behind and below the leg axis, so
+   *    a lift that only lands the axis on the ground (acos(0.31 / hip)) still
+   *    buried each heel 4-5 cm. Allowing 0.075 x scale for the heel clears
+   *    every shoe by about 2 cm, and every other vertex by 7-8 mm.
+   */
+  private campfireSit(ref: THREE.Object3D, legL: THREE.Object3D): { drop: number; lift: number } {
+    ref.updateMatrixWorld(true);
+    const s = ref.scale.y;
+    const hip = ref.worldToLocal(legL.getWorldPosition(new THREE.Vector3())).y * s;
+    const hipOverGround = GameScene.CAMPFIRE_LOG_TOP + 0.1 * s;
+    return {
+      drop: hipOverGround - hip,
+      lift: Math.acos(THREE.MathUtils.clamp((hipOverGround - 0.075 * s) / hip, -1, 1)),
+    };
   }
 
   /** Borrow (or release) the villagers who sit at the fire. */
@@ -12301,7 +12377,7 @@ export class GameScene extends THREE.Scene {
 
   /** Any visible villager within `radius` of the player? Same visibility rule
    *  as the cached-NPC revalidation in getNearbyInteractable, so the one-time
-   *  "live AI villager" hint never advertises someone indoors or hidden. */
+   *  talk hint never advertises someone indoors or hidden. */
   public hasVillagerWithin(radius: number): boolean {
     if (!this.player) return false;
     const p = this.player.getWorldPositionInto(this._nearNpcPos);

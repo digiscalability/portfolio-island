@@ -832,17 +832,20 @@ export class SimplePlayer extends THREE.Group {
           // The old `-PI + (1.4 ± s*1.3)*poseW` kept armL.rotation.x in
           // [-3.04, -0.44], where the limb forward axis z=sin(rot.x) stays in
           // [-0.985, -0.100] — negative for the ENTIRE cycle, i.e. both hands
-          // behind the shoulder: a permanent BACKSTROKE on a face-down body. So
-          // a swimming peer looked fine to themselves and swam backwards to
-          // everyone else. Rotating continuously from -PI (like applySwimPose's
-          // `REST_X - swimPhase`) carries each hand forward past the head (z>0),
-          // down through the pull (z<0) and over the top. The two arms sit half
-          // a revolution apart. NOT poseW-scaled: swimClock is an unbounded
-          // accumulator, so scaling it by a ramping poseW would spin the arm
-          // wildly during the pose fade — the local player doesn't blend it
-          // either. See test/oceanDive swim-arm windmill lock.
-          if (armLBone) armLBone.rotation.x = -Math.PI - swimClock;
-          if (armRBone) armRBone.rotation.x = -Math.PI - swimClock + Math.PI;
+          // behind the shoulder: a permanent BACKSTROKE on a face-down body.
+          // The windmill must also turn the SAME WAY as applySwimPose's
+          // `REST_X + swimPhase`: rotating up from -PI carries each hand
+          // forward over the top (the recovery) and back under the body (the
+          // pull). Both copies first shipped as `- clock`, which MEASURED as a
+          // reversed crawl on the live rig: every hand moved backward over the
+          // top and forward underwater, for you and for every peer alike. The
+          // two arms sit half a revolution apart. NOT poseW-scaled: swimClock
+          // is an unbounded accumulator, so scaling it by a ramping poseW would
+          // spin the arm wildly during the pose fade — the local player doesn't
+          // blend it either. test/swimStroke.test.ts measures the hand path of
+          // this copy and the local one on player.glb.
+          if (armLBone) armLBone.rotation.x = -Math.PI + swimClock;
+          if (armRBone) armRBone.rotation.x = -Math.PI + swimClock + Math.PI;
           // legL/legR rest at PI (bone +Y runs down the limb). Anchor the
           // trailing bias to PI or the legs fold up toward the head, and
           // blend with poseW from PI itself rather than from the live value,
@@ -1275,20 +1278,25 @@ export class SimplePlayer extends THREE.Group {
       // Alternating front-crawl while stroking; soft sculling tread idle.
       // REST-RELATIVE, like the wave and the legs: the arm bones hang at
       // ~-PI, so writing -1.4 absolutely ran the whole stroke in the wrong
-      // frame — the hands swept back-to-front, which is a backstroke on a
-      // face-down body. Anchored to -PI, +delta reaches FORWARD past the
-      // head and the arm pulls back through the water, which is the crawl.
+      // frame. Every write here is -PI + delta.
       // A crawl is a WINDMILL, not an oscillation. The arm direction in parent
       // space is (0, cos t, sin t), so a swinging range that never lets sin go
       // positive keeps both hands behind the shoulder for the whole cycle —
       // measured on the old code, hand z ran -0.05 -> -0.49 -> -0.21, i.e. a
-      // permanent backstroke. Rotating continuously carries each hand forward
-      // past the head (z > 0), down, back through the pull (z < 0) and over
-      // the top again. The two arms sit half a revolution apart.
+      // permanent backstroke.
+      // And the windmill has a DIRECTION. Under the prone pitch p the limb
+      // points along (cos(t+p), sin(t+p)) in (up, forward), so t must RISE
+      // with the phase: the hand then travels forward over the top (the
+      // recovery) and back under the body (the pull). The first windmill
+      // was `REST_X - swimPhase`, which turns the other way. MEASURED on the
+      // live rig (world law 3): every hand moved backward over the top and
+      // forward underwater, a reversed crawl. test/swimStroke.test.ts checks
+      // the hand path on player.glb for this copy and the remote-peer copy.
+      // The two arms sit half a revolution apart.
       const REST_X = -Math.PI;
       if (moving) {
-        if (this.armLBone) this.armLBone.rotation.x = REST_X - this.swimPhase;
-        if (this.armRBone) this.armRBone.rotation.x = REST_X - this.swimPhase + Math.PI;
+        if (this.armLBone) this.armLBone.rotation.x = REST_X + this.swimPhase;
+        if (this.armRBone) this.armRBone.rotation.x = REST_X + this.swimPhase + Math.PI;
       } else {
         // Treading: gentle sculling either side of straight-down.
         if (this.armLBone) this.armLBone.rotation.x = REST_X + 0.55 + s * 0.35;
