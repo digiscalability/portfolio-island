@@ -687,6 +687,24 @@ describe('from visualPolish.test.ts', () => {
     // idle deferral that already carries music and profile sync.
     const main = stripped('main-simple.ts');
     expect(main).toContain('this.idleDefer(() => void this.scene.warmInterior()');
+    // CO-A5: on a coarse pointer it may start EARLIER, never on the frame of
+    // the first E and never during the fly-in: one task after afterIntro
+    // (the card is up), or at the first walk input once the fly-in landed.
+    // The 9 s idle deferral above stays the ceiling on every device.
+    const early = bodyOf(main, 'private readonly warmRoomsEarly = (): void =>');
+    expect(early).toContain('if (this.roomsWarmStarted || !this.coarsePointer) return;');
+    expect(early).toContain('void this.scene.warmInterior();');
+    expect(main).toContain("matchMedia('(pointer: coarse)').matches");
+    expect(bodyOf(main, 'const afterIntro = () =>')).toContain(
+      'window.setTimeout(this.warmRoomsEarly, 0);',
+    );
+    const walk = blockOf(main, '(walkForward !== 0 || walkStrafe !== 0) &&');
+    const call = walk.indexOf('this.warmRoomsEarly();');
+    expect(walk.indexOf('!this.scene.getOrbitCamera().isFlyingIn()')).toBeGreaterThan(-1);
+    expect(walk.indexOf('!this.scene.getOrbitCamera().isFlyingIn()')).toBeLessThan(call);
+    expect(call).toBeLessThan(
+      walk.indexOf('this.scene.setPlayerMovement(walkForward, walkStrafe);'),
+    );
   });
 });
 

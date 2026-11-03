@@ -175,6 +175,24 @@ export class SimpleApp {
   private completionAccum = 0;
   private lostAccum = 0; // in-world seconds, for the lost-visitor recovery hint
 
+  /** A coarse pointer (phones, tablets): the rooms warm early (CO-A5). */
+  private readonly coarsePointer =
+    typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  private roomsWarmStarted = false;
+  /**
+   * CO-A5. At 4x CPU the idle warm's 9 s ceiling fires 6-7 s late on a busy
+   * thread, and a door entered in that gap compiled under the veil: +13-15
+   * programs, a 370-1110 ms frame and 0.83-1.50 s of black. On a coarse
+   * pointer the warm starts at afterIntro, while the welcome card is up, or
+   * at the first walk input after the fly-in, whichever comes first. Never
+   * during the fly-in. Bound once: it is a setTimeout callback.
+   */
+  private readonly warmRoomsEarly = (): void => {
+    if (this.roomsWarmStarted || !this.coarsePointer) return;
+    this.roomsWarmStarted = true;
+    void this.scene.warmInterior();
+  };
+
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
     { id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 8 },
@@ -1485,6 +1503,11 @@ export class SimpleApp {
         } else if (this.applyRaceChallengeParam(sp)) {
           /* challenge accepted — guided straight to the start line */
         } else if (!this.openDeepLinkZone()) this.ui.showWelcome(this.buildAwayDelta());
+        // Phones warm the rooms while the card is up (CO-A5). The fly-in is
+        // over, so the intro stays light; one task later, so the warm's
+        // synchronous room build never joins the boot block (reduced motion
+        // reaches here before the first frame).
+        window.setTimeout(this.warmRoomsEarly, 0);
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -1671,6 +1694,8 @@ export class SimpleApp {
       // otherwise built and compiled on the frame the player first presses E.
       // Warm it in idle time instead. Scheduled last: music and profile sync
       // both surface sooner. See GameScene.warmInterior for the measurements.
+      // This stays the ceiling on every device; phones start sooner, at
+      // afterIntro (warmRoomsEarly). warmInterior is idempotent.
       this.idleDefer(() => void this.scene.warmInterior(), 9000);
       // (Vercel Analytics inject() moved to module top — pre-boot pageviews.)
 
@@ -2616,6 +2641,15 @@ export class SimpleApp {
         const joy = this.ui.getJoystick();
         const walkForward = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
         const walkStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
+        // CO-A5: a phone's first steps after the fly-in start the room warm
+        // too, if afterIntro has not already.
+        if (
+          !this.roomsWarmStarted &&
+          (walkForward !== 0 || walkStrafe !== 0) &&
+          !this.scene.getOrbitCamera().isFlyingIn()
+        ) {
+          this.warmRoomsEarly();
+        }
         this.scene.setPlayerMovement(walkForward, walkStrafe);
         // The chase camera reads the input direction too: it holds its follow
         // when the direction swings, and under reduced motion recentres once
