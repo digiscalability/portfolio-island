@@ -4,7 +4,6 @@
 // keep the shared stream byte-identical (plan-r3 seededWindow). So each one is
 // pinned by BEHAVIOUR, with a Math.random spy counting the ambient draws, the
 // way celInk.test.ts pins the ink shield.
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -169,12 +168,5 @@ describe('seedMark', () => {
     globalThis.__dsSeedMark = undefined;
     seedMark('after');
     expect(marks).toEqual(['createBuildingTextures', 'construction']);
-  });
-
-  test('GameScene installs no recorder, so the browser census keeps its own marks', () => {
-    // window.__dsSeedDraws and test/golden/seedDraws.json hold GameScene's 8
-    // checkpoints; Island's marks belong to the drawNeutral census.
-    const scene = readFileSync(join(process.cwd(), 'GameScene.ts'), 'utf8');
-    expect(scene).not.toMatch(/__dsSeedMark\s*=/);
   });
 });

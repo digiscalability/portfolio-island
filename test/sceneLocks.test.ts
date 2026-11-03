@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+//
 // GameScene.ts source locks that lived in other packages' suites (UX plan
 // testOwnership, rule 1: a structural lock moves to the owner of the code it
 // pins). Each test is a verbatim copy of its original's GameScene assertions;
@@ -9,9 +11,14 @@
 //     not just the strobe' (its fixed 6000-character window is now bodyOf)
 //   - feelRegressions.test.ts › 'GameScene requests the freeze; it never
 //     writes the raw field'
+//   - celInk.test.ts › 'toonify RNG shield' (behavioural: it borrows
+//     GameScene's toonify onto a stub; C deletes its copy in C0)
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import * as THREE from 'three';
+import { describe, expect, test, vi } from 'vitest';
+
+import { GameScene } from '../GameScene';
 
 // EOL-agnostic, as onboarding.test.ts reads it; no assertion here spans a line.
 const src = (f: string): string =>
@@ -83,5 +90,64 @@ describe('shadowMap.autoUpdate has exactly one owner', () => {
     expect(g).not.toContain('shadowAutoUpdateWas');
     expect(g).toContain('setShadowFreeze?.(true)');
     expect(g).toContain('setShadowFreeze?.(false)');
+  });
+});
+
+describe('the seeded window keeps its own census', () => {
+  test('GameScene installs no WorldSeed recorder, so the browser census keeps its own marks', () => {
+    // window.__dsSeedDraws and test/golden/seedDraws.json hold GameScene's 8
+    // checkpoints; Island's marks (WorldSeed.seedMark) belong to the
+    // drawNeutral census, which installs globalThis.__dsSeedMark itself.
+    expect(stripped('GameScene.ts')).not.toMatch(/__dsSeedMark\s*=/);
+  });
+});
+
+describe('toonify RNG shield', () => {
+  test('converts materials but consumes ZERO ambient draws', () => {
+    // Borrow the real method onto a stub carrying only what it reads
+    // (this.island.mesh), the same pattern test/buildPlots.test.ts uses.
+    const mesh = new THREE.Group();
+    const mats: THREE.MeshStandardMaterial[] = [];
+    for (let i = 0; i < 5; i++) {
+      const mat = new THREE.MeshStandardMaterial({ color: 0x334455 + i });
+      mats.push(mat);
+      mesh.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat));
+    }
+    // A transparent one must be left alone (the shipped rule), and an
+    // array-material mesh exercises the map() branch.
+    const glass = new THREE.MeshStandardMaterial({ transparent: true });
+    mesh.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), glass));
+    const multi = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), [mats[0], glass]);
+    mesh.add(multi);
+
+    const proto = GameScene.prototype as unknown as Record<string, () => void>;
+    // The shield delegates to the inner method, so the stub carries it too
+    // (same borrowing pattern as test/buildPlots.test.ts).
+    const stub = {
+      island: { mesh },
+      toonifyIslandMaterialsShielded: proto['toonifyIslandMaterialsShielded'],
+    } as unknown as GameScene;
+    const toonify = proto['toonifyIslandMaterials'].bind(stub);
+
+    const spy = vi.spyOn(Math, 'random');
+    spy.mockClear();
+    toonify();
+    const ambient = spy.mock.calls.length;
+    spy.mockRestore();
+
+    let toonCount = 0;
+    let stillTransparent = 0;
+    mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const list = Array.isArray(m.material) ? m.material : [m.material];
+      for (const mat of list) {
+        if ((mat as THREE.MeshToonMaterial).isMeshToonMaterial) toonCount++;
+        if ((mat as THREE.Material).transparent) stillTransparent++;
+      }
+    });
+    expect(toonCount).toBeGreaterThan(0); // it really converted…
+    expect(stillTransparent).toBeGreaterThan(0); // …and spared the glass
+    expect(ambient).toBe(0); // …and the shared stream paid nothing
   });
 });
