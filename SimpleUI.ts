@@ -7086,9 +7086,18 @@ export class SimpleUI {
     this.showZonePanel({ id: 'hire', name: 'Hiring' }, { source });
   }
 
+  /**
+   * Open a zone panel. `source` says how ('proximity' alone stamps the
+   * passport; 'landmark' is a world landmark's way in, which never stamps,
+   * for A's P2-A11 and P2-A13). `anchor` opens the panel scrolled to a part
+   * of it: a Projects card by its data-project id, or an element id (P2-D5).
+   */
   showZonePanel(
     zone: any,
-    opts?: { source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' },
+    opts?: {
+      source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' | 'landmark';
+      anchor?: string;
+    },
   ): void {
     const source = opts?.source ?? 'menu';
     // A switch along the section strip keeps the panel's history mode: a
@@ -7146,6 +7155,9 @@ export class SimpleUI {
       history,
       // 'ds:modal' carries it: closing the hire card says zone 'hire' (P2-D8).
       zone: String(zone?.id ?? 'unknown'),
+      // Opened at a card (P2-D5): focus takes that card's heading, so Tab goes
+      // on from the project and a screen reader names it. Else the panel's h2.
+      ...(opts?.anchor ? { initialFocus: () => this.anchorHeading(opts.anchor ?? '') } : {}),
     });
     this.stepHintAside(true); // nothing paints over a modal (D6)
 
@@ -7195,12 +7207,30 @@ export class SimpleUI {
       this.hideZonePanel();
       this.onRecruitTour?.();
     });
-    // The hire card's second way to reach Abbas: the Contact panel (D5).
+    // The hire card's second way to reach Abbas: the Contact panel, at its
+    // message form (D5).
     this.zonePanelDiv.querySelector('button[data-hire-contact]')?.addEventListener('click', (e) => {
       e.stopPropagation();
       track('hire_cta', { cta: 'message' });
-      this.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'cta' });
+      this.showZonePanel(
+        { id: 'contact', name: 'contact' },
+        { source: 'cta', anchor: 'lead-form-block' },
+      );
     });
+    // Selected work: each row opens Projects at that project's card (P2-D5).
+    this.zonePanelDiv
+      .querySelectorAll<HTMLButtonElement>('button[data-open-project]')
+      .forEach((b) => {
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const project = b.dataset.openProject ?? '';
+          track('hire_cta', { cta: `project_${project}` });
+          this.showZonePanel(
+            { id: 'projects', name: 'projects' },
+            { source: 'cta', anchor: project },
+          );
+        });
+      });
     trackOnce('zone_explored', { zone: zid, source });
     // "Reached the actual work" = any real section, not the intro or an unknown.
     if (zid !== 'welcome' && zid !== 'unknown') {
@@ -7211,8 +7241,12 @@ export class SimpleUI {
       trackOnce('contact_opened');
       // Voice desk goes ABOVE the written form — the lead form's own heading
       // ("Or send a message") already reads as the secondary option.
+      const panel = this.zonePanelDiv;
       void import('./ReceptionDesk').then(({ appendReceptionDesk }) => {
-        if (this.zonePanelDiv) appendReceptionDesk(this.zonePanelDiv);
+        if (this.zonePanelDiv !== panel) return;
+        appendReceptionDesk(panel);
+        // The desk lands above the form: an anchor on the form re-aims.
+        if (opts?.anchor) this.scrollToAnchor(opts.anchor, false);
       });
       this.appendLeadForm(this.zonePanelDiv);
     }
@@ -7297,6 +7331,8 @@ export class SimpleUI {
       }
       this.addScrollFade(panel, '#000');
     }
+    // Opened at a card or a block (P2-D5): it scrolls in under the nav.
+    if (opts?.anchor) this.scrollToAnchor(opts.anchor, true);
 
     // Reflect the open zone in the URL so a visitor can copy/share a deep link
     // (e.g. /?zone=projects); cleared again on close. Param-scoped so it never
@@ -7467,6 +7503,56 @@ export class SimpleUI {
     this.showZonePanel({ id, name: id }, { source: 'strip' });
   }
 
+  /** The open panel's anchor: a Projects card by data-project, else an id. */
+  private anchorTarget(anchor: string): HTMLElement | null {
+    const panel = this.zonePanelDiv;
+    // Ids only (A's landmarks pass theirs through): no selector syntax.
+    if (!panel || !/^[a-z][\w-]*$/i.test(anchor)) return null;
+    return panel.querySelector<HTMLElement>(`[data-project="${anchor}"], #${anchor}`);
+  }
+
+  /** The anchor's own heading takes focus: never a field (no phone keyboard). */
+  private anchorHeading(anchor: string): HTMLElement | null {
+    const target = this.anchorTarget(anchor);
+    return target?.querySelector<HTMLElement>('h3, h4') ?? target;
+  }
+
+  /** Where scrollToAnchor last left the panel's scroller. */
+  private anchorScrollTop = -1;
+
+  /**
+   * Scroll the open panel so its anchor's top sits just under the sticky
+   * section nav (P2-D5), then ring its border once, never under reduced
+   * motion. `first` false re-aims after content lands above the anchor (the
+   * reception desk above the message form), unless the scroller has moved
+   * since: the visitor's own scroll, or the browser's scroll anchoring that
+   * already kept the anchor in place.
+   */
+  private scrollToAnchor(anchor: string, first: boolean): void {
+    const panel = this.zonePanelDiv;
+    const target = this.anchorTarget(anchor);
+    if (!panel || !target) return;
+    if (!first && panel.scrollTop !== this.anchorScrollTop) return;
+    const nav = panel.querySelector<HTMLElement>('[data-panel-nav]');
+    const below = panel.getBoundingClientRect().top + panel.clientTop + (nav?.offsetHeight ?? 0);
+    panel.scrollTop += target.getBoundingClientRect().top - below - 8;
+    this.anchorScrollTop = panel.scrollTop;
+    if (!first || a11y.reducedMotion || typeof target.animate !== 'function') return;
+    // An outline ring, so the plain rows (digiscalability, banos, insta) ring
+    // like the bordered cards; it follows their radius.
+    const ring = (alpha: number): Keyframe => ({
+      outlineStyle: 'solid',
+      outlineWidth: '2px',
+      outlineOffset: '3px',
+      outlineColor: `rgba(255, 212, 121, ${alpha})`,
+      boxShadow: `0 0 ${alpha ? 18 : 0}px rgba(255, 212, 121, ${alpha * 0.35})`,
+    });
+    target.animate([ring(0), { ...ring(0.95), offset: 0.35 }, ring(0)], {
+      duration: 1400,
+      easing: 'ease-in-out',
+    });
+  }
+
   /**
    * A 24 px fade at the bottom of a scroller that overflows, gone at the end
    * (D5, UX-09: no scroll cue anywhere in short landscape).
@@ -7617,12 +7703,22 @@ export class SimpleUI {
       `<span style="background:#33333f;padding:5px 11px;border-radius:15px;font-size:13px;">${t}</span>`;
     // Optional lazy thumbnail — hidden by the error handler in showZonePanel if
     // the asset isn't present, so the panels never depend on the images shipping.
-    const thumb = (src: string, alt: string): string =>
-      `<img src="${src}" alt="${alt}" loading="lazy" style="width:100%;max-height:150px;object-fit:cover;
+    // Its intrinsic size reserves the box before it loads: a lazy load grew the
+    // card under a Projects panel opened at a lower card (P2-D5).
+    const thumb = (src: string, alt: string, w: number, h: number): string =>
+      `<img src="${src}" alt="${alt}" loading="lazy" width="${w}" height="${h}" style="width:100%;height:auto;max-height:150px;object-fit:cover;
         object-position:top;border-radius:10px;margin:8px 0 4px;display:block;border:1px solid rgba(255,255,255,0.08);" />`;
-    const card = (inner: string): string =>
-      `<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);
+    // `project`: the card's data-project id, the anchor the hire card's
+    // Selected work rows open Projects at (P2-D5).
+    const card = (inner: string, project?: string): string =>
+      `<div${project ? ` data-project="${project}"` : ''} style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);
         border-radius:12px;padding:14px;margin:12px 0;text-align:left;">${inner}</div>`;
+    // One Selected work row: an outline button that opens Projects at a card.
+    const workRow = (project: string, name: string, status: string): string =>
+      `<button type="button" data-open-project="${project}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;margin:6px 0 0;${
+        this.isTouch ? 'min-height:44px;' : ''
+      }padding:9px 12px;border-radius:10px;background:transparent;color:#e8edf5;border:1px solid rgba(255,212,121,0.4);font-size:13.5px;text-align:left;cursor:pointer;">
+        <span><strong>${name}</strong> · ${status}</span><span aria-hidden="true" style="color:#ffd479;">›</span></button>`;
 
     const contents: { [key: string]: string } = {
       welcome: `
@@ -7677,7 +7773,8 @@ export class SimpleUI {
       `,
       projects: `
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
-        ${card(`
+        ${card(
+          `
           <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:11px;color:#ffd479;">● you are standing in it</span></h3>
           <p style="margin:6px 0;font-size:13.5px;">The flagship: a multiplayer 3D world (Three.js +
           TypeScript) where <strong>${aiCount} villagers talk through Claude Haiku 4.5</strong>. A
@@ -7694,7 +7791,9 @@ export class SimpleUI {
             ${link(OWNER.repo, '💻 Source')}
             ${link(`${OWNER.repo}#how-it-is-built`, "🧭 How it's built")}
           </div>
-        `)}
+        `,
+          'island',
+        )}
         ${card(`
           <h3 style="margin:0 0 6px;">🛡️ How the AI is kept safe and cheap</h3>
           <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.5;">
@@ -7717,7 +7816,8 @@ export class SimpleUI {
             ${link(`${OWNER.repo}/blob/main/functions/src/index.ts`, '💻 See the code')}
           </div>
         `)}
-        ${card(`
+        ${card(
+          `
           <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#ffcc80;">● live, pre-launch</span></h3>
           <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Problem:</strong>
           search is shifting from ten blue links to AI answers — and most sites are invisible to
@@ -7727,25 +7827,36 @@ export class SimpleUI {
           what to fix. Solo build.</p>
           <p style="margin:6px 0;font-size:13px;color:#cdd6e4;"><strong>Status:</strong> live, pre-launch: no users beyond test accounts.</p>
           <div style="margin-top:6px;">${link('https://rankpilot-h3jpc.web.app', '↗ Pre-launch demo', { small: true })}</div>
-        `)}
-        ${card(`
+        `,
+          'rankpilot',
+        )}
+        ${card(
+          `
           <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:11px;color:#aab;">● paused</span></h3>
-          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront')}
+          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront', 820, 384)}
           <p style="margin:6px 0;font-size:13.5px;">Direct-to-consumer chocolate brand —
           the storefront, brand system, and content pipeline, end to end. Paused.</p>
           <div style="margin-top:6px;">${link('https://chocomate.au', '↗ chocomate.au', { small: true })}</div>
-        `)}
+        `,
+          'chocomate',
+        )}
         <div style="text-align:left;">
+          <div data-project="digiscalability">
           <h3 style="margin-bottom:4px;margin-top:14px;">🌐 digiscalability.com</h3>
           <p style="margin-top:4px;font-size:13.5px;">My business site, built solo: Next.js 15 +
           Firebase on Vercel.
           ${link('https://digiscalability.com', '↗ digiscalability.com')}</p>
+          </div>
+          <div data-project="banos">
           <h3 style="margin-bottom:4px;margin-top:14px;">📖 Bano's Cookbook</h3>
           <p style="margin-top:4px;font-size:13.5px;">Digitising my mother's (Ammi's) handwritten recipes from 1981.</p>
+          </div>
+          <div data-project="insta">
           <h3 style="margin-bottom:4px;margin-top:14px;">🧰 Insta Services API</h3>
           <p style="margin-top:4px;font-size:13.5px;">Modernising an inherited 2016 Java system
           (Java API + Android app) with login rate limiting, health checks and nightly
           backups.</p>
+          </div>
         </div>
         ${emailRow(true)}
       `,
@@ -7818,6 +7929,16 @@ export class SimpleUI {
             background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
             🎬 Or watch the highlights tour (under a minute)</button>
         </div>
+        <div data-selected-work style="margin:16px 0 0;text-align:left;">
+          <h3 style="margin:0 0 2px;font-size:15px;">Selected work</h3>
+          ${workRow('island', 'This island', 'open source (MIT)')}
+          ${workRow('rankpilot', 'RankPilot', 'live, pre-launch: no users beyond test accounts')}
+          ${workRow('digiscalability', 'digiscalability.com', 'Next.js 15 + Firebase')}
+        </div>
+        <p data-education style="margin:14px 0 0;font-size:13px;line-height:1.5;text-align:left;color:#dde3ee;">
+          <strong>Education:</strong> BSc Computer Science, SZABIST, Islamabad (2016) · Master of
+          Information Technology (coursework), Deakin University, 2017–2019: 11 of 16 credit points
+          completed</p>
         <h3 style="margin:16px 0 4px;font-size:15px;text-align:left;">Experience</h3>
         <ul style="margin:0;padding:0;list-style:none;text-align:left;font-size:13px;line-height:1.45;">
           ${xp('Founder &amp; lead developer', 'DigiScalability, Melbourne', 'Jan 2025 – present')}

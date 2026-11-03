@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { a11y } from '../Accessibility';
+import { Passport } from '../Passport';
 import { SimpleUI } from '../SimpleUI';
 
 const AVAILABILITY =
@@ -510,5 +512,169 @@ describe('the recruiter path in one click (D5)', () => {
     );
     expect(filled.map((b) => b.dataset.section)).toEqual(['hire']);
     expect(filled[0].getAttribute('style')).toMatch(/color:\s*(#1b1400|rgb\(27, 20, 0\))/i);
+  });
+});
+
+// P2-D5: the hire card names the work and the education, and each Selected
+// work row opens Projects at that project's card: scrolled in under the
+// section nav, focus on the card's heading, its border ringed once (never
+// under reduced motion). ?zone stays 'projects'. The 'landmark' source (A's
+// hall exhibits and project sites) opens a panel without stamping the passport.
+describe('the hire card names the work, and Projects opens at it (P2-D5)', () => {
+  const events = (): Array<{ name: string; props?: Record<string, unknown> }> =>
+    window.__analyticsLog ?? [];
+  const zoneParam = (): string | null => new URL(location.href).searchParams.get('zone');
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate');
+  let rung: HTMLElement[] = [];
+  const animate = vi.fn(function (this: HTMLElement) {
+    rung.push(this);
+  });
+
+  beforeEach(() => {
+    window.__analyticsLog = [];
+    rung = [];
+    animate.mockClear();
+    // happy-dom has no Web Animations: a spy stands in for Element.animate.
+    Object.defineProperty(HTMLElement.prototype, 'animate', {
+      value: animate,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    if (own) Object.defineProperty(HTMLElement.prototype, 'animate', own);
+    else delete (HTMLElement.prototype as { animate?: unknown }).animate;
+    a11y.setReducedMotion(false);
+  });
+
+  /** happy-dom has no layout: the panel sits at 100 and the card at 640. */
+  const layout = (project: string): void => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const top = this.dataset.project === project ? 640 : this.dataset.zone ? 100 : 0;
+      return new DOMRect(0, top, 0, 0);
+    });
+  };
+
+  test('Selected work: three rows from the Fact Sheet, then Education, above Experience', () => {
+    ui.showHireCard('cta');
+    const card = panel();
+    const rows = [
+      ...card.querySelectorAll<HTMLButtonElement>('[data-selected-work] button[data-open-project]'),
+    ];
+    // The name a screen reader hears: the row's text without its aria-hidden ›.
+    const name = (b: HTMLElement): string => text(b.querySelector('span:not([aria-hidden])')!);
+    expect(rows.map((b) => [b.dataset.openProject, name(b)])).toEqual([
+      ['island', 'This island · open source (MIT)'],
+      ['rankpilot', 'RankPilot · live, pre-launch: no users beyond test accounts'],
+      ['digiscalability', 'digiscalability.com · Next.js 15 + Firebase'],
+    ]);
+    expect(rows.every((b) => text(b.querySelector('[aria-hidden="true"]')!) === '›')).toBe(true);
+    // Below the email row, above Experience; the availability line still once.
+    const xp = [...card.querySelectorAll('h3')].find((h) => text(h) === 'Experience')!;
+    const order = [
+      card.querySelector('[data-email]')!,
+      card.querySelector('[data-selected-work]')!,
+      card.querySelector('[data-education]')!,
+      xp,
+    ];
+    for (let i = 1; i < order.length; i++) {
+      const after = order[i - 1].compareDocumentPosition(order[i]);
+      expect(after & Node.DOCUMENT_POSITION_FOLLOWING, String(i)).toBeTruthy();
+    }
+    expect(text(card).split(AVAILABILITY).length - 1).toBe(1);
+    // The Education line is the Professional panel's, word for word.
+    const edu = text(card.querySelector('[data-education]')!);
+    ui.showZonePanel({ id: 'professional', name: 'professional' }, { source: 'menu' });
+    const head = [...panel().querySelectorAll('h3')].find((h) => text(h) === 'Education')!;
+    const lines = [head.nextElementSibling!, head.nextElementSibling!.nextElementSibling!];
+    expect(edu).toBe(`Education: ${lines.map(text).join(' · ')}`);
+  });
+
+  test('every project in the Projects panel carries its data-project id', () => {
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    const cards = [...panel().querySelectorAll<HTMLElement>('[data-project]')];
+    expect(cards.map((c) => c.dataset.project)).toEqual([
+      'island',
+      'rankpilot',
+      'chocomate',
+      'digiscalability',
+      'banos',
+      'insta',
+    ]);
+    for (const c of cards) expect(c.querySelector('h3'), c.dataset.project).toBeTruthy();
+    expect(animate).not.toHaveBeenCalled(); // no anchor, no ring
+  });
+
+  test.each(['island', 'rankpilot', 'digiscalability'])(
+    'the %s row opens Projects at its card, ringed once, focus on its heading',
+    async (id) => {
+      layout(id);
+      ui.showHireCard('cta');
+      panel().querySelector<HTMLButtonElement>(`button[data-open-project="${id}"]`)!.click();
+      const p = panel();
+      expect(p.dataset.zone).toBe('projects');
+      expect(zoneParam()).toBe('projects'); // the anchor never reaches the URL
+      const card = p.querySelector<HTMLElement>(`[data-project="${id}"]`)!;
+      // The card's top lands 8 px under the nav (no height in happy-dom).
+      expect(p.scrollTop).toBe(640 - 100 - 8);
+      expect(rung).toEqual([card]);
+      await Promise.resolve();
+      expect(document.activeElement).toBe(card.querySelector('h3'));
+      // One prop of its own, so the event keeps its src attribution.
+      expect(events().find((e) => e.name === 'hire_cta')?.props).toEqual({
+        cta: `project_${id}`,
+        src: 'direct',
+      });
+    },
+  );
+
+  test('under reduced motion there is no ring; the panel still opens at the card', async () => {
+    a11y.setReducedMotion(true);
+    layout('rankpilot');
+    ui.showHireCard('cta');
+    panel().querySelector<HTMLButtonElement>('button[data-open-project="rankpilot"]')!.click();
+    expect(animate).not.toHaveBeenCalled();
+    expect(panel().scrollTop).toBe(532);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(panel().querySelector('[data-project="rankpilot"] h3'));
+  });
+
+  test("'landmark' opens a panel without a stamp; walking up still stamps", () => {
+    const passport = new Passport();
+    ui.setPassport(passport);
+    ui.showZonePanel(
+      { id: 'projects', name: 'projects' },
+      { source: 'landmark', anchor: 'chocomate' },
+    );
+    expect(passport.count()).toBe(0);
+    expect(ui.panels.current()).toBe('zone');
+    expect(zoneParam()).toBe('projects');
+    expect(rung.map((c) => c.dataset.project)).toEqual(['chocomate']);
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'proximity' });
+    expect(passport.count()).toBe(1);
+  });
+
+  test('an unknown or malformed anchor opens the panel at its top, focus on its heading', async () => {
+    for (const anchor of ['nope', 'x"], *', '1st', '']) {
+      expect(() =>
+        ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'landmark', anchor }),
+      ).not.toThrow();
+      expect(panel().scrollTop, anchor).toBe(0);
+      await Promise.resolve();
+      expect(document.activeElement, anchor).toBe(panel().querySelector('h2'));
+    }
+    expect(animate).not.toHaveBeenCalled();
+  });
+
+  test('Send a message opens Contact at its form: focus on its heading, never a field', async () => {
+    ui.showHireCard('cta');
+    panel().querySelector<HTMLButtonElement>('button[data-hire-contact]')!.click();
+    expect(zoneParam()).toBe('contact');
+    expect(rung.map((el) => el.id)).toEqual(['lead-form-block']);
+    await Promise.resolve();
+    expect(text(document.activeElement!)).toBe('Or send a message');
   });
 });

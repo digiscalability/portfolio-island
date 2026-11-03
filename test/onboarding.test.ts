@@ -163,7 +163,12 @@ describe('the welcome card hierarchy matches the audience', () => {
     expect(ui).toContain("track('hire_cta', { cta: 'message' });");
     expect(ui).toContain("track('hire_cta', { cta: 'tour' });");
     expect(ui).toContain("track('cta_pill_click');");
-    expect(ui).toMatch(/source\?: 'proximity' \| 'menu' \| 'deeplink' \| 'cta' \| 'strip'/);
+    // P2-D5: the Selected work rows say which project, in hire_cta's one prop
+    // (it keeps its src), and 'landmark' joins zone_explored's sources for A.
+    expect(ui).toContain("track('hire_cta', { cta: `project_${project}` });");
+    expect(ui).toMatch(
+      /source\?: 'proximity' \| 'menu' \| 'deeplink' \| 'cta' \| 'strip' \| 'landmark';/,
+    );
     const keyEvents = stripped('Analytics.ts');
     const set = keyEvents.slice(keyEvents.indexOf('const KEY_EVENTS'), keyEvents.indexOf(']);'));
     expect(set).toContain("'hire_chip_click'");
