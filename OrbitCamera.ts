@@ -92,6 +92,11 @@ export class OrbitCamera {
   private reducedRecentrePending = false;
   private static readonly REDUCED_IDLE_S = 0.5;
   private static readonly REDUCED_RECENTRE_RATE = 0.59; // rad/s
+  // A frame the world takes no input (holdMoveInput) is not a still frame:
+  // the movement tracker and the recentre sit it out. `moveHeld` is the
+  // request, `inputHeld` what this update() read from it.
+  private moveHeld = false;
+  private inputHeld = false;
 
   private smoothness: number = 0.16; // interpolation factor for smooth camera — was 0.2; the slightly lazier follow is part of the calm-locomotion pass (pairs with the 8.0→5.6 walk speed)
   // True only while flyInFromDistant owns the camera. The intro fly-in runs on
@@ -637,10 +642,12 @@ export class OrbitCamera {
     }
   }
 
-  /** Reduced motion, on foot, idle for 0.5 s since moving, and no manual look since. */
+  /** Reduced motion, on foot, idle for 0.5 s since moving, no manual look
+   *  since, and the world listening this frame (holdMoveInput). */
   private reducedRecentreDue(): boolean {
     return (
       this.reducedRecentrePending &&
+      !this.inputHeld &&
       a11y.reducedMotion &&
       !this.rideMode &&
       this.sinceMoveInput >= OrbitCamera.REDUCED_IDLE_S
@@ -677,8 +684,32 @@ export class OrbitCamera {
     this.moveStrafe = Number.isFinite(strafe) ? strafe : 0;
   }
 
+  /**
+   * This frame the world takes no input: a panel that is not walkable, the
+   * welcome card or the loader owns the moment (main-simple's holdWorldInput).
+   * That is not a stop: the visitor did not stand still, the world stopped
+   * listening. Counted as idle, these frames used to set off the
+   * reduced-motion recentre 0.5 s after a panel opened, turning the camera
+   * behind it. Now the movement tracker skips them and the recentre waits:
+   * once input is back, the idle clock carries on from where it stopped, and
+   * a recentre that was under way finishes. Read and cleared by update(),
+   * like setMoveInput.
+   */
+  public holdMoveInput(): void {
+    this.moveHeld = true;
+  }
+
   /** Track the movement input for the follow's turn hold and the reduced-motion recentre. */
   private trackMoveInput(dt: number): void {
+    this.inputHeld = this.moveHeld;
+    this.moveHeld = false;
+    if (this.inputHeld) {
+      // Paused, not idle: the idle clock, the turn hold and its reference
+      // direction all keep their values.
+      this.moveForward = 0;
+      this.moveStrafe = 0;
+      return;
+    }
     this.followHold = Math.max(0, this.followHold - dt);
     if (Math.hypot(this.moveForward, this.moveStrafe) > 0.1) {
       const ang = Math.atan2(this.moveStrafe, this.moveForward);

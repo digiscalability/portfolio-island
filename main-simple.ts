@@ -3380,8 +3380,11 @@ class SimpleApp {
    * the avatar is doing (on foot, driving, indoors), latched presses are
    * dropped, and banked look and pinch input is drained so it cannot land
    * as one whip when the moment ends — the tour branch's drain, for all.
+   * The chase camera is told the frame is held, not still: taken for a stop,
+   * it used to start the reduced-motion recentre behind an open panel.
    */
   private holdWorldInput(): void {
+    this.scene.getOrbitCamera().holdMoveInput();
     this.scene.setPlayerMovement(0, 0);
     if (this.scene.isRidingVehicle()) {
       this.scene.setVehicleMove(0, 0);

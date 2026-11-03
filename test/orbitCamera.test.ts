@@ -437,3 +437,73 @@ describe('reduced motion: no follow on foot, a calm recentre once still (A5)', (
     expect(fastest).toBeGreaterThan(0.5);
   });
 });
+
+// ---- A2 meets A5: a frame the world takes no input is not a stop -----------
+
+/** `seconds` of frames behind a panel that is not walkable: held, no input. */
+const heldFor = (cam: OrbitCamera, seconds: number) => {
+  for (let t = 0; t < seconds - 1e-9; t += 1 / 60) {
+    cam.holdMoveInput();
+    cam.update(1 / 60);
+  }
+};
+const BEHIND_EAST = new THREE.Vector3(-1, 0, 0); // the camera's spot behind a player facing +X
+
+describe('held frames are not a stop: no recentre behind a panel (A2 × A5)', () => {
+  test('walk, then 3 s behind a panel: the camera holds still', () => {
+    // The integration review: A held 1.2 s, then the Portfolio menu at once,
+    // and the view turned 90° behind the open menu in 3 s.
+    a11y.reducedMotion = true;
+    const { player, cam } = rig();
+    player.facing.set(1, 0, 0); // strafed east, facing east
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 1.2, [0, 1]);
+    player.vel.set(0, 0, 0);
+    const f0 = followDirOf(cam).clone();
+    heldFor(cam, 3);
+    expect(followDirOf(cam).angleTo(f0) * DEG).toBeLessThan(0.01);
+  });
+
+  test('the idle clock pauses behind the panel and carries on after it', () => {
+    a11y.reducedMotion = true;
+    const { player, cam } = rig();
+    player.facing.set(1, 0, 0);
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 1, [0, 1]);
+    player.vel.set(0, 0, 0);
+    run(cam, 0.3, 1 / 60); // still for 0.3 s, then the panel opens
+    heldFor(cam, 3);
+    const f0 = followDirOf(cam).clone();
+    run(cam, 0.1, 1 / 60); // 0.4 s still in all: not yet
+    expect(followDirOf(cam).angleTo(f0) * DEG).toBeLessThan(0.01);
+    run(cam, 0.3, 1 / 60); // 0.7 s: under way
+    expect(followDirOf(cam).angleTo(f0) * DEG).toBeGreaterThan(1);
+    run(cam, 4, 1 / 60);
+    expect(followDirOf(cam).angleTo(BEHIND_EAST) * DEG).toBeLessThan(1);
+  });
+
+  test('a recentre under way waits behind the panel, then finishes', () => {
+    a11y.reducedMotion = true;
+    const { player, cam } = rig();
+    player.facing.set(1, 0, 0);
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 1, [0, 1]);
+    player.vel.set(0, 0, 0);
+    run(cam, 1.2, 1 / 60); // 0.5 s still, then about 0.7 s of turning
+    const f1 = followDirOf(cam).clone();
+    expect(f1.angleTo(new THREE.Vector3(0, 0, 1)) * DEG).toBeGreaterThan(10);
+    heldFor(cam, 3);
+    expect(followDirOf(cam).angleTo(f1) * DEG).toBeLessThan(0.01);
+    run(cam, 4, 1 / 60);
+    expect(followDirOf(cam).angleTo(BEHIND_EAST) * DEG).toBeLessThan(1);
+  });
+
+  test('a key held through the panel walks on after it, with no turn in between', () => {
+    // The phone case: the joystick still pushed as the drawer opens.
+    a11y.reducedMotion = true;
+    const { player, cam } = rig();
+    player.facing.set(1, 0, 0);
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 1, [0, 1]);
+    const f0 = followDirOf(cam).clone();
+    heldFor(cam, 3); // D still down behind the panel, the world deaf to it
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 1, [0, 1]); // the panel closes; D walks on
+    expect(followDirOf(cam).angleTo(f0) * DEG).toBeLessThan(0.5);
+  });
+});

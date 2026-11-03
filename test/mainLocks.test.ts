@@ -829,4 +829,13 @@ describe('stage-1 integration seams in main-simple', () => {
       "window.removeEventListener('popstate', this.boundHandlers.popState);",
     );
   });
+
+  test('a held frame is not a stop: holdWorldInput tells the chase camera (A2 × A5)', () => {
+    // Behind a panel that is not walkable the world hears no input, and the
+    // camera read the silence as a stop: under reduced motion it turned
+    // behind the open panel 0.5 s later (orbitCamera.test.ts has the rest).
+    expect(bodyOf(stripped('main-simple.ts'), 'private holdWorldInput(')).toContain(
+      'this.scene.getOrbitCamera().holdMoveInput();',
+    );
+  });
 });
