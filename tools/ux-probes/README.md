@@ -103,8 +103,8 @@ the JSON), and a run counts only if that log shows the boot
 | `strafe` | A5 | D held after a walk: heading and camera °/s; reduced motion; walk-away settle; fixed-pose camera frames (`--compare`) | heading 143°/s, camera 143°/s, reduced motion 143°/s |
 | `legspin` | B1 | first-visit standing jump on the frozen sim (1/60 s); legs vs π; mixer rewrites; landing hand jumps | legL −11.7 rad after landing and after 10 s idle; legs rewritten 0/300 |
 | `rig` | B1 | sit, ride and swim bone positions in the player's frame; `--compare` gives max \|Δ\| | main vs main: 0 |
-| `hitch` | B2 | 5-25 s after ready, idle on the card and walking: frames, LoAF, programs per render() and per compile, the warm, the first door entry | a 1.93 s frame; see the note below |
-| `seed` | B0 | `window.__dsSeedDraws` fresh, `ds_arrived='1'`, three reloads, low tier, vs `test/golden/seedDraws.json`; `--bless` writes the golden | counter absent |
+| `hitch` | B2 | 5-25 s after ready, idle on the card and walking: frames, LoAF, programs per render() and per compile, the warm, the first door entry | a 1.9-2.2 s frame gaining 93 programs; see the note below |
+| `seed` | B0 | `window.__dsSeedDraws` fresh, `ds_arrived='1'`, three reloads, low tier, vs `test/golden/seedDraws.json`; `--bless` writes the golden as `{ "desktop": { "total", "marks" }, "lowtier": { "total", "marks" } }` (only when every desktop run agrees) | counter absent |
 | `guide-me` | D1 | Leaderboard → Guide me: panels, scrim, chip opacity, touch controls | stack `['leaderboard']`, scrim up, controls hidden |
 | `back` | D2 | the eight history cases | Back from Projects lands on `about:blank` |
 | `contrast` | D3 | filled-button labels at `?hour=6/12/18/21` on 1440 and 390, touch captions over grass/sand/sky, the focus ring | Work with me 2.97:1, Explore 2.97:1, Send 3.17:1, USE 3.16:1 over grass |

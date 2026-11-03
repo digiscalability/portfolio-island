@@ -301,7 +301,15 @@ async function seed(t) {
     const out = { desktop: { total: desk[0].seed.total, marks: desk[0].seed.marks } };
     if (low.length && low[0].seed) out.lowtier = { total: low[0].seed.total, marks: low[0].seed.marks };
     fs.mkdirSync(path.dirname(GOLDEN), { recursive: true });
-    fs.writeFileSync(GOLDEN, JSON.stringify(out, null, 2) + '\n');
+    // JSON goldens are prettier-formatted (format:check covers *.json).
+    let text = JSON.stringify(out, null, 2) + '\n';
+    try {
+      const prettier = require(require.resolve('prettier', { paths: [lib.REPO] }));
+      text = await prettier.format(text, { ...((await prettier.resolveConfig(GOLDEN)) || {}), parser: 'json' });
+    } catch (e) {
+      t.data.blessNote = `written without prettier: ${String(e).slice(0, 120)}`;
+    }
+    fs.writeFileSync(GOLDEN, text);
     t.data.blessed = GOLDEN.replace(/\\/g, '/');
   }
 }
