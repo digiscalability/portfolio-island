@@ -1600,9 +1600,10 @@ export class SimpleUI {
 
   /** Escape user-provided text before it goes into innerHTML. Guestbook notes
    *  and peer names are shown to OTHER visitors, so this is a real XSS guard —
-   *  cleanChatText masks slurs but does not neutralise markup. */
-  private escapeHtml(s: string): string {
-    return s.replace(
+   *  cleanChatText masks slurs but does not neutralise markup. Takes unknown
+   *  because network fields are not type-checked on arrival. */
+  private escapeHtml(s: unknown): string {
+    return String(s ?? '').replace(
       /[&<>"']/g,
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
     );
@@ -4363,7 +4364,7 @@ export class SimpleUI {
            font-size:13px; line-height:1.55; text-align:left;">
            <div style="font-weight:600; color:#8a9bff; margin-bottom:2px;">While you were away (${awayDelta.daysAway}d)</div>
            ${awayDelta.editions > 0 ? `📰 ${awayDelta.editions} new edition${awayDelta.editions > 1 ? 's' : ''} of the Island Times<br>` : ''}
-           ${awayDelta.headline ? `🏝️ ${awayDelta.headline} ${awayDelta.weather ? (WGLYPH[awayDelta.weather] ?? '') : ''}<br>` : ''}
+           ${awayDelta.headline ? `🏝️ ${this.escapeHtml(awayDelta.headline)} ${awayDelta.weather ? (WGLYPH[awayDelta.weather] ?? '') : ''}<br>` : ''}
            <span id="wlc-gb">✍️ checking the guestbook…</span>
          </div>`
       : '';
@@ -4919,10 +4920,10 @@ export class SimpleUI {
         .map(
           (
             p,
-          ) => `<div data-peer="${p.id}" style="display:flex;align-items:center;justify-content:space-between;
+          ) => `<div data-peer="${this.escapeHtml(p.id)}" style="display:flex;align-items:center;justify-content:space-between;
             gap:10px;padding:10px 12px;margin:6px 0;background:rgba(255,255,255,0.04);border-radius:10px;">
-            <span style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👤 ${p.name}</span>
-            <button data-mute="${p.id}" style="flex:0 0 auto;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
+            <span style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👤 ${this.escapeHtml(p.name)}</span>
+            <button data-mute="${this.escapeHtml(p.id)}" style="flex:0 0 auto;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
               background:${p.muted ? 'rgba(255,90,90,0.25)' : 'rgba(255,255,255,0.08)'};color:#fff;font-size:13px;cursor:pointer;">
               ${p.muted ? '🔇 Muted' : '🔊 Mute'}</button>
           </div>`,
