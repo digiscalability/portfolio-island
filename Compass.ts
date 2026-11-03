@@ -15,6 +15,8 @@
  * guide and "Ask the townsfolk" — so they are all fixed here. The radar and
  * the island-map heading are separate code paths.
  *
+ * The order the pill picks its target in (compassTarget) lives here too.
+ *
  * Pure, so test/compassArrow.test.ts runs it without a scene.
  */
 
@@ -41,4 +43,91 @@ export function compassBearing(camForward: Vec3Like, toTarget: Vec3Like, normal:
   const cz = toTarget.x * camForward.y - toTarget.y * camForward.x;
   const dot = camForward.x * toTarget.x + camForward.y * toTarget.y + camForward.z * toTarget.z;
   return Math.atan2(cx * normal.x + cy * normal.y + cz * normal.z, dot);
+}
+
+/**
+ * Where the pill points, one target at a time (A7, with P2-A3's order).
+ *
+ * The first available source wins:
+ * 1. the island-map pick, and for 8 s after it is reached, the arrival hold;
+ * 2. the race-start guide;
+ * 3. meet-the-townsfolk;
+ * 4. the trail villager, while the first-visit coins are down, until the
+ *    visitor reaches them, stamps a district or picks a place (a missed coin
+ *    must not pull the pill back to the spawn);
+ * 5. Projects, until it is stamped (Projects and Professional tie at
+ *    103.3 m from the spawn, so "nearest" alone flipped between them);
+ * 6. the nearest unstamped district;
+ * 7. a parcel, but only once the passport is complete or the visitor has
+ *    collected a parcel this session: the ten-stop courier chain used to take
+ *    the pill at the first stamp and never give it back;
+ * 8. nothing.
+ */
+export type CompassSource =
+  | 'map'
+  | 'hold'
+  | 'race'
+  | 'ai'
+  | 'trail'
+  | 'projects'
+  | 'district'
+  | 'parcel';
+
+export interface CompassState {
+  /** An island-map pick (or a 'ds:guide-to' key) is set. */
+  mapPick: boolean;
+  /** A map pick was reached under 8 s ago: the pill holds on it. */
+  arrivalHold: boolean;
+  /** "Beat the lap record": the start gate. */
+  raceGuide: boolean;
+  /** "Ask the townsfolk": the Storyteller. */
+  aiGuide: boolean;
+  /** A trail villager was chosen at Explore, its coins are still down, and
+   *  the visitor has not reached it, stamped a district or picked a place. */
+  trailVillager: boolean;
+  /** Projects exists and is not stamped. */
+  projectsUnstamped: boolean;
+  /** Another district is unstamped. */
+  districtUnstamped: boolean;
+  /** An active delivery has a mailbox to go to. */
+  parcelActive: boolean;
+  passportComplete: boolean;
+  /** A parcel was collected this session. */
+  deliveryOptIn: boolean;
+}
+
+export function compassTarget(s: CompassState): CompassSource | null {
+  if (s.mapPick) return 'map';
+  if (s.arrivalHold) return 'hold';
+  if (s.raceGuide) return 'race';
+  if (s.aiGuide) return 'ai';
+  if (s.trailVillager) return 'trail';
+  if (s.projectsUnstamped) return 'projects';
+  if (s.districtUnstamped) return 'district';
+  if (s.parcelActive && (s.passportComplete || s.deliveryOptIn)) return 'parcel';
+  return null;
+}
+
+/** How much closer another district must be before the pill switches to it. */
+export const DISTRICT_HYSTERESIS_U = 12;
+
+/**
+ * The nearest candidate, except that the current one is kept until another
+ * is at least `margin` closer: walking between two districts of nearly equal
+ * distance must not flip the pill back and forth.
+ */
+export function nearestWithHysteresis(
+  current: string | null,
+  candidates: ReadonlyArray<{ id: string; dist: number }>,
+  margin = DISTRICT_HYSTERESIS_U,
+): string | null {
+  let best: { id: string; dist: number } | null = null;
+  let cur: { id: string; dist: number } | null = null;
+  for (const c of candidates) {
+    if (!best || c.dist < best.dist) best = c;
+    if (c.id === current) cur = c;
+  }
+  if (!best) return null;
+  if (cur && best.dist > cur.dist - margin) return cur.id;
+  return best.id;
 }

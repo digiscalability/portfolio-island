@@ -857,3 +857,76 @@ describe('stage-1 integration seams in main-simple', () => {
     );
   });
 });
+
+// ---- stage-2 wiring (wave 1) ---------------------------------------------
+// compassArrow.test.ts holds compassTarget's order table; these pin that
+// main-simple actually routes the pill through it.
+describe('A7: one compass target at a time (the zone branch, replaced)', () => {
+  const qc = (): string => bodyOf(stripped('main-simple.ts'), 'private updateQuestCompass(');
+
+  test('the pill picks its source through compassTarget, not a branch chain', () => {
+    const body = qc();
+    expect(body).toContain('switch (compassTarget(st)) {');
+    // The 'after the first stamp, active deliveries take priority' rule is gone.
+    expect(body).not.toContain('portfolioFirst');
+    expect(body).not.toContain("'📬 Delivery'");
+    // Parcels have their own glyph; 📬 means Contact only.
+    expect(body).toContain("label = '📦 Parcel';");
+    expect(body).toContain('st.deliveryOptIn = this.deliveryOptIn;');
+    // The trail villager is named, and only while the coins are down and the
+    // trail has not done its job (reached, a stamp, or a pick elsewhere).
+    expect(body).toContain('this.trailVillager && !this.trailDone && this.scene.hasTrailCoins()');
+    expect(body).toContain("label = this.trailVillager ?? '';");
+    expect(body).toContain('if ((passport?.count() ?? 0) > 0) this.trailDone = true;');
+    // where the coins lead: the seat, so the pill and the coins never fork;
+    // reaching the seat, any conversation or a pick elsewhere ends the trail
+    expect(body).toContain('? this.trailSeat(this.trailVillager)');
+    expect(body).toContain(
+      'if (trailPos && playerPos.distanceTo(trailPos) < SimpleApp.TRAIL_REACHED_U) {',
+    );
+    for (const m of ['private setMapPick(', 'private beginNpcDialogue(']) {
+      expect(bodyOf(stripped('main-simple.ts'), m), m).toContain('this.trailDone = true;');
+    }
+  });
+
+  test('a district pick ends at its door; anything else at 6 u; then an 8 s hold', () => {
+    const body = qc();
+    expect(body).toContain(
+      'if (zone !== null ? this.doorPromptZone === zone || d < 3.2 : d < 6) {',
+    );
+    expect(body).toContain('until: now + 8000,');
+    expect(body).toContain("label: zone !== null ? enter : '✓ Here',");
+    // the door prompt sets the flag where it is shown, and every frame clears it
+    expect(stripped('main-simple.ts')).toContain('this.doorPromptZone = String(nearby.zone.id);');
+    expect(bodyOf(stripped('main-simple.ts'), 'private update(')).toContain(
+      'this.doorPromptZone = null;',
+    );
+  });
+
+  test('parcels opt in on a collected delivery; stamps 1-3 flash the next district once', () => {
+    const m = stripped('main-simple.ts');
+    expect(argsOf(m, 'this.deliverySystem.setOnDeliveryComplete(')).toContain(
+      'this.deliveryOptIn = true;',
+    );
+    const body = qc();
+    expect(body).toContain('if (stamps <= 3) this.pendingNextFlash = true;');
+    expect(body).toContain('`Next: ${next} — the gold arrow points the way.`');
+  });
+
+  test('phones end the intro facing the trail villager through setYaw', () => {
+    const m = stripped('main-simple.ts');
+    const intro = bodyOf(m, 'const afterIntro = () =>');
+    // chosen once, at the end of the intro, then faced
+    const pick = intro.indexOf('this.trailVillager = this.pickTrailVillager();');
+    expect(pick).toBeGreaterThan(-1);
+    expect(pick).toBeLessThan(intro.indexOf('this.faceTrailVillager();'));
+    expect(m.split('this.trailVillager = ').length - 1).toBe(1);
+    const face = bodyOf(m, 'private faceTrailVillager(');
+    expect(face).toContain('if (!this.coarsePointer) return;');
+    expect(face).toContain('const bearing = compassBearing(fwd.normalize(), to.normalize(), n);');
+    expect(face).toContain('cam.setYaw(cam.getYaw() - bearing);');
+    // the pick reads positions only: never Math.random (the seeded window)
+    expect(bodyOf(m, 'private pickTrailVillager(')).not.toContain('Math.random');
+    expect(bodyOf(m, 'private trailSeatVillager(')).toContain('if (d > 0.04 && d < best) {');
+  });
+});

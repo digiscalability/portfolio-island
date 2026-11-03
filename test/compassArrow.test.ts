@@ -7,7 +7,13 @@
 import * as THREE from 'three';
 import { describe, expect, test } from 'vitest';
 
-import { compassBearing } from '../Compass';
+import {
+  compassBearing,
+  compassTarget,
+  DISTRICT_HYSTERESIS_U,
+  nearestWithHysteresis,
+  type CompassState,
+} from '../Compass';
 
 const DEG = 180 / Math.PI;
 /** Wrap to (−180, 180]. */
@@ -96,5 +102,126 @@ describe('the arrow points where the target is', () => {
       const old = Math.atan2(cross.dot(n), f.dot(t));
       expect(compassBearing(f, t, n)).toBeCloseTo(-old, 12);
     }
+  });
+});
+
+// ---- one target at a time (A7 with P2-A3) ---------------------------------
+describe('compassTarget: the pill picks one target, in order', () => {
+  const none: CompassState = {
+    mapPick: false,
+    arrivalHold: false,
+    raceGuide: false,
+    aiGuide: false,
+    trailVillager: false,
+    projectsUnstamped: false,
+    districtUnstamped: false,
+    parcelActive: false,
+    passportComplete: false,
+    deliveryOptIn: false,
+  };
+  const all: CompassState = {
+    mapPick: true,
+    arrivalHold: true,
+    raceGuide: true,
+    aiGuide: true,
+    trailVillager: true,
+    projectsUnstamped: true,
+    districtUnstamped: true,
+    parcelActive: true,
+    passportComplete: false,
+    deliveryOptIn: true,
+  };
+
+  test('the order table: each source wins over everything after it', () => {
+    const order: Array<[keyof CompassState, string]> = [
+      ['mapPick', 'map'],
+      ['arrivalHold', 'hold'],
+      ['raceGuide', 'race'],
+      ['aiGuide', 'ai'],
+      ['trailVillager', 'trail'],
+      ['projectsUnstamped', 'projects'],
+      ['districtUnstamped', 'district'],
+    ];
+    const s: CompassState = { ...all };
+    for (const [key, source] of order) {
+      expect(compassTarget(s), `${key} on`).toBe(source);
+      s[key] = false;
+    }
+    // Only the parcel is left: the visitor collected one this session.
+    expect(compassTarget(s)).toBe('parcel');
+    expect(compassTarget(none)).toBeNull();
+  });
+
+  test('no candidate, so the branch is skipped', () => {
+    // No trail villager (asleep, out of range, or no trail at all): Projects.
+    expect(compassTarget({ ...none, trailVillager: false, projectsUnstamped: true })).toBe(
+      'projects',
+    );
+    // Projects stamped: the nearest other district.
+    expect(compassTarget({ ...none, districtUnstamped: true })).toBe('district');
+    // Nothing left and no parcel opted into: the pill hides.
+    expect(compassTarget({ ...none, parcelActive: true })).toBeNull();
+  });
+
+  test('Parcel never shows before 4 stamps unless a parcel was collected', () => {
+    // The courier chain always has an active parcel. After the first stamp it
+    // used to take the pill for the rest of the visit (GD-01, GP-01).
+    const afterFirstStamp = { ...none, districtUnstamped: true, parcelActive: true };
+    expect(compassTarget(afterFirstStamp)).toBe('district');
+    // Every district stamped but one, and no parcel collected: still districts.
+    expect(compassTarget({ ...afterFirstStamp, deliveryOptIn: false })).toBe('district');
+    // A parcel collected this session: once the districts are done, parcels.
+    expect(compassTarget({ ...none, parcelActive: true, deliveryOptIn: true })).toBe('parcel');
+    // The passport complete: parcels, opted in or not.
+    expect(compassTarget({ ...none, parcelActive: true, passportComplete: true })).toBe('parcel');
+    // Before the fourth stamp and without a parcel collected: never a parcel.
+    for (const projectsUnstamped of [true, false]) {
+      for (const districtUnstamped of [true, false]) {
+        const pick = compassTarget({
+          ...none,
+          projectsUnstamped,
+          districtUnstamped,
+          parcelActive: true,
+          passportComplete: false,
+          deliveryOptIn: false,
+        });
+        expect(pick).not.toBe('parcel');
+      }
+    }
+  });
+
+  test('Projects breaks the 103.3 m tie with Professional', () => {
+    // Both unstamped and equally far: the Projects branch comes first.
+    expect(compassTarget({ ...none, projectsUnstamped: true, districtUnstamped: true })).toBe(
+      'projects',
+    );
+  });
+});
+
+describe('nearestWithHysteresis: districts switch only when another is 12 u closer', () => {
+  test('the nearest wins when nothing is held', () => {
+    expect(
+      nearestWithHysteresis(null, [
+        { id: 'personal', dist: 80 },
+        { id: 'contact', dist: 60 },
+      ]),
+    ).toBe('contact');
+  });
+
+  test('the held district stays until another is at least 12 u closer', () => {
+    const at = (contact: number) =>
+      nearestWithHysteresis('personal', [
+        { id: 'personal', dist: 70 },
+        { id: 'contact', dist: contact },
+      ]);
+    expect(at(65)).toBe('personal');
+    expect(at(58.5)).toBe('personal');
+    expect(at(58)).toBe('contact');
+    expect(DISTRICT_HYSTERESIS_U).toBe(12);
+  });
+
+  test('a held district that is gone (stamped) is dropped', () => {
+    expect(nearestWithHysteresis('projects', [{ id: 'contact', dist: 90 }])).toBe('contact');
+    expect(nearestWithHysteresis('projects', [])).toBeNull();
   });
 });
