@@ -7569,9 +7569,14 @@ export class SimpleUI {
     const fade = document.createElement('div');
     fade.dataset.scrollFade = '1';
     fade.setAttribute('aria-hidden', 'true');
+    // Flush with the scroller's bottom edge. A sticky inset counts from inside
+    // the scroller's padding (the nav's top: -20px is the same rule), so
+    // bottom 0 floated the fade 20 px up, over the labels of the hire card's
+    // LinkedIn, CV and Code at 844x390.
+    const pad = parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
     Object.assign(fade.style, {
       position: 'sticky',
-      bottom: '0',
+      bottom: `${-pad}px`,
       height: '24px',
       marginTop: '-24px',
       pointerEvents: 'none',

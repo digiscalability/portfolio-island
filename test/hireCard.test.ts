@@ -473,6 +473,26 @@ describe('the recruiter path in one click (D5)', () => {
     expect(zoneParam()).toBe('contact');
   });
 
+  test('short landscape: the scroll fade sits flush with the bottom edge, not 20 px up', () => {
+    // A sticky inset counts from inside the scroller's padding: bottom 0 put
+    // the fade over the labels of LinkedIn, CV and Code at 844x390.
+    const tall = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+    Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
+    try {
+      ui.showHireCard('cta');
+      const p = panel();
+      const fade = p.querySelector<HTMLElement>('[data-scroll-fade]')!;
+      expect(fade).toBeTruthy();
+      expect(p.style.padding).toBe('20px');
+      expect(fade.style.bottom).toBe('-20px');
+      expect(p.querySelector<HTMLElement>('[data-hire-actions]')!.style.position).toBe('sticky');
+    } finally {
+      if (tall) Object.defineProperty(window, 'innerHeight', tall);
+      else delete (window as { innerHeight?: number }).innerHeight; // back to the prototype's
+    }
+    expect(window.innerHeight).toBeGreaterThan(500);
+  });
+
   test('‹ Portfolio reopens the menu at the section it came from', async () => {
     ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
     panel().querySelector<HTMLButtonElement>('[data-panel-nav] button[data-nav-back]')!.click();
