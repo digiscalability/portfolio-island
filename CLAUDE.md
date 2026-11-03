@@ -1,14 +1,14 @@
 # Portfolio Island (Life Island) — Claude Code context
 
-This repo is part of a multi-venture operator setup. **Portfolio Island / "DigiScalability Life Island" is a product under DigiScalability** (parent holding co).
+This repo is part of a multi-venture operator setup. **Portfolio Island / "DigiScalability Life Island" is a product of DigiScalability**, Abbas's sole-trader business.
 
 ## Status
 
-Venture status lives only in the Ventures register (`C:\claudeSessions\SoloBro\Home.md`); what is next is in `TASKS.md` › Portfolio Island beside it.
+Venture status and next steps live in Abbas's private notes, outside this repo.
 
 ## Operator context
 
-I'm Abbas — Melbourne-based, solo founder of DigiScalability (parent). Portfolio Island is the 3D interactive portfolio / "Life Island" product. Related product: Planet Messenger (integrated architecture — see `Integrated Architecture Design_ DigiScalability Life Island & Planet Messenger.md`).
+I'm Abbas — Melbourne-based, solo founder of DigiScalability. Portfolio Island is the 3D interactive portfolio / "Life Island" product. Inspiration: Messenger by Abeto (credited in `README.md`); there is no related product.
 
 When I arrive, assume I'm resuming. Never ask "what would you like to work on today?" first.
 
@@ -92,7 +92,7 @@ Before claiming a visual fix worked, capture a fresh screenshot of the affected 
 
 ## Cross-venture awareness
 
-Life Island + Planet Messenger share architecture (`Integrated Project Requirements_ DigiScalability Life Island & Planet Messenger.md`). If a change affects Planet Messenger's contract, note it in `.claude/LOCAL-STATE.md`; don't edit cross-repo.
+This repo stands alone; no other venture shares its code. If a change affects another venture (a shared link or fact, say), note it in `.claude/LOCAL-STATE.md`; don't edit cross-repo.
 
 ## Checkpoint protocol
 

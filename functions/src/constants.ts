@@ -11,6 +11,31 @@ export const MONTHLY_TOKEN_CAP = 4_000_000;
  *  hits" metric counts IPs that exceeded this same threshold. */
 export const IP_MAX_PER_WINDOW = 8;
 
+// ── Model calls ──────────────────────────────────────────────────────────────
+// One home for each model id and per-call limit, so the evals harness (evals/)
+// sends exactly what npcChat and the planner send.
+
+/** npcChat and the planner: Claude Haiku 4.5, pinned to a dated snapshot. */
+export const NPC_MODEL = 'claude-haiku-4-5-20251001';
+
+/** npcChat reply ceiling: short, in-character replies (also caps per-turn cost). */
+export const NPC_MAX_TOKENS = 120;
+
+/** npcChat clamps the visitor's message to this many characters. */
+export const NPC_MSG_MAX_CHARS = 300;
+
+/** The planner's reply ceiling: one minified JSON plan. */
+export const PLANNER_MAX_TOKENS = 400;
+
+/** The nightly analyst (analyst.ts). */
+export const ANALYST_MODEL = 'claude-sonnet-5';
+
+/** Why npcChat answered with a scripted line instead of the model. Each is a
+ *  key under aiUsage/{month}/fallbacks: npcChat counts them and the analyst
+ *  reports them in its private digest, so the set is fixed. */
+export const FALLBACK_REASONS = ['input', 'rate', 'cap', 'refusal', 'error', 'output'] as const;
+export type FallbackReason = (typeof FALLBACK_REASONS)[number];
+
 /** Monthly ElevenLabs TTS character budget (npcVoice). The plan carries 131k
  *  credits/month; eleven_v3 bills 1 credit/char (2x turbo's 0.5), so 75k
  *  chars ≈ 57% of the plan — HALVED from the old 150k when the model moved

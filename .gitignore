@@ -59,3 +59,20 @@ _legacy/unused-assets/
 # Claude session-internal files (local only)
 .claude/settings.local.json
 __pycache__/
+
+# Evals harness (evals/): the uv venv, fixtures dumped from functions/lib, and
+# run records. Root-level patterns so Prettier (which reads only this file) skips them.
+evals/.venv/
+evals/fixtures/generated/
+evals/runs/
+.pytest_cache/
+
+# Local-only working notes and tool configs, untracked 2026-11-02 (still in
+# history; never rewritten). The launch kit lives in the owner's notes now.
+# Merging the commit that untracked them deletes them from that checkout's
+# disk; bring one back with: git show 72f76f8:<path> > <path>
+/OVERNIGHT_LOG.md
+/docs/archive/
+/mcp.json
+.claude/ROADMAP-2026-08.md
+.claude/LAUNCH-KIT.md

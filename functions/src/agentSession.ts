@@ -8,7 +8,7 @@
 // connection requires a SIGNED URL, and to mint that URL here, behind the same
 // layered gates the TTS path already proved out.
 //
-// This was written after the 2026-08-16 incident: an leaked API key was used to
+// This was written after the 2026-08-16 incident: a leaked API key was used to
 // create 17 unauthorized voice clones and burn ~129,000 credits in a day, while
 // Island's own capped TTS spend was ~1,900. The lesson was not "add caps to the
 // island" — those worked — it was "every surface that can spend money needs

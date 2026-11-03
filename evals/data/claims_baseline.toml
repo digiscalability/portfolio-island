@@ -1,0 +1,16 @@
+# Known claims-rule hits in public files that predate the fact sheet.
+# A file's entry applies only while its LF-normalised sha256 is unchanged:
+# the first edit to the file must clear every hit (CI fails otherwise).
+# Regenerate: cd evals && uv run python -m islandevals.claims --baseline
+
+[files."SimpleUI.ts"]
+sha256 = "8b6006114a43ecd6f881a76a8ccf7b9f060eb5aaf7b091e8aee7a2282b075808"
+hits = { "every-villager-ai" = 2, "grandmother" = 1, "masters-status" = 2, "rankpilot-daily-use" = 1, "retired-tagline" = 1, "stale-npc-count" = 1, "venture-studio" = 2, "villagers-are-agents" = 1, "wrong-linkedin" = 2 }
+
+[files."index.html"]
+sha256 = "cf872d92fb40091ff86e0a4bc3eeacae503c4ef22dd7fb82f9e41895f2aaab05"
+hits = { "every-villager-ai" = 1, "venture-studio" = 4, "wrong-linkedin" = 2 }
+
+[files."public/llms.txt"]
+sha256 = "433884051d5c02e490e5baabef5583cd88d5ed724121ad3e55dd99b28613994a"
+hits = { "every-villager-ai" = 1, "rankpilot-daily-use" = 1, "stale-npc-count" = 1 }

@@ -978,7 +978,7 @@ From Abbas's screenshot report, four commits, one per stream, 14 locks in
 - **Grass Phase-A `Math.random()` order is a WIRE PROTOCOL** (multiplayer vehicle placement) —
   write-site changes only.
 - **Presence `t` is sender-clock** — freshness windows must be generous (30s).
-- **Bash cwd sometimes resets to `C:\`** — `cd /c/claudeSessions/githubCLONES/portfolio-island`
+- **Bash cwd sometimes resets to `C:\`** — cd to the repo root
   first or vitest/npm fail confusingly.
 
 ## STANDING LAWS (short form — full text in CLAUDE.md, history in the archive)
