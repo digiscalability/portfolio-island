@@ -14,6 +14,7 @@ import { GameScene } from './GameScene';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
+import { worldInputBlocked } from './keyGuards';
 import { Multiplayer } from './Multiplayer';
 import {
   AI_NPCS,
@@ -2233,23 +2234,11 @@ class SimpleApp {
             ? '✨ Bloom enabled (Ctrl+B to toggle).'
             : '✨ Bloom disabled (Ctrl+B to toggle).',
         );
-      } else if (event.key.toLowerCase() === 'c') {
-        // Toggle the appearance editor
-        if (this.ui['customizeDiv']) {
-          this.ui.hideCustomize();
-        } else {
-          this.openCustomize();
-        }
-      } else if (event.key.toLowerCase() === 'p' && !event.ctrlKey && !event.metaKey) {
-        // Photo mode — but not while typing in chat / the name field.
-        const el = document.activeElement as HTMLElement | null;
-        const typing =
-          el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-        if (!typing) {
-          event.preventDefault();
-          void this.capturePhoto();
-        }
       }
+      // C (appearance editor) and P (photo) used to live here, on a raw
+      // document listener: Ctrl+C on the contact card opened the editor over
+      // it, and both fired behind any open panel. They are latched verbs in
+      // update() now, beside Q, F, G and M.
     };
 
     this.boundHandlers.debugKeydown = handler;
@@ -2428,6 +2417,15 @@ class SimpleApp {
         this.endNpcDialogue();
       }
       if (this.npcCine) this.updateNpcCine(deltaTime);
+      // C closes the appearance editor while it is on top, whatever the
+      // avatar is doing (in free walk the verb below also opens it).
+      if (
+        !this.tour &&
+        this.ui.panels.current() === 'customize' &&
+        this.inputManager.consumeKeyPress('c')
+      ) {
+        this.ui.hideCustomize();
+      }
       // Cinematic tour: the rail owns the camera and the player stands still.
       // Everything else in the world keeps running (that's the point of it).
       if (this.tour) {
@@ -2438,7 +2436,16 @@ class SimpleApp {
         // discard every frame (same failure mode the npcCine drain names).
         this.inputManager.getCameraInput();
         consumePinchZoomFactor();
+        // Presses during the tour are for the tour: none fires after it.
+        this.inputManager.clearLatched();
         this.updateTour(deltaTime);
+      } else if (worldInputBlocked(this.ui.panels.current())) {
+        // A panel that is not walkable (Projects, the Portfolio menu, the
+        // shop, the map…) owns the keyboard: W or ↓ held behind it used to
+        // walk the avatar while it scrolled, and E seated it on the bench
+        // beside it. keyGuards.ts lists the walkable sheets.
+        this.holdWorldInput();
+        this.ui.hideInteractionPrompt();
       } else if (this.scene.isInsideInterior()) {
         // Interiors never feed the orbit camera either — same banking, same
         // whip on stepping out the door. Drain both interior branches.
@@ -2637,6 +2644,18 @@ class SimpleApp {
 
         // Full island map (same as tapping the radar)
         if (this.inputManager.consumeKeyPress('m')) this.openIslandMap();
+
+        // Appearance editor (C) and photo mode (P). Latched like the verbs
+        // above, so they fire only here in free walk: never from a field or
+        // a focused control, never behind a panel, never as Ctrl/Meta+C.
+        if (this.inputManager.consumeKeyPress('c')) {
+          if (this.ui['customizeDiv']) {
+            this.ui.hideCustomize();
+          } else {
+            this.openCustomize();
+          }
+        }
+        if (this.inputManager.consumeKeyPress('p')) void this.capturePhoto();
 
         // Footsteps while walking; thud when landing from a real jump/fall
         if (player) {
@@ -3171,9 +3190,10 @@ class SimpleApp {
         }
       }
     } else {
-      // Stop player movement when welcome screen is visible
-      this.scene.setPlayerMovement(0, 0);
-      this.scene.setCameraInput(0, 0);
+      // The welcome card or the loader owns the moment: no movement, no
+      // banked camera input, and no latched press firing once it closes (C,
+      // P, M and E on the card used to act the moment Explore was clicked).
+      this.holdWorldInput();
     }
 
     // Quest compass: point at the active delivery's mailbox
@@ -3313,6 +3333,26 @@ class SimpleApp {
 
     // Always update scene (for animations, etc.)
     this.scene.update(deltaTime);
+  }
+
+  /**
+   * This frame the world takes no input: the welcome card, the loader or a
+   * non-walkable panel owns the moment. Movement goes to zero in whatever
+   * the avatar is doing (on foot, driving, indoors), latched presses are
+   * dropped, and banked look and pinch input is drained so it cannot land
+   * as one whip when the moment ends — the tour branch's drain, for all.
+   */
+  private holdWorldInput(): void {
+    this.scene.setPlayerMovement(0, 0);
+    if (this.scene.isRidingVehicle()) {
+      this.scene.setVehicleMove(0, 0);
+      this.currentThrottle = 0;
+    }
+    if (this.scene.isInsideInterior()) this.scene.setInteriorMove(0, 0);
+    this.scene.setCameraInput(0, 0);
+    this.inputManager.clearLatched();
+    this.inputManager.getCameraInput();
+    consumePinchZoomFactor();
   }
 
   /**

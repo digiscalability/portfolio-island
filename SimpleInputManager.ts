@@ -1,3 +1,5 @@
+import { focusedControlOwnsKey } from './keyGuards';
+
 // Pinch-zoom channel: SimpleInputManager accumulates a multiplicative orbit-
 // distance factor from two-finger canvas gestures; OrbitCamera consumes (and
 // resets) it once per frame in update(). Module-level because the two objects
@@ -70,17 +72,22 @@ export class SimpleInputManager {
    */
   private setupKeyboardListeners(): void {
     document.addEventListener('keydown', (e) => {
+      // Browser and OS chords are never game input: Ctrl+C copies the email
+      // on the contact card (it used to open the appearance editor over it),
+      // Ctrl+W closes the tab, Alt+Tab leaves. Nothing is held or latched
+      // while Ctrl, Meta or Alt is down. Shift still counts (the dive key).
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const k = e.key.toLowerCase();
+      // A focused control keeps the keys it uses (keyGuards.ts): a text field
+      // every key, so typing "feed the birds" never fires the one-shot verbs
+      // or walks; a slider or select its arrows; a button or link Space and
+      // Enter. Holding counts too, not just the latch: a key typed into a
+      // field used to walk the avatar behind it.
+      if (focusedControlOwnsKey(k, e.target)) return;
       this.keys.add(k);
       this.lastKeyEventAt.set(k, performance.now());
       // Latch the press edge (ignore OS auto-repeat) for consumeKeyPress().
-      // NOT while typing: the edge latch drives one-shot actions (interact,
-      // wave, throw feed), and typing "feed the birds" into an NPC chat box
-      // would otherwise fire them on every matching letter.
-      const el = e.target as HTMLElement | null;
-      const typing =
-        !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-      if (!e.repeat && !typing) {
+      if (!e.repeat) {
         this.pressedSinceLastPoll.add(k);
       }
       // Debug: Log first few key presses
@@ -311,6 +318,17 @@ export class SimpleInputManager {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Drop every latched press. main-simple calls this each frame while the
+   * welcome card, the loader, a tour or a non-walkable panel owns the
+   * moment: a key pressed there must not fire when it closes (E behind the
+   * Projects panel used to seat the avatar on the bench beside it, and M on
+   * the welcome card opened the map the moment Explore was clicked).
+   */
+  public clearLatched(): void {
+    this.pressedSinceLastPoll.clear();
   }
 
   /**

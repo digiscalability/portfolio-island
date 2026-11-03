@@ -6,7 +6,7 @@
 // It runs for real here: Enter belongs to whatever already used it.
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { enterOpensChat, type EnterGuardUi } from '../keyGuards';
+import { enterOpensChat, WALKABLE, worldInputBlocked, type EnterGuardUi } from '../keyGuards';
 
 const enter = (init: KeyboardEventInit = {}): KeyboardEvent =>
   new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
@@ -98,5 +98,48 @@ describe('Enter stands down when something else owns it', () => {
   test('a plain, non-interactive element does not block it', () => {
     const p = mount<HTMLParagraphElement>('<p>Island Times</p>');
     expect(enterOpensChat(enter(), ui(), p)).toBe(true);
+  });
+});
+
+// worldInputBlocked decides, per frame, whether the top PanelManager panel
+// owns the keyboard: then main-simple zeroes movement, drops latched presses
+// and drains camera input. Walkable sheets are an allow-list.
+describe('the world takes input only beside a walkable panel', () => {
+  test('no panel: the world has the keyboard', () => {
+    expect(worldInputBlocked(null)).toBe(false);
+  });
+
+  test('the walkable sheets keep the world live', () => {
+    for (const id of ['npc-chat', 'dialogue', 'chat-input', 'customize', 'tour']) {
+      expect(worldInputBlocked(id), id).toBe(false);
+    }
+    expect([...WALKABLE].sort()).toEqual(
+      ['chat-input', 'customize', 'dialogue', 'npc-chat', 'tour'].sort(),
+    );
+  });
+
+  test('every other panel owns the keyboard', () => {
+    // The ids SimpleUI opens today: zone panels (Projects, Contact, the hire
+    // card), the Portfolio menu, the phone drawer, the welcome card, the shop,
+    // the emote wheel, the interior pickers and every centred modal.
+    for (const id of [
+      'zone',
+      'portfolio-menu',
+      'drawer',
+      'welcome',
+      'shop',
+      'emote-wheel',
+      'watch-picker',
+      'pin-pad',
+      'receipt',
+      'modal',
+    ]) {
+      expect(worldInputBlocked(id), id).toBe(true);
+    }
+  });
+
+  test('a panel nobody has classified yet blocks by default', () => {
+    expect(worldInputBlocked('controls')).toBe(true);
+    expect(worldInputBlocked('some-new-sheet')).toBe(true);
   });
 });
