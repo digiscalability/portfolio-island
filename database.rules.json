@@ -8,17 +8,33 @@
           ".validate": "newData.hasChildren(['p', 'q', 't'])",
           "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
           "hat": { ".validate": "newData.isString() && newData.val().length <= 20" },
-          "p": { "$i": { ".validate": "newData.isNumber()" } },
-          "q": { "$i": { ".validate": "newData.isNumber()" } },
+          "p": {
+            ".validate": "newData.hasChildren(['0', '1', '2'])",
+            "$i": { ".validate": "newData.isNumber() && $i.matches(/^[0-2]$/)" }
+          },
+          "q": {
+            ".validate": "newData.hasChildren(['0', '1', '2', '3'])",
+            "$i": { ".validate": "newData.isNumber() && $i.matches(/^[0-3]$/)" }
+          },
           "veh": { ".validate": "newData.isString() && newData.val().length <= 12" },
           "vehIdx": { ".validate": "newData.isNumber()" },
-          "vp": { "$i": { ".validate": "newData.isNumber()" } },
-          "vq": { "$i": { ".validate": "newData.isNumber()" } },
+          "vp": {
+            ".validate": "newData.hasChildren(['0', '1', '2'])",
+            "$i": { ".validate": "newData.isNumber() && $i.matches(/^[0-2]$/)" }
+          },
+          "vq": {
+            ".validate": "newData.hasChildren(['0', '1', '2', '3'])",
+            "$i": { ".validate": "newData.isNumber() && $i.matches(/^[0-3]$/)" }
+          },
           "t": { ".validate": "newData.isNumber()" },
           "wave": { ".validate": "newData.isNumber()" },
           "founder": { ".validate": "newData.isBoolean()" },
           "pose": { ".validate": "newData.isNumber()" },
-          "cols": { "$part": { ".validate": "newData.isNumber()" } },
+          "cols": {
+            "$part": {
+              ".validate": "newData.isNumber() && ($part === 'outfit' || $part === 'pants' || $part === 'hair' || $part === 'skin')"
+            }
+          },
           "$other": { ".validate": false }
         }
       }
@@ -32,7 +48,11 @@
           "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
           "hat": { ".validate": "newData.isString() && newData.val().length <= 20" },
           "founder": { ".validate": "newData.isBoolean()" },
-          "cols": { "$part": { ".validate": "newData.isNumber()" } },
+          "cols": {
+            "$part": {
+              ".validate": "newData.isNumber() && ($part === 'outfit' || $part === 'pants' || $part === 'hair' || $part === 'skin')"
+            }
+          },
           "t": { ".validate": "newData.isNumber()" },
           "$other": { ".validate": false }
         }
@@ -50,7 +70,48 @@
         ".write": "auth != null && auth.uid == $uid",
         ".validate": "newData.hasChildren(['t'])",
         "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
-        "coins": { ".validate": "newData.isNumber() && newData.val() >= 0" }
+        "hat": { ".validate": "newData.isString() && newData.val().length <= 20" },
+        "coins": { ".validate": "newData.isNumber() && newData.val() >= 0" },
+        "birdFeed": { ".validate": "newData.isNumber()" },
+        "catFeed": { ".validate": "newData.isNumber()" },
+        "fishFeed": { ".validate": "newData.isNumber()" },
+        "lessons": {
+          "$i": {
+            ".validate": "$i.matches(/^[0-9]{1,2}$/) && newData.isString() && newData.val().length <= 32"
+          }
+        },
+        "ownedHats": {
+          "$i": {
+            ".validate": "$i.matches(/^[0-9]{1,2}$/) && newData.isString() && newData.val().length <= 32"
+          }
+        },
+        "tools": {
+          "$i": {
+            ".validate": "$i.matches(/^[0-9]{1,2}$/) && newData.isString() && newData.val().length <= 32"
+          }
+        },
+        "meals": {
+          "pie": { ".validate": "newData.isNumber()" },
+          "fish": { ".validate": "newData.isNumber()" },
+          "soup": { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        },
+        "inventory": {
+          "fish": { ".validate": "newData.isNumber()" },
+          "timber": { ".validate": "newData.isNumber()" },
+          "wheat": { ".validate": "newData.isNumber()" },
+          "produce": { ".validate": "newData.isNumber()" },
+          "ore": { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        },
+        "colors": {
+          "$part": {
+            ".validate": "($part === 'outfit' || $part === 'pants' || $part === 'hair' || $part === 'skin') && newData.isString() && newData.val().length <= 9"
+          }
+        },
+        "lastSeen": { ".validate": "newData.isNumber()" },
+        "t": { ".validate": "newData.isNumber()" },
+        "$other": { ".validate": false }
       }
     },
     "chat": {
@@ -86,14 +147,16 @@
     "leaderboard": {
       "island": {
         ".read": "auth != null",
-        "$circuit": {
-          "$uid": {
-            ".write": "auth != null && auth.uid == $uid",
-            ".validate": "newData.hasChildren(['name', 'timeMs', 't'])",
-            "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
-            "timeMs": { ".validate": "newData.isNumber() && newData.val() > 0" },
-            "t": { ".validate": "newData.isNumber()" },
-            "$other": { ".validate": false }
+        "$era": {
+          "$circuit": {
+            "$uid": {
+              ".write": "auth != null && auth.uid == $uid && $era.matches(/^r[0-9]{1,4}$/) && ($circuit === 'land' || $circuit === 'water')",
+              ".validate": "newData.hasChildren(['name', 'timeMs', 't'])",
+              "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
+              "timeMs": { ".validate": "newData.isNumber() && newData.val() > 0" },
+              "t": { ".validate": "newData.isNumber()" },
+              "$other": { ".validate": false }
+            }
           }
         }
       }
@@ -138,7 +201,8 @@
           ".write": "auth != null && $benchId.beginsWith(auth.uid + '_') && !data.exists()",
           ".validate": "newData.hasChildren(['plot', 't']) && ($benchId === auth.uid + '_0' || $benchId === auth.uid + '_1' || $benchId === auth.uid + '_2' || $benchId === auth.uid + '_3')",
           "plot": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 7" },
-          "t": { ".validate": "newData.isNumber()" }
+          "t": { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
         }
       },
       "benchHidden": {
