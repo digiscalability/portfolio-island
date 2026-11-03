@@ -9738,6 +9738,21 @@ export class GameScene extends THREE.Scene {
    * never respawn; finishing the trail fires onArrivalTrail (flash + flag).
    */
   private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
+    const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
+    // Nearest villager to the spawn (npcTargets are seated by now). The search
+    // draws nothing from the seeded stream.
+    let npcDir: THREE.Vector3 | null = null;
+    let best = Infinity;
+    for (const t of this.island.npcTargets ?? []) {
+      const d = t.position.clone().normalize().angleTo(spawnDir);
+      if (d > 0.04 && d < best) {
+        best = d;
+        npcDir = t.position.clone().normalize();
+      }
+    }
+    // No villager: the world decides that for every visitor alike, so there
+    // is no trail to skip and nothing to burn.
+    if (!npcDir) return;
     let returning = false;
     try {
       returning = localStorage.getItem('ds_arrived') === '1';
@@ -9754,18 +9769,6 @@ export class GameScene extends THREE.Scene {
       for (let i = 0; i < ARRIVAL_TRAIL_COINS; i++) THREE.MathUtils.generateUUID();
       return;
     }
-    const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
-    // Nearest villager to the spawn (npcTargets are seated by now).
-    let npcDir: THREE.Vector3 | null = null;
-    let best = Infinity;
-    for (const t of this.island.npcTargets ?? []) {
-      const d = t.position.clone().normalize().angleTo(spawnDir);
-      if (d > 0.04 && d < best) {
-        best = d;
-        npcDir = t.position.clone().normalize();
-      }
-    }
-    if (!npcDir) return;
     const q = new THREE.Quaternion().setFromUnitVectors(spawnDir, npcDir);
     const idQ = new THREE.Quaternion();
     const step = new THREE.Quaternion();

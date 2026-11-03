@@ -216,10 +216,16 @@ describe('the GameScene builders take a fixed share of the seeded stream', () =>
   });
 });
 
-/** test/golden/seedDraws.json: the in-browser census from the seed probe. */
-interface SeedGolden {
-  marks: Record<string, number>;
+/** test/golden/seedDraws.json: the in-browser census from the seed probe, per
+ *  profile, in the shape E5's `seed --bless` writes and `perf:gate --seed`
+ *  reads ({desktop, lowtier}, each {total, marks}, marks in window order). */
+interface SeedCensus {
   total: number;
+  marks: Record<string, number>;
+}
+interface SeedGolden {
+  desktop: SeedCensus;
+  lowtier: SeedCensus;
 }
 const CHECKPOINTS = [
   'island',
@@ -237,12 +243,29 @@ describe('the in-browser census golden (test/golden/seedDraws.json)', () => {
     readFileSync(join(process.cwd(), 'test', 'golden', 'seedDraws.json'), 'utf8'),
   ) as SeedGolden;
 
-  test('has every checkpoint, in window order, cumulative', () => {
-    expect(Object.keys(golden.marks)).toEqual(CHECKPOINTS);
-    for (let i = 1; i < CHECKPOINTS.length; i++) {
-      expect(golden.marks[CHECKPOINTS[i]]).toBeGreaterThanOrEqual(golden.marks[CHECKPOINTS[i - 1]]);
+  test('holds one census per probe profile, each {total, marks}', () => {
+    expect(Object.keys(golden)).toEqual(['desktop', 'lowtier']);
+    for (const census of [golden.desktop, golden.lowtier]) {
+      expect(Object.keys(census)).toEqual(['total', 'marks']);
     }
-    expect(golden.total).toBe(golden.marks.restore);
+  });
+
+  test('has every checkpoint, in window order, cumulative', () => {
+    // Key order matters: the perf gate compares the JSON text of the marks.
+    for (const { marks, total } of [golden.desktop, golden.lowtier]) {
+      expect(Object.keys(marks)).toEqual(CHECKPOINTS);
+      for (let i = 1; i < CHECKPOINTS.length; i++) {
+        expect(marks[CHECKPOINTS[i]]).toBeGreaterThanOrEqual(marks[CHECKPOINTS[i - 1]]);
+      }
+      expect(total).toBe(marks.restore);
+    }
+  });
+
+  test('the low tier rolls the same world as desktop', () => {
+    // MEASURED by the seed probe: equal totals and marks on both profiles. The
+    // seeded window exists so every client builds the same map; tierParity
+    // pins that for the Island half, and this for the whole window.
+    expect(golden.lowtier).toEqual(golden.desktop);
   });
 
   test('every checkpoint is published by GameScene.initialize', () => {
@@ -254,7 +277,7 @@ describe('the in-browser census golden (test/golden/seedDraws.json)', () => {
     // The spans also carry the builders this suite cannot run headless (sway
     // phases, butterflies, fireflies, smoke, guide sparkles), so they bound
     // the per-builder counts from above.
-    const m = golden.marks;
+    const m = golden.desktop.marks;
     expect(m.coins - m.dustPool).toBeGreaterThanOrEqual(GOLDEN_GS_DRAWS.coins);
     expect(m.nameTags - m.placeAssets).toBeGreaterThanOrEqual(GOLDEN_GS_DRAWS.nameTags);
     expect(m.dustPool - m.island).toBeGreaterThanOrEqual(GOLDEN_GS_DRAWS.dustPool);
