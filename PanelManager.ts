@@ -126,11 +126,14 @@ const isShown = (el: HTMLElement): boolean => {
 const focusablesIn = (root: HTMLElement): HTMLElement[] =>
   Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(isShown);
 
-/** Focus without scrolling the page; a non-control takes tabindex -1 first. */
-const focusEl = (el: HTMLElement): boolean => {
+/** Focus without scrolling the page; a non-control takes tabindex -1 first.
+ *  `reveal`: a Tab step, which the browser brings into view inside the
+ *  panel's own scroller. Trapped with preventScroll, Tab walked a long panel
+ *  (the hire card, Projects, Contact) off its visible part (WCAG 2.4.11). */
+const focusEl = (el: HTMLElement, reveal = false): boolean => {
   if (!el.matches(FOCUSABLE) && !el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
   try {
-    el.focus({ preventScroll: true });
+    el.focus({ preventScroll: !reveal });
   } catch {
     el.focus();
   }
@@ -667,14 +670,14 @@ export class PanelManager {
         (f) => !!(active.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_FOLLOWING),
       );
       i = after === -1 ? list.length : after;
-      focusEl(e.shiftKey ? list[(i - 1 + list.length) % list.length] : list[i % list.length]);
+      focusEl(e.shiftKey ? list[(i - 1 + list.length) % list.length] : list[i % list.length], true);
       return;
     }
     if (i === -1) {
-      focusEl(e.shiftKey ? list[list.length - 1] : list[0]);
+      focusEl(e.shiftKey ? list[list.length - 1] : list[0], true);
       return;
     }
-    focusEl(list[(i + (e.shiftKey ? -1 : 1) + list.length) % list.length]);
+    focusEl(list[(i + (e.shiftKey ? -1 : 1) + list.length) % list.length], true);
   }
 
   /** inert on every other overlay child while a modal is on top. */

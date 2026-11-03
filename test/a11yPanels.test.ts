@@ -151,6 +151,32 @@ describe('a modal makes the rest of the overlay inert, and traps Tab', () => {
     expect(document.activeElement).toBe(last);
   });
 
+  test('a Tab step lets the panel scroll its control into view; the first focus does not', async () => {
+    // Trapped with preventScroll, Tab walked a long panel off its visible part
+    // (2.4.11). The sticky section nav is cleared by scroll-padding-top.
+    const calls: Array<{ el: HTMLElement; preventScroll?: boolean }> = [];
+    const focus = HTMLElement.prototype.focus;
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+      this: HTMLElement,
+      opts?: FocusOptions,
+    ) {
+      calls.push({ el: this, preventScroll: opts?.preventScroll });
+      focus.call(this, opts);
+    });
+    ui.showHireCard('cta');
+    await tick();
+    const panel = zonePanel()!;
+    const nav = panel.querySelector('[data-panel-nav]')!;
+    expect(calls.at(-1)).toEqual({ el: panel.querySelector('h2'), preventScroll: true });
+    expect(panel.style.scrollPaddingTop).toMatch(/^\d+px$/);
+    key('Tab');
+    key('Tab');
+    key('Tab', document, { shiftKey: true });
+    const steps = calls.slice(-3);
+    expect(steps.every((c) => panel.contains(c.el) && c.preventScroll === false)).toBe(true);
+    expect(steps.some((c) => nav.contains(c.el))).toBe(false); // the nav sits before the h2
+  });
+
   test('the Portfolio menu is a dialog, but a sheet: no aria-modal, no trap, no inert', async () => {
     chip('Open portfolio menu').click();
     await tick();

@@ -7331,6 +7331,14 @@ export class SimpleUI {
       }
       this.addScrollFade(panel, '#000');
     }
+    if (nav) {
+      // A Tab step scrolls its control in clear of the sticky header (and of
+      // the pinned action bar in short landscape), never under it (2.4.11).
+      const pinned = compact
+        ? this.zonePanelDiv.querySelector<HTMLElement>('[data-hire-actions]')
+        : null;
+      this.zonePanelDiv.style.scrollPaddingTop = `${nav.offsetHeight + (pinned?.offsetHeight ?? 0) + 8}px`;
+    }
     // Opened at a card or a block (P2-D5): it scrolls in under the nav.
     if (opts?.anchor) this.scrollToAnchor(opts.anchor, true);
 
