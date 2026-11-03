@@ -146,6 +146,22 @@ const OWNER = {
   email: 'admin@digiscalability.com',
 } as const;
 
+/** One message in the toast queue (D6): a toast or a flash. */
+interface QueuedMessage {
+  text: string;
+  /** An unprompted line (onboarding, world news) rather than an outcome. */
+  hint: boolean;
+  kind: 'toast' | 'flash';
+  /** A hint is stale, and drops, once this returns true. */
+  until?: () => boolean;
+}
+
+/** A message stays inside a panel for this long after the visitor's last
+ *  action there counts as that panel's own outcome (P2-D3). The message
+ *  clocks read Date.now(), which the suites' fake timers move along with
+ *  the timers; performance.now() they leave alone. */
+const PANEL_ACTION_MS = 8000;
+
 export class SimpleUI {
   private overlay: HTMLElement;
   private loadingDiv: HTMLElement | null = null;
@@ -304,6 +320,7 @@ export class SimpleUI {
         onStaleEntry: () => setUrlParam('zone', null),
         fallbackFocus: () => (this.isTouch ? this.drawerToggleEl : this.portfolioBtnEl),
       });
+    this.initMessageSignals();
     this.createFPSDisplay();
     this.createMuteButton();
     this.createPortfolioButton();
@@ -435,7 +452,7 @@ export class SimpleUI {
       Object.assign(el.style, {
         bottom: 'calc(var(--sab, 0px) + 100px)',
         left: '50%',
-        maxWidth: 'calc(100vw - 32px)',
+        maxWidth: 'min(440px, calc(100vw - 32px))',
       });
       return;
     }
@@ -450,11 +467,13 @@ export class SimpleUI {
       });
       return;
     }
-    // Portrait: above the whole control band.
+    // Portrait: above the whole control band. max-content up to 440 (D6):
+    // a shrink-to-fit box at left 50% was 195 px wide at 390, so 'Tap USE
+    // to talk to Elder Sage — ask anything' wrapped to three lines.
     Object.assign(el.style, {
       bottom: 'calc(var(--sab, 0px) + 300px)',
       left: '50%',
-      maxWidth: 'calc(100vw - 32px)',
+      maxWidth: 'min(440px, calc(100vw - 32px))',
     });
   }
 
@@ -484,16 +503,39 @@ export class SimpleUI {
 
   private applyToastAnchor(el: HTMLElement): void {
     const short = this.isTouch && this.shortLandscape;
+    // Desktop: the bulletin's lane under the compass pill whenever no
+    // bulletin is up (FM-09: the bottom +250 lane covered the avatar's
+    // torso). Narrow windows keep the bottom lane, clear of the icon row.
+    if (!this.isTouch && !this.bulletinShowing() && window.innerWidth >= 900) {
+      el.dataset.lane = 'top';
+      Object.assign(el.style, {
+        top: 'calc(var(--sat, 0px) + 66px)',
+        bottom: '',
+        maxWidth: 'min(92vw, 440px)',
+        left: '50%',
+      });
+      return;
+    }
+    el.dataset.lane = 'bottom';
+    // Portrait touch: 350, not 250 — the action column starts at y381 on a
+    // 667-tall screen, so the 250 lane put toast text straight across the
+    // WAVE button (measured 74x36). 350 clears it and still sits below the
+    // prompt's 300 lane.
+    let bottom = short ? 96 : this.isTouch ? 350 : 250;
+    // On touch the toast sits ABOVE the interaction prompt and the guide
+    // card, 8 px clear (D6): a two-line prompt reached into the 350 lane.
+    if (this.isTouch) {
+      for (const other of [this.interactionDiv, document.getElementById('ds-guide')]) {
+        if (!other?.isConnected) continue;
+        const r = other.getBoundingClientRect();
+        if (r.height > 0 && getComputedStyle(other).display !== 'none') {
+          bottom = Math.max(bottom, Math.ceil(window.innerHeight - r.top + 8));
+        }
+      }
+    }
     Object.assign(el.style, {
-      // Portrait touch: 350, not 250 — the action column starts at y381 on a
-      // 667-tall screen, so the 250 lane put toast text straight across the
-      // WAVE button (measured 74x36). 350 clears it and still sits below the
-      // prompt's 300 lane.
-      bottom: short
-        ? 'calc(var(--sab, 0px) + 96px)'
-        : this.isTouch
-          ? 'calc(var(--sab, 0px) + 350px)'
-          : 'calc(var(--sab, 0px) + 250px)',
+      top: '',
+      bottom: `calc(var(--sab, 0px) + ${bottom}px)`,
       maxWidth: short ? 'min(56vw, 360px)' : 'min(92vw, 440px)',
       // Landscape: nudged into the free centre band like the prompt, so the
       // pill clears the joystick ring instead of grazing it.
@@ -707,6 +749,7 @@ export class SimpleUI {
       this.toggleDrawer();
     });
     this.makeHudButtonAccessible(t, 'Open island menu');
+    t.dataset.guide = 'drawer-toggle'; // First steps rings it (A6)
     list.id = 'ds-drawer';
     list.setAttribute('aria-label', 'Island menu');
     t.setAttribute('aria-controls', 'ds-drawer');
@@ -1113,8 +1156,14 @@ export class SimpleUI {
 
   private toastEl: HTMLDivElement | null = null;
   private toastTimer = 0;
-  private toastQueue: string[] = [];
+  private pumpTimer = 0;
+  /** Messages waiting to show, oldest first: toasts and flashes (D6). */
+  private toastQueue: QueuedMessage[] = [];
+  /** The message on screen now, while toastBusy. */
+  private shownMessage: QueuedMessage | null = null;
   private toastBusy = false;
+  /** A fading flash: toasts wait out its 300 ms fade. */
+  private flashFadeUntil = 0;
   /**
    * Brief auto-dismissing status toast — e.g. "Muted <name>".
    *
@@ -1126,110 +1175,175 @@ export class SimpleUI {
    * - DEFERS while the loader or welcome modal is up (the once-per-day
    *   featured toast fired under the opaque loader and burned its
    *   localStorage key without ever being seen).
+   *
+   * One message at a time (D6, P2-D3): toasts and flashes share this queue,
+   * so a flash and a toast are never on screen together. Nothing paints over
+   * an open modal: a message waits for it to close, unless it answers what
+   * the visitor just did inside it (a shop purchase, 'Link copied'), which
+   * shows inside the panel instead. An outcome takes the place of a hint on
+   * screen at once, and a hint whose `until()` has come true is dropped.
    */
-  public toast(message: string, opts?: { hint?: boolean }): void {
-    message = this.touchifyPlain(message);
+  public toast(message: string, opts?: { hint?: boolean; until?: () => boolean }): void {
+    this.enqueue({
+      text: this.touchifyPlain(message),
+      hint: !!opts?.hint,
+      kind: 'toast',
+      until: opts?.until,
+    });
+  }
+
+  private enqueue(m: QueuedMessage): void {
+    if (!m.hint && this.panelOwnsMessage()) {
+      this.panelNote(m);
+      return;
+    }
     // Drop exact duplicates already waiting — a queue of three "+1 🪙" adds
     // nothing.
-    if (this.toastQueue.includes(message)) return;
-    this.toastQueue.push(message);
-    if (opts?.hint) this.hintToasts.add(message);
+    if (this.toastQueue.some((q) => q.text === m.text)) return;
+    this.toastQueue.push(m);
+    // Outcomes beat hints (GP-08): the refund waited 5.9 s behind an 88-char
+    // hint. The hint bows out and goes back to the head of the queue.
+    if (!m.hint && this.shownMessage?.hint && this.mayShow(m)) this.stepHintAside();
     this.pumpToasts();
   }
 
-  /** Queued messages that are HINTS (see takeToast), by text. */
-  private readonly hintToasts = new Set<string>();
-
   /**
-   * Dequeue the next toast that may show now, or null to wait. Hints — the
+   * May this message show now? Nothing paints over an open modal (P2-D3:
+   * 'Secret found' printed across the Welcome hall's body text). Hints — the
    * unprompted onboarding and world lines (compass, coins, districts, streak,
-   * world news) — wait while any panel, the menu or the tour is open: the
-   * first-run compass hint landed on the contact form and on the recruiter
-   * tour. Everything else answers something the visitor just did, often
-   * inside that very panel (the lead form's "Please add your email.", a shop
-   * purchase, "Link copied"), so it never waits behind a hint.
+   * world news) — also wait while any panel, the menu or the tour is open
+   * (the first-run compass hint landed on the contact form and on the
+   * recruiter tour), while the first-steps guide is active (A6), and on touch
+   * while an interaction prompt is up (it covered a third of 'Tap USE to talk
+   * to…', PROMPT-01).
    */
-  private takeToast(): string | null {
-    const i = this.panels.isOpen() ? this.toastQueue.findIndex((m) => !this.hintToasts.has(m)) : 0;
-    if (i < 0) return null;
-    const [message] = this.toastQueue.splice(i, 1);
-    const hint = this.hintToasts.delete(message);
-    this.shownHint = hint ? message : null;
-    if (hint) this.watchHintToast(message);
-    return message;
+  private mayShow(m: QueuedMessage): boolean {
+    if (this.panels.isModalOpen()) return false;
+    if (!m.hint) return true;
+    if (this.panels.isOpen() || this.guideActive()) return false;
+    // The first beat after the welcome card belongs to First steps, which
+    // arms on Explore and comes up 600 ms after the card goes (A6).
+    if (Date.now() - this.welcomeClosedAt < 600) return false;
+    return !(this.isTouch && this.interactionDiv !== null);
   }
 
-  /** The hint toast on screen right now, if the current toast is one. */
-  private shownHint: string | null = null;
+  private welcomeClosedAt = -Infinity;
 
   /**
-   * A hint already showing when a panel, the menu or the tour opens bows out
-   * at once and goes back to the head of the queue, to show again after the
-   * panel closes. Measured before this: the talk hint stayed over a freshly
-   * opened hire card for the rest of its dwell. Polls only while the hint
-   * shows (6 s at most).
+   * Dequeue the next message that may show now, or null to wait: outcomes
+   * first, then hints, oldest first within each. A hint whose until() has
+   * come true is stale and drops (the talk hint returned after the visitor
+   * had already talked, GP-08).
    */
-  private watchHintToast(hint: string): void {
+  private takeToast(): QueuedMessage | null {
+    this.toastQueue = this.toastQueue.filter((q) => !(q.hint && q.until?.()));
+    const pick =
+      this.toastQueue.find((q) => !q.hint && this.mayShow(q)) ??
+      this.toastQueue.find((q) => q.hint && this.mayShow(q)) ??
+      null;
+    if (pick) this.toastQueue.splice(this.toastQueue.indexOf(pick), 1);
+    return pick;
+  }
+
+  /**
+   * The message on screen bows out the moment it may no longer show: a modal
+   * opened over it, or (a hint) a panel, the menu, the tour, the guide or a
+   * phone prompt came up, or its until() came true. Measured before this: the
+   * talk hint stayed over a freshly opened hire card for the rest of its
+   * dwell. Polls only while a message shows (6 s at most).
+   */
+  private watchShown(m: QueuedMessage): void {
     const iv = window.setInterval(() => {
-      if (this.shownHint !== hint || !this.toastBusy) {
+      if (this.shownMessage !== m || !this.toastBusy) {
         window.clearInterval(iv);
         return;
       }
-      if (!this.panels.isOpen()) return;
+      if (this.mayShow(m) && !(m.hint && m.until?.())) return;
       window.clearInterval(iv);
-      this.stepHintAside();
+      this.stepHintAside(true);
     }, 120);
   }
 
   /**
    * Take the hint on screen down NOW, with no fade, and put it back at the
-   * head of the queue. The hire card, the Portfolio panels, the menu and the
-   * centred modals call this as they open: waiting for the poll above left
-   * the compass hint painted over a just-opened hire card for a tick plus
-   * the 200 ms fade (measured at 390x844).
+   * head of the queue (`any`: whatever is on screen, the opening of a modal).
+   * The hire card, the Portfolio panels, the menu and the centred modals call
+   * this as they open: waiting for the poll above left the compass hint
+   * painted over a just-opened hire card for a tick plus the 200 ms fade
+   * (measured at 390x844). A stale hint (until() true) is dropped instead.
    */
-  private stepHintAside(): void {
-    const hint = this.shownHint;
-    if (hint === null || !this.toastBusy) return;
+  private stepHintAside(any = false): void {
+    const m = this.shownMessage;
+    if (m === null || !this.toastBusy || !(m.hint || any)) return;
     if (this.toastTimer) clearTimeout(this.toastTimer);
-    const el = this.toastEl;
-    if (el) {
+    if (m.kind === 'flash') {
+      this.flashEl?.remove();
+      this.flashEl = null;
+    } else if (this.toastEl) {
       // Hide with the fade switched off, flush styles so the hide lands
       // unanimated, then switch the fade back on for the next toast.
+      const el = this.toastEl;
       const fade = el.style.transition;
       el.style.transition = 'none';
       el.style.opacity = '0';
       void getComputedStyle(el).opacity;
       el.style.transition = fade;
     }
-    this.shownHint = null;
+    this.shownMessage = null;
     this.toastBusy = false;
-    if (!this.toastQueue.includes(hint)) {
-      this.toastQueue.unshift(hint);
-      this.hintToasts.add(hint);
-    }
-    window.setTimeout(() => this.pumpToasts(), 250);
+    const stale = m.hint && !!m.until?.();
+    if (!stale && !this.toastQueue.some((q) => q.text === m.text)) this.toastQueue.unshift(m);
+    this.schedulePump(250);
+  }
+
+  /** One pending pump at a time: a sooner request replaces a later one. */
+  private schedulePump(ms: number): void {
+    if (this.pumpTimer) clearTimeout(this.pumpTimer);
+    this.pumpTimer = window.setTimeout(() => {
+      this.pumpTimer = 0;
+      this.pumpToasts();
+    }, ms);
   }
 
   private pumpToasts(): void {
     if (this.toastBusy || this.toastQueue.length === 0) return;
-    // Not while an opaque loader or the welcome/name modal owns the screen —
-    // re-checked on a short poll so deferred messages surface right after.
-    const message = this.isLoadingVisible() || this.isWelcomeVisible() ? null : this.takeToast();
-    if (message === null) {
-      window.setTimeout(() => this.pumpToasts(), 700);
+    // Not while an opaque loader or the welcome/name modal owns the screen,
+    // nor before the fly-in settles (a returning visitor read a special
+    // before the card, FM-12), nor over a fading flash — re-checked on a
+    // short poll so deferred messages surface right after.
+    const fade = this.flashFadeUntil - Date.now();
+    const wait = this.isLoadingVisible() || this.isWelcomeVisible() || this.introHold() || fade > 0;
+    const m = wait ? null : this.takeToast();
+    if (m === null) {
+      this.schedulePump(fade > 0 ? Math.ceil(fade) : 700);
       return;
     }
     this.toastBusy = true;
+    this.shownMessage = m;
+    // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
+    // a 120-char school lesson (shown only via toast, key already spent)
+    // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
+    // Flashes take the same rule (they were a flat 1.8 s).
+    const dwell = Math.min(6000, Math.max(2000, m.text.length * 50));
+    if (m.kind === 'flash') this.showFlash(m.text, dwell);
+    else this.showToast(m.text, dwell);
+    this.announce(m.text);
+    this.watchShown(m);
+  }
+
+  private showToast(text: string, dwell: number): void {
     if (!this.toastEl) {
       this.toastEl = document.createElement('div');
-      // Bottom-centre lane, stacked so concurrent notices don't overlap:
-      // chat-input 96 · breath 150 · recording 200 · toast 250 · prompt 300.
+      // Bottom-centre lane on phones, stacked so concurrent notices don't
+      // overlap (chat-input 96 · breath 150 · recording 200 · toast 350 ·
+      // prompt 300, lifted over the prompt and the guide card); the top lane
+      // under the compass pill on desktop (see applyToastAnchor).
       Object.assign(this.toastEl.style, {
         position: 'absolute',
         left: '50%',
         transform: 'translateX(-50%)',
         width: 'max-content',
+        maxWidth: 'min(92vw, 440px)',
         textAlign: 'center',
         background: 'rgba(12,12,20,0.92)',
         color: '#fff',
@@ -1243,22 +1357,197 @@ export class SimpleUI {
         opacity: '0',
         transition: 'opacity 0.2s ease',
       });
-      this.applyToastAnchor(this.toastEl);
       this.overlay.appendChild(this.toastEl);
     }
-    this.toastEl.textContent = message;
+    this.toastEl.textContent = text;
+    this.applyToastAnchor(this.toastEl); // the lanes depend on what else is up
     this.toastEl.style.opacity = '1';
     if (this.toastTimer) clearTimeout(this.toastTimer);
-    // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
-    // a 120-char school lesson (shown only via toast, key already spent)
-    // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
-    const dwell = Math.min(6000, Math.max(2000, message.length * 50));
     this.toastTimer = window.setTimeout(() => {
       if (this.toastEl) this.toastEl.style.opacity = '0';
       this.toastBusy = false;
+      this.shownMessage = null;
       // 250ms gap between queued toasts so consecutive ones read as separate.
-      window.setTimeout(() => this.pumpToasts(), 250);
+      this.schedulePump(250);
     }, dwell);
+  }
+
+  // ── Messages: the panel's own outcomes, the guide, the intro, the live region ──
+
+  /** The visitor's last press inside an open panel, and which panel. */
+  private lastPanelAction: { id: string; at: number } | null = null;
+  private panelNoteTimer = 0;
+
+  /** The top modal asked for this message: the visitor acted inside it a
+   *  moment ago (a purchase, a Copy, a share, a vault deposit). The welcome
+   *  card is not one: its every button closes it. */
+  private panelOwnsMessage(): boolean {
+    const top = this.panels.topModal();
+    const a = this.lastPanelAction;
+    return (
+      !!top?.el &&
+      top.id !== 'welcome' &&
+      !!a &&
+      a.id === top.id &&
+      Date.now() - a.at < PANEL_ACTION_MS
+    );
+  }
+
+  /**
+   * Show an outcome INSIDE the open modal: a status line pinned to the
+   * bottom of its scroller, never a toast painted over it (P2-D3). A
+   * microtask later, because the shop re-renders itself right after its own
+   * toast; a panel gone by then hands the message back to the queue.
+   */
+  private panelNote(m: QueuedMessage): void {
+    queueMicrotask(() => {
+      const top = this.panels.topModal();
+      const el = top?.el;
+      if (!el?.isConnected) {
+        if (!this.toastQueue.some((q) => q.text === m.text)) this.toastQueue.push(m);
+        this.pumpToasts();
+        return;
+      }
+      let note = Array.from(el.children).find(
+        (c): c is HTMLElement => c instanceof HTMLElement && c.dataset.panelNote === '1',
+      );
+      if (!note) {
+        note = document.createElement('div');
+        note.dataset.panelNote = '1';
+        note.setAttribute('role', 'status'); // read out by the dialog itself
+        Object.assign(note.style, {
+          position: 'sticky',
+          bottom: '0',
+          margin: '12px 0 0',
+          padding: '9px 14px',
+          borderRadius: '10px',
+          background: 'rgba(28,34,52,0.97)',
+          border: '1px solid rgba(143,193,255,0.35)',
+          color: '#fff',
+          fontSize: '13.5px',
+          lineHeight: '1.35',
+          textAlign: 'center',
+          zIndex: '1',
+        });
+        el.appendChild(note);
+      }
+      note.textContent = m.text;
+      const shown = note;
+      if (this.panelNoteTimer) clearTimeout(this.panelNoteTimer);
+      this.panelNoteTimer = window.setTimeout(
+        () => shown.remove(),
+        Math.min(6000, Math.max(2000, m.text.length * 50)),
+      );
+    });
+  }
+
+  /** The latest 'ds:guide' {active, step} (A6), until the card itself exists. */
+  private lastGuide: { active: boolean } | null = null;
+
+  /** First steps is on screen and teaching: hints wait (D6). The card's own
+   *  data-active wins; before it exists, the last 'ds:guide' event. */
+  private guideActive(): boolean {
+    const el = typeof document === 'undefined' ? null : document.getElementById('ds-guide');
+    if (el) return el.dataset.active === '1';
+    return this.lastGuide?.active === true;
+  }
+
+  /** The guide has armed at least once this page life: it teaches the
+   *  compass itself, so the welcome's first-run compass hint stands down. */
+  private guideArmed(): boolean {
+    return this.lastGuide !== null || !!document.getElementById('ds-guide');
+  }
+
+  // The intro hold (D6, FM-12): 'ds:intro' settled (A8), or 3.5 s after the
+  // loader hides where nobody sends it. With no loader at all (an embed, a
+  // test) there is nothing to wait for.
+  private introPhase: 'none' | 'started' | 'settled' = 'none';
+  private introStartedAt = 0;
+  private loaderEverShown = false;
+  private loaderHiddenAt = 0;
+  private static readonly INTRO_HOLD_MS = 3500;
+  /** A 'start' whose 'settled' never comes holds no longer than this. */
+  private static readonly INTRO_MAX_MS = 20000;
+
+  private introHold(): boolean {
+    if (this.introPhase === 'settled') return false;
+    const now = Date.now();
+    if (this.introPhase === 'started') return now - this.introStartedAt < SimpleUI.INTRO_MAX_MS;
+    if (!this.loaderEverShown) return false;
+    return this.loadingDiv !== null || now - this.loaderHiddenAt < SimpleUI.INTRO_HOLD_MS;
+  }
+
+  /** The visually hidden polite live region: toasts, flashes, the bulletin,
+   *  the interaction prompt (debounced) and compass target changes (D6;
+   *  UX-05: every notice was silent to screen readers). */
+  private liveEl: HTMLDivElement | null = null;
+  private liveTimer = 0;
+
+  private announce(text: string): void {
+    if (!text) return;
+    if (!this.liveEl) {
+      const el = document.createElement('div');
+      el.className = 'ds-sr-only';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.setAttribute('aria-atomic', 'true');
+      el.dataset.neverInert = '1'; // a modal's inert must not silence it
+      this.overlay.appendChild(el);
+      this.liveEl = el;
+    }
+    const el = this.liveEl;
+    if (this.liveTimer) clearTimeout(this.liveTimer);
+    if (el.textContent !== text) {
+      el.textContent = text;
+      return;
+    }
+    // The same line again: clear, then re-set, so it is read again.
+    el.textContent = '';
+    this.liveTimer = window.setTimeout(() => {
+      el.textContent = text;
+    }, 60);
+  }
+
+  /** Window listeners: the guide, the intro, and the panel's own actions. */
+  private initMessageSignals(): void {
+    if (typeof window === 'undefined') return;
+    window.addEventListener('ds:guide', this.onGuideEvent);
+    window.addEventListener('ds:intro', this.onIntroEvent);
+    // Capture: a press inside a modal marks the next outcome as its own,
+    // whatever the control does with the event afterwards.
+    for (const type of ['pointerdown', 'keydown', 'click'] as const) {
+      this.overlay.addEventListener(type, this.onPanelAction, true);
+    }
+  }
+
+  private readonly onGuideEvent = (e: Event): void => {
+    const d = (e as CustomEvent<{ active?: boolean }>).detail;
+    this.lastGuide = { active: !!d?.active };
+    if (this.lastGuide.active) this.stepHintAside();
+    else this.schedulePump(0);
+  };
+
+  private readonly onIntroEvent = (e: Event): void => {
+    const phase = (e as CustomEvent<{ phase?: string }>).detail?.phase;
+    if (phase === 'start' && this.introPhase === 'none') {
+      this.introPhase = 'started';
+      this.introStartedAt = Date.now();
+    } else if (phase === 'settled') {
+      this.introPhase = 'settled';
+      // A tick later: afterIntro opens the welcome card right after it says
+      // settled, and the card must win that race.
+      this.schedulePump(0);
+    }
+  };
+
+  private readonly onPanelAction = (e: Event): void => {
+    const id = this.panels.panelAt(e.target as Node | null);
+    if (id) this.lastPanelAction = { id, at: Date.now() };
+  };
+
+  /** Is the bulletin banner up (the desktop toast lane yields to it)? */
+  private bulletinShowing(): boolean {
+    return !!this.bulletinEl && this.bulletinEl.style.opacity === '1';
   }
 
   private bulletinEl: HTMLDivElement | null = null;
@@ -1321,12 +1610,17 @@ export class SimpleUI {
     this.bulletinEl.style.borderTopColor = accent;
     this.bulletinEl.style.opacity = '1';
     this.bulletinEl.style.transform = 'translateX(-50%) translateY(0)';
+    this.announce(`The island today: ${headline}`);
+    // A desktop toast in the bulletin's lane steps down to the bottom lane
+    // while the banner is up, and back after.
+    if (this.toastEl) this.applyToastAnchor(this.toastEl);
     if (this.bulletinTimer) clearTimeout(this.bulletinTimer);
     this.bulletinTimer = window.setTimeout(() => {
       if (this.bulletinEl) {
         this.bulletinEl.style.opacity = '0';
         this.bulletinEl.style.transform = 'translateX(-50%) translateY(-8px)';
       }
+      if (this.toastEl) this.applyToastAnchor(this.toastEl);
     }, 7000);
   }
 
@@ -1604,7 +1898,7 @@ export class SimpleUI {
       el: modal, // a removed modal pops even if its close path never notifies
       allow: opts.allow,
     });
-    this.stepHintAside();
+    this.stepHintAside(true); // nothing paints over a modal (D6)
     Object.assign(modal.style, {
       position: 'fixed',
       top: '50%',
@@ -1726,6 +2020,7 @@ export class SimpleUI {
       <input id="lead-email" type="email" aria-label="Your email" autocomplete="email" placeholder="Your email" maxlength="120" style="${field}" />
       <textarea id="lead-msg" aria-label="Your message" autocomplete="off" placeholder="A role, a project, or a question" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
       <button id="lead-send" style="width:100%;${this.isTouch ? 'min-height:44px;' : ''}padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
+      <p id="lead-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
       <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;${this.isTouch ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;' : ''}">Privacy</a></p>`;
     container.appendChild(form);
     // Keep keystrokes out of the game while typing.
@@ -1733,12 +2028,18 @@ export class SimpleUI {
       .querySelectorAll('input,textarea')
       .forEach((el) => el.addEventListener('keydown', (e) => e.stopPropagation()));
     const btn = form.querySelector('#lead-send') as HTMLButtonElement | null;
+    // Errors show inline (D6, UX-05): a role=alert line, aria-invalid on the
+    // field and focus on it. A toast here landed over the email and message
+    // fields on a phone, and screen readers never heard it.
+    const errEl = form.querySelector<HTMLElement>('#lead-error')!;
+    const emailEl = form.querySelector('#lead-email') as HTMLInputElement;
+    this.clearFormErrorOnInput(errEl, form.querySelectorAll<HTMLElement>('input,textarea'));
     btn?.addEventListener('click', async () => {
       const name = (form.querySelector('#lead-name') as HTMLInputElement).value;
-      const email = (form.querySelector('#lead-email') as HTMLInputElement).value;
+      const email = emailEl.value;
       const msg = (form.querySelector('#lead-msg') as HTMLTextAreaElement).value;
       if (!email.trim()) {
-        this.toast('Please add your email.');
+        this.formError(errEl, 'Please add your email.', emailEl);
         return;
       }
       btn.disabled = true;
@@ -1769,13 +2070,44 @@ export class SimpleUI {
         // into a retype loop and then away. Re-test client-side and only
         // accuse the address when it is actually wrong.
         track('lead_failed'); // the missing half of the funnel — success was tracked, failure never
-        this.toast(
-          /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())
+        const good = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
+        this.formError(
+          errEl,
+          good
             ? 'Could not send — try again, or email admin@digiscalability.com.'
             : 'Please check your email address.',
+          good ? null : emailEl,
         );
       }
     });
+  }
+
+  /** An inline form error (D6): the form's role=alert line says it, the
+   *  field at fault gets aria-invalid and focus. `field` null: nothing the
+   *  visitor typed is wrong (a network failure), so focus stays put. */
+  private formError(errEl: HTMLElement, msg: string, field: HTMLElement | null): void {
+    errEl.textContent = msg;
+    errEl.hidden = false;
+    const form = errEl.parentElement;
+    form?.querySelectorAll('[aria-invalid]').forEach((f) => f.removeAttribute('aria-invalid'));
+    if (!field) return;
+    field.setAttribute('aria-invalid', 'true');
+    field.setAttribute('aria-describedby', errEl.id);
+    field.focus();
+  }
+
+  /** Typing again clears the error. */
+  private clearFormErrorOnInput(errEl: HTMLElement, fields: Iterable<HTMLElement>): void {
+    for (const f of fields) {
+      f.addEventListener('input', () => {
+        if (errEl.hidden) return;
+        errEl.hidden = true;
+        errEl.textContent = '';
+        errEl.parentElement
+          ?.querySelectorAll('[aria-invalid]')
+          .forEach((n) => n.removeAttribute('aria-invalid'));
+      });
+    }
   }
 
   /** Global race leaderboard: fastest laps per circuit. */
@@ -1838,6 +2170,7 @@ export class SimpleUI {
       // the Leaderboard's button left 'leaderboard' on the stack: scrim up,
       // chips dimmed, phone controls hidden under "Follow the compass" (UX-01).
       this.panels.notifyClosed(panelId);
+      this.raceGuided = true;
       this.onRaceGuide?.();
     });
     return go;
@@ -1924,11 +2257,26 @@ export class SimpleUI {
        <div style="display:flex;gap:8px;margin-bottom:12px;">
          <input id="gb-msg" aria-label="Your guestbook note" maxlength="200" placeholder="Say hi…" style="flex:1;padding:9px 12px;border-radius:10px;
            border:none;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
-         <button id="gb-sign" class="ds-press" style="padding:9px 16px;border:none;border-radius:10px;background:${DS.primary};
+         <button id="gb-sign" class="ds-press" disabled style="padding:9px 16px;border:none;border-radius:10px;background:${DS.primary};
            color:#fff;font-size:14px;font-weight:600;cursor:pointer;">Sign</button>
        </div>
+       <p id="gb-error" role="alert" hidden style="margin:-4px 0 10px;font-size:13px;line-height:1.4;color:#ffb4a8;text-align:left;"></p>
        <div id="gb-body" style="text-align:left;max-height:40vh;overflow:auto;">Loading…</div>`,
     );
+    // Sign waits for a note (D6): an empty Sign did nothing, silently.
+    const gbInput = modal.querySelector<HTMLInputElement>('#gb-msg');
+    const gbSign = modal.querySelector<HTMLButtonElement>('#gb-sign');
+    const gbError = modal.querySelector<HTMLElement>('#gb-error')!;
+    const syncSign = (): void => {
+      if (gbSign) {
+        gbSign.disabled = !gbInput?.value.trim();
+        gbSign.style.opacity = gbSign.disabled ? '0.5' : '1';
+        gbSign.style.cursor = gbSign.disabled ? 'default' : 'pointer';
+      }
+    };
+    gbInput?.addEventListener('input', syncSign);
+    syncSign();
+    if (gbInput) this.clearFormErrorOnInput(gbError, [gbInput]);
     trackOnce('guestbook_opened');
     this.overlay.appendChild(modal);
     const { getGuestbook, signGuestbook } = await import('./Boards');
@@ -1963,7 +2311,8 @@ export class SimpleUI {
       const ok = await signGuestbook(name, msg);
       if (ok) {
         if (input) input.value = '';
-        this.toast('✍️ Signed the guestbook!');
+        syncSign();
+        this.toast('✍️ Signed the guestbook!'); // shows inside the open guestbook (P2-D3)
         track('guestbook_signed');
         try {
           localStorage.setItem('ds_said_hi', '1');
@@ -1973,7 +2322,7 @@ export class SimpleUI {
         this.onProgressMade?.();
         await render();
       } else {
-        this.toast('Message could not be posted.');
+        this.formError(gbError, 'Message could not be posted.', input);
       }
     };
     modal.querySelector('#gb-sign')?.addEventListener('click', () => void sign());
@@ -3106,6 +3455,8 @@ export class SimpleUI {
       this.togglePortfolioMenu();
     });
     this.makeHudButtonAccessible(btn, 'Open portfolio menu');
+    // First steps' anchor (A6): the pill on desktop, its drawer row on touch.
+    btn.dataset.guide = this.isTouch ? 'drawer-portfolio' : 'portfolio-chip';
     this.portfolioBtnEl = btn;
     this.chipHost(btn, { drawer: true, order: 2 });
   }
@@ -3207,6 +3558,7 @@ export class SimpleUI {
       history: false, // transient: Back is not spent on it
     });
     const cap = document.createElement('div');
+    cap.setAttribute('role', 'status'); // each stop's caption is read out (UX-05)
     Object.assign(cap.style, {
       position: 'absolute',
       left: '50%',
@@ -3345,6 +3697,7 @@ export class SimpleUI {
        <input id="sh-email" aria-label="Your email, only if you'd like a reply (optional)" autocomplete="email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
        <button id="sh-send" class="ds-press" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
          background:${DS.primary};color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
+       <p id="sh-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
        <p style="margin:9px 0 0;font-size:11px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
     );
     this.overlay.appendChild(modal);
@@ -3356,17 +3709,20 @@ export class SimpleUI {
     const nameEl = modal.querySelector('#sh-name') as HTMLInputElement | null;
     const emailEl = modal.querySelector('#sh-email') as HTMLInputElement | null;
     const sendBtn = modal.querySelector('#sh-send') as HTMLButtonElement | null;
+    // Inline errors, as the lead form's (D6).
+    const errEl = modal.querySelector<HTMLElement>('#sh-error')!;
+    this.clearFormErrorOnInput(errEl, modal.querySelectorAll<HTMLElement>('input, textarea'));
     msgEl?.focus();
     sendBtn?.addEventListener('click', () => {
       void (async () => {
         const msg = msgEl?.value.trim() ?? '';
         if (!msg) {
-          this.toast('Write a little something first!');
+          this.formError(errEl, 'Write a little something first!', msgEl);
           return;
         }
         const email = emailEl?.value.trim() ?? '';
         if (email && !/^\S+@\S+\.\S+$/.test(email)) {
-          this.toast('Please check your email address.');
+          this.formError(errEl, 'Please check your email address.', emailEl);
           return;
         }
         const name = nameEl?.value.trim() || 'Traveller';
@@ -3405,7 +3761,7 @@ export class SimpleUI {
         } else {
           sendBtn.disabled = false;
           sendBtn.textContent = 'Send 👋';
-          this.toast('Could not send — try again in a moment.');
+          this.formError(errEl, 'Could not send — try again in a moment.', null);
         }
       })();
     });
@@ -3836,6 +4192,7 @@ export class SimpleUI {
       background: 'rgba(255,255,255,0.45)',
     });
     base.appendChild(thumb);
+    base.dataset.guide = 'joystick'; // First steps' ghost thumb sits on the ring (A6)
     hit.appendChild(base);
     this.overlay.appendChild(hit);
     this.panels.registerLayer('touch-controls', hit);
@@ -4010,7 +4367,7 @@ export class SimpleUI {
     };
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
-    makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse);
+    makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide = 'use-button';
     makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump);
     makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave);
     // DIVE — touch's only route to the free dive (Shift is desktop-only).
@@ -4166,6 +4523,7 @@ export class SimpleUI {
    * Show loading screen with progress
    */
   showLoading(progress: number): void {
+    this.loaderEverShown = true; // toasts now wait out the intro (introHold)
     if (!this.loadingDiv) {
       // FULLSCREEN opaque backdrop: the first frames can render before the
       // camera is placed (degenerate inside-the-planet views) — nothing
@@ -4291,6 +4649,7 @@ export class SimpleUI {
       this.loadingTimer = 0;
     }
     if (this.loadingDiv) {
+      this.loaderHiddenAt = Date.now();
       const el = this.loadingDiv;
       // Blank the CSS planet + orbiting moon BEFORE the fade. The loader is
       // opaque and fades out (0.45s) ON TOP of the already-running 3D fly-in, so
@@ -4431,6 +4790,7 @@ export class SimpleUI {
       el: card,
       initialFocus: () => card,
     });
+    this.stepHintAside(true);
 
     trackOnce('welcome_shown');
 
@@ -4633,6 +4993,7 @@ export class SimpleUI {
     this.welcomeDiv.querySelector('button[data-race]')?.addEventListener('click', (e) => {
       e.stopPropagation();
       track('welcome_cta', { cta: 'race' });
+      this.raceGuided = true;
       closeWelcome();
       this.onRaceGuide?.();
     });
@@ -4745,6 +5106,7 @@ export class SimpleUI {
     if (this.welcomeDiv) {
       this.welcomeDiv.remove();
       this.welcomeDiv = null;
+      this.welcomeClosedAt = Date.now();
       this.panels.notifyClosed('welcome'); // no-op during a sweep
       // TEARDOWN IS NOT DISMISSAL. beforeunload -> dispose() -> hideWelcome()
       // used to burn ds_welcomed for a visitor who closed the tab while the
@@ -4774,11 +5136,16 @@ export class SimpleUI {
       // pinned by the teardown test.
       const skipHint = this.skipCompassHint;
       this.skipCompassHint = false;
+      // It stands down once First steps arms (A6 teaches the compass and fires
+      // this hint itself on Skip), once the visitor opens the map, or when a
+      // race guide already put the compass to work (CO-D2: on a phone it
+      // stacked on the start-line message).
       try {
         if (wasFirstEver && !skipHint && !localStorage.getItem('ds_hint_compass')) {
           localStorage.setItem('ds_hint_compass', '1');
           this.toast('🧭 The gold ➤ up top points to your next stop — tap it for the island map.', {
             hint: true,
+            until: () => this.guideArmed() || this.compassPillUsed || this.raceGuided,
           });
         }
       } catch {
@@ -4790,6 +5157,10 @@ export class SimpleUI {
   /** Set by a welcome CTA that opens a panel or the tour; read once by
    *  hideWelcome to skip the first-run compass hint. */
   private skipCompassHint = false;
+  /** The compass pill opened the map, or a race guide set the compass: the
+   *  first-run compass hint is stale (its until()). */
+  private compassPillUsed = false;
+  private raceGuided = false;
   /** The open card's Escape listener: a scrim tap or the sweep closes the
    *  card without it, so hideWelcome drops it. */
   private welcomeEscape: ((e: KeyboardEvent) => void) | null = null;
@@ -4951,12 +5322,16 @@ export class SimpleUI {
     // TARGET changes). Cleared in hideInteractionPrompt.
     if (text === this.lastPromptText && this.interactionDiv) return;
     this.lastPromptText = text;
+    const created = !this.interactionDiv;
     if (!this.interactionDiv) {
       this.interactionDiv = document.createElement('div');
+      // The guide card's anchor (A6 keeps 8 px above it).
+      this.interactionDiv.dataset.hud = 'prompt';
       Object.assign(this.interactionDiv.style, {
         position: 'absolute',
         // bottom/left/maxWidth come from applyPromptAnchor (breakpoint-aware,
         // and re-applied on rotation) right after this style block.
+        width: 'max-content',
         background: 'rgba(0, 0, 0, 0.8)',
         color: 'white',
         padding: '10px 18px', // was 15px 25px — the prompt is a hint, not a card
@@ -4990,7 +5365,22 @@ export class SimpleUI {
     }
 
     this.interactionDiv.innerHTML = this.touchify(text);
+    // Read out once the text has held for 600 ms: this runs every frame while
+    // a target is in range, and only a CHANGE gets this far (D6).
+    if (this.promptAnnounceTimer) clearTimeout(this.promptAnnounceTimer);
+    const el = this.interactionDiv;
+    this.promptAnnounceTimer = window.setTimeout(() => {
+      this.promptAnnounceTimer = 0;
+      if (this.interactionDiv === el) this.announce(el.textContent ?? '');
+    }, 600);
+    // A toast already up on a phone steps above the prompt; a hint bows out.
+    if (this.isTouch && this.toastEl && this.toastBusy) {
+      if (created) this.stepHintAside();
+      this.applyToastAnchor(this.toastEl);
+    }
   }
+
+  private promptAnnounceTimer = 0;
 
   /**
    * Rewrite keyboard prompts into touch language on phones/tablets. Desktop
@@ -5028,9 +5418,14 @@ export class SimpleUI {
    */
   hideInteractionPrompt(): void {
     this.lastPromptText = null;
+    if (this.promptAnnounceTimer) {
+      clearTimeout(this.promptAnnounceTimer);
+      this.promptAnnounceTimer = 0;
+    }
     if (this.interactionDiv) {
       this.interactionDiv.remove();
       this.interactionDiv = null;
+      if (this.isTouch && this.toastEl && this.toastBusy) this.applyToastAnchor(this.toastEl);
     }
   }
 
@@ -5797,6 +6192,7 @@ export class SimpleUI {
         return (sel ? shop.querySelector<HTMLElement>(sel) : null) ?? shop.querySelector('h3');
       },
     });
+    this.stepHintAside(true); // nothing paints over a modal (D6)
     this.shopDiv.querySelector('#shop-close')?.addEventListener('click', () => {
       this.hideShop();
       onClose();
@@ -5851,6 +6247,7 @@ export class SimpleUI {
       // .hud-btn 44px tap pad (the visual chip is 30px tall) plus keyboard
       // focus + Enter/Space activation. Title above survives its guard.
       this.makeHudButtonAccessible(this.coinDiv, 'Open coin history');
+      this.coinDiv.dataset.guide = 'coin-chip';
       if (this.isTouch) {
         this.tierChip(this.coinDiv); // inserts BEFORE ☰ to keep [👥][🪙][☰]
       } else {
@@ -6246,14 +6643,24 @@ export class SimpleUI {
 
   /** Brief centred splash message (used for the drown/rescue). */
   private flashEl: HTMLDivElement | null = null;
+  /**
+   * A flash joins the toast queue as an outcome (D6): one message at a time,
+   * so it never shares the screen with a toast (FM-09: a flash, a toast and a
+   * prompt stacked at 35 s), never paints over an open modal (UX-04: 'Secret
+   * found' across the Projects text), and dwells 50 ms a character, 2-6 s.
+   */
   flashMessage(text: string): void {
+    this.enqueue({ text: this.touchifyPlain(text), hint: false, kind: 'flash' });
+  }
+
+  private showFlash(text: string, dwell: number): void {
     // Single slot: each call used to append a NEW div at the identical
     // anchor, so two flashes within ~2s superimposed their text (reachable
     // first-session: ?race= landing + arrival trail). Replace, don't stack.
     this.flashEl?.remove();
     const el = document.createElement('div');
     this.flashEl = el;
-    el.textContent = this.touchifyPlain(text);
+    el.textContent = text;
     Object.assign(el.style, {
       position: 'absolute',
       top: '38%',
@@ -6277,13 +6684,19 @@ export class SimpleUI {
       el.style.opacity = '1';
       el.style.transform = 'translate(-50%, -50%) scale(1)';
     });
-    window.setTimeout(() => {
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => {
       el.style.opacity = '0';
+      this.toastBusy = false;
+      this.shownMessage = null;
+      // The next toast waits out this 300 ms fade (pumpToasts).
+      this.flashFadeUntil = Date.now() + 300;
+      this.schedulePump(300);
       window.setTimeout(() => {
         el.remove();
         if (this.flashEl === el) this.flashEl = null;
       }, 300);
-    }, 1800);
+    }, dwell);
   }
 
   /**
@@ -6534,10 +6947,12 @@ export class SimpleUI {
         fontFamily: 'sans-serif',
       });
       this.compassDiv.setAttribute('role', 'button');
+      this.compassDiv.dataset.guide = 'compass';
       this.compassDiv.setAttribute('tabindex', '0');
       this.compassDiv.setAttribute('aria-label', 'Open the island map');
       this.compassDiv.title = 'Open the island map';
       const openMap = (): void => {
+        this.compassPillUsed = true;
         track('compass_pill_tap');
         // The existing map seam (journal's map button uses it too) \u2014 one
         // entry path into openIslandMap, multiple callers.
@@ -6599,7 +7014,15 @@ export class SimpleUI {
         this.compassLabel.textContent = text;
       }
     }
+    // A new target is read out once, by its label (never the metres, which
+    // change every few frames).
+    if (state.label !== this._compassAnnounced) {
+      this._compassAnnounced = state.label;
+      this.announce(`Compass: ${state.label}`);
+    }
   }
+
+  private _compassAnnounced = '';
 
   /**
    * The recruiter front door: name, role, availability, experience, the
@@ -6659,7 +7082,7 @@ export class SimpleUI {
       // 'ds:modal' carries it: closing the hire card says zone 'hire' (P2-D8).
       zone: String(zone?.id ?? 'unknown'),
     });
-    this.stepHintAside();
+    this.stepHintAside(true); // nothing paints over a modal (D6)
 
     const content = this.getZoneContent(zone);
     this.zonePanelDiv.innerHTML = content;
@@ -7274,6 +7697,13 @@ export class SimpleUI {
     header.appendChild(controls);
     panel.appendChild(header);
     const log = document.createElement('div');
+    // A log: each new line is read out once (UX-05: 0 live regions). The
+    // typewriter's partial text is hidden from screen readers; each NPC line
+    // carries its whole text in a visually hidden twin.
+    log.setAttribute('role', 'log');
+    log.setAttribute('aria-live', 'polite');
+    log.setAttribute('aria-label', `Conversation with ${name}`);
+    log.tabIndex = 0; // a scroller: the keyboard can page back through it
     Object.assign(log.style, {
       padding: '12px 16px',
       maxHeight: '38vh',
@@ -7304,9 +7734,15 @@ export class SimpleUI {
     // right before the cloud-voiced continuation arrives made the panel open
     // with a jarring robot-then-premium voice switch.
     const npcLine = (text: string, voiced = true): void => {
-      const row = document.createElement('div');
-      Object.assign(row.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
-      log.appendChild(row);
+      const line = document.createElement('div');
+      Object.assign(line.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
+      const row = document.createElement('span');
+      row.setAttribute('aria-hidden', 'true'); // the typewriter's partial text
+      const whole = document.createElement('span');
+      whole.className = 'ds-sr-only';
+      whole.textContent = `${name}: ${text}`; // what the log reads out, once
+      line.append(row, whole);
+      log.appendChild(line);
       if (voiced) speak(text, voice.rate, voice.pitch, voice.variant);
       if (a11y.reducedMotion) {
         row.textContent = text;
@@ -7618,6 +8054,7 @@ export class SimpleUI {
       // its link field (focused 50 ms after open, below)
       initialFocus: () => panel.querySelector<HTMLElement>('input'),
     });
+    this.stepHintAside(true);
     panel.innerHTML = `
       <div style="font-weight:600; font-size:15px; margin-bottom:4px;">📺 The wall screen</div>
       <div style="font-size:12.5px; color:#aab; margin-bottom:12px;">What shall we watch? Paste a YouTube link (or any https page).</div>
@@ -7863,6 +8300,7 @@ export class SimpleUI {
       label: 'Door code',
       initialFocus: () => panel, // its own keydown takes the digits
     });
+    this.stepHintAside(true);
     panel.innerHTML = `
       <div style="font-weight:600; font-size:14.5px; margin-bottom:2px;">🔒 The door is locked</div>
       <div style="font-size:12px; color:#aab; margin-bottom:10px;">Enter the door code</div>
@@ -8041,7 +8479,8 @@ export class SimpleUI {
         color: rgba(160, 200, 255, 0.9);
       ">${name}</div>
       <div style="padding: clamp(10px, 1.8vh, 16px) clamp(14px, 4vw, 20px); min-height: clamp(36px, 7vh, 60px);">
-        <div id="dialogue-text" style="
+        <div id="dialogue-sr" class="ds-sr-only" role="status" aria-live="polite"></div>
+        <div id="dialogue-text" aria-hidden="true" style="
           line-height: 1.5;
           font-size: clamp(13px, 3.5vw, 15px);
           min-height: clamp(18px, 4vh, 24px);
@@ -8062,6 +8501,10 @@ export class SimpleUI {
 
   private startTypewriter(text: string): void {
     this.typewriterText = text;
+    // The whole line, once, to screen readers (the dialogue's role=status;
+    // the typed-out text itself is aria-hidden).
+    const sr = this.dialogueDiv?.querySelector('#dialogue-sr');
+    if (sr) sr.textContent = text;
     if (this.typewriterTimer) cancelAnimationFrame(this.typewriterTimer);
     // Reduced motion: full line instantly — the same rule the free-chat
     // panel's typewriter has always had (npcLine). Read per line, so the ♿
@@ -8145,6 +8588,11 @@ export class SimpleUI {
     // First: the closes below must not step the history back. This runs on
     // beforeunload, where a back() could turn a reload or a link into Back.
     this.panels.dispose();
+    window.removeEventListener('ds:guide', this.onGuideEvent);
+    window.removeEventListener('ds:intro', this.onIntroEvent);
+    for (const type of ['pointerdown', 'keydown', 'click'] as const) {
+      this.overlay.removeEventListener(type, this.onPanelAction, true);
+    }
     if (this.compassDiv) {
       this.compassDiv.remove();
       this.compassDiv = null;

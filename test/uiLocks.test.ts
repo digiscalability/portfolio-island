@@ -319,6 +319,37 @@ describe('moved from inventoryPanel.test.ts (A): the pack', () => {
   });
 });
 
+// D6 (with P2-D3): the message rules frontDoorPolish runs, pinned at the
+// source so a refactor cannot route a surface around them.
+describe('D6: one message at a time', () => {
+  const ui = code('SimpleUI.ts');
+
+  test('a flash is a queued message, not a DOM write of its own', () => {
+    const flash = bodyOf(ui, 'flashMessage(text: string): void');
+    expect(flash).toContain("kind: 'flash'");
+    expect(flash).toContain('this.enqueue(');
+    expect(flash).not.toContain('createElement');
+  });
+
+  test('nothing paints over a modal; outcomes go first; stale hints drop', () => {
+    const may = bodyOf(ui, 'private mayShow(m: QueuedMessage): boolean');
+    expect(may.indexOf('this.panels.isModalOpen()')).toBeLessThan(may.indexOf('if (!m.hint)'));
+    const take = bodyOf(ui, 'private takeToast(): QueuedMessage | null');
+    expect(take).toContain('q.hint && q.until?.()');
+    expect(take.indexOf('!q.hint && this.mayShow(q)')).toBeLessThan(
+      take.indexOf('q.hint && this.mayShow(q)'),
+    );
+  });
+
+  test('the prompt is announced after the per-frame guard, debounced, never per frame', () => {
+    const prompt = bodyOf(ui, 'showInteractionPrompt(text: string): void');
+    const guard = prompt.indexOf('if (text === this.lastPromptText && this.interactionDiv) return');
+    expect(guard).toBeGreaterThan(-1);
+    expect(prompt.indexOf('this.announce(')).toBeGreaterThan(guard);
+    expect(prompt).toContain('}, 600);');
+  });
+});
+
 /** Hue in degrees of '#rrggbb' or 'rgb(r, g, b)'. */
 const hue = (colour: string): number => {
   const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(colour);
