@@ -9746,21 +9746,28 @@ export class GameScene extends THREE.Scene {
   /**
    * First-30-seconds quick win (engagement research: the highest-leverage,
    * lowest-risk fix): a short breadcrumb of coins from the spawn point toward
-   * the nearest villager, so a brand-new visitor's very first minute is
-   * move → collect → arrive at a talking NPC. First visit only; trail coins
-   * never respawn; finishing the trail fires onArrivalTrail (flash + flag).
+   * the nearest villager who talks, so a brand-new visitor's very first
+   * minute is move → collect → arrive at a villager to chat with. First
+   * visit only; trail coins never respawn; the first one collected marks the
+   * visit (ds_arrived), and finishing the trail fires onArrivalTrail.
    */
   private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
     const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
-    // Nearest villager to the spawn (npcTargets are seated by now). The search
-    // draws nothing from the seeded stream.
+    // Nearest villager to the spawn who talks through the chat (isAiNpc):
+    // the trail ends at a conversation, never at one of the villagers with
+    // only written lines (the market vendors, the First Mate and the
+    // Deckhand). npcTargets are seated by now. The search draws nothing from
+    // the seeded stream.
     let npcDir: THREE.Vector3 | null = null;
     let best = Infinity;
+    this.trailVillager = null;
     for (const t of this.island.npcTargets ?? []) {
+      if (!isAiNpc(t.name)) continue;
       const d = t.position.clone().normalize().angleTo(spawnDir);
       if (d > 0.04 && d < best) {
         best = d;
         npcDir = t.position.clone().normalize();
+        this.trailVillager = t.name;
       }
     }
     // No villager: the world decides that for every visitor alike, so there
@@ -9804,6 +9811,10 @@ export class GameScene extends THREE.Scene {
   }
 
   private trailCoinsLeft = 0;
+  /** ds_arrived has been written for this visit (the first trail coin). */
+  private arrivalMarked = false;
+  /** The villager the arrival trail leads to (createArrivalTrail). */
+  private trailVillager: string | null = null;
   /** First-visit arrival coins still on the ground? While true, the guide
    *  sparkles yield — minute one shows ONE golden breadcrumb system, not two
    *  competing trails (coins to the nearest villager vs sparkles to
@@ -9811,6 +9822,14 @@ export class GameScene extends THREE.Scene {
    *  and behaviour is identical for them. */
   public hasTrailCoins(): boolean {
     return this.trailCoinsLeft > 0;
+  }
+  /** The villager the first-visit coin trail leads to: the nearest to the
+   *  spawn who talks (isAiNpc), or null when the world has none. A property
+   *  of the shared world, so it is set for returning visitors too;
+   *  hasTrailCoins() says whether the coins are down. The compass reads it,
+   *  so the pill names the villager the coins lead to. */
+  public getTrailVillager(): string | null {
+    return this.trailVillager;
   }
   private onArrivalTrail: (() => void) | null = null;
   public setOnArrivalTrail(cb: () => void): void {
@@ -11915,7 +11934,21 @@ export class GameScene extends THREE.Scene {
         // quest + delivery rewards the sane way to kit out. Arrival-trail
         // coins are one-shot: respawnAt 0 means the respawn branch never fires.
         c.respawnAt = c.trail ? 0 : time + 120;
-        if (c.trail && --this.trailCoinsLeft === 0) this.onArrivalTrail?.();
+        if (c.trail) {
+          // The first trail coin marks the visit: a reload after it builds no
+          // trail, so its coins cannot be collected again (a free coin per
+          // reload). main-simple's markDone at the trail's end writes the
+          // same key.
+          if (!this.arrivalMarked) {
+            this.arrivalMarked = true;
+            try {
+              localStorage.setItem('ds_arrived', '1');
+            } catch {
+              /* no storage: the trail shows again next visit */
+            }
+          }
+          if (--this.trailCoinsLeft === 0) this.onArrivalTrail?.();
+        }
         // Streak-pitched chime: quick successive pickups climb a pentatonic
         // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
         // reward grammar. Only THIS site pitches; shop dings stay flat.

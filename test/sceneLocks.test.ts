@@ -273,3 +273,56 @@ describe('no runtime change to the light count: GameScene’s half (P2-B6)', () 
     expect([porch.visible, beam.visible, roomLamp.visible]).toEqual([true, true, true]);
   });
 });
+
+describe('the arrival trail leads to a villager who talks (B10)', () => {
+  test('a scripted villager nearer the spawn is passed over', () => {
+    localStorage.clear(); // a first visit
+    const spawn = new THREE.Vector3(0.1, 1, 0.1).normalize();
+    const tilt = new THREE.Vector3().crossVectors(spawn, new THREE.Vector3(1, 0, 0)).normalize();
+    const at = (deg: number): THREE.Vector3 =>
+      spawn
+        .clone()
+        .applyAxisAngle(tilt, (deg * Math.PI) / 180)
+        .multiplyScalar(75);
+    const npcTargets = [
+      { name: 'Market Vendor', position: at(4), meshRef: new THREE.Object3D() },
+      { name: 'Mayor', position: at(8), meshRef: new THREE.Object3D() },
+      { name: 'Deckhand', position: at(6), meshRef: new THREE.Object3D() },
+    ];
+    // Real createArrivalTrail on a stub world (the borrow pattern above).
+    const scene = Object.setPrototypeOf(new THREE.Scene(), GameScene.prototype) as Record<
+      string,
+      unknown
+    > & { getTrailVillager(): string | null };
+    Object.assign(scene, {
+      island: {
+        npcTargets,
+        sampleSurfaceByDirection: (d: THREE.Vector3) => ({
+          position: d.clone().multiplyScalar(75),
+          normal: d.clone(),
+        }),
+      },
+      coins: [],
+      trailCoinsLeft: 0,
+    });
+    const proto = GameScene.prototype as unknown as Record<string, (...a: unknown[]) => void>;
+    proto['createArrivalTrail'].call(scene, new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+    expect(scene.getTrailVillager()).toBe('Mayor');
+    const coins = scene.coins as Array<{ mesh: THREE.Object3D; trail?: boolean }>;
+    expect(coins.filter((c) => c.trail)).toHaveLength(5);
+    const last = coins[coins.length - 1].mesh.position;
+    expect(last.distanceTo(npcTargets[1].position)).toBeLessThan(3);
+  });
+
+  test('the first trail coin marks the visit, so a reload builds no trail', () => {
+    // A reload before the trail's end used to rebuild the trail, and its
+    // coins could be collected again: a free coin per reload.
+    const g = stripped('GameScene.ts');
+    const pickup = bodyOf(g, 'if (c.trail) {');
+    expect(pickup).toContain("localStorage.setItem('ds_arrived', '1')");
+    expect(pickup).toContain('this.onArrivalTrail?.()');
+    expect(bodyOf(g, 'private createArrivalTrail(')).toContain(
+      "localStorage.getItem('ds_arrived') === '1'",
+    );
+  });
+});
