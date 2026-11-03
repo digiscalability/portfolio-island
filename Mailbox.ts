@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
 import { Materials } from './Materials';
+import { isRealTheme } from './Theme';
 
 export class Mailbox {
   public mesh: THREE.Group;
@@ -95,6 +96,13 @@ export class Mailbox {
     this.beam.position.y = 8.2;
     this.beam.visible = false;
     group.add(this.beam);
+
+    // One cel look (UX plan C3): post, box, plate and flag join the toon
+    // props; the transparent glow and the basic beam stay as they are. Quest
+    // mailboxes are built inside GameScene's seeded window (placeAssets), and
+    // Materials.toonify draws from its own generator, so the stream sees the
+    // same constructions as before. Under ?theme=real they stay PBR.
+    if (!isRealTheme()) Materials.toonifyTree(group);
 
     return group;
   }

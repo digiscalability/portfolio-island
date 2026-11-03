@@ -29,9 +29,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as THREE from 'three';
 import * as ts from 'typescript';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { addGroupHulls, setInkVisible } from '../CelLook';
+import type { Island } from '../Island';
+import { Mailbox } from '../Mailbox';
+import { Materials } from '../Materials';
+import { Zone } from '../Zones';
 
 // ---- AST slicing ------------------------------------------------------------
 // File-local until E's test/helpers/astSlice.ts lands (CO-E1), same contract:
@@ -671,5 +675,280 @@ describe('the light count never changes at runtime (decision P2-1, P2-C4)', () =
       'new THREE.PointLight(',
       'new THREE.SpotLight(',
     ]);
+  });
+});
+
+describe('one cel look for landmarks and props (C3)', () => {
+  // Materials.toonify is the one converter (wave 2's B15 points GameScene's
+  // island pass at it too). These pin what it carries, that it never draws from
+  // the shared stream, and where C applies it. The in-browser census and the
+  // seed probe check the running world.
+
+  /** Ambient Math.random calls while fn runs. */
+  const ambientDraws = (fn: () => void): number => {
+    const spy = vi.spyOn(Math, 'random');
+    spy.mockClear();
+    try {
+      fn();
+      return spy.mock.calls.length;
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  /** Every material slot under root, ink hulls skipped, as type[tr]. */
+  const kinds = (root: THREE.Object3D): string[] => {
+    const out: string[] = [];
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.userData.isCelHull) return;
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+        const toon = mat as THREE.MeshToonMaterial;
+        const ramp = toon.isMeshToonMaterial
+          ? toon.gradientMap === Materials.toonRamp()
+            ? '[ramp]'
+            : '[NO RAMP]'
+          : '';
+        out.push(`${mat.type}${ramp}${mat.transparent ? '[tr]' : ''}`);
+      }
+    });
+    return out;
+  };
+
+  test('toonify carries colour, map, emissive, vertex colours, the flags and the shader hooks', () => {
+    const map = new THREE.Texture();
+    const src = new THREE.MeshStandardMaterial({
+      color: 0x336699,
+      map,
+      emissive: 0x112233,
+      emissiveIntensity: 0.7,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      name: 'Seat',
+    });
+    src.alphaTest = 0.25;
+    src.depthWrite = false;
+    src.userData.celRim = true;
+    const hook = (): void => {};
+    src.onBeforeCompile = hook;
+    src.customProgramCacheKey = () => 'cel-rim-v1';
+    let disposed = false;
+    src.addEventListener('dispose', () => (disposed = true));
+
+    const toon = Materials.toonify(src);
+    expect(toon.isMeshToonMaterial).toBe(true);
+    expect(toon.gradientMap).toBe(Materials.toonRamp()); // the ONE shared ramp
+    expect(toon.color.getHex()).toBe(0x336699);
+    expect(toon.map).toBe(map);
+    expect(toon.emissive.getHex()).toBe(0x112233);
+    expect(toon.emissiveIntensity).toBe(0.7);
+    expect(toon.vertexColors).toBe(true);
+    expect(toon.side).toBe(THREE.DoubleSide);
+    expect(toon.name).toBe('Seat'); // dressNpc swaps villager parts by name
+    expect(toon.alphaTest).toBe(0.25);
+    expect(toon.depthWrite).toBe(false);
+    expect(toon.userData.celRim).toBe(true);
+    expect(toon.onBeforeCompile).toBe(hook);
+    expect(toon.customProgramCacheKey()).toBe('cel-rim-v1');
+    expect(disposed).toBe(true); // the replaced material is released
+    // Memoised: a material shared by many meshes converts once, stays shared.
+    expect(Materials.toonify(src)).toBe(toon);
+
+    const glass = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.4 });
+    const clear = Materials.toonify(glass);
+    expect(clear.transparent).toBe(true);
+    expect(clear.opacity).toBe(0.4);
+  });
+
+  test('toonifyTree: opaque standard goes toon, glass stays PBR, ink is left alone, ZERO ambient draws', () => {
+    const g = new THREE.Group();
+    const shared = new THREE.MeshStandardMaterial({ color: 0x808080 });
+    for (let i = 0; i < 3; i++) g.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), shared));
+    const glass = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.4 });
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), glass);
+    g.add(pane);
+    const multi = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), [
+      new THREE.MeshStandardMaterial(),
+      glass,
+    ]);
+    g.add(multi);
+    const inkMat = new THREE.MeshStandardMaterial();
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), inkMat);
+    hull.userData.isCelHull = true;
+    g.add(hull);
+    const flat = new THREE.MeshBasicMaterial();
+    const decal = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), flat);
+    g.add(decal);
+
+    let swapped = 0;
+    const ambient = ambientDraws(() => {
+      swapped = Materials.toonifyTree(g);
+    });
+    expect(ambient).toBe(0); // the seeded stream pays nothing, inside the window too
+    expect(swapped).toBe(4); // three shared slots and the multi's opaque slot
+    const [a, b] = g.children as THREE.Mesh[];
+    expect(a.material).toBe(b.material); // shared stays shared
+    expect((a.material as THREE.Material).type).toBe('MeshToonMaterial');
+    expect(pane.material).toBe(glass);
+    expect((multi.material as THREE.Material[])[1]).toBe(glass);
+    expect(((multi.material as THREE.Material[])[0] as THREE.Material).type).toBe(
+      'MeshToonMaterial',
+    );
+    expect(hull.material).toBe(inkMat);
+    expect(decal.material).toBe(flat);
+  });
+
+  test('the zone halls are toon at creation, and the seeded stream sees the same draws', () => {
+    const island = {
+      sampleSurfaceByDirection: () => {
+        throw new Error('stub: Zone falls back to an ideal-sphere seat');
+      },
+      getRadius: () => 100,
+    } as unknown as Island;
+    const data = {
+      id: 'projects',
+      name: 'Projects',
+      description: '',
+      position: new THREE.Vector3(0, 100, 0),
+      color: 0xff9800,
+      icon: 'P',
+    };
+    new Zone(data, island); // warm every first-of-kind cache before counting
+    const off = vi.spyOn(Materials, 'toonifyTree').mockReturnValue(0);
+    let plain = 0;
+    try {
+      plain = ambientDraws(() => new Zone(data, island));
+    } finally {
+      off.mockRestore();
+    }
+    let zone: Zone | null = null;
+    const toon = ambientDraws(() => {
+      zone = new Zone(data, island);
+    });
+    // ZonesManager builds inside GameScene's seeded window: converting the
+    // halls must leave its draw count exactly as it was.
+    expect(toon).toBe(plain);
+    const hall = kinds((zone as unknown as Zone).marker);
+    expect(hall.length).toBeGreaterThan(20);
+    expect(hall.filter((k) => !k.endsWith('[tr]'))).toEqual(
+      hall.filter((k) => !k.endsWith('[tr]')).map(() => 'MeshToonMaterial[ramp]'),
+    );
+    // Converted before the ink, so the hulls are built on the toon masses.
+    const zc = ctor('Zones.ts', 'Zone');
+    expect(zc).toContain('if (isCelTheme()) Materials.toonifyTree(this.marker)');
+    expect(zc.indexOf('Materials.toonifyTree(this.marker)')).toBeLessThan(
+      zc.indexOf('addGroupHulls(this.marker'),
+    );
+  });
+
+  test('quest mailboxes are toon, the delivery glow stays PBR, the stream is untouched', () => {
+    new Mailbox(); // warm
+    const off = vi.spyOn(Materials, 'toonifyTree').mockReturnValue(0);
+    let plain = 0;
+    try {
+      plain = ambientDraws(() => new Mailbox());
+    } finally {
+      off.mockRestore();
+    }
+    let box: Mailbox | null = null;
+    const toon = ambientDraws(() => {
+      box = new Mailbox();
+    });
+    // Quest mailboxes are built inside the seeded window (placeAssets).
+    expect(toon).toBe(plain);
+    const parts = kinds((box as unknown as Mailbox).mesh);
+    expect(parts.filter((k) => k === 'MeshToonMaterial[ramp]')).toHaveLength(4); // post, box, plate, flag
+    expect(parts).toContain('MeshStandardMaterial[tr]'); // the glow keeps its PBR fade
+    expect(parts).not.toContain('MeshStandardMaterial');
+  });
+
+  test('the GLB loaders toonify the MODEL before the snapshot, the clones and the collapse', () => {
+    const at = (s: string, marker: string): number => {
+      const i = s.indexOf(marker);
+      expect(i, `${marker} not found`).toBeGreaterThan(-1);
+      return i;
+    };
+    // One helper does it: theme-gated, the shared converter, then FrontSide
+    // (every authored mesh is closed and wound outward; measured).
+    const helper = decl('Island.ts', 'toonifyModel');
+    expect(at(helper, 'if (isRealTheme()) return;')).toBeLessThan(
+      at(helper, 'Materials.toonifyTree(model)'),
+    );
+    expect(at(helper, 'Materials.toonifyTree(model)')).toBeLessThan(
+      at(helper, 'mat.side = THREE.FrontSide'),
+    );
+    const convert = 'toonifyModel(model)';
+    // Props (bench, mailbox, lamp): converted on the model, so the collapse
+    // still buckets every clone into one instanced draw per part.
+    const props = decl('Island.ts', 'loadAndReplace');
+    expect(at(props, convert)).toBeLessThan(at(props, 'snapshotAuthoredMaterials(model)'));
+    expect(at(props, convert)).toBeLessThan(at(props, 'prepareClone(model'));
+    expect(at(props, convert)).toBeLessThan(at(props, 'collapseClonesToInstances('));
+    // tree.glb: before its snapshot and its clones.
+    const trees = decl('Island.ts', 'tryTree');
+    expect(at(trees, convert)).toBeLessThan(at(trees, 'snapshotAuthoredMaterials(model)'));
+    expect(at(trees, convert)).toBeLessThan(at(trees, 'prepareClone(model'));
+    // npc.glb: before the skeleton clones share the materials; then the flair.
+    const villagers = decl('Island.ts', 'tryNpc');
+    expect(at(villagers, convert)).toBeLessThan(at(villagers, 'new NPC('));
+    expect(decl('Island.ts', 'dressNpc')).toContain(
+      'if (!isRealTheme()) Materials.toonifyTree(group)',
+    );
+  });
+
+  test('prepareClone keeps a toonified material toon, so clones keep sharing it', () => {
+    const prep = decl('Island.ts', 'prepareClone');
+    const p = parse('Island.ts');
+    const from = declNode('Island.ts', 'prepareClone').getStart(p.sf);
+    const gate = statementNode('Island.ts', '.isMeshToonMaterial', from);
+    expect(ts.isIfStatement(gate)).toBe(true);
+    const then = code('Island.ts', (gate as ts.IfStatement).thenStatement);
+    expect(then).toContain('typedMaterial.transparent = true');
+    expect(then).toContain('typedMaterial.opacity = 0');
+    expect(then).toMatch(/return;\s*\}$/);
+    // ...ahead of the per-clone rebuild into a fresh MeshStandardMaterial.
+    expect(prep.indexOf('.isMeshToonMaterial')).toBeLessThan(
+      prep.indexOf('const standardMaterial = new THREE.MeshStandardMaterial()'),
+    );
+  });
+
+  test('the traffic fleet converts after the window; the real theme keeps PBR everywhere', () => {
+    expect(ctor('Traffic.ts', 'TrafficSystem')).toContain(
+      'if (!isRealTheme()) Materials.toonifyTree(this.bodies)',
+    );
+    // Every C call site is theme-gated: each one is listed here, so a new,
+    // ungated call fails the count.
+    const gates: Record<string, string[]> = {
+      'Island.ts': [
+        'if (isRealTheme()) return;',
+        'if (!isRealTheme()) Materials.toonifyTree(group)',
+      ],
+      'Zones.ts': ['if (isCelTheme()) Materials.toonifyTree(this.marker)'],
+      'Mailbox.ts': ['if (!isRealTheme()) Materials.toonifyTree(group)'],
+      'Traffic.ts': ['if (!isRealTheme()) Materials.toonifyTree(this.bodies)'],
+    };
+    for (const [file, lines] of Object.entries(gates)) {
+      const s = stripped(file);
+      for (const line of lines) expect(s, file).toContain(line);
+      const calls = (s.match(/Materials\.toonifyTree\(/g) ?? []).length;
+      expect(calls, file).toBe(file === 'Island.ts' ? 2 : 1);
+    }
+  });
+
+  test('envMapIntensity in overrides.json is real-theme only', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'public', 'assets', 'models', 'overrides.json'), 'utf8'),
+    ) as Record<string, Record<string, unknown>>;
+    let scoped = 0;
+    for (const [model, entry] of Object.entries(manifest)) {
+      expect(entry, model).not.toHaveProperty('envMapIntensity');
+      const real = entry.realTheme as Record<string, unknown> | undefined;
+      if (real && typeof real.envMapIntensity === 'number') scoped++;
+    }
+    expect(scoped).toBeGreaterThan(0);
+    // The loader merges a `realTheme` block only under ?theme=real.
+    expect(decl('Island.ts', 'tryLoadModels')).toContain(
+      'isRealTheme() && realTheme ? { ...shared, ...realTheme } : shared',
+    );
   });
 });

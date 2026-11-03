@@ -5695,6 +5695,10 @@ export class Island {
     } catch {
       /* flair is a bonus, never fatal */
     }
+    // One cel look (C3): the flair built above can still be standard (the
+    // Night Watch lantern, parts of the hat kit). The palette, the dress and
+    // the toonified GLB materials are toon already and pass through.
+    if (!isRealTheme()) Materials.toonifyTree(group);
   }
 
   /**
@@ -8792,6 +8796,27 @@ export class Island {
         return out;
       };
 
+      // One cel look (UX plan C3): an authored model joins the toon world on
+      // load, converted on the MODEL before any clone exists, so every clone
+      // shares the toon materials. Every load lands after GameScene's seeded
+      // window. The GLBs export DoubleSide (Blender's default), but their
+      // meshes are closed and wound outward (measured: no open edge except
+      // the npc Eye's and Hair's, whose open sides face into the head, and the
+      // Hair is swapped for a FrontSide palette material anyway), so FrontSide
+      // draws them the same and lets them share the toon programs already
+      // compiled rather than add DoubleSide variants of their own.
+      const toonifyModel = (model: THREE.Object3D): void => {
+        if (isRealTheme()) return;
+        Materials.toonifyTree(model);
+        model.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh) return;
+          for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+            if ((mat as THREE.MeshToonMaterial).isMeshToonMaterial) mat.side = THREE.FrontSide;
+          }
+        });
+      };
+
       // per-model override table (basename -> tweaks)
       let modelOverrides: Record<string, ModelOverride> = {
         // Intended toon set (Blender-authored, public/assets/models/*.glb)
@@ -8828,7 +8853,18 @@ export class Island {
         if (manifestResp.ok) {
           const userOverrides = await manifestResp.json();
           if (userOverrides && typeof userOverrides === 'object') {
-            modelOverrides = Object.assign({}, modelOverrides, userOverrides);
+            // An entry may scope keys to one look: `realTheme` holds what only
+            // ?theme=real reads. envMapIntensity is one (C3): the cel look has
+            // no environment map, and its toon materials have no such property.
+            const themed: Record<string, ModelOverride> = {};
+            for (const [name, entry] of Object.entries(userOverrides as Record<string, unknown>)) {
+              if (!entry || typeof entry !== 'object') continue;
+              const { realTheme, ...shared } = entry as ModelOverride & {
+                realTheme?: ModelOverride;
+              };
+              themed[name] = isRealTheme() && realTheme ? { ...shared, ...realTheme } : shared;
+            }
+            modelOverrides = Object.assign({}, modelOverrides, themed);
             console.log('Island: applied model overrides manifest');
           }
         }
@@ -9164,6 +9200,19 @@ export class Island {
               return;
             }
 
+            // Toonified at load in the cel theme (C3): only the fade's start
+            // state applies. A toon material has no env map or roughness to
+            // tune, and converting it back to standard per clone (the branch
+            // below) would undo the cel look and split the shared materials.
+            if (
+              (typedMaterial as THREE.Material & { isMeshToonMaterial?: boolean })
+                .isMeshToonMaterial
+            ) {
+              typedMaterial.transparent = true;
+              typedMaterial.opacity = 0;
+              return;
+            }
+
             try {
               const sourceMaterial = typedMaterial;
               const standardMaterial = new THREE.MeshStandardMaterial();
@@ -9407,6 +9456,9 @@ export class Island {
                 const model = gltf.scene || gltf.scenes?.[0];
                 const animations = gltf.animations || [];
                 if (!model) return;
+                // Toon before the clones (see toonifyModel), so the collapse
+                // below still buckets them into one instanced draw per part.
+                toonifyModel(model);
                 const placeholders = findPlaceholders(prefix);
                 const placedClones: THREE.Object3D[] = [];
                 // Authored transparency, read before prepareClone overwrites
@@ -9685,6 +9737,11 @@ export class Island {
                 tryNpc(idx + 1);
                 return;
               }
+              // Toon before the skeleton clones share the materials (see
+              // toonifyModel). dressNpc then swaps Shirt, Skin, Pants and Hair
+              // by NAME (toonify keeps names) for the persona palette; Shoe and
+              // the baked face (Eye, EyeShine, Blush) keep these toon copies.
+              toonifyModel(model);
               const placeholders = findPlaceholders('npc_placeholder_');
               placeholders.forEach((ph) => {
                 try {
@@ -9766,6 +9823,9 @@ export class Island {
                 return;
               }
               const overrides = modelOverrides['tree.glb'] ?? modelOverrides['tree.gltf'];
+              // The authored trees stood muted PBR beside the toon procedural
+              // ones: toon before the snapshot and the clones (see toonifyModel).
+              toonifyModel(model);
               // Same snapshot the other loader takes — the tree fade below
               // has the identical prepareClone start state.
               const authoredTreeMats = snapshotAuthoredMaterials(model);
