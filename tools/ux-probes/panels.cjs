@@ -174,31 +174,9 @@ async function back(t) {
       cases.sweepThenBack = { open, urlAfterBack: u, after: st };
       want('6. Projects, then Hiring (a sweep), then one Back: back on the island', onApp(u) && !!st && st.panel === null, st || u, 'the island, no panel');
     }
-    // 7. Overlays that must not add history entries.
-    {
-      const s = await fresh('desktop');
-      const p = s.page;
-      const h0 = await p.evaluate(() => history.length);
-      const rows = [['welcome card (boot)', h0]];
-      await press(p, false, `${W} button[data-dismiss]`);
-      await p.waitForTimeout(800);
-      const step = async (label, fn) => {
-        await fn();
-        await p.waitForTimeout(500);
-        rows.push([label, await p.evaluate(() => history.length)]);
-        await p.keyboard.press('Escape').catch(() => {});
-        await p.evaluate(() => window.__app.ui.panels.closeAll()).catch(() => {});
-        await p.waitForTimeout(300);
-      };
-      if (await p.$(DRAWER)) await step('drawer', () => p.click(DRAWER));
-      if (await p.$('.hud-btn[aria-label="Send an emote"]')) await step('emote wheel', () => p.click('.hud-btn[aria-label="Send an emote"]'));
-      await step('chat input', () => p.keyboard.press('Enter'));
-      await step('tour', () => p.evaluate(() => typeof window.__app.startTour === 'function' && window.__app.startTour()));
-      await p.evaluate(() => window.__app.tour && window.__app.endTour && window.__app.endTour()).catch(() => {});
-      cases.historyLength = rows;
-      const grew = rows.filter(([, n]) => n !== h0);
-      want('7. welcome card, drawer, emote wheel, chat input and tour leave history.length unchanged', grew.length === 0, rows, `all ${h0}`);
-    }
+    // 7. Overlays that must not add history entries (the phone half, with
+    // the drawer, runs in the phone block below).
+    cases.historyLengthDesktop = await historyOverlays(t, fresh, 'desktop');
     // 8. bfcache: away and back, panels.current() matches the DOM.
     {
       const s = await fresh('desktop');
@@ -234,8 +212,58 @@ async function back(t) {
     cases.phoneProjectsThenBack = { open, urlAfterBack: u1, after: st1, urlAfterSecondBack: u2 };
     want('5. phone: drawer, Portfolio, Projects, then Back: island, no panel, no zone', onApp(u1) && !!st1 && st1.panel === null && !st1.zone, st1 || u1, 'the island, no panel');
     want('5. phone: the next Back leaves the site', u2 !== null && !onApp(u2), u2, 'off the island');
+    // 7, phone half: the ☰ drawer exists only on touch (SimpleUI.chipHost).
+    cases.historyLengthPhone = await historyOverlays(t, fresh, 'phone');
   }
   t.data.cases = cases;
+}
+
+/**
+ * Case 7 on one profile: open each overlay in turn and read history.length.
+ * Each overlay must really open (panels.current() is its id): one whose
+ * opener is missing, or that does not open, makes the check inconclusive
+ * instead of being skipped. The drawer is touch-only by design, so desktop
+ * does not list it.
+ */
+async function historyOverlays(t, fresh, prof) {
+  const touch = prof !== 'desktop';
+  const s = await fresh(prof);
+  const p = s.page;
+  const h0 = await p.evaluate(() => history.length);
+  const rows = [{ overlay: 'welcome card (boot)', opened: true, historyLength: h0 }];
+  await press(p, touch, `${W} button[data-dismiss]`);
+  await p.waitForTimeout(touch ? 1500 : 800);
+  const EMOTE = '.hud-btn[aria-label="Send an emote"]';
+  const CHAT = '.hud-btn[aria-label="Open chat"]';
+  const steps = [
+    ...(touch ? [{ overlay: 'drawer', id: 'drawer', sel: DRAWER, open: () => p.tap(DRAWER) }] : []),
+    { overlay: 'emote wheel', id: 'emote-wheel', sel: EMOTE, open: () => press(p, touch, EMOTE) },
+    touch ? { overlay: 'chat input', id: 'chat-input', sel: CHAT, open: () => p.tap(CHAT) } : { overlay: 'chat input', id: 'chat-input', sel: null, open: () => p.keyboard.press('Enter') },
+    { overlay: 'tour', id: 'tour', sel: null, open: () => p.evaluate(() => typeof window.__app.startTour === 'function' && (window.__app.startTour(), true)) },
+  ];
+  for (const st of steps) {
+    const row = { overlay: st.overlay, opened: false, historyLength: null };
+    rows.push(row);
+    if (st.sel && !(await p.$(st.sel))) {
+      row.missing = st.sel;
+      continue;
+    }
+    await st.open();
+    await p.waitForTimeout(500);
+    row.current = await p.evaluate(() => window.__app.ui.panels.current()).catch(() => null);
+    row.opened = row.current === st.id;
+    row.historyLength = await p.evaluate(() => history.length);
+    await p.keyboard.press('Escape').catch(() => {});
+    await p.evaluate(() => window.__app.ui.panels.closeAll()).catch(() => {});
+    await p.evaluate(() => window.__app.endTour && window.__app.endTour()).catch(() => {});
+    await p.waitForTimeout(300);
+  }
+  const names = rows.map((r) => r.overlay).join(', ');
+  const notOpened = rows.filter((r) => !r.opened);
+  const grew = rows.filter((r) => r.opened && r.historyLength !== h0);
+  t.check(`7. ${prof}: every overlay opened (${names})`, notOpened.length ? null : true, notOpened.length ? notOpened.map((r) => `${r.overlay}: ${r.missing ? 'opener missing' : `panels.current() = ${JSON.stringify(r.current)}`}`) : 'all', 'each overlay open');
+  t.check(`7. ${prof}: ${names} leave history.length unchanged`, notOpened.length && !grew.length ? null : grew.length === 0, rows.map((r) => `${r.overlay}: ${r.historyLength}`), `all ${h0}`);
+  return rows;
 }
 
 const pageUrl = (p) => {

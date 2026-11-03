@@ -23,15 +23,20 @@ npm run probe -- list
 | `--out <dir>` | Output folder (default `<os tmpdir>/ux-probes/<name>`). |
 | `--compare <dir> --compare-port <m>` | A second build, for `rig` and `strafe`. |
 | `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`). |
+| `--golden <path>` | The seed golden (`seed`, and the perf gate's `--seed`). Default: `test/golden/seedDraws.json` in the checkout that holds `--dist`, else in the current directory; never this tool's own checkout. `--bless` writes there. |
 
 Ports are always arguments. Suggested ranges, so parallel builders do not
 collide: E 5190-5199, A 5200-5209, B 5210-5219, D 5220-5229, C 5230-5239.
 
 Exit codes: `0` pass, `1` criterion fail (including a hook the plan's
 contracts promise going missing), `2` fail-closed (a request got past the
-harness), `3` inconclusive (setup error, probe crash, or no boot signUp
-intercept). On main every stage-1 probe except `axe` and `lock-census`
-exits 1: main has the bugs the stage-1 items fix.
+harness), `3` inconclusive (setup error, probe crash, no boot signUp
+intercept, or a check that could not be made, such as an overlay whose
+opener is missing). On main every stage-1 probe exits 1 (main has the bugs
+the stage-1 items fix) except three: `axe` passes, `rig` is a regression
+guard that exits 0 unless `--compare` finds a difference, and `lock-census`
+passes on this branch (it exits 1 with `--ref origin/main`, before the
+relocations land).
 
 ### Running before E's stage-1 PR merges
 
@@ -101,12 +106,12 @@ the JSON), and a run counts only if that log shows the boot
 | `sheet-lock` | A3 | a world click beside the open Portfolio menu, then its Projects row | the click locks the pointer; the row does nothing |
 | `look` | A3, A4 | drag and locked look at 1/5/30/60/120 frames; hover; peer tap; right-drag; `ds_mouse_lock`; touch swipes (fling off/on); J L I K R; ~30 fps | 300 px over 30 frames 3.5-3.6° at 13 ms frames (audit 3.8° at 14.6 ms); swipe 150 px: 21.2/5.4/2.7/1.8° |
 | `strafe` | A5 | D held after a walk: heading and camera °/s; reduced motion; walk-away settle; fixed-pose camera frames (`--compare`) | heading 143°/s, camera 143°/s, reduced motion 143°/s |
-| `legspin` | B1 | first-visit standing jump on the frozen sim (1/60 s); legs vs π; mixer rewrites; landing hand jumps | legL −11.7 rad after landing and after 10 s idle; legs rewritten 0/300 |
-| `rig` | B1 | sit, ride and swim bone positions in the player's frame; `--compare` gives max \|Δ\| | main vs main: 0 |
+| `legspin` | B1 | first-visit standing jump on the frozen sim (1/60 s); legs vs π; mixer rewrites; landing hand jumps | legL −11.7 rad after landing and after 10 s idle; legs rewritten 0/300; the landing-hand check already passes on main (≈0.12 u), see the note below |
+| `rig` | B1 | sit, ride and swim bone positions in the player's frame; `--compare` gives max \|Δ\| | exits 0 on main; main vs main: 0 |
 | `hitch` | B2 | 5-25 s after ready, idle on the card and walking: frames, LoAF, programs per render() and per compile, the warm, the first door entry | a 1.9-2.2 s frame gaining 93 programs; see the note below |
-| `seed` | B0 | `window.__dsSeedDraws` fresh, `ds_arrived='1'`, three reloads, low tier, vs `test/golden/seedDraws.json`; `--bless` writes the golden as `{ "desktop": { "total", "marks" }, "lowtier": { "total", "marks" } }` (only when every desktop run agrees) | counter absent |
+| `seed` | B0 | `window.__dsSeedDraws` fresh, `ds_arrived='1'`, three reloads, low tier, vs the subject's `test/golden/seedDraws.json` (see `--golden`); `--bless` writes B0's flat shape, `{ "marks", "total" }` (only when every desktop run agrees; a low-tier difference is noted, not written). A `{ "desktop", "lowtier" }` file is also read | counter absent |
 | `guide-me` | D1 | Leaderboard → Guide me: panels, scrim, chip opacity, touch controls | stack `['leaderboard']`, scrim up, controls hidden |
-| `back` | D2 | the eight history cases | Back from Projects lands on `about:blank` |
+| `back` | D2 | the eight history cases; case 7 runs on desktop (welcome card, emote wheel, chat input, tour) and on the phone, where the touch-only ☰ drawer exists; each overlay must really open, or the check is inconclusive | Back from Projects lands on `about:blank` |
 | `contrast` | D3 | filled-button labels at `?hour=6/12/18/21` on 1440 and 390, touch captions over grass/sand/sky, the focus ring | Work with me 2.97:1, Explore 2.97:1, Send 3.17:1, USE 3.16:1 over grass |
 | `axe` | D3, D4, D8 | axe-core 4.10.3 on the welcome card, HUD, hire card, Projects and NPC chat | 0 color-contrast violations (gradients land in `incomplete`, which is why `contrast` samples pixels) |
 | `lock-census` | EL, AL, BL, DL | every literal source read in `test/*.test.ts`, owners, rules, vs the relocation table (static, no browser; `--ref <git ref>`) | reproduces the relocation table on `origin/main` |
@@ -120,6 +125,11 @@ walking). The probe reports both (`maxProgramsAddedInOneFrame` and
 **Frame-rate dependence.** Main's look and leg-spin numbers scale with frame
 time (that is the bug). `look` reports `meanFrameMs` with every reading, and
 `legspin` runs on the frozen sim so its airborne frame count is fixed.
+
+**Landing hand.** `legspin`'s per-landing-frame hand displacement is
+already ≈0.12 u on main's frozen 1/60 s sim, inside its bound, so it does
+not reproduce MOT-01's hand pop and cannot show B1's fix. The leg checks
+(legL ≈ −11.7 rad, the 0/300 rewrites) are the ones that fail on main.
 
 ## Perf gate
 

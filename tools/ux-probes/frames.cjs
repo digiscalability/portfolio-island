@@ -58,13 +58,19 @@ const HITCH_INIT = `(() => {
       const orig = R[key];
       if (typeof orig !== 'function' || orig.__hitch) return;
       const f = function () {
+        // compileAsync runs this.compile() inside it: only the outermost call
+        // is recorded, so summing 'compiles' counts each program once.
+        const nested = inCompile > 0;
         const p0 = progs();
         const t0 = now();
         inCompile++;
         let r;
         try { r = orig.apply(this, arguments); } finally { inCompile--; }
+        if (nested) return r;
         const rec = { t: Math.round(t0), label: 'renderer.' + key, addedSync: progs() - p0, syncMs: +(now() - t0).toFixed(1) };
         H.compiles.push(rec);
+        // addedByResolve: programs gained from the call until the promise
+        // resolved, from any source (a render in between counts too).
         if (r && typeof r.then === 'function') r.then(() => { rec.resolvedMs = Math.round(now() - t0); rec.addedByResolve = progs() - p0; }, () => { rec.rejected = true; });
         return r;
       };
@@ -253,7 +259,9 @@ async function hitch(t) {
 }
 
 // ------------------------------------------------------------------- seed
-const GOLDEN = path.join(lib.REPO, 'test', 'golden', 'seedDraws.json');
+// The golden belongs to the checkout under test (B0 writes it there), so it
+// resolves from --golden, else the checkout holding --dist, else the current
+// directory, never from this tool's own checkout (lib.goldenPath).
 
 async function seedRun(t, prof, label, localStorage) {
   const s = await t.session(prof, localStorage ? { localStorage } : {});
@@ -275,43 +283,52 @@ async function seed(t) {
     runs.push(await seedRun(t, prof, "ds_arrived='1'", { ds_arrived: '1' }));
   }
   t.data.runs = runs;
-  const golden = fs.existsSync(GOLDEN) ? JSON.parse(fs.readFileSync(GOLDEN, 'utf8')) : null;
-  t.data.golden = golden ? { file: GOLDEN.replace(/\\/g, '/'), ...golden } : 'absent';
+  const GOLDEN = lib.goldenPath(t.args);
+  const shown = GOLDEN.replace(/\\/g, '/');
   const key = (x) => (x ? JSON.stringify({ total: x.total, marks: x.marks }) : null);
+  // --bless first, so the checks below read the golden it wrote.
+  if (t.args.bless) await bless(t, runs, GOLDEN, key);
+  const golden = lib.readJson(GOLDEN);
+  t.data.golden = golden ? { file: shown, ...golden } : { file: shown, absent: true };
   for (const prof of profiles) {
     const mine = runs.filter((r) => r.profile === prof);
     const present = mine.every((r) => r.seed);
     const sameAll = present && mine.every((r) => key(r.seed) === key(mine[0].seed));
     const first = mine[0] && mine[0].seed;
+    const g = lib.goldenFor(golden, prof);
     if (prof === 'desktop') {
       t.check('desktop: window.__dsSeedDraws present', present, present ? first.total : 'seed counter absent', '{marks, total}');
       t.check("desktop: total and every mark identical for fresh storage, ds_arrived='1' and 3 reloads", present ? sameAll : false, present ? mine.map((r) => `${r.label}: ${r.seed.total}`) : 'seed counter absent', 'identical');
-      const g = golden ? golden.desktop || golden : null;
-      t.check('desktop: equal to test/golden/seedDraws.json', present && g ? key(first) === key(g) : false, golden ? (present ? { measured: first.total, golden: g && g.total } : 'seed counter absent') : 'golden absent', 'equal');
+      t.check(`desktop: equal to ${shown}`, present && g ? key(first) === key(g) : false, !golden ? 'golden absent' : !present ? 'seed counter absent' : { measured: first.total, golden: g ? g.total : 'no desktop entry' }, 'equal');
     } else {
       // The low tier is reported; a difference is a pre-existing finding.
-      t.data[`${prof}Report`] = present ? { totals: mine.map((r) => `${r.label}: ${r.seed.total}`), identical: sameAll, equalsDesktop: key(first) === key((runs.find((r) => r.profile === 'desktop') || {}).seed) } : 'seed counter absent';
+      t.data[`${prof}Report`] = present ? { totals: mine.map((r) => `${r.label}: ${r.seed.total}`), identical: sameAll, equalsDesktop: key(first) === key((runs.find((r) => r.profile === 'desktop') || {}).seed), equalsGolden: g ? key(first) === key(g) : 'golden absent' } : 'seed counter absent';
     }
   }
-  if (t.args.bless) {
-    const desk = runs.filter((r) => r.profile === 'desktop');
-    const low = runs.filter((r) => r.profile === 'lowtier');
-    const ok = desk.length && desk.every((r) => r.seed && key(r.seed) === key(desk[0].seed));
-    if (!ok) throw new Error('--bless refused: the desktop runs are missing the counter or disagree');
-    const out = { desktop: { total: desk[0].seed.total, marks: desk[0].seed.marks } };
-    if (low.length && low[0].seed) out.lowtier = { total: low[0].seed.total, marks: low[0].seed.marks };
-    fs.mkdirSync(path.dirname(GOLDEN), { recursive: true });
-    // JSON goldens are prettier-formatted (format:check covers *.json).
-    let text = JSON.stringify(out, null, 2) + '\n';
-    try {
-      const prettier = require(require.resolve('prettier', { paths: [lib.REPO] }));
-      text = await prettier.format(text, { ...((await prettier.resolveConfig(GOLDEN)) || {}), parser: 'json' });
-    } catch (e) {
-      t.data.blessNote = `written without prettier: ${String(e).slice(0, 120)}`;
-    }
-    fs.writeFileSync(GOLDEN, text);
-    t.data.blessed = GOLDEN.replace(/\\/g, '/');
+}
+
+/** --bless: write B0's golden from the desktop runs (only when they all agree). */
+async function bless(t, runs, GOLDEN, key) {
+  const desk = runs.filter((r) => r.profile === 'desktop');
+  const low = runs.filter((r) => r.profile === 'lowtier');
+  const ok = desk.length && desk.every((r) => r.seed && key(r.seed) === key(desk[0].seed));
+  if (!ok) throw new Error('--bless refused: the desktop runs are missing the counter or disagree');
+  // B0's shape: the flat window.__dsSeedDraws object, { marks, total }.
+  // The low tier must match it; a difference is recorded, not blessed.
+  const out = { marks: desk[0].seed.marks, total: desk[0].seed.total };
+  if (low.length && low[0].seed && key(low[0].seed) !== key(desk[0].seed)) t.data.blessNote = `the low tier differs (${low[0].seed.total}); only the desktop values were written`;
+  fs.mkdirSync(path.dirname(GOLDEN), { recursive: true });
+  // JSON goldens are prettier-formatted (format:check covers *.json), with
+  // the subject checkout's prettier when it has one.
+  let text = JSON.stringify(out, null, 2) + '\n';
+  try {
+    const prettier = require(require.resolve('prettier', { paths: [path.dirname(path.dirname(path.dirname(GOLDEN))), lib.REPO] }));
+    text = await prettier.format(text, { ...((await prettier.resolveConfig(GOLDEN)) || {}), parser: 'json' });
+  } catch (e) {
+    t.data.blessNote = [t.data.blessNote, `written without prettier: ${String(e).slice(0, 120)}`].filter(Boolean).join('; ');
   }
+  fs.writeFileSync(GOLDEN, text);
+  t.data.blessed = GOLDEN.replace(/\\/g, '/');
 }
 
 module.exports = {

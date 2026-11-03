@@ -745,6 +745,59 @@ function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
 }
 
+/** Parsed JSON, or null when the file is missing or unreadable. */
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    return null;
+  }
+}
+
+// --------------------------------------------------------------- seed golden
+/**
+ * test/golden/seedDraws.json of the checkout under test, never of this tool's
+ * own checkout: `--golden <path>` when given; else the checkout that holds
+ * `--dist` (the build being measured was made there); else the current
+ * directory. --bless writes to the same path.
+ */
+function goldenPath(args) {
+  if (args.golden && args.golden !== true) return path.resolve(String(args.golden));
+  const rel = path.join('test', 'golden', 'seedDraws.json');
+  if (args.dist && args.dist !== true) {
+    const root = path.resolve(String(args.dist), '..');
+    if (fs.existsSync(path.join(root, 'package.json'))) return path.join(root, rel);
+  }
+  return path.resolve(process.cwd(), rel);
+}
+
+/**
+ * The golden's { total, marks } for one profile. B0's golden is the flat
+ * window.__dsSeedDraws shape, { marks, total }, which every profile must
+ * match. A { desktop, lowtier } file (older --bless output) is read per
+ * profile.
+ */
+function goldenFor(golden, prof) {
+  if (!golden || typeof golden !== 'object') return null;
+  if (golden.marks && golden.total !== undefined) return { total: golden.total, marks: golden.marks };
+  const g = golden[prof];
+  return g && g.marks && g.total !== undefined ? { total: g.total, marks: g.marks } : null;
+}
+
+// ---------------------------------------------------------------- host load
+/** CPU time over every core of this machine (ms), for a busy share over a window. */
+function hostCpu() {
+  let busy = 0;
+  let total = 0;
+  for (const c of os.cpus()) {
+    const t = c.times;
+    busy += t.user + t.nice + t.sys + t.irq;
+    total += t.user + t.nice + t.sys + t.irq + t.idle;
+  }
+  return { busy, total };
+}
+const hostBusyPct = (a, b) => (b.total > a.total ? round(((b.busy - a.busy) / (b.total - a.total)) * 100, 1) : null);
+
 /**
  * Verdict over a list of checks. A check is { name, pass: true|false|null }
  * where null = could not be evaluated (inconclusive). Leaks and a missing
@@ -798,5 +851,10 @@ module.exports = {
   parseRgb,
   outDir,
   writeJson,
+  readJson,
+  goldenPath,
+  goldenFor,
+  hostCpu,
+  hostBusyPct,
   verdict,
 };

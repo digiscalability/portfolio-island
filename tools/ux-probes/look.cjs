@@ -7,7 +7,8 @@
 //   CDP; absent → main's click-to-lock, driven the way the controls audit did
 //   (the input manager's lock flag plus one movementX event per frame), so the
 //   per-frame pacing is exact.
-// - Touch swipes are trusted CDP touches in a hasTouch phone context, and the
+// - Touch swipes are synthetic TouchEvents dispatched once per animation frame
+//   from inside rAF (exact pacing) in a hasTouch phone context, and the
 //   fling-off runs set __dsFx.lookFling = false before any page script.
 // - Yaw is read from OrbitCamera.getYawTarget() when A4 provides it, and is
 //   otherwise measured from the orbit's follow direction.
