@@ -217,7 +217,7 @@ const portfolioChip = (): HTMLElement => {
 };
 
 describe('a HUD chip owns its Enter', () => {
-  test('Enter on the focused Portfolio chip activates it and never reaches window', () => {
+  test('Enter on the focused Portfolio chip activates it and never reaches window', async () => {
     const chip = portfolioChip();
     const seen: string[] = [];
     const onWindow = (e: KeyboardEvent) => seen.push(e.key);
@@ -227,6 +227,12 @@ describe('a HUD chip owns its Enter', () => {
       chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       expect(seen).toEqual([]);
       expect(ui.isPanelOpen()).toBe(true); // the chip did its own job (menu open)
+      // D4: focus moves to the menu's first row (it used to stay on the chip,
+      // 9 Tabs from the rows), and Escape brings it back to the chip.
+      await Promise.resolve();
+      expect(document.activeElement).toBe(document.querySelector('button[data-section]'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(ui.isPanelOpen()).toBe(false);
       expect(document.activeElement).toBe(chip); // keyboard users keep their place
     } finally {
       window.removeEventListener('keydown', onWindow);

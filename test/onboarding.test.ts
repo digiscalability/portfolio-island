@@ -172,7 +172,13 @@ describe('the welcome card hierarchy matches the audience', () => {
 
   test('focus moves into the dialog, and the returning card never auto-closes', () => {
     const w = welcome();
-    expect(w).toContain('?.focus()');
+    // The dialog itself takes focus (D4, FM-02): a focused 'See the work'
+    // made Space or Enter open Projects. The behaviour runs in a11yPanels.
+    expect(w).toContain('this.welcomeDiv.tabIndex = -1;');
+    expect(w).toContain('this.welcomeDiv.focus();');
+    expect(w).not.toContain(
+      `querySelector('button[data-cta="projects"]') as HTMLElement | null)?.focus()`,
+    );
     // It closed itself after 2.6 s / 7 s; with the Hiring pill on it, that
     // took a returning recruiter's one-click path away. Choice only now.
     expect(w).not.toContain('setTimeout(closeWelcome');

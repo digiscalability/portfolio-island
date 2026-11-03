@@ -1171,6 +1171,12 @@ html.reduced-motion #ld-orbit {
   outline-offset: 2px;
   box-shadow: var(--ds-focus-ring) !important;
 }
+/* Where PanelManager parks focus as a panel opens (its heading, the welcome
+   card itself): a place to start reading and scrolling, not a control, so
+   it draws no ring (D4). */
+#ui-overlay [tabindex='-1']:focus {
+  outline: none;
+}
 .hud-btn:hover {
   filter: brightness(1.18);
 }

@@ -255,6 +255,9 @@ export class SimpleUI {
       boxShadow: '0 3px 10px rgba(0,0,0,0.4)',
     });
     b.addEventListener('click', () => onLeave());
+    // Never inert: a hall panel (a modal) is open whenever this is, and the
+    // way out must stay a click away over it (D4; P2-D2 gives it a role).
+    b.dataset.neverInert = '1';
     this.leaveBtn = b;
     this.overlay.appendChild(b);
   }
@@ -295,9 +298,12 @@ export class SimpleUI {
 
     // Back closes the open panel (its pushed history entry); an entry left
     // over from a closed panel loses its ?zone= when the visitor lands on it.
+    // A keyboard-opened panel whose opener has gone (a menu row) hands focus
+    // to the Portfolio pill, or to ☰ on a phone, where the pill is a drawer row.
     if (!this.panels)
       this.panels = new PanelManager(this.overlay, this.isTouch, {
         onStaleEntry: () => setUrlParam('zone', null),
+        fallbackFocus: () => (this.isTouch ? this.drawerToggleEl : this.portfolioBtnEl),
       });
     this.createFPSDisplay();
     this.createMuteButton();
@@ -702,6 +708,10 @@ export class SimpleUI {
       this.toggleDrawer();
     });
     this.makeHudButtonAccessible(t, 'Open island menu');
+    list.id = 'ds-drawer';
+    list.setAttribute('aria-label', 'Island menu');
+    t.setAttribute('aria-controls', 'ds-drawer');
+    t.setAttribute('aria-expanded', 'false');
     this.drawerToggleEl = t;
     this.getTier1Row().appendChild(t);
     return list;
@@ -727,6 +737,7 @@ export class SimpleUI {
       history: false, // transient: Back is not spent on it
     });
     list.style.display = 'flex';
+    this.drawerToggleEl?.setAttribute('aria-expanded', 'true');
     // 😀 tier-2 chip yields its spot while the drawer occupies it.
     if (this.emoteBtnEl) this.emoteBtnEl.style.visibility = 'hidden';
     // Staggered 22ms slide-in per row; instant under reduced motion.
@@ -758,15 +769,20 @@ export class SimpleUI {
     this.overlay.appendChild(catcher);
     this.drawerCatcher = catcher;
     // 8s IDLE auto-collapse — idle meaning untouched. The timer re-arms on
-    // any interaction with the list (scroll, touch, press), otherwise the
-    // drawer vanished mid-read under a slow reader's finger.
+    // any interaction with the list (scroll, touch, press, and keyboard focus
+    // or keys), otherwise the drawer vanished mid-read under a slow reader's
+    // finger. It never collapses while focus is inside it: a keyboard user
+    // walking the rows would lose them, and the focus with them (D4).
     const arm = (): void => {
       if (this.drawerIdleTimer) clearTimeout(this.drawerIdleTimer);
-      this.drawerIdleTimer = window.setTimeout(() => this.closeDrawer(), 8000);
+      this.drawerIdleTimer = window.setTimeout(() => {
+        if (this.drawerListEl?.contains(document.activeElement)) arm();
+        else this.closeDrawer();
+      }, 8000);
     };
     if (!list.dataset.idleRearm) {
       list.dataset.idleRearm = '1';
-      for (const ev of ['pointerdown', 'scroll', 'touchmove'] as const) {
+      for (const ev of ['pointerdown', 'scroll', 'touchmove', 'focusin', 'keydown'] as const) {
         list.addEventListener(ev, () => this.drawerOpen && arm(), { passive: true });
       }
     }
@@ -783,6 +799,7 @@ export class SimpleUI {
     this.drawerCatcher?.remove();
     this.drawerCatcher = null;
     if (this.drawerListEl) this.drawerListEl.style.display = 'none';
+    this.drawerToggleEl?.setAttribute('aria-expanded', 'false');
     if (this.emoteBtnEl) this.emoteBtnEl.style.visibility = '';
     this.panels.notifyClosed('drawer'); // no-op during a sweep
   }
@@ -980,8 +997,12 @@ export class SimpleUI {
       }
       if (best) pick(best.poi);
     });
+    // The canvas is a picture of the legend below: the legend is the
+    // accessible path, so screen readers skip the canvas (UX-15).
+    canvas.setAttribute('aria-hidden', 'true');
     // Legend — every provider as a tappable chip (works even where map dots
-    // crowd each other).
+    // crowd each other). Repeats share one chip that picks the nearest of
+    // them: four 'Ore vein' chips became one 'Ore veins (4)' (UX-15).
     const legend = document.createElement('div');
     Object.assign(legend.style, {
       display: 'flex',
@@ -992,12 +1013,35 @@ export class SimpleUI {
       maxHeight: '150px',
       overflowY: 'auto',
     });
+    const groups = new Map<string, Array<(typeof pois)[number]>>();
     for (const poi of pois) {
+      const key = `${poi.icon} ${poi.label}`;
+      groups.set(key, [...(groups.get(key) ?? []), poi]);
+    }
+    const plural = (label: string): string =>
+      label.replace(
+        /^(.*?)(\s+\(.*)?$/,
+        (_m, head: string, tail = '') =>
+          `${head}${/(?:ch|sh|s|x|z)$/.test(head) ? 'es' : 's'}${tail}`,
+      );
+    const nearest = (list: Array<(typeof pois)[number]>): (typeof pois)[number] => {
+      const p = opts?.playerPos;
+      if (!p) return list[0];
+      const d2 = (q: { x: number; y: number; z: number }): number =>
+        (q.x - p.x) ** 2 + (q.y - p.y) ** 2 + (q.z - p.z) ** 2;
+      return list.reduce((a, b) => (d2(b.pos) < d2(a.pos) ? b : a));
+    };
+    for (const list of groups.values()) {
+      const poi = list[0];
       const chip = document.createElement('button');
       chip.type = 'button';
-      chip.textContent = `${poi.icon} ${poi.label}`;
+      chip.textContent =
+        list.length > 1
+          ? `${poi.icon} ${plural(poi.label)} (${list.length})`
+          : `${poi.icon} ${poi.label}`;
       Object.assign(chip.style, {
         padding: '5px 9px',
+        minHeight: this.isTouch ? '44px' : '36px',
         borderRadius: '999px',
         // District chips wear their accent — same colour as the map halo,
         // the radar beacon and the in-world plaza tint.
@@ -1007,7 +1051,7 @@ export class SimpleUI {
         fontSize: '12px',
         cursor: 'pointer',
       });
-      chip.addEventListener('click', () => pick(poi));
+      chip.addEventListener('click', () => pick(list.length > 1 ? nearest(list) : poi));
       legend.appendChild(chip);
     }
     modal.appendChild(legend);
@@ -1616,6 +1660,7 @@ export class SimpleUI {
     btn.textContent = label;
     Object.assign(btn.style, {
       padding: '9px 16px',
+      minHeight: this.isTouch ? '44px' : '', // a thumb target (it measured 38)
       borderRadius: '10px',
       border: '1px solid rgba(120,160,255,0.45)',
       background: 'rgba(80,130,255,0.18)',
@@ -1660,15 +1705,15 @@ export class SimpleUI {
     // font-family:inherit: form controls default to the UA font, which left
     // the message box in monospace. aria-label + autocomplete: the fields
     // had placeholders only (axe: unlabelled form fields).
-    const field = `width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};outline:1px solid rgba(255,255,255,0.15);`;
+    const field = `width:100%;box-sizing:border-box;${this.isTouch ? 'min-height:44px;' : ''}margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};outline:1px solid rgba(255,255,255,0.15);`;
     form.innerHTML = `
       <h3 style="margin:0 0 4px;font-size:15px;">Or send a message</h3>
       <p style="margin:0 0 10px;font-size:12px;color:#9aa;">Straight to my inbox — I'll reply personally.</p>
       <input id="lead-name" aria-label="Your name (optional)" autocomplete="name" placeholder="Your name (optional)" maxlength="80" style="${field}" />
       <input id="lead-email" type="email" aria-label="Your email" autocomplete="email" placeholder="Your email" maxlength="120" style="${field}" />
       <textarea id="lead-msg" aria-label="Your message" autocomplete="off" placeholder="A role, a project, or a question" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
-      <button id="lead-send" style="width:100%;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
-      <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;">Privacy</a></p>`;
+      <button id="lead-send" style="width:100%;${this.isTouch ? 'min-height:44px;' : ''}padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
+      <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;${this.isTouch ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;' : ''}">Privacy</a></p>`;
     container.appendChild(form);
     // Keep keystrokes out of the game while typing.
     form
@@ -2105,6 +2150,11 @@ export class SimpleUI {
       this.panels.notifyClosed('emote-wheel');
       return;
     }
+    // A menu of emotes (UX-15): focus lands on the first, the arrows walk
+    // the 4x2 grid, and Escape closes it (PanelManager) with focus back on 😀.
+    const wheel = document.createElement('div');
+    wheel.setAttribute('role', 'menu');
+    wheel.setAttribute('aria-label', 'Emotes');
     this.panels.open('emote-wheel', {
       kind: 'sheet',
       hides: ['nav-chips'], // the wheel opens exactly over the chip column
@@ -2115,6 +2165,8 @@ export class SimpleUI {
         this.emoteWheelCatcher = null;
       },
       history: false, // transient: Back is not spent on it
+      el: wheel,
+      initialFocus: () => wheel.querySelector<HTMLElement>('button'),
     });
     // Outside tap dismisses (drawer's catcher pattern). Without it, touch had
     // NO dismissal: hides:['nav-chips'] hides the 😀 toggle itself and phones
@@ -2130,7 +2182,6 @@ export class SimpleUI {
     catcher.addEventListener('click', () => this.toggleEmoteWheel());
     this.overlay.appendChild(catcher);
     this.emoteWheelCatcher = catcher;
-    const wheel = document.createElement('div');
     Object.assign(wheel.style, {
       position: 'absolute',
       top: 'calc(var(--sat, 0px) + 132px)',
@@ -2147,14 +2198,16 @@ export class SimpleUI {
       boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
     });
     // Single-codepoint emoji (no ZWJ sequences) so they survive text cleaning.
+    const side = this.isTouch ? '48px' : '40px'; // a thumb target on touch
     ['👋', '😂', '❤️', '🎉', '👍', '🔥', '😮', '🙌'].forEach((emo) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = emo;
+      b.setAttribute('role', 'menuitem');
       b.setAttribute('aria-label', `Send ${emo}`);
       Object.assign(b.style, {
-        width: '40px',
-        height: '40px',
+        width: side,
+        height: side,
         fontSize: '20px',
         background: 'rgba(255,255,255,0.06)',
         border: '1px solid rgba(255,255,255,0.12)',
@@ -2167,6 +2220,20 @@ export class SimpleUI {
         this.toggleEmoteWheel();
       });
       wheel.appendChild(b);
+    });
+    const steps: Record<string, number> = {
+      ArrowLeft: -1,
+      ArrowRight: 1,
+      ArrowUp: -4,
+      ArrowDown: 4,
+    };
+    wheel.addEventListener('keydown', (e) => {
+      const step = steps[e.key];
+      if (step === undefined) return;
+      const items = Array.from(wheel.querySelectorAll<HTMLElement>('button'));
+      const i = items.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      items[(Math.max(0, i) + step + items.length) % items.length]?.focus();
     });
     this.emoteWheel = wheel;
     this.overlay.appendChild(wheel);
@@ -2850,6 +2917,12 @@ export class SimpleUI {
     slider.addEventListener('focus', () => this.showVolumePill(4000));
     slider.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.hideVolumePill();
+      // The value keys belong to the slider: ← used to turn the volume down
+      // AND walk the avatar 4.4 u (PANEL-01).
+      if (/^(Arrow(Up|Down|Left|Right)|Home|End|PageUp|PageDown)$/.test(e.key)) {
+        e.stopPropagation();
+        this.showVolumePill(4000);
+      }
     });
   }
 
@@ -3020,8 +3093,13 @@ export class SimpleUI {
       this.togglePortfolioMenu();
     });
     this.makeHudButtonAccessible(btn, 'Open portfolio menu');
+    this.portfolioBtnEl = btn;
     this.chipHost(btn, { drawer: true, order: 2 });
   }
+
+  /** The Portfolio pill: where a keyboard user's focus lands when the panel
+   *  they opened from the menu closes (PanelManager fallbackFocus). */
+  private portfolioBtnEl: HTMLElement | null = null;
 
   /**
    * Persistent "Work with me" pill (top-center). A portfolio's whole job is to
@@ -3562,6 +3640,10 @@ export class SimpleUI {
     // menu (z 1600), so a tap on Guestbook, Island Times, Your Pack or Island
     // Journal could land on a touch control. The menu clears them, as every
     // modal does; they come back when it closes.
+    const menu = document.createElement('div');
+    // A dialog by name, but a sheet: no aria-modal, no Tab trap, no inert.
+    // Focus moves to its first row and comes back to the pill on close (D4;
+    // Enter on the pill used to leave focus there, 9 Tabs from the rows).
     this.panels.open('portfolio-menu', {
       kind: 'sheet',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
@@ -3569,9 +3651,12 @@ export class SimpleUI {
         this.portfolioMenuDiv?.remove();
         this.portfolioMenuDiv = null;
       },
+      el: menu,
+      initialFocus: () => menu.querySelector<HTMLElement>('button[data-section]'),
     });
     this.stepHintAside();
-    const menu = document.createElement('div');
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-labelledby', 'ds-portfolio-menu-title');
     Object.assign(menu.style, {
       position: 'fixed',
       top: '50%',
@@ -3605,7 +3690,7 @@ export class SimpleUI {
     const rows = sections
       .map(
         (s) =>
-          `<button data-section="${s.id}" style="display:block;width:100%;margin:7px 0;padding:12px;
+          `<button data-section="${s.id}" style="display:block;width:100%;min-height:44px;margin:7px 0;padding:12px;
             background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);
             border-radius:10px;font-size:15px;cursor:pointer;text-align:left;">${s.label}</button>`,
       )
@@ -3617,32 +3702,40 @@ export class SimpleUI {
         : `🛂 Passport — ${pp.count()}/${pp.total()} stamped`
       : '🛂 Passport';
     menu.innerHTML = `
-      <h2 style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
+      <h2 id="ds-portfolio-menu-title" style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
       <p style="margin:0 0 14px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
-      <button data-passport="1" style="display:block;width:100%;margin:0 0 12px;padding:12px;
+      <button data-passport="1" style="display:block;width:100%;min-height:44px;margin:0 0 12px;padding:12px;
         background:linear-gradient(135deg,rgba(18,183,106,0.28),rgba(14,159,110,0.18));color:#fff;
         border:1px solid rgba(120,220,170,0.45);border-radius:10px;font-size:14px;font-weight:600;
         cursor:pointer;text-align:center;">${ppLabel}</button>
       ${rows}
       <div style="display:flex;gap:8px;margin-top:10px;">
-        <button data-board="leaderboard" style="flex:1;padding:11px;background:#26263340;color:#fff;
+        <button data-board="leaderboard" style="flex:1;min-height:44px;padding:11px;background:#26263340;color:#fff;
           border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">🏁 Leaderboard</button>
-        <button data-board="guestbook" style="flex:1;padding:11px;background:#26263340;color:#fff;
+        <button data-board="guestbook" style="flex:1;min-height:44px;padding:11px;background:#26263340;color:#fff;
           border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">✍️ Guestbook</button>
       </div>
-      <button data-board="times" style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
+      <button data-board="times" style="display:block;width:100%;min-height:44px;margin-top:8px;padding:11px;background:#26263340;color:#fff;
         border:1px solid rgba(255,215,121,0.28);border-radius:10px;font-size:14px;cursor:pointer;">📰 Island Times</button>
-      <button data-pack style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
+      <button data-pack style="display:block;width:100%;min-height:44px;margin-top:8px;padding:11px;background:#26263340;color:#fff;
         border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">🎒 Your Pack</button>
-      <button data-journal style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
+      <button data-journal style="display:block;width:100%;min-height:44px;margin-top:8px;padding:11px;background:#26263340;color:#fff;
         border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">📔 Island Journal</button>`;
-    // close button
+    // close button: named, and the 44px box every other × has (it measured
+    // 14x28 and was announced as 'times').
     const close = document.createElement('button');
     close.textContent = '×';
+    close.setAttribute('aria-label', 'Close portfolio menu');
     Object.assign(close.style, {
       position: 'absolute',
-      top: '10px',
-      right: '14px',
+      top: '4px',
+      right: '6px',
+      width: '44px',
+      height: '44px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '0',
       background: 'transparent',
       color: 'white',
       border: 'none',
@@ -4310,12 +4403,20 @@ export class SimpleUI {
     // touch policy that clears the HUD for panels never ran at the single
     // most crowded moment of the whole product (fresh boot on a phone:
     // welcome + minimap + chips + 7 touch controls + pills, 9 surfaces).
+    // A stray tap on the scrim closes the card without burning ds_welcomed
+    // (FM-06: an outside tap on a phone used to spend the pitch unread); the
+    // sweep and every explicit choice still persist. The card takes focus
+    // itself (tabIndex -1, below), so Space and Enter do nothing on a fresh
+    // card and the first Tab reaches the Hiring pill (FM-02).
+    const card = this.welcomeDiv;
     this.panels.open('welcome', {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
-      close: () => this.hideWelcome(),
+      close: (reason) => this.hideWelcome(reason !== 'scrim'),
       ownEscape: true, // welcome keeps its own Escape listener below
       history: false, // the landing card: Back from it leaves, as before
+      el: card,
+      initialFocus: () => card,
     });
 
     trackOnce('welcome_shown');
@@ -4339,6 +4440,9 @@ export class SimpleUI {
     } catch {
       /* storage blocked — show the full pitch */
     }
+    // Every card button is a 44px thumb target on touch (phone.cjs: the
+    // Hiring pill measured 40 and Explore 42).
+    const tap = this.isTouch ? 'min-height:44px;' : '';
     const controlsLine = this.isTouch
       ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
       : 'WASD to move · drag or J/L to look · space to jump · Q to wave.';
@@ -4348,10 +4452,10 @@ export class SimpleUI {
     // indigo outline: the card has ONE filled primary, Explore (D3).
     const ctaRow = `
       <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 10px;">
-        <button data-cta="projects" style="flex:1 1 140px; padding:12px 14px; border:1px solid rgba(143,155,255,0.8); border-radius:10px;
+        <button data-cta="projects" style="flex:1 1 140px; ${tap}padding:12px 14px; border:1px solid rgba(143,155,255,0.8); border-radius:10px;
           background:rgba(76,91,224,0.14); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
           🚀 See the work</button>
-        <button data-cta="contact" style="flex:1 1 140px; padding:12px 14px; border-radius:10px;
+        <button data-cta="contact" style="flex:1 1 140px; ${tap}padding:12px 14px; border-radius:10px;
           background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
           📬 Get in touch</button>
       </div>`;
@@ -4365,7 +4469,7 @@ export class SimpleUI {
     // camera tour that ended on a client pitch; that tour is now a secondary
     // button inside the card, and it ends back on the card.
     const recruiterPill = `
-      <button data-recruit style="width:100%; padding:10px 14px; margin:0 0 12px; border-radius:10px;
+      <button data-recruit style="width:100%; ${tap}padding:10px 14px; margin:0 0 12px; border-radius:10px;
         background:rgba(38,38,51,0.5); color:#ffe3a3; border:1px solid rgba(255,212,121,0.45); font-size:13.5px; font-weight:600; cursor:pointer;">
         📄 Hiring? CV, experience and contact</button>`;
 
@@ -4374,7 +4478,7 @@ export class SimpleUI {
     // it names the compass pill — the card's one pointer at the persistent
     // wayfinding surface that is literally on screen behind it.
     const exploreBtn = `
-      <button data-dismiss="1" class="ds-press" style="width:100%; padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
+      <button data-dismiss="1" class="ds-press" style="width:100%; ${tap}padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
         background:${DS.primary}; color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
         🧭 Explore the island →</button>
       <p style="margin:0 0 12px; font-size:11px; color:#8fa0b5;">
@@ -4385,7 +4489,7 @@ export class SimpleUI {
     // seven same-weight buttons was choice overload, and two of these call
     // the same tour rail anyway. Same data-* analytics contracts. 44px-tall
     // touch targets via padding despite the small type.
-    const chipPad = this.isTouch ? 'padding:12px 8px;' : 'padding:8px 8px;';
+    const chipPad = this.isTouch ? `${tap}padding:12px 8px;` : 'padding:8px 8px;';
     const secondaryRow = `
       <div style="display:flex; gap:8px; margin:0 0 12px;">
         <button data-meet-ai="1" style="flex:1; ${chipPad} border-radius:10px;
@@ -4453,7 +4557,8 @@ export class SimpleUI {
 
     // Dismiss only on an explicit choice — a CTA, the Explore button, or
     // Escape. The old "any key / click-outside" dismiss evaporated the pitch
-    // the instant a visitor pressed W to move.
+    // the instant a visitor pressed W to move. (A scrim tap closes it too,
+    // without persisting: see the panels.open above.)
     const onEscape = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') closeWelcome();
     };
@@ -4461,11 +4566,15 @@ export class SimpleUI {
       this.hideWelcome();
       document.removeEventListener('keydown', onEscape);
     };
+    this.welcomeEscape = onEscape; // hideWelcome drops it on any other close
 
     // Move focus INTO the dialog: aria-modal was set but focus never
     // followed, so keyboard/screen-reader users started outside their own
-    // welcome card.
-    (this.welcomeDiv.querySelector('button[data-cta="projects"]') as HTMLElement | null)?.focus();
+    // welcome card. The dialog itself, not 'See the work': a focused button
+    // made Space or Enter open Projects on a card whose own line says
+    // 'space to jump' (FM-02). PanelManager traps Tab inside it.
+    this.welcomeDiv.tabIndex = -1;
+    this.welcomeDiv.focus();
 
     // A CTA that opens a panel (or the tour) skips the compass hint: the
     // visitor is going somewhere specific, and the hint landed on the
@@ -4616,6 +4725,10 @@ export class SimpleUI {
   /** @param persist false ONLY for page teardown — see dispose(). Every other
    *  caller is a real dismissal and must burn the key. */
   hideWelcome(persist = true): void {
+    if (this.welcomeEscape) {
+      document.removeEventListener('keydown', this.welcomeEscape);
+      this.welcomeEscape = null;
+    }
     if (this.welcomeDiv) {
       this.welcomeDiv.remove();
       this.welcomeDiv = null;
@@ -4664,6 +4777,9 @@ export class SimpleUI {
   /** Set by a welcome CTA that opens a panel or the tour; read once by
    *  hideWelcome to skip the first-run compass hint. */
   private skipCompassHint = false;
+  /** The open card's Escape listener: a scrim tap or the sweep closes the
+   *  card without it, so hideWelcome drops it. */
+  private welcomeEscape: ((e: KeyboardEvent) => void) | null = null;
 
   /**
    * Check if welcome is visible
@@ -4702,11 +4818,18 @@ export class SimpleUI {
       textAlign: 'center',
       padding: '24px',
     });
+    // A named dialog with a labelled field and an announced error (UX-15:
+    // it had no role, the input's only name was its placeholder, and the
+    // validation line was silent).
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'ds-name-title');
     modal.innerHTML = `
-      <div style="font-size:26px;font-weight:700;">🌎 Welcome to Life Island</div>
-      <div style="opacity:0.85;font-size:15px;max-width:320px;">What should other visitors call you?</div>
+      <div id="ds-name-title" style="font-size:26px;font-weight:700;">🌎 Welcome to Life Island</div>
+      <label for="ds-name-input" style="opacity:0.85;font-size:15px;max-width:320px;">What should other visitors call you?</label>
     `;
     const input = document.createElement('input');
+    input.id = 'ds-name-input';
     input.type = 'text';
     input.maxLength = 20;
     input.placeholder = 'Your name';
@@ -4737,6 +4860,7 @@ export class SimpleUI {
     });
     // Inline validation message (offensive / too-short names)
     const err = document.createElement('div');
+    err.setAttribute('role', 'alert');
     Object.assign(err.style, {
       color: '#ff9a9a',
       fontSize: '12.5px',
@@ -4778,7 +4902,8 @@ export class SimpleUI {
       fontSize: '13px',
       textDecoration: 'underline',
       cursor: 'pointer',
-      padding: '4px',
+      padding: '4px 12px',
+      minHeight: '44px', // was a 129x23 target
     });
     skip.addEventListener('click', () => {
       if (done) return;
@@ -5519,6 +5644,13 @@ export class SimpleUI {
     onAction: (id: string) => void,
     onClose: () => void,
   ): void {
+    // A purchase re-renders the shop: keep keyboard focus on the row it was
+    // on, where the re-render would drop it to BODY (D4).
+    const was = this.shopDiv?.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement)
+      : null;
+    const keepId = was?.getAttribute('data-shop-id') ?? null;
+    const keepTab = was?.getAttribute('data-shop-tab') ?? null;
     this.hideShop();
     this.shopDiv = document.createElement('div');
     Object.assign(this.shopDiv.style, {
@@ -5590,7 +5722,7 @@ export class SimpleUI {
         <h3 style="margin:0;color:#ffd34a;">🛒 Island Shop</h3>
         <div style="display:flex;gap:12px;align-items:center;">
           <span style="color:#ffd34a;font-weight:800;font-size:16px;background:rgba(255,211,74,0.12);padding:4px 12px;border-radius:999px;">🪙 ${state.coins}</span>
-          <span id="shop-close" style="cursor:pointer;font-size:18px;padding:2px 8px;">✕</span>
+          <button type="button" id="shop-close" aria-label="Close the shop" style="cursor:pointer;font-size:18px;width:44px;height:44px;padding:0;background:transparent;border:none;color:#fff;">✕</button>
         </div>
       </div>
       <div id="shop-tabs" style="display:flex;gap:6px;margin-bottom:8px;">
@@ -5633,6 +5765,7 @@ export class SimpleUI {
     // manager also act would double-fire onClose). The SAME-ID RE-OPEN rule
     // is load-bearing here: showShop re-renders itself after every purchase,
     // and the sweep firing onClose mid-refresh would unpause the game.
+    const shop = this.shopDiv;
     this.panels.open('shop', {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
@@ -5640,6 +5773,15 @@ export class SimpleUI {
       close: () => {
         this.hideShop();
         onClose();
+      },
+      el: shop,
+      initialFocus: () => {
+        const sel = keepId
+          ? `button[data-shop-id="${keepId}"]:not([disabled])`
+          : keepTab
+            ? `button[data-shop-tab="${keepTab}"]`
+            : '';
+        return (sel ? shop.querySelector<HTMLElement>(sel) : null) ?? shop.querySelector('h3');
       },
     });
     this.shopDiv.querySelector('#shop-close')?.addEventListener('click', () => {
@@ -6156,11 +6298,19 @@ export class SimpleUI {
     hair: 'Hair',
     skin: 'Skin',
   };
+  /** Swatch names, in CUSTOMIZE_PALETTES order: a screen reader heard
+   *  '#f3b359' (UX-15). Skin tones are numbered, not named. */
+  private static readonly CUSTOMIZE_NAMES: Record<string, string[]> = {
+    outfit: ['mustard', 'blue', 'red', 'green', 'purple', 'teal', 'pink', 'charcoal'],
+    pants: ['slate', 'navy', 'brown', 'charcoal', 'khaki', 'denim'],
+    hair: ['brown', 'black', 'blonde', 'auburn', 'grey', 'blue'],
+    skin: ['tone 1', 'tone 2', 'tone 3', 'tone 4', 'tone 5', 'tone 6'],
+  };
 
   /**
    * Appearance editor: colour swatches per body part + a picker over owned
    * hats. Recolours the live model through the callbacks and persists via the
-   * caller. Re-renders itself after each pick to move the active highlight.
+   * caller. A pick moves the active highlight in place.
    */
   showCustomize(opts: {
     colors: Record<string, number | undefined>;
@@ -6207,8 +6357,8 @@ export class SimpleUI {
     }
     // Sheet, NOT modal, and touch-controls stay: "preview while moving" is the
     // point of this panel (see the touch-layout comment above) — hiding the
-    // joystick would trap the player mid-recolour. Re-renders itself on every
-    // swatch tap → protected by the same-id re-open rule.
+    // joystick would trap the player mid-recolour. A caller re-opening it
+    // re-renders it → protected by the same-id re-open rule.
     this.panels.open('customize', {
       kind: 'sheet',
       hides: ['nav-chips'],
@@ -6216,19 +6366,29 @@ export class SimpleUI {
     });
 
     const hexStr = (h: number) => `#${h.toString(16).padStart(6, '0')}`;
+    // Named, pressed-state swatches in a 6-column grid: 32px on desktop and
+    // a 44px thumb target on touch, where they were 23px and named by hex
+    // (UX-15). A pick updates the highlight IN PLACE, so focus stays on the
+    // swatch it was on (the old innerHTML rewrite dropped it).
+    const sw = this.isTouch ? 44 : 32;
+    this.customizeDiv.style.maxWidth = this.isTouch ? 'min(340px, calc(100vw - 24px))' : '272px';
     const swatchRow = (part: string): string => {
       const cur = opts.colors[part];
+      const label = SimpleUI.CUSTOMIZE_LABELS[part];
+      const names = SimpleUI.CUSTOMIZE_NAMES[part] ?? [];
       const swatches = SimpleUI.CUSTOMIZE_PALETTES[part]
-        .map((hex) => {
+        .map((hex, i) => {
           const active = cur === hex;
-          return `<button data-part="${part}" data-hex="${hex}" title="${hexStr(hex)}" style="width:23px;height:23px;border-radius:6px;border:2px solid ${active ? '#fff' : 'transparent'};background:${hexStr(hex)};cursor:pointer;margin:2px;padding:0;"></button>`;
+          const name = `${label}: ${names[i] ?? hexStr(hex)}`;
+          return `<button type="button" data-part="${part}" data-hex="${hex}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="width:${sw}px;height:${sw}px;border-radius:6px;border:2px solid ${active ? '#fff' : 'transparent'};background:${hexStr(hex)};cursor:pointer;margin:0;padding:0;"></button>`;
         })
         .join('');
-      return `<div style="margin-bottom:7px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">${SimpleUI.CUSTOMIZE_LABELS[part]}</div><div style="display:flex;flex-wrap:wrap;">${swatches}</div></div>`;
+      return `<div style="margin-bottom:7px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">${label}</div><div role="group" aria-label="${label}" style="display:grid;grid-template-columns:repeat(6, ${sw}px);gap:4px;">${swatches}</div></div>`;
     };
     const hatBtn = (id: string | null, icon: string): string => {
       const active = (opts.equippedHat ?? null) === id;
-      return `<button data-hat="${id ?? ''}" style="font-size:16px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
+      const name = id ? `Hat: ${id.replace(/[-_]/g, ' ')}` : 'No hat';
+      return `<button type="button" data-hat="${id ?? ''}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="font-size:16px;min-width:${sw}px;min-height:${sw}px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
     };
     const ownedBtns = opts.hats
       .filter((h) => opts.ownedHats.includes(h.id))
@@ -6240,24 +6400,31 @@ export class SimpleUI {
       <div style="font-weight:700;margin-bottom:9px;">🎨 Appearance</div>
       ${swatchRow('outfit')}${swatchRow('pants')}${swatchRow('hair')}${swatchRow('skin')}
       ${hatRow}
-      <button id="close-customize" class="ds-press" style="background:${DS.primary};color:white;border:none;padding:6px 13px;border-radius:8px;cursor:pointer;margin-top:6px;">Done</button>
+      <button id="close-customize" class="ds-press" style="background:${DS.primary};color:white;border:none;padding:6px 13px;min-height:${this.isTouch ? 44 : 32}px;border-radius:8px;cursor:pointer;margin-top:6px;">Done</button>
     `;
 
-    this.customizeDiv.querySelectorAll<HTMLElement>('button[data-hex]').forEach((btn) => {
+    const root = this.customizeDiv;
+    const mark = (group: NodeListOf<HTMLElement>, on: HTMLElement): void => {
+      for (const b of Array.from(group)) {
+        b.style.borderColor = b === on ? '#fff' : 'transparent';
+        b.setAttribute('aria-pressed', String(b === on));
+      }
+    };
+    root.querySelectorAll<HTMLElement>('button[data-hex]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const part = btn.dataset.part!;
         const hex = parseInt(btn.dataset.hex!, 10);
         opts.onColor(part, hex);
-        opts.colors[part] = hex; // reflect for the re-render highlight
-        this.showCustomize(opts);
+        opts.colors[part] = hex; // a later re-open starts from it
+        mark(root.querySelectorAll<HTMLElement>(`button[data-part="${part}"]`), btn);
       });
     });
-    this.customizeDiv.querySelectorAll<HTMLElement>('button[data-hat]').forEach((btn) => {
+    root.querySelectorAll<HTMLElement>('button[data-hat]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.hat ? btn.dataset.hat : null;
         opts.onHat(id);
         opts.equippedHat = id;
-        this.showCustomize(opts);
+        mark(root.querySelectorAll<HTMLElement>('button[data-hat]'), btn);
       });
     });
     const closeBtn = this.customizeDiv.querySelector('#close-customize') as HTMLButtonElement;
@@ -6340,6 +6507,9 @@ export class SimpleUI {
         background: 'rgba(0, 0, 0, 0.55)',
         borderRadius: '20px',
         padding: '6px 14px',
+        // A 44px thumb target on touch: it measured 39 (phone.cjs).
+        boxSizing: 'border-box',
+        minHeight: this.isTouch ? '44px' : '',
         zIndex: '1200',
         // The one ALWAYS-visible wayfinding element used to be inert
         // (pointerEvents none) \u2014 it pointed at things but could never hand
@@ -6473,11 +6643,22 @@ export class SimpleUI {
       // A ?zone= deep link opens on the visitor's landing entry: there is no
       // entry of ours to step back off, and Back from it leaves the site.
       history: source !== 'deeplink',
+      // 'ds:modal' carries it: closing the hire card says zone 'hire' (P2-D8).
+      zone: String(zone?.id ?? 'unknown'),
     });
     this.stepHintAside();
 
     const content = this.getZoneContent(zone);
     this.zonePanelDiv.innerHTML = content;
+    // A dialog named by its heading; PanelManager focuses that heading once
+    // the panel is in, so ↑/↓, PageUp/PageDown and Space scroll it (D4).
+    this.zonePanelDiv.setAttribute('role', 'dialog');
+    this.zonePanelDiv.setAttribute('aria-modal', 'true');
+    const heading = this.zonePanelDiv.querySelector('h2');
+    if (heading) {
+      heading.id = 'ds-zone-title';
+      this.zonePanelDiv.setAttribute('aria-labelledby', heading.id);
+    }
     // Panel thumbnails are lazy + optional: if an image is missing (or blocked)
     // it hides itself rather than showing a broken-image glyph. Attached here
     // (not via an inline onerror handler) so a strict CSP can't neutralise it.
@@ -6702,8 +6883,10 @@ export class SimpleUI {
       label: string,
       opts: { primary?: boolean; small?: boolean } = {},
     ): string => {
+      // 44px thumb targets on touch: the links measured 37-39 (phone.cjs).
       const base =
-        'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;';
+        'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;' +
+        (this.isTouch ? 'min-height:44px;box-sizing:border-box;' : '');
       const size = opts.small
         ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:12.5px;`
         : '';
@@ -6723,7 +6906,7 @@ export class SimpleUI {
       <div style="display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px;margin:10px 0 6px;">
         <span data-email style="user-select:all;-webkit-user-select:all;cursor:text;font-size:15px;font-weight:600;color:#fff;
           background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:8px 12px;">${OWNER.email}</span>
-        <button type="button" data-copy="${OWNER.email}" title="Copy the email address" style="padding:8px 14px;border-radius:8px;
+        <button type="button" data-copy="${OWNER.email}" title="Copy the email address" style="${this.isTouch ? 'min-height:44px;' : ''}padding:8px 14px;border-radius:8px;
           border:1px solid rgba(120,160,255,0.45);background:rgba(80,130,255,0.18);color:#cfe0ff;font-size:13.5px;font-weight:600;cursor:pointer;">Copy</button>
         ${withMailto ? link(`mailto:${OWNER.email}`, '✉️ Email', { small: true }) : ''}
       </div>`;
@@ -7418,6 +7601,10 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.closeWatchPicker(),
+      el: panel,
+      label: 'The wall screen',
+      // its link field (focused 50 ms after open, below)
+      initialFocus: () => panel.querySelector<HTMLElement>('input'),
     });
     panel.innerHTML = `
       <div style="font-weight:600; font-size:15px; margin-bottom:4px;">📺 The wall screen</div>
@@ -7660,6 +7847,9 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.closePinPad(),
+      el: panel,
+      label: 'Door code',
+      initialFocus: () => panel, // its own keydown takes the digits
     });
     panel.innerHTML = `
       <div style="font-weight:600; font-size:14.5px; margin-bottom:2px;">🔒 The door is locked</div>

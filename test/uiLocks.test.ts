@@ -274,8 +274,11 @@ describe('moved from visualPolish.test.ts (B): the welcome card and the contact 
     expect(ui).toContain('hideWelcome(persist = true)');
     expect(ui).toContain('if (!persist) return;');
     expect(ui).toContain('this.hideWelcome(false)');
-    // The PanelManager sweep IS a dismissal and must still persist.
-    expect(ui).toContain('close: () => this.hideWelcome(),');
+    // The PanelManager sweep IS a dismissal and must still persist; a stray
+    // tap on the scrim is not, and must not (D4, FM-06: an outside tap on a
+    // phone burned the pitch unread). Changed deliberately in D4 from
+    // `close: () => this.hideWelcome(),`.
+    expect(ui).toContain("close: (reason) => this.hideWelcome(reason !== 'scrim'),");
   });
 
   test('the contact form cannot strand itself or blame a good email', () => {

@@ -44,12 +44,50 @@
  *         wheel, the chat input, the tour, NPC dialogue, a deep-linked panel)
  *         never push: Back from there leaves, as it always did;
  *       · pageshow (a bfcache restore) re-syncs the stack with the page.
+ *   - FOCUS MOVES IN, STAYS IN AND COMES BACK (D4; FOCUS-01, UX-03): focus
+ *     used to stay on BODY behind every panel, Tab walked the dimmed HUD
+ *     behind the modals, and the welcome card leaked focus after five Tabs.
+ *       · a modal (zone panels, the hire card, the centred modals, the
+ *         welcome card, the shop) is aria-modal, makes every other overlay
+ *         child inert (tabindex -1 where inert is unsupported), takes focus
+ *         once its element is in the document (initialFocus, else its first
+ *         heading at tabindex -1) and traps Tab;
+ *       · a sheet with initialFocus (the Portfolio menu, the emote wheel)
+ *         takes focus too, with no trap and no inert; other sheets keep the
+ *         world live and never move focus;
+ *       · sheets, #ds-guide and [data-never-inert] (the Leave pill, the live
+ *         region) are never made inert;
+ *       · on close, a panel still open underneath takes focus back (the hall
+ *         panel under the passport crown); otherwise a panel the KEYBOARD
+ *         opened returns focus to its opener (the Portfolio pill when the
+ *         opener has gone), and one a pointer or the world opened hands focus
+ *         back to the world: an HUD chip left holding focus would take the
+ *         next Enter (chat) or Space (jump);
+ *       · close(reason) says why the manager closed it: 'escape', 'scrim',
+ *         'sweep' or 'back' (the welcome card persists ds_welcomed on all but
+ *         a scrim tap);
+ *       · window 'ds:modal' {open, id, zone?} fires when the top panel turns
+ *         into or out of a modal, coalesced per task (a close then an open in
+ *         one task, a section switch, fires nothing).
  */
 
 /** 'aux-controls' = the second-rank touch controls (FEED/EAT/💬/🎤): panels
  *  that must keep USE/JUMP visible (NPC dialogue advances on USE) can hide
  *  just these instead of the whole touch suite. */
 export type HudLayer = 'nav-chips' | 'touch-controls' | 'aux-controls' | 'ambient-info';
+
+/** Why the manager closed a panel: Escape, a tap on the scrim, the exclusivity
+ *  sweep (or closeAll), or Back off the panel's history entry. A panel's own
+ *  ✕ or button closes it without the manager, through notifyClosed. */
+export type CloseReason = 'escape' | 'scrim' | 'sweep' | 'back';
+
+/** What window 'ds:modal' carries (see the header). */
+export interface ModalEventDetail {
+  open: boolean;
+  id: string;
+  /** The zone panel's zone ('hire', 'projects', …) when the modal is one. */
+  zone?: string;
+}
 
 /** The slice of the History API the back-button contract uses. */
 export interface HistoryPort {
@@ -66,7 +104,41 @@ export interface PanelManagerOptions {
    *  (Forward after a close, or a reload), once its state is cleared: the
    *  owner drops the URL params that named the panel. */
   onStaleEntry?: () => void;
+  /** Where focus goes when a keyboard-opened panel closes and its opener has
+   *  left the page (a Portfolio-menu row): the Portfolio pill. */
+  fallbackFocus?: () => HTMLElement | null;
 }
+
+/** What Tab can land on inside a panel. */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+
+const isShown = (el: HTMLElement): boolean => {
+  if (el.closest('[hidden], [inert]')) return false;
+  for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+    const cs = getComputedStyle(n);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+  }
+  return true;
+};
+
+/** The panel's controls in tab order (DOM order; nothing here sets tabindex > 0). */
+const focusablesIn = (root: HTMLElement): HTMLElement[] =>
+  Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(isShown);
+
+/** Focus without scrolling the page; a non-control takes tabindex -1 first. */
+const focusEl = (el: HTMLElement): boolean => {
+  if (!el.matches(FOCUSABLE) && !el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
+  try {
+    el.focus({ preventScroll: true });
+  } catch {
+    el.focus();
+  }
+  return document.activeElement === el;
+};
+
+const INERT_SUPPORTED = typeof HTMLElement !== 'undefined' && 'inert' in HTMLElement.prototype;
+let dialogIds = 0;
 
 /** What a pushed entry carries. dsTok is unique per push and per page life. */
 interface PanelHistoryState {
@@ -98,8 +170,9 @@ export interface PanelSpec {
   /** Layers suppressed while open. */
   hides: HudLayer[];
   /** Tear down THIS panel's DOM and run its side effects. MUST be idempotent —
-   *  both the manager and the panel's own ✕/Escape path may call it. */
-  close: () => void;
+   *  both the manager and the panel's own ✕/Escape path may call it. `reason`
+   *  says why the manager closed it. */
+  close: (reason?: CloseReason) => void;
   /** Panel ids allowed to remain open underneath (watch-frame over picker). */
   allow?: string[];
   /** Panel owns its own Escape (chat inputs that stopPropagation). */
@@ -110,6 +183,17 @@ export interface PanelSpec {
   /** false: opening it pushes no history entry, so Back never closes it
    *  (transient sheets, the welcome card, a deep-linked panel). Default true. */
   history?: boolean;
+  /** Where focus lands once the panel is in the document. A modal defaults
+   *  to its first heading (at tabindex -1), else its element; a sheet takes
+   *  focus only when this is given (the Portfolio menu's first row). */
+  initialFocus?: () => HTMLElement | null;
+  /** The panel moves focus itself (chat inputs, the tour, NPC dialogue): the
+   *  manager neither moves focus in nor brings it back. */
+  ownFocus?: boolean;
+  /** The accessible name for a dialog with no heading to point at. */
+  label?: string;
+  /** A zone panel's zone id, carried on 'ds:modal'. */
+  zone?: string;
 }
 
 interface Entry {
@@ -118,6 +202,11 @@ interface Entry {
   /** spec.el has been seen in the document: only then does leaving it pop
    *  the entry (a modal is registered before its caller appends it). */
   seen: boolean;
+  /** Where focus came from when a KEYBOARD opened the panel; null when a
+   *  pointer or the world (E at a door, a timer) did. */
+  opener: HTMLElement | null;
+  /** Its close has run the focus hand-back already. */
+  restored: boolean;
 }
 
 export class PanelManager {
@@ -129,6 +218,34 @@ export class PanelManager {
   private readonly scrim: HTMLDivElement;
   private sweeping = false;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
+
+  // ── Focus contract (see the header) ──
+  private readonly overlay: HTMLElement;
+  private readonly fallbackFocus: (() => HTMLElement | null) | null;
+  /** The last input: a keyboard-opened panel hands focus back to its opener,
+   *  a pointer-opened one to the world. */
+  private modality: 'keyboard' | 'pointer' = 'pointer';
+  /** The entry that closed in this task, so an open in the same task (a menu
+   *  row opening its section, the shop re-rendering) inherits its opener. */
+  private justClosed: Entry | null = null;
+  /** Overlay children this manager made inert, and the tabindex each
+   *  fallback-disabled control had before. */
+  private readonly inerted = new Set<HTMLElement>();
+  private readonly savedTabIndex = new Map<HTMLElement, string | null>();
+  /** The modal 'ds:modal' last reported open, and whether a flush is queued. */
+  private modalShown: { id: string; zone?: string } | null = null;
+  private modalFlushQueued = false;
+  private disposed = false;
+  private readonly onKeyModality = (): void => {
+    this.modality = 'keyboard';
+  };
+  private readonly onPointerModality = (): void => {
+    this.modality = 'pointer';
+  };
+  private readonly onClickModality = (e: MouseEvent): void => {
+    if (e.detail > 0) this.modality = 'pointer'; // a keyboard click() has detail 0
+  };
+  private readonly onTrapTab = (e: KeyboardEvent): void => this.trapTab(e);
 
   // ── Back-button contract (see the header) ──
   private readonly history: HistoryPort | null;
@@ -159,6 +276,8 @@ export class PanelManager {
     private readonly isTouch: boolean,
     opts: PanelManagerOptions = {},
   ) {
+    this.overlay = overlay;
+    this.fallbackFocus = opts.fallbackFocus ?? null;
     this.history = opts.history === undefined ? defaultHistory() : opts.history;
     this.onStaleEntry = opts.onStaleEntry ?? null;
     if (this.history) {
@@ -181,7 +300,7 @@ export class PanelManager {
       display: 'none',
       pointerEvents: 'auto',
     });
-    this.scrim.addEventListener('click', () => this.closeTop());
+    this.scrim.addEventListener('click', () => this.closeTop('scrim'));
     overlay.appendChild(this.scrim);
 
     // One Escape for every panel that doesn't own its key. Bubble phase:
@@ -192,9 +311,16 @@ export class PanelManager {
       const top = this.stack[this.stack.length - 1];
       if (top.spec.ownEscape) return;
       e.preventDefault();
-      this.closeTop();
+      this.closeTop('escape');
     };
     document.addEventListener('keydown', this.onKeyDown);
+    // Capture phase: the lead form's fields stop their keydowns from
+    // propagating, and the modality and the Tab trap must still see them.
+    document.addEventListener('keydown', this.onKeyModality, true);
+    document.addEventListener('pointerdown', this.onPointerModality, true);
+    document.addEventListener('mousedown', this.onPointerModality, true);
+    document.addEventListener('click', this.onClickModality, true);
+    document.addEventListener('keydown', this.onTrapTab, true);
   }
 
   /** Register a HUD element into a layer at creation time. */
@@ -215,20 +341,24 @@ export class PanelManager {
     const top = this.stack[this.stack.length - 1];
     if (top && top.id === id) {
       // Same-id re-open: replace in place, never fire close() (see header).
-      if (spec.el !== top.spec.el) top.seen = false;
+      const newEl = spec.el !== top.spec.el;
+      if (newEl) top.seen = false;
       top.spec = spec;
       this.applyState();
       this.checkSoon();
+      if (newEl) this.focusSoon(top); // the re-render dropped the old element
       return;
     }
+    const opener = this.openerFor(spec);
     this.sweeping = true;
     try {
       for (let i = this.stack.length - 1; i >= 0; i--) {
         const entry = this.stack[i];
         if (spec.allow?.includes(entry.id)) continue;
         this.stack.splice(i, 1);
+        entry.restored = true; // the panel opening now takes focus
         try {
-          entry.spec.close();
+          entry.spec.close('sweep');
         } catch {
           /* one broken teardown must not strand the sweep */
         }
@@ -236,28 +366,31 @@ export class PanelManager {
     } finally {
       this.sweeping = false;
     }
-    this.stack.push({ id, spec, seen: false });
+    const entry: Entry = { id, spec, seen: false, opener, restored: false };
+    this.stack.push(entry);
     this.applyState();
     this.checkSoon();
+    this.focusSoon(entry);
   }
 
   /** A panel closed itself (its own ✕ / Escape path). No-op during a sweep. */
   notifyClosed(id: string): void {
     if (this.sweeping) return;
     const idx = this.stack.findIndex((e) => e.id === id);
-    if (idx !== -1) this.stack.splice(idx, 1);
+    const gone = idx !== -1 ? this.stack.splice(idx, 1)[0] : null;
     // Re-derive even for an id that is not open: a close path that named the
     // wrong id has still removed its DOM, and the detached-panel pop below is
     // what takes its scrim down.
     this.applyState();
+    if (gone) this.handBackFocus(gone);
   }
 
-  /** Escape / scrim-tap: close the top panel. False when the stack is empty. */
-  closeTop(): boolean {
+  /** Escape / scrim-tap / Back: close the top panel. False when the stack is empty. */
+  closeTop(reason?: CloseReason): boolean {
     const top = this.stack[this.stack.length - 1];
     if (!top) return false;
     try {
-      top.spec.close(); // its teardown usually calls notifyClosed(id)
+      top.spec.close(reason); // its teardown usually calls notifyClosed(id)
     } catch {
       /* still pop below */
     }
@@ -265,6 +398,7 @@ export class PanelManager {
     const idx = this.stack.indexOf(top);
     if (idx !== -1) this.stack.splice(idx, 1);
     this.applyState();
+    this.handBackFocus(top);
     return true;
   }
 
@@ -272,8 +406,9 @@ export class PanelManager {
     this.sweeping = true;
     try {
       for (let i = this.stack.length - 1; i >= 0; i--) {
+        this.stack[i].restored = true;
         try {
-          this.stack[i].spec.close();
+          this.stack[i].spec.close('sweep');
         } catch {
           /* keep going */
         }
@@ -283,6 +418,28 @@ export class PanelManager {
       this.sweeping = false;
     }
     this.applyState();
+  }
+
+  /** The top panel when it is a modal: toasts never paint over one (D6). */
+  topModal(): { id: string; el: HTMLElement | null } | null {
+    this.sync();
+    const top = this.stack[this.stack.length - 1];
+    return top && top.spec.kind === 'modal' ? { id: top.id, el: top.spec.el ?? null } : null;
+  }
+
+  /** Any modal open, on top or under a sheet. */
+  isModalOpen(): boolean {
+    this.sync();
+    return this.stack.some((e) => e.spec.kind === 'modal');
+  }
+
+  /** The open panel whose element holds `node`, topmost first. */
+  panelAt(node: Node | null): string | null {
+    if (!node) return null;
+    for (let i = this.stack.length - 1; i >= 0; i--) {
+      if (this.stack[i].spec.el?.contains(node)) return this.stack[i].id;
+    }
+    return null;
   }
 
   isOpen(id?: string): boolean {
@@ -300,6 +457,12 @@ export class PanelManager {
    *  on the history is never touched. */
   dispose(): void {
     document.removeEventListener('keydown', this.onKeyDown);
+    document.removeEventListener('keydown', this.onKeyModality, true);
+    document.removeEventListener('pointerdown', this.onPointerModality, true);
+    document.removeEventListener('mousedown', this.onPointerModality, true);
+    document.removeEventListener('click', this.onClickModality, true);
+    document.removeEventListener('keydown', this.onTrapTab, true);
+    this.disposed = true;
     this.historyFrozen = true;
     this.backQueued = false;
     if (this.history) {
@@ -315,8 +478,8 @@ export class PanelManager {
    * one or two deep), so the per-frame isOpen() reads double as the check.
    * True when something popped.
    */
-  private pruneDetached(): boolean {
-    let popped = false;
+  private pruneDetached(): Entry[] {
+    const popped: Entry[] = [];
     for (let i = this.stack.length - 1; i >= 0; i--) {
       const e = this.stack[i];
       const el = e.spec.el;
@@ -324,7 +487,7 @@ export class PanelManager {
       if (el.isConnected) e.seen = true;
       else if (e.seen) {
         this.stack.splice(i, 1);
-        popped = true;
+        popped.push(e);
       }
     }
     return popped;
@@ -332,7 +495,11 @@ export class PanelManager {
 
   /** Bring the scrim and layers in line if a panel's element went away. */
   private sync(): void {
-    if (!this.sweeping && this.pruneDetached()) this.applyState();
+    if (this.sweeping) return;
+    const popped = this.pruneDetached();
+    if (!popped.length) return;
+    this.applyState();
+    for (const e of popped) this.handBackFocus(e);
   }
 
   /** Callers append a panel's element right after open(); look once the
@@ -344,7 +511,7 @@ export class PanelManager {
 
   /** Re-derive scrim + layer visibility from the whole stack. */
   private applyState(): void {
-    if (!this.sweeping) this.pruneDetached();
+    const popped = this.sweeping ? [] : this.pruneDetached();
     const top = this.stack[this.stack.length - 1];
     this.scrim.style.display = top && top.spec.kind === 'modal' ? 'block' : 'none';
     // Union of hides across ALL open panels (a 2-deep watch stack must keep
@@ -363,7 +530,221 @@ export class PanelManager {
         }
       }
     }
+    if (!this.sweeping) this.applyInert();
     this.syncHistory();
+    this.queueModalEvent();
+    for (const e of popped) this.handBackFocus(e);
+  }
+
+  // ── Focus contract ────────────────────────────────────────────────────
+
+  /** Who gets focus back when this panel closes (null: the world does). */
+  private openerFor(spec: PanelSpec): HTMLElement | null {
+    if (this.modality !== 'keyboard') return null;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active === document.body) {
+      // Focus left with a panel that closed in this task: its opener stands.
+      return this.justClosed?.opener ?? null;
+    }
+    if (spec.el?.contains(active)) return this.justClosed?.opener ?? null;
+    // Opened from inside a panel the sweep is about to close: that panel's
+    // opener, since the control itself is about to leave the page.
+    for (const e of this.stack) {
+      if (!spec.allow?.includes(e.id) && e.spec.el?.contains(active)) return e.opener;
+    }
+    return active;
+  }
+
+  /** The manager moves this panel's focus: every modal, and a sheet that
+   *  names its initial focus. */
+  private managesFocus(e: Entry): boolean {
+    if (e.spec.ownFocus) return false;
+    return e.spec.kind === 'modal' || !!e.spec.initialFocus;
+  }
+
+  /** Once the caller has appended the element (same task), focus into it. */
+  private focusSoon(entry: Entry): void {
+    queueMicrotask(() => {
+      if (this.disposed || this.stack[this.stack.length - 1] !== entry) return;
+      this.dress(entry);
+      this.focusInto(entry, false);
+    });
+  }
+
+  /** Put focus inside the panel: its initialFocus, else its first heading,
+   *  else the element itself. `force` re-focuses even if focus is already
+   *  somewhere inside (a stacked panel closed over this one). */
+  private focusInto(entry: Entry, force: boolean): void {
+    if (!this.managesFocus(entry)) return;
+    const el = entry.spec.el;
+    const active = document.activeElement;
+    if (!force && el && active instanceof Node && el.contains(active)) return; // it focused itself
+    let target = entry.spec.initialFocus?.() ?? null;
+    if (!target && el?.isConnected) target = el.querySelector<HTMLElement>('h1, h2, h3') ?? el;
+    if (target?.isConnected) focusEl(target);
+  }
+
+  /** Dialog semantics, once the content is in: role and aria-modal for a
+   *  modal, a name from its first heading (or spec.label), and keyboard
+   *  scrolling for a scroller that holds nothing focusable. */
+  private dress(entry: Entry): void {
+    const el = entry.spec.el;
+    if (!el?.isConnected) return;
+    if (entry.spec.kind === 'modal') {
+      if (!el.getAttribute('role')) el.setAttribute('role', 'dialog');
+      el.setAttribute('aria-modal', 'true');
+    }
+    if (
+      el.getAttribute('role') === 'dialog' &&
+      !el.hasAttribute('aria-label') &&
+      !el.hasAttribute('aria-labelledby')
+    ) {
+      const h = el.querySelector<HTMLElement>('h1, h2, h3');
+      if (h) {
+        if (!h.id) h.id = `ds-dialog-title-${++dialogIds}`;
+        el.setAttribute('aria-labelledby', h.id);
+      } else if (entry.spec.label) {
+        el.setAttribute('aria-label', entry.spec.label);
+      }
+    }
+    for (const n of Array.from(el.querySelectorAll<HTMLElement>('div, ul, section'))) {
+      const ov = n.style.overflowY || n.style.overflow;
+      if (
+        (ov === 'auto' || ov === 'scroll') &&
+        !n.hasAttribute('tabindex') &&
+        !n.querySelector(FOCUSABLE)
+      ) {
+        n.tabIndex = 0;
+      }
+    }
+  }
+
+  /** A panel left the stack by any path but the sweep: see the header. */
+  private handBackFocus(closed: Entry): void {
+    if (closed.restored || this.disposed) return;
+    closed.restored = true;
+    this.justClosed = closed;
+    queueMicrotask(() => {
+      if (this.justClosed === closed) this.justClosed = null;
+    });
+    if (!this.managesFocus(closed)) return;
+    const active = document.activeElement;
+    const el = closed.spec.el;
+    const inside = !!el && active instanceof Node && el.contains(active);
+    const lost = !active || active === document.body || !active.isConnected;
+    if (!inside && !lost) return; // focus already went somewhere on purpose
+    const top = this.stack[this.stack.length - 1];
+    if (top && this.managesFocus(top) && top.spec.el?.isConnected) {
+      this.focusInto(top, true);
+      return;
+    }
+    const opener = closed.opener;
+    if (opener) {
+      if (opener.isConnected && !opener.closest('[inert]') && focusEl(opener)) return;
+      const fb = this.fallbackFocus?.();
+      if (fb?.isConnected && focusEl(fb)) return;
+    }
+    if (inside && active instanceof HTMLElement) active.blur(); // the world keeps its keys
+  }
+
+  /** Tab and Shift+Tab wrap inside the top modal, first ↔ last. */
+  private trapTab(e: KeyboardEvent): void {
+    if (e.key !== 'Tab' || e.altKey || e.ctrlKey || e.metaKey) return;
+    const top = this.stack[this.stack.length - 1];
+    const el = top?.spec.kind === 'modal' ? top.spec.el : undefined;
+    if (!el?.isConnected) return;
+    const list = focusablesIn(el);
+    e.preventDefault();
+    if (!list.length) {
+      focusEl(el);
+      return;
+    }
+    const active = document.activeElement;
+    let i = active instanceof HTMLElement ? list.indexOf(active) : -1;
+    if (i === -1 && active instanceof Node && el.contains(active)) {
+      // On the heading or the dialog itself: step from its place in the DOM.
+      const after = list.findIndex(
+        (f) => !!(active.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_FOLLOWING),
+      );
+      i = after === -1 ? list.length : after;
+      focusEl(e.shiftKey ? list[(i - 1 + list.length) % list.length] : list[i % list.length]);
+      return;
+    }
+    if (i === -1) {
+      focusEl(e.shiftKey ? list[list.length - 1] : list[0]);
+      return;
+    }
+    focusEl(list[(i + (e.shiftKey ? -1 : 1) + list.length) % list.length]);
+  }
+
+  /** inert on every other overlay child while a modal is on top. */
+  private applyInert(): void {
+    const top = this.stack[this.stack.length - 1];
+    const want = new Set<HTMLElement>();
+    const modalEl = top?.spec.kind === 'modal' ? top.spec.el : undefined;
+    if (modalEl) {
+      const keep = new Set<HTMLElement>([modalEl, this.scrim]);
+      for (const e of this.stack) if (e.spec.kind === 'sheet' && e.spec.el) keep.add(e.spec.el);
+      for (const c of Array.from(this.overlay.children)) {
+        if (!(c instanceof HTMLElement) || keep.has(c) || c.contains(modalEl)) continue;
+        if (c.id === 'ds-guide' || c.hasAttribute('data-never-inert')) continue;
+        want.add(c);
+      }
+    }
+    for (const c of Array.from(this.inerted)) {
+      if (want.has(c)) continue;
+      this.setInert(c, false);
+      this.inerted.delete(c);
+    }
+    for (const c of want) {
+      if (this.inerted.has(c)) continue;
+      this.setInert(c, true);
+      this.inerted.add(c);
+    }
+  }
+
+  private setInert(el: HTMLElement, on: boolean): void {
+    if (on) el.setAttribute('inert', '');
+    else el.removeAttribute('inert');
+    if (INERT_SUPPORTED) return;
+    // No inert: take the controls out of the tab order, and put them back.
+    if (on) {
+      for (const f of Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE))) {
+        if (this.savedTabIndex.has(f)) continue;
+        this.savedTabIndex.set(f, f.getAttribute('tabindex'));
+        f.setAttribute('tabindex', '-1');
+      }
+      return;
+    }
+    for (const [f, t] of Array.from(this.savedTabIndex)) {
+      if (!el.contains(f)) continue;
+      if (t === null) f.removeAttribute('tabindex');
+      else f.setAttribute('tabindex', t);
+      this.savedTabIndex.delete(f);
+    }
+  }
+
+  /** 'ds:modal' when the top turns into or out of a modal, once per task. */
+  private queueModalEvent(): void {
+    if (this.modalFlushQueued || typeof window === 'undefined') return;
+    this.modalFlushQueued = true;
+    queueMicrotask(() => {
+      this.modalFlushQueued = false;
+      if (this.disposed) return;
+      const top = this.stack[this.stack.length - 1];
+      const now = top && top.spec.kind === 'modal' ? { id: top.id, zone: top.spec.zone } : null;
+      const was = this.modalShown;
+      this.modalShown = now;
+      if (!now === !was) return;
+      const m = (now ?? was)!;
+      const detail: ModalEventDetail = { open: !!now, id: m.id };
+      if (m.zone) detail.zone = m.zone;
+      try {
+        window.dispatchEvent(new CustomEvent('ds:modal', { detail }));
+      } catch {
+        /* no CustomEvent: nothing listens either */
+      }
+    });
   }
 
   // ── Back-button contract ──────────────────────────────────────────────
@@ -458,7 +839,7 @@ export class PanelManager {
       this.ownTok = null;
       this.ownId = null;
       this.backQueued = false;
-      this.closeTop();
+      this.closeTop('back');
       return;
     }
     if (isPanelState(state)) {
@@ -474,7 +855,7 @@ export class PanelManager {
    *  back, then re-derive (a history panel without an entry gets one). */
   private resync(): void {
     if (!this.history) return;
-    this.pruneDetached();
+    const popped = this.pruneDetached();
     const state = this.historyState();
     if (this.ownTok !== null && !(isPanelState(state) && state.dsTok === this.ownTok)) {
       this.ownTok = null;
@@ -483,5 +864,6 @@ export class PanelManager {
     this.pendingPops = 0;
     this.backQueued = false;
     this.applyState();
+    for (const e of popped) this.handBackFocus(e);
   }
 }
