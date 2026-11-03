@@ -119,8 +119,9 @@ export class SimpleInputManager {
   private drag: DragState | null = null;
   // The last press was a drag: its trailing click must not request the lock.
   private lastPressWasDrag = false;
-  // A right-drag of CLICK_PX or more swallows the context menu that follows it
-  // (Windows opens it on release). A plain right-click still gets its menu.
+  // Where the context menu opens on release (Windows), a right-drag of
+  // CLICK_PX or more swallows the one that follows it and a plain right-click
+  // keeps its menu. Where it opens on press (macOS, Linux), see onContextMenu.
   private suppressMenuUntil = 0;
 
   // ---- The opt-in pointer lock -------------------------------------------
@@ -246,6 +247,13 @@ export class SimpleInputManager {
       },
       { signal },
     );
+
+    // On the document, capture phase: a right-drag can end over a HUD chip,
+    // and the menu that follows its release opens there, not on the canvas.
+    document.addEventListener('contextmenu', (e) => this.onContextMenu(e), {
+      capture: true,
+      signal,
+    });
   }
 
   /**
@@ -416,17 +424,27 @@ export class SimpleInputManager {
     canvas.addEventListener('pointerup', (e) => this.onPointerEnd(e), { signal });
     canvas.addEventListener('pointercancel', (e) => this.onPointerEnd(e), { signal });
     canvas.addEventListener('lostpointercapture', (e) => this.onPointerEnd(e), { signal });
-    canvas.addEventListener(
-      'contextmenu',
-      (e) => {
-        if (performance.now() < this.suppressMenuUntil) {
-          e.preventDefault();
-          this.suppressMenuUntil = 0;
-        }
-      },
-      { signal },
-    );
     canvas.addEventListener('click', () => this.requestLockOnClick(), { signal });
+  }
+
+  /**
+   * The context menu, wherever it opens. Windows opens it when the right
+   * button comes up: the menu after a right-drag is swallowed (onPointerEnd
+   * arms the window), a plain right-click keeps it. macOS and Linux open it
+   * when the button goes down, before a click can be told from a drag, and
+   * the open menu would take the mouse so the drag never started: there a
+   * menu that arrives while a right press on the world is still down is
+   * always swallowed. Ctrl+click on a Mac is a left press and keeps its menu.
+   */
+  private onContextMenu(e: MouseEvent): void {
+    if (this.drag?.button === 2) {
+      e.preventDefault();
+      return;
+    }
+    if (performance.now() < this.suppressMenuUntil) {
+      e.preventDefault();
+      this.suppressMenuUntil = 0;
+    }
   }
 
   /** A mouse or pen button (left or right) went down on the world. */

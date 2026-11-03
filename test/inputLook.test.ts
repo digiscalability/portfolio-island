@@ -292,7 +292,7 @@ describe('press and drag to look (A3)', () => {
     expect(im.getCameraInput().deltaX).toBe(0);
   });
 
-  test('a right-drag swallows the context menu; a right-click keeps it', () => {
+  test('menu on release (Windows): a right-drag swallows it, a right-click keeps it', () => {
     const c = worldCanvas();
     dragAcross(c, [130], { button: 2 });
     const afterDrag = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
@@ -302,6 +302,44 @@ describe('press and drag to look (A3)', () => {
     const afterClick = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
     c.dispatchEvent(afterClick);
     expect(afterClick.defaultPrevented).toBe(false);
+  });
+
+  test('menu on release: swallowed too when the right-drag ends over a HUD chip', () => {
+    const c = worldCanvas();
+    const chip = mount<HTMLDivElement>('<div role="button" tabindex="0">📸</div>');
+    dragAcross(c, [160], { button: 2 });
+    const overChip = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    chip.dispatchEvent(overChip);
+    expect(overChip.defaultPrevented).toBe(true);
+  });
+
+  test('menu on press (macOS, Linux): swallowed while the right button is down, and the drag looks', () => {
+    const c = worldCanvas();
+    pointer(c, 'pointerdown', { button: 2, clientX: 100, clientY: 300 });
+    const onPress = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    c.dispatchEvent(onPress);
+    expect(onPress.defaultPrevented).toBe(true);
+    pointer(c, 'pointermove', { clientX: 220, clientY: 300 });
+    expect(im.getCameraInput().deltaX).toBeCloseTo(120 * SimpleInputManager.MOUSE_K, 12);
+    pointer(c, 'pointerup', { button: 2, clientX: 220, clientY: 300 });
+  });
+
+  test('menu on press: a plain right-click loses it there, Ctrl+click (a left press) keeps it', () => {
+    const c = worldCanvas();
+    pointer(c, 'pointerdown', { button: 2, clientX: 100, clientY: 300 });
+    const rightClick = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    c.dispatchEvent(rightClick);
+    expect(rightClick.defaultPrevented).toBe(true);
+    pointer(c, 'pointerup', { button: 2, clientX: 100, clientY: 300 });
+    pointer(c, 'pointerdown', { button: 0, ctrlKey: true, clientX: 100, clientY: 300 });
+    const ctrlClick = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    });
+    c.dispatchEvent(ctrlClick);
+    expect(ctrlClick.defaultPrevented).toBe(false);
+    pointer(c, 'pointerup', { clientX: 100, clientY: 300 });
   });
 });
 
