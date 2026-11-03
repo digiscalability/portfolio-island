@@ -8,6 +8,63 @@
   --radius-lg: 18px;
 }
 
+/* Design tokens (D3), mirrored from ui/tokens.ts: test/tokens.test.ts fails if
+   the two drift. Prefixed --ds- so they never collide with the legacy tokens
+   above (and index.html's) until D17 retires those. */
+:root {
+  --ds-ink-950: #0b1220;
+  --ds-ink-900: #101826;
+  --ds-ink-800: #172133;
+  --ds-ink-700: #22304a;
+  --ds-hud-surface: rgba(11, 18, 32, 0.78);
+  --ds-scrim: rgba(5, 9, 16, 0.55);
+  --ds-line: rgba(255, 255, 255, 0.1);
+  --ds-line-strong: rgba(255, 255, 255, 0.2);
+  --ds-text-1: #f3f6fb;
+  --ds-text-2: #c5cfdd;
+  --ds-text-3: #8d9bb0;
+  --ds-primary: linear-gradient(135deg, #4c5be0, #7a45d6);
+  --ds-cta-work: linear-gradient(135deg, #087a4c, #067046);
+  --ds-hover-filter: brightness(0.92);
+  --ds-press-filter: brightness(0.85);
+  --ds-signal: #ffd479;
+  --ds-info: #8fc1ff;
+  --ds-danger: #ff7a6b;
+  --ds-success: #6fcf97;
+  --ds-focus-ring: 0 0 0 2px #0b1220, 0 0 0 4px #8fc1ff, 0 0 0 5px #0b1220;
+  --ds-district-hub: #7cc47f;
+  --ds-district-professional: #6fa8e8;
+  --ds-district-projects: #f0a24a;
+  --ds-district-personal: #ee7fa6;
+  --ds-district-contact: #b493e6;
+  --ds-ring-use: #6fcf97;
+  --ds-ring-jump: #7fb2ff;
+  --ds-ring-wave: #ffd479;
+  --ds-ring-dive: #8fc1ff;
+  --ds-ring-feed: #f0a24a;
+  --ds-ring-eat: #ee7fa6;
+  --ds-radius-xs: 6px;
+  --ds-radius-sm: 10px;
+  --ds-radius-md: 14px;
+  --ds-radius-lg: 20px;
+  --ds-radius-pill: 999px;
+  --ds-radius-round: 50%;
+  --ds-shadow-1: 0 2px 8px rgba(3, 6, 12, 0.35);
+  --ds-shadow-2: 0 8px 24px rgba(3, 6, 12, 0.45);
+  --ds-shadow-3: 0 18px 48px rgba(3, 6, 12, 0.55);
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 20px;
+  --ds-space-6: 24px;
+  --ds-space-8: 32px;
+  --ds-space-10: 40px;
+  --ds-hit-target: 44px;
+  --ds-type-floor: 12px;
+  --ds-type-caption: 11px;
+}
+
 /* Screen-reader only helper (used for live regions and visually-hidden content) */
 .sr-only {
   position: absolute !important;
@@ -1093,11 +1150,37 @@ html.reduced-motion #ld-orbit {
 /* HUD icon controls (🎨 ♿ 🔊 and the 📖 Portfolio pill) are <div role="button">
    for layout flexibility. Give keyboard users a clear focus ring and a subtle
    hover so the controls are operable and discoverable without a mouse. Uses
-   :focus-visible so the ring only shows for keyboard/AT focus, not mouse taps. */
-.hud-btn:focus-visible {
-  outline: 3px solid rgba(120, 170, 255, 0.95);
+   :focus-visible so the ring only shows for keyboard/AT focus, not mouse taps.
+
+   One ring for every focusable HUD and panel control (D3): two-tone, so its
+   dark band stands out against a bright sky and its light band against a dark
+   panel. !important beats the chips' inline box-shadow; the transparent
+   outline is what forced-colors mode draws, since it drops box-shadow. */
+.hud-btn:focus-visible,
+#ui-overlay
+  :is(
+    button,
+    a[href],
+    input,
+    select,
+    textarea,
+    [role='button'],
+    [tabindex]:not([tabindex='-1'])
+  ):focus-visible {
+  outline: 2px solid transparent;
   outline-offset: 2px;
+  box-shadow: var(--ds-focus-ring) !important;
 }
 .hud-btn:hover {
   filter: brightness(1.18);
+}
+/* Filled actions (the primary and Work-with-me fills) darken on hover and
+   press, so white text never drops below AA, where the chips' brighten would. */
+.ds-press:hover,
+.hud-btn.ds-press:hover {
+  filter: var(--ds-hover-filter);
+}
+.ds-press:active,
+.hud-btn.ds-press:active {
+  filter: var(--ds-press-filter);
 }
