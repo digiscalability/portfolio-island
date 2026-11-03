@@ -62,6 +62,26 @@ type NpcLimbCache = Array<{
   ang: number;
 }>;
 
+/** The seeded-window census: draws taken from GameScene's mulberry32 stream,
+ *  cumulative at each checkpoint, and in total when the window closes. */
+export interface SeedDrawCensus {
+  marks: Record<string, number>;
+  total: number;
+}
+
+// Declared here, not in global.d.ts, so no other package edits that file for it.
+declare global {
+  interface Window {
+    /** Published by GameScene.initialize; read by the seed probe and the perf gate. */
+    __dsSeedDraws?: SeedDrawCensus;
+  }
+}
+
+/** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
+ *  (geometry and material are shared), so a returning visitor's skipped trail
+ *  burns exactly this many uuids to stay on the first visitor's stream. */
+const ARRIVAL_TRAIL_COINS = 5;
+
 /**
  * GameScene
  *
@@ -797,11 +817,16 @@ export class GameScene extends THREE.Scene {
    * the same place for everyone, and vehicle indices that line up so a car
    * can be networked by index). Runtime randomness (multiplayer ids, FX)
    * stays truly random because it happens after generation, once restored.
+   *
+   * Every call is COUNTED (seedDrawCount). Counting is not drawing: the
+   * generator is untouched, so the stream is the one tierParity pins.
    */
   private static installSeededRandom(seedInit = 0x1a2b3c4d): () => void {
     const real = Math.random;
     let s = seedInit >>> 0;
+    GameScene.seedDrawCount = 0;
     Math.random = () => {
+      GameScene.seedDrawCount++;
       // mulberry32
       s = (s + 0x6d2b79f5) >>> 0;
       let t = Math.imul(s ^ (s >>> 15), 1 | s);
@@ -811,6 +836,22 @@ export class GameScene extends THREE.Scene {
     return () => {
       Math.random = real;
     };
+  }
+
+  /** Seeded draws since installSeededRandom (see seedMark). */
+  private static seedDrawCount = 0;
+  private readonly seedCensus: SeedDrawCensus = { marks: {}, total: 0 };
+
+  /**
+   * Record how many seeded draws the window has taken so far, and publish the
+   * census as window.__dsSeedDraws. The marks are cumulative, so a change that
+   * re-rolls the stream shows up at the first checkpoint after it — the
+   * GameScene half of the window had no pin at all before this.
+   */
+  private seedMark(label: string): void {
+    this.seedCensus.marks[label] = GameScene.seedDrawCount;
+    this.seedCensus.total = GameScene.seedDrawCount;
+    if (typeof window !== 'undefined') window.__dsSeedDraws = this.seedCensus;
   }
 
   /**
@@ -841,6 +882,7 @@ export class GameScene extends THREE.Scene {
       // declaring it at this call site is what let SoftLook bake a stale copy
       // into a shader chunk. setPlanet below reads getRadius() so it follows.
       this.island = new Island(WORLD_RADIUS);
+      this.seedMark('island');
       this.add(this.island.mesh);
       // Unify the art direction. The CEL/TOON look is the DEFAULT (owner
       // verdict 2026-08-09): stepped shading on every prop, applied here.
@@ -876,6 +918,7 @@ export class GameScene extends THREE.Scene {
       this.createFireflies();
       this.createChimneySmoke();
       this.createDustPool();
+      this.seedMark('dustPool');
 
       // Solid props: register colliders so the player can't walk through
       // them. Only TownPlanner props ever registered before — the island's
@@ -936,8 +979,10 @@ export class GameScene extends THREE.Scene {
 
       // Navigation + traversal rewards
       this.createGuideSparkles();
-      this.createCoins();
+      this.createCoins(); // includes createArrivalTrail
+      this.seedMark('coins');
       this.createVehicles();
+      this.seedMark('vehicles');
       this.createWaterFX();
 
       // Checkpoint race circuits (land for cars, water for boats/jetskis). Gate
@@ -1008,6 +1053,7 @@ export class GameScene extends THREE.Scene {
 
       // Create zones manager for portfolio content
       this.zonesManager = new ZonesManager(this.island, this);
+      this.seedMark('zones');
       // Zone landmark buildings are added under THIS scene, not island.mesh, so
       // the collider traverse (above) never registers them. Push their footprint
       // colliders explicitly. Radius (1.7) < interactionRange (2.5) so a player
@@ -1020,6 +1066,7 @@ export class GameScene extends THREE.Scene {
 
       // Place quest mailboxes (Island.ts owns the town proper)
       await this.placeAssets();
+      this.seedMark('placeAssets');
 
       // Camera collision must ALSO see the zone buildings (they live under the
       // scene, not island.mesh) — orbiting behind a hall used to swing the
@@ -1062,6 +1109,7 @@ export class GameScene extends THREE.Scene {
 
       // Floating identity pins above every NPC
       this.createNameTags();
+      this.seedMark('nameTags');
       this.setupNpcActivities();
 
       // The Fisherman stands at the shore and casts a line
@@ -1081,6 +1129,7 @@ export class GameScene extends THREE.Scene {
       this.setupVendors();
     } finally {
       // Generation done — restore true randomness for runtime/FX.
+      this.seedMark('restore');
       restoreRandom();
     }
 
@@ -9675,10 +9724,21 @@ export class GameScene extends THREE.Scene {
    * never respawn; finishing the trail fires onArrivalTrail (flash + flag).
    */
   private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
+    let returning = false;
     try {
-      if (localStorage.getItem('ds_arrived') === '1') return; // returning visitor
+      returning = localStorage.getItem('ds_arrived') === '1';
     } catch {
       /* no storage — still show the trail */
+    }
+    if (returning) {
+      // This runs inside the SEEDED window. The trail's Meshes would each have
+      // minted one uuid (4 draws; geometry and material are shared), so the
+      // skip burns exactly that many: a returning visitor then rolls every
+      // later builder (vehicle bob, sailor and cruise-ship angles, embers) on
+      // the same stream as a first-time one. test/gameSceneSeed.test.ts
+      // measures both paths.
+      for (let i = 0; i < ARRIVAL_TRAIL_COINS; i++) THREE.MathUtils.generateUUID();
+      return;
     }
     const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
     // Nearest villager to the spawn (npcTargets are seated by now).
@@ -9696,8 +9756,8 @@ export class GameScene extends THREE.Scene {
     const idQ = new THREE.Quaternion();
     const step = new THREE.Quaternion();
     const dir = new THREE.Vector3();
-    for (let i = 0; i < 5; i++) {
-      const t = 0.18 + (i / 4) * 0.6; // stop short of the NPC's toes
+    for (let i = 0; i < ARRIVAL_TRAIL_COINS; i++) {
+      const t = 0.18 + (i / (ARRIVAL_TRAIL_COINS - 1)) * 0.6; // stop short of the NPC's toes
       step.copy(idQ).slerp(q, t);
       dir.copy(spawnDir).applyQuaternion(step).normalize();
       const sampled = this.island.sampleSurfaceByDirection(dir, 0);
