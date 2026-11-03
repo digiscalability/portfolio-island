@@ -164,7 +164,7 @@ export class PanelManager {
     if (this.history) {
       // An entry pushed in an earlier life of this page (a reload while a
       // panel was open) is not ours any more: keep its URL, drop the state.
-      if (isPanelState(this.history.state)) this.history.replaceState(null, '');
+      if (isPanelState(this.historyState())) this.tryHistory((h) => h.replaceState(null, ''));
       window.addEventListener('popstate', this.onPopState);
       window.addEventListener('pagehide', this.onPageHide);
       window.addEventListener('pageshow', this.onPageShow);
@@ -371,23 +371,24 @@ export class PanelManager {
   /** Bring the session history in line with the stack: one entry of ours
    *  exactly while the top panel is a history panel. */
   private syncHistory(): void {
-    const h = this.history;
-    if (!h || this.sweeping || this.historyFrozen) return;
+    if (!this.history || this.sweeping || this.historyFrozen) return;
     const top = this.stack[this.stack.length - 1];
     if (top && top.spec.history !== false) {
       this.backQueued = false; // an open in the same task takes the entry over
-      if (this.ownTok !== null) {
+      const owned = this.ownTok;
+      if (owned !== null) {
         // The sweep, or a close then an open: re-label the entry, never
         // back-then-push (the queued back would land after the push).
         if (this.ownId !== top.id) {
-          h.replaceState(this.stateFor(top.id, this.ownTok), '');
-          this.ownId = top.id;
+          this.tryHistory((h) => h.replaceState(this.stateFor(top.id, owned), ''));
+          this.ownId = top.id; // the token, not the label, is what Back checks
         }
       } else if (this.pendingPops === 0) {
         const tok = `${PAGE_LIFE}:${++pushes}`;
-        h.pushState(this.stateFor(top.id, tok), '');
-        this.ownTok = tok;
-        this.ownId = top.id;
+        if (this.tryHistory((h) => h.pushState(this.stateFor(top.id, tok), ''))) {
+          this.ownTok = tok;
+          this.ownId = top.id;
+        }
       }
       // else: our own back() is still in flight; handlePopState pushes after it
       return;
@@ -402,26 +403,45 @@ export class PanelManager {
     return { dsPanel: id, dsTok: tok };
   }
 
+  /** A history write the browser refuses (Safari caps pushState at 100 per
+   *  30 s; a sandboxed frame may forbid it) costs the Back contract, never
+   *  the panel: false instead of a throw out of open() or a close. */
+  private tryHistory(write: (h: HistoryPort) => void): boolean {
+    if (!this.history) return false;
+    try {
+      write(this.history);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private historyState(): unknown {
+    try {
+      return this.history?.state ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /** The panel our entry stood for has closed: step back off the entry, but
    *  only while it is provably ours. If another writer replaced its state, a
    *  back() could leave the site; one stale entry costs one extra Back. */
   private releaseEntry(): void {
-    const h = this.history;
-    if (!this.backQueued || !h || this.historyFrozen) return;
+    if (!this.backQueued || !this.history || this.historyFrozen) return;
     this.backQueued = false;
     const tok = this.ownTok;
     this.ownTok = null;
     this.ownId = null;
-    const state = h.state;
+    const state = this.historyState();
     if (tok !== null && isPanelState(state) && state.dsTok === tok) {
       this.pendingPops++;
-      h.back();
+      if (!this.tryHistory((h) => h.back())) this.pendingPops--;
     }
   }
 
   private handlePopState(): void {
-    const h = this.history;
-    if (!h) return;
+    if (!this.history) return;
     if (this.pendingPops > 0) {
       // The traversal our own back() asked for. A panel that opened while it
       // was in flight gets its entry now.
@@ -429,7 +449,7 @@ export class PanelManager {
       this.syncHistory();
       return;
     }
-    const state = h.state;
+    const state = this.historyState();
     if (this.ownTok !== null) {
       if (isPanelState(state) && state.dsTok === this.ownTok) return; // still ours
       // Back (or Forward) moved off the entry: close the panel it stood for.
@@ -444,7 +464,7 @@ export class PanelManager {
     if (isPanelState(state)) {
       // An entry pushed for a panel that has since closed (Forward after a
       // close): make it a plain island entry again.
-      h.replaceState(null, '');
+      this.tryHistory((h) => h.replaceState(null, ''));
       this.onStaleEntry?.();
     }
   }
@@ -453,10 +473,9 @@ export class PanelManager {
    *  forget an entry we are no longer on and any traversal that never came
    *  back, then re-derive (a history panel without an entry gets one). */
   private resync(): void {
-    const h = this.history;
-    if (!h) return;
+    if (!this.history) return;
     this.pruneDetached();
-    const state = h.state;
+    const state = this.historyState();
     if (this.ownTok !== null && !(isPanelState(state) && state.dsTok === this.ownTok)) {
       this.ownTok = null;
       this.ownId = null;

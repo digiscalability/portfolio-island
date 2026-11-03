@@ -542,6 +542,42 @@ describe('Back closes the panel, not the island (PanelManager)', () => {
     expect(pm.current()).toBeNull();
   });
 
+  test('a history write the browser refuses never breaks a panel', async () => {
+    // Safari throws SecurityError past 100 pushState calls in 30 s.
+    const refuse = (): never => {
+      throw new DOMException('too many history calls', 'SecurityError');
+    };
+    const refusing: HistoryPort = {
+      state: null,
+      pushState: refuse,
+      replaceState: refuse,
+      back: refuse,
+    };
+    const p2 = new PanelManager(overlay, false, { history: refusing });
+    expect(() => p2.open('zone', spec())).not.toThrow();
+    expect(p2.current()).toBe('zone');
+    expect(scrimOf(p2).style.display).toBe('block');
+    expect(() => p2.notifyClosed('zone')).not.toThrow();
+    await settle();
+    expect(p2.current()).toBeNull();
+    p2.dispose();
+  });
+
+  test('a refused back() leaves no later open waiting on a popstate that never comes', async () => {
+    const h2 = new FakeHistory();
+    const p2 = new PanelManager(overlay, false, { history: h2 });
+    p2.open('zone', spec());
+    h2.back = () => {
+      throw new Error('refused');
+    };
+    p2.notifyClosed('zone');
+    await settle();
+    p2.open('journal', spec());
+    expect(h2.length).toBe(3); // pushed at once
+    expect(h2.state).toMatchObject({ dsPanel: 'journal' });
+    p2.dispose();
+  });
+
   test('page teardown never steps back: after dispose(), or while the page hides', async () => {
     pm.open('zone', spec());
     window.dispatchEvent(new Event('pagehide')); // navigating away
