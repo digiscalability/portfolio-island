@@ -3,18 +3,18 @@
 // The 2026-11-02 pass, step i2b: the front door's runtime polish.
 // DOM tests on a REAL SimpleUI where behaviour can run (loader exit, toast
 // hints, compass hint, Day badge, offline replies tag, form labels), unit
-// tests for analytics attribution and the owner opt-out, and source locks
-// where the code only runs inside the WebGL boot (the cel shadow patch,
-// Firebase Auth). The boot's main-simple.ts locks (error screen, coin tip,
-// tour framing, fly-in ink timing, beforeSend, the canvas label) moved to
-// package A's test/mainLocks.test.ts (testOwnership rule 1).
+// tests for analytics attribution and the owner opt-out, and a source lock
+// where the code only runs inside the WebGL boot (Firebase Auth). The boot's
+// main-simple.ts locks (error screen, coin tip, tour framing, fly-in ink
+// timing, beforeSend, the canvas label) moved to package A's
+// test/mainLocks.test.ts, and the two CelLook.ts locks (the ink hides through
+// the shared material; the dead cel shadow patch stays gone) to package C's
+// test/worldLook.test.ts (testOwnership rule 1).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as THREE from 'three';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { entryAttribution, isOwnerVisit, track, trackOnce } from '../Analytics';
-import { addGroupHulls, setInkVisible } from '../CelLook';
 import { AI_NPCS } from '../NpcChat';
 import { appendReceptionDesk } from '../ReceptionDesk';
 import { SimpleUI } from '../SimpleUI';
@@ -270,53 +270,9 @@ describe('the tour frames what its captions say', () => {
   // package A's mainLocks)
 });
 
-describe('the fly-in hides the ink through the material', () => {
-  const boxGroup = (n: number): THREE.Group => {
-    const g = new THREE.Group();
-    for (let i = 0; i < n; i++) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
-      m.position.set(i * 2, 0, 0);
-      g.add(m);
-    }
-    return g;
-  };
-  const hullsOf = (root: THREE.Object3D): THREE.Mesh[] => {
-    const out: THREE.Mesh[] = [];
-    root.traverse((o) => {
-      if (o.userData.isCelHull) out.push(o as THREE.Mesh);
-    });
-    return out;
-  };
-
-  test('setInkVisible flips the shared material and never Object3D.visible', () => {
-    const g = boxGroup(3);
-    addGroupHulls(g);
-    const hulls = hullsOf(g);
-    expect(hulls.length).toBe(3);
-    try {
-      setInkVisible(false);
-      for (const h of hulls) {
-        expect((h.material as THREE.Material).visible).toBe(false);
-        expect(h.visible).toBe(true); // game state is untouched
-      }
-      const late = boxGroup(1); // a hull baked mid-intro joins the hidden state
-      addGroupHulls(late);
-      expect((hullsOf(late)[0].material as THREE.Material).visible).toBe(false);
-    } finally {
-      setInkVisible(true);
-    }
-    for (const h of hulls) expect((h.material as THREE.Material).visible).toBe(true);
-  });
-
-  // (where main-simple hides the ink and when it restores it is main-simple.ts
-  // code: package A's mainLocks)
-
-  test('the dead cel shadow patch and its load warning are gone', () => {
-    // (its name survives in a CelLook comment, for anyone searching history)
-    expect(stripped('CelLook.ts')).not.toContain('applyCelShadowPatch');
-    expect(stripped('CelLook.ts')).not.toContain('console.warn');
-  });
-});
+// (The fly-in's ink, hidden through the shared material, and the dead cel
+// shadow patch are CelLook.ts code: package C's test/worldLook.test.ts. Where
+// main-simple hides the ink and when it restores it is package A's mainLocks.)
 
 describe('Firebase Auth without the popup resolver', () => {
   test('initializeAuth with getAuth’s persistences and no resolver', () => {
