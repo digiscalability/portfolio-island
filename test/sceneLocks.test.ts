@@ -72,8 +72,8 @@ describe('one golden breadcrumb system at a time', () => {
 
 describe('load-bearing gates exist at their call sites', () => {
   test('the party "calm" path covers the whole room, not just the strobe', () => {
-    // ballLight, confetti, tiles, spot sweep and the spinner guest all read
-    // `calm` now; the original gate covered only the beat flash + lasers.
+    // The ball glow, confetti, tiles, floor sweep and the spinner guest all
+    // read `calm` now; the original gate covered only the beat flash + lasers.
     const party = bodyOf(src('GameScene.ts'), 'private updateInteriorParty');
     expect((party.match(/\bcalm\b/g) ?? []).length).toBeGreaterThanOrEqual(10);
   });
@@ -149,5 +149,83 @@ describe('toonify RNG shield', () => {
     expect(toonCount).toBeGreaterThan(0); // it really converted…
     expect(stillTransparent).toBeGreaterThan(0); // …and spared the glass
     expect(ambient).toBe(0); // …and the shared stream paid nothing
+  });
+});
+
+describe('the beach-house party keeps a cottage’s lights (P2-B2)', () => {
+  test('the party rig adds no light, and is built hidden with the room', () => {
+    // three bakes light counts into every lit program: the rig's four lights
+    // re-keyed the whole room on entry and on each toggle (MEASURED: +17
+    // programs and a 1.8-2.4 s frame on desktop). The beat now drives the
+    // room's own lights, and the rig is part of the room the warm compiles.
+    const g = stripped('GameScene.ts');
+    const rig = bodyOf(g, 'private buildPartyProps()');
+    expect(rig).not.toMatch(/new THREE\.\w*Light\(/);
+    expect(rig).toContain('group.visible = false');
+    expect(bodyOf(g, 'private buildInterior()')).toContain('this.buildPartyProps();');
+    for (const body of [
+      bodyOf(g, 'private setPartyMode('),
+      bodyOf(g, 'private updateInteriorParty('),
+    ]) {
+      expect(body).not.toMatch(/new THREE\.\w*Light\(/);
+    }
+  });
+
+  test('guests dance 2 u or more from the floor centre, and go home when it stops', () => {
+    type Npc = { name: string; position: THREE.Vector3; meshRef: THREE.Object3D };
+    const names = ['Gardener', 'Artist', 'Musician', 'Storyteller', 'Cartographer', 'Courier'];
+    const npcTargets: Npc[] = names.map((name) => ({
+      name,
+      position: new THREE.Vector3(),
+      meshRef: new THREE.Object3D(),
+    }));
+    npcTargets[5].meshRef.visible = false; // asleep behind a cottage door
+    // The party's own state on a stub (the borrow pattern of the toonify
+    // test): the rig is unbuilt, so only the guests are exercised.
+    const stub = Object.assign(Object.create(GameScene.prototype), {
+      island: { npcTargets },
+      partyMode: false,
+      partyProps: null,
+      interiorGroup: null,
+      partyGuests: [],
+      partyGuestHome: new Map(),
+      insideInterior: true,
+    }) as Record<string, unknown>;
+    const proto = GameScene.prototype as unknown as Record<string, (...a: unknown[]) => void>;
+    const setPartyMode = (on: boolean): void => proto['setPartyMode'].call(stub, on);
+    const statics = GameScene as unknown as {
+      INTERIOR_ORIGIN: THREE.Vector3;
+      PARTY_FLOOR: { x: number; z: number };
+    };
+    const o = statics.INTERIOR_ORIGIN;
+    const F = statics.PARTY_FLOOR;
+
+    setPartyMode(true);
+    const guests = stub.partyGuests as Array<{
+      seat: THREE.Vector3;
+      side: THREE.Vector2;
+      npc: Npc;
+    }>;
+    expect(guests).toHaveLength(6);
+    for (const g of guests) {
+      const x = g.seat.x - o.x - F.x;
+      const z = g.seat.z - o.z - F.z;
+      expect(Math.hypot(x, z)).toBeGreaterThanOrEqual(2.0);
+      // A side-step at its widest (0.22 u) never comes in from the edge.
+      expect(Math.hypot(x + g.side.x * 0.22, z + g.side.y * 0.22)).toBeGreaterThanOrEqual(2.0);
+      expect(g.npc.meshRef.visible).toBe(true);
+    }
+
+    // Party over, indoors: the world is frozen, so nobody may be left
+    // standing mid-dance. Back on, and off again, keeps the outdoor state.
+    setPartyMode(false);
+    expect(npcTargets.every((n) => !n.meshRef.visible)).toBe(true);
+    setPartyMode(true);
+    setPartyMode(false);
+    expect(npcTargets.every((n) => !n.meshRef.visible)).toBe(true);
+
+    // Leaving hands each one back exactly as it was found outdoors.
+    proto['sendPartyGuestsHome'].call(stub);
+    expect(npcTargets.map((n) => n.meshRef.visible)).toEqual([true, true, true, true, true, false]);
   });
 });

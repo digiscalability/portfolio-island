@@ -12947,6 +12947,15 @@ export class GameScene extends THREE.Scene {
   private interiorLampOn = true;
   private interiorRoomLamp: THREE.PointLight | null = null;
   private interiorRoomFill: THREE.PointLight | null = null;
+  // The house level each room light eases toward (lamp switch, club dim);
+  // the party's own light rides on top of it. Seeded from the built lights.
+  private interiorLampLevel = 0;
+  private interiorRoomLampLevel = 0;
+  private interiorRoomFillLevel = 0;
+  // Their authored colours, which they ease back to when a party ends.
+  private readonly interiorLampHome = new THREE.Color();
+  private readonly interiorRoomLampHome = new THREE.Color();
+  private readonly interiorRoomFillHome = new THREE.Color();
 
   /** Work a room fixture. Returns the line to flash. */
   public toggleInteriorFixture(which: string): string {
@@ -12964,31 +12973,70 @@ export class GameScene extends THREE.Scene {
   }
 
   // ── Party mode (beach house) ───────────────────────────────────────────
-  // Disco ball + colour-cycling dance floor + two sweeping spotlights + four
+  // Disco ball + colour-cycling dance floor + two sweeping floor lights + six
   // villagers borrowed onto the floor, all driven on a fixed 120bpm beat
   // (iframe audio is cross-origin — the beat can't read the music, so it
   // fakes confidence and most tracks agree). The wall screen is the jukebox.
+  //
+  // NO LIGHTS OF ITS OWN. three bakes light counts into every lit program,
+  // and the party used to add four (a ball light, a beat flash and two
+  // spots): MEASURED on desktop, entering the beach house added 17 programs
+  // in a 2.4 s frame behind 2.6 s of black, and each toggle cost 150-270 ms
+  // frames. The beat flash, the ball glow and the club colour now ride the
+  // room's own three lights (uniforms only), and the floor sweeps are
+  // additive discs, so the beach house carries exactly a cottage's lights.
   private partyMode = false;
   private partyBeatClock = 0;
   private partyBeatIndex = -1;
+  /** The party's light, added by updateInteriorMode onto the club levels:
+   *  the beat flash (room lamp), the ball glow (pendant), the club tint (fill). */
+  private partyFlash = 0;
+  private partyFlashHue = 0;
+  private partyGlow = 0;
+  private partyTint = 0;
+  /** The dance floor's centre, room-local. */
+  private static readonly PARTY_FLOOR = { x: 0.9, z: 0.6 };
+  /** Where the guests dance, room-local: each 2.1 u from the floor centre,
+   *  round the edge of the floor rather than in the follow camera's face.
+   *  The door side (where the camera trails a visitor walking in) is left
+   *  open, and every spot is clear of the driftwood table, the floor
+   *  cushions and the cinema shot's view of the wall screen. (The old 1.55 u
+   *  ring stood one guest inside the table and crowded the camera.) Index 1
+   *  and 4 are the side-steppers (style 1). */
+  private static readonly PARTY_DANCE_SPOTS: ReadonlyArray<readonly [number, number]> = [
+    [2.51, 1.95],
+    [3.0, 0.6],
+    [1.44, 2.63],
+    [-0.15, -1.22],
+    [-1.0, -0.29],
+    [2.51, -0.75],
+  ];
   private partyProps: {
     group: THREE.Group;
     ball: THREE.Mesh;
-    ballLight: THREE.PointLight;
     tiles: THREE.Mesh[];
-    spots: THREE.SpotLight[];
+    /** The two floor sweeps: additive discs riding the old spot targets. */
+    sweeps: THREE.Mesh[];
     confetti: Array<{ m: THREE.Mesh; speed: number; phase: number }>;
     lasers: Array<{ pivot: THREE.Group; mat: THREE.MeshBasicMaterial; hue: number }>;
-    flash: THREE.PointLight;
   } | null = null;
   private partyGuests: Array<{
     npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string };
-    wasVisible: boolean;
     seat: THREE.Vector3; // world-space dance spot
+    /** The ring's tangent at the seat (room x, z): side to side as the guest
+     *  faces the floor, so a shuffle never steps toward the middle. */
+    side: THREE.Vector2;
     phase: number;
     style: number; // 0 = pumps, 1 = disco point, 2 = spinner
   }> = [];
+  /** Every guest borrowed this visit, with the visibility it had outdoors.
+   *  A guest the party lets go indoors is hidden (the world is frozen, so it
+   *  would stand mid-dance until the visitor left) and handed back on exit. */
+  private readonly partyGuestHome = new Map<{ meshRef: THREE.Object3D }, boolean>();
 
+  /** The party rig, built hidden with the room (buildInterior) so the
+   *  interior warm compiles it: the first door into the beach house then
+   *  shows it without a compile. */
   private buildPartyProps(): void {
     if (this.partyProps || !this.interiorGroup) return;
     // LOCAL room coordinates throughout: the group is a CHILD of
@@ -13027,10 +13075,8 @@ export class GameScene extends THREE.Scene {
       sp.rotation.y = -a;
       ball.add(sp);
     }
-    // Beat-pulsed glitter light at the ball.
-    const ballLight = new THREE.PointLight(0xffffff, 0, 9, 1.6);
-    ballLight.position.set(0.9, 2.8, 0.6);
-    group.add(ballLight);
+    // (The ball's beat-pulsed glitter rides the room's pendant light:
+    // updateInteriorParty.)
     // Fairy-light strands along the two far walls.
     const strandGeo = new THREE.SphereGeometry(0.045, 6, 5);
     const strandMats = [0xff6a7a, 0x6ad0ff, 0xffd36a].map(
@@ -13088,18 +13134,47 @@ export class GameScene extends THREE.Scene {
         tiles.push(tile);
       }
     }
-    // Two coloured spotlights sweeping the floor.
-    const spots: THREE.SpotLight[] = [];
-    for (const [sx, sz, hex] of [
-      [-2.4, -2.2, 0xff4fd8],
-      [2.6, 2.4, 0x39d8ff],
-    ] as Array<[number, number, number]>) {
-      const spot = new THREE.SpotLight(hex, 0, 12, Math.PI / 5, 0.55, 1.2);
-      spot.position.set(sx, 3.5, sz);
-      spot.target.position.set(0.9, 0.1, 0.6);
-      group.add(spot);
-      group.add(spot.target);
-      spots.push(spot);
+    // Two coloured sweeps on the floor, where the two spotlights' cones used
+    // to land: additive discs sharing one 64x64 radial-gradient map, one
+    // program for both, and not a light between them. updateInteriorParty
+    // drives them round the floor on the spots' old target path.
+    const scv = document.createElement('canvas');
+    scv.width = scv.height = 64;
+    const sx2 = scv.getContext('2d');
+    if (sx2) {
+      const grad = sx2.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.4)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      sx2.fillStyle = grad;
+      sx2.fillRect(0, 0, 64, 64);
+    }
+    const sweepMap = new THREE.CanvasTexture(scv);
+    sweepMap.colorSpace = THREE.SRGBColorSpace;
+    const sweepGeo = new THREE.PlaneGeometry(2.8, 2.8);
+    const sweeps: THREE.Mesh[] = [];
+    for (const hex of [0xff4fd8, 0x39d8ff]) {
+      const disc = new THREE.Mesh(
+        sweepGeo,
+        new THREE.MeshBasicMaterial({
+          color: hex,
+          map: sweepMap,
+          transparent: true,
+          opacity: 0.8,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          // Lift in depth, not in position (the grounding-shadow trick): the
+          // disc lies on the tiles, the rug and the boards alike.
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
+        }),
+      );
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.set(GameScene.PARTY_FLOOR.x, 0.2, GameScene.PARTY_FLOOR.z);
+      disc.renderOrder = 2;
+      group.add(disc);
+      sweeps.push(disc);
     }
     // Laser fan: six beams hung off the ball's rig point, each on its own
     // pivot. YXZ order matters — the tilt (X) has to be applied BEFORE the
@@ -13127,15 +13202,10 @@ export class GameScene extends THREE.Scene {
       group.add(pivot);
       lasers.push({ pivot, mat, hue });
     }
-    // Beat flash: one hard white pop per beat, decayed over ~110ms. At 120bpm
-    // that is 2Hz — deliberately under the 3Hz photosensitivity threshold —
-    // and reduced motion drops it to a gentle swell (see updateInteriorParty).
-    const flash = new THREE.PointLight(0xffffff, 0, 15, 1.1);
-    flash.position.set(0.9, 3, 0.6);
-    group.add(flash);
+    // (The beat flash rides the room lamp: updateInteriorParty.)
     group.visible = false;
     this.interiorGroup.add(group);
-    this.partyProps = { group, ball, ballLight, tiles, spots, confetti, lasers, flash };
+    this.partyProps = { group, ball, tiles, sweeps, confetti, lasers };
   }
 
   private togglePartyMode(): string {
@@ -13147,17 +13217,14 @@ export class GameScene extends THREE.Scene {
     if (on === this.partyMode) return;
     this.partyMode = on;
     this.buildPartyProps();
-    if (this.partyProps) {
-      this.partyProps.group.visible = on;
-      for (const s of this.partyProps.spots) s.intensity = on ? 2.6 : 0;
-    }
+    if (this.partyProps) this.partyProps.group.visible = on;
     // The track owns the beat from here: the loop's own clock drives the
     // kick, and updateInteriorParty reads its beat count so the lights and
     // the dancers land ON it rather than near it.
     if (on) sfx.startPartyMusic();
     else sfx.stopPartyMusic();
     if (on) {
-      // Borrow four villagers onto the floor (the cottage-occupant pattern:
+      // Borrow six villagers onto the floor (the cottage-occupant pattern:
       // move meshRef only; the wander loop re-claims transforms on the
       // first outdoor frame). Gardener/Artist/Musician/Storyteller first,
       // any wander villager as fallback; station NPCs stay at their posts.
@@ -13192,31 +13259,44 @@ export class GameScene extends THREE.Scene {
         ),
       ];
       const o = GameScene.INTERIOR_ORIGIN;
-      const N = Math.min(6, pool.length);
+      const F = GameScene.PARTY_FLOOR;
+      const spots = GameScene.PARTY_DANCE_SPOTS;
+      const N = Math.min(spots.length, pool.length);
       for (let i = 0; i < N; i++) {
         const npc = pool[i];
-        const a = (i / N) * Math.PI * 2 + 0.6;
+        const [x, z] = spots[i];
+        const r = Math.hypot(x - F.x, z - F.z);
+        if (!this.partyGuestHome.has(npc)) this.partyGuestHome.set(npc, npc.meshRef.visible);
         this.partyGuests.push({
           npc,
-          wasVisible: npc.meshRef.visible,
-          seat: new THREE.Vector3(
-            o.x + 0.9 + Math.cos(a) * 1.55,
-            o.y + GameScene.INTERIOR_PLAYER_Y,
-            o.z + 0.6 + Math.sin(a) * 1.55,
-          ),
+          seat: new THREE.Vector3(o.x + x, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + z),
+          side: new THREE.Vector2(-(z - F.z) / r, (x - F.x) / r),
           phase: i * 1.7,
           style: i % 3, // pumps / disco point / spinner
         });
         npc.meshRef.visible = true;
       }
     } else {
-      for (const g of this.partyGuests) g.npc.meshRef.visible = g.wasVisible;
+      // Indoors the world is frozen, so a guest left standing would hold its
+      // last dance pose until the visitor leaves (MEASURED: all six, still
+      // 1.5 s apart). They go home now: hidden for the rest of the visit.
+      for (const g of this.partyGuests) g.npc.meshRef.visible = false;
       this.partyGuests = [];
+      if (!this.insideInterior) this.sendPartyGuestsHome();
     }
   }
 
-  /** Per-frame party drive: ball spin, tile colour cycle, spot sweep, and
-   *  the guests dancing on the beat. Interior-only (outdoor world frozen). */
+  /** Hand every guest borrowed this visit back as it was found. The wander
+   *  loop (or the routine that pins it, like the campfire's) re-claims its
+   *  transform on the first world frame, as for the cottage sleepers. */
+  private sendPartyGuestsHome(): void {
+    for (const [npc, visible] of this.partyGuestHome) npc.meshRef.visible = visible;
+    this.partyGuestHome.clear();
+  }
+
+  /** Per-frame party drive: ball spin, tile colour cycle, floor sweeps, the
+   *  room lights on the beat, and the guests dancing on it. Interior-only
+   *  (outdoor world frozen). */
   private updateInteriorParty(deltaTime: number, time: number): void {
     const P = this.partyProps;
     if (!this.partyMode || !P) return;
@@ -13246,16 +13326,33 @@ export class GameScene extends THREE.Scene {
         onBeat = true;
       }
     }
-    if (onBeat) P.flash.intensity = calm ? 0.55 : 3.4; // one pop per beat = 2Hz
-    P.flash.intensity *= Math.max(0, 1 - deltaTime * (calm ? 3 : 9));
+    // Beat flash: one hard pop per beat on the room lamp, decayed over
+    // ~110ms. At 120bpm that is 2Hz — deliberately under the 3Hz
+    // photosensitivity threshold. Each pop takes the next hue round the
+    // wheel; calm keeps the lamp's own warm white and a gentle swell.
+    if (onBeat) {
+      this.partyFlash = calm ? 0.55 : 3.4;
+      if (!calm) this.partyFlashHue = (this.partyFlashHue + 0.17) % 1;
+    }
+    this.partyFlash *= Math.max(0, 1 - deltaTime * (calm ? 3 : 9));
     // Half-turn per beat, counted off the music when there is music to count.
     const beat = (beats >= 0 ? beats : time * BPS) * Math.PI;
     P.ball.rotation.y = time * 0.9;
-    // Glitter light breathes with the beat; confetti drifts down forever.
-    // Calm completes what the flash gate above started: the club keeps its
-    // colour and dim, loses every beat-locked luminance pulse, and the
-    // confetti falls slow and untumbling like ash instead of a storm.
-    P.ballLight.intensity = calm ? 0.9 : 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
+    // The ball's glitter breathes with the beat on the pendant; the fill
+    // carries the club's colour, drifting round the wheel and lifting on the
+    // off-beat. Calm completes what the flash gate above started: the club
+    // keeps its colour and dim, loses every beat-locked luminance pulse, and
+    // the confetti falls slow and untumbling like ash instead of a storm.
+    // Colour and intensity only (updateInteriorMode adds these to the club
+    // levels): uniforms, so the room keeps a cottage's light count.
+    this.partyGlow = calm ? 0.9 : 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
+    this.partyTint = calm ? 0.45 : 0.3 + Math.max(0, Math.sin(beat + Math.PI / 2)) * 0.35;
+    if (this.interiorRoomLamp) {
+      if (calm) this.interiorRoomLamp.color.copy(this.interiorRoomLampHome);
+      else this.interiorRoomLamp.color.setHSL(this.partyFlashHue, 0.55, 0.82);
+    }
+    this.interiorLamp?.color.setHSL(0, 0, 1);
+    this.interiorRoomFill?.color.setHSL((time * 0.05) % 1, 0.9, 0.6);
     for (const c of P.confetti) {
       c.m.position.y -= c.speed * (calm ? 0.25 : 1) * deltaTime;
       if (c.m.position.y < 0.25) c.m.position.y = 3.4;
@@ -13281,14 +13378,20 @@ export class GameScene extends THREE.Scene {
       L.mat.color.setHSL((L.hue + time * 0.06) % 1, 0.95, 0.6);
       L.mat.opacity = calm ? 0.3 : 0.22 + Math.max(0, Math.sin(beat + i * 0.6)) * 0.4;
     }
-    for (let s = 0; s < P.spots.length; s++) {
-      const spot = P.spots[s];
+    const F = GameScene.PARTY_FLOOR;
+    for (let s = 0; s < P.sweeps.length; s++) {
+      const disc = P.sweeps[s];
       // Calm slows the floor sweep the same way the laser rig above slows.
       const swSpeed = (s === 0 ? 0.8 : -0.65) * (calm ? 0.25 : 1);
       const sw = time * swSpeed + s * 2.1;
-      // Local room coords — targets are children of the party group.
-      spot.target.position.set(0.9 + Math.cos(sw) * 1.6, 0.1, 0.6 + Math.sin(sw) * 1.6);
-      spot.color.setHSL((s * 0.45 + time * 0.05) % 1, 0.9, 0.6);
+      // Local room coords — the discs are children of the party group, on
+      // the path the two spotlights' targets swept.
+      disc.position.set(F.x + Math.cos(sw) * 1.6, 0.2, F.z + Math.sin(sw) * 1.6);
+      (disc.material as THREE.MeshBasicMaterial).color.setHSL(
+        (s * 0.45 + time * 0.05) % 1,
+        0.9,
+        0.6,
+      );
     }
     // The guests: bounce + arm pumps composed onto the cached rest quats
     // (never .rotation on npc.glb bones), facing the floor centre with a
@@ -13300,10 +13403,11 @@ export class GameScene extends THREE.Scene {
       const ref = g.npc.meshRef;
       const b = beat + g.phase;
       const hop = Math.abs(Math.sin(b * 0.5)) * (g.style === 2 ? 0.05 : 0.08);
-      // Disco-pointers shuffle side to side along their spot; spinners hold.
+      // Disco-pointers shuffle side to side along their spot (the ring's
+      // tangent, so never in toward the floor); spinners hold.
       const slide = g.style === 1 ? Math.sin(b * 0.5) * 0.22 : 0;
-      ref.position.set(g.seat.x + slide, g.seat.y + hop, g.seat.z);
-      const face = Math.atan2(o.x + 0.9 - g.seat.x, o.z + 0.6 - g.seat.z);
+      ref.position.set(g.seat.x + g.side.x * slide, g.seat.y + hop, g.seat.z + g.side.y * slide);
+      const face = Math.atan2(o.x + F.x - g.seat.x, o.z + F.z - g.seat.z);
       // Spinners turn full circles; everyone else sways on the beat. Calm
       // routes spinners through the sway too — an endlessly rotating figure
       // two units from the camera is the room's one true "spinning" trigger.
@@ -13608,6 +13712,8 @@ export class GameScene extends THREE.Scene {
     pendantLight.position.set(0, 3.25, 0);
     g.add(pendantLight);
     this.interiorLamp = pendantLight;
+    this.interiorLampLevel = pendantLight.intensity;
+    this.interiorLampHome.copy(pendantLight.color);
     // Light switch by the door, at hand height.
     box(g, 0.14, 0.2, 0.05, 0xf0ece2, -2.75, 1.35, 3.82);
 
@@ -13911,7 +14017,14 @@ export class GameScene extends THREE.Scene {
     // ease them back up afterwards (updateInteriorMode owns the easing).
     this.interiorRoomLamp = lamp;
     this.interiorRoomFill = fill;
+    this.interiorRoomLampLevel = lamp.intensity;
+    this.interiorRoomFillLevel = fill.intensity;
+    this.interiorRoomLampHome.copy(lamp.color);
+    this.interiorRoomFillHome.copy(fill.color);
     this.interiorGroup = g;
+    // The party rig is part of the room, hidden until the beach house turns
+    // it on, so the interior warm compiles its materials with the rest.
+    this.buildPartyProps();
     this.add(g);
   }
 
@@ -15019,6 +15132,7 @@ export class GameScene extends THREE.Scene {
     this.insideInterior = false;
     this.interiorWatching = false; // never leave the cinema shot armed
     this.setPartyMode(false); // guests go home; the wander loop re-claims them
+    this.sendPartyGuestsHome(); // …including any the party let go indoors
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
     this.restoreShadowAutoUpdate();
@@ -15161,8 +15275,8 @@ export class GameScene extends THREE.Scene {
     // post-mixer arm groove (applied AFTER tickInteriorAnimation so the
     // mixer reclaims the bones the moment you step off).
     if (this.partyMode) {
-      const fdx = p.x - o.x - 0.9;
-      const fdz = p.z - o.z - 0.6;
+      const fdx = p.x - o.x - GameScene.PARTY_FLOOR.x;
+      const fdz = p.z - o.z - GameScene.PARTY_FLOOR.z;
       if (gait < 0.15 && fdx * fdx + fdz * fdz < 2.1 * 2.1) {
         const b = this.interiorTime * 2 * Math.PI;
         p.y += Math.abs(Math.sin(b * 0.5)) * 0.07;
@@ -15243,25 +15357,34 @@ export class GameScene extends THREE.Scene {
     // House lights. Party mode pulls them right down so the disco ball, the
     // lasers and the lit floor are what you actually see — a fully lit room
     // washes all three out. Everything eases rather than snapping, and the
-    // same easing carries them back up when the party stops.
+    // same easing carries them back up when the party stops. The party's
+    // own light rides on top of those levels (updateInteriorParty): the beat
+    // flash on the room lamp, the ball glow on the pendant, the club tint on
+    // the fill, and their colours, which ease home once it ends.
     const clubK = Math.min(1, 3.5 * deltaTime);
+    const party = this.partyMode;
     if (this.interiorLamp) {
-      const lampWant = this.partyMode ? 0.1 : this.interiorLampOn ? 1.35 : 0;
-      this.interiorLamp.intensity +=
-        (lampWant - this.interiorLamp.intensity) * Math.min(1, 9 * deltaTime);
+      const lampWant = party ? 0.1 : this.interiorLampOn ? 1.35 : 0;
+      this.interiorLampLevel += (lampWant - this.interiorLampLevel) * Math.min(1, 9 * deltaTime);
+      this.interiorLamp.intensity = this.interiorLampLevel + (party ? this.partyGlow : 0);
+      if (!party) this.interiorLamp.color.lerp(this.interiorLampHome, clubK);
       if (this.interiorBulb) {
         (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
-          this.interiorLampOn && !this.partyMode ? 0xffe8b8 : 0x6b6a63,
+          this.interiorLampOn && !party ? 0xffe8b8 : 0x6b6a63,
         );
       }
     }
     if (this.interiorRoomLamp) {
-      const want = this.partyMode ? 0.35 : 3.2;
-      this.interiorRoomLamp.intensity += (want - this.interiorRoomLamp.intensity) * clubK;
+      const want = party ? 0.35 : 3.2;
+      this.interiorRoomLampLevel += (want - this.interiorRoomLampLevel) * clubK;
+      this.interiorRoomLamp.intensity = this.interiorRoomLampLevel + (party ? this.partyFlash : 0);
+      if (!party) this.interiorRoomLamp.color.lerp(this.interiorRoomLampHome, clubK);
     }
     if (this.interiorRoomFill) {
-      const want = this.partyMode ? 0.14 : 1.2;
-      this.interiorRoomFill.intensity += (want - this.interiorRoomFill.intensity) * clubK;
+      const want = party ? 0.14 : 1.2;
+      this.interiorRoomFillLevel += (want - this.interiorRoomFillLevel) * clubK;
+      this.interiorRoomFill.intensity = this.interiorRoomFillLevel + (party ? this.partyTint : 0);
+      if (!party) this.interiorRoomFill.color.lerp(this.interiorRoomFillHome, clubK);
     }
 
     // Floating 💤 bob while a sleeper occupies the bed.
