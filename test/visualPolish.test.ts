@@ -374,7 +374,13 @@ describe('per-frame sweeps — allocation-free hot paths and instanced fleets', 
     // (The EnvironmentCycle.ts half, the one shared 0.85 cutoff and the
     // pinned night intensities, is C's, in test/worldLook.test.ts.)
     const scene = src('GameScene.ts');
-    expect(scene).toContain('slot.light.visible = on');
+    // Decision P2-1: GameScene adds no exterior point light of its own, so
+    // none is left to gate by day. This used to pin the roaming lamp lights'
+    // gate, `slot.light.visible = on`; they are now constructed for the
+    // seeded stream and never tracked (sceneLocks pins both halves).
+    expect(bodyOf(scene, 'private createLampLightPools()')).not.toContain(
+      'this.lampFollowLights.push',
+    );
     expect(scene).toContain('this.lampPoolMat.visible = this.lampPoolMat.opacity > 0.01');
     expect(scene).toContain('ud.beamMat.visible = ud.beamMat.opacity > 0.01');
   });

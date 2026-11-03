@@ -1247,17 +1247,23 @@ export class GameScene extends THREE.Scene {
    *
    * Writes only booleans: no allocation, no uuid, no Math.random — safe to
    * call from anywhere, including before restoreRandom.
+   *
+   * The interior room is skipped: its four lights are the room's own, shown
+   * and hidden with the room's group and never on the day/night gate, so a
+   * room built before this runs keeps its lights for the next visit. Since
+   * decision P2-1, GameScene adds no exterior light of its own.
    */
   public primeExteriorLightGate(): void {
     const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
     const on = day < EXTERIOR_LIGHTS_DAY_CUTOFF;
-    this.traverse((o) => {
+    const room = this.interiorGroup;
+    const gate = (o: THREE.Object3D): void => {
+      if (o === room) return;
       const l = o as THREE.PointLight & { isPointLight?: boolean; isSpotLight?: boolean };
-      if (!l.isPointLight && !l.isSpotLight) return;
-      // The interior room's own lights live under a group that is hidden
-      // while outdoors, so traverseVisible never counts them either way.
-      l.visible = on;
-    });
+      if (l.isPointLight || l.isSpotLight) l.visible = on;
+      for (const c of o.children) gate(c);
+    };
+    gate(this);
   }
 
   /**
@@ -1426,16 +1432,18 @@ export class GameScene extends THREE.Scene {
     this.add(mesh);
     this.lampPoolMat = mat;
 
-    // Roaming lamp lights: three real point lights that re-park themselves on
-    // the lamps nearest the player. Distance 16 with decay 2 clears the 4.3u
-    // bulb height with reach to spare over the pool.
-    for (let i = 0; i < 3; i++) {
-      const l = new THREE.PointLight(0xffeeaa, 0, 16, 2);
-      l.name = `lamp_follow_${i}`;
-      this.add(l);
-      this.lampFollowLights.push({ light: l, siteIndex: -1 });
-    }
-    console.log(`💡 ${anchors.length} lamp light pools (1 draw call) + 3 roaming lights`);
+    // The three roaming lamp lights are retired (decision P2-1: no exterior
+    // point lights). three bakes light counts into every lit program, so the
+    // exterior set switching on at dusk recompiled the world in one long task
+    // (MEASURED with all twelve exterior lights: 2.4-3.6 s), and a boot after
+    // dark compiled the night set before the welcome card. The pools and the
+    // bulbs carry the lamplight. Still CONSTRUCTED, never added or tracked:
+    // this runs inside the seeded window, and each PointLight mints the
+    // light's and its shadow camera's uuids, so dropping the constructors
+    // would re-roll every placement after this point. With lampFollowLights
+    // left empty, updateLampFollowLights is a no-op.
+    for (let i = 0; i < 3; i++) void new THREE.PointLight(0xffeeaa, 0, 16, 2);
+    console.log(`💡 ${anchors.length} lamp light pools (1 draw call)`);
   }
 
   /**
@@ -1443,6 +1451,10 @@ export class GameScene extends THREE.Scene {
    * the night. Re-picked on a 0.2s cadence (37 distance checks — nothing), and
    * intensity always EASES, so a light changing which lamp it serves reads as
    * one lamp fading up rather than a pop.
+   *
+   * A no-op by default: createLampLightPools tracks no roaming light since
+   * decision P2-1 (no exterior point lights). Kept for that decision's
+   * alternative, the lights present all day at intensity 0 on desktop.
    */
   private updateLampFollowLights(deltaTime: number, dayFactor: number): void {
     if (!this.lampFollowLights.length) return;
@@ -5011,7 +5023,6 @@ export class GameScene extends THREE.Scene {
   private campfire: {
     group: THREE.Group;
     flames: THREE.Mesh[];
-    light: THREE.PointLight;
     embers: Array<{ m: THREE.Mesh; speed: number; phase: number }>;
     logs: THREE.Mesh[];
     pos: THREE.Vector3;
@@ -5113,9 +5124,12 @@ export class GameScene extends THREE.Scene {
       group.add(m);
       embers.push({ m, speed: 0.5 + Math.random() * 0.7, phase: Math.random() * Math.PI * 2 });
     }
-    const light = new THREE.PointLight(0xff9a3c, 0, 14, 1.4);
-    light.position.set(0, 0.75, 0);
-    group.add(light);
+    // The fire's own light is retired (decision P2-1: no exterior point
+    // lights; switching it on at dusk re-keyed every lit program). The
+    // flames' additive flicker carries the glow. Still CONSTRUCTED, never
+    // added: setupCampfire runs inside the seeded window, and a PointLight
+    // mints the light's and its shadow camera's uuids.
+    void new THREE.PointLight(0xff9a3c, 0, 14, 1.4);
 
     // Four seating logs, and the world-space seat/facing pairs for the NPCs.
     const seats: Array<{ pos: THREE.Vector3; face: THREE.Vector3 }> = [];
@@ -5187,7 +5201,6 @@ export class GameScene extends THREE.Scene {
     this.campfire = {
       group,
       flames,
-      light,
       embers,
       logs,
       pos: place.position.clone(),
@@ -5199,11 +5212,10 @@ export class GameScene extends THREE.Scene {
 
   /**
    * Burn the fire and hold the circle. Lit from dusk to dawn; the flames
-   * flicker on three different sine rates so no two agree, embers rise and
-   * respawn, and the light breathes with them. While it burns, up to three
-   * villagers are borrowed onto the logs (the party-guest pattern: take over
-   * meshRef only, and the wander loop reclaims them on the first frame after
-   * they are released).
+   * flicker on three different sine rates so no two agree, and embers rise
+   * and respawn. While it burns, up to three villagers are borrowed onto the
+   * logs (the party-guest pattern: take over meshRef only, and the wander
+   * loop reclaims them on the first frame after they are released).
    */
   private updateCampfire(deltaTime: number, time: number, dayFactor: number): void {
     const C = this.campfire;
@@ -5245,16 +5257,8 @@ export class GameScene extends THREE.Scene {
       em.opacity = Math.max(0, 1 - life) * night;
       e.m.visible = night > 0.02;
     }
-    C.light.intensity =
-      night *
-      (2.6 +
-        Math.sin(time * 11) * 0.35 +
-        (a11y.reducedMotion ? 0 : Math.sin(time * 23 + 1.7) * 0.22));
-    // WebGLLights counts a point light whatever its intensity, and the count
-    // is a #define — so an always-present zero-intensity campfire kept every
-    // lit program compiled for one more light all day. Same shared cutoff as
-    // the rest of the exterior set, so the day/night flip stays ONE relink.
-    C.light.visible = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF;
+    // No light to drive or gate: the fire has none (setupCampfire), so the
+    // light count never changes at dusk here. The flames above are its glow.
 
     // Hold the seated villagers in place and give them a fireside sway.
     for (const g of this.campfireGuests) {

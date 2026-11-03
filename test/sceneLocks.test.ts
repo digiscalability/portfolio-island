@@ -229,3 +229,47 @@ describe('the beach-house party keeps a cottage’s lights (P2-B2)', () => {
     expect(npcTargets.map((n) => n.meshRef.visible)).toEqual([true, true, true, true, true, false]);
   });
 });
+
+describe('no runtime change to the light count: GameScene’s half (P2-B6)', () => {
+  test('the roaming lamp lights and the campfire light are built, never added', () => {
+    // Decision P2-1: no exterior point lights. Both builders run inside the
+    // seeded window, and each PointLight mints two uuids (the light and its
+    // shadow camera), so the constructors stay for the stream while nothing
+    // reaches the scene, lampFollowLights or a per-frame gate.
+    const g = stripped('GameScene.ts');
+    const pools = bodyOf(g, 'private createLampLightPools()');
+    expect(pools.match(/new THREE\.PointLight\(0xffeeaa, 0, 16, 2\)/g) ?? []).toHaveLength(1);
+    expect(pools).toMatch(/for \(let i = 0; i < 3; i\+\+\) void new THREE\.PointLight\(/);
+    expect(pools).not.toContain('this.lampFollowLights.push');
+    const fire = bodyOf(g, 'private setupCampfire()');
+    expect(fire).toContain('void new THREE.PointLight(0xff9a3c, 0, 14, 1.4)');
+    expect(fire).not.toMatch(/(group|this)\.add\(light\)/);
+    expect(bodyOf(g, 'private updateCampfire(')).not.toMatch(/\.light\b/);
+  });
+
+  test('the boot gate primes the exterior set and leaves the room’s lights alone', () => {
+    const scene = new THREE.Scene();
+    const room = new THREE.Group();
+    const roomLamp = new THREE.PointLight();
+    room.add(roomLamp);
+    const porch = new THREE.PointLight();
+    const beam = new THREE.SpotLight();
+    const house = new THREE.Group();
+    house.add(porch);
+    scene.add(room, house, beam);
+    let day = 1;
+    const stub = Object.assign(scene, {
+      envCycle: { getDayFactor: () => day },
+      interiorGroup: room,
+    });
+    const prime = (GameScene.prototype as unknown as Record<string, () => void>)[
+      'primeExteriorLightGate'
+    ];
+    prime.call(stub);
+    expect([porch.visible, beam.visible]).toEqual([false, false]); // by day: off
+    expect(roomLamp.visible).toBe(true); // the room's own, not on the gate
+    day = 0;
+    prime.call(stub);
+    expect([porch.visible, beam.visible, roomLamp.visible]).toEqual([true, true, true]);
+  });
+});
