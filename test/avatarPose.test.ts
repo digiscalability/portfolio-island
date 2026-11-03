@@ -24,6 +24,23 @@ const fn = (file: string, marker: string, span: number): string => {
   return s.slice(i, i + span);
 };
 
+/** From `marker` to the brace that closes the block it opens, comments
+ *  stripped first: the whole body however long it grows, and prose that
+ *  quotes the code can neither unbalance the braces nor trip a lock. */
+const bodyOf = (file: string, marker: string): string => {
+  const s = src(file)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+  const at = s.indexOf(marker);
+  expect(at, `${marker} not found in ${file}`).toBeGreaterThan(-1);
+  let depth = 0;
+  for (let i = s.indexOf('{', at); i > -1 && i < s.length; i++) {
+    if (s[i] === '{') depth++;
+    else if (s[i] === '}' && --depth === 0) return s.slice(at, i + 1);
+  }
+  throw new Error(`${marker}: no closing brace in ${file}`);
+};
+
 describe('the ride pose respects the rig rest', () => {
   const ride = (): string => fn('SimplePlayer.ts', 'private applyRidePose', 2600);
 
@@ -105,8 +122,13 @@ describe('the REMOTE peer ride pose respects the rig rest', () => {
   test('nothing in the peer pose blends FROM a live limb rotation', () => {
     // The whole remote update(), not just the ride branch: swim and airborne
     // are already clean (airborne composes onto the cached clip output,
-    // LimbClip.onClip, and never reads the live rotation at all).
-    const all = fn('SimplePlayer.ts', 'const update = (dt: number, speed: number)', 3400);
+    // LimbClip.onClip, and never reads the live rotation at all). Sliced by
+    // its braces: a fixed 3,400-character window stopped short of the ride
+    // and airborne branches it names, in a body over twice that long.
+    const all = bodyOf('SimplePlayer.ts', 'const update = (dt: number, speed: number)');
+    expect(all).toContain('clip.restore();'); // from its first line...
+    expect(all).toContain('} else if (activePose === 2) {'); // ...through the ride branch...
+    expect(all).toContain("clip.onClip('legR', -0.45 * poseW);"); // ...and the airborne one
     expect(all).not.toMatch(/lerp\(\s*(arm|leg)[LR]Bone\.rotation/);
   });
 
