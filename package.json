@@ -23,7 +23,9 @@
     "check": "npm run typecheck && npm run lint && npm run format:check",
     "precommit": "npm run check",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "probe": "node tools/ux-probes/run.cjs",
+    "perf:gate": "node tools/perf-gate.cjs"
   },
   "engines": {
     "node": "22.x"
@@ -42,12 +44,14 @@
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.8.0",
     "@typescript-eslint/parser": "^8.8.0",
+    "axe-core": "4.10.3",
     "eslint": "^9.11.1",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-import": "^2.29.1",
     "happy-dom": "^15.11.7",
     "markdownlint-cli": "^0.44.0",
     "markdownlint-cli2": "^0.17.2",
+    "playwright-core": "1.58.2",
     "prettier": "^3.3.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.8.0",
