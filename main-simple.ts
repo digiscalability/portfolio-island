@@ -5,6 +5,7 @@ import { a11y } from './Accessibility';
 import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
 import { setInkVisible } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
+import { compassBearing } from './Compass';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
@@ -3400,8 +3401,10 @@ class SimpleApp {
     }
     toTarget.normalize();
     camForward.normalize();
-    const cross = this._qcCross.copy(camForward).cross(toTarget);
-    const angleRad = Math.atan2(cross.dot(normal), camForward.dot(toTarget));
+    // Positive = target to the RIGHT, the sign SimpleUI's rotate(angle − 90°)
+    // needs. The old atan2((camForward × toTarget) · normal, …) was mirrored:
+    // every off-axis arrow pointed to the wrong side (Compass.ts).
+    const angleRad = compassBearing(camForward, toTarget, normal);
     // great-circle distance on the planet surface
     const R = playerPos.length();
     // _qcTmp and _qcCross are free again here; reuse them for the two great-circle endpoints.
