@@ -104,8 +104,8 @@ describe('the REMOTE peer ride pose respects the rig rest', () => {
 
   test('nothing in the peer pose blends FROM a live limb rotation', () => {
     // The whole remote update(), not just the ride branch: swim and airborne
-    // are already clean (airborne uses += , a pure delta, which survives the
-    // sign flip because the two readings differ by exactly 2*PI).
+    // are already clean (airborne composes onto the cached clip output,
+    // LimbClip.onClip, and never reads the live rotation at all).
     const all = fn('SimplePlayer.ts', 'const update = (dt: number, speed: number)', 3400);
     expect(all).not.toMatch(/lerp\(\s*(arm|leg)[LR]Bone\.rotation/);
   });
