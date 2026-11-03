@@ -379,6 +379,18 @@ export class Island {
   private static readonly TIDE_AMP = 0.09; // radial units above/below mean sea
   private static readonly TIDE_PERIOD = 120; // seconds for a full high→low→high
 
+  /**
+   * Seed census checkpoint. new Island() runs inside GameScene's seeded
+   * window, so every three.js uuid it mints is a draw from the shared stream.
+   * When a recorder is installed (test/drawNeutral.test.ts does; the app never
+   * does) this hands it the label at a builder boundary, and the recorder
+   * notes how many draws the build has taken so far. With no recorder it does
+   * nothing, and it never draws.
+   */
+  private static seedMark(label: string): void {
+    (globalThis as { __dsSeedMark?: (l: string) => void }).__dsSeedMark?.(label);
+  }
+
   constructor(radius: number = 18) {
     this.radius = radius;
     this.center = new THREE.Vector3(0, 0, 0);
@@ -391,6 +403,7 @@ export class Island {
         data._debug = true;
       }
     }
+    Island.seedMark('island:end');
   }
 
   /**
@@ -1978,6 +1991,7 @@ export class Island {
     const buildings = new THREE.Group();
     // generate procedural building textures and use them for PBR-like facades
     const buildingTex = TextureGenerator.createBuildingTextures(512, 512);
+    Island.seedMark('island:buildingTextures');
     const buildingMat = Materials.createPBRMaterial({
       color: 0xffffff, // WHITE: the albedo map carries the slate facade color.
       // 0xd9c6b3 here MULTIPLIED the same-toned brick map (the near-black-grass
@@ -3870,6 +3884,9 @@ export class Island {
       block.name = `construction_${i}`;
       constructions.add(block);
     }
+    // After plaque #0, the process's first Sprite: a cold build pays three's
+    // shared sprite geometry here and nowhere earlier.
+    Island.seedMark('island:constructionBlocks');
 
     // Flowers — instanced for batching. Each bloom is a stem + 5-petal ring +
     // center of identical static geometry, so instead of ~7 meshes per flower
@@ -4474,6 +4491,7 @@ export class Island {
       // ink cap is fine.
       addGroupHulls(gate, 0.3, (m) => m.name !== 'gate-board');
     }
+    Island.seedMark('island:gateBoards');
 
     // Group everything and attach to the main mesh as children so the island remains dominant
     const root = new THREE.Group();
@@ -4593,6 +4611,7 @@ export class Island {
     // Instanced boulder layer — scree on steep slopes (where grass collapses
     // for steepness) plus a shoreline band, so cliffs and beaches get real rock
     // geometry to back the terrain's rock/steep shading. One draw call.
+    Island.seedMark('island:beforeRocks');
     const rocks = this.createRocks();
     if (rocks) root.add(rocks);
 
