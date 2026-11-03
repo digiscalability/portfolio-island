@@ -377,6 +377,7 @@ class SimpleApp {
     chatKeyup?: (event: KeyboardEvent) => void;
     mutePointerDown?: (event: PointerEvent) => void;
     mutePointerUp?: (event: PointerEvent) => void;
+    popState?: () => void;
   } = {};
 
   constructor() {
@@ -1864,14 +1865,7 @@ class SimpleApp {
       const label = `🕐 ${((hh + 11) % 12) + 1}${hh < 12 ? 'am' : 'pm'}`;
       this.ui.showTimeOverridePill(label, () => {
         env.debugHour = null;
-        try {
-          const sp = new URLSearchParams(location.search);
-          sp.delete('hour');
-          const q = sp.toString();
-          history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}`);
-        } catch {
-          /* ignore */
-        }
+        this.dropUrlParam('hour');
       });
     } catch {
       /* ignore */
@@ -1915,18 +1909,51 @@ class SimpleApp {
           this.scene.snapCameraToPlayer();
         });
         if (env) env.debugHour = null;
-        try {
-          const sp = new URLSearchParams(location.search);
-          sp.delete('pc');
-          const q = sp.toString();
-          history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}`);
-        } catch {
-          /* ignore */
-        }
+        this.dropUrlParam('pc');
       });
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** Params a pill has handed back this page life: ?hour= and ?pc=. */
+  private readonly droppedUrlParams = new Set<string>();
+
+  /**
+   * A pill gave its moment back (the ?hour= clock, the ?pc= postcard view):
+   * take its param out of the address bar for the rest of the page's life.
+   * The entry keeps its state. An open panel's entry carries PanelManager's
+   * {dsPanel, dsTok} (D2), and the null written here before left the panel
+   * unable to step back off its entry when it closed: the first Back then
+   * stayed on the island and put ?hour= back. The entry below a panel's own
+   * still carries the param, and the step back a closing panel takes (or a
+   * Back) lands there, so every popstate drops these params again.
+   */
+  private dropUrlParam(name: string): void {
+    this.droppedUrlParams.add(name);
+    if (!this.boundHandlers.popState) {
+      this.boundHandlers.popState = () => this.stripDroppedUrlParams();
+      window.addEventListener('popstate', this.boundHandlers.popState);
+    }
+    this.stripDroppedUrlParams();
+  }
+
+  /** Take every dropped param out of the current entry's URL, state untouched. */
+  private stripDroppedUrlParams(): void {
+    try {
+      const sp = new URLSearchParams(location.search);
+      let changed = false;
+      for (const name of this.droppedUrlParams) {
+        if (!sp.has(name)) continue;
+        sp.delete(name);
+        changed = true;
+      }
+      if (!changed) return;
+      const q = sp.toString();
+      history.replaceState(history.state, '', `${location.pathname}${q ? `?${q}` : ''}`);
+    } catch {
+      /* ignore */
     }
   }
 
@@ -5770,6 +5797,10 @@ class SimpleApp {
 
     if (this.boundHandlers.beforeUnload) {
       window.removeEventListener('beforeunload', this.boundHandlers.beforeUnload);
+    }
+
+    if (this.boundHandlers.popState) {
+      window.removeEventListener('popstate', this.boundHandlers.popState);
     }
 
     if (this.boundHandlers.debugKeydown) {

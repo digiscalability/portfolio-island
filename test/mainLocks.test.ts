@@ -10,8 +10,9 @@
 // The owners of the original suites delete their copies in their own stage-1
 // PRs, so for a while both copies run. Both pass.
 //
-// The last describe is not relocated: it holds A's own new locks on how
-// main-simple wires the stage-1 fixes.
+// The last two describes are not relocated: they hold A's own new locks on
+// how main-simple wires the stage-1 fixes, and on the seams the integration
+// review found where the stage-1 branches meet.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
@@ -795,6 +796,37 @@ describe('stage-1 wiring in main-simple (A1, A2, A4, A5)', () => {
     );
     expect(branch('this.scene.isRidingVehicle()')).toContain(
       'this.scene.getOrbitCamera().setMoveInput(vFwd, vStrafe);',
+    );
+  });
+});
+
+// ---- where the stage-1 branches meet ---------------------------------------
+// Seams the integration play review found between A's wiring and the other
+// packages. Locks only: the browser runs that found them are not CI.
+describe('stage-1 integration seams in main-simple', () => {
+  test("the time and postcard pills keep the history entry's state (D2's Back)", () => {
+    const main = stripped('main-simple.ts');
+    // A null state wiped PanelManager's {dsPanel, dsTok}: the open panel could
+    // not step back off its entry, so the first Back stayed on the island and
+    // put ?hour= back. Every history write here hands the state on.
+    const firstArgs = [...main.matchAll(/history\.(?:replaceState|pushState)\(\s*([^,]*),/g)].map(
+      (m) => m[1].trim(),
+    );
+    expect(firstArgs.length).toBeGreaterThan(0);
+    for (const a of firstArgs) expect(a).toBe('history.state');
+    expect(bodyOf(main, 'private stripDroppedUrlParams(')).toContain(
+      "history.replaceState(history.state, '', ",
+    );
+    // Both pills hand their param back through the one dropper...
+    expect(bodyOf(main, 'private applyHourParam(')).toContain("this.dropUrlParam('hour');");
+    expect(bodyOf(main, 'private applyPostcardParam(')).toContain("this.dropUrlParam('pc');");
+    // ...which drops it again on every popstate: the step back a closing
+    // panel takes lands on the entry under it, and that one still has it.
+    const drop = bodyOf(main, 'private dropUrlParam(');
+    expect(drop).toContain('this.boundHandlers.popState = () => this.stripDroppedUrlParams();');
+    expect(drop).toContain("window.addEventListener('popstate', this.boundHandlers.popState);");
+    expect(bodyOf(main, 'private dispose(')).toContain(
+      "window.removeEventListener('popstate', this.boundHandlers.popState);",
     );
   });
 });
