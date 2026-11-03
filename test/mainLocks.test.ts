@@ -9,6 +9,9 @@
 //
 // The owners of the original suites delete their copies in their own stage-1
 // PRs, so for a while both copies run. Both pass.
+//
+// The last describe is not relocated: it holds A's own new locks on how
+// main-simple wires the stage-1 fixes.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
@@ -683,5 +686,93 @@ describe('from visualPolish.test.ts', () => {
     // idle deferral that already carries music and profile sync.
     const main = stripped('main-simple.ts');
     expect(main).toContain('this.idleDefer(() => void this.scene.warmInterior()');
+  });
+});
+
+// ---- A's own stage-1 wiring ------------------------------------------------
+// New locks, not relocated ones. Compass.ts, keyGuards.ts, SimpleInputManager
+// and OrbitCamera have unit tests of their own, and the probes do not run in
+// CI, so nothing else notices if main-simple stops calling them.
+describe('stage-1 wiring in main-simple (A1, A2, A4, A5)', () => {
+  const update = (): string => bodyOf(stripped('main-simple.ts'), 'private update(');
+  /** One branch of update()'s input chain, by its condition. */
+  const branch = (cond: string): string => bodyOf(update(), `} else if (${cond}) {`);
+
+  test('the update() slice is the whole method', () => {
+    // A literal the slicer misread would end it early or run it on; every
+    // lock below reads through this slice.
+    expect(update()).toMatch(/this\.scene\.update\(deltaTime\);\s*\}$/);
+    expect(update()).toContain('if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {');
+  });
+
+  test('A1: the compass pill gets compassBearing, not the mirrored atan2', () => {
+    const body = bodyOf(stripped('main-simple.ts'), 'private updateQuestCompass');
+    expect(body).toContain('const angleRad = compassBearing(camForward, toTarget, normal);');
+    expect(body).not.toContain('Math.atan2(cross.dot(normal)');
+    // handed over as computed: SimpleUI's rotate(angle − 90°) expects this sign
+    expect(body).toMatch(/this\.ui\.updateQuestCompass\(\{\s*angleRad,/);
+  });
+
+  test('A2: a non-walkable panel, the welcome card and the loader hold the world', () => {
+    expect(branch('worldInputBlocked(this.ui.panels.current())')).toContain(
+      'this.holdWorldInput();',
+    );
+    // the else of `if (!welcome && !loading)`
+    expect(update()).toMatch(/\}\s*else\s*\{\s*this\.holdWorldInput\(\);\s*\}/);
+    const hold = bodyOf(stripped('main-simple.ts'), 'private holdWorldInput(');
+    for (const call of [
+      'this.scene.setPlayerMovement(0, 0)',
+      'this.scene.setVehicleMove(0, 0)',
+      'this.scene.setInteriorMove(0, 0)',
+      'this.inputManager.clearLatched()',
+      'this.inputManager.getCameraInput()',
+      'consumePinchZoomFactor()',
+    ]) {
+      expect(hold, call).toContain(call);
+    }
+    // presses during the tour are for the tour
+    expect(bodyOf(update(), 'if (this.tour) {')).toContain('this.inputManager.clearLatched();');
+  });
+
+  test('A2: C and P are free-walk verbs, no longer a raw keydown listener', () => {
+    const verbs = blockOf(
+      update(),
+      "if (this.inputManager.consumeKeyPress('m')) this.openIslandMap();",
+    );
+    expect(verbs).toContain("if (this.inputManager.consumeKeyPress('c')) {");
+    expect(verbs).toContain(
+      "if (this.inputManager.consumeKeyPress('p')) void this.capturePhoto();",
+    );
+    const debug = bodyOf(stripped('main-simple.ts'), 'private setupDebugShortcuts(');
+    expect(debug).toContain("event.ctrlKey && event.key.toLowerCase() === 'b'");
+    expect(debug).not.toContain("=== 'c'");
+    expect(debug).not.toContain("=== 'p'");
+  });
+
+  test('A4: every follow branch looks through applyLook', () => {
+    const look = bodyOf(stripped('main-simple.ts'), 'private applyLook(');
+    expect(look).toContain('cam.setInput(look.deltaX, look.deltaY, look.source);');
+    expect(look).toContain('if (look.fling !== 0) cam.fling(look.fling);');
+    expect(look).toContain("cam.keyLook(held('l') - held('j'), held('i') - held('k'), deltaTime);");
+    expect(look).toContain("if (this.inputManager.consumeKeyPress('r')) cam.recentre();");
+    for (const cond of [
+      'this.ui.isDialogueActive() || this.ui.isNpcChatOpen()',
+      'this.scene.isPlayerSeated()',
+      'this.scene.isRidingVehicle()',
+    ]) {
+      expect(branch(cond), cond).toContain('this.applyLook(deltaTime);');
+    }
+    expect(blockOf(update(), 'this.scene.setPlayerMovement(walkForward, walkStrafe);')).toContain(
+      'this.applyLook(deltaTime);',
+    );
+  });
+
+  test('A5: the chase camera hears the walk and the drive input', () => {
+    expect(blockOf(update(), 'this.scene.setPlayerMovement(walkForward, walkStrafe);')).toContain(
+      'this.scene.getOrbitCamera().setMoveInput(walkForward, walkStrafe);',
+    );
+    expect(branch('this.scene.isRidingVehicle()')).toContain(
+      'this.scene.getOrbitCamera().setMoveInput(vFwd, vStrafe);',
+    );
   });
 });
