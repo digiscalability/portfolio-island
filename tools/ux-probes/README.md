@@ -139,7 +139,7 @@ light count, the programs and the draws); `--hour live` turns that off.
 
 ```sh
 npm run perf:gate -- --dist dist --port <n>            # baseline report + counter and µs budget checks
-npm run perf:gate -- --dist dist --port <n> --fx <name>  # one __dsFx effect, interleaved 6 x 1.5 s per side
+npm run perf:gate -- --dist dist --port <n> --fx <name>  # one __dsFx effect: draws and programs per view, then 6 x 1.5 s per side
 npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
 ```
 
@@ -185,16 +185,46 @@ npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
 
 **What is not exact on main.** Per-view draws vary from load to load:
 villagers, cats, ground birds, herons, birds, clouds and cars move through
-every view, and `rock.glb` (8 rocks placed with `Math.random()` after an
-await in `GameScene.placeAssets`) and the `tree.glb` clones (Island's async
-loader) land in different places on every load, with the camera and player
-poses identical. Programs ride a boot race: whether the GLB materials
+every view. Two sets of static props also land somewhere different on every
+load, though the camera and player poses are identical:
+- the 8 `rock.glb` rocks: `GameScene.placeAssets` places them with
+  `Math.random()` after an `await`, so whatever drew from it first moves them;
+- the `tree.glb` clones, placed by Island's async loader.
+
+Programs ride a boot race: whether the GLB materials
 (Seat, Post, Pole, Trunk, Stone, Leg, LeafL, LeafD) compile in the screen
 pass, the composer's linear pass, or both depends on when each model
 finishes loading (desktop 211-216 programs; in a 96-load A/A the
 215-program loads showed the card ~0.6 s later on the median, so
 welcome_visible is bimodal too). These counters are judged by the sigma
 rule; only the texture MB is exact.
+
+**A/A on main.** `--ab dist dist --cycles 6`, run 2026-11-04 on the audit
+rig with the host about 16% busy:
+- Startup passes after 6 cycles.
+- Desktop and the low tier stay inconclusive after 24 cycles. Nothing fails.
+- Texture MB is 18.1 on all 96 loads.
+
+What keeps the two profiles inconclusive (sigma against threshold/2):
+
+| Profile | Metric | sigma | threshold/2 |
+|---|---|---|---|
+| desktop | CPU p50 | 0.50–0.90 ms | 0.5 |
+| desktop | CPU p95 | 1.00–1.06 ms | 0.75 |
+| desktop | welcome_visible (bimodal) | 198 ms | 50 |
+| desktop | world_gen | 25.8 ms | 25 |
+| desktop | long tasks | 1.08 | 0.5 |
+| desktop | Projects draws | 8.7 | 0 |
+| low tier | CPU p50 (spawn, hub; Projects passes) | 0.26–0.33 ms | 0.25 |
+| low tier | CPU p95 | 0.42–0.56 ms | 0.4 |
+
+Desktop Projects draws have a threshold of 0, so they are valid only when
+exact. On main they are not, and their |Δ| = 1 is the one A/A delta over
+its threshold. Desktop `--ab` therefore tops out at inconclusive:
+- Projects draws need a tolerance from the plan owner, or seeded GLB
+  placements;
+- welcome_visible needs the boot race gone;
+- the CPU p95 and long-task budgets sit below this rig's noise.
 
 ## Files
 
