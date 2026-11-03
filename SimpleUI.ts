@@ -163,7 +163,6 @@ export class SimpleUI {
   private envBadgeDiv: HTMLElement | null = null;
   private customizeDiv: HTMLElement | null = null;
   private zonePanelDiv: HTMLElement | null = null;
-  private zoneEscapeHandler: ((e: KeyboardEvent) => void) | null = null;
   private dialogueDiv: HTMLElement | null = null;
   private dialogueLines: string[] = [];
   private dialogueIndex: number = 0;
@@ -1411,9 +1410,15 @@ export class SimpleUI {
     this.overlay.appendChild(modal);
   }
 
-  /** Reward celebration fired when the last stamp lands (see Passport.onComplete). */
+  /** Reward celebration fired when the last stamp lands (see Passport.onComplete).
+   *  The last stamp lands inside a hall, from showZonePanel: the crown stacks
+   *  OVER that hall's panel (allow: ['zone']) instead of sweeping it, and on
+   *  close focus goes back to the panel's heading (PanelManager). Its entry,
+   *  Escape and the CTA close only the crown (INT-02). */
   showPassportComplete(): void {
-    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))', 'passport-complete');
+    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))', 'passport-complete', {
+      allow: ['zone'],
+    });
     modal.style.border = '1px solid rgba(255,213,74,0.55)';
     modal.insertAdjacentHTML(
       'beforeend',
@@ -1583,13 +1588,21 @@ export class SimpleUI {
    * A modal that removes itself outside the ✕ path (timed success screens)
    * must call `this.panels.notifyClosed(id)` alongside its remove().
    */
-  private buildCenteredModal(width: string, id = 'modal'): HTMLElement {
+  private buildCenteredModal(
+    width: string,
+    id = 'modal',
+    opts: {
+      /** Panels left open underneath: the passport crown over a hall panel. */
+      allow?: string[];
+    } = {},
+  ): HTMLElement {
     const modal = document.createElement('div');
     this.panels.open(id, {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => modal.remove(),
       el: modal, // a removed modal pops even if its close path never notifies
+      allow: opts.allow,
     });
     this.stepHintAside();
     Object.assign(modal.style, {
@@ -6704,23 +6717,6 @@ export class SimpleUI {
       this.appendLeadForm(this.zonePanelDiv);
     }
 
-    // Passport: stamp ONLY when the visitor physically walked up to the zone
-    // ('proximity'). Opening the same panel from the top-right Portfolio menu, a
-    // welcome CTA, or a deep link no longer stamps — the 👑 crown now means the
-    // island was actually explored, not that five buttons were clicked. The menu
-    // still opens every panel, so a hurried recruiter loses no content.
-    if (source === 'proximity' && this.passport?.visit(zid)) {
-      trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
-      if (!this.passport.isComplete()) {
-        const meta = PASSPORT_META[zid as PassportZone];
-        // A hint: it would land on the panel this walk-up just opened, so it
-        // waits for the panel to close.
-        this.toast(
-          `🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`,
-          { hint: true },
-        );
-      }
-    }
     // Delegated: catches every link in the panel without touching the markup
     this.zonePanelDiv.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement)?.closest?.('a');
@@ -6783,13 +6779,33 @@ export class SimpleUI {
     // clobbers ?hour=/?theme=.
     setUrlParam('zone', zid);
 
-    // Escape closes. Removed in hideZonePanel — the old self-removing handler
-    // only cleaned up on the Escape path, so every ×/scrim close leaked one
-    // document listener per open.
-    this.zoneEscapeHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') this.hideZonePanel();
-    };
-    document.addEventListener('keydown', this.zoneEscapeHandler);
+    // Escape is PanelManager's, which closes only the TOP panel. The panel's
+    // own document listener closed it too, under a passport crown stacked over
+    // it, taking the Get In Touch form with the crown (INT-02).
+
+    // Passport: stamp ONLY when the visitor physically walked up to the zone
+    // ('proximity'). Opening the same panel from the top-right Portfolio menu, a
+    // welcome CTA, or a deep link no longer stamps — the 👑 crown now means the
+    // island was actually explored, not that five buttons were clicked. The menu
+    // still opens every panel, so a hurried recruiter loses no content.
+    // LAST, once the panel is whole (INT-02): the fourth stamp fires
+    // onComplete, main-simple's reward opens showPassportComplete, and that
+    // used to sweep this very panel mid-build, throw on the null panel, and
+    // leave the visitor indoors with no content and no Leave pill. The crown
+    // now stacks over the panel (allow: ['zone']).
+    if (source === 'proximity' && this.passport?.visit(zid)) {
+      trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
+      if (!this.zonePanelDiv) return; // a reward that closed the panel after all
+      if (!this.passport.isComplete()) {
+        const meta = PASSPORT_META[zid as PassportZone];
+        // A hint: it would land on the panel this walk-up just opened, so it
+        // waits for the panel to close.
+        this.toast(
+          `🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`,
+          { hint: true },
+        );
+      }
+    }
   }
 
   /**
@@ -6804,10 +6820,6 @@ export class SimpleUI {
       void import('./ReceptionDesk').then((m) => m.stopReceptionCall());
       this.zonePanelDiv.remove();
       this.zonePanelDiv = null;
-      if (this.zoneEscapeHandler) {
-        document.removeEventListener('keydown', this.zoneEscapeHandler);
-        this.zoneEscapeHandler = null;
-      }
       this.panels.notifyClosed('zone');
       // Drop ONLY the ?zone= deep link when the panel closes — the old
       // whole-search wipe also destroyed ?hour=/?theme=.
