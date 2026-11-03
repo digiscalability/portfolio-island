@@ -1511,6 +1511,7 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => modal.remove(),
+      el: modal, // a removed modal pops even if its close path never notifies
     });
     this.stepHintAside();
     Object.assign(modal.style, {
@@ -1714,11 +1715,16 @@ export class SimpleUI {
     const body = modal.querySelector('#lb-body');
     if (body)
       body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
-    modal.appendChild(this.makeRaceGuideButton(modal, 'leaderboard'));
+    modal.appendChild(this.makeRaceGuideButton(modal, 'leaderboard', 'leaderboard'));
   }
 
-  /** "Take me to the start line" — closes the modal and compass-guides there. */
-  private makeRaceGuideButton(modal: HTMLElement, from: string): HTMLButtonElement {
+  /** "Take me to the start line" — closes the modal and compass-guides there.
+   *  `panelId` is the id the modal was opened under (buildCenteredModal). */
+  private makeRaceGuideButton(
+    modal: HTMLElement,
+    from: string,
+    panelId: 'leaderboard' | 'race-leaderboard',
+  ): HTMLButtonElement {
     const go = document.createElement('button');
     go.textContent = '📍 Guide me to the start line';
     Object.assign(go.style, {
@@ -1736,7 +1742,10 @@ export class SimpleUI {
     go.addEventListener('click', () => {
       track('race_guide', { from });
       modal.remove();
-      this.panels.notifyClosed('race-leaderboard');
+      // The opener's id. This named 'race-leaderboard' for both callers, so
+      // the Leaderboard's button left 'leaderboard' on the stack: scrim up,
+      // chips dimmed, phone controls hidden under "Follow the compass" (UX-01).
+      this.panels.notifyClosed(panelId);
       this.onRaceGuide?.();
     });
     return go;
@@ -1785,7 +1794,7 @@ export class SimpleUI {
       }),
     );
     modal.appendChild(shareRow);
-    modal.appendChild(this.makeRaceGuideButton(modal, 'race_finish'));
+    modal.appendChild(this.makeRaceGuideButton(modal, 'race_finish', 'race-leaderboard'));
     this.overlay.appendChild(modal);
     const { getLeaderboard } = await import('./Boards');
     const entries = await getLeaderboard(circuit);
@@ -6426,6 +6435,7 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.hideZonePanel(),
+      el: this.zonePanelDiv,
     });
     this.stepHintAside();
 

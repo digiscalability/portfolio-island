@@ -7,9 +7,19 @@
 //     under the open shop.
 //   - notifyClosed must NO-OP during the exclusivity sweep — every panel's
 //     close() path calls notifyClosed, and the sweep owns the stack.
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+//   - a panel whose element has left the document pops by itself, and the
+//     leaderboard's "Guide me" closes the id it was opened under (UX-01: it
+//     named 'race-leaderboard', leaving the scrim up and the phone controls
+//     hidden under "Follow the compass to the start gate").
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { PanelManager, type PanelSpec } from '../PanelManager';
+import { SimpleUI } from '../SimpleUI';
+
+// The boards are Firebase reads; here they answer at once, empty.
+vi.mock('../Boards', () => ({
+  getLeaderboard: vi.fn(async () => []),
+}));
 
 function spec(over: Partial<PanelSpec> = {}): PanelSpec {
   return { kind: 'modal', hides: [], close: () => {}, ...over };
@@ -189,5 +199,121 @@ describe('scrim + Escape', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(closeOwn).not.toHaveBeenCalled();
     expect(pm.current()).toBe('own');
+  });
+});
+
+const scrimOf = (pm: PanelManager): HTMLElement => (pm as unknown as { scrim: HTMLElement }).scrim;
+
+describe('a detached panel pops (the second UX-01 safeguard)', () => {
+  test('its element leaving the document takes the entry and the scrim down', () => {
+    const pm = new PanelManager(overlay, true);
+    const chip = document.createElement('button');
+    pm.registerLayer('touch-controls', chip);
+    const modal = document.createElement('div');
+    pm.open('leaderboard', spec({ hides: ['touch-controls'], el: modal }));
+    overlay.appendChild(modal);
+    expect(pm.current()).toBe('leaderboard'); // seen in the document
+    modal.remove(); // a close path that removed the DOM and told nobody
+    expect(pm.isOpen()).toBe(false);
+    expect(scrimOf(pm).style.display).toBe('none');
+    expect(chip.style.display).toBe('');
+  });
+
+  test('notifying the wrong id still re-derives (the exact UX-01 sequence)', () => {
+    const pm = new PanelManager(overlay, false);
+    const modal = document.createElement('div');
+    pm.open('leaderboard', spec({ el: modal }));
+    overlay.appendChild(modal);
+    pm.current();
+    modal.remove();
+    pm.notifyClosed('race-leaderboard');
+    expect(scrimOf(pm).style.display).toBe('none');
+  });
+
+  test('a modal is not popped before its caller appends it', async () => {
+    const pm = new PanelManager(overlay, false);
+    const modal = document.createElement('div');
+    pm.open('m', spec({ el: modal })); // buildCenteredModal opens, then appends
+    expect(pm.current()).toBe('m');
+    overlay.appendChild(modal);
+    await Promise.resolve(); // the post-open check
+    expect(pm.current()).toBe('m');
+  });
+
+  test('one removed in the same task as its open still pops', async () => {
+    const pm = new PanelManager(overlay, false);
+    const modal = document.createElement('div');
+    pm.open('m', spec({ el: modal }));
+    overlay.appendChild(modal);
+    await Promise.resolve(); // seen by the post-open check
+    modal.remove();
+    expect(pm.isOpen()).toBe(false);
+  });
+
+  test('a same-id re-open with a new element waits for that element', () => {
+    const pm = new PanelManager(overlay, false);
+    const first = document.createElement('div');
+    pm.open('inventory', spec({ el: first }));
+    overlay.appendChild(first);
+    pm.current();
+    first.remove(); // showInventory drops the previous element first...
+    const second = document.createElement('div');
+    pm.open('inventory', spec({ el: second })); // ...then re-opens the same id
+    overlay.appendChild(second);
+    expect(pm.current()).toBe('inventory');
+  });
+});
+
+describe("the leaderboards' Guide me leaves no scrim (UX-01)", () => {
+  let ui: SimpleUI;
+  const guideMe = (): HTMLButtonElement =>
+    [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      (b.textContent ?? '').includes('Guide me to the start line'),
+    )!;
+  const controls = (): HTMLElement[] =>
+    [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].filter(
+      (d) =>
+        d.children.length === 2 && /^(USE|JUMP|WAVE)$/.test(d.lastElementChild?.textContent ?? ''),
+    );
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+  });
+  afterEach(() => {
+    history.replaceState(null, '', '/');
+  });
+
+  test('desktop: the Leaderboard closes for real and the compass guide runs', async () => {
+    ui = new SimpleUI('ui-overlay');
+    const guided = vi.fn();
+    ui.setOnRaceGuide(guided);
+    await ui.showLeaderboard();
+    expect(ui.panels.current()).toBe('leaderboard');
+    guideMe().click();
+    expect(ui.panels.isOpen()).toBe(false);
+    expect(scrimOf(ui.panels).style.display).toBe('none');
+    expect(ui.isPanelOpen()).toBe(false); // Enter-to-chat works again
+    expect(guided).toHaveBeenCalledTimes(1);
+  });
+
+  test('phone: the joystick buttons come straight back', async () => {
+    history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
+    ui = new SimpleUI('ui-overlay');
+    expect(controls()).toHaveLength(3);
+    await ui.showLeaderboard();
+    expect(controls().every((c) => c.style.display === 'none')).toBe(true);
+    guideMe().click();
+    expect(ui.panels.isOpen()).toBe(false);
+    expect(scrimOf(ui.panels).style.display).toBe('none');
+    expect(controls().every((c) => c.style.display !== 'none')).toBe(true);
+  });
+
+  test('the race-finish board closes its own id too', async () => {
+    ui = new SimpleUI('ui-overlay');
+    await ui.showRaceLeaderboard('land', 61_234, 'Tester');
+    expect(ui.panels.current()).toBe('race-leaderboard');
+    guideMe().click();
+    expect(ui.panels.isOpen()).toBe(false);
+    expect(scrimOf(ui.panels).style.display).toBe('none');
   });
 });

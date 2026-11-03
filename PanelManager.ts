@@ -21,6 +21,11 @@
  *   - SWEEP GUARD: the exclusivity sweep calls each panel's close(), whose
  *     teardown path usually calls notifyClosed() — which must NO-OP during
  *     the sweep (the sweep owns the stack while it runs).
+ *   - DETACHED PANELS POP: a panel registered with its root `el` is popped
+ *     once that element has been in the document and has left it, even if
+ *     its close path never notified (or notified the wrong id: the
+ *     leaderboard's "Guide me" named 'race-leaderboard' and left the scrim up
+ *     and the phone controls hidden, UX-01).
  */
 
 /** 'aux-controls' = the second-rank touch controls (FEED/EAT/💬/🎤): panels
@@ -41,11 +46,17 @@ export interface PanelSpec {
   allow?: string[];
   /** Panel owns its own Escape (chat inputs that stopPropagation). */
   ownEscape?: boolean;
+  /** The panel's root element, for panels whose close removes it. Once it
+   *  has been in the document and is no longer, the entry pops by itself. */
+  el?: HTMLElement;
 }
 
 interface Entry {
   id: string;
   spec: PanelSpec;
+  /** spec.el has been seen in the document: only then does leaving it pop
+   *  the entry (a modal is registered before its caller appends it). */
+  seen: boolean;
 }
 
 export class PanelManager {
@@ -108,8 +119,10 @@ export class PanelManager {
     const top = this.stack[this.stack.length - 1];
     if (top && top.id === id) {
       // Same-id re-open: replace in place, never fire close() (see header).
+      if (spec.el !== top.spec.el) top.seen = false;
       top.spec = spec;
       this.applyState();
+      this.checkSoon();
       return;
     }
     this.sweeping = true;
@@ -127,16 +140,19 @@ export class PanelManager {
     } finally {
       this.sweeping = false;
     }
-    this.stack.push({ id, spec });
+    this.stack.push({ id, spec, seen: false });
     this.applyState();
+    this.checkSoon();
   }
 
   /** A panel closed itself (its own ✕ / Escape path). No-op during a sweep. */
   notifyClosed(id: string): void {
     if (this.sweeping) return;
     const idx = this.stack.findIndex((e) => e.id === id);
-    if (idx === -1) return;
-    this.stack.splice(idx, 1);
+    if (idx !== -1) this.stack.splice(idx, 1);
+    // Re-derive even for an id that is not open: a close path that named the
+    // wrong id has still removed its DOM, and the detached-panel pop below is
+    // what takes its scrim down.
     this.applyState();
   }
 
@@ -174,11 +190,13 @@ export class PanelManager {
   }
 
   isOpen(id?: string): boolean {
+    this.sync();
     if (id === undefined) return this.stack.length > 0;
     return this.stack.some((e) => e.id === id);
   }
 
   current(): string | null {
+    this.sync();
     return this.stack.length ? this.stack[this.stack.length - 1].id : null;
   }
 
@@ -187,8 +205,41 @@ export class PanelManager {
     this.scrim.remove();
   }
 
+  /**
+   * Pop every entry whose element has left the document. Cheap (the stack is
+   * one or two deep), so the per-frame isOpen() reads double as the check.
+   * True when something popped.
+   */
+  private pruneDetached(): boolean {
+    let popped = false;
+    for (let i = this.stack.length - 1; i >= 0; i--) {
+      const e = this.stack[i];
+      const el = e.spec.el;
+      if (!el) continue;
+      if (el.isConnected) e.seen = true;
+      else if (e.seen) {
+        this.stack.splice(i, 1);
+        popped = true;
+      }
+    }
+    return popped;
+  }
+
+  /** Bring the scrim and layers in line if a panel's element went away. */
+  private sync(): void {
+    if (!this.sweeping && this.pruneDetached()) this.applyState();
+  }
+
+  /** Callers append a panel's element right after open(); look once the
+   *  current task is done, so a panel removed before any frame ran still
+   *  counts as seen. */
+  private checkSoon(): void {
+    queueMicrotask(() => this.sync());
+  }
+
   /** Re-derive scrim + layer visibility from the whole stack. */
   private applyState(): void {
+    if (!this.sweeping) this.pruneDetached();
     const top = this.stack[this.stack.length - 1];
     this.scrim.style.display = top && top.spec.kind === 'modal' ? 'block' : 'none';
     // Union of hides across ALL open panels (a 2-deep watch stack must keep
