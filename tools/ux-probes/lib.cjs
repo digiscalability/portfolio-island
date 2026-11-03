@@ -472,7 +472,12 @@ async function startPreview({ dist, port, host = '127.0.0.1', label = 'preview' 
 async function serve({ base, dist, port, label }) {
   if (base) {
     const u = new URL(base);
-    if (!(await portInUse(Number(u.port || 80), u.hostname))) throw new HarnessError(`nothing listens at ${base}`);
+    const p = Number(u.port || 80);
+    // 'localhost' may resolve to ::1 while vite listens on 127.0.0.1 only.
+    const hosts = u.hostname === 'localhost' ? ['127.0.0.1', '::1'] : [u.hostname.replace(/^\[|\]$/g, '')];
+    let up = false;
+    for (const h of hosts) up = up || (await portInUse(p, h));
+    if (!up) throw new HarnessError(`nothing listens at ${base}`);
     return { url: base.replace(/\/$/, ''), pid: null, port: Number(u.port), stop: async () => {}, attached: true, label };
   }
   if (!port) throw new HarnessError('pass --port <n> with --dist (ports are always arguments), or --base <url>');

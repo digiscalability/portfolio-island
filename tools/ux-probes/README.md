@@ -121,6 +121,34 @@ walking). The probe reports both (`maxProgramsAddedInOneFrame` and
 time (that is the bug). `look` reports `meanFrameMs` with every reading, and
 `legspin` runs on the frozen sim so its airborne frame count is fixed.
 
+## Perf gate
+
+`npm run perf:gate` (`tools/perf-gate.cjs`, item E1) runs on the same
+harness. The world clock is pinned to `?hour=12` (night lights change the
+light count, the programs and the draws); `--hour live` turns that off.
+
+```sh
+npm run perf:gate -- --dist dist --port <n>            # baseline report + counter and µs budget checks
+npm run perf:gate -- --dist dist --port <n> --fx <name>  # one __dsFx effect, interleaved 6 x 1.5 s per side
+npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
+```
+
+- Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
+  (GPU timer queries off).
+- Views: idle spawn, hub-wide and the Projects district, posed with the
+  design audit's framing (follow direction, pitch, distance, teleport).
+  Counters are one whole frame with the loop paused (draws, triangles,
+  programs, textures); timings are 1.5 s windows (CPU per app frame,
+  GPU timer queries, fps).
+- Programs are logged per render() and per compile call; µs per effect come
+  from `FxBudget.ts` (`__dsFx.stats`), divided by the frames the gate saw.
+- Validity: sigma = |median(A_odd) - median(A_even)|; valid when
+  sigma <= threshold/2; pass when delta <= threshold; fail when
+  delta > threshold + sigma; else inconclusive, escalating to 12, then 24
+  cycles. Exits 0 pass, 1 budget fail, 2 fail-closed, 3 inconclusive.
+- Output: `perf-gate-<mode>.json` and `ledger.md` (one row per registered
+  effect) in `--out`.
+
 ## Files
 
 - `lib.cjs` the shared harness: serving, launch, safety, profiles, boot,

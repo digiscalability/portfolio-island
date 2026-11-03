@@ -24,7 +24,8 @@
     "precommit": "npm run check",
     "test": "vitest run",
     "test:watch": "vitest",
-    "probe": "node tools/ux-probes/run.cjs"
+    "probe": "node tools/ux-probes/run.cjs",
+    "perf:gate": "node tools/perf-gate.cjs"
   },
   "engines": {
     "node": "22.x"
