@@ -2553,6 +2553,7 @@ class SimpleApp {
         const vFwd = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
         const vStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
         this.scene.setVehicleMove(vFwd, vStrafe);
+        this.scene.getOrbitCamera().setMoveInput(vFwd, vStrafe);
         this.currentThrottle = Math.max(Math.abs(vFwd), Math.abs(vStrafe) * 0.5);
         this.applyLook(deltaTime);
         this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
@@ -2569,10 +2570,13 @@ class SimpleApp {
 
         // Apply player input (keyboard merged with the touch joystick)
         const joy = this.ui.getJoystick();
-        this.scene.setPlayerMovement(
-          Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
-          Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
-        );
+        const walkForward = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
+        const walkStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
+        this.scene.setPlayerMovement(walkForward, walkStrafe);
+        // The chase camera reads the input direction too: it holds its follow
+        // when the direction swings, and under reduced motion recentres once
+        // the visitor stands still.
+        this.scene.getOrbitCamera().setMoveInput(walkForward, walkStrafe);
         const player = this.scene.getPlayer();
         // Swim: hold Space to stay afloat in water (same key jumps on land)
         if (player) player.setSwimIntent(jumpInput);

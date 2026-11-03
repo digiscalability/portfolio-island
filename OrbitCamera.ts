@@ -68,6 +68,31 @@ export class OrbitCamera {
   private static readonly FOLLOW_HOLD_S = 1.0;
   private static readonly FOLLOW_RAMP_S = 0.8;
 
+  // ---- Follow: only motion AWAY from the camera, at a capped rate --------
+  // The follow swung the camera behind ANY motion, so holding D (strafe)
+  // turned the view at ~145°/s and walked the avatar round in a circle.
+  // Now a sideways or backward step leaves the camera be; motion away from
+  // it is followed through a smoothstep gate, at most 1.2 rad/s on foot and
+  // 2.4 rad/s riding.
+  private static readonly FOLLOW_CAP_FOOT = 1.2; // rad/s
+  private static readonly FOLLOW_CAP_RIDE = 2.4; // rad/s
+  private static readonly FOLLOW_CAP_RIDE_REDUCED = 0.6; // rad/s
+  // This frame's movement input in the camera's frame (setMoveInput).
+  private moveForward = 0;
+  private moveStrafe = 0;
+  // The follow pauses for 0.35 s after the input direction turns > 45°.
+  private moveRefAngle: number | null = null;
+  private followHold = 0;
+  private static readonly TURN_HOLD_S = 0.35;
+  private static readonly TURN_HOLD_ANGLE = Math.PI / 4;
+  // Reduced motion never follows on foot; once the visitor has stood still
+  // for 0.5 s, the camera recentres behind their facing at under 34°/s, once
+  // per stop (a manual look cancels it).
+  private sinceMoveInput = Number.POSITIVE_INFINITY;
+  private reducedRecentrePending = false;
+  private static readonly REDUCED_IDLE_S = 0.5;
+  private static readonly REDUCED_RECENTRE_RATE = 0.59; // rad/s
+
   private smoothness: number = 0.16; // interpolation factor for smooth camera — was 0.2; the slightly lazier follow is part of the calm-locomotion pass (pairs with the 8.0→5.6 walk speed)
   // True only while flyInFromDistant owns the camera. The intro fly-in runs on
   // its OWN requestAnimationFrame loop and writes camera.position directly; the
@@ -198,6 +223,12 @@ export class OrbitCamera {
   private _rcFacing = new THREE.Vector3();
   private _rcFollow = new THREE.Vector3();
   private _rcCross = new THREE.Vector3();
+  private _followCross = new THREE.Vector3();
+  private _followQuat = new THREE.Quaternion();
+  // The look target last frame, for the reduced-motion carry in update().
+  private _prevTarget = new THREE.Vector3();
+  private _rmStep = new THREE.Vector3();
+  private hasPrevTarget = false;
   private baseFov = 0; // captured on first ride; 0 = fov untouched so far
   private fovTarget = 0;
 
@@ -323,12 +354,17 @@ export class OrbitCamera {
         : this.player.getVelocityInto(this._camVel);
       vTangent.addScaledVector(surfaceNormal, -vTangent.dot(surfaceNormal));
       if (vTangent.lengthSq() > 0.25) {
-        const desired = this._desired.copy(vTangent).normalize().negate(); // behind the motion
-        const strength =
-          (this.rideMode ? this.followStrength * 1.8 : this.followStrength) * this.followGain();
-        const k = Math.min(1, strength * deltaTime);
-        if (k > 0) this.followDir.lerp(desired, k).normalize();
+        // Only motion AWAY from the camera is followed: away is 1 walking
+        // straight away, 0 sideways or toward the camera.
+        const vDir = this._desired.copy(vTangent).normalize();
+        const away = Math.min(1, Math.max(0, -vDir.dot(this.followDir)));
+        const strength = this.followStrengthFor(away);
+        if (strength > 0) {
+          // behind the motion, by a capped angular step
+          this.turnFollowToward(vDir.negate(), surfaceNormal, strength, deltaTime);
+        }
       }
+      if (this.reducedRecentreDue()) this.reducedRecentreStep(surfaceNormal, deltaTime);
       // Velocity look-ahead: bias the look target along the (tangent-plane)
       // motion so the camera frames where you're GOING, not where you are.
       // Spring-smoothed via frame-rate-independent decay — raw velocity would
@@ -487,6 +523,10 @@ export class OrbitCamera {
     this.distance = Math.max(this.minDistance, Math.min(this.maxDistance, this.distance));
     this.height = Math.max(this.minHeight, Math.min(this.maxHeight, this.height));
 
+    // Movement input this frame: the follow's turn hold and the
+    // reduced-motion recentre clock.
+    this.trackMoveInput(safeDeltaTime);
+
     // Update camera position
     this.updateCameraPosition(safeDeltaTime);
 
@@ -506,6 +546,18 @@ export class OrbitCamera {
     // the orbit (the camera swung in toward the avatar) and trailed the
     // applied yaw by ~0.1 s.
     if (yawStep !== 0 || pitchStep !== 0) this.orbitLive(currentCamPos, yawStep, pitchStep);
+
+    // Reduced motion: the live camera travels WITH the visitor across the
+    // ground instead of trailing them, so walking off never swings the view
+    // (the trail turned it ~10° in the first half-second of a strafe). Only
+    // the tangential part: jumps and slopes still ease, as before.
+    if (a11y.reducedMotion && this.hasPrevTarget) {
+      const step = this._rmStep.subVectors(this.targetPosition, this._prevTarget);
+      step.addScaledVector(this._camNormal, -step.dot(this._camNormal));
+      if (step.lengthSq() < 4) currentCamPos.add(step); // a teleport is a snap's job
+    }
+    this._prevTarget.copy(this.targetPosition);
+    this.hasPrevTarget = true;
 
     // Same Hz-independence for the position ease: convert the tuned per-frame
     // factor (assumed 60Hz) into a rate, then apply it over the real dt.
@@ -546,6 +598,111 @@ export class OrbitCamera {
   }
 
   /**
+   * How hard the camera swings behind motion that is `away` (0..1) from it:
+   * the follow strength (1.8× riding) through smoothstep(0.35, 0.9, away),
+   * times the manual-look hold. Zero while the input direction has just
+   * turned, and on foot under reduced motion.
+   */
+  private followStrengthFor(away: number): number {
+    if (a11y.reducedMotion && !this.rideMode) return 0;
+    if (this.followHold > 0) return 0;
+    const t = Math.min(1, Math.max(0, (away - 0.35) / (0.9 - 0.35)));
+    const gate = t * t * (3 - 2 * t);
+    const base = this.rideMode ? this.followStrength * 1.8 : this.followStrength;
+    return base * gate * this.followGain();
+  }
+
+  /**
+   * Turn followDir toward `desired` about `n` by min(angle·(1 − e^(−strength·dt)),
+   * cap·dt): the old lerp-and-normalize, with its angular speed capped at
+   * 1.2 rad/s on foot, 2.4 riding (0.6 riding under reduced motion).
+   */
+  private turnFollowToward(
+    desired: THREE.Vector3,
+    n: THREE.Vector3,
+    strength: number,
+    dt: number,
+  ): void {
+    const fd = this.followDir;
+    if (!fd) return;
+    const cap = !this.rideMode
+      ? OrbitCamera.FOLLOW_CAP_FOOT
+      : a11y.reducedMotion
+        ? OrbitCamera.FOLLOW_CAP_RIDE_REDUCED
+        : OrbitCamera.FOLLOW_CAP_RIDE;
+    const angle = Math.atan2(this._followCross.copy(fd).cross(desired).dot(n), fd.dot(desired));
+    const step = Math.min(Math.abs(angle) * (1 - Math.exp(-strength * dt)), cap * dt);
+    if (step > 0) {
+      fd.applyQuaternion(this._followQuat.setFromAxisAngle(n, Math.sign(angle) * step)).normalize();
+    }
+  }
+
+  /** Reduced motion, on foot, idle for 0.5 s since moving, and no manual look since. */
+  private reducedRecentreDue(): boolean {
+    return (
+      this.reducedRecentrePending &&
+      a11y.reducedMotion &&
+      !this.rideMode &&
+      this.sinceMoveInput >= OrbitCamera.REDUCED_IDLE_S
+    );
+  }
+
+  /** One frame of the reduced-motion recentre: behind the player's facing, ≤ 0.59 rad/s. */
+  private reducedRecentreStep(n: THREE.Vector3, dt: number): void {
+    const fd = this.followDir;
+    const behind = this.player.getWorldDirection(this._rcFacing);
+    behind.addScaledVector(n, -behind.dot(n));
+    if (!fd || behind.lengthSq() < 1e-8) {
+      this.reducedRecentrePending = false;
+      return;
+    }
+    behind.normalize().negate();
+    const angle = Math.atan2(this._followCross.copy(fd).cross(behind).dot(n), fd.dot(behind));
+    const step = Math.min(Math.abs(angle), OrbitCamera.REDUCED_RECENTRE_RATE * dt);
+    if (step > 0) {
+      fd.applyQuaternion(this._followQuat.setFromAxisAngle(n, Math.sign(angle) * step)).normalize();
+    }
+    if (Math.abs(angle) - step < 0.005) this.reducedRecentrePending = false;
+  }
+
+  /**
+   * This frame's movement input in the camera's frame, from main-simple: on
+   * foot the keys plus the stick, riding the throttle and steering. Read and
+   * cleared by update(): when the input direction turns by more than 45° the
+   * follow waits 0.35 s, and under reduced motion the camera recentres once
+   * the visitor has had no input for 0.5 s.
+   */
+  public setMoveInput(forward: number, strafe: number): void {
+    this.moveForward = Number.isFinite(forward) ? forward : 0;
+    this.moveStrafe = Number.isFinite(strafe) ? strafe : 0;
+  }
+
+  /** Track the movement input for the follow's turn hold and the reduced-motion recentre. */
+  private trackMoveInput(dt: number): void {
+    this.followHold = Math.max(0, this.followHold - dt);
+    if (Math.hypot(this.moveForward, this.moveStrafe) > 0.1) {
+      const ang = Math.atan2(this.moveStrafe, this.moveForward);
+      if (this.moveRefAngle === null) {
+        this.moveRefAngle = ang;
+      } else {
+        let d = ang - this.moveRefAngle;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        if (Math.abs(d) > OrbitCamera.TURN_HOLD_ANGLE) {
+          this.followHold = OrbitCamera.TURN_HOLD_S;
+          this.moveRefAngle = ang;
+        }
+      }
+      this.sinceMoveInput = 0;
+      if (a11y.reducedMotion && !this.rideMode) this.reducedRecentrePending = true;
+    } else {
+      this.moveRefAngle = null;
+      this.sinceMoveInput += dt;
+    }
+    this.moveForward = 0;
+    this.moveStrafe = 0;
+  }
+
+  /**
    * Look input, in RADIANS: deltaYaw > 0 turns the view right, deltaPitch > 0
    * moves the camera as a downward drag does (pitch × 0.8). It accumulates
    * into the look target; update() eases onto it with τ = 40 ms for a mouse
@@ -569,6 +726,7 @@ export class OrbitCamera {
     this.yawVelocity = 0;
     this.flingLeft = 0;
     this.sinceManualLook = 0;
+    this.reducedRecentrePending = false; // a manual look wins over the recentre
   }
 
   /**
@@ -588,6 +746,7 @@ export class OrbitCamera {
     this.yawVelocity = 0;
     this.flingLeft = 0;
     this.sinceManualLook = 0;
+    this.reducedRecentrePending = false; // a manual look wins over the recentre
   }
   private static readonly KEY_TURN_RATE = Math.PI / 2; // 90°/s
   private static readonly KEY_TILT_RATE = Math.PI / 3; // 60°/s
@@ -604,6 +763,7 @@ export class OrbitCamera {
     this.yawVelocity = -rate;
     this.flingLeft = OrbitCamera.FLING_CAP;
     this.sinceManualLook = 0;
+    this.reducedRecentrePending = false; // a manual look wins over the recentre
   }
 
   /**
@@ -626,6 +786,7 @@ export class OrbitCamera {
     this.yawVelocity = 0;
     this.flingLeft = 0;
     this.sinceManualLook = 0;
+    this.reducedRecentrePending = false; // a manual look wins over the recentre
     if (a11y.reducedMotion) {
       this.yawStepPending += this.yawTarget - this.yawApplied;
       this.yawApplied = this.yawTarget;
@@ -716,6 +877,7 @@ export class OrbitCamera {
     this.yawVelocity = 0;
     this.flingLeft = 0;
     this.sinceManualLook = 0;
+    this.reducedRecentrePending = false; // a manual look wins over the recentre
     this.snapToPlayer();
   }
 

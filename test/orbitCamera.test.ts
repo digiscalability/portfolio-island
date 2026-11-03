@@ -275,3 +275,165 @@ describe('auto-follow waits for a manual look to finish (A4)', () => {
     expect(followTurn(cam, camera, player, 0.5)).toBeGreaterThan(5);
   });
 });
+
+// ---- A5: the follow takes only motion away from the camera ----------------
+
+const followDirOf = (cam: OrbitCamera): THREE.Vector3 =>
+  (cam as unknown as { followDir: THREE.Vector3 }).followDir;
+/** Signed angle (deg) of the follow direction from where it started, about +Y. */
+const followYaw = (start: THREE.Vector3, now: THREE.Vector3): number =>
+  Math.atan2(start.clone().cross(now).y, start.dot(now)) * DEG;
+/** Walk in a fixed WORLD direction for `seconds`, with input `input` each frame. */
+const walk = (
+  cam: OrbitCamera,
+  player: FakePlayer,
+  dir: THREE.Vector3,
+  seconds: number,
+  input: [number, number] = [1, 0],
+) => {
+  player.vel.copy(dir).normalize().multiplyScalar(5.6);
+  for (let t = 0; t < seconds - 1e-9; t += 1 / 60) {
+    cam.setMoveInput(input[0], input[1]);
+    cam.update(1 / 60);
+  }
+};
+
+describe('strafing walks a straight line (A5)', () => {
+  // At rest the camera sits south of the player: followDir +Z, looking -Z.
+
+  test('a sideways walk leaves the camera where it is', () => {
+    const { player, cam } = rig();
+    const f0 = followDirOf(cam).clone();
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 2, [0, 1]); // D, held 2 s
+    expect(Math.abs(followYaw(f0, followDirOf(cam)))).toBeLessThan(0.5);
+  });
+
+  test('walking toward the camera does not swing it round', () => {
+    const { player, cam } = rig();
+    const f0 = followDirOf(cam).clone();
+    walk(cam, player, new THREE.Vector3(0, 0, 1), 2, [-1, 0]); // S
+    expect(Math.abs(followYaw(f0, followDirOf(cam)))).toBeLessThan(0.5);
+  });
+
+  test('walking away a little off-axis settles behind the motion within 1.5 s', () => {
+    const { player, cam } = rig();
+    // 25° off straight-away (north), toward the east
+    const dir = new THREE.Vector3(
+      Math.sin((25 * Math.PI) / 180),
+      0,
+      -Math.cos((25 * Math.PI) / 180),
+    );
+    walk(cam, player, dir, 1.5);
+    const behind = dir.clone().negate();
+    expect(followDirOf(cam).angleTo(behind) * DEG).toBeLessThan(2);
+  });
+
+  test('the swing never turns faster than 1.2 rad/s on foot, 2.4 riding', () => {
+    for (const ride of [false, true]) {
+      const { player, cam } = rig();
+      (cam as unknown as { followStrength: number }).followStrength = 50; // make the cap bind
+      cam.setRideMode(ride);
+      const dir = new THREE.Vector3(Math.sin(0.4), 0, -Math.cos(0.4)); // 23° off
+      player.vel.copy(dir).multiplyScalar(5);
+      let prev = followDirOf(cam).clone();
+      let fastest = 0;
+      for (let i = 0; i < 30; i++) {
+        cam.setMoveInput(1, 0);
+        cam.update(1 / 60);
+        fastest = Math.max(fastest, prev.angleTo(followDirOf(cam)) * 60);
+        prev = followDirOf(cam).clone();
+      }
+      expect(fastest, `ride=${ride}`).toBeLessThanOrEqual((ride ? 2.4 : 1.2) + 1e-6);
+      expect(fastest, `ride=${ride}`).toBeGreaterThan((ride ? 2.4 : 1.2) * 0.9);
+    }
+  });
+
+  test('the follow waits 0.35 s after the input direction turns by more than 45°', () => {
+    const { player, cam } = rig();
+    const dir = new THREE.Vector3(Math.sin(0.4), 0, -Math.cos(0.4));
+    walk(cam, player, dir, 0.1, [1, 0]); // W
+    const f0 = followDirOf(cam).clone();
+    walk(cam, player, dir, 0.3, [0.7, 0.7]); // W+D: exactly 45°, no hold
+    expect(followDirOf(cam).angleTo(f0)).toBeGreaterThan(0);
+    const f1 = followDirOf(cam).clone();
+    walk(cam, player, dir, 0.3, [0, -1]); // A: a 135° swing, the follow holds
+    expect(followDirOf(cam).angleTo(f1)).toBe(0);
+    walk(cam, player, dir, 0.3, [0, -1]);
+    expect(followDirOf(cam).angleTo(f1)).toBeGreaterThan(0);
+  });
+});
+
+describe('reduced motion: no follow on foot, a calm recentre once still (A5)', () => {
+  test('moving: under 5°/s; stopped 0.5 s: recentres behind the facing at ≤ 34°/s', () => {
+    a11y.reducedMotion = true;
+    const { player, cam } = rig();
+    player.facing.set(1, 0, 0); // strafing east, facing east
+    const f0 = followDirOf(cam).clone();
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 2, [0, 1]);
+    expect(Math.abs(followYaw(f0, followDirOf(cam))) / 2).toBeLessThan(5);
+    // stop
+    player.vel.set(0, 0, 0);
+    let prev = followDirOf(cam).clone();
+    let fastest = 0;
+    let behindAt = -1;
+    for (let i = 1; i <= 6 * 60; i++) {
+      cam.update(1 / 60);
+      const now = followDirOf(cam);
+      fastest = Math.max(fastest, (prev.angleTo(now) * DEG) / (1 / 60));
+      prev = now.clone();
+      if (i === 29) expect(now.angleTo(f0) * DEG).toBeLessThan(0.5); // still waiting at 0.48 s
+      if (behindAt < 0 && now.angleTo(new THREE.Vector3(-1, 0, 0)) * DEG < 1) behindAt = i / 60;
+    }
+    expect(fastest).toBeLessThanOrEqual(34);
+    expect(behindAt).toBeGreaterThan(0.5);
+    expect(behindAt).toBeLessThan(6);
+  });
+
+  test('the view does not swing as the visitor walks off sideways', () => {
+    a11y.reducedMotion = true;
+    const { camera, player, cam } = rig();
+    player.facing.set(1, 0, 0);
+    const h0 = heading(camera);
+    let worst = 0;
+    player.vel.set(3.4, 0, 0);
+    for (let i = 0; i < 120; i++) {
+      player.pos.x += 3.4 / 60; // the visitor really moves (a flat patch at the pole)
+      cam.setMoveInput(0, 1);
+      cam.update(1 / 60);
+      worst = Math.max(worst, Math.abs(heading(camera) - h0));
+    }
+    expect(worst).toBeLessThan(3);
+  });
+
+  test('a manual look cancels the recentre', () => {
+    a11y.reducedMotion = true;
+    const { player, cam } = rig();
+    player.facing.set(1, 0, 0);
+    walk(cam, player, new THREE.Vector3(1, 0, 0), 0.5, [0, 1]);
+    player.vel.set(0, 0, 0);
+    cam.setInput(0.3, 0); // look around while standing
+    run(cam, 0.3, 1 / 60);
+    const looked = followDirOf(cam).clone();
+    run(cam, 4, 1 / 60);
+    expect(followDirOf(cam).angleTo(looked) * DEG).toBeLessThan(0.01);
+  });
+
+  test('riding still follows, capped at 0.6 rad/s', () => {
+    a11y.reducedMotion = true;
+    const { player, cam } = rig();
+    (cam as unknown as { followStrength: number }).followStrength = 50;
+    cam.setRideMode(true);
+    const dir = new THREE.Vector3(Math.sin(0.4), 0, -Math.cos(0.4));
+    player.vel.copy(dir).multiplyScalar(5);
+    let prev = followDirOf(cam).clone();
+    let fastest = 0;
+    for (let i = 0; i < 30; i++) {
+      cam.setMoveInput(1, 0);
+      cam.update(1 / 60);
+      fastest = Math.max(fastest, prev.angleTo(followDirOf(cam)) * 60);
+      prev = followDirOf(cam).clone();
+    }
+    expect(fastest).toBeLessThanOrEqual(0.6 + 1e-6);
+    expect(fastest).toBeGreaterThan(0.5);
+  });
+});
