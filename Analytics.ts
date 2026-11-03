@@ -13,6 +13,21 @@
  * offline visitor, or a missing plan feature must never break the game. In dev
  * nothing is sent; events are logged and pushed to `window.__analyticsLog` so
  * the wiring can be asserted without polluting production numbers.
+ *
+ * Two things keep the numbers honest (the analytics were mostly the owner's
+ * own visits, with no way to tell traffic sources apart):
+ *  - OWNER OPT-OUT: open the island once with ?owner=1 and this browser stops
+ *    counting (events here, pageviews via inject's beforeSend in main-simple).
+ *    ?owner=0 undoes it.
+ *  - ATTRIBUTION: the KEY_EVENTS below carry `src` and, when the link was
+ *    tagged, `campaign`, read from the ds_entry context main-simple captures
+ *    at boot. Vercel Pro keeps 2 custom properties per event (Web Analytics
+ *    Plus keeps 8) and does not document which keys survive past that, so
+ *    attribution only fills the room an event's own props leave: prop-less
+ *    events (welcome_shown, contact_opened, lead_submitted) get src and
+ *    campaign, one-prop events (welcome_cta, hire_cta, loader_skip) get src,
+ *    and events with two or more props of their own (zone_explored,
+ *    external_link, session_end) are sent as they are.
  */
 
 type Props = Record<string, string | number | boolean | null>;
@@ -25,9 +40,88 @@ declare global {
   }
 }
 
+const OWNER_KEY = 'ds_owner';
+let ownerParamRead = false;
+
+/** True in a browser the owner marked with ?owner=1 (until ?owner=0). */
+export function isOwnerVisit(): boolean {
+  try {
+    if (!ownerParamRead) {
+      ownerParamRead = true;
+      const flag = new URLSearchParams(window.location.search).get('owner');
+      if (flag === '1') localStorage.setItem(OWNER_KEY, '1');
+      else if (flag === '0') localStorage.removeItem(OWNER_KEY);
+    }
+    return localStorage.getItem(OWNER_KEY) === '1';
+  } catch {
+    return false; // no storage: count the visit
+  }
+}
+
+/** The funnel and conversion events that carry the entry attribution. */
+const KEY_EVENTS = new Set([
+  'world_ready',
+  'welcome_shown',
+  'welcome_cta',
+  'zone_explored',
+  'reached_portfolio',
+  'contact_opened',
+  'hire_cta',
+  'external_link',
+  'email_copied',
+  'lead_submitted',
+  'loader_skip',
+  'session_end',
+]);
+
+/**
+ * Where this session came from, from the ds_entry context main-simple stores
+ * once per tab: utm_source, else the referring host, else 'direct'. A
+ * same-site referrer means the visitor bounced through a /z/<zone> share link
+ * ('z-link') or another island page ('internal'). `campaign` only when the
+ * link carried utm_campaign.
+ */
+export function entryAttribution(): { src: string; campaign?: string } {
+  try {
+    const raw = sessionStorage.getItem('ds_entry');
+    const entry: { ref?: string; utm?: Record<string, string> } = raw ? JSON.parse(raw) : {};
+    const utm = entry.utm ?? {};
+    let src = (utm.utm_source ?? '').trim().toLowerCase().slice(0, 40);
+    if (!src && entry.ref) {
+      const ref = new URL(entry.ref);
+      if (ref.hostname === window.location.hostname) {
+        src = ref.pathname.startsWith('/z/') ? 'z-link' : 'internal';
+      } else {
+        src = ref.hostname.replace(/^www\./, '');
+      }
+    }
+    const campaign = (utm.utm_campaign ?? '').trim().slice(0, 60);
+    return campaign ? { src: src || 'direct', campaign } : { src: src || 'direct' };
+  } catch {
+    return { src: 'unknown' };
+  }
+}
+
+/** Custom properties Vercel keeps per event on the Pro plan. */
+const MAX_EVENT_PROPS = 2;
+
+/**
+ * Add the entry attribution to a key event, but only into the room its own
+ * props leave under MAX_EVENT_PROPS (src first, then campaign), so the
+ * event's own dimension is never the key Vercel might drop.
+ */
+function withAttribution(props?: Props): Props | undefined {
+  const room = MAX_EVENT_PROPS - Object.keys(props ?? {}).length;
+  if (room <= 0) return props;
+  const a = entryAttribution();
+  return { ...props, src: a.src, ...(room > 1 && a.campaign ? { campaign: a.campaign } : {}) };
+}
+
 /** Fire an event. Safe to call from anywhere; never throws. */
 export function track(name: string, props?: Props): void {
   try {
+    if (isOwnerVisit()) return;
+    if (KEY_EVENTS.has(name)) props = withAttribution(props);
     if (import.meta.env.DEV) {
       (window.__analyticsLog ??= []).push({ name, props });
       console.info('[analytics]', name, props ?? '');

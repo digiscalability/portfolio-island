@@ -2,8 +2,8 @@ import { inject } from '@vercel/analytics';
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { startDwellTracking, track, trackOnce } from './Analytics';
-import { applyCelShadowPatch } from './CelLook';
+import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
+import { setInkVisible } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
@@ -12,8 +12,16 @@ import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
+import { enterOpensChat } from './keyGuards';
 import { Multiplayer } from './Multiplayer';
-import { askNpc, askNpcOpening, composeAwareGreeting, isAiNpc, voiceProfileFor } from './NpcChat';
+import {
+  AI_NPCS,
+  askNpc,
+  askNpcOpening,
+  composeAwareGreeting,
+  isAiNpc,
+  voiceProfileFor,
+} from './NpcChat';
 import { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import {
@@ -48,7 +56,12 @@ import './style.css';
 // screen (or hit the WebGL fallback) was invisible — the top of the funnel was
 // unmeasured. inject() is cookieless and failure-safe; custom events stay lazy.
 try {
-  inject({ mode: import.meta.env.PROD ? 'production' : 'development' });
+  inject({
+    mode: import.meta.env.PROD ? 'production' : 'development',
+    // Owner opt-out: after one visit with ?owner=1 this browser's pageviews
+    // stop counting too, not just the custom events (Analytics.isOwnerVisit).
+    beforeSend: (event) => (isOwnerVisit() ? null : event),
+  });
 } catch {
   /* ad-blocker / offline — never let analytics break the app */
 }
@@ -71,6 +84,19 @@ try {
   }
 } catch {
   /* no storage — attribution is best-effort */
+}
+
+/** One stop on the cinematic tour rail (SimpleApp.startTour). */
+interface TourStop {
+  caption: string;
+  look: THREE.Vector3; // surface point the camera studies
+  dir: THREE.Vector3; // camera position direction (unit, from planet centre)
+  r: number; // camera position radius
+  alt: number; // camera height above the subject
+  back: number; // camera set-back along the tangent
+  /** A villager stop: who to frame, in order of preference. Re-read (and
+   *  held in place) when the leg to it starts, because villagers walk. */
+  villagers?: readonly string[];
 }
 
 /**
@@ -117,25 +143,26 @@ class SimpleApp {
   // While active the orbit camera is suspended and this drives the scene
   // camera directly; the world (NPCs, sea, activities) keeps living.
   private tour: {
-    stops: Array<{
-      caption: string;
-      look: THREE.Vector3; // surface point the camera studies
-      dir: THREE.Vector3; // camera position direction (unit, from planet centre)
-      r: number; // camera position radius
-    }>;
+    stops: TourStop[];
     idx: number;
     t: number;
     phase: 'fly' | 'dwell';
     fromDir: THREE.Vector3;
     fromR: number;
     fromLook: THREE.Vector3;
+    /** The villager this tour is holding in place (GameScene dialogue hold). */
+    held: string | null;
   } | null = null;
+  /** afterIntro has run: the welcome card, if any, is up or already closed. */
+  private introSettled = false;
   // Tour scratch (kept allocation-free per frame)
   private readonly _tourDir = new THREE.Vector3();
   private readonly _tourLook = new THREE.Vector3();
   private readonly _tourUp = new THREE.Vector3();
   private readonly _tourAxis = new THREE.Vector3();
   private readonly _tourQ = new THREE.Quaternion();
+  // Villager line-of-sight probe (firstHitOnly: the terrain's BVH fast path)
+  private readonly _tourRay = Object.assign(new THREE.Raycaster(), { firstHitOnly: true });
 
   // Completion meter recompute throttle (localStorage reads are cheap; 2.5s
   // keeps the pill fresh without touching storage every frame)
@@ -339,6 +366,7 @@ class SimpleApp {
   private readonly _audioPos = new THREE.Vector3(); // per-frame ambient sea-swell probe
   private readonly _qcCross = new THREE.Vector3();
   private readonly _qcTmp = new THREE.Vector3();
+  private readonly _hintPos = new THREE.Vector3(); // talk-hint proximity probe
 
   private boundHandlers: {
     beforeUnload?: () => void;
@@ -362,10 +390,10 @@ class SimpleApp {
     try {
       console.log('🎮 Starting SimpleApp initialization...');
 
-      // Global shader-chunk patches, BEFORE any material compiles — the
-      // program cache never rebuilds compiled ones. Cel shadow edges for the
-      // default cel theme; the ?look=soft fog experiment for ?theme=real.
-      applyCelShadowPatch();
+      // Global shader-chunk patch, BEFORE any material compiles — the
+      // program cache never rebuilds compiled ones: the ?look=soft fog
+      // experiment for ?theme=real. (The cel shadow-edge patch is gone: it had
+      // matched nothing since three r165 and warned on every load. CelLook.)
       applySoftLookFogPatch();
 
       // Get or create canvas
@@ -386,6 +414,13 @@ class SimpleApp {
         zIndex: '500',
         display: 'block',
       });
+      // A name for the 3D view (axe: unlabelled canvas). The panels the
+      // Portfolio menu opens carry the same work and contact details as text.
+      canvas.setAttribute('role', 'img');
+      canvas.setAttribute(
+        'aria-label',
+        "Life Island, Abbas Ali's portfolio as a live 3D world. The Portfolio menu has the same work and contact details as text.",
+      );
 
       console.log('✓ Canvas created');
 
@@ -735,6 +770,9 @@ class SimpleApp {
               track('npc_chat_sent', { npc: npcData.name });
               const res = await askNpc(npcData.name, text);
               if (res.reply && !res.fallback) return res.reply;
+              // A written line stands in (askNpc counted it as npc_fallback),
+              // so the header stops promising a generated reply.
+              this.ui.markNpcChatOffline(npcData.name);
               return canned[ci++ % canned.length] ?? '…';
             },
             voiceProfileFor(npcData.name),
@@ -866,7 +904,10 @@ class SimpleApp {
           const ledger = this.visitLedger();
           if (ledger.streak >= 2) {
             window.setTimeout(
-              () => this.ui.toast(`📅 Day ${ledger.streak} in a row — the island kept a light on.`),
+              () =>
+                this.ui.toast(`📅 Day ${ledger.streak} in a row — the island kept a light on.`, {
+                  hint: true,
+                }),
               6000,
             );
           }
@@ -889,11 +930,18 @@ class SimpleApp {
         saveProfile({ coins: total });
         if (total >= 100) trackOnce('coins_milestone', { n: 100 });
         else if (total >= 50) trackOnce('coins_milestone', { n: 50 });
-        // One-time pointer at the earning guide, on the first coin.
+        // One-time pointer at the earning guide, on the first coin collected
+        // AFTER the welcome card. The spawn often sits on a trail coin, so it
+        // was collected mid fly-in and the coin tip became the first text a
+        // visitor read, ahead of the pitch and the compass hint. The key is
+        // not burned until the tip can actually show.
         try {
-          if (!localStorage.getItem('ds_hint_earn')) {
+          const welcomePending = !this.introSettled || this.ui.isWelcomeVisible();
+          if (!welcomePending && !localStorage.getItem('ds_hint_earn')) {
             localStorage.setItem('ds_hint_earn', '1');
-            this.ui.toast('🪙 Coins! The 📔 Journal (Portfolio menu) lists every way to earn.');
+            this.ui.toast('🪙 Coins! The 📔 Journal (Portfolio menu) lists every way to earn.', {
+              hint: true,
+            });
           }
         } catch {
           /* no storage */
@@ -1168,7 +1216,14 @@ class SimpleApp {
       // Cinematic tour + race guide CTAs (welcome modal / leaderboards) and the
       // UI-side completion flags (guestbook, Times, say-hi) refreshing the pill.
       this.ui.setOnTour(() => this.startTour());
-      this.ui.setOnRecruitTour(() => this.startTour(true));
+      // The recruiter tour now starts from a button INSIDE the hire card,
+      // which may be open while the visitor stands in a building — where the
+      // tour cannot run. Say so instead of leaving a dead button.
+      this.ui.setOnRecruitTour(() => {
+        this.startTour(true);
+        if (!this.tour)
+          this.ui.flashMessage('🎬 Step outside first — the tour flies over the island.');
+      });
       this.ui.setOnRaceGuide(() => this.guideToRace());
       this.ui.setOnProgressMade(() => this.refreshCompletion());
       this.refreshCompletion();
@@ -1255,6 +1310,13 @@ class SimpleApp {
       this.boundHandlers.chatKeydown = (e: KeyboardEvent) => {
         if (this.ui.isChatInputOpen()) return; // the input owns the keyboard while typing
         if (e.key === 'Enter') {
+          // Enter belongs to whatever already used it. A focused button or
+          // link activates itself on Enter, and this window listener ran as
+          // well, so "See the work" opened Projects AND the name prompt,
+          // and a second Enter published "Visitor". Chat opens only from the
+          // bare world: nothing focused, no welcome card, no panel open
+          // (keyGuards.ts, exercised in test/keyGuards.test.ts).
+          if (!enterOpensChat(e, this.ui)) return;
           // First time a name becomes visible to OTHERS — ask for it here
           // (lazily), not as a gate on the whole site.
           this.ensureNamed(() => this.ui.openChatInput());
@@ -1340,7 +1402,9 @@ class SimpleApp {
               // gazebo request on a small plot back to the plot default, and
               // the toast must name what actually appeared.
               const kindName = GameScene.resolveKind(b.plot, b.kind) ?? 'structure';
-              this.ui.toast(`🔨 A visitor just raised a ${kindName} — it's on your map.`);
+              this.ui.toast(`🔨 A visitor just raised a ${kindName} — it's on your map.`, {
+                hint: true,
+              });
             }
           },
           (r) => {
@@ -1359,6 +1423,7 @@ class SimpleApp {
             if (totalBuilds > seen && seen > 0) {
               this.ui.toast(
                 `🏘️ Visitors raised ${totalBuilds - seen} structure${totalBuilds - seen > 1 ? 's' : ''} while you were away.`,
+                { hint: true },
               );
             }
             localStorage.setItem('ds_seen_builds', String(totalBuilds));
@@ -1379,6 +1444,7 @@ class SimpleApp {
       // for a multiplayer game" before the portfolio pitch) — it is now lazy,
       // asked only when a social feature actually needs a name (ensureNamed).
       const afterIntro = () => {
+        this.introSettled = true; // the welcome card (if any) opens below
         // The governor starts measuring only NOW. The fly-in is the single
         // heaviest, least representative view in the game (whole planet in
         // frustum, intro-lite quality), and with the governor's clocks on true
@@ -1488,6 +1554,13 @@ class SimpleApp {
         //     is independent of the freeze), so the 1.5s unfreeze never hitches.
         this.renderer.setIntroResolution(0.7);
         this.renderer.setShadowFreeze(true);
+        //   • hide the ink outlines — one shared MATERIAL flag (never
+        //     Object3D.visible: coins and birds use that as game state, and
+        //     input is live during the swoop). MEASURED at a fixed fly-in
+        //     pose: 1,563 of the frame's 5,077 draws were ink hulls, lines a
+        //     fraction of a pixel wide from that distance. No-op where no ink
+        //     is built (low tier, ?theme=real).
+        setInkVisible(false);
         // RESTORE MID-SWOOP, NOT ON ARRIVAL. Firing on the frame the camera
         // settles put the biggest visual discontinuity in the game at the exact
         // moment the player first looks at the island — read as the screen
@@ -1514,8 +1587,8 @@ class SimpleApp {
         //   on for ~1s of motion. So bloom waits for ARRIVAL, when the camera is
         //   still and there is nothing to ghost (the on-step itself is
         //   imperceptible — measured mean +0.24/255 at the settled view).
-        // Restores ALL three intro-lite levers at once (grass, resolution,
-        // shadows). Fired at 1500ms — under camera motion, ~74% of the way in
+        // Restores ALL four intro-lite levers at once (grass, resolution,
+        // shadows, ink). Fired at 1500ms — under camera motion, ~74% of the way in
         // (ease-in-out), where the whole-image change hides and the frame has
         // lightened enough (closer camera, more culled) to afford full quality
         // for the final approach. Idempotent, so the arrival .then can call it
@@ -1524,8 +1597,17 @@ class SimpleApp {
           this.scene.getIsland().setGrassBudget(1);
           this.renderer.setIntroResolution(null);
           this.renderer.setShadowFreeze(false);
+          setInkVisible(true);
         };
-        window.setTimeout(restoreIntroQuality, 1500);
+        // The 1.5s clock starts at the swoop's FIRST FRAME, like the fly-in's
+        // own stall-immune clock. Started here, it ran out before any frame
+        // drew: warmUp below compiles every program synchronously. MEASURED
+        // (hardware GL, dev server): scheduled at 2253ms, render loop at
+        // 4573ms, timer ran at 4574ms, first frame 4729ms; a production build
+        // shows the same ~2.5s from world gen to the first frame. So all four
+        // levers were restored before the visitor saw the swoop: the
+        // intro-lite never engaged.
+        requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500));
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
@@ -1972,10 +2054,10 @@ class SimpleApp {
   // actually SHOWS the portfolio, not just its name (the full panel still opens).
   private static readonly INTERIOR_CONTENT: Record<string, [string, string]> = {
     welcome: ['5 districts\nto explore', 'Hand-built\nin Three.js'],
-    professional: ['Abbas Ali\nFull-stack\nAI builder', 'Next.js · TS\nFirebase\nPython'],
-    projects: ['RankPilot\nlive AI-SEO\nplatform', 'ChocoMate\nBano’s\nInsta Services'],
-    personal: ['Food · Family\nCreative\ntooling', 'Melbourne,\nAustralia'],
-    contact: ['Work with\nDigiScalability', 'admin@\ndigiscalability\n.com'],
+    professional: ['Abbas Ali\nAI & software\nengineer', 'Next.js · TS\nThree.js\nFirebase'],
+    projects: ['RankPilot\nAI-SEO app\n(pre-launch)', 'Bano’s\nInsta Services\nChocoMate'],
+    personal: ['Kitchens · Family\nCreative\ntooling', 'Melbourne,\nVictoria'],
+    contact: ['Hiring, or\na project?', 'admin@\ndigiscalability\n.com'],
   };
 
   // Which themed furniture set each zone building opens into (houses → cottage).
@@ -2070,7 +2152,9 @@ class SimpleApp {
     try {
       const z = new URLSearchParams(location.search).get('zone');
       if (!z) return false;
-      if (['welcome', 'professional', 'projects', 'personal', 'contact'].includes(z)) {
+      // 'hire' is the recruiter card (SimpleUI.showHireCard), not a district;
+      // api/z.js serves its /z/hire share route.
+      if (['welcome', 'professional', 'projects', 'personal', 'contact', 'hire'].includes(z)) {
         this.ui.hideWelcome();
         this.ui.showZonePanel({ id: z, name: z }, { source: 'deeplink' });
         return true;
@@ -2081,10 +2165,17 @@ class SimpleApp {
     return false;
   }
 
+  /** "Skip — just browsing" is remembered for the session (instance flag +
+   *  sessionStorage, so a reload in the same tab keeps it). */
+  private nameSkipped = false;
+  private static readonly NAME_SKIP_KEY = 'ds_name_skipped';
+
   /**
    * Lazy naming: run `then` once the visitor has a name, prompting only the
    * first time a social feature (race leaderboard, chat) actually needs one.
-   * An empty name from the prompt (skip) proceeds anonymously without saving.
+   * An empty name from the prompt (skip) proceeds anonymously without saving,
+   * and the skip is REMEMBERED for the session: asking again on every chat
+   * open re-gated the visitor who had already said no.
    */
   private ensureNamed(then: () => void): void {
     try {
@@ -2095,10 +2186,27 @@ class SimpleApp {
     } catch {
       /* no storage — proceed to prompt */
     }
+    let skipped = this.nameSkipped;
+    try {
+      skipped ||= sessionStorage.getItem(SimpleApp.NAME_SKIP_KEY) === '1';
+    } catch {
+      /* no session storage — the instance flag still holds for this page */
+    }
+    if (skipped) {
+      then();
+      return;
+    }
     this.ui.promptName('', (name) => {
       if (name) {
         this.multiplayer?.setName(name);
         saveProfile({ name });
+      } else {
+        this.nameSkipped = true;
+        try {
+          sessionStorage.setItem(SimpleApp.NAME_SKIP_KEY, '1');
+        } catch {
+          /* no session storage */
+        }
       }
       then();
     });
@@ -2252,7 +2360,7 @@ class SimpleApp {
             const key = `ds_hint_district_${bestId}`;
             if (bestDot > 0.9 && DISTRICT_INTRO[bestId] && !localStorage.getItem(key)) {
               localStorage.setItem(key, '1');
-              this.ui.toast(DISTRICT_INTRO[bestId]);
+              this.ui.toast(DISTRICT_INTRO[bestId], { hint: true });
             }
           }
         }
@@ -2277,28 +2385,32 @@ class SimpleApp {
             this.ui.isTouchDevice()
               ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the ➤ compass guides you.'
               : '🗺️ Lost? Tap the radar (or press M) for the island map — pick a spot and the ➤ compass guides you.',
+            { hint: true },
           );
         }
       } catch {
         /* no storage */
       }
-      // One-time "that's a live AI villager" discovery hint, fired while
-      // APPROACHING (4x the E-prompt range, derived not hand-written) — the
-      // product's differentiator otherwise only announces itself inside 2.5u.
-      // The key is also set where NPC chat opens, so a visitor who found the
-      // feature themselves never gets taught what they already know.
+      // One-time "a villager nearby talks through Claude Haiku 4.5" discovery
+      // hint, fired while APPROACHING (4x the E-prompt range, derived not
+      // hand-written) — the product's differentiator otherwise only announces
+      // itself inside 2.5u. Only an AI villager sets it off: near one of the 4
+      // scripted ones (the market vendors, the first mate, the deckhand) the line
+      // would be untrue. The key is also set where NPC chat opens, so a visitor
+      // who found the feature themselves never gets taught what they already know.
       try {
         if (
           !localStorage.getItem('ds_hint_talk') &&
           !this.ui.isWelcomeVisible() &&
           !this.tour &&
-          this.scene.hasVillagerWithin(4 * this.scene.getInteractionRange())
+          this.aiVillagerWithin(4 * this.scene.getInteractionRange())
         ) {
           localStorage.setItem('ds_hint_talk', '1');
           this.ui.toast(
             this.ui.isTouchDevice()
-              ? '💬 That’s a live AI villager — walk up and tap USE to ask anything.'
-              : '💬 That’s a live AI villager — walk up and press E to ask anything.',
+              ? '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and tap USE to ask anything.'
+              : '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and press E to ask anything.',
+            { hint: true },
           );
         }
       } catch {
@@ -2475,7 +2587,7 @@ class SimpleApp {
             try {
               if (!localStorage.getItem('ds_hint_eat')) {
                 localStorage.setItem('ds_hint_eat', '1');
-                this.ui.toast('😮‍💨 Winded? Press G to eat and restore stamina.');
+                this.ui.toast('😮‍💨 Winded? Press G to eat and restore stamina.', { hint: true });
               }
             } catch {
               /* no storage */
@@ -3443,34 +3555,45 @@ class SimpleApp {
         .getZones()
         .map((z) => [z.id, z.getPosition()] as const),
     );
-    const stops: Array<{ caption: string; look: THREE.Vector3; dir: THREE.Vector3; r: number }> =
-      [];
+    const stops: TourStop[] = [];
     const addStop = (
       p: THREE.Vector3 | null | undefined,
       caption: string,
       alt: number,
       back: number,
+      villagers?: readonly string[],
     ) => {
       if (!p) return;
-      const up = p.clone().normalize();
-      const tan = new THREE.Vector3(0, 1, 0).cross(up);
-      if (tan.lengthSq() < 0.05) tan.set(1, 0, 0).cross(up);
-      tan.normalize();
-      const camPos = p.clone().addScaledVector(up, alt).addScaledVector(tan, back);
-      stops.push({
+      const stop: TourStop = {
         caption,
-        look: p.clone().addScaledVector(up, 1.4),
-        dir: camPos.clone().normalize(),
-        r: camPos.length(),
-      });
+        look: new THREE.Vector3(),
+        dir: new THREE.Vector3(),
+        r: 0,
+        alt,
+        back,
+        villagers,
+      };
+      this.frameTourStop(stop, p);
+      stops.push(stop);
     };
+    // Counted from the client roster (AI_NPCS), never typed into a caption.
+    const aiCount = Object.keys(AI_NPCS).length;
+    // Villager stops name a preference order, then the whole AI roster as a
+    // fallback, so an awake villager is almost always on hand to frame.
+    const villagerStop = (preferred: string[]): [THREE.Vector3 | null, string[]] => {
+      const names = [...preferred, ...Object.keys(AI_NPCS)];
+      const who = this.tourVillager(names);
+      return [who ? this.scene.getNpcPosition(who) : null, names];
+    };
+    const [storyteller, storytellerNames] = villagerStop(['Storyteller', 'Gardener']);
+    const [gardener, gardenerNames] = villagerStop(['Gardener', 'Guard']);
     if (recruiter) {
-      // RECRUITER MODE \u2014 the 60-second play-to-hire path (the deep-dive
+      // RECRUITER MODE \u2014 the short play-to-hire path (the deep-dive
       // critic's top flag: nothing routed a visitor from playing to hiring).
-      // Four punchy stops, shorter dwell, and it ENDS on the contact panel.
+      // Four punchy stops, shorter dwell, and it ENDS on the hire card.
       addStop(
         zones.get('welcome'),
-        'Abbas Ali \u2014 full-stack + AI engineer. This whole planet is his hand-built portfolio.',
+        'Abbas Ali \u2014 AI & software engineer, Melbourne. This whole planet is his hand-built portfolio.',
         24,
         8,
       );
@@ -3481,14 +3604,15 @@ class SimpleApp {
         14,
       );
       addStop(
-        this.scene.getNpcPosition('Storyteller') ?? this.scene.getNpcPosition('Gardener'),
-        'Every villager is a live AI agent with a voice \u2014 planned, scheduled, and reported on by LLMs.',
+        storyteller,
+        `${aiCount} villagers talk through Claude Haiku 4.5, with a voice \u2014 planned each morning, reported on nightly.`,
         6.5,
         9,
+        storytellerNames,
       );
       addStop(
         zones.get('contact'),
-        "That's the 60-second version \u2014 the contact form sends Abbas a real email.",
+        "That's the short version \u2014 next: his CV, experience and contact details.",
         8.5,
         13,
       );
@@ -3507,17 +3631,18 @@ class SimpleApp {
       );
       addStop(
         zones.get('projects'),
-        'The Projects District \u2014 ventures under construction: RankPilot, ChocoMate, and friends.',
+        'The Projects District \u2014 this island, RankPilot (pre-launch), Bano\u2019s Cookbook and more.',
         9.5,
         14,
       );
       addStop(
-        this.scene.getNpcPosition('Gardener') ?? this.scene.getNpcPosition('Guard'),
-        'Every townsperson is a live AI agent \u2014 planned each morning, reported on nightly. Talk to anyone.',
+        gardener,
+        `${aiCount} townsfolk talk through Claude Haiku 4.5 \u2014 planned each morning, reported on nightly. Walk up and talk.`,
         // High enough to clear tree canopies \u2014 NPC positions are live, so a low
         // camera is occlusion roulette (a prod capture found a tree filling it).
         6.5,
         9,
+        gardenerNames,
       );
       addStop(
         zones.get('personal'),
@@ -3546,9 +3671,127 @@ class SimpleApp {
       fromDir: cam.position.clone().normalize(),
       fromR: Math.max(cam.position.length(), 20),
       fromLook: playerPos.clone(),
+      held: null,
     };
+    this.holdTourVillager(stops[0]);
     this.ui.showTourOverlay(() => this.endTour(true));
+    // The opening caption shows at once (it introduces the whole planet);
+    // every later caption swaps in on LANDING (landTourStop).
     this.ui.setTourCaption(stops[0].caption);
+  }
+
+  /** Place the camera for a stop that studies surface point `p`, set back
+   *  along the default tangent turned `turn` radians about the local up. */
+  private frameTourStop(stop: TourStop, p: THREE.Vector3, turn = 0): void {
+    const up = p.clone().normalize();
+    const tan = new THREE.Vector3(0, 1, 0).cross(up);
+    if (tan.lengthSq() < 0.05) tan.set(1, 0, 0).cross(up);
+    tan.normalize();
+    if (turn) tan.applyAxisAngle(up, turn);
+    const camPos = p.clone().addScaledVector(up, stop.alt).addScaledVector(tan, stop.back);
+    stop.look.copy(p).addScaledVector(up, 1.4);
+    stop.dir.copy(camPos).normalize();
+    stop.r = camPos.length();
+  }
+
+  /**
+   * An AI villager (one of AI_NPCS, never one of the 4 scripted ones) is
+   * visible within `radius` of the player. Gates the one-time talk hint, which
+   * says the villager talks through Claude Haiku 4.5. Same visibility rule as
+   * GameScene.hasVillagerWithin, so it never points at someone indoors.
+   */
+  private aiVillagerWithin(radius: number): boolean {
+    const p = this.scene.getPlayer()?.getWorldPositionInto(this._hintPos);
+    if (!p) return false;
+    const targets = this.scene.getIsland().npcTargets;
+    return targets.some(
+      (n) => isAiNpc(n.name) && n.meshRef.visible && n.meshRef.position.distanceTo(p) < radius,
+    );
+  }
+
+  /**
+   * First of `names` who is up and about. Asleep villagers are hidden indoors,
+   * and one walking to bed vanishes the moment a hold stops it; falls back to
+   * any villager with a position.
+   */
+  private tourVillager(names: readonly string[]): string | null {
+    const targets = this.scene.getIsland().npcTargets;
+    for (const n of names) {
+      const t = targets.find((x) => x.name === n);
+      if (t?.meshRef.visible && this.scene.getNpcActivity(n) !== 'sleep') return n;
+    }
+    return names.find((n) => this.scene.getNpcPosition(n)) ?? null;
+  }
+
+  /**
+   * At the START of the leg to a villager stop: re-read where the villager is
+   * now and hold them there for the flight and the dwell. The stop used to
+   * keep the position read when the tour began, ~20 s earlier, so the camera
+   * landed on wherever the villager had been (a prod capture: a parked car and
+   * trees under a caption about villagers).
+   */
+  private holdTourVillager(stop: TourStop): void {
+    const tour = this.tour;
+    if (!tour || !stop.villagers) return;
+    const who = this.tourVillager(stop.villagers);
+    const p = who ? this.scene.getNpcPosition(who) : null;
+    if (!who || !p) return; // keep the start-of-tour framing
+    this.frameTourStop(stop, p, this.clearTourBearing(stop, p));
+    // Never take over a real conversation's hold (none can start mid-tour,
+    // but the slot is shared).
+    if (!this.npcDialogueName) {
+      this.scene.setNpcDialogueHold(who);
+      tour.held = who;
+    }
+  }
+
+  /**
+   * A bearing (turn about the villager's up) whose camera can SEE the
+   * villager. Villagers stand among buildings and trees, and one fixed
+   * bearing parked the camera behind them: SEEN in a capture, the held
+   * Storyteller dead centre in the frame and hidden by an office block.
+   * Tries eight bearings against the chase camera's own view-blocker list
+   * (terrain + every mesh big enough to block a view ray; it ray-tests that
+   * list every frame, so eight rays once per leg cost nothing).
+   */
+  private clearTourBearing(stop: TourStop, p: THREE.Vector3): number {
+    // Private on OrbitCamera; read here rather than widening its API.
+    const blockers = (this.scene.getOrbitCamera() as unknown as { collisionMeshes?: THREE.Mesh[] })
+      .collisionMeshes;
+    if (!blockers?.length) return 0;
+    const probe: TourStop = { ...stop, look: new THREE.Vector3(), dir: new THREE.Vector3() };
+    const camPos = new THREE.Vector3();
+    const toCam = new THREE.Vector3();
+    for (let k = 0; k < 8; k++) {
+      const turn = (k * Math.PI) / 4;
+      this.frameTourStop(probe, p, turn);
+      camPos.copy(probe.dir).multiplyScalar(probe.r);
+      toCam.subVectors(camPos, probe.look);
+      const dist = toCam.length();
+      this._tourRay.set(probe.look, toCam.divideScalar(dist));
+      this._tourRay.near = 0.5; // clear of the villager's own head
+      this._tourRay.far = dist;
+      if (this._tourRay.intersectObjects(blockers, false).length === 0) return turn;
+    }
+    return 0; // every bearing blocked: keep the default framing
+  }
+
+  /** Let the tour's villager walk on again. */
+  private releaseTourVillager(): void {
+    const tour = this.tour;
+    if (!tour?.held) return;
+    if (!this.npcDialogueName) this.scene.setNpcDialogueHold(null);
+    tour.held = null;
+  }
+
+  /** The camera has arrived: start the dwell and show THIS stop's caption.
+   *  Swapping it at take-off described the next stop for the whole flight. */
+  private landTourStop(): void {
+    const tour = this.tour;
+    if (!tour) return;
+    tour.phase = 'dwell';
+    tour.t = 0;
+    if (tour.idx > 0) this.ui.setTourCaption(tour.stops[tour.idx].caption);
   }
 
   private updateTour(dt: number): void {
@@ -3567,8 +3810,7 @@ class SimpleApp {
         cam.position.copy(stop.dir).multiplyScalar(stop.r);
         cam.up.copy(this._tourUp.copy(cam.position).normalize());
         cam.lookAt(stop.look);
-        tour.phase = 'dwell';
-        tour.t = 0;
+        this.landTourStop();
         return;
       }
       const k = Math.min(1, tour.t / SimpleApp.TOUR_FLY_S);
@@ -3580,10 +3822,7 @@ class SimpleApp {
       this._tourLook.copy(tour.fromLook).lerp(stop.look, e);
       cam.up.copy(this._tourUp.copy(cam.position).normalize());
       cam.lookAt(this._tourLook);
-      if (k >= 1) {
-        tour.phase = 'dwell';
-        tour.t = 0;
-      }
+      if (k >= 1) this.landTourStop();
     } else {
       // Gentle drift around the stop while the caption is read — held static
       // under reduced motion (a rotation the user cannot stop, however slow,
@@ -3609,17 +3848,20 @@ class SimpleApp {
     }
     const cam = this.scene.getCamera();
     const prev = tour.stops[tour.idx];
+    this.releaseTourVillager();
     tour.idx += 1;
     tour.phase = 'fly';
     tour.t = 0;
     tour.fromDir.copy(cam.position).normalize();
     tour.fromR = cam.position.length();
     tour.fromLook.copy(prev.look);
-    this.ui.setTourCaption(tour.stops[tour.idx].caption);
+    // The caption stays on the stop being left until the camera lands.
+    this.holdTourVillager(tour.stops[tour.idx]);
   }
 
   private endTour(skipped: boolean): void {
     if (!this.tour) return;
+    this.releaseTourVillager();
     this.tour = null;
     this.ui.hideTourOverlay();
     // The return from the last tour stop to the follow pose is a
@@ -3643,9 +3885,10 @@ class SimpleApp {
           : 'tour_complete',
     );
     if (recruiter && !skipped) {
-      // The play-to-hire path CONVERTS: the highlights end on the contact
-      // panel with the lead form ready, not on an empty meadow.
-      this.ui.showZonePanel({ id: 'contact', name: 'Get In Touch' }, { source: 'cta' });
+      // The play-to-hire path CONVERTS: the highlights end on the hire card
+      // (CV, experience, LinkedIn, email), not on an empty meadow — and not
+      // on the old client-services contact pitch.
+      this.ui.showHireCard('cta');
       return;
     }
     this.ui.flashMessage('\ud83e\udded The island is yours \u2014 walk anywhere, talk to anyone');
@@ -4736,6 +4979,7 @@ class SimpleApp {
         };
         this.ui.toast(
           `⭐ ${marketDay ? 'Market day! ' : ''}${label[this.featured.provider as ProviderKey]} is paying extra today.`,
+          { hint: true },
         );
       }
     } catch {
@@ -5332,40 +5576,71 @@ class SimpleApp {
   }
 
   /**
-   * Display error screen on initialization failure
+   * Init failed: hand the visitor to index.html's #boot-fallback card, which
+   * carries the portfolio itself (who, the work, the contact links).
+   *
+   * This used to paint a full-screen z-9999 overlay with the raw error.stack
+   * in innerHTML. With no WebGL the boot guard had ALREADY shown the fallback
+   * card (z 4000), so the overlay landed on top of it: visitors saw a red
+   * JavaScript stack trace instead of the portfolio. Now: the fallback stays
+   * on top, nothing from the error is rendered (it is logged, and reported
+   * as a short init_failed reason), and the bare overlay is gone.
    */
-  private showErrorScreen(error: Error): void {
-    const errorDiv = document.createElement('div');
-    Object.assign(errorDiv.style, {
+  private showErrorScreen(error: unknown): void {
+    // Tell index.html's boot guard that init already failed and the card is
+    // up. Its showFallback() must stand down on this flag: otherwise its 60 s
+    // watchdog later rewrites the reason the visitor is reading ("timed out")
+    // and sends a second boot_fallback on top of init_failed.
+    (window as Window & { __lifeIslandBootFailed?: boolean }).__lifeIslandBootFailed = true;
+    const reason = String((error as Error | null)?.message ?? error ?? 'unknown').slice(0, 120);
+    track('init_failed', { reason });
+    try {
+      this.ui?.hideLoading(); // our own loader must not linger behind the card
+      // A visitor reading the loader's quick version has no island to go
+      // back to now: drop its Back button and skip wording first.
+      this.ui?.closeQuickVersion();
+    } catch {
+      /* the UI may be the thing that failed */
+    }
+    const fallback = document.getElementById('boot-fallback');
+    if (fallback) {
+      if (fallback.hidden) {
+        // WebGL exists but init still failed (a throw mid-boot). The boot
+        // guard only shows the card for errors that ESCAPE, and init() caught
+        // this one, so show it here with the guard's own generic wording.
+        const why = document.getElementById('bf-reason');
+        if (why) why.textContent = 'but something went wrong loading it.';
+        fallback.hidden = false;
+      }
+      document.getElementById('loading-screen')?.style.setProperty('display', 'none');
+      return;
+    }
+    // No fallback markup at all (a stripped page): a plain card, text only.
+    const card = document.createElement('div');
+    Object.assign(card.style, {
       position: 'fixed',
-      top: '0',
-      left: '0',
-      width: '100%',
-      height: '100%',
-      background: '#1a1a1a',
-      color: '#ff6b6b',
-      fontFamily: 'monospace',
-      padding: '20px',
-      zIndex: '9999',
-      overflow: 'auto',
+      inset: '0',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '14px',
+      padding: '24px',
+      background: '#0b1220',
+      color: '#e6edf7',
+      fontFamily: 'system-ui, sans-serif',
+      textAlign: 'center',
+      zIndex: '4000',
     });
-
-    errorDiv.innerHTML = `
-      <h1>❌ Initialization Error</h1>
-      <p>${error.message}</p>
-      <pre>${error.stack || ''}</pre>
-      <button onclick="location.reload()" style="
-        background: #ff6b6b;
-        color: white;
-        border: none;
-        padding: 10px 20px;
-        margin-top: 20px;
-        cursor: pointer;
-        font-size: 16px;
-      ">Reload Page</button>
-    `;
-
-    document.body.appendChild(errorDiv);
+    const msg = document.createElement('p');
+    msg.textContent =
+      "The 3D island couldn't start in this browser. Abbas Ali's portfolio is also at digiscalability.com.";
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Try again';
+    retry.addEventListener('click', () => location.reload());
+    card.append(msg, retry);
+    document.body.appendChild(card);
   }
 
   /**

@@ -3,9 +3,8 @@
  * 2026-08-09 from the art-direction bake-off).
  *
  * Four pieces, all verified against three ~0.180 in the deep-dive:
- *  1. CEL SHADOWS: a global shadowmap chunk patch that thresholds every
- *     shadow term — PCFSoft's penumbra becomes the anti-aliasing of a crisp
- *     cel edge. Apply ONCE before any material compiles.
+ *  1. CEL SHADOWS: NOT ACTIVE (see section 1 below). Shadow edges are three's
+ *     stock PCF.
  *  2. RIM LIGHT: per-material onBeforeCompile injection at
  *     <opaque_fragment> (r154+ name of output_fragment) — a fresnel gated by
  *     the lit side (the BotW recipe), on the CAST only (villagers + player);
@@ -29,50 +28,22 @@ export function isCelTheme(): boolean {
   return !isRealTheme();
 }
 
-// ── 1. Cel shadow edges ─────────────────────────────────────────────────────
-
-let shadowPatched = false;
-
-/**
- * Threshold every getShadow variant so soft penumbras read as crisp cel edges.
- * Call before ANY material compiles (the program cache never rebuilds).
- *
- * FAILS LOUDLY NOW, because it had already stopped working silently. It splits
- * on `return shadow;`, and three moved that line to
- * `return mix( 1.0, shadow, shadowIntensity );` in r165 when per-light shadow
- * intensity landed. Verified against the installed 0.180: `return shadow;`
- * occurs ZERO times in shadowmap_pars_fragment. split().join() with no match
- * returns the string unchanged, so the patch has been a no-op — while still
- * logging that it applied, which is how it survived. Two commit messages in
- * this repo went on to explain shadow artefacts as "CelLook turns the mid-grey
- * PCF into a hard black step"; that was never true on this version.
- *
- * DELIBERATELY NOT REPOINTED at shadowmask_pars_fragment, which is where
- * `return shadow;` now lives. shadowIntensity is mixed in INSIDE getShadow,
- * before the mask is returned, so thresholding the mask would distort every
- * intermediate value of the horizon fade in GameScene.updateSunShadow — an
- * eased ramp would become a snap that never reaches a clean off. If the crisp
- * cel edge is wanted back, it has to be applied to `shadow` before that mix,
- * which means patching the chunk body rather than its return.
- */
-export function applyCelShadowPatch(): void {
-  if (shadowPatched || !isCelTheme()) return;
-  shadowPatched = true;
-  const chunk = THREE.ShaderChunk.shadowmap_pars_fragment;
-  if (!chunk.includes('return shadow;')) {
-    console.warn(
-      '✒️ CelLook: cel shadow-edge patch SKIPPED — three no longer returns `shadow;` ' +
-        'from shadowmap_pars_fragment (moved to the shadowIntensity mix in r165). ' +
-        'Shadow edges are three’s stock PCF, not cel-thresholded.',
-    );
-    return;
-  }
-  // split/join = replaceAll without needing the es2021 lib target.
-  THREE.ShaderChunk.shadowmap_pars_fragment = chunk
-    .split('return shadow;')
-    .join('return smoothstep( 0.35, 0.65, shadow );');
-  console.log('✒️ CelLook: cel shadow-edge patch applied');
-}
+// ── 1. Cel shadow edges: removed (stock PCF) ────────────────────────────────
+//
+// The old applyCelShadowPatch() split shadowmap_pars_fragment on
+// `return shadow;`, a line three moved to
+// `return mix( 1.0, shadow, shadowIntensity );` in r165 (per-light shadow
+// intensity). On the installed 0.180 it matched nothing, so for months it was
+// a no-op that first logged "applied" and later warned on every page load.
+// Deleted rather than ported: porting CHANGES THE LOOK (Abbas's call). Two
+// older commit messages blame shadow artefacts on "CelLook turning the
+// mid-grey PCF into a hard black step"; that was never true on this version.
+//
+// If the crisp cel edge is wanted back, threshold `shadow` INSIDE getShadow,
+// before the shadowIntensity mix (patch the chunk body, not its return). Do
+// NOT threshold shadowmask_pars_fragment, where `return shadow;` lives now:
+// the intensity is already mixed in there, so every intermediate value of the
+// horizon fade in GameScene.updateSunShadow would snap instead of easing.
 
 // ── 2. Rim light on the cast ────────────────────────────────────────────────
 
@@ -128,6 +99,7 @@ export function updateCelRim(sunWorldDir: THREE.Vector3, camera: THREE.Camera): 
 
 const INK_COLOR = 0x1c2430;
 let inkMat: THREE.MeshBasicMaterial | null = null;
+let inkVisible = true;
 function getInkMat(): THREE.MeshBasicMaterial {
   if (!inkMat) {
     inkMat = new THREE.MeshBasicMaterial({
@@ -135,8 +107,25 @@ function getInkMat(): THREE.MeshBasicMaterial {
       side: THREE.BackSide,
       fog: true, // Sable-style: lines fade with the same fog as the world
     });
+    inkMat.visible = inkVisible; // a hull baked mid-intro joins the current state
   }
   return inkMat;
+}
+
+/**
+ * Show or hide EVERY ink hull at once, through the one material they share.
+ * The intro fly-in hides them: with the whole planet in frustum, ~1,550 of
+ * its ~5,080 draws per frame were hulls (measured at a fixed fly-in pose), at
+ * a distance where a 0.016u line is sub-pixel anyway.
+ *
+ * Material.visible ONLY. Object3D.visible on hulls, coins or birds is game
+ * state (coin respawn, peck mode) and input is live during the fly-in.
+ * WebGLRenderer.compile() prepares materials whatever their visibility, so the
+ * warm-up still compiles the ink programs behind the loader.
+ */
+export function setInkVisible(visible: boolean): void {
+  inkVisible = visible;
+  if (inkMat) inkMat.visible = visible;
 }
 
 const hullGeoCache = new Map<string, THREE.BufferGeometry>();

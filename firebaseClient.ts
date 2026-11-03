@@ -1,5 +1,12 @@
 import { initializeApp, type FirebaseApp } from 'firebase/app';
-import { getAuth, signInAnonymously } from 'firebase/auth';
+import {
+  browserLocalPersistence,
+  browserSessionPersistence,
+  indexedDBLocalPersistence,
+  initializeAuth,
+  signInAnonymously,
+  type Auth,
+} from 'firebase/auth';
 import { getDatabase, type Database } from 'firebase/database';
 
 // Public Firebase web config for the `life-island` project. The apiKey is a
@@ -53,6 +60,28 @@ async function maybeInitAppCheck(app: FirebaseApp): Promise<void> {
 }
 
 /**
+ * Auth for ANONYMOUS sign-in only, which is all this app uses. getAuth() also
+ * wires in browserPopupRedirectResolver, and on mobile browsers and Safari
+ * that resolver starts PROACTIVELY: it loads gapi (apis.google.com) and the
+ * <authDomain>/__/auth/iframe during the intro fly-in (~138 KB), and on a
+ * host missing from the OAuth domain list it logs an "unauthorized domain"
+ * warning in every visitor's console. Popup and redirect sign-in are never
+ * called here, so the resolver is left out.
+ *
+ * The persistences are getAuth()'s three, in its order, so a returning
+ * visitor keeps the same anonymous uid. Cached: initializeAuth throws if
+ * called again with different options, and a retry after a failed attempt
+ * (see the ready.catch below) must reuse this instance.
+ */
+let auth: Auth | null = null;
+function anonymousAuth(app: FirebaseApp): Auth {
+  auth ??= initializeAuth(app, {
+    persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence],
+  });
+  return auth;
+}
+
+/**
  * Lazily initialise Firebase, sign in anonymously, and return the Realtime
  * Database handle + this session's uid. Cached so repeat callers share one
  * app/auth/connection.
@@ -62,7 +91,7 @@ export function getFirebaseRealtime(): Promise<{ app: FirebaseApp; db: Database;
     ready = (async () => {
       const app: FirebaseApp = initializeApp(firebaseConfig);
       await maybeInitAppCheck(app);
-      const cred = await signInAnonymously(getAuth(app));
+      const cred = await signInAnonymously(anonymousAuth(app));
       return { app, db: getDatabase(app), uid: cred.user.uid };
     })();
     // DO NOT CACHE A REJECTION. `if (!ready)` is false for a rejected promise,

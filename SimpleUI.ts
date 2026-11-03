@@ -132,6 +132,19 @@ const CHIP_ICON: Partial<CSSStyleDeclaration> = {
   fontSize: '15px',
 };
 
+/**
+ * The owner's identity links, in ONE place. LinkedIn is the PERSONAL profile
+ * (the old /in/ slug here was the brand page); GitHub buttons open this
+ * island's repo, not the bare org profile; the CV is the web CV on the main
+ * site. test/claimsPanels.test.ts pins these.
+ */
+const OWNER = {
+  linkedin: 'https://www.linkedin.com/in/-abbas-ali',
+  repo: 'https://github.com/digiscalability/portfolio-island',
+  cv: 'https://digiscalability.com/about',
+  email: 'admin@digiscalability.com',
+} as const;
+
 export class SimpleUI {
   private overlay: HTMLElement;
   private loadingDiv: HTMLElement | null = null;
@@ -1037,24 +1050,99 @@ export class SimpleUI {
    *   featured toast fired under the opaque loader and burned its
    *   localStorage key without ever being seen).
    */
-  public toast(message: string): void {
+  public toast(message: string, opts?: { hint?: boolean }): void {
     message = this.touchifyPlain(message);
     // Drop exact duplicates already waiting — a queue of three "+1 🪙" adds
     // nothing.
     if (this.toastQueue.includes(message)) return;
     this.toastQueue.push(message);
+    if (opts?.hint) this.hintToasts.add(message);
     this.pumpToasts();
+  }
+
+  /** Queued messages that are HINTS (see takeToast), by text. */
+  private readonly hintToasts = new Set<string>();
+
+  /**
+   * Dequeue the next toast that may show now, or null to wait. Hints — the
+   * unprompted onboarding and world lines (compass, coins, districts, streak,
+   * world news) — wait while any panel, the menu or the tour is open: the
+   * first-run compass hint landed on the contact form and on the recruiter
+   * tour. Everything else answers something the visitor just did, often
+   * inside that very panel (the lead form's "Please add your email.", a shop
+   * purchase, "Link copied"), so it never waits behind a hint.
+   */
+  private takeToast(): string | null {
+    const i = this.panels.isOpen() ? this.toastQueue.findIndex((m) => !this.hintToasts.has(m)) : 0;
+    if (i < 0) return null;
+    const [message] = this.toastQueue.splice(i, 1);
+    const hint = this.hintToasts.delete(message);
+    this.shownHint = hint ? message : null;
+    if (hint) this.watchHintToast(message);
+    return message;
+  }
+
+  /** The hint toast on screen right now, if the current toast is one. */
+  private shownHint: string | null = null;
+
+  /**
+   * A hint already showing when a panel, the menu or the tour opens bows out
+   * at once and goes back to the head of the queue, to show again after the
+   * panel closes. Measured before this: the talk hint stayed over a freshly
+   * opened hire card for the rest of its dwell. Polls only while the hint
+   * shows (6 s at most).
+   */
+  private watchHintToast(hint: string): void {
+    const iv = window.setInterval(() => {
+      if (this.shownHint !== hint || !this.toastBusy) {
+        window.clearInterval(iv);
+        return;
+      }
+      if (!this.panels.isOpen()) return;
+      window.clearInterval(iv);
+      this.stepHintAside();
+    }, 120);
+  }
+
+  /**
+   * Take the hint on screen down NOW, with no fade, and put it back at the
+   * head of the queue. The hire card, the Portfolio panels, the menu and the
+   * centred modals call this as they open: waiting for the poll above left
+   * the compass hint painted over a just-opened hire card for a tick plus
+   * the 200 ms fade (measured at 390x844).
+   */
+  private stepHintAside(): void {
+    const hint = this.shownHint;
+    if (hint === null || !this.toastBusy) return;
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    const el = this.toastEl;
+    if (el) {
+      // Hide with the fade switched off, flush styles so the hide lands
+      // unanimated, then switch the fade back on for the next toast.
+      const fade = el.style.transition;
+      el.style.transition = 'none';
+      el.style.opacity = '0';
+      void getComputedStyle(el).opacity;
+      el.style.transition = fade;
+    }
+    this.shownHint = null;
+    this.toastBusy = false;
+    if (!this.toastQueue.includes(hint)) {
+      this.toastQueue.unshift(hint);
+      this.hintToasts.add(hint);
+    }
+    window.setTimeout(() => this.pumpToasts(), 250);
   }
 
   private pumpToasts(): void {
     if (this.toastBusy || this.toastQueue.length === 0) return;
     // Not while an opaque loader or the welcome/name modal owns the screen —
     // re-checked on a short poll so deferred messages surface right after.
-    if (this.isLoadingVisible() || this.isWelcomeVisible()) {
+    const message = this.isLoadingVisible() || this.isWelcomeVisible() ? null : this.takeToast();
+    if (message === null) {
       window.setTimeout(() => this.pumpToasts(), 700);
       return;
     }
-    const message = this.toastQueue.shift()!;
     this.toastBusy = true;
     if (!this.toastEl) {
       this.toastEl = document.createElement('div');
@@ -1424,6 +1512,7 @@ export class SimpleUI {
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => modal.remove(),
     });
+    this.stepHintAside();
     Object.assign(modal.style, {
       position: 'fixed',
       top: '50%',
@@ -1532,13 +1621,16 @@ export class SimpleUI {
     // 16px on touch: same anti-focus-zoom defense the chat inputs carry — iOS
     // zooms any focused field under 16px even where user-scalable=no is ignored
     // (in-app webviews), and this is the site's primary conversion form.
-    const field = `width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-size:${this.isTouch ? '16px' : '14px'};outline:1px solid rgba(255,255,255,0.15);`;
+    // font-family:inherit: form controls default to the UA font, which left
+    // the message box in monospace. aria-label + autocomplete: the fields
+    // had placeholders only (axe: unlabelled form fields).
+    const field = `width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};outline:1px solid rgba(255,255,255,0.15);`;
     form.innerHTML = `
       <h3 style="margin:0 0 4px;font-size:15px;">Or send a message</h3>
       <p style="margin:0 0 10px;font-size:12px;color:#9aa;">Straight to my inbox — I'll reply personally.</p>
-      <input id="lead-name" placeholder="Your name (optional)" maxlength="80" style="${field}" />
-      <input id="lead-email" type="email" placeholder="Your email" maxlength="120" style="${field}" />
-      <textarea id="lead-msg" placeholder="What are you working on?" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
+      <input id="lead-name" aria-label="Your name (optional)" autocomplete="name" placeholder="Your name (optional)" maxlength="80" style="${field}" />
+      <input id="lead-email" type="email" aria-label="Your email" autocomplete="email" placeholder="Your email" maxlength="120" style="${field}" />
+      <textarea id="lead-msg" aria-label="Your message" autocomplete="off" placeholder="A role, a project, or a question" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
       <button id="lead-send" style="width:100%;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
       <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;">Privacy</a></p>`;
     container.appendChild(form);
@@ -1728,8 +1820,8 @@ export class SimpleUI {
       `<h2 style="margin:0 0 4px;color:#8a9bff;">✍️ Guestbook</h2>
        <p style="margin:0 0 12px;font-size:13px;color:#aab;">Leave a note for the next visitor.</p>
        <div style="display:flex;gap:8px;margin-bottom:12px;">
-         <input id="gb-msg" maxlength="200" placeholder="Say hi…" style="flex:1;padding:9px 12px;border-radius:10px;
-           border:none;font-size:${this.isTouch ? '16px' : '14px'};background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
+         <input id="gb-msg" aria-label="Your guestbook note" maxlength="200" placeholder="Say hi…" style="flex:1;padding:9px 12px;border-radius:10px;
+           border:none;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
          <button id="gb-sign" style="padding:9px 16px;border:none;border-radius:10px;background:linear-gradient(135deg,#5b6cff,#8a4de0);
            color:#fff;font-size:14px;font-weight:600;cursor:pointer;">Sign</button>
        </div>
@@ -2227,8 +2319,21 @@ export class SimpleUI {
     el.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
+        // The key is spent on THIS control. Without the stop, the same Enter
+        // bubbled on to the window-level chat hotkey (main-simple), which
+        // popped the multiplayer name prompt over whatever the chip opened,
+        // and Space reached the document-level movement handler as a jump.
+        e.stopPropagation();
         el.click();
       }
+    });
+    // The stop also means a chip that KEEPS focus owns every later Enter and
+    // Space. A mouse click focuses a tabindex=0 chip, so after clicking the
+    // Portfolio chip and closing the menu, Enter re-opened the menu instead
+    // of chat. A pointer click (detail = click count, >= 1) hands focus back;
+    // the keyboard path's el.click() above has detail 0 and keeps it.
+    el.addEventListener('click', (e: MouseEvent) => {
+      if (e.detail > 0) el.blur();
     });
   }
 
@@ -3002,6 +3107,10 @@ export class SimpleUI {
     });
     this.overlay.appendChild(skip);
     this.tourSkipBtn = skip;
+    // Skip sits in the Day badge's corner. The ambient-info layer hides the
+    // badge on touch, but desktop only DIMS layers, which left it showing
+    // through under Skip; hide it outright for the tour.
+    if (this.envBadgeDiv) this.envBadgeDiv.style.visibility = 'hidden';
 
     this.tourEscHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') doSkip();
@@ -3031,6 +3140,7 @@ export class SimpleUI {
     this.tourCaptionDiv = null;
     this.tourSkipBtn?.remove();
     this.tourSkipBtn = null;
+    if (this.envBadgeDiv) this.envBadgeDiv.style.visibility = '';
     if (this.tourEscHandler) {
       document.removeEventListener('keydown', this.tourEscHandler);
       this.tourEscHandler = null;
@@ -3082,9 +3192,9 @@ export class SimpleUI {
       'beforeend',
       `<h2 style="margin:0 0 4px;color:#8a9bff;">👋 Say hi</h2>
        <p style="margin:0 0 12px;font-size:13px;color:#aab;">Leave a note on the island — takes five seconds.</p>
-       <input id="sh-name" maxlength="24" placeholder="Your name (optional)" value="${this.escapeHtml(savedName)}" style="${field}" />
-       <textarea id="sh-msg" maxlength="200" rows="3" placeholder="Hi Abbas! 👋" style="${field}resize:none;"></textarea>
-       <input id="sh-email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
+       <input id="sh-name" aria-label="Your name (optional)" autocomplete="nickname" maxlength="24" placeholder="Your name (optional)" value="${this.escapeHtml(savedName)}" style="${field}" />
+       <textarea id="sh-msg" aria-label="Your note" maxlength="200" rows="3" placeholder="Hi Abbas! 👋" style="${field}resize:none;"></textarea>
+       <input id="sh-email" aria-label="Your email, only if you'd like a reply (optional)" autocomplete="email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
        <button id="sh-send" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
          background:linear-gradient(135deg,#5b6cff,#8a4de0);color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
        <p style="margin:9px 0 0;font-size:11px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
@@ -3223,7 +3333,9 @@ export class SimpleUI {
     try {
       if (seeded && pct > prev && !localStorage.getItem('ds_hint_checklist')) {
         localStorage.setItem('ds_hint_checklist', '1');
-        this.toast('🏝 That ticked up — tap the percentage for everything worth doing here.');
+        this.toast('🏝 That ticked up — tap the percentage for everything worth doing here.', {
+          hint: true,
+        });
       }
     } catch {
       /* no storage */
@@ -3389,14 +3501,19 @@ export class SimpleUI {
     }
     trackOnce('portfolio_opened');
     this.hideZonePanel();
+    // Phones: WAVE/JUMP/USE and the 💬/🎤 buttons (z 1650) drew over this
+    // menu (z 1600), so a tap on Guestbook, Island Times, Your Pack or Island
+    // Journal could land on a touch control. The menu clears them, as every
+    // modal does; they come back when it closes.
     this.panels.open('portfolio-menu', {
       kind: 'sheet',
-      hides: ['nav-chips'],
+      hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => {
         this.portfolioMenuDiv?.remove();
         this.portfolioMenuDiv = null;
       },
     });
+    this.stepHintAside();
     const menu = document.createElement('div');
     Object.assign(menu.style, {
       position: 'fixed',
@@ -3413,8 +3530,15 @@ export class SimpleUI {
       textAlign: 'center',
       border: '1px solid rgba(255,255,255,0.15)',
       boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+      // The hire row made the menu ~708px tall: on a 375x667 phone its title
+      // and × sat off-screen. Clamp + scroll inside, like the other modals.
+      maxHeight: 'calc(100dvh - 32px)',
+      overflowY: 'auto',
     });
     const sections: Array<{ id: string; label: string }> = [
+      // The hire card is reachable from here too: a recruiter who dismissed
+      // the welcome card must not have to find the pill again.
+      { id: 'hire', label: '📄 Hiring? CV, experience and contact' },
       { id: 'welcome', label: '🏠 About this world' },
       { id: 'professional', label: '💼 Professional' },
       { id: 'projects', label: '🚀 Projects' },
@@ -3940,20 +4064,37 @@ export class SimpleUI {
                    border-radius:50%;background:#cfe4f7;box-shadow:0 0 10px rgba(160,200,240,0.8);"></div>
             </div>
           </div>
-          <div style="font-family:'Bebas Neue',system-ui,sans-serif;font-size:25px;letter-spacing:1.5px;">
+          <div style="font-family:'Bebas Neue',system-ui,sans-serif;font-size:min(48px,12vw);line-height:1.05;letter-spacing:1.5px;">
             DIGISCALABILITY LIFE ISLAND</div>
-          <div style="color:#a9bdd4;font-size:12.5px;margin-top:3px;max-width:290px;">
-            Abbas Ali's hand-built 3D portfolio — a living island run by AI agents</div>
+          <div style="color:#a9bdd4;font-size:12.5px;margin-top:6px;max-width:290px;">
+            Abbas Ali's hand-built 3D portfolio — a living 3D world where
+            ${Object.keys(AI_NPCS).length} villagers talk through Claude Haiku 4.5.</div>
           <div id="ld-msg" style="color:#8fa6bd;font-size:12.5px;margin:8px 0 16px;min-height:16px;"></div>
           <div style="width:230px;height:7px;background:rgba(255,255,255,0.12);border-radius:6px;overflow:hidden;">
             <div id="ld-bar" style="width:0%;height:100%;border-radius:6px;
                  background:linear-gradient(90deg,#4CAF50,#7fd18b);transition:width 0.35s ease;"></div>
           </div>
           <div id="ld-pct" style="color:#6e8298;font-size:11px;margin-top:8px;">0%</div>
+          ${
+            document.getElementById('boot-fallback')
+              ? `<button id="ld-skip" type="button" style="margin-top:18px;padding:10px 16px;border-radius:999px;
+                  border:1px solid rgba(255,255,255,0.22);background:rgba(255,255,255,0.06);color:#cfe0ff;
+                  font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;">Quick version (no 3D) →</button>`
+              : ''
+          }
         </div>`;
+      // 48px, not 25: on a cold desktop load the big static loader title is
+      // replaced before it ever paints, so this title is the first large text
+      // and must outsize the welcome paragraph, or LCP lands on that paragraph
+      // ~15 s in (a PageSpeed lab artefact; phones already were fine). 12vw
+      // caps it on narrow phones: before Bebas Neue arrives, the fallback
+      // font's unbreakable "DIGISCALABILITY" measured 384px at 48px.
       this.loadingBar = this.loadingDiv.querySelector('#ld-bar');
       this.loadingPct = this.loadingDiv.querySelector('#ld-pct');
       this.loadingMsg = this.loadingDiv.querySelector('#ld-msg');
+      this.loadingDiv
+        .querySelector('#ld-skip')
+        ?.addEventListener('click', () => this.openQuickVersion());
       // World generation is a single long synchronous stretch with no progress
       // events inside it, so a bar pinned to real milestones sits dead for
       // ~15s and reads as a hang. This eases toward the target and, once
@@ -4022,6 +4163,70 @@ export class SimpleUI {
 
   isLoadingVisible(): boolean {
     return this.loadingDiv !== null;
+  }
+
+  /** What #bf-reason says while the quick version is open on purpose. */
+  private static readonly QUICK_REASON = 'and it is waiting behind this card.';
+
+  /**
+   * The loader's way out: index.html's #boot-fallback card (who, the work,
+   * the contact links), opened on purpose, with a Back button. Loading goes
+   * on behind it. World generation is one long synchronous task, so a tap
+   * made during it lands when it ends; no yields were added to world gen
+   * (they would move the seeded build).
+   */
+  private openQuickVersion(): void {
+    const card = document.getElementById('boot-fallback');
+    if (!card) return;
+    track('loader_skip', { waited_s: Math.round(performance.now() / 1000) });
+    // The card's stock wording is for a browser that CAN'T run the island.
+    const why = document.getElementById('bf-reason');
+    if (why) {
+      why.dataset.stock ??= why.textContent ?? '';
+      why.textContent = SimpleUI.QUICK_REASON;
+    }
+    const retry = document.getElementById('bf-retry');
+    if (retry) retry.hidden = true; // "Try again" reloads: wrong here
+    let back = document.getElementById('bf-back');
+    if (!back) {
+      back = document.createElement('button');
+      back.id = 'bf-back';
+      (back as HTMLButtonElement).type = 'button';
+      back.textContent = '← Back to the island';
+      back.style.cssText =
+        'padding:10px 22px;border-radius:10px;border:none;background:linear-gradient(135deg,#4caf50,#3d8b40);' +
+        'color:#fff;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;';
+      back.addEventListener('click', () => {
+        // The boot guard rewrites the reason if the island failed while this
+        // card was up: there is nothing to go back to, so start over.
+        if (why && why.textContent !== SimpleUI.QUICK_REASON) {
+          window.location.reload();
+          return;
+        }
+        this.closeQuickVersion();
+      });
+      if (retry?.parentElement) retry.parentElement.insertBefore(back, retry);
+      else (card.firstElementChild ?? card).appendChild(back);
+    }
+    card.hidden = false;
+    back.focus();
+  }
+
+  /** Close the quick version and put the card back as index.html wrote it
+   *  (main-simple's init-failure path reuses the card with its own wording). */
+  public closeQuickVersion(): void {
+    const back = document.getElementById('bf-back');
+    if (!back) return; // not opened from the loader
+    back.remove();
+    const why = document.getElementById('bf-reason');
+    if (why?.dataset.stock !== undefined) {
+      why.textContent = why.dataset.stock;
+      delete why.dataset.stock;
+    }
+    const retry = document.getElementById('bf-retry');
+    if (retry) retry.hidden = false;
+    const card = document.getElementById('boot-fallback');
+    if (card) card.hidden = true;
   }
 
   /**
@@ -4109,10 +4314,13 @@ export class SimpleUI {
     // the card while "Beat the lap record" had a real button: hierarchy
     // exactly inverted from the audience priority. Same data-recruit
     // contract; amber border borrowed from the old meet-AI button.
+    // It opens the HIRE CARD at once (showHireCard). It used to start a 37 s
+    // camera tour that ended on a client pitch; that tour is now a secondary
+    // button inside the card, and it ends back on the card.
     const recruiterPill = `
       <button data-recruit style="width:100%; padding:10px 14px; margin:0 0 12px; border-radius:10px;
         background:rgba(38,38,51,0.5); color:#ffe3a3; border:1px solid rgba(255,212,121,0.45); font-size:13.5px; font-weight:600; cursor:pointer;">
-        ⏱️ Hiring? Watch the 60-second highlights</button>`;
+        📄 Hiring? CV, experience and contact</button>`;
 
     // Explicit dismiss button so the pitch stays put until the visitor chooses
     // to leave it (moving with WASD no longer evaporates it). The line under
@@ -4159,25 +4367,25 @@ export class SimpleUI {
            <span id="wlc-gb">✍️ checking the guestbook…</span>
          </div>`
       : '';
-    // The returning card is a HELLO, not a menu: delta + the two primary CTAs
-    // + an explicit way in. The tour/race/meet-AI chips were five same-moment
-    // choices on a card that auto-closes in seconds — and a returning visitor
-    // already knows those exist. (The trim was gated on returning-session
-    // welcome_cta data; Web Analytics turned out to be DISABLED on the Vercel
-    // project, so no data was ever recorded — owner called the trim.) The
-    // Explore button matters here now: intent (hover/focus/touch) cancels the
-    // auto-close, so the card needs an obvious manual way to dismiss it.
+    // The returning card is a HELLO, not a menu: delta + the Hiring pill + the
+    // two primary CTAs + an explicit way in. The tour/race/meet-AI chips were
+    // five same-moment choices on a short-lived card — and a returning visitor
+    // already knows those exist (owner's call). The Explore button is the
+    // obvious manual way out: the card no longer auto-closes (see below), so
+    // it stays until the visitor chooses.
+    // The title is the page's h1 (axe: no level-one heading), sized as the
+    // h2 it replaced.
     this.welcomeDiv.innerHTML = returning
-      ? `<h2 style="margin: 0 0 12px 0; color: #4CAF50;">👋 Welcome back!</h2>
+      ? `<h1 style="margin: 0 0 12px 0; font-size: 1.5em; color: #4CAF50;">👋 Welcome back!</h1>
          ${awayHtml}
+         ${recruiterPill}
          ${ctaRow}
          ${exploreBtn}`
       : `
-      <h2 style="margin: 0 0 8px 0; color: #4CAF50;">DigiScalability Life Island</h2>
+      <h1 style="margin: 0 0 8px 0; font-size: 1.5em; color: #4CAF50;">DigiScalability Life Island</h1>
       <p style="margin: 0 0 12px 0; font-size:15px; line-height:1.5;">
-        I'm <strong>Abbas</strong> — I build AI-powered products, and this island is my
-        portfolio. Every building holds a real project: walk up to open it, or jump
-        straight there below.</p>
+        I'm <strong>Abbas</strong> — I build AI products end to end, and this island is my
+        portfolio. Walk up to a district to open it, or jump straight there below.</p>
       ${
         // Progressive disclosure on short phones (SE 667px): the AI-agent
         // detail paragraph is the "Ask the townsfolk" chip's job — on a
@@ -4185,9 +4393,9 @@ export class SimpleUI {
         this.isTouch && window.innerHeight < 700
           ? ''
           : `<p style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
-        The townsfolk are <strong>live AI agents</strong> — a planner sets their jobs
-        each morning, an analyst files a nightly report. Walk up to anyone and ask
-        them anything.</p>`
+        ${Object.keys(AI_NPCS).length} of the townsfolk talk through
+        <strong>Claude Haiku 4.5</strong> — a planner agent sets their jobs each morning,
+        and an analyst agent reports nightly. Walk up to one and ask them anything.</p>`
       }
       ${recruiterPill}
       ${ctaRow}
@@ -4212,11 +4420,16 @@ export class SimpleUI {
     // welcome card.
     (this.welcomeDiv.querySelector('button[data-cta="projects"]') as HTMLElement | null)?.focus();
 
+    // A CTA that opens a panel (or the tour) skips the compass hint: the
+    // visitor is going somewhere specific, and the hint landed on the
+    // contact form. Explore keeps it; so do Ask the townsfolk and Try a
+    // race, which hand the visitor to that very compass.
     this.welcomeDiv.querySelectorAll('button[data-cta]').forEach((b) => {
       b.addEventListener('click', (e) => {
         e.stopPropagation();
         const cta = (b as HTMLElement).dataset.cta!;
         track('welcome_cta', { cta });
+        this.skipCompassHint = true;
         closeWelcome();
         this.showZonePanel({ id: cta, name: cta }, { source: 'cta' });
       });
@@ -4235,14 +4448,18 @@ export class SimpleUI {
     this.welcomeDiv.querySelector('button[data-tour]')?.addEventListener('click', (e) => {
       e.stopPropagation();
       track('welcome_cta', { cta: 'tour' });
+      this.skipCompassHint = true;
       closeWelcome();
       this.onTour?.();
     });
     this.welcomeDiv.querySelector('button[data-recruit]')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      track('welcome_cta', { cta: 'recruit' });
+      // 'hire', not the old 'recruit': the pill now opens the hire card, and
+      // the dashboard must not merge it with the tour's historical clicks.
+      track('welcome_cta', { cta: 'hire' });
+      this.skipCompassHint = true;
       closeWelcome();
-      this.onRecruitTour?.();
+      this.showHireCard('cta');
     });
     this.welcomeDiv.querySelector('button[data-race]')?.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -4252,19 +4469,10 @@ export class SimpleUI {
     });
 
     document.addEventListener('keydown', onEscape);
-    // The delta card earns a longer look; the plain welcome-back stays snappy.
-    // But INTENT cancels the clock: the card used to vanish unconditionally —
-    // under the visitor's cursor mid-reach for a button. First hover / focus /
-    // touch means they're reading it; from then on it closes only by choice.
-    if (returning) {
-      // 7000 (was 5600) with a delta card: the guestbook line patches in
-      // ASYNC and could appear with under a second left to read it.
-      const autoClose = window.setTimeout(closeWelcome, awayDelta ? 7000 : 2600);
-      const cancelAuto = () => window.clearTimeout(autoClose);
-      this.welcomeDiv.addEventListener('pointerenter', cancelAuto, { once: true });
-      this.welcomeDiv.addEventListener('focusin', cancelAuto, { once: true });
-      this.welcomeDiv.addEventListener('touchstart', cancelAuto, { once: true, passive: true });
-    }
+    // No auto-close on the returning card any more. It closed itself after
+    // 2.6 s (7 s with a delta) unless hovered, and it now carries the Hiring
+    // pill: a recruiter coming back for the CV lost the one-click path before
+    // reaching for it. It closes by choice only — Explore, Escape or any CTA.
     // Patch the guestbook line in when the async count lands (line vanishes on
     // failure/zero — never show a broken stat).
     if (awayDelta) {
@@ -4368,9 +4576,9 @@ export class SimpleUI {
       // TEARDOWN IS NOT DISMISSAL. beforeunload -> dispose() -> hideWelcome()
       // used to burn ds_welcomed for a visitor who closed the tab while the
       // card was still on screen, unread. They came back to the trimmed
-      // "Welcome back!" branch and permanently lost the pitch, the recruiter
-      // "60-second highlights" pill, the secondary CTA row and the one-time
-      // compass hint. On a portfolio, first-visit bounce is most of the
+      // "Welcome back!" branch and permanently lost the pitch, the secondary
+      // CTA row and the one-time compass hint (the Hiring pill is now on both
+      // cards). On a portfolio, first-visit bounce is most of the
       // traffic, so this was burning the pitch for the majority of visitors.
       // Same class as the featured toast that fired under the opaque loader
       // and burned its key unseen (see the toast queue notes above).
@@ -4388,16 +4596,27 @@ export class SimpleUI {
       // naming the one persistent wayfinding surface. The toast queue defers
       // under the welcome/loader, so this lands the second the island shows.
       // Copy says "tap" only: works as click on desktop, no key names.
+      // skipCompassHint: closed by a CTA that opens a panel or the tour (see
+      // showWelcome). It is a field, not a parameter: the signature above is
+      // pinned by the teardown test.
+      const skipHint = this.skipCompassHint;
+      this.skipCompassHint = false;
       try {
-        if (wasFirstEver && !localStorage.getItem('ds_hint_compass')) {
+        if (wasFirstEver && !skipHint && !localStorage.getItem('ds_hint_compass')) {
           localStorage.setItem('ds_hint_compass', '1');
-          this.toast('🧭 The gold ➤ up top points to your next stop — tap it for the island map.');
+          this.toast('🧭 The gold ➤ up top points to your next stop — tap it for the island map.', {
+            hint: true,
+          });
         }
       } catch {
         /* no storage — skip the one-time hint rather than repeat it forever */
       }
     }
   }
+
+  /** Set by a welcome CTA that opens a panel or the tour; read once by
+   *  hideWelcome to skip the first-run compass hint. */
+  private skipCompassHint = false;
 
   /**
    * Check if welcome is visible
@@ -4406,6 +4625,12 @@ export class SimpleUI {
     // The name modal counts as blocking too, so movement/interaction stays
     // suspended (and typing your name never drives the player).
     return this.welcomeDiv !== null || this.nameModalDiv !== null;
+  }
+
+  /** Any PanelManager panel (zone card, modal, menu, sheet) open right now?
+   *  The window-level Enter→chat hotkey stands down while one is. */
+  isPanelOpen(): boolean {
+    return this.panels.isOpen();
   }
 
   /**
@@ -4494,8 +4719,8 @@ export class SimpleUI {
     });
     btn.addEventListener('click', submit);
     // Never a gate: browsing must not require naming yourself. Skip proceeds
-    // anonymously (caller gets '' and saves nothing — asked again next time
-    // a social feature needs it).
+    // anonymously (caller gets '' and saves nothing; main-simple's
+    // ensureNamed remembers the skip for the rest of the session).
     const skip = document.createElement('button');
     skip.textContent = 'Skip — just browsing';
     Object.assign(skip.style, {
@@ -4776,6 +5001,10 @@ export class SimpleUI {
         this.toggleWeatherPopover();
       });
       this.overlay.appendChild(this.envBadgeDiv);
+      // Ambient HUD like the radar: the tour and the welcome card clear it.
+      // Unregistered, it stayed under the tour's Skip button (same corner).
+      this.panels.registerLayer('ambient-info', this.envBadgeDiv);
+      if (this.tourSkipBtn) this.envBadgeDiv.style.visibility = 'hidden'; // born mid-tour
     }
     this.envBadgeDiv.textContent = text;
   }
@@ -6141,6 +6370,15 @@ export class SimpleUI {
     }
   }
 
+  /**
+   * The recruiter front door: name, role, availability, experience, the
+   * guardrails in this island's code, and LinkedIn / CV / code / email. A zone
+   * panel with id 'hire', so ?zone=hire (and /z/hire) deep-link to it.
+   */
+  public showHireCard(source: 'menu' | 'deeplink' | 'cta' = 'cta'): void {
+    this.showZonePanel({ id: 'hire', name: 'Hiring' }, { source });
+  }
+
   showZonePanel(zone: any, opts?: { source?: 'proximity' | 'menu' | 'deeplink' | 'cta' }): void {
     const source = opts?.source ?? 'menu';
     this.hideZonePanel(); // Hide any existing panel
@@ -6151,7 +6389,9 @@ export class SimpleUI {
       top: '50%',
       left: '50%',
       transform: 'translate(-50%, -50%)',
-      background: 'rgba(0, 0, 0, 0.9)',
+      // Opaque: at 0.9 the minimap's labels read through the card's top-left
+      // corner on a phone, where the card overlaps the minimap.
+      background: 'rgb(0, 0, 0)',
       color: 'white',
       padding: '20px',
       borderRadius: '14px',
@@ -6173,11 +6413,16 @@ export class SimpleUI {
       maxHeight: '70vh',
       overflowY: 'auto',
     });
+    // The hire card and the Portfolio panels clear the touch controls too: at
+    // z 1650 WAVE/JUMP/USE sat above this modal's scrim, so a tap on them
+    // beside the card waved, jumped or fired E at the world (inside a
+    // building, at its nearest hotspot) instead of closing the card.
     this.panels.open('zone', {
       kind: 'modal',
-      hides: ['nav-chips'],
+      hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.hideZonePanel(),
     });
+    this.stepHintAside();
 
     const content = this.getZoneContent(zone);
     this.zonePanelDiv.innerHTML = content;
@@ -6194,6 +6439,22 @@ export class SimpleUI {
     // clicks that are the real conversion. Once-per-session so re-opening the
     // same panel doesn't inflate the numbers.
     const zid = String(zone?.id ?? 'unknown');
+    // Copy buttons (hire card + contact panel): the address is also on screen
+    // as selectable text, so a blocked clipboard still leaves a way to copy.
+    this.zonePanelDiv.querySelectorAll<HTMLButtonElement>('button[data-copy]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.copyText(b.dataset.copy ?? '', b, zid);
+      });
+    });
+    // The recruiter highlights tour, demoted to a secondary button inside the
+    // hire card. It ends back on this card (main-simple endTour).
+    this.zonePanelDiv.querySelector('button[data-hire-tour]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('hire_cta', { cta: 'tour' });
+      this.hideZonePanel();
+      this.onRecruitTour?.();
+    });
     trackOnce('zone_explored', { zone: zid, source });
     // "Reached the actual work" = any real section, not the intro or an unknown.
     if (zid !== 'welcome' && zid !== 'unknown') {
@@ -6219,8 +6480,11 @@ export class SimpleUI {
       trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
       if (!this.passport.isComplete()) {
         const meta = PASSPORT_META[zid as PassportZone];
+        // A hint: it would land on the panel this walk-up just opened, so it
+        // waits for the panel to close.
         this.toast(
           `🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`,
+          { hint: true },
         );
       }
     }
@@ -6239,12 +6503,17 @@ export class SimpleUI {
       const footer = document.createElement('div');
       footer.style.cssText =
         'margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.12);';
+      const hire = zid === 'hire';
       footer.appendChild(
-        this.makeShareButton('🔗 Share this zone', {
+        this.makeShareButton(hire ? '🔗 Share this card' : '🔗 Share this zone', {
           surface: `zone_${zid}`,
           url: buildShareUrl({ zone: zid }),
-          title: 'DigiScalability Life Island',
-          text: `Walk through the ${String(zone?.name ?? zid)} zone of this 3D portfolio island:`,
+          title: hire
+            ? 'Abbas Ali — AI & software engineer, Melbourne'
+            : 'DigiScalability Life Island',
+          text: hire
+            ? 'Abbas Ali — AI & software engineer, Melbourne. CV, experience and contact:'
+            : `Walk through the ${String(zone?.name ?? zid)} zone of this 3D portfolio island:`,
         }),
       );
       this.zonePanelDiv.appendChild(footer);
@@ -6317,10 +6586,55 @@ export class SimpleUI {
    * Get color for zone
    */
   private getZoneColor(zoneId: string): string {
+    // The hire card is a panel, not a district: it signs itself in the amber
+    // of the Hiring pill that opens it.
+    if (zoneId === 'hire') return '#ffd479';
     // Derive from the single DISTRICTS source of truth (was a hardcoded hex-string
     // copy that could drift from the 3D markers + minimap dots).
     const d = DISTRICTS.find((x) => x.id === zoneId);
     return d ? `#${d.color.toString(16).padStart(6, '0')}` : '#666';
+  }
+
+  /**
+   * Copy text (the contact email) and say so ON THE BUTTON — a toast would
+   * land over or under the open panel. Clipboard API first; when it is blocked
+   * (permissions, insecure context, old WebViews) the on-screen address is
+   * SELECTED instead, so Ctrl/Cmd+C or the OS menu finishes the job.
+   */
+  private copyText(text: string, btn: HTMLButtonElement, from: string): void {
+    // The resting label, captured ONCE: a second click inside the 2 s window
+    // would otherwise capture "Copied ✓" and leave it stuck there.
+    const label = (btn.dataset.label ??= btn.textContent ?? 'Copy');
+    const settle = (msg: string): void => {
+      btn.textContent = msg;
+      window.setTimeout(() => {
+        btn.textContent = label;
+      }, 2000);
+    };
+    const selectInstead = (): void => {
+      try {
+        const target = btn.parentElement?.querySelector('[data-email]');
+        const sel = window.getSelection();
+        if (target && sel) {
+          const range = document.createRange();
+          range.selectNodeContents(target);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } catch {
+        /* selection unsupported — the address is still visible */
+      }
+      track('email_copied', { from, ok: false });
+      settle('Selected — copy it');
+    };
+    try {
+      void navigator.clipboard.writeText(text).then(() => {
+        track('email_copied', { from, ok: true });
+        settle('Copied ✓');
+      }, selectInstead);
+    } catch {
+      selectInstead(); // navigator.clipboard is undefined outside secure contexts
+    }
   }
 
   /**
@@ -6330,15 +6644,43 @@ export class SimpleUI {
     // Shared button styles for the clickable portfolio links. Links are the
     // owner's own curated URLs (a visitor chooses to click), opened in a new
     // tab with rel=noopener — the portfolio's whole point is to be actionable.
-    const link = (href: string, label: string, opts: { primary?: boolean } = {}): string => {
+    // `small` is the second-rank row (socials, the pre-launch demo).
+    const link = (
+      href: string,
+      label: string,
+      opts: { primary?: boolean; small?: boolean } = {},
+    ): string => {
       const base =
         'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;';
+      const size = opts.small
+        ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:12.5px;`
+        : '';
       const style = opts.primary
         ? base +
+          size +
           'background:linear-gradient(135deg,#5b6cff,#8a4de0);color:#fff;font-weight:600;border:none;'
-        : base + 'background:#2a2a37;color:#e8e8f0;border:1px solid rgba(255,255,255,0.14);';
+        : base + size + 'background:#2a2a37;color:#e8e8f0;border:1px solid rgba(255,255,255,0.14);';
       return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="${style}">${label}</a>`;
     };
+    // Counted from the client roster, never typed: the panel said 18 while the
+    // roster (and the server personas it must match) had grown to 24.
+    const aiCount = Object.keys(AI_NPCS).length;
+    // The address as SELECTABLE TEXT plus a Copy button (wired in
+    // showZonePanel). It used to exist only inside a mailto: button, which
+    // does nothing visible on a machine with no mail client.
+    const emailRow = (withMailto: boolean): string => `
+      <div style="display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px;margin:10px 0 6px;">
+        <span data-email style="user-select:all;-webkit-user-select:all;cursor:text;font-size:15px;font-weight:600;color:#fff;
+          background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:8px 12px;">${OWNER.email}</span>
+        <button type="button" data-copy="${OWNER.email}" title="Copy the email address" style="padding:8px 14px;border-radius:8px;
+          border:1px solid rgba(120,160,255,0.45);background:rgba(80,130,255,0.18);color:#cfe0ff;font-size:13.5px;font-weight:600;cursor:pointer;">Copy</button>
+        ${withMailto ? link(`mailto:${OWNER.email}`, '✉️ Email', { small: true }) : ''}
+      </div>`;
+    // One work-history row: role (+ where) left, dates right.
+    const xp = (role: string, where: string, when: string): string =>
+      `<li style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:6px 0;border-top:1px solid rgba(255,255,255,0.08);">
+        <span><strong>${role}</strong>${where ? `, ${where}` : ''}</span>
+        <span style="white-space:nowrap;color:#aab6c8;font-size:12.5px;">${when}</span></li>`;
     const chip = (t: string): string =>
       `<span style="background:#33333f;padding:5px 11px;border-radius:15px;font-size:13px;">${t}</span>`;
     // Optional lazy thumbnail — hidden by the error handler in showZonePanel if
@@ -6352,16 +6694,17 @@ export class SimpleUI {
 
     const contents: { [key: string]: string } = {
       welcome: `
-        <h2 style="margin-top: 0; color: #4CAF50;">🏝️ Welcome to the DigiScalability World</h2>
-        <p><strong>DigiScalability</strong> is a Melbourne venture studio building AI-powered
-        products — and this island is its living 3D portfolio, hand-built in Three.js.</p>
+        <h2 style="margin-top: 0; color: #4CAF50;">🏝️ Welcome to Life Island</h2>
+        <p>This island is <strong>Abbas Ali's portfolio</strong>: a living 3D world, hand-built
+        in Three.js and TypeScript, where ${aiCount} villagers talk through Claude Haiku 4.5.
+        It's live and open source (MIT).</p>
         <p style="text-align:left;margin-bottom:4px;">Follow the
         <strong style="color:#ffd54a;">➤ compass</strong> to each district, or just wander:</p>
         <ul style="text-align: left; display: inline-block; line-height:1.7;margin-top:4px;">
-          <li>💼 <strong>Professional</strong> — the builder behind the studio</li>
-          <li>🚀 <strong>Projects</strong> — RankPilot, ChocoMate &amp; more</li>
-          <li>🎨 <strong>Personal</strong> — food, family recipes, creative tools</li>
-          <li>📬 <strong>Contact</strong> — work with DigiScalability</li>
+          <li>💼 <strong>Professional</strong> — experience, stack and education</li>
+          <li>🚀 <strong>Projects</strong> — this island, RankPilot (pre-launch) &amp; more</li>
+          <li>🎨 <strong>Personal</strong> — kitchens, family recipes, creative tools</li>
+          <li>📬 <strong>Contact</strong> — hiring, or have a project?</li>
         </ul>
         <p style="margin-top:12px; font-size:13.5px; color:#cdd;">🛂 Visit all four
         <em>in person</em> to stamp your <strong>Passport</strong> and earn the Founder's Crown 👑.</p>
@@ -6373,107 +6716,190 @@ export class SimpleUI {
       `,
       professional: `
         <h2 style="margin-top: 0; color: #2196F3;">💼 Professional</h2>
-        <p>Abbas Ali — solo founder &amp; full-stack AI builder. Day job in tech,
-        a venture studio after hours, hospitality-management roots, CS degree with an
-        MIT (Deakin) nearly done.</p>
+        <p><strong>Abbas Ali</strong> — AI &amp; software engineer, Melbourne.</p>
+        <p style="font-size:14px;">I build AI products end to end and make them safe to put in
+        front of the public: the model call and its guardrails, the realtime client, the cloud
+        functions and the tests.</p>
         <p style="font-size:13.5px;color:#bcd;background:rgba(90,140,255,0.12);
           border-radius:10px;padding:8px 12px;margin:10px 0;">🛠️ <strong>Now:</strong>
-          building <strong>RankPilot</strong> — see the Projects district. 🚀</p>
+          founder &amp; lead developer at DigiScalability (solo, since Jan 2025), building this
+          open-source (MIT) island, digiscalability.com and RankPilot (pre-launch). Before that:
+          software engineer (remote contract) at TechNova Solutions, Dec 2023 – Nov 2024.</p>
         <h3 style="margin-bottom:8px;">Core Stack</h3>
         <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 12px 0 18px;">
-          ${chip('Next.js')} ${chip('TypeScript')} ${chip('Firebase / GCP')}
-          ${chip('Python')} ${chip('Three.js')} ${chip('LLM / AI Automation')}
+          ${chip('TypeScript')} ${chip('React')} ${chip('Next.js')} ${chip('Three.js')}
+          ${chip('Firebase / GCP')} ${chip('Claude API')} ${chip('PostgreSQL')}
+          ${chip('Docker')} ${chip('GitHub Actions')}
         </div>
-        <p style="font-size:14px;">Ships end-to-end: product, code, infra, and the AI
-        pipelines that glue them together — n8n automations, local model inference,
-        agentic tooling.</p>
+        <h3 style="margin-bottom:6px;">Education</h3>
+        <p style="font-size:13.5px;margin:0 0 4px;">BSc Computer Science, SZABIST, Islamabad (2016)</p>
+        <p style="font-size:13.5px;margin:0;">Master of Information Technology (coursework), Deakin
+        University, 2017–2019: 11 of 16 credit points completed</p>
         <div style="margin-top:16px;">
-          ${link('https://linkedin.com/in/digiscalability', '🔗 LinkedIn', { primary: true })}
-          ${link('https://github.com/digiscalability', '💻 GitHub')}
+          ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
+          ${link(OWNER.cv, '📄 CV')}
+          ${link(OWNER.repo, '💻 GitHub')}
           ${link('https://digiscalability.com', '🌐 digiscalability.com')}
         </div>
+        ${emailRow(true)}
       `,
       projects: `
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
         ${card(`
           <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:11px;color:#ffd479;">● you are standing in it</span></h3>
-          <p style="margin:6px 0;font-size:13.5px;">The flagship: a multiplayer 3D world where
-          <strong>every townsperson is a live AI agent</strong>. An LLM planner assigns their jobs each
-          morning, they follow real daily schedules (and sleep in the cottages at night), and an
-          autonomous analyst emails me a nightly report and files GitHub issues about its own island.</p>
+          <p style="margin:6px 0;font-size:13.5px;">The flagship: a multiplayer 3D world (Three.js +
+          TypeScript) where <strong>${aiCount} villagers talk through Claude Haiku 4.5</strong>. A
+          scheduled planner agent assigns their jobs each morning, they follow real daily schedules
+          (and sleep in the cottages at night), and a nightly analyst agent (Claude Sonnet) emails a
+          usage digest and files GitHub issues about its own island.</p>
           <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Three.js + TypeScript + Firebase +
-          Claude · 18 conversational agents · runs at 60fps on a ~300KB core bundle · the whole
-          agent fleet costs under $0.10/day with hard token caps.</p>
+          Claude · open source (MIT) · ~280 KB app + 175 KB three.js (brotli) · a hard
+          monthly token cap on the model calls.</p>
           <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Proof it runs itself: read the
-          📰 Island Times (Portfolio menu) — compiled nightly by the analyst — or just walk up to
-          anyone and ask what they're doing today.</p>
+          📰 Island Times (Portfolio menu) — compiled nightly by the analyst — or walk up to a
+          villager and ask what they're doing today.</p>
+          <div style="margin-top:8px;">
+            ${link(OWNER.repo, '💻 Source')}
+            ${link(`${OWNER.repo}#how-it-is-built`, "🧭 How it's built")}
+          </div>
         `)}
         ${card(`
-          <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#8f8;">● live</span></h3>
-          ${thumb('/assets/panels/rankpilot.webp', 'RankPilot dashboard')}
+          <h3 style="margin:0 0 6px;">🛡️ How the AI is kept safe and cheap</h3>
+          <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.5;">
+            <li><strong>The key stays server-side.</strong> Claude Haiku 4.5 is called from a
+            Firebase callable function that enforces App Check; the API key lives in Secret
+            Manager, never in the browser.</li>
+            <li><strong>Hard caps.</strong> Per-IP burst limits (anonymous IDs are free to mint, so
+            limits are keyed by IP) and a monthly token cap. When either trips, the villager falls
+            back to its scripted lines.</li>
+            <li><strong>Visitor text is data.</strong> The persona rules treat what you type as a
+            traveller's words, never as instructions, and it never joins the system prompt.</li>
+            <li><strong>Moderation both ways.</strong> A filter checks the visitor's message before
+            the model sees it, and the model's reply before it reaches the page.</li>
+            <li><strong>The planner can't write prose.</strong> The daily planner may only choose ids
+            from fixed pools; its reply is validated and unknown ids are dropped, so no planner text
+            reaches a public surface.</li>
+          </ul>
+          <div style="margin-top:8px;">
+            ${link(`${OWNER.repo}#for-reviewers-10-min`, '🧭 Read the architecture')}
+            ${link(`${OWNER.repo}/blob/main/functions/src/index.ts`, '💻 See the code')}
+          </div>
+        `)}
+        ${card(`
+          <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#ffcc80;">● live, pre-launch</span></h3>
           <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Problem:</strong>
           search is shifting from ten blue links to AI answers — and most sites are invisible to
           the models doing the answering.</p>
           <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Built:</strong>
           a platform that audits a site's schema, content &amp; LLM-readiness and shows exactly
-          what to fix. Solo build, live and in daily use.</p>
-          <div style="margin-top:8px;">${link('https://rankpilot-h3jpc.web.app', '↗ Visit RankPilot', { primary: true })}</div>
+          what to fix. Solo build.</p>
+          <p style="margin:6px 0;font-size:13px;color:#cdd6e4;"><strong>Status:</strong> live, pre-launch: no users beyond test accounts.</p>
+          <div style="margin-top:6px;">${link('https://rankpilot-h3jpc.web.app', '↗ Pre-launch demo', { small: true })}</div>
         `)}
         ${card(`
-          <h3 style="margin:0 0 2px;">🍫 ChocoMate</h3>
+          <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:11px;color:#aab;">● paused</span></h3>
           ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront')}
           <p style="margin:6px 0;font-size:13.5px;">Direct-to-consumer chocolate brand —
-          the storefront, brand system, and content pipeline, end to end.</p>
-          <div style="margin-top:8px;">${link('https://chocomate.au', '↗ chocomate.au')}</div>
+          the storefront, brand system, and content pipeline, end to end. Paused.</p>
+          <div style="margin-top:6px;">${link('https://chocomate.au', '↗ chocomate.au', { small: true })}</div>
         `)}
         <div style="text-align:left;">
-          <h3 style="margin-bottom:4px;margin-top:14px;">🌐 DigiScalability</h3>
-          <p style="margin-top:4px;font-size:13.5px;">The studio itself — services, case studies,
-          and the SEO/LLM-visibility practice behind RankPilot.
+          <h3 style="margin-bottom:4px;margin-top:14px;">🌐 digiscalability.com</h3>
+          <p style="margin-top:4px;font-size:13.5px;">My business site, built solo: Next.js 15 +
+          Firebase on Vercel.
           ${link('https://digiscalability.com', '↗ digiscalability.com')}</p>
-          <h3 style="margin-bottom:4px;margin-top:14px;">📖 Bano's Cookbook &amp; more</h3>
-          <p style="margin-top:4px;font-size:13.5px;">Digitising a family's 1981 handwritten recipes;
-          a services marketplace (Insta Services); and this Three.js island world.
-          ${link('https://github.com/digiscalability', '💻 GitHub')}</p>
+          <h3 style="margin-bottom:4px;margin-top:14px;">📖 Bano's Cookbook</h3>
+          <p style="margin-top:4px;font-size:13.5px;">Digitising my mother's (Ammi's) handwritten recipes from 1981.</p>
+          <h3 style="margin-bottom:4px;margin-top:14px;">🧰 Insta Services API</h3>
+          <p style="margin-top:4px;font-size:13.5px;">Modernising an inherited 2016 Java system
+          (Java API + Android app) with login rate limiting, health checks and nightly
+          backups.</p>
         </div>
+        ${emailRow(true)}
       `,
       personal: `
         <h2 style="margin-top: 0; color: #E91E63;">🎨 Personal</h2>
-        <p>Melbourne, Australia. Builder by day and night — but not only of software.
-        A lot of this island is personal: those cottages are the Personal district,
-        the market stalls nod to the food side, and the recipes below are real.</p>
+        <p>Melbourne, Victoria. Not everything here is software: those cottages are the
+        Personal district, the market stalls nod to the food side, and the family recipes
+        are real.</p>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; text-align:left;">
-          <div><h3 style="margin:0 0 4px;">🍽️ Food Ventures</h3>
-            <p style="font-size:13.5px;">Hospitality roots; kitchen-to-market concepts from
-            steak frites to desserts — the Bayside commissary idea in progress.</p></div>
-          <div><h3 style="margin:0 0 4px;">👵 Family Heritage</h3>
-            <p style="font-size:13.5px;">Preserving a grandmother's handwritten recipes from
-            1981 — the heart behind Bano's Cookbook.</p></div>
+          <div><h3 style="margin:0 0 4px;">🍽️ Kitchens</h3>
+            <p style="font-size:13.5px;">Chef at Mr. Miyagi and Baxter Tavern, Melbourne,
+            2019 – 2024.</p></div>
+          <div><h3 style="margin:0 0 4px;">📖 Family Heritage</h3>
+            <p style="font-size:13.5px;">Preserving my mother's (Ammi's) handwritten recipes from 1981 — the heart behind Bano's Cookbook.</p></div>
           <div><h3 style="margin:0 0 4px;">🎬 Creative Tooling</h3>
             <p style="font-size:13.5px;">Blender, DaVinci Resolve, ComfyUI — a full studio
             for product storytelling and 3D worlds like this one.</p></div>
           <div><h3 style="margin:0 0 4px;">📚 Always Learning</h3>
-            <p style="font-size:13.5px;">A CS degree, a Masters of IT nearly done, and a
-            new experiment shipped most weeks.</p></div>
+            <p style="font-size:13.5px;">BSc Computer Science (SZABIST, 2016), and Master of IT
+            coursework at Deakin: 11 of 16 credit points completed.</p></div>
         </div>
         <div style="margin-top:8px;">
           ${link('https://youtube.com/@DigiScalability', '▶️ Creative builds', { primary: true })}
           ${link('https://instagram.com/digiscalability', '📸 Instagram')}
         </div>
+        ${emailRow(true)}
       `,
       contact: `
         <h2 style="margin-top: 0; color: #9C27B0;">📬 Get In Touch</h2>
-        <p>Work with DigiScalability — product builds, AI automation, SEO/LLM
-        visibility, or something new. Melbourne, Australia.</p>
-        <div style="margin: 22px 0; display:flex; flex-wrap:wrap; justify-content:center;">
-          ${link('mailto:admin@digiscalability.com', '✉️ Email', { primary: true })}
-          ${link('https://linkedin.com/in/digiscalability', '🔗 LinkedIn')}
-          ${link('https://github.com/digiscalability', '💻 GitHub')}
-          ${link('https://x.com/digiscalability', '𝕏 Twitter')}
-          ${link('https://instagram.com/digiscalability', '📸 Instagram')}
-          ${link('https://youtube.com/@DigiScalability', '▶️ YouTube')}
+        <p style="font-size:16px;font-weight:600;margin:0 0 6px;">Hiring, or have a project? This reaches me directly.</p>
+        ${emailRow(true)}
+        <div style="margin: 12px 0 2px; display:flex; flex-wrap:wrap; justify-content:center;">
+          ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
+          ${link(OWNER.repo, '💻 GitHub')}
+          ${link(OWNER.cv, '📄 CV')}
         </div>
-        <p style="font-size:13px; color:#999;">All channels @digiscalability.</p>
+        <div style="margin: 0 0 6px; display:flex; flex-wrap:wrap; justify-content:center;">
+          ${link('https://x.com/digiscalability', '𝕏 Twitter', { small: true })}
+          ${link('https://instagram.com/digiscalability', '📸 Instagram', { small: true })}
+          ${link('https://youtube.com/@DigiScalability', '▶️ YouTube', { small: true })}
+        </div>
+        <p style="font-size:12.5px; color:#999;">Melbourne, Victoria. X, Instagram and YouTube
+        are @digiscalability; LinkedIn is my personal profile.</p>
+      `,
+      // The recruiter front door (showHireCard / ?zone=hire). Copy comes from
+      // the approved fact sheet only. The availability line appears HERE and
+      // nowhere else in the app. LinkedIn leads (filled), then CV, then Code:
+      // the fact sheet makes LinkedIn the primary hiring link, and hire.html
+      // and digiscalability.com/about lead with it too.
+      hire: `
+        <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;">📄 Hiring?</div>
+        <h2 style="margin:0 0 2px;color:#fff;font-size:26px;">Abbas Ali</h2>
+        <p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
+        <p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:#dde3ee;">I build AI
+        products end to end and make them safe to put in front of the public: the model call and
+        its guardrails, the realtime client, the cloud functions and the tests.</p>
+        <p style="margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(18,183,106,0.14);border:1px solid rgba(120,220,170,0.4);font-size:13.5px;line-height:1.45;color:#d7f5e6;">
+          Open to AI and software engineering roles in Melbourne (full-time or contract).</p>
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;">
+          ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
+          ${link(OWNER.cv, '📄 CV')}
+          ${link(OWNER.repo, '💻 Code')}
+        </div>
+        ${emailRow(false)}
+        <h3 style="margin:16px 0 4px;font-size:15px;text-align:left;">Experience</h3>
+        <ul style="margin:0;padding:0;list-style:none;text-align:left;font-size:13px;line-height:1.45;">
+          ${xp('Founder &amp; lead developer', 'DigiScalability, Melbourne', 'Jan 2025 – present')}
+          ${xp('Software engineer (remote contract)', 'TechNova Solutions', 'Dec 2023 – Nov 2024')}
+          ${xp('Chef', 'Mr. Miyagi and Baxter Tavern, Melbourne', '2019 – 2024')}
+          ${xp('Software developer', 'Event Technologies, Islamabad', 'Oct 2016 – Sep 2017')}
+          ${xp('Freelance full-stack developer', '', 'Aug 2015 – Oct 2017')}
+        </ul>
+        <h3 style="margin:16px 0 6px;font-size:15px;text-align:left;">Guardrails I ship, in this island's open-source (MIT) code</h3>
+        <ul style="margin:0;padding-left:18px;text-align:left;font-size:13px;line-height:1.5;">
+          <li>${aiCount} villagers talk through Claude Haiku 4.5 behind a Firebase callable: the API
+          key lives in Secret Manager, and App Check guards the call.</li>
+          <li>Per-IP burst limits (anonymous IDs are free to mint, so limits are keyed by IP) and a
+          hard monthly token cap that falls back to scripted lines.</li>
+          <li>Moderation on input and output; visitor text is fenced as data, never instructions.</li>
+          <li>A scheduled planner picks each day's jobs and events by index from pre-written pools;
+          ids are validated on server and client, so no planner text reaches a public surface.</li>
+          <li>A Vitest suite, typecheck, lint and Prettier run in CI (GitHub Actions) on every push.</li>
+        </ul>
+        <button type="button" data-hire-tour style="width:100%;margin:16px 0 0;padding:10px 14px;border-radius:10px;
+          background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
+          🎬 Or watch the highlights tour (under a minute)</button>
       `,
     };
 
@@ -6564,6 +6990,7 @@ export class SimpleUI {
     });
     aiBadge.title = 'A live language-model conversation — every reply is generated, not scripted';
     header.appendChild(aiBadge);
+    this.npcChatBadge = aiBadge; // markNpcChatOffline re-labels it on a fallback
     const controls = document.createElement('span');
     Object.assign(controls.style, { display: 'flex', gap: '12px', alignItems: 'center' });
     // Voice mute toggle (only if the browser can speak).
@@ -6835,8 +7262,28 @@ export class SimpleUI {
     }
   }
 
+  private npcChatBadge: HTMLElement | null = null;
+
+  /**
+   * The villager answered from its written lines: the model call fell back
+   * (App Check, a rate or spend cap, moderation, offline). The header said
+   * "live AI — every reply is generated", which was then untrue; say so.
+   * No-op unless `name`'s chat is the one open.
+   */
+  public markNpcChatOffline(name: string): void {
+    const badge = this.npcChatBadge;
+    if (!badge || !this.npcChatDiv || this.npcChatAppend?.name !== name) return;
+    badge.textContent = 'offline replies';
+    badge.dataset.offline = '1';
+    badge.style.color = '#b8c2d0';
+    badge.style.borderColor = 'rgba(184,194,208,0.45)';
+    badge.title =
+      'The live model is unavailable right now, so this villager is answering with its written lines.';
+  }
+
   public closeNpcChat(): void {
     this.npcChatAppend = null;
+    this.npcChatBadge = null;
     if (this.npcTypeTimer) {
       clearTimeout(this.npcTypeTimer);
       this.npcTypeTimer = 0;
@@ -6917,7 +7364,7 @@ export class SimpleUI {
     });
     this.panels.open('watch-picker', {
       kind: 'modal',
-      hides: ['nav-chips'],
+      hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.closeWatchPicker(),
     });
     panel.innerHTML = `
