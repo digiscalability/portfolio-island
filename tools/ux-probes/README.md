@@ -145,19 +145,56 @@ npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
 
 - Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
   (GPU timer queries off).
-- Views: idle spawn, hub-wide and the Projects district, posed with the
-  design audit's framing (follow direction, pitch, distance, teleport).
-  Counters are one whole frame with the loop paused (draws, triangles,
-  programs, textures); timings are 1.5 s windows (CPU per app frame,
-  GPU timer queries, fps).
-- Programs are logged per render() and per compile call; µs per effect come
+- Each load: the startup marks, then 30 s after the card (past the interior
+  warm and the late compiles) programs, nodes and textures, then the views:
+  idle spawn, hub-wide and the Projects district, posed with the design
+  audit's framing (follow direction, pitch, distance, teleport). Counters
+  are one whole frame with the loop paused (draws, triangles, programs,
+  textures); timings are 1.5 s windows (CPU per app frame, GPU timer
+  queries, fps). `programs after the views` is judged too.
+- Programs are logged per render() and per outermost compile call (a
+  compileAsync's inner compile() is not counted twice); µs per effect come
   from `FxBudget.ts` (`__dsFx.stats`), divided by the frames the gate saw.
-- Validity: sigma = |median(A_odd) - median(A_even)|; valid when
-  sigma <= threshold/2; pass when delta <= threshold; fail when
-  delta > threshold + sigma; else inconclusive, escalating to 12, then 24
-  cycles. Exits 0 pass, 1 budget fail, 2 fail-closed, 3 inconclusive.
-- Output: `perf-gate-<mode>.json` and `ledger.md` (one row per registered
-  effect) in `--out`.
+- Verdict per metric: delta is the median of the paired (B − A) cycle
+  differences, and sigma is the 95% band of delta,
+  t(0.975, n−1) × 1.2533 × SD(B − A) / √n, so it pools both sides' noise
+  and the ABAB pairing cancels drift. Valid when sigma <= threshold/2; pass
+  when valid and delta <= threshold; fail when valid and
+  delta > threshold + sigma; anything else is inconclusive, escalating to
+  12, then 24 cycles. An invalid result never fails. The plan's single
+  split, |median(A_odd) − median(A_even)|, is reported as `sigmaSplitA`
+  and decides nothing: one 3-vs-3 split routinely understates the spread.
+  Exits 0 pass, 1 budget fail, 2 fail-closed, 3 inconclusive.
+- A/A (`--ab dist dist`): the JSON's `aa` block lists the exact counters
+  (texture MB; equal on every load, or the run fails), every |delta| over
+  its threshold, and whether any profile failed.
+- `hostBusyPct`: the whole machine's CPU busy share during each load. Other
+  sessions' builds and probes widen sigma; an idle machine gives the
+  tightest verdicts.
+- `--fx <name>`: the effect starts off before any page script. 30 s after
+  the card each view is posed and measured with four off/on pairs, the live
+  loop stopped inside each pair so nothing moves between its sides (per
+  side: the switch, then two app frames of 1/240 s; draws and triangles
+  are their mean, programs the on sides add are the effect's). Then
+  6 × 1.5 s per side of timing at the spawn. On main, `--fx __unused`
+  reads 0/0/0 draws and 0 programs on both tiers.
+- `--seed`: `__dsSeedDraws` against the subject's golden (see `--golden`).
+- Output: `perf-gate-<mode>.json` and `ledger.md` in `--out`: one row per
+  registered effect (tier default, switch, µs/frame); `--fx <name>` fills
+  its row's draws per view and programs.
+
+**What is not exact on main.** Per-view draws vary from load to load:
+villagers, cats, ground birds, herons, birds, clouds and cars move through
+every view, and `rock.glb` (8 rocks placed with `Math.random()` after an
+await in `GameScene.placeAssets`) and the `tree.glb` clones (Island's async
+loader) land in different places on every load, with the camera and player
+poses identical. Programs ride a boot race: whether the GLB materials
+(Seat, Post, Pole, Trunk, Stone, Leg, LeafL, LeafD) compile in the screen
+pass, the composer's linear pass, or both depends on when each model
+finishes loading (desktop 211-216 programs; in a 96-load A/A the
+215-program loads showed the card ~0.6 s later on the median, so
+welcome_visible is bimodal too). These counters are judged by the sigma
+rule; only the texture MB is exact.
 
 ## Files
 

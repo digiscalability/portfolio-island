@@ -4,9 +4,9 @@
 //
 //   perf:gate -- --dist dist --port 5191                 baseline report + counter and µs budget checks
 //   perf:gate -- --base http://127.0.0.1:5191            the same, attached to a running preview
-//   perf:gate -- --dist dist --port 5191 --fx <name>     interleaved toggle of one __dsFx effect, 6 x 1.5 s per side
+//   perf:gate -- --dist dist --port 5191 --fx <name>     one __dsFx effect: per-view draws and programs, then 6 x 1.5 s per side
 //   perf:gate -- --ab <distA> <distB> --ports pA,pB [--cycles 6]   whole build B against A, ABAB, fresh context per cycle
-//   add --seed to compare window.__dsSeedDraws with test/golden/seedDraws.json
+//   add --seed to compare window.__dsSeedDraws with the subject's test/golden/seedDraws.json (--golden <path> overrides)
 //   --profiles desktop,lowtier,startup  (default: all three; --fx uses desktop,lowtier)
 //   --hour <h|live>                                       the world clock (default 12: noon, as the audit measured)
 //   --out <dir>                                           JSON + ledger.md (default <os tmpdir>/ux-probes/perf-gate)
@@ -15,10 +15,13 @@
 // startup-only at 4x CPU with GPU timer queries off (they inflate throttled
 // CPU time by ~15%). Hardware GL (ANGLE D3D11 on Windows; PERF_GL overrides).
 //
-// Validity (plan › perfBudget): sigma = |median(A_odd) - median(A_even)| per
-// metric. A result is valid only when sigma <= threshold/2. Pass when
-// delta <= threshold; fail when delta > threshold + sigma; anything else is
-// inconclusive, and the run escalates to 2x cycles, up to 24.
+// Verdict per metric (plan › perfBudget): valid when sigma <= threshold/2;
+// pass when valid and delta <= threshold; fail when valid and
+// delta > threshold + sigma; anything else is inconclusive, and the run
+// escalates to 2x cycles, up to 24. delta = median of the paired (B - A)
+// cycle differences; sigma = the 95% band of delta, t(n-1) x 1.2533 x SD/sqrt(n)
+// over those differences (both sides' noise, drift cancelled by the ABAB
+// pairing). The plan's single A split is reported (sigmaSplitA), never used.
 // Exit codes: 0 pass, 1 budget fail, 2 fail-closed (a request got past the
 // harness), 3 inconclusive. Shares the probes' safety harness (lib.cjs).
 const fs = require('fs');
@@ -44,7 +47,8 @@ const BASELINE = {
   desktop: { idleCpuP95: 16.4, programs: 216, programsTol: 5, draws: { spawn: 658, hub: 1777, projects: 1233 } },
   lowtier: { programs: 118, programsTol: 3, draws: { spawn: 658 } },
 };
-const GOLDEN_SEED = path.join(lib.REPO, 'test', 'golden', 'seedDraws.json');
+const VIEWS = ['spawn', 'hub', 'projects'];
+const DRAW_KEY = { spawn: 'drawsSpawn', hub: 'drawsHub', projects: 'drawsProjects' };
 
 // ------------------------------------------------------------ page hooks
 // Installed before any page script: per-app-frame CPU (the update callback
@@ -130,12 +134,15 @@ const GATE_INIT = (opts) => `(() => {
       const orig = R[key];
       if (typeof orig !== 'function') continue;
       R[key] = function () {
+        // compileAsync runs this.compile() inside it: only the outermost call
+        // is recorded, so summing 'compiles' counts each program once.
+        const nested = inCompile > 0;
         const p0 = progs();
         const t0 = performance.now();
         inCompile++;
         let r;
         try { r = orig.apply(this, arguments); } finally { inCompile--; }
-        G.compiles.push({ t: Math.round(t0), label: 'renderer.' + key, added: progs() - p0, ms: +(performance.now() - t0).toFixed(1) });
+        if (!nested) G.compiles.push({ t: Math.round(t0), label: 'renderer.' + key, added: progs() - p0, ms: +(performance.now() - t0).toFixed(1) });
         return r;
       };
     }
@@ -167,6 +174,11 @@ const GATE_INIT = (opts) => `(() => {
 })();`;
 
 // ------------------------------------------------------------ page-side
+/**
+ * The three views. 'spawn' is the idle camera where the visitor lands: the
+ * first call records it (player position, follow direction, pitch,
+ * distance) and later calls restore it, so --fx can come back to it.
+ */
 const POSE = ({ view }) => {
   const app = window.__app;
   const sc = app.scene;
@@ -184,14 +196,27 @@ const POSE = ({ view }) => {
     // The design audit's view framing (runtime only): follow direction,
     // pitch and distance, then a hard cut to the pose.
     oc.minPitch = -1.35;
-    if (oc.followDir) oc.followDir.copy(follow.clone().normalize());
+    if (oc.followDir && follow) oc.followDir.copy(follow.clone().normalize());
     if (pitch !== null) oc.pitch = pitch;
     if (typeof oc.setDistance === 'function') oc.setDistance(dist);
     oc.distanceTarget = dist;
     oc.distance = dist;
     if (typeof oc.snapToPlayer === 'function') oc.snapToPlayer();
   };
-  if (view === 'hub') {
+  if (view === 'spawn') {
+    const z = window.__gatePose0;
+    if (!z) {
+      window.__gatePose0 = {
+        pos: P.getWorldPosition().clone(),
+        follow: oc.followDir ? oc.followDir.clone() : null,
+        pitch: typeof oc.pitch === 'number' ? oc.pitch : null,
+        dist: typeof oc.distance === 'number' ? oc.distance : null,
+      };
+    } else {
+      P.setWorldPosition(z.pos.clone());
+      frame(z.follow, z.pitch, z.dist);
+    }
+  } else if (view === 'hub') {
     const p = P.position.clone().normalize();
     const f = new V3(0.2, 0, 1);
     frame(f.addScaledVector(p, -f.dot(p)).normalize(), -0.62, 12);
@@ -257,6 +282,14 @@ const FX_SNAPSHOT = () => {
   return { stats: JSON.parse(JSON.stringify(g.stats || {})), effects: JSON.parse(JSON.stringify(g.effects || {})) };
 };
 
+const PIN_GOVERNOR = () => {
+  // A resolution or rung change must not masquerade as cost.
+  const sr = window.__app.renderer;
+  sr.governorArmed = false;
+  sr.governorArmAccum = -1e12;
+  return true;
+};
+
 // --------------------------------------------------------------- numbers
 const { median, pct, round } = lib;
 
@@ -284,21 +317,41 @@ async function windowStats(page, ms) {
   };
 }
 
-/** One page load: startup marks, the three views, counters, programs. */
-async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS = 12, seed = false, hour = '12' }) {
+async function bootPage(page, base, profObj, hour) {
+  // The hour is pinned (noon by default): night lights change the light
+  // count, the programs and the draws, so a live clock would move every counter.
+  const q = '?owner=1&perf=1' + (hour && hour !== 'live' ? `&hour=${hour}` : '') + (profObj.query || '');
+  await page.goto(`${base}/${q}`, { waitUntil: 'domcontentloaded', timeout: 240000 });
+  await page.waitForFunction(() => window.__lifeIslandReady === true, null, { timeout: 300000, polling: 100 });
+  await page.waitForSelector(`${lib.WELCOME} button[data-dismiss]`, { state: 'visible', timeout: 180000 });
+  await page.evaluate(lib.HELPERS);
+}
+
+/** Dismiss the card, pin the governor, and wait until `atS` after the card. */
+async function settleAfterCard(page, atS) {
+  await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
+  const cardAt = Date.now();
+  await page.waitForTimeout(2500);
+  await page.evaluate(PIN_GOVERNOR);
+  const waitMs = atS * 1000 - (Date.now() - cardAt);
+  if (waitMs > 0) await page.waitForTimeout(waitMs);
+  return cardAt;
+}
+
+/**
+ * One page load: startup marks, then (programsAtS after the card: past the
+ * interior warm and the late compiles) programs, nodes and textures, then the
+ * three views' counters and timing windows.
+ */
+async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS = 30, seed = false, hour = '12' }) {
   const p = lib.profile(prof === 'startup' ? 'lowtier' : prof);
   const profObj = prof === 'startup' ? { ...p, name: 'startup', cpu: 4 } : p;
+  const cpu0 = lib.hostCpu();
   const s = await lib.openSession(browser, profObj, { init: [GATE_INIT({ nogpu: nogpu || prof === 'startup' })] });
   const { page } = s;
   const out = { profile: prof };
   try {
-    // The hour is pinned (noon by default): night lights change the light
-    // count, the programs and the draws, so a live clock would move every counter.
-    const q = '?owner=1&perf=1' + (hour && hour !== 'live' ? `&hour=${hour}` : '') + (profObj.query || '');
-    await page.goto(`${base}/${q}`, { waitUntil: 'domcontentloaded', timeout: 240000 });
-    await page.waitForFunction(() => window.__lifeIslandReady === true, null, { timeout: 300000, polling: 100 });
-    await page.waitForSelector(`${lib.WELCOME} button[data-dismiss]`, { state: 'visible', timeout: 180000 });
-    await page.evaluate(lib.HELPERS);
+    await bootPage(page, base, profObj, hour);
     const boot = await page.evaluate(() => {
       const G = window.__gate;
       const welcome = G.welcomeAt;
@@ -321,74 +374,94 @@ async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS 
     if (seed) out.seed = await page.evaluate(() => (window.__dsSeedDraws ? JSON.parse(JSON.stringify(window.__dsSeedDraws)) : null));
     if (startupOnly) return out;
     if (!boot.hooked) throw new Error('hook missing: __app.renderer.renderCallback / getRenderer for frame timing');
-    await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
-    const cardAt = Date.now();
-    await page.waitForTimeout(2500);
-    // Pin the governor: a resolution or rung change must not masquerade as cost.
-    await page.evaluate(() => {
-      const sr = window.__app.renderer;
-      sr.governorArmed = false;
-      sr.governorArmAccum = -1e12;
-    });
+    const cardAt = await settleAfterCard(page, programsAtS);
+    out.programs = (await page.evaluate(WHOLE_FRAME)).programs;
+    out.programsReadAtS = round((Date.now() - cardAt) / 1000, 1);
+    Object.assign(out, await page.evaluate(CENSUS));
     out.views = {};
-    for (const view of ['spawn', 'hub', 'projects']) {
-      if (view !== 'spawn') {
-        await page.evaluate(POSE, { view });
-        await page.waitForTimeout(view === 'projects' ? 1500 : 1200);
-      }
+    for (const view of VIEWS) {
+      await page.evaluate(POSE, { view });
+      if (view !== 'spawn') await page.waitForTimeout(view === 'projects' ? 1500 : 1200);
       const counters = await page.evaluate(WHOLE_FRAME);
       await page.waitForTimeout(250);
       const timing = await windowStats(page, 1500);
       out.views[view] = { ...counters, ...timing };
-      if (view === 'spawn') {
-        // Programs, nodes and textures at the spawn, programsAtS after the
-        // card (past the interior warm), before the other views add their own.
-        const waitMs = programsAtS * 1000 - (Date.now() - cardAt);
-        if (waitMs > 0) await page.waitForTimeout(waitMs);
-        out.programs = (await page.evaluate(WHOLE_FRAME)).programs;
-        out.programsReadAtS = round((Date.now() - cardAt) / 1000, 1);
-        Object.assign(out, await page.evaluate(CENSUS));
-      }
     }
     out.programsAfterViews = (await page.evaluate(WHOLE_FRAME)).programs;
     out.renderProgramAdds = await page.evaluate(() => window.__gate.renders.filter((r) => !r.inCompile).map((r) => ({ label: r.label, added: r.added, ms: r.ms })));
   } finally {
     await s.close({ waitSignUpMs: 20000 });
     out.net = { signUpSeen: s.net.signUpSeen, leaks: s.net.leaks.slice(), intercepted: [...new Set(s.net.intercepted)] };
+    // Everything on the machine, this browser included: other sessions'
+    // builds and probes show up here and in the timing spread.
+    out.hostBusyPct = lib.hostBusyPct(cpu0, lib.hostCpu());
   }
   return out;
 }
 
 // ---------------------------------------------------------------- verdicts
-/** The plan's rule for one metric. a, b: per-cycle values (lower is better). */
+const T975 = [null, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131, 2.12, 2.11, 2.101, 2.093, 2.086, 2.08, 2.074, 2.069, 2.064, 2.06, 2.056, 2.052, 2.048, 2.045, 2.042];
+/** Two-sided 95% Student t quantile; past 30 df the table rounds df down (conservative). */
+const t975 = (df) => (df < 1 ? null : df <= 30 ? T975[df] : df <= 40 ? 2.042 : df <= 60 ? 2.021 : df <= 120 ? 2.0 : 1.98);
+const isNum = (x) => typeof x === 'number' && Number.isFinite(x);
+const sampleSd = (a) => {
+  const m = a.reduce((s, x) => s + x, 0) / a.length;
+  return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (a.length - 1));
+};
+
+/**
+ * The plan's verdict rule for one metric (lower is better). a[i] and b[i] are
+ * side A and side B in cycle i; ABAB order makes each pair adjacent in time.
+ * - delta = median over cycles of (b[i] - a[i]);
+ * - sigma = the 95% band of delta: t(0.975, n-1) x 1.2533 x SD(b - a) / sqrt(n);
+ * - valid when sigma <= threshold/2; pass when valid and delta <= threshold;
+ *   fail when valid and delta > threshold + sigma; else inconclusive.
+ * An invalid result never fails. sigmaSplitA is the plan's single split,
+ * |median(A_odd) - median(A_even)|, kept for the record: one 3-vs-3 split
+ * routinely understates the spread, so it does not decide anything.
+ */
 function judge(a, b, threshold) {
-  const A = a.filter((x) => x !== null && x !== undefined);
-  const B = b.filter((x) => x !== null && x !== undefined);
-  if (!A.length || !B.length) return { verdict: 'n/a', a: A, b: B };
-  // No budget on this profile: report the medians (A/A still compares them).
-  if (threshold === undefined || threshold === null) return { verdict: 'n/a', delta: round(median(B) - median(A), 3), medianA: round(median(A), 3), medianB: round(median(B), 3), n: [A.length, B.length] };
+  const pairs = [];
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (isNum(a[i]) && isNum(b[i])) pairs.push([a[i], b[i]]);
+  const n = pairs.length;
+  if (!n) return { verdict: 'n/a', n: 0 };
+  const A = pairs.map((x) => x[0]);
+  const B = pairs.map((x) => x[1]);
+  const d = pairs.map(([x, y]) => y - x);
+  const delta = median(d);
+  const sigma = n > 1 ? (t975(n - 1) * 1.2533 * sampleSd(d)) / Math.sqrt(n) : null;
   const odd = A.filter((_, i) => i % 2 === 0);
   const even = A.filter((_, i) => i % 2 === 1);
-  const sigma = odd.length && even.length ? Math.abs(median(odd) - median(even)) : 0;
-  const delta = median(B) - median(A);
-  const valid = sigma <= threshold / 2;
-  let verdict;
+  const all = [...A, ...B];
+  const out = {
+    delta: round(delta, 3),
+    sigma: sigma === null ? null : round(sigma, 3),
+    n,
+    medianA: round(median(A), 3),
+    medianB: round(median(B), 3),
+    range: [round(Math.min(...all), 3), round(Math.max(...all), 3)],
+    sigmaSplitA: odd.length && even.length ? round(Math.abs(median(odd) - median(even)), 3) : null,
+  };
+  // No budget on this profile: report the numbers (A/A still compares them).
+  if (threshold === undefined || threshold === null) return { verdict: 'n/a', ...out };
+  const valid = sigma !== null && sigma <= threshold / 2;
+  let verdict = 'inconclusive';
   if (valid && delta <= threshold) verdict = 'pass';
-  else if (delta > threshold + sigma) verdict = 'fail';
-  else verdict = 'inconclusive';
-  return { verdict, delta: round(delta, 3), sigma: round(sigma, 3), threshold, valid, medianA: round(median(A), 3), medianB: round(median(B), 3), n: [A.length, B.length] };
+  else if (valid && delta > threshold + sigma) verdict = 'fail';
+  return { verdict, ...out, threshold, valid, withinThreshold: Math.abs(delta) <= threshold };
 }
 
 function metricTable(prof, cyclesA, cyclesB) {
   const T = THRESHOLDS[prof === 'startup' ? 'startup' : prof] || {};
   const B = THRESHOLDS.boot;
-  const pick = (arr, f) => arr.map((c) => {
-    try {
-      return f(c);
-    } catch (e) {
-      return null;
-    }
-  });
+  const pick = (arr, f) =>
+    arr.map((c) => {
+      try {
+        return f(c);
+      } catch (e) {
+        return null;
+      }
+    });
   const rows = {};
   const add = (name, f, thr, kind = 'timing') => {
     rows[name] = { kind, ...judge(pick(cyclesA, f), pick(cyclesB, f), thr) };
@@ -398,43 +471,69 @@ function metricTable(prof, cyclesA, cyclesB) {
     add('world_gen ms (4x)', (c) => c.worldGenMs, T.worldGenMs);
     return rows;
   }
-  for (const v of ['spawn', 'hub', 'projects']) {
+  for (const v of VIEWS) {
     add(`${v}: CPU p50 ms`, (c) => c.views[v].cpuP50, T.cpuP50);
     add(`${v}: CPU p95 ms`, (c) => c.views[v].cpuP95, T.cpuP95);
     if (T.gpuP50) add(`${v}: GPU p50 ms`, (c) => c.views[v].gpuP50, T.gpuP50);
-    const dk = { spawn: 'drawsSpawn', hub: 'drawsHub', projects: 'drawsProjects' }[v];
-    add(`${v}: draws`, (c) => c.views[v].draws, T[dk], 'counter');
+    // Draws per view are counters but not exact on main: villagers, cats,
+    // birds, clouds and cars move through every view, and rock.glb / tree.glb
+    // clones land in different places on every load (see README). They are
+    // judged by the sigma rule like the timings.
+    add(`${v}: draws`, (c) => c.views[v].draws, T[DRAW_KEY[v]], 'counter');
     add(`${v}: triangles`, (c) => c.views[v].triangles, null, 'counter');
   }
-  // Programs and nodes are counters but not exact on main: a boot race puts
-  // 3 more programs (215 vs 212 desktop, 117 vs 113 low tier) and ~700 ms
-  // before the card into ~40% of loads, and nodes wander by up to 6. Measured
-  // over 96 A/A loads; they are judged by the sigma rule like the draws.
-  add('programs', (c) => c.programs, T.programs, 'counter');
+  // Programs, nodes and the bytes before the card are counters but not exact
+  // on main: a boot race adds 3 programs (215 vs 212 desktop, 117 vs 113 low
+  // tier) and ~600 ms before the card to some loads, nodes wander by up to 6,
+  // and the low tier's bytes before the card alternate 805.2 / 807.5 KB.
+  add('programs (30 s after the card)', (c) => c.programs, T.programs, 'counter');
+  add('programs after the views', (c) => c.programsAfterViews, T.programs, 'counter');
   add('scene nodes', (c) => c.nodes, T.nodes ?? null, 'counter');
+  // The exact counter: constant on every A/A load measured.
   add('texture MB', (c) => c.textureMB, T.textureMB ?? null, 'exact');
   add('welcome_visible ms', (c) => c.welcomeMs, prof === 'desktop' ? B.welcomeMs : null);
   add('world_gen ms', (c) => c.worldGenMs, prof === 'desktop' ? B.worldGenMs : null);
-  add('long tasks > 50 ms before the card', (c) => c.longTasksBeforeCard, B.longTasksBeforeCard);
-  add('bytes before the card (KB, transfer)', (c) => c.bytesBeforeCardKB, B.bytesBeforeCardKB, 'exact');
+  add('long tasks > 50 ms before the card', (c) => c.longTasksBeforeCard, B.longTasksBeforeCard, 'counter');
+  add('bytes before the card (KB, transfer)', (c) => c.bytesBeforeCardKB, B.bytesBeforeCardKB, 'counter');
   return rows;
 }
 
 function overall(rows) {
-  const vs = Object.values(rows).map((r) => r.verdict).filter((v) => v !== 'n/a');
+  const vs = Object.values(rows)
+    .map((r) => r.verdict)
+    .filter((v) => v !== 'n/a');
   if (vs.includes('fail')) return 'fail';
   if (vs.includes('inconclusive')) return 'inconclusive';
   return 'pass';
 }
 
+/** A/A (one dist on both sides): exact counters equal, |delta| within each threshold. */
+function aaSummary(profiles) {
+  const out = { exactCountersEqual: true, exactCounters: [], outsideThreshold: [], verdictNeverFail: true };
+  for (const [prof, p] of Object.entries(profiles)) {
+    if (p.verdict === 'fail') out.verdictNeverFail = false;
+    for (const [k, r] of Object.entries(p.metrics || {})) {
+      if (r.kind === 'exact' && r.range) {
+        const equal = r.range[0] === r.range[1];
+        out.exactCounters.push({ profile: prof, metric: k, range: r.range, equal });
+        if (!equal) out.exactCountersEqual = false;
+      }
+      if (r.threshold !== undefined && r.withinThreshold === false) out.outsideThreshold.push({ profile: prof, metric: k, delta: r.delta, sigma: r.sigma, threshold: r.threshold });
+    }
+  }
+  return out;
+}
+
 // -------------------------------------------------------------------- modes
-async function modeAB(args, out) {
+async function modeAB(args) {
   const [distA, distB] = args.ab || [];
   if (!distA || !distB) throw new lib.HarnessError('--ab takes two dist directories');
-  const ports = String(args.ports || '').split(',').map((x) => lib.numArg(x, '--ports'));
+  const ports = String(args.ports || '')
+    .split(',')
+    .map((x) => lib.numArg(x, '--ports'));
   if (ports.length !== 2) throw new lib.HarnessError('--ab needs --ports <pA>,<pB>');
   const profiles = String(args.profiles || 'desktop,lowtier,startup').split(',');
-  let cycles = Number(args.cycles || 6);
+  const hour = args.hour || '12';
   const srvA = await lib.startPreview({ dist: distA, port: ports[0], label: 'A' });
   let srvB;
   try {
@@ -450,7 +549,7 @@ async function modeAB(args, out) {
       // One discarded load per side first: the browser's shader and HTTP
       // caches start cold, and a cold first cycle would bias side A.
       for (const base of [srvA.url, srvB.url]) {
-        const w = await loadCycle(browser, base, prof, { startupOnly: true, hour: args.hour || '12' });
+        const w = await loadCycle(browser, base, prof, { startupOnly: true, hour });
         if (w.net.leaks.length) data.leaks.push(...w.net.leaks);
       }
       const A = [];
@@ -458,16 +557,16 @@ async function modeAB(args, out) {
       let rows = null;
       let done = 0;
       // Each profile starts at the requested cycles and escalates on its own.
-      cycles = Number(args.cycles || 6);
+      let cycles = Number(args.cycles || 6);
       for (;;) {
         for (let c = done; c < cycles; c++) {
           for (const side of ['A', 'B']) {
             const base = side === 'A' ? srvA.url : srvB.url;
-            const r = await loadCycle(browser, base, prof, { startupOnly: prof === 'startup', hour: args.hour || '12' });
+            const r = await loadCycle(browser, base, prof, { startupOnly: prof === 'startup', programsAtS: 30, hour });
             if (r.net.leaks.length) data.leaks.push(...r.net.leaks);
             if (!r.net.signUpSeen) data.signUpMissing++;
             (side === 'A' ? A : B).push(r);
-            process.stdout.write(`  ${prof} cycle ${c + 1}/${cycles} ${side}: welcome ${r.welcomeMs} ms${r.views ? `, spawn cpu p50 ${r.views.spawn.cpuP50} / draws ${r.views.spawn.draws}` : ''}\n`);
+            process.stdout.write(`  ${prof} cycle ${c + 1}/${cycles} ${side}: welcome ${r.welcomeMs} ms${r.views ? `, spawn cpu p50 ${r.views.spawn.cpuP50} / draws ${r.views.spawn.draws}` : ''}, host ${r.hostBusyPct}% busy\n`);
           }
         }
         done = cycles;
@@ -477,23 +576,8 @@ async function modeAB(args, out) {
         cycles = Math.min(24, cycles * 2);
         process.stdout.write(`  ${prof}: inconclusive, escalating to ${cycles} cycles\n`);
       }
-      // A/A: exact counters must be equal (amendment 3). The exact ones are
-      // the texture MB and the bytes before the card (constant over 96 A/A
-      // loads). Draws and triangles per view vary load to load (villagers walk
-      // in and out of a view, ±20 draws at the spawn), and programs and nodes
-      // ride a boot race (see metricTable); all of those are judged by the
-      // sigma rule like the timings.
-      if (data.sameDist) {
-        data.aaExactCountersEqual = data.aaExactCountersEqual !== false;
-        for (const r of Object.values(rows)) {
-          if (r.kind !== 'exact' || r.delta === undefined) continue;
-          if (r.delta !== 0) {
-            r.aaCounterMismatch = true;
-            data.aaExactCountersEqual = false;
-          }
-        }
-      }
-      data.profiles[prof] = { cycles: done, verdict: overall(rows), metrics: rows, raw: { A, B } };
+      const host = [...A, ...B].map((r) => r.hostBusyPct).filter((x) => x !== null && x !== undefined);
+      data.profiles[prof] = { cycles: done, verdict: overall(rows), hostBusyPct: { p50: round(median(host), 1), max: host.length ? Math.max(...host) : null }, metrics: rows, raw: { A, B } };
     }
   } finally {
     await browser.close().catch(() => {});
@@ -503,70 +587,163 @@ async function modeAB(args, out) {
   const verdicts = Object.values(data.profiles).map((p) => p.verdict);
   let v = verdicts.includes('fail') ? 'fail' : verdicts.includes('inconclusive') ? 'inconclusive' : 'pass';
   if (data.signUpMissing) v = v === 'fail' ? v : 'inconclusive';
-  if (data.sameDist && data.aaExactCountersEqual === false && v === 'pass') v = 'fail';
+  if (data.sameDist) {
+    // A/A (amendment 3): pass or inconclusive, never fail; every |delta|
+    // within its threshold; exact counters equal on every load.
+    data.aa = aaSummary(data.profiles);
+    if (!data.aa.exactCountersEqual) v = 'fail';
+  }
   if (data.leaks.length) v = 'fail-closed';
   data.verdict = v;
   return data;
 }
 
-async function modeFx(args, out) {
+/**
+ * One off/on pair for --fx, with the live loop stopped so nothing moves
+ * between the two sides: per side, the switch is set, then two app frames
+ * run (the update callback with a 1/240 s step, so the effect applies its
+ * switch while villagers move ~1 cm, then a whole render). Draws and
+ * triangles are the mean of the two frames (a half-rate pass averages out);
+ * programs are read after them.
+ */
+const FX_PAIR = ({ name }) => {
+  const sr = window.__app.renderer;
+  const R = sr.getRenderer();
+  sr.stopRenderLoop();
+  const side = (v) => {
+    window.__dsFx = window.__dsFx || {};
+    window.__dsFx[name] = v;
+    let draws = 0;
+    let triangles = 0;
+    for (let k = 0; k < 2; k++) {
+      sr.renderCallback(1 / 240);
+      R.info.reset();
+      sr.render();
+      draws += R.info.render.calls;
+      triangles += R.info.render.triangles;
+    }
+    return { draws: draws / 2, triangles: triangles / 2, programs: R.info.programs ? R.info.programs.length : null };
+  };
+  const off = side(false);
+  const on = side(true);
+  sr.isRunning = false;
+  sr.startRenderLoop(sr.scene, sr.camera, sr.renderCallback);
+  return { off, on };
+};
+
+/**
+ * --fx <name>: the effect starts OFF before any page script runs. 30 s after
+ * the card, each view is posed and measured with 4 off/on pairs (FX_PAIR:
+ * whole-frame draws, triangles and programs per side, nothing moving in
+ * between); programs the ON sides add are the effect's. Then 6 x 1.5 s per
+ * side of timing at the spawn, escalating like --ab.
+ */
+async function modeFx(args) {
   const name = String(args.fx);
   const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
   const browser = await lib.launch();
-  const profiles = String(args.profiles || 'desktop,lowtier').split(',').filter((p) => p !== 'startup');
+  const profiles = String(args.profiles || 'desktop,lowtier')
+    .split(',')
+    .filter((p) => p !== 'startup');
+  const hour = args.hour || '12';
   const data = { mode: 'fx', effect: name, profiles: {}, leaks: [], signUpMissing: 0 };
   try {
     for (const prof of profiles) {
-      const s = await lib.openSession(browser, lib.profile(prof), { init: [GATE_INIT({ nogpu: false })] });
+      const p = lib.profile(prof);
+      const T = THRESHOLDS[prof];
+      const s = await lib.openSession(browser, p, { init: [GATE_INIT({ nogpu: false })], fx: { [name]: false } });
       const { page } = s;
-      const hour = args.hour || '12';
-      await page.goto(`${server.url}/?owner=1&perf=1${hour !== 'live' ? `&hour=${hour}` : ''}${lib.profile(prof).query || ''}`, { waitUntil: 'domcontentloaded', timeout: 240000 });
-      await page.waitForFunction(() => window.__lifeIslandReady === true, null, { timeout: 300000, polling: 100 });
-      await page.waitForSelector(`${lib.WELCOME} button[data-dismiss]`, { state: 'visible', timeout: 180000 });
-      await page.evaluate(lib.HELPERS);
-      await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
-      await page.waitForTimeout(3000);
-      await page.evaluate(() => {
-        const sr = window.__app.renderer;
-        sr.governorArmed = false;
-        sr.governorArmAccum = -1e12;
-      });
-      const set = (on) => page.evaluate(([n, v]) => {
-        window.__dsFx = window.__dsFx || {};
-        window.__dsFx[n] = v;
-      }, [name, on]);
-      const off = [];
-      const on = [];
-      let cycles = Number(args.cycles || 6);
-      let done = 0;
-      let rows;
-      for (;;) {
-        for (let c = done; c < cycles; c++) {
-          await set(false);
-          await page.waitForTimeout(400);
-          off.push(await windowStats(page, 1500));
-          await set(true);
-          await page.waitForTimeout(400);
-          on.push(await windowStats(page, 1500));
+      const set = (on) =>
+        page.evaluate(
+          ([n, v]) => {
+            window.__dsFx = window.__dsFx || {};
+            window.__dsFx[n] = v;
+          },
+          [name, on],
+        );
+      try {
+        await bootPage(page, server.url, p, hour);
+        await settleAfterCard(page, 30);
+        // Counters: per view, 4 off/on pairs with the world held still.
+        const counters = {};
+        let programsAdded = 0;
+        for (const view of VIEWS) {
+          await page.evaluate(POSE, { view });
+          await page.waitForTimeout(view === 'spawn' ? 600 : view === 'projects' ? 1500 : 1200);
+          const off = [];
+          const on = [];
+          for (let k = 0; k < 4; k++) {
+            const pair = await page.evaluate(FX_PAIR, { name });
+            off.push(pair.off);
+            on.push(pair.on);
+            programsAdded += pair.on.programs - pair.off.programs;
+            await page.waitForTimeout(250);
+          }
+          counters[view] = {
+            draws: judge(
+              off.map((x) => x.draws),
+              on.map((x) => x.draws),
+              T[DRAW_KEY[view]],
+            ),
+            triangles: judge(
+              off.map((x) => x.triangles),
+              on.map((x) => x.triangles),
+              null,
+            ),
+            off,
+            on,
+          };
         }
-        done = cycles;
-        const T = THRESHOLDS[prof];
-        rows = {
-          'CPU p50 ms': judge(off.map((x) => x.cpuP50), on.map((x) => x.cpuP50), T.cpuP50),
-          'CPU p95 ms': judge(off.map((x) => x.cpuP95), on.map((x) => x.cpuP95), T.cpuP95),
-          draws: { kind: 'counter', ...judge(off.map((x) => x.drawsMean), on.map((x) => x.drawsMean), T.drawsSpawn) },
+        // Timing at the spawn, interleaved.
+        await page.evaluate(POSE, { view: 'spawn' });
+        await page.waitForTimeout(800);
+        const offW = [];
+        const onW = [];
+        let cycles = Number(args.cycles || 6);
+        let done = 0;
+        let rows;
+        for (;;) {
+          for (let c = done; c < cycles; c++) {
+            await set(false);
+            await page.waitForTimeout(400);
+            offW.push(await windowStats(page, 1500));
+            await set(true);
+            await page.waitForTimeout(400);
+            onW.push(await windowStats(page, 1500));
+          }
+          done = cycles;
+          rows = {
+            'spawn: CPU p50 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP50), onW.map((x) => x.cpuP50), T.cpuP50) },
+            'spawn: CPU p95 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
+          };
+          if (T.gpuP50) rows['spawn: GPU p50 ms'] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50) };
+          for (const view of VIEWS) rows[`${view}: draws`] = { kind: 'counter', ...counters[view].draws };
+          rows['programs the effect adds'] = { kind: 'counter', verdict: programsAdded <= T.programs ? 'pass' : 'fail', delta: programsAdded, threshold: T.programs, n: 1 };
+          const us = onW.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
+          rows['µs per frame (FxBudget)'] = us.length ? { kind: 'µs', verdict: median(us) <= FX_US[prof] ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: FX_US[prof] } : { kind: 'µs', verdict: 'n/a', note: 'not timed by fx.time (unregistered or ?perf=1 off)' };
+          if (overall(rows) !== 'inconclusive' || cycles >= 24) break;
+          cycles = Math.min(24, cycles * 2);
+        }
+        await set(null);
+        const fxNow = await page.evaluate(FX_SNAPSHOT);
+        data.profiles[prof] = {
+          cycles: done,
+          verdict: overall(rows),
+          metrics: rows,
+          ledger: {
+            defaults: (fxNow.effects || {})[name] || null,
+            draws: Object.fromEntries(VIEWS.map((v) => [v, counters[v].draws.delta])),
+            programs: programsAdded,
+            usPerFrame: rows['µs per frame (FxBudget)'].medianB ?? null,
+          },
+          counters: Object.fromEntries(VIEWS.map((v) => [v, { off: counters[v].off, on: counters[v].on, triangles: counters[v].triangles }])),
+          raw: { off: offW, on: onW },
         };
-        if (T.gpuP50) rows['GPU p50 ms'] = judge(off.map((x) => x.gpuP50), on.map((x) => x.gpuP50), T.gpuP50);
-        const us = on.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
-        rows['µs per frame (FxBudget)'] = us.length ? { verdict: median(us) <= FX_US[prof] ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: FX_US[prof] } : { verdict: 'n/a', note: 'not timed by fx.time (unregistered or ?perf=1 off)' };
-        if (overall(rows) !== 'inconclusive' || cycles >= 24) break;
-        cycles = Math.min(24, cycles * 2);
+      } finally {
+        await s.close({ waitSignUpMs: 20000 });
+        if (s.net.leaks.length) data.leaks.push(...s.net.leaks);
+        if (!s.net.signUpSeen) data.signUpMissing++;
       }
-      await set(null);
-      data.profiles[prof] = { cycles: done, verdict: overall(rows), metrics: rows, raw: { off, on } };
-      await s.close({ waitSignUpMs: 20000 });
-      if (s.net.leaks.length) data.leaks.push(...s.net.leaks);
-      if (!s.net.signUpSeen) data.signUpMissing++;
     }
   } finally {
     await browser.close().catch(() => {});
@@ -577,12 +754,15 @@ async function modeFx(args, out) {
   return data;
 }
 
-async function modeReport(args, out) {
+async function modeReport(args) {
   const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
   const browser = await lib.launch();
   const profiles = String(args.profiles || 'desktop,lowtier,startup').split(',');
   const data = { mode: 'report', profiles: {}, checks: [], leaks: [], signUpMissing: 0 };
   const check = (name, pass, value, expect, reportOnly = false) => data.checks.push({ name, pass, value, expect, reportOnly });
+  const goldenFile = args.seed ? lib.goldenPath(args) : null;
+  const golden = goldenFile ? lib.readJson(goldenFile) : null;
+  if (goldenFile) data.seedGolden = { file: goldenFile.replace(/\\/g, '/'), present: !!golden };
   try {
     for (const prof of profiles) {
       const r = await loadCycle(browser, server.url, prof, { startupOnly: prof === 'startup', programsAtS: 30, seed: !!args.seed, hour: args.hour || '12' });
@@ -615,11 +795,14 @@ async function modeReport(args, out) {
       check(`${prof}: all effects µs/frame`, total <= cap, round(total, 2), `<= ${cap}`);
       if (prof === 'desktop') check('desktop: idle CPU p95 ms (sanity, report-only)', null, r.views.spawn.cpuP95, `~${BASELINE.desktop.idleCpuP95} ±15% on the audit rig`, true);
       check(`${prof}: render() calls that created programs (B2 ledger, report-only)`, null, r.renderProgramAdds.map((x) => `+${x.added} ${x.ms} ms`), 'none after B2', true);
+      check(`${prof}: host CPU busy during the load (report-only)`, null, r.hostBusyPct, 'other sessions add timing noise', true);
       if (args.seed) {
-        const golden = fs.existsSync(GOLDEN_SEED) ? JSON.parse(fs.readFileSync(GOLDEN_SEED, 'utf8')) : null;
-        const g = golden ? golden[prof === 'desktop' ? 'desktop' : 'lowtier'] || null : null;
-        if (!r.seed || !g) check(`${prof}: __dsSeedDraws vs test/golden/seedDraws.json`, null, !r.seed ? 'seed counter absent' : 'golden absent', 'report only', true);
-        else check(`${prof}: __dsSeedDraws vs test/golden/seedDraws.json`, JSON.stringify({ total: r.seed.total, marks: r.seed.marks }) === JSON.stringify({ total: g.total, marks: g.marks }), r.seed.total, g.total);
+        const g = lib.goldenFor(golden, prof);
+        const rel = path.relative(process.cwd(), goldenFile);
+        const label = `${prof}: __dsSeedDraws vs ${(rel && !rel.startsWith('..') ? rel : goldenFile).replace(/\\/g, '/')}`;
+        if (!r.seed) check(label, null, 'seed counter absent', 'report only', true);
+        else if (!g) check(label, null, golden ? `golden has no ${prof} entry` : `golden absent: ${goldenFile.replace(/\\/g, '/')}`, 'report only', true);
+        else check(label, JSON.stringify({ total: r.seed.total, marks: r.seed.marks }) === JSON.stringify({ total: g.total, marks: g.marks }), r.seed.total, g.total);
       }
     }
   } finally {
@@ -632,26 +815,49 @@ async function modeReport(args, out) {
 }
 
 // ------------------------------------------------------------------ ledger
+/**
+ * One row per registered effect (FxBudget's __dsFx.effects), plus the --fx
+ * subject. Draws and programs are measured by --fx <name> (on minus off);
+ * µs per frame comes from FxBudget's stats in whatever windows the mode ran.
+ */
 function ledger(data) {
-  const rows = ['| effect | tier default (desktop/low) | switch | draws spawn/hub/Projects | programs | µs/frame |', '|---|---|---|---|---|---|'];
+  const rows = ['| effect | tier default (desktop/low) | switch | draws spawn/hub/Projects (on - off) | programs desktop/low | µs/frame desktop/low |', '|---|---|---|---|---|---|'];
   const effects = {};
-  const collect = (r) => {
-    if (!r || !r.views) return;
-    for (const v of Object.values(r.views)) {
-      for (const [n, d] of Object.entries(v.effects || {})) effects[n] = effects[n] || { defaults: d, us: [] };
+  const entry = (n) => (effects[n] = effects[n] || { defaults: null, us: { desktop: [], lowtier: [] } });
+  const collect = (prof, windows) => {
+    for (const v of windows) {
+      if (!v) continue;
+      for (const [n, d] of Object.entries(v.effects || {})) entry(n).defaults = d;
       for (const [n, us] of Object.entries(v.fxUsPerFrame || {})) {
-        effects[n] = effects[n] || { defaults: null, us: [] };
-        effects[n].us.push(us);
+        if (us === null || us === undefined) continue;
+        const e = entry(n);
+        if (e.us[prof]) e.us[prof].push(us);
       }
     }
   };
-  for (const p of Object.values(data.profiles || {})) {
-    if (p.views) collect(p);
-    if (p.raw) for (const r of [...(p.raw.A || []), ...(p.raw.B || [])]) collect(r);
+  for (const [prof, p] of Object.entries(data.profiles || {})) {
+    if (p.views) collect(prof, Object.values(p.views));
+    if (p.raw && (p.raw.A || p.raw.B)) for (const r of [...(p.raw.A || []), ...(p.raw.B || [])]) if (r.views) collect(prof, Object.values(r.views));
+    if (p.raw && p.raw.on) collect(prof, data.mode === 'fx' ? p.raw.on : []);
+    if (p.raw && p.raw.off) for (const w of p.raw.off) for (const [n, d] of Object.entries(w.effects || {})) entry(n).defaults = d;
   }
-  for (const [n, e] of Object.entries(effects).sort()) {
-    const d = e.defaults ? `${e.defaults.desktop ? 'on' : 'off'}/${e.defaults.low ? 'on' : 'off'}` : '?';
-    rows.push(`| ${n} | ${d} | __dsFx.${n} | (per-effect A/B: --fx ${n}) | - | ${e.us.length ? round(median(e.us), 1) : '-'} |`);
+  if (data.mode === 'fx' && data.effect) entry(data.effect);
+  const fmtD = (x) => (x === null || x === undefined ? '?' : x > 0 ? `+${x}` : String(x));
+  const fmtUs = (a) => (a.length ? String(round(median(a), 1)) : '-');
+  for (const [n, e] of Object.entries(effects).sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const d = e.defaults ? `${e.defaults.desktop ? 'on' : 'off'}/${e.defaults.low ? 'on' : 'off'}` : 'not registered';
+    let draws = `run --fx ${n}`;
+    let progs = `run --fx ${n}`;
+    if (data.mode === 'fx' && n === data.effect) {
+      const L = (prof) => (data.profiles[prof] ? data.profiles[prof].ledger : null);
+      const dv = (prof) => (L(prof) ? VIEWS.map((v) => fmtD(L(prof).draws[v])).join('/') : '-');
+      draws = ['desktop', 'lowtier']
+        .filter((prof) => L(prof))
+        .map((prof) => `${prof === 'desktop' ? 'desktop' : 'low'} ${dv(prof)}`)
+        .join('; ');
+      progs = ['desktop', 'lowtier'].map((prof) => (L(prof) ? fmtD(L(prof).programs) : '-')).join('/');
+    }
+    rows.push(`| ${n} | ${d} | __dsFx.${n} | ${draws} | ${progs} | ${fmtUs(e.us.desktop)}/${fmtUs(e.us.lowtier)} |`);
   }
   if (Object.keys(effects).length === 0) rows.push('| (none registered) | | | | | |');
   return rows.join('\n') + '\n';
@@ -662,9 +868,16 @@ function printSummary(data) {
   if (data.mode === 'report') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
-      lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles`);
-      for (const [k, r] of Object.entries(p.metrics)) if (r.verdict !== 'n/a') lines.push(`    ${r.verdict.padEnd(12)} ${k}: Δ ${r.delta ?? r.medianB} σ ${r.sigma ?? '-'} thr ${r.threshold}${r.aaCounterMismatch ? '  (A/A counter mismatch)' : ''}`);
+      lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%)` : ''}`);
+      for (const [k, r] of Object.entries(p.metrics)) {
+        if (r.verdict === 'n/a') continue;
+        const why = r.verdict === 'inconclusive' && r.valid === false ? '  (sigma > thr/2)' : '';
+        lines.push(`    ${r.verdict.padEnd(12)} ${k}: Δ ${r.delta ?? r.medianB} σ ${r.sigma ?? '-'} thr ${r.threshold}${why}`);
+      }
     }
+  if (data.aa) {
+    lines.push(`  A/A: verdict never fail ${data.aa.verdictNeverFail}; exact counters equal ${data.aa.exactCountersEqual}; |Δ| over threshold: ${data.aa.outsideThreshold.length ? data.aa.outsideThreshold.map((x) => `${x.profile} ${x.metric} ${x.delta}`).join('; ') : 'none'}`);
+  }
   if (data.leaks && data.leaks.length) lines.push(`  LEAKS: ${data.leaks.slice(0, 5).join(' | ')}`);
   process.stdout.write(lines.join('\n') + '\n');
 }
@@ -672,16 +885,16 @@ function printSummary(data) {
 async function main() {
   const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help'] });
   if (args.help) {
-    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 22).join('\n') + '\n');
+    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 26).join('\n') + '\n');
     return 0;
   }
   const out = lib.outDir(args, 'perf-gate');
   const startedAt = new Date().toISOString();
   let data;
   try {
-    if (args.ab) data = await modeAB(args, out);
-    else if (args.fx) data = await modeFx(args, out);
-    else data = await modeReport(args, out);
+    if (args.ab) data = await modeAB(args);
+    else if (args.fx) data = await modeFx(args);
+    else data = await modeReport(args);
   } catch (e) {
     data = { mode: args.ab ? 'ab' : args.fx ? 'fx' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
   }
@@ -710,4 +923,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { judge, metricTable, overall, THRESHOLDS, FX_US, BASELINE };
+module.exports = { judge, metricTable, overall, aaSummary, ledger, t975, THRESHOLDS, FX_US, BASELINE };

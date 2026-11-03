@@ -1,6 +1,7 @@
 // FxBudget: the per-effect switch and stopwatch every new per-frame effect uses
 // (stage-1 item E1). The perf gate toggles effects through __dsFx and reads
 // __dsFx.stats, so these semantics are its contract.
+import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { fx } from '../FxBudget';
@@ -162,5 +163,87 @@ describe('time()', () => {
     fx.time('squash', () => undefined);
     expect(globalThis.__dsFx?.stats).toBeUndefined();
     vi.unstubAllGlobals();
+  });
+});
+
+// The perf gate's verdict maths (tools/perf-gate.cjs), which every package's
+// --ab acceptance reads. delta is the median paired (B - A) difference, sigma
+// its 95% band over both sides; an invalid result (sigma > threshold/2) is
+// inconclusive and never fails, so an A/A run cannot fail on noise.
+describe('perf gate verdict maths', () => {
+  type Row = { verdict: string; delta: number; sigma: number | null; valid?: boolean };
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    judge: (a: number[], b: number[], threshold: number | null) => Row;
+    aaSummary: (profiles: Record<string, unknown>) => {
+      exactCountersEqual: boolean;
+      outsideThreshold: Array<{ metric: string }>;
+      verdictNeverFail: boolean;
+    };
+  };
+  // Seeded Gaussian noise, so every run of this test sees the same numbers.
+  const noise = (seed: number) => {
+    let s = seed;
+    const u = () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648;
+    return () => Math.sqrt(-2 * Math.log(u() || 1e-9)) * Math.cos(2 * Math.PI * u());
+  };
+
+  const plus = (a: number[], k: number) => a.map((x) => x + k);
+
+  test('an exact counter passes at its threshold and fails one past it', () => {
+    const a = [626, 626, 626, 626, 626, 626];
+    expect(gate.judge(a, a, 0)).toMatchObject({ verdict: 'pass', delta: 0, sigma: 0 });
+    expect(gate.judge(a, plus(a, 2), 2).verdict).toBe('pass');
+    expect(gate.judge(a, plus(a, 3), 2).verdict).toBe('fail');
+  });
+
+  test('a noisy result is inconclusive even when delta is over the threshold', () => {
+    const a = [10.8, 14.0, 10.9, 13.8, 12.4, 12.3];
+    const b = [13.1, 11.2, 15.0, 12.1, 14.6, 12.9];
+    const r = gate.judge(a, b, 0.5);
+    expect(r.delta).toBeGreaterThan(0.5 + 0.1);
+    expect(r.valid).toBe(false);
+    expect(r.verdict).toBe('inconclusive');
+  });
+
+  test('pairing cancels drift that both sides share', () => {
+    const a = [6, 7.5, 9, 10.5, 12, 13.5];
+    const r = gate.judge(a, plus(a, 0.1), 0.5);
+    expect(r.verdict).toBe('pass');
+    expect(r.delta).toBeCloseTo(0.1, 6);
+  });
+
+  test('a real regression beyond the band fails', () => {
+    const g = noise(7);
+    const a = Array.from({ length: 12 }, () => 14 + 0.1 * g());
+    const b = a.map((x) => x + 2 + 0.1 * g());
+    expect(gate.judge(a, b, 1).verdict).toBe('fail');
+  });
+
+  test('A/A over noise as large as the threshold never fails (1,000 runs of 6, 12 and 24 cycles)', () => {
+    const g = noise(20261104);
+    let fails = 0;
+    for (let run = 0; run < 1000; run++) {
+      for (const n of [6, 12, 24]) {
+        const a = Array.from({ length: n }, () => 14 + g());
+        const b = Array.from({ length: n }, () => 14 + g());
+        if (gate.judge(a, b, 1).verdict === 'fail') fails++;
+      }
+    }
+    expect(fails).toBe(0);
+  });
+
+  test('the A/A summary flags an exact counter that moved and a delta over its threshold', () => {
+    const aa = gate.aaSummary({
+      desktop: {
+        verdict: 'inconclusive',
+        metrics: {
+          'texture MB': { kind: 'exact', range: [18.1, 18.2] },
+          'projects: draws': { kind: 'counter', threshold: 0, withinThreshold: false, delta: 1 },
+        },
+      },
+    });
+    expect(aa.exactCountersEqual).toBe(false);
+    expect(aa.outsideThreshold.map((x) => x.metric)).toEqual(['projects: draws']);
+    expect(aa.verdictNeverFail).toBe(true);
   });
 });
