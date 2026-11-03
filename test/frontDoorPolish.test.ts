@@ -462,3 +462,72 @@ describe('accessibility quick wins', () => {
     expect(text(box)).toContain('your voice streams live to ElevenLabs');
   });
 });
+
+// Stage 1 (A3, A4) made looking a press-and-drag with the left or right mouse
+// button, a swipe on touch, and J/L on the keyboard; pointer lock is opt-in.
+// "mouse to look" taught a click and a move, which now turns nothing. (D9
+// later drops the card's controls line, and these card checks with it.)
+describe('the controls copy teaches the stage-1 look', () => {
+  const lookLine = (root: Element | null | undefined): string =>
+    text([...(root?.querySelectorAll('p') ?? [])].find((p) => text(p).includes('to move')));
+  const cardLine = (): string => {
+    ui.showWelcome(null);
+    return lookLine(document.querySelector('[role="dialog"]'));
+  };
+  const hubLine = (): string => {
+    ui.hideWelcome(false);
+    ui.showZonePanel({ id: 'welcome', name: 'welcome' }, { source: 'menu' });
+    const hub = [...document.querySelectorAll('#ui-overlay > div')].find((d) =>
+      text(d.querySelector('h2')).includes('Welcome to Life Island'),
+    );
+    expect(hub, 'no Welcome Hub panel').toBeTruthy();
+    return lookLine(hub);
+  };
+
+  test('desktop: drag or J/L to look, on the card and in the Welcome Hub', () => {
+    expect(ui.isTouchDevice()).toBe(false);
+    const card = cardLine();
+    const hub = hubLine();
+    expect(card).toBe('WASD to move · drag or J/L to look · space to jump · Q to wave.');
+    expect(hub).toContain('WASD to move, drag or J/L to look, E to interact.');
+    for (const line of [card, hub]) expect(line).not.toMatch(/mouse/i);
+  });
+
+  test('touch: swipe to look in the Hub, and neither surface names a mouse or a key', () => {
+    history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
+    try {
+      document.body.innerHTML = '<div id="ui-overlay"></div>';
+      ui = new SimpleUI('ui-overlay');
+      expect(ui.isTouchDevice()).toBe(true);
+      const card = cardLine();
+      const hub = hubLine();
+      expect(card).toContain('Drag the joystick to move');
+      expect(hub).toContain('Drag the joystick to move, swipe to look, 👆 USE to interact.');
+      for (const line of [card, hub]) {
+        expect(line).not.toMatch(/mouse|J\/L|WASD|drag to look/i);
+      }
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  test('the README table says the same: a drag with either button, J/L, a swipe', () => {
+    const readme = src('README.md');
+    const controls = readme.slice(readme.indexOf('## Controls'), readme.indexOf('## How it is'));
+    expect(controls).toContain('| Mouse drag (left or right button) | Look |');
+    expect(controls).toContain('| J / L | Turn the view (I / K tilt it, R recentres it) |');
+    expect(controls).toContain('On a phone: a joystick to move, swipe to look,');
+  });
+
+  test('no surface still teaches the click-to-lock look', () => {
+    for (const f of [
+      'SimpleUI.ts',
+      'README.md',
+      'index.html',
+      'public/hire.html',
+      'public/404.html',
+    ]) {
+      expect(src(f), f).not.toMatch(/mouse to look|lock the pointer|click the world/i);
+    }
+  });
+});

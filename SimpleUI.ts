@@ -4341,7 +4341,7 @@ export class SimpleUI {
     }
     const controlsLine = this.isTouch
       ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
-      : 'WASD to move · mouse to look · space to jump · Q to wave.';
+      : 'WASD to move · drag or J/L to look · space to jump · Q to wave.';
 
     // Primary CTAs: the work and the contact path. A recruiter who won't
     // explore still reaches everything in one click. See the work is an
@@ -6761,8 +6761,8 @@ export class SimpleUI {
         <em>in person</em> to stamp your <strong>Passport</strong> and earn the Founder's Crown 👑.</p>
         <p style="margin-top: 12px; font-size:13px; color:#aaa;"><em>${
           this.isTouch
-            ? 'Drag the joystick to move, drag to look, 👆 USE to interact'
-            : 'WASD to move, mouse to look, E to interact'
+            ? 'Drag the joystick to move, swipe to look, 👆 USE to interact'
+            : 'WASD to move, drag or J/L to look, E to interact'
         }. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
       `,
       professional: `
