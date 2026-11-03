@@ -697,6 +697,9 @@ describe('stage-1 wiring in main-simple (A1, A2, A4, A5)', () => {
   const update = (): string => bodyOf(stripped('main-simple.ts'), 'private update(');
   /** One branch of update()'s input chain, by its condition. */
   const branch = (cond: string): string => bodyOf(update(), `} else if (${cond}) {`);
+  /** Where the last press a branch acts on is read: applyLook consumes R. */
+  const lastPressRead = (body: string): number =>
+    Math.max(body.lastIndexOf('consumeKeyPress('), body.lastIndexOf('this.applyLook('));
 
   test('the update() slice is the whole method', () => {
     // A literal the slicer misread would end it early or run it on; every
@@ -732,6 +735,25 @@ describe('stage-1 wiring in main-simple (A1, A2, A4, A5)', () => {
     }
     // presses during the tour are for the tour
     expect(bodyOf(update(), 'if (this.tour) {')).toContain('this.inputManager.clearLatched();');
+  });
+
+  test('A2: indoors, in a conversation, on a bench and at the wheel, an unused press is dropped', () => {
+    // P in the car used to take a photo on hop-off, C on a bench opened the
+    // editor on standing up, R indoors recentred the camera outside.
+    expect(bodyOf(stripped('main-simple.ts'), 'private dropUnusedPresses(')).toContain(
+      'this.inputManager.clearLatched();',
+    );
+    for (const cond of [
+      'this.scene.isInsideInterior()',
+      'this.ui.isDialogueActive() || this.ui.isNpcChatOpen()',
+      'this.scene.isPlayerSeated()',
+      'this.scene.isRidingVehicle()',
+    ]) {
+      const body = branch(cond);
+      const drop = body.lastIndexOf('this.dropUnusedPresses();');
+      expect(drop, cond).toBeGreaterThan(-1);
+      expect(drop, `${cond}: after the last press it acts on`).toBeGreaterThan(lastPressRead(body));
+    }
   });
 
   test('A2: C and P are free-walk verbs, no longer a raw keydown listener', () => {

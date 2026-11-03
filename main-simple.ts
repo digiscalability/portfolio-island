@@ -2494,6 +2494,7 @@ class SimpleApp {
             this.ui.hideInteractionPrompt();
           }
         }
+        this.dropUnusedPresses();
       } else if (this.ui.isDialogueActive() || this.ui.isNpcChatOpen()) {
         // A conversation is open (canned panel or AI chat): you're standing
         // WITH someone — movement is suppressed, the villager is held, and
@@ -2537,6 +2538,7 @@ class SimpleApp {
             this.ui.closeNpcChat();
           }
         }
+        this.dropUnusedPresses();
       } else if (this.scene.isPlayerSeated()) {
         // Seated on a bench: movement suppressed, E stands back up
         this.scene.setPlayerMovement(0, 0);
@@ -2546,6 +2548,7 @@ class SimpleApp {
           this.scene.standUpFromBench();
           this.ui.hideInteractionPrompt();
         }
+        this.dropUnusedPresses();
       } else if (this.scene.isRidingVehicle()) {
         // Driving a boat/jetski: WASD/joystick steers the craft; E hops off
         const moveInput = this.inputManager.getMovementInput();
@@ -2561,6 +2564,7 @@ class SimpleApp {
           this.scene.disembarkVehicle();
           this.ui.hideInteractionPrompt();
         }
+        this.dropUnusedPresses();
         this.ui.updateBreath(1, false);
         this.ui.setUnderwater(this.scene.getSubmergedFactor());
       } else {
@@ -2654,7 +2658,8 @@ class SimpleApp {
 
         // Appearance editor (C) and photo mode (P). Latched like the verbs
         // above, so they fire only here in free walk: never from a field or
-        // a focused control, never behind a panel, never as Ctrl/Meta+C.
+        // a focused control, never behind a panel, never as Ctrl/Meta+C, and
+        // never late (a press at the wheel or on a bench is dropped there).
         if (this.inputManager.consumeKeyPress('c')) {
           if (this.ui['customizeDiv']) {
             this.ui.hideCustomize();
@@ -3359,6 +3364,19 @@ class SimpleApp {
     this.inputManager.clearLatched();
     this.inputManager.getCameraInput();
     consumePinchZoomFactor();
+  }
+
+  /**
+   * The end of a frame spent indoors, in a conversation, on a bench or at the
+   * wheel: every press the frame did not act on is dropped. Those moments use
+   * E and R at most, and the walk verbs (Q, F, G, M, C, P) act only in free
+   * walk, so a press kept for later fired when the moment ended: P in the car
+   * took a photo on hop-off, C on the bench opened the appearance editor on
+   * standing up, R indoors recentred the camera outside. The 📸 and 🎨 HUD
+   * buttons call their handlers directly, so the latch never touches them.
+   */
+  private dropUnusedPresses(): void {
+    this.inputManager.clearLatched();
   }
 
   /**
