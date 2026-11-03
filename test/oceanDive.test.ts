@@ -278,15 +278,8 @@ describe('no underwater transparent writes depth', () => {
   });
 });
 
-describe('the dive key does not fight the browser', () => {
-  test('Shift only — never Control', () => {
-    // The keydown handler never calls preventDefault, so teaching the player
-    // to hold Ctrl while pressing WASD means Ctrl+W closes the tab.
-    const d = fn('SimpleInputManager.ts', 'getDiveInput');
-    expect(d).toContain("isKeyPressed('shift')");
-    expect(d).not.toContain("isKeyPressed('control')");
-  });
-});
+// 'the dive key does not fight the browser' › 'Shift only — never Control'
+// reads SimpleInputManager.ts (getDiveInput) and moved to A's mainLocks.
 
 describe('mid-water life is cheap and RNG-safe', () => {
   test('the bait ball is ONE InstancedMesh, not 240 objects', () => {

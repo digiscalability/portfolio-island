@@ -19,8 +19,18 @@
 // These are SOURCE locks: comments are stripped before matching so a lock
 // can never be satisfied by its own explanatory prose (a trap this suite
 // has hit three times).
+//
+// OWNERSHIP (UX plan testOwnership): this suite pins package B's files. The
+// assertions it held on main-simple.ts and OrbitCamera.ts moved to A's
+// test/mainLocks.test.ts, on SimpleUI.ts to D's test/uiLocks.test.ts and on
+// SimpleRenderer.ts to E's test/rendererLocks.test.ts; a split test keeps its
+// name in both files. Locks on the world-look files (Island, Mailbox, …) stay
+// here, sliced with bodyOf() instead of fixed character windows, so code C
+// adds around them cannot slide an asserted string out of the window.
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { ShaderChunk } from 'three';
 import { describe, expect, test } from 'vitest';
 
 const src = (f: string): string =>
@@ -28,6 +38,41 @@ const src = (f: string): string =>
     .replace(/\r\n/g, '\n') // a Windows stash pop once flipped these to CRLF
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/.*$/gm, '');
+
+/**
+ * The brace-balanced block a marker belongs to.
+ * - A declaration or block opener (a `{` comes before any `;`): from the marker
+ *   to the brace that closes the block it opens.
+ * - A statement (a `;` comes first): the whole block that encloses it, from
+ *   the brace that opens that block to the brace that closes it.
+ */
+const bodyOf = (s: string, marker: string): string => {
+  const at = s.indexOf(marker);
+  expect(at, `${marker} not found`).toBeGreaterThan(-1);
+  const brace = s.indexOf('{', at);
+  const semi = s.indexOf(';', at);
+  if (brace > -1 && (semi === -1 || brace < semi)) {
+    let depth = 0;
+    for (let i = brace; i < s.length; i++) {
+      if (s[i] === '{') depth++;
+      else if (s[i] === '}' && --depth === 0) return s.slice(at, i + 1);
+    }
+    return s.slice(at);
+  }
+  let open = 0;
+  for (let i = at - 1, depth = 0; i >= 0; i--) {
+    if (s[i] === '}') depth++;
+    else if (s[i] === '{' && depth-- === 0) {
+      open = i;
+      break;
+    }
+  }
+  for (let i = at, depth = 0; i < s.length; i++) {
+    if (s[i] === '{') depth++;
+    else if (s[i] === '}' && depth-- === 0) return s.slice(open, i + 1);
+  }
+  return s.slice(open);
+};
 
 describe('asset grounding — World Law 1 (plumb radial up-axis)', () => {
   test('zone halls derive their basis from the marker plumb, not the slope', () => {
@@ -40,8 +85,7 @@ describe('asset grounding — World Law 1 (plumb radial up-axis)', () => {
 
   test('stationAt seats AND faces about the same plumb axis', () => {
     const island = src('Island.ts');
-    const start = island.indexOf('stationAt');
-    const body = island.slice(start, start + 1600);
+    const body = bodyOf(island, 'stationAt');
     expect(body).toContain('seat.position.clone().normalize()');
     // Both writers must take the SAME axis — faceObjectToward premultiplies
     // about whatever it is handed, so a slope normal here re-tilts the seat.
@@ -58,8 +102,7 @@ describe('asset grounding — World Law 1 (plumb radial up-axis)', () => {
 
   test('construction blocks stand plumb', () => {
     const island = src('Island.ts');
-    const start = island.indexOf('block.quaternion.copy');
-    const body = island.slice(start, start + 300);
+    const body = bodyOf(island, 'block.quaternion.copy');
     expect(body).toContain('sampled.position.clone().normalize()');
   });
 
@@ -107,20 +150,11 @@ describe('slope feel — snap-down, uphill cost, coyote jump', () => {
   });
 
   test('coyote jump: 120ms grace, and SOUND AND PHYSICS share one edge', () => {
+    // The shared sound/physics edge itself lives in main-simple.ts: that half
+    // of this test is in A's mainLocks.
     const player = src('SimplePlayer.ts');
     expect(player).toContain('COYOTE_MS = 120');
     expect(player).toContain('public canJump()');
-    const main = src('main-simple.ts');
-    // Sound and physics must agree: the old gate read isOnGround() on the
-    // keypress frame and went silent on exactly the crest-jumps coyote saves.
-    expect(main).toContain('player.canJump() && !this.prevJumpHeld');
-    expect(main).not.toContain('player.isOnGround() && !this.prevJumpHeld');
-    // ...and playerJump() must live INSIDE that edge block: outside it, a
-    // held Space re-jumped silently on every snap-down landing while the
-    // edge-gated sound stayed quiet — physics and audio disagreed per frame.
-    const edge = main.slice(main.indexOf('player.canJump() && !this.prevJumpHeld'));
-    const block = edge.slice(0, edge.indexOf('}'));
-    expect(block).toContain('this.scene.playerJump()');
   });
 });
 
@@ -161,8 +195,8 @@ describe('clouds — stable compositing + non-degenerate shapes', () => {
     // transparent material that writes depth is an invisible mask at low
     // opacity and punches holes behind itself at partial opacity.
     const mailbox = src('Mailbox.ts');
-    const glow = mailbox.slice(mailbox.indexOf('glowMaterial = new'), mailbox.length);
-    expect(glow.slice(0, 400)).toContain('depthWrite: false');
+    const glow = bodyOf(mailbox, 'glowMaterial = new');
+    expect(glow).toContain('depthWrite: false');
     const race = src('RaceSystem.ts');
     const ring = race.slice(race.indexOf('emissive: 0x2266aa'));
     expect(ring.slice(0, 400)).toContain('depthWrite: false');
@@ -196,10 +230,9 @@ describe('night legibility — lit roads, dark shore and highlands', () => {
   test('the artery lamp pass is RNG-SHIELDED (multiplayer world must not re-roll)', () => {
     const island = src('Island.ts');
     // CODE anchor, not a comment — src() strips comments, so a comment anchor
-    // silently yields an empty slice (this suite has been bitten before).
-    const at = island.indexOf('let lseed = 0x9e3779b1');
-    expect(at).toBeGreaterThan(-1);
-    const body = island.slice(Math.max(0, at - 300), at + 3000);
+    // silently yields an empty slice (this suite has been bitten before). The
+    // seed line is a statement, so bodyOf takes the whole shield block.
+    const body = bodyOf(island, 'let lseed = 0x9e3779b1');
     // three's generateUUID burns 4 Math.random draws per Object3D/Material/
     // Geometry, and buildLamp mints a Group per lamp — upstream of the parked
     // cars, which multiplayer addresses BY INDEX. Verified live: car_0 and
@@ -247,9 +280,7 @@ describe('roads read as roads — kerbs, centre line, and off the camera ray', (
     // The build loop's 401 allocations are seeded-RNG currency and must stay;
     // only the merge tail is new, and it is shielded so its own ~64 draws
     // cannot leak into the world stream.
-    const at = island.indexOf('let sseed = 0x51ed270b');
-    expect(at).toBeGreaterThan(-1);
-    expect(island.slice(at - 200, at + 2600)).toContain('Math.random = stashedRandom');
+    expect(bodyOf(island, 'let sseed = 0x51ed270b')).toContain('Math.random = stashedRandom');
     // Contracts the merged mesh must carry forward.
     expect(island).toContain('mesh.name = `street_sector_${b}`');
     expect(island).toMatch(/mesh\.userData\.isPavement = true;[\s\S]{0,80}pathGroup\.add/);
@@ -276,27 +307,21 @@ describe('roads read as roads — kerbs, centre line, and off the camera ray', (
     // OrbitCamera treats an own-property raycast as an explicit opt-out and
     // ray-tests its whole collision list every frame; a ground-hugging
     // ribbon can never block the camera. ~401 sphere tests/frame removed.
-    const at = island.indexOf('mesh.userData.isPavement = true');
-    expect(at).toBeGreaterThan(-1);
-    expect(island.slice(Math.max(0, at - 600), at)).toContain('mesh.raycast = () => {}');
+    expect(bodyOf(island, 'mesh.userData.isPavement = true')).toContain('mesh.raycast = () => {}');
   });
 });
 
 describe('engine smoothness — no mid-flight recompile, no wasted frames', () => {
   test('the boot precompile bakes the permutation frame 1 will use', () => {
-    const main = src('main-simple.ts');
     const scene = src('GameScene.ts');
     // three bakes NUM_POINT_LIGHTS/NUM_SPOT_LIGHTS into every lit material's
     // program key. Lights are born visible and are only gated once update()
     // runs — after this compile — so the precompile used to bake the NIGHT
     // permutation and the first daylight frame invalidated EVERY lit program
     // at once, mid fly-in. Measured after priming: 174 -> 103 programs and
-    // ZERO programs added by the first render.
+    // ZERO programs added by the first render. (That main-simple primes BEFORE
+    // its compileAsync is pinned in A's mainLocks.)
     expect(scene).toContain('public primeExteriorLightGate()');
-    const prime = main.indexOf('primeExteriorLightGate()');
-    const compile = main.indexOf('compileAsync(this.scene');
-    expect(prime).toBeGreaterThan(-1);
-    expect(prime).toBeLessThan(compile);
     // Booleans only — safe before restoreRandom, no uuid, no Math.random.
     const start = scene.indexOf('public primeExteriorLightGate()');
     const body = scene.slice(start, scene.indexOf('\n  }', start));
@@ -314,14 +339,8 @@ describe('engine smoothness — no mid-flight recompile, no wasted frames', () =
     expect(scene).toContain('this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL');
   });
 
-  test('the camera size filter applies to every root', () => {
-    const cam = src('OrbitCamera.ts');
-    // `&& rootIndex !== 0` exempted every DESCENDANT of the island group, not
-    // just the terrain — ~1,600 bounding-sphere tests per frame. Measured
-    // after: 555.
-    expect(cam).toContain('if (r * Math.max(s.x, s.y, s.z) < MIN_BLOCKING_RADIUS) return;');
-    expect(cam).not.toContain('MIN_BLOCKING_RADIUS && rootIndex !== 0');
-  });
+  // 'the camera size filter applies to every root' (OrbitCamera.ts) moved to
+  // A's mainLocks.
 
   test('tree sway writes the quaternion once, not twice', () => {
     const scene = src('GameScene.ts');
@@ -442,73 +461,19 @@ describe('sky — soft posterization with a hard horizon contract', () => {
   });
 });
 
-describe('HUD — one chip recipe for the top-right column', () => {
-  test('CHIP/CHIP_ICON exist and every column chip spreads them', () => {
-    const ui = src('SimpleUI.ts');
-    expect(ui).toContain('const CHIP: Partial<CSSStyleDeclaration>');
-    expect(ui).toContain('const CHIP_ICON: Partial<CSSStyleDeclaration>');
-    // Text chips: online, coin, feed, Say hi, completion.
-    expect((ui.match(/\.\.\.CHIP,/g) ?? []).length).toBeGreaterThanOrEqual(5);
-    // Icon chips: mute, reduced-motion, customize, emote, photo, inventory.
-    expect((ui.match(/\.\.\.CHIP_ICON,/g) ?? []).length).toBeGreaterThanOrEqual(6);
-    // The recipe pins the geometry the column drifted on.
-    const chipBlock = ui.slice(ui.indexOf('const CHIP:'), ui.indexOf('export class SimpleUI'));
-    expect(chipBlock).toContain("height: '30px'");
-    expect(chipBlock).toContain("borderRadius: '999px'");
-    expect(chipBlock).toContain("borderRadius: '50%'");
-    // No fontFamily in the recipes — the overlay's Inter must cascade.
-    expect(chipBlock).not.toContain('fontFamily');
-  });
-
-  test('38px row pitch anchored to the frozen Portfolio/Work-with-me pills', () => {
-    const ui = src('SimpleUI.ts');
-    // Frozen anchors (analytics ruling — do not move):
-    expect(ui).toContain('+ 126px');
-    expect(ui).toContain('+ 164px');
-    // The derived rows: online 12, coin/feed 50, icon row 88, Say hi 202,
-    // completion 240; icon slots 10/48/86/124/162/200.
-    for (const off of ['+ 12px', '+ 50px', '+ 202px', '+ 240px']) {
-      expect(ui).toContain(off);
-    }
-    for (const slot of ['+ 48px', '+ 86px', '+ 124px', '+ 162px', '+ 200px']) {
-      expect(ui).toContain(slot);
-    }
-  });
-
-  test('demotions and accent discipline', () => {
-    const ui = src('SimpleUI.ts');
-    // Photo is icon-only everywhere now (the P shortcut lives in the title).
-    expect(ui).not.toContain("'📸 P'");
-    // Reduced-motion active = the indigo accent — green stays reserved for
-    // the Work-with-me conversion pill.
-    expect(ui).toContain('rgba(91, 108, 255, 0.35)');
-    expect(ui).not.toContain('rgba(80, 180, 120, 0.75)');
-    // The FPS debug readout anchors bottom-right, off the visitor column.
-    const start = ui.indexOf('private createFPSDisplay');
-    const fps = ui.slice(start, ui.indexOf('this.playerCountDiv = document.createElement', start));
-    expect(fps).toContain('bottom:');
-    expect(fps).not.toMatch(/top: 'calc/);
-  });
+describe('per-frame sweeps — allocation-free hot paths and instanced fleets', () => {
+  // The HUD chip-recipe tests that opened this block ('CHIP/CHIP_ICON exist…',
+  // '38px row pitch…', 'demotions and accent discipline', 'per-frame HUD
+  // writers…') read only SimpleUI.ts and moved to D's uiLocks. 'startup:
+  // Firebase deferred, postprocessing preloaded…' moved to A's mainLocks
+  // (main-simple.ts) and E's rendererLocks (SimpleRenderer.ts).
 
   test('per-frame hot paths stay allocation-free (sweep round 2)', () => {
     // The sweep measured the camera + player physics as the two densest
     // per-frame allocation clusters (~20 heap objects/frame combined, the
     // player's doubled by the substep split exactly on slow frames). These
     // pin the scratch-field conversions; `.clone()` reappearing in either
-    // body is the regression.
-    const cam = src('OrbitCamera.ts');
-    // End anchor must be CODE — src() strips comments before slicing, so a
-    // comment anchor silently extends the slice to the end of the file.
-    const camBody = cam.slice(
-      cam.indexOf('private updateCameraPosition'),
-      cam.indexOf('private readonly focusTarget'),
-    );
-    expect(camBody).not.toContain('.clone()');
-    // Only the two cold-path seeds may allocate (first frame / degenerate).
-    expect((camBody.match(/new THREE\./g) ?? []).length).toBeLessThanOrEqual(2);
-    expect(cam).toContain('getWorldPositionInto(this._camPlayerPos)');
-    expect(cam).toContain('getSurfaceNormalInto(this._camNormal)');
-
+    // body is the regression. (The OrbitCamera half is in A's mainLocks.)
     const player = src('SimplePlayer.ts');
     const applyBody = player.slice(
       player.indexOf('private applyMovement'),
@@ -532,26 +497,11 @@ describe('HUD — one chip recipe for the top-right column', () => {
     expect(island).not.toContain('return this.npcInstances.slice()');
   });
 
-  test('per-frame HUD writers skip unchanged values (sweep round 2)', () => {
-    const ui = src('SimpleUI.ts');
-    // Interaction prompt: innerHTML parse only when the TEXT changes.
-    expect(ui).toContain('if (text === this.lastPromptText && this.interactionDiv) return');
-    // Race panel: null-first so on-foot visitors never get the DOM built,
-    // and show/hide writes only on the transition.
-    const race = ui.slice(ui.indexOf('updateRaceHud(status'));
-    expect(race.indexOf('if (!status)')).toBeLessThan(race.indexOf('if (!this.raceDiv)'));
-    expect(ui).toContain('this.raceVisible');
-    // Breath: dry sessions never build the meter+vignette DOM, and the two
-    // vignette gradients are prebuilt constants, not per-frame templates.
-    expect(ui).toContain('VIGNETTE_DEEP');
-    expect(ui).toContain('VIGNETTE_SHALLOW');
-    expect(ui).not.toMatch(/radial-gradient\(circle at 50% 45%[^`]*\$\{edge\}/);
-  });
-
   test('per-frame position reads use the Into variant (sweep round 3)', () => {
     const scene = src('GameScene.ts');
     // Each per-frame consumer owns its scratch; collisions keep a DEDICATED
-    // buffer because they mutate it in place as the write-back.
+    // buffer because they mutate it in place as the write-back. (The
+    // main-simple.ts audio/compass scratches are pinned in A's mainLocks.)
     for (const s of [
       'getWorldPositionInto(this._collidePos)',
       'getWorldPositionInto(this._npcPlayerPos)',
@@ -562,39 +512,6 @@ describe('HUD — one chip recipe for the top-right column', () => {
     ]) {
       expect(scene).toContain(s);
     }
-    const main = src('main-simple.ts');
-    // The audio/compass scratches must be FED by Into, not by copy(clone()).
-    expect(main).toContain('getWorldPositionInto(this._listenerPos)');
-    expect(main).toContain('getWorldPositionInto(this._qcPlayerPos)');
-    expect(main).not.toContain('.copy(player.getWorldPosition())');
-  });
-
-  test('startup: Firebase deferred, postprocessing preloaded, honest measures (round 4)', () => {
-    const main = src('main-simple.ts');
-    // The three boot-window Firebase touches run from idle slots (1.5s max
-    // keeps the world beat arriving during the fly-in for buildAwayDelta).
-    expect(main).toMatch(/idleDefer\(\s*\(\)\s*=>\s*connectWorldState/);
-    expect(main).toMatch(/idleDefer\(\(\)\s*=>\s*\{\s*void subscribeBenches/);
-    // The postprocessing fetch starts BEFORE world gen so the RTT overlaps it.
-    expect(main).toContain('SimpleRenderer.preloadPostProcessing()');
-    expect(main.indexOf('SimpleRenderer.preloadPostProcessing()')).toBeLessThan(
-      main.indexOf("performance.mark('boot:worldgen-start')"),
-    );
-    // Paint yields are visibility-guarded — rAF never fires in a hidden tab.
-    expect(main).toContain("document.visibilityState !== 'visible'");
-    // world_gen measures through scene-ready (the builder passes after the
-    // constructor's first await used to be mis-attributed to scene_ready).
-    expect(main).toContain(
-      "performance.measure('world_gen', 'boot:worldgen-start', 'boot:scene-ready')",
-    );
-    expect(main).not.toContain("'boot:worldgen-end'");
-
-    const r = src('SimpleRenderer.ts');
-    expect(r).toContain('public static preloadPostProcessing');
-    // Idempotent cache + swallowed preload rejection (real errors re-surface
-    // at initPostProcessing's await); null on the low tier — never fetched.
-    expect(r).toContain('if (SimpleRenderer.isLowTierDevice()) return null');
-    expect(r).toMatch(/await \(SimpleRenderer\.preloadPostProcessing\(\) \?\?/);
   });
 
   test('exterior lights + zero-alpha overlays leave the pipeline by day (round 4)', () => {
@@ -718,41 +635,17 @@ describe('HUD — one chip recipe for the top-right column', () => {
     expect(npc).not.toContain('object.frustumCulled = false');
   });
 
-  test('chip-recipe regressions from the follow-up review stay fixed', () => {
-    const ui = src('SimpleUI.ts');
-    // The feed chip re-shows as FLEX — a block re-show drops the CHIP
-    // recipe's centering the first time charges go 0 -> nonzero.
-    expect(ui).toContain("this.feedDiv.style.display = 'flex'");
-    expect(ui).not.toContain("this.feedDiv.style.display = 'block'");
-    // The emote responsive restore is gated by SURFACE first: the short-
-    // landscape media query also matches a short DESKTOP window, which
-    // parked the desktop emote on the customize slot.
-    expect(ui).toContain('this.emoteBtnEl.style.right = this.isTouch');
-  });
+  // 'chip-recipe regressions from the follow-up review stay fixed'
+  // (SimpleUI.ts) moved to D's uiLocks.
 });
 
 describe('smoothness round 2 — the two measured hitches', () => {
-  test('music slices keep a time budget when the page never goes idle', () => {
-    const main = src('main-simple.ts');
-    // THE BUG: `deadline.timeRemaining() > 3 || deadline.didTimeout` treated a
-    // TIMED-OUT idle callback as unlimited time. requestIdleCallback sets
-    // didTimeout precisely when the page has been too busy to go idle for
-    // 500ms — i.e. the fly-in — so the budget switched itself off on exactly
-    // the frames it existed to protect, and ran the whole 40k-sample slice.
-    expect(main).not.toMatch(/timeRemaining\(\) > 3 \|\| deadline\.didTimeout/);
-    // The timed-out path falls back to a wall clock instead of surrendering.
-    expect(main).toContain('performance.now() - started >= 6');
-    expect(main).toContain('deadline.timeRemaining() <= 3');
-    // And the clock is read per BLOCK, not per sample: at 5.3M samples the
-    // guard cost more than the synthesis it guarded. The counter also
-    // guarantees forward progress, which a pure time test does not.
-    expect(main).toContain('if (++sinceCheck >= 4096)');
-    // The wall clock is the DEFAULT branch. The first pass at this fix
-    // guarded didTimeout but left `deadline === undefined` returning false,
-    // so the setTimeout fallback — every browser without
-    // requestIdleCallback — still ran the original unbounded 40k slice.
-    expect(main).toContain('deadline && !deadline.didTimeout');
-  });
+  // Moved with their files: 'music slices keep a time budget…' and 'bloom
+  // turns on at arrival…' to A's mainLocks; 'bloom FADES in at the reveal…'
+  // to A's mainLocks and E's rendererLocks; 'desktop drops the unused canvas
+  // MSAA buffer…' and 'warmUp compiles the bloom pass…' to E's
+  // rendererLocks; 'blocked localStorage cannot brick the welcome card' and
+  // 'page teardown does not burn the first-run welcome unread' to D's uiLocks.
 
   test('the market vendor faces its shopper spot, not the nearest street', () => {
     const scene = src('GameScene.ts');
@@ -769,20 +662,6 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(body).not.toMatch(
       /const street = this\.island\.nearestStreetDir\(dir[\s\S]{0,200}orientAvatar/,
     );
-  });
-
-  test('bloom FADES in at the reveal instead of snapping (no arrival pop)', () => {
-    const r = src('SimpleRenderer.ts');
-    // Enabling bloom at arrival avoids rim-ghosting during the swoop, but a hard
-    // enable is a visible pop right as the reveal settles — "a flicker during
-    // the fly-in". Ramp its strength up from 0 instead.
-    expect(r).toContain('public fadeBloomIn(');
-    expect(r).toContain('bloom.strength = 0;');
-    expect(r).toContain('this.bloomTargetStrength = bloomPass.strength;'); // authored value snapshot
-    const m = src('main-simple.ts');
-    // the intro's arrival callback fades, it no longer hard-enables.
-    expect(m).toContain('this.renderer.fadeBloomIn(');
-    expect(m).not.toMatch(/\.then\(\(\) => \{[\s\S]{0,200}setBloomEnabled\(true\)/);
   });
 
   test('remote peers cull like NPCs, and idle presence writes are suppressed (scale)', () => {
@@ -843,13 +722,6 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(cel.indexOf('hull.computeBoundingSphere()')).toBeGreaterThan(cel.indexOf('hull.bind('));
   });
 
-  test('desktop drops the unused canvas MSAA buffer (composer does the AA)', () => {
-    // On desktop the steady state is composer.render(), whose samples:4 target
-    // does the scene AA — so antialias:true only allocated a ~60MB full-canvas
-    // MSAA buffer used as the OutputPass blit destination (where MSAA is inert).
-    expect(src('SimpleRenderer.ts')).toContain('antialias: SimpleRenderer.isLowTierDevice()');
-  });
-
   test('villager face decals do not cast shadow (invisible, but re-skinned every frame)', () => {
     const island = src('Island.ts');
     // eye/eyeshine/blush sit inside the head's own silhouette — sub-texel in the
@@ -875,43 +747,6 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // Casting is preserved (grounding shadow stays).
     expect(p).toContain('obj.castShadow = true');
     expect(p).toContain('o.castShadow = true');
-  });
-
-  test('bloom turns on at arrival, not mid-swoop (no first-load rim ghosting)', () => {
-    const m = src('main-simple.ts');
-    // Bloom is half-res, so enabling it mid-fly-in makes the bright planet rim
-    // ghost at intro-lite fps — the "world first-loading bloom flicker". Grass
-    // restores under motion (1500ms, pop hidden); bloom waits for the still
-    // camera at arrival (the flyIn .then()).
-    // The mid-swoop 1500ms timer restores the intro-lite quality levers (grass,
-    // resolution, shadows) under camera motion. Bloom is deliberately NOT among
-    // them — it waits for the still arrival camera (fadeBloomIn) to avoid the
-    // half-res rim ghosting.
-    expect(m).toContain('window.setTimeout(restoreIntroQuality, 1500)');
-    const restoreStart = m.indexOf('const restoreIntroQuality');
-    const restoreBody = m.slice(restoreStart, restoreStart + 400);
-    expect(restoreBody).not.toContain('setBloomEnabled(true)');
-    expect(restoreBody).not.toContain('fadeBloomIn');
-    // Bloom comes on in the arrival callback (now via fadeBloomIn), AFTER the
-    // fly-in — never in the 1500ms mid-swoop timer.
-    const fly = m.indexOf('flyInFromDistant');
-    expect(fly).toBeGreaterThan(-1);
-    expect(m.indexOf('fadeBloomIn(')).toBeGreaterThan(fly);
-    expect(m).not.toMatch(/setGrassBudget\(1\);\s*this\.renderer\.setBloomEnabled\(true\)/);
-  });
-
-  test('warmUp compiles the bloom pass, not just the output pass', () => {
-    const r = src('SimpleRenderer.ts');
-    // warmUp renders a throwaway frame behind the loader to compile the
-    // post-processing programs. But main-simple disables bloom for the
-    // intro-lite swoop BEFORE warmUp runs, and EffectComposer skips a disabled
-    // pass entirely — so bloom's ~8 fullscreen-quad programs never compiled
-    // here and cold-compiled ~1.5s into the visible reveal when bloom came
-    // back on. warmUp now forces bloom on for the throwaway render and
-    // restores the caller's setting. `bloomWas` is unique to this fix (the
-    // governor snapshots into bloomSuspendedByGovernor instead).
-    expect(r).toContain('const bloomWas = this.bloomPass?.enabled');
-    expect(r).toContain('this.bloomPass.enabled = bloomWas');
   });
 
   // The swim-stroke lock (local AND remote-peer copies) lives in
@@ -983,46 +818,10 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(scene).toContain('if (!this.interiorRainNode || !this.interiorRainNode.parent)');
   });
 
-  test('blocked localStorage cannot brick the welcome card', () => {
-    const ui = src('SimpleUI.ts');
-    // This was the ONE bare localStorage read left in the file (16 of 17
-    // siblings already catch). On iOS Safari with "Block All Cookies" it threw
-    // AFTER the card was appended and panels.open() had raised the scrim and
-    // hidden the touch controls, but BEFORE innerHTML filled it and before the
-    // Escape listener was attached — and welcomeDiv stayed non-null, so
-    // isWelcomeVisible() gated out movement, camera, jump and interaction for
-    // the entire session. Empty black box, no controls, no Escape.
-    expect(ui).toMatch(/let returning = false;\s*try \{\s*returning = localStorage\.getItem/);
-    expect(ui).not.toMatch(/const returning = localStorage\.getItem/);
-  });
-
-  test('page teardown does not burn the first-run welcome unread', () => {
-    const ui = src('SimpleUI.ts');
-    // beforeunload -> dispose() -> hideWelcome() persisted ds_welcomed for a
-    // visitor who closed the tab with the card still on screen. They returned
-    // to the trimmed "Welcome back!" branch and permanently lost the pitch,
-    // the recruiter highlights pill, the secondary CTAs and the compass hint.
-    // On a portfolio, first-visit bounce is most of the traffic.
-    expect(ui).toContain('hideWelcome(persist = true)');
-    expect(ui).toContain('if (!persist) return;');
-    expect(ui).toContain('this.hideWelcome(false)');
-    // The PanelManager sweep IS a dismissal and must still persist.
-    expect(ui).toContain('close: () => this.hideWelcome(),');
-  });
-
   test('the contact form cannot strand itself or blame a good email', () => {
-    const ui = src('SimpleUI.ts');
-    // submitLead returns false for BOTH a malformed address and any backend
-    // failure, and the caller mapped both to "Please check your email
-    // address." — sending a recruiter with a valid address into a retype loop.
-    expect(ui).toContain("track('lead_failed')");
-    expect(ui).toContain('Could not send — try again, or email admin@digiscalability.com.');
-    // Boards is lazy-loaded and statically imported nowhere, so a failed chunk
-    // fetch used to escape the async handler and leave the site's primary
-    // conversion control disabled on "Sending…" forever. Import inside try.
-    expect(ui).toMatch(/try \{\s*const \{ submitLead \} = await import\('\.\/Boards'\);/);
-    expect(ui).toMatch(/try \{\s*const boards = await import\('\.\/Boards'\);/);
-
+    // The SimpleUI.ts half (lead_failed copy, Boards imported inside try) is
+    // in D's uiLocks. firebaseClient.ts has no owner this round, so its half
+    // stays here.
     const fb = src('firebaseClient.ts');
     // `if (!ready)` is false for a REJECTED promise, so one transient auth or
     // network failure disabled the backend for the whole session with no retry.
@@ -1060,16 +859,28 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // the same work for real, so the idle pass has nothing left to warm.
     expect(scene).toMatch(/this\.buildInterior\(\);\s*this\.interiorWarmed = true;/);
     // THE ENTRY GUARD ALONE IS NOT ENOUGH, and shipping it that way was a bug.
-    // compileAsync yields for 100-500ms; a player pressing E inside that
-    // window sets visible=true, then the resumed warm set it back to false and
-    // NOTHING re-arms visibility mid-visit (interiorGroup.visible = true
-    // appears exactly once, in enterInterior). They stood in a building with
-    // no walls, floor or furniture for the whole visit. So every visibility
-    // write re-checks the flag on the far side of every await.
+    // The warm yields between slices and while it polls; a player pressing E
+    // inside that window sets visible=true, then a resumed warm set it back
+    // to false and NOTHING re-arms visibility mid-visit (interiorGroup.visible
+    // = true appears exactly once, in enterInterior). They stood in a building
+    // with no walls, floor or furniture for the whole visit. So every
+    // visibility write re-checks the flag on the far side of every await.
     expect(scene).toMatch(
       /const warm = async \(visible: boolean\): Promise<void> => \{\s*if \(this\.insideInterior\) return;/,
     );
     expect(scene).toContain('if (!this.insideInterior) g.visible = wasVisible;');
+    // And no frame ever draws the room-lit variants while they compile (B2):
+    // each slice shows the room, compiles and hides it again in ONE task.
+    // MEASURED on main, awaiting compileAsync with the room shown let the next
+    // frame block 2,043 ms finishing them.
+    const pass = bodyOf(scene, 'private async compileInteriorPass(');
+    const slice = pass.slice(
+      pass.indexOf('g.visible = roomVisible;'),
+      pass.indexOf('if (!this.insideInterior) g.visible = wasVisible;'),
+    );
+    expect(slice).toContain('gl.compile(chunk, camera, proxy)');
+    expect(slice).not.toContain('await');
+    expect(bodyOf(scene, 'private async warmInteriorPasses(')).not.toContain('compileAsync');
   });
 
   test('the interior is built and compiled in idle time, not on the first E', () => {
@@ -1087,9 +898,97 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // Restores whatever visibility it found — warming must never leave the
     // room showing, nor hide a room the player is standing in.
     expect(scene).toContain('g.visible = wasVisible');
-    // Off the boot window AND off the interaction: scheduled through the same
-    // idle deferral that already carries music and profile sync.
-    const main = src('main-simple.ts');
-    expect(main).toContain('this.idleDefer(() => void this.scene.warmInterior()');
+    // (Off the boot window AND off the interaction: main-simple's idleDefer
+    // trigger is pinned in A's mainLocks.)
+  });
+
+  test('the warm compiles what the frame will draw, off the render path (B2)', () => {
+    const scene = src('GameScene.ts');
+    const pass = bodyOf(scene, 'private async compileInteriorPass(');
+    // Against the frame's OWN render target: three keys programs on it, and
+    // compiling against the canvas while desktop frames draw into the
+    // composer's buffer left 38 programs for a frame to create (measured).
+    expect(scene).toContain(
+      'this.compileInteriorPass(gl, g, items, visible, this.lastSceneTarget)',
+    );
+    expect(pass).toContain('gl.setRenderTarget(target)');
+    // Through a proxy scene (its own render state in three), so the live
+    // frame's lights version never moves and no frame re-keys.
+    expect(pass).toContain('const proxy = new THREE.Scene();');
+    // One object per compile call until the slice's budget is spent: a batch
+    // sized from the last slice overran it (measured 9.3 ms and 23 ms).
+    expect(pass).toContain('batch = [items[i++]];');
+    expect(pass).toContain('performance.now() - t0 < GameScene.WARM_SLICE_MS');
+    // Polled ready, then first-used, in idle time: the first getUniforms() is
+    // a synchronous shader check that took 121 ms of the first room frame.
+    const settle = bodyOf(scene, 'private async settleWarmPrograms(');
+    expect(settle).toContain('p.isReady()');
+    expect(settle).toContain('performance.now() + 10000');
+    expect(settle).toContain('p.getUniforms();');
+    // Without KHR_parallel_shader_compile the idle warm stands down…
+    expect(bodyOf(scene, 'public async warmInterior()')).toContain(
+      "!gl.extensions.has('KHR_parallel_shader_compile')",
+    );
+    // …and the measured fallback runs instead: still for 1 s within 12 u of
+    // a door (the no-extension veil held black 1.60 s without it).
+    expect(scene).toContain('private static readonly NEAR_DOOR_RANGE = 12;');
+    expect(scene).toContain('private static readonly NEAR_DOOR_STILL_S = 1.0;');
+    expect(bodyOf(scene, 'public update(deltaTime: number)')).toContain(
+      'this.updateNearDoorWarm(deltaTime);',
+    );
+    // No new lights, ever: the room's own four are the whole problem.
+    for (const body of [pass, settle, bodyOf(scene, 'private async warmInteriorNearDoor(')]) {
+      expect(body).not.toMatch(/new THREE\.\w*Light\(/);
+    }
+  });
+
+  test('the window view draws with the frame’s own programs (B2)', () => {
+    const scene = src('GameScene.ts');
+    // three keys every program on the bound target. On the canvas path (the
+    // low tier) a plain window target needed a second variant of everything
+    // it saw, and alternating the two kinds re-keyed the unlit world too.
+    // MEASURED at the 1x low tier's first door: 31 + 5 programs, a 1.4 s
+    // first room frame. So the window target takes the frame's own kind.
+    const sync = bodyOf(scene, 'private syncInteriorViewOutput()');
+    expect(sync).toContain('const canvas = this.lastSceneTarget === null;');
+    expect(sync).toMatch(/\.isXRRenderTarget = canvas;/);
+    expect(sync).toContain(
+      'view.texture.colorSpace = canvas ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;',
+    );
+    // The pane shows the stored display colours unchanged: decoded inline,
+    // and not tone-mapped a second time.
+    expect(sync).toContain('pane.toneMapped = !canvas;');
+    expect(sync).toContain("{ DECODE_VIDEO_TEXTURE: '' }");
+    const ensure = bodyOf(scene, 'private ensureInteriorView()');
+    // RGBA8 in both kinds: an SRGB8_ALPHA8 store would encode the bytes twice.
+    expect(ensure).toContain("texture.internalFormat = 'RGBA8';");
+    // Synced on every refresh, and before the warm compiles the pane.
+    expect(ensure).toContain('this.syncInteriorViewOutput();');
+    expect(bodyOf(scene, 'private refreshInteriorView()')).toContain('this.ensureInteriorView();');
+    // So no warm compiles a window pass of its own.
+    expect(bodyOf(scene, 'private async warmInteriorNearDoor(')).not.toContain(
+      'interiorViewTarget',
+    );
+  });
+
+  test('three still treats an XR-flagged target as a canvas (B2)', () => {
+    // syncInteriorViewOutput leans on three r180: an isXRRenderTarget target
+    // gets the renderer's tone mapping and its texture's colour space as the
+    // output, exactly like the canvas, and map_fragment's video-texture
+    // define decodes a map inline. An upgrade that moves either fails here,
+    // not as a quietly washed-out window.
+    const three = readFileSync(
+      join(dirname(createRequire(import.meta.url).resolve('three')), 'three.module.js'),
+      'utf8',
+    );
+    expect(three).toContain(
+      'if ( currentRenderTarget === null || currentRenderTarget.isXRRenderTarget === true ) {',
+    );
+    expect(three).toContain(
+      '( currentRenderTarget.isXRRenderTarget === true ? currentRenderTarget.texture.colorSpace : LinearSRGBColorSpace )',
+    );
+    expect(ShaderChunk.map_fragment).toMatch(
+      /#ifdef DECODE_VIDEO_TEXTURE\s+(\/\/[^\n]*\s+)?sampledDiffuseColor = sRGBTransferEOTF\( sampledDiffuseColor \);/,
+    );
   });
 });

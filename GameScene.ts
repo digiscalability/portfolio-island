@@ -62,6 +62,33 @@ type NpcLimbCache = Array<{
   ang: number;
 }>;
 
+/** The seeded-window census: draws taken from GameScene's mulberry32 stream,
+ *  cumulative at each checkpoint, and in total when the window closes. */
+export interface SeedDrawCensus {
+  marks: Record<string, number>;
+  total: number;
+}
+
+// Declared here, not in global.d.ts, so no other package edits that file for it.
+declare global {
+  interface Window {
+    /** Published by GameScene.initialize; read by the seed probe and the perf gate. */
+    __dsSeedDraws?: SeedDrawCensus;
+  }
+}
+
+/** The slice of three's WebGLProgram the interior warm drives. */
+interface WarmProgram {
+  isReady(): boolean;
+  getUniforms(): unknown;
+  getAttributes(): unknown;
+}
+
+/** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
+ *  (geometry and material are shared), so a returning visitor's skipped trail
+ *  burns exactly this many uuids to stay on the first visitor's stream. */
+const ARRIVAL_TRAIL_COINS = 5;
+
 /**
  * GameScene
  *
@@ -797,11 +824,16 @@ export class GameScene extends THREE.Scene {
    * the same place for everyone, and vehicle indices that line up so a car
    * can be networked by index). Runtime randomness (multiplayer ids, FX)
    * stays truly random because it happens after generation, once restored.
+   *
+   * Every call is COUNTED (seedDrawCount). Counting is not drawing: the
+   * generator is untouched, so the stream is the one tierParity pins.
    */
   private static installSeededRandom(seedInit = 0x1a2b3c4d): () => void {
     const real = Math.random;
     let s = seedInit >>> 0;
+    GameScene.seedDrawCount = 0;
     Math.random = () => {
+      GameScene.seedDrawCount++;
       // mulberry32
       s = (s + 0x6d2b79f5) >>> 0;
       let t = Math.imul(s ^ (s >>> 15), 1 | s);
@@ -811,6 +843,22 @@ export class GameScene extends THREE.Scene {
     return () => {
       Math.random = real;
     };
+  }
+
+  /** Seeded draws since installSeededRandom (see seedMark). */
+  private static seedDrawCount = 0;
+  private readonly seedCensus: SeedDrawCensus = { marks: {}, total: 0 };
+
+  /**
+   * Record how many seeded draws the window has taken so far, and publish the
+   * census as window.__dsSeedDraws. The marks are cumulative, so a change that
+   * re-rolls the stream shows up at the first checkpoint after it — the
+   * GameScene half of the window had no pin at all before this.
+   */
+  private seedMark(label: string): void {
+    this.seedCensus.marks[label] = GameScene.seedDrawCount;
+    this.seedCensus.total = GameScene.seedDrawCount;
+    if (typeof window !== 'undefined') window.__dsSeedDraws = this.seedCensus;
   }
 
   /**
@@ -841,6 +889,7 @@ export class GameScene extends THREE.Scene {
       // declaring it at this call site is what let SoftLook bake a stale copy
       // into a shader chunk. setPlanet below reads getRadius() so it follows.
       this.island = new Island(WORLD_RADIUS);
+      this.seedMark('island');
       this.add(this.island.mesh);
       // Unify the art direction. The CEL/TOON look is the DEFAULT (owner
       // verdict 2026-08-09): stepped shading on every prop, applied here.
@@ -876,6 +925,7 @@ export class GameScene extends THREE.Scene {
       this.createFireflies();
       this.createChimneySmoke();
       this.createDustPool();
+      this.seedMark('dustPool');
 
       // Solid props: register colliders so the player can't walk through
       // them. Only TownPlanner props ever registered before — the island's
@@ -936,8 +986,10 @@ export class GameScene extends THREE.Scene {
 
       // Navigation + traversal rewards
       this.createGuideSparkles();
-      this.createCoins();
+      this.createCoins(); // includes createArrivalTrail
+      this.seedMark('coins');
       this.createVehicles();
+      this.seedMark('vehicles');
       this.createWaterFX();
 
       // Checkpoint race circuits (land for cars, water for boats/jetskis). Gate
@@ -1008,6 +1060,7 @@ export class GameScene extends THREE.Scene {
 
       // Create zones manager for portfolio content
       this.zonesManager = new ZonesManager(this.island, this);
+      this.seedMark('zones');
       // Zone landmark buildings are added under THIS scene, not island.mesh, so
       // the collider traverse (above) never registers them. Push their footprint
       // colliders explicitly. Radius (1.7) < interactionRange (2.5) so a player
@@ -1020,6 +1073,7 @@ export class GameScene extends THREE.Scene {
 
       // Place quest mailboxes (Island.ts owns the town proper)
       await this.placeAssets();
+      this.seedMark('placeAssets');
 
       // Camera collision must ALSO see the zone buildings (they live under the
       // scene, not island.mesh) — orbiting behind a hall used to swing the
@@ -1062,6 +1116,7 @@ export class GameScene extends THREE.Scene {
 
       // Floating identity pins above every NPC
       this.createNameTags();
+      this.seedMark('nameTags');
       this.setupNpcActivities();
 
       // The Fisherman stands at the shore and casts a line
@@ -1081,6 +1136,7 @@ export class GameScene extends THREE.Scene {
       this.setupVendors();
     } finally {
       // Generation done — restore true randomness for runtime/FX.
+      this.seedMark('restore');
       restoreRandom();
     }
 
@@ -9675,13 +9731,9 @@ export class GameScene extends THREE.Scene {
    * never respawn; finishing the trail fires onArrivalTrail (flash + flag).
    */
   private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
-    try {
-      if (localStorage.getItem('ds_arrived') === '1') return; // returning visitor
-    } catch {
-      /* no storage — still show the trail */
-    }
     const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
-    // Nearest villager to the spawn (npcTargets are seated by now).
+    // Nearest villager to the spawn (npcTargets are seated by now). The search
+    // draws nothing from the seeded stream.
     let npcDir: THREE.Vector3 | null = null;
     let best = Infinity;
     for (const t of this.island.npcTargets ?? []) {
@@ -9691,13 +9743,31 @@ export class GameScene extends THREE.Scene {
         npcDir = t.position.clone().normalize();
       }
     }
+    // No villager: the world decides that for every visitor alike, so there
+    // is no trail to skip and nothing to burn.
     if (!npcDir) return;
+    let returning = false;
+    try {
+      returning = localStorage.getItem('ds_arrived') === '1';
+    } catch {
+      /* no storage — still show the trail */
+    }
+    if (returning) {
+      // This runs inside the SEEDED window. The trail's Meshes would each have
+      // minted one uuid (4 draws; geometry and material are shared), so the
+      // skip burns exactly that many: a returning visitor then rolls every
+      // later builder (vehicle bob, sailor and cruise-ship angles, embers) on
+      // the same stream as a first-time one. test/gameSceneSeed.test.ts
+      // measures both paths.
+      for (let i = 0; i < ARRIVAL_TRAIL_COINS; i++) THREE.MathUtils.generateUUID();
+      return;
+    }
     const q = new THREE.Quaternion().setFromUnitVectors(spawnDir, npcDir);
     const idQ = new THREE.Quaternion();
     const step = new THREE.Quaternion();
     const dir = new THREE.Vector3();
-    for (let i = 0; i < 5; i++) {
-      const t = 0.18 + (i / 4) * 0.6; // stop short of the NPC's toes
+    for (let i = 0; i < ARRIVAL_TRAIL_COINS; i++) {
+      const t = 0.18 + (i / (ARRIVAL_TRAIL_COINS - 1)) * 0.6; // stop short of the NPC's toes
       step.copy(idQ).slerp(q, t);
       dir.copy(spawnDir).applyQuaternion(step).normalize();
       const sampled = this.island.sampleSurfaceByDirection(dir, 0);
@@ -10822,6 +10892,7 @@ export class GameScene extends THREE.Scene {
 
     // Update player physics
     this.player.update(deltaTime);
+    this.updateNearDoorWarm(deltaTime);
 
     // Check collisions with assets
     this.checkPlayerCollisions();
@@ -12830,6 +12901,9 @@ export class GameScene extends THREE.Scene {
   // not change fast enough for anyone to notice the difference.
   private interiorWindowMat: THREE.MeshBasicMaterial | null = null;
   private interiorViewTarget: THREE.WebGLRenderTarget | null = null;
+  /** The window target's output kind (syncInteriorViewOutput): true while
+   *  the frame draws to the canvas, null before it is first set. */
+  private interiorViewCanvasKind: boolean | null = null;
   private interiorViewCam: THREE.PerspectiveCamera | null = null;
   private interiorViewFrom = new THREE.Vector3();
   private interiorViewLook = new THREE.Vector3();
@@ -14184,6 +14258,39 @@ export class GameScene extends THREE.Scene {
     return this.interiorHotspot;
   }
 
+  /** The contact-shadow blob material, shared by every themed set. Built on
+   *  the first entry, or earlier by warmInterior so its program is warm too
+   *  (measured: left to the first entry, it compiled in a 139 ms frame). */
+  private ensureInteriorBlobMat(): THREE.MeshBasicMaterial {
+    if (!this.interiorBlobMat) {
+      const bcv = document.createElement('canvas');
+      bcv.width = 64;
+      bcv.height = 64;
+      const bx = bcv.getContext('2d');
+      if (bx) {
+        const grad = bx.createRadialGradient(32, 32, 2, 32, 32, 30);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(0.55, 'rgba(0,0,0,0.55)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        bx.fillStyle = grad;
+        bx.fillRect(0, 0, 64, 64);
+      }
+      const btex = new THREE.CanvasTexture(bcv);
+      this.interiorBlobMat = new THREE.MeshBasicMaterial({
+        map: btex,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.4,
+        // WHITE, not black. MeshBasicMaterial multiplies colour by the map,
+        // and the map is already black with a soft alpha falloff — tinting it
+        // black too just multiplies black by black and makes `color` a no-op
+        // that looks deliberate to the next reader.
+        color: 0xffffff,
+      });
+    }
+    return this.interiorBlobMat;
+  }
+
   /** Lazily derive furniture colliders for a themed set from its own meshes:
    *  world-space Box3 per prop → room-local AABB; overhead items (beams,
    *  banners, wall clocks) are skipped by their floor clearance. */
@@ -14219,32 +14326,7 @@ export class GameScene extends THREE.Scene {
     // blob under each footprint reads almost as well for one unlit quad.
     // The AABB pass above is already exactly the right filter — it skips
     // sprites and skips anything mounted above head height.
-    if (!this.interiorBlobMat) {
-      const bcv = document.createElement('canvas');
-      bcv.width = 64;
-      bcv.height = 64;
-      const bx = bcv.getContext('2d');
-      if (bx) {
-        const grad = bx.createRadialGradient(32, 32, 2, 32, 32, 30);
-        grad.addColorStop(0, 'rgba(0,0,0,1)');
-        grad.addColorStop(0.55, 'rgba(0,0,0,0.55)');
-        grad.addColorStop(1, 'rgba(0,0,0,0)');
-        bx.fillStyle = grad;
-        bx.fillRect(0, 0, 64, 64);
-      }
-      const btex = new THREE.CanvasTexture(bcv);
-      this.interiorBlobMat = new THREE.MeshBasicMaterial({
-        map: btex,
-        transparent: true,
-        depthWrite: false,
-        opacity: 0.4,
-        // WHITE, not black. MeshBasicMaterial multiplies colour by the map,
-        // and the map is already black with a soft alpha falloff — tinting it
-        // black too just multiplies black by black and makes `color` a no-op
-        // that looks deliberate to the next reader.
-        color: 0xffffff,
-      });
-    }
+    const blobMat = this.ensureInteriorBlobMat();
     for (const b of boxes) {
       const w = b.maxX - b.minX;
       const d = b.maxZ - b.minZ;
@@ -14256,7 +14338,7 @@ export class GameScene extends THREE.Scene {
       // desk and only a hairline showed, which is why the first attempt looked
       // like nothing had changed. The visible part is the fringe, so the
       // fringe has to be wide enough to see.
-      const blob = new THREE.Mesh(new THREE.PlaneGeometry(w * 1.7, d * 1.7), this.interiorBlobMat);
+      const blob = new THREE.Mesh(new THREE.PlaneGeometry(w * 1.7, d * 1.7), blobMat);
       // Sit just above whichever surface is actually underneath. The rug is
       // Box(4.6, 0.06, 3.4) at (0, 0.13, 0.3), so its top face is 0.16 —
       // a blob at the floor's 0.105 is BURIED by it, and the furniture
@@ -14286,22 +14368,248 @@ export class GameScene extends THREE.Scene {
   }
 
   private interiorWarmed = false;
+  /** The near-door warm (updateNearDoorWarm) has started. */
+  private interiorNearDoorWarmed = false;
+  private static readonly NEAR_DOOR_RANGE = 12;
+  private static readonly NEAR_DOOR_STILL_S = 1.0;
+  /** Seconds the player has stood still outdoors (updateNearDoorWarm), and
+   *  when, in those seconds, the doors are next checked. */
+  private nearDoorStill = 0;
+  private nearDoorNextCheck = GameScene.NEAR_DOOR_STILL_S;
+  private readonly _nearDoorPos = new THREE.Vector3();
+  private readonly _nearDoorVel = new THREE.Vector3();
 
-  /** Build the room and compile its shaders in an idle slot, so the player's
-   *  first E-press doesn't pay for them.
+  /** Where the main camera last drew this scene: the composer's buffer on
+   *  desktop, the canvas (null) where post-processing is off. three keys every
+   *  program on the bound target (output colour space, tone mapping), so the
+   *  warm compiles against the same one or it warms variants no frame draws. */
+  private lastSceneTarget: THREE.WebGLRenderTarget | null = null;
+
+  /** three calls a Scene's onBeforeRender with the bound render target. */
+  public override onBeforeRender(
+    _renderer: THREE.WebGLRenderer,
+    _scene: THREE.Scene,
+    camera: THREE.Camera,
+    target: unknown,
+  ): void {
+    if (camera === this.camera) {
+      this.lastSceneTarget = (target as THREE.WebGLRenderTarget | null | undefined) ?? null;
+    }
+  }
+
+  /** Yield to the event loop: the next frame may render before we resume. */
+  private static nextTask(): Promise<void> {
+    return new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  /** Main-thread budget for one warm slice. A frame plus a slice (plus the
+   *  next frame re-checking the slice's materials) stays well under the
+   *  50 ms hitch line; measured cost is ~1 ms per new program. */
+  private static readonly WARM_SLICE_MS = 4;
+
+  /** The materials three re-keys on a light-count change (its own
+   *  materialNeedsLights). An unlit material keeps the program it has. */
+  private static isLitMaterial(m: THREE.Material): boolean {
+    const f = m as unknown as Record<string, unknown>;
+    return (
+      f.isMeshLambertMaterial === true ||
+      f.isMeshToonMaterial === true ||
+      f.isMeshPhongMaterial === true ||
+      f.isMeshStandardMaterial === true ||
+      f.isShadowMaterial === true ||
+      (f.isShaderMaterial === true && f.lights === true)
+    );
+  }
+
+  /**
+   * One object per (material, object kind) a warm pass must prepare, in scene
+   * order: every lit material outside the room, which a light-count change
+   * re-keys, and, when `roomItems`, the room's own materials, lit or not (only
+   * a pass that shows the room wants them: nothing draws them hidden). Unlit
+   * world materials are left alone: no light change re-keys them, so they keep
+   * the program the frame already draws them with. A program also depends on
+   * the object (instancing, skinning, morphs, vertex colours), so the kind
+   * rides in the key.
+   */
+  private interiorWarmItems(room: THREE.Object3D, roomItems: boolean): THREE.Object3D[] {
+    type Drawable = THREE.Object3D & {
+      material?: THREE.Material | THREE.Material[];
+      geometry?: THREE.BufferGeometry;
+      isMesh?: boolean;
+      isPoints?: boolean;
+      isLine?: boolean;
+      isSprite?: boolean;
+      isInstancedMesh?: boolean;
+      isSkinnedMesh?: boolean;
+      isBatchedMesh?: boolean;
+      instanceColor?: unknown;
+    };
+    const inRoom = new Set<THREE.Object3D>();
+    room.traverse((o) => inRoom.add(o));
+    const seen = new Set<string>();
+    const items: THREE.Object3D[] = [];
+    this.traverse((obj) => {
+      const o = obj as Drawable;
+      if (!(o.isMesh || o.isPoints || o.isLine || o.isSprite) || !o.material) return;
+      const mats = (Array.isArray(o.material) ? o.material : [o.material]).filter(Boolean);
+      if (!(inRoom.has(o) ? roomItems : mats.every((m) => GameScene.isLitMaterial(m)))) return;
+      const attrs = o.geometry?.attributes ?? {};
+      const kind = [
+        o.isInstancedMesh ? (o.instanceColor ? 'Ic' : 'I') : '',
+        o.isSkinnedMesh ? 'S' : '',
+        o.isBatchedMesh ? 'B' : '',
+        o.isPoints ? 'P' : '',
+        o.isLine ? 'L' : '',
+        o.isSprite ? 's' : '',
+        o.geometry?.morphAttributes?.position ? 'm' : '',
+        attrs.color ? `v${attrs.color.itemSize}` : '',
+        attrs.uv1 ? 'u1' : '',
+        attrs.tangent ? 't' : '',
+      ].join('');
+      let fresh = false;
+      for (const m of mats) {
+        if (seen.has(m.uuid + kind)) continue;
+        seen.add(m.uuid + kind);
+        fresh = true;
+      }
+      if (fresh) items.push(o);
+    });
+    return items;
+  }
+
+  /**
+   * Compile `items` with the room shown or hidden, against `target`, in slices
+   * of ~WARM_SLICE_MS. Every slice is one synchronous task that leaves the
+   * scene as the live frame needs it, before anything can render:
+   * - the room is shown (when `roomVisible`) and `target` bound only inside
+   *   the slice;
+   * - each object compiles against a proxy scene fed the live lights. three
+   *   gives the proxy its own render state, so the live frame's lights state
+   *   never changes and no frame re-keys. A lit world material the pass left
+   *   on a room-lit variant is re-checked by the next frame (the proxy's
+   *   lights version differs) and goes back to its own; the only unlit ones a
+   *   pass compiles are the room's, which draw with the room shown anyway;
+   * - objects compile one per call until the slice's budget is spent, so a
+   *   slice overruns it by one object at most, whether that one is a cache
+   *   hit or a new program. (A batch sized from the last slice overran it
+   *   whenever hits gave way to misses: MEASURED, a 9.3 ms slice of 7 new
+   *   programs on the 1x low tier, 23 ms of 5 on desktop.)
+   * Returns the programs the pass compiled.
+   */
+  private async compileInteriorPass(
+    gl: THREE.WebGLRenderer,
+    g: THREE.Group,
+    items: THREE.Object3D[],
+    roomVisible: boolean,
+    target: THREE.WebGLRenderTarget | null,
+  ): Promise<WarmProgram[]> {
+    const camera = this.camera;
+    const proxy = new THREE.Scene();
+    proxy.fog = this.fog;
+    proxy.environment = this.environment;
+    proxy.environmentRotation.copy(this.environmentRotation);
+    let batch: THREE.Object3D[] = [];
+    const chunk = new THREE.Object3D();
+    chunk.traverse = (cb) => {
+      for (const o of batch) cb(o);
+    };
+    // three's compile() walks traverseVisible only to collect lights. The live
+    // ones are gathered once per slice, not by a walk of the whole scene per
+    // call, which would cost more than most of the compiles it feeds.
+    const lights: THREE.Object3D[] = [];
+    chunk.traverseVisible = (cb) => {
+      for (const l of lights) cb(l);
+    };
+    const wasVisible = g.visible;
+    const started: WarmProgram[] = [];
+    for (let i = 0; i < items.length && !this.insideInterior; ) {
+      const t0 = performance.now();
+      const bound = gl.getRenderTarget();
+      try {
+        g.visible = roomVisible;
+        gl.setRenderTarget(target);
+        lights.length = 0;
+        this.traverseVisible((o) => {
+          if ((o as THREE.Light).isLight) lights.push(o);
+        });
+        do {
+          batch = [items[i++]];
+          for (const m of gl.compile(chunk, camera, proxy)) {
+            // EVERY variant the material holds, not just currentProgram: a
+            // transparent double-sided material compiles a back-face and a
+            // front-face program, and the uncaptured one reached its first use
+            // inside the first room frame (measured: a 170 ms frame).
+            const props = gl.properties.get(m) as { programs?: Map<string, WarmProgram> };
+            if (props.programs) started.push(...props.programs.values());
+          }
+        } while (i < items.length && performance.now() - t0 < GameScene.WARM_SLICE_MS);
+      } finally {
+        gl.setRenderTarget(bound);
+        if (!this.insideInterior) g.visible = wasVisible;
+      }
+      await GameScene.nextTask();
+    }
+    return started;
+  }
+
+  /**
+   * With KHR_parallel_shader_compile: poll the programs with isReady() every
+   * 50 ms, off the render path, for up to 10 s; then first-use them in idle
+   * slices too. A program's first getUniforms() runs three's shader-error
+   * check (getProgramInfoLog), a synchronous query that waits for the GPU
+   * process to drain its queue. Left to the first frame inside, 11 of them
+   * took 121 of that frame's 136 ms (measured); here, on ready programs, they
+   * cost ~0.15 ms each.
+   */
+  private async settleWarmPrograms(started: WarmProgram[]): Promise<void> {
+    const until = performance.now() + 10000;
+    while (!this.insideInterior && started.some((p) => !p.isReady())) {
+      if (performance.now() > until) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+    const used = new Set<WarmProgram>();
+    let sliceStart = performance.now();
+    for (const p of started) {
+      if (this.insideInterior) return;
+      if (used.has(p) || !p.isReady()) continue;
+      used.add(p);
+      p.getUniforms();
+      p.getAttributes();
+      if (performance.now() - sliceStart > GameScene.WARM_SLICE_MS) {
+        await GameScene.nextTask();
+        sliceStart = performance.now();
+      }
+    }
+  }
+
+  /**
+   * Compile the room's shaders in idle time, so the player's first E-press
+   * doesn't pay for them — and never let a rendered frame use a variant that
+   * is still compiling.
    *
-   *  MEASURED on prod 2026-08-17: buildInterior() constructs 219 meshes / 74
-   *  materials / 219 geometries in 16.3ms — a dropped frame by itself — and
-   *  the first frame that SHOWS the room compiles 39 new shader programs
-   *  (103 → 142). Most of that 39 is NOT the room's own materials: the room
-   *  carries 4 PointLights, and three.js bakes light COUNTS into every lit
-   *  program's cache key, so opening a door re-keys the whole scene. It is
-   *  one-time (programs sit at 142 across every later toggle), but untreated
-   *  it lands squarely on the player's first interaction with a building.
+   * The room carries 4 PointLights and three bakes light COUNTS into every lit
+   * program's cache key, so showing the room re-keys the whole scene. MEASURED
+   * on main: the old warm made the room visible and awaited compileAsync, the
+   * render loop drew the next frame with the room-lit variants, and that frame
+   * blocked 2,043 ms finishing them and creating 38 more (compile() had run
+   * against the canvas, the frame draws into the composer's buffer). Its
+   * synchronous compile was a 210 ms task of its own.
    *
-   *  Both permutations are warmed — leaving costs compiles too, because the
-   *  light count drops back. Idempotent and best-effort: on any failure the
-   *  old lazy path still works, just as slowly as before. */
+   * Now the room-lit and outdoor permutations are compiled in synchronous
+   * slices (compileInteriorPass) against the frame's own render target, then
+   * polled ready and first-used (settleWarmPrograms), all off the render path.
+   * The window view needs no pass of its own: it draws with the frame's
+   * programs (syncInteriorViewOutput).
+   *
+   * Without KHR_parallel_shader_compile a background warm cannot tell when a
+   * program is ready, and the driver may compile on the GPU's own thread, so
+   * the idle warm is skipped. The near-door warm covers that case instead
+   * (updateNearDoorWarm), and failing that the first door's veil covers the
+   * compile, as it always has.
+   *
+   * Idempotent and best-effort: on any failure the lazy path still works,
+   * just as slowly as before.
+   */
   public async warmInterior(): Promise<void> {
     if (this.interiorWarmed) return;
     // `idleDefer(cb, 9000)` is a CEILING, not a delay — the callback can fire
@@ -14313,37 +14621,46 @@ export class GameScene extends THREE.Scene {
       this.interiorWarmed = true;
       return;
     }
+    const gl = this.rendererRef?.getRenderer();
+    if (!gl || !this.camera || !gl.extensions.has('KHR_parallel_shader_compile')) return;
+    await this.warmInteriorPasses(gl, true);
+  }
+
+  /** The room-lit and outdoor passes (see warmInterior). `khr` false skips the
+   *  readiness poll and first use, which would block without the extension. */
+  private async warmInteriorPasses(gl: THREE.WebGLRenderer, khr: boolean): Promise<void> {
     this.interiorWarmed = true;
     this.buildInterior();
+    this.ensureInteriorView(); // the pane's final material, or it re-keys on entry
     const g = this.interiorGroup;
-    const gl = this.rendererRef?.getRenderer() as unknown as
-      | {
-          compile?: (s: unknown, c: unknown) => void;
-          compileAsync?: (s: unknown, c: unknown) => Promise<unknown>;
-        }
-      | undefined;
-    if (!g || !gl || !this.camera) return;
+    if (!g) return;
+    await GameScene.nextTask(); // the build (~10 ms) gets a task of its own
     const wasVisible = g.visible;
+    // A room material built only on entry (the contact-shadow blobs) gets a
+    // stand-in quad outside the scene, so the room-lit pass covers it too.
+    const blobStandIn = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.ensureInteriorBlobMat());
     // EVERY visibility write is re-gated on insideInterior, not just the one
-    // before the first await. compileAsync yields for 100-500ms while it
-    // compiles the room's programs, and a player can press E inside that
-    // window: enterInterior would set visible=true, then this resumed and set
-    // it back to false, leaving them inside a building with NO room — camera
-    // at (0,-300,0) staring at their own avatar against empty sky, with
-    // prompts and Leave still working. Nothing re-arms visibility during a
-    // visit (interiorGroup.visible = true appears exactly once, in
-    // enterInterior), so that state was terminal until they left and re-entered.
+    // before the first await. The warm yields between slices and while it
+    // polls, and a player can press E inside that window: enterInterior would
+    // set visible=true, then a resumed slice set it back to false, leaving
+    // them inside a building with NO room — camera at (0,-300,0) staring at
+    // their own avatar against empty sky, with prompts and Leave still
+    // working. Nothing re-arms visibility during a visit
+    // (interiorGroup.visible = true appears exactly once, in enterInterior),
+    // so that state was terminal until they left and re-entered.
     const warm = async (visible: boolean): Promise<void> => {
       if (this.insideInterior) return; // a real entry took over mid-await
-      g.visible = visible;
-      if (typeof gl.compileAsync === 'function') await gl.compileAsync(this, this.camera);
-      else gl.compile?.(this, this.camera);
+      const items = this.interiorWarmItems(g, visible);
+      if (visible) items.push(blobStandIn);
+      await GameScene.nextTask();
+      const started = await this.compileInteriorPass(gl, g, items, visible, this.lastSceneTarget);
+      if (khr) await this.settleWarmPrograms(started);
     };
     try {
-      // Visible for the first pass: the light count IS the cache key, so a
-      // hidden group would warm the wrong permutation and change nothing.
-      // Nothing can flash on screen — the room sits at INTERIOR_ORIGIN,
-      // 200u below the south pole, behind the planet from any play camera.
+      // Room-lit first: the variants a door needs. Nothing can flash on screen
+      // even within a slice — no frame is drawn while the room is visible, and
+      // it sits at INTERIOR_ORIGIN, 200u below the south pole. The outdoor
+      // pass covers leaving, which re-keys too.
       await warm(true);
       await warm(false);
     } catch {
@@ -14351,6 +14668,51 @@ export class GameScene extends THREE.Scene {
     } finally {
       // Never restore a stale snapshot over a live entry.
       if (!this.insideInterior) g.visible = wasVisible;
+      blobStandIn.geometry.dispose();
+    }
+  }
+
+  /**
+   * The near-door warm: once the player has stood still for NEAR_DOOR_STILL_S
+   * within NEAR_DOOR_RANGE of a door, run the room passes if the idle warm has
+   * not. Without KHR_parallel_shader_compile no idle warm runs, so this is the
+   * only warm there: compile the room now, while nobody is moving. MEASURED
+   * with the extension hidden, the first door then held its veil black 1.60 s.
+   * The window view needs nothing of its own on any tier: it draws with the
+   * frame's programs (syncInteriorViewOutput).
+   */
+  private updateNearDoorWarm(dt: number): void {
+    if (this.interiorNearDoorWarmed || this.interiorWarmed || this.insideInterior || !this.island) {
+      return;
+    }
+    if (this.player.getVelocityInto(this._nearDoorVel).lengthSq() > 0.04) {
+      this.nearDoorStill = 0;
+      this.nearDoorNextCheck = GameScene.NEAR_DOOR_STILL_S;
+      return;
+    }
+    this.nearDoorStill += dt;
+    // The doors are checked at NEAR_DOOR_STILL_S, then twice a second while
+    // the player stays put: no per-frame scan for a visitor idling elsewhere.
+    if (this.nearDoorStill < this.nearDoorNextCheck) return;
+    this.nearDoorNextCheck = this.nearDoorStill + 0.5;
+    const p = this.player.getWorldPositionInto(this._nearDoorPos);
+    const range = GameScene.NEAR_DOOR_RANGE;
+    let near = this.island.houseDoors.some((d) => d.position.distanceToSquared(p) < range * range);
+    if (!near && this.zonesManager) {
+      near = this.zonesManager.getZones().some((z) => z.isNearby(p, range));
+    }
+    if (!near) return;
+    this.interiorNearDoorWarmed = true;
+    void this.warmInteriorNearDoor();
+  }
+
+  private async warmInteriorNearDoor(): Promise<void> {
+    const gl = this.rendererRef?.getRenderer();
+    if (!gl || !this.camera || this.interiorWarmed || this.insideInterior) return;
+    try {
+      await this.warmInteriorPasses(gl, gl.extensions.has('KHR_parallel_shader_compile'));
+    } catch {
+      // Best-effort, like the idle warm.
     }
   }
 
@@ -14471,6 +14833,90 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
+   * The window pane's render target and camera, and the pane material in its
+   * final state (white, mapped to the target). Built on the first window
+   * render, or earlier by warmInterior: giving the pane its map re-keys the
+   * pane's program, so warming before it has one leaves a compile for the
+   * first frame inside (measured: one 152.6 ms render under the door veil).
+   * Every call also syncs the target to the frame's output kind, the warm's
+   * before it compiles the pane and each window refresh's before it draws.
+   * Creating the target allocates nothing on the GPU until it is first drawn.
+   */
+  private ensureInteriorView(): void {
+    if (!this.interiorWindowMat) return;
+    if (!this.interiorViewTarget) {
+      // 384x288, not 512x384: the pane is ~220px on screen at a normal viewing
+      // distance, so 512 was oversampled by more than 2x. Measured 2.85ms per
+      // pass at 512; this is ~44% fewer pixels for no visible difference.
+      this.interiorViewTarget = new THREE.WebGLRenderTarget(384, 288, {
+        depthBuffer: true,
+        stencilBuffer: false,
+      });
+      // RGBA8 storage in either output kind (syncInteriorViewOutput sets the
+      // colour space). Left to three, an sRGB-tagged target is stored as
+      // SRGB8_ALPHA8, whose hardware encode would encode the bytes the canvas
+      // kind's shaders already encoded a second time; pinned, a kind change
+      // never re-allocates the target either.
+      this.interiorViewTarget.texture.internalFormat = 'RGBA8';
+      // far MUST reach the sky. SkyDome is radius 800 and the starfields sit
+      // at ~700-770; at the 400 I first used, the whole sky was clipped away
+      // and the window showed a pale void at midnight instead of stars.
+      this.interiorViewCam = new THREE.PerspectiveCamera(55, 4 / 3, 0.3, 2000);
+      this.interiorWindowMat.color.set(0xffffff); // stop tinting the render
+      this.interiorWindowMat.map = this.interiorViewTarget.texture;
+      this.interiorViewCanvasKind = null;
+    }
+    this.syncInteriorViewOutput();
+  }
+
+  /**
+   * Give the window target the frame's own output kind, so the window pass
+   * draws with the programs the frame already has.
+   *
+   * three keys every program on the bound target: the canvas gets the
+   * renderer's tone mapping and sRGB output, a plain render target gets
+   * neither (WebGLPrograms, r180). Where the frame draws to the canvas (no
+   * composer: the low tier), a plain window target needed a second variant of
+   * everything the window sees, and alternating the two kinds re-keyed the
+   * unlit world materials as well. MEASURED at the 1x low tier's first door:
+   * 31 programs in the window pass on main (a 184 ms first room frame); 31
+   * there plus 5 in the room frame with the first B2 warm (289-1,423 ms).
+   *
+   * On the canvas path the target is flagged as three flags its canvas-kind
+   * XR target (isXRRenderTarget: the renderer's tone mapping, and the target
+   * texture's colour space as the output), so its pass compiles exactly the
+   * canvas's programs. Its RGBA8 bytes are then the display colours a canvas
+   * pass writes, and the pane shows them unchanged: three's own inline sRGB
+   * decode (map_fragment's DECODE_VIDEO_TEXTURE) undoes the main pass's
+   * re-encode, and the pane is not tone-mapped a second time. MEASURED from
+   * one camera at the low tier, six rays: the window bytes equal a canvas
+   * render's exactly. The old linear target plus the pane's tone mapping was
+   * up to 63/255 off, a washed-out sky (the sky dome writes display colours).
+   *
+   * With a composer (desktop) the frame and the window both draw into linear
+   * targets, so the window keeps that kind: linear, graded once by the frame.
+   * (Tagging a plain target sRGB is the old trap: three decodes its
+   * already-linear radiance a second time, ~2.3x too dark in the midtones.)
+   */
+  private syncInteriorViewOutput(): void {
+    const view = this.interiorViewTarget;
+    const pane = this.interiorWindowMat;
+    if (!view || !pane) return;
+    const canvas = this.lastSceneTarget === null;
+    if (this.interiorViewCanvasKind === canvas) return;
+    this.interiorViewCanvasKind = canvas;
+    // three's WebGLPrograms reads both fields for every target and every
+    // material; @types/three just doesn't declare them on these classes.
+    (view as THREE.WebGLRenderTarget & { isXRRenderTarget?: boolean }).isXRRenderTarget = canvas;
+    view.texture.colorSpace = canvas ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+    pane.toneMapped = !canvas;
+    (pane as THREE.MeshBasicMaterial & { defines?: Record<string, string> }).defines = canvas
+      ? { DECODE_VIDEO_TEXTURE: '' }
+      : {};
+    pane.needsUpdate = true;
+  }
+
+  /**
    * Render the island from outside the building into the window pane.
    *
    * Costs one extra scene render at quarter resolution, four times a second.
@@ -14481,30 +14927,7 @@ export class GameScene extends THREE.Scene {
   private refreshInteriorView(): void {
     const renderer = this.rendererRef?.getRenderer();
     if (!renderer || !this.interiorWindowMat) return;
-    if (!this.interiorViewTarget) {
-      // 384x288, not 512x384: the pane is ~220px on screen at a normal viewing
-      // distance, so 512 was oversampled by more than 2x. Measured 2.85ms per
-      // pass at 512; this is ~44% fewer pixels for no visible difference.
-      this.interiorViewTarget = new THREE.WebGLRenderTarget(384, 288, {
-        depthBuffer: true,
-        stencilBuffer: false,
-      });
-      // LINEAR, not sRGB. three forces LinearSRGBColorSpace on every non-XR
-      // render target (WebGLRenderer, r180) and NoToneMapping with it, so
-      // tagging the texture sRGB made the sampler decode already-linear
-      // radiance a second time — the view came out roughly 2.3x too dark in
-      // the midtones and over-contrasted, reading as "it's gloomy outside"
-      // rather than as a bug. The pane's material keeps toneMapped=true so the
-      // main pass grades the sample exactly once.
-      this.interiorViewTarget.texture.colorSpace = THREE.LinearSRGBColorSpace;
-      // far MUST reach the sky. SkyDome is radius 800 and the starfields sit at
-      // ~700-770; at the 400 I first used, the whole sky was clipped away and
-      // the window showed a pale void at midnight instead of stars.
-      this.interiorViewCam = new THREE.PerspectiveCamera(55, 4 / 3, 0.3, 2000);
-      this.interiorWindowMat.color.set(0xffffff); // stop tinting the render
-      this.interiorWindowMat.map = this.interiorViewTarget.texture;
-      this.interiorWindowMat.needsUpdate = true;
-    }
+    this.ensureInteriorView();
     const cam = this.interiorViewCam;
     if (!cam) return;
     cam.up.copy(this.interiorViewFrom).normalize();

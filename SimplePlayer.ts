@@ -143,6 +143,72 @@ const PART_MATERIAL: Record<BodyPart, string> = {
   skin: 'Skin',
 };
 
+type LimbKey = 'armL' | 'armR' | 'legL' | 'legR';
+const LIMB_KEYS: readonly LimbKey[] = ['armL', 'armR', 'legL', 'legR'];
+const _limbAxisX = new THREE.Vector3(1, 0, 0);
+const _limbTurn = new THREE.Quaternion();
+
+/**
+ * THE CLIP LAYER: world law 2's cached-quaternion rule, applied to the
+ * AnimationMixer's own output, for the local avatar and every remote peer.
+ *
+ * three r180's PropertyMixer writes a bone only when the MIXED value changed
+ * since its last apply (PropertyMixer.apply), so while a track holds still —
+ * Idle's legs are constant STEP keys — the mixer never rewrites that bone. A
+ * pose written onto the live bone after the mixer (`rotation.x += …`) then
+ * survives into the next frame, and the next frame's pose lands on top of it.
+ * MEASURED on the live build: one standing jump spun legL from 3.06 to -12.04
+ * rad, legs up through the torso until the visitor walked, and a skipped arm
+ * frame jumped the hand +0.50 u and then -1.02 u on landing.
+ *
+ * So the clip output is cached per limb: restore() puts it back immediately
+ * before mixer.update (a bone the mixer skips still carries the clip),
+ * capture() records it immediately after, and additive poses go through
+ * onClip(). Absolute poses (wave, swim, ride, sit, dance) keep their
+ * rest-anchored writes: they never read the live value, so they cannot stack.
+ */
+class LimbClip {
+  private readonly clip: Record<LimbKey, THREE.Quaternion> = {
+    armL: new THREE.Quaternion(),
+    armR: new THREE.Quaternion(),
+    legL: new THREE.Quaternion(),
+    legR: new THREE.Quaternion(),
+  };
+  private held = false;
+
+  constructor(private readonly bone: (k: LimbKey) => THREE.Object3D | null) {}
+
+  /** Before mixer.update: every limb back on the last clip output. */
+  restore(): void {
+    if (!this.held) return;
+    for (const k of LIMB_KEYS) this.bone(k)?.quaternion.copy(this.clip[k]);
+  }
+
+  /** After mixer.update — and once at load, from the bind pose, which is the
+   *  mixer's own original state (saveOriginalState at play()). */
+  capture(): void {
+    for (const k of LIMB_KEYS) {
+      const b = this.bone(k);
+      if (b) this.clip[k].copy(b.quaternion);
+    }
+    this.held = true;
+  }
+
+  /**
+   * The clip pose turned `angle` about the PARENT's X axis: Rx(angle) · clip.
+   * That is exactly what `rotation.x += angle` produced on a frame the mixer
+   * had rewritten (MEASURED equal on player.glb, and it keeps the clip's Euler
+   * y/z, so a later absolute rotation.x write still lands where it did). The
+   * other order, clip · Rx, would turn the arms about their own splayed axis:
+   * 0.05-0.08 u off at the hand.
+   */
+  onClip(k: LimbKey, angle: number): void {
+    const b = this.bone(k);
+    if (!b || !this.held) return;
+    b.quaternion.copy(_limbTurn.setFromAxisAngle(_limbAxisX, angle)).multiply(this.clip[k]);
+  }
+}
+
 /**
  * SimplePlayer
  *
@@ -332,6 +398,16 @@ export class SimplePlayer extends THREE.Group {
 
   // Jump/air pose (on-foot only): eases 0→1 while airborne, back on land.
   private airPoseWeight = 0;
+  // The mixer's last output for the four limbs (see LimbClip).
+  private readonly limbClip = new LimbClip((k) =>
+    k === 'armL'
+      ? this.armLBone
+      : k === 'armR'
+        ? this.armRBone
+        : k === 'legL'
+          ? this.legLBone
+          : this.legRBone,
+  );
   // Arm-wave gesture: seconds of the ~1.2s wave remaining (0 = idle).
   private waveTime = 0;
   private static readonly WAVE_DURATION = 1.2;
@@ -770,12 +846,19 @@ export class SimplePlayer extends THREE.Group {
       }
       if (!idle && !walk) mixer.clipAction(base.animations[0]).play();
     }
+    // The peer's own clip layer (LimbClip), seeded from the fresh clone's bind
+    // pose before any pose touches it.
+    const clip = new LimbClip((k) =>
+      k === 'armL' ? armLBone : k === 'armR' ? armRBone : k === 'legL' ? legLBone : legRBone,
+    );
+    clip.capture();
 
     // Broadcast pose (0 foot, 1 swim, 2 ride, 3 air) + eased override weight, so
     // a swimming/riding/jumping peer strikes the right pose instead of always
-    // walk-cycling upright. Applied AFTER mixer.update (the clip writes the same
-    // limb bones every frame); activePose remembers the last non-foot pose so it
-    // eases back out. Wave overrides the right arm regardless of pose.
+    // walk-cycling upright. Applied AFTER mixer.update, which does NOT rewrite a
+    // limb whose clip value holds still — hence the clip layer around it;
+    // activePose remembers the last non-foot pose so it eases back out. Wave
+    // overrides the right arm regardless of pose.
     let curPose = 0;
     let activePose = 0;
     let poseW = 0;
@@ -789,7 +872,11 @@ export class SimplePlayer extends THREE.Group {
     let swimPitchR = 0;
 
     const update = (dt: number, speed: number): void => {
-      if (mixer) mixer.update(dt);
+      if (mixer) {
+        clip.restore();
+        mixer.update(dt);
+        clip.capture();
+      }
       const overriding = curPose !== 0;
       if (walk) {
         const w = overriding ? 0 : THREE.MathUtils.clamp(speed / 3, 0, 1);
@@ -881,12 +968,14 @@ export class SimplePlayer extends THREE.Group {
           if (legLBone) legLBone.rotation.x = Math.PI + RIDE_PEER_LEG_X * poseW;
           if (legRBone) legRBone.rotation.x = Math.PI + RIDE_PEER_LEG_X * poseW;
         } else {
-          // Airborne: arms up, knees tucked (additive on top of the mixer).
+          // Airborne: arms up, knees tucked, composed onto the clip output
+          // (LimbClip), never onto the live bone, which the mixer may not
+          // have rewritten this frame.
           model.rotation.set(0, 0, 0);
-          if (armLBone) armLBone.rotation.x += -0.85 * poseW;
-          if (armRBone) armRBone.rotation.x += -0.85 * poseW;
-          if (legLBone) legLBone.rotation.x += -0.45 * poseW;
-          if (legRBone) legRBone.rotation.x += -0.45 * poseW;
+          clip.onClip('armL', -0.85 * poseW);
+          clip.onClip('armR', -0.85 * poseW);
+          clip.onClip('legL', -0.45 * poseW);
+          clip.onClip('legR', -0.45 * poseW);
         }
       } else {
         model.rotation.set(0, 0, 0);
@@ -1558,11 +1647,21 @@ export class SimplePlayer extends THREE.Group {
     this.rodHoldW += ((this.rodHold ? 1 : 0) - this.rodHoldW) * Math.min(1, 6 * dt);
     if (this.gltfModel) {
       this.ensureLimbBones();
-      if (aw > 0.001) {
-        if (this.armLBone) this.armLBone.rotation.x += -0.85 * aw;
-        if (this.armRBone) this.armRBone.rotation.x += -0.85 * aw;
-        if (this.legLBone) this.legLBone.rotation.x += -0.45 * aw;
-        if (this.legRBone) this.legRBone.rotation.x += -0.45 * aw;
+      // ADDITIVE layers compose onto the clip output (LimbClip), never onto the
+      // live bone: the air pose, plus the toss's opposite-arm counterweight and
+      // knee bend. Summed per limb, so the two stack exactly as the old '+='
+      // pair did on a frame the mixer had rewritten. The absolute writes below
+      // then override a limb as before (the wave or toss on armR, the chop).
+      const tossing = !(waveEnv > 0 && this.armRBone) && tossEnv > 0;
+      const air = aw > 0.001 ? aw : 0;
+      const addArmL = -0.85 * air + (tossing ? tossLean : 0);
+      const addArmR = -0.85 * air;
+      const addLeg = -0.45 * air + (tossing ? 0.5 * tossCrouch : 0);
+      if (addArmL !== 0) this.limbClip.onClip('armL', addArmL);
+      if (addArmR !== 0) this.limbClip.onClip('armR', addArmR);
+      if (addLeg !== 0) {
+        this.limbClip.onClip('legL', addLeg);
+        this.limbClip.onClip('legR', addLeg);
       }
       if (waveEnv > 0 && this.armRBone) {
         // Bone convention, measured on the live rig: rotation.x = 0 points the
@@ -1590,9 +1689,7 @@ export class SimplePlayer extends THREE.Group {
             tossEnv,
           );
         }
-        if (this.armLBone) this.armLBone.rotation.x += tossLean;
-        if (this.legLBone) this.legLBone.rotation.x += 0.5 * tossCrouch;
-        if (this.legRBone) this.legRBone.rotation.x += 0.5 * tossCrouch;
+        // The counterweight lean and the knee bend went onto the clip above.
       } else if (castEnv > 0 && this.armRBone) {
         this.armRBone.rotation.x = THREE.MathUtils.lerp(SimplePlayer.SETTLE_REST, castAng, castEnv);
       } else if (this.rodHoldW > 0.01 && this.armRBone) {
@@ -1716,7 +1813,13 @@ export class SimplePlayer extends THREE.Group {
         2.1,
       );
     }
-    this.animationMixer?.update(dt);
+    if (this.animationMixer) {
+      // Same clip layer as update(): applyPartyDance writes the arms after this.
+      this.ensureLimbBones();
+      this.limbClip.restore();
+      this.animationMixer.update(dt);
+      this.limbClip.capture();
+    }
   }
 
   public getWalkCyclePhase(): number {
@@ -1859,6 +1962,10 @@ export class SimplePlayer extends THREE.Group {
             );
           }
         }
+        // Seed the clip layer from the fresh model's bind pose, before any pose
+        // can touch the limbs (LimbClip).
+        this.ensureLimbBones();
+        this.limbClip.capture();
 
         // Enable shadows + the cel rim on the garment/skin materials.
         // Rim SKIPS Eye/EyeShine/Blush (face accents would sparkle) and the
@@ -2146,14 +2253,19 @@ export class SimplePlayer extends THREE.Group {
       ); // ceiling raised 1.6→2.1 for the R50 run speed 8.0 (ratio 1.9) so the feet don't slide at a full run
     }
 
-    // Update GLTF animations
+    // Update GLTF animations, bracketed by the clip layer (LimbClip): restore,
+    // so a limb the mixer skips this frame carries the clip and not the last
+    // frame's pose (or a swim/ride/sit pose left on it), then capture.
     if (this.animationMixer) {
+      this.ensureLimbBones();
+      this.limbClip.restore();
       this.animationMixer.update(safeDeltaTime);
+      this.limbClip.capture();
     }
 
-    // Jump/air pose + arm-wave: applied AFTER the mixer (the clip writes these
-    // same bones every frame). Reached only on foot — swim/ride/seat return
-    // earlier — so isGrounded gates the air pose.
+    // Jump/air pose + arm-wave: applied AFTER the mixer, composed onto the
+    // captured clip. Reached only on foot — swim/ride/seat return earlier — so
+    // isGrounded gates the air pose.
     this.applyAirWavePose(safeDeltaTime);
 
     // Update mesh position
