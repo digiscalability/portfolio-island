@@ -224,15 +224,18 @@ export function moodNpcFlavor(): string | null {
  * changes it (and once immediately for a dev override). Never throws.
  */
 export function connectWorldState(onUpdate: (s: WorldState) => void): void {
-  // Dev/preview override: ?mood=festive (optionally &headline=...). Skips the
-  // backend entirely so any mood is previewable before the director is live.
+  // Dev/preview override: ?mood=festive (and, in dev builds only,
+  // &headline=...). Skips the backend entirely so any mood is previewable
+  // before the director is live. A free-text headline stays dev-only: in
+  // production it would let any link put its own words in front of a visitor.
   try {
     const params = new URLSearchParams(window.location.search);
     const override = params.get('mood');
     if (isMood(override)) {
+      const devHeadline = import.meta.env.DEV ? params.get('headline')?.slice(0, 160) : null;
       const s: WorldState = {
         mood: override,
-        headline: params.get('headline') || MOOD_META[override].devHeadline,
+        headline: devHeadline || MOOD_META[override].devHeadline,
         updatedAt: Date.now(),
       };
       current = s;

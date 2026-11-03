@@ -1600,9 +1600,10 @@ export class SimpleUI {
 
   /** Escape user-provided text before it goes into innerHTML. Guestbook notes
    *  and peer names are shown to OTHER visitors, so this is a real XSS guard —
-   *  cleanChatText masks slurs but does not neutralise markup. */
-  private escapeHtml(s: string): string {
-    return s.replace(
+   *  cleanChatText masks slurs but does not neutralise markup. Takes unknown
+   *  because network fields are not type-checked on arrival. */
+  private escapeHtml(s: unknown): string {
+    return String(s ?? '').replace(
       /[&<>"']/g,
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
     );
@@ -4363,7 +4364,7 @@ export class SimpleUI {
            font-size:13px; line-height:1.55; text-align:left;">
            <div style="font-weight:600; color:#8a9bff; margin-bottom:2px;">While you were away (${awayDelta.daysAway}d)</div>
            ${awayDelta.editions > 0 ? `📰 ${awayDelta.editions} new edition${awayDelta.editions > 1 ? 's' : ''} of the Island Times<br>` : ''}
-           ${awayDelta.headline ? `🏝️ ${awayDelta.headline} ${awayDelta.weather ? (WGLYPH[awayDelta.weather] ?? '') : ''}<br>` : ''}
+           ${awayDelta.headline ? `🏝️ ${this.escapeHtml(awayDelta.headline)} ${awayDelta.weather ? (WGLYPH[awayDelta.weather] ?? '') : ''}<br>` : ''}
            <span id="wlc-gb">✍️ checking the guestbook…</span>
          </div>`
       : '';
