@@ -51,6 +51,7 @@ import {
   beltScale,
   faunaBelt,
 } from './WorldScale';
+import { burnDraws } from './WorldSeed';
 import { getWorldState } from './WorldState';
 import { ZonesManager } from './ZonesManager';
 
@@ -85,9 +86,13 @@ interface WarmProgram {
 }
 
 /** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
- *  (geometry and material are shared), so a returning visitor's skipped trail
- *  burns exactly this many uuids to stay on the first visitor's stream. */
+ *  (geometry and material are shared). */
 const ARRIVAL_TRAIL_COINS = 5;
+/** Seeded draws the trail's Meshes take, as the census MEASURED them
+ *  (test/gameSceneSeed.test.ts: with this burn, a returning visitor's coins
+ *  span equals a first visitor's 588). A returning visitor's skipped trail
+ *  burns them to stay on the first visitor's stream. */
+const ARRIVAL_TRAIL_DRAWS = 20;
 
 /**
  * GameScene
@@ -9754,12 +9759,12 @@ export class GameScene extends THREE.Scene {
     }
     if (returning) {
       // This runs inside the SEEDED window. The trail's Meshes would each have
-      // minted one uuid (4 draws; geometry and material are shared), so the
-      // skip burns exactly that many: a returning visitor then rolls every
-      // later builder (vehicle bob, sailor and cruise-ship angles, embers) on
-      // the same stream as a first-time one. test/gameSceneSeed.test.ts
-      // measures both paths.
-      for (let i = 0; i < ARRIVAL_TRAIL_COINS; i++) THREE.MathUtils.generateUUID();
+      // minted one uuid (geometry and material are shared), so the skip burns
+      // their measured draws: a returning visitor then rolls every later
+      // builder (vehicle bob, sailor and cruise-ship angles, embers) on the
+      // same stream as a first-time one. test/gameSceneSeed.test.ts measures
+      // both paths, and the seed probe the whole window.
+      burnDraws(ARRIVAL_TRAIL_DRAWS);
       return;
     }
     const q = new THREE.Quaternion().setFromUnitVectors(spawnDir, npcDir);
