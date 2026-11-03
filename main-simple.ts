@@ -113,8 +113,12 @@ interface TourStop {
  * - Setup input handling
  * - Start render loop
  * - Handle cleanup
+ *
+ * Exported for test/interiorEntry.test.ts, which drives single methods on a
+ * stub. Importing this module still boots the app unless
+ * window.__lifeIslandBooted is already set (see bootApp below).
  */
-class SimpleApp {
+export class SimpleApp {
   private renderer!: SimpleRenderer;
   private scene!: GameScene;
   private inputManager!: SimpleInputManager;
@@ -2162,10 +2166,19 @@ class SimpleApp {
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
       this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
-      if (isZone && zone) {
-        this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
-      }
+      // Leave FIRST, and the panel in its own try. The fourth passport stamp
+      // lands inside showZonePanel and its celebration used to sweep the hall
+      // panel mid-build, so the panel threw (INT-02); fadeThrough's catch
+      // swallowed it and this line never ran. The visitor stood in the room
+      // with no Leave and no panel. Whatever a panel does, the way out exists.
       this.ui.showLeaveButton(() => this.exitBuilding(isZone));
+      if (isZone && zone) {
+        try {
+          this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
+        } catch (e) {
+          console.warn('Zone panel failed inside the building:', e);
+        }
+      }
     });
   }
 
