@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-AU">
   <head>
     <meta charset="UTF-8" />
     <!-- Fonts matching the mood: bold display and hand-drawn dialogue.
@@ -23,94 +23,135 @@
         rel="stylesheet"
       />
     </noscript>
+    <!-- favicon.ico for clients that never ask for SVG (and the bare
+         /favicon.ico request every browser makes); sizes="32x32" stops Chrome
+         preferring it over the SVG. -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- iOS ignores SVG apple-touch-icons; needs a real PNG for home-screen. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="canonical" href="https://island.digiscalability.com/" />
-    <!-- viewport-fit=cover: paint under notches (we inset the HUD via
-         env(safe-area-*)). maximum-scale/user-scalable=no: a game canvas
-         must not pinch-zoom or double-tap-zoom on touch. -->
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
-    />
+    <!-- viewport-fit=cover: paint under notches (the HUD insets itself via
+         env(safe-area-*)). Pinch-zoom stays available (WCAG 1.4.4, axe
+         meta-viewport): the canvas keeps its own gestures through
+         touch-action: none, and controls opt out of double-tap zoom in the
+         inline style below, so a quick double tap on the HUD never zooms. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0b1220" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <title>DigiScalability Life Island — a living 3D portfolio</title>
+    <title>Abbas Ali, AI &amp; software engineer: Life Island</title>
     <meta
       name="description"
-      content="Explore a hand-built 3D island from DigiScalability, a Melbourne-based venture studio building AI-powered products. Walk the planet, meet the townsfolk, drive the boats and cars, and discover the work."
+      content="Portfolio of Abbas Ali, AI &amp; software engineer in Melbourne: a living 3D world (Three.js + TypeScript) where 24 villagers talk through Claude Haiku 4.5."
     />
-    <meta name="author" content="DigiScalability" />
+    <meta name="author" content="Abbas Ali" />
 
-    <!-- Open Graph / LinkedIn / WhatsApp / Slack link previews -->
+    <!-- Open Graph / LinkedIn / WhatsApp / Slack link previews.
+         og-cover-v3.jpg is rendered from the current build; keep the alt text
+         in step with what the image actually shows. -->
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="DigiScalability" />
+    <meta property="og:site_name" content="Life Island" />
+    <meta property="og:locale" content="en_AU" />
     <meta property="og:url" content="https://island.digiscalability.com/" />
-    <meta property="og:title" content="DigiScalability Life Island — a living 3D portfolio" />
+    <meta property="og:title" content="Abbas Ali, AI &amp; software engineer: Life Island" />
     <meta
       property="og:description"
-      content="A hand-built 3D island you can actually explore: walk the planet, meet the townsfolk, race the boats and cars, and discover the work of a Melbourne venture studio."
+      content="A living 3D world (Three.js + TypeScript) where 24 villagers talk through Claude Haiku 4.5. Built solo by Abbas Ali, AI &amp; software engineer, Melbourne."
     />
-    <meta property="og:image" content="https://island.digiscalability.com/og-cover-v2.jpg" />
+    <meta property="og:image" content="https://island.digiscalability.com/og-cover-v3.jpg" />
+    <meta property="og:image:type" content="image/jpeg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="DigiScalability Life Island — an explorable low-poly 3D portfolio planet with a village, ocean and mountains."
+      content="Life Island, a low-poly 3D island planet with a village, sea and a snow-capped mountain, captioned Abbas Ali, AI &amp; software engineer."
     />
 
-    <!-- X / Twitter -->
+    <!-- X / Twitter. No twitter:creator: there is no personal handle. -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="DigiScalability Life Island — a living 3D portfolio" />
+    <meta name="twitter:site" content="@digiscalability" />
+    <meta name="twitter:title" content="Abbas Ali, AI &amp; software engineer: Life Island" />
     <meta
       name="twitter:description"
-      content="A hand-built 3D island you can actually explore — walk the planet, meet the townsfolk, and discover the work."
+      content="A living 3D world where 24 villagers talk through Claude Haiku 4.5. Built by Abbas Ali, AI &amp; software engineer, Melbourne."
     />
-    <meta name="twitter:image" content="https://island.digiscalability.com/og-cover-v2.jpg" />
+    <meta name="twitter:image" content="https://island.digiscalability.com/og-cover-v3.jpg" />
     <meta
       name="twitter:image:alt"
-      content="DigiScalability Life Island — an explorable 3D portfolio planet."
+      content="Life Island, a low-poly 3D island planet with a village, sea and a snow-capped mountain, captioned Abbas Ali, AI &amp; software engineer."
     />
 
-    <!-- Structured data: help search + AI crawlers understand this is Abbas's
-         portfolio under DigiScalability. Verify the name / social links are how
-         you want them presented publicly. -->
+    <!-- Structured data: this page is Abbas Ali's profile page, and the island
+         is his work. The Person @id is the one the website's own Person markup
+         uses (PERSON_ID, digiscalability.com/about#abbas), so both sites
+         describe one entity; keep it and sameAs in step with the website. -->
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@graph": [
           {
-            "@type": "WebSite",
-            "@id": "https://island.digiscalability.com/#website",
-            "name": "DigiScalability Life Island",
+            "@type": "ProfilePage",
+            "@id": "https://island.digiscalability.com/#profile",
             "url": "https://island.digiscalability.com/",
-            "description": "A hand-built, explorable 3D portfolio from DigiScalability, a Melbourne-based venture studio building AI-powered products.",
-            "author": { "@id": "https://island.digiscalability.com/#person" }
+            "name": "Abbas Ali, AI & software engineer: Life Island",
+            "inLanguage": "en-AU",
+            "mainEntity": { "@id": "https://digiscalability.com/about#abbas" }
           },
           {
             "@type": "Person",
-            "@id": "https://island.digiscalability.com/#person",
+            "@id": "https://digiscalability.com/about#abbas",
             "name": "Abbas Ali",
-            "jobTitle": "Founder",
-            "worksFor": {
-              "@type": "Organization",
-              "name": "DigiScalability",
-              "url": "https://digiscalability.com"
+            "jobTitle": "AI & software engineer",
+            "url": "https://digiscalability.com/about",
+            "email": "admin@digiscalability.com",
+            "address": {
+              "@type": "PostalAddress",
+              "addressLocality": "Melbourne",
+              "addressRegion": "VIC",
+              "addressCountry": "AU"
             },
+            "sameAs": ["https://www.linkedin.com/in/-abbas-ali", "https://github.com/digiscalability"]
+          },
+          {
+            "@type": "CreativeWork",
+            "@id": "https://island.digiscalability.com/#island",
+            "name": "Life Island",
             "url": "https://island.digiscalability.com/",
-            "sameAs": [
-              "https://digiscalability.com",
-              "https://www.linkedin.com/in/digiscalability",
-              "https://github.com/digiscalability"
-            ]
+            "description": "A living 3D world (Three.js + TypeScript) where 24 villagers talk through Claude Haiku 4.5.",
+            "image": "https://island.digiscalability.com/og-cover-v3.jpg",
+            "inLanguage": "en-AU",
+            "isAccessibleForFree": true,
+            "creator": { "@id": "https://digiscalability.com/about#abbas" },
+            "isBasedOn": {
+              "@type": "SoftwareSourceCode",
+              "codeRepository": "https://github.com/digiscalability/portfolio-island",
+              "programmingLanguage": "TypeScript"
+            }
           }
         ]
       }
     </script>
+    <!-- No JavaScript: show the fallback card (the same portfolio content the
+         no-WebGL path shows) instead of an endless spinner. Inline <style> in a
+         head <noscript> is valid HTML and costs nothing when JS is on. -->
+    <noscript>
+      <style>
+        #boot-fallback[hidden] {
+          display: flex !important;
+        }
+        #loading-screen,
+        #bf-retry,
+        #bf-reason {
+          display: none !important;
+        }
+        .bf-nojs {
+          display: inline !important;
+        }
+      </style>
+    </noscript>
     <style>
       :root {
         --bg-gradient-start: #667eea;
@@ -179,6 +220,8 @@
         flex-direction: column;
         justify-content: center;
         align-items: center;
+        padding: 0 16px;
+        text-align: center;
         z-index: 1000;
         color: var(--text-light);
         transition: opacity 0.5s ease-out;
@@ -191,7 +234,9 @@
 
       #loading-screen h2 {
         font-family: var(--font-display);
-        font-size: 48px;
+        /* 48px ran edge to edge on a 390px phone; scale down with the width. */
+        font-size: clamp(32px, 10vw, 48px);
+        line-height: 1.1;
         letter-spacing: 2px;
         margin-bottom: 20px;
       }
@@ -219,6 +264,40 @@
         .loading-spinner {
           animation-duration: 3s;
         }
+      }
+
+      /* The loader's way out: a plain link, so it works while the bundle is
+         still downloading and on a phone stuck in world generation. */
+      #ls-quick {
+        display: inline-block;
+        margin-top: 22px;
+        padding: 12px 14px;
+        color: #9cc4ff;
+        font-size: 16px;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      #ls-quick:hover {
+        color: #c7dcff;
+      }
+      #ls-quick:focus-visible {
+        outline: 2px solid #9cc4ff;
+        outline-offset: 2px;
+        border-radius: 8px;
+      }
+
+      /* Pinch-zoom is allowed (see the viewport meta), so controls opt out of
+         double-tap zoom: a quick double tap on a HUD button must never zoom
+         the page. Inline touch-action: none on the joystick and other drag
+         controls still wins over this. */
+      a,
+      button,
+      input,
+      select,
+      textarea,
+      label,
+      [role='button'] {
+        touch-action: manipulation;
       }
 
       /* Welcome Modal */
@@ -361,93 +440,27 @@
         font-family: monospace;
         font-size: 14px;
       }
-    </style>
-  </head>
-  <body>
-    <canvas id="game-canvas"></canvas>
 
-    <!-- Loading Screen: the wait is the first impression — pitch while it
-         loads, and narrate progress so a slow phone never reads as a hang. -->
-    <div id="loading-screen">
-      <h2>DIGISCALABILITY LIFE ISLAND</h2>
-      <p style="margin: 6px 0 2px; font-size: 14px; opacity: 0.85">
-        Abbas Ali's hand-built 3D portfolio — a living island run by AI agents.
-      </p>
-      <div class="loading-spinner"></div>
-      <p id="load-phase" style="margin-top: 10px; font-size: 12.5px; opacity: 0.6">
-        Preparing the crossing…
-      </p>
-    </div>
-
-    <!--
-      (Removed: the old static #welcome-modal and #hud-overlay placeholders —
-      dead markup the app replaced at runtime, one still name-dropping a template
-      it was scaffolded from. Real no-JS/crawler content lives in the <noscript>
-      + JSON-LD + boot-fallback below.)
-    -->
-
-    <!--
-      Fallback surface. Shown when WebGL is unavailable (locked-down laptops,
-      old devices, blocked GPUs) or the app fails to boot. It is not just an
-      error message — it carries the actual portfolio, so a visitor who can
-      never see the 3D island still reaches the content and the contact links.
-      Also emitted in <noscript> so crawlers and no-JS visitors get real HTML.
-    -->
-    <div id="boot-fallback" hidden>
-      <div class="bf-card">
-        <h1>Abbas Ali — DigiScalability</h1>
-        <p class="bf-lead">
-          Melbourne-based full-stack engineer and solo founder building AI-powered products
-          (TypeScript · Next.js · Three.js · Firebase · Python · LLM/agent engineering). This
-          portfolio is normally an explorable 3D island —
-          <span id="bf-reason">but it can't run in this browser.</span>
-        </p>
-        <h2 style="font-size: 15px; margin: 14px 0 6px">Selected work</h2>
-        <ul class="bf-links" style="text-align: left">
-          <li>
-            <strong>This island</strong> — a multiplayer Three.js world where every townsperson is a
-            live AI agent: an LLM planner assigns their daily jobs, and an autonomous analyst emails
-            a nightly report and files GitHub issues about its own world.
-          </li>
-          <li>
-            <strong>RankPilot</strong> — a live AI-SEO / LLM-visibility platform, solo-built:
-            <a href="https://rankpilot-h3jpc.web.app">rankpilot</a>
-          </li>
-          <li>
-            <strong>ChocoMate</strong> — direct-to-consumer chocolate brand:
-            <a href="https://chocomate.au">chocomate.au</a>
-          </li>
-        </ul>
-        <ul class="bf-links">
-          <li><a href="https://digiscalability.com">🌐 digiscalability.com</a></li>
-          <li><a href="https://linkedin.com/in/digiscalability">🔗 LinkedIn</a></li>
-          <li><a href="https://github.com/digiscalability">💻 GitHub</a></li>
-          <li><a href="mailto:admin@digiscalability.com">✉️ admin@digiscalability.com</a></li>
-        </ul>
-        <button id="bf-retry" type="button">Try again</button>
-        <p class="bf-foot">
-          The 3D island needs WebGL — it works in an up-to-date Chrome, Edge, Firefox or Safari with
-          hardware acceleration enabled. <a href="/privacy.html">Privacy</a>
-        </p>
-      </div>
-    </div>
-    <style>
+      /* Boot fallback card (no WebGL 2, failed boot, or JS off). It sits above
+         everything the app can draw, including main-simple's init-error
+         screen (z 9999), so a failed boot always lands on the portfolio card.
+         margin: auto on the card (not align-items: center) keeps a tall card
+         scrollable from its top on short phones instead of clipping it. */
       #boot-fallback {
         position: fixed;
         inset: 0;
-        z-index: 4000;
+        z-index: 10000;
         display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
+        padding: 24px 16px;
         background: linear-gradient(160deg, #0b1220 0%, #16233a 100%);
-        overflow: auto;
+        overflow-y: auto;
       }
       #boot-fallback[hidden] {
         display: none;
       }
       .bf-card {
-        max-width: 520px;
+        margin: auto;
+        max-width: 560px;
         width: 100%;
         color: #e6edf7;
         font-family:
@@ -455,23 +468,40 @@
           -apple-system,
           'Segoe UI',
           sans-serif;
+        font-size: 16px;
+        line-height: 1.55;
         text-align: center;
       }
       .bf-card h1 {
         font-family: 'Bebas Neue', system-ui, sans-serif;
+        font-weight: 400;
         letter-spacing: 1px;
-        font-size: 42px;
-        margin: 0 0 10px;
+        font-size: 46px;
+        line-height: 1.05;
+        margin: 0;
+      }
+      .bf-role {
+        margin: 4px 0 14px;
+        color: #9fd4a8;
+        font-size: 17px;
+        font-weight: 600;
       }
       .bf-lead {
-        color: #b8c6d9;
-        line-height: 1.6;
-        margin: 0 0 22px;
+        color: #c9d5e4;
+        margin: 0 0 12px;
+      }
+      .bf-note {
+        color: #9fb0c6;
+        font-size: 14.5px;
+        margin: 0 0 18px;
+      }
+      .bf-nojs {
+        display: none;
       }
       .bf-links {
         list-style: none;
         padding: 0;
-        margin: 0 0 24px;
+        margin: 0 0 12px;
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
@@ -479,71 +509,181 @@
       }
       .bf-links a {
         display: inline-block;
-        padding: 9px 15px;
+        min-width: 88px;
+        padding: 11px 16px;
         border-radius: 10px;
         background: rgba(255, 255, 255, 0.09);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        color: #dce7f5;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        color: #e6edf7;
         text-decoration: none;
-        font-size: 14px;
+        font-size: 15px;
+        font-weight: 600;
       }
       .bf-links a:hover {
         background: rgba(255, 255, 255, 0.16);
       }
-      #bf-retry {
-        padding: 10px 22px;
-        border-radius: 10px;
-        border: none;
-        background: linear-gradient(135deg, #4caf50, #3d8b40);
+      .bf-links a.bf-primary {
+        background: #2e7d4f;
+        border-color: #3f9d66;
         color: #fff;
+      }
+      .bf-links a.bf-primary:hover {
+        background: #36905b;
+      }
+      .bf-card a:focus-visible,
+      #bf-retry:focus-visible {
+        outline: 2px solid #9cc4ff;
+        outline-offset: 2px;
+      }
+      .bf-email {
+        margin: 0 0 22px;
+        color: #9fb0c6;
         font-size: 15px;
-        font-weight: 700;
+      }
+      .bf-addr {
+        color: #fff;
+        font-weight: 600;
+        user-select: all;
+        -webkit-user-select: all;
+      }
+      .bf-card h2 {
+        font-size: 15px;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: #9fb0c6;
+        margin: 0 0 8px;
+      }
+      .bf-work {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 22px;
+        text-align: left;
+        font-size: 14.5px;
+        color: #c9d5e4;
+      }
+      .bf-work li {
+        padding: 9px 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .bf-work a {
+        color: #9cc4ff;
+        white-space: nowrap;
+      }
+      #bf-retry {
+        padding: 11px 22px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: transparent;
+        color: #e6edf7;
+        font-size: 15px;
+        font-weight: 600;
         cursor: pointer;
       }
       .bf-foot {
-        margin: 22px 0 0;
-        font-size: 12px;
-        color: #7d8ea6;
+        margin: 18px 0 0;
+        font-size: 12.5px;
+        color: #8a9bb3;
         line-height: 1.6;
       }
       .bf-foot a {
-        color: #7fb2ff;
+        color: #9cc4ff;
       }
     </style>
+  </head>
+  <body>
+    <!--
+      One landmark around the whole app. The HUD lives in #ui-overlay, which
+      SimpleUI adopts by id instead of appending its own <div> to <body>, so
+      every canvas, panel and button the app draws sits inside <main> (axe
+      "region": all page content must be inside a landmark).
+    -->
+    <main id="app">
+      <canvas
+        id="game-canvas"
+        role="img"
+        aria-label="Life Island: a 3D island world you can walk, swim and drive around"
+      ></canvas>
+      <div id="ui-overlay"></div>
 
-    <noscript>
-      <div
-        style="
-          position: fixed;
-          inset: 0;
-          z-index: 5000;
-          background: #0b1220;
-          color: #e6edf7;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 24px;
-          font-family: system-ui, sans-serif;
-          text-align: center;
-        "
-      >
-        <div style="max-width: 520px">
-          <h1 style="font-size: 34px; margin: 0 0 12px">DigiScalability</h1>
-          <p style="color: #b8c6d9; line-height: 1.6">
-            A Melbourne-based venture studio building AI-powered products. This 3D portfolio needs
-            JavaScript — meanwhile you can reach us at
-            <a style="color: #7fb2ff" href="https://digiscalability.com">digiscalability.com</a> or
-            <a style="color: #7fb2ff" href="mailto:admin@digiscalability.com"
-              >admin@digiscalability.com</a
-            >.
+      <!-- Loading Screen: the wait is the first impression — pitch while it
+           loads, and narrate progress so a slow phone never reads as a hang.
+           The copy mirrors SimpleUI.showLoading, which replaces this screen
+           once the bundle runs; keep the two in step. -->
+      <div id="loading-screen">
+        <h2>DIGISCALABILITY LIFE ISLAND</h2>
+        <p style="margin: 6px 0 2px; font-size: 14px; opacity: 0.85">
+          Abbas Ali's hand-built 3D portfolio — a living 3D world where 24 villagers talk through
+          Claude Haiku 4.5.
+        </p>
+        <div class="loading-spinner"></div>
+        <p id="load-phase" style="margin-top: 10px; font-size: 12.5px; opacity: 0.6">
+          Preparing the crossing…
+        </p>
+        <a id="ls-quick" href="/hire.html">Quick version: experience and contact, no 3D</a>
+      </div>
+
+      <!--
+        Fallback surface. Shown when WebGL 2 is unavailable (locked-down
+        laptops, old devices, blocked GPUs), when the app fails to boot, and
+        (through the head <noscript> style) when JavaScript is off. It carries
+        the actual portfolio, so a visitor who can never see the 3D island still
+        reaches the work and the contact details. Copy comes from the
+        2026-11-02 fact sheet. The availability line stays off this card:
+        crawlers index it as home-page text, and that line belongs only on
+        the hire surfaces (hire.html, the in-app hire card, /about).
+      -->
+      <div id="boot-fallback" hidden>
+        <div class="bf-card">
+          <h1>Abbas Ali</h1>
+          <p class="bf-role">AI &amp; software engineer, Melbourne</p>
+          <p class="bf-lead">
+            I build AI products end to end and make them safe to put in front of the public: the
+            model call and its guardrails, the realtime client, the cloud functions and the tests.
+          </p>
+          <p class="bf-note">
+            This portfolio is normally an explorable 3D island,
+            <span id="bf-reason">but it can't run in this browser.</span
+            ><span class="bf-nojs">but it needs JavaScript, which is switched off here.</span>
+            The quick version has the experience and contact details.
+          </p>
+          <ul class="bf-links">
+            <li><a class="bf-primary" href="/hire.html">Quick version</a></li>
+            <li><a href="https://www.linkedin.com/in/-abbas-ali">LinkedIn</a></li>
+            <li><a href="https://digiscalability.com/about">CV</a></li>
+            <li><a href="https://github.com/digiscalability/portfolio-island">Code</a></li>
+          </ul>
+          <p class="bf-email">
+            Email <span class="bf-addr">admin@digiscalability.com</span>
+          </p>
+          <h2>Selected work</h2>
+          <ul class="bf-work">
+            <li>
+              <strong>Life Island</strong> (this site): a living 3D world (Three.js + TypeScript)
+              where 24 villagers talk through Claude Haiku 4.5. Live and open source (MIT).
+            </li>
+            <li>
+              <strong>digiscalability.com</strong>: built solo, Next.js 15 + Firebase on Vercel.
+            </li>
+            <li>
+              <strong>RankPilot</strong>: live, pre-launch: no users beyond test accounts.
+              <a class="bf-secondary" href="https://rankpilot-h3jpc.web.app">Pre-launch demo</a>
+            </li>
+            <li>
+              <strong>Bano's Cookbook</strong>: my mother's (Ammi's) handwritten recipes from 1981.
+            </li>
+          </ul>
+          <button id="bf-retry" type="button">Try the 3D island again</button>
+          <p class="bf-foot">
+            The 3D island needs WebGL 2, which an up-to-date Chrome, Edge, Firefox or Safari has
+            with hardware acceleration switched on. <a href="/privacy.html">Privacy</a>
           </p>
         </div>
       </div>
-    </noscript>
+    </main>
 
     <!--
       Boot guard. Runs BEFORE the deferred module so it can catch a failed
-      module load too. Three triggers: no WebGL, an uncaught error before the
+      module load too. Three triggers: no WebGL 2, an uncaught error before the
       app signals boot, or a watchdog timeout. After a successful boot it stands
       down — a late error shouldn't blank a playable game.
     -->
@@ -572,8 +712,11 @@
             /* analytics must never break the page */
           }
         }
+        // __lifeIslandBootFailed: main-simple's showErrorScreen already put
+        // this card up and reported init_failed. Stand down, or the 60 s
+        // watchdog rewrites the reason and sends a second boot_fallback.
         function showFallback(reason) {
-          if (shown || booted()) return;
+          if (shown || booted() || window.__lifeIslandBootFailed) return;
           shown = true;
           vaEvent('boot_fallback', { reason: String(reason || '').slice(0, 120) });
           var el = document.getElementById('boot-fallback');
@@ -586,15 +729,18 @@
           var ls = document.getElementById('loading-screen');
           if (ls) ls.style.display = 'none';
         }
+        // WebGL 2 only: three.js r163+ dropped WebGL 1, so a WebGL-1-only
+        // browser used to pass this probe and then crash in the renderer. The
+        // probe context is released at once: browsers cap live WebGL contexts,
+        // and leaking one per load costs GPU memory the app's own needs.
         function hasWebGL() {
           try {
-            var c = document.createElement('canvas');
-            return !!(
-              window.WebGLRenderingContext &&
-              (c.getContext('webgl2') ||
-                c.getContext('webgl') ||
-                c.getContext('experimental-webgl'))
-            );
+            if (!window.WebGL2RenderingContext) return false;
+            var gl = document.createElement('canvas').getContext('webgl2');
+            if (!gl) return false;
+            var lose = gl.getExtension('WEBGL_lose_context');
+            if (lose) lose.loseContext();
+            return true;
           } catch (e) {
             return false;
           }
@@ -606,7 +752,7 @@
           });
 
         if (!hasWebGL()) {
-          showFallback("but this browser doesn't support WebGL, which the island needs.");
+          showFallback("but this browser can't run WebGL 2, which the island needs.");
           return;
         }
         // A GPU can also drop the context mid-session on flaky drivers.

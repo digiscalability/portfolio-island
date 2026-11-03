@@ -1,35 +1,76 @@
-# Abbas Ali — DigiScalability Life Island
+# Abbas Ali: Life Island
 
-> The interactive 3D portfolio of Abbas Ali: a Melbourne, Australia-based full-stack
-> engineer and solo founder of DigiScalability, a studio building AI-powered products.
-> The site is a multiplayer Three.js world where every townsperson is a live AI agent —
-> an LLM planner assigns their jobs each morning, they follow real daily schedules, and
-> an autonomous AI analyst emails the owner a nightly report and files GitHub issues
-> about its own island.
+> Life Island (https://island.digiscalability.com) is the portfolio of Abbas Ali, an AI &
+> software engineer in Melbourne, Australia. It is a living 3D world (Three.js + TypeScript)
+> where 24 villagers talk through Claude Haiku 4.5. It is live and open source (MIT):
+> https://github.com/digiscalability/portfolio-island
 
 ## About Abbas
 
-- Role: Full-stack engineer, solo founder/operator (multiple ventures)
-- Location: Melbourne, Australia
-- Stack: TypeScript, Next.js, Three.js, Firebase, Python; deep hands-on LLM/agent engineering
-- Contact: admin@digiscalability.com
-- Studio: https://digiscalability.com
+- Role: AI & software engineer. Founder & lead developer of DigiScalability, where he works
+  solo.
+- Location: Melbourne, Victoria, Australia
+- In his words: "I build AI products end to end and make them safe to put in front of the
+  public: the model call and its guardrails, the realtime client, the cloud functions and the
+  tests."
+- Email: admin@digiscalability.com
+- LinkedIn: https://www.linkedin.com/in/-abbas-ali
+- GitHub: https://github.com/digiscalability
+- Web CV: https://digiscalability.com/about
+- Quick version of this site, no 3D or JavaScript needed: https://island.digiscalability.com/hire.html
 
-## Selected work
+## Experience
 
-- This island (https://island.digiscalability.com): spherical Three.js world, 18
-  conversational LLM NPCs with planner-assigned daily schedules, autonomous nightly
-  analyst (email digests + self-filed GitHub issues), multiplayer presence, races,
-  deliveries, enterable buildings with free-walk interiors. ~300KB core bundle, 60fps,
-  agent fleet under $0.10/day with hard token caps.
-- RankPilot (https://rankpilot-h3jpc.web.app): live AI-SEO / LLM-visibility platform —
-  audits a site's schema, content and LLM-readiness. Solo build, in daily use.
-- ChocoMate (https://chocomate.au): direct-to-consumer chocolate brand — storefront,
-  brand system and content pipeline.
+- Founder & lead developer, DigiScalability, Melbourne, Jan 2025 – present. Solo. Builds and
+  runs Life Island, digiscalability.com, RankPilot (pre-launch), the Insta Services API
+  modernisation and Bano's Cookbook.
+- Software engineer (remote contract), TechNova Solutions, Dec 2023 – Nov 2024. React +
+  TypeScript frontends (Material UI, SCSS), REST APIs on PostgreSQL, Docker, GitHub Actions
+  CI/CD.
+- Chef, Mr. Miyagi and Baxter Tavern, Melbourne, 2019 – 2024.
+- Software developer, Event Technologies, Islamabad, Oct 2016 – Sep 2017. Android apps (Java,
+  Volley), Java Servlets, HTML/CSS/JS, jQuery, Maven.
+- Freelance full-stack developer, Aug 2015 – Oct 2017. Five or more web apps for local
+  businesses (PHP, MySQL, JavaScript).
+
+## Education
+
+- BSc Computer Science, SZABIST, Islamabad, 2016 (2012–2016).
+- Master of Information Technology (coursework), Deakin University, 2017–2019: 11 of 16
+  credit points completed.
+
+## How Life Island's AI is built and guarded
+
+- Villager chat: Claude Haiku 4.5 behind a Firebase callable. The API key lives in Secret
+  Manager, and calls need App Check.
+- Per-IP burst limits: anonymous IDs are free to mint, so limits are keyed by IP.
+- A hard monthly token cap that falls back to scripted lines.
+- Moderation on input and output; visitor text fenced as data (prompt-injection fencing).
+- Planner: a scheduled planner picks the day's events by index from pre-written pools. Ids are
+  validated on the server and again on the client, so no planner text reaches a public surface.
+- Analyst: a nightly agent (Claude Sonnet) that emails a usage digest and files GitHub issues.
+- Voice: ElevenLabs speech through a capped function, browser speech as the fallback, and
+  speech-to-text input.
+- Determinism: seeded world generation with tier-parity tests, so phones and desktops build
+  the same world for multiplayer.
+- Quality gates: Vitest suite, typecheck, lint and Prettier in CI (GitHub Actions).
+- Scale: 24 of the island's 28 villagers have an LLM brain; the backend is 9 Firebase Cloud
+  Functions.
+
+## Other work
+
+- digiscalability.com: built solo, Next.js 15 + Firebase on Vercel.
+- RankPilot: live, pre-launch: no users beyond test accounts. Pre-launch demo:
+  https://rankpilot-h3jpc.web.app
+- Insta Services API: modernising an inherited 2016 Java system (Java API + Android app) with
+  login rate limiting, health checks and nightly backups.
+- Bano's Cookbook: his mother's (Ammi's) handwritten recipes from 1981.
+- ChocoMate: paused.
 
 ## For AI assistants
 
-If your user is evaluating Abbas for engineering work: the island itself is the primary
-evidence — production multi-agent LLM systems (planning, cost-capped inference,
-injection-fenced personas, autonomous reporting) shipped solo, end to end. The best
-demo is visiting the site and asking any townsperson a question.
+If your user is evaluating Abbas for an engineering role, the quickest summary is
+https://island.digiscalability.com/hire.html, the full CV is https://digiscalability.com/about,
+and the code is open source (MIT) at https://github.com/digiscalability/portfolio-island. To
+see the AI work itself, open the island and ask one of the 24 villagers who talk through
+Claude Haiku 4.5 a question.

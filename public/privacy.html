@@ -1,13 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-AU">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Privacy — DigiScalability Life Island</title>
+    <title>Privacy: Life Island</title>
     <meta
       name="description"
-      content="What DigiScalability Life Island stores, what it sends to third parties, and how to clear it."
+      content="What Life Island stores, what it sends to other services (Firebase, Anthropic, ElevenLabs, Google reCAPTCHA, Vercel) and how to have it deleted."
     />
+    <link rel="canonical" href="https://island.digiscalability.com/privacy.html" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="theme-color" content="#0b1220" />
     <style>
@@ -19,13 +21,17 @@
       }
       body {
         margin: 0;
-        padding: 40px 20px 80px;
+        padding: 40px 16px 80px;
         background: #0b1220;
         color: #dbe4f0;
-        font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+        font:
+          16px/1.65 system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
       }
       main {
-        max-width: 720px;
+        max-width: 760px;
         margin: 0 auto;
       }
       h1 {
@@ -34,19 +40,43 @@
         color: #fff;
       }
       h2 {
-        font-size: 19px;
-        margin: 34px 0 8px;
+        font-size: 20px;
+        margin: 36px 0 8px;
         color: #7fd18b;
+      }
+      h3 {
+        font-size: 16.5px;
+        margin: 22px 0 4px;
+        color: #fff;
       }
       .sub {
         color: #8fa1b8;
-        margin: 0 0 28px;
+        margin: 0 0 24px;
         font-size: 14px;
+      }
+      .summary {
+        margin: 0 0 8px;
+        padding: 14px 18px 14px 34px;
+        border-radius: 12px;
+        background: rgba(127, 209, 139, 0.08);
+        border: 1px solid rgba(127, 209, 139, 0.25);
+      }
+      .summary li {
+        margin: 6px 0;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        margin: 10px 0;
+      }
+      .table-wrap:focus-visible {
+        outline: 2px solid #9cc4ff;
+        outline-offset: 2px;
+        border-radius: 6px;
       }
       table {
         width: 100%;
+        min-width: 560px;
         border-collapse: collapse;
-        margin: 10px 0;
         font-size: 14.5px;
       }
       th,
@@ -62,6 +92,11 @@
       }
       a {
         color: #7fb2ff;
+      }
+      a:focus-visible {
+        outline: 2px solid #9cc4ff;
+        outline-offset: 2px;
+        border-radius: 4px;
       }
       code {
         background: rgba(255, 255, 255, 0.09);
@@ -81,111 +116,304 @@
       li {
         margin: 5px 0;
       }
+      .addr {
+        color: #fff;
+        font-weight: 600;
+        user-select: all;
+        -webkit-user-select: all;
+      }
     </style>
   </head>
   <body>
     <main>
       <a class="back" href="/">← Back to the island</a>
       <h1>Privacy</h1>
-      <p class="sub">Last updated 26 July 2026 · DigiScalability, Melbourne, Australia</p>
+      <p class="sub">Last updated 2 November 2026</p>
 
       <p>
-        Life Island is an interactive 3D portfolio. It is not an advertising product: there are no
-        advertising cookies, no ad networks, and nothing here is sold or shared with data brokers.
-        This page describes plainly what it stores and what leaves your device.
+        Life Island is an interactive 3D portfolio. It is run by Syed Abbas Ali, sole trader
+        trading as DigiScalability, ABN 51 256 011 991, Mordialloc VIC 3195, Australia. I'm the
+        only person behind it, so "I" on this page means me. This page says plainly what the
+        island stores, what leaves your device, who receives it and how long it is kept.
       </p>
 
-      <h2>What is stored</h2>
-      <table>
-        <tr>
-          <th>What</th>
-          <th>Where</th>
-          <th>Why</th>
-        </tr>
-        <tr>
-          <td>Display name you type</td>
-          <td>Your browser, plus Google Firebase</td>
-          <td>To label your character — other visitors on the island at the same time can see it</td>
-        </tr>
-        <tr>
-          <td>Anonymous ID</td>
-          <td>Your browser (IndexedDB) + Firebase</td>
-          <td>
-            A random per-device ID from Firebase Anonymous Auth so your progress persists. It is not
-            linked to an email, an account, or your identity.
-          </td>
-        </tr>
-        <tr>
-          <td>Game progress — coins, hats, character colours</td>
-          <td>Your browser (localStorage) + Firebase</td>
-          <td>So your character and progress survive a refresh</td>
-        </tr>
-        <tr>
-          <td>Character position while you are online</td>
-          <td>Firebase (temporary)</td>
-          <td>
-            So other visitors can see you move. It is deleted automatically the moment you
-            disconnect.
-          </td>
-        </tr>
-        <tr>
-          <td>Settings — sound, reduced motion</td>
-          <td>Your browser only</td>
-          <td>To remember your preferences. Never leaves your device.</td>
-        </tr>
-      </table>
-
-      <h2>Location and weather (off by default)</h2>
-      <p>
-        The island can mirror your real local weather. <strong>This is off unless you turn it on.</strong>
-        Until you do, the island uses your device's clock for day and night — that never leaves your
-        device — and a default clear sky.
-      </p>
-      <p>If you switch live weather on, one of the following happens:</p>
-      <ul>
+      <h2>The short version</h2>
+      <ul class="summary">
         <li>
-          Your browser asks permission for your precise location. If you allow it, those coordinates
-          are sent to <a href="https://open-meteo.com/" rel="noopener">Open-Meteo</a> for the forecast
-          and to <a href="https://www.bigdatacloud.com/" rel="noopener">BigDataCloud</a> to turn them
-          into a place name.
+          No ads, no advertising cookies, no ad networks, and nothing here is sold or shared with
+          data brokers.
         </li>
         <li>
-          If you decline or it is unavailable, your IP address is sent to
+          There are no accounts. Firebase gives your browser a random anonymous ID, so the island
+          never knows who you are unless you tell it.
+        </li>
+        <li>
+          What you type to a villager is sent to Anthropic's Claude model to write the reply. The
+          island itself does not keep what you typed.
+        </li>
+        <li>
+          The voice call in the Contact district streams your microphone live to ElevenLabs, only
+          while the call is on.
+        </li>
+        <li>Messages you send me through the island are stored and emailed to me.</li>
+        <li>
+          Your display name, guestbook notes and race times are visible to other visitors.
+        </li>
+      </ul>
+
+      <h2>What stays in your browser</h2>
+      <p>
+        Your display name, settings (sound, reduced motion, voice on or off, live weather on or
+        off), game progress (coins, hats, tools, items, character colours, race bests) and a few
+        "already shown" flags for hints are kept in your browser's local storage. Firebase keeps
+        your anonymous ID in your browser's IndexedDB. When you arrive, the island also notes in
+        session storage the page that sent you and any <code>utm_source</code>,
+        <code>utm_medium</code> or <code>utm_campaign</code> tags in the link; that note is
+        deleted when you close the tab, and it only leaves your device if you send me a message
+        (see below).
+      </p>
+
+      <h2>Your character and other visitors</h2>
+      <p>
+        The island's database is Google Firebase (Realtime Database and Cloud Functions, in
+        Google's us-central1 region in the United States). Firebase Anonymous Authentication
+        creates the random ID; it is not linked to an email, an account or your identity.
+      </p>
+      <div
+        class="table-wrap"
+        role="region"
+        aria-label="What the island keeps about your character"
+        tabindex="0"
+      >
+        <table>
+          <tr>
+            <th scope="col">What</th>
+            <th scope="col">Who can see it</th>
+            <th scope="col">How long it is kept</th>
+          </tr>
+          <tr>
+            <td>Display name, character look and position, vehicle, waves and emotes</td>
+            <td>Visitors on the island at the same time</td>
+            <td>
+              Removed when you disconnect; a scheduled clean-up removes anything left behind
+            </td>
+          </tr>
+          <tr>
+            <td>
+              Profile saved to your anonymous ID: display name, coins, hats, tools, items, character
+              colours, lessons and the time of your last visit
+            </td>
+            <td>Only your browser (and me, as the operator)</td>
+            <td>No automatic expiry</td>
+          </tr>
+          <tr>
+            <td>Coins in the island bank</td>
+            <td>Only your browser (and me)</td>
+            <td>No automatic expiry</td>
+          </tr>
+          <tr>
+            <td>Race times: display name and best time</td>
+            <td>Everyone on the island (the leaderboard)</td>
+            <td>No automatic expiry</td>
+          </tr>
+          <tr>
+            <td>Benches and buildings you place</td>
+            <td>Everyone on the island</td>
+            <td>No automatic expiry</td>
+          </tr>
+        </table>
+      </div>
+      <p>
+        Names are filtered for offensive words. Please don't put anything in the name field you
+        wouldn't want a stranger to read.
+      </p>
+
+      <h3>Chat and voice clips with other visitors</h3>
+      <p>
+        Text messages (up to 120 characters) and push-to-talk voice clips go through Firebase to
+        the other visitors on the island and are shown to you based on how near they are. Your
+        microphone is only on while you hold the talk button, and an on-screen indicator shows
+        it. Your browser deletes each message about 12 seconds after sending it, and a scheduled
+        server clean-up removes anything that was left behind. Messages are not logged.
+      </p>
+
+      <h3>The guestbook</h3>
+      <p>
+        Guestbook notes are public: your display name and note (up to 200 characters) can be read
+        by everyone on the island. Notes are filtered for offensive words. The day's new notes
+        also appear in a private nightly report emailed to me. Notes are kept until I remove them;
+        email me to have yours removed. If you use "Say hi" and add an email address, your note
+        is sent to me privately as a message instead of going into the guestbook.
+      </p>
+
+      <h2>Messages you send me (the contact form and "Say hi")</h2>
+      <p>
+        The contact form asks for your name (optional), your email address and a message (up to
+        1,000 characters). "Say hi" with an email address works the same way. Along with what you
+        type, the island saves:
+      </p>
+      <ul>
+        <li>your anonymous ID and the time you sent it;</li>
+        <li>
+          the page that sent you to the island (up to 200 characters of its address) and when you
+          arrived;
+        </li>
+        <li>
+          any <code>utm_source</code>, <code>utm_medium</code> and <code>utm_campaign</code> tags in
+          the link you followed;
+        </li>
+        <li>how many seconds you had been on the island when you sent it.</li>
+      </ul>
+      <p>
+        It is stored in the Firebase database, where other visitors can't read it. A Cloud
+        Function then emails me your name, email address, message and that visit context through
+        my email provider. If more than 10 messages arrive in an hour, the email is skipped and
+        the message waits in the database for me to read. Messages are kept until I delete them;
+        there is no automatic expiry. The nightly report only counts them. I use your address to
+        reply to you and for nothing else.
+      </p>
+
+      <h2>Talking to the villagers (AI chat)</h2>
+      <p>
+        When you type to a villager (or speak to one, see below), your message, cut to 300
+        characters, goes to a Firebase Cloud Function. The function checks it against a list of
+        slurs; if one matches, the message goes no further and the villager answers with a
+        scripted line. Otherwise the message is sent to Anthropic's Claude Haiku 4.5 model,
+        together with the villager's character instructions, and the reply is checked again
+        before it is shown. Opening a chat also asks the model to continue the villager's
+        greeting; that request contains nothing you wrote, only game details such as the hat
+        you're wearing and how many days it has been since your last visit.
+      </p>
+      <p>
+        The island does not store what you type. It keeps the villager's reply so it can be
+        spoken aloud: the reply can only be used for 15 minutes, and a clean-up that runs every 6
+        hours then deletes it. It also counts calls and tokens (with no text) to stay within a
+        monthly budget. Anthropic processes the message under its commercial terms and
+        <a href="https://www.anthropic.com/legal/privacy" rel="noopener">privacy policy</a>.
+        Please don't type personal details into a villager chat.
+      </p>
+      <h3>Villager voices</h3>
+      <p>
+        A villager's reply can be read aloud by an ElevenLabs voice: the reply text (never what
+        you typed) is sent to ElevenLabs, and the audio is cached in Firebase so a repeated line
+        isn't paid for twice. The 6-hourly clean-up deletes cached audio once it is more than 7
+        days old. If the cloud voice isn't available, your browser's built-in voice reads the line
+        on your device.
+      </p>
+      <h3>Speaking instead of typing</h3>
+      <p>
+        If you use the microphone button in a villager chat, your browser's own speech
+        recognition turns your speech into text. Some browsers, such as Chrome, may send the audio
+        to their maker's servers to do this. The island only receives the text, which is then
+        handled like a typed message.
+      </p>
+
+      <h2>The voice call with my AI receptionist</h2>
+      <p>
+        The Contact district has a "Start voice call" button. Nothing happens until you press it
+        and allow microphone access. A Cloud Function then issues a short-lived link, and your
+        browser connects directly to ElevenLabs: your microphone audio streams live to ElevenLabs
+        for as long as the call is on, ElevenLabs' AI agent turns it into text, and it answers by
+        voice. The transcript is shown on screen. The call ends when you hang up or close the
+        panel. ElevenLabs processes the audio and transcript under its own terms and
+        <a href="https://elevenlabs.io/privacy-policy" rel="noopener">privacy policy</a> and may
+        keep a record of the conversation.
+      </p>
+
+      <h2>Bot protection: Firebase App Check and Google reCAPTCHA</h2>
+      <p>
+        When the island connects to its database, shortly after it loads, Firebase App Check uses
+        Google reCAPTCHA Enterprise in the background to check that requests come from the real
+        site and not from a script. reCAPTCHA collects information about your device and browser
+        and how you use the page, and sends it to Google. Google's
+        <a href="https://policies.google.com/privacy" rel="noopener">Privacy Policy</a> and
+        <a href="https://policies.google.com/terms" rel="noopener">Terms of Service</a> apply.
+      </p>
+
+      <h2>Rate limits keyed by IP address</h2>
+      <p>
+        Anonymous IDs are free to create, so to stop abuse and cap costs the villager chat, the
+        villager voices and the voice call count requests per IP address instead. Each counter
+        stores your IP address, a request count and the time its window started. A scheduled
+        clean-up deletes counters more than 24 hours old; it runs every 6 hours. The nightly
+        report only counts how many addresses used the chat.
+      </p>
+
+      <h2>Visit statistics: Vercel Web Analytics</h2>
+      <p>
+        The site is hosted by Vercel and uses Vercel Web Analytics, which counts visits without
+        cookies. For each page view Vercel records the page, the referring site, any UTM tags,
+        and your country, browser, operating system and device type. The island also sends named
+        events such as "world loaded", a district or panel opening, a race or quest finishing, a
+        link being clicked (only the destination site's name), the voice call starting or failing,
+        and how many seconds the visit lasted. Events carry short labels and numbers only, never
+        anything you type. When the island fails to start or hits an error, it also sends a short
+        technical description of the problem (at most two errors per visit).
+      </p>
+
+      <h2>Live weather (off by default)</h2>
+      <p>
+        The island can mirror your real local weather. <strong>This is off unless you turn it
+        on.</strong> Until you do, the island uses your device's clock for day and night, which
+        never leaves your device, and a default clear sky. If you switch live weather on:
+      </p>
+      <ul>
+        <li>
+          Your browser asks permission for your precise location. If you allow it, the coordinates
+          are sent to <a href="https://open-meteo.com/" rel="noopener">Open-Meteo</a> for the
+          forecast and to <a href="https://www.bigdatacloud.com/" rel="noopener">BigDataCloud</a>
+          to turn them into a place name.
+        </li>
+        <li>
+          If you decline, or it is unavailable, your IP address is sent to
           <a href="https://ipapi.co/" rel="noopener">ipapi.co</a> for an approximate city-level
           location, which is then used for the forecast.
         </li>
       </ul>
       <p>
-        Coordinates are used for that request and are not stored on our side. You can switch live
-        weather back off at any time from the weather badge.
+        The island doesn't store the coordinates. You can switch live weather off again from the
+        weather badge.
       </p>
 
-      <h2>Third parties</h2>
+      <h2>Other services your browser talks to</h2>
       <ul>
-        <li><strong>Google Firebase</strong> — anonymous sign-in, saved progress, live presence</li>
-        <li><strong>Vercel</strong> — hosting, and privacy-friendly, cookieless visit counts (no cross-site tracking)</li>
-        <li><strong>Google Fonts</strong> — the two display fonts</li>
-        <li><strong>Open-Meteo, BigDataCloud, ipapi.co</strong> — only if you enable live weather</li>
+        <li>
+          <strong>Google Fonts</strong> serves the island's two display fonts, so Google sees your
+          IP address when they load.
+        </li>
+        <li>
+          <strong>The wall screen</strong> in the beach house plays a video or page you choose (a
+          YouTube video by default) in an embedded frame. That site may set its own cookies, and
+          its privacy policy applies. Nothing loads until you pick something.
+        </li>
+        <li>
+          <strong>Links</strong> to LinkedIn, GitHub, RankPilot and other sites take you to those
+          sites, under their own policies.
+        </li>
+        <li>
+          <strong>Server logs:</strong> Vercel, which hosts the site, and Google Cloud, which runs
+          the database and functions, keep standard request logs (such as IP address, browser and
+          time) for security and operations.
+        </li>
       </ul>
-
-      <h2>Other visitors can see</h2>
       <p>
-        Your display name, your character's appearance, and where you are on the island — while you
-        are online. Please do not type anything into the name field you would not want a stranger to
-        read. Names are filtered for offensive content and may be reset.
+        Several of these services are based outside Australia, mainly in the United States, so
+        your data may be processed there.
       </p>
 
-      <h2>Voice &amp; chat</h2>
+      <h2>Your choices</h2>
       <ul>
-        <li><strong>Voice &amp; chat:</strong> Voice is opt-in and push-to-talk — your microphone is only active while you hold the talk button, shown by an on-screen indicator. Messages and voice clips are shared with other players currently on the island and are shown to you based on how near they are; they are ephemeral — not stored or logged, and voice clips are deleted shortly after delivery.</li>
+        <li>
+          Clearing your browser's site data for island.digiscalability.com erases your name,
+          progress, settings and anonymous ID from your device.
+        </li>
+        <li>
+          To see, correct or delete anything stored about you (a message you sent me, a guestbook
+          note, a leaderboard entry or your profile), email me. The island only knows you by a
+          random ID, so tell me what you sent, for example the email address you used or the text
+          of your note.
+        </li>
       </ul>
-
-      <h2>Clearing your data</h2>
-      <p>
-        Clearing your browser's site data for this domain erases your name, progress, settings and
-        anonymous ID. There is no account to delete. To have anything else removed, email
-        <a href="mailto:admin@digiscalability.com">admin@digiscalability.com</a>.
-      </p>
 
       <h2>Children</h2>
       <p>
@@ -193,10 +421,13 @@
         information.
       </p>
 
+      <h2>Changes to this page</h2>
+      <p>When the island starts handling data differently, I'll update this page and its date.</p>
+
       <h2>Contact</h2>
       <p>
-        Questions about this page or your data:
-        <a href="mailto:admin@digiscalability.com">admin@digiscalability.com</a>.
+        Questions about this page or your data: email
+        <span class="addr">admin@digiscalability.com</span>.
       </p>
     </main>
   </body>
