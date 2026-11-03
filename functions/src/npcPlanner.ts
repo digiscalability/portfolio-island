@@ -22,7 +22,7 @@ import { defineSecret } from 'firebase-functions/params';
 import * as admin from 'firebase-admin';
 import Anthropic from '@anthropic-ai/sdk';
 
-import { MONTHLY_TOKEN_CAP, NPC_MODEL, PLANNER_MAX_TOKENS } from './constants';
+import { LEADERBOARD_ERA, MONTHLY_TOKEN_CAP, NPC_MODEL, PLANNER_MAX_TOKENS } from './constants';
 import { parsePlanReply, PLANNER_SYSTEM, plannerUserTurn, type PlannerPools } from './plannerPrompt';
 import { seededPick } from './pure';
 
@@ -112,7 +112,7 @@ async function runPlanner(): Promise<void> {
       db.ref('guestbook/island').get(),
       db.ref('worldHistory/island').orderByKey().limitToLast(8).get(),
       db.ref(`aiUsage/${month}/tokens`).get(),
-      db.ref('leaderboard/island').get(),
+      db.ref(`leaderboard/island/${LEADERBOARD_ERA}`).get(),
       db.ref(`stats/daily/${yesterday}`).get(),
     ]);
     const guestbookCount = Object.keys((gbSnap.val() as object) ?? {}).length;

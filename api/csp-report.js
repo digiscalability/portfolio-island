@@ -2,11 +2,26 @@
 // the site policy runs report-only (vercel.json). Each violation becomes one
 // `csp-report {...}` line in the Vercel runtime logs; nothing is stored. Read
 // the logs before switching the policy to enforcing. ESM, zero deps.
+//
+// A Web handler on purpose: the Node (req, res) helpers parse only json, text,
+// form and octet-stream bodies, so browsers' application/csp-report and
+// application/reports+json payloads would arrive empty.
 const MAX_BODY = 16 * 1024;
 const MAX_REPORTS = 10;
 
 const clip = (v) =>
   typeof v === 'string' ? v.slice(0, 200) : typeof v === 'number' ? v : undefined;
+
+/** Origin and path only: report URLs can carry tokens in their query string. */
+const bare = (v) => {
+  if (typeof v !== 'string') return undefined;
+  try {
+    const u = new URL(v);
+    return clip(`${u.origin}${u.pathname}`);
+  } catch {
+    return clip(v.split(/[?#]/)[0]); // 'inline', 'eval', 'blob', 'data'
+  }
+};
 
 /**
  * Both wire formats: report-uri's `{"csp-report": {...}}` and the Reporting
@@ -32,10 +47,10 @@ export function parseReports(raw) {
           : null;
     if (!b) continue;
     rows.push({
-      page: clip(b.documentURL ?? b['document-uri']),
+      page: bare(b.documentURL ?? b['document-uri']),
       directive: clip(b.effectiveDirective ?? b['effective-directive'] ?? b['violated-directive']),
-      blocked: clip(b.blockedURL ?? b['blocked-uri']),
-      source: clip(b.sourceFile ?? b['source-file']),
+      blocked: bare(b.blockedURL ?? b['blocked-uri']),
+      source: bare(b.sourceFile ?? b['source-file']),
       line: clip(b.lineNumber ?? b['line-number']),
       sample: clip(b.sample ?? b['script-sample']),
       mode: clip(b.disposition),
@@ -44,32 +59,15 @@ export function parseReports(raw) {
   return rows;
 }
 
-async function readBody(req) {
-  if (req.body !== undefined && req.body !== null) {
-    return Buffer.isBuffer(req.body) ? req.body.toString('utf8', 0, MAX_BODY) : req.body;
-  }
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > MAX_BODY) break;
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    res.status(405).end();
-    return;
+export async function POST(request) {
+  if (Number(request.headers.get('content-length') ?? 0) > MAX_BODY) {
+    return new Response(null, { status: 413 });
   }
   try {
-    for (const row of parseReports(await readBody(req))) {
-      console.log(`csp-report ${JSON.stringify(row)}`);
-    }
+    const text = (await request.text()).slice(0, MAX_BODY);
+    for (const row of parseReports(text)) console.log(`csp-report ${JSON.stringify(row)}`);
   } catch {
     /* a malformed report must never turn into an error for the browser */
   }
-  res.status(204).end();
+  return new Response(null, { status: 204 });
 }

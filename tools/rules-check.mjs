@@ -133,6 +133,10 @@ await deny('presence: an unknown field', () =>
 await deny("presence: writing another visitor's node", () =>
   set(ref(u2, 'presence/island/u1'), onFoot),
 );
+await deny('presence: cols as one bare string', () =>
+  set(ref(u1, 'presence/island/u1'), { ...onFoot, cols: 'x'.repeat(1000) }),
+);
+await deny('presence: a node in another room', () => set(ref(u1, 'presence/lobby/u1'), onFoot));
 
 // --- meta: the cold node (Multiplayer.ts writeMeta) -------------------------
 await allow('meta: name, hat, founder and colours', () =>
@@ -147,6 +151,12 @@ await allow('meta: name, hat, founder and colours', () =>
 await allow('meta: name only (hat and cols null)', () =>
   set(ref(u1, 'meta/island/u1'), { name: 'Sam', hat: null, founder: false, cols: null, t: now }),
 );
+await deny('meta: cols as one bare string', () =>
+  set(ref(u1, 'meta/island/u1'), { name: 'Sam', founder: false, cols: 'x'.repeat(1000), t: now }),
+);
+await deny('meta: a node in another room', () =>
+  set(ref(u1, 'meta/lobby/u1'), { name: 'Sam', founder: false, t: now }),
+);
 await deny('meta: cols with an unknown part', () =>
   set(ref(u1, 'meta/island/u1'), {
     name: 'Sam',
@@ -157,19 +167,36 @@ await deny('meta: cols with an unknown part', () =>
 );
 
 // --- profiles: saveProfile's update() patches (profileSync.ts) --------------
+// The largest save saveProfile can coalesce: every Profile field at once,
+// with real ids (HatId, main-simple's LESSONS and *_ID tool constants).
 const fullSave = {
   name: 'Sam',
-  hat: 'crown',
-  ownedHats: ['party', 'top', 'crown'],
+  hat: 'headphones',
+  ownedHats: [
+    'party',
+    'top',
+    'crown',
+    'cap',
+    'flower',
+    'wizard',
+    'halo',
+    'pirate',
+    'chef',
+    'headphones',
+  ],
   coins: 12,
   birdFeed: 1,
   catFeed: 0,
   fishFeed: 2,
+  lessons: ['move', 'fish', 'chop', 'feed', 'chat', 'build'],
+  tools: ['fishingrod', 'woodaxe', 'harvestsickle', 'pickaxe'],
+  meals: { pie: 1, fish: 0, soup: 2 },
+  inventory: { fish: 3, timber: 4, wheat: 0, produce: 1, ore: 2 },
   colors: { outfit: '#a1b2c3', pants: '#000000', hair: '#ffffff', skin: '#c68642' },
   lastSeen: now,
   t: now,
 };
-await allow('profiles: the session-end save (main-simple)', () =>
+await allow('profiles: every field in one coalesced save', () =>
   update(ref(u1, 'profiles/u1'), fullSave),
 );
 await allow('profiles: lessons', () =>
@@ -179,7 +206,10 @@ await allow('profiles: lessons', () =>
   }),
 );
 await allow('profiles: tools', () =>
-  update(ref(u1, 'profiles/u1'), { tools: ['rod', 'axe', 'sickle', 'pickaxe'], t: now }),
+  update(ref(u1, 'profiles/u1'), {
+    tools: ['fishingrod', 'woodaxe', 'harvestsickle', 'pickaxe'],
+    t: now,
+  }),
 );
 await allow('profiles: meals', () =>
   update(ref(u1, 'profiles/u1'), { meals: { pie: 1, fish: 0, soup: 2 }, t: now }),
@@ -218,6 +248,11 @@ await deny('profiles: an over-long colour value', () =>
 await deny('profiles: an unknown meal', () =>
   update(ref(u1, 'profiles/u1'), { meals: { pie: 1, cake: 2 }, t: now }),
 );
+for (const field of ['lessons', 'ownedHats', 'tools', 'meals', 'inventory', 'colors']) {
+  await deny(`profiles: ${field} as one bare value`, () =>
+    update(ref(u1, 'profiles/u1'), { [field]: 'x'.repeat(1000), t: now }),
+  );
+}
 await deny('profiles: an unknown inventory item', () =>
   update(ref(u1, 'profiles/u1'), { inventory: { fish: 1, gold: 9 }, t: now }),
 );
@@ -251,6 +286,15 @@ await deny('leaderboard: the old era-less path', () =>
 );
 await deny('leaderboard: an extra field', () =>
   set(ref(u1, 'leaderboard/island/r100/land/u1'), { ...lap, junk: 1 }),
+);
+await deny('leaderboard: a forged 1 ms lap', () =>
+  set(ref(u1, 'leaderboard/island/r100/water/u1'), { ...lap, timeMs: 1 }),
+);
+await deny('leaderboard: a lap under the 15 s floor', () =>
+  set(ref(u1, 'leaderboard/island/r100/water/u1'), { ...lap, timeMs: 14999 }),
+);
+await allow('leaderboard: a lap exactly at the floor', () =>
+  set(ref(u1, 'leaderboard/island/r100/water/u1'), { ...lap, timeMs: 15000 }),
 );
 
 // --- world/benches: worldBenches.placeBench ---------------------------------

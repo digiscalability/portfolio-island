@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import cspReport, { parseReports } from '../api/csp-report.js';
+import { parseReports, POST as cspReport } from '../api/csp-report.js';
 import zoneRoute from '../api/z.js';
 
 const src = (f: string): string =>
@@ -103,6 +103,20 @@ describe('site policy (vercel.json)', () => {
     expect(reportOnly.get('frame-src')).toEqual(['https:']);
   });
 
+  test('the voice desk and model loading are covered', () => {
+    // @elevenlabs/client loads its worklets from blob: URLs, and in Firefox
+    // (no sampleRate constraint) resamples with a WebAssembly worklet from
+    // jsdelivr. three's GLTFLoader fetches embedded textures from blob: URLs.
+    const script = reportOnly.get('script-src') ?? [];
+    expect(script).toEqual(expect.arrayContaining(["'wasm-unsafe-eval'", 'blob:']));
+    expect(script.some((s) => s.startsWith('https://cdn.jsdelivr.net/npm/@alexanderolsen/'))).toBe(
+      true,
+    );
+    expect(script).not.toContain("'unsafe-eval'");
+    expect(script).not.toContain("'unsafe-inline'");
+    expect(reportOnly.get('connect-src')).toContain('blob:');
+  });
+
   test('reports go to the collector', () => {
     expect(reportOnly.get('report-uri')).toEqual(['/api/csp-report']);
     expect(reportOnly.get('report-to')).toEqual(['csp']);
@@ -138,6 +152,7 @@ describe('share route policy (api/z.js)', () => {
     (query) => {
       const out: RouteResult = { status: 0, headers: {}, body: '' };
       zoneRoute({ query }, fakeRes(out));
+      expect(out.headers['content-security-policy'], 'api/z.js sets no policy').toBeDefined();
       const policy = directives(out.headers['content-security-policy']);
       const scripts = [...out.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
       expect(scripts).toHaveLength(1);
@@ -204,34 +219,46 @@ describe('report collector (api/csp-report.js)', () => {
     expect(rows[0].blocked).toHaveLength(200);
   });
 
-  test('POST logs one line per violation and answers 204', async () => {
+  // Browsers send these two content types, which the Node (req, res) helpers
+  // leave unparsed; the Web handler reads the raw body either way.
+  test.each([
+    ['application/csp-report', legacy],
+    [
+      'application/reports+json',
+      [{ type: 'csp-violation', body: { documentURL: 'https://island.digiscalability.com/' } }],
+    ],
+  ])('a %s POST logs one line and answers 204', async (type, payload) => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const out: RouteResult = { status: 0, headers: {}, body: '' };
-    await cspReport({ method: 'POST', body: legacy }, fakeRes(out));
-    expect(out.status).toBe(204);
+    const res = await cspReport(
+      new Request('https://island.digiscalability.com/api/csp-report', {
+        method: 'POST',
+        headers: { 'content-type': type },
+        body: JSON.stringify(payload),
+      }),
+    );
+    expect(res.status).toBe(204);
     expect(log).toHaveBeenCalledTimes(1);
     expect(String(log.mock.calls[0][0])).toMatch(/^csp-report \{"page":"https:\/\/island/);
   });
 
-  test('reads a raw stream when the platform leaves the body unparsed', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const out: RouteResult = { status: 0, headers: {}, body: '' };
-    const req = {
-      method: 'POST',
-      body: undefined,
-      async *[Symbol.asyncIterator]() {
-        yield Buffer.from(JSON.stringify(legacy));
+  test('logs origin and path only, never a query string', () => {
+    const [row] = parseReports({
+      'csp-report': {
+        'document-uri': 'https://island.digiscalability.com/?pc=1#x',
+        'blocked-uri': 'https://s-usc1a-nss-2000.firebaseio.com/.lp?id=7&pw=secret',
       },
-    };
-    await cspReport(req, fakeRes(out));
-    expect(out.status).toBe(204);
-    expect(log).toHaveBeenCalledTimes(1);
+    });
+    expect(row.page).toBe('https://island.digiscalability.com/');
+    expect(row.blocked).toBe('https://s-usc1a-nss-2000.firebaseio.com/.lp');
   });
 
-  test('anything but POST is refused', async () => {
-    const out: RouteResult = { status: 0, headers: {}, body: '' };
-    await cspReport({ method: 'GET' }, fakeRes(out));
-    expect(out.status).toBe(405);
-    expect(out.headers.allow).toBe('POST');
+  test('a body over 16 KB is refused unread', async () => {
+    const text = vi.fn(async () => '');
+    const res = await cspReport({
+      headers: new Headers({ 'content-length': String(17 * 1024) }),
+      text,
+    } as unknown as Request);
+    expect(res.status).toBe(413);
+    expect(text).not.toHaveBeenCalled();
   });
 });

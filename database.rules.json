@@ -4,7 +4,7 @@
       "$room": {
         ".read": "auth != null",
         "$uid": {
-          ".write": "auth != null && auth.uid == $uid",
+          ".write": "auth != null && auth.uid == $uid && $room === 'island'",
           ".validate": "newData.hasChildren(['p', 'q', 't'])",
           "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
           "hat": { ".validate": "newData.isString() && newData.val().length <= 20" },
@@ -31,6 +31,7 @@
           "founder": { ".validate": "newData.isBoolean()" },
           "pose": { ".validate": "newData.isNumber()" },
           "cols": {
+            ".validate": "newData.hasChildren()",
             "$part": {
               ".validate": "newData.isNumber() && ($part === 'outfit' || $part === 'pants' || $part === 'hair' || $part === 'skin')"
             }
@@ -43,12 +44,13 @@
       "$room": {
         ".read": "auth != null",
         "$uid": {
-          ".write": "auth != null && auth.uid == $uid",
+          ".write": "auth != null && auth.uid == $uid && $room === 'island'",
           ".validate": "newData.hasChildren(['name', 't'])",
           "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
           "hat": { ".validate": "newData.isString() && newData.val().length <= 20" },
           "founder": { ".validate": "newData.isBoolean()" },
           "cols": {
+            ".validate": "newData.hasChildren()",
             "$part": {
               ".validate": "newData.isNumber() && ($part === 'outfit' || $part === 'pants' || $part === 'hair' || $part === 'skin')"
             }
@@ -76,27 +78,32 @@
         "catFeed": { ".validate": "newData.isNumber()" },
         "fishFeed": { ".validate": "newData.isNumber()" },
         "lessons": {
+          ".validate": "newData.hasChildren()",
           "$i": {
             ".validate": "$i.matches(/^[0-9]{1,2}$/) && newData.isString() && newData.val().length <= 32"
           }
         },
         "ownedHats": {
+          ".validate": "newData.hasChildren()",
           "$i": {
             ".validate": "$i.matches(/^[0-9]{1,2}$/) && newData.isString() && newData.val().length <= 32"
           }
         },
         "tools": {
+          ".validate": "newData.hasChildren()",
           "$i": {
             ".validate": "$i.matches(/^[0-9]{1,2}$/) && newData.isString() && newData.val().length <= 32"
           }
         },
         "meals": {
+          ".validate": "newData.hasChildren()",
           "pie": { ".validate": "newData.isNumber()" },
           "fish": { ".validate": "newData.isNumber()" },
           "soup": { ".validate": "newData.isNumber()" },
           "$other": { ".validate": false }
         },
         "inventory": {
+          ".validate": "newData.hasChildren()",
           "fish": { ".validate": "newData.isNumber()" },
           "timber": { ".validate": "newData.isNumber()" },
           "wheat": { ".validate": "newData.isNumber()" },
@@ -105,6 +112,7 @@
           "$other": { ".validate": false }
         },
         "colors": {
+          ".validate": "newData.hasChildren()",
           "$part": {
             ".validate": "($part === 'outfit' || $part === 'pants' || $part === 'hair' || $part === 'skin') && newData.isString() && newData.val().length <= 9"
           }
@@ -153,7 +161,7 @@
               ".write": "auth != null && auth.uid == $uid && $era.matches(/^r[0-9]{1,4}$/) && ($circuit === 'land' || $circuit === 'water')",
               ".validate": "newData.hasChildren(['name', 'timeMs', 't'])",
               "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
-              "timeMs": { ".validate": "newData.isNumber() && newData.val() > 0" },
+              "timeMs": { ".validate": "newData.isNumber() && newData.val() >= 15000" },
               "t": { ".validate": "newData.isNumber()" },
               "$other": { ".validate": false }
             }

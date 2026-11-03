@@ -7,6 +7,11 @@
 /** Shared monthly Anthropic token budget across npcChat + planner + analyst. */
 export const MONTHLY_TOKEN_CAP = 4_000_000;
 
+/** The client's WorldScale.WORLD_ERA. Race times live under
+ *  leaderboard/island/<era>/<circuit>/<uid>; test/databaseRules.test.ts keeps
+ *  the two in step. */
+export const LEADERBOARD_ERA = 'r100';
+
 /** npcChat per-IP calls allowed per rate window; the analyst's "burst-limit
  *  hits" metric counts IPs that exceeded this same threshold. */
 export const IP_MAX_PER_WINDOW = 8;
