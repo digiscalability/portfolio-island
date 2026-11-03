@@ -67,6 +67,7 @@ const KEY_EVENTS = new Set([
   'reached_portfolio',
   'contact_opened',
   'hire_cta',
+  'hire_chip_click',
   'external_link',
   'email_copied',
   'lead_submitted',

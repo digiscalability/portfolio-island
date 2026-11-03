@@ -364,3 +364,151 @@ describe('on a phone, the menu and the panels clear the touch controls', () => {
     }
   });
 });
+
+// D5: the recruiter path in one click, without touching the Work-with-me pill.
+// Analytics contract (changed deliberately in D5): hire_chip_click is new and
+// carries the entry attribution; hire_cta gains cta 'message'; zone_explored
+// gains source 'strip'; cta_pill_click is untouched (uiLocks pins it).
+describe('the recruiter path in one click (D5)', () => {
+  const events = (): Array<{ name: string; props?: Record<string, unknown> }> =>
+    window.__analyticsLog ?? [];
+  const zoneParam = (): string | null => new URL(location.href).searchParams.get('zone');
+
+  beforeEach(() => {
+    window.__analyticsLog = [];
+  });
+
+  test('desktop: the Hiring chip sits at +278 and opens the hire card in one click', () => {
+    const chip = document.querySelector<HTMLElement>('[data-hiring-chip]')!;
+    expect(text(chip)).toBe('Hiring? CV & contact');
+    expect(chip.getAttribute('role')).toBe('button');
+    // (happy-dom drops calc(var()) offsets: the slot is read from the source,
+    // one 38 px row below the completion pill's +240)
+    const body = /private createHiringChip\(\): void \{[\s\S]*?\n {2}\}/.exec(
+      readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8').replace(/\r\n/g, '\n'),
+    )![0];
+    expect(body).toContain("top: 'calc(var(--sat, 0px) + 278px)'");
+    expect(body).toContain("right: 'calc(var(--sar, 0px) + 10px)'");
+    expect(body).toContain('...CHIP,');
+    chip.click();
+    expect(text(panel())).toContain('Abbas Ali');
+    expect(zoneParam()).toBe('hire');
+    const hit = events().find((e) => e.name === 'hire_chip_click');
+    expect(hit).toBeTruthy();
+    expect(hit!.props).toHaveProperty('src'); // a key event: it carries the attribution
+  });
+
+  test('phone: drawer row 2, between Work with me (#1) and Portfolio (#3)', () => {
+    history.replaceState(null, '', '/?touch=1');
+    try {
+      document.body.innerHTML = '<div id="ui-overlay"></div>';
+      ui = new SimpleUI('ui-overlay');
+      const list = document.getElementById('ds-drawer')!;
+      const rows = [...list.children]
+        .map((r) => ({ order: Number((r as HTMLElement).style.order || 0), text: text(r) }))
+        .sort((a, b) => a.order - b.order);
+      expect(rows.slice(0, 4).map((r) => [r.order, r.text])).toEqual([
+        [1, '💼 Work with me'],
+        [2, 'Hiring? CV & contact'],
+        [3, '📖 Portfolio'],
+        [4, '👋 Say hi'],
+      ]);
+      expect(new Set(rows.map((r) => r.order)).size).toBe(rows.length); // no shared slots
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  test('the card: Send a message opens Contact; the tour button sits by the links', () => {
+    ui.showHireCard('cta');
+    const card = panel();
+    const send = card.querySelector<HTMLButtonElement>('button[data-hire-contact]')!;
+    const tour = card.querySelector<HTMLButtonElement>('button[data-hire-tour]')!;
+    // above the fold: before the experience list, right after the links and email
+    const xp = [...card.querySelectorAll('h3')].find((h) => text(h) === 'Experience')!;
+    expect(tour.compareDocumentPosition(xp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    send.click();
+    expect(text(panel())).toContain('Hiring, or have a project? This reaches me directly.');
+    expect(zoneParam()).toBe('contact');
+    expect(events().find((e) => e.name === 'hire_cta')?.props).toMatchObject({ cta: 'message' });
+  });
+
+  test('the strip: every section in one action, ?zone follows, scrollTop 0', () => {
+    ui.showHireCard('cta');
+    for (const id of ['welcome', 'professional', 'projects', 'personal', 'contact', 'hire']) {
+      const p = panel();
+      p.scrollTop = 200;
+      p.querySelector<HTMLButtonElement>(`[data-panel-nav] button[data-goto="${id}"]`)!.click();
+      expect(zoneParam(), id).toBe(id);
+      expect(panel().scrollTop, id).toBe(0);
+      expect(panel().querySelector('[aria-current="page"]')!.getAttribute('data-goto')).toBe(id);
+    }
+    expect(
+      events()
+        .filter((e) => e.name === 'zone_explored')
+        .map((e) => e.props),
+    ).toContainEqual({
+      zone: 'projects',
+      source: 'strip',
+    });
+    expect(ui.panels.current()).toBe('zone');
+  });
+
+  test('← and → switch sections while the panel has focus; not from a text field', () => {
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    const key = (k: string, target: EventTarget): void => {
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }),
+      );
+    };
+    key('ArrowRight', panel().querySelector('h2')!);
+    expect(zoneParam()).toBe('personal');
+    key('ArrowLeft', panel().querySelector('h2')!);
+    key('ArrowLeft', panel().querySelector('h2')!);
+    expect(zoneParam()).toBe('professional');
+    ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'menu' });
+    key('ArrowLeft', document.querySelector('#lead-email')!); // the caret's key
+    expect(zoneParam()).toBe('contact');
+  });
+
+  test('‹ Portfolio reopens the menu at the section it came from', async () => {
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    panel().querySelector<HTMLButtonElement>('[data-panel-nav] button[data-nav-back]')!.click();
+    expect(ui.panels.current()).toBe('portfolio-menu');
+    await Promise.resolve();
+    expect((document.activeElement as HTMLElement).dataset.section).toBe('projects');
+  });
+
+  test('the menu: a Portfolio group led by the one filled Hiring row, then an Island group', () => {
+    portfolioChip().click();
+    const groups = [...document.querySelectorAll<HTMLElement>('[role="group"]')];
+    expect(
+      groups.map((g) => text(document.getElementById(g.getAttribute('aria-labelledby')!)!)),
+    ).toEqual(['Portfolio', 'Island']);
+    const portfolio = [...groups[0].querySelectorAll<HTMLElement>('button')].map(
+      (b) => b.dataset.section,
+    );
+    expect(portfolio).toEqual([
+      'hire',
+      'welcome',
+      'professional',
+      'projects',
+      'personal',
+      'contact',
+    ]);
+    const island = [...groups[1].querySelectorAll('button')].map((b) => text(b));
+    expect(island.map((t) => t.split(' ')[1])).toEqual([
+      'Journal',
+      'Pack',
+      'Passport',
+      'Leaderboard',
+      'Guestbook',
+      'Island',
+    ]);
+    const filled = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter(
+      (b) => /background:\s*(#ffd479|rgb\(255, 212, 121\))/i.test(b.getAttribute('style') ?? ''),
+    );
+    expect(filled.map((b) => b.dataset.section)).toEqual(['hire']);
+    expect(filled[0].getAttribute('style')).toMatch(/color:\s*(#1b1400|rgb\(27, 20, 0\))/i);
+  });
+});

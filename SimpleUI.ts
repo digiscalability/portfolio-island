@@ -325,6 +325,7 @@ export class SimpleUI {
     this.createMuteButton();
     this.createPortfolioButton();
     this.createContactCTA();
+    this.createHiringChip();
     this.createPhotoButton();
     this.createSayHiButton();
     this.createCompletionButton();
@@ -1951,6 +1952,13 @@ export class SimpleUI {
       this.panels.notifyClosed(id);
     });
     modal.appendChild(close);
+    // Short landscape: a scroll cue on a modal taller than the screen (D5).
+    // A frame later, once its caller has filled and appended it.
+    if (window.innerHeight <= 500) {
+      requestAnimationFrame(() => {
+        if (modal.isConnected) this.addScrollFade(modal, 'rgba(12,12,20,0.96)');
+      });
+    }
     return modal;
   }
 
@@ -3196,7 +3204,7 @@ export class SimpleUI {
       'Toggle game sound (music, effects, voices — live calls excluded)',
       muted,
     );
-    this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 8 });
+    this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 9 });
     this.createVolumePill(volume);
     this.createReducedMotionButton();
     this.createCustomizeButton();
@@ -3331,7 +3339,7 @@ export class SimpleUI {
       this.onCustomizeToggle?.();
     });
     this.makeHudButtonAccessible(btn, 'Customize appearance');
-    this.chipHost(btn, { drawer: true, label: 'Customize', order: 6 });
+    this.chipHost(btn, { drawer: true, label: 'Customize', order: 7 });
   }
 
   /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
@@ -3364,7 +3372,7 @@ export class SimpleUI {
     });
     this.makeHudButtonAccessible(btn, 'Toggle reduced motion', a11y.reducedMotion);
     render();
-    this.chipHost(btn, { drawer: true, label: 'Reduce motion', order: 9 });
+    this.chipHost(btn, { drawer: true, label: 'Reduce motion', order: 10 });
   }
 
   private portfolioMenuDiv: HTMLElement | null = null;
@@ -3458,7 +3466,8 @@ export class SimpleUI {
     // First steps' anchor (A6): the pill on desktop, its drawer row on touch.
     btn.dataset.guide = this.isTouch ? 'drawer-portfolio' : 'portfolio-chip';
     this.portfolioBtnEl = btn;
-    this.chipHost(btn, { drawer: true, order: 2 });
+    // Drawer row 3: Work with me keeps #1 and the Hiring row takes #2 (D5).
+    this.chipHost(btn, { drawer: true, order: 3 });
   }
 
   /** The Portfolio pill: where a keyboard user's focus lands when the panel
@@ -3510,6 +3519,33 @@ export class SimpleUI {
     this.chipHost(btn, { drawer: true, order: 1 });
   }
 
+  /**
+   * The recruiter path in one click (D5, UX-07): a 'Hiring? CV & contact'
+   * text chip at +278 on desktop, below the completion pill, and drawer row
+   * #2 on a phone. It opens the hire card, where the Work-with-me pill (left
+   * exactly as ruled: its slot, label, green and cta_pill_click) opens
+   * Contact, which lacks the CV and the availability line. The glyph is a
+   * page with lines until D13's icon sprite lands.
+   */
+  private createHiringChip(): void {
+    const btn = document.createElement('div');
+    btn.innerHTML =
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true" style="color:#ffd479;flex:none"><path d="M4 1.5h5l3.5 3.5v9.5h-8.5z"/><path d="M9 1.5v3.5h3.5M6 9h4.5M6 11.5h4.5"/></svg><span>Hiring? CV &amp; contact</span>';
+    btn.dataset.hiringChip = '1';
+    Object.assign(btn.style, {
+      ...CHIP,
+      top: 'calc(var(--sat, 0px) + 278px)', // the row below the completion pill (38px pitch)
+      right: 'calc(var(--sar, 0px) + 10px)',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('hire_chip_click');
+      this.showHireCard('cta');
+    });
+    this.makeHudButtonAccessible(btn, 'Hiring? Open the CV and contact card');
+    this.chipHost(btn, { drawer: true, order: 2 });
+  }
+
   /** Photo mode entry — the game loop owns the actual capture (renderer flag). */
   private onPhotoRequest: (() => void) | null = null;
   public setOnPhotoRequest(fn: () => void): void {
@@ -3533,7 +3569,7 @@ export class SimpleUI {
       this.onPhotoRequest?.();
     });
     this.makeHudButtonAccessible(btn, 'Take a photo of the island (P)');
-    this.chipHost(btn, { drawer: true, label: 'Photo', order: 5 });
+    this.chipHost(btn, { drawer: true, label: 'Photo', order: 6 });
   }
 
   // ── Tour mode overlay (caption bar + skip) ───────────────────────────────
@@ -3670,7 +3706,7 @@ export class SimpleUI {
       this.showSayHi();
     });
     this.makeHudButtonAccessible(btn, 'Say hi — leave a quick note');
-    this.chipHost(btn, { drawer: true, order: 3 });
+    this.chipHost(btn, { drawer: true, order: 4 });
   }
 
   showSayHi(): void {
@@ -3791,7 +3827,7 @@ export class SimpleUI {
       this.showInventory();
     });
     this.makeHudButtonAccessible(btn, 'Your pack (inventory)');
-    this.chipHost(btn, { drawer: true, label: 'Your Pack', order: 4 });
+    this.chipHost(btn, { drawer: true, label: 'Your Pack', order: 5 });
   }
 
   private createCompletionButton(): void {
@@ -3807,7 +3843,7 @@ export class SimpleUI {
       this.showCompletionModal();
     });
     this.makeHudButtonAccessible(btn, 'Island completion checklist');
-    this.chipHost(btn, { drawer: true, label: 'Progress', order: 7 });
+    this.chipHost(btn, { drawer: true, label: 'Progress', order: 8 });
     this.completionBtn = btn;
   }
 
@@ -4021,7 +4057,15 @@ export class SimpleUI {
         this.portfolioMenuDiv = null;
       },
       el: menu,
-      initialFocus: () => menu.querySelector<HTMLElement>('button[data-section]'),
+      // The first row, or the section '‹ Portfolio' came back from (UX-08).
+      initialFocus: () => {
+        const want = this.menuFocusSection;
+        this.menuFocusSection = null;
+        return (
+          (want ? menu.querySelector<HTMLElement>(`button[data-section="${want}"]`) : null) ??
+          menu.querySelector<HTMLElement>('button[data-section]')
+        );
+      },
     });
     this.stepHintAside();
     menu.setAttribute('role', 'dialog');
@@ -4046,6 +4090,10 @@ export class SimpleUI {
       maxHeight: 'calc(100dvh - 32px)',
       overflowY: 'auto',
     });
+    // Two labelled groups (D5, UX-19): the six portfolio entries, then the
+    // island's. It mixed 6 portfolio items with 7 game items under one title,
+    // with Passport, a game item, first and the only filled button. Now the
+    // Hiring row leads as the one filled button (#ffd479 on #1b1400, 13:1).
     const sections: Array<{ id: string; label: string }> = [
       // The hire card is reachable from here too: a recruiter who dismissed
       // the welcome card must not have to find the pill again.
@@ -4056,40 +4104,44 @@ export class SimpleUI {
       { id: 'personal', label: '🎨 Personal' },
       { id: 'contact', label: '📬 Get in touch' },
     ];
+    const row =
+      'display:block;width:100%;min-height:44px;margin:6px 0;padding:11px 12px;border-radius:10px;font-size:15px;cursor:pointer;text-align:left;';
     const rows = sections
-      .map(
-        (s) =>
-          `<button data-section="${s.id}" style="display:block;width:100%;min-height:44px;margin:7px 0;padding:12px;
-            background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);
-            border-radius:10px;font-size:15px;cursor:pointer;text-align:left;">${s.label}</button>`,
+      .map((s) =>
+        s.id === 'hire'
+          ? `<button data-section="${s.id}" style="${row}background:#ffd479;color:#1b1400;border:1px solid #ffd479;font-weight:700;">${s.label}</button>`
+          : `<button data-section="${s.id}" style="${row}background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);">${s.label}</button>`,
       )
       .join('');
     const pp = this.passport;
     const ppLabel = pp
       ? pp.isComplete()
-        ? '🛂 Passport — complete 👑'
-        : `🛂 Passport — ${pp.count()}/${pp.total()} stamped`
+        ? '🛂 Passport 👑'
+        : `🛂 Passport ${pp.count()}/${pp.total()}`
       : '🛂 Passport';
+    const tile =
+      'min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
+    const group =
+      'margin:14px 0 2px;font-size:11.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9fb0c8;text-align:left;';
     menu.innerHTML = `
       <h2 id="ds-portfolio-menu-title" style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
-      <p style="margin:0 0 14px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
-      <button data-passport="1" style="display:block;width:100%;min-height:44px;margin:0 0 12px;padding:12px;
-        background:linear-gradient(135deg,rgba(18,183,106,0.28),rgba(14,159,110,0.18));color:#fff;
-        border:1px solid rgba(120,220,170,0.45);border-radius:10px;font-size:14px;font-weight:600;
-        cursor:pointer;text-align:center;">${ppLabel}</button>
-      ${rows}
-      <div style="display:flex;gap:8px;margin-top:10px;">
-        <button data-board="leaderboard" style="flex:1;min-height:44px;padding:11px;background:#26263340;color:#fff;
-          border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">🏁 Leaderboard</button>
-        <button data-board="guestbook" style="flex:1;min-height:44px;padding:11px;background:#26263340;color:#fff;
-          border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">✍️ Guestbook</button>
+      <p style="margin:0 0 4px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
+      <div role="group" aria-labelledby="ds-menu-group-portfolio">
+        <h3 id="ds-menu-group-portfolio" style="${group}">Portfolio</h3>
+        ${rows}
       </div>
-      <button data-board="times" style="display:block;width:100%;min-height:44px;margin-top:8px;padding:11px;background:#26263340;color:#fff;
-        border:1px solid rgba(255,215,121,0.28);border-radius:10px;font-size:14px;cursor:pointer;">📰 Island Times</button>
-      <button data-pack style="display:block;width:100%;min-height:44px;margin-top:8px;padding:11px;background:#26263340;color:#fff;
-        border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">🎒 Your Pack</button>
-      <button data-journal style="display:block;width:100%;min-height:44px;margin-top:8px;padding:11px;background:#26263340;color:#fff;
-        border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">📔 Island Journal</button>`;
+      <div role="group" aria-labelledby="ds-menu-group-island">
+        <h3 id="ds-menu-group-island" style="${group}">Island</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
+          <button data-journal style="${tile}">📔 Journal</button>
+          <button data-pack style="${tile}">🎒 Pack</button>
+          <button data-passport="1" style="${tile}">${ppLabel}</button>
+          <button data-board="leaderboard" style="${tile}">🏁 Leaderboard</button>
+          <button data-board="guestbook" style="${tile}">✍️ Guestbook</button>
+          <button data-board="times" style="${tile}">📰 Island Times</button>
+        </div>
+      </div>`;
+
     // close button: named, and the 44px box every other × has (it measured
     // 14x28 and was announced as 'times').
     const close = document.createElement('button');
@@ -4143,6 +4195,7 @@ export class SimpleUI {
     });
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);
+    if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgba(12, 12, 20, 0.95)');
   }
 
   /**
@@ -7033,8 +7086,19 @@ export class SimpleUI {
     this.showZonePanel({ id: 'hire', name: 'Hiring' }, { source });
   }
 
-  showZonePanel(zone: any, opts?: { source?: 'proximity' | 'menu' | 'deeplink' | 'cta' }): void {
+  showZonePanel(
+    zone: any,
+    opts?: { source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' },
+  ): void {
     const source = opts?.source ?? 'menu';
+    // A switch along the section strip keeps the panel's history mode: a
+    // deep-linked card never pushes an entry, and Back from it still leaves.
+    const history = source === 'strip' ? this.zoneHistory : source !== 'deeplink';
+    this.zoneHistory = history;
+    // Short landscape (a phone on its side, height 500 or less): the panel
+    // takes the whole height, its nav goes on one row, and the hire card's
+    // LinkedIn, CV and Code stay pinned in view (D5, UX-09).
+    const compact = window.innerHeight <= 500;
     this.hideZonePanel(); // Hide any existing panel
 
     this.zonePanelDiv = document.createElement('div');
@@ -7064,7 +7128,8 @@ export class SimpleUI {
       // the site's core content — in a skinny ~180px ribbon of wrapped text.
       width: 'min(500px, calc(100vw - 24px))',
       boxSizing: 'border-box',
-      maxHeight: '70vh',
+      // 70vh gave a 273 px card at 844x390, the links below the fold.
+      maxHeight: compact ? 'calc(100dvh - 24px - var(--sat, 0px) - var(--sab, 0px))' : '70vh',
       overflowY: 'auto',
     });
     // The hire card and the Portfolio panels clear the touch controls too: at
@@ -7078,7 +7143,7 @@ export class SimpleUI {
       el: this.zonePanelDiv,
       // A ?zone= deep link opens on the visitor's landing entry: there is no
       // entry of ours to step back off, and Back from it leaves the site.
-      history: source !== 'deeplink',
+      history,
       // 'ds:modal' carries it: closing the hire card says zone 'hire' (P2-D8).
       zone: String(zone?.id ?? 'unknown'),
     });
@@ -7094,6 +7159,12 @@ export class SimpleUI {
     if (heading) {
       heading.id = 'ds-zone-title';
       this.zonePanelDiv.setAttribute('aria-labelledby', heading.id);
+    }
+    const nav = this.sectionNav(String(zone?.id ?? 'unknown'), compact);
+    if (nav) {
+      this.zonePanelDiv.prepend(nav);
+      this.zonePanelDiv.dataset.zone = String(zone.id);
+      this.zonePanelDiv.addEventListener('keydown', this.onSectionKey);
     }
     // Panel thumbnails are lazy + optional: if an image is missing (or blocked)
     // it hides itself rather than showing a broken-image glyph. Attached here
@@ -7123,6 +7194,12 @@ export class SimpleUI {
       track('hire_cta', { cta: 'tour' });
       this.hideZonePanel();
       this.onRecruitTour?.();
+    });
+    // The hire card's second way to reach Abbas: the Contact panel (D5).
+    this.zonePanelDiv.querySelector('button[data-hire-contact]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('hire_cta', { cta: 'message' });
+      this.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'cta' });
     });
     trackOnce('zone_explored', { zone: zid, source });
     // "Reached the actual work" = any real section, not the intro or an unknown.
@@ -7193,9 +7270,33 @@ export class SimpleUI {
     });
     closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.addEventListener('click', () => this.hideZonePanel());
-    this.zonePanelDiv.appendChild(closeBtn);
+    // In the sticky nav where there is one, so it never scrolls away.
+    if (nav) {
+      Object.assign(closeBtn.style, { top: compact ? '4px' : '2px', right: '6px' });
+      nav.appendChild(closeBtn);
+    } else this.zonePanelDiv.appendChild(closeBtn);
 
     this.overlay.appendChild(this.zonePanelDiv);
+    if (compact) {
+      // The hire card's LinkedIn, CV and Code pin under the nav while the
+      // card scrolls; every panel that overflows gets a 24 px bottom fade.
+      const panel = this.zonePanelDiv;
+      const actions = panel.querySelector<HTMLElement>('[data-hire-actions]');
+      if (actions) {
+        Object.assign(actions.style, {
+          position: 'sticky',
+          zIndex: '1',
+          background: '#000',
+          margin: '0 -20px',
+          padding: '4px 12px',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
+        });
+        // Sticky offsets count from inside the panel's 20 px padding (the
+        // nav's -20px puts it flush): the bar sits right under the nav.
+        actions.style.top = `${(nav ? nav.offsetHeight : 0) - 20}px`;
+      }
+      this.addScrollFade(panel, '#000');
+    }
 
     // Reflect the open zone in the URL so a visitor can copy/share a deep link
     // (e.g. /?zone=projects); cleared again on close. Param-scoped so it never
@@ -7229,6 +7330,168 @@ export class SimpleUI {
         );
       }
     }
+  }
+
+  /** The section a switch keeps: whether the open zone panel pushes history. */
+  private zoneHistory = true;
+  /** The menu row '‹ Portfolio' asks the next menu to focus. */
+  private menuFocusSection: string | null = null;
+
+  /** The portfolio sections, in the strip's order (D5, UX-08). */
+  private static readonly SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
+    { id: 'hire', label: 'Hiring' },
+    { id: 'welcome', label: 'About' },
+    { id: 'professional', label: 'Professional' },
+    { id: 'projects', label: 'Projects' },
+    { id: 'personal', label: 'Personal' },
+    { id: 'contact', label: 'Contact' },
+  ];
+
+  /**
+   * A portfolio section's sticky header (D5, UX-08): '‹ Portfolio' back to
+   * the menu, at this section's row, and a strip with every section one
+   * action away (44 px chips on a phone). ← and → switch sections while the
+   * panel has focus. Reading Hire, Professional, Projects and Contact took 12
+   * clicks on desktop and 16 taps on a phone. Null for other zones.
+   */
+  private sectionNav(zid: string, compact: boolean): HTMLElement | null {
+    const sections = SimpleUI.SECTIONS;
+    const at = sections.findIndex((s) => s.id === zid);
+    if (at < 0) return null;
+    const h = this.isTouch ? 44 : 32;
+    const nav = document.createElement('div');
+    nav.dataset.panelNav = '1';
+    Object.assign(nav.style, {
+      position: 'sticky',
+      top: '-20px', // the panel's 20 px padding: flush with the scrollport's edge
+      zIndex: '2',
+      margin: '-20px -20px 14px',
+      // One row in short landscape leaves the × room at its end; on two rows
+      // the × shares the first with '‹ Portfolio' and the strip gets the width.
+      padding: compact ? '8px 56px 8px 12px' : '8px 12px',
+      background: '#000',
+      borderBottom: '1px solid rgba(255,255,255,0.12)',
+      display: 'flex',
+      flexDirection: compact ? 'row' : 'column',
+      alignItems: compact ? 'center' : 'flex-start',
+      gap: compact ? '8px' : '6px',
+      textAlign: 'left',
+    });
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.dataset.navBack = '1';
+    back.textContent = '‹ Portfolio';
+    Object.assign(back.style, {
+      flex: 'none',
+      minHeight: `${h}px`,
+      padding: '0 12px',
+      borderRadius: '10px',
+      background: 'transparent',
+      color: '#cfe0ff',
+      border: '1px solid rgba(255,255,255,0.18)',
+      fontSize: '13px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    back.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.menuFocusSection = zid; // the menu opens with this row focused
+      this.togglePortfolioMenu(); // it closes this panel first
+    });
+    nav.appendChild(back);
+    const strip = document.createElement('nav');
+    strip.setAttribute('aria-label', 'Portfolio sections');
+    Object.assign(strip.style, {
+      display: 'flex',
+      gap: '5px',
+      overflowX: 'auto',
+      maxWidth: '100%',
+      minWidth: '0',
+      scrollbarWidth: 'none',
+    });
+    const accent = this.getZoneColor(zid);
+    for (const s of sections) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.goto = s.id;
+      b.textContent = s.label;
+      const here = s.id === zid;
+      if (here) b.setAttribute('aria-current', 'page');
+      Object.assign(b.style, {
+        flex: 'none',
+        minHeight: `${h}px`,
+        padding: this.isTouch ? '0 14px' : '0 11px',
+        borderRadius: '999px',
+        background: here ? 'rgba(255,255,255,0.08)' : 'transparent',
+        color: here ? '#fff' : '#b8c4d6',
+        border: `1px solid ${here ? accent : 'rgba(255,255,255,0.14)'}`,
+        fontSize: '12.5px',
+        fontWeight: here ? '700' : '600',
+        cursor: here ? 'default' : 'pointer',
+      });
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!here) this.switchSection(s.id);
+      });
+      strip.appendChild(b);
+    }
+    nav.appendChild(strip);
+    // Keep this section's chip in view on a narrow strip.
+    requestAnimationFrame(() => {
+      const cur = strip.querySelector<HTMLElement>('[aria-current]');
+      if (cur && strip.scrollWidth > strip.clientWidth) {
+        strip.scrollLeft = cur.offsetLeft - strip.clientWidth / 2 + cur.offsetWidth / 2;
+      }
+    });
+    return nav;
+  }
+
+  /** ← / → between sections while the panel has focus (not in a text field). */
+  private onSectionKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const zid = this.zonePanelDiv?.dataset.zone;
+    const sections = SimpleUI.SECTIONS;
+    const at = sections.findIndex((s) => s.id === zid);
+    if (at < 0) return;
+    e.preventDefault();
+    e.stopPropagation(); // the world never takes the arrow either
+    const step = e.key === 'ArrowRight' ? 1 : -1;
+    this.switchSection(sections[(at + step + sections.length) % sections.length].id);
+  };
+
+  /** One action per section: the zone param follows, scrollTop starts at 0. */
+  private switchSection(id: string): void {
+    this.showZonePanel({ id, name: id }, { source: 'strip' });
+  }
+
+  /**
+   * A 24 px fade at the bottom of a scroller that overflows, gone at the end
+   * (D5, UX-09: no scroll cue anywhere in short landscape).
+   */
+  private addScrollFade(scroller: HTMLElement, bg: string): void {
+    const fade = document.createElement('div');
+    fade.dataset.scrollFade = '1';
+    fade.setAttribute('aria-hidden', 'true');
+    Object.assign(fade.style, {
+      position: 'sticky',
+      bottom: '0',
+      height: '24px',
+      marginTop: '-24px',
+      pointerEvents: 'none',
+      background: `linear-gradient(to bottom, rgba(0,0,0,0), ${bg})`,
+      zIndex: '1',
+      opacity: '0',
+    });
+    scroller.appendChild(fade);
+    const place = (): void => {
+      const end = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+      fade.style.opacity = scroller.scrollHeight > scroller.clientHeight + 2 && !end ? '1' : '0';
+    };
+    scroller.addEventListener('scroll', place, { passive: true });
+    requestAnimationFrame(place);
   }
 
   /**
@@ -7541,12 +7804,20 @@ export class SimpleUI {
         its guardrails, the realtime client, the cloud functions and the tests.</p>
         <p style="margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(18,183,106,0.14);border:1px solid rgba(120,220,170,0.4);font-size:13.5px;line-height:1.45;color:#d7f5e6;">
           Open to AI and software engineering roles in Melbourne (full-time or contract).</p>
-        <div style="display:flex;flex-wrap:wrap;justify-content:center;">
+        <div data-hire-actions style="display:flex;flex-wrap:wrap;justify-content:center;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
           ${link(OWNER.cv, '📄 CV')}
           ${link(OWNER.repo, '💻 Code')}
         </div>
         ${emailRow(false)}
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:10px 0 0;">
+          <button type="button" data-hire-contact style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;">
+            ✉️ Send a message</button>
+          <button type="button" data-hire-tour style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
+            🎬 Or watch the highlights tour (under a minute)</button>
+        </div>
         <h3 style="margin:16px 0 4px;font-size:15px;text-align:left;">Experience</h3>
         <ul style="margin:0;padding:0;list-style:none;text-align:left;font-size:13px;line-height:1.45;">
           ${xp('Founder &amp; lead developer', 'DigiScalability, Melbourne', 'Jan 2025 – present')}
@@ -7566,9 +7837,6 @@ export class SimpleUI {
           ids are validated on server and client, so no planner text reaches a public surface.</li>
           <li>A Vitest suite, typecheck, lint and Prettier run in CI (GitHub Actions) on every push.</li>
         </ul>
-        <button type="button" data-hire-tour style="width:100%;margin:16px 0 0;padding:10px 14px;border-radius:10px;
-          background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
-          🎬 Or watch the highlights tour (under a minute)</button>
       `,
     };
 

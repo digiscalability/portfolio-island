@@ -155,6 +155,21 @@ describe('the welcome card hierarchy matches the audience', () => {
     expect(ui).toContain("querySelector('button[data-hire-tour]')");
   });
 
+  test('the recruiter path adds its events and keeps the frozen ones (D5)', () => {
+    // Changed deliberately in D5: one new key event and two new values. The
+    // welcome card's own contracts below, and cta_pill_click, are unchanged.
+    const ui = stripped('SimpleUI.ts');
+    expect(ui).toContain("track('hire_chip_click');");
+    expect(ui).toContain("track('hire_cta', { cta: 'message' });");
+    expect(ui).toContain("track('hire_cta', { cta: 'tour' });");
+    expect(ui).toContain("track('cta_pill_click');");
+    expect(ui).toMatch(/source\?: 'proximity' \| 'menu' \| 'deeplink' \| 'cta' \| 'strip'/);
+    const keyEvents = stripped('Analytics.ts');
+    const set = keyEvents.slice(keyEvents.indexOf('const KEY_EVENTS'), keyEvents.indexOf(']);'));
+    expect(set).toContain("'hire_chip_click'");
+    expect(set).not.toContain("'cta_pill_click'"); // a frozen series: no attribution added
+  });
+
   test('all seven analytics contracts survive the restructure', () => {
     const w = welcome();
     for (const attr of [
