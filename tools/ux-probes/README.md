@@ -24,6 +24,11 @@ npm run probe -- list
 | `--compare <dir> --compare-port <m>` | A second build, for `rig` and `strafe`. |
 | `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`). |
 | `--golden <path>` | The seed golden (`seed`, and the perf gate's `--seed`). Default: `test/golden/seedDraws.json` in the checkout that holds `--dist`, else in the current directory; never this tool's own checkout. `--bless` writes there. |
+| `--selftest-leak` | The harness answers one blocked-host URL itself (a synthetic 200 from `route.fulfill`, so nothing leaves the machine) and the page fetches it after boot. That response is a leak by the rule, so the run must exit 2. |
+| `--url <url>`, `--device desk\|phone` | The phase-2 probes' spellings of `--base` and `--profile`; both work everywhere. |
+
+Phase-2 probes live in `p2/` and run by their path, `npm run probe -- p2/walkin --dist dist --port <n>`.
+They write to `tools/ux-probes/out/p2/<name>/` (git-ignored) unless `--out` is given.
 
 Ports are always arguments. Suggested ranges, so parallel builders do not
 collide: E 5190-5199, A 5200-5209, B 5210-5219, D 5220-5229, C 5230-5239.
@@ -32,11 +37,34 @@ Exit codes: `0` pass, `1` criterion fail (including a hook the plan's
 contracts promise going missing), `2` fail-closed (a request got past the
 harness), `3` inconclusive (setup error, probe crash, no boot signUp
 intercept, or a check that could not be made, such as an overlay whose
-opener is missing). On main every stage-1 probe exits 1 (main has the bugs
-the stage-1 items fix) except three: `axe` passes, `rig` is a regression
-guard that exits 0 unless `--compare` finds a difference, and `lock-census`
-passes on this branch (it exits 1 with `--ref origin/main`, before the
-relocations land).
+opener is missing). On 58c8849 every stage-1 probe exits 1 (it has the bugs
+the stage-1 items fix) except `axe`, which passes, and `rig`, a regression
+guard that exits 0 unless `--compare` finds a difference.
+
+## Lock census and `tools/owners.json`
+
+`tools/owners.json` is the one ownership table: every package's code and
+tests (plan-r3's ownsFiles and testOwnership plus the stage-2
+reassignments), the unowned code nobody edits, and the contract-check
+allow-list (the claims scans, securityHeaders 62-91, databaseRules 163-174,
+livingNpcs 36-43, radiusUnits, serverModeration 322-329, islandRadius
+189-212, the Island and Districts imports of amenities, tierParity,
+buildPlots and gameSceneSeed, and the isLowTierDevice mocks). It is written
+through prettier.
+
+```sh
+npm run probe -- lock-census --owner B     # B's pending moves; exit 1 while any remain
+npm run probe -- lock-census               # every package, plus "every test has an owner"
+```
+
+A read is a literal `readFileSync` path (or one through a reader helper); an
+import is a static, dynamic, `require()` or `vi.mock()` import of a repo
+module, attributed to the tests that use its bindings. `import type` and
+`test/helpers/*` are skipped. From stage 2 on, a B or D test that reads C's
+code is a pending move to C (`--stage 1` keeps stage 1's "loosen in place"
+label), and any other cross-package read outside the allow-list is a
+pending move to the code's owner. This replaces plan-r3's
+`tools/lockmap.mjs`, which is not built.
 
 ### Running before E's stage-1 PR merges
 
@@ -68,11 +96,23 @@ The harness (`lib.cjs`) is the audit's read-only net:
 - service workers are blocked, every context starts with fresh storage,
   and every boot carries `?owner=1`.
 
-A run fails closed (exit 2) only when something gets past: a response from
-a blocked host, a `route.continue()` to one, or a non-GET reaching the
-network. Every intercepted attempt is logged with method and host (`net` in
-the JSON), and a run counts only if that log shows the boot
-`POST identitytoolkit.googleapis.com …signUp` as intercepted.
+Every interception goes through one pure rule, `classify({url, method,
+resourceType, isWebSocket})`, which returns `allow`, `abort-nonget`,
+`block-host` or `close-ws`; `test/probeSafety.test.ts` pins its table and
+the exit codes. The blocked hosts are Firebase (RTDB, Auth, App Check
+including `content-firebaseappcheck`, Firestore, installations), Functions
+and `*.run.app`, identitytoolkit, securetoken, ElevenLabs, reCAPTCHA, Vercel
+insights, the Google analytics and auth hosts, and the weather lookups
+(`open-meteo`, `ipapi`, `bigdatacloud`) EnvironmentCycle makes with consent.
+
+A run fails closed (exit 2) only when something gets past (`leakReason()`):
+a response from a blocked host, a `route.continue()` to one, or a non-GET
+reaching the network. Every intercepted attempt is logged with method and
+host (`net` in the JSON), and a run counts only if that log shows a boot
+proof intercepted: the `POST identitytoolkit.googleapis.com …signUp`, or,
+on a build with App Check (production, `--base https://…`), the
+`POST content-firebaseappcheck.googleapis.com …:exchange…` that gates the
+sign-up. Without either the run is inconclusive (exit 3).
 
 ## Independence from the behaviour the plan changes
 
@@ -95,6 +135,37 @@ the JSON), and a run counts only if that log shows the boot
 - An item that changes an input updates its probe through these DOM hooks
   in the same PR.
 
+## Probe-hook contract
+
+The probes read and drive the app only through these hooks. An item that
+renames or removes one updates every probe that uses it in the same PR, or
+the probe exits 1 with `hook missing`. Owners are the packages whose code
+holds the hook.
+
+| Hook | Owner | Used by |
+|---|---|---|
+| `window.__app` (the SimpleApp instance) | A | every probe |
+| `__app.ui.panels.current()`, `.isOpen(id)`, `.stack`, `.closeTop()`, `.closeAll()` | D | every probe that reads panel state |
+| `__app.scene.getOrbitCamera()`: `getYaw()`, `getYawTarget()`, `setYaw(rad)`, `getDistance()`, `setDistance(u)`, `followDir`, `pitch`, `pitchTarget`, `distance`, `distanceTarget`, `minPitch`, `snapToPlayer()`, `getForwardDirection()`. `lookInDirection` no longer exists. `setDistance` clamps at `minDistance` (2 u), so a probe that forces a closer camera (camera.cjs's 0.8 u) writes `minDistance` directly first | A | compass, look, perf gate, guide, p2/journey |
+| `__app.scene.getPlayer()` / `.player`: `setWorldPosition(v)`, `getWorldPosition()` | B | most probes |
+| `__app.renderer` (SimpleRenderer): `getRenderer().info`, `renderCallback`, `stopRenderLoop()`, `startRenderLoop(scene, camera, cb)`, `render()`, `composer`, `governorArmed` | E | hitch, perf gate, p2/L.cjs, census |
+| `window.__lifeIslandReady`, `window.__dsSeedDraws` | A, B | every boot; seed |
+| `#loading-screen`, `#ld-bar`, `#ld-msg`, `#ld-pct`, `#boot-fallback` | D | fm, loader marks |
+| the welcome dialog `[role=dialog][aria-label="Welcome to DigiScalability Life Island"]` and its buttons `data-dismiss`, `data-cta="projects"\|"contact"`, `data-tour`, `data-meet-ai`, `data-race` | D | every probe; fm, keyboard, guide |
+| `.hud-btn[aria-label="Open portfolio menu"]`, `[aria-label="Open island menu"]`, `button[data-section]`, `button[data-board]`, `button[data-hire-tour]` | D | keyboard, phone, breakpoints, fm |
+| `__app.ui` surfaces: `compassDiv`, `compassArrow`, `compassLabel`, `toastEl`, `flashEl`, `interactionDiv`, `fadeDiv`, `leaveBtn`, `pinDiv`, `zonePanelDiv`, `npcChatDiv`, `isWelcomeVisible()`, `isDialogueActive()`, `showZonePanel`, `showCompletionModal()`, `showJournal()`, `showPassport()`, `getJoystick()` | D | fm, events, guide, p2 probes |
+| the touch joystick (the 166 px hit square, 44 px thumb) and the 74 px USE / JUMP / WAVE discs; `[data-guide=joystick]` and `[data-guide=use-button]` win once D6 lands | D | p2/walkin, guide, phone |
+| `__app.mapGuideTarget`, `mapGuideLabel`, `lastCompassTarget`, `exitBuilding(isZone)`, `insideIsZone`, `isletUnlocked`, `enterBuilding(id, isZone)`, `passport.count()`, `passport.has(id)` | A | compass, p2 probes, p2/journey |
+| `__app.scene`: `getZonesManager().getZones()`/`getZoneById()`, `coins`, `hasTrailCoins()`, `getCoinsCollected()`, `getNpcPosition(name)`, `getNearbyInteractable()`, `getIsland()` (`npcTargets`, `houseDoors`, `surfaceMesh`, `sampleSurfaceByDirection`, `seaLevel`), `warmInterior()`, `interiorWarmed`, `interiorNearDoorWarmed`, `onHouseEnterCb(id)`, `interactWithZone(zone)` | B, C | p2 probes, guide, census |
+| phase 2: `__app.scene.isInsideInterior()`, `getInteriorHotspot()`, `INTERIOR_ORIGIN`, `INTERIOR_HOTSPOTS`, `INTERIOR_DOOR_HOTSPOT`, `INTERIOR_PLAYER_R`, `interiorSets`, `interiorActiveTheme`, `interiorColliders`, `interiorWallBlocked(x,z)`, `interiorFurnitureBlocked(x,z)`, `interiorPosters`, `interiorYaw`, `setInteriorMove()`, `toggleInteriorFixture(id)`, `partyMode` | B | p2/room-lib, survey, party, passport-interior |
+| phase 2: `__app.scene.getEnvironmentCycle()`: `getHour()`, `getDayFactor()`, `.debugHour` (written by duskflip) | C | p2/duskflip, p2/bootcost, p2/L.cjs |
+| phase 2: `__app.scene.boardVehicle(i)`, `vehicleKind(i)`, `isRidingVehicle()` | B | strafe, perf gate (P2-E3) |
+| phase 2: p2/L.cjs's mask material swap, keyed on `SkyDome`, `userData.isPavement`, `userData.isCelHull`, `island.surfaceMesh` and `island.npcTargets` | B, C | p2/L.cjs (and the lighting probes in later waves) |
+| stage 2: `#ds-guide` (`data-active`, its Skip button and resume chip), window events `ds:intro`, `ds:modal`, `ds:guide`, `ds:guide-to`, `ds:goals`, `ds:npc-speaking`, `ds:npc-typing`, `ds:coin`, `ds:settings`; `[data-guide=*]` anchors and `[data-hud=prompt]` | A, D | guide, events, fm |
+
+The probes write only through the same hooks (a teleport, a camera pose, a
+clock hour, a panel close), and only inside their own browser context.
+
 ## Probes and the items they serve
 
 | Probe | Item | What it measures | Main baseline (this rig) |
@@ -114,7 +185,7 @@ the JSON), and a run counts only if that log shows the boot
 | `back` | D2 | the eight history cases; case 7 runs on desktop (welcome card, emote wheel, chat input, tour) and on the phone, where the touch-only ☰ drawer exists; each overlay must really open, or the check is inconclusive | Back from Projects lands on `about:blank` |
 | `contrast` | D3 | filled-button labels at `?hour=6/12/18/21` on 1440 and 390, touch captions over grass/sand/sky, the focus ring | Work with me 2.97:1, Explore 2.97:1, Send 3.17:1, USE 3.16:1 over grass |
 | `axe` | D3, D4, D8 | axe-core 4.10.3 on the welcome card, HUD, hire card, Projects and NPC chat | 0 color-contrast violations (gradients land in `incomplete`, which is why `contrast` samples pixels) |
-| `lock-census` | EL, AL, BL, DL | every literal source read in `test/*.test.ts`, owners, rules, vs the relocation table (static, no browser; `--ref <git ref>`) | reproduces the relocation table on `origin/main` |
+| `lock-census` | CO-E1 (stage 1: EL, AL, BL, DL) | every literal source read and repo-module import in `test/*.test.ts`, its owners from `tools/owners.json`, and its rule; `--owner <pkg>` lists that package's pending moves and exits 1 while any remain (static, no browser; `--ref <git ref>`, `--stage 1`) | on s1-int (= main d5e0e96): `--owner B` 21 reads of C's code, `--owner D` 4 reads plus frontDoorPolish's CelLook import, `--owner C` celInk's GameScene import, A and E clean. After wave 1 merges every `--owner` run is clean |
 
 **Follower.** The follower holds W while the arrow is within 25° of
 screen-up, and W plus the side key out to 120°. Behind that it holds the
@@ -245,4 +316,10 @@ its threshold. Desktop `--ab` therefore tops out at inconclusive:
 - `compass.cjs` (arrow, follow), `keys.cjs` (clash, cardkeys, sheet-lock),
   `look.cjs` (look, strafe), `rig.cjs` (legspin, rig), `frames.cjs`
   (hitch, seed), `panels.cjs` (guide-me, back), `a11y.cjs` (contrast, axe).
-- `lock-census.cjs` the static census, reused by E7's lockOwnership test.
+- `lock-census.cjs` the static census over `tools/owners.json`.
+- `../owners.json` the ownership table and the contract-check allow-list.
+- `test/probeSafety.test.ts` pins `classify()`, `leakReason()`, the boot
+  proof and the exit codes; `test/helpers/astSlice.ts` (with
+  `test/astSlice.test.ts`) is the shared read-only AST slicer for stage-2
+  locks: `methodBody(file, 'Class.method')`, `functionBody(file, name)`,
+  `statementAt(file, marker, { within, kind: 'if', nth })`.

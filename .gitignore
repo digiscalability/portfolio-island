@@ -60,6 +60,9 @@ _legacy/unused-assets/
 .claude/settings.local.json
 __pycache__/
 
+# UX probe outputs (JSON and PNGs from tools/ux-probes/p2 and --out runs)
+/tools/ux-probes/out/
+
 # Evals harness (evals/): the uv venv, fixtures dumped from functions/lib, and
 # run records. Root-level patterns so Prettier (which reads only this file) skips them.
 evals/.venv/

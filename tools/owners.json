@@ -1,0 +1,292 @@
+{
+  "about": "Who owns every file the UX programme edits (plan-r3 ownsFiles and testOwnership, plus the stage-2 reassignments), and the contract checks that may read another package's code. lock-census.cjs reads this table; a path not listed here is unowned code that no package edits. A code entry ending in '/' covers that folder. Tests are named by base name (visualPolish = test/visualPolish.test.ts); helpers and fixtures by path.",
+  "packages": {
+    "E": {
+      "name": "Perf gate, probes and renderer levers",
+      "code": [
+        "SimpleRenderer.ts",
+        "FxBudget.ts",
+        "tools/perf-gate.cjs",
+        "tools/perf-gate.floor.json",
+        "tools/ux-probes/",
+        "tools/lockmap.mjs",
+        "tools/owners.json",
+        "package.json",
+        "package-lock.json",
+        ".gitignore",
+        "functions/src/personas.ts",
+        "evals/"
+      ],
+      "tests": [
+        "feelRegressions",
+        "functionsPure",
+        "promptBuilders",
+        "serverModeration",
+        "moderation",
+        "clientModeration",
+        "rendererLocks",
+        "perfLevers",
+        "fxBudget",
+        "probeSafety",
+        "astSlice"
+      ],
+      "testFiles": ["test/helpers/networkStubs.ts", "test/helpers/astSlice.ts"]
+    },
+    "A": {
+      "name": "Controls, camera and the first minute",
+      "code": [
+        "main-simple.ts",
+        "SimpleInputManager.ts",
+        "OrbitCamera.ts",
+        "keyGuards.ts",
+        "Framing.ts",
+        "Compass.ts",
+        "Guide.ts",
+        "GuideCard.ts",
+        "NpcQuests.ts"
+      ],
+      "tests": [
+        "simpleInputManager",
+        "keyGuards",
+        "inventoryPanel",
+        "framing",
+        "compassArrow",
+        "inputLook",
+        "orbitCamera",
+        "guide",
+        "introTourLocks",
+        "mainLocks",
+        "interiorEntry"
+      ],
+      "testFiles": []
+    },
+    "B": {
+      "name": "Characters, villagers and world motion",
+      "code": [
+        "GameScene.ts",
+        "SimplePlayer.ts",
+        "Juice.ts",
+        "NpcActivities.ts",
+        "worldBenches.ts",
+        "HudLabels.ts",
+        "Multiplayer.ts",
+        "WorldSeed.ts",
+        "RaceSystem.ts",
+        "tools/ux-probes/golden/seed-marks.json",
+        "test/golden/seedDraws.json"
+      ],
+      "tests": [
+        "visualPolish",
+        "avatarPose",
+        "swimStroke",
+        "oceanDive",
+        "npcActivities",
+        "livingNpcs",
+        "buildPlots",
+        "databaseRules",
+        "economy",
+        "profileSync",
+        "chat",
+        "gameSceneSeed",
+        "sceneLocks",
+        "limbLayers",
+        "juice",
+        "npcMotion",
+        "coins",
+        "worldSeed",
+        "interiorRoom"
+      ],
+      "testFiles": ["test/fixtures/gameSceneSeed.json"]
+    },
+    "C": {
+      "name": "World look: light, sea, materials, ink and signage",
+      "code": [
+        "Island.ts",
+        "EnvironmentCycle.ts",
+        "CelLook.ts",
+        "Materials.ts",
+        "Zones.ts",
+        "TextureGenerator.ts",
+        "Mailbox.ts",
+        "Traffic.ts",
+        "SignPainter.ts",
+        "public/assets/models/overrides.json",
+        "public/assets/panels/chocomate.webp"
+      ],
+      "tests": [
+        "tierParity",
+        "staticFreeze",
+        "oreNodes",
+        "celInk",
+        "radiusUnits",
+        "waveMirror",
+        "surfBands",
+        "oceanScale",
+        "terrainNoise",
+        "grassClump",
+        "grassMarshal",
+        "amenities",
+        "islandRadius",
+        "cloudFormations",
+        "deliverySystem",
+        "worldLook",
+        "drawNeutral",
+        "signPainter"
+      ],
+      "testFiles": ["test/helpers/headlessDom.ts", "test/fixtures/islandSeed.json"]
+    },
+    "D": {
+      "name": "UI system, recruiter path and controls reference",
+      "code": [
+        "SimpleUI.ts",
+        "style.css",
+        "PanelManager.ts",
+        "index.html",
+        "vercel.json",
+        "Share.ts",
+        "Passport.ts",
+        "Districts.ts",
+        "Boards.ts",
+        "NpcChat.ts",
+        "ReceptionDesk.ts",
+        "Analytics.ts",
+        "CREDITS.md",
+        "README.md",
+        "ui/",
+        "public/hire.html",
+        "public/404.html",
+        "public/fonts/",
+        "evals/data/claims_baseline.toml"
+      ],
+      "tests": [
+        "onboarding",
+        "frontDoorPolish",
+        "mobileHud",
+        "hireCard",
+        "panelManager",
+        "claimsPanels",
+        "claimsSurfaces",
+        "reducedMotion",
+        "npcFallback",
+        "audioControl",
+        "audioManager",
+        "speech",
+        "htmlEscape",
+        "securityHeaders",
+        "serviceWorker",
+        "tokens",
+        "motionRules",
+        "a11yPanels",
+        "uiLocks",
+        "passportInterior"
+      ],
+      "testFiles": []
+    }
+  },
+  "unownedCode": [
+    "Chat.ts",
+    "economy.ts",
+    "profileSync.ts",
+    "Moderation.ts",
+    "WorldState.ts",
+    "DeliverySystem.ts",
+    "CloudFormations.ts",
+    "functions/",
+    "api/",
+    "database.rules.json"
+  ],
+  "helperImports": "Imports of test/helpers/* are shared helpers, not locks; type-only imports carry no code. lock-census skips both.",
+  "contractChecks": [
+    {
+      "test": "claimsPanels",
+      "via": "read",
+      "files": ["main-simple.ts", "SimpleUI.ts", "ReceptionDesk.ts", "NpcChat.ts"],
+      "where": "claimsPanels 80-86, 103-109, 127-131 at 58c8849",
+      "why": "the banned-word scan: public copy against code counts"
+    },
+    {
+      "test": "claimsSurfaces",
+      "via": "read",
+      "files": ["Island.ts"],
+      "where": "claimsSurfaces 355-374 at 58c8849",
+      "why": "the public-surface claims, including NPC_SITES in Island.ts"
+    },
+    {
+      "test": "securityHeaders",
+      "via": "read",
+      "files": ["EnvironmentCycle.ts"],
+      "where": "securityHeaders 62-91 at 58c8849",
+      "why": "every fetch host is in the CSP, with one inline script"
+    },
+    {
+      "test": "databaseRules",
+      "via": "read",
+      "files": ["Boards.ts"],
+      "where": "databaseRules 163-174 at 58c8849",
+      "why": "the Boards write paths the rules must accept"
+    },
+    {
+      "test": "livingNpcs",
+      "via": "read",
+      "files": ["SimpleUI.ts", "NpcChat.ts", "WorldState.ts"],
+      "where": "livingNpcs 36-43 at 58c8849",
+      "why": "client/server template parity"
+    },
+    {
+      "test": "radiusUnits",
+      "via": "read",
+      "files": ["Island.ts", "GameScene.ts", "NpcActivities.ts"],
+      "where": "radiusUnits (the whole file)",
+      "why": "no bare radians"
+    },
+    {
+      "test": "serverModeration",
+      "via": "read",
+      "files": ["NpcChat.ts"],
+      "where": "serverModeration 322-329 at 58c8849",
+      "why": "AI_NPCS is append-only (the persona roster order)"
+    },
+    {
+      "test": "islandRadius",
+      "via": "import",
+      "files": ["OrbitCamera.ts"],
+      "where": "islandRadius 189-212 at 58c8849",
+      "why": "MAX_DISTANCE against the terrain"
+    },
+    {
+      "test": "amenities",
+      "via": "import",
+      "files": ["Island.ts", "Districts.ts"],
+      "where": "amenities imports",
+      "why": "the amenity layout read from Island and Districts, a stable API"
+    },
+    {
+      "test": "tierParity",
+      "via": "import",
+      "files": ["Island.ts", "SimpleRenderer.ts"],
+      "where": "tierParity imports",
+      "why": "builds Island on both tiers through the isLowTierDevice mock"
+    },
+    {
+      "test": "buildPlots",
+      "via": "import",
+      "files": ["Island.ts"],
+      "where": "buildPlots imports",
+      "why": "buildPlots' read of Island data, a stable API"
+    },
+    {
+      "test": "gameSceneSeed",
+      "via": "import",
+      "files": ["Island.ts", "SimpleRenderer.ts"],
+      "where": "gameSceneSeed imports",
+      "why": "builds Island for the census through the isLowTierDevice mock"
+    },
+    {
+      "test": "grassMarshal",
+      "via": "import",
+      "files": ["SimpleRenderer.ts"],
+      "where": "grassMarshal imports",
+      "why": "the isLowTierDevice mock"
+    }
+  ]
+}

@@ -15,8 +15,11 @@
 // A run fails closed (exit 2) only when something gets past: a response
 // arrives from a blocked host, a route.continue() goes to one, or a non-GET
 // reaches the network. Every intercepted attempt is logged with its method and
-// host, and a run counts only if that log shows the boot
-// 'POST identitytoolkit.googleapis.com …signUp' as intercepted.
+// host, and a run counts only if that log shows the boot proof intercepted:
+// the 'POST identitytoolkit.googleapis.com …signUp', or, on a build with App
+// Check (production), the 'POST content-firebaseappcheck.googleapis.com
+// …:exchange…' that gates it. classify() is the one rule every interception
+// goes through; test/probeSafety.test.ts pins it.
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -159,7 +162,8 @@ const BLOCK_HOST = [
   /(^|\.)firebaseapp\.com$/,
   /^identitytoolkit\.googleapis\.com$/,
   /^securetoken\.googleapis\.com$/,
-  /^firebaseappcheck\.googleapis\.com$/,
+  // App Check: the SDK's token exchange lives on content-firebaseappcheck.
+  /^(content-)?firebaseappcheck\.googleapis\.com$/,
   /^firestore\.googleapis\.com$/,
   /^firebaseinstallations\.googleapis\.com$/,
   /^firebase\.googleapis\.com$/,
@@ -181,6 +185,11 @@ const BLOCK_HOST = [
   /(^|\.)vercel-scripts\.com$/,
   /(^|\.)clarity\.ms$/,
   /(^|\.)hotjar\.com$/,
+  // Third-party lookups EnvironmentCycle makes only with weather consent: a
+  // probe's world stays on the clock it was given, never the rig's weather.
+  /(^|\.)open-meteo\.com$/,
+  /(^|\.)ipapi\.co$/,
+  /(^|\.)bigdatacloud\.net$/,
 ];
 const BLOCK_PATH = [/\/_vercel\/(insights|speed-insights)\//, /\/recaptcha\//, /\/__\/auth\//];
 
@@ -195,7 +204,55 @@ const isBlockedUrl = (u) => {
   if (/^(data|blob|about|chrome-extension):/.test(u)) return false;
   return BLOCK_HOST.some((r) => r.test(hostOf(u))) || BLOCK_PATH.some((r) => r.test(u));
 };
+
+/**
+ * The interception rule, pure (test/probeSafety.test.ts pins its table):
+ * - 'close-ws'     every WebSocket, wherever it goes;
+ * - 'block-host'   any method to a blocked backend host or path, GET included;
+ * - 'abort-nonget' any other request that is not a GET (HEAD included);
+ * - 'allow'        a GET to anything else (the build's own files, fonts).
+ */
+function classify({ url, method = 'GET', resourceType = '', isWebSocket = false } = {}) {
+  const u = String(url || '');
+  if (isWebSocket || resourceType === 'websocket' || /^wss?:/i.test(u)) return 'close-ws';
+  if (isBlockedUrl(u)) return 'block-host';
+  if (String(method).toUpperCase() !== 'GET') return 'abort-nonget';
+  return 'allow';
+}
+
+/**
+ * The leak rule, pure. A leak is anything that got past classify():
+ * - a 'response' from a blocked host;
+ * - a 'response' to a non-GET the harness did not abort;
+ * - a 'requestfailed' non-GET the harness did not abort, failing for a reason
+ *   other than the client blocking it.
+ * Returns the reason, or null.
+ */
+function leakReason({ event, method, url, aborted = false, errorText = '' }) {
+  const m = String(method || 'GET').toUpperCase();
+  if (event === 'response') {
+    if (isBlockedUrl(String(url || ''))) return 'response from a blocked host';
+    if (m !== 'GET' && !aborted) return 'non-GET reached the network';
+    return null;
+  }
+  if (event === 'requestfailed') {
+    if (m !== 'GET' && !aborted && !/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(errorText || '')) return `non-GET reached the network (${errorText})`;
+    return null;
+  }
+  return null;
+}
+
+// The boot proof: the anonymous sign-up, or (App Check builds, production)
+// the token exchange it waits on. One of them must be seen intercepted.
 const SIGNUP = /^POST identitytoolkit\.googleapis\.com\S*signUp/;
+const APPCHECK = /^POST content-firebaseappcheck\.googleapis\.com\/\S*:exchange\w*/;
+/** 'signUp' | 'appCheck' | null for one intercepted-log line. */
+const bootProof = (line) => (SIGNUP.test(line) ? 'signUp' : APPCHECK.test(line) ? 'appCheck' : null);
+
+// --selftest-leak: the harness answers this one blocked-host URL itself with a
+// synthetic 200 (route.fulfill, nothing leaves the machine). Its 'response'
+// event is a leak by the rule above, so the run must exit 2.
+const SELFTEST_URL = 'https://firebaseinstallations.googleapis.com/ux-probes-selftest-leak';
 
 // Before any page script: a WebSocket that never connects, a recorder for
 // pointer-lock requests and haptics, and (for --no-khr) no parallel compile.
@@ -251,7 +308,7 @@ const CLOCK = `(() => {
 
 /**
  * One browser context with the safety net. Returns { ctx, page, net, close }.
- * net = { intercepted: [], leaks: [], signUpSeen }.
+ * net = { intercepted: [], leaks: [], signUpSeen, appCheckSeen, bootProofSeen }.
  */
 async function openSession(browser, prof, opts = {}) {
   const p = typeof prof === 'string' ? profile(prof) : prof;
@@ -266,7 +323,7 @@ async function openSession(browser, prof, opts = {}) {
   const ctx = await browser.newContext(ctxOpts);
   // net.hold = { re, ms } lets a probe give blocked requests matching `re` a
   // realistic latency before they are aborted (they are never continued).
-  const netLog = { intercepted: [], leaks: [], aborted: new WeakSet(), signUpSeen: false, offHost: new Set(), hold: null };
+  const netLog = { intercepted: [], leaks: [], aborted: new WeakSet(), signUpSeen: false, appCheckSeen: false, bootProofSeen: false, offHost: new Set(), hold: null, selftestLeak: !!opts.selftestLeak };
   const intercept = (req) => {
     const line = `${req.method()} ${hostOf(req.url())}${(() => {
       try {
@@ -276,13 +333,20 @@ async function openSession(browser, prof, opts = {}) {
       }
     })()}`;
     netLog.intercepted.push(line.slice(0, 200));
-    if (SIGNUP.test(line)) netLog.signUpSeen = true;
+    const proof = bootProof(line);
+    if (proof === 'signUp') netLog.signUpSeen = true;
+    if (proof === 'appCheck') netLog.appCheckSeen = true;
+    if (proof) netLog.bootProofSeen = true;
   };
   const leak = (why, req) => netLog.leaks.push(`${why}: ${req.method()} ${req.url().slice(0, 160)}`);
   await ctx.route('**/*', async (route) => {
     const req = route.request();
     const u = req.url();
-    if (req.method() !== 'GET' || isBlockedUrl(u)) {
+    if (netLog.selftestLeak && u === SELFTEST_URL) {
+      // Answered here, never sent: the synthetic 'response' must read as a leak.
+      return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: 'ux-probes selftest' }).catch(() => {});
+    }
+    if (classify({ url: u, method: req.method(), resourceType: req.resourceType() }) !== 'allow') {
       netLog.aborted.add(req);
       intercept(req);
       const hold = netLog.hold;
@@ -293,9 +357,9 @@ async function openSession(browser, prof, opts = {}) {
       const handled = await opts.onRoute(route, req);
       if (handled) return undefined;
     }
-    // Belt and braces: never continue something the rules above should have
+    // Belt and braces: never continue something the rule above should have
     // stopped (a probe's onRoute hook cannot reach this line with one either).
-    if (req.method() !== 'GET' || isBlockedUrl(u)) {
+    if (classify({ url: u, method: req.method(), resourceType: req.resourceType() }) !== 'allow') {
       leak('route.continue() to a blocked request', req);
       return route.abort('blockedbyclient');
     }
@@ -303,7 +367,7 @@ async function openSession(browser, prof, opts = {}) {
   });
   await ctx.routeWebSocket(/.*/, (ws) => {
     netLog.intercepted.push(`WS ${hostOf(ws.url())}`);
-    ws.close({ code: 1000, reason: 'ux-probes blocked' });
+    if (classify({ url: ws.url(), isWebSocket: true }) === 'close-ws') ws.close({ code: 1000, reason: 'ux-probes blocked' });
   });
   for (const s of [WS_STUB, RECORDER, ...(opts.noKhr ? [NO_KHR] : []), ...(opts.clock ? [CLOCK] : [])]) await ctx.addInitScript(s);
   if (opts.skipName !== false)
@@ -334,12 +398,13 @@ async function openSession(browser, prof, opts = {}) {
   });
   page.on('response', (r) => {
     const req = r.request();
-    if (isBlockedUrl(r.url())) leak('response from a blocked host', req);
-    else if (req.method() !== 'GET' && !netLog.aborted.has(req)) leak('non-GET reached the network', req);
+    const why = leakReason({ event: 'response', method: req.method(), url: r.url(), aborted: netLog.aborted.has(req) });
+    if (why) leak(why, req);
   });
   page.on('requestfailed', (req) => {
     const err = (req.failure() && req.failure().errorText) || '';
-    if (req.method() !== 'GET' && !netLog.aborted.has(req) && !/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(err)) leak(`non-GET reached the network (${err})`, req);
+    const why = leakReason({ event: 'requestfailed', method: req.method(), url: req.url(), aborted: netLog.aborted.has(req), errorText: err });
+    if (why) leak(why, req);
   });
   if (p.cpu && p.cpu > 1) {
     const cdp = await ctx.newCDPSession(page);
@@ -349,10 +414,10 @@ async function openSession(browser, prof, opts = {}) {
   const close = async ({ waitSignUpMs = 15000 } = {}) => {
     if (closed) return;
     closed = true;
-    // The boot signUp is the proof the net is live; give a short run time to
-    // reach it, as long as the page is still on the app.
+    // The boot proof (signUp, or App Check's exchange) shows the net is live;
+    // give a short run time to reach it, as long as the page is on the app.
     const t0 = Date.now();
-    while (!netLog.signUpSeen && Date.now() - t0 < waitSignUpMs) {
+    while (!netLog.bootProofSeen && Date.now() - t0 < waitSignUpMs) {
       const onApp = await page.evaluate(() => !!window.__app).catch(() => false);
       if (!onApp) break;
       await sleep(250);
@@ -362,16 +427,32 @@ async function openSession(browser, prof, opts = {}) {
   return { ctx, page, net: netLog, sink, profile: p, close };
 }
 
+/** --selftest-leak: ask the page for the one URL the harness answers itself. */
+async function triggerSelftestLeak(session) {
+  if (!session || !session.net || !session.net.selftestLeak || session.net.selftestFired) return false;
+  session.net.selftestFired = true;
+  await session.page
+    .evaluate((u) => fetch(u, { mode: 'no-cors', cache: 'no-store' }).then(() => true, () => false), SELFTEST_URL)
+    .catch(() => false);
+  // The 'response' event can trail the fetch's resolution by a tick.
+  for (let i = 0; i < 20 && !session.net.leaks.length; i++) await sleep(100);
+  return session.net.leaks.length > 0;
+}
+
 function netSummary(sessions) {
   const leaks = [];
   const intercepted = new Map();
   let signUp = 0;
+  let appCheck = 0;
+  let proof = 0;
   const offHost = new Set();
   for (const s of sessions) {
     leaks.push(...s.net.leaks);
     if (s.net.signUpSeen) signUp++;
+    if (s.net.appCheckSeen) appCheck++;
+    if (s.net.bootProofSeen || s.net.signUpSeen || s.net.appCheckSeen) proof++;
     for (const l of s.net.intercepted) {
-      const k = l.replace(/(identitytoolkit\.googleapis\.com\S*signUp)\S*/, '$1');
+      const k = l.replace(/(identitytoolkit\.googleapis\.com\S*signUp)\S*/, '$1').replace(/(content-firebaseappcheck\.googleapis\.com)\/\S*(:exchange\w*)/, '$1/…$2');
       intercepted.set(k, (intercepted.get(k) || 0) + 1);
     }
     for (const h of s.net.offHost) offHost.add(h);
@@ -379,7 +460,13 @@ function netSummary(sessions) {
   return {
     sessions: sessions.length,
     sessionsWithSignUpIntercepted: signUp,
+    sessionsWithAppCheckIntercepted: appCheck,
+    sessionsWithBootProof: proof,
     signUpIntercepted: signUp > 0,
+    appCheckIntercepted: appCheck > 0,
+    // A run counts when either boot proof was intercepted (production's App
+    // Check gates the sign-up behind its exchange).
+    bootProofIntercepted: proof > 0,
     leaks,
     intercepted: [...intercepted.entries()].map(([k, n]) => `${k} x${n}`),
     offHostRequests: [...offHost],
@@ -472,13 +559,13 @@ async function startPreview({ dist, port, host = '127.0.0.1', label = 'preview' 
 async function serve({ base, dist, port, label }) {
   if (base) {
     const u = new URL(base);
-    const p = Number(u.port || 80);
+    const p = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
     // 'localhost' may resolve to ::1 while vite listens on 127.0.0.1 only.
     const hosts = u.hostname === 'localhost' ? ['127.0.0.1', '::1'] : [u.hostname.replace(/^\[|\]$/g, '')];
     let up = false;
     for (const h of hosts) up = up || (await portInUse(p, h));
     if (!up) throw new HarnessError(`nothing listens at ${base}`);
-    return { url: base.replace(/\/$/, ''), pid: null, port: Number(u.port), stop: async () => {}, attached: true, label };
+    return { url: base.replace(/\/$/, ''), pid: null, port: p, stop: async () => {}, attached: true, label };
   }
   if (!port) throw new HarnessError('pass --port <n> with --dist (ports are always arguments), or --base <url>');
   return startPreview({ dist: dist || 'dist', port: numArg(port, '--port'), label });
@@ -503,6 +590,7 @@ async function boot(session, base, { query = '', waitWelcome = true, timeout = 2
     if (ok) welcomeMs = Date.now() - t0;
   }
   await page.evaluate(HELPERS);
+  await triggerSelftestLeak(session);
   return { readyMs, welcomeMs };
 }
 
@@ -801,11 +889,12 @@ const hostBusyPct = (a, b) => (b.total > a.total ? round(((b.busy - a.busy) / (b
 /**
  * Verdict over a list of checks. A check is { name, pass: true|false|null }
  * where null = could not be evaluated (inconclusive). Leaks and a missing
- * boot signUp intercept override everything.
+ * boot proof (signUp, or App Check's exchange) override everything.
  */
 function verdict(checks, netSum, { requireSignUp = true } = {}) {
   if (netSum && netSum.leaks.length) return { code: EXIT.failClosed, verdict: 'fail-closed', why: netSum.leaks.slice(0, 5) };
-  if (requireSignUp && netSum && !netSum.signUpIntercepted) return { code: EXIT.inconclusive, verdict: 'inconclusive', why: ['the boot identitytoolkit signUp POST was never seen intercepted: the run does not count'] };
+  const proof = netSum && (netSum.bootProofIntercepted !== undefined ? netSum.bootProofIntercepted : netSum.signUpIntercepted);
+  if (requireSignUp && netSum && !proof) return { code: EXIT.inconclusive, verdict: 'inconclusive', why: ['neither the boot identitytoolkit signUp POST nor the App Check exchange was seen intercepted: the run does not count'] };
   const failed = checks.filter((c) => c.pass === false);
   const open = checks.filter((c) => c.pass === null || c.pass === undefined);
   if (failed.length) return { code: EXIT.fail, verdict: 'fail', why: failed.map((c) => c.name) };
@@ -828,7 +917,13 @@ module.exports = {
   PROFILES,
   profile,
   BLOCK_HOST,
+  BLOCK_PATH,
   isBlockedUrl,
+  classify,
+  leakReason,
+  bootProof,
+  SELFTEST_URL,
+  triggerSelftestLeak,
   openSession,
   netSummary,
   portInUse,

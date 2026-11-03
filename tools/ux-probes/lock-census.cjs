@@ -1,14 +1,21 @@
 'use strict';
-// lock-census (static, no browser): every literal source-file read in
-// test/*.test.ts, with the test's owner and the code's owner from the plan's
-// testOwnership tables, and every cross-package read classified by its rule:
-//   rule 1  MOVE   a structural lock on another stage-1 package's code (A, B, D, E)
-//   rule 2  LOOSEN a lock on C's code (C has no stage-1 PR)
-//   rule 3  SCAN   a content scan that stays with its owner and binds everyone
-//   rule 5  STAYS  a lock on code no package edits this round
-// It then compares the rule-1 moves with the plan's relocation table.
+// lock-census (static, no browser): every literal source-file read and every
+// repo-module import in test/*.test.ts, with the test's owner and the code's
+// owner from tools/owners.json, and every cross-package read classified:
+//   own       the test's package owns the code it reads
+//   rule 5    STAYS    code no package edits (owners.json unownedCode, or unlisted)
+//   rule 3    CONTRACT a cross-file check on owners.json's allow-list; it stays
+//                      with its owner and binds every package
+//   rule 1/2  PENDING  a lock on another package's code: a pending move to the
+//                      code's owner (rule 2 is a B or D test reading C's code)
 //
-//   npm run probe -- lock-census [--ref <git ref>] [--table-ref <git ref>] [--out <dir>]
+//   npm run probe -- lock-census [--owner A|B|C|D|E] [--ref <git ref>] [--stage 1|2] [--owners <file>] [--out <dir>]
+//
+// --owner <pkg> exits 1 while that package's tests hold a pending move; with
+// no --owner every package is checked, and every test file needs an owner.
+// This replaces plan-r3's tools/lockmap.mjs. --stage 1 labels rule 2 the way
+// stage 1 did ('C code, loosen in place'); from stage 2 on it is a pending
+// move to C.
 //
 // A read is a call of readFileSync, or of a helper whose first parameter flows
 // into readFileSync (src, stripped, read, method, fn, scan, ...), whose path
@@ -16,65 +23,60 @@
 // const bound to one, or an element of an array iterated by for...of, .map,
 // .flatMap, .forEach or test.each (a "list" read). Literals that never reach a
 // reader (a bundle file name handed to a plugin, say) are not reads.
+//
+// An import is a static, dynamic, require() or vi.mock() import of a repo
+// module. `import type` (and an import whose every name is a type) carries no
+// code, and test/helpers/* are shared helpers, so both are skipped. A static
+// import is attributed to every test that uses one of its bindings.
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const lib = require('./lib.cjs');
 
 // ------------------------------------------------------------- ownership
-const TEST_OWNERS = {
-  A: 'simpleInputManager keyGuards inventoryPanel framing profileSync mainLocks compassArrow inputLook orbitCamera guide',
-  B: 'visualPolish avatarPose swimStroke oceanDive npcActivities livingNpcs buildPlots economy sceneLocks gameSceneSeed limbLayers juice npcMotion coins',
-  C: 'tierParity staticFreeze oreNodes celInk amenities grassClump grassMarshal islandRadius oceanScale surfBands terrainNoise waveMirror radiusUnits cloudFormations deliverySystem worldLook signPainter drawNeutral',
-  D: 'onboarding frontDoorPolish mobileHud hireCard panelManager claimsPanels claimsSurfaces reducedMotion npcFallback audioControl audioManager chat speech moderation clientModeration htmlEscape uiLocks tokens motionRules a11yPanels',
-  E: 'feelRegressions serviceWorker functionsPure promptBuilders serverModeration rendererLocks fxBudget perfLevers lockOwnership',
-};
-// PR #20 (main 58c8849) added two tests no package owns; nobody edits them.
-const UNOWNED_TESTS = ['databaseRules', 'securityHeaders'];
+const OWNERS_FILE = path.join(lib.REPO, 'tools', 'owners.json');
+let OWNERS = null;
+
+function loadOwners(file) {
+  let o;
+  try {
+    o = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    throw new lib.HarnessError(`cannot read the ownership table ${file}: ${String(e).slice(0, 160)}`);
+  }
+  if (!o || !o.packages) throw new lib.HarnessError(`${file} has no packages table`);
+  return o;
+}
+const owners = () => (OWNERS = OWNERS || loadOwners(OWNERS_FILE));
+
+const testBase = (file) => path.basename(file).replace(/\.test\.ts$/, '');
+/** The package that owns test/<file> (a base name or a path), or '?'. */
 const testOwner = (file) => {
-  const base = path.basename(file).replace(/\.test\.ts$/, '');
-  for (const [p, list] of Object.entries(TEST_OWNERS)) if (list.split(' ').includes(base)) return p;
-  return UNOWNED_TESTS.includes(base) ? 'unowned' : '?';
+  const base = testBase(file);
+  for (const [p, d] of Object.entries(owners().packages)) if ((d.tests || []).includes(base)) return p;
+  return '?';
 };
-
-const CODE_OWNERS = {
-  E: ['SimpleRenderer.ts', 'FxBudget.ts', 'tools/perf-gate.cjs', 'tools/ux-probes/', 'package.json', 'package-lock.json', 'test/helpers/headlessDom.ts', 'test/helpers/networkStubs.ts'],
-  A: ['main-simple.ts', 'SimpleInputManager.ts', 'OrbitCamera.ts', 'keyGuards.ts', 'Compass.ts', 'Guide.ts', 'GuideCard.ts'],
-  B: ['GameScene.ts', 'SimplePlayer.ts', 'Juice.ts', 'NpcActivities.ts', 'worldBenches.ts', 'HudLabels.ts', 'Multiplayer.ts', 'test/golden/seedDraws.json'],
-  D: ['SimpleUI.ts', 'style.css', 'PanelManager.ts', 'index.html', 'Share.ts', 'Passport.ts', 'Districts.ts', 'Boards.ts', 'NpcChat.ts', 'ReceptionDesk.ts', 'Analytics.ts', 'CREDITS.md', 'README.md', 'ui/', 'public/hire.html', 'public/404.html', 'public/fonts/'],
-  C: ['Island.ts', 'EnvironmentCycle.ts', 'CelLook.ts', 'Materials.ts', 'Zones.ts', 'TextureGenerator.ts', 'Mailbox.ts', 'Traffic.ts', 'SignPainter.ts', 'public/assets/models/overrides.json', 'public/assets/panels/chocomate.webp'],
-};
+/** The package that owns a repo path, or 'unowned'. Exact entries beat folders; the longest folder wins. */
 const codeOwner = (rel) => {
-  for (const [p, list] of Object.entries(CODE_OWNERS)) if (list.some((x) => (x.endsWith('/') ? rel.startsWith(x) : rel === x))) return p;
-  return 'unowned';
+  const o = owners();
+  if (/^test\/[^/]+\.test\.ts$/.test(rel)) {
+    const t = testOwner(rel);
+    return t === '?' ? 'unowned' : t;
+  }
+  for (const [p, d] of Object.entries(o.packages)) if ((d.code || []).includes(rel) || (d.testFiles || []).includes(rel)) return p;
+  if ((o.unownedCode || []).includes(rel)) return 'unowned';
+  let best = null;
+  const consider = (owner, entry) => {
+    if (entry.endsWith('/') && rel.startsWith(entry) && (!best || entry.length > best.entry.length)) best = { owner, entry };
+  };
+  for (const [p, d] of Object.entries(o.packages)) for (const e of [...(d.code || []), ...(d.testFiles || [])]) consider(p, e);
+  for (const e of o.unownedCode || []) consider('unowned', e);
+  return best ? best.owner : 'unowned';
 };
-const STAGE1 = ['A', 'B', 'D', 'E'];
-
-// Rule 3: content scans stay with their owners (testOwnership rule 3, plus
-// serverModeration's AI_NPC_DEFS order read, named by critique-r2).
-const CONTENT_SCANS = [
-  { test: 'claimsPanels.test.ts', kind: 'list', why: "the banned-word scan over SimpleUI, main-simple, ReceptionDesk and NpcChat (FILES)" },
-  { test: 'claimsSurfaces.test.ts', why: 'the public-surface claims, including NPC_SITES in Island.ts' },
-  { test: 'radiusUnits.test.ts', why: "the bare-radian ban over Island, GameScene and NpcActivities" },
-  { test: 'livingNpcs.test.ts', why: "client/server list equality (SimpleUI NOTICE_TEMPLATES, NpcChat, WorldState)" },
-  { test: 'serverModeration.test.ts', files: ['NpcChat.ts'], why: 'the persona roster order (AI_NPC_DEFS), critique-r2 minor' },
-];
-const contentScan = (testFile, rel, kind) =>
-  CONTENT_SCANS.find((c) => c.test === testFile && (!c.files || c.files.includes(rel)) && (!c.kind || c.kind === kind)) || null;
-
-// The plan's relocation table: origin test() line on main -> destination.
-const PLAN_TABLE = {
-  'onboarding.test.ts': { A: [66, 73, 79, 91, 102, 113, 122, 142, 169, 210, 285, 295, 312], B: [102] },
-  'frontDoorPolish.test.ts': { A: [95, 111, 258, 297, 307, 367, 376, 387, 482, 504, 538] },
-  'mobileHud.test.ts': { A: [70, 107] },
-  'reducedMotion.test.ts': { A: [69, 100, 104], B: [82] },
-  'claimsPanels.test.ts': { A: [80] },
-  'audioControl.test.ts': { A: [147, 361, 375] },
-  'inventoryPanel.test.ts': { D: [42, 88] },
-  'feelRegressions.test.ts': { A: [378, 396, 430, 472, 497, 528], B: [191], D: [517] },
-  'oceanDive.test.ts': { A: [282] },
-  'visualPolish.test.ts': { A: [109, 286, 317, 493, 551, 572, 735, 774, 880, 1075], D: [446, 463, 478, 535, 721, 986, 999, 1013], E: [572, 774, 846, 903] },
-};
+/** The owners.json contract check that allows this read or import, if any. */
+const contractCheck = (testFile, rel, how) =>
+  (owners().contractChecks || []).find((c) => c.test === testBase(testFile) && (c.via || 'read') === (how === 'import' ? 'import' : 'read') && (c.files || []).includes(rel)) || null;
+const PACKAGES = () => Object.keys(owners().packages);
 
 // ----------------------------------------------------------------- lexer
 const KEYWORDS_BEFORE_REGEX = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
@@ -516,10 +518,121 @@ function analyze(file, src, exists) {
     }
     if (!attributed) for (const f of files) rows.push({ line: d ? d.line : s.line, test: d ? `describe: ${d.name}` : '(file level)', file: f, kind: s.kind, scope: d ? 'describe' : 'file', at: s.line, reader: s.reader });
   }
-  // One row per (test line, file, kind).
+  for (const r of rows) r.how = 'read';
+
+  // Imports: an import of another package's module is a read of that module.
+  const resolveModule = (spec) => {
+    if (!/^\.\.?\//.test(spec)) return null; // a package from node_modules, not repo code
+    const rel = path.posix.normalize(path.posix.join('test', spec));
+    if (rel.startsWith('..')) return null;
+    for (const ext of ['', '.ts', '.js', '.cjs', '.mjs', '.json', '/index.ts']) if (exists(rel + ext)) return rel + ext;
+    return null;
+  };
+  const imports = [];
+  for (let k = 0; k < toks.length; k++) {
+    // vi.mock('x') / vi.doMock('x')
+    if (isId(k, 'vi') && isP(k + 1, '.') && isId(k + 2) && ['mock', 'doMock'].includes(toks[k + 2].value) && isP(k + 3, '(') && toks[k + 4] && toks[k + 4].type === 'str') {
+      imports.push({ k, line: toks[k].line, spec: toks[k + 4].value, bindings: [], kind: 'mock' });
+      continue;
+    }
+    // createRequire(...)('x')
+    if (isId(k, 'createRequire') && isP(k + 1, '(')) {
+      const c = matchClose(toks, k + 1);
+      if (isP(c + 1, '(') && toks[c + 2] && toks[c + 2].type === 'str') {
+        const b = isP(k - 1, '=') && isId(k - 2) ? [toks[k - 2].value] : [];
+        imports.push({ k, line: toks[k].line, spec: toks[c + 2].value, bindings: b, kind: 'require' });
+      }
+      continue;
+    }
+    // require('x')
+    if (isId(k, 'require') && !isP(k - 1, '.') && isP(k + 1, '(') && toks[k + 2] && toks[k + 2].type === 'str') {
+      const b = isP(k - 1, '=') && isId(k - 2) ? [toks[k - 2].value] : [];
+      imports.push({ k, line: toks[k].line, spec: toks[k + 2].value, bindings: b, kind: 'require' });
+      continue;
+    }
+    if (!(isId(k, 'import') || isId(k, 'export')) || isP(k - 1, '.')) continue;
+    const isImport = toks[k].value === 'import';
+    // import('x'), possibly inside a test
+    if (isImport && isP(k + 1, '(')) {
+      if (toks[k + 2] && toks[k + 2].type === 'str') imports.push({ k, line: toks[k].line, spec: toks[k + 2].value, bindings: [], kind: 'dynamic' });
+      continue;
+    }
+    // import 'x'
+    if (isImport && toks[k + 1] && toks[k + 1].type === 'str') {
+      imports.push({ k, line: toks[k].line, spec: toks[k + 1].value, bindings: [], kind: 'side-effect' });
+      continue;
+    }
+    // Only the import and re-export statement forms from here on.
+    if (!isImport && !(isP(k + 1, '{') || isP(k + 1, '*'))) continue;
+    if (isImport && !(isId(k + 1) || isP(k + 1, '{') || isP(k + 1, '*'))) continue;
+    let q = k + 1;
+    let typeOnly = false;
+    if (isId(q, 'type') && !isP(q + 1, ',') && !isId(q + 1, 'from') && !isP(q + 1, '=')) {
+      typeOnly = true;
+      q++;
+    }
+    const bindings = [];
+    let named = 0;
+    let namedTypes = 0;
+    let other = 0;
+    let ok = false;
+    for (; q < toks.length; q++) {
+      if (isId(q, 'from')) {
+        ok = true;
+        break;
+      }
+      if (isP(q, ';') || (toks[q].line > toks[k].line + 40)) break;
+      if (isP(q, '{')) {
+        const e = matchClose(toks, q);
+        for (const a of args(toks, q, e)) {
+          const ids = a.filter((x) => isId(x)).map((x) => toks[x].value);
+          if (!ids.length) continue;
+          named++;
+          const isType = ids[0] === 'type' && ids.length > 1;
+          if (isType) namedTypes++;
+          bindings.push(ids[ids.length - 1]);
+        }
+        q = e;
+        continue;
+      }
+      if (isP(q, '*') && isId(q + 1, 'as') && isId(q + 2)) {
+        bindings.push(toks[q + 2].value);
+        other++;
+        q += 2;
+        continue;
+      }
+      if (isImport && isId(q) && toks[q].value !== 'type') {
+        bindings.push(toks[q].value);
+        other++;
+      }
+    }
+    if (!ok || !toks[q + 1] || toks[q + 1].type !== 'str') continue;
+    if (typeOnly || (named > 0 && namedTypes === named && other === 0)) continue;
+    imports.push({ k, line: toks[k].line, spec: toks[q + 1].value, bindings, kind: isImport ? 'import' : 'export-from' });
+  }
+  for (const im of imports) {
+    const file = resolveModule(im.spec);
+    if (!file || file.startsWith('test/helpers/')) continue;
+    const kind = im.kind === 'mock' ? 'mock' : 'import';
+    const t = testAt(im.k);
+    if (t) {
+      rows.push({ line: t.line, test: t.name, file, kind, scope: 'test', at: im.line, how: 'import' });
+      continue;
+    }
+    const users = im.bindings.length
+      ? tests.filter((tb) => {
+          for (let q = tb.from; q <= tb.to; q++) if (isId(q) && im.bindings.includes(toks[q].value) && !isP(q - 1, '.')) return true;
+          return false;
+        })
+      : [];
+    if (users.length) for (const tb of users) rows.push({ line: tb.line, test: tb.name, file, kind, scope: 'file', at: im.line, how: 'import' });
+    else rows.push({ line: im.line, test: '(file level)', file, kind, scope: 'file', at: im.line, how: 'import' });
+  }
+
+  // One row per (test line, file, kind, how).
   const seen = new Set();
   return rows.filter((r) => {
-    const key = `${r.line}|${r.file}|${r.kind}`;
+    const key = `${r.line}|${r.file}|${r.kind}|${r.how}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -548,131 +661,98 @@ function treeReader(ref) {
   };
 }
 
-function census(tree) {
+/** The rule for one read or import in test/<tf>. */
+function ruleFor(tf, r, stage) {
+  const owner = testOwner(tf);
+  const co = codeOwner(r.file);
+  if (owner === co) return { rule: 'own' };
+  if (owner === '?') return { rule: 'test without an owner in tools/owners.json', unownedTest: true };
+  if (co === 'unowned') return { rule: 'rule 5: unowned code, stays' };
+  const cc = contractCheck(tf, r.file, r.how);
+  if (cc) return { rule: 'rule 3: contract check, stays', contract: cc.where || cc.why };
+  const ruleNo = co === 'C' && (owner === 'B' || owner === 'D') ? 2 : 1;
+  if (stage === 1) return { rule: ruleNo === 2 ? 'rule 2: C code, loosen in place' : `rule 1: move to ${co}`, pending: co };
+  return { rule: `rule ${ruleNo}: pending move to ${co}`, pending: co };
+}
+
+function census(tree, stage = 2) {
   const reads = [];
   for (const tf of tree.tests) {
     const rows = analyze(tf, tree.read(`test/${tf}`), (f) => tree.exists(f));
     const owner = testOwner(tf);
     for (const r of rows) {
-      const co = codeOwner(r.file);
-      let rule;
       if (r.file === `test/${tf}`) continue;
-      if (owner === co) rule = 'own';
-      else if (owner === 'unowned') rule = 'unowned test (PR #20)';
-      else if (co === 'unowned') rule = 'rule 5: unowned code, stays';
-      else if (contentScan(tf, r.file, r.kind)) rule = 'rule 3: content scan, stays';
-      else if (co === 'C') rule = 'rule 2: C code, loosen in place';
-      else if (STAGE1.includes(co)) rule = `rule 1: move to ${co}`;
-      else rule = '?';
-      reads.push({ testFile: tf, testOwner: owner, line: r.line, test: r.test, file: r.file, codeOwner: co, kind: r.kind, scope: r.scope, rule });
+      const rule = ruleFor(tf, r, stage);
+      reads.push({ testFile: tf, testOwner: owner, line: r.line, test: r.test, file: r.file, codeOwner: codeOwner(r.file), how: r.how, kind: r.kind, scope: r.scope, ...(r.via ? { binding: r.via } : {}), ...rule });
     }
   }
   return reads;
 }
 
-function testNamesAt(tree, tf, lines) {
-  let src;
-  try {
-    src = tree.read(`test/${tf}`).split('\n');
-  } catch (e) {
-    return null;
-  }
-  const out = {};
-  for (const l of lines) {
-    const m = /(?:test|it)(?:\.each\(.*?\))?\(\s*(['"`])(.*?)\1/.exec(src[l - 1] || '');
-    out[l] = m ? m[2] : null;
-  }
-  return out;
-}
+const fmtRow = (r) => `${r.testFile}:${r.line} '${r.test}' ${r.how === 'import' ? (r.kind === 'mock' ? 'mocks' : 'imports') : 'reads'} ${r.file} -> pending move to ${r.pending}`;
 
 async function run({ args }) {
+  if (args.owners && args.owners !== true) OWNERS = loadOwners(path.resolve(String(args.owners)));
+  const stage = args.stage === undefined ? 2 : Number(args.stage);
+  if (stage !== 1 && stage !== 2) throw new lib.HarnessError(`--stage takes 1 or 2, got ${args.stage}`);
+  if (args.owner === true) throw new lib.HarnessError(`--owner takes a package: ${PACKAGES().join(', ')}`);
+  const only = args.owner ? String(args.owner).toUpperCase() : null;
+  if (only && !PACKAGES().includes(only)) throw new lib.HarnessError(`--owner takes one of ${PACKAGES().join(', ')}, got ${args.owner}`);
   const tree = treeReader(args.ref || null);
-  const reads = census(tree);
-  const moves = {};
-  for (const r of reads.filter((x) => x.rule.startsWith('rule 1'))) {
-    const dest = r.codeOwner;
-    ((moves[r.testFile] = moves[r.testFile] || {})[dest] = moves[r.testFile][dest] || new Set()).add(`${r.line}|${r.test}`);
-  }
-  // Compare with the plan's table by test name (lines resolved on the table ref).
-  let tableRef = args.tableRef || 'origin/main';
-  let tableTree = null;
-  try {
-    tableTree = treeReader(tableRef);
-  } catch (e) {
-    tableRef = null;
-  }
-  const planRows = [];
-  for (const [tf, dests] of Object.entries(PLAN_TABLE)) {
-    for (const [dest, lines] of Object.entries(dests)) {
-      const names = tableTree ? testNamesAt(tableTree, tf, lines) : null;
-      for (const l of lines) planRows.push({ testFile: tf, dest, line: l, test: names ? names[l] : null });
-    }
-  }
-  const have = new Set();
-  for (const [tf, dests] of Object.entries(moves)) for (const [dest, set] of Object.entries(dests)) for (const e of set) have.add(`${tf}|${dest}|${e.split('|').slice(1).join('|')}`);
-  const haveLines = new Set();
-  for (const [tf, dests] of Object.entries(moves)) for (const [dest, set] of Object.entries(dests)) for (const e of set) haveLines.add(`${tf}|${dest}|${e.split('|')[0]}`);
-  const byName = planRows.every((p) => p.test);
-  const pending = [];
-  const done = [];
-  for (const p of planRows) {
-    const hit = byName ? have.has(`${p.testFile}|${p.dest}|${p.test}`) : haveLines.has(`${p.testFile}|${p.dest}|${p.line}`);
-    (hit ? pending : done).push(p);
-  }
-  const planKeys = new Set(planRows.map((p) => (byName ? `${p.testFile}|${p.dest}|${p.test}` : `${p.testFile}|${p.dest}|${p.line}`)));
-  const extra = [];
-  for (const [tf, dests] of Object.entries(moves))
-    for (const [dest, set] of Object.entries(dests))
-      for (const e of set) {
-        const [line, ...nm] = e.split('|');
-        const key = byName ? `${tf}|${dest}|${nm.join('|')}` : `${tf}|${dest}|${line}`;
-        if (!planKeys.has(key)) extra.push({ testFile: tf, dest, line: Number(line), test: nm.join('|') });
-      }
-  const table = {};
-  for (const [tf, dests] of Object.entries(moves)) {
-    table[tf] = {};
-    for (const [dest, set] of Object.entries(dests)) table[tf][dest] = [...set].map((e) => Number(e.split('|')[0])).sort((a, b) => a - b).filter((x, i, a) => a.indexOf(x) === i);
-  }
+  const reads = census(tree, stage);
+  const pkgs = only ? [only] : PACKAGES();
+  const pending = reads.filter((r) => r.pending && pkgs.includes(r.testOwner));
+  const unownedTests = [...new Set(tree.tests.filter((tf) => testOwner(tf) === '?'))];
   const byOwner = {};
   for (const r of reads.filter((x) => x.rule !== 'own')) {
     const o = (byOwner[r.testOwner] = byOwner[r.testOwner] || {});
     o[r.rule] = (o[r.rule] || 0) + 1;
   }
-  const feel = reads.filter((r) => r.testFile === 'feelRegressions.test.ts' && ['main-simple.ts', 'OrbitCamera.ts', 'GameScene.ts', 'SimpleUI.ts'].includes(r.file));
-  const checks = [
-    { name: 'feelRegressions.test.ts reads no main-simple.ts, OrbitCamera.ts, GameScene.ts or SimpleUI.ts (EL)', pass: feel.length === 0, value: feel.map((r) => `${r.line} ${r.file}`), expect: 'none' },
-    { name: 'every rule-1 cross-package read is in the plan relocation table', pass: extra.length === 0, value: extra.map((x) => `${x.testFile}:${x.line} -> ${x.dest} (${x.test})`), expect: 'none' },
-  ];
-  if (!args.ref && !extra.length) {
-    // A table row whose read is gone has moved; list them so a relocation PR can show its moves.
+  const pendingBy = {};
+  for (const r of pending) {
+    const k = `${r.testOwner} -> ${r.pending}`;
+    (pendingBy[k] = pendingBy[k] || []).push(fmtRow(r));
   }
+  const checks = pkgs.map((p) => {
+    const mine = pending.filter((r) => r.testOwner === p);
+    return {
+      name: `${p}: reads and imports of another package's code outside the owners.json allow-list`,
+      pass: mine.length === 0,
+      value: mine.length ? mine.map(fmtRow) : 'none',
+      expect: 'none',
+    };
+  });
+  if (!only) checks.push({ name: 'every test file has an owner in tools/owners.json', pass: unownedTests.length === 0, value: unownedTests.length ? unownedTests : 'all owned', expect: 'all owned' });
   const out = {
     tree: tree.label,
-    tableRef: tableRef ? tableTree.label : 'unresolved (lines compared)',
-    comparedBy: byName ? 'test name' : 'test line',
-    relocationTable: table,
-    planRowsPending: pending.length,
-    planRowsDone: done.map((p) => `${p.testFile}:${p.line} -> ${p.dest}${p.test ? ` (${p.test})` : ''}`),
-    reproducesPlanTable: done.length === 0 && extra.length === 0,
-    extraMoves: extra,
+    stage,
+    owner: only || 'all',
+    ownersFile: (args.owners && args.owners !== true ? path.resolve(String(args.owners)) : OWNERS_FILE).replace(/\\/g, '/'),
+    pendingMoves: pending.length,
+    pendingBy,
     summaryByTestOwner: byOwner,
-    contentScans: CONTENT_SCANS,
-    unownedTests: reads.filter((r) => r.testOwner === 'unowned').map((r) => `${r.testFile}:${r.line} ${r.file} (${r.codeOwner})`),
+    contractChecks: owners().contractChecks || [],
+    unownedTests,
     reads,
   };
-  const text = [`lock-census on ${tree.label}; table ${out.tableRef}, compared by ${out.comparedBy}`];
-  for (const [tf, dests] of Object.entries(table).sort()) text.push(`  ${tf} (${testOwner(tf)}) -> ${Object.entries(dests).map(([d, ls]) => `${d}: ${ls.join(', ')}`).join(' | ')}`);
-  text.push(`  plan rows still pending: ${pending.length}; moved already: ${done.length}; reads not in the table: ${extra.length}`);
-  for (const d of out.planRowsDone) text.push(`    moved: ${d}`);
+  const text = [`lock-census on ${tree.label} (stage ${stage}${only ? `, --owner ${only}` : ''})`];
+  for (const p of pkgs) {
+    const mine = pending.filter((r) => r.testOwner === p);
+    text.push(`  ${p}: ${mine.length ? `${mine.length} pending move${mine.length === 1 ? '' : 's'}` : 'clean'}`);
+    for (const r of mine) text.push(`    ${fmtRow(r)}`);
+  }
+  if (!only && unownedTests.length) text.push(`  tests without an owner: ${unownedTests.join(', ')}`);
   process.stdout.write(text.join('\n') + '\n');
   return { checks, data: out };
 }
 
 module.exports = {
-  probe: { static: true, item: 'EL, AL, BL, DL (E7 later)', title: 'every literal source read in test/*.test.ts, owners and rules, vs the relocation table', run },
+  probe: { static: true, item: 'CO-E1 (EL, AL, BL, DL in stage 1)', title: 'every source read and import in test/*.test.ts, its owners and rule; --owner <pkg> lists pending moves', run },
   analyze,
   census,
   treeReader,
   testOwner,
   codeOwner,
+  contractCheck,
+  loadOwners,
 };
