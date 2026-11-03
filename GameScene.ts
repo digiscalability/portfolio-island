@@ -13243,6 +13243,12 @@ export class GameScene extends THREE.Scene {
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
+        // Both faces in one draw. three splits a transparent double-sided
+        // material into a back pass and a front pass (two programs, two
+        // draws a beam) so normal blending sorts itself; additive light with
+        // no depth write sums the same in any order. MEASURED: one program
+        // fewer at +30 s on both tiers, now that the warm compiles the rig.
+        forceSinglePass: true,
       });
       const beam = new THREE.Mesh(beamGeo, mat);
       beam.position.y = -3; // hang the cylinder below its pivot
