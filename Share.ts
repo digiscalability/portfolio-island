@@ -91,7 +91,9 @@ export function buildShareUrl(params: ShareParams = {}): string {
 /**
  * Set or remove ONE query param in the address bar without touching the rest.
  * The old ?zone= writer rebuilt the whole query string, silently nuking
- * ?hour=/?theme= — every URL write must go through here instead.
+ * ?hour=/?theme= — every URL write must go through here instead. It keeps the
+ * entry's state too: an open panel's history entry carries {dsPanel, dsTok}
+ * (PanelManager), and wiping it left Back unable to step off the entry.
  */
 export function setUrlParam(name: string, value: string | null): void {
   try {
@@ -99,7 +101,7 @@ export function setUrlParam(name: string, value: string | null): void {
     if (value === null) sp.delete(name);
     else sp.set(name, value);
     const q = sp.toString();
-    history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}`);
+    history.replaceState(history.state, '', `${location.pathname}${q ? `?${q}` : ''}`);
   } catch {
     /* ignore */
   }

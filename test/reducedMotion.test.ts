@@ -65,25 +65,15 @@ describe('the in-app toggle reaches CSS (root-class contract)', () => {
   });
 });
 
+// The gates in main-simple.ts (the tour slideshow, the fly-in seat) and in
+// OrbitCamera.ts (the fly-in early-out) moved to package A's
+// test/mainLocks.test.ts; the party's calm path in GameScene.ts moved to
+// package B's test/sceneLocks.test.ts (testOwnership rule 1).
 describe('load-bearing gates exist at their call sites', () => {
-  test('the tour is a slideshow under reduced motion (fly cut, dwell hold, exit snap)', () => {
-    const tour = fn('main-simple.ts', 'private updateTour');
-    // Both the fly branch (hard cut) and the dwell branch (no drift) gate.
-    expect(tour.split('a11y.reducedMotion').length).toBeGreaterThanOrEqual(3);
-    expect(fn('main-simple.ts', 'private endTour')).toContain('snapCameraToPlayer');
-  });
-
   test('rain calms, and rebuilds live when the toggle flips mid-storm', () => {
     const env = src('EnvironmentCycle.ts');
     expect(env).toContain('a11y.reducedMotion');
     expect(env).toContain('a11y.onChange');
-  });
-
-  test('the party "calm" path covers the whole room, not just the strobe', () => {
-    // ballLight, confetti, tiles, spot sweep and the spinner guest all read
-    // `calm` now; the original gate covered only the beat flash + lasers.
-    const party = fn('GameScene.ts', 'private updateInteriorParty', 6000);
-    expect((party.match(/\bcalm\b/g) ?? []).length).toBeGreaterThanOrEqual(10);
   });
 
   test('pending-delivery attention loops hold still (mailbox glow, minimap pulses)', () => {
@@ -95,22 +85,6 @@ describe('load-bearing gates exist at their call sites', () => {
 
   test('the scripted-dialogue typewriter matches the chat-panel rule', () => {
     expect(fn('SimpleUI.ts', 'private startTypewriter')).toContain('a11y.reducedMotion');
-  });
-
-  test('the fly-in primitive early-outs on its own (defence in depth)', () => {
-    expect(fn('OrbitCamera.ts', 'public async flyInFromDistant')).toContain('a11y.reducedMotion');
-  });
-
-  test('reduced motion still SEATS the camera in the follow view', () => {
-    // The swoop is skipped, but flyInFromDistant is ALSO what initialises the
-    // camera pose (its own reduced-motion guard snapToPlayer()s). Skipping the
-    // whole else-branch left the camera at the distant pre-placement position —
-    // MEASURED 243u from the player — so a reduced-motion visitor got a
-    // washed-out distant planet that never came in. The branch must snap.
-    const branch = fn('main-simple.ts', 'if (a11y.reducedMotion) {', 1000);
-    expect(branch).toContain('this.scene.getOrbitCamera().snapToPlayer()');
-    // snap must precede afterIntro so the first governed frame is the follow view.
-    expect(branch.indexOf('snapToPlayer()')).toBeLessThan(branch.indexOf('afterIntro()'));
   });
 
   test('the dead Island.update() lamp-blink landmine stays deleted', () => {

@@ -143,18 +143,10 @@ describe('dispose unhooks the lifecycle', () => {
   });
 });
 
+// The main-simple.ts locks of this suite (dispose() on teardown, the boot
+// unlock's guard-before-detach order and its sticky-activation resume) moved to
+// package A's test/mainLocks.test.ts (testOwnership rule 1).
 describe('the audio review lows', () => {
-  test('AudioManager.dispose() is actually called on app teardown', () => {
-    // It was documented, correct, and DEAD — zero callers. Since the
-    // lifecycle hooks landed that also meant leaked visibilitychange/
-    // pageshow/pointerdown listeners that could poke a closed context.
-    const m = src('main-simple.ts')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-    expect(m).toContain('w.audioManager?.dispose?.()');
-    expect(m).toContain('w.audioManager = undefined'); // HMR re-boot gets a fresh manager
-  });
-
   test('the mute button tells the truth', () => {
     const s = src('SimpleUI.ts')
       .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -354,33 +346,5 @@ describe('the sfx duck survives a mute during a voice line', () => {
     s.duckForVoice(true);
     void s.ctxOrNull;
     expect(gainWrites.length).toBe(n); // applied state matches intent — no-op
-  });
-});
-
-describe('the boot unlock stays armed until there is something to unlock', () => {
-  test('resumeAudio checks for the manager BEFORE detaching its listeners', () => {
-    // The old order — removeEventListener first, look for window.audioManager
-    // second — is the whole bug: the manager arrives ~5s after first paint.
-    const m = src('main-simple.ts');
-    const i = m.indexOf('const resumeAudio = ()');
-    expect(i, 'resumeAudio not found').toBeGreaterThan(-1);
-    const body = m.slice(i, i + 1800);
-    const guard = body.indexOf('if (!am) return;');
-    const detach = body.indexOf("window.removeEventListener('keydown', resumeAudio)");
-    expect(guard, 'the not-booted guard must exist').toBeGreaterThan(-1);
-    expect(detach).toBeGreaterThan(-1);
-    expect(guard, 'the guard must come BEFORE the detach').toBeLessThan(detach);
-  });
-
-  test('creating the manager attempts one sticky-activation resume', () => {
-    // Chrome grants sticky activation after any prior gesture, so a resume
-    // right after the late boot recovers those sessions without waiting for
-    // another tap; WebKit no-ops it and the still-armed listener covers it.
-    const m = src('main-simple.ts')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-    const i = m.indexOf("new (await import('./AudioManager')).AudioManager()");
-    expect(i).toBeGreaterThan(-1);
-    expect(m.slice(i, i + 400)).toContain('.ensureCtx().resume()');
   });
 });

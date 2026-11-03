@@ -4,8 +4,10 @@
 // DOM tests on a REAL SimpleUI where behaviour can run (loader exit, toast
 // hints, compass hint, Day badge, offline replies tag, form labels), unit
 // tests for analytics attribution and the owner opt-out, and source locks
-// where the code only runs inside the WebGL boot (fly-in ink, canvas label,
-// Firebase Auth, tour framing).
+// where the code only runs inside the WebGL boot (the cel shadow patch,
+// Firebase Auth). The boot's main-simple.ts locks (error screen, coin tip,
+// tour framing, fly-in ink timing, beforeSend, the canvas label) moved to
+// package A's test/mainLocks.test.ts (testOwnership rule 1).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as THREE from 'three';
@@ -25,13 +27,6 @@ const stripped = (f: string): string =>
     .replace(/\/\/.*$/gm, '');
 const text = (el: Element | null | undefined): string =>
   (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
-/** Slice one method body: from its declaration to the next `\n  }\n`. */
-const method = (file: string, marker: string): string => {
-  const s = stripped(file);
-  const i = s.indexOf(marker);
-  expect(i, `${marker} not found in ${file}`).toBeGreaterThan(-1);
-  return s.slice(i, s.indexOf('\n  }\n', i));
-};
 
 const FALLBACK = `
   <div id="boot-fallback" hidden>
@@ -100,21 +95,8 @@ describe('the loader has a way out', () => {
     ui.closeQuickVersion(); // main-simple showErrorScreen calls this first
     expect(document.getElementById('bf-back')).toBeNull();
     expect(document.getElementById('bf-retry')!.hidden).toBe(false);
-    // ...and showErrorScreen does call it before it rewrites the card
-    const err = method('main-simple.ts', 'private showErrorScreen');
-    expect(err.indexOf('this.ui?.closeQuickVersion()')).toBeGreaterThan(-1);
-    expect(err.indexOf('this.ui?.closeQuickVersion()')).toBeLessThan(
-      err.indexOf('fallback.hidden'),
-    );
-  });
-
-  test('init failure flags itself for the boot guard before it shows the card', () => {
-    // index.html's guard stands down on this flag, so its 60 s watchdog can't
-    // rewrite the reason later or send a second boot_fallback.
-    const err = method('main-simple.ts', 'private showErrorScreen');
-    const flag = err.indexOf('.__lifeIslandBootFailed = true;');
-    expect(flag).toBeGreaterThan(-1);
-    expect(flag).toBeLessThan(err.indexOf('fallback.hidden = false'));
+    // (that showErrorScreen calls it before it rewrites the card, and flags
+    // itself for the boot guard, is main-simple.ts code: package A's mainLocks)
   });
 
   test('the loader and quick-version buttons use the page font, not the UA button font', () => {
@@ -254,15 +236,6 @@ describe('toasts never sit over a panel unasked', () => {
     vi.advanceTimersByTime(4000);
     expect(text(toastEl())).not.toContain('gold ➤');
   });
-
-  test('the coin tip waits for a coin collected after the welcome card', () => {
-    const coin = method('main-simple.ts', 'this.scene.setOnCoinCollected(');
-    expect(coin).toContain(
-      'const welcomePending = !this.introSettled || this.ui.isWelcomeVisible();',
-    );
-    expect(coin).toMatch(/if \(!welcomePending && !localStorage\.getItem\('ds_hint_earn'\)\)/);
-    expect(stripped('main-simple.ts')).toContain('this.introSettled = true;');
-  });
 });
 
 describe('the tour frames what its captions say', () => {
@@ -293,37 +266,8 @@ describe('the tour frames what its captions say', () => {
     ui.hideTourOverlay();
     expect(badge.style.visibility).toBe('');
   });
-
-  test('captions swap on landing, not at take-off', () => {
-    expect(method('main-simple.ts', 'private advanceTourStop')).not.toContain('setTourCaption');
-    const land = method('main-simple.ts', 'private landTourStop');
-    expect(land).toContain("tour.phase = 'dwell'");
-    expect(land).toContain('this.ui.setTourCaption(tour.stops[tour.idx].caption)');
-    // both fly branches (reduced motion and the flight) land through it
-    const upd = method('main-simple.ts', 'private updateTour');
-    expect(upd.split('this.landTourStop()').length - 1).toBe(2);
-  });
-
-  test('a villager stop is re-read and held when its leg starts, released after', () => {
-    const hold = method('main-simple.ts', 'private holdTourVillager');
-    expect(hold).toContain('this.tourVillager(stop.villagers)');
-    expect(hold).toContain('this.scene.getNpcPosition(who)');
-    expect(hold).toContain('this.frameTourStop(stop, p, this.clearTourBearing(stop, p))');
-    expect(hold).toContain('this.scene.setNpcDialogueHold(who)');
-    // the camera bearing is chosen for a clear line of sight to the villager
-    const bearing = method('main-simple.ts', 'private clearTourBearing');
-    expect(bearing).toContain('collisionMeshes');
-    expect(bearing).toContain('intersectObjects(blockers, false)');
-    const adv = method('main-simple.ts', 'private advanceTourStop');
-    expect(adv.indexOf('this.releaseTourVillager()')).toBeGreaterThan(-1);
-    expect(adv.indexOf('this.releaseTourVillager()')).toBeLessThan(adv.indexOf('tour.idx += 1'));
-    expect(adv).toContain('this.holdTourVillager(tour.stops[tour.idx])');
-    expect(method('main-simple.ts', 'private endTour')).toContain('this.releaseTourVillager()');
-    // asleep villagers are hidden indoors: only frame one who is up
-    expect(method('main-simple.ts', 'private tourVillager')).toContain(
-      "this.scene.getNpcActivity(n) !== 'sleep'",
-    );
-  });
+  // (the caption-on-landing and villager-hold locks are main-simple.ts code:
+  // package A's mainLocks)
 });
 
 describe('the fly-in hides the ink through the material', () => {
@@ -364,31 +308,13 @@ describe('the fly-in hides the ink through the material', () => {
     for (const h of hulls) expect((h.material as THREE.Material).visible).toBe(true);
   });
 
-  test('main-simple hides it in the intro-lite block and restores it mid-swoop', () => {
-    const m = stripped('main-simple.ts');
-    const hide = m.indexOf('setInkVisible(false)');
-    const restore = m.indexOf('const restoreIntroQuality');
-    expect(hide).toBeGreaterThan(m.indexOf('this.renderer.setShadowFreeze(true)'));
-    expect(hide).toBeLessThan(restore);
-    expect(m.slice(restore, restore + 300)).toContain('setInkVisible(true)');
-  });
-
-  test('the 1.5 s restore clock starts at the first frame, not before warmUp', () => {
-    // warmUp compiles every program synchronously (measured 2.3 s), so a clock
-    // started in the intro block ran out before the swoop's first frame and
-    // the intro-lite levers (ink included) never engaged.
-    const m = stripped('main-simple.ts');
-    expect(m).toContain(
-      'requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500))',
-    );
-    expect(m.split('window.setTimeout(restoreIntroQuality, 1500)').length - 1).toBe(1);
-  });
+  // (where main-simple hides the ink and when it restores it is main-simple.ts
+  // code: package A's mainLocks)
 
   test('the dead cel shadow patch and its load warning are gone', () => {
     // (its name survives in a CelLook comment, for anyone searching history)
     expect(stripped('CelLook.ts')).not.toContain('applyCelShadowPatch');
     expect(stripped('CelLook.ts')).not.toContain('console.warn');
-    expect(stripped('main-simple.ts')).not.toContain('applyCelShadowPatch');
   });
 });
 
@@ -479,11 +405,8 @@ describe('analytics: owner opt-out and entry attribution', () => {
     }
   });
 
-  test('pageviews obey it too (inject beforeSend)', () => {
-    expect(stripped('main-simple.ts')).toContain(
-      'beforeSend: (event) => (isOwnerVisit() ? null : event)',
-    );
-  });
+  // (pageviews obey it through main-simple's inject beforeSend: package A's
+  // mainLocks)
 
   test('the stale "Web Analytics is disabled" note is gone', () => {
     expect(src('SimpleUI.ts')).not.toContain('turned out to be DISABLED');
@@ -500,16 +423,7 @@ describe('the NPC chat admits offline replies', () => {
     expect(text(badge)).toBe('offline replies');
     expect(badge.title).toContain('written lines');
   });
-
-  test('main-simple marks it on the canned branch of the AI chat', () => {
-    const m = stripped('main-simple.ts');
-    const i = m.indexOf('const res = await askNpc(npcData.name, text);');
-    expect(i).toBeGreaterThan(-1);
-    const branch = m.slice(i, i + 400);
-    expect(branch.indexOf('this.ui.markNpcChatOffline(npcData.name)')).toBeLessThan(
-      branch.indexOf('canned[ci++'),
-    );
-  });
+  // (that main-simple marks it on the canned branch is package A's mainLocks)
 });
 
 describe('accessibility quick wins', () => {
@@ -535,10 +449,8 @@ describe('accessibility quick wins', () => {
     expect(msg.getAttribute('style')).toContain('font-family:inherit');
   });
 
-  test('the canvas is named, and HUD chips skip the double-tap delay', () => {
-    const m = stripped('main-simple.ts');
-    expect(m).toContain("canvas.setAttribute('role', 'img')");
-    expect(m).toMatch(/canvas\.setAttribute\(\s*'aria-label',/);
+  test('HUD chips skip the double-tap delay', () => {
+    // (that main-simple names the canvas is package A's mainLocks)
     const css = src('style.css');
     const rule = css.slice(css.indexOf('.hud-btn {'), css.indexOf('}', css.indexOf('.hud-btn {')));
     expect(rule).toContain('touch-action: manipulation');
@@ -548,5 +460,74 @@ describe('accessibility quick wins', () => {
     const box = document.createElement('div');
     appendReceptionDesk(box);
     expect(text(box)).toContain('your voice streams live to ElevenLabs');
+  });
+});
+
+// Stage 1 (A3, A4) made looking a press-and-drag with the left or right mouse
+// button, a swipe on touch, and J/L on the keyboard; pointer lock is opt-in.
+// "mouse to look" taught a click and a move, which now turns nothing. (D9
+// later drops the card's controls line, and these card checks with it.)
+describe('the controls copy teaches the stage-1 look', () => {
+  const lookLine = (root: Element | null | undefined): string =>
+    text([...(root?.querySelectorAll('p') ?? [])].find((p) => text(p).includes('to move')));
+  const cardLine = (): string => {
+    ui.showWelcome(null);
+    return lookLine(document.querySelector('[role="dialog"]'));
+  };
+  const hubLine = (): string => {
+    ui.hideWelcome(false);
+    ui.showZonePanel({ id: 'welcome', name: 'welcome' }, { source: 'menu' });
+    const hub = [...document.querySelectorAll('#ui-overlay > div')].find((d) =>
+      text(d.querySelector('h2')).includes('Welcome to Life Island'),
+    );
+    expect(hub, 'no Welcome Hub panel').toBeTruthy();
+    return lookLine(hub);
+  };
+
+  test('desktop: drag or J/L to look, on the card and in the Welcome Hub', () => {
+    expect(ui.isTouchDevice()).toBe(false);
+    const card = cardLine();
+    const hub = hubLine();
+    expect(card).toBe('WASD to move · drag or J/L to look · space to jump · Q to wave.');
+    expect(hub).toContain('WASD to move, drag or J/L to look, E to interact.');
+    for (const line of [card, hub]) expect(line).not.toMatch(/mouse/i);
+  });
+
+  test('touch: swipe to look in the Hub, and neither surface names a mouse or a key', () => {
+    history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
+    try {
+      document.body.innerHTML = '<div id="ui-overlay"></div>';
+      ui = new SimpleUI('ui-overlay');
+      expect(ui.isTouchDevice()).toBe(true);
+      const card = cardLine();
+      const hub = hubLine();
+      expect(card).toContain('Drag the joystick to move');
+      expect(hub).toContain('Drag the joystick to move, swipe to look, 👆 USE to interact.');
+      for (const line of [card, hub]) {
+        expect(line).not.toMatch(/mouse|J\/L|WASD|drag to look/i);
+      }
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  test('the README table says the same: a drag with either button, J/L, a swipe', () => {
+    const readme = src('README.md');
+    const controls = readme.slice(readme.indexOf('## Controls'), readme.indexOf('## How it is'));
+    expect(controls).toContain('| Mouse drag (left or right button) | Look |');
+    expect(controls).toContain('| J / L | Turn the view (I / K tilt it, R recentres it) |');
+    expect(controls).toContain('On a phone: a joystick to move, swipe to look,');
+  });
+
+  test('no surface still teaches the click-to-lock look', () => {
+    for (const f of [
+      'SimpleUI.ts',
+      'README.md',
+      'index.html',
+      'public/hire.html',
+      'public/404.html',
+    ]) {
+      expect(src(f), f).not.toMatch(/mouse to look|lock the pointer|click the world/i);
+    }
   });
 });

@@ -7,9 +7,21 @@
 //     under the open shop.
 //   - notifyClosed must NO-OP during the exclusivity sweep — every panel's
 //     close() path calls notifyClosed, and the sweep owns the stack.
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+//   - a panel whose element has left the document pops by itself, and the
+//     leaderboard's "Guide me" closes the id it was opened under (UX-01: it
+//     named 'race-leaderboard', leaving the scrim up and the phone controls
+//     hidden under "Follow the compass to the start gate").
+//   - Back closes the open panel instead of leaving the island (UX-02), run
+//     against a session-history double with a browser's traversal rules.
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { PanelManager, type PanelSpec } from '../PanelManager';
+import { type HistoryPort, PanelManager, type PanelSpec } from '../PanelManager';
+import { SimpleUI } from '../SimpleUI';
+
+// The boards are Firebase reads; here they answer at once, empty.
+vi.mock('../Boards', () => ({
+  getLeaderboard: vi.fn(async () => []),
+}));
 
 function spec(over: Partial<PanelSpec> = {}): PanelSpec {
   return { kind: 'modal', hides: [], close: () => {}, ...over };
@@ -189,5 +201,530 @@ describe('scrim + Escape', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(closeOwn).not.toHaveBeenCalled();
     expect(pm.current()).toBe('own');
+  });
+});
+
+const scrimOf = (pm: PanelManager): HTMLElement => (pm as unknown as { scrim: HTMLElement }).scrim;
+
+describe('a detached panel pops (the second UX-01 safeguard)', () => {
+  test('its element leaving the document takes the entry and the scrim down', () => {
+    const pm = new PanelManager(overlay, true);
+    const chip = document.createElement('button');
+    pm.registerLayer('touch-controls', chip);
+    const modal = document.createElement('div');
+    pm.open('leaderboard', spec({ hides: ['touch-controls'], el: modal }));
+    overlay.appendChild(modal);
+    expect(pm.current()).toBe('leaderboard'); // seen in the document
+    modal.remove(); // a close path that removed the DOM and told nobody
+    expect(pm.isOpen()).toBe(false);
+    expect(scrimOf(pm).style.display).toBe('none');
+    expect(chip.style.display).toBe('');
+  });
+
+  test('notifying the wrong id still re-derives (the exact UX-01 sequence)', () => {
+    const pm = new PanelManager(overlay, false);
+    const modal = document.createElement('div');
+    pm.open('leaderboard', spec({ el: modal }));
+    overlay.appendChild(modal);
+    pm.current();
+    modal.remove();
+    pm.notifyClosed('race-leaderboard');
+    expect(scrimOf(pm).style.display).toBe('none');
+  });
+
+  test('a modal is not popped before its caller appends it', async () => {
+    const pm = new PanelManager(overlay, false);
+    const modal = document.createElement('div');
+    pm.open('m', spec({ el: modal })); // buildCenteredModal opens, then appends
+    expect(pm.current()).toBe('m');
+    overlay.appendChild(modal);
+    await Promise.resolve(); // the post-open check
+    expect(pm.current()).toBe('m');
+  });
+
+  test('one removed in the same task as its open still pops', async () => {
+    const pm = new PanelManager(overlay, false);
+    const modal = document.createElement('div');
+    pm.open('m', spec({ el: modal }));
+    overlay.appendChild(modal);
+    await Promise.resolve(); // seen by the post-open check
+    modal.remove();
+    expect(pm.isOpen()).toBe(false);
+  });
+
+  test('a same-id re-open with a new element waits for that element', () => {
+    const pm = new PanelManager(overlay, false);
+    const first = document.createElement('div');
+    pm.open('inventory', spec({ el: first }));
+    overlay.appendChild(first);
+    pm.current();
+    first.remove(); // showInventory drops the previous element first...
+    const second = document.createElement('div');
+    pm.open('inventory', spec({ el: second })); // ...then re-opens the same id
+    overlay.appendChild(second);
+    expect(pm.current()).toBe('inventory');
+  });
+});
+
+describe("the leaderboards' Guide me leaves no scrim (UX-01)", () => {
+  let ui: SimpleUI;
+  const guideMe = (): HTMLButtonElement =>
+    [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      (b.textContent ?? '').includes('Guide me to the start line'),
+    )!;
+  const controls = (): HTMLElement[] =>
+    [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].filter(
+      (d) =>
+        d.children.length === 2 && /^(USE|JUMP|WAVE)$/.test(d.lastElementChild?.textContent ?? ''),
+    );
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+  });
+  afterEach(() => {
+    history.replaceState(null, '', '/');
+  });
+
+  test('desktop: the Leaderboard closes for real and the compass guide runs', async () => {
+    ui = new SimpleUI('ui-overlay');
+    const guided = vi.fn();
+    ui.setOnRaceGuide(guided);
+    await ui.showLeaderboard();
+    expect(ui.panels.current()).toBe('leaderboard');
+    guideMe().click();
+    expect(ui.panels.isOpen()).toBe(false);
+    expect(scrimOf(ui.panels).style.display).toBe('none');
+    expect(ui.isPanelOpen()).toBe(false); // Enter-to-chat works again
+    expect(guided).toHaveBeenCalledTimes(1);
+  });
+
+  test('phone: the joystick buttons come straight back', async () => {
+    history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
+    ui = new SimpleUI('ui-overlay');
+    expect(controls()).toHaveLength(3);
+    await ui.showLeaderboard();
+    expect(controls().every((c) => c.style.display === 'none')).toBe(true);
+    guideMe().click();
+    expect(ui.panels.isOpen()).toBe(false);
+    expect(scrimOf(ui.panels).style.display).toBe('none');
+    expect(controls().every((c) => c.style.display !== 'none')).toBe(true);
+  });
+
+  test('the race-finish board closes its own id too', async () => {
+    ui = new SimpleUI('ui-overlay');
+    await ui.showRaceLeaderboard('land', 61_234, 'Tester');
+    expect(ui.panels.current()).toBe('race-leaderboard');
+    guideMe().click();
+    expect(ui.panels.isOpen()).toBe(false);
+    expect(scrimOf(ui.panels).style.display).toBe('none');
+  });
+});
+
+// ── Back closes the panel, not the island (UX-02) ───────────────────────
+
+const clone = (v: unknown): unknown => (v === undefined ? null : JSON.parse(JSON.stringify(v)));
+
+/**
+ * A session history with a browser's traversal rules: back() and forward()
+ * are queued tasks that step from whatever entry is current when they run and
+ * then fire popstate, and stepping back from the landing entry leaves the
+ * site. (A push made while a back is queued therefore gets stepped off: the
+ * race the sweep's replaceState avoids.)
+ */
+class FakeHistory implements HistoryPort {
+  entries: Array<{ state: unknown; url: string }>;
+  index = 0;
+  left = false;
+  constructor(url = '/') {
+    this.entries = [{ state: null, url }];
+  }
+  get state(): unknown {
+    return this.entries[this.index].state;
+  }
+  get length(): number {
+    return this.entries.length;
+  }
+  get url(): string {
+    return this.entries[this.index].url;
+  }
+  pushState(data: unknown, _unused: string, url?: string | URL | null): void {
+    this.entries.splice(this.index + 1);
+    this.entries.push({ state: clone(data), url: url ? String(url) : this.url });
+    this.index++;
+  }
+  replaceState(data: unknown, _unused: string, url?: string | URL | null): void {
+    this.entries[this.index] = { state: clone(data), url: url ? String(url) : this.url };
+  }
+  back(): void {
+    this.go(-1);
+  }
+  forward(): void {
+    this.go(1);
+  }
+  private go(delta: number): void {
+    setTimeout(() => {
+      if (this.left) return;
+      const to = this.index + delta;
+      if (to < 0) {
+        this.left = true;
+        return;
+      }
+      if (to >= this.entries.length) return;
+      this.index = to;
+      window.dispatchEvent(new Event('popstate'));
+    }, 0);
+  }
+}
+
+/** Let queued traversals, their popstate handlers and microtasks run. */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+describe('Back closes the panel, not the island (PanelManager)', () => {
+  let h: FakeHistory;
+  let pm: PanelManager;
+  beforeEach(() => {
+    h = new FakeHistory();
+    pm = new PanelManager(overlay, false, { history: h });
+  });
+  afterEach(() => pm.dispose());
+
+  test('an open pushes one entry; Back closes the panel; a second Back leaves', async () => {
+    const close = vi.fn(() => pm.notifyClosed('zone'));
+    pm.open('zone', spec({ close }));
+    expect(h.length).toBe(2);
+    expect(h.state).toMatchObject({ dsPanel: 'zone' });
+    h.back();
+    await settle();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(pm.current()).toBeNull();
+    expect(h.left).toBe(false);
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('✕ steps back off the entry, so one Back then leaves (no phantom entry)', async () => {
+    pm.open('zone', spec());
+    pm.notifyClosed('zone'); // the panel's own ✕
+    await settle();
+    expect(h.index).toBe(0);
+    expect(pm.current()).toBeNull();
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('Escape, the scrim and closeAll release the entry too', async () => {
+    for (const shut of [
+      () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })),
+      () => scrimOf(pm).click(),
+      () => pm.closeAll(),
+    ]) {
+      pm.open('zone', spec());
+      expect(h.index).toBe(1);
+      shut();
+      await settle();
+      expect(h.index).toBe(0);
+      expect(pm.current()).toBeNull();
+    }
+    expect(h.left).toBe(false);
+  });
+
+  test('a same-id re-open pushes nothing', async () => {
+    pm.open('shop', spec());
+    pm.open('shop', spec()); // the shop re-renders after a purchase
+    await settle();
+    expect(h.length).toBe(2);
+  });
+
+  test('the sweep replaces the entry: B over A, then one Back is the island', async () => {
+    const closeA = vi.fn();
+    pm.open('a', spec({ close: closeA }));
+    pm.open('b', spec());
+    await settle();
+    expect(closeA).toHaveBeenCalledTimes(1);
+    expect(h.length).toBe(2);
+    expect(h.state).toMatchObject({ dsPanel: 'b' });
+    h.back();
+    await settle();
+    expect(pm.current()).toBeNull();
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('a close then an open in one task re-labels the entry (showZonePanel)', async () => {
+    pm.open('portfolio-menu', spec());
+    pm.notifyClosed('portfolio-menu'); // the menu row closes the menu...
+    pm.open('zone', spec()); // ...and opens the zone panel
+    await settle();
+    expect(h.length).toBe(2);
+    expect(h.index).toBe(1);
+    expect(h.state).toMatchObject({ dsPanel: 'zone' });
+    expect(pm.current()).toBe('zone');
+  });
+
+  test('history:false panels push nothing, and sweeping into one releases the entry', async () => {
+    pm.open('welcome', spec({ history: false }));
+    pm.notifyClosed('welcome');
+    pm.open('drawer', spec({ kind: 'sheet', history: false }));
+    await settle();
+    expect(h.length).toBe(1);
+    pm.open('zone', spec());
+    expect(h.length).toBe(2);
+    pm.open('drawer', spec({ kind: 'sheet', history: false })); // sweeps the zone panel
+    await settle();
+    expect(h.index).toBe(0);
+    expect(pm.current()).toBe('drawer');
+    h.back();
+    await settle();
+    expect(h.left).toBe(true); // the drawer never spent a Back
+  });
+
+  test('an open while our back is in flight pushes once it has landed', async () => {
+    pm.open('zone', spec());
+    pm.notifyClosed('zone');
+    await Promise.resolve(); // the step back is queued, not yet run
+    pm.open('journal', spec());
+    await settle();
+    expect(h.index).toBe(1);
+    expect(h.state).toMatchObject({ dsPanel: 'journal' });
+    expect(pm.current()).toBe('journal');
+  });
+
+  test('an entry whose state another writer replaced is never stepped back from', async () => {
+    pm.open('zone', spec());
+    h.replaceState(null, ''); // e.g. a URL writer that drops history.state
+    pm.notifyClosed('zone');
+    await settle();
+    expect(h.index).toBe(1); // a stale entry costs one Back; a wrong back() could leave
+    expect(h.left).toBe(false);
+  });
+
+  test('Forward onto an entry whose panel has closed makes it a plain entry', async () => {
+    const stale = vi.fn();
+    pm.dispose();
+    pm = new PanelManager(overlay, false, { history: h, onStaleEntry: stale });
+    pm.open('zone', spec());
+    pm.notifyClosed('zone');
+    await settle();
+    h.forward();
+    await settle();
+    expect(h.index).toBe(1);
+    expect(h.state).toBeNull();
+    expect(stale).toHaveBeenCalledTimes(1);
+    expect(pm.current()).toBeNull();
+  });
+
+  test('an entry left by an earlier life of the page is cleared at boot', () => {
+    const old = new FakeHistory();
+    old.replaceState({ dsPanel: 'zone', dsTok: 'earlier:1' }, '');
+    const fresh = new PanelManager(overlay, false, { history: old });
+    expect(old.state).toBeNull();
+    fresh.dispose();
+  });
+
+  const restored = (): Event =>
+    Object.defineProperty(new Event('pageshow'), 'persisted', { value: true });
+
+  test('a bfcache restore re-syncs: a lost entry is pushed again', async () => {
+    pm.open('zone', spec());
+    h.replaceState({ other: 1 }, ''); // came back to an entry that is not ours
+    window.dispatchEvent(new Event('pageshow')); // a plain load: nothing to do
+    expect(h.length).toBe(2);
+    window.dispatchEvent(restored());
+    expect(h.length).toBe(3);
+    expect(h.state).toMatchObject({ dsPanel: 'zone' });
+    h.back();
+    await settle();
+    expect(pm.current()).toBeNull();
+  });
+
+  test('a history write the browser refuses never breaks a panel', async () => {
+    // Safari throws SecurityError past 100 pushState calls in 30 s.
+    const refuse = (): never => {
+      throw new DOMException('too many history calls', 'SecurityError');
+    };
+    const refusing: HistoryPort = {
+      state: null,
+      pushState: refuse,
+      replaceState: refuse,
+      back: refuse,
+    };
+    const p2 = new PanelManager(overlay, false, { history: refusing });
+    expect(() => p2.open('zone', spec())).not.toThrow();
+    expect(p2.current()).toBe('zone');
+    expect(scrimOf(p2).style.display).toBe('block');
+    expect(() => p2.notifyClosed('zone')).not.toThrow();
+    await settle();
+    expect(p2.current()).toBeNull();
+    p2.dispose();
+  });
+
+  test('a refused back() leaves no later open waiting on a popstate that never comes', async () => {
+    const h2 = new FakeHistory();
+    const p2 = new PanelManager(overlay, false, { history: h2 });
+    p2.open('zone', spec());
+    h2.back = () => {
+      throw new Error('refused');
+    };
+    p2.notifyClosed('zone');
+    await settle();
+    p2.open('journal', spec());
+    expect(h2.length).toBe(3); // pushed at once
+    expect(h2.state).toMatchObject({ dsPanel: 'journal' });
+    p2.dispose();
+  });
+
+  test('page teardown never steps back: after dispose(), or while the page hides', async () => {
+    pm.open('zone', spec());
+    window.dispatchEvent(new Event('pagehide')); // navigating away
+    pm.notifyClosed('zone');
+    await settle();
+    expect(h.index).toBe(1);
+    window.dispatchEvent(new Event('pageshow')); // stayed after all
+    pm.open('zone', spec());
+    pm.dispose(); // SimpleUI.dispose, on beforeunload, before it closes the panels
+    pm.notifyClosed('zone');
+    await settle();
+    expect(h.index).toBe(1);
+    expect(h.left).toBe(false);
+  });
+
+  test('a bfcache restore drops a panel whose element is gone', () => {
+    const el = document.createElement('div');
+    pm.open('zone', spec({ el }));
+    overlay.appendChild(el);
+    pm.current(); // seen
+    el.remove();
+    window.dispatchEvent(restored());
+    expect(pm.current()).toBeNull();
+  });
+});
+
+describe('Back closes the panel, not the island (the island UI)', () => {
+  // The real window.history in a browser: under vitest PanelManager leaves it
+  // off (happy-dom's back() navigates to about:blank), so these tests run in
+  // production mode with the double standing in for window.history, which
+  // Share.setUrlParam writes through as well.
+  let h: FakeHistory;
+  let ui: SimpleUI;
+  const realHistory = Object.getOwnPropertyDescriptor(window, 'history')!;
+  const boot = (url = '/'): void => {
+    history.replaceState(null, '', url); // happy-dom's location, read by the UI
+    h = new FakeHistory(url);
+    Object.defineProperty(window, 'history', { configurable: true, get: () => h });
+    vi.stubEnv('MODE', 'production');
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+  };
+  const zoneParam = (): string | null =>
+    new URL(h.url, 'https://island.test').searchParams.get('zone');
+  const closeButton = (): HTMLButtonElement =>
+    [...document.querySelectorAll<HTMLButtonElement>('button[aria-label="Close"]')].at(-1)!;
+  const chip = (label: string): HTMLElement =>
+    document.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
+
+  afterEach(() => {
+    ui.panels.closeAll();
+    ui.panels.dispose();
+    Object.defineProperty(window, 'history', realHistory);
+    vi.unstubAllEnvs();
+    history.replaceState(null, '', '/');
+  });
+
+  test('1-2. Projects, then Back: still on the island, no panel, no zone; Back again leaves', async () => {
+    boot();
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    expect(h.length).toBe(2);
+    expect(zoneParam()).toBe('projects');
+    expect(h.state).toMatchObject({ dsPanel: 'zone' }); // setUrlParam kept the state
+    h.back();
+    await settle();
+    expect(ui.panels.current()).toBeNull();
+    expect(zoneParam()).toBeNull();
+    expect(h.left).toBe(false);
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('3. ✕, then one Back leaves the site', async () => {
+    boot();
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    closeButton().click();
+    await settle();
+    expect(ui.panels.current()).toBeNull();
+    expect(zoneParam()).toBeNull();
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('4. ?zone=hire opens the hire card, and one Back leaves the site', async () => {
+    boot('/?zone=hire');
+    ui.showZonePanel({ id: 'hire', name: 'hire' }, { source: 'deeplink' }); // main-simple's deep link
+    expect(ui.panels.current()).toBe('zone');
+    expect(h.length).toBe(1);
+    closeButton().click(); // and closing it never steps back off the landing entry
+    await settle();
+    expect(h.left).toBe(false);
+    expect(zoneParam()).toBeNull();
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('5. Phone: drawer, Portfolio, Projects, then one Back is the island; the next leaves', async () => {
+    boot('/?touch=1');
+    chip('Open island menu').click(); // the drawer
+    chip('Open portfolio menu').click(); // its Portfolio row
+    document.querySelector<HTMLButtonElement>('button[data-section="projects"]')!.click();
+    await settle();
+    expect(ui.panels.current()).toBe('zone');
+    expect(h.length).toBe(2);
+    h.back();
+    await settle();
+    expect(ui.panels.current()).toBeNull();
+    expect(zoneParam()).toBeNull();
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('6. Projects, then Hiring from the menu (a sweep), then one Back is the island', async () => {
+    boot();
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    chip('Open portfolio menu').click(); // sweeps Projects
+    document.querySelector<HTMLButtonElement>('button[data-section="hire"]')!.click();
+    await settle();
+    expect(zoneParam()).toBe('hire');
+    expect(h.length).toBe(2);
+    h.back();
+    await settle();
+    expect(ui.panels.current()).toBeNull();
+    expect(zoneParam()).toBeNull();
+    h.back();
+    await settle();
+    expect(h.left).toBe(true);
+  });
+
+  test('7. the welcome card, drawer, emote wheel, chat input and tour leave history alone', async () => {
+    boot('/?touch=1');
+    ui.showWelcome(null);
+    ui.hideWelcome(false);
+    chip('Open island menu').click(); // drawer open...
+    chip('Open island menu').click(); // ...and shut
+    chip('Send an emote').click();
+    chip('Send an emote').click();
+    ui.openChatInput();
+    ui.panels.closeAll();
+    ui.showTourOverlay(() => ui.hideTourOverlay());
+    ui.hideTourOverlay();
+    await settle();
+    expect(h.length).toBe(1);
+    expect(h.left).toBe(false);
   });
 });

@@ -18,6 +18,7 @@ import {
   isSttSupported,
   startListening,
 } from './Speech';
+import { DS } from './ui/tokens';
 import { EVENT_META } from './WorldState';
 import type { NoticeState, NpcPlan } from './WorldState';
 
@@ -292,7 +293,12 @@ export class SimpleUI {
     this.overlay.style.setProperty('--sab', 'env(safe-area-inset-bottom, 0px)');
     this.overlay.style.setProperty('--sal', 'env(safe-area-inset-left, 0px)');
 
-    if (!this.panels) this.panels = new PanelManager(this.overlay, this.isTouch);
+    // Back closes the open panel (its pushed history entry); an entry left
+    // over from a closed panel loses its ?zone= when the visitor lands on it.
+    if (!this.panels)
+      this.panels = new PanelManager(this.overlay, this.isTouch, {
+        onStaleEntry: () => setUrlParam('zone', null),
+      });
     this.createFPSDisplay();
     this.createMuteButton();
     this.createPortfolioButton();
@@ -401,6 +407,15 @@ export class SimpleUI {
       this.envBadgeDiv.style.left = short
         ? 'calc(var(--sal, 0px) + 122px)'
         : 'calc(var(--sal, 0px) + 10px)';
+    }
+    // The 52px 🎤 stacked over 💬 would reach y≈89 on a 375-tall screen,
+    // into the radar (top 8, 104 tall): short landscape seats it beside 💬,
+    // still above the joystick's 166px hit square.
+    if (this.micBtn) {
+      Object.assign(this.micBtn.style, {
+        left: short ? 'calc(var(--sal, 0px) + 86px)' : 'calc(var(--sal, 0px) + 26px)',
+        bottom: short ? 'calc(var(--sab, 0px) + 174px)' : 'calc(var(--sab, 0px) + 234px)',
+      });
     }
   }
 
@@ -709,6 +724,7 @@ export class SimpleUI {
       kind: 'sheet',
       hides: ['touch-controls', 'aux-controls'],
       close: () => this.closeDrawer(),
+      history: false, // transient: Back is not spent on it
     });
     list.style.display = 'flex';
     // 😀 tier-2 chip yields its spot while the drawer occupies it.
@@ -1020,6 +1036,24 @@ export class SimpleUI {
   private onMicDown: (() => void) | null = null;
   private onMicUp: (() => void) | null = null;
   private micBtn: HTMLElement | null = null;
+  /** 💬 and 🎤 on touch: 52px circles in the action discs' family (D3,
+   *  DA-14), where they were 10px-radius squares of 55% black. Centred by
+   *  line-height, not flex: the mic's support check and PanelManager restore
+   *  their display to ''. */
+  private static readonly AUX_DISC: Partial<CSSStyleDeclaration> = {
+    position: 'absolute',
+    width: '52px',
+    height: '52px',
+    boxSizing: 'border-box',
+    borderRadius: '50%',
+    background: DS.hudSurface,
+    boxShadow: `inset 0 0 0 2px ${DS.lineStrong}, 0 3px 10px rgba(0,0,0,0.3)`,
+    fontSize: '20px',
+    lineHeight: '52px',
+    textAlign: 'center',
+    pointerEvents: 'auto',
+    userSelect: 'none',
+  };
 
   public isChatInputOpen(): boolean {
     return this.chatInput !== null;
@@ -1511,6 +1545,7 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => modal.remove(),
+      el: modal, // a removed modal pops even if its close path never notifies
     });
     this.stepHintAside();
     Object.assign(modal.style, {
@@ -1714,11 +1749,16 @@ export class SimpleUI {
     const body = modal.querySelector('#lb-body');
     if (body)
       body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
-    modal.appendChild(this.makeRaceGuideButton(modal, 'leaderboard'));
+    modal.appendChild(this.makeRaceGuideButton(modal, 'leaderboard', 'leaderboard'));
   }
 
-  /** "Take me to the start line" — closes the modal and compass-guides there. */
-  private makeRaceGuideButton(modal: HTMLElement, from: string): HTMLButtonElement {
+  /** "Take me to the start line" — closes the modal and compass-guides there.
+   *  `panelId` is the id the modal was opened under (buildCenteredModal). */
+  private makeRaceGuideButton(
+    modal: HTMLElement,
+    from: string,
+    panelId: 'leaderboard' | 'race-leaderboard',
+  ): HTMLButtonElement {
     const go = document.createElement('button');
     go.textContent = '📍 Guide me to the start line';
     Object.assign(go.style, {
@@ -1736,7 +1776,10 @@ export class SimpleUI {
     go.addEventListener('click', () => {
       track('race_guide', { from });
       modal.remove();
-      this.panels.notifyClosed('race-leaderboard');
+      // The opener's id. This named 'race-leaderboard' for both callers, so
+      // the Leaderboard's button left 'leaderboard' on the stack: scrim up,
+      // chips dimmed, phone controls hidden under "Follow the compass" (UX-01).
+      this.panels.notifyClosed(panelId);
       this.onRaceGuide?.();
     });
     return go;
@@ -1785,7 +1828,7 @@ export class SimpleUI {
       }),
     );
     modal.appendChild(shareRow);
-    modal.appendChild(this.makeRaceGuideButton(modal, 'race_finish'));
+    modal.appendChild(this.makeRaceGuideButton(modal, 'race_finish', 'race-leaderboard'));
     this.overlay.appendChild(modal);
     const { getLeaderboard } = await import('./Boards');
     const entries = await getLeaderboard(circuit);
@@ -1823,7 +1866,7 @@ export class SimpleUI {
        <div style="display:flex;gap:8px;margin-bottom:12px;">
          <input id="gb-msg" aria-label="Your guestbook note" maxlength="200" placeholder="Say hi…" style="flex:1;padding:9px 12px;border-radius:10px;
            border:none;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
-         <button id="gb-sign" style="padding:9px 16px;border:none;border-radius:10px;background:linear-gradient(135deg,#5b6cff,#8a4de0);
+         <button id="gb-sign" class="ds-press" style="padding:9px 16px;border:none;border-radius:10px;background:${DS.primary};
            color:#fff;font-size:14px;font-weight:600;cursor:pointer;">Sign</button>
        </div>
        <div id="gb-body" style="text-align:left;max-height:40vh;overflow:auto;">Loading…</div>`,
@@ -2071,6 +2114,7 @@ export class SimpleUI {
         this.emoteWheelCatcher?.remove();
         this.emoteWheelCatcher = null;
       },
+      history: false, // transient: Back is not spent on it
     });
     // Outside tap dismisses (drawer's catcher pattern). Without it, touch had
     // NO dismissal: hides:['nav-chips'] hides the 😀 toggle itself and phones
@@ -2194,6 +2238,7 @@ export class SimpleUI {
       hides: ['touch-controls', 'aux-controls'],
       ownEscape: true,
       close,
+      history: false, // transient: Back is not spent on it
     });
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
@@ -2956,7 +3001,9 @@ export class SimpleUI {
       // This pill is wide and was overlapping them at +118.
       top: 'calc(var(--sat, 0px) + 126px)',
       right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'linear-gradient(135deg, #5b6cff, #8a4de0)',
+      // The indigo primary, darkened for AA: white text 5.41-5.75:1, where
+      // #5b6cff gave 4.17 (DA-01).
+      background: DS.primary,
       color: 'white',
       padding: '7px 12px',
       borderRadius: '999px', // pill like every other chip in the column
@@ -2967,6 +3014,7 @@ export class SimpleUI {
       userSelect: 'none',
       boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
     });
+    btn.classList.add('ds-press'); // hover/press darken, never brighten below AA
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.togglePortfolioMenu();
@@ -2983,13 +3031,19 @@ export class SimpleUI {
   private createContactCTA(): void {
     const btn = document.createElement('div');
     btn.textContent = '💼 Work with me';
+    // The one element that is this pill, on the HUD and re-hosted in the phone
+    // drawer: icon sweeps and DOM censuses exempt it by this hook, and
+    // test/uiLocks.test.ts pins the ruling it carries.
+    btn.dataset.cta = 'work-with-me';
     Object.assign(btn.style, {
       position: 'absolute',
       // Stacked just below the 📖 Portfolio pill (top-right conversion column),
       // clear of the top-center quest/delivery tracker.
       top: 'calc(var(--sat, 0px) + 164px)',
       right: 'calc(var(--sar, 0px) + 10px)',
-      background: 'linear-gradient(135deg, #12b76a, #0e9f6e)',
+      // Green, reserved for this pill, darkened for AA: white text 5.39-6.15:1
+      // (it was 2.97). Same hue family, so the ruling's pin still holds.
+      background: DS.ctaWork,
       color: 'white',
       padding: '7px 14px',
       borderRadius: '999px',
@@ -3001,6 +3055,7 @@ export class SimpleUI {
       boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
       zIndex: '1200',
     });
+    btn.classList.add('ds-press');
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       track('cta_pill_click');
@@ -3058,6 +3113,7 @@ export class SimpleUI {
       hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
       close: () => onSkip(),
       ownEscape: true, // tour has its own Escape → skip handler below
+      history: false, // transient: Back is not spent on it
     });
     const cap = document.createElement('div');
     Object.assign(cap.style, {
@@ -3196,8 +3252,8 @@ export class SimpleUI {
        <input id="sh-name" aria-label="Your name (optional)" autocomplete="nickname" maxlength="24" placeholder="Your name (optional)" value="${this.escapeHtml(savedName)}" style="${field}" />
        <textarea id="sh-msg" aria-label="Your note" maxlength="200" rows="3" placeholder="Hi Abbas! 👋" style="${field}resize:none;"></textarea>
        <input id="sh-email" aria-label="Your email, only if you'd like a reply (optional)" autocomplete="email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
-       <button id="sh-send" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
-         background:linear-gradient(135deg,#5b6cff,#8a4de0);color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
+       <button id="sh-send" class="ds-press" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
+         background:${DS.primary};color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
        <p style="margin:9px 0 0;font-size:11px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
     );
     this.overlay.appendChild(modal);
@@ -3764,30 +3820,36 @@ export class SimpleUI {
     // controls are never hidden behind it — the reported "keys behind the
     // dialogue" bug. Each button shows an icon + caption so its job is clear
     // without a physical key.
+    // One disc recipe (D3, DA-14): the 74px box stays the hit target; inside
+    // it a 72px circle (the 1px transparent border clips the fill) in the HUD
+    // surface with a 2px ring in the action's accent. The 50%-alpha tints let
+    // the world decide the captions' contrast: 2.04-3.6:1 over sand and sky.
     const makeButton = (
       icon: string,
       caption: string,
       bottom: string,
       code: string,
       key: string,
-      tint: string,
+      ring: string,
       rightPx = 26,
       layer: 'touch-controls' | 'aux-controls' = 'touch-controls',
     ): HTMLElement => {
       const btn = document.createElement('div');
       btn.innerHTML =
         `<div style="font-size:24px;line-height:1;">${icon}</div>` +
-        `<div style="font-size:10px;font-weight:700;letter-spacing:1px;margin-top:2px;opacity:0.9;">${caption}</div>`;
+        `<div style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
       Object.assign(btn.style, {
         position: 'absolute',
         right: `calc(var(--sar, 0px) + ${rightPx}px)`,
         bottom: `calc(var(--sab, 0px) + ${bottom})`,
         width: '74px',
         height: '74px',
+        boxSizing: 'border-box',
         borderRadius: '50%',
-        background: tint,
-        border: '1.5px solid rgba(255,255,255,0.28)', // quieter touch-button rim
-        boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+        background: DS.hudSurface,
+        backgroundClip: 'padding-box',
+        border: '1px solid transparent',
+        boxShadow: `inset 0 0 0 2px ${ring}, 0 3px 10px rgba(0,0,0,0.3)`,
         color: 'white',
         display: 'flex',
         flexDirection: 'column',
@@ -3842,9 +3904,9 @@ export class SimpleUI {
     };
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
-    makeButton('👆', 'USE', '36px', 'KeyE', 'e', 'rgba(80,150,90,0.5)');
-    makeButton('⤒', 'JUMP', '124px', 'Space', ' ', 'rgba(70,120,190,0.5)');
-    makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', 'rgba(160,120,60,0.5)');
+    makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse);
+    makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump);
+    makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave);
     // DIVE — touch's only route to the free dive (Shift is desktop-only).
     // Contextual like FEED/EAT: it exists only while actually SWIMMING, so a
     // walker never sees it. Gated on isSwimming(), NOT isInWater(): the
@@ -3861,7 +3923,7 @@ export class SimpleUI {
       '212px',
       'ShiftLeft',
       'Shift',
-      'rgba(60,140,175,0.5)',
+      DS.ringDive,
       112,
       'aux-controls',
     );
@@ -3883,21 +3945,12 @@ export class SimpleUI {
       '36px',
       'KeyF',
       'f',
-      'rgba(150,130,70,0.5)',
+      DS.ringFeed,
       112,
       'aux-controls',
     );
     // EAT stacks over FEED in the second column (124px over 36px, same 112 inset)
-    this.eatBtnEl = makeButton(
-      '🍽️',
-      'EAT',
-      '124px',
-      'KeyG',
-      'g',
-      'rgba(150,90,70,0.5)',
-      112,
-      'aux-controls',
-    );
+    this.eatBtnEl = makeButton('🍽️', 'EAT', '124px', 'KeyG', 'g', DS.ringEat, 112, 'aux-controls');
     this.feedBtnEl.style.visibility = 'hidden';
     this.eatBtnEl.style.visibility = 'hidden';
 
@@ -3907,20 +3960,14 @@ export class SimpleUI {
     const chatBtn = document.createElement('div');
     chatBtn.textContent = '💬';
     Object.assign(chatBtn.style, {
-      position: 'absolute',
+      ...SimpleUI.AUX_DISC,
       left: 'calc(var(--sal, 0px) + 26px)',
       // 174, not 152: the joystick's INVISIBLE hit square is 166px tall from
       // the bottom edge, so 152 put the lower 14px of this button inside it
       // (measured, both orientations) — a drag starting there opened chat
       // instead of moving. 166 + 8px gap.
       bottom: 'calc(var(--sab, 0px) + 174px)',
-      background: 'rgba(0,0,0,0.55)',
-      padding: '7px 11px',
-      borderRadius: '10px',
-      fontSize: '15px',
       cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
       // Match the other touch buttons: sit above the dialogue panel (1600)
       // so it isn't hidden behind (and its taps swallowed by) it mid-NPC-chat.
       zIndex: '1650',
@@ -3942,16 +3989,12 @@ export class SimpleUI {
     this.micBtn = micBtn;
     micBtn.textContent = '🎤';
     Object.assign(micBtn.style, {
-      position: 'absolute',
+      ...SimpleUI.AUX_DISC,
+      // 8px above 💬 (174 + 52 + 8); short landscape moves it beside 💬
+      // instead (applyResponsiveHud), clear of the shrunk radar above.
       left: 'calc(var(--sal, 0px) + 26px)',
-      bottom: 'calc(var(--sab, 0px) + 220px)', // rides 46px above 💬 (see there)
-      background: 'rgba(0,0,0,0.55)',
-      padding: '7px 11px',
-      borderRadius: '10px',
-      fontSize: '15px',
+      bottom: 'calc(var(--sab, 0px) + 234px)',
       cursor: 'pointer',
-      pointerEvents: 'auto',
-      userSelect: 'none',
       touchAction: 'none',
       zIndex: '1650',
     });
@@ -4194,8 +4237,9 @@ export class SimpleUI {
       back.id = 'bf-back';
       (back as HTMLButtonElement).type = 'button';
       back.textContent = '← Back to the island';
+      back.className = 'ds-press';
       back.style.cssText =
-        'padding:10px 22px;border-radius:10px;border:none;background:linear-gradient(135deg,#4caf50,#3d8b40);' +
+        `padding:10px 22px;border-radius:10px;border:none;background:${DS.primary};` +
         'color:#fff;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;';
       back.addEventListener('click', () => {
         // The boot guard rewrites the reason if the island failed while this
@@ -4271,6 +4315,7 @@ export class SimpleUI {
       hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
       close: () => this.hideWelcome(),
       ownEscape: true, // welcome keeps its own Escape listener below
+      history: false, // the landing card: Back from it leaves, as before
     });
 
     trackOnce('welcome_shown');
@@ -4296,14 +4341,15 @@ export class SimpleUI {
     }
     const controlsLine = this.isTouch
       ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
-      : 'WASD to move · mouse to look · space to jump · Q to wave.';
+      : 'WASD to move · drag or J/L to look · space to jump · Q to wave.';
 
     // Primary CTAs: the work and the contact path. A recruiter who won't
-    // explore still reaches everything in one click.
+    // explore still reaches everything in one click. See the work is an
+    // indigo outline: the card has ONE filled primary, Explore (D3).
     const ctaRow = `
       <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 10px;">
-        <button data-cta="projects" style="flex:1 1 140px; padding:12px 14px; border:none; border-radius:10px;
-          background:linear-gradient(135deg,#5b6cff,#8a4de0); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
+        <button data-cta="projects" style="flex:1 1 140px; padding:12px 14px; border:1px solid rgba(143,155,255,0.8); border-radius:10px;
+          background:rgba(76,91,224,0.14); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
           🚀 See the work</button>
         <button data-cta="contact" style="flex:1 1 140px; padding:12px 14px; border-radius:10px;
           background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
@@ -4328,8 +4374,8 @@ export class SimpleUI {
     // it names the compass pill — the card's one pointer at the persistent
     // wayfinding surface that is literally on screen behind it.
     const exploreBtn = `
-      <button data-dismiss="1" style="width:100%; padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
-        background:linear-gradient(135deg,#12b76a,#0e9f6e); color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
+      <button data-dismiss="1" class="ds-press" style="width:100%; padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
+        background:${DS.primary}; color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
         🧭 Explore the island →</button>
       <p style="margin:0 0 12px; font-size:11px; color:#8fa0b5;">
         The gold ➤ pill at the top of your screen points to your next stop.</p>`;
@@ -4678,13 +4724,14 @@ export class SimpleUI {
     });
     const btn = document.createElement('button');
     btn.textContent = 'Enter the island →';
+    btn.className = 'ds-press';
     Object.assign(btn.style, {
       padding: '12px 26px',
       fontSize: '16px',
       fontWeight: '700',
       borderRadius: '12px',
       border: 'none',
-      background: 'linear-gradient(135deg,#4CAF50,#3d8b40)',
+      background: DS.primary, // the green gave white text 2.78:1
       color: 'white',
       cursor: 'pointer',
     });
@@ -6193,7 +6240,7 @@ export class SimpleUI {
       <div style="font-weight:700;margin-bottom:9px;">🎨 Appearance</div>
       ${swatchRow('outfit')}${swatchRow('pants')}${swatchRow('hair')}${swatchRow('skin')}
       ${hatRow}
-      <button id="close-customize" style="background:#4CAF50;color:white;border:none;padding:6px 13px;border-radius:8px;cursor:pointer;margin-top:6px;">Done</button>
+      <button id="close-customize" class="ds-press" style="background:${DS.primary};color:white;border:none;padding:6px 13px;border-radius:8px;cursor:pointer;margin-top:6px;">Done</button>
     `;
 
     this.customizeDiv.querySelectorAll<HTMLElement>('button[data-hex]').forEach((btn) => {
@@ -6422,6 +6469,10 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.hideZonePanel(),
+      el: this.zonePanelDiv,
+      // A ?zone= deep link opens on the visitor's landing entry: there is no
+      // entry of ours to step back off, and Back from it leaves the site.
+      history: source !== 'deeplink',
     });
     this.stepHintAside();
 
@@ -6657,11 +6708,10 @@ export class SimpleUI {
         ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:12.5px;`
         : '';
       const style = opts.primary
-        ? base +
-          size +
-          'background:linear-gradient(135deg,#5b6cff,#8a4de0);color:#fff;font-weight:600;border:none;'
+        ? base + size + `background:${DS.primary};color:#fff;font-weight:600;border:none;`
         : base + size + 'background:#2a2a37;color:#e8e8f0;border:1px solid rgba(255,255,255,0.14);';
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="${style}">${label}</a>`;
+      const cls = opts.primary ? ' class="ds-press"' : '';
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer"${cls} style="${style}">${label}</a>`;
     };
     // Counted from the client roster, never typed: the panel said 18 while the
     // roster (and the server personas it must match) had grown to 24.
@@ -6711,8 +6761,8 @@ export class SimpleUI {
         <em>in person</em> to stamp your <strong>Passport</strong> and earn the Founder's Crown 👑.</p>
         <p style="margin-top: 12px; font-size:13px; color:#aaa;"><em>${
           this.isTouch
-            ? 'Drag the joystick to move, drag to look, 👆 USE to interact'
-            : 'WASD to move, mouse to look, E to interact'
+            ? 'Drag the joystick to move, swipe to look, 👆 USE to interact'
+            : 'WASD to move, drag or J/L to look, E to interact'
         }. Swim, and drive the boats, jetskis &amp; cars around the island.</em></p>
       `,
       professional: `
@@ -7103,12 +7153,13 @@ export class SimpleUI {
     });
     const send = document.createElement('button');
     send.textContent = 'Send';
+    send.className = 'ds-press';
     Object.assign(send.style, {
       padding: '8px 16px',
       borderRadius: '10px',
       border: 'none',
       cursor: 'pointer',
-      background: '#5a8cff',
+      background: DS.primary, // #5a8cff gave white text 3.17:1
       color: '#fff',
       fontWeight: '600',
     });
@@ -7416,11 +7467,12 @@ export class SimpleUI {
       input.addEventListener(ev, (e) => e.stopPropagation()); // typing must not walk the room
     const go = document.createElement('button');
     go.textContent = 'Watch';
+    go.className = 'ds-press';
     Object.assign(go.style, {
       padding: '9px 16px',
       borderRadius: '10px',
       border: 'none',
-      background: '#5a8cff',
+      background: DS.primary,
       color: '#fff',
       fontWeight: '600',
       fontSize: '13.5px',
@@ -7713,6 +7765,7 @@ export class SimpleUI {
       // SE, and EAT sat inside its tap-to-advance region firing KeyG.
       hides: ['nav-chips', 'aux-controls'],
       close: () => this.hideDialogue(),
+      history: false, // transient: Back is not spent on it
     });
 
     if (!this.dialogueDiv) {
@@ -7795,9 +7848,9 @@ export class SimpleUI {
           text-align: right;
           margin-top: clamp(5px, 1vh, 10px);
           font-size: clamp(10px, 2.6vw, 12px);
-          color: rgba(160, 200, 255, 0.5);
+          color: rgba(160, 200, 255, 0.85);
         ">
-          <span id="dialogue-hint">${this.isTouch ? 'Tap to continue' : 'Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to continue'}</span>
+          <span id="dialogue-hint">${this.isTouch ? 'Tap to continue' : 'Press <strong style="color:#dce9ff">E</strong> to continue'}</span>
         </div>
       </div>
     `;
@@ -7855,7 +7908,7 @@ export class SimpleUI {
       if (hint && this.dialogueIndex === this.dialogueLines.length - 1) {
         hint.innerHTML = this.isTouch
           ? 'Tap to close'
-          : 'Press <strong style="color:rgba(160,200,255,0.8)">E</strong> to close';
+          : 'Press <strong style="color:#dce9ff">E</strong> to close';
       }
       return true;
     }
@@ -7887,6 +7940,9 @@ export class SimpleUI {
    * Dispose of UI elements
    */
   dispose(): void {
+    // First: the closes below must not step the history back. This runs on
+    // beforeunload, where a back() could turn a reload or a link into Back.
+    this.panels.dispose();
     if (this.compassDiv) {
       this.compassDiv.remove();
       this.compassDiv = null;

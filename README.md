@@ -133,7 +133,8 @@ run the evals, see [evals/README.md](evals/README.md).
 | Key | Action |
 | --- | --- |
 | W A S D or arrow keys | Move |
-| Mouse | Look (click the world to lock the pointer; Esc releases it) |
+| Mouse drag (left or right button) | Look |
+| J / L | Turn the view (I / K tilt it, R recentres it) |
 | Space | Tap to jump; hold while moving to run (uses stamina); hold in water to stay afloat |
 | Shift | Hold in water to dive |
 | E | Talk, enter, sit or use, whatever the on-screen prompt says |
@@ -147,7 +148,7 @@ run the evals, see [evals/README.md](evals/README.md).
 | C | Change your look |
 | Esc | Close panels |
 
-On a phone: a joystick and on-screen buttons.
+On a phone: a joystick to move, swipe to look, and on-screen buttons.
 
 ## How it is built
 

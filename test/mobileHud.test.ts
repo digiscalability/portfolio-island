@@ -68,10 +68,10 @@ describe('touch layout recomposition', () => {
   });
 
   test('FEED/EAT are contextual aux controls, not permanent buttons', () => {
+    // (that main-simple calls setAuxActionAvailable is package A's mainLocks)
     const s = src('SimpleUI.ts');
     expect(s).toContain("'aux-controls'");
     expect(s).toContain('setAuxActionAvailable');
-    expect(src('main-simple.ts')).toContain('setAuxActionAvailable');
   });
 
   test('narrow-portrait recompose exists (SE-class radar + chip row)', () => {
@@ -103,18 +103,6 @@ describe('touch layout recomposition', () => {
   });
 });
 
-describe('scene-transition grammar is unified (veil + cut)', () => {
-  test('tour end, postcard release and drown respawn all use the door veil', () => {
-    expect(fn('main-simple.ts', 'private endTour')).toContain('fadeThrough');
-    const m = src('main-simple.ts');
-    // postcard pill release
-    expect(fn('main-simple.ts', "showTimeOverridePill('📸 Postcard view'")).toContain(
-      'fadeThrough',
-    );
-    // drown respawn: one message, veiled cut
-    const drown = fn('main-simple.ts', 'setOnDrownRespawn');
-    expect(drown).toContain('fadeThrough');
-    expect(drown).toContain('pendingDrownFee');
-    expect(m).not.toContain('Fished out by the shore patrol');
-  });
-});
+// The scene-transition grammar lock (tour end, postcard release and drown
+// respawn all veil through fadeThrough) is main-simple.ts code: it moved to
+// package A's test/mainLocks.test.ts (testOwnership rule 1).

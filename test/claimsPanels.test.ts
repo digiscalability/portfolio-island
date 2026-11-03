@@ -78,8 +78,9 @@ describe('the approved lines are the ones shipped', () => {
   });
 
   test('the AI-agent count is derived from the roster, never typed', () => {
+    // (main-simple.ts's own roster-derived count is package A's mainLocks; the
+    // typed-count scan below is a content scan and stays: testOwnership rule 3)
     expect(ui).toContain('Object.keys(AI_NPCS).length');
-    expect(src('main-simple.ts')).toContain('Object.keys(AI_NPCS).length');
     for (const f of FILES) {
       expect(src(f), f).not.toMatch(/\b\d+ (conversational agents|villagers talk|townsfolk are)/);
     }
