@@ -4919,10 +4919,10 @@ export class SimpleUI {
         .map(
           (
             p,
-          ) => `<div data-peer="${p.id}" style="display:flex;align-items:center;justify-content:space-between;
+          ) => `<div data-peer="${this.escapeHtml(p.id)}" style="display:flex;align-items:center;justify-content:space-between;
             gap:10px;padding:10px 12px;margin:6px 0;background:rgba(255,255,255,0.04);border-radius:10px;">
-            <span style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👤 ${p.name}</span>
-            <button data-mute="${p.id}" style="flex:0 0 auto;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
+            <span style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👤 ${this.escapeHtml(p.name)}</span>
+            <button data-mute="${this.escapeHtml(p.id)}" style="flex:0 0 auto;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
               background:${p.muted ? 'rgba(255,90,90,0.25)' : 'rgba(255,255,255,0.08)'};color:#fff;font-size:13px;cursor:pointer;">
               ${p.muted ? '🔇 Muted' : '🔊 Mute'}</button>
           </div>`,
