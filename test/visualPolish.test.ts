@@ -28,7 +28,9 @@
 // here, sliced with bodyOf() instead of fixed character windows, so code C
 // adds around them cannot slide an asserted string out of the window.
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { ShaderChunk } from 'three';
 import { describe, expect, test } from 'vitest';
 
 const src = (f: string): string =>
@@ -913,6 +915,10 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // Through a proxy scene (its own render state in three), so the live
     // frame's lights version never moves and no frame re-keys.
     expect(pass).toContain('const proxy = new THREE.Scene();');
+    // One object per compile call until the slice's budget is spent: a batch
+    // sized from the last slice overran it (measured 9.3 ms and 23 ms).
+    expect(pass).toContain('batch = [items[i++]];');
+    expect(pass).toContain('performance.now() - t0 < GameScene.WARM_SLICE_MS');
     // Polled ready, then first-used, in idle time: the first getUniforms() is
     // a synchronous shader check that took 121 ms of the first room frame.
     const settle = bodyOf(scene, 'private async settleWarmPrograms(');
@@ -934,5 +940,55 @@ describe('smoothness round 2 — the two measured hitches', () => {
     for (const body of [pass, settle, bodyOf(scene, 'private async warmInteriorNearDoor(')]) {
       expect(body).not.toMatch(/new THREE\.\w*Light\(/);
     }
+  });
+
+  test('the window view draws with the frame’s own programs (B2)', () => {
+    const scene = src('GameScene.ts');
+    // three keys every program on the bound target. On the canvas path (the
+    // low tier) a plain window target needed a second variant of everything
+    // it saw, and alternating the two kinds re-keyed the unlit world too.
+    // MEASURED at the 1x low tier's first door: 31 + 5 programs, a 1.4 s
+    // first room frame. So the window target takes the frame's own kind.
+    const sync = bodyOf(scene, 'private syncInteriorViewOutput()');
+    expect(sync).toContain('const canvas = this.lastSceneTarget === null;');
+    expect(sync).toMatch(/\.isXRRenderTarget = canvas;/);
+    expect(sync).toContain(
+      'view.texture.colorSpace = canvas ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;',
+    );
+    // The pane shows the stored display colours unchanged: decoded inline,
+    // and not tone-mapped a second time.
+    expect(sync).toContain('pane.toneMapped = !canvas;');
+    expect(sync).toContain("{ DECODE_VIDEO_TEXTURE: '' }");
+    const ensure = bodyOf(scene, 'private ensureInteriorView()');
+    // RGBA8 in both kinds: an SRGB8_ALPHA8 store would encode the bytes twice.
+    expect(ensure).toContain("texture.internalFormat = 'RGBA8';");
+    // Synced on every refresh, and before the warm compiles the pane.
+    expect(ensure).toContain('this.syncInteriorViewOutput();');
+    expect(bodyOf(scene, 'private refreshInteriorView()')).toContain('this.ensureInteriorView();');
+    // So no warm compiles a window pass of its own.
+    expect(bodyOf(scene, 'private async warmInteriorNearDoor(')).not.toContain(
+      'interiorViewTarget',
+    );
+  });
+
+  test('three still treats an XR-flagged target as a canvas (B2)', () => {
+    // syncInteriorViewOutput leans on three r180: an isXRRenderTarget target
+    // gets the renderer's tone mapping and its texture's colour space as the
+    // output, exactly like the canvas, and map_fragment's video-texture
+    // define decodes a map inline. An upgrade that moves either fails here,
+    // not as a quietly washed-out window.
+    const three = readFileSync(
+      join(dirname(createRequire(import.meta.url).resolve('three')), 'three.module.js'),
+      'utf8',
+    );
+    expect(three).toContain(
+      'if ( currentRenderTarget === null || currentRenderTarget.isXRRenderTarget === true ) {',
+    );
+    expect(three).toContain(
+      '( currentRenderTarget.isXRRenderTarget === true ? currentRenderTarget.texture.colorSpace : LinearSRGBColorSpace )',
+    );
+    expect(ShaderChunk.map_fragment).toMatch(
+      /#ifdef DECODE_VIDEO_TEXTURE\s+(\/\/[^\n]*\s+)?sampledDiffuseColor = sRGBTransferEOTF\( sampledDiffuseColor \);/,
+    );
   });
 });
