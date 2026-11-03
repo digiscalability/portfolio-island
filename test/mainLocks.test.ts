@@ -952,3 +952,75 @@ describe("P2-A5: one 'Show me' seam, window 'ds:guide-to'", () => {
     );
   });
 });
+
+describe('A6: First steps, wired into main-simple', () => {
+  test('one bound tick per frame, behind FxBudget\'s "guide" switch', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain('private readonly boundGuideTick = (): void => this.guideTick();');
+    const update = bodyOf(m, 'private update(');
+    expect(update).toContain("if (this.guide && fx.on('guide')) {");
+    expect(update).toContain("fx.time('guide', this.boundGuideTick);");
+    // never a per-frame closure
+    expect(update).not.toMatch(/fx\.time\('guide', \(\)/);
+    expect(stripped('Guide.ts')).toContain("fx.register('guide', { desktop: true, low: true });");
+  });
+
+  test('Explore arms it in the capture phase, before hideWelcome reads ds_hint_compass', () => {
+    const m = stripped('main-simple.ts');
+    const setup = bodyOf(m, 'private setupGuide(');
+    expect(setup).toContain(
+      "this.ui.getOverlay().addEventListener('click', this.boundHandlers.guideWelcomeClick, true);",
+    );
+    expect(setup).toContain(
+      "window.addEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);",
+    );
+    const exit = bodyOf(m, 'private onWelcomeExit(');
+    expect(exit).toContain("if (b.hasAttribute('data-dismiss')) exit = 'explore';");
+    expect(exit).toContain("b.dataset.cta === 'projects' || b.dataset.cta === 'contact'");
+    expect(bodyOf(m, 'private armGuide(')).toContain(
+      "localStorage.setItem('ds_hint_compass', '1');",
+    );
+    // the legacy check reads ds_welcomed at boot, before Explore writes it
+    expect(setup).toContain("welcomed: flag('ds_welcomed'),");
+    expect(setup).toContain('talkTarget: () => this.trailVillager,');
+  });
+
+  test('the full tour hands over to the guide; a CTA panel arms it when it closes', () => {
+    const m = stripped('main-simple.ts');
+    const end = bodyOf(m, 'private endTour');
+    const arm = end.indexOf("if (!recruiter && this.armGuide('tour')) return;");
+    expect(arm).toBeGreaterThan(end.indexOf("this.ui.showHireCard('cta');"));
+    expect(arm).toBeLessThan(end.indexOf('The island is yours'));
+    const tick = bodyOf(m, 'private guideTick(');
+    expect(tick).toContain("this.armGuide('cta');");
+    expect(tick).toContain('this.scene.isInsideInterior()');
+    expect(tick).toContain('this.tour !== null');
+  });
+
+  test('talk, the map and coins reach the guide', () => {
+    const m = stripped('main-simple.ts');
+    expect(m.split("this.guide?.complete('talk');").length - 1).toBe(2); // quest + AI chat
+    expect(bodyOf(m, 'private openIslandMap(')).toContain("this.guide?.complete('compass');");
+    expect(argsOf(m, 'this.scene.setOnCoinCollected(')).toContain('this.guide?.coin();');
+  });
+
+  test('while it runs, main-simple fires no unprompted hints: talk, coin, lost, district, specials', () => {
+    const m = stripped('main-simple.ts');
+    const update = bodyOf(m, 'private update(');
+    expect(update).toContain('const hintsHeld = this.guideHoldsHints();');
+    expect(update).toMatch(
+      /!hintsHeld &&\s*!this\.ui\.isWelcomeVisible\(\) &&\s*!this\.tour &&\s*!this\.scene\.hasTrailCoins\(\)/,
+    );
+    expect(blockOf(update, 'this.lostAccum > 60 &&')).toContain('!hintsHeld &&');
+    expect(blockOf(update, "!localStorage.getItem('ds_hint_talk') &&")).toContain('!hintsHeld &&');
+    expect(argsOf(m, 'this.scene.setOnCoinCollected(')).toContain(
+      'if (this.guideHoldsHints()) return;',
+    );
+    expect(bodyOf(m, 'private refreshFeatured')).toContain('this.hintLater(');
+    expect(bodyOf(m, 'private refreshFeatured')).not.toContain('this.ui.toast(');
+    // held hints go out once it lets go
+    expect(update).toContain(
+      'for (const m of this.heldHints.splice(0)) this.ui.toast(m, { hint: true });',
+    );
+  });
+});

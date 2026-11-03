@@ -10,8 +10,20 @@ import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
+import { fx } from './FxBudget';
 import { GameScene } from './GameScene';
-import { readGuideTo, resolveGuideKey, type GuideWorld } from './Guide';
+import {
+  Guide,
+  guideCopy,
+  readGuideTo,
+  resolveGuideKey,
+  type GuideArm,
+  type GuideButton,
+  type GuideFrame,
+  type GuideStore,
+  type GuideWorld,
+} from './Guide';
+import { GuideCard } from './GuideCard';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
@@ -426,6 +438,8 @@ export class SimpleApp {
     mutePointerUp?: (event: PointerEvent) => void;
     popState?: () => void;
     guideTo?: (event: Event) => void;
+    guideWelcomeClick?: (event: Event) => void;
+    guideWelcomeKey?: (event: KeyboardEvent) => void;
   } = {};
 
   constructor() {
@@ -730,6 +744,9 @@ export class SimpleApp {
       this.passport = new Passport();
       this.passport.setOnComplete(() => this.grantPassportReward());
       this.ui.setPassport(this.passport);
+      // First steps (A6): the guide and its card, armed later by the welcome
+      // card, the full tour or a CTA panel closing.
+      this.setupGuide();
 
       // Roster: click the online-count to see who's here and mute per peer.
       this.ui.setRosterProvider(() => this.multiplayer?.getPeerList() ?? []);
@@ -786,6 +803,7 @@ export class SimpleApp {
         // to free-text chat below.
         const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
         if (talk) {
+          this.guide?.complete('talk');
           this.ui.showDialogue(npcData.name, talk.lines);
           this.beginNpcDialogue(npcData.name);
           if (talk.accepted) {
@@ -820,6 +838,7 @@ export class SimpleApp {
         if (isAiNpc(npcData.name)) {
           this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
           this.markDone('ds_npc_chatted');
+          this.guide?.complete('talk');
           sfx.blip();
           const canned = npcData.dialogue;
           let ci = 1; // first fallback skips the opening line (canned[0])
@@ -973,9 +992,7 @@ export class SimpleApp {
           if (ledger.streak >= 2) {
             window.setTimeout(
               () =>
-                this.ui.toast(`📅 Day ${ledger.streak} in a row — the island kept a light on.`, {
-                  hint: true,
-                }),
+                this.hintLater(`📅 Day ${ledger.streak} in a row — the island kept a light on.`),
               6000,
             );
           }
@@ -1003,6 +1020,9 @@ export class SimpleApp {
         // was collected mid fly-in and the coin tip became the first text a
         // visitor read, ahead of the pitch and the compass hint. The key is
         // not burned until the tip can actually show.
+        this.guide?.coin();
+        // While the guide holds hints the tip waits for a later coin (A6).
+        if (this.guideHoldsHints()) return;
         try {
           const welcomePending = !this.introSettled || this.ui.isWelcomeVisible();
           if (!welcomePending && !localStorage.getItem('ds_hint_earn')) {
@@ -1474,9 +1494,7 @@ export class SimpleApp {
               // gazebo request on a small plot back to the plot default, and
               // the toast must name what actually appeared.
               const kindName = GameScene.resolveKind(b.plot, b.kind) ?? 'structure';
-              this.ui.toast(`🔨 A visitor just raised a ${kindName} — it's on your map.`, {
-                hint: true,
-              });
+              this.hintLater(`🔨 A visitor just raised a ${kindName} — it's on your map.`);
             }
           },
           (r) => {
@@ -1493,9 +1511,8 @@ export class SimpleApp {
           try {
             const seen = parseInt(localStorage.getItem('ds_seen_builds') ?? '0', 10) || 0;
             if (totalBuilds > seen && seen > 0) {
-              this.ui.toast(
+              this.hintLater(
                 `🏘️ Visitors raised ${totalBuilds - seen} structure${totalBuilds - seen > 1 ? 's' : ''} while you were away.`,
-                { hint: true },
               );
             }
             localStorage.setItem('ds_seen_builds', String(totalBuilds));
@@ -2415,6 +2432,7 @@ export class SimpleApp {
     this.updateFPS(deltaTime);
     // Re-set by the free-walk branch only while a district's door prompt shows.
     this.doorPromptZone = null;
+    this.guideMoveMag = 0; // free walk sets it below
 
     // Juice kernel: advance all micro-tweens (hat pops, squash-stretch,
     // pickup ceremonies). Here, not GameScene.update — this always runs
@@ -2433,6 +2451,11 @@ export class SimpleApp {
       this.completionAccum = 0;
       this.refreshCompletion();
       this.sweepSecrets();
+      // main-simple's own hints held while the guide ran (A6) go out now.
+      if (this.heldHints.length && !this.guideHoldsHints()) {
+        for (const m of this.heldHints.splice(0)) this.ui.toast(m, { hint: true });
+      }
+      const hintsHeld = this.guideHoldsHints();
       // DISTRICT-ENTRY CARDS: one toast, once ever per district, at the
       // boundary (dot > 0.90 = inside the accent tint, same threshold the
       // terrain colouring uses). The crossing was silent — the ground tint
@@ -2442,7 +2465,12 @@ export class SimpleApp {
         // hasTrailCoins guard: minute one's toast budget belongs to the
         // orientation + talk hints — district cards start after the arrival
         // trail is done.
-        if (!this.ui.isWelcomeVisible() && !this.tour && !this.scene.hasTrailCoins()) {
+        if (
+          !hintsHeld &&
+          !this.ui.isWelcomeVisible() &&
+          !this.tour &&
+          !this.scene.hasTrailCoins()
+        ) {
           const p = this.scene.getPlayer()?.getWorldPosition();
           if (p) {
             const len = p.length() || 1;
@@ -2484,6 +2512,7 @@ export class SimpleApp {
       try {
         if (
           this.lostAccum > 60 &&
+          !hintsHeld &&
           !this.tour &&
           !localStorage.getItem('ds_hint_map') &&
           !this.ui.hasSeenInteractionPrompt() &&
@@ -2510,6 +2539,7 @@ export class SimpleApp {
       try {
         if (
           !localStorage.getItem('ds_hint_talk') &&
+          !hintsHeld &&
           !this.ui.isWelcomeVisible() &&
           !this.tour &&
           this.aiVillagerWithin(4 * this.scene.getInteractionRange())
@@ -2691,6 +2721,7 @@ export class SimpleApp {
         const joy = this.ui.getJoystick();
         const walkForward = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
         const walkStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
+        this.guideMoveMag = Math.hypot(walkForward, walkStrafe);
         // CO-A5: a phone's first steps after the fly-in start the room warm
         // too, if afterIntro has not already.
         if (
@@ -3336,6 +3367,11 @@ export class SimpleApp {
 
     // Quest compass: point at the active delivery's mailbox
     this.updateQuestCompass();
+    // First steps (A6): one bound tick, timed under FxBudget's 'guide'.
+    if (this.guide && fx.on('guide')) {
+      this.guideDt = deltaTime;
+      fx.time('guide', this.boundGuideTick);
+    }
 
     // Minimap: player + NPCs + plazas + delivery target + online peers
     // (throttled to 10 Hz). Peers come from Multiplayer (GameScene stays
@@ -3937,9 +3973,238 @@ export class SimpleApp {
     track('map_guide_set', { label: label ?? hit.label, source });
   }
 
+  // ── First steps (A6) ─────────────────────────────────────────────────
+  private guide: Guide | null = null;
+  private guideCard: GuideCard | null = null;
+  private guideDt = 0;
+  /** This frame's walk input (keyboard plus joystick); 0 outside free walk. */
+  private guideMoveMag = 0;
+  private guidePromptT = 0;
+  /** See the work / Get in touch closed the card: arm when the panel goes. */
+  private guideArmOnPanelsClosed = false;
+  private guidePrevValid = false;
+  private readonly _guidePos = new THREE.Vector3();
+  private readonly _guidePrev = new THREE.Vector3();
+  private readonly _guideFrame: GuideFrame = {
+    dt: 0,
+    blocked: false,
+    top: null,
+    moveMag: 0,
+    walked: 0,
+    yaw: 0,
+    targetDist: null,
+  };
+  /** Bound once: FxBudget times it every frame. */
+  private readonly boundGuideTick = (): void => this.guideTick();
+  /** main-simple's own unprompted hints, held while the guide runs. */
+  private readonly heldHints: string[] = [];
+
+  private setupGuide(): void {
+    const store: GuideStore = {
+      get: (k) => localStorage.getItem(k),
+      set: (k, v) => localStorage.setItem(k, v),
+    };
+    const flag = (k: string): boolean => {
+      try {
+        return localStorage.getItem(k) === '1';
+      } catch {
+        return false;
+      }
+    };
+    this.guide = new Guide(
+      store,
+      {
+        track: (name, props) => track(name, props),
+        completed: () => sfx.blip(),
+        skipped: () => {
+          // Skip fires the compass hint instead; the gate is open by now.
+          this.renderGuide();
+          this.ui.toast(
+            '🧭 The gold ➤ up top points to your next stop — tap it for the island map.',
+            { hint: true },
+          );
+        },
+      },
+      {
+        // Read now, at boot: Explore writes ds_welcomed for a first visit.
+        welcomed: flag('ds_welcomed'),
+        facts: () => ({
+          npcChatted: flag('ds_npc_chatted'),
+          passportCount: this.passport?.count() ?? 0,
+          mapHint: flag('ds_hint_map'),
+        }),
+        talkTarget: () => this.trailVillager,
+        controlsCard: !this.ui.isTouchDevice(),
+      },
+    );
+    this.guideCard = new GuideCard(this.ui.getOverlay(), {
+      touch: this.ui.isTouchDevice(),
+      reducedMotion: () => a11y.reducedMotion,
+      onButton: (id) => this.onGuideButton(id),
+      // D6's hook; before it lands, the prompt element itself.
+      prompt: () =>
+        document.querySelector<HTMLElement>('[data-hud="prompt"]') ??
+        (this.ui as unknown as { interactionDiv?: HTMLElement | null }).interactionDiv ??
+        null,
+    });
+    // How the welcome card closes decides how the guide arms. Capture phase,
+    // ahead of the buttons' own handlers: arming writes ds_hint_compass
+    // before hideWelcome reads it, so the card's one-time compass hint never
+    // lands on top of the guide.
+    this.boundHandlers.guideWelcomeClick = (e: Event) => this.onWelcomeExit(e.target, null);
+    this.ui.getOverlay().addEventListener('click', this.boundHandlers.guideWelcomeClick, true);
+    this.boundHandlers.guideWelcomeKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.onWelcomeExit(null, 'explore');
+    };
+    window.addEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);
+  }
+
+  /** Explore (or Escape) arms now; See the work and Get in touch arm when
+   *  their panel closes; the full tour arms at its end. Hiring, Ask the
+   *  townsfolk and Try a race set their own course. */
+  private onWelcomeExit(target: EventTarget | null, forced: GuideArm | null): void {
+    const card = this.ui
+      .getOverlay()
+      .querySelector('[role="dialog"][aria-label="Welcome to DigiScalability Life Island"]');
+    if (!card) return;
+    let exit = forced;
+    if (!exit) {
+      const b = (target as Element | null)?.closest?.('button') as HTMLElement | null;
+      if (!b || !card.contains(b)) return;
+      if (b.hasAttribute('data-dismiss')) exit = 'explore';
+      else if (b.dataset.cta === 'projects' || b.dataset.cta === 'contact') exit = 'cta';
+      else return;
+    }
+    if (exit === 'explore') this.armGuide('explore');
+    else this.guideArmOnPanelsClosed = true;
+  }
+
+  /** Arm the guide; arming counts as the compass hint shown (ds_hint_compass). */
+  private armGuide(source: GuideArm): boolean {
+    if (!this.guide?.arm(source)) return false;
+    try {
+      localStorage.setItem('ds_hint_compass', '1');
+    } catch {
+      /* no storage */
+    }
+    this.guidePrevValid = false;
+    return true;
+  }
+
+  /** While the guide runs, or may arm as the welcome card closes, main-simple
+   *  fires no unprompted hints: talk, coin, lost, district, specials. */
+  private guideHoldsHints(): boolean {
+    const g = this.guide;
+    if (!g) return false;
+    if (g.isActive()) return true;
+    return g.eligible() && !g.running() && (!this.introSettled || this.ui.isWelcomeVisible());
+  }
+
+  /** One of main-simple's own unprompted hints: now, or once the guide lets go. */
+  private hintLater(message: string): void {
+    if (!this.guideHoldsHints()) {
+      this.ui.toast(message, { hint: true });
+      return;
+    }
+    if (!this.heldHints.includes(message)) this.heldHints.push(message);
+  }
+
+  /** The guide's frame (FxBudget 'guide'): DOM writes only when it changed. */
+  private guideTick(): void {
+    const g = this.guide;
+    // A finished save still runs its finale (a clock, the pause rules).
+    if (!g || (!g.eligible() && !g.running())) return;
+    const ui = this.ui;
+    if (
+      this.guideArmOnPanelsClosed &&
+      !ui.isWelcomeVisible() &&
+      !ui.panels.isOpen() &&
+      !this.tour
+    ) {
+      this.guideArmOnPanelsClosed = false;
+      this.armGuide('cta');
+    }
+    const f = this._guideFrame;
+    f.dt = this.guideDt;
+    f.top = ui.panels.current();
+    f.blocked =
+      f.top !== null ||
+      ui.isWelcomeVisible() ||
+      ui.isLoadingVisible() ||
+      this.tour !== null ||
+      this.scene.isInsideInterior();
+    const player = this.scene.getPlayer();
+    f.walked = 0;
+    f.targetDist = null;
+    if (player) {
+      const p = player.getWorldPositionInto(this._guidePos);
+      if (this.guidePrevValid) f.walked = p.distanceTo(this._guidePrev);
+      this._guidePrev.copy(p);
+      this.guidePrevValid = true;
+      if (this.lastCompassTarget) f.targetDist = p.distanceTo(this.lastCompassTarget);
+    }
+    f.moveMag = this.guideMoveMag;
+    f.yaw = this.scene.getOrbitCamera().getYaw();
+    g.setCompassLabel(this.compassLabel);
+    g.frame(f);
+    this.renderGuide();
+    this.guidePromptT += f.dt;
+    if (this.guidePromptT > 0.25) {
+      this.guidePromptT = 0;
+      this.guideCard?.checkPrompt();
+    }
+  }
+
+  /** Redraw the card when the guide changed (never per frame otherwise). */
+  private renderGuide(): void {
+    const g = this.guide;
+    const card = this.guideCard;
+    if (!g || !card || card.version() === g.version()) return;
+    const v = g.view();
+    const root = document.documentElement;
+    card.render(
+      v,
+      guideCopy(v, {
+        touch: this.ui.isTouchDevice(),
+        lookMode: root.getAttribute('data-look-mode'),
+        runKey: root.getAttribute('data-run-key'),
+        compassLabel: this.compassLabel,
+        finaleLabel: PASSPORT_META[this.guideFinaleDistrict()].label,
+      }),
+    );
+  }
+
+  /** The finale's 'Show me': Projects until it is stamped, then the nearest
+   *  unstamped district, and Projects again once all four are stamped. */
+  private guideFinaleDistrict(): PassportZone {
+    const passport = this.passport;
+    if (!passport || !passport.has('projects')) return 'projects';
+    const d = this.compassDistrict;
+    if (d && passport.isStampZone(d) && !passport.has(d)) return d as PassportZone;
+    return PASSPORT_ZONES.find((z) => !passport.has(z)) ?? 'projects';
+  }
+
+  private onGuideButton(id: GuideButton['id']): void {
+    const g = this.guide;
+    if (!g) return;
+    if (id === 'skip') g.skip();
+    else if (id === 'resume') g.expand();
+    else if (id === 'ok') g.controlsDone();
+    else if (id === 'close') g.finish();
+    else {
+      const key = id === 'school' ? 'school' : `district:${this.guideFinaleDistrict()}`;
+      g.finish();
+      // The finale's 'Show me' goes through the seam every producer uses
+      // (P2-A5): the School leads to its lessons, a district to its door.
+      window.dispatchEvent(new CustomEvent('ds:guide-to', { detail: { key, source: 'guide' } }));
+    }
+    this.renderGuide();
+  }
+
   /** Assemble every shop/provider/build-spot POI and open the island map.
    *  Picking one sets the compass (mapGuideTarget — top of the chain). */
   private openIslandMap(): void {
+    this.guide?.complete('compass');
     const pois: Array<{ icon: string; label: string; pos: THREE.Vector3; color?: string }> = [];
     const add = (icon: string, label: string, pos: THREE.Vector3 | null, color?: string): void => {
       if (pos) pois.push({ icon, label, pos, color });
@@ -4395,6 +4660,9 @@ export class SimpleApp {
       this.ui.showHireCard('cta');
       return;
     }
+    // The full tour hands over to the guide, headed 'The island is yours'
+    // (A6); with the guide done, the old line.
+    if (!recruiter && this.armGuide('tour')) return;
     this.ui.flashMessage('\ud83e\udded The island is yours \u2014 walk anywhere, talk to anyone');
   }
 
@@ -5482,9 +5750,8 @@ export class SimpleApp {
           bank: 'the bank',
           carpenter: 'the Carpenter',
         };
-        this.ui.toast(
+        this.hintLater(
           `⭐ ${marketDay ? 'Market day! ' : ''}${label[this.featured.provider as ProviderKey]} is paying extra today.`,
-          { hint: true },
         );
       }
     } catch {
@@ -6200,6 +6467,18 @@ export class SimpleApp {
     if (this.boundHandlers.guideTo) {
       window.removeEventListener('ds:guide-to', this.boundHandlers.guideTo);
     }
+
+    if (this.boundHandlers.guideWelcomeClick) {
+      this.ui
+        ?.getOverlay()
+        .removeEventListener('click', this.boundHandlers.guideWelcomeClick, true);
+    }
+
+    if (this.boundHandlers.guideWelcomeKey) {
+      window.removeEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);
+    }
+
+    this.guideCard?.dispose();
 
     if (this.boundHandlers.debugKeydown) {
       document.removeEventListener('keydown', this.boundHandlers.debugKeydown);
