@@ -930,3 +930,25 @@ describe('A7: one compass target at a time (the zone branch, replaced)', () => {
     expect(bodyOf(m, 'private trailSeatVillager(')).toContain('if (d > 0.04 && d < best) {');
   });
 });
+
+describe("P2-A5: one 'Show me' seam, window 'ds:guide-to'", () => {
+  test('the listener resolves the key and sets the pill exactly as a map pick does', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("window.addEventListener('ds:guide-to', this.boundHandlers.guideTo);");
+    expect(bodyOf(m, 'private dispose(')).toContain(
+      "window.removeEventListener('ds:guide-to', this.boundHandlers.guideTo);",
+    );
+    const go = bodyOf(m, 'private guideTo(');
+    expect(go).toContain('resolveGuideKey(key, this.guideWorld)');
+    // an unknown key opens the island map instead
+    expect(go).toMatch(/if \(!hit\) \{\s*this\.openIslandMap\(\);\s*return;\s*\}/);
+    expect(go).toContain('this.setMapPick(');
+    expect(go).toContain('hit.zone');
+    expect(go).toContain('this.ui.toast(`🧭 Compass set: ${shown}`);');
+    expect(go).toContain("track('map_guide_set', { label: label ?? hit.label, source });");
+    // and the map's own picks now say where they came from
+    expect(bodyOf(m, 'private openIslandMap(')).toContain(
+      "track('map_guide_set', { label: poi.label, source: 'map' });",
+    );
+  });
+});

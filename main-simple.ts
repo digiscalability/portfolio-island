@@ -11,6 +11,7 @@ import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import { GameScene } from './GameScene';
+import { readGuideTo, resolveGuideKey, type GuideWorld } from './Guide';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
@@ -424,6 +425,7 @@ export class SimpleApp {
     mutePointerDown?: (event: PointerEvent) => void;
     mutePointerUp?: (event: PointerEvent) => void;
     popState?: () => void;
+    guideTo?: (event: Event) => void;
   } = {};
 
   constructor() {
@@ -707,6 +709,13 @@ export class SimpleApp {
       // Expandable island map: tap the radar (or press M) for the full map.
       this.ui.setOnMinimapClick(() => this.openIslandMap());
       this.ui.setOnOpenMap(() => this.openIslandMap());
+      // One 'Show me' seam (P2-A5): any surface names a place by key and the
+      // compass points there, exactly as an island-map pick does.
+      this.boundHandlers.guideTo = (e: Event) => {
+        const req = readGuideTo((e as CustomEvent).detail);
+        if (req) this.guideTo(req.key, req.label, req.source);
+      };
+      window.addEventListener('ds:guide-to', this.boundHandlers.guideTo);
       this.ui.setVoiceSupported(this.chat.voiceSupported);
       this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
@@ -3861,6 +3870,73 @@ export class SimpleApp {
     this.trailDone = true; // the visitor chose a place: the trail is not called back
   }
 
+  /**
+   * The world as the 'Show me' resolver sees it (Guide.resolveGuideKey): the
+   * same getters openIslandMap builds its POIs from.
+   */
+  private readonly guideWorld: GuideWorld = {
+    zone: (id) => this.zonePos(id),
+    school: () => this.scene.schoolPos(),
+    kiosk: () => this.scene.kioskPos(),
+    bank: () => this.scene.bankPos(),
+    // The fisherman's jetty: where a line can be cast.
+    shore: () => this.scene.fishermanPos(),
+    carpenter: () => this.scene.carpenterRackPos(),
+    farm: () => this.scene.farmPos(),
+    raceStart: (kind) => this.scene.getRaceStartPosition(kind),
+    nextMailbox: () =>
+      this.deliverySystem?.getActiveDeliveries?.()?.[0]?.destination?.mesh.position ?? null,
+    nearestStake: () => {
+      const p = this.scene.getPlayer()?.getWorldPosition();
+      let best: THREE.Vector3 | null = null;
+      let bestD = Infinity;
+      for (const f of this.scene.freePlotSummary()) {
+        if (f.kind === 'bench') continue;
+        const d = p ? f.pos.distanceTo(p) : 0;
+        if (d < bestD) {
+          bestD = d;
+          best = f.pos;
+        }
+      }
+      return best;
+    },
+    nearestAiVillager: () => {
+      const p = this.scene.getPlayer()?.getWorldPosition();
+      let best: { name: string; pos: THREE.Vector3 } | null = null;
+      let bestD = Infinity;
+      for (const t of this.scene.getIsland().npcTargets) {
+        if (!isAiNpc(t.name) || !t.meshRef.visible) continue;
+        if (this.scene.getNpcActivity(t.name) === 'sleep') continue;
+        const d = p ? t.meshRef.position.distanceTo(p) : 0;
+        if (d < bestD) {
+          bestD = d;
+          best = { name: t.name, pos: t.meshRef.position };
+        }
+      }
+      return best;
+    },
+    beachHouse: () =>
+      this.scene.getIsland().houseDoors.find((d) => d.id === 'islet_beach_house')?.position ?? null,
+  };
+
+  /**
+   * Point the compass at a place named by key (P2-A5's 'ds:guide-to' seam),
+   * exactly as an island-map pick does: top of the chain, under the arrival
+   * rule (a district ends at its door), with the 'Compass set' toast. An
+   * unknown key opens the island map instead, so a 'Show me' never dead-ends.
+   */
+  private guideTo(key: string, label: string | null, source: string): void {
+    const hit = resolveGuideKey(key, this.guideWorld);
+    if (!hit) {
+      this.openIslandMap();
+      return;
+    }
+    const shown = label ?? `${hit.icon} ${hit.label}`;
+    this.setMapPick(new THREE.Vector3(hit.pos.x, hit.pos.y, hit.pos.z), shown, hit.zone);
+    this.ui.toast(`🧭 Compass set: ${shown}`);
+    track('map_guide_set', { label: label ?? hit.label, source });
+  }
+
   /** Assemble every shop/provider/build-spot POI and open the island map.
    *  Picking one sets the compass (mapGuideTarget — top of the chain). */
   private openIslandMap(): void {
@@ -3954,7 +4030,7 @@ export class SimpleApp {
           zoneOf.get(poi) ?? null,
         );
         this.ui.toast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
-        track('map_guide_set', { label: poi.label });
+        track('map_guide_set', { label: poi.label, source: 'map' });
       },
       {
         playerPos: this.scene.getPlayer()?.getWorldPosition() ?? null,
@@ -6119,6 +6195,10 @@ export class SimpleApp {
 
     if (this.boundHandlers.popState) {
       window.removeEventListener('popstate', this.boundHandlers.popState);
+    }
+
+    if (this.boundHandlers.guideTo) {
+      window.removeEventListener('ds:guide-to', this.boundHandlers.guideTo);
     }
 
     if (this.boundHandlers.debugKeydown) {
