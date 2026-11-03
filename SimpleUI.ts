@@ -292,7 +292,12 @@ export class SimpleUI {
     this.overlay.style.setProperty('--sab', 'env(safe-area-inset-bottom, 0px)');
     this.overlay.style.setProperty('--sal', 'env(safe-area-inset-left, 0px)');
 
-    if (!this.panels) this.panels = new PanelManager(this.overlay, this.isTouch);
+    // Back closes the open panel (its pushed history entry); an entry left
+    // over from a closed panel loses its ?zone= when the visitor lands on it.
+    if (!this.panels)
+      this.panels = new PanelManager(this.overlay, this.isTouch, {
+        onStaleEntry: () => setUrlParam('zone', null),
+      });
     this.createFPSDisplay();
     this.createMuteButton();
     this.createPortfolioButton();
@@ -709,6 +714,7 @@ export class SimpleUI {
       kind: 'sheet',
       hides: ['touch-controls', 'aux-controls'],
       close: () => this.closeDrawer(),
+      history: false, // transient: Back is not spent on it
     });
     list.style.display = 'flex';
     // 😀 tier-2 chip yields its spot while the drawer occupies it.
@@ -2080,6 +2086,7 @@ export class SimpleUI {
         this.emoteWheelCatcher?.remove();
         this.emoteWheelCatcher = null;
       },
+      history: false, // transient: Back is not spent on it
     });
     // Outside tap dismisses (drawer's catcher pattern). Without it, touch had
     // NO dismissal: hides:['nav-chips'] hides the 😀 toggle itself and phones
@@ -2203,6 +2210,7 @@ export class SimpleUI {
       hides: ['touch-controls', 'aux-controls'],
       ownEscape: true,
       close,
+      history: false, // transient: Back is not spent on it
     });
     input.addEventListener('keydown', (e) => {
       e.stopPropagation(); // critical: don't leak movement/hotkeys to the game while typing
@@ -3071,6 +3079,7 @@ export class SimpleUI {
       hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
       close: () => onSkip(),
       ownEscape: true, // tour has its own Escape → skip handler below
+      history: false, // transient: Back is not spent on it
     });
     const cap = document.createElement('div');
     Object.assign(cap.style, {
@@ -4284,6 +4293,7 @@ export class SimpleUI {
       hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
       close: () => this.hideWelcome(),
       ownEscape: true, // welcome keeps its own Escape listener below
+      history: false, // the landing card: Back from it leaves, as before
     });
 
     trackOnce('welcome_shown');
@@ -6436,6 +6446,9 @@ export class SimpleUI {
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.hideZonePanel(),
       el: this.zonePanelDiv,
+      // A ?zone= deep link opens on the visitor's landing entry: there is no
+      // entry of ours to step back off, and Back from it leaves the site.
+      history: source !== 'deeplink',
     });
     this.stepHintAside();
 
@@ -7727,6 +7740,7 @@ export class SimpleUI {
       // SE, and EAT sat inside its tap-to-advance region firing KeyG.
       hides: ['nav-chips', 'aux-controls'],
       close: () => this.hideDialogue(),
+      history: false, // transient: Back is not spent on it
     });
 
     if (!this.dialogueDiv) {
@@ -7901,6 +7915,9 @@ export class SimpleUI {
    * Dispose of UI elements
    */
   dispose(): void {
+    // First: the closes below must not step the history back. This runs on
+    // beforeunload, where a back() could turn a reload or a link into Back.
+    this.panels.dispose();
     if (this.compassDiv) {
       this.compassDiv.remove();
       this.compassDiv = null;
