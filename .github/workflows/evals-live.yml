@@ -1,0 +1,76 @@
+# Live evals (evals/): villagers under injection and role-break attempts, what
+# they say about Abbas, and the planner's id validity, against the real
+# Anthropic API with the exact prompts npcChat and the planner send.
+#
+# Manual only (workflow_dispatch): every run spends real money, so it never
+# runs on push or PR. It reads the ANTHROPIC_API_KEY repository secret, which
+# should be a key from a workspace with a low spend limit. Without the secret
+# the live suites skip and the job passes with a warning. Every call is held
+# to a hard token budget (token_budget below); the run records are uploaded.
+name: Evals (live)
+
+on:
+  workflow_dispatch:
+    inputs:
+      token_budget:
+        description: Hard cap on input + output tokens for the whole run
+        required: true
+        default: '300000'
+      reps:
+        description: Repetitions of each villager case
+        required: true
+        default: '1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-live
+  cancel-in-progress: false
+
+jobs:
+  live-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # The uv that wrote evals/uv.lock, so `uv run --locked` never meets a
+          # newer lock format. Bump it together with the lock.
+          version: '0.10.9'
+          python-version: '3.11'
+          cache-dependency-glob: evals/uv.lock
+      - name: Functions install + build
+        run: cd functions && npm ci && npm run build
+      - name: Dump fixtures from the built functions
+        run: node evals/tools/dump_personas.mjs
+      - name: Offline evals (the harness must be sound before it spends)
+        working-directory: evals
+        run: uv run --locked pytest -m offline
+      - name: Live evals
+        working-directory: evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVALS_TOKEN_BUDGET: ${{ inputs.token_budget }}
+          EVALS_REPS: ${{ inputs.reps }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY is not set, so the live suites skip."
+          fi
+          uv run --locked --group live pytest -m live
+      - name: Upload the run records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-evals-${{ github.run_id }}
+          path: |
+            evals/runs/
+            evals/fixtures/generated/
+          if-no-files-found: ignore
+          retention-days: 30

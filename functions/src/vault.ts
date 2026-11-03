@@ -3,8 +3,9 @@
  *
  * Coins are client-authoritative and per-device (adopt-once, Phase 0). The
  * vault is the deliberate exception: a server-validated balance under
- * `bank/{uid}` that survives devices, mutated ONLY here (clients have no
- * write access — see database.rules.json). Deposits are soft-trust by design
+ * `bank/{uid}` (the anonymous uid, so per browser until an account can be
+ * linked), mutated ONLY here (clients have no write access — see
+ * database.rules.json). Deposits are soft-trust by design
  * (the client asserts it removed local coins; a forged deposit only inflates
  * the forger's own vault). Withdrawals are the guarded edge: the transaction
  * refuses to go below zero, so vault money can be duplicated by NOBODY —

@@ -22,7 +22,7 @@
 // DEPLOY NOTE: defineSecret runs at module load for the whole codebase — the
 // ELEVENLABS_API_KEY secret must EXIST in Secret Manager before ANY functions
 // deploy succeeds (same gotcha as GITHUB_TOKEN):
-//   firebase functions:secrets:set ELEVENLABS_API_KEY --account digiscalability@gmail.com
+//   firebase functions:secrets:set ELEVENLABS_API_KEY --account <your-google-account>
 //
 // All RTDB nodes here (ttsQueue, ttsCache, ttsCacheAt, ttsRate, ttsFetch,
 // ttsUsage) are UNLISTED in the database rules ⇒ default-deny ⇒
