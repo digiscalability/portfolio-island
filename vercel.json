@@ -5,7 +5,28 @@
       "destination": "/api/z?zone=:zone"
     }
   ],
+  "redirects": [
+    {
+      "source": "/cv",
+      "destination": "https://digiscalability.com/about",
+      "permanent": false
+    },
+    {
+      "source": "/resume",
+      "destination": "https://digiscalability.com/about",
+      "permanent": false
+    }
+  ],
   "headers": [
+    {
+      "source": "/assets/([^/]+-[A-Za-z0-9_-]{8}\\.(?:js|css))",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
     {
       "source": "/launch-clip.mp4",
       "headers": [

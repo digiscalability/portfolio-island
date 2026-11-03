@@ -1,3 +1,5 @@
+import { randomBytes } from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { defineConfig, type Plugin, type ViteDevServer } from 'vite';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -33,9 +35,51 @@ function multiplayerRelay(): Plugin {
   };
 }
 
+/**
+ * Stamp a per-build id and this build's hashed file list into dist/sw.js.
+ *
+ * public/sw.js is copied into dist verbatim, so its bytes never changed between
+ * deploys: the browser kept the first worker it installed and never ran
+ * install/activate again, and the cache flush in activate never ran after the
+ * first visit. A fresh BUILD_ID makes every build's worker byte-different (two
+ * builds of the same commit still differ), and BUILD_ASSETS tells activate
+ * which cached files belong to this build. Build-only; `vite dev` serves the
+ * unstamped placeholders and never registers the worker.
+ */
+function serviceWorkerStamp(): Plugin {
+  return {
+    name: 'sw-build-stamp',
+    apply: 'build',
+    writeBundle(options, bundle) {
+      // Runs after the bundle is written; the public dir (sw.js) was copied in
+      // at renderStart.
+      const file = path.join(options.dir ?? path.resolve(__dirname, 'dist'), 'sw.js');
+      if (!fs.existsSync(file)) this.error(`sw-build-stamp: ${file} is missing`);
+      const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+      const buildId = `${stamp}-${randomBytes(4).toString('hex')}`;
+      const assets = Object.keys(bundle)
+        .filter((f) => f.startsWith('assets/'))
+        .sort()
+        .map((f) => `/${f}`);
+      const idRe = /const BUILD_ID = '[^']*';/;
+      const assetsRe = /const BUILD_ASSETS = \[[^\]]*\];/;
+      const src = fs.readFileSync(file, 'utf8');
+      if (!idRe.test(src) || !assetsRe.test(src)) {
+        this.error('sw-build-stamp: BUILD_ID / BUILD_ASSETS placeholders not found in sw.js');
+      }
+      fs.writeFileSync(
+        file,
+        src
+          .replace(idRe, () => `const BUILD_ID = '${buildId}';`)
+          .replace(assetsRe, () => `const BUILD_ASSETS = ${JSON.stringify(assets)};`),
+      );
+    },
+  };
+}
+
 // Vite config: expose assetKits and assets directories via aliases and allow serving them
 export default defineConfig({
-  plugins: [multiplayerRelay()],
+  plugins: [multiplayerRelay(), serviceWorkerStamp()],
   publicDir: 'public',
   build: {
     // Copy assets during build
@@ -88,12 +132,6 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      // Path aliases matching tsconfig.json
-      '@': path.resolve(__dirname),
-      '@core': path.resolve(__dirname),
-      '@utils': path.resolve(__dirname, 'src/utils'),
-      '@assets': path.resolve(__dirname, 'assets'),
-      '@assetKits': path.resolve(__dirname, 'assetKits'),
       // Legacy aliases for backwards compatibility
       '/assetKits': path.resolve(__dirname, 'assetKits'),
       '/assets': path.resolve(__dirname, 'assets'),

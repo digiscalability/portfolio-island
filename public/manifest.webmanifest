@@ -2,8 +2,8 @@
   "id": "/",
   "name": "DigiScalability Life Island",
   "short_name": "Life Island",
-  "description": "A living 3D portfolio you can explore — walk, drive, and fly around an island planet.",
-  "lang": "en",
+  "description": "Abbas Ali's portfolio: a living 3D world (Three.js + TypeScript) where 24 villagers talk through Claude Haiku 4.5.",
+  "lang": "en-AU",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -16,22 +16,34 @@
       "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
   "screenshots": [
     {
-      "src": "/og-cover.jpg",
+      "src": "/og-cover-v3.jpg",
       "sizes": "1200x630",
       "type": "image/jpeg",
       "form_factor": "wide",
-      "label": "Explore the Life Island planet"
+      "label": "Life Island, Abbas Ali's 3D portfolio planet"
     }
   ]
 }
