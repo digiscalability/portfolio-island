@@ -38,16 +38,11 @@ describe('CONSUMABLE LAW: a corrupt blob must not refund the inventory', () => {
   });
 });
 
+// The pack's two SimpleUI.ts locks (showInventory drops the previous element
+// first; values are escaped at the HTML sink) moved to test/uiLocks.test.ts,
+// which owns SimpleUI's locks (stage-1 lock relocation). This file reads
+// main-simple.ts only.
 describe('the pack re-renders instead of stacking', () => {
-  test('showInventory drops the previous element first', () => {
-    // PanelManager's same-id re-open replaces the SPEC without firing
-    // close() — by design, so the shop can re-render per purchase. That
-    // means the old DOM node survives: without this the change-hook
-    // re-render appended a second modal over a stale one (measured: the
-    // stale copy still read 4 fish after the value moved to 9).
-    expect(fn('SimpleUI.ts', 'showInventory(): void')).toContain('this.packDiv?.remove()');
-  });
-
   test('the app re-renders it from the funnels every mutation passes through', () => {
     const s = src('main-simple.ts');
     expect(s).toContain('refreshPackIfOpen');
@@ -83,9 +78,5 @@ describe('the pack shows what nothing else did', () => {
     expect(birdLine).toBeDefined();
     const iconLine = p.split('\n')[p.split('\n').indexOf(birdLine!)];
     expect(iconLine).not.toContain('🌾');
-  });
-
-  test('values are escaped at the HTML sink', () => {
-    expect(fn('SimpleUI.ts', 'showInventory(): void')).toContain('SimpleUI.esc');
   });
 });

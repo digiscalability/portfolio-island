@@ -5,6 +5,7 @@ import { a11y } from './Accessibility';
 import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
 import { setInkVisible } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
+import { compassBearing } from './Compass';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
@@ -13,6 +14,7 @@ import { GameScene } from './GameScene';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
+import { worldInputBlocked } from './keyGuards';
 import { Multiplayer } from './Multiplayer';
 import {
   AI_NPCS,
@@ -375,6 +377,7 @@ class SimpleApp {
     chatKeyup?: (event: KeyboardEvent) => void;
     mutePointerDown?: (event: PointerEvent) => void;
     mutePointerUp?: (event: PointerEvent) => void;
+    popState?: () => void;
   } = {};
 
   constructor() {
@@ -1296,9 +1299,13 @@ class SimpleApp {
 
       this.setupDebugShortcuts();
 
-      // Create input manager
+      // Create input manager. Look is press-and-drag; the pointer lock is an
+      // opt-in setting (ds_mouse_lock) and never engages while a panel is
+      // open, so it can never strand an open sheet or card under a captured
+      // cursor.
       this.inputManager = new SimpleInputManager();
       this.inputManager.attachToCanvas(canvas);
+      this.inputManager.setPointerLockGuard(() => !this.ui.panels.isOpen());
       console.log('✓ Input manager created');
 
       // Chat keybindings: Enter opens the text input; V is push-to-talk
@@ -1858,14 +1865,7 @@ class SimpleApp {
       const label = `🕐 ${((hh + 11) % 12) + 1}${hh < 12 ? 'am' : 'pm'}`;
       this.ui.showTimeOverridePill(label, () => {
         env.debugHour = null;
-        try {
-          const sp = new URLSearchParams(location.search);
-          sp.delete('hour');
-          const q = sp.toString();
-          history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}`);
-        } catch {
-          /* ignore */
-        }
+        this.dropUrlParam('hour');
       });
     } catch {
       /* ignore */
@@ -1909,18 +1909,51 @@ class SimpleApp {
           this.scene.snapCameraToPlayer();
         });
         if (env) env.debugHour = null;
-        try {
-          const sp = new URLSearchParams(location.search);
-          sp.delete('pc');
-          const q = sp.toString();
-          history.replaceState(null, '', `${location.pathname}${q ? `?${q}` : ''}`);
-        } catch {
-          /* ignore */
-        }
+        this.dropUrlParam('pc');
       });
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** Params a pill has handed back this page life: ?hour= and ?pc=. */
+  private readonly droppedUrlParams = new Set<string>();
+
+  /**
+   * A pill gave its moment back (the ?hour= clock, the ?pc= postcard view):
+   * take its param out of the address bar for the rest of the page's life.
+   * The entry keeps its state. An open panel's entry carries PanelManager's
+   * {dsPanel, dsTok} (D2), and the null written here before left the panel
+   * unable to step back off its entry when it closed: the first Back then
+   * stayed on the island and put ?hour= back. The entry below a panel's own
+   * still carries the param, and the step back a closing panel takes (or a
+   * Back) lands there, so every popstate drops these params again.
+   */
+  private dropUrlParam(name: string): void {
+    this.droppedUrlParams.add(name);
+    if (!this.boundHandlers.popState) {
+      this.boundHandlers.popState = () => this.stripDroppedUrlParams();
+      window.addEventListener('popstate', this.boundHandlers.popState);
+    }
+    this.stripDroppedUrlParams();
+  }
+
+  /** Take every dropped param out of the current entry's URL, state untouched. */
+  private stripDroppedUrlParams(): void {
+    try {
+      const sp = new URLSearchParams(location.search);
+      let changed = false;
+      for (const name of this.droppedUrlParams) {
+        if (!sp.has(name)) continue;
+        sp.delete(name);
+        changed = true;
+      }
+      if (!changed) return;
+      const q = sp.toString();
+      history.replaceState(history.state, '', `${location.pathname}${q ? `?${q}` : ''}`);
+    } catch {
+      /* ignore */
     }
   }
 
@@ -2232,23 +2265,11 @@ class SimpleApp {
             ? '✨ Bloom enabled (Ctrl+B to toggle).'
             : '✨ Bloom disabled (Ctrl+B to toggle).',
         );
-      } else if (event.key.toLowerCase() === 'c') {
-        // Toggle the appearance editor
-        if (this.ui['customizeDiv']) {
-          this.ui.hideCustomize();
-        } else {
-          this.openCustomize();
-        }
-      } else if (event.key.toLowerCase() === 'p' && !event.ctrlKey && !event.metaKey) {
-        // Photo mode — but not while typing in chat / the name field.
-        const el = document.activeElement as HTMLElement | null;
-        const typing =
-          el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-        if (!typing) {
-          event.preventDefault();
-          void this.capturePhoto();
-        }
       }
+      // C (appearance editor) and P (photo) used to live here, on a raw
+      // document listener: Ctrl+C on the contact card opened the editor over
+      // it, and both fired behind any open panel. They are latched verbs in
+      // update() now, beside Q, F, G and M.
     };
 
     this.boundHandlers.debugKeydown = handler;
@@ -2418,6 +2439,9 @@ class SimpleApp {
       }
     }
 
+    // Any open panel needs the cursor: let go of the opt-in pointer lock.
+    if (this.ui.panels.isOpen()) this.inputManager.releasePointerLock();
+
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
       // In-person dialogue upkeep: release the hold when every conversation
@@ -2427,6 +2451,15 @@ class SimpleApp {
         this.endNpcDialogue();
       }
       if (this.npcCine) this.updateNpcCine(deltaTime);
+      // C closes the appearance editor while it is on top, whatever the
+      // avatar is doing (in free walk the verb below also opens it).
+      if (
+        !this.tour &&
+        this.ui.panels.current() === 'customize' &&
+        this.inputManager.consumeKeyPress('c')
+      ) {
+        this.ui.hideCustomize();
+      }
       // Cinematic tour: the rail owns the camera and the player stands still.
       // Everything else in the world keeps running (that's the point of it).
       if (this.tour) {
@@ -2437,7 +2470,16 @@ class SimpleApp {
         // discard every frame (same failure mode the npcCine drain names).
         this.inputManager.getCameraInput();
         consumePinchZoomFactor();
+        // Presses during the tour are for the tour: none fires after it.
+        this.inputManager.clearLatched();
         this.updateTour(deltaTime);
+      } else if (worldInputBlocked(this.ui.panels.current())) {
+        // A panel that is not walkable (Projects, the Portfolio menu, the
+        // shop, the map…) owns the keyboard: W or ↓ held behind it used to
+        // walk the avatar while it scrolled, and E seated it on the bench
+        // beside it. keyGuards.ts lists the walkable sheets.
+        this.holdWorldInput();
+        this.ui.hideInteractionPrompt();
       } else if (this.scene.isInsideInterior()) {
         // Interiors never feed the orbit camera either — same banking, same
         // whip on stepping out the door. Drain both interior branches.
@@ -2479,14 +2521,14 @@ class SimpleApp {
             this.ui.hideInteractionPrompt();
           }
         }
+        this.dropUnusedPresses();
       } else if (this.ui.isDialogueActive() || this.ui.isNpcChatOpen()) {
         // A conversation is open (canned panel or AI chat): you're standing
         // WITH someone — movement is suppressed, the villager is held, and
         // the camera two-shot completes the in-person framing.
         this.scene.setPlayerMovement(0, 0);
         this.ui.hideInteractionPrompt();
-        const cameraInput = this.inputManager.getCameraInput();
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        this.applyLook(deltaTime);
 
         if (this.ui.isDialogueActive()) {
           if (this.inputManager.consumeKeyPress('e')) {
@@ -2523,16 +2565,17 @@ class SimpleApp {
             this.ui.closeNpcChat();
           }
         }
+        this.dropUnusedPresses();
       } else if (this.scene.isPlayerSeated()) {
         // Seated on a bench: movement suppressed, E stands back up
         this.scene.setPlayerMovement(0, 0);
         this.ui.showInteractionPrompt('🪑 Press <strong>E</strong> to stand up');
-        const cameraInput = this.inputManager.getCameraInput();
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        this.applyLook(deltaTime);
         if (this.inputManager.consumeKeyPress('e')) {
           this.scene.standUpFromBench();
           this.ui.hideInteractionPrompt();
         }
+        this.dropUnusedPresses();
       } else if (this.scene.isRidingVehicle()) {
         // Driving a boat/jetski: WASD/joystick steers the craft; E hops off
         const moveInput = this.inputManager.getMovementInput();
@@ -2540,28 +2583,31 @@ class SimpleApp {
         const vFwd = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
         const vStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
         this.scene.setVehicleMove(vFwd, vStrafe);
+        this.scene.getOrbitCamera().setMoveInput(vFwd, vStrafe);
         this.currentThrottle = Math.max(Math.abs(vFwd), Math.abs(vStrafe) * 0.5);
-        const cameraInput = this.inputManager.getCameraInput();
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        this.applyLook(deltaTime);
         this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
         if (this.inputManager.consumeKeyPress('e')) {
           this.scene.disembarkVehicle();
           this.ui.hideInteractionPrompt();
         }
+        this.dropUnusedPresses();
         this.ui.updateBreath(1, false);
         this.ui.setUnderwater(this.scene.getSubmergedFactor());
       } else {
         // Get input
         const moveInput = this.inputManager.getMovementInput();
-        const cameraInput = this.inputManager.getCameraInput();
         const jumpInput = this.inputManager.getJumpInput();
 
         // Apply player input (keyboard merged with the touch joystick)
         const joy = this.ui.getJoystick();
-        this.scene.setPlayerMovement(
-          Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
-          Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
-        );
+        const walkForward = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
+        const walkStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
+        this.scene.setPlayerMovement(walkForward, walkStrafe);
+        // The chase camera reads the input direction too: it holds its follow
+        // when the direction swings, and under reduced motion recentres once
+        // the visitor stands still.
+        this.scene.getOrbitCamera().setMoveInput(walkForward, walkStrafe);
         const player = this.scene.getPlayer();
         // Swim: hold Space to stay afloat in water (same key jumps on land)
         if (player) player.setSwimIntent(jumpInput);
@@ -2637,6 +2683,19 @@ class SimpleApp {
         // Full island map (same as tapping the radar)
         if (this.inputManager.consumeKeyPress('m')) this.openIslandMap();
 
+        // Appearance editor (C) and photo mode (P). Latched like the verbs
+        // above, so they fire only here in free walk: never from a field or
+        // a focused control, never behind a panel, never as Ctrl/Meta+C, and
+        // never late (a press at the wheel or on a bench is dropped there).
+        if (this.inputManager.consumeKeyPress('c')) {
+          if (this.ui['customizeDiv']) {
+            this.ui.hideCustomize();
+          } else {
+            this.openCustomize();
+          }
+        }
+        if (this.inputManager.consumeKeyPress('p')) void this.capturePhoto();
+
         // Footsteps while walking; thud when landing from a real jump/fall
         if (player) {
           const grounded = player.isOnGround();
@@ -2689,8 +2748,8 @@ class SimpleApp {
           }
         }
 
-        // Apply camera input (mouse/touch)
-        this.scene.setCameraInput(cameraInput.deltaX, cameraInput.deltaY);
+        // Apply camera input (drag, swipe, keyboard look)
+        this.applyLook(deltaTime);
 
         // Check for nearby interactable and handle interaction.
         // Interpolated values are HTML-escaped: the prompt renders via
@@ -3170,9 +3229,10 @@ class SimpleApp {
         }
       }
     } else {
-      // Stop player movement when welcome screen is visible
-      this.scene.setPlayerMovement(0, 0);
-      this.scene.setCameraInput(0, 0);
+      // The welcome card or the loader owns the moment: no movement, no
+      // banked camera input, and no latched press firing once it closes (C,
+      // P, M and E on the card used to act the moment Explore was clicked).
+      this.holdWorldInput();
     }
 
     // Quest compass: point at the active delivery's mailbox
@@ -3315,6 +3375,58 @@ class SimpleApp {
   }
 
   /**
+   * This frame the world takes no input: the welcome card, the loader or a
+   * non-walkable panel owns the moment. Movement goes to zero in whatever
+   * the avatar is doing (on foot, driving, indoors), latched presses are
+   * dropped, and banked look and pinch input is drained so it cannot land
+   * as one whip when the moment ends — the tour branch's drain, for all.
+   * The chase camera is told the frame is held, not still: taken for a stop,
+   * it used to start the reduced-motion recentre behind an open panel.
+   */
+  private holdWorldInput(): void {
+    this.scene.getOrbitCamera().holdMoveInput();
+    this.scene.setPlayerMovement(0, 0);
+    if (this.scene.isRidingVehicle()) {
+      this.scene.setVehicleMove(0, 0);
+      this.currentThrottle = 0;
+    }
+    if (this.scene.isInsideInterior()) this.scene.setInteriorMove(0, 0);
+    this.inputManager.clearLatched();
+    this.inputManager.getCameraInput();
+    consumePinchZoomFactor();
+  }
+
+  /**
+   * The end of a frame spent indoors, in a conversation, on a bench or at the
+   * wheel: every press the frame did not act on is dropped. Those moments use
+   * E and R at most, and the walk verbs (Q, F, G, M, C, P) act only in free
+   * walk, so a press kept for later fired when the moment ended: P in the car
+   * took a photo on hop-off, C on the bench opened the appearance editor on
+   * standing up, R indoors recentred the camera outside. The 📸 and 🎨 HUD
+   * buttons call their handlers directly, so the latch never touches them.
+   */
+  private dropUnusedPresses(): void {
+    this.inputManager.clearLatched();
+  }
+
+  /**
+   * This frame's look, wherever the camera follows the visitor (on foot,
+   * driving, seated, in a conversation): the drag or swipe in radians from
+   * SimpleInputManager, with any fling it released; J/L to turn and I/K to
+   * tilt; R to recentre behind the player. Typing never gets here: a focused
+   * field keeps its keys (keyGuards.ts), and blocked frames drain instead.
+   */
+  private applyLook(deltaTime: number): void {
+    const cam = this.scene.getOrbitCamera();
+    const look = this.inputManager.getCameraInput();
+    cam.setInput(look.deltaX, look.deltaY, look.source);
+    if (look.fling !== 0) cam.fling(look.fling);
+    const held = (k: string): number => (this.inputManager.isKeyPressed(k) ? 1 : 0);
+    cam.keyLook(held('l') - held('j'), held('i') - held('k'), deltaTime);
+    if (this.inputManager.consumeKeyPress('r')) cam.recentre();
+  }
+
+  /**
    * Compute the bearing from the camera's forward direction to the active
    * delivery target (both projected onto the player's tangent plane) and
    * feed it to the HUD compass. Hidden when the chain is complete.
@@ -3400,8 +3512,10 @@ class SimpleApp {
     }
     toTarget.normalize();
     camForward.normalize();
-    const cross = this._qcCross.copy(camForward).cross(toTarget);
-    const angleRad = Math.atan2(cross.dot(normal), camForward.dot(toTarget));
+    // Positive = target to the RIGHT, the sign SimpleUI's rotate(angle − 90°)
+    // needs. The old atan2((camForward × toTarget) · normal, …) was mirrored:
+    // every off-axis arrow pointed to the wrong side (Compass.ts).
+    const angleRad = compassBearing(camForward, toTarget, normal);
     // great-circle distance on the planet surface
     const R = playerPos.length();
     // _qcTmp and _qcCross are free again here; reuse them for the two great-circle endpoints.
@@ -5686,6 +5800,10 @@ class SimpleApp {
 
     if (this.boundHandlers.beforeUnload) {
       window.removeEventListener('beforeunload', this.boundHandlers.beforeUnload);
+    }
+
+    if (this.boundHandlers.popState) {
+      window.removeEventListener('popstate', this.boundHandlers.popState);
     }
 
     if (this.boundHandlers.debugKeydown) {
