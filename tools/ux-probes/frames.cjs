@@ -558,13 +558,13 @@ async function hitch(t) {
       const warmValue = !r.warmInterior.length ? 'no warm ran' : r.warmFramesOver50.length ? r.warmFramesOver50.slice(0, 6) : ww.seenWhole ? 0 : ww.why;
       t.check(`${k}: the interior warm makes no frame over 50 ms, wherever it fires`, warmPass, warmValue, 0);
       t.check(`${k}: render() calls that created programs, card to +25 s (each must be a <= 50 ms first draw of a late-loaded model)`, slowAdds.length === 0, inWin.length ? inWin.map((x) => `${x.atS}s +${x.added} (${x.ms} ms)`) : 'none', 'none over 50 ms');
-      // plan-r3's runtime budget: 0 frames over 50 ms after the card.
+      // plan-r3's runtime budget (0 frames over 50 ms after the card, on
+      // desktop with the extension), judged on every profile hitch runs, as
+      // stage 1 judged it; a busy host makes a frame over the line inconclusive.
       const over = r.framesOver50;
       const other = r.hostLoad ? r.hostLoad.otherBusyPct : null;
-      if (prof === 'desktop' && !t.noKhr) {
-        const quiet = other !== null && other <= cap;
-        t.check(`${k}: frames over 50 ms, card to +25 s`, over.length === 0 ? true : quiet ? false : null, over.length ? { frames: over.slice(0, 6), host: r.hostLoad } : 0, `0 (inconclusive when other processes took over ${cap}% of the host)`);
-      } else t.log(`${k}: frames over 50 ms, card to +25 s (reported; plan-r3 budgets desktop with the extension): ${over.length ? JSON.stringify(over.slice(0, 6)) : 0}; host ${JSON.stringify(r.hostLoad)}`);
+      const quiet = other !== null && other <= cap;
+      t.check(`${k}: frames over 50 ms, card to +25 s`, over.length === 0 ? true : quiet ? false : null, over.length ? { frames: over.slice(0, 6), host: r.hostLoad } : 0, `0 (inconclusive when other processes took over ${cap}% of the host)`);
       t.check(`${k}: long animation frames >= 100 ms, card to +25 s`, r.loafOver100.length === 0, r.loafOver100.length ? r.loafOver100.slice(0, 6) : 0, 0);
       const warm = r.warmInterior[0];
       if (!t.noKhr) t.check(`${k}: the interior warm resolves within 10 s`, warm ? warm.endMs !== null && warm.endMs <= 10000 : null, warm || 'no warm in the window', '<= 10000 ms');

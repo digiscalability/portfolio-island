@@ -1039,32 +1039,54 @@ const hostBusyPct = (a, b) => (b.total > a.total ? round(((b.busy - a.busy) / (b
  * browser's own processes (browser, renderers, GPU). otherBusyPct is what
  * other sessions, builds and apps took; null when CDP cannot say. A probe
  * that judges frame times reads it, since its own browser's share is not
- * noise. stop() returns { hostBusyPct, browserPct, otherBusyPct, threads }.
+ * noise. The processes are sampled every second and each one's CPU time is
+ * summed by pid, so a renderer that starts and exits inside the window (a
+ * context opened and closed) is counted up to its last sample, not handed to
+ * 'other'. stop() returns { hostBusyPct, browserPct, otherBusyPct, threads }.
  */
-async function hostLoadMeter(browser) {
+async function hostLoadMeter(browser, { everyMs = 1000 } = {}) {
   let cdp = null;
   try {
     cdp = await browser.newBrowserCDPSession();
   } catch (e) {}
-  const browserCpuMs = async () => {
-    if (!cdp) return null;
+  const seen = new Map(); // pid -> last cpuTime (s)
+  let ownMs = 0;
+  let ok = !!cdp;
+  let first = true;
+  const sample = async () => {
+    if (!cdp || !ok) return;
     try {
       const { processInfo } = await cdp.send('SystemInfo.getProcessInfo');
-      return processInfo.reduce((s, p) => s + (p.cpuTime || 0), 0) * 1000;
+      for (const p of processInfo) {
+        const cpu = p.cpuTime || 0;
+        // A process already running at the first sample is the baseline; one
+        // that appears later started inside the window, so all of it counts.
+        const prev = seen.has(p.id) ? seen.get(p.id) : first ? cpu : 0;
+        ownMs += Math.max(0, cpu - prev) * 1000;
+        seen.set(p.id, cpu);
+      }
+      first = false;
     } catch (e) {
-      return null;
+      ok = false;
     }
   };
   const a = hostCpu();
-  const b0 = await browserCpuMs();
+  await sample();
+  let busy = null;
+  const timer = setInterval(() => {
+    if (!busy) busy = sample().finally(() => (busy = null));
+  }, everyMs);
+  if (timer.unref) timer.unref();
   return {
     async stop() {
-      const b1 = await browserCpuMs();
+      clearInterval(timer);
+      if (busy) await busy;
+      await sample();
       const z = hostCpu();
       if (cdp) await cdp.detach().catch(() => {});
       const total = z.total - a.total;
       const host = total > 0 ? ((z.busy - a.busy) / total) * 100 : null;
-      const own = b0 !== null && b1 !== null && total > 0 ? ((b1 - b0) / total) * 100 : null;
+      const own = ok && total > 0 ? (ownMs / total) * 100 : null;
       return { hostBusyPct: round(host, 1), browserPct: round(own, 1), otherBusyPct: host !== null && own !== null ? round(Math.max(0, host - own), 1) : null, threads: os.cpus().length };
     },
   };

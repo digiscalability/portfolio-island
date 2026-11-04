@@ -261,32 +261,34 @@ s1-int's early warm took the blame for the boot tail's last frame, so
 hitch exited 1 in two of the review's three runs.
 
 Gates: the warm's frames; render() calls in the window that create programs
-and take over 50 ms; frames over 50 ms from the card to ready + 25 s on
-desktop with the extension (plan-r3's runtime budget; on the low tier and
-with `--no-khr` they are reported); long animation frames of 100 ms or
-more; the warm resolving within 10 s; the first door. A frame over 50 ms
-fails only on a quiet host: `hostLoad` (`lib.hostLoadMeter`: the machine's
-busy share from `os.cpus()`, this browser's own from CDP
-`SystemInfo.getProcessInfo`) must show other processes at 10% of the
-machine or less (`--busy-cap <pct>`), or the check is inconclusive. Here a
-probe's own browser takes 8-16% of the machine and the rest of a quiet host
-3-6%; one other session's probe adds about as much again. Reported, not
+and take over 50 ms; frames over 50 ms from the card to ready + 25 s
+(plan-r3's runtime budget sets 0 on desktop with the extension; like stage
+1, hitch judges it on every profile it runs); long animation frames of
+100 ms or more; the warm resolving within 10 s; the first door. A frame
+over 50 ms fails only on a quiet host: `hostLoad` (`lib.hostLoadMeter`: the
+machine's busy share from `os.cpus()`, this browser's own from CDP
+`SystemInfo.getProcessInfo`, sampled every second and summed per process)
+must show other processes at 10% of the machine or less (`--busy-cap
+<pct>`), or the check is inconclusive. Here a probe's own browser takes
+8-25% of the machine and the rest of a quiet host 3-6%; one other
+session's probe adds about as much again. Reported, not
 judged: `bootTailOver50`, ready to the card, where both builds draw their
 late GLB models for the first time behind the loader and build the card
 (60-370 ms frames).
 
-Baselines, 2026-11-04, other processes 3.7-5.7% of the host:
-- s1-int: 14 scenario runs (6 runs on desktop, among them `--warm-at 1.0`
-  and `--warm-at 2.3`, and one on both tiers) all exit 0. The idle warm
-  started at 2.17-3.36 s, often before the card at 2.38-2.61 s; its own
-  work was 124-137 ms in 29-33 spans, the longest 10-13 ms (the room's
-  build), the rest 4-9 ms slices. Four frames over 50 ms fell inside a warm:
-  the boot tail's last frame before the card (60, 70 and 90 ms) and, with
+Baselines, 2026-11-04, other processes 3.7-7.3% of the host:
+- s1-int: 18 scenario runs in 7 runs (five on desktop, among them
+  `--warm-at 1.0` and `--warm-at 2.3`, and two on both tiers), all exit 0.
+  The idle warm started at 2.17-3.36 s, often before the card at
+  2.38-2.63 s; its own work was 123-137 ms in 29-34 spans, the longest
+  10-13 ms (the room's build), the rest 4-9 ms slices. Six frames over
+  50 ms fell inside a warm: the boot tail's last frame before the card (60,
+  70, 90 and 100 ms on desktop, 50 ms on the low tier) and, with
   `--warm-at 1.0`, the bloom's arrival (120 ms, +6 programs, the room
   hidden). The warm's own work in each was 4.0-4.2 ms, one slice, so none is
   the warm's, and nothing goes to B: these are the frames stage 1's rule
-  blamed. No frame over 50 ms after the card in any run; the first door
-  17-24 ms.
+  blamed. No frame over 50 ms after the card in any run, on either tier;
+  the first door 17-24 ms.
 - 58c8849 (desktop): exits 1. The warm at 2.45 s ran 1,834 ms; its first
   span was 141 ms (the room's build and `compileAsync`'s compile), and the
   frame at 4.13 s (1,680 ms) held a 1,545 ms render of the room
