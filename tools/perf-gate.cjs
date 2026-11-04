@@ -15,28 +15,78 @@
 // startup-only at 4x CPU with GPU timer queries off (they inflate throttled
 // CPU time by ~15%). Hardware GL (ANGLE D3D11 on Windows; PERF_GL overrides).
 //
-// Verdict per metric (plan › perfBudget): valid when sigma <= threshold/2;
-// pass when valid and delta <= threshold; fail when valid and
-// delta > threshold + sigma; anything else is inconclusive, and the run
-// escalates to 2x cycles, up to 24. delta = median of the paired (B - A)
-// cycle differences; sigma = the 95% band of delta, t(n-1) x 1.2533 x SD/sqrt(n)
-// over those differences (both sides' noise, drift cancelled by the ABAB
-// pairing). The plan's single A split is reported (sigmaSplitA), never used.
+// Verdict per metric (plan-r3 › perfBudget, critique-r3), against T, the
+// budget, and the metric's floor, its 24-cycle A/A band from
+// tools/perf-gate.floor.json:
+// - timings (sigma rule): valid when sigma <= T/2; pass when valid and
+//   delta <= T; fail when valid and delta > T + sigma; anything else is
+//   inconclusive, and the run escalates to 2x cycles, up to 24. delta = median
+//   of the paired (B - A) cycle differences; sigma = the 95% band of delta,
+//   t(n-1) x 1.2533 x SD/sqrt(n) over those differences. A timing whose T is
+//   below 2 x its floor cannot resolve on this rig: CPU is judged by its proxy
+//   (FxBudget µs per effect) and the rest are reported 'unresolvable', and
+//   the report says so.
+// - counters (draws, triangles, programs, nodes, long tasks, bytes): delta =
+//   median(B) - median(A); pass when delta <= max(T, floor); fail when delta
+//   > max(T, floor) + sigma, or > max(T, floor) at 24 cycles; else
+//   inconclusive. Improvements always pass.
+// - texture MB is the one exact counter: equal on every A/A load.
+// welcome_visible is stratified by the boot-race mode (programs 212/215 on
+// desktop, 113/117 on the low tier) and compared like with like. Every load
+// checks the hub-wide and Projects poses, and a pitch that differs between
+// the builds by more than 0.01 rad makes the run inconclusive.
 // Exit codes: 0 pass, 1 budget fail, 2 fail-closed (a request got past the
 // harness), 3 inconclusive. Shares the probes' safety harness (lib.cjs).
+//
+//   --record-floor (with --ab <dist> <dist>): run 24 cycles, keep the verdicts
+//   at 6, 12 and 24, and write each metric's 24-cycle band to the floor file
+//   (--floor <file> reads or writes another one).
 const fs = require('fs');
 const path = require('path');
 const lib = require('./ux-probes/lib.cjs');
 
 // ---------------------------------------------------------------- budgets
+// plan-r3 perfBudget. CPU p50 has no budget (report-only); the startup
+// budgets for the 1x profiles are desktop's, the 'startup' profile is 4x.
 const THRESHOLDS = {
-  desktop: { cpuP50: 1.0, cpuP95: 1.5, gpuP50: 2.0, drawsSpawn: 50, drawsHub: 60, drawsProjects: 0, programs: 5 },
-  lowtier: { cpuP50: 0.5, cpuP95: 0.8, drawsSpawn: 20, drawsHub: 20, drawsProjects: 20, programs: 3, nodes: 150, textureMB: 6 },
-  startup: { welcomeMs: 400, worldGenMs: 200 },
-  // startup metrics on the 1x profiles (desktop numbers)
-  boot: { welcomeMs: 100, worldGenMs: 50, bytesBeforeCardKB: 50, longTasksBeforeCard: 1 },
+  desktop: { cpuP95: 1.0, gpuP50: 2.0, drawsSpawn: 50, drawsHub: 80, drawsProjects: 60, programs: 5, welcomeMs: 150, worldGenMs: 50, longTasksBeforeCard: 1, longestTaskBeforeCardMs: 50, bytesBeforeCardKB: 50 },
+  lowtier: { cpuP95: 0.75, drawsSpawn: 20, drawsHub: 30, drawsProjects: 25, programs: 3, nodes: 150, textureMB: 6, bytesBeforeCardKB: 50 },
+  startup: { welcomeMs: 400, worldGenMs: 200, longTasksBeforeCard: 2, longestTaskBeforeCardMs: 50, bytesBeforeCardKB: 50 },
 };
-const FX_US = { desktop: 150, lowtier: 100, totalDesktop: 600, totalLowtier: 400 };
+// FxBudget µs per frame: each effect, and the sum of every effect.
+const FX_US = { desktop: 150, lowtier: 80, totalDesktop: 600, totalLowtier: 300 };
+// plan-r3's per-effect ledger (µs/frame), which --fx <name> also holds an effect to.
+const FX_LEDGER = {
+  lookFling: 20,
+  guide: 30,
+  camRays: { desktop: 50, lowtier: 40 },
+  gait: 60,
+  squash: 5,
+  swim: 10,
+  npcGait: 80,
+  npcTalk: 20,
+  coins: 20,
+  avatarFade: 5,
+  idleLife: { desktop: 40, lowtier: 15 },
+  pins: 0,
+  dust: 15,
+};
+const ledgerUs = (name, prof) => {
+  const v = FX_LEDGER[name];
+  if (v === undefined || v === null) return null;
+  return typeof v === 'number' ? v : v[prof] ?? null;
+};
+// A/A bands recorded by --record-floor.
+const FLOOR_FILE = path.join(__dirname, 'perf-gate.floor.json');
+function loadFloor(file) {
+  const f = lib.readJson(file);
+  return f && typeof f === 'object' ? f : null;
+}
+const floorOf = (floor, prof, metric) => {
+  const p = floor && floor.profiles && floor.profiles[prof];
+  const v = p ? p[metric] : undefined;
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+};
 // Main 58c8849 on the audit rig (RTX 5070, Ryzen 7 7700), noon. The plan's
 // numbers, except the low-tier spawn draws: the plan's ~627 came from a 4x
 // run on the live afternoon clock with the governor free; this gate's
@@ -47,8 +97,17 @@ const BASELINE = {
   desktop: { idleCpuP95: 16.4, programs: 216, programsTol: 5, draws: { spawn: 658, hub: 1777, projects: 1233 } },
   lowtier: { programs: 118, programsTol: 3, draws: { spawn: 658 } },
 };
-const VIEWS = ['spawn', 'hub', 'projects'];
-const DRAW_KEY = { spawn: 'drawsSpawn', hub: 'drawsHub', projects: 'drawsProjects' };
+// The fixed views, in measuring order. A view is a POSE ({ view }) plus the
+// time the world needs to settle after it, and its draw budget key. P2-E3
+// adds a vehicle view and a room view here.
+const VIEW_DEFS = [
+  { name: 'spawn', settleMs: 0, fxSettleMs: 600, drawKey: 'drawsSpawn', poseCheck: false },
+  { name: 'hub', settleMs: 1200, fxSettleMs: 1200, drawKey: 'drawsHub', poseCheck: true },
+  { name: 'projects', settleMs: 1500, fxSettleMs: 1500, drawKey: 'drawsProjects', poseCheck: true },
+];
+const VIEWS = VIEW_DEFS.map((v) => v.name);
+const DRAW_KEY = Object.fromEntries(VIEW_DEFS.map((v) => [v.name, v.drawKey]));
+const POSE_TOL_RAD = 0.01;
 
 // ------------------------------------------------------------ page hooks
 // Installed before any page script: per-app-frame CPU (the update callback
@@ -194,10 +253,16 @@ const POSE = ({ view }) => {
   };
   const frame = (follow, pitch, dist) => {
     // The design audit's view framing (runtime only): follow direction,
-    // pitch and distance, then a hard cut to the pose.
+    // pitch and distance, then a hard cut to the pose. A4 eases pitch toward
+    // pitchTarget within 1.2-1.5 s, so the target is pinned too: stage 1
+    // measured s1-int's hub and Projects views at -0.12 rad against main's
+    // -0.62 and -0.38 and reported a fake saving.
     oc.minPitch = -1.35;
     if (oc.followDir && follow) oc.followDir.copy(follow.clone().normalize());
-    if (pitch !== null) oc.pitch = pitch;
+    if (pitch !== null) {
+      oc.pitch = pitch;
+      oc.pitchTarget = pitch;
+    }
     if (typeof oc.setDistance === 'function') oc.setDistance(dist);
     oc.distanceTarget = dist;
     oc.distance = dist;
@@ -227,6 +292,24 @@ const POSE = ({ view }) => {
     frame(north(d).negate(), -0.38, 9);
   }
   return true;
+};
+
+/** The pose the camera really holds when a view is measured. */
+const POSE_READ = () => {
+  const sc = window.__app.scene;
+  const oc = sc.getOrbitCamera();
+  const cam = sc.getCamera();
+  const P = sc.getPlayer();
+  const V3 = P.position.constructor;
+  const up = P.position.clone().normalize();
+  const fwd = cam.getWorldDirection(new V3());
+  const r = (x) => (typeof x === 'number' && Number.isFinite(x) ? +x.toFixed(4) : null);
+  return {
+    ocPitch: r(oc.pitch),
+    pitchTarget: 'pitchTarget' in oc ? r(oc.pitchTarget) : null,
+    camPitch: r(Math.asin(Math.max(-1, Math.min(1, -fwd.dot(up))))),
+    distance: r(oc.distance),
+  };
 };
 
 /** One whole frame (shadow pass + composer passes), loop paused around it. */
@@ -293,12 +376,18 @@ const PIN_GOVERNOR = () => {
 // --------------------------------------------------------------- numbers
 const { median, pct, round } = lib;
 
+const ANIMATED = () => document.getAnimations().filter((a) => a.playState === 'running').length;
+
 async function windowStats(page, ms) {
   const t0 = await page.evaluate(() => performance.now());
   const fx0 = await page.evaluate(FX_SNAPSHOT);
-  await page.waitForTimeout(ms);
+  const an0 = await page.evaluate(ANIMATED).catch(() => null);
+  await page.waitForTimeout(ms / 2);
+  const an1 = await page.evaluate(ANIMATED).catch(() => null);
+  await page.waitForTimeout(ms / 2);
   const t1 = await page.evaluate(() => performance.now());
   const fx1 = await page.evaluate(FX_SNAPSHOT);
+  const an2 = await page.evaluate(ANIMATED).catch(() => null);
   const f = await page.evaluate(FRAME_STATS, [t0, t1]);
   const fxUs = {};
   for (const [name, s] of Object.entries(fx1.stats)) {
@@ -314,6 +403,7 @@ async function windowStats(page, ms) {
     drawsMean: f.calls.length ? round(f.calls.reduce((s, x) => s + x, 0) / f.calls.length, 1) : null,
     fxUsPerFrame: fxUs,
     effects: fx1.effects,
+    animatedMax: [an0, an1, an2].some((x) => typeof x === 'number') ? Math.max(...[an0, an1, an2].filter((x) => typeof x === 'number')) : null,
   };
 }
 
@@ -360,12 +450,16 @@ async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS 
       const res = performance.getEntriesByType('resource');
       const before = welcome ? res.filter((r) => r.responseEnd <= welcome) : res;
       const lt = welcome ? G.longtasks.filter((x) => x[0] < welcome) : G.longtasks;
+      const sr = window.__app && window.__app.renderer;
+      const R = sr && typeof sr.getRenderer === 'function' ? sr.getRenderer() : null;
       return {
         welcomeMs: welcome ? Math.round(welcome) : null,
         worldGenMs: measures.world_gen ?? null,
         longTasksBeforeCard: lt.filter((x) => x[1] > 50).length,
         longestTaskBeforeCardMs: lt.length ? Math.max(...lt.map((x) => x[1])) : 0,
         bytesBeforeCardKB: +(before.reduce((n, r) => n + (r.transferSize || 0), 0) / 1024).toFixed(1),
+        // The boot race's mode for a startup-only load (no +30 s read).
+        programsAtCard: R && R.info && R.info.programs ? R.info.programs.length : null,
         hooked: G.hooked,
         hookErr: G.err,
       };
@@ -379,19 +473,20 @@ async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS 
     out.programsReadAtS = round((Date.now() - cardAt) / 1000, 1);
     Object.assign(out, await page.evaluate(CENSUS));
     out.views = {};
-    for (const view of VIEWS) {
-      await page.evaluate(POSE, { view });
-      if (view !== 'spawn') await page.waitForTimeout(view === 'projects' ? 1500 : 1200);
+    for (const v of VIEW_DEFS) {
+      await page.evaluate(POSE, { view: v.name });
+      if (v.settleMs) await page.waitForTimeout(v.settleMs);
+      const pose = await page.evaluate(POSE_READ);
       const counters = await page.evaluate(WHOLE_FRAME);
       await page.waitForTimeout(250);
       const timing = await windowStats(page, 1500);
-      out.views[view] = { ...counters, ...timing };
+      out.views[v.name] = { ...counters, ...timing, pose };
     }
     out.programsAfterViews = (await page.evaluate(WHOLE_FRAME)).programs;
     out.renderProgramAdds = await page.evaluate(() => window.__gate.renders.filter((r) => !r.inCompile).map((r) => ({ label: r.label, added: r.added, ms: r.ms })));
   } finally {
     await s.close({ waitSignUpMs: 20000 });
-    out.net = { signUpSeen: s.net.signUpSeen, leaks: s.net.leaks.slice(), intercepted: [...new Set(s.net.intercepted)] };
+    out.net = { signUpSeen: s.net.signUpSeen, bootProofSeen: !!s.net.bootProofSeen, leaks: s.net.leaks.slice(), intercepted: [...new Set(s.net.intercepted)] };
     // Everything on the machine, this browser included: other sessions'
     // builds and probes show up here and in the timing spread.
     out.hostBusyPct = lib.hostBusyPct(cpu0, lib.hostCpu());
@@ -451,9 +546,101 @@ function judge(a, b, threshold) {
   return { verdict, ...out, threshold, valid, withinThreshold: Math.abs(delta) <= threshold };
 }
 
-function metricTable(prof, cyclesA, cyclesB) {
-  const T = THRESHOLDS[prof === 'startup' ? 'startup' : prof] || {};
-  const B = THRESHOLDS.boot;
+/**
+ * The counter rule (critique-r3): delta = median(B) - median(A), the per-side
+ * medians; Tc = max(threshold, floor). Pass when delta <= Tc (an improvement
+ * of any size passes); fail when delta > Tc + sigma, or delta > Tc at 24
+ * cycles; otherwise inconclusive. sigma is the paired band as in judge().
+ */
+function judgeCounter(a, b, threshold, floor = null, { cycles = null } = {}) {
+  const pairs = [];
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (isNum(a[i]) && isNum(b[i])) pairs.push([a[i], b[i]]);
+  const n = pairs.length;
+  if (!n) return { verdict: 'n/a', n: 0 };
+  const A = pairs.map((x) => x[0]);
+  const B = pairs.map((x) => x[1]);
+  const d = pairs.map(([x, y]) => y - x);
+  const delta = median(B) - median(A);
+  const sigma = n > 1 ? (t975(n - 1) * 1.2533 * sampleSd(d)) / Math.sqrt(n) : null;
+  const all = [...A, ...B];
+  const out = { delta: round(delta, 3), sigma: sigma === null ? null : round(sigma, 3), n, medianA: round(median(A), 3), medianB: round(median(B), 3), range: [round(Math.min(...all), 3), round(Math.max(...all), 3)] };
+  if (threshold === undefined || threshold === null) return { verdict: 'n/a', ...out };
+  const tc = Math.max(threshold, isNum(floor) ? floor : 0);
+  let verdict = 'inconclusive';
+  if (delta <= tc) verdict = 'pass';
+  else if ((sigma !== null && delta > tc + sigma) || (cycles !== null && cycles >= 24)) verdict = 'fail';
+  return { verdict, ...out, threshold, floor: isNum(floor) ? floor : null, thresholdUsed: round(tc, 3), withinThreshold: Math.abs(delta) <= tc };
+}
+
+/** The exact rule: |delta| <= threshold, and an A/A side must not move at all. */
+function judgeExact(a, b, threshold) {
+  const r = judge(a, b, null);
+  if (!r.n) return r;
+  if (threshold === undefined || threshold === null) return { ...r, verdict: 'n/a' };
+  const delta = median(b.filter(isNum)) - median(a.filter(isNum));
+  return { ...r, delta: round(delta, 3), threshold, verdict: delta <= threshold ? 'pass' : 'fail', withinThreshold: Math.abs(delta) <= threshold };
+}
+
+/**
+ * The boot race (README): GLB materials compile in one render pass or both,
+ * so programs land in two modes (desktop 212/215, low tier 113/117) and the
+ * late mode shows the card ~0.6 s later. Each side's loads are split at the
+ * midpoint of its own program range (one mode when the range is under 2),
+ * and the timing is paired within each mode, in cycle order.
+ */
+function bootModes(progs) {
+  const xs = progs.filter(isNum);
+  if (xs.length < 2) return progs.map((p) => (isNum(p) ? 'one' : null));
+  const lo = Math.min(...xs);
+  const hi = Math.max(...xs);
+  if (hi - lo < 2) return progs.map((p) => (isNum(p) ? 'one' : null));
+  const mid = (lo + hi) / 2;
+  return progs.map((p) => (!isNum(p) ? null : p > mid ? 'late' : 'early'));
+}
+function stratify(a, b, modeA, modeB) {
+  const ma = bootModes(modeA);
+  const mb = bootModes(modeB);
+  const uni = ma.every((m) => m === 'one' || m === null) || mb.every((m) => m === 'one' || m === null);
+  const strata = {};
+  if (uni) return { a, b, strata: { one: { a: a.filter(isNum).length, b: b.filter(isNum).length, paired: Math.min(a.length, b.length) } }, stratified: false };
+  const pa = [];
+  const pb = [];
+  for (const s of ['early', 'late']) {
+    const qa = a.filter((x, i) => ma[i] === s && isNum(x));
+    const qb = b.filter((x, i) => mb[i] === s && isNum(x));
+    const n = Math.min(qa.length, qb.length);
+    pa.push(...qa.slice(0, n));
+    pb.push(...qb.slice(0, n));
+    strata[s] = { a: qa.length, b: qb.length, paired: n };
+  }
+  return { a: pa, b: pb, strata, stratified: true };
+}
+
+/** µs per frame for each FxBudget effect over a side's windows (median), and the sum. */
+function fxUsOf(cycles) {
+  const per = {};
+  for (const c of cycles) for (const v of Object.values((c && c.views) || {})) for (const [n, us] of Object.entries(v.fxUsPerFrame || {})) if (isNum(us)) (per[n] = per[n] || []).push(us);
+  const med = Object.fromEntries(Object.entries(per).map(([n, xs]) => [n, round(median(xs), 2)]));
+  return { perEffect: med, sum: round(Object.values(med).reduce((s, x) => s + x, 0), 2) };
+}
+
+/** The CPU proxy: every FxBudget effect on side B within its µs budget, and their sum. */
+function cpuProxy(prof, cyclesB) {
+  const fxp = fxUsOf(cyclesB);
+  const each = prof === 'lowtier' ? FX_US.lowtier : FX_US.desktop;
+  const total = prof === 'lowtier' ? FX_US.totalLowtier : FX_US.totalDesktop;
+  const names = Object.keys(fxp.perEffect);
+  if (!names.length) return { verdict: 'n/a', note: 'no FxBudget timings on side B (no effect registered, or ?perf=1 off)', ...fxp };
+  const over = names.filter((n) => fxp.perEffect[n] > Math.min(each, ledgerUs(n, prof) ?? each));
+  return { verdict: !over.length && fxp.sum <= total ? 'pass' : 'fail', each, total, over, ...fxp };
+}
+
+/**
+ * One profile's verdict table. floor: the parsed floor file (or null);
+ * cycles: how many cycles ran (counters fail outright at 24).
+ */
+function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {}) {
+  const T = THRESHOLDS[prof] || {};
   const pick = (arr, f) =>
     arr.map((c) => {
       try {
@@ -463,38 +650,69 @@ function metricTable(prof, cyclesA, cyclesB) {
       }
     });
   const rows = {};
-  const add = (name, f, thr, kind = 'timing') => {
-    rows[name] = { kind, ...judge(pick(cyclesA, f), pick(cyclesB, f), thr) };
+  let proxyRow = null;
+  const proxy = () => (proxyRow = proxyRow || cpuProxy(prof, cyclesB));
+  const fl = (name) => floorOf(floor, prof, name);
+  /** A timing: the sigma rule, unless T is below 2 x the floor (then the proxy, or unresolvable). */
+  const timing = (name, f, thr, { proxyOf = null, a = null, b = null, extra = {} } = {}) => {
+    const A = a || pick(cyclesA, f);
+    const B = b || pick(cyclesB, f);
+    const floorV = fl(name);
+    const r = { kind: 'timing', ...judge(A, B, thr), floor: floorV, ...extra };
+    if (thr !== undefined && thr !== null && floorV !== null && thr < 2 * floorV) {
+      r.unresolvable = `T ${thr} < 2 x floor ${floorV}`;
+      r.directVerdict = r.verdict;
+      if (proxyOf === 'cpu') {
+        const p = proxy();
+        r.rule = 'proxy: FxBudget µs per effect';
+        r.verdict = p.verdict;
+        r.proxy = { verdict: p.verdict, sum: p.sum, each: p.each, total: p.total, over: p.over, note: p.note };
+      } else {
+        r.rule = 'unresolvable on this rig (no proxy): reported, not judged';
+        r.verdict = 'n/a';
+      }
+    } else r.rule = thr === undefined || thr === null ? 'report only' : 'sigma';
+    rows[name] = r;
+  };
+  const counter = (name, f, thr) => {
+    rows[name] = { kind: 'counter', rule: thr === undefined || thr === null ? 'report only' : 'counter: |Δ| <= max(T, floor)', ...judgeCounter(pick(cyclesA, f), pick(cyclesB, f), thr, fl(name), { cycles }) };
+  };
+  const exact = (name, f, thr) => {
+    rows[name] = { kind: 'exact', rule: thr === undefined || thr === null ? 'exact (A/A equal), no budget' : 'exact', ...judgeExact(pick(cyclesA, f), pick(cyclesB, f), thr) };
+  };
+  const startupRows = (suffix) => {
+    // welcome_visible, compared like with like across the boot race's modes.
+    const modeOf = (c) => (isNum(c.programs) ? c.programs : c.programsAtCard);
+    const st = stratify(pick(cyclesA, (c) => c.welcomeMs), pick(cyclesB, (c) => c.welcomeMs), pick(cyclesA, modeOf), pick(cyclesB, modeOf));
+    timing(`welcome_visible ms${suffix}`, null, T.welcomeMs, { a: st.a, b: st.b, extra: { stratified: st.stratified, strata: st.strata } });
+    timing(`world_gen ms${suffix}`, (c) => c.worldGenMs, T.worldGenMs);
+    timing(`longest task before the card ms${suffix}`, (c) => c.longestTaskBeforeCardMs, T.longestTaskBeforeCardMs);
+    counter(`long tasks > 50 ms before the card${suffix}`, (c) => c.longTasksBeforeCard, T.longTasksBeforeCard);
+    counter(`bytes before the card (KB, transfer)${suffix}`, (c) => c.bytesBeforeCardKB, T.bytesBeforeCardKB);
   };
   if (prof === 'startup') {
-    add('welcome_visible ms (4x)', (c) => c.welcomeMs, T.welcomeMs);
-    add('world_gen ms (4x)', (c) => c.worldGenMs, T.worldGenMs);
+    startupRows(' (4x)');
     return rows;
   }
   for (const v of VIEWS) {
-    add(`${v}: CPU p50 ms`, (c) => c.views[v].cpuP50, T.cpuP50);
-    add(`${v}: CPU p95 ms`, (c) => c.views[v].cpuP95, T.cpuP95);
-    if (T.gpuP50) add(`${v}: GPU p50 ms`, (c) => c.views[v].gpuP50, T.gpuP50);
-    // Draws per view are counters but not exact on main: villagers, cats,
-    // birds, clouds and cars move through every view, and rock.glb / tree.glb
-    // clones land in different places on every load (see README). They are
-    // judged by the sigma rule like the timings.
-    add(`${v}: draws`, (c) => c.views[v].draws, T[DRAW_KEY[v]], 'counter');
-    add(`${v}: triangles`, (c) => c.views[v].triangles, null, 'counter');
+    timing(`${v}: CPU p50 ms`, (c) => c.views[v].cpuP50, null);
+    timing(`${v}: CPU p95 ms`, (c) => c.views[v].cpuP95, T.cpuP95, { proxyOf: 'cpu' });
+    if (T.gpuP50) timing(`${v}: GPU p50 ms`, (c) => c.views[v].gpuP50, T.gpuP50);
+    // Draws and triangles per view are counters, not exact: villagers,
+    // cats, birds, clouds and cars move through every view, and rock.glb /
+    // tree.glb clones land somewhere new on every load (see README).
+    counter(`${v}: draws`, (c) => c.views[v].draws, T[DRAW_KEY[v]]);
+    counter(`${v}: triangles`, (c) => c.views[v].triangles, null);
   }
-  // Programs, nodes and the bytes before the card are counters but not exact
-  // on main: a boot race adds 3 programs (215 vs 212 desktop, 117 vs 113 low
-  // tier) and ~600 ms before the card to some loads, nodes wander by up to 6,
-  // and the low tier's bytes before the card alternate 805.2 / 807.5 KB.
-  add('programs (30 s after the card)', (c) => c.programs, T.programs, 'counter');
-  add('programs after the views', (c) => c.programsAfterViews, T.programs, 'counter');
-  add('scene nodes', (c) => c.nodes, T.nodes ?? null, 'counter');
-  // The exact counter: constant on every A/A load measured.
-  add('texture MB', (c) => c.textureMB, T.textureMB ?? null, 'exact');
-  add('welcome_visible ms', (c) => c.welcomeMs, prof === 'desktop' ? B.welcomeMs : null);
-  add('world_gen ms', (c) => c.worldGenMs, prof === 'desktop' ? B.worldGenMs : null);
-  add('long tasks > 50 ms before the card', (c) => c.longTasksBeforeCard, B.longTasksBeforeCard, 'counter');
-  add('bytes before the card (KB, transfer)', (c) => c.bytesBeforeCardKB, B.bytesBeforeCardKB, 'counter');
+  // Programs ride the boot race (212/215 desktop, 113/117 low tier) and nodes
+  // wander by a few: counters with floors.
+  counter('programs (30 s after the card)', (c) => c.programs, T.programs);
+  counter('programs after the views', (c) => c.programsAfterViews, T.programs);
+  counter('scene nodes', (c) => c.nodes, T.nodes ?? null);
+  // The one exact counter: constant on every A/A load measured.
+  exact('texture MB', (c) => c.textureMB, T.textureMB ?? null);
+  startupRows('');
+  if (proxyRow) rows['CPU proxy: FxBudget µs (side B)'] = { kind: 'µs', rule: 'proxy for the CPU p95 budgets', ...proxyRow };
   return rows;
 }
 
@@ -507,7 +725,10 @@ function overall(rows) {
   return 'pass';
 }
 
-/** A/A (one dist on both sides): exact counters equal, |delta| within each threshold. */
+/**
+ * A/A (one dist on both sides): the exact counter is equal on every load, no
+ * verdict fails, and every |delta| is within max(T, floor).
+ */
 function aaSummary(profiles) {
   const out = { exactCountersEqual: true, exactCounters: [], outsideThreshold: [], verdictNeverFail: true };
   for (const [prof, p] of Object.entries(profiles)) {
@@ -518,8 +739,32 @@ function aaSummary(profiles) {
         out.exactCounters.push({ profile: prof, metric: k, range: r.range, equal });
         if (!equal) out.exactCountersEqual = false;
       }
-      if (r.threshold !== undefined && r.withinThreshold === false) out.outsideThreshold.push({ profile: prof, metric: k, delta: r.delta, sigma: r.sigma, threshold: r.threshold });
+      if (r.threshold === undefined || r.threshold === null || !isNum(r.delta)) continue;
+      const tc = Math.max(r.threshold, isNum(r.floor) ? r.floor : 0);
+      const within = r.withinThreshold === false ? false : Math.abs(r.delta) <= tc;
+      if (!within) out.outsideThreshold.push({ profile: prof, metric: k, delta: r.delta, sigma: r.sigma, threshold: r.threshold, floor: isNum(r.floor) ? r.floor : null });
     }
+  }
+  return out;
+}
+
+/** Hub-wide and Projects: both builds hold the same camera pitch (within POSE_TOL_RAD). */
+function poseCheck(cyclesA, cyclesB) {
+  const out = { equal: true, views: {} };
+  for (const v of VIEW_DEFS.filter((x) => x.poseCheck)) {
+    const get = (arr, k) => arr.map((c) => c && c.views && c.views[v.name] && c.views[v.name].pose && c.views[v.name].pose[k]).filter(isNum);
+    const row = {};
+    for (const k of ['camPitch', 'ocPitch']) {
+      const a = get(cyclesA, k);
+      const b = get(cyclesB, k);
+      const ma = a.length ? median(a) : null;
+      const mb = b.length ? median(b) : null;
+      const spread = a.length && b.length ? Math.max(Math.max(...a, ...b) - Math.min(...a, ...b), 0) : null;
+      const d = ma !== null && mb !== null ? Math.abs(mb - ma) : null;
+      row[k] = { medianA: ma === null ? null : round(ma, 4), medianB: mb === null ? null : round(mb, 4), absDelta: d === null ? null : round(d, 4), spreadAllLoads: spread === null ? null : round(spread, 4) };
+      if (d === null || d > POSE_TOL_RAD) out.equal = false;
+    }
+    out.views[v.name] = row;
   }
   return out;
 }
@@ -534,6 +779,10 @@ async function modeAB(args) {
   if (ports.length !== 2) throw new lib.HarnessError('--ab needs --ports <pA>,<pB>');
   const profiles = String(args.profiles || 'desktop,lowtier,startup').split(',');
   const hour = args.hour || '12';
+  const recordFloor = !!args.recordFloor;
+  const floorFile = args.floor && args.floor !== true ? path.resolve(String(args.floor)) : FLOOR_FILE;
+  // --record-floor measures the floor, so it judges without the old one.
+  const floor = recordFloor ? null : loadFloor(floorFile);
   const srvA = await lib.startPreview({ dist: distA, port: ports[0], label: 'A' });
   let srvB;
   try {
@@ -543,7 +792,8 @@ async function modeAB(args) {
     throw e;
   }
   const browser = await lib.launch();
-  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, sameDist: srvA.dist === srvB.dist, profiles: {}, leaks: [], signUpMissing: 0 };
+  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, sameDist: srvA.dist === srvB.dist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, profiles: {}, leaks: [], signUpMissing: 0 };
+  if (recordFloor && !data.sameDist) throw new lib.HarnessError('--record-floor needs an A/A run: --ab <dist> <dist>');
   try {
     for (const prof of profiles) {
       // One discarded load per side first: the browser's shader and HTTP
@@ -556,28 +806,37 @@ async function modeAB(args) {
       const B = [];
       let rows = null;
       let done = 0;
-      // Each profile starts at the requested cycles and escalates on its own.
+      const checkpoints = [];
+      // Each profile starts at the requested cycles and escalates on its own;
+      // --record-floor keeps going to 24 and keeps each checkpoint's verdict.
       let cycles = Number(args.cycles || 6);
+      // --max-cycles caps the escalation (a smoke run); 24 is the verdict's own cap.
+      const maxCycles = recordFloor ? 24 : Math.min(24, Number(args.maxCycles || 24));
       for (;;) {
         for (let c = done; c < cycles; c++) {
           for (const side of ['A', 'B']) {
             const base = side === 'A' ? srvA.url : srvB.url;
             const r = await loadCycle(browser, base, prof, { startupOnly: prof === 'startup', programsAtS: 30, hour });
             if (r.net.leaks.length) data.leaks.push(...r.net.leaks);
-            if (!r.net.signUpSeen) data.signUpMissing++;
+            if (!r.net.signUpSeen && !r.net.bootProofSeen) data.signUpMissing++;
             (side === 'A' ? A : B).push(r);
-            process.stdout.write(`  ${prof} cycle ${c + 1}/${cycles} ${side}: welcome ${r.welcomeMs} ms${r.views ? `, spawn cpu p50 ${r.views.spawn.cpuP50} / draws ${r.views.spawn.draws}` : ''}, host ${r.hostBusyPct}% busy\n`);
+            process.stdout.write(`  ${prof} cycle ${c + 1}/${cycles} ${side}: welcome ${r.welcomeMs} ms${r.views ? `, spawn cpu p50 ${r.views.spawn.cpuP50} / draws ${r.views.spawn.draws}, hub pitch ${r.views.hub.pose.camPitch}` : ''}, host ${r.hostBusyPct}% busy\n`);
           }
         }
         done = cycles;
-        rows = metricTable(prof, A, B);
+        rows = metricTable(prof, A, B, floor, { cycles });
         const v = overall(rows);
-        if (v !== 'inconclusive' || cycles >= 24) break;
-        cycles = Math.min(24, cycles * 2);
-        process.stdout.write(`  ${prof}: inconclusive, escalating to ${cycles} cycles\n`);
+        checkpoints.push({ cycles, verdict: v, fails: Object.entries(rows).filter(([, r]) => r.verdict === 'fail').map(([k]) => k), inconclusive: Object.entries(rows).filter(([, r]) => r.verdict === 'inconclusive').map(([k]) => k) });
+        if ((v !== 'inconclusive' && !recordFloor) || cycles >= maxCycles) break;
+        cycles = Math.min(maxCycles, cycles * 2);
+        process.stdout.write(`  ${prof}: ${v} at ${done} cycles, ${recordFloor ? 'recording the floor' : 'escalating'} to ${cycles}\n`);
       }
       const host = [...A, ...B].map((r) => r.hostBusyPct).filter((x) => x !== null && x !== undefined);
-      data.profiles[prof] = { cycles: done, verdict: overall(rows), hostBusyPct: { p50: round(median(host), 1), max: host.length ? Math.max(...host) : null }, metrics: rows, raw: { A, B } };
+      const pose = prof === 'startup' ? null : poseCheck(A, B);
+      let pv = overall(rows);
+      if (pose && !pose.equal && pv !== 'fail') pv = 'inconclusive';
+      data.profiles[prof] = { cycles: done, verdict: pv, checkpoints, poseCheck: pose, hostBusyPct: { p50: round(median(host), 1), max: host.length ? Math.max(...host) : null }, metrics: rows, raw: { A, B } };
+      if (pose) process.stdout.write(`  ${prof} pose check: ${pose.equal ? 'equal' : 'DIFFERENT'} — ${Object.entries(pose.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad`).join('; ')}\n`);
     }
   } finally {
     await browser.close().catch(() => {});
@@ -588,14 +847,67 @@ async function modeAB(args) {
   let v = verdicts.includes('fail') ? 'fail' : verdicts.includes('inconclusive') ? 'inconclusive' : 'pass';
   if (data.signUpMissing) v = v === 'fail' ? v : 'inconclusive';
   if (data.sameDist) {
-    // A/A (amendment 3): pass or inconclusive, never fail; every |delta|
-    // within its threshold; exact counters equal on every load.
+    // A/A: pass or inconclusive, never fail; every |delta| within
+    // max(T, floor); the exact counter equal on every load.
     data.aa = aaSummary(data.profiles);
     if (!data.aa.exactCountersEqual) v = 'fail';
+  }
+  if (recordFloor && !data.leaks.length) {
+    data.floorWritten = await writeFloor(floorFile, data);
+    // The same 24 cycles judged against the floor they just recorded.
+    const fresh = loadFloor(floorFile);
+    const rejudged = {};
+    for (const [prof, p] of Object.entries(data.profiles)) {
+      const rows = metricTable(prof, p.raw.A, p.raw.B, fresh, { cycles: p.cycles });
+      rejudged[prof] = { verdict: overall(rows), metrics: rows };
+    }
+    data.withRecordedFloor = { profiles: Object.fromEntries(Object.entries(rejudged).map(([k, v]) => [k, { verdict: v.verdict }])), aa: aaSummary(rejudged) };
   }
   if (data.leaks.length) v = 'fail-closed';
   data.verdict = v;
   return data;
+}
+
+/** A dist's entry bundle (main-<hash>.js), or its folder name when it has none. */
+function bundleOf(dist) {
+  try {
+    const m = fs.readdirSync(path.join(dist, 'assets')).find((f) => /^main-[\w-]+\.js$/.test(f));
+    if (m) return m;
+  } catch (e) {}
+  return path.basename(dist);
+}
+
+/**
+ * --record-floor: each metric's 24-cycle A/A band (the sigma the verdict rule
+ * uses) per profile, written through prettier (format:check covers *.json).
+ */
+async function writeFloor(file, data) {
+  const out = {
+    about:
+      "The perf gate's floor: each metric's 24-cycle A/A band (the 95% band of the paired delta, the gate's sigma) on this rig. A timing whose budget T is under 2 x its floor is judged by its proxy (FxBudget µs for CPU) or reported unresolvable; a counter passes when its delta is within max(T, floor). Rewrite with: npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor",
+    recorded: {
+      at: new Date().toISOString(),
+      // The build by its entry bundle, not by a local path.
+      build: bundleOf(data.distA),
+      cycles: Object.fromEntries(Object.entries(data.profiles).map(([p, x]) => [p, x.cycles])),
+      hostBusyPct: Object.fromEntries(Object.entries(data.profiles).map(([p, x]) => [p, x.hostBusyPct])),
+      rig: `${require('os').cpus()[0].model.trim()}, ${require('os').cpus().length} threads`,
+    },
+    profiles: {},
+  };
+  for (const [prof, p] of Object.entries(data.profiles)) {
+    out.profiles[prof] = {};
+    for (const [k, r] of Object.entries(p.metrics || {})) if (isNum(r.sigma)) out.profiles[prof][k] = round(r.sigma, 4);
+  }
+  let text = JSON.stringify(out, null, 2) + '\n';
+  try {
+    const prettier = require(require.resolve('prettier', { paths: [lib.REPO] }));
+    text = await prettier.format(text, { ...((await prettier.resolveConfig(file)) || {}), parser: 'json' });
+  } catch (e) {
+    out.note = `written without prettier: ${String(e).slice(0, 120)}`;
+  }
+  fs.writeFileSync(file, text);
+  return file.replace(/\\/g, '/');
 }
 
 /**
@@ -667,9 +979,10 @@ async function modeFx(args) {
         // Counters: per view, 4 off/on pairs with the world held still.
         const counters = {};
         let programsAdded = 0;
-        for (const view of VIEWS) {
+        for (const vd of VIEW_DEFS) {
+          const view = vd.name;
           await page.evaluate(POSE, { view });
-          await page.waitForTimeout(view === 'spawn' ? 600 : view === 'projects' ? 1500 : 1200);
+          await page.waitForTimeout(vd.fxSettleMs);
           const off = [];
           const on = [];
           for (let k = 0; k < 4; k++) {
@@ -720,7 +1033,12 @@ async function modeFx(args) {
           for (const view of VIEWS) rows[`${view}: draws`] = { kind: 'counter', ...counters[view].draws };
           rows['programs the effect adds'] = { kind: 'counter', verdict: programsAdded <= T.programs ? 'pass' : 'fail', delta: programsAdded, threshold: T.programs, n: 1 };
           const us = onW.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
-          rows['µs per frame (FxBudget)'] = us.length ? { kind: 'µs', verdict: median(us) <= FX_US[prof] ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: FX_US[prof] } : { kind: 'µs', verdict: 'n/a', note: 'not timed by fx.time (unregistered or ?perf=1 off)' };
+          // The effect's own ledger line when plan-r3 gives one, inside the tier's per-effect cap.
+          const usCap = Math.min(FX_US[prof], ledgerUs(name, prof) ?? FX_US[prof]);
+          rows['µs per frame (FxBudget)'] = us.length ? { kind: 'µs', verdict: median(us) <= usCap ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: usCap, ledger: ledgerUs(name, prof) } : { kind: 'µs', verdict: 'n/a', note: 'not timed by fx.time (unregistered or ?perf=1 off)' };
+          // plan-r3 rules: at most 3 animated elements at once.
+          const anim = onW.map((x) => x.animatedMax).filter(isNum);
+          rows['animated elements with the effect on (max)'] = anim.length ? { kind: 'counter', verdict: Math.max(...anim) <= 3 ? 'pass' : 'fail', medianB: Math.max(...anim), threshold: 3 } : { kind: 'counter', verdict: 'n/a' };
           if (overall(rows) !== 'inconclusive' || cycles >= 24) break;
           cycles = Math.min(24, cycles * 2);
         }
@@ -742,7 +1060,7 @@ async function modeFx(args) {
       } finally {
         await s.close({ waitSignUpMs: 20000 });
         if (s.net.leaks.length) data.leaks.push(...s.net.leaks);
-        if (!s.net.signUpSeen) data.signUpMissing++;
+        if (!s.net.signUpSeen && !s.net.bootProofSeen) data.signUpMissing++;
       }
     }
   } finally {
@@ -767,7 +1085,7 @@ async function modeReport(args) {
     for (const prof of profiles) {
       const r = await loadCycle(browser, server.url, prof, { startupOnly: prof === 'startup', programsAtS: 30, seed: !!args.seed, hour: args.hour || '12' });
       if (r.net.leaks.length) data.leaks.push(...r.net.leaks);
-      if (!r.net.signUpSeen) data.signUpMissing++;
+      if (!r.net.signUpSeen && !r.net.bootProofSeen) data.signUpMissing++;
       data.profiles[prof] = r;
       if (prof === 'startup') {
         check('startup (4x): welcome_visible ms', true, r.welcomeMs, 'reported', true);
@@ -869,21 +1187,31 @@ function printSummary(data) {
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%)` : ''}`);
+      if (p.checkpoints && p.checkpoints.length > 1) lines.push(`    checkpoints: ${p.checkpoints.map((c) => `${c.cycles} cycles ${c.verdict}${c.fails.length ? ` (FAIL ${c.fails.join(', ')})` : ''}`).join('; ')}`);
+      if (p.poseCheck) lines.push(`    pose check: ${p.poseCheck.equal ? 'equal' : 'DIFFERENT (the run cannot pass)'}; ${Object.entries(p.poseCheck.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad, orbit pitch A ${r.ocPitch.medianA} B ${r.ocPitch.medianB}`).join('; ')}`);
       for (const [k, r] of Object.entries(p.metrics)) {
-        if (r.verdict === 'n/a') continue;
+        if (r.verdict === 'n/a' && !r.unresolvable) continue;
         const why = r.verdict === 'inconclusive' && r.valid === false ? '  (sigma > thr/2)' : '';
-        lines.push(`    ${r.verdict.padEnd(12)} ${k}: Δ ${r.delta ?? r.medianB} σ ${r.sigma ?? '-'} thr ${r.threshold}${why}`);
+        const fl = isNum(r.floor) ? ` floor ${r.floor}` : '';
+        const tc = isNum(r.thresholdUsed) && r.thresholdUsed !== r.threshold ? ` (judged at ${r.thresholdUsed})` : '';
+        const rule = r.unresolvable ? `  [${r.rule}: ${r.unresolvable}${r.proxy ? `, proxy ${r.proxy.verdict}` : ''}]` : '';
+        lines.push(`    ${String(r.verdict).padEnd(12)} ${k}: Δ ${r.delta ?? r.medianB} σ ${r.sigma ?? '-'} thr ${r.threshold ?? '-'}${fl}${tc}${why}${rule}`);
       }
     }
   if (data.aa) {
-    lines.push(`  A/A: verdict never fail ${data.aa.verdictNeverFail}; exact counters equal ${data.aa.exactCountersEqual}; |Δ| over threshold: ${data.aa.outsideThreshold.length ? data.aa.outsideThreshold.map((x) => `${x.profile} ${x.metric} ${x.delta}`).join('; ') : 'none'}`);
+    lines.push(`  A/A: verdict never fail ${data.aa.verdictNeverFail}; exact counters equal ${data.aa.exactCountersEqual}; |Δ| over max(T, floor): ${data.aa.outsideThreshold.length ? data.aa.outsideThreshold.map((x) => `${x.profile} ${x.metric} ${x.delta}`).join('; ') : 'none'}`);
+  }
+  if (data.floorWritten) lines.push(`  floor written: ${data.floorWritten}`);
+  if (data.withRecordedFloor) {
+    const w = data.withRecordedFloor;
+    lines.push(`  judged with the recorded floor: ${Object.entries(w.profiles).map(([p, x]) => `${p} ${x.verdict}`).join(', ')}; never fail ${w.aa.verdictNeverFail}; |Δ| over max(T, floor): ${w.aa.outsideThreshold.length ? w.aa.outsideThreshold.map((x) => `${x.profile} ${x.metric} ${x.delta}`).join('; ') : 'none'}`);
   }
   if (data.leaks && data.leaks.length) lines.push(`  LEAKS: ${data.leaks.slice(0, 5).join(' | ')}`);
   process.stdout.write(lines.join('\n') + '\n');
 }
 
 async function main() {
-  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help'] });
+  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor'] });
   if (args.help) {
     process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 26).join('\n') + '\n');
     return 0;
@@ -901,6 +1229,7 @@ async function main() {
   data.startedAt = startedAt;
   data.finishedAt = new Date().toISOString();
   data.thresholds = THRESHOLDS;
+  data.fxLedgerUs = FX_LEDGER;
   data.fxBudgetUs = FX_US;
   const code = { pass: 0, fail: 1, 'fail-closed': 2, inconclusive: 3 }[data.verdict] ?? 3;
   data.exit = code;
@@ -923,4 +1252,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { judge, metricTable, overall, aaSummary, ledger, t975, THRESHOLDS, FX_US, BASELINE };
+module.exports = { judge, judgeCounter, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

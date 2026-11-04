@@ -247,3 +247,185 @@ describe('perf gate verdict maths', () => {
     expect(aa.verdictNeverFail).toBe(true);
   });
 });
+
+// CO-E2: the gate judged by plan-r3's budget, its recorded floors, the CPU
+// proxy and the boot race's modes.
+describe('perf gate budgets, floors and proxies (CO-E2)', () => {
+  type Row = {
+    verdict: string;
+    delta?: number;
+    rule?: string;
+    unresolvable?: string;
+    thresholdUsed?: number;
+    withinThreshold?: boolean;
+    stratified?: boolean;
+  };
+  type Cycle = Record<string, unknown>;
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    THRESHOLDS: Record<string, Record<string, number>>;
+    FX_US: Record<string, number>;
+    judgeCounter: (
+      a: number[],
+      b: number[],
+      t: number | null,
+      floor?: number | null,
+      o?: { cycles?: number },
+    ) => Row;
+    judgeExact: (a: number[], b: number[], t: number | null) => Row;
+    bootModes: (p: Array<number | null>) => Array<string | null>;
+    stratify: (
+      a: number[],
+      b: number[],
+      ma: number[],
+      mb: number[],
+    ) => { a: number[]; b: number[]; stratified: boolean };
+    cpuProxy: (prof: string, cyclesB: Cycle[]) => { verdict: string; sum?: number };
+    metricTable: (
+      prof: string,
+      a: Cycle[],
+      b: Cycle[],
+      floor?: unknown,
+      o?: { cycles?: number },
+    ) => Record<string, Row>;
+    poseCheck: (a: Cycle[], b: Cycle[]) => { equal: boolean };
+  };
+
+  test("the thresholds are plan-r3's perfBudget", () => {
+    expect(gate.THRESHOLDS.desktop).toMatchObject({
+      cpuP95: 1.0,
+      gpuP50: 2.0,
+      drawsSpawn: 50,
+      drawsHub: 80,
+      drawsProjects: 60,
+      programs: 5,
+      welcomeMs: 150,
+      worldGenMs: 50,
+      longTasksBeforeCard: 1,
+      bytesBeforeCardKB: 50,
+    });
+    expect(gate.THRESHOLDS.lowtier).toMatchObject({
+      cpuP95: 0.75,
+      drawsSpawn: 20,
+      drawsHub: 30,
+      drawsProjects: 25,
+      programs: 3,
+      nodes: 150,
+      textureMB: 6,
+    });
+    expect(gate.THRESHOLDS.startup).toMatchObject({
+      welcomeMs: 400,
+      worldGenMs: 200,
+      longTasksBeforeCard: 2,
+    });
+    expect(gate.FX_US).toEqual({ desktop: 150, lowtier: 80, totalDesktop: 600, totalLowtier: 300 });
+  });
+
+  test('a counter passes within max(T, floor), on the per-side medians', () => {
+    const a = [212, 215, 212, 215, 212, 215];
+    expect(gate.judgeCounter(a, a, 5).verdict).toBe('pass');
+    // A delta of 4 against T 3 with no noise fails at once; a recorded floor of 4 lets it pass.
+    const b = a.map((x) => x + 4);
+    expect(gate.judgeCounter(a, b, 3, null, { cycles: 6 }).verdict).toBe('fail');
+    // Noise that straddles the threshold escalates instead of failing early.
+    const noisy = [219, 216, 222, 215, 221, 217];
+    expect(gate.judgeCounter(a, noisy, 3, null, { cycles: 6 }).verdict).toBe('inconclusive');
+    expect(gate.judgeCounter(a, b, 3, 4, { cycles: 6 })).toMatchObject({
+      verdict: 'pass',
+      thresholdUsed: 4,
+    });
+    // Past max(T, floor) at 24 cycles it fails; an improvement always passes.
+    expect(gate.judgeCounter(a, b, 3, null, { cycles: 24 }).verdict).toBe('fail');
+    expect(
+      gate.judgeCounter(
+        a,
+        a.map((x) => x - 50),
+        3,
+      ).verdict,
+    ).toBe('pass');
+    expect(
+      gate.judgeCounter(
+        a,
+        a.map((x) => x - 50),
+        3,
+      ).withinThreshold,
+    ).toBe(false);
+  });
+
+  test('texture MB stays exact', () => {
+    const a = [18.1, 18.1, 18.1];
+    expect(gate.judgeExact(a, a, 6).verdict).toBe('pass');
+    expect(
+      gate.judgeExact(
+        a,
+        a.map((x) => x + 7),
+        6,
+      ).verdict,
+    ).toBe('fail');
+  });
+
+  test("the boot race splits each side at its own programs' midpoint", () => {
+    expect(gate.bootModes([212, 215, 212, 215])).toEqual(['early', 'late', 'early', 'late']);
+    expect(gate.bootModes([165, 165, 166])).toEqual(['one', 'one', 'one']);
+    // Like with like: a late-mode card is never compared with an early one.
+    const welcome = gate.stratify(
+      [5000, 5600, 5000, 5600],
+      [5600, 5000, 5600, 5000],
+      [212, 215, 212, 215],
+      [215, 212, 215, 212],
+    );
+    expect(welcome.stratified).toBe(true);
+    expect(welcome.a).toEqual([5000, 5000, 5600, 5600]);
+    expect(welcome.b).toEqual([5000, 5000, 5600, 5600]);
+  });
+
+  const cycle = (cpuP95: number, us: Record<string, number>, pitch = -0.62): Cycle => {
+    const view = (p: number) => ({
+      cpuP50: 7,
+      cpuP95,
+      gpuP50: 5,
+      draws: 700,
+      triangles: 1e6,
+      fxUsPerFrame: us,
+      pose: { camPitch: -p, ocPitch: p },
+    });
+    return {
+      views: { spawn: view(-0.1), hub: view(pitch), projects: view(-0.38) },
+      programs: 212,
+      programsAfterViews: 214,
+      nodes: 7400,
+      textureMB: 18.1,
+      welcomeMs: 5000,
+      worldGenMs: 1400,
+      longestTaskBeforeCardMs: 300,
+      longTasksBeforeCard: 6,
+      bytesBeforeCardKB: 811,
+    };
+  };
+
+  test('a CPU budget under 2 x its floor is judged by the FxBudget proxy, and the report says so', () => {
+    const a = Array.from({ length: 6 }, (_, i) => cycle(16 + (i % 2), { lookFling: 4 }));
+    const floor = { profiles: { desktop: { 'spawn: CPU p95 ms': 0.9 } } };
+    const rows = gate.metricTable('desktop', a, a, floor, { cycles: 6 });
+    const cpu = rows['spawn: CPU p95 ms'];
+    expect(cpu.unresolvable).toMatch(/T 1 < 2 x floor 0.9/);
+    expect(cpu.rule).toMatch(/proxy: FxBudget/);
+    expect(cpu.verdict).toBe('pass');
+    // Over budget on the B side: the proxy fails.
+    const hot = Array.from({ length: 6 }, () => cycle(16, { lookFling: 400 }));
+    expect(gate.metricTable('desktop', a, hot, floor)['spawn: CPU p95 ms'].verdict).toBe('fail');
+    expect(gate.cpuProxy('lowtier', hot).verdict).toBe('fail');
+    // A timing with no proxy is reported, never judged.
+    const gfloor = { profiles: { desktop: { 'world_gen ms': 30 } } };
+    expect(gate.metricTable('desktop', a, a, gfloor)['world_gen ms']).toMatchObject({
+      verdict: 'n/a',
+    });
+  });
+
+  test('the pose check holds the hub and Projects pitch to 0.01 rad', () => {
+    const a = Array.from({ length: 4 }, () => cycle(16, {}));
+    expect(gate.poseCheck(a, a).equal).toBe(true);
+    // Stage 1's fake saving: s1-int eased to -0.12 rad against main's -0.62.
+    const eased = Array.from({ length: 4 }, () => cycle(16, {}, -0.12));
+    expect(gate.poseCheck(a, eased).equal).toBe(false);
+  });
+});

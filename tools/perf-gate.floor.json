@@ -1,0 +1,85 @@
+{
+  "about": "The perf gate's floor: each metric's 24-cycle A/A band (the 95% band of the paired delta, the gate's sigma) on this rig. A timing whose budget T is under 2 x its floor is judged by its proxy (FxBudget µs for CPU) or reported unresolvable; a counter passes when its delta is within max(T, floor). Rewrite with: npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor",
+  "recorded": {
+    "at": "2026-11-04T02:25:42.744Z",
+    "build": "main-DxoUtBPC.js",
+    "cycles": {
+      "desktop": 24,
+      "lowtier": 24,
+      "startup": 24
+    },
+    "hostBusyPct": {
+      "desktop": {
+        "p50": 18.4,
+        "max": 69.2
+      },
+      "lowtier": {
+        "p50": 49,
+        "max": 95.3
+      },
+      "startup": {
+        "p50": 14.4,
+        "max": 57.8
+      }
+    },
+    "rig": "AMD Ryzen 7 7700 8-Core Processor, 16 threads"
+  },
+  "profiles": {
+    "desktop": {
+      "spawn: CPU p50 ms": 1.524,
+      "spawn: CPU p95 ms": 1.609,
+      "spawn: GPU p50 ms": 0.229,
+      "spawn: draws": 7.103,
+      "spawn: triangles": 1558.611,
+      "hub: CPU p50 ms": 1.69,
+      "hub: CPU p95 ms": 2.157,
+      "hub: GPU p50 ms": 0.686,
+      "hub: draws": 16.754,
+      "hub: triangles": 948.144,
+      "projects: CPU p50 ms": 1.49,
+      "projects: CPU p95 ms": 2.454,
+      "projects: GPU p50 ms": 0.494,
+      "projects: draws": 7.588,
+      "projects: triangles": 1474.047,
+      "programs (30 s after the card)": 3.6,
+      "programs after the views": 3.687,
+      "scene nodes": 2.561,
+      "texture MB": 0,
+      "welcome_visible ms": 337.028,
+      "world_gen ms": 181.244,
+      "longest task before the card ms": 174.617,
+      "long tasks > 50 ms before the card": 1.176,
+      "bytes before the card (KB, transfer)": 0.76
+    },
+    "lowtier": {
+      "spawn: CPU p50 ms": 0.816,
+      "spawn: CPU p95 ms": 1.895,
+      "spawn: draws": 5.859,
+      "spawn: triangles": 820.571,
+      "hub: CPU p50 ms": 0.947,
+      "hub: CPU p95 ms": 1.692,
+      "hub: draws": 6.293,
+      "hub: triangles": 993.684,
+      "projects: CPU p50 ms": 1.082,
+      "projects: CPU p95 ms": 1.269,
+      "projects: draws": 9.497,
+      "projects: triangles": 1279.764,
+      "programs (30 s after the card)": 0,
+      "programs after the views": 0.403,
+      "scene nodes": 2.041,
+      "texture MB": 0,
+      "welcome_visible ms": 167.675,
+      "world_gen ms": 123.483,
+      "longest task before the card ms": 119.906,
+      "long tasks > 50 ms before the card": 0.524,
+      "bytes before the card (KB, transfer)": 0.565
+    },
+    "startup": {
+      "welcome_visible ms (4x)": 378.627,
+      "world_gen ms (4x)": 76.607,
+      "longest task before the card ms (4x)": 73.703,
+      "long tasks > 50 ms before the card (4x)": 1.644,
+      "bytes before the card (KB, transfer) (4x)": 0.249
+    }
+  }
+}

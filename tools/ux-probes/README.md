@@ -329,41 +329,80 @@ villager walk, the timeline) are libraries, not probes.
 
 ## Perf gate
 
-`npm run perf:gate` (`tools/perf-gate.cjs`, item E1) runs on the same
-harness. The world clock is pinned to `?hour=12` (night lights change the
-light count, the programs and the draws); `--hour live` turns that off.
+`npm run perf:gate` (`tools/perf-gate.cjs`, items E1 and CO-E2) runs on the
+same harness. The world clock is pinned to `?hour=12` (night lights change
+the light count, the programs and the draws); `--hour live` turns that off.
 
 ```sh
-npm run perf:gate -- --dist dist --port <n>            # baseline report + counter and µs budget checks
+npm run perf:gate -- --dist dist --port <n>              # baseline report + counter and µs budget checks
 npm run perf:gate -- --dist dist --port <n> --fx <name>  # one __dsFx effect: draws and programs per view, then 6 x 1.5 s per side
 npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
+npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor   # 24 A/A cycles: writes tools/perf-gate.floor.json
 ```
 
 - Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
   (GPU timer queries off).
 - Each load: the startup marks, then 30 s after the card (past the interior
-  warm and the late compiles) programs, nodes and textures, then the views:
-  idle spawn, hub-wide and the Projects district, posed with the design
-  audit's framing (follow direction, pitch, distance, teleport). Counters
-  are one whole frame with the loop paused (draws, triangles, programs,
-  textures); timings are 1.5 s windows (CPU per app frame, GPU timer
-  queries, fps). `programs after the views` is judged too.
+  warm and the late compiles) programs, nodes and textures, then the views
+  in `VIEW_DEFS`: idle spawn, hub-wide and the Projects district, posed with
+  the design audit's framing (follow direction, pitch, distance, teleport).
+  P2-E3 adds a vehicle view and a room view there. Counters are one whole
+  frame with the loop paused (draws, triangles, programs, textures); timings
+  are 1.5 s windows (CPU per app frame, GPU timer queries, fps).
+  `programs after the views` is judged too.
+- The pose sets the OrbitCamera's `pitchTarget` with its pitch. A4 eases
+  pitch toward pitchTarget within a view's 1.2-1.5 s settle, so stage 1,
+  which set only the pitch, measured s1-int's hub-wide and Projects views at
+  −0.12 rad against main's −0.62 and −0.38 rad, and reported −949 and −404
+  draws that the camera saved, not the build. Every load now reads the
+  camera's and the orbit's pitch at both views (`pose` per view); when the
+  two sides' medians differ by more than 0.01 rad the profile is
+  inconclusive, whatever its metrics say.
 - Programs are logged per render() and per outermost compile call (a
   compileAsync's inner compile() is not counted twice); µs per effect come
   from `FxBudget.ts` (`__dsFx.stats`), divided by the frames the gate saw.
-- Verdict per metric: delta is the median of the paired (B − A) cycle
-  differences, and sigma is the 95% band of delta,
-  t(0.975, n−1) × 1.2533 × SD(B − A) / √n, so it pools both sides' noise
-  and the ABAB pairing cancels drift. Valid when sigma <= threshold/2; pass
-  when valid and delta <= threshold; fail when valid and
-  delta > threshold + sigma; anything else is inconclusive, escalating to
-  12, then 24 cycles. An invalid result never fails. The plan's single
-  split, |median(A_odd) − median(A_even)|, is reported as `sigmaSplitA`
-  and decides nothing: one 3-vs-3 split routinely understates the spread.
-  Exits 0 pass, 1 budget fail, 2 fail-closed, 3 inconclusive.
-- A/A (`--ab dist dist`): the JSON's `aa` block lists the exact counters
-  (texture MB; equal on every load, or the run fails), every |delta| over
-  its threshold, and whether any profile failed.
+
+Budgets (`THRESHOLDS`, from plan-r3 › perfBudget), as B − A:
+
+| Profile | Budget |
+|---|---|
+| desktop | CPU p95 +1.0 ms; GPU p50 +2.0 ms; draws spawn +50, hub-wide +80, Projects +60; programs +5; welcome_visible +150 ms; world_gen +50 ms; before the card: long tasks over 50 ms main + 1, the longest task +50 ms, +50 KB transferred |
+| low tier (1x) | CPU p95 +0.75 ms; draws spawn +20, hub-wide +30, Projects +25; programs +3; scene nodes +150; textures +6 MB; +50 KB before the card |
+| startup (4x) | welcome_visible +400 ms; world_gen +200 ms; long tasks main + 2, the longest task +50 ms; +50 KB before the card |
+| FxBudget (`FX_US`) | per effect 150 µs a frame on desktop and 80 on the low tier; all effects 600 and 300. An effect in plan-r3's ledger (`FX_LEDGER`) is held to its ledger value where that is lower, in `--fx` and in the CPU proxy |
+
+CPU p50 and triangles have no budget and are reported.
+
+Verdicts, per metric:
+- Timings (CPU p95, GPU p50, welcome_visible, world_gen, the longest task):
+  delta is the median of the paired (B − A) cycle differences, and sigma
+  the 95% band of delta, t(0.975, n−1) × 1.2533 × SD(B − A) / √n, so it
+  pools both sides' noise and the ABAB pairing cancels drift. Valid when
+  sigma <= T/2; pass when valid and delta <= T; fail when valid and
+  delta > T + sigma; anything else is inconclusive, escalating to 12, then
+  24 cycles. An invalid result never fails.
+- Counters (draws, programs, nodes, long tasks, bytes; critique-r3): delta
+  is median(B) − median(A). Pass when delta <= max(T, floor), an
+  improvement of any size included; fail when delta > max(T, floor) +
+  sigma, or > max(T, floor) at 24 cycles; otherwise inconclusive.
+- Texture MB is the one exact counter: equal on every A/A load, or the run
+  fails.
+- The floor is each metric's 24-cycle A/A sigma on this rig, per profile, in
+  `tools/perf-gate.floor.json` (`--floor <file>` reads or writes another).
+  A timing whose T is below twice its floor cannot resolve here: CPU p95 is
+  then judged by its proxy (every FxBudget effect within its µs budget, and
+  their sum), and the others are reported `unresolvable`, not judged. Each
+  row names its `rule`.
+- welcome_visible rides the boot race (below), so it is stratified: each
+  side's loads are split at the midpoint of that side's own program range,
+  and the timing is paired within each mode (`strata` in the JSON).
+- `--record-floor` (A/A only) runs 24 cycles, keeps the verdicts at 6, 12
+  and 24 (`checkpoints`), writes the floor file through prettier, and
+  judges the same cycles again against it (`withRecordedFloor`).
+  `--max-cycles <n>` caps the escalation for a smoke run.
+- Exits 0 pass, 1 budget fail, 2 fail-closed, 3 inconclusive.
+- A/A (`--ab dist dist`): the JSON's `aa` block lists the exact counters,
+  every |delta| over max(T, floor), and whether any profile failed.
 - `hostBusyPct`: the whole machine's CPU busy share during each load. Other
   sessions' builds and probes widen sigma; an idle machine gives the
   tightest verdicts.
@@ -372,8 +411,10 @@ npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
   loop stopped inside each pair so nothing moves between its sides (per
   side: the switch, then two app frames of 1/240 s; draws and triangles
   are their mean, programs the on sides add are the effect's). Then
-  6 × 1.5 s per side of timing at the spawn. On main, `--fx __unused`
-  reads 0/0/0 draws and 0 programs on both tiers.
+  6 × 1.5 s per side of timing at the spawn, its µs against the budget
+  above, and at most 3 animated elements at once with the effect on
+  (plan-r3). On main, `--fx __unused` reads 0/0/0 draws and 0 programs on
+  both tiers.
 - `--seed`: `__dsSeedDraws` against the subject's golden (see `--golden`).
 - Output: `perf-gate-<mode>.json` and `ledger.md` in `--out`: one row per
   registered effect (tier default, switch, µs/frame); `--fx <name>` fills
@@ -390,43 +431,92 @@ load, though the camera and player poses are identical:
 Programs ride a boot race: whether the GLB materials
 (Seat, Post, Pole, Trunk, Stone, Leg, LeafL, LeafD) compile in the screen
 pass, the composer's linear pass, or both depends on when each model
-finishes loading (desktop 211-216 programs; in a 96-load A/A the
-215-program loads showed the card ~0.6 s later on the median, so
-welcome_visible is bimodal too). These counters are judged by the sigma
-rule; only the texture MB is exact.
+finishes loading. On main, desktop shows 212 or 215 programs and the low
+tier 113 or 117; in stage 1's 96-load A/A the late mode showed the card
+~0.6 s later on the median, so welcome_visible is bimodal too. In s1-int's
+48-load A/A, desktop read
+154 (19 loads), 165 (25) or 166 (4) programs, and the low tier
+101 on every load.
 
-**A/A on main.** `--ab dist dist --cycles 6`, run 2026-11-04 on the audit
-rig with the host about 16% busy:
-- Startup passes after 6 cycles.
-- Desktop and the low tier stay inconclusive after 24 cycles. Nothing fails.
-- Texture MB is 18.1 on all 96 loads.
+**A/A on s1-int (CO-E2).** `--ab <s1-int> <s1-int> --ports 5192,5193
+--record-floor`, 2026-11-04: 144 loads, 24
+cycles a side on desktop, the low tier and startup, the host busy at a
+median of 18% on desktop, 49% on the low tier and 14% at startup:
+- No FAIL at 6, 12 or 24 cycles on any profile: each stays inconclusive
+  (timings whose sigma is over T/2) and every counter passes.
+- The pose check is equal on both tiers: camera pitch 0.62 rad hub-wide and
+  0.38 rad at Projects on every load of both sides (orbit pitch −0.62 and
+  −0.38).
+- Texture MB is 18.52 on all 96 desktop and low-tier loads.
+- Judged against the floor it recorded, the same 24 cycles pass on all
+  three profiles, and every |Δ| is within max(T, floor).
+- 0 leaks, and a boot proof on every load.
 
-What keeps the two profiles inconclusive (sigma against threshold/2):
+The floors, against each budget (a timing is judged directly only when
+T >= 2 × floor):
 
-| Profile | Metric | sigma | threshold/2 |
-|---|---|---|---|
-| desktop | CPU p50 | 0.50–0.90 ms | 0.5 |
-| desktop | CPU p95 | 1.00–1.06 ms | 0.75 |
-| desktop | welcome_visible (bimodal) | 198 ms | 50 |
-| desktop | world_gen | 25.8 ms | 25 |
-| desktop | long tasks | 1.08 | 0.5 |
-| desktop | Projects draws | 8.7 | 0 |
-| low tier | CPU p50 (spawn, hub; Projects passes) | 0.26–0.33 ms | 0.25 |
-| low tier | CPU p95 | 0.42–0.56 ms | 0.4 |
+| Profile | Metric | floor (24-cycle sigma) | T | judged by |
+|---|---|---|---|---|
+| desktop | spawn: CPU p95 ms | 1.61 | 1.00 | proxy: FxBudget µs (T < 2 × floor) |
+| desktop | spawn: GPU p50 ms | 0.23 | 2.00 | sigma rule |
+| desktop | spawn: draws | 7.10 | 50.0 | counter, max(T, floor) = 50.0 |
+| desktop | hub: CPU p95 ms | 2.16 | 1.00 | proxy: FxBudget µs (T < 2 × floor) |
+| desktop | hub: GPU p50 ms | 0.69 | 2.00 | sigma rule |
+| desktop | hub: draws | 16.8 | 80.0 | counter, max(T, floor) = 80.0 |
+| desktop | projects: CPU p95 ms | 2.45 | 1.00 | proxy: FxBudget µs (T < 2 × floor) |
+| desktop | projects: GPU p50 ms | 0.49 | 2.00 | sigma rule |
+| desktop | projects: draws | 7.59 | 60.0 | counter, max(T, floor) = 60.0 |
+| desktop | programs (30 s after the card) | 3.60 | 5.00 | counter, max(T, floor) = 5.00 |
+| desktop | programs after the views | 3.69 | 5.00 | counter, max(T, floor) = 5.00 |
+| desktop | welcome_visible ms | 337 | 150 | reported, not judged (T < 2 × floor) |
+| desktop | world_gen ms | 181 | 50.0 | reported, not judged (T < 2 × floor) |
+| desktop | longest task before the card ms | 175 | 50.0 | reported, not judged (T < 2 × floor) |
+| desktop | long tasks > 50 ms before the card | 1.18 | 1.00 | counter, max(T, floor) = 1.18 |
+| desktop | bytes before the card (KB, transfer) | 0.76 | 50.0 | counter, max(T, floor) = 50.0 |
+| low tier | spawn: CPU p95 ms | 1.90 | 0.75 | proxy: FxBudget µs (T < 2 × floor) |
+| low tier | spawn: draws | 5.86 | 20.0 | counter, max(T, floor) = 20.0 |
+| low tier | hub: CPU p95 ms | 1.69 | 0.75 | proxy: FxBudget µs (T < 2 × floor) |
+| low tier | hub: draws | 6.29 | 30.0 | counter, max(T, floor) = 30.0 |
+| low tier | projects: CPU p95 ms | 1.27 | 0.75 | proxy: FxBudget µs (T < 2 × floor) |
+| low tier | projects: draws | 9.50 | 25.0 | counter, max(T, floor) = 25.0 |
+| low tier | programs (30 s after the card) | 0.00 | 3.00 | counter, max(T, floor) = 3.00 |
+| low tier | programs after the views | 0.40 | 3.00 | counter, max(T, floor) = 3.00 |
+| low tier | scene nodes | 2.04 | 150 | counter, max(T, floor) = 150 |
+| low tier | texture MB | – | 6.00 | exact |
+| low tier | bytes before the card (KB, transfer) | 0.56 | 50.0 | counter, max(T, floor) = 50.0 |
+| startup | welcome_visible ms (4x) | 379 | 400 | reported, not judged (T < 2 × floor) |
+| startup | world_gen ms (4x) | 76.6 | 200 | sigma rule |
+| startup | longest task before the card ms (4x) | 73.7 | 50.0 | reported, not judged (T < 2 × floor) |
+| startup | long tasks > 50 ms before the card (4x) | 1.64 | 2.00 | counter, max(T, floor) = 2.00 |
+| startup | bytes before the card (KB, transfer) (4x) | 0.25 | 50.0 | counter, max(T, floor) = 50.0 |
 
-Desktop Projects draws have a threshold of 0, so they are valid only when
-exact. On main they are not, and their |Δ| = 1 is the one A/A delta over
-its threshold. Desktop `--ab` therefore tops out at inconclusive:
-- Projects draws need a tolerance from the plan owner, or seeded GLB
-  placements;
-- welcome_visible needs the boot race gone;
-- the CPU p95 and long-task budgets sit below this rig's noise.
+CPU p95's floor is over half its budget on both tiers, so CPU goes to the
+FxBudget proxy; s1-int registers no effect yet, so the proxy reads n/a and
+the CPU budget is reported, not judged, until stage 2's effects register
+(each is then held to its µs budget). welcome_visible, world_gen and the
+longest task before the card are reported too. Other sessions' builds and
+probes kept the host busy through the run (medians 14-49%, peaks to 95% on
+the low tier); an idle machine gives tighter floors, and `--record-floor`
+rewrites the file.
+
+**A/B, s1-main against s1-int.** `--ab <58c8849> <s1-int> --ports 5192,5193
+--cycles 6 --max-cycles 6`, judged against that floor,
+2026-11-04, the host 12-14% busy:
+- The savings are gone: desktop hub-wide draws Δ +8 and Projects −9.5
+  (stage 1: −949 and −404), the low tier +6 and +7. The pose check is
+  equal on both tiers (camera pitch 0.62 and 0.38 rad on both builds).
+- Programs 30 s after the card: desktop −51, the low tier −12.
+- Desktop and the low tier pass after 6 cycles, CPU p95, welcome_visible,
+  world_gen and the longest task reported, not judged; startup stays
+  inconclusive (world_gen at 4x: sigma 123 ms against T/2 = 100). 0 leaks.
 
 ## Files
 
 - `lib.cjs` the shared harness: serving, launch, safety, profiles, boot,
   in-page helpers, the virtual clock, numbers and contrast maths.
 - `run.cjs` the CLI.
+- `../perf-gate.cjs` the perf gate, and `../perf-gate.floor.json` its
+  24-cycle A/A floor (written by `--record-floor`).
 - `compass.cjs` (arrow, follow), `keys.cjs` (clash, cardkeys, sheet-lock),
   `look.cjs` (look, strafe), `rig.cjs` (legspin, rig), `frames.cjs`
   (hitch, seed), `panels.cjs` (guide-me, back), `a11y.cjs` (contrast, axe).
