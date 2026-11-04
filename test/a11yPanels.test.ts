@@ -50,7 +50,7 @@ afterEach(() => {
   ui.hideZonePanel();
   ui.hideWelcome(false);
   ui.panels.closeAll();
-  ui.panels.dispose();
+  ui.dispose(); // PanelManager's dispose, and no message timer outlives the test
   vi.useRealTimers();
   vi.restoreAllMocks();
   history.replaceState(null, '', '/');

@@ -35,6 +35,9 @@ beforeEach(() => {
 afterEach(() => {
   ui.hideZonePanel();
   ui.hideWelcome(false);
+  // Torn down as the page is: no message timer outlives the test (a stamp
+  // hint's pump fired after the file's environment had gone).
+  ui.dispose();
   vi.restoreAllMocks();
 });
 

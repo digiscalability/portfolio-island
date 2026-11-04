@@ -41,7 +41,9 @@ beforeEach(() => {
 
 afterEach(() => {
   ui.panels.closeAll();
-  ui.panels.dispose();
+  // The page's own teardown (PanelManager's dispose first): the stamp hint's
+  // queue timers stop with it, so none fires after this file has gone.
+  ui.dispose();
   vi.unstubAllEnvs();
   history.replaceState(null, '', '/');
 });

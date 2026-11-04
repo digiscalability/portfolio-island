@@ -1194,6 +1194,7 @@ export class SimpleUI {
   }
 
   private enqueue(m: QueuedMessage): void {
+    if (this.messagesStopped) return;
     if (!m.hint && this.panelOwnsMessage()) {
       this.panelNote(m);
       return;
@@ -1254,15 +1255,54 @@ export class SimpleUI {
    * dwell. Polls only while a message shows (6 s at most).
    */
   private watchShown(m: QueuedMessage): void {
+    if (this.shownWatch) window.clearInterval(this.shownWatch);
     const iv = window.setInterval(() => {
       if (this.shownMessage !== m || !this.toastBusy) {
         window.clearInterval(iv);
+        if (this.shownWatch === iv) this.shownWatch = 0;
         return;
       }
       if (this.mayShow(m) && !(m.hint && m.until?.())) return;
       window.clearInterval(iv);
+      this.shownWatch = 0;
       this.stepHintAside(true);
     }, 120);
+    this.shownWatch = iv;
+  }
+
+  /** watchShown's poll, while a message shows. */
+  private shownWatch = 0;
+  /** dispose() ran: the queue takes nothing more and arms no timer. */
+  private messagesStopped = false;
+
+  /**
+   * End the message queue for good (dispose): every timer it runs on (the
+   * pump's re-poll, the dwell, the panel note, the live region, the prompt's
+   * read-out, the shown message's watch) is cleared and none re-arms. They
+   * ran on after the UI was gone: a test file's environment torn down under
+   * a pending pump failed the run with 'document is not defined'.
+   */
+  private stopMessages(): void {
+    this.messagesStopped = true;
+    for (const t of [
+      this.pumpTimer,
+      this.toastTimer,
+      this.panelNoteTimer,
+      this.liveTimer,
+      this.promptAnnounceTimer,
+    ]) {
+      if (t) clearTimeout(t);
+    }
+    if (this.shownWatch) window.clearInterval(this.shownWatch);
+    this.pumpTimer = 0;
+    this.toastTimer = 0;
+    this.panelNoteTimer = 0;
+    this.liveTimer = 0;
+    this.promptAnnounceTimer = 0;
+    this.shownWatch = 0;
+    this.toastQueue = [];
+    this.shownMessage = null;
+    this.toastBusy = false;
   }
 
   /**
@@ -1299,6 +1339,7 @@ export class SimpleUI {
 
   /** One pending pump at a time: a sooner request replaces a later one. */
   private schedulePump(ms: number): void {
+    if (this.messagesStopped) return;
     if (this.pumpTimer) clearTimeout(this.pumpTimer);
     this.pumpTimer = window.setTimeout(() => {
       this.pumpTimer = 0;
@@ -1307,7 +1348,7 @@ export class SimpleUI {
   }
 
   private pumpToasts(): void {
-    if (this.toastBusy || this.toastQueue.length === 0) return;
+    if (this.messagesStopped || this.toastBusy || this.toastQueue.length === 0) return;
     // Not while an opaque loader or the welcome/name modal owns the screen,
     // nor before the fly-in settles (a returning visitor read a special
     // before the card, FM-12), nor over a fading flash — re-checked on a
@@ -1402,6 +1443,7 @@ export class SimpleUI {
    */
   private panelNote(m: QueuedMessage): void {
     queueMicrotask(() => {
+      if (this.messagesStopped) return;
       const top = this.panels.topModal();
       const el = top?.el;
       if (!el?.isConnected) {
@@ -1485,7 +1527,7 @@ export class SimpleUI {
   private liveTimer = 0;
 
   private announce(text: string): void {
-    if (!text) return;
+    if (!text || this.messagesStopped) return;
     if (!this.liveEl) {
       const el = document.createElement('div');
       el.className = 'ds-sr-only';
@@ -9041,6 +9083,8 @@ export class SimpleUI {
     // First: the closes below must not step the history back. This runs on
     // beforeunload, where a back() could turn a reload or a link into Back.
     this.panels.dispose();
+    // Then the message queue: no closing panel below may re-arm its timers.
+    this.stopMessages();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {

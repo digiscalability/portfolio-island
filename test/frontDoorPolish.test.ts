@@ -404,6 +404,25 @@ describe('messages: one at a time', () => {
     vi.advanceTimersByTime(1300);
     expect(text(toastEl())).toBe('⭐ The bank is paying extra today.');
   });
+
+  // The queue re-polls on timers, and they outlived the UI: a pump left by a
+  // hint queued behind a panel fired after a test file's environment was torn
+  // down ('document is not defined' failed the run).
+  test('dispose() ends the queue: nothing shows, polls or re-arms after it', () => {
+    vi.useFakeTimers();
+    ui.showHireCard('cta'); // a modal: the hint and the flash wait, polling
+    ui.toast('🧭 Follow the gold ➤ arrow.', { hint: true });
+    ui.flashMessage('🔍 Secret found: The Town Hall Steps!');
+    vi.advanceTimersByTime(1000);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    ui.dispose();
+    const made = vi.spyOn(document, 'createElement');
+    ui.toast('A late callback, after the page went');
+    ui.flashMessage('🏁 Finish!');
+    vi.advanceTimersByTime(30_000);
+    expect(made).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe('messages: announced, once', () => {
