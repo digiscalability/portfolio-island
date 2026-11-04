@@ -7600,19 +7600,45 @@ export class SimpleUI {
     panel.scrollTop += target.getBoundingClientRect().top - below - 8;
     this.anchorScrollTop = panel.scrollTop;
     if (!first || a11y.reducedMotion || typeof target.animate !== 'function') return;
-    // An outline ring, so the plain rows (digiscalability, banos, insta) ring
-    // like the bordered cards; it follows their radius.
-    const ring = (alpha: number): Keyframe => ({
-      outlineStyle: 'solid',
-      outlineWidth: '2px',
-      outlineOffset: '3px',
-      outlineColor: `rgba(255, 212, 121, ${alpha})`,
-      boxShadow: `0 0 ${alpha ? 18 : 0}px rgba(255, 212, 121, ${alpha * 0.35})`,
+    // A ring drawn once, of which only the opacity moves (perfBudget: transform
+    // and opacity only; animating the outline repainted it every frame). It
+    // sits 3 px outside the card, 2 px wide, on the card's radius; the plain
+    // rows (digiscalability, banos, insta) ring square, as before.
+    const cs = getComputedStyle(target);
+    const radius = parseFloat(cs.borderTopLeftRadius) || 0;
+    // An absolute inset counts from inside the card's border: 5 px past it.
+    const out = (side: 'Top' | 'Right' | 'Bottom' | 'Left'): string =>
+      `${-5 - (parseFloat(cs[`border${side}Width`]) || 0)}px`;
+    const ring = document.createElement('div');
+    ring.dataset.anchorRing = '1';
+    ring.setAttribute('aria-hidden', 'true');
+    Object.assign(ring.style, {
+      position: 'absolute',
+      top: out('Top'),
+      right: out('Right'),
+      bottom: out('Bottom'),
+      left: out('Left'),
+      borderRadius: radius ? `${radius + 5}px` : '0',
+      border: '2px solid rgba(255, 212, 121, 0.95)',
+      boxShadow: '0 0 18px rgba(255, 212, 121, 0.33)',
+      pointerEvents: 'none',
+      opacity: '0',
     });
-    target.animate([ring(0), { ...ring(0.95), offset: 0.35 }, ring(0)], {
+    const placed = cs.position === 'static'; // the ring's containing block
+    if (placed) target.style.position = 'relative';
+    target.appendChild(ring);
+    const done = (): void => {
+      ring.remove();
+      if (placed) target.style.position = '';
+    };
+    const run = ring.animate([{ opacity: 0 }, { opacity: 1, offset: 0.35 }, { opacity: 0 }], {
       duration: 1400,
       easing: 'ease-in-out',
     });
+    if (run) {
+      run.onfinish = done;
+      run.oncancel = done;
+    } else done();
   }
 
   /**

@@ -578,14 +578,19 @@ describe('the hire card names the work, and Projects opens at it (P2-D5)', () =>
     window.__analyticsLog ?? [];
   const zoneParam = (): string | null => new URL(location.href).searchParams.get('zone');
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate');
+  // What each ring went round (the ring is a child of the ringed element),
+  // and the keyframes it ran.
   let rung: HTMLElement[] = [];
-  const animate = vi.fn(function (this: HTMLElement) {
-    rung.push(this);
+  let frames: Keyframe[][] = [];
+  const animate = vi.fn(function (this: HTMLElement, keyframes: Keyframe[]) {
+    rung.push(this.parentElement as HTMLElement);
+    frames.push(keyframes);
   });
 
   beforeEach(() => {
     window.__analyticsLog = [];
     rung = [];
+    frames = [];
     animate.mockClear();
     // happy-dom has no Web Animations: a spy stands in for Element.animate.
     Object.defineProperty(HTMLElement.prototype, 'animate', {
@@ -674,6 +679,16 @@ describe('the hire card names the work, and Projects opens at it (P2-D5)', () =>
       // The card's top lands 8 px under the nav (no height in happy-dom).
       expect(p.scrollTop).toBe(640 - 100 - 8);
       expect(rung).toEqual([card]);
+      // Only its opacity moves (perfBudget: transform and opacity only). Once
+      // run, the ring is gone and the card as it was (here at once: the
+      // stand-in returns no Animation).
+      expect(frames[0].map((f) => Object.keys(f).filter((k) => k !== 'offset'))).toEqual([
+        ['opacity'],
+        ['opacity'],
+        ['opacity'],
+      ]);
+      expect(card.querySelector('[data-anchor-ring]')).toBeNull();
+      expect(card.style.position).toBe('');
       await Promise.resolve();
       expect(document.activeElement).toBe(card.querySelector('h3'));
       // One prop of its own, so the event keeps its src attribution.
