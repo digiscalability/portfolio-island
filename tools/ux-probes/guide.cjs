@@ -7,8 +7,9 @@
 // - Skip (writes skipped, hides the card), resume after a reload with two
 //   steps done (at 3/5), and the one-line chip after 20 s on a step;
 // - document.getAnimations() inside #ds-guide under reduced motion (none);
-// - the card's rect against the joystick (bottom-left 166x166), the action
-//   column, [data-hud=prompt] and the viewport edges (no overlap);
+// - the card's rect, at every step, with the chip up and at the finale,
+//   against the joystick (bottom-left 166x166), the action column,
+//   [data-hud=prompt], the minimap and the viewport edges (no overlap);
 // - the compass label after the finale's 'Show me' buttons (Projects, School);
 // - legacy storage: the controls card once, then the first undone step;
 // - hint toasts shown while the guide is active (none, once D6 lands);
@@ -71,7 +72,7 @@ const STATE = () => {
   };
 };
 
-/** The card against the joystick, the action column, the prompt lane and the viewport. */
+/** The card against the joystick, the action column, the prompt lane, the minimap and the viewport. */
 const GEOMETRY = () => {
   const g = document.getElementById('ds-guide');
   if (!g) return null;
@@ -101,6 +102,9 @@ const GEOMETRY = () => {
   inter('joystick', document.querySelector('[data-guide="joystick"]') || kids.find((d) => d.style && d.style.width === '166px' && d.style.touchAction === 'none'));
   for (const d of kids) if (d.style && d.style.width === '74px' && d.style.height === '74px') inter(`action ${(d.textContent || '').trim().slice(0, 8)}`, d);
   inter('prompt', document.querySelector('[data-hud="prompt"]') || (window.__app && window.__app.ui && window.__app.ui.interactionDiv));
+  // The minimap (top +40, left +10, 104-172 px): A6's short-landscape lane
+  // (top +56, left +16, 300 px) and its chip sit over it (waves critique).
+  inter('minimap', document.querySelector('[data-hud="minimap"], [data-guide="minimap"]') || (window.__app && window.__app.ui && window.__app.ui.mapCanvas));
   const edges = [];
   if (card.left < 0) edges.push('left');
   if (card.top < 0) edges.push('top');
@@ -163,7 +167,7 @@ const DOUBLE = `(() => {
         if (!localStorage.getItem('ds_controls_v2')) {
           localStorage.setItem('ds_controls_v2', '1');
           const c = document.createElement('div');
-          c.textContent = 'Drag to look · Space to run · ? for all controls';
+          c.textContent = 'Drag to look · Space to run';
           Object.assign(c.style, { position: 'absolute', left: '16px', top: '180px', background: '#111', color: '#fff', padding: '8px' });
           (document.getElementById('ui-overlay') || document.body).appendChild(c);
           setTimeout(() => c.remove(), 5000);
@@ -193,7 +197,7 @@ const DOUBLE = `(() => {
     if (!on) return;
     if (st.finished) { card.innerHTML = "You're set. Next: the work. <button data-g='p'>Show me Projects</button> <button data-g='s'>Show me the School</button>"; return; }
     const n = st.i + 1;
-    card.innerHTML = st.chip ? '<button data-g="r" style="min-height:44px">First steps ' + n + '/5 · Resume</button>' : 'First steps · ' + n + '/5 <button data-g="k" aria-label="Skip the first-steps guide" style="min-height:44px">Skip</button><div>' + ({ move: 'Walk with W A S D.', look: 'Drag to look — or J/L to turn.', talk: 'Villagers talk through Claude Haiku 4.5. Walk up to Mayor and press E to ask anything.', portfolio: 'Open 📖 Portfolio.', compass: 'The gold ➤ points the way. Press M for the map.' })[STEPS[st.i]] + '</div>';
+    card.innerHTML = st.chip ? '<button data-g="r" style="min-height:44px">First steps ' + n + '/5 · Resume</button>' : 'First steps · ' + n + '/5 <button data-g="k" aria-label="Skip the first-steps guide" style="min-height:44px">Skip</button><div>' + ({ move: 'Walk with W A S D.', look: 'Drag to look — or J/L to turn.', talk: 'Mayor talks through Claude Haiku 4.5. Walk up to Mayor and press E to ask anything.', portfolio: 'Open 📖 Portfolio.', compass: 'The gold ➤ points the way. Press M for the map.' })[STEPS[st.i]] + '</div>';
   };
   const complete = (step) => {
     if (STEPS[st.i] !== step || st.finished) return;
@@ -484,6 +488,9 @@ async function flow(t, v) {
       await lib.sleep(21000);
       const chip = await page.evaluate(STATE);
       r.chip = { text: chip.text, rect: chip.rect };
+      // The chip's rect is judged too: it sits where the card's top-left does.
+      const gc = await page.evaluate(GEOMETRY);
+      if (gc) r.geometry.push({ step: `${step} (chip)`, ...gc });
       t.check(tagOf(t, `${v.tag}: 20 s with no input on a step shows the chip`), chip.chip, chip.text.slice(0, 50) || 'no card', "'First steps 3/5 · Resume'");
       await t.shot(page, `guide-${v.tag}-chip.png`);
       const cxy = await page.evaluate(() => {
@@ -519,6 +526,8 @@ async function flow(t, v) {
   t.check(tagOf(t, `${v.tag}: Explore to the finale (s)`), fin !== null && r.finaleS <= 60, fin ? r.finaleS : 'no finale', '<= 60 (target 35-50)');
   await t.shot(page, `guide-${v.tag}-finale.png`);
   if (fin) {
+    const gf = await page.evaluate(GEOMETRY);
+    if (gf) r.geometry.push({ step: 'finale', ...gf });
     const want = v.show === 'school' ? /school/i : /show me/i;
     const bxy = await page.evaluate((src) => {
       const re = new RegExp(src, 'i');
@@ -541,7 +550,7 @@ async function flow(t, v) {
   sampling = false;
   await sampler;
   const overl = r.geometry.filter((x) => x.overlaps.length || x.edges.length);
-  t.check(tagOf(t, `${v.tag}: the card never overlaps the joystick, the action column, the prompt or an edge`), r.geometry.length ? overl.length === 0 : null, overl.length ? overl.map((x) => `${x.step}: ${[...x.overlaps, ...x.edges].join(', ')}`) : 'clear', 'clear');
+  t.check(tagOf(t, `${v.tag}: the card never overlaps the joystick, the action column, the prompt, the minimap or an edge`), r.geometry.length ? overl.length === 0 : null, overl.length ? overl.map((x) => `${x.step}: ${[...x.overlaps, ...x.edges].join(', ')}`) : 'clear', 'clear');
   t.check(tagOf(t, `${v.tag}: no hint toast while the guide is active`), r.hintsWhileActive.length === 0, r.hintsWhileActive.length ? r.hintsWhileActive : 'none', 'none (D6)');
   t.data[v.tag] = r;
   return r;

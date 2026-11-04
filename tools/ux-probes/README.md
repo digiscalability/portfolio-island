@@ -179,7 +179,7 @@ holds the hook.
 | `#loading-screen`, `#ld-bar`, `#ld-msg`, `#ld-pct`, `#boot-fallback` | D | fm, loader marks |
 | the welcome dialog `[role=dialog][aria-label="Welcome to DigiScalability Life Island"]` and its buttons `data-dismiss`, `data-cta="projects"\|"contact"`, `data-tour`, `data-meet-ai`, `data-race` | D | every probe; fm, keyboard, guide |
 | `.hud-btn[aria-label="Open portfolio menu"]`, `[aria-label="Open island menu"]`, `button[data-section]`, `button[data-board]`, `button[data-hire-tour]` | D | keyboard, phone, breakpoints, fm |
-| `__app.ui` surfaces: `compassDiv`, `compassArrow`, `compassLabel`, `toastEl`, `flashEl`, `interactionDiv`, `fadeDiv`, `leaveBtn`, `pinDiv`, `zonePanelDiv`, `npcChatDiv`, `isWelcomeVisible()`, `isDialogueActive()`, `showZonePanel`, `showCompletionModal()`, `showJournal()`, `showPassport()`, `getJoystick()` | D | fm, events, guide, p2 probes |
+| `__app.ui` surfaces: `compassDiv`, `compassArrow`, `compassLabel`, `toastEl`, `flashEl`, `interactionDiv`, `fadeDiv`, `leaveBtn`, `pinDiv`, `zonePanelDiv`, `npcChatDiv`, `mapCanvas` (the minimap), `isWelcomeVisible()`, `isDialogueActive()`, `showZonePanel`, `showCompletionModal()`, `showJournal()`, `showPassport()`, `getJoystick()` | D | fm, events, guide, p2 probes |
 | the touch joystick (the 166 px hit square, 44 px thumb) and the 74 px USE / JUMP / WAVE discs; `[data-guide=joystick]` and `[data-guide=use-button]` win once D6 lands | D | p2/walkin, guide, phone |
 | `__app.mapGuideTarget`, `mapGuideLabel`, `lastCompassTarget`, `exitBuilding(isZone)`, `insideIsZone`, `isletUnlocked`, `enterBuilding(id, isZone)`, `passport.count()`, `passport.has(id)` | A | compass, p2 probes, p2/journey |
 | `__app.scene`: `getZonesManager().getZones()`/`getZoneById()`, `coins`, `hasTrailCoins()`, `getCoinsCollected()`, `getNpcPosition(name)`, `getNearbyInteractable()`, `getIsland()` (`npcTargets`, `houseDoors`, `surfaceMesh`, `sampleSurfaceByDirection`, `seaLevel`), `warmInterior()`, `interiorWarmed`, `interiorNearDoorWarmed`, `onHouseEnterCb(id)`, `interactWithZone(zone)`, `schoolPos()` (guide's `--double`) | B, C | p2 probes, guide, census |
@@ -354,7 +354,7 @@ none of wave 1's fixes yet.
 
 | Probe | Item | What it measures | 58c8849 | s1-int |
 |---|---|---|---|---|
-| `guide` | A6, B10 | First steps at 1440x900, 390x844, 844x390 and 667x375: each step done within 1 s of its action (walk W or the stick; look by drag or swipe; talk to the named villager, E or USE; the Portfolio menu; the map by M or a compass tap), Explore to the finale (<= 60 s), the reload at 3/5, the 20 s chip, Skip, getAnimations() inside `#ds-guide` under reduced motion, the card against the joystick / action column / prompt / edges, the finale's 'Show me' label (Projects at 1440 and 844, School at 390 and 667), legacy storage, hint toasts while active; B10's trail end | 'guide card present' fails at all four sizes; legacy fails; the trail's last coin is 1.53 u from the Mayor, whose prompt says "ask anything" (B10 passes) | the same |
+| `guide` | A6, B10 | First steps at 1440x900, 390x844, 844x390 and 667x375: each step done within 1 s of its action (walk W or the stick; look by drag or swipe; talk to the named villager, E or USE; the Portfolio menu; the map by M or a compass tap), Explore to the finale (<= 60 s), the reload at 3/5, the 20 s chip, Skip, getAnimations() inside `#ds-guide` under reduced motion, the card (every step, the chip, the finale) against the joystick / action column / prompt / minimap / edges, the finale's 'Show me' label (Projects at 1440 and 844, School at 390 and 667), legacy storage, hint toasts while active; B10's trail end | 'guide card present' fails at all four sizes; legacy fails; the trail's last coin is 1.53 u from the Mayor, whose prompt says "ask anything" (B10 passes) | the same |
 | `fm` | A8, D6, D9 | `d-idle`, `m-idle` (the 'Lost?' hint by +35 s with the guide skipped; cardGeo: visible words, buttons, the world showing through the card), `d-active`, `m-active` (a flash and a toast together; the toast against the prompt at 390), `d-tour` (the full and recruiter tours) | 'Lost?' at +58.5 s on the phone and not at all in one desktop run (a villager's prompt came first; the audit saw +54-59 s); 124/128 words, 7 buttons, world through the card max channel 14; d-active one flash+toast overlap; m-active the 195 px prompt under a toast; full tour 54.8 s; the hire card's tour button below the fold | 'Lost?' at +58.3 s desktop, none in 106 s on the phone (a villager first); 126/128 words, 7 buttons, max channel 14; d-active clean in 857 samples, m-active a flash with a toast; full tour 53.4 s |
 | `events` | A8, P2-A5, D4 | `ds:*` window events (EVENTS_INIT, for any probe): one `ds:intro` start then settled per load (desktop, phone, reduced motion, `?zone=projects`), `ds:guide-to` {key:'school'} sets the label to School within 1 frame, closing the hire card dispatches `ds:modal` {open:false, id:'zone', zone:'hire'}; a recorder self-check | no ds:intro, no guide-to handling, no ds:modal (recorder self-check passes) | the same |
 | `keyboard` | D4 | Tab x10 on the welcome card, Space and Enter on a fresh card, Enter on the Portfolio pill (focus on the first row, no aria-modal), a zone panel taking focus, ArrowDown x5 and PageDown scrolling it, Escape back to the pill, the phone drawer open for 20 s under keyboard focus | focus escapes the card; Space and Enter close it into Projects; focus stays on the pill; the panel leaves focus on BODY and does not scroll; the drawer closes after ~6 s | the same |
@@ -373,6 +373,16 @@ sizes (51 of 55 checks). The four that fail are the product's: hint toasts
 show while the card is up at every size (the gold arrow, the villager who
 talks through Claude Haiku 4.5, 'Coins!'), because s1-int has no D6, and
 the double does not stand in for D6.
+
+The geometry check also names the minimap (`__app.ui.mapCanvas`, or a
+`[data-hud=minimap]` / `[data-guide=minimap]` anchor once D adds one), and
+reads the card's rect at every step, while the 20 s chip is up and at the
+finale. The double sits in A6's short-landscape lane (top +56, left +16,
+300 px), so on s1-int, 2026-11-04, `--double --profile landscape` and
+`--profile landscape667` both fail it: the card and the chip cover
+98x56 px of the minimap at every step (10 of 12 checks pass at each size,
+the other failure being the hint toasts). At 1440x900 and 390x844 it reads
+clear.
 
 ### Phase-2 probes, wave 1 (P2-E1a, P2-E2a)
 
