@@ -297,7 +297,7 @@ show while the card is up at every size (the gold arrow, the villager who
 talks through Claude Haiku 4.5, 'Coins!'), because s1-int has no D6, and
 the double does not stand in for D6.
 
-### Phase-2 probes, wave 1 (P2-E1a)
+### Phase-2 probes, wave 1 (P2-E1a, P2-E2a)
 
 In `p2/`, CommonJS on `lib.cjs`, run by path (`npm run probe -- p2/<name>`),
 output in `tools/ux-probes/out/p2/<name>/`. They take `--dist` or `--url`,
@@ -319,10 +319,13 @@ same two dists, 2026-11-04).
 | `p2/partyoff` | INT-08, P2-B2 | 3 s after 'Party over': borrowed dancers still in the room, visible and frozen | 6 frozen | 6 frozen |
 | `p2/bootcost` | LT-03, P2-B6, P2-C4 | a fresh browser per boot, ?hour=12 against ?hour=21, 3 each: the card, long tasks before it, programs, lights | the 21 h card +4,817 ms on desktop (6,769 vs 11,586) and +4,168 ms on the phone (5,051 vs 9,219) | +4,783 ms on desktop (6,859 vs 11,642), +4,556 ms on the phone (4,800 vs 9,356) |
 | `p2/duskflip` | LT-03, P2-B6, P2-C4 | ?hour=17, the warm, then `debugHour = 17.5`: the longest long task, long animation frame or rAF gap of the next 6 s | desktop 3,848 ms; phone 3,581-3,717 ms (one run read 0 with the long-task observer alone, so the frame gaps are read too); lights 5 to 17, programs +35-37 | desktop 2,385 ms, phone 3,393 ms; lights 5 to 17; programs +33 on desktop, +37 on the phone |
+| `p2/journey` | GD-01, A7 | the curious visitor (`--scenario follow`): trail, the trail's villager, then the compass wherever it points, entering each hall it leads to, a map pick after two deliveries; the pill over time, each stamp and when, each map pick's end (its door prompt, the pill). `--scenario mappick`: a map pick of each district. Villager replies take the written fallback (the backend stays blocked) | 1 of 4 stamps by 6 min and by 9 min (Projects, at 42 s); the pill reads 'Delivery' after it; after two deliveries, 11 map picks of Professional each fell back to the delivery's final gift before the door. `--scenario mappick`: Projects and Professional end at their doors, Personal and Contact at the Welcome Hub's door prompt | 1 of 4 by 6 and by 9 min (Projects, at 58 s); 'Delivery' after it; 7 map picks of Professional fell back the same way. mappick: Projects, Professional and Personal end at their doors; Contact ends on a door prompt with no name ('Press E to enter') |
 
 `p2/room-lib.cjs` (the interiors kit, ported from `ia.cjs` and rebased onto
-`lib.cjs`) and `p2/L.cjs` (the lighting kit: masks, L*, the loop pause; its
-PNG reader is playwright-core's) are libraries, not probes.
+`lib.cjs`), `p2/L.cjs` (the lighting kit: masks, L*, the loop pause; its
+PNG reader is playwright-core's), `p2/play-lib.cjs` (the gameplay kit) and
+`p2/guide-lib.cjs` (the guidance kit: readout, the compass follower, the
+villager walk, the timeline) are libraries, not probes.
 
 ## Perf gate
 
@@ -436,7 +439,8 @@ its threshold. Desktop `--ab` therefore tops out at inconclusive:
   label; under 480 px the pill shows only its icon).
 - Phase 2, wave 1, in `p2/`: `walkin.cjs`, `survey.cjs`,
   `passport-interior.cjs`, `party.cjs` (party, partyoff), `bootcost.cjs`,
-  `duskflip.cjs`, and the `room-lib.cjs` and `L.cjs` libraries.
+  `duskflip.cjs`, `journey.cjs`, and the `room-lib.cjs`, `L.cjs`,
+  `play-lib.cjs` and `guide-lib.cjs` libraries.
 - `lock-census.cjs` the static census over `tools/owners.json`.
 - `../owners.json` the ownership table and the contract-check allow-list.
 - `test/probeSafety.test.ts` pins `classify()`, `leakReason()`, the boot
