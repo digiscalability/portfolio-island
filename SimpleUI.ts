@@ -7645,6 +7645,29 @@ export class SimpleUI {
     };
     scroller.addEventListener('scroll', place, { passive: true });
     requestAnimationFrame(place);
+    // Content that lands later (a board's rows and its Guide me, after an
+    // await) went in below the fade, which then rode above it and stayed
+    // hidden until a scroll: the fade moves back to the end (before a panel
+    // note, which must stay legible) and re-measures once the content is in.
+    let queued = false;
+    const observer = new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        if (!scroller.isConnected) {
+          observer.disconnect();
+          return;
+        }
+        const note =
+          Array.from(scroller.children).find(
+            (c) => c instanceof HTMLElement && c.dataset.panelNote === '1',
+          ) ?? null;
+        if (fade.nextElementSibling !== note) scroller.insertBefore(fade, note);
+        place();
+      });
+    });
+    observer.observe(scroller, { childList: true, subtree: true });
   }
 
   /**

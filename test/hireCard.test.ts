@@ -440,6 +440,7 @@ describe('the recruiter path in one click (D5)', () => {
 
   test('the strip: every section in one action, ?zone follows, scrollTop 0', () => {
     ui.showHireCard('cta');
+    window.__analyticsLog = []; // from the first strip press on
     for (const id of ['welcome', 'professional', 'projects', 'personal', 'contact', 'hire']) {
       const p = panel();
       p.scrollTop = 200;
@@ -448,14 +449,16 @@ describe('the recruiter path in one click (D5)', () => {
       expect(panel().scrollTop, id).toBe(0);
       expect(panel().querySelector('[aria-current="page"]')!.getAttribute('data-goto')).toBe(id);
     }
-    expect(
-      events()
-        .filter((e) => e.name === 'zone_explored')
-        .map((e) => e.props),
-    ).toContainEqual({
-      zone: 'projects',
-      source: 'strip',
-    });
+    // zone_explored fires once a page session for each {zone, source}, and
+    // the ←/→ test spends the strip's projects, personal and professional
+    // when it runs first (--sequence.shuffle): every one this walk recorded
+    // says 'strip', and welcome, which only this test walks to, always does.
+    const explored = events()
+      .filter((e) => e.name === 'zone_explored')
+      .map((e) => e.props);
+    expect(explored.length).toBeGreaterThan(0);
+    for (const props of explored) expect(props).toMatchObject({ source: 'strip' });
+    expect(explored).toContainEqual({ zone: 'welcome', source: 'strip' });
     expect(ui.panels.current()).toBe('zone');
   });
 
@@ -494,6 +497,33 @@ describe('the recruiter path in one click (D5)', () => {
       else delete (window as { innerHeight?: number }).innerHeight; // back to the prototype's
     }
     expect(window.innerHeight).toBeGreaterThan(500);
+  });
+
+  test('short landscape: content that lands later goes above the fade, which stays last', async () => {
+    // The leaderboard appends its Guide me after an await: it went in below
+    // the fade, which then rode above it, hidden until the first scroll.
+    const tall = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+    Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
+    const frame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
+    try {
+      ui.showReceipt([]); // a centred modal: its fade comes a frame after it opens
+      await frame();
+      const modal = [...document.querySelectorAll<HTMLElement>('#ui-overlay > [role=dialog]')].at(
+        -1,
+      )!;
+      const fade = modal.querySelector<HTMLElement>('[data-scroll-fade]')!;
+      expect(modal.lastElementChild).toBe(fade);
+      const late = document.createElement('button');
+      late.textContent = 'Guide me';
+      modal.appendChild(late);
+      // The observer's record, then its frame (happy-dom delivers both on
+      // timers of its own, so wait for the move rather than count frames).
+      await vi.waitFor(() => expect(modal.lastElementChild).toBe(fade));
+      expect(fade.previousElementSibling).toBe(late);
+    } finally {
+      if (tall) Object.defineProperty(window, 'innerHeight', tall);
+      else delete (window as { innerHeight?: number }).innerHeight;
+    }
   });
 
   test('‹ Portfolio reopens the menu at the section it came from', async () => {
