@@ -25,6 +25,7 @@ npm run probe -- list
 | `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`). |
 | `--golden <path>` | The seed golden (`seed`, and the perf gate's `--seed`). Default: `test/golden/seedDraws.json` in the checkout that holds `--dist`, else in the current directory; never this tool's own checkout. `--bless` writes there. |
 | `--selftest-leak` | The harness answers one blocked-host URL itself (a synthetic 200 from `route.fulfill`, so nothing leaves the machine) and the page fetches it after boot. That response is a leak by the rule, so the run must exit 2. |
+| `--double` | `guide`: inject a stand-in for A6's card that follows the guide's contract (see Stage-2 probes). |
 | `--url <url>`, `--device desk\|phone` | The phase-2 probes' spellings of `--base` and `--profile`; both work everywhere. |
 
 Phase-2 probes live in `p2/` and run by their path, `npm run probe -- p2/walkin --dist dist --port <n>`.
@@ -213,6 +214,34 @@ already ≈0.12 u on main's frozen 1/60 s sim, inside its bound, so it does
 not reproduce MOT-01's hand pop and cannot show B1's fix. The leg checks
 (legL ≈ −11.7 rad, the 0/300 rewrites) are the ones that fail on main.
 
+### Stage-2 probes, wave 1 (E6a)
+
+Baselines on this rig (RTX 5070, Ryzen 7 7700), 2026-11-04: s1-main is
+58c8849's dist (`main-FxtHGAB1.js`), s1-int is main d5e0e96 (tree-identical
+to ux/s1-integration 16a7af9). Every row exits 1 on both builds: they have
+none of wave 1's fixes yet.
+
+| Probe | Item | What it measures | 58c8849 | s1-int |
+|---|---|---|---|---|
+| `guide` | A6, B10 | First steps at 1440x900, 390x844, 844x390 and 667x375: each step done within 1 s of its action (walk W or the stick; look by drag or swipe; talk to the named villager, E or USE; the Portfolio menu; the map by M or a compass tap), Explore to the finale (<= 60 s), the reload at 3/5, the 20 s chip, Skip, getAnimations() inside `#ds-guide` under reduced motion, the card against the joystick / action column / prompt / edges, the finale's 'Show me' label (Projects at 1440 and 844, School at 390 and 667), legacy storage, hint toasts while active; B10's trail end | 'guide card present' fails at all four sizes; legacy fails; the trail's last coin is 1.53 u from the Mayor, whose prompt says "ask anything" (B10 passes) | the same |
+| `fm` | A8, D6, D9 | `d-idle`, `m-idle` (the 'Lost?' hint by +35 s with the guide skipped; cardGeo: visible words, buttons, the world showing through the card), `d-active`, `m-active` (a flash and a toast together; the toast against the prompt at 390), `d-tour` (the full and recruiter tours) | 'Lost?' at +58.5 s on the phone and not at all in one desktop run (a villager's prompt came first; the audit saw +54-59 s); 124/128 words, 7 buttons, world through the card max channel 14; d-active one flash+toast overlap; m-active the 195 px prompt under a toast; full tour 54.8 s; the hire card's tour button below the fold | 'Lost?' at +58.3 s desktop, none in 106 s on the phone (a villager first); 126/128 words, 7 buttons, max channel 14; d-active clean in 857 samples, m-active a flash with a toast; full tour 53.4 s |
+| `events` | A8, P2-A5, D4 | `ds:*` window events (EVENTS_INIT, for any probe): one `ds:intro` start then settled per load (desktop, phone, reduced motion, `?zone=projects`), `ds:guide-to` {key:'school'} sets the label to School within 1 frame, closing the hire card dispatches `ds:modal` {open:false, id:'zone', zone:'hire'}; a recorder self-check | no ds:intro, no guide-to handling, no ds:modal (recorder self-check passes) | the same |
+| `keyboard` | D4 | Tab x10 on the welcome card, Space and Enter on a fresh card, Enter on the Portfolio pill (focus on the first row, no aria-modal), a zone panel taking focus, ArrowDown x5 and PageDown scrolling it, Escape back to the pill, the phone drawer open for 20 s under keyboard focus | focus escapes the card; Space and Enter close it into Projects; focus stays on the pill; the panel leaves focus on BODY and does not scroll; the drawer closes after ~6 s | the same |
+| `phone` | D4 | tap targets under 44 px on the welcome card, HUD, drawer, menu, hire card, the four districts, the emote wheel and the NPC chat | welcome 2, HUD 1, drawer 0, menu 6, hire 4, Professional 6, Projects 2, Personal 5, Contact 12, emote 8, NPC chat 4 | the same counts |
+| `breakpoints` | D5, P2-D5 | 768x1024, 1024x768, 844x390, 667x375 and 1440x900: the hire card's LinkedIn, CV and Code in view without scrolling, the tour button at 1440, overflow, overlaps, small targets | 844x390: LinkedIn, CV and Code all below the fold; 1440: links in view, the tour button not | the same |
+| `census` | C3 | lit opaque materials that are not MeshToon in the zone halls, trees, villagers and props; MeshToon without the shared ramp; programs 12 s after the card (`--compare` against main, one load, ±4); the DOM style census | not toon: zone halls 109, props 43, villagers 6, trees 4 (player 9 and interiors 66 reported only); 28 toon materials without a ramp; programs 215 desktop / 117 phone | the same materials; programs 160 / 101 |
+
+`--double` (guide only) injects a stand-in for A6's card that follows the
+contract, to test the probe before A6 exists. Its checks say '(double)' and
+prove nothing about the product. On s1-int: every step, the reload at 3/5, the chip, the finale (24-33 s from
+Explore), 'Show me' (Projects at 1440 and 844, School at 390 and 667), the
+card against the joystick, the action column, the prompt and the edges,
+Skip, reduced motion, legacy storage and B10 read as designed at all four
+sizes (51 of 55 checks). The four that fail are the product's: hint toasts
+show while the card is up at every size (the gold arrow, the villager who
+talks through Claude Haiku 4.5, 'Coins!'), because s1-int has no D6, and
+the double does not stand in for D6.
+
 ## Perf gate
 
 `npm run perf:gate` (`tools/perf-gate.cjs`, item E1) runs on the same
@@ -316,6 +345,13 @@ its threshold. Desktop `--ab` therefore tops out at inconclusive:
 - `compass.cjs` (arrow, follow), `keys.cjs` (clash, cardkeys, sheet-lock),
   `look.cjs` (look, strafe), `rig.cjs` (legspin, rig), `frames.cjs`
   (hitch, seed), `panels.cjs` (guide-me, back), `a11y.cjs` (contrast, axe).
+- Stage 2, wave 1: `events.cjs` (events, and `EVENTS_INIT` / `eventsOf`
+  for any probe), `guide.cjs`, `fm.cjs`, `keyboard.cjs`, `phone.cjs`
+  (and the shared `UX_HELPERS`), `breakpoints.cjs`, `census.cjs`.
+  `lib.cjs` adds the `landscape` (844x390), `landscape667`, `tablet` and
+  `desktop1024` profiles, `touch(session)` (trusted CDP touches: tap, drag,
+  the joystick, the USE disc) and `__h.compassFull()` (the pill's full
+  label; under 480 px the pill shows only its icon).
 - `lock-census.cjs` the static census over `tools/owners.json`.
 - `../owners.json` the ownership table and the contract-check allow-list.
 - `test/probeSafety.test.ts` pins `classify()`, `leakReason()`, the boot

@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const lib = require('./lib.cjs');
 
-const GROUPS = ['compass', 'keys', 'look', 'rig', 'frames', 'panels', 'a11y'];
+const GROUPS = ['compass', 'keys', 'look', 'rig', 'frames', 'panels', 'a11y', 'events', 'guide', 'fm', 'keyboard', 'phone', 'breakpoints', 'census'];
 // p2/*.cjs modules that are shared libraries, not probes.
 const P2_LIBS = new Set(['room-lib', 'L', 'play-lib', 'guide-lib']);
 

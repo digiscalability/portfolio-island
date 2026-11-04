@@ -147,12 +147,96 @@ const PROFILES = {
     query: '&touch=1',
     cpu: 1,
   },
+  // Stage-2 breakpoints: a landscape phone, a short landscape phone, a
+  // portrait tablet and a small laptop.
+  landscape: {
+    name: 'landscape',
+    device: { viewport: { width: 844, height: 390 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: UA_PHONE },
+    query: '',
+    cpu: 1,
+  },
+  landscape667: {
+    name: 'landscape667',
+    device: { viewport: { width: 667, height: 375 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: UA_PHONE },
+    query: '',
+    cpu: 1,
+  },
+  tablet: {
+    name: 'tablet',
+    device: { viewport: { width: 768, height: 1024 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: UA_PHONE },
+    query: '',
+    cpu: 1,
+  },
+  desktop1024: {
+    name: 'desktop1024',
+    device: { viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, userAgent: UA_DESKTOP },
+    query: '',
+    cpu: 1,
+  },
 };
 
 function profile(name) {
   const p = PROFILES[name];
-  if (!p) throw new HarnessError(`unknown profile '${name}' (desktop | phone | lowtier)`);
+  if (!p) throw new HarnessError(`unknown profile '${name}' (${Object.keys(PROFILES).join(' | ')})`);
   return p;
+}
+const isTouchProfile = (p) => !!((typeof p === 'string' ? profile(p) : p).device.hasTouch);
+
+/**
+ * Trusted touches through CDP (Input.dispatchTouchEvent), the way a phone
+ * sends them: tap, drag, a held joystick, and the touch UI's own controls
+ * (the D6 data-guide anchors when they exist, else the 166 px joystick hit
+ * square and the 74 px USE disc).
+ */
+async function touch(session) {
+  const { page, ctx } = session;
+  const cdp = await ctx.newCDPSession(page);
+  const send = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y, id]) => ({ x, y, id: id ?? 1, radiusX: 6, radiusY: 6, force: 1 })) });
+  const tap = async (x, y) => {
+    await send('touchStart', [[x, y, 9]]);
+    await sleep(40);
+    await send('touchEnd', []);
+  };
+  const drag = async (from, to, ms = 600, steps = 12, id = 7) => {
+    await send('touchStart', [[from[0], from[1], id]]);
+    for (let i = 1; i <= steps; i++) {
+      await send('touchMove', [[from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps, id]]);
+      await sleep(ms / steps);
+    }
+    await send('touchEnd', []);
+  };
+  const joyCenter = () =>
+    page.evaluate(() => {
+      const anchor = document.querySelector('[data-guide="joystick"]');
+      const hit = anchor || [...document.querySelectorAll('#ui-overlay > div')].find((d) => d.style.touchAction === 'none' && d.style.width === '166px');
+      if (!hit) return null;
+      const ring = hit.firstElementChild && hit.firstElementChild.getBoundingClientRect().width > 40 ? hit.firstElementChild : hit;
+      const b = ring.getBoundingClientRect();
+      return [b.left + b.width / 2, b.top + b.height / 2];
+    });
+  const useBtn = () =>
+    page.evaluate(() => {
+      const anchor = document.querySelector('[data-guide="use-button"]');
+      const el = anchor || [...document.querySelectorAll('#ui-overlay > div')].find((d) => d.style.width === '74px' && /USE/.test(d.textContent || ''));
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return [b.left + b.width / 2, b.top + b.height / 2];
+    });
+  /** Hold the stick (dx, dy) px off centre for ms, re-sending like a resting thumb. */
+  const joyHold = async (dx, dy, ms) => {
+    const c = await joyCenter();
+    if (!c) return false;
+    await send('touchStart', [[c[0], c[1], 3]]);
+    await sleep(50);
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      await send('touchMove', [[c[0] + dx, c[1] + dy, 3]]);
+      await sleep(120);
+    }
+    await send('touchEnd', []);
+    return true;
+  };
+  return { cdp, send, tap, drag, joyCenter, useBtn, joyHold };
 }
 
 // -------------------------------------------------------------------- safety
@@ -754,7 +838,21 @@ const HELPERS = () => {
     // The glyph points right at 0deg, so screen-up is -90deg.
     return { rel: wrap(deg + 90), label: ui.compassLabel ? ui.compassLabel.textContent : null };
   };
-  window.__h = { app, sc, oc, player, pos, up, V3, flat, yawBetween, camFwd, bearing, followDir, rotateFollow, wrap, wait, raf, frames, tpNear, visible, rect, describe, zonePanel, panels, zones, zonePos, arcTo, arrow };
+  // The compass pill's full label. Under 480 px the pill shows only the
+  // label's first token (its icon), so the label is read where the UI is
+  // handed it: updateQuestCompass(state), observed, never changed.
+  const ui0 = app.ui;
+  if (ui0 && typeof ui0.updateQuestCompass === 'function' && !ui0.updateQuestCompass.__probe) {
+    const orig = ui0.updateQuestCompass;
+    const w = function (state) {
+      window.__compassFull = state ? state.label : null;
+      return orig.apply(this, arguments);
+    };
+    w.__probe = true;
+    ui0.updateQuestCompass = w;
+  }
+  const compassFull = () => (window.__compassFull !== undefined ? window.__compassFull : ui0 && ui0.compassLabel ? ui0.compassLabel.textContent : null);
+  window.__h = { app, sc, oc, player, pos, up, V3, flat, yawBetween, camFwd, bearing, followDir, rotateFollow, wrap, wait, raf, frames, tpNear, visible, rect, describe, zonePanel, panels, zones, zonePos, arcTo, arrow, compassFull };
   return true;
 };
 
@@ -916,6 +1014,8 @@ module.exports = {
   glArgs,
   PROFILES,
   profile,
+  isTouchProfile,
+  touch,
   BLOCK_HOST,
   BLOCK_PATH,
   isBlockedUrl,
