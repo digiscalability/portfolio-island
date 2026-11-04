@@ -2541,9 +2541,10 @@ export class SimpleApp {
         /* no storage */
       }
       // ...and the stall trigger beside it (A8): no stamp yet and under 10 u
-      // travelled in the last 30 s, at most twice a visit, never while the
-      // guide is active and never indoors. The once-ever clause above needs a
-      // minute with no prompt at all; an idle visitor heard nothing for 54-59 s.
+      // travelled in the last 30 s of free roam, at most twice a visit; a
+      // panel, the guide, a tour or a room restarts the window. The once-ever
+      // clause above needs a minute with no prompt at all; an idle visitor
+      // heard nothing for 54-59 s.
       this.checkLostStall(hintsHeld);
       // One-time "a villager nearby talks through Claude Haiku 4.5" discovery
       // hint, fired while APPROACHING (4x the E-prompt range, derived not
@@ -3935,20 +3936,30 @@ export class SimpleApp {
 
   /**
    * The stall trigger, sampled on the 2.5 s cadence: under 10 u travelled
-   * in the last 30 s in the open world, with no passport stamp. Fires at
-   * most twice a visit, never while the guide holds hints, never indoors,
-   * and the window starts over after it fires.
+   * in the last 30 s of free roam, with no passport stamp. Fires at most
+   * twice a visit, and the window starts over after it fires.
+   *
+   * Only free-roam time counts. Anything that holds the visitor clears the
+   * window, which starts over when it lets go: any panel (the menu, a hall
+   * panel, the hire card, NPC chat, a quest dialogue), the guide holding
+   * hints, a tour, a room, a line in the water or a bench. Checking those
+   * only at the instant of firing let a visitor who read a panel for 30 s
+   * hear 'Lost?' the moment they closed it.
    */
   private checkLostStall(hintsHeld: boolean): void {
     const trail = this.lostTrail;
     const p = this.scene.getPlayer()?.getWorldPosition();
-    const inWorld =
+    const freeRoam =
       !!p &&
+      !hintsHeld &&
       !this.ui.isWelcomeVisible() &&
       !this.ui.isLoadingVisible() &&
+      !this.ui.panels.isOpen() &&
       !this.tour &&
-      !this.scene.isInsideInterior();
-    if (!inWorld || this.lostStallHints >= SimpleApp.LOST_STALL_MAX) {
+      !this.scene.isInsideInterior() &&
+      !this.scene.isFishingActive() &&
+      !this.scene.isPlayerSeated();
+    if (!freeRoam || this.lostStallHints >= SimpleApp.LOST_STALL_MAX) {
       trail.length = 0;
       return;
     }
@@ -3957,14 +3968,7 @@ export class SimpleApp {
     if (trail.length <= SimpleApp.LOST_STALL_SAMPLES) return;
     let travelled = 0;
     for (let i = 1; i < trail.length; i++) travelled += trail[i].distanceTo(trail[i - 1]);
-    if (
-      travelled >= SimpleApp.LOST_STALL_U ||
-      hintsHeld ||
-      (this.passport?.count() ?? 0) > 0 ||
-      this.ui.panels.isOpen()
-    ) {
-      return;
-    }
+    if (travelled >= SimpleApp.LOST_STALL_U || (this.passport?.count() ?? 0) > 0) return;
     this.lostStallHints++;
     trail.length = 0;
     try {

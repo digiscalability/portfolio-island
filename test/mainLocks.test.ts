@@ -1053,7 +1053,7 @@ describe('A6: First steps, wired into main-simple', () => {
 });
 
 describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
-  test('a stall trigger beside the once-ever lost clause: 10 u in 30 s, twice a visit at most', () => {
+  test('a stall trigger beside the once-ever lost clause: 10 u in 30 s of free roam, twice a visit at most', () => {
     const m = stripped('main-simple.ts');
     // the once-ever clause stays (onboarding's lock above pins its terms)
     expect(blockOf(bodyOf(m, 'private update('), 'this.lostAccum > 60 &&')).toContain(
@@ -1065,14 +1065,32 @@ describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
     expect(m).toContain('private static readonly LOST_STALL_MAX = 2;');
     const stall = bodyOf(m, 'private checkLostStall(');
     for (const term of [
-      '!this.scene.isInsideInterior()',
       'travelled >= SimpleApp.LOST_STALL_U',
-      'hintsHeld ||',
       '(this.passport?.count() ?? 0) > 0',
       'this.lostStallHints++;',
     ]) {
       expect(stall, term).toContain(term);
     }
+    // Free-roam time only: whatever holds the visitor clears the 30 s window
+    // (it starts over when it lets go), not just the instant of firing. A
+    // 33 s read of a panel used to fire 'Lost?' as it closed.
+    const at = stall.indexOf('const freeRoam =');
+    expect(at, 'const freeRoam =').toBeGreaterThan(-1);
+    const roam = stall.slice(at, stall.indexOf(';', at)); // the one expression
+    for (const term of [
+      '!hintsHeld &&',
+      '!this.ui.isWelcomeVisible() &&',
+      '!this.ui.panels.isOpen() &&',
+      '!this.tour &&',
+      '!this.scene.isInsideInterior() &&',
+      '!this.scene.isFishingActive() &&',
+      '!this.scene.isPlayerSeated()',
+    ]) {
+      expect(roam, term).toContain(term);
+    }
+    expect(stall).toMatch(
+      /if \(!freeRoam \|\| this\.lostStallHints >= SimpleApp\.LOST_STALL_MAX\) \{\s*trail\.length = 0;/,
+    );
     const copy = bodyOf(m, 'private showLostHint(');
     expect(copy).toContain(
       'Lost? Click the radar or press M for the island map — pick a spot and the gold arrow guides you.',
