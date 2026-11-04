@@ -3598,12 +3598,15 @@ export class SimpleApp {
     // Map-pick arrival. A district pick ends at its door: its door prompt is
     // up, or the visitor is within 3.2 u (the old 6 u let go before the
     // prompt's 3.4 u, and the pill swung to a mailbox on the plaza). Any
-    // other pick ends at 6 u. Either way the pill holds on the spot for 8 s.
+    // other pick ends at 6 u. Either way the pill holds on the spot for 8 s,
+    // and a district's hold still names it, as its door prompt does.
     if (this.mapGuideTarget) {
       const d = playerPos.distanceTo(this.mapGuideTarget);
       const zone = this.mapGuideZone;
       if (zone !== null ? this.doorPromptZone === zone || d < 3.2 : d < 6) {
-        const enter = this.ui.isTouchDevice() ? '🚪 Tap USE to enter' : '🚪 Press E to enter';
+        const name = DISTRICTS.find((x) => x.id === zone)?.name;
+        const verb = this.ui.isTouchDevice() ? '🚪 Tap USE to enter' : '🚪 Press E to enter';
+        const enter = name ? `${verb} ${name}` : verb;
         this.arrivalHold = {
           pos: this.mapGuideTarget,
           label: zone !== null ? enter : '✓ Here',

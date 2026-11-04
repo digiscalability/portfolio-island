@@ -901,6 +901,12 @@ describe('A7: one compass target at a time (the zone branch, replaced)', () => {
     );
     expect(body).toContain('until: now + 8000,');
     expect(body).toContain("label: zone !== null ? enter : '✓ Here',");
+    // A district's hold still names it, as its door prompt does ('Press E to
+    // enter Project Portfolio'): a bare 'Press E to enter' left the pill on
+    // no district at all.
+    expect(body).toContain('const name = DISTRICTS.find((x) => x.id === zone)?.name;');
+    expect(body).toContain('const enter = name ? `${verb} ${name}` : verb;');
+    expect(body).toContain("? '🚪 Tap USE to enter' : '🚪 Press E to enter';");
     // the door prompt sets the flag where it is shown, and every frame clears it
     expect(stripped('main-simple.ts')).toContain('this.doorPromptZone = String(nearby.zone.id);');
     expect(bodyOf(stripped('main-simple.ts'), 'private update(')).toContain(
