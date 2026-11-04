@@ -18,12 +18,24 @@
 // taken at each one, for two builds:
 //  - COLD: the file's first Island. Vitest's default forks pool isolates each
 //    test file in a fresh process, so three's sprite cache and Island's module
-//    caches start empty, as they do in a browser.
+//    caches start empty.
 //  - WARM: the second Island in the same process.
 // Both must equal test/fixtures/islandSeed.json, recorded on main before any
 // stage-2 change. A change inside new Island() keeps them by burning exactly
 // the draws the census measures at the site it changes, or by building under
 // a local RNG shield. The fixture is never re-blessed.
+//
+// NODE'S BUILDS, NOT THE BROWSER'S. Both builds run under happy-dom and the
+// headless canvas, and the browser's build matches neither. Recorded in
+// Chromium on a built dist, on both tiers, its draws between the five
+// checkpoints are 29784 / 6257 / 284 / 9907 (46232 from the first to the
+// last), against 29442 / 6276 / 284 / 10311 (46313) cold and
+// 29434 / 6247 / 284 / 10036 (46001) warm here. This suite pins node's two
+// builds; the seed probe (`npm run probe -- seed`, against
+// test/golden/seedDraws.json) pins the browser's seeded window. So a burn
+// sized from this census alone, above all a first-of-kind one (the first
+// Sprite, the first build of a cached geometry or texture), is confirmed
+// with the seed probe before it lands.
 //
 // The counts do not depend on the device tier. Of the tier gates inside new
 // Island(), the grass and the ink build under local RNG shields and the sea's

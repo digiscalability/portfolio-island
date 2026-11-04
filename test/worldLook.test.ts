@@ -548,6 +548,7 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // The 128-entry LUT could not represent the coastal lane's 2.079u of
     // relief at 4.72u spacing (worst error 0.425u); analyticSurface is exact.
     expect(traffic).toContain('return this.island.analyticSurface(dir).radius;');
+    expect(traffic).not.toMatch(/const LUT = /);
   });
 });
 
