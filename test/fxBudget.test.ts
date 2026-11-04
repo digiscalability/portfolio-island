@@ -574,3 +574,192 @@ describe('perf gate: the boot-race mix and the counter floors (CO-E2)', () => {
     expect(gate.floorQuiet({ recorded: {} })).toEqual({ known: false, busy: [] });
   });
 });
+
+// Wave-1 integration: the A/B could not reach PASS on this rig, and its
+// welcome_visible rule could not catch a +341 ms shift. A paired sign test
+// fails a shift above T that the pairs agree on, however wide sigma is, and
+// CPU p95 still over T/2 at 24 cycles is judged by the FxBudget proxy.
+describe('perf gate: the sign test and the 24-cycle CPU proxy (wave-1 integration)', () => {
+  type Row = {
+    verdict: string;
+    delta: number;
+    sigma: number | null;
+    valid?: boolean;
+    rule?: string;
+    unresolvable?: string;
+    directVerdict?: string;
+    sign?: { over: number; n: number; needed: number | null; fail: boolean };
+    strata?: Record<string, unknown>;
+  };
+  type Cycle = Record<string, unknown>;
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    SIGN_ALPHA: number;
+    signCritical: (n: number, alpha?: number) => number | null;
+    judge: (a: number[], b: number[], threshold: number | null) => Row;
+    stratify: (
+      a: number[],
+      b: number[],
+      ma: number[],
+      mb: number[],
+    ) => { a: number[]; b: number[]; stratified: boolean; strata: Record<string, unknown> };
+    metricTable: (
+      prof: string,
+      a: Cycle[],
+      b: Cycle[],
+      floor?: unknown,
+      o?: { cycles?: number },
+    ) => Record<string, Row>;
+  };
+  const lcg = (seed: number) => {
+    let s = seed;
+    return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648;
+  };
+  const gauss = (seed: number) => {
+    const u = lcg(seed);
+    return () => Math.sqrt(-2 * Math.log(u() || 1e-9)) * Math.cos(2 * Math.PI * u());
+  };
+
+  test('the sign test fails at 8 of 8, 11 of 12 and 19 of 24, never at 6', () => {
+    expect(gate.SIGN_ALPHA).toBe(0.005);
+    expect(gate.signCritical(6)).toBeNull();
+    expect(gate.signCritical(8)).toBe(8);
+    expect(gate.signCritical(12)).toBe(11);
+    expect(gate.signCritical(24)).toBe(19);
+    // At the sigma band's own 2.5% it would be 6 of 6, 10 of 12, 18 of 24.
+    expect([6, 12, 24].map((n) => gate.signCritical(n, 0.025))).toEqual([6, 10, 18]);
+  });
+
+  // The integration's 24 desktop pairs (verify/perf/ab): main in three
+  // boot-race modes (154 and 158 programs, ~650 ms faster than 165), the
+  // build in one (160).
+  const mainWelcome = [
+    5431, 5400, 4694, 5361, 4685, 5266, 5313, 5304, 5327, 5320, 5324, 5338, 5443, 5300, 5327, 4700,
+    5292, 5248, 5345, 5265, 5418, 4589, 5332, 4633,
+  ];
+  const mainProgs = [
+    165, 165, 154, 165, 158, 165, 165, 165, 165, 165, 165, 165, 166, 165, 165, 154, 165, 165, 165,
+    165, 165, 154, 165, 154,
+  ];
+  const intWelcome = [
+    5699, 5761, 5669, 5701, 5573, 5576, 5572, 5599, 5628, 5618, 5666, 5713, 5630, 5613, 5685, 5584,
+    5657, 5661, 5613, 5669, 5536, 5512, 5613, 5618,
+  ];
+  const intProgs = mainProgs.map(() => 160);
+
+  test('the +341 ms welcome_visible of wave 1 fails by the sign test, though sigma is over T/2', () => {
+    const st = gate.stratify(mainWelcome, intWelcome, mainProgs, intProgs);
+    // One side in one mode: no like-with-like pairs, and the strata say so.
+    expect(st.stratified).toBe(false);
+    expect(st.strata).toMatchObject({ modesA: { early: 5, late: 19 }, modesB: { one: 24 } });
+    const r = gate.judge(st.a, st.b, 150);
+    expect(r.delta).toBe(341);
+    expect(r.valid).toBe(false);
+    expect(r.sign).toMatchObject({ over: 23, n: 24, needed: 19, fail: true });
+    expect(r.verdict).toBe('fail');
+    // At 12 cycles too (12 of 12 over T); at 6 the test cannot fail, so the run escalates.
+    expect(gate.judge(st.a.slice(0, 12), st.b.slice(0, 12), 150).verdict).toBe('fail');
+    expect(gate.judge(st.a.slice(0, 6), st.b.slice(0, 6), 150).verdict).toBe('inconclusive');
+    // The same loads with the build 500 ms faster: only main's five early-mode
+    // pairs are still over T, far short of 19, so the sign test stays quiet.
+    const faster = intWelcome.map((x) => x - 500);
+    expect(gate.judge(mainWelcome, faster, 150).sign).toMatchObject({ over: 5, fail: false });
+  });
+
+  test('A/A with noise as large as T never fails (1,000 runs each of 6, 12 and 24 cycles)', () => {
+    const g = gauss(4111);
+    let fails = 0;
+    for (let run = 0; run < 1000; run++) {
+      for (const n of [6, 12, 24]) {
+        const a = Array.from({ length: n }, () => 5000 + 150 * g());
+        const b = Array.from({ length: n }, () => 5000 + 150 * g());
+        if (gate.judge(a, b, 150).verdict === 'fail') fails++;
+      }
+    }
+    expect(fails).toBe(0);
+  });
+
+  test('a shift of 2 x T on a bimodal side fails; a shift of T / 2 does not fail by sign', () => {
+    const g = gauss(99);
+    const modeA = Array.from({ length: 24 }, (_, i) => (i % 4 === 0 ? 4650 : 5300));
+    const a = modeA.map((x) => x + 20 * g());
+    // Pairs in cycle order across the modes: sigma is wide, every pair over T.
+    const shifted = a.map((x, i) => (i % 4 === 0 ? 5300 : x) + 300 + 20 * g());
+    const r = gate.judge(a, shifted, 150);
+    expect(r.valid).toBe(false);
+    expect(r.verdict).toBe('fail');
+    expect(
+      gate.judge(
+        a,
+        a.map((x) => x + 75 + 20 * g()),
+        150,
+      ).sign?.fail,
+    ).toBe(false);
+  });
+
+  const cyc = (cpuP95: number, us: Record<string, number>): Cycle => {
+    const view = (p: number) => ({
+      cpuP50: 7,
+      cpuP95,
+      gpuP50: 5,
+      draws: 700,
+      triangles: 1e6,
+      fxUsPerFrame: us,
+      pose: { camPitch: -p, ocPitch: p },
+    });
+    return {
+      views: { spawn: view(-0.1), hub: view(-0.62), projects: view(-0.38) },
+      programs: 160,
+      programsAfterViews: 160,
+      nodes: 7400,
+      textureMB: 18.5,
+      welcomeMs: 5000,
+      worldGenMs: 1400,
+      longestTaskBeforeCardMs: 300,
+      longTasksBeforeCard: 4,
+      bytesBeforeCardKB: 811,
+    };
+  };
+  // CPU p95 whose pairs straddle T: sigma over T/2, delta within T.
+  const noisy = (n: number, us: Record<string, number>) => {
+    const g = gauss(7);
+    const a = Array.from({ length: n }, () => cyc(17 + 1.6 * g(), us));
+    const b = Array.from({ length: n }, () => cyc(17 + 1.6 * g(), us));
+    return { a, b };
+  };
+
+  test('CPU p95 with sigma over T/2 at 24 cycles is judged by the FxBudget proxy, and says so', () => {
+    const { a, b } = noisy(24, { guide: 5 });
+    const rows = gate.metricTable('desktop', a, b, null, { cycles: 24 });
+    const hub = rows['hub: CPU p95 ms'];
+    expect(hub.valid).toBe(false);
+    expect(hub.directVerdict).toBe('inconclusive');
+    expect(hub.rule).toMatch(/proxy: FxBudget/);
+    expect(hub.unresolvable).toMatch(/sigma .* > T\/2 0.5 at 24 cycles/);
+    expect(hub.verdict).toBe('pass');
+    // An effect over its budget on side B fails it.
+    const hot = noisy(24, { guide: 400 });
+    expect(
+      gate.metricTable('desktop', hot.a, hot.b, null, { cycles: 24 })['hub: CPU p95 ms'].verdict,
+    ).toBe('fail');
+    // Before 24 cycles the run escalates instead.
+    const twelve = gate.metricTable('desktop', a.slice(0, 12), b.slice(0, 12), null, {
+      cycles: 12,
+    });
+    expect(twelve['hub: CPU p95 ms'].verdict).toBe('inconclusive');
+    // No FxBudget timings on side B (main registers none): the proxy cannot stand in.
+    const bare = noisy(24, {});
+    const r = gate.metricTable('desktop', bare.a, bare.b, null, { cycles: 24 })['hub: CPU p95 ms'];
+    expect(r.verdict).toBe('inconclusive');
+    expect(r.unresolvable).toBeUndefined();
+  });
+
+  test('the sign test fails a timing the floor rule would only report', () => {
+    const a = Array.from({ length: 24 }, (_, i) => cyc(16 + (i % 3), { guide: 5 }));
+    const b = a.map((c) => ({ ...c, worldGenMs: 1400 + 80 }));
+    const floor = { profiles: { desktop: { 'world_gen ms': 30 } } };
+    const r = gate.metricTable('desktop', a, b, floor, { cycles: 24 })['world_gen ms'];
+    expect(r.unresolvable).toMatch(/T 50 < 2 x floor 30/);
+    expect(r.rule).toMatch(/sign test: 24 of 24 pairs over T/);
+    expect(r.verdict).toBe('fail');
+  });
+});

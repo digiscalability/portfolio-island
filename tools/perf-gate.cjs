@@ -6,6 +6,7 @@
 //   perf:gate -- --base http://127.0.0.1:5191            the same, attached to a running preview
 //   perf:gate -- --dist dist --port 5191 --fx <name>     one __dsFx effect: per-view draws and programs, then 6 x 1.5 s per side
 //   perf:gate -- --ab <distA> <distB> --ports pA,pB [--cycles 6]   whole build B against A, ABAB, fresh context per cycle
+//   perf:gate -- --rejudge <perf-gate-ab.json>           the verdict maths again on a saved A/B's loads (no browser)
 //   add --seed to compare window.__dsSeedDraws with the subject's test/golden/seedDraws.json (--golden <path> overrides)
 //   --profiles desktop,lowtier,startup  (default: all three; --fx uses desktop,lowtier)
 //   --hour <h|live>                                       the world clock (default 12: noon, as the audit measured)
@@ -25,7 +26,12 @@
 //   t(n-1) x 1.2533 x SD/sqrt(n) over those differences. A timing's floor is
 //   that sigma at 24 cycles; a timing whose T is below 2 x its floor cannot
 //   resolve on this rig: CPU is judged by its proxy (FxBudget µs per effect)
-//   and the rest are reported 'unresolvable', and the report says so.
+//   and the rest are reported 'unresolvable', and the report says so. CPU
+//   p95 whose sigma is still over T/2 at 24 cycles is judged by the proxy
+//   too, when side B has FxBudget timings. A paired sign test fails any
+//   timing, valid or not, when nearly every pair is over T (19 of 24, 11 of
+//   12: one-sided 0.005), so a shift every pair agrees on fails although a
+//   bimodal side inflates sigma.
 // - counters (draws, triangles, programs, nodes, long tasks, bytes): delta =
 //   median(B) - median(A), except programs, which ride the boot race and are
 //   judged on its mix (judgeMixCounter: each side's mode medians weighted by
@@ -36,7 +42,10 @@
 //   A/As, with the counter's own statistic).
 // - texture MB is the one exact counter: equal on every A/A load.
 // welcome_visible is stratified by the boot-race mode (on s1-int, desktop
-// programs 154 or 165) and compared like with like. Every load checks the
+// programs 154 or 165) and compared like with like; when one side has one
+// mode (wave 1: main 154/158/165 against the build's 160) the pairs cannot
+// be matched and stay in cycle order, and the sign test judges a shift (the
+// JSON's strata give each side's modes). Every load checks the
 // hub-wide and Projects poses, and a pitch that differs between the builds by
 // more than 0.01 rad makes the run inconclusive. Every load records the share
 // of the machine other processes took (otherBusyPct).
@@ -517,13 +526,43 @@ const sampleSd = (a) => {
 };
 
 /**
+ * The paired sign test's level, one-sided. A timing fails on it when so many
+ * of its n paired differences are over T that a true median shift of T or
+ * less would give that many with probability SIGN_ALPHA or less. At 0.005 it
+ * needs 8 of 8, 11 of 12 or 19 of 24 (never at 6 cycles), so an A/A timing
+ * whose noise is as large as T (each side's SD = T) fails on it in about 1
+ * run in 700,000.
+ */
+const SIGN_ALPHA = 0.005;
+/** The fewest of n pairs over T that the sign test fails on, or null when even n of n is not enough. */
+function signCritical(n, alpha = SIGN_ALPHA) {
+  if (!(n >= 1)) return null;
+  // P(X >= k) for X ~ Binomial(n, 1/2), summed down from k = n.
+  let c = 1; // C(n, k)
+  let tail = 0;
+  let found = null;
+  for (let k = n; k >= 0; k--) {
+    tail += c / 2 ** n;
+    if (tail > alpha) break;
+    found = k;
+    c = (c * k) / (n - k + 1);
+  }
+  return found;
+}
+
+/**
  * The plan's verdict rule for one metric (lower is better). a[i] and b[i] are
  * side A and side B in cycle i; ABAB order makes each pair adjacent in time.
  * - delta = median over cycles of (b[i] - a[i]);
  * - sigma = the 95% band of delta: t(0.975, n-1) x 1.2533 x SD(b - a) / sqrt(n);
  * - valid when sigma <= threshold/2; pass when valid and delta <= threshold;
  *   fail when valid and delta > threshold + sigma; else inconclusive.
- * An invalid result never fails. sigmaSplitA is the plan's single split,
+ * - the paired sign test (sign): fail, valid or not, when at least
+ *   signCritical(n) of the n differences are over the threshold, a shift
+ *   above T that the pairs agree on (wave 1's welcome_visible: +341 ms, every
+ *   pair later and 23 of 24 over T, but sigma 141 against T 150, because
+ *   main's loads sat in boot-race modes ~650 ms apart and the build's in
+ *   one). Otherwise an invalid result never fails. sigmaSplitA is the plan's single split,
  * |median(A_odd) - median(A_even)|, kept for the record: one 3-vs-3 split
  * routinely understates the spread, so it does not decide anything.
  */
@@ -552,10 +591,13 @@ function judge(a, b, threshold) {
   // No budget on this profile: report the numbers (A/A still compares them).
   if (threshold === undefined || threshold === null) return { verdict: 'n/a', ...out };
   const valid = sigma !== null && sigma <= threshold / 2;
+  const over = d.filter((x) => x > threshold).length;
+  const needed = signCritical(n);
+  const sign = { over, n, needed, fail: needed !== null && over >= needed };
   let verdict = 'inconclusive';
   if (valid && delta <= threshold) verdict = 'pass';
-  else if (valid && delta > threshold + sigma) verdict = 'fail';
-  return { verdict, ...out, threshold, valid, withinThreshold: Math.abs(delta) <= threshold };
+  else if ((valid && delta > threshold + sigma) || sign.fail) verdict = 'fail';
+  return { verdict, ...out, threshold, valid, sign, withinThreshold: Math.abs(delta) <= threshold };
 }
 
 /**
@@ -712,7 +754,10 @@ function stratify(a, b, modeA, modeB) {
   const mb = bootModes(modeB);
   const uni = ma.every((m) => m === 'one' || m === null) || mb.every((m) => m === 'one' || m === null);
   const strata = {};
-  if (uni) return { a, b, strata: { one: { a: a.filter(isNum).length, b: b.filter(isNum).length, paired: Math.min(a.length, b.length) } }, stratified: false };
+  // Loads per mode on each side, so a run whose sides cannot be matched mode
+  // to mode (one side in one mode) says so; the sign test judges it then.
+  const count = (ms) => ms.reduce((o, m) => (m === null ? o : { ...o, [m]: (o[m] || 0) + 1 }), {});
+  if (uni) return { a, b, strata: { one: { a: a.filter(isNum).length, b: b.filter(isNum).length, paired: Math.min(a.length, b.length) }, modesA: count(ma), modesB: count(mb) }, stratified: false };
   const pa = [];
   const pb = [];
   for (const s of ['early', 'late']) {
@@ -763,25 +808,45 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
   let proxyRow = null;
   const proxy = () => (proxyRow = proxyRow || cpuProxy(prof, cyclesB));
   const fl = (name) => floorOf(floor, prof, name);
-  /** A timing: the sigma rule, unless T is below 2 x the floor (then the proxy, or unresolvable). */
+  /**
+   * A timing: the sigma rule, unless T is below 2 x the floor, or CPU p95's
+   * sigma is still over T/2 at 24 cycles (then the CPU proxy, or
+   * unresolvable). The paired sign test fails a shift above T on every rule.
+   */
   const timing = (name, f, thr, { proxyOf = null, a = null, b = null, extra = {} } = {}) => {
     const A = a || pick(cyclesA, f);
     const B = b || pick(cyclesB, f);
     const floorV = fl(name);
     const r = { kind: 'timing', ...judge(A, B, thr), floor: floorV, ...extra };
+    const signFail = !!(r.sign && r.sign.fail);
+    const byProxy = () => {
+      const p = proxy();
+      r.rule = 'proxy: FxBudget µs per effect';
+      r.verdict = p.verdict;
+      r.proxy = { verdict: p.verdict, sum: p.sum, each: p.each, total: p.total, over: p.over, note: p.note };
+    };
+    const signRule = `sign test: ${r.sign ? r.sign.over : 0} of ${r.n} pairs over T (fails at ${r.sign ? r.sign.needed : '-'})`;
     if (thr !== undefined && thr !== null && floorV !== null && thr < 2 * floorV) {
       r.unresolvable = `T ${thr} < 2 x floor ${floorV}`;
       r.directVerdict = r.verdict;
-      if (proxyOf === 'cpu') {
-        const p = proxy();
-        r.rule = 'proxy: FxBudget µs per effect';
-        r.verdict = p.verdict;
-        r.proxy = { verdict: p.verdict, sum: p.sum, each: p.each, total: p.total, over: p.over, note: p.note };
-      } else {
+      if (signFail) {
+        r.rule = signRule;
+        r.verdict = 'fail';
+      } else if (proxyOf === 'cpu') byProxy();
+      else {
         r.rule = 'unresolvable on this rig (no proxy): reported, not judged';
         r.verdict = 'n/a';
       }
-    } else r.rule = thr === undefined || thr === null ? 'report only' : 'sigma';
+    } else if (proxyOf === 'cpu' && r.verdict === 'inconclusive' && r.valid === false && !signFail && isNum(cycles) && cycles >= 24 && proxy().verdict !== 'n/a') {
+      // 24 cycles and sigma still over T/2: this run cannot resolve the
+      // budget directly, so CPU p95 is judged by its proxy, as a timing
+      // under 2 x its floor is, and the row says so. A side B with no
+      // FxBudget timings leaves the proxy nothing to stand in with, so the
+      // row stays inconclusive then.
+      r.unresolvable = `sigma ${r.sigma} > T/2 ${thr / 2} at ${cycles} cycles`;
+      r.directVerdict = r.verdict;
+      byProxy();
+    } else r.rule = thr === undefined || thr === null ? 'report only' : signFail ? signRule : 'sigma';
     rows[name] = r;
   };
   // The boot race's mode for a load: its programs 30 s after the card, or at
@@ -994,6 +1059,52 @@ async function modeAB(args) {
       rejudged[prof] = { verdict: overall(rows), metrics: rows };
     }
     data.withRecordedFloor = { profiles: Object.fromEntries(Object.entries(rejudged).map(([k, v]) => [k, { verdict: v.verdict }])), aa: aaSummary(rejudged) };
+  }
+  if (data.leaks.length) v = 'fail-closed';
+  data.verdict = v;
+  return data;
+}
+
+/**
+ * --rejudge <perf-gate-ab.json>: the verdict maths again on a saved A/B's
+ * loads (each profile's raw.A and raw.B), against the current floor file
+ * (or --floor), replaying the run's checkpoints (6, 12, 24 cycles: the first
+ * that is not inconclusive ends a profile, as in --ab). No browser, no
+ * server: a rule change is checked on recorded runs without new loads.
+ */
+function modeRejudge(args) {
+  const file = path.resolve(String(args.rejudge));
+  const src = lib.readJson(file);
+  if (!src || !src.profiles || src.mode !== 'ab') throw new lib.HarnessError(`--rejudge takes a perf-gate-ab.json; ${file} is not one`);
+  const floorFile = args.floor && args.floor !== true ? path.resolve(String(args.floor)) : FLOOR_FILE;
+  const floor = loadFloor(floorFile);
+  const data = { mode: 'rejudge', source: file.replace(/\\/g, '/'), sourceVerdict: src.verdict, distA: src.distA, distB: src.distB, sameDist: !!src.sameDist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, floorQuiet: floor ? floorQuiet(floor) : null, profiles: {}, leaks: src.leaks || [], signUpMissing: src.signUpMissing || 0 };
+  const start = Number(args.cycles || 6);
+  for (const [prof, p] of Object.entries(src.profiles)) {
+    const A = (p.raw && p.raw.A) || [];
+    const B = (p.raw && p.raw.B) || [];
+    const n = Math.min(A.length, B.length);
+    if (!n) continue;
+    const checkpoints = [];
+    let rows = null;
+    for (let c = Math.min(start, n); ; c = Math.min(n, c * 2)) {
+      rows = metricTable(prof, A.slice(0, c), B.slice(0, c), floor, { cycles: c });
+      const v = overall(rows);
+      checkpoints.push({ cycles: c, verdict: v, fails: Object.entries(rows).filter(([, r]) => r.verdict === 'fail').map(([k]) => k), inconclusive: Object.entries(rows).filter(([, r]) => r.verdict === 'inconclusive').map(([k]) => k) });
+      if (v !== 'inconclusive' || c >= n) break;
+    }
+    const used = checkpoints[checkpoints.length - 1].cycles;
+    const pose = prof === 'startup' ? null : poseCheck(A.slice(0, used), B.slice(0, used));
+    let pv = overall(rows);
+    if (pose && !pose.equal && pv !== 'fail') pv = 'inconclusive';
+    data.profiles[prof] = { cycles: used, verdict: pv, sourceVerdict: p.verdict, sourceCycles: p.cycles, checkpoints, poseCheck: pose, hostBusyPct: p.hostBusyPct, otherBusyPct: p.otherBusyPct, metrics: rows };
+  }
+  const verdicts = Object.values(data.profiles).map((p) => p.verdict);
+  let v = verdicts.includes('fail') ? 'fail' : verdicts.includes('inconclusive') || !verdicts.length ? 'inconclusive' : 'pass';
+  if (data.signUpMissing) v = v === 'fail' ? v : 'inconclusive';
+  if (data.sameDist) {
+    data.aa = aaSummary(data.profiles);
+    if (!data.aa.exactCountersEqual) v = 'fail';
   }
   if (data.leaks.length) v = 'fail-closed';
   data.verdict = v;
@@ -1345,20 +1456,26 @@ function ledger(data) {
 
 function printSummary(data) {
   const lines = [`perf-gate (${data.mode}): ${data.verdict}`];
+  if (data.mode === 'rejudge' && data.source) lines.push(`  re-judged ${data.source} (it read ${data.sourceVerdict}) against ${data.floorFile}`);
   if (data.floorQuiet && data.floorQuiet.busy.length) lines.push(`  note: the floor file was recorded on a busy host (${data.floorQuiet.busy.join(', ')}: other processes over ${QUIET_OTHER_PCT}% of the machine); re-record it on a quiet one`);
   else if (data.floorQuiet && !data.floorQuiet.known) lines.push('  note: the floor file does not say how quiet the host was; re-record it with --record-floor');
   if (data.mode === 'report') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
-      lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
+      lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
       if (p.checkpoints && p.checkpoints.length > 1) lines.push(`    checkpoints: ${p.checkpoints.map((c) => `${c.cycles} cycles ${c.verdict}${c.fails.length ? ` (FAIL ${c.fails.join(', ')})` : ''}`).join('; ')}`);
       if (p.poseCheck) lines.push(`    pose check: ${p.poseCheck.equal ? 'equal' : 'DIFFERENT (the run cannot pass)'}; ${Object.entries(p.poseCheck.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad, orbit pitch A ${r.ocPitch.medianA} B ${r.ocPitch.medianB}`).join('; ')}`);
       for (const [k, r] of Object.entries(p.metrics)) {
         if (r.verdict === 'n/a' && !r.unresolvable) continue;
+        if (r.kind === 'µs' && !isNum(r.delta) && !isNum(r.medianB)) {
+          // The CPU proxy row: side B's FxBudget µs per frame against their budgets.
+          lines.push(`    ${String(r.verdict).padEnd(12)} ${k}: sum ${r.sum ?? '-'} µs (each <= ${r.each ?? '-'}, all <= ${r.total ?? '-'})${r.over && r.over.length ? `, over: ${r.over.join(', ')}` : ''}${r.note ? ` (${r.note})` : ''}`);
+          continue;
+        }
         const why = r.verdict === 'inconclusive' && r.valid === false ? '  (sigma > thr/2)' : '';
         const fl = isNum(r.floor) ? ` floor ${r.floor}` : '';
         const tc = isNum(r.thresholdUsed) && r.thresholdUsed !== r.threshold ? ` (judged at ${r.thresholdUsed})` : '';
-        const rule = r.unresolvable ? `  [${r.rule}: ${r.unresolvable}${r.proxy ? `, proxy ${r.proxy.verdict}` : ''}]` : '';
+        const rule = r.unresolvable ? `  [${r.rule}: ${r.unresolvable}${r.proxy ? `, proxy ${r.proxy.verdict}` : ''}]` : r.sign && r.sign.fail ? `  [${r.rule}]` : '';
         lines.push(`    ${String(r.verdict).padEnd(12)} ${k}: Δ ${r.delta ?? r.medianB} σ ${r.sigma ?? '-'} thr ${r.threshold ?? '-'}${fl}${tc}${why}${rule}`);
       }
     }
@@ -1377,18 +1494,19 @@ function printSummary(data) {
 async function main() {
   const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor'] });
   if (args.help) {
-    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 26).join('\n') + '\n');
+    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 34).join('\n') + '\n');
     return 0;
   }
   const out = lib.outDir(args, 'perf-gate');
   const startedAt = new Date().toISOString();
   let data;
   try {
-    if (args.ab) data = await modeAB(args);
+    if (args.rejudge) data = modeRejudge(args);
+    else if (args.ab) data = await modeAB(args);
     else if (args.fx) data = await modeFx(args);
     else data = await modeReport(args);
   } catch (e) {
-    data = { mode: args.ab ? 'ab' : args.fx ? 'fx' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
+    data = { mode: args.rejudge ? 'rejudge' : args.ab ? 'ab' : args.fx ? 'fx' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
   }
   data.startedAt = startedAt;
   data.finishedAt = new Date().toISOString();
@@ -1416,4 +1534,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { judge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { judge, signCritical, SIGN_ALPHA, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

@@ -429,6 +429,7 @@ npm run perf:gate -- --dist dist --port <n>              # baseline report + cou
 npm run perf:gate -- --dist dist --port <n> --fx <name>  # one __dsFx effect: draws and programs per view, then 6 x 1.5 s per side
 npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
 npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor   # 24 A/A cycles: writes tools/perf-gate.floor.json
+npm run perf:gate -- --rejudge <perf-gate-ab.json>        # the verdict maths again on a saved A/B's loads (no browser)
 ```
 
 - Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
@@ -471,7 +472,32 @@ Verdicts, per metric:
   pools both sides' noise and the ABAB pairing cancels drift. Valid when
   sigma <= T/2; pass when valid and delta <= T; fail when valid and
   delta > T + sigma; anything else is inconclusive, escalating to 12, then
-  24 cycles. An invalid result never fails.
+  24 cycles.
+- The paired sign test (`sign` in the JSON: pairs over T, n, and the count
+  it fails at) fails a timing, valid or not, when so many of its n pairs
+  are over T that a true median shift of T or less would give that many
+  with probability 0.005 or less (`SIGN_ALPHA`): 8 of 8, 11 of 12, 19 of
+  24, never at 6 cycles. Otherwise an invalid result never fails. Wave 1's
+  integration A/B is why: welcome_visible moved +341 ms with all 24 pairs
+  positive, but main's loads sat in three boot-race modes (154, 158 and
+  165 programs, the first two ~650 ms faster) and the build's in one (160),
+  so the pairs could not be matched mode to mode and sigma read 141 ms
+  against T 150: inconclusive. Re-judged, it fails at 12 cycles (12 of 12
+  over T). An A/A timing whose noise is as large as T (each side's SD = T)
+  fails on it in about 1 run in 700,000 (11 of 12 pairs over T; 19 of 24
+  is rarer still). Re-judged against the same floor, none of the nine
+  saved runs (four of them A/As) changes verdict except that A/B.
+- CPU p95 whose sigma is still over T/2 at 24 cycles is judged by the
+  FxBudget proxy, as a CPU p95 under 2 x its floor is, and the row says so
+  (`unresolvable: sigma … > T/2 … at 24 cycles`, `rule: proxy …`). When
+  side B has no FxBudget timings (main registers no effect) the proxy
+  cannot stand in and the row stays inconclusive. Re-judged, wave 1's
+  integration A/B reaches PASS on the low tier this way (spawn σ 0.47 and
+  Projects σ 0.56 against T/2 0.375, the proxy passing at 7.9 µs), and its
+  desktop hub and Projects CPU rows pass by it at 24 cycles. Its desktop
+  world_gen and longest task stay inconclusive at 24 (σ 26.2 and 25.3
+  against T/2 25, other processes at 7.4% against the floor's 4.8%): no
+  proxy covers them, so a quieter host settles them.
 - Counters (draws, programs, nodes, long tasks, bytes; critique-r3): delta
   is median(B) − median(A). Pass when delta <= max(T, floor), an
   improvement of any size included; fail when delta > max(T, floor) +
@@ -506,7 +532,10 @@ Verdicts, per metric:
   `rule`.
 - welcome_visible rides the boot race (below), so it is stratified: each
   side's loads are split at the midpoint of that side's own program range,
-  and the timing is paired within each mode (`strata` in the JSON).
+  and the timing is paired within each mode (`strata` in the JSON). When
+  one side has a single mode the pairs stay in cycle order (`strata.one`,
+  with each side's modes in `modesA` and `modesB`), and the sign test is
+  what judges a shift.
 - `--record-floor` (A/A only) runs 24 cycles, keeps the verdicts at 6, 12
   and 24 (`checkpoints`), writes the floor file through prettier, and
   judges the same cycles again against it (`withRecordedFloor`). It marks
@@ -515,6 +544,11 @@ Verdicts, per metric:
   a run that reads a floor marked busy, or one that does not say, prints a
   note. `--max-cycles <n>` caps the escalation for a smoke run.
 - Exits 0 pass, 1 budget fail, 2 fail-closed, 3 inconclusive.
+- `--rejudge <perf-gate-ab.json>` runs the verdict maths again on a saved
+  A/B's loads against the current floor (or `--floor`), replaying the
+  checkpoints (the first that is not inconclusive ends a profile, as in
+  `--ab`), and writes `perf-gate-rejudge.json` with each profile's old
+  verdict beside the new one.
 - A/A (`--ab dist dist`): the JSON's `aa` block lists the exact counters,
   every |delta| over max(T, floor), and whether any profile failed.
 - `hostBusyPct` and `otherBusyPct`: the whole machine's CPU busy share
