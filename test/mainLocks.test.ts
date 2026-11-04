@@ -686,7 +686,12 @@ describe('from visualPolish.test.ts', () => {
     // Off the boot window AND off the interaction: scheduled through the same
     // idle deferral that already carries music and profile sync.
     const main = stripped('main-simple.ts');
-    expect(main).toContain('this.idleDefer(() => void this.scene.warmInterior()');
+    expect(main).toContain('this.idleDefer(this.warmRoomsIdle, 9000);');
+    const idle = bodyOf(main, 'private readonly warmRoomsIdle = (): void =>');
+    expect(idle).toContain('void this.scene.warmInterior();');
+    // ...and it stands down once the early warm below has started: a second,
+    // empty warm call read as a warm to the hitch probe.
+    expect(idle).toContain('if (this.roomsWarmStarted) return;');
     // CO-A5: on a coarse pointer it may start EARLIER, never on the frame of
     // the first E and never during the fly-in: one task after afterIntro
     // (the card is up), or at the first walk input once the fly-in landed.

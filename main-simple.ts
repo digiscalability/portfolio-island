@@ -229,6 +229,17 @@ export class SimpleApp {
     this.roomsWarmStarted = true;
     void this.scene.warmInterior();
   };
+  /**
+   * The 9 s idle ceiling, on every device. Once the early warm has started
+   * it stands down: warmInterior would return at once (it is idempotent),
+   * but a second, empty warm call still reads as a warm to the hitch probe,
+   * which then blames the warm for an unrelated frame after it.
+   */
+  private readonly warmRoomsIdle = (): void => {
+    if (this.roomsWarmStarted) return;
+    this.roomsWarmStarted = true;
+    void this.scene.warmInterior();
+  };
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
@@ -1765,8 +1776,8 @@ export class SimpleApp {
       // Warm it in idle time instead. Scheduled last: music and profile sync
       // both surface sooner. See GameScene.warmInterior for the measurements.
       // This stays the ceiling on every device; phones start sooner, at
-      // afterIntro (warmRoomsEarly). warmInterior is idempotent.
-      this.idleDefer(() => void this.scene.warmInterior(), 9000);
+      // afterIntro (warmRoomsEarly), and then the ceiling stands down.
+      this.idleDefer(this.warmRoomsIdle, 9000);
       // (Vercel Analytics inject() moved to module top — pre-boot pageviews.)
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
