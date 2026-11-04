@@ -1034,6 +1034,43 @@ function hostCpu() {
 const hostBusyPct = (a, b) => (b.total > a.total ? round(((b.busy - a.busy) / (b.total - a.total)) * 100, 1) : null);
 
 /**
+ * The machine's load over a window, split between this browser and the rest:
+ * os.cpus() for the whole machine, CDP SystemInfo.getProcessInfo for this
+ * browser's own processes (browser, renderers, GPU). otherBusyPct is what
+ * other sessions, builds and apps took; null when CDP cannot say. A probe
+ * that judges frame times reads it, since its own browser's share is not
+ * noise. stop() returns { hostBusyPct, browserPct, otherBusyPct, threads }.
+ */
+async function hostLoadMeter(browser) {
+  let cdp = null;
+  try {
+    cdp = await browser.newBrowserCDPSession();
+  } catch (e) {}
+  const browserCpuMs = async () => {
+    if (!cdp) return null;
+    try {
+      const { processInfo } = await cdp.send('SystemInfo.getProcessInfo');
+      return processInfo.reduce((s, p) => s + (p.cpuTime || 0), 0) * 1000;
+    } catch (e) {
+      return null;
+    }
+  };
+  const a = hostCpu();
+  const b0 = await browserCpuMs();
+  return {
+    async stop() {
+      const b1 = await browserCpuMs();
+      const z = hostCpu();
+      if (cdp) await cdp.detach().catch(() => {});
+      const total = z.total - a.total;
+      const host = total > 0 ? ((z.busy - a.busy) / total) * 100 : null;
+      const own = b0 !== null && b1 !== null && total > 0 ? ((b1 - b0) / total) * 100 : null;
+      return { hostBusyPct: round(host, 1), browserPct: round(own, 1), otherBusyPct: host !== null && own !== null ? round(Math.max(0, host - own), 1) : null, threads: os.cpus().length };
+    },
+  };
+}
+
+/**
  * Verdict over a list of checks. A check is { name, pass: true|false|null }
  * where null = could not be evaluated (inconclusive). Leaks and a missing
  * boot proof (signUp, or App Check's exchange) override everything.
@@ -1102,5 +1139,6 @@ module.exports = {
   goldenFor,
   hostCpu,
   hostBusyPct,
+  hostLoadMeter,
   verdict,
 };

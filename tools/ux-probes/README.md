@@ -24,6 +24,8 @@ npm run probe -- list
 | `--compare <dir> --compare-port <m>` | A second build, for `rig` and `strafe`. |
 | `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`: runs desktop, low tier and phone, adds the pause-near-door entry, and judges the black interval by pixels). |
 | `--pause-near-door` | `hitch`: a second first door on a fresh page, entered after standing 3 s within 3 u of it. |
+| `--warm-at <s>` | `hitch`: call `scene.warmInterior()` at ready + s, so the warm fires there (a no-op when the idle warm came first). |
+| `--busy-cap <pct>` | `hitch`: the share of the machine other processes may take before a frame over 50 ms is inconclusive rather than a fail (default 10). |
 | `--reduced-motion` | `follow`: a browser context that prefers reduced motion. |
 | `--golden <path>` | The seed golden (`seed`, and the perf gate's `--seed`). Default: `test/golden/seedDraws.json` in the checkout that holds `--dist`, else in the current directory; never this tool's own checkout. `--bless` writes there. |
 | `--selftest-leak` | The harness answers one blocked-host URL itself (a synthetic 200 from `route.fulfill`, so nothing leaves the machine) and the page fetches it after boot. That response is a leak by the rule, so the run must exit 2. |
@@ -181,6 +183,7 @@ holds the hook.
 | the touch joystick (the 166 px hit square, 44 px thumb) and the 74 px USE / JUMP / WAVE discs; `[data-guide=joystick]` and `[data-guide=use-button]` win once D6 lands | D | p2/walkin, guide, phone |
 | `__app.mapGuideTarget`, `mapGuideLabel`, `lastCompassTarget`, `exitBuilding(isZone)`, `insideIsZone`, `isletUnlocked`, `enterBuilding(id, isZone)`, `passport.count()`, `passport.has(id)` | A | compass, p2 probes, p2/journey |
 | `__app.scene`: `getZonesManager().getZones()`/`getZoneById()`, `coins`, `hasTrailCoins()`, `getCoinsCollected()`, `getNpcPosition(name)`, `getNearbyInteractable()`, `getIsland()` (`npcTargets`, `houseDoors`, `surfaceMesh`, `sampleSurfaceByDirection`, `seaLevel`), `warmInterior()`, `interiorWarmed`, `interiorNearDoorWarmed`, `onHouseEnterCb(id)`, `interactWithZone(zone)`, `schoolPos()` (guide's `--double`) | B, C | p2 probes, guide, census |
+| the warm: `__app.scene.warmInterior()`, `warmInteriorNearDoor()`, `interiorGroup` and `isInsideInterior()` (a live frame drawing the room), and the method names `warmInteriorPasses`, `compileInteriorPass` and `settleWarmPrograms` on the stack, by which hitch tags the warm's yields (a rename leaves its warm check inconclusive) | B | hitch |
 | phase 2: `__app.scene.isInsideInterior()`, `getInteriorHotspot()`, `INTERIOR_ORIGIN`, `INTERIOR_HOTSPOTS`, `INTERIOR_DOOR_HOTSPOT`, `INTERIOR_PLAYER_R`, `interiorSets`, `interiorActiveTheme`, `interiorColliders`, `interiorWallBlocked(x,z)`, `interiorFurnitureBlocked(x,z)`, `interiorPosters`, `interiorYaw`, `setInteriorMove()`, `toggleInteriorFixture(id)`, `partyMode` | B | p2/room-lib, survey, party, passport-interior |
 | phase 2: `__app.scene.getEnvironmentCycle()`: `getHour()`, `getDayFactor()`, `.debugHour` (written by duskflip) | C | p2/duskflip, p2/bootcost, p2/L.cjs |
 | phase 2: `__app.scene.boardVehicle(i)`, `vehicleKind(i)`, `isRidingVehicle()`, `disembarkVehicle()`, `vehicles[i].forward` | B | strafe (the vehicle chases), perf gate (P2-E3) |
@@ -203,7 +206,7 @@ clock hour, a panel close), and only inside their own browser context.
 | `strafe` | A5, CO-E3 | D held after a walk: heading and camera °/s; reduced motion; walk-away settle; fixed-pose camera frames (`--compare`), with two vehicle chases: 'aligned' and 'as boarded' (see the note below) | heading 143°/s, camera 143°/s, reduced motion 143°/s. Vehicle chase as boarded: the camera turns 39.9°/s; s1-int 13.3°/s, so `--compare` against main exits 1 on s1-int; 'aligned' matches main (pitch 0.03%, distance 0.27%) |
 | `legspin` | B1 | first-visit standing jump on the frozen sim (1/60 s); legs vs π; mixer rewrites; landing hand jumps | legL −11.7 rad (130.7° off π) after landing and after 10 s idle; legs rewritten 0/300; the landing hand 0.071-0.075 u at every landing here, 0.492 u once in the integration's run (see the note below); s1-int: the legs at π, exits 0 |
 | `rig` | B1 | sit, ride and swim bone positions in the player's frame; `--compare` gives max \|Δ\| | exits 0 on main; main vs main: 0; s1-int exits 0 |
-| `hitch` | B2, CO-E3 | idle on the card and walking, from the welcome card to ready + 25 s: the interior warm's frames wherever it fires, LoAF, programs per render() and per compile; the first door's longest frame up to the first room frame; `--no-khr`: the black interval by pixels (see the note below) | exits 1: the warm's 2,181 ms frame at 11.1 s (+93 programs in that frame, +38 in one render), 520 ms walking, the first door 228 ms; s1-int exits 0 (no warm frame over 50 ms, the first door 25-33 ms) |
+| `hitch` | B2, CO-E3 | idle on the card and walking, from the welcome card to ready + 25 s: the interior warm wherever it fires, judged by its own work (`--warm-at <s>` puts it anywhere), frames over 50 ms after the card on a quiet host, LoAF, programs per render() and per compile; the first door's longest frame up to the first room frame; `--no-khr`: the black interval by pixels (see the note below) | exits 1: the warm's 2,181 ms frame at 11.1 s on a busy host (+93 programs in that frame, +38 in one render); on a quiet one, the warm at 2.45 s and a 1,680 ms frame holding a 1,545 ms render of the room (+38 programs), 300 ms walking, a frame over 50 ms after the card, a 1,692 ms long animation frame, the first door 179 ms. s1-int exits 0 in all 14 scenario runs (see the note below) |
 | `seed` | B0 | `window.__dsSeedDraws` fresh, `ds_arrived='1'`, three reloads, low tier, vs the subject's `test/golden/seedDraws.json` (see `--golden`); `--bless` writes B0's flat shape, `{ "marks", "total" }` (only when every desktop run agrees; a low-tier difference is noted, not written). A `{ "desktop", "lowtier" }` file is also read | counter absent |
 | `guide-me` | D1 | Leaderboard → Guide me: panels, scrim, chip opacity, touch controls | stack `['leaderboard']`, scrim up, controls hidden |
 | `back` | D2 | the eight history cases; case 7 runs on desktop (welcome card, emote wheel, chat input, tour) and on the phone, where the touch-only ☰ drawer exists; each overlay must really open, or the check is inconclusive | Back from Projects lands on `about:blank` |
@@ -224,20 +227,73 @@ JSON is the time spent on each key set.
 
 **Hitch note.** The recorder is an init script, in place before any page
 script, so the probe sees ready. It judges from the welcome card (ready +
-2.4 s here) to ready + 25 s, and the interior warm's own frames wherever the
-warm fires (from its start to 100 ms past its end). main-simple defers the
-warm with `idleDefer(warmInterior, 9000)`: on a quiet machine it runs 1.3-2.9 s
-after ready, on this rig at its 9 s ceiling (8.9 s), and stage 1's window,
-which opened at ready + 5 s, missed the quiet case. Gates: the warm's frames
-over 50 ms, render() calls that create programs and take over 50 ms, long
-animation frames of 100 ms or more, the warm resolving within 10 s, and the
-first door. Reported, not judged:
-- `bootTailOver50`: ready to the card, where both builds draw their late GLB
-  models for the first time behind the loader (70-370 ms frames);
-- `framesOver50`: every frame over 50 ms in the window. Both builds make one
-  of 60-80 ms near ready + 5 s, the ambient music's synthesis
-  (`idleDefer(startMusic, 5000)`, a minute of samples on the main thread),
-  and now and then a 70-90 ms one later.
+2.4 s here) to ready + 25 s, and the interior warm wherever it fires.
+main-simple defers the warm with `idleDefer(warmInterior, 9000)`: on a quiet
+machine it runs 1.3-3.4 s after ready, often before the card, and on a busy
+one at its 9 s ceiling (8.9 s); stage 1's window, which opened at ready +
+5 s, missed the quiet case. `--warm-at <s>` calls `scene.warmInterior()` at
+ready + s, so a run can put the warm anywhere (when the idle warm fired
+first the call is a no-op; `warmInterior[].source` says which one ran).
+
+The warm is judged by its own work, not by where it lands
+(`warmAttribution()`, pinned by `test/probeHitch.test.ts`). The recorder
+logs the synchronous spans the warm runs: the call itself, then each
+continuation from one of the warm's own yields (a `setTimeout` made from
+`warmInteriorPasses`, `compileInteriorPass` or `settleWarmPrograms`, found
+by name on the stack) up to its next. A frame over 50 ms that overlaps a
+warm (from its start to 100 ms past its end) is the warm's when
+- a live render in it drew the room outside an entry: stage 1's warm showed
+  the room while `compileAsync` finished, and the next frame drew the
+  room-lit variants (main's 1,680 ms frame below);
+- the warm's own work in it is over 50 ms; or
+- that work is 10 ms or more (`WARM_MIN_MS`: a slice is 4 ms plus one object
+  and setTimeout's 4 ms clamp spaces the slices, so an ordinary frame holds
+  two at most) and the frame is 50 ms or less without it.
+
+A render that created programs with the room hidden (the bloom's arrival, a
+late model's first draw) is listed with its frame
+(`warmFlightFramesOver50`), not charged. When the warm's work was not seen
+whole (a warm that ran over 150 ms with fewer than 2 yields seen, a span
+still open at a frame, or a compile call in a flight outside the spans:
+`warmWork.why`), the check is inconclusive, not a pass. Stage 1's rule
+charged every frame over 50 ms in a flight to the warm, and on a quiet host
+s1-int's early warm took the blame for the boot tail's last frame, so
+hitch exited 1 in two of the review's three runs.
+
+Gates: the warm's frames; render() calls in the window that create programs
+and take over 50 ms; frames over 50 ms from the card to ready + 25 s on
+desktop with the extension (plan-r3's runtime budget; on the low tier and
+with `--no-khr` they are reported); long animation frames of 100 ms or
+more; the warm resolving within 10 s; the first door. A frame over 50 ms
+fails only on a quiet host: `hostLoad` (`lib.hostLoadMeter`: the machine's
+busy share from `os.cpus()`, this browser's own from CDP
+`SystemInfo.getProcessInfo`) must show other processes at 10% of the
+machine or less (`--busy-cap <pct>`), or the check is inconclusive. Here a
+probe's own browser takes 8-16% of the machine and the rest of a quiet host
+3-6%; one other session's probe adds about as much again. Reported, not
+judged: `bootTailOver50`, ready to the card, where both builds draw their
+late GLB models for the first time behind the loader and build the card
+(60-370 ms frames).
+
+Baselines, 2026-11-04, other processes 3.7-5.7% of the host:
+- s1-int: 14 scenario runs (6 runs on desktop, among them `--warm-at 1.0`
+  and `--warm-at 2.3`, and one on both tiers) all exit 0. The idle warm
+  started at 2.17-3.36 s, often before the card at 2.38-2.61 s; its own
+  work was 124-137 ms in 29-33 spans, the longest 10-13 ms (the room's
+  build), the rest 4-9 ms slices. Four frames over 50 ms fell inside a warm:
+  the boot tail's last frame before the card (60, 70 and 90 ms) and, with
+  `--warm-at 1.0`, the bloom's arrival (120 ms, +6 programs, the room
+  hidden). The warm's own work in each was 4.0-4.2 ms, one slice, so none is
+  the warm's, and nothing goes to B: these are the frames stage 1's rule
+  blamed. No frame over 50 ms after the card in any run; the first door
+  17-24 ms.
+- 58c8849 (desktop): exits 1. The warm at 2.45 s ran 1,834 ms; its first
+  span was 141 ms (the room's build and `compileAsync`'s compile), and the
+  frame at 4.13 s (1,680 ms) held a 1,545 ms render of the room
+  (+38 programs). Walking: the warm at 2.54 s, a 300 ms frame with a 184 ms
+  render of the room. Its yields go through three's `compileAsync`, which
+  the tags do not name, so `warmWork.seenWhole` is false there; the charged
+  frames fail it all the same.
 
 On main the warm's frame-to-frame program jump is the audit's 93, but it is
 split: `warmInterior`'s `compileAsync` adds 55 programs inside the compile
@@ -258,10 +314,10 @@ within 3 u of the first house's door, then enter) beside `walkStraightIn`.
 Black is judged by pixels: a CDP screencast frame (JPEG, decoded with
 playwright-core's jpeg-js) is black when its mean luminance is at most 5% of
 the pre-entry median, which is the veil at 0.95 or more; the fade div's
-opacity interval is reported beside it. s1-int, `--no-khr --profile desktop`:
-walk-straight-in 1,566 ms black by pixels (1,576 ms by opacity), with a
-1,074 ms first room frame; pause-near-door 586 ms (541 ms). The
-integration measured 1.37-1.49 s and about 0.66 s.
+opacity interval is reported beside it. s1-int, `--no-khr --profile desktop`,
+two runs: walk-straight-in 1,369-1,566 ms black by pixels (1,374-1,576 ms by
+opacity), with an 862-1,074 ms first room frame; pause-near-door 586-590 ms
+(541-557 ms). The integration measured 1.37-1.49 s and about 0.66 s.
 
 **Vehicle chase.** `strafe` boards the first car twice. 'aligned' turns the
 camera behind the car first; 'as boarded' turns it until the car's forward

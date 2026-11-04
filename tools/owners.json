@@ -28,6 +28,7 @@
         "perfLevers",
         "fxBudget",
         "probeSafety",
+        "probeHitch",
         "astSlice"
       ],
       "testFiles": ["test/helpers/networkStubs.ts", "test/helpers/astSlice.ts"]
