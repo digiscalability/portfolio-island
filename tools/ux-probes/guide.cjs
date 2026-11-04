@@ -144,7 +144,9 @@ const TRAIL = () => {
     const d = p.distanceTo(last);
     if (!best || d < best.d) best = { name: n.name, d: +d.toFixed(2) };
   }
-  return { coins: coins.length, last: last.toArray().map((x) => +x.toFixed(2)), nearest: best };
+  // B10's own word for the villager the trail leads to, when the build has it.
+  const named = typeof sc.getTrailVillager === 'function' ? sc.getTrailVillager() : undefined;
+  return { coins: coins.length, last: last.toArray().map((x) => +x.toFixed(2)), nearest: best, named };
 };
 
 // ---------------------------------------------------------------- the double
@@ -603,7 +605,7 @@ async function skipAndTrail(t, prof) {
       if (pr && pr.includes(r.trail.nearest.name)) r.trail.talkPrompt = pr;
     }
     const ai = /ask anything/i.test(r.trail.talkPrompt || '');
-    t.check(`at Explore: the last trail coin is within 3 u of a villager who talks through Claude Haiku 4.5 (B10)`, r.trail.nearest.d <= 3 && ai, { villager: r.trail.nearest.name, distanceU: r.trail.nearest.d, prompt: r.trail.talkPrompt }, '<= 3 u, "ask anything"');
+    t.check(`at Explore: the last trail coin is within 3 u of a villager who talks through Claude Haiku 4.5 (B10)`, r.trail.nearest.d <= 3 && ai, { villager: r.trail.nearest.name, distanceU: r.trail.nearest.d, prompt: r.trail.talkPrompt, getTrailVillager: r.trail.named }, '<= 3 u, "ask anything"');
   }
   t.data[`skip-${prof}`] = r;
 }

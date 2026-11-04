@@ -417,17 +417,30 @@ const INSTALL = () => {
       }
     return { poses, cameraInsidePropPct: +((100 * inside) / poses).toFixed(1), viewBlockedPct: +((100 * blocked) / poses).toFixed(1), insideBy, examples };
   };
-  // Flood-fill the walkable floor from the doorway spawn; which hotspots can
-  // be reached, how far, and where two hotspots fight for the prompt.
+  // Flood-fill the walkable floor from the build's spawn; which hotspots can
+  // be reached, how far, and where two hotspots fight for the prompt. The
+  // spawn and the hotspot list are the build's own when it has them (P2-B1:
+  // GameScene.INTERIOR_SPAWN and scene.interiorHotspotsFor(theme), which
+  // moves the home's curtains to (2.4, 2.7)); an older build falls back to
+  // the audit's spawn (-1.8, 2.6) and its shell fixtures, the curtains at
+  // (1.8, 2.95).
   IA.reach = () => {
     const G = sc.constructor;
     const theme = sc.interiorActiveTheme;
-    const spots = [
-      ...(G.INTERIOR_HOTSPOTS[theme] || []).map((h) => ({ ...h })),
-      { x: -2.75, z: 3.0, r: 1.0, label: 'lamp switch', action: 'room' },
-      { x: 1.8, z: 2.95, r: 1.05, label: 'curtains', action: 'room' },
-      { ...G.INTERIOR_DOOR_HOTSPOT, label: 'door (leave)' },
-    ];
+    const own = !!G.INTERIOR_SPAWN && Number.isFinite(G.INTERIOR_SPAWN.x) && Number.isFinite(G.INTERIOR_SPAWN.z);
+    const SP = own ? { x: G.INTERIOR_SPAWN.x, z: G.INTERIOR_SPAWN.z } : { x: -1.8, z: 2.6 };
+    const ownSpots = typeof sc.interiorHotspotsFor === 'function';
+    // Short labels for the shell fixtures and the door; a theme's own
+    // hotspots keep the prompt they show.
+    const short = (h) => (h.action === 'leave' ? 'door (leave)' : h.text === 'curtains' ? 'curtains' : h.text === 'lamp' ? 'lamp switch' : h.label);
+    const spots = ownSpots
+      ? sc.interiorHotspotsFor(theme).map((h) => ({ ...h, label: short(h) }))
+      : [
+          ...(G.INTERIOR_HOTSPOTS[theme] || []).map((h) => ({ ...h })),
+          { x: -2.75, z: 3.0, r: 1.0, label: 'lamp switch', action: 'room' },
+          { x: 1.8, z: 2.95, r: 1.05, label: 'curtains', action: 'room' },
+          { ...G.INTERIOR_DOOR_HOTSPOT, label: 'door (leave)' },
+        ];
     const step = 0.1;
     const key = (i, j) => i * 1000 + j;
     const toXZ = (i, j) => [-3.4 + i * step, -3.4 + j * step];
@@ -442,8 +455,8 @@ const INSTALL = () => {
       return sc.interiorFurnitureBlocked(x, z);
     };
     const ok = (i, j) => !inWall(i, j) && !inProp(i, j);
-    const si = Math.round((-1.8 + 3.4) / step);
-    const sj = Math.round((2.6 + 3.4) / step);
+    const si = Math.round((SP.x + 3.4) / step);
+    const sj = Math.round((SP.z + 3.4) / step);
     const spawnInProp = inProp(si, sj);
     const dist = new Map([[key(si, sj), 0]]);
     const q = [[si, sj]];
@@ -480,17 +493,15 @@ const INSTALL = () => {
       return { label: String(h.label).replace(/<[^>]+>/g, ''), action: h.action, reachable: best < Infinity, walkFromDoor: best < Infinity ? +best.toFixed(1) : null };
     });
     // the prompt at the spawn point itself
-    const sx = -1.8;
-    const sz = 2.6;
-    const atSpawn = spots.filter((h) => Math.hypot(sx - h.x, sz - h.z) < h.r).map((h) => String(h.label).replace(/<[^>]+>/g, ''));
+    const atSpawn = spots.filter((h) => Math.hypot(SP.x - h.x, SP.z - h.z) < h.r).map((h) => String(h.label).replace(/<[^>]+>/g, ''));
     // which prop the spawn overlaps (by its collider box), if any
     let spawnProp = null;
     if (spawnInProp) {
       const R = G.INTERIOR_PLAYER_R;
-      const c = (sc.interiorColliders[theme] || []).find((b) => -1.8 > b.minX - R && -1.8 < b.maxX + R && 2.6 > b.minZ - R && 2.6 < b.maxZ + R);
+      const c = (sc.interiorColliders[theme] || []).find((b) => SP.x > b.minX - R && SP.x < b.maxX + R && SP.z > b.minZ - R && SP.z < b.maxZ + R);
       if (c) spawnProp = { minX: +c.minX.toFixed(2), maxX: +c.maxX.toFixed(2), minZ: +c.minZ.toFixed(2), maxZ: +c.maxZ.toFixed(2) };
     }
-    return { reachableCells: dist.size, walkableCells: walkable, hotspots: out, promptAtSpawn: atSpawn, spawnInsideProp: spawnProp };
+    return { spawn: [SP.x, SP.z], spawnFrom: own ? 'INTERIOR_SPAWN' : 'the audit (-1.8, 2.6)', spotsFrom: ownSpots ? 'interiorHotspotsFor' : 'the audit list', reachableCells: dist.size, walkableCells: walkable, hotspots: out, promptAtSpawn: atSpawn, spawnInsideProp: spawnProp };
   };
   IA.state = () => {
     const o = sc.constructor.INTERIOR_ORIGIN;

@@ -2,11 +2,13 @@
 // p2/survey (P2-E1a, from the interiors audit's survey.cjs). Every enterable
 // building, entered the way a visitor does (walk at the door, E or a USE tap,
 // the islet code typed on its pad): the entry transition, the room's
-// reachability flood fill (reach: every hotspot reachable from the doorway,
-// promptAtSpawn, spawnInsideProp), the camera sweep, the avatar's share of
-// the frame (avatarFrame), the posters' cap height (capPx), four room poses,
-// the steady per-room cost, the forced window pass, then out by the Leave
-// control and the exit transition.
+// reachability flood fill (reach: every hotspot reachable from the spawn,
+// promptAtSpawn, spawnInsideProp; the spawn and hotspots are the build's own,
+// GameScene.INTERIOR_SPAWN and interiorHotspotsFor(theme), or the audit's
+// (-1.8, 2.6) and shell fixtures on a build without them), the camera sweep,
+// the avatar's share of the frame (avatarFrame), the posters' cap height
+// (capPx), four room poses, the steady per-room cost, the forced window
+// pass, then out by the Leave control and the exit transition.
 //
 //   npm run probe -- p2/survey [--device desk|phone] [--hour 12] [--ids a,b] [--no-poses] [--weather rain] --dist dist --port <n>
 //

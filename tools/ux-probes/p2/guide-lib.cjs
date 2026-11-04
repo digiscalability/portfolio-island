@@ -8,7 +8,11 @@
 // - followCompass(): a visitor who follows the compass as A1 draws it (the
 //   bearing of __app.lastCompassTarget from the camera's forward): W when the
 //   target is ahead, W plus A or D to turn; stops on arrival, on a panel, on
-//   the welcome card, or when a prompt matches;
+//   the welcome card, when a prompt matches, or (untilZone) when
+//   getNearbyInteractable() is that district's door;
+// - sampleReadout(): readouts over about a second, so a prompt that is still
+//   fading in or out is not read as absent;
+// - closeNpcChat(): closes a villager chat that opened on the way;
 // - walkTo() and walkToNpc(): the same steering to a fixed point or to a
 //   villager, until the talk prompt names them;
 // - startTimeline(): a background sampler of every change in those readouts,
@@ -95,10 +99,18 @@ const BEARING = (T) => {
     panel: ui.panels.current(),
     welcome: ui.isWelcomeVisible(),
     prompt: ui.interactionDiv ? (ui.interactionDiv.textContent || '').trim() : null,
+    nearZone: (() => {
+      try {
+        const n = a.scene.getNearbyInteractable && a.scene.getNearbyInteractable();
+        return n && n.type === 'zone' && n.zone ? n.zone.id || null : null;
+      } catch (e) {
+        return null;
+      }
+    })(),
   };
 };
 
-async function steer(page, getState, ms, { near = 2.6, untilPrompt = null, stopOnPanel = true } = {}) {
+async function steer(page, getState, ms, { near = 2.6, untilPrompt = null, untilZone = null, stopOnPanel = true } = {}) {
   const log = [];
   const end = Date.now() + ms;
   let held = new Set();
@@ -138,6 +150,10 @@ async function steer(page, getState, ms, { near = 2.6, untilPrompt = null, stopO
       outcome = 'prompt';
       break;
     }
+    if (untilZone && s.nearZone === untilZone) {
+      outcome = 'prompt';
+      break;
+    }
     const a = Math.abs(s.rel);
     await set(new Set(a < 25 ? ['w'] : ['w', s.rel > 0 ? 'd' : 'a']));
     await lib.sleep(150);
@@ -166,6 +182,36 @@ async function walkToNpc(page, name, ms) {
     await walkTo(page, pos, 1200, 1.5);
   }
   return 'timeout';
+}
+
+/** Readouts every `every` ms for `ms`: a prompt fades in and out, so one read can miss it. */
+async function sampleReadout(page, ms = 1200, every = 150) {
+  const out = [];
+  const end = Date.now() + ms;
+  do {
+    const r = await readout(page).catch(() => null);
+    if (r) out.push(r);
+    await lib.sleep(every);
+  } while (Date.now() < end);
+  return out;
+}
+
+/** Close a villager chat that opened on the way (a villager who greets, or an E meant for something else). True when one was open. */
+async function closeNpcChat(page) {
+  const open = await page.evaluate(() => {
+    const ui = window.__app.ui;
+    const el = ui.npcChatDiv;
+    const shown = !!el && el.isConnected && getComputedStyle(el).display !== 'none';
+    return (ui.panels && ui.panels.current() === 'npc-chat') || shown;
+  });
+  if (!open) return false;
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => {
+    const ui = window.__app.ui;
+    if (ui.closeNpcChat) ui.closeNpcChat();
+  });
+  await lib.sleep(500);
+  return true;
 }
 
 /**
@@ -219,4 +265,4 @@ const linkGeo = (page, rootSel) =>
       .filter((x) => x.t);
   }, rootSel);
 
-module.exports = { ptime, untilPage, hold, READOUT, readout, BEARING, steer, followCompass, walkTo, walkToNpc, startTimeline, linkGeo };
+module.exports = { ptime, untilPage, hold, READOUT, readout, sampleReadout, closeNpcChat, BEARING, steer, followCompass, walkTo, walkToNpc, startTimeline, linkGeo };

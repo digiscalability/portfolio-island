@@ -15,6 +15,13 @@
 // mappick: a map pick of each district in turn (M, or a tap on the compass,
 //   then the district's chip), followed to its end.
 //
+// A pick is followed until that district's own door prompt shows (its zone
+// name in the prompt, or getNearbyInteractable() on its door): another door
+// on the way (a cottage's unnamed 'Press E to enter') is walked past. Its
+// end is judged on readouts over 1.2 s, so a prompt still fading in is not
+// read as absent. A villager chat that opens on the way is closed and the
+// walk goes on, and E is pressed only with the prompt it is meant for up.
+//
 // A7's bar, at 1440x900 and 390x844 touch: all four halls entered within 6
 // minutes; after each of stamps 1-3 the pill names a district within 1 s; a
 // map pick of each district ends with its door prompt up and the pill still
@@ -29,8 +36,68 @@ const DISTRICTS = [
   { id: 'contact', re: /contact|get in touch/i, chip: /Get In Touch|Contact/ },
 ];
 const isDistrictLabel = (l) => DISTRICTS.some((d) => d.re.test(l || ''));
+const districtOf = (l) => DISTRICTS.find((d) => d.re.test(l || '')) || null;
 const strip = (l) => (l || '').replace(/\s*•?\s*[\d.]+m$/, '').trim();
 const DOOR = /(Press E|Tap 👆 USE|Tap USE) to enter/;
+const DELIVER = /collect the delivery|deliver/i;
+const escapeRe = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A district's own door prompt: the zone's name after 'to enter' (its chip's words when the build gives no name). */
+const doorRe = (d, names) =>
+  names && names[d.id]
+    ? new RegExp(`${DOOR.source} ${escapeRe(names[d.id])}`)
+    : new RegExp(`${DOOR.source} .*(${d.re.source})`, 'i');
+/** The district names the build gives its zones. */
+const zoneNames = (page) =>
+  page.evaluate(
+    (ids) => {
+      const zm = window.__app.scene.getZonesManager && window.__app.scene.getZonesManager();
+      return Object.fromEntries(
+        ids.map((id) => [id, (zm && zm.getZoneById(id) && zm.getZoneById(id).name) || null]),
+      );
+    },
+    DISTRICTS.map((d) => d.id),
+  );
+/** The first sampled prompt that matches re, else the last one shown. */
+const promptOf = (ss, re) => {
+  const hit = ss.find((x) => x.prompt && re.test(x.prompt));
+  if (hit) return hit.prompt;
+  const shown = ss.filter((x) => x.prompt);
+  return shown.length ? shown[shown.length - 1].prompt : null;
+};
+/** The pill at the end (the last sample that shows one), and whether every sample that shows one names the district. */
+const pillOf = (ss, re) => {
+  const shown = ss.map((x) => strip(x.compass)).filter(Boolean);
+  return {
+    pill: shown.length ? shown[shown.length - 1] : null,
+    on: shown.length > 0 && shown.every((l) => re.test(l)),
+  };
+};
+
+/**
+ * Follow the compass to a district: until its own door prompt (or its door
+ * as the nearby interactable), arrival within `near`, or the time runs out.
+ * A villager chat that opens on the way is closed and the walk resumes.
+ */
+async function followTo(page, ms, { near, d = null, names = null } = {}) {
+  const end = Date.now() + ms;
+  const log = [];
+  let strays = 0;
+  let f = { outcome: 'timeout', log: [] };
+  while (Date.now() < end) {
+    f = await G.followCompass(page, end - Date.now(), {
+      near,
+      untilPrompt: d ? doorRe(d, names) : DOOR,
+      untilZone: d ? d.id : null,
+    });
+    log.push(...f.log);
+    if (f.outcome === 'panel:npc-chat' && strays < 4 && (await G.closeNpcChat(page))) {
+      strays++;
+      continue;
+    }
+    break;
+  }
+  return { ...f, log, strays };
+}
 
 async function press(page, touch, xy) {
   if (touch) await page.touchscreen.tap(xy[0], xy[1]);
@@ -187,22 +254,26 @@ async function follow(t, prof) {
   for (const c of coins) await G.walkTo(page, c.slice(0, 3), 6000, 0.9);
   await lib.sleep(2200);
   R.steps.push({ at: 'trail done', s: await now(), read: await G.readout(page) });
-  // The villager the trail ended at.
+  // The villager the trail ended at: the one the build says it leads to
+  // (B10's getTrailVillager), else the nearest.
   const who = await page.evaluate(() => {
     const sc = window.__app.scene;
     const P = sc.getPlayer().getWorldPosition();
+    const named = typeof sc.getTrailVillager === 'function' ? sc.getTrailVillager() : null;
     let best = null;
     for (const n of sc.getIsland().npcTargets) {
       if (!n.meshRef.visible) continue;
       const q = n.meshRef.getWorldPosition(P.clone());
       const d = q.distanceTo(P);
-      if (!best || d < best.d) best = { name: n.name, d: +d.toFixed(1) };
+      if (named && n.name === named) return { name: n.name, d: +d.toFixed(1), from: 'getTrailVillager' };
+      if (!best || d < best.d) best = { name: n.name, d: +d.toFixed(1), from: 'nearest' };
     }
     return best;
   });
   if (who) {
     R.talkWalk = await G.walkToNpc(page, who.name, 15000);
-    await page.keyboard.press('e');
+    // E only with the villager's prompt up.
+    if (R.talkWalk === 'prompt') await page.keyboard.press('e');
     await lib.sleep(2600);
     R.talk = await page.evaluate(() => {
       const ui = window.__app.ui;
@@ -210,6 +281,7 @@ async function follow(t, prof) {
       return { chat: chat ? chat.innerText.replace(/\s+/g, ' ').slice(0, 400) : null, dialogue: ui.isDialogueActive() };
     });
     R.talk.who = who.name;
+    R.talk.whoFrom = who.from;
     if (R.talk.chat) {
       await page.evaluate(() => {
         const i = window.__app.ui.npcChatDiv.querySelector('input');
@@ -226,16 +298,20 @@ async function follow(t, prof) {
     } else await closeDialogue(page);
   }
   // Legs: follow the compass wherever it points.
+  const names = await zoneNames(page);
+  R.zoneNames = names;
   let deliveries = 0;
   for (let n = 0; n < 14; n++) {
     if ((await now()) > cap) break;
-    // A canned conversation still open (a villager met on the way) holds the
-    // visitor in place: read it to the end first, as a visitor would.
+    // A canned conversation or a villager chat still open (a villager met on
+    // the way) holds the visitor in place: read it to the end, or close it.
     await closeDialogue(page);
+    const strayAtStart = await G.closeNpcChat(page);
     const r0 = await G.readout(page);
     if (r0.stamps >= 4) break;
     const label = strip(r0.compass);
     const leg = { n, label, startS: await now() };
+    if (strayAtStart) leg.strayChatClosed = true;
     R.legs.push(leg);
     if (!label) {
       leg.note = 'compass hidden';
@@ -252,33 +328,54 @@ async function follow(t, prof) {
         leg.labelAfterMap = strip((await G.readout(page)).compass);
       }
     }
-    const f = await G.followCompass(page, 80000, { near: /Delivery|Parcel/.test(label) && !pick ? 1.6 : 2.5, untilPrompt: DOOR });
+    const delivery = /Delivery|Parcel/.test(leg.labelAfterMap || label);
+    // The district this leg leads to (the pick's, or the one the pill
+    // names): only that district's own door ends it.
+    const d = pick || (delivery ? null : districtOf(label));
+    const want = d ? doorRe(d, names) : DOOR;
+    const f = await followTo(page, 80000, { near: delivery ? 1.6 : 2.5, d, names });
     leg.outcome = f.outcome;
+    if (f.strays) leg.strayChats = f.strays;
     leg.labels = [...new Set(f.log.map((x) => strip(x.label)))];
     leg.endS = await now();
-    const ra = await G.readout(page);
-    leg.prompt = ra.prompt;
-    leg.labelAtEnd = strip(ra.compass);
-    if (pick) R.mapPicks.push({ district: pick.id, doorPromptUp: DOOR.test(ra.prompt || '') && pick.re.test(ra.prompt || ''), pillAtEnd: leg.labelAtEnd, prompt: ra.prompt, s: leg.endS });
+    let ss = await G.sampleReadout(page, 1200);
+    leg.prompt = promptOf(ss, delivery ? DELIVER : want);
+    leg.labelAtEnd = pillOf(ss, /./).pill;
+    if (pick) {
+      const pl = pillOf(ss, pick.re);
+      R.mapPicks.push({ district: pick.id, doorPromptUp: ss.some((x) => want.test(x.prompt || '')), pillOn: pl.on, pillAtEnd: pl.pill, prompt: leg.prompt, outcome: f.outcome, s: leg.endS });
+    }
     await t.shot(page, `journey-${tag}-leg${n}-arrive.png`);
-    if (/Delivery|Parcel/.test(leg.labelAfterMap || label) && !DOOR.test(ra.prompt || '')) {
-      await page.keyboard.press('e');
-      await lib.sleep(1500);
-      leg.afterE = await G.readout(page);
-      deliveries++;
+    if (delivery && !DOOR.test(leg.prompt || '')) {
+      // E only with the mailbox's prompt up: an E beside a villager opens a chat.
+      if (!DELIVER.test(leg.prompt || '')) {
+        const tgt = await page.evaluate(() => (window.__app.lastCompassTarget ? window.__app.lastCompassTarget.toArray() : null));
+        if (tgt) await G.walkTo(page, tgt, 4000, 1.0);
+        ss = await G.sampleReadout(page, 1200);
+        leg.promptAfterNudge = promptOf(ss, DELIVER);
+      }
+      if (DELIVER.test(leg.promptAfterNudge || leg.prompt || '')) {
+        await page.keyboard.press('e');
+        await lib.sleep(1500);
+        leg.afterE = await G.readout(page);
+        deliveries++;
+      } else leg.note = 'no delivery prompt: E not pressed';
+      if (await G.closeNpcChat(page)) leg.strayChatClosed = true;
       await lib.sleep(1500);
       continue;
     }
-    if (!DOOR.test(ra.prompt || '')) {
+    if (!ss.some((x) => want.test(x.prompt || ''))) {
       const tgt = await page.evaluate(() => (window.__app.lastCompassTarget ? window.__app.lastCompassTarget.toArray() : null));
       if (tgt) await G.walkTo(page, tgt, 6000, 1.9);
-      leg.promptAfterNudge = (await G.readout(page)).prompt;
+      ss = await G.sampleReadout(page, 1200);
+      leg.promptAfterNudge = promptOf(ss, want);
     }
-    if (DOOR.test((await G.readout(page)).prompt || '')) {
+    // E (or USE) only with the door prompt up.
+    if (want.test(promptOf(ss, want) || '')) {
       const done = await enterAndRead(t, page, touch, leg, tag);
       leg.after = await G.readout(page);
       if (done) break;
-    }
+    } else leg.note = leg.note || 'no door prompt: E not pressed';
   }
   R.final = await G.readout(page);
   R.endS = await now();
@@ -330,7 +427,7 @@ function mapPickChecks(t, prof, picks) {
   const by = new Map();
   for (const m of picks) by.set(m.district, [...(by.get(m.district) || []), m]);
   for (const [district, ms] of by) {
-    const ok = ms.filter((m) => m.doorPromptUp && isDistrictLabel(m.pillAtEnd)).length;
+    const ok = ms.filter((m) => m.doorPromptUp && (m.pillOn !== undefined ? m.pillOn : isDistrictLabel(m.pillAtEnd))).length;
     const last = ms[ms.length - 1];
     const value = ms.length > 1 ? { picks: ms.length, endedAtTheDoor: ok, last: { prompt: last.prompt, pill: last.pillAtEnd } } : { prompt: last.prompt, pill: last.pillAtEnd };
     t.check(`${prof}: the map pick${ms.length > 1 ? 's' : ''} of ${district} end${ms.length > 1 ? '' : 's'} with its door prompt up and the pill still on it`, ok === ms.length, value, 'door prompt up, pill on it');
@@ -348,20 +445,30 @@ async function mappick(t, prof) {
   await explore(page, touch);
   R.guideSkipped = await skipGuide(page, touch);
   await lib.sleep(1500);
+  const names = await zoneNames(page);
+  R.zoneNames = names;
   for (const d of DISTRICTS) {
     const p = { district: d.id };
+    if (await G.closeNpcChat(page)) p.strayChatClosedBefore = true;
     p.mapOk = await openMapPick(page, touch, d.chip);
     p.labelAfterPick = strip((await G.readout(page)).compass);
-    const f = await G.followCompass(page, 90000, { near: 0.8, untilPrompt: DOOR });
+    // On to the district's own door prompt: another door on the way does not end it.
+    const f = await followTo(page, 90000, { near: 0.8, d, names });
     p.outcome = f.outcome;
+    if (f.strays) p.strayChats = f.strays;
     p.labels = [...new Set(f.log.map((x) => strip(x.label)))];
-    const ra = await G.readout(page);
-    p.prompt = ra.prompt;
-    p.pillAtEnd = strip(ra.compass);
-    p.doorPromptUp = DOOR.test(ra.prompt || '') && d.re.test(ra.prompt || '');
+    // Judged over 1.2 s: the prompt may still be fading in.
+    const ss = await G.sampleReadout(page, 1200);
+    const want = doorRe(d, names);
+    const pl = pillOf(ss, d.re);
+    p.prompt = promptOf(ss, want);
+    p.pillAtEnd = pl.pill;
+    p.pillOn = pl.on;
+    p.doorPromptUp = ss.some((x) => want.test(x.prompt || ''));
+    p.samples = ss.length;
     await t.shot(page, `journey-${tag}-${d.id}.png`);
     R.picks.push(p);
-    t.check(`${prof}: a map pick of ${d.id} ends with its door prompt up and the pill still on it`, p.mapOk ? p.doorPromptUp && d.re.test(p.pillAtEnd || '') : null, { outcome: p.outcome, prompt: p.prompt, pill: p.pillAtEnd, labels: p.labels }, `door prompt for ${d.id}, pill on it`);
+    t.check(`${prof}: a map pick of ${d.id} ends with its door prompt up and the pill still on it`, p.mapOk ? p.doorPromptUp && p.pillOn : null, { outcome: p.outcome, prompt: p.prompt, pill: p.pillAtEnd, labels: p.labels }, `door prompt for ${names[d.id] || d.id}, pill on it`);
     await stepOff(page);
     await stepOff(page);
   }
