@@ -7,7 +7,9 @@
 // - First steps (A6): the state machine on dt-driven frames, persistence,
 //   resume, the pause rules, the 20 s chip, the talk skip, legacy visitors,
 //   the arming sources, the words, and the card on happy-dom.
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+// - main-simple makes the card only when the guide first arms (the last
+//   describe runs its methods for real on a stub app).
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import {
   CONTROLS_KEY,
@@ -29,6 +31,10 @@ import {
   type Vec3Like,
 } from '../Guide';
 import { GuideCard, type GuideCardOptions } from '../GuideCard';
+
+// The last describe imports main-simple, which calls inject() at module
+// load; under happy-dom the analytics script tag would be FETCHED.
+vi.mock('@vercel/analytics', () => ({ inject: vi.fn(), track: vi.fn() }));
 
 const at = (x: number): Vec3Like => ({ x, y: 100, z: 0 });
 
@@ -596,10 +602,24 @@ describe('First steps: the words', () => {
 
   test('the talk step names its villager, not every villager', () => {
     const d = guideCopy(view({ step: 'talk' }), ctx());
+    // The critique's named subject, then the brief's 'Walk up to <name> and
+    // press [E]' clause, which says who to walk to.
     expect(d.body).toBe(
-      'Mayor talks through Claude Haiku 4.5. Walk up and press [E] to ask anything.',
+      'Mayor talks through Claude Haiku 4.5. Walk up to Mayor and press [E] to ask anything.',
     );
-    expect(guideCopy(view({ step: 'talk' }), ctx({ touch: true })).body).toContain('tap USE');
+    expect(guideCopy(view({ step: 'talk' }), ctx({ touch: true })).body).toBe(
+      'Mayor talks through Claude Haiku 4.5. Walk up to Mayor and tap USE to ask anything.',
+    );
+    // E's guide probe (guide.cjs) reads the villager from that clause.
+    const named = /walk up to (?:the )?(.+?) and (?:press|tap)/i;
+    for (const touch of [false, true]) {
+      const body = guideCopy(view({ step: 'talk' }), ctx({ touch })).body;
+      expect(named.exec(body.replace(/\[|\]/g, ''))?.[1]).toBe('Mayor');
+    }
+    // No target: never shown (the step is skipped), and still one villager.
+    const none = guideCopy(view({ step: 'talk', talkTarget: null }), ctx()).body;
+    expect(none).toMatch(/^A villager nearby talks through Claude Haiku 4\.5\./);
+    expect(none).not.toMatch(/^Villagers/);
   });
 
   test('look follows html[data-look-mode] and names J/L on keyboards', () => {
@@ -848,5 +868,107 @@ describe('GuideCard: one live, focus-free card on the HUD', () => {
     c.checkPrompt();
     expect(c.el.dataset.lift).toBe('366');
     Object.defineProperty(window, 'innerHeight', { value: 1024, configurable: true });
+  });
+});
+
+// ---- First steps (A6): main-simple makes the card when the guide arms ------
+
+// D6 reads #ds-guide, or any 'ds:guide' event, as "the guide has armed" and
+// then stands the welcome's one-time compass hint down. So neither may exist
+// on a visit the guide never arms (Ask the townsfolk, Hiring, a race): the
+// card used to be built at boot, and its first redraw sent {active: false}.
+// main-simple's own methods run here on a stub app, as in interiorEntry.
+describe("main-simple: no #ds-guide and no 'ds:guide' until the guide arms (A6, D6)", () => {
+  type Method = (this: unknown, ...a: unknown[]) => unknown;
+  const NAMES = ['renderGuide', 'armGuide', 'createGuideCard', 'guideFinaleDistrict'] as const;
+  let proto: Record<(typeof NAMES)[number], Method>;
+  beforeAll(async () => {
+    // The boot latch: importing the module then builds no app.
+    (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
+    const mod = await import('../main-simple');
+    proto = mod.SimpleApp.prototype as unknown as typeof proto;
+  }, 120000);
+
+  /** The fields renderGuide and armGuide read, and the four methods, for real. */
+  const stubApp = (guide: Guide) => {
+    const app: Record<string, unknown> = {
+      guide,
+      guideCard: null,
+      ui: {
+        getOverlay: () => document.getElementById('ui-overlay')!,
+        isTouchDevice: () => false,
+      },
+      compassLabel: '',
+      passport: null,
+      compassDistrict: null,
+      guidePrevValid: true,
+      onGuideButton: () => undefined,
+    };
+    for (const k of NAMES) app[k] = proto[k].bind(app);
+    return app as typeof app & Record<(typeof NAMES)[number], (...a: unknown[]) => unknown>;
+  };
+
+  const seen: Array<{ active: boolean; step: string | null }> = [];
+  const on = (e: Event) => seen.push((e as CustomEvent).detail);
+  let app: ReturnType<typeof stubApp> | null = null;
+  // happy-dom has no Web Animations; the card animates in when motion is on.
+  const proto0 = Element.prototype as { animate?: unknown };
+  let animate0: unknown;
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    localStorage.clear();
+    seen.length = 0;
+    window.addEventListener('ds:guide', on);
+    animate0 = proto0.animate;
+    proto0.animate = () => ({ cancel() {} });
+  });
+  afterEach(() => {
+    window.removeEventListener('ds:guide', on);
+    (app?.guideCard as GuideCard | null)?.dispose();
+    app = null;
+    proto0.animate = animate0;
+  });
+
+  test('before it arms, frames and redraws put nothing on the page', () => {
+    const { guide } = makeGuide();
+    app = stubApp(guide);
+    for (let i = 0; i < 30; i++) {
+      // a panel-driven completion before arming is saved, not drawn
+      guide.frame(idle({ top: i === 10 ? 'portfolio-menu' : null }));
+      app.renderGuide();
+    }
+    expect(document.getElementById('ds-guide')).toBeNull();
+    expect(seen).toEqual([]);
+    expect(app.guideCard).toBeNull();
+  });
+
+  test('arming makes the one card and sends its first ds:guide at once', () => {
+    const { guide } = makeGuide();
+    app = stubApp(guide);
+    expect(app.armGuide('explore')).toBe(true);
+    const el = document.getElementById('ds-guide');
+    expect(el).not.toBeNull();
+    expect(el!.dataset.active).toBe('1');
+    expect(seen).toEqual([{ active: true, step: 'move' }]);
+    expect(localStorage.getItem('ds_hint_compass')).toBe('1');
+    // later redraws reuse it
+    run(guide, 0.7);
+    app.renderGuide();
+    expect(document.querySelectorAll('#ds-guide')).toHaveLength(1);
+    // a Skip still reaches the page through the same card
+    guide.skip();
+    app.renderGuide();
+    expect(seen[seen.length - 1]).toEqual({ active: false, step: null });
+    expect(el!.style.display).toBe('none');
+  });
+
+  test('a guide that cannot arm (skipped before) never makes a card', () => {
+    const skipped = JSON.stringify({ v: 1, done: [], finished: false, skipped: true, t: 1 });
+    const { guide } = makeGuide({}, { [GUIDE_KEY]: skipped });
+    app = stubApp(guide);
+    expect(app.armGuide('explore')).toBe(false);
+    app.renderGuide();
+    expect(document.getElementById('ds-guide')).toBeNull();
+    expect(seen).toEqual([]);
   });
 });

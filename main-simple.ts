@@ -4115,16 +4115,7 @@ export class SimpleApp {
         controlsCard: !this.ui.isTouchDevice(),
       },
     );
-    this.guideCard = new GuideCard(this.ui.getOverlay(), {
-      touch: this.ui.isTouchDevice(),
-      reducedMotion: () => a11y.reducedMotion,
-      onButton: (id) => this.onGuideButton(id),
-      // D6's hook; before it lands, the prompt element itself.
-      prompt: () =>
-        document.querySelector<HTMLElement>('[data-hud="prompt"]') ??
-        (this.ui as unknown as { interactionDiv?: HTMLElement | null }).interactionDiv ??
-        null,
-    });
+    // No card yet: #ds-guide is made when the guide first arms (renderGuide).
     // How the welcome card closes decides how the guide arms. Capture phase,
     // ahead of the buttons' own handlers: arming writes ds_hint_compass
     // before hideWelcome reads it, so the card's one-time compass hint never
@@ -4135,6 +4126,21 @@ export class SimpleApp {
       if (e.key === 'Escape') this.onWelcomeExit(null, 'explore');
     };
     window.addEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);
+  }
+
+  /** The First steps card, #ds-guide. Made once, by renderGuide, when the
+   *  guide first runs. */
+  private createGuideCard(): GuideCard {
+    return new GuideCard(this.ui.getOverlay(), {
+      touch: this.ui.isTouchDevice(),
+      reducedMotion: () => a11y.reducedMotion,
+      onButton: (id) => this.onGuideButton(id),
+      // D6's hook; before it lands, the prompt element itself.
+      prompt: () =>
+        document.querySelector<HTMLElement>('[data-hud="prompt"]') ??
+        (this.ui as unknown as { interactionDiv?: HTMLElement | null }).interactionDiv ??
+        null,
+    });
   }
 
   /** Explore (or Escape) arms now; See the work and Get in touch arm when
@@ -4157,7 +4163,8 @@ export class SimpleApp {
     else this.guideArmOnPanelsClosed = true;
   }
 
-  /** Arm the guide; arming counts as the compass hint shown (ds_hint_compass). */
+  /** Arm the guide; arming counts as the compass hint shown (ds_hint_compass).
+   *  The card and its first 'ds:guide' appear now, at the arming. */
   private armGuide(source: GuideArm): boolean {
     if (!this.guide?.arm(source)) return false;
     try {
@@ -4166,6 +4173,7 @@ export class SimpleApp {
       /* no storage */
     }
     this.guidePrevValid = false;
+    this.renderGuide();
     return true;
   }
 
@@ -4233,11 +4241,20 @@ export class SimpleApp {
     }
   }
 
-  /** Redraw the card when the guide changed (never per frame otherwise). */
+  /**
+   * Redraw the card when the guide changed (never per frame otherwise).
+   *
+   * The card itself is made the first time the guide runs. Before that the
+   * page carries no #ds-guide and no 'ds:guide' event: D6 reads either one
+   * as "the guide armed" and stands the welcome's compass hint down, and a
+   * visit that never arms the guide (Ask the townsfolk, Hiring, a race)
+   * still needs that hint.
+   */
   private renderGuide(): void {
     const g = this.guide;
-    const card = this.guideCard;
-    if (!g || !card || card.version() === g.version()) return;
+    if (!g || (!this.guideCard && !g.running())) return;
+    const card = (this.guideCard ??= this.createGuideCard());
+    if (card.version() === g.version()) return;
     const v = g.view();
     const root = document.documentElement;
     card.render(

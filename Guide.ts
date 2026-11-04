@@ -644,10 +644,18 @@ const STEP_COPY: Record<GuideStep, (c: GuideCopyContext, who: string | null) => 
       : c.lookMode === 'lock'
         ? 'Move the mouse to look — or [J] / [L] to turn.'
         : 'Drag to look — or [J] / [L] to turn.',
-  // Names the villager: four of the townsfolk are scripted, so "villagers
-  // talk through Claude Haiku 4.5" would overclaim.
-  talk: (c, who) =>
-    `${who ?? 'This villager'} talks through Claude Haiku 4.5. Walk up and ${c.touch ? 'tap USE' : 'press [E]'} to ask anything.`,
+  // Names the villager twice: as the one who talks through Claude Haiku 4.5
+  // (four of the townsfolk are scripted, so "villagers talk through..."
+  // would overclaim), and in the brief's own clause, 'Walk up to <name> and
+  // press [E]', which says who to walk to (E's guide probe reads it too).
+  // Without a target the step is skipped (Guide.nextStep), so the fallback
+  // is never on screen; it still claims no more than one villager nearby.
+  talk: (c, who) => {
+    const ask = `${c.touch ? 'tap USE' : 'press [E]'} to ask anything.`;
+    return who
+      ? `${who} talks through Claude Haiku 4.5. Walk up to ${who} and ${ask}`
+      : `A villager nearby talks through Claude Haiku 4.5. Walk up and ${ask}`;
+  },
   portfolio: (c) =>
     c.touch
       ? 'See the work: tap ☰, then 📖 Portfolio.'

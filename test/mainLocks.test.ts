@@ -996,6 +996,22 @@ describe('A6: First steps, wired into main-simple', () => {
     expect(setup).toContain('talkTarget: () => this.trailVillager,');
   });
 
+  test("#ds-guide and the first 'ds:guide' wait for the guide to arm (D6 reads either as armed)", () => {
+    const m = stripped('main-simple.ts');
+    // setupGuide builds no card; renderGuide builds the one card the first
+    // time the guide runs, and arming draws it at once.
+    expect(bodyOf(m, 'private setupGuide(')).not.toContain('new GuideCard(');
+    expect(m.split('new GuideCard(').length - 1).toBe(1);
+    expect(bodyOf(m, 'private createGuideCard(')).toContain(
+      'return new GuideCard(this.ui.getOverlay(), {',
+    );
+    const render = bodyOf(m, 'private renderGuide(');
+    expect(render).toContain('if (!g || (!this.guideCard && !g.running())) return;');
+    expect(render).toContain('const card = (this.guideCard ??= this.createGuideCard());');
+    expect(m.split('this.createGuideCard()').length - 1).toBe(1);
+    expect(bodyOf(m, 'private armGuide(')).toContain('this.renderGuide();');
+  });
+
   test('the full tour hands over to the guide; a CTA panel arms it when it closes', () => {
     const m = stripped('main-simple.ts');
     const end = bodyOf(m, 'private endTour');
