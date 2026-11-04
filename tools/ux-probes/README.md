@@ -297,6 +297,33 @@ show while the card is up at every size (the gold arrow, the villager who
 talks through Claude Haiku 4.5, 'Coins!'), because s1-int has no D6, and
 the double does not stand in for D6.
 
+### Phase-2 probes, wave 1 (P2-E1a)
+
+In `p2/`, CommonJS on `lib.cjs`, run by path (`npm run probe -- p2/<name>`),
+output in `tools/ux-probes/out/p2/<name>/`. They take `--dist` or `--url`,
+`--port`, `--device desk|phone` and `--hour`. Rooms are entered the way a
+visitor enters them (`p2/room-lib.cjs`'s `enterRoom`): stand on the door
+axis, walk at the door (W, or the joystick through trusted CDP touches) until
+its prompt shows, press E or tap USE, and type the islet code (5673) on its
+pad. When a villager holds the prompt the scene's own door callback is used
+and the JSON says `fallback-callback`. The veil is the fade div's opacity
+(>= 0.95), as the audits measured it. Baselines as for stage 2 (same rig,
+same two dists, 2026-11-04).
+
+| Probe | Item | What it measures | 58c8849 | s1-int |
+|---|---|---|---|---|
+| `p2/walkin` | INT-01, CO-A5 | phone, joystick straight at the door: Professional (the first door), Projects, a cottage after standing 2 s; programs added, the longest frame, the black veil. `--cpu 4` (CPU throttled through CDP): the Welcome Hub 2.5 s after the card, as the integration measured it (Explore tapped at the card, the visitor put 2 u out on the hall's door axis 1 s after it, USE when the prompt shows and not before 2.5 s), median of 3 fresh browsers (`--runs`); a median press outside 2.5-4 s is inconclusive | first door +31 programs, a 1,362 ms frame, 1,915 ms black (audit +31, 1,224 ms, 1,761 ms); Projects +3 (172 ms, 369 ms black), the cottage +2 (140 ms, 327 ms). `--cpu 4`, E 2.7 s after the card: +46 programs, a 2,370 ms frame, 3,024 ms black (median of 3; the integration's 4x low tier read +43-44, 730-1,370 ms, 1.22-1.79 s) | first door +0 programs, a 55 ms frame, 553 ms black; Projects +0 (29 ms, 220 ms), the cottage +0 (10 ms, 190 ms); exits 0. `--cpu 4`, E 2.75 s after the card: +11 programs in all three runs, a 1,246 ms frame, 1,831 ms black (the integration: +13-15, 370-1,110 ms, 0.83-1.50 s) |
+| `p2/survey` | INT-03, INT-04, P2-B1, D6 | every building by the door: the entry, reach (promptAtSpawn, spawnInsideProp, every hotspot reachable), the camera sweep, avatarFrame, capPx, four poses, the per-room cost, the window pass, Leave and the exit; D6's toast or flash over the Welcome panel | promptAtSpawn `['door (leave)']` in all 7 themes; the home's spawn inside a prop and its curtains out of reach; D6: 'Secret found' flashes over the Welcome panel; every building entered by E; the beach house +17 programs, a 1,682 ms frame, 1,851 ms black, the Welcome hall a 246 ms frame, the others 15-56 ms; Leave is a DIV (tabIndex −1) | the same reach, spawn, D6 and Leave findings; the beach house +17 programs, a 1,751 ms frame, 1,923 ms black; the Welcome hall 56 ms, the others 15-52 ms |
+| `p2/passport-interior` | INT-02, P2-D1, P2-A2 | three stamps set, E at Get In Touch: the TypeError fadeThrough swallows, the panel stack, the Leave control, Escape | the TypeError ("Cannot read properties of null (reading 'addEventListener')"), stack `['passport-complete']`, no Leave, nothing open after Escape | the same: the TypeError, stack `['passport-complete']`, no Leave, nothing open after Escape |
+| `p2/party` | INT-08, P2-B2 | desktop (or `--device phone`): a cottage, then the beach house by its door and code; the party off and on; out and back in. Programs, the longest frame, the veil, visible lights (`--first`: the beach house as the session's first door) | the beach entry +18 programs, a 2,346 ms frame; party off +2 programs, 136 ms; 13 lights against a cottage's 9 | the beach entry +20 programs, a 1,661 ms frame (1,847 ms black); party off and on +0 programs, 25 and 12 ms; 13 lights against a cottage's 9 |
+| `p2/partyoff` | INT-08, P2-B2 | 3 s after 'Party over': borrowed dancers still in the room, visible and frozen | 6 frozen | 6 frozen |
+| `p2/bootcost` | LT-03, P2-B6, P2-C4 | a fresh browser per boot, ?hour=12 against ?hour=21, 3 each: the card, long tasks before it, programs, lights | the 21 h card +4,817 ms on desktop (6,769 vs 11,586) and +4,168 ms on the phone (5,051 vs 9,219) | +4,783 ms on desktop (6,859 vs 11,642), +4,556 ms on the phone (4,800 vs 9,356) |
+| `p2/duskflip` | LT-03, P2-B6, P2-C4 | ?hour=17, the warm, then `debugHour = 17.5`: the longest long task, long animation frame or rAF gap of the next 6 s | desktop 3,848 ms; phone 3,581-3,717 ms (one run read 0 with the long-task observer alone, so the frame gaps are read too); lights 5 to 17, programs +35-37 | desktop 2,385 ms, phone 3,393 ms; lights 5 to 17; programs +33 on desktop, +37 on the phone |
+
+`p2/room-lib.cjs` (the interiors kit, ported from `ia.cjs` and rebased onto
+`lib.cjs`) and `p2/L.cjs` (the lighting kit: masks, L*, the loop pause; its
+PNG reader is playwright-core's) are libraries, not probes.
+
 ## Perf gate
 
 `npm run perf:gate` (`tools/perf-gate.cjs`, item E1) runs on the same
@@ -407,6 +434,9 @@ its threshold. Desktop `--ab` therefore tops out at inconclusive:
   `desktop1024` profiles, `touch(session)` (trusted CDP touches: tap, drag,
   the joystick, the USE disc) and `__h.compassFull()` (the pill's full
   label; under 480 px the pill shows only its icon).
+- Phase 2, wave 1, in `p2/`: `walkin.cjs`, `survey.cjs`,
+  `passport-interior.cjs`, `party.cjs` (party, partyoff), `bootcost.cjs`,
+  `duskflip.cjs`, and the `room-lib.cjs` and `L.cjs` libraries.
 - `lock-census.cjs` the static census over `tools/owners.json`.
 - `../owners.json` the ownership table and the contract-check allow-list.
 - `test/probeSafety.test.ts` pins `classify()`, `leakReason()`, the boot
