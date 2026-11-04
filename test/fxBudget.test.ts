@@ -429,3 +429,148 @@ describe('perf gate budgets, floors and proxies (CO-E2)', () => {
     expect(gate.poseCheck(a, eased).equal).toBe(false);
   });
 });
+
+// CO-E2 review: programs ride the boot race (s1-int desktop: 154 on 19 of 48
+// A/A loads, 165 or 166 on the rest), so a per-side median jumps by the whole
+// gap when the two sides land in different modes. Programs are judged on the
+// race's mix instead, and every counter's floor is its resampled A/A spread.
+describe('perf gate: the boot-race mix and the counter floors (CO-E2)', () => {
+  type Row = {
+    verdict: string;
+    delta: number;
+    sigma: number | null;
+    stratified?: boolean;
+    thresholdUsed?: number;
+    withinThreshold?: boolean;
+  };
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    judgeCounter: (
+      a: number[],
+      b: number[],
+      t: number | null,
+      floor?: number | null,
+      o?: { cycles?: number },
+    ) => Row;
+    judgeMixCounter: (
+      a: number[],
+      b: number[],
+      ma: number[],
+      mb: number[],
+      t: number | null,
+      floor?: number | null,
+      o?: { cycles?: number; name?: string },
+    ) => Row;
+    mixValue: (values: number[], modes: number[]) => number | null;
+    aaSpread: (
+      x: { a: number[]; b: number[]; ma?: number[] | null; mb?: number[] | null },
+      o?: { name?: string; n?: number; resamples?: number },
+    ) => number | null;
+    metricTable: (
+      prof: string,
+      a: Array<Record<string, unknown>>,
+      b: Array<Record<string, unknown>>,
+      floor?: unknown,
+      o?: { cycles?: number },
+    ) => Record<string, Row & { rule?: string }>;
+    floorQuiet: (floor: unknown) => { known: boolean; busy: string[] };
+  };
+  // The builder's 48 desktop A/A loads on s1-int, programs 30 s after the card.
+  const A = [
+    154, 154, 154, 154, 165, 165, 165, 166, 165, 165, 165, 165, 165, 165, 154, 165, 165, 154, 154,
+    154, 165, 154, 154, 154,
+  ];
+  const B = [
+    165, 154, 154, 165, 165, 154, 165, 165, 165, 166, 165, 165, 165, 154, 166, 165, 154, 165, 154,
+    165, 166, 165, 154, 154,
+  ];
+  const pool = [...A, ...B];
+  // A seeded resampler for the test's own A/As.
+  const lcg = (seed: number) => {
+    let s = seed;
+    return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648;
+  };
+
+  test("a side's mix value moves with the mode mix, not by the whole gap", () => {
+    // 12 early and 12 late: the median sits between the modes (159.5).
+    const half = [...Array(12).fill(154), ...Array(12).fill(165)];
+    expect(gate.mixValue(half, half)).toBeCloseTo(159.5, 6);
+    // 13 late: the median jumps to 165; the mix value moves by 11/24.
+    const more = [...Array(11).fill(154), ...Array(13).fill(165)];
+    expect(gate.mixValue(more, more)).toBeCloseTo(154 + (11 * 13) / 24, 6);
+  });
+
+  test("the review's A/A: per-side medians fail 'programs' in about 1 of 6 resamples; the mix almost never", () => {
+    const draw = (rnd: () => number) =>
+      Array.from({ length: 24 }, () => pool[Math.floor(rnd() * 48)]);
+    const rnd = lcg(48);
+    let medianFails = 0;
+    let mixFails = 0;
+    let mixOutside = 0;
+    const runs = 200;
+    for (let r = 0; r < runs; r++) {
+      const a = draw(rnd);
+      const b = draw(rnd);
+      // The committed floor for this counter was its paired sigma, 3.6.
+      if (gate.judgeCounter(a, b, 5, 3.6, { cycles: 24 }).verdict === 'fail') medianFails++;
+      const m = gate.judgeMixCounter(a, b, a, b, 5, null, { cycles: 24, name: 't' });
+      if (m.verdict === 'fail') mixFails++;
+      if (!m.withinThreshold) mixOutside++;
+    }
+    expect(medianFails / runs).toBeGreaterThan(0.08);
+    // The mix's A/A spread: about 11 x 0.14 = 1.6 programs (sd), so |delta|
+    // over 5 is about 1 in 800.
+    expect(mixFails / runs).toBeLessThanOrEqual(0.01);
+    expect(mixOutside / runs).toBeLessThanOrEqual(0.01);
+  });
+
+  test('a real regression still fails on the mix: +6 programs in every load, or a race always lost', () => {
+    const plus6 = B.map((x) => x + 6);
+    expect(gate.judgeMixCounter(A, plus6, A, plus6, 5, null, { cycles: 24 }).verdict).toBe('fail');
+    // B always lands in the late mode, 6 programs higher still: +11 on the mix.
+    const late = B.map(() => 171);
+    expect(gate.judgeMixCounter(A, late, A, late, 5, null, { cycles: 24 }).verdict).toBe('fail');
+    // An improvement of any size passes.
+    const fewer = B.map((x) => x - 40);
+    expect(gate.judgeMixCounter(A, fewer, A, fewer, 5, null, { cycles: 6 }).verdict).toBe('pass');
+  });
+
+  test("a counter's floor is the 99th percentile of its resampled A/A spread, the same on every run", () => {
+    const mixFloor = gate.aaSpread({ a: A, b: B, ma: A, mb: B }, { name: 'desktop:programs' });
+    const medianFloor = gate.aaSpread({ a: A, b: B }, { name: 'desktop:programs' });
+    expect(gate.aaSpread({ a: A, b: B, ma: A, mb: B }, { name: 'desktop:programs' })).toBe(
+      mixFloor,
+    );
+    // On the per-side median the spread is the whole gap: such a floor would
+    // hide a +10 regression. On the mix it stays under T (5).
+    expect(medianFloor).toBeGreaterThanOrEqual(10);
+    expect(mixFloor).toBeGreaterThan(1);
+    expect(mixFloor).toBeLessThan(5);
+  });
+
+  test('metricTable judges both programs rows on the mix', () => {
+    const cyc = (p: number) => ({
+      views: {},
+      programs: p,
+      programsAfterViews: p + 2,
+      nodes: 7400,
+      textureMB: 18.5,
+      welcomeMs: 5000,
+      worldGenMs: 1400,
+      longestTaskBeforeCardMs: 300,
+      longTasksBeforeCard: 4,
+      bytesBeforeCardKB: 811,
+    });
+    const rows = gate.metricTable('desktop', A.map(cyc), B.map(cyc), null, { cycles: 24 });
+    for (const k of ['programs (30 s after the card)', 'programs after the views']) {
+      expect(rows[k].stratified).toBe(true);
+      expect(rows[k].rule).toMatch(/boot-race mix/);
+      expect(rows[k].verdict).toBe('pass');
+    }
+  });
+
+  test('a floor recorded on a busy host is marked, and the gate says so', () => {
+    const q = { recorded: { quiet: { desktop: true, lowtier: false } } };
+    expect(gate.floorQuiet(q)).toEqual({ known: true, busy: ['lowtier'] });
+    expect(gate.floorQuiet({ recorded: {} })).toEqual({ known: false, busy: [] });
+  });
+});

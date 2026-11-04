@@ -474,27 +474,52 @@ Verdicts, per metric:
   is median(B) − median(A). Pass when delta <= max(T, floor), an
   improvement of any size included; fail when delta > max(T, floor) +
   sigma, or > max(T, floor) at 24 cycles; otherwise inconclusive.
+- Programs ride the boot race (below), so a per-side median jumps by the
+  whole gap between its modes (11 programs on s1-int's desktop) whenever
+  the two sides' medians land in different modes. Resampling stage 2's
+  first 48 A/A loads, that rule failed 'programs (30 s after the card)' in
+  about 1 of 6 24-cycle A/As and put |delta| over max(T, floor) in about
+  1 of 3. Both programs rows are judged on the race's mix instead
+  (`judgeMixCounter`): each side is split at the midpoint of its own
+  programs range, as welcome_visible is, and its value is its modes'
+  medians weighted by how often each came up, so delta moves by the gap
+  times the shift in the mix, and a shift of the whole mode (a real
+  regression) moves it fully. sigma is a seeded bootstrap band; the JSON
+  keeps each side's modes (`modesA`, `modesB`: loads and median).
 - Texture MB is the one exact counter: equal on every A/A load, or the run
   fails.
-- The floor is each metric's 24-cycle A/A sigma on this rig, per profile, in
-  `tools/perf-gate.floor.json` (`--floor <file>` reads or writes another).
-  A timing whose T is below twice its floor cannot resolve here: CPU p95 is
-  then judged by its proxy (every FxBudget effect within its µs budget, and
-  their sum), and the others are reported `unresolvable`, not judged. Each
-  row names its `rule`.
+- The floor, per profile, is in `tools/perf-gate.floor.json` (`--floor
+  <file>` reads or writes another), from a 24-cycle A/A on this rig. A
+  timing's floor is its 24-cycle sigma; a timing whose T is below twice
+  its floor cannot resolve here: CPU p95 is then judged by its proxy (every
+  FxBudget effect within its µs budget, and their sum), and the others are
+  reported `unresolvable`, not judged. A counter's floor is its A/A spread
+  (`aaSpread`, critique-r3's "each counter's 24-cycle A/A spread"): the
+  99th percentile of |delta| over 2,000 seeded resampled 24-cycle A/As
+  drawn from the run's loads, by the statistic the counter is judged with.
+  A counter over max(T, floor) at 24 cycles fails outright, so that
+  percentile keeps a false fail near 1 A/A in 100 per counter at the edge.
+  (The first floor file held each counter's paired sigma, which
+  understates how far median(B) − median(A) moves.) Each row names its
+  `rule`.
 - welcome_visible rides the boot race (below), so it is stratified: each
   side's loads are split at the midpoint of that side's own program range,
   and the timing is paired within each mode (`strata` in the JSON).
 - `--record-floor` (A/A only) runs 24 cycles, keeps the verdicts at 6, 12
   and 24 (`checkpoints`), writes the floor file through prettier, and
-  judges the same cycles again against it (`withRecordedFloor`).
-  `--max-cycles <n>` caps the escalation for a smoke run.
+  judges the same cycles again against it (`withRecordedFloor`). It marks
+  each profile `quiet` when other processes took 10% of the machine or
+  less (`QUIET_OTHER_PCT`, the median of `otherBusyPct` over its loads);
+  a run that reads a floor marked busy, or one that does not say, prints a
+  note. `--max-cycles <n>` caps the escalation for a smoke run.
 - Exits 0 pass, 1 budget fail, 2 fail-closed, 3 inconclusive.
 - A/A (`--ab dist dist`): the JSON's `aa` block lists the exact counters,
   every |delta| over max(T, floor), and whether any profile failed.
-- `hostBusyPct`: the whole machine's CPU busy share during each load. Other
-  sessions' builds and probes widen sigma; an idle machine gives the
-  tightest verdicts.
+- `hostBusyPct` and `otherBusyPct`: the whole machine's CPU busy share
+  during each load, and the share other processes took
+  (`lib.hostLoadMeter`; this browser's own share comes from CDP
+  `SystemInfo.getProcessInfo`). Other sessions' builds and probes widen
+  sigma; a quiet machine gives the tightest verdicts.
 - `--fx <name>`: the effect starts off before any page script. 30 s after
   the card each view is posed and measured with four off/on pairs, the live
   loop stopped inside each pair so nothing moves between its sides (per
@@ -522,82 +547,107 @@ Programs ride a boot race: whether the GLB materials
 pass, the composer's linear pass, or both depends on when each model
 finishes loading. On main, desktop shows 212 or 215 programs and the low
 tier 113 or 117; in stage 1's 96-load A/A the late mode showed the card
-~0.6 s later on the median, so welcome_visible is bimodal too. In s1-int's
-48-load A/A, desktop read
-154 (19 loads), 165 (25) or 166 (4) programs, and the low tier
-101 on every load.
+~0.6 s later on the median, so welcome_visible is bimodal too. On s1-int,
+desktop reads 154 or 165-166 and the low tier 101 on every load, and the
+mix follows the host: 154 on 19 of 48 desktop loads with the host busy
+(the first floor's run), on 3 of 48 on a quiet one (below).
 
-**A/A on s1-int (CO-E2).** `--ab <s1-int> <s1-int> --ports 5192,5193
---record-floor`, 2026-11-04: 144 loads, 24
-cycles a side on desktop, the low tier and startup, the host busy at a
-median of 18% on desktop, 49% on the low tier and 14% at startup:
-- No FAIL at 6, 12 or 24 cycles on any profile: each stays inconclusive
-  (timings whose sigma is over T/2) and every counter passes.
+**A/A on s1-int (CO-E2).** `--ab <s1-int> <s1-int> --ports 5196,5197
+--record-floor`, 2026-11-04, after the review: 144 loads, 24 cycles a side
+on desktop, the low tier and startup, on a quiet host (other processes at
+a median of 4.8% of the machine on desktop, 5.1% on the low tier and 5.9%
+at startup, the whole machine 13.7-15.5% with this browser), so the floor
+file is marked quiet on every profile:
+- No FAIL at 6, 12 or 24 cycles on any profile. Each stays inconclusive on
+  one timing whose sigma is over T/2 at 24 cycles (spawn CPU p95 on
+  desktop, hub CPU p95 on the low tier, the longest task at 4x), and every
+  counter passes; programs on the mix read Δ −0.46 (σ 1.60) and −0.88
+  after the views on desktop, 0 on the low tier.
 - The pose check is equal on both tiers: camera pitch 0.62 rad hub-wide and
   0.38 rad at Projects on every load of both sides (orbit pitch −0.62 and
   −0.38).
 - Texture MB is 18.52 on all 96 desktop and low-tier loads.
+- Desktop programs: 165 on 44 loads, 154 on 3, 166 on 1.
 - Judged against the floor it recorded, the same 24 cycles pass on all
   three profiles, and every |Δ| is within max(T, floor).
 - 0 leaks, and a boot proof on every load.
 
+Resampled 300 times as 24-cycle A/As: on the first floor's 48 busy-host
+desktop loads, the stage-1 counter rule (per-side medians, the paired-sigma
+floor) failed 'programs (30 s after the card)' in 64 and 'programs after
+the views' in 53, and put their |Δ| over max(T, floor) in 109 and 93; the
+mix with its recorded spread fails each in 2 and puts each outside in 2.
+The 4x long-task counter, at the edge of its budget there, went from 24
+fails and 56 outside to 0 and 1. On this quiet run's loads no counter
+fails; the 4x long tasks fall outside max(T, floor) in 2 of 300 under
+either rule.
+
 The floors, against each budget (a timing is judged directly only when
-T >= 2 × floor):
+T >= 2 × floor; a timing's floor is its sigma, a counter's its resampled
+spread):
 
-| Profile | Metric | floor (24-cycle sigma) | T | judged by |
+| Profile | Metric | floor | T | judged by |
 |---|---|---|---|---|
-| desktop | spawn: CPU p95 ms | 1.61 | 1.00 | proxy: FxBudget µs (T < 2 × floor) |
-| desktop | spawn: GPU p50 ms | 0.23 | 2.00 | sigma rule |
-| desktop | spawn: draws | 7.10 | 50.0 | counter, max(T, floor) = 50.0 |
-| desktop | hub: CPU p95 ms | 2.16 | 1.00 | proxy: FxBudget µs (T < 2 × floor) |
-| desktop | hub: GPU p50 ms | 0.69 | 2.00 | sigma rule |
-| desktop | hub: draws | 16.8 | 80.0 | counter, max(T, floor) = 80.0 |
-| desktop | projects: CPU p95 ms | 2.45 | 1.00 | proxy: FxBudget µs (T < 2 × floor) |
-| desktop | projects: GPU p50 ms | 0.49 | 2.00 | sigma rule |
-| desktop | projects: draws | 7.59 | 60.0 | counter, max(T, floor) = 60.0 |
-| desktop | programs (30 s after the card) | 3.60 | 5.00 | counter, max(T, floor) = 5.00 |
-| desktop | programs after the views | 3.69 | 5.00 | counter, max(T, floor) = 5.00 |
-| desktop | welcome_visible ms | 337 | 150 | reported, not judged (T < 2 × floor) |
-| desktop | world_gen ms | 181 | 50.0 | reported, not judged (T < 2 × floor) |
-| desktop | longest task before the card ms | 175 | 50.0 | reported, not judged (T < 2 × floor) |
-| desktop | long tasks > 50 ms before the card | 1.18 | 1.00 | counter, max(T, floor) = 1.18 |
-| desktop | bytes before the card (KB, transfer) | 0.76 | 50.0 | counter, max(T, floor) = 50.0 |
-| low tier | spawn: CPU p95 ms | 1.90 | 0.75 | proxy: FxBudget µs (T < 2 × floor) |
-| low tier | spawn: draws | 5.86 | 20.0 | counter, max(T, floor) = 20.0 |
-| low tier | hub: CPU p95 ms | 1.69 | 0.75 | proxy: FxBudget µs (T < 2 × floor) |
-| low tier | hub: draws | 6.29 | 30.0 | counter, max(T, floor) = 30.0 |
-| low tier | projects: CPU p95 ms | 1.27 | 0.75 | proxy: FxBudget µs (T < 2 × floor) |
-| low tier | projects: draws | 9.50 | 25.0 | counter, max(T, floor) = 25.0 |
-| low tier | programs (30 s after the card) | 0.00 | 3.00 | counter, max(T, floor) = 3.00 |
-| low tier | programs after the views | 0.40 | 3.00 | counter, max(T, floor) = 3.00 |
-| low tier | scene nodes | 2.04 | 150 | counter, max(T, floor) = 150 |
+| desktop | spawn: CPU p95 ms | 0.64 (sigma) | 1.00 | proxy: FxBudget µs (T < 2 × floor) |
+| desktop | spawn: GPU p50 ms | 0.08 (sigma) | 2.00 | sigma rule |
+| desktop | spawn: draws | 9.50 (spread) | 50.0 | counter, max(T, floor) = 50.0 |
+| desktop | hub: CPU p95 ms | 0.47 (sigma) | 1.00 | sigma rule |
+| desktop | hub: GPU p50 ms | 0.42 (sigma) | 2.00 | sigma rule |
+| desktop | hub: draws | 31.0 (spread) | 80.0 | counter, max(T, floor) = 80.0 |
+| desktop | projects: CPU p95 ms | 0.34 (sigma) | 1.00 | sigma rule |
+| desktop | projects: GPU p50 ms | 0.10 (sigma) | 2.00 | sigma rule |
+| desktop | projects: draws | 9.50 (spread) | 60.0 | counter, max(T, floor) = 60.0 |
+| desktop | programs (30 s after the card) | 1.83 (spread) | 5.00 | counter on the boot-race mix, max(T, floor) = 5.00 |
+| desktop | programs after the views | 2.38 (spread) | 5.00 | counter on the boot-race mix, max(T, floor) = 5.00 |
+| desktop | welcome_visible ms | 20.9 (sigma) | 150 | sigma rule |
+| desktop | world_gen ms | 14.7 (sigma) | 50.0 | sigma rule |
+| desktop | longest task before the card ms | 14.2 (sigma) | 50.0 | sigma rule |
+| desktop | long tasks > 50 ms before the card | 1.00 (spread) | 1.00 | counter, max(T, floor) = 1.00 |
+| desktop | bytes before the card (KB, transfer) | 0.00 (spread) | 50.0 | counter, max(T, floor) = 50.0 |
+| low tier | spawn: CPU p95 ms | 0.27 (sigma) | 0.75 | sigma rule |
+| low tier | spawn: draws | 6.50 (spread) | 20.0 | counter, max(T, floor) = 20.0 |
+| low tier | hub: CPU p95 ms | 0.39 (sigma) | 0.75 | proxy: FxBudget µs (T < 2 × floor) |
+| low tier | hub: draws | 5.50 (spread) | 30.0 | counter, max(T, floor) = 30.0 |
+| low tier | projects: CPU p95 ms | 0.20 (sigma) | 0.75 | sigma rule |
+| low tier | projects: draws | 9.00 (spread) | 25.0 | counter, max(T, floor) = 25.0 |
+| low tier | programs (30 s after the card) | 0.00 (spread) | 3.00 | counter on the boot-race mix, max(T, floor) = 3.00 |
+| low tier | programs after the views | 0.00 (spread) | 3.00 | counter on the boot-race mix, max(T, floor) = 3.00 |
+| low tier | scene nodes | 2.50 (spread) | 150 | counter, max(T, floor) = 150 |
 | low tier | texture MB | – | 6.00 | exact |
-| low tier | bytes before the card (KB, transfer) | 0.56 | 50.0 | counter, max(T, floor) = 50.0 |
-| startup | welcome_visible ms (4x) | 379 | 400 | reported, not judged (T < 2 × floor) |
-| startup | world_gen ms (4x) | 76.6 | 200 | sigma rule |
-| startup | longest task before the card ms (4x) | 73.7 | 50.0 | reported, not judged (T < 2 × floor) |
-| startup | long tasks > 50 ms before the card (4x) | 1.64 | 2.00 | counter, max(T, floor) = 2.00 |
-| startup | bytes before the card (KB, transfer) (4x) | 0.25 | 50.0 | counter, max(T, floor) = 50.0 |
+| low tier | bytes before the card (KB, transfer) | 0.00 (spread) | 50.0 | counter, max(T, floor) = 50.0 |
+| startup | welcome_visible ms (4x) | 55.4 (sigma) | 400 | sigma rule |
+| startup | world_gen ms (4x) | 40.4 (sigma) | 200 | sigma rule |
+| startup | longest task before the card ms (4x) | 40.8 (sigma) | 50.0 | reported, not judged (T < 2 × floor) |
+| startup | long tasks > 50 ms before the card (4x) | 2.50 (spread) | 2.00 | counter, max(T, floor) = 2.50 |
+| startup | bytes before the card (KB, transfer) (4x) | 0.00 (spread) | 50.0 | counter, max(T, floor) = 50.0 |
 
-CPU p95's floor is over half its budget on both tiers, so CPU goes to the
-FxBudget proxy; s1-int registers no effect yet, so the proxy reads n/a and
-the CPU budget is reported, not judged, until stage 2's effects register
-(each is then held to its µs budget). welcome_visible, world_gen and the
-longest task before the card are reported too. Other sessions' builds and
-probes kept the host busy through the run (medians 14-49%, peaks to 95% on
-the low tier); an idle machine gives tighter floors, and `--record-floor`
-rewrites the file.
+On the quiet host the timing floors are 2.5 to 16 times smaller than the
+first file's, so more of them are judged directly: on desktop
+welcome_visible, world_gen, the longest task and the hub-wide and Projects
+CPU p95; on the low tier the spawn and Projects CPU p95; at 4x
+welcome_visible (world_gen at 4x already was).
+Desktop's spawn CPU p95 and the low tier's hub-wide CPU p95 still have a
+floor over half their budget, so they go to the FxBudget proxy; s1-int
+registers no effect yet, so the proxy reads n/a there until stage 2's
+effects register (each is then held to its µs budget). The longest task at
+4x is reported. A counter whose spread is over its budget (the 4x long
+tasks, 2.5 against 2) is judged at the spread: that is as fine as this rig
+resolves.
 
 **A/B, s1-main against s1-int.** `--ab <58c8849> <s1-int> --ports 5192,5193
---cycles 6 --max-cycles 6`, judged against that floor,
-2026-11-04, the host 12-14% busy:
+--cycles 6 --max-cycles 6`, 2026-11-04, the host 12-14% busy:
 - The savings are gone: desktop hub-wide draws Δ +8 and Projects −9.5
   (stage 1: −949 and −404), the low tier +6 and +7. The pose check is
   equal on both tiers (camera pitch 0.62 and 0.38 rad on both builds).
-- Programs 30 s after the card: desktop −51, the low tier −12.
-- Desktop and the low tier pass after 6 cycles, CPU p95, welcome_visible,
-  world_gen and the longest task reported, not judged; startup stays
-  inconclusive (world_gen at 4x: sigma 123 ms against T/2 = 100). 0 leaks.
+- Programs 30 s after the card: desktop −50.5 on the mix, the low tier −12.
+- Against the first floor, desktop and the low tier passed after 6 cycles
+  and startup stayed inconclusive (world_gen at 4x: sigma 123 ms against
+  T/2 = 100). Re-judged against the quiet floor (the same loads, offline,
+  `metricTable`), desktop and the low tier read inconclusive at 6 cycles:
+  the timings the old floor left unjudged (hub-wide and Projects CPU p95
+  and welcome_visible on desktop, spawn CPU p95 on the low tier) are judged
+  now, and 6 cycles of two builds leave their sigma over T/2, so a run
+  without `--max-cycles` escalates. Every counter still passes. 0 leaks.
 
 ## Files
 

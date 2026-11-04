@@ -16,31 +16,37 @@
 // CPU time by ~15%). Hardware GL (ANGLE D3D11 on Windows; PERF_GL overrides).
 //
 // Verdict per metric (plan-r3 › perfBudget, critique-r3), against T, the
-// budget, and the metric's floor, its 24-cycle A/A band from
-// tools/perf-gate.floor.json:
+// budget, and the metric's floor from tools/perf-gate.floor.json (a 24-cycle
+// A/A on this rig):
 // - timings (sigma rule): valid when sigma <= T/2; pass when valid and
 //   delta <= T; fail when valid and delta > T + sigma; anything else is
 //   inconclusive, and the run escalates to 2x cycles, up to 24. delta = median
 //   of the paired (B - A) cycle differences; sigma = the 95% band of delta,
-//   t(n-1) x 1.2533 x SD/sqrt(n) over those differences. A timing whose T is
-//   below 2 x its floor cannot resolve on this rig: CPU is judged by its proxy
-//   (FxBudget µs per effect) and the rest are reported 'unresolvable', and
-//   the report says so.
+//   t(n-1) x 1.2533 x SD/sqrt(n) over those differences. A timing's floor is
+//   that sigma at 24 cycles; a timing whose T is below 2 x its floor cannot
+//   resolve on this rig: CPU is judged by its proxy (FxBudget µs per effect)
+//   and the rest are reported 'unresolvable', and the report says so.
 // - counters (draws, triangles, programs, nodes, long tasks, bytes): delta =
-//   median(B) - median(A); pass when delta <= max(T, floor); fail when delta
-//   > max(T, floor) + sigma, or > max(T, floor) at 24 cycles; else
-//   inconclusive. Improvements always pass.
+//   median(B) - median(A), except programs, which ride the boot race and are
+//   judged on its mix (judgeMixCounter: each side's mode medians weighted by
+//   how often each mode came up). Pass when delta <= max(T, floor); fail when
+//   delta > max(T, floor) + sigma, or > max(T, floor) at 24 cycles; else
+//   inconclusive. Improvements always pass. A counter's floor is its A/A
+//   spread (aaSpread: the 99th percentile of |delta| over resampled 24-cycle
+//   A/As, with the counter's own statistic).
 // - texture MB is the one exact counter: equal on every A/A load.
-// welcome_visible is stratified by the boot-race mode (programs 212/215 on
-// desktop, 113/117 on the low tier) and compared like with like. Every load
-// checks the hub-wide and Projects poses, and a pitch that differs between
-// the builds by more than 0.01 rad makes the run inconclusive.
+// welcome_visible is stratified by the boot-race mode (on s1-int, desktop
+// programs 154 or 165) and compared like with like. Every load checks the
+// hub-wide and Projects poses, and a pitch that differs between the builds by
+// more than 0.01 rad makes the run inconclusive. Every load records the share
+// of the machine other processes took (otherBusyPct).
 // Exit codes: 0 pass, 1 budget fail, 2 fail-closed (a request got past the
 // harness), 3 inconclusive. Shares the probes' safety harness (lib.cjs).
 //
 //   --record-floor (with --ab <dist> <dist>): run 24 cycles, keep the verdicts
-//   at 6, 12 and 24, and write each metric's 24-cycle band to the floor file
-//   (--floor <file> reads or writes another one).
+//   at 6, 12 and 24, and write each metric's floor to the floor file
+//   (--floor <file> reads or writes another one), marked quiet or busy by
+//   what other processes took while it ran.
 const fs = require('fs');
 const path = require('path');
 const lib = require('./ux-probes/lib.cjs');
@@ -436,7 +442,8 @@ async function settleAfterCard(page, atS) {
 async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS = 30, seed = false, hour = '12' }) {
   const p = lib.profile(prof === 'startup' ? 'lowtier' : prof);
   const profObj = prof === 'startup' ? { ...p, name: 'startup', cpu: 4 } : p;
-  const cpu0 = lib.hostCpu();
+  // The machine's load over the load, split between this browser and the rest.
+  const meter = await lib.hostLoadMeter(browser);
   const s = await lib.openSession(browser, profObj, { init: [GATE_INIT({ nogpu: nogpu || prof === 'startup' })] });
   const { page } = s;
   const out = { profile: prof };
@@ -485,11 +492,16 @@ async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS 
     out.programsAfterViews = (await page.evaluate(WHOLE_FRAME)).programs;
     out.renderProgramAdds = await page.evaluate(() => window.__gate.renders.filter((r) => !r.inCompile).map((r) => ({ label: r.label, added: r.added, ms: r.ms })));
   } finally {
+    // Everything on the machine (hostBusyPct, this browser included) and what
+    // other processes took (otherBusyPct), over the load, read before the
+    // context closes: other sessions' builds and probes show up there and in
+    // the timing spread.
+    const load = await meter.stop();
+    out.hostBusyPct = load.hostBusyPct;
+    out.browserPct = load.browserPct;
+    out.otherBusyPct = load.otherBusyPct;
     await s.close({ waitSignUpMs: 20000 });
     out.net = { signUpSeen: s.net.signUpSeen, bootProofSeen: !!s.net.bootProofSeen, leaks: s.net.leaks.slice(), intercepted: [...new Set(s.net.intercepted)] };
-    // Everything on the machine, this browser included: other sessions'
-    // builds and probes show up here and in the timing spread.
-    out.hostBusyPct = lib.hostBusyPct(cpu0, lib.hostCpu());
   }
   return out;
 }
@@ -570,6 +582,104 @@ function judgeCounter(a, b, threshold, floor = null, { cycles = null } = {}) {
   if (delta <= tc) verdict = 'pass';
   else if ((sigma !== null && delta > tc + sigma) || (cycles !== null && cycles >= 24)) verdict = 'fail';
   return { verdict, ...out, threshold, floor: isNum(floor) ? floor : null, thresholdUsed: round(tc, 3), withinThreshold: Math.abs(delta) <= tc };
+}
+
+/** A seeded PRNG (mulberry32), so a resampled floor or band is the same on every run. */
+function prng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let x = s;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const seedOf = (name) => [...String(name)].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 2166136261);
+
+/**
+ * A side's value for a counter that rides the boot race (desktop programs:
+ * 154 or 165 on s1-int): the mean of its modes' medians, weighted by how
+ * often each mode came up. Each side is split at its own midpoint
+ * (bootModes), as welcome_visible is. A plain median jumps by the whole gap
+ * (11 programs) when the two sides' medians land in different modes; this
+ * moves only with the mode mix, by the gap times the shift in it.
+ */
+function mixValue(values, modes) {
+  const xs = [];
+  const ms = [];
+  for (let i = 0; i < values.length; i++) if (isNum(values[i]) && isNum(modes[i])) (xs.push(values[i]), ms.push(modes[i]));
+  if (!xs.length) return null;
+  const split = bootModes(ms);
+  const by = {};
+  split.forEach((m, i) => (by[m] = by[m] || []).push(xs[i]));
+  return Object.values(by).reduce((s, g) => s + (g.length / xs.length) * median(g), 0);
+}
+
+/**
+ * The counter rule on a boot-race counter: delta = mixValue(B) - mixValue(A),
+ * sigma its 95% band from a seeded bootstrap over cycles (each side
+ * resampled with its modes), then judgeCounter's verdict on max(T, floor).
+ * The JSON keeps each side's mode medians and mix.
+ */
+function judgeMixCounter(a, b, modeA, modeB, threshold, floor = null, { cycles = null, name = '' } = {}) {
+  const side = (v, m) => {
+    const out = [];
+    for (let i = 0; i < v.length; i++) if (isNum(v[i]) && isNum(m[i])) out.push([v[i], m[i]]);
+    return out;
+  };
+  const A = side(a, modeA);
+  const B = side(b, modeB);
+  const n = Math.min(A.length, B.length);
+  if (!n) return { verdict: 'n/a', n: 0 };
+  const val = (s) => mixValue(s.map((x) => x[0]), s.map((x) => x[1]));
+  const delta = val(B) - val(A);
+  const rnd = prng(seedOf(`band:${name}`));
+  const draw = (s) => Array.from({ length: s.length }, () => s[Math.floor(rnd() * s.length)]);
+  const ds = [];
+  for (let r = 0; r < 1000; r++) ds.push(val(draw(B)) - val(draw(A)));
+  ds.sort((x, y) => x - y);
+  const sigma = n > 1 ? (ds[Math.floor(0.975 * (ds.length - 1))] - ds[Math.floor(0.025 * (ds.length - 1))]) / 2 : null;
+  const modes = (s) => {
+    const split = bootModes(s.map((x) => x[1]));
+    const by = {};
+    split.forEach((m, i) => (by[m] = by[m] || []).push(s[i][0]));
+    return Object.fromEntries(Object.entries(by).map(([m, g]) => [m, { loads: g.length, median: round(median(g), 2) }]));
+  };
+  const all = [...A, ...B].map((x) => x[0]);
+  const out = { delta: round(delta, 3), sigma: sigma === null ? null : round(sigma, 3), n, medianA: round(val(A), 3), medianB: round(val(B), 3), range: [round(Math.min(...all), 3), round(Math.max(...all), 3)], stratified: true, modesA: modes(A), modesB: modes(B) };
+  if (threshold === undefined || threshold === null) return { verdict: 'n/a', ...out };
+  const tc = Math.max(threshold, isNum(floor) ? floor : 0);
+  let verdict = 'inconclusive';
+  if (delta <= tc) verdict = 'pass';
+  else if ((sigma !== null && delta > tc + sigma) || (cycles !== null && cycles >= 24)) verdict = 'fail';
+  return { verdict, ...out, threshold, floor: isNum(floor) ? floor : null, thresholdUsed: round(tc, 3), withinThreshold: Math.abs(delta) <= tc };
+}
+
+/**
+ * A counter's floor (critique-r3: "record each counter's 24-cycle A/A
+ * spread"): the 99th percentile of |delta| over 2,000 seeded resampled A/As,
+ * each side n loads drawn from both sides' loads pooled, with the counter's
+ * own statistic (the per-side median, or mixValue for a boot-race counter).
+ * At 24 cycles a counter over max(T, floor) fails outright, so a floor set
+ * at this percentile keeps that to about 1 A/A in 100 per counter at the edge.
+ */
+function aaSpread({ a, b, ma = null, mb = null }, { name = '', n = null, resamples = 2000, q = 0.99 } = {}) {
+  const pool = [];
+  for (const [vals, mods] of [
+    [a, ma],
+    [b, mb],
+  ])
+    for (let i = 0; i < vals.length; i++) if (isNum(vals[i]) && (!mods || isNum(mods[i]))) pool.push([vals[i], mods ? mods[i] : null]);
+  const k = n || Math.min(a.filter(isNum).length, b.filter(isNum).length);
+  if (pool.length < 2 || !k) return null;
+  const rnd = prng(seedOf(`floor:${name}`));
+  const draw = () => Array.from({ length: k }, () => pool[Math.floor(rnd() * pool.length)]);
+  const stat = ma ? (s) => mixValue(s.map((x) => x[0]), s.map((x) => x[1])) : (s) => median(s.map((x) => x[0]));
+  const ds = [];
+  for (let r = 0; r < resamples; r++) ds.push(Math.abs(stat(draw()) - stat(draw())));
+  ds.sort((x, y) => x - y);
+  return round(ds[Math.min(ds.length - 1, Math.floor(q * ds.length))], 4);
 }
 
 /** The exact rule: |delta| <= threshold, and an A/A side must not move at all. */
@@ -674,15 +784,26 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
     } else r.rule = thr === undefined || thr === null ? 'report only' : 'sigma';
     rows[name] = r;
   };
-  const counter = (name, f, thr) => {
-    rows[name] = { kind: 'counter', rule: thr === undefined || thr === null ? 'report only' : 'counter: |Δ| <= max(T, floor)', ...judgeCounter(pick(cyclesA, f), pick(cyclesB, f), thr, fl(name), { cycles }) };
+  // The boot race's mode for a load: its programs 30 s after the card, or at
+  // the card for a startup-only load.
+  const modeOf = (c) => (isNum(c.programs) ? c.programs : c.programsAtCard);
+  /** A counter; `raced` judges it by the boot race's mix (judgeMixCounter). */
+  const counter = (name, f, thr, { raced = false } = {}) => {
+    const a = pick(cyclesA, f);
+    const b = pick(cyclesB, f);
+    const ma = raced ? pick(cyclesA, modeOf) : null;
+    const mb = raced ? pick(cyclesB, modeOf) : null;
+    const judged = raced ? judgeMixCounter(a, b, ma, mb, thr, fl(name), { cycles, name }) : judgeCounter(a, b, thr, fl(name), { cycles });
+    const rule = thr === undefined || thr === null ? 'report only' : raced ? 'counter on the boot-race mix: |Δ| <= max(T, floor)' : 'counter: |Δ| <= max(T, floor)';
+    rows[name] = { kind: 'counter', rule, ...judged };
+    // What --record-floor resamples: kept off the JSON.
+    Object.defineProperty(rows[name], 'floorInput', { value: { a, b, ma, mb }, enumerable: false });
   };
   const exact = (name, f, thr) => {
     rows[name] = { kind: 'exact', rule: thr === undefined || thr === null ? 'exact (A/A equal), no budget' : 'exact', ...judgeExact(pick(cyclesA, f), pick(cyclesB, f), thr) };
   };
   const startupRows = (suffix) => {
     // welcome_visible, compared like with like across the boot race's modes.
-    const modeOf = (c) => (isNum(c.programs) ? c.programs : c.programsAtCard);
     const st = stratify(pick(cyclesA, (c) => c.welcomeMs), pick(cyclesB, (c) => c.welcomeMs), pick(cyclesA, modeOf), pick(cyclesB, modeOf));
     timing(`welcome_visible ms${suffix}`, null, T.welcomeMs, { a: st.a, b: st.b, extra: { stratified: st.stratified, strata: st.strata } });
     timing(`world_gen ms${suffix}`, (c) => c.worldGenMs, T.worldGenMs);
@@ -704,10 +825,11 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
     counter(`${v}: draws`, (c) => c.views[v].draws, T[DRAW_KEY[v]]);
     counter(`${v}: triangles`, (c) => c.views[v].triangles, null);
   }
-  // Programs ride the boot race (212/215 desktop, 113/117 low tier) and nodes
-  // wander by a few: counters with floors.
-  counter('programs (30 s after the card)', (c) => c.programs, T.programs);
-  counter('programs after the views', (c) => c.programsAfterViews, T.programs);
+  // Programs ride the boot race (on s1-int desktop 154 or 165, the low tier
+  // 101), so they are judged on its mix; nodes wander by a few. Counters
+  // with floors.
+  counter('programs (30 s after the card)', (c) => c.programs, T.programs, { raced: true });
+  counter('programs after the views', (c) => c.programsAfterViews, T.programs, { raced: true });
   counter('scene nodes', (c) => c.nodes, T.nodes ?? null);
   // The one exact counter: constant on every A/A load measured.
   exact('texture MB', (c) => c.textureMB, T.textureMB ?? null);
@@ -792,7 +914,7 @@ async function modeAB(args) {
     throw e;
   }
   const browser = await lib.launch();
-  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, sameDist: srvA.dist === srvB.dist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, profiles: {}, leaks: [], signUpMissing: 0 };
+  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, sameDist: srvA.dist === srvB.dist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, floorQuiet: floor ? floorQuiet(floor) : null, profiles: {}, leaks: [], signUpMissing: 0 };
   if (recordFloor && !data.sameDist) throw new lib.HarnessError('--record-floor needs an A/A run: --ab <dist> <dist>');
   try {
     for (const prof of profiles) {
@@ -820,7 +942,7 @@ async function modeAB(args) {
             if (r.net.leaks.length) data.leaks.push(...r.net.leaks);
             if (!r.net.signUpSeen && !r.net.bootProofSeen) data.signUpMissing++;
             (side === 'A' ? A : B).push(r);
-            process.stdout.write(`  ${prof} cycle ${c + 1}/${cycles} ${side}: welcome ${r.welcomeMs} ms${r.views ? `, spawn cpu p50 ${r.views.spawn.cpuP50} / draws ${r.views.spawn.draws}, hub pitch ${r.views.hub.pose.camPitch}` : ''}, host ${r.hostBusyPct}% busy\n`);
+            process.stdout.write(`  ${prof} cycle ${c + 1}/${cycles} ${side}: welcome ${r.welcomeMs} ms${r.views ? `, spawn cpu p50 ${r.views.spawn.cpuP50} / draws ${r.views.spawn.draws}, programs ${r.programs}, hub pitch ${r.views.hub.pose.camPitch}` : ''}, host ${r.hostBusyPct}% busy (others ${r.otherBusyPct}%)\n`);
           }
         }
         done = cycles;
@@ -832,10 +954,20 @@ async function modeAB(args) {
         process.stdout.write(`  ${prof}: ${v} at ${done} cycles, ${recordFloor ? 'recording the floor' : 'escalating'} to ${cycles}\n`);
       }
       const host = [...A, ...B].map((r) => r.hostBusyPct).filter((x) => x !== null && x !== undefined);
+      const others = [...A, ...B].map((r) => r.otherBusyPct).filter((x) => x !== null && x !== undefined);
       const pose = prof === 'startup' ? null : poseCheck(A, B);
       let pv = overall(rows);
       if (pose && !pose.equal && pv !== 'fail') pv = 'inconclusive';
-      data.profiles[prof] = { cycles: done, verdict: pv, checkpoints, poseCheck: pose, hostBusyPct: { p50: round(median(host), 1), max: host.length ? Math.max(...host) : null }, metrics: rows, raw: { A, B } };
+      data.profiles[prof] = {
+        cycles: done,
+        verdict: pv,
+        checkpoints,
+        poseCheck: pose,
+        hostBusyPct: { p50: round(median(host), 1), max: host.length ? Math.max(...host) : null },
+        otherBusyPct: others.length ? { p50: round(median(others), 1), max: Math.max(...others) } : null,
+        metrics: rows,
+        raw: { A, B },
+      };
       if (pose) process.stdout.write(`  ${prof} pose check: ${pose.equal ? 'equal' : 'DIFFERENT'} — ${Object.entries(pose.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad`).join('; ')}\n`);
     }
   } finally {
@@ -878,26 +1010,56 @@ function bundleOf(dist) {
 }
 
 /**
- * --record-floor: each metric's 24-cycle A/A band (the sigma the verdict rule
- * uses) per profile, written through prettier (format:check covers *.json).
+ * The floor's own record of how quiet the host was: per profile, the median
+ * share of the machine that other processes took during the loads, against
+ * QUIET_OTHER_PCT. A floor recorded busier than that is marked, and every run
+ * that reads it says so.
+ */
+const QUIET_OTHER_PCT = 10;
+function floorQuiet(floor) {
+  const q = floor && floor.recorded && floor.recorded.quiet;
+  if (!q || typeof q !== 'object') return { known: false, busy: [] };
+  return { known: true, busy: Object.entries(q).filter(([, v]) => v === false).map(([p]) => p) };
+}
+
+/**
+ * --record-floor: per profile, each timing's 24-cycle A/A band (the sigma the
+ * verdict rule uses) and each counter's 24-cycle A/A spread (aaSpread: the
+ * 99th percentile of |delta| over resampled A/As, with the counter's own
+ * statistic), written through prettier (format:check covers *.json). The
+ * host's quiet share is recorded beside them.
  */
 async function writeFloor(file, data) {
+  const quiet = {};
+  const other = {};
+  for (const [p, x] of Object.entries(data.profiles)) {
+    other[p] = x.otherBusyPct || null;
+    quiet[p] = !!(x.otherBusyPct && isNum(x.otherBusyPct.p50) && x.otherBusyPct.p50 <= QUIET_OTHER_PCT);
+  }
   const out = {
     about:
-      "The perf gate's floor: each metric's 24-cycle A/A band (the 95% band of the paired delta, the gate's sigma) on this rig. A timing whose budget T is under 2 x its floor is judged by its proxy (FxBudget µs for CPU) or reported unresolvable; a counter passes when its delta is within max(T, floor). Rewrite with: npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor",
+      "The perf gate's floor on this rig, from a 24-cycle A/A. A timing's floor is its 95% band (the gate's sigma over the paired deltas); a timing whose budget T is under 2 x its floor is judged by its proxy (FxBudget µs for CPU) or reported unresolvable. A counter's floor is its A/A spread: the 99th percentile of |delta| over 2,000 seeded resampled 24-cycle A/As, with the statistic it is judged by (the per-side median, or the boot-race mix for programs); a counter passes when its delta is within max(T, floor). 'quiet' says whether other processes took no more than quietOtherPct of the machine (median over the loads) while it was recorded. Rewrite with: npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor",
     recorded: {
       at: new Date().toISOString(),
       // The build by its entry bundle, not by a local path.
       build: bundleOf(data.distA),
       cycles: Object.fromEntries(Object.entries(data.profiles).map(([p, x]) => [p, x.cycles])),
       hostBusyPct: Object.fromEntries(Object.entries(data.profiles).map(([p, x]) => [p, x.hostBusyPct])),
+      otherBusyPct: other,
+      quietOtherPct: QUIET_OTHER_PCT,
+      quiet,
       rig: `${require('os').cpus()[0].model.trim()}, ${require('os').cpus().length} threads`,
     },
     profiles: {},
   };
   for (const [prof, p] of Object.entries(data.profiles)) {
     out.profiles[prof] = {};
-    for (const [k, r] of Object.entries(p.metrics || {})) if (isNum(r.sigma)) out.profiles[prof][k] = round(r.sigma, 4);
+    for (const [k, r] of Object.entries(p.metrics || {})) {
+      if (r.kind === 'counter' && r.floorInput) {
+        const s = aaSpread(r.floorInput, { name: `${prof}:${k}` });
+        if (isNum(s)) out.profiles[prof][k] = s;
+      } else if (isNum(r.sigma)) out.profiles[prof][k] = round(r.sigma, 4);
+    }
   }
   let text = JSON.stringify(out, null, 2) + '\n';
   try {
@@ -1183,10 +1345,12 @@ function ledger(data) {
 
 function printSummary(data) {
   const lines = [`perf-gate (${data.mode}): ${data.verdict}`];
+  if (data.floorQuiet && data.floorQuiet.busy.length) lines.push(`  note: the floor file was recorded on a busy host (${data.floorQuiet.busy.join(', ')}: other processes over ${QUIET_OTHER_PCT}% of the machine); re-record it on a quiet one`);
+  else if (data.floorQuiet && !data.floorQuiet.known) lines.push('  note: the floor file does not say how quiet the host was; re-record it with --record-floor');
   if (data.mode === 'report') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
-      lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%)` : ''}`);
+      lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
       if (p.checkpoints && p.checkpoints.length > 1) lines.push(`    checkpoints: ${p.checkpoints.map((c) => `${c.cycles} cycles ${c.verdict}${c.fails.length ? ` (FAIL ${c.fails.join(', ')})` : ''}`).join('; ')}`);
       if (p.poseCheck) lines.push(`    pose check: ${p.poseCheck.equal ? 'equal' : 'DIFFERENT (the run cannot pass)'}; ${Object.entries(p.poseCheck.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad, orbit pitch A ${r.ocPitch.medianA} B ${r.ocPitch.medianB}`).join('; ')}`);
       for (const [k, r] of Object.entries(p.metrics)) {
@@ -1252,4 +1416,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { judge, judgeCounter, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { judge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
