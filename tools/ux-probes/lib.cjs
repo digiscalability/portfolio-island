@@ -10,6 +10,9 @@
 //   hosts and Vercel insights are blocked outright, GET included;
 // - WebSockets are replaced by a stub before any page script runs, and
 //   routeWebSocket closes anything that still tries;
+// - reCAPTCHA is answered in the page by a stub (RECAPTCHA_STUB) that makes
+//   no request, so a build with App Check (production) gets as far as its
+//   token exchange, which is then aborted like any backend call;
 // - service workers are blocked, so page.route sees every request;
 // - every context starts with fresh storage, and every boot carries ?owner=1.
 // A run fails closed (exit 2) only when something gets past: a response
@@ -19,7 +22,7 @@
 // the 'POST identitytoolkit.googleapis.com …signUp', or, on a build with App
 // Check (production), the 'POST content-firebaseappcheck.googleapis.com
 // …:exchange…' that gates it. classify() is the one rule every interception
-// goes through; test/probeSafety.test.ts pins it.
+// goes through; test/probeSafety.test.ts pins it and the stub.
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -360,6 +363,36 @@ const WS_STUB = `(() => {
   for (const [k, v] of [['CONNECTING', 0], ['OPEN', 1], ['CLOSING', 2], ['CLOSED', 3]]) { BlockedWebSocket[k] = v; BlockedWebSocket.prototype[k] = v; }
   window.WebSocket = BlockedWebSocket;
 })();`;
+// reCAPTCHA Enterprise, answered in the page. On a build with App Check
+// (VITE_APPCHECK_SITE_KEY: production), Auth's signUp waits for an App Check
+// token, the token for App Check's exchange, and the exchange for reCAPTCHA.
+// Its script (www.google.com/recaptcha/enterprise.js) is blocked, and
+// firebase/app-check 0.12 loads it with no onerror, so without this stub the
+// exchange is never sent, the signUp never leaves, and no production run
+// counts. The stub is the API App Check calls (ready, render, execute, plus
+// the v3 spelling on grecaptcha itself): execute() runs the widget's success
+// callback and resolves a dummy token. It makes no request of its own; the
+// exchange POST and the signUp it unlocks are aborted by classify() like any
+// backend call. A build without App Check never touches it.
+const RECAPTCHA_STUB = `(() => {
+  if (window.top !== window) return;
+  const TOKEN = 'ux-probes-recaptcha-stub';
+  const widgets = [];
+  const stub = (window.__recaptchaStub = { rendered: 0, executed: 0 });
+  const api = {
+    ready(cb) { if (typeof cb === 'function') setTimeout(cb, 0); },
+    render(container, params) { widgets.push(params || {}); stub.rendered++; return widgets.length - 1; },
+    execute(widget) {
+      const w = typeof widget === 'number' ? widgets[widget] : widgets[widgets.length - 1];
+      stub.executed++;
+      try { if (w && typeof w.callback === 'function') w.callback(TOKEN); } catch (e) {}
+      return Promise.resolve(TOKEN);
+    },
+    reset() {},
+    getResponse() { return TOKEN; },
+  };
+  window.grecaptcha = Object.assign({ enterprise: api }, api);
+})();`;
 const RECORDER = `(() => {
   window.__vib = [];
   try { Object.defineProperty(Navigator.prototype, 'vibrate', { configurable: true, value: function (p) { window.__vib.push({ t: Math.round(performance.now()), p }); return true; } }); } catch (e) {}
@@ -389,6 +422,16 @@ const CLOCK = `(() => {
   const rafLoop = () => { if (fl.on) fl.t.push(realNow()); requestAnimationFrame(rafLoop); };
   requestAnimationFrame(rafLoop);
 })();`;
+
+/**
+ * The init scripts every session gets, in this order, before any page script
+ * and before a probe's own: the WebSocket stub, the reCAPTCHA stub (unless
+ * recaptchaStub is false), the recorder, then --no-khr and the virtual clock
+ * when asked for.
+ */
+function baseInitScripts({ noKhr = false, clock = false, recaptchaStub = true } = {}) {
+  return [WS_STUB, ...(recaptchaStub ? [RECAPTCHA_STUB] : []), RECORDER, ...(noKhr ? [NO_KHR] : []), ...(clock ? [CLOCK] : [])];
+}
 
 /**
  * One browser context with the safety net. Returns { ctx, page, net, close }.
@@ -453,7 +496,7 @@ async function openSession(browser, prof, opts = {}) {
     netLog.intercepted.push(`WS ${hostOf(ws.url())}`);
     if (classify({ url: ws.url(), isWebSocket: true }) === 'close-ws') ws.close({ code: 1000, reason: 'ux-probes blocked' });
   });
-  for (const s of [WS_STUB, RECORDER, ...(opts.noKhr ? [NO_KHR] : []), ...(opts.clock ? [CLOCK] : [])]) await ctx.addInitScript(s);
+  for (const s of baseInitScripts({ noKhr: !!opts.noKhr, clock: !!opts.clock, recaptchaStub: opts.recaptchaStub !== false })) await ctx.addInitScript(s);
   if (opts.skipName !== false)
     await ctx.addInitScript(() => {
       try {
@@ -506,6 +549,8 @@ async function openSession(browser, prof, opts = {}) {
       if (!onApp) break;
       await sleep(250);
     }
+    // Whether App Check used the reCAPTCHA stub (only a build with App Check does).
+    netLog.recaptchaStub = await page.evaluate(() => (window.__recaptchaStub ? { ...window.__recaptchaStub } : null)).catch(() => null);
     await ctx.close().catch(() => {});
   };
   return { ctx, page, net: netLog, sink, profile: p, close };
@@ -529,11 +574,13 @@ function netSummary(sessions) {
   let signUp = 0;
   let appCheck = 0;
   let proof = 0;
+  let stubbed = 0;
   const offHost = new Set();
   for (const s of sessions) {
     leaks.push(...s.net.leaks);
     if (s.net.signUpSeen) signUp++;
     if (s.net.appCheckSeen) appCheck++;
+    if (s.net.recaptchaStub && s.net.recaptchaStub.executed > 0) stubbed++;
     if (s.net.bootProofSeen || s.net.signUpSeen || s.net.appCheckSeen) proof++;
     for (const l of s.net.intercepted) {
       const k = l.replace(/(identitytoolkit\.googleapis\.com\S*signUp)\S*/, '$1').replace(/(content-firebaseappcheck\.googleapis\.com)\/\S*(:exchange\w*)/, '$1/…$2');
@@ -551,6 +598,8 @@ function netSummary(sessions) {
     // A run counts when either boot proof was intercepted (production's App
     // Check gates the sign-up behind its exchange).
     bootProofIntercepted: proof > 0,
+    // Sessions where App Check asked the reCAPTCHA stub for a token.
+    sessionsWithRecaptchaStubUsed: stubbed,
     leaks,
     intercepted: [...intercepted.entries()].map(([k, n]) => `${k} x${n}`),
     offHostRequests: [...offHost],
@@ -1023,6 +1072,8 @@ module.exports = {
   leakReason,
   bootProof,
   SELFTEST_URL,
+  RECAPTCHA_STUB,
+  baseInitScripts,
   triggerSelftestLeak,
   openSession,
   netSummary,

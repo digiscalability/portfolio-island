@@ -18,7 +18,7 @@ npm run probe -- list
 | Option | Meaning |
 |---|---|
 | `--dist <dir> --port <n>` | Serve `<dir>` with `vite preview --strictPort`. The child is killed by PID on exit and on Ctrl+C. A busy port is an error, never reused. |
-| `--base <url>` | Attach to a preview that is already running instead. |
+| `--base <url>` | Attach to a preview that is already running instead, or to production (`https://island.digiscalability.com`; see App Check under Safety). |
 | `--profile desktop\|phone\|lowtier` | Run one profile instead of the probe's defaults. |
 | `--out <dir>` | Output folder (default `<os tmpdir>/ux-probes/<name>`). |
 | `--compare <dir> --compare-port <m>` | A second build, for `rig` and `strafe`. |
@@ -96,6 +96,8 @@ The harness (`lib.cjs`) is the audit's read-only net:
   auth hosts and Vercel insights are blocked, GET included;
 - WebSockets are stubbed before any page script, and `routeWebSocket`
   closes anything that still tries;
+- reCAPTCHA is answered in the page by a stub that sends nothing (App
+  Check, below);
 - service workers are blocked, every context starts with fresh storage,
   and every boot carries `?owner=1`.
 
@@ -116,6 +118,25 @@ proof intercepted: the `POST identitytoolkit.googleapis.com …signUp`, or,
 on a build with App Check (production, `--base https://…`), the
 `POST content-firebaseappcheck.googleapis.com …:exchange…` that gates the
 sign-up. Without either the run is inconclusive (exit 3).
+
+**App Check (production).** On a build with App Check the anonymous sign-up
+waits for App Check's token exchange, and the exchange waits for reCAPTCHA
+Enterprise, whose script the harness blocks. firebase/app-check 0.12 loads
+that script with no `onerror`, so nothing was ever sent and every
+`--base https://island.digiscalability.com` run exited 3. `RECAPTCHA_STUB`,
+an init script in every session (`baseInitScripts()`; `recaptchaStub: false`
+leaves it out), answers in the page instead: `grecaptcha.enterprise`'s
+`ready`, `render` and `execute` (and the v3 spelling on `grecaptcha`), the
+widget's success callback, a dummy token. It sends nothing. The exchange and
+the sign-up it unlocks are aborted by `classify()` like any backend call,
+the leak rules are unchanged, and `net.sessionsWithRecaptchaStubUsed` in the
+JSON counts the sessions where App Check asked the stub for a token. A build
+without App Check (every local build here) never calls it.
+`test/probeSafety.test.ts` replays App Check's calls against it. Production,
+2026-11-04, `arrow --base https://island.digiscalability.com`: desktop and
+phone both exit 0, the exchange (x3 desktop, x2 phone) and then the sign-up
+(x3, x2) intercepted and aborted, 0 leaks. Before the stub the same run
+exited 3, with only the insights script and `enterprise.js` intercepted.
 
 ## Independence from the behaviour the plan changes
 
@@ -534,7 +555,7 @@ rewrites the file.
 - `lock-census.cjs` the static census over `tools/owners.json`.
 - `../owners.json` the ownership table and the contract-check allow-list.
 - `test/probeSafety.test.ts` pins `classify()`, `leakReason()`, the boot
-  proof and the exit codes; `test/helpers/astSlice.ts` (with
+  proof, the reCAPTCHA stub and the exit codes; `test/helpers/astSlice.ts` (with
   `test/astSlice.test.ts`) is the shared read-only AST slicer for stage-2
   locks: `methodBody(file, 'Class.method')`, `functionBody(file, name)`,
   `statementAt(file, marker, { within, kind: 'if', nth })`.

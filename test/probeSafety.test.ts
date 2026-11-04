@@ -4,6 +4,7 @@
 // leaves, a backend host is blocked even for a GET, every WebSocket closes, and
 // a response that gets past anyway fails the run closed (exit 2).
 import { createRequire } from 'node:module';
+import vm from 'node:vm';
 import { describe, expect, test } from 'vitest';
 
 type Verdict = { code: number; verdict: string; why: string[] };
@@ -49,6 +50,8 @@ const lib = createRequire(import.meta.url)('../tools/ux-probes/lib.cjs') as {
     o?: { requireSignUp?: boolean },
   ) => Verdict;
   SELFTEST_URL: string;
+  RECAPTCHA_STUB: string;
+  baseInitScripts: (o?: { noKhr?: boolean; clock?: boolean; recaptchaStub?: boolean }) => string[];
 };
 
 const LOCAL = 'http://127.0.0.1:5191';
@@ -202,6 +205,88 @@ describe('the boot proof: a run counts only when the net was live', () => {
     expect(lib.verdict(pass, signUp).code).toBe(0);
     expect(lib.verdict(pass, appCheck).code).toBe(0);
     expect(lib.verdict(pass, neither).code).toBe(3);
+  });
+});
+
+// Production builds carry App Check: Auth's signUp waits for its token, the
+// token for the exchange, the exchange for reCAPTCHA, whose script the harness
+// blocks (and firebase/app-check 0.12 loads it with no onerror). The stub
+// answers in the page, so the exchange and then the signUp are sent, and both
+// are intercepted and aborted (their rows in the table above).
+describe('the reCAPTCHA stub: a production run reaches its boot proof', () => {
+  type Grecaptcha = {
+    ready: (cb: () => void) => void;
+    render: (container: string, params: Record<string, unknown>) => number;
+    execute: (widget?: number, o?: { action: string }) => Promise<string>;
+  };
+  type Win = { grecaptcha?: Grecaptcha & { enterprise: Grecaptcha }; __recaptchaStub?: unknown };
+
+  /** Run the stub in a bare global; anything it reaches for on the network is logged. */
+  const runStub = (topFrame = true) => {
+    const reached: string[] = [];
+    const g: Record<string, unknown> = { setTimeout, Promise };
+    g.window = g;
+    g.top = topFrame ? g : {};
+    g.fetch = () => {
+      reached.push('fetch');
+      return Promise.reject(new Error('no network'));
+    };
+    g.XMLHttpRequest = function () {
+      reached.push('XMLHttpRequest');
+    };
+    g.document = new Proxy(
+      {},
+      { get: (_, k) => reached.push(`document.${String(k)}`) && undefined },
+    );
+    vm.createContext(g);
+    vm.runInContext(lib.RECAPTCHA_STUB, g);
+    return { win: g as Win, reached };
+  };
+
+  test('every session gets it before any page script; recaptchaStub: false leaves it out', () => {
+    expect(lib.baseInitScripts({})).toContain(lib.RECAPTCHA_STUB);
+    expect(lib.baseInitScripts({ noKhr: true, clock: true })).toContain(lib.RECAPTCHA_STUB);
+    expect(lib.baseInitScripts({ recaptchaStub: false })).not.toContain(lib.RECAPTCHA_STUB);
+  });
+
+  test("it answers firebase/app-check's ReCaptchaEnterpriseProvider the way reCAPTCHA does", async () => {
+    const { win, reached } = runStub();
+    const ent = win.grecaptcha?.enterprise;
+    expect(ent).toBeDefined();
+    if (!ent) return;
+    // initializeEnterprise finds grecaptcha.enterprise, so no script is loaded;
+    // queueWidgetRender: ready() -> renderInvisibleWidget -> render(div, params).
+    const state: { succeeded?: boolean; widgetId?: number } = {};
+    await new Promise<void>((done) =>
+      ent.ready(() => {
+        state.widgetId = ent.render('fire_app_check_[DEFAULT]', {
+          sitekey: 'site-key',
+          size: 'invisible',
+          callback: () => (state.succeeded = true),
+          'error-callback': () => (state.succeeded = false),
+        });
+        done();
+      }),
+    );
+    // getToken$1: ready() -> execute(widgetId, {action}); the provider then
+    // requires the success callback to have run before it sends the exchange.
+    const token = await new Promise<string>((done) =>
+      ent.ready(() => done(ent.execute(state.widgetId, { action: 'fire_app_check' }))),
+    );
+    expect(typeof token).toBe('string');
+    expect(token.length).toBeGreaterThan(0);
+    expect(state.succeeded).toBe(true);
+    // (Compared as JSON: the stub's object comes from the vm's own realm.)
+    expect(JSON.parse(JSON.stringify(win.__recaptchaStub))).toEqual({ rendered: 1, executed: 1 });
+    // The v3 provider reads grecaptcha itself: the same API is there.
+    expect(typeof win.grecaptcha?.execute).toBe('function');
+    expect(reached).toEqual([]);
+  });
+
+  test('it stays out of frames', () => {
+    const { win, reached } = runStub(false);
+    expect(win.grecaptcha).toBeUndefined();
+    expect(reached).toEqual([]);
   });
 });
 
