@@ -1780,7 +1780,9 @@ export class SimpleUI {
     },
   ): void {
     this.vaultDiv?.remove();
-    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'vault');
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'vault', {
+      label: 'Island Bank',
+    });
     this.vaultDiv = modal;
     const h = document.createElement('div');
     h.innerHTML = `<div style="font-size:28px">🏦</div>
@@ -1835,7 +1837,9 @@ export class SimpleUI {
    *  escaped defensively since some carry a provider name. */
   public showReceipt(entries: ReadonlyArray<{ label: string; amount: number; t: number }>): void {
     this.receiptDiv?.remove();
-    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'receipt');
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'receipt', {
+      label: 'Coin history',
+    });
     this.receiptDiv = modal;
     const now = Date.now();
     const esc = (s: string): string =>
@@ -1889,6 +1893,9 @@ export class SimpleUI {
     opts: {
       /** Panels left open underneath: the passport crown over a hall panel. */
       allow?: string[];
+      /** The dialog's name when its title is not a heading (axe
+       *  aria-dialog-name: the coin history, the bank, the build modals). */
+      label?: string;
     } = {},
   ): HTMLElement {
     const modal = document.createElement('div');
@@ -1898,6 +1905,7 @@ export class SimpleUI {
       close: () => modal.remove(),
       el: modal, // a removed modal pops even if its close path never notifies
       allow: opts.allow,
+      label: opts.label,
     });
     this.stepHintAside(true); // nothing paints over a modal (D6)
     Object.assign(modal.style, {
@@ -3084,7 +3092,9 @@ export class SimpleUI {
     wallet: { timber: number; coins: number; built: number; cap: number },
     onPick: (kind: number) => void,
   ): void {
-    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'build-chooser');
+    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'build-chooser', {
+      label: 'Raise a structure',
+    });
     modal.style.textAlign = 'left';
     modal.insertAdjacentHTML(
       'beforeend',
@@ -3134,7 +3144,9 @@ export class SimpleUI {
     build: { icon: string; name: string; timber: number },
     onAction: (action: 'reclaim' | 'replace') => void,
   ): void {
-    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'build-options');
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'build-options', {
+      label: `Your ${build.name}`,
+    });
     modal.insertAdjacentHTML(
       'beforeend',
       `<div style="font-size:17px;font-weight:700;margin-bottom:4px;">${build.icon} Your ${build.name}</div>
@@ -8062,16 +8074,51 @@ export class SimpleUI {
     aiBadge.title = 'A live language-model conversation — every reply is generated, not scripted';
     header.appendChild(aiBadge);
     this.npcChatBadge = aiBadge; // markNpcChatOffline re-labels it on a fallback
+    const touch = this.isTouch;
     const controls = document.createElement('span');
-    Object.assign(controls.style, { display: 'flex', gap: '12px', alignItems: 'center' });
+    Object.assign(controls.style, {
+      display: 'flex',
+      gap: touch ? '0' : '12px', // on touch the two 44 px boxes sit edge to edge
+      alignItems: 'center',
+    });
+    // The header's controls are buttons drawn as bare glyphs: a name, a role
+    // and the keyboard come with them (D4). On touch each is a 44 px thumb
+    // box (phone.cjs measured the ✕ at 39x47). Its top stays inside the
+    // panel there: the panel's overflow clips, so the ✕'s -13px top margin
+    // left the top 5 px of its box unreachable.
+    const glyphButton = (glyph: string, label: string): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = glyph;
+      b.setAttribute('aria-label', label);
+      Object.assign(b.style, {
+        font: 'inherit',
+        color: 'inherit',
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+      });
+      return b;
+    };
+    const thumbBox = { minWidth: '44px', minHeight: '44px', padding: '0' };
     // Voice mute toggle (only if the browser can speak).
     if (isSpeechSupported()) {
-      const voiceBtn = document.createElement('span');
+      const voiceBtn = glyphButton('🔊', 'NPC voice');
       const render = () => {
-        voiceBtn.textContent = isSpeechEnabled() ? '🔊' : '🔇';
+        const on = isSpeechEnabled();
+        voiceBtn.textContent = on ? '🔊' : '🔇';
+        voiceBtn.setAttribute('aria-pressed', String(on));
       };
       render();
-      Object.assign(voiceBtn.style, { cursor: 'pointer', fontSize: '15px', userSelect: 'none' });
+      Object.assign(voiceBtn.style, {
+        fontSize: '15px',
+        userSelect: 'none',
+        ...(touch ? { ...thumbBox, margin: '-8px 0' } : { padding: '0' }),
+      });
       voiceBtn.title = 'Toggle NPC voice';
       voiceBtn.addEventListener('click', () => {
         setSpeechEnabled(!isSpeechEnabled());
@@ -8079,21 +8126,15 @@ export class SimpleUI {
       });
       controls.appendChild(voiceBtn);
     }
-    const closeBtn = document.createElement('span');
-    closeBtn.textContent = '✕';
+    const closeBtn = glyphButton('✕', 'Close chat');
     // Was a bare ~16×18px glyph — the panel's only explicit dismiss. Pad to a
     // real thumb box (negative margin keeps the header's visual rhythm).
     Object.assign(closeBtn.style, {
-      cursor: 'pointer',
       opacity: '0.7',
-      padding: '13px',
-      margin: '-13px',
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
+      ...(touch
+        ? { ...thumbBox, margin: '-8px -13px -8px 0' }
+        : { padding: '13px', margin: '-13px' }),
     });
-    closeBtn.setAttribute('role', 'button');
-    closeBtn.setAttribute('aria-label', 'Close chat');
     closeBtn.addEventListener('click', () => this.closeNpcChat());
     controls.appendChild(closeBtn);
     header.appendChild(controls);
@@ -8170,12 +8211,18 @@ export class SimpleUI {
       padding: '10px 12px',
       borderTop: '1px solid rgba(255,255,255,0.08)',
     });
+    // 44 px thumb targets on touch: the mic, the field and Send measured 38
+    // tall (phone.cjs).
+    const tall = touch ? { minHeight: '44px', boxSizing: 'border-box' } : {};
     const input = document.createElement('input');
     input.type = 'text';
     input.maxLength = 300;
     input.placeholder = `Say something to ${name}…`;
     Object.assign(input.style, {
       flex: '1',
+      // A field's automatic minimum is its ~20-character intrinsic width: on
+      // a 390 px phone the row overflowed, and the panel's clip cut Send.
+      minWidth: '0',
       padding: '8px 12px',
       borderRadius: '10px',
       border: '1px solid rgba(255,255,255,0.15)',
@@ -8183,6 +8230,7 @@ export class SimpleUI {
       color: '#fff',
       fontSize: this.isTouch ? '16px' : '15px', // 16px kills iOS focus zoom
       outline: 'none',
+      ...tall,
     });
     const send = document.createElement('button');
     send.textContent = 'Send';
@@ -8195,6 +8243,7 @@ export class SimpleUI {
       background: DS.primary, // #5a8cff gave white text 3.17:1
       color: '#fff',
       fontWeight: '600',
+      ...tall,
     });
     // Mic button (speech-to-text) — only where the browser supports it.
     const mic = isSttSupported() ? document.createElement('button') : null;
@@ -8209,6 +8258,8 @@ export class SimpleUI {
         background: 'rgba(255,255,255,0.06)',
         color: '#fff',
         fontSize: '15px',
+        ...tall,
+        ...(touch ? { minWidth: '44px' } : {}),
       });
       inputRow.appendChild(mic);
     }

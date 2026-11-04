@@ -318,6 +318,26 @@ describe('dialog names and keyboard scrolling', () => {
     expect(modal.querySelector<HTMLElement>('#gb-body')!.tabIndex).toBe(0);
   });
 
+  test('a centred modal whose title is no heading is named by its label', async () => {
+    const top = (): HTMLElement =>
+      [...document.querySelectorAll<HTMLElement>('#ui-overlay > [role=dialog]')].at(-1)!;
+    ui.showReceipt([]);
+    await tick();
+    expect(top().getAttribute('aria-label')).toBe('Coin history');
+    ui.closeReceipt();
+    ui.showVaultPanel(12, 3, 5, { deposit: () => {}, withdraw: () => {} });
+    await tick();
+    expect(top().getAttribute('aria-label')).toBe('Island Bank');
+    ui.closeVaultPanel();
+    ui.showBuildChooser([], { timber: 0, coins: 0, built: 0, cap: 3 }, () => {});
+    await tick();
+    expect(top().getAttribute('aria-label')).toBe('Raise a structure');
+    ui.panels.closeAll();
+    ui.showBuildOptions({ icon: '🛖', name: 'hut', timber: 4 }, () => {});
+    await tick();
+    expect(top().getAttribute('aria-label')).toBe('Your hut');
+  });
+
   test('the volume slider keeps its arrow keys', () => {
     const slider = document.querySelector<HTMLInputElement>('input[type=range]')!;
     const seen: string[] = [];
@@ -361,6 +381,68 @@ describe('the drawer waits for the keyboard', () => {
     vi.advanceTimersByTime(8100);
     expect(list.style.display).toBe('none');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('the NPC chat: named buttons, 44 px thumb targets on touch', () => {
+  const chatParts = (): Record<string, HTMLElement> => {
+    const panel = document.querySelector<HTMLElement>('[role="log"]')!.parentElement!;
+    return {
+      close: chip('Close chat'),
+      voice: chip('NPC voice'),
+      mic: panel.querySelector<HTMLElement>('[title="Talk to this character"]')!,
+      input: panel.querySelector<HTMLElement>('input[type=text]')!,
+      send: [...panel.querySelectorAll<HTMLElement>('button')].find(
+        (b) => b.textContent === 'Send',
+      )!,
+    };
+  };
+  beforeEach(() => {
+    // The voice toggle and the mic exist only where the browser can speak
+    // and listen.
+    vi.stubGlobal('speechSynthesis', { speak() {}, cancel() {}, getVoices: () => [] });
+    vi.stubGlobal('SpeechSynthesisUtterance', class {});
+    vi.stubGlobal('webkitSpeechRecognition', class {});
+  });
+  afterEach(() => {
+    ui.closeNpcChat();
+    vi.unstubAllGlobals();
+  });
+
+  test('on touch the ✕, the voice toggle, the mic, the field and Send are 44 px boxes', () => {
+    history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    ui.showNpcChat('Gardener', 'Morning!', async () => 'Hello.');
+    const { close, voice, mic, input, send } = chatParts();
+    for (const b of [close, voice]) {
+      expect(b.tagName).toBe('BUTTON'); // a name, a role and the keyboard come with it
+      expect(b.style.minWidth).toBe('44px');
+      expect(b.style.minHeight).toBe('44px');
+      expect(b.style.boxSizing).toBe('border-box');
+      // Inside the panel's clip: the old -13px top margin lost the box's top 5 px.
+      expect(b.style.marginTop).toBe('-8px');
+    }
+    for (const el of [mic, input, send]) {
+      expect(el.style.minHeight).toBe('44px');
+      expect(el.style.boxSizing).toBe('border-box');
+    }
+    expect(mic.style.minWidth).toBe('44px');
+  });
+
+  test('on desktop the header keeps its look; the voice toggle says whether it is on', () => {
+    ui.showNpcChat('Gardener', 'Morning!', async () => 'Hello.');
+    const { close, voice, input } = chatParts();
+    expect(close.tagName).toBe('BUTTON');
+    expect([close.style.padding, close.style.margin]).toEqual(['13px', '-13px']);
+    expect(close.style.minWidth).toBe('');
+    expect(input.style.minHeight).toBe('');
+    const was = voice.getAttribute('aria-pressed');
+    expect(['true', 'false']).toContain(was);
+    voice.click();
+    expect(voice.getAttribute('aria-pressed')).toBe(was === 'true' ? 'false' : 'true');
+    voice.click(); // back as it was (the choice persists)
+    expect(voice.getAttribute('aria-pressed')).toBe(was);
   });
 });
 
