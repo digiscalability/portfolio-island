@@ -22,7 +22,9 @@ npm run probe -- list
 | `--profile desktop\|phone\|lowtier` | Run one profile instead of the probe's defaults. |
 | `--out <dir>` | Output folder (default `<os tmpdir>/ux-probes/<name>`). |
 | `--compare <dir> --compare-port <m>` | A second build, for `rig` and `strafe`. |
-| `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`). |
+| `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`: runs desktop, low tier and phone, adds the pause-near-door entry, and judges the black interval by pixels). |
+| `--pause-near-door` | `hitch`: a second first door on a fresh page, entered after standing 3 s within 3 u of it. |
+| `--reduced-motion` | `follow`: a browser context that prefers reduced motion. |
 | `--golden <path>` | The seed golden (`seed`, and the perf gate's `--seed`). Default: `test/golden/seedDraws.json` in the checkout that holds `--dist`, else in the current directory; never this tool's own checkout. `--bless` writes there. |
 | `--selftest-leak` | The harness answers one blocked-host URL itself (a synthetic 200 from `route.fulfill`, so nothing leaves the machine) and the page fetches it after boot. That response is a leak by the rule, so the run must exit 2. |
 | `--double` | `guide`: inject a stand-in for A6's card that follows the guide's contract (see Stage-2 probes). |
@@ -157,10 +159,10 @@ holds the hook.
 | `__app.ui` surfaces: `compassDiv`, `compassArrow`, `compassLabel`, `toastEl`, `flashEl`, `interactionDiv`, `fadeDiv`, `leaveBtn`, `pinDiv`, `zonePanelDiv`, `npcChatDiv`, `isWelcomeVisible()`, `isDialogueActive()`, `showZonePanel`, `showCompletionModal()`, `showJournal()`, `showPassport()`, `getJoystick()` | D | fm, events, guide, p2 probes |
 | the touch joystick (the 166 px hit square, 44 px thumb) and the 74 px USE / JUMP / WAVE discs; `[data-guide=joystick]` and `[data-guide=use-button]` win once D6 lands | D | p2/walkin, guide, phone |
 | `__app.mapGuideTarget`, `mapGuideLabel`, `lastCompassTarget`, `exitBuilding(isZone)`, `insideIsZone`, `isletUnlocked`, `enterBuilding(id, isZone)`, `passport.count()`, `passport.has(id)` | A | compass, p2 probes, p2/journey |
-| `__app.scene`: `getZonesManager().getZones()`/`getZoneById()`, `coins`, `hasTrailCoins()`, `getCoinsCollected()`, `getNpcPosition(name)`, `getNearbyInteractable()`, `getIsland()` (`npcTargets`, `houseDoors`, `surfaceMesh`, `sampleSurfaceByDirection`, `seaLevel`), `warmInterior()`, `interiorWarmed`, `interiorNearDoorWarmed`, `onHouseEnterCb(id)`, `interactWithZone(zone)` | B, C | p2 probes, guide, census |
+| `__app.scene`: `getZonesManager().getZones()`/`getZoneById()`, `coins`, `hasTrailCoins()`, `getCoinsCollected()`, `getNpcPosition(name)`, `getNearbyInteractable()`, `getIsland()` (`npcTargets`, `houseDoors`, `surfaceMesh`, `sampleSurfaceByDirection`, `seaLevel`), `warmInterior()`, `interiorWarmed`, `interiorNearDoorWarmed`, `onHouseEnterCb(id)`, `interactWithZone(zone)`, `schoolPos()` (guide's `--double`) | B, C | p2 probes, guide, census |
 | phase 2: `__app.scene.isInsideInterior()`, `getInteriorHotspot()`, `INTERIOR_ORIGIN`, `INTERIOR_HOTSPOTS`, `INTERIOR_DOOR_HOTSPOT`, `INTERIOR_PLAYER_R`, `interiorSets`, `interiorActiveTheme`, `interiorColliders`, `interiorWallBlocked(x,z)`, `interiorFurnitureBlocked(x,z)`, `interiorPosters`, `interiorYaw`, `setInteriorMove()`, `toggleInteriorFixture(id)`, `partyMode` | B | p2/room-lib, survey, party, passport-interior |
 | phase 2: `__app.scene.getEnvironmentCycle()`: `getHour()`, `getDayFactor()`, `.debugHour` (written by duskflip) | C | p2/duskflip, p2/bootcost, p2/L.cjs |
-| phase 2: `__app.scene.boardVehicle(i)`, `vehicleKind(i)`, `isRidingVehicle()` | B | strafe, perf gate (P2-E3) |
+| phase 2: `__app.scene.boardVehicle(i)`, `vehicleKind(i)`, `isRidingVehicle()`, `disembarkVehicle()`, `vehicles[i].forward` | B | strafe (the vehicle chases), perf gate (P2-E3) |
 | phase 2: p2/L.cjs's mask material swap, keyed on `SkyDome`, `userData.isPavement`, `userData.isCelHull`, `island.surfaceMesh` and `island.npcTargets` | B, C | p2/L.cjs (and the lighting probes in later waves) |
 | stage 2: `#ds-guide` (`data-active`, its Skip button and resume chip), window events `ds:intro`, `ds:modal`, `ds:guide`, `ds:guide-to`, `ds:goals`, `ds:npc-speaking`, `ds:npc-typing`, `ds:coin`, `ds:settings`; `[data-guide=*]` anchors and `[data-hud=prompt]` | A, D | guide, events, fm |
 
@@ -172,15 +174,15 @@ clock hour, a panel close), and only inside their own browser context.
 | Probe | Item | What it measures | Main baseline (this rig) |
 |---|---|---|---|
 | `arrow` | A1 | 24 off-axis bearings (the audit's set): arrow side vs target side, mean \|error\| | 0/24 same side; unwrapped mean error 148.8° (audit 148.1°) |
-| `follow` | A1 | keyboard follower steering by the arrow toward the Projects zone: W ahead, W + the side key to a side and behind, or J/L behind with `--turn jl` (see the note below); distance at 25 s, label flips | walks away, 103 → 208 m; `--mirror` (self-test) arrives in 19.3 s; `--turn jl` stands at 103 m (main has no J/L) |
+| `follow` | A1, CO-E3 | keyboard follower steering by the arrow toward the Projects zone: W ahead, W + the side key to a side and behind, or J/L behind with `--turn jl` (see the note below); distance at 25 s, label flips. `--reduced-motion`: the same in a context that prefers reduced motion | walks away, 103 → 208 m; `--mirror` (self-test) arrives in 19.3 s; `--turn jl` stands at 103 m (main has no J/L). `--reduced-motion`: walks away, 103 → 208 m; s1-int 103 → 199 m (the integration read 103 → 211) |
 | `clash` | A2 | Ctrl/Meta+C with the email selected; ↓ and W behind Projects; M, C, P in a panel; E at a bench behind a panel; Space on a panel button; ← on the volume slider; sendThenWalk | Ctrl+C → `customize`; ↓ walks 8.4 u; P takes a photo; E seats; slider walks 4.5 u |
 | `cardkeys` | A2 | C, P, M and E on a fresh card, then Explore; panel 0.9 s later and `ds_welcomed` | C replaces the card; `ds_welcomed=1`; the island map is open |
 | `sheet-lock` | A3 | a world click beside the open Portfolio menu, then its Projects row | the click locks the pointer; the row does nothing |
 | `look` | A3, A4 | drag and locked look at 1/5/30/60/120 frames; hover; peer tap; right-drag; `ds_mouse_lock`; touch swipes (fling off/on); J L I K R; ~30 fps | 300 px over 30 frames 3.5-3.6° at 13 ms frames (audit 3.8° at 14.6 ms); swipe 150 px: 21.2/5.4/2.7/1.8° |
-| `strafe` | A5 | D held after a walk: heading and camera °/s; reduced motion; walk-away settle; fixed-pose camera frames (`--compare`) | heading 143°/s, camera 143°/s, reduced motion 143°/s |
-| `legspin` | B1 | first-visit standing jump on the frozen sim (1/60 s); legs vs π; mixer rewrites; landing hand jumps | legL −11.7 rad after landing and after 10 s idle; legs rewritten 0/300; the landing-hand check already passes on main (≈0.12 u), see the note below |
-| `rig` | B1 | sit, ride and swim bone positions in the player's frame; `--compare` gives max \|Δ\| | exits 0 on main; main vs main: 0 |
-| `hitch` | B2 | 5-25 s after ready, idle on the card and walking: frames, LoAF, programs per render() and per compile, the warm, the first door entry | a 1.9-2.2 s frame gaining 93 programs; see the note below |
+| `strafe` | A5, CO-E3 | D held after a walk: heading and camera °/s; reduced motion; walk-away settle; fixed-pose camera frames (`--compare`), with two vehicle chases: 'aligned' and 'as boarded' (see the note below) | heading 143°/s, camera 143°/s, reduced motion 143°/s. Vehicle chase as boarded: the camera turns 39.9°/s; s1-int 13.3°/s, so `--compare` against main exits 1 on s1-int; 'aligned' matches main (pitch 0.03%, distance 0.27%) |
+| `legspin` | B1 | first-visit standing jump on the frozen sim (1/60 s); legs vs π; mixer rewrites; landing hand jumps | legL −11.7 rad (130.7° off π) after landing and after 10 s idle; legs rewritten 0/300; the landing hand 0.071-0.075 u at every landing here, 0.492 u once in the integration's run (see the note below); s1-int: the legs at π, exits 0 |
+| `rig` | B1 | sit, ride and swim bone positions in the player's frame; `--compare` gives max \|Δ\| | exits 0 on main; main vs main: 0; s1-int exits 0 |
+| `hitch` | B2, CO-E3 | idle on the card and walking, from the welcome card to ready + 25 s: the interior warm's frames wherever it fires, LoAF, programs per render() and per compile; the first door's longest frame up to the first room frame; `--no-khr`: the black interval by pixels (see the note below) | exits 1: the warm's 2,181 ms frame at 11.1 s (+93 programs in that frame, +38 in one render), 520 ms walking, the first door 228 ms; s1-int exits 0 (no warm frame over 50 ms, the first door 25-33 ms) |
 | `seed` | B0 | `window.__dsSeedDraws` fresh, `ds_arrived='1'`, three reloads, low tier, vs the subject's `test/golden/seedDraws.json` (see `--golden`); `--bless` writes B0's flat shape, `{ "marks", "total" }` (only when every desktop run agrees; a low-tier difference is noted, not written). A `{ "desktop", "lowtier" }` file is also read | counter absent |
 | `guide-me` | D1 | Leaderboard → Guide me: panels, scrim, chip opacity, touch controls | stack `['leaderboard']`, scrim up, controls hidden |
 | `back` | D2 | the eight history cases; case 7 runs on desktop (welcome card, emote wheel, chat input, tour) and on the phone, where the touch-only ☰ drawer exists; each overlay must really open, or the check is inconclusive | Back from Projects lands on `about:blank` |
@@ -199,20 +201,72 @@ the bug A5 removes: on A's branch it sidesteps with the target pinned at
 20.1 s (two runs) and `--turn jl` in 19.8 and 20.4 s. `heldSeconds` in the
 JSON is the time spent on each key set.
 
-**Hitch note.** On main the warm's frame-to-frame program jump is the
-audit's 93, but it is split: `warmInterior`'s `compileAsync` adds 55
-programs inside the compile call and the next render adds 38 (44 when
-walking). The probe reports both (`maxProgramsAddedInOneFrame` and
-`renderCallsWithNewPrograms`), because B2's criterion is per render().
+**Hitch note.** The recorder is an init script, in place before any page
+script, so the probe sees ready. It judges from the welcome card (ready +
+2.4 s here) to ready + 25 s, and the interior warm's own frames wherever the
+warm fires (from its start to 100 ms past its end). main-simple defers the
+warm with `idleDefer(warmInterior, 9000)`: on a quiet machine it runs 1.3-2.9 s
+after ready, on this rig at its 9 s ceiling (8.9 s), and stage 1's window,
+which opened at ready + 5 s, missed the quiet case. Gates: the warm's frames
+over 50 ms, render() calls that create programs and take over 50 ms, long
+animation frames of 100 ms or more, the warm resolving within 10 s, and the
+first door. Reported, not judged:
+- `bootTailOver50`: ready to the card, where both builds draw their late GLB
+  models for the first time behind the loader (70-370 ms frames);
+- `framesOver50`: every frame over 50 ms in the window. Both builds make one
+  of 60-80 ms near ready + 5 s, the ambient music's synthesis
+  (`idleDefer(startMusic, 5000)`, a minute of samples on the main thread),
+  and now and then a 70-90 ms one later.
+
+On main the warm's frame-to-frame program jump is the audit's 93, but it is
+split: `warmInterior`'s `compileAsync` adds 55 programs inside the compile
+call and the next render adds 38 (44 when walking). The probe reports both
+(`maxProgramsAddedInOneFrame` and `renderCallsWithNewPrograms`), because
+B2's criterion is per render().
+
+**First door.** `firstInsideFrameMs` is the frame that first shows the room
+(`rows[firstInside].dt`) and `maxFrameToFirstInsideMs` the longest frame from
+`enterBuilding` through firstInside + 1. Stage 1 read
+`rows[firstInside + 1].dt`, the frame after, which hid a slow first room
+frame.
+
+**Black interval (`--no-khr`).** Without the extension no idle warm runs, and
+the near-door warm waits for 3 s of standing still. `--no-khr` runs desktop,
+the low tier and the phone and adds `pauseNearDoor` (a fresh page; stand 3 s
+within 3 u of the first house's door, then enter) beside `walkStraightIn`.
+Black is judged by pixels: a CDP screencast frame (JPEG, decoded with
+playwright-core's jpeg-js) is black when its mean luminance is at most 5% of
+the pre-entry median, which is the veil at 0.95 or more; the fade div's
+opacity interval is reported beside it. s1-int, `--no-khr --profile desktop`:
+walk-straight-in 1,566 ms black by pixels (1,576 ms by opacity), with a
+1,074 ms first room frame; pause-near-door 586 ms (541 ms). The
+integration measured 1.37-1.49 s and about 0.66 s.
+
+**Vehicle chase.** `strafe` boards the first car twice. 'aligned' turns the
+camera behind the car first; 'as boarded' turns it until the car's forward
+sits 150° from the camera's, the integration's boarding-facing-away case.
+The camera turns through `setYaw` where that moves the view (A4 drives the
+follow direction from yaw) and through the follow direction where it does
+not (riding on main ignores yaw). Each way is measured, the first within 3°
+is kept, and the JSON names it (`vehicle.via`). After 30 still frames W is
+held 2 s on the frozen 1/60 s sim; `cameraYawAbsDegS` is the camera's
+absolute yaw change per second. `--compare`: 'aligned' within 5% of the other
+build's distance and pitch, 'as boarded' within 10% of its camera turn. Main
+turns 39.9°/s as boarded (the integration's diagnostic: 37.2), s1-int
+13.3°/s (15.1); the CO-A1 row in the stage-2 plan is the fix.
 
 **Frame-rate dependence.** Main's look and leg-spin numbers scale with frame
 time (that is the bug). `look` reports `meanFrameMs` with every reading, and
 `legspin` runs on the frozen sim so its airborne frame count is fixed.
 
-**Landing hand.** `legspin`'s per-landing-frame hand displacement is
-already ≈0.12 u on main's frozen 1/60 s sim, inside its bound, so it does
-not reproduce MOT-01's hand pop and cannot show B1's fix. The leg checks
-(legL ≈ −11.7 rad, the 0/300 rewrites) are the ones that fail on main.
+**Landing hand.** On 58c8849 three runs here read 0.071-0.075 u per frame at
+every one of the seven landings, inside the 0.15 u bound. The integration's
+run on the same rig read 0.492 u at the sixth: a one-frame spike four frames
+before touchdown (+0.492 u, then −0.488 u), which no other landing or run
+shows. So the landing-hand check fails on main only now and then, and it
+cannot show B1's fix on its own; the leg checks (legL −11.7 rad, 130.7° off
+π, and 0/300 leg rewrites) fail on main every time. s1-int: the legs at π
+after landing and after 10 s idle, the hand 0.071-0.075 u; exits 0.
 
 ### Stage-2 probes, wave 1 (E6a)
 
@@ -233,7 +287,8 @@ none of wave 1's fixes yet.
 
 `--double` (guide only) injects a stand-in for A6's card that follows the
 contract, to test the probe before A6 exists. Its checks say '(double)' and
-prove nothing about the product. On s1-int: every step, the reload at 3/5, the chip, the finale (24-33 s from
+prove nothing about the product.
+On s1-int: every step, the reload at 3/5, the chip, the finale (24-33 s from
 Explore), 'Show me' (Projects at 1440 and 844, School at 390 and 667), the
 card against the joystick, the action column, the prompt and the edges,
 Skip, reduced motion, legacy storage and B10 read as designed at all four

@@ -16,7 +16,9 @@ const BEARINGS = [164, 154, 144, 134, 124, 115, 106, 96, 88, 79, 70, 62, 53, 45,
 
 /** Boot, leave the card, clear panels, aim the compass at the Projects zone. */
 async function setup(t, prof) {
-  const s = await t.session(prof);
+  // --reduced-motion (CO-E3): a context that prefers reduced motion, where
+  // on-foot follow is off and a keyboard visitor has only J/L to turn.
+  const s = await t.session(prof, t.args.reducedMotion ? { reducedMotion: 'reduce' } : {});
   const b = await t.boot(s);
   const { page } = s;
   await lib.dismissWelcome(page);
@@ -208,7 +210,7 @@ async function follow(t) {
     await t.shot(page, `follow-${prof}-end.png`);
     const startD = samples.length ? samples[0].d : null;
     const heldSeconds = Object.fromEntries(Object.entries(heldS).map(([k, v]) => [k, lib.round(v, 1)]));
-    t.data[prof] = { boot, target, steering: t.args.mirror ? 'mirror image (self-test)' : 'arrow as drawn', turn, whenBehind: FOLLOW_TURNS[turn], startDistance: startD, distanceAt25s: end.d, minDistance: Math.min(...samples.map((x) => x.d), end.d), reachedWithin5mAtS: reached, labelFlips: flips, heldSeconds, prompts: [...prompts], samples };
+    t.data[prof] = { boot, target, reducedMotion: !!t.args.reducedMotion, steering: t.args.mirror ? 'mirror image (self-test)' : 'arrow as drawn', turn, whenBehind: FOLLOW_TURNS[turn], startDistance: startD, distanceAt25s: end.d, minDistance: Math.min(...samples.map((x) => x.d), end.d), reachedWithin5mAtS: reached, labelFlips: flips, heldSeconds, prompts: [...prompts], samples };
     t.check(`${prof}: within 5 m of the Projects zone in <= 25 s`, reached !== null, reached === null ? `closest ${t.data[prof].minDistance} m` : `${reached} s`, '<= 25 s');
     t.check(`${prof}: label flips while the explicit target is active`, flips === 0, flips, 0);
   }
@@ -216,5 +218,5 @@ async function follow(t) {
 
 module.exports = {
   arrow: { item: 'A1', title: '24 off-axis yaws: arrow side vs target side, |error|', profiles: ['desktop'], run: arrow },
-  follow: { item: 'A1', title: 'keyboard follower steers by the arrow to the Projects zone (--turn wasd|jl when it is behind)', profiles: ['desktop'], run: follow },
+  follow: { item: 'A1, CO-E3', title: 'keyboard follower steers by the arrow to the Projects zone (--turn wasd|jl when it is behind; --reduced-motion)', profiles: ['desktop'], run: follow },
 };

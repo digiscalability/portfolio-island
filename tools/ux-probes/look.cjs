@@ -384,6 +384,11 @@ const STRAFE_LIB = () => {
     let dHead = 0;
     if (state.pv && v.lengthSq() > 1e-10 && state.pv.lengthSq() > 1e-10) dHead = (Math.acos(Math.min(1, v.clone().normalize().dot(state.pv.clone().normalize()))) * 180) / Math.PI;
     const dCam = (2 * Math.acos(Math.min(1, Math.abs(state.pq.dot(cam.quaternion)))) * 180) / Math.PI;
+    // The camera's yaw change about the player's up, apart from pitch and roll.
+    const f0 = flat(new V3(0, 0, -1).applyQuaternion(state.pq), n).normalize();
+    const f1 = flat(new V3(0, 0, -1).applyQuaternion(cam.quaternion), n).normalize();
+    const cy = f0.clone().cross(f1);
+    const dYaw = (Math.atan2(cy.dot(n), f0.dot(f1)) * 180) / Math.PI;
     const camToPlayer = cam.position.clone().sub(P.position);
     const dist = camToPlayer.length();
     const pitch = (Math.asin(Math.max(-1, Math.min(1, camToPlayer.clone().normalize().dot(n)))) * 180) / Math.PI;
@@ -392,7 +397,7 @@ const STRAFE_LIB = () => {
     const fwd = flat(cam.getWorldDirection(new V3()), n).normalize();
     const c = face.clone().cross(fwd);
     const behind = Math.abs((Math.atan2(c.dot(n), face.dot(fwd)) * 180) / Math.PI);
-    rec.push({ tag, dHead, dCam, step: v.length(), dist, pitch, behind });
+    rec.push({ tag, dHead, dCam, dYaw, step: v.length(), dist, pitch, behind });
     state.pq.copy(cam.quaternion);
     state.pp.copy(P.position);
     state.pv = v.lengthSq() > 1e-10 ? v : state.pv;
@@ -431,7 +436,8 @@ const summarizeTag = (rec, tag) => {
   const head = a.reduce((s, r) => s + r.dHead, 0);
   const camRot = a.reduce((s, r) => s + r.dCam, 0);
   const path = a.reduce((s, r) => s + r.step, 0);
-  return { secs: lib.round(secs, 2), headingDegS: lib.round(head / secs, 0), cameraDegS: lib.round(camRot / secs, 0), pathU: lib.round(path, 2), turnRadiusU: head > 0 ? lib.round(path / ((head * Math.PI) / 180), 2) : null };
+  const yawAbs = a.reduce((s, r) => s + Math.abs(r.dYaw || 0), 0);
+  return { secs: lib.round(secs, 2), headingDegS: lib.round(head / secs, 0), cameraDegS: lib.round(camRot / secs, 0), cameraYawAbsDegS: lib.round(yawAbs / secs, 1), pathU: lib.round(path, 2), turnRadiusU: head > 0 ? lib.round(path / ((head * Math.PI) / 180), 2) : null };
 };
 
 /** One deterministic strafe session (standard or reduced motion). */
@@ -487,21 +493,83 @@ async function strafeSession(t, base, { reduced }) {
     });
   }
   await run(30, 'rest3');
-  const vehicle = await page.evaluate(() => {
+  // Two vehicle chases (CO-E3), W held 2 s from boarding: 'aligned' puts the
+  // camera behind the car first; 'as boarded' parks it 150 degrees from the
+  // camera's forward (boarding facing away, the case A5 left at 15 deg/s
+  // against main's 37).
+  // Board the first car, then turn the camera until its forward sits
+  // offsetDeg from the car's, the way the integration's diagnostic did:
+  // setYaw where it moves the view (A4 drives followDir from yaw), else the
+  // follow direction itself (58c8849 keeps a yaw that riding ignores). Each
+  // way is tried, then measured; the first that lands within 3 deg is kept.
+  const BOARD = ([variant]) => {
     const sc = window.__app.scene;
     if (typeof sc.boardVehicle !== 'function' || typeof sc.vehicleKind !== 'function') return null;
-    for (let i = 0; i < 12; i++) {
+    let idx = -1;
+    for (let i = 0; i < 12; i++)
       if (sc.vehicleKind(i) === 'car') {
-        sc.boardVehicle(i);
-        return sc.isRidingVehicle() ? i : null;
+        idx = i;
+        break;
+      }
+    if (idx < 0) return null;
+    sc.boardVehicle(idx);
+    if (!sc.isRidingVehicle()) return null;
+    const v = sc.vehicles && sc.vehicles[idx];
+    const oc = sc.getOrbitCamera();
+    const cam = sc.getCamera();
+    if (!v || !v.forward) return { idx, set: false };
+    const V3 = v.forward.constructor;
+    const deg = variant === 'aligned' ? 0 : 150;
+    const offset = () => {
+      const up = sc.getPlayer().position.clone().normalize();
+      const flat = (x) => x.clone().addScaledVector(up, -x.dot(up)).normalize();
+      const f = flat(v.forward);
+      const c = flat(cam.getWorldDirection(new V3()));
+      const cr = f.clone().cross(c);
+      return { up, f, deg: (Math.atan2(cr.dot(up), f.dot(c)) * 180) / Math.PI };
+    };
+    const wrap = (d) => ((((d + 180) % 360) + 360) % 360) - 180;
+    const ways = [];
+    if (typeof oc.setYaw === 'function' && typeof oc.getYaw === 'function') ways.push('setYaw');
+    if (oc.followDir) ways.push('followDir');
+    const turn = (way, d) => {
+      if (way === 'setYaw') oc.setYaw(oc.getYaw() + (d * Math.PI) / 180);
+      else {
+        oc.followDir.applyAxisAngle(offset().up, (d * Math.PI) / 180);
+        if (typeof oc.snapToPlayer === 'function') oc.snapToPlayer();
+      }
+      window.__step(1, 1 / 60);
+    };
+    let via = null;
+    for (const way of ways) {
+      let sign = 1;
+      let last = null;
+      for (let i = 0; i < 10; i++) {
+        const err = wrap(deg - offset().deg);
+        if (Math.abs(err) < 1) break;
+        // No progress (or the wrong way): turn the other way next time.
+        if (last !== null && Math.abs(err) > Math.abs(last) - 0.5) sign = -sign;
+        last = err;
+        turn(way, sign * err);
+      }
+      if (Math.abs(wrap(deg - offset().deg)) < 3) {
+        via = way;
+        break;
       }
     }
-    return null;
-  });
-  if (vehicle !== null) {
+    return { idx, set: via !== null, wantDeg: deg, gotDeg: +offset().deg.toFixed(1), via };
+  };
+  const vehicles = {};
+  for (const variant of ['aligned', 'asBoarded']) {
+    const v = await page.evaluate(BOARD, [variant]);
+    if (v === null) continue;
+    vehicles[variant] = v;
+    await run(30, `boarded-${variant}`);
     await page.keyboard.down('KeyW');
-    await run(120, 'chase');
+    await run(120, `chase-${variant}`);
     await page.keyboard.up('KeyW');
+    await page.evaluate(() => window.__app.scene.disembarkVehicle());
+    await run(60, `off-${variant}`);
   }
   const rec = await page.evaluate(() => window.__srec);
   await page.evaluate(lib.THAW);
@@ -529,7 +597,12 @@ async function strafeSession(t, base, { reduced }) {
     strafe: summarizeTag(rec, 'strafeD'),
     stopped: { maxRecentreDegS: maxRate('stopped'), behindWithinS: firstBehind('stopped', 10), offBackAtStopDeg: tag('stopped').length ? lib.round(tag('stopped')[0].behind, 1) : null },
     walkAway: { behindWithinS: firstBehind('walkaway', 10), offBackAtStartDeg: tag('walkaway').length ? lib.round(tag('walkaway')[0].behind, 1) : null },
-    poses: { sWalk: frame('swalk'), stick: stick ? frame('stick') : null, vehicleChase: vehicle !== null ? { vehicle, ...frame('chase') } : null },
+    poses: {
+      sWalk: frame('swalk'),
+      stick: stick ? frame('stick') : null,
+      vehicleChaseAligned: vehicles.aligned ? { vehicle: vehicles.aligned, ...frame('chase-aligned'), ...summarizeTag(rec, 'chase-aligned') } : null,
+      vehicleChaseAsBoarded: vehicles.asBoarded ? { vehicle: vehicles.asBoarded, ...frame('chase-asBoarded'), ...summarizeTag(rec, 'chase-asBoarded') } : null,
+    },
   };
 }
 
@@ -548,11 +621,17 @@ async function strafe(t) {
     const cmp = await strafeSession(t, t.compareBase, { reduced: false });
     t.data.compare = cmp;
     const pctDiff = (a, b) => (a === null || b === null || b === 0 ? null : lib.round((100 * Math.abs(a - b)) / Math.abs(b), 2));
-    for (const pose of ['sWalk', 'stick', 'vehicleChase']) {
+    // A vehicle pose counts only where BOARD turned the camera as asked.
+    const oriented = (p) => !p.vehicle || p.vehicle.set !== false;
+    for (const pose of ['sWalk', 'stick', 'vehicleChaseAligned']) {
       const a = std.poses[pose];
       const b = cmp.poses[pose];
       if (!a || !b) {
         t.check(`${pose}: camera distance and pitch within 5% of the compare build`, null, { subject: a, compare: b }, 'both poses present');
+        continue;
+      }
+      if (!oriented(a) || !oriented(b)) {
+        t.check(`${pose}: the camera turned as asked on both builds`, null, { subject: a.vehicle, compare: b.vehicle }, 'within 3°');
         continue;
       }
       const dd = pctDiff(a.dist, b.dist);
@@ -560,10 +639,17 @@ async function strafe(t) {
       t.check(`${pose}: camera distance within 5% of the compare build (%)`, dd !== null && dd <= 5, dd, '<= 5');
       t.check(`${pose}: camera pitch within 5% of the compare build (%)`, dp !== null && dp <= 5, dp, '<= 5');
     }
+    // As boarded, facing away: the camera swings behind the car as fast as on the compare build (plan +-10%).
+    const a = std.poses.vehicleChaseAsBoarded;
+    const b = cmp.poses.vehicleChaseAsBoarded;
+    const both = a && b && oriented(a) && oriented(b);
+    const dr = both ? pctDiff(a.cameraYawAbsDegS, b.cameraYawAbsDegS) : null;
+    t.check('vehicleChaseAsBoarded: camera yaw deg/s within 10% of the compare build (%)', both ? dr !== null && dr <= 10 : null, both ? { subject: a.cameraYawAbsDegS, compare: b.cameraYawAbsDegS, diffPct: dr } : a && b ? { notTurned: { subject: a.vehicle, compare: b.vehicle } } : 'pose missing', '<= 10');
   }
+  if (std.poses.vehicleChaseAsBoarded) t.data.vehicleChaseAsBoardedCameraYawDegS = std.poses.vehicleChaseAsBoarded.cameraYawAbsDegS;
 }
 
 module.exports = {
   look: { item: 'A3, A4', title: 'mouse drag, hover, peer tap, right-drag, opt-in lock, touch swipe, look keys, 30 fps', profiles: ['desktop', 'phone'], run: lookProbe },
-  strafe: { item: 'A5', title: 'D held after a walk: heading and camera deg/s, reduced motion, settle, fixed poses', profiles: ['desktop'], compare: true, run: strafe },
+  strafe: { item: 'A5, CO-E3', title: "D held after a walk: heading and camera deg/s, reduced motion, settle, fixed poses, the vehicle chase 'aligned' and 'as boarded'", profiles: ['desktop'], compare: true, run: strafe },
 };
