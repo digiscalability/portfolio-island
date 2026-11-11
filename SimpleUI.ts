@@ -5,7 +5,7 @@ import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
 import { checkName, safePeerName } from './Moderation';
 import { ACTIVITY_DEFS } from './NpcActivities';
-import { AI_NPCS } from './NpcChat';
+import { AI_NPCS, routeQuestion, type QuestionRoute } from './NpcChat';
 import { PanelManager } from './PanelManager';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { rumorOfTheDay } from './Secrets';
@@ -7482,7 +7482,7 @@ export class SimpleUI {
    * guardrails in this island's code, and LinkedIn / CV / code / email. A zone
    * panel with id 'hire', so ?zone=hire (and /z/hire) deep-link to it.
    */
-  public showHireCard(source: 'menu' | 'deeplink' | 'cta' = 'cta'): void {
+  public showHireCard(source: 'menu' | 'deeplink' | 'cta' | 'npc' = 'cta'): void {
     this.showZonePanel({ id: 'hire', name: 'Hiring' }, { source });
   }
 
@@ -7495,7 +7495,8 @@ export class SimpleUI {
   showZonePanel(
     zone: any,
     opts?: {
-      source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' | 'landmark';
+      /** 'npc': a villager's route button (P2-D4). */
+      source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' | 'landmark' | 'npc';
       anchor?: string;
     },
   ): void {
@@ -8784,6 +8785,10 @@ export class SimpleUI {
         thinking.textContent = `${name} is thinking…`;
         log.scrollTop = log.scrollHeight;
       }, SimpleUI.NPC_THINKING_MS);
+      // What the question is about, if the portfolio or the compass can
+      // answer it (P2-D4). The send goes to the model either way.
+      const route = routeQuestion(text);
+      this.npcSendFellBack = false;
       let reply = '…';
       try {
         reply = await onSend(text);
@@ -8793,7 +8798,12 @@ export class SimpleUI {
       clearTimeout(slow);
       thinking.remove();
       if (this.npcChatDiv !== panel) return; // closed while the villager thought
-      npcLine(reply);
+      // The model could not answer (markNpcChatOffline fired during the
+      // send): a routed question gets its answer, not the next written line,
+      // which had nothing to do with what was asked.
+      npcLine(route && this.npcSendFellBack ? route.line : reply);
+      if (route?.action) log.appendChild(this.npcRouteButton(route));
+      log.scrollTop = log.scrollHeight;
       busy = false;
       send.disabled = false;
       // Only re-focus if focus was actually lost (desktop click on Send blurs
@@ -8895,6 +8905,64 @@ export class SimpleUI {
   }
 
   private npcChatBadge: HTMLElement | null = null;
+  /** The send in flight came back as a written line (markNpcChatOffline). */
+  private npcSendFellBack = false;
+
+  /**
+   * The next action under a routed reply (P2-D4): one 44 px indigo-outline
+   * button that opens the panel, the hire card, or points the compass. Green
+   * stays Work with me's alone.
+   */
+  private npcRouteButton(route: QuestionRoute): HTMLButtonElement {
+    const action = route.action!;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = action.label;
+    b.dataset.npcRoute = route.kind;
+    Object.assign(b.style, {
+      alignSelf: 'flex-start',
+      minHeight: '44px',
+      padding: '0 16px',
+      borderRadius: '10px',
+      border: '1px solid rgba(143,155,255,0.8)',
+      background: 'rgba(76,91,224,0.14)',
+      color: '#fff',
+      font: 'inherit',
+      fontSize: '14px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (action.hire) {
+        track('npc_route', { to: 'hire' });
+        this.showHireCard('npc'); // the modal sweeps the chat closed
+      } else if (action.zone) {
+        track('npc_route', { to: action.zone });
+        this.showZonePanel({ id: action.zone, name: action.zone }, { source: 'npc' });
+      } else if (action.guideKey) {
+        track('npc_route', { to: action.guideKey });
+        // The visitor is about to walk: the conversation ends here.
+        this.closeNpcChat();
+        this.guideTo(action.guideKey, 'npc');
+      }
+    });
+    return b;
+  }
+
+  /**
+   * 'Show me': point the compass at a place by key, through the one seam
+   * main-simple listens on ('ds:guide-to' {key, source}, P2-A5). With no
+   * event to send, the island map opens instead, so the button never
+   * dead-ends.
+   */
+  private guideTo(key: string, source: string): void {
+    try {
+      window.dispatchEvent(new CustomEvent('ds:guide-to', { detail: { key, source } }));
+    } catch {
+      this.onOpenMap?.();
+    }
+  }
 
   /** '<name> is thinking…' replaces the bare '…' after this long. */
   private static readonly NPC_THINKING_MS = 3000;
@@ -8940,6 +9008,7 @@ export class SimpleUI {
   public markNpcChatOffline(name: string): void {
     const badge = this.npcChatBadge;
     if (!badge || !this.npcChatDiv || this.npcChatAppend?.name !== name) return;
+    this.npcSendFellBack = true; // showNpcChat's send reads it (P2-D4)
     badge.textContent = 'offline replies';
     badge.dataset.offline = '1';
     badge.style.color = '#b8c2d0';

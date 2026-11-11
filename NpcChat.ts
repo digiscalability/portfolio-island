@@ -260,3 +260,185 @@ async function fetchNpcVoice(voiceKey: string): Promise<string | null> {
 export async function askNpcOpening(npcName: string, composedGreeting: string): Promise<NpcReply> {
   return askNpc(npcName, composedGreeting, true);
 }
+
+// ── Question routes (P2-D4) ──────────────────────────────────────────────────
+// A visitor who asks a villager "what does he build?" or "where is the shop?"
+// should leave with the answer and one button that takes them there, whether
+// the model answered or not. routeQuestion is pure and client-side: keyword
+// routes onto the four portfolio surfaces and the hire card, and "where is"
+// questions onto a place the compass can point at ('ds:guide-to' keys).
+//
+// Copy rules: the lines restate what the panels already say, type no counts,
+// and never call a villager anything but a villager. The availability line
+// stays on the hire card alone, so no line here states it.
+//
+// NOTE for whoever adds a route: the roster order tests read this file from
+// the villager list to its end for quoted persona ids, so nothing down here
+// may carry a property named like the roster's id field with a quoted value.
+
+export type RouteKind = 'projects' | 'professional' | 'personal' | 'contact' | 'hire' | 'place';
+
+/** The one button offered under the reply. Exactly one of zone, hire and
+ *  guideKey is set. */
+export interface RouteAction {
+  label: string;
+  /** Open this Portfolio panel. */
+  zone?: 'projects' | 'professional' | 'personal';
+  /** Open the hire card (CV, experience, contact). */
+  hire?: true;
+  /** Point the compass at this 'ds:guide-to' key. */
+  guideKey?: string;
+}
+
+export interface QuestionRoute {
+  kind: RouteKind;
+  /** What the villager says when the model could not answer. */
+  line: string;
+  action?: RouteAction;
+}
+
+const SHOW_ME = 'Show me';
+
+/** Places a "where is" question can name: [pattern, guide key, line]. The
+ *  first match wins, so the specific names come before the district words. */
+const PLACE_ROUTES: Array<[RegExp, string, string]> = [
+  [
+    /\bbeach ?house\b|\bislet\b/,
+    'beach-house',
+    'The beach house is on the islet out south. Its door wants a code — ask the Sailor at the harbour.',
+  ],
+  [
+    /\bschool\b|\blessons?\b/,
+    'school',
+    'The School is in the Personal district. Its lessons teach how the island works.',
+  ],
+  [
+    /\b(shop|kiosk|store|market|stalls?)\b/,
+    'kiosk',
+    'The shop kiosk sells tools, hats, feed and food for coins.',
+  ],
+  [
+    /\bbank\b|\bvault\b/,
+    'bank',
+    'The Bank is in the Hub. It assays ore and keeps a vault for your coins.',
+  ],
+  [
+    /\b(harbou?r|jetty|dock|pier|shore|fishing|fish)\b/,
+    'shore',
+    'The Fisherman’s jetty is down on the shore, the place to cast a line. Bring a rod from the shop.',
+  ],
+  [
+    /\b(race|races|racing|circuit|start line|starting line)\b/,
+    'race:land',
+    'The land circuit has a start line. Board a vehicle and cross it to begin.',
+  ],
+  [
+    /\b(projects?|portfolio|ventures?)\b|\bhis work\b|\bthe work\b/,
+    'district:projects',
+    'Projects is its own district: every venture has a site there, with this island as the flagship.',
+  ],
+  [
+    /\b(contact|post office|get in touch)\b/,
+    'district:contact',
+    'Contact is its own district. The Post Office there sends Abbas a real email.',
+  ],
+  [
+    /\b(professional|experience|career)\b/,
+    'district:professional',
+    'Professional is its own district: Abbas’s experience, role by role.',
+  ],
+  [
+    /\bpersonal\b/,
+    'district:personal',
+    'Personal is the cottage district: kitchens, family recipes and the creative side.',
+  ],
+  [
+    /\b(hub|town square|town hall|plaza)\b/,
+    'district:welcome',
+    'The Hub is the town square at the top of the island.',
+  ],
+];
+
+/** "where is…", "how do I get to…", "take me to…", "which way to…". */
+const WHERE =
+  /\bwhere(?:'s| is| are| can i find| do i find)?\b|\bhow (?:do|can) i (?:get|go) to\b|\b(?:take|guide|lead|point) me to\b|\bwhich way\b|\bdirections? to\b|\bhow (?:do|can) i find\b/;
+
+const HIRE =
+  /\b(hire|hiring|recruit(?:er|ing)?|cv|resume|role|roles|job|jobs|vacancy|position|available|availability|employ(?:er|ment)?)\b/;
+const CONTACT =
+  /\b(contact|email|e-mail|reach|get in touch|message (?:him|abbas)|talk to (?:him|abbas)|speak (?:to|with) (?:him|abbas)|linkedin)\b/;
+/** Who made this, who is he: the person, not the villager being asked. */
+const WHO =
+  /\bwho(?:'s| is| was)? (?:abbas|he|him|the (?:owner|maker|builder|creator|founder|developer))\b|\bwho (?:made|built|created|runs|owns|designed)\b|\babout (?:abbas|him|the (?:owner|maker|builder|creator|founder))\b/;
+const PROJECTS =
+  /\b(projects?|portfolio|built|builds?|building|ship(?:s|ped|ping)?|ventures?|products?|rankpilot|chocomate|cookbook|digiscalability)\b|\b(?:his|abbas's|abbas'|the) work\b|\bwork(?:s|ed|ing)? on\b|\binsta services\b/;
+/** "How do I build a house?" is about the island's own building, not the portfolio. */
+const OWN_BUILD = /\b(?:i|we|me|my)\b[^?.!]{0,16}\bbuild/;
+const PROFESSIONAL =
+  /\b(experience|background|career|skills?|stack|qualifications?|education|degree|studied|professional)\b/;
+const PERSONAL =
+  /\b(hobby|hobbies|family|personal|outside (?:of )?work|free time|spare time|chef|kitchens?)\b/;
+
+/**
+ * Route a visitor's question. Null when it names nothing the portfolio or
+ * the compass can answer ("Nice weather?"): the villager's own reply stands.
+ */
+export function routeQuestion(text: string): QuestionRoute | null {
+  if (typeof text !== 'string') return null;
+  const q = text
+    .slice(0, 300)
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/é/g, 'e')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!q) return null;
+  if (WHERE.test(q)) {
+    for (const [re, guideKey, line] of PLACE_ROUTES) {
+      if (re.test(q)) return { kind: 'place', line, action: { label: SHOW_ME, guideKey } };
+    }
+  }
+  if (HIRE.test(q)) {
+    return {
+      kind: 'hire',
+      line: 'Abbas is an AI and software engineer in Melbourne. His CV, experience and contact details are on one card.',
+      action: { label: 'Hiring? CV & contact', hire: true },
+    };
+  }
+  if (CONTACT.test(q)) {
+    return {
+      kind: 'contact',
+      line: 'You can reach Abbas directly: his email, LinkedIn and a message form are on one card.',
+      action: { label: 'Hiring? CV & contact', hire: true },
+    };
+  }
+  if (WHO.test(q)) {
+    return {
+      kind: 'professional',
+      line: 'Abbas built this island. He is an AI and software engineer in Melbourne, and the founder of DigiScalability. Professional has his experience.',
+      action: { label: 'Open Professional', zone: 'professional' },
+    };
+  }
+  if (PROJECTS.test(q) && !OWN_BUILD.test(q)) {
+    return {
+      kind: 'projects',
+      line: 'Abbas builds AI products end to end. This island is the flagship, and the rest of his work is in Projects.',
+      action: { label: 'Open Projects', zone: 'projects' },
+    };
+  }
+  if (PROFESSIONAL.test(q)) {
+    return {
+      kind: 'professional',
+      line: 'Abbas is an AI and software engineer in Melbourne, and the founder of DigiScalability. Professional has his experience and education.',
+      action: { label: 'Open Professional', zone: 'professional' },
+    };
+  }
+  if (PERSONAL.test(q)) {
+    return {
+      kind: 'personal',
+      line: 'Not everything here is software: years in Melbourne kitchens, his mother’s handwritten recipes and a creative studio. Personal has that side.',
+      action: { label: 'Open Personal', zone: 'personal' },
+    };
+  }
+  return null;
+}

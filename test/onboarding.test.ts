@@ -166,9 +166,11 @@ describe('the welcome card hierarchy matches the audience', () => {
     // P2-D5: the Selected work rows say which project, in hire_cta's one prop
     // (it keeps its src), and 'landmark' joins zone_explored's sources for A.
     expect(ui).toContain("track('hire_cta', { cta: `project_${project}` });");
+    // P2-D4: 'npc' joins them, for a villager's route button, with npc_route.
     expect(ui).toMatch(
-      /source\?: 'proximity' \| 'menu' \| 'deeplink' \| 'cta' \| 'strip' \| 'landmark';/,
+      /source\?: 'proximity' \| 'menu' \| 'deeplink' \| 'cta' \| 'strip' \| 'landmark' \| 'npc';/,
     );
+    expect(ui).toContain("track('npc_route', { to: 'hire' });");
     const keyEvents = stripped('Analytics.ts');
     const set = keyEvents.slice(keyEvents.indexOf('const KEY_EVENTS'), keyEvents.indexOf(']);'));
     expect(set).toContain("'hire_chip_click'");
