@@ -172,7 +172,8 @@ describe('from onboarding.test.ts', () => {
   });
 
   test('the arrival trail hands off instead of congratulating into silence', () => {
-    expect(src('main-simple.ts')).toContain('follow the ➤ arrow to 🚀 Projects');
+    // To the pill, which names the next stop itself (wave-1 integration).
+    expect(src('main-simple.ts')).toContain('the gold ➤ up top points to your next stop.');
   });
 
   test('fires while APPROACHING an AI villager, at a radius DERIVED from the prompt range', () => {
@@ -1049,6 +1050,20 @@ describe('A6: First steps, wired into main-simple', () => {
     expect(update).toContain(
       'for (const m of this.heldHints.splice(0)) this.ui.toast(m, { hint: true });',
     );
+  });
+
+  test('the arrival trail’s end: no flash while the guide runs, else a hint toast naming no place', () => {
+    // B10 ends the trail at the guide's talk villager, so the old flash
+    // ('follow the ➤ arrow to 🚀 Projects') landed on the look or talk card,
+    // or over the villager's chat, while the card said 'Walk up to Mayor'.
+    const trail = argsOf(stripped('main-simple.ts'), 'this.scene.setOnArrivalTrail(');
+    expect(trail).toContain('if (!this.guideHoldsHints()) {');
+    expect(trail).toContain('the gold ➤ up top points to your next stop.');
+    expect(trail).toContain('hint: true,');
+    expect(trail).not.toContain('flashMessage');
+    expect(trail).not.toContain('🚀 Projects');
+    expect(trail).toContain("this.markDone('ds_arrived');");
+    expect(trail).toContain("trackOnce('arrival_trail_done');");
   });
 });
 

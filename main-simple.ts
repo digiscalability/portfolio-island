@@ -1051,8 +1051,20 @@ export class SimpleApp {
       this.scene.setOnArrivalTrail(() => {
         this.markDone('ds_arrived');
         // Hand off to the NEXT thing, not a dead-end congratulation — the
-        // old copy celebrated and left the visitor standing there.
-        this.ui.flashMessage('🏝️ You’ve got the hang of it — follow the ➤ arrow to 🚀 Projects.');
+        // old copy celebrated and left the visitor standing there. While
+        // First steps runs, the guide owns the next step: the trail ends at
+        // its talk villager, so a flash sending the visitor to Projects
+        // landed on the look or talk card, or over the villager's chat. Else
+        // a hint toast (D6 holds it behind panels), naming no place the pill
+        // might not show.
+        if (!this.guideHoldsHints()) {
+          this.ui.toast(
+            '🏝️ You’ve got the hang of it — the gold ➤ up top points to your next stop.',
+            {
+              hint: true,
+            },
+          );
+        }
         sfx.questComplete();
         trackOnce('arrival_trail_done');
       });
@@ -3725,10 +3737,11 @@ export class SimpleApp {
     // Feed the in-world breadcrumb trail the same target as the HUD compass —
     // EXCEPT while the first-visit arrival coins are still down: two golden
     // trails pointing different ways is a fork, not a path. The coins lead to
-    // the nearest villager (where the talk hint fires), the completion flash
-    // hands off to the ➤ arrow, and THEN the sparkles resume toward Projects
-    // — a chain. Target-based suppression (null), never visibility-based:
-    // reduced-motion users keep their breadcrumbs by design.
+    // the nearest villager (where the talk hint fires), the completion hint
+    // (or First steps' talk step) hands off to the ➤ arrow, and THEN the
+    // sparkles resume toward the pill's target — a chain. Target-based
+    // suppression (null), never visibility-based: reduced-motion users keep
+    // their breadcrumbs by design.
     this.scene.setGuideTarget(this.scene.hasTrailCoins() ? null : targetPos);
 
     // Bearing vectors projected onto the player's tangent plane (reused scratch).
