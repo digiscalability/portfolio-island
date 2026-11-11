@@ -8,13 +8,17 @@
  * the same with or without D's tokens. Motion is transform and opacity,
  * finite, and none at all under reduced motion; at most three elements
  * animate at once (the card, its check, one ring or the ghost thumb).
+ *
+ * The same element draws the recruiter route (P2-A4): a view whose phase is
+ * 'route', with 'Show me' rows.
  */
-import type { GuideButton, GuideCopy, GuideView } from './Guide';
+import type { GuideButton, GuideCopy, GuideRow, GuideView } from './Guide';
 
 export interface GuideCardOptions {
   touch: boolean;
   reducedMotion(): boolean;
-  /** A button: skip, resume (the chip), ok, primary, school, close. */
+  /** A button: skip, resume (the chip), ok, primary, school, close, and the
+   *  route's stay and route:<district>. */
   onButton(id: GuideButton['id']): void;
   /** The interaction prompt the phone card stays 8 px above, if any. */
   prompt(): HTMLElement | null;
@@ -174,7 +178,7 @@ export class GuideCard {
     const signal =
       v.phase === 'steps'
         ? v.step
-        : v.phase === 'controls' || v.phase === 'finale'
+        : v.phase === 'controls' || v.phase === 'finale' || v.phase === 'route'
           ? v.phase
           : null;
     const active = v.active;
@@ -373,21 +377,24 @@ export class GuideCard {
   private drawCard(v: GuideView, copy: GuideCopy): void {
     this.el.style.padding = '10px 14px';
     const head = document.createElement('div');
+    // 'Skip' and 'Close' fit in 52 px; 'Stay in the menu' needs its width,
+    // and the title wraps beside it in the narrow landscape lane.
+    const longHead = copy.headButton.label.length > 6;
     Object.assign(head.style, {
       position: 'relative',
       display: 'flex',
       alignItems: 'center',
       gap: '8px',
       minHeight: '20px',
-      paddingRight: '52px',
+      paddingRight: longHead ? '112px' : '52px',
       fontSize: '12px',
       color: 'var(--ds-text-3, #9fb0c8)',
     });
     const title = document.createElement('span');
     title.textContent = copy.title;
-    if (v.phase === 'finale') {
+    if (v.phase === 'finale' || v.phase === 'route') {
       Object.assign(title.style, {
-        fontSize: '14px',
+        fontSize: v.phase === 'finale' ? '14px' : '12.5px',
         fontWeight: '700',
         color: 'var(--ds-text-1, #f3f6fb)',
       });
@@ -408,6 +415,7 @@ export class GuideCard {
         fontSize: '12.5px',
         color: 'var(--ds-text-2, #c5cfdd)',
         textDecoration: 'underline',
+        whiteSpace: 'nowrap',
       }),
     );
     this.el.appendChild(head);
@@ -440,6 +448,7 @@ export class GuideCard {
       });
       this.el.appendChild(line);
     }
+    if (copy.rows?.length) this.el.appendChild(this.rows(copy.rows));
     if (copy.buttons.length) {
       const row = document.createElement('div');
       // Stacked, each the card's width: half a 300 px card cannot hold
@@ -472,6 +481,73 @@ export class GuideCard {
       );
       this.el.appendChild(row);
     }
+  }
+
+  /**
+   * 'Show me' rows: each row is one button, what it leads to and 'Show me'.
+   * Stacked on a desktop window with room; side by side on a phone or a
+   * short window, where three stacked 44 px rows would run the card into
+   * the minimap (portrait, 375x667) or the joystick (landscape, 667x375).
+   * The first is the one filled primary, the indigo; nothing new is green.
+   */
+  private rows(rows: GuideRow[]): HTMLElement {
+    const across = this.opts.touch || innerHeight <= 500;
+    const wrap = document.createElement('div');
+    wrap.dataset.rows = across ? 'across' : 'stacked';
+    Object.assign(wrap.style, {
+      display: 'flex',
+      flexDirection: across ? 'row' : 'column',
+      gap: '6px',
+      marginTop: '8px',
+    });
+    rows.forEach((r, i) => {
+      const b = this.button(
+        { id: r.button.id, label: '' },
+        {
+          display: 'flex',
+          flexDirection: across ? 'column' : 'row',
+          alignItems: 'center',
+          justifyContent: across ? 'center' : 'space-between',
+          gap: across ? '0' : '8px',
+          flex: across ? '1 1 0' : 'none',
+          minWidth: '0',
+          minHeight: 'var(--ds-hit-target, 44px)',
+          padding: across ? '3px 4px' : '0 12px',
+          borderRadius: 'var(--ds-radius-sm, 10px)',
+          border: i === 0 ? 'none' : '1px solid var(--ds-line-strong, rgba(255,255,255,0.2))',
+          background:
+            i === 0
+              ? 'var(--ds-primary, linear-gradient(135deg,#4c5be0,#7a45d6))'
+              : 'rgba(255,255,255,0.06)',
+        },
+      );
+      const name = document.createElement('span');
+      name.textContent = r.label;
+      Object.assign(name.style, {
+        fontSize: across ? '12px' : '13.5px',
+        fontWeight: '600',
+        lineHeight: '1.25',
+        maxWidth: '100%',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      });
+      const act = document.createElement('span');
+      act.textContent = r.button.label;
+      Object.assign(act.style, {
+        fontSize: across ? '11.5px' : '12.5px',
+        lineHeight: '1.25',
+        whiteSpace: 'nowrap',
+        // on the filled primary the label keeps the button's own white
+        color: i === 0 ? 'inherit' : 'var(--ds-signal, #ffd479)',
+      });
+      b.append(name, act);
+      if (i === 0) b.dataset.primary = '1';
+      // Read as one phrase: 'Show me Projects'.
+      b.setAttribute('aria-label', `${r.button.label} ${r.label}`);
+      wrap.appendChild(b);
+    });
+    return wrap;
   }
 
   private dots(v: GuideView): HTMLElement {

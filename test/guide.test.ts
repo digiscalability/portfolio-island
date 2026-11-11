@@ -9,6 +9,8 @@
 //   the arming sources, the words, and the card on happy-dom.
 // - main-simple makes the card only when the guide first arms (the last
 //   describe runs its methods for real on a stub app).
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import {
@@ -20,7 +22,11 @@ import {
   guideCopy,
   parseGuideSave,
   readGuideTo,
+  RecruiterRoute,
   resolveGuideKey,
+  ROUTE_PITCH,
+  ROUTE_STOPS,
+  ROUTE_WALK_U,
   type GuideCopyContext,
   type GuideFrame,
   type GuideOptions,
@@ -855,14 +861,30 @@ describe('First steps: the words', () => {
     ]);
   });
 
-  test('the legacy controls card says Space until A11 makes Shift run; no "?" key yet', () => {
+  test('the legacy controls card says Space until A11 makes Shift run', () => {
     const c = guideCopy(view({ phase: 'controls', step: null }), ctx());
     expect(c.body).toBe('Drag to look · Space to run');
     expect(guideCopy(view({ phase: 'controls', step: null }), ctx({ runKey: 'shift' })).body).toBe(
       'Drag to look · Shift to run',
     );
-    // '? for all controls' waits for D8's controls sheet (wave 2).
+  });
+
+  test("it names '?' only in a build that has D8's Controls & settings sheet", () => {
+    // Without the sheet nothing answers the key: the clause stays off.
+    const c = guideCopy(view({ phase: 'controls', step: null }), ctx());
     expect(c.body).not.toContain('?');
+    expect(
+      guideCopy(view({ phase: 'controls', step: null }), ctx({ controlsSheet: false })).body,
+    ).not.toContain('?');
+    expect(
+      guideCopy(view({ phase: 'controls', step: null }), ctx({ controlsSheet: true })).body,
+    ).toBe('Drag to look · Space to run · ? for all controls');
+    expect(
+      guideCopy(
+        view({ phase: 'controls', step: null }),
+        ctx({ controlsSheet: true, runKey: 'shift' }),
+      ).body,
+    ).toBe('Drag to look · Shift to run · ? for all controls');
   });
 });
 
@@ -1486,5 +1508,458 @@ describe('main-simple: the pill names the villager First steps sends the visitor
     run(far.guide, 0.6);
     expect(far.guide.currentStep()).toBe('portfolio');
     expect(far.frame().label).toBe('🚀 Projects');
+  });
+});
+
+// ---- P2-A4: the recruiter route -------------------------------------------
+
+describe('RecruiterRoute: three stops after the hire card (P2-A4)', () => {
+  type Tracked = { name: string; stop: string; outcome: string };
+  const make = () => {
+    const tracked: Tracked[] = [];
+    const route = new RecruiterRoute({ track: (name, p) => tracked.push({ name, ...p }) });
+    return { route, tracked };
+  };
+  /** Frames for `seconds`, with nothing (or something) in the way. */
+  const frames = (route: RecruiterRoute, seconds: number, blocked = false): void => {
+    for (let t = 0; t < seconds - 1e-9; t += 1 / 60) route.frame(1 / 60, blocked);
+  };
+
+  test('the stops are Projects, Professional, Get in touch, in that order', () => {
+    expect(ROUTE_STOPS.map((x) => x.id)).toEqual(['projects', 'professional', 'contact']);
+    expect(ROUTE_STOPS.map((x) => x.label)).toEqual(['Projects', 'Professional', 'Get in touch']);
+  });
+
+  test('it arms when a hire card closes on a visitor who has walked under 4 u', () => {
+    expect(ROUTE_WALK_U).toBe(4);
+    const { route, tracked } = make();
+    expect(route.showing()).toBe(false);
+    expect(route.arm('hire', 3.9)).toBe(true);
+    expect(route.showing()).toBe(true);
+    expect(tracked).toEqual([{ name: 'recruiter_route', stop: 'hire', outcome: 'shown' }]);
+    // a visitor already exploring is left alone
+    const walked = make();
+    expect(walked.route.arm('hire', 4)).toBe(false);
+    expect(walked.route.arm('hire', Number.NaN)).toBe(false);
+    expect(walked.route.showing()).toBe(false);
+    expect(walked.tracked).toEqual([]);
+  });
+
+  test('visible 600 ms after the card closes, inside the 1 s the brief allows', () => {
+    const { route } = make();
+    route.arm('hire', 0);
+    expect(route.view()).toMatchObject({ phase: 'route', visible: false, active: true });
+    frames(route, 0.55);
+    expect(route.view().visible).toBe(false);
+    frames(route, 0.1);
+    expect(route.view().visible).toBe(true);
+  });
+
+  test('a panel, a tour or a room hides it; it comes back 600 ms after, still holding hints', () => {
+    const { route } = make();
+    route.arm('tour', 0);
+    frames(route, 0.7);
+    const v0 = route.version();
+    frames(route, 2); // nothing changes: no redraw
+    expect(route.version()).toBe(v0);
+    frames(route, 3, true);
+    expect(route.view()).toMatchObject({ visible: false, active: true });
+    expect(route.showing()).toBe(true);
+    frames(route, 0.55);
+    expect(route.view().visible).toBe(false);
+    frames(route, 0.1);
+    expect(route.view().visible).toBe(true);
+  });
+
+  test("a stop's 'Show me' closes it and is tracked with two properties", () => {
+    const { route, tracked } = make();
+    route.arm('hire', 0);
+    frames(route, 0.7);
+    expect(route.pick('nowhere')).toBe(false); // not a stop: nothing happens
+    expect(route.showing()).toBe(true);
+    expect(route.pick('professional')).toBe(true);
+    expect(route.showing()).toBe(false);
+    expect(route.view()).toMatchObject({ visible: false, active: false });
+    expect(tracked[tracked.length - 1]).toEqual({
+      name: 'recruiter_route',
+      stop: 'professional',
+      outcome: 'show',
+    });
+    for (const t of tracked) {
+      expect(Object.keys(t).filter((k) => k !== 'name')).toEqual(['stop', 'outcome']);
+    }
+    expect(route.pick('projects')).toBe(false); // gone: a second press does nothing
+  });
+
+  test("'Stay in the menu' closes it, and it has had its turn for this visit", () => {
+    const { route, tracked } = make();
+    route.arm('hire', 0);
+    route.stay();
+    expect(route.showing()).toBe(false);
+    expect(tracked[tracked.length - 1]).toEqual({
+      name: 'recruiter_route',
+      stop: 'none',
+      outcome: 'stay',
+    });
+    expect(route.arm('hire', 0)).toBe(false);
+    expect(route.arm('deeplink', 0)).toBe(false);
+  });
+
+  test('its version never collides with a First steps version, and changes only when the card does', () => {
+    const { route } = make();
+    const { guide } = armed();
+    expect(route.version()).toBeGreaterThanOrEqual(1_000_000);
+    expect(guide.version()).toBeLessThan(1_000_000);
+    const v0 = route.version();
+    route.arm('hire', 0);
+    expect(route.version()).toBeGreaterThan(v0);
+  });
+
+  test('the words: the title, three Show me rows, Stay in the menu; nothing overclaimed', () => {
+    const { route } = make();
+    route.arm('hire', 0);
+    const c = route.copy();
+    expect(c.title).toBe('Recruiter route · 3 stops');
+    expect(c.body).toBe('');
+    expect(c.headButton).toEqual({ id: 'stay', label: 'Stay in the menu' });
+    expect(c.rows).toEqual([
+      { label: 'Projects', button: { id: 'route:projects', label: 'Show me' } },
+      { label: 'Professional', button: { id: 'route:professional', label: 'Show me' } },
+      { label: 'Get in touch', button: { id: 'route:contact', label: 'Show me' } },
+    ]);
+    expect(c.buttons).toEqual([]);
+    for (const s of [c.title, c.body, c.headButton.label, ...c.rows!.map((r) => r.label)]) {
+      expect(s).not.toMatch(/agent/i);
+      expect(s).not.toMatch(/live AI/i);
+    }
+  });
+
+  test('a /z/hire visitor is told where they are, once: the pitch line', () => {
+    const { route } = make();
+    route.arm('deeplink', 0);
+    expect(route.copy().body).toBe(
+      "You're on Abbas's 3D portfolio island — walk in to see the work.",
+    );
+    expect(route.copy().body).toBe(ROUTE_PITCH);
+    // the pill and the tour's card have a welcome card behind them: no pitch
+    for (const source of ['hire', 'tour'] as const) {
+      const r = make().route;
+      r.arm(source, 0);
+      expect(r.copy().body).toBe('');
+    }
+  });
+});
+
+describe('GuideCard: the recruiter route on the same card (P2-A4)', () => {
+  const pressed: string[] = [];
+  const seen: Array<{ active: boolean; step: string | null }> = [];
+  const on = (e: Event) => seen.push((e as CustomEvent).detail);
+  let card: GuideCard | null = null;
+  const proto0 = Element.prototype as { animate?: unknown };
+  let animate0: unknown;
+  const mount = (over: Partial<GuideCardOptions> = {}): GuideCard => {
+    card = new GuideCard(document.getElementById('ui-overlay')!, {
+      touch: false,
+      reducedMotion: () => true,
+      onButton: (id) => pressed.push(id),
+      prompt: () => null,
+      ...over,
+    });
+    return card;
+  };
+  const shown = (source: 'hire' | 'deeplink' = 'hire') => {
+    const route = new RecruiterRoute();
+    route.arm(source, 0);
+    for (let i = 0; i < 45; i++) route.frame(1 / 60, false);
+    return route;
+  };
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    pressed.length = 0;
+    seen.length = 0;
+    window.addEventListener('ds:guide', on);
+    animate0 = proto0.animate;
+    proto0.animate = () => ({ cancel() {} });
+  });
+  afterEach(() => {
+    window.removeEventListener('ds:guide', on);
+    card?.dispose();
+    card = null;
+    proto0.animate = animate0;
+    Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true });
+  });
+
+  test("it holds hints like First steps: data-active '1' and 'ds:guide' {active, step: 'route'}", () => {
+    const c = mount();
+    const route = shown();
+    c.render(route.view(), route.copy());
+    expect(c.el.style.display).toBe('block');
+    expect(c.el.dataset.active).toBe('1');
+    expect(c.el.dataset.step).toBe('route');
+    expect(seen).toEqual([{ active: true, step: 'route' }]);
+    expect(c.el.textContent).toContain('Recruiter route · 3 stops');
+    // it goes: the gate opens
+    route.stay();
+    c.render(route.view(), route.copy());
+    expect(c.el.style.display).toBe('none');
+    expect(seen[seen.length - 1]).toEqual({ active: false, step: null });
+  });
+
+  test("three 'Show me' buttons, read as 'Show me Projects', and Stay in the menu", () => {
+    const c = mount();
+    const route = shown();
+    c.render(route.view(), route.copy());
+    const stops = [...c.el.querySelectorAll<HTMLButtonElement>('button[data-g^="route:"]')];
+    expect(stops.map((b) => b.dataset.g)).toEqual([
+      'route:projects',
+      'route:professional',
+      'route:contact',
+    ]);
+    for (const b of stops) expect(b.textContent).toMatch(/Show me/);
+    expect(stops.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Show me Projects',
+      'Show me Professional',
+      'Show me Get in touch',
+    ]);
+    // each a 44 px target
+    for (const b of stops) expect(b.style.minHeight).toBe('var(--ds-hit-target, 44px)');
+    stops[0].click();
+    c.el.querySelector<HTMLButtonElement>('button[data-g="stay"]')!.click();
+    expect(pressed).toEqual(['route:projects', 'stay']);
+    expect(c.el.querySelector('button[data-g="stay"]')!.textContent).toBe('Stay in the menu');
+  });
+
+  test('one filled primary, the indigo; the rest are outlines; nothing is green', () => {
+    const c = mount();
+    const route = shown();
+    c.render(route.view(), route.copy());
+    const stops = [...c.el.querySelectorAll<HTMLButtonElement>('button[data-g^="route:"]')];
+    // (happy-dom drops a var() background, so the card marks its primary)
+    expect(stops.map((b) => b.dataset.primary ?? '')).toEqual(['1', '', '']);
+    for (const b of stops.slice(1)) expect(b.style.background).toBe('rgba(255, 255, 255, 0.06)');
+    expect(stops[0].style.background).toBe('');
+    // the fill is D3's indigo token with the literal as its fallback, and
+    // neither file carries the green reserved for Work with me
+    const card = readFileSync(join(process.cwd(), 'GuideCard.ts'), 'utf8');
+    expect(card).toContain("'var(--ds-primary, linear-gradient(135deg,#4c5be0,#7a45d6))'");
+    for (const f of ['GuideCard.ts', 'Guide.ts']) {
+      const src = readFileSync(join(process.cwd(), f), 'utf8').toLowerCase();
+      for (const green of ['#087a4c', '#067046', '--ds-green', '--ds-success']) {
+        expect(src, `${f}: ${green}`).not.toContain(green);
+      }
+    }
+  });
+
+  test('stacked on a desktop window; side by side on a phone and in a short window', () => {
+    const route = shown();
+    const desk = mount();
+    desk.render(route.view(), route.copy());
+    expect(desk.el.querySelector<HTMLElement>('[data-rows]')!.dataset.rows).toBe('stacked');
+    desk.dispose();
+    const phone = mount({ touch: true });
+    phone.render(route.view(), route.copy());
+    const across = phone.el.querySelector<HTMLElement>('[data-rows]')!;
+    expect(across.dataset.rows).toBe('across');
+    expect(across.style.flexDirection).toBe('row');
+    phone.dispose();
+    Object.defineProperty(window, 'innerHeight', { value: 480, configurable: true });
+    const short = mount();
+    short.render(route.view(), route.copy());
+    expect(short.el.querySelector<HTMLElement>('[data-rows]')!.dataset.rows).toBe('across');
+    expect(short.el.dataset.lane).toBe('landscape');
+  });
+
+  test('the pitch line shows for a /z/hire visitor only', () => {
+    const c = mount();
+    const link = shown('deeplink');
+    c.render(link.view(), link.copy());
+    expect(c.el.textContent).toContain(ROUTE_PITCH);
+    c.dispose();
+    const plain = mount();
+    const route = shown('hire');
+    plain.render(route.view(), route.copy());
+    expect(plain.el.textContent).not.toContain('portfolio island');
+  });
+
+  test('reduced motion: nothing animates', () => {
+    const calls: unknown[] = [];
+    proto0.animate = (...a: unknown[]) => {
+      calls.push(a);
+      return { cancel() {} };
+    };
+    const c = mount({ reducedMotion: () => true });
+    const route = shown();
+    c.render(route.view(), route.copy());
+    expect(calls).toEqual([]);
+  });
+});
+
+// main-simple's own handlers, for real, on a stub app (as in interiorEntry).
+describe('main-simple: a hire card closing arms the recruiter route (P2-A4)', () => {
+  type Method = (this: unknown, ...a: unknown[]) => unknown;
+  const NAMES = [
+    'renderGuide',
+    'armGuide',
+    'armRoute',
+    'onModalEvent',
+    'onGuideButton',
+    'createGuideCard',
+    'guideFinaleDistrict',
+    'guideHoldsHints',
+  ] as const;
+  let proto: Record<(typeof NAMES)[number], Method>;
+  beforeAll(async () => {
+    (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
+    const mod = await import('../main-simple');
+    proto = mod.SimpleApp.prototype as unknown as typeof proto;
+  }, 120000);
+
+  const stubApp = (guide: Guide, walked = 0) => {
+    const app: Record<string, unknown> = {
+      guide,
+      guideCard: null,
+      route: new RecruiterRoute(),
+      walkedSinceLoad: walked,
+      hireCardSource: null,
+      ui: {
+        getOverlay: () => document.getElementById('ui-overlay')!,
+        isTouchDevice: () => false,
+        isWelcomeVisible: () => false,
+      },
+      introSettled: true,
+      compassLabel: '',
+      passport: null,
+      compassDistrict: null,
+      guidePrevValid: true,
+    };
+    for (const k of NAMES) app[k] = proto[k].bind(app);
+    return app as typeof app & Record<(typeof NAMES)[number], (...a: unknown[]) => unknown>;
+  };
+  const closed = { open: false, id: 'zone', zone: 'hire' };
+  /** The frames main-simple's guideTick would run: the route, then a redraw. */
+  const tick = (app: ReturnType<typeof stubApp>, seconds: number): void => {
+    for (let t = 0; t < seconds - 1e-9; t += 1 / 60) {
+      (app.route as RecruiterRoute).frame(1 / 60, false);
+      app.renderGuide();
+    }
+  };
+  const sent: Array<{ key: string; source: string }> = [];
+  const onTo = (e: Event) => sent.push((e as CustomEvent).detail);
+  let app: ReturnType<typeof stubApp> | null = null;
+  const proto0 = Element.prototype as { animate?: unknown };
+  let animate0: unknown;
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    localStorage.clear();
+    sent.length = 0;
+    window.addEventListener('ds:guide-to', onTo);
+    animate0 = proto0.animate;
+    proto0.animate = () => ({ cancel() {} });
+  });
+  afterEach(() => {
+    window.removeEventListener('ds:guide-to', onTo);
+    (app?.guideCard as GuideCard | null)?.dispose();
+    app = null;
+    proto0.animate = animate0;
+  });
+  const cardText = (): string => document.getElementById('ds-guide')?.textContent ?? '';
+  const visible = (): boolean => document.getElementById('ds-guide')?.style.display === 'block';
+
+  test('within 1 s of the hire card closing the route card is up; arming sets ds_hint_compass', () => {
+    app = stubApp(makeGuide().guide);
+    app.onModalEvent(closed);
+    expect(localStorage.getItem('ds_hint_compass')).toBe('1');
+    expect(document.getElementById('ds-guide')).not.toBeNull(); // made at the arming
+    expect(visible()).toBe(false); // the 600 ms beat
+    tick(app, 0.7);
+    expect(visible()).toBe(true);
+    expect(cardText()).toContain('Recruiter route · 3 stops');
+    expect(app.guideHoldsHints()).toBe(true);
+  });
+
+  test('other panels, an opening hire card and a visitor who walked off arm nothing', () => {
+    app = stubApp(makeGuide().guide);
+    for (const d of [
+      { open: true, id: 'zone', zone: 'hire' },
+      { open: false, id: 'zone', zone: 'projects' },
+      { open: false, id: 'island-map' },
+      null,
+      'hire',
+    ]) {
+      app.onModalEvent(d);
+    }
+    expect((app.route as RecruiterRoute).showing()).toBe(false);
+    expect(document.getElementById('ds-guide')).toBeNull();
+    const walked = stubApp(makeGuide().guide, 9);
+    walked.onModalEvent(closed);
+    expect((walked.route as RecruiterRoute).showing()).toBe(false);
+    expect(localStorage.getItem('ds_hint_compass')).toBeNull();
+  });
+
+  test("'Show me' on Projects sends 'ds:guide-to' district:projects, and First steps arms", () => {
+    const { guide } = makeGuide();
+    app = stubApp(guide);
+    app.onModalEvent(closed);
+    tick(app, 0.7);
+    document.querySelector<HTMLButtonElement>('#ds-guide button[data-g="route:projects"]')!.click();
+    // the card's own onButton is the stub's; main-simple's handler runs here
+    app.onGuideButton('route:projects');
+    expect(sent).toEqual([{ key: 'district:projects', source: 'route' }]);
+    expect((app.route as RecruiterRoute).showing()).toBe(false);
+    expect(guide.running()).toBe(true);
+    // the card now shows First steps
+    run(guide, 0.7);
+    app.renderGuide();
+    expect(cardText()).toContain('First steps · 1/5');
+    expect(cardText()).not.toContain('Recruiter route');
+  });
+
+  test("'Stay in the menu' takes the card down and arms nothing", () => {
+    const { guide } = makeGuide();
+    app = stubApp(guide);
+    app.onModalEvent(closed);
+    tick(app, 0.7);
+    app.onGuideButton('stay');
+    expect(visible()).toBe(false);
+    expect(guide.running()).toBe(false);
+    expect(sent).toEqual([]);
+    expect(app.guideHoldsHints()).toBe(false);
+    // and a second hire card this visit does not bring it back
+    app.onModalEvent(closed);
+    tick(app, 0.7);
+    expect(visible()).toBe(false);
+  });
+
+  test('a /z/hire link: the pitch line, once; the tour and the pill: none', () => {
+    app = stubApp(makeGuide().guide);
+    app.hireCardSource = 'deeplink';
+    app.onModalEvent(closed);
+    expect(app.hireCardSource).toBeNull(); // spent on this card
+    tick(app, 0.7);
+    expect(cardText()).toContain(ROUTE_PITCH);
+    (app.guideCard as GuideCard).dispose();
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    const tour = stubApp(makeGuide().guide);
+    tour.hireCardSource = 'tour';
+    tour.onModalEvent(closed);
+    tick(tour, 0.7);
+    expect(cardText()).toContain('Recruiter route · 3 stops');
+    expect(cardText()).not.toContain('portfolio island');
+    (tour.guideCard as GuideCard).dispose();
+  });
+
+  test('First steps running when the hire card closes: the route has the card, then hands it back', () => {
+    const { guide } = makeGuide();
+    app = stubApp(guide);
+    app.armGuide('explore');
+    run(guide, 0.7);
+    app.renderGuide();
+    expect(cardText()).toContain('First steps · 1/5');
+    app.onModalEvent(closed);
+    tick(app, 0.7);
+    expect(cardText()).toContain('Recruiter route · 3 stops');
+    app.onGuideButton('stay');
+    app.renderGuide();
+    expect(cardText()).toContain('First steps · 1/5');
   });
 });

@@ -16,12 +16,14 @@ import {
   Guide,
   guideCopy,
   readGuideTo,
+  RecruiterRoute,
   resolveGuideKey,
   type GuideArm,
   type GuideButton,
   type GuideFrame,
   type GuideStore,
   type GuideWorld,
+  type RouteSource,
 } from './Guide';
 import { GuideCard } from './GuideCard';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
@@ -485,6 +487,7 @@ export class SimpleApp {
     guideWelcomeClick?: (event: Event) => void;
     guideWelcomeKey?: (event: KeyboardEvent) => void;
     interiorEscape?: (event: KeyboardEvent) => void;
+    guideModal?: (event: Event) => void;
   } = {};
 
   constructor() {
@@ -2300,6 +2303,9 @@ export class SimpleApp {
       // api/z.js serves its /z/hire share route.
       if (['welcome', 'professional', 'projects', 'personal', 'contact', 'hire'].includes(z)) {
         this.ui.hideWelcome();
+        // A /z/hire visitor has seen no welcome card: the route that follows
+        // the hire card opens with where they are (P2-A4).
+        if (z === 'hire') this.hireCardSource = 'deeplink';
         this.ui.showZonePanel({ id: z, name: z }, { source: 'deeplink' });
         return true;
       }
@@ -4247,6 +4253,12 @@ export class SimpleApp {
     yaw: 0,
     targetDist: null,
   };
+  /** The recruiter route (P2-A4), made with the guide. */
+  private route: RecruiterRoute | null = null;
+  /** How far the visitor has walked since the page loaded, u. */
+  private walkedSinceLoad = 0;
+  /** How the hire card now open was opened, when not by the pill or a chip. */
+  private hireCardSource: RouteSource | null = null;
   /** Bound once: FxBudget times it every frame. */
   private readonly boundGuideTick = (): void => this.guideTick();
   /** main-simple's own unprompted hints, held while the guide runs. */
@@ -4290,6 +4302,11 @@ export class SimpleApp {
         controlsCard: !this.ui.isTouchDevice(),
       },
     );
+    // The recruiter route (P2-A4) arms when a hire card closes. D4's 'ds:modal'
+    // says which panel that was: {open: false, id: 'zone', zone: 'hire'}.
+    this.route = new RecruiterRoute({ track: (name, props) => track(name, props) });
+    this.boundHandlers.guideModal = (e: Event) => this.onModalEvent((e as CustomEvent).detail);
+    window.addEventListener('ds:modal', this.boundHandlers.guideModal);
     // No card yet: #ds-guide is made when the guide first arms (renderGuide).
     // How the welcome card closes decides how the guide arms. Capture phase,
     // ahead of the buttons' own handlers: arming writes ds_hint_compass
@@ -4352,12 +4369,39 @@ export class SimpleApp {
     return true;
   }
 
+  /**
+   * A modal opened or closed (D4's 'ds:modal'). A hire card closing arms the
+   * recruiter route for a visitor who has not walked anywhere yet: one who
+   * read the card and closed it stood on an island nobody had explained.
+   */
+  private onModalEvent(detail: unknown): void {
+    const d = detail as { open?: unknown; id?: unknown; zone?: unknown } | null;
+    if (!d || d.id !== 'zone' || d.zone !== 'hire' || d.open !== false) return;
+    const source = this.hireCardSource ?? 'hire';
+    this.hireCardSource = null;
+    this.armRoute(source);
+  }
+
+  /** Arm the route; like arming First steps, that counts as the compass hint
+   *  shown (ds_hint_compass). */
+  private armRoute(source: RouteSource): boolean {
+    if (!this.route?.arm(source, this.walkedSinceLoad)) return false;
+    try {
+      localStorage.setItem('ds_hint_compass', '1');
+    } catch {
+      /* no storage */
+    }
+    this.renderGuide();
+    return true;
+  }
+
   /** While the guide runs, or may arm as the welcome card closes, main-simple
    *  fires no unprompted hints: talk, coin, lost, district, specials. */
   private guideHoldsHints(): boolean {
     const g = this.guide;
     if (!g) return false;
-    if (g.isActive()) return true;
+    // The recruiter route holds them the same way while it is up.
+    if (g.isActive() || this.route?.showing()) return true;
     return g.eligible() && !g.running() && (!this.introSettled || this.ui.isWelcomeVisible());
   }
 
@@ -4394,8 +4438,7 @@ export class SimpleApp {
   /** The guide's frame (FxBudget 'guide'): DOM writes only when it changed. */
   private guideTick(): void {
     const g = this.guide;
-    // A finished save still runs its finale (a clock, the pause rules).
-    if (!g || (!g.eligible() && !g.running())) return;
+    if (!g) return;
     const ui = this.ui;
     if (
       this.guideArmOnPanelsClosed &&
@@ -4424,11 +4467,21 @@ export class SimpleApp {
       this._guidePrev.copy(p);
       this.guidePrevValid = true;
       if (this.lastCompassTarget) f.targetDist = p.distanceTo(this.lastCompassTarget);
+      // a teleport (respawn, a room) is not a walk
+      if (f.walked > 0 && f.walked < 5) this.walkedSinceLoad += f.walked;
     }
     f.moveMag = this.guideMoveMag;
     f.yaw = this.scene.getOrbitCamera().getYaw();
-    g.setCompassLabel(this.compassLabel);
-    g.frame(f);
+    // The recruiter route has the card while it shows: First steps waits
+    // behind it like behind a panel, and comes back 600 ms after it goes.
+    const route = this.route;
+    route?.frame(f.dt, f.blocked);
+    if (route?.showing()) f.blocked = true;
+    // A finished save still runs its finale (a clock, the pause rules).
+    if (g.eligible() || g.running()) {
+      g.setCompassLabel(this.compassLabel);
+      g.frame(f);
+    }
     this.renderGuide();
     this.guidePromptT += f.dt;
     if (this.guidePromptT > 0.25) {
@@ -4448,8 +4501,17 @@ export class SimpleApp {
    */
   private renderGuide(): void {
     const g = this.guide;
-    if (!g || (!this.guideCard && !g.running())) return;
+    if (!g) return;
+    const route = this.route ?? null;
+    const routeUp = route !== null && route.showing();
+    if (!this.guideCard && !g.running() && !routeUp) return;
     const card = (this.guideCard ??= this.createGuideCard());
+    // One surface at a time on the one card: the recruiter route while it
+    // shows (and once more as it goes, to take it down), else First steps.
+    if (route !== null && (routeUp || (!g.running() && card.version() >= 1_000_000))) {
+      if (card.version() !== route.version()) card.render(route.view(), route.copy());
+      return;
+    }
     if (card.version() === g.version()) return;
     const v = g.view();
     const root = document.documentElement;
@@ -4466,6 +4528,9 @@ export class SimpleApp {
           v.step === 'talk' &&
           v.talkTarget !== null &&
           this.questLinesFirst(v.talkTarget, this.scene.getCoinsCollected()),
+        // '?' is named only where D8's Controls & settings sheet answers it.
+        controlsSheet:
+          typeof (this.ui as unknown as { showControls?: unknown }).showControls === 'function',
       }),
     );
   }
@@ -4487,7 +4552,19 @@ export class SimpleApp {
     else if (id === 'resume') g.expand();
     else if (id === 'ok') g.controlsDone();
     else if (id === 'close') g.finish();
-    else {
+    else if (id === 'stay') this.route?.stay();
+    else if (id.startsWith('route:')) {
+      // A stop's 'Show me': the compass goes there through the seam every
+      // producer uses (P2-A5), and First steps arms, because a visitor who
+      // has only read a card has not been shown how to walk.
+      const stop = id.slice('route:'.length);
+      if (this.route?.pick(stop)) {
+        window.dispatchEvent(
+          new CustomEvent('ds:guide-to', { detail: { key: `district:${stop}`, source: 'route' } }),
+        );
+        this.armGuide('cta');
+      }
+    } else {
       const key = id === 'school' ? 'school' : `district:${this.guideFinaleDistrict()}`;
       g.finish();
       // The finale's 'Show me' goes through the seam every producer uses
@@ -4952,7 +5029,10 @@ export class SimpleApp {
     if (recruiter && !skipped) {
       // The play-to-hire path CONVERTS: the highlights end on the hire card
       // (CV, experience, LinkedIn, email), not on an empty meadow — and not
-      // on the old client-services contact pitch.
+      // on the old client-services contact pitch. When that card closes the
+      // recruiter route takes over (P2-A4): the tour used to end on 20 s of
+      // nothing.
+      this.hireCardSource = 'tour';
       this.ui.showHireCard('cta');
       return;
     }
@@ -6923,6 +7003,10 @@ export class SimpleApp {
 
     if (this.boundHandlers.interiorEscape) {
       window.removeEventListener('keydown', this.boundHandlers.interiorEscape, true);
+    }
+
+    if (this.boundHandlers.guideModal) {
+      window.removeEventListener('ds:modal', this.boundHandlers.guideModal);
     }
 
     this.guideCard?.dispose();

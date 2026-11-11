@@ -10,6 +10,8 @@
  *   cards, the guide's own buttons) name a place by key; resolveGuideKey
  *   turns the key into a position, from the same scene getters
  *   openIslandMap reads.
+ * - RecruiterRoute is the three-stop card a visitor gets when a hire card
+ *   closes before they have walked anywhere (P2-A4).
  * No DOM and no scene: test/guide.test.ts runs all of it on stubs.
  */
 import { fx } from './FxBudget';
@@ -196,7 +198,9 @@ export const GUIDE_GOALS = {
  *  the full tour, or the close of the panel See the work / Get in touch opened. */
 export type GuideArm = 'explore' | 'tour' | 'cta';
 
-export type GuidePhase = 'idle' | 'controls' | 'steps' | 'finale' | 'done';
+/** 'route' is the recruiter route's card (RecruiterRoute), drawn by the same
+ *  GuideCard through the same GuideView. */
+export type GuidePhase = 'idle' | 'controls' | 'steps' | 'finale' | 'done' | 'route';
 
 /** One frame of what the guide needs to know. main-simple reuses one object. */
 export interface GuideFrame {
@@ -653,6 +657,142 @@ export class Guide {
   }
 }
 
+// ---- The recruiter route (P2-A4) -------------------------------------------
+
+/** The route's three stops, in order: the work, the experience, the way in. */
+export const ROUTE_STOPS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'projects', label: 'Projects' },
+  { id: 'professional', label: 'Professional' },
+  { id: 'contact', label: 'Get in touch' },
+];
+/** A visitor who has walked this far since the page loaded is exploring
+ *  already: the route is for one who has only read the card. */
+export const ROUTE_WALK_U = 4;
+/** What a /z/hire visitor is told once the card closes: the deep link opens
+ *  on the hire card and otherwise never says where they are. */
+export const ROUTE_PITCH = "You're on Abbas's 3D portfolio island — walk in to see the work.";
+
+/** How the hire card that just closed was opened: the Hiring pill or chip, the
+ *  recruiter tour's last stop, or a /z/hire (?zone=hire) link. */
+export type RouteSource = 'hire' | 'tour' | 'deeplink';
+
+export interface RouteHooks {
+  track?(name: string, props: { stop: string; outcome: string }): void;
+}
+
+/**
+ * 'Recruiter route · 3 stops': Projects, Professional, Get in touch, each
+ * with a 'Show me' that points the compass there, and 'Stay in the menu'.
+ * It shows when a hire card closes on a visitor who has walked under 4 u
+ * since load, once a visit. A recruiter who read the card and closed it was
+ * left on an island nobody had explained (after the recruiter tour: 20 s of
+ * nothing). It pauses under panels, tours and rooms like First steps, and
+ * comes back 600 ms after.
+ */
+export class RecruiterRoute {
+  private phase: 'idle' | 'shown' | 'done' = 'idle';
+  private pitch = false;
+  private paused = true;
+  private resumeLeft = 0;
+  private ver = 0;
+
+  constructor(private readonly hooks: RouteHooks = {}) {}
+
+  /** Never the same number as a Guide's version: GuideCard redraws on change. */
+  version(): number {
+    return 1_000_000 + this.ver;
+  }
+
+  /** On screen or waiting behind a panel: it holds hints, as First steps does. */
+  showing(): boolean {
+    return this.phase === 'shown';
+  }
+
+  /** The hire card closed. False when the route has had its turn this visit,
+   *  or the visitor has walked off already. */
+  arm(source: RouteSource, walkedU: number): boolean {
+    if (this.phase !== 'idle' || !(walkedU < ROUTE_WALK_U)) return false;
+    this.phase = 'shown';
+    this.pitch = source === 'deeplink';
+    this.paused = true;
+    this.resumeLeft = GUIDE_TIMING.resume;
+    this.hooks.track?.('recruiter_route', { stop: source, outcome: 'shown' });
+    this.ver++;
+    return true;
+  }
+
+  /** One frame: hidden while anything is up, back 600 ms after it goes. */
+  frame(dt: number, blocked: boolean): void {
+    if (this.phase !== 'shown') return;
+    if (blocked) {
+      if (!this.paused) {
+        this.paused = true;
+        this.ver++;
+      }
+      this.resumeLeft = GUIDE_TIMING.resume;
+      return;
+    }
+    if (!this.paused) return;
+    this.resumeLeft -= Math.min(Math.max(dt, 0), 0.25);
+    if (this.resumeLeft > 0) return;
+    this.paused = false;
+    this.ver++;
+  }
+
+  /** A stop's 'Show me': the card goes; the caller points the compass there. */
+  pick(stop: string): boolean {
+    if (this.phase !== 'shown' || !ROUTE_STOPS.some((x) => x.id === stop)) return false;
+    this.hooks.track?.('recruiter_route', { stop, outcome: 'show' });
+    this.close();
+    return true;
+  }
+
+  /** 'Stay in the menu': the card goes and nothing else changes. */
+  stay(): void {
+    if (this.phase !== 'shown') return;
+    this.hooks.track?.('recruiter_route', { stop: 'none', outcome: 'stay' });
+    this.close();
+  }
+
+  view(): GuideView {
+    const shown = this.phase === 'shown';
+    return {
+      version: this.version(),
+      phase: shown ? 'route' : 'done',
+      visible: shown && !this.paused,
+      active: shown,
+      step: null,
+      justDone: null,
+      done: [],
+      chip: false,
+      coinLine: false,
+      heading: 'Recruiter route',
+      talkTarget: null,
+    };
+  }
+
+  /** The card's words. The pitch line is for a visitor a link dropped here. */
+  copy(): GuideCopy {
+    return {
+      title: `Recruiter route · ${ROUTE_STOPS.length} stops`,
+      body: this.pitch ? ROUTE_PITCH : '',
+      line: null,
+      headButton: { id: 'stay', label: 'Stay in the menu' },
+      buttons: [],
+      rows: ROUTE_STOPS.map((x) => ({
+        label: x.label,
+        button: { id: `route:${x.id}`, label: 'Show me' },
+      })),
+      chip: '',
+    };
+  }
+
+  private close(): void {
+    this.phase = 'done';
+    this.ver++;
+  }
+}
+
 // ---- the card's words ------------------------------------------------------
 
 export interface GuideCopyContext {
@@ -669,11 +809,23 @@ export interface GuideCopyContext {
    *  errand's next step, a reminder not yet heard this session): E opens
    *  those, not the chat, so the card must not promise 'ask anything'. */
   talkQuest?: boolean;
+  /** D8's Controls & settings sheet is in this build, so '?' opens it. The
+   *  legacy controls card names the key only then: a key that does nothing
+   *  is worse than no hint. */
+  controlsSheet?: boolean;
 }
 
 export interface GuideButton {
-  id: 'skip' | 'resume' | 'ok' | 'primary' | 'school' | 'close';
+  /** 'route:<district>' is a recruiter-route stop's 'Show me'; 'stay' is its
+   *  'Stay in the menu'. */
+  id: 'skip' | 'resume' | 'ok' | 'primary' | 'school' | 'close' | 'stay' | `route:${string}`;
   label: string;
+}
+
+/** One 'Show me' row: what it leads to, and its button. */
+export interface GuideRow {
+  label: string;
+  button: GuideButton;
 }
 
 /** The card's text. [X] marks a key cap. */
@@ -682,9 +834,12 @@ export interface GuideCopy {
   body: string;
   /** The extra line (a coin picked up). */
   line: string | null;
-  /** The header's own button: Skip, or Close on the finale. */
+  /** The header's own button: Skip, Close on the finale, or the route's
+   *  'Stay in the menu'. */
   headButton: GuideButton;
   buttons: GuideButton[];
+  /** 'Show me' rows (the recruiter route's stops), under the body. */
+  rows?: GuideRow[];
   /** The collapsed one-line chip. */
   chip: string;
 }
@@ -737,7 +892,9 @@ export function guideCopy(v: GuideView, c: GuideCopyContext): GuideCopy {
   if (v.phase === 'controls') {
     return {
       title: 'Controls changed',
-      body: `Drag to look · ${c.runKey === 'shift' ? 'Shift' : 'Space'} to run`,
+      body: `Drag to look · ${c.runKey === 'shift' ? 'Shift' : 'Space'} to run${
+        c.controlsSheet ? ' · ? for all controls' : ''
+      }`,
       line,
       headButton: { id: 'skip', label: 'Skip' },
       buttons: [{ id: 'ok', label: 'OK' }],

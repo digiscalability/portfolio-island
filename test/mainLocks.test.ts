@@ -1045,7 +1045,9 @@ describe('A6: First steps, wired into main-simple', () => {
       'return new GuideCard(this.ui.getOverlay(), {',
     );
     const render = bodyOf(m, 'private renderGuide(');
-    expect(render).toContain('if (!g || (!this.guideCard && !g.running())) return;');
+    // ...or the recruiter route shows (P2-A4): a visit that never arms either
+    // still carries no #ds-guide
+    expect(render).toContain('if (!this.guideCard && !g.running() && !routeUp) return;');
     expect(render).toContain('const card = (this.guideCard ??= this.createGuideCard());');
     expect(m.split('this.createGuideCard()').length - 1).toBe(1);
     expect(bodyOf(m, 'private armGuide(')).toContain('this.renderGuide();');
@@ -1480,6 +1482,74 @@ describe('A10: a smoother desktop intro, and a calm entry on phones only', () =>
     );
     expect(stripped('OrbitCamera.ts')).toContain(
       'public static readonly FLY_IN_MAX_TURN = (1.4 * Math.PI) / 180;',
+    );
+  });
+});
+
+// guide.test.ts runs the route, its card and main-simple's handlers for real;
+// these pin where main-simple hooks them.
+describe('P2-A4: the recruiter route, wired into main-simple', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test("a hire card closing arms it: D4's 'ds:modal' {open: false, id: 'zone', zone: 'hire'}", () => {
+    const setup = bodyOf(m(), 'private setupGuide(');
+    expect(setup).toContain("window.addEventListener('ds:modal', this.boundHandlers.guideModal);");
+    expect(bodyOf(m(), 'private dispose(')).toContain(
+      "window.removeEventListener('ds:modal', this.boundHandlers.guideModal);",
+    );
+    const modal = bodyOf(m(), 'private onModalEvent(');
+    expect(modal).toContain(
+      "if (!d || d.id !== 'zone' || d.zone !== 'hire' || d.open !== false) return;",
+    );
+    expect(modal).toContain("const source = this.hireCardSource ?? 'hire';");
+    // only a visitor who has not walked off, and the compass hint counts as shown
+    const arm = bodyOf(m(), 'private armRoute(');
+    expect(arm).toContain('if (!this.route?.arm(source, this.walkedSinceLoad)) return false;');
+    expect(arm).toContain("localStorage.setItem('ds_hint_compass', '1');");
+    // walked since load: counted every frame, teleports left out
+    expect(bodyOf(m(), 'private guideTick(')).toContain(
+      'if (f.walked > 0 && f.walked < 5) this.walkedSinceLoad += f.walked;',
+    );
+  });
+
+  test('the recruiter tour and a /z/hire link say how their hire card was opened', () => {
+    const end = bodyOf(m(), 'private endTour');
+    const tour = end.indexOf("this.hireCardSource = 'tour';");
+    expect(tour).toBeGreaterThan(-1);
+    expect(tour).toBeLessThan(end.indexOf("this.ui.showHireCard('cta');"));
+    const link = bodyOf(m(), 'private openDeepLinkZone(');
+    const deep = link.indexOf("if (z === 'hire') this.hireCardSource = 'deeplink';");
+    expect(deep).toBeGreaterThan(-1);
+    expect(deep).toBeLessThan(link.indexOf('this.ui.showZonePanel('));
+  });
+
+  test('it has the card while it shows, holds hints, and First steps waits behind it', () => {
+    const tick = bodyOf(m(), 'private guideTick(');
+    const frame = tick.indexOf('route?.frame(f.dt, f.blocked);');
+    expect(frame).toBeGreaterThan(-1);
+    expect(tick.indexOf('if (route?.showing()) f.blocked = true;')).toBeGreaterThan(frame);
+    expect(tick.indexOf('g.frame(f);')).toBeGreaterThan(
+      tick.indexOf('if (route?.showing()) f.blocked = true;'),
+    );
+    expect(bodyOf(m(), 'private guideHoldsHints(')).toContain(
+      'if (g.isActive() || this.route?.showing()) return true;',
+    );
+  });
+
+  test("a stop's 'Show me' goes through 'ds:guide-to' and arms First steps; Stay only closes", () => {
+    const btn = bodyOf(m(), 'private onGuideButton(');
+    expect(btn).toContain("else if (id === 'stay') this.route?.stay();");
+    const pick = bodyOf(btn, "else if (id.startsWith('route:')) {");
+    expect(pick).toContain('if (this.route?.pick(stop)) {');
+    expect(pick).toMatch(
+      /new CustomEvent\('ds:guide-to', \{ detail: \{ key: `district:\$\{stop\}`, source: 'route' \} \}\)/,
+    );
+    expect(pick.indexOf("this.armGuide('cta');")).toBeGreaterThan(pick.indexOf("'ds:guide-to'"));
+  });
+
+  test("the legacy controls card names '?' only where D8's sheet answers it", () => {
+    expect(bodyOf(m(), 'private renderGuide(')).toMatch(
+      /controlsSheet:\s*typeof \(this\.ui as unknown as \{ showControls\?: unknown \}\)\.showControls === 'function',/,
     );
   });
 });
