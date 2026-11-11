@@ -113,11 +113,22 @@ describe('the welcome card hierarchy matches the audience', () => {
     const s = src('SimpleUI.ts');
     const i = s.indexOf('showWelcome(awayDelta');
     expect(i).toBeGreaterThan(-1);
-    // 14000, not 12000: this slice is taken from the RAW source (comments
-    // included), so documenting a fix inside showWelcome pushes the tail of
-    // the method out of the window and silently drops assertions. Third time
-    // this suite has been bitten by a fixed-length slice.
-    return s.slice(i, i + 14000);
+    // The whole method, up to the next one: a fixed-length slice bit this
+    // suite four times as showWelcome grew.
+    const end = s.indexOf('showRecordingIndicator(): void', i);
+    expect(end).toBeGreaterThan(i);
+    return s.slice(i, end);
+  };
+  /** The two card templates: the returning branch of the ternary, then the
+   *  first-run one. */
+  const branches = (w: string): { returningBranch: string; firstRun: string } => {
+    const html = w.slice(w.indexOf('this.welcomeDiv.innerHTML = returning'));
+    const split = html.indexOf('\n      : `');
+    expect(split).toBeGreaterThan(-1);
+    return {
+      returningBranch: html.slice(0, split),
+      firstRun: html.slice(split, html.indexOf('\n    `;', split)),
+    };
   };
 
   test('the Hiring pill sits above the CTAs on BOTH cards, footnote gone', () => {
@@ -129,8 +140,7 @@ describe('the welcome card hierarchy matches the audience', () => {
     expect(w).not.toContain('text-decoration:underline'); // the old 12px footnote
     // template order: recruiterPill is rendered above ctaRow in the first-run
     // branch AND (since the returning card carries it too) the returning one
-    const returningBranch = w.slice(w.indexOf('returning\n      ?'), w.indexOf(': `'));
-    const firstRun = w.slice(w.indexOf(': `'));
+    const { returningBranch, firstRun } = branches(w);
     for (const [name, branch] of [
       ['returning', returningBranch],
       ['first-run', firstRun],
@@ -207,23 +217,70 @@ describe('the welcome card hierarchy matches the audience', () => {
     expect(w).not.toContain('autoClose');
   });
 
-  test('the card names the compass pill', () => {
-    expect(welcome()).toContain('points to your next stop');
+  // Changed deliberately in D9: this was 'the card names the compass pill'.
+  test('the guide owns the compass step: the card carries no compass footnote or controls line', () => {
+    const w = welcome();
+    expect(w).not.toContain('points to your next stop');
+    expect(w).not.toContain('controlsLine');
+    expect(w).not.toMatch(/WASD to move|Drag the joystick to move/);
+    // The one-time compass hint after the card is hideWelcome's, and it
+    // stands down the moment First steps arms (frontDoorPolish runs it).
+    const s = src('SimpleUI.ts');
+    const hide = s.slice(
+      s.indexOf('hideWelcome(persist = true)'),
+      s.indexOf('isWelcomeVisible(): boolean'),
+    );
+    expect(hide).toContain('until: () => this.guideArmed() ||');
+  });
+
+  test('D9: one filled primary (the Hiring pill), outline CTAs, a neutral Explore', () => {
+    const w = welcome();
+    const pill = w.slice(w.indexOf('const recruiterPill'), w.indexOf('const outline'));
+    expect(pill).toContain('background:${DS.primary}');
+    expect(pill).toContain('min-height:46px');
+    expect(pill).toContain('font-size:15px; font-weight:700');
+    expect(pill).toContain('width:100%');
+    const explore = w.slice(w.indexOf('const exploreBtn'), w.indexOf('const chipPad'));
+    expect(explore).toContain('data-dismiss="1"');
+    expect(explore).not.toContain('DS.primary');
+    expect(explore).not.toMatch(/#12b76a|#0e9f6e|#4caf50|ctaWork/i);
+  });
+
+  test('D9: Ask the townsfolk, Full tour and Try a race wait behind one disclosure', () => {
+    const w = welcome();
+    const row = w.slice(w.indexOf('const secondaryRow'), w.indexOf('const WGLYPH'));
+    expect(row).toContain('More ways to explore ▾');
+    expect(row).toContain('aria-expanded="false"');
+    expect(row).toContain('aria-controls="wlc-more"');
+    const hidden = row.slice(row.indexOf('id="wlc-more" hidden'));
+    for (const attr of ['data-meet-ai', 'data-tour', 'data-race']) {
+      expect(hidden, attr).toContain(attr);
+    }
+  });
+
+  test('D9: the villager line counts from the roster and says nothing of agents', () => {
+    const w = welcome();
+    expect(w).toContain('${Object.keys(AI_NPCS).length} villagers talk through');
+    expect(w).toContain('walk up and ask them anything.');
+    expect(w).not.toMatch(/planner agent|analyst agent/);
+  });
+
+  test('D9: the card is opaque', () => {
+    expect(welcome()).toContain("background: 'rgb(8, 10, 16)'");
   });
 
   test('the returning card is a hello, not a menu', () => {
     // Trimmed to delta + the Hiring pill + primary CTAs + an explicit Explore
     // (the card closes by choice only). The guided-experience chips stay on
     // the FIRST-RUN card only — a returning visitor already knows they exist.
-    const w = welcome();
-    const returningBranch = w.slice(w.indexOf('returning\n      ?'), w.indexOf(': `'));
+    const { returningBranch, firstRun } = branches(welcome());
+    expect(returningBranch).toContain('${progressHtml}'); // D9: the passport line
     expect(returningBranch).toContain('${awayHtml}');
     expect(returningBranch).toContain('${recruiterPill}');
     expect(returningBranch).toContain('${ctaRow}');
     expect(returningBranch).toContain('${exploreBtn}');
     expect(returningBranch).not.toContain('${secondaryRow}');
-    // ...while the first-run branch keeps all three chips
-    const firstRun = w.slice(w.indexOf(': `'));
+    // ...while the first-run branch keeps all three chips (behind its disclosure)
     expect(firstRun).toContain('${secondaryRow}');
   });
 });

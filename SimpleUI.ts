@@ -3,6 +3,7 @@ import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import type { BoardRead } from './Boards';
 import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
+import { GUIDE_KEY, GUIDE_STEPS, type GuideStep } from './Guide';
 import { checkName, safePeerName } from './Moderation';
 import { ACTIVITY_DEFS } from './NpcActivities';
 import { AI_NPCS, routeQuestion, type QuestionRoute } from './NpcChat';
@@ -5190,7 +5191,9 @@ export class SimpleUI {
         top: '50%',
         left: '50%',
         transform: 'translate(-50%, -50%)',
-        background: 'rgba(0, 0, 0, 0.9)',
+        // Opaque (D9): at 0.9 the Mayor's bubble and his pin read through
+        // the card on a phone, where it covers the plaza.
+        background: 'rgb(8, 10, 16)',
         color: 'white',
         padding: '22px',
         borderRadius: '15px',
@@ -5256,64 +5259,68 @@ export class SimpleUI {
     // Every card button is a 44px thumb target on touch (phone.cjs: the
     // Hiring pill measured 40 and Explore 42).
     const tap = this.isTouch ? 'min-height:44px;' : '';
-    const controlsLine = this.isTouch
-      ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
-      : 'WASD to move · drag or J/L to look · space to jump · Q to wave.';
+    // A phone on its side (height 500 or less): the card drops the villager
+    // line and tightens its padding, so Explore is on screen without a scroll
+    // (at 844x390 the full card was 68 px taller than the screen).
+    const compact = window.innerHeight <= 500;
+    this.welcomeDiv.style.padding = compact ? '14px 22px' : '22px';
 
-    // Primary CTAs: the work and the contact path. A recruiter who won't
-    // explore still reaches everything in one click. See the work is an
-    // indigo outline: the card has ONE filled primary, Explore (D3).
+    // The card says less (D9, FM-11): one filled primary, two outline CTAs,
+    // a neutral way in, and the rest behind one disclosure. The controls line
+    // and the compass footnote are gone: First steps teaches both, a step at
+    // a time, once the card closes (A6).
+
+    // The recruiter pill is the card's ONE filled primary, in the indigo
+    // (decision 2 covers the HUD pill, not this card): full width, 15 px/700,
+    // 46 px tall. Same data-recruit contract. It opens the HIRE CARD at once
+    // (showHireCard); the highlights tour is a secondary button inside it.
+    const recruiterPill = `
+      <button data-recruit class="ds-press" style="width:100%; min-height:46px; box-sizing:border-box; padding:10px 14px; margin:0 0 10px;
+        border:none; border-radius:10px; background:${DS.primary}; color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
+        📄 Hiring? CV, experience and contact</button>`;
+
+    // The work and the contact path, as outlines: a recruiter who won't
+    // explore still reaches everything in one click.
+    const outline =
+      'background:rgba(76,91,224,0.14); color:#fff; border:1px solid rgba(143,155,255,0.8);';
     const ctaRow = `
       <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 10px;">
-        <button data-cta="projects" style="flex:1 1 140px; ${tap}padding:12px 14px; border:1px solid rgba(143,155,255,0.8); border-radius:10px;
-          background:rgba(76,91,224,0.14); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
+        <button data-cta="projects" style="flex:1 1 140px; ${tap}padding:12px 14px; border-radius:10px;
+          ${outline} font-size:15px; font-weight:600; cursor:pointer;">
           🚀 See the work</button>
         <button data-cta="contact" style="flex:1 1 140px; ${tap}padding:12px 14px; border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
+          ${outline} font-size:15px; font-weight:600; cursor:pointer;">
           📬 Get in touch</button>
       </div>`;
 
-    // The recruiter pill — PROMOTED from a 12px footnote link below the
-    // controls line. The primary audience got the least visible control on
-    // the card while "Beat the lap record" had a real button: hierarchy
-    // exactly inverted from the audience priority. Same data-recruit
-    // contract; amber border borrowed from the old meet-AI button.
-    // It opens the HIRE CARD at once (showHireCard). It used to start a 37 s
-    // camera tour that ended on a client pitch; that tour is now a secondary
-    // button inside the card, and it ends back on the card.
-    const recruiterPill = `
-      <button data-recruit style="width:100%; ${tap}padding:10px 14px; margin:0 0 12px; border-radius:10px;
-        background:rgba(38,38,51,0.5); color:#ffe3a3; border:1px solid rgba(255,212,121,0.45); font-size:13.5px; font-weight:600; cursor:pointer;">
-        📄 Hiring? CV, experience and contact</button>`;
-
-    // Explicit dismiss button so the pitch stays put until the visitor chooses
-    // to leave it (moving with WASD no longer evaporates it). The line under
-    // it names the compass pill — the card's one pointer at the persistent
-    // wayfinding surface that is literally on screen behind it.
+    // Explicit dismiss, so the pitch stays put until the visitor chooses to
+    // leave it. A NEUTRAL outline: green is Work with me's alone, and the
+    // filled primary is the Hiring pill's. A returning visitor who left First
+    // steps unfinished is told how much of it is left.
+    const stepsLeft = returning ? this.guideStepsLeft() : null;
+    const exploreLabel =
+      stepsLeft === null
+        ? '🧭 Explore the island →'
+        : `🧭 Explore (${stepsLeft} quick step${stepsLeft === 1 ? '' : 's'} left)`;
     const exploreBtn = `
-      <button data-dismiss="1" class="ds-press" style="width:100%; ${tap}padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
-        background:${DS.primary}; color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
-        🧭 Explore the island →</button>
-      <p style="margin:0 0 12px; font-size:11px; color:#8fa0b5;">
-        The gold ➤ pill at the top of your screen points to your next stop.</p>`;
+      <button data-dismiss="1" style="width:100%; ${tap}padding:11px 14px; margin:0 0 10px; border-radius:10px;
+        background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.28); font-size:15px; font-weight:600; cursor:pointer;">
+        ${exploreLabel}</button>`;
 
-    // Tertiary chip row: three near-duplicate "guided experiences" (meet-AI /
-    // tour / race) collapsed from two full-width tiers into one 13px line —
-    // seven same-weight buttons was choice overload, and two of these call
-    // the same tour rail anyway. Same data-* analytics contracts. 44px-tall
-    // touch targets via padding despite the small type.
+    // The three guided experiences (meet a villager, the full tour, a race)
+    // wait behind one disclosure: seven same-weight buttons was choice
+    // overload. Same data-* analytics contracts; 44 px targets on touch.
     const chipPad = this.isTouch ? `${tap}padding:12px 8px;` : 'padding:8px 8px;';
+    const chip =
+      'border-radius:10px; background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;';
     const secondaryRow = `
-      <div style="display:flex; gap:8px; margin:0 0 12px;">
-        <button data-meet-ai="1" style="flex:1; ${chipPad} border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🤖 Ask the townsfolk</button>
-        <button data-tour="1" style="flex:1; ${chipPad} border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🎬 Full tour</button>
-        <button data-race="1" style="flex:1; ${chipPad} border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🏁 Try a race</button>
+      <button type="button" data-more aria-expanded="false" aria-controls="wlc-more" style="${tap}padding:6px 10px; margin:0;
+        background:none; border:none; color:#b9c6da; font-size:13px; cursor:pointer;">
+        More ways to explore ▾</button>
+      <div id="wlc-more" hidden style="gap:8px; margin:6px 0 0;">
+        <button data-meet-ai="1" style="flex:1; ${chipPad} ${chip}">💬 Ask the townsfolk</button>
+        <button data-tour="1" style="flex:1; ${chipPad} ${chip}">🎬 Full tour</button>
+        <button data-race="1" style="flex:1; ${chipPad} ${chip}">🏁 Try a race</button>
       </div>`;
 
     // "While you were away": the living world's deltas, so a return visit is
@@ -5331,42 +5338,50 @@ export class SimpleUI {
            <span id="wlc-gb">✍️ checking the guestbook…</span>
          </div>`
       : '';
-    // The returning card is a HELLO, not a menu: delta + the Hiring pill + the
-    // two primary CTAs + an explicit way in. The tour/race/meet-AI chips were
-    // five same-moment choices on a short-lived card — and a returning visitor
-    // already knows those exist (owner's call). The Explore button is the
-    // obvious manual way out: the card no longer auto-closes (see below), so
-    // it stays until the visitor chooses.
+    // The returning card shows progress (D9): the passport, stamp by stamp.
+    const progressHtml = this.passportProgressLine();
+    // The returning card is a HELLO, not a menu: progress + delta + the
+    // Hiring pill + the two CTAs + an explicit way in. The guided chips stay
+    // on the first-run card (a returning visitor already knows they exist).
+    // The card never auto-closes, so Explore is the obvious way out.
     // The title is the page's h1 (axe: no level-one heading), sized as the
     // h2 it replaced.
     this.welcomeDiv.innerHTML = returning
       ? `<h1 style="margin: 0 0 12px 0; font-size: 1.5em; color: #4CAF50;">👋 Welcome back!</h1>
+         ${progressHtml}
          ${awayHtml}
          ${recruiterPill}
          ${ctaRow}
          ${exploreBtn}`
       : `
       <h1 style="margin: 0 0 8px 0; font-size: 1.5em; color: #4CAF50;">DigiScalability Life Island</h1>
-      <p style="margin: 0 0 12px 0; font-size:15px; line-height:1.5;">
+      <p style="margin: 0 0 10px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI products end to end, and this island is my
         portfolio. Walk up to a district to open it, or jump straight there below.</p>
       ${
-        // Progressive disclosure on short phones (SE 667px): the AI-agent
-        // detail paragraph is the "Ask the townsfolk" chip's job — on a
-        // screen this size the full pitch pushed the CTAs below the fold.
-        this.isTouch && window.innerHeight < 700
+        compact
           ? ''
-          : `<p style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
-        ${Object.keys(AI_NPCS).length} of the townsfolk talk through
-        <strong>Claude Haiku 4.5</strong> — a planner agent sets their jobs each morning,
-        and an analyst agent reports nightly. Walk up to one and ask them anything.</p>`
+          : `<p data-ai-line style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
+        ${Object.keys(AI_NPCS).length} villagers talk through <strong>Claude Haiku 4.5</strong> —
+        walk up and ask them anything.</p>`
       }
       ${recruiterPill}
       ${ctaRow}
       ${exploreBtn}
       ${secondaryRow}
-      <p style="margin: 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
     `;
+    // The disclosure: the three guided ways in, shown on request.
+    const more = this.welcomeDiv.querySelector<HTMLButtonElement>('button[data-more]');
+    const moreRow = this.welcomeDiv.querySelector<HTMLElement>('#wlc-more');
+    more?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!moreRow) return;
+      const open = moreRow.hidden;
+      moreRow.hidden = !open;
+      moreRow.style.display = open ? 'flex' : 'none';
+      more.setAttribute('aria-expanded', String(open));
+      more.textContent = open ? 'More ways to explore ▴' : 'More ways to explore ▾';
+    });
 
     // Dismiss only on an explicit choice — a CTA, the Explore button, or
     // Escape. The old "any key / click-outside" dismiss evaporated the pitch
@@ -5592,6 +5607,48 @@ export class SimpleUI {
         /* no storage — skip the one-time hint rather than repeat it forever */
       }
     }
+  }
+
+  /**
+   * First steps' quick steps still to do, for the returning card's Explore
+   * (D9): read from ds_guide_v1 = {v:1, done[], finished, skipped, t}, which
+   * package A's guide writes. Null when there is nothing to say: the key is
+   * absent or unparseable, or the guide was finished or skipped.
+   */
+  private guideStepsLeft(): number | null {
+    try {
+      const raw = localStorage.getItem(GUIDE_KEY);
+      if (!raw) return null;
+      const save = JSON.parse(raw) as {
+        v?: unknown;
+        done?: unknown;
+        finished?: unknown;
+        skipped?: unknown;
+      } | null;
+      if (!save || save.v !== 1 || !Array.isArray(save.done)) return null;
+      if (save.finished === true || save.skipped === true) return null;
+      const done = new Set(
+        save.done.filter((s): s is GuideStep => (GUIDE_STEPS as readonly unknown[]).includes(s)),
+      );
+      const left = GUIDE_STEPS.length - done.size;
+      return left > 0 ? left : null;
+    } catch {
+      return null; // no storage, or not JSON
+    }
+  }
+
+  /** The returning card's passport line (D9): how far, and what is left.
+   *  Empty before the passport is wired (setPassport). */
+  private passportProgressLine(): string {
+    const pp = this.passport;
+    if (!pp) return '';
+    const left = PASSPORT_ZONES.filter((z) => !pp.has(z)).map((z) => PASSPORT_META[z].label);
+    const text = pp.isComplete()
+      ? '🛂 Passport complete — every district stamped 👑'
+      : left.length === PASSPORT_ZONES.length
+        ? `🛂 Passport: no stamps yet — ${left.join(', ')} to visit`
+        : `🛂 Passport: ${pp.count()} of ${pp.total()} stamps — ${left.join(', ')} to go`;
+    return `<p data-passport-progress style="margin:0 0 12px; font-size:13.5px; line-height:1.45; color:#dfe6f2;">${text}</p>`;
   }
 
   /** Set by a welcome CTA that opens a panel or the tour; read once by

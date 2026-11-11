@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { entryAttribution, isOwnerVisit, track, trackOnce } from '../Analytics';
 import { AI_NPCS } from '../NpcChat';
+import { Passport } from '../Passport';
 import { appendReceptionDesk } from '../ReceptionDesk';
 import { SimpleUI } from '../SimpleUI';
 
@@ -1129,6 +1130,151 @@ describe('the NPC chat says when the villager speaks and when the visitor types 
   });
 });
 
+describe('the welcome cards say less and show progress (D9)', () => {
+  const card = (): HTMLElement => document.querySelector<HTMLElement>('[role="dialog"]')!;
+  const shown = (el: Element): boolean => !el.closest('[hidden]');
+  const visibleButtons = (): HTMLButtonElement[] =>
+    [...card().querySelectorAll<HTMLButtonElement>('button')].filter(shown);
+  const words = (): number =>
+    [...card().querySelectorAll<HTMLElement>('h1, p, button, a')]
+      .filter(shown)
+      .map((el) => text(el))
+      .join(' ')
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+  test('first run: 80 words or fewer, four buttons plus the disclosure', () => {
+    ui.showWelcome(null);
+    expect(words()).toBeLessThanOrEqual(80);
+    const buttons = visibleButtons();
+    const disclosure = buttons.filter((b) => b.hasAttribute('aria-expanded'));
+    expect(disclosure).toHaveLength(1);
+    expect(buttons.filter((b) => !b.hasAttribute('aria-expanded')).map((b) => text(b))).toEqual([
+      '📄 Hiring? CV, experience and contact',
+      '🚀 See the work',
+      '📬 Get in touch',
+      '🧭 Explore the island →',
+    ]);
+    expect(text(card())).toContain(
+      `${Object.keys(AI_NPCS).length} villagers talk through Claude Haiku 4.5 — walk up and ask them anything.`,
+    );
+    expect(card().style.background).toMatch(/rgb\(8, 10, 16\)/);
+  });
+
+  test('the disclosure opens the three guided ways in, and their contracts still fire', () => {
+    const onTour = vi.fn();
+    ui.setOnTour(onTour);
+    ui.showWelcome(null);
+    const more = card().querySelector<HTMLButtonElement>('button[data-more]')!;
+    const tour = card().querySelector<HTMLButtonElement>('button[data-tour]')!;
+    expect(shown(tour)).toBe(false);
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    more.click();
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    expect(ui.isWelcomeVisible()).toBe(true); // the disclosure never closes the card
+    for (const sel of ['button[data-meet-ai]', 'button[data-tour]', 'button[data-race]']) {
+      expect(shown(card().querySelector(sel)!), sel).toBe(true);
+    }
+    more.click();
+    expect(shown(tour)).toBe(false);
+    more.click();
+    tour.click();
+    expect(onTour).toHaveBeenCalledTimes(1);
+    expect(ui.isWelcomeVisible()).toBe(false);
+    // (the disclosure itself is not an event: welcome_cta counts choices)
+    expect(
+      (window.__analyticsLog ?? [])
+        .filter((e) => e.name === 'welcome_cta')
+        .map((e) => e.props?.cta),
+    ).toEqual(['tour']);
+  });
+
+  describe('the returning card', () => {
+    beforeEach(() => localStorage.setItem('ds_welcomed', '1'));
+    const progress = (): string => text(card().querySelector('[data-passport-progress]'));
+    const explore = (): string => text(card().querySelector('button[data-dismiss]'));
+
+    test('shows the passport progress line: how many, and which are left', () => {
+      localStorage.setItem('ds_passport', JSON.stringify(['projects', 'contact']));
+      ui.setPassport(new Passport());
+      ui.showWelcome(null);
+      expect(progress()).toBe('🛂 Passport: 2 of 4 stamps — Professional, Personal to go');
+      expect(card().querySelector('button[data-more]')).toBeNull(); // a hello, not a menu
+    });
+
+    test('a complete passport says so', () => {
+      localStorage.setItem(
+        'ds_passport',
+        JSON.stringify(['professional', 'projects', 'personal', 'contact']),
+      );
+      ui.setPassport(new Passport());
+      ui.showWelcome(null);
+      expect(progress()).toContain('Passport complete');
+    });
+
+    test("Explore counts First steps' quick steps left, from ds_guide_v1", () => {
+      localStorage.setItem(
+        'ds_guide_v1',
+        JSON.stringify({ v: 1, done: ['move', 'look'], finished: false, skipped: false, t: 1 }),
+      );
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore (3 quick steps left)');
+      ui.hideWelcome(false);
+      localStorage.setItem(
+        'ds_guide_v1',
+        JSON.stringify({
+          v: 1,
+          done: ['move', 'look', 'talk', 'portfolio'],
+          finished: false,
+          skipped: false,
+          t: 2,
+        }),
+      );
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore (1 quick step left)');
+    });
+
+    test.each([
+      ['absent', null],
+      ['unparseable', '{not json'],
+      ['another version', JSON.stringify({ v: 2, done: [] })],
+      ['finished', JSON.stringify({ v: 1, done: ['move'], finished: true, skipped: false, t: 1 })],
+      ['skipped', JSON.stringify({ v: 1, done: ['move'], finished: false, skipped: true, t: 1 })],
+    ])('the count is omitted when ds_guide_v1 is %s', (_name, value) => {
+      if (value !== null) localStorage.setItem('ds_guide_v1', value);
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore the island →');
+    });
+
+    test('a first-run card never counts steps, whatever the key says', () => {
+      localStorage.removeItem('ds_welcomed');
+      localStorage.setItem(
+        'ds_guide_v1',
+        JSON.stringify({ v: 1, done: [], finished: false, skipped: false, t: 1 }),
+      );
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore the island →');
+    });
+  });
+
+  test('a phone on its side drops the villager line and tightens the padding', () => {
+    const height = window.innerHeight;
+    try {
+      Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
+      ui.showWelcome(null);
+      expect(card().querySelector('[data-ai-line]')).toBeNull();
+      expect(card().style.padding).toBe('14px 22px');
+      expect(visibleButtons().length).toBe(5); // the four, and the disclosure
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { value: height, configurable: true });
+    }
+    ui.hideWelcome(false);
+    ui.showWelcome(null);
+    expect(card().querySelector('[data-ai-line]')).not.toBeNull();
+    expect(card().style.padding).toBe('22px');
+  });
+});
+
 describe('accessibility quick wins', () => {
   test('the welcome title is the page’s h1, on both cards', () => {
     ui.showWelcome(null);
@@ -1177,14 +1323,15 @@ describe('accessibility quick wins', () => {
 
 // Stage 1 (A3, A4) made looking a press-and-drag with the left or right mouse
 // button, a swipe on touch, and J/L on the keyboard; pointer lock is opt-in.
-// "mouse to look" taught a click and a move, which now turns nothing. (D9
-// later drops the card's controls line, and these card checks with it.)
+// "mouse to look" taught a click and a move, which now turns nothing. D9
+// dropped the welcome card's controls line (First steps teaches the controls,
+// a step at a time), so the card now has no such line to get wrong.
 describe('the controls copy teaches the stage-1 look', () => {
   const lookLine = (root: Element | null | undefined): string =>
     text([...(root?.querySelectorAll('p') ?? [])].find((p) => text(p).includes('to move')));
-  const cardLine = (): string => {
+  const cardText = (): string => {
     ui.showWelcome(null);
-    return lookLine(document.querySelector('[role="dialog"]'));
+    return text(document.querySelector('[role="dialog"]'));
   };
   const hubLine = (): string => {
     ui.hideWelcome(false);
@@ -1196,11 +1343,11 @@ describe('the controls copy teaches the stage-1 look', () => {
     return lookLine(hub);
   };
 
-  test('desktop: drag or J/L to look, on the card and in the Welcome Hub', () => {
+  test('desktop: drag or J/L to look in the Welcome Hub; the card teaches no controls', () => {
     expect(ui.isTouchDevice()).toBe(false);
-    const card = cardLine();
+    const card = cardText();
     const hub = hubLine();
-    expect(card).toBe('WASD to move · drag or J/L to look · space to jump · Q to wave.');
+    expect(card).not.toMatch(/WASD|to move|to jump|to wave|J\/L/i);
     expect(hub).toContain('WASD to move, drag or J/L to look, E to interact.');
     for (const line of [card, hub]) expect(line).not.toMatch(/mouse/i);
   });
@@ -1211,9 +1358,9 @@ describe('the controls copy teaches the stage-1 look', () => {
       document.body.innerHTML = '<div id="ui-overlay"></div>';
       ui = new SimpleUI('ui-overlay');
       expect(ui.isTouchDevice()).toBe(true);
-      const card = cardLine();
+      const card = cardText();
       const hub = hubLine();
-      expect(card).toContain('Drag the joystick to move');
+      expect(card).not.toMatch(/joystick|USE to interact|JUMP|WAVE/);
       expect(hub).toContain('Drag the joystick to move, swipe to look, 👆 USE to interact.');
       for (const line of [card, hub]) {
         expect(line).not.toMatch(/mouse|J\/L|WASD|drag to look/i);
