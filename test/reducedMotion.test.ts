@@ -68,16 +68,12 @@ describe('the in-app toggle reaches CSS (root-class contract)', () => {
 // The gates in main-simple.ts (the tour slideshow, the fly-in seat) and in
 // OrbitCamera.ts (the fly-in early-out) moved to package A's
 // test/mainLocks.test.ts; the party's calm path in GameScene.ts moved to
-// package B's test/sceneLocks.test.ts (testOwnership rule 1).
+// package B's test/sceneLocks.test.ts; the rain's calm and live rebuild
+// (EnvironmentCycle.ts), the mailbox glow (Mailbox.ts) and the deleted
+// Island.update() lamp blink (Island.ts) moved to package C's
+// test/worldLook.test.ts (testOwnership rule 1). What stays pins SimpleUI.ts.
 describe('load-bearing gates exist at their call sites', () => {
-  test('rain calms, and rebuilds live when the toggle flips mid-storm', () => {
-    const env = src('EnvironmentCycle.ts');
-    expect(env).toContain('a11y.reducedMotion');
-    expect(env).toContain('a11y.onChange');
-  });
-
-  test('pending-delivery attention loops hold still (mailbox glow, minimap pulses)', () => {
-    expect(src('Mailbox.ts')).toContain('a11y.reducedMotion');
+  test('the pending-delivery minimap pulses hold still', () => {
     // Canvas drawing is unreachable by any CSS rule — the gate must live in
     // the draw code itself.
     expect(fn('SimpleUI.ts', 'updateMinimap(', 20000)).toContain('a11y.reducedMotion');
@@ -85,11 +81,5 @@ describe('load-bearing gates exist at their call sites', () => {
 
   test('the scripted-dialogue typewriter matches the chat-panel rule', () => {
     expect(fn('SimpleUI.ts', 'private startTypewriter')).toContain('a11y.reducedMotion');
-  });
-
-  test('the dead Island.update() lamp-blink landmine stays deleted', () => {
-    // The old method was dead code whose lamp blink (`sin(t*3) > -0.5`
-    // visibility toggle) would strobe every lamp in town if revived.
-    expect(src('Island.ts')).not.toContain('public update(deltaTime: number)');
   });
 });

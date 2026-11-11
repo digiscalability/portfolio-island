@@ -94,13 +94,22 @@ export function appendReceptionDesk(container: HTMLElement): void {
   const box = document.createElement('div');
   box.style.cssText =
     'margin-top:18px;text-align:left;border-top:1px solid rgba(255,255,255,0.12);padding-top:16px;';
+  // 44px thumb targets on a touch screen (the call button measured 42 and
+  // the Privacy link 34x15); the transcript scrolls from the keyboard too.
+  const coarse =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(pointer: coarse)').matches;
+  const thumb = coarse
+    ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;'
+    : '';
   box.innerHTML = `
     <h3 style="margin:0 0 4px;font-size:15px;">Talk to my AI receptionist</h3>
     <p style="margin:0 0 10px;font-size:12px;color:#9aa;">A live voice agent I built — ask it about my work, or your project.</p>
-    <button id="rd-start" class="ds-press" style="width:100%;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#00796b,#00695c);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">🎙 Start voice call</button>
-    <p style="margin:6px 0 0;font-size:11px;color:#889;">During a call your voice streams live to ElevenLabs, the voice provider. <a href="/privacy.html" style="color:#80cbc4;">Privacy</a></p>
+    <button id="rd-start" class="ds-press" style="width:100%;min-height:44px;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#00796b,#00695c);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">🎙 Start voice call</button>
+    <p style="margin:6px 0 0;font-size:11px;color:#889;">During a call your voice streams live to ElevenLabs, the voice provider. <a href="/privacy.html" style="color:#80cbc4;${thumb}">Privacy</a></p>
     <div id="rd-status" role="status" aria-live="polite" style="margin:8px 0 0;font-size:12px;color:#9aa;min-height:16px;"></div>
-    <div id="rd-log" style="margin:8px 0 0;font-size:13px;line-height:1.45;max-height:150px;overflow-y:auto;display:none;"></div>`;
+    <div id="rd-log" tabindex="0" aria-label="Call transcript" style="margin:8px 0 0;font-size:13px;line-height:1.45;max-height:150px;overflow-y:auto;display:none;"></div>`;
   // Sit ABOVE the written form — its heading ("Or send a message") reads as the
   // secondary option. This module is dynamically imported so it always resolves
   // after the form's synchronous append; anchor to the node, don't trust order.

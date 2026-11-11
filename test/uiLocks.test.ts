@@ -274,8 +274,11 @@ describe('moved from visualPolish.test.ts (B): the welcome card and the contact 
     expect(ui).toContain('hideWelcome(persist = true)');
     expect(ui).toContain('if (!persist) return;');
     expect(ui).toContain('this.hideWelcome(false)');
-    // The PanelManager sweep IS a dismissal and must still persist.
-    expect(ui).toContain('close: () => this.hideWelcome(),');
+    // The PanelManager sweep IS a dismissal and must still persist; a stray
+    // tap on the scrim is not, and must not (D4, FM-06: an outside tap on a
+    // phone burned the pitch unread). Changed deliberately in D4 from
+    // `close: () => this.hideWelcome(),`.
+    expect(ui).toContain("close: (reason) => this.hideWelcome(reason !== 'scrim'),");
   });
 
   test('the contact form cannot strand itself or blame a good email', () => {
@@ -313,6 +316,39 @@ describe('moved from inventoryPanel.test.ts (A): the pack', () => {
 
   test('values are escaped at the HTML sink', () => {
     expect(bodyOf(raw('SimpleUI.ts'), 'showInventory(): void')).toContain('SimpleUI.esc');
+  });
+});
+
+// D6 (with P2-D3): the message rules frontDoorPolish runs, pinned at the
+// source so a refactor cannot route a surface around them.
+describe('D6: one message at a time', () => {
+  const ui = code('SimpleUI.ts');
+
+  test('a flash is a queued message, not a DOM write of its own', () => {
+    const flash = bodyOf(ui, 'flashMessage(text: string): void');
+    expect(flash).toContain("this.queued(this.touchifyPlain(text), 'flash', false)");
+    expect(flash).toContain('this.enqueue(');
+    expect(flash).not.toContain('createElement');
+  });
+
+  // Changed deliberately (wave-1 integration): until() drops an outcome too,
+  // and so does a message that showed, stepped aside and changed place.
+  test('nothing paints over a modal; outcomes go first; stale messages drop', () => {
+    const may = bodyOf(ui, 'private mayShow(m: QueuedMessage, shown = false): boolean');
+    expect(may.indexOf('this.panels.isModalOpen()')).toBeLessThan(may.indexOf('if (!m.hint)'));
+    const take = bodyOf(ui, 'private takeToast(): QueuedMessage | null');
+    expect(take).toContain('!q.until?.() && !(q.shows > 0 && q.inside !== inside)');
+    expect(take.indexOf('!q.hint && this.mayShow(q)')).toBeLessThan(
+      take.indexOf('q.hint && this.mayShow(q)'),
+    );
+  });
+
+  test('the prompt is announced after the per-frame guard, debounced, never per frame', () => {
+    const prompt = bodyOf(ui, 'showInteractionPrompt(text: string): void');
+    const guard = prompt.indexOf('if (text === this.lastPromptText && this.interactionDiv) return');
+    expect(guard).toBeGreaterThan(-1);
+    expect(prompt.indexOf('this.announce(')).toBeGreaterThan(guard);
+    expect(prompt).toContain('}, 600);');
   });
 });
 

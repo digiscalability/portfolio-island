@@ -3,18 +3,18 @@
 // The 2026-11-02 pass, step i2b: the front door's runtime polish.
 // DOM tests on a REAL SimpleUI where behaviour can run (loader exit, toast
 // hints, compass hint, Day badge, offline replies tag, form labels), unit
-// tests for analytics attribution and the owner opt-out, and source locks
-// where the code only runs inside the WebGL boot (the cel shadow patch,
-// Firebase Auth). The boot's main-simple.ts locks (error screen, coin tip,
-// tour framing, fly-in ink timing, beforeSend, the canvas label) moved to
-// package A's test/mainLocks.test.ts (testOwnership rule 1).
+// tests for analytics attribution and the owner opt-out, and a source lock
+// where the code only runs inside the WebGL boot (Firebase Auth). The boot's
+// main-simple.ts locks (error screen, coin tip, tour framing, fly-in ink
+// timing, beforeSend, the canvas label) moved to package A's
+// test/mainLocks.test.ts, and the two CelLook.ts locks (the ink hides through
+// the shared material; the dead cel shadow patch stays gone) to package C's
+// test/worldLook.test.ts (testOwnership rule 1).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as THREE from 'three';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { entryAttribution, isOwnerVisit, track, trackOnce } from '../Analytics';
-import { addGroupHulls, setInkVisible } from '../CelLook';
 import { AI_NPCS } from '../NpcChat';
 import { appendReceptionDesk } from '../ReceptionDesk';
 import { SimpleUI } from '../SimpleUI';
@@ -61,6 +61,17 @@ const toastEl = (): HTMLElement | undefined =>
   [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find(
     (d) => d.style.zIndex === '1750',
   );
+/** The centred flash (z 2000 at 38%; the door fade is z 2000 too, full-screen). */
+const flashEl = (): HTMLElement | undefined =>
+  [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find(
+    (d) => d.style.zIndex === '2000' && d.style.top === '38%',
+  );
+const zonePanelEl = (): HTMLElement | undefined =>
+  [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find(
+    (d) => d.style.zIndex === '1650' && !!d.querySelector('[data-email], h2'),
+  );
+const liveText = (): string =>
+  text(document.querySelector('#ui-overlay > .ds-sr-only[role="status"]'));
 
 describe('the loader has a way out', () => {
   test('Quick version opens #boot-fallback with Back; Back restores the card', () => {
@@ -135,19 +146,44 @@ describe('the loader has a way out', () => {
 });
 
 describe('toasts never sit over a panel unasked', () => {
-  test('a hint waits out an open panel; feedback inside the panel does not', () => {
+  // D6 / P2-D3, changed deliberately: nothing paints over an open MODAL any
+  // more. The modal's own outcome (here a share's 'Link copied' after a press
+  // inside it) shows INSIDE the panel; the lead form's 'Please add your
+  // email.' that this test used to toast is an inline field error now (see
+  // 'messages: forms say it inline' below).
+  test("a hint waits out an open panel; the panel's own outcome shows inside it", async () => {
     vi.useFakeTimers();
     ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'menu' });
     ui.toast('🧭 hint line', { hint: true });
-    ui.toast('Please add your email.');
-    expect(text(toastEl())).toBe('Please add your email.'); // jumped the queue
-    vi.advanceTimersByTime(2300 + 2100); // dwell + gap + a few polls
-    expect(toastEl()!.style.opacity).toBe('0');
-    expect(text(toastEl())).toBe('Please add your email.'); // the hint never showed
+    const panel = zonePanelEl()!;
+    panel.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); // the visitor acts in it
+    ui.toast('🔗 Link copied — paste it anywhere!');
+    await Promise.resolve(); // the note lands a microtask later (the shop re-renders first)
+    const note = panel.querySelector<HTMLElement>('[data-panel-note]');
+    expect(text(note)).toBe('🔗 Link copied — paste it anywhere!');
+    expect(note!.getAttribute('role')).toBe('status');
+    expect(toastEl()?.style.opacity ?? '0').toBe('0'); // nothing over the panel
+    vi.advanceTimersByTime(2300 + 2100); // the note's dwell + a few polls
+    expect(panel.querySelector('[data-panel-note]')).toBeNull();
+    expect(toastEl()).toBeUndefined(); // the hint never showed
     ui.hideZonePanel();
     vi.advanceTimersByTime(800);
     expect(text(toastEl())).toBe('🧭 hint line');
     expect(toastEl()!.style.opacity).toBe('1');
+  });
+
+  test('a message from outside the modal waits for it to close, outcome or not', () => {
+    vi.useFakeTimers();
+    ui.showHireCard('cta');
+    ui.toast('🐟 Caught one! (1 in the basket)');
+    ui.flashMessage('🔍 Secret found: The Town Hall Steps!');
+    vi.advanceTimersByTime(5000);
+    expect(toastEl()).toBeUndefined();
+    expect(flashEl()).toBeUndefined();
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('🐟 Caught one! (1 in the basket)');
+    expect(flashEl()).toBeUndefined(); // one at a time: the flash is next
   });
 
   test('a hint already showing bows out when a panel opens, and comes back after', () => {
@@ -197,19 +233,56 @@ describe('toasts never sit over a panel unasked', () => {
     expect(toastEl()!.style.opacity).toBe('0');
   });
 
-  test('a feedback toast is not a hint: opening a panel leaves it be', () => {
+  // Changed deliberately (D6, P2-D3): a sheet leaves feedback be, as before,
+  // but a modal sends any message aside, to come back once it closes.
+  test('a feedback toast stays over a sheet; a modal sends it aside until it closes', () => {
     vi.useFakeTimers();
     ui.toast('Link copied');
-    ui.showHireCard('cta');
+    ui.showNpcChat('Gardener', 'Morning!', async () => 'Hello.'); // a sheet
+    expect(text(toastEl())).toBe('Link copied');
+    expect(toastEl()!.style.opacity).toBe('1');
+    ui.closeNpcChat();
+    ui.showHireCard('cta'); // a modal
+    expect(toastEl()!.style.opacity).toBe('0');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
     expect(text(toastEl())).toBe('Link copied');
     expect(toastEl()!.style.opacity).toBe('1');
   });
 
-  test('with nothing open, hints and feedback keep their order', () => {
+  // Changed deliberately (P2-D3, GP-08): an outcome no longer waits behind a
+  // hint. The hint bows out to the head of the queue and returns after.
+  test('an outcome takes a hint’s place at once, and the hint comes back after', () => {
     vi.useFakeTimers();
     ui.toast('first', { hint: true });
     ui.toast('second');
+    expect(text(toastEl())).toBe('second'); // within 300 ms: here, at once
+    expect(toastEl()!.style.opacity).toBe('1');
+    vi.advanceTimersByTime(2000 + 300); // second's 2 s dwell and the gap
     expect(text(toastEl())).toBe('first');
+    expect(toastEl()!.style.opacity).toBe('1');
+  });
+
+  test('until() drops a queued hint, and takes one already on screen down', () => {
+    vi.useFakeTimers();
+    let chatted = false;
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    ui.toast('💬 A villager nearby talks — walk up and press E', {
+      hint: true,
+      until: () => chatted,
+    });
+    chatted = true; // the visitor talked while the panel was up
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()).toBeUndefined(); // stale: dropped, never shown
+    let mapped = false;
+    ui.toast('🧭 compass hint', { hint: true, until: () => mapped });
+    expect(toastEl()!.style.opacity).toBe('1');
+    mapped = true;
+    vi.advanceTimersByTime(150); // the on-screen watch
+    expect(toastEl()!.style.opacity).toBe('0');
+    vi.advanceTimersByTime(5000);
+    expect(toastEl()!.style.opacity).toBe('0'); // and it never comes back
   });
 
   test('a welcome CTA that opens a panel skips the compass hint; Explore keeps it', () => {
@@ -235,6 +308,544 @@ describe('toasts never sit over a panel unasked', () => {
     ui.hideZonePanel();
     vi.advanceTimersByTime(4000);
     expect(text(toastEl())).not.toContain('gold ➤');
+  });
+});
+
+// D6: one message at a time, announced, never before the card or over the
+// guide; forms say their errors inline; the guide's anchors.
+describe('messages: one at a time', () => {
+  test('a flash joins the queue: never on screen with a toast, and 300 ms after its fade', () => {
+    vi.useFakeTimers();
+    ui.toast('Link copied');
+    ui.flashMessage('🔍 Secret found: The Town Hall Steps!');
+    expect(flashEl()).toBeUndefined(); // waits its turn
+    vi.advanceTimersByTime(2000); // t 2000: the toast's 2 s dwell ends
+    expect(toastEl()!.style.opacity).toBe('0');
+    vi.advanceTimersByTime(300); // t 2300: the flash came up at 2250
+    expect(text(flashEl())).toBe('🔍 Secret found: The Town Hall Steps!');
+    expect(toastEl()!.style.opacity).toBe('0');
+    ui.toast('🪙 +3');
+    vi.advanceTimersByTime(1940); // t 4240: still inside the flash's 2 s
+    expect(flashEl()!.style.opacity).toBe('1');
+    expect(toastEl()!.style.opacity).toBe('0');
+    vi.advanceTimersByTime(20); // t 4260: the flash fades...
+    expect(flashEl()!.style.opacity).toBe('0');
+    vi.advanceTimersByTime(250); // t 4510: ...and the toast waits out its 300 ms
+    expect(toastEl()!.style.opacity).toBe('0');
+    vi.advanceTimersByTime(60); // t 4570
+    expect(text(toastEl())).toBe('🪙 +3');
+    expect(toastEl()!.style.opacity).toBe('1');
+  });
+
+  // Wave-1 integration: a flash that arrived just as a toast's dwell ended
+  // showed at once, over the toast's 0.2 s fade (two elements, both on screen
+  // for one sample): the 'Next:' flash on leaving a hall, 2.0 s after the
+  // passport toast, at 390x844 and 667x375.
+  test('a message that arrives while a toast fades waits out the 200 ms fade', () => {
+    vi.useFakeTimers();
+    const next = 'Next: 💼 Professional — the gold arrow points the way.';
+    ui.toast('🛂 Passport stamped: Projects (1/4)');
+    vi.advanceTimersByTime(2030); // its 2 s dwell ended 30 ms ago: it is fading
+    expect(toastEl()!.style.opacity).toBe('0');
+    ui.flashMessage(next);
+    vi.advanceTimersByTime(150); // 180 ms into the fade
+    expect(flashEl()).toBeUndefined();
+    vi.advanceTimersByTime(30); // the fade is over
+    expect(text(flashEl())).toBe(next);
+  });
+
+  test('a hint taken down for an outcome has no fade: the flash shows at once', () => {
+    vi.useFakeTimers();
+    const next = 'Next: 💼 Professional — the gold arrow points the way.';
+    ui.toast('🛂 Passport stamped: Projects (1/4)', { hint: true });
+    vi.advanceTimersByTime(1000);
+    ui.flashMessage(next);
+    expect(toastEl()!.style.opacity).toBe('0');
+    expect(text(flashEl())).toBe(next);
+  });
+
+  test('a flash dwells 50 ms a character, 2-6 s (it was a flat 1.8 s)', () => {
+    vi.useFakeTimers();
+    const line = '🏝️ You’ve got the hang of it — follow the ➤ arrow to 🚀 Projects.'; // 66 chars
+    ui.flashMessage(line);
+    vi.advanceTimersByTime(line.length * 50 - 50);
+    expect(flashEl()!.style.opacity).toBe('1');
+    vi.advanceTimersByTime(100);
+    expect(flashEl()!.style.opacity).toBe('0');
+  });
+
+  test('hints wait while First steps is active, by its card or its event', () => {
+    vi.useFakeTimers();
+    window.dispatchEvent(new CustomEvent('ds:guide', { detail: { active: true, step: 'move' } }));
+    ui.toast('🪙 Coins! The 📔 Journal lists every way to earn.', { hint: true });
+    ui.toast('🧭 Compass set: 🏦 Bank');
+    expect(text(toastEl())).toBe('🧭 Compass set: 🏦 Bank'); // outcomes still show
+    vi.advanceTimersByTime(6000);
+    expect(toastEl()!.style.opacity).toBe('0'); // the hint waited
+    const card = document.createElement('div');
+    card.id = 'ds-guide';
+    card.dataset.active = '0'; // the card itself wins over the last event
+    document.body.appendChild(card);
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('🪙 Coins! The 📔 Journal lists every way to earn.');
+    card.remove();
+  });
+
+  test('the first-run compass hint stands down once First steps arms', () => {
+    vi.useFakeTimers();
+    ui.showWelcome(null);
+    document.querySelector<HTMLButtonElement>('button[data-dismiss]')!.click();
+    // A6 arms on Explore and fires its own compass hint on Skip.
+    window.dispatchEvent(new CustomEvent('ds:guide', { detail: { active: true, step: 'move' } }));
+    vi.advanceTimersByTime(2000);
+    window.dispatchEvent(new CustomEvent('ds:guide', { detail: { active: false } }));
+    vi.advanceTimersByTime(5000);
+    expect(text(toastEl())).not.toContain('gold ➤');
+    expect(localStorage.getItem('ds_hint_compass')).toBe('1'); // both writers share the key
+  });
+
+  test('no toast before the fly-in settles (ds:intro), nor before the card', () => {
+    vi.useFakeTimers();
+    ui.showLoading(10);
+    window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
+    ui.hideLoading();
+    ui.toast('⭐ The bank is paying extra today.');
+    vi.advanceTimersByTime(8000); // a long fly-in
+    expect(toastEl()).toBeUndefined();
+    window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'settled' } }));
+    ui.showWelcome(null); // afterIntro: settled, then the card in the same task
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()).toBeUndefined();
+    document.querySelector<HTMLButtonElement>('button[data-dismiss]')!.click();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('⭐ The bank is paying extra today.');
+  });
+
+  test('with no ds:intro, toasts wait 3.5 s after the loader hides', () => {
+    vi.useFakeTimers();
+    ui.showLoading(10);
+    ui.hideLoading();
+    ui.toast('⭐ The bank is paying extra today.');
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()).toBeUndefined();
+    vi.advanceTimersByTime(1300);
+    expect(text(toastEl())).toBe('⭐ The bank is paying extra today.');
+  });
+
+  // The queue re-polls on timers, and they outlived the UI: a pump left by a
+  // hint queued behind a panel fired after a test file's environment was torn
+  // down ('document is not defined' failed the run).
+  test('dispose() ends the queue: nothing shows, polls or re-arms after it', () => {
+    vi.useFakeTimers();
+    ui.showHireCard('cta'); // a modal: the hint and the flash wait, polling
+    ui.toast('🧭 Follow the gold ➤ arrow.', { hint: true });
+    ui.flashMessage('🔍 Secret found: The Town Hall Steps!');
+    vi.advanceTimersByTime(1000);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    ui.dispose();
+    const made = vi.spyOn(document, 'createElement');
+    ui.toast('A late callback, after the page went');
+    ui.flashMessage('🏁 Finish!');
+    vi.advanceTimersByTime(30_000);
+    expect(made).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+// Wave-1 integration: a message stepped aside came back with no limit, after
+// the visitor had read it and even after they had moved ('🧭 You have
+// arrived.' re-showed inside every hall; the compass hint showed four times in
+// 26 s on a phone; a passing villager's prompt made 'Lost?' blink).
+describe('messages: read once, shown twice at most', () => {
+  test('a message read for 1 s (an outcome) or 1.5 s (a hint) drops when a modal takes it down', () => {
+    vi.useFakeTimers();
+    ui.toast('🧭 You have arrived.');
+    vi.advanceTimersByTime(1100);
+    ui.showHireCard('cta'); // e.g. the hall panel opening at the door
+    expect(toastEl()!.style.opacity).toBe('0');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()!.style.opacity).toBe('0'); // read: it does not come back
+
+    ui.toast('💬 A villager nearby talks — walk up and press E', { hint: true });
+    vi.advanceTimersByTime(1400); // not yet read
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('💬 A villager nearby talks — walk up and press E');
+    expect(toastEl()!.style.opacity).toBe('1');
+    vi.advanceTimersByTime(200); // past 1.5 s on screen in all
+    ui.toast('🪙 +3'); // an outcome takes its place...
+    vi.advanceTimersByTime(2000 + 300 + 3000);
+    expect(text(toastEl())).toBe('🪙 +3'); // ...and the read hint never returns
+  });
+
+  test('a message comes back once after a step aside, never a second time', () => {
+    vi.useFakeTimers();
+    ui.toast('🪙 coin hint', { hint: true });
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('🪙 coin hint'); // the one re-show
+    expect(toastEl()!.style.opacity).toBe('1');
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    for (let t = 0; t < 6000; t += 200) {
+      vi.advanceTimersByTime(200);
+      expect(toastEl()!.style.opacity).toBe('0'); // no third show
+    }
+  });
+
+  test('a shown message that changed place drops; one that never showed keeps its turn', () => {
+    vi.useFakeTimers();
+    ui.toast('🧭 You have arrived.'); // at the door
+    vi.advanceTimersByTime(500);
+    ui.showLeaveButton(() => {}); // in through it
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    ui.hideZonePanel();
+    for (let t = 0; t < 3000; t += 200) {
+      vi.advanceTimersByTime(200);
+      expect(toastEl()!.style.opacity).toBe('0'); // not inside the hall
+    }
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    ui.toast('🛂 Passport stamped: Projects (1/4)', { hint: true }); // waits out the panel
+    ui.hideLeaveButton(); // the visitor walks out with the panel up
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('🛂 Passport stamped: Projects (1/4)');
+    expect(toastEl()!.style.opacity).toBe('1');
+  });
+
+  test('until() drops an outcome too', () => {
+    vi.useFakeTimers();
+    let inside = false;
+    ui.showHireCard('cta');
+    ui.toast('🧭 You have arrived.', { until: () => inside });
+    inside = true; // the visitor went in before the card closed
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()).toBeUndefined();
+  });
+
+  test('a re-shown line is not read out again', () => {
+    vi.useFakeTimers();
+    ui.toast('💬 talk hint', { hint: true });
+    expect(liveText()).toBe('💬 talk hint');
+    // Every write to the live region, as it happens (a MutationObserver
+    // reports a microtask later, after the expects).
+    const live = document.querySelector('#ui-overlay > .ds-sr-only')!;
+    const writes: string[] = [];
+    const own = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent')!;
+    Object.defineProperty(live, 'textContent', {
+      configurable: true,
+      get(this: Node) {
+        return own.get!.call(this);
+      },
+      set(this: Node, v: string) {
+        writes.push(v);
+        own.set!.call(this, v);
+      },
+    });
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('💬 talk hint'); // back on screen...
+    expect(writes).toEqual([]); // ...silently: not cleared and set again
+  });
+
+  test('touch: a prompt coming and going no longer takes a shown hint down', () => {
+    history.replaceState(null, '', '/?touch=1');
+    try {
+      document.body.innerHTML = '<div id="ui-overlay"></div>';
+      ui = new SimpleUI('ui-overlay');
+      vi.useFakeTimers();
+      const lost =
+        '🗺️ Lost? Tap the radar for the island map — pick a spot and the gold arrow leads.';
+      ui.toast(lost, { hint: true });
+      expect(toastEl()!.style.opacity).toBe('1');
+      for (let i = 0; i < 4; i++) {
+        ui.showInteractionPrompt('💬 Press <strong>E</strong> to talk to Mayor — ask anything');
+        vi.advanceTimersByTime(250); // two poll ticks
+        expect(toastEl()!.style.opacity).toBe('1');
+        ui.hideInteractionPrompt();
+        vi.advanceTimersByTime(250);
+      }
+      expect(text(toastEl())).toBe(lost);
+      // A hint that has not shown yet still waits for the prompt to go.
+      vi.advanceTimersByTime(4000); // lost's dwell ends
+      ui.showInteractionPrompt('🚪 Press <strong>E</strong> to enter Projects');
+      ui.toast('🪙 Coins! The 📔 Journal lists every way to earn.', { hint: true });
+      vi.advanceTimersByTime(1500);
+      expect(toastEl()!.style.opacity).toBe('0');
+      ui.hideInteractionPrompt();
+      vi.advanceTimersByTime(800);
+      expect(text(toastEl())).toBe('🪙 Coins! The 📔 Journal lists every way to earn.');
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+});
+
+// Wave-1 integration: in short landscape A6 puts First steps' card in a top
+// lane (top +60, left +146), so a toast lifted over it sat on the compass pill
+// and the 38% flash covered the card's last line. happy-dom has no layout:
+// the boxes below are the ones measured at 844x390, 390x844 and 375x667.
+describe('messages: clear of First steps’ card', () => {
+  const restore: (() => void)[] = [];
+  afterEach(() => {
+    for (const r of restore.splice(0)) r();
+    history.replaceState(null, '', '/');
+  });
+
+  /** A phone at w x h (short landscape at 500 tall or less), the guide card
+   *  at `card`, the compass pill at the top centre, and a 212x37 toast and
+   *  294x40 flash wherever their lanes put them. */
+  const phone = (w: number, h: number, card: DOMRect): HTMLElement => {
+    for (const [k, v] of [
+      ['innerWidth', w],
+      ['innerHeight', h],
+    ] as const) {
+      const own = Object.getOwnPropertyDescriptor(window, k);
+      Object.defineProperty(window, k, { value: v, configurable: true });
+      restore.push(() => {
+        if (own) Object.defineProperty(window, k, own);
+        else delete (window as unknown as Record<string, unknown>)[k];
+      });
+    }
+    const short = h <= 500;
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (q: string) =>
+        ({
+          matches: q.includes('max-height: 500px') ? short : false,
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(40);
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(294);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.id === 'ds-guide') return card;
+      if (this.dataset.guide === 'compass') return new DOMRect(w / 2 - 62, 14, 124, 44);
+      // (happy-dom drops calc(var()) offsets: the lane's offset is read from
+      // its data-bottom marker.)
+      if (this.style.zIndex === '1750' && this.dataset.bottom) {
+        return new DOMRect(w / 2 - 106, h - Number(this.dataset.bottom) - 37, 212, 37);
+      }
+      return new DOMRect();
+    });
+    history.replaceState(null, '', '/?touch=1');
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    ui.updateQuestCompass({ angleRad: 0, distance: 103, label: '🚀 Projects' });
+    const g = document.createElement('div');
+    g.id = 'ds-guide';
+    g.dataset.active = '0';
+    document.body.appendChild(g);
+    return g;
+  };
+  const flash = (): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find(
+      (d) => d.style.zIndex === '2000' && text(d).startsWith('🔍'),
+    );
+
+  test('short landscape: the toast keeps its 96 px lane, off the compass pill', () => {
+    vi.useFakeTimers();
+    phone(844, 390, new DOMRect(146, 60, 290, 91));
+    ui.toast('🧭 Compass set: 🚀 Projects');
+    expect(toastEl()!.dataset.lane).toBe('bottom');
+    expect(toastEl()!.dataset.bottom).toBe('96'); // y 257-294, under the card's 60-151
+  });
+
+  test('a phone in portrait: the toast still steps 8 px above the card', () => {
+    vi.useFakeTimers();
+    phone(390, 844, new DOMRect(16, 403, 359, 91));
+    ui.toast('🧭 Compass set: 🚀 Projects');
+    expect(toastEl()!.dataset.bottom).toBe(String(844 - 403 + 8));
+  });
+
+  test('short landscape: the flash goes 8 px below the card, and follows it', () => {
+    vi.useFakeTimers();
+    const card = new DOMRect(146, 60, 290, 91);
+    phone(844, 390, card);
+    ui.flashMessage('🔍 Secret found: The Musician’s Stage!');
+    expect(flash()!.style.top).toBe(`${60 + 91 + 8 + 20}px`); // its centre
+    card.height = 68; // the next step's card is shorter
+    vi.advanceTimersByTime(130);
+    expect(flash()!.style.top).toBe(`${60 + 68 + 8 + 20}px`);
+    document.getElementById('ds-guide')!.style.display = 'none';
+    vi.advanceTimersByTime(130);
+    expect(flash()!.style.top).toBe('38%'); // no card: back to centre
+  });
+
+  test('a small phone in portrait: the flash goes above the card', () => {
+    vi.useFakeTimers();
+    phone(375, 667, new DOMRect(8, 226, 359, 91));
+    ui.flashMessage('🔍 Secret found: The Musician’s Stage!');
+    expect(flash()!.style.top).toBe(`${226 - 8 - 20}px`);
+  });
+});
+
+describe('messages: announced, once', () => {
+  test('the live region mirrors the toast, the flash and the bulletin', () => {
+    vi.useFakeTimers();
+    ui.toast('🔇 Muted Traveller');
+    expect(liveText()).toBe('🔇 Muted Traveller');
+    vi.advanceTimersByTime(2300);
+    ui.flashMessage('🌊 The current pulls you back to shore');
+    vi.advanceTimersByTime(400);
+    expect(liveText()).toBe('🌊 The current pulls you back to shore');
+    ui.showWorldBulletin('Fresh records on the circuits', '#ffd479');
+    expect(liveText()).toBe('The island today: Fresh records on the circuits');
+    const live = document.querySelector('#ui-overlay > .ds-sr-only')!;
+    expect(live.getAttribute('aria-live')).toBe('polite');
+    expect(live.hasAttribute('data-never-inert')).toBe(true);
+  });
+
+  test('the prompt is read once, 600 ms after it settles, never per frame', () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    for (let f = 0; f < 30; f++)
+      ui.showInteractionPrompt('🚪 Press <strong>E</strong> to enter Projects');
+    const live = document.querySelector('#ui-overlay > .ds-sr-only');
+    expect(live).toBeNull(); // nothing yet: debounced
+    vi.advanceTimersByTime(650);
+    const el = document.querySelector('#ui-overlay > .ds-sr-only')!;
+    writes.push(text(el));
+    new MutationObserver(() => writes.push(text(el))).observe(el, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    for (let f = 0; f < 30; f++)
+      ui.showInteractionPrompt('🚪 Press <strong>E</strong> to enter Projects');
+    vi.advanceTimersByTime(2000);
+    expect(writes).toEqual(['🚪 Press E to enter Projects']);
+    const prompt = document.querySelector<HTMLElement>('[data-hud="prompt"]')!;
+    expect(prompt.style.width).toBe('max-content');
+    expect(prompt.style.maxWidth).toBe('min(440px, calc(100vw - 32px))');
+  });
+
+  test('a compass target change is read once, by its label', () => {
+    for (let f = 0; f < 10; f++) {
+      ui.updateQuestCompass({ angleRad: 0.1 * f, distance: 103 - f, label: '🚀 Projects' });
+    }
+    expect(liveText()).toBe('Compass: 🚀 Projects');
+    ui.updateQuestCompass({ angleRad: 0, distance: 80, label: '💼 Professional' });
+    expect(liveText()).toBe('Compass: 💼 Professional');
+  });
+
+  test('the NPC log is a log, the dialogue and the tour caption say their lines', () => {
+    ui.showNpcChat('Gardener', 'Morning!', async () => 'Hello.');
+    const log = document.querySelector('[role="log"]')!;
+    expect(log.getAttribute('aria-live')).toBe('polite');
+    expect(text(log.querySelector('.ds-sr-only'))).toBe('Gardener: Morning!');
+    ui.closeNpcChat();
+    ui.showDialogue('Mayor', ['Welcome to the island.', 'Enjoy it.']);
+    expect(text(document.querySelector('#dialogue-sr'))).toBe('Welcome to the island.');
+    expect(document.querySelector('#dialogue-sr')!.getAttribute('role')).toBe('status');
+    expect(document.querySelector('#dialogue-text')!.getAttribute('aria-hidden')).toBe('true');
+    ui.hideDialogue();
+    ui.showTourOverlay(() => {});
+    expect(
+      [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].some(
+        (d) => d.getAttribute('role') === 'status' && d.style.zIndex === '1900',
+      ),
+    ).toBe(true);
+    ui.hideTourOverlay();
+  });
+});
+
+describe('messages: the lanes', () => {
+  test('desktop: the toast takes the lane under the compass, and yields it to a bulletin', () => {
+    // (happy-dom drops calc(var()) offsets, so the lane is read from its
+    // marker; the browser probe measures the rectangles.)
+    vi.useFakeTimers();
+    ui.toast('🪙 +3');
+    expect(toastEl()!.dataset.lane).toBe('top');
+    ui.showWorldBulletin('A steady day on the island.', '#7cc47f');
+    expect(toastEl()!.dataset.lane).toBe('bottom');
+    vi.advanceTimersByTime(7100); // the bulletin goes
+    ui.toast('🪙 +4');
+    vi.advanceTimersByTime(300);
+    expect(toastEl()!.dataset.lane).toBe('top');
+    expect(toastEl()!.style.zIndex).toBe('1750');
+  });
+
+  test('the 7 First-steps anchors, on desktop and on a phone', () => {
+    ui.updateCoinCounter(3);
+    ui.updateQuestCompass({ angleRad: 0, distance: 103, label: '🚀 Projects' });
+    const anchors = (): string[] =>
+      [...document.querySelectorAll<HTMLElement>('[data-guide]')]
+        .map((e) => e.dataset.guide!)
+        .sort();
+    expect(anchors()).toEqual(['coin-chip', 'compass', 'portfolio-chip']);
+    history.replaceState(null, '', '/?touch=1');
+    try {
+      document.body.innerHTML = '<div id="ui-overlay"></div>';
+      ui = new SimpleUI('ui-overlay');
+      ui.updateCoinCounter(3);
+      ui.updateQuestCompass({ angleRad: 0, distance: 103, label: '🚀 Projects' });
+      expect(anchors()).toEqual(
+        [
+          'coin-chip',
+          'compass',
+          'drawer-portfolio',
+          'drawer-toggle',
+          'joystick',
+          'use-button',
+        ].sort(),
+      );
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+});
+
+describe('messages: forms say it inline', () => {
+  test('an empty Send: an inline alert, aria-invalid, focus on the field, no toast', () => {
+    vi.useFakeTimers();
+    ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'menu' });
+    document.querySelector<HTMLButtonElement>('#lead-send')!.click();
+    const err = document.querySelector<HTMLElement>('#lead-error')!;
+    const email = document.querySelector<HTMLInputElement>('#lead-email')!;
+    expect(err.getAttribute('role')).toBe('alert');
+    expect(err.hidden).toBe(false);
+    expect(text(err)).toBe('Please add your email.');
+    expect(email.getAttribute('aria-invalid')).toBe('true');
+    expect(email.getAttribute('aria-describedby')).toBe('lead-error');
+    expect(document.activeElement).toBe(email);
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()).toBeUndefined();
+    email.value = 'a@b.co';
+    email.dispatchEvent(new Event('input'));
+    expect(err.hidden).toBe(true);
+    expect(email.hasAttribute('aria-invalid')).toBe(false);
+  });
+
+  test('Say hi says it inline too', () => {
+    ui.showSayHi();
+    document.querySelector<HTMLButtonElement>('#sh-send')!.click();
+    const err = document.querySelector<HTMLElement>('#sh-error')!;
+    expect(text(err)).toBe('Write a little something first!');
+    expect(document.querySelector('#sh-msg')!.getAttribute('aria-invalid')).toBe('true');
+    expect(document.activeElement).toBe(document.querySelector('#sh-msg'));
+  });
+
+  test('Guestbook Sign stays disabled until there is text', () => {
+    const shown = ui.showGuestbook(); // its board read is async; the form is not
+    const input = document.querySelector<HTMLInputElement>('#gb-msg')!;
+    const sign = document.querySelector<HTMLButtonElement>('#gb-sign')!;
+    expect(sign.disabled).toBe(true);
+    input.value = '  ';
+    input.dispatchEvent(new Event('input'));
+    expect(sign.disabled).toBe(true);
+    input.value = 'Hi Abbas!';
+    input.dispatchEvent(new Event('input'));
+    expect(sign.disabled).toBe(false);
+    void shown.catch(() => {}); // the stubbed board read may settle either way
   });
 });
 
@@ -270,53 +881,9 @@ describe('the tour frames what its captions say', () => {
   // package A's mainLocks)
 });
 
-describe('the fly-in hides the ink through the material', () => {
-  const boxGroup = (n: number): THREE.Group => {
-    const g = new THREE.Group();
-    for (let i = 0; i < n; i++) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
-      m.position.set(i * 2, 0, 0);
-      g.add(m);
-    }
-    return g;
-  };
-  const hullsOf = (root: THREE.Object3D): THREE.Mesh[] => {
-    const out: THREE.Mesh[] = [];
-    root.traverse((o) => {
-      if (o.userData.isCelHull) out.push(o as THREE.Mesh);
-    });
-    return out;
-  };
-
-  test('setInkVisible flips the shared material and never Object3D.visible', () => {
-    const g = boxGroup(3);
-    addGroupHulls(g);
-    const hulls = hullsOf(g);
-    expect(hulls.length).toBe(3);
-    try {
-      setInkVisible(false);
-      for (const h of hulls) {
-        expect((h.material as THREE.Material).visible).toBe(false);
-        expect(h.visible).toBe(true); // game state is untouched
-      }
-      const late = boxGroup(1); // a hull baked mid-intro joins the hidden state
-      addGroupHulls(late);
-      expect((hullsOf(late)[0].material as THREE.Material).visible).toBe(false);
-    } finally {
-      setInkVisible(true);
-    }
-    for (const h of hulls) expect((h.material as THREE.Material).visible).toBe(true);
-  });
-
-  // (where main-simple hides the ink and when it restores it is main-simple.ts
-  // code: package A's mainLocks)
-
-  test('the dead cel shadow patch and its load warning are gone', () => {
-    // (its name survives in a CelLook comment, for anyone searching history)
-    expect(stripped('CelLook.ts')).not.toContain('applyCelShadowPatch');
-    expect(stripped('CelLook.ts')).not.toContain('console.warn');
-  });
-});
+// (The fly-in's ink, hidden through the shared material, and the dead cel
+// shadow patch are CelLook.ts code: package C's test/worldLook.test.ts. Where
+// main-simple hides the ink and when it restores it is package A's mainLocks.)
 
 describe('Firebase Auth without the popup resolver', () => {
   test('initializeAuth with getAuth’s persistences and no resolver', () => {
@@ -414,11 +981,18 @@ describe('analytics: owner opt-out and entry attribution', () => {
 });
 
 describe('the NPC chat admits offline replies', () => {
-  test('a canned reply re-labels the live-AI badge for that chat only', () => {
+  // The badge names the model, as the Fact Sheet does ('villagers talk
+  // through Claude Haiku 4.5'); the label it replaced is banned copy
+  // (claimsPanels).
+  test('a canned reply re-labels the model badge for that chat only', () => {
     ui.showNpcChat('Gardener', 'Morning!', async () => 'A written line.');
-    const badge = [...document.querySelectorAll('span')].find((s) => text(s) === '✨ live AI')!;
+    const badge = [...document.querySelectorAll('span')].find(
+      (s) => text(s) === 'Claude Haiku 4.5',
+    )!;
+    expect(badge.title).toContain('talks through Claude Haiku 4.5');
+    expect(badge.title).not.toMatch(/every reply|generated/i);
     ui.markNpcChatOffline('Guard'); // a different villager: no-op
-    expect(text(badge)).toBe('✨ live AI');
+    expect(text(badge)).toBe('Claude Haiku 4.5');
     ui.markNpcChatOffline('Gardener');
     expect(text(badge)).toBe('offline replies');
     expect(badge.title).toContain('written lines');

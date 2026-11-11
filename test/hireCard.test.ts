@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { a11y } from '../Accessibility';
+import { Passport } from '../Passport';
 import { SimpleUI } from '../SimpleUI';
 
 const AVAILABILITY =
@@ -33,6 +35,9 @@ beforeEach(() => {
 afterEach(() => {
   ui.hideZonePanel();
   ui.hideWelcome(false);
+  // Torn down as the page is: no message timer outlives the test (a stamp
+  // hint's pump fired after the file's environment had gone).
+  ui.dispose();
   vi.restoreAllMocks();
 });
 
@@ -217,7 +222,7 @@ const portfolioChip = (): HTMLElement => {
 };
 
 describe('a HUD chip owns its Enter', () => {
-  test('Enter on the focused Portfolio chip activates it and never reaches window', () => {
+  test('Enter on the focused Portfolio chip activates it and never reaches window', async () => {
     const chip = portfolioChip();
     const seen: string[] = [];
     const onWindow = (e: KeyboardEvent) => seen.push(e.key);
@@ -227,6 +232,12 @@ describe('a HUD chip owns its Enter', () => {
       chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       expect(seen).toEqual([]);
       expect(ui.isPanelOpen()).toBe(true); // the chip did its own job (menu open)
+      // D4: focus moves to the menu's first row (it used to stay on the chip,
+      // 9 Tabs from the rows), and Escape brings it back to the chip.
+      await Promise.resolve();
+      expect(document.activeElement).toBe(document.querySelector('button[data-section]'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(ui.isPanelOpen()).toBe(false);
       expect(document.activeElement).toBe(chip); // keyboard users keep their place
     } finally {
       window.removeEventListener('keydown', onWindow);
@@ -356,5 +367,382 @@ describe('on a phone, the menu and the panels clear the touch controls', () => {
       expect(p.hides, p.id).toContain("'touch-controls'");
       expect(p.hides, p.id).toContain("'aux-controls'");
     }
+  });
+});
+
+// D5: the recruiter path in one click, without touching the Work-with-me pill.
+// Analytics contract (changed deliberately in D5): hire_chip_click is new and
+// carries the entry attribution; hire_cta gains cta 'message'; zone_explored
+// gains source 'strip'; cta_pill_click is untouched (uiLocks pins it).
+describe('the recruiter path in one click (D5)', () => {
+  const events = (): Array<{ name: string; props?: Record<string, unknown> }> =>
+    window.__analyticsLog ?? [];
+  const zoneParam = (): string | null => new URL(location.href).searchParams.get('zone');
+
+  beforeEach(() => {
+    window.__analyticsLog = [];
+  });
+
+  test('desktop: the Hiring chip sits at +278 and opens the hire card in one click', () => {
+    const chip = document.querySelector<HTMLElement>('[data-hiring-chip]')!;
+    expect(text(chip)).toBe('Hiring? CV & contact');
+    expect(chip.getAttribute('role')).toBe('button');
+    // (happy-dom drops calc(var()) offsets: the slot is read from the source,
+    // one 38 px row below the completion pill's +240)
+    const body = /private createHiringChip\(\): void \{[\s\S]*?\n {2}\}/.exec(
+      readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8').replace(/\r\n/g, '\n'),
+    )![0];
+    expect(body).toContain("top: 'calc(var(--sat, 0px) + 278px)'");
+    expect(body).toContain("right: 'calc(var(--sar, 0px) + 10px)'");
+    expect(body).toContain('...CHIP,');
+    chip.click();
+    expect(text(panel())).toContain('Abbas Ali');
+    expect(zoneParam()).toBe('hire');
+    const hit = events().find((e) => e.name === 'hire_chip_click');
+    expect(hit).toBeTruthy();
+    expect(hit!.props).toHaveProperty('src'); // a key event: it carries the attribution
+  });
+
+  test('phone: drawer row 2, between Work with me (#1) and Portfolio (#3)', () => {
+    history.replaceState(null, '', '/?touch=1');
+    try {
+      document.body.innerHTML = '<div id="ui-overlay"></div>';
+      ui = new SimpleUI('ui-overlay');
+      const list = document.getElementById('ds-drawer')!;
+      const rows = [...list.children]
+        .map((r) => ({ order: Number((r as HTMLElement).style.order || 0), text: text(r) }))
+        .sort((a, b) => a.order - b.order);
+      expect(rows.slice(0, 4).map((r) => [r.order, r.text])).toEqual([
+        [1, '💼 Work with me'],
+        [2, 'Hiring? CV & contact'],
+        [3, '📖 Portfolio'],
+        [4, '👋 Say hi'],
+      ]);
+      expect(new Set(rows.map((r) => r.order)).size).toBe(rows.length); // no shared slots
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  test('the card: Send a message opens Contact; the tour button sits by the links', () => {
+    ui.showHireCard('cta');
+    const card = panel();
+    const send = card.querySelector<HTMLButtonElement>('button[data-hire-contact]')!;
+    const tour = card.querySelector<HTMLButtonElement>('button[data-hire-tour]')!;
+    // above the fold: before the experience list, right after the links and email
+    const xp = [...card.querySelectorAll('h3')].find((h) => text(h) === 'Experience')!;
+    expect(tour.compareDocumentPosition(xp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    send.click();
+    expect(text(panel())).toContain('Hiring, or have a project? This reaches me directly.');
+    expect(zoneParam()).toBe('contact');
+    expect(events().find((e) => e.name === 'hire_cta')?.props).toMatchObject({ cta: 'message' });
+  });
+
+  test('the strip: every section in one action, ?zone follows, scrollTop 0', () => {
+    ui.showHireCard('cta');
+    window.__analyticsLog = []; // from the first strip press on
+    for (const id of ['welcome', 'professional', 'projects', 'personal', 'contact', 'hire']) {
+      const p = panel();
+      p.scrollTop = 200;
+      p.querySelector<HTMLButtonElement>(`[data-panel-nav] button[data-goto="${id}"]`)!.click();
+      expect(zoneParam(), id).toBe(id);
+      expect(panel().scrollTop, id).toBe(0);
+      expect(panel().querySelector('[aria-current="page"]')!.getAttribute('data-goto')).toBe(id);
+    }
+    // zone_explored fires once a page session for each {zone, source}, and
+    // the ←/→ test spends the strip's projects, personal and professional
+    // when it runs first (--sequence.shuffle): every one this walk recorded
+    // says 'strip', and welcome, which only this test walks to, always does.
+    const explored = events()
+      .filter((e) => e.name === 'zone_explored')
+      .map((e) => e.props);
+    expect(explored.length).toBeGreaterThan(0);
+    for (const props of explored) expect(props).toMatchObject({ source: 'strip' });
+    expect(explored).toContainEqual({ zone: 'welcome', source: 'strip' });
+    expect(ui.panels.current()).toBe('zone');
+  });
+
+  test('← and → switch sections while the panel has focus; not from a text field', () => {
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    const key = (k: string, target: EventTarget): void => {
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }),
+      );
+    };
+    key('ArrowRight', panel().querySelector('h2')!);
+    expect(zoneParam()).toBe('personal');
+    key('ArrowLeft', panel().querySelector('h2')!);
+    key('ArrowLeft', panel().querySelector('h2')!);
+    expect(zoneParam()).toBe('professional');
+    ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'menu' });
+    key('ArrowLeft', document.querySelector('#lead-email')!); // the caret's key
+    expect(zoneParam()).toBe('contact');
+  });
+
+  test('short landscape: the scroll fade sits flush with the bottom edge, not 20 px up', () => {
+    // A sticky inset counts from inside the scroller's padding: bottom 0 put
+    // the fade over the labels of LinkedIn, CV and Code at 844x390.
+    const tall = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+    Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
+    try {
+      ui.showHireCard('cta');
+      const p = panel();
+      const fade = p.querySelector<HTMLElement>('[data-scroll-fade]')!;
+      expect(fade).toBeTruthy();
+      expect(p.style.padding).toBe('20px');
+      expect(fade.style.bottom).toBe('-20px');
+      expect(p.querySelector<HTMLElement>('[data-hire-actions]')!.style.position).toBe('sticky');
+    } finally {
+      if (tall) Object.defineProperty(window, 'innerHeight', tall);
+      else delete (window as { innerHeight?: number }).innerHeight; // back to the prototype's
+    }
+    expect(window.innerHeight).toBeGreaterThan(500);
+  });
+
+  test('short landscape: content that lands later goes above the fade, which stays last', async () => {
+    // The leaderboard appends its Guide me after an await: it went in below
+    // the fade, which then rode above it, hidden until the first scroll.
+    const tall = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+    Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
+    const frame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
+    try {
+      ui.showReceipt([]); // a centred modal: its fade comes a frame after it opens
+      await frame();
+      const modal = [...document.querySelectorAll<HTMLElement>('#ui-overlay > [role=dialog]')].at(
+        -1,
+      )!;
+      const fade = modal.querySelector<HTMLElement>('[data-scroll-fade]')!;
+      expect(modal.lastElementChild).toBe(fade);
+      const late = document.createElement('button');
+      late.textContent = 'Guide me';
+      modal.appendChild(late);
+      // The observer's record, then its frame (happy-dom delivers both on
+      // timers of its own, so wait for the move rather than count frames).
+      await vi.waitFor(() => expect(modal.lastElementChild).toBe(fade));
+      expect(fade.previousElementSibling).toBe(late);
+    } finally {
+      if (tall) Object.defineProperty(window, 'innerHeight', tall);
+      else delete (window as { innerHeight?: number }).innerHeight;
+    }
+  });
+
+  test('‹ Portfolio reopens the menu at the section it came from', async () => {
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    panel().querySelector<HTMLButtonElement>('[data-panel-nav] button[data-nav-back]')!.click();
+    expect(ui.panels.current()).toBe('portfolio-menu');
+    await Promise.resolve();
+    expect((document.activeElement as HTMLElement).dataset.section).toBe('projects');
+  });
+
+  test('the menu: a Portfolio group led by the one filled Hiring row, then an Island group', () => {
+    portfolioChip().click();
+    const groups = [...document.querySelectorAll<HTMLElement>('[role="group"]')];
+    expect(
+      groups.map((g) => text(document.getElementById(g.getAttribute('aria-labelledby')!)!)),
+    ).toEqual(['Portfolio', 'Island']);
+    const portfolio = [...groups[0].querySelectorAll<HTMLElement>('button')].map(
+      (b) => b.dataset.section,
+    );
+    expect(portfolio).toEqual([
+      'hire',
+      'welcome',
+      'professional',
+      'projects',
+      'personal',
+      'contact',
+    ]);
+    const island = [...groups[1].querySelectorAll('button')].map((b) => text(b));
+    expect(island.map((t) => t.split(' ')[1])).toEqual([
+      'Journal',
+      'Pack',
+      'Passport',
+      'Leaderboard',
+      'Guestbook',
+      'Island',
+    ]);
+    const filled = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter(
+      (b) => /background:\s*(#ffd479|rgb\(255, 212, 121\))/i.test(b.getAttribute('style') ?? ''),
+    );
+    expect(filled.map((b) => b.dataset.section)).toEqual(['hire']);
+    expect(filled[0].getAttribute('style')).toMatch(/color:\s*(#1b1400|rgb\(27, 20, 0\))/i);
+  });
+});
+
+// P2-D5: the hire card names the work and the education, and each Selected
+// work row opens Projects at that project's card: scrolled in under the
+// section nav, focus on the card's heading, its border ringed once (never
+// under reduced motion). ?zone stays 'projects'. The 'landmark' source (A's
+// hall exhibits and project sites) opens a panel without stamping the passport.
+describe('the hire card names the work, and Projects opens at it (P2-D5)', () => {
+  const events = (): Array<{ name: string; props?: Record<string, unknown> }> =>
+    window.__analyticsLog ?? [];
+  const zoneParam = (): string | null => new URL(location.href).searchParams.get('zone');
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate');
+  // What each ring went round (the ring is a child of the ringed element),
+  // and the keyframes it ran.
+  let rung: HTMLElement[] = [];
+  let frames: Keyframe[][] = [];
+  const animate = vi.fn(function (this: HTMLElement, keyframes: Keyframe[]) {
+    rung.push(this.parentElement as HTMLElement);
+    frames.push(keyframes);
+  });
+
+  beforeEach(() => {
+    window.__analyticsLog = [];
+    rung = [];
+    frames = [];
+    animate.mockClear();
+    // happy-dom has no Web Animations: a spy stands in for Element.animate.
+    Object.defineProperty(HTMLElement.prototype, 'animate', {
+      value: animate,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    if (own) Object.defineProperty(HTMLElement.prototype, 'animate', own);
+    else delete (HTMLElement.prototype as { animate?: unknown }).animate;
+    a11y.setReducedMotion(false);
+  });
+
+  /** happy-dom has no layout: the panel sits at 100 and the card at 640. */
+  const layout = (project: string): void => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const top = this.dataset.project === project ? 640 : this.dataset.zone ? 100 : 0;
+      return new DOMRect(0, top, 0, 0);
+    });
+  };
+
+  test('Selected work: three rows from the Fact Sheet, then Education, above Experience', () => {
+    ui.showHireCard('cta');
+    const card = panel();
+    const rows = [
+      ...card.querySelectorAll<HTMLButtonElement>('[data-selected-work] button[data-open-project]'),
+    ];
+    // The name a screen reader hears: the row's text without its aria-hidden ›.
+    const name = (b: HTMLElement): string => text(b.querySelector('span:not([aria-hidden])')!);
+    expect(rows.map((b) => [b.dataset.openProject, name(b)])).toEqual([
+      ['island', 'This island · open source (MIT)'],
+      ['rankpilot', 'RankPilot · live, pre-launch: no users beyond test accounts'],
+      ['digiscalability', 'digiscalability.com · Next.js 15 + Firebase'],
+    ]);
+    expect(rows.every((b) => text(b.querySelector('[aria-hidden="true"]')!) === '›')).toBe(true);
+    // Below the email row, above Experience; the availability line still once.
+    const xp = [...card.querySelectorAll('h3')].find((h) => text(h) === 'Experience')!;
+    const order = [
+      card.querySelector('[data-email]')!,
+      card.querySelector('[data-selected-work]')!,
+      card.querySelector('[data-education]')!,
+      xp,
+    ];
+    for (let i = 1; i < order.length; i++) {
+      const after = order[i - 1].compareDocumentPosition(order[i]);
+      expect(after & Node.DOCUMENT_POSITION_FOLLOWING, String(i)).toBeTruthy();
+    }
+    expect(text(card).split(AVAILABILITY).length - 1).toBe(1);
+    // The Education line is the Professional panel's, word for word.
+    const edu = text(card.querySelector('[data-education]')!);
+    ui.showZonePanel({ id: 'professional', name: 'professional' }, { source: 'menu' });
+    const head = [...panel().querySelectorAll('h3')].find((h) => text(h) === 'Education')!;
+    const lines = [head.nextElementSibling!, head.nextElementSibling!.nextElementSibling!];
+    expect(edu).toBe(`Education: ${lines.map(text).join(' · ')}`);
+  });
+
+  test('every project in the Projects panel carries its data-project id', () => {
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    const cards = [...panel().querySelectorAll<HTMLElement>('[data-project]')];
+    expect(cards.map((c) => c.dataset.project)).toEqual([
+      'island',
+      'rankpilot',
+      'chocomate',
+      'digiscalability',
+      'banos',
+      'insta',
+    ]);
+    for (const c of cards) expect(c.querySelector('h3'), c.dataset.project).toBeTruthy();
+    expect(animate).not.toHaveBeenCalled(); // no anchor, no ring
+  });
+
+  test.each(['island', 'rankpilot', 'digiscalability'])(
+    'the %s row opens Projects at its card, ringed once, focus on its heading',
+    async (id) => {
+      layout(id);
+      ui.showHireCard('cta');
+      panel().querySelector<HTMLButtonElement>(`button[data-open-project="${id}"]`)!.click();
+      const p = panel();
+      expect(p.dataset.zone).toBe('projects');
+      expect(zoneParam()).toBe('projects'); // the anchor never reaches the URL
+      const card = p.querySelector<HTMLElement>(`[data-project="${id}"]`)!;
+      // The card's top lands 8 px under the nav (no height in happy-dom).
+      expect(p.scrollTop).toBe(640 - 100 - 8);
+      expect(rung).toEqual([card]);
+      // Only its opacity moves (perfBudget: transform and opacity only). Once
+      // run, the ring is gone and the card as it was (here at once: the
+      // stand-in returns no Animation).
+      expect(frames[0].map((f) => Object.keys(f).filter((k) => k !== 'offset'))).toEqual([
+        ['opacity'],
+        ['opacity'],
+        ['opacity'],
+      ]);
+      expect(card.querySelector('[data-anchor-ring]')).toBeNull();
+      expect(card.style.position).toBe('');
+      await Promise.resolve();
+      expect(document.activeElement).toBe(card.querySelector('h3'));
+      // One prop of its own, so the event keeps its src attribution.
+      expect(events().find((e) => e.name === 'hire_cta')?.props).toEqual({
+        cta: `project_${id}`,
+        src: 'direct',
+      });
+    },
+  );
+
+  test('under reduced motion there is no ring; the panel still opens at the card', async () => {
+    a11y.setReducedMotion(true);
+    layout('rankpilot');
+    ui.showHireCard('cta');
+    panel().querySelector<HTMLButtonElement>('button[data-open-project="rankpilot"]')!.click();
+    expect(animate).not.toHaveBeenCalled();
+    expect(panel().scrollTop).toBe(532);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(panel().querySelector('[data-project="rankpilot"] h3'));
+  });
+
+  test("'landmark' opens a panel without a stamp; walking up still stamps", () => {
+    const passport = new Passport();
+    ui.setPassport(passport);
+    ui.showZonePanel(
+      { id: 'projects', name: 'projects' },
+      { source: 'landmark', anchor: 'chocomate' },
+    );
+    expect(passport.count()).toBe(0);
+    expect(ui.panels.current()).toBe('zone');
+    expect(zoneParam()).toBe('projects');
+    expect(rung.map((c) => c.dataset.project)).toEqual(['chocomate']);
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'proximity' });
+    expect(passport.count()).toBe(1);
+  });
+
+  test('an unknown or malformed anchor opens the panel at its top, focus on its heading', async () => {
+    for (const anchor of ['nope', 'x"], *', '1st', '']) {
+      expect(() =>
+        ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'landmark', anchor }),
+      ).not.toThrow();
+      expect(panel().scrollTop, anchor).toBe(0);
+      await Promise.resolve();
+      expect(document.activeElement, anchor).toBe(panel().querySelector('h2'));
+    }
+    expect(animate).not.toHaveBeenCalled();
+  });
+
+  test('Send a message opens Contact at its form: focus on its heading, never a field', async () => {
+    ui.showHireCard('cta');
+    panel().querySelector<HTMLButtonElement>('button[data-hire-contact]')!.click();
+    expect(zoneParam()).toBe('contact');
+    expect(rung.map((el) => el.id)).toEqual(['lead-form-block']);
+    await Promise.resolve();
+    expect(text(document.activeElement!)).toBe('Or send a message');
   });
 });

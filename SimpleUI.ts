@@ -146,6 +146,40 @@ const OWNER = {
   email: 'admin@digiscalability.com',
 } as const;
 
+/** One message in the toast queue (D6): a toast or a flash. */
+interface QueuedMessage {
+  text: string;
+  /** An unprompted line (onboarding, world news) rather than an outcome. */
+  hint: boolean;
+  kind: 'toast' | 'flash';
+  /** The message is stale, and drops, once this returns true: a hint the
+   *  visitor already acted on, or an outcome tied to a place they left. */
+  until?: () => boolean;
+  /** Times it has come on screen: the first show and at most one more. */
+  shows: number;
+  /** Time on screen so far, ms. Past READ_MS it counts as read. */
+  seenMs: number;
+  /** When it last came on screen (Date.now()). */
+  shownAt: number;
+  /** Inside a building (the Leave pill up) when it last showed. */
+  inside: boolean;
+}
+
+/** A message on screen this long has been read: a modal, an outcome or the
+ *  guide that takes it down after that drops it instead of re-queueing it.
+ *  Wave-1 integration: '🧭 You have arrived.' showed at the door, stepped
+ *  aside for the hall panel and came back inside every hall; the compass
+ *  hint showed four times in 26 s on a phone. */
+const READ_MS = { outcome: 1000, hint: 1500 } as const;
+/** The first show and one more after a step aside, never a third. */
+const MAX_SHOWS = 2;
+
+/** A message stays inside a panel for this long after the visitor's last
+ *  action there counts as that panel's own outcome (P2-D3). The message
+ *  clocks read Date.now(), which the suites' fake timers move along with
+ *  the timers; performance.now() they leave alone. */
+const PANEL_ACTION_MS = 8000;
+
 export class SimpleUI {
   private overlay: HTMLElement;
   private loadingDiv: HTMLElement | null = null;
@@ -163,7 +197,6 @@ export class SimpleUI {
   private envBadgeDiv: HTMLElement | null = null;
   private customizeDiv: HTMLElement | null = null;
   private zonePanelDiv: HTMLElement | null = null;
-  private zoneEscapeHandler: ((e: KeyboardEvent) => void) | null = null;
   private dialogueDiv: HTMLElement | null = null;
   private dialogueLines: string[] = [];
   private dialogueIndex: number = 0;
@@ -255,6 +288,9 @@ export class SimpleUI {
       boxShadow: '0 3px 10px rgba(0,0,0,0.4)',
     });
     b.addEventListener('click', () => onLeave());
+    // Never inert: a hall panel (a modal) is open whenever this is, and the
+    // way out must stay a click away over it (D4; P2-D2 gives it a role).
+    b.dataset.neverInert = '1';
     this.leaveBtn = b;
     this.overlay.appendChild(b);
   }
@@ -295,14 +331,19 @@ export class SimpleUI {
 
     // Back closes the open panel (its pushed history entry); an entry left
     // over from a closed panel loses its ?zone= when the visitor lands on it.
+    // A keyboard-opened panel whose opener has gone (a menu row) hands focus
+    // to the Portfolio pill, or to ☰ on a phone, where the pill is a drawer row.
     if (!this.panels)
       this.panels = new PanelManager(this.overlay, this.isTouch, {
         onStaleEntry: () => setUrlParam('zone', null),
+        fallbackFocus: () => (this.isTouch ? this.drawerToggleEl : this.portfolioBtnEl),
       });
+    this.initMessageSignals();
     this.createFPSDisplay();
     this.createMuteButton();
     this.createPortfolioButton();
     this.createContactCTA();
+    this.createHiringChip();
     this.createPhotoButton();
     this.createSayHiButton();
     this.createCompletionButton();
@@ -430,7 +471,7 @@ export class SimpleUI {
       Object.assign(el.style, {
         bottom: 'calc(var(--sab, 0px) + 100px)',
         left: '50%',
-        maxWidth: 'calc(100vw - 32px)',
+        maxWidth: 'min(440px, calc(100vw - 32px))',
       });
       return;
     }
@@ -445,11 +486,13 @@ export class SimpleUI {
       });
       return;
     }
-    // Portrait: above the whole control band.
+    // Portrait: above the whole control band. max-content up to 440 (D6):
+    // a shrink-to-fit box at left 50% was 195 px wide at 390, so 'Tap USE
+    // to talk to Elder Sage — ask anything' wrapped to three lines.
     Object.assign(el.style, {
       bottom: 'calc(var(--sab, 0px) + 300px)',
       left: '50%',
-      maxWidth: 'calc(100vw - 32px)',
+      maxWidth: 'min(440px, calc(100vw - 32px))',
     });
   }
 
@@ -479,21 +522,125 @@ export class SimpleUI {
 
   private applyToastAnchor(el: HTMLElement): void {
     const short = this.isTouch && this.shortLandscape;
-    Object.assign(el.style, {
-      // Portrait touch: 350, not 250 — the action column starts at y381 on a
-      // 667-tall screen, so the 250 lane put toast text straight across the
-      // WAVE button (measured 74x36). 350 clears it and still sits below the
-      // prompt's 300 lane.
-      bottom: short
-        ? 'calc(var(--sab, 0px) + 96px)'
-        : this.isTouch
-          ? 'calc(var(--sab, 0px) + 350px)'
-          : 'calc(var(--sab, 0px) + 250px)',
-      maxWidth: short ? 'min(56vw, 360px)' : 'min(92vw, 440px)',
-      // Landscape: nudged into the free centre band like the prompt, so the
-      // pill clears the joystick ring instead of grazing it.
-      left: short ? 'calc(50% + 30px)' : '50%',
-    });
+    const guide = this.guideRect();
+    // Desktop: the bulletin's lane under the compass pill whenever no
+    // bulletin is up (FM-09: the bottom +250 lane covered the avatar's
+    // torso), and First steps' card is clear of it (a desktop window 500 px
+    // tall or less puts the card at top +60 too, A6). Narrow windows keep
+    // the bottom lane, clear of the icon row.
+    if (!this.isTouch && !this.bulletinShowing() && window.innerWidth >= 900) {
+      el.dataset.lane = 'top';
+      delete el.dataset.bottom;
+      Object.assign(el.style, {
+        top: 'calc(var(--sat, 0px) + 66px)',
+        bottom: '',
+        maxWidth: 'min(92vw, 440px)',
+        left: '50%',
+      });
+      if (!guide || !SimpleUI.near(el.getBoundingClientRect(), guide)) return;
+    }
+    el.dataset.lane = 'bottom';
+    // Portrait touch: 350, not 250 — the action column starts at y381 on a
+    // 667-tall screen, so the 250 lane put toast text straight across the
+    // WAVE button (measured 74x36). 350 clears it and still sits below the
+    // prompt's 300 lane.
+    let bottom = short ? 96 : this.isTouch ? 350 : 250;
+    // On touch the toast sits ABOVE the interaction prompt, 8 px clear (D6):
+    // a two-line prompt reached into the 350 lane.
+    const prompt = this.interactionDiv;
+    if (this.isTouch && prompt?.isConnected) {
+      const r = prompt.getBoundingClientRect();
+      if (r.height > 0 && getComputedStyle(prompt).display !== 'none') {
+        bottom = Math.max(bottom, Math.ceil(window.innerHeight - r.top + 8));
+      }
+    }
+    const place = (px: number): void => {
+      el.dataset.bottom = String(px); // the offset as data, for the probes and the tests
+      Object.assign(el.style, {
+        top: '',
+        bottom: `calc(var(--sab, 0px) + ${px}px)`,
+        maxWidth: short ? 'min(56vw, 360px)' : 'min(92vw, 440px)',
+        // Landscape: nudged into the free centre band like the prompt, so
+        // the pill clears the joystick ring instead of grazing it.
+        left: short ? 'calc(50% + 30px)' : '50%',
+      });
+    };
+    place(bottom);
+    // First steps' card (A6): the toast steps above it, 8 px clear, only
+    // where the card is in its lane and there is room above the card below
+    // the compass pill. That is the phone's card, low on the screen. In short
+    // landscape the card sits in a top lane (top +60), and lifting over it
+    // put every toast on the compass pill (124x37 at 844x390, wave-1
+    // integration); the 96 px lane is clear of that card.
+    if (guide) {
+      const r = el.getBoundingClientRect();
+      if (SimpleUI.near(r, guide) && guide.top - 8 - r.height >= this.topClear()) {
+        place(Math.max(bottom, Math.ceil(window.innerHeight - guide.top + 8)));
+      }
+    }
+  }
+
+  /**
+   * The flash's place: centred at 38% of the height, unless First steps'
+   * card is there. Then it goes 8 px above the card where that fits below
+   * the compass pill (a phone's card, low on the screen), else 8 px below it
+   * (short landscape, where A6 puts the card at top +60: the 38% flash
+   * covered the card's last line, 226x33 px at 844x390 and 267x38 at
+   * 667x375, wave-1 integration). Re-run while the flash shows (watchShown):
+   * the card changes with each step and folds to its chip.
+   */
+  private anchorFlash(el: HTMLElement): void {
+    const guide = this.guideRect();
+    const vh = window.innerHeight;
+    const h = el.offsetHeight;
+    const w = el.offsetWidth;
+    let mid: number | null = null; // the flash's centre, when it moves
+    if (guide && h > 0) {
+      const at = new DOMRect(window.innerWidth / 2 - w / 2, vh * 0.38 - h / 2, w, h);
+      if (SimpleUI.near(at, guide)) {
+        if (guide.top - 8 - h >= this.topClear()) mid = guide.top - 8 - h / 2;
+        else if (guide.bottom + 8 + h <= vh - 8) mid = guide.bottom + 8 + h / 2;
+      }
+    }
+    el.style.top = mid === null ? '38%' : `${Math.round(mid)}px`;
+    if (mid === null) delete el.dataset.lane;
+    else el.dataset.lane = 'guide';
+  }
+
+  /** First steps' card or chip (A6, #ds-guide) where it stands on screen,
+   *  or null while it is hidden. */
+  private guideRect(): DOMRect | null {
+    const g = typeof document === 'undefined' ? null : document.getElementById('ds-guide');
+    if (!g?.isConnected) return null;
+    const cs = getComputedStyle(g);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) {
+      return null;
+    }
+    const r = g.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? r : null;
+  }
+
+  /** The highest a lifted toast or a moved flash may reach: 8 px under the
+   *  compass pill, or 8 px from the top while the pill is hidden. */
+  private topClear(): number {
+    const c = this.compassDiv;
+    if (c?.isConnected && c.style.display !== 'none') {
+      const r = c.getBoundingClientRect();
+      if (r.height > 0) return r.bottom + 8;
+    }
+    return 8;
+  }
+
+  /** Do two boxes meet, or come within `pad` px of each other? */
+  private static near(a: DOMRect, b: DOMRect, pad = 8): boolean {
+    return (
+      a.width > 0 &&
+      a.height > 0 &&
+      a.left < b.right + pad &&
+      b.left < a.right + pad &&
+      a.top < b.bottom + pad &&
+      b.top < a.bottom + pad
+    );
   }
 
   // ── Mobile chip drawer (mobile-HUD Round 3, Phase 3) ──────────────────
@@ -702,6 +849,11 @@ export class SimpleUI {
       this.toggleDrawer();
     });
     this.makeHudButtonAccessible(t, 'Open island menu');
+    t.dataset.guide = 'drawer-toggle'; // First steps rings it (A6)
+    list.id = 'ds-drawer';
+    list.setAttribute('aria-label', 'Island menu');
+    t.setAttribute('aria-controls', 'ds-drawer');
+    t.setAttribute('aria-expanded', 'false');
     this.drawerToggleEl = t;
     this.getTier1Row().appendChild(t);
     return list;
@@ -727,6 +879,7 @@ export class SimpleUI {
       history: false, // transient: Back is not spent on it
     });
     list.style.display = 'flex';
+    this.drawerToggleEl?.setAttribute('aria-expanded', 'true');
     // 😀 tier-2 chip yields its spot while the drawer occupies it.
     if (this.emoteBtnEl) this.emoteBtnEl.style.visibility = 'hidden';
     // Staggered 22ms slide-in per row; instant under reduced motion.
@@ -758,15 +911,20 @@ export class SimpleUI {
     this.overlay.appendChild(catcher);
     this.drawerCatcher = catcher;
     // 8s IDLE auto-collapse — idle meaning untouched. The timer re-arms on
-    // any interaction with the list (scroll, touch, press), otherwise the
-    // drawer vanished mid-read under a slow reader's finger.
+    // any interaction with the list (scroll, touch, press, and keyboard focus
+    // or keys), otherwise the drawer vanished mid-read under a slow reader's
+    // finger. It never collapses while focus is inside it: a keyboard user
+    // walking the rows would lose them, and the focus with them (D4).
     const arm = (): void => {
       if (this.drawerIdleTimer) clearTimeout(this.drawerIdleTimer);
-      this.drawerIdleTimer = window.setTimeout(() => this.closeDrawer(), 8000);
+      this.drawerIdleTimer = window.setTimeout(() => {
+        if (this.drawerListEl?.contains(document.activeElement)) arm();
+        else this.closeDrawer();
+      }, 8000);
     };
     if (!list.dataset.idleRearm) {
       list.dataset.idleRearm = '1';
-      for (const ev of ['pointerdown', 'scroll', 'touchmove'] as const) {
+      for (const ev of ['pointerdown', 'scroll', 'touchmove', 'focusin', 'keydown'] as const) {
         list.addEventListener(ev, () => this.drawerOpen && arm(), { passive: true });
       }
     }
@@ -783,6 +941,7 @@ export class SimpleUI {
     this.drawerCatcher?.remove();
     this.drawerCatcher = null;
     if (this.drawerListEl) this.drawerListEl.style.display = 'none';
+    this.drawerToggleEl?.setAttribute('aria-expanded', 'false');
     if (this.emoteBtnEl) this.emoteBtnEl.style.visibility = '';
     this.panels.notifyClosed('drawer'); // no-op during a sweep
   }
@@ -980,8 +1139,12 @@ export class SimpleUI {
       }
       if (best) pick(best.poi);
     });
+    // The canvas is a picture of the legend below: the legend is the
+    // accessible path, so screen readers skip the canvas (UX-15).
+    canvas.setAttribute('aria-hidden', 'true');
     // Legend — every provider as a tappable chip (works even where map dots
-    // crowd each other).
+    // crowd each other). Repeats share one chip that picks the nearest of
+    // them: four 'Ore vein' chips became one 'Ore veins (4)' (UX-15).
     const legend = document.createElement('div');
     Object.assign(legend.style, {
       display: 'flex',
@@ -992,12 +1155,35 @@ export class SimpleUI {
       maxHeight: '150px',
       overflowY: 'auto',
     });
+    const groups = new Map<string, Array<(typeof pois)[number]>>();
     for (const poi of pois) {
+      const key = `${poi.icon} ${poi.label}`;
+      groups.set(key, [...(groups.get(key) ?? []), poi]);
+    }
+    const plural = (label: string): string =>
+      label.replace(
+        /^(.*?)(\s+\(.*)?$/,
+        (_m, head: string, tail = '') =>
+          `${head}${/(?:ch|sh|s|x|z)$/.test(head) ? 'es' : 's'}${tail}`,
+      );
+    const nearest = (list: Array<(typeof pois)[number]>): (typeof pois)[number] => {
+      const p = opts?.playerPos;
+      if (!p) return list[0];
+      const d2 = (q: { x: number; y: number; z: number }): number =>
+        (q.x - p.x) ** 2 + (q.y - p.y) ** 2 + (q.z - p.z) ** 2;
+      return list.reduce((a, b) => (d2(b.pos) < d2(a.pos) ? b : a));
+    };
+    for (const list of groups.values()) {
+      const poi = list[0];
       const chip = document.createElement('button');
       chip.type = 'button';
-      chip.textContent = `${poi.icon} ${poi.label}`;
+      chip.textContent =
+        list.length > 1
+          ? `${poi.icon} ${plural(poi.label)} (${list.length})`
+          : `${poi.icon} ${poi.label}`;
       Object.assign(chip.style, {
         padding: '5px 9px',
+        minHeight: this.isTouch ? '44px' : '36px',
         borderRadius: '999px',
         // District chips wear their accent — same colour as the map halo,
         // the radar beacon and the in-world plaza tint.
@@ -1007,7 +1193,7 @@ export class SimpleUI {
         fontSize: '12px',
         cursor: 'pointer',
       });
-      chip.addEventListener('click', () => pick(poi));
+      chip.addEventListener('click', () => pick(list.length > 1 ? nearest(list) : poi));
       legend.appendChild(chip);
     }
     modal.appendChild(legend);
@@ -1070,8 +1256,20 @@ export class SimpleUI {
 
   private toastEl: HTMLDivElement | null = null;
   private toastTimer = 0;
-  private toastQueue: string[] = [];
+  private pumpTimer = 0;
+  /** Messages waiting to show, oldest first: toasts and flashes (D6). */
+  private toastQueue: QueuedMessage[] = [];
+  /** The message on screen now, while toastBusy. */
+  private shownMessage: QueuedMessage | null = null;
   private toastBusy = false;
+  /** A fading flash: toasts wait out its 300 ms fade. */
+  private flashFadeUntil = 0;
+  /** A toast whose dwell just ended: the next message waits out its 200 ms
+   *  fade. A flash is a second element, and one that arrived in that window
+   *  showed over the fading toast (wave-1 integration: the 'Next:' flash on
+   *  leaving a hall, 2.0 s after the passport toast). A hint taken down at
+   *  once (stepHintAside) has no fade to wait for. */
+  private toastFadeUntil = 0;
   /**
    * Brief auto-dismissing status toast — e.g. "Muted <name>".
    *
@@ -1083,110 +1281,292 @@ export class SimpleUI {
    * - DEFERS while the loader or welcome modal is up (the once-per-day
    *   featured toast fired under the opaque loader and burned its
    *   localStorage key without ever being seen).
+   *
+   * One message at a time (D6, P2-D3): toasts and flashes share this queue,
+   * so a flash and a toast are never on screen together. Nothing paints over
+   * an open modal: a message waits for it to close, unless it answers what
+   * the visitor just did inside it (a shop purchase, 'Link copied'), which
+   * shows inside the panel instead. An outcome takes the place of a hint on
+   * screen at once, and a message whose `until()` has come true is dropped,
+   * hint or outcome (an arrival toast can pass `until: () =>
+   * scene.isInsideInterior()`).
    */
-  public toast(message: string, opts?: { hint?: boolean }): void {
-    message = this.touchifyPlain(message);
-    // Drop exact duplicates already waiting — a queue of three "+1 🪙" adds
-    // nothing.
-    if (this.toastQueue.includes(message)) return;
-    this.toastQueue.push(message);
-    if (opts?.hint) this.hintToasts.add(message);
+  public toast(message: string, opts?: { hint?: boolean; until?: () => boolean }): void {
+    this.enqueue(this.queued(this.touchifyPlain(message), 'toast', !!opts?.hint, opts?.until));
+  }
+
+  /** A fresh queue entry: never shown yet. */
+  private queued(
+    text: string,
+    kind: QueuedMessage['kind'],
+    hint: boolean,
+    until?: () => boolean,
+  ): QueuedMessage {
+    return { text, hint, kind, until, shows: 0, seenMs: 0, shownAt: 0, inside: false };
+  }
+
+  private enqueue(m: QueuedMessage): void {
+    if (this.messagesStopped) return;
+    if (!m.hint && this.panelOwnsMessage()) {
+      this.panelNote(m);
+      return;
+    }
+    // Drop exact duplicates already waiting, or on screen now — a queue of
+    // three "+1 🪙" adds nothing.
+    if (this.toastQueue.some((q) => q.text === m.text)) return;
+    if (this.toastBusy && this.shownMessage?.text === m.text) return;
+    this.toastQueue.push(m);
+    // Outcomes beat hints (GP-08): the refund waited 5.9 s behind an 88-char
+    // hint. The hint bows out and goes back to the head of the queue.
+    if (!m.hint && this.shownMessage?.hint && this.mayShow(m)) this.stepHintAside();
     this.pumpToasts();
   }
 
-  /** Queued messages that are HINTS (see takeToast), by text. */
-  private readonly hintToasts = new Set<string>();
-
   /**
-   * Dequeue the next toast that may show now, or null to wait. Hints — the
+   * May this message show now? Nothing paints over an open modal (P2-D3:
+   * 'Secret found' printed across the Welcome hall's body text). Hints — the
    * unprompted onboarding and world lines (compass, coins, districts, streak,
-   * world news) — wait while any panel, the menu or the tour is open: the
-   * first-run compass hint landed on the contact form and on the recruiter
-   * tour. Everything else answers something the visitor just did, often
-   * inside that very panel (the lead form's "Please add your email.", a shop
-   * purchase, "Link copied"), so it never waits behind a hint.
+   * world news) — also wait while any panel, the menu or the tour is open
+   * (the first-run compass hint landed on the contact form and on the
+   * recruiter tour), while the first-steps guide is active (A6), and on touch
+   * while an interaction prompt is up (it covered a third of 'Tap USE to talk
+   * to…', PROMPT-01).
+   *
+   * `shown`: the hint is on screen already. A prompt no longer takes it
+   * down: the toast lane steps above the prompt instead (applyToastAnchor).
+   * Taking it down made it blink — a passing villager's prompt hid 'Lost?'
+   * five times in 16 s on a phone, each for 0.1-0.5 s (wave-1 integration).
    */
-  private takeToast(): string | null {
-    const i = this.panels.isOpen() ? this.toastQueue.findIndex((m) => !this.hintToasts.has(m)) : 0;
-    if (i < 0) return null;
-    const [message] = this.toastQueue.splice(i, 1);
-    const hint = this.hintToasts.delete(message);
-    this.shownHint = hint ? message : null;
-    if (hint) this.watchHintToast(message);
-    return message;
+  private mayShow(m: QueuedMessage, shown = false): boolean {
+    if (this.panels.isModalOpen()) return false;
+    if (!m.hint) return true;
+    if (this.panels.isOpen() || this.guideActive()) return false;
+    if (shown) return true;
+    // The first beat after the welcome card belongs to First steps, which
+    // arms on Explore and comes up 600 ms after the card goes (A6).
+    if (Date.now() - this.welcomeClosedAt < 600) return false;
+    return !(this.isTouch && this.interactionDiv !== null);
   }
 
-  /** The hint toast on screen right now, if the current toast is one. */
-  private shownHint: string | null = null;
+  /** Inside a building: the Leave pill is up. */
+  private isInside(): boolean {
+    return this.leaveBtn !== null;
+  }
+
+  private welcomeClosedAt = -Infinity;
 
   /**
-   * A hint already showing when a panel, the menu or the tour opens bows out
-   * at once and goes back to the head of the queue, to show again after the
-   * panel closes. Measured before this: the talk hint stayed over a freshly
-   * opened hire card for the rest of its dwell. Polls only while the hint
-   * shows (6 s at most).
+   * Dequeue the next message that may show now, or null to wait: outcomes
+   * first, then hints, oldest first within each. Stale messages drop:
+   * - one whose until() has come true, hint or outcome (the talk hint
+   *   returned after the visitor had already talked, GP-08);
+   * - one that showed already, stepped aside, and whose place has changed
+   *   since: the visitor went into a building or came out ('🏝️ The Hub —
+   *   the town square' stepped aside for the PIN pad and came back inside
+   *   the beach house). A message that never showed keeps its turn: the
+   *   passport stamp waits out the hall panel, and the visitor may have
+   *   left the hall by the time it shows.
    */
-  private watchHintToast(hint: string): void {
+  private takeToast(): QueuedMessage | null {
+    const inside = this.isInside();
+    this.toastQueue = this.toastQueue.filter(
+      (q) => !q.until?.() && !(q.shows > 0 && q.inside !== inside),
+    );
+    const pick =
+      this.toastQueue.find((q) => !q.hint && this.mayShow(q)) ??
+      this.toastQueue.find((q) => q.hint && this.mayShow(q)) ??
+      null;
+    if (pick) this.toastQueue.splice(this.toastQueue.indexOf(pick), 1);
+    return pick;
+  }
+
+  /**
+   * The message on screen bows out the moment it may no longer show: a modal
+   * opened over it, or (a hint) a panel, the menu, the tour or the guide came
+   * up, or its until() came true. Measured before this: the talk hint stayed
+   * over a freshly opened hire card for the rest of its dwell.
+   *
+   * While it may stay, it keeps its lane clear of First steps' card, which
+   * grows with each step, folds to its chip and moves over a prompt while
+   * the message shows: on every poll, and in the same frame the card
+   * resizes (at 844x390 the step-3 card grew 39 px into a flash 8 px below
+   * it, for one 100 ms monitor sample before the poll moved it). Polls only
+   * while a message shows (6 s at most).
+   */
+  private watchShown(m: QueuedMessage): void {
+    if (this.shownWatch) window.clearInterval(this.shownWatch);
+    this.unwatchGuide();
+    const reanchor = (): void => {
+      if (m.kind === 'flash') {
+        if (this.flashEl) this.anchorFlash(this.flashEl);
+      } else if (this.toastEl) {
+        this.applyToastAnchor(this.toastEl);
+      }
+    };
+    const guide = document.getElementById('ds-guide');
+    if (guide && typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => {
+        if (this.shownMessage === m && this.toastBusy) reanchor();
+      });
+      ro.observe(guide);
+      this.guideResize = ro;
+    }
     const iv = window.setInterval(() => {
-      if (this.shownHint !== hint || !this.toastBusy) {
+      if (this.shownMessage !== m || !this.toastBusy) {
         window.clearInterval(iv);
+        if (this.shownWatch === iv) {
+          this.shownWatch = 0;
+          this.unwatchGuide();
+        }
         return;
       }
-      if (!this.panels.isOpen()) return;
+      if (this.mayShow(m, true) && !m.until?.()) {
+        reanchor();
+        return;
+      }
       window.clearInterval(iv);
-      this.stepHintAside();
+      this.shownWatch = 0;
+      this.unwatchGuide();
+      this.stepHintAside(true);
     }, 120);
+    this.shownWatch = iv;
+  }
+
+  /** watchShown's poll, while a message shows. */
+  private shownWatch = 0;
+  /** watchShown's eye on First steps' card, while a message shows. */
+  private guideResize: ResizeObserver | null = null;
+  private unwatchGuide(): void {
+    this.guideResize?.disconnect();
+    this.guideResize = null;
+  }
+
+  /** dispose() ran: the queue takes nothing more and arms no timer. */
+  private messagesStopped = false;
+
+  /**
+   * End the message queue for good (dispose): every timer it runs on (the
+   * pump's re-poll, the dwell, the panel note, the live region, the prompt's
+   * read-out, the shown message's watch) is cleared and none re-arms. They
+   * ran on after the UI was gone: a test file's environment torn down under
+   * a pending pump failed the run with 'document is not defined'.
+   */
+  private stopMessages(): void {
+    this.messagesStopped = true;
+    for (const t of [
+      this.pumpTimer,
+      this.toastTimer,
+      this.panelNoteTimer,
+      this.liveTimer,
+      this.promptAnnounceTimer,
+    ]) {
+      if (t) clearTimeout(t);
+    }
+    if (this.shownWatch) window.clearInterval(this.shownWatch);
+    this.unwatchGuide();
+    this.pumpTimer = 0;
+    this.toastTimer = 0;
+    this.panelNoteTimer = 0;
+    this.liveTimer = 0;
+    this.promptAnnounceTimer = 0;
+    this.shownWatch = 0;
+    this.toastQueue = [];
+    this.shownMessage = null;
+    this.toastBusy = false;
   }
 
   /**
    * Take the hint on screen down NOW, with no fade, and put it back at the
-   * head of the queue. The hire card, the Portfolio panels, the menu and the
-   * centred modals call this as they open: waiting for the poll above left
-   * the compass hint painted over a just-opened hire card for a tick plus
-   * the 200 ms fade (measured at 390x844).
+   * head of the queue (`any`: whatever is on screen, the opening of a modal).
+   * The hire card, the Portfolio panels, the menu and the centred modals call
+   * this as they open: waiting for the poll above left the compass hint
+   * painted over a just-opened hire card for a tick plus the 200 ms fade
+   * (measured at 390x844).
+   *
+   * It drops instead of going back when it is stale (until() true), when it
+   * has been read (on screen READ_MS in all), or when it has had its one
+   * re-show already (MAX_SHOWS).
    */
-  private stepHintAside(): void {
-    const hint = this.shownHint;
-    if (hint === null || !this.toastBusy) return;
+  private stepHintAside(any = false): void {
+    const m = this.shownMessage;
+    if (m === null || !this.toastBusy || !(m.hint || any)) return;
     if (this.toastTimer) clearTimeout(this.toastTimer);
-    const el = this.toastEl;
-    if (el) {
+    if (m.kind === 'flash') {
+      this.flashEl?.remove();
+      this.flashEl = null;
+    } else if (this.toastEl) {
       // Hide with the fade switched off, flush styles so the hide lands
       // unanimated, then switch the fade back on for the next toast.
+      const el = this.toastEl;
       const fade = el.style.transition;
       el.style.transition = 'none';
       el.style.opacity = '0';
       void getComputedStyle(el).opacity;
       el.style.transition = fade;
     }
-    this.shownHint = null;
+    this.shownMessage = null;
     this.toastBusy = false;
-    if (!this.toastQueue.includes(hint)) {
-      this.toastQueue.unshift(hint);
-      this.hintToasts.add(hint);
-    }
-    window.setTimeout(() => this.pumpToasts(), 250);
+    m.seenMs += Math.max(0, Date.now() - m.shownAt);
+    const read = m.seenMs >= (m.hint ? READ_MS.hint : READ_MS.outcome);
+    const back = !read && m.shows < MAX_SHOWS && !m.until?.();
+    if (back && !this.toastQueue.some((q) => q.text === m.text)) this.toastQueue.unshift(m);
+    this.schedulePump(250);
+  }
+
+  /** One pending pump at a time: a sooner request replaces a later one. */
+  private schedulePump(ms: number): void {
+    if (this.messagesStopped) return;
+    if (this.pumpTimer) clearTimeout(this.pumpTimer);
+    this.pumpTimer = window.setTimeout(() => {
+      this.pumpTimer = 0;
+      this.pumpToasts();
+    }, ms);
   }
 
   private pumpToasts(): void {
-    if (this.toastBusy || this.toastQueue.length === 0) return;
-    // Not while an opaque loader or the welcome/name modal owns the screen —
-    // re-checked on a short poll so deferred messages surface right after.
-    const message = this.isLoadingVisible() || this.isWelcomeVisible() ? null : this.takeToast();
-    if (message === null) {
-      window.setTimeout(() => this.pumpToasts(), 700);
+    if (this.messagesStopped || this.toastBusy || this.toastQueue.length === 0) return;
+    // Not while an opaque loader or the welcome/name modal owns the screen,
+    // nor before the fly-in settles (a returning visitor read a special
+    // before the card, FM-12), nor over a fading flash or toast — re-checked
+    // on a short poll so deferred messages surface right after.
+    const fade = Math.max(this.flashFadeUntil, this.toastFadeUntil) - Date.now();
+    const wait = this.isLoadingVisible() || this.isWelcomeVisible() || this.introHold() || fade > 0;
+    const m = wait ? null : this.takeToast();
+    if (m === null) {
+      this.schedulePump(fade > 0 ? Math.ceil(fade) : 700);
       return;
     }
     this.toastBusy = true;
+    this.shownMessage = m;
+    m.shows += 1;
+    m.shownAt = Date.now();
+    m.inside = this.isInside();
+    // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
+    // a 120-char school lesson (shown only via toast, key already spent)
+    // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
+    // Flashes take the same rule (they were a flat 1.8 s).
+    const dwell = Math.min(6000, Math.max(2000, m.text.length * 50));
+    if (m.kind === 'flash') this.showFlash(m.text, dwell);
+    else this.showToast(m.text, dwell);
+    // Read out on its first show only: a re-show after a step aside is the
+    // same line, and the live region read 'Lost?' seven times in 33 s.
+    if (m.shows === 1) this.announce(m.text);
+    this.watchShown(m);
+  }
+
+  private showToast(text: string, dwell: number): void {
     if (!this.toastEl) {
       this.toastEl = document.createElement('div');
-      // Bottom-centre lane, stacked so concurrent notices don't overlap:
-      // chat-input 96 · breath 150 · recording 200 · toast 250 · prompt 300.
+      // Bottom-centre lane on phones, stacked so concurrent notices don't
+      // overlap (chat-input 96 · breath 150 · recording 200 · toast 350 ·
+      // prompt 300, lifted over the prompt and the guide card); the top lane
+      // under the compass pill on desktop (see applyToastAnchor).
       Object.assign(this.toastEl.style, {
         position: 'absolute',
         left: '50%',
         transform: 'translateX(-50%)',
         width: 'max-content',
+        maxWidth: 'min(92vw, 440px)',
         textAlign: 'center',
         background: 'rgba(12,12,20,0.92)',
         color: '#fff',
@@ -1200,22 +1580,200 @@ export class SimpleUI {
         opacity: '0',
         transition: 'opacity 0.2s ease',
       });
-      this.applyToastAnchor(this.toastEl);
       this.overlay.appendChild(this.toastEl);
     }
-    this.toastEl.textContent = message;
+    this.toastEl.textContent = text;
+    this.applyToastAnchor(this.toastEl); // the lanes depend on what else is up
     this.toastEl.style.opacity = '1';
     if (this.toastTimer) clearTimeout(this.toastTimer);
-    // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
-    // a 120-char school lesson (shown only via toast, key already spent)
-    // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
-    const dwell = Math.min(6000, Math.max(2000, message.length * 50));
     this.toastTimer = window.setTimeout(() => {
       if (this.toastEl) this.toastEl.style.opacity = '0';
       this.toastBusy = false;
+      this.shownMessage = null;
+      // The next message waits out this 200 ms fade (pumpToasts).
+      this.toastFadeUntil = Date.now() + 200;
       // 250ms gap between queued toasts so consecutive ones read as separate.
-      window.setTimeout(() => this.pumpToasts(), 250);
+      this.schedulePump(250);
     }, dwell);
+  }
+
+  // ── Messages: the panel's own outcomes, the guide, the intro, the live region ──
+
+  /** The visitor's last press inside an open panel, and which panel. */
+  private lastPanelAction: { id: string; at: number } | null = null;
+  private panelNoteTimer = 0;
+
+  /** The top modal asked for this message: the visitor acted inside it a
+   *  moment ago (a purchase, a Copy, a share, a vault deposit). The welcome
+   *  card is not one: its every button closes it. */
+  private panelOwnsMessage(): boolean {
+    const top = this.panels.topModal();
+    const a = this.lastPanelAction;
+    return (
+      !!top?.el &&
+      top.id !== 'welcome' &&
+      !!a &&
+      a.id === top.id &&
+      Date.now() - a.at < PANEL_ACTION_MS
+    );
+  }
+
+  /**
+   * Show an outcome INSIDE the open modal: a status line pinned to the
+   * bottom of its scroller, never a toast painted over it (P2-D3). A
+   * microtask later, because the shop re-renders itself right after its own
+   * toast; a panel gone by then hands the message back to the queue.
+   */
+  private panelNote(m: QueuedMessage): void {
+    queueMicrotask(() => {
+      if (this.messagesStopped) return;
+      const top = this.panels.topModal();
+      const el = top?.el;
+      if (!el?.isConnected) {
+        if (!this.toastQueue.some((q) => q.text === m.text)) this.toastQueue.push(m);
+        this.pumpToasts();
+        return;
+      }
+      let note = Array.from(el.children).find(
+        (c): c is HTMLElement => c instanceof HTMLElement && c.dataset.panelNote === '1',
+      );
+      if (!note) {
+        note = document.createElement('div');
+        note.dataset.panelNote = '1';
+        note.setAttribute('role', 'status'); // read out by the dialog itself
+        Object.assign(note.style, {
+          position: 'sticky',
+          bottom: '0',
+          margin: '12px 0 0',
+          padding: '9px 14px',
+          borderRadius: '10px',
+          background: 'rgba(28,34,52,0.97)',
+          border: '1px solid rgba(143,193,255,0.35)',
+          color: '#fff',
+          fontSize: '13.5px',
+          lineHeight: '1.35',
+          textAlign: 'center',
+          zIndex: '1',
+        });
+        el.appendChild(note);
+      }
+      note.textContent = m.text;
+      const shown = note;
+      if (this.panelNoteTimer) clearTimeout(this.panelNoteTimer);
+      this.panelNoteTimer = window.setTimeout(
+        () => shown.remove(),
+        Math.min(6000, Math.max(2000, m.text.length * 50)),
+      );
+    });
+  }
+
+  /** The latest 'ds:guide' {active, step} (A6), until the card itself exists. */
+  private lastGuide: { active: boolean } | null = null;
+
+  /** First steps is on screen and teaching: hints wait (D6). The card's own
+   *  data-active wins; before it exists, the last 'ds:guide' event. */
+  private guideActive(): boolean {
+    const el = typeof document === 'undefined' ? null : document.getElementById('ds-guide');
+    if (el) return el.dataset.active === '1';
+    return this.lastGuide?.active === true;
+  }
+
+  /** The guide has armed at least once this page life: it teaches the
+   *  compass itself, so the welcome's first-run compass hint stands down. */
+  private guideArmed(): boolean {
+    return this.lastGuide !== null || !!document.getElementById('ds-guide');
+  }
+
+  // The intro hold (D6, FM-12): 'ds:intro' settled (A8), or 3.5 s after the
+  // loader hides where nobody sends it. With no loader at all (an embed, a
+  // test) there is nothing to wait for.
+  private introPhase: 'none' | 'started' | 'settled' = 'none';
+  private introStartedAt = 0;
+  private loaderEverShown = false;
+  private loaderHiddenAt = 0;
+  private static readonly INTRO_HOLD_MS = 3500;
+  /** A 'start' whose 'settled' never comes holds no longer than this. */
+  private static readonly INTRO_MAX_MS = 20000;
+
+  private introHold(): boolean {
+    if (this.introPhase === 'settled') return false;
+    const now = Date.now();
+    if (this.introPhase === 'started') return now - this.introStartedAt < SimpleUI.INTRO_MAX_MS;
+    if (!this.loaderEverShown) return false;
+    return this.loadingDiv !== null || now - this.loaderHiddenAt < SimpleUI.INTRO_HOLD_MS;
+  }
+
+  /** The visually hidden polite live region: toasts, flashes, the bulletin,
+   *  the interaction prompt (debounced) and compass target changes (D6;
+   *  UX-05: every notice was silent to screen readers). */
+  private liveEl: HTMLDivElement | null = null;
+  private liveTimer = 0;
+
+  private announce(text: string): void {
+    if (!text || this.messagesStopped) return;
+    if (!this.liveEl) {
+      const el = document.createElement('div');
+      el.className = 'ds-sr-only';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.setAttribute('aria-atomic', 'true');
+      el.dataset.neverInert = '1'; // a modal's inert must not silence it
+      this.overlay.appendChild(el);
+      this.liveEl = el;
+    }
+    const el = this.liveEl;
+    if (this.liveTimer) clearTimeout(this.liveTimer);
+    if (el.textContent !== text) {
+      el.textContent = text;
+      return;
+    }
+    // The same line again: clear, then re-set, so it is read again.
+    el.textContent = '';
+    this.liveTimer = window.setTimeout(() => {
+      el.textContent = text;
+    }, 60);
+  }
+
+  /** Window listeners: the guide, the intro, and the panel's own actions. */
+  private initMessageSignals(): void {
+    if (typeof window === 'undefined') return;
+    window.addEventListener('ds:guide', this.onGuideEvent);
+    window.addEventListener('ds:intro', this.onIntroEvent);
+    // Capture: a press inside a modal marks the next outcome as its own,
+    // whatever the control does with the event afterwards.
+    for (const type of ['pointerdown', 'keydown', 'click'] as const) {
+      this.overlay.addEventListener(type, this.onPanelAction, true);
+    }
+  }
+
+  private readonly onGuideEvent = (e: Event): void => {
+    const d = (e as CustomEvent<{ active?: boolean }>).detail;
+    this.lastGuide = { active: !!d?.active };
+    if (this.lastGuide.active) this.stepHintAside();
+    else this.schedulePump(0);
+  };
+
+  private readonly onIntroEvent = (e: Event): void => {
+    const phase = (e as CustomEvent<{ phase?: string }>).detail?.phase;
+    if (phase === 'start' && this.introPhase === 'none') {
+      this.introPhase = 'started';
+      this.introStartedAt = Date.now();
+    } else if (phase === 'settled') {
+      this.introPhase = 'settled';
+      // A tick later: afterIntro opens the welcome card right after it says
+      // settled, and the card must win that race.
+      this.schedulePump(0);
+    }
+  };
+
+  private readonly onPanelAction = (e: Event): void => {
+    const id = this.panels.panelAt(e.target as Node | null);
+    if (id) this.lastPanelAction = { id, at: Date.now() };
+  };
+
+  /** Is the bulletin banner up (the desktop toast lane yields to it)? */
+  private bulletinShowing(): boolean {
+    return !!this.bulletinEl && this.bulletinEl.style.opacity === '1';
   }
 
   private bulletinEl: HTMLDivElement | null = null;
@@ -1278,12 +1836,17 @@ export class SimpleUI {
     this.bulletinEl.style.borderTopColor = accent;
     this.bulletinEl.style.opacity = '1';
     this.bulletinEl.style.transform = 'translateX(-50%) translateY(0)';
+    this.announce(`The island today: ${headline}`);
+    // A desktop toast in the bulletin's lane steps down to the bottom lane
+    // while the banner is up, and back after.
+    if (this.toastEl) this.applyToastAnchor(this.toastEl);
     if (this.bulletinTimer) clearTimeout(this.bulletinTimer);
     this.bulletinTimer = window.setTimeout(() => {
       if (this.bulletinEl) {
         this.bulletinEl.style.opacity = '0';
         this.bulletinEl.style.transform = 'translateX(-50%) translateY(-8px)';
       }
+      if (this.toastEl) this.applyToastAnchor(this.toastEl);
     }, 7000);
   }
 
@@ -1367,9 +1930,15 @@ export class SimpleUI {
     this.overlay.appendChild(modal);
   }
 
-  /** Reward celebration fired when the last stamp lands (see Passport.onComplete). */
+  /** Reward celebration fired when the last stamp lands (see Passport.onComplete).
+   *  The last stamp lands inside a hall, from showZonePanel: the crown stacks
+   *  OVER that hall's panel (allow: ['zone']) instead of sweeping it, and on
+   *  close focus goes back to the panel's heading (PanelManager). Its entry,
+   *  Escape and the CTA close only the crown (INT-02). */
   showPassportComplete(): void {
-    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))', 'passport-complete');
+    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))', 'passport-complete', {
+      allow: ['zone'],
+    });
     modal.style.border = '1px solid rgba(255,213,74,0.55)';
     modal.insertAdjacentHTML(
       'beforeend',
@@ -1436,7 +2005,9 @@ export class SimpleUI {
     },
   ): void {
     this.vaultDiv?.remove();
-    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'vault');
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'vault', {
+      label: 'Island Bank',
+    });
     this.vaultDiv = modal;
     const h = document.createElement('div');
     h.innerHTML = `<div style="font-size:28px">🏦</div>
@@ -1491,7 +2062,9 @@ export class SimpleUI {
    *  escaped defensively since some carry a provider name. */
   public showReceipt(entries: ReadonlyArray<{ label: string; amount: number; t: number }>): void {
     this.receiptDiv?.remove();
-    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'receipt');
+    const modal = this.buildCenteredModal('min(360px, calc(100vw - 32px))', 'receipt', {
+      label: 'Coin history',
+    });
     this.receiptDiv = modal;
     const now = Date.now();
     const esc = (s: string): string =>
@@ -1539,15 +2112,27 @@ export class SimpleUI {
    * A modal that removes itself outside the ✕ path (timed success screens)
    * must call `this.panels.notifyClosed(id)` alongside its remove().
    */
-  private buildCenteredModal(width: string, id = 'modal'): HTMLElement {
+  private buildCenteredModal(
+    width: string,
+    id = 'modal',
+    opts: {
+      /** Panels left open underneath: the passport crown over a hall panel. */
+      allow?: string[];
+      /** The dialog's name when its title is not a heading (axe
+       *  aria-dialog-name: the coin history, the bank, the build modals). */
+      label?: string;
+    } = {},
+  ): HTMLElement {
     const modal = document.createElement('div');
     this.panels.open(id, {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => modal.remove(),
       el: modal, // a removed modal pops even if its close path never notifies
+      allow: opts.allow,
+      label: opts.label,
     });
-    this.stepHintAside();
+    this.stepHintAside(true); // nothing paints over a modal (D6)
     Object.assign(modal.style, {
       position: 'fixed',
       top: '50%',
@@ -1600,6 +2185,13 @@ export class SimpleUI {
       this.panels.notifyClosed(id);
     });
     modal.appendChild(close);
+    // Short landscape: a scroll cue on a modal taller than the screen (D5).
+    // A frame later, once its caller has filled and appended it.
+    if (window.innerHeight <= 500) {
+      requestAnimationFrame(() => {
+        if (modal.isConnected) this.addScrollFade(modal, 'rgba(12,12,20,0.96)');
+      });
+    }
     return modal;
   }
 
@@ -1616,6 +2208,7 @@ export class SimpleUI {
     btn.textContent = label;
     Object.assign(btn.style, {
       padding: '9px 16px',
+      minHeight: this.isTouch ? '44px' : '', // a thumb target (it measured 38)
       borderRadius: '10px',
       border: '1px solid rgba(120,160,255,0.45)',
       background: 'rgba(80,130,255,0.18)',
@@ -1660,27 +2253,34 @@ export class SimpleUI {
     // font-family:inherit: form controls default to the UA font, which left
     // the message box in monospace. aria-label + autocomplete: the fields
     // had placeholders only (axe: unlabelled form fields).
-    const field = `width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};outline:1px solid rgba(255,255,255,0.15);`;
+    const field = `width:100%;box-sizing:border-box;${this.isTouch ? 'min-height:44px;' : ''}margin:0 0 8px;padding:9px 11px;border:none;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};outline:1px solid rgba(255,255,255,0.15);`;
     form.innerHTML = `
       <h3 style="margin:0 0 4px;font-size:15px;">Or send a message</h3>
       <p style="margin:0 0 10px;font-size:12px;color:#9aa;">Straight to my inbox — I'll reply personally.</p>
       <input id="lead-name" aria-label="Your name (optional)" autocomplete="name" placeholder="Your name (optional)" maxlength="80" style="${field}" />
       <input id="lead-email" type="email" aria-label="Your email" autocomplete="email" placeholder="Your email" maxlength="120" style="${field}" />
       <textarea id="lead-msg" aria-label="Your message" autocomplete="off" placeholder="A role, a project, or a question" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
-      <button id="lead-send" style="width:100%;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
-      <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;">Privacy</a></p>`;
+      <button id="lead-send" style="width:100%;${this.isTouch ? 'min-height:44px;' : ''}padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
+      <p id="lead-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
+      <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;${this.isTouch ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;' : ''}">Privacy</a></p>`;
     container.appendChild(form);
     // Keep keystrokes out of the game while typing.
     form
       .querySelectorAll('input,textarea')
       .forEach((el) => el.addEventListener('keydown', (e) => e.stopPropagation()));
     const btn = form.querySelector('#lead-send') as HTMLButtonElement | null;
+    // Errors show inline (D6, UX-05): a role=alert line, aria-invalid on the
+    // field and focus on it. A toast here landed over the email and message
+    // fields on a phone, and screen readers never heard it.
+    const errEl = form.querySelector<HTMLElement>('#lead-error')!;
+    const emailEl = form.querySelector('#lead-email') as HTMLInputElement;
+    this.clearFormErrorOnInput(errEl, form.querySelectorAll<HTMLElement>('input,textarea'));
     btn?.addEventListener('click', async () => {
       const name = (form.querySelector('#lead-name') as HTMLInputElement).value;
-      const email = (form.querySelector('#lead-email') as HTMLInputElement).value;
+      const email = emailEl.value;
       const msg = (form.querySelector('#lead-msg') as HTMLTextAreaElement).value;
       if (!email.trim()) {
-        this.toast('Please add your email.');
+        this.formError(errEl, 'Please add your email.', emailEl);
         return;
       }
       btn.disabled = true;
@@ -1711,13 +2311,44 @@ export class SimpleUI {
         // into a retype loop and then away. Re-test client-side and only
         // accuse the address when it is actually wrong.
         track('lead_failed'); // the missing half of the funnel — success was tracked, failure never
-        this.toast(
-          /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())
+        const good = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
+        this.formError(
+          errEl,
+          good
             ? 'Could not send — try again, or email admin@digiscalability.com.'
             : 'Please check your email address.',
+          good ? null : emailEl,
         );
       }
     });
+  }
+
+  /** An inline form error (D6): the form's role=alert line says it, the
+   *  field at fault gets aria-invalid and focus. `field` null: nothing the
+   *  visitor typed is wrong (a network failure), so focus stays put. */
+  private formError(errEl: HTMLElement, msg: string, field: HTMLElement | null): void {
+    errEl.textContent = msg;
+    errEl.hidden = false;
+    const form = errEl.parentElement;
+    form?.querySelectorAll('[aria-invalid]').forEach((f) => f.removeAttribute('aria-invalid'));
+    if (!field) return;
+    field.setAttribute('aria-invalid', 'true');
+    field.setAttribute('aria-describedby', errEl.id);
+    field.focus();
+  }
+
+  /** Typing again clears the error. */
+  private clearFormErrorOnInput(errEl: HTMLElement, fields: Iterable<HTMLElement>): void {
+    for (const f of fields) {
+      f.addEventListener('input', () => {
+        if (errEl.hidden) return;
+        errEl.hidden = true;
+        errEl.textContent = '';
+        errEl.parentElement
+          ?.querySelectorAll('[aria-invalid]')
+          .forEach((n) => n.removeAttribute('aria-invalid'));
+      });
+    }
   }
 
   /** Global race leaderboard: fastest laps per circuit. */
@@ -1780,6 +2411,7 @@ export class SimpleUI {
       // the Leaderboard's button left 'leaderboard' on the stack: scrim up,
       // chips dimmed, phone controls hidden under "Follow the compass" (UX-01).
       this.panels.notifyClosed(panelId);
+      this.raceGuided = true;
       this.onRaceGuide?.();
     });
     return go;
@@ -1866,11 +2498,26 @@ export class SimpleUI {
        <div style="display:flex;gap:8px;margin-bottom:12px;">
          <input id="gb-msg" aria-label="Your guestbook note" maxlength="200" placeholder="Say hi…" style="flex:1;padding:9px 12px;border-radius:10px;
            border:none;font-family:inherit;font-size:${this.isTouch ? '16px' : '14px'};background:rgba(255,255,255,0.1);color:#fff;outline:1px solid rgba(120,170,255,0.5);" />
-         <button id="gb-sign" class="ds-press" style="padding:9px 16px;border:none;border-radius:10px;background:${DS.primary};
+         <button id="gb-sign" class="ds-press" disabled style="padding:9px 16px;border:none;border-radius:10px;background:${DS.primary};
            color:#fff;font-size:14px;font-weight:600;cursor:pointer;">Sign</button>
        </div>
+       <p id="gb-error" role="alert" hidden style="margin:-4px 0 10px;font-size:13px;line-height:1.4;color:#ffb4a8;text-align:left;"></p>
        <div id="gb-body" style="text-align:left;max-height:40vh;overflow:auto;">Loading…</div>`,
     );
+    // Sign waits for a note (D6): an empty Sign did nothing, silently.
+    const gbInput = modal.querySelector<HTMLInputElement>('#gb-msg');
+    const gbSign = modal.querySelector<HTMLButtonElement>('#gb-sign');
+    const gbError = modal.querySelector<HTMLElement>('#gb-error')!;
+    const syncSign = (): void => {
+      if (gbSign) {
+        gbSign.disabled = !gbInput?.value.trim();
+        gbSign.style.opacity = gbSign.disabled ? '0.5' : '1';
+        gbSign.style.cursor = gbSign.disabled ? 'default' : 'pointer';
+      }
+    };
+    gbInput?.addEventListener('input', syncSign);
+    syncSign();
+    if (gbInput) this.clearFormErrorOnInput(gbError, [gbInput]);
     trackOnce('guestbook_opened');
     this.overlay.appendChild(modal);
     const { getGuestbook, signGuestbook } = await import('./Boards');
@@ -1905,7 +2552,8 @@ export class SimpleUI {
       const ok = await signGuestbook(name, msg);
       if (ok) {
         if (input) input.value = '';
-        this.toast('✍️ Signed the guestbook!');
+        syncSign();
+        this.toast('✍️ Signed the guestbook!'); // shows inside the open guestbook (P2-D3)
         track('guestbook_signed');
         try {
           localStorage.setItem('ds_said_hi', '1');
@@ -1915,7 +2563,7 @@ export class SimpleUI {
         this.onProgressMade?.();
         await render();
       } else {
-        this.toast('Message could not be posted.');
+        this.formError(gbError, 'Message could not be posted.', input);
       }
     };
     modal.querySelector('#gb-sign')?.addEventListener('click', () => void sign());
@@ -2105,6 +2753,11 @@ export class SimpleUI {
       this.panels.notifyClosed('emote-wheel');
       return;
     }
+    // A menu of emotes (UX-15): focus lands on the first, the arrows walk
+    // the 4x2 grid, and Escape closes it (PanelManager) with focus back on 😀.
+    const wheel = document.createElement('div');
+    wheel.setAttribute('role', 'menu');
+    wheel.setAttribute('aria-label', 'Emotes');
     this.panels.open('emote-wheel', {
       kind: 'sheet',
       hides: ['nav-chips'], // the wheel opens exactly over the chip column
@@ -2115,6 +2768,8 @@ export class SimpleUI {
         this.emoteWheelCatcher = null;
       },
       history: false, // transient: Back is not spent on it
+      el: wheel,
+      initialFocus: () => wheel.querySelector<HTMLElement>('button'),
     });
     // Outside tap dismisses (drawer's catcher pattern). Without it, touch had
     // NO dismissal: hides:['nav-chips'] hides the 😀 toggle itself and phones
@@ -2130,7 +2785,6 @@ export class SimpleUI {
     catcher.addEventListener('click', () => this.toggleEmoteWheel());
     this.overlay.appendChild(catcher);
     this.emoteWheelCatcher = catcher;
-    const wheel = document.createElement('div');
     Object.assign(wheel.style, {
       position: 'absolute',
       top: 'calc(var(--sat, 0px) + 132px)',
@@ -2147,14 +2801,16 @@ export class SimpleUI {
       boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
     });
     // Single-codepoint emoji (no ZWJ sequences) so they survive text cleaning.
+    const side = this.isTouch ? '48px' : '40px'; // a thumb target on touch
     ['👋', '😂', '❤️', '🎉', '👍', '🔥', '😮', '🙌'].forEach((emo) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = emo;
+      b.setAttribute('role', 'menuitem');
       b.setAttribute('aria-label', `Send ${emo}`);
       Object.assign(b.style, {
-        width: '40px',
-        height: '40px',
+        width: side,
+        height: side,
         fontSize: '20px',
         background: 'rgba(255,255,255,0.06)',
         border: '1px solid rgba(255,255,255,0.12)',
@@ -2167,6 +2823,20 @@ export class SimpleUI {
         this.toggleEmoteWheel();
       });
       wheel.appendChild(b);
+    });
+    const steps: Record<string, number> = {
+      ArrowLeft: -1,
+      ArrowRight: 1,
+      ArrowUp: -4,
+      ArrowDown: 4,
+    };
+    wheel.addEventListener('keydown', (e) => {
+      const step = steps[e.key];
+      if (step === undefined) return;
+      const items = Array.from(wheel.querySelectorAll<HTMLElement>('button'));
+      const i = items.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      items[(Math.max(0, i) + step + items.length) % items.length]?.focus();
     });
     this.emoteWheel = wheel;
     this.overlay.appendChild(wheel);
@@ -2647,7 +3317,9 @@ export class SimpleUI {
     wallet: { timber: number; coins: number; built: number; cap: number },
     onPick: (kind: number) => void,
   ): void {
-    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'build-chooser');
+    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'build-chooser', {
+      label: 'Raise a structure',
+    });
     modal.style.textAlign = 'left';
     modal.insertAdjacentHTML(
       'beforeend',
@@ -2697,7 +3369,9 @@ export class SimpleUI {
     build: { icon: string; name: string; timber: number },
     onAction: (action: 'reclaim' | 'replace') => void,
   ): void {
-    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'build-options');
+    const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'build-options', {
+      label: `Your ${build.name}`,
+    });
     modal.insertAdjacentHTML(
       'beforeend',
       `<div style="font-size:17px;font-weight:700;margin-bottom:4px;">${build.icon} Your ${build.name}</div>
@@ -2767,7 +3441,7 @@ export class SimpleUI {
       'Toggle game sound (music, effects, voices — live calls excluded)',
       muted,
     );
-    this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 8 });
+    this.chipHost(this.muteBtn, { drawer: true, label: 'Sound', order: 9 });
     this.createVolumePill(volume);
     this.createReducedMotionButton();
     this.createCustomizeButton();
@@ -2850,6 +3524,12 @@ export class SimpleUI {
     slider.addEventListener('focus', () => this.showVolumePill(4000));
     slider.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.hideVolumePill();
+      // The value keys belong to the slider: ← used to turn the volume down
+      // AND walk the avatar 4.4 u (PANEL-01).
+      if (/^(Arrow(Up|Down|Left|Right)|Home|End|PageUp|PageDown)$/.test(e.key)) {
+        e.stopPropagation();
+        this.showVolumePill(4000);
+      }
     });
   }
 
@@ -2896,7 +3576,7 @@ export class SimpleUI {
       this.onCustomizeToggle?.();
     });
     this.makeHudButtonAccessible(btn, 'Customize appearance');
-    this.chipHost(btn, { drawer: true, label: 'Customize', order: 6 });
+    this.chipHost(btn, { drawer: true, label: 'Customize', order: 7 });
   }
 
   /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
@@ -2929,7 +3609,7 @@ export class SimpleUI {
     });
     this.makeHudButtonAccessible(btn, 'Toggle reduced motion', a11y.reducedMotion);
     render();
-    this.chipHost(btn, { drawer: true, label: 'Reduce motion', order: 9 });
+    this.chipHost(btn, { drawer: true, label: 'Reduce motion', order: 10 });
   }
 
   private portfolioMenuDiv: HTMLElement | null = null;
@@ -3020,8 +3700,16 @@ export class SimpleUI {
       this.togglePortfolioMenu();
     });
     this.makeHudButtonAccessible(btn, 'Open portfolio menu');
-    this.chipHost(btn, { drawer: true, order: 2 });
+    // First steps' anchor (A6): the pill on desktop, its drawer row on touch.
+    btn.dataset.guide = this.isTouch ? 'drawer-portfolio' : 'portfolio-chip';
+    this.portfolioBtnEl = btn;
+    // Drawer row 3: Work with me keeps #1 and the Hiring row takes #2 (D5).
+    this.chipHost(btn, { drawer: true, order: 3 });
   }
+
+  /** The Portfolio pill: where a keyboard user's focus lands when the panel
+   *  they opened from the menu closes (PanelManager fallbackFocus). */
+  private portfolioBtnEl: HTMLElement | null = null;
 
   /**
    * Persistent "Work with me" pill (top-center). A portfolio's whole job is to
@@ -3068,6 +3756,33 @@ export class SimpleUI {
     this.chipHost(btn, { drawer: true, order: 1 });
   }
 
+  /**
+   * The recruiter path in one click (D5, UX-07): a 'Hiring? CV & contact'
+   * text chip at +278 on desktop, below the completion pill, and drawer row
+   * #2 on a phone. It opens the hire card, where the Work-with-me pill (left
+   * exactly as ruled: its slot, label, green and cta_pill_click) opens
+   * Contact, which lacks the CV and the availability line. The glyph is a
+   * page with lines until D13's icon sprite lands.
+   */
+  private createHiringChip(): void {
+    const btn = document.createElement('div');
+    btn.innerHTML =
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true" style="color:#ffd479;flex:none"><path d="M4 1.5h5l3.5 3.5v9.5h-8.5z"/><path d="M9 1.5v3.5h3.5M6 9h4.5M6 11.5h4.5"/></svg><span>Hiring? CV &amp; contact</span>';
+    btn.dataset.hiringChip = '1';
+    Object.assign(btn.style, {
+      ...CHIP,
+      top: 'calc(var(--sat, 0px) + 278px)', // the row below the completion pill (38px pitch)
+      right: 'calc(var(--sar, 0px) + 10px)',
+    });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('hire_chip_click');
+      this.showHireCard('cta');
+    });
+    this.makeHudButtonAccessible(btn, 'Hiring? Open the CV and contact card');
+    this.chipHost(btn, { drawer: true, order: 2 });
+  }
+
   /** Photo mode entry — the game loop owns the actual capture (renderer flag). */
   private onPhotoRequest: (() => void) | null = null;
   public setOnPhotoRequest(fn: () => void): void {
@@ -3091,7 +3806,7 @@ export class SimpleUI {
       this.onPhotoRequest?.();
     });
     this.makeHudButtonAccessible(btn, 'Take a photo of the island (P)');
-    this.chipHost(btn, { drawer: true, label: 'Photo', order: 5 });
+    this.chipHost(btn, { drawer: true, label: 'Photo', order: 6 });
   }
 
   // ── Tour mode overlay (caption bar + skip) ───────────────────────────────
@@ -3116,6 +3831,7 @@ export class SimpleUI {
       history: false, // transient: Back is not spent on it
     });
     const cap = document.createElement('div');
+    cap.setAttribute('role', 'status'); // each stop's caption is read out (UX-05)
     Object.assign(cap.style, {
       position: 'absolute',
       left: '50%',
@@ -3227,7 +3943,7 @@ export class SimpleUI {
       this.showSayHi();
     });
     this.makeHudButtonAccessible(btn, 'Say hi — leave a quick note');
-    this.chipHost(btn, { drawer: true, order: 3 });
+    this.chipHost(btn, { drawer: true, order: 4 });
   }
 
   showSayHi(): void {
@@ -3254,6 +3970,7 @@ export class SimpleUI {
        <input id="sh-email" aria-label="Your email, only if you'd like a reply (optional)" autocomplete="email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
        <button id="sh-send" class="ds-press" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
          background:${DS.primary};color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
+       <p id="sh-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
        <p style="margin:9px 0 0;font-size:11px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
     );
     this.overlay.appendChild(modal);
@@ -3265,17 +3982,20 @@ export class SimpleUI {
     const nameEl = modal.querySelector('#sh-name') as HTMLInputElement | null;
     const emailEl = modal.querySelector('#sh-email') as HTMLInputElement | null;
     const sendBtn = modal.querySelector('#sh-send') as HTMLButtonElement | null;
+    // Inline errors, as the lead form's (D6).
+    const errEl = modal.querySelector<HTMLElement>('#sh-error')!;
+    this.clearFormErrorOnInput(errEl, modal.querySelectorAll<HTMLElement>('input, textarea'));
     msgEl?.focus();
     sendBtn?.addEventListener('click', () => {
       void (async () => {
         const msg = msgEl?.value.trim() ?? '';
         if (!msg) {
-          this.toast('Write a little something first!');
+          this.formError(errEl, 'Write a little something first!', msgEl);
           return;
         }
         const email = emailEl?.value.trim() ?? '';
         if (email && !/^\S+@\S+\.\S+$/.test(email)) {
-          this.toast('Please check your email address.');
+          this.formError(errEl, 'Please check your email address.', emailEl);
           return;
         }
         const name = nameEl?.value.trim() || 'Traveller';
@@ -3314,7 +4034,7 @@ export class SimpleUI {
         } else {
           sendBtn.disabled = false;
           sendBtn.textContent = 'Send 👋';
-          this.toast('Could not send — try again in a moment.');
+          this.formError(errEl, 'Could not send — try again in a moment.', null);
         }
       })();
     });
@@ -3344,7 +4064,7 @@ export class SimpleUI {
       this.showInventory();
     });
     this.makeHudButtonAccessible(btn, 'Your pack (inventory)');
-    this.chipHost(btn, { drawer: true, label: 'Your Pack', order: 4 });
+    this.chipHost(btn, { drawer: true, label: 'Your Pack', order: 5 });
   }
 
   private createCompletionButton(): void {
@@ -3360,7 +4080,7 @@ export class SimpleUI {
       this.showCompletionModal();
     });
     this.makeHudButtonAccessible(btn, 'Island completion checklist');
-    this.chipHost(btn, { drawer: true, label: 'Progress', order: 7 });
+    this.chipHost(btn, { drawer: true, label: 'Progress', order: 8 });
     this.completionBtn = btn;
   }
 
@@ -3562,6 +4282,10 @@ export class SimpleUI {
     // menu (z 1600), so a tap on Guestbook, Island Times, Your Pack or Island
     // Journal could land on a touch control. The menu clears them, as every
     // modal does; they come back when it closes.
+    const menu = document.createElement('div');
+    // A dialog by name, but a sheet: no aria-modal, no Tab trap, no inert.
+    // Focus moves to its first row and comes back to the pill on close (D4;
+    // Enter on the pill used to leave focus there, 9 Tabs from the rows).
     this.panels.open('portfolio-menu', {
       kind: 'sheet',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
@@ -3569,9 +4293,20 @@ export class SimpleUI {
         this.portfolioMenuDiv?.remove();
         this.portfolioMenuDiv = null;
       },
+      el: menu,
+      // The first row, or the section '‹ Portfolio' came back from (UX-08).
+      initialFocus: () => {
+        const want = this.menuFocusSection;
+        this.menuFocusSection = null;
+        return (
+          (want ? menu.querySelector<HTMLElement>(`button[data-section="${want}"]`) : null) ??
+          menu.querySelector<HTMLElement>('button[data-section]')
+        );
+      },
     });
     this.stepHintAside();
-    const menu = document.createElement('div');
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-labelledby', 'ds-portfolio-menu-title');
     Object.assign(menu.style, {
       position: 'fixed',
       top: '50%',
@@ -3592,6 +4327,10 @@ export class SimpleUI {
       maxHeight: 'calc(100dvh - 32px)',
       overflowY: 'auto',
     });
+    // Two labelled groups (D5, UX-19): the six portfolio entries, then the
+    // island's. It mixed 6 portfolio items with 7 game items under one title,
+    // with Passport, a game item, first and the only filled button. Now the
+    // Hiring row leads as the one filled button (#ffd479 on #1b1400, 13:1).
     const sections: Array<{ id: string; label: string }> = [
       // The hire card is reachable from here too: a recruiter who dismissed
       // the welcome card must not have to find the pill again.
@@ -3602,47 +4341,59 @@ export class SimpleUI {
       { id: 'personal', label: '🎨 Personal' },
       { id: 'contact', label: '📬 Get in touch' },
     ];
+    const row =
+      'display:block;width:100%;min-height:44px;margin:6px 0;padding:11px 12px;border-radius:10px;font-size:15px;cursor:pointer;text-align:left;';
     const rows = sections
-      .map(
-        (s) =>
-          `<button data-section="${s.id}" style="display:block;width:100%;margin:7px 0;padding:12px;
-            background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);
-            border-radius:10px;font-size:15px;cursor:pointer;text-align:left;">${s.label}</button>`,
+      .map((s) =>
+        s.id === 'hire'
+          ? `<button data-section="${s.id}" style="${row}background:#ffd479;color:#1b1400;border:1px solid #ffd479;font-weight:700;">${s.label}</button>`
+          : `<button data-section="${s.id}" style="${row}background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);">${s.label}</button>`,
       )
       .join('');
     const pp = this.passport;
     const ppLabel = pp
       ? pp.isComplete()
-        ? '🛂 Passport — complete 👑'
-        : `🛂 Passport — ${pp.count()}/${pp.total()} stamped`
+        ? '🛂 Passport 👑'
+        : `🛂 Passport ${pp.count()}/${pp.total()}`
       : '🛂 Passport';
+    const tile =
+      'min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
+    const group =
+      'margin:14px 0 2px;font-size:11.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9fb0c8;text-align:left;';
     menu.innerHTML = `
-      <h2 style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
-      <p style="margin:0 0 14px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
-      <button data-passport="1" style="display:block;width:100%;margin:0 0 12px;padding:12px;
-        background:linear-gradient(135deg,rgba(18,183,106,0.28),rgba(14,159,110,0.18));color:#fff;
-        border:1px solid rgba(120,220,170,0.45);border-radius:10px;font-size:14px;font-weight:600;
-        cursor:pointer;text-align:center;">${ppLabel}</button>
-      ${rows}
-      <div style="display:flex;gap:8px;margin-top:10px;">
-        <button data-board="leaderboard" style="flex:1;padding:11px;background:#26263340;color:#fff;
-          border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">🏁 Leaderboard</button>
-        <button data-board="guestbook" style="flex:1;padding:11px;background:#26263340;color:#fff;
-          border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;">✍️ Guestbook</button>
+      <h2 id="ds-portfolio-menu-title" style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
+      <p style="margin:0 0 4px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
+      <div role="group" aria-labelledby="ds-menu-group-portfolio">
+        <h3 id="ds-menu-group-portfolio" style="${group}">Portfolio</h3>
+        ${rows}
       </div>
-      <button data-board="times" style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
-        border:1px solid rgba(255,215,121,0.28);border-radius:10px;font-size:14px;cursor:pointer;">📰 Island Times</button>
-      <button data-pack style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
-        border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">🎒 Your Pack</button>
-      <button data-journal style="display:block;width:100%;margin-top:8px;padding:11px;background:#26263340;color:#fff;
-        border:1px solid rgba(138,155,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">📔 Island Journal</button>`;
-    // close button
+      <div role="group" aria-labelledby="ds-menu-group-island">
+        <h3 id="ds-menu-group-island" style="${group}">Island</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
+          <button data-journal style="${tile}">📔 Journal</button>
+          <button data-pack style="${tile}">🎒 Pack</button>
+          <button data-passport="1" style="${tile}">${ppLabel}</button>
+          <button data-board="leaderboard" style="${tile}">🏁 Leaderboard</button>
+          <button data-board="guestbook" style="${tile}">✍️ Guestbook</button>
+          <button data-board="times" style="${tile}">📰 Island Times</button>
+        </div>
+      </div>`;
+
+    // close button: named, and the 44px box every other × has (it measured
+    // 14x28 and was announced as 'times').
     const close = document.createElement('button');
     close.textContent = '×';
+    close.setAttribute('aria-label', 'Close portfolio menu');
     Object.assign(close.style, {
       position: 'absolute',
-      top: '10px',
-      right: '14px',
+      top: '4px',
+      right: '6px',
+      width: '44px',
+      height: '44px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '0',
       background: 'transparent',
       color: 'white',
       border: 'none',
@@ -3681,6 +4432,7 @@ export class SimpleUI {
     });
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);
+    if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgba(12, 12, 20, 0.95)');
   }
 
   /**
@@ -3730,6 +4482,7 @@ export class SimpleUI {
       background: 'rgba(255,255,255,0.45)',
     });
     base.appendChild(thumb);
+    base.dataset.guide = 'joystick'; // First steps' ghost thumb sits on the ring (A6)
     hit.appendChild(base);
     this.overlay.appendChild(hit);
     this.panels.registerLayer('touch-controls', hit);
@@ -3904,7 +4657,7 @@ export class SimpleUI {
     };
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
-    makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse);
+    makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide = 'use-button';
     makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump);
     makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave);
     // DIVE — touch's only route to the free dive (Shift is desktop-only).
@@ -4060,6 +4813,7 @@ export class SimpleUI {
    * Show loading screen with progress
    */
   showLoading(progress: number): void {
+    this.loaderEverShown = true; // toasts now wait out the intro (introHold)
     if (!this.loadingDiv) {
       // FULLSCREEN opaque backdrop: the first frames can render before the
       // camera is placed (degenerate inside-the-planet views) — nothing
@@ -4185,6 +4939,7 @@ export class SimpleUI {
       this.loadingTimer = 0;
     }
     if (this.loadingDiv) {
+      this.loaderHiddenAt = Date.now();
       const el = this.loadingDiv;
       // Blank the CSS planet + orbiting moon BEFORE the fade. The loader is
       // opaque and fades out (0.45s) ON TOP of the already-running 3D fly-in, so
@@ -4310,13 +5065,22 @@ export class SimpleUI {
     // touch policy that clears the HUD for panels never ran at the single
     // most crowded moment of the whole product (fresh boot on a phone:
     // welcome + minimap + chips + 7 touch controls + pills, 9 surfaces).
+    // A stray tap on the scrim closes the card without burning ds_welcomed
+    // (FM-06: an outside tap on a phone used to spend the pitch unread); the
+    // sweep and every explicit choice still persist. The card takes focus
+    // itself (tabIndex -1, below), so Space and Enter do nothing on a fresh
+    // card and the first Tab reaches the Hiring pill (FM-02).
+    const card = this.welcomeDiv;
     this.panels.open('welcome', {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls', 'ambient-info'],
-      close: () => this.hideWelcome(),
+      close: (reason) => this.hideWelcome(reason !== 'scrim'),
       ownEscape: true, // welcome keeps its own Escape listener below
       history: false, // the landing card: Back from it leaves, as before
+      el: card,
+      initialFocus: () => card,
     });
+    this.stepHintAside(true);
 
     trackOnce('welcome_shown');
 
@@ -4339,6 +5103,9 @@ export class SimpleUI {
     } catch {
       /* storage blocked — show the full pitch */
     }
+    // Every card button is a 44px thumb target on touch (phone.cjs: the
+    // Hiring pill measured 40 and Explore 42).
+    const tap = this.isTouch ? 'min-height:44px;' : '';
     const controlsLine = this.isTouch
       ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
       : 'WASD to move · drag or J/L to look · space to jump · Q to wave.';
@@ -4348,10 +5115,10 @@ export class SimpleUI {
     // indigo outline: the card has ONE filled primary, Explore (D3).
     const ctaRow = `
       <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 10px;">
-        <button data-cta="projects" style="flex:1 1 140px; padding:12px 14px; border:1px solid rgba(143,155,255,0.8); border-radius:10px;
+        <button data-cta="projects" style="flex:1 1 140px; ${tap}padding:12px 14px; border:1px solid rgba(143,155,255,0.8); border-radius:10px;
           background:rgba(76,91,224,0.14); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
           🚀 See the work</button>
-        <button data-cta="contact" style="flex:1 1 140px; padding:12px 14px; border-radius:10px;
+        <button data-cta="contact" style="flex:1 1 140px; ${tap}padding:12px 14px; border-radius:10px;
           background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
           📬 Get in touch</button>
       </div>`;
@@ -4365,7 +5132,7 @@ export class SimpleUI {
     // camera tour that ended on a client pitch; that tour is now a secondary
     // button inside the card, and it ends back on the card.
     const recruiterPill = `
-      <button data-recruit style="width:100%; padding:10px 14px; margin:0 0 12px; border-radius:10px;
+      <button data-recruit style="width:100%; ${tap}padding:10px 14px; margin:0 0 12px; border-radius:10px;
         background:rgba(38,38,51,0.5); color:#ffe3a3; border:1px solid rgba(255,212,121,0.45); font-size:13.5px; font-weight:600; cursor:pointer;">
         📄 Hiring? CV, experience and contact</button>`;
 
@@ -4374,7 +5141,7 @@ export class SimpleUI {
     // it names the compass pill — the card's one pointer at the persistent
     // wayfinding surface that is literally on screen behind it.
     const exploreBtn = `
-      <button data-dismiss="1" class="ds-press" style="width:100%; padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
+      <button data-dismiss="1" class="ds-press" style="width:100%; ${tap}padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
         background:${DS.primary}; color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
         🧭 Explore the island →</button>
       <p style="margin:0 0 12px; font-size:11px; color:#8fa0b5;">
@@ -4385,7 +5152,7 @@ export class SimpleUI {
     // seven same-weight buttons was choice overload, and two of these call
     // the same tour rail anyway. Same data-* analytics contracts. 44px-tall
     // touch targets via padding despite the small type.
-    const chipPad = this.isTouch ? 'padding:12px 8px;' : 'padding:8px 8px;';
+    const chipPad = this.isTouch ? `${tap}padding:12px 8px;` : 'padding:8px 8px;';
     const secondaryRow = `
       <div style="display:flex; gap:8px; margin:0 0 12px;">
         <button data-meet-ai="1" style="flex:1; ${chipPad} border-radius:10px;
@@ -4453,7 +5220,8 @@ export class SimpleUI {
 
     // Dismiss only on an explicit choice — a CTA, the Explore button, or
     // Escape. The old "any key / click-outside" dismiss evaporated the pitch
-    // the instant a visitor pressed W to move.
+    // the instant a visitor pressed W to move. (A scrim tap closes it too,
+    // without persisting: see the panels.open above.)
     const onEscape = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') closeWelcome();
     };
@@ -4461,11 +5229,15 @@ export class SimpleUI {
       this.hideWelcome();
       document.removeEventListener('keydown', onEscape);
     };
+    this.welcomeEscape = onEscape; // hideWelcome drops it on any other close
 
     // Move focus INTO the dialog: aria-modal was set but focus never
     // followed, so keyboard/screen-reader users started outside their own
-    // welcome card.
-    (this.welcomeDiv.querySelector('button[data-cta="projects"]') as HTMLElement | null)?.focus();
+    // welcome card. The dialog itself, not 'See the work': a focused button
+    // made Space or Enter open Projects on a card whose own line says
+    // 'space to jump' (FM-02). PanelManager traps Tab inside it.
+    this.welcomeDiv.tabIndex = -1;
+    this.welcomeDiv.focus();
 
     // A CTA that opens a panel (or the tour) skips the compass hint: the
     // visitor is going somewhere specific, and the hint landed on the
@@ -4511,6 +5283,7 @@ export class SimpleUI {
     this.welcomeDiv.querySelector('button[data-race]')?.addEventListener('click', (e) => {
       e.stopPropagation();
       track('welcome_cta', { cta: 'race' });
+      this.raceGuided = true;
       closeWelcome();
       this.onRaceGuide?.();
     });
@@ -4616,9 +5389,14 @@ export class SimpleUI {
   /** @param persist false ONLY for page teardown — see dispose(). Every other
    *  caller is a real dismissal and must burn the key. */
   hideWelcome(persist = true): void {
+    if (this.welcomeEscape) {
+      document.removeEventListener('keydown', this.welcomeEscape);
+      this.welcomeEscape = null;
+    }
     if (this.welcomeDiv) {
       this.welcomeDiv.remove();
       this.welcomeDiv = null;
+      this.welcomeClosedAt = Date.now();
       this.panels.notifyClosed('welcome'); // no-op during a sweep
       // TEARDOWN IS NOT DISMISSAL. beforeunload -> dispose() -> hideWelcome()
       // used to burn ds_welcomed for a visitor who closed the tab while the
@@ -4648,11 +5426,16 @@ export class SimpleUI {
       // pinned by the teardown test.
       const skipHint = this.skipCompassHint;
       this.skipCompassHint = false;
+      // It stands down once First steps arms (A6 teaches the compass and fires
+      // this hint itself on Skip), once the visitor opens the map, or when a
+      // race guide already put the compass to work (CO-D2: on a phone it
+      // stacked on the start-line message).
       try {
         if (wasFirstEver && !skipHint && !localStorage.getItem('ds_hint_compass')) {
           localStorage.setItem('ds_hint_compass', '1');
           this.toast('🧭 The gold ➤ up top points to your next stop — tap it for the island map.', {
             hint: true,
+            until: () => this.guideArmed() || this.compassPillUsed || this.raceGuided,
           });
         }
       } catch {
@@ -4664,6 +5447,13 @@ export class SimpleUI {
   /** Set by a welcome CTA that opens a panel or the tour; read once by
    *  hideWelcome to skip the first-run compass hint. */
   private skipCompassHint = false;
+  /** The compass pill opened the map, or a race guide set the compass: the
+   *  first-run compass hint is stale (its until()). */
+  private compassPillUsed = false;
+  private raceGuided = false;
+  /** The open card's Escape listener: a scrim tap or the sweep closes the
+   *  card without it, so hideWelcome drops it. */
+  private welcomeEscape: ((e: KeyboardEvent) => void) | null = null;
 
   /**
    * Check if welcome is visible
@@ -4702,11 +5492,18 @@ export class SimpleUI {
       textAlign: 'center',
       padding: '24px',
     });
+    // A named dialog with a labelled field and an announced error (UX-15:
+    // it had no role, the input's only name was its placeholder, and the
+    // validation line was silent).
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'ds-name-title');
     modal.innerHTML = `
-      <div style="font-size:26px;font-weight:700;">🌎 Welcome to Life Island</div>
-      <div style="opacity:0.85;font-size:15px;max-width:320px;">What should other visitors call you?</div>
+      <div id="ds-name-title" style="font-size:26px;font-weight:700;">🌎 Welcome to Life Island</div>
+      <label for="ds-name-input" style="opacity:0.85;font-size:15px;max-width:320px;">What should other visitors call you?</label>
     `;
     const input = document.createElement('input');
+    input.id = 'ds-name-input';
     input.type = 'text';
     input.maxLength = 20;
     input.placeholder = 'Your name';
@@ -4737,6 +5534,7 @@ export class SimpleUI {
     });
     // Inline validation message (offensive / too-short names)
     const err = document.createElement('div');
+    err.setAttribute('role', 'alert');
     Object.assign(err.style, {
       color: '#ff9a9a',
       fontSize: '12.5px',
@@ -4778,7 +5576,8 @@ export class SimpleUI {
       fontSize: '13px',
       textDecoration: 'underline',
       cursor: 'pointer',
-      padding: '4px',
+      padding: '4px 12px',
+      minHeight: '44px', // was a 129x23 target
     });
     skip.addEventListener('click', () => {
       if (done) return;
@@ -4815,10 +5614,13 @@ export class SimpleUI {
     this.lastPromptText = text;
     if (!this.interactionDiv) {
       this.interactionDiv = document.createElement('div');
+      // The guide card's anchor (A6 keeps 8 px above it).
+      this.interactionDiv.dataset.hud = 'prompt';
       Object.assign(this.interactionDiv.style, {
         position: 'absolute',
         // bottom/left/maxWidth come from applyPromptAnchor (breakpoint-aware,
         // and re-applied on rotation) right after this style block.
+        width: 'max-content',
         background: 'rgba(0, 0, 0, 0.8)',
         color: 'white',
         padding: '10px 18px', // was 15px 25px — the prompt is a hint, not a card
@@ -4852,7 +5654,22 @@ export class SimpleUI {
     }
 
     this.interactionDiv.innerHTML = this.touchify(text);
+    // Read out once the text has held for 600 ms: this runs every frame while
+    // a target is in range, and only a CHANGE gets this far (D6).
+    if (this.promptAnnounceTimer) clearTimeout(this.promptAnnounceTimer);
+    const el = this.interactionDiv;
+    this.promptAnnounceTimer = window.setTimeout(() => {
+      this.promptAnnounceTimer = 0;
+      if (this.interactionDiv === el) this.announce(el.textContent ?? '');
+    }, 600);
+    // A toast already up on a phone steps above the prompt, hint or not. A
+    // hint used to bow out here, and a passing villager's prompt made it
+    // blink (wave-1 integration); a waiting hint still waits for the prompt
+    // to go (mayShow).
+    if (this.isTouch && this.toastEl && this.toastBusy) this.applyToastAnchor(this.toastEl);
   }
+
+  private promptAnnounceTimer = 0;
 
   /**
    * Rewrite keyboard prompts into touch language on phones/tablets. Desktop
@@ -4890,9 +5707,14 @@ export class SimpleUI {
    */
   hideInteractionPrompt(): void {
     this.lastPromptText = null;
+    if (this.promptAnnounceTimer) {
+      clearTimeout(this.promptAnnounceTimer);
+      this.promptAnnounceTimer = 0;
+    }
     if (this.interactionDiv) {
       this.interactionDiv.remove();
       this.interactionDiv = null;
+      if (this.isTouch && this.toastEl && this.toastBusy) this.applyToastAnchor(this.toastEl);
     }
   }
 
@@ -5519,6 +6341,13 @@ export class SimpleUI {
     onAction: (id: string) => void,
     onClose: () => void,
   ): void {
+    // A purchase re-renders the shop: keep keyboard focus on the row it was
+    // on, where the re-render would drop it to BODY (D4).
+    const was = this.shopDiv?.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement)
+      : null;
+    const keepId = was?.getAttribute('data-shop-id') ?? null;
+    const keepTab = was?.getAttribute('data-shop-tab') ?? null;
     this.hideShop();
     this.shopDiv = document.createElement('div');
     Object.assign(this.shopDiv.style, {
@@ -5590,7 +6419,7 @@ export class SimpleUI {
         <h3 style="margin:0;color:#ffd34a;">🛒 Island Shop</h3>
         <div style="display:flex;gap:12px;align-items:center;">
           <span style="color:#ffd34a;font-weight:800;font-size:16px;background:rgba(255,211,74,0.12);padding:4px 12px;border-radius:999px;">🪙 ${state.coins}</span>
-          <span id="shop-close" style="cursor:pointer;font-size:18px;padding:2px 8px;">✕</span>
+          <button type="button" id="shop-close" aria-label="Close the shop" style="cursor:pointer;font-size:18px;width:44px;height:44px;padding:0;background:transparent;border:none;color:#fff;">✕</button>
         </div>
       </div>
       <div id="shop-tabs" style="display:flex;gap:6px;margin-bottom:8px;">
@@ -5633,6 +6462,7 @@ export class SimpleUI {
     // manager also act would double-fire onClose). The SAME-ID RE-OPEN rule
     // is load-bearing here: showShop re-renders itself after every purchase,
     // and the sweep firing onClose mid-refresh would unpause the game.
+    const shop = this.shopDiv;
     this.panels.open('shop', {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
@@ -5641,7 +6471,17 @@ export class SimpleUI {
         this.hideShop();
         onClose();
       },
+      el: shop,
+      initialFocus: () => {
+        const sel = keepId
+          ? `button[data-shop-id="${keepId}"]:not([disabled])`
+          : keepTab
+            ? `button[data-shop-tab="${keepTab}"]`
+            : '';
+        return (sel ? shop.querySelector<HTMLElement>(sel) : null) ?? shop.querySelector('h3');
+      },
     });
+    this.stepHintAside(true); // nothing paints over a modal (D6)
     this.shopDiv.querySelector('#shop-close')?.addEventListener('click', () => {
       this.hideShop();
       onClose();
@@ -5696,6 +6536,7 @@ export class SimpleUI {
       // .hud-btn 44px tap pad (the visual chip is 30px tall) plus keyboard
       // focus + Enter/Space activation. Title above survives its guard.
       this.makeHudButtonAccessible(this.coinDiv, 'Open coin history');
+      this.coinDiv.dataset.guide = 'coin-chip';
       if (this.isTouch) {
         this.tierChip(this.coinDiv); // inserts BEFORE ☰ to keep [👥][🪙][☰]
       } else {
@@ -6091,14 +6932,24 @@ export class SimpleUI {
 
   /** Brief centred splash message (used for the drown/rescue). */
   private flashEl: HTMLDivElement | null = null;
+  /**
+   * A flash joins the toast queue as an outcome (D6): one message at a time,
+   * so it never shares the screen with a toast (FM-09: a flash, a toast and a
+   * prompt stacked at 35 s), never paints over an open modal (UX-04: 'Secret
+   * found' across the Projects text), and dwells 50 ms a character, 2-6 s.
+   */
   flashMessage(text: string): void {
+    this.enqueue(this.queued(this.touchifyPlain(text), 'flash', false));
+  }
+
+  private showFlash(text: string, dwell: number): void {
     // Single slot: each call used to append a NEW div at the identical
     // anchor, so two flashes within ~2s superimposed their text (reachable
     // first-session: ?race= landing + arrival trail). Replace, don't stack.
     this.flashEl?.remove();
     const el = document.createElement('div');
     this.flashEl = el;
-    el.textContent = this.touchifyPlain(text);
+    el.textContent = text;
     Object.assign(el.style, {
       position: 'absolute',
       top: '38%',
@@ -6118,17 +6969,24 @@ export class SimpleUI {
       transition: 'opacity 0.25s ease, transform 0.25s cubic-bezier(0.34,1.56,0.64,1)',
     });
     this.overlay.appendChild(el);
+    this.anchorFlash(el); // clear of First steps' card
     requestAnimationFrame(() => {
       el.style.opacity = '1';
       el.style.transform = 'translate(-50%, -50%) scale(1)';
     });
-    window.setTimeout(() => {
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => {
       el.style.opacity = '0';
+      this.toastBusy = false;
+      this.shownMessage = null;
+      // The next toast waits out this 300 ms fade (pumpToasts).
+      this.flashFadeUntil = Date.now() + 300;
+      this.schedulePump(300);
       window.setTimeout(() => {
         el.remove();
         if (this.flashEl === el) this.flashEl = null;
       }, 300);
-    }, 1800);
+    }, dwell);
   }
 
   /**
@@ -6156,11 +7014,19 @@ export class SimpleUI {
     hair: 'Hair',
     skin: 'Skin',
   };
+  /** Swatch names, in CUSTOMIZE_PALETTES order: a screen reader heard
+   *  '#f3b359' (UX-15). Skin tones are numbered, not named. */
+  private static readonly CUSTOMIZE_NAMES: Record<string, string[]> = {
+    outfit: ['mustard', 'blue', 'red', 'green', 'purple', 'teal', 'pink', 'charcoal'],
+    pants: ['slate', 'navy', 'brown', 'charcoal', 'khaki', 'denim'],
+    hair: ['brown', 'black', 'blonde', 'auburn', 'grey', 'blue'],
+    skin: ['tone 1', 'tone 2', 'tone 3', 'tone 4', 'tone 5', 'tone 6'],
+  };
 
   /**
    * Appearance editor: colour swatches per body part + a picker over owned
    * hats. Recolours the live model through the callbacks and persists via the
-   * caller. Re-renders itself after each pick to move the active highlight.
+   * caller. A pick moves the active highlight in place.
    */
   showCustomize(opts: {
     colors: Record<string, number | undefined>;
@@ -6207,8 +7073,8 @@ export class SimpleUI {
     }
     // Sheet, NOT modal, and touch-controls stay: "preview while moving" is the
     // point of this panel (see the touch-layout comment above) — hiding the
-    // joystick would trap the player mid-recolour. Re-renders itself on every
-    // swatch tap → protected by the same-id re-open rule.
+    // joystick would trap the player mid-recolour. A caller re-opening it
+    // re-renders it → protected by the same-id re-open rule.
     this.panels.open('customize', {
       kind: 'sheet',
       hides: ['nav-chips'],
@@ -6216,19 +7082,29 @@ export class SimpleUI {
     });
 
     const hexStr = (h: number) => `#${h.toString(16).padStart(6, '0')}`;
+    // Named, pressed-state swatches in a 6-column grid: 32px on desktop and
+    // a 44px thumb target on touch, where they were 23px and named by hex
+    // (UX-15). A pick updates the highlight IN PLACE, so focus stays on the
+    // swatch it was on (the old innerHTML rewrite dropped it).
+    const sw = this.isTouch ? 44 : 32;
+    this.customizeDiv.style.maxWidth = this.isTouch ? 'min(340px, calc(100vw - 24px))' : '272px';
     const swatchRow = (part: string): string => {
       const cur = opts.colors[part];
+      const label = SimpleUI.CUSTOMIZE_LABELS[part];
+      const names = SimpleUI.CUSTOMIZE_NAMES[part] ?? [];
       const swatches = SimpleUI.CUSTOMIZE_PALETTES[part]
-        .map((hex) => {
+        .map((hex, i) => {
           const active = cur === hex;
-          return `<button data-part="${part}" data-hex="${hex}" title="${hexStr(hex)}" style="width:23px;height:23px;border-radius:6px;border:2px solid ${active ? '#fff' : 'transparent'};background:${hexStr(hex)};cursor:pointer;margin:2px;padding:0;"></button>`;
+          const name = `${label}: ${names[i] ?? hexStr(hex)}`;
+          return `<button type="button" data-part="${part}" data-hex="${hex}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="width:${sw}px;height:${sw}px;border-radius:6px;border:2px solid ${active ? '#fff' : 'transparent'};background:${hexStr(hex)};cursor:pointer;margin:0;padding:0;"></button>`;
         })
         .join('');
-      return `<div style="margin-bottom:7px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">${SimpleUI.CUSTOMIZE_LABELS[part]}</div><div style="display:flex;flex-wrap:wrap;">${swatches}</div></div>`;
+      return `<div style="margin-bottom:7px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">${label}</div><div role="group" aria-label="${label}" style="display:grid;grid-template-columns:repeat(6, ${sw}px);gap:4px;">${swatches}</div></div>`;
     };
     const hatBtn = (id: string | null, icon: string): string => {
       const active = (opts.equippedHat ?? null) === id;
-      return `<button data-hat="${id ?? ''}" style="font-size:16px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
+      const name = id ? `Hat: ${id.replace(/[-_]/g, ' ')}` : 'No hat';
+      return `<button type="button" data-hat="${id ?? ''}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="font-size:16px;min-width:${sw}px;min-height:${sw}px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
     };
     const ownedBtns = opts.hats
       .filter((h) => opts.ownedHats.includes(h.id))
@@ -6240,24 +7116,31 @@ export class SimpleUI {
       <div style="font-weight:700;margin-bottom:9px;">🎨 Appearance</div>
       ${swatchRow('outfit')}${swatchRow('pants')}${swatchRow('hair')}${swatchRow('skin')}
       ${hatRow}
-      <button id="close-customize" class="ds-press" style="background:${DS.primary};color:white;border:none;padding:6px 13px;border-radius:8px;cursor:pointer;margin-top:6px;">Done</button>
+      <button id="close-customize" class="ds-press" style="background:${DS.primary};color:white;border:none;padding:6px 13px;min-height:${this.isTouch ? 44 : 32}px;border-radius:8px;cursor:pointer;margin-top:6px;">Done</button>
     `;
 
-    this.customizeDiv.querySelectorAll<HTMLElement>('button[data-hex]').forEach((btn) => {
+    const root = this.customizeDiv;
+    const mark = (group: NodeListOf<HTMLElement>, on: HTMLElement): void => {
+      for (const b of Array.from(group)) {
+        b.style.borderColor = b === on ? '#fff' : 'transparent';
+        b.setAttribute('aria-pressed', String(b === on));
+      }
+    };
+    root.querySelectorAll<HTMLElement>('button[data-hex]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const part = btn.dataset.part!;
         const hex = parseInt(btn.dataset.hex!, 10);
         opts.onColor(part, hex);
-        opts.colors[part] = hex; // reflect for the re-render highlight
-        this.showCustomize(opts);
+        opts.colors[part] = hex; // a later re-open starts from it
+        mark(root.querySelectorAll<HTMLElement>(`button[data-part="${part}"]`), btn);
       });
     });
-    this.customizeDiv.querySelectorAll<HTMLElement>('button[data-hat]').forEach((btn) => {
+    root.querySelectorAll<HTMLElement>('button[data-hat]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.hat ? btn.dataset.hat : null;
         opts.onHat(id);
         opts.equippedHat = id;
-        this.showCustomize(opts);
+        mark(root.querySelectorAll<HTMLElement>('button[data-hat]'), btn);
       });
     });
     const closeBtn = this.customizeDiv.querySelector('#close-customize') as HTMLButtonElement;
@@ -6340,6 +7223,9 @@ export class SimpleUI {
         background: 'rgba(0, 0, 0, 0.55)',
         borderRadius: '20px',
         padding: '6px 14px',
+        // A 44px thumb target on touch: it measured 39 (phone.cjs).
+        boxSizing: 'border-box',
+        minHeight: this.isTouch ? '44px' : '',
         zIndex: '1200',
         // The one ALWAYS-visible wayfinding element used to be inert
         // (pointerEvents none) \u2014 it pointed at things but could never hand
@@ -6351,10 +7237,12 @@ export class SimpleUI {
         fontFamily: 'sans-serif',
       });
       this.compassDiv.setAttribute('role', 'button');
+      this.compassDiv.dataset.guide = 'compass';
       this.compassDiv.setAttribute('tabindex', '0');
       this.compassDiv.setAttribute('aria-label', 'Open the island map');
       this.compassDiv.title = 'Open the island map';
       const openMap = (): void => {
+        this.compassPillUsed = true;
         track('compass_pill_tap');
         // The existing map seam (journal's map button uses it too) \u2014 one
         // entry path into openIslandMap, multiple callers.
@@ -6416,7 +7304,15 @@ export class SimpleUI {
         this.compassLabel.textContent = text;
       }
     }
+    // A new target is read out once, by its label (never the metres, which
+    // change every few frames).
+    if (state.label !== this._compassAnnounced) {
+      this._compassAnnounced = state.label;
+      this.announce(`Compass: ${state.label}`);
+    }
   }
+
+  private _compassAnnounced = '';
 
   /**
    * The recruiter front door: name, role, availability, experience, the
@@ -6427,8 +7323,28 @@ export class SimpleUI {
     this.showZonePanel({ id: 'hire', name: 'Hiring' }, { source });
   }
 
-  showZonePanel(zone: any, opts?: { source?: 'proximity' | 'menu' | 'deeplink' | 'cta' }): void {
+  /**
+   * Open a zone panel. `source` says how ('proximity' alone stamps the
+   * passport; 'landmark' is a world landmark's way in, which never stamps,
+   * for A's P2-A11 and P2-A13). `anchor` opens the panel scrolled to a part
+   * of it: a Projects card by its data-project id, or an element id (P2-D5).
+   */
+  showZonePanel(
+    zone: any,
+    opts?: {
+      source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' | 'landmark';
+      anchor?: string;
+    },
+  ): void {
     const source = opts?.source ?? 'menu';
+    // A switch along the section strip keeps the panel's history mode: a
+    // deep-linked card never pushes an entry, and Back from it still leaves.
+    const history = source === 'strip' ? this.zoneHistory : source !== 'deeplink';
+    this.zoneHistory = history;
+    // Short landscape (a phone on its side, height 500 or less): the panel
+    // takes the whole height, its nav goes on one row, and the hire card's
+    // LinkedIn, CV and Code stay pinned in view (D5, UX-09).
+    const compact = window.innerHeight <= 500;
     this.hideZonePanel(); // Hide any existing panel
 
     this.zonePanelDiv = document.createElement('div');
@@ -6458,7 +7374,8 @@ export class SimpleUI {
       // the site's core content — in a skinny ~180px ribbon of wrapped text.
       width: 'min(500px, calc(100vw - 24px))',
       boxSizing: 'border-box',
-      maxHeight: '70vh',
+      // 70vh gave a 273 px card at 844x390, the links below the fold.
+      maxHeight: compact ? 'calc(100dvh - 24px - var(--sat, 0px) - var(--sab, 0px))' : '70vh',
       overflowY: 'auto',
     });
     // The hire card and the Portfolio panels clear the touch controls too: at
@@ -6472,12 +7389,32 @@ export class SimpleUI {
       el: this.zonePanelDiv,
       // A ?zone= deep link opens on the visitor's landing entry: there is no
       // entry of ours to step back off, and Back from it leaves the site.
-      history: source !== 'deeplink',
+      history,
+      // 'ds:modal' carries it: closing the hire card says zone 'hire' (P2-D8).
+      zone: String(zone?.id ?? 'unknown'),
+      // Opened at a card (P2-D5): focus takes that card's heading, so Tab goes
+      // on from the project and a screen reader names it. Else the panel's h2.
+      ...(opts?.anchor ? { initialFocus: () => this.anchorHeading(opts.anchor ?? '') } : {}),
     });
-    this.stepHintAside();
+    this.stepHintAside(true); // nothing paints over a modal (D6)
 
     const content = this.getZoneContent(zone);
     this.zonePanelDiv.innerHTML = content;
+    // A dialog named by its heading; PanelManager focuses that heading once
+    // the panel is in, so ↑/↓, PageUp/PageDown and Space scroll it (D4).
+    this.zonePanelDiv.setAttribute('role', 'dialog');
+    this.zonePanelDiv.setAttribute('aria-modal', 'true');
+    const heading = this.zonePanelDiv.querySelector('h2');
+    if (heading) {
+      heading.id = 'ds-zone-title';
+      this.zonePanelDiv.setAttribute('aria-labelledby', heading.id);
+    }
+    const nav = this.sectionNav(String(zone?.id ?? 'unknown'), compact);
+    if (nav) {
+      this.zonePanelDiv.prepend(nav);
+      this.zonePanelDiv.dataset.zone = String(zone.id);
+      this.zonePanelDiv.addEventListener('keydown', this.onSectionKey);
+    }
     // Panel thumbnails are lazy + optional: if an image is missing (or blocked)
     // it hides itself rather than showing a broken-image glyph. Attached here
     // (not via an inline onerror handler) so a strict CSP can't neutralise it.
@@ -6507,6 +7444,30 @@ export class SimpleUI {
       this.hideZonePanel();
       this.onRecruitTour?.();
     });
+    // The hire card's second way to reach Abbas: the Contact panel, at its
+    // message form (D5).
+    this.zonePanelDiv.querySelector('button[data-hire-contact]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track('hire_cta', { cta: 'message' });
+      this.showZonePanel(
+        { id: 'contact', name: 'contact' },
+        { source: 'cta', anchor: 'lead-form-block' },
+      );
+    });
+    // Selected work: each row opens Projects at that project's card (P2-D5).
+    this.zonePanelDiv
+      .querySelectorAll<HTMLButtonElement>('button[data-open-project]')
+      .forEach((b) => {
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const project = b.dataset.openProject ?? '';
+          track('hire_cta', { cta: `project_${project}` });
+          this.showZonePanel(
+            { id: 'projects', name: 'projects' },
+            { source: 'cta', anchor: project },
+          );
+        });
+      });
     trackOnce('zone_explored', { zone: zid, source });
     // "Reached the actual work" = any real section, not the intro or an unknown.
     if (zid !== 'welcome' && zid !== 'unknown') {
@@ -6517,29 +7478,16 @@ export class SimpleUI {
       trackOnce('contact_opened');
       // Voice desk goes ABOVE the written form — the lead form's own heading
       // ("Or send a message") already reads as the secondary option.
+      const panel = this.zonePanelDiv;
       void import('./ReceptionDesk').then(({ appendReceptionDesk }) => {
-        if (this.zonePanelDiv) appendReceptionDesk(this.zonePanelDiv);
+        if (this.zonePanelDiv !== panel) return;
+        appendReceptionDesk(panel);
+        // The desk lands above the form: an anchor on the form re-aims.
+        if (opts?.anchor) this.scrollToAnchor(opts.anchor, false);
       });
       this.appendLeadForm(this.zonePanelDiv);
     }
 
-    // Passport: stamp ONLY when the visitor physically walked up to the zone
-    // ('proximity'). Opening the same panel from the top-right Portfolio menu, a
-    // welcome CTA, or a deep link no longer stamps — the 👑 crown now means the
-    // island was actually explored, not that five buttons were clicked. The menu
-    // still opens every panel, so a hurried recruiter loses no content.
-    if (source === 'proximity' && this.passport?.visit(zid)) {
-      trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
-      if (!this.passport.isComplete()) {
-        const meta = PASSPORT_META[zid as PassportZone];
-        // A hint: it would land on the panel this walk-up just opened, so it
-        // waits for the panel to close.
-        this.toast(
-          `🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`,
-          { hint: true },
-        );
-      }
-    }
     // Delegated: catches every link in the panel without touching the markup
     this.zonePanelDiv.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement)?.closest?.('a');
@@ -6593,22 +7541,342 @@ export class SimpleUI {
     });
     closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.addEventListener('click', () => this.hideZonePanel());
-    this.zonePanelDiv.appendChild(closeBtn);
+    // In the sticky nav where there is one, so it never scrolls away.
+    if (nav) {
+      Object.assign(closeBtn.style, { top: compact ? '4px' : '2px', right: '6px' });
+      nav.appendChild(closeBtn);
+    } else this.zonePanelDiv.appendChild(closeBtn);
 
     this.overlay.appendChild(this.zonePanelDiv);
+    if (compact) {
+      // The hire card's LinkedIn, CV and Code pin under the nav while the
+      // card scrolls; every panel that overflows gets a 24 px bottom fade.
+      const panel = this.zonePanelDiv;
+      const actions = panel.querySelector<HTMLElement>('[data-hire-actions]');
+      if (actions) {
+        Object.assign(actions.style, {
+          position: 'sticky',
+          zIndex: '1',
+          background: '#000',
+          margin: '0 -20px',
+          padding: '4px 12px',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
+        });
+        // Sticky offsets count from inside the panel's 20 px padding (the
+        // nav's -20px puts it flush): the bar sits right under the nav.
+        actions.style.top = `${(nav ? nav.offsetHeight : 0) - 20}px`;
+      }
+      this.addScrollFade(panel, '#000');
+    }
+    if (nav) {
+      // A Tab step scrolls its control in clear of the sticky header (and of
+      // the pinned action bar in short landscape), never under it (2.4.11).
+      const pinned = compact
+        ? this.zonePanelDiv.querySelector<HTMLElement>('[data-hire-actions]')
+        : null;
+      this.zonePanelDiv.style.scrollPaddingTop = `${nav.offsetHeight + (pinned?.offsetHeight ?? 0) + 8}px`;
+    }
+    // Opened at a card or a block (P2-D5): it scrolls in under the nav.
+    if (opts?.anchor) this.scrollToAnchor(opts.anchor, true);
 
     // Reflect the open zone in the URL so a visitor can copy/share a deep link
     // (e.g. /?zone=projects); cleared again on close. Param-scoped so it never
     // clobbers ?hour=/?theme=.
     setUrlParam('zone', zid);
 
-    // Escape closes. Removed in hideZonePanel — the old self-removing handler
-    // only cleaned up on the Escape path, so every ×/scrim close leaked one
-    // document listener per open.
-    this.zoneEscapeHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') this.hideZonePanel();
+    // Escape is PanelManager's, which closes only the TOP panel. The panel's
+    // own document listener closed it too, under a passport crown stacked over
+    // it, taking the Get In Touch form with the crown (INT-02).
+
+    // Passport: stamp ONLY when the visitor physically walked up to the zone
+    // ('proximity'). Opening the same panel from the top-right Portfolio menu, a
+    // welcome CTA, or a deep link no longer stamps — the 👑 crown now means the
+    // island was actually explored, not that five buttons were clicked. The menu
+    // still opens every panel, so a hurried recruiter loses no content.
+    // LAST, once the panel is whole (INT-02): the fourth stamp fires
+    // onComplete, main-simple's reward opens showPassportComplete, and that
+    // used to sweep this very panel mid-build, throw on the null panel, and
+    // leave the visitor indoors with no content and no Leave pill. The crown
+    // now stacks over the panel (allow: ['zone']).
+    if (source === 'proximity' && this.passport?.visit(zid)) {
+      trackOnce('passport_stamp', { zone: zid, count: this.passport.count() });
+      if (!this.zonePanelDiv) return; // a reward that closed the panel after all
+      if (!this.passport.isComplete()) {
+        const meta = PASSPORT_META[zid as PassportZone];
+        // A hint: it would land on the panel this walk-up just opened, so it
+        // waits for the panel to close.
+        this.toast(
+          `🛂 Passport stamped: ${meta.label} (${this.passport.count()}/${this.passport.total()})`,
+          { hint: true },
+        );
+      }
+    }
+  }
+
+  /** The section a switch keeps: whether the open zone panel pushes history. */
+  private zoneHistory = true;
+  /** The menu row '‹ Portfolio' asks the next menu to focus. */
+  private menuFocusSection: string | null = null;
+
+  /** The portfolio sections, in the strip's order (D5, UX-08). */
+  private static readonly SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
+    { id: 'hire', label: 'Hiring' },
+    { id: 'welcome', label: 'About' },
+    { id: 'professional', label: 'Professional' },
+    { id: 'projects', label: 'Projects' },
+    { id: 'personal', label: 'Personal' },
+    { id: 'contact', label: 'Contact' },
+  ];
+
+  /**
+   * A portfolio section's sticky header (D5, UX-08): '‹ Portfolio' back to
+   * the menu, at this section's row, and a strip with every section one
+   * action away (44 px chips on a phone). ← and → switch sections while the
+   * panel has focus. Reading Hire, Professional, Projects and Contact took 12
+   * clicks on desktop and 16 taps on a phone. Null for other zones.
+   */
+  private sectionNav(zid: string, compact: boolean): HTMLElement | null {
+    const sections = SimpleUI.SECTIONS;
+    const at = sections.findIndex((s) => s.id === zid);
+    if (at < 0) return null;
+    const h = this.isTouch ? 44 : 32;
+    const nav = document.createElement('div');
+    nav.dataset.panelNav = '1';
+    Object.assign(nav.style, {
+      position: 'sticky',
+      top: '-20px', // the panel's 20 px padding: flush with the scrollport's edge
+      zIndex: '2',
+      margin: '-20px -20px 14px',
+      // One row in short landscape leaves the × room at its end; on two rows
+      // the × shares the first with '‹ Portfolio' and the strip gets the width.
+      padding: compact ? '8px 56px 8px 12px' : '8px 12px',
+      background: '#000',
+      borderBottom: '1px solid rgba(255,255,255,0.12)',
+      display: 'flex',
+      flexDirection: compact ? 'row' : 'column',
+      alignItems: compact ? 'center' : 'flex-start',
+      gap: compact ? '8px' : '6px',
+      textAlign: 'left',
+    });
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.dataset.navBack = '1';
+    back.textContent = '‹ Portfolio';
+    Object.assign(back.style, {
+      flex: 'none',
+      minHeight: `${h}px`,
+      padding: '0 12px',
+      borderRadius: '10px',
+      background: 'transparent',
+      color: '#cfe0ff',
+      border: '1px solid rgba(255,255,255,0.18)',
+      fontSize: '13px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    back.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.menuFocusSection = zid; // the menu opens with this row focused
+      this.togglePortfolioMenu(); // it closes this panel first
+    });
+    nav.appendChild(back);
+    const strip = document.createElement('nav');
+    strip.setAttribute('aria-label', 'Portfolio sections');
+    Object.assign(strip.style, {
+      display: 'flex',
+      gap: '5px',
+      overflowX: 'auto',
+      maxWidth: '100%',
+      minWidth: '0',
+      scrollbarWidth: 'none',
+    });
+    const accent = this.getZoneColor(zid);
+    for (const s of sections) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.goto = s.id;
+      b.textContent = s.label;
+      const here = s.id === zid;
+      if (here) b.setAttribute('aria-current', 'page');
+      Object.assign(b.style, {
+        flex: 'none',
+        minHeight: `${h}px`,
+        padding: this.isTouch ? '0 14px' : '0 11px',
+        borderRadius: '999px',
+        background: here ? 'rgba(255,255,255,0.08)' : 'transparent',
+        color: here ? '#fff' : '#b8c4d6',
+        border: `1px solid ${here ? accent : 'rgba(255,255,255,0.14)'}`,
+        fontSize: '12.5px',
+        fontWeight: here ? '700' : '600',
+        cursor: here ? 'default' : 'pointer',
+      });
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!here) this.switchSection(s.id);
+      });
+      strip.appendChild(b);
+    }
+    nav.appendChild(strip);
+    // Keep this section's chip in view on a narrow strip.
+    requestAnimationFrame(() => {
+      const cur = strip.querySelector<HTMLElement>('[aria-current]');
+      if (cur && strip.scrollWidth > strip.clientWidth) {
+        strip.scrollLeft = cur.offsetLeft - strip.clientWidth / 2 + cur.offsetWidth / 2;
+      }
+    });
+    return nav;
+  }
+
+  /** ← / → between sections while the panel has focus (not in a text field). */
+  private onSectionKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const zid = this.zonePanelDiv?.dataset.zone;
+    const sections = SimpleUI.SECTIONS;
+    const at = sections.findIndex((s) => s.id === zid);
+    if (at < 0) return;
+    e.preventDefault();
+    e.stopPropagation(); // the world never takes the arrow either
+    const step = e.key === 'ArrowRight' ? 1 : -1;
+    this.switchSection(sections[(at + step + sections.length) % sections.length].id);
+  };
+
+  /** One action per section: the zone param follows, scrollTop starts at 0. */
+  private switchSection(id: string): void {
+    this.showZonePanel({ id, name: id }, { source: 'strip' });
+  }
+
+  /** The open panel's anchor: a Projects card by data-project, else an id. */
+  private anchorTarget(anchor: string): HTMLElement | null {
+    const panel = this.zonePanelDiv;
+    // Ids only (A's landmarks pass theirs through): no selector syntax.
+    if (!panel || !/^[a-z][\w-]*$/i.test(anchor)) return null;
+    return panel.querySelector<HTMLElement>(`[data-project="${anchor}"], #${anchor}`);
+  }
+
+  /** The anchor's own heading takes focus: never a field (no phone keyboard). */
+  private anchorHeading(anchor: string): HTMLElement | null {
+    const target = this.anchorTarget(anchor);
+    return target?.querySelector<HTMLElement>('h3, h4') ?? target;
+  }
+
+  /** Where scrollToAnchor last left the panel's scroller. */
+  private anchorScrollTop = -1;
+
+  /**
+   * Scroll the open panel so its anchor's top sits just under the sticky
+   * section nav (P2-D5), then ring its border once, never under reduced
+   * motion. `first` false re-aims after content lands above the anchor (the
+   * reception desk above the message form), unless the scroller has moved
+   * since: the visitor's own scroll, or the browser's scroll anchoring that
+   * already kept the anchor in place.
+   */
+  private scrollToAnchor(anchor: string, first: boolean): void {
+    const panel = this.zonePanelDiv;
+    const target = this.anchorTarget(anchor);
+    if (!panel || !target) return;
+    if (!first && panel.scrollTop !== this.anchorScrollTop) return;
+    const nav = panel.querySelector<HTMLElement>('[data-panel-nav]');
+    const below = panel.getBoundingClientRect().top + panel.clientTop + (nav?.offsetHeight ?? 0);
+    panel.scrollTop += target.getBoundingClientRect().top - below - 8;
+    this.anchorScrollTop = panel.scrollTop;
+    if (!first || a11y.reducedMotion || typeof target.animate !== 'function') return;
+    // A ring drawn once, of which only the opacity moves (perfBudget: transform
+    // and opacity only; animating the outline repainted it every frame). It
+    // sits 3 px outside the card, 2 px wide, on the card's radius; the plain
+    // rows (digiscalability, banos, insta) ring square, as before.
+    const cs = getComputedStyle(target);
+    const radius = parseFloat(cs.borderTopLeftRadius) || 0;
+    // An absolute inset counts from inside the card's border: 5 px past it.
+    const out = (side: 'Top' | 'Right' | 'Bottom' | 'Left'): string =>
+      `${-5 - (parseFloat(cs[`border${side}Width`]) || 0)}px`;
+    const ring = document.createElement('div');
+    ring.dataset.anchorRing = '1';
+    ring.setAttribute('aria-hidden', 'true');
+    Object.assign(ring.style, {
+      position: 'absolute',
+      top: out('Top'),
+      right: out('Right'),
+      bottom: out('Bottom'),
+      left: out('Left'),
+      borderRadius: radius ? `${radius + 5}px` : '0',
+      border: '2px solid rgba(255, 212, 121, 0.95)',
+      boxShadow: '0 0 18px rgba(255, 212, 121, 0.33)',
+      pointerEvents: 'none',
+      opacity: '0',
+    });
+    const placed = cs.position === 'static'; // the ring's containing block
+    if (placed) target.style.position = 'relative';
+    target.appendChild(ring);
+    const done = (): void => {
+      ring.remove();
+      if (placed) target.style.position = '';
     };
-    document.addEventListener('keydown', this.zoneEscapeHandler);
+    const run = ring.animate([{ opacity: 0 }, { opacity: 1, offset: 0.35 }, { opacity: 0 }], {
+      duration: 1400,
+      easing: 'ease-in-out',
+    });
+    if (run) {
+      run.onfinish = done;
+      run.oncancel = done;
+    } else done();
+  }
+
+  /**
+   * A 24 px fade at the bottom of a scroller that overflows, gone at the end
+   * (D5, UX-09: no scroll cue anywhere in short landscape).
+   */
+  private addScrollFade(scroller: HTMLElement, bg: string): void {
+    const fade = document.createElement('div');
+    fade.dataset.scrollFade = '1';
+    fade.setAttribute('aria-hidden', 'true');
+    // Flush with the scroller's bottom edge. A sticky inset counts from inside
+    // the scroller's padding (the nav's top: -20px is the same rule), so
+    // bottom 0 floated the fade 20 px up, over the labels of the hire card's
+    // LinkedIn, CV and Code at 844x390.
+    const pad = parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
+    Object.assign(fade.style, {
+      position: 'sticky',
+      bottom: `${-pad}px`,
+      height: '24px',
+      marginTop: '-24px',
+      pointerEvents: 'none',
+      background: `linear-gradient(to bottom, rgba(0,0,0,0), ${bg})`,
+      zIndex: '1',
+      opacity: '0',
+    });
+    scroller.appendChild(fade);
+    const place = (): void => {
+      const end = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+      fade.style.opacity = scroller.scrollHeight > scroller.clientHeight + 2 && !end ? '1' : '0';
+    };
+    scroller.addEventListener('scroll', place, { passive: true });
+    requestAnimationFrame(place);
+    // Content that lands later (a board's rows and its Guide me, after an
+    // await) went in below the fade, which then rode above it and stayed
+    // hidden until a scroll: the fade moves back to the end (before a panel
+    // note, which must stay legible) and re-measures once the content is in.
+    let queued = false;
+    const observer = new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        if (!scroller.isConnected) {
+          observer.disconnect();
+          return;
+        }
+        const note =
+          Array.from(scroller.children).find(
+            (c) => c instanceof HTMLElement && c.dataset.panelNote === '1',
+          ) ?? null;
+        if (fade.nextElementSibling !== note) scroller.insertBefore(fade, note);
+        place();
+      });
+    });
+    observer.observe(scroller, { childList: true, subtree: true });
   }
 
   /**
@@ -6623,10 +7891,6 @@ export class SimpleUI {
       void import('./ReceptionDesk').then((m) => m.stopReceptionCall());
       this.zonePanelDiv.remove();
       this.zonePanelDiv = null;
-      if (this.zoneEscapeHandler) {
-        document.removeEventListener('keydown', this.zoneEscapeHandler);
-        this.zoneEscapeHandler = null;
-      }
       this.panels.notifyClosed('zone');
       // Drop ONLY the ?zone= deep link when the panel closes — the old
       // whole-search wipe also destroyed ?hour=/?theme=.
@@ -6702,8 +7966,10 @@ export class SimpleUI {
       label: string,
       opts: { primary?: boolean; small?: boolean } = {},
     ): string => {
+      // 44px thumb targets on touch: the links measured 37-39 (phone.cjs).
       const base =
-        'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;';
+        'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;' +
+        (this.isTouch ? 'min-height:44px;box-sizing:border-box;' : '');
       const size = opts.small
         ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:12.5px;`
         : '';
@@ -6723,7 +7989,7 @@ export class SimpleUI {
       <div style="display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px;margin:10px 0 6px;">
         <span data-email style="user-select:all;-webkit-user-select:all;cursor:text;font-size:15px;font-weight:600;color:#fff;
           background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:8px 12px;">${OWNER.email}</span>
-        <button type="button" data-copy="${OWNER.email}" title="Copy the email address" style="padding:8px 14px;border-radius:8px;
+        <button type="button" data-copy="${OWNER.email}" title="Copy the email address" style="${this.isTouch ? 'min-height:44px;' : ''}padding:8px 14px;border-radius:8px;
           border:1px solid rgba(120,160,255,0.45);background:rgba(80,130,255,0.18);color:#cfe0ff;font-size:13.5px;font-weight:600;cursor:pointer;">Copy</button>
         ${withMailto ? link(`mailto:${OWNER.email}`, '✉️ Email', { small: true }) : ''}
       </div>`;
@@ -6736,12 +8002,22 @@ export class SimpleUI {
       `<span style="background:#33333f;padding:5px 11px;border-radius:15px;font-size:13px;">${t}</span>`;
     // Optional lazy thumbnail — hidden by the error handler in showZonePanel if
     // the asset isn't present, so the panels never depend on the images shipping.
-    const thumb = (src: string, alt: string): string =>
-      `<img src="${src}" alt="${alt}" loading="lazy" style="width:100%;max-height:150px;object-fit:cover;
+    // Its intrinsic size reserves the box before it loads: a lazy load grew the
+    // card under a Projects panel opened at a lower card (P2-D5).
+    const thumb = (src: string, alt: string, w: number, h: number): string =>
+      `<img src="${src}" alt="${alt}" loading="lazy" width="${w}" height="${h}" style="width:100%;height:auto;max-height:150px;object-fit:cover;
         object-position:top;border-radius:10px;margin:8px 0 4px;display:block;border:1px solid rgba(255,255,255,0.08);" />`;
-    const card = (inner: string): string =>
-      `<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);
+    // `project`: the card's data-project id, the anchor the hire card's
+    // Selected work rows open Projects at (P2-D5).
+    const card = (inner: string, project?: string): string =>
+      `<div${project ? ` data-project="${project}"` : ''} style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);
         border-radius:12px;padding:14px;margin:12px 0;text-align:left;">${inner}</div>`;
+    // One Selected work row: an outline button that opens Projects at a card.
+    const workRow = (project: string, name: string, status: string): string =>
+      `<button type="button" data-open-project="${project}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;margin:6px 0 0;${
+        this.isTouch ? 'min-height:44px;' : ''
+      }padding:9px 12px;border-radius:10px;background:transparent;color:#e8edf5;border:1px solid rgba(255,212,121,0.4);font-size:13.5px;text-align:left;cursor:pointer;">
+        <span><strong>${name}</strong> · ${status}</span><span aria-hidden="true" style="color:#ffd479;">›</span></button>`;
 
     const contents: { [key: string]: string } = {
       welcome: `
@@ -6796,7 +8072,8 @@ export class SimpleUI {
       `,
       projects: `
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
-        ${card(`
+        ${card(
+          `
           <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:11px;color:#ffd479;">● you are standing in it</span></h3>
           <p style="margin:6px 0;font-size:13.5px;">The flagship: a multiplayer 3D world (Three.js +
           TypeScript) where <strong>${aiCount} villagers talk through Claude Haiku 4.5</strong>. A
@@ -6813,7 +8090,9 @@ export class SimpleUI {
             ${link(OWNER.repo, '💻 Source')}
             ${link(`${OWNER.repo}#how-it-is-built`, "🧭 How it's built")}
           </div>
-        `)}
+        `,
+          'island',
+        )}
         ${card(`
           <h3 style="margin:0 0 6px;">🛡️ How the AI is kept safe and cheap</h3>
           <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.5;">
@@ -6836,7 +8115,8 @@ export class SimpleUI {
             ${link(`${OWNER.repo}/blob/main/functions/src/index.ts`, '💻 See the code')}
           </div>
         `)}
-        ${card(`
+        ${card(
+          `
           <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#ffcc80;">● live, pre-launch</span></h3>
           <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Problem:</strong>
           search is shifting from ten blue links to AI answers — and most sites are invisible to
@@ -6846,25 +8126,36 @@ export class SimpleUI {
           what to fix. Solo build.</p>
           <p style="margin:6px 0;font-size:13px;color:#cdd6e4;"><strong>Status:</strong> live, pre-launch: no users beyond test accounts.</p>
           <div style="margin-top:6px;">${link('https://rankpilot-h3jpc.web.app', '↗ Pre-launch demo', { small: true })}</div>
-        `)}
-        ${card(`
+        `,
+          'rankpilot',
+        )}
+        ${card(
+          `
           <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:11px;color:#aab;">● paused</span></h3>
-          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront')}
+          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront', 820, 384)}
           <p style="margin:6px 0;font-size:13.5px;">Direct-to-consumer chocolate brand —
           the storefront, brand system, and content pipeline, end to end. Paused.</p>
           <div style="margin-top:6px;">${link('https://chocomate.au', '↗ chocomate.au', { small: true })}</div>
-        `)}
+        `,
+          'chocomate',
+        )}
         <div style="text-align:left;">
+          <div data-project="digiscalability">
           <h3 style="margin-bottom:4px;margin-top:14px;">🌐 digiscalability.com</h3>
           <p style="margin-top:4px;font-size:13.5px;">My business site, built solo: Next.js 15 +
           Firebase on Vercel.
           ${link('https://digiscalability.com', '↗ digiscalability.com')}</p>
+          </div>
+          <div data-project="banos">
           <h3 style="margin-bottom:4px;margin-top:14px;">📖 Bano's Cookbook</h3>
           <p style="margin-top:4px;font-size:13.5px;">Digitising my mother's (Ammi's) handwritten recipes from 1981.</p>
+          </div>
+          <div data-project="insta">
           <h3 style="margin-bottom:4px;margin-top:14px;">🧰 Insta Services API</h3>
           <p style="margin-top:4px;font-size:13.5px;">Modernising an inherited 2016 Java system
           (Java API + Android app) with login rate limiting, health checks and nightly
           backups.</p>
+          </div>
         </div>
         ${emailRow(true)}
       `,
@@ -6923,12 +8214,30 @@ export class SimpleUI {
         its guardrails, the realtime client, the cloud functions and the tests.</p>
         <p style="margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(18,183,106,0.14);border:1px solid rgba(120,220,170,0.4);font-size:13.5px;line-height:1.45;color:#d7f5e6;">
           Open to AI and software engineering roles in Melbourne (full-time or contract).</p>
-        <div style="display:flex;flex-wrap:wrap;justify-content:center;">
+        <div data-hire-actions style="display:flex;flex-wrap:wrap;justify-content:center;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
           ${link(OWNER.cv, '📄 CV')}
           ${link(OWNER.repo, '💻 Code')}
         </div>
         ${emailRow(false)}
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:10px 0 0;">
+          <button type="button" data-hire-contact style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;">
+            ✉️ Send a message</button>
+          <button type="button" data-hire-tour style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
+            🎬 Or watch the highlights tour (under a minute)</button>
+        </div>
+        <div data-selected-work style="margin:16px 0 0;text-align:left;">
+          <h3 style="margin:0 0 2px;font-size:15px;">Selected work</h3>
+          ${workRow('island', 'This island', 'open source (MIT)')}
+          ${workRow('rankpilot', 'RankPilot', 'live, pre-launch: no users beyond test accounts')}
+          ${workRow('digiscalability', 'digiscalability.com', 'Next.js 15 + Firebase')}
+        </div>
+        <p data-education style="margin:14px 0 0;font-size:13px;line-height:1.5;text-align:left;color:#dde3ee;">
+          <strong>Education:</strong> BSc Computer Science, SZABIST, Islamabad (2016) · Master of
+          Information Technology (coursework), Deakin University, 2017–2019: 11 of 16 credit points
+          completed</p>
         <h3 style="margin:16px 0 4px;font-size:15px;text-align:left;">Experience</h3>
         <ul style="margin:0;padding:0;list-style:none;text-align:left;font-size:13px;line-height:1.45;">
           ${xp('Founder &amp; lead developer', 'DigiScalability, Melbourne', 'Jan 2025 – present')}
@@ -6948,9 +8257,6 @@ export class SimpleUI {
           ids are validated on server and client, so no planner text reaches a public surface.</li>
           <li>A Vitest suite, typecheck, lint and Prettier run in CI (GitHub Actions) on every push.</li>
         </ul>
-        <button type="button" data-hire-tour style="width:100%;margin:16px 0 0;padding:10px 14px;border-radius:10px;
-          background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
-          🎬 Or watch the highlights tour (under a minute)</button>
       `,
     };
 
@@ -7027,31 +8333,70 @@ export class SimpleUI {
     header.appendChild(title);
     // The differentiator, made legible: this is a REAL model conversation, not
     // a dialogue tree — visitors couldn't tell (fallbacks look identical).
+    // The badge names the model and nothing more (the Fact Sheet's wording,
+    // as on First steps' talk card): villagers are chat characters, one
+    // model call a message. Its old label is banned copy (claimsPanels).
     const aiBadge = document.createElement('span');
-    aiBadge.textContent = '✨ live AI';
+    aiBadge.textContent = 'Claude Haiku 4.5';
     Object.assign(aiBadge.style, {
       fontSize: '10.5px',
       fontWeight: '700',
-      letterSpacing: '0.5px',
       color: '#ffd479',
       border: '1px solid rgba(255,212,121,0.5)',
       borderRadius: '20px',
       padding: '2px 8px',
       whiteSpace: 'nowrap',
     });
-    aiBadge.title = 'A live language-model conversation — every reply is generated, not scripted';
+    aiBadge.title =
+      'This villager talks through Claude Haiku 4.5: one model call per message. ' +
+      "If the model can't be reached, it answers with its written lines and this badge says so.";
     header.appendChild(aiBadge);
     this.npcChatBadge = aiBadge; // markNpcChatOffline re-labels it on a fallback
+    const touch = this.isTouch;
     const controls = document.createElement('span');
-    Object.assign(controls.style, { display: 'flex', gap: '12px', alignItems: 'center' });
+    Object.assign(controls.style, {
+      display: 'flex',
+      gap: touch ? '0' : '12px', // on touch the two 44 px boxes sit edge to edge
+      alignItems: 'center',
+    });
+    // The header's controls are buttons drawn as bare glyphs: a name, a role
+    // and the keyboard come with them (D4). On touch each is a 44 px thumb
+    // box (phone.cjs measured the ✕ at 39x47). Its top stays inside the
+    // panel there: the panel's overflow clips, so the ✕'s -13px top margin
+    // left the top 5 px of its box unreachable.
+    const glyphButton = (glyph: string, label: string): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = glyph;
+      b.setAttribute('aria-label', label);
+      Object.assign(b.style, {
+        font: 'inherit',
+        color: 'inherit',
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+      });
+      return b;
+    };
+    const thumbBox = { minWidth: '44px', minHeight: '44px', padding: '0' };
     // Voice mute toggle (only if the browser can speak).
     if (isSpeechSupported()) {
-      const voiceBtn = document.createElement('span');
+      const voiceBtn = glyphButton('🔊', 'NPC voice');
       const render = () => {
-        voiceBtn.textContent = isSpeechEnabled() ? '🔊' : '🔇';
+        const on = isSpeechEnabled();
+        voiceBtn.textContent = on ? '🔊' : '🔇';
+        voiceBtn.setAttribute('aria-pressed', String(on));
       };
       render();
-      Object.assign(voiceBtn.style, { cursor: 'pointer', fontSize: '15px', userSelect: 'none' });
+      Object.assign(voiceBtn.style, {
+        fontSize: '15px',
+        userSelect: 'none',
+        ...(touch ? { ...thumbBox, margin: '-8px 0' } : { padding: '0' }),
+      });
       voiceBtn.title = 'Toggle NPC voice';
       voiceBtn.addEventListener('click', () => {
         setSpeechEnabled(!isSpeechEnabled());
@@ -7059,26 +8404,27 @@ export class SimpleUI {
       });
       controls.appendChild(voiceBtn);
     }
-    const closeBtn = document.createElement('span');
-    closeBtn.textContent = '✕';
+    const closeBtn = glyphButton('✕', 'Close chat');
     // Was a bare ~16×18px glyph — the panel's only explicit dismiss. Pad to a
     // real thumb box (negative margin keeps the header's visual rhythm).
     Object.assign(closeBtn.style, {
-      cursor: 'pointer',
       opacity: '0.7',
-      padding: '13px',
-      margin: '-13px',
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
+      ...(touch
+        ? { ...thumbBox, margin: '-8px -13px -8px 0' }
+        : { padding: '13px', margin: '-13px' }),
     });
-    closeBtn.setAttribute('role', 'button');
-    closeBtn.setAttribute('aria-label', 'Close chat');
     closeBtn.addEventListener('click', () => this.closeNpcChat());
     controls.appendChild(closeBtn);
     header.appendChild(controls);
     panel.appendChild(header);
     const log = document.createElement('div');
+    // A log: each new line is read out once (UX-05: 0 live regions). The
+    // typewriter's partial text is hidden from screen readers; each NPC line
+    // carries its whole text in a visually hidden twin.
+    log.setAttribute('role', 'log');
+    log.setAttribute('aria-live', 'polite');
+    log.setAttribute('aria-label', `Conversation with ${name}`);
+    log.tabIndex = 0; // a scroller: the keyboard can page back through it
     Object.assign(log.style, {
       padding: '12px 16px',
       maxHeight: '38vh',
@@ -7109,9 +8455,15 @@ export class SimpleUI {
     // right before the cloud-voiced continuation arrives made the panel open
     // with a jarring robot-then-premium voice switch.
     const npcLine = (text: string, voiced = true): void => {
-      const row = document.createElement('div');
-      Object.assign(row.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
-      log.appendChild(row);
+      const line = document.createElement('div');
+      Object.assign(line.style, { alignSelf: 'flex-start', color: '#dfe6ff', maxWidth: '90%' });
+      const row = document.createElement('span');
+      row.setAttribute('aria-hidden', 'true'); // the typewriter's partial text
+      const whole = document.createElement('span');
+      whole.className = 'ds-sr-only';
+      whole.textContent = `${name}: ${text}`; // what the log reads out, once
+      line.append(row, whole);
+      log.appendChild(line);
       if (voiced) speak(text, voice.rate, voice.pitch, voice.variant);
       if (a11y.reducedMotion) {
         row.textContent = text;
@@ -7137,12 +8489,18 @@ export class SimpleUI {
       padding: '10px 12px',
       borderTop: '1px solid rgba(255,255,255,0.08)',
     });
+    // 44 px thumb targets on touch: the mic, the field and Send measured 38
+    // tall (phone.cjs).
+    const tall = touch ? { minHeight: '44px', boxSizing: 'border-box' } : {};
     const input = document.createElement('input');
     input.type = 'text';
     input.maxLength = 300;
     input.placeholder = `Say something to ${name}…`;
     Object.assign(input.style, {
       flex: '1',
+      // A field's automatic minimum is its ~20-character intrinsic width: on
+      // a 390 px phone the row overflowed, and the panel's clip cut Send.
+      minWidth: '0',
       padding: '8px 12px',
       borderRadius: '10px',
       border: '1px solid rgba(255,255,255,0.15)',
@@ -7150,6 +8508,7 @@ export class SimpleUI {
       color: '#fff',
       fontSize: this.isTouch ? '16px' : '15px', // 16px kills iOS focus zoom
       outline: 'none',
+      ...tall,
     });
     const send = document.createElement('button');
     send.textContent = 'Send';
@@ -7162,6 +8521,7 @@ export class SimpleUI {
       background: DS.primary, // #5a8cff gave white text 3.17:1
       color: '#fff',
       fontWeight: '600',
+      ...tall,
     });
     // Mic button (speech-to-text) — only where the browser supports it.
     const mic = isSttSupported() ? document.createElement('button') : null;
@@ -7176,6 +8536,8 @@ export class SimpleUI {
         background: 'rgba(255,255,255,0.06)',
         color: '#fff',
         fontSize: '15px',
+        ...tall,
+        ...(touch ? { minWidth: '44px' } : {}),
       });
       inputRow.appendChild(mic);
     }
@@ -7318,8 +8680,8 @@ export class SimpleUI {
 
   /**
    * The villager answered from its written lines: the model call fell back
-   * (App Check, a rate or spend cap, moderation, offline). The header said
-   * "live AI — every reply is generated", which was then untrue; say so.
+   * (App Check, a rate or spend cap, moderation, offline). The header names
+   * the model, which did not answer this time; say so.
    * No-op unless `name`'s chat is the one open.
    */
   public markNpcChatOffline(name: string): void {
@@ -7418,7 +8780,12 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.closeWatchPicker(),
+      el: panel,
+      label: 'The wall screen',
+      // its link field (focused 50 ms after open, below)
+      initialFocus: () => panel.querySelector<HTMLElement>('input'),
     });
+    this.stepHintAside(true);
     panel.innerHTML = `
       <div style="font-weight:600; font-size:15px; margin-bottom:4px;">📺 The wall screen</div>
       <div style="font-size:12.5px; color:#aab; margin-bottom:12px;">What shall we watch? Paste a YouTube link (or any https page).</div>
@@ -7660,7 +9027,11 @@ export class SimpleUI {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
       close: () => this.closePinPad(),
+      el: panel,
+      label: 'Door code',
+      initialFocus: () => panel, // its own keydown takes the digits
     });
+    this.stepHintAside(true);
     panel.innerHTML = `
       <div style="font-weight:600; font-size:14.5px; margin-bottom:2px;">🔒 The door is locked</div>
       <div style="font-size:12px; color:#aab; margin-bottom:10px;">Enter the door code</div>
@@ -7839,7 +9210,8 @@ export class SimpleUI {
         color: rgba(160, 200, 255, 0.9);
       ">${name}</div>
       <div style="padding: clamp(10px, 1.8vh, 16px) clamp(14px, 4vw, 20px); min-height: clamp(36px, 7vh, 60px);">
-        <div id="dialogue-text" style="
+        <div id="dialogue-sr" class="ds-sr-only" role="status" aria-live="polite"></div>
+        <div id="dialogue-text" aria-hidden="true" style="
           line-height: 1.5;
           font-size: clamp(13px, 3.5vw, 15px);
           min-height: clamp(18px, 4vh, 24px);
@@ -7860,6 +9232,10 @@ export class SimpleUI {
 
   private startTypewriter(text: string): void {
     this.typewriterText = text;
+    // The whole line, once, to screen readers (the dialogue's role=status;
+    // the typed-out text itself is aria-hidden).
+    const sr = this.dialogueDiv?.querySelector('#dialogue-sr');
+    if (sr) sr.textContent = text;
     if (this.typewriterTimer) cancelAnimationFrame(this.typewriterTimer);
     // Reduced motion: full line instantly — the same rule the free-chat
     // panel's typewriter has always had (npcLine). Read per line, so the ♿
@@ -7943,6 +9319,13 @@ export class SimpleUI {
     // First: the closes below must not step the history back. This runs on
     // beforeunload, where a back() could turn a reload or a link into Back.
     this.panels.dispose();
+    // Then the message queue: no closing panel below may re-arm its timers.
+    this.stopMessages();
+    window.removeEventListener('ds:guide', this.onGuideEvent);
+    window.removeEventListener('ds:intro', this.onIntroEvent);
+    for (const type of ['pointerdown', 'keydown', 'click'] as const) {
+      this.overlay.removeEventListener(type, this.onPanelAction, true);
+    }
     if (this.compassDiv) {
       this.compassDiv.remove();
       this.compassDiv = null;

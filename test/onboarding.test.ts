@@ -155,6 +155,26 @@ describe('the welcome card hierarchy matches the audience', () => {
     expect(ui).toContain("querySelector('button[data-hire-tour]')");
   });
 
+  test('the recruiter path adds its events and keeps the frozen ones (D5)', () => {
+    // Changed deliberately in D5: one new key event and two new values. The
+    // welcome card's own contracts below, and cta_pill_click, are unchanged.
+    const ui = stripped('SimpleUI.ts');
+    expect(ui).toContain("track('hire_chip_click');");
+    expect(ui).toContain("track('hire_cta', { cta: 'message' });");
+    expect(ui).toContain("track('hire_cta', { cta: 'tour' });");
+    expect(ui).toContain("track('cta_pill_click');");
+    // P2-D5: the Selected work rows say which project, in hire_cta's one prop
+    // (it keeps its src), and 'landmark' joins zone_explored's sources for A.
+    expect(ui).toContain("track('hire_cta', { cta: `project_${project}` });");
+    expect(ui).toMatch(
+      /source\?: 'proximity' \| 'menu' \| 'deeplink' \| 'cta' \| 'strip' \| 'landmark';/,
+    );
+    const keyEvents = stripped('Analytics.ts');
+    const set = keyEvents.slice(keyEvents.indexOf('const KEY_EVENTS'), keyEvents.indexOf(']);'));
+    expect(set).toContain("'hire_chip_click'");
+    expect(set).not.toContain("'cta_pill_click'"); // a frozen series: no attribution added
+  });
+
   test('all seven analytics contracts survive the restructure', () => {
     const w = welcome();
     for (const attr of [
@@ -172,7 +192,13 @@ describe('the welcome card hierarchy matches the audience', () => {
 
   test('focus moves into the dialog, and the returning card never auto-closes', () => {
     const w = welcome();
-    expect(w).toContain('?.focus()');
+    // The dialog itself takes focus (D4, FM-02): a focused 'See the work'
+    // made Space or Enter open Projects. The behaviour runs in a11yPanels.
+    expect(w).toContain('this.welcomeDiv.tabIndex = -1;');
+    expect(w).toContain('this.welcomeDiv.focus();');
+    expect(w).not.toContain(
+      `querySelector('button[data-cta="projects"]') as HTMLElement | null)?.focus()`,
+    );
     // It closed itself after 2.6 s / 7 s; with the Hiring pill on it, that
     // took a returning recruiter's one-click path away. Choice only now.
     expect(w).not.toContain('setTimeout(closeWelcome');
