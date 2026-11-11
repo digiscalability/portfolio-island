@@ -7,8 +7,14 @@ import type { EffectComposer } from 'three/addons/postprocessing/EffectComposer.
 import type { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
+import { fx } from './FxBudget';
 import { GradeShader, isSoftLook } from './SoftLook';
 import { isRealTheme } from './Theme';
+
+// E2: half-rate shadows are the low tier's default. Desktop stays at full
+// rate until ?halfshadow=1 has been compared there (decision 12), so its
+// default is off and the getter below ignores the switch on that tier.
+fx.register('halfShadow', { desktop: false, low: true });
 
 /**
  * SimpleRenderer
@@ -148,18 +154,38 @@ export class SimpleRenderer {
   /** Interior mode holds this true: the outdoor world is provably frozen while
    *  indoors, so every depth pass there is pure waste. See setShadowFreeze. */
   private shadowFrozen = false;
-  /** ?halfshadow=1 — A/B lever: run the every-2nd-frame shadow refresh on ALL
-   *  tiers (today it engages only at governor rung 2). Halves the depth-pass
-   *  cost for a one-frame shadow lag during fast movement. Default OFF so the
-   *  live look is unchanged; composes with the rung-2 path and the interior
-   *  freeze (both still gate on !shadowFrozen). */
-  private readonly alwaysHalfShadow = (() => {
+  /** ?halfshadow=1 or ?halfshadow=0 pins the lever on any tier (the A/B
+   *  spelling, and the way to compare half rate on desktop); null when the
+   *  URL does not say. */
+  private readonly halfShadowParam: boolean | null = (() => {
     try {
-      return new URLSearchParams(window.location.search).get('halfshadow') === '1';
+      const v = new URLSearchParams(window.location.search).get('halfshadow');
+      return v === '1' ? true : v === '0' ? false : null;
     } catch {
-      return false;
+      return null;
     }
   })();
+  /** The tier, read once: the canvas's antialias flag is fixed from it at
+   *  construction, and matchMedia per frame would allocate. */
+  private readonly lowTier = SimpleRenderer.isLowTierDevice();
+  /** The lever's value applyShadowPolicy last derived autoUpdate from. */
+  private halfShadowApplied = false;
+  /**
+   * Half-rate shadows: the every-2nd-frame shadow refresh (the governor's
+   * rung 2) at every rung. It halves the depth pass (about 95 shadow draws a
+   * frame at the spawn, 145 at Projects) for a one-frame shadow lag, 0.09 u
+   * at a 5.4 u/s walk. On by default on the low tier, where the pass costs
+   * most; the URL pins it either way; composes with rung 2 and the interior
+   * freeze (both still gate on !shadowFrozen).
+   *
+   * A getter, not a field: fx.on reads __dsFx on every call, so the perf
+   * gate's --fx halfShadow can flip it mid-page. render() re-runs the policy
+   * when it flips (see there).
+   */
+  private get alwaysHalfShadow(): boolean {
+    if (this.halfShadowParam !== null) return this.halfShadowParam;
+    return this.lowTier && fx.on('halfShadow');
+  }
   // Stable handler ref so dispose() can actually detach the resize listener
   // (an inline arrow at addEventListener cannot be removed).
   private readonly _onResize = (): void => this.onWindowResize();
@@ -203,9 +229,9 @@ export class SimpleRenderer {
     this.renderer.toneMappingExposure = isRealTheme() ? 1.14 : 1.0;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    // Derive the initial autoUpdate from the shadow policy so ?halfshadow=1
-    // takes effect from frame 1, not only after the governor first acts. With
-    // the flag off this is identical to the old `= true`.
+    // Derive the initial autoUpdate from the shadow policy so half rate (the
+    // low tier's default, or ?halfshadow=1) holds from frame 1, not only after
+    // the governor first acts. With the lever off this is the old `= true`.
     this.applyShadowPolicy();
 
     // Set a clear background color for debugging
@@ -404,6 +430,10 @@ export class SimpleRenderer {
       // compile stalls a frame, which is what shows as a white flash. The
       // heavy sea shader (wave normals + surf) made this much more visible.
       this.renderer.compile(scene, camera);
+      // At half rate autoUpdate is off, so the throwaway frame below would
+      // skip the shadow pass and its depth programs would compile on the first
+      // visible frame. Arm one refresh (a no-op when autoUpdate is on).
+      if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;
       if (this.postProcessingEnabled && this.composer) {
         // Force bloom ON for the throwaway render, whatever the caller left it
         // at. EffectComposer skips a disabled pass entirely (`if (pass.enabled
@@ -729,7 +759,7 @@ export class SimpleRenderer {
         this.rungCooldown >= SimpleRenderer.RUNG_ENGAGE_COOLDOWN_S
       ) {
         // Resolution is at the floor and it's still not enough: next rung
-        // (rungStep skips the inert rung 1 on the low tier — see its doc)
+        // (rungStep skips the rungs that are inert here — see its doc)
         this.setQualityRung(this.rungStep(1));
       }
     } else {
@@ -813,6 +843,7 @@ export class SimpleRenderer {
     // alwaysHalfShadow forces the manual every-2nd-frame path (autoUpdate off)
     // at every rung, exactly as rung 2 does — render()'s re-arm keeps the map
     // fresh. Interior freeze still wins (autoUpdate off, no re-arm).
+    this.halfShadowApplied = this.alwaysHalfShadow;
     this.renderer.shadowMap.autoUpdate =
       !this.shadowFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow;
   }
@@ -862,8 +893,15 @@ export class SimpleRenderer {
     this.rungCooldown = 0;
   }
 
+  /** A rung that sheds nothing on this machine: rung 1 without a bloom pass
+   *  (the low tier builds no composer), and rung 2 while the half-rate lever
+   *  already holds the shadows at half rate (the low tier's default, E2). */
+  private rungInert(rung: number): boolean {
+    return (rung === 1 && !this.bloomPass) || (rung === 2 && this.alwaysHalfShadow);
+  }
+
   /**
-   * The next rung one decision away, stepping OVER rung 1 where it is inert.
+   * The next rung one decision away, stepping OVER every rung that is inert.
    *
    * On the low tier no composer (and so no bloomPass) is ever built, but the
    * ladder still stopped at rung 1: the engage shed NOTHING yet reset the
@@ -874,10 +912,15 @@ export class SimpleRenderer {
    * the rung could clear and the resolution claw-back (gated on rung 0)
    * could begin. Walking THROUGH 1 inside one setQualityRung call is free —
    * engageRung(1)/releaseRung(1) are explicit no-ops without the pass.
+   *
+   * Rung 2 is the same story since half-rate shadows became the low tier's
+   * default: engaging it there changes nothing, so the ladder goes straight
+   * from the resolution floor to rung 3 (grass), and releases 3 -> 0.
    */
   private rungStep(dir: 1 | -1): number {
-    const next = this.qualityRung + dir;
-    return next === 1 && !this.bloomPass ? this.qualityRung + 2 * dir : next;
+    let next = this.qualityRung + dir;
+    while (next > 0 && next < SimpleRenderer.MAX_QUALITY_RUNG && this.rungInert(next)) next += dir;
+    return next;
   }
 
   private engageRung(rung: number): void {
@@ -1001,6 +1044,14 @@ export class SimpleRenderer {
       });
       return;
     }
+
+    // The half-rate lever is a live switch. When it flips, derive autoUpdate
+    // again: turned off mid-page (the perf gate's --fx off side) the field
+    // would stay false with nothing re-arming it, a frozen shadow map that
+    // reads as a saving; turned on, three would keep its every-frame pass.
+    // No refresh is forced here: off -> on leaves a map one frame old, and
+    // on -> off refreshes on this very frame.
+    if (this.alwaysHalfShadow !== this.halfShadowApplied) this.applyShadowPolicy();
 
     // Governor rung 2+: refresh the shadow map every OTHER frame. The sun
     // moves slowly enough that a one-frame-stale map is invisible. Suspended
