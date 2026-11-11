@@ -1,0 +1,24 @@
+{
+  "note": "Seeded draws taken by new Island() at each Island.seedMark checkpoint, cumulative. Recorded by test/drawNeutral.test.ts on main d5e0e96 before any stage-2 change (UX plan C0). Never re-blessed: a change inside new Island() burns the measured draws at its own site, or builds under a local RNG shield.",
+  "firstSpriteCost": 8,
+  "cold": {
+    "marks": {
+      "island:buildingTextures": 3770,
+      "island:constructionBlocks": 33212,
+      "island:gateBoards": 39488,
+      "island:beforeRocks": 39772,
+      "island:end": 50083
+    },
+    "total": 50083
+  },
+  "warm": {
+    "marks": {
+      "island:buildingTextures": 3770,
+      "island:constructionBlocks": 33204,
+      "island:gateBoards": 39451,
+      "island:beforeRocks": 39735,
+      "island:end": 49771
+    },
+    "total": 49771
+  }
+}

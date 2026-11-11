@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { addGroupHulls } from './CelLook';
+import { addGroupHulls, isCelTheme } from './CelLook';
 import { Island } from './Island';
+import { Materials } from './Materials';
 
 export interface ZoneData {
   id: string;
@@ -92,6 +93,14 @@ export class Zone {
     this.position = data.position.clone();
 
     this.marker = this.createBuilding(data.id, data.color, data.icon);
+    // One cel look (UX plan C3): the halls were the island's only PBR
+    // landmarks, beside toon terrain and props. Their materials are built as
+    // standard, exactly as before, then converted. ZonesManager runs inside
+    // GameScene.initialize's seeded window, so the order and count of
+    // constructions above are what the seeded stream sees; the conversion
+    // draws from its own generator (Materials.toonify), and the seed probe's
+    // 'zones' mark is unchanged. Under ?theme=real the halls stay PBR.
+    if (isCelTheme()) Materials.toonifyTree(this.marker);
     this.beacon = this.marker.getObjectByName('zone-beacon') ?? null;
     if (this.beacon) this.beaconBaseY = this.beacon.position.y;
     // Outline Tier 1: ink the landmark masses; the beacon stays clean (its

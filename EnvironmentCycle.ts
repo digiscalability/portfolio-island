@@ -307,13 +307,18 @@ export class EnvironmentCycle {
   }
 
   /**
-   * Collect lamp + house-window lights so they can brighten at night,
-   * plus the isNightEmissive-tagged meshes (house windows, lamp bulbs).
+   * Collect the lamp lights so they can brighten at night, plus the
+   * isNightEmissive-tagged meshes (house windows, lamp bulbs).
    * The constructor pass runs after GameScene's toonify pass, so the
    * collected materials are the live toon clones; every tagged mesh owns a
    * private material (created inline in Island, and the toonify cache is
    * keyed per instance), so the emissive writes in update() can't leak to
    * other props. Dedupe: a house's two windows share one material.
+   *
+   * The porch lights that carried isHouseWarmLight no longer join the scene
+   * (P2-C4), so nothing collected carries that flag today. Its branch stays
+   * so that reverting P2-C4 alone brings their dusk ramp and day cutoff back
+   * with them, instead of leaving six porch lights lit all day.
    *
    * Runs again once on the first update(): TownPlanner props are placed
    * AFTER this cycle is built (GameScene.placeAssets), and the render loop

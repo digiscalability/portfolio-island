@@ -379,6 +379,18 @@ export class Island {
   private static readonly TIDE_AMP = 0.09; // radial units above/below mean sea
   private static readonly TIDE_PERIOD = 120; // seconds for a full high→low→high
 
+  /**
+   * Seed census checkpoint. new Island() runs inside GameScene's seeded
+   * window, so every three.js uuid it mints is a draw from the shared stream.
+   * When a recorder is installed (test/drawNeutral.test.ts does; the app never
+   * does) this hands it the label at a builder boundary, and the recorder
+   * notes how many draws the build has taken so far. With no recorder it does
+   * nothing, and it never draws.
+   */
+  private static seedMark(label: string): void {
+    (globalThis as { __dsSeedMark?: (l: string) => void }).__dsSeedMark?.(label);
+  }
+
   constructor(radius: number = 18) {
     this.radius = radius;
     this.center = new THREE.Vector3(0, 0, 0);
@@ -391,6 +403,7 @@ export class Island {
         data._debug = true;
       }
     }
+    Island.seedMark('island:end');
   }
 
   /**
@@ -1681,7 +1694,13 @@ export class Island {
     // Animated waves: displace each vertex radially by the SAME sum-of-sines
     // the CPU sampler (waveHeightAt) uses, so swimmers/boats bob in lockstep
     // with the visible surface. Crest foam lightens the colour.
-    seaMat.onBeforeCompile = (shader) => {
+    seaMat.onBeforeCompile = (shader, renderer) => {
+      // The sea is in the boot pre-compile on every tier and theme, and no
+      // pass swaps its material (transparent stays PBR). So it is the one
+      // that asks for the pass's links to be sent: without this the
+      // pre-compile waits ~1 s on its last program, behind the loader (see
+      // Materials.flushAfterCompile).
+      Materials.flushAfterCompile(renderer);
       shader.uniforms.uTime = this.seaTimeUniform;
       shader.uniforms.uAmp = { value: Island.WAVE_AMP };
       shader.uniforms.uTide = this.seaTideUniform;
@@ -1978,6 +1997,7 @@ export class Island {
     const buildings = new THREE.Group();
     // generate procedural building textures and use them for PBR-like facades
     const buildingTex = TextureGenerator.createBuildingTextures(512, 512);
+    Island.seedMark('island:buildingTextures');
     const buildingMat = Materials.createPBRMaterial({
       color: 0xffffff, // WHITE: the albedo map carries the slate facade color.
       // 0xd9c6b3 here MULTIPLIED the same-toned brick map (the near-black-grass
@@ -2247,15 +2267,18 @@ export class Island {
       // Outline Tier 1: body/roof/plinth/chimney get ink; the doormat, knob
       // and porch lamp fall under the 0.6 size floor, windows plane-guard out.
       addGroupHulls(house, 0.6, () => true);
-      // Porch light. This used to sit at z = d*0.35 — INSIDE the walls — with
-      // a 2u radius, so it lit precisely nothing and every house read as a
-      // black slab with two lit windows after dark. It now hangs just proud
-      // of the facade (half-depth + 0.6) with the reach to actually wash the
-      // front wall and the doorstep. Still ONE light per house, the same one
-      // EnvironmentCycle already ramps at dusk via isHouseWarmLight.
-      const warmColor = 0xffd6a5;
-      const light = new THREE.PointLight(warmColor, 1.9, 8, 2);
-      light.position.set(0, h * 0.62, d * 0.5 + 0.6);
+      // Porch light: CONSTRUCTED, NEVER ADDED (decision P2-1: no exterior
+      // point lights). three bakes the light COUNT into every lit program,
+      // so six porch lights joining the scene at dusk re-linked the whole
+      // world (a measured 2.4-3.6 s freeze) and made every night boot
+      // 3.4-4.4 s slower. The constructor still runs, here, with the same
+      // arguments: a PointLight mints two uuids (the light and its shadow
+      // camera), 8 seeded draws, and new Island() runs inside GameScene's
+      // seeded window, so dropping it would re-roll every placement after it
+      // (test/drawNeutral.test.ts pins the counts). The sconce below, the lit
+      // windows and the porch lamp beside every door, with its warm pool,
+      // carry the doorstep instead.
+      new THREE.PointLight(0xffd6a5, 1.9, 8, 2);
       // A sconce beside the door so the glow has a visible source rather than
       // coming from thin air. Tagged isNightEmissive, so it is dark by day.
       const sconceMat = new THREE.MeshStandardMaterial({
@@ -2273,13 +2296,6 @@ export class Island {
       );
       hood.position.set(w * 0.3, h * 0.66 + 0.22, d * 0.5 + 0.1);
       house.add(hood);
-      // don't cast shadows by default (expensive); user can toggle in renderer settings if desired
-      light.castShadow = false;
-      // tag so the renderer or debug UI can find and tweak these
-      const lightData = light.userData as Record<string, unknown>;
-      lightData.isHouseWarmLight = true;
-      // attach to house so it follows rotation/position on the sphere
-      house.add(light);
     }
 
     // Trees: stylized low-poly trees with clustered dodecahedron canopies.
@@ -3870,6 +3886,9 @@ export class Island {
       block.name = `construction_${i}`;
       constructions.add(block);
     }
+    // After plaque #0, the process's first Sprite: a cold build pays three's
+    // shared sprite geometry here and nowhere earlier.
+    Island.seedMark('island:constructionBlocks');
 
     // Flowers — instanced for batching. Each bloom is a stem + 5-petal ring +
     // center of identical static geometry, so instead of ~7 meshes per flower
@@ -4474,6 +4493,7 @@ export class Island {
       // ink cap is fine.
       addGroupHulls(gate, 0.3, (m) => m.name !== 'gate-board');
     }
+    Island.seedMark('island:gateBoards');
 
     // Group everything and attach to the main mesh as children so the island remains dominant
     const root = new THREE.Group();
@@ -4593,6 +4613,7 @@ export class Island {
     // Instanced boulder layer — scree on steep slopes (where grass collapses
     // for steepness) plus a shoreline band, so cliffs and beaches get real rock
     // geometry to back the terrain's rock/steep shading. One draw call.
+    Island.seedMark('island:beforeRocks');
     const rocks = this.createRocks();
     if (rocks) root.add(rocks);
 
@@ -4871,10 +4892,10 @@ export class Island {
 
     // THE BEAM. The lantern glowed but threw nothing — a lighthouse that does
     // not sweep is just a striped tower. Two opposed cones of additive haze
-    // (apex at the lantern, laid on their sides so they point out to sea)
-    // plus ONE real spotlight riding the same pivot, so the sweep actually
-    // lands on the rocks and the water as it passes. GameScene spins the
-    // pivot and fades the whole thing in as the light goes.
+    // (apex at the lantern, laid on their sides so they point out to sea).
+    // A real spotlight used to ride each arm too; it no longer enters the
+    // scene (see the arm loop). GameScene spins the pivot and fades the
+    // cones in as the light goes.
     const beam = new THREE.Group();
     beam.name = 'lighthouse_beam';
     beam.position.y = galleryY + 0.85;
@@ -4929,7 +4950,6 @@ export class Island {
     // margin than at R=50 and drifts in the safe direction (~2u across a ~24u
     // sweep). Recorded so the next auditor doesn't re-derive this and "fix" it.
     const BEAM_TILT = 0.72;
-    const beamLights: THREE.SpotLight[] = [];
     for (const s of [1, -1]) {
       // The arm carries the downward tilt so the cone keeps its simple local
       // geometry: rotating about Z by -s*t swings the +/-X axis toward -Y.
@@ -4941,18 +4961,20 @@ export class Island {
       cone.rotation.z = (s * Math.PI) / 2;
       cone.position.set((s * BEAM_LEN) / 2, 0, 0);
       arm.add(cone);
-      // One spotlight per beam, aimed straight down the arm, so BOTH sweeps
-      // wash the rocks, trees and water they cross instead of only glowing in
-      // the air. decay 1.1 rather than the physical 2: a squared falloff is
-      // spent within a few units and would light nothing but the gallery.
+      // The beam's spotlight: CONSTRUCTED, NEVER ADDED (decision P2-1). Two
+      // spots joining at dusk re-linked every lit program with the porch
+      // lights; the additive cones above carry the sweep on their own. The
+      // constructor still runs, here: a SpotLight mints three uuids (the
+      // light, its target and its shadow camera), 12 seeded draws inside the
+      // seeded window. Its target stays aimed down the arm.
       const sl = new THREE.SpotLight(0xffe4a0, 0, 44, 0.3, 0.55, 1.1);
-      sl.position.set(0, 0, 0);
       sl.target.position.set(s * BEAM_LEN, 0, 0);
-      arm.add(sl, sl.target);
-      beamLights.push(sl);
+      arm.add(sl.target);
       beam.add(arm);
     }
-    beam.userData.beamLights = beamLights;
+    // No light rides the beam, so GameScene's sweep loop, which drives this
+    // list, does nothing; the cones still turn and fade with the dusk ramp.
+    beam.userData.beamLights = [];
     g.add(beam);
 
     console.log('🗼 Lighthouse placed on the coast');
@@ -5679,6 +5701,10 @@ export class Island {
     } catch {
       /* flair is a bonus, never fatal */
     }
+    // One cel look (C3): the flair built above can still be standard (the
+    // Night Watch lantern, parts of the hat kit). The palette, the dress and
+    // the toonified GLB materials are toon already and pass through.
+    if (!isRealTheme()) Materials.toonifyTree(group);
   }
 
   /**
@@ -8776,6 +8802,27 @@ export class Island {
         return out;
       };
 
+      // One cel look (UX plan C3): an authored model joins the toon world on
+      // load, converted on the MODEL before any clone exists, so every clone
+      // shares the toon materials. Every load lands after GameScene's seeded
+      // window. The GLBs export DoubleSide (Blender's default), but their
+      // meshes are closed and wound outward (measured: no open edge except
+      // the npc Eye's and Hair's, whose open sides face into the head, and the
+      // Hair is swapped for a FrontSide palette material anyway), so FrontSide
+      // draws them the same and lets them share the toon programs already
+      // compiled rather than add DoubleSide variants of their own.
+      const toonifyModel = (model: THREE.Object3D): void => {
+        if (isRealTheme()) return;
+        Materials.toonifyTree(model);
+        model.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh) return;
+          for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+            if ((mat as THREE.MeshToonMaterial).isMeshToonMaterial) mat.side = THREE.FrontSide;
+          }
+        });
+      };
+
       // per-model override table (basename -> tweaks)
       let modelOverrides: Record<string, ModelOverride> = {
         // Intended toon set (Blender-authored, public/assets/models/*.glb)
@@ -8812,7 +8859,18 @@ export class Island {
         if (manifestResp.ok) {
           const userOverrides = await manifestResp.json();
           if (userOverrides && typeof userOverrides === 'object') {
-            modelOverrides = Object.assign({}, modelOverrides, userOverrides);
+            // An entry may scope keys to one look: `realTheme` holds what only
+            // ?theme=real reads. envMapIntensity is one (C3): the cel look has
+            // no environment map, and its toon materials have no such property.
+            const themed: Record<string, ModelOverride> = {};
+            for (const [name, entry] of Object.entries(userOverrides as Record<string, unknown>)) {
+              if (!entry || typeof entry !== 'object') continue;
+              const { realTheme, ...shared } = entry as ModelOverride & {
+                realTheme?: ModelOverride;
+              };
+              themed[name] = isRealTheme() && realTheme ? { ...shared, ...realTheme } : shared;
+            }
+            modelOverrides = Object.assign({}, modelOverrides, themed);
             console.log('Island: applied model overrides manifest');
           }
         }
@@ -9148,6 +9206,19 @@ export class Island {
               return;
             }
 
+            // Toonified at load in the cel theme (C3): only the fade's start
+            // state applies. A toon material has no env map or roughness to
+            // tune, and converting it back to standard per clone (the branch
+            // below) would undo the cel look and split the shared materials.
+            if (
+              (typedMaterial as THREE.Material & { isMeshToonMaterial?: boolean })
+                .isMeshToonMaterial
+            ) {
+              typedMaterial.transparent = true;
+              typedMaterial.opacity = 0;
+              return;
+            }
+
             try {
               const sourceMaterial = typedMaterial;
               const standardMaterial = new THREE.MeshStandardMaterial();
@@ -9391,6 +9462,9 @@ export class Island {
                 const model = gltf.scene || gltf.scenes?.[0];
                 const animations = gltf.animations || [];
                 if (!model) return;
+                // Toon before the clones (see toonifyModel), so the collapse
+                // below still buckets them into one instanced draw per part.
+                toonifyModel(model);
                 const placeholders = findPlaceholders(prefix);
                 const placedClones: THREE.Object3D[] = [];
                 // Authored transparency, read before prepareClone overwrites
@@ -9669,6 +9743,11 @@ export class Island {
                 tryNpc(idx + 1);
                 return;
               }
+              // Toon before the skeleton clones share the materials (see
+              // toonifyModel). dressNpc then swaps Shirt, Skin, Pants and Hair
+              // by NAME (toonify keeps names) for the persona palette; Shoe and
+              // the baked face (Eye, EyeShine, Blush) keep these toon copies.
+              toonifyModel(model);
               const placeholders = findPlaceholders('npc_placeholder_');
               placeholders.forEach((ph) => {
                 try {
@@ -9750,6 +9829,9 @@ export class Island {
                 return;
               }
               const overrides = modelOverrides['tree.glb'] ?? modelOverrides['tree.gltf'];
+              // The authored trees stood muted PBR beside the toon procedural
+              // ones: toon before the snapshot and the clones (see toonifyModel).
+              toonifyModel(model);
               // Same snapshot the other loader takes — the tree fade below
               // has the identical prepareClone start state.
               const authoredTreeMats = snapshotAuthoredMaterials(model);

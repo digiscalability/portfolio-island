@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 
 import { EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle';
+import { Materials } from './Materials';
+import { isRealTheme } from './Theme';
 
 /**
  * Ring traffic — cars that actually drive the island, for TWO draw calls by
@@ -111,6 +113,10 @@ export class TrafficSystem {
       this.cars.length,
     );
     this.bodies.name = 'traffic_cars';
+    // One cel look (UX plan C3): the fleet's one material goes toon, with its
+    // vertex colours (and so the per-instance tint) carried over. Built after
+    // the seeded window. Under ?theme=real it stays PBR.
+    if (!isRealTheme()) Materials.toonifyTree(this.bodies);
     this.bodies.castShadow = true;
     this.bodies.frustumCulled = false; // the fleet wraps the planet
     const palette = [0xd94f4f, 0x4f7fd9, 0xe0c24a, 0x63b86a, 0xdedede, 0xc06fd0];

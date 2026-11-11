@@ -4,6 +4,29 @@ import { isRealTheme } from './Theme';
 
 type TextureWithEncoding = THREE.Texture & { colorSpace?: THREE.ColorSpace; encoding?: number };
 
+// The toon converter's own generator (see Materials.toonify): a mulberry32
+// that only material uuids draw from, so conversions inside the seeded window
+// leave the shared stream untouched. Module state, so successive conversions
+// never repeat a uuid. Same law as CelLook's ink and Island's shielded builders.
+let toonSeed = 0x7c0ff1d3 >>> 0;
+function toonRandom(): number {
+  toonSeed = (toonSeed + 0x6d2b79f5) >>> 0;
+  let t = Math.imul(toonSeed ^ (toonSeed >>> 15), 1 | toonSeed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+/** Run fn with Math.random routed into the toon generator. Stash and restore,
+ *  so it nests inside another shield. */
+function withToonRng<T>(fn: () => T): T {
+  const stashed = Math.random;
+  Math.random = toonRandom;
+  try {
+    return fn();
+  } finally {
+    Math.random = stashed;
+  }
+}
+
 type MaterialWithOptionalMaps = THREE.Material & {
   map?: THREE.Texture;
   normalMap?: THREE.Texture;
@@ -56,6 +79,111 @@ export class Materials {
       // keep emissive very low to avoid driving bloom; highlights rely on envMap/specular
       emissive: 0x000000,
       emissiveIntensity: 0.02,
+    });
+  }
+
+  /** Every conversion so far, by source: a material shared by many meshes
+   *  converts once and stays shared. */
+  private static readonly toonified = new WeakMap<THREE.Material, THREE.MeshToonMaterial>();
+
+  /**
+   * The cel look's converter (UX plan C3): a MeshToonMaterial on the shared
+   * toonRamp() that shows what the standard material showed.
+   * - Carried over: colour, map, emissive (colour, intensity and map),
+   *   vertexColors, and every base Material flag through Material.copy (the
+   *   transparency flags, side, name, visibility, userData and the rest).
+   * - The onBeforeCompile and customProgramCacheKey go with it, so shader
+   *   injections (the terrain's wet-sand band, the cast's rim) survive and
+   *   keep their programs.
+   * - Roughness, metalness and envMapIntensity have no toon counterpart and
+   *   are dropped.
+   * The source is disposed. Memoised per source, so call it for every use.
+   *
+   * SHIELD. The new material's uuid takes 4 Math.random draws, and callers run
+   * inside GameScene.initialize's seeded window (the zone halls, the quest
+   * mailboxes). Every conversion therefore draws from a local mulberry32 and
+   * the shared stream pays nothing, wherever toonify is called from.
+   */
+  public static toonify(mat: THREE.MeshStandardMaterial): THREE.MeshToonMaterial {
+    const known = Materials.toonified.get(mat);
+    if (known) return known;
+    const toon = withToonRng(() => {
+      const t = new THREE.MeshToonMaterial();
+      THREE.Material.prototype.copy.call(t, mat);
+      t.color.copy(mat.color);
+      t.map = mat.map;
+      t.emissive.copy(mat.emissive);
+      t.emissiveIntensity = mat.emissiveIntensity;
+      t.emissiveMap = mat.emissiveMap;
+      t.gradientMap = Materials.toonRamp();
+      t.onBeforeCompile = mat.onBeforeCompile;
+      t.customProgramCacheKey = mat.customProgramCacheKey;
+      return t;
+    });
+    Materials.toonified.set(mat, toon);
+    mat.dispose();
+    return toon;
+  }
+
+  /**
+   * Toonify every opaque standard material under root, in place. Transparent
+   * ones (sea, glass, glows, rivers) stay PBR, and ink hulls are skipped.
+   * Draws nothing from the shared stream (see toonify). Returns how many
+   * material slots it swapped.
+   */
+  public static toonifyTree(root: THREE.Object3D): number {
+    let swapped = 0;
+    const swap = (m: THREE.Material): THREE.Material => {
+      const s = m as THREE.MeshStandardMaterial;
+      if (!s || !s.isMeshStandardMaterial || s.transparent) return m;
+      swapped++;
+      return Materials.toonify(s);
+    };
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || mesh.userData.isCelHull || !mesh.material) return;
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
+    });
+    return swapped;
+  }
+
+  /** Renderers with a flush already queued for the end of the current task. */
+  private static readonly flushQueued = new WeakSet<THREE.WebGLRenderer>();
+
+  /**
+   * Send the renderer's queued GL commands once the current task ends. Call it
+   * from a shader hook: onBeforeCompile is handed the renderer.
+   *
+   * WHY. A compile pass (WebGLRenderer.compile) queues one linkProgram per new
+   * program, and Chrome sends queued commands to the GPU process only on a
+   * flush: a drawn frame, or its own check every 100 commands. Behind the
+   * loader no frame is drawn, and three's compileAsync never flushes. It
+   * polls, one command per material still pending, every 10 ms.
+   * - On main the zone halls' standard materials shared a program that was
+   *   still pending at the first poll: 144 polls in that round, so the check
+   *   came round at once.
+   * - C3 made the halls toon, on programs linked early in the pass. The first
+   *   round fell to 15 polls, then to one per 10 ms, for the road markings'
+   *   program, the last one linked. Its link sat in the queue until the
+   *   100th command.
+   * MEASURED, desktop, warm program cache, compileAsync's last pending poll
+   * after scene-ready: main 88-109 ms, the wave-1 build 1,021-1,038 ms (the
+   * welcome card +341 ms in the perf gate's A/B), with this flush 91-101 ms.
+   *
+   * A microtask, not a direct call: a hook runs BEFORE its own program links,
+   * and every link after it in the same pass has to go too. One flush per
+   * task and renderer, however many hooks ask.
+   */
+  public static flushAfterCompile(renderer: THREE.WebGLRenderer | undefined): void {
+    if (!renderer || Materials.flushQueued.has(renderer)) return;
+    Materials.flushQueued.add(renderer);
+    queueMicrotask(() => {
+      Materials.flushQueued.delete(renderer);
+      try {
+        renderer.getContext().flush();
+      } catch {
+        /* a lost or torn-down context has nothing to send */
+      }
     });
   }
 
