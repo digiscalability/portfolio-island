@@ -763,3 +763,254 @@ describe('perf gate: the sign test and the 24-cycle CPU proxy (wave-1 integratio
     expect(r.verdict).toBe('fail');
   });
 });
+
+// P2-E3: the gate measures a vehicle view and a room view per load, and has a
+// dusk check; --fx holds an effect to what it is meant to save (FX_CREDIT).
+describe('perf gate: the vehicle and room views, the dusk check and credits (P2-E3)', () => {
+  type Row = {
+    verdict: string;
+    kind?: string;
+    rule?: string;
+    delta?: number | null;
+    medianA?: number | null;
+    medianB?: number | null;
+    threshold?: number | string;
+    thresholdUsed?: number;
+    sign?: { over: number; n: number; needed: number | null };
+  };
+  type Cycle = Record<string, unknown>;
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    THRESHOLDS: Record<string, Record<string, number>>;
+    FX_CREDIT: Record<string, Record<string, Record<string, unknown>>>;
+    DUSK_LONGEST_MS: number;
+    judgeAbsolute: (
+      a: Array<number | null>,
+      b: Array<number | null>,
+      bar: number | null,
+      o?: { cycles?: number },
+    ) => Row;
+    judgeCredit: (a: number[], b: number[], credit: number, o?: { ciUpper?: boolean }) => Row;
+    duskVerdict: (runs: Record<string, { pass: boolean | null }> | null) => string;
+    frameNumbers: (
+      f: Record<string, number[] | number>,
+      ms: number,
+    ) => Record<string, number | null>;
+    metricTable: (
+      prof: string,
+      a: Cycle[],
+      b: Cycle[],
+      floor?: unknown,
+      o?: { cycles?: number },
+    ) => Record<string, Row>;
+    overall: (rows: Record<string, Row>) => string;
+    aaSummary: (profiles: Record<string, unknown>) => {
+      outsideThreshold: Array<{ metric: string }>;
+    };
+  };
+
+  /** A load with the three posed views, the vehicle view and the room view. */
+  const load = (
+    o: {
+      vehicleDraws?: number;
+      roomDraws?: number;
+      firstDoorMs?: number;
+      programsAdded?: number;
+    } = {},
+  ): Cycle => {
+    const view = (draws: number) => ({
+      cpuP50: 7,
+      cpuP95: 9,
+      gpuP50: 5,
+      draws,
+      triangles: 1e6,
+      fxUsPerFrame: {},
+      pose: { camPitch: 0.5, ocPitch: -0.5 },
+    });
+    return {
+      views: {
+        spawn: view(650),
+        hub: view(1780),
+        projects: view(1250),
+        vehicle: view(o.vehicleDraws ?? 1466),
+      },
+      room: {
+        inside: true,
+        firstDoorFrameMs: o.firstDoorMs ?? 60,
+        programsAdded: o.programsAdded ?? 0,
+        blackMsPixels: 680,
+        draws: o.roomDraws ?? 105,
+        renP50: 8.9,
+      },
+      programs: 139,
+      programsAfterViews: 139,
+      nodes: 7400,
+      textureMB: 18.5,
+      welcomeMs: 5000,
+      worldGenMs: 1400,
+      longestTaskBeforeCardMs: 300,
+      longTasksBeforeCard: 6,
+      bytesBeforeCardKB: 811,
+    };
+  };
+  const six = (o?: Parameters<typeof load>[0]): Cycle[] => Array.from({ length: 6 }, () => load(o));
+
+  test('the ledger: the draws of the vehicle view and the bars of the room view', () => {
+    expect(gate.THRESHOLDS.desktop).toMatchObject({
+      drawsVehicle: 60,
+      drawsRoom: 25,
+      roomFirstDoorMs: 100,
+      roomProgramsAdded: 3,
+    });
+    expect(gate.THRESHOLDS.lowtier).toMatchObject({
+      drawsVehicle: 25,
+      drawsRoom: 0,
+      roomFirstDoorMs: 200,
+      roomProgramsAdded: 3,
+    });
+    expect(gate.DUSK_LONGEST_MS).toBe(100);
+  });
+
+  test('an absolute bar judges side B alone, and never fails on 6 loads', () => {
+    const main = [60, 55, 70, 62, 58, 66];
+    expect(gate.judgeAbsolute(main, main, 100).verdict).toBe('pass');
+    // Main over the bar does not excuse the branch, and the branch under it passes.
+    const slow = main.map((x) => x + 1300);
+    expect(gate.judgeAbsolute(slow, main, 100).verdict).toBe('pass');
+    // Every load over the bar: inconclusive at 6 (the sign test needs 11 of 12), fail at 12.
+    expect(gate.judgeAbsolute(main, slow, 100, { cycles: 6 }).verdict).toBe('inconclusive');
+    const twelve = [...slow, ...slow];
+    const r = gate.judgeAbsolute([...main, ...main], twelve, 100, { cycles: 12 });
+    expect(r.verdict).toBe('fail');
+    expect(r.sign).toEqual({ over: 12, n: 12, needed: 11 });
+    // One slow load in six leaves the median under the bar.
+    expect(gate.judgeAbsolute(main, [60, 55, 900, 62, 58, 66], 100).verdict).toBe('pass');
+    // A median over the bar at 24 cycles fails, however the loads split.
+    const split = Array.from({ length: 24 }, (_, i) => (i % 2 ? 90 : 140));
+    expect(gate.judgeAbsolute(split, split, 100, { cycles: 24 }).verdict).toBe('fail');
+    // No loads, or no bar: reported.
+    expect(gate.judgeAbsolute([], [], 100).verdict).toBe('n/a');
+    expect(gate.judgeAbsolute(main, main, null).verdict).toBe('n/a');
+  });
+
+  test('the table gains the vehicle and room rows, judged by the ledger', () => {
+    const rows = gate.metricTable('desktop', six(), six(), null, { cycles: 6 });
+    expect(rows['vehicle: draws']).toMatchObject({ verdict: 'pass', threshold: 60 });
+    expect(rows['vehicle: CPU p95 ms'].verdict).toBe('pass');
+    expect(rows['room: draws']).toMatchObject({ verdict: 'pass', threshold: 25 });
+    expect(rows['room: first-door longest frame ms']).toMatchObject({
+      kind: 'absolute',
+      verdict: 'pass',
+      medianB: 60,
+      threshold: 100,
+    });
+    expect(rows['room: programs added on entry']).toMatchObject({ verdict: 'pass', threshold: 3 });
+    expect(gate.overall(rows)).toBe('pass');
+    // +70 draws in the vehicle view is over its +60.
+    const heavy = gate.metricTable('desktop', six(), six({ vehicleDraws: 1536 }), null, {
+      cycles: 6,
+    });
+    expect(heavy['vehicle: draws'].verdict).toBe('fail');
+    // The low tier's room may not draw more than main's: +1 fails, 0 passes.
+    expect(
+      gate.metricTable('lowtier', six({ roomDraws: 74 }), six({ roomDraws: 75 }), null, {
+        cycles: 6,
+      })['room: draws'].verdict,
+    ).toBe('fail');
+    expect(
+      gate.metricTable('lowtier', six({ roomDraws: 74 }), six({ roomDraws: 74 }), null, {
+        cycles: 6,
+      })['room: draws'].verdict,
+    ).toBe('pass');
+    // 58c8849's first door on the low tier (1.4 s, +33 programs) against the 200 ms bar.
+    const old = Array.from({ length: 12 }, () => load({ firstDoorMs: 1414, programsAdded: 33 }));
+    const good = Array.from({ length: 12 }, () => load());
+    const t = gate.metricTable('lowtier', good, old, null, { cycles: 12 });
+    expect(t['room: first-door longest frame ms'].verdict).toBe('fail');
+    expect(t['room: programs added on entry'].verdict).toBe('fail');
+  });
+
+  test('a run saved before P2-E3 leaves the new rows n/a and its verdict alone', () => {
+    const strip = (c: Cycle): Cycle => {
+      const views = { ...(c.views as Record<string, unknown>) };
+      delete views.vehicle;
+      return { ...c, views, room: undefined };
+    };
+    const old = six().map(strip);
+    const rows = gate.metricTable('desktop', old, old, null, { cycles: 6 });
+    for (const k of [
+      'vehicle: draws',
+      'vehicle: CPU p95 ms',
+      'room: draws',
+      'room: first-door longest frame ms',
+      'room: programs added on entry',
+    ]) {
+      expect(rows[k].verdict, k).toBe('n/a');
+    }
+    expect(gate.overall(rows)).toBe('pass');
+  });
+
+  test('the A/A summary does not read an absolute bar as a delta budget', () => {
+    const rows = gate.metricTable('desktop', six(), six(), null, { cycles: 6 });
+    const aa = gate.aaSummary({ desktop: { verdict: 'pass', metrics: rows } });
+    expect(aa.outsideThreshold.map((x) => x.metric)).toEqual([]);
+  });
+
+  test('the dusk check: side B over the bar fails, an error is inconclusive', () => {
+    expect(gate.duskVerdict({ desktop: { pass: true }, lowtier: { pass: true } })).toBe('pass');
+    expect(gate.duskVerdict({ desktop: { pass: true }, lowtier: { pass: false } })).toBe('fail');
+    expect(gate.duskVerdict({ desktop: { pass: null } })).toBe('inconclusive');
+    expect(gate.duskVerdict({})).toBe('inconclusive');
+  });
+
+  test('a credit is what an effect must save: E2 on the low tier', () => {
+    expect(gate.FX_CREDIT.halfShadow.lowtier).toEqual({
+      gpuP50: -0.6,
+      cpuMean: -0.4,
+      shadowDrawsSpawn: { value: 47.5, tol: 3 },
+    });
+    expect(gate.FX_CREDIT.halfShadow.desktop).toEqual({ shadowDrawsUnchanged: true });
+    const off = [6.4, 6.5, 6.3, 6.6, 6.4, 6.5, 6.4, 6.5];
+    // -0.9 ms on every pair: at or below the -0.6 credit.
+    expect(
+      gate.judgeCredit(
+        off,
+        off.map((x) => x - 0.9),
+        -0.6,
+      ).verdict,
+    ).toBe('pass');
+    // -0.2 ms on every pair misses it outright.
+    expect(
+      gate.judgeCredit(
+        off,
+        off.map((x) => x - 0.2),
+        -0.6,
+      ).verdict,
+    ).toBe('fail');
+    // The upper bound of the band: a -0.5 ms saving with 0.3 of noise either
+    // way does not prove -0.4 (inconclusive), while a steady -0.5 does.
+    const noisy = off.map((x, i) => x - 0.5 + (i % 2 ? 0.3 : -0.3));
+    expect(gate.judgeCredit(off, noisy, -0.4, { ciUpper: true }).verdict).toBe('inconclusive');
+    expect(
+      gate.judgeCredit(
+        off,
+        off.map((x) => x - 0.5),
+        -0.4,
+        { ciUpper: true },
+      ).verdict,
+    ).toBe('pass');
+  });
+
+  test('a window reports the mean frame beside p50: a half-rate pass hides in p50', () => {
+    // Frames alternate 6 ms (with the shadow pass) and 4 ms (without it).
+    const cpu = Array.from({ length: 90 }, (_, i) => (i % 2 ? 4 : 6));
+    const shadow = Array.from({ length: 90 }, (_, i) => (i % 2 ? 0 : 96));
+    const n = gate.frameNumbers(
+      { n: 90, cpu, ren: cpu, gpu: cpu, calls: cpu.map(() => 600), tris: cpu, shadow },
+      1500,
+    );
+    expect(n.cpuMean).toBe(5);
+    expect([4, 6]).toContain(n.cpuP50);
+    expect(n.shadowDrawsMean).toBe(48);
+    expect(n.fps).toBe(60);
+  });
+});

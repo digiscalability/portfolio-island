@@ -430,6 +430,8 @@ npm run perf:gate -- --dist dist --port <n> --fx <name>  # one __dsFx effect: dr
 npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
 npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor   # 24 A/A cycles: writes tools/perf-gate.floor.json
 npm run perf:gate -- --rejudge <perf-gate-ab.json>        # the verdict maths again on a saved A/B's loads (no browser)
+npm run perf:gate -- --dist dist --port <n> --dusk        # the dusk check alone (add --dusk to --ab to run it on each side)
+npm run perf:gate -- --dist dist --port <n> --hour 21     # the night run: the card, the longest task before it, programs at +30 s
 ```
 
 - Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
@@ -438,10 +440,10 @@ npm run perf:gate -- --rejudge <perf-gate-ab.json>        # the verdict maths ag
   warm and the late compiles) programs, nodes and textures, then the views
   in `VIEW_DEFS`: idle spawn, hub-wide and the Projects district, posed with
   the design audit's framing (follow direction, pitch, distance, teleport).
-  P2-E3 adds a vehicle view and a room view there. Counters are one whole
-  frame with the loop paused (draws, triangles, programs, textures); timings
-  are 1.5 s windows (CPU per app frame, GPU timer queries, fps).
-  `programs after the views` is judged too.
+  Counters are one whole frame with the loop paused (draws, triangles,
+  programs, textures); timings are 1.5 s windows (CPU per app frame, GPU
+  timer queries, fps). `programs after the views` is judged too. Then the
+  two driven views of P2-E3, the vehicle view and the room view (below).
 - The pose sets the OrbitCamera's `pitchTarget` with its pitch. A4 eases
   pitch toward pitchTarget within a view's 1.2-1.5 s settle, so stage 1,
   which set only the pitch, measured s1-int's hub-wide and Projects views at
@@ -458,8 +460,8 @@ Budgets (`THRESHOLDS`, from plan-r3 › perfBudget), as B − A:
 
 | Profile | Budget |
 |---|---|
-| desktop | CPU p95 +1.0 ms; GPU p50 +2.0 ms; draws spawn +50, hub-wide +80, Projects +60; programs +5; welcome_visible +150 ms; world_gen +50 ms; before the card: long tasks over 50 ms main + 1, the longest task +50 ms, +50 KB transferred |
-| low tier (1x) | CPU p95 +0.75 ms; draws spawn +20, hub-wide +30, Projects +25; programs +3; scene nodes +150; textures +6 MB; +50 KB before the card |
+| desktop | CPU p95 +1.0 ms; GPU p50 +2.0 ms; draws spawn +50, hub-wide +80, Projects +60, vehicle +60, room main + 25; programs +5; welcome_visible +150 ms; world_gen +50 ms; before the card: long tasks over 50 ms main + 1, the longest task +50 ms, +50 KB transferred. The first door (absolute, side B): its longest frame 100 ms or less, 3 programs or fewer |
+| low tier (1x) | CPU p95 +0.75 ms; draws spawn +20, hub-wide +30, Projects +25, vehicle +25, room no more than main; programs +3; scene nodes +150; textures +6 MB; +50 KB before the card. The first door: its longest frame 200 ms or less, 3 programs or fewer |
 | startup (4x) | welcome_visible +400 ms; world_gen +200 ms; long tasks main + 2, the longest task +50 ms; +50 KB before the card |
 | FxBudget (`FX_US`) | per effect 150 µs a frame on desktop and 80 on the low tier; all effects 600 and 300. An effect in plan-r3's ledger (`FX_LEDGER`) is held to its ledger value where that is lower, in `--fx` and in the CPU proxy |
 
@@ -569,6 +571,94 @@ Verdicts, per metric:
 - Output: `perf-gate-<mode>.json` and `ledger.md` in `--out`: one row per
   registered effect (tier default, switch, µs/frame); `--fx <name>` fills
   its row's draws per view and programs.
+
+**Vehicle and room views (P2-E3).** After the posed views every load drives
+two more, so `programs after the views` and the three posed views' rows keep
+the meaning the floor recorded.
+
+- *Vehicle.* The car nearest the land circuit's start is boarded through
+  `scene.boardVehicle`, put on ring 0 heading down the leg to ring 1, and the
+  chase camera is turned behind it (the follow direction, or `setYaw` where
+  yaw drives it; over 5° off the leg is a missing hook). Then W is held for
+  3 s with no pointer input: 38-40 u of the 115.5 u leg, 0.1-1.0 u off its
+  great circle. The view's draws and triangles are the drive's mean whole
+  frame; its timings pool both 1.5 s windows (each is kept in `windows`).
+  Rows: `vehicle: CPU p95 ms`, `vehicle: GPU p50 ms`, `vehicle: draws`
+  (+60 desktop, +25 low tier).
+- *Room.* The Professional hall by its door, the session's first, the way a
+  visitor enters (`p2/room-lib.cjs`'s `enterRoom`: W or the joystick to the
+  prompt, then E or a USE tap). The entry records the longest frame, the
+  black interval by pixels (hitch's CDP screencast: the veil hides 95% or
+  more of the world) and by the veil's opacity, and the programs it adds;
+  then, the hall's panel closed, one whole frame's draws and a 1.5 s window
+  (`render p50`) from the door end. Rows: `room: first-door longest frame ms`
+  and `room: programs added on entry` are absolute bars on side B
+  (`judgeAbsolute`: pass when B's median is within the bar; fail when it is
+  over and the sign test's count of loads is, 11 of 12 or 19 of 24, or at 24
+  cycles; side A is shown beside it); `room: draws` is a counter against
+  main; the black interval and `render p50` are reported.
+- A whole-frame count always holds a shadow pass: at half rate (E2, the low
+  tier's default) every other frame has none, and a single frame would read
+  476 or 572 draws by its phase.
+- The report mode (`--dist`) holds the first door to the same bars and lists
+  the rest.
+
+One report load per tier, 2026-11-11, with four other builders on the
+machine (54-79% busy, so the milliseconds are provisional; the counts are
+not):
+
+| Build | Tier | Vehicle draws (idle spawn) | First door: longest frame | Programs added | Black, pixels (opacity) | Room draws | Room render p50 |
+|---|---|---|---|---|---|---|---|
+| 58c8849 | desktop | 1,474 (655) | 247 ms | +2 | 888 ms (793) | 107 | 8.0 ms |
+| 58c8849 | low tier | 924 (645) | 1,414 ms | +33 | 2,007 ms (1,941) | 74 | 5.0 ms |
+| wave-1 main | desktop | 1,466 (664) | 96 ms | +0 | 682 ms (590) | 105 | 8.9 ms |
+| wave-1 main | low tier | 921 (572) | 61 ms | +0 | 681 ms (570) | 74 | 4.5 ms |
+
+This branch (E2's half-rate shadows on the low tier), same rig: desktop
+vehicle 1,466 (672), first door 82 ms, +0, 720 ms (604), 105 draws; low
+tier vehicle 852 (573), first door 96 ms, +0, 670 ms (560), 74 draws. The
+low tier's vehicle draws are the drive's mean frame, so half rate takes
+about half the shadow pass off them (921 → 852); its posed views count a
+whole frame with the pass, so they stay where main's are (573 against 572).
+
+The floor file has no entry for the new rows yet: `--record-floor` writes
+them on the next quiet-host A/A (this branch was built with other builders
+on the machine, where an A/B reads inconclusive). Until then a counter is
+judged at its ledger value and a timing by the sigma rule.
+
+**Dusk check (P2-E3; LT-03, P2-B6, P2-C4).** `--dusk` boots at `?hour=17` in
+a browser of its own (a cold GPU program cache), waits 13 s for the interior
+warm, moves the clock to 17.5 h through `EnvironmentCycle.debugHour`, and
+takes the longest long task, long animation frame or frame gap of the next
+6 s. The bar is under 100 ms. A longer frame fails only when the light set
+changed or programs were added across it (the flip is a re-link); with
+neither, it was the host, and the check is inconclusive. With `--ab` it
+runs once per side after the cycles, and side B is held to it. 58c8849:
+3,846 ms on desktop and 4,183 ms on the low tier, the lights going from 5
+to 17 (10 point and 2 spot lights join) and 34 and 37 programs re-linking.
+Wave-1 main: 0 ms on both, the same 5 lights before and after, 0 programs.
+This branch, with the host 86-94% busy: 94 ms on desktop and a 200 ms frame
+on the low tier, 0 programs and the same lights on both, so the low tier
+reads inconclusive there.
+
+**Nights.** `--hour 21` is the night run: every mode takes it, and the card
+time, the longest task before the card and the programs 30 s after it are
+the rows it already has. (The phase-2 plan asked for an "`--hour 21`
+profile"; the flag is that profile.)
+
+**Credits (`--fx`).** `FX_CREDIT` lists what an effect is meant to save, and
+`--fx <name>` holds it to that beside the budgets (`judgeCredit`: pass when
+the paired delta is at or below the credit, or, for mean CPU, when the 95%
+band's upper bound is; fail when even the lower bound misses it). A window
+reports the mean frame beside p50 and p95, and `--fx` pairs count shadow
+draws. E2's credit, on the low tier: GPU p50 −0.6 ms, mean CPU −0.4 ms, and
+47.5 ±3 shadow draws a frame at the spawn; on desktop the switch must change
+nothing. `--fx halfShadow --cycles 20` on this branch, 24 cycles, the host
+busy: low tier GPU p50 −0.88 ms (σ 0.21), mean CPU −1.46 ms (σ 0.53), CPU
+p50 −1.5 ms, shadow draws 96 → 48, draws −48 at the spawn and hub-wide and
+−58.5 at Projects, 0 programs; desktop 96 → 96, draws ±0. The run reads
+inconclusive on `spawn: CPU p95` alone (σ 1.19 against T/2 0.375 on the
+busy host); a quiet host settles it.
 
 **What is not exact on main.** Per-view draws vary from load to load:
 villagers, cats, ground birds, herons, birds, clouds and cars move through

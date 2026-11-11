@@ -656,5 +656,7 @@ module.exports = {
   warmAttribution,
   warmTagging,
   WARM_MIN_MS,
+  // The black interval by pixels, for the perf gate's room view (P2-E3).
+  screencastBlack,
   seed: { item: 'B0', title: "window.__dsSeedDraws: fresh vs ds_arrived='1', reloads, vs test/golden/seedDraws.json (--bless writes it)", profiles: ['desktop', 'lowtier'], run: seed },
 };
