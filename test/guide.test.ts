@@ -886,6 +886,62 @@ describe('GuideCard: one live, focus-free card on the HUD', () => {
     set(1024, 768);
   });
 
+  test('a portrait phone shows the move step as one line in the prompt lane, then the card', () => {
+    // At 390x844 the 350 lane sat on the arrival trail at Explore: 3 of its
+    // 4 coins projected under the card (wave-1 integration).
+    const set = (w: number, h: number) => {
+      Object.defineProperty(window, 'innerWidth', { value: w, configurable: true });
+      Object.defineProperty(window, 'innerHeight', { value: h, configurable: true });
+    };
+    const touchWords = (v: GuideView) =>
+      guideCopy(v, {
+        touch: true,
+        lookMode: 'drag',
+        runKey: null,
+        compassLabel: 'Mayor',
+        finaleLabel: 'Projects',
+      });
+    set(390, 844);
+    const c = make({ touch: true });
+    const move = view();
+    c.render(move, touchWords(move));
+    expect(c.el.dataset.lane).toBe('phone');
+    expect(c.el.dataset.compact).toBe('1');
+    // one line: the step and Skip, still read out as 'First steps · 1/5'
+    const buttons = [...c.el.querySelectorAll('button')];
+    expect(buttons.map((b) => b.dataset.g)).toEqual(['skip']);
+    expect(buttons[0].style.minHeight).toContain('44px');
+    expect(c.el.textContent).toContain('First steps · 1/5');
+    expect(c.el.textContent).toContain('Walk: drag the joystick, bottom left.');
+    buttons[0].click();
+    expect(pressed).toEqual(['skip']);
+    // walked: the check plays on the full card, back in the 350 lane
+    const done = view({ version: 2, justDone: 'move', done: ['move'] });
+    c.render(done, touchWords(done));
+    expect(c.el.dataset.compact).toBe('0');
+    expect(c.el.querySelector('[data-check]')).not.toBeNull();
+    const look = view({ version: 3, step: 'look', done: ['move'] });
+    c.render(look, touchWords(look));
+    expect(c.el.dataset.compact).toBe('0');
+    // a rotation to landscape mid-step redraws the full card in its lane
+    const again = view({ version: 4 });
+    c.render(again, touchWords(again));
+    expect(c.el.dataset.compact).toBe('1');
+    set(844, 390);
+    window.dispatchEvent(new Event('resize'));
+    expect(c.el.dataset.lane).toBe('landscape');
+    expect(c.el.dataset.compact).toBe('0');
+    expect(c.el.textContent).toContain('Skip');
+    c.dispose();
+    // the desktop's move step keeps the full card
+    set(1440, 900);
+    const desk = make();
+    const dm = view();
+    desk.render(dm, words(dm));
+    expect(desk.el.dataset.compact).toBe('0');
+    set(1024, 768);
+  });
+
   test('on a phone the card rises to stay 8 px above a tall prompt, and never bobs back', () => {
     Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: 844, configurable: true });

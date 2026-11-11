@@ -936,7 +936,9 @@ describe('A7: one compass target at a time (the zone branch, replaced)', () => {
     const face = bodyOf(m, 'private faceTrailVillager(');
     expect(face).toContain('if (!this.coarsePointer) return;');
     expect(face).toContain('const bearing = compassBearing(fwd.normalize(), to.normalize(), n);');
-    expect(face).toContain('cam.setYaw(cam.getYaw() - bearing);');
+    // the seat 20° right of dead ahead: dead ahead, the avatar hid every coin
+    expect(face).toContain('cam.setYaw(cam.getYaw() - bearing + SimpleApp.TRAIL_VIEW_OFFSET);');
+    expect(m).toContain('private static readonly TRAIL_VIEW_OFFSET = (20 * Math.PI) / 180;');
     // the pick reads positions only: never Math.random (the seeded window)
     expect(bodyOf(m, 'private pickTrailVillager(')).not.toContain('Math.random');
     expect(bodyOf(m, 'private trailSeatVillager(')).toContain('if (d > 0.04 && d < best) {');

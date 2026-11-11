@@ -3907,12 +3907,19 @@ export class SimpleApp {
     return who;
   }
 
+  /** How far right of dead ahead phones see the trail's end at Explore. */
+  private static readonly TRAIL_VIEW_OFFSET = (20 * Math.PI) / 180;
+
   /**
    * Phones end the intro facing the trail villager, so the coins that lead
    * to them are on screen (A7): the view turns to the villager's seat, the
-   * end of the trail. OrbitCamera.setYaw hard-cuts, like snapToPlayer; a
-   * positive bearing is a target on the right, and a positive yaw turns the
-   * view left, so the view turns by −bearing.
+   * end of the trail, then 20° past it. Dead ahead, the trail ran straight
+   * away from the camera through the avatar, whose body hid every coin
+   * (measured at 390x844: 0 of 4 seen; at 20°, the coins clear the avatar
+   * and the villager stays on screen). OrbitCamera.setYaw hard-cuts, like
+   * snapToPlayer; a positive bearing is a target on the right, and a
+   * positive yaw turns the view left, so the view turns by −bearing, plus
+   * the offset to put the seat on the right.
    */
   private faceTrailVillager(): void {
     if (!this.coarsePointer) return;
@@ -3927,7 +3934,7 @@ export class SimpleApp {
     const fwd = this.projectTangent(this._qcCamFwd, cam.getForwardDirection(), n);
     if (to.lengthSq() < 1e-6 || fwd.lengthSq() < 1e-6) return;
     const bearing = compassBearing(fwd.normalize(), to.normalize(), n);
-    cam.setYaw(cam.getYaw() - bearing);
+    cam.setYaw(cam.getYaw() - bearing + SimpleApp.TRAIL_VIEW_OFFSET);
   }
 
   /** The 30 s travel window for the stall trigger: one sample per 2.5 s. */

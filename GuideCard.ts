@@ -85,8 +85,17 @@ export class GuideCard {
   private lastAnchors = '';
   private decor: HTMLElement[] = [];
   private promptLift = 0;
+  /** The one-line move step of a portrait phone (compactFor). */
+  private compact = false;
+  private last: { v: GuideView; copy: GuideCopy } | null = null;
   private readonly onResize = (): void => {
     this.promptLift = 0;
+    // A rotation can change the form (compactFor reads innerHeight).
+    if (this.last && this.compactFor(this.last.v) !== this.compact) {
+      this.renderedVersion = -1;
+      this.render(this.last.v, this.last.copy);
+      return;
+    }
     this.place();
   };
   private readonly onClick = (e: Event): void => {
@@ -136,9 +145,32 @@ export class GuideCard {
     return this.renderedVersion;
   }
 
+  /**
+   * A portrait phone shows the move step compact until the visitor walks:
+   * no header, bottom left in the prompt lane, beside the joystick it
+   * teaches. The full card's 350 lane spans the screen on the horizon, where
+   * the arrival trail runs at Explore (measured at 390x844: three of the
+   * four coins under it). Phones face the trail's end 20° to the right
+   * (main-simple faceTrailVillager), so the coins and their villager land
+   * right of the avatar, clear of a card that ends at 54vw. Every other
+   * step, and every other screen, keeps the full card.
+   */
+  private compactFor(v: GuideView): boolean {
+    return (
+      this.opts.touch &&
+      innerHeight > 500 &&
+      v.phase === 'steps' &&
+      v.step === 'move' &&
+      !v.justDone &&
+      !v.chip
+    );
+  }
+
   render(v: GuideView, copy: GuideCopy): void {
     if (v.version === this.renderedVersion) return;
     this.renderedVersion = v.version;
+    this.last = { v, copy };
+    this.compact = this.compactFor(v);
     const signal =
       v.phase === 'steps'
         ? v.step
@@ -161,6 +193,7 @@ export class GuideCard {
     }
     this.el.replaceChildren();
     if (v.chip) this.drawChip(copy);
+    else if (this.compact) this.drawCompact(copy);
     else this.drawCard(v, copy);
     this.el.style.display = 'block';
     this.place();
@@ -211,14 +244,18 @@ export class GuideCard {
 
   /**
    * The card's lane. Desktop: left, under the radar. Phone portrait: above
-   * the prompt lane, clear of the joystick and the action column. Short
-   * landscape: right of the radar, below the compass pill, clear of the
-   * chat buttons, the emote chip and the toast lane.
+   * the prompt lane, clear of the joystick and the action column; the
+   * compact move step sits bottom left in the prompt lane itself (300),
+   * over the chat buttons and left of the arrival trail, and lifts above a
+   * prompt as the card does. Short landscape: right of the radar, below the
+   * compass pill, clear of the chat buttons, the emote chip and the toast
+   * lane.
    */
   place(): void {
     const s = this.el.style;
     // The lane and the lift as data, for the probes and the tests.
     this.el.dataset.lift = String(this.promptLift);
+    this.el.dataset.compact = this.compact ? '1' : '0';
     if (innerHeight <= 500) {
       this.el.dataset.lane = 'landscape';
       Object.assign(s, {
@@ -229,12 +266,12 @@ export class GuideCard {
       });
     } else if (this.opts.touch) {
       this.el.dataset.lane = 'phone';
-      const base = 'calc(var(--sab, 0px) + 350px)';
+      const base = `calc(var(--sab, 0px) + ${this.compact ? 300 : 350}px)`;
       Object.assign(s, {
         top: 'auto',
-        left: 'calc(50% - min(46vw, 180px))',
+        left: this.compact ? 'calc(var(--sal, 0px) + 16px)' : 'calc(50% - min(46vw, 180px))',
         bottom: this.promptLift > 0 ? `max(${base}, ${this.promptLift}px)` : base,
-        width: 'min(92vw, 360px)',
+        width: this.compact ? 'min(54vw, 240px)' : 'min(92vw, 360px)',
       });
     } else {
       this.el.dataset.lane = 'desktop';
@@ -285,6 +322,52 @@ export class GuideCard {
       },
     );
     this.el.appendChild(b);
+  }
+
+  /** The compact move step: the step's words, then Skip, at least 44 px
+   *  tall. The title stays in the text (visually hidden), so the live region
+   *  and readers of the card still get 'First steps · 1/5'. */
+  private drawCompact(copy: GuideCopy): void {
+    this.el.style.padding = '0 0 0 12px';
+    const row = document.createElement('div');
+    Object.assign(row.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      minHeight: 'var(--ds-hit-target, 44px)',
+      fontSize: '13.5px',
+      lineHeight: '1.35',
+    });
+    const title = document.createElement('span');
+    title.textContent = `${copy.title}: `;
+    Object.assign(title.style, {
+      position: 'absolute',
+      width: '1px',
+      height: '1px',
+      overflow: 'hidden',
+      clipPath: 'inset(50%)',
+      whiteSpace: 'nowrap',
+    });
+    row.appendChild(title);
+    const text = document.createElement('span');
+    Object.assign(text.style, { flex: '1', padding: '6px 0' });
+    appendWithKeys(text, copy.body);
+    row.appendChild(text);
+    row.appendChild(
+      this.button(copy.headButton, {
+        flex: 'none',
+        alignSelf: 'stretch',
+        minWidth: '48px',
+        minHeight: 'var(--ds-hit-target, 44px)',
+        padding: '0 8px',
+        border: 'none',
+        background: 'transparent',
+        fontSize: '12.5px',
+        color: 'var(--ds-text-2, #c5cfdd)',
+        textDecoration: 'underline',
+      }),
+    );
+    this.el.appendChild(row);
   }
 
   private drawCard(v: GuideView, copy: GuideCopy): void {
