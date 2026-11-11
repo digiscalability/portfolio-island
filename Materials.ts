@@ -147,6 +147,46 @@ export class Materials {
     return swapped;
   }
 
+  /** Renderers with a flush already queued for the end of the current task. */
+  private static readonly flushQueued = new WeakSet<THREE.WebGLRenderer>();
+
+  /**
+   * Send the renderer's queued GL commands once the current task ends. Call it
+   * from a shader hook: onBeforeCompile is handed the renderer.
+   *
+   * WHY. A compile pass (WebGLRenderer.compile) queues one linkProgram per new
+   * program, and Chrome sends queued commands to the GPU process only on a
+   * flush: a drawn frame, or its own check every 100 commands. Behind the
+   * loader no frame is drawn, and three's compileAsync never flushes. It
+   * polls, one command per material still pending, every 10 ms.
+   * - On main the zone halls' standard materials shared a program that was
+   *   still pending at the first poll: 144 polls in that round, so the check
+   *   came round at once.
+   * - C3 made the halls toon, on programs linked early in the pass. The first
+   *   round fell to 15 polls, then to one per 10 ms, for the road markings'
+   *   program, the last one linked. Its link sat in the queue until the
+   *   100th command.
+   * MEASURED, desktop, warm program cache, compileAsync's last pending poll
+   * after scene-ready: main 88-109 ms, the wave-1 build 1,021-1,038 ms (the
+   * welcome card +341 ms in the perf gate's A/B), with this flush 91-101 ms.
+   *
+   * A microtask, not a direct call: a hook runs BEFORE its own program links,
+   * and every link after it in the same pass has to go too. One flush per
+   * task and renderer, however many hooks ask.
+   */
+  public static flushAfterCompile(renderer: THREE.WebGLRenderer | undefined): void {
+    if (!renderer || Materials.flushQueued.has(renderer)) return;
+    Materials.flushQueued.add(renderer);
+    queueMicrotask(() => {
+      Materials.flushQueued.delete(renderer);
+      try {
+        renderer.getContext().flush();
+      } catch {
+        /* a lost or torn-down context has nothing to send */
+      }
+    });
+  }
+
   // Create a PBR-style material that accepts optional texture maps for albedo/normal/roughness/metalness
   public static createPBRMaterial(
     options: {

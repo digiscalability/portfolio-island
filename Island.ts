@@ -1694,7 +1694,13 @@ export class Island {
     // Animated waves: displace each vertex radially by the SAME sum-of-sines
     // the CPU sampler (waveHeightAt) uses, so swimmers/boats bob in lockstep
     // with the visible surface. Crest foam lightens the colour.
-    seaMat.onBeforeCompile = (shader) => {
+    seaMat.onBeforeCompile = (shader, renderer) => {
+      // The sea is in the boot pre-compile on every tier and theme, and no
+      // pass swaps its material (transparent stays PBR). So it is the one
+      // that asks for the pass's links to be sent: without this the
+      // pre-compile waits ~1 s on its last program, behind the loader (see
+      // Materials.flushAfterCompile).
+      Materials.flushAfterCompile(renderer);
       shader.uniforms.uTime = this.seaTimeUniform;
       shader.uniforms.uAmp = { value: Island.WAVE_AMP };
       shader.uniforms.uTide = this.seaTideUniform;

@@ -953,3 +953,87 @@ describe('one cel look for landmarks and props (C3)', () => {
     );
   });
 });
+
+describe('a compile pass is sent to the GPU, not left queued (wave 1, welcome_visible)', () => {
+  // three's compileAsync polls and never flushes, and Chrome sends queued GL
+  // commands only on a flush: a drawn frame, or its own check every 100
+  // commands. C3 took the zone halls' standard materials out of the boot
+  // pass's last links, the polls fell from 144 a round to one, and the last
+  // program's link sat in the queue for ~1 s behind the loader (the welcome
+  // card +341 ms). The sea's shader hook now asks for one flush when the pass
+  // ends. The in-browser proof is the perf gate's A/B on welcome_visible.
+
+  const fakeRenderer = (): { renderer: THREE.WebGLRenderer; flush: ReturnType<typeof vi.fn> } => {
+    const flush = vi.fn();
+    return { renderer: { getContext: () => ({ flush }) } as unknown as THREE.WebGLRenderer, flush };
+  };
+
+  test('one flush per pass, after every link in it and before the next poll', async () => {
+    const order: string[] = [];
+    const { renderer, flush } = fakeRenderer();
+    flush.mockImplementation(() => order.push('flush'));
+    // A pass, as three runs it: each hook fires BEFORE its own program links,
+    // more programs link after it, and the first poll is a 10 ms timer away.
+    Materials.flushAfterCompile(renderer);
+    order.push('link: sea');
+    Materials.flushAfterCompile(renderer); // a second hooked material asks too
+    order.push('link: the last program');
+    setTimeout(() => order.push('poll'), 0);
+    expect(flush).not.toHaveBeenCalled(); // nothing is sent mid-pass
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(order).toEqual(['link: sea', 'link: the last program', 'flush', 'poll']);
+
+    // The next pass (a later task) gets a flush of its own.
+    Materials.flushAfterCompile(renderer);
+    await Promise.resolve();
+    expect(flush).toHaveBeenCalledTimes(2);
+  });
+
+  test('each renderer is flushed; no renderer, or a context that throws, is a no-op', async () => {
+    const a = fakeRenderer();
+    const b = fakeRenderer();
+    Materials.flushAfterCompile(a.renderer);
+    Materials.flushAfterCompile(b.renderer);
+    Materials.flushAfterCompile(undefined); // a hook called without one (tests, tools)
+    const lost = {
+      getContext: () => {
+        throw new Error('context lost');
+      },
+    } as unknown as THREE.WebGLRenderer;
+    Materials.flushAfterCompile(lost);
+    await Promise.resolve();
+    expect(a.flush).toHaveBeenCalledTimes(1);
+    expect(b.flush).toHaveBeenCalledTimes(1);
+    // The failed one is not left marked as queued: it may ask again.
+    const again = vi.fn();
+    (lost as unknown as { getContext: () => unknown }).getContext = () => ({ flush: again });
+    Materials.flushAfterCompile(lost);
+    await Promise.resolve();
+    expect(again).toHaveBeenCalledTimes(1);
+  });
+
+  test('the sea asks, first thing in its shader hook, and it is the only one that does', () => {
+    const hook = statementNode('Island.ts', 'seaMat.onBeforeCompile =');
+    expect(ts.isExpressionStatement(hook)).toBe(true);
+    const assign = (hook as ts.ExpressionStatement).expression as ts.BinaryExpression;
+    expect(ts.isArrowFunction(assign.right)).toBe(true);
+    const fn = assign.right as ts.ArrowFunction;
+    // three hands the hook (parameters, renderer).
+    expect(fn.parameters.map((p) => p.name.getText())).toEqual(['shader', 'renderer']);
+    const first = (fn.body as ts.Block).statements[0];
+    expect(code('Island.ts', first)).toBe('Materials.flushAfterCompile(renderer);');
+    // The sea stays PBR in both themes (toonifyTree and GameScene's island
+    // pass skip transparent materials), so no swap can drop the hook.
+    expect(statement('Island.ts', 'const seaMat = new THREE.MeshStandardMaterial(')).toMatch(
+      /transparent: true/,
+    );
+    const calls = ['Island.ts', 'Zones.ts', 'Mailbox.ts', 'Traffic.ts', 'CelLook.ts']
+      .map((f) => (stripped(f).match(/Materials\.flushAfterCompile\(/g) ?? []).length)
+      .reduce((a, b) => a + b, 0);
+    expect(calls).toBe(1);
+    // A microtask: a direct flush from the hook would miss the hook's own
+    // program and every link after it.
+    const helper = decl('Materials.ts', 'flushAfterCompile');
+    expect(helper).toMatch(/queueMicrotask\(\(\) => \{[\s\S]*renderer\.getContext\(\)\.flush\(\)/);
+  });
+});
