@@ -4915,6 +4915,15 @@ export class SimpleUI {
     modal.classList.add('ds-controls');
     track('controls_opened', { source });
 
+    // Mouse lock is offered wherever there is a mouse: every desktop, and a
+    // touchscreen laptop (the touch scheme, but a fine pointer as well).
+    let finePointer = false;
+    try {
+      finePointer = window.matchMedia?.('(any-pointer: fine)').matches === true;
+    } catch {
+      /* no matchMedia: the touch scheme alone decides */
+    }
+    const hasMouse = !this.isTouch || finePointer;
     const readFlag = (key: string): boolean => {
       try {
         return localStorage.getItem(key) === '1';
@@ -4991,7 +5000,7 @@ export class SimpleUI {
          </label>
          ${check('ds-set-invert', 'Invert vertical look', 'Dragging down tilts the view up.', readFlag('ds_look_invert'))}
          ${
-           this.isTouch
+           !hasMouse
              ? ''
              : check(
                  'ds-set-lock',

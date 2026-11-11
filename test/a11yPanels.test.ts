@@ -992,8 +992,11 @@ describe('the Controls & settings sheet (D8)', () => {
       expect(document.querySelector('#ds-set-haptics')).toBeNull();
     });
 
-    test('touch: haptics is a switch, and mouse lock is not offered', async () => {
+    test('a phone (touch, no fine pointer): haptics is a switch, and mouse lock is not offered', async () => {
       touchUi();
+      vi.spyOn(window, 'matchMedia').mockImplementation(
+        (q: string) => ({ matches: false, media: q }) as unknown as MediaQueryList,
+      );
       ui.showControls('drawer', 'settings');
       await tick();
       expect(document.querySelector('#ds-set-lock')).toBeNull();
@@ -1002,6 +1005,18 @@ describe('the Controls & settings sheet (D8)', () => {
       haptics.click();
       expect(localStorage.getItem('ds_haptics')).toBe('0');
       expect(settings).toEqual(['ds_haptics']);
+    });
+
+    test('a touchscreen laptop (the touch scheme, and a mouse) is offered both', async () => {
+      touchUi();
+      vi.spyOn(window, 'matchMedia').mockImplementation(
+        (q: string) =>
+          ({ matches: q === '(any-pointer: fine)', media: q }) as unknown as MediaQueryList,
+      );
+      ui.showControls('drawer', 'settings');
+      await tick();
+      expect(document.querySelector('#ds-set-lock')).not.toBeNull();
+      expect(document.querySelector('#ds-set-haptics')).not.toBeNull();
     });
 
     test('hapticPulse follows the setting, with the old reduced-motion gate as its default', () => {
