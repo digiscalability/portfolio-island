@@ -633,10 +633,52 @@ describe('First steps: the words', () => {
   });
 
   test('the header counts 2/5; the chip says "First steps 3/5 · Resume"', () => {
-    expect(guideCopy(view({ done: ['move'] }), ctx()).title).toBe('First steps · 2/5');
-    expect(guideCopy(view({ done: ['move', 'look'], chip: true }), ctx()).chip).toBe(
+    expect(guideCopy(view({ step: 'look', done: ['move'] }), ctx()).title).toBe(
+      'First steps · 2/5',
+    );
+    expect(guideCopy(view({ step: 'talk', done: ['move', 'look'], chip: true }), ctx()).chip).toBe(
       'First steps 3/5 · Resume',
     );
+  });
+
+  test('the number is the step on the card, not how many are done', () => {
+    // The work opened from the welcome card first (Hiring, See the work, Get
+    // in touch): the card read 'First steps · 2/5' over step 1's words
+    // (wave-1 integration).
+    const early = guideCopy(view({ step: 'move', done: ['portfolio'] }), ctx());
+    expect(early.title).toBe('First steps · 1/5');
+    expect(early.body).toContain('Walk with');
+    expect(guideCopy(view({ step: 'move', done: ['portfolio'], chip: true }), ctx()).chip).toBe(
+      'First steps 1/5 · Resume',
+    );
+    // ...and when its turn comes it is passed over: 3/5, then 5/5.
+    expect(
+      guideCopy(view({ step: 'talk', done: ['portfolio', 'move', 'look'] }), ctx()).title,
+    ).toBe('First steps · 3/5');
+    expect(
+      guideCopy(view({ step: 'compass', done: ['portfolio', 'move', 'look', 'talk'] }), ctx())
+        .title,
+    ).toBe('First steps · 5/5');
+    // While a step's check plays, the card still shows that step's number.
+    const check = guideCopy(view({ step: 'move', justDone: 'move', done: ['move'] }), ctx());
+    expect(check.title).toBe('First steps · 1/5');
+    expect(check.body).toContain('Walk with');
+    // Each step's number, in order, with nothing done out of order.
+    GUIDE_STEPS.forEach((step, i) => {
+      expect(guideCopy(view({ step, done: GUIDE_STEPS.slice(0, i) }), ctx()).title).toBe(
+        `First steps · ${i + 1}/5`,
+      );
+    });
+  });
+
+  test('the state machine numbers a guide whose work step was done first 1/5, not 2/5', () => {
+    const { guide } = makeGuide();
+    // See the work, from the welcome card: a zone panel on top before arming.
+    guide.frame(idle({ blocked: true, top: 'zone' }));
+    guide.arm('cta');
+    run(guide, 0.7);
+    expect(guide.view()).toMatchObject({ step: 'move', done: ['portfolio'] });
+    expect(guideCopy(guide.view(), ctx()).title).toBe('First steps · 1/5');
   });
 
   test('the finale leads to the work: Projects first, then the School', () => {
@@ -772,7 +814,7 @@ describe('GuideCard: one live, focus-free card on the HUD', () => {
 
   test('the chip is one Resume button with a 44 px hit area', () => {
     const c = make();
-    const v = view({ chip: true, active: false, done: ['move', 'look'] });
+    const v = view({ step: 'talk', chip: true, active: false, done: ['move', 'look'] });
     c.render(v, words(v));
     const b = c.el.querySelectorAll('button');
     expect(b.length).toBe(1);

@@ -670,7 +670,11 @@ const STEP_COPY: Record<GuideStep, (c: GuideCopyContext, who: string | null) => 
 
 /** Everything the card says for a view. Never 'agent', never 'live AI'. */
 export function guideCopy(v: GuideView, c: GuideCopyContext): GuideCopy {
-  const n = Math.min(GUIDE_STEPS.length, v.done.length + 1);
+  // The number of the step the card shows, not how many are done: steps done
+  // out of order (the work opened from the welcome card, before walking)
+  // made the card read '2/5' over step 1's words.
+  const step = v.justDone ?? v.step;
+  const n = step ? GUIDE_STEPS.indexOf(step) + 1 : GUIDE_STEPS.length;
   const of = `${n}/${GUIDE_STEPS.length}`;
   const line = v.coinLine ? 'Coins buy food and hats at the shop' : null;
   const chip = `${v.heading} ${of} · Resume`;
@@ -697,7 +701,6 @@ export function guideCopy(v: GuideView, c: GuideCopyContext): GuideCopy {
       chip,
     };
   }
-  const step = v.justDone ?? v.step;
   return {
     title: `${v.heading} · ${of}`,
     body: step ? STEP_COPY[step](c, v.talkTarget) : '',
