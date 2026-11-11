@@ -10,7 +10,8 @@
 // lamp's collider, and its curtains were unreachable behind the sofa.
 //
 // The first door (CO-A5): the warm prepares the Welcome Hub's programs first,
-// in slices sized to the thread.
+// in slices sized to the thread, and the first room frame carries no window
+// pass.
 //
 // Behavioural: a real GameScene with its world build switched off builds the
 // real room (every theme's furniture and the colliders derived from it), and
@@ -280,6 +281,7 @@ interface Warm {
   partyProps: { group: THREE.Group } | null;
   insideInterior: boolean;
   interiorWarmed: boolean;
+  interiorViewBucket: number;
   warmYieldMs: number;
   warmSliceMs(): number;
   warmYield(): Promise<void>;
@@ -297,6 +299,7 @@ interface Warm {
   warmInteriorPasses(gl: unknown, khr: boolean): Promise<void>;
   warmInteriorPosters(): void;
   drawPoster(i: number, text: string, big: boolean): void;
+  refreshInteriorView(): void;
   add(...o: THREE.Object3D[]): void;
   remove(...o: THREE.Object3D[]): void;
   traverseVisible(cb: (o: THREE.Object3D) => void): void;
@@ -539,6 +542,40 @@ describe('the warm prepares the first door first (CO-A5)', () => {
     } finally {
       walk.mockRestore();
       w.remove(lamp, parkedHome);
+    }
+  });
+});
+
+describe('the first room frame carries no window pass (CO-A5)', () => {
+  // MEASURED on a phone at 4x CPU: the window's render of the island took
+  // 36 ms of the first room frame, which is drawn under the door veil at full
+  // black. The veil starts to lift only once that frame is out.
+  test('an entry paints the window on its second frame, a change of light at once', () => {
+    const w = scene as unknown as Warm;
+    const paint = vi.spyOn(w, 'refreshInteriorView').mockImplementation(() => {});
+    try {
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).not.toHaveBeenCalled();
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(1);
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(1); // and no more while the view holds
+      // Mid-visit the outside changes (a new five-minute bucket, the weather):
+      // nothing covers the room now, so the pane repaints in that frame.
+      w.interiorViewBucket = 99;
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(2);
+      scene.exitInterior();
+      // The next building waits its one frame again.
+      enter('office');
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(2);
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(3);
+    } finally {
+      paint.mockRestore();
+      scene.exitInterior();
     }
   });
 });

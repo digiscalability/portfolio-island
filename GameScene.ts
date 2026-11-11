@@ -12961,6 +12961,8 @@ export class GameScene extends THREE.Scene {
   private interiorViewFrom = new THREE.Vector3();
   private interiorViewLook = new THREE.Vector3();
   private interiorViewAccum = 0;
+  /** Frames an entry's window repaint still waits (updateInteriorMode). */
+  private interiorViewWait = 0;
   private interiorRainNode: THREE.Object3D | null = null;
   /** Hand the shadow map back. Must run on EVERY exit path, or the world
    *  outside silently keeps whatever shadows it had when you stepped in.
@@ -15190,7 +15192,8 @@ export class GameScene extends THREE.Scene {
     away.normalize();
     this.interiorViewFrom.copy(stand).addScaledVector(up, 2.2);
     this.interiorViewLook.copy(this.interiorViewFrom).addScaledVector(away, 30);
-    this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL; // force a frame-1 refresh
+    this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL; // repaint for this building
+    this.interiorViewWait = 1; // on the second frame inside (updateInteriorMode)
   }
 
   /**
@@ -15438,8 +15441,20 @@ export class GameScene extends THREE.Scene {
       this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL;
     }
     if (this.interiorViewAccum >= GameScene.INTERIOR_VIEW_INTERVAL) {
-      this.interiorViewAccum = 0;
-      this.refreshInteriorView();
+      // An entry's repaint waits for the second frame inside. The first is
+      // drawn under the door veil at full black, and the veil starts to lift
+      // only once that frame is out (SimpleUI.fadeThrough), so a window pass
+      // in it holds the black for as long as it takes: MEASURED on a phone at
+      // 4x CPU, 36 ms of a 250 ms first room frame. The pane keeps its old
+      // picture (black on a first visit) for that one frame, under a veil
+      // that has only begun to lift: 94% black or more at 60 fps when the
+      // second frame is out.
+      if (this.interiorViewWait > 0) {
+        this.interiorViewWait--;
+      } else {
+        this.interiorViewAccum = 0;
+        this.refreshInteriorView();
+      }
     }
     // Hearth flicker (fire is 0 in hearthless rooms).
     if (this.interiorFire && this.interiorFire.intensity > 0) {
