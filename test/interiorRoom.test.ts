@@ -9,9 +9,13 @@
 // straight back out. The Personal room also put the avatar inside its floor
 // lamp's collider, and its curtains were unreachable behind the sofa.
 //
+// The first door (CO-A5): the warm prepares the Welcome Hub's programs first,
+// in slices sized to the thread.
+//
 // Behavioural: a real GameScene with its world build switched off builds the
 // real room (every theme's furniture and the colliders derived from it), and
-// enterInterior and updateInteriorMode run for real on a stand-in player.
+// enterInterior and updateInteriorMode run for real on a stand-in player. The
+// warm's passes run for real against a stand-in renderer.
 import * as THREE from 'three';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 
@@ -266,5 +270,275 @@ describe('every hotspot can be reached', () => {
     expect((pole!.minX + pole!.maxX) / 2).toBeCloseTo(-3.3, 2);
     expect((pole!.minZ + pole!.maxZ) / 2).toBeCloseTo(3.3, 2);
     scene.exitInterior();
+  });
+});
+
+/** The private warm surface the CO-A5 tests drive. */
+interface Warm {
+  interiorGroup: THREE.Group;
+  interiorSets: Record<string, THREE.Group>;
+  partyProps: { group: THREE.Group } | null;
+  insideInterior: boolean;
+  interiorWarmed: boolean;
+  warmYieldMs: number;
+  warmSliceMs(): number;
+  warmYield(): Promise<void>;
+  interiorWarmItems(
+    room: THREE.Object3D,
+    roomItems: boolean,
+  ): { first: THREE.Object3D[]; rest: THREE.Object3D[] };
+  compileInteriorPass(
+    gl: unknown,
+    g: THREE.Group,
+    items: THREE.Object3D[],
+    roomVisible: boolean,
+    target: null,
+  ): Promise<unknown[]>;
+  warmInteriorPasses(gl: unknown, khr: boolean): Promise<void>;
+  warmInteriorPosters(): void;
+  drawPoster(i: number, text: string, big: boolean): void;
+  add(...o: THREE.Object3D[]): void;
+  remove(...o: THREE.Object3D[]): void;
+  traverseVisible(cb: (o: THREE.Object3D) => void): void;
+}
+
+const under = (o: THREE.Object3D, root: THREE.Object3D): boolean => {
+  for (let x: THREE.Object3D | null = o; x; x = x.parent) if (x === root) return true;
+  return false;
+};
+
+const box = (m: THREE.Material): THREE.Mesh => new THREE.Mesh(new THREE.BoxGeometry(), m);
+
+/** A renderer stand-in. compile() reports the lights and the objects it was
+ *  fed, then burns `burnMs` of the slice. */
+const fakeGl = (
+  onCompile: (lights: THREE.Object3D[], objects: THREE.Object3D[]) => void,
+  burnMs: number,
+): {
+  getRenderTarget: () => null;
+  setRenderTarget: () => void;
+  properties: { get: () => object };
+  compile: (chunk: THREE.Object3D) => Set<THREE.Material>;
+} => ({
+  getRenderTarget: () => null,
+  setRenderTarget: () => {},
+  properties: { get: () => ({}) },
+  compile: (chunk: THREE.Object3D) => {
+    const lights: THREE.Object3D[] = [];
+    chunk.traverseVisible((o) => {
+      if ((o as THREE.Light).isLight) lights.push(o);
+    });
+    const objects: THREE.Object3D[] = [];
+    chunk.traverse((o) => objects.push(o));
+    onCompile(lights, objects);
+    const until = performance.now() + burnMs;
+    while (performance.now() < until) {
+      /* the compile's main-thread time */
+    }
+    return new Set<THREE.Material>();
+  },
+});
+
+describe('the warm prepares the first door first (CO-A5)', () => {
+  // MEASURED at 4x CPU on a phone, the warm started at the welcome card and
+  // E came 3.1 s later: +11 programs, a 1,141 ms frame, 1,917 ms of black.
+  // The room-lit pass took 19 s, one ~4 ms slice a ~60 ms frame, and the
+  // Welcome Hub's programs came last in scene order.
+  test('first: the shell, the hall, the unculled world and the player; rest: the other rooms and the villagers', () => {
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    const sets = w.interiorSets;
+    const party = w.partyProps!.group;
+    const culled = box(new THREE.MeshStandardMaterial());
+    const unculled = box(new THREE.MeshToonMaterial());
+    unculled.frustumCulled = false; // the instanced fleets, traffic, skinned avatars
+    const unlit = box(new THREE.MeshBasicMaterial());
+    unlit.frustumCulled = false;
+    // Culled, yet drawn indoors: what the player wears stands in every room,
+    // and a villager is borrowed into the cottages and the beach house.
+    const avatar = new THREE.Group();
+    const hat = box(new THREE.MeshToonMaterial());
+    avatar.add(hat);
+    const villager = new THREE.Group();
+    const tunic = box(new THREE.MeshToonMaterial());
+    villager.add(tunic);
+    w.add(culled, unculled, unlit, avatar, villager);
+    const player = scene.player as { traverse?: (cb: (o: THREE.Object3D) => void) => void };
+    const island = scene.island as { npcTargets: unknown[] };
+    player.traverse = (cb) => avatar.traverse(cb);
+    island.npcTargets = [{ name: 'Gardener', position: new THREE.Vector3(), meshRef: villager }];
+    try {
+      const { first, rest } = w.interiorWarmItems(g, true);
+      // first: what the Welcome Hub's first frame draws, and nothing else.
+      const inSet = (o: THREE.Object3D): boolean => Object.values(sets).some((s) => under(o, s));
+      expect(first).toContain(unculled);
+      expect(first).toContain(hat);
+      expect(first.some((o) => under(o, sets.hall))).toBe(true);
+      expect(first.some((o) => under(o, g) && !inSet(o))).toBe(true); // the shell
+      for (const o of first.filter((x) => under(x, g))) {
+        expect(under(o, party)).toBe(false);
+        expect(!inSet(o) || under(o, sets.hall)).toBe(true);
+      }
+      // rest: the other rooms, the party rig and the villagers.
+      expect(rest.some((o) => under(o, sets.office))).toBe(true);
+      expect(rest.some((o) => under(o, party))).toBe(true);
+      expect(rest).toContain(tunic);
+      expect(rest.every((o) => under(o, g) || o === tunic)).toBe(true);
+      // No other culled world object is drawn from the room, which sits
+      // 300 u below the planet's centre; nor is an unlit one re-keyed.
+      expect([...first, ...rest]).not.toContain(culled);
+      expect([...first, ...rest]).not.toContain(unlit);
+
+      // The outdoor pass: every lit world object, none of the room, no first.
+      const out = w.interiorWarmItems(g, false);
+      expect(out.first).toEqual([]);
+      expect(out.rest).toEqual(expect.arrayContaining([culled, unculled, hat, tunic]));
+      expect(out.rest).not.toContain(unlit);
+      expect(out.rest.some((o) => under(o, g))).toBe(false);
+    } finally {
+      delete player.traverse;
+      island.npcTargets = [];
+      w.remove(culled, unculled, unlit, avatar, villager);
+    }
+  });
+
+  test('a material shared with the hall is warmed with the hall', () => {
+    const w = scene as unknown as Warm;
+    const sets = w.interiorSets;
+    const shared = new THREE.MeshStandardMaterial();
+    const inOffice = box(shared);
+    const inHall = box(shared);
+    sets.office.add(inOffice);
+    sets.hall.add(inHall);
+    try {
+      const { first, rest } = w.interiorWarmItems(w.interiorGroup, true);
+      expect(first).toContain(inHall);
+      expect(rest).not.toContain(inOffice); // the same program, warmed once
+    } finally {
+      sets.office.remove(inOffice);
+      sets.hall.remove(inHall);
+    }
+  });
+
+  test('the passes draw the posters, then compile the first door, then the rest', async () => {
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    const posters = vi.spyOn(w, 'drawPoster');
+    const order: THREE.Object3D[] = [];
+    let postersAtFirstCompile = -1;
+    const shownAtCompile = new Set<boolean>();
+    const gl = fakeGl((_lights, objects) => {
+      if (postersAtFirstCompile < 0) postersAtFirstCompile = posters.mock.calls.length;
+      shownAtCompile.add(g.visible);
+      order.push(...objects);
+    }, 0);
+    const { first, rest } = w.interiorWarmItems(g, true);
+    const warmed = w.interiorWarmed;
+    try {
+      await w.warmInteriorPasses(gl, false);
+      // Every poster canvas and both font sizes are used before a door is.
+      expect(postersAtFirstCompile).toBe(3);
+      expect(posters.mock.calls.map((c) => [c[0], c[2]])).toEqual([
+        [0, true],
+        [1, false],
+        [2, false],
+      ]);
+      const at = (o: THREE.Object3D): number => order.indexOf(o);
+      expect(first.length).toBeGreaterThan(0);
+      expect(rest.length).toBeGreaterThan(0);
+      expect([...first, ...rest].every((o) => at(o) >= 0)).toBe(true);
+      expect(Math.max(...first.map(at))).toBeLessThan(Math.min(...rest.map(at)));
+      // The room was shown only inside a slice.
+      expect(shownAtCompile.has(true)).toBe(true);
+      expect(g.visible).toBe(false);
+    } finally {
+      posters.mockRestore();
+      w.interiorWarmed = warmed;
+    }
+  });
+
+  test('a slice is 4 ms on a free thread and up to 12 ms on a busy one', async () => {
+    // MEASURED at 4x CPU: a frame takes 55-110 ms, a zero-delay timer comes
+    // back after 80-240 ms and a new program costs 4-5 ms. 4 ms slices
+    // compiled one program a frame.
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    // 15% of the gap the thread last took to come back, within 4-12 ms.
+    for (const [gap, ms] of [
+      [0, 4],
+      [16.7, 4],
+      [40, 6],
+      [80, 12],
+      [500, 12],
+    ]) {
+      w.warmYieldMs = gap;
+      expect(w.warmSliceMs()).toBeCloseTo(ms, 5);
+    }
+    // warmYield measures that gap itself.
+    w.warmYieldMs = 9999;
+    await w.warmYield();
+    expect(w.warmYieldMs).toBeLessThan(1000);
+
+    // And a pass spends it: 12 objects of 3 ms each take fewer slices on a
+    // thread that comes back after 80 ms than on one that comes straight back.
+    const items = Array.from({ length: 12 }, () => box(new THREE.MeshBasicMaterial()));
+    const gl = fakeGl(() => {}, 3);
+    const slices = async (gap: number): Promise<number> => {
+      w.warmYieldMs = gap;
+      const yielded = vi.spyOn(w, 'warmYield').mockImplementation(async () => {
+        w.warmYieldMs = gap;
+      });
+      try {
+        await w.compileInteriorPass(gl, g, items, true, null);
+        return yielded.mock.calls.length;
+      } finally {
+        yielded.mockRestore();
+      }
+    };
+    try {
+      const free = await slices(0);
+      const busy = await slices(80);
+      expect(free).toBeGreaterThanOrEqual(6); // 2 objects a 4 ms slice
+      expect(busy).toBeLessThanOrEqual(free - 2); // 4 objects a 12 ms slice
+    } finally {
+      w.warmYieldMs = 0;
+    }
+  });
+
+  test('each slice feeds the lights a frame would draw with, with no scene walk', async () => {
+    // MEASURED at 4x CPU, a traverseVisible of the whole scene per slice cost
+    // 2.9 ms of its 4 ms budget.
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    const lamp = new THREE.PointLight();
+    const parkedHome = new THREE.Group();
+    parkedHome.visible = false;
+    const parked = new THREE.PointLight();
+    parkedHome.add(parked);
+    w.add(lamp, parkedHome);
+    const walk = vi.spyOn(w, 'traverseVisible');
+    const fed: THREE.Object3D[][] = [];
+    // 13 ms a compile: over any slice's budget, so every slice takes one item.
+    const gl = fakeGl((lights) => {
+      fed.push(lights);
+      if (fed.length === 1) lamp.visible = false; // hidden mid-pass
+    }, 13);
+    const items = [0, 1].map(() => box(new THREE.MeshBasicMaterial()));
+    try {
+      await w.compileInteriorPass(gl, g, items, true, null);
+      expect(walk).not.toHaveBeenCalled();
+      expect(fed).toHaveLength(2);
+      expect(fed[0]).toContain(lamp);
+      expect(fed[1]).not.toContain(lamp); // the next slice counts it as a frame would
+      for (const lights of fed) expect(lights).not.toContain(parked);
+      expect(fed[0].some((l) => under(l, g))).toBe(true); // the room is shown in the slice
+      fed.length = 0;
+      await w.compileInteriorPass(gl, g, items.slice(0, 1), false, null);
+      expect(fed[0].some((l) => under(l, g))).toBe(false);
+      expect(g.visible).toBe(false); // and hidden again after it
+    } finally {
+      walk.mockRestore();
+      w.remove(lamp, parkedHome);
+    }
   });
 });

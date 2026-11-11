@@ -14638,10 +14638,48 @@ export class GameScene extends THREE.Scene {
     return new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
 
-  /** Main-thread budget for one warm slice. A frame plus a slice (plus the
-   *  next frame re-checking the slice's materials) stays well under the
-   *  50 ms hitch line; measured cost is ~1 ms per new program. */
+  /** Main-thread budget for one warm slice where the thread has time to
+   *  spare. A frame plus a slice (plus the next frame re-checking the slice's
+   *  materials) stays well under the 50 ms hitch line; measured cost is ~1 ms
+   *  per new program. */
   private static readonly WARM_SLICE_MS = 4;
+  /** On a busy thread a slice takes this share of the gap the thread last
+   *  took to come back to the warm (warmYield), up to WARM_SLICE_MAX_MS: the
+   *  slice grows with the frame it follows, never past 15% of it. MEASURED on
+   *  a phone at 4x CPU (CO-A5): frames take 55-110 ms, a zero-delay timer
+   *  comes back after 80-240 ms and a new program costs 4-5 ms, so 4 ms
+   *  slices compiled one program a frame, and the first door's 14 were ready
+   *  2.3-2.8 s after the welcome card with E due at 2.5 s. At 60 fps the
+   *  timer is back within the frame and a slice stays WARM_SLICE_MS. */
+  private static readonly WARM_SLICE_SHARE = 0.15;
+  private static readonly WARM_SLICE_MAX_MS = 12;
+  /** How long the warm's last yield took to resume, in ms (warmYield). */
+  private warmYieldMs = 0;
+
+  /** nextTask for the warm, timed: the gap sizes the next slice. */
+  private async warmYield(): Promise<void> {
+    const t0 = performance.now();
+    await GameScene.nextTask();
+    this.warmYieldMs = performance.now() - t0;
+  }
+
+  /** The budget of the warm slice that starts now, in ms. */
+  private warmSliceMs(): number {
+    return Math.min(
+      GameScene.WARM_SLICE_MAX_MS,
+      Math.max(GameScene.WARM_SLICE_MS, this.warmYieldMs * GameScene.WARM_SLICE_SHARE),
+    );
+  }
+
+  /** traverseVisible from this scene would reach `o`: it and every ancestor
+   *  are visible, and it is still attached here. */
+  private drawnInScene(o: THREE.Object3D): boolean {
+    for (let x: THREE.Object3D | null = o; x; x = x.parent) {
+      if (!x.visible) return false;
+      if (x === this) return true;
+    }
+    return false;
+  }
 
   /** The materials three re-keys on a light-count change (its own
    *  materialNeedsLights). An unlit material keeps the program it has. */
@@ -14657,17 +14695,46 @@ export class GameScene extends THREE.Scene {
     );
   }
 
+  /** The room set the warm prepares first: the Welcome Hub's. Its door is the
+   *  one nearest the spawn, and the first a phone visitor reaches (CO-A5). */
+  private static readonly WARM_FIRST_THEME = 'hall';
+
   /**
-   * One object per (material, object kind) a warm pass must prepare, in scene
-   * order: every lit material outside the room, which a light-count change
-   * re-keys, and, when `roomItems`, the room's own materials, lit or not (only
-   * a pass that shows the room wants them: nothing draws them hidden). Unlit
-   * world materials are left alone: no light change re-keys them, so they keep
-   * the program the frame already draws them with. A program also depends on
-   * the object (instancing, skinning, morphs, vertex colours), so the kind
-   * rides in the key.
+   * One object per (material, object kind) a warm pass must prepare. A
+   * program also depends on the object (instancing, skinning, morphs, vertex
+   * colours), so the kind rides in the key. Unlit world materials are left
+   * alone: no light change re-keys them, so they keep the program the frame
+   * already draws them with.
+   * - The room-lit pass (`roomItems`) takes the room's own materials, lit or
+   *   not, and the lit world objects a camera inside the room can draw:
+   *   whatever is never frustum-culled (the instanced fleets, traffic, road
+   *   markings, skinned avatars), the player with what it wears, and the
+   *   villagers, who are borrowed into rooms (setPartyMode,
+   *   placeCottageOccupants). Nothing else reaches the room's frustum. The
+   *   room sits 300 u below the planet's centre, so the world within 200 u
+   *   of that centre lies 48 degrees or more above the room camera's
+   *   horizon, and the camera, level or looking down, sees 34 degrees up at
+   *   most (Framing's 68 degree ceiling). MEASURED at the Welcome Hub, from 5
+   *   spots x 8 headings: every world object drawn was unculled, or unlit
+   *   (the sky). The culled rest got room-lit programs no frame ever used
+   *   (the sea, the grass and street sectors...), and they filled the 4x-CPU
+   *   phone's pass.
+   * - The outdoor pass takes every lit world material, which covers leaving
+   *   and the parts of the world no frame has drawn yet.
+   *
+   * `first` holds what the first frame inside the Welcome Hub draws, and
+   * `rest` everything else, each in scene order (CO-A5): the room's shell and
+   * the WARM_FIRST_THEME set shown the way entry shows it (another set or
+   * the party rig waits), the unculled world and the player. MEASURED at
+   * that door with no warm, its first frame created 11 programs, all from
+   * this set. The villagers wait in `rest`: no hall borrows one. The outdoor
+   * pass has no `first`. Sorting before the dedup puts a material shared
+   * with a `first` object in `first` too.
    */
-  private interiorWarmItems(room: THREE.Object3D, roomItems: boolean): THREE.Object3D[] {
+  private interiorWarmItems(
+    room: THREE.Object3D,
+    roomItems: boolean,
+  ): { first: THREE.Object3D[]; rest: THREE.Object3D[] } {
     type Drawable = THREE.Object3D & {
       material?: THREE.Material | THREE.Material[];
       geometry?: THREE.BufferGeometry;
@@ -14682,41 +14749,77 @@ export class GameScene extends THREE.Scene {
     };
     const inRoom = new Set<THREE.Object3D>();
     room.traverse((o) => inRoom.add(o));
-    const seen = new Set<string>();
-    const items: THREE.Object3D[] = [];
+    const firstSet = this.interiorSets[GameScene.WARM_FIRST_THEME];
+    const themedSets = new Set<THREE.Object3D>(Object.values(this.interiorSets));
+    /** Drawn when the first theme's room is shown: every ancestor up to the
+     *  room is visible, with the themed sets as enterInterior leaves them
+     *  (the first theme's shown, the others hidden). */
+    const shownInFirstRoom = (o: THREE.Object3D): boolean => {
+      for (let x: THREE.Object3D | null = o; x && x !== room; x = x.parent) {
+        if (themedSets.has(x) ? x !== firstSet : !x.visible) return false;
+      }
+      return true;
+    };
+    // The culled world objects a room can still draw: the player's, in every
+    // room, and the villagers', in the ones that borrow them.
+    const onPlayer = new Set<THREE.Object3D>();
+    this.player?.traverse?.((o) => onPlayer.add(o));
+    const onVillager = new Set<THREE.Object3D>();
+    for (const t of this.island?.npcTargets ?? []) t.meshRef?.traverse((o) => onVillager.add(o));
+    const firstCandidates: Drawable[] = [];
+    const restCandidates: Drawable[] = [];
     this.traverse((obj) => {
       const o = obj as Drawable;
       if (!(o.isMesh || o.isPoints || o.isLine || o.isSprite) || !o.material) return;
       const mats = (Array.isArray(o.material) ? o.material : [o.material]).filter(Boolean);
-      if (!(inRoom.has(o) ? roomItems : mats.every((m) => GameScene.isLitMaterial(m)))) return;
-      const attrs = o.geometry?.attributes ?? {};
-      const kind = [
-        o.isInstancedMesh ? (o.instanceColor ? 'Ic' : 'I') : '',
-        o.isSkinnedMesh ? 'S' : '',
-        o.isBatchedMesh ? 'B' : '',
-        o.isPoints ? 'P' : '',
-        o.isLine ? 'L' : '',
-        o.isSprite ? 's' : '',
-        o.geometry?.morphAttributes?.position ? 'm' : '',
-        attrs.color ? `v${attrs.color.itemSize}` : '',
-        attrs.uv1 ? 'u1' : '',
-        attrs.tangent ? 't' : '',
-      ].join('');
-      let fresh = false;
-      for (const m of mats) {
-        if (seen.has(m.uuid + kind)) continue;
-        seen.add(m.uuid + kind);
-        fresh = true;
+      if (inRoom.has(o)) {
+        if (roomItems) (shownInFirstRoom(o) ? firstCandidates : restCandidates).push(o);
+        return;
       }
-      if (fresh) items.push(o);
+      if (!mats.every((m) => GameScene.isLitMaterial(m))) return;
+      if (!roomItems) restCandidates.push(o);
+      else if (!o.frustumCulled || onPlayer.has(o)) firstCandidates.push(o);
+      else if (onVillager.has(o)) restCandidates.push(o);
     });
-    return items;
+    const seen = new Set<string>();
+    const pick = (candidates: Drawable[]): THREE.Object3D[] => {
+      const items: THREE.Object3D[] = [];
+      for (const o of candidates) {
+        const mats = (Array.isArray(o.material) ? o.material : [o.material]).filter(
+          (m): m is THREE.Material => !!m,
+        );
+        const attrs = o.geometry?.attributes ?? {};
+        const kind = [
+          o.isInstancedMesh ? (o.instanceColor ? 'Ic' : 'I') : '',
+          o.isSkinnedMesh ? 'S' : '',
+          o.isBatchedMesh ? 'B' : '',
+          o.isPoints ? 'P' : '',
+          o.isLine ? 'L' : '',
+          o.isSprite ? 's' : '',
+          o.geometry?.morphAttributes?.position ? 'm' : '',
+          attrs.color ? `v${attrs.color.itemSize}` : '',
+          attrs.uv1 ? 'u1' : '',
+          attrs.tangent ? 't' : '',
+        ].join('');
+        let fresh = false;
+        for (const m of mats) {
+          if (seen.has(m.uuid + kind)) continue;
+          seen.add(m.uuid + kind);
+          fresh = true;
+        }
+        if (fresh) items.push(o);
+      }
+      return items;
+    };
+    const first = pick(firstCandidates);
+    return { first, rest: pick(restCandidates) };
   }
 
   /**
    * Compile `items` with the room shown or hidden, against `target`, in slices
-   * of ~WARM_SLICE_MS. Every slice is one synchronous task that leaves the
-   * scene as the live frame needs it, before anything can render:
+   * of warmSliceMs() (WARM_SLICE_MS, more on a busy thread). Every slice is
+   * one synchronous task that leaves the scene as the live frame needs it,
+   * before anything can render:
    * - the room is shown (when `roomVisible`) and `target` bound only inside
    *   the slice;
    * - each object compiles against a proxy scene fed the live lights. three
@@ -14749,9 +14852,17 @@ export class GameScene extends THREE.Scene {
     chunk.traverse = (cb) => {
       for (const o of batch) cb(o);
     };
-    // three's compile() walks traverseVisible only to collect lights. The live
-    // ones are gathered once per slice, not by a walk of the whole scene per
-    // call, which would cost more than most of the compiles it feeds.
+    // three's compile() walks traverseVisible only to collect lights. The
+    // scene's lights are gathered once per pass, in traversal order, and each
+    // slice keeps the ones a frame would draw with now (traverseVisible's
+    // rule: the light and every ancestor visible), so a light shown or hidden
+    // mid-pass still counts as the frame counts it. MEASURED at 4x CPU, a walk
+    // of the whole scene per slice cost 2.9 ms of its 4 ms budget: the 19 s
+    // room-lit pass compiled ~4 objects a frame.
+    const sceneLights: THREE.Object3D[] = [];
+    this.traverse((o) => {
+      if ((o as THREE.Light).isLight) sceneLights.push(o);
+    });
     const lights: THREE.Object3D[] = [];
     chunk.traverseVisible = (cb) => {
       for (const l of lights) cb(l);
@@ -14760,14 +14871,13 @@ export class GameScene extends THREE.Scene {
     const started: WarmProgram[] = [];
     for (let i = 0; i < items.length && !this.insideInterior; ) {
       const t0 = performance.now();
+      const budget = this.warmSliceMs();
       const bound = gl.getRenderTarget();
       try {
         g.visible = roomVisible;
         gl.setRenderTarget(target);
         lights.length = 0;
-        this.traverseVisible((o) => {
-          if ((o as THREE.Light).isLight) lights.push(o);
-        });
+        for (const l of sceneLights) if (this.drawnInScene(l)) lights.push(l);
         do {
           batch = [items[i++]];
           for (const m of gl.compile(chunk, camera, proxy)) {
@@ -14778,12 +14888,12 @@ export class GameScene extends THREE.Scene {
             const props = gl.properties.get(m) as { programs?: Map<string, WarmProgram> };
             if (props.programs) started.push(...props.programs.values());
           }
-        } while (i < items.length && performance.now() - t0 < GameScene.WARM_SLICE_MS);
+        } while (i < items.length && performance.now() - t0 < budget);
       } finally {
         gl.setRenderTarget(bound);
         if (!this.insideInterior) g.visible = wasVisible;
       }
-      await GameScene.nextTask();
+      await this.warmYield();
     }
     return started;
   }
@@ -14811,8 +14921,8 @@ export class GameScene extends THREE.Scene {
       used.add(p);
       p.getUniforms();
       p.getAttributes();
-      if (performance.now() - sliceStart > GameScene.WARM_SLICE_MS) {
-        await GameScene.nextTask();
+      if (performance.now() - sliceStart > this.warmSliceMs()) {
+        await this.warmYield();
         sliceStart = performance.now();
       }
     }
@@ -14870,7 +14980,9 @@ export class GameScene extends THREE.Scene {
     this.ensureInteriorView(); // the pane's final material, or it re-keys on entry
     const g = this.interiorGroup;
     if (!g) return;
-    await GameScene.nextTask(); // the build (~10 ms) gets a task of its own
+    await this.warmYield(); // the build (~10 ms) gets a task of its own
+    this.warmInteriorPosters();
+    await this.warmYield();
     const wasVisible = g.visible;
     // A room material built only on entry (the contact-shadow blobs) gets a
     // stand-in quad outside the scene, so the room-lit pass covers it too.
@@ -14884,13 +14996,20 @@ export class GameScene extends THREE.Scene {
     // working. Nothing re-arms visibility during a visit
     // (interiorGroup.visible = true appears exactly once, in enterInterior),
     // so that state was terminal until they left and re-entered.
+    // Each pass compiles and settles its `first` items before the rest, so
+    // the first door's programs are ready long before the pass ends (CO-A5,
+    // interiorWarmItems).
     const warm = async (visible: boolean): Promise<void> => {
       if (this.insideInterior) return; // a real entry took over mid-await
-      const items = this.interiorWarmItems(g, visible);
-      if (visible) items.push(blobStandIn);
-      await GameScene.nextTask();
-      const started = await this.compileInteriorPass(gl, g, items, visible, this.lastSceneTarget);
-      if (khr) await this.settleWarmPrograms(started);
+      const { first, rest } = this.interiorWarmItems(g, visible);
+      if (visible) first.push(blobStandIn);
+      for (const items of [first, rest]) {
+        if (this.insideInterior) return;
+        if (!items.length) continue;
+        await this.warmYield();
+        const started = await this.compileInteriorPass(gl, g, items, visible, this.lastSceneTarget);
+        if (khr) await this.settleWarmPrograms(started);
+      }
     };
     try {
       // Room-lit first: the variants a door needs. Nothing can flash on screen
@@ -15226,6 +15345,18 @@ export class GameScene extends THREE.Scene {
     if (skyUp && skyUpHome) skyUp.value.copy(skyUpHome);
     if (rain && rainHome) rain.position.copy(rainHome);
     if (this.interiorGroup) this.interiorGroup.visible = roomWasVisible;
+  }
+
+  /**
+   * Draw each poster once ahead of the first door (warmInteriorPasses). A
+   * canvas pays for its backing store on its first draw and a font for its
+   * face on its first text. MEASURED on a phone at 4x CPU: the three posters
+   * took 14 ms of the first door's entry task, and 0.5 ms of a later door's.
+   * enterInterior redraws all three with the building's own text.
+   */
+  private warmInteriorPosters(): void {
+    const glyphs = "ABCDEFGHIJKLM\nNOPQRSTUVWXYZ\nabcdefghijklm\nnopqrstuvwxyz\n0123456789 &,.'-";
+    this.interiorPosters.forEach((_, i) => this.drawPoster(i, glyphs, i === 0));
   }
 
   /** Draw a framed poster: title (big) or a content panel of \n-split lines. */

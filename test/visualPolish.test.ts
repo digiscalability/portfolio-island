@@ -637,9 +637,16 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // frame's lights version never moves and no frame re-keys.
     expect(pass).toContain('const proxy = new THREE.Scene();');
     // One object per compile call until the slice's budget is spent: a batch
-    // sized from the last slice overran it (measured 9.3 ms and 23 ms).
+    // sized from the last slice overran it (measured 9.3 ms and 23 ms). The
+    // budget is 4 ms, and never less: more only on a thread too busy to come
+    // straight back to the warm (CO-A5; interiorRoom drives it).
     expect(pass).toContain('batch = [items[i++]];');
-    expect(pass).toContain('performance.now() - t0 < GameScene.WARM_SLICE_MS');
+    expect(pass).toContain('const budget = this.warmSliceMs();');
+    expect(pass).toContain('performance.now() - t0 < budget');
+    expect(scene).toContain('private static readonly WARM_SLICE_MS = 4;');
+    expect(bodyOf(scene, 'private warmSliceMs(): number')).toContain(
+      'Math.max(GameScene.WARM_SLICE_MS, this.warmYieldMs * GameScene.WARM_SLICE_SHARE)',
+    );
     // Polled ready, then first-used, in idle time: the first getUniforms() is
     // a synchronous shader check that took 121 ms of the first room frame.
     const settle = bodyOf(scene, 'private async settleWarmPrograms(');
