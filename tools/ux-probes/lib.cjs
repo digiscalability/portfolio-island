@@ -120,7 +120,9 @@ async function launch() {
   // channel 'chromium' = Chrome for Testing in new-headless mode: the same
   // chromium-1208 binary the audits ran, found in the shared ms-playwright
   // cache (PLAYWRIGHT_BROWSERS_PATH overrides the cache location).
-  return chromium.launch({ channel: 'chromium', headless: true, args: glArgs() });
+  // --mute-audio is Playwright's headless default; naming it keeps a headed
+  // debug run silent too. Speech needs SILENT_TTS as well (see below).
+  return chromium.launch({ channel: 'chromium', headless: true, args: ['--mute-audio', ...glArgs()] });
 }
 
 // ------------------------------------------------------------------ profiles
@@ -429,8 +431,23 @@ const CLOCK = `(() => {
  * recaptchaStub is false), the recorder, then --no-khr and the virtual clock
  * when asked for.
  */
+// The cloud voice is blocked here, so spoken lines fall back to
+// speechSynthesis, and the OS speech engine ignores --mute-audio: a probe run
+// talked out of the operator's speakers. Volume 0 keeps the utterance and its
+// start/end events, so timing is unchanged, and makes it silent.
+const SILENT_TTS = `(() => {
+  try {
+    const ss = window.speechSynthesis;
+    const proto = ss && Object.getPrototypeOf(ss);
+    if (!proto || typeof proto.speak !== 'function') return;
+    const orig = proto.speak;
+    window.__ttsSpoken = 0;
+    proto.speak = function (u) { try { u.volume = 0; } catch (e) {} window.__ttsSpoken++; return orig.call(this, u); };
+  } catch (e) {}
+})();`;
+
 function baseInitScripts({ noKhr = false, clock = false, recaptchaStub = true } = {}) {
-  return [WS_STUB, ...(recaptchaStub ? [RECAPTCHA_STUB] : []), RECORDER, ...(noKhr ? [NO_KHR] : []), ...(clock ? [CLOCK] : [])];
+  return [WS_STUB, SILENT_TTS, ...(recaptchaStub ? [RECAPTCHA_STUB] : []), RECORDER, ...(noKhr ? [NO_KHR] : []), ...(clock ? [CLOCK] : [])];
 }
 
 /**
@@ -1132,6 +1149,7 @@ module.exports = {
   bootProof,
   SELFTEST_URL,
   RECAPTCHA_STUB,
+  SILENT_TTS,
   baseInitScripts,
   triggerSelftestLeak,
   openSession,
