@@ -119,9 +119,8 @@ describe('a modal makes the rest of the overlay inert, and traps Tab', () => {
     ui.showHireCard('cta');
     await tick();
     const panel = zonePanel()!;
-    const leave = [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find(
-      (d) => d.textContent === '← Leave',
-    )!;
+    const leave = document.querySelector<HTMLElement>('#ui-overlay > button[data-leave]')!;
+    expect(leave.textContent).toBe('← Leave');
     const pill = chip('Open portfolio menu');
     expect(pill.closest('[inert]')).not.toBeNull();
     expect(panel.hasAttribute('inert')).toBe(false);
@@ -1035,5 +1034,205 @@ describe('the Controls & settings sheet (D8)', () => {
     // (securityHeaders holds the inline-script count: this was style only.)
     expect(readFileSync(join(process.cwd(), 'index.html'), 'utf8')).not.toContain('controls-guide');
     expect(readFileSync(join(process.cwd(), 'style.css'), 'utf8')).toContain('.ds-controls kbd');
+  });
+});
+
+// P2-D2 (INT-07, INT-12): inside a building, Leave is a real button, the HUD
+// steps aside and the room is announced. It was a div only a mouse could
+// use, it sat on top of the weather chip, and nothing told a screen-reader
+// user they had gone indoors. Pixel overlap and the Tab count in a real
+// browser are the probes' (p2/room-a11y, p2/room-phone).
+describe('inside a building: the Leave button, the interior mode, the announcement (P2-D2)', () => {
+  const leave = (): HTMLButtonElement | null =>
+    document.querySelector<HTMLButtonElement>('#ui-overlay > button[data-leave]');
+  const live = (): string =>
+    (document.querySelector('#ui-overlay > .ds-sr-only[role="status"]')?.textContent ?? '').trim();
+  /** The visitor's last real input, as the trusted listeners would record it
+   *  (happy-dom's dispatched events are never trusted). */
+  const lastInput = (kind: 'keyboard' | 'pointer'): void => {
+    (ui as unknown as { lastInput: string }).lastInput = kind;
+  };
+  const touchUi = (): void => {
+    ui.dispose();
+    history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+  };
+
+  test('a <button type=button> reading "← Leave", named for the building, 44 px, first in the overlay', () => {
+    const onLeave = vi.fn();
+    ui.showLeaveButton(onLeave, 'Project Portfolio');
+    const b = leave()!;
+    expect(b.tagName).toBe('BUTTON');
+    expect(b.getAttribute('type')).toBe('button');
+    expect(b.textContent).toBe('← Leave');
+    expect(b.getAttribute('aria-label')).toBe('Leave Project Portfolio');
+    expect(b.style.minHeight).toBe('44px');
+    expect(ui.getOverlay().firstElementChild).toBe(b); // the first Tab from the room
+    expect(b.hasAttribute('data-never-inert')).toBe(true);
+    b.click();
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  test("with no name it is 'Leave the building'; a hall's own panel names it", async () => {
+    ui.showLeaveButton(() => {});
+    expect(leave()!.getAttribute('aria-label')).toBe('Leave the building');
+    // main-simple opens the hall's panel right after, in the same task.
+    ui.showZonePanel({ id: 'projects', name: 'Project Portfolio' }, { source: 'proximity' });
+    expect(leave()!.getAttribute('aria-label')).toBe('Leave Project Portfolio');
+    await tick();
+    expect(live()).toBe('Inside Project Portfolio. Press Escape or walk to the door to leave.');
+    // A panel opened from the menu while indoors names nothing.
+    ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'menu' });
+    expect(leave()!.getAttribute('aria-label')).toBe('Leave Project Portfolio');
+  });
+
+  test('a name given by the caller wins over the panel', () => {
+    ui.showLeaveButton(() => {}, "Brother's Beach House");
+    ui.showZonePanel({ id: 'projects', name: 'Project Portfolio' }, { source: 'proximity' });
+    expect(leave()!.getAttribute('aria-label')).toBe("Leave Brother's Beach House");
+  });
+
+  test('the live region announces the room once per entry', async () => {
+    ui.showLeaveButton(() => {}, 'A cosy home');
+    await tick();
+    expect(live()).toBe('Inside A cosy home. Press Escape or walk to the door to leave.');
+    const region = document.querySelector('#ui-overlay > .ds-sr-only[role="status"]')!;
+    const writes: string[] = [];
+    const mo = new MutationObserver(() => writes.push(region.textContent ?? ''));
+    mo.observe(region, { childList: true, characterData: true, subtree: true });
+    // Panels opening and closing inside the room say nothing more about it.
+    ui.showZonePanel({ id: 'projects', name: 'Project Portfolio' }, { source: 'proximity' });
+    await tick();
+    ui.hideZonePanel();
+    await tick();
+    mo.disconnect();
+    expect(writes.filter((w) => w.startsWith('Inside'))).toEqual([]);
+    // The next entry is announced again.
+    ui.hideLeaveButton();
+    ui.showLeaveButton(() => {}, 'Get In Touch');
+    await tick();
+    expect(live()).toBe('Inside Get In Touch. Press Escape or walk to the door to leave.');
+  });
+
+  test('the room line is heard out: a compass change right behind it waits its turn', async () => {
+    // Entering a hall stamps the passport and the compass retargets: in the
+    // browser 'Compass: Personal' replaced the room line 15 ms after it was
+    // written.
+    vi.useFakeTimers();
+    ui.showLeaveButton(() => {}, 'Project Portfolio');
+    await vi.advanceTimersByTimeAsync(0);
+    const room = 'Inside Project Portfolio. Press Escape or walk to the door to leave.';
+    expect(live()).toBe(room);
+    const state = (label: string): { angleRad: number; distance: number; label: string } => ({
+      label,
+      distance: 40,
+      angleRad: 0,
+    });
+    ui.updateQuestCompass(state('🎨 Personal'));
+    await vi.advanceTimersByTimeAsync(15);
+    expect(live()).toBe(room);
+    ui.updateQuestCompass(state('📬 Contact')); // the latest target is the one said next
+    await vi.advanceTimersByTimeAsync(2400);
+    expect(live()).toBe(room);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(live()).toBe('Compass: 📬 Contact');
+    // Outdoors again, nothing is held back.
+    ui.hideLeaveButton();
+    ui.updateQuestCompass(state('🚀 Projects'));
+    expect(live()).toBe('Compass: 🚀 Projects');
+  });
+
+  test('on touch it says Tap Leave', async () => {
+    touchUi();
+    ui.showLeaveButton(() => {});
+    await tick();
+    expect(live()).toBe('Inside the building. Tap Leave or walk to the door to leave.');
+  });
+
+  test('it takes focus on a keyboard entry, never on a pointer one; focus goes back to the body on exit', () => {
+    lastInput('pointer');
+    ui.showLeaveButton(() => {});
+    expect(document.activeElement).not.toBe(leave());
+    ui.hideLeaveButton();
+    lastInput('keyboard');
+    ui.showLeaveButton(() => {});
+    expect(document.activeElement).toBe(leave());
+    ui.hideLeaveButton();
+    expect(leave()).toBeNull();
+    expect(document.activeElement === document.body || document.activeElement === null).toBe(true);
+  });
+
+  test('a keyboard entry into a hall: the panel takes focus, and closing it puts focus on Leave', async () => {
+    lastInput('keyboard');
+    // The world opened the door on a key: PanelManager's modality says so.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+    ui.showLeaveButton(() => {});
+    ui.showZonePanel({ id: 'projects', name: 'Project Portfolio' }, { source: 'proximity' });
+    await tick();
+    expect(document.activeElement).toBe(document.querySelector('#ds-zone-title'));
+    expect(leave()!.hasAttribute('inert')).toBe(false); // still a click away over the panel
+    key('Escape');
+    expect(ui.panels.current()).toBeNull();
+    expect(document.activeElement).toBe(leave());
+  });
+
+  describe("the 'interior' mode", () => {
+    test('touch: the ambient info and the outdoor actions go; USE, the joystick, chat, the mic and ☰ stay', async () => {
+      touchUi();
+      ui.setEnvironmentBadge('☀️ Day');
+      const btn = (caption: string): HTMLElement =>
+        [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find(
+          (d) => d.children.length === 2 && d.children[1].textContent === caption,
+        )!;
+      const shown = (el: HTMLElement): boolean => el.style.display !== 'none';
+      const joystick =
+        document.querySelector<HTMLElement>('[data-guide="joystick"]')!.parentElement!;
+      const badge = [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find((d) =>
+        (d.textContent ?? '').includes('Day'),
+      )!;
+      const all = ['USE', 'JUMP', 'WAVE', 'DIVE', 'FEED', 'EAT'].map(btn);
+      expect(all.every(shown)).toBe(true);
+      ui.showLeaveButton(() => {});
+      expect(ui.panels.inMode('interior')).toBe(true);
+      expect(['USE', 'JUMP', 'WAVE', 'DIVE', 'FEED', 'EAT'].filter((c) => shown(btn(c)))).toEqual([
+        'USE',
+      ]);
+      expect(shown(joystick)).toBe(true);
+      expect(shown(chip('Open chat'))).toBe(true);
+      expect(shown(chip('Hold to talk to nearby players (or hold the V key)'))).toBe(true);
+      expect(shown(chip('Open island menu'))).toBe(true); // it holds Work with me
+      expect(shown(badge)).toBe(false);
+      expect(shown(leave()!)).toBe(true);
+      // A panel over the room, then gone: the mode's hides are still on.
+      ui.showHireCard('cta');
+      await tick();
+      expect(shown(btn('USE'))).toBe(false);
+      ui.hideZonePanel();
+      expect(shown(btn('USE'))).toBe(true);
+      expect(shown(btn('JUMP'))).toBe(false);
+      expect(ui.panels.current()).toBeNull(); // a mode is not a panel
+      ui.hideLeaveButton();
+      expect(ui.panels.inMode('interior')).toBe(false);
+      expect(all.every(shown)).toBe(true);
+      expect(shown(badge)).toBe(true);
+    });
+
+    test('desktop: the weather chip is taken out, not dimmed; the Portfolio and Work-with-me pills are untouched', () => {
+      ui.setEnvironmentBadge('☀️ Day');
+      const badge = [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find((d) =>
+        (d.textContent ?? '').includes('Day'),
+      )!;
+      const portfolio = chip('Open portfolio menu');
+      const work = document.querySelector<HTMLElement>('[data-cta="work-with-me"]')!;
+      const before = [portfolio, work].map((el) => el.getAttribute('style'));
+      const display = badge.style.display;
+      ui.showLeaveButton(() => {});
+      expect(badge.style.display).toBe('none');
+      expect([portfolio, work].map((el) => el.getAttribute('style'))).toEqual(before);
+      ui.hideLeaveButton();
+      expect(badge.style.display).toBe(display);
+      expect(badge.style.opacity).toBe('');
+    });
   });
 });

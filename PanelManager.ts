@@ -69,12 +69,31 @@
  *       · window 'ds:modal' {open, id, zone?} fires when the top panel turns
  *         into or out of a modal, coalesced per task (a close then an open in
  *         one task, a section switch, fires nothing).
+ *   - A MODE IS NOT A PANEL (P2-D2): setMode(name, {hides, hard}) adds a
+ *     standing state's hides (being inside a building) to the same layer
+ *     policy without touching the stack, the sweep, Escape, the scrim, focus
+ *     or history. 'hard' hides outright on desktop too, where a panel only
+ *     dims: the Leave button used to sit on top of the weather chip.
  */
 
 /** 'aux-controls' = the second-rank touch controls (FEED/EAT/💬/🎤): panels
  *  that must keep USE/JUMP visible (NPC dialogue advances on USE) can hide
  *  just these instead of the whole touch suite. */
-export type HudLayer = 'nav-chips' | 'touch-controls' | 'aux-controls' | 'ambient-info';
+export type HudLayer =
+  | 'nav-chips'
+  | 'touch-controls'
+  | 'aux-controls'
+  | 'ambient-info'
+  /** JUMP, WAVE, DIVE, FEED and EAT: the touch actions with no use indoors.
+   *  They are in 'touch-controls' or 'aux-controls' as well. */
+  | 'outdoor-actions';
+
+/** A standing HUD state that is not a panel (see the header). */
+export interface ModeSpec {
+  hides: HudLayer[];
+  /** display:none on desktop as well, instead of the panels' dim. */
+  hard?: boolean;
+}
 
 /** Why the manager closed a panel: Escape, a tap on the scrim, the exclusivity
  *  sweep (or closeAll), or Back off the panel's history entry. A panel's own
@@ -217,6 +236,13 @@ export class PanelManager {
   // restore path must put back what was there (the tier-1 row is display:flex
   // — restoring '' collapsed it to block and stacked its chips vertically).
   private readonly layers = new Map<HudLayer, Array<{ el: HTMLElement; baseDisplay: string }>>();
+  /** An element's inline display at its FIRST registration: one in two
+   *  layers (JUMP is a touch control and an outdoor action) keeps one base. */
+  private readonly bases = new Map<HTMLElement, string>();
+  /** Open modes, by name (setMode). */
+  private readonly modes = new Map<string, ModeSpec>();
+  /** Desktop elements a hard mode took out, and the inline display each had. */
+  private readonly hardHidden = new Map<HTMLElement, string>();
   private readonly stack: Entry[] = [];
   private readonly scrim: HTMLDivElement;
   private sweeping = false;
@@ -329,11 +355,28 @@ export class PanelManager {
   /** Register a HUD element into a layer at creation time. */
   registerLayer(layer: HudLayer, el: HTMLElement): void {
     const list = this.layers.get(layer) ?? [];
-    list.push({ el, baseDisplay: el.style.display });
+    if (!this.bases.has(el)) this.bases.set(el, el.style.display);
+    list.push({ el, baseDisplay: this.bases.get(el) ?? '' });
     this.layers.set(layer, list);
     // A panel may already be open when a late element registers (the coin
     // counter is created on first update) — apply the current policy to it.
     this.applyState();
+  }
+
+  /**
+   * Enter or leave a mode: a standing state whose hides join the layer
+   * policy (null leaves it). No stack entry, so nothing sweeps it, Escape
+   * and Back never close it, and it raises no scrim and moves no focus.
+   */
+  setMode(name: string, spec: ModeSpec | null): void {
+    if (spec) this.modes.set(name, spec);
+    else this.modes.delete(name);
+    this.applyState();
+  }
+
+  /** Is this mode on? */
+  inMode(name: string): boolean {
+    return this.modes.has(name);
   }
 
   /**
@@ -521,16 +564,35 @@ export class PanelManager {
     // suppressing what the lower panel suppressed).
     const hidden = new Set<HudLayer>();
     for (const e of this.stack) for (const l of e.spec.hides) hidden.add(l);
+    // Modes add theirs: 'hard' ones hide outright on desktop too.
+    const hard = new Set<HudLayer>();
+    for (const m of this.modes.values()) for (const l of m.hides) (m.hard ? hard : hidden).add(l);
+    // One verdict per element: it may sit in two layers.
+    const verdict = new Map<HTMLElement, { base: string; soft: boolean; hard: boolean }>();
     for (const [layer, entries] of this.layers) {
-      const hide = hidden.has(layer);
       for (const { el, baseDisplay } of entries) {
-        if (this.isTouch) {
-          // Absolutely-positioned HUD: display:none reflows nothing.
-          el.style.display = hide ? 'none' : baseDisplay;
-        } else {
-          el.style.opacity = hide ? '0.35' : '';
-          el.style.pointerEvents = hide ? 'none' : '';
+        const v = verdict.get(el) ?? { base: baseDisplay, soft: false, hard: false };
+        v.soft = v.soft || hidden.has(layer);
+        v.hard = v.hard || hard.has(layer);
+        verdict.set(el, v);
+      }
+    }
+    for (const [el, v] of verdict) {
+      if (this.isTouch) {
+        // Absolutely-positioned HUD: display:none reflows nothing.
+        el.style.display = v.soft || v.hard ? 'none' : v.base;
+        continue;
+      }
+      el.style.opacity = v.soft ? '0.35' : '';
+      el.style.pointerEvents = v.soft ? 'none' : '';
+      if (v.hard) {
+        if (!this.hardHidden.has(el)) {
+          this.hardHidden.set(el, el.style.display);
+          el.style.display = 'none';
         }
+      } else if (this.hardHidden.has(el)) {
+        el.style.display = this.hardHidden.get(el) ?? '';
+        this.hardHidden.delete(el);
       }
     }
     if (!this.sweeping) this.applyInert();

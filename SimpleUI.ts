@@ -284,16 +284,45 @@ export class SimpleUI {
     }, 470);
   }
 
-  private leaveBtn: HTMLElement | null = null;
-  /** "← Leave" button shown while inside a building. */
-  showLeaveButton(onLeave: () => void): void {
+  private leaveBtn: HTMLButtonElement | null = null;
+  /** The building's name came with the call (else the hall panel names it). */
+  private leaveTitled = false;
+  /** The visitor's last real input: a trusted key, or a pointer. Local to
+   *  the Leave button for now; D7 generalises it in wave 3. */
+  private lastInput: 'keyboard' | 'pointer' = 'pointer';
+  private readonly onInputKey = (e: KeyboardEvent): void => {
+    // The touch buttons send synthetic keys (USE is 'e'): not a keyboard.
+    if (e.isTrusted) this.lastInput = 'keyboard';
+  };
+  private readonly onInputPointer = (): void => {
+    this.lastInput = 'pointer';
+  };
+
+  /**
+   * "← Leave", shown while inside a building (P2-D2, INT-07): a real button
+   * with a name, a focus ring and a 44 px box, where there was a div only a
+   * mouse could use. It is the overlay's FIRST child, so the first Tab from
+   * the room lands on it, and it takes focus itself when the visitor came in
+   * by keyboard. The HUD steps aside for the room ('interior' mode: the
+   * minimap, the weather chip and stamina, and the touch actions with no
+   * use indoors), and the live region says where the visitor is and how to
+   * get out, once per entry.
+   *
+   * `title` is the building's name. Without one, a hall's panel names it
+   * (showZonePanel, in the same task), else it is 'the building'.
+   */
+  showLeaveButton(onLeave: () => void, title?: string): void {
     this.hideLeaveButton();
-    const b = document.createElement('div');
+    const b = document.createElement('button');
+    b.type = 'button';
     b.textContent = '← Leave';
+    b.dataset.leave = '1';
     Object.assign(b.style, {
       position: 'fixed',
       top: 'calc(var(--sat, 0px) + 14px)',
       left: 'calc(var(--sal, 0px) + 14px)',
+      boxSizing: 'border-box',
+      minHeight: '44px',
       background: 'rgba(12,16,28,0.82)',
       color: '#fff',
       padding: '9px 16px',
@@ -310,14 +339,61 @@ export class SimpleUI {
     });
     b.addEventListener('click', () => onLeave());
     // Never inert: a hall panel (a modal) is open whenever this is, and the
-    // way out must stay a click away over it (D4; P2-D2 gives it a role).
+    // way out must stay a click away over it (D4).
     b.dataset.neverInert = '1';
     this.leaveBtn = b;
-    this.overlay.appendChild(b);
+    this.leaveTitled = false;
+    this.overlay.prepend(b);
+    this.setLeaveTitle(title?.trim() || '');
+    this.leaveTitled = !!title?.trim();
+    this.panels.setMode('interior', { hides: ['ambient-info', 'outdoor-actions'], hard: true });
+    // By keyboard (E at the door): focus goes to the way out. A hall's panel
+    // takes it from here a moment later, and hands it back to the room.
+    if (this.lastInput === 'keyboard') {
+      try {
+        b.focus({ preventScroll: true });
+      } catch {
+        b.focus();
+      }
+    }
+    // A task later: a hall's panel, opened right after this, may name the
+    // building. Said once per entry.
+    queueMicrotask(() => {
+      if (this.leaveBtn !== b) return;
+      const name = b.dataset.title || 'the building';
+      this.announce(
+        this.isTouch
+          ? `Inside ${name}. Tap Leave or walk to the door to leave.`
+          : `Inside ${name}. Press Escape or walk to the door to leave.`,
+        SimpleUI.ROOM_ANNOUNCE_HOLD_MS,
+      );
+    });
   }
+
+  /** The room announcement keeps the live region this long. */
+  private static readonly ROOM_ANNOUNCE_HOLD_MS = 2500;
+
+  /** Name the building on the Leave button ('' : the default). */
+  private setLeaveTitle(title: string): void {
+    const b = this.leaveBtn;
+    if (!b) return;
+    if (title) b.dataset.title = title;
+    else delete b.dataset.title;
+    const label = `Leave ${title || 'the building'}`;
+    b.setAttribute('aria-label', label);
+    b.title = label;
+  }
+
   hideLeaveButton(): void {
-    this.leaveBtn?.remove();
+    const b = this.leaveBtn;
+    if (!b) return;
+    // Focus goes back to the body: a removed button would strand it.
+    if (document.activeElement === b) b.blur();
+    b.remove();
     this.leaveBtn = null;
+    this.leaveTitled = false;
+    this.liveHoldUntil = 0; // outdoors again: the room line holds nothing back
+    this.panels.setMode('interior', null);
   }
 
   constructor(id: string) {
@@ -375,6 +451,9 @@ export class SimpleUI {
     this.initResponsiveHud();
     // ? or H: the Controls & settings sheet (D8).
     window.addEventListener('keydown', this.onControlsKey);
+    // Keyboard or pointer: where the Leave button puts focus (P2-D2).
+    document.addEventListener('keydown', this.onInputKey, true);
+    document.addEventListener('pointerdown', this.onInputPointer, true);
   }
 
   /**
@@ -1482,10 +1561,13 @@ export class SimpleUI {
       this.toastTimer,
       this.panelNoteTimer,
       this.liveTimer,
+      this.liveHoldTimer,
       this.promptAnnounceTimer,
     ]) {
       if (t) clearTimeout(t);
     }
+    this.liveHoldTimer = 0;
+    this.liveHeld = null;
     if (this.shownWatch) window.clearInterval(this.shownWatch);
     this.unwatchGuide();
     this.pumpTimer = 0;
@@ -1732,9 +1814,35 @@ export class SimpleUI {
    *  UX-05: every notice was silent to screen readers). */
   private liveEl: HTMLDivElement | null = null;
   private liveTimer = 0;
+  /** A line that must be heard out (the room announcement) holds the region
+   *  until this time; the latest line that arrives meanwhile follows it. */
+  private liveHoldUntil = 0;
+  private liveHeld: string | null = null;
+  private liveHoldTimer = 0;
 
-  private announce(text: string): void {
+  /**
+   * Say `text` through the live region. `holdMs` keeps it there that long:
+   * entering a hall stamps the passport, the compass retargets, and
+   * 'Compass: Personal' replaced 'Inside Project Portfolio…' 15 ms after it
+   * was written, before a screen reader could have read a word of it.
+   */
+  private announce(text: string, holdMs = 0): void {
     if (!text || this.messagesStopped) return;
+    const now = Date.now();
+    if (now < this.liveHoldUntil) {
+      this.liveHeld = text; // the latest state is the one worth saying next
+      if (!this.liveHoldTimer) {
+        this.liveHoldTimer = window.setTimeout(() => {
+          this.liveHoldTimer = 0;
+          const next = this.liveHeld;
+          this.liveHeld = null;
+          this.liveHoldUntil = 0;
+          if (next) this.announce(next);
+        }, this.liveHoldUntil - now);
+      }
+      return;
+    }
+    if (holdMs > 0) this.liveHoldUntil = now + holdMs;
     if (!this.liveEl) {
       const el = document.createElement('div');
       el.className = 'ds-sr-only';
@@ -5253,8 +5361,15 @@ export class SimpleUI {
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
     makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide = 'use-button';
-    makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump);
-    makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave);
+    // JUMP, WAVE and the contextual DIVE, FEED and EAT have no use inside a
+    // room: the 'interior' mode takes this layer out (P2-D2). USE, the
+    // joystick, chat and the mic stay.
+    const outdoor = (btn: HTMLElement): HTMLElement => {
+      this.panels.registerLayer('outdoor-actions', btn);
+      return btn;
+    };
+    outdoor(makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump));
+    outdoor(makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave));
     // DIVE — touch's only route to the free dive (Shift is desktop-only).
     // Contextual like FEED/EAT: it exists only while actually SWIMMING, so a
     // walker never sees it. Gated on isSwimming(), NOT isInWater(): the
@@ -5276,6 +5391,7 @@ export class SimpleUI {
       'aux-controls',
     );
     this.diveBtnEl.style.visibility = 'hidden';
+    outdoor(this.diveBtnEl);
     // FEED goes in a SECOND COLUMN beside USE rather than extending the stack
     // to 374px: on a short landscape phone (the UI explicitly supports
     // max-height 500px) a 4th row would sit over the coin chip and the icon
@@ -5301,6 +5417,8 @@ export class SimpleUI {
     this.eatBtnEl = makeButton('🍽️', 'EAT', '124px', 'KeyG', 'g', DS.ringEat, 112, 'aux-controls');
     this.feedBtnEl.style.visibility = 'hidden';
     this.eatBtnEl.style.visibility = 'hidden';
+    outdoor(this.feedBtnEl);
+    outdoor(this.eatBtnEl);
 
     // Proximity chat: 💬 opens the text input, 🎤 is press-hold-to-talk.
     // Stacked above the joystick (which spans bottom 26–136px here) so
@@ -8025,6 +8143,12 @@ export class SimpleUI {
     },
   ): void {
     const source = opts?.source ?? 'menu';
+    // Inside a hall, its own panel (opened by the door) names the building
+    // for the Leave button, when the caller gave no name (P2-D2).
+    if (source === 'proximity' && this.leaveBtn && !this.leaveTitled) {
+      const name = typeof zone?.name === 'string' ? zone.name.trim() : '';
+      if (name && name !== zone?.id) this.setLeaveTitle(name);
+    }
     // A switch along the section strip keeps the panel's history mode: a
     // deep-linked card never pushes an entry, and Back from it still leaves.
     const history = source === 'strip' ? this.zoneHistory : source !== 'deeplink';
@@ -10178,6 +10302,8 @@ export class SimpleUI {
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
     window.removeEventListener('keydown', this.onControlsKey);
+    document.removeEventListener('keydown', this.onInputKey, true);
+    document.removeEventListener('pointerdown', this.onInputPointer, true);
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {
       this.overlay.removeEventListener(type, this.onPanelAction, true);
     }
