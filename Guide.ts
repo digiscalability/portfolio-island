@@ -12,6 +12,9 @@
  *   openIslandMap reads.
  * - RecruiterRoute is the three-stop card a visitor gets when a hire card
  *   closes before they have walked anywhere (P2-A4).
+ * - GOAL_LADDER is one list of everything worth doing, in three rungs, and
+ *   NextChip is the 'Next: <goal>' chip the card folds into once the first
+ *   steps are over (P2-A12).
  * No DOM and no scene: test/guide.test.ts runs all of it on stubs.
  */
 import { fx } from './FxBudget';
@@ -145,7 +148,9 @@ export function readGuideTo(
 export type GuideStep = 'move' | 'look' | 'talk' | 'portfolio' | 'compass';
 export const GUIDE_STEPS: readonly GuideStep[] = ['move', 'look', 'talk', 'portfolio', 'compass'];
 
-/** Progress, {v:1, done[], finished, skipped, t}. D9 reads it too. */
+/** Progress, {v:1, done[], finished, skipped, t, goals[]}. D9 reads it too:
+ *  goals[] (the ladder's goals seen done, P2-A12) was added without changing
+ *  v, and a reader that does not know it ignores it. */
 export const GUIDE_KEY = 'ds_guide_v1';
 /** The once-only "controls changed" card for visitors from before the guide. */
 export const CONTROLS_KEY = 'ds_controls_v2';
@@ -157,6 +162,8 @@ export interface GuideSave {
   skipped: boolean;
   /** Last write, ms since the epoch (0: never written). */
   t: number;
+  /** Ladder goals seen done (GOAL_LADDER ids), kept once the first steps are over. */
+  goals: string[];
 }
 
 /** Where progress lives. A throw from either method keeps it for the session. */
@@ -198,9 +205,9 @@ export const GUIDE_GOALS = {
  *  the full tour, or the close of the panel See the work / Get in touch opened. */
 export type GuideArm = 'explore' | 'tour' | 'cta';
 
-/** 'route' is the recruiter route's card (RecruiterRoute), drawn by the same
- *  GuideCard through the same GuideView. */
-export type GuidePhase = 'idle' | 'controls' | 'steps' | 'finale' | 'done' | 'route';
+/** 'route' is the recruiter route's card (RecruiterRoute) and 'next' the Next
+ *  chip (NextChip), drawn by the same GuideCard through the same GuideView. */
+export type GuidePhase = 'idle' | 'controls' | 'steps' | 'finale' | 'done' | 'route' | 'next';
 
 /** One frame of what the guide needs to know. main-simple reuses one object. */
 export interface GuideFrame {
@@ -275,6 +282,9 @@ export function parseGuideSave(raw: string | null): GuideSave | null {
       finished: o.finished === true,
       skipped: o.skipped === true,
       t: typeof o.t === 'number' && Number.isFinite(o.t) ? o.t : 0,
+      goals: Array.isArray(o.goals)
+        ? (o.goals as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, 64)
+        : [],
     };
   } catch {
     return null;
@@ -317,7 +327,7 @@ export class Guide {
       /* no storage: a session-only guide */
     }
     const saved = parseGuideSave(raw);
-    this.save = saved ?? { v: 1, done: [], finished: false, skipped: false, t: 0 };
+    this.save = saved ?? { v: 1, done: [], finished: false, skipped: false, t: 0, goals: [] };
     this.legacy = opts.welcomed && saved === null;
   }
 
@@ -343,6 +353,33 @@ export class Guide {
 
   currentStep(): GuideStep | null {
     return this.phase === 'steps' ? this.step : null;
+  }
+
+  /** The first steps are over: finished (and the finale has closed) or
+   *  skipped, this visit or an earlier one. The Next chip takes over. */
+  over(): boolean {
+    return (this.save.finished || this.save.skipped) && !this.running();
+  }
+
+  /** Ladder goals seen done on this or an earlier visit (ds_guide_v1.goals). */
+  goals(): readonly string[] {
+    return this.save.goals;
+  }
+
+  /**
+   * Keep ladder goals as done. Only once the first steps are over: a write
+   * before that would stamp t, and arm() reads t === 0 as "a visitor from
+   * before the guide, never written".
+   */
+  addGoals(ids: readonly string[]): void {
+    if (!this.over()) return;
+    let changed = false;
+    for (const id of ids) {
+      if (this.save.goals.includes(id)) continue;
+      this.save.goals.push(id);
+      changed = true;
+    }
+    if (changed) this.persist();
   }
 
   /**
@@ -793,6 +830,299 @@ export class RecruiterRoute {
   }
 }
 
+// ---- The goal ladder and the Next chip (P2-A12) ----------------------------
+
+/** One thing worth doing on the island. */
+export interface GoalDef {
+  id: string;
+  /** 1 the work, 2 the island, 3 make a mark. */
+  rung: 1 | 2 | 3;
+  /** In the chip ('Next: <label>') and in a stacked row. */
+  label: string;
+  /** In a row that shares the card's width with two others. */
+  short: string;
+  /** What its 'Show me' sends through 'ds:guide-to'. */
+  guideKey: string;
+}
+
+/**
+ * Everything worth doing, in the order the chip offers it. One list: D's
+ * Things to do and the crown's 'Next:' read the same goals through
+ * 'ds:goals'. Rung 1 is the work (the four stamps, the hire card), rung 2
+ * the island, rung 3 making a mark on it. No count is typed in a label.
+ */
+export const GOAL_LADDER: readonly GoalDef[] = [
+  ...(['projects', 'professional', 'personal', 'contact'] as const).map(
+    (z): GoalDef => ({
+      id: `stamp:${z}`,
+      rung: 1,
+      label: PASSPORT_META[z].label,
+      short: PASSPORT_META[z].label,
+      guideKey: `district:${z}`,
+    }),
+  ),
+  { id: 'hire', rung: 1, label: 'The hire card', short: 'Hire card', guideKey: 'panel:hire' },
+  {
+    id: 'talk',
+    rung: 2,
+    label: 'Talk to a villager',
+    short: 'A villager',
+    guideKey: 'villager:ai-nearest',
+  },
+  { id: 'race', rung: 2, label: 'Run a race', short: 'A race', guideKey: 'race:land' },
+  { id: 'catch', rung: 2, label: 'Catch a fish', short: 'Fishing', guideKey: 'shore' },
+  { id: 'lesson', rung: 2, label: 'Take a School lesson', short: 'School', guideKey: 'school' },
+  { id: 'shop', rung: 2, label: 'Visit the shop', short: 'The shop', guideKey: 'kiosk' },
+  { id: 'build', rung: 3, label: 'Build at a stake', short: 'Build', guideKey: 'stake:nearest' },
+  {
+    id: 'guestbook',
+    rung: 3,
+    label: 'Sign the guestbook',
+    short: 'Guestbook',
+    guideKey: 'panel:guestbook',
+  },
+  {
+    id: 'deliveries',
+    rung: 3,
+    label: 'Deliver every parcel',
+    short: 'Parcels',
+    guideKey: 'mailbox:next',
+  },
+  { id: 'crown', rung: 3, label: 'Earn the Golden Crown', short: 'Crown', guideKey: 'kiosk' },
+];
+
+/** How many 'Show me' rows the unfolded chip offers: side by side, stacked. */
+export const NEXT_ROWS = { across: 3, stacked: 5 } as const;
+/** How many accepted quests it lists under them. */
+export const NEXT_QUEST_LINES = { across: 2, stacked: 3 } as const;
+
+/** Where the ladder's done goals are kept: Guide, through ds_guide_v1.goals. */
+export interface GoalStore {
+  goals(): readonly string[];
+  addGoals(ids: readonly string[]): void;
+}
+
+export interface NextHooks {
+  track?(name: string, props: { goal: string; outcome: string }): void;
+}
+
+/** What 'ds:goals' carries, less the visit's numbers (main-simple adds them). */
+export interface GoalsSummary {
+  done: number;
+  total: number;
+  next: { id: string; label: string; guideKey: string } | null;
+  goals: Array<{ id: string; rung: number; label: string; guideKey: string; done: boolean }>;
+}
+
+/**
+ * The 'Next: <goal>' chip. When the first steps finish or are skipped the
+ * card folds into it and it stays: one 44 px line naming the next goal on
+ * the ladder. A tap unfolds 'Show me' rows for the next few goals and the
+ * quests the visitor has accepted. It hides under panels, tours and rooms
+ * and comes back, folded, 600 ms after. It never holds hints.
+ *
+ * sync() is fed a few times a second with what is done now. A goal seen
+ * done stays done (ds_guide_v1.goals), so a reload resumes the ladder.
+ */
+export class NextChip {
+  private readonly doneIds = new Set<string>();
+  private enabled = false;
+  /** The first sync after it comes on takes stock without tracking. */
+  private primed = false;
+  private paused = true;
+  private resumeLeft = 0;
+  private expanded = false;
+  private preferred: string | null = null;
+  private quests: string[] = [];
+  private ver = 0;
+
+  constructor(
+    private readonly store: GoalStore,
+    private readonly hooks: NextHooks = {},
+  ) {
+    for (const id of store.goals()) this.doneIds.add(id);
+  }
+
+  /** Never the same number as a Guide's or a RecruiterRoute's version. */
+  version(): number {
+    return 2_000_000 + this.ver;
+  }
+
+  /** On: the first steps are over and something is left to offer. */
+  showing(): boolean {
+    return this.enabled && (this.next() !== null || this.quests.length > 0);
+  }
+
+  isDone(id: string): boolean {
+    return this.doneIds.has(id);
+  }
+
+  /**
+   * The next goal: the preferred one while it is undone (the district the
+   * compass is on, so the chip and the pill name the same place), else the
+   * first undone goal in ladder order.
+   */
+  next(): GoalDef | null {
+    const p = this.preferred;
+    if (p && !this.doneIds.has(p)) {
+      const goal = GOAL_LADDER.find((g) => g.id === p);
+      if (goal) return goal;
+    }
+    return GOAL_LADDER.find((g) => !this.doneIds.has(g.id)) ?? null;
+  }
+
+  /** The next goal, then the undone ones after it in ladder order. */
+  rows(n: number): GoalDef[] {
+    const first = this.next();
+    if (!first) return [];
+    return [first, ...GOAL_LADDER.filter((g) => g !== first && !this.doneIds.has(g.id))].slice(
+      0,
+      Math.max(1, n),
+    );
+  }
+
+  /**
+   * What is true now. `enabled`: the first steps are over and nothing else
+   * has the card. `facts`: goal id to done. `preferred`: the goal the compass
+   * is on, if any. `quests`: accepted quests, one line each. Returns true
+   * when the set of done goals grew (the caller publishes 'ds:goals').
+   */
+  sync(
+    enabled: boolean,
+    facts: Readonly<Record<string, boolean>>,
+    preferred: string | null,
+    quests: readonly string[],
+  ): boolean {
+    const before = `${this.showing()}|${this.next()?.id ?? ''}|${this.quests.join('\n')}`;
+    if (enabled !== this.enabled) {
+      this.enabled = enabled;
+      this.paused = true;
+      this.resumeLeft = 0; // the card it replaces has just gone: no second beat
+      this.expanded = false;
+    }
+    const fresh: string[] = [];
+    for (const g of GOAL_LADDER) {
+      if (facts[g.id] === true && !this.doneIds.has(g.id)) {
+        this.doneIds.add(g.id);
+        fresh.push(g.id);
+      }
+    }
+    if (enabled) {
+      // Kept only from here on (Guide.addGoals): what was done before the
+      // first steps ended is taken as found, not tracked as an achievement.
+      this.store.addGoals([...this.doneIds]);
+      if (this.primed) {
+        for (const id of fresh) this.hooks.track?.('guide_goal', { goal: id, outcome: 'done' });
+      }
+      this.primed = true;
+    }
+    this.preferred = preferred;
+    this.quests = quests.slice(0, NEXT_QUEST_LINES.stacked);
+    const after = `${this.showing()}|${this.next()?.id ?? ''}|${this.quests.join('\n')}`;
+    if (after !== before || (fresh.length > 0 && this.expanded)) this.ver++;
+    return fresh.length > 0;
+  }
+
+  /** One frame: hidden while anything is up, back (folded) 600 ms after. */
+  frame(dt: number, blocked: boolean): void {
+    if (!this.enabled) return;
+    if (blocked) {
+      if (!this.paused || this.expanded) {
+        this.paused = true;
+        this.expanded = false;
+        this.ver++;
+      }
+      this.resumeLeft = GUIDE_TIMING.resume;
+      return;
+    }
+    if (!this.paused) return;
+    this.resumeLeft -= Math.min(Math.max(dt, 0), 0.25);
+    if (this.resumeLeft > 0) return;
+    this.paused = false;
+    this.ver++;
+  }
+
+  /** The chip was tapped: unfold, or fold again. */
+  toggle(): void {
+    if (!this.showing()) return;
+    this.expanded = !this.expanded;
+    this.ver++;
+  }
+
+  /** Fold the list away: the visitor walked off. */
+  fold(): void {
+    if (!this.expanded) return;
+    this.expanded = false;
+    this.ver++;
+  }
+
+  /** A row's 'Show me': the chip folds; the caller points the compass. */
+  pick(id: string): GoalDef | null {
+    const goal = GOAL_LADDER.find((g) => g.id === id) ?? null;
+    if (!goal || !this.showing()) return null;
+    this.hooks.track?.('guide_goal', { goal: id, outcome: 'show' });
+    if (this.expanded) {
+      this.expanded = false;
+      this.ver++;
+    }
+    return goal;
+  }
+
+  /** For 'ds:goals': D's Things to do and the crown's 'Next:' read it. */
+  summary(): GoalsSummary {
+    const next = this.next();
+    return {
+      done: GOAL_LADDER.filter((g) => this.doneIds.has(g.id)).length,
+      total: GOAL_LADDER.length,
+      next: next ? { id: next.id, label: next.label, guideKey: next.guideKey } : null,
+      goals: GOAL_LADDER.map((g) => ({
+        id: g.id,
+        rung: g.rung,
+        label: g.label,
+        guideKey: g.guideKey,
+        done: this.doneIds.has(g.id),
+      })),
+    };
+  }
+
+  view(): GuideView {
+    const on = this.showing();
+    return {
+      version: this.version(),
+      phase: on ? 'next' : 'done',
+      visible: on && !this.paused,
+      active: false, // a standing chip never holds hints
+      step: null,
+      justDone: null,
+      done: [],
+      chip: !this.expanded,
+      coinLine: false,
+      heading: 'Next',
+      talkTarget: null,
+    };
+  }
+
+  /** The chip's words. `across`: rows share the width (a phone, a short window). */
+  copy(across: boolean): GuideCopy {
+    const next = this.next();
+    const head = next ? `Next: ${next.label}` : 'Your requests';
+    const n = across ? NEXT_ROWS.across : NEXT_ROWS.stacked;
+    return {
+      title: head,
+      body: '',
+      line: null,
+      headButton: { id: 'next', label: head },
+      buttons: [],
+      rows: this.rows(n).map((g) => ({
+        label: across ? g.short : g.label,
+        button: { id: `goal:${g.id}`, label: 'Show me' },
+      })),
+      lines: this.quests.slice(0, across ? NEXT_QUEST_LINES.across : NEXT_QUEST_LINES.stacked),
+      chip: head,
+    };
+  }
+}
+
 // ---- the card's words ------------------------------------------------------
 
 export interface GuideCopyContext {
@@ -817,8 +1147,19 @@ export interface GuideCopyContext {
 
 export interface GuideButton {
   /** 'route:<district>' is a recruiter-route stop's 'Show me'; 'stay' is its
-   *  'Stay in the menu'. */
-  id: 'skip' | 'resume' | 'ok' | 'primary' | 'school' | 'close' | 'stay' | `route:${string}`;
+   *  'Stay in the menu'. 'next' folds and unfolds the Next chip; 'goal:<id>'
+   *  is one of its 'Show me' rows. */
+  id:
+    | 'skip'
+    | 'resume'
+    | 'ok'
+    | 'primary'
+    | 'school'
+    | 'close'
+    | 'stay'
+    | 'next'
+    | `route:${string}`
+    | `goal:${string}`;
   label: string;
 }
 
@@ -838,8 +1179,11 @@ export interface GuideCopy {
    *  'Stay in the menu'. */
   headButton: GuideButton;
   buttons: GuideButton[];
-  /** 'Show me' rows (the recruiter route's stops), under the body. */
+  /** 'Show me' rows (the recruiter route's stops, the Next chip's goals),
+   *  under the body. */
   rows?: GuideRow[];
+  /** Plain lines under the rows: the Next chip's accepted quests. */
+  lines?: string[];
   /** The collapsed one-line chip. */
   chip: string;
 }

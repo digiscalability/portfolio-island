@@ -18,8 +18,11 @@ import {
   GUIDE_KEY,
   GUIDE_KEYS,
   GUIDE_STEPS,
+  GOAL_LADDER,
   Guide,
   guideCopy,
+  NEXT_ROWS,
+  NextChip,
   parseGuideSave,
   readGuideTo,
   RecruiterRoute,
@@ -1961,5 +1964,682 @@ describe('main-simple: a hire card closing arms the recruiter route (P2-A4)', ()
     app.onGuideButton('stay');
     app.renderGuide();
     expect(cardText()).toContain('First steps · 1/5');
+  });
+});
+
+// ---- P2-A12: the Next chip and the goal ladder ------------------------------
+/** A guide whose first steps are over (skipped), and its store. */
+function overGuide(init: Record<string, string> = {}) {
+  const h = makeGuide({}, init);
+  if (!h.guide.over()) {
+    h.guide.arm('explore');
+    run(h.guide, 0.7);
+    h.guide.skip();
+    run(h.guide, 1);
+  }
+  return h;
+}
+const noFacts: Record<string, boolean> = {};
+/** A chip that is on and past its 600 ms. */
+function chipOn(facts: Record<string, boolean> = noFacts, init: Record<string, string> = {}) {
+  const h = overGuide(init);
+  const tracked: Array<{ goal: string; outcome: string }> = [];
+  const chip = new NextChip(h.guide, { track: (_n, p) => tracked.push(p) });
+  chip.sync(true, facts, null, []);
+  for (let i = 0; i < 45; i++) chip.frame(1 / 60, false);
+  return { ...h, chip, tracked };
+}
+
+describe('GOAL_LADDER and NextChip (P2-A12)', () => {
+  test('the ladder: four stamps and the hire card, then five things to try, then four long ones', () => {
+    expect(GOAL_LADDER.map((g) => g.id)).toEqual([
+      'stamp:projects',
+      'stamp:professional',
+      'stamp:personal',
+      'stamp:contact',
+      'hire',
+      'talk',
+      'race',
+      'catch',
+      'lesson',
+      'shop',
+      'build',
+      'guestbook',
+      'deliveries',
+      'crown',
+    ]);
+    expect(GOAL_LADDER.map((g) => g.rung).join('')).toBe('11111222223333');
+    // every goal leads somewhere the 'Show me' seam can take: a key
+    // resolveGuideKey answers on the audited world, or one of the two panels
+    for (const g of GOAL_LADDER) {
+      if (g.guideKey.startsWith('panel:')) continue;
+      expect(resolveGuideKey(g.guideKey, world()), g.id).not.toBeNull();
+    }
+    expect(GOAL_LADDER.filter((g) => g.guideKey.startsWith('panel:')).map((g) => g.id)).toEqual([
+      'hire',
+      'guestbook',
+    ]);
+    // the fact sheet: no count is typed, and villagers are villagers
+    for (const g of GOAL_LADDER) {
+      expect(`${g.label} ${g.short}`).not.toMatch(/\d|agent|live AI/i);
+    }
+  });
+
+  test('off until the first steps are over; on, it shows 600 ms later, folded, naming Projects', () => {
+    const h = makeGuide();
+    const chip = new NextChip(h.guide);
+    expect(h.guide.over()).toBe(false);
+    chip.sync(false, noFacts, null, []);
+    expect(chip.showing()).toBe(false);
+    expect(chip.view().phase).toBe('done');
+    const on = chipOn();
+    expect(on.chip.showing()).toBe(true);
+    const v = on.chip.view();
+    expect(v).toMatchObject({ phase: 'next', visible: true, chip: true, active: false });
+    expect(on.chip.copy(false).chip).toBe('Next: Projects');
+    expect(on.chip.next()?.guideKey).toBe('district:projects');
+  });
+
+  test('it never shares a version with First steps or the route', () => {
+    const { chip, guide } = chipOn();
+    expect(chip.version()).toBeGreaterThanOrEqual(2_000_000);
+    expect(guide.version()).toBeLessThan(1_000_000);
+    expect(new RecruiterRoute().version()).toBeLessThan(2_000_000);
+  });
+
+  test('the next goal is the first undone one; the compass district is preferred while undone', () => {
+    const { chip } = chipOn({ 'stamp:projects': true });
+    expect(chip.next()?.id).toBe('stamp:professional');
+    chip.sync(true, { 'stamp:projects': true }, 'stamp:contact', []);
+    expect(chip.next()?.id).toBe('stamp:contact');
+    expect(chip.rows(3).map((g) => g.id)).toEqual([
+      'stamp:contact',
+      'stamp:professional',
+      'stamp:personal',
+    ]);
+    // a preferred goal that is done, or unknown, is ignored
+    chip.sync(true, { 'stamp:projects': true, 'stamp:contact': true }, 'stamp:contact', []);
+    expect(chip.next()?.id).toBe('stamp:professional');
+    chip.sync(true, {}, 'stamp:nowhere', []);
+    expect(chip.next()?.id).toBe('stamp:professional');
+  });
+
+  test('it names a district until all four are stamped, then the hire card, then rung 2', () => {
+    const facts: Record<string, boolean> = {};
+    const { chip } = chipOn(facts);
+    for (const z of ['projects', 'professional', 'personal', 'contact']) {
+      expect(chip.next()?.id).toBe(`stamp:${z}`);
+      facts[`stamp:${z}`] = true;
+      chip.sync(true, facts, null, []);
+    }
+    expect(chip.next()?.id).toBe('hire');
+    facts.hire = true;
+    chip.sync(true, facts, null, []);
+    expect(chip.next()?.id).toBe('talk');
+    expect(chip.copy(false).chip).toBe('Next: Talk to a villager');
+  });
+
+  test('a goal seen done stays done, is kept in ds_guide_v1.goals, and a reload resumes the ladder', () => {
+    const { chip, data, guide } = chipOn({ 'stamp:projects': true, race: true });
+    expect(saveOf(data).goals).toEqual(['stamp:projects', 'race']);
+    // the fact going false again (a cleared flag) does not undo it
+    chip.sync(true, {}, null, []);
+    expect(chip.isDone('race')).toBe(true);
+    expect(guide.goals()).toEqual(['stamp:projects', 'race']);
+    // a new page: the save alone
+    const again = makeGuide({}, { [GUIDE_KEY]: data[GUIDE_KEY] });
+    expect(again.guide.over()).toBe(true);
+    const chip2 = new NextChip(again.guide);
+    chip2.sync(true, {}, null, []);
+    expect(chip2.isDone('stamp:projects')).toBe(true);
+    expect(chip2.next()?.id).toBe('stamp:professional');
+    expect(chip2.summary().done).toBe(2);
+  });
+
+  test('nothing is written before the first steps are over: a pre-guide visitor still reads as never written', () => {
+    const h = makeGuide();
+    const chip = new NextChip(h.guide);
+    chip.sync(false, { 'stamp:projects': true }, null, []);
+    expect(h.data[GUIDE_KEY]).toBeUndefined();
+    h.guide.addGoals(['race']);
+    expect(h.data[GUIDE_KEY]).toBeUndefined();
+    // seen all the same, and kept the moment the chip comes on
+    expect(chip.isDone('stamp:projects')).toBe(true);
+  });
+
+  test('a save from before the ladder (no goals) and a damaged goals field both parse to an empty list', () => {
+    expect(parseGuideSave(JSON.stringify({ v: 1, done: [], skipped: true, t: 5 }))?.goals).toEqual(
+      [],
+    );
+    const bad = parseGuideSave(
+      JSON.stringify({ v: 1, done: [], skipped: true, t: 5, goals: ['race', 7, null, 'race'] }),
+    );
+    expect(bad?.goals.every((x) => typeof x === 'string')).toBe(true);
+  });
+
+  test('guide_goal is tracked for a goal done while the chip is on, not for what it found done', () => {
+    const { chip, tracked } = chipOn({ 'stamp:projects': true });
+    expect(tracked).toEqual([]);
+    expect(chip.sync(true, { 'stamp:projects': true, talk: true }, null, [])).toBe(true);
+    expect(tracked).toEqual([{ goal: 'talk', outcome: 'done' }]);
+    // unchanged facts: nothing grew, nothing redrawn
+    const ver = chip.version();
+    expect(chip.sync(true, { 'stamp:projects': true, talk: true }, null, [])).toBe(false);
+    expect(chip.version()).toBe(ver);
+  });
+
+  test('a tap unfolds rows and quests; a second tap, walking off or a pick folds it', () => {
+    const { chip, tracked } = chipOn();
+    chip.sync(true, {}, null, ['Fisher: Bring 3 fish 1/3']);
+    chip.toggle();
+    expect(chip.view().chip).toBe(false);
+    const open = chip.copy(false);
+    expect(open.rows?.map((r) => r.label)).toEqual([
+      'Projects',
+      'Professional',
+      'Personal',
+      'Contact',
+      'The hire card',
+    ]);
+    expect(open.rows?.[0].button).toEqual({ id: 'goal:stamp:projects', label: 'Show me' });
+    expect(open.lines).toEqual(['Fisher: Bring 3 fish 1/3']);
+    chip.toggle();
+    expect(chip.view().chip).toBe(true);
+    chip.toggle();
+    chip.fold();
+    expect(chip.view().chip).toBe(true);
+    const ver = chip.version();
+    chip.fold(); // already folded: no redraw
+    expect(chip.version()).toBe(ver);
+    chip.toggle();
+    expect(chip.pick('stamp:personal')?.guideKey).toBe('district:personal');
+    expect(chip.view().chip).toBe(true);
+    expect(tracked).toEqual([{ goal: 'stamp:personal', outcome: 'show' }]);
+    expect(chip.pick('nope')).toBeNull();
+  });
+
+  test('side by side it offers three short rows and two quests; stacked, five and three', () => {
+    const { chip } = chipOn();
+    chip.sync(true, {}, null, ['a', 'b', 'c', 'd']);
+    expect(chip.copy(true).rows).toHaveLength(NEXT_ROWS.across);
+    expect(chip.copy(true).lines).toEqual(['a', 'b']);
+    expect(chip.copy(false).rows).toHaveLength(NEXT_ROWS.stacked);
+    expect(chip.copy(false).lines).toEqual(['a', 'b', 'c']);
+    chip.sync(true, { 'stamp:projects': true, 'stamp:professional': true }, null, []);
+    expect(chip.copy(true).rows?.map((r) => r.label)).toEqual(['Personal', 'Contact', 'Hire card']);
+  });
+
+  test('an accepted quest appears on the next sync, and redraws the chip', () => {
+    const { chip } = chipOn();
+    const ver = chip.version();
+    chip.sync(true, {}, null, ['Baker: Deliver the bread 0/1']);
+    expect(chip.version()).toBeGreaterThan(ver);
+    chip.toggle();
+    expect(chip.copy(false).lines).toEqual(['Baker: Deliver the bread 0/1']);
+  });
+
+  test('it hides under a panel, a tour or a room, and comes back folded 600 ms after', () => {
+    const { chip } = chipOn();
+    chip.toggle();
+    chip.frame(1 / 60, true);
+    expect(chip.view().visible).toBe(false);
+    expect(chip.view().chip).toBe(true);
+    for (let i = 0; i < 30; i++) chip.frame(1 / 60, false); // 500 ms
+    expect(chip.view().visible).toBe(false);
+    for (let i = 0; i < 8; i++) chip.frame(1 / 60, false);
+    expect(chip.view().visible).toBe(true);
+    // toggling while off does nothing
+    chip.sync(false, {}, null, []);
+    chip.toggle();
+    expect(chip.showing()).toBe(false);
+  });
+
+  test('with every goal done and no quest it goes; with a quest left it says so', () => {
+    const all: Record<string, boolean> = {};
+    for (const g of GOAL_LADDER) all[g.id] = true;
+    const { chip } = chipOn(all);
+    expect(chip.showing()).toBe(false);
+    expect(chip.summary()).toMatchObject({ done: 14, total: 14, next: null });
+    chip.sync(true, all, null, ['Fisher: Bring 3 fish 1/3']);
+    expect(chip.showing()).toBe(true);
+    expect(chip.copy(false).chip).toBe('Your requests');
+  });
+
+  test("summary: what 'ds:goals' carries", () => {
+    const { chip } = chipOn({ 'stamp:projects': true });
+    const s = chip.summary();
+    expect(s.done).toBe(1);
+    expect(s.total).toBe(GOAL_LADDER.length);
+    expect(s.next).toEqual({
+      id: 'stamp:professional',
+      label: 'Professional',
+      guideKey: 'district:professional',
+    });
+    expect(s.goals[0]).toEqual({
+      id: 'stamp:projects',
+      rung: 1,
+      label: 'Projects',
+      guideKey: 'district:projects',
+      done: true,
+    });
+  });
+});
+
+describe('GuideCard: the Next chip on the same card (P2-A12)', () => {
+  const pressed: string[] = [];
+  const seen: Array<{ active: boolean; step: string | null }> = [];
+  const on = (e: Event) => seen.push((e as CustomEvent).detail);
+  let card: GuideCard | null = null;
+  const proto0 = Element.prototype as { animate?: unknown };
+  let animate0: unknown;
+  let animated = 0;
+  const mount = (over: Partial<GuideCardOptions> = {}): GuideCard => {
+    card = new GuideCard(document.getElementById('ui-overlay')!, {
+      touch: false,
+      reducedMotion: () => true,
+      onButton: (id) => pressed.push(id),
+      prompt: () => null,
+      ...over,
+    });
+    return card;
+  };
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    pressed.length = 0;
+    seen.length = 0;
+    animated = 0;
+    window.addEventListener('ds:guide', on);
+    animate0 = proto0.animate;
+    proto0.animate = () => {
+      animated++;
+      return { cancel() {} };
+    };
+  });
+  afterEach(() => {
+    window.removeEventListener('ds:guide', on);
+    card?.dispose();
+    card = null;
+    proto0.animate = animate0;
+    Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true });
+  });
+  const head = (): HTMLButtonElement =>
+    document.querySelector<HTMLButtonElement>('#ds-guide button[data-g="next"]')!;
+
+  test("folded: one 44 px button, as wide as its words, that holds no hints (data-active '0')", () => {
+    const c = mount();
+    const { chip } = chipOn();
+    c.render(chip.view(), chip.copy(false));
+    expect(c.el.style.display).toBe('block');
+    expect(c.el.dataset.active).toBe('0');
+    expect(c.el.dataset.next).toBe('folded');
+    expect(c.el.style.width).toBe('max-content');
+    expect(c.el.style.maxWidth).toBe('300px');
+    expect(c.el.querySelectorAll('button')).toHaveLength(1);
+    expect(head().textContent).toContain('Next: Projects');
+    expect(head().getAttribute('aria-expanded')).toBe('false');
+    expect(head().style.minHeight).toContain('44px');
+    // the standing chip is not "the guide is active" to D6
+    expect(seen.every((d) => d.active === false)).toBe(true);
+  });
+
+  test('open: Show me rows read with their goal, quests under them, and the button says expanded', () => {
+    const c = mount();
+    const { chip } = chipOn();
+    chip.sync(true, {}, null, ['Fisher: Bring 3 fish 1/3']);
+    chip.toggle();
+    c.render(chip.view(), chip.copy(false));
+    expect(c.el.dataset.next).toBe('open');
+    expect(c.el.style.width).toBe('300px');
+    expect(head().getAttribute('aria-expanded')).toBe('true');
+    const rows = [...c.el.querySelectorAll<HTMLButtonElement>('button[data-g^="goal:"]')];
+    expect(rows.map((b) => b.dataset.g)).toEqual([
+      'goal:stamp:projects',
+      'goal:stamp:professional',
+      'goal:stamp:personal',
+      'goal:stamp:contact',
+      'goal:hire',
+    ]);
+    expect(rows[0].textContent).toContain('Projects');
+    expect(rows[0].textContent).toContain('Show me');
+    // one filled primary, as on the route
+    expect(rows.filter((b) => b.dataset.primary === '1')).toHaveLength(1);
+    expect([...c.el.querySelectorAll('[data-quest]')].map((n) => n.textContent)).toEqual([
+      'Fisher: Bring 3 fish 1/3',
+    ]);
+    rows[2].click();
+    head().click();
+    expect(pressed).toEqual(['goal:stamp:personal', 'next']);
+  });
+
+  test('on a portrait phone it stands bottom left and unfolds upward', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 844, configurable: true });
+    const c = mount({ touch: true });
+    const { chip } = chipOn();
+    chip.toggle();
+    c.render(chip.view(), chip.copy(true));
+    expect(c.el.dataset.lane).toBe('phone');
+    // (happy-dom drops a calc(var()) value: the browser check measures the
+    // 16 px; here, only that it is not the centred card's lane)
+    expect(c.el.style.left).not.toContain('50%');
+    expect((c.el.firstElementChild as HTMLElement).style.flexDirection).toBe('column-reverse');
+    expect(c.el.querySelectorAll('button[data-g^="goal:"]')).toHaveLength(NEXT_ROWS.across);
+  });
+
+  test('reduced motion: folding and unfolding animate nothing', () => {
+    const c = mount({ reducedMotion: () => true });
+    const { chip } = chipOn();
+    c.render(chip.view(), chip.copy(false));
+    chip.toggle();
+    c.render(chip.view(), chip.copy(false));
+    chip.toggle();
+    c.render(chip.view(), chip.copy(false));
+    expect(animated).toBe(0);
+    expect(c.el.style.transition === '' || c.el.style.transition === 'none').toBe(true);
+  });
+
+  test('hidden under a panel: the element is not displayed', () => {
+    const c = mount();
+    const { chip } = chipOn();
+    c.render(chip.view(), chip.copy(false));
+    chip.frame(1 / 60, true);
+    c.render(chip.view(), chip.copy(false));
+    expect(c.el.style.display).toBe('none');
+  });
+});
+
+describe('main-simple: the Next chip takes the card when the first steps end (P2-A12)', () => {
+  type Method = (this: unknown, ...a: unknown[]) => unknown;
+  const NAMES = [
+    'renderGuide',
+    'armGuide',
+    'onGuideButton',
+    'onModalEvent',
+    'armRoute',
+    'createGuideCard',
+    'guideFinaleDistrict',
+    'guideHoldsHints',
+    'guideTo',
+    'storedFlag',
+    'goalFacts',
+    'syncGoals',
+    'publishGoals',
+  ] as const;
+  let proto: Record<(typeof NAMES)[number], Method>;
+  beforeAll(async () => {
+    (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
+    const mod = await import('../main-simple');
+    proto = mod.SimpleApp.prototype as unknown as typeof proto;
+  }, 120000);
+
+  const stamps = new Set<string>();
+  const opened: string[] = [];
+  let quests: Array<{ id: string; giver: string; label: string; progress: string }> = [];
+  const stubApp = (guide: Guide) => {
+    const app: Record<string, unknown> = {
+      guide,
+      guideCard: null,
+      guideSurface: null,
+      route: new RecruiterRoute(),
+      nextChip: new NextChip(guide),
+      walkedSinceLoad: 0,
+      hireCardSource: null,
+      hireSeen: false,
+      fishEver: false,
+      fishCaught: 0,
+      shopOpened: false,
+      ownedRod: false,
+      ownedAxe: false,
+      ownedSickle: false,
+      ownedPickaxe: false,
+      lessons: [],
+      ownBuilds: new Map(),
+      ownedHats: new Set<string>(),
+      villagersTalked: new Set<string>(),
+      deliverySystem: null,
+      coinsEarned: 0,
+      coinsSeen: -1,
+      visitStartedAt: 0,
+      goalsWereOn: false,
+      goalsPublishT: 0,
+      goalTarget: null,
+      _goalFacts: {},
+      _goalPos: {
+        x: 0,
+        y: 0,
+        z: 0,
+        set(x: number, y: number, z: number) {
+          this.x = x;
+          this.y = y;
+          this.z = z;
+          return this;
+        },
+      },
+      guideWorld: world(),
+      secrets: { count: () => 2 },
+      npcQuests: { getActiveQuests: () => quests },
+      scene: { getCoinsCollected: () => 40 },
+      ui: {
+        getOverlay: () => document.getElementById('ui-overlay')!,
+        isTouchDevice: () => false,
+        isWelcomeVisible: () => false,
+        showHireCard: (src: string) => opened.push(`hire:${src}`),
+        showGuestbook: () => {
+          opened.push('guestbook');
+          return Promise.resolve();
+        },
+      },
+      introSettled: true,
+      compassLabel: '',
+      passport: {
+        has: (z: string) => stamps.has(z),
+        count: () => stamps.size,
+        isComplete: () => stamps.size >= 4,
+        isStampZone: () => true,
+      },
+      compassDistrict: null,
+      guidePrevValid: true,
+    };
+    for (const k of NAMES) app[k] = proto[k].bind(app);
+    return app as typeof app & Record<(typeof NAMES)[number], (...a: unknown[]) => unknown>;
+  };
+  /** What guideTick does for the chip, without the scene. */
+  const tick = (app: ReturnType<typeof stubApp>, seconds: number): void => {
+    const chip = app.nextChip as NextChip;
+    const g = app.guide as Guide;
+    for (let t = 0; t < seconds - 1e-9; t += 1 / 60) {
+      g.frame(idle());
+      const on = g.over() && !(app.route as RecruiterRoute).showing();
+      if (on !== app.goalsWereOn) app.syncGoals(on);
+      chip.frame(1 / 60, false);
+      app.renderGuide();
+    }
+  };
+  const sent: Array<{ key: string; source: string }> = [];
+  const goals: Array<Record<string, unknown>> = [];
+  const guideEvents: Array<{ active: boolean; step: string | null }> = [];
+  const onTo = (e: Event) => sent.push((e as CustomEvent).detail);
+  const onGoals = (e: Event) => goals.push((e as CustomEvent).detail);
+  const onGuide = (e: Event) => guideEvents.push((e as CustomEvent).detail);
+  let app: ReturnType<typeof stubApp> | null = null;
+  const proto0 = Element.prototype as { animate?: unknown };
+  let animate0: unknown;
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    localStorage.clear();
+    stamps.clear();
+    opened.length = 0;
+    quests = [];
+    sent.length = 0;
+    goals.length = 0;
+    guideEvents.length = 0;
+    window.addEventListener('ds:guide-to', onTo);
+    window.addEventListener('ds:goals', onGoals);
+    window.addEventListener('ds:guide', onGuide);
+    animate0 = proto0.animate;
+    proto0.animate = () => ({ cancel() {} });
+  });
+  afterEach(() => {
+    window.removeEventListener('ds:guide-to', onTo);
+    window.removeEventListener('ds:goals', onGoals);
+    window.removeEventListener('ds:guide', onGuide);
+    (app?.guideCard as GuideCard | null)?.dispose();
+    app = null;
+    proto0.animate = animate0;
+  });
+  const el = (): HTMLElement | null => document.getElementById('ds-guide');
+  const visible = (): boolean => el()?.style.display === 'block';
+
+  test('Skip: the card folds into the chip within a second, on the same #ds-guide', () => {
+    const { guide } = makeGuide();
+    app = stubApp(guide);
+    app.armGuide('explore');
+    tick(app, 0.7);
+    expect(el()?.textContent).toContain('First steps · 1/5');
+    app.onGuideButton('skip');
+    tick(app, 1);
+    expect(document.querySelectorAll('#ds-guide')).toHaveLength(1);
+    expect(visible()).toBe(true);
+    expect(el()?.dataset.next).toBe('folded');
+    expect(el()?.textContent).toContain('Next: Projects');
+    expect(el()?.dataset.active).toBe('0');
+    expect(app.guideHoldsHints()).toBe(false);
+    // the steps' end was announced before the chip drew: hints are released
+    expect(guideEvents.at(-1)?.active).toBe(false);
+  });
+
+  test('a returning visitor whose first steps are over gets the chip with no card before it', () => {
+    const first = overGuide();
+    const { guide } = makeGuide({}, { [GUIDE_KEY]: first.data[GUIDE_KEY] });
+    app = stubApp(guide);
+    expect(el()).toBeNull();
+    tick(app, 0.7);
+    expect(visible()).toBe(true);
+    expect(el()?.textContent).toContain('Next: Projects');
+  });
+
+  test('the chip names the district the compass would: stamps, then the hire card', () => {
+    app = stubApp(overGuide().guide);
+    tick(app, 0.7);
+    stamps.add('projects');
+    app.syncGoals(true);
+    app.renderGuide();
+    expect(el()?.textContent).toContain('Next: Professional');
+    expect((app.goalTarget as { label: string }).label).toContain('Professional');
+    for (const z of ['professional', 'personal', 'contact']) stamps.add(z);
+    app.syncGoals(true);
+    app.renderGuide();
+    expect(el()?.textContent).toContain('Next: The hire card');
+    // a panel is not a place: the compass is left alone
+    expect(app.goalTarget).toBeNull();
+    app.onModalEvent({ open: true, id: 'zone', zone: 'hire' });
+    app.syncGoals(true);
+    app.renderGuide();
+    expect(el()?.textContent).toContain('Next: Talk to a villager');
+  });
+
+  test("a tap unfolds it; a row's Show me goes through 'ds:guide-to' with source next and folds it", () => {
+    app = stubApp(overGuide().guide);
+    tick(app, 0.7);
+    app.onGuideButton('next');
+    expect(el()?.dataset.next).toBe('open');
+    expect(el()?.querySelectorAll('button[data-g^="goal:"]')).toHaveLength(NEXT_ROWS.stacked);
+    app.onGuideButton('goal:stamp:personal');
+    expect(sent).toEqual([{ key: 'district:personal', source: 'next' }]);
+    expect(el()?.dataset.next).toBe('folded');
+    // First steps is not re-armed by it
+    expect((app.guide as Guide).running()).toBe(false);
+  });
+
+  test('an accepted quest is listed in the unfolded chip on the next sync', () => {
+    app = stubApp(overGuide().guide);
+    tick(app, 0.7);
+    quests = [{ id: 'q1', giver: 'Fisher', label: 'Bring 3 fish', progress: '1/3' }];
+    app.syncGoals(true);
+    app.onGuideButton('next');
+    expect([...el()!.querySelectorAll('[data-quest]')].map((n) => n.textContent)).toEqual([
+      'Fisher: Bring 3 fish 1/3',
+    ]);
+  });
+
+  test("the two panel goals open their panel through guideTo: 'panel:hire', 'panel:guestbook'", () => {
+    app = stubApp(overGuide().guide);
+    app.guideTo('panel:hire', null, 'next');
+    app.guideTo('panel:guestbook', null, 'things');
+    expect(opened).toEqual(['hire:menu', 'guestbook']);
+  });
+
+  test("'ds:goals' carries the ladder and the visit's numbers, when the chip comes on and when a goal is done", () => {
+    app = stubApp(overGuide().guide);
+    (app.villagersTalked as Set<string>).add('Mayor');
+    stamps.add('projects');
+    tick(app, 0.7);
+    expect(goals).toHaveLength(1);
+    expect(goals[0]).toMatchObject({
+      done: 2,
+      total: GOAL_LADDER.length,
+      next: { id: 'stamp:professional', guideKey: 'district:professional' },
+      visit: { stamps: 1, villagers: 1, coins: 0, secrets: 2, minutes: 0 },
+    });
+    app.syncGoals(true); // nothing new: nothing sent
+    expect(goals).toHaveLength(1);
+    localStorage.setItem('ds_raced', '1');
+    app.syncGoals(true);
+    expect(goals).toHaveLength(2);
+    expect(goals[1].done).toBe(3);
+  });
+
+  test('coins earned this visit are counted from the first reading on', () => {
+    app = stubApp(overGuide().guide);
+    let coins = 40;
+    (app.scene as { getCoinsCollected: () => number }).getCoinsCollected = () => coins;
+    app.syncGoals(true);
+    coins = 47;
+    app.syncGoals(true);
+    coins = 30; // spent: not negative earnings
+    app.syncGoals(true);
+    app.publishGoals();
+    expect((goals.at(-1)!.visit as { coins: number }).coins).toBe(7);
+  });
+
+  test('what counts as done: the flags and the session facts', () => {
+    app = stubApp(overGuide().guide);
+    expect(Object.values(app.goalFacts() as Record<string, boolean>).some(Boolean)).toBe(false);
+    localStorage.setItem('ds_npc_chatted', '1');
+    localStorage.setItem('ds_said_hi', '1');
+    localStorage.setItem('ds_courier_reward', '1');
+    app.fishCaught = 1;
+    app.shopOpened = true;
+    (app.lessons as unknown[]).push({});
+    (app.ownBuilds as Map<string, unknown>).set('a', {});
+    (app.ownedHats as Set<string>).add('crown');
+    expect(app.goalFacts()).toMatchObject({
+      talk: true,
+      guestbook: true,
+      deliveries: true,
+      catch: true,
+      shop: true,
+      lesson: true,
+      build: true,
+      crown: true,
+      race: false,
+      hire: false,
+    });
+  });
+
+  test('the route has the card while it shows; the chip returns after Stay', () => {
+    app = stubApp(overGuide().guide);
+    tick(app, 0.7);
+    expect(el()?.textContent).toContain('Next: Projects');
+    app.onModalEvent({ open: false, id: 'zone', zone: 'hire' });
+    const route = app.route as RecruiterRoute;
+    for (let i = 0; i < 45; i++) {
+      route.frame(1 / 60, false);
+      tick(app, 1 / 60);
+    }
+    expect(el()?.textContent).toContain('Recruiter route · 3 stops');
+    app.onGuideButton('stay');
+    tick(app, 0.8);
+    expect(el()?.textContent).toContain('Next: Projects');
+    expect(visible()).toBe(true);
   });
 });

@@ -1047,7 +1047,8 @@ describe('A6: First steps, wired into main-simple', () => {
     const render = bodyOf(m, 'private renderGuide(');
     // ...or the recruiter route shows (P2-A4): a visit that never arms either
     // still carries no #ds-guide
-    expect(render).toContain('if (!this.guideCard && !g.running() && !routeUp) return;');
+    // ...or the Next chip (P2-A12)
+    expect(render).toContain('if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;');
     expect(render).toContain('const card = (this.guideCard ??= this.createGuideCard());');
     expect(m.split('this.createGuideCard()').length - 1).toBe(1);
     expect(bodyOf(m, 'private armGuide(')).toContain('this.renderGuide();');
@@ -1498,9 +1499,10 @@ describe('P2-A4: the recruiter route, wired into main-simple', () => {
       "window.removeEventListener('ds:modal', this.boundHandlers.guideModal);",
     );
     const modal = bodyOf(m(), 'private onModalEvent(');
-    expect(modal).toContain(
-      "if (!d || d.id !== 'zone' || d.zone !== 'hire' || d.open !== false) return;",
-    );
+    expect(modal).toContain("if (!d || d.id !== 'zone' || d.zone !== 'hire') return;");
+    // its opening is a rung-1 goal (P2-A12); only its closing arms the route
+    expect(modal).toContain('if (d.open === true) this.hireSeen = true;');
+    expect(modal).toContain('if (d.open !== false) return;');
     expect(modal).toContain("const source = this.hireCardSource ?? 'hire';");
     // only a visitor who has not walked off, and the compass hint counts as shown
     const arm = bodyOf(m(), 'private armRoute(');
@@ -1550,6 +1552,79 @@ describe('P2-A4: the recruiter route, wired into main-simple', () => {
   test("the legacy controls card names '?' only where D8's sheet answers it", () => {
     expect(bodyOf(m(), 'private renderGuide(')).toMatch(
       /controlsSheet:\s*typeof \(this\.ui as unknown as \{ showControls\?: unknown \}\)\.showControls === 'function',/,
+    );
+  });
+});
+
+// ---- P2-A12: the Next chip and the goal ladder ------------------------------
+describe('P2-A12: the Next chip, wired into main-simple', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test('the chip is made with the guide and fed by the guide tick, twice a second', () => {
+    const setup = bodyOf(m(), 'private setupGuide(');
+    expect(setup).toContain('this.nextChip = new NextChip(this.guide, {');
+    const tick = bodyOf(m(), 'private guideTick(');
+    expect(tick).toContain('const on = g.over() && !route?.showing();');
+    expect(tick).toContain('if (this.goalsT >= 0.5 || on !== this.goalsWereOn) {');
+    expect(tick).toContain('this.syncGoals(on);');
+    // walking off folds the list; panels, tours and rooms hide it
+    expect(tick).toContain('if (this.guideMoveMag > 0.3) chip.fold();');
+    expect(tick).toContain('chip.frame(f.dt, f.blocked);');
+    // the order: the route, First steps, the chip, then one redraw
+    const order = [
+      'route?.frame(f.dt, f.blocked);',
+      'g.frame(f);',
+      'chip.frame(f.dt, f.blocked);',
+      'this.renderGuide();',
+    ].map((x) => tick.indexOf(x));
+    for (const i of order) expect(i).toBeGreaterThan(-1);
+    expect([...order].sort((x, y) => x - y)).toEqual(order);
+  });
+
+  test('one surface on the one card: the route, else First steps, else the chip', () => {
+    const render = bodyOf(m(), 'private renderGuide(');
+    expect(render).toContain(
+      "const want = routeUp ? 'route' : g.running() ? 'steps' : chipUp ? 'next' : null;",
+    );
+    // the surface that was up draws its own end before the next one draws
+    expect(render).toContain('const surface = want ?? this.guideSurface ?? null;');
+    // still exactly one card, however many surfaces
+    expect(m().split('new GuideCard(').length - 1).toBe(1);
+  });
+
+  test("its buttons: 'next' folds and unfolds; 'goal:<id>' goes through 'ds:guide-to' with source next", () => {
+    const btn = bodyOf(m(), 'private onGuideButton(');
+    expect(btn).toContain("else if (id === 'next') this.nextChip?.toggle();");
+    expect(btn).toContain("const goal = this.nextChip?.pick(id.slice('goal:'.length));");
+    expect(btn).toContain(
+      "new CustomEvent('ds:guide-to', { detail: { key: goal.guideKey, source: 'next' } }),",
+    );
+  });
+
+  test('the compass takes the goal last, and the two panel goals open panels', () => {
+    const compass = bodyOf(m(), 'private updateQuestCompass(');
+    expect(compass).toContain('st.goal = this.goalTarget !== null;');
+    expect(compass).toContain("case 'goal':");
+    const to = bodyOf(m(), 'private guideTo(');
+    expect(to).toContain("if (key === 'panel:hire') {");
+    expect(to).toContain("this.ui.showHireCard('menu');");
+    expect(to).toContain("if (key === 'panel:guestbook') {");
+    expect(to.indexOf("if (key === 'panel:hire') {")).toBeLessThan(
+      to.indexOf('resolveGuideKey(key, this.guideWorld)'),
+    );
+  });
+
+  test("'ds:goals' is sent from one place, with the visit's numbers", () => {
+    const s = m();
+    expect(s.split("new CustomEvent('ds:goals'").length - 1).toBe(1);
+    const pub = bodyOf(s, 'private publishGoals(');
+    for (const k of ['stamps:', 'villagers:', 'coins:', 'secrets:', 'minutes:']) {
+      expect(pub, k).toContain(k);
+    }
+    const sync = bodyOf(s, 'private syncGoals(');
+    expect(sync).toContain('if (grew || on !== this.goalsWereOn) {');
+    expect(bodyOf(s, 'private guideTick(')).toContain(
+      'if (on && this.goalsPublishT >= 15) this.publishGoals();',
     );
   });
 });

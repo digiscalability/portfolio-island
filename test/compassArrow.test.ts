@@ -119,6 +119,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
     parcelActive: false,
     passportComplete: false,
     deliveryOptIn: false,
+    goal: false,
   };
   const all: CompassState = {
     mapPick: true,
@@ -132,6 +133,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
     parcelActive: true,
     passportComplete: false,
     deliveryOptIn: true,
+    goal: true,
   };
 
   test('the order table: each source wins over everything after it', () => {
@@ -152,6 +154,13 @@ describe('compassTarget: the pill picks one target, in order', () => {
     }
     // Only the parcel is left: the visitor collected one this session.
     expect(compassTarget(s)).toBe('parcel');
+    // The Next chip's goal (P2-A12) comes last of all: it has the pill only
+    // when nothing else does.
+    s.parcelActive = false;
+    s.deliveryOptIn = false;
+    expect(compassTarget(s)).toBe('goal');
+    expect(compassTarget({ ...none, goal: true })).toBe('goal');
+    expect(compassTarget({ ...none, goal: true, districtUnstamped: true })).toBe('district');
     expect(compassTarget(none)).toBeNull();
   });
 

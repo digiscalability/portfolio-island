@@ -10,15 +10,18 @@
  * animate at once (the card, its check, one ring or the ghost thumb).
  *
  * The same element draws the recruiter route (P2-A4): a view whose phase is
- * 'route', with 'Show me' rows.
+ * 'route', with 'Show me' rows. And the Next chip (P2-A12), phase 'next':
+ * one 44 px line that unfolds into 'Show me' rows and the visitor's quests.
+ * It sits where the card's top-left does (on a phone, bottom-left above the
+ * prompt), as wide as its words, and never sets data-active.
  */
 import type { GuideButton, GuideCopy, GuideRow, GuideView } from './Guide';
 
 export interface GuideCardOptions {
   touch: boolean;
   reducedMotion(): boolean;
-  /** A button: skip, resume (the chip), ok, primary, school, close, and the
-   *  route's stay and route:<district>. */
+  /** A button: skip, resume (the chip), ok, primary, school, close, the
+   *  route's stay and route:<district>, the Next chip's next and goal:<id>. */
   onButton(id: GuideButton['id']): void;
   /** The interaction prompt the phone card stays 8 px above, if any. */
   prompt(): HTMLElement | null;
@@ -91,9 +94,14 @@ export class GuideCard {
   private promptLift = 0;
   /** The one-line move step of a portrait phone (compactFor). */
   private compact = false;
+  /** The Next chip is drawn: 'folded' (as wide as its words) or 'open'. */
+  private next: 'folded' | 'open' | null = null;
   private last: { v: GuideView; copy: GuideCopy } | null = null;
   private readonly onResize = (): void => {
     this.promptLift = 0;
+    // Rows and the Next chip lay themselves out by the window: the owner
+    // redraws them (with fresh words) on its next pass.
+    if (this.next || this.last?.copy.rows?.length) this.renderedVersion = -1;
     // A rotation can change the form (compactFor reads innerHeight).
     if (this.last && this.compactFor(this.last.v) !== this.compact) {
       this.renderedVersion = -1;
@@ -175,10 +183,14 @@ export class GuideCard {
     this.renderedVersion = v.version;
     this.last = { v, copy };
     this.compact = this.compactFor(v);
+    this.next = v.phase === 'next' ? (v.chip ? 'folded' : 'open') : null;
     const signal =
       v.phase === 'steps'
         ? v.step
-        : v.phase === 'controls' || v.phase === 'finale' || v.phase === 'route'
+        : v.phase === 'controls' ||
+            v.phase === 'finale' ||
+            v.phase === 'route' ||
+            v.phase === 'next'
           ? v.phase
           : null;
     const active = v.active;
@@ -196,7 +208,8 @@ export class GuideCard {
       return;
     }
     this.el.replaceChildren();
-    if (v.chip) this.drawChip(copy);
+    if (this.next) this.drawNext(copy, this.next === 'open');
+    else if (v.chip) this.drawChip(copy);
     else if (this.compact) this.drawCompact(copy);
     else this.drawCard(v, copy);
     this.el.style.display = 'block';
@@ -273,7 +286,12 @@ export class GuideCard {
       const base = `calc(var(--sab, 0px) + ${this.compact ? 300 : 350}px)`;
       Object.assign(s, {
         top: 'auto',
-        left: this.compact ? 'calc(var(--sal, 0px) + 16px)' : 'calc(50% - min(46vw, 180px))',
+        // The Next chip stands bottom left, above the prompt lane: a chip
+        // that is always there must not sit across the middle of the view.
+        left:
+          this.compact || this.next
+            ? 'calc(var(--sal, 0px) + 16px)'
+            : 'calc(50% - min(46vw, 180px))',
         bottom: this.promptLift > 0 ? `max(${base}, ${this.promptLift}px)` : base,
         width: this.compact ? 'min(54vw, 240px)' : 'min(92vw, 360px)',
       });
@@ -285,6 +303,14 @@ export class GuideCard {
         bottom: 'auto',
         width: '300px',
       });
+    }
+    // Folded, the Next chip is as wide as its words, up to its lane's width.
+    this.el.dataset.next = this.next ?? '';
+    if (this.next === 'folded') {
+      s.maxWidth = s.width;
+      s.width = 'max-content';
+    } else {
+      s.maxWidth = '';
     }
   }
 
@@ -326,6 +352,78 @@ export class GuideCard {
       },
     );
     this.el.appendChild(b);
+  }
+
+  /**
+   * The Next chip. Folded: one button, 'Next: <goal>', 44 px tall. Open: the
+   * same button (it folds the chip again), 'Show me' rows for the next few
+   * goals, and the visitor's accepted quests. On a portrait phone the card
+   * is anchored by its bottom edge, so the button stays at the bottom, under
+   * the thumb that opened it, and the rows unfold above it.
+   */
+  private drawNext(copy: GuideCopy, open: boolean): void {
+    this.el.style.padding = '0';
+    const up = this.opts.touch && innerHeight > 500; // bottom-anchored lane
+    const box = document.createElement('div');
+    Object.assign(box.style, { display: 'flex', flexDirection: up ? 'column-reverse' : 'column' });
+    const head = this.button(
+      { id: 'next', label: '' },
+      {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '10px',
+        width: '100%',
+        minHeight: 'var(--ds-hit-target, 44px)',
+        padding: '0 14px',
+        border: 'none',
+        background: 'transparent',
+        fontSize: '13px',
+        fontWeight: '600',
+        textAlign: 'left',
+      },
+    );
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const words = document.createElement('span');
+    words.textContent = copy.chip;
+    Object.assign(words.style, {
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+    });
+    const caret = document.createElement('span');
+    caret.setAttribute('aria-hidden', 'true');
+    // the rows unfold away from the button: up on a phone, down elsewhere
+    caret.textContent = open === up ? '▾' : '▴';
+    Object.assign(caret.style, { flex: 'none', color: 'var(--ds-text-3, #9fb0c8)' });
+    head.append(words, caret);
+    box.appendChild(head);
+    if (open) {
+      const body = document.createElement('div');
+      Object.assign(body.style, { padding: up ? '10px 12px 0' : '0 12px 10px' });
+      if (copy.rows?.length) {
+        const rows = this.rows(copy.rows);
+        rows.style.marginTop = '0';
+        body.appendChild(rows);
+      }
+      for (const text of copy.lines ?? []) {
+        const line = document.createElement('div');
+        line.dataset.quest = '1';
+        line.textContent = text;
+        Object.assign(line.style, {
+          marginTop: '6px',
+          fontSize: '12.5px',
+          lineHeight: '1.3',
+          color: 'var(--ds-text-2, #c5cfdd)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        });
+        body.appendChild(line);
+      }
+      box.appendChild(body);
+    }
+    this.el.appendChild(box);
   }
 
   /** The compact move step: the step's words, then Skip, at least 44 px

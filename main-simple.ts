@@ -15,6 +15,7 @@ import { GameScene } from './GameScene';
 import {
   Guide,
   guideCopy,
+  NextChip,
   readGuideTo,
   RecruiterRoute,
   resolveGuideKey,
@@ -1454,6 +1455,7 @@ export class SimpleApp {
         // The trail villager is chosen once, here, so the pill names them from
         // behind the card on; phones end the intro facing them (A7), with the
         // coins that lead there on screen.
+        this.visitStartedAt = performance.now(); // the visit's minutes ('ds:goals')
         this.trailVillager = this.pickTrailVillager();
         this.faceTrailVillager();
         let saved: string | null = null;
@@ -1827,6 +1829,10 @@ export class SimpleApp {
     }
     this.scene.equipPlayerHat(hat as HatId);
     this.multiplayer?.setHat(hat as HatId);
+    // The crown's card reads the latest 'ds:goals' (P2-D10): send it the
+    // ladder as it stands with this stamp, before the card opens.
+    this.syncGoals(this.goalsWereOn);
+    this.publishGoals();
     this.ui.showPassportComplete();
   }
 
@@ -3032,6 +3038,7 @@ export class SimpleApp {
           );
           if (this.inputManager.consumeKeyPress('e')) {
             if (this.scene.reelLine() === 'fish') {
+              this.fishEver = true; // a rung-2 goal (P2-A12)
               this.fishCaught++;
               this.persistFish();
               sfx.coin();
@@ -3787,6 +3794,7 @@ export class SimpleApp {
     st.parcelActive = !!delivery?.destination;
     st.passportComplete = passport?.isComplete() ?? false;
     st.deliveryOptIn = this.deliveryOptIn;
+    st.goal = this.goalTarget !== null;
     let targetPos: THREE.Vector3 | null = null;
     let label = '';
     switch (compassTarget(st)) {
@@ -3831,6 +3839,11 @@ export class SimpleApp {
         // Its own glyph: 📬 means the Contact district only.
         targetPos = delivery?.destination?.mesh.position ?? null;
         label = '📦 Parcel';
+        break;
+      case 'goal':
+        // The Next chip's goal (P2-A12): only when nothing above has the pill.
+        targetPos = this.goalTarget?.pos ?? null;
+        label = this.goalTarget?.label ?? '';
         break;
     }
     this.lastCompassTarget = targetPos ?? null;
@@ -3921,6 +3934,7 @@ export class SimpleApp {
     parcelActive: false,
     passportComplete: false,
     deliveryOptIn: false,
+    goal: false,
   };
 
   /** The districts' door positions, read once: zones never move, and
@@ -4221,6 +4235,16 @@ export class SimpleApp {
    * unknown key opens the island map instead, so a 'Show me' never dead-ends.
    */
   private guideTo(key: string, label: string | null, source: string): void {
+    // Two ladder goals are panels, not places (P2-A12): their 'Show me'
+    // opens them, whoever sends the key.
+    if (key === 'panel:hire') {
+      this.ui.showHireCard('menu');
+      return;
+    }
+    if (key === 'panel:guestbook') {
+      void this.ui.showGuestbook();
+      return;
+    }
     const hit = resolveGuideKey(key, this.guideWorld);
     if (!hit) {
       this.openIslandMap();
@@ -4259,6 +4283,26 @@ export class SimpleApp {
   private walkedSinceLoad = 0;
   /** How the hire card now open was opened, when not by the pill or a chip. */
   private hireCardSource: RouteSource | null = null;
+  // ── The goal ladder and the Next chip (P2-A12) ──────────────────────
+  private nextChip: NextChip | null = null;
+  /** Which surface #ds-guide last drew: one at a time on the one card. */
+  private guideSurface: 'route' | 'steps' | 'next' | null = null;
+  private goalsT = 0;
+  private goalsPublishT = 0;
+  private goalsWereOn = false;
+  /** Where the chip's goal is, when it names a place: the compass's last
+   *  resort (Compass.compassTarget's 'goal'). */
+  private goalTarget: { pos: THREE.Vector3; label: string } | null = null;
+  private readonly _goalPos = new THREE.Vector3();
+  private readonly _goalFacts: Record<string, boolean> = {};
+  // What only this session saw happen (the rest is read from the world).
+  private hireSeen = false;
+  private fishEver = false;
+  private shopOpened = false;
+  private readonly villagersTalked = new Set<string>();
+  private coinsEarned = 0;
+  private coinsSeen = -1;
+  private visitStartedAt = 0;
   /** Bound once: FxBudget times it every frame. */
   private readonly boundGuideTick = (): void => this.guideTick();
   /** main-simple's own unprompted hints, held while the guide runs. */
@@ -4305,6 +4349,10 @@ export class SimpleApp {
     // The recruiter route (P2-A4) arms when a hire card closes. D4's 'ds:modal'
     // says which panel that was: {open: false, id: 'zone', zone: 'hire'}.
     this.route = new RecruiterRoute({ track: (name, props) => track(name, props) });
+    // The Next chip (P2-A12) takes the card once the first steps are over.
+    if (this.guide) {
+      this.nextChip = new NextChip(this.guide, { track: (name, props) => track(name, props) });
+    }
     this.boundHandlers.guideModal = (e: Event) => this.onModalEvent((e as CustomEvent).detail);
     window.addEventListener('ds:modal', this.boundHandlers.guideModal);
     // No card yet: #ds-guide is made when the guide first arms (renderGuide).
@@ -4376,7 +4424,9 @@ export class SimpleApp {
    */
   private onModalEvent(detail: unknown): void {
     const d = detail as { open?: unknown; id?: unknown; zone?: unknown } | null;
-    if (!d || d.id !== 'zone' || d.zone !== 'hire' || d.open !== false) return;
+    if (!d || d.id !== 'zone' || d.zone !== 'hire') return;
+    if (d.open === true) this.hireSeen = true; // a rung-1 goal (P2-A12)
+    if (d.open !== false) return;
     const source = this.hireCardSource ?? 'hire';
     this.hireCardSource = null;
     this.armRoute(source);
@@ -4482,6 +4532,22 @@ export class SimpleApp {
       g.setCompassLabel(this.compassLabel);
       g.frame(f);
     }
+    // The Next chip (P2-A12): what is done is read twice a second, and at
+    // once when the first steps end, so the chip follows them within a frame.
+    const chip = this.nextChip;
+    if (chip) {
+      this.goalsT += f.dt;
+      const on = g.over() && !route?.showing();
+      if (this.goalsT >= 0.5 || on !== this.goalsWereOn) {
+        this.goalsT = 0;
+        this.syncGoals(on);
+      }
+      // Walking off folds the list: it is for choosing where to go.
+      if (this.guideMoveMag > 0.3) chip.fold();
+      chip.frame(f.dt, f.blocked);
+      this.goalsPublishT += f.dt;
+      if (on && this.goalsPublishT >= 15) this.publishGoals();
+    }
     this.renderGuide();
     this.guidePromptT += f.dt;
     if (this.guidePromptT > 0.25) {
@@ -4503,13 +4569,28 @@ export class SimpleApp {
     const g = this.guide;
     if (!g) return;
     const route = this.route ?? null;
+    const chip = this.nextChip ?? null;
     const routeUp = route !== null && route.showing();
-    if (!this.guideCard && !g.running() && !routeUp) return;
+    const chipUp = chip !== null && chip.showing();
+    if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;
     const card = (this.guideCard ??= this.createGuideCard());
     // One surface at a time on the one card: the recruiter route while it
-    // shows (and once more as it goes, to take it down), else First steps.
-    if (route !== null && (routeUp || (!g.running() && card.version() >= 1_000_000))) {
+    // shows, else First steps while it runs, else the Next chip. With none
+    // wanted, the one that was up draws its own end (the card goes, and
+    // 'ds:guide' says so).
+    const want = routeUp ? 'route' : g.running() ? 'steps' : chipUp ? 'next' : null;
+    const surface = want ?? this.guideSurface ?? null;
+    this.guideSurface = want;
+    if (surface === 'route' && route !== null) {
       if (card.version() !== route.version()) card.render(route.view(), route.copy());
+      return;
+    }
+    if (surface === 'next' && chip !== null) {
+      if (card.version() !== chip.version()) {
+        // the same rule as GuideCard's rows: side by side on a phone or in
+        // a short window
+        card.render(chip.view(), chip.copy(this.ui.isTouchDevice() || innerHeight <= 500));
+      }
       return;
     }
     if (card.version() === g.version()) return;
@@ -4553,7 +4634,16 @@ export class SimpleApp {
     else if (id === 'ok') g.controlsDone();
     else if (id === 'close') g.finish();
     else if (id === 'stay') this.route?.stay();
-    else if (id.startsWith('route:')) {
+    else if (id === 'next') this.nextChip?.toggle();
+    else if (id.startsWith('goal:')) {
+      // A goal's 'Show me', through the same seam (P2-A5).
+      const goal = this.nextChip?.pick(id.slice('goal:'.length));
+      if (goal) {
+        window.dispatchEvent(
+          new CustomEvent('ds:guide-to', { detail: { key: goal.guideKey, source: 'next' } }),
+        );
+      }
+    } else if (id.startsWith('route:')) {
       // A stop's 'Show me': the compass goes there through the seam every
       // producer uses (P2-A5), and First steps arms, because a visitor who
       // has only read a card has not been shown how to walk.
@@ -4572,6 +4662,98 @@ export class SimpleApp {
       window.dispatchEvent(new CustomEvent('ds:guide-to', { detail: { key, source: 'guide' } }));
     }
     this.renderGuide();
+  }
+
+  /** A '1' flag in storage (the one-shot acts refreshCompletion reads too). */
+  private storedFlag(key: string): boolean {
+    try {
+      return localStorage.getItem(key) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  /** What is done on the ladder right now (P2-A12): goal id to done. One
+   *  object, refilled twice a second. */
+  private goalFacts(): Record<string, boolean> {
+    const f = this._goalFacts;
+    const passport = this.passport;
+    for (const z of PASSPORT_ZONES) f[`stamp:${z}`] = passport?.has(z) ?? false;
+    f.hire = this.hireSeen;
+    f.talk = this.villagersTalked.size > 0 || this.storedFlag('ds_npc_chatted');
+    f.race = this.storedFlag('ds_raced');
+    f.catch = this.fishEver || this.fishCaught > 0;
+    f.lesson = this.lessons.length > 0;
+    f.shop =
+      this.shopOpened || this.ownedRod || this.ownedAxe || this.ownedSickle || this.ownedPickaxe;
+    f.build = this.ownBuilds.size > 0;
+    f.guestbook = this.storedFlag('ds_said_hi');
+    const total = this.deliverySystem?.getTotalCount?.() ?? 0;
+    f.deliveries =
+      this.storedFlag('ds_courier_reward') ||
+      (total > 0 && (this.deliverySystem?.getCompletedCount?.() ?? 0) >= total);
+    f.crown = this.ownedHats.has('crown');
+    return f;
+  }
+
+  /**
+   * Feed the Next chip what is true now: the done goals, the goal the
+   * compass is on (so the chip and the pill name the same district), and the
+   * accepted quests. Then find where its goal is, for the compass's last
+   * resort. `on`: the first steps are over and the route card is not up.
+   */
+  private syncGoals(on: boolean): void {
+    const chip = this.nextChip;
+    if (!chip) return;
+    const coins = this.scene.getCoinsCollected();
+    if (this.coinsSeen >= 0 && coins > this.coinsSeen) this.coinsEarned += coins - this.coinsSeen;
+    this.coinsSeen = coins;
+    const quests = this.npcQuests
+      .getActiveQuests(coins)
+      .map((q) => `${q.giver}: ${q.label} ${q.progress}`);
+    const passport = this.passport;
+    const preferred =
+      passport && !passport.isComplete() ? `stamp:${this.guideFinaleDistrict()}` : null;
+    const grew = chip.sync(on, this.goalFacts(), preferred, quests);
+    const next = on ? chip.next() : null;
+    const hit = next ? resolveGuideKey(next.guideKey, this.guideWorld) : null;
+    this.goalTarget = hit
+      ? {
+          pos: this._goalPos.set(hit.pos.x, hit.pos.y, hit.pos.z),
+          label: `${hit.icon} ${hit.label}`,
+        }
+      : null;
+    if (grew || on !== this.goalsWereOn) {
+      this.goalsWereOn = on;
+      this.publishGoals();
+    }
+  }
+
+  /**
+   * window 'ds:goals' {done, total, next, goals, visit}: the ladder for D's
+   * Things to do, and the visit's numbers for the crown's summary (P2-D10).
+   * Sent when a goal is done, when the chip comes on, every 15 s while it is
+   * on, and as the passport completes.
+   */
+  private publishGoals(): void {
+    const chip = this.nextChip;
+    if (!chip) return;
+    this.goalsPublishT = 0;
+    const started = this.visitStartedAt || performance.now();
+    window.dispatchEvent(
+      new CustomEvent('ds:goals', {
+        detail: {
+          ...chip.summary(),
+          visit: {
+            stamps: this.passport?.count() ?? 0,
+            villagers: this.villagersTalked.size,
+            coins: this.coinsEarned,
+            secrets: this.secrets.count(),
+            minutes: Math.round((performance.now() - started) / 60000),
+          },
+        },
+      }),
+    );
   }
 
   /** Assemble every shop/provider/build-spot POI and open the island map.
@@ -5213,6 +5395,7 @@ export class SimpleApp {
   }
 
   private beginNpcDialogue(name: string): void {
+    this.villagersTalked.add(name); // the visit's count, and a rung-2 goal (P2-A12)
     this.npcDialogueName = name;
     this.chatWalkAwayT = 0;
     this.trailDone = true; // talking to a villager is what the trail was for
@@ -5518,6 +5701,7 @@ export class SimpleApp {
    * re-renders after every action so balances and buttons stay current.
    */
   private openShop(): void {
+    this.shopOpened = true; // a rung-2 goal (P2-A12)
     const render = () => {
       this.ui.showShop(
         {
