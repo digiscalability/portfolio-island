@@ -4864,6 +4864,14 @@ export class SimpleUI {
         how: 'Walk into each district’s hall to stamp your passport. A full passport earns a crown.',
         ...(nextStamp ? { key: `district:${nextStamp}` } : {}),
       },
+      // Decision P2-2: the beach house is findable. Its door has a code, and
+      // the Sailor is who to ask (P2-D9; his line is package C's P2-C6).
+      {
+        icon: '🏖️',
+        title: 'The beach house',
+        how: 'Visit the beach house on the islet (ask the Sailor).',
+        key: 'beach-house',
+      },
     ];
   }
 
@@ -9979,6 +9987,8 @@ export class SimpleUI {
   // ── Door PIN pad (the beach house's coded lock) ────────────────────────
   // A game mechanic, not security: the code ships in the client bundle.
   private pinDiv: HTMLElement | null = null;
+  /** A wrong code was entered this session: the pad says who knows it. */
+  private pinMissed = false;
 
   public showPinPad(expected: string, onSuccess: () => void): void {
     this.closePinPad();
@@ -10016,6 +10026,23 @@ export class SimpleUI {
       <div id="pin-dots" style="letter-spacing:8px; font-size:22px; min-height:28px; margin-bottom:10px;">····</div>
     `;
     const dots = panel.querySelector('#pin-dots') as HTMLElement;
+    // The locked door points to the Sailor (P2-D9, decision P2-2): after the
+    // first wrong code of the session, one line under the pad, once. A pad
+    // reopened later in the session carries it from the start.
+    const hint = (): void => {
+      if (panel.querySelector('[data-pin-hint]')) return;
+      const line = document.createElement('div');
+      line.dataset.pinHint = '1';
+      line.setAttribute('role', 'status');
+      line.textContent = 'Ask the Sailor at the harbour.';
+      Object.assign(line.style, {
+        marginTop: '12px',
+        fontSize: '13px',
+        lineHeight: '1.4',
+        color: '#cfd8e6',
+      });
+      panel.appendChild(line);
+    };
     let entered = '';
     const paint = (): void => {
       dots.textContent = (entered.replace(/./g, '●') + '····').slice(0, 4);
@@ -10029,6 +10056,8 @@ export class SimpleUI {
           this.closePinPad();
           onSuccess();
         } else {
+          this.pinMissed = true;
+          hint();
           dots.style.color = '#ff8a8a';
           panel.style.transform = 'translate(-50%, -50%) translateX(6px)';
           window.setTimeout(() => {
@@ -10071,6 +10100,7 @@ export class SimpleUI {
       grid.appendChild(b);
     }
     panel.appendChild(grid);
+    if (this.pinMissed) hint();
     // Keyboard digits work too (stopPropagation keeps them out of the game)
     const keyHandler = (e: KeyboardEvent): void => {
       if (/^[0-9]$/.test(e.key)) press(e.key);

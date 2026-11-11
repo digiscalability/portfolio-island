@@ -874,6 +874,7 @@ describe('the Controls & settings sheet (D8)', () => {
           'school',
           'kiosk',
           'district:professional', // the first stamp still missing
+          'beach-house', // P2-D9
         ]);
         for (const k of keys) {
           if (!sheet()) {
@@ -1234,5 +1235,101 @@ describe('inside a building: the Leave button, the interior mode, the announceme
       expect(badge.style.display).toBe(display);
       expect(badge.style.opacity).toBe('');
     });
+  });
+});
+
+// P2-D9 (INT-10, decision P2-2): the locked beach-house door points to the
+// Sailor. The pad gave no way on: a visitor without the code could only
+// guess. After the first wrong code of the session one line appears under
+// the pad, once; the Sailor's own line is package C's (P2-C6).
+describe('the locked beach-house door points to the Sailor (P2-D9)', () => {
+  const pad = (): HTMLElement => document.querySelector<HTMLElement>('[aria-label="Door code"]')!;
+  const hints = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-pin-hint]')];
+  const type = (code: string): void => {
+    for (const d of code) {
+      pad().dispatchEvent(new KeyboardEvent('keydown', { key: d, bubbles: true }));
+    }
+  };
+
+  test('one wrong code shows the line, once; the correct code still opens the door', async () => {
+    vi.useFakeTimers();
+    const onSuccess = vi.fn();
+    ui.showPinPad('5673', onSuccess);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hints()).toHaveLength(0); // nothing before a miss
+    type('1111');
+    expect(hints()).toHaveLength(1);
+    expect(hints()[0].textContent).toBe('Ask the Sailor at the harbour.');
+    expect(hints()[0].getAttribute('role')).toBe('status');
+    expect(pad().contains(hints()[0])).toBe(true);
+    expect(pad().lastElementChild).toBe(hints()[0]); // under the pad
+    await vi.advanceTimersByTimeAsync(400); // the shake clears the digits
+    type('2222');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(hints()).toHaveLength(1); // once, however many misses
+    expect(onSuccess).not.toHaveBeenCalled();
+    type('5673');
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(ui.panels.isOpen('pin-pad')).toBe(false);
+  });
+
+  test('the on-screen digits count as well as the keyboard', async () => {
+    const onSuccess = vi.fn();
+    ui.showPinPad('5673', onSuccess);
+    await tick();
+    const tap = (d: string): void =>
+      [...pad().querySelectorAll<HTMLButtonElement>('button')]
+        .find((b) => b.textContent === d)!
+        .click();
+    for (const d of '9999') tap(d);
+    expect(hints()).toHaveLength(1);
+  });
+
+  test('a pad reopened later in the session carries the line from the start; a new session does not', async () => {
+    ui.showPinPad('5673', () => {});
+    await tick();
+    type('0000');
+    ui.closePinPad();
+    ui.showPinPad('5673', () => {});
+    await tick();
+    expect(hints()).toHaveLength(1);
+    ui.closePinPad();
+    // A new page life: no miss yet.
+    ui.dispose();
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    ui.showPinPad('5673', () => {});
+    await tick();
+    expect(hints()).toHaveLength(0);
+  });
+
+  test('the correct code first time shows no line', async () => {
+    const onSuccess = vi.fn();
+    ui.showPinPad('5673', onSuccess);
+    await tick();
+    type('5673');
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(hints()).toHaveLength(0);
+  });
+
+  test("Things to do lists the beach house, with a Show me for 'beach-house'", async () => {
+    ui.showControls('menu', 'todo');
+    await tick();
+    const rows = [...document.querySelectorAll<HTMLElement>('.ds-controls-todo li')];
+    const row = rows.find((li) => (li.textContent ?? '').includes('The beach house'))!;
+    expect(row.textContent).toContain('Visit the beach house on the islet (ask the Sailor).');
+    expect(row.querySelector<HTMLButtonElement>('button')!.dataset.showMe).toBe('beach-house');
+    expect(rows[rows.length - 1]).toBe(row);
+  });
+
+  test('the code itself is nowhere in the pad or the sheet', async () => {
+    ui.showPinPad('5673', () => {});
+    await tick();
+    type('1234');
+    expect(pad().textContent).not.toContain('5673');
+    ui.closePinPad();
+    ui.showControls('menu', 'todo');
+    await tick();
+    expect(document.querySelector('.ds-controls')!.textContent).not.toMatch(/\d{4}/);
   });
 });
