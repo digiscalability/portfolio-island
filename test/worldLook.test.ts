@@ -1226,6 +1226,31 @@ describe("the sun shines in each visitor's own sky (P2-C1)", () => {
     }
   });
 
+  test('standing still is free: the settled light is not touched, and idle sway is not a walk', () => {
+    const { env, sun } = makeCycle();
+    env.debugHour = 10.5;
+    const up = DISTRICT_DIRS[3].clone();
+    const axis = new THREE.Vector3(0, 1, 0).cross(up).normalize();
+    env.update(1 / 60, up.clone().multiplyScalar(R), 0);
+    const held = sun.position.clone();
+    const frame = env.getLocalFrame().clone();
+    // An idle avatar sways by fractions of a millimetre: 1e-7 rad a frame is
+    // 0.0006 u/s at R = 100, far under the standing limit (0.3 u/s).
+    for (let f = 1; f <= 120; f++) {
+      up.applyAxisAngle(axis, f % 2 ? 1e-7 : -1e-7).normalize();
+      env.update(1 / 60, up.clone().multiplyScalar(R), f / 60);
+      expect(sun.position.equals(held)).toBe(true);
+      expect(env.getLocalFrame().equals(frame)).toBe(true);
+    }
+    // The step itself: no angle is taken per frame (a dot product decides).
+    const step = decl('EnvironmentCycle.ts', 'stepLocalFrame');
+    expect(step).toContain('this._upNow.dot(this._upPrev)');
+    expect(step).toContain('if (this.frameSettled) return;');
+    // One angle in the whole step, and only once the visitor has stood still.
+    expect(step.split('.angleTo(')).toHaveLength(2);
+    expect(step.indexOf('if (this.frameSettled) return;')).toBeLessThan(step.indexOf('.angleTo('));
+  });
+
   test('one switch, timed through FxBudget on a method bound once', () => {
     const env = stripped('EnvironmentCycle.ts');
     expect(env).toContain("fx.register('localSun', { desktop: true, low: true })");

@@ -98,6 +98,7 @@ export const KEY_ELEVATION_CAP = Math.sin(1.13);
  *  (fast travel, a respawn, leaving a room): 3.4 degrees is 6 u at R = 100,
  *  more than any vehicle covers in a frame. */
 const FRAME_TELEPORT_STEP = 0.06;
+const FRAME_TELEPORT_COS = Math.cos(FRAME_TELEPORT_STEP);
 /** Below this the visitor counts as standing: 0.3 u/s at R = 100. */
 const FRAME_STILL_SPEED = 0.003;
 /** How long they must stand before the light starts to turn. */
@@ -421,6 +422,7 @@ export class EnvironmentCycle {
   private readonly _upNow = new THREE.Vector3(0, 1, 0);
   private readonly _upPrev = new THREE.Vector3(0, 1, 0);
   private frameReady = false;
+  private frameSettled = false;
   private stillFor = 0;
   private localSunOn = false;
   // stepLocalFrame's arguments (it is called through fx.time, bound once).
@@ -443,37 +445,48 @@ export class EnvironmentCycle {
   private readonly stepLocalFrame = (): void => {
     this.localSunOn = fx.on('localSun');
     if (!this.localSunOn) {
-      this.qSky.identity();
-      this.qLight.identity();
-      this.frameReady = false;
+      if (this.frameReady) {
+        this.qSky.identity();
+        this.qLight.identity();
+        this.frameReady = false;
+      }
       return;
     }
     const pos = this._framePos;
     if (pos.lengthSq() < 1e-8) return;
     this._upNow.copy(pos).normalize();
     this.qSky.setFromUnitVectors(this._up, this._upNow);
-    const step = this.frameReady ? this._upNow.angleTo(this._upPrev) : Infinity;
+    // How far the up-axis turned this frame, as a cosine (no acos per frame).
+    const cos = this.frameReady ? this._upNow.dot(this._upPrev) : -1;
     this._upPrev.copy(this._upNow);
-    if (step > FRAME_TELEPORT_STEP) {
+    if (cos < FRAME_TELEPORT_COS) {
       // First frame, or the visitor was moved: nothing to ease from.
       this.qLight.copy(this.qSky);
       this.frameReady = true;
+      this.frameSettled = true;
       this.stillFor = 0;
       return;
     }
     const dt = this._frameDt;
     if (dt <= 0) return;
-    if (step > FRAME_STILL_SPEED * dt) {
+    // 1 - cos(a) is a*a/2 for a small turn a: compare with the standing limit.
+    const still = FRAME_STILL_SPEED * dt;
+    if (1 - cos > 0.5 * still * still) {
       this.stillFor = 0; // walking, riding or sailing: hold the light
+      this.frameSettled = false;
       return;
     }
+    if (this.frameSettled) return; // standing where the light already is
     this.stillFor += dt;
     if (this.stillFor < FRAME_STILL_HOLD) return;
     const err = this.qLight.angleTo(this.qSky);
-    if (err < 1e-5) return;
     // Reduced motion: no world-wide swing of the light, it is simply right.
-    if (a11y.reducedMotion) this.qLight.copy(this.qSky);
-    else this.qLight.rotateTowards(this.qSky, Math.max(FRAME_MIN_RATE, err * FRAME_GAIN) * dt);
+    if (err < 1e-5 || a11y.reducedMotion) {
+      this.qLight.copy(this.qSky);
+      this.frameSettled = true;
+      return;
+    }
+    this.qLight.rotateTowards(this.qSky, Math.max(FRAME_MIN_RATE, err * FRAME_GAIN) * dt);
   };
 
   // Scratch
