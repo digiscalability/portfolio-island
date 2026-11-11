@@ -141,6 +141,296 @@ describe('a visit starts clear of the door', () => {
   });
 });
 
+describe('a room borrows the island’s light rig (P2-B9)', () => {
+  // MEASURED on main (desktop, the Welcome Hub from its entry pose): lamp on,
+  // the room read 46.6 L* at 12 h and 34.9 at 21 h; the lamp switch moved it
+  // 0.8-1.2 L*; the avatar's median stood 16-26 L* BELOW its surroundings; and
+  // the room's four PointLights re-keyed every lit program at each door.
+  interface Rig {
+    lights: { sun?: THREE.DirectionalLight; ambient?: THREE.AmbientLight };
+    hemiLight: THREE.HemisphereLight | null;
+    fillLight?: THREE.DirectionalLight;
+    rimLight?: THREE.DirectionalLight;
+    envCycle: unknown;
+    interiorGroup: THREE.Group;
+    interiorSets: Record<string, THREE.Group>;
+    interiorHearths: Record<string, { glow: THREE.MeshBasicMaterial; pool: THREE.Material }>;
+    interiorShades: Array<{ mat: THREE.MeshStandardMaterial; glow: number }>;
+    interiorWindowMat: THREE.MeshBasicMaterial;
+    rendererRef: unknown;
+    toggleInteriorFixture(which: string): string;
+    refreshInteriorView(): void;
+    setPartyMode(on: boolean): void;
+    partyFlash: number;
+  }
+  const rig = (): Rig => scene as unknown as Rig;
+  const env = { day: 1 };
+  /** The island's five lights, as an afternoon leaves them. */
+  const island = (): {
+    sun: THREE.DirectionalLight;
+    hemi: THREE.HemisphereLight;
+    ambient: THREE.AmbientLight;
+    fill: THREE.DirectionalLight;
+    rim: THREE.DirectionalLight;
+  } => {
+    const sun = new THREE.DirectionalLight(0xffe9c0, 1.37);
+    sun.position.set(31, 120, 12);
+    sun.target.position.set(4, 76, 3);
+    sun.shadow.intensity = 0.83;
+    const hemi = new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.57);
+    const ambient = new THREE.AmbientLight(0xfff6e8, 0.21);
+    const fill = new THREE.DirectionalLight(0xd4e8ff, 0.18);
+    fill.position.set(7, 11, -38);
+    const rim = new THREE.DirectionalLight(0xcfe6ff, 0.51);
+    rim.position.set(-40, 26, 20);
+    const r = rig();
+    r.lights = { sun, ambient };
+    r.hemiLight = hemi;
+    r.fillLight = fill;
+    r.rimLight = rim;
+    r.envCycle = { getDayFactor: () => env.day, getHour: () => 12, getWeather: () => 'clear' };
+    return { sun, hemi, ambient, fill, rim };
+  };
+  const unrig = (): void => {
+    const r = rig();
+    r.lights = {};
+    r.hemiLight = null;
+    r.fillLight = undefined;
+    r.rimLight = undefined;
+    r.envCycle = null;
+    env.day = 1;
+  };
+  /** What a renderer reads: every light's direction, colour and level. */
+  const read = (l: ReturnType<typeof island>): Record<string, unknown> => ({
+    sunPos: l.sun.position.toArray(),
+    sunTarget: l.sun.target.position.toArray(),
+    sun: [l.sun.color.getHex(), l.sun.intensity, l.sun.shadow.intensity],
+    hemiPos: l.hemi.position.toArray(),
+    hemi: [l.hemi.color.getHex(), l.hemi.groundColor.getHex(), l.hemi.intensity],
+    ambient: [l.ambient.color.getHex(), l.ambient.intensity],
+    fillPos: l.fill.position.toArray(),
+    fill: [l.fill.color.getHex(), l.fill.intensity],
+    rimPos: l.rim.position.toArray(),
+    rim: [l.rim.color.getHex(), l.rim.intensity],
+  });
+  const dirOf = (l: THREE.DirectionalLight): THREE.Vector3 =>
+    l.position.clone().sub(l.target.position).normalize();
+  const settle = (seconds = 2): void => {
+    for (let i = 0; i < seconds * 60; i++) scene.updateInteriorMode(1 / 60);
+  };
+  const hex = (n: number): number => new THREE.Color(n).getHex();
+
+  test('the room is built without a light', () => {
+    let lights = 0;
+    rig().interiorGroup.traverse((o) => {
+      if ((o as THREE.Light).isLight) lights++;
+    });
+    expect(lights).toBe(0);
+  });
+
+  test('lamp on, by day: a warm key over the shoulder, cream hemisphere, cool window rim', () => {
+    const l = island();
+    try {
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      const o = statics.INTERIOR_ORIGIN;
+      // In room space: aimed at the room's origin, 300 u under the island.
+      expect(l.sun.target.position.equals(o)).toBe(true);
+      const key = new THREE.Vector3(0.35, 0.9, 0.45).normalize();
+      expect(dirOf(l.sun).angleTo(key)).toBeLessThan(1e-6);
+      expect([l.sun.color.getHex(), l.sun.intensity]).toEqual([hex(0xffe2bc), 1.25]);
+      // Nothing in a room receives the island's shadow map.
+      expect(l.sun.shadow.intensity).toBe(0);
+      expect(l.hemi.position.toArray()).toEqual([0, 1, 0]);
+      expect([l.hemi.color.getHex(), l.hemi.groundColor.getHex(), l.hemi.intensity]).toEqual([
+        hex(0xfff0dc),
+        hex(0x6b5640),
+        0.95,
+      ]);
+      expect(l.ambient.intensity).toBe(0.22);
+      expect(dirOf(l.rim).angleTo(new THREE.Vector3(-0.2, 0.3, 1).normalize())).toBeLessThan(1e-6);
+      expect([l.rim.color.getHex(), l.rim.intensity]).toEqual([hex(0xcfe6ff), 0.25]);
+      // The fill comes from the room camera, onto the avatar.
+      const p = (scene.player as { position: THREE.Vector3 }).position;
+      const along = scene.camera.position.clone().sub(p).normalize();
+      expect(dirOf(l.fill).angleTo(along)).toBeLessThan(1e-6);
+      expect(l.fill.intensity).toBeCloseTo(0.2, 9);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the island gets its rig back exactly, on the way out', () => {
+    const l = island();
+    try {
+      const before = read(l);
+      enter('cottage');
+      settle(1);
+      expect(read(l)).not.toEqual(before);
+      scene.exitInterior();
+      expect(read(l)).toEqual(before);
+      // A second entry with no exit between keeps the island's values, not the room's.
+      enter('hall');
+      enter('office');
+      settle(0.5);
+      scene.exitInterior();
+      expect(read(l)).toEqual(before);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('at night the key turns amber and the window’s rim falls away', () => {
+    const l = island();
+    try {
+      env.day = 0;
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect([l.sun.color.getHex(), l.sun.intensity]).toEqual([hex(0xffd59a), 1.25]);
+      expect(l.rim.intensity).toBeCloseTo(0.1, 9);
+      // Golden hour is still day (EnvironmentCycle's day factor at 06 h and 18 h).
+      scene.exitInterior();
+      env.day = 0.198;
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect(l.sun.color.getHex()).toBe(hex(0xffe2bc));
+      expect(l.rim.intensity).toBeCloseTo(0.25, 9);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the lamp switch eases the room to window light, and back', () => {
+    const l = island();
+    try {
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect(rig().toggleInteriorFixture('lamp')).toContain('off');
+      // One frame in, it has moved 15% of the way (9 per second), not jumped.
+      scene.updateInteriorMode(1 / 60);
+      expect(l.sun.intensity).toBeCloseTo(1.25 + (0.45 - 1.25) * 0.15, 6);
+      settle();
+      const window = new THREE.Vector3(0.1, 0.35, 1).normalize();
+      expect(dirOf(l.sun).angleTo(window)).toBeLessThan(1e-4);
+      expect(l.sun.color.getHex()).toBe(hex(0xcfe0ff));
+      expect(l.sun.intensity).toBeCloseTo(0.45, 6);
+      expect(l.hemi.intensity).toBeCloseTo(0.5, 6);
+      expect([l.hemi.color.getHex(), l.hemi.groundColor.getHex()]).toEqual([
+        hex(0xd8e4f2),
+        hex(0x4a4038),
+      ]);
+      expect(l.ambient.intensity).toBeCloseTo(0.12, 6);
+      expect(l.rim.intensity).toBeCloseTo(0.35, 6);
+      // The shades stop glowing with the lamp.
+      for (const s of rig().interiorShades) expect(s.mat.emissiveIntensity).toBeLessThan(0.001);
+      // By moonlight the window gives a fraction of it.
+      env.day = 0;
+      settle();
+      expect(l.sun.color.getHex()).toBe(hex(0x9db3e6));
+      expect(l.sun.intensity).toBeCloseTo(0.2, 6);
+      // Draw the curtains and most of what the window gave is gone.
+      env.day = 1;
+      settle();
+      expect(rig().toggleInteriorFixture('curtains')).toContain('draw');
+      settle();
+      expect(l.sun.intensity).toBeCloseTo(0.45 * 0.2, 3);
+      expect(l.rim.intensity).toBeCloseTo(0.35 * 0.2, 3);
+      rig().toggleInteriorFixture('curtains');
+      // Back on.
+      expect(rig().toggleInteriorFixture('lamp')).toContain('on');
+      settle();
+      expect(l.sun.intensity).toBeCloseTo(1.25, 6);
+      expect(l.hemi.intensity).toBeCloseTo(0.95, 6);
+      for (const s of rig().interiorShades) expect(s.mat.emissiveIntensity).toBeCloseTo(s.glow, 3);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the window pass sees the island’s light, the room frame the room’s', () => {
+    const l = island();
+    const r = rig();
+    const seen: Array<Record<string, unknown>> = [];
+    r.rendererRef = {
+      getRenderer: () => ({
+        getRenderTarget: () => null,
+        setRenderTarget: () => {},
+        render: () => seen.push(read(l)),
+      }),
+    };
+    try {
+      const before = read(l);
+      enter('hall');
+      settle(0.2); // the second room frame paints the window
+      expect(seen.length).toBeGreaterThan(0);
+      for (const during of seen) expect(during).toEqual(before);
+      // And the room's rig is back on for the frame that follows.
+      expect(l.sun.intensity).toBe(1.25);
+      expect(l.sun.shadow.intensity).toBe(0);
+      expect(l.sun.target.position.equals(statics.INTERIOR_ORIGIN)).toBe(true);
+    } finally {
+      scene.exitInterior();
+      r.rendererRef = null;
+      unrig();
+    }
+  });
+
+  test('a party dims the house lights and rides the beat on the same five', () => {
+    const l = island();
+    const r = rig();
+    try {
+      enter('beach'); // the beach house is already a party
+      scene.updateInteriorMode(1 / 60);
+      // Club levels from the first frame: no ease down from the lamp-lit room.
+      expect(l.sun.intensity - r.partyFlash * 0.3).toBeCloseTo(0.14, 6);
+      expect(l.ambient.intensity).toBeCloseTo(0.08, 6);
+      // The beat's flash is on the key; nothing was added to the scene for it.
+      r.partyFlash = 3.4;
+      scene.updateInteriorMode(0);
+      expect(l.sun.intensity).toBeCloseTo(0.14 + 3.4 * 0.3, 6);
+      let lights = 0;
+      r.interiorGroup.traverse((o) => {
+        if ((o as THREE.Light).isLight) lights++;
+      });
+      expect(lights).toBe(0);
+      // Party over: the lamp-lit room comes back up, and the rim is the window's again.
+      r.setPartyMode(false);
+      settle();
+      expect(l.sun.intensity).toBeCloseTo(1.25, 4);
+      expect(l.rim.color.getHex()).toBe(hex(0xcfe6ff));
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the hearth’s firelight flickers on the embers and a pool, and blocks nobody', () => {
+    const r = rig();
+    expect(Object.keys(r.interiorHearths).sort()).toEqual(['cottage', 'home']);
+    enter('home');
+    try {
+      const { glow, pool } = r.interiorHearths.home;
+      const reds = new Set<number>();
+      const pools = new Set<number>();
+      for (let i = 0; i < 30; i++) {
+        scene.updateInteriorMode(1 / 60);
+        reds.add(+glow.color.r.toFixed(4));
+        pools.add(+pool.opacity.toFixed(4));
+      }
+      expect(reds.size).toBeGreaterThan(10);
+      expect(pools.size).toBeGreaterThan(10);
+      // The pool lies on the floor in front of the grate: no collider for it.
+      expect(scene.interiorFurnitureBlocked(-2.2, -0.9)).toBe(false);
+    } finally {
+      scene.exitInterior();
+    }
+  });
+});
+
 describe('a wall behind the camera fades the avatar (B11)', () => {
   // The room camera trails 2.4 u behind the avatar and is clamped inside the
   // walls, so a visitor with their back to a wall has it at their shoulder.
@@ -561,10 +851,28 @@ describe('the warm prepares the first door first (CO-A5)', () => {
       expect(fed[0]).toContain(lamp);
       expect(fed[1]).not.toContain(lamp); // the next slice counts it as a frame would
       for (const lights of fed) expect(lights).not.toContain(parked);
-      expect(fed[0].some((l) => under(l, g))).toBe(true); // the room is shown in the slice
-      fed.length = 0;
-      await w.compileInteriorPass(gl, g, items.slice(0, 1), false, null);
-      expect(fed[0].some((l) => under(l, g))).toBe(false);
+      // The room brings no light of its own (P2-B9): shown or hidden, a slice
+      // is fed the same lights, so the two passes compile one set of programs.
+      expect(fed.flat().some((l) => under(l, g))).toBe(false);
+      lamp.visible = true;
+      const shown: THREE.Object3D[][] = [];
+      const hidden: THREE.Object3D[][] = [];
+      await w.compileInteriorPass(
+        fakeGl((l) => shown.push(l), 13),
+        g,
+        items.slice(0, 1),
+        true,
+        null,
+      );
+      await w.compileInteriorPass(
+        fakeGl((l) => hidden.push(l), 13),
+        g,
+        items.slice(0, 1),
+        false,
+        null,
+      );
+      expect(shown[0]).toEqual(hidden[0]);
+      expect(shown[0]).toContain(lamp);
       expect(g.visible).toBe(false); // and hidden again after it
     } finally {
       walk.mockRestore();

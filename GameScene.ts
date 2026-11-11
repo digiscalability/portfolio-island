@@ -114,6 +114,24 @@ interface LightRigSource {
   } | null;
 }
 
+/**
+ * One state of the scene's five lights as a room sets them (P2-B9): the key's
+ * direction (room space, toward the light), colour and level; the hemisphere;
+ * the ambient; and the rim's and the fill's levels.
+ */
+interface RoomRig {
+  keyDir: THREE.Vector3;
+  keyColor: THREE.Color;
+  key: number;
+  sky: THREE.Color;
+  ground: THREE.Color;
+  hemi: number;
+  ambientColor: THREE.Color;
+  ambient: number;
+  rim: number;
+  fill: number;
+}
+
 // The light rig's per-frame half (P2-B5): the camera fill, the rim opposite
 // the sun, and the moon's and the weather's share of the sun's shadow. Off,
 // the rig is the authored one.
@@ -13146,7 +13164,6 @@ export class GameScene extends THREE.Scene {
   private interiorRugMat: THREE.MeshStandardMaterial | null = null;
   private interiorPosters: Array<{ ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
   private interiorSets: Record<string, THREE.Group> = {};
-  private interiorFire: THREE.PointLight | null = null;
   private interiorTime = 0;
   private onHouseEnterCb: ((id: string) => void) | null = null;
   private static readonly INTERIOR_ORIGIN = new THREE.Vector3(0, -300, 0);
@@ -13198,20 +13215,325 @@ export class GameScene extends THREE.Scene {
   private interiorCurtains: Array<{ mesh: THREE.Mesh; open: number; shut: number }> = [];
   private interiorCurtainT = 0; // 0 = open, 1 = drawn
   private interiorCurtainsShut = false;
-  private interiorLamp: THREE.PointLight | null = null;
   private interiorBulb: THREE.Mesh | null = null;
   private interiorLampOn = true;
-  private interiorRoomLamp: THREE.PointLight | null = null;
-  private interiorRoomFill: THREE.PointLight | null = null;
-  // The house level each room light eases toward (lamp switch, club dim);
-  // the party's own light rides on top of it. Seeded from the built lights.
-  private interiorLampLevel = 0;
-  private interiorRoomLampLevel = 0;
-  private interiorRoomFillLevel = 0;
-  // Their authored colours, which they ease back to when a party ends.
-  private readonly interiorLampHome = new THREE.Color();
-  private readonly interiorRoomLampHome = new THREE.Color();
-  private readonly interiorRoomFillHome = new THREE.Color();
+  /** The lamp shades (the pendant's, the Personal floor lamp's): they glow
+   *  while the lamp is on. `glow` is the emissive level when lit. */
+  private interiorShades: Array<{ mat: THREE.MeshStandardMaterial; glow: number }> = [];
+  private interiorShadeLevel = 1;
+  /** Each hearth room's fire: the ember plane and the warm pool it throws on
+   *  the floor. Both flicker (updateInteriorMode); neither is a light. */
+  private interiorHearths: Record<
+    string,
+    { glow: THREE.MeshBasicMaterial; pool: THREE.MeshBasicMaterial }
+  > = {};
+  private static readonly _hearthGlow = new THREE.Color(0xff8c3a);
+  private static readonly HEARTH_POOL_OPACITY = 0.3;
+
+  // ── The borrowed light rig (P2-B9) ─────────────────────────────────────
+  // A room has NO LIGHTS OF ITS OWN. three bakes light counts into every lit
+  // program, so the room's four PointLights re-keyed the whole scene at every
+  // door (the warm exists to hide that), and they lit a room at midnight
+  // exactly as at noon. Indoors the scene's own five lights (sun, hemisphere,
+  // ambient, fill, rim) are borrowed instead: enterInterior remembers where
+  // the island left them, the room sets them to a preset in room space, the
+  // window pass puts the island's values back around its render, and
+  // exitInterior hands them back. Same lights indoors and out, so a door
+  // changes no program.
+  //
+  // LAMP ON: a warm key from over the visitor's shoulder, a cream hemisphere
+  // and a cool rim from the window. At night the key turns amber and the
+  // window's rim falls away. LAMP OFF: the window is the key (daylight, or
+  // moonlight at a fraction of it), over a dim cool hemisphere.
+  private static readonly ROOM_KEY_ON_DIR = new THREE.Vector3(0.35, 0.9, 0.45).normalize();
+  private static readonly ROOM_KEY_OFF_DIR = new THREE.Vector3(0.1, 0.35, 1).normalize();
+  private static readonly ROOM_RIM_DIR = new THREE.Vector3(-0.2, 0.3, 1).normalize();
+  private static readonly ROOM_ON = {
+    keyDay: new THREE.Color(0xffe2bc),
+    keyNight: new THREE.Color(0xffd59a),
+    key: 1.25,
+    sky: new THREE.Color(0xfff0dc),
+    ground: new THREE.Color(0x6b5640),
+    hemi: 0.95,
+    ambientColor: new THREE.Color(0xfff6e8),
+    ambient: 0.22,
+    rimDay: 0.25,
+    rimNight: 0.1,
+  };
+  private static readonly ROOM_OFF = {
+    keyDay: new THREE.Color(0xcfe0ff),
+    keyNight: new THREE.Color(0x9db3e6),
+    keyLevelDay: 0.45,
+    keyLevelNight: 0.2,
+    sky: new THREE.Color(0xd8e4f2),
+    ground: new THREE.Color(0x4a4038),
+    hemi: 0.5,
+    ambientColor: new THREE.Color(0xdfe6f2),
+    ambient: 0.12,
+    rimDay: 0.35,
+    rimNight: 0.14,
+  };
+  private static readonly ROOM_RIM_COLOR = new THREE.Color(0xcfe6ff);
+  /** The fill, aimed along the room camera so the avatar stands out. */
+  private static readonly ROOM_FILL = 0.2;
+  /** Drawn curtains keep this share of the window's light. */
+  private static readonly ROOM_CURTAIN_KEEP = 0.2;
+  /** The house lights during a party: a club's dim, under the beat. */
+  private static readonly ROOM_CLUB = {
+    key: 0.14,
+    hemi: 0.16,
+    ambient: 0.08,
+    rim: 0.08,
+    fill: 0.1,
+  };
+  /** The party's light per unit of its drive: the beat flash on the key, the
+   *  ball's glow on the hemisphere, the club's colour on the rim. */
+  private static readonly ROOM_PARTY_GAIN = { flash: 0.3, glow: 0.14, tint: 0.45 };
+  /** How fast the rig eases to its preset (per second); a party's dim is slower. */
+  private static readonly ROOM_RIG_RATE = 9;
+  private static readonly ROOM_CLUB_RATE = 3.5;
+  private static newRoomRig(): RoomRig {
+    return {
+      keyDir: new THREE.Vector3(0, 1, 0),
+      keyColor: new THREE.Color(),
+      key: 0,
+      sky: new THREE.Color(),
+      ground: new THREE.Color(),
+      hemi: 0,
+      ambientColor: new THREE.Color(),
+      ambient: 0,
+      rim: 0,
+      fill: 0,
+    };
+  }
+  /** The preset the room is easing to, and where it has got to. */
+  private readonly roomRigWant = GameScene.newRoomRig();
+  private readonly roomRigNow = GameScene.newRoomRig();
+  /** The island's rig as enterInterior found it. `held` while a visit borrows it. */
+  private readonly rigHome = {
+    held: false,
+    sunPos: new THREE.Vector3(),
+    sunTarget: new THREE.Vector3(),
+    sunColor: new THREE.Color(),
+    sun: 0,
+    sunShadow: 1,
+    hemiPos: new THREE.Vector3(0, 1, 0),
+    sky: new THREE.Color(),
+    ground: new THREE.Color(),
+    hemi: 0,
+    ambientColor: new THREE.Color(),
+    ambient: 0,
+    fillPos: new THREE.Vector3(),
+    fillColor: new THREE.Color(),
+    fill: 0,
+    rimPos: new THREE.Vector3(),
+    rimColor: new THREE.Color(),
+    rim: 0,
+  };
+  private readonly _roomRigDir = new THREE.Vector3();
+
+  /** enterInterior: remember the island's rig, to the last value. */
+  private snapshotOutdoorRig(): void {
+    const h = this.rigHome;
+    h.held = true;
+    const sun = this.lights.sun;
+    if (sun) {
+      h.sunPos.copy(sun.position);
+      h.sunTarget.copy(sun.target.position);
+      h.sunColor.copy(sun.color);
+      h.sun = sun.intensity;
+      h.sunShadow = sun.shadow.intensity;
+    }
+    const hemi = this.hemiLight;
+    if (hemi) {
+      h.hemiPos.copy(hemi.position);
+      h.sky.copy(hemi.color);
+      h.ground.copy(hemi.groundColor);
+      h.hemi = hemi.intensity;
+    }
+    const ambient = this.lights.ambient;
+    if (ambient) {
+      h.ambientColor.copy(ambient.color);
+      h.ambient = ambient.intensity;
+    }
+    const fill = this.fillLight;
+    if (fill) {
+      h.fillPos.copy(fill.position);
+      h.fillColor.copy(fill.color);
+      h.fill = fill.intensity;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      h.rimPos.copy(rim.position);
+      h.rimColor.copy(rim.color);
+      h.rim = rim.intensity;
+    }
+  }
+
+  /** Put the island's rig back: around the window's render, and on the way out. */
+  private restoreOutdoorRig(): void {
+    const h = this.rigHome;
+    if (!h.held) return;
+    const sun = this.lights.sun;
+    if (sun) {
+      sun.position.copy(h.sunPos);
+      sun.target.position.copy(h.sunTarget);
+      sun.target.updateMatrixWorld();
+      sun.color.copy(h.sunColor);
+      sun.intensity = h.sun;
+      sun.shadow.intensity = h.sunShadow;
+    }
+    const hemi = this.hemiLight;
+    if (hemi) {
+      hemi.position.copy(h.hemiPos);
+      hemi.color.copy(h.sky);
+      hemi.groundColor.copy(h.ground);
+      hemi.intensity = h.hemi;
+    }
+    const ambient = this.lights.ambient;
+    if (ambient) {
+      ambient.color.copy(h.ambientColor);
+      ambient.intensity = h.ambient;
+    }
+    const fill = this.fillLight;
+    if (fill) {
+      fill.position.copy(h.fillPos);
+      fill.color.copy(h.fillColor);
+      fill.intensity = h.fill;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      rim.position.copy(h.rimPos);
+      rim.color.copy(h.rimColor);
+      rim.intensity = h.rim;
+    }
+  }
+
+  /** The preset for the room as it stands: lamp, hour, curtains, party. */
+  private roomRigTarget(out: RoomRig): void {
+    const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
+    const night = this.nightFactor(day);
+    // The window's share: drawn curtains keep most of it out.
+    const windowLight = 1 - (1 - GameScene.ROOM_CURTAIN_KEEP) * this.interiorCurtainT;
+    if (this.interiorLampOn) {
+      const P = GameScene.ROOM_ON;
+      out.keyDir.copy(GameScene.ROOM_KEY_ON_DIR);
+      out.keyColor.lerpColors(P.keyDay, P.keyNight, night);
+      out.key = P.key;
+      out.sky.copy(P.sky);
+      out.ground.copy(P.ground);
+      out.hemi = P.hemi;
+      out.ambientColor.copy(P.ambientColor);
+      out.ambient = P.ambient;
+      out.rim = (P.rimDay + (P.rimNight - P.rimDay) * night) * windowLight;
+    } else {
+      const P = GameScene.ROOM_OFF;
+      out.keyDir.copy(GameScene.ROOM_KEY_OFF_DIR);
+      out.keyColor.lerpColors(P.keyDay, P.keyNight, night);
+      out.key = (P.keyLevelDay + (P.keyLevelNight - P.keyLevelDay) * night) * windowLight;
+      out.sky.copy(P.sky);
+      out.ground.copy(P.ground);
+      out.hemi = P.hemi;
+      out.ambientColor.copy(P.ambientColor);
+      out.ambient = P.ambient;
+      out.rim = (P.rimDay + (P.rimNight - P.rimDay) * night) * windowLight;
+    }
+    out.fill = GameScene.ROOM_FILL;
+    if (this.partyMode) {
+      // The house lights come right down, so the ball, the lasers and the
+      // lit floor are what you see. The beat rides on top (applyRoomRig).
+      const C = GameScene.ROOM_CLUB;
+      out.key = C.key;
+      out.hemi = C.hemi;
+      out.ambient = C.ambient;
+      out.rim = C.rim;
+      out.fill = C.fill;
+    }
+  }
+
+  /** Jump the rig to its preset (an entry, under the door veil). */
+  private snapRoomRig(): void {
+    this.roomRigTarget(this.roomRigNow);
+    this.applyRoomRig();
+  }
+
+  /** Ease the rig toward its preset and write it to the lights. */
+  private updateRoomRig(deltaTime: number): void {
+    const want = this.roomRigWant;
+    const now = this.roomRigNow;
+    this.roomRigTarget(want);
+    const rate = this.partyMode ? GameScene.ROOM_CLUB_RATE : GameScene.ROOM_RIG_RATE;
+    const k = Math.min(1, rate * deltaTime);
+    now.keyDir.lerp(want.keyDir, k).normalize();
+    now.keyColor.lerp(want.keyColor, k);
+    now.key += (want.key - now.key) * k;
+    now.sky.lerp(want.sky, k);
+    now.ground.lerp(want.ground, k);
+    now.hemi += (want.hemi - now.hemi) * k;
+    now.ambientColor.lerp(want.ambientColor, k);
+    now.ambient += (want.ambient - now.ambient) * k;
+    now.rim += (want.rim - now.rim) * k;
+    now.fill += (want.fill - now.fill) * k;
+    this.applyRoomRig();
+  }
+
+  /**
+   * Write the room's rig to the borrowed lights, in room space (directions
+   * about INTERIOR_ORIGIN). Levels, colours and directions only: no light is
+   * added, shown or hidden, so no program re-keys. The sun's shadow is off
+   * for the visit: the map is parked outdoors (setShadowFreeze) and nothing
+   * in a room receives it. A party's light rides on the eased levels: the
+   * beat flash on the key, the ball's glow on the hemisphere, the club's
+   * colour on the rim.
+   */
+  private applyRoomRig(): void {
+    const now = this.roomRigNow;
+    const o = GameScene.INTERIOR_ORIGIN;
+    const party = this.partyMode;
+    const G = GameScene.ROOM_PARTY_GAIN;
+    const sun = this.lights.sun;
+    if (sun) {
+      sun.position.copy(o).addScaledVector(now.keyDir, 55);
+      sun.target.position.copy(o);
+      sun.target.updateMatrixWorld();
+      sun.color.copy(now.keyColor);
+      sun.intensity = now.key;
+      sun.shadow.intensity = 0;
+      if (party) {
+        sun.intensity += this.partyFlash * G.flash;
+        // Each beat takes the next hue; reduced motion keeps the lamp's own.
+        if (!a11y.reducedMotion) sun.color.setHSL(this.partyFlashHue, 0.55, 0.82);
+      }
+    }
+    const hemi = this.hemiLight;
+    if (hemi) {
+      hemi.position.copy(GameScene._localUp); // the room's up is +Y
+      hemi.color.copy(now.sky);
+      hemi.groundColor.copy(now.ground);
+      hemi.intensity = now.hemi + (party ? this.partyGlow * G.glow : 0);
+    }
+    const ambient = this.lights.ambient;
+    if (ambient) {
+      ambient.color.copy(now.ambientColor);
+      ambient.intensity = now.ambient;
+    }
+    const fill = this.fillLight;
+    if (fill && this.camera && this.player) {
+      // Along the room camera (its target stays at the origin: P2-B5).
+      this._roomRigDir.copy(this.camera.position).sub(this.player.position);
+      if (this._roomRigDir.lengthSq() > 1e-6) fill.position.copy(this._roomRigDir.setLength(40));
+      fill.intensity = now.fill;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      rim.position.copy(GameScene.ROOM_RIM_DIR).multiplyScalar(52);
+      rim.intensity = now.rim + (party ? this.partyTint * G.tint : 0);
+      if (party) rim.color.setHSL(this.partyTintHue, 0.9, 0.6);
+      else rim.color.copy(GameScene.ROOM_RIM_COLOR);
+    }
+    // The cast's cel rim follows the room's key, not the sun left outside.
+    if (this.camera) updateCelRim(now.keyDir, this.camera);
+  }
 
   /** Work a room fixture. Returns the line to flash. */
   public toggleInteriorFixture(which: string): string {
@@ -13239,17 +13561,19 @@ export class GameScene extends THREE.Scene {
   // spots): MEASURED on desktop, entering the beach house added 17 programs
   // in a 2.4 s frame behind 2.6 s of black, and each toggle cost 150-270 ms
   // frames. The beat flash, the ball glow and the club colour now ride the
-  // room's own three lights (uniforms only), and the floor sweeps are
-  // additive discs, so the beach house carries exactly a cottage's lights.
+  // room's borrowed rig (uniforms only: applyRoomRig), and the floor sweeps
+  // are additive discs, so the beach house carries exactly a cottage's
+  // lights, which are the island's.
   private partyMode = false;
   private partyBeatClock = 0;
   private partyBeatIndex = -1;
-  /** The party's light, added by updateInteriorMode onto the club levels:
-   *  the beat flash (room lamp), the ball glow (pendant), the club tint (fill). */
+  /** The party's light, added by applyRoomRig onto the club levels: the beat
+   *  flash (the key), the ball glow (the hemisphere), the club tint (the rim). */
   private partyFlash = 0;
   private partyFlashHue = 0;
   private partyGlow = 0;
   private partyTint = 0;
+  private partyTintHue = 0;
   /** The dance floor's centre, room-local. */
   private static readonly PARTY_FLOOR = { x: 0.9, z: 0.6 };
   /** Where the guests dance, room-local: each 2.1 u from the floor centre,
@@ -13605,16 +13929,13 @@ export class GameScene extends THREE.Scene {
     // off-beat. Calm completes what the flash gate above started: the club
     // keeps its colour and dim, loses every beat-locked luminance pulse, and
     // the confetti falls slow and untumbling like ash instead of a storm.
-    // Colour and intensity only (updateInteriorMode adds these to the club
-    // levels): uniforms, so the room keeps a cottage's light count.
+    // Colour and intensity only (applyRoomRig adds these to the club levels
+    // of the borrowed rig): uniforms, so the room keeps the island's lights.
+    // The flash takes the beat's hue on the key unless calm, which keeps the
+    // lamp's own colour.
     this.partyGlow = calm ? 0.9 : 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
     this.partyTint = calm ? 0.45 : 0.3 + Math.max(0, Math.sin(beat + Math.PI / 2)) * 0.35;
-    if (this.interiorRoomLamp) {
-      if (calm) this.interiorRoomLamp.color.copy(this.interiorRoomLampHome);
-      else this.interiorRoomLamp.color.setHSL(this.partyFlashHue, 0.55, 0.82);
-    }
-    this.interiorLamp?.color.setHSL(0, 0, 1);
-    this.interiorRoomFill?.color.setHSL((time * 0.05) % 1, 0.9, 0.6);
+    this.partyTintHue = (time * 0.05) % 1;
     for (const c of P.confetti) {
       c.m.position.y -= c.speed * (calm ? 0.25 : 1) * deltaTime;
       if (c.m.position.y < 0.25) c.m.position.y = 3.4;
@@ -13955,15 +14276,25 @@ export class GameScene extends THREE.Scene {
       this.interiorCurtains.push({ mesh: c, open, shut: 1.8 + side * 0.41 });
     }
     box(g, 2.75, 0.1, 0.12, 0x4a3a28, 1.8, 3.02, 3.74); // curtain rail, wider than the pull
-    // Pendant lamp over the middle of the room.
+    // Pendant lamp over the middle of the room. Its shade gets a material of
+    // its own: it is seen from inside as well, and it glows while the lamp is
+    // on (updateInteriorMode). No light hangs in it: the room is lit by the
+    // borrowed rig (P2-B9), and the bulb and shade only have to look lit.
     box(g, 0.04, 0.55, 0.04, 0x3a3a3a, 0, 3.7, 0);
+    const pendantShadeMat = new THREE.MeshStandardMaterial({
+      color: 0x5c4127,
+      roughness: 0.85,
+      side: THREE.DoubleSide,
+      emissive: 0xffc27a,
+      emissiveIntensity: 0.55,
+    });
+    this.interiorShades.push({ mat: pendantShadeMat, glow: 0.55 });
     const pendantShade = new THREE.Mesh(
       new THREE.ConeGeometry(0.34, 0.3, 10, 1, true),
-      matFor(0x5c4127),
+      pendantShadeMat,
     );
     pendantShade.position.set(0, 3.4, 0);
     pendantShade.rotation.x = Math.PI;
-    (pendantShade.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
     g.add(pendantShade);
     const bulb = new THREE.Mesh(
       new THREE.SphereGeometry(0.1, 10, 8),
@@ -13972,12 +14303,6 @@ export class GameScene extends THREE.Scene {
     bulb.position.set(0, 3.32, 0);
     g.add(bulb);
     this.interiorBulb = bulb;
-    const pendantLight = new THREE.PointLight(0xffd9a0, 1.35, 11, 2);
-    pendantLight.position.set(0, 3.25, 0);
-    g.add(pendantLight);
-    this.interiorLamp = pendantLight;
-    this.interiorLampLevel = pendantLight.intensity;
-    this.interiorLampHome.copy(pendantLight.color);
     // Light switch by the door, at hand height.
     box(g, 0.14, 0.2, 0.05, 0xf0ece2, -2.75, 1.35, 3.82);
 
@@ -14060,7 +14385,7 @@ export class GameScene extends THREE.Scene {
       [1.3, 1.42],
     ] as const)
       box(home, 0.08, 0.42, 0.08, D, lx, 0.24, lz);
-    this.buildFireplace(home, -1); // left wall
+    this.buildFireplace(home, -1, 'home'); // left wall
     box(home, 0.38, 2.2, 1.6, D, 3.6, 1.28, -2.2); // bookshelf
     for (const [by, bc] of [
       [0.7, 0xa54242],
@@ -14072,10 +14397,14 @@ export class GameScene extends THREE.Scene {
     // so its collider) stood in the doorway, through the arriving avatar,
     // with the shade filling the middle of the entry shot.
     cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -3.3, 0.95, 3.3);
-    const shade = new THREE.Mesh(
-      new THREE.ConeGeometry(0.3, 0.35, 12, 1, true),
-      matFor(0xf0d9a8, 0.7),
-    );
+    const floorShadeMat = new THREE.MeshStandardMaterial({
+      color: 0xf0d9a8,
+      roughness: 0.7,
+      emissive: 0xffd9a0,
+      emissiveIntensity: 0.4,
+    });
+    this.interiorShades.push({ mat: floorShadeMat, glow: 0.4 });
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.35, 12, 1, true), floorShadeMat);
     shade.position.set(-3.3, 1.95, 3.3);
     home.add(shade);
 
@@ -14178,7 +14507,7 @@ export class GameScene extends THREE.Scene {
     cyl(cot, 0.09, 0.12, 0.82, D, 1.6, 0.41, -1.6);
     cyl(cot, 0.24, 0.26, 0.5, D, 0.75, 0.29, -1.3); // stools
     cyl(cot, 0.24, 0.26, 0.5, D, 2.45, 0.29, -1.9);
-    this.buildFireplace(cot, 1); // right wall
+    this.buildFireplace(cot, 1, 'cottage'); // right wall
     box(cot, 1.6, 0.08, 0.4, W, -2.4, 1.7, -3.78); // kitchen shelf
     cyl(cot, 0.12, 0.12, 0.28, 0x8a9a5b, -2.9, 1.88, -3.78);
     cyl(cot, 0.1, 0.1, 0.24, 0xb0603e, -2.45, 1.86, -3.78);
@@ -14242,12 +14571,8 @@ export class GameScene extends THREE.Scene {
     clasp.position.set(-3.05, 0.48, -0.88);
     chest.add(clasp);
 
-    // Fireplace glow — one shared light, repositioned per themed set and only
-    // switched on for sets that have a hearth. Flicker runs in the interior
-    // camera update (zero cost while outside).
-    const fire = new THREE.PointLight(0xff9a3c, 0, 7, 1.4);
-    g.add(fire);
-    this.interiorFire = fire;
+    // (No fireplace light: each hearth's ember plane and floor pool flicker
+    // instead, in updateInteriorMode. See buildFireplace.)
     // Three framed posters — a big title on the back wall + a content panel on
     // each side wall — all re-drawn per building on enter (so you SEE the
     // portfolio content inside the building, not just a title).
@@ -14271,23 +14596,7 @@ export class GameScene extends THREE.Scene {
     makePoster(3.6, 1.9, 0, 2.5, -3.88, 0); // back — title
     makePoster(2.6, 1.7, -3.88, 1.95, 0.4, Math.PI / 2); // left — content
     makePoster(2.6, 1.7, 3.88, 1.95, 0.4, -Math.PI / 2); // right — content
-    // Bright, linear-falloff room light so all four walls read clearly (the
-    // island's scene ambient is deliberately low, and the sun may face away
-    // from a room 300u under the map). A second low fill kills dark corners.
-    const lamp = new THREE.PointLight(0xfff4e0, 3.2, 24, 1);
-    lamp.position.set(0, 3.4, 0);
-    g.add(lamp);
-    const fill = new THREE.PointLight(0xd8e2ff, 1.2, 20, 1);
-    fill.position.set(2.5, 1.6, 2.5);
-    g.add(fill);
-    // Held so party mode can pull the house lights down to a club level and
-    // ease them back up afterwards (updateInteriorMode owns the easing).
-    this.interiorRoomLamp = lamp;
-    this.interiorRoomFill = fill;
-    this.interiorRoomLampLevel = lamp.intensity;
-    this.interiorRoomFillLevel = fill.intensity;
-    this.interiorRoomLampHome.copy(lamp.color);
-    this.interiorRoomFillHome.copy(fill.color);
+    // (No room lights: the visit borrows the island's rig. See roomRigTarget.)
     this.interiorGroup = g;
     // The party rig is part of the room, hidden until the beach house turns
     // it on, so the interior warm compiles its materials with the rest.
@@ -14297,11 +14606,11 @@ export class GameScene extends THREE.Scene {
 
   /** A brick hearth with a glowing firebox, against the left (side=-1) or
    *  right (side=+1) wall at z≈-2 — clear of that wall's content poster. */
-  private buildFireplace(parent: THREE.Group, side: -1 | 1): void {
+  private buildFireplace(parent: THREE.Group, side: -1 | 1, theme: string): void {
     const brick = new THREE.MeshStandardMaterial({ color: 0x9a5a48, roughness: 0.95 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x1c1512, roughness: 1 });
     const wood = new THREE.MeshStandardMaterial({ color: 0x6e5236, roughness: 0.85 });
-    const glow = new THREE.MeshBasicMaterial({ color: 0xff8c3a });
+    const glow = new THREE.MeshBasicMaterial({ color: GameScene._hearthGlow });
     const addBox = (
       geo: THREE.BoxGeometry,
       mat: THREE.Material,
@@ -14322,9 +14631,44 @@ export class GameScene extends THREE.Scene {
     fire.rotation.y = side === -1 ? Math.PI / 2 : -Math.PI / 2;
     parent.add(fire);
     addBox(new THREE.BoxGeometry(0.16, 0.14, 0.7), dark, side * 3.34, 0.22, -2.0); // log
+    // The firelight on the floor: a warm additive pool in front of the grate,
+    // where the hearth's PointLight used to fall. It and the ember plane
+    // flicker together (updateInteriorMode). Lifted in depth, not position,
+    // so it lies on the boards and the rug alike (the party sweeps' trick).
+    const pcv = document.createElement('canvas');
+    pcv.width = pcv.height = 64;
+    const px = pcv.getContext('2d');
+    if (px) {
+      const grad = px.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.35)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      px.fillStyle = grad;
+      px.fillRect(0, 0, 64, 64);
+    }
+    const poolMap = new THREE.CanvasTexture(pcv);
+    poolMap.colorSpace = THREE.SRGBColorSpace;
+    const pool = new THREE.MeshBasicMaterial({
+      color: 0xff9a3c,
+      map: poolMap,
+      transparent: true,
+      opacity: GameScene.HEARTH_POOL_OPACITY,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    const disc = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 3.4), pool);
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(side * 2.55, 0.17, -2.0);
+    disc.renderOrder = 2;
+    disc.userData.isLightPool = true; // light on the floor: nothing to walk into
+    parent.add(disc);
+    this.interiorHearths[theme] = { glow, pool };
   }
 
-  /** Rug tint + hearth-light anchor per themed set (hearth rooms only). */
+  /** Rug tint per themed set. */
   private static readonly INTERIOR_RUGS: Record<string, number> = {
     office: 0x51687d,
     workshop: 0xa8793e,
@@ -14333,10 +14677,6 @@ export class GameScene extends THREE.Scene {
     hall: 0x5d8a58,
     cottage: 0x9c5f4e,
     beach: 0xd9c48a, // woven sand-mat
-  };
-  private static readonly INTERIOR_FIRE_POS: Record<string, [number, number, number]> = {
-    home: [-3.05, 0.85, -2.0],
-    cottage: [3.05, 0.85, -2.0],
   };
 
   // ── Interior free-walk mode ──
@@ -14752,6 +15092,7 @@ export class GameScene extends THREE.Scene {
     const b = new THREE.Box3();
     for (const child of set.children) {
       if ((child as THREE.Sprite).isSprite) continue; // markers (💤) never block
+      if (child.userData.isLightPool) continue; // nor does firelight on the floor
       b.setFromObject(child);
       if (b.isEmpty()) continue;
       if (b.min.y - o.y > 1.45) continue; // overhead — walk under it
@@ -14766,10 +15107,9 @@ export class GameScene extends THREE.Scene {
     this.interiorColliders[theme] = boxes;
 
     // CONTACT SHADOWS, for free, from the boxes we just measured.
-    // No interior mesh casts or receives a shadow and every interior light is
-    // an unshadowed point light, so all the furniture floats a little. A real
-    // shadow-casting point light would be a six-face cube depth render; a soft
-    // blob under each footprint reads almost as well for one unlit quad.
+    // No interior mesh casts or receives a shadow (the borrowed sun's shadow
+    // is off indoors), so all the furniture floats a little. A soft blob
+    // under each footprint reads almost as well as a shadow, for one unlit quad.
     // The AABB pass above is already exactly the right filter — it skips
     // sprites and skips anything mounted above head height.
     const blobMat = this.ensureInteriorBlobMat();
@@ -15143,18 +15483,24 @@ export class GameScene extends THREE.Scene {
    * doesn't pay for them — and never let a rendered frame use a variant that
    * is still compiling.
    *
-   * The room carries 4 PointLights and three bakes light COUNTS into every lit
-   * program's cache key, so showing the room re-keys the whole scene. MEASURED
-   * on main: the old warm made the room visible and awaited compileAsync, the
-   * render loop drew the next frame with the room-lit variants, and that frame
-   * blocked 2,043 ms finishing them and creating 38 more (compile() had run
-   * against the canvas, the frame draws into the composer's buffer). Its
-   * synchronous compile was a 210 ms task of its own.
+   * HISTORY. The room used to carry 4 PointLights, and three bakes light
+   * COUNTS into every lit program's cache key, so showing the room re-keyed
+   * the whole scene. MEASURED then: the old warm made the room visible and
+   * awaited compileAsync, the render loop drew the next frame with the
+   * room-lit variants, and that frame blocked 2,043 ms finishing them and
+   * creating 38 more (compile() had run against the canvas, the frame draws
+   * into the composer's buffer). Its synchronous compile was a 210 ms task of
+   * its own.
    *
-   * Now the room-lit and outdoor permutations are compiled in synchronous
-   * slices (compileInteriorPass) against the frame's own render target, then
-   * polled ready and first-used (settleWarmPrograms), all off the render path.
-   * The window view needs no pass of its own: it draws with the frame's
+   * NOW the room has no lights: a visit borrows the island's rig (P2-B9), so
+   * the light set is the same indoors and out, and a door re-keys nothing.
+   * What is left to warm is the room's own materials. They are compiled in
+   * synchronous slices (compileInteriorPass) against the frame's own render
+   * target, with the room shown and then hidden (one set of programs either
+   * way; the second pass is cache hits), then polled ready and first-used
+   * (settleWarmPrograms), all off the render path. MEASURED cold: the warm
+   * adds 7 programs on desktop and 5 on the low tier, where it added 23 and
+   * 21. The window view needs no pass of its own: it draws with the frame's
    * programs (syncInteriorViewOutput).
    *
    * Without KHR_parallel_shader_compile a background warm cannot tell when a
@@ -15222,10 +15568,10 @@ export class GameScene extends THREE.Scene {
       }
     };
     try {
-      // Room-lit first: the variants a door needs. Nothing can flash on screen
-      // even within a slice — no frame is drawn while the room is visible, and
-      // it sits at INTERIOR_ORIGIN, 200u below the south pole. The outdoor
-      // pass covers leaving, which re-keys too.
+      // The room first: what a door needs. Nothing can flash on screen even
+      // within a slice — no frame is drawn while the room is visible, and it
+      // sits at INTERIOR_ORIGIN, 200u below the south pole. The outdoor pass
+      // covers the world's lit materials no frame has drawn yet.
       await warm(true);
       await warm(false);
     } catch {
@@ -15303,15 +15649,13 @@ export class GameScene extends THREE.Scene {
     const active = this.interiorSets[theme] ? theme : 'cottage';
     for (const [name, s] of Object.entries(this.interiorSets)) s.visible = name === active;
     this.interiorRugMat?.color.set(GameScene.INTERIOR_RUGS[active] ?? 0xb06a72);
-    if (this.interiorFire) {
-      const fp = GameScene.INTERIOR_FIRE_POS[active];
-      this.interiorFire.intensity = fp ? 1.6 : 0;
-      if (fp) this.interiorFire.position.set(fp[0], fp[1], fp[2]);
-    }
     this.drawPoster(0, title, true);
     this.drawPoster(1, left, false);
     this.drawPoster(2, right, false);
     if (this.interiorGroup) this.interiorGroup.visible = true;
+    // Borrow the island's light rig for the visit (P2-B9). Taken once: a
+    // second entry without an exit must not remember the room's values.
+    if (!this.rigHome.held) this.snapshotOutdoorRig();
     this.insideInterior = true;
     // Free-walk: place the player's VISUAL group just inside the door and hold
     // the broadcast position at the door outside (peers keep seeing them
@@ -15372,6 +15716,10 @@ export class GameScene extends THREE.Scene {
     this.interiorOccupants = [];
     if (this.interiorZzz) this.interiorZzz.visible = false;
     if (active === 'cottage' && houseId) this.placeCottageOccupants(houseId);
+    // The room's light, at its preset from the first frame: the entry is
+    // drawn under the door veil, and an ease from the island's values would
+    // show as the veil lifts. (Last, so a party already has its club dim.)
+    this.snapRoomRig();
   }
 
   /**
@@ -15549,10 +15897,15 @@ export class GameScene extends THREE.Scene {
     const skyUp = this.skyUpUniform;
     const skyUpHome = skyUp ? this._npcColWorld.copy(skyUp.value) : null;
     if (skyUp) skyUp.value.copy(cam.up);
+    // The window shows the island, so the island's light goes back on for the
+    // pass (the room has borrowed the rig), and the room's after it.
+    const borrowed = this.insideInterior && this.rigHome.held;
+    if (borrowed) this.restoreOutdoorRig();
     const prevTarget = renderer.getRenderTarget();
     renderer.setRenderTarget(this.interiorViewTarget);
     renderer.render(this, cam);
     renderer.setRenderTarget(prevTarget);
+    if (borrowed) this.applyRoomRig();
     if (skyUp && skyUpHome) skyUp.value.copy(skyUpHome);
     if (rain && rainHome) rain.position.copy(rainHome);
     if (this.interiorGroup) this.interiorGroup.visible = roomWasVisible;
@@ -15601,6 +15954,9 @@ export class GameScene extends THREE.Scene {
     this.sendPartyGuestsHome(); // …including any the party let go indoors
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
+    // Hand the island its light rig back, exactly as it was left (P2-B9).
+    this.restoreOutdoorRig();
+    this.rigHome.held = false;
     this.restoreShadowAutoUpdate();
     // Borrowed sleepers: hide now; the wander loop re-claims their position,
     // orientation, and visibility on the first world frame after exit.
@@ -15664,13 +16020,16 @@ export class GameScene extends THREE.Scene {
         this.refreshInteriorView();
       }
     }
-    // Hearth flicker (fire is 0 in hearthless rooms).
-    if (this.interiorFire && this.interiorFire.intensity > 0) {
+    // Hearth flicker, on the fire itself: the ember plane and the pool it
+    // throws on the floor (hearthless rooms have neither). The campfire's
+    // recipe, with the same reduced-motion trim of the >3 Hz term.
+    const hearth = this.interiorHearths[this.interiorActiveTheme];
+    if (hearth) {
       const t = this.interiorTime;
-      // Same recipe as the campfire — and the same reduced-motion trim of
-      // the >3 Hz term; here it is a primary room light at close range.
-      this.interiorFire.intensity =
-        1.55 + Math.sin(t * 11) * 0.22 + (a11y.reducedMotion ? 0 : Math.sin(t * 23 + 1.7) * 0.14);
+      const flicker =
+        1 + Math.sin(t * 11) * 0.14 + (a11y.reducedMotion ? 0 : Math.sin(t * 23 + 1.7) * 0.09);
+      hearth.glow.color.copy(GameScene._hearthGlow).multiplyScalar(flicker);
+      hearth.pool.opacity = GameScene.HEARTH_POOL_OPACITY * flicker;
     }
 
     const o = GameScene.INTERIOR_ORIGIN;
@@ -15836,38 +16195,22 @@ export class GameScene extends THREE.Scene {
         c.mesh.position.x = c.open + (c.shut - c.open) * this.interiorCurtainT;
       }
     }
-    // House lights. Party mode pulls them right down so the disco ball, the
-    // lasers and the lit floor are what you actually see — a fully lit room
-    // washes all three out. Everything eases rather than snapping, and the
-    // same easing carries them back up when the party stops. The party's
-    // own light rides on top of those levels (updateInteriorParty): the beat
-    // flash on the room lamp, the ball glow on the pendant, the club tint on
-    // the fill, and their colours, which ease home once it ends.
-    const clubK = Math.min(1, 3.5 * deltaTime);
-    const party = this.partyMode;
-    if (this.interiorLamp) {
-      const lampWant = party ? 0.1 : this.interiorLampOn ? 1.35 : 0;
-      this.interiorLampLevel += (lampWant - this.interiorLampLevel) * Math.min(1, 9 * deltaTime);
-      this.interiorLamp.intensity = this.interiorLampLevel + (party ? this.partyGlow : 0);
-      if (!party) this.interiorLamp.color.lerp(this.interiorLampHome, clubK);
-      if (this.interiorBulb) {
-        (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
-          this.interiorLampOn && !party ? 0xffe8b8 : 0x6b6a63,
-        );
-      }
+    // House lights: the borrowed rig eases to the room's preset (lamp on or
+    // off, the hour, the curtains, a party's club dim), and the party's own
+    // light rides on top of it (applyRoomRig). Everything eases rather than
+    // snapping, so pressing E reads as working a switch.
+    this.updateRoomRig(deltaTime);
+    const lampLit = this.interiorLampOn && !this.partyMode;
+    if (this.interiorBulb) {
+      (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
+        lampLit ? 0xffe8b8 : 0x6b6a63,
+      );
     }
-    if (this.interiorRoomLamp) {
-      const want = party ? 0.35 : 3.2;
-      this.interiorRoomLampLevel += (want - this.interiorRoomLampLevel) * clubK;
-      this.interiorRoomLamp.intensity = this.interiorRoomLampLevel + (party ? this.partyFlash : 0);
-      if (!party) this.interiorRoomLamp.color.lerp(this.interiorRoomLampHome, clubK);
-    }
-    if (this.interiorRoomFill) {
-      const want = party ? 0.14 : 1.2;
-      this.interiorRoomFillLevel += (want - this.interiorRoomFillLevel) * clubK;
-      this.interiorRoomFill.intensity = this.interiorRoomFillLevel + (party ? this.partyTint : 0);
-      if (!party) this.interiorRoomFill.color.lerp(this.interiorRoomFillHome, clubK);
-    }
+    // The shades glow with the lamp, on its own ease.
+    this.interiorShadeLevel +=
+      ((lampLit ? 1 : 0) - this.interiorShadeLevel) *
+      Math.min(1, GameScene.ROOM_RIG_RATE * deltaTime);
+    for (const s of this.interiorShades) s.mat.emissiveIntensity = s.glow * this.interiorShadeLevel;
 
     // Floating 💤 bob while a sleeper occupies the bed.
     if (this.interiorZzz?.visible) {
