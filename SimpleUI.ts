@@ -1264,6 +1264,12 @@ export class SimpleUI {
   private toastBusy = false;
   /** A fading flash: toasts wait out its 300 ms fade. */
   private flashFadeUntil = 0;
+  /** A toast whose dwell just ended: the next message waits out its 200 ms
+   *  fade. A flash is a second element, and one that arrived in that window
+   *  showed over the fading toast (wave-1 integration: the 'Next:' flash on
+   *  leaving a hall, 2.0 s after the passport toast). A hint taken down at
+   *  once (stepHintAside) has no fade to wait for. */
+  private toastFadeUntil = 0;
   /**
    * Brief auto-dismissing status toast — e.g. "Muted <name>".
    *
@@ -1521,9 +1527,9 @@ export class SimpleUI {
     if (this.messagesStopped || this.toastBusy || this.toastQueue.length === 0) return;
     // Not while an opaque loader or the welcome/name modal owns the screen,
     // nor before the fly-in settles (a returning visitor read a special
-    // before the card, FM-12), nor over a fading flash — re-checked on a
-    // short poll so deferred messages surface right after.
-    const fade = this.flashFadeUntil - Date.now();
+    // before the card, FM-12), nor over a fading flash or toast — re-checked
+    // on a short poll so deferred messages surface right after.
+    const fade = Math.max(this.flashFadeUntil, this.toastFadeUntil) - Date.now();
     const wait = this.isLoadingVisible() || this.isWelcomeVisible() || this.introHold() || fade > 0;
     const m = wait ? null : this.takeToast();
     if (m === null) {
@@ -1584,6 +1590,8 @@ export class SimpleUI {
       if (this.toastEl) this.toastEl.style.opacity = '0';
       this.toastBusy = false;
       this.shownMessage = null;
+      // The next message waits out this 200 ms fade (pumpToasts).
+      this.toastFadeUntil = Date.now() + 200;
       // 250ms gap between queued toasts so consecutive ones read as separate.
       this.schedulePump(250);
     }, dwell);

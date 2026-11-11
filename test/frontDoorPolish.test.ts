@@ -337,6 +337,33 @@ describe('messages: one at a time', () => {
     expect(toastEl()!.style.opacity).toBe('1');
   });
 
+  // Wave-1 integration: a flash that arrived just as a toast's dwell ended
+  // showed at once, over the toast's 0.2 s fade (two elements, both on screen
+  // for one sample): the 'Next:' flash on leaving a hall, 2.0 s after the
+  // passport toast, at 390x844 and 667x375.
+  test('a message that arrives while a toast fades waits out the 200 ms fade', () => {
+    vi.useFakeTimers();
+    const next = 'Next: 💼 Professional — the gold arrow points the way.';
+    ui.toast('🛂 Passport stamped: Projects (1/4)');
+    vi.advanceTimersByTime(2030); // its 2 s dwell ended 30 ms ago: it is fading
+    expect(toastEl()!.style.opacity).toBe('0');
+    ui.flashMessage(next);
+    vi.advanceTimersByTime(150); // 180 ms into the fade
+    expect(flashEl()).toBeUndefined();
+    vi.advanceTimersByTime(30); // the fade is over
+    expect(text(flashEl())).toBe(next);
+  });
+
+  test('a hint taken down for an outcome has no fade: the flash shows at once', () => {
+    vi.useFakeTimers();
+    const next = 'Next: 💼 Professional — the gold arrow points the way.';
+    ui.toast('🛂 Passport stamped: Projects (1/4)', { hint: true });
+    vi.advanceTimersByTime(1000);
+    ui.flashMessage(next);
+    expect(toastEl()!.style.opacity).toBe('0');
+    expect(text(flashEl())).toBe(next);
+  });
+
   test('a flash dwells 50 ms a character, 2-6 s (it was a flat 1.8 s)', () => {
     vi.useFakeTimers();
     const line = '🏝️ You’ve got the hang of it — follow the ➤ arrow to 🚀 Projects.'; // 66 chars
