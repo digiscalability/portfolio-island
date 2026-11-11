@@ -1,0 +1,581 @@
+// @vitest-environment happy-dom
+//
+// Rooms (P2-B1): a visit starts clear of the door, the door arms after a step
+// or a moment, and every hotspot in every theme can be reached.
+//
+// MEASURED before (the interiors audit, every theme): the spawn at (-1.8,
+// 2.6) stood 0.7 u from the door spot, inside its 1.0 u reach, so the first
+// prompt was 'head outside' and the first E or USE walked the visitor
+// straight back out. The Personal room also put the avatar inside its floor
+// lamp's collider, and its curtains were unreachable behind the sofa.
+//
+// The first door (CO-A5): the warm prepares the Welcome Hub's programs first,
+// in slices sized to the thread, and the first room frame carries no window
+// pass.
+//
+// Behavioural: a real GameScene with its world build switched off builds the
+// real room (every theme's furniture and the colliders derived from it), and
+// enterInterior and updateInteriorMode run for real on a stand-in player. The
+// warm's passes run for real against a stand-in renderer.
+import * as THREE from 'three';
+import { beforeAll, describe, expect, test, vi } from 'vitest';
+
+import { GameScene } from '../GameScene';
+import { installHeadlessCanvas } from './helpers/headlessDom';
+
+interface Hotspot {
+  x: number;
+  z: number;
+  r: number;
+  label: string;
+  action: string;
+  text?: string;
+}
+
+/** The private room surface this suite drives. */
+interface Room {
+  player: unknown;
+  camera: THREE.PerspectiveCamera;
+  island: unknown;
+  insideInterior: boolean;
+  interiorColliders: Record<
+    string,
+    Array<{ minX: number; maxX: number; minZ: number; maxZ: number }>
+  >;
+  buildInterior(): void;
+  enterInterior(
+    title: string,
+    wall: number,
+    left: string,
+    right: string,
+    theme: string,
+    houseId?: string,
+  ): void;
+  exitInterior(): void;
+  setInteriorMove(forward: number, strafe: number): void;
+  updateInteriorMode(dt: number): void;
+  getInteriorHotspot(): { label: string; action: string } | null;
+  interiorHotspotsFor(theme: string): Hotspot[];
+  interiorWallBlocked(x: number, z: number): boolean;
+  interiorFurnitureBlocked(x: number, z: number): boolean;
+}
+
+const statics = GameScene as unknown as {
+  INTERIOR_ORIGIN: THREE.Vector3;
+  INTERIOR_SPAWN: { x: number; z: number };
+  INTERIOR_PLAYER_R: number;
+};
+const THEMES = ['office', 'workshop', 'home', 'post', 'hall', 'cottage', 'beach'];
+const DOOR = 'leave';
+
+let scene: Room;
+const room = (): { x: number; z: number } => {
+  const o = statics.INTERIOR_ORIGIN;
+  const p = (scene.player as { position: THREE.Vector3 }).position;
+  return { x: p.x - o.x, z: p.z - o.z };
+};
+
+/** A visitor's E: whatever the prompt offers where they stand. */
+const enter = (theme: string): void => {
+  scene.enterInterior(
+    'A room',
+    0xe0c9a8,
+    '',
+    '',
+    theme,
+    theme === 'beach' ? 'islet_beach_house' : undefined,
+  );
+};
+
+beforeAll(() => {
+  installHeadlessCanvas();
+  // A real GameScene, minus the world: initialize builds the whole island.
+  const init = vi
+    .spyOn(GameScene.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+    .mockResolvedValue(undefined);
+  scene = new GameScene() as unknown as Room;
+  init.mockRestore();
+  const position = new THREE.Vector3();
+  scene.player = {
+    position,
+    quaternion: new THREE.Quaternion(),
+    getWorldPosition: () => new THREE.Vector3(0, 76, 0),
+    setPositionHold: () => {},
+    updateWorldMatrix: () => {},
+    tickInteriorAnimation: () => {},
+    getWalkCyclePhase: () => 0,
+    applyPartyDance: () => {},
+  };
+  scene.camera = new THREE.PerspectiveCamera(50, 1.6, 0.1, 2000);
+  scene.island = { houseDoors: [], npcTargets: [] };
+  scene.buildInterior();
+}, 60000);
+
+describe('a visit starts clear of the door', () => {
+  test.each(THEMES)('%s: no prompt and no furniture at the spawn', (theme) => {
+    enter(theme);
+    const s = statics.INTERIOR_SPAWN;
+    expect(room()).toEqual({ x: s.x, z: s.z });
+    // Not even the door, armed: the spawn is outside every hotspot's reach.
+    const atSpawn = scene
+      .interiorHotspotsFor(theme)
+      .filter((h) => Math.hypot(s.x - h.x, s.z - h.z) < h.r)
+      .map((h) => h.label);
+    expect(atSpawn).toEqual([]);
+    expect(scene.interiorFurnitureBlocked(s.x, s.z)).toBe(false);
+    scene.updateInteriorMode(1 / 60);
+    expect(scene.getInteriorHotspot()).toBeNull();
+    scene.exitInterior();
+  });
+
+  test('the spawn is 1.4 u from the door spot', () => {
+    const s = statics.INTERIOR_SPAWN;
+    const door = scene.interiorHotspotsFor('cottage').find((h) => h.action === DOOR)!;
+    expect(Math.hypot(s.x - door.x, s.z - door.z)).toBeCloseTo(1.43, 2);
+  });
+});
+
+describe('the door arms after a step or a moment', () => {
+  test('excluded before arming, included after 0.6 u walked', () => {
+    // Placed INSIDE the door's reach the moment the room opens: the door is
+    // not offered yet.
+    enter('cottage');
+    const o = statics.INTERIOR_ORIGIN;
+    const p = (scene.player as { position: THREE.Vector3 }).position;
+    p.set(o.x - 1.8, p.y, o.z + 2.7);
+    scene.updateInteriorMode(1 / 60);
+    expect(scene.getInteriorHotspot()?.action).not.toBe(DOOR);
+    scene.exitInterior();
+
+    // Walking from the spawn straight back to the door: inside its reach
+    // after about 0.45 u, offered once 0.6 u are walked, well before 1.5 s.
+    enter('cottage');
+    const door = scene.interiorHotspotsFor('cottage').find((h) => h.action === DOOR)!;
+    let walked = 0;
+    let t = 0;
+    let inReachUnarmed = 0;
+    let offeredUnarmed = 0;
+    while (walked < 0.6 && t < 1.2) {
+      // Steer at the door spot: room movement is relative to the camera yaw.
+      const at = room();
+      (scene as unknown as { interiorCamYaw: number }).interiorCamYaw = Math.atan2(
+        door.x - at.x,
+        door.z - at.z,
+      );
+      scene.setInteriorMove(1, 0);
+      scene.updateInteriorMode(1 / 60);
+      t += 1 / 60;
+      walked += Math.hypot(room().x - at.x, room().z - at.z);
+      if (walked < 0.6 && Math.hypot(room().x - door.x, room().z - door.z) < door.r) {
+        inReachUnarmed++;
+        if (scene.getInteriorHotspot()?.action === DOOR) offeredUnarmed++;
+      }
+    }
+    scene.setInteriorMove(0, 0);
+    expect(t).toBeLessThan(1.5); // armed by the walk, not the clock
+    expect(inReachUnarmed).toBeGreaterThan(0);
+    expect(offeredUnarmed).toBe(0);
+    expect(walked).toBeGreaterThanOrEqual(0.6);
+    expect(scene.getInteriorHotspot()?.action).toBe(DOOR);
+    scene.exitInterior();
+  });
+
+  test('a visitor who stands still is offered the door after 1.5 s', () => {
+    enter('cottage');
+    const o = statics.INTERIOR_ORIGIN;
+    const p = (scene.player as { position: THREE.Vector3 }).position;
+    p.set(o.x - 1.8, p.y, o.z + 2.7); // within the door's reach, never walking
+    for (let t = 0; t < 1.4; t += 1 / 60) scene.updateInteriorMode(1 / 60);
+    expect(scene.getInteriorHotspot()?.action).not.toBe(DOOR);
+    for (let t = 0; t < 0.2; t += 1 / 60) scene.updateInteriorMode(1 / 60);
+    expect(scene.getInteriorHotspot()?.action).toBe(DOOR);
+    scene.exitInterior();
+  });
+});
+
+/** Hotspots in reach but never the nearest, KNOWN and older than this suite.
+ *  The beach house's sea spot (-3.0, -2.2) sits behind the daybed, inside
+ *  the wall screen's 1.5 u spot: MEASURED on a 0.05 u grid it wins only a
+ *  5 cm sliver past the daybed's foot, which the 0.1 u walk grid misses.
+ *  Reported to the plan; a new entry here is a regression. */
+const SHADOWED: Record<string, string[]> = {
+  beach: ['🌊 Press E to listen to the sea'],
+};
+
+describe('every hotspot can be reached', () => {
+  // The survey's flood fill (phase-2 interiors audit, IA.reach): 0.1 u cells
+  // from the spawn, walls always solid, furniture solid unless the current
+  // cell already overlaps it (updateInteriorMode's stuck-visitor escape).
+  test.each(THEMES)('%s', (theme) => {
+    enter(theme);
+    const step = 0.1;
+    const N = Math.round(6.8 / step) + 1;
+    const xz = (i: number, j: number): [number, number] => [-3.4 + i * step, -3.4 + j * step];
+    const wall = (i: number, j: number): boolean =>
+      i < 0 || j < 0 || i >= N || j >= N || scene.interiorWallBlocked(...xz(i, j));
+    const prop = (i: number, j: number): boolean => scene.interiorFurnitureBlocked(...xz(i, j));
+    const s = statics.INTERIOR_SPAWN;
+    const start: [number, number] = [
+      Math.round((s.x + 3.4) / step),
+      Math.round((s.z + 3.4) / step),
+    ];
+    const seen = new Set<number>([start[0] * 1000 + start[1]]);
+    const queue: Array<[number, number]> = [start];
+    while (queue.length) {
+      const [i, j] = queue.shift()!;
+      const escaping = prop(i, j);
+      for (const [di, dj] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const ni = i + di;
+        const nj = j + dj;
+        if (wall(ni, nj) || seen.has(ni * 1000 + nj) || (!escaping && prop(ni, nj))) continue;
+        seen.add(ni * 1000 + nj);
+        queue.push([ni, nj]);
+      }
+    }
+    const cells = [...seen].map((k) => xz(Math.floor(k / 1000), k % 1000));
+    const spots = scene.interiorHotspotsFor(theme);
+    const unreachable = spots
+      .filter((h) => !cells.some(([x, z]) => Math.hypot(x - h.x, z - h.z) < h.r))
+      .map((h) => h.label.replace(/<[^>]+>/g, ''));
+    expect(unreachable).toEqual([]);
+    // Stricter than the survey: each one is THE prompt somewhere reachable.
+    // In reach is not enough: at the shell's (1.8, 2.95) the home curtains
+    // were in reach in front of the sofa, but the sofa's own spot was always
+    // nearer, so they never showed.
+    (scene as unknown as { interiorDoorArmed: boolean }).interiorDoorArmed = true;
+    const nearest = (x: number, z: number): Hotspot | null =>
+      (
+        scene as unknown as { nearestInteriorHotspot(x: number, z: number): Hotspot | null }
+      ).nearestInteriorHotspot(x, z);
+    const shown = new Set(cells.map(([x, z]) => nearest(x, z)?.label));
+    const neverShown = spots
+      .filter((h) => !shown.has(h.label))
+      .map((h) => h.label.replace(/<[^>]+>/g, ''));
+    expect(neverShown).toEqual(SHADOWED[theme] ?? []);
+    scene.exitInterior();
+  });
+
+  test('the Personal floor lamp stands in its corner, out of the doorway', () => {
+    enter('home');
+    // Its pole's collider moved with it: none blocks the walk from the
+    // spawn to the door any more.
+    const pole = scene.interiorColliders.home.find(
+      (b) => b.maxX - b.minX < 0.2 && b.maxZ - b.minZ < 0.2 && b.minX < -3,
+    );
+    expect(pole).toBeDefined();
+    expect((pole!.minX + pole!.maxX) / 2).toBeCloseTo(-3.3, 2);
+    expect((pole!.minZ + pole!.maxZ) / 2).toBeCloseTo(3.3, 2);
+    scene.exitInterior();
+  });
+});
+
+/** The private warm surface the CO-A5 tests drive. */
+interface Warm {
+  interiorGroup: THREE.Group;
+  interiorSets: Record<string, THREE.Group>;
+  partyProps: { group: THREE.Group } | null;
+  insideInterior: boolean;
+  interiorWarmed: boolean;
+  interiorViewBucket: number;
+  warmYieldMs: number;
+  warmSliceMs(): number;
+  warmYield(): Promise<void>;
+  interiorWarmItems(
+    room: THREE.Object3D,
+    roomItems: boolean,
+  ): { first: THREE.Object3D[]; rest: THREE.Object3D[] };
+  compileInteriorPass(
+    gl: unknown,
+    g: THREE.Group,
+    items: THREE.Object3D[],
+    roomVisible: boolean,
+    target: null,
+  ): Promise<unknown[]>;
+  warmInteriorPasses(gl: unknown, khr: boolean): Promise<void>;
+  warmInteriorPosters(): void;
+  drawPoster(i: number, text: string, big: boolean): void;
+  refreshInteriorView(): void;
+  add(...o: THREE.Object3D[]): void;
+  remove(...o: THREE.Object3D[]): void;
+  traverseVisible(cb: (o: THREE.Object3D) => void): void;
+}
+
+const under = (o: THREE.Object3D, root: THREE.Object3D): boolean => {
+  for (let x: THREE.Object3D | null = o; x; x = x.parent) if (x === root) return true;
+  return false;
+};
+
+const box = (m: THREE.Material): THREE.Mesh => new THREE.Mesh(new THREE.BoxGeometry(), m);
+
+/** A renderer stand-in. compile() reports the lights and the objects it was
+ *  fed, then burns `burnMs` of the slice. */
+const fakeGl = (
+  onCompile: (lights: THREE.Object3D[], objects: THREE.Object3D[]) => void,
+  burnMs: number,
+): {
+  getRenderTarget: () => null;
+  setRenderTarget: () => void;
+  properties: { get: () => object };
+  compile: (chunk: THREE.Object3D) => Set<THREE.Material>;
+} => ({
+  getRenderTarget: () => null,
+  setRenderTarget: () => {},
+  properties: { get: () => ({}) },
+  compile: (chunk: THREE.Object3D) => {
+    const lights: THREE.Object3D[] = [];
+    chunk.traverseVisible((o) => {
+      if ((o as THREE.Light).isLight) lights.push(o);
+    });
+    const objects: THREE.Object3D[] = [];
+    chunk.traverse((o) => objects.push(o));
+    onCompile(lights, objects);
+    const until = performance.now() + burnMs;
+    while (performance.now() < until) {
+      /* the compile's main-thread time */
+    }
+    return new Set<THREE.Material>();
+  },
+});
+
+describe('the warm prepares the first door first (CO-A5)', () => {
+  // MEASURED at 4x CPU on a phone, the warm started at the welcome card and
+  // E came 3.1 s later: +11 programs, a 1,141 ms frame, 1,917 ms of black.
+  // The room-lit pass took 19 s, one ~4 ms slice a ~60 ms frame, and the
+  // Welcome Hub's programs came last in scene order.
+  test('first: the shell, the hall, the unculled world and the player; rest: the other rooms and the villagers', () => {
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    const sets = w.interiorSets;
+    const party = w.partyProps!.group;
+    const culled = box(new THREE.MeshStandardMaterial());
+    const unculled = box(new THREE.MeshToonMaterial());
+    unculled.frustumCulled = false; // the instanced fleets, traffic, skinned avatars
+    const unlit = box(new THREE.MeshBasicMaterial());
+    unlit.frustumCulled = false;
+    // Culled, yet drawn indoors: what the player wears stands in every room,
+    // and a villager is borrowed into the cottages and the beach house.
+    const avatar = new THREE.Group();
+    const hat = box(new THREE.MeshToonMaterial());
+    avatar.add(hat);
+    const villager = new THREE.Group();
+    const tunic = box(new THREE.MeshToonMaterial());
+    villager.add(tunic);
+    w.add(culled, unculled, unlit, avatar, villager);
+    const player = scene.player as { traverse?: (cb: (o: THREE.Object3D) => void) => void };
+    const island = scene.island as { npcTargets: unknown[] };
+    player.traverse = (cb) => avatar.traverse(cb);
+    island.npcTargets = [{ name: 'Gardener', position: new THREE.Vector3(), meshRef: villager }];
+    try {
+      const { first, rest } = w.interiorWarmItems(g, true);
+      // first: what the Welcome Hub's first frame draws, and nothing else.
+      const inSet = (o: THREE.Object3D): boolean => Object.values(sets).some((s) => under(o, s));
+      expect(first).toContain(unculled);
+      expect(first).toContain(hat);
+      expect(first.some((o) => under(o, sets.hall))).toBe(true);
+      expect(first.some((o) => under(o, g) && !inSet(o))).toBe(true); // the shell
+      for (const o of first.filter((x) => under(x, g))) {
+        expect(under(o, party)).toBe(false);
+        expect(!inSet(o) || under(o, sets.hall)).toBe(true);
+      }
+      // rest: the other rooms, the party rig and the villagers.
+      expect(rest.some((o) => under(o, sets.office))).toBe(true);
+      expect(rest.some((o) => under(o, party))).toBe(true);
+      expect(rest).toContain(tunic);
+      expect(rest.every((o) => under(o, g) || o === tunic)).toBe(true);
+      // No other culled world object is drawn from the room, which sits
+      // 300 u below the planet's centre; nor is an unlit one re-keyed.
+      expect([...first, ...rest]).not.toContain(culled);
+      expect([...first, ...rest]).not.toContain(unlit);
+
+      // The outdoor pass: every lit world object, none of the room, no first.
+      const out = w.interiorWarmItems(g, false);
+      expect(out.first).toEqual([]);
+      expect(out.rest).toEqual(expect.arrayContaining([culled, unculled, hat, tunic]));
+      expect(out.rest).not.toContain(unlit);
+      expect(out.rest.some((o) => under(o, g))).toBe(false);
+    } finally {
+      delete player.traverse;
+      island.npcTargets = [];
+      w.remove(culled, unculled, unlit, avatar, villager);
+    }
+  });
+
+  test('a material shared with the hall is warmed with the hall', () => {
+    const w = scene as unknown as Warm;
+    const sets = w.interiorSets;
+    const shared = new THREE.MeshStandardMaterial();
+    const inOffice = box(shared);
+    const inHall = box(shared);
+    sets.office.add(inOffice);
+    sets.hall.add(inHall);
+    try {
+      const { first, rest } = w.interiorWarmItems(w.interiorGroup, true);
+      expect(first).toContain(inHall);
+      expect(rest).not.toContain(inOffice); // the same program, warmed once
+    } finally {
+      sets.office.remove(inOffice);
+      sets.hall.remove(inHall);
+    }
+  });
+
+  test('the passes draw the posters, then compile the first door, then the rest', async () => {
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    const posters = vi.spyOn(w, 'drawPoster');
+    const order: THREE.Object3D[] = [];
+    let postersAtFirstCompile = -1;
+    const shownAtCompile = new Set<boolean>();
+    const gl = fakeGl((_lights, objects) => {
+      if (postersAtFirstCompile < 0) postersAtFirstCompile = posters.mock.calls.length;
+      shownAtCompile.add(g.visible);
+      order.push(...objects);
+    }, 0);
+    const { first, rest } = w.interiorWarmItems(g, true);
+    const warmed = w.interiorWarmed;
+    try {
+      await w.warmInteriorPasses(gl, false);
+      // Every poster canvas and both font sizes are used before a door is.
+      expect(postersAtFirstCompile).toBe(3);
+      expect(posters.mock.calls.map((c) => [c[0], c[2]])).toEqual([
+        [0, true],
+        [1, false],
+        [2, false],
+      ]);
+      const at = (o: THREE.Object3D): number => order.indexOf(o);
+      expect(first.length).toBeGreaterThan(0);
+      expect(rest.length).toBeGreaterThan(0);
+      expect([...first, ...rest].every((o) => at(o) >= 0)).toBe(true);
+      expect(Math.max(...first.map(at))).toBeLessThan(Math.min(...rest.map(at)));
+      // The room was shown only inside a slice.
+      expect(shownAtCompile.has(true)).toBe(true);
+      expect(g.visible).toBe(false);
+    } finally {
+      posters.mockRestore();
+      w.interiorWarmed = warmed;
+    }
+  });
+
+  test('a slice is 4 ms on a free thread and up to 12 ms on a busy one', async () => {
+    // MEASURED at 4x CPU: a frame takes 55-110 ms, a zero-delay timer comes
+    // back after 80-240 ms and a new program costs 4-5 ms. 4 ms slices
+    // compiled one program a frame.
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    // 15% of the gap the thread last took to come back, within 4-12 ms.
+    for (const [gap, ms] of [
+      [0, 4],
+      [16.7, 4],
+      [40, 6],
+      [80, 12],
+      [500, 12],
+    ]) {
+      w.warmYieldMs = gap;
+      expect(w.warmSliceMs()).toBeCloseTo(ms, 5);
+    }
+    // warmYield measures that gap itself.
+    w.warmYieldMs = 9999;
+    await w.warmYield();
+    expect(w.warmYieldMs).toBeLessThan(1000);
+
+    // And a pass spends it: 12 objects of 3 ms each take fewer slices on a
+    // thread that comes back after 80 ms than on one that comes straight back.
+    const items = Array.from({ length: 12 }, () => box(new THREE.MeshBasicMaterial()));
+    const gl = fakeGl(() => {}, 3);
+    const slices = async (gap: number): Promise<number> => {
+      w.warmYieldMs = gap;
+      const yielded = vi.spyOn(w, 'warmYield').mockImplementation(async () => {
+        w.warmYieldMs = gap;
+      });
+      try {
+        await w.compileInteriorPass(gl, g, items, true, null);
+        return yielded.mock.calls.length;
+      } finally {
+        yielded.mockRestore();
+      }
+    };
+    try {
+      const free = await slices(0);
+      const busy = await slices(80);
+      expect(free).toBeGreaterThanOrEqual(6); // 2 objects a 4 ms slice
+      expect(busy).toBeLessThanOrEqual(free - 2); // 4 objects a 12 ms slice
+    } finally {
+      w.warmYieldMs = 0;
+    }
+  });
+
+  test('each slice feeds the lights a frame would draw with, with no scene walk', async () => {
+    // MEASURED at 4x CPU, a traverseVisible of the whole scene per slice cost
+    // 2.9 ms of its 4 ms budget.
+    const w = scene as unknown as Warm;
+    const g = w.interiorGroup;
+    const lamp = new THREE.PointLight();
+    const parkedHome = new THREE.Group();
+    parkedHome.visible = false;
+    const parked = new THREE.PointLight();
+    parkedHome.add(parked);
+    w.add(lamp, parkedHome);
+    const walk = vi.spyOn(w, 'traverseVisible');
+    const fed: THREE.Object3D[][] = [];
+    // 13 ms a compile: over any slice's budget, so every slice takes one item.
+    const gl = fakeGl((lights) => {
+      fed.push(lights);
+      if (fed.length === 1) lamp.visible = false; // hidden mid-pass
+    }, 13);
+    const items = [0, 1].map(() => box(new THREE.MeshBasicMaterial()));
+    try {
+      await w.compileInteriorPass(gl, g, items, true, null);
+      expect(walk).not.toHaveBeenCalled();
+      expect(fed).toHaveLength(2);
+      expect(fed[0]).toContain(lamp);
+      expect(fed[1]).not.toContain(lamp); // the next slice counts it as a frame would
+      for (const lights of fed) expect(lights).not.toContain(parked);
+      expect(fed[0].some((l) => under(l, g))).toBe(true); // the room is shown in the slice
+      fed.length = 0;
+      await w.compileInteriorPass(gl, g, items.slice(0, 1), false, null);
+      expect(fed[0].some((l) => under(l, g))).toBe(false);
+      expect(g.visible).toBe(false); // and hidden again after it
+    } finally {
+      walk.mockRestore();
+      w.remove(lamp, parkedHome);
+    }
+  });
+});
+
+describe('the first room frame carries no window pass (CO-A5)', () => {
+  // MEASURED on a phone at 4x CPU: the window's render of the island took
+  // 36 ms of the first room frame, which is drawn under the door veil at full
+  // black. The veil starts to lift only once that frame is out.
+  test('an entry paints the window on its second frame, a change of light at once', () => {
+    const w = scene as unknown as Warm;
+    const paint = vi.spyOn(w, 'refreshInteriorView').mockImplementation(() => {});
+    try {
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).not.toHaveBeenCalled();
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(1);
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(1); // and no more while the view holds
+      // Mid-visit the outside changes (a new five-minute bucket, the weather):
+      // nothing covers the room now, so the pane repaints in that frame.
+      w.interiorViewBucket = 99;
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(2);
+      scene.exitInterior();
+      // The next building waits its one frame again.
+      enter('office');
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(2);
+      scene.updateInteriorMode(1 / 60);
+      expect(paint).toHaveBeenCalledTimes(3);
+    } finally {
+      paint.mockRestore();
+      scene.exitInterior();
+    }
+  });
+});

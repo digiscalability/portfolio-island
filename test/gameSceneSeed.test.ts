@@ -76,6 +76,7 @@ interface Builders {
   createDustPool(): void;
   createCoins(): void;
   createNameTags(): void;
+  getTrailVillager(): string | null;
 }
 
 interface Census {
@@ -88,6 +89,10 @@ interface Census {
   coinRows: string[];
   trailRows: string[];
   pins: number;
+  /** The villager the arrival trail leads to, and its last coin's distance
+   *  from them (null without a trail). */
+  trailVillager: string | null;
+  lastTrailToVillager: number | null;
 }
 
 const v5 = (x: number): string => x.toFixed(5);
@@ -116,7 +121,10 @@ const build = (arrived: boolean): Census => {
     fn();
     return draws - before;
   };
-  let census: Omit<Census, 'placement' | 'coinRows' | 'trailRows' | 'pins'>;
+  let census: Omit<
+    Census,
+    'placement' | 'coinRows' | 'trailRows' | 'pins' | 'trailVillager' | 'lastTrailToVillager'
+  >;
   try {
     const island = take(() => {
       scene.island = new Island(WORLD_RADIUS);
@@ -153,7 +161,20 @@ const build = (arrived: boolean): Census => {
       ...pins.map((n) => `pin:${n}`),
     ].join(';'),
   );
-  return { ...census, placement, coinRows, trailRows, pins: pins.length };
+  const trailVillager = scene.getTrailVillager();
+  const villager = scene.island.npcTargets.find((t) => t.name === trailVillager);
+  const trail = scene.coins.filter((c) => c.trail);
+  const last = trail.length ? trail[trail.length - 1].mesh.position : null;
+  const lastTrailToVillager = last && villager ? last.distanceTo(villager.position) : null;
+  return {
+    ...census,
+    placement,
+    coinRows,
+    trailRows,
+    pins: pins.length,
+    trailVillager,
+    lastTrailToVillager,
+  };
 };
 
 let cold: Census;
@@ -199,6 +220,20 @@ describe('the GameScene builders take a fixed share of the seeded stream', () =>
     expect(warmArrived.nameTags).toBe(warm.nameTags);
     // The coins themselves land identically: the trail draws come after them.
     expect(warmArrived.coinRows).toEqual(warm.coinRows);
+  });
+
+  test('the trail leads to a villager who talks, the Mayor, and ends near them', () => {
+    // B10: the nearest villager to the spawn who talks through the chat. In
+    // this world that is the Mayor, as it was before the AI-villager filter,
+    // so the trail and the placement digest are unchanged.
+    expect(warm.trailVillager).toBe('Mayor');
+    expect(cold.trailVillager).toBe('Mayor');
+    // guide.cjs's bar: the last trail coin is 3 u or less from the villager.
+    expect(warm.lastTrailToVillager).toBeLessThanOrEqual(3);
+    // A property of the shared world: set for a returning visitor too, who
+    // gets no coins.
+    expect(warmArrived.trailVillager).toBe('Mayor');
+    expect(warmArrived.lastTrailToVillager).toBeNull();
   });
 
   test('the placements match the golden, cold and warm', () => {

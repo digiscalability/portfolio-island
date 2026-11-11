@@ -302,11 +302,12 @@ describe('mid-water life is cheap and RNG-safe', () => {
   test('the water ceiling is a separate shell, not a flipped sea material', () => {
     // The sea's alpha is overwritten inside its own shader and the whole
     // material was tuned single-sided; flipping it to DoubleSide is a coin
-    // flip on the most regression-prone material in the codebase.
+    // flip on the most regression-prone material in the codebase. (The
+    // Island.ts half, the sea staying single-sided, is C's, in
+    // test/worldLook.test.ts.)
     const c = fn('GameScene.ts', 'private createMidwaterShielded', 6000);
     expect(c).toContain('BackSide');
     expect(c).toContain('depthWrite: false');
-    expect(src('Island.ts')).not.toContain('side: THREE.DoubleSide, // sea');
   });
 
   test('fauna and ceiling show from the first moment of a descent', () => {

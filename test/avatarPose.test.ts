@@ -89,8 +89,13 @@ describe('the party dance respects the rig rest', () => {
   test('the npc.glb guests compose onto the cached rest quaternion instead', () => {
     // Different rig, different rule: on npc.glb .rotation must not be written at
     // all. The guests were already correct — the stale note that sent me here
-    // blamed them, and the raw constants were the PLAYER's.
-    const guests = fn('GameScene.ts', 'The guests: bounce + arm pumps', 2300);
+    // blamed them, and the raw constants were the PLAYER's. (The guests' loop
+    // through to the end of updateInteriorParty, not a fixed 2300-character
+    // window: that one slid off the compose line as the party grew.)
+    const party = bodyOf('GameScene.ts', 'private updateInteriorParty(');
+    const at = party.indexOf('for (const g of this.partyGuests)');
+    expect(at, 'the guests loop').toBeGreaterThan(-1);
+    const guests = party.slice(at);
     expect(guests).toMatch(/l\.b\.quaternion\.copy\(l\.rest\)\.multiply\(/);
     expect(guests).not.toMatch(/l\.b\.rotation\./);
   });

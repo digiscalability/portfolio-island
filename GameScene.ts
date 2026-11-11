@@ -51,6 +51,7 @@ import {
   beltScale,
   faunaBelt,
 } from './WorldScale';
+import { burnDraws } from './WorldSeed';
 import { getWorldState } from './WorldState';
 import { ZonesManager } from './ZonesManager';
 
@@ -77,6 +78,17 @@ declare global {
   }
 }
 
+/** A room hotspot: room-local x/z, trigger radius, and what E does there. */
+interface InteriorHotspot {
+  id?: string;
+  x: number;
+  z: number;
+  r: number;
+  label: string;
+  action: string;
+  text?: string;
+}
+
 /** The slice of three's WebGLProgram the interior warm drives. */
 interface WarmProgram {
   isReady(): boolean;
@@ -85,9 +97,13 @@ interface WarmProgram {
 }
 
 /** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
- *  (geometry and material are shared), so a returning visitor's skipped trail
- *  burns exactly this many uuids to stay on the first visitor's stream. */
+ *  (geometry and material are shared). */
 const ARRIVAL_TRAIL_COINS = 5;
+/** Seeded draws the trail's Meshes take, as the census MEASURED them
+ *  (test/gameSceneSeed.test.ts: with this burn, a returning visitor's coins
+ *  span equals a first visitor's 588). A returning visitor's skipped trail
+ *  burns them to stay on the first visitor's stream. */
+const ARRIVAL_TRAIL_DRAWS = 20;
 
 /**
  * GameScene
@@ -1242,17 +1258,23 @@ export class GameScene extends THREE.Scene {
    *
    * Writes only booleans: no allocation, no uuid, no Math.random — safe to
    * call from anywhere, including before restoreRandom.
+   *
+   * The interior room is skipped: its four lights are the room's own, shown
+   * and hidden with the room's group and never on the day/night gate, so a
+   * room built before this runs keeps its lights for the next visit. Since
+   * decision P2-1, GameScene adds no exterior light of its own.
    */
   public primeExteriorLightGate(): void {
     const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
     const on = day < EXTERIOR_LIGHTS_DAY_CUTOFF;
-    this.traverse((o) => {
+    const room = this.interiorGroup;
+    const gate = (o: THREE.Object3D): void => {
+      if (o === room) return;
       const l = o as THREE.PointLight & { isPointLight?: boolean; isSpotLight?: boolean };
-      if (!l.isPointLight && !l.isSpotLight) return;
-      // The interior room's own lights live under a group that is hidden
-      // while outdoors, so traverseVisible never counts them either way.
-      l.visible = on;
-    });
+      if (l.isPointLight || l.isSpotLight) l.visible = on;
+      for (const c of o.children) gate(c);
+    };
+    gate(this);
   }
 
   /**
@@ -1421,16 +1443,18 @@ export class GameScene extends THREE.Scene {
     this.add(mesh);
     this.lampPoolMat = mat;
 
-    // Roaming lamp lights: three real point lights that re-park themselves on
-    // the lamps nearest the player. Distance 16 with decay 2 clears the 4.3u
-    // bulb height with reach to spare over the pool.
-    for (let i = 0; i < 3; i++) {
-      const l = new THREE.PointLight(0xffeeaa, 0, 16, 2);
-      l.name = `lamp_follow_${i}`;
-      this.add(l);
-      this.lampFollowLights.push({ light: l, siteIndex: -1 });
-    }
-    console.log(`💡 ${anchors.length} lamp light pools (1 draw call) + 3 roaming lights`);
+    // The three roaming lamp lights are retired (decision P2-1: no exterior
+    // point lights). three bakes light counts into every lit program, so the
+    // exterior set switching on at dusk recompiled the world in one long task
+    // (MEASURED with all twelve exterior lights: 2.4-3.6 s), and a boot after
+    // dark compiled the night set before the welcome card. The pools and the
+    // bulbs carry the lamplight. Still CONSTRUCTED, never added or tracked:
+    // this runs inside the seeded window, and each PointLight mints the
+    // light's and its shadow camera's uuids, so dropping the constructors
+    // would re-roll every placement after this point. With lampFollowLights
+    // left empty, updateLampFollowLights is a no-op.
+    for (let i = 0; i < 3; i++) void new THREE.PointLight(0xffeeaa, 0, 16, 2);
+    console.log(`💡 ${anchors.length} lamp light pools (1 draw call)`);
   }
 
   /**
@@ -1438,6 +1462,10 @@ export class GameScene extends THREE.Scene {
    * the night. Re-picked on a 0.2s cadence (37 distance checks — nothing), and
    * intensity always EASES, so a light changing which lamp it serves reads as
    * one lamp fading up rather than a pop.
+   *
+   * A no-op by default: createLampLightPools tracks no roaming light since
+   * decision P2-1 (no exterior point lights). Kept for that decision's
+   * alternative, the lights present all day at intensity 0 on desktop.
    */
   private updateLampFollowLights(deltaTime: number, dayFactor: number): void {
     if (!this.lampFollowLights.length) return;
@@ -5006,7 +5034,6 @@ export class GameScene extends THREE.Scene {
   private campfire: {
     group: THREE.Group;
     flames: THREE.Mesh[];
-    light: THREE.PointLight;
     embers: Array<{ m: THREE.Mesh; speed: number; phase: number }>;
     logs: THREE.Mesh[];
     pos: THREE.Vector3;
@@ -5108,9 +5135,12 @@ export class GameScene extends THREE.Scene {
       group.add(m);
       embers.push({ m, speed: 0.5 + Math.random() * 0.7, phase: Math.random() * Math.PI * 2 });
     }
-    const light = new THREE.PointLight(0xff9a3c, 0, 14, 1.4);
-    light.position.set(0, 0.75, 0);
-    group.add(light);
+    // The fire's own light is retired (decision P2-1: no exterior point
+    // lights; switching it on at dusk re-keyed every lit program). The
+    // flames' additive flicker carries the glow. Still CONSTRUCTED, never
+    // added: setupCampfire runs inside the seeded window, and a PointLight
+    // mints the light's and its shadow camera's uuids.
+    void new THREE.PointLight(0xff9a3c, 0, 14, 1.4);
 
     // Four seating logs, and the world-space seat/facing pairs for the NPCs.
     const seats: Array<{ pos: THREE.Vector3; face: THREE.Vector3 }> = [];
@@ -5182,7 +5212,6 @@ export class GameScene extends THREE.Scene {
     this.campfire = {
       group,
       flames,
-      light,
       embers,
       logs,
       pos: place.position.clone(),
@@ -5194,11 +5223,10 @@ export class GameScene extends THREE.Scene {
 
   /**
    * Burn the fire and hold the circle. Lit from dusk to dawn; the flames
-   * flicker on three different sine rates so no two agree, embers rise and
-   * respawn, and the light breathes with them. While it burns, up to three
-   * villagers are borrowed onto the logs (the party-guest pattern: take over
-   * meshRef only, and the wander loop reclaims them on the first frame after
-   * they are released).
+   * flicker on three different sine rates so no two agree, and embers rise
+   * and respawn. While it burns, up to three villagers are borrowed onto the
+   * logs (the party-guest pattern: take over meshRef only, and the wander
+   * loop reclaims them on the first frame after they are released).
    */
   private updateCampfire(deltaTime: number, time: number, dayFactor: number): void {
     const C = this.campfire;
@@ -5240,16 +5268,8 @@ export class GameScene extends THREE.Scene {
       em.opacity = Math.max(0, 1 - life) * night;
       e.m.visible = night > 0.02;
     }
-    C.light.intensity =
-      night *
-      (2.6 +
-        Math.sin(time * 11) * 0.35 +
-        (a11y.reducedMotion ? 0 : Math.sin(time * 23 + 1.7) * 0.22));
-    // WebGLLights counts a point light whatever its intensity, and the count
-    // is a #define — so an always-present zero-intensity campfire kept every
-    // lit program compiled for one more light all day. Same shared cutoff as
-    // the rest of the exterior set, so the day/night flip stays ONE relink.
-    C.light.visible = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF;
+    // No light to drive or gate: the fire has none (setupCampfire), so the
+    // light count never changes at dusk here. The flames above are its glow.
 
     // Hold the seated villagers in place and give them a fireside sway.
     for (const g of this.campfireGuests) {
@@ -9726,21 +9746,28 @@ export class GameScene extends THREE.Scene {
   /**
    * First-30-seconds quick win (engagement research: the highest-leverage,
    * lowest-risk fix): a short breadcrumb of coins from the spawn point toward
-   * the nearest villager, so a brand-new visitor's very first minute is
-   * move → collect → arrive at a talking NPC. First visit only; trail coins
-   * never respawn; finishing the trail fires onArrivalTrail (flash + flag).
+   * the nearest villager who talks, so a brand-new visitor's very first
+   * minute is move → collect → arrive at a villager to chat with. First
+   * visit only; trail coins never respawn; the first one collected marks the
+   * visit (ds_arrived), and finishing the trail fires onArrivalTrail.
    */
   private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
     const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
-    // Nearest villager to the spawn (npcTargets are seated by now). The search
-    // draws nothing from the seeded stream.
+    // Nearest villager to the spawn who talks through the chat (isAiNpc):
+    // the trail ends at a conversation, never at one of the villagers with
+    // only written lines (the market vendors, the First Mate and the
+    // Deckhand). npcTargets are seated by now. The search draws nothing from
+    // the seeded stream.
     let npcDir: THREE.Vector3 | null = null;
     let best = Infinity;
+    this.trailVillager = null;
     for (const t of this.island.npcTargets ?? []) {
+      if (!isAiNpc(t.name)) continue;
       const d = t.position.clone().normalize().angleTo(spawnDir);
       if (d > 0.04 && d < best) {
         best = d;
         npcDir = t.position.clone().normalize();
+        this.trailVillager = t.name;
       }
     }
     // No villager: the world decides that for every visitor alike, so there
@@ -9754,12 +9781,12 @@ export class GameScene extends THREE.Scene {
     }
     if (returning) {
       // This runs inside the SEEDED window. The trail's Meshes would each have
-      // minted one uuid (4 draws; geometry and material are shared), so the
-      // skip burns exactly that many: a returning visitor then rolls every
-      // later builder (vehicle bob, sailor and cruise-ship angles, embers) on
-      // the same stream as a first-time one. test/gameSceneSeed.test.ts
-      // measures both paths.
-      for (let i = 0; i < ARRIVAL_TRAIL_COINS; i++) THREE.MathUtils.generateUUID();
+      // minted one uuid (geometry and material are shared), so the skip burns
+      // their measured draws: a returning visitor then rolls every later
+      // builder (vehicle bob, sailor and cruise-ship angles, embers) on the
+      // same stream as a first-time one. test/gameSceneSeed.test.ts measures
+      // both paths, and the seed probe the whole window.
+      burnDraws(ARRIVAL_TRAIL_DRAWS);
       return;
     }
     const q = new THREE.Quaternion().setFromUnitVectors(spawnDir, npcDir);
@@ -9784,6 +9811,24 @@ export class GameScene extends THREE.Scene {
   }
 
   private trailCoinsLeft = 0;
+  /** ds_arrived has been written for this visit (the first trail coin). */
+  private arrivalMarked = false;
+  /** The visitor has steered the avatar since load (setPlayerMovement). */
+  private visitorSteered = false;
+  /**
+   * A trail coin waits for the visitor: no magnet and no pickup until they
+   * have steered. The first coin lies inside the magnet's reach of the
+   * spawn. MEASURED: it was taken during the fly-in, before the welcome
+   * card, and that pickup marked the visit (ds_arrived). A reload with the
+   * card still up then built no trail, for a visitor who had not moved. Now
+   * the first pickup is the visitor's own: a reload before it shows the
+   * whole trail again, and a reload after it still gives no coin twice.
+   */
+  private trailCoinWaits(c: { trail?: boolean }): boolean {
+    return c.trail === true && !this.visitorSteered;
+  }
+  /** The villager the arrival trail leads to (createArrivalTrail). */
+  private trailVillager: string | null = null;
   /** First-visit arrival coins still on the ground? While true, the guide
    *  sparkles yield — minute one shows ONE golden breadcrumb system, not two
    *  competing trails (coins to the nearest villager vs sparkles to
@@ -9791,6 +9836,14 @@ export class GameScene extends THREE.Scene {
    *  and behaviour is identical for them. */
   public hasTrailCoins(): boolean {
     return this.trailCoinsLeft > 0;
+  }
+  /** The villager the first-visit coin trail leads to: the nearest to the
+   *  spawn who talks (isAiNpc), or null when the world has none. A property
+   *  of the shared world, so it is set for returning visitors too;
+   *  hasTrailCoins() says whether the coins are down. The compass reads it,
+   *  so the pill names the villager the coins lead to. */
+  public getTrailVillager(): string | null {
+    return this.trailVillager;
   }
   private onArrivalTrail: (() => void) | null = null;
   public setOnArrivalTrail(cb: () => void): void {
@@ -11875,6 +11928,7 @@ export class GameScene extends THREE.Scene {
       }
       this._npcNormal.copy(c.mesh.position).normalize();
       c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 2.5);
+      if (this.trailCoinWaits(c)) continue;
       // Magnet: within ~2.1u the coin leans toward the player — the pickup
       // starts ANSWERING before it lands (anticipation beat of the ceremony).
       // Near-misses ease back to their seat so no coin is left stranded.
@@ -11895,7 +11949,21 @@ export class GameScene extends THREE.Scene {
         // quest + delivery rewards the sane way to kit out. Arrival-trail
         // coins are one-shot: respawnAt 0 means the respawn branch never fires.
         c.respawnAt = c.trail ? 0 : time + 120;
-        if (c.trail && --this.trailCoinsLeft === 0) this.onArrivalTrail?.();
+        if (c.trail) {
+          // The first trail coin marks the visit: a reload after it builds no
+          // trail, so its coins cannot be collected again (a free coin per
+          // reload). main-simple's markDone at the trail's end writes the
+          // same key.
+          if (!this.arrivalMarked) {
+            this.arrivalMarked = true;
+            try {
+              localStorage.setItem('ds_arrived', '1');
+            } catch {
+              /* no storage: the trail shows again next visit */
+            }
+          }
+          if (--this.trailCoinsLeft === 0) this.onArrivalTrail?.();
+        }
         // Streak-pitched chime: quick successive pickups climb a pentatonic
         // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
         // reward grammar. Only THIS site pitches; shop dings stay flat.
@@ -12908,6 +12976,8 @@ export class GameScene extends THREE.Scene {
   private interiorViewFrom = new THREE.Vector3();
   private interiorViewLook = new THREE.Vector3();
   private interiorViewAccum = 0;
+  /** Frames an entry's window repaint still waits (updateInteriorMode). */
+  private interiorViewWait = 0;
   private interiorRainNode: THREE.Object3D | null = null;
   /** Hand the shadow map back. Must run on EVERY exit path, or the world
    *  outside silently keeps whatever shadows it had when you stepped in.
@@ -12942,6 +13012,15 @@ export class GameScene extends THREE.Scene {
   private interiorLampOn = true;
   private interiorRoomLamp: THREE.PointLight | null = null;
   private interiorRoomFill: THREE.PointLight | null = null;
+  // The house level each room light eases toward (lamp switch, club dim);
+  // the party's own light rides on top of it. Seeded from the built lights.
+  private interiorLampLevel = 0;
+  private interiorRoomLampLevel = 0;
+  private interiorRoomFillLevel = 0;
+  // Their authored colours, which they ease back to when a party ends.
+  private readonly interiorLampHome = new THREE.Color();
+  private readonly interiorRoomLampHome = new THREE.Color();
+  private readonly interiorRoomFillHome = new THREE.Color();
 
   /** Work a room fixture. Returns the line to flash. */
   public toggleInteriorFixture(which: string): string {
@@ -12959,31 +13038,70 @@ export class GameScene extends THREE.Scene {
   }
 
   // ── Party mode (beach house) ───────────────────────────────────────────
-  // Disco ball + colour-cycling dance floor + two sweeping spotlights + four
+  // Disco ball + colour-cycling dance floor + two sweeping floor lights + six
   // villagers borrowed onto the floor, all driven on a fixed 120bpm beat
   // (iframe audio is cross-origin — the beat can't read the music, so it
   // fakes confidence and most tracks agree). The wall screen is the jukebox.
+  //
+  // NO LIGHTS OF ITS OWN. three bakes light counts into every lit program,
+  // and the party used to add four (a ball light, a beat flash and two
+  // spots): MEASURED on desktop, entering the beach house added 17 programs
+  // in a 2.4 s frame behind 2.6 s of black, and each toggle cost 150-270 ms
+  // frames. The beat flash, the ball glow and the club colour now ride the
+  // room's own three lights (uniforms only), and the floor sweeps are
+  // additive discs, so the beach house carries exactly a cottage's lights.
   private partyMode = false;
   private partyBeatClock = 0;
   private partyBeatIndex = -1;
+  /** The party's light, added by updateInteriorMode onto the club levels:
+   *  the beat flash (room lamp), the ball glow (pendant), the club tint (fill). */
+  private partyFlash = 0;
+  private partyFlashHue = 0;
+  private partyGlow = 0;
+  private partyTint = 0;
+  /** The dance floor's centre, room-local. */
+  private static readonly PARTY_FLOOR = { x: 0.9, z: 0.6 };
+  /** Where the guests dance, room-local: each 2.1 u from the floor centre,
+   *  round the edge of the floor rather than in the follow camera's face.
+   *  The door side (where the camera trails a visitor walking in) is left
+   *  open, and every spot is clear of the driftwood table, the floor
+   *  cushions and the cinema shot's view of the wall screen. (The old 1.55 u
+   *  ring stood one guest inside the table and crowded the camera.) Index 1
+   *  and 4 are the side-steppers (style 1). */
+  private static readonly PARTY_DANCE_SPOTS: ReadonlyArray<readonly [number, number]> = [
+    [2.51, 1.95],
+    [3.0, 0.6],
+    [1.44, 2.63],
+    [-0.15, -1.22],
+    [-1.0, -0.29],
+    [2.51, -0.75],
+  ];
   private partyProps: {
     group: THREE.Group;
     ball: THREE.Mesh;
-    ballLight: THREE.PointLight;
     tiles: THREE.Mesh[];
-    spots: THREE.SpotLight[];
+    /** The two floor sweeps: additive discs riding the old spot targets. */
+    sweeps: THREE.Mesh[];
     confetti: Array<{ m: THREE.Mesh; speed: number; phase: number }>;
     lasers: Array<{ pivot: THREE.Group; mat: THREE.MeshBasicMaterial; hue: number }>;
-    flash: THREE.PointLight;
   } | null = null;
   private partyGuests: Array<{
     npc: { position: THREE.Vector3; meshRef: THREE.Object3D; name: string };
-    wasVisible: boolean;
     seat: THREE.Vector3; // world-space dance spot
+    /** The ring's tangent at the seat (room x, z): side to side as the guest
+     *  faces the floor, so a shuffle never steps toward the middle. */
+    side: THREE.Vector2;
     phase: number;
     style: number; // 0 = pumps, 1 = disco point, 2 = spinner
   }> = [];
+  /** Every guest borrowed this visit, with the visibility it had outdoors.
+   *  A guest the party lets go indoors is hidden (the world is frozen, so it
+   *  would stand mid-dance until the visitor left) and handed back on exit. */
+  private readonly partyGuestHome = new Map<{ meshRef: THREE.Object3D }, boolean>();
 
+  /** The party rig, built hidden with the room (buildInterior) so the
+   *  interior warm compiles it: the first door into the beach house then
+   *  shows it without a compile. */
   private buildPartyProps(): void {
     if (this.partyProps || !this.interiorGroup) return;
     // LOCAL room coordinates throughout: the group is a CHILD of
@@ -13022,10 +13140,8 @@ export class GameScene extends THREE.Scene {
       sp.rotation.y = -a;
       ball.add(sp);
     }
-    // Beat-pulsed glitter light at the ball.
-    const ballLight = new THREE.PointLight(0xffffff, 0, 9, 1.6);
-    ballLight.position.set(0.9, 2.8, 0.6);
-    group.add(ballLight);
+    // (The ball's beat-pulsed glitter rides the room's pendant light:
+    // updateInteriorParty.)
     // Fairy-light strands along the two far walls.
     const strandGeo = new THREE.SphereGeometry(0.045, 6, 5);
     const strandMats = [0xff6a7a, 0x6ad0ff, 0xffd36a].map(
@@ -13083,18 +13199,47 @@ export class GameScene extends THREE.Scene {
         tiles.push(tile);
       }
     }
-    // Two coloured spotlights sweeping the floor.
-    const spots: THREE.SpotLight[] = [];
-    for (const [sx, sz, hex] of [
-      [-2.4, -2.2, 0xff4fd8],
-      [2.6, 2.4, 0x39d8ff],
-    ] as Array<[number, number, number]>) {
-      const spot = new THREE.SpotLight(hex, 0, 12, Math.PI / 5, 0.55, 1.2);
-      spot.position.set(sx, 3.5, sz);
-      spot.target.position.set(0.9, 0.1, 0.6);
-      group.add(spot);
-      group.add(spot.target);
-      spots.push(spot);
+    // Two coloured sweeps on the floor, where the two spotlights' cones used
+    // to land: additive discs sharing one 64x64 radial-gradient map, one
+    // program for both, and not a light between them. updateInteriorParty
+    // drives them round the floor on the spots' old target path.
+    const scv = document.createElement('canvas');
+    scv.width = scv.height = 64;
+    const sx2 = scv.getContext('2d');
+    if (sx2) {
+      const grad = sx2.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.4)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      sx2.fillStyle = grad;
+      sx2.fillRect(0, 0, 64, 64);
+    }
+    const sweepMap = new THREE.CanvasTexture(scv);
+    sweepMap.colorSpace = THREE.SRGBColorSpace;
+    const sweepGeo = new THREE.PlaneGeometry(2.8, 2.8);
+    const sweeps: THREE.Mesh[] = [];
+    for (const hex of [0xff4fd8, 0x39d8ff]) {
+      const disc = new THREE.Mesh(
+        sweepGeo,
+        new THREE.MeshBasicMaterial({
+          color: hex,
+          map: sweepMap,
+          transparent: true,
+          opacity: 0.8,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          // Lift in depth, not in position (the grounding-shadow trick): the
+          // disc lies on the tiles, the rug and the boards alike.
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
+        }),
+      );
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.set(GameScene.PARTY_FLOOR.x, 0.2, GameScene.PARTY_FLOOR.z);
+      disc.renderOrder = 2;
+      group.add(disc);
+      sweeps.push(disc);
     }
     // Laser fan: six beams hung off the ball's rig point, each on its own
     // pivot. YXZ order matters — the tilt (X) has to be applied BEFORE the
@@ -13115,6 +13260,12 @@ export class GameScene extends THREE.Scene {
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
+        // Both faces in one draw. three splits a transparent double-sided
+        // material into a back pass and a front pass (two programs, two
+        // draws a beam) so normal blending sorts itself; additive light with
+        // no depth write sums the same in any order. MEASURED: one program
+        // fewer at +30 s on both tiers, now that the warm compiles the rig.
+        forceSinglePass: true,
       });
       const beam = new THREE.Mesh(beamGeo, mat);
       beam.position.y = -3; // hang the cylinder below its pivot
@@ -13122,15 +13273,10 @@ export class GameScene extends THREE.Scene {
       group.add(pivot);
       lasers.push({ pivot, mat, hue });
     }
-    // Beat flash: one hard white pop per beat, decayed over ~110ms. At 120bpm
-    // that is 2Hz — deliberately under the 3Hz photosensitivity threshold —
-    // and reduced motion drops it to a gentle swell (see updateInteriorParty).
-    const flash = new THREE.PointLight(0xffffff, 0, 15, 1.1);
-    flash.position.set(0.9, 3, 0.6);
-    group.add(flash);
+    // (The beat flash rides the room lamp: updateInteriorParty.)
     group.visible = false;
     this.interiorGroup.add(group);
-    this.partyProps = { group, ball, ballLight, tiles, spots, confetti, lasers, flash };
+    this.partyProps = { group, ball, tiles, sweeps, confetti, lasers };
   }
 
   private togglePartyMode(): string {
@@ -13142,17 +13288,14 @@ export class GameScene extends THREE.Scene {
     if (on === this.partyMode) return;
     this.partyMode = on;
     this.buildPartyProps();
-    if (this.partyProps) {
-      this.partyProps.group.visible = on;
-      for (const s of this.partyProps.spots) s.intensity = on ? 2.6 : 0;
-    }
+    if (this.partyProps) this.partyProps.group.visible = on;
     // The track owns the beat from here: the loop's own clock drives the
     // kick, and updateInteriorParty reads its beat count so the lights and
     // the dancers land ON it rather than near it.
     if (on) sfx.startPartyMusic();
     else sfx.stopPartyMusic();
     if (on) {
-      // Borrow four villagers onto the floor (the cottage-occupant pattern:
+      // Borrow six villagers onto the floor (the cottage-occupant pattern:
       // move meshRef only; the wander loop re-claims transforms on the
       // first outdoor frame). Gardener/Artist/Musician/Storyteller first,
       // any wander villager as fallback; station NPCs stay at their posts.
@@ -13187,31 +13330,44 @@ export class GameScene extends THREE.Scene {
         ),
       ];
       const o = GameScene.INTERIOR_ORIGIN;
-      const N = Math.min(6, pool.length);
+      const F = GameScene.PARTY_FLOOR;
+      const spots = GameScene.PARTY_DANCE_SPOTS;
+      const N = Math.min(spots.length, pool.length);
       for (let i = 0; i < N; i++) {
         const npc = pool[i];
-        const a = (i / N) * Math.PI * 2 + 0.6;
+        const [x, z] = spots[i];
+        const r = Math.hypot(x - F.x, z - F.z);
+        if (!this.partyGuestHome.has(npc)) this.partyGuestHome.set(npc, npc.meshRef.visible);
         this.partyGuests.push({
           npc,
-          wasVisible: npc.meshRef.visible,
-          seat: new THREE.Vector3(
-            o.x + 0.9 + Math.cos(a) * 1.55,
-            o.y + GameScene.INTERIOR_PLAYER_Y,
-            o.z + 0.6 + Math.sin(a) * 1.55,
-          ),
+          seat: new THREE.Vector3(o.x + x, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + z),
+          side: new THREE.Vector2(-(z - F.z) / r, (x - F.x) / r),
           phase: i * 1.7,
           style: i % 3, // pumps / disco point / spinner
         });
         npc.meshRef.visible = true;
       }
     } else {
-      for (const g of this.partyGuests) g.npc.meshRef.visible = g.wasVisible;
+      // Indoors the world is frozen, so a guest left standing would hold its
+      // last dance pose until the visitor leaves (MEASURED: all six, still
+      // 1.5 s apart). They go home now: hidden for the rest of the visit.
+      for (const g of this.partyGuests) g.npc.meshRef.visible = false;
       this.partyGuests = [];
+      if (!this.insideInterior) this.sendPartyGuestsHome();
     }
   }
 
-  /** Per-frame party drive: ball spin, tile colour cycle, spot sweep, and
-   *  the guests dancing on the beat. Interior-only (outdoor world frozen). */
+  /** Hand every guest borrowed this visit back as it was found. The wander
+   *  loop (or the routine that pins it, like the campfire's) re-claims its
+   *  transform on the first world frame, as for the cottage sleepers. */
+  private sendPartyGuestsHome(): void {
+    for (const [npc, visible] of this.partyGuestHome) npc.meshRef.visible = visible;
+    this.partyGuestHome.clear();
+  }
+
+  /** Per-frame party drive: ball spin, tile colour cycle, floor sweeps, the
+   *  room lights on the beat, and the guests dancing on it. Interior-only
+   *  (outdoor world frozen). */
   private updateInteriorParty(deltaTime: number, time: number): void {
     const P = this.partyProps;
     if (!this.partyMode || !P) return;
@@ -13241,16 +13397,33 @@ export class GameScene extends THREE.Scene {
         onBeat = true;
       }
     }
-    if (onBeat) P.flash.intensity = calm ? 0.55 : 3.4; // one pop per beat = 2Hz
-    P.flash.intensity *= Math.max(0, 1 - deltaTime * (calm ? 3 : 9));
+    // Beat flash: one hard pop per beat on the room lamp, decayed over
+    // ~110ms. At 120bpm that is 2Hz — deliberately under the 3Hz
+    // photosensitivity threshold. Each pop takes the next hue round the
+    // wheel; calm keeps the lamp's own warm white and a gentle swell.
+    if (onBeat) {
+      this.partyFlash = calm ? 0.55 : 3.4;
+      if (!calm) this.partyFlashHue = (this.partyFlashHue + 0.17) % 1;
+    }
+    this.partyFlash *= Math.max(0, 1 - deltaTime * (calm ? 3 : 9));
     // Half-turn per beat, counted off the music when there is music to count.
     const beat = (beats >= 0 ? beats : time * BPS) * Math.PI;
     P.ball.rotation.y = time * 0.9;
-    // Glitter light breathes with the beat; confetti drifts down forever.
-    // Calm completes what the flash gate above started: the club keeps its
-    // colour and dim, loses every beat-locked luminance pulse, and the
-    // confetti falls slow and untumbling like ash instead of a storm.
-    P.ballLight.intensity = calm ? 0.9 : 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
+    // The ball's glitter breathes with the beat on the pendant; the fill
+    // carries the club's colour, drifting round the wheel and lifting on the
+    // off-beat. Calm completes what the flash gate above started: the club
+    // keeps its colour and dim, loses every beat-locked luminance pulse, and
+    // the confetti falls slow and untumbling like ash instead of a storm.
+    // Colour and intensity only (updateInteriorMode adds these to the club
+    // levels): uniforms, so the room keeps a cottage's light count.
+    this.partyGlow = calm ? 0.9 : 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
+    this.partyTint = calm ? 0.45 : 0.3 + Math.max(0, Math.sin(beat + Math.PI / 2)) * 0.35;
+    if (this.interiorRoomLamp) {
+      if (calm) this.interiorRoomLamp.color.copy(this.interiorRoomLampHome);
+      else this.interiorRoomLamp.color.setHSL(this.partyFlashHue, 0.55, 0.82);
+    }
+    this.interiorLamp?.color.setHSL(0, 0, 1);
+    this.interiorRoomFill?.color.setHSL((time * 0.05) % 1, 0.9, 0.6);
     for (const c of P.confetti) {
       c.m.position.y -= c.speed * (calm ? 0.25 : 1) * deltaTime;
       if (c.m.position.y < 0.25) c.m.position.y = 3.4;
@@ -13276,14 +13449,20 @@ export class GameScene extends THREE.Scene {
       L.mat.color.setHSL((L.hue + time * 0.06) % 1, 0.95, 0.6);
       L.mat.opacity = calm ? 0.3 : 0.22 + Math.max(0, Math.sin(beat + i * 0.6)) * 0.4;
     }
-    for (let s = 0; s < P.spots.length; s++) {
-      const spot = P.spots[s];
+    const F = GameScene.PARTY_FLOOR;
+    for (let s = 0; s < P.sweeps.length; s++) {
+      const disc = P.sweeps[s];
       // Calm slows the floor sweep the same way the laser rig above slows.
       const swSpeed = (s === 0 ? 0.8 : -0.65) * (calm ? 0.25 : 1);
       const sw = time * swSpeed + s * 2.1;
-      // Local room coords — targets are children of the party group.
-      spot.target.position.set(0.9 + Math.cos(sw) * 1.6, 0.1, 0.6 + Math.sin(sw) * 1.6);
-      spot.color.setHSL((s * 0.45 + time * 0.05) % 1, 0.9, 0.6);
+      // Local room coords — the discs are children of the party group, on
+      // the path the two spotlights' targets swept.
+      disc.position.set(F.x + Math.cos(sw) * 1.6, 0.2, F.z + Math.sin(sw) * 1.6);
+      (disc.material as THREE.MeshBasicMaterial).color.setHSL(
+        (s * 0.45 + time * 0.05) % 1,
+        0.9,
+        0.6,
+      );
     }
     // The guests: bounce + arm pumps composed onto the cached rest quats
     // (never .rotation on npc.glb bones), facing the floor centre with a
@@ -13295,10 +13474,11 @@ export class GameScene extends THREE.Scene {
       const ref = g.npc.meshRef;
       const b = beat + g.phase;
       const hop = Math.abs(Math.sin(b * 0.5)) * (g.style === 2 ? 0.05 : 0.08);
-      // Disco-pointers shuffle side to side along their spot; spinners hold.
+      // Disco-pointers shuffle side to side along their spot (the ring's
+      // tangent, so never in toward the floor); spinners hold.
       const slide = g.style === 1 ? Math.sin(b * 0.5) * 0.22 : 0;
-      ref.position.set(g.seat.x + slide, g.seat.y + hop, g.seat.z);
-      const face = Math.atan2(o.x + 0.9 - g.seat.x, o.z + 0.6 - g.seat.z);
+      ref.position.set(g.seat.x + g.side.x * slide, g.seat.y + hop, g.seat.z + g.side.y * slide);
+      const face = Math.atan2(o.x + F.x - g.seat.x, o.z + F.z - g.seat.z);
       // Spinners turn full circles; everyone else sways on the beat. Calm
       // routes spinners through the sway too — an endlessly rotating figure
       // two units from the camera is the room's one true "spinning" trigger.
@@ -13603,6 +13783,8 @@ export class GameScene extends THREE.Scene {
     pendantLight.position.set(0, 3.25, 0);
     g.add(pendantLight);
     this.interiorLamp = pendantLight;
+    this.interiorLampLevel = pendantLight.intensity;
+    this.interiorLampHome.copy(pendantLight.color);
     // Light switch by the door, at hand height.
     box(g, 0.14, 0.2, 0.05, 0xf0ece2, -2.75, 1.35, 3.82);
 
@@ -13693,12 +13875,15 @@ export class GameScene extends THREE.Scene {
       [1.95, 0xc9a227],
     ] as const)
       box(home, 0.3, 0.34, 1.35, bc, 3.58, by, -2.2);
-    cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -1.7, 0.95, 2.8); // floor lamp
+    // Floor lamp, in the corner beside the door. At (-1.7, 2.8) its pole (and
+    // so its collider) stood in the doorway, through the arriving avatar,
+    // with the shade filling the middle of the entry shot.
+    cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -3.3, 0.95, 3.3);
     const shade = new THREE.Mesh(
       new THREE.ConeGeometry(0.3, 0.35, 12, 1, true),
       matFor(0xf0d9a8, 0.7),
     );
-    shade.position.set(-1.7, 1.95, 2.8);
+    shade.position.set(-3.3, 1.95, 3.3);
     home.add(shade);
 
     // post — Contact: service counter, pigeonhole wall, parcels, brass scale.
@@ -13906,7 +14091,14 @@ export class GameScene extends THREE.Scene {
     // ease them back up afterwards (updateInteriorMode owns the easing).
     this.interiorRoomLamp = lamp;
     this.interiorRoomFill = fill;
+    this.interiorRoomLampLevel = lamp.intensity;
+    this.interiorRoomFillLevel = fill.intensity;
+    this.interiorRoomLampHome.copy(lamp.color);
+    this.interiorRoomFillHome.copy(fill.color);
     this.interiorGroup = g;
+    // The party rig is part of the room, hidden until the beach house turns
+    // it on, so the interior warm compiles its materials with the rest.
+    this.buildPartyProps();
     this.add(g);
   }
 
@@ -14024,18 +14216,7 @@ export class GameScene extends THREE.Scene {
 
   /** Per-theme interaction hotspots (room-local x/z, trigger radius). The door
    *  "leave" spot is appended to every theme at lookup time. */
-  private static readonly INTERIOR_HOTSPOTS: Record<
-    string,
-    Array<{
-      id?: string;
-      x: number;
-      z: number;
-      r: number;
-      label: string;
-      action: string;
-      text?: string;
-    }>
-  > = {
+  private static readonly INTERIOR_HOTSPOTS: Record<string, InteriorHotspot[]> = {
     beach: [
       {
         x: -1.4,
@@ -14198,6 +14379,27 @@ export class GameScene extends THREE.Scene {
     label: '🚪 Press <strong>E</strong> to head outside',
     action: 'leave',
   };
+  /** Where a visit starts, room-local: 1.4 u in from the door spot and clear
+   *  of every theme's furniture, so the first prompt is never 'head
+   *  outside'. (The old (-1.8, 2.6) stood 0.7 u from the door spot, inside
+   *  its 1.0 u reach, in every room: the first E or USE walked straight back
+   *  out, and the Personal room put the avatar inside its floor lamp.) */
+  public static readonly INTERIOR_SPAWN = { x: -1.5, z: 1.9 };
+  /** The door arms (offers 'head outside') after this much walking, or
+   *  this long inside, whichever comes first. */
+  private static readonly INTERIOR_DOOR_ARM_WALK = 0.6;
+  private static readonly INTERIOR_DOOR_ARM_S = 1.5;
+  /** The curtains spot per theme, where the room's furniture keeps the
+   *  visitor from the shell's (1.8, 2.95). The home theme's sofa stands under
+   *  the window, so its spot comes forward to z 2.7, reachable in front of
+   *  the sofa, and over to the window's right half: MEASURED at x 1.8, the
+   *  sofa's own spot won every reachable cell, so the curtains never showed. */
+  private static readonly INTERIOR_CURTAINS_AT: Record<string, { x: number; z: number }> = {
+    home: { x: 2.4, z: 2.7 },
+  };
+  private interiorDoorArmed = true;
+  private interiorDoorArmWalked = 0;
+  private interiorDoorArmT = 0;
 
   /** World position of a named NPC (the "meet the AI townsfolk" guide), or null. */
   public getNpcPosition(name: string): THREE.Vector3 | null {
@@ -14256,6 +14458,57 @@ export class GameScene extends THREE.Scene {
    *  shows the prompt and executes the action on E. */
   public getInteriorHotspot(): { label: string; action: string; text?: string } | null {
     return this.interiorHotspot;
+  }
+
+  /**
+   * Every hotspot in a theme's room, in scan order: the theme's own, then the
+   * shell fixtures every room shares (lamp switch, curtains), then the door.
+   * One implementation serves all the rooms. Labels follow the fixtures'
+   * state, so the prompt never offers to do what you just did. (The room
+   * survey reads it too, with INTERIOR_SPAWN.)
+   */
+  public interiorHotspotsFor(theme: string): InteriorHotspot[] {
+    const curtains = GameScene.INTERIOR_CURTAINS_AT[theme] ?? { x: 1.8, z: 2.95 };
+    return [
+      ...(GameScene.INTERIOR_HOTSPOTS[theme] ?? []),
+      {
+        x: -2.75,
+        z: 3.0,
+        r: 1.0,
+        label: this.interiorLampOn
+          ? '💡 Press <strong>E</strong> to switch the lamp off'
+          : '💡 Press <strong>E</strong> to switch the lamp on',
+        action: 'room',
+        text: 'lamp',
+      },
+      {
+        x: curtains.x,
+        z: curtains.z,
+        r: 1.05,
+        label: this.interiorCurtainsShut
+          ? '🪟 Press <strong>E</strong> to open the curtains'
+          : '🪟 Press <strong>E</strong> to draw the curtains',
+        action: 'room',
+        text: 'curtains',
+      },
+      GameScene.INTERIOR_DOOR_HOTSPOT,
+    ];
+  }
+
+  /** The hotspot a visitor at room-local (px, pz) is prompted for: the
+   *  nearest in reach, skipping the door until it arms. */
+  private nearestInteriorHotspot(px: number, pz: number): InteriorHotspot | null {
+    let found: InteriorHotspot | null = null;
+    let bestD = Infinity;
+    for (const h of this.interiorHotspotsFor(this.interiorActiveTheme)) {
+      if (h === GameScene.INTERIOR_DOOR_HOTSPOT && !this.interiorDoorArmed) continue;
+      const d = Math.hypot(px - h.x, pz - h.z);
+      if (d < h.r && d < bestD) {
+        bestD = d;
+        found = h;
+      }
+    }
+    return found;
   }
 
   /** The contact-shadow blob material, shared by every themed set. Built on
@@ -14402,10 +14655,48 @@ export class GameScene extends THREE.Scene {
     return new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
 
-  /** Main-thread budget for one warm slice. A frame plus a slice (plus the
-   *  next frame re-checking the slice's materials) stays well under the
-   *  50 ms hitch line; measured cost is ~1 ms per new program. */
+  /** Main-thread budget for one warm slice where the thread has time to
+   *  spare. A frame plus a slice (plus the next frame re-checking the slice's
+   *  materials) stays well under the 50 ms hitch line; measured cost is ~1 ms
+   *  per new program. */
   private static readonly WARM_SLICE_MS = 4;
+  /** On a busy thread a slice takes this share of the gap the thread last
+   *  took to come back to the warm (warmYield), up to WARM_SLICE_MAX_MS: the
+   *  slice grows with the frame it follows, never past 15% of it. MEASURED on
+   *  a phone at 4x CPU (CO-A5): frames take 55-110 ms, a zero-delay timer
+   *  comes back after 80-240 ms and a new program costs 4-5 ms, so 4 ms
+   *  slices compiled one program a frame, and the first door's 14 were ready
+   *  2.3-2.8 s after the welcome card with E due at 2.5 s. At 60 fps the
+   *  timer is back within the frame and a slice stays WARM_SLICE_MS. */
+  private static readonly WARM_SLICE_SHARE = 0.15;
+  private static readonly WARM_SLICE_MAX_MS = 12;
+  /** How long the warm's last yield took to resume, in ms (warmYield). */
+  private warmYieldMs = 0;
+
+  /** nextTask for the warm, timed: the gap sizes the next slice. */
+  private async warmYield(): Promise<void> {
+    const t0 = performance.now();
+    await GameScene.nextTask();
+    this.warmYieldMs = performance.now() - t0;
+  }
+
+  /** The budget of the warm slice that starts now, in ms. */
+  private warmSliceMs(): number {
+    return Math.min(
+      GameScene.WARM_SLICE_MAX_MS,
+      Math.max(GameScene.WARM_SLICE_MS, this.warmYieldMs * GameScene.WARM_SLICE_SHARE),
+    );
+  }
+
+  /** traverseVisible from this scene would reach `o`: it and every ancestor
+   *  are visible, and it is still attached here. */
+  private drawnInScene(o: THREE.Object3D): boolean {
+    for (let x: THREE.Object3D | null = o; x; x = x.parent) {
+      if (!x.visible) return false;
+      if (x === this) return true;
+    }
+    return false;
+  }
 
   /** The materials three re-keys on a light-count change (its own
    *  materialNeedsLights). An unlit material keeps the program it has. */
@@ -14421,17 +14712,46 @@ export class GameScene extends THREE.Scene {
     );
   }
 
+  /** The room set the warm prepares first: the Welcome Hub's. Its door is the
+   *  one nearest the spawn, and the first a phone visitor reaches (CO-A5). */
+  private static readonly WARM_FIRST_THEME = 'hall';
+
   /**
-   * One object per (material, object kind) a warm pass must prepare, in scene
-   * order: every lit material outside the room, which a light-count change
-   * re-keys, and, when `roomItems`, the room's own materials, lit or not (only
-   * a pass that shows the room wants them: nothing draws them hidden). Unlit
-   * world materials are left alone: no light change re-keys them, so they keep
-   * the program the frame already draws them with. A program also depends on
-   * the object (instancing, skinning, morphs, vertex colours), so the kind
-   * rides in the key.
+   * One object per (material, object kind) a warm pass must prepare. A
+   * program also depends on the object (instancing, skinning, morphs, vertex
+   * colours), so the kind rides in the key. Unlit world materials are left
+   * alone: no light change re-keys them, so they keep the program the frame
+   * already draws them with.
+   * - The room-lit pass (`roomItems`) takes the room's own materials, lit or
+   *   not, and the lit world objects a camera inside the room can draw:
+   *   whatever is never frustum-culled (the instanced fleets, traffic, road
+   *   markings, skinned avatars), the player with what it wears, and the
+   *   villagers, who are borrowed into rooms (setPartyMode,
+   *   placeCottageOccupants). Nothing else reaches the room's frustum. The
+   *   room sits 300 u below the planet's centre, so the world within 200 u
+   *   of that centre lies 48 degrees or more above the room camera's
+   *   horizon, and the camera, level or looking down, sees 34 degrees up at
+   *   most (Framing's 68 degree ceiling). MEASURED at the Welcome Hub, from 5
+   *   spots x 8 headings: every world object drawn was unculled, or unlit
+   *   (the sky). The culled rest got room-lit programs no frame ever used
+   *   (the sea, the grass and street sectors...), and they filled the 4x-CPU
+   *   phone's pass.
+   * - The outdoor pass takes every lit world material, which covers leaving
+   *   and the parts of the world no frame has drawn yet.
+   *
+   * `first` holds what the first frame inside the Welcome Hub draws, and
+   * `rest` everything else, each in scene order (CO-A5): the room's shell and
+   * the WARM_FIRST_THEME set shown the way entry shows it (another set or
+   * the party rig waits), the unculled world and the player. MEASURED at
+   * that door with no warm, its first frame created 11 programs, all from
+   * this set. The villagers wait in `rest`: no hall borrows one. The outdoor
+   * pass has no `first`. Sorting before the dedup puts a material shared
+   * with a `first` object in `first` too.
    */
-  private interiorWarmItems(room: THREE.Object3D, roomItems: boolean): THREE.Object3D[] {
+  private interiorWarmItems(
+    room: THREE.Object3D,
+    roomItems: boolean,
+  ): { first: THREE.Object3D[]; rest: THREE.Object3D[] } {
     type Drawable = THREE.Object3D & {
       material?: THREE.Material | THREE.Material[];
       geometry?: THREE.BufferGeometry;
@@ -14446,41 +14766,77 @@ export class GameScene extends THREE.Scene {
     };
     const inRoom = new Set<THREE.Object3D>();
     room.traverse((o) => inRoom.add(o));
-    const seen = new Set<string>();
-    const items: THREE.Object3D[] = [];
+    const firstSet = this.interiorSets[GameScene.WARM_FIRST_THEME];
+    const themedSets = new Set<THREE.Object3D>(Object.values(this.interiorSets));
+    /** Drawn when the first theme's room is shown: every ancestor up to the
+     *  room is visible, with the themed sets as enterInterior leaves them
+     *  (the first theme's shown, the others hidden). */
+    const shownInFirstRoom = (o: THREE.Object3D): boolean => {
+      for (let x: THREE.Object3D | null = o; x && x !== room; x = x.parent) {
+        if (themedSets.has(x) ? x !== firstSet : !x.visible) return false;
+      }
+      return true;
+    };
+    // The culled world objects a room can still draw: the player's, in every
+    // room, and the villagers', in the ones that borrow them.
+    const onPlayer = new Set<THREE.Object3D>();
+    this.player?.traverse?.((o) => onPlayer.add(o));
+    const onVillager = new Set<THREE.Object3D>();
+    for (const t of this.island?.npcTargets ?? []) t.meshRef?.traverse((o) => onVillager.add(o));
+    const firstCandidates: Drawable[] = [];
+    const restCandidates: Drawable[] = [];
     this.traverse((obj) => {
       const o = obj as Drawable;
       if (!(o.isMesh || o.isPoints || o.isLine || o.isSprite) || !o.material) return;
       const mats = (Array.isArray(o.material) ? o.material : [o.material]).filter(Boolean);
-      if (!(inRoom.has(o) ? roomItems : mats.every((m) => GameScene.isLitMaterial(m)))) return;
-      const attrs = o.geometry?.attributes ?? {};
-      const kind = [
-        o.isInstancedMesh ? (o.instanceColor ? 'Ic' : 'I') : '',
-        o.isSkinnedMesh ? 'S' : '',
-        o.isBatchedMesh ? 'B' : '',
-        o.isPoints ? 'P' : '',
-        o.isLine ? 'L' : '',
-        o.isSprite ? 's' : '',
-        o.geometry?.morphAttributes?.position ? 'm' : '',
-        attrs.color ? `v${attrs.color.itemSize}` : '',
-        attrs.uv1 ? 'u1' : '',
-        attrs.tangent ? 't' : '',
-      ].join('');
-      let fresh = false;
-      for (const m of mats) {
-        if (seen.has(m.uuid + kind)) continue;
-        seen.add(m.uuid + kind);
-        fresh = true;
+      if (inRoom.has(o)) {
+        if (roomItems) (shownInFirstRoom(o) ? firstCandidates : restCandidates).push(o);
+        return;
       }
-      if (fresh) items.push(o);
+      if (!mats.every((m) => GameScene.isLitMaterial(m))) return;
+      if (!roomItems) restCandidates.push(o);
+      else if (!o.frustumCulled || onPlayer.has(o)) firstCandidates.push(o);
+      else if (onVillager.has(o)) restCandidates.push(o);
     });
-    return items;
+    const seen = new Set<string>();
+    const pick = (candidates: Drawable[]): THREE.Object3D[] => {
+      const items: THREE.Object3D[] = [];
+      for (const o of candidates) {
+        const mats = (Array.isArray(o.material) ? o.material : [o.material]).filter(
+          (m): m is THREE.Material => !!m,
+        );
+        const attrs = o.geometry?.attributes ?? {};
+        const kind = [
+          o.isInstancedMesh ? (o.instanceColor ? 'Ic' : 'I') : '',
+          o.isSkinnedMesh ? 'S' : '',
+          o.isBatchedMesh ? 'B' : '',
+          o.isPoints ? 'P' : '',
+          o.isLine ? 'L' : '',
+          o.isSprite ? 's' : '',
+          o.geometry?.morphAttributes?.position ? 'm' : '',
+          attrs.color ? `v${attrs.color.itemSize}` : '',
+          attrs.uv1 ? 'u1' : '',
+          attrs.tangent ? 't' : '',
+        ].join('');
+        let fresh = false;
+        for (const m of mats) {
+          if (seen.has(m.uuid + kind)) continue;
+          seen.add(m.uuid + kind);
+          fresh = true;
+        }
+        if (fresh) items.push(o);
+      }
+      return items;
+    };
+    const first = pick(firstCandidates);
+    return { first, rest: pick(restCandidates) };
   }
 
   /**
    * Compile `items` with the room shown or hidden, against `target`, in slices
-   * of ~WARM_SLICE_MS. Every slice is one synchronous task that leaves the
-   * scene as the live frame needs it, before anything can render:
+   * of warmSliceMs() (WARM_SLICE_MS, more on a busy thread). Every slice is
+   * one synchronous task that leaves the scene as the live frame needs it,
+   * before anything can render:
    * - the room is shown (when `roomVisible`) and `target` bound only inside
    *   the slice;
    * - each object compiles against a proxy scene fed the live lights. three
@@ -14513,9 +14869,17 @@ export class GameScene extends THREE.Scene {
     chunk.traverse = (cb) => {
       for (const o of batch) cb(o);
     };
-    // three's compile() walks traverseVisible only to collect lights. The live
-    // ones are gathered once per slice, not by a walk of the whole scene per
-    // call, which would cost more than most of the compiles it feeds.
+    // three's compile() walks traverseVisible only to collect lights. The
+    // scene's lights are gathered once per pass, in traversal order, and each
+    // slice keeps the ones a frame would draw with now (traverseVisible's
+    // rule: the light and every ancestor visible), so a light shown or hidden
+    // mid-pass still counts as the frame counts it. MEASURED at 4x CPU, a walk
+    // of the whole scene per slice cost 2.9 ms of its 4 ms budget: the 19 s
+    // room-lit pass compiled ~4 objects a frame.
+    const sceneLights: THREE.Object3D[] = [];
+    this.traverse((o) => {
+      if ((o as THREE.Light).isLight) sceneLights.push(o);
+    });
     const lights: THREE.Object3D[] = [];
     chunk.traverseVisible = (cb) => {
       for (const l of lights) cb(l);
@@ -14524,14 +14888,13 @@ export class GameScene extends THREE.Scene {
     const started: WarmProgram[] = [];
     for (let i = 0; i < items.length && !this.insideInterior; ) {
       const t0 = performance.now();
+      const budget = this.warmSliceMs();
       const bound = gl.getRenderTarget();
       try {
         g.visible = roomVisible;
         gl.setRenderTarget(target);
         lights.length = 0;
-        this.traverseVisible((o) => {
-          if ((o as THREE.Light).isLight) lights.push(o);
-        });
+        for (const l of sceneLights) if (this.drawnInScene(l)) lights.push(l);
         do {
           batch = [items[i++]];
           for (const m of gl.compile(chunk, camera, proxy)) {
@@ -14542,12 +14905,12 @@ export class GameScene extends THREE.Scene {
             const props = gl.properties.get(m) as { programs?: Map<string, WarmProgram> };
             if (props.programs) started.push(...props.programs.values());
           }
-        } while (i < items.length && performance.now() - t0 < GameScene.WARM_SLICE_MS);
+        } while (i < items.length && performance.now() - t0 < budget);
       } finally {
         gl.setRenderTarget(bound);
         if (!this.insideInterior) g.visible = wasVisible;
       }
-      await GameScene.nextTask();
+      await this.warmYield();
     }
     return started;
   }
@@ -14575,8 +14938,8 @@ export class GameScene extends THREE.Scene {
       used.add(p);
       p.getUniforms();
       p.getAttributes();
-      if (performance.now() - sliceStart > GameScene.WARM_SLICE_MS) {
-        await GameScene.nextTask();
+      if (performance.now() - sliceStart > this.warmSliceMs()) {
+        await this.warmYield();
         sliceStart = performance.now();
       }
     }
@@ -14634,7 +14997,9 @@ export class GameScene extends THREE.Scene {
     this.ensureInteriorView(); // the pane's final material, or it re-keys on entry
     const g = this.interiorGroup;
     if (!g) return;
-    await GameScene.nextTask(); // the build (~10 ms) gets a task of its own
+    await this.warmYield(); // the build (~10 ms) gets a task of its own
+    this.warmInteriorPosters();
+    await this.warmYield();
     const wasVisible = g.visible;
     // A room material built only on entry (the contact-shadow blobs) gets a
     // stand-in quad outside the scene, so the room-lit pass covers it too.
@@ -14648,13 +15013,20 @@ export class GameScene extends THREE.Scene {
     // working. Nothing re-arms visibility during a visit
     // (interiorGroup.visible = true appears exactly once, in enterInterior),
     // so that state was terminal until they left and re-entered.
+    // Each pass compiles and settles its `first` items before the rest, so
+    // the first door's programs are ready long before the pass ends (CO-A5,
+    // interiorWarmItems).
     const warm = async (visible: boolean): Promise<void> => {
       if (this.insideInterior) return; // a real entry took over mid-await
-      const items = this.interiorWarmItems(g, visible);
-      if (visible) items.push(blobStandIn);
-      await GameScene.nextTask();
-      const started = await this.compileInteriorPass(gl, g, items, visible, this.lastSceneTarget);
-      if (khr) await this.settleWarmPrograms(started);
+      const { first, rest } = this.interiorWarmItems(g, visible);
+      if (visible) first.push(blobStandIn);
+      for (const items of [first, rest]) {
+        if (this.insideInterior) return;
+        if (!items.length) continue;
+        await this.warmYield();
+        const started = await this.compileInteriorPass(gl, g, items, visible, this.lastSceneTarget);
+        if (khr) await this.settleWarmPrograms(started);
+      }
     };
     try {
       // Room-lit first: the variants a door needs. Nothing can flash on screen
@@ -14769,13 +15141,19 @@ export class GameScene extends THREE.Scene {
     this.aimInteriorOutlook();
     this.player.setPositionHold(this.player.getWorldPosition());
     const o = GameScene.INTERIOR_ORIGIN;
-    this.player.position.set(o.x - 1.8, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + 2.6);
+    const spawn = GameScene.INTERIOR_SPAWN;
+    this.player.position.set(o.x + spawn.x, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + spawn.z);
     this.interiorYaw = Math.PI; // facing into the room (model +z convention)
     this.interiorCamYaw = Math.PI;
     this.player.quaternion.setFromAxisAngle(GameScene._localUp, Math.PI);
     this.interiorMoveF = 0;
     this.interiorMoveS = 0;
     this.interiorHotspot = null;
+    // The door stays quiet until the visitor has taken a step or a moment:
+    // the press that opened it, or a reflex tap, cannot walk them back out.
+    this.interiorDoorArmed = false;
+    this.interiorDoorArmWalked = 0;
+    this.interiorDoorArmT = 0;
     // The Brother's Beach House IS the party: it's already going when the
     // door opens. The 🪩 spot still toggles it off for a quiet watch.
     if (houseId?.startsWith('islet_')) this.setPartyMode(true);
@@ -14829,7 +15207,8 @@ export class GameScene extends THREE.Scene {
     away.normalize();
     this.interiorViewFrom.copy(stand).addScaledVector(up, 2.2);
     this.interiorViewLook.copy(this.interiorViewFrom).addScaledVector(away, 30);
-    this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL; // force a frame-1 refresh
+    this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL; // repaint for this building
+    this.interiorViewWait = 1; // on the second frame inside (updateInteriorMode)
   }
 
   /**
@@ -14986,6 +15365,18 @@ export class GameScene extends THREE.Scene {
     if (this.interiorGroup) this.interiorGroup.visible = roomWasVisible;
   }
 
+  /**
+   * Draw each poster once ahead of the first door (warmInteriorPasses). A
+   * canvas pays for its backing store on its first draw and a font for its
+   * face on its first text. MEASURED on a phone at 4x CPU: the three posters
+   * took 14 ms of the first door's entry task, and 0.5 ms of a later door's.
+   * enterInterior redraws all three with the building's own text.
+   */
+  private warmInteriorPosters(): void {
+    const glyphs = "ABCDEFGHIJKLM\nNOPQRSTUVWXYZ\nabcdefghijklm\nnopqrstuvwxyz\n0123456789 &,.'-";
+    this.interiorPosters.forEach((_, i) => this.drawPoster(i, glyphs, i === 0));
+  }
+
   /** Draw a framed poster: title (big) or a content panel of \n-split lines. */
   private drawPoster(i: number, text: string, big: boolean): void {
     const p = this.interiorPosters[i];
@@ -15014,6 +15405,7 @@ export class GameScene extends THREE.Scene {
     this.insideInterior = false;
     this.interiorWatching = false; // never leave the cinema shot armed
     this.setPartyMode(false); // guests go home; the wander loop re-claims them
+    this.sendPartyGuestsHome(); // …including any the party let go indoors
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
     this.restoreShadowAutoUpdate();
@@ -15064,8 +15456,20 @@ export class GameScene extends THREE.Scene {
       this.interiorViewAccum = GameScene.INTERIOR_VIEW_INTERVAL;
     }
     if (this.interiorViewAccum >= GameScene.INTERIOR_VIEW_INTERVAL) {
-      this.interiorViewAccum = 0;
-      this.refreshInteriorView();
+      // An entry's repaint waits for the second frame inside. The first is
+      // drawn under the door veil at full black, and the veil starts to lift
+      // only once that frame is out (SimpleUI.fadeThrough), so a window pass
+      // in it holds the black for as long as it takes: MEASURED on a phone at
+      // 4x CPU, 36 ms of a 250 ms first room frame. The pane keeps its old
+      // picture (black on a first visit) for that one frame, under a veil
+      // that has only begun to lift: 94% black or more at 60 fps when the
+      // second frame is out.
+      if (this.interiorViewWait > 0) {
+        this.interiorViewWait--;
+      } else {
+        this.interiorViewAccum = 0;
+        this.refreshInteriorView();
+      }
     }
     // Hearth flicker (fire is 0 in hearthless rooms).
     if (this.interiorFire && this.interiorFire.intensity > 0) {
@@ -15128,12 +15532,14 @@ export class GameScene extends THREE.Scene {
         const beforeZ = p.z;
         if (okX) p.x = o.x + nx;
         if (okZ) p.z = o.z + nz;
+        const stepped = Math.hypot(p.x - beforeX, p.z - beforeZ);
         // Advance the stride by DISTANCE walked, not by wall-clock. A fixed
         // sin(time*9) keeps pumping at the same rate while you ease in, stop,
         // or grind against a wall — the same 4Hz-vibration bug already fixed
         // for the villagers outdoors. Tying phase to metres means the feet
         // stop when you stop and slow when a chair slows you.
-        this.interiorStride += Math.hypot(p.x - beforeX, p.z - beforeZ) * 3.6;
+        this.interiorStride += stepped * 3.6;
+        this.interiorDoorArmWalked += stepped;
         // Face travel, shortest-arc eased.
         const targetYaw = Math.atan2(dirX, dirZ);
         let dYaw = targetYaw - this.interiorYaw;
@@ -15156,8 +15562,8 @@ export class GameScene extends THREE.Scene {
     // post-mixer arm groove (applied AFTER tickInteriorAnimation so the
     // mixer reclaims the bones the moment you step off).
     if (this.partyMode) {
-      const fdx = p.x - o.x - 0.9;
-      const fdz = p.z - o.z - 0.6;
+      const fdx = p.x - o.x - GameScene.PARTY_FLOOR.x;
+      const fdz = p.z - o.z - GameScene.PARTY_FLOOR.z;
       if (gait < 0.15 && fdx * fdx + fdz * fdz < 2.1 * 2.1) {
         const b = this.interiorTime * 2 * Math.PI;
         p.y += Math.abs(Math.sin(b * 0.5)) * 0.07;
@@ -15238,25 +15644,34 @@ export class GameScene extends THREE.Scene {
     // House lights. Party mode pulls them right down so the disco ball, the
     // lasers and the lit floor are what you actually see — a fully lit room
     // washes all three out. Everything eases rather than snapping, and the
-    // same easing carries them back up when the party stops.
+    // same easing carries them back up when the party stops. The party's
+    // own light rides on top of those levels (updateInteriorParty): the beat
+    // flash on the room lamp, the ball glow on the pendant, the club tint on
+    // the fill, and their colours, which ease home once it ends.
     const clubK = Math.min(1, 3.5 * deltaTime);
+    const party = this.partyMode;
     if (this.interiorLamp) {
-      const lampWant = this.partyMode ? 0.1 : this.interiorLampOn ? 1.35 : 0;
-      this.interiorLamp.intensity +=
-        (lampWant - this.interiorLamp.intensity) * Math.min(1, 9 * deltaTime);
+      const lampWant = party ? 0.1 : this.interiorLampOn ? 1.35 : 0;
+      this.interiorLampLevel += (lampWant - this.interiorLampLevel) * Math.min(1, 9 * deltaTime);
+      this.interiorLamp.intensity = this.interiorLampLevel + (party ? this.partyGlow : 0);
+      if (!party) this.interiorLamp.color.lerp(this.interiorLampHome, clubK);
       if (this.interiorBulb) {
         (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
-          this.interiorLampOn && !this.partyMode ? 0xffe8b8 : 0x6b6a63,
+          this.interiorLampOn && !party ? 0xffe8b8 : 0x6b6a63,
         );
       }
     }
     if (this.interiorRoomLamp) {
-      const want = this.partyMode ? 0.35 : 3.2;
-      this.interiorRoomLamp.intensity += (want - this.interiorRoomLamp.intensity) * clubK;
+      const want = party ? 0.35 : 3.2;
+      this.interiorRoomLampLevel += (want - this.interiorRoomLampLevel) * clubK;
+      this.interiorRoomLamp.intensity = this.interiorRoomLampLevel + (party ? this.partyFlash : 0);
+      if (!party) this.interiorRoomLamp.color.lerp(this.interiorRoomLampHome, clubK);
     }
     if (this.interiorRoomFill) {
-      const want = this.partyMode ? 0.14 : 1.2;
-      this.interiorRoomFill.intensity += (want - this.interiorRoomFill.intensity) * clubK;
+      const want = party ? 0.14 : 1.2;
+      this.interiorRoomFillLevel += (want - this.interiorRoomFillLevel) * clubK;
+      this.interiorRoomFill.intensity = this.interiorRoomFillLevel + (party ? this.partyTint : 0);
+      if (!party) this.interiorRoomFill.color.lerp(this.interiorRoomFillHome, clubK);
     }
 
     // Floating 💤 bob while a sleeper occupies the bed.
@@ -15264,44 +15679,19 @@ export class GameScene extends THREE.Scene {
       this.interiorZzz.position.y = 1.55 + Math.sin(this.interiorTime * 2.2) * 0.09;
     }
 
-    // Nearest hotspot (theme spots + the door), for the prompt + E action.
-    const spots = GameScene.INTERIOR_HOTSPOTS[this.interiorActiveTheme] ?? [];
-    let found: { id?: string; label: string; action: string; text?: string } | null = null;
-    let bestD = Infinity;
-    const px = p.x - o.x;
-    const pz = p.z - o.z;
-    // Shell fixtures are appended to EVERY theme, like the door — one
-    // implementation serving all six rooms. Labels reflect current state so
-    // the prompt never offers to do what you just did.
-    const shellSpots = [
-      {
-        x: -2.75,
-        z: 3.0,
-        r: 1.0,
-        label: this.interiorLampOn
-          ? '💡 Press <strong>E</strong> to switch the lamp off'
-          : '💡 Press <strong>E</strong> to switch the lamp on',
-        action: 'room',
-        text: 'lamp',
-      },
-      {
-        x: 1.8,
-        z: 2.95,
-        r: 1.05,
-        label: this.interiorCurtainsShut
-          ? '🪟 Press <strong>E</strong> to open the curtains'
-          : '🪟 Press <strong>E</strong> to draw the curtains',
-        action: 'room',
-        text: 'curtains',
-      },
-    ];
-    for (const h of [...spots, ...shellSpots, GameScene.INTERIOR_DOOR_HOTSPOT]) {
-      const d = Math.hypot(px - h.x, pz - h.z);
-      if (d < h.r && d < bestD) {
-        bestD = d;
-        found = h;
-      }
+    // The door arms after a step or a moment (enterInterior disarms it).
+    this.interiorDoorArmT += deltaTime;
+    if (
+      !this.interiorDoorArmed &&
+      (this.interiorDoorArmWalked >= GameScene.INTERIOR_DOOR_ARM_WALK ||
+        this.interiorDoorArmT >= GameScene.INTERIOR_DOOR_ARM_S)
+    ) {
+      this.interiorDoorArmed = true;
     }
+
+    // Nearest hotspot (theme spots + the door), for the prompt + E action.
+    let found: { id?: string; label: string; action: string; text?: string } | null =
+      this.nearestInteriorHotspot(p.x - o.x, p.z - o.z);
     // An occupied bed changes the interaction — you don't "test" someone's bed.
     if (found?.id === 'bed' && this.interiorOccupants.length > 0) {
       found = {
@@ -15395,6 +15785,7 @@ export class GameScene extends THREE.Scene {
    * Set player movement input (camera-relative)
    */
   public setPlayerMovement(forward: number, strafe: number): void {
+    if (forward !== 0 || strafe !== 0) this.visitorSteered = true; // trailCoinWaits
     if (this.player && this.orbitCamera) {
       // getForwardDirection/getRightDirection are already projected onto the tangent plane
       const cameraForward = this.orbitCamera.getForwardDirection();

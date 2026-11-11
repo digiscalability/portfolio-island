@@ -23,10 +23,9 @@
 // OWNERSHIP (UX plan testOwnership): this suite pins package B's files. The
 // assertions it held on main-simple.ts and OrbitCamera.ts moved to A's
 // test/mainLocks.test.ts, on SimpleUI.ts to D's test/uiLocks.test.ts and on
-// SimpleRenderer.ts to E's test/rendererLocks.test.ts; a split test keeps its
-// name in both files. Locks on the world-look files (Island, Mailbox, …) stay
-// here, sliced with bodyOf() instead of fixed character windows, so code C
-// adds around them cannot slide an asserted string out of the window.
+// SimpleRenderer.ts to E's test/rendererLocks.test.ts, and those on the
+// world-look files (Island, Zones, Mailbox, EnvironmentCycle, Traffic, CelLook)
+// to C's test/worldLook.test.ts. A split test keeps its name in both files.
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -75,37 +74,6 @@ const bodyOf = (s: string, marker: string): string => {
 };
 
 describe('asset grounding — World Law 1 (plumb radial up-axis)', () => {
-  test('zone halls derive their basis from the marker plumb, not the slope', () => {
-    const zones = src('Zones.ts');
-    expect(zones).toContain('this.marker.position.clone().normalize()');
-    // The old basis: `const normal = sampled.normal` — the hall then leaned
-    // with the hillside (10.2 deg at the welcome hub).
-    expect(zones).not.toMatch(/const normal = sampled\.normal/);
-  });
-
-  test('stationAt seats AND faces about the same plumb axis', () => {
-    const island = src('Island.ts');
-    const body = bodyOf(island, 'stationAt');
-    expect(body).toContain('seat.position.clone().normalize()');
-    // Both writers must take the SAME axis — faceObjectToward premultiplies
-    // about whatever it is handed, so a slope normal here re-tilts the seat.
-    expect(body).toMatch(/setFromUnitVectors\(new THREE\.Vector3\(0, 1, 0\), plumb\)/);
-    expect(body).toMatch(/faceObjectToward\(g, plumb,/);
-    expect(body).not.toMatch(/faceObjectToward\(g, seat\.normal/);
-  });
-
-  test('benches: one plumb axis for both the seat and the facing', () => {
-    const island = src('Island.ts');
-    expect(island).toContain('const bPlumb = bSampled.position.clone().normalize()');
-    expect(island).not.toMatch(/faceObjectToward\(\s*bench,\s*bSampled\.normal/);
-  });
-
-  test('construction blocks stand plumb', () => {
-    const island = src('Island.ts');
-    const body = bodyOf(island, 'block.quaternion.copy');
-    expect(body).toContain('sampled.position.clone().normalize()');
-  });
-
   test('parked cars: plumb placement, wheel probe only adjusts RADIUS', () => {
     const scene = src('GameScene.ts');
     // Both the initial parking and the disembark re-park hand placeVehicle
@@ -193,99 +161,15 @@ describe('clouds — stable compositing + non-degenerate shapes', () => {
   test('the depthWrite class is closed at the other flagged sites', () => {
     // Same failure shape as the clouds, found by the follow-up sweep: a
     // transparent material that writes depth is an invisible mask at low
-    // opacity and punches holes behind itself at partial opacity.
-    const mailbox = src('Mailbox.ts');
-    const glow = bodyOf(mailbox, 'glowMaterial = new');
-    expect(glow).toContain('depthWrite: false');
+    // opacity and punches holes behind itself at partial opacity. (The
+    // Mailbox.ts glow half is C's, in test/worldLook.test.ts.)
     const race = src('RaceSystem.ts');
     const ring = race.slice(race.indexOf('emissive: 0x2266aa'));
     expect(ring.slice(0, 400)).toContain('depthWrite: false');
   });
 });
 
-describe('night legibility — lit roads, dark shore and highlands', () => {
-  test('pavement LIFTS at night instead of dimming to asphalt', () => {
-    const env = src('EnvironmentCycle.ts');
-    // The ribbon used to be lerped 85% toward 0x3c3f48 while its authored
-    // emissive was ~0.019 linear — visually nil. Measured night read was
-    // ~2.4:1 against grass, i.e. you could not tell where the path went.
-    expect(env).toContain('this._c2.set(0x6a7183)');
-    expect(env).toContain('p.mat.color.copy(p.base).lerp(this._c2, nightF * 0.6)');
-    expect(env).toContain('p.mat.emissiveIntensity = 0.15 + 0.75 * nightF');
-    expect(env).not.toContain('lerp(this._c2, nightF * 0.85)');
-    // The emissive drive must lerp from the AUTHORED value, not overwrite it.
-    expect(env).toContain('emBase');
-  });
-
-  test('the dark patches are authored by scope, not by omission', () => {
-    const island = src('Island.ts');
-    // Beach band and highland shoulder are explicit rejections in the artery
-    // lamp pass — Abbas asked to KEEP the dark beaches and mountains.
-    expect(island).toContain('if (dir.y < Math.sin(0.32)) continue');
-    expect(island).toContain('Island.MAX_DISPLACEMENT * 0.42 * this.reliefScale');
-    // The coastal ring is never collected for lighting at all.
-    expect(island).toContain('arteryLines.push(');
-  });
-
-  test('the artery lamp pass is RNG-SHIELDED (multiplayer world must not re-roll)', () => {
-    const island = src('Island.ts');
-    // CODE anchor, not a comment — src() strips comments, so a comment anchor
-    // silently yields an empty slice (this suite has been bitten before). The
-    // seed line is a statement, so bodyOf takes the whole shield block.
-    const body = bodyOf(island, 'let lseed = 0x9e3779b1');
-    // three's generateUUID burns 4 Math.random draws per Object3D/Material/
-    // Geometry, and buildLamp mints a Group per lamp — upstream of the parked
-    // cars, which multiplayer addresses BY INDEX. Verified live: car_0 and
-    // house_0 are bit-identical to prod with 28 extra lamps built.
-    expect(body).toContain('const stashedRandom = Math.random');
-    expect(body).toContain('Math.random = stashedRandom');
-    expect(body).toMatch(/finally\s*\{/);
-  });
-});
-
 describe('roads read as roads — kerbs, centre line, and off the camera ray', () => {
-  test('cross-section rides in vertex colour, at no allocation cost', () => {
-    const island = src('Island.ts');
-    // A BufferAttribute mints no uuid and PlaneGeometry costs the same 4
-    // Math.random draws at any resolution — which is why the road could be
-    // detailed WITHOUT the flag-day world re-roll a width rewrite needs.
-    expect(island).toContain('mat.vertexColors = true');
-    expect(island).toMatch(/new THREE\.PlaneGeometry\(planeLen, width, lenSegs, 6\)/);
-    expect(island).toContain("geo.setAttribute('color'");
-    // Kerb band + body + a centre line on wide roads only (a footpath with a
-    // centre line looks like a runway).
-    expect(island).toContain('const marked = width >= 1.5');
-    expect(island).toContain('shade = 0.6');
-  });
-
-  test('widened only as far as the MEASURED clear width allows', () => {
-    const island = src('Island.ts');
-    expect(island).toContain('createStreetPath(boulevardPts, 1.7)');
-    expect(island).toContain('createStreetPath(avenue, 1.5)');
-    // The keep-out floor must stay 1.9: max(1.7*0.5+0.8, 1.9) = 1.9, so no
-    // prop placement shifts and the seeded world is untouched. Anything
-    // wider than 1.80u needs the streetDirs endpoint fix first.
-    expect(island).toContain('Math.max(width * 0.5 + 0.8, 1.9)');
-  });
-
-  test('the street network merges into sectors, RNG-shielded', () => {
-    const island = src('Island.ts');
-    expect(island).toContain('private mergeStreetNetwork(');
-    expect(island).toContain('this.mergeStreetNetwork(pathGroup)');
-    // 8 sectors, not 1 mesh: frustum culling keys off bounding spheres and a
-    // single planet-spanning road would never cull. MEASURED at one fixed
-    // camera pose: 1390 -> 1243 draw calls (-147) with triangles unchanged.
-    expect(island).toContain('const SECTORS = 8');
-    expect(island).toContain('street_sector_');
-    // The build loop's 401 allocations are seeded-RNG currency and must stay;
-    // only the merge tail is new, and it is shielded so its own ~64 draws
-    // cannot leak into the world stream.
-    expect(bodyOf(island, 'let sseed = 0x51ed270b')).toContain('Math.random = stashedRandom');
-    // Contracts the merged mesh must carry forward.
-    expect(island).toContain('mesh.name = `street_sector_${b}`');
-    expect(island).toMatch(/mesh\.userData\.isPavement = true;[\s\S]{0,80}pathGroup\.add/);
-  });
-
   test('pedestrian crossings lie FLAT and clear the ribbon lift', () => {
     const scene = src('GameScene.ts');
     expect(scene).toContain("mesh.name = 'road_markings_instanced'");
@@ -300,14 +184,6 @@ describe('roads read as roads — kerbs, centre line, and off the camera ray', (
     // Paint must clear the road's own alternating parity lift (0.04/0.055).
     expect(scene).toContain('s.position.length() + 0.09');
     expect(scene).toContain('polygonOffsetFactor: -4');
-  });
-
-  test('pavement is opted out of the per-frame camera raycast', () => {
-    const island = src('Island.ts');
-    // OrbitCamera treats an own-property raycast as an explicit opt-out and
-    // ray-tests its whole collision list every frame; a ground-hugging
-    // ribbon can never block the camera. ~401 sphere tests/frame removed.
-    expect(bodyOf(island, 'mesh.userData.isPavement = true')).toContain('mesh.raycast = () => {}');
   });
 });
 
@@ -372,23 +248,6 @@ describe('ring traffic — alive, but structurally unable to break the world', (
     // Fed the villagers + player so it brakes instead of driving through.
     expect(scene).toContain('this.traffic?.update(');
     expect(scene).toContain('this.island ? this.island.npcTargets : null');
-  });
-
-  test('cars stand PLUMB and the headlights are fake', () => {
-    const t = src('Traffic.ts');
-    // WORLD LAW 1 — radial up, never the terrain normal (a slope-normal car
-    // reads as crashed; the parked fleet already learned this).
-    expect(t).toContain('this._up.copy(this._dir)');
-    expect(t).toContain('makeBasis(this._right, this._up, this._tan)');
-    // No real lights anywhere: MeshBasic never enters the fragment light loop.
-    expect(t).toContain('MeshBasicMaterial');
-    expect(t).not.toContain('PointLight');
-    expect(t).not.toContain('SpotLight');
-    // Night-only, on the SHARED cutoff so the day flip stays one relink.
-    expect(t).toContain('dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF');
-    expect(t).toContain('this.wash.visible = lit');
-    // The yield exists and is directional (ahead only, not merely nearby).
-    expect(t).toContain('brakeAt');
   });
 });
 
@@ -490,11 +349,8 @@ describe('per-frame sweeps — allocation-free hot paths and instanced fleets', 
     expect(scene).not.toContain('this.sailors.some((s) => s.npc === npc)');
     expect(scene).not.toContain('this.vendors.some((v) => v.npc === npc)');
     expect(scene).not.toContain('this.campfireGuests.some((g) => g.npc === npc)');
-
-    // The per-frame NPC-shadow pass reads a VIEW, not a fresh copy.
-    const island = src('Island.ts');
-    expect(island).toContain('public getNPCInstances(): readonly NPC[]');
-    expect(island).not.toContain('return this.npcInstances.slice()');
+    // (The Island.ts half, the NPC-shadow pass reading a view, is C's, in
+    // test/worldLook.test.ts.)
   });
 
   test('per-frame position reads use the Into variant (sweep round 3)', () => {
@@ -515,112 +371,32 @@ describe('per-frame sweeps — allocation-free hot paths and instanced fleets', 
   });
 
   test('exterior lights + zero-alpha overlays leave the pipeline by day (round 4)', () => {
-    const env = src('EnvironmentCycle.ts');
-    expect(env).toContain('EXTERIOR_LIGHTS_DAY_CUTOFF = 0.85');
-    // ONE shared cutoff: the light count flips once per dusk/dawn instead of
-    // stepping through permutations as per-light curves cross zero.
-    expect(env).toContain('g.light.visible = exteriorLightsOn && !off');
+    // (The EnvironmentCycle.ts half, the one shared 0.85 cutoff and the
+    // pinned night intensities, is C's, in test/worldLook.test.ts.)
     const scene = src('GameScene.ts');
-    expect(scene).toContain('slot.light.visible = on');
+    // Decision P2-1: GameScene adds no exterior point light of its own, so
+    // none is left to gate by day. This used to pin the roaming lamp lights'
+    // gate, `slot.light.visible = on`; they are now constructed for the
+    // seeded stream and never tracked (sceneLocks pins both halves).
+    expect(bodyOf(scene, 'private createLampLightPools()')).not.toContain(
+      'this.lampFollowLights.push',
+    );
     expect(scene).toContain('this.lampPoolMat.visible = this.lampPoolMat.opacity > 0.01');
     expect(scene).toContain('ud.beamMat.visible = ud.beamMat.opacity > 0.01');
-    // The intensity formulas are deliberately untouched (night look pinned).
-    expect(env).toContain('const glow = 0.25 + (1 - dayFactor) * 1.05');
   });
 
   test('the lamp fleet is two instanced draws, discovery contract intact', () => {
-    const island = src('Island.ts');
-    // Anchors keep the whole discovery contract: name lamp_<i> (colliders,
-    // pool anchors, both parity tests), poolScale, and the byte-identical
-    // transform math (plumb + faceObjectToward + arm swing on the GROUP,
-    // whose matrix becomes the instance matrix).
-    expect(island).toContain('lampGroup.name = `lamp_${i}`');
-    expect(island).toContain('lampGroup.userData.poolScale = poolScale');
-    expect(island).toContain('lampMatrices.push(lampGroup.matrix.clone())');
-    // The fleet renders as exactly two InstancedMesh (~228 meshes + ~171
-    // materials before — all built and toonified at EVERY boot even though
-    // lamp.glb hides them, which is where the always-paid win actually is).
-    expect(island).toContain("bodyMesh.name = 'streetlamp_bodies_instanced'");
-    expect(island).toContain("bulbMesh.name = 'streetlamp_bulbs_instanced'");
-    // The names must NOT start with 'lamp': findPlaceholders matches by
-    // PREFIX, so 'lamp_*_instanced' made the fleet its own placeholder —
-    // hidden, materials zeroed, two junk GLB clones at the planet core.
-    expect(island).not.toContain("'lamp_posts_instanced'");
-    expect(island).not.toContain("'lamp_bulbs_instanced'");
-    expect(island).toContain("loadAndReplace(basePath + 'lamp.glb', 'lamp_'");
-    // The fleet is the FALLBACK: retired by flag when the authored model
-    // lands, so a failed GLB load still lights the boulevard.
-    expect(island).toContain('for (const m of this.lampFleet) m.visible = false');
-    // Empty anchors are invisible to seatGroupsOnTerrain's bbox pass, so the
-    // anchors are seated by hand and the matrices REWRITTEN from them —
-    // without this the whole fleet floats at buildLamp's +0.62 sample.
-    expect(island).toContain('fleet.setMatrixAt(i, anchors[i].matrix)');
-    expect(island).toContain('sampled.position.dot(dir) - SINK - anchor.position.dot(dir)');
-    // ...and the lampSites re-anchor guard counts ANCHORS, not children.
-    expect(island).toMatch(/anchors\.length === this\.lampSites\.length/);
-    // ONE night-drive entry for all bulbs (EnvironmentCycle dedupes by mat).
-    expect(island).toContain('bulbMesh.userData.isNightEmissive = true');
-    // No per-lamp mesh/material mints inside buildLamp any more.
-    const start = island.indexOf('const buildLamp');
-    const body = island.slice(start, island.indexOf('};', start));
-    expect(body).not.toContain('new THREE.Mesh(');
-    expect(body).not.toContain('createTrimMaterial');
+    // (The Island.ts half, the fleet itself, is C's, in test/worldLook.test.ts.)
     // GameScene fetches the single shared bulb material by name (the anchor
     // traversal finds nothing on the island lamps now).
     expect(src('GameScene.ts')).toContain("getObjectByName('streetlamp_bulbs_instanced')");
-    // InstancedMesh owns a GPU instanceMatrix the geometry/material disposal
-    // does not release.
-    expect(island).toContain('if (inst.isInstancedMesh) inst.dispose()');
   });
 
   test('GLB clones collapse to instanced draws, and the fade stops leaking transparency', () => {
-    const island = src('Island.ts');
-    // Object3D.clone() SHARES geometry+materials, so N identical static
-    // clones are N draws of the same buffers. The collapse re-packs the
-    // RESULT of the existing placement logic, so transforms are preserved.
-    expect(island).toContain('const collapseClonesToInstances =');
-    // Opted in: lamps, benches, decorative mailboxes — all static, cloned
-    // per placeholder, with anchors (not clones) carrying every interaction.
-    expect((island.match(/collapseToInstances: true/g) ?? []).length).toBe(3);
-    // Cars and TREES must NOT opt in: cars are driven (GameScene moves the
-    // group) and trees sway per frame + can be felled.
-    const treeCall = island.slice(island.indexOf('tryTree'));
-    expect(treeCall).not.toContain('collapseToInstances');
-    // CONSERVATIVE bail: skinned (per-clone skeleton), nested instanced,
-    // points/lines, hidden sub-meshes, or a DEGENERATE split (prepareClone
-    // mints per-clone materials for non-standard sources → one single-
-    // instance mesh per clone, strictly worse) all leave the clones alone.
-    expect(island).toContain('(m as THREE.SkinnedMesh).isSkinnedMesh ||');
-    expect(island).toContain('!m.visible');
-    expect(island).toContain('buckets.size >= clones.length');
-    // An animated model must never collapse — mixers are bound per clone.
-    expect(island).toContain('options.collapseToInstances && animations.length === 0');
-    // Instances must not be named with a placeholder prefix, or the loader
-    // would treat them as replaceable stand-ins (the bug that hid the
-    // procedural fleet and dropped junk clones at the planet core).
-    expect(island).toContain('inst.name = `glbfleet_${label}${idx++}`');
-    // The clones are DETACHED, never disposed: the instances now own their
-    // geometry and materials, and the fade still animates those materials.
-    expect(island).toContain('for (const clone of clones) clone.parent?.remove(clone)');
-
-    // The fade forced transparent=true (via prepareClone's opacity-0 start)
-    // and never put it back, leaving every GLB-replaced prop in the
-    // transparent pass forever. The authored value must be snapshotted from
-    // the SOURCE model — clones share its materials, so by the time a clone
-    // exists the flag has already been overwritten.
-    expect(island).toContain('const snapshotAuthoredMaterials =');
-    expect(island).toContain('const restoreAuthoredMaterials =');
-    expect(island).toContain('mat.transparent = authored.transparent');
-    // A material prepareClone REPLACED has a uuid the snapshot never saw —
-    // it is authored opaque by construction, so default rather than skip.
-    expect(island).toContain('snap.get(mat.uuid) ?? { transparent: false, opacity: 1 }');
-    // BOTH GLB loaders must restore — the tree fade had no terminal branch
-    // at all, leaving 4 DOUBLE-SIDED materials per tree in the sorted
-    // transparent pass for the whole session.
-    expect(island).toContain('restoreAuthoredMaterials(fadeMats, authoredMats)');
-    expect(island).toContain('restoreAuthoredMaterials(treeFadeMats, authoredTreeMats)');
-    // GameScene owns the island teardown (Island.dispose has no callers), so
-    // the instanceMatrix release has to live there too.
+    // (The Island.ts half, the collapse and the fade restore, is C's, in
+    // test/worldLook.test.ts.) GameScene owns the island teardown
+    // (Island.dispose has no callers), so the instanceMatrix release has to
+    // live there too.
     const scene = src('GameScene.ts');
     expect(scene).toContain('if (inst.isInstancedMesh) inst.dispose()');
   });
@@ -707,32 +483,6 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(mp).toContain('name: m?.name ?? v.name,'); // reader merge + fallback
   });
 
-  test('villager ink hulls cull with their body, not from anywhere on the planet', () => {
-    const cel = src('CelLook.ts');
-    // The body got the pose-proof 2.5x-sphere cull (NPC.ts) but the hull kept
-    // frustumCulled=false, so all 140 villager hull SkinnedMeshes were
-    // GPU-skinned + drawn every frame regardless of camera. Same sphere now.
-    expect(cel).not.toContain('hull.frustumCulled = false');
-    expect(cel).toContain('hull.computeBoundingSphere()');
-    expect(cel).toContain('hull.boundingSphere.radius *= 2.5');
-    // ORDER MATTERS: computeBoundingSphere skins through the skeleton, so it
-    // MUST run AFTER hull.bind() or it returns a null sphere and the hull falls
-    // back to bind-pose bounds (which pop as the villager walks).
-    expect(cel.indexOf('hull.bind(')).toBeGreaterThan(-1);
-    expect(cel.indexOf('hull.computeBoundingSphere()')).toBeGreaterThan(cel.indexOf('hull.bind('));
-  });
-
-  test('villager face decals do not cast shadow (invisible, but re-skinned every frame)', () => {
-    const island = src('Island.ts');
-    // eye/eyeshine/blush sit inside the head's own silhouette — sub-texel in the
-    // 2048 shadow map — yet NPC.ts blanket-set castShadow, so they were
-    // re-skinned + drawn into the depth pass every frame. The else-branch of the
-    // hull regex drops them from the shadow pass.
-    expect(island).toMatch(
-      /if \(!\/eye\|blush\/\.test\(matName\)\) \{\s*addSkinnedHull[\s\S]{0,120}\} else \{[\s\S]{0,260}castShadow = false/,
-    );
-  });
-
   test('the player avatar does not self-shadow (no acne flicker)', () => {
     const p = src('SimplePlayer.ts');
     // A skinned avatar under the single whole-planet directional shadow map
@@ -770,35 +520,6 @@ describe('smoothness round 2 — the two measured hitches', () => {
     expect(body).toContain('if (c.owner?.userData.felled) continue;');
     // ...and the player path keeps its own guard, so the two agree.
     expect(scene).toContain('if (collider.owner?.userData.felled) continue;');
-  });
-
-  test('the headlight wash is rolled ALONG the road, on an exact radius', () => {
-    const traffic = src('Traffic.ts');
-    // The wash is 3u x 7u — a NON-UNIFORM scale, so its long axis has a
-    // designated direction. setFromUnitVectors alone pinned only the NORMAL to
-    // the radial and left the in-plane roll as the shortest-arc residue, a
-    // pure function of world POSITION: measured 2.0 / 12.1 / 62.3 / 64.6 /
-    // 73.2 / 73.3 / 74.6 / 82.1 / 83.4 / 89.7 deg off the road across the ten
-    // cars, so most laid a 7u bar ACROSS a 1.7u boulevard.
-    expect(traffic).not.toContain('this._q.setFromUnitVectors(this._flat, this._ahead)');
-    // Y = road tangent, Z = radial => X MUST be tan x ahead for a proper
-    // right-handed basis. Argument order here is the improper-matrix bug this
-    // repo has hit three times, so the order is pinned explicitly.
-    expect(traffic).toContain('this._right.crossVectors(this._washTan, this._ahead)');
-    expect(traffic).toContain('makeBasis(this._right, this._washTan, this._ahead)');
-    // Re-orthogonalise: the raw tangent carries ~0.04 of shear against the
-    // 4u-lead direction, which tips the quad off the ground if skipped.
-    expect(traffic).toMatch(
-      /_washTan\s*\n?\s*\.addScaledVector\(this\._ahead, -this\._washTan\.dot/,
-    );
-    // Seat: wheels bottom out at local y = -0.02 and the ribbon sits at
-    // +0.04/+0.055, so +0.35 hovered every wheel 0.29u above its own road.
-    expect(traffic).toContain('multiplyScalar(r + 0.075)');
-    expect(traffic).not.toContain('multiplyScalar(r + 0.35)');
-    // The 128-entry LUT could not represent the coastal lane's 2.079u of
-    // relief at 4.72u spacing (worst error 0.425u); analyticSurface is exact.
-    expect(traffic).toContain('return this.island.analyticSurface(dir).radius;');
-    expect(traffic).not.toMatch(/const LUT = /);
   });
 
   test('peer teardown and the interior rain handle do not leak or go stale', () => {
@@ -916,9 +637,16 @@ describe('smoothness round 2 — the two measured hitches', () => {
     // frame's lights version never moves and no frame re-keys.
     expect(pass).toContain('const proxy = new THREE.Scene();');
     // One object per compile call until the slice's budget is spent: a batch
-    // sized from the last slice overran it (measured 9.3 ms and 23 ms).
+    // sized from the last slice overran it (measured 9.3 ms and 23 ms). The
+    // budget is 4 ms, and never less: more only on a thread too busy to come
+    // straight back to the warm (CO-A5; interiorRoom drives it).
     expect(pass).toContain('batch = [items[i++]];');
-    expect(pass).toContain('performance.now() - t0 < GameScene.WARM_SLICE_MS');
+    expect(pass).toContain('const budget = this.warmSliceMs();');
+    expect(pass).toContain('performance.now() - t0 < budget');
+    expect(scene).toContain('private static readonly WARM_SLICE_MS = 4;');
+    expect(bodyOf(scene, 'private warmSliceMs(): number')).toContain(
+      'Math.max(GameScene.WARM_SLICE_MS, this.warmYieldMs * GameScene.WARM_SLICE_SHARE)',
+    );
     // Polled ready, then first-used, in idle time: the first getUniforms() is
     // a synchronous shader check that took 121 ms of the first room frame.
     const settle = bodyOf(scene, 'private async settleWarmPrograms(');
