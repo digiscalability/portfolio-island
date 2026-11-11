@@ -114,6 +114,10 @@ interface LightRigSource {
   } | null;
 }
 
+/** A room's lit material: toon under the cel theme (P2-B10), standard as
+ *  authored under ?theme=real. Both carry colour, map and emissive. */
+type RoomMat = THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+
 /**
  * One state of the scene's five lights as a room sets them (P2-B9): the key's
  * direction (room space, toward the light), colour and level; the hemisphere;
@@ -13200,8 +13204,20 @@ export class GameScene extends THREE.Scene {
   // collider changes (the exact blockers the design flagged), no 2nd scene.
   private insideInterior = false;
   private interiorGroup: THREE.Group | null = null;
-  private interiorWallMat: THREE.MeshStandardMaterial | null = null;
-  private interiorRugMat: THREE.MeshStandardMaterial | null = null;
+  private interiorWallMat: RoomMat | null = null;
+  private interiorRugMat: RoomMat | null = null;
+  /** The room's trim (dado and picture rails, stiles, skirting): tinted per
+   *  building from its district's accent (enterInterior). */
+  private interiorTrim: Array<{ mat: RoomMat; base: THREE.Color }> = [];
+  /** How far the trim leans toward the district accent, and how much darker
+   *  than the accent it sits, so it still reads as painted wood. */
+  private static readonly ROOM_TRIM_TINT = 0.55;
+  private static readonly ROOM_TRIM_SHADE = 0.62;
+  /** Ink goes on a set's big pieces only (world radius, u): a desk, a bed, a
+   *  cabinet. Legs, jars and books would double the room's draws for lines
+   *  thinner than a pixel. */
+  private static readonly ROOM_INK_MIN_RADIUS = 0.5;
+  private readonly _trimAccent = new THREE.Color();
   private interiorPosters: Array<{ ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
   private interiorSets: Record<string, THREE.Group> = {};
   private interiorTime = 0;
@@ -13259,7 +13275,7 @@ export class GameScene extends THREE.Scene {
   private interiorLampOn = true;
   /** The lamp shades (the pendant's, the Personal floor lamp's): they glow
    *  while the lamp is on. `glow` is the emissive level when lit. */
-  private interiorShades: Array<{ mat: THREE.MeshStandardMaterial; glow: number }> = [];
+  private interiorShades: Array<{ mat: RoomMat; glow: number }> = [];
   private interiorShadeLevel = 1;
   /** Each hearth room's fire: the ember plane and the warm pool it throws on
    *  the floor. Both flicker (updateInteriorMode); neither is a light. */
@@ -13670,23 +13686,33 @@ export class GameScene extends THREE.Scene {
     );
     rod.position.set(0.9, 3.35, 0.6);
     group.add(rod);
+    // Faceted = mirror tiles at this poly count. The facets are in the
+    // GEOMETRY (unshared vertices, a normal per face), not a flatShading
+    // material: that flag is a program of its own, and the ball's toon
+    // material draws with the one every toon prop shares.
+    const ballGeo = new THREE.SphereGeometry(0.32, 12, 10).toNonIndexed();
+    ballGeo.computeVertexNormals();
     const ball = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 12, 10),
-      new THREE.MeshStandardMaterial({
-        color: 0xd8dce4,
-        metalness: 0.9,
-        roughness: 0.18,
-        flatShading: true, // faceted = mirror tiles at this poly count
-      }),
+      ballGeo,
+      GameScene.celMat(
+        new THREE.MeshStandardMaterial({
+          color: 0xd8dce4,
+          metalness: 0.9,
+          roughness: 0.18,
+          flatShading: true, // ?theme=real keeps the standard material, faceted
+        }),
+      ),
     );
     ball.position.set(0.9, 2.95, 0.6);
     group.add(ball);
     // Sparkle ring — children of the ball, so they orbit as it spins.
-    const sparkMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      emissive: 0xffffff,
-      emissiveIntensity: 1.4,
-    });
+    const sparkMat = GameScene.celMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: 0xffffff,
+        emissiveIntensity: 1.4,
+      }),
+    );
     const sparkGeo = new THREE.PlaneGeometry(0.05, 0.05);
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
@@ -13699,8 +13725,10 @@ export class GameScene extends THREE.Scene {
     // updateInteriorParty.)
     // Fairy-light strands along the two far walls.
     const strandGeo = new THREE.SphereGeometry(0.045, 6, 5);
-    const strandMats = [0xff6a7a, 0x6ad0ff, 0xffd36a].map(
-      (c) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9 }),
+    const strandMats = [0xff6a7a, 0x6ad0ff, 0xffd36a].map((c) =>
+      GameScene.celMat(
+        new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9 }),
+      ),
     );
     for (let i = 0; i < 10; i++) {
       const bulbA = new THREE.Mesh(strandGeo, strandMats[i % 3]);
@@ -13713,14 +13741,15 @@ export class GameScene extends THREE.Scene {
     // Drifting confetti pool — respawns at the ceiling forever.
     const confetti: Array<{ m: THREE.Mesh; speed: number; phase: number }> = [];
     const confGeo = new THREE.PlaneGeometry(0.07, 0.07);
-    const confMats = [0xff6a7a, 0x6ad0ff, 0xffd36a, 0x8affc1, 0xd9a0ff].map(
-      (c) =>
+    const confMats = [0xff6a7a, 0x6ad0ff, 0xffd36a, 0x8affc1, 0xd9a0ff].map((c) =>
+      GameScene.celMat(
         new THREE.MeshStandardMaterial({
           color: c,
           emissive: c,
           emissiveIntensity: 0.5,
           side: THREE.DoubleSide,
         }),
+      ),
     );
     for (let i = 0; i < 22; i++) {
       const m = new THREE.Mesh(confGeo, confMats[i % confMats.length]);
@@ -14104,15 +14133,46 @@ export class GameScene extends THREE.Scene {
     const g = new THREE.Group();
     g.position.copy(GameScene.INTERIOR_ORIGIN);
     g.visible = false;
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.92 });
+    // THE ISLAND'S LOOK (P2-B10). Every lit material in a room is toon on the
+    // shared ramp, through the converter the island's props use, so a room
+    // bands like the street outside and draws with its programs. Authored as
+    // standard and converted once (GameScene.celMat), so ?theme=real keeps the
+    // rooms as they were. Left as authored: the posters (their text is a map
+    // on a transparent sheet), the window pane (unlit: it shows a render) and
+    // the party's floor tiles and additive discs.
+    const lit = (params: THREE.MeshStandardMaterialParameters): RoomMat =>
+      GameScene.celMat(new THREE.MeshStandardMaterial(params)) as RoomMat;
+    // Limewash: soft vertical streaks in four near-white tones. Near-white
+    // because the wall's colour is re-tinted per building and a map
+    // MULTIPLIES: anything darker would mute every room. (It replaces a
+    // 2,400-dot speckle that read as dirt on a banded wall.)
+    const wcv = document.createElement('canvas');
+    wcv.width = 64;
+    wcv.height = 64;
+    const wx2 = wcv.getContext('2d');
+    if (wx2) {
+      const tones = ['#ffffff', '#f8f5ef', '#f1ede5', '#fbf9f4'];
+      const widths = [3, 5, 2, 6, 4, 3, 7, 2, 5, 4, 6, 3, 5, 4, 5];
+      let x = 0;
+      widths.forEach((w, i) => {
+        wx2.fillStyle = tones[(i * 3 + 1) % tones.length];
+        wx2.fillRect(x, 0, w, 64);
+        x += w;
+      });
+    }
+    const wtex = new THREE.CanvasTexture(wcv);
+    wtex.colorSpace = THREE.SRGBColorSpace;
+    wtex.wrapS = wtex.wrapT = THREE.RepeatWrapping;
+    wtex.repeat.set(3, 1);
+    const wallMat = lit({ color: 0xe8e2d6, roughness: 0.92, map: wtex });
     this.interiorWallMat = wallMat;
     // Shared material cache: themed sets reuse one material per colour so the
     // whole six-room wardrobe costs a handful of materials, not one per prop.
-    const mats = new Map<number, THREE.MeshStandardMaterial>();
-    const matFor = (color: number, rough = 0.85): THREE.MeshStandardMaterial => {
+    const mats = new Map<number, RoomMat>();
+    const matFor = (color: number, rough = 0.85): RoomMat => {
       let m = mats.get(color);
       if (!m) {
-        m = new THREE.MeshStandardMaterial({ color, roughness: rough });
+        m = lit({ color, roughness: rough });
         mats.set(color, m);
       }
       return m;
@@ -14174,17 +14234,17 @@ export class GameScene extends THREE.Scene {
     ftex.repeat.set(2, 2);
     const floor = new THREE.Mesh(
       new THREE.BoxGeometry(8, 0.2, 8),
-      new THREE.MeshStandardMaterial({ map: ftex, roughness: 0.9 }),
+      lit({ map: ftex, roughness: 0.9 }),
     );
     g.add(floor);
-    box(g, 8, 0.2, 8, 0xe8e2d6, 0, 4, 0).material = wallMat; // ceiling (wall tint)
-    const rug = new THREE.Mesh(
-      new THREE.BoxGeometry(4.6, 0.06, 3.4),
-      new THREE.MeshStandardMaterial({ color: 0xb06a72, roughness: 0.9 }),
-    );
+    const ceiling = new THREE.Mesh(new THREE.BoxGeometry(8, 0.2, 8), wallMat); // wall tint
+    ceiling.position.set(0, 4, 0);
+    g.add(ceiling);
+    const rugMat = lit({ color: 0xb06a72, roughness: 0.9 });
+    const rug = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.06, 3.4), rugMat);
     rug.position.set(0, 0.13, 0.3);
     g.add(rug);
-    this.interiorRugMat = rug.material as THREE.MeshStandardMaterial;
+    this.interiorRugMat = rugMat;
     for (const [x, z, ry] of [
       [0, -4, 0],
       [0, 4, 0],
@@ -14209,29 +14269,17 @@ export class GameScene extends THREE.Scene {
     // panelled wainscot below the hand, a dado rail capping it, a picture rail
     // near the ceiling. That is three horizontals and a rhythm of verticals,
     // and it costs a few boxes. In the SHELL, so all six themes inherit it.
-    const wcv = document.createElement('canvas');
-    wcv.width = 128;
-    wcv.height = 128;
-    const wx2 = wcv.getContext('2d');
-    if (wx2) {
-      // Near-white speckle: the material's colour is re-tinted per building
-      // and a map MULTIPLIES, so anything darker here would mute every room.
-      wx2.fillStyle = '#ffffff';
-      wx2.fillRect(0, 0, 128, 128);
-      for (let i = 0; i < 2400; i++) {
-        wx2.fillStyle = `rgba(122,112,98,${0.03 + Math.random() * 0.05})`;
-        wx2.fillRect(Math.random() * 128, Math.random() * 128, 1.5, 1.5);
-      }
-    }
-    const wtex = new THREE.CanvasTexture(wcv);
-    wtex.colorSpace = THREE.SRGBColorSpace;
-    wtex.wrapS = wtex.wrapT = THREE.RepeatWrapping;
-    wtex.repeat.set(3, 1.6);
-    wallMat.map = wtex;
-    wallMat.needsUpdate = true;
-
-    const panelMat = matFor(0xdcd5c7, 0.94);
+    // The field sits two steps under the wall, so the wainscot reads as
+    // panelling. (At the wall's own tone, with a stile every metre, it read
+    // as a fence standing in front of the wall.)
+    const panelMat = matFor(0xb9a98f, 0.94);
     const railMat = matFor(0x8a7355, 0.8);
+    // The trim is the building's: enterInterior leans it toward the
+    // district's accent. The skirting (the only 0x74573a in the room) with it.
+    this.interiorTrim = [railMat, matFor(0x74573a)].map((mat) => ({
+      mat,
+      base: mat.color.clone(),
+    }));
     // Built once facing +z and rotated onto each wall. Room-ward is DECREASING
     // z here: the wall's inner face is 3.9, so the field sits at 3.875 and the
     // stiles stand proud of it at 3.855.
@@ -14258,11 +14306,11 @@ export class GameScene extends THREE.Scene {
         const picture = new THREE.Mesh(new THREE.BoxGeometry(width, 0.07, 0.06), railMat);
         picture.position.set(cx, 3.12, 3.86);
         w.add(picture);
-        // Stiles roughly every metre, and always one at each end of the span
-        // so a run never stops in mid-air beside the doorway.
-        const n = Math.max(1, Math.round(width / 0.98));
+        // Slim stiles every 1.6 u or so, and always one at each end of the
+        // span so a run never stops in mid-air beside the doorway.
+        const n = Math.max(1, Math.round(width / 1.6));
         for (let i = 0; i <= n; i++) {
-          const stile = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.74, 0.05), railMat);
+          const stile = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.74, 0.05), railMat);
           stile.position.set(a + (width * i) / n, 0.66, 3.855);
           w.add(stile);
         }
@@ -14321,7 +14369,7 @@ export class GameScene extends THREE.Scene {
     // on (updateInteriorMode). No light hangs in it: the room is lit by the
     // borrowed rig (P2-B9), and the bulb and shade only have to look lit.
     box(g, 0.04, 0.55, 0.04, 0x3a3a3a, 0, 3.7, 0);
-    const pendantShadeMat = new THREE.MeshStandardMaterial({
+    const pendantShadeMat = lit({
       color: 0x5c4127,
       roughness: 0.85,
       side: THREE.DoubleSide,
@@ -14359,17 +14407,20 @@ export class GameScene extends THREE.Scene {
 
     // office — the Professional HQ: desk, monitor, chair, cabinet, plant, clock.
     const office = set('office');
-    box(office, 2.4, 0.12, 1.0, D, 0, 0.95, -2.6);
+    // DESKS AND BENCHES stand at 0.8 of the height they were built at
+    // (P2-B10): a desk top at 0.95 came to the 1.58 u avatar's chest, a
+    // counter to its shoulders. What stands on one comes down with it.
+    box(office, 2.4, 0.12, 1.0, D, 0, 0.76, -2.6);
     for (const [lx, lz] of [
       [-1.05, -2.25],
       [1.05, -2.25],
       [-1.05, -2.95],
       [1.05, -2.95],
     ] as const)
-      box(office, 0.12, 0.9, 0.12, D, lx, 0.45, lz);
-    box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.66, -2.75); // monitor
-    box(office, 0.12, 0.3, 0.12, 0x33383f, 0, 1.16, -2.75);
-    box(office, 0.6, 0.09, 0.35, 0xd7dbe0, 0.65, 1.06, -2.45); // keyboard? papers
+      box(office, 0.12, 0.7, 0.12, D, lx, 0.35, lz);
+    box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.47, -2.75); // monitor
+    box(office, 0.12, 0.3, 0.12, 0x33383f, 0, 0.97, -2.75);
+    box(office, 0.6, 0.09, 0.35, 0xd7dbe0, 0.65, 0.87, -2.45); // keyboard? papers
     box(office, 0.55, 0.1, 0.55, 0x3a3f47, 0, 0.62, -1.65); // chair seat
     box(office, 0.55, 0.72, 0.09, 0x3a3f47, 0, 1.05, -1.94);
     cyl(office, 0.06, 0.06, 0.5, 0x22262e, 0, 0.3, -1.65);
@@ -14385,19 +14436,19 @@ export class GameScene extends THREE.Scene {
 
     // workshop — Projects: workbench, pegboard + tools, blueprint table, crates.
     const shop = set('workshop');
-    box(shop, 2.6, 0.14, 1.0, W, 0, 0.95, -2.6); // bench top
+    box(shop, 2.6, 0.14, 1.0, W, 0, 0.76, -2.6); // bench top
     for (const lx of [-1.15, 1.15] as const) {
-      box(shop, 0.14, 0.9, 0.14, D, lx, 0.45, -2.25);
-      box(shop, 0.14, 0.9, 0.14, D, lx, 0.45, -2.95);
+      box(shop, 0.14, 0.7, 0.14, D, lx, 0.35, -2.25);
+      box(shop, 0.14, 0.7, 0.14, D, lx, 0.35, -2.95);
     }
-    box(shop, 0.5, 0.22, 0.3, 0x7d838c, -0.6, 1.13, -2.6); // vice-ish block
+    box(shop, 0.5, 0.22, 0.3, 0x7d838c, -0.6, 0.94, -2.6); // vice-ish block
     box(shop, 1.8, 1.1, 0.06, 0xcdb289, -2.85, 2.1, -3.86); // pegboard
     box(shop, 0.09, 0.5, 0.05, 0x8a2f2b, -3.35, 2.1, -3.8); // tools on it
     box(shop, 0.4, 0.09, 0.05, 0x55595e, -2.85, 2.3, -3.8);
     box(shop, 0.09, 0.4, 0.05, 0x2e6b8a, -2.35, 2.0, -3.8);
-    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.98, -1.7, 0, -0.35); // drafting table
+    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.78, -1.7, 0, -0.35); // drafting table
     const bp = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.8), matFor(0x2f5aa0, 0.95));
-    bp.position.set(2.6, 1.05, -1.68);
+    bp.position.set(2.6, 0.85, -1.68);
     bp.rotation.x = -Math.PI / 2 - 0.35;
     shop.add(bp);
     for (const [lx, lz] of [
@@ -14406,7 +14457,7 @@ export class GameScene extends THREE.Scene {
       [2.0, -2.05],
       [3.2, -2.05],
     ] as const)
-      box(shop, 0.1, 0.95, 0.1, D, lx, 0.48, lz);
+      box(shop, 0.1, 0.76, 0.1, D, lx, 0.38, lz);
     cyl(shop, 0.25, 0.28, 0.55, W, 1.1, 0.38, -1.4); // stool
     box(shop, 0.85, 0.75, 0.85, 0xb5854e, -3.0, 0.48, -2.55); // crates
     box(shop, 0.7, 0.6, 0.7, 0xc09055, -2.85, 1.16, -2.7);
@@ -14437,7 +14488,7 @@ export class GameScene extends THREE.Scene {
     // so its collider) stood in the doorway, through the arriving avatar,
     // with the shade filling the middle of the entry shot.
     cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -3.3, 0.95, 3.3);
-    const floorShadeMat = new THREE.MeshStandardMaterial({
+    const floorShadeMat = lit({
       color: 0xf0d9a8,
       roughness: 0.7,
       emissive: 0xffd9a0,
@@ -14450,8 +14501,8 @@ export class GameScene extends THREE.Scene {
 
     // post — Contact: service counter, pigeonhole wall, parcels, brass scale.
     const post = set('post');
-    box(post, 2.8, 1.0, 0.7, W, 0, 0.6, -1.9); // counter
-    box(post, 3.1, 0.1, 0.95, D, 0, 1.13, -1.9);
+    box(post, 2.8, 0.8, 0.7, W, 0, 0.5, -1.9); // counter
+    box(post, 3.1, 0.1, 0.95, D, 0, 0.93, -1.9);
     box(post, 0.28, 1.75, 2.4, D, 3.8, 1.6, -2.2); // pigeonholes backing
     for (const sy of [1.05, 1.6, 2.15] as const)
       box(post, 0.3, 0.06, 2.4, 0xcdb289, 3.78, sy, -2.2);
@@ -14460,15 +14511,15 @@ export class GameScene extends THREE.Scene {
     box(post, 0.7, 0.55, 0.6, 0xb5854e, -2.9, 0.38, -2.7); // parcels
     box(post, 0.55, 0.45, 0.5, 0xc09055, -2.75, 0.88, -2.85);
     box(post, 0.45, 0.4, 0.45, 0xb5854e, -2.2, 0.3, -3.0);
-    cyl(post, 0.16, 0.2, 0.08, 0xc9a227, 0.8, 1.22, -1.9); // scale base
-    cyl(post, 0.03, 0.03, 0.4, 0xc9a227, 0.8, 1.45, -1.9);
-    cyl(post, 0.18, 0.18, 0.03, 0xc9a227, 0.8, 1.68, -1.9);
+    cyl(post, 0.16, 0.2, 0.08, 0xc9a227, 0.8, 1.02, -1.9); // scale base
+    cyl(post, 0.03, 0.03, 0.4, 0xc9a227, 0.8, 1.25, -1.9);
+    cyl(post, 0.18, 0.18, 0.03, 0xc9a227, 0.8, 1.48, -1.9);
 
     // hall — Welcome town hall: podium, banners, visitor benches, notice board.
     const hall = set('hall');
     box(hall, 1.2, 0.5, 1.2, D, 0, 0.35, -2.5); // dais
-    box(hall, 0.5, 1.05, 0.5, W, 0, 1.12, -2.5); // lectern
-    box(hall, 0.7, 0.08, 0.55, D, 0, 1.68, -2.42, 0, -0.3);
+    box(hall, 0.5, 0.84, 0.5, W, 0, 1.02, -2.5); // lectern
+    box(hall, 0.7, 0.08, 0.55, D, 0, 1.47, -2.42, 0, -0.3);
     for (const bx of [-2.5, 2.5] as const) {
       const banner = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 2.1), matFor(0x4caf50, 0.9));
       banner.position.set(bx, 2.55, -3.78);
@@ -14476,9 +14527,9 @@ export class GameScene extends THREE.Scene {
       box(hall, 0.9, 0.07, 0.07, W, bx, 3.66, -3.76);
     }
     for (const bz of [0.7, 1.9] as const) {
-      box(hall, 2.1, 0.12, 0.5, W, 0, 0.5, bz);
-      box(hall, 0.12, 0.5, 0.45, D, -0.9, 0.25, bz);
-      box(hall, 0.12, 0.5, 0.45, D, 0.9, 0.25, bz);
+      box(hall, 2.1, 0.12, 0.5, W, 0, 0.4, bz);
+      box(hall, 0.12, 0.4, 0.45, D, -0.9, 0.2, bz);
+      box(hall, 0.12, 0.4, 0.45, D, 0.9, 0.2, bz);
     }
     box(hall, 1.5, 1.05, 0.07, 0xcdb289, 3.8, 2.05, -2.2, Math.PI / 2); // notice board
     for (const [py, pz] of [
@@ -14522,7 +14573,7 @@ export class GameScene extends THREE.Scene {
       bch.add(tvFrame);
       const tvScreen = new THREE.Mesh(
         new THREE.PlaneGeometry(T.hw * 2, T.hh * 2),
-        new THREE.MeshStandardMaterial({
+        lit({
           color: 0x0b0e14,
           emissive: 0x101722,
           emissiveIntensity: 0.35,
@@ -14539,7 +14590,7 @@ export class GameScene extends THREE.Scene {
     box(cot, 0.8, 0.14, 0.42, 0xf7f3ea, -3.0, 0.68, -3.25);
     // Blanket gets a DEDICATED material: its colour varies per house, and the
     // shared matFor cache would tint every 0xa54242 prop island-wide with it.
-    this.cottageBlanketMat = new THREE.MeshStandardMaterial({ color: 0xa54242, roughness: 0.9 });
+    this.cottageBlanketMat = lit({ color: 0xa54242, roughness: 0.9 });
     const blanket = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.15, 1.05), this.cottageBlanketMat);
     blanket.position.set(-3.0, 0.63, -2.05);
     cot.add(blanket);
@@ -14636,6 +14687,21 @@ export class GameScene extends THREE.Scene {
     makePoster(3.6, 1.9, 0, 2.5, -3.88, 0); // back — title
     makePoster(2.6, 1.7, -3.88, 1.95, 0.4, Math.PI / 2); // left — content
     makePoster(2.6, 1.7, 3.88, 1.95, 0.4, -Math.PI / 2); // right — content
+    // INK on each themed set's big pieces, as on the props outdoors: an
+    // inverted hull on the shared ink material. Desktop and cel theme only
+    // (addGroupHulls returns at once on the low tier and under ?theme=real).
+    // Per mesh, so the flat ones are left out: a hull on a plane (a banner, a
+    // blueprint, the firelight pool) is a second quad nobody can see.
+    for (const themed of Object.values(this.interiorSets)) {
+      const pieces: THREE.Mesh[] = [];
+      themed.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || m.geometry.type === 'PlaneGeometry') return;
+        if (Array.isArray(m.material) || m.material.transparent) return;
+        pieces.push(m);
+      });
+      for (const m of pieces) addGroupHulls(m, GameScene.ROOM_INK_MIN_RADIUS);
+    }
     // (No room lights: the visit borrows the island's rig. See roomRigTarget.)
     this.interiorGroup = g;
     // The party rig is part of the room, hidden until the beach house turns
@@ -14647,9 +14713,15 @@ export class GameScene extends THREE.Scene {
   /** A brick hearth with a glowing firebox, against the left (side=-1) or
    *  right (side=+1) wall at z≈-2 — clear of that wall's content poster. */
   private buildFireplace(parent: THREE.Group, side: -1 | 1, theme: string): void {
-    const brick = new THREE.MeshStandardMaterial({ color: 0x9a5a48, roughness: 0.95 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x1c1512, roughness: 1 });
-    const wood = new THREE.MeshStandardMaterial({ color: 0x6e5236, roughness: 0.85 });
+    const brick = GameScene.celMat(
+      new THREE.MeshStandardMaterial({ color: 0x9a5a48, roughness: 0.95 }),
+    );
+    const dark = GameScene.celMat(
+      new THREE.MeshStandardMaterial({ color: 0x1c1512, roughness: 1 }),
+    );
+    const wood = GameScene.celMat(
+      new THREE.MeshStandardMaterial({ color: 0x6e5236, roughness: 0.85 }),
+    );
     const glow = new THREE.MeshBasicMaterial({ color: GameScene._hearthGlow });
     const addBox = (
       geo: THREE.BoxGeometry,
@@ -14993,7 +15065,7 @@ export class GameScene extends THREE.Scene {
   private interiorZzz: THREE.Sprite | null = null;
   // Cottage variation: seeded per-house decor — dedicated tint materials plus
   // optional prop groups toggled per house (2 of 4 shown).
-  private cottageBlanketMat: THREE.MeshStandardMaterial | null = null;
+  private cottageBlanketMat: RoomMat | null = null;
   private cottageExtras: THREE.Group[] = [];
 
   /** Show the NPCs sleeping behind THIS cottage's door (cap 2: bed + rug).
@@ -15685,6 +15757,22 @@ export class GameScene extends THREE.Scene {
     this.interiorWarmed = true;
     if (this.interiorWallMat) {
       this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
+    }
+    // The trim takes the district's accent (DISTRICTS[].accent). A hall is
+    // handed its own as the wall colour; a house takes the accent of the
+    // district it stands in, weighted by how far inside it is (the player is
+    // still on the doorstep here). Out on the islet the trim stays wood.
+    let accentWeight = 1;
+    if (houseId === undefined) this._trimAccent.set(wallColor);
+    else {
+      accentWeight = districtAccentAt(this.player.getWorldPosition().normalize(), this._trimAccent);
+    }
+    if (accentWeight > 0) this._trimAccent.multiplyScalar(GameScene.ROOM_TRIM_SHADE);
+    for (const t of this.interiorTrim) {
+      t.mat.color.copy(t.base);
+      if (accentWeight > 0) {
+        t.mat.color.lerp(this._trimAccent, GameScene.ROOM_TRIM_TINT * accentWeight);
+      }
     }
     const active = this.interiorSets[theme] ? theme : 'cottage';
     for (const [name, s] of Object.entries(this.interiorSets)) s.visible = name === active;

@@ -431,6 +431,169 @@ describe('a room borrows the island’s light rig (P2-B9)', () => {
   });
 });
 
+describe('rooms wear the island’s cel look (P2-B10)', () => {
+  // MEASURED on main: 92 lit, opaque MeshStandard materials in the room, shaded
+  // smooth beside a banded island, on programs of their own.
+  interface Look {
+    interiorGroup: THREE.Group;
+    interiorSets: Record<string, THREE.Group>;
+    interiorWallMat: THREE.MeshToonMaterial;
+    interiorTrim: Array<{ mat: THREE.MeshToonMaterial; base: THREE.Color }>;
+    partyProps: { tiles: THREE.Mesh[]; ball: THREE.Mesh };
+  }
+  const look = (): Look => scene as unknown as Look;
+  type Mat = THREE.Material & {
+    isMeshStandardMaterial?: boolean;
+    isMeshToonMaterial?: boolean;
+    gradientMap?: THREE.Texture | null;
+    map?: THREE.Texture | null;
+  };
+  /** Every material in the room with the meshes that carry it. */
+  const census = (): Map<Mat, THREE.Mesh[]> => {
+    const out = new Map<Mat, THREE.Mesh[]>();
+    look().interiorGroup.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.userData.isCelHull) return;
+      for (const mat of (Array.isArray(m.material) ? m.material : [m.material]) as Mat[]) {
+        out.set(mat, [...(out.get(mat) ?? []), m]);
+      }
+    });
+    return out;
+  };
+  const hullsUnder = (root: THREE.Object3D): number => {
+    let n = 0;
+    root.traverse((o) => {
+      if (o.userData.isCelHull) n++;
+    });
+    return n;
+  };
+
+  test('standard shading is left on the posters and the party tiles only', () => {
+    const tiles = new Set(look().partyProps.tiles);
+    let ramp: THREE.Texture | null = null;
+    let toon = 0;
+    for (const [mat, meshes] of census()) {
+      if (mat.isMeshStandardMaterial) {
+        // A poster (its text is a map on a transparent sheet) or a floor tile.
+        const poster = mat.transparent && !!mat.map;
+        expect(poster || meshes.every((m) => tiles.has(m)), mat.type).toBe(true);
+        continue;
+      }
+      if (!mat.isMeshToonMaterial) continue; // the unlit ones: pane, bulb, embers, discs
+      toon++;
+      expect(mat.gradientMap).toBeTruthy();
+      ramp = ramp ?? mat.gradientMap ?? null;
+      expect(mat.gradientMap).toBe(ramp); // the one ramp, shared
+    }
+    expect(toon).toBeGreaterThan(60);
+    // The disco ball is faceted in its geometry, so it needs no program of its own.
+    const ball = look().partyProps.ball;
+    expect((ball.material as Mat).isMeshToonMaterial).toBe(true);
+    expect(ball.geometry.index).toBeNull();
+    expect((ball.material as THREE.Material & { flatShading?: boolean }).flatShading).not.toBe(
+      true,
+    );
+  });
+
+  test('ink on every set’s big pieces, or on none (the low tier)', () => {
+    const counts = Object.entries(look().interiorSets).map(([name, s]) => [name, hullsUnder(s)]);
+    const inked = counts.filter(([, n]) => (n as number) > 0);
+    // addGroupHulls decides by tier: all seven sets on desktop, none on a phone.
+    expect([0, THEMES.length]).toContain(inked.length);
+    // Never on the shell, and never on a flat piece (a banner, the firelight pool).
+    let shell = 0;
+    let flat = 0;
+    look().interiorGroup.traverse((o) => {
+      if (!o.userData.isCelHull) return;
+      const host = o.parent as THREE.Mesh;
+      if (!Object.values(look().interiorSets).some((s) => under(host, s))) shell++;
+      if (host.geometry.type === 'PlaneGeometry') flat++;
+    });
+    expect([shell, flat]).toEqual([0, 0]);
+  });
+
+  test('the wainscot is panelling: a darker field, slim stiles 1.6 u apart', () => {
+    const g = look().interiorGroup;
+    const stiles: THREE.Mesh[] = [];
+    const fields: THREE.Mesh[] = [];
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.geometry.type !== 'BoxGeometry') return;
+      const p = (m.geometry as THREE.BoxGeometry).parameters;
+      if (p.height === 0.74 && p.depth === 0.05) stiles.push(m);
+      if (p.height === 0.74 && p.depth === 0.03) fields.push(m);
+    });
+    expect(stiles.length).toBeGreaterThan(12);
+    for (const s of stiles) {
+      expect((s.geometry as THREE.BoxGeometry).parameters.width).toBe(0.05);
+    }
+    // The back wall's run (7.76 u): 5 bays, so 6 stiles 1.55 u apart.
+    const back = stiles
+      .filter((s) => Math.abs(s.parent!.rotation.y - Math.PI) < 1e-6)
+      .map((s) => s.position.x)
+      .sort((a, b) => a - b);
+    expect(back).toHaveLength(6);
+    expect(back[1] - back[0]).toBeCloseTo(1.552, 3);
+    // Two steps under the wall, and the wall's limewash is a small soft map.
+    const field = fields[0].material as THREE.MeshToonMaterial;
+    expect(field.color.getHex()).toBe(new THREE.Color(0xb9a98f).getHex());
+    const wash = look().interiorWallMat.map as THREE.Texture;
+    expect([wash.image.width, wash.image.height]).toEqual([64, 64]);
+  });
+
+  test('the trim takes the district’s accent, and goes back to wood without one', () => {
+    const trim = look().interiorTrim;
+    expect(trim).toHaveLength(2); // the rails and stiles, and the skirting
+    const want = (accent: number, t: { base: THREE.Color }): number =>
+      t.base.clone().lerp(new THREE.Color(accent).multiplyScalar(0.62), 0.55).getHex();
+    // A hall is handed its district's accent as the wall colour.
+    scene.enterInterior('Work', 0x7fa8c9, '', '', 'office');
+    for (const t of trim) expect(t.mat.color.getHex()).toBe(want(0x7fa8c9, t));
+    scene.exitInterior();
+    scene.enterInterior('Projects', 0xc9a06a, '', '', 'workshop');
+    for (const t of trim) expect(t.mat.color.getHex()).toBe(want(0xc9a06a, t));
+    scene.exitInterior();
+    // A house takes the accent of the district it stands in, by its doorstep.
+    // Far from every plaza (the far side of the planet) there is none: wood.
+    const player = scene.player as { getWorldPosition: () => THREE.Vector3 };
+    const doorstep = player.getWorldPosition;
+    player.getWorldPosition = () => new THREE.Vector3(0, -76, 0);
+    try {
+      scene.enterInterior('A cosy home', 0xe0c9a8, '', '', 'cottage', 'house_0');
+      for (const t of trim) expect(t.mat.color.getHex()).toBe(t.base.getHex());
+      scene.exitInterior();
+    } finally {
+      player.getWorldPosition = doorstep;
+    }
+  });
+
+  test('desks, benches and counters stand at 0.8 of their old height', () => {
+    /** The top of a set's box of this size (width, height, depth), room-local. */
+    const topOf = (theme: string, w: number, h: number, d: number): number => {
+      let top = -Infinity;
+      look().interiorSets[theme].traverse((n) => {
+        const m = n as THREE.Mesh;
+        if (!m.isMesh || m.geometry.type !== 'BoxGeometry' || m.userData.isCelHull) return;
+        const p = (m.geometry as THREE.BoxGeometry).parameters;
+        if (p.width !== w || p.height !== h || p.depth !== d) return;
+        top = Math.max(top, m.position.y + p.height / 2);
+      });
+      return top;
+    };
+    // Was 1.01 (desk), 1.02 (workbench), 1.18 (counter), 0.56 (visitor bench).
+    expect(topOf('office', 2.4, 0.12, 1.0)).toBeCloseTo(0.82, 6);
+    expect(topOf('workshop', 2.6, 0.14, 1.0)).toBeCloseTo(0.83, 6);
+    expect(topOf('post', 3.1, 0.1, 0.95)).toBeCloseTo(0.98, 6);
+    expect(topOf('hall', 2.1, 0.12, 0.5)).toBeCloseTo(0.46, 6);
+    // Their legs reach them and stop: none stands proud of its top.
+    expect(topOf('office', 0.12, 0.7, 0.12)).toBeCloseTo(0.7, 6);
+    expect(topOf('workshop', 0.14, 0.7, 0.14)).toBeCloseTo(0.7, 6);
+    expect(topOf('hall', 0.12, 0.4, 0.45)).toBeCloseTo(0.4, 6);
+    // What stood on the desk came down with it: the monitor's stand sits on it.
+    expect(topOf('office', 0.12, 0.3, 0.12) - 0.3).toBeCloseTo(0.82, 6);
+  });
+});
+
 describe('a wall behind the camera fades the avatar (B11)', () => {
   // The room camera trails 2.4 u behind the avatar and is clamped inside the
   // walls, so a visitor with their back to a wall has it at their shoulder.
