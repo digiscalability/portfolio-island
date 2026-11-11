@@ -8325,19 +8325,23 @@ export class SimpleUI {
     header.appendChild(title);
     // The differentiator, made legible: this is a REAL model conversation, not
     // a dialogue tree — visitors couldn't tell (fallbacks look identical).
+    // The badge names the model and nothing more (the Fact Sheet's wording,
+    // as on First steps' talk card): villagers are chat characters, one
+    // model call a message. Its old label is banned copy (claimsPanels).
     const aiBadge = document.createElement('span');
-    aiBadge.textContent = '✨ live AI';
+    aiBadge.textContent = 'Claude Haiku 4.5';
     Object.assign(aiBadge.style, {
       fontSize: '10.5px',
       fontWeight: '700',
-      letterSpacing: '0.5px',
       color: '#ffd479',
       border: '1px solid rgba(255,212,121,0.5)',
       borderRadius: '20px',
       padding: '2px 8px',
       whiteSpace: 'nowrap',
     });
-    aiBadge.title = 'A live language-model conversation — every reply is generated, not scripted';
+    aiBadge.title =
+      'This villager talks through Claude Haiku 4.5: one model call per message. ' +
+      "If the model can't be reached, it answers with its written lines and this badge says so.";
     header.appendChild(aiBadge);
     this.npcChatBadge = aiBadge; // markNpcChatOffline re-labels it on a fallback
     const touch = this.isTouch;
@@ -8668,8 +8672,8 @@ export class SimpleUI {
 
   /**
    * The villager answered from its written lines: the model call fell back
-   * (App Check, a rate or spend cap, moderation, offline). The header said
-   * "live AI — every reply is generated", which was then untrue; say so.
+   * (App Check, a rate or spend cap, moderation, offline). The header names
+   * the model, which did not answer this time; say so.
    * No-op unless `name`'s chat is the one open.
    */
   public markNpcChatOffline(name: string): void {

@@ -954,11 +954,18 @@ describe('analytics: owner opt-out and entry attribution', () => {
 });
 
 describe('the NPC chat admits offline replies', () => {
-  test('a canned reply re-labels the live-AI badge for that chat only', () => {
+  // The badge names the model, as the Fact Sheet does ('villagers talk
+  // through Claude Haiku 4.5'); the label it replaced is banned copy
+  // (claimsPanels).
+  test('a canned reply re-labels the model badge for that chat only', () => {
     ui.showNpcChat('Gardener', 'Morning!', async () => 'A written line.');
-    const badge = [...document.querySelectorAll('span')].find((s) => text(s) === '✨ live AI')!;
+    const badge = [...document.querySelectorAll('span')].find(
+      (s) => text(s) === 'Claude Haiku 4.5',
+    )!;
+    expect(badge.title).toContain('talks through Claude Haiku 4.5');
+    expect(badge.title).not.toMatch(/every reply|generated/i);
     ui.markNpcChatOffline('Guard'); // a different villager: no-op
-    expect(text(badge)).toBe('✨ live AI');
+    expect(text(badge)).toBe('Claude Haiku 4.5');
     ui.markNpcChatOffline('Gardener');
     expect(text(badge)).toBe('offline replies');
     expect(badge.title).toContain('written lines');

@@ -28,8 +28,11 @@ const BANNED = [
   'growing teams',
   'agency',
   'senior',
-  // villagers are LLM chat characters; the agents are the planner and analyst
-  'live AI villager',
+  // villagers are LLM chat characters; the agents are the planner and analyst.
+  // 'live AI' covers the retired 'live AI villager' line and the NPC chat's
+  // old header badge (wave-1 integration: First steps sends every first-time
+  // visitor to that chat).
+  'live AI',
   'conversational agents',
 ];
 

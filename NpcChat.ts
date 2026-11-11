@@ -5,7 +5,8 @@
 // caller: any failure (offline, App Check missing, rate/cap tripped, moderation)
 // resolves to { fallback: true } and the NPC gracefully drops to canned dialogue.
 // Every such fallback is now COUNTED (npc_fallback): with App Check failing,
-// "live AI" villagers used to answer in written lines and nothing recorded it.
+// the model-backed villagers used to answer in written lines and nothing
+// recorded it.
 
 import { track } from './Analytics';
 import { offerCloudVoice } from './Speech';
