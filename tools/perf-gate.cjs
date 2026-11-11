@@ -40,7 +40,13 @@
 //   too, when side B has FxBudget timings. A paired sign test fails any
 //   timing, valid or not, when nearly every pair is over T (19 of 24, 11 of
 //   12: one-sided 0.005), so a shift every pair agrees on fails although a
-//   bimodal side inflates sigma.
+//   bimodal side inflates sigma. The same test passes a timing the sigma
+//   rule left inconclusive when, at 24 cycles or more, no pair is over T
+//   (wave-1 re-verify: welcome_visible 578 ms earlier, 22 of 24 pairs earlier
+//   and 0 over T, read inconclusive on sigma 369 against T/2 75). A median
+//   shift of T or more gives 0 of 24 with probability 6e-8 or less. For
+//   welcome_visible the pairs counted are the cycle-order ones, since the
+//   mode-matched pairing can leave as few as 7.
 // - counters (draws, triangles, programs, nodes, long tasks, bytes): delta =
 //   median(B) - median(A), except programs, which ride the boot race and are
 //   judged on its mix (judgeMixCounter: each side's mode medians weighted by
@@ -911,6 +917,15 @@ const sampleSd = (a) => {
  * run in 700,000.
  */
 const SIGN_ALPHA = 0.005;
+/** The fewest pairs the sign test's pass path needs (none of them over T): 24, the gate's last escalation. */
+const SIGN_PASS_MIN = 24;
+/** Pairs (b - a) over T, in the order given; pass when there are SIGN_PASS_MIN or more and none is over. */
+function signPass(a, b, threshold) {
+  const d = [];
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (isNum(a[i]) && isNum(b[i])) d.push(b[i] - a[i]);
+  const over = d.filter((x) => x > threshold).length;
+  return { over, n: d.length, pass: d.length >= SIGN_PASS_MIN && over === 0 };
+}
 /** The fewest of n pairs over T that the sign test fails on, or null when even n of n is not enough. */
 function signCritical(n, alpha = SIGN_ALPHA) {
   if (!(n >= 1)) return null;
@@ -939,7 +954,10 @@ function signCritical(n, alpha = SIGN_ALPHA) {
  *   above T that the pairs agree on (wave 1's welcome_visible: +341 ms, every
  *   pair later and 23 of 24 over T, but sigma 141 against T 150, because
  *   main's loads sat in boot-race modes ~650 ms apart and the build's in
- *   one). Otherwise an invalid result never fails. sigmaSplitA is the plan's single split,
+ *   one). Otherwise an invalid result never fails. The pass path: a result
+ *   the sigma rule leaves inconclusive passes when n >= SIGN_PASS_MIN and no
+ *   difference is over the threshold (passedBy 'sign'); it never turns a
+ *   fail into a pass. sigmaSplitA is the plan's single split,
  * |median(A_odd) - median(A_even)|, kept for the record: one 3-vs-3 split
  * routinely understates the spread, so it does not decide anything.
  */
@@ -970,11 +988,16 @@ function judge(a, b, threshold) {
   const valid = sigma !== null && sigma <= threshold / 2;
   const over = d.filter((x) => x > threshold).length;
   const needed = signCritical(n);
-  const sign = { over, n, needed, fail: needed !== null && over >= needed };
+  const sign = { over, n, needed, fail: needed !== null && over >= needed, pass: n >= SIGN_PASS_MIN && over === 0 };
   let verdict = 'inconclusive';
+  let passedBy = null;
   if (valid && delta <= threshold) verdict = 'pass';
   else if ((valid && delta > threshold + sigma) || sign.fail) verdict = 'fail';
-  return { verdict, ...out, threshold, valid, sign, withinThreshold: Math.abs(delta) <= threshold };
+  else if (sign.pass) {
+    verdict = 'pass';
+    passedBy = 'sign';
+  }
+  return { verdict, ...out, threshold, valid, sign, ...(passedBy ? { passedBy } : {}), withinThreshold: Math.abs(delta) <= threshold };
 }
 
 /**
@@ -1228,12 +1251,26 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
    * sigma is still over T/2 at 24 cycles (then the CPU proxy, or
    * unresolvable). The paired sign test fails a shift above T on every rule.
    */
-  const timing = (name, f, thr, { proxyOf = null, a = null, b = null, extra = {} } = {}) => {
+  const timing = (name, f, thr, { proxyOf = null, a = null, b = null, order = null, extra = {} } = {}) => {
     const A = a || pick(cyclesA, f);
     const B = b || pick(cyclesB, f);
     const floorV = fl(name);
     const r = { kind: 'timing', ...judge(A, B, thr), floor: floorV, ...extra };
     const signFail = !!(r.sign && r.sign.fail);
+    // The pass path on the cycle-order pairs, when the row was paired some
+    // other way (welcome_visible by boot-race mode) and stayed inconclusive.
+    if (order && r.verdict === 'inconclusive' && thr !== undefined && thr !== null) {
+      const sp = signPass(order.a, order.b, thr);
+      r.signInCycleOrder = sp;
+      if (sp.pass) {
+        r.verdict = 'pass';
+        r.passedBy = 'sign';
+      }
+    }
+    const passRule = () => {
+      const sp = r.signInCycleOrder && r.signInCycleOrder.pass ? r.signInCycleOrder : r.sign;
+      return `sign test: ${sp.over} of ${sp.n} pairs over T${sp === r.sign ? '' : ' in cycle order'} (passes at 0 of ${SIGN_PASS_MIN} or more)`;
+    };
     const byProxy = () => {
       const p = proxy();
       r.rule = 'proxy: FxBudget µs per effect';
@@ -1261,7 +1298,7 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
       r.unresolvable = `sigma ${r.sigma} > T/2 ${thr / 2} at ${cycles} cycles`;
       r.directVerdict = r.verdict;
       byProxy();
-    } else r.rule = thr === undefined || thr === null ? 'report only' : signFail ? signRule : 'sigma';
+    } else r.rule = thr === undefined || thr === null ? 'report only' : signFail ? signRule : r.passedBy === 'sign' ? passRule() : 'sigma';
     rows[name] = r;
   };
   // The boot race's mode for a load: its programs 30 s after the card, or at
@@ -1288,8 +1325,10 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
   };
   const startupRows = (suffix) => {
     // welcome_visible, compared like with like across the boot race's modes.
-    const st = stratify(pick(cyclesA, (c) => c.welcomeMs), pick(cyclesB, (c) => c.welcomeMs), pick(cyclesA, modeOf), pick(cyclesB, modeOf));
-    timing(`welcome_visible ms${suffix}`, null, T.welcomeMs, { a: st.a, b: st.b, extra: { stratified: st.stratified, strata: st.strata } });
+    const wA = pick(cyclesA, (c) => c.welcomeMs);
+    const wB = pick(cyclesB, (c) => c.welcomeMs);
+    const st = stratify(wA, wB, pick(cyclesA, modeOf), pick(cyclesB, modeOf));
+    timing(`welcome_visible ms${suffix}`, null, T.welcomeMs, { a: st.a, b: st.b, order: st.stratified ? { a: wA, b: wB } : null, extra: { stratified: st.stratified, strata: st.strata } });
     timing(`world_gen ms${suffix}`, (c) => c.worldGenMs, T.worldGenMs);
     timing(`longest task before the card ms${suffix}`, (c) => c.longestTaskBeforeCardMs, T.longestTaskBeforeCardMs);
     counter(`long tasks > 50 ms before the card${suffix}`, (c) => c.longTasksBeforeCard, T.longTasksBeforeCard);
@@ -2010,4 +2049,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, SIGN_ALPHA, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

@@ -597,6 +597,20 @@ Verdicts, per metric:
   fails on it in about 1 run in 700,000 (11 of 12 pairs over T; 19 of 24
   is rarer still). Re-judged against the same floor, none of the nine
   saved runs (four of them A/As) changes verdict except that A/B.
+- The same test has a pass path (wave-1 re-verify): a timing the sigma
+  rule leaves inconclusive passes when it has 24 pairs or more and none is
+  over T (`sign.pass`, `passedBy: 'sign'`, and the row's rule says so). A
+  true median shift of T or more gives 0 of 24 with probability 6e-8 or
+  less. It never turns a fail into a pass, and the fail path is unchanged.
+  welcome_visible, which is paired by boot-race mode, counts its
+  cycle-order pairs for this (`signInCycleOrder`), since the mode-matched
+  pairing can leave as few as 7. Why: on the re-verify's 24-cycle A/B the
+  desktop card was 578 ms earlier (22 of 24 pairs earlier, the other two
+  +17 and +48 ms, 0 over T 150) and the row read inconclusive on sigma 369
+  against T/2 75. Re-judged (`--rejudge`), that row passes and desktop
+  reads pass after 24 cycles; the low tier is unchanged (pass). 4x
+  world_gen stays inconclusive: delta -20 ms, but 2 of its 24 pairs are
+  over T 200 (+217 and +424 ms).
 - CPU p95 whose sigma is still over T/2 at 24 cycles is judged by the
   FxBudget proxy, as a CPU p95 under 2 x its floor is, and the row says so
   (`unresolvable: sigma … > T/2 … at 24 cycles`, `rule: proxy …`). When

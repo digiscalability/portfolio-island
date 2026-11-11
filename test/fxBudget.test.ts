@@ -588,12 +588,17 @@ describe('perf gate: the sign test and the 24-cycle CPU proxy (wave-1 integratio
     rule?: string;
     unresolvable?: string;
     directVerdict?: string;
-    sign?: { over: number; n: number; needed: number | null; fail: boolean };
+    sign?: { over: number; n: number; needed: number | null; fail: boolean; pass?: boolean };
+    signInCycleOrder?: { over: number; n: number; pass: boolean };
+    passedBy?: string;
+    stratified?: boolean;
     strata?: Record<string, unknown>;
   };
   type Cycle = Record<string, unknown>;
   const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
     SIGN_ALPHA: number;
+    SIGN_PASS_MIN: number;
+    signPass: (a: number[], b: number[], t: number) => { over: number; n: number; pass: boolean };
     signCritical: (n: number, alpha?: number) => number | null;
     judge: (a: number[], b: number[], threshold: number | null) => Row;
     stratify: (
@@ -761,6 +766,100 @@ describe('perf gate: the sign test and the 24-cycle CPU proxy (wave-1 integratio
     expect(r.unresolvable).toMatch(/T 50 < 2 x floor 30/);
     expect(r.rule).toMatch(/sign test: 24 of 24 pairs over T/);
     expect(r.verdict).toBe('fail');
+  });
+
+  // Wave-1 re-verify: the gate could not return PASS for a timing that
+  // improved a lot. The 24 desktop pairs, main in two boot-race modes.
+  const rvMain = [
+    5230, 5249, 5241, 4640, 5236, 5222, 5228, 5244, 5219, 5232, 4655, 5240, 5226, 5231, 5238, 5247,
+    5225, 5229, 4633, 5234, 5243, 5221, 5237, 5227,
+  ];
+  const rvBuild = rvMain.map((x, i) =>
+    i === 3 ? x + 17 : i === 18 ? x + 48 : x > 5000 ? x - 600 : x - 40,
+  );
+
+  test('a timing that improved passes at 24 cycles when no pair is over T', () => {
+    expect(gate.SIGN_PASS_MIN).toBe(24);
+    const r = gate.judge(rvMain, rvBuild, 150);
+    // 22 of 24 pairs earlier, 2 later (+17 and +48 ms), none over T; sigma over T/2.
+    expect(r.valid).toBe(false);
+    expect(r.sign).toMatchObject({ over: 0, n: 24, fail: false, pass: true });
+    expect(r.verdict).toBe('pass');
+    expect(r.passedBy).toBe('sign');
+    // Before 24 cycles the run escalates, as it did.
+    const twelve = gate.judge(rvMain.slice(0, 12), rvBuild.slice(0, 12), 150);
+    expect(twelve.sign?.pass).toBe(false);
+    expect(twelve.verdict).toBe('inconclusive');
+    // One pair over T at 24 cycles: no pass by sign.
+    const one = gate.judge(
+      rvMain,
+      rvBuild.map((x, i) => (i === 5 ? rvMain[i] + 151 : x)),
+      150,
+    );
+    expect(one.sign).toMatchObject({ over: 1, pass: false });
+    expect(one.verdict).toBe('inconclusive');
+    // The sigma rule's own pass is not relabelled.
+    const quiet = gate.judge(
+      rvMain.map(() => 5000),
+      rvMain.map((_, i) => 5010 + (i % 2)),
+      150,
+    );
+    expect(quiet.verdict).toBe('pass');
+    expect(quiet.passedBy).toBeUndefined();
+  });
+
+  test('the pass path never rescues a fail, and the fail path is as it was', () => {
+    // Every pair over T: the sign test fails it at 24 and at 12.
+    const worse = rvMain.map((x) => x + 400);
+    expect(gate.judge(rvMain, worse, 150).verdict).toBe('fail');
+    expect(gate.judge(rvMain, worse, 150).passedBy).toBeUndefined();
+    expect(gate.signCritical(24)).toBe(19);
+    // A valid fail (delta over T + sigma) with no sign-test fail stays a fail.
+    const flat = rvMain.map(() => 5000);
+    const r = gate.judge(
+      flat,
+      flat.map((x, i) => x + (i < 14 ? 160 : 140)),
+      150,
+    );
+    expect(r.sign?.fail).toBe(false);
+    expect(r.valid).toBe(true);
+    expect(r.verdict).toBe('fail');
+    // signPass counts in the order given and needs 24 pairs.
+    expect(gate.signPass(rvMain, rvBuild, 150)).toEqual({ over: 0, n: 24, pass: true });
+    expect(gate.signPass(rvMain.slice(0, 23), rvBuild.slice(0, 23), 150).pass).toBe(false);
+  });
+
+  test('welcome_visible paired by boot-race mode passes on its cycle-order pairs, and says so', () => {
+    // Main mostly in the late mode, the build mostly in the early one: the
+    // mode-matched pairing keeps 6 pairs (and a wide sigma), too few for the pass path.
+    const progsA = rvMain.map((x) => (x > 5000 ? 165 : 154));
+    const progsB = rvMain.map((_, i) => (i % 8 === 0 ? 165 : 154));
+    const a = rvMain.map((w, i) => ({
+      ...cyc(17, { guide: 5 }),
+      welcomeMs: w,
+      programs: progsA[i],
+    }));
+    const b = rvBuild.map((w, i) => ({
+      ...cyc(17, { guide: 5 }),
+      welcomeMs: w + (i % 8 === 0 ? [560, 300, 700][i / 8] : 0),
+      programs: progsB[i],
+    }));
+    const row = gate.metricTable('desktop', a, b, null, { cycles: 24 })['welcome_visible ms'];
+    expect(row.stratified).toBe(true);
+    expect((row.sign as { n: number }).n).toBeLessThan(24);
+    expect(row.signInCycleOrder).toEqual({ over: 0, n: 24, pass: true });
+    expect(row.verdict).toBe('pass');
+    expect(row.rule).toMatch(/sign test: 0 of 24 pairs over T in cycle order/);
+    // At 12 cycles it is still inconclusive.
+    const early = gate.metricTable('desktop', a.slice(0, 12), b.slice(0, 12), null, { cycles: 12 });
+    expect(early['welcome_visible ms'].verdict).toBe('inconclusive');
+    // A cycle-order pair over T keeps it inconclusive.
+    const b2 = b.map((c, i) =>
+      i === 1 ? { ...c, welcomeMs: (a[1].welcomeMs as number) + 200 } : c,
+    );
+    const row2 = gate.metricTable('desktop', a, b2, null, { cycles: 24 })['welcome_visible ms'];
+    expect(row2.signInCycleOrder?.pass).toBe(false);
+    expect(row2.verdict).not.toBe('pass');
   });
 });
 
