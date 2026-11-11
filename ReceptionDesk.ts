@@ -105,7 +105,7 @@ export function appendReceptionDesk(container: HTMLElement): void {
     : '';
   box.innerHTML = `
     <h3 style="margin:0 0 4px;font-size:15px;">Talk to my AI receptionist</h3>
-    <p style="margin:0 0 10px;font-size:12px;color:#9aa;">A live voice agent I built — ask it about my work, or your project.</p>
+    <p style="margin:0 0 10px;font-size:12px;color:#9aa;">A voice assistant I set up on ElevenLabs — ask it about my work, or your project.</p>
     <button id="rd-start" class="ds-press" style="width:100%;min-height:44px;padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#00796b,#00695c);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">🎙 Start voice call</button>
     <p style="margin:6px 0 0;font-size:11px;color:#889;">During a call your voice streams live to ElevenLabs, the voice provider. <a href="/privacy.html" style="color:#80cbc4;${thumb}">Privacy</a></p>
     <div id="rd-status" role="status" aria-live="polite" style="margin:8px 0 0;font-size:12px;color:#9aa;min-height:16px;"></div>

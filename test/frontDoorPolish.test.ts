@@ -998,6 +998,135 @@ describe('the NPC chat admits offline replies', () => {
     expect(badge.title).toContain('written lines');
   });
   // (that main-simple marks it on the canned branch is package A's mainLocks)
+
+  test('the chip is a neutral 12 px name of the model, not an amber status light (D10)', () => {
+    ui.showNpcChat('Lighthouse Keeper', 'Evening.', async () => 'A written line.');
+    const chip = document.querySelector<HTMLElement>('[data-npc-model]')!;
+    expect(text(chip)).toBe('Claude Haiku 4.5');
+    expect(chip.style.fontSize).toBe('12px');
+    expect(chip.style.color).not.toMatch(/ffd479|255, ?212, ?121/i);
+    // The name and the chip wrap as a pair; the name ellipsises before the
+    // close button gives way (it broke in two at 390 px beside the chip).
+    const who = chip.parentElement!;
+    expect(who.style.flexWrap).toBe('wrap');
+    expect(who.style.minWidth).toMatch(/^0(px)?$/);
+    const name = who.firstElementChild as HTMLElement;
+    expect(text(name)).toBe('Lighthouse Keeper');
+    expect(name.style.textOverflow).toBe('ellipsis');
+    expect(name.style.whiteSpace).toBe('nowrap');
+    const close = document.querySelector<HTMLElement>('button[aria-label="Close chat"]')!;
+    expect(close.parentElement!.style.flex).toMatch(/^(none|0 0 auto)$/);
+  });
+});
+
+describe('the NPC chat says when the villager speaks and when the visitor types (D10)', () => {
+  type Sig = { type: string; name: unknown; on: unknown };
+  let seen: Sig[] = [];
+  const onSpeak = (e: Event): void => {
+    const d = (e as CustomEvent<{ name: string; speaking: boolean }>).detail;
+    seen.push({ type: 'speaking', name: d.name, on: d.speaking });
+  };
+  const onType = (e: Event): void => {
+    const d = (e as CustomEvent<{ name: string; typing: boolean }>).detail;
+    seen.push({ type: 'typing', name: d.name, on: d.typing });
+  };
+  const field = (): HTMLInputElement =>
+    document.querySelector<HTMLInputElement>('input[placeholder^="Say something to"]')!;
+
+  beforeEach(() => {
+    seen = [];
+    vi.useFakeTimers();
+    window.addEventListener('ds:npc-speaking', onSpeak);
+    window.addEventListener('ds:npc-typing', onType);
+  });
+  afterEach(() => {
+    window.removeEventListener('ds:npc-speaking', onSpeak);
+    window.removeEventListener('ds:npc-typing', onType);
+  });
+
+  test("'ds:npc-speaking' is true while a line types and false when it has", () => {
+    ui.showNpcChat('Gardener', 'Morning!', async () => 'A written line.');
+    expect(seen).toEqual([{ type: 'speaking', name: 'Gardener', on: true }]);
+    vi.advanceTimersByTime(18 * 'Morning!'.length + 40);
+    expect(seen).toEqual([
+      { type: 'speaking', name: 'Gardener', on: true },
+      { type: 'speaking', name: 'Gardener', on: false },
+    ]);
+  });
+
+  test('closing the chat mid-line ends the speaking signal', () => {
+    ui.showNpcChat('Gardener', 'A much longer greeting than that.', async () => '…');
+    ui.closeNpcChat();
+    expect(seen.at(-1)).toEqual({ type: 'speaking', name: 'Gardener', on: false });
+    vi.advanceTimersByTime(5000);
+    expect(seen.filter((s) => s.type === 'speaking')).toHaveLength(2); // nothing after the close
+  });
+
+  test("'ds:npc-typing' is true on input, once, and false 1.5 s after the last keystroke", () => {
+    ui.showNpcChat('Gardener', 'Hi', async () => '…');
+    vi.advanceTimersByTime(200);
+    seen = [];
+    const input = field();
+    input.value = 'H';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    vi.advanceTimersByTime(1000);
+    input.value = 'He';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    vi.advanceTimersByTime(1400); // 1.4 s after the LAST keystroke: still typing
+    expect(seen).toEqual([{ type: 'typing', name: 'Gardener', on: true }]);
+    vi.advanceTimersByTime(150);
+    expect(seen).toEqual([
+      { type: 'typing', name: 'Gardener', on: true },
+      { type: 'typing', name: 'Gardener', on: false },
+    ]);
+  });
+
+  test('a send ends typing at once', async () => {
+    ui.showNpcChat('Gardener', 'Hi', async () => 'A written line.');
+    vi.advanceTimersByTime(200);
+    seen = [];
+    const input = field();
+    input.value = 'Hello';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(seen.filter((s) => s.type === 'typing')).toEqual([
+      { type: 'typing', name: 'Gardener', on: true },
+      { type: 'typing', name: 'Gardener', on: false },
+    ]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(seen.filter((s) => s.type === 'typing')).toHaveLength(2); // the 1.5 s timer went with it
+  });
+
+  test("a slow reply reads '<name> is thinking…' after 3 s, then the reply replaces it", async () => {
+    let answer!: (line: string) => void;
+    ui.showNpcChat('Gardener', 'Hi', () => new Promise<string>((r) => (answer = r)));
+    const input = field();
+    input.value = 'How are the flowers?';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const thinking = (): string => text(document.querySelector('[data-npc-thinking]'));
+    expect(thinking()).toBe('…');
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(thinking()).toBe('…');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(thinking()).toBe('Gardener is thinking…');
+    answer('The roses are thirsty today.');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(document.querySelector('[data-npc-thinking]')).toBeNull();
+    expect(text(document.querySelector('[role="log"]'))).toContain('The roses are thirsty today.');
+  });
+
+  test('a reply that lands after the chat closed is not typed or spoken', async () => {
+    let answer!: (line: string) => void;
+    ui.showNpcChat('Gardener', 'Hi', () => new Promise<string>((r) => (answer = r)));
+    const input = field();
+    input.value = 'Anyone home?';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    ui.closeNpcChat();
+    seen = [];
+    answer('Too late.');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(seen).toEqual([]);
+  });
 });
 
 describe('accessibility quick wins', () => {
@@ -1028,6 +1157,15 @@ describe('accessibility quick wins', () => {
     const css = src('style.css');
     const rule = css.slice(css.indexOf('.hud-btn {'), css.indexOf('}', css.indexOf('.hud-btn {')));
     expect(rule).toContain('touch-action: manipulation');
+  });
+
+  test('the receptionist is a voice assistant set up on ElevenLabs (decision 11)', () => {
+    const box = document.createElement('div');
+    appendReceptionDesk(box);
+    expect(text(box)).toContain(
+      'A voice assistant I set up on ElevenLabs — ask it about my work, or your project.',
+    );
+    expect(text(box)).not.toMatch(/voice agent|I built/i);
   });
 
   test('the receptionist says the call streams live audio to ElevenLabs', () => {

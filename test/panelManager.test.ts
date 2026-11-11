@@ -21,6 +21,7 @@ import { SimpleUI } from '../SimpleUI';
 // The boards are Firebase reads; here they answer at once, empty.
 vi.mock('../Boards', () => ({
   getLeaderboard: vi.fn(async () => []),
+  readLeaderboard: vi.fn(async () => ({ ok: true, entries: [] })),
 }));
 
 function spec(over: Partial<PanelSpec> = {}): PanelSpec {

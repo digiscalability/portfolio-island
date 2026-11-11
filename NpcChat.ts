@@ -153,11 +153,14 @@ function fallbackReply(reason: string, opening: boolean): NpcReply {
   return { reply: null, fallback: true, reason };
 }
 
-export async function askNpc(npcName: string, message: string, opening = false): Promise<NpcReply> {
-  const npcId = AI_NPCS[npcName];
-  if (!npcId) return { reply: null, fallback: true, reason: 'not-ai' };
-  const text = message.trim().slice(0, 300);
-  if (!text) return { reply: null, fallback: true, reason: 'empty' };
+/** A villager's model call that has not answered by now falls back to the
+ *  written lines (D10): a stalled call left the bare '…' up with no end. */
+export const NPC_TIMEOUT_MS = 12000;
+
+/** What the callable came back with, before it is counted or voiced. */
+type NpcOutcome = { reply: NpcReply } | { fallback: string };
+
+async function callNpc(npcId: string, text: string, opening: boolean): Promise<NpcOutcome> {
   try {
     const [{ getFirebaseApp }, fns] = await Promise.all([
       import('./firebaseClient'),
@@ -168,33 +171,62 @@ export async function askNpc(npcName: string, message: string, opening = false):
     const call = fns.httpsCallable<{ npcId: string; message: string; opening?: boolean }, NpcReply>(
       functions,
       'npcChat',
+      { timeout: NPC_TIMEOUT_MS },
     );
     const res = await call(
       opening ? { npcId, message: text, opening: true } : { npcId, message: text },
     );
     const d = res.data;
     if (d && typeof d.fallback === 'boolean') {
-      if (d.fallback) return fallbackReply(String(d.reason ?? 'unknown').slice(0, 40), opening);
+      if (d.fallback) return { fallback: String(d.reason ?? 'unknown').slice(0, 40) };
       // A "success" with no text is still a written line on screen.
-      if (!d.reply) return fallbackReply('empty-reply', opening);
-      // Cloud voice: start fetching the ElevenLabs audio NOW (it synthesizes
-      // while the typewriter animates) and offer it to Speech keyed by the
-      // exact reply text — speak() will play it instead of the browser voice.
-      // Any failure quietly resolves null and the on-device voice takes over.
-      if (typeof d.voiceKey === 'string') offerCloudVoice(d.reply, fetchNpcVoice(d.voiceKey));
-      return d;
+      if (!d.reply) return { fallback: 'empty-reply' };
+      return { reply: d };
     }
-    return fallbackReply('bad-shape', opening);
+    return { fallback: 'bad-shape' };
   } catch (e) {
     // Offline, App Check rejected or not configured, function not deployed,
     // timeout — all degrade to canned lines. The NPC never appears broken,
     // and the error code says which it was.
     const code = (e as { code?: unknown } | null)?.code;
-    return fallbackReply(
-      typeof code === 'string' ? `client:${code}`.slice(0, 60) : 'client-error',
-      opening,
-    );
+    return { fallback: typeof code === 'string' ? `client:${code}`.slice(0, 60) : 'client-error' };
   }
+}
+
+export async function askNpc(npcName: string, message: string, opening = false): Promise<NpcReply> {
+  const npcId = AI_NPCS[npcName];
+  if (!npcId) return { reply: null, fallback: true, reason: 'not-ai' };
+  const text = message.trim().slice(0, 300);
+  if (!text) return { reply: null, fallback: true, reason: 'empty' };
+  // The callable carries the timeout, and this clock covers what comes before
+  // it: the chunk loads, the sign-in and App Check, any of which can stall
+  // with the call never made. Whichever answers first is the one counted.
+  return new Promise<NpcReply>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(fallbackReply('client:timeout', opening));
+    }, NPC_TIMEOUT_MS);
+    void callNpc(npcId, text, opening).then((out) => {
+      if (settled) return; // the visitor already has a written line
+      settled = true;
+      clearTimeout(timer);
+      if ('fallback' in out) {
+        resolve(fallbackReply(out.fallback, opening));
+        return;
+      }
+      const d = out.reply;
+      // Cloud voice: start fetching the ElevenLabs audio NOW (it synthesizes
+      // while the typewriter animates) and offer it to Speech keyed by the
+      // exact reply text — speak() will play it instead of the browser voice.
+      // Any failure quietly resolves null and the on-device voice takes over.
+      if (typeof d.voiceKey === 'string' && d.reply) {
+        offerCloudVoice(d.reply, fetchNpcVoice(d.voiceKey));
+      }
+      resolve(d);
+    });
+  });
 }
 
 /** Fetch the ElevenLabs audio (base64 MP3) for a reply id. Never throws —

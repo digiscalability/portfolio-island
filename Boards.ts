@@ -18,6 +18,35 @@ export interface GuestEntry {
   t: number;
 }
 
+/**
+ * A board read that says whether it worked (D10). getLeaderboard and
+ * getGuestbook answer [] for an empty board and for a failed read alike, so
+ * the panels printed "No times yet" over a blocked backend. SimpleUI reads
+ * through readLeaderboard / readGuestbook and shows the failure with a Retry;
+ * the array getters stay for callers that only count (main-simple).
+ */
+export type BoardRead<T> = { ok: true; entries: T[] } | { ok: false };
+
+/** A read that has not answered by now has failed. */
+export const BOARD_READ_TIMEOUT_MS = 8000;
+
+/** `work`, or a rejection once BOARD_READ_TIMEOUT_MS has passed. */
+function withReadTimeout<T>(work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('board-read-timeout')), BOARD_READ_TIMEOUT_MS);
+    work.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error('board-read-failed'));
+      },
+    );
+  });
+}
+
 /** Submit a race time; keeps only the player's personal best per circuit. */
 export async function submitRaceTime(
   circuit: CircuitKind,
@@ -39,23 +68,37 @@ export async function submitRaceTime(
   }
 }
 
-/** Top-N fastest times for a circuit, ascending. */
-export async function getLeaderboard(circuit: CircuitKind, topN = 10): Promise<LeaderEntry[]> {
+async function fetchLeaderboard(circuit: CircuitKind, topN: number): Promise<LeaderEntry[]> {
+  const { getFirebaseRealtime } = await import('./firebaseClient');
+  const { ref, get } = await import('firebase/database');
+  const { db } = await getFirebaseRealtime();
+  const snap = await get(ref(db, `leaderboard/island/${WORLD_ERA}/${circuit}`));
+  const val = snap.val() as Record<string, { name?: string; timeMs?: number }> | null;
+  if (!val) return [];
+  return Object.values(val)
+    .filter((v): v is { name?: string; timeMs: number } => !!v && typeof v.timeMs === 'number')
+    .map((v) => ({ name: safePeerName(v.name || 'Guest'), timeMs: v.timeMs }))
+    .sort((a, b) => a.timeMs - b.timeMs)
+    .slice(0, topN);
+}
+
+/** Top-N fastest times for a circuit, ascending; {ok:false} when the read
+ *  failed or took longer than BOARD_READ_TIMEOUT_MS. Never throws. */
+export async function readLeaderboard(
+  circuit: CircuitKind,
+  topN = 10,
+): Promise<BoardRead<LeaderEntry>> {
   try {
-    const { getFirebaseRealtime } = await import('./firebaseClient');
-    const { ref, get } = await import('firebase/database');
-    const { db } = await getFirebaseRealtime();
-    const snap = await get(ref(db, `leaderboard/island/${WORLD_ERA}/${circuit}`));
-    const val = snap.val() as Record<string, { name?: string; timeMs?: number }> | null;
-    if (!val) return [];
-    return Object.values(val)
-      .filter((v): v is { name?: string; timeMs: number } => !!v && typeof v.timeMs === 'number')
-      .map((v) => ({ name: safePeerName(v.name || 'Guest'), timeMs: v.timeMs }))
-      .sort((a, b) => a.timeMs - b.timeMs)
-      .slice(0, topN);
+    return { ok: true, entries: await withReadTimeout(fetchLeaderboard(circuit, topN)) };
   } catch {
-    return [];
+    return { ok: false };
   }
+}
+
+/** Top-N fastest times for a circuit, ascending ([] on any failure). */
+export async function getLeaderboard(circuit: CircuitKind, topN = 10): Promise<LeaderEntry[]> {
+  const res = await readLeaderboard(circuit, topN);
+  return res.ok ? res.entries : [];
 }
 
 /** Sign the guestbook. Returns false if the message was empty after cleaning. */
@@ -116,20 +159,31 @@ export async function submitLead(name: string, email: string, message: string): 
   }
 }
 
-/** Most-recent guestbook entries, newest first. */
-export async function getGuestbook(limitN = 25): Promise<GuestEntry[]> {
+async function fetchGuestbook(limitN: number): Promise<GuestEntry[]> {
+  const { getFirebaseRealtime } = await import('./firebaseClient');
+  const { ref, query, limitToLast, get } = await import('firebase/database');
+  const { db } = await getFirebaseRealtime();
+  const snap = await get(query(ref(db, 'guestbook/island'), limitToLast(limitN)));
+  const val = snap.val() as Record<string, Partial<GuestEntry>> | null;
+  if (!val) return [];
+  return Object.values(val)
+    .filter((v): v is GuestEntry => !!v && typeof v.msg === 'string')
+    .map((v) => ({ name: safePeerName(v.name || 'Guest'), msg: v.msg, t: v.t || 0 }))
+    .sort((a, b) => b.t - a.t);
+}
+
+/** Most-recent guestbook entries, newest first; {ok:false} when the read
+ *  failed or took longer than BOARD_READ_TIMEOUT_MS. Never throws. */
+export async function readGuestbook(limitN = 25): Promise<BoardRead<GuestEntry>> {
   try {
-    const { getFirebaseRealtime } = await import('./firebaseClient');
-    const { ref, query, limitToLast, get } = await import('firebase/database');
-    const { db } = await getFirebaseRealtime();
-    const snap = await get(query(ref(db, 'guestbook/island'), limitToLast(limitN)));
-    const val = snap.val() as Record<string, Partial<GuestEntry>> | null;
-    if (!val) return [];
-    return Object.values(val)
-      .filter((v): v is GuestEntry => !!v && typeof v.msg === 'string')
-      .map((v) => ({ name: safePeerName(v.name || 'Guest'), msg: v.msg, t: v.t || 0 }))
-      .sort((a, b) => b.t - a.t);
+    return { ok: true, entries: await withReadTimeout(fetchGuestbook(limitN)) };
   } catch {
-    return [];
+    return { ok: false };
   }
+}
+
+/** Most-recent guestbook entries, newest first ([] on any failure). */
+export async function getGuestbook(limitN = 25): Promise<GuestEntry[]> {
+  const res = await readGuestbook(limitN);
+  return res.ok ? res.entries : [];
 }

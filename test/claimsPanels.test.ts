@@ -34,6 +34,9 @@ const BANNED = [
   // visitor to that chat).
   'live AI',
   'conversational agents',
+  // decision 11: the receptionist is 'a voice assistant I set up on
+  // ElevenLabs'; the retired line called it a live voice agent Abbas built.
+  'voice agent',
 ];
 
 describe('banned claims never reach the in-app copy', () => {
@@ -147,6 +150,19 @@ describe('copy elsewhere in the funnel', () => {
 
   test('the lead form speaks to hiring as well as projects', () => {
     expect(src('SimpleUI.ts')).toContain('placeholder="A role, a project, or a question"');
+  });
+});
+
+describe('one short name per district (D10)', () => {
+  // The radar and the gate boards (Island prints DISTRICTS[].radar) said
+  // 'Work' and 'Life' for the districts every other surface calls
+  // Professional and Personal.
+  test('the radar and gate labels are the passport labels', () => {
+    const districts = src('Districts.ts');
+    const radar = [...districts.matchAll(/radar: '([^']+)'/g)].map((m) => m[1]);
+    expect(radar).toEqual(['Hub', 'Professional', 'Projects', 'Personal', 'Contact']);
+    const passport = src('Passport.ts');
+    for (const label of radar.slice(1)) expect(passport).toContain(`label: '${label}'`);
   });
 });
 
