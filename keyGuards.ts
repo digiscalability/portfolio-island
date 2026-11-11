@@ -40,10 +40,13 @@ export function enterOpensChat(
 
 /**
  * Panels the visitor can walk away from: the conversation sheets, the
- * multiplayer chat line, the appearance editor and the tour rail. While any
- * OTHER panel is on top, the world gets no input at all (main-simple zeroes
- * movement, drops latched presses and drains camera input). An allow-list on
- * purpose: a new panel blocks the world until it is added here.
+ * multiplayer chat line, the appearance editor, the tour rail and the emote
+ * wheel (a small sheet over the chip column: W walked with it open before
+ * the allow-list, and stopping dead to pick a wave read as a freeze, CO-A4).
+ * While any OTHER panel is on top, the world gets no input at all
+ * (main-simple zeroes movement, drops latched presses and drains camera
+ * input). An allow-list on purpose: a new panel blocks the world until it is
+ * added here.
  */
 export const WALKABLE: ReadonlySet<string> = new Set([
   'npc-chat',
@@ -51,6 +54,7 @@ export const WALKABLE: ReadonlySet<string> = new Set([
   'chat-input',
   'customize',
   'tour',
+  'emote-wheel',
 ]);
 
 /** Does the top panel own the keyboard? `topPanelId` is PanelManager.current(). */
@@ -104,6 +108,10 @@ const BUTTON_ROLES: ReadonlySet<string> = new Set([
  *   Anything else still reaches the world, so W after clicking an NPC chat's
  *   Send button walks away from the chat, and a focused swatch does not
  *   freeze the walkable appearance editor.
+ * - A menu's items (role=menuitem: the emote wheel's grid): the arrows as
+ *   well, which walk the menu. The wheel is walkable (WALKABLE), so without
+ *   this an arrow moved the focus and the avatar at once; W, A, S and D still
+ *   walk.
  * `key` is KeyboardEvent.key; case does not matter.
  */
 export function focusedControlOwnsKey(key: string, target: EventTarget | null): boolean {
@@ -121,7 +129,8 @@ export function focusedControlOwnsKey(key: string, target: EventTarget | null): 
     return true; // text, search, email, number, password, …
   }
   if (tag === 'SELECT') return VALUE_KEYS.has(k) || ACTIVATE_KEYS.has(k);
-  if (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') return ACTIVATE_KEYS.has(k);
   const role = target.getAttribute('role');
+  if (role === 'menuitem') return ACTIVATE_KEYS.has(k) || VALUE_KEYS.has(k);
+  if (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') return ACTIVATE_KEYS.has(k);
   return role !== null && BUTTON_ROLES.has(role) && ACTIVATE_KEYS.has(k);
 }

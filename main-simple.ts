@@ -451,6 +451,7 @@ export class SimpleApp {
     guideTo?: (event: Event) => void;
     guideWelcomeClick?: (event: Event) => void;
     guideWelcomeKey?: (event: KeyboardEvent) => void;
+    interiorEscape?: (event: KeyboardEvent) => void;
   } = {};
 
   constructor() {
@@ -1447,6 +1448,12 @@ export class SimpleApp {
       window.addEventListener('keydown', this.boundHandlers.chatKeydown);
       window.addEventListener('keyup', this.boundHandlers.chatKeyup);
 
+      // Indoors, Escape leaves (P2-A1). Capture phase on window: it reads the
+      // panels as they stood when the key went down, before PanelManager's
+      // document listener closes the top one.
+      this.boundHandlers.interiorEscape = (e: KeyboardEvent) => this.onInteriorEscape(e);
+      window.addEventListener('keydown', this.boundHandlers.interiorEscape, true);
+
       // Setup cleanup on page unload
       this.boundHandlers.beforeUnload = () => this.dispose();
       window.addEventListener('beforeunload', this.boundHandlers.beforeUnload);
@@ -2284,6 +2291,9 @@ export class SimpleApp {
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
       this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
+      // No carry-over (INT-12): a key pressed on the doorstep, in the gap
+      // between the last outdoor frame and this swap, never fires in the room.
+      this.inputManager.clearLatched();
       // Leave FIRST, and the panel in its own try. The fourth passport stamp
       // lands inside showZonePanel and its celebration used to sweep the hall
       // panel mid-build, so the panel threw (INT-02); fadeThrough's catch
@@ -2300,13 +2310,44 @@ export class SimpleApp {
     });
   }
 
+  /** The door veil is already closing on the way out: a second Leave, E at
+   *  the door or Escape must not start another. */
+  private leavingBuilding = false;
+
   private exitBuilding(isZone: boolean): void {
+    if (this.leavingBuilding) return;
+    this.leavingBuilding = true;
     this.ui.closeWatchFrame(); // stop any wall-screen playback (fires onClose)
     this.ui.fadeThrough(() => {
+      this.leavingBuilding = false;
       this.scene.exitInterior();
+      // No carry-over (INT-12): Q pressed in the room, in the gap before
+      // this swap, used to wave on the first frame outside.
+      this.inputManager.clearLatched();
       this.ui.hideLeaveButton();
       if (isZone) this.ui.hideZonePanel();
     });
+  }
+
+  /**
+   * Indoors, Escape leaves (P2-A1). Heard on window in the capture phase, so
+   * it reads the room as it stood when the key went down: PanelManager and
+   * SimpleInputManager listen on the document, which runs later. With a panel
+   * open (the hall panel, the emote wheel, the chat line) or the name prompt
+   * up, the press is theirs: the panel closes and the visitor stays inside.
+   * With the wall screen on, it steps away from the screen. Only a press that
+   * finds nothing open leaves, so one Escape never does both, whatever order
+   * the document listeners run in.
+   */
+  private onInteriorEscape(e: KeyboardEvent): void {
+    if (e.key !== 'Escape' || e.repeat || e.defaultPrevented) return;
+    if (!this.scene?.isInsideInterior()) return;
+    if (this.ui.panels.isOpen() || this.ui.isWelcomeVisible()) return;
+    if (this.ui.isWatchOpen()) {
+      this.ui.closeWatchFrame();
+      return;
+    }
+    this.exitBuilding(this.insideIsZone);
   }
 
   /** Open a section directly from a /?zone=<id> deep link, if present + valid. */
@@ -2472,15 +2513,18 @@ export class SimpleApp {
     // The secret-spot proximity sweep rides the same 2.5s cadence — nine
     // distance checks against static points, effectively free.
     // Wall time spent actually IN the world (welcome dismissed) — feeds the
-    // lost-visitor recovery hint below.
-    if (!this.ui.isWelcomeVisible()) this.lostAccum += deltaTime;
+    // lost-visitor recovery hint below. A room is not the world: nobody is
+    // lost in one, so the clock stops at the door (P2-A1, INT-11).
+    const indoors = this.scene.isInsideInterior();
+    if (!this.ui.isWelcomeVisible() && !indoors) this.lostAccum += deltaTime;
     this.completionAccum += deltaTime;
     if (this.completionAccum > 2.5) {
       this.completionAccum = 0;
       this.refreshCompletion();
       this.sweepSecrets();
-      // main-simple's own hints held while the guide ran (A6) go out now.
-      if (this.heldHints.length && !this.guideHoldsHints()) {
+      // main-simple's own hints held while the guide ran (A6) go out now;
+      // indoors they wait for the door (hintLater holds them there too).
+      if (this.heldHints.length && !indoors && !this.guideHoldsHints()) {
         for (const m of this.heldHints.splice(0)) this.ui.toast(m, { hint: true });
       }
       const hintsHeld = this.guideHoldsHints();
@@ -2492,8 +2536,11 @@ export class SimpleApp {
       try {
         // hasTrailCoins guard: minute one's toast budget belongs to the
         // orientation + talk hints — district cards start after the arrival
-        // trail is done.
+        // trail is done. Never indoors (P2-A1): the avatar stands frozen at
+        // the door outside, so every outdoor hint below read that spot and
+        // fired over the room ('a villager nearby…', a district's card).
         if (
+          !indoors &&
           !hintsHeld &&
           !this.ui.isWelcomeVisible() &&
           !this.tour &&
@@ -2525,7 +2572,7 @@ export class SimpleApp {
             const key = `ds_hint_district_${bestId}`;
             if (bestDot > 0.9 && DISTRICT_INTRO[bestId] && !localStorage.getItem(key)) {
               localStorage.setItem(key, '1');
-              this.ui.toast(DISTRICT_INTRO[bestId], { hint: true });
+              this.ui.toast(DISTRICT_INTRO[bestId], { hint: true, until: this.indoorsNow });
             }
           }
         }
@@ -2540,6 +2587,7 @@ export class SimpleApp {
       try {
         if (
           this.lostAccum > 60 &&
+          !indoors &&
           !hintsHeld &&
           !this.tour &&
           !localStorage.getItem('ds_hint_map') &&
@@ -2568,6 +2616,7 @@ export class SimpleApp {
       try {
         if (
           !localStorage.getItem('ds_hint_talk') &&
+          !indoors &&
           !hintsHeld &&
           !this.ui.isWelcomeVisible() &&
           !this.tour &&
@@ -2578,7 +2627,7 @@ export class SimpleApp {
             this.ui.isTouchDevice()
               ? '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and tap USE to ask anything.'
               : '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and press E to ask anything.',
-            { hint: true },
+            { hint: true, until: this.talkHintStale },
           );
         }
       } catch {
@@ -3604,6 +3653,16 @@ export class SimpleApp {
     }
     // Into-variants write the scratches directly — the old .copy(clone())
     // pattern kept the scratch but still paid the allocation each frame.
+    // Indoors the pill is hidden (P2-A1, INT-11): the avatar stands frozen at
+    // the door outside, so the pill kept a bearing and a label for a walk the
+    // room cannot make. Picks, stamps and the "Next:" flash wait at the door.
+    if (this.scene.isInsideInterior()) {
+      this.arrivalHold = null;
+      this.lastCompassTarget = null;
+      this.compassLabel = '';
+      this.ui.updateQuestCompass(null);
+      return;
+    }
     const playerPos = player.getWorldPositionInto(this._qcPlayerPos);
     const normal = player.getSurfaceNormalInto(this._qcNormal);
     const now = performance.now();
@@ -3997,7 +4056,7 @@ export class SimpleApp {
       this.ui.isTouchDevice()
         ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the gold arrow guides you.'
         : '🗺️ Lost? Click the radar or press M for the island map — pick a spot and the gold arrow guides you.',
-      { hint: true },
+      { hint: true, until: this.indoorsNow },
     );
   }
 
@@ -4257,9 +4316,30 @@ export class SimpleApp {
     return g.eligible() && !g.running() && (!this.introSettled || this.ui.isWelcomeVisible());
   }
 
-  /** One of main-simple's own unprompted hints: now, or once the guide lets go. */
+  /**
+   * A place hint that has not shown by the time the visitor is in a room is
+   * dropped (D6's until()). On a phone a hint waits while a prompt is up, so
+   * one fired on a doorstep came up over the room once the hall panel closed
+   * (measured at 390x844: 'A villager nearby talks…', indoors).
+   */
+  private readonly indoorsNow = (): boolean => this.scene.isInsideInterior();
+  /** The talk hint, dropped the same way, hands its once-ever key back
+   *  unless the visitor has talked to a villager by then: it is the one
+   *  line that says the villagers answer, and it fires again outside. */
+  private readonly talkHintStale = (): boolean => {
+    if (!this.scene.isInsideInterior()) return false;
+    try {
+      if (localStorage.getItem('ds_npc_chatted') !== '1') localStorage.removeItem('ds_hint_talk');
+    } catch {
+      /* no storage */
+    }
+    return true;
+  };
+
+  /** One of main-simple's own unprompted hints: now, or once the guide lets
+   *  go; one that comes due inside a room waits for the door (P2-A1). */
   private hintLater(message: string): void {
-    if (!this.guideHoldsHints()) {
+    if (!this.guideHoldsHints() && !this.scene.isInsideInterior()) {
       this.ui.toast(message, { hint: true });
       return;
     }
@@ -6643,6 +6723,10 @@ export class SimpleApp {
 
     if (this.boundHandlers.guideWelcomeKey) {
       window.removeEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);
+    }
+
+    if (this.boundHandlers.interiorEscape) {
+      window.removeEventListener('keydown', this.boundHandlers.interiorEscape, true);
     }
 
     this.guideCard?.dispose();

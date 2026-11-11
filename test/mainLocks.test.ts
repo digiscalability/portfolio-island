@@ -1186,3 +1186,94 @@ describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
     );
   });
 });
+
+// ---- stage-2 wiring (wave 2) ---------------------------------------------
+// interiorEntry.test.ts runs onInteriorEscape, enterBuilding and exitBuilding
+// for real; these pin what only main-simple's own text can show: where the
+// listener is hooked, and that update() keeps the outdoors out of a room.
+describe('P2-A1: indoors, Escape leaves and the outdoors stays out', () => {
+  const m = (): string => stripped('main-simple.ts');
+  const update = (): string => bodyOf(m(), 'private update(');
+
+  test('Escape is heard on window in the capture phase, and unhooked on teardown', () => {
+    expect(m()).toContain(
+      'this.boundHandlers.interiorEscape = (e: KeyboardEvent) => this.onInteriorEscape(e);',
+    );
+    expect(m()).toContain(
+      "window.addEventListener('keydown', this.boundHandlers.interiorEscape, true);",
+    );
+    expect(bodyOf(m(), 'private dispose(')).toContain(
+      "window.removeEventListener('keydown', this.boundHandlers.interiorEscape, true);",
+    );
+    const esc = bodyOf(m(), 'private onInteriorEscape(');
+    // a panel or the name prompt owns the press: checked before anything leaves
+    const guard = esc.indexOf('if (this.ui.panels.isOpen() || this.ui.isWelcomeVisible()) return;');
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(esc.indexOf('this.exitBuilding(this.insideIsZone);'));
+    expect(esc).toContain('if (!this.scene?.isInsideInterior()) return;');
+  });
+
+  test('both door swaps drop the latched presses, inside the veil', () => {
+    const enter = bodyOf(m(), 'private enterBuilding(');
+    expect(enter.indexOf('this.inputManager.clearLatched();')).toBeGreaterThan(
+      enter.indexOf('this.scene.enterInterior('),
+    );
+    const exit = bodyOf(m(), 'private exitBuilding(');
+    expect(exit.indexOf('this.inputManager.clearLatched();')).toBeGreaterThan(
+      exit.indexOf('this.scene.exitInterior();'),
+    );
+    // one veil at a time on the way out
+    expect(exit).toContain('if (this.leavingBuilding) return;');
+  });
+
+  test('no outdoor hint fires in a room, and the lost clock stops at the door', () => {
+    const u = update();
+    expect(u).toContain('const indoors = this.scene.isInsideInterior();');
+    expect(u).toContain(
+      'if (!this.ui.isWelcomeVisible() && !indoors) this.lostAccum += deltaTime;',
+    );
+    // the district card, the once-ever lost hint and the talk hint
+    expect(u).toMatch(/!indoors &&\s*!hintsHeld &&\s*!this\.ui\.isWelcomeVisible\(\) &&/);
+    expect(blockOf(u, 'this.lostAccum > 60 &&')).toContain('!indoors &&');
+    expect(blockOf(u, "!localStorage.getItem('ds_hint_talk') &&")).toContain('!indoors &&');
+    // held hints wait for the door, and one that comes due indoors is held
+    expect(u).toContain('if (this.heldHints.length && !indoors && !this.guideHoldsHints()) {');
+    expect(bodyOf(m(), 'private hintLater(')).toContain(
+      'if (!this.guideHoldsHints() && !this.scene.isInsideInterior()) {',
+    );
+  });
+
+  test('a place hint still waiting in the queue is dropped once the visitor is in a room', () => {
+    // D6 holds a hint while a prompt is up on a phone: one fired on the
+    // doorstep used to come up over the room when the hall panel closed.
+    const u = update();
+    expect(u).toContain(
+      'this.ui.toast(DISTRICT_INTRO[bestId], { hint: true, until: this.indoorsNow });',
+    );
+    expect(u).toContain('{ hint: true, until: this.talkHintStale },');
+    expect(bodyOf(m(), 'private showLostHint(')).toContain(
+      '{ hint: true, until: this.indoorsNow },',
+    );
+    expect(m()).toContain(
+      'private readonly indoorsNow = (): boolean => this.scene.isInsideInterior();',
+    );
+    // the talk hint hands its once-ever key back, unless they have talked
+    const stale = bodyOf(m(), 'private readonly talkHintStale = (): boolean =>');
+    expect(stale).toContain('if (!this.scene.isInsideInterior()) return false;');
+    expect(stale).toContain(
+      "if (localStorage.getItem('ds_npc_chatted') !== '1') localStorage.removeItem('ds_hint_talk');",
+    );
+  });
+
+  test('indoors the pill is hidden: no bearing, no label', () => {
+    const qc = bodyOf(m(), 'private updateQuestCompass(');
+    const inside = bodyOf(qc, 'if (this.scene.isInsideInterior()) {');
+    expect(inside).toContain("this.compassLabel = '';");
+    expect(inside).toContain('this.ui.updateQuestCompass(null);');
+    expect(inside).toMatch(/return;\s*\}$/);
+    // before any target is worked out
+    expect(qc.indexOf('if (this.scene.isInsideInterior()) {')).toBeLessThan(
+      qc.indexOf('switch (compassTarget(st)) {'),
+    );
+  });
+});
