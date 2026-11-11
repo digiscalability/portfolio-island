@@ -1113,3 +1113,92 @@ describe('perf gate: the vehicle and room views, the dusk check and credits (P2-
     expect(n.fps).toBe(60);
   });
 });
+
+// Wave-2 amendments: wave 1 took the main chunk over Vite's 1,000 kB warning.
+// The gate's report holds it against the merged main and names the lazy-load
+// candidate; the warning limit itself stays where it is.
+describe('perf gate: the bundle check (wave-2 amendments)', () => {
+  type Size = { file: string; rawKB: number; gzipKB: number };
+  type Check = Size & {
+    deltaRawKB: number;
+    deltaGzipKB: number;
+    overWarning: boolean;
+    overWarningKB: number;
+    pass: boolean;
+  };
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    BUNDLE: {
+      warnKB: number;
+      gzipBudgetKB: number;
+      main: { rawKB: number; gzipKB: number };
+      beforeWave1: { rawKB: number; gzipKB: number };
+      lazyCandidate: { module: string; minKB: number; gzipKB: number };
+    };
+    bundleSize: (dist: string) => Size | null;
+    bundleCheck: (size: Size | null, base?: { rawKB: number; gzipKB: number }) => Check | null;
+  };
+  const nodeRequire = createRequire(import.meta.url);
+  const fs = nodeRequire('node:fs') as typeof import('node:fs');
+  const os = nodeRequire('node:os') as typeof import('node:os');
+  const path = nodeRequire('node:path') as typeof import('node:path');
+  const zlib = nodeRequire('node:zlib') as typeof import('node:zlib');
+
+  test('the baseline is the merged wave-1 main, and the warning limit is not raised', () => {
+    expect(gate.BUNDLE.warnKB).toBe(1000);
+    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1004.45, gzipKB: 311.85 });
+    expect(gate.BUNDLE.beforeWave1).toMatchObject({ rawKB: 930.89, gzipKB: 288.04 });
+    const cfg = fs.readFileSync(path.resolve(__dirname, '../vite.config.ts'), 'utf8');
+    expect(cfg).toMatch(/chunkSizeWarningLimit:\s*1000\b/);
+  });
+
+  test('a dist is measured as Vite reports it: bytes / 1000, gzip at the default level', () => {
+    const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-bundle-'));
+    try {
+      fs.mkdirSync(path.join(dist, 'assets'));
+      const code = Buffer.from('export const island = "life";\n'.repeat(4000));
+      fs.writeFileSync(path.join(dist, 'assets', 'main-Ab_c-12.js'), code);
+      fs.writeFileSync(path.join(dist, 'assets', 'three-xyz.js'), 'x');
+      const size = gate.bundleSize(dist);
+      expect(size).toEqual({
+        file: 'main-Ab_c-12.js',
+        rawKB: Math.round(code.length / 10) / 100,
+        gzipKB: Math.round(zlib.gzipSync(code).length / 10) / 100,
+      });
+      // No main chunk (or no dist at all): nothing to report.
+      fs.rmSync(path.join(dist, 'assets', 'main-Ab_c-12.js'));
+      expect(gate.bundleSize(dist)).toBeNull();
+      expect(gate.bundleSize(path.join(dist, 'missing'))).toBeNull();
+      expect(gate.bundleCheck(null)).toBeNull();
+    } finally {
+      fs.rmSync(dist, { recursive: true, force: true });
+    }
+  });
+
+  test('gzip gates at main + 50 kB; being over the warning is reported, not a fail', () => {
+    const at = (rawKB: number, gzipKB: number) =>
+      gate.bundleCheck({ file: 'main-x.js', rawKB, gzipKB }) as Check;
+    const same = at(1004.45, 311.85);
+    expect(same).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, overWarning: true, pass: true });
+    expect(same.overWarningKB).toBe(4.45);
+    expect(at(1100, 361.85).pass).toBe(true);
+    expect(at(1100, 361.86).pass).toBe(false);
+    // Under the warning again once the candidate moves out.
+    const moved = at(991.5, 307);
+    expect(moved).toMatchObject({ overWarning: false, pass: true });
+    expect(moved.deltaRawKB).toBe(-12.95);
+    // Side A of an A/B is the baseline there.
+    const ab = gate.bundleCheck(
+      { file: 'main-b.js', rawKB: 1005.55, gzipKB: 312.11 },
+      { rawKB: 1004.45, gzipKB: 311.85 },
+    ) as Check;
+    expect([ab.deltaRawKB, ab.deltaGzipKB]).toEqual([1.1, 0.26]);
+  });
+
+  test('the report names a lazy-load candidate with its measured size', () => {
+    const c = gate.BUNDLE.lazyCandidate;
+    expect(c.module).toBe('Multiplayer.ts');
+    expect(c.minKB).toBeGreaterThan(gate.BUNDLE.main.rawKB - gate.BUNDLE.warnKB);
+    expect(c.gzipKB).toBeGreaterThan(0);
+    expect(fs.existsSync(path.resolve(__dirname, '..', c.module))).toBe(true);
+  });
+});

@@ -73,6 +73,7 @@
 //   what other processes took while it ran.
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const lib = require('./ux-probes/lib.cjs');
 // The room view enters by the door with the room probes' kit and judges the
 // black interval with hitch's screencast.
@@ -1450,7 +1451,8 @@ async function modeAB(args) {
     throw e;
   }
   const browser = await lib.launch();
-  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, sameDist: srvA.dist === srvB.dist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, floorQuiet: floor ? floorQuiet(floor) : null, profiles: {}, leaks: [], signUpMissing: 0 };
+  const sizeA = bundleSize(srvA.dist);
+  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, bundle: { A: sizeA, B: bundleCheck(bundleSize(srvB.dist), sizeA || BUNDLE.main), againstMain: bundleCheck(bundleSize(srvB.dist)) }, sameDist: srvA.dist === srvB.dist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, floorQuiet: floor ? floorQuiet(floor) : null, profiles: {}, leaks: [], signUpMissing: 0 };
   if (recordFloor && !data.sameDist) throw new lib.HarnessError('--record-floor needs an A/A run: --ab <dist> <dist>');
   try {
     for (const prof of profiles) {
@@ -1588,6 +1590,59 @@ function modeRejudge(args) {
   if (data.leaks.length) v = 'fail-closed';
   data.verdict = v;
   return data;
+}
+
+/**
+ * The main chunk's size (wave-2 amendments). Wave 1 took it over Vite's
+ * 1,000 kB chunk warning (vite.config.ts chunkSizeWarningLimit, which stays
+ * where it is). kB are Vite's: bytes / 1000, gzip at zlib's default level.
+ * - main: the merged wave-1 main (8662b27), the baseline every report is
+ *   held against; beforeWave1 is main before it (d5e0e96), for the record.
+ * - gzipBudgetKB: the plan's '+50 KB transferred before the card' (the main
+ *   chunk is fetched before the card); the gating half of the check.
+ * - lazyCandidate: the largest whole module in the chunk that nothing needs
+ *   before the welcome card, measured on ux/w2-perf-gate by minifying each
+ *   module of the chunk on its own (esbuild, then gzip). GameScene.ts,
+ *   SimpleUI.ts, Island.ts and main-simple.ts are 69% of the chunk and are
+ *   not candidates as whole files. Its owner moves it in wave 3.
+ */
+const BUNDLE = {
+  warnKB: 1000,
+  main: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
+  beforeWave1: { rawKB: 930.89, gzipKB: 288.04, at: 'main before wave 1 (d5e0e96)' },
+  gzipBudgetKB: 50,
+  lazyCandidate: {
+    module: 'Multiplayer.ts',
+    minKB: 14.07,
+    gzipKB: 5.17,
+    owners: 'A imports it (main-simple.ts), B owns the file',
+    how: "main-simple.ts builds it after the world, so a dynamic import() there moves it out; Chat.ts (7.0 kB, 2.77 gzip) can follow once SimpleUI.ts stops importing Chat's VOICE_MAX_MS",
+  },
+};
+const kB = (bytes) => round(bytes / 1000, 2);
+/** A dist's main chunk: { file, rawKB, gzipKB }, or null when the dist has none (a --base run). */
+function bundleSize(dist) {
+  try {
+    const dir = path.join(dist, 'assets');
+    const file = fs.readdirSync(dir).find((f) => /^main-[\w-]+\.js$/.test(f));
+    if (!file) return null;
+    const buf = fs.readFileSync(path.join(dir, file));
+    return { file, rawKB: kB(buf.length), gzipKB: kB(zlib.gzipSync(buf).length) };
+  } catch (e) {
+    return null;
+  }
+}
+/**
+ * A main chunk against a baseline ({ rawKB, gzipKB }; BUNDLE.main unless side
+ * A of an A/B is given). pass: gzip grew by no more than gzipBudgetKB.
+ * overWarning is reported, never gating: the chunk was already over on main.
+ */
+function bundleCheck(size, base = BUNDLE.main) {
+  if (!size) return null;
+  const deltaRawKB = round(size.rawKB - base.rawKB, 2);
+  const deltaGzipKB = round(size.gzipKB - base.gzipKB, 2);
+  const overWarningKB = round(size.rawKB - BUNDLE.warnKB, 2);
+  return { ...size, base, deltaRawKB, deltaGzipKB, overWarning: overWarningKB > 0, overWarningKB, pass: deltaGzipKB <= BUNDLE.gzipBudgetKB };
 }
 
 /** A dist's entry bundle (main-<hash>.js), or its folder name when it has none. */
@@ -1905,6 +1960,16 @@ async function modeReport(args) {
     await browser.close().catch(() => {});
     await server.stop();
   }
+  // The main chunk against wave-1 main (needs a dist on disk; a --base run has none).
+  const bundle = bundleCheck(server.dist ? bundleSize(server.dist) : null);
+  data.bundle = bundle;
+  if (bundle) {
+    const m = BUNDLE.main;
+    const c = BUNDLE.lazyCandidate;
+    check(`bundle: main chunk gzip kB against main (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB }, `<= main ${m.gzipKB} + ${BUNDLE.gzipBudgetKB} (${m.at})`);
+    check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
+    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `best lazy-load candidate: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners})`, true);
+  } else check('bundle: main chunk size (report-only)', null, 'no dist on disk (a --base run)', 'reported with --dist', true);
   const gating = data.checks.filter((c) => !c.reportOnly);
   data.verdict = data.leaks.length ? 'fail-closed' : gating.some((c) => c.pass === false) ? 'fail' : data.signUpMissing ? 'inconclusive' : 'pass';
   return data;
@@ -1964,6 +2029,10 @@ function printSummary(data) {
   if (data.mode === 'rejudge' && data.source) lines.push(`  re-judged ${data.source} (it read ${data.sourceVerdict}) against ${data.floorFile}`);
   if (data.floorQuiet && data.floorQuiet.busy.length) lines.push(`  note: the floor file was recorded on a busy host (${data.floorQuiet.busy.join(', ')}: other processes over ${QUIET_OTHER_PCT}% of the machine); re-record it on a quiet one`);
   else if (data.floorQuiet && !data.floorQuiet.known) lines.push('  note: the floor file does not say how quiet the host was; re-record it with --record-floor');
+  if (data.mode === 'ab' && data.bundle && data.bundle.B) {
+    const b = data.bundle.B;
+    lines.push(`  bundle: main chunk B ${b.rawKB} kB raw, ${b.gzipKB} kB gzip; against A ${b.deltaRawKB >= 0 ? '+' : ''}${b.deltaRawKB} raw, ${b.deltaGzipKB >= 0 ? '+' : ''}${b.deltaGzipKB} gzip${b.overWarning ? `; over Vite's ${BUNDLE.warnKB} kB warning by ${b.overWarningKB}` : ''} (report-only here; --report gates gzip)`);
+  }
   if (data.mode === 'report') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
@@ -2049,4 +2118,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

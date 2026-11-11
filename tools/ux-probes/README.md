@@ -763,6 +763,41 @@ This branch, with the host 86-94% busy: 94 ms on desktop and a 200 ms frame
 on the low tier, 0 programs and the same lights on both, so the low tier
 reads inconclusive there.
 
+**Bundle check (wave-2 amendments).** Wave 1 took the main chunk over
+Vite's 1,000 kB chunk warning. The limit in `vite.config.ts` stays at 1,000.
+Every report (`perf:gate -- --dist dist --port <n>`) measures the dist's
+`assets/main-*.js` the way Vite prints it (bytes / 1000, gzip at the default
+level) against the merged wave-1 main (`BUNDLE.main`):
+
+| Build | raw kB | gzip kB |
+|---|---|---|
+| main before wave 1 (d5e0e96) | 930.89 | 288.04 |
+| wave-1 main (8662b27), the baseline | 1,004.45 | 311.85 |
+| ux/w2-perf-gate | 1,005.55 | 312.11 |
+
+One line gates: gzip no more than main + 50 kB (the plan's "+50 KB
+transferred before the card"; the chunk is fetched before the card). Raw
+size and "over the warning by N kB" are reported. `--ab` prints side B
+against side A and stores both (`bundle` in the JSON). A `--base` run has no
+dist on disk and says so.
+
+The lazy-load candidate the report names is `Multiplayer.ts`: 14.07 kB
+minified, 5.17 kB gzip, measured on this branch by minifying each module of
+the chunk on its own (esbuild) and gzipping it. It is the largest whole
+module in the chunk that nothing needs before the welcome card:
+`main-simple.ts` builds it after the world and is its only static importer,
+so a dynamic `import()` there (A; the file is B's) moves it out and leaves
+the chunk about 8 kB under the warning. `Chat.ts` (7.0 kB, 2.77 gzip) can
+follow once `SimpleUI.ts` no longer imports its `VOICE_MAX_MS`. That is all
+the headroom whole modules give: `GameScene.ts` (257 kB minified),
+`SimpleUI.ts` (202), `Island.ts` (145) and `main-simple.ts` (115) are 69% of
+the chunk, and the next whole modules that could wait are `Sfx.ts` (11.3),
+`RaceSystem.ts` (6.9), `Speech.ts` (6.6) and `DeliverySystem.ts` (5.8), each
+imported statically by `GameScene.ts` or `main-simple.ts`. `three-mesh-bvh`
+(58.7 kB minified, 42 modules) also sits in the main chunk; it is needed
+before the card, so it is not a lazy-load candidate, but
+`manualChunks` could move it beside `three`.
+
 **Nights.** `--hour 21` is the night run: every mode takes it, and the card
 time, the longest task before the card and the programs 30 s after it are
 the rows it already has. (The phase-2 plan asked for an "`--hour 21`
