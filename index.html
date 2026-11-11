@@ -728,6 +728,31 @@
           el.hidden = false;
           var ls = document.getElementById('loading-screen');
           if (ls) ls.style.display = 'none';
+          return el;
+        }
+        // A false alarm. A slow boot can pass the 60 s watchdog, or throw a
+        // stray error on the way, and still finish: the card then stayed over
+        // a working island (wave-1 integration: it covered the welcome card
+        // after __lifeIslandReady, so Explore could not be tapped). For those
+        // reasons the guard keeps looking for 5 minutes and, once the render
+        // loop runs, takes its own card down with the wording it found there.
+        // A visitor who had the loader's quick version open (#bf-back) keeps
+        // the card: its Back button leads to the island again.
+        function showUntilBoot(reason) {
+          var r = document.getElementById('bf-reason');
+          var was = r ? r.textContent : '';
+          var el = showFallback(reason);
+          if (!el) return;
+          var left = 600;
+          var iv = setInterval(function () {
+            if (--left < 0 || window.__lifeIslandBootFailed) {
+              clearInterval(iv); // no boot, or init failed for real: the card stays
+            } else if (booted()) {
+              clearInterval(iv);
+              if (r) r.textContent = was;
+              if (!document.getElementById('bf-back')) el.hidden = true;
+            }
+          }, 500);
         }
         // WebGL 2 only: three.js r163+ dropped WebGL 1, so a WebGL-1-only
         // browser used to pass this probe and then crash in the renderer. The
@@ -771,7 +796,7 @@
               booted: booted() ? 1 : 0,
             });
           }
-          if (!booted()) showFallback('but something went wrong loading it.');
+          if (!booted()) showUntilBoot('but something went wrong loading it.');
           else if (window.console) {
             // Log the stack too — a bare message ("cannot read 'dispose' of
             // undefined") is unactionable when it fires during async init.
@@ -791,15 +816,16 @@
               booted: booted() ? 1 : 0,
             });
           }
-          if (!booted()) showFallback('but something went wrong loading it.');
+          if (!booted()) showUntilBoot('but something went wrong loading it.');
         });
         // Watchdog: a silent stall (slow CDN, blocked asset) is otherwise an
         // endless spinner with no explanation.
         // Generous: a mid-range phone is several times slower than a desktop
         // through the world-generation pass, and a false "timed out" that
-        // hides a working game is far worse than a long spinner.
+        // hides a working game is far worse than a long spinner (so the card
+        // comes down again if the island does come up: showUntilBoot).
         setTimeout(function () {
-          showFallback('but it timed out while loading.');
+          showUntilBoot('but it timed out while loading.');
         }, 60000);
       })();
     </script>

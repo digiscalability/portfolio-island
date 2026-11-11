@@ -229,6 +229,136 @@ describe('the boot guard stands down once the app has put the card up', () => {
   });
 });
 
+describe('the boot guard takes a false alarm down once the island runs', () => {
+  // Wave-1 integration: on a loaded host the 60 s watchdog fired during a
+  // slow boot that then finished. #boot-fallback (z 10000) stayed over the
+  // working island and its welcome card, so Explore could not be tapped.
+  type BootWindow = Window & {
+    __lifeIslandBootFailed?: boolean;
+    __lifeIslandReady?: boolean;
+    WebGL2RenderingContext?: unknown;
+    va?: unknown;
+    vaq?: unknown[];
+  };
+  const html = src('index.html');
+  const guard = /<script>\s*([\s\S]*?)<\/script>/.exec(html)?.[1] ?? '';
+  const body = html
+    .slice(html.indexOf('<body>') + '<body>'.length, html.indexOf('</body>'))
+    .replace(/<script[\s\S]*?<\/script>/g, '');
+  const STOCK = "but it can't run in this browser.";
+  const card = (): HTMLElement => document.getElementById('boot-fallback')!;
+  const reason = (): string => document.getElementById('bf-reason')!.textContent ?? '';
+  const w = window as BootWindow;
+  let listeners: Record<string, EventListener> = {};
+
+  /** Run the page's inline guard in a browser that has WebGL 2, so it gets
+   *  past the probe and arms its error listeners and its watchdog. The
+   *  listeners are kept here, off the test window. */
+  const runGuard = (): void => {
+    vi.useFakeTimers();
+    document.body.innerHTML = body;
+    w.WebGL2RenderingContext = function WebGL2RenderingContext() {};
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      getExtension: () => null,
+    } as unknown as RenderingContext);
+    listeners = {};
+    vi.spyOn(window, 'addEventListener').mockImplementation((type, listener) => {
+      listeners[type] = listener as EventListener;
+    });
+    new Function(guard)();
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    for (const k of [
+      '__lifeIslandBootFailed',
+      '__lifeIslandReady',
+      'WebGL2RenderingContext',
+      'va',
+      'vaq',
+    ] as const) {
+      delete w[k];
+    }
+    document.body.innerHTML = '';
+  });
+
+  test('the watchdog fires at 60 s; the card comes down within 0.5 s of the boot', () => {
+    runGuard();
+    vi.advanceTimersByTime(59_900);
+    expect(card().hidden).toBe(true);
+    vi.advanceTimersByTime(200);
+    expect(card().hidden).toBe(false);
+    expect(reason()).toBe('but it timed out while loading.');
+    vi.advanceTimersByTime(20_000); // still booting: the card stays
+    expect(card().hidden).toBe(false);
+
+    w.__lifeIslandReady = true; // the render loop started after all
+    vi.advanceTimersByTime(500);
+    expect(card().hidden).toBe(true);
+    expect(reason()).toBe(STOCK); // as index.html wrote it
+    expect((w.vaq ?? []).length).toBe(1); // one boot_fallback, no second report
+    expect(vi.getTimerCount()).toBe(0); // and the guard stops looking
+  });
+
+  test('a stray error before the boot is a false alarm too', () => {
+    runGuard();
+    listeners.error(new Event('error'));
+    expect(card().hidden).toBe(false);
+    expect(reason()).toBe('but something went wrong loading it.');
+    w.__lifeIslandReady = true;
+    vi.advanceTimersByTime(500);
+    expect(card().hidden).toBe(true);
+  });
+
+  test('a visitor reading the quick version keeps the card, and its Back works again', () => {
+    runGuard();
+    // SimpleUI.openQuickVersion: its own wording and a Back button.
+    document.getElementById('bf-reason')!.textContent = 'and it is waiting behind this card.';
+    const back = document.createElement('button');
+    back.id = 'bf-back';
+    card().appendChild(back);
+    card().hidden = false;
+    vi.advanceTimersByTime(60_000);
+    expect(reason()).toBe('but it timed out while loading.');
+
+    w.__lifeIslandReady = true;
+    vi.advanceTimersByTime(500);
+    expect(card().hidden).toBe(false); // they opened it on purpose
+    expect(reason()).toBe('and it is waiting behind this card.'); // Back closes it, no reload
+  });
+
+  test('an init that failed for real keeps the card and its reason', () => {
+    runGuard();
+    vi.advanceTimersByTime(60_000);
+    w.__lifeIslandBootFailed = true; // main-simple's showErrorScreen
+    vi.advanceTimersByTime(500);
+    w.__lifeIslandReady = true; // (never both; the guard has stopped looking)
+    vi.advanceTimersByTime(5000);
+    expect(card().hidden).toBe(false);
+    expect(reason()).toBe('but it timed out while loading.');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('a lost graphics context is not a false alarm: that card stays', () => {
+    runGuard();
+    const lost = new Event('webglcontextlost');
+    document.getElementById('game-canvas')!.dispatchEvent(lost);
+    expect(card().hidden).toBe(false);
+    w.__lifeIslandReady = true;
+    vi.advanceTimersByTime(5000);
+    expect(card().hidden).toBe(false);
+    expect(reason()).toBe('but the graphics context was lost. Reloading usually fixes it.');
+  });
+
+  test('a boot that never comes: the guard stops looking after 5 minutes', () => {
+    runGuard();
+    vi.advanceTimersByTime(60_000 + 5 * 60_000 + 1000);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(card().hidden).toBe(false);
+  });
+});
+
 describe('no street address or phone number reaches a public surface', () => {
   // This file is scanned too, so no one can write a guard by pasting the value.
   test.each([...SURFACES, 'test/claimsSurfaces.test.ts'])('%s carries none', (file) => {
