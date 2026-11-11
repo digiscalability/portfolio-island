@@ -121,7 +121,7 @@ function makeContext({ name, def, args, out, server, compare, browser }) {
 
 async function main() {
   const argv = process.argv.slice(2);
-  const args = normaliseArgs(lib.parseArgs(argv, { bool: ['noKhr', 'quiet', 'help', 'bless', 'selftestLeak', 'reducedMotion', 'pauseNearDoor', 'first', 'record'] }));
+  const args = normaliseArgs(lib.parseArgs(argv, { bool: ['noKhr', 'quiet', 'help', 'bless', 'selftestLeak', 'reducedMotion', 'pauseNearDoor', 'first', 'record', 'bloom', 'sweep', 'keep', 'borrow', 'noSailor'] }));
   const reg = registry();
   const name = args._[0];
   if (!name || args.help) {

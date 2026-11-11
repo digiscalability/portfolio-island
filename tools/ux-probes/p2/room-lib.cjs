@@ -112,6 +112,7 @@ const INSTALL = () => {
           let s = 0;
           let n = 0;
           let dark = 0;
+          const rgb = [0, 0, 0];
           // regions are in top-left-origin fractions; readPixels rows are bottom-up
           for (let y = Math.floor(y0 * h); y < Math.floor(y1 * h); y += 4) {
             const row = h - 1 - y;
@@ -121,9 +122,12 @@ const INSTALL = () => {
               s += L;
               n++;
               if (L < 15) dark++;
+              rgb[0] += buf[i];
+              rgb[1] += buf[i + 1];
+              rgb[2] += buf[i + 2];
             }
           }
-          out[name] = { L: +(s / Math.max(1, n)).toFixed(1), darkPct: +((100 * dark) / Math.max(1, n)).toFixed(1) };
+          out[name] = { L: +(s / Math.max(1, n)).toFixed(1), darkPct: +((100 * dark) / Math.max(1, n)).toFixed(1), rgb: rgb.map((v) => Math.round(v / Math.max(1, n))) };
         }
         IA.pixels = out;
       } catch (e) {
@@ -250,6 +254,59 @@ const INSTALL = () => {
       const wait = () => (IA.pixels ? res(IA.pixels) : requestAnimationFrame(wait));
       requestAnimationFrame(wait);
     });
+  // The same readback from one frame drawn now (the caller may have stopped
+  // the loop to change a light for that one frame).
+  IA.lumNow = (regions) => {
+    IA.pixRegions = regions || null;
+    IA.pixels = null;
+    IA.wantPixels = true;
+    R.render();
+    return IA.pixels;
+  };
+  // Visible lights, by type, and which of them are the room's own.
+  IA.lights = () => {
+    const own = new Set([sc.interiorLamp, sc.interiorRoomLamp, sc.interiorRoomFill, sc.interiorFire].filter(Boolean));
+    const byType = {};
+    let n = 0;
+    let room = 0;
+    sc.traverseVisible((o) => {
+      if (!o.isLight) return;
+      n++;
+      byType[o.type] = (byType[o.type] || 0) + 1;
+      if (own.has(o) || (sc.interiorGroup && (() => { let p = o; while (p) { if (p === sc.interiorGroup) return true; p = p.parent; } return false; })())) room++;
+    });
+    return { n, byType, room };
+  };
+  // The window pane on screen (top-left-origin fractions), or null when out of view.
+  IA.windowRegion = () => {
+    const mat = sc.interiorWindowMat;
+    if (!mat || !sc.interiorGroup) return null;
+    const V = sc.player.position.constructor;
+    let x0 = 1, y0 = 1, x1 = 0, y1 = 0, seen = false;
+    sc.interiorGroup.traverse((m) => {
+      if (!m.isMesh || m.material !== mat || !m.geometry) return;
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox;
+      for (const x of [b.min.x, b.max.x])
+        for (const y of [b.min.y, b.max.y])
+          for (const z of [b.min.z, b.max.z]) {
+            const w = new V(x, y, z).applyMatrix4(m.matrixWorld);
+            if (w.clone().applyMatrix4(sc.camera.matrixWorldInverse).z > -sc.camera.near) continue;
+            const v = w.project(sc.camera);
+            seen = true;
+            x0 = Math.min(x0, (v.x + 1) / 2);
+            x1 = Math.max(x1, (v.x + 1) / 2);
+            y0 = Math.min(y0, (1 - v.y) / 2);
+            y1 = Math.max(y1, (1 - v.y) / 2);
+          }
+    });
+    const c = (v) => Math.max(0, Math.min(1, v));
+    if (!seen || c(x1) - c(x0) < 0.02 || c(y1) - c(y0) < 0.02) return null;
+    // Inset a little: the frame and the curtains sit at the pane's edge.
+    const ix = (c(x1) - c(x0)) * 0.2;
+    const iy = (c(y1) - c(y0)) * 0.2;
+    return [+(c(x0) + ix).toFixed(3), +(c(y0) + iy).toFixed(3), +(c(x1) - ix).toFixed(3), +(c(y1) - iy).toFixed(3)];
+  };
   const geoAny = () => {
     let g = null;
     sc.interiorGroup.traverse((o) => {

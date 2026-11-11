@@ -32,8 +32,32 @@ npm run probe -- list
 | `--double` | `guide`: inject a stand-in for A6's card that follows the guide's contract (see Stage-2 probes). |
 | `--url <url>`, `--device desk\|phone` | The phase-2 probes' spellings of `--base` and `--profile`; both work everywhere. |
 
-Phase-2 probes live in `p2/` and run by their path, `npm run probe -- p2/walkin --dist dist --port <n>`.
-They write to `tools/ux-probes/out/p2/<name>/` (git-ignored) unless `--out` is given.
+### Running a phase-2 probe
+
+Phase-2 probes live in `p2/` and run by their path, `npm run probe --
+p2/walkin --dist dist --port <n>`. They write to
+`tools/ux-probes/out/p2/<name>/` (git-ignored) unless `--out` is given.
+
+The phase-2 audits wrote their scripts with their own flag spellings, and the
+plan's items quote them. The runner takes both on every probe, stage-1 and
+stage-2 ones included:
+
+| The plan's spelling | The runner's | Notes |
+|---|---|---|
+| `--url <url>` | `--base <url>` | attach to a preview that is already up |
+| `--device desk` | `--profile desktop` | 1440x900, DPR 1 |
+| `--device phone` | `--profile phone` | 390x844, touch, DPR 2 |
+| (none) | `--profile lowtier` | the perf gate's low tier: the phone context with `?touch=1`. `landscape`, `landscape667`, `tablet` and `desktop1024` have no `--device` spelling either |
+| `p2/daycycle.cjs` | `p2/daycycle` | a probe's name is its export's name, not its file's: `p2/light.cjs` holds `p2/daycycle`, `p2/weather`, `p2/beacons`, `p2/shadowdraws` and `p2/edge-crawl`; `p2/rooms.cjs` holds `p2/room-a11y`, `p2/room-phone`, `p2/room-light`, `p2/room-rig`, `p2/avlum`, `p2/warmtest` and `p2/room-census`; `p2/guidance.cjs` holds `p2/recruiter`, `p2/npcs` and `p2/copy`; `p2/play.cjs` holds `p2/firstplay`, `p2/race` and `p2/quests`. `npm run probe -- list` prints them all |
+
+`--dist <dir> --port <n>` serves a build for the run, as for every probe.
+With neither `--profile` nor `--device` a probe runs its own default
+profiles (its row says which). The hour is pinned: the lighting and room
+probes set it through `EnvironmentCycle.debugHour`, the field `?hour=`
+itself writes, so one load covers every hour (`--hours 12,21` picks them);
+the others boot at `?hour=12` unless their row names an hour. `--compare
+<main dist> --compare-port <m>` adds the same measurement on a second build
+for `p2/daycycle` and `p2/edge-crawl`.
 
 Ports are always arguments. Suggested ranges, so parallel builders do not
 collide: E 5190-5199, A 5200-5209, B 5210-5219, D 5220-5229, C 5230-5239.
@@ -191,6 +215,12 @@ holds the hook.
 | phase 2: `__app.scene.boardVehicle(i)`, `vehicleKind(i)`, `isRidingVehicle()`, `disembarkVehicle()`, `vehicles[i].forward` | B | strafe (the vehicle chases), perf gate (P2-E3) |
 | phase 2: p2/L.cjs's mask material swap, keyed on `SkyDome`, `userData.isPavement`, `userData.isCelHull`, `island.surfaceMesh` and `island.npcTargets` | B, C | p2/L.cjs (and the lighting probes in later waves) |
 | stage 2: `#ds-guide` (`data-active`, its Skip button and resume chip), window events `ds:intro`, `ds:modal`, `ds:guide`, `ds:guide-to`, `ds:goals`, `ds:npc-speaking`, `ds:npc-typing`, `ds:coin`, `ds:settings`; `[data-guide=*]` anchors and `[data-hud=prompt]` | A, D | guide, events, fm |
+| wave 2, the renderer's levers: `__app.renderer.bloomPass` (`enabled`, `threshold`, `strength`), `setBloomEnabled(on)`, `setBloomNight(day)` (P2-E5), `shadowFrozen`; `getRenderer().shadowMap.render` (wrapped to count shadow draws), `.autoUpdate`, `.needsUpdate`; `window.__dsFx.halfShadow` and `.bloomNight` | E | perf gate (`--fx`, whole frames), p2/shadowdraws, p2/daycycle `--bloom`, p2/beacons, camera |
+| wave 2, light: `getEnvironmentCycle().setWeather(kind)`, `getWeather()`; the key light (the `DirectionalLight` with `castShadow`: its `shadow.intensity`, `shadow.mapSize`, position and target); `userData.isNightEmissive` on windows, sconces, bulbs and beacons; a zone's `marker.getObjectByName('zone-beacon')`; `Island.MAX_DISPLACEMENT`, `island.reliefScale`, `isOverWater(dir)`, `analyticSurface(dir)` (the beach-band and highland-shoulder masks follow Island's own dark-zone rule) | C, B | p2/L.cjs, p2/daycycle, p2/weather, p2/beacons, p2/edge-crawl, lum |
+| wave 2, rooms: `scene.toggleInteriorFixture('lamp' \| 'curtains')`, `interiorLamp`, `interiorRoomLamp`, `interiorRoomFill`, `interiorFire` (the room's own lights), `interiorWindowMat` (the pane), `partyProps.group`, `interiorSets`, `warmInterior()` (wrapped by p2/warmtest before it first runs), `player.waveTime`; the 74 px JUMP and WAVE discs and the 💬 and 🎤 buttons | B, D | p2/room-light, p2/room-rig, p2/room-census, p2/warmtest, p2/room-a11y, p2/room-phone |
+| wave 2, vehicles and races: `scene.vehicles[i]` (`dir`, `forward`, `radius`, `normal`, `group`, `occupied`), `getRaceStartPosition(kind)`, `races.circuits[kind].dirs` and `.surfaceR`, `races.state`, `races.nextIdx`; `ui.raceDiv` | B, D | perf gate (the vehicle view), p2/race |
+| wave 2, villagers and copy: `scene.getNpcActivity(name)`, `npcTargets[i].dialogue`, `__app.talkVillager(current)` (who First steps names; null skips the step), `__app.constructor.LESSONS`, `ui.touchifyPlain(text)`, `ui.npcChatBadge`, the chat's `[role=log]`, its `input` and any button a reply adds, `ui.completionBtn`, `ui.showJournal()`, `multiplayer.selfName` | A, B, D | p2/npcs, p2/copy, p2/firstplay, p2/quests, p2/race |
+| wave 2, intro and camera: `ui.fadeThrough(cb)`, the app loader (the overlay child holding `#ld-bar`), `button[data-tour]`, `__app.endTour()`, `getOrbitCamera().collisionMeshes`, `.raycaster`, `.minDistance` (written first to force the distance under 2 u) | A, D | intro, camera |
 
 The probes write only through the same hooks (a teleport, a camera pose, a
 clock hour, a panel close), and only inside their own browser context.
@@ -435,6 +465,46 @@ same two dists, 2026-11-04).
 PNG reader is playwright-core's), `p2/play-lib.cjs` (the gameplay kit) and
 `p2/guide-lib.cjs` (the guidance kit: readout, the compass follower, the
 villager walk, the timeline) are libraries, not probes.
+
+### Phase-2 probes, wave 2: rooms and light (P2-E1b)
+
+The audits' own scripts were session temp files, and they were gone by wave
+2. These probes are rebuilt from the audit reports
+(`docs/history/2026-11-03-ux-audit/phase2/building.json` and
+`lighting,.json`): the same views, hours, poses and masks, checked against
+the numbers the audits recorded on 58c8849 (in brackets below where the
+report gives one). Baselines: 2026-11-11 and 12, the same rig and the same
+two dists as wave 1 (58c8849, and wave-1 main 8662b27 as built in `w1-int`),
+with four other builders on the machine, so counts and L\* hold and
+milliseconds are provisional. Every run: 0 leaks, a boot proof in every
+session, the port free afterwards. Each row exits 1 on both builds unless
+it says otherwise: they have none of wave 2's fixes.
+
+| Probe | Item | What it measures | 58c8849 | wave-1 main |
+|---|---|---|---|---|
+| `p2/daycycle` | LT-01, LT-02, LT-05, LT-06; P2-C1, C1, C5, P2-B4, P2-B5 | exact per-pixel masks (`p2/L.cjs`): ground, path, player, villager, sky and sea L\* at 8 views (hub-wide, spawn, the four districts, the beach band, the highland shoulder) x 8 hours (0, 6, 9, 10.5, 12, 15, 18, 21; `--hours`, `--views`) on desktop and the phone, with the key light's elevation over the player's own horizon and its shadow strength. The terrain is split by Island's dark-zone rule into beach band (`dir.y < sin 0.32`), highland shoulder and the rest; "ground" in a check is the whole terrain. `--compare <main dist>`: noon hub ground within ±1.2 of main, beach band and highland at 21 h within +3, the 21 h sky within ±2. The frames for 6, 12, 18 and 21 h at the hub, the beach and the highland are kept (`--keep` keeps all) | hub ground by hour on desktop 15.9 / 22.6 / 57.3 / 57.2 / 57.3 / 56.9 / 22.8 / 16.7 (the audit: 16.9 / 25.8 / 57.4 / 58.8 / 57.5 / 58.3 / 23.2 / 16.9; 06 h rides the moon's phase); at 10.5 h Professional 40.9 under a 5.7° sun at shadow strength 0.337, Projects 49.1, Personal 53.4, Contact 41.2 (40.8, 49.1, 53.2, 41.0): Professional is 16.3 L\* below the hub, Contact 21.8 below on the phone; the lowest sun −8.1° (Contact, 9 h); 21 h player median 4.4, p90 9.6; sky to ground 11.3:1 at 6 h; the phone's sky 57.5 at noon and 2.4 at 21 h against desktop's 75.6 and 13.5 (18.8 apart at 6 h); beach band 12.2 and highland 14.3 at 21 h | the same light: hub 14.9 / 21.4 / 57.2 / 57.3 / 57.3 / 56.9 / 21.7 / 14.8; Professional 40.8 (16.5 below the hub; the phone's Contact 21.9 below); 21 h player median 4.7, p90 8.2; sky to ground 12.4:1 at 6 h; the phone's sky 19.2 below desktop's at 6 h; beach band 10.8, highland 14.3 at 21 h |
+| `p2/daycycle --bloom` | P2-E5 | desktop, one frozen frame (the loop stopped) at 12 and 21 h, at Professional and the hub, under today's bloom, the decided night threshold (the build's own `setBloomNight` where it has one; else the probe writes the curve's value, and the check names which) and the bloom pass off: ground, player, bulb (the `isNightEmissive` meshes) and halo (within 6 px of a bulb) L\*. `--sweep` adds thresholds 0.90 and 0.95 | 21 h, Professional: today's bloom against bloom-off lifts the ground +3.8 L\*, the player +17.6, the halo +32.3 and the bulbs +2.6; at 1.0 (written by the probe) all four are +0.0, and already at 0.95; at the hub ground +0.2, halo +11.5, bulbs +1.1, and 0.0 at 1.0. Noon: 0.0 at every threshold. Exits 1 on the bulb bar | 21 h, Professional: ground +3.3, player +17.3, halo +21.7, bulbs +3.6 under today's bloom; at 0.95 still +1.1, +12.2, +14.7, +1.9; at 1.0 all +0.0; at the hub ground 0.0, halo +11.7, bulbs +1.0, gone by 0.95. Noon: 0.0. Exits 1 on the bulb bar. This branch (P2-E5, the build's own `setBloomNight`): +2.9, +17.7, +27.5, +2.8 today and 0.0 at 1.0 |
+| `p2/weather` | LT-08, P2-B5 | noon, hub-wide, in clear, cloudy, rain and snow (`EnvironmentCycle.setWeather`): ground L\*, the sun's intensity and shadow strength, and the shadow's contrast on the ground (1 − Y as rendered / Y with the key's shadows off, the median over the pixels the shadow darkens) | ground 57.4 / 48.3 / 44.1 / 49.8 (57.5 / 48.3 / 44.2 / 50.4), the sun 1.6 / 0.88 / 0.56 / 0.8, shadow strength 1 in all four; contrast 0.32 clear, 0.33 in rain: 1.02x | the same ground and sun; contrast 0.30 clear, 0.32 in rain: 1.05x |
+| `p2/beacons` | LT-09, P2-C5 | each district beacon at 12 and 21 h: the material's emissive and intensity, the rendered beacon's hue (its own pixels, by a one-mesh mask) against the district colour, and on desktop the 8 px around it with the bloom pass on and off | intensity 0.15 at 12 h and 1.3 at 21 h; at 21 h the emissive reads #a0aa4d, #9798d2, #ff9925, #f05d5b, #c15f9a (the audit's five) and the rendered hue is off by 55° (Welcome), 33° (Professional), 20° (Personal), 30° (Contact), 6.5° (Projects); at noon all five are within 5.2° | the same: 54°, 31°, 20°, 29°, 6.3° at 21 h; within 3° at noon |
+| `p2/shadowdraws` | LT-08, E2 | desktop and the low tier: shadow draws per pass (counted where `WebGLShadowMap.render` adds them) and passes per 60 frames at the spawn, hub-wide and Projects at 12 h and the spawn at 21 h; then W held 2 s on the frozen 1/60 s sim: the contact shadow's offset from the feet, which is how far the player walked since the last pass | 95 at the spawn and hub-wide, 122.5-124 at Projects, 134-135 at 21 h (the audit: 94-95, 145-148 at its Projects view); a pass every frame on both tiers; offset 0 | 96, 96, 118-124, 138; a pass every frame on both tiers; offset 0. This branch (E2): the low tier 30 passes in 60 frames, 48 draws a frame, offset 0.093 u at 5.6 u/s; desktop unchanged; exits 0 |
+| `p2/edge-crawl` | LT-01, P2-C1 (new: the phase-2 critique asked for it) | desktop, a fixed camera 16 u over the path, the sim frozen at 1/60 s, hour 10: the L\* of shadow-edge pixels frame to frame (edges: where the key's shadow darkens the frame by 15-85% of the full step), on the edges that held still while the player stood 1.5 s (a swaying tree's shadow is not crawl), over the lower 90% of those pixels (a villager's shadow crossing moves a few of them a lot); standing 1 s, then W for 3 s. `--compare <main dist>`: within 10% of main, or 0.01 L\* | walking 0.0027 L\* a frame against 0.0013 standing: crawl 0.0014, on 1,592 static edge pixels of 3,189 (all edge pixels, untrimmed: 0.086 walking, 0.013 standing: the villagers' shadows). Exits 0: it has no bar without `--compare` | 0.0000 walking and standing on 6,346 static edge pixels of 6,897 (untrimmed 0.0020 and 0.0018). Exits 0 |
+| `p2/room-a11y` | INT-03, INT-07, INT-11; P2-A1, P2-D2 | desktop keyboard: E 0.7 s after entering a cottage; out by the door; in the Professional hall W for 1 s and E behind its panel, a 16-stop Tab walk, Escape once; Leave as a control (tag, name, tabIndex), Tab to it within 3 presses, its box against every visible HUD element, a live region naming the room, axe; a 60 s listener (`--listen`) for outdoor hints and the compass pill; Escape again; Q inside against a wave after the exit | E puts the visitor back outside; W behind the panel walks 1.94 u; Leave is a DIV, tabIndex −1, never reached by Tab, over the Day chip (60x22) and the minimap (86x9); no live region; the compass pill on screen in 113 of 113 samples; a second Escape does nothing; Q waves after the exit; axe 0 | E keeps the visitor inside and W behind the panel moves 0 u (wave 1); Leave, Tab, the overlaps, the compass pill (112 of 112) and the second Escape as on 58c8849; no live region names the room; Q does not carry over |
+| `p2/room-phone` | INT-12, INT-03; P2-A1, P2-D2 | phone, a cottage by the joystick and USE: a USE tap 0.6 s after entry; which touch controls stay (USE, the joystick, 💬, 🎤, JUMP, WAVE, the drawer toggle, Leave); Leave as a 44 px target and against the HUD; the joystick indoors; out by a tap on Leave | the USE tap puts the visitor outside; JUMP and WAVE stay on screen; Leave is 86x39, over the Day chip and the minimap; the joystick walks 2.5 u in 1.2 s | the USE tap keeps the visitor inside; the rest as on 58c8849 (2.4 u) |
+| `p2/room-light` | INT-09, LT-04; P2-B9 | a cottage and the Professional hall at 12, 21 and 22 h (`--hours`), both tiers, the back-wall pose: room L\* with the lamp on and off, the back wall's R/B, visible lights indoors against outdoors; the front pose: the window pane's L\* (its own screen box) and the curtains | the lamp off against on changes the room by −0.7 L\* at 12 h and −1.0 at 21 h in the cottage, −0.7 and −0.9 in the hall (the audit: about −1); phone −1.2 to −1.6; lamp on, 21 h against 12 h: −13.3 (43.7 → 30.4) in the cottage and −14.7 (42.5 → 27.8) in the hall; lights indoors against outdoors 9 against 5 at 12 h and 21 against 17 at 21 and 22 h; the window pane 51.2 at 12 h and 15.5 at 22 h; the back wall's R/B 1.43 at 22 h | the same room: lamp −0.7 and −0.9 in both (phone −1.1 to −1.4); −13.0 and −14.7 from 12 to 21 h; lights 9 against 5 at every hour (wave 1 took the porch and lighthouse lights out); the pane 51.3 and 14.3; R/B 1.42 |
+| `p2/room-rig` | LT-04; P2-B9 | the five halls at 12 and 21 h, both tiers: room L\*, the same frame with the outdoor rig dark (what the frozen sun, hemisphere, fill and rim add through the walls), visible lights and programs inside. `--borrow`: the frame with the room's own lights dark instead (the room on the outdoor rig alone) | desktop halls 42.3-45.4 at 12 h and 27.6-31.1 at 21 h, 13.8-14.7 apart (the audit: 42.3-50.4 and 29.2-31.8); the outdoor rig adds 16.0-17.9 L\* at noon (16.2) and 2.4-3.2 at 21 h; lights 9 indoors against 5 by day, 21 against 17 at night; programs inside 215-218 by day and 269-275 at 21 h (phone 148-156 and 231-245) | the same L\* (13.7-14.7 apart); lights 9 against 5 at both hours; programs 135-141 (phone 77-84) |
+| `p2/avlum` | INT-09; P2-B9 | a cottage at 12 and 22 h, both tiers, the back-wall pose, by mask: the avatar's L\* against the band of room right beside it (a fifth of its height wide) | the avatar 32.8 against 44.6 at noon and 16.0 against 30.4 at 22 h (−14.4); phone 14.2 against 29.8 (the audit: the core at 14-15, against a darker surround of 19-23 by its own box) | 32.5 against 44.7, and 15.0 against 30.9 at 22 h (−15.9); phone 13.5 against 29.8 |
+| `p2/warmtest` | LT-04; P2-B9 | cold, a fresh browser per hour (12 and 21) and tier: `scene.warmInterior` is wrapped before it first runs, the app's own idle warm is waited for (the probe calls it after 12 s if it has not come): programs added, and the longest long task, long animation frame or frame gap in its window | desktop +96 programs (119 → 215, the audit's numbers) and a 2,420 ms task at 12 h, +155 and 4,831 ms at 21 h (the audit: 1.66-1.80 s and 3.55 s on a quiet host); phone +59 and 580 ms, +73 and 945 ms | +23 programs on desktop at both hours, the longest task 70 and 0 ms; phone +21, 50 and 140 ms (the warm starts with the card there) |
+| `p2/room-census` | INT-06; P2-B10 | the room sets by material: lit materials off the toon model outside the window pane, the posters and the party props; ink hulls per set (wanted on desktop, none on the low tier); shadow casters | 7 sets; every lit material is MeshStandard: the shell 78 of 80 meshes, office 18, workshop 19, home 19 of 20, post 16, hall 17, beach 18 of 29, cottage 29 of 30 (the audit's set sizes); 0 ink hulls, 0 casters on both tiers | the same |
+
+**What the bloom rows show.** At 21 h, Professional, today's bloom lifts the
+ground, the player and the halo by 3-4, 17-18 and 22-32 L\* over bloom-off. At the decided
+threshold of 1.0 all three equal bloom-off, and so do the bulbs: the plan's
+third bar (bulb pixels 5 L\* above bloom-off) is not met on any build, and no
+threshold meets it. The windows' own pixels gain 1-3 L\* even under today's
+bloom, the haze is their glow, and nothing in either view is brighter than
+1.0 at 21 h. A glow on the bulbs alone needs the bulbs (not the windows)
+driven past the threshold, which is `EnvironmentCycle`'s emissive drive
+(C's), or a different bar.
 
 ## Perf gate
 
