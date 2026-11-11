@@ -73,7 +73,8 @@ export class OrbitCamera {
   // turned the view at ~145°/s and walked the avatar round in a circle.
   // Now a sideways or backward step leaves the camera be; motion away from
   // it is followed through a smoothstep gate, at most 1.2 rad/s on foot and
-  // 2.4 rad/s riding.
+  // 2.4 rad/s riding. Under reduced motion the same gate holds at a gentler
+  // cap: 0.59 rad/s on foot (the recentre's own rate), 0.6 riding.
   private static readonly FOLLOW_CAP_FOOT = 1.2; // rad/s
   private static readonly FOLLOW_CAP_RIDE = 2.4; // rad/s
   private static readonly FOLLOW_CAP_RIDE_REDUCED = 0.6; // rad/s
@@ -85,13 +86,18 @@ export class OrbitCamera {
   private followHold = 0;
   private static readonly TURN_HOLD_S = 0.35;
   private static readonly TURN_HOLD_ANGLE = Math.PI / 4;
-  // Reduced motion never follows on foot; once the visitor has stood still
-  // for 0.5 s, the camera recentres behind their facing at under 34°/s, once
-  // per stop (a manual look cancels it).
+  // Reduced motion: once the visitor has stood still for 0.5 s, the camera
+  // recentres behind their facing at under 34°/s, once per stop (a manual
+  // look cancels it). On foot it also follows motion AWAY from the camera,
+  // through the same gate as everyone's, no faster than that recentre
+  // (CO-A2). With no follow at all, W plus a side key walked a straight
+  // diagonal: a keyboard visitor steering by the compass arrow walked away
+  // from the target (measured: 103 m out to 211 m), with J/L the only turn.
   private sinceMoveInput = Number.POSITIVE_INFINITY;
   private reducedRecentrePending = false;
   private static readonly REDUCED_IDLE_S = 0.5;
   private static readonly REDUCED_RECENTRE_RATE = 0.59; // rad/s
+  private static readonly FOLLOW_CAP_FOOT_REDUCED = OrbitCamera.REDUCED_RECENTRE_RATE;
   // A frame the world takes no input (holdMoveInput) is not a still frame:
   // the movement tracker and the recentre sit it out. `moveHeld` is the
   // request, `inputHeld` what this update() read from it.
@@ -606,10 +612,10 @@ export class OrbitCamera {
    * How hard the camera swings behind motion that is `away` (0..1) from it:
    * the follow strength (1.8× riding) through smoothstep(0.35, 0.9, away),
    * times the manual-look hold. Zero while the input direction has just
-   * turned, and on foot under reduced motion.
+   * turned. Reduced motion keeps the gate and slows the turn instead
+   * (turnFollowToward's cap): a strafe (away near 0) still turns nothing.
    */
   private followStrengthFor(away: number): number {
-    if (a11y.reducedMotion && !this.rideMode) return 0;
     if (this.followHold > 0) return 0;
     const t = Math.min(1, Math.max(0, (away - 0.35) / (0.9 - 0.35)));
     const gate = t * t * (3 - 2 * t);
@@ -620,7 +626,8 @@ export class OrbitCamera {
   /**
    * Turn followDir toward `desired` about `n` by min(angle·(1 − e^(−strength·dt)),
    * cap·dt): the old lerp-and-normalize, with its angular speed capped at
-   * 1.2 rad/s on foot, 2.4 riding (0.6 riding under reduced motion).
+   * 1.2 rad/s on foot, 2.4 riding (0.59 on foot and 0.6 riding under reduced
+   * motion).
    */
   private turnFollowToward(
     desired: THREE.Vector3,
@@ -630,11 +637,13 @@ export class OrbitCamera {
   ): void {
     const fd = this.followDir;
     if (!fd) return;
-    const cap = !this.rideMode
-      ? OrbitCamera.FOLLOW_CAP_FOOT
-      : a11y.reducedMotion
+    const cap = a11y.reducedMotion
+      ? this.rideMode
         ? OrbitCamera.FOLLOW_CAP_RIDE_REDUCED
-        : OrbitCamera.FOLLOW_CAP_RIDE;
+        : OrbitCamera.FOLLOW_CAP_FOOT_REDUCED
+      : this.rideMode
+        ? OrbitCamera.FOLLOW_CAP_RIDE
+        : OrbitCamera.FOLLOW_CAP_FOOT;
     const angle = Math.atan2(this._followCross.copy(fd).cross(desired).dot(n), fd.dot(desired));
     const step = Math.min(Math.abs(angle) * (1 - Math.exp(-strength * dt)), cap * dt);
     if (step > 0) {

@@ -363,7 +363,95 @@ describe('strafing walks a straight line (A5)', () => {
   });
 });
 
-describe('reduced motion: no follow on foot, a calm recentre once still (A5)', () => {
+/**
+ * Walk by CAMERA-RELATIVE input for `seconds`, as main-simple does: forward
+ * is where the camera looks, so a turning camera turns the walk with it.
+ * Returns the fastest follow turn seen, rad/s. The player stays at the pole
+ * (velocity only), which keeps the tangent plane exactly XZ.
+ */
+const steer = (
+  cam: OrbitCamera,
+  camera: THREE.PerspectiveCamera,
+  player: FakePlayer,
+  input: [number, number],
+  seconds: number,
+): number => {
+  let prev = followDirOf(cam).clone();
+  let fastest = 0;
+  for (let t = 0; t < seconds - 1e-9; t += 1 / 60) {
+    const f = camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize();
+    const right = new THREE.Vector3(-f.z, 0, f.x);
+    const dir = f.multiplyScalar(input[0]).addScaledVector(right, input[1]).normalize();
+    player.vel.copy(dir).multiplyScalar(5.6);
+    player.facing.copy(dir);
+    cam.setMoveInput(input[0], input[1]);
+    cam.update(1 / 60);
+    fastest = Math.max(fastest, prev.angleTo(followDirOf(cam)) * 60);
+    prev = followDirOf(cam).clone();
+  }
+  return fastest;
+};
+
+describe('reduced motion: a gentle follow on foot, a calm recentre once still (A5, CO-A2)', () => {
+  test('W+A held 3 s: the camera comes round behind the walk, never faster than 0.59 rad/s', () => {
+    // With no follow at all (stage 1), W plus a side key walked a straight
+    // diagonal: a keyboard visitor steering by the compass arrow walked away
+    // from the target (103 m out to 211 m in the reduced-motion follow probe).
+    a11y.reducedMotion = true;
+    const { camera, player, cam } = rig();
+    const f0 = followDirOf(cam).clone();
+    const fastest = steer(cam, camera, player, [1, -1], 3);
+    expect(fastest).toBeLessThanOrEqual(0.59 + 1e-6);
+    // and it does turn: most of 3 s x 0.59 rad/s = 101°, to the walk's side
+    const turned = followYaw(f0, followDirOf(cam));
+    expect(Math.abs(turned)).toBeGreaterThan(60);
+    expect(Math.abs(turned)).toBeLessThanOrEqual(0.59 * 3 * DEG + 0.1);
+    // W+A walks north-west from a camera to the south: the spot behind the
+    // walk is south-east, so the follow direction swings from +Z toward +X
+    // (positive about +Y), and the view turns left with the walk
+    expect(turned).toBeGreaterThan(0);
+  });
+
+  test('the same walk without reduced motion turns at up to 1.2 rad/s', () => {
+    const { camera, player, cam } = rig();
+    const fastest = steer(cam, camera, player, [1, -1], 3);
+    expect(fastest).toBeGreaterThan(0.59 + 0.2);
+    expect(fastest).toBeLessThanOrEqual(1.2 + 1e-6);
+  });
+
+  test('D alone turns under 3°/s; S (toward the camera) turns nothing', () => {
+    for (const input of [
+      [0, 1],
+      [-1, 0],
+    ] as Array<[number, number]>) {
+      a11y.reducedMotion = true;
+      const { camera, player, cam } = rig();
+      const f0 = followDirOf(cam).clone();
+      steer(cam, camera, player, input, 2);
+      expect(Math.abs(followYaw(f0, followDirOf(cam))) / 2, `input ${input}`).toBeLessThan(3);
+    }
+  });
+
+  test('straight away (W) holds the camera where it is: nothing to follow', () => {
+    a11y.reducedMotion = true;
+    const { camera, player, cam } = rig();
+    const f0 = followDirOf(cam).clone();
+    expect(steer(cam, camera, player, [1, 0], 2)).toBeLessThan(1e-6);
+    expect(followDirOf(cam).angleTo(f0) * DEG).toBeLessThan(0.01);
+  });
+
+  test('a manual look still holds the follow off for 1.0 s', () => {
+    a11y.reducedMotion = true;
+    const { camera, player, cam } = rig();
+    cam.setInput(0.2, 0);
+    run(cam, 0.3, 1 / 60); // the look lands
+    const looked = followDirOf(cam).clone();
+    steer(cam, camera, player, [1, -1], 0.6); // inside the hold
+    expect(followDirOf(cam).angleTo(looked) * DEG).toBeLessThan(0.01);
+    steer(cam, camera, player, [1, -1], 2); // hold and ramp over
+    expect(followDirOf(cam).angleTo(looked) * DEG).toBeGreaterThan(5);
+  });
+
   test('moving: under 5°/s; stopped 0.5 s: recentres behind the facing at ≤ 34°/s', () => {
     a11y.reducedMotion = true;
     const { player, cam } = rig();
