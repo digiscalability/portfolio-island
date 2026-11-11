@@ -895,6 +895,12 @@ export class OrbitCamera {
     return this.yawTarget;
   }
 
+  /** The intro fly-in owns the camera: main-simple starts no heavy work
+   *  (the phone room warm) until it lands. */
+  public isFlyingIn(): boolean {
+    return this.flyingIn;
+  }
+
   /**
    * Turn to this manual yaw at once (same units as getYaw), e.g.
    * setYaw(getYaw() + Math.PI / 12) for 15° to the left: the probes' way to

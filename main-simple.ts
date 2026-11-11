@@ -5,12 +5,25 @@ import { a11y } from './Accessibility';
 import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
 import { setInkVisible } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
-import { compassBearing } from './Compass';
+import { compassBearing, compassTarget, nearestWithHysteresis, type CompassState } from './Compass';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
+import { fx } from './FxBudget';
 import { GameScene } from './GameScene';
+import {
+  Guide,
+  guideCopy,
+  readGuideTo,
+  resolveGuideKey,
+  type GuideArm,
+  type GuideButton,
+  type GuideFrame,
+  type GuideStore,
+  type GuideWorld,
+} from './Guide';
+import { GuideCard } from './GuideCard';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
@@ -113,8 +126,12 @@ interface TourStop {
  * - Setup input handling
  * - Start render loop
  * - Handle cleanup
+ *
+ * Exported for test/interiorEntry.test.ts, which drives single methods on a
+ * stub. Importing this module still boots the app unless
+ * window.__lifeIslandBooted is already set (see bootApp below).
  */
-class SimpleApp {
+export class SimpleApp {
   private renderer!: SimpleRenderer;
   private scene!: GameScene;
   private inputManager!: SimpleInputManager;
@@ -131,12 +148,36 @@ class SimpleApp {
   // "Meet the AI townsfolk" compass override (welcome CTA → cleared on AI chat)
   private aiGuideTarget: THREE.Vector3 | null = null;
   // Island-map pick: explicit user intent, outranks every other compass
-  // source; cleared on arrival (<6u) or a fresh pick.
+  // source; cleared on arrival or a fresh pick (see updateQuestCompass).
   private mapGuideTarget: THREE.Vector3 | null = null;
   /** Whatever the compass pill currently points at — the island map halos it
    *  so the two wayfinding surfaces visibly agree. */
   private lastCompassTarget: THREE.Vector3 | null = null;
   private mapGuideLabel = '';
+  /** The pill's label this frame, '' when it is hidden. A probe hook: the
+   *  phone pill shows only the label's first word. */
+  public compassLabel = '';
+  /** A district pick ends at that district's door, not 6 u short of it. */
+  private mapGuideZone: string | null = null;
+  /** After any map-pick arrival the pill holds on the reached spot for 8 s. */
+  private arrivalHold: { pos: THREE.Vector3; label: string; until: number } | null = null;
+  /** The zone whose door prompt is up this frame (set where it is shown). */
+  private doorPromptZone: string | null = null;
+  /** The villager the first-visit coins lead to, chosen once at afterIntro
+   *  (A7). Null: no awake AI villager within 30 u. */
+  private trailVillager: string | null = null;
+  /** The trail branch is over for this visit: the visitor reached or talked
+   *  to the villager, stamped a district or picked a place, even with coins
+   *  still down (a missed coin must not pull the pill back to spawn). */
+  private trailDone = false;
+  /** The district the pill is on: it switches only when another is 12 u closer. */
+  private compassDistrict: string | null = null;
+  /** A parcel was collected this session: deliveries may take the pill. */
+  private deliveryOptIn = false;
+  /** Passport stamps seen, for the "Next:" flash after stamps 1-3. */
+  private stampsSeen = -1;
+  private pendingNextFlash = false;
+  private readonly districtDists: Array<{ id: string; dist: number }> = [];
   // "Beat the lap record" CTA → compass points at the start gate until a race starts
   private raceGuideTarget: THREE.Vector3 | null = null;
 
@@ -170,6 +211,35 @@ class SimpleApp {
   // keeps the pill fresh without touching storage every frame)
   private completionAccum = 0;
   private lostAccum = 0; // in-world seconds, for the lost-visitor recovery hint
+
+  /** A coarse pointer (phones, tablets): the rooms warm early (CO-A5). */
+  private readonly coarsePointer =
+    typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  private roomsWarmStarted = false;
+  /**
+   * CO-A5. At 4x CPU the idle warm's 9 s ceiling fires 6-7 s late on a busy
+   * thread, and a door entered in that gap compiled under the veil: +13-15
+   * programs, a 370-1110 ms frame and 0.83-1.50 s of black. On a coarse
+   * pointer the warm starts at afterIntro, while the welcome card is up, or
+   * at the first walk input after the fly-in, whichever comes first. Never
+   * during the fly-in. Bound once: it is a setTimeout callback.
+   */
+  private readonly warmRoomsEarly = (): void => {
+    if (this.roomsWarmStarted || !this.coarsePointer) return;
+    this.roomsWarmStarted = true;
+    void this.scene.warmInterior();
+  };
+  /**
+   * The 9 s idle ceiling, on every device. Once the early warm has started
+   * it stands down: warmInterior would return at once (it is idempotent),
+   * but a second, empty warm call still reads as a warm to the hitch probe,
+   * which then blames the warm for an unrelated frame after it.
+   */
+  private readonly warmRoomsIdle = (): void => {
+    if (this.roomsWarmStarted) return;
+    this.roomsWarmStarted = true;
+    void this.scene.warmInterior();
+  };
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
@@ -378,6 +448,9 @@ class SimpleApp {
     mutePointerDown?: (event: PointerEvent) => void;
     mutePointerUp?: (event: PointerEvent) => void;
     popState?: () => void;
+    guideTo?: (event: Event) => void;
+    guideWelcomeClick?: (event: Event) => void;
+    guideWelcomeKey?: (event: KeyboardEvent) => void;
   } = {};
 
   constructor() {
@@ -486,6 +559,13 @@ class SimpleApp {
       performance.measure('scene_ready', 'boot:worldgen-start', 'boot:scene-ready');
       this.ui.showLoading(90);
       console.log('✓ Scene initialized and ready');
+      // The villagers' seats as the world was built, before the first frame
+      // walks anyone: the arrival trail was laid toward one of them, and the
+      // pill points there while its coins are down (A7). npcTargets[].position
+      // follows the villager from the first frame on.
+      for (const t of this.scene.getIsland().npcTargets ?? []) {
+        if (!this.npcSeats.has(t.name)) this.npcSeats.set(t.name, t.position.clone());
+      }
 
       // Initialize delivery system
       this.deliverySystem = new DeliverySystem();
@@ -520,6 +600,9 @@ class SimpleApp {
       // Pickup ding + analytics on every completed delivery
       this.deliverySystem.setOnDeliveryComplete((d) => {
         sfx.collect();
+        // The visitor chose the courier chain: from now on the pill may point
+        // at parcels (after the districts, compassTarget's branch 7).
+        this.deliveryOptIn = true;
         track('delivery_completed', {
           id: d.id,
           count: this.deliverySystem.getCompletedCount(),
@@ -651,6 +734,13 @@ class SimpleApp {
       // Expandable island map: tap the radar (or press M) for the full map.
       this.ui.setOnMinimapClick(() => this.openIslandMap());
       this.ui.setOnOpenMap(() => this.openIslandMap());
+      // One 'Show me' seam (P2-A5): any surface names a place by key and the
+      // compass points there, exactly as an island-map pick does.
+      this.boundHandlers.guideTo = (e: Event) => {
+        const req = readGuideTo((e as CustomEvent).detail);
+        if (req) this.guideTo(req.key, req.label, req.source);
+      };
+      window.addEventListener('ds:guide-to', this.boundHandlers.guideTo);
       this.ui.setVoiceSupported(this.chat.voiceSupported);
       this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
@@ -665,6 +755,9 @@ class SimpleApp {
       this.passport = new Passport();
       this.passport.setOnComplete(() => this.grantPassportReward());
       this.ui.setPassport(this.passport);
+      // First steps (A6): the guide and its card, armed later by the welcome
+      // card, the full tour or a CTA panel closing.
+      this.setupGuide();
 
       // Roster: click the online-count to see who's here and mute per peer.
       this.ui.setRosterProvider(() => this.multiplayer?.getPeerList() ?? []);
@@ -721,6 +814,7 @@ class SimpleApp {
         // to free-text chat below.
         const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
         if (talk) {
+          this.guide?.complete('talk');
           this.ui.showDialogue(npcData.name, talk.lines);
           this.beginNpcDialogue(npcData.name);
           if (talk.accepted) {
@@ -755,6 +849,7 @@ class SimpleApp {
         if (isAiNpc(npcData.name)) {
           this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
           this.markDone('ds_npc_chatted');
+          this.guide?.complete('talk');
           sfx.blip();
           const canned = npcData.dialogue;
           let ci = 1; // first fallback skips the opening line (canned[0])
@@ -908,9 +1003,7 @@ class SimpleApp {
           if (ledger.streak >= 2) {
             window.setTimeout(
               () =>
-                this.ui.toast(`📅 Day ${ledger.streak} in a row — the island kept a light on.`, {
-                  hint: true,
-                }),
+                this.hintLater(`📅 Day ${ledger.streak} in a row — the island kept a light on.`),
               6000,
             );
           }
@@ -938,6 +1031,9 @@ class SimpleApp {
         // was collected mid fly-in and the coin tip became the first text a
         // visitor read, ahead of the pitch and the compass hint. The key is
         // not burned until the tip can actually show.
+        this.guide?.coin();
+        // While the guide holds hints the tip waits for a later coin (A6).
+        if (this.guideHoldsHints()) return;
         try {
           const welcomePending = !this.introSettled || this.ui.isWelcomeVisible();
           if (!welcomePending && !localStorage.getItem('ds_hint_earn')) {
@@ -955,8 +1051,20 @@ class SimpleApp {
       this.scene.setOnArrivalTrail(() => {
         this.markDone('ds_arrived');
         // Hand off to the NEXT thing, not a dead-end congratulation — the
-        // old copy celebrated and left the visitor standing there.
-        this.ui.flashMessage('🏝️ You’ve got the hang of it — follow the ➤ arrow to 🚀 Projects.');
+        // old copy celebrated and left the visitor standing there. While
+        // First steps runs, the guide owns the next step: the trail ends at
+        // its talk villager, so a flash sending the visitor to Projects
+        // landed on the look or talk card, or over the villager's chat. Else
+        // a hint toast (D6 holds it behind panels), naming no place the pill
+        // might not show.
+        if (!this.guideHoldsHints()) {
+          this.ui.toast(
+            '🏝️ You’ve got the hang of it — the gold ➤ up top points to your next stop.',
+            {
+              hint: true,
+            },
+          );
+        }
         sfx.questComplete();
         trackOnce('arrival_trail_done');
       });
@@ -1409,9 +1517,7 @@ class SimpleApp {
               // gazebo request on a small plot back to the plot default, and
               // the toast must name what actually appeared.
               const kindName = GameScene.resolveKind(b.plot, b.kind) ?? 'structure';
-              this.ui.toast(`🔨 A visitor just raised a ${kindName} — it's on your map.`, {
-                hint: true,
-              });
+              this.hintLater(`🔨 A visitor just raised a ${kindName} — it's on your map.`);
             }
           },
           (r) => {
@@ -1428,9 +1534,8 @@ class SimpleApp {
           try {
             const seen = parseInt(localStorage.getItem('ds_seen_builds') ?? '0', 10) || 0;
             if (totalBuilds > seen && seen > 0) {
-              this.ui.toast(
+              this.hintLater(
                 `🏘️ Visitors raised ${totalBuilds - seen} structure${totalBuilds - seen > 1 ? 's' : ''} while you were away.`,
-                { hint: true },
               );
             }
             localStorage.setItem('ds_seen_builds', String(totalBuilds));
@@ -1452,6 +1557,9 @@ class SimpleApp {
       // asked only when a social feature actually needs a name (ensureNamed).
       const afterIntro = () => {
         this.introSettled = true; // the welcome card (if any) opens below
+        // The intro is over (A8): D holds its toasts and staggers the HUD in
+        // on this. Exactly one settled per load, after exactly one start.
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'settled' } }));
         // The governor starts measuring only NOW. The fly-in is the single
         // heaviest, least representative view in the game (whole planet in
         // frustum, intro-lite quality), and with the governor's clocks on true
@@ -1462,6 +1570,11 @@ class SimpleApp {
         // is somehow never reached, the governor self-arms after 10s of
         // visible wall time (see SimpleRenderer.armGovernor).
         this.renderer.armGovernor();
+        // The trail villager is chosen once, here, so the pill names them from
+        // behind the card on; phones end the intro facing them (A7), with the
+        // coins that lead there on screen.
+        this.trailVillager = this.pickTrailVillager();
+        this.faceTrailVillager();
         let saved: string | null = null;
         try {
           saved = localStorage.getItem('ds_player_name');
@@ -1481,6 +1594,11 @@ class SimpleApp {
         } else if (this.applyRaceChallengeParam(sp)) {
           /* challenge accepted — guided straight to the start line */
         } else if (!this.openDeepLinkZone()) this.ui.showWelcome(this.buildAwayDelta());
+        // Phones warm the rooms while the card is up (CO-A5). The fly-in is
+        // over, so the intro stays light; one task later, so the warm's
+        // synchronous room build never joins the boot block (reduced motion
+        // reaches here before the first frame).
+        window.setTimeout(this.warmRoomsEarly, 0);
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -1497,6 +1615,7 @@ class SimpleApp {
         // distant planet that never came in, and it never self-corrected
         // (update() lerps distance toward distanceTarget, not the whole pose).
         // snapToPlayer is the exact init flyInFromDistant ends on.
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene.getOrbitCamera().snapToPlayer();
         afterIntro();
       } else {
@@ -1615,6 +1734,7 @@ class SimpleApp {
         // levers were restored before the visitor saw the swoop: the
         // intro-lite never engaged.
         requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500));
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
@@ -1667,7 +1787,9 @@ class SimpleApp {
       // otherwise built and compiled on the frame the player first presses E.
       // Warm it in idle time instead. Scheduled last: music and profile sync
       // both surface sooner. See GameScene.warmInterior for the measurements.
-      this.idleDefer(() => void this.scene.warmInterior(), 9000);
+      // This stays the ceiling on every device; phones start sooner, at
+      // afterIntro (warmRoomsEarly), and then the ceiling stands down.
+      this.idleDefer(this.warmRoomsIdle, 9000);
       // (Vercel Analytics inject() moved to module top — pre-boot pageviews.)
 
       // Browsers create AudioContexts suspended until a user gesture; nothing
@@ -2162,10 +2284,19 @@ class SimpleApp {
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
       this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
-      if (isZone && zone) {
-        this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
-      }
+      // Leave FIRST, and the panel in its own try. The fourth passport stamp
+      // lands inside showZonePanel and its celebration used to sweep the hall
+      // panel mid-build, so the panel threw (INT-02); fadeThrough's catch
+      // swallowed it and this line never ran. The visitor stood in the room
+      // with no Leave and no panel. Whatever a panel does, the way out exists.
       this.ui.showLeaveButton(() => this.exitBuilding(isZone));
+      if (isZone && zone) {
+        try {
+          this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
+        } catch (e) {
+          console.warn('Zone panel failed inside the building:', e);
+        }
+      }
     });
   }
 
@@ -2327,6 +2458,9 @@ class SimpleApp {
   private update(deltaTime: number): void {
     // Update FPS counter
     this.updateFPS(deltaTime);
+    // Re-set by the free-walk branch only while a district's door prompt shows.
+    this.doorPromptZone = null;
+    this.guideMoveMag = 0; // free walk sets it below
 
     // Juice kernel: advance all micro-tweens (hat pops, squash-stretch,
     // pickup ceremonies). Here, not GameScene.update — this always runs
@@ -2345,6 +2479,11 @@ class SimpleApp {
       this.completionAccum = 0;
       this.refreshCompletion();
       this.sweepSecrets();
+      // main-simple's own hints held while the guide ran (A6) go out now.
+      if (this.heldHints.length && !this.guideHoldsHints()) {
+        for (const m of this.heldHints.splice(0)) this.ui.toast(m, { hint: true });
+      }
+      const hintsHeld = this.guideHoldsHints();
       // DISTRICT-ENTRY CARDS: one toast, once ever per district, at the
       // boundary (dot > 0.90 = inside the accent tint, same threshold the
       // terrain colouring uses). The crossing was silent — the ground tint
@@ -2354,7 +2493,12 @@ class SimpleApp {
         // hasTrailCoins guard: minute one's toast budget belongs to the
         // orientation + talk hints — district cards start after the arrival
         // trail is done.
-        if (!this.ui.isWelcomeVisible() && !this.tour && !this.scene.hasTrailCoins()) {
+        if (
+          !hintsHeld &&
+          !this.ui.isWelcomeVisible() &&
+          !this.tour &&
+          !this.scene.hasTrailCoins()
+        ) {
           const p = this.scene.getPlayer()?.getWorldPosition();
           if (p) {
             const len = p.length() || 1;
@@ -2396,22 +2540,24 @@ class SimpleApp {
       try {
         if (
           this.lostAccum > 60 &&
+          !hintsHeld &&
           !this.tour &&
           !localStorage.getItem('ds_hint_map') &&
           !this.ui.hasSeenInteractionPrompt() &&
           (this.passport?.count() ?? 0) === 0
         ) {
           localStorage.setItem('ds_hint_map', '1');
-          this.ui.toast(
-            this.ui.isTouchDevice()
-              ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the ➤ compass guides you.'
-              : '🗺️ Lost? Tap the radar (or press M) for the island map — pick a spot and the ➤ compass guides you.',
-            { hint: true },
-          );
+          this.showLostHint();
         }
       } catch {
         /* no storage */
       }
+      // ...and the stall trigger beside it (A8): no stamp yet and under 10 u
+      // travelled in the last 30 s of free roam, at most twice a visit; a
+      // panel, the guide, a tour or a room restarts the window. The once-ever
+      // clause above needs a minute with no prompt at all; an idle visitor
+      // heard nothing for 54-59 s.
+      this.checkLostStall(hintsHeld);
       // One-time "a villager nearby talks through Claude Haiku 4.5" discovery
       // hint, fired while APPROACHING (4x the E-prompt range, derived not
       // hand-written) — the product's differentiator otherwise only announces
@@ -2422,6 +2568,7 @@ class SimpleApp {
       try {
         if (
           !localStorage.getItem('ds_hint_talk') &&
+          !hintsHeld &&
           !this.ui.isWelcomeVisible() &&
           !this.tour &&
           this.aiVillagerWithin(4 * this.scene.getInteractionRange())
@@ -2603,6 +2750,16 @@ class SimpleApp {
         const joy = this.ui.getJoystick();
         const walkForward = Math.max(-1, Math.min(1, moveInput.forward + joy.forward));
         const walkStrafe = Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe));
+        this.guideMoveMag = Math.hypot(walkForward, walkStrafe);
+        // CO-A5: a phone's first steps after the fly-in start the room warm
+        // too, if afterIntro has not already.
+        if (
+          !this.roomsWarmStarted &&
+          (walkForward !== 0 || walkStrafe !== 0) &&
+          !this.scene.getOrbitCamera().isFlyingIn()
+        ) {
+          this.warmRoomsEarly();
+        }
         this.scene.setPlayerMovement(walkForward, walkStrafe);
         // The chase camera reads the input direction too: it holds its follow
         // when the direction swings, and under reduced motion recentres once
@@ -3141,6 +3298,8 @@ class SimpleApp {
             text = '💡 Press <strong>E</strong> to toggle the lamp';
           } else if (nearby.type === 'zone') {
             text = `🚪 Press <strong>E</strong> to enter ${esc(nearby.zone.name)}`;
+            // A district map pick has arrived once this prompt is up.
+            this.doorPromptZone = String(nearby.zone.id);
           } else if (nearby.type === 'house_door') {
             text = '🚪 Press <strong>E</strong> to enter';
           } else if (nearby.type === 'npc') {
@@ -3237,6 +3396,11 @@ class SimpleApp {
 
     // Quest compass: point at the active delivery's mailbox
     this.updateQuestCompass();
+    // First steps (A6): one bound tick, timed under FxBudget's 'guide'.
+    if (this.guide && fx.on('guide')) {
+      this.guideDt = deltaTime;
+      fx.time('guide', this.boundGuideTick);
+    }
 
     // Minimap: player + NPCs + plazas + delivery target + online peers
     // (throttled to 10 Hz). Peers come from Multiplayer (GameScene stays
@@ -3427,9 +3591,10 @@ class SimpleApp {
   }
 
   /**
-   * Compute the bearing from the camera's forward direction to the active
-   * delivery target (both projected onto the player's tangent plane) and
-   * feed it to the HUD compass. Hidden when the chain is complete.
+   * Point the HUD compass at ONE target, in Compass.compassTarget's order
+   * (A7 with P2-A3), and feed it the bearing from the camera's forward
+   * direction, both projected onto the player's tangent plane. Hidden when
+   * nothing is left to point at.
    */
   private updateQuestCompass(): void {
     const player = this.scene.getPlayer();
@@ -3441,45 +3606,147 @@ class SimpleApp {
     // pattern kept the scratch but still paid the allocation each frame.
     const playerPos = player.getWorldPositionInto(this._qcPlayerPos);
     const normal = player.getSurfaceNormalInto(this._qcNormal);
+    const now = performance.now();
 
-    // PORTFOLIO first for new visitors: until the first district is stamped,
-    // the compass guides to the nearest unstamped zone even while the
-    // auto-active delivery chain runs (it used to read "📬 Delivery" from the
-    // very first frame, steering every new visitor to a mini-game before
-    // they'd seen a single piece of Abbas's work). After the first stamp,
-    // active deliveries take priority as before.
+    // Map-pick arrival. A district pick ends at its door: its door prompt is
+    // up, or the visitor is within 3.2 u (the old 6 u let go before the
+    // prompt's 3.4 u, and the pill swung to a mailbox on the plaza). Any
+    // other pick ends at 6 u. Either way the pill holds on the spot for 8 s,
+    // and a district's hold still names it, as its door prompt does.
+    if (this.mapGuideTarget) {
+      const d = playerPos.distanceTo(this.mapGuideTarget);
+      const zone = this.mapGuideZone;
+      if (zone !== null ? this.doorPromptZone === zone || d < 3.2 : d < 6) {
+        const name = DISTRICTS.find((x) => x.id === zone)?.name;
+        const verb = this.ui.isTouchDevice() ? '🚪 Tap USE to enter' : '🚪 Press E to enter';
+        const enter = name ? `${verb} ${name}` : verb;
+        this.arrivalHold = {
+          pos: this.mapGuideTarget,
+          label: zone !== null ? enter : '✓ Here',
+          until: now + 8000,
+        };
+        this.mapGuideTarget = null;
+        this.mapGuideZone = null;
+        this.ui.toast('🧭 You have arrived.');
+      }
+    }
+    if (this.arrivalHold && (now > this.arrivalHold.until || this.scene.isInsideInterior())) {
+      this.arrivalHold = null;
+    }
+
+    const passport = this.passport;
+    const projects = this.zonePos('projects');
+    const district = this.nearestDistrict(playerPos);
     const active = this.deliverySystem?.getActiveDeliveries?.() ?? [];
     const delivery = active.length > 0 ? active[0] : null;
-    const zone = this.nearestUnstampedZone(playerPos);
-    const portfolioFirst = (this.passport?.count() ?? 0) === 0;
-    // Map-pick arrival check: the guide fulfils itself.
-    if (this.mapGuideTarget && playerPos.distanceTo(this.mapGuideTarget) < 6) {
-      this.mapGuideTarget = null;
-      this.ui.toast('🧭 You have arrived.');
+    if ((passport?.count() ?? 0) > 0) this.trailDone = true;
+    // The pill points where the coins lead, the villager's seat, so the two
+    // never fork when the villager has wandered a few steps. Within 4 u of
+    // the seat (or once any conversation opens) the trail has done its job;
+    // a villager who wanders up to a visitor standing still does not end it.
+    let trailPos =
+      this.trailVillager && !this.trailDone && this.scene.hasTrailCoins()
+        ? this.trailSeat(this.trailVillager)
+        : null;
+    // A villager who has gone to bed ends the trail: nobody is at the seat.
+    if (trailPos && this.trailVillager && !this.villagerUp(this.trailVillager)) {
+      this.trailDone = true;
+      trailPos = null;
     }
+    if (trailPos && playerPos.distanceTo(trailPos) < SimpleApp.TRAIL_REACHED_U) {
+      this.trailDone = true; // arrived: the next target takes over
+      trailPos = null;
+    }
+    // Until the visitor has talked to them, the pill names the villager First
+    // steps sends them to, where they stand now: a reload has no trail coins,
+    // and the trail ends at its seat before a word is said, so the card said
+    // "Walk up to Mayor" over a pill on Projects. Until the first stamp, as
+    // the trail.
+    const talkWho =
+      !trailPos && (passport?.count() ?? 0) === 0 ? (this.guide?.talkTargetNow() ?? null) : null;
+    const talkPos = talkWho ? this.scene.getNpcPosition(talkWho) : null;
+    const st = this._compassState;
+    st.mapPick = this.mapGuideTarget !== null;
+    st.arrivalHold = this.arrivalHold !== null;
+    st.raceGuide = this.raceGuideTarget !== null;
+    st.aiGuide = this.aiGuideTarget !== null;
+    st.trailVillager = trailPos !== null;
+    st.talkStep = talkPos !== null;
+    st.projectsUnstamped = !!passport && !!projects && !passport.has('projects');
+    st.districtUnstamped = district !== null;
+    st.parcelActive = !!delivery?.destination;
+    st.passportComplete = passport?.isComplete() ?? false;
+    st.deliveryOptIn = this.deliveryOptIn;
     let targetPos: THREE.Vector3 | null = null;
     let label = '';
-    if (this.mapGuideTarget) {
-      // Island-map pick — explicit intent, outranks everything until reached.
-      targetPos = this.mapGuideTarget;
-      label = this.mapGuideLabel;
-    } else if (this.aiGuideTarget) {
-      // "Meet the AI townsfolk" welcome CTA — outranks everything until the
-      // visitor talks to an AI NPC (cleared in the chat-open branch).
-      targetPos = this.aiGuideTarget;
-      label = '🤖 The Storyteller';
-    } else if (this.raceGuideTarget) {
-      // "Beat the lap record" CTA — explicit intent, cleared when a race starts.
-      targetPos = this.raceGuideTarget;
-      label = '🏁 Race start';
-    } else if (zone && (portfolioFirst || !delivery?.destination)) {
-      targetPos = zone.pos;
-      label = `${PASSPORT_META[zone.id].icon} ${PASSPORT_META[zone.id].label}`;
-    } else if (delivery?.destination) {
-      targetPos = delivery.destination.mesh.position;
-      label = '📬 Delivery';
+    switch (compassTarget(st)) {
+      case 'map':
+        // Island-map pick or a 'ds:guide-to' key: explicit intent, until reached.
+        targetPos = this.mapGuideTarget;
+        label = this.mapGuideLabel;
+        break;
+      case 'hold':
+        targetPos = this.arrivalHold?.pos ?? null;
+        label = this.arrivalHold?.label ?? '';
+        break;
+      case 'race':
+        // "Beat the lap record" CTA, cleared when a race starts.
+        targetPos = this.raceGuideTarget;
+        label = '🏁 Race start';
+        break;
+      case 'ai':
+        // "Ask the townsfolk": cleared once the visitor talks to an AI villager.
+        targetPos = this.aiGuideTarget;
+        label = '🤖 The Storyteller';
+        break;
+      case 'trail':
+        // The villager the first-visit coins lead to, by name.
+        targetPos = trailPos;
+        label = this.trailVillager ?? '';
+        break;
+      case 'talk':
+        // The villager First steps sends them to, wherever they have wandered.
+        targetPos = talkPos;
+        label = talkWho ?? '';
+        break;
+      case 'projects':
+        targetPos = projects;
+        label = `${PASSPORT_META.projects.icon} ${PASSPORT_META.projects.label}`;
+        break;
+      case 'district':
+        targetPos = district ? this.zonePos(district) : null;
+        label = district ? this.districtLabel(district) : '';
+        break;
+      case 'parcel':
+        // Its own glyph: 📬 means the Contact district only.
+        targetPos = delivery?.destination?.mesh.position ?? null;
+        label = '📦 Parcel';
+        break;
     }
     this.lastCompassTarget = targetPos ?? null;
+    this.compassLabel = targetPos ? label : '';
+
+    // After each of stamps 1-3, once, outside and with no panel up: where next.
+    const stamps = passport?.count() ?? 0;
+    if (this.stampsSeen < 0) this.stampsSeen = stamps;
+    else if (stamps > this.stampsSeen) {
+      this.stampsSeen = stamps;
+      if (stamps <= 3) this.pendingNextFlash = true;
+    }
+    if (
+      this.pendingNextFlash &&
+      targetPos &&
+      (st.projectsUnstamped || st.districtUnstamped) &&
+      !this.scene.isInsideInterior() &&
+      !this.ui.panels.isOpen()
+    ) {
+      this.pendingNextFlash = false;
+      const next = st.projectsUnstamped
+        ? `${PASSPORT_META.projects.icon} ${PASSPORT_META.projects.label}`
+        : this.districtLabel(district ?? '');
+      this.ui.flashMessage(`Next: ${next} — the gold arrow points the way.`);
+    }
+
     if (!targetPos) {
       this.ui.updateQuestCompass(null);
       this.scene.setGuideTarget(null);
@@ -3489,10 +3756,11 @@ class SimpleApp {
     // Feed the in-world breadcrumb trail the same target as the HUD compass —
     // EXCEPT while the first-visit arrival coins are still down: two golden
     // trails pointing different ways is a fork, not a path. The coins lead to
-    // the nearest villager (where the talk hint fires), the completion flash
-    // hands off to the ➤ arrow, and THEN the sparkles resume toward Projects
-    // — a chain. Target-based suppression (null), never visibility-based:
-    // reduced-motion users keep their breadcrumbs by design.
+    // the nearest villager (where the talk hint fires), the completion hint
+    // (or First steps' talk step) hands off to the ➤ arrow, and THEN the
+    // sparkles resume toward the pill's target — a chain. Target-based
+    // suppression (null), never visibility-based: reduced-motion users keep
+    // their breadcrumbs by design.
     this.scene.setGuideTarget(this.scene.hasTrailCoins() ? null : targetPos);
 
     // Bearing vectors projected onto the player's tangent plane (reused scratch).
@@ -3530,31 +3798,599 @@ class SimpleApp {
     });
   }
 
+  /** Reused by updateQuestCompass every frame (no allocation). */
+  private readonly _compassState: CompassState = {
+    mapPick: false,
+    arrivalHold: false,
+    raceGuide: false,
+    aiGuide: false,
+    trailVillager: false,
+    talkStep: false,
+    projectsUnstamped: false,
+    districtUnstamped: false,
+    parcelActive: false,
+    passportComplete: false,
+    deliveryOptIn: false,
+  };
+
+  /** The districts' door positions, read once: zones never move, and
+   *  Zone.getPosition() clones on every call. */
+  private zoneList: Array<{ id: string; pos: THREE.Vector3 }> | null = null;
+  private zonePos(id: string): THREE.Vector3 | null {
+    if (!this.zoneList) {
+      this.zoneList = this.scene
+        .getZonesManager()
+        .getZones()
+        .map((z) => ({ id: String(z.id), pos: z.getPosition() }));
+    }
+    for (const z of this.zoneList) if (z.id === id) return z.pos;
+    return null;
+  }
+
   /**
-   * Nearest passport zone the visitor hasn't stamped yet, for the compass
-   * guide-me fallback. Returns null once the passport is complete (compass off)
-   * or before the passport exists. Only the four stamp zones count \u2014 the pole
+   * The unstamped district the pill points at (compassTarget's branch 7):
+   * the nearest, but the current one is kept until another is 12 u closer.
+   * Null once the passport is complete. Only the four stamp zones count; the
    * Welcome hub is the intro, not a destination.
    */
+  private nearestDistrict(playerPos: THREE.Vector3): string | null {
+    const passport = this.passport;
+    if (!passport || passport.isComplete()) {
+      this.compassDistrict = null;
+      return null;
+    }
+    this.zonePos('projects'); // fills zoneList
+    const pool = this.districtDists;
+    let n = 0;
+    for (const z of this.zoneList ?? []) {
+      if (!passport.isStampZone(z.id) || passport.has(z.id)) continue;
+      const c = pool[n] ?? (pool[n] = { id: z.id, dist: 0 });
+      c.id = z.id;
+      c.dist = playerPos.distanceTo(z.pos);
+      n++;
+    }
+    pool.length = n;
+    this.compassDistrict = nearestWithHysteresis(this.compassDistrict, pool);
+    return this.compassDistrict;
+  }
+
+  private districtLabel(id: string): string {
+    const meta = (PASSPORT_META as Record<string, { icon: string; label: string }>)[id];
+    return meta ? `${meta.icon} ${meta.label}` : id;
+  }
+
+  /** How near an awake AI villager must stand to be the trail villager. */
+  private static readonly TRAIL_VILLAGER_RANGE = 30;
+  /** Within this of the trail villager, the trail has done its job. */
+  private static readonly TRAIL_REACHED_U = 4;
+
+  /**
+   * compassTarget's branch 4: the villager the first-visit coins lead to.
+   * That is the trail's own villager (GameScene names it once B10 exposes
+   * getTrailVillager; until then the same seat search createArrivalTrail
+   * makes) when it is an awake AI villager within 30 u. Otherwise the
+   * nearest awake AI villager within 30 u, and with none the branch is
+   * skipped. Reads positions only: no draw from any random stream.
+   */
+  private pickTrailVillager(): string | null {
+    const player = this.scene.getPlayer();
+    if (!player) return null;
+    const p = player.getWorldPosition();
+    const targets = this.scene.getIsland().npcTargets;
+    const range = SimpleApp.TRAIL_VILLAGER_RANGE;
+    const awakeNear = (name: string): number | null => {
+      if (!isAiNpc(name)) return null;
+      const t = targets.find((x) => x.name === name);
+      if (!t || !t.meshRef.visible || this.scene.getNpcActivity(name) === 'sleep') return null;
+      const d = t.meshRef.position.distanceTo(p);
+      return d <= range ? d : null;
+    };
+    const named =
+      (this.scene as unknown as { getTrailVillager?: () => string | null }).getTrailVillager?.() ??
+      this.trailSeatVillager();
+    if (named && awakeNear(named) !== null) return named;
+    let best: string | null = null;
+    let bestD = Infinity;
+    for (const name of Object.keys(AI_NPCS)) {
+      const d = awakeNear(name);
+      if (d !== null && d < bestD) {
+        bestD = d;
+        best = name;
+      }
+    }
+    return best;
+  }
+
+  /** In the world and not headed for bed: the sleep goal walks a villager
+   *  home under an "asleep" tag, then hides them inside. Villagers get their
+   *  first goal seconds after the intro, so the pick above cannot know. */
+  private villagerUp(name: string): boolean {
+    const t = this.scene.getIsland().npcTargets.find((x) => x.name === name);
+    return !!t && t.meshRef.visible && this.scene.getNpcActivity(name) !== 'sleep';
+  }
+
+  /**
+   * Who First steps sends the visitor to talk to (Guide's talkTarget): the
+   * trail villager while they are up. Once they have gone to bed, the
+   * stand-in the guide names already, while that one is up; else the nearest
+   * awake villager who talks, within 30 u; with none, null, and the talk step
+   * is skipped. At night the card and the pill used to name a villager whose
+   * tag read "asleep" on the walk home.
+   */
+  private talkVillager(current: string | null): string | null {
+    const trail = this.trailVillager;
+    if (trail && this.villagerUp(trail)) return trail;
+    if (current && this.villagerUp(current)) return current;
+    const near = this.guideWorld.nearestAiVillager();
+    const p = this.scene.getPlayer()?.getWorldPosition();
+    if (!near || !p) return null;
+    const d = Math.hypot(near.pos.x - p.x, near.pos.y - p.y, near.pos.z - p.z);
+    return d <= SimpleApp.TRAIL_VILLAGER_RANGE ? near.name : null;
+  }
+
+  /** Each villager's seat as the world was built (filled once, after
+   *  scene.ready): where the arrival trail was laid toward. */
+  private readonly npcSeats = new Map<string, THREE.Vector3>();
+  private trailSeat(name: string): THREE.Vector3 | null {
+    return this.npcSeats.get(name) ?? null;
+  }
+
+  /** createArrivalTrail's search, on the same build-time seats: the seat
+   *  nearest the spawn direction, beyond 0.04 rad, among the AI villagers
+   *  (B10's rule). */
+  private trailSeatVillager(): string | null {
+    const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // the player spawn
+    const dir = new THREE.Vector3();
+    let best = Infinity;
+    let who: string | null = null;
+    for (const [name, seat] of this.npcSeats) {
+      if (!isAiNpc(name)) continue;
+      const d = dir.copy(seat).normalize().angleTo(spawnDir);
+      if (d > 0.04 && d < best) {
+        best = d;
+        who = name;
+      }
+    }
+    return who;
+  }
+
+  /** How far right of dead ahead phones see the trail's end at Explore. */
+  private static readonly TRAIL_VIEW_OFFSET = (20 * Math.PI) / 180;
+
+  /**
+   * Phones end the intro facing the trail villager, so the coins that lead
+   * to them are on screen (A7): the view turns to the villager's seat, the
+   * end of the trail, then 20° past it. Dead ahead, the trail ran straight
+   * away from the camera through the avatar, whose body hid every coin
+   * (measured at 390x844: 0 of 4 seen; at 20°, the coins clear the avatar
+   * and the villager stays on screen). OrbitCamera.setYaw hard-cuts, like
+   * snapToPlayer; a positive bearing is a target on the right, and a
+   * positive yaw turns the view left, so the view turns by −bearing, plus
+   * the offset to put the seat on the right.
+   */
+  private faceTrailVillager(): void {
+    if (!this.coarsePointer) return;
+    const name = this.trailVillager;
+    const npc = name ? (this.trailSeat(name) ?? this.scene.getNpcPosition(name)) : null;
+    const player = this.scene.getPlayer();
+    if (!npc || !player) return;
+    const cam = this.scene.getOrbitCamera();
+    const p = player.getWorldPositionInto(this._qcPlayerPos);
+    const n = player.getSurfaceNormalInto(this._qcNormal);
+    const to = this.projectTangent(this._qcToTarget, this._qcTmp.copy(npc).sub(p), n);
+    const fwd = this.projectTangent(this._qcCamFwd, cam.getForwardDirection(), n);
+    if (to.lengthSq() < 1e-6 || fwd.lengthSq() < 1e-6) return;
+    const bearing = compassBearing(fwd.normalize(), to.normalize(), n);
+    cam.setYaw(cam.getYaw() - bearing + SimpleApp.TRAIL_VIEW_OFFSET);
+  }
+
+  /** The 30 s travel window for the stall trigger: one sample per 2.5 s. */
+  private readonly lostTrail: THREE.Vector3[] = [];
+  private lostStallHints = 0;
+  private static readonly LOST_STALL_SAMPLES = 12; // 12 x 2.5 s = 30 s
+  private static readonly LOST_STALL_U = 10;
+  private static readonly LOST_STALL_MAX = 2;
+
+  /** The lost-visitor hint, one line for both triggers. */
+  private showLostHint(): void {
+    this.ui.toast(
+      this.ui.isTouchDevice()
+        ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the gold arrow guides you.'
+        : '🗺️ Lost? Click the radar or press M for the island map — pick a spot and the gold arrow guides you.',
+      { hint: true },
+    );
+  }
+
+  /**
+   * The stall trigger, sampled on the 2.5 s cadence: under 10 u travelled
+   * in the last 30 s of free roam, with no passport stamp. Fires at most
+   * twice a visit, and the window starts over after it fires.
+   *
+   * Only free-roam time counts. Anything that holds the visitor clears the
+   * window, which starts over when it lets go: any panel (the menu, a hall
+   * panel, the hire card, NPC chat, a quest dialogue), the guide holding
+   * hints, a tour, a room, a line in the water or a bench. Checking those
+   * only at the instant of firing let a visitor who read a panel for 30 s
+   * hear 'Lost?' the moment they closed it.
+   */
+  private checkLostStall(hintsHeld: boolean): void {
+    const trail = this.lostTrail;
+    const p = this.scene.getPlayer()?.getWorldPosition();
+    const freeRoam =
+      !!p &&
+      !hintsHeld &&
+      !this.ui.isWelcomeVisible() &&
+      !this.ui.isLoadingVisible() &&
+      !this.ui.panels.isOpen() &&
+      !this.tour &&
+      !this.scene.isInsideInterior() &&
+      !this.scene.isFishingActive() &&
+      !this.scene.isPlayerSeated();
+    if (!freeRoam || this.lostStallHints >= SimpleApp.LOST_STALL_MAX) {
+      trail.length = 0;
+      return;
+    }
+    trail.push(p);
+    if (trail.length > SimpleApp.LOST_STALL_SAMPLES + 1) trail.shift();
+    if (trail.length <= SimpleApp.LOST_STALL_SAMPLES) return;
+    let travelled = 0;
+    for (let i = 1; i < trail.length; i++) travelled += trail[i].distanceTo(trail[i - 1]);
+    if (travelled >= SimpleApp.LOST_STALL_U || (this.passport?.count() ?? 0) > 0) return;
+    this.lostStallHints++;
+    trail.length = 0;
+    try {
+      localStorage.setItem('ds_hint_map', '1'); // the same hint: the once-ever clause stands down
+    } catch {
+      /* no storage */
+    }
+    this.showLostHint();
+  }
+
+  /** Point the pill at a picked place: top of the chain until it is reached. */
+  private setMapPick(pos: THREE.Vector3, label: string, zone: string | null): void {
+    this.mapGuideTarget = pos;
+    this.mapGuideLabel = label;
+    this.mapGuideZone = zone;
+    this.arrivalHold = null;
+    this.trailDone = true; // the visitor chose a place: the trail is not called back
+  }
+
+  /**
+   * The world as the 'Show me' resolver sees it (Guide.resolveGuideKey): the
+   * same getters openIslandMap builds its POIs from.
+   */
+  private readonly guideWorld: GuideWorld = {
+    zone: (id) => this.zonePos(id),
+    school: () => this.scene.schoolPos(),
+    kiosk: () => this.scene.kioskPos(),
+    bank: () => this.scene.bankPos(),
+    // The fisherman's jetty: where a line can be cast.
+    shore: () => this.scene.fishermanPos(),
+    carpenter: () => this.scene.carpenterRackPos(),
+    farm: () => this.scene.farmPos(),
+    raceStart: (kind) => this.scene.getRaceStartPosition(kind),
+    nextMailbox: () =>
+      this.deliverySystem?.getActiveDeliveries?.()?.[0]?.destination?.mesh.position ?? null,
+    nearestStake: () => {
+      const p = this.scene.getPlayer()?.getWorldPosition();
+      let best: THREE.Vector3 | null = null;
+      let bestD = Infinity;
+      for (const f of this.scene.freePlotSummary()) {
+        if (f.kind === 'bench') continue;
+        const d = p ? f.pos.distanceTo(p) : 0;
+        if (d < bestD) {
+          bestD = d;
+          best = f.pos;
+        }
+      }
+      return best;
+    },
+    nearestAiVillager: () => {
+      const p = this.scene.getPlayer()?.getWorldPosition();
+      let best: { name: string; pos: THREE.Vector3 } | null = null;
+      let bestD = Infinity;
+      for (const t of this.scene.getIsland().npcTargets) {
+        if (!isAiNpc(t.name) || !t.meshRef.visible) continue;
+        if (this.scene.getNpcActivity(t.name) === 'sleep') continue;
+        const d = p ? t.meshRef.position.distanceTo(p) : 0;
+        if (d < bestD) {
+          bestD = d;
+          best = { name: t.name, pos: t.meshRef.position };
+        }
+      }
+      return best;
+    },
+    beachHouse: () =>
+      this.scene.getIsland().houseDoors.find((d) => d.id === 'islet_beach_house')?.position ?? null,
+  };
+
+  /**
+   * Point the compass at a place named by key (P2-A5's 'ds:guide-to' seam),
+   * exactly as an island-map pick does: top of the chain, under the arrival
+   * rule (a district ends at its door), with the 'Compass set' toast. An
+   * unknown key opens the island map instead, so a 'Show me' never dead-ends.
+   */
+  private guideTo(key: string, label: string | null, source: string): void {
+    const hit = resolveGuideKey(key, this.guideWorld);
+    if (!hit) {
+      this.openIslandMap();
+      return;
+    }
+    const shown = label ?? `${hit.icon} ${hit.label}`;
+    this.setMapPick(new THREE.Vector3(hit.pos.x, hit.pos.y, hit.pos.z), shown, hit.zone);
+    this.ui.toast(`🧭 Compass set: ${shown}`);
+    track('map_guide_set', { label: label ?? hit.label, source });
+  }
+
+  // ── First steps (A6) ─────────────────────────────────────────────────
+  private guide: Guide | null = null;
+  private guideCard: GuideCard | null = null;
+  private guideDt = 0;
+  /** This frame's walk input (keyboard plus joystick); 0 outside free walk. */
+  private guideMoveMag = 0;
+  private guidePromptT = 0;
+  /** See the work / Get in touch closed the card: arm when the panel goes. */
+  private guideArmOnPanelsClosed = false;
+  private guidePrevValid = false;
+  private readonly _guidePos = new THREE.Vector3();
+  private readonly _guidePrev = new THREE.Vector3();
+  private readonly _guideFrame: GuideFrame = {
+    dt: 0,
+    blocked: false,
+    top: null,
+    moveMag: 0,
+    walked: 0,
+    yaw: 0,
+    targetDist: null,
+  };
+  /** Bound once: FxBudget times it every frame. */
+  private readonly boundGuideTick = (): void => this.guideTick();
+  /** main-simple's own unprompted hints, held while the guide runs. */
+  private readonly heldHints: string[] = [];
+
+  private setupGuide(): void {
+    const store: GuideStore = {
+      get: (k) => localStorage.getItem(k),
+      set: (k, v) => localStorage.setItem(k, v),
+    };
+    const flag = (k: string): boolean => {
+      try {
+        return localStorage.getItem(k) === '1';
+      } catch {
+        return false;
+      }
+    };
+    this.guide = new Guide(
+      store,
+      {
+        track: (name, props) => track(name, props),
+        completed: () => sfx.blip(),
+        skipped: () => {
+          // Skip fires the compass hint instead; the gate is open by now.
+          this.renderGuide();
+          this.ui.toast(
+            '🧭 The gold ➤ up top points to your next stop — tap it for the island map.',
+            { hint: true },
+          );
+        },
+      },
+      {
+        // Read now, at boot: Explore writes ds_welcomed for a first visit.
+        welcomed: flag('ds_welcomed'),
+        facts: () => ({
+          npcChatted: flag('ds_npc_chatted'),
+          passportCount: this.passport?.count() ?? 0,
+          mapHint: flag('ds_hint_map'),
+        }),
+        talkTarget: (current) => this.talkVillager(current),
+        controlsCard: !this.ui.isTouchDevice(),
+      },
+    );
+    // No card yet: #ds-guide is made when the guide first arms (renderGuide).
+    // How the welcome card closes decides how the guide arms. Capture phase,
+    // ahead of the buttons' own handlers: arming writes ds_hint_compass
+    // before hideWelcome reads it, so the card's one-time compass hint never
+    // lands on top of the guide.
+    this.boundHandlers.guideWelcomeClick = (e: Event) => this.onWelcomeExit(e.target, null);
+    this.ui.getOverlay().addEventListener('click', this.boundHandlers.guideWelcomeClick, true);
+    this.boundHandlers.guideWelcomeKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.onWelcomeExit(null, 'explore');
+    };
+    window.addEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);
+  }
+
+  /** The First steps card, #ds-guide. Made once, by renderGuide, when the
+   *  guide first runs. */
+  private createGuideCard(): GuideCard {
+    return new GuideCard(this.ui.getOverlay(), {
+      touch: this.ui.isTouchDevice(),
+      reducedMotion: () => a11y.reducedMotion,
+      onButton: (id) => this.onGuideButton(id),
+      // D6's hook; before it lands, the prompt element itself.
+      prompt: () =>
+        document.querySelector<HTMLElement>('[data-hud="prompt"]') ??
+        (this.ui as unknown as { interactionDiv?: HTMLElement | null }).interactionDiv ??
+        null,
+    });
+  }
+
+  /** Explore (or Escape) arms now; See the work and Get in touch arm when
+   *  their panel closes; the full tour arms at its end. Hiring, Ask the
+   *  townsfolk and Try a race set their own course. */
+  private onWelcomeExit(target: EventTarget | null, forced: GuideArm | null): void {
+    const card = this.ui
+      .getOverlay()
+      .querySelector('[role="dialog"][aria-label="Welcome to DigiScalability Life Island"]');
+    if (!card) return;
+    let exit = forced;
+    if (!exit) {
+      const b = (target as Element | null)?.closest?.('button') as HTMLElement | null;
+      if (!b || !card.contains(b)) return;
+      if (b.hasAttribute('data-dismiss')) exit = 'explore';
+      else if (b.dataset.cta === 'projects' || b.dataset.cta === 'contact') exit = 'cta';
+      else return;
+    }
+    if (exit === 'explore') this.armGuide('explore');
+    else this.guideArmOnPanelsClosed = true;
+  }
+
+  /** Arm the guide; arming counts as the compass hint shown (ds_hint_compass).
+   *  The card and its first 'ds:guide' appear now, at the arming. */
+  private armGuide(source: GuideArm): boolean {
+    if (!this.guide?.arm(source)) return false;
+    try {
+      localStorage.setItem('ds_hint_compass', '1');
+    } catch {
+      /* no storage */
+    }
+    this.guidePrevValid = false;
+    this.renderGuide();
+    return true;
+  }
+
+  /** While the guide runs, or may arm as the welcome card closes, main-simple
+   *  fires no unprompted hints: talk, coin, lost, district, specials. */
+  private guideHoldsHints(): boolean {
+    const g = this.guide;
+    if (!g) return false;
+    if (g.isActive()) return true;
+    return g.eligible() && !g.running() && (!this.introSettled || this.ui.isWelcomeVisible());
+  }
+
+  /** One of main-simple's own unprompted hints: now, or once the guide lets go. */
+  private hintLater(message: string): void {
+    if (!this.guideHoldsHints()) {
+      this.ui.toast(message, { hint: true });
+      return;
+    }
+    if (!this.heldHints.includes(message)) this.heldHints.push(message);
+  }
+
+  /** The guide's frame (FxBudget 'guide'): DOM writes only when it changed. */
+  private guideTick(): void {
+    const g = this.guide;
+    // A finished save still runs its finale (a clock, the pause rules).
+    if (!g || (!g.eligible() && !g.running())) return;
+    const ui = this.ui;
+    if (
+      this.guideArmOnPanelsClosed &&
+      !ui.isWelcomeVisible() &&
+      !ui.panels.isOpen() &&
+      !this.tour
+    ) {
+      this.guideArmOnPanelsClosed = false;
+      this.armGuide('cta');
+    }
+    const f = this._guideFrame;
+    f.dt = this.guideDt;
+    f.top = ui.panels.current();
+    f.blocked =
+      f.top !== null ||
+      ui.isWelcomeVisible() ||
+      ui.isLoadingVisible() ||
+      this.tour !== null ||
+      this.scene.isInsideInterior();
+    const player = this.scene.getPlayer();
+    f.walked = 0;
+    f.targetDist = null;
+    if (player) {
+      const p = player.getWorldPositionInto(this._guidePos);
+      if (this.guidePrevValid) f.walked = p.distanceTo(this._guidePrev);
+      this._guidePrev.copy(p);
+      this.guidePrevValid = true;
+      if (this.lastCompassTarget) f.targetDist = p.distanceTo(this.lastCompassTarget);
+    }
+    f.moveMag = this.guideMoveMag;
+    f.yaw = this.scene.getOrbitCamera().getYaw();
+    g.setCompassLabel(this.compassLabel);
+    g.frame(f);
+    this.renderGuide();
+    this.guidePromptT += f.dt;
+    if (this.guidePromptT > 0.25) {
+      this.guidePromptT = 0;
+      this.guideCard?.checkPrompt();
+    }
+  }
+
+  /**
+   * Redraw the card when the guide changed (never per frame otherwise).
+   *
+   * The card itself is made the first time the guide runs. Before that the
+   * page carries no #ds-guide and no 'ds:guide' event: D6 reads either one
+   * as "the guide armed" and stands the welcome's compass hint down, and a
+   * visit that never arms the guide (Ask the townsfolk, Hiring, a race)
+   * still needs that hint.
+   */
+  private renderGuide(): void {
+    const g = this.guide;
+    if (!g || (!this.guideCard && !g.running())) return;
+    const card = (this.guideCard ??= this.createGuideCard());
+    if (card.version() === g.version()) return;
+    const v = g.view();
+    const root = document.documentElement;
+    card.render(
+      v,
+      guideCopy(v, {
+        touch: this.ui.isTouchDevice(),
+        lookMode: root.getAttribute('data-look-mode'),
+        runKey: root.getAttribute('data-run-key'),
+        compassLabel: this.compassLabel,
+        finaleLabel: PASSPORT_META[this.guideFinaleDistrict()].label,
+      }),
+    );
+  }
+
+  /** The finale's 'Show me': Projects until it is stamped, then the nearest
+   *  unstamped district, and Projects again once all four are stamped. */
+  private guideFinaleDistrict(): PassportZone {
+    const passport = this.passport;
+    if (!passport || !passport.has('projects')) return 'projects';
+    const d = this.compassDistrict;
+    if (d && passport.isStampZone(d) && !passport.has(d)) return d as PassportZone;
+    return PASSPORT_ZONES.find((z) => !passport.has(z)) ?? 'projects';
+  }
+
+  private onGuideButton(id: GuideButton['id']): void {
+    const g = this.guide;
+    if (!g) return;
+    if (id === 'skip') g.skip();
+    else if (id === 'resume') g.expand();
+    else if (id === 'ok') g.controlsDone();
+    else if (id === 'close') g.finish();
+    else {
+      const key = id === 'school' ? 'school' : `district:${this.guideFinaleDistrict()}`;
+      g.finish();
+      // The finale's 'Show me' goes through the seam every producer uses
+      // (P2-A5): the School leads to its lessons, a district to its door.
+      window.dispatchEvent(new CustomEvent('ds:guide-to', { detail: { key, source: 'guide' } }));
+    }
+    this.renderGuide();
+  }
+
   /** Assemble every shop/provider/build-spot POI and open the island map.
    *  Picking one sets the compass (mapGuideTarget — top of the chain). */
   private openIslandMap(): void {
+    this.guide?.complete('compass');
     const pois: Array<{ icon: string; label: string; pos: THREE.Vector3; color?: string }> = [];
     const add = (icon: string, label: string, pos: THREE.Vector3 | null, color?: string): void => {
       if (pos) pois.push({ icon, label, pos, color });
     };
+    // A district pick ends at the district's door: remember which POIs are districts.
+    const zoneOf = new Map<object, string>();
     for (const z of this.scene.getZonesManager().getZones()) {
       // Real district identity, not five identical 🏛️: the passport icon the
       // rest of the app already uses, haloed in the district's own accent
       // (same single source of truth as the radar beacons and plaza tints).
       const meta = (PASSPORT_META as Record<string, { icon: string }>)[z.id];
       const d = DISTRICTS.find((x) => x.id === z.id);
+      const before = pois.length;
       add(
         meta?.icon ?? '🏝️',
         z.name,
         z.getPosition(),
         d ? `#${d.color.toString(16).padStart(6, '0')}` : undefined,
       );
+      if (pois.length > before) zoneOf.set(pois[before], String(z.id));
     }
     add('🛒', 'Shop kiosk', this.scene.kioskPos());
     add('📰', 'Notice board', this.scene.noticeBoardPos());
@@ -3619,10 +4455,13 @@ class SimpleApp {
     this.ui.showIslandMap(
       pois,
       (poi) => {
-        this.mapGuideTarget = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
-        this.mapGuideLabel = `${poi.icon} ${poi.label}`;
+        this.setMapPick(
+          new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z),
+          `${poi.icon} ${poi.label}`,
+          zoneOf.get(poi) ?? null,
+        );
         this.ui.toast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
-        track('map_guide_set', { label: poi.label });
+        track('map_guide_set', { label: poi.label, source: 'map' });
       },
       {
         playerPos: this.scene.getPlayer()?.getWorldPosition() ?? null,
@@ -3631,24 +4470,6 @@ class SimpleApp {
         targetPos: this.lastCompassTarget,
       },
     );
-  }
-
-  private nearestUnstampedZone(
-    playerPos: THREE.Vector3,
-  ): { pos: THREE.Vector3; id: PassportZone } | null {
-    if (!this.passport || this.passport.isComplete()) return null;
-    let best: { pos: THREE.Vector3; id: PassportZone } | null = null;
-    let bestD = Infinity;
-    for (const z of this.scene.getZonesManager().getZones()) {
-      if (!this.passport.isStampZone(z.id) || this.passport.has(z.id)) continue;
-      const zp = z.getPosition();
-      const d = zp.distanceToSquared(playerPos);
-      if (d < bestD) {
-        bestD = d;
-        best = { pos: zp, id: z.id as PassportZone };
-      }
-    }
-    return best;
   }
 
   // \u2500\u2500 Tour mode: skippable cinematic rail (welcome CTA / ?tour=1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -4005,6 +4826,9 @@ class SimpleApp {
       this.ui.showHireCard('cta');
       return;
     }
+    // The full tour hands over to the guide, headed 'The island is yours'
+    // (A6); with the guide done, the old line.
+    if (!recruiter && this.armGuide('tour')) return;
     this.ui.flashMessage('\ud83e\udded The island is yours \u2014 walk anywhere, talk to anyone');
   }
 
@@ -4035,6 +4859,7 @@ class SimpleApp {
   private beginNpcDialogue(name: string): void {
     this.npcDialogueName = name;
     this.chatWalkAwayT = 0;
+    this.trailDone = true; // talking to a villager is what the trail was for
     this.scene.setNpcDialogueHold(name);
     // The camera push-in is optional flavor on top of the hold: skip it under
     // reduced motion, during the tour, or when another rail (postcard hold /
@@ -5084,16 +5909,16 @@ class SimpleApp {
       // key means the special fires normally from their next visit.
       if (!localStorage.getItem(key) && localStorage.getItem('ds_welcomed')) {
         localStorage.setItem(key, '1');
+        // Each label opens the sentence: capitalised.
         const label: Record<ProviderKey, string> = {
-          fisherman: 'the fisherman',
-          baker: 'the Baker',
-          canteen: 'the canteen',
-          bank: 'the bank',
-          carpenter: 'the Carpenter',
+          fisherman: 'The fisherman',
+          baker: 'The Baker',
+          canteen: 'The canteen',
+          bank: 'The bank',
+          carpenter: 'The Carpenter',
         };
-        this.ui.toast(
+        this.hintLater(
           `⭐ ${marketDay ? 'Market day! ' : ''}${label[this.featured.provider as ProviderKey]} is paying extra today.`,
-          { hint: true },
         );
       }
     } catch {
@@ -5805,6 +6630,22 @@ class SimpleApp {
     if (this.boundHandlers.popState) {
       window.removeEventListener('popstate', this.boundHandlers.popState);
     }
+
+    if (this.boundHandlers.guideTo) {
+      window.removeEventListener('ds:guide-to', this.boundHandlers.guideTo);
+    }
+
+    if (this.boundHandlers.guideWelcomeClick) {
+      this.ui
+        ?.getOverlay()
+        .removeEventListener('click', this.boundHandlers.guideWelcomeClick, true);
+    }
+
+    if (this.boundHandlers.guideWelcomeKey) {
+      window.removeEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);
+    }
+
+    this.guideCard?.dispose();
 
     if (this.boundHandlers.debugKeydown) {
       document.removeEventListener('keydown', this.boundHandlers.debugKeydown);

@@ -172,7 +172,8 @@ describe('from onboarding.test.ts', () => {
   });
 
   test('the arrival trail hands off instead of congratulating into silence', () => {
-    expect(src('main-simple.ts')).toContain('follow the ➤ arrow to 🚀 Projects');
+    // To the pill, which names the next stop itself (wave-1 integration).
+    expect(src('main-simple.ts')).toContain('the gold ➤ up top points to your next stop.');
   });
 
   test('fires while APPROACHING an AI villager, at a radius DERIVED from the prompt range', () => {
@@ -686,7 +687,30 @@ describe('from visualPolish.test.ts', () => {
     // Off the boot window AND off the interaction: scheduled through the same
     // idle deferral that already carries music and profile sync.
     const main = stripped('main-simple.ts');
-    expect(main).toContain('this.idleDefer(() => void this.scene.warmInterior()');
+    expect(main).toContain('this.idleDefer(this.warmRoomsIdle, 9000);');
+    const idle = bodyOf(main, 'private readonly warmRoomsIdle = (): void =>');
+    expect(idle).toContain('void this.scene.warmInterior();');
+    // ...and it stands down once the early warm below has started: a second,
+    // empty warm call read as a warm to the hitch probe.
+    expect(idle).toContain('if (this.roomsWarmStarted) return;');
+    // CO-A5: on a coarse pointer it may start EARLIER, never on the frame of
+    // the first E and never during the fly-in: one task after afterIntro
+    // (the card is up), or at the first walk input once the fly-in landed.
+    // The 9 s idle deferral above stays the ceiling on every device.
+    const early = bodyOf(main, 'private readonly warmRoomsEarly = (): void =>');
+    expect(early).toContain('if (this.roomsWarmStarted || !this.coarsePointer) return;');
+    expect(early).toContain('void this.scene.warmInterior();');
+    expect(main).toContain("matchMedia('(pointer: coarse)').matches");
+    expect(bodyOf(main, 'const afterIntro = () =>')).toContain(
+      'window.setTimeout(this.warmRoomsEarly, 0);',
+    );
+    const walk = blockOf(main, '(walkForward !== 0 || walkStrafe !== 0) &&');
+    const call = walk.indexOf('this.warmRoomsEarly();');
+    expect(walk.indexOf('!this.scene.getOrbitCamera().isFlyingIn()')).toBeGreaterThan(-1);
+    expect(walk.indexOf('!this.scene.getOrbitCamera().isFlyingIn()')).toBeLessThan(call);
+    expect(call).toBeLessThan(
+      walk.indexOf('this.scene.setPlayerMovement(walkForward, walkStrafe);'),
+    );
   });
 });
 
@@ -836,6 +860,329 @@ describe('stage-1 integration seams in main-simple', () => {
     // behind the open panel 0.5 s later (orbitCamera.test.ts has the rest).
     expect(bodyOf(stripped('main-simple.ts'), 'private holdWorldInput(')).toContain(
       'this.scene.getOrbitCamera().holdMoveInput();',
+    );
+  });
+});
+
+// ---- stage-2 wiring (wave 1) ---------------------------------------------
+// compassArrow.test.ts holds compassTarget's order table; these pin that
+// main-simple actually routes the pill through it.
+describe('A7: one compass target at a time (the zone branch, replaced)', () => {
+  const qc = (): string => bodyOf(stripped('main-simple.ts'), 'private updateQuestCompass(');
+
+  test('the pill picks its source through compassTarget, not a branch chain', () => {
+    const body = qc();
+    expect(body).toContain('switch (compassTarget(st)) {');
+    // The 'after the first stamp, active deliveries take priority' rule is gone.
+    expect(body).not.toContain('portfolioFirst');
+    expect(body).not.toContain("'📬 Delivery'");
+    // Parcels have their own glyph; 📬 means Contact only.
+    expect(body).toContain("label = '📦 Parcel';");
+    expect(body).toContain('st.deliveryOptIn = this.deliveryOptIn;');
+    // The trail villager is named, and only while the coins are down and the
+    // trail has not done its job (reached, a stamp, or a pick elsewhere).
+    expect(body).toContain('this.trailVillager && !this.trailDone && this.scene.hasTrailCoins()');
+    expect(body).toContain("label = this.trailVillager ?? '';");
+    expect(body).toContain('if ((passport?.count() ?? 0) > 0) this.trailDone = true;');
+    // where the coins lead: the seat, so the pill and the coins never fork;
+    // reaching the seat, any conversation or a pick elsewhere ends the trail
+    expect(body).toContain('? this.trailSeat(this.trailVillager)');
+    expect(body).toContain(
+      'if (trailPos && playerPos.distanceTo(trailPos) < SimpleApp.TRAIL_REACHED_U) {',
+    );
+    for (const m of ['private setMapPick(', 'private beginNpcDialogue(']) {
+      expect(bodyOf(stripped('main-simple.ts'), m), m).toContain('this.trailDone = true;');
+    }
+  });
+
+  test('until the visitor has talked, the pill names First steps’ villager, without trail coins', () => {
+    const body = qc();
+    // after the trail, before the first stamp, from the guide's own target
+    expect(body).toContain(
+      '!trailPos && (passport?.count() ?? 0) === 0 ? (this.guide?.talkTargetNow() ?? null) : null;',
+    );
+    // where they stand now, not the seat the trail was laid to
+    expect(body).toContain('const talkPos = talkWho ? this.scene.getNpcPosition(talkWho) : null;');
+    expect(body).toContain('st.talkStep = talkPos !== null;');
+    expect(body).toContain("label = talkWho ?? '';");
+  });
+
+  test('a district pick ends at its door; anything else at 6 u; then an 8 s hold', () => {
+    const body = qc();
+    expect(body).toContain(
+      'if (zone !== null ? this.doorPromptZone === zone || d < 3.2 : d < 6) {',
+    );
+    expect(body).toContain('until: now + 8000,');
+    expect(body).toContain("label: zone !== null ? enter : '✓ Here',");
+    // A district's hold still names it, as its door prompt does ('Press E to
+    // enter Project Portfolio'): a bare 'Press E to enter' left the pill on
+    // no district at all.
+    expect(body).toContain('const name = DISTRICTS.find((x) => x.id === zone)?.name;');
+    expect(body).toContain('const enter = name ? `${verb} ${name}` : verb;');
+    expect(body).toContain("? '🚪 Tap USE to enter' : '🚪 Press E to enter';");
+    // the door prompt sets the flag where it is shown, and every frame clears it
+    expect(stripped('main-simple.ts')).toContain('this.doorPromptZone = String(nearby.zone.id);');
+    expect(bodyOf(stripped('main-simple.ts'), 'private update(')).toContain(
+      'this.doorPromptZone = null;',
+    );
+  });
+
+  test('parcels opt in on a collected delivery; stamps 1-3 flash the next district once', () => {
+    const m = stripped('main-simple.ts');
+    expect(argsOf(m, 'this.deliverySystem.setOnDeliveryComplete(')).toContain(
+      'this.deliveryOptIn = true;',
+    );
+    const body = qc();
+    expect(body).toContain('if (stamps <= 3) this.pendingNextFlash = true;');
+    expect(body).toContain('`Next: ${next} — the gold arrow points the way.`');
+  });
+
+  test('phones end the intro facing the trail villager through setYaw', () => {
+    const m = stripped('main-simple.ts');
+    const intro = bodyOf(m, 'const afterIntro = () =>');
+    // chosen once, at the end of the intro, then faced
+    const pick = intro.indexOf('this.trailVillager = this.pickTrailVillager();');
+    expect(pick).toBeGreaterThan(-1);
+    expect(pick).toBeLessThan(intro.indexOf('this.faceTrailVillager();'));
+    expect(m.split('this.trailVillager = ').length - 1).toBe(1);
+    const face = bodyOf(m, 'private faceTrailVillager(');
+    expect(face).toContain('if (!this.coarsePointer) return;');
+    expect(face).toContain('const bearing = compassBearing(fwd.normalize(), to.normalize(), n);');
+    // the seat 20° right of dead ahead: dead ahead, the avatar hid every coin
+    expect(face).toContain('cam.setYaw(cam.getYaw() - bearing + SimpleApp.TRAIL_VIEW_OFFSET);');
+    expect(m).toContain('private static readonly TRAIL_VIEW_OFFSET = (20 * Math.PI) / 180;');
+    // the pick reads positions only: never Math.random (the seeded window)
+    expect(bodyOf(m, 'private pickTrailVillager(')).not.toContain('Math.random');
+    expect(bodyOf(m, 'private trailSeatVillager(')).toContain('if (d > 0.04 && d < best) {');
+  });
+
+  test('a villager who has gone to bed ends the trail, and the talk step asks for a stand-in', () => {
+    const m = stripped('main-simple.ts');
+    const body = qc();
+    // the trail's pill lets go of an empty seat
+    expect(body).toContain(
+      'if (trailPos && this.trailVillager && !this.villagerUp(this.trailVillager)) {',
+    );
+    // up: in the world, and not on the walk home under an "asleep" tag
+    const up = bodyOf(m, 'private villagerUp(');
+    expect(up).toContain(
+      "return !!t && t.meshRef.visible && this.scene.getNpcActivity(name) !== 'sleep';",
+    );
+    // the guide asks main-simple, with the villager it names now
+    expect(m).toContain('talkTarget: (current) => this.talkVillager(current),');
+    const talk = bodyOf(m, 'private talkVillager(');
+    expect(talk).toContain('if (trail && this.villagerUp(trail)) return trail;');
+    expect(talk).toContain('if (current && this.villagerUp(current)) return current;');
+    expect(talk).toContain('const near = this.guideWorld.nearestAiVillager();');
+    expect(talk).toContain('return d <= SimpleApp.TRAIL_VILLAGER_RANGE ? near.name : null;');
+    // positions only: never Math.random (the seeded window)
+    expect(talk).not.toContain('Math.random');
+  });
+});
+
+describe("P2-A5: one 'Show me' seam, window 'ds:guide-to'", () => {
+  test('the listener resolves the key and sets the pill exactly as a map pick does', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("window.addEventListener('ds:guide-to', this.boundHandlers.guideTo);");
+    expect(bodyOf(m, 'private dispose(')).toContain(
+      "window.removeEventListener('ds:guide-to', this.boundHandlers.guideTo);",
+    );
+    const go = bodyOf(m, 'private guideTo(');
+    expect(go).toContain('resolveGuideKey(key, this.guideWorld)');
+    // an unknown key opens the island map instead
+    expect(go).toMatch(/if \(!hit\) \{\s*this\.openIslandMap\(\);\s*return;\s*\}/);
+    expect(go).toContain('this.setMapPick(');
+    expect(go).toContain('hit.zone');
+    expect(go).toContain('this.ui.toast(`🧭 Compass set: ${shown}`);');
+    expect(go).toContain("track('map_guide_set', { label: label ?? hit.label, source });");
+    // and the map's own picks now say where they came from
+    expect(bodyOf(m, 'private openIslandMap(')).toContain(
+      "track('map_guide_set', { label: poi.label, source: 'map' });",
+    );
+  });
+});
+
+describe('A6: First steps, wired into main-simple', () => {
+  test('one bound tick per frame, behind FxBudget\'s "guide" switch', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain('private readonly boundGuideTick = (): void => this.guideTick();');
+    const update = bodyOf(m, 'private update(');
+    expect(update).toContain("if (this.guide && fx.on('guide')) {");
+    expect(update).toContain("fx.time('guide', this.boundGuideTick);");
+    // never a per-frame closure
+    expect(update).not.toMatch(/fx\.time\('guide', \(\)/);
+    expect(stripped('Guide.ts')).toContain("fx.register('guide', { desktop: true, low: true });");
+  });
+
+  test('Explore arms it in the capture phase, before hideWelcome reads ds_hint_compass', () => {
+    const m = stripped('main-simple.ts');
+    const setup = bodyOf(m, 'private setupGuide(');
+    expect(setup).toContain(
+      "this.ui.getOverlay().addEventListener('click', this.boundHandlers.guideWelcomeClick, true);",
+    );
+    expect(setup).toContain(
+      "window.addEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);",
+    );
+    const exit = bodyOf(m, 'private onWelcomeExit(');
+    expect(exit).toContain("if (b.hasAttribute('data-dismiss')) exit = 'explore';");
+    expect(exit).toContain("b.dataset.cta === 'projects' || b.dataset.cta === 'contact'");
+    expect(bodyOf(m, 'private armGuide(')).toContain(
+      "localStorage.setItem('ds_hint_compass', '1');",
+    );
+    // the legacy check reads ds_welcomed at boot, before Explore writes it
+    expect(setup).toContain("welcomed: flag('ds_welcomed'),");
+    // the talk step's villager: the trail villager while they are up
+    expect(setup).toContain('talkTarget: (current) => this.talkVillager(current),');
+  });
+
+  test("#ds-guide and the first 'ds:guide' wait for the guide to arm (D6 reads either as armed)", () => {
+    const m = stripped('main-simple.ts');
+    // setupGuide builds no card; renderGuide builds the one card the first
+    // time the guide runs, and arming draws it at once.
+    expect(bodyOf(m, 'private setupGuide(')).not.toContain('new GuideCard(');
+    expect(m.split('new GuideCard(').length - 1).toBe(1);
+    expect(bodyOf(m, 'private createGuideCard(')).toContain(
+      'return new GuideCard(this.ui.getOverlay(), {',
+    );
+    const render = bodyOf(m, 'private renderGuide(');
+    expect(render).toContain('if (!g || (!this.guideCard && !g.running())) return;');
+    expect(render).toContain('const card = (this.guideCard ??= this.createGuideCard());');
+    expect(m.split('this.createGuideCard()').length - 1).toBe(1);
+    expect(bodyOf(m, 'private armGuide(')).toContain('this.renderGuide();');
+  });
+
+  test('the full tour hands over to the guide; a CTA panel arms it when it closes', () => {
+    const m = stripped('main-simple.ts');
+    const end = bodyOf(m, 'private endTour');
+    const arm = end.indexOf("if (!recruiter && this.armGuide('tour')) return;");
+    expect(arm).toBeGreaterThan(end.indexOf("this.ui.showHireCard('cta');"));
+    expect(arm).toBeLessThan(end.indexOf('The island is yours'));
+    const tick = bodyOf(m, 'private guideTick(');
+    expect(tick).toContain("this.armGuide('cta');");
+    expect(tick).toContain('this.scene.isInsideInterior()');
+    expect(tick).toContain('this.tour !== null');
+  });
+
+  test('talk, the map and coins reach the guide', () => {
+    const m = stripped('main-simple.ts');
+    expect(m.split("this.guide?.complete('talk');").length - 1).toBe(2); // quest + AI chat
+    expect(bodyOf(m, 'private openIslandMap(')).toContain("this.guide?.complete('compass');");
+    expect(argsOf(m, 'this.scene.setOnCoinCollected(')).toContain('this.guide?.coin();');
+  });
+
+  test('while it runs, main-simple fires no unprompted hints: talk, coin, lost, district, specials', () => {
+    const m = stripped('main-simple.ts');
+    const update = bodyOf(m, 'private update(');
+    expect(update).toContain('const hintsHeld = this.guideHoldsHints();');
+    expect(update).toMatch(
+      /!hintsHeld &&\s*!this\.ui\.isWelcomeVisible\(\) &&\s*!this\.tour &&\s*!this\.scene\.hasTrailCoins\(\)/,
+    );
+    expect(blockOf(update, 'this.lostAccum > 60 &&')).toContain('!hintsHeld &&');
+    expect(blockOf(update, "!localStorage.getItem('ds_hint_talk') &&")).toContain('!hintsHeld &&');
+    expect(argsOf(m, 'this.scene.setOnCoinCollected(')).toContain(
+      'if (this.guideHoldsHints()) return;',
+    );
+    expect(bodyOf(m, 'private refreshFeatured')).toContain('this.hintLater(');
+    expect(bodyOf(m, 'private refreshFeatured')).not.toContain('this.ui.toast(');
+    // held hints go out once it lets go
+    expect(update).toContain(
+      'for (const m of this.heldHints.splice(0)) this.ui.toast(m, { hint: true });',
+    );
+  });
+
+  test('the arrival trail’s end: no flash while the guide runs, else a hint toast naming no place', () => {
+    // B10 ends the trail at the guide's talk villager, so the old flash
+    // ('follow the ➤ arrow to 🚀 Projects') landed on the look or talk card,
+    // or over the villager's chat, while the card said 'Walk up to Mayor'.
+    const trail = argsOf(stripped('main-simple.ts'), 'this.scene.setOnArrivalTrail(');
+    expect(trail).toContain('if (!this.guideHoldsHints()) {');
+    expect(trail).toContain('the gold ➤ up top points to your next stop.');
+    expect(trail).toContain('hint: true,');
+    expect(trail).not.toContain('flashMessage');
+    expect(trail).not.toContain('🚀 Projects');
+    expect(trail).toContain("this.markDone('ds_arrived');");
+    expect(trail).toContain("trackOnce('arrival_trail_done');");
+  });
+});
+
+describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
+  test('a stall trigger beside the once-ever lost clause: 10 u in 30 s of free roam, twice a visit at most', () => {
+    const m = stripped('main-simple.ts');
+    // the once-ever clause stays (onboarding's lock above pins its terms)
+    expect(blockOf(bodyOf(m, 'private update('), 'this.lostAccum > 60 &&')).toContain(
+      'this.showLostHint();',
+    );
+    expect(bodyOf(m, 'private update(')).toContain('this.checkLostStall(hintsHeld);');
+    expect(m).toContain('private static readonly LOST_STALL_SAMPLES = 12;'); // x 2.5 s = 30 s
+    expect(m).toContain('private static readonly LOST_STALL_U = 10;');
+    expect(m).toContain('private static readonly LOST_STALL_MAX = 2;');
+    const stall = bodyOf(m, 'private checkLostStall(');
+    for (const term of [
+      'travelled >= SimpleApp.LOST_STALL_U',
+      '(this.passport?.count() ?? 0) > 0',
+      'this.lostStallHints++;',
+    ]) {
+      expect(stall, term).toContain(term);
+    }
+    // Free-roam time only: whatever holds the visitor clears the 30 s window
+    // (it starts over when it lets go), not just the instant of firing. A
+    // 33 s read of a panel used to fire 'Lost?' as it closed.
+    const at = stall.indexOf('const freeRoam =');
+    expect(at, 'const freeRoam =').toBeGreaterThan(-1);
+    const roam = stall.slice(at, stall.indexOf(';', at)); // the one expression
+    for (const term of [
+      '!hintsHeld &&',
+      '!this.ui.isWelcomeVisible() &&',
+      '!this.ui.panels.isOpen() &&',
+      '!this.tour &&',
+      '!this.scene.isInsideInterior() &&',
+      '!this.scene.isFishingActive() &&',
+      '!this.scene.isPlayerSeated()',
+    ]) {
+      expect(roam, term).toContain(term);
+    }
+    expect(stall).toMatch(
+      /if \(!freeRoam \|\| this\.lostStallHints >= SimpleApp\.LOST_STALL_MAX\) \{\s*trail\.length = 0;/,
+    );
+    const copy = bodyOf(m, 'private showLostHint(');
+    expect(copy).toContain(
+      'Lost? Click the radar or press M for the island map — pick a spot and the gold arrow guides you.',
+    );
+    expect(copy).toContain(
+      'Lost? Tap the radar for the island map — pick a spot and the gold arrow guides you.',
+    );
+  });
+
+  test('the specials toast opens with a capital: no provider label starts lower-case', () => {
+    const body = bodyOf(stripped('main-simple.ts'), 'private refreshFeatured');
+    const labels = [...body.matchAll(/^\s+(\w+): '([^']*)',$/gm)].map((x) => x[2]);
+    expect(labels).toEqual([
+      'The fisherman',
+      'The Baker',
+      'The canteen',
+      'The bank',
+      'The Carpenter',
+    ]);
+    for (const l of labels) expect(l[0], l).toBe(l[0].toUpperCase());
+  });
+
+  test("'ds:intro': one start as the fly-in or the calm entry begins, one settled in afterIntro", () => {
+    const m = stripped('main-simple.ts');
+    const start =
+      "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));";
+    const settled =
+      "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'settled' } }));";
+    expect(m.split(start).length - 1).toBe(2);
+    expect(m.split(settled).length - 1).toBe(1);
+    expect(bodyOf(m, 'const afterIntro = () =>')).toContain(settled);
+    // the calm entry: start before the snap and afterIntro
+    const calm = blockOf(m, 'if (a11y.reducedMotion) {', m.indexOf('const afterIntro'));
+    expect(calm.indexOf(start)).toBeGreaterThan(-1);
+    expect(calm.indexOf(start)).toBeLessThan(calm.indexOf('afterIntro()'));
+    // the fly-in: start right before the swoop
+    const fly = m.indexOf('.flyInFromDistant(2500)');
+    expect(m.lastIndexOf(start, fly)).toBeGreaterThan(
+      m.lastIndexOf('const restoreIntroQuality', fly),
     );
   });
 });
