@@ -152,9 +152,27 @@ interface QueuedMessage {
   /** An unprompted line (onboarding, world news) rather than an outcome. */
   hint: boolean;
   kind: 'toast' | 'flash';
-  /** A hint is stale, and drops, once this returns true. */
+  /** The message is stale, and drops, once this returns true: a hint the
+   *  visitor already acted on, or an outcome tied to a place they left. */
   until?: () => boolean;
+  /** Times it has come on screen: the first show and at most one more. */
+  shows: number;
+  /** Time on screen so far, ms. Past READ_MS it counts as read. */
+  seenMs: number;
+  /** When it last came on screen (Date.now()). */
+  shownAt: number;
+  /** Inside a building (the Leave pill up) when it last showed. */
+  inside: boolean;
 }
+
+/** A message on screen this long has been read: a modal, an outcome or the
+ *  guide that takes it down after that drops it instead of re-queueing it.
+ *  Wave-1 integration: '🧭 You have arrived.' showed at the door, stepped
+ *  aside for the hall panel and came back inside every hall; the compass
+ *  hint showed four times in 26 s on a phone. */
+const READ_MS = { outcome: 1000, hint: 1500 } as const;
+/** The first show and one more after a step aside, never a third. */
+const MAX_SHOWS = 2;
 
 /** A message stays inside a panel for this long after the visitor's last
  *  action there counts as that panel's own outcome (P2-D3). The message
@@ -1263,15 +1281,22 @@ export class SimpleUI {
    * an open modal: a message waits for it to close, unless it answers what
    * the visitor just did inside it (a shop purchase, 'Link copied'), which
    * shows inside the panel instead. An outcome takes the place of a hint on
-   * screen at once, and a hint whose `until()` has come true is dropped.
+   * screen at once, and a message whose `until()` has come true is dropped,
+   * hint or outcome (an arrival toast can pass `until: () =>
+   * scene.isInsideInterior()`).
    */
   public toast(message: string, opts?: { hint?: boolean; until?: () => boolean }): void {
-    this.enqueue({
-      text: this.touchifyPlain(message),
-      hint: !!opts?.hint,
-      kind: 'toast',
-      until: opts?.until,
-    });
+    this.enqueue(this.queued(this.touchifyPlain(message), 'toast', !!opts?.hint, opts?.until));
+  }
+
+  /** A fresh queue entry: never shown yet. */
+  private queued(
+    text: string,
+    kind: QueuedMessage['kind'],
+    hint: boolean,
+    until?: () => boolean,
+  ): QueuedMessage {
+    return { text, hint, kind, until, shows: 0, seenMs: 0, shownAt: 0, inside: false };
   }
 
   private enqueue(m: QueuedMessage): void {
@@ -1280,9 +1305,10 @@ export class SimpleUI {
       this.panelNote(m);
       return;
     }
-    // Drop exact duplicates already waiting — a queue of three "+1 🪙" adds
-    // nothing.
+    // Drop exact duplicates already waiting, or on screen now — a queue of
+    // three "+1 🪙" adds nothing.
     if (this.toastQueue.some((q) => q.text === m.text)) return;
+    if (this.toastBusy && this.shownMessage?.text === m.text) return;
     this.toastQueue.push(m);
     // Outcomes beat hints (GP-08): the refund waited 5.9 s behind an 88-char
     // hint. The hint bows out and goes back to the head of the queue.
@@ -1299,27 +1325,47 @@ export class SimpleUI {
    * recruiter tour), while the first-steps guide is active (A6), and on touch
    * while an interaction prompt is up (it covered a third of 'Tap USE to talk
    * to…', PROMPT-01).
+   *
+   * `shown`: the hint is on screen already. A prompt no longer takes it
+   * down: the toast lane steps above the prompt instead (applyToastAnchor).
+   * Taking it down made it blink — a passing villager's prompt hid 'Lost?'
+   * five times in 16 s on a phone, each for 0.1-0.5 s (wave-1 integration).
    */
-  private mayShow(m: QueuedMessage): boolean {
+  private mayShow(m: QueuedMessage, shown = false): boolean {
     if (this.panels.isModalOpen()) return false;
     if (!m.hint) return true;
     if (this.panels.isOpen() || this.guideActive()) return false;
+    if (shown) return true;
     // The first beat after the welcome card belongs to First steps, which
     // arms on Explore and comes up 600 ms after the card goes (A6).
     if (Date.now() - this.welcomeClosedAt < 600) return false;
     return !(this.isTouch && this.interactionDiv !== null);
   }
 
+  /** Inside a building: the Leave pill is up. */
+  private isInside(): boolean {
+    return this.leaveBtn !== null;
+  }
+
   private welcomeClosedAt = -Infinity;
 
   /**
    * Dequeue the next message that may show now, or null to wait: outcomes
-   * first, then hints, oldest first within each. A hint whose until() has
-   * come true is stale and drops (the talk hint returned after the visitor
-   * had already talked, GP-08).
+   * first, then hints, oldest first within each. Stale messages drop:
+   * - one whose until() has come true, hint or outcome (the talk hint
+   *   returned after the visitor had already talked, GP-08);
+   * - one that showed already, stepped aside, and whose place has changed
+   *   since: the visitor went into a building or came out ('🏝️ The Hub —
+   *   the town square' stepped aside for the PIN pad and came back inside
+   *   the beach house). A message that never showed keeps its turn: the
+   *   passport stamp waits out the hall panel, and the visitor may have
+   *   left the hall by the time it shows.
    */
   private takeToast(): QueuedMessage | null {
-    this.toastQueue = this.toastQueue.filter((q) => !(q.hint && q.until?.()));
+    const inside = this.isInside();
+    this.toastQueue = this.toastQueue.filter(
+      (q) => !q.until?.() && !(q.shows > 0 && q.inside !== inside),
+    );
     const pick =
       this.toastQueue.find((q) => !q.hint && this.mayShow(q)) ??
       this.toastQueue.find((q) => q.hint && this.mayShow(q)) ??
@@ -1330,10 +1376,9 @@ export class SimpleUI {
 
   /**
    * The message on screen bows out the moment it may no longer show: a modal
-   * opened over it, or (a hint) a panel, the menu, the tour, the guide or a
-   * phone prompt came up, or its until() came true. Measured before this: the
-   * talk hint stayed over a freshly opened hire card for the rest of its
-   * dwell.
+   * opened over it, or (a hint) a panel, the menu, the tour or the guide came
+   * up, or its until() came true. Measured before this: the talk hint stayed
+   * over a freshly opened hire card for the rest of its dwell.
    *
    * While it may stay, it keeps its lane clear of First steps' card, which
    * grows with each step, folds to its chip and moves over a prompt while
@@ -1369,7 +1414,7 @@ export class SimpleUI {
         }
         return;
       }
-      if (this.mayShow(m) && !(m.hint && m.until?.())) {
+      if (this.mayShow(m, true) && !m.until?.()) {
         reanchor();
         return;
       }
@@ -1430,7 +1475,11 @@ export class SimpleUI {
    * The hire card, the Portfolio panels, the menu and the centred modals call
    * this as they open: waiting for the poll above left the compass hint
    * painted over a just-opened hire card for a tick plus the 200 ms fade
-   * (measured at 390x844). A stale hint (until() true) is dropped instead.
+   * (measured at 390x844).
+   *
+   * It drops instead of going back when it is stale (until() true), when it
+   * has been read (on screen READ_MS in all), or when it has had its one
+   * re-show already (MAX_SHOWS).
    */
   private stepHintAside(any = false): void {
     const m = this.shownMessage;
@@ -1451,8 +1500,10 @@ export class SimpleUI {
     }
     this.shownMessage = null;
     this.toastBusy = false;
-    const stale = m.hint && !!m.until?.();
-    if (!stale && !this.toastQueue.some((q) => q.text === m.text)) this.toastQueue.unshift(m);
+    m.seenMs += Math.max(0, Date.now() - m.shownAt);
+    const read = m.seenMs >= (m.hint ? READ_MS.hint : READ_MS.outcome);
+    const back = !read && m.shows < MAX_SHOWS && !m.until?.();
+    if (back && !this.toastQueue.some((q) => q.text === m.text)) this.toastQueue.unshift(m);
     this.schedulePump(250);
   }
 
@@ -1481,6 +1532,9 @@ export class SimpleUI {
     }
     this.toastBusy = true;
     this.shownMessage = m;
+    m.shows += 1;
+    m.shownAt = Date.now();
+    m.inside = this.isInside();
     // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
     // a 120-char school lesson (shown only via toast, key already spent)
     // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
@@ -1488,7 +1542,9 @@ export class SimpleUI {
     const dwell = Math.min(6000, Math.max(2000, m.text.length * 50));
     if (m.kind === 'flash') this.showFlash(m.text, dwell);
     else this.showToast(m.text, dwell);
-    this.announce(m.text);
+    // Read out on its first show only: a re-show after a step aside is the
+    // same line, and the live region read 'Lost?' seven times in 33 s.
+    if (m.shows === 1) this.announce(m.text);
     this.watchShown(m);
   }
 
@@ -5548,7 +5604,6 @@ export class SimpleUI {
     // TARGET changes). Cleared in hideInteractionPrompt.
     if (text === this.lastPromptText && this.interactionDiv) return;
     this.lastPromptText = text;
-    const created = !this.interactionDiv;
     if (!this.interactionDiv) {
       this.interactionDiv = document.createElement('div');
       // The guide card's anchor (A6 keeps 8 px above it).
@@ -5599,11 +5654,11 @@ export class SimpleUI {
       this.promptAnnounceTimer = 0;
       if (this.interactionDiv === el) this.announce(el.textContent ?? '');
     }, 600);
-    // A toast already up on a phone steps above the prompt; a hint bows out.
-    if (this.isTouch && this.toastEl && this.toastBusy) {
-      if (created) this.stepHintAside();
-      this.applyToastAnchor(this.toastEl);
-    }
+    // A toast already up on a phone steps above the prompt, hint or not. A
+    // hint used to bow out here, and a passing villager's prompt made it
+    // blink (wave-1 integration); a waiting hint still waits for the prompt
+    // to go (mayShow).
+    if (this.isTouch && this.toastEl && this.toastBusy) this.applyToastAnchor(this.toastEl);
   }
 
   private promptAnnounceTimer = 0;
@@ -6876,7 +6931,7 @@ export class SimpleUI {
    * found' across the Projects text), and dwells 50 ms a character, 2-6 s.
    */
   flashMessage(text: string): void {
-    this.enqueue({ text: this.touchifyPlain(text), hint: false, kind: 'flash' });
+    this.enqueue(this.queued(this.touchifyPlain(text), 'flash', false));
   }
 
   private showFlash(text: string, dwell: number): void {

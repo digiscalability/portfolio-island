@@ -425,6 +425,140 @@ describe('messages: one at a time', () => {
   });
 });
 
+// Wave-1 integration: a message stepped aside came back with no limit, after
+// the visitor had read it and even after they had moved ('🧭 You have
+// arrived.' re-showed inside every hall; the compass hint showed four times in
+// 26 s on a phone; a passing villager's prompt made 'Lost?' blink).
+describe('messages: read once, shown twice at most', () => {
+  test('a message read for 1 s (an outcome) or 1.5 s (a hint) drops when a modal takes it down', () => {
+    vi.useFakeTimers();
+    ui.toast('🧭 You have arrived.');
+    vi.advanceTimersByTime(1100);
+    ui.showHireCard('cta'); // e.g. the hall panel opening at the door
+    expect(toastEl()!.style.opacity).toBe('0');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()!.style.opacity).toBe('0'); // read: it does not come back
+
+    ui.toast('💬 A villager nearby talks — walk up and press E', { hint: true });
+    vi.advanceTimersByTime(1400); // not yet read
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('💬 A villager nearby talks — walk up and press E');
+    expect(toastEl()!.style.opacity).toBe('1');
+    vi.advanceTimersByTime(200); // past 1.5 s on screen in all
+    ui.toast('🪙 +3'); // an outcome takes its place...
+    vi.advanceTimersByTime(2000 + 300 + 3000);
+    expect(text(toastEl())).toBe('🪙 +3'); // ...and the read hint never returns
+  });
+
+  test('a message comes back once after a step aside, never a second time', () => {
+    vi.useFakeTimers();
+    ui.toast('🪙 coin hint', { hint: true });
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('🪙 coin hint'); // the one re-show
+    expect(toastEl()!.style.opacity).toBe('1');
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    for (let t = 0; t < 6000; t += 200) {
+      vi.advanceTimersByTime(200);
+      expect(toastEl()!.style.opacity).toBe('0'); // no third show
+    }
+  });
+
+  test('a shown message that changed place drops; one that never showed keeps its turn', () => {
+    vi.useFakeTimers();
+    ui.toast('🧭 You have arrived.'); // at the door
+    vi.advanceTimersByTime(500);
+    ui.showLeaveButton(() => {}); // in through it
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    ui.hideZonePanel();
+    for (let t = 0; t < 3000; t += 200) {
+      vi.advanceTimersByTime(200);
+      expect(toastEl()!.style.opacity).toBe('0'); // not inside the hall
+    }
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    ui.toast('🛂 Passport stamped: Projects (1/4)', { hint: true }); // waits out the panel
+    ui.hideLeaveButton(); // the visitor walks out with the panel up
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('🛂 Passport stamped: Projects (1/4)');
+    expect(toastEl()!.style.opacity).toBe('1');
+  });
+
+  test('until() drops an outcome too', () => {
+    vi.useFakeTimers();
+    let inside = false;
+    ui.showHireCard('cta');
+    ui.toast('🧭 You have arrived.', { until: () => inside });
+    inside = true; // the visitor went in before the card closed
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(3000);
+    expect(toastEl()).toBeUndefined();
+  });
+
+  test('a re-shown line is not read out again', () => {
+    vi.useFakeTimers();
+    ui.toast('💬 talk hint', { hint: true });
+    expect(liveText()).toBe('💬 talk hint');
+    // Every write to the live region, as it happens (a MutationObserver
+    // reports a microtask later, after the expects).
+    const live = document.querySelector('#ui-overlay > .ds-sr-only')!;
+    const writes: string[] = [];
+    const own = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent')!;
+    Object.defineProperty(live, 'textContent', {
+      configurable: true,
+      get(this: Node) {
+        return own.get!.call(this);
+      },
+      set(this: Node, v: string) {
+        writes.push(v);
+        own.set!.call(this, v);
+      },
+    });
+    ui.showHireCard('cta');
+    ui.hideZonePanel();
+    vi.advanceTimersByTime(800);
+    expect(text(toastEl())).toBe('💬 talk hint'); // back on screen...
+    expect(writes).toEqual([]); // ...silently: not cleared and set again
+  });
+
+  test('touch: a prompt coming and going no longer takes a shown hint down', () => {
+    history.replaceState(null, '', '/?touch=1');
+    try {
+      document.body.innerHTML = '<div id="ui-overlay"></div>';
+      ui = new SimpleUI('ui-overlay');
+      vi.useFakeTimers();
+      const lost =
+        '🗺️ Lost? Tap the radar for the island map — pick a spot and the gold arrow leads.';
+      ui.toast(lost, { hint: true });
+      expect(toastEl()!.style.opacity).toBe('1');
+      for (let i = 0; i < 4; i++) {
+        ui.showInteractionPrompt('💬 Press <strong>E</strong> to talk to Mayor — ask anything');
+        vi.advanceTimersByTime(250); // two poll ticks
+        expect(toastEl()!.style.opacity).toBe('1');
+        ui.hideInteractionPrompt();
+        vi.advanceTimersByTime(250);
+      }
+      expect(text(toastEl())).toBe(lost);
+      // A hint that has not shown yet still waits for the prompt to go.
+      vi.advanceTimersByTime(4000); // lost's dwell ends
+      ui.showInteractionPrompt('🚪 Press <strong>E</strong> to enter Projects');
+      ui.toast('🪙 Coins! The 📔 Journal lists every way to earn.', { hint: true });
+      vi.advanceTimersByTime(1500);
+      expect(toastEl()!.style.opacity).toBe('0');
+      ui.hideInteractionPrompt();
+      vi.advanceTimersByTime(800);
+      expect(text(toastEl())).toBe('🪙 Coins! The 📔 Journal lists every way to earn.');
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+});
+
 // Wave-1 integration: in short landscape A6 puts First steps' card in a top
 // lane (top +60, left +146), so a toast lifted over it sat on the compass pill
 // and the 38% flash covered the card's last line. happy-dom has no layout:

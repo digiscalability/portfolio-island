@@ -326,16 +326,18 @@ describe('D6: one message at a time', () => {
 
   test('a flash is a queued message, not a DOM write of its own', () => {
     const flash = bodyOf(ui, 'flashMessage(text: string): void');
-    expect(flash).toContain("kind: 'flash'");
+    expect(flash).toContain("this.queued(this.touchifyPlain(text), 'flash', false)");
     expect(flash).toContain('this.enqueue(');
     expect(flash).not.toContain('createElement');
   });
 
-  test('nothing paints over a modal; outcomes go first; stale hints drop', () => {
-    const may = bodyOf(ui, 'private mayShow(m: QueuedMessage): boolean');
+  // Changed deliberately (wave-1 integration): until() drops an outcome too,
+  // and so does a message that showed, stepped aside and changed place.
+  test('nothing paints over a modal; outcomes go first; stale messages drop', () => {
+    const may = bodyOf(ui, 'private mayShow(m: QueuedMessage, shown = false): boolean');
     expect(may.indexOf('this.panels.isModalOpen()')).toBeLessThan(may.indexOf('if (!m.hint)'));
     const take = bodyOf(ui, 'private takeToast(): QueuedMessage | null');
-    expect(take).toContain('q.hint && q.until?.()');
+    expect(take).toContain('!q.until?.() && !(q.shows > 0 && q.inside !== inside)');
     expect(take.indexOf('!q.hint && this.mayShow(q)')).toBeLessThan(
       take.indexOf('q.hint && this.mayShow(q)'),
     );
