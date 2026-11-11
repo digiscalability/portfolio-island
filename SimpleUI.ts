@@ -504,18 +504,22 @@ export class SimpleUI {
 
   private applyToastAnchor(el: HTMLElement): void {
     const short = this.isTouch && this.shortLandscape;
+    const guide = this.guideRect();
     // Desktop: the bulletin's lane under the compass pill whenever no
     // bulletin is up (FM-09: the bottom +250 lane covered the avatar's
-    // torso). Narrow windows keep the bottom lane, clear of the icon row.
+    // torso), and First steps' card is clear of it (a desktop window 500 px
+    // tall or less puts the card at top +60 too, A6). Narrow windows keep
+    // the bottom lane, clear of the icon row.
     if (!this.isTouch && !this.bulletinShowing() && window.innerWidth >= 900) {
       el.dataset.lane = 'top';
+      delete el.dataset.bottom;
       Object.assign(el.style, {
         top: 'calc(var(--sat, 0px) + 66px)',
         bottom: '',
         maxWidth: 'min(92vw, 440px)',
         left: '50%',
       });
-      return;
+      if (!guide || !SimpleUI.near(el.getBoundingClientRect(), guide)) return;
     }
     el.dataset.lane = 'bottom';
     // Portrait touch: 350, not 250 — the action column starts at y381 on a
@@ -523,25 +527,102 @@ export class SimpleUI {
     // WAVE button (measured 74x36). 350 clears it and still sits below the
     // prompt's 300 lane.
     let bottom = short ? 96 : this.isTouch ? 350 : 250;
-    // On touch the toast sits ABOVE the interaction prompt and the guide
-    // card, 8 px clear (D6): a two-line prompt reached into the 350 lane.
-    if (this.isTouch) {
-      for (const other of [this.interactionDiv, document.getElementById('ds-guide')]) {
-        if (!other?.isConnected) continue;
-        const r = other.getBoundingClientRect();
-        if (r.height > 0 && getComputedStyle(other).display !== 'none') {
-          bottom = Math.max(bottom, Math.ceil(window.innerHeight - r.top + 8));
-        }
+    // On touch the toast sits ABOVE the interaction prompt, 8 px clear (D6):
+    // a two-line prompt reached into the 350 lane.
+    const prompt = this.interactionDiv;
+    if (this.isTouch && prompt?.isConnected) {
+      const r = prompt.getBoundingClientRect();
+      if (r.height > 0 && getComputedStyle(prompt).display !== 'none') {
+        bottom = Math.max(bottom, Math.ceil(window.innerHeight - r.top + 8));
       }
     }
-    Object.assign(el.style, {
-      top: '',
-      bottom: `calc(var(--sab, 0px) + ${bottom}px)`,
-      maxWidth: short ? 'min(56vw, 360px)' : 'min(92vw, 440px)',
-      // Landscape: nudged into the free centre band like the prompt, so the
-      // pill clears the joystick ring instead of grazing it.
-      left: short ? 'calc(50% + 30px)' : '50%',
-    });
+    const place = (px: number): void => {
+      el.dataset.bottom = String(px); // the offset as data, for the probes and the tests
+      Object.assign(el.style, {
+        top: '',
+        bottom: `calc(var(--sab, 0px) + ${px}px)`,
+        maxWidth: short ? 'min(56vw, 360px)' : 'min(92vw, 440px)',
+        // Landscape: nudged into the free centre band like the prompt, so
+        // the pill clears the joystick ring instead of grazing it.
+        left: short ? 'calc(50% + 30px)' : '50%',
+      });
+    };
+    place(bottom);
+    // First steps' card (A6): the toast steps above it, 8 px clear, only
+    // where the card is in its lane and there is room above the card below
+    // the compass pill. That is the phone's card, low on the screen. In short
+    // landscape the card sits in a top lane (top +60), and lifting over it
+    // put every toast on the compass pill (124x37 at 844x390, wave-1
+    // integration); the 96 px lane is clear of that card.
+    if (guide) {
+      const r = el.getBoundingClientRect();
+      if (SimpleUI.near(r, guide) && guide.top - 8 - r.height >= this.topClear()) {
+        place(Math.max(bottom, Math.ceil(window.innerHeight - guide.top + 8)));
+      }
+    }
+  }
+
+  /**
+   * The flash's place: centred at 38% of the height, unless First steps'
+   * card is there. Then it goes 8 px above the card where that fits below
+   * the compass pill (a phone's card, low on the screen), else 8 px below it
+   * (short landscape, where A6 puts the card at top +60: the 38% flash
+   * covered the card's last line, 226x33 px at 844x390 and 267x38 at
+   * 667x375, wave-1 integration). Re-run while the flash shows (watchShown):
+   * the card changes with each step and folds to its chip.
+   */
+  private anchorFlash(el: HTMLElement): void {
+    const guide = this.guideRect();
+    const vh = window.innerHeight;
+    const h = el.offsetHeight;
+    const w = el.offsetWidth;
+    let mid: number | null = null; // the flash's centre, when it moves
+    if (guide && h > 0) {
+      const at = new DOMRect(window.innerWidth / 2 - w / 2, vh * 0.38 - h / 2, w, h);
+      if (SimpleUI.near(at, guide)) {
+        if (guide.top - 8 - h >= this.topClear()) mid = guide.top - 8 - h / 2;
+        else if (guide.bottom + 8 + h <= vh - 8) mid = guide.bottom + 8 + h / 2;
+      }
+    }
+    el.style.top = mid === null ? '38%' : `${Math.round(mid)}px`;
+    if (mid === null) delete el.dataset.lane;
+    else el.dataset.lane = 'guide';
+  }
+
+  /** First steps' card or chip (A6, #ds-guide) where it stands on screen,
+   *  or null while it is hidden. */
+  private guideRect(): DOMRect | null {
+    const g = typeof document === 'undefined' ? null : document.getElementById('ds-guide');
+    if (!g?.isConnected) return null;
+    const cs = getComputedStyle(g);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) {
+      return null;
+    }
+    const r = g.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? r : null;
+  }
+
+  /** The highest a lifted toast or a moved flash may reach: 8 px under the
+   *  compass pill, or 8 px from the top while the pill is hidden. */
+  private topClear(): number {
+    const c = this.compassDiv;
+    if (c?.isConnected && c.style.display !== 'none') {
+      const r = c.getBoundingClientRect();
+      if (r.height > 0) return r.bottom + 8;
+    }
+    return 8;
+  }
+
+  /** Do two boxes meet, or come within `pad` px of each other? */
+  private static near(a: DOMRect, b: DOMRect, pad = 8): boolean {
+    return (
+      a.width > 0 &&
+      a.height > 0 &&
+      a.left < b.right + pad &&
+      b.left < a.right + pad &&
+      a.top < b.bottom + pad &&
+      b.top < a.bottom + pad
+    );
   }
 
   // ── Mobile chip drawer (mobile-HUD Round 3, Phase 3) ──────────────────
@@ -1252,19 +1333,49 @@ export class SimpleUI {
    * opened over it, or (a hint) a panel, the menu, the tour, the guide or a
    * phone prompt came up, or its until() came true. Measured before this: the
    * talk hint stayed over a freshly opened hire card for the rest of its
-   * dwell. Polls only while a message shows (6 s at most).
+   * dwell.
+   *
+   * While it may stay, it keeps its lane clear of First steps' card, which
+   * grows with each step, folds to its chip and moves over a prompt while
+   * the message shows: on every poll, and in the same frame the card
+   * resizes (at 844x390 the step-3 card grew 39 px into a flash 8 px below
+   * it, for one 100 ms monitor sample before the poll moved it). Polls only
+   * while a message shows (6 s at most).
    */
   private watchShown(m: QueuedMessage): void {
     if (this.shownWatch) window.clearInterval(this.shownWatch);
+    this.unwatchGuide();
+    const reanchor = (): void => {
+      if (m.kind === 'flash') {
+        if (this.flashEl) this.anchorFlash(this.flashEl);
+      } else if (this.toastEl) {
+        this.applyToastAnchor(this.toastEl);
+      }
+    };
+    const guide = document.getElementById('ds-guide');
+    if (guide && typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => {
+        if (this.shownMessage === m && this.toastBusy) reanchor();
+      });
+      ro.observe(guide);
+      this.guideResize = ro;
+    }
     const iv = window.setInterval(() => {
       if (this.shownMessage !== m || !this.toastBusy) {
         window.clearInterval(iv);
-        if (this.shownWatch === iv) this.shownWatch = 0;
+        if (this.shownWatch === iv) {
+          this.shownWatch = 0;
+          this.unwatchGuide();
+        }
         return;
       }
-      if (this.mayShow(m) && !(m.hint && m.until?.())) return;
+      if (this.mayShow(m) && !(m.hint && m.until?.())) {
+        reanchor();
+        return;
+      }
       window.clearInterval(iv);
       this.shownWatch = 0;
+      this.unwatchGuide();
       this.stepHintAside(true);
     }, 120);
     this.shownWatch = iv;
@@ -1272,6 +1383,13 @@ export class SimpleUI {
 
   /** watchShown's poll, while a message shows. */
   private shownWatch = 0;
+  /** watchShown's eye on First steps' card, while a message shows. */
+  private guideResize: ResizeObserver | null = null;
+  private unwatchGuide(): void {
+    this.guideResize?.disconnect();
+    this.guideResize = null;
+  }
+
   /** dispose() ran: the queue takes nothing more and arms no timer. */
   private messagesStopped = false;
 
@@ -1294,6 +1412,7 @@ export class SimpleUI {
       if (t) clearTimeout(t);
     }
     if (this.shownWatch) window.clearInterval(this.shownWatch);
+    this.unwatchGuide();
     this.pumpTimer = 0;
     this.toastTimer = 0;
     this.panelNoteTimer = 0;
@@ -6787,6 +6906,7 @@ export class SimpleUI {
       transition: 'opacity 0.25s ease, transform 0.25s cubic-bezier(0.34,1.56,0.64,1)',
     });
     this.overlay.appendChild(el);
+    this.anchorFlash(el); // clear of First steps' card
     requestAnimationFrame(() => {
       el.style.opacity = '1';
       el.style.transform = 'translate(-50%, -50%) scale(1)';

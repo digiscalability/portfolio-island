@@ -425,6 +425,108 @@ describe('messages: one at a time', () => {
   });
 });
 
+// Wave-1 integration: in short landscape A6 puts First steps' card in a top
+// lane (top +60, left +146), so a toast lifted over it sat on the compass pill
+// and the 38% flash covered the card's last line. happy-dom has no layout:
+// the boxes below are the ones measured at 844x390, 390x844 and 375x667.
+describe('messages: clear of First steps’ card', () => {
+  const restore: (() => void)[] = [];
+  afterEach(() => {
+    for (const r of restore.splice(0)) r();
+    history.replaceState(null, '', '/');
+  });
+
+  /** A phone at w x h (short landscape at 500 tall or less), the guide card
+   *  at `card`, the compass pill at the top centre, and a 212x37 toast and
+   *  294x40 flash wherever their lanes put them. */
+  const phone = (w: number, h: number, card: DOMRect): HTMLElement => {
+    for (const [k, v] of [
+      ['innerWidth', w],
+      ['innerHeight', h],
+    ] as const) {
+      const own = Object.getOwnPropertyDescriptor(window, k);
+      Object.defineProperty(window, k, { value: v, configurable: true });
+      restore.push(() => {
+        if (own) Object.defineProperty(window, k, own);
+        else delete (window as unknown as Record<string, unknown>)[k];
+      });
+    }
+    const short = h <= 500;
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (q: string) =>
+        ({
+          matches: q.includes('max-height: 500px') ? short : false,
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(40);
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(294);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.id === 'ds-guide') return card;
+      if (this.dataset.guide === 'compass') return new DOMRect(w / 2 - 62, 14, 124, 44);
+      // (happy-dom drops calc(var()) offsets: the lane's offset is read from
+      // its data-bottom marker.)
+      if (this.style.zIndex === '1750' && this.dataset.bottom) {
+        return new DOMRect(w / 2 - 106, h - Number(this.dataset.bottom) - 37, 212, 37);
+      }
+      return new DOMRect();
+    });
+    history.replaceState(null, '', '/?touch=1');
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    ui.updateQuestCompass({ angleRad: 0, distance: 103, label: '🚀 Projects' });
+    const g = document.createElement('div');
+    g.id = 'ds-guide';
+    g.dataset.active = '0';
+    document.body.appendChild(g);
+    return g;
+  };
+  const flash = (): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('#ui-overlay > div')].find(
+      (d) => d.style.zIndex === '2000' && text(d).startsWith('🔍'),
+    );
+
+  test('short landscape: the toast keeps its 96 px lane, off the compass pill', () => {
+    vi.useFakeTimers();
+    phone(844, 390, new DOMRect(146, 60, 290, 91));
+    ui.toast('🧭 Compass set: 🚀 Projects');
+    expect(toastEl()!.dataset.lane).toBe('bottom');
+    expect(toastEl()!.dataset.bottom).toBe('96'); // y 257-294, under the card's 60-151
+  });
+
+  test('a phone in portrait: the toast still steps 8 px above the card', () => {
+    vi.useFakeTimers();
+    phone(390, 844, new DOMRect(16, 403, 359, 91));
+    ui.toast('🧭 Compass set: 🚀 Projects');
+    expect(toastEl()!.dataset.bottom).toBe(String(844 - 403 + 8));
+  });
+
+  test('short landscape: the flash goes 8 px below the card, and follows it', () => {
+    vi.useFakeTimers();
+    const card = new DOMRect(146, 60, 290, 91);
+    phone(844, 390, card);
+    ui.flashMessage('🔍 Secret found: The Musician’s Stage!');
+    expect(flash()!.style.top).toBe(`${60 + 91 + 8 + 20}px`); // its centre
+    card.height = 68; // the next step's card is shorter
+    vi.advanceTimersByTime(130);
+    expect(flash()!.style.top).toBe(`${60 + 68 + 8 + 20}px`);
+    document.getElementById('ds-guide')!.style.display = 'none';
+    vi.advanceTimersByTime(130);
+    expect(flash()!.style.top).toBe('38%'); // no card: back to centre
+  });
+
+  test('a small phone in portrait: the flash goes above the card', () => {
+    vi.useFakeTimers();
+    phone(375, 667, new DOMRect(8, 226, 359, 91));
+    ui.flashMessage('🔍 Secret found: The Musician’s Stage!');
+    expect(flash()!.style.top).toBe(`${226 - 8 - 20}px`);
+  });
+});
+
 describe('messages: announced, once', () => {
   test('the live region mirrors the toast, the flash and the bulletin', () => {
     vi.useFakeTimers();
