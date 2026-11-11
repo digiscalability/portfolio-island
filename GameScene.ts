@@ -7,6 +7,7 @@ import { buildCloudFormations } from './CloudFormations';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle, EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle';
 import { framingFov } from './Framing';
+import { fx } from './FxBudget';
 import { Island } from './Island';
 import { expDecayV3, squash } from './Juice';
 import { Mailbox } from './Mailbox';
@@ -95,6 +96,28 @@ interface WarmProgram {
   getUniforms(): unknown;
   getAttributes(): unknown;
 }
+
+/**
+ * What the light rig reads from EnvironmentCycle once C's wave-2 getters exist
+ * (C merges after B, so each is optional and has today's value as its
+ * fallback): the night factor, the night level of the camera fill, and the
+ * hemisphere's live tint.
+ */
+interface LightRigSource {
+  getNightFactor?(): number;
+  getNightFill?(): number;
+  getHemiTint?(): {
+    sky?: THREE.Color;
+    ground?: THREE.Color;
+    color?: THREE.Color;
+    groundColor?: THREE.Color;
+  } | null;
+}
+
+// The light rig's per-frame half (P2-B5): the camera fill, the rim opposite
+// the sun, and the moon's and the weather's share of the sun's shadow. Off,
+// the rig is the authored one.
+fx.register('lightRig', { desktop: true, low: true });
 
 /** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
  *  (geometry and material are shared). */
@@ -764,6 +787,26 @@ export class GameScene extends THREE.Scene {
   // still cover what the chase camera can see behind the player.
   private static readonly SHADOW_EXTENT = 17;
   private rimLight?: THREE.DirectionalLight;
+  /** The cool fill (setupLighting). updateLightRig aims it from the camera. */
+  private fillLight?: THREE.DirectionalLight;
+  /** Where setupLighting leaves the fill and the rim: the rig with fx
+   *  'lightRig' off. */
+  private static readonly FILL_HOME = new THREE.Vector3(-20, -30, -20);
+  private static readonly RIM_HOME = new THREE.Vector3(-34, 26, -30);
+  /** The fill's level by day, and at night until EnvironmentCycle says
+   *  otherwise (getNightFill, C's lever). */
+  private static readonly FILL_DAY = 0.18;
+  /** The rim stands this far above the horizon, opposite the sun. */
+  private static readonly RIM_LIFT = Math.PI / 6;
+  /** Weather's share of the sun's shadow, eased at cloudWet's rate. */
+  private rigWeatherShadow = 1;
+  /** The rim's last horizontal direction, kept while the sun is overhead. */
+  private readonly _rigRimFlat = new THREE.Vector3(1, 0, 0);
+  private readonly _rigDir = new THREE.Vector3();
+  private readonly _rigPlayerPos = new THREE.Vector3();
+  private rigDt = 0;
+  private rigParked = true;
+  private readonly boundLightRig = (): void => this.updateLightRig();
   private _sunDir = new THREE.Vector3();
   // Shadow-box texel snapping (updateSunShadow) — the basis three's shadow
   // camera uses, plus the rounded box centre.
@@ -1591,15 +1634,20 @@ export class GameScene extends THREE.Scene {
     this.hemiBaseGround = hemiLight.groundColor.clone();
 
     // Soft fill from below-opposite so the planet's far side isn't pure black
-    const fillLight = new THREE.DirectionalLight(0xd4e8ff, 0.18);
-    fillLight.position.set(-20, -30, -20);
+    // (updateLightRig re-aims it from the camera each frame: P2-B5.)
+    const fillLight = new THREE.DirectionalLight(0xd4e8ff, GameScene.FILL_DAY);
+    fillLight.position.copy(GameScene.FILL_HOME);
+    fillLight.name = 'rig_fill';
     this.add(fillLight);
+    this.fillLight = fillLight;
 
     // RIM: a cool back-light roughly opposite the key. This is what separates
     // a prop's silhouette from the terrain behind it — the single biggest
     // reason stylised scenes read as "lit" rather than "flat shaded".
+    // (updateLightRig keeps it opposite the sun at the player: P2-B5.)
     const rimLight = new THREE.DirectionalLight(0xcfe6ff, 0.55);
-    rimLight.position.set(-34, 26, -30);
+    rimLight.position.copy(GameScene.RIM_HOME);
+    rimLight.name = 'rig_rim';
     this.add(rimLight);
     this.rimLight = rimLight;
 
@@ -12129,7 +12177,7 @@ export class GameScene extends THREE.Scene {
     // perfectly static, losing the "this is alive, come here" affordance.
     this.zonesManager.update(time);
     // AFTER the cycle, which owns the sun's direction each frame
-    this.updateSunShadow(playerPos);
+    this.updateSunShadow(playerPos, deltaTime);
   }
 
   /**
@@ -12268,6 +12316,9 @@ export class GameScene extends THREE.Scene {
     }
     // ?look=soft: the composer's grade pass + bloom breathe with the cycle.
     this.rendererRef?.setGradeDayFactor?.(day);
+    // Night bloom stays on the bulbs: the renderer lifts its threshold after
+    // dark (E's P2-E5; a no-op until it merges, and where there is no composer).
+    this.rendererRef?.setBloomNight?.(day);
     // Cel rim: sun direction into view space for every registered cast shader.
     if (this.lights.sun && this.camera) {
       GameScene._celSunDir
@@ -12287,8 +12338,11 @@ export class GameScene extends THREE.Scene {
     // Submerged look: when the CAMERA dips below the live wave surface, grade
     // the frame into teal murk. Fog color/density are rewritten by
     // EnvironmentCycle at the top of every frame, so this override MUST stay
-    // in this post-envCycle block — restore is automatic. The hemi tint has
-    // no per-frame owner, so at f=0 the exact cached bases are written back.
+    // in this post-envCycle block — restore is automatic. The hemi tint is
+    // lerped from EnvironmentCycle's live tint (getHemiTint, C1), so its
+    // golden-hour and night colours survive this write. Until that getter
+    // exists the tint has no per-frame owner, and at f=0 the exact cached
+    // bases are written back, as before.
     if (this.island && this.camera && this.fog) {
       this._camDirScratch.copy(this.camera.position).normalize();
       const waveR = this.island.waveHeightAt(this._camDirScratch, this.island.seaTimeUniform.value);
@@ -12309,8 +12363,11 @@ export class GameScene extends THREE.Scene {
         fog.density += (UNDERWATER_FOG_DENSITY - fog.density) * f;
       }
       if (this.hemiLight && this.hemiBaseSky && this.hemiBaseGround) {
-        this.hemiLight.color.copy(this.hemiBaseSky).lerp(GameScene._underHemiSky, f);
-        this.hemiLight.groundColor.copy(this.hemiBaseGround).lerp(GameScene._underHemiGround, f);
+        const tint = (this.envCycle as unknown as LightRigSource).getHemiTint?.();
+        const sky = tint?.sky ?? tint?.color ?? this.hemiBaseSky;
+        const ground = tint?.ground ?? tint?.groundColor ?? this.hemiBaseGround;
+        this.hemiLight.color.copy(sky).lerp(GameScene._underHemiSky, f);
+        this.hemiLight.groundColor.copy(ground).lerp(GameScene._underHemiGround, f);
       }
     }
   }
@@ -12327,7 +12384,7 @@ export class GameScene extends THREE.Scene {
    * them, so the tight ortho box is always spent where the camera is looking
    * instead of being smeared across the whole planet.
    */
-  private updateSunShadow(playerPos: THREE.Vector3): void {
+  private updateSunShadow(playerPos: THREE.Vector3, deltaTime = 0): void {
     const sun = this.lights.sun;
     if (!sun) return;
     this._sunDir.copy(sun.position).normalize();
@@ -12404,6 +12461,96 @@ export class GameScene extends THREE.Scene {
       const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
       this.rimLight.intensity = 0.12 + 0.43 * day;
     }
+    // The rig's per-frame half, after the fade above (it scales that shadow).
+    if (fx.on('lightRig')) {
+      this._rigPlayerPos.copy(playerPos);
+      this.rigDt = deltaTime;
+      fx.time('lightRig', this.boundLightRig);
+    } else if (!this.rigParked) {
+      this.parkLightRig();
+    }
+  }
+
+  /**
+   * 0 by day and through golden hour, 1 in deep night. EnvironmentCycle's
+   * getNightFactor() when it has one (C1); until then a ramp over the bottom
+   * of the day factor. NEVER 1 - getDayFactor(): that is 0.8 at 06 h and 18 h
+   * (day factor 0.198), which would halve golden-hour shadows and lift the
+   * golden-hour fill.
+   */
+  private nightFactor(day: number): number {
+    const live = (this.envCycle as unknown as LightRigSource | null)?.getNightFactor?.();
+    if (typeof live === 'number') return THREE.MathUtils.clamp(live, 0, 1);
+    return 1 - THREE.MathUtils.smoothstep(day, 0.02, 0.15);
+  }
+
+  /**
+   * The light rig's per-frame half (P2-B5). Directions and levels only: no
+   * light is added, shown or hidden, so no program re-keys and nothing draws.
+   * Runs from updateSunShadow, which has just set the sun's direction
+   * (_sunDir), the player's up (_shadowUpAxis) and the local-horizon fade.
+   *
+   * - FILL: aimed along camera - player, so the side of a face or a wall the
+   *   camera sees is never the unlit one. (It used to shine up from under the
+   *   planet, on undersides.) 0.18 by day. At night it takes
+   *   EnvironmentCycle's getNightFill() level, which C tunes together with
+   *   its night key and hemisphere (C5); until that getter exists, 0.18.
+   * - RIM: opposite the sun's horizontal direction at the player, raised 30
+   *   degrees. The fixed world direction it had was a rim at one longitude
+   *   and a second key at another.
+   * - MOON SHADOWS: half strength in deep night.
+   * - WEATHER SHADOWS: 0.45 under cloud, 0.4 in snow, 0.2 in rain, eased at
+   *   cloudWet's rate. An overcast sky is a soft box, and a hard cel shadow
+   *   under rain read as a second sun.
+   */
+  private updateLightRig(): void {
+    const sun = this.lights.sun;
+    if (!sun || !this.camera) return;
+    this.rigParked = false;
+    const env = this.envCycle;
+    const day = env ? env.getDayFactor() : 1;
+    const night = this.nightFactor(day);
+    const up = this._shadowUpAxis;
+    const fill = this.fillLight;
+    if (fill) {
+      // A DirectionalLight shines along position - target, and this target
+      // stays at the origin (it is not in the scene graph), so the position
+      // is the direction.
+      this._rigDir.copy(this.camera.position).sub(this._rigPlayerPos);
+      if (this._rigDir.lengthSq() > 1e-6) fill.position.copy(this._rigDir.setLength(40));
+      const nightFill = (env as unknown as LightRigSource | null)?.getNightFill?.();
+      const atNight = typeof nightFill === 'number' ? nightFill : GameScene.FILL_DAY;
+      fill.intensity = GameScene.FILL_DAY + (atNight - GameScene.FILL_DAY) * night;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      // The sun's direction with its vertical part (along the player's up)
+      // taken out, reversed. Overhead it has no horizontal part: hold the last.
+      this._rigDir.copy(this._sunDir).addScaledVector(up, -this._sunDir.dot(up));
+      if (this._rigDir.lengthSq() > 1e-4) this._rigRimFlat.copy(this._rigDir).normalize().negate();
+      rim.position
+        .copy(this._rigRimFlat)
+        .multiplyScalar(Math.cos(GameScene.RIM_LIFT))
+        .addScaledVector(up, Math.sin(GameScene.RIM_LIFT))
+        .multiplyScalar(52);
+    }
+    const w = env ? env.getWeather() : 'clear';
+    const weatherShadow = w === 'rain' ? 0.2 : w === 'snow' ? 0.4 : w === 'cloudy' ? 0.45 : 1;
+    this.rigWeatherShadow +=
+      (weatherShadow - this.rigWeatherShadow) * Math.min(1, this.rigDt * 0.5);
+    sun.shadow.intensity *= (1 - 0.5 * night) * this.rigWeatherShadow;
+  }
+
+  /** fx 'lightRig' off: the fill and the rim go back where setupLighting put
+   *  them. (The shadow needs nothing: updateSunShadow rewrites it each frame.) */
+  private parkLightRig(): void {
+    this.rigParked = true;
+    this.rigWeatherShadow = 1;
+    if (this.fillLight) {
+      this.fillLight.position.copy(GameScene.FILL_HOME);
+      this.fillLight.intensity = GameScene.FILL_DAY;
+    }
+    this.rimLight?.position.copy(GameScene.RIM_HOME);
   }
 
   public getEnvironmentCycle(): EnvironmentCycle | null {
@@ -13528,11 +13675,13 @@ export class GameScene extends THREE.Scene {
   private rendererRef: {
     getRenderer(): THREE.WebGLRenderer;
     setGradeDayFactor?(day: number): void;
+    setBloomNight?(day: number): void;
     setShadowFreeze?(frozen: boolean): void;
   } | null = null;
   public setRendererRef(r: {
     getRenderer(): THREE.WebGLRenderer;
     setGradeDayFactor?(day: number): void;
+    setBloomNight?(day: number): void;
     setShadowFreeze?(frozen: boolean): void;
   }): void {
     this.rendererRef = r;
