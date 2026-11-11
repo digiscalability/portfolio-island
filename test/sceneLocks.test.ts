@@ -325,4 +325,31 @@ describe('the arrival trail leads to a villager who talks (B10)', () => {
       "localStorage.getItem('ds_arrived') === '1'",
     );
   });
+
+  test('a trail coin waits for the visitor to steer, so the first pickup is theirs', () => {
+    // MEASURED on the integration: the first coin lies 1.3 u from the spawn,
+    // inside the magnet's reach, and was taken during the fly-in. At the
+    // first card ds_arrived was '1' with 1 coin held and 4 of 5 on the
+    // ground, so a reload with the card still up built no trail for a
+    // visitor who had not moved.
+    const scene = Object.setPrototypeOf(new THREE.Scene(), GameScene.prototype) as unknown as {
+      trailCoinWaits(c: { trail?: boolean }): boolean;
+      setPlayerMovement(forward: number, strafe: number): void;
+    };
+    Object.assign(scene, { visitorSteered: false });
+    expect(scene.trailCoinWaits({ trail: true })).toBe(true);
+    expect(scene.trailCoinWaits({})).toBe(false); // a meadow coin never waits
+    scene.setPlayerMovement(0, 0); // the fly-in and the card feed zeros every frame
+    expect(scene.trailCoinWaits({ trail: true })).toBe(true);
+    scene.setPlayerMovement(0, 0.4);
+    expect(scene.trailCoinWaits({ trail: true })).toBe(false);
+    scene.setPlayerMovement(0, 0); // released for the visit, standing or not
+    expect(scene.trailCoinWaits({ trail: true })).toBe(false);
+    // The coin loop asks before the magnet and before the pickup.
+    const loop = bodyOf(stripped('GameScene.ts'), 'for (const c of this.coins) {');
+    const waits = loop.indexOf('if (this.trailCoinWaits(c)) continue;');
+    expect(waits).toBeGreaterThan(-1);
+    expect(waits).toBeLessThan(loop.indexOf('c.mesh.position.lerp(playerPos'));
+    expect(waits).toBeLessThan(loop.indexOf('if (c.trail) {'));
+  });
 });

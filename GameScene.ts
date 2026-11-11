@@ -9813,6 +9813,20 @@ export class GameScene extends THREE.Scene {
   private trailCoinsLeft = 0;
   /** ds_arrived has been written for this visit (the first trail coin). */
   private arrivalMarked = false;
+  /** The visitor has steered the avatar since load (setPlayerMovement). */
+  private visitorSteered = false;
+  /**
+   * A trail coin waits for the visitor: no magnet and no pickup until they
+   * have steered. The first coin lies inside the magnet's reach of the
+   * spawn. MEASURED: it was taken during the fly-in, before the welcome
+   * card, and that pickup marked the visit (ds_arrived). A reload with the
+   * card still up then built no trail, for a visitor who had not moved. Now
+   * the first pickup is the visitor's own: a reload before it shows the
+   * whole trail again, and a reload after it still gives no coin twice.
+   */
+  private trailCoinWaits(c: { trail?: boolean }): boolean {
+    return c.trail === true && !this.visitorSteered;
+  }
   /** The villager the arrival trail leads to (createArrivalTrail). */
   private trailVillager: string | null = null;
   /** First-visit arrival coins still on the ground? While true, the guide
@@ -11914,6 +11928,7 @@ export class GameScene extends THREE.Scene {
       }
       this._npcNormal.copy(c.mesh.position).normalize();
       c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 2.5);
+      if (this.trailCoinWaits(c)) continue;
       // Magnet: within ~2.1u the coin leans toward the player — the pickup
       // starts ANSWERING before it lands (anticipation beat of the ceremony).
       // Near-misses ease back to their seat so no coin is left stranded.
@@ -15770,6 +15785,7 @@ export class GameScene extends THREE.Scene {
    * Set player movement input (camera-relative)
    */
   public setPlayerMovement(forward: number, strafe: number): void {
+    if (forward !== 0 || strafe !== 0) this.visitorSteered = true; // trailCoinWaits
     if (this.player && this.orbitCamera) {
       // getForwardDirection/getRightDirection are already projected onto the tangent plane
       const cameraForward = this.orbitCamera.getForwardDirection();
