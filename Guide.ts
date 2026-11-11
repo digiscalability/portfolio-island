@@ -341,6 +341,17 @@ export class Guide {
     return this.phase === 'steps' ? this.step : null;
   }
 
+  /**
+   * The villager First steps is sending the visitor to, while it is: the
+   * talk step is on the card or still ahead (walk, look), not done, and the
+   * card is not collapsed to the chip. The compass names the same villager
+   * (compassTarget's talk branch), so the pill and the card never part.
+   */
+  talkTargetNow(): string | null {
+    if (this.phase !== 'steps' || this.chip || this.save.done.includes('talk')) return null;
+    return this.talkTarget;
+  }
+
   /** What 'ds:guide' says the guide is on. */
   signalStep(): string | null {
     if (this.phase === 'steps') return this.step;
@@ -378,6 +389,9 @@ export class Guide {
     this.paused = true;
     this.resumeLeft = GUIDE_TIMING.resume;
     this.lastYaw = null;
+    // Known from the arming on, so the pill names the villager at once.
+    this.talkT = 0;
+    if (!this.save.done.includes('talk')) this.talkTarget = this.opts.talkTarget(null);
     if (controls) {
       this.phase = 'controls';
       this.phaseLeft = GUIDE_TIMING.controls;

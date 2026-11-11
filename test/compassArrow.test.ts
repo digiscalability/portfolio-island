@@ -113,6 +113,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
     raceGuide: false,
     aiGuide: false,
     trailVillager: false,
+    talkStep: false,
     projectsUnstamped: false,
     districtUnstamped: false,
     parcelActive: false,
@@ -125,6 +126,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
     raceGuide: true,
     aiGuide: true,
     trailVillager: true,
+    talkStep: true,
     projectsUnstamped: true,
     districtUnstamped: true,
     parcelActive: true,
@@ -139,6 +141,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
       ['raceGuide', 'race'],
       ['aiGuide', 'ai'],
       ['trailVillager', 'trail'],
+      ['talkStep', 'talk'],
       ['projectsUnstamped', 'projects'],
       ['districtUnstamped', 'district'],
     ];
@@ -187,6 +190,20 @@ describe('compassTarget: the pill picks one target, in order', () => {
         });
         expect(pick).not.toBe('parcel');
       }
+    }
+  });
+
+  test("First steps' talk villager: named without trail coins, after the trail's seat", () => {
+    // A reload: no trail coins, the card says 'Walk up to Mayor'. The pill
+    // used to fall through to Projects, 103 m away (wave-1 integration).
+    expect(compassTarget({ ...none, talkStep: true, projectsUnstamped: true })).toBe('talk');
+    // While the coins are down they lead the way, to the same villager's seat.
+    expect(
+      compassTarget({ ...none, trailVillager: true, talkStep: true, projectsUnstamped: true }),
+    ).toBe('trail');
+    // A map pick, its hold, a race or Ask the townsfolk still come first.
+    for (const key of ['mapPick', 'arrivalHold', 'raceGuide', 'aiGuide'] as const) {
+      expect(compassTarget({ ...none, [key]: true, talkStep: true })).not.toBe('talk');
     }
   });
 

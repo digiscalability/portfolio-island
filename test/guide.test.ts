@@ -497,6 +497,95 @@ describe('First steps: persistence, resume and arming', () => {
     expect(again.guide.view()).toMatchObject({ step: 'talk', done: ['move', 'look'] });
   });
 
+  test('talkTargetNow: the villager First steps sends the visitor to, until they have talked', () => {
+    const idleGuide = makeGuide().guide;
+    expect(idleGuide.talkTargetNow()).toBeNull(); // not armed: the welcome card is up
+    const h = makeGuide();
+    h.guide.arm('explore');
+    // From the arming on, walk and look included: the pill never leaves the
+    // villager for Projects between the trail's end and the talk step.
+    expect(h.guide.talkTargetNow()).toBe('Mayor');
+    run(h.guide, 0.7);
+    expect(h.guide.currentStep()).toBe('move');
+    expect(h.guide.talkTargetNow()).toBe('Mayor');
+    const { guide } = h;
+    guide.complete('move');
+    guide.complete('look');
+    run(guide, 0.5);
+    expect(guide.currentStep()).toBe('talk');
+    expect(guide.talkTargetNow()).toBe('Mayor');
+    run(guide, 20); // the chip: the card no longer says it
+    expect(guide.view().chip).toBe(true);
+    expect(guide.talkTargetNow()).toBeNull();
+    guide.expand();
+    expect(guide.talkTargetNow()).toBe('Mayor');
+    guide.complete('talk'); // its check plays for 450 ms: the pill moves on now
+    expect(guide.currentStep()).toBe('talk');
+    expect(guide.talkTargetNow()).toBeNull();
+    const skipped = armed();
+    skipped.guide.complete('move');
+    skipped.guide.complete('look');
+    run(skipped.guide, 0.5);
+    skipped.guide.skip();
+    expect(skipped.guide.talkTargetNow()).toBeNull();
+    // talked before the guide reached the step (out of order): not sent again
+    const early = armed();
+    early.guide.complete('talk');
+    expect(early.guide.currentStep()).toBe('move');
+    expect(early.guide.talkTargetNow()).toBeNull();
+    // nobody to talk to: nothing for the pill either
+    expect(armed({ talkTarget: () => null }).guide.talkTargetNow()).toBeNull();
+  });
+
+  test('the villager goes to bed before the talk step: the pill moves at once, the card later', () => {
+    let who: string | null = 'Mayor';
+    const { guide } = armed({ talkTarget: () => who });
+    expect(guide.talkTargetNow()).toBe('Mayor');
+    const v0 = guide.version();
+    who = 'Elder Sage';
+    run(guide, 0.6);
+    expect(guide.currentStep()).toBe('move');
+    expect(guide.talkTargetNow()).toBe('Elder Sage');
+    expect(guide.version()).toBe(v0); // walk's card does not name them: no redraw
+    who = null; // nobody up: the pill lets go, and the step will be skipped
+    run(guide, 0.6);
+    expect(guide.talkTargetNow()).toBeNull();
+    guide.complete('move');
+    guide.complete('look');
+    run(guide, 0.5);
+    expect(guide.currentStep()).toBe('portfolio');
+    // a panel or a room pauses the question with the card
+    const paused = armed({ talkTarget: () => who });
+    who = 'Mayor';
+    run(paused.guide, 3, { blocked: true });
+    expect(paused.guide.talkTargetNow()).toBeNull();
+    run(paused.guide, 1.2);
+    expect(paused.guide.talkTargetNow()).toBe('Mayor');
+  });
+
+  test('a reload resumes at talk naming this load’s villager, trail coins or none', () => {
+    const first = armed();
+    first.guide.complete('move');
+    first.guide.complete('look');
+    // The reload picks its villager afresh at the intro (A7); the guide asks
+    // for it when the talk step starts, after arming.
+    let villager: string | null = null;
+    const again = makeGuide({ welcomed: true, talkTarget: () => villager }, { ...first.data });
+    villager = 'Mayor';
+    again.guide.arm('explore');
+    run(again.guide, 0.7);
+    expect(again.guide.talkTargetNow()).toBe('Mayor');
+    expect(
+      guideCopy(again.guide.view(), {
+        touch: false,
+        lookMode: 'drag',
+        runKey: null,
+        compassLabel: 'Mayor',
+        finaleLabel: 'Projects',
+      }).body,
+    ).toContain('Walk up to Mayor and press [E]');
+  });
+
   test('finished or skipped never arms again', () => {
     for (const end of [{ finished: true }, { skipped: true }]) {
       const save = JSON.stringify({
@@ -1120,5 +1209,258 @@ describe("main-simple: no #ds-guide and no 'ds:guide' until the guide arms (A6, 
     app.renderGuide();
     expect(document.getElementById('ds-guide')).toBeNull();
     expect(seen).toEqual([]);
+  });
+});
+
+// ---- wave-1 integration: the talk step and the pill agree -----------------
+
+// After a reload the arrival trail is gone (first visit only), yet First
+// steps resumes at talk and names the villager A7 picked for this load. The
+// pill fell through to Projects, 103 m away, while the card said 'Walk up to
+// Mayor'. On a first visit the trail ends at its seat before a word is said,
+// with the same result. And at night the trail villager goes to bed seconds
+// after the intro: the card and the pill named a villager tagged "asleep".
+// updateQuestCompass, talkVillager and villagerUp run for real here, on a
+// stub app and world, with the guide asking the app for its talk villager.
+describe('main-simple: the pill names the villager First steps sends the visitor to', () => {
+  type Method = (this: unknown, ...a: unknown[]) => unknown;
+  const NAMES = [
+    'updateQuestCompass',
+    'zonePos',
+    'nearestDistrict',
+    'districtLabel',
+    'projectTangent',
+    'trailSeat',
+    'villagerUp',
+    'talkVillager',
+  ] as const;
+  let proto: Record<(typeof NAMES)[number], Method>;
+  let V3: typeof import('three').Vector3;
+  beforeAll(async () => {
+    (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
+    const mod = await import('../main-simple');
+    proto = mod.SimpleApp.prototype as unknown as typeof proto;
+    V3 = (await import('three')).Vector3;
+  }, 120000);
+
+  /**
+   * An app on a world of three villagers who talk: the Mayor 4 u away (his
+   * seat, where the trail was laid, 8 u away), the Elder Sage 12 u away and
+   * the Teller 40 u away. `done` is the reloaded guide's progress.
+   */
+  const setup = (over: { coins?: boolean; stamps?: number; done?: GuideStep[] } = {}) => {
+    const stamps = over.stamps ?? 0;
+    const player = new V3(0, 100, 0);
+    const villagers = [
+      { name: 'Mayor', meshRef: { visible: true, position: new V3(4, 99.9, 0) } },
+      { name: 'Elder Sage', meshRef: { visible: true, position: new V3(0, 99.3, 12) } },
+      { name: 'Teller', meshRef: { visible: true, position: new V3(0, 91.7, -40) } },
+    ];
+    const activity: Record<string, string | undefined> = {};
+    const up = (n: string): boolean =>
+      villagers.some((v) => v.name === n && v.meshRef.visible) && activity[n] !== 'sleep';
+    const pills: Array<{ label: string } | null> = [];
+    const app: Record<string, unknown> = {
+      scene: {
+        getPlayer: () => ({
+          getWorldPosition: () => player.clone(),
+          getWorldPositionInto: (o: InstanceType<typeof V3>) => o.copy(player),
+          getSurfaceNormalInto: (o: InstanceType<typeof V3>) => o.set(0, 1, 0),
+        }),
+        isInsideInterior: () => false,
+        hasTrailCoins: () => over.coins === true,
+        getIsland: () => ({ npcTargets: villagers }),
+        getNpcActivity: (n: string) => activity[n],
+        getNpcPosition: (n: string) =>
+          villagers.find((v) => v.name === n)?.meshRef.position ?? null,
+        getZonesManager: () => ({
+          getZones: () => [
+            { id: 'projects', getPosition: () => new V3(0, 0, 100) },
+            { id: 'professional', getPosition: () => new V3(0, 0, -100) },
+          ],
+        }),
+        setGuideTarget: () => undefined,
+        getOrbitCamera: () => ({ getForwardDirection: () => new V3(1, 0, 0) }),
+      },
+      // guideWorld's nearestAiVillager, as main-simple builds it: the nearest
+      // villager who talks, in the world and not headed for bed.
+      guideWorld: {
+        nearestAiVillager: () =>
+          villagers
+            .filter((v) => up(v.name))
+            .map((v) => ({ name: v.name, pos: v.meshRef.position }))
+            .sort((a, b) => a.pos.distanceTo(player) - b.pos.distanceTo(player))[0] ?? null,
+      },
+      ui: {
+        updateQuestCompass: (p: { label: string } | null) => pills.push(p),
+        isTouchDevice: () => false,
+        panels: { isOpen: () => false },
+        flashMessage: () => undefined,
+        toast: () => undefined,
+      },
+      passport: {
+        count: () => stamps,
+        has: (id: string) => stamps > 0 && id === 'projects',
+        isComplete: () => false,
+        isStampZone: (id: string) => id === 'projects' || id === 'professional',
+      },
+      mapGuideTarget: null,
+      mapGuideZone: null,
+      mapGuideLabel: '',
+      arrivalHold: null,
+      doorPromptZone: null,
+      raceGuideTarget: null,
+      aiGuideTarget: null,
+      deliverySystem: null,
+      deliveryOptIn: false,
+      // A7 picks the Mayor at every intro, trail or not.
+      trailVillager: 'Mayor',
+      trailDone: false,
+      npcSeats: new Map([['Mayor', new V3(8, 99.6, 0)]]),
+      stampsSeen: -1,
+      pendingNextFlash: false,
+      compassDistrict: null,
+      districtDists: [],
+      zoneList: null,
+      lastCompassTarget: null,
+      compassLabel: '',
+      _compassState: {},
+      _qcPlayerPos: new V3(),
+      _qcNormal: new V3(),
+      _qcToTarget: new V3(),
+      _qcCamFwd: new V3(),
+      _qcCross: new V3(),
+      _qcTmp: new V3(),
+    };
+    for (const k of NAMES) app[k] = proto[k].bind(app);
+    // The guide asks the app, as setupGuide wires it.
+    const talkTarget = (current: string | null): string | null =>
+      (app.talkVillager as (c: string | null) => string | null)(current);
+    const first = armed({ talkTarget });
+    for (const s of over.done ?? ['move', 'look']) first.guide.complete(s);
+    const { guide, tracked } = makeGuide({ welcomed: true, talkTarget }, { ...first.data });
+    app.guide = guide;
+    guide.arm('explore');
+    run(guide, 0.7);
+    const frame = () => {
+      (app.updateQuestCompass as () => void)();
+      return {
+        label: app.compassLabel as string,
+        target: app.lastCompassTarget as InstanceType<typeof V3> | null,
+      };
+    };
+    const pos = (n: string) => villagers.find((v) => v.name === n)!.meshRef.position;
+    const hide = (n: string) => (villagers.find((v) => v.name === n)!.meshRef.visible = false);
+    return { guide, tracked, app, frame, player, pos, hide, activity, pills };
+  };
+
+  test('the card says "Walk up to Mayor" and the pill says Mayor, where he stands', () => {
+    const { guide, frame, pos } = setup();
+    expect(guide.talkTargetNow()).toBe('Mayor');
+    expect(guideCopy(guide.view(), wordsCtx).body).toContain('Walk up to Mayor and press [E]');
+    const f = frame();
+    expect(f.label).toBe('Mayor');
+    expect(f.target).toBe(pos('Mayor'));
+    // He wanders off: the pill follows him, not the seat the trail was laid to.
+    pos('Mayor').set(16, 98.7, 0);
+    expect(frame().target).toBe(pos('Mayor'));
+  });
+
+  test('a reload at step 1: the pill names him through walk and look, never Projects', () => {
+    const { guide, frame } = setup({ done: [] });
+    expect(guide.currentStep()).toBe('move');
+    expect(frame().label).toBe('Mayor');
+    guide.complete('move');
+    run(guide, 0.5);
+    expect(guide.currentStep()).toBe('look');
+    expect(frame().label).toBe('Mayor');
+    guide.complete('look');
+    run(guide, 0.5);
+    expect(guide.currentStep()).toBe('talk');
+    expect(frame().label).toBe('Mayor');
+  });
+
+  test('the chip, a talk, or a stamp hand the pill back to the districts', () => {
+    const chip = setup();
+    run(chip.guide, 20);
+    expect(chip.guide.view().chip).toBe(true);
+    expect(chip.frame().label).toBe('🚀 Projects');
+    const talked = setup();
+    talked.guide.complete('talk');
+    expect(talked.frame().label).toBe('🚀 Projects');
+    // a stamp ends it, as it ends the trail: the 'Next:' flash names the pill
+    const stamped = setup({ stamps: 1 });
+    expect(stamped.frame().label).not.toBe('Mayor');
+  });
+
+  test('a first visit: the coins’ seat, then the villager himself, with no Projects between', () => {
+    const { guide, frame, player, pos, app } = setup({ coins: true, done: [] });
+    const f = frame();
+    expect(f.label).toBe('Mayor');
+    expect(f.target!.toArray()).toEqual([8, 99.6, 0]);
+    // Within 4 u of the seat the trail has done its job; the guide is still
+    // on look, and the pill stays on the Mayor, now where he stands.
+    guide.complete('move');
+    run(guide, 0.5);
+    player.set(5, 99.8, 0);
+    const near = frame();
+    expect(app.trailDone).toBe(true);
+    expect(guide.currentStep()).toBe('look');
+    expect(near.label).toBe('Mayor');
+    expect(near.target).toBe(pos('Mayor'));
+  });
+
+  test('at night the trail villager goes to bed: the pill and the card name a stand-in', () => {
+    const { guide, frame, pos, activity, app } = setup({ coins: true });
+    expect(frame().label).toBe('Mayor'); // the trail, to his seat
+    activity.Mayor = 'sleep'; // the walk home, under an "asleep" tag
+    // The trail's pill lets go of the empty seat at once: it follows him for
+    // the half second until the guide asks again, never the seat.
+    const leaving = frame();
+    expect(app.trailDone).toBe(true);
+    expect(leaving.target).toBe(pos('Mayor'));
+    run(guide, 0.6);
+    expect(guide.view()).toMatchObject({ step: 'talk', talkTarget: 'Elder Sage' });
+    expect(guideCopy(guide.view(), wordsCtx).body).toBe(
+      'Elder Sage talks through Claude Haiku 4.5. Walk up to Elder Sage and press [E] to ask anything.',
+    );
+    const g = frame();
+    expect(g.label).toBe('Elder Sage');
+    expect(g.target).toBe(pos('Elder Sage'));
+  });
+
+  test('a stand-in is kept while up; with nobody within 30 u the talk step is skipped', () => {
+    const { guide, tracked, frame, pos, hide, activity } = setup();
+    activity.Mayor = 'sleep';
+    run(guide, 0.6);
+    expect(guide.view().talkTarget).toBe('Elder Sage');
+    // The Teller walks up closer than the Elder Sage: the card does not flip.
+    pos('Teller').set(0, 99.9, -3);
+    run(guide, 1.2);
+    expect(guide.view().talkTarget).toBe('Elder Sage');
+    // The Elder Sage steps inside: the nearest one up, within 30 u.
+    hide('Elder Sage');
+    run(guide, 0.6);
+    expect(guide.view().talkTarget).toBe('Teller');
+    expect(frame().label).toBe('Teller');
+    // The Teller walks 40 u off and stays the stand-in (as the trail
+    // villager would); in bed, nobody is left: skipped, and Projects.
+    pos('Teller').set(0, 91.7, -40);
+    run(guide, 0.6);
+    expect(guide.view().talkTarget).toBe('Teller');
+    activity.Teller = 'sleep';
+    run(guide, 0.6);
+    expect(guide.currentStep()).toBe('portfolio');
+    expect(tracked).toContainEqual({ name: 'guide_step', step: 'talk', outcome: 'skipped' });
+    expect(frame().label).toBe('🚀 Projects');
+  });
+
+  test('the nearest awake villager is a stand-in only within 30 u', () => {
+    const far = setup();
+    far.hide('Elder Sage');
+    far.activity.Mayor = 'sleep'; // the Teller, 40 u away, is the only one up
+    run(far.guide, 0.6);
+    expect(far.guide.currentStep()).toBe('portfolio');
+    expect(far.frame().label).toBe('🚀 Projects');
   });
 });

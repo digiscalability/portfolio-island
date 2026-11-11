@@ -3657,12 +3657,21 @@ export class SimpleApp {
       this.trailDone = true; // arrived: the next target takes over
       trailPos = null;
     }
+    // Until the visitor has talked to them, the pill names the villager First
+    // steps sends them to, where they stand now: a reload has no trail coins,
+    // and the trail ends at its seat before a word is said, so the card said
+    // "Walk up to Mayor" over a pill on Projects. Until the first stamp, as
+    // the trail.
+    const talkWho =
+      !trailPos && (passport?.count() ?? 0) === 0 ? (this.guide?.talkTargetNow() ?? null) : null;
+    const talkPos = talkWho ? this.scene.getNpcPosition(talkWho) : null;
     const st = this._compassState;
     st.mapPick = this.mapGuideTarget !== null;
     st.arrivalHold = this.arrivalHold !== null;
     st.raceGuide = this.raceGuideTarget !== null;
     st.aiGuide = this.aiGuideTarget !== null;
     st.trailVillager = trailPos !== null;
+    st.talkStep = talkPos !== null;
     st.projectsUnstamped = !!passport && !!projects && !passport.has('projects');
     st.districtUnstamped = district !== null;
     st.parcelActive = !!delivery?.destination;
@@ -3694,6 +3703,11 @@ export class SimpleApp {
         // The villager the first-visit coins lead to, by name.
         targetPos = trailPos;
         label = this.trailVillager ?? '';
+        break;
+      case 'talk':
+        // The villager First steps sends them to, wherever they have wandered.
+        targetPos = talkPos;
+        label = talkWho ?? '';
         break;
       case 'projects':
         targetPos = projects;
@@ -3791,6 +3805,7 @@ export class SimpleApp {
     raceGuide: false,
     aiGuide: false,
     trailVillager: false,
+    talkStep: false,
     projectsUnstamped: false,
     districtUnstamped: false,
     parcelActive: false,
@@ -3813,7 +3828,7 @@ export class SimpleApp {
   }
 
   /**
-   * The unstamped district the pill points at (compassTarget's branch 6):
+   * The unstamped district the pill points at (compassTarget's branch 7):
    * the nearest, but the current one is kept until another is 12 u closer.
    * Null once the passport is complete. Only the four stamp zones count; the
    * Welcome hub is the intro, not a destination.

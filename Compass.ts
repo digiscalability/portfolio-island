@@ -54,14 +54,19 @@ export function compassBearing(camForward: Vec3Like, toTarget: Vec3Like, normal:
  * 3. meet-the-townsfolk;
  * 4. the trail villager, while the first-visit coins are down, until the
  *    visitor reaches them, stamps a district or picks a place (a missed coin
- *    must not pull the pill back to the spawn);
- * 5. Projects, until it is stamped (Projects and Professional tie at
+ *    must not pull the pill back to the spawn), or the villager goes to bed;
+ * 5. the villager First steps sends the visitor to talk to, where they stand
+ *    now, while its talk step is on the card or still ahead and no district
+ *    is stamped. A reload has no trail coins, and the trail also ends at its
+ *    seat before the visitor has said a word; without this the card said
+ *    "Walk up to <name>" while the pill named Projects;
+ * 6. Projects, until it is stamped (Projects and Professional tie at
  *    103.3 m from the spawn, so "nearest" alone flipped between them);
- * 6. the nearest unstamped district;
- * 7. a parcel, but only once the passport is complete or the visitor has
+ * 7. the nearest unstamped district;
+ * 8. a parcel, but only once the passport is complete or the visitor has
  *    collected a parcel this session: the ten-stop courier chain used to take
  *    the pill at the first stamp and never give it back;
- * 8. nothing.
+ * 9. nothing.
  */
 export type CompassSource =
   | 'map'
@@ -69,6 +74,7 @@ export type CompassSource =
   | 'race'
   | 'ai'
   | 'trail'
+  | 'talk'
   | 'projects'
   | 'district'
   | 'parcel';
@@ -83,8 +89,12 @@ export interface CompassState {
   /** "Ask the townsfolk": the Storyteller. */
   aiGuide: boolean;
   /** A trail villager was chosen at Explore, its coins are still down, and
-   *  the visitor has not reached it, stamped a district or picked a place. */
+   *  the visitor has not reached it, stamped a district or picked a place;
+   *  the villager has not gone to bed. */
   trailVillager: boolean;
+  /** First steps' talk step is on the card or ahead (not collapsed to the
+   *  chip), its villager is in the world, and no district is stamped. */
+  talkStep: boolean;
   /** Projects exists and is not stamped. */
   projectsUnstamped: boolean;
   /** Another district is unstamped. */
@@ -102,6 +112,7 @@ export function compassTarget(s: CompassState): CompassSource | null {
   if (s.raceGuide) return 'race';
   if (s.aiGuide) return 'ai';
   if (s.trailVillager) return 'trail';
+  if (s.talkStep) return 'talk';
   if (s.projectsUnstamped) return 'projects';
   if (s.districtUnstamped) return 'district';
   if (s.parcelActive && (s.passportComplete || s.deliveryOptIn)) return 'parcel';

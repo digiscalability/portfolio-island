@@ -895,6 +895,18 @@ describe('A7: one compass target at a time (the zone branch, replaced)', () => {
     }
   });
 
+  test('until the visitor has talked, the pill names First steps’ villager, without trail coins', () => {
+    const body = qc();
+    // after the trail, before the first stamp, from the guide's own target
+    expect(body).toContain(
+      '!trailPos && (passport?.count() ?? 0) === 0 ? (this.guide?.talkTargetNow() ?? null) : null;',
+    );
+    // where they stand now, not the seat the trail was laid to
+    expect(body).toContain('const talkPos = talkWho ? this.scene.getNpcPosition(talkWho) : null;');
+    expect(body).toContain('st.talkStep = talkPos !== null;');
+    expect(body).toContain("label = talkWho ?? '';");
+  });
+
   test('a district pick ends at its door; anything else at 6 u; then an 8 s hold', () => {
     const body = qc();
     expect(body).toContain(
