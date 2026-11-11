@@ -246,6 +246,15 @@ function armed(opts: Partial<GuideOptions> = {}, init: Record<string, string> = 
 
 const saveOf = (data: Record<string, string>) => JSON.parse(data[GUIDE_KEY] ?? 'null');
 
+/** A keyboard visitor's words, for the tests that read the card's text. */
+const wordsCtx: GuideCopyContext = {
+  touch: false,
+  lookMode: 'drag',
+  runKey: null,
+  compassLabel: 'Mayor',
+  finaleLabel: 'Projects',
+};
+
 describe('First steps: the five steps, in order', () => {
   test('arming writes ds_guide_v1 and starts at walk, after the 600 ms resume', () => {
     const { guide, data } = makeGuide();
@@ -319,6 +328,49 @@ describe('First steps: the five steps, in order', () => {
     expect(guide.currentStep()).toBe('portfolio');
     expect(tracked).toContainEqual({ name: 'guide_step', step: 'talk', outcome: 'skipped' });
     expect(saveOf(data).done).toContain('talk');
+  });
+
+  test('the villager goes to bed on the talk step: the card names a stand-in, kept while up', () => {
+    // main-simple's talkVillager: the trail villager while up, then the
+    // stand-in the guide already names, then the nearest awake one, or null.
+    let up = ['Mayor', 'Elder Sage', 'Teller'];
+    const asked: Array<string | null> = [];
+    const talkTarget = (current: string | null): string | null => {
+      asked.push(current);
+      if (up.includes('Mayor')) return 'Mayor';
+      if (current && up.includes(current)) return current;
+      return up[0] ?? null;
+    };
+    const { guide, tracked, data } = armed({ talkTarget });
+    guide.complete('move');
+    guide.complete('look');
+    run(guide, 0.5);
+    expect(guide.view()).toMatchObject({ step: 'talk', talkTarget: 'Mayor' });
+    const v0 = guide.version();
+    run(guide, 2); // nothing changes while he is up: no redraw
+    expect(guide.version()).toBe(v0);
+    up = ['Elder Sage', 'Teller']; // 21:00, the Mayor heads home
+    run(guide, 0.6);
+    expect(guide.view()).toMatchObject({ step: 'talk', talkTarget: 'Elder Sage' });
+    expect(guide.version()).toBeGreaterThan(v0); // the card is redrawn
+    expect(guideCopy(guide.view(), wordsCtx).body).toContain('Walk up to Elder Sage and press [E]');
+    up = ['Teller', 'Elder Sage']; // another is nearer now: the stand-in is kept
+    run(guide, 1.2);
+    expect(guide.view().talkTarget).toBe('Elder Sage');
+    expect(asked).toContain('Elder Sage');
+    // asked twice a second, not every frame
+    const before = asked.length;
+    run(guide, 2);
+    expect(asked.length - before).toBeGreaterThanOrEqual(3);
+    expect(asked.length - before).toBeLessThanOrEqual(5);
+    up = []; // everyone is in bed: the step is passed over, recorded as skipped
+    run(guide, 0.6);
+    expect(guide.currentStep()).toBe('portfolio');
+    expect(tracked).toContainEqual({ name: 'guide_step', step: 'talk', outcome: 'skipped' });
+    expect(saveOf(data).done).toEqual(['move', 'look', 'talk']);
+    const asks = asked.length;
+    run(guide, 2); // and never asked again
+    expect(asked.length).toBe(asks);
   });
 
   test('portfolio: the Portfolio menu or any zone panel on top, even while it pauses the card', () => {

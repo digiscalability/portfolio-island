@@ -171,6 +171,8 @@ export const GUIDE_TIMING = {
   advance: 0.45,
   /** After the welcome card, a panel, a tour or a room closes. */
   resume: 0.6,
+  /** How often the guide asks who the talk step's villager is. */
+  talkCheck: 0.5,
   coinLine: 3,
   /** The legacy controls card, unless OK is pressed first. */
   controls: 8,
@@ -226,8 +228,13 @@ export interface GuideOptions {
   welcomed: boolean;
   /** Read at arming, for a legacy visitor's pre-completed steps. */
   facts(): { npcChatted: boolean; passportCount: number; mapHint: boolean };
-  /** The talk step's villager (A7's trail villager), or null to skip it. */
-  talkTarget(): string | null;
+  /**
+   * The talk step's villager, or null to skip the step: A7's trail villager
+   * while they are up. Asked again while the step is ahead or on the card,
+   * with the villager the guide names now, so a stand-in for one who went to
+   * bed is kept while they are up in turn.
+   */
+  talkTarget(current: string | null): string | null;
   /** Show the once-only controls card to a legacy visitor (keyboards only). */
   controlsCard: boolean;
 }
@@ -290,6 +297,7 @@ export class Guide {
   private coinLeft = 0;
   private phaseLeft = 0;
   private talkTarget: string | null = null;
+  private talkT = 0;
   private compassLabel = '';
   private ver = 0;
 
@@ -422,6 +430,13 @@ export class Guide {
       if (this.advanceLeft <= 0) this.nextStep();
       return;
     }
+    if (!this.save.done.includes('talk')) {
+      this.talkT += dt;
+      if (this.talkT >= GUIDE_TIMING.talkCheck) {
+        this.talkT = 0;
+        this.refreshTalkTarget();
+      }
+    }
     switch (this.step) {
       case 'move':
         if (f.moveMag > GUIDE_GOALS.moveInput) this.moveT += dt;
@@ -550,14 +565,11 @@ export class Guide {
         return;
       }
       if (next === 'talk') {
-        const who = this.opts.talkTarget();
-        if (!who) {
-          this.save.done.push('talk');
-          this.persist();
-          this.hooks.track?.('guide_step', { step: 'talk', outcome: 'skipped' });
+        this.talkTarget = this.opts.talkTarget(this.talkTarget);
+        if (!this.talkTarget) {
+          this.skipTalk();
           continue;
         }
-        this.talkTarget = who;
       }
       this.step = next;
       this.stepT = 0;
@@ -567,6 +579,32 @@ export class Guide {
       this.bump();
       return;
     }
+  }
+
+  /** Nobody to talk to: the step is recorded as skipped. */
+  private skipTalk(): void {
+    this.save.done.push('talk');
+    this.persist();
+    this.hooks.track?.('guide_step', { step: 'talk', outcome: 'skipped' });
+  }
+
+  /**
+   * Ask again who the talk step's villager is: one can go to bed mid-guide
+   * (the sleep goal walks them home under an "asleep" tag, then hides them).
+   * Ahead of the step only the pill shows the answer; on the step the card
+   * names the stand-in, and with nobody left the step is skipped.
+   */
+  private refreshTalkTarget(): void {
+    const who = this.opts.talkTarget(this.talkTarget);
+    if (who === this.talkTarget) return;
+    this.talkTarget = who;
+    if (this.step !== 'talk') return;
+    if (who) {
+      this.bump();
+      return;
+    }
+    this.skipTalk();
+    this.nextStep();
   }
 
   private startFinale(): void {

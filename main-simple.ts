@@ -3648,6 +3648,11 @@ export class SimpleApp {
       this.trailVillager && !this.trailDone && this.scene.hasTrailCoins()
         ? this.trailSeat(this.trailVillager)
         : null;
+    // A villager who has gone to bed ends the trail: nobody is at the seat.
+    if (trailPos && this.trailVillager && !this.villagerUp(this.trailVillager)) {
+      this.trailDone = true;
+      trailPos = null;
+    }
     if (trailPos && playerPos.distanceTo(trailPos) < SimpleApp.TRAIL_REACHED_U) {
       this.trailDone = true; // arrived: the next target takes over
       trailPos = null;
@@ -3879,6 +3884,33 @@ export class SimpleApp {
       }
     }
     return best;
+  }
+
+  /** In the world and not headed for bed: the sleep goal walks a villager
+   *  home under an "asleep" tag, then hides them inside. Villagers get their
+   *  first goal seconds after the intro, so the pick above cannot know. */
+  private villagerUp(name: string): boolean {
+    const t = this.scene.getIsland().npcTargets.find((x) => x.name === name);
+    return !!t && t.meshRef.visible && this.scene.getNpcActivity(name) !== 'sleep';
+  }
+
+  /**
+   * Who First steps sends the visitor to talk to (Guide's talkTarget): the
+   * trail villager while they are up. Once they have gone to bed, the
+   * stand-in the guide names already, while that one is up; else the nearest
+   * awake villager who talks, within 30 u; with none, null, and the talk step
+   * is skipped. At night the card and the pill used to name a villager whose
+   * tag read "asleep" on the walk home.
+   */
+  private talkVillager(current: string | null): string | null {
+    const trail = this.trailVillager;
+    if (trail && this.villagerUp(trail)) return trail;
+    if (current && this.villagerUp(current)) return current;
+    const near = this.guideWorld.nearestAiVillager();
+    const p = this.scene.getPlayer()?.getWorldPosition();
+    if (!near || !p) return null;
+    const d = Math.hypot(near.pos.x - p.x, near.pos.y - p.y, near.pos.z - p.z);
+    return d <= SimpleApp.TRAIL_VILLAGER_RANGE ? near.name : null;
   }
 
   /** Each villager's seat as the world was built (filled once, after
@@ -4135,7 +4167,7 @@ export class SimpleApp {
           passportCount: this.passport?.count() ?? 0,
           mapHint: flag('ds_hint_map'),
         }),
-        talkTarget: () => this.trailVillager,
+        talkTarget: (current) => this.talkVillager(current),
         controlsCard: !this.ui.isTouchDevice(),
       },
     );

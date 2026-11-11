@@ -943,6 +943,29 @@ describe('A7: one compass target at a time (the zone branch, replaced)', () => {
     expect(bodyOf(m, 'private pickTrailVillager(')).not.toContain('Math.random');
     expect(bodyOf(m, 'private trailSeatVillager(')).toContain('if (d > 0.04 && d < best) {');
   });
+
+  test('a villager who has gone to bed ends the trail, and the talk step asks for a stand-in', () => {
+    const m = stripped('main-simple.ts');
+    const body = qc();
+    // the trail's pill lets go of an empty seat
+    expect(body).toContain(
+      'if (trailPos && this.trailVillager && !this.villagerUp(this.trailVillager)) {',
+    );
+    // up: in the world, and not on the walk home under an "asleep" tag
+    const up = bodyOf(m, 'private villagerUp(');
+    expect(up).toContain(
+      "return !!t && t.meshRef.visible && this.scene.getNpcActivity(name) !== 'sleep';",
+    );
+    // the guide asks main-simple, with the villager it names now
+    expect(m).toContain('talkTarget: (current) => this.talkVillager(current),');
+    const talk = bodyOf(m, 'private talkVillager(');
+    expect(talk).toContain('if (trail && this.villagerUp(trail)) return trail;');
+    expect(talk).toContain('if (current && this.villagerUp(current)) return current;');
+    expect(talk).toContain('const near = this.guideWorld.nearestAiVillager();');
+    expect(talk).toContain('return d <= SimpleApp.TRAIL_VILLAGER_RANGE ? near.name : null;');
+    // positions only: never Math.random (the seeded window)
+    expect(talk).not.toContain('Math.random');
+  });
 });
 
 describe("P2-A5: one 'Show me' seam, window 'ds:guide-to'", () => {
@@ -996,7 +1019,8 @@ describe('A6: First steps, wired into main-simple', () => {
     );
     // the legacy check reads ds_welcomed at boot, before Explore writes it
     expect(setup).toContain("welcomed: flag('ds_welcomed'),");
-    expect(setup).toContain('talkTarget: () => this.trailVillager,');
+    // the talk step's villager: the trail villager while they are up
+    expect(setup).toContain('talkTarget: (current) => this.talkVillager(current),');
   });
 
   test("#ds-guide and the first 'ds:guide' wait for the guide to arm (D6 reads either as armed)", () => {
