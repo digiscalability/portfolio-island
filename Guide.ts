@@ -665,6 +665,10 @@ export interface GuideCopyContext {
   compassLabel: string;
   /** The finale's primary 'Show me': Projects, or the nearest unstamped district. */
   finaleLabel: string;
+  /** The talk step's villager has quest lines to say first (a request, an
+   *  errand's next step, a reminder not yet heard this session): E opens
+   *  those, not the chat, so the card must not promise 'ask anything'. */
+  talkQuest?: boolean;
 }
 
 export interface GuideButton {
@@ -703,7 +707,7 @@ const STEP_COPY: Record<GuideStep, (c: GuideCopyContext, who: string | null) => 
   // Without a target the step is skipped (Guide.nextStep), so the fallback
   // is never on screen; it still claims no more than one villager nearby.
   talk: (c, who) => {
-    const ask = `${c.touch ? 'tap USE' : 'press [E]'} to ask anything.`;
+    const ask = `${c.touch ? 'tap USE' : 'press [E]'} to ${c.talkQuest ? 'talk' : 'ask anything'}.`;
     return who
       ? `${who} talks through Claude Haiku 4.5. Walk up to ${who} and ${ask}`
       : `A villager nearby talks through Claude Haiku 4.5. Walk up and ${ask}`;

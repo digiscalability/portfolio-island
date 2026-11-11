@@ -763,6 +763,30 @@ describe('First steps: the words', () => {
     expect(none).not.toMatch(/^Villagers/);
   });
 
+  test('a villager with quest lines to say first: "press E to talk", not "ask anything" (P2-A7)', () => {
+    // E on a quest giver opens her request, not the chat: the card promises
+    // only what that press does. She still talks through Claude Haiku 4.5.
+    const quest = guideCopy(
+      view({ step: 'talk', talkTarget: 'Elder Sage' }),
+      ctx({ talkQuest: true }),
+    );
+    expect(quest.body).toBe(
+      'Elder Sage talks through Claude Haiku 4.5. Walk up to Elder Sage and press [E] to talk.',
+    );
+    expect(
+      guideCopy(
+        view({ step: 'talk', talkTarget: 'Elder Sage' }),
+        ctx({ touch: true, talkQuest: true }),
+      ).body,
+    ).toBe('Elder Sage talks through Claude Haiku 4.5. Walk up to Elder Sage and tap USE to talk.');
+    // E's guide probe still reads the villager from the same clause
+    expect(/walk up to (?:the )?(.+?) and (?:press|tap)/i.exec(quest.body)?.[1]).toBe('Elder Sage');
+    // unset (or false) keeps 'ask anything'
+    expect(guideCopy(view({ step: 'talk' }), ctx({ talkQuest: false })).body).toContain(
+      'to ask anything.',
+    );
+  });
+
   test('look follows html[data-look-mode] and names J/L on keyboards', () => {
     expect(guideCopy(view({ step: 'look' }), ctx()).body).toBe(
       'Drag to look — or [J] / [L] to turn.',

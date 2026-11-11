@@ -1277,3 +1277,63 @@ describe('P2-A1: indoors, Escape leaves and the outdoors stays out', () => {
     );
   });
 });
+
+// questTracker.test.ts runs onNpcInteract, questLinesFirst, onRaceEvent and
+// boardName for real; these pin the two places a unit test cannot reach: the
+// talk prompt inside update(), and the seams the stubs stand in for.
+describe('P2-A7: quest givers say so, and race times go up under a real name', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test('the talk prompt says what this press does', () => {
+    const npc = blockOf(bodyOf(m(), 'private update('), 'const who = nearby.npcData.name;');
+    expect(npc).toContain('const quest = this.npcQuests.talkKind(who, held);');
+    expect(npc).toContain('<strong>${esc(who)}</strong> has a request`');
+    expect(npc).toContain('<strong>${esc(who)}</strong> is expecting you`');
+    // 'ask anything' only when E opens the chat: a villager who talks through
+    // Claude Haiku 4.5 with no quest lines to say first
+    expect(npc).toMatch(
+      /: isAiNpc\(who\) && !this\.questLinesFirst\(who, held\)\s*\? `💬 Press <strong>E<\/strong> to talk to <strong>\$\{esc\(who\)\}<\/strong> — ask anything`/,
+    );
+    // the offer comes before the errand, and both before the chat's line
+    expect(npc.indexOf("quest === 'offer'")).toBeLessThan(npc.indexOf("quest === 'errand'"));
+    expect(npc.indexOf("quest === 'errand'")).toBeLessThan(npc.indexOf('ask anything'));
+  });
+
+  test('the scene hands villager talks and race events to the two methods', () => {
+    expect(m()).toContain('this.scene.setOnNPCInteract((npcData) => this.onNpcInteract(npcData));');
+    expect(m()).toContain('this.scene.setOnRaceEvent((e) => this.onRaceEvent(e));');
+    const talk = bodyOf(m(), 'private onNpcInteract(');
+    // the pure read decides before onTalk may change anything
+    expect(talk).toMatch(
+      /const talk = this\.questLinesFirst\(npcData\.name, coins\)\s*\? this\.npcQuests\.onTalk\(npcData\.name, coins\)\s*: null;/,
+    );
+    expect(talk).toContain('this.questLinesShown.add(npcData.name);');
+    expect(talk).toContain('this.openVillagerChat(npcData);');
+    // First steps hears a conversation from both branches
+    expect(talk).toContain("this.guide?.complete('talk');");
+    expect(bodyOf(m(), 'private openVillagerChat(')).toContain("this.guide?.complete('talk');");
+  });
+
+  test('the First steps card reads the same rule for its talk step', () => {
+    expect(bodyOf(m(), 'private renderGuide(')).toMatch(
+      /talkQuest:\s*v\.step === 'talk' &&\s*v\.talkTarget !== null &&\s*this\.questLinesFirst\(v\.talkTarget, this\.scene\.getCoinsCollected\(\)\),/,
+    );
+  });
+
+  test('every finish is sent through ensureNamed; Boards stays a lazy import', () => {
+    const race = bodyOf(m(), 'private onRaceEvent(');
+    const named = bodyOf(race, 'this.ensureNamed(() => {');
+    expect(named).toContain('const name = this.boardName();');
+    expect(named).toContain('if (timeSec !== null) this.submitRaceTime(circuit, timeSec, name);');
+    expect(named).toContain('this.ui.showRaceLeaderboard(circuit, tMs, name), 1200);');
+    // not only a local best any more
+    expect(race).not.toContain('if (e.improved && e.circuit');
+    expect(bodyOf(m(), 'private submitRaceTime(')).toContain(
+      "void import('./Boards').then((b) => b.submitRaceTime(circuit, timeSec, name));",
+    );
+    expect(m()).not.toMatch(/^import .* from '\.\/Boards';$/m);
+    // 'Guest' unless the visitor chose a name: never the name tag's placeholder
+    const name = bodyOf(m(), 'private boardName(');
+    expect(name).toContain("if (!saved && !this.nameTyped) return 'Guest';");
+  });
+});

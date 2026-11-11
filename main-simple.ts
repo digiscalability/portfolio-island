@@ -49,6 +49,7 @@ import {
   loadProfile,
   saveProfile,
 } from './profileSync';
+import type { RaceEvent } from './RaceSystem';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
@@ -801,111 +802,7 @@ export class SimpleApp {
       }
 
       // Setup NPC interaction callback (quest dialogue wins when relevant)
-      this.scene.setOnNPCInteract((npcData) => {
-        console.log(`💬 Talking to: ${npcData.name}`);
-        // The Market Vendor runs the island shop.
-        if (npcData.name === 'Market Vendor') {
-          sfx.blip();
-          this.openShop();
-          return;
-        }
-        // Quest steps take PRIORITY over idle chat, so a quest-giver still gives
-        // its quest (and fetch pickups / completions still fire) even though it
-        // is also an AI NPC. When it has no active quest step, it falls through
-        // to free-text chat below.
-        const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
-        if (talk) {
-          this.guide?.complete('talk');
-          this.ui.showDialogue(npcData.name, talk.lines);
-          this.beginNpcDialogue(npcData.name);
-          if (talk.accepted) {
-            sfx.blip();
-            this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
-          }
-          // Fetch quest: picked the fish up at the Fisherman — carry it in hand
-          if (talk.pickedUp) {
-            sfx.collect();
-            this.scene.setPlayerCarryingFish(true);
-          }
-          if (talk.completed) {
-            const q = talk.completed;
-            // Delivering the fish → the Baker bakes it into a pie before your eyes
-            if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
-            this.scene.addCoins(q.rewardCoins);
-            this.scene.floatCoinsAtPlayer(q.rewardCoins);
-            this.scene.logTransaction('Quest reward', q.rewardCoins);
-            sfx.questComplete();
-            this.ui.showQuestComplete({
-              name: `${q.giverName}'s request`,
-              reward: { type: 'message', value: `+${q.rewardCoins} 🪙 reward` },
-            } as any);
-            this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
-          }
-          return;
-        }
-        // No active quest for this NPC → intelligent free-text conversation if it
-        // has a brain wired up. On ANY failure (function/App Check/rate/spend
-        // cap/moderation/offline) askNpc returns a fallback and we cycle the
-        // NPC's authored canned lines, so the NPC never appears broken.
-        if (isAiNpc(npcData.name)) {
-          this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
-          this.markDone('ds_npc_chatted');
-          this.guide?.complete('talk');
-          sfx.blip();
-          const canned = npcData.dialogue;
-          let ci = 1; // first fallback skips the opening line (canned[0])
-          // Aware opening: same live-state composition as the proximity bubble
-          // (planner-assigned activity + hour + day-theme), so the walk-up line
-          // and the conversation flow as one — no more static canned[0].
-          const aware = composeAwareGreeting({
-            activity: this.scene.getNpcActivity(npcData.name),
-            hour: this.scene.getEnvironmentCycle()?.getHour() ?? 12,
-            event: getWorldState()?.npcPlan?.event,
-          });
-          this.ui.showNpcChat(
-            npcData.name,
-            aware || canned[0] || 'Hello, traveller.',
-            async (text) => {
-              track('npc_chat_sent', { npc: npcData.name });
-              const res = await askNpc(npcData.name, text);
-              if (res.reply && !res.fallback) return res.reply;
-              // A written line stands in (askNpc counted it as npc_fallback),
-              // so the header stops promising a generated reply.
-              this.ui.markNpcChatOffline(npcData.name);
-              return canned[ci++ % canned.length] ?? '…';
-            },
-            voiceProfileFor(npcData.name),
-          );
-          this.beginNpcDialogue(npcData.name);
-          try {
-            // Found the feature themselves — the discovery hint would only
-            // teach what they already know.
-            localStorage.setItem('ds_hint_talk', '1');
-          } catch {
-            /* no storage */
-          }
-          // Deepen the opening in the background: the composed line shows
-          // instantly; when the persona's generated continuation arrives the
-          // NPC simply keeps talking. Failures resolve silently — the
-          // composed opening already stands on its own.
-          // NPC memory: visitor facts ride the LLM-ONLY copy of the greeting
-          // (the displayed bubble stays clean) — the model naturally works
-          // "back after three days, still in that crown" into its reply.
-          // Facts are data inside the greeting quote, within the 300-char cap.
-          void askNpcOpening(npcData.name, this.withVisitorFacts(aware)).then((res) => {
-            if (res.reply && !res.fallback) {
-              this.ui.appendNpcChatLine(npcData.name, res.reply);
-            }
-          });
-          return;
-        }
-        // Non-AI, non-quest NPC → canned dialogue, led by a living-world mood line.
-        let lines = npcData.dialogue;
-        const flavor = moodNpcFlavor();
-        if (flavor) lines = [flavor, ...lines];
-        this.ui.showDialogue(npcData.name, lines);
-        this.beginNpcDialogue(npcData.name);
-      });
+      this.scene.setOnNPCInteract((npcData) => this.onNpcInteract(npcData));
       // Release the hold + camera the moment the chat panel closes by any
       // path (✕, Escape, replaced by a new chat) — the per-frame poll below
       // is the belt for the canned-dialogue panel, this is the braces.
@@ -1252,65 +1149,7 @@ export class SimpleApp {
       });
 
       // Vehicle time-trials: banner on start/checkpoint/finish + live lap HUD
-      this.scene.setOnRaceEvent((e) => {
-        if (e.kind === 'finish') {
-          sfx.questComplete();
-          // Racing paid NOTHING before — the most complete loop in the game had
-          // no reward. Every finish now pays out (bigger on a PB).
-          const reward = e.improved ? 15 : 5;
-          this.scene.addCoins(reward);
-          this.scene.floatCoinsAtPlayer(reward);
-          this.scene.logTransaction(e.improved ? 'Race — new best!' : 'Race finish', reward);
-          this.ui.updateCoinCounter(this.scene.getCoinsCollected());
-          this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
-          // ?race=&beat= challenge verdict (one-shot: cleared either way).
-          if (
-            this.raceChallenge &&
-            e.circuit === this.raceChallenge.kind &&
-            typeof e.timeSec === 'number'
-          ) {
-            const beaten = e.timeSec * 1000 < this.raceChallenge.ms;
-            window.setTimeout(
-              () =>
-                this.ui.flashMessage(
-                  beaten
-                    ? '🏆 Challenge beaten — send them YOUR time!'
-                    : '⚔️ Challenge stands — one more lap?',
-                ),
-              2000,
-            );
-            track('race_challenge_result', { beaten });
-            if (beaten) {
-              this.raceChallenge = null;
-              if (e.circuit) this.scene.setRaceChallenge(e.circuit, null);
-            }
-          }
-          track('race_finish', {
-            circuit: e.circuit ?? 'unknown',
-            timeMs: Math.round((e.timeSec ?? 0) * 1000),
-            improved: !!e.improved,
-          });
-          this.markDone('ds_raced');
-          const name = this.multiplayer?.selfName ?? 'Guest';
-          if (e.improved && e.circuit && typeof e.timeSec === 'number') {
-            void import('./Boards').then((b) => b.submitRaceTime(e.circuit!, e.timeSec!, name));
-          }
-          // Surface the (otherwise buried) global leaderboard a beat after the
-          // finish, with a Share button — turns every PB into a share prompt.
-          if (e.circuit) {
-            const circuit = e.circuit;
-            const tMs = typeof e.timeSec === 'number' ? Math.round(e.timeSec * 1000) : null;
-            window.setTimeout(() => void this.ui.showRaceLeaderboard(circuit, tMs, name), 1200);
-          }
-          return;
-        }
-        this.ui.flashMessage(e.text);
-        if (e.kind === 'start') {
-          sfx.raceGo();
-          this.raceGuideTarget = null; // the guide CTA is fulfilled
-          track('race_start', { circuit: e.circuit ?? 'unknown' });
-        } else if (e.kind === 'checkpoint') sfx.checkpoint();
-      });
+      this.scene.setOnRaceEvent((e) => this.onRaceEvent(e));
       this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
 
       // "Meet the AI townsfolk" welcome CTA: compass-guide to the Storyteller
@@ -2370,9 +2209,103 @@ export class SimpleApp {
     return false;
   }
 
+  /**
+   * Vehicle time-trials: the banner on start, checkpoint and finish. A finish
+   * pays out, answers a ?race=&beat= challenge, and goes to the board under
+   * the visitor's name (P2-A7).
+   */
+  private onRaceEvent(e: RaceEvent): void {
+    if (e.kind === 'finish') {
+      sfx.questComplete();
+      // Racing paid NOTHING before — the most complete loop in the game had
+      // no reward. Every finish now pays out (bigger on a PB).
+      const reward = e.improved ? 15 : 5;
+      this.scene.addCoins(reward);
+      this.scene.floatCoinsAtPlayer(reward);
+      this.scene.logTransaction(e.improved ? 'Race — new best!' : 'Race finish', reward);
+      this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+      this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
+      // ?race=&beat= challenge verdict (one-shot: cleared either way).
+      if (
+        this.raceChallenge &&
+        e.circuit === this.raceChallenge.kind &&
+        typeof e.timeSec === 'number'
+      ) {
+        const beaten = e.timeSec * 1000 < this.raceChallenge.ms;
+        window.setTimeout(
+          () =>
+            this.ui.flashMessage(
+              beaten
+                ? '🏆 Challenge beaten — send them YOUR time!'
+                : '⚔️ Challenge stands — one more lap?',
+            ),
+          2000,
+        );
+        track('race_challenge_result', { beaten });
+        if (beaten) {
+          this.raceChallenge = null;
+          if (e.circuit) this.scene.setRaceChallenge(e.circuit, null);
+        }
+      }
+      track('race_finish', {
+        circuit: e.circuit ?? 'unknown',
+        timeMs: Math.round((e.timeSec ?? 0) * 1000),
+        improved: !!e.improved,
+      });
+      this.markDone('ds_raced');
+      if (e.circuit) {
+        const circuit = e.circuit;
+        const timeSec = typeof e.timeSec === 'number' ? e.timeSec : null;
+        // The board shows a name, so the first finish asks for one (decision
+        // P2-8): once a session, and Skip goes up as 'Guest'. Times used to go
+        // up under the placeholder minted for the name tag ('Sunny Courier').
+        this.ensureNamed(() => {
+          const name = this.boardName();
+          // EVERY finish is sent, not only a local best: Boards keeps the
+          // better time itself, and a best set while the write failed (or
+          // before the visitor had a name) never reached the board otherwise.
+          if (timeSec !== null) this.submitRaceTime(circuit, timeSec, name);
+          // Surface the (otherwise buried) global leaderboard a beat after
+          // the finish, with a Share button — turns every PB into a share
+          // prompt.
+          const tMs = timeSec !== null ? Math.round(timeSec * 1000) : null;
+          window.setTimeout(() => void this.ui.showRaceLeaderboard(circuit, tMs, name), 1200);
+        });
+      }
+      return;
+    }
+    this.ui.flashMessage(e.text);
+    if (e.kind === 'start') {
+      sfx.raceGo();
+      this.raceGuideTarget = null; // the guide CTA is fulfilled
+      track('race_start', { circuit: e.circuit ?? 'unknown' });
+    } else if (e.kind === 'checkpoint') sfx.checkpoint();
+  }
+
+  /** The name a race time goes up under: the one the visitor chose, else
+   *  'Guest'. Never the placeholder minted for the name tag. */
+  private boardName(): string {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem('ds_player_name');
+    } catch {
+      /* no storage: a name typed this session still counts */
+    }
+    if (!saved && !this.nameTyped) return 'Guest';
+    return this.multiplayer?.selfName ?? saved ?? 'Guest';
+  }
+
+  /** Boards loads lazily (Firebase stays off the boot path), and the write
+   *  is fire-and-forget: Boards.submitRaceTime never throws. */
+  private submitRaceTime(circuit: 'land' | 'water', timeSec: number, name: string): void {
+    void import('./Boards').then((b) => b.submitRaceTime(circuit, timeSec, name));
+  }
+
   /** "Skip — just browsing" is remembered for the session (instance flag +
    *  sessionStorage, so a reload in the same tab keeps it). */
   private nameSkipped = false;
+  /** The visitor typed a name at the prompt this session (storage may not keep it). */
+  private nameTyped = false;
   private static readonly NAME_SKIP_KEY = 'ds_name_skipped';
 
   /**
@@ -2403,6 +2336,7 @@ export class SimpleApp {
     }
     this.ui.promptName('', (name) => {
       if (name) {
+        this.nameTyped = true;
         this.multiplayer?.setName(name);
         saveProfile({ name });
       } else {
@@ -3354,9 +3288,20 @@ export class SimpleApp {
           } else if (nearby.type === 'npc') {
             // AI townsfolk advertise free-text chat — "talk" alone reads as a
             // canned dialogue tree, and visitors never discover the real LLM.
-            text = isAiNpc(nearby.npcData.name)
-              ? `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong> — ask anything`
-              : `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong>`;
+            // The prompt says what THIS press does (P2-A7): a quest giver has
+            // a request, an errand's next villager is expecting the visitor,
+            // and 'ask anything' shows only when E opens the chat.
+            const who = nearby.npcData.name;
+            const held = this.scene.getCoinsCollected();
+            const quest = this.npcQuests.talkKind(who, held);
+            text =
+              quest === 'offer'
+                ? `💬 Press <strong>E</strong> — <strong>${esc(who)}</strong> has a request`
+                : quest === 'errand'
+                  ? `💬 Press <strong>E</strong> — <strong>${esc(who)}</strong> is expecting you`
+                  : isAiNpc(who) && !this.questLinesFirst(who, held)
+                    ? `💬 Press <strong>E</strong> to talk to <strong>${esc(who)}</strong> — ask anything`
+                    : `💬 Press <strong>E</strong> to talk to <strong>${esc(who)}</strong>`;
           } else if (nearby.type === 'bench') {
             text = '🪑 Press <strong>E</strong> to sit down';
           }
@@ -4416,6 +4361,11 @@ export class SimpleApp {
         runKey: root.getAttribute('data-run-key'),
         compassLabel: this.compassLabel,
         finaleLabel: PASSPORT_META[this.guideFinaleDistrict()].label,
+        // P2-A7: with quest lines to say first, E does not open the chat.
+        talkQuest:
+          v.step === 'talk' &&
+          v.talkTarget !== null &&
+          this.questLinesFirst(v.talkTarget, this.scene.getCoinsCollected()),
       }),
     );
   }
@@ -4935,6 +4885,152 @@ export class SimpleApp {
   private readonly _cineDesired = new THREE.Vector3();
   private readonly _cineLookT = new THREE.Vector3();
   private readonly _cineTmp = new THREE.Vector3();
+
+  /**
+   * E on a villager: the shop for the Market Vendor, a quest step or the
+   * quest lines first where there are any (questLinesFirst), then the chat
+   * for a villager who talks through Claude Haiku 4.5, else their own lines.
+   */
+  private onNpcInteract(npcData: { name: string; dialogue: string[] }): void {
+    console.log(`💬 Talking to: ${npcData.name}`);
+    // The Market Vendor runs the island shop.
+    if (npcData.name === 'Market Vendor') {
+      sfx.blip();
+      this.openShop();
+      return;
+    }
+    // Quest steps take PRIORITY over idle chat, so a quest-giver still gives
+    // its quest (and fetch pickups / completions still fire) even though it
+    // is also an AI NPC. When it has no active quest step, it falls through
+    // to free-text chat below.
+    // A reminder or a thank-you ('status') is not a step: it shows once a
+    // session, and after that E opens the chat (P2-A7). A quest giver who
+    // talks through Claude Haiku 4.5 used to answer every press with the
+    // same written line for the rest of the visit, quest done or not.
+    const coins = this.scene.getCoinsCollected();
+    const talk = this.questLinesFirst(npcData.name, coins)
+      ? this.npcQuests.onTalk(npcData.name, coins)
+      : null;
+    if (talk) {
+      this.questLinesShown.add(npcData.name);
+      this.guide?.complete('talk');
+      this.ui.showDialogue(npcData.name, talk.lines);
+      this.beginNpcDialogue(npcData.name);
+      if (talk.accepted) {
+        sfx.blip();
+        this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+      }
+      // Fetch quest: picked the fish up at the Fisherman — carry it in hand
+      if (talk.pickedUp) {
+        sfx.collect();
+        this.scene.setPlayerCarryingFish(true);
+      }
+      if (talk.completed) {
+        const q = talk.completed;
+        // Delivering the fish → the Baker bakes it into a pie before your eyes
+        if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
+        this.scene.addCoins(q.rewardCoins);
+        this.scene.floatCoinsAtPlayer(q.rewardCoins);
+        this.scene.logTransaction('Quest reward', q.rewardCoins);
+        sfx.questComplete();
+        this.ui.showQuestComplete({
+          name: `${q.giverName}'s request`,
+          reward: { type: 'message', value: `+${q.rewardCoins} 🪙 reward` },
+        } as any);
+        this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+      }
+      return;
+    }
+    // No active quest for this NPC → intelligent free-text conversation if it
+    // has a brain wired up. On ANY failure (function/App Check/rate/spend
+    // cap/moderation/offline) askNpc returns a fallback and we cycle the
+    // NPC's authored canned lines, so the NPC never appears broken.
+    if (isAiNpc(npcData.name)) {
+      this.openVillagerChat(npcData);
+      return;
+    }
+    // Non-AI, non-quest NPC → canned dialogue, led by a living-world mood line.
+    let lines = npcData.dialogue;
+    const flavor = moodNpcFlavor();
+    if (flavor) lines = [flavor, ...lines];
+    this.ui.showDialogue(npcData.name, lines);
+    this.beginNpcDialogue(npcData.name);
+  }
+
+  /**
+   * The free-text conversation with a villager who talks through Claude
+   * Haiku 4.5. On ANY failure (function, App Check, rate or spend cap,
+   * moderation, offline) askNpc returns a fallback and the villager cycles
+   * their authored lines, so they never appear broken.
+   */
+  private openVillagerChat(npcData: { name: string; dialogue: string[] }): void {
+    this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
+    this.markDone('ds_npc_chatted');
+    this.guide?.complete('talk');
+    sfx.blip();
+    const canned = npcData.dialogue;
+    let ci = 1; // first fallback skips the opening line (canned[0])
+    // Aware opening: same live-state composition as the proximity bubble
+    // (planner-assigned activity + hour + day-theme), so the walk-up line
+    // and the conversation flow as one — no more static canned[0].
+    const aware = composeAwareGreeting({
+      activity: this.scene.getNpcActivity(npcData.name),
+      hour: this.scene.getEnvironmentCycle()?.getHour() ?? 12,
+      event: getWorldState()?.npcPlan?.event,
+    });
+    this.ui.showNpcChat(
+      npcData.name,
+      aware || canned[0] || 'Hello, traveller.',
+      async (text) => {
+        track('npc_chat_sent', { npc: npcData.name });
+        const res = await askNpc(npcData.name, text);
+        if (res.reply && !res.fallback) return res.reply;
+        // A written line stands in (askNpc counted it as npc_fallback),
+        // so the header stops promising a generated reply.
+        this.ui.markNpcChatOffline(npcData.name);
+        return canned[ci++ % canned.length] ?? '…';
+      },
+      voiceProfileFor(npcData.name),
+    );
+    this.beginNpcDialogue(npcData.name);
+    try {
+      // Found the feature themselves — the discovery hint would only
+      // teach what they already know.
+      localStorage.setItem('ds_hint_talk', '1');
+    } catch {
+      /* no storage */
+    }
+    // Deepen the opening in the background: the composed line shows
+    // instantly; when the persona's generated continuation arrives the
+    // NPC simply keeps talking. Failures resolve silently — the
+    // composed opening already stands on its own.
+    // NPC memory: visitor facts ride the LLM-ONLY copy of the greeting
+    // (the displayed bubble stays clean) — the model naturally works
+    // "back after three days, still in that crown" into its reply.
+    // Facts are data inside the greeting quote, within the 300-char cap.
+    void askNpcOpening(npcData.name, this.withVisitorFacts(aware)).then((res) => {
+      if (res.reply && !res.fallback) {
+        this.ui.appendNpcChatLine(npcData.name, res.reply);
+      }
+    });
+  }
+
+  /** Villagers whose quest lines have shown this session (P2-A7). */
+  private readonly questLinesShown = new Set<string>();
+
+  /**
+   * Does E on this villager open quest dialogue (true), or go on to the chat
+   * or their ambient lines (false)? A step always does: a request to accept,
+   * a pickup, a delivery, a completion. A reminder or a thank-you does once a
+   * session for a villager who talks through Claude Haiku 4.5; one of the
+   * scripted few has nothing else to say, so theirs always shows.
+   */
+  private questLinesFirst(name: string, coins: number): boolean {
+    const kind = this.npcQuests.talkKind(name, coins);
+    if (kind === null) return false;
+    if (kind !== 'status') return true;
+    return !(isAiNpc(name) && this.questLinesShown.has(name));
+  }
 
   private beginNpcDialogue(name: string): void {
     this.npcDialogueName = name;

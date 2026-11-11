@@ -39,6 +39,24 @@ export interface TalkResult {
   pickedUp?: NpcQuest; // 'fetch': just collected the item at the target
 }
 
+/**
+ * What talking to a villager would do for a quest right now (P2-A7):
+ * - 'offer': they have a request to give (onTalk would accept it);
+ * - 'errand': the visitor's errand moves on here (a pickup, a delivery, a
+ *   completion);
+ * - 'status': only a reminder or a thank-you (onTalk changes nothing);
+ * - null: no quest involves them.
+ */
+export type QuestTalk = 'offer' | 'errand' | 'status' | null;
+
+/** An accepted quest, as the Next chip lists it: 'Gardener: dew-coins 2/5'. */
+export interface ActiveQuest {
+  id: string;
+  giver: string;
+  label: string;
+  progress: string;
+}
+
 const STORAGE_KEY = 'ds_npc_quests';
 
 export class NpcQuestSystem {
@@ -160,6 +178,64 @@ export class NpcQuestSystem {
    * carried prop after a reload). */
   public isCarryingFetchItem(): boolean {
     return this.quests.some((q) => q.kind === 'fetch' && q.state === 'active' && !!q.carrying);
+  }
+
+  /**
+   * What onTalk(npcName) would do now, without doing it. Mirrors onTalk's
+   * order branch for branch; test/questTracker.test.ts runs the two side by
+   * side over every state.
+   */
+  public talkKind(npcName: string, currentCoins = 0): QuestTalk {
+    for (const q of this.quests) {
+      if (q.kind !== 'fetch' || q.state !== 'active') continue;
+      if (npcName === q.targetName && !q.carrying) return 'errand';
+      if (npcName === q.giverName && q.carrying) return 'errand';
+    }
+    for (const q of this.quests) {
+      if (q.state === 'active' && q.kind === 'relay' && q.targetName === npcName) return 'errand';
+    }
+    for (const q of this.quests) {
+      if (q.giverName !== npcName) continue;
+      if (q.state === 'available') return 'offer';
+      if (q.state === 'active' && q.kind === 'coins') {
+        return Math.max(0, currentCoins - q.coinBaseline) >= (q.coinTarget ?? 0)
+          ? 'errand'
+          : 'status';
+      }
+      return 'status';
+    }
+    return null;
+  }
+
+  /** A quest step waits at this villager: a request to accept, or the
+   *  visitor's errand moving on. The talk prompt says so instead of 'ask
+   *  anything', which that press would not do. */
+  public hasPendingStep(npcName: string, currentCoins = 0): boolean {
+    const k = this.talkKind(npcName, currentCoins);
+    return k === 'offer' || k === 'errand';
+  }
+
+  /** Every accepted quest with where it stands, in catalogue order. */
+  public getActiveQuests(currentCoins = 0): ActiveQuest[] {
+    const out: ActiveQuest[] = [];
+    for (const q of this.quests) {
+      if (q.state !== 'active') continue;
+      let label: string;
+      let progress: string;
+      if (q.kind === 'coins') {
+        const target = q.coinTarget ?? 0;
+        label = 'dew-coins';
+        progress = `${Math.min(target, Math.max(0, currentCoins - q.coinBaseline))}/${target}`;
+      } else if (q.kind === 'fetch') {
+        label = `a fish from the ${q.targetName ?? 'shore'}`;
+        progress = q.carrying ? 'in hand, take it back' : 'to collect';
+      } else {
+        label = `a message for the ${q.targetName ?? 'villager'}`;
+        progress = 'to deliver';
+      }
+      out.push({ id: q.id, giver: q.giverName, label, progress });
+    }
+    return out;
   }
 
   /**
