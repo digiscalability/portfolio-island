@@ -388,6 +388,24 @@ finale. The double sits in A6's short-landscape lane (top +56, left +16,
 the other failure being the hint toasts). At 1440x900 and 390x844 it reads
 clear.
 
+### Stage-2 probes, wave 2: intro, camera and luminance (E6b)
+
+The audit's own scripts (`motion/intro_ui`, `veil2`, `analyze_intro`,
+`camprobe`, `camprobe2` and `design-assets/lum.cjs`) were session temp
+files, gone by wave 2. These three are rebuilt from the audit's reports
+(`docs/history/2026-11-03-ux-audit/motion.json` and `design.json`, in the
+main checkout) and checked against the numbers recorded there. Baselines:
+2026-11-11 and 12, 58c8849's dist and wave-1 main 8662b27 (as built in
+`w1-int`), four other builders on the machine: degrees, counts and L\* hold,
+milliseconds are provisional. Every run: 0 leaks, a boot proof in every
+session, the port free afterwards. All three exit 1 on both builds.
+
+| Probe | Item | What it measures | 58c8849 | wave-1 main |
+|---|---|---|---|---|
+| `intro` | MOT-09, MOT-10; A10 | desktop, a cold load with a per-frame recorder from the first script: the camera's turn per frame through the fly-in (or the calm entry) once the loader has faded, with the distance it happens at; frames over 50 ms after the loader fades; when the welcome card shows (`welcome_visible`); the first-frame opacity and ramp of the welcome card, the hire card, the Portfolio menu and a zone panel; the door veil's first and second use (first-frame opacity, the ramp to black, how long it holds) | the largest turn 3.48° in a frame, 6.2 u from the player (the bar is 1.5°); 2 frames over 50 ms after the fade (60 and 120 ms); the card at 6.6 s; all four surfaces at opacity 1 on their first frame, a 0 ms ramp; the veil's first use starts opaque (a hard cut, the audit's finding) and holds 2.7 s, its second ramps over 360 ms | 2.89° at 8 u; 1 frame over 50 ms (150 ms); the card at 6.6 s, 31 ms after `ds:intro` settled; the four surfaces as on 58c8849; the veil's first use a hard cut held 0.5 s (wave 1's warm), its second a 392 ms ramp |
+| `camera` | MOT-05, MOT-06, MOT-18; B11 | desktop, the camera's turn per frame from a per-frame recorder with key marks: a conversation's push-in (its first frame), its release and the frames after; the guided tour (`--mode tour`): the first frame, the largest turn, frames with the camera inside a building's box; parked 1.2 u from a wall (`parked`): frames with the wall between the player and the camera, and the camera's distance; leaving a room by its door (`door`); `force`: OrbitCamera's distance set to 0.8 u, the avatar's opacity within 150 ms and after the camera is let back, programs before, close and restored | the push-in's first frame 1.6° in this run (it rides on where the villager stands: 10-12.5° in the other three runs on the two builds); the release 15.7° in a frame; the tour's first frame 9.43° (the audit: a cut on the first frame), its largest 11.9° (530°/s), 0 frames inside a building; parked: the wall between in 39 of 39 frames, the camera 2.22 u out with the wall at 1.22 u; the door 0 of 47; at 0.8 u the avatar stays at opacity 1 (no fade); programs 212 throughout | the push-in 12.5°, the release 20.3°; the tour 9.42° and 11.0° (549°/s), 0 inside; parked 45 of 45 at 2.22 u; the door 0 of 38; no fade; programs 130 throughout |
+| `lum` | DA-02, DA-03; C1, C2, P2-B4 | `?hour=6/12/18/21` at 1440x900 and 390x844, hub-wide, by mask: ground, sky, player and open-sea L\*, the sea's hue and saturation, sky to ground as a luminance ratio, and the L\* step across the horizon row (sky above against sea below, the median over the columns where they meet) | desktop ground 22.0 / 57.4 / 22.8 / 16.7, sky 70.5 / 75.8 / 70.4 / 13.9: sky to ground 11.8:1 at 6 h and 11.0:1 at 18 h; the sea's hue 14.5° at 6 h and 14.7° at 18 h against 205° at noon (a brown sea under a low sun), L\* 45.6 at noon; the horizon step 20.3 / 32.3 / 33.6 / 2.3; the phone's sky 18.9 L\* under desktop's at 6 h (18.5, 17.7 and 11.1 at 12, 18 and 21 h), its ratio 5.8:1 | ground 21.4 at 6 h and 21.6 at 18 h, 12.4:1 and 12.1:1; the sea's hue 15.7° and 16.2°, L\* 41.2 at noon; the horizon step 21.8 / 30.1 / 31.2 / 2.3; the phone's sky 19.0 under desktop's at 6 h, 6.4:1 |
+
 ### Phase-2 probes, wave 1 (P2-E1a, P2-E2a)
 
 In `p2/`, CommonJS on `lib.cjs`, run by path (`npm run probe -- p2/<name>`),
