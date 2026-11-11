@@ -506,6 +506,26 @@ bloom, the haze is their glow, and nothing in either view is brighter than
 driven past the threshold, which is `EnvironmentCycle`'s emissive drive
 (C's), or a different bar.
 
+### Phase-2 probes, wave 2: guidance and play (P2-E2b)
+
+On `p2/guide-lib.cjs` and `p2/play-lib.cjs`, rebuilt from the audit reports
+(`phase2/a.json` and `phase2/gameplay.json`) for the same reason. The
+backend stays blocked, so every villager reply is the written fallback, and
+a probe never reads a secret from the source to pass a check (the Sailor's
+code comes from his words or not at all). Sounds are logged by wrapping
+OscillatorNode and AudioBufferSourceNode starts (`play-lib`'s `AUDIO`).
+Baselines as above: 2026-11-11 and 12, 0 leaks, a boot proof in every
+session, the port free afterwards. Every row exits 1 on both builds.
+
+| Probe | Item | What it measures | 58c8849 | wave-1 main |
+|---|---|---|---|---|
+| `p2/recruiter` | GD-02; P2-A4 | desktop and the phone, three visits: Work with me from the welcome card, then the hire card closed: seconds to the first guide surface (a First steps card, a route card, a hint toast or the compass pill gaining a target) in 60 s, and whether its 'Show me' sets the compass to Projects; `?zone=hire`: the same after the deep link's card closes, and `ds_welcomed` left unset; the recruiter tour from the hire card's `button[data-hire-tour]`: a guide surface within 2 s of the card closing | no guide surface in 60 s after the hire card closes, on either device (the audit: none in 50 s), and none after the `?zone=hire` card; `ds_welcomed` stays unset; the tour check reads 'hook missing' | a guide surface 0.8 s after the hire card closes on both devices (First steps, wave 1), with no 'Show me' on it; after the `?zone=hire` card none in 60 s; `ds_welcomed` stays unset; the tour check reads 'hook missing' (no `data-hire-tour` yet) |
+| `p2/firstplay` | GP-02, GP-08; P2-D4 | desktop and the phone at `?hour=12`: Explore, the arrival trail's coins, the villager it ends at, a chat with them, and five questions typed with the backend blocked ('What does Abbas build, and how do I contact him?', 'What does Abbas build?', 'How do I contact him?', 'Where is the shop?', 'Nice weather?'): the reply, any button on it, where the button leads; the badge; a talk hint after the chat; sounds started | the trail's 4 coins, then the Mayor (the nearest villager); 'What does Abbas build, and how do I contact him?' gets 'The town hall is always open — that is a campaign promise.' and no button (the audit's finding); the other four get one of his three written lines, no button; the badge reads '✨ live AI' until the first reply, then 'offline replies'; no talk hint returns | the trail ends at the Mayor (`getTrailVillager`); all five get one of his written lines and no button ('Deliveries up, complaints down. A fine term so far.' to the Projects question); the badge reads 'offline replies'; no talk hint returns |
+| `p2/npcs` | GD-12, GD-05; P2-C6 | desktop, a fresh load at 10.5, 18, 21, 23, 2 and 6 h (`--hours`): the villagers awake within 30 u of the spawn, how many are asleep, when the talk hint shows in 12 s, and who First steps' talk step names; then (`--no-sailor` skips it) the Sailor, by keeping pace 1.6 u off his boat until his prompt shows: everything he says, a 4-digit code in it, and that code typed at the beach house's door | awake within 30 u: 3, 3 and 2 at 10.5, 18 and 21 h, none at 23, 2 and 6 h (16, 16 and 9 of 28 asleep), and the talk hint still shows at 4.1-4.3 s at those three hours; the Sailor: no talk prompt beside his boat in 5 s (the swim prompt shows), so no code is heard | the same villagers; no talk hint in 12 s at any hour (First steps is up); its talk step names the Mayor, the Mayor and the Elder Sage at 10.5, 18 and 21 h and is skipped at 23, 2 and 6 h; the Sailor as on 58c8849 |
+| `p2/copy` | GD-08 | the phone and desktop: the six lessons, every villager's written lines (85), the Journal and the checklist, read for keyboard keys in copy a phone shows and for wrong facts, banned words ('agents', 'live AI') and typed counts | on the phone 4 key names (WASD and Space in lesson 1, 'E to cast' in lesson 2, the Nurse's 'hold Space'); facts: 'Two dozen of them will really talk' (a typed count), 'five zones' (Island Explorer, Cartographer), 'your next delivery', 'the Project Portfolio zone'; the chat badge reads '✨ live AI' before the first reply | the same lists |
+| `p2/race` | GP-03, GP-05; P2-A7, D10 | desktop and the phone: the land circuit driven ring to ring (`--driver gates`, steering at each ring's position) or by the compass pill's bearing alone (`--driver compass`, A1's sign: positive is to the right): the lap, stalls, at each of the 5 checkpoints whether the next ring is below the horizon and what the pill names; the share of the pill the race HUD covers; district toasts between 'Go!' and the finish; the finish card's words with the backend blocked; a name prompt for a fresh visitor | the next ring below the horizon at 10 of 10 checkpoints; the HUD covers 73% of the pill on desktop and 100% on the phone; the pill names districts (Projects, Personal, Contact, Contact, Professional), never a ring; laps 59.7 and 54.2 s; the finish says 'No times yet — you're on the board!' with the board unreachable, no Retry; no name prompt (a random 'Brave Scout') | 10 of 10; the HUD covers 83% and 88%; the pill names the Mayor (First steps' target) at all five; laps 55.7 and 58.7 s; the finish and the name as on 58c8849. `--driver compass` does not finish a lap on either build (0 checkpoints in 150 s: the pill never points at a ring), which is what A's ring bearing changes |
+| `p2/quests` | GP-04, GP-07, GP-10; P2-A7 | desktop: six E presses at the School (coins paid); the Elder Sage's prompt; E after her quest lines | six presses pay +60 (the audit's number); her prompt reads 'Press E to talk to Elder Sage — ask anything' with no word of a request; after her lines E opens the scripted dialogue again, not the chat | the same |
+
 ## Perf gate
 
 `npm run perf:gate` (`tools/perf-gate.cjs`, items E1 and CO-E2) runs on the
@@ -884,6 +904,13 @@ resolves.
   `passport-interior.cjs`, `party.cjs` (party, partyoff), `bootcost.cjs`,
   `duskflip.cjs`, `journey.cjs`, and the `room-lib.cjs`, `L.cjs`,
   `play-lib.cjs` and `guide-lib.cjs` libraries.
+- Stage 2, wave 2: `intro.cjs`, `camera.cjs`, `lum.cjs`.
+- Phase 2, wave 2, in `p2/`: `light.cjs` (daycycle, weather, beacons,
+  shadowdraws, edge-crawl), `rooms.cjs` (room-a11y, room-phone, room-light,
+  room-rig, avlum, warmtest, room-census), `guidance.cjs` (recruiter, npcs,
+  copy) and `play.cjs` (firstplay, race, quests). `L.cjs` adds the terrain
+  zones, the bulb mask and the hue helpers; `room-lib.cjs` adds `IA.lum`,
+  `IA.lights` and `IA.windowRegion`.
 - `lock-census.cjs` the static census over `tools/owners.json`.
 - `../owners.json` the ownership table and the contract-check allow-list.
 - `test/probeSafety.test.ts` pins `classify()`, `leakReason()`, the boot
