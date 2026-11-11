@@ -927,8 +927,29 @@ export class OrbitCamera {
     this.snapToPlayer();
   }
 
+  /** The fly-in never turns the view more than this in one frame (A10). */
+  public static readonly FLY_IN_MAX_TURN = (1.4 * Math.PI) / 180;
+  /** The view starts turning from the planet to the follow view this far in. */
+  private static readonly FLY_IN_TURN_FROM = 0.3;
+
   /**
-   * Cinematic fly-in from distant view (like Messenger title screen)
+   * Cinematic fly-in from distant view (like Messenger title screen).
+   *
+   * A curved approach, not a line (A10, MOT-10). The old path lerped straight
+   * from 244 u out to the follow pose with lookAt on the player, so the
+   * camera looked down for most of the flight and then swung 3.0-3.3° a
+   * frame in the last 6 u. Now:
+   * - position: the bearing (the direction from the planet's centre) slerps
+   *   from the start to the follow pose while the radius comes in as
+   *   r(t) = rFollow + (rStart − rFollow)(1 − easeOutCubic(t)), so the camera
+   *   is over its landing spot early and settles onto it;
+   * - orientation: 'look at the island's centre' for the first 30%, then a
+   *   slerp to the follow view on easeInOutSine over t in [0.3, 1], which
+   *   spreads the pitch-up over 1.75 s. One frame never turns the view more
+   *   than FLY_IN_MAX_TURN: a slow frame makes the turn fall behind and catch
+   *   up, never jump.
+   * The 2.5 s clock is unchanged, and still stall-immune. The swoop ends
+   * exactly on the follow pose it started from.
    */
   public async flyInFromDistant(
     duration: number = 2000,
@@ -953,12 +974,42 @@ export class OrbitCamera {
         .add(targetOffset || new THREE.Vector3(0, 25, 40))
         .multiplyScalar(2.5);
 
+      // The path's two ends about the planet's centre: bearing and radius.
+      const rStart = farAwayPos.length();
+      const rFollow = startPos.length();
+      const dirStart = farAwayPos.clone().divideScalar(rStart || 1);
+      const dirFollow = startPos.clone().divideScalar(rFollow || 1);
+      const arc = dirStart.angleTo(dirFollow);
+      const arcAxis = dirStart.clone().cross(dirFollow);
+      // (anti)parallel ends: no arc to sweep, the radius does all the work
+      const sweeps = arcAxis.lengthSq() > 1e-10 && arc > 1e-6;
+      if (sweeps) arcAxis.normalize();
+
+      // The view's two ends. The follow view: at the follow pose, looking at
+      // the look target, up along the surface normal (what update() resumes
+      // on). The planet view keeps 'ahead' (where the follow view will look)
+      // at the top of the screen, so the turn between them is a pitch-up with
+      // no roll.
+      const look = new THREE.Matrix4();
+      const followQuat = new THREE.Quaternion().setFromRotationMatrix(
+        look.lookAt(startPos, this.targetPosition, this.camera.up),
+      );
+      const ahead = this.targetPosition.clone().sub(startPos);
+      if (ahead.lengthSq() < 1e-8) ahead.copy(this.camera.up);
+      ahead.normalize();
+      const centre = new THREE.Vector3();
+      const planetQuat = new THREE.Quaternion();
+      const wantQuat = new THREE.Quaternion();
+      const arcQuat = new THREE.Quaternion();
+      const dir = new THREE.Vector3();
+
       this.cameraPosition.copy(farAwayPos);
       this.camera.position.copy(farAwayPos);
+      this.camera.quaternion.setFromRotationMatrix(look.lookAt(farAwayPos, centre, ahead));
 
       // Take the camera off the follow-update for the duration of the swoop —
       // update() no-ops while this holds, so the fly-in is the SOLE writer and
-      // its smooth lerp is what renders (not a lerp fighting the follow).
+      // its path is what renders (not a path fighting the follow).
       this.flyingIn = true;
 
       // Stall-immune clock: elapsed accrues from the FIRST animation frame
@@ -967,6 +1018,7 @@ export class OrbitCamera {
       // whole window before any frame drew — the fly-in appeared skipped.
       let elapsed = 0;
       let last: number | null = null;
+      let first = true;
 
       const animate = () => {
         const now = Date.now();
@@ -974,21 +1026,32 @@ export class OrbitCamera {
         last = now;
         const progress = Math.min(elapsed / duration, 1);
 
-        // Ease in-out cubic
-        const easeProgress =
-          progress < 0.5
-            ? 4 * progress * progress * progress
-            : 1 - Math.pow(-2 * progress + 2, 3) / 2;
-
-        this.cameraPosition.lerpVectors(farAwayPos, startPos, easeProgress);
+        // Position: ease-out cubic along the arc and down the radius.
+        const e = 1 - Math.pow(1 - progress, 3);
+        dir.copy(dirStart);
+        if (sweeps) dir.applyQuaternion(arcQuat.setFromAxisAngle(arcAxis, arc * e));
+        this.cameraPosition.copy(dir).multiplyScalar(rFollow + (rStart - rFollow) * (1 - e));
         this.camera.position.copy(this.cameraPosition);
-        this.camera.lookAt(this.targetPosition);
 
-        if (progress < 1) {
+        // Orientation: the planet view, turning to the follow view from 30%.
+        const k = (progress - OrbitCamera.FLY_IN_TURN_FROM) / (1 - OrbitCamera.FLY_IN_TURN_FROM);
+        const turn = k <= 0 ? 0 : 0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, k)); // easeInOutSine
+        planetQuat.setFromRotationMatrix(look.lookAt(this.cameraPosition, centre, ahead));
+        wantQuat.slerpQuaternions(planetQuat, followQuat, turn);
+        if (first) this.camera.quaternion.copy(wantQuat);
+        else this.camera.quaternion.rotateTowards(wantQuat, OrbitCamera.FLY_IN_MAX_TURN);
+        first = false;
+
+        // Landed: the clock has run out and the view has caught up (it trails
+        // only after slow frames, by a few frames at most).
+        if (progress < 1 || this.camera.quaternion.angleTo(followQuat) > 1e-4) {
           requestAnimationFrame(animate);
         } else {
           // Hand the camera back to the follow-update on the pose the swoop
           // ended on (== startPos, the settled follow pose) — seamless resume.
+          this.cameraPosition.copy(startPos);
+          this.camera.position.copy(startPos);
+          this.camera.quaternion.copy(followQuat);
           this.flyingIn = false;
           resolve();
         }

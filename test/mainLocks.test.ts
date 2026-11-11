@@ -1166,17 +1166,22 @@ describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
     for (const l of labels) expect(l[0], l).toBe(l[0].toUpperCase());
   });
 
-  test("'ds:intro': one start as the fly-in or the calm entry begins, one settled in afterIntro", () => {
+  test("'ds:intro': one start as the fly-in or a calm entry begins, one settled in afterIntro", () => {
     const m = stripped('main-simple.ts');
     const start =
       "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));";
     const settled =
       "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'settled' } }));";
-    expect(m.split(start).length - 1).toBe(2);
+    // one per entry: reduced motion, a phone's calm entry (A10), the fly-in
+    expect(m.split(start).length - 1).toBe(3);
     expect(m.split(settled).length - 1).toBe(1);
     expect(bodyOf(m, 'const afterIntro = () =>')).toContain(settled);
-    // the calm entry: start before the snap and afterIntro
-    const calm = blockOf(m, 'if (a11y.reducedMotion) {', m.indexOf('const afterIntro'));
+    // reduced motion: start before the snap and afterIntro
+    const reduced = bodyOf(m, 'if (a11y.reducedMotion) {', m.indexOf('const afterIntro'));
+    expect(reduced.indexOf(start)).toBeGreaterThan(-1);
+    expect(reduced.indexOf(start)).toBeLessThan(reduced.indexOf('afterIntro()'));
+    // the calm entry: the same order
+    const calm = bodyOf(m, '} else if (this.calmEntry) {', m.indexOf('const afterIntro'));
     expect(calm.indexOf(start)).toBeGreaterThan(-1);
     expect(calm.indexOf(start)).toBeLessThan(calm.indexOf('afterIntro()'));
     // the fly-in: start right before the swoop
@@ -1335,5 +1340,146 @@ describe('P2-A7: quest givers say so, and race times go up under a real name', (
     // 'Guest' unless the visitor chose a name: never the name tag's placeholder
     const name = bodyOf(m(), 'private boardName(');
     expect(name).toContain("if (!saved && !this.nameTyped) return 'Guest';");
+  });
+});
+
+// orbitCamera.test.ts flies the fly-in for real; these pin the intro block in
+// main-simple.init, which no unit test can run.
+describe('A10: a smoother desktop intro, and a calm entry on phones only', () => {
+  const m = (): string => stripped('main-simple.ts');
+  const intro = (): string =>
+    blockOf(m(), 'if (a11y.reducedMotion) {', m().indexOf('const afterIntro'));
+
+  test('the calm entry is keyed on a coarse pointer that cannot hover, never the low tier', () => {
+    const field = m().slice(
+      m().indexOf('private readonly calmEntry ='),
+      m().indexOf('private calmEntryCanvas'),
+    );
+    expect(field).toContain('this.coarsePointer &&');
+    expect(field).toContain("matchMedia('(hover: none)').matches");
+    // isLowTierDevice() also catches 4-core laptops, which keep the fly-in
+    expect(field).not.toContain('isLowTierDevice');
+    expect(intro()).not.toContain('isLowTierDevice');
+  });
+
+  test('a phone snaps into the follow view under a 600 ms opacity fade; nothing flies', () => {
+    const calm = bodyOf(m(), '} else if (this.calmEntry) {', m().indexOf('const afterIntro'));
+    const snap = calm.indexOf('this.scene.getOrbitCamera().snapToPlayer();');
+    expect(snap).toBeGreaterThan(-1);
+    expect(snap).toBeLessThan(calm.indexOf('afterIntro();'));
+    expect(calm).toContain("canvas.style.opacity = '0';");
+    expect(calm).toContain('this.calmEntryCanvas = canvas;');
+    // none of the fly-in's machinery: no flight, no intro-lite levers
+    for (const no of ['flyInFromDistant', 'setGrassBudget', 'setShadowFreeze', 'setInkVisible']) {
+      expect(calm, no).not.toContain(no);
+    }
+    // the fade starts with the loader's own fade, and is opacity only
+    expect(m()).toContain('setTimeout(() => this.startCalmEntryFade(), 500);');
+    const fade = bodyOf(m(), 'private startCalmEntryFade(');
+    expect(fade).toContain("canvas.style.transition = 'opacity 600ms ease-out';");
+    expect(fade).toContain("canvas.style.opacity = '1';");
+    expect(fade).not.toContain('transform');
+    // whatever happens, the canvas is never left invisible
+    expect(fade).toMatch(
+      /window\.setTimeout\(\(\) => \{\s*canvas\.style\.transition = '';\s*canvas\.style\.opacity = '';\s*\}, 700\);/,
+    );
+  });
+
+  test('reduced motion is unchanged: the snap, with no fade', () => {
+    const reduced = bodyOf(m(), 'if (a11y.reducedMotion) {', m().indexOf('const afterIntro'));
+    expect(reduced).toContain('this.scene.getOrbitCamera().snapToPlayer();');
+    expect(reduced).not.toContain('calmEntryCanvas');
+    expect(reduced).not.toContain('opacity');
+    // and it is asked first: a phone that prefers reduced motion takes this branch
+    expect(intro().indexOf('if (a11y.reducedMotion) {')).toBeLessThan(
+      intro().indexOf('} else if (this.calmEntry) {'),
+    );
+  });
+
+  test('the intro-lite levers come back in three timers: grass 1.1 s, ink and resolution 1.5 s, shadows 1.9 s', () => {
+    const s = m();
+    expect(s).toContain('requestAnimationFrame(() => window.setTimeout(restoreIntroGrass, 1100));');
+    expect(s).toContain(
+      'requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500));',
+    );
+    expect(s).toContain(
+      'requestAnimationFrame(() => window.setTimeout(restoreIntroShadows, 1900));',
+    );
+    expect(s).toContain(
+      'const restoreIntroGrass = (): void => this.scene.getIsland().setGrassBudget(1);',
+    );
+    const shadows = bodyOf(s, 'const restoreIntroShadows');
+    expect(shadows).toContain('this.renderer.setShadowFreeze(false);');
+    expect(shadows).not.toContain('setGrassBudget');
+    const quality = bodyOf(s, 'const restoreIntroQuality');
+    expect(quality).toContain('this.renderer.setIntroResolution(null);');
+    expect(quality).toContain('setInkVisible(true);');
+    expect(quality).not.toContain('setGrassBudget');
+    expect(quality).not.toContain('setShadowFreeze');
+    // the arrival covers a skipped or short flight: all three, then the bloom
+    const fly = s.indexOf('.flyInFromDistant(2500)');
+    const land = s.slice(fly, s.indexOf('afterIntro();', fly));
+    for (const call of [
+      'restoreIntroGrass();',
+      'restoreIntroQuality();',
+      'restoreIntroShadows();',
+    ]) {
+      expect(land, call).toContain(call);
+      expect(land.indexOf(call), call).toBeLessThan(
+        land.indexOf('this.renderer.fadeBloomIn(650);'),
+      );
+    }
+  });
+
+  test('the ink and the shadow pass link their programs behind the loader, not as the levers return', () => {
+    // Hidden ink and a frozen shadow pass are not drawn in warmUp's hidden
+    // frame, so their programs linked mid-flight, in clear view (measured:
+    // +2 programs in a 90 ms frame and +5 in a 160 ms frame). Two frames
+    // behind the loader draw them instead.
+    const s = m();
+    const prime = bodyOf(s, 'const primeIntroLevers = (): void =>');
+    // frame 1: the ink; frame 2: the ink off again and the shadow pass on;
+    // frame 3: the shadow pass frozen again
+    const order = [
+      'setInkVisible(true);',
+      'if (!inkBack) setInkVisible(false);',
+      'this.renderer.setShadowFreeze(false);',
+      'if (!shadowsBack) this.renderer.setShadowFreeze(true);',
+    ].map((x) => prime.indexOf(x));
+    for (const i of order) expect(i).toBeGreaterThan(-1);
+    expect([...order].sort((x, y) => x - y)).toEqual(order);
+    expect(prime.split('requestAnimationFrame(').length - 1).toBe(2);
+    // a lever that is back for good is never touched again
+    expect(prime).toContain('if (inkBack || shadowsBack) return;');
+    expect(bodyOf(s, 'const restoreIntroQuality')).toContain('inkBack = true;');
+    expect(bodyOf(s, 'const restoreIntroShadows')).toContain('shadowsBack = true;');
+    // twice: on the swoop's first frame...
+    const first = s.indexOf('requestAnimationFrame(primeIntroLevers);');
+    expect(first).toBeGreaterThan(s.indexOf('const primeIntroLevers'));
+    expect(first).toBeLessThan(s.indexOf('.flyInFromDistant(2500)'));
+    // ...and as the loader starts to fade, when the avatar GLBs are usually
+    // in (their skinned ink and depth variants cannot link before that)
+    expect(s).toContain('this.primeIntroAgain = primeIntroLevers;');
+    const again = s.indexOf('this.primeIntroAgain?.();');
+    expect(again).toBeGreaterThan(s.indexOf('setTimeout(() => this.ui.hideLoading(), 500);'));
+    expect(s.slice(again, again + 120)).toMatch(/this\.primeIntroAgain = null;\s*\}, 500\);/);
+  });
+
+  test('the fly-in keeps its 2.5 s and its stall-immune clock, and caps the turn per frame', () => {
+    const fly = bodyOf(stripped('OrbitCamera.ts'), 'public async flyInFromDistant');
+    expect(m()).toContain('.flyInFromDistant(2500)');
+    expect(fly).toContain('if (last !== null) elapsed += Math.min(now - last, 100);');
+    // the radius: rFollow + (rStart - rFollow)(1 - easeOutCubic(t))
+    expect(fly).toContain('const e = 1 - Math.pow(1 - progress, 3);');
+    expect(fly).toContain('multiplyScalar(rFollow + (rStart - rFollow) * (1 - e));');
+    // the view: easeInOutSine over t in [0.3, 1], then the per-frame cap
+    expect(stripped('OrbitCamera.ts')).toContain('private static readonly FLY_IN_TURN_FROM = 0.3;');
+    expect(fly).toContain('0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, k))');
+    expect(fly).toContain(
+      'this.camera.quaternion.rotateTowards(wantQuat, OrbitCamera.FLY_IN_MAX_TURN);',
+    );
+    expect(stripped('OrbitCamera.ts')).toContain(
+      'public static readonly FLY_IN_MAX_TURN = (1.4 * Math.PI) / 180;',
+    );
   });
 });

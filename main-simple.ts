@@ -216,6 +216,38 @@ export class SimpleApp {
   /** A coarse pointer (phones, tablets): the rooms warm early (CO-A5). */
   private readonly coarsePointer =
     typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  /**
+   * A phone or tablet: a coarse pointer that cannot hover. It takes the calm
+   * entry instead of the intro fly-in (A10, decision 6). Not
+   * isLowTierDevice(), which also catches laptops with 4 cores or fewer; a
+   * fine pointer always flies in.
+   */
+  private readonly calmEntry =
+    this.coarsePointer && typeof matchMedia === 'function' && matchMedia('(hover: none)').matches;
+  /** The canvas a calm entry holds at opacity 0 until the loader starts to fade. */
+  private calmEntryCanvas: HTMLCanvasElement | null = null;
+  /** The fly-in's second priming of its ink and shadow levers (see init). */
+  private primeIntroAgain: (() => void) | null = null;
+
+  /**
+   * The calm entry's cross-fade: the world comes up over 600 ms while the
+   * loader fades out above it. Opacity only, so it stays on the compositor.
+   * The inline styles are cleared afterwards whether or not a frame ever ran
+   * the transition (a hidden tab): the canvas can never be left invisible.
+   */
+  private startCalmEntryFade(): void {
+    const canvas = this.calmEntryCanvas;
+    if (!canvas) return;
+    this.calmEntryCanvas = null;
+    canvas.style.transition = 'opacity 600ms ease-out';
+    requestAnimationFrame(() => {
+      canvas.style.opacity = '1';
+    });
+    window.setTimeout(() => {
+      canvas.style.transition = '';
+      canvas.style.opacity = '';
+    }, 700);
+  }
   private roomsWarmStarted = false;
   /**
    * CO-A5. At 4x CPU the idle warm's 9 s ceiling fires 6-7 s late on a busy
@@ -1464,6 +1496,20 @@ export class SimpleApp {
         window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene.getOrbitCamera().snapToPlayer();
         afterIntro();
+      } else if (this.calmEntry) {
+        // CALM ENTRY (A10, decision 6): a phone skips the swoop. MEASURED on
+        // the phone profile at 4x CPU (PERF-08): the fly-in drew 28 frames at
+        // 7 fps and the welcome card came up at 14.6 s; with this entry, the
+        // reduced-motion one, it came up at 9.8 s with 6 long tasks before it
+        // instead of 35. Keyed on a coarse pointer that cannot hover, never on
+        // isLowTierDevice(): that also catches 4-core laptops, which keep the
+        // fly-in. The camera is seated in the follow pose and the world fades
+        // in under the loader's own fade (startCalmEntryFade): opacity only.
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
+        canvas.style.opacity = '0';
+        this.calmEntryCanvas = canvas;
+        this.scene.getOrbitCamera().snapToPlayer();
+        afterIntro();
       } else {
         // INTRO-LITE: the fly-in is the single heaviest view in the game — the
         // whole planet in frustum, so chunk culling recovers nothing and every
@@ -1538,7 +1584,7 @@ export class SimpleApp {
         // moment the player first looks at the island — read as the screen
         // "glitching". The brightness half of that is gone now, but grass
         // 0.3 -> 1.0 is still a whole-image change, so it keeps riding in under
-        // the motion at 1.5s of a 2.5s flight. The heavy part of the swoop —
+        // the motion, 1.1s into a 2.5s flight. The heavy part of the swoop —
         // the whole planet in frustum — is the FIRST second, which still runs
         // lean, so the judder this was protecting is intact.
         //
@@ -1550,7 +1596,7 @@ export class SimpleApp {
         // users (who skip this block) ever got a warmed composer.
         // GRASS and BLOOM want OPPOSITE restore timing.
         //   Grass 0.3 -> 1.0 is a whole-image change, so it rides in mid-swoop
-        //   (1500ms) where the camera's own motion HIDES the pop.
+        //   (1100ms) where the camera's own motion HIDES the pop.
         //   Bloom is the reverse: turning it on mid-swoop is the "world
         //   first-loading bloom flicker". Bloom is half-res, so on a fast-moving
         //   bright planet rim at intro-lite fps its halo lags the edge frame to
@@ -1559,19 +1605,28 @@ export class SimpleApp {
         //   on for ~1s of motion. So bloom waits for ARRIVAL, when the camera is
         //   still and there is nothing to ghost (the on-step itself is
         //   imperceptible — measured mean +0.24/255 at the settled view).
-        // Restores ALL four intro-lite levers at once (grass, resolution,
-        // shadows, ink). Fired at 1500ms — under camera motion, ~74% of the way in
-        // (ease-in-out), where the whole-image change hides and the frame has
-        // lightened enough (closer camera, more culled) to afford full quality
-        // for the final approach. Idempotent, so the arrival .then can call it
-        // again to cover a skipped/short flight.
-        const restoreIntroQuality = (): void => {
-          this.scene.getIsland().setGrassBudget(1);
-          this.renderer.setIntroResolution(null);
+        // The four intro-lite levers come back STAGGERED, under camera motion
+        // (A10, MOT-10): grass at 1.1 s, resolution and ink at 1.5 s, shadows
+        // at 1.9 s, each in a timer of its own. All four in one task cost a
+        // 123 ms frame 1.43 s into the flight, at the moment the view turned
+        // fastest. By 1.1 s the camera is about 40 u up and still closing at
+        // speed, so the whole-image changes hide in the motion and the frame
+        // has lightened enough (closer camera, more culled) to afford full
+        // quality for the final approach. Each is idempotent, so the arrival
+        // .then calls all three again to cover a skipped/short flight.
+        let inkBack = false;
+        let shadowsBack = false;
+        const restoreIntroGrass = (): void => this.scene.getIsland().setGrassBudget(1);
+        const restoreIntroShadows = (): void => {
+          shadowsBack = true;
           this.renderer.setShadowFreeze(false);
+        };
+        const restoreIntroQuality = (): void => {
+          inkBack = true;
+          this.renderer.setIntroResolution(null);
           setInkVisible(true);
         };
-        // The 1.5s clock starts at the swoop's FIRST FRAME, like the fly-in's
+        // Every clock starts at the swoop's FIRST FRAME, like the fly-in's
         // own stall-immune clock. Started here, it ran out before any frame
         // drew: warmUp below compiles every program synchronously. MEASURED
         // (hardware GL, dev server): scheduled at 2253ms, render loop at
@@ -1579,13 +1634,50 @@ export class SimpleApp {
         // shows the same ~2.5s from world gen to the first frame. So all four
         // levers were restored before the visitor saw the swoop: the
         // intro-lite never engaged.
+        requestAnimationFrame(() => window.setTimeout(restoreIntroGrass, 1100));
         requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500));
+        requestAnimationFrame(() => window.setTimeout(restoreIntroShadows, 1900));
+        // PRIME UNDER THE LOADER. Hidden ink and a frozen shadow pass are not
+        // drawn in warmUp's hidden frame, so their programs linked when the
+        // levers came back, in clear view. MEASURED on the staggered timers:
+        // +2 programs and a 90 ms frame as the ink returned, +5 and 160 ms as
+        // the shadow pass resumed (before the stagger: +7 in one 170-220 ms
+        // frame). Two frames behind the loader draw them instead: one draws
+        // the ink, the next runs the shadow pass, and each lever goes back on
+        // the frame after. Two frames, not one: the fly-in clock forgives
+        // 100 ms a frame, so two shorter stalls cost the flight less than one
+        // long one. The shadow map also holds a real frame through the swoop
+        // now, where it was empty until the unfreeze.
+        //
+        // It runs twice: on the swoop's first frame, and again as the loader
+        // starts to fade (below, beside hideLoading). The avatar GLBs land
+        // about half a second in, and their SKINNED ink and depth variants
+        // cannot link before the meshes exist: after one priming, MEASURED
+        // one program still linked at each restore (a 60-80 ms frame each).
+        // A lever that is back for good is never touched again.
+        const primeIntroLevers = (): void => {
+          if (inkBack || shadowsBack) return;
+          setInkVisible(true);
+          requestAnimationFrame(() => {
+            if (!inkBack) setInkVisible(false);
+            if (shadowsBack) return;
+            this.renderer.setShadowFreeze(false);
+            requestAnimationFrame(() => {
+              if (!shadowsBack) this.renderer.setShadowFreeze(true);
+            });
+          });
+        };
+        requestAnimationFrame(primeIntroLevers);
+        this.primeIntroAgain = primeIntroLevers;
         window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
           .then(() => {
-            restoreIntroQuality(); // idempotent — covers a skipped/short flight
+            // idempotent — covers a skipped/short flight
+            restoreIntroGrass();
+            restoreIntroQuality();
+            restoreIntroShadows();
             // FADE bloom in, don't snap it. Enabling at arrival avoids the
             // rim-ghosting-during-motion, but a hard enable is a bloom POP right
             // as the reveal settles and the eye lands on the scene — read as a
@@ -1607,6 +1699,14 @@ export class SimpleApp {
       // Hold the loader a touch longer so a couple of clean frames render
       // before it fades over them (was 350ms — too eager, revealed mid-warmup).
       setTimeout(() => this.ui.hideLoading(), 500);
+      // A calm entry (A10) brings the world up under that same fade.
+      setTimeout(() => this.startCalmEntryFade(), 500);
+      // The fly-in primes its two levers once more while the loader is still
+      // all but opaque: the avatar GLBs are usually in by now.
+      setTimeout(() => {
+        this.primeIntroAgain?.();
+        this.primeIntroAgain = null;
+      }, 500);
 
       // Register the service worker for instant repeat visits + offline shell.
       // Production only (SW caching would fight Vite HMR in dev), on load so it
