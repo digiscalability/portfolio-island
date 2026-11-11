@@ -564,3 +564,30 @@ describe('the light rig follows the camera and the sun (P2-B5)', () => {
     expect(grade).toContain('?? this.hemiBaseGround');
   });
 });
+
+describe('the sky ends like every built-in material (P2-B4)', () => {
+  test('the dome applies the frame’s tone mapping, then its output encoding', () => {
+    // MEASURED on the low tier, which draws straight to the canvas: the dome
+    // wrote linear colours as display colours, 18-23 L* below desktop by day.
+    const scene = Object.setPrototypeOf(new THREE.Scene(), GameScene.prototype) as THREE.Scene;
+    (GameScene.prototype as unknown as Record<string, () => void>)['createSkyDome'].call(scene);
+    const dome = scene.getObjectByName('SkyDome') as THREE.Mesh;
+    const mat = dome.material as THREE.ShaderMaterial;
+    const frag = mat.fragmentShader.replace(/\/\/.*$/gm, '');
+    const out = frag.indexOf('gl_FragColor = vec4(sky, 1.0);');
+    const tone = frag.indexOf('#include <tonemapping_fragment>');
+    const encode = frag.indexOf('#include <colorspace_fragment>');
+    expect(out).toBeGreaterThan(-1);
+    expect(tone).toBeGreaterThan(out);
+    expect(encode).toBeGreaterThan(tone);
+    // Nothing writes the colour after them.
+    expect(frag.slice(encode)).not.toContain('gl_FragColor');
+    // three resolves both by name; a renamed chunk would make them no-ops.
+    expect(THREE.ShaderChunk.tonemapping_fragment).toContain('toneMapping(');
+    expect(THREE.ShaderChunk.colorspace_fragment).toContain('linearToOutputTexel(');
+    // The renderer's tone mapping reaches it (WebGLPrograms reads toneMapped).
+    expect(mat.toneMapped).toBe(true);
+    // Still one unlit shader program: nothing here keys on the lights.
+    expect(mat.lights).toBe(false);
+  });
+});

@@ -10811,6 +10811,15 @@ export class GameScene extends THREE.Scene {
           sunAmt *= smoothstep(0.0, 0.12, abs(h)); // exactly horizonColor at h=0
           sky = mix(sky, horizonColor * vec3(1.25, 1.02, 0.82), sunAmt * 0.55);
           gl_FragColor = vec4(sky, 1.0);
+          // The frame's own tone mapping and output encoding, as every
+          // built-in material ends (P2-B4). Drawn into the composer's linear
+          // buffer (desktop) both are no-ops and the output pass grades the
+          // sky with the rest. Drawn straight to the canvas (the low tier, no
+          // composer) the dome used to skip both: its linear colours went to
+          // the screen as if they were display colours, MEASURED 18-23 L*
+          // below desktop by day and 2-3 against 14-15 at night.
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });
