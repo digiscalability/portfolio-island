@@ -1,6 +1,10 @@
 'use strict';
-// Frame probes (B0, B2): the interior warm-up hitch and the seeded-window
-// draw counter.
+// Frame probes (B0, B2, CO-E3): the interior warm-up hitch and the
+// seeded-window draw counter. hitch attaches at ready and measures ready to
+// ready + 25 s; its first door reports the longest frame up to the first room
+// frame and the black interval judged by pixels (a CDP screencast, veil
+// hiding 95% of the world or more); --pause-near-door (and --no-khr) adds the
+// entry after standing 3 s within a door's range.
 const fs = require('fs');
 const path = require('path');
 const lib = require('./lib.cjs');
@@ -9,17 +13,42 @@ const lib = require('./lib.cjs');
 // program accounting. renderer.render and the composer's render log
 // info.programs.length before and after every call; renderer.compile and
 // compileAsync tag what they add, so a program created by a render() is told
-// apart from one created inside a compile call. scene.warmInterior is timed.
+// apart from one created inside a compile call. scene.warmInterior and
+// warmInteriorNearDoor are timed, and the warm's own work is recorded as the
+// synchronous spans it runs (warmSegs, below), so a frame is charged to the
+// warm by that work and not by when it lands.
 const HITCH_INIT = `(() => {
   if (window.top !== window) return;
-  const H = (window.__hitch = { frames: [], loaf: [], renders: [], compiles: [], warm: [], readyAt: null, installed: false, renderCalls: 0, composerCalls: 0 });
+  const H = (window.__hitch = { frames: [], loaf: [], renders: [], compiles: [], warm: [], warmSegs: [], warmYields: 0, warmSegsClosedAtFrame: 0, readyAt: null, cardAt: null, installed: false, renderCalls: 0, composerCalls: 0 });
   const now = () => performance.now();
+  // The warm's own work. A warm call opens a span; every time the warm yields
+  // (a setTimeout made from its own frames: nextTask in compileInteriorPass
+  // and warmInteriorPasses, settleWarmPrograms' polls) the open span closes,
+  // and that timer's callback opens the next one, which the warm's
+  // continuation then runs in. A span still open at a frame means a yield the
+  // tags missed: it is closed there and counted.
+  const WARM_FRAMES = /\\b(warmInteriorPasses|compileInteriorPass|settleWarmPrograms)\\b/;
+  let flight = 0;
+  let segAt = null;
+  const segOpen = () => { if (segAt === null) segAt = now(); };
+  const segClose = () => { if (segAt !== null) { H.warmSegs.push([+segAt.toFixed(2), +now().toFixed(2)]); segAt = null; } };
+  const st0 = window.setTimeout;
+  window.setTimeout = function (cb, ms) {
+    if (flight > 0 && typeof cb === 'function' && WARM_FRAMES.test(new Error().stack || '')) {
+      segClose();
+      H.warmYields++;
+      const rest = Array.prototype.slice.call(arguments, 2);
+      return st0.call(window, function () { segOpen(); return cb.apply(this, arguments); }, ms, ...rest);
+    }
+    return st0.apply(window, arguments);
+  };
   let last = 0;
   // Each rAF tick also logs the program count after the last top-level
   // render, so the jump between two consecutive renders (a compile call in
   // between plus the render itself) is visible as one number.
   H.postProgs = null;
   const tick = (t) => {
+    if (segAt !== null) { segClose(); H.warmSegsClosedAtFrame++; }
     if (last) H.frames.push([Math.round(t), +(t - last).toFixed(1), H.postProgs]);
     last = t;
     requestAnimationFrame(tick);
@@ -31,23 +60,36 @@ const HITCH_INIT = `(() => {
   } catch (e) {}
   let inCompile = 0;
   let inComposer = 0; // renderer.render calls nested in composer.render are the composer's
+  // A live frame that draws the room outside an entry: stage 1's warm made
+  // the room visible while compileAsync finished, and the next frame drew the
+  // room-lit variants for 2,043 ms. By design no frame ever draws it there.
+  H.roomRenders = [];
+  const roomShown = () => {
+    const sc = window.__app && window.__app.scene;
+    const g = sc && sc.interiorGroup;
+    if (!g || !g.visible) return false;
+    try { return !sc.isInsideInterior(); } catch (e) { return false; }
+  };
   const install = () => {
     const app = window.__app;
     if (!app || !app.renderer || !app.scene || typeof app.renderer.getRenderer !== 'function') return false;
     const R = app.renderer.getRenderer();
     if (!R || !R.info) return false;
+    H.roomHook = 'interiorGroup' in app.scene && typeof app.scene.isInsideInterior === 'function';
     const progs = () => (R.info.programs ? R.info.programs.length : 0);
     const wrapRender = (obj, key, label, counter) => {
       const orig = obj[key];
       if (typeof orig !== 'function' || orig.__hitch) return;
       const f = function () {
         const p0 = progs();
+        const shown = inComposer === 0 && inCompile === 0 && roomShown();
         const t0 = now();
         const r = orig.apply(this, arguments);
         const p1 = progs();
         H[counter]++;
         if (inComposer === 0 && inCompile === 0) H.postProgs = p1;
         if (p1 !== p0 && inComposer === 0) H.renders.push({ t: Math.round(t0), label, added: p1 - p0, ms: +(now() - t0).toFixed(1), inCompile: inCompile > 0, programs: p1 });
+        if (shown) H.roomRenders.push({ t: Math.round(t0), label, added: p1 - p0, ms: +(now() - t0).toFixed(1) });
         return r;
       };
       f.__hitch = true;
@@ -80,19 +122,32 @@ const HITCH_INIT = `(() => {
     wrapCompile('compile');
     wrapCompile('compileAsync');
     const sc = app.scene;
-    if (typeof sc.warmInterior === 'function' && !sc.warmInterior.__hitch) {
-      const o = sc.warmInterior;
+    // The idle warm (warmInterior) and B2's near-door warm. A call that finds
+    // the room already warm returns at once and records endMs 0.
+    const wrapWarm = (key, source) => {
+      if (typeof sc[key] !== 'function' || sc[key].__hitch) return;
+      const o = sc[key];
       const w = function () {
         const t0 = now();
-        const rec = { t: Math.round(t0) };
+        const rec = { t: Math.round(t0), source: H.nextWarmSource || source };
+        H.nextWarmSource = null;
         H.warm.push(rec);
-        const r = o.apply(this, arguments);
-        if (r && typeof r.then === 'function') r.then(() => { rec.endMs = Math.round(now() - t0); }, () => { rec.rejected = true; });
+        flight++;
+        segOpen();
+        let r;
+        try { r = o.apply(this, arguments); } catch (e) { flight--; segClose(); throw e; }
+        // The call's synchronous part is over: what runs next in this task is the caller's.
+        segClose();
+        const done = (ok) => { segClose(); flight = Math.max(0, flight - 1); rec.endMs = Math.round(now() - t0); if (!ok) rec.rejected = true; };
+        if (r && typeof r.then === 'function') r.then(() => done(true), () => done(false));
+        else done(true);
         return r;
       };
       w.__hitch = true;
-      sc.warmInterior = w;
-    }
+      sc[key] = w;
+    };
+    wrapWarm('warmInterior', 'idle');
+    wrapWarm('warmInteriorNearDoor', 'near-door');
     return true;
   };
   const iv = setInterval(() => {
@@ -108,6 +163,7 @@ const HITCH_INIT = `(() => {
     const orig = c.render;
     const f = function () {
       const p0 = progs();
+      const shown = inCompile === 0 && roomShown();
       const t0 = now();
       inComposer++;
       let r;
@@ -116,6 +172,7 @@ const HITCH_INIT = `(() => {
       H.composerCalls++;
       if (inCompile === 0) H.postProgs = p1;
       if (p1 !== p0) H.renders.push({ t: Math.round(t0), label: 'composer.render', added: p1 - p0, ms: +(now() - t0).toFixed(1), inCompile: inCompile > 0, programs: p1 });
+      if (shown) H.roomRenders.push({ t: Math.round(t0), label: 'composer.render', added: p1 - p0, ms: +(now() - t0).toFixed(1) });
       return r;
     };
     f.__hitch = true;
@@ -123,14 +180,221 @@ const HITCH_INIT = `(() => {
     clearInterval(ivc);
   }, 20);
   const ivr = setInterval(() => { if (window.__lifeIslandReady) { clearInterval(ivr); H.readyAt = performance.now(); } }, 5);
+  // The welcome card's first paint with content (welcome_visible, as the perf gate marks it).
+  const ivw = setInterval(() => { const w = document.querySelector('[role=dialog][aria-label="Welcome to DigiScalability Life Island"]'); if (w && w.innerHTML.length > 50) { clearInterval(ivw); H.cardAt = performance.now(); } }, 5);
 })();`;
 
-async function hitchRun(t, prof, scenario) {
+// A frame over 50 ms is the warm's only by the warm's own work in it. One
+// slice is WARM_SLICE_MS (4 ms) plus one object by design, and setTimeout's
+// 4 ms clamp spaces the slices, so an ordinary frame holds two at most: under
+// WARM_MIN_MS of the warm's work, a frame over the line is over it on someone
+// else's work.
+const WARM_MIN_MS = 10;
+const HITCH_MS = 50;
+
+/**
+ * Which frames over 50 ms the interior warm made (CO-E3), pure. frames: rAF
+ * ticks [t, dt], each the interval (t - dt, t]; flights: the warm calls,
+ * [{ t, endMs }], each watched to 100 ms past its end; segs: the warm's own
+ * synchronous spans [[t0, t1]]; roomRenders: live renders that drew the room
+ * outside an entry, [{ t, label, added, ms }]; renders: render() calls that
+ * created programs, listed with each frame and never charged by themselves
+ * (a late model's first draw or the bloom's is not the warm's). A frame over
+ * 50 ms that overlaps a flight is the warm's when
+ * - a live render in it drew the room outside an entry: the room-lit variants
+ *   on screen (stage 1's 2,181 ms frame), or
+ * - the warm's own work in it is over 50 ms, or
+ * - that work is at least WARM_MIN_MS and the frame is 50 ms or less without it.
+ * Returns { inFlight, charged }: every frame over 50 ms in a flight, and the
+ * warm's, each { t, ms, warmMs, renders, roomRenders, why }.
+ */
+function warmAttribution({ frames = [], flights = [], segs = [], roomRenders = [], renders = [], minMs = WARM_MIN_MS, hitchMs = HITCH_MS } = {}) {
+  const overlap = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+  const wins = flights.map((w) => [w.t, w.t + (w.endMs === null || w.endMs === undefined ? 10000 : w.endMs) + 100]);
+  const inWins = (tt) => wins.some(([w0, w1]) => tt >= w0 && tt <= w1);
+  const inFlight = [];
+  const charged = [];
+  for (const [t, dt] of frames) {
+    if (!(dt > hitchMs)) continue;
+    const f0 = t - dt;
+    if (!wins.some(([w0, w1]) => overlap(f0, t, w0, w1) > 0)) continue;
+    const warmMs = +segs.reduce((s, [s0, s1]) => s + overlap(f0, t, s0, s1), 0).toFixed(1);
+    const inFrame = (r) => r.t > f0 && r.t <= t && inWins(r.t);
+    const room = roomRenders.filter(inFrame).map((r) => ({ label: r.label, added: r.added, ms: r.ms }));
+    const adds = renders.filter((r) => !r.inCompile && r.added > 0 && inFrame(r)).map((r) => ({ label: r.label, added: r.added, ms: r.ms }));
+    const row = { t, ms: dt, warmMs, renders: adds, roomRenders: room };
+    let why = null;
+    if (room.length) why = `a live render in it drew the room outside an entry (${room.map((r) => `${r.label} ${r.ms} ms, +${r.added} programs`).join('; ')})`;
+    else if (warmMs > hitchMs) why = `the warm's own work in it is ${warmMs} ms`;
+    else if (warmMs >= minMs && dt - warmMs <= hitchMs) why = `${warmMs} ms of it is the warm's: ${+(dt - warmMs).toFixed(1)} ms without it`;
+    inFlight.push({ ...row, why });
+    if (why) charged.push({ ...row, why });
+  }
+  return { inFlight, charged };
+}
+
+/**
+ * Whether the warm's work was seen whole: a warm that ran over several tasks
+ * (over 150 ms) yielded through the tagged frames at least twice, no span was
+ * left open at a frame, and no compile call inside a flight fell outside the
+ * spans. Otherwise warmAttribution() cannot see the warm's work, and the
+ * check is inconclusive rather than a pass.
+ */
+function warmTagging({ flights = [], segs = [], compiles = [], yields = 0, closedAtFrame = 0 } = {}) {
+  const ran = flights.filter((w) => (w.endMs || 0) > 150);
+  const inSeg = (c) => segs.some(([s0, s1]) => c.t >= s0 - 1 && c.t + (c.syncMs || 0) <= s1 + 1);
+  const inFlightC = compiles.filter((c) => flights.some((w) => c.t >= w.t && c.t <= w.t + (w.endMs ?? 10000)));
+  const outsideMs = +inFlightC.filter((c) => !inSeg(c)).reduce((s, c) => s + (c.syncMs || 0), 0).toFixed(1);
+  const why = [];
+  if (ran.length && yields < 2) why.push(`a warm ran ${ran[0].endMs} ms but ${yields} of its yields were seen (frames.cjs tags warmInteriorPasses, compileInteriorPass and settleWarmPrograms)`);
+  if (closedAtFrame) why.push(`${closedAtFrame} warm spans were still open at a frame`);
+  if (outsideMs > 5) why.push(`${outsideMs} ms of compile calls inside a flight fell outside the warm's spans`);
+  return { ok: why.length === 0, why, compileMsOutsideSpans: outsideMs };
+}
+
+/**
+ * The black interval judged by pixels (CO-E3): a CDP screencast through the
+ * door entry, each frame's mean luminance against the world's just before
+ * it. A frame is black when the veil hides 95% or more of the world (its
+ * luminance is 5% of the pre-entry median or less); the interval runs from
+ * the first black frame to the next frame that is not.
+ */
+async function screencastBlack(page, cdp, run) {
+  const { jpegjs } = require('playwright-core/lib/utilsBundle');
+  const frames = [];
+  const onFrame = ({ data, metadata, sessionId }) => {
+    frames.push({ t: metadata.timestamp * 1000, data });
+    cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+  };
+  cdp.on('Page.screencastFrame', onFrame);
+  await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 40, maxWidth: 320, maxHeight: 320, everyNthFrame: 1 });
+  await page.waitForTimeout(500);
+  const enterAt = Date.now();
+  const out = await run();
+  await cdp.send('Page.stopScreencast').catch(() => {});
+  cdp.off('Page.screencastFrame', onFrame);
+  const lum = (b64) => {
+    const img = jpegjs.decode(Buffer.from(b64, 'base64'), { useTArray: true });
+    const lin = (c) => {
+      const s = c / 255;
+      return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < img.data.length; i += 16) {
+      sum += 0.2126 * lin(img.data[i]) + 0.7152 * lin(img.data[i + 1]) + 0.0722 * lin(img.data[i + 2]);
+      n++;
+    }
+    return n ? sum / n : 0;
+  };
+  const rows = frames.map((f) => ({ t: f.t, lum: lum(f.data) })).sort((a, b) => a.t - b.t);
+  const before = rows.filter((r) => r.t < enterAt).map((r) => r.lum);
+  const base = before.length ? lib.median(before) : null;
+  let blackMs = 0;
+  let first = null;
+  if (base) {
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].t < enterAt) continue;
+      const black = rows[i].lum <= 0.05 * base;
+      if (black && first === null) first = rows[i].t;
+      if (black && rows[i + 1]) blackMs += rows[i + 1].t - rows[i].t;
+    }
+  }
+  return {
+    out,
+    pixels: {
+      frames: rows.length,
+      baseLum: base === null ? null : lib.round(base, 4),
+      blackMs: base === null ? null : Math.round(blackMs),
+      firstBlackAfterMs: first === null ? null : Math.round(first - enterAt),
+      trace: rows.filter((r) => r.t >= enterAt).slice(0, 80).map((r) => `${Math.round(r.t - enterAt)}:${base ? lib.round(1 - r.lum / base, 2) : '?'}`),
+    },
+  };
+}
+
+/** The first door entry, under the veil: rows per rAF, the veil's opacity and the pixels. */
+async function doorEntry(page, cdp, { pauseNearDoor = false } = {}) {
+  if (pauseNearDoor) {
+    // Stand 3 s within NEAR_DOOR_RANGE of a cottage door (B2's near-door
+    // warm needs 1 s of standing still), then enter.
+    const near = await page.evaluate(() => {
+      const sc = window.__app.scene;
+      const d = sc.getIsland().houseDoors[0];
+      if (!d) return null;
+      const P = sc.getPlayer();
+      const up = d.position.clone().normalize();
+      const ref = Math.abs(up.y) < 0.9 ? up.clone().set(0, 1, 0) : up.clone().set(1, 0, 0);
+      const dir = d.position.clone().addScaledVector(ref.clone().cross(up).normalize(), 3).normalize();
+      const s = sc.getIsland().sampleSurfaceByDirection(dir, 0);
+      P.setWorldPosition(dir.multiplyScalar(s.position.length() + 0.75));
+      return { door: d.id, distanceU: 3 };
+    });
+    await page.waitForTimeout(3000);
+    if (!near) return { error: 'no house door' };
+  }
+  const run = () =>
+    page.evaluate(async () => {
+      const a = window.__app;
+      if (typeof a.enterBuilding !== 'function') return { error: 'no enterBuilding' };
+      a.ui.panels.closeAll();
+      const nearDoorWarmed = !!a.scene.interiorNearDoorWarmed;
+      const rows = [];
+      const t0 = performance.now();
+      let last = t0;
+      a.enterBuilding('probe_house', false);
+      await new Promise((res) => {
+        const loop = () => {
+          const n = performance.now();
+          const el = a.ui.fadeDiv;
+          rows.push({ t: Math.round(n - t0), dt: +(n - last).toFixed(1), op: el ? +(+getComputedStyle(el).opacity).toFixed(2) : 0, inside: a.scene.isInsideInterior() });
+          last = n;
+          if (n - t0 < 2500) requestAnimationFrame(loop);
+          else res();
+        };
+        requestAnimationFrame(loop);
+      });
+      return { rows, nearDoorWarmed };
+    });
+  const { out: door, pixels } = await screencastBlack(page, cdp, run);
+  if (!door.rows) return door;
+  const rows = door.rows;
+  let black = 0;
+  for (let i = 1; i < rows.length; i++) if (rows[i - 1].op >= 0.95) black += rows[i].t - rows[i - 1].t;
+  const firstInside = rows.findIndex((r) => r.inside);
+  const upTo = firstInside >= 0 ? Math.min(rows.length, firstInside + 2) : rows.length;
+  return {
+    pauseNearDoor,
+    nearDoorWarmedBeforeEntry: door.nearDoorWarmed,
+    // Stage 1 read rows[firstInside + 1].dt and so hid a slow first room frame.
+    firstInsideFrameMs: firstInside >= 0 ? rows[firstInside].dt : null,
+    maxFrameToFirstInsideMs: rows.length ? Math.max(...rows.slice(0, upTo).map((r) => r.dt)) : null,
+    maxFrameMs: rows.length ? Math.max(...rows.map((r) => r.dt)) : null,
+    blackIntervalMs: Math.round(black),
+    blackIntervalPixelsMs: pixels.blackMs,
+    pixels,
+    trace: rows.filter((_, i) => i % 3 === 0).map((r) => `${r.t}:${r.op}${r.inside ? 'i' : ''}`),
+  };
+}
+
+async function hitchRun(t, prof, scenario, { pauseNearDoor = false, warmAt = null } = {}) {
   const s = await t.session(prof, { init: [HITCH_INIT] });
   const { page } = s;
   const b = await t.boot(s, { waitWelcome: false });
   if (!(await page.evaluate(() => window.__hitch && window.__hitch.installed))) throw new Error('hook missing: __app.renderer.getRenderer() for program accounting');
   const readyAt = await page.evaluate(() => window.__hitch.readyAt);
+  // --warm-at <s>: call scene.warmInterior() at ready + s, so the warm fires
+  // there whatever idleDefer would have done (an earlier idle warm makes it a
+  // no-op, and the JSON says which warm ran).
+  if (warmAt !== null)
+    await page.evaluate(
+      ({ at, readyAt: r0 }) => {
+        setTimeout(() => {
+          window.__hitch.nextWarmSource = 'probe (--warm-at)';
+          void window.__app.scene.warmInterior();
+        }, Math.max(0, r0 + at * 1000 - performance.now()));
+      },
+      { at: warmAt, readyAt },
+    );
   const untilAfterReady = async (ms) => {
     for (;;) {
       const n = await page.evaluate(() => performance.now());
@@ -139,6 +403,9 @@ async function hitchRun(t, prof, scenario) {
     }
   };
   await page.waitForSelector(`${lib.WELCOME} button[data-dismiss]`, { state: 'visible', timeout: 120000 }).catch(() => {});
+  // The machine's load from the card to the end of the window: frames over
+  // 50 ms are judged only when other processes left the host quiet.
+  const meter = await lib.hostLoadMeter(t.browser);
   if (scenario === 'walk') {
     await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
     const plan = [
@@ -160,13 +427,42 @@ async function hitchRun(t, prof, scenario) {
     }
   }
   await untilAfterReady(25000);
+  const hostLoad = await meter.stop();
   const H = await page.evaluate(() => {
     const h = window.__hitch;
-    return { frames: h.frames, loaf: h.loaf, renders: h.renders, compiles: h.compiles, warm: h.warm, readyAt: h.readyAt, renderCalls: h.renderCalls, composerCalls: h.composerCalls, err: h.err || null };
+    return { frames: h.frames, loaf: h.loaf, renders: h.renders, roomRenders: h.roomRenders, roomHook: !!h.roomHook, compiles: h.compiles, warm: h.warm, warmSegs: h.warmSegs, warmYields: h.warmYields, warmSegsClosedAtFrame: h.warmSegsClosedAtFrame, readyAt: h.readyAt, cardAt: h.cardAt, renderCalls: h.renderCalls, composerCalls: h.composerCalls, err: h.err || null };
   });
-  const w0 = H.readyAt + 5000;
+  // CO-E3: the probe attaches at ready and watches ready to ready + 25 s, so
+  // a warm that fires early (main's at 1.3-2.9 s on a quiet machine, at its
+  // 9 s ceiling on a busy one) is inside it wherever it lands. The frames
+  // between ready and the card are the boot's own tail (the intro, the late
+  // GLB models' first draws): reported, and judged from the card on.
+  const w0 = H.cardAt !== null && H.cardAt > H.readyAt ? H.cardAt : H.readyAt;
   const w1 = H.readyAt + 25000;
   const inWin = (tt) => tt >= w0 && tt <= w1;
+  const atS = (tt) => lib.round((tt - H.readyAt) / 1000, 2);
+  const bootTail = H.frames.filter(([tt, d]) => tt >= H.readyAt && tt < w0 && d > 50).map(([tt, d]) => ({ atS: atS(tt), ms: d }));
+  // The warm, wherever it fires, judged by its own work in each frame.
+  const att = warmAttribution({ frames: H.frames, flights: H.warm, segs: H.warmSegs, roomRenders: H.roomRenders, renders: H.renders });
+  const tagging = warmTagging({ flights: H.warm, segs: H.warmSegs, compiles: H.compiles, yields: H.warmYields, closedAtFrame: H.warmSegsClosedAtFrame });
+  if (!H.roomHook) tagging.why.push('no scene.interiorGroup / isInsideInterior(): a live frame drawing the room cannot be seen');
+  tagging.ok = tagging.why.length === 0;
+  const shown = (x) => ({ atS: atS(x.t), ms: x.ms, warmMs: x.warmMs, ...(x.renders.length ? { renders: x.renders } : {}), ...(x.roomRenders.length ? { roomRenders: x.roomRenders } : {}), ...(x.why ? { why: x.why } : {}) });
+  const segMs = H.warmSegs.map(([a, z]) => z - a);
+  const warmWork = {
+    yields: H.warmYields,
+    spans: H.warmSegs.length,
+    ms: lib.round(segMs.reduce((x, y) => x + y, 0), 1),
+    longestSpanMs: segMs.length ? lib.round(Math.max(...segMs), 1) : null,
+    longestSpans: H.warmSegs
+      .map(([a, z]) => ({ atS: atS(a), ms: lib.round(z - a, 1) }))
+      .sort((x, y) => y.ms - x.ms)
+      .slice(0, 5),
+    spansOpenAtAFrame: H.warmSegsClosedAtFrame,
+    compileMsOutsideSpans: tagging.compileMsOutsideSpans,
+    seenWhole: tagging.ok,
+    why: tagging.why,
+  };
   const frames = H.frames.filter(([tt]) => inWin(tt)).map(([, d]) => d);
   // Programs gained between two consecutive renders (compile calls included):
   // the frame-level number the perf audit reported.
@@ -180,44 +476,37 @@ async function hitchRun(t, prof, scenario) {
   const long = H.frames.filter(([tt, d]) => inWin(tt) && d > 50).map(([tt, d]) => ({ atS: lib.round((tt - H.readyAt) / 1000, 2), ms: d }));
   const loaf = H.loaf.filter(([st]) => inWin(st)).map(([st, d, blk]) => ({ atS: lib.round((st - H.readyAt) / 1000, 2), ms: d, blockingMs: blk }));
   const renderAdds = H.renders.filter((r) => !r.inCompile).map((r) => ({ atS: lib.round((r.t - H.readyAt) / 1000, 2), label: r.label, added: r.added, ms: r.ms, programs: r.programs }));
-  const renderAddsInWin = renderAdds.filter((r) => r.atS >= 5 && r.atS <= 25);
+  const cardS = lib.round((w0 - H.readyAt) / 1000, 2);
+  const renderAddsInWin = renderAdds.filter((r) => r.atS >= cardS && r.atS <= 25);
   const compiles = H.compiles.map((c) => ({ ...c, atS: lib.round((c.t - H.readyAt) / 1000, 2) }));
-  const warm = H.warm.map((w) => ({ startS: lib.round((w.t - H.readyAt) / 1000, 2), endMs: w.endMs ?? null }));
-  // The first door entry, under the veil.
-  const door = await page.evaluate(async () => {
-    const a = window.__app;
-    if (typeof a.enterBuilding !== 'function') return { error: 'no enterBuilding' };
-    a.ui.panels.closeAll();
-    const rows = [];
-    const t0 = performance.now();
-    let last = t0;
-    a.enterBuilding('probe_house', false);
-    await new Promise((res) => {
-      const loop = () => {
-        const n = performance.now();
-        const el = a.ui.fadeDiv;
-        rows.push({ t: Math.round(n - t0), dt: +(n - last).toFixed(1), op: el ? +(+getComputedStyle(el).opacity).toFixed(2) : 0, inside: a.scene.isInsideInterior() });
-        last = n;
-        if (n - t0 < 2500) requestAnimationFrame(loop);
-        else res();
-      };
-      requestAnimationFrame(loop);
-    });
-    return { rows };
-  });
-  let doorOut = door;
-  if (door.rows) {
-    const rows = door.rows;
-    let black = 0;
-    for (let i = 1; i < rows.length; i++) if (rows[i - 1].op >= 0.95) black += rows[i].t - rows[i - 1].t;
-    const firstInside = rows.findIndex((r) => r.inside);
-    const interiorFrameMs = firstInside >= 0 && firstInside + 1 < rows.length ? rows[firstInside + 1].dt : null;
-    doorOut = { blackIntervalMs: Math.round(black), interiorFrameMs, maxFrameMs: Math.max(...rows.map((r) => r.dt)), trace: rows.filter((_, i) => i % 3 === 0).map((r) => `${r.t}:${r.op}${r.inside ? 'i' : ''}`) };
-  }
+  const warm = H.warm.map((w) => ({ startS: lib.round((w.t - H.readyAt) / 1000, 2), endMs: w.endMs ?? null, source: w.source }));
+  const cdp = await s.ctx.newCDPSession(page);
+  const doors = { walkStraightIn: await doorEntry(page, cdp) };
   await t.shot(page, `hitch-${prof}-${scenario}-inside.png`);
+  if (pauseNearDoor) {
+    // The near-door entry needs its own first door: a fresh page.
+    const s2 = await t.session(prof, { init: [HITCH_INIT] });
+    await t.boot(s2);
+    await lib.dismissWelcome(s2.page);
+    await s2.page.waitForTimeout(1500);
+    doors.pauseNearDoor = await doorEntry(s2.page, await s2.ctx.newCDPSession(s2.page), { pauseNearDoor: true });
+    await t.shot(s2.page, `hitch-${prof}-${scenario}-near-door-inside.png`);
+    await s2.close();
+  }
   return {
     boot: b,
     scenario,
+    window: 'the card to ready + 25 s, and the warm wherever it fires',
+    cardAfterReadyS: cardS,
+    bootTailOver50: bootTail,
+    // The frames over 50 ms the warm made, by its own work (warmAttribution),
+    // and every frame over 50 ms while a warm was in flight, with its share.
+    warmFramesOver50: att.charged.map(shown),
+    warmFlightFramesOver50: att.inFlight.map(shown),
+    warmWork,
+    // Live renders that drew the room outside an entry, ready to + 25 s (none by design).
+    roomRendersOutsideAnEntry: H.roomRenders.map((x) => ({ atS: atS(x.t), label: x.label, ms: x.ms, added: x.added })),
+    hostLoad,
     frames: lib.dist(frames),
     framesOver50: long,
     maxFrameMs: frames.length ? Math.max(...frames) : null,
@@ -227,7 +516,8 @@ async function hitchRun(t, prof, scenario) {
     maxProgramsAddedInOneFrame: frameJump,
     compiles,
     warmInterior: warm,
-    door: doorOut,
+    door: doors.walkStraightIn,
+    doors,
     renderCalls: H.renderCalls,
     composerCalls: H.composerCalls,
     hookError: H.err,
@@ -235,24 +525,54 @@ async function hitchRun(t, prof, scenario) {
   };
 }
 
+// Frames over 50 ms after the card are judged where plan-r3 sets that budget
+// (desktop, with the extension), and only when other processes (other
+// sessions' builds and probes, other apps) took no more than this share of
+// the machine (lib.hostLoadMeter; --busy-cap <pct> overrides it). On a busier
+// host a frame over 50 ms is inconclusive, not a fail and not a pass.
+const OTHER_BUSY_CAP_PCT = 10;
+
 async function hitch(t) {
   const tag = t.noKhr ? ' (--no-khr)' : '';
-  for (const prof of t.profiles(['desktop', 'lowtier'])) {
+  // Without the extension the near-door warm is the only warm, so --no-khr
+  // runs the pause-near-door entry too; --pause-near-door adds it anywhere.
+  const pauseNearDoor = !!t.args.pauseNearDoor || t.noKhr;
+  const warmAt = t.args.warmAt !== undefined && t.args.warmAt !== true ? Number(t.args.warmAt) : null;
+  if (warmAt !== null && !(warmAt >= 0)) throw new lib.HarnessError(`--warm-at takes seconds after ready, got ${t.args.warmAt}`);
+  const cap = t.args.busyCap !== undefined && t.args.busyCap !== true ? Number(t.args.busyCap) : OTHER_BUSY_CAP_PCT;
+  t.data.otherBusyCapPct = cap;
+  t.data.warmAt = warmAt;
+  // --no-khr judges the black interval by pixels on the phone as well.
+  for (const prof of t.profiles(t.noKhr ? ['desktop', 'lowtier', 'phone'] : ['desktop', 'lowtier'])) {
     for (const scenario of ['card', 'walk']) {
-      const r = await hitchRun(t, prof, scenario);
+      const r = await hitchRun(t, prof, scenario, { pauseNearDoor: pauseNearDoor && scenario === 'card', warmAt });
       const inWin = r._renderAddsInWin;
       delete r._renderAddsInWin;
       t.data[`${prof}-${scenario}`] = r;
       const k = `${prof} ${scenario === 'card' ? 'idle on the card' : 'walking'}${tag}`;
       const slowAdds = inWin.filter((x) => x.ms > 50);
-      t.check(`${k}: render() calls that created programs, 5-25 s (each must be a <= 50 ms first draw of a late-loaded model)`, slowAdds.length === 0, inWin.length ? inWin.map((x) => `${x.atS}s +${x.added} (${x.ms} ms)`) : 'none', 'none over 50 ms');
-      t.check(`${k}: frames over 50 ms, 5-25 s`, r.framesOver50.length === 0, r.framesOver50.length ? r.framesOver50.slice(0, 6) : 0, 0);
-      t.check(`${k}: long animation frames >= 100 ms, 5-25 s`, r.loafOver100.length === 0, r.loafOver100.length ? r.loafOver100.slice(0, 6) : 0, 0);
+      // The warm by its own work in each frame (warmAttribution). A warm whose
+      // work the tags did not see whole is inconclusive, never a pass.
+      const ww = r.warmWork;
+      const warmPass = !r.warmInterior.length ? null : r.warmFramesOver50.length ? false : ww.seenWhole ? true : null;
+      const warmValue = !r.warmInterior.length ? 'no warm ran' : r.warmFramesOver50.length ? r.warmFramesOver50.slice(0, 6) : ww.seenWhole ? 0 : ww.why;
+      t.check(`${k}: the interior warm makes no frame over 50 ms, wherever it fires`, warmPass, warmValue, 0);
+      t.check(`${k}: render() calls that created programs, card to +25 s (each must be a <= 50 ms first draw of a late-loaded model)`, slowAdds.length === 0, inWin.length ? inWin.map((x) => `${x.atS}s +${x.added} (${x.ms} ms)`) : 'none', 'none over 50 ms');
+      // plan-r3's runtime budget (0 frames over 50 ms after the card, on
+      // desktop with the extension), judged on every profile hitch runs, as
+      // stage 1 judged it; a busy host makes a frame over the line inconclusive.
+      const over = r.framesOver50;
+      const other = r.hostLoad ? r.hostLoad.otherBusyPct : null;
+      const quiet = other !== null && other <= cap;
+      t.check(`${k}: frames over 50 ms, card to +25 s`, over.length === 0 ? true : quiet ? false : null, over.length ? { frames: over.slice(0, 6), host: r.hostLoad } : 0, `0 (inconclusive when other processes took over ${cap}% of the host)`);
+      t.check(`${k}: long animation frames >= 100 ms, card to +25 s`, r.loafOver100.length === 0, r.loafOver100.length ? r.loafOver100.slice(0, 6) : 0, 0);
       const warm = r.warmInterior[0];
       if (!t.noKhr) t.check(`${k}: the interior warm resolves within 10 s`, warm ? warm.endMs !== null && warm.endMs <= 10000 : null, warm || 'no warm in the window', '<= 10000 ms');
-      if (r.door && r.door.interiorFrameMs !== undefined) {
-        t.check(`${k}: first door entry, interior frame (ms)`, r.door.interiorFrameMs !== null && r.door.interiorFrameMs < 100, r.door.interiorFrameMs, '< 100');
-        if (t.noKhr && prof === 'desktop') t.check(`${k}: first door entry, black interval (ms)`, r.door.blackIntervalMs <= 1000, r.door.blackIntervalMs, '<= 1000');
+      for (const [variant, d] of Object.entries(r.doors)) {
+        if (!d || d.maxFrameToFirstInsideMs === undefined) continue;
+        const v = variant === 'pauseNearDoor' ? 'pause-near-door' : 'walk-straight-in';
+        t.check(`${k}: first door (${v}), the longest frame to the first room frame (ms)`, d.maxFrameToFirstInsideMs !== null && d.maxFrameToFirstInsideMs < 100, { maxToFirstInside: d.maxFrameToFirstInsideMs, firstInside: d.firstInsideFrameMs }, '< 100');
+        if (t.noKhr) t.check(`${k}: first door (${v}), black interval by pixels (ms)`, d.blackIntervalPixelsMs !== null && d.blackIntervalPixelsMs <= 1000, { pixels: d.blackIntervalPixelsMs, opacity: d.blackIntervalMs }, '<= 1000');
       }
     }
   }
@@ -332,6 +652,9 @@ async function bless(t, runs, GOLDEN, key) {
 }
 
 module.exports = {
-  hitch: { item: 'B2', title: '5-25 s after ready: frames, LoAF, programs per render and per compile, the first door entry', profiles: ['desktop', 'lowtier'], run: hitch },
+  hitch: { item: 'B2, CO-E3', title: "the card to ready + 25 s and the interior warm wherever it fires (by its own work; --warm-at <s> fires it): frames, LoAF, programs per render and per compile; the first door walking straight in (and after a pause near a door), the black judged by pixels with --no-khr", profiles: ['desktop', 'lowtier'], run: hitch },
+  warmAttribution,
+  warmTagging,
+  WARM_MIN_MS,
   seed: { item: 'B0', title: "window.__dsSeedDraws: fresh vs ds_arrived='1', reloads, vs test/golden/seedDraws.json (--bless writes it)", profiles: ['desktop', 'lowtier'], run: seed },
 };

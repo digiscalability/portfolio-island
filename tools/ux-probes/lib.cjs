@@ -10,13 +10,19 @@
 //   hosts and Vercel insights are blocked outright, GET included;
 // - WebSockets are replaced by a stub before any page script runs, and
 //   routeWebSocket closes anything that still tries;
+// - reCAPTCHA is answered in the page by a stub (RECAPTCHA_STUB) that makes
+//   no request, so a build with App Check (production) gets as far as its
+//   token exchange, which is then aborted like any backend call;
 // - service workers are blocked, so page.route sees every request;
 // - every context starts with fresh storage, and every boot carries ?owner=1.
 // A run fails closed (exit 2) only when something gets past: a response
 // arrives from a blocked host, a route.continue() goes to one, or a non-GET
 // reaches the network. Every intercepted attempt is logged with its method and
-// host, and a run counts only if that log shows the boot
-// 'POST identitytoolkit.googleapis.com …signUp' as intercepted.
+// host, and a run counts only if that log shows the boot proof intercepted:
+// the 'POST identitytoolkit.googleapis.com …signUp', or, on a build with App
+// Check (production), the 'POST content-firebaseappcheck.googleapis.com
+// …:exchange…' that gates it. classify() is the one rule every interception
+// goes through; test/probeSafety.test.ts pins it and the stub.
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -114,7 +120,9 @@ async function launch() {
   // channel 'chromium' = Chrome for Testing in new-headless mode: the same
   // chromium-1208 binary the audits ran, found in the shared ms-playwright
   // cache (PLAYWRIGHT_BROWSERS_PATH overrides the cache location).
-  return chromium.launch({ channel: 'chromium', headless: true, args: glArgs() });
+  // --mute-audio is Playwright's headless default; naming it keeps a headed
+  // debug run silent too. Speech needs SILENT_TTS as well (see below).
+  return chromium.launch({ channel: 'chromium', headless: true, args: ['--mute-audio', ...glArgs()] });
 }
 
 // ------------------------------------------------------------------ profiles
@@ -144,12 +152,96 @@ const PROFILES = {
     query: '&touch=1',
     cpu: 1,
   },
+  // Stage-2 breakpoints: a landscape phone, a short landscape phone, a
+  // portrait tablet and a small laptop.
+  landscape: {
+    name: 'landscape',
+    device: { viewport: { width: 844, height: 390 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: UA_PHONE },
+    query: '',
+    cpu: 1,
+  },
+  landscape667: {
+    name: 'landscape667',
+    device: { viewport: { width: 667, height: 375 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: UA_PHONE },
+    query: '',
+    cpu: 1,
+  },
+  tablet: {
+    name: 'tablet',
+    device: { viewport: { width: 768, height: 1024 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: UA_PHONE },
+    query: '',
+    cpu: 1,
+  },
+  desktop1024: {
+    name: 'desktop1024',
+    device: { viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, userAgent: UA_DESKTOP },
+    query: '',
+    cpu: 1,
+  },
 };
 
 function profile(name) {
   const p = PROFILES[name];
-  if (!p) throw new HarnessError(`unknown profile '${name}' (desktop | phone | lowtier)`);
+  if (!p) throw new HarnessError(`unknown profile '${name}' (${Object.keys(PROFILES).join(' | ')})`);
   return p;
+}
+const isTouchProfile = (p) => !!((typeof p === 'string' ? profile(p) : p).device.hasTouch);
+
+/**
+ * Trusted touches through CDP (Input.dispatchTouchEvent), the way a phone
+ * sends them: tap, drag, a held joystick, and the touch UI's own controls
+ * (the D6 data-guide anchors when they exist, else the 166 px joystick hit
+ * square and the 74 px USE disc).
+ */
+async function touch(session) {
+  const { page, ctx } = session;
+  const cdp = await ctx.newCDPSession(page);
+  const send = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y, id]) => ({ x, y, id: id ?? 1, radiusX: 6, radiusY: 6, force: 1 })) });
+  const tap = async (x, y) => {
+    await send('touchStart', [[x, y, 9]]);
+    await sleep(40);
+    await send('touchEnd', []);
+  };
+  const drag = async (from, to, ms = 600, steps = 12, id = 7) => {
+    await send('touchStart', [[from[0], from[1], id]]);
+    for (let i = 1; i <= steps; i++) {
+      await send('touchMove', [[from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps, id]]);
+      await sleep(ms / steps);
+    }
+    await send('touchEnd', []);
+  };
+  const joyCenter = () =>
+    page.evaluate(() => {
+      const anchor = document.querySelector('[data-guide="joystick"]');
+      const hit = anchor || [...document.querySelectorAll('#ui-overlay > div')].find((d) => d.style.touchAction === 'none' && d.style.width === '166px');
+      if (!hit) return null;
+      const ring = hit.firstElementChild && hit.firstElementChild.getBoundingClientRect().width > 40 ? hit.firstElementChild : hit;
+      const b = ring.getBoundingClientRect();
+      return [b.left + b.width / 2, b.top + b.height / 2];
+    });
+  const useBtn = () =>
+    page.evaluate(() => {
+      const anchor = document.querySelector('[data-guide="use-button"]');
+      const el = anchor || [...document.querySelectorAll('#ui-overlay > div')].find((d) => d.style.width === '74px' && /USE/.test(d.textContent || ''));
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return [b.left + b.width / 2, b.top + b.height / 2];
+    });
+  /** Hold the stick (dx, dy) px off centre for ms, re-sending like a resting thumb. */
+  const joyHold = async (dx, dy, ms) => {
+    const c = await joyCenter();
+    if (!c) return false;
+    await send('touchStart', [[c[0], c[1], 3]]);
+    await sleep(50);
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      await send('touchMove', [[c[0] + dx, c[1] + dy, 3]]);
+      await sleep(120);
+    }
+    await send('touchEnd', []);
+    return true;
+  };
+  return { cdp, send, tap, drag, joyCenter, useBtn, joyHold };
 }
 
 // -------------------------------------------------------------------- safety
@@ -159,7 +251,8 @@ const BLOCK_HOST = [
   /(^|\.)firebaseapp\.com$/,
   /^identitytoolkit\.googleapis\.com$/,
   /^securetoken\.googleapis\.com$/,
-  /^firebaseappcheck\.googleapis\.com$/,
+  // App Check: the SDK's token exchange lives on content-firebaseappcheck.
+  /^(content-)?firebaseappcheck\.googleapis\.com$/,
   /^firestore\.googleapis\.com$/,
   /^firebaseinstallations\.googleapis\.com$/,
   /^firebase\.googleapis\.com$/,
@@ -181,6 +274,11 @@ const BLOCK_HOST = [
   /(^|\.)vercel-scripts\.com$/,
   /(^|\.)clarity\.ms$/,
   /(^|\.)hotjar\.com$/,
+  // Third-party lookups EnvironmentCycle makes only with weather consent: a
+  // probe's world stays on the clock it was given, never the rig's weather.
+  /(^|\.)open-meteo\.com$/,
+  /(^|\.)ipapi\.co$/,
+  /(^|\.)bigdatacloud\.net$/,
 ];
 const BLOCK_PATH = [/\/_vercel\/(insights|speed-insights)\//, /\/recaptcha\//, /\/__\/auth\//];
 
@@ -195,7 +293,55 @@ const isBlockedUrl = (u) => {
   if (/^(data|blob|about|chrome-extension):/.test(u)) return false;
   return BLOCK_HOST.some((r) => r.test(hostOf(u))) || BLOCK_PATH.some((r) => r.test(u));
 };
+
+/**
+ * The interception rule, pure (test/probeSafety.test.ts pins its table):
+ * - 'close-ws'     every WebSocket, wherever it goes;
+ * - 'block-host'   any method to a blocked backend host or path, GET included;
+ * - 'abort-nonget' any other request that is not a GET (HEAD included);
+ * - 'allow'        a GET to anything else (the build's own files, fonts).
+ */
+function classify({ url, method = 'GET', resourceType = '', isWebSocket = false } = {}) {
+  const u = String(url || '');
+  if (isWebSocket || resourceType === 'websocket' || /^wss?:/i.test(u)) return 'close-ws';
+  if (isBlockedUrl(u)) return 'block-host';
+  if (String(method).toUpperCase() !== 'GET') return 'abort-nonget';
+  return 'allow';
+}
+
+/**
+ * The leak rule, pure. A leak is anything that got past classify():
+ * - a 'response' from a blocked host;
+ * - a 'response' to a non-GET the harness did not abort;
+ * - a 'requestfailed' non-GET the harness did not abort, failing for a reason
+ *   other than the client blocking it.
+ * Returns the reason, or null.
+ */
+function leakReason({ event, method, url, aborted = false, errorText = '' }) {
+  const m = String(method || 'GET').toUpperCase();
+  if (event === 'response') {
+    if (isBlockedUrl(String(url || ''))) return 'response from a blocked host';
+    if (m !== 'GET' && !aborted) return 'non-GET reached the network';
+    return null;
+  }
+  if (event === 'requestfailed') {
+    if (m !== 'GET' && !aborted && !/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(errorText || '')) return `non-GET reached the network (${errorText})`;
+    return null;
+  }
+  return null;
+}
+
+// The boot proof: the anonymous sign-up, or (App Check builds, production)
+// the token exchange it waits on. One of them must be seen intercepted.
 const SIGNUP = /^POST identitytoolkit\.googleapis\.com\S*signUp/;
+const APPCHECK = /^POST content-firebaseappcheck\.googleapis\.com\/\S*:exchange\w*/;
+/** 'signUp' | 'appCheck' | null for one intercepted-log line. */
+const bootProof = (line) => (SIGNUP.test(line) ? 'signUp' : APPCHECK.test(line) ? 'appCheck' : null);
+
+// --selftest-leak: the harness answers this one blocked-host URL itself with a
+// synthetic 200 (route.fulfill, nothing leaves the machine). Its 'response'
+// event is a leak by the rule above, so the run must exit 2.
+const SELFTEST_URL = 'https://firebaseinstallations.googleapis.com/ux-probes-selftest-leak';
 
 // Before any page script: a WebSocket that never connects, a recorder for
 // pointer-lock requests and haptics, and (for --no-khr) no parallel compile.
@@ -218,6 +364,36 @@ const WS_STUB = `(() => {
   }
   for (const [k, v] of [['CONNECTING', 0], ['OPEN', 1], ['CLOSING', 2], ['CLOSED', 3]]) { BlockedWebSocket[k] = v; BlockedWebSocket.prototype[k] = v; }
   window.WebSocket = BlockedWebSocket;
+})();`;
+// reCAPTCHA Enterprise, answered in the page. On a build with App Check
+// (VITE_APPCHECK_SITE_KEY: production), Auth's signUp waits for an App Check
+// token, the token for App Check's exchange, and the exchange for reCAPTCHA.
+// Its script (www.google.com/recaptcha/enterprise.js) is blocked, and
+// firebase/app-check 0.12 loads it with no onerror, so without this stub the
+// exchange is never sent, the signUp never leaves, and no production run
+// counts. The stub is the API App Check calls (ready, render, execute, plus
+// the v3 spelling on grecaptcha itself): execute() runs the widget's success
+// callback and resolves a dummy token. It makes no request of its own; the
+// exchange POST and the signUp it unlocks are aborted by classify() like any
+// backend call. A build without App Check never touches it.
+const RECAPTCHA_STUB = `(() => {
+  if (window.top !== window) return;
+  const TOKEN = 'ux-probes-recaptcha-stub';
+  const widgets = [];
+  const stub = (window.__recaptchaStub = { rendered: 0, executed: 0 });
+  const api = {
+    ready(cb) { if (typeof cb === 'function') setTimeout(cb, 0); },
+    render(container, params) { widgets.push(params || {}); stub.rendered++; return widgets.length - 1; },
+    execute(widget) {
+      const w = typeof widget === 'number' ? widgets[widget] : widgets[widgets.length - 1];
+      stub.executed++;
+      try { if (w && typeof w.callback === 'function') w.callback(TOKEN); } catch (e) {}
+      return Promise.resolve(TOKEN);
+    },
+    reset() {},
+    getResponse() { return TOKEN; },
+  };
+  window.grecaptcha = Object.assign({ enterprise: api }, api);
 })();`;
 const RECORDER = `(() => {
   window.__vib = [];
@@ -250,8 +426,33 @@ const CLOCK = `(() => {
 })();`;
 
 /**
+ * The init scripts every session gets, in this order, before any page script
+ * and before a probe's own: the WebSocket stub, the reCAPTCHA stub (unless
+ * recaptchaStub is false), the recorder, then --no-khr and the virtual clock
+ * when asked for.
+ */
+// The cloud voice is blocked here, so spoken lines fall back to
+// speechSynthesis, and the OS speech engine ignores --mute-audio: a probe run
+// talked out of the operator's speakers. Volume 0 keeps the utterance and its
+// start/end events, so timing is unchanged, and makes it silent.
+const SILENT_TTS = `(() => {
+  try {
+    const ss = window.speechSynthesis;
+    const proto = ss && Object.getPrototypeOf(ss);
+    if (!proto || typeof proto.speak !== 'function') return;
+    const orig = proto.speak;
+    window.__ttsSpoken = 0;
+    proto.speak = function (u) { try { u.volume = 0; } catch (e) {} window.__ttsSpoken++; return orig.call(this, u); };
+  } catch (e) {}
+})();`;
+
+function baseInitScripts({ noKhr = false, clock = false, recaptchaStub = true } = {}) {
+  return [WS_STUB, SILENT_TTS, ...(recaptchaStub ? [RECAPTCHA_STUB] : []), RECORDER, ...(noKhr ? [NO_KHR] : []), ...(clock ? [CLOCK] : [])];
+}
+
+/**
  * One browser context with the safety net. Returns { ctx, page, net, close }.
- * net = { intercepted: [], leaks: [], signUpSeen }.
+ * net = { intercepted: [], leaks: [], signUpSeen, appCheckSeen, bootProofSeen }.
  */
 async function openSession(browser, prof, opts = {}) {
   const p = typeof prof === 'string' ? profile(prof) : prof;
@@ -266,7 +467,7 @@ async function openSession(browser, prof, opts = {}) {
   const ctx = await browser.newContext(ctxOpts);
   // net.hold = { re, ms } lets a probe give blocked requests matching `re` a
   // realistic latency before they are aborted (they are never continued).
-  const netLog = { intercepted: [], leaks: [], aborted: new WeakSet(), signUpSeen: false, offHost: new Set(), hold: null };
+  const netLog = { intercepted: [], leaks: [], aborted: new WeakSet(), signUpSeen: false, appCheckSeen: false, bootProofSeen: false, offHost: new Set(), hold: null, selftestLeak: !!opts.selftestLeak };
   const intercept = (req) => {
     const line = `${req.method()} ${hostOf(req.url())}${(() => {
       try {
@@ -276,13 +477,20 @@ async function openSession(browser, prof, opts = {}) {
       }
     })()}`;
     netLog.intercepted.push(line.slice(0, 200));
-    if (SIGNUP.test(line)) netLog.signUpSeen = true;
+    const proof = bootProof(line);
+    if (proof === 'signUp') netLog.signUpSeen = true;
+    if (proof === 'appCheck') netLog.appCheckSeen = true;
+    if (proof) netLog.bootProofSeen = true;
   };
   const leak = (why, req) => netLog.leaks.push(`${why}: ${req.method()} ${req.url().slice(0, 160)}`);
   await ctx.route('**/*', async (route) => {
     const req = route.request();
     const u = req.url();
-    if (req.method() !== 'GET' || isBlockedUrl(u)) {
+    if (netLog.selftestLeak && u === SELFTEST_URL) {
+      // Answered here, never sent: the synthetic 'response' must read as a leak.
+      return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: 'ux-probes selftest' }).catch(() => {});
+    }
+    if (classify({ url: u, method: req.method(), resourceType: req.resourceType() }) !== 'allow') {
       netLog.aborted.add(req);
       intercept(req);
       const hold = netLog.hold;
@@ -293,9 +501,9 @@ async function openSession(browser, prof, opts = {}) {
       const handled = await opts.onRoute(route, req);
       if (handled) return undefined;
     }
-    // Belt and braces: never continue something the rules above should have
+    // Belt and braces: never continue something the rule above should have
     // stopped (a probe's onRoute hook cannot reach this line with one either).
-    if (req.method() !== 'GET' || isBlockedUrl(u)) {
+    if (classify({ url: u, method: req.method(), resourceType: req.resourceType() }) !== 'allow') {
       leak('route.continue() to a blocked request', req);
       return route.abort('blockedbyclient');
     }
@@ -303,9 +511,9 @@ async function openSession(browser, prof, opts = {}) {
   });
   await ctx.routeWebSocket(/.*/, (ws) => {
     netLog.intercepted.push(`WS ${hostOf(ws.url())}`);
-    ws.close({ code: 1000, reason: 'ux-probes blocked' });
+    if (classify({ url: ws.url(), isWebSocket: true }) === 'close-ws') ws.close({ code: 1000, reason: 'ux-probes blocked' });
   });
-  for (const s of [WS_STUB, RECORDER, ...(opts.noKhr ? [NO_KHR] : []), ...(opts.clock ? [CLOCK] : [])]) await ctx.addInitScript(s);
+  for (const s of baseInitScripts({ noKhr: !!opts.noKhr, clock: !!opts.clock, recaptchaStub: opts.recaptchaStub !== false })) await ctx.addInitScript(s);
   if (opts.skipName !== false)
     await ctx.addInitScript(() => {
       try {
@@ -334,12 +542,13 @@ async function openSession(browser, prof, opts = {}) {
   });
   page.on('response', (r) => {
     const req = r.request();
-    if (isBlockedUrl(r.url())) leak('response from a blocked host', req);
-    else if (req.method() !== 'GET' && !netLog.aborted.has(req)) leak('non-GET reached the network', req);
+    const why = leakReason({ event: 'response', method: req.method(), url: r.url(), aborted: netLog.aborted.has(req) });
+    if (why) leak(why, req);
   });
   page.on('requestfailed', (req) => {
     const err = (req.failure() && req.failure().errorText) || '';
-    if (req.method() !== 'GET' && !netLog.aborted.has(req) && !/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(err)) leak(`non-GET reached the network (${err})`, req);
+    const why = leakReason({ event: 'requestfailed', method: req.method(), url: req.url(), aborted: netLog.aborted.has(req), errorText: err });
+    if (why) leak(why, req);
   });
   if (p.cpu && p.cpu > 1) {
     const cdp = await ctx.newCDPSession(page);
@@ -349,29 +558,49 @@ async function openSession(browser, prof, opts = {}) {
   const close = async ({ waitSignUpMs = 15000 } = {}) => {
     if (closed) return;
     closed = true;
-    // The boot signUp is the proof the net is live; give a short run time to
-    // reach it, as long as the page is still on the app.
+    // The boot proof (signUp, or App Check's exchange) shows the net is live;
+    // give a short run time to reach it, as long as the page is on the app.
     const t0 = Date.now();
-    while (!netLog.signUpSeen && Date.now() - t0 < waitSignUpMs) {
+    while (!netLog.bootProofSeen && Date.now() - t0 < waitSignUpMs) {
       const onApp = await page.evaluate(() => !!window.__app).catch(() => false);
       if (!onApp) break;
       await sleep(250);
     }
+    // Whether App Check used the reCAPTCHA stub (only a build with App Check does).
+    netLog.recaptchaStub = await page.evaluate(() => (window.__recaptchaStub ? { ...window.__recaptchaStub } : null)).catch(() => null);
     await ctx.close().catch(() => {});
   };
   return { ctx, page, net: netLog, sink, profile: p, close };
+}
+
+/** --selftest-leak: ask the page for the one URL the harness answers itself. */
+async function triggerSelftestLeak(session) {
+  if (!session || !session.net || !session.net.selftestLeak || session.net.selftestFired) return false;
+  session.net.selftestFired = true;
+  await session.page
+    .evaluate((u) => fetch(u, { mode: 'no-cors', cache: 'no-store' }).then(() => true, () => false), SELFTEST_URL)
+    .catch(() => false);
+  // The 'response' event can trail the fetch's resolution by a tick.
+  for (let i = 0; i < 20 && !session.net.leaks.length; i++) await sleep(100);
+  return session.net.leaks.length > 0;
 }
 
 function netSummary(sessions) {
   const leaks = [];
   const intercepted = new Map();
   let signUp = 0;
+  let appCheck = 0;
+  let proof = 0;
+  let stubbed = 0;
   const offHost = new Set();
   for (const s of sessions) {
     leaks.push(...s.net.leaks);
     if (s.net.signUpSeen) signUp++;
+    if (s.net.appCheckSeen) appCheck++;
+    if (s.net.recaptchaStub && s.net.recaptchaStub.executed > 0) stubbed++;
+    if (s.net.bootProofSeen || s.net.signUpSeen || s.net.appCheckSeen) proof++;
     for (const l of s.net.intercepted) {
-      const k = l.replace(/(identitytoolkit\.googleapis\.com\S*signUp)\S*/, '$1');
+      const k = l.replace(/(identitytoolkit\.googleapis\.com\S*signUp)\S*/, '$1').replace(/(content-firebaseappcheck\.googleapis\.com)\/\S*(:exchange\w*)/, '$1/…$2');
       intercepted.set(k, (intercepted.get(k) || 0) + 1);
     }
     for (const h of s.net.offHost) offHost.add(h);
@@ -379,7 +608,15 @@ function netSummary(sessions) {
   return {
     sessions: sessions.length,
     sessionsWithSignUpIntercepted: signUp,
+    sessionsWithAppCheckIntercepted: appCheck,
+    sessionsWithBootProof: proof,
     signUpIntercepted: signUp > 0,
+    appCheckIntercepted: appCheck > 0,
+    // A run counts when either boot proof was intercepted (production's App
+    // Check gates the sign-up behind its exchange).
+    bootProofIntercepted: proof > 0,
+    // Sessions where App Check asked the reCAPTCHA stub for a token.
+    sessionsWithRecaptchaStubUsed: stubbed,
     leaks,
     intercepted: [...intercepted.entries()].map(([k, n]) => `${k} x${n}`),
     offHostRequests: [...offHost],
@@ -472,13 +709,13 @@ async function startPreview({ dist, port, host = '127.0.0.1', label = 'preview' 
 async function serve({ base, dist, port, label }) {
   if (base) {
     const u = new URL(base);
-    const p = Number(u.port || 80);
+    const p = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
     // 'localhost' may resolve to ::1 while vite listens on 127.0.0.1 only.
     const hosts = u.hostname === 'localhost' ? ['127.0.0.1', '::1'] : [u.hostname.replace(/^\[|\]$/g, '')];
     let up = false;
     for (const h of hosts) up = up || (await portInUse(p, h));
     if (!up) throw new HarnessError(`nothing listens at ${base}`);
-    return { url: base.replace(/\/$/, ''), pid: null, port: Number(u.port), stop: async () => {}, attached: true, label };
+    return { url: base.replace(/\/$/, ''), pid: null, port: p, stop: async () => {}, attached: true, label };
   }
   if (!port) throw new HarnessError('pass --port <n> with --dist (ports are always arguments), or --base <url>');
   return startPreview({ dist: dist || 'dist', port: numArg(port, '--port'), label });
@@ -503,6 +740,7 @@ async function boot(session, base, { query = '', waitWelcome = true, timeout = 2
     if (ok) welcomeMs = Date.now() - t0;
   }
   await page.evaluate(HELPERS);
+  await triggerSelftestLeak(session);
   return { readyMs, welcomeMs };
 }
 
@@ -666,7 +904,21 @@ const HELPERS = () => {
     // The glyph points right at 0deg, so screen-up is -90deg.
     return { rel: wrap(deg + 90), label: ui.compassLabel ? ui.compassLabel.textContent : null };
   };
-  window.__h = { app, sc, oc, player, pos, up, V3, flat, yawBetween, camFwd, bearing, followDir, rotateFollow, wrap, wait, raf, frames, tpNear, visible, rect, describe, zonePanel, panels, zones, zonePos, arcTo, arrow };
+  // The compass pill's full label. Under 480 px the pill shows only the
+  // label's first token (its icon), so the label is read where the UI is
+  // handed it: updateQuestCompass(state), observed, never changed.
+  const ui0 = app.ui;
+  if (ui0 && typeof ui0.updateQuestCompass === 'function' && !ui0.updateQuestCompass.__probe) {
+    const orig = ui0.updateQuestCompass;
+    const w = function (state) {
+      window.__compassFull = state ? state.label : null;
+      return orig.apply(this, arguments);
+    };
+    w.__probe = true;
+    ui0.updateQuestCompass = w;
+  }
+  const compassFull = () => (window.__compassFull !== undefined ? window.__compassFull : ui0 && ui0.compassLabel ? ui0.compassLabel.textContent : null);
+  window.__h = { app, sc, oc, player, pos, up, V3, flat, yawBetween, camFwd, bearing, followDir, rotateFollow, wrap, wait, raf, frames, tpNear, visible, rect, describe, zonePanel, panels, zones, zonePos, arcTo, arrow, compassFull };
   return true;
 };
 
@@ -799,13 +1051,73 @@ function hostCpu() {
 const hostBusyPct = (a, b) => (b.total > a.total ? round(((b.busy - a.busy) / (b.total - a.total)) * 100, 1) : null);
 
 /**
+ * The machine's load over a window, split between this browser and the rest:
+ * os.cpus() for the whole machine, CDP SystemInfo.getProcessInfo for this
+ * browser's own processes (browser, renderers, GPU). otherBusyPct is what
+ * other sessions, builds and apps took; null when CDP cannot say. A probe
+ * that judges frame times reads it, since its own browser's share is not
+ * noise. The processes are sampled every second and each one's CPU time is
+ * summed by pid, so a renderer that starts and exits inside the window (a
+ * context opened and closed) is counted up to its last sample, not handed to
+ * 'other'. stop() returns { hostBusyPct, browserPct, otherBusyPct, threads }.
+ */
+async function hostLoadMeter(browser, { everyMs = 1000 } = {}) {
+  let cdp = null;
+  try {
+    cdp = await browser.newBrowserCDPSession();
+  } catch (e) {}
+  const seen = new Map(); // pid -> last cpuTime (s)
+  let ownMs = 0;
+  let ok = !!cdp;
+  let first = true;
+  const sample = async () => {
+    if (!cdp || !ok) return;
+    try {
+      const { processInfo } = await cdp.send('SystemInfo.getProcessInfo');
+      for (const p of processInfo) {
+        const cpu = p.cpuTime || 0;
+        // A process already running at the first sample is the baseline; one
+        // that appears later started inside the window, so all of it counts.
+        const prev = seen.has(p.id) ? seen.get(p.id) : first ? cpu : 0;
+        ownMs += Math.max(0, cpu - prev) * 1000;
+        seen.set(p.id, cpu);
+      }
+      first = false;
+    } catch (e) {
+      ok = false;
+    }
+  };
+  const a = hostCpu();
+  await sample();
+  let busy = null;
+  const timer = setInterval(() => {
+    if (!busy) busy = sample().finally(() => (busy = null));
+  }, everyMs);
+  if (timer.unref) timer.unref();
+  return {
+    async stop() {
+      clearInterval(timer);
+      if (busy) await busy;
+      await sample();
+      const z = hostCpu();
+      if (cdp) await cdp.detach().catch(() => {});
+      const total = z.total - a.total;
+      const host = total > 0 ? ((z.busy - a.busy) / total) * 100 : null;
+      const own = ok && total > 0 ? (ownMs / total) * 100 : null;
+      return { hostBusyPct: round(host, 1), browserPct: round(own, 1), otherBusyPct: host !== null && own !== null ? round(Math.max(0, host - own), 1) : null, threads: os.cpus().length };
+    },
+  };
+}
+
+/**
  * Verdict over a list of checks. A check is { name, pass: true|false|null }
  * where null = could not be evaluated (inconclusive). Leaks and a missing
- * boot signUp intercept override everything.
+ * boot proof (signUp, or App Check's exchange) override everything.
  */
 function verdict(checks, netSum, { requireSignUp = true } = {}) {
   if (netSum && netSum.leaks.length) return { code: EXIT.failClosed, verdict: 'fail-closed', why: netSum.leaks.slice(0, 5) };
-  if (requireSignUp && netSum && !netSum.signUpIntercepted) return { code: EXIT.inconclusive, verdict: 'inconclusive', why: ['the boot identitytoolkit signUp POST was never seen intercepted: the run does not count'] };
+  const proof = netSum && (netSum.bootProofIntercepted !== undefined ? netSum.bootProofIntercepted : netSum.signUpIntercepted);
+  if (requireSignUp && netSum && !proof) return { code: EXIT.inconclusive, verdict: 'inconclusive', why: ['neither the boot identitytoolkit signUp POST nor the App Check exchange was seen intercepted: the run does not count'] };
   const failed = checks.filter((c) => c.pass === false);
   const open = checks.filter((c) => c.pass === null || c.pass === undefined);
   if (failed.length) return { code: EXIT.fail, verdict: 'fail', why: failed.map((c) => c.name) };
@@ -827,8 +1139,19 @@ module.exports = {
   glArgs,
   PROFILES,
   profile,
+  isTouchProfile,
+  touch,
   BLOCK_HOST,
+  BLOCK_PATH,
   isBlockedUrl,
+  classify,
+  leakReason,
+  bootProof,
+  SELFTEST_URL,
+  RECAPTCHA_STUB,
+  SILENT_TTS,
+  baseInitScripts,
+  triggerSelftestLeak,
   openSession,
   netSummary,
   portInUse,
@@ -856,5 +1179,6 @@ module.exports = {
   goldenFor,
   hostCpu,
   hostBusyPct,
+  hostLoadMeter,
   verdict,
 };
