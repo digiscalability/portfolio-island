@@ -15,6 +15,10 @@ import { isRealTheme } from './Theme';
 // rate until ?halfshadow=1 has been compared there (decision 12), so its
 // default is off and the getter below ignores the switch on that tier.
 fx.register('halfShadow', { desktop: false, low: true });
+// P2-E5: at night the bloom threshold rises so only the bulbs bloom (decision
+// P2-3). Desktop only: the low tier builds no composer. With the switch off
+// the threshold stays at its day value, which keeps today's warm night haze.
+fx.register('bloomNight', { desktop: true, low: false });
 
 /**
  * SimpleRenderer
@@ -376,7 +380,7 @@ export class SimpleRenderer {
       new THREE.Vector2(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2)),
       0.4, // strength — subtle glow
       0.6, // radius — tight halos
-      0.85, // threshold — only bright emissives bloom
+      SimpleRenderer.BLOOM_DAY_THRESHOLD, // threshold — only bright emissives bloom
     );
     bloomPass.setSize(Math.ceil(window.innerWidth / 2), Math.ceil(window.innerHeight / 2));
     this.bloomPass = bloomPass;
@@ -412,6 +416,52 @@ export class SimpleRenderer {
       this.gradePass.uniforms.uDay.value = day;
       if (this.bloomPass) this.bloomPass.strength = 0.15 + (1 - day) * 0.35;
     }
+  }
+
+  /** The bloom threshold by day: only bright emissives bloom. */
+  public static readonly BLOOM_DAY_THRESHOLD = 0.85;
+  /** The bloom threshold at night: lit ground, facades and characters stay
+   *  under it, the bulbs (emissive driven to 1.3) stay over it. */
+  public static readonly BLOOM_NIGHT_THRESHOLD = 1.0;
+
+  /**
+   * The bloom threshold for a day factor (1 = full day, 0 = night): 0.85 from
+   * a day factor of 0.8 up, 1.0 from 0.3 down, a smoothstep between. At night
+   * the windows and sconces are driven above 1, and at 0.85 their half-res
+   * glow washed whole facades and the player (+16 L* on the player near a
+   * hall), a night phones never showed.
+   */
+  public static bloomNightThreshold(day: number): number {
+    return THREE.MathUtils.lerp(
+      SimpleRenderer.BLOOM_NIGHT_THRESHOLD,
+      SimpleRenderer.BLOOM_DAY_THRESHOLD,
+      THREE.MathUtils.smoothstep(day, 0.3, 0.8),
+    );
+  }
+
+  private bloomNightDay = 1;
+  /** Bound once: fx.time takes it every frame without allocating. */
+  private readonly applyBloomNight = (): void => this.writeBloomThreshold();
+
+  /** UnrealBloomPass.render copies this.threshold into its high-pass uniform
+   *  every frame, so this is a uniform write with no recompile. */
+  private writeBloomThreshold(): void {
+    const bloom = this.bloomPass;
+    if (!bloom) return;
+    bloom.threshold = fx.on('bloomNight')
+      ? SimpleRenderer.bloomNightThreshold(this.bloomNightDay)
+      : SimpleRenderer.BLOOM_DAY_THRESHOLD;
+  }
+
+  /**
+   * Per-frame hook, beside setGradeDayFactor: keep night bloom on the bulbs
+   * (P2-E5). `day` is the cycle's day factor. Nothing to do without a
+   * composer (the low tier).
+   */
+  public setBloomNight(day: number): void {
+    if (!this.bloomPass) return;
+    this.bloomNightDay = day;
+    fx.time('bloomNight', this.applyBloomNight);
   }
 
   /**
