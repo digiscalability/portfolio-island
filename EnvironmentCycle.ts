@@ -107,6 +107,103 @@ const FRAME_STILL_HOLD = 0.15;
 const FRAME_MIN_RATE = 0.105;
 const FRAME_GAIN = 1.6;
 
+// ── The key and the hemisphere through the day (C1) ─────────────────────────
+// `elev` below is the sun's height as update() carries it: the y of its unit
+// direction (the sine of its elevation), 0 at the horizon, negative under it.
+
+/** 1 with the sun on the horizon, 0 once it is 20 degrees above or below. */
+export function duskFactorAt(elev: number): number {
+  return Math.max(0, 1 - Math.abs(elev) / 0.35);
+}
+
+/**
+ * 0 by day and through golden hour, 1 once the sun is well under the horizon.
+ *
+ * The edges are in ORDER on purpose. THREE.MathUtils.smoothstep(x, min, max)
+ * returns 0 for x <= min and 1 for x >= max and does not accept min > max: the
+ * first plan for this wrote smoothstep(elev, 0.0, -0.15), which is 0 for
+ * every negative elevation, so its night tint could never engage.
+ * 1 - dayFactor is no night factor either: it is already 0.8 at sunset, which
+ * is why the golden-hour key used to come out grey-lavender.
+ */
+export function nightFactorAt(elev: number): number {
+  return THREE.MathUtils.smoothstep(-elev, 0.05, 0.3);
+}
+
+/**
+ * How far the key has swung from the sun to the moon. The sun stays the key
+ * through golden hour: the old ramp ran on dayFactor < 0.5, which is already
+ * true at sunset, so a 06:00 key came about 90% from the moon and the dawn
+ * look depended on the lunar phase.
+ */
+export function moonWeightAt(elev: number, moonElev: number): number {
+  return (
+    THREE.MathUtils.smoothstep(-elev, 0.05, 0.25) * THREE.MathUtils.smoothstep(moonElev, 0.03, 0.2)
+  );
+}
+
+/** 1 while the sun is up or just under the horizon, 0 once it has set. A
+ *  short ramp (about 14 minutes of clock) where a step would pop the key. */
+export function sunUpAt(elev: number): number {
+  return THREE.MathUtils.smoothstep(elev, -0.08, -0.02);
+}
+
+/**
+ * The lowest the key light may stand, as the y of its unit direction.
+ *
+ * The cel ramp's top band starts at N.L = 1/3 (19.5 degrees over flat
+ * ground). Floored at 0.06 the dawn and dusk key lit flat ground from 3.4
+ * degrees, so the ground stayed in the middle band whatever the intensity:
+ * golden hour was a silhouette world. 0.40 at the horizon (23.6 degrees)
+ * puts the ground in the top band; a key that high under a disc on the
+ * horizon is a deliberate cheat. The disc keeps its true height.
+ */
+export function keyFloorAt(elev: number): number {
+  return 0.06 + 0.34 * duskFactorAt(elev);
+}
+
+/**
+ * Golden hour's share of the key and of the hemisphere, as fractions of their
+ * bases, with the sun on the horizon. They used to be 0.29 and 0.45 there
+ * (the day ramp alone), which with the key tinted 80% toward night left the
+ * ground at L* 20-26 under a sky at 60-70.
+ *
+ * The plan's 0.85 and 0.75 measured the sunlit ground at L* 39.4-39.9 in
+ * Professional Experience (its ground is the darkest of the districts), just
+ * under the target of 40; these clear it in every district.
+ */
+const GOLDEN_KEY_LEVEL = 0.92;
+const GOLDEN_HEMI_LEVEL = 0.8;
+
+/** The key's intensity as a fraction of its base, before weather. Night
+ *  keeps the day ramp's floor (0.12). */
+export function keyLevelAt(dayFactor: number, elev: number): number {
+  return Math.max(0.12 + 0.88 * dayFactor, GOLDEN_KEY_LEVEL * duskFactorAt(elev) * sunUpAt(elev));
+}
+
+/** The hemisphere's intensity as a fraction of its base, before weather.
+ *  Night keeps the day ramp's floor (0.32). */
+export function hemiLevelAt(dayFactor: number, elev: number): number {
+  return Math.max(0.32 + 0.68 * dayFactor, GOLDEN_HEMI_LEVEL * duskFactorAt(elev));
+}
+
+// Key colours: warm white by day, amber at the horizon, moonlight at night.
+const KEY_DAY = new THREE.Color(0xfff2dd);
+const KEY_DUSK = new THREE.Color(0xffc58a);
+const KEY_NIGHT = new THREE.Color(0x9db3e6);
+// Hemisphere: the sky side cools to moonlit blue, the ground side warms at
+// the horizon (the bounce off sunlit earth) and sinks to a dark green.
+const HEMI_SKY_NIGHT = new THREE.Color(0x7c93c8);
+const HEMI_GROUND_DUSK = new THREE.Color(0x6b5a3a);
+const HEMI_GROUND_NIGHT = new THREE.Color(0x26331f);
+
+/**
+ * The day factor as a shader uniform, written once a frame. Shared by
+ * reference (the sea's trough tint reads it as uDayFactor), so no caller
+ * plumbs it through.
+ */
+export const DAY_FACTOR_UNIFORM: { value: number } = { value: 1 };
+
 // Hoisted out of update() — both were re-created every frame (object literal +
 // array literal) in the unconditional day/night tick. Pure constants now.
 const WEATHER_DIM: Record<WeatherKind, number> = { clear: 1, cloudy: 0.55, rain: 0.35, snow: 0.5 };
@@ -184,9 +281,38 @@ export class EnvironmentCycle {
 
   /** Last computed day factor (0 = deep night, 1 = full day). */
   private lastDayFactor = 1;
+  private lastDuskFactor = 0;
+  private lastNightFactor = 0;
 
   public getDayFactor(): number {
     return this.lastDayFactor;
+  }
+
+  /** 1 with the sun on the horizon, 0 away from dawn and dusk. */
+  public getDuskFactor(): number {
+    return this.lastDuskFactor;
+  }
+
+  /**
+   * 0 by day AND through golden hour, 1 at night (nightFactorAt). Anything
+   * that should only happen after dark keys on this, never on
+   * 1 - getDayFactor(), which is 0.8 at sunset.
+   */
+  public getNightFactor(): number {
+    return this.lastNightFactor;
+  }
+
+  // The hemisphere's live tint. GameScene's underwater grade rewrites the
+  // hemisphere's two colours every frame, so the tint is also handed out here
+  // for it to start from (the Colors are this object's, updated in place).
+  private readonly hemiBaseSky: THREE.Color;
+  private readonly hemiBaseGround: THREE.Color;
+  private readonly hemiTint = { sky: new THREE.Color(), ground: new THREE.Color() };
+
+  /** The hemisphere's sky and ground colours for this frame, before any
+   *  underwater grade. Read-only; the same object every call. */
+  public getHemiTint(): { readonly sky: THREE.Color; readonly ground: THREE.Color } {
+    return this.hemiTint;
   }
 
   /** Current in-world hour 0–24 (honours the ?hour= debug override). Drives the
@@ -298,6 +424,10 @@ export class EnvironmentCycle {
     this.fog = scene.fog instanceof THREE.FogExp2 ? scene.fog : null;
     this.baseSunIntensity = sun.intensity;
     this.baseHemiIntensity = hemi.intensity;
+    this.hemiBaseSky = hemi.color.clone();
+    this.hemiBaseGround = hemi.groundColor.clone();
+    this.hemiTint.sky.copy(this.hemiBaseSky);
+    this.hemiTint.ground.copy(this.hemiBaseGround);
     this.baseFogDensity = this.fog ? this.fog.density : 0.012;
 
     // Rebuild live precipitation when the ♿ toggle flips mid-storm — the
@@ -821,15 +951,16 @@ export class EnvironmentCycle {
     this.scene.add(this.precip);
   }
 
-  /** Lower a unit direction to at most `maxY` of height, keeping its bearing. */
-  private static capElevation(v: THREE.Vector3, maxY: number): void {
-    if (v.y <= maxY) return;
+  /** Hold a unit direction's height between `minY` and `maxY`, keeping its bearing. */
+  private static clampElevation(v: THREE.Vector3, minY: number, maxY: number): void {
+    const y = Math.min(Math.max(v.y, minY), maxY);
+    if (y === v.y) return;
     const flat = Math.hypot(v.x, v.z);
-    const reach = Math.sqrt(1 - maxY * maxY);
+    const reach = Math.sqrt(Math.max(0, 1 - y * y));
     // Straight up has no bearing: lean it toward +X (noon on the arc is -X/+X
     // by a hair either way, so the choice is never seen).
-    if (flat < 1e-6) v.set(reach, maxY, 0);
-    else v.set((v.x / flat) * reach, maxY, (v.z / flat) * reach);
+    if (flat < 1e-6) v.set(reach, y, 0);
+    else v.set((v.x / flat) * reach, y, (v.z / flat) * reach);
   }
 
   /** Call every frame with the player's world position. */
@@ -865,8 +996,12 @@ export class EnvironmentCycle {
       this.emitStatus();
     }
     const dayFactor = THREE.MathUtils.smoothstep(elev, -0.12, 0.3);
-    const duskFactor = Math.max(0, 1 - Math.abs(elev) / 0.35);
+    const duskFactor = duskFactorAt(elev);
+    const night = nightFactorAt(elev);
     this.lastDayFactor = dayFactor;
+    this.lastDuskFactor = duskFactor;
+    this.lastNightFactor = night;
+    DAY_FACTOR_UNIFORM.value = dayFactor;
 
     // ?theme=real: the sky PMREM (GameScene.applyRealEnvironment) is generated
     // once from the DAY palette; dim its contribution with the sun so PBR
@@ -887,33 +1022,31 @@ export class EnvironmentCycle {
     const mElev = Math.sin(((moonHour - 6) / 24) * Math.PI * 2);
     const mAz = (moonHour / 24) * Math.PI * 2;
 
-    // Directional light rides the sun arc by day; after dusk it swings toward
-    // the visible moon so night shadows come FROM the moon instead of an
-    // underground sun. The weight ramps across dayFactor 0.5→0.15 (a ~30-real-
-    // minute window — no visible snap) and fades with moon elevation so a
-    // setting moon hands back to the horizon-clamped sun direction smoothly.
-    const e = Math.max(elev, 0.06);
+    // Directional light rides the sun arc by day and through golden hour;
+    // once the sun is under the horizon it swings toward the visible moon, so
+    // night shadows come FROM the moon instead of an underground sun
+    // (moonWeightAt: no snap, and a setting moon hands the key back smoothly).
+    // Its height never drops under keyFloorAt, whichever body it follows.
+    const floor = keyFloorAt(elev);
+    const e = Math.max(elev, floor);
     this._v1.set(
       Math.cos(azimuth) * Math.sqrt(1 - e * e),
       e,
       Math.sin(azimuth) * Math.sqrt(1 - e * e),
     );
-    if (dayFactor < 0.5 && mElev > 0.03) {
-      const w =
-        THREE.MathUtils.smoothstep(0.5 - dayFactor, 0.02, 0.35) *
-        THREE.MathUtils.smoothstep(mElev, 0.03, 0.2);
+    const moonW = moonWeightAt(elev, mElev);
+    if (moonW > 0) {
       this._v2.set(
         Math.cos(mAz) * Math.sqrt(1 - mElev * mElev),
         mElev,
         Math.sin(mAz) * Math.sqrt(1 - mElev * mElev),
       );
-      this._v1.lerp(this._v2, w).normalize();
+      this._v1.lerp(this._v2, moonW).normalize();
     }
-    if (this.localSunOn) {
-      // 65 degrees at most (KEY_ELEVATION_CAP), then into the light's frame.
-      EnvironmentCycle.capElevation(this._v1, KEY_ELEVATION_CAP);
-      this._v1.applyQuaternion(this.qLight);
-    }
+    // 65 degrees at most in the visitor's frame (KEY_ELEVATION_CAP); the
+    // world-anchored sun keeps its zenith.
+    EnvironmentCycle.clampElevation(this._v1, floor, this.localSunOn ? KEY_ELEVATION_CAP : 1);
+    if (this.localSunOn) this._v1.applyQuaternion(this.qLight);
     this.sun.position.copy(this._v1).multiplyScalar(60);
 
     // Weather dimming
@@ -927,12 +1060,16 @@ export class EnvironmentCycle {
             ? 0.45
             : 0;
 
-    // Lights
-    this.sun.intensity = this.baseSunIntensity * (0.12 + 0.88 * dayFactor) * wDim;
-    this.hemi.intensity = this.baseHemiIntensity * (0.32 + 0.68 * dayFactor) * (0.6 + 0.4 * wDim);
-    this._c1.set(0xfff2dd).lerp(this._c2.set(0xffb066), duskFactor * 0.8);
-    this._c1.lerp(this._c2.set(0x93a4cc), 1 - dayFactor);
-    this.sun.color.copy(this._c1);
+    // Lights. Golden hour holds a warm key (it used to fall to 0.29 of the
+    // base and be tinted 80% toward night at sunset) and a brighter
+    // hemisphere; see GOLDEN_KEY_LEVEL.
+    this.sun.intensity = this.baseSunIntensity * keyLevelAt(dayFactor, elev) * wDim;
+    this.hemi.intensity =
+      this.baseHemiIntensity * hemiLevelAt(dayFactor, elev) * (0.6 + 0.4 * wDim);
+    this.sun.color
+      .copy(KEY_DAY)
+      .lerp(KEY_DUSK, 0.85 * duskFactor)
+      .lerp(KEY_NIGHT, night);
 
     // Sun disc rides the TRUE elevation (the shadow light clamps to a floor):
     // warm white and modest at noon, swollen + reddened through golden hour,
@@ -971,6 +1108,20 @@ export class EnvironmentCycle {
             : this.sky.bottomColor.value;
       target.copy(this._c1);
     }
+
+    // Hemisphere tint, after the palette: the sky side leans toward the live
+    // horizon at dawn and dusk (a warm sky lights the world warm), then to
+    // moonlit blue; the ground side warms, then sinks to dark green.
+    this.hemiTint.sky
+      .copy(this.hemiBaseSky)
+      .lerp(this.sky.horizonColor.value, 0.35 * duskFactor)
+      .lerp(HEMI_SKY_NIGHT, night);
+    this.hemiTint.ground
+      .copy(this.hemiBaseGround)
+      .lerp(HEMI_GROUND_DUSK, 0.25 * duskFactor)
+      .lerp(HEMI_GROUND_NIGHT, night);
+    this.hemi.color.copy(this.hemiTint.sky);
+    this.hemi.groundColor.copy(this.hemiTint.ground);
 
     // Fog follows the horizon color; thicker in bad weather
     if (this.fog) {

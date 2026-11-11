@@ -33,7 +33,18 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { a11y } from '../Accessibility';
 import { addGroupHulls, setInkVisible } from '../CelLook';
-import { EnvironmentCycle, KEY_ELEVATION_CAP } from '../EnvironmentCycle';
+import {
+  DAY_FACTOR_UNIFORM,
+  duskFactorAt,
+  EnvironmentCycle,
+  hemiLevelAt,
+  KEY_ELEVATION_CAP,
+  keyFloorAt,
+  keyLevelAt,
+  moonWeightAt,
+  nightFactorAt,
+  sunUpAt,
+} from '../EnvironmentCycle';
 import type { Island } from '../Island';
 import { Mailbox } from '../Mailbox';
 import { Materials } from '../Materials';
@@ -1226,5 +1237,131 @@ describe("the sun shines in each visitor's own sky (P2-C1)", () => {
     const update = decl('EnvironmentCycle.ts', 'update');
     expect(update.match(/\.applyQuaternion\(this\.qSky\)/g)).toHaveLength(3);
     expect(update.match(/\.applyQuaternion\(this\.qLight\)/g)).toHaveLength(1);
+  });
+});
+
+describe('a golden hour that holds (C1)', () => {
+  // Dawn and dusk were a silhouette world: ground L* 20-26 under a sky at
+  // 60-70. Three causes, each pinned below: the key stood 3.4 degrees up (the
+  // cel ramp's top band needs 19.5), it came from the moon at sunset itself,
+  // and it ran at 0.29 of its base tinted 80% toward night.
+
+  /** update()'s day ramp, for the helpers that take it. */
+  const dayAt = (elev: number): number => THREE.MathUtils.smoothstep(elev, -0.12, 0.3);
+  const hex = (c: THREE.Color): string => c.getHexString();
+
+  test('the night factor is 0 through golden hour and engages under the horizon', () => {
+    // The plan's first formula, smoothstep(elev, 0.0, -0.15), is 0 here.
+    expect(nightFactorAt(-0.2)).toBeGreaterThan(0.5);
+    expect(nightFactorAt(-0.3)).toBe(1);
+    expect(nightFactorAt(-1)).toBe(1);
+    for (const elev of [1, 0.35, 0.1, 0, -0.02, -0.05]) expect(nightFactorAt(elev)).toBe(0);
+    // 1 - dayFactor, which the old tint used, is already 0.8 at sunset.
+    expect(1 - dayAt(0)).toBeCloseTo(0.802, 3);
+  });
+
+  test('the sun stays the key through golden hour; the moon takes over below it', () => {
+    expect(moonWeightAt(-0.02, 0.9)).toBe(0);
+    expect(moonWeightAt(0, 0.9)).toBe(0);
+    expect(moonWeightAt(0.2, 0.9)).toBe(0);
+    expect(moonWeightAt(-0.25, 0.9)).toBe(1);
+    // A moon under the horizon never takes the key.
+    expect(moonWeightAt(-1, 0.02)).toBe(0);
+  });
+
+  test('the key stands 23.6 degrees up at the horizon, where the ramp lights flat ground', () => {
+    expect(keyFloorAt(0)).toBeCloseTo(0.4, 12);
+    expect(keyFloorAt(0)).toBeGreaterThan(1 / 3);
+    expect(keyFloorAt(0.35)).toBeCloseTo(0.06, 12);
+    expect(keyFloorAt(-0.35)).toBeCloseTo(0.06, 12);
+    expect(keyFloorAt(1)).toBeCloseTo(0.06, 12);
+  });
+
+  test('golden hour holds the key and the hemisphere up; noon and night keep their levels', () => {
+    expect(duskFactorAt(0)).toBe(1);
+    expect(keyLevelAt(dayAt(0), 0)).toBeCloseTo(0.92, 12);
+    expect(hemiLevelAt(dayAt(0), 0)).toBeCloseTo(0.8, 12);
+    // Main at the horizon: 0.29 and 0.45.
+    expect(0.12 + 0.88 * dayAt(0)).toBeCloseTo(0.294, 3);
+    expect(0.32 + 0.68 * dayAt(0)).toBeCloseTo(0.455, 3);
+    expect(keyLevelAt(1, 1)).toBe(1);
+    expect(hemiLevelAt(1, 1)).toBe(1);
+    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12, 12);
+    expect(hemiLevelAt(0, -1)).toBeCloseTo(0.32, 12);
+  });
+
+  test('the warm key ends with the sun, on a ramp: no frame pops', () => {
+    expect(sunUpAt(0)).toBe(1);
+    expect(sunUpAt(-0.02)).toBe(1);
+    expect(sunUpAt(-0.08)).toBe(0);
+    // Sunset to night in steps of 0.001 of height (about 14 s of clock).
+    let last = keyLevelAt(dayAt(0.4), 0.4);
+    let lastHemi = hemiLevelAt(dayAt(0.4), 0.4);
+    for (let elev = 0.4; elev >= -0.4; elev -= 0.001) {
+      const key = keyLevelAt(dayAt(elev), elev);
+      const hemi = hemiLevelAt(dayAt(elev), elev);
+      expect(Math.abs(key - last)).toBeLessThan(0.025);
+      expect(Math.abs(hemi - lastHemi)).toBeLessThan(0.01);
+      last = key;
+      lastHemi = hemi;
+    }
+  });
+
+  test('18:00 on the island: a warm key at 0.92, 23.6 degrees up, and a tinted hemisphere', () => {
+    const { env, sun, hemi } = makeCycle();
+    env.debugHour = 18;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(env.getDuskFactor()).toBeCloseTo(1, 9);
+    expect(env.getNightFactor()).toBe(0);
+    expect(sun.intensity).toBeCloseTo(1.6 * 0.92, 6);
+    expect(localElevation(sun, HUB)).toBeCloseTo(23.58, 1);
+    // #fff2dd, 85% of the way to #ffc58a, and not a step toward night.
+    expect(hex(sun.color)).toBe(
+      hex(new THREE.Color(0xfff2dd).lerp(new THREE.Color(0xffc58a), 0.85)),
+    );
+    expect(hemi.intensity).toBeCloseTo(0.62 * 0.8, 6);
+    // The tint is handed out for GameScene's underwater grade to start from,
+    // and written to the light for anything that has no such grade.
+    const tint = env.getHemiTint();
+    expect(env.getHemiTint()).toBe(tint);
+    expect(hex(hemi.color)).toBe(hex(tint.sky));
+    expect(hex(hemi.groundColor)).toBe(hex(tint.ground));
+    expect(hex(tint.ground)).toBe(
+      hex(new THREE.Color(0x4a6b32).lerp(new THREE.Color(0x6b5a3a), 0.25)),
+    );
+    // Warmer than the day sky side (#aacdf7): pulled toward the dusk horizon.
+    expect(tint.sky.r).toBeGreaterThan(new THREE.Color(0xaacdf7).r);
+    expect(tint.sky.b).toBeLessThan(new THREE.Color(0xaacdf7).b);
+  });
+
+  test('noon is untouched, and midnight is moonlit blue at the old levels', () => {
+    const { env, sun, hemi } = makeCycle();
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(sun.intensity).toBeCloseTo(1.6, 9);
+    expect(hex(sun.color)).toBe('fff2dd');
+    expect(hemi.intensity).toBeCloseTo(0.62, 9);
+    expect(hex(hemi.color)).toBe('aacdf7');
+    expect(hex(hemi.groundColor)).toBe('4a6b32');
+    expect(env.getDuskFactor()).toBe(0);
+    expect(env.getNightFactor()).toBe(0);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(1);
+
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(env.getNightFactor()).toBe(1);
+    expect(env.getDuskFactor()).toBe(0);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(0);
+    expect(sun.intensity).toBeCloseTo(1.6 * 0.12, 9);
+    expect(hex(sun.color)).toBe('9db3e6');
+    expect(hemi.intensity).toBeCloseTo(0.62 * 0.32, 9);
+  });
+
+  test('the pinned night code is still there: one cutoff, the glow formula', () => {
+    const update = decl('EnvironmentCycle.ts', 'update');
+    expect(update).toContain('const glow = 0.25 + (1 - dayFactor) * 1.05');
+    expect(update).toContain('const exteriorLightsOn = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF');
+    // The day factor reaches shaders as one shared uniform object.
+    expect(update).toContain('DAY_FACTOR_UNIFORM.value = dayFactor');
   });
 });
