@@ -9,7 +9,8 @@
  *     <opaque_fragment> (r154+ name of output_fragment) — a fresnel gated by
  *     the lit side (the BotW recipe), on the CAST only (villagers + player);
  *     rimming everything would flatten the value hierarchy. Sun direction is
- *     a VIEW-SPACE uniform updated per frame through a registry.
+ *     a VIEW-SPACE uniform updated per frame through a registry. At night the
+ *     same injection adds the cast's own fill and a moon rim (C5).
  *  3. INK OUTLINES: inverted-hull meshes baked by displacing clone geometry
  *     along SMOOTHED normals (position-hash weld first — the chamfered
  *     avatars carry split normals at hard edges and raw displacement would
@@ -20,6 +21,7 @@
  */
 import * as THREE from 'three';
 
+import { fx } from './FxBudget';
 import { SimpleRenderer } from './SimpleRenderer';
 import { isRealTheme } from './Theme';
 
@@ -47,9 +49,43 @@ export function isCelTheme(): boolean {
 
 // ── 2. Rim light on the cast ────────────────────────────────────────────────
 
-type RimUniforms = { uCelSunDir: { value: THREE.Vector3 }; uCelRim: { value: number } };
+type RimUniforms = {
+  uCelSunDir: { value: THREE.Vector3 };
+  uCelRim: { value: number };
+  uCelNight: { value: number };
+};
 const rimRegistry: RimUniforms[] = [];
 const _sunView = new THREE.Vector3();
+
+// ── The cast's night light (C5) ─────────────────────────────────────────────
+// At night the avatar was a black cut-out: L* 5-7 against ground at 14-18,
+// face and clothes unreadable. Every light in the rig is global, so lifting
+// the figure with one lifts the sand and the scree under it too, and the dark
+// beaches and mountains are Abbas's to keep. These two terms live in the
+// cast's shader instead, so they reach people and nothing else:
+// - a fill on what faces the camera: the albedo x 0.075, eased to 60% of that
+//   at the silhouette, so the face and the jacket keep their own colours;
+// - a moon rim round the silhouette that needs no lit side.
+// The plan's 0.16 and 0.35 were never measured against exact masks: with
+// them the avatar's median L* at 21 h was 35-38, brighter than at noon (27).
+// These give 20-25 (p90 25-30) on both tiers at 21 h and 00 h.
+const CEL_NIGHT_FILL = 0.075;
+const CEL_NIGHT_RIM = 0.15;
+
+/** The night level, ONE uniform object shared by every rim material: a
+ *  frame's update is a single write, however many villagers are dressed. */
+const celNight = { value: 0 };
+
+fx.register('celNightRim', { desktop: true, low: true });
+
+/**
+ * Per frame, from EnvironmentCycle: how far into night the world is (its
+ * night factor: 0 by day and through golden hour, 1 at night). With the
+ * 'celNightRim' switch off the cast's night terms stay at 0.
+ */
+export function setCelNight(night: number): void {
+  celNight.value = fx.on('celNightRim') ? night : 0;
+}
 
 /**
  * Add the lit-side fresnel rim to a material (villager palette mats + the
@@ -64,11 +100,15 @@ export function applyCelRim(mat: THREE.Material): void {
     const uniforms: RimUniforms = {
       uCelSunDir: { value: new THREE.Vector3(0, 1, 0) },
       uCelRim: { value: 1.0 },
+      uCelNight: celNight,
     };
     Object.assign(shader.uniforms, uniforms);
     rimRegistry.push(uniforms);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', 'uniform vec3 uCelSunDir;\nuniform float uCelRim;\nvoid main() {')
+      .replace(
+        'void main() {',
+        'uniform vec3 uCelSunDir;\nuniform float uCelRim;\nuniform float uCelNight;\nvoid main() {',
+      )
       .replace(
         '#include <opaque_fragment>',
         `{
@@ -77,13 +117,18 @@ export function applyCelRim(mat: THREE.Material): void {
 	float celFres = 1.0 - saturate( dot( normalize( vViewPosition ), normal ) );
 	float celRim = smoothstep( 0.70, 0.74, celFres * pow( celNdotL, 0.35 ) );
 	outgoingLight += vec3( 1.05, 1.0, 0.92 ) * celRim * 0.28 * uCelRim;
+	// Night (C5), cast only: a fill on what faces the camera, and a moon rim
+	// round the silhouette.
+	outgoingLight += diffuseColor.rgb * ( 0.6 + 0.4 * ( 1.0 - celFres ) ) * ${CEL_NIGHT_FILL.toFixed(3)} * uCelNight;
+	outgoingLight += vec3( 0.55, 0.65, 0.90 ) * smoothstep( 0.62, 0.70, celFres ) * ${CEL_NIGHT_RIM.toFixed(3)} * uCelNight;
 }
 #include <opaque_fragment>`,
       );
   };
   // Identical injection body across materials → identical cache key → one
-  // shared program with per-material uniforms.
-  mat.customProgramCacheKey = () => 'cel-rim-v1';
+  // shared program with per-material uniforms. v2 (the night terms) REPLACES
+  // v1: every rim material takes this key, so the program count is unchanged.
+  mat.customProgramCacheKey = () => 'cel-rim-v2';
   mat.needsUpdate = true;
 }
 

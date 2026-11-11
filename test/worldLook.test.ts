@@ -32,7 +32,7 @@ import * as ts from 'typescript';
 import { describe, expect, test, vi } from 'vitest';
 
 import { a11y } from '../Accessibility';
-import { addGroupHulls, setInkVisible } from '../CelLook';
+import { addGroupHulls, applyCelRim, setCelNight, setInkVisible } from '../CelLook';
 import {
   DAY_FACTOR_UNIFORM,
   duskFactorAt,
@@ -42,6 +42,7 @@ import {
   keyFloorAt,
   keyLevelAt,
   moonWeightAt,
+  NIGHT_KEY_FLOOR,
   nightFactorAt,
   sunUpAt,
 } from '../EnvironmentCycle';
@@ -1272,8 +1273,8 @@ describe('a golden hour that holds (C1)', () => {
   test('the key stands 23.6 degrees up at the horizon, where the ramp lights flat ground', () => {
     expect(keyFloorAt(0)).toBeCloseTo(0.4, 12);
     expect(keyFloorAt(0)).toBeGreaterThan(1 / 3);
+    // Away from the horizon by day it is the old 0.06 (night has its own, C5).
     expect(keyFloorAt(0.35)).toBeCloseTo(0.06, 12);
-    expect(keyFloorAt(-0.35)).toBeCloseTo(0.06, 12);
     expect(keyFloorAt(1)).toBeCloseTo(0.06, 12);
   });
 
@@ -1363,5 +1364,146 @@ describe('a golden hour that holds (C1)', () => {
     expect(update).toContain('const exteriorLightsOn = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF');
     // The day factor reaches shaders as one shared uniform object.
     expect(update).toContain('DAY_FACTOR_UNIFORM.value = dayFactor');
+  });
+});
+
+describe('faces readable at night, the dark patches kept (C5)', () => {
+  // The avatar at night was a black cut-out (L* 5-7). Abbas asked to keep the
+  // beaches and the mountains dark, and every light in the rig is global, so
+  // the WORLD keeps its night levels and PEOPLE get a light of their own in
+  // the cast's shader. Measured at 21 h and 00 h in the wave-2 report.
+
+  /** What three hands a material's onBeforeCompile. */
+  const fakeShader = (): {
+    uniforms: Record<string, { value: unknown }>;
+    fragmentShader: string;
+  } => ({
+    uniforms: {},
+    fragmentShader: 'void main() {\n#include <opaque_fragment>\n}',
+  });
+  const compile = (mat: THREE.Material): ReturnType<typeof fakeShader> => {
+    const shader = fakeShader();
+    (mat.onBeforeCompile as unknown as (s: unknown, r: unknown) => void)(shader, null);
+    return shader;
+  };
+
+  test('the world keeps its night levels: the key only stands higher', () => {
+    expect(NIGHT_KEY_FLOOR).toBeCloseTo(Math.sin(0.62), 12);
+    expect(keyFloorAt(-1)).toBe(NIGHT_KEY_FLOOR);
+    // No step between the dusk floor and the night floor.
+    let last = keyFloorAt(0.4);
+    for (let elev = 0.4; elev >= -0.5; elev -= 0.001) {
+      expect(Math.abs(keyFloorAt(elev) - last)).toBeLessThan(0.006);
+      last = keyFloorAt(elev);
+    }
+    // The plan's 0.20 and 0.60 night levels are NOT taken: they lifted beach
+    // ground +13.7 L* and highland +7.5 at 21 h. The day ramp's floors stand.
+    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12, 12);
+    expect(hemiLevelAt(0, -1)).toBeCloseTo(0.32, 12);
+
+    const { env, sun, hemi } = makeCycle();
+    for (const hour of [21, 0, 3]) {
+      env.debugHour = hour;
+      env.update(1 / 60, HUB.clone().multiplyScalar(R), hour);
+      expect(sun.intensity).toBeCloseTo(1.6 * 0.12, 9);
+      expect(hemi.intensity).toBeCloseTo(0.62 * 0.32, 9);
+      // 35.5 degrees or more, whatever the moon is doing tonight.
+      const up = localElevation(sun, HUB);
+      expect(up).toBeGreaterThanOrEqual(THREE.MathUtils.radToDeg(0.62) - 1e-6);
+      expect(up).toBeLessThanOrEqual(CAP_DEG + 1e-6);
+    }
+  });
+
+  test('the night hemisphere is moonlit blue at the old brightness: the tint carries the level', () => {
+    const { env } = makeCycle();
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    const tint = env.getHemiTint();
+    const sky = new THREE.Color(0x7c93c8).multiplyScalar(0.6 / 0.32);
+    const ground = new THREE.Color(0x26331f).multiplyScalar(0.6 / 0.32);
+    for (const k of ['r', 'g', 'b'] as const) {
+      expect(tint.sky[k]).toBeCloseTo(sky[k], 9);
+      expect(tint.ground[k]).toBeCloseTo(ground[k], 9);
+    }
+    // In luminance, about what shipped: 0.32 x #aacdf7 then, 0.60 x #7c93c8 now.
+    const lum = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    const was = 0.32 * lum(new THREE.Color(0xaacdf7));
+    const now = 0.32 * lum(tint.sky);
+    expect(now / was).toBeGreaterThan(0.85);
+    expect(now / was).toBeLessThan(1);
+    // Where nothing applies the tint, the level alone decides, and it is the
+    // old one: the constant is a gain on the colours, not on the intensity.
+    expect(stripped('EnvironmentCycle.ts')).toContain('const NIGHT_HEMI_GAIN = 0.6 / 0.32');
+  });
+
+  test("the camera fill is turned down at night, through GameScene's getter", () => {
+    const { env } = makeCycle();
+    // 0.18 is its day level (GameScene); aimed from the camera it lights the
+    // ground in view, so at night it goes down, not up.
+    expect(env.getNightFill()).toBe(0.08);
+    expect(env.getNightFill()).toBeLessThan(0.18);
+  });
+
+  test('people get their own night light: one shared uniform, in the cast shader only', () => {
+    const a = new THREE.MeshToonMaterial();
+    const b = new THREE.MeshToonMaterial();
+    applyCelRim(a);
+    applyCelRim(b);
+    // v2 replaces v1: every rim material shares the one program.
+    expect(a.customProgramCacheKey()).toBe('cel-rim-v2');
+    expect(b.customProgramCacheKey()).toBe('cel-rim-v2');
+    expect(stripped('CelLook.ts')).not.toContain('cel-rim-v1');
+    const sa = compile(a);
+    const sb = compile(b);
+    // The same uniform OBJECT in both: a frame's update is one write.
+    expect(sa.uniforms.uCelNight).toBe(sb.uniforms.uCelNight);
+    expect(sa.uniforms.uCelSunDir).not.toBe(sb.uniforms.uCelSunDir);
+    expect(sa.fragmentShader).toContain('uniform float uCelNight;');
+    expect(sa.fragmentShader).toContain(
+      'outgoingLight += diffuseColor.rgb * ( 0.6 + 0.4 * ( 1.0 - celFres ) ) * 0.075 * uCelNight;',
+    );
+    expect(sa.fragmentShader).toContain(
+      'outgoingLight += vec3( 0.55, 0.65, 0.90 ) * smoothstep( 0.62, 0.70, celFres ) * 0.150 * uCelNight;',
+    );
+    // The day rim is as it was.
+    expect(sa.fragmentShader).toContain(
+      'outgoingLight += vec3( 1.05, 1.0, 0.92 ) * celRim * 0.28 * uCelRim;',
+    );
+
+    setCelNight(1);
+    expect(sa.uniforms.uCelNight.value).toBe(1);
+    withFx('celNightRim', false, () => {
+      setCelNight(1);
+      expect(sa.uniforms.uCelNight.value).toBe(0);
+    });
+    setCelNight(0);
+    expect(stripped('CelLook.ts')).toContain(
+      "fx.register('celNightRim', { desktop: true, low: true })",
+    );
+    // The cast only: Island dresses the villagers (the player's is in
+    // SimplePlayer); nothing else in C's world asks for the rim.
+    for (const file of ['Zones.ts', 'Mailbox.ts', 'Traffic.ts', 'Materials.ts']) {
+      expect(stripped(file)).not.toContain('applyCelRim(');
+    }
+    expect(stripped('Island.ts').match(/applyCelRim\(/g)).toHaveLength(2);
+  });
+
+  test('the cycle drives it with the night factor: off through golden hour', () => {
+    const mat = new THREE.MeshToonMaterial();
+    applyCelRim(mat);
+    const night = compile(mat).uniforms.uCelNight;
+    const { env } = makeCycle();
+    for (const [hour, want] of [
+      [12, 0],
+      [18, 0],
+      [6, 0],
+      [0, 1],
+      [21, 1],
+    ]) {
+      env.debugHour = hour;
+      env.update(1 / 60, HUB.clone().multiplyScalar(R), hour);
+      expect(night.value).toBe(want);
+    }
+    expect(decl('EnvironmentCycle.ts', 'update')).toContain('setCelNight(night)');
   });
 });

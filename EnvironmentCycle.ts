@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
+import { setCelNight } from './CelLook';
 import { fx } from './FxBudget';
 import { isRealTheme } from './Theme';
 import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
@@ -107,7 +108,7 @@ const FRAME_STILL_HOLD = 0.15;
 const FRAME_MIN_RATE = 0.105;
 const FRAME_GAIN = 1.6;
 
-// ── The key and the hemisphere through the day (C1) ─────────────────────────
+// ── The key and the hemisphere through the day (C1, C5) ─────────────────────
 // `elev` below is the sun's height as update() carries it: the y of its unit
 // direction (the sine of its elevation), 0 at the horizon, negative under it.
 
@@ -148,6 +149,57 @@ export function sunUpAt(elev: number): number {
   return THREE.MathUtils.smoothstep(elev, -0.08, -0.02);
 }
 
+// ── Night (C5): faces readable, the dark patches kept ───────────────────────
+//
+// Abbas asked to keep the beaches and the mountains dark at night, and the
+// plan bounds the night lift by it: beach-band and highland ground within
+// +3 L* of what shipped, while the avatar's median L* goes from 5-7 to 14 or
+// more. The plan's first numbers (a night key at 0.20 of its base, a night
+// hemisphere at 0.60, GameScene's camera fill at 0.30) lift every surface the
+// same: MEASURED with them at 21 h, beach ground rose +13.7 L* and highland
+// +7.5, and the avatar came out brighter than at noon. Every one of those
+// lights is global, so none of them can lift a face without lifting the sand
+// under it.
+//
+// So the night is split in two (the plan's fallback path):
+// - the WORLD keeps its levels. The key stays at the day ramp's floor (0.12);
+//   it only stands higher (NIGHT_KEY_FLOOR), which costs flat ground one band
+//   of a dim light and gives the night shadows and top-lit forms. The
+//   hemisphere keeps its floor too and turns moonlit blue (NIGHT_HEMI_GAIN).
+//   The camera fill, which lights whatever the camera faces, the ground
+//   included, is turned DOWN at night (NIGHT_FILL);
+// - PEOPLE get their own light: CelLook's night fill and moon rim, in the
+//   cast's shader only (setCelNight).
+// Measured at 21 h and 00 h on both tiers, with GameScene's light rig, against
+// what shipped: beach ground +0.5 to +1.0 L* (the mean of four points round
+// the island), highland -1.2 to -2.1, hub +1.1 to +2.7, the avatar's median
+// 20-25. One caveat: the shipped fill and rim were fixed in the WORLD, so its
+// beaches ran from L* 8 to 16.7 round the island; evened out at 13-14, the
+// stretch that was darkest rises by 3 to 6.5.
+
+/** The night key's floor, as the y of its unit direction: 35.5 degrees. */
+export const NIGHT_KEY_FLOOR = Math.sin(0.62);
+
+/**
+ * The night hemisphere's tint carries its level. The plan asked for 0.60 of
+ * the base with the tint #7c93c8 / #26331f; these are those two colours
+ * times 0.60 / 0.32, at the floor the hemisphere already has (0.32). The
+ * product is the same, and it is about what shipped (sky side 0.109 against
+ * 0.117 in luminance), only blue.
+ *
+ * Written this way round because the tint reaches the light through
+ * GameScene (getHemiTint): where nothing reads it, the level alone decides,
+ * and an untinted 0.60 would be a night twice as bright.
+ */
+const NIGHT_HEMI_GAIN = 0.6 / 0.32;
+
+/**
+ * GameScene's camera fill at full night (0.18 by day). It is aimed from the
+ * camera, so at any pitch over 19.5 degrees it puts the ground in the ramp's
+ * top band: left at 0.18 it alone lifted beach ground +7.8 L* at 21 h.
+ */
+const NIGHT_FILL = 0.08;
+
 /**
  * The lowest the key light may stand, as the y of its unit direction.
  *
@@ -157,9 +209,12 @@ export function sunUpAt(elev: number): number {
  * golden hour was a silhouette world. 0.40 at the horizon (23.6 degrees)
  * puts the ground in the top band; a key that high under a disc on the
  * horizon is a deliberate cheat. The disc keeps its true height.
+ *
+ * At night it is NIGHT_KEY_FLOOR: moonlight from 35.5 degrees, whether or not
+ * the moon is up.
  */
 export function keyFloorAt(elev: number): number {
-  return 0.06 + 0.34 * duskFactorAt(elev);
+  return Math.max(0.06 + 0.34 * duskFactorAt(elev), NIGHT_KEY_FLOOR * nightFactorAt(elev));
 }
 
 /**
@@ -193,9 +248,9 @@ const KEY_DUSK = new THREE.Color(0xffc58a);
 const KEY_NIGHT = new THREE.Color(0x9db3e6);
 // Hemisphere: the sky side cools to moonlit blue, the ground side warms at
 // the horizon (the bounce off sunlit earth) and sinks to a dark green.
-const HEMI_SKY_NIGHT = new THREE.Color(0x7c93c8);
+const HEMI_SKY_NIGHT = new THREE.Color(0x7c93c8).multiplyScalar(NIGHT_HEMI_GAIN);
 const HEMI_GROUND_DUSK = new THREE.Color(0x6b5a3a);
-const HEMI_GROUND_NIGHT = new THREE.Color(0x26331f);
+const HEMI_GROUND_NIGHT = new THREE.Color(0x26331f).multiplyScalar(NIGHT_HEMI_GAIN);
 
 /**
  * The day factor as a shader uniform, written once a frame. Shared by
@@ -313,6 +368,15 @@ export class EnvironmentCycle {
    *  underwater grade. Read-only; the same object every call. */
   public getHemiTint(): { readonly sky: THREE.Color; readonly ground: THREE.Color } {
     return this.hemiTint;
+  }
+
+  /**
+   * The level GameScene's camera fill takes at full night (NIGHT_FILL). One of
+   * the three night levers, with the key and the hemisphere; all three are
+   * set here, together, against the dark beaches and highlands.
+   */
+  public getNightFill(): number {
+    return NIGHT_FILL;
   }
 
   /** Current in-world hour 0–24 (honours the ?hour= debug override). Drives the
@@ -1002,6 +1066,8 @@ export class EnvironmentCycle {
     this.lastDuskFactor = duskFactor;
     this.lastNightFactor = night;
     DAY_FACTOR_UNIFORM.value = dayFactor;
+    // The cast's own night light (CelLook): people only, never the ground.
+    setCelNight(night);
 
     // ?theme=real: the sky PMREM (GameScene.applyRealEnvironment) is generated
     // once from the DAY palette; dim its contribution with the sun so PBR
