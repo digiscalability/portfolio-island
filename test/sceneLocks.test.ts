@@ -565,6 +565,92 @@ describe('the light rig follows the camera and the sun (P2-B5)', () => {
   });
 });
 
+describe('every prop of the scene shares the toon look (B15)', () => {
+  /** Each `new THREE.<type>(...)` call in a file, to its closing bracket. */
+  const calls = (file: string, type: string): string[] => {
+    const s = stripped(file);
+    const out: string[] = [];
+    const head = `new THREE.${type}(`;
+    for (let at = s.indexOf(head); at > -1; at = s.indexOf(head, at + 1)) {
+      let depth = 0;
+      for (let i = at + head.length - 1; i < s.length; i++) {
+        if (s[i] === '(') depth++;
+        else if (s[i] === ')' && --depth === 0) {
+          out.push(s.slice(at, i + 1));
+          break;
+        }
+      }
+    }
+    return out;
+  };
+
+  test('no toon material is built without the shared ramp', () => {
+    // MEASURED on main: 28 ramp-less MeshToon materials (the fish shop, the
+    // bakery, the play structures, butterflies, coins, the rod), on three's
+    // built-in two-band shading beside the three-band ramp everywhere else.
+    for (const file of ['GameScene.ts', 'SimplePlayer.ts', 'RaceSystem.ts']) {
+      const bare = calls(file, 'MeshToonMaterial').filter((c) => !c.includes('gradientMap'));
+      expect(bare, file).toEqual([]);
+    }
+  });
+
+  test('a standard prop converts through the island’s converter, for free', () => {
+    const celMat = (
+      GameScene as unknown as { celMat(m: THREE.MeshStandardMaterial): THREE.Material }
+    ).celMat;
+    const std = new THREE.MeshStandardMaterial({
+      color: 0xffe6a8,
+      emissive: 0xffc966,
+      emissiveIntensity: 0.35,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+    });
+    // Inside the seeded window the stream must pay what it always paid: the
+    // one standard material above. The toon's uuid comes from elsewhere.
+    const spy = vi.spyOn(Math, 'random');
+    spy.mockClear();
+    const toon = celMat(std) as THREE.MeshToonMaterial;
+    const drawn = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(drawn).toBe(0);
+    expect(toon.isMeshToonMaterial).toBe(true);
+    expect(toon.gradientMap).toBeTruthy();
+    expect([toon.color.getHex(), toon.emissive.getHex(), toon.emissiveIntensity]).toEqual([
+      0xffe6a8, 0xffc966, 0.35,
+    ]);
+    expect([toon.polygonOffset, toon.polygonOffsetFactor]).toEqual([true, -4]);
+  });
+
+  test('the lit, opaque standard materials left in the scene are the rooms’ (P2-B10)', () => {
+    const g = stripped('GameScene.ts');
+    // The road paint, the cruise ship's and the beach house's window glow.
+    expect(bodyOf(g, 'private createRoadMarkings()')).toContain('GameScene.celMat(');
+    expect(bodyOf(g, 'private setupCruise()')).toContain('GameScene.celMat(');
+    expect(bodyOf(g, 'private setupIsletBeachHouse()')).toContain('GameScene.celMat(');
+    // The rock.glb clones, after their load.
+    expect(g).toContain('if (!isRealTheme()) Materials.toonifyTree(inst);');
+    // The race gates' posts; the rings stay transparent standard.
+    const race = stripped('RaceSystem.ts');
+    expect(race).toContain('isRealTheme() ? postStd : Materials.toonify(postStd)');
+    // The player's dress and the hats (behaviour: limbLayers).
+    const p = stripped('SimplePlayer.ts');
+    expect(bodyOf(p, 'private async loadGLTFCharacter()')).toContain(
+      'if (isCelTheme()) Materials.toonifyTree(this.gltfModel);',
+    );
+    expect(bodyOf(p, 'public static buildHat(')).toContain(
+      'if (isCelTheme()) Materials.toonifyTree(g);',
+    );
+  });
+
+  test('the island’s own pass delegates to the same converter', () => {
+    const g = stripped('GameScene.ts');
+    const shielded = bodyOf(g, 'private toonifyIslandMaterialsShielded()');
+    expect(shielded).toContain('Materials.toonifyTree(this.island.mesh)');
+    expect(shielded).not.toContain('new THREE.MeshToonMaterial');
+    // (That it converts, spares glass and draws nothing: 'toonify RNG shield'.)
+  });
+});
+
 describe('the close-camera fade is driven from the visual group (B11)', () => {
   test('the camera-to-torso distance comes from player.position, outdoors and in a room', () => {
     const fed: Array<[number, number]> = [];

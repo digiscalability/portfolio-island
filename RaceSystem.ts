@@ -2,6 +2,8 @@ import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
 import type { Island } from './Island';
+import { Materials } from './Materials';
+import { isRealTheme } from './Theme';
 import { WORLD_ERA } from './WorldScale';
 
 /**
@@ -230,7 +232,11 @@ export class RaceSystem {
       const ring = new THREE.Mesh(ringGeo, mat);
       g.add(ring);
       // A slim post so the ring reads as a gate on the ground/water
-      const postMat = new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.7 });
+      // The island's look (B15): toon on the shared ramp. The conversion draws
+      // from Materials.toonify's own generator, so the seeded stream still
+      // pays for one standard material per gate, as before.
+      const postStd = new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.7 });
+      const postMat = isRealTheme() ? postStd : Materials.toonify(postStd);
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, RING_RADIUS, 6), postMat);
       post.position.y = -RING_RADIUS * 0.5;
       g.add(post);

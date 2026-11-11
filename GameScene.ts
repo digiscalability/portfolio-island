@@ -1367,13 +1367,15 @@ export class GameScene extends THREE.Scene {
     const BARS = 7;
     const mesh = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(1, 1),
-      new THREE.MeshStandardMaterial({
-        color: 0xe8e2d2,
-        roughness: 0.9,
-        polygonOffset: true,
-        polygonOffsetFactor: -4,
-        polygonOffsetUnits: -4,
-      }),
+      GameScene.celMat(
+        new THREE.MeshStandardMaterial({
+          color: 0xe8e2d2,
+          roughness: 0.9,
+          polygonOffset: true,
+          polygonOffsetFactor: -4,
+          polygonOffsetUnits: -4,
+        }),
+      ),
       RING_DISTRICT_LONS.length * BARS,
     );
     mesh.name = 'road_markings_instanced';
@@ -3251,6 +3253,17 @@ export class GameScene extends THREE.Scene {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
     return geo;
+  }
+
+  /**
+   * A prop's standard material in the island's look (B15): toon on the shared
+   * ramp under the cel theme, as authored under ?theme=real. The conversion
+   * draws its uuid from Materials.toonify's own generator, so a prop built
+   * inside the seeded window costs the stream what it always cost: the one
+   * standard material.
+   */
+  private static celMat(mat: THREE.MeshStandardMaterial): THREE.Material {
+    return isRealTheme() ? mat : Materials.toonify(mat);
   }
 
   private static birdMatCache = new Map<number, THREE.MeshToonMaterial>();
@@ -5753,10 +5766,18 @@ export class GameScene extends THREE.Scene {
    * the group + local counter slot positions where sold fish are laid out. */
   private buildFishShop(): { group: THREE.Group; slots: THREE.Vector3[] } {
     const g = new THREE.Group();
-    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f });
-    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
-    const stripe = new THREE.MeshToonMaterial({ color: 0x2f7fae, side: THREE.DoubleSide });
-    const stripe2 = new THREE.MeshToonMaterial({ color: 0xf2f2f2, side: THREE.DoubleSide });
+    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f, gradientMap: Materials.toonRamp() });
+    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22, gradientMap: Materials.toonRamp() });
+    const stripe = new THREE.MeshToonMaterial({
+      color: 0x2f7fae,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
+    const stripe2 = new THREE.MeshToonMaterial({
+      color: 0xf2f2f2,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
     // Counter (front toward the beach = −Z), on legs
     const counter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.14, 0.95), wood);
     counter.position.set(0, 0.92, -0.95);
@@ -5788,7 +5809,7 @@ export class GameScene extends THREE.Scene {
     // Ice crate on the counter
     const crate = new THREE.Mesh(
       new THREE.BoxGeometry(0.95, 0.22, 0.66),
-      new THREE.MeshToonMaterial({ color: 0xd4eaf4 }),
+      new THREE.MeshToonMaterial({ color: 0xd4eaf4, gradientMap: Materials.toonRamp() }),
     );
     crate.position.set(-0.72, 1.1, -0.95);
     g.add(crate);
@@ -5923,7 +5944,7 @@ export class GameScene extends THREE.Scene {
     const rig = new THREE.Group();
     const rod = new THREE.Mesh(
       new THREE.CylinderGeometry(0.018, 0.03, 1.4, 6),
-      new THREE.MeshToonMaterial({ color: 0x6b4a2a }),
+      new THREE.MeshToonMaterial({ color: 0x6b4a2a, gradientMap: Materials.toonRamp() }),
     );
     rod.castShadow = true;
     rig.add(rod);
@@ -5936,7 +5957,11 @@ export class GameScene extends THREE.Scene {
     rig.add(line);
     const bobber = new THREE.Mesh(
       new THREE.SphereGeometry(0.07, 8, 6),
-      new THREE.MeshToonMaterial({ color: 0xdd3b3b, emissive: 0x551111 }),
+      new THREE.MeshToonMaterial({
+        color: 0xdd3b3b,
+        emissive: 0x551111,
+        gradientMap: Materials.toonRamp(),
+      }),
     );
     rig.add(bobber);
     this.add(rig);
@@ -6952,7 +6977,7 @@ export class GameScene extends THREE.Scene {
     const seat = this.plotSample(`b${plot}`, site[0], site[1]);
     if (!seat) return;
     const g = new THREE.Group();
-    const wood = new THREE.MeshToonMaterial({ color: 0x9a7648 });
+    const wood = new THREE.MeshToonMaterial({ color: 0x9a7648, gradientMap: Materials.toonRamp() });
     const plank = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.09, 0.45), wood);
     plank.position.y = 0.42;
     const back = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 0.07), wood);
@@ -7630,8 +7655,14 @@ export class GameScene extends THREE.Scene {
     const base = new THREE.Group();
     base.position.copy(seat.position);
     base.quaternion.setFromUnitVectors(GameScene.AXIS_Y, seat.normal);
-    const steel = new THREE.MeshToonMaterial({ color: 0x8a93a6 });
-    const bright = new THREE.MeshToonMaterial({ color: 0xd4574a });
+    const steel = new THREE.MeshToonMaterial({
+      color: 0x8a93a6,
+      gradientMap: Materials.toonRamp(),
+    });
+    const bright = new THREE.MeshToonMaterial({
+      color: 0xd4574a,
+      gradientMap: Materials.toonRamp(),
+    });
     // Merry-go-round: disc + 4 spokes, one rotating group.
     const spin = new THREE.Group();
     const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.08, 12), bright);
@@ -8011,14 +8042,14 @@ export class GameScene extends THREE.Scene {
     const g = new THREE.Group();
     const tin = new THREE.Mesh(
       new THREE.CylinderGeometry(0.16, 0.14, 0.06, 12),
-      new THREE.MeshToonMaterial({ color: 0x8a5a2f }),
+      new THREE.MeshToonMaterial({ color: 0x8a5a2f, gradientMap: Materials.toonRamp() }),
     );
     tin.position.y = 0.03;
     tin.castShadow = true;
     g.add(tin);
     const crust = new THREE.Mesh(
       new THREE.SphereGeometry(0.15, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2),
-      new THREE.MeshToonMaterial({ color: 0xe2b566 }),
+      new THREE.MeshToonMaterial({ color: 0xe2b566, gradientMap: Materials.toonRamp() }),
     );
     crust.scale.y = 0.55;
     crust.position.y = 0.06;
@@ -8027,7 +8058,7 @@ export class GameScene extends THREE.Scene {
     if (fishTopped) {
       const fish = new THREE.Mesh(
         new THREE.OctahedronGeometry(0.07),
-        new THREE.MeshToonMaterial({ color: 0xff7a33 }),
+        new THREE.MeshToonMaterial({ color: 0xff7a33, gradientMap: Materials.toonRamp() }),
       );
       fish.scale.set(0.5, 0.45, 1.4);
       fish.position.set(0, 0.14, 0);
@@ -8046,9 +8077,12 @@ export class GameScene extends THREE.Scene {
     ovenGlow: THREE.Mesh;
   } {
     const g = new THREE.Group();
-    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f });
-    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
-    const brick = new THREE.MeshToonMaterial({ color: 0x9a5140 });
+    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f, gradientMap: Materials.toonRamp() });
+    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22, gradientMap: Materials.toonRamp() });
+    const brick = new THREE.MeshToonMaterial({
+      color: 0x9a5140,
+      gradientMap: Materials.toonRamp(),
+    });
     const box = (
       w: number,
       h: number,
@@ -8075,8 +8109,16 @@ export class GameScene extends THREE.Scene {
       post.castShadow = true;
       g.add(post);
     }
-    const awnA = new THREE.MeshToonMaterial({ color: 0xd9843a, side: THREE.DoubleSide });
-    const awnB = new THREE.MeshToonMaterial({ color: 0xf2e0c0, side: THREE.DoubleSide });
+    const awnA = new THREE.MeshToonMaterial({
+      color: 0xd9843a,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
+    const awnB = new THREE.MeshToonMaterial({
+      color: 0xf2e0c0,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
     for (let i = 0; i < 5; i++) {
       const panel = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.05, 1.7), i % 2 ? awnB : awnA);
       panel.position.set(-1.04 + i * 0.52, 1.77, -0.55);
@@ -8092,7 +8134,15 @@ export class GameScene extends THREE.Scene {
     dome.position.set(1.75, 1.0, 0.35);
     dome.castShadow = true;
     g.add(dome);
-    box(0.55, 0.55, 0.12, new THREE.MeshToonMaterial({ color: 0x160b04 }), 1.75, 0.5, -0.22);
+    box(
+      0.55,
+      0.55,
+      0.12,
+      new THREE.MeshToonMaterial({ color: 0x160b04, gradientMap: Materials.toonRamp() }),
+      1.75,
+      0.5,
+      -0.22,
+    );
     const ovenGlow = new THREE.Mesh(
       new THREE.PlaneGeometry(0.5, 0.5),
       new THREE.MeshBasicMaterial({
@@ -8295,11 +8345,13 @@ export class GameScene extends THREE.Scene {
     const navy = GameScene.birdMat(0x24384c);
     const deckMat = GameScene.birdMat(0xd9dee4);
     const funnelMat = GameScene.birdMat(0xd94a3a);
-    const glowMat = new THREE.MeshStandardMaterial({
-      color: 0xffe6a8,
-      emissive: 0xffc966,
-      emissiveIntensity: 0.35,
-    });
+    const glowMat = GameScene.celMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xffe6a8,
+        emissive: 0xffc966,
+        emissiveIntensity: 0.35,
+      }),
+    );
     glowMat.userData.isNightEmissive = true; // EnvironmentCycle ramps it at dusk
     const ship = new THREE.Group();
     // Lower hull (navy) + main hull (white); bow tapers toward -Z.
@@ -8384,11 +8436,13 @@ export class GameScene extends THREE.Scene {
     const trim = GameScene.birdMat(0x8a6a42);
     const roofMat = GameScene.birdMat(0x4a8ea6);
     const stone = GameScene.birdMat(0x7a7168);
-    const glow = new THREE.MeshStandardMaterial({
-      color: 0xffe6a8,
-      emissive: 0xffc966,
-      emissiveIntensity: 0.4,
-    });
+    const glow = GameScene.celMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xffe6a8,
+        emissive: 0xffc966,
+        emissiveIntensity: 0.4,
+      }),
+    );
     glow.userData.isNightEmissive = true;
 
     const house = new THREE.Group();
@@ -8538,7 +8592,7 @@ export class GameScene extends THREE.Scene {
     const dough = new THREE.Group();
     const ball = new THREE.Mesh(
       new THREE.SphereGeometry(0.14, 10, 8),
-      new THREE.MeshToonMaterial({ color: 0xf0e2c0 }),
+      new THREE.MeshToonMaterial({ color: 0xf0e2c0, gradientMap: Materials.toonRamp() }),
     );
     ball.scale.y = 0.65;
     ball.castShadow = true;
@@ -8899,13 +8953,17 @@ export class GameScene extends THREE.Scene {
    */
   private createButterflies(): void {
     const WING_COLORS = [0xffa04a, 0xf5f5ff, 0xc48ae0, 0xffd34a, 0x7ab8ff];
-    const bodyMat = new THREE.MeshToonMaterial({ color: 0x33302a });
+    const bodyMat = new THREE.MeshToonMaterial({
+      color: 0x33302a,
+      gradientMap: Materials.toonRamp(),
+    });
     for (let i = 0; i < this.island.flowerSites.length; i++) {
       const site = this.island.flowerSites[i];
       const group = new THREE.Group();
       const wingMat = new THREE.MeshToonMaterial({
         color: WING_COLORS[i % WING_COLORS.length],
         side: THREE.DoubleSide,
+        gradientMap: Materials.toonRamp(),
       });
       const wingGeo = new THREE.PlaneGeometry(0.09, 0.07);
       wingGeo.translate(0.045, 0, 0); // hinge at the body
@@ -9785,7 +9843,7 @@ export class GameScene extends THREE.Scene {
       /* counter starts at 0 */
     }
     const geo = new THREE.CylinderGeometry(0.16, 0.16, 0.045, 12);
-    const mat = new THREE.MeshToonMaterial({ color: 0xffd34a });
+    const mat = new THREE.MeshToonMaterial({ color: 0xffd34a, gradientMap: Materials.toonRamp() });
     mat.emissive = new THREE.Color(0x554411);
     const golden = Math.PI * (3 - Math.sqrt(5));
     const dir = new THREE.Vector3();
@@ -10676,43 +10734,19 @@ export class GameScene extends THREE.Scene {
     }
   }
 
+  /**
+   * The island's opaque standard materials become toon, through the one
+   * converter every prop uses (Materials.toonify, C3; B15): the shared ramp,
+   * the source's colour, map, emissive and vertex colours, its shader
+   * injections (the terrain's wet-sand band keeps its program), and every
+   * base Material flag. The loop this replaces carried only the first five,
+   * so a double-sided awning or a polygon-offset decal lost that on the way.
+   * Transparent materials (sea, glass, glows) stay as authored, and a
+   * material shared by many meshes converts once.
+   */
   private toonifyIslandMaterialsShielded(): void {
-    const gradientMap = Materials.toonRamp(); // shared: island bands like the props
-    const cache = new Map<string, THREE.MeshToonMaterial>();
-    const convert = (mat: THREE.Material): THREE.Material => {
-      if (!(mat instanceof THREE.MeshStandardMaterial)) return mat;
-      if (mat.transparent) return mat;
-      const cached = cache.get(mat.uuid);
-      if (cached) return cached;
-      const toon = new THREE.MeshToonMaterial({
-        color: mat.color.clone(),
-        emissive: mat.emissive.clone(),
-        emissiveIntensity: mat.emissiveIntensity,
-        map: mat.map,
-        vertexColors: mat.vertexColors,
-        gradientMap,
-      });
-      // Carry custom onBeforeCompile injections through the swap (currently
-      // just the terrain material's wet-sand band). The chunks they target
-      // (<common>, <begin_vertex>, <color_fragment>) exist in the toon shaders
-      // too, and Material.onBeforeCompile defaults to a no-op, so copying it
-      // is free for every uncustomised material — and the default
-      // customProgramCacheKey (onBeforeCompile.toString()) keeps the terrain
-      // toon clone on its own shader program without splitting the others.
-      toon.onBeforeCompile = mat.onBeforeCompile;
-      cache.set(mat.uuid, toon);
-      return toon;
-    };
-    this.island.mesh.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      if (Array.isArray(mesh.material)) {
-        mesh.material = mesh.material.map(convert);
-      } else if (mesh.material) {
-        mesh.material = convert(mesh.material);
-      }
-    });
-    console.log('🎨 Toonified island materials:', cache.size, 'unique materials converted');
+    const swapped = Materials.toonifyTree(this.island.mesh);
+    console.log('🎨 Toonified island materials:', swapped, 'material slots converted');
   }
 
   private createSkyDome(): void {
@@ -10996,6 +11030,9 @@ export class GameScene extends THREE.Scene {
         const inst = rock.scene.clone(true);
         placeOnSphere(inst, i * GOLDEN + 1.0, 0.3 + Math.random() * 0.8); // above-shore band (was -0.8..0.8: half sat underwater)
         inst.scale.multiplyScalar(0.6 + Math.random() * 0.6);
+        // The island's look for the GLB's stone too (one conversion: the
+        // clones share its material). B15.
+        if (!isRealTheme()) Materials.toonifyTree(inst);
         enableShadows(inst);
         this.add(inst);
         rockCount++;
@@ -11374,7 +11411,10 @@ export class GameScene extends THREE.Scene {
           tr.group.visible = false;
           if (!tr.stump) {
             GameScene._stumpGeo ??= new THREE.CylinderGeometry(0.22, 0.3, 0.42, 8);
-            const mat = new THREE.MeshToonMaterial({ color: 0x6b4a2a });
+            const mat = new THREE.MeshToonMaterial({
+              color: 0x6b4a2a,
+              gradientMap: Materials.toonRamp(),
+            });
             tr.stump = new THREE.Mesh(GameScene._stumpGeo, mat);
             tr.stump.castShadow = false;
             this.add(tr.stump);

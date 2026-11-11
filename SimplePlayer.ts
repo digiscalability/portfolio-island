@@ -878,20 +878,21 @@ export class SimplePlayer extends THREE.Group {
     // SkeletonUtils.clone SHARES materials with the base (and every other peer),
     // so per-peer body-colour sync needs independent material instances. Clone
     // them once here (geometry stays shared — cheap) and track for disposal.
+    // Each clone also takes the island's toon look, as the local player's
+    // dress does (B15): a peer wears what they see themselves wearing.
     const clonedMats: THREE.Material[] = [];
+    const own = (x: THREE.Material): THREE.Material => {
+      const c = SimplePlayer.celDress(x.clone());
+      clonedMats.push(c);
+      return c;
+    };
     model.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh && !(m as THREE.SkinnedMesh).isSkinnedMesh) return;
       if (Array.isArray(m.material)) {
-        m.material = m.material.map((x) => {
-          const c = x.clone();
-          clonedMats.push(c);
-          return c;
-        });
+        m.material = m.material.map(own);
       } else if (m.material) {
-        const c = (m.material as THREE.Material).clone();
-        clonedMats.push(c);
-        m.material = c;
+        m.material = own(m.material as THREE.Material);
       }
     });
     const body = new THREE.Group();
@@ -1136,6 +1137,19 @@ export class SimplePlayer extends THREE.Group {
     return { body, headBone, update, setPose, setSwimMotion, wave, dispose };
   }
 
+  /**
+   * A dress material in the island's look (B15): an opaque standard material
+   * becomes toon on the shared ramp under the cel theme (Materials.toonify:
+   * its uuid comes from the converter's own generator, never the world's
+   * seeded stream). Anything else, and everything under ?theme=real, is
+   * returned as it came.
+   */
+  private static celDress(mat: THREE.Material): THREE.Material {
+    const std = mat as THREE.MeshStandardMaterial;
+    if (!isCelTheme() || !std.isMeshStandardMaterial || std.transparent) return mat;
+    return Materials.toonify(std);
+  }
+
   /** Procedural toon hats sold in the island shop (also used by remote avatars). */
   public static buildHat(id: HatId): THREE.Group {
     const g = new THREE.Group();
@@ -1320,6 +1334,9 @@ export class SimplePlayer extends THREE.Group {
     g.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
+    // The crown's gold, the star and the halo are authored standard: toon, on
+    // the shared ramp, like the hats built toon above (B15).
+    if (isCelTheme()) Materials.toonifyTree(g);
     return g;
   }
 
@@ -2025,6 +2042,11 @@ export class SimplePlayer extends THREE.Group {
         // Add the GLTF model
         this.gltfModel = gltfResult.scene;
         this.add(this.gltfModel);
+        // The dress in the island's look (B15): player.glb's standard
+        // materials become toon on the shared ramp, before the rim and the
+        // close-camera fade pick them up by name. Names, colours and shader
+        // hooks carry over, so setBodyColor still finds every part.
+        if (isCelTheme()) Materials.toonifyTree(this.gltfModel);
 
         // Self-calibrate: place the model's feet at local -playerHeight (0.7)
         // regardless of where the exporter put the mesh origin.

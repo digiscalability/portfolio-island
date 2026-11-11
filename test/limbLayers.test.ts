@@ -212,6 +212,86 @@ describe('post-mixer limb poses compose onto the clip (MOT-01)', () => {
   });
 });
 
+// The dress in the island's look (B15), on the shipped player.glb.
+describe('the avatar wears the island’s toon look (B15)', () => {
+  const dressOf = (root: THREE.Object3D): THREE.Material[] => {
+    const mats: THREE.Material[] = [];
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !m.material) return;
+      for (const x of Array.isArray(m.material) ? m.material : [m.material]) {
+        if (!mats.includes(x)) mats.push(x);
+      }
+    });
+    return mats;
+  };
+  const PARTS = ['Blush', 'Eye', 'EyeShine', 'Hair', 'Jacket', 'Outline', 'Pants', 'Shoe', 'Skin'];
+
+  test(
+    'the local dress: toon on the shared ramp, names and colours kept',
+    { timeout: 30000 },
+    async () => {
+      // MEASURED on main: the nine dress materials were the only lit, opaque
+      // MeshStandard on a character, shaded smooth among banded villagers.
+      const { player, model } = await standingPlayer();
+      const mats = dressOf(model);
+      expect(mats.map((m) => m.name).sort()).toEqual(PARTS);
+      // The one ramp every toon prop shares: a hat built toon carries it.
+      const ramp = (dressOf(SimplePlayer.buildHat('party'))[0] as THREE.MeshToonMaterial)
+        .gradientMap;
+      expect(ramp).toBeTruthy();
+      for (const m of mats) {
+        const toon = m as THREE.MeshToonMaterial;
+        expect(toon.isMeshToonMaterial, m.name).toBe(true);
+        expect(toon.gradientMap, m.name).toBe(ramp);
+      }
+      // The customiser still finds a part by its material's name.
+      player.setBodyColor('outfit', 0x3366cc);
+      const jacket = mats.find((m) => m.name === 'Jacket') as THREE.MeshToonMaterial;
+      expect(jacket.color.getHex()).toBe(0x3366cc);
+    },
+  );
+
+  test('a peer’s dress and the standard hats take it too', { timeout: 30000 }, async () => {
+    const peer = await SimplePlayer.createRemoteAvatar();
+    expect(peer, 'createRemoteAvatar').not.toBeNull();
+    if (!peer) return;
+    const mats = dressOf(peer.body);
+    expect(mats.map((m) => m.name).sort()).toEqual(PARTS);
+    for (const m of mats)
+      expect((m as THREE.MeshToonMaterial).isMeshToonMaterial, m.name).toBe(true);
+    // Each peer owns its materials (their colours sync per peer).
+    const other = await SimplePlayer.createRemoteAvatar();
+    if (other) {
+      for (const m of dressOf(other.body)) expect(mats).not.toContain(m);
+      other.dispose();
+    }
+    peer.dispose();
+    // Every hat, the gold crown and the glowing halo included.
+    const ramp = (dressOf(SimplePlayer.buildHat('party'))[0] as THREE.MeshToonMaterial).gradientMap;
+    const hats = [
+      'party',
+      'top',
+      'crown',
+      'cap',
+      'flower',
+      'wizard',
+      'halo',
+      'pirate',
+      'chef',
+      'headphones',
+    ] as const;
+    for (const id of hats) {
+      for (const m of dressOf(SimplePlayer.buildHat(id))) {
+        const toon = m as THREE.MeshToonMaterial;
+        if (m.transparent) continue; // glass and glows stay as authored
+        expect(toon.isMeshToonMaterial, id).toBe(true);
+        expect(toon.gradientMap, id).toBe(ramp);
+      }
+    }
+  });
+});
+
 // The close-camera fade (B11), on the shipped player.glb.
 describe('the avatar fades when the camera comes close (B11)', () => {
   interface Fade {
