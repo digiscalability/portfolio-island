@@ -26,12 +26,30 @@ import { EVENT_META } from './WorldState';
 import type { NoticeState, NpcPlan } from './WorldState';
 
 /**
+ * Haptics on? The settings sheet's switch (ds_haptics: '1' on, '0' off)
+ * decides (D8, HAPTIC-01). Until the visitor has chosen, it follows the gate
+ * it replaces: off under reduced motion, on otherwise. A buzz is not motion,
+ * so a reduced-motion visitor can now turn it on, and anyone can turn it off.
+ */
+export function hapticsEnabled(): boolean {
+  try {
+    const v = localStorage.getItem('ds_haptics');
+    if (v === '1') return true;
+    if (v === '0') return false;
+  } catch {
+    /* storage blocked: the default */
+  }
+  return !a11y.reducedMotion;
+}
+
+/**
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
- * harmless no-op). Gated OFF under reduced motion. Exported so game events
- * elsewhere (landings, race checkpoints, coins) can adopt it too.
+ * harmless no-op). Off when the Haptics setting is (see hapticsEnabled).
+ * Exported so game events elsewhere (landings, race checkpoints, coins) can
+ * adopt it too.
  */
 export function hapticPulse(ms: number): void {
-  if (a11y.reducedMotion) return;
+  if (!hapticsEnabled()) return;
   try {
     navigator.vibrate?.(ms);
   } catch {
@@ -351,9 +369,12 @@ export class SimpleUI {
     this.createSayHiButton();
     this.createCompletionButton();
     this.createInventoryButton();
+    this.createControlsRow();
     this.createEmoteButton();
     this.createTouchControls();
     this.initResponsiveHud();
+    // ? or H: the Controls & settings sheet (D8).
+    window.addEventListener('keydown', this.onControlsKey);
   }
 
   /**
@@ -2124,13 +2145,26 @@ export class SimpleUI {
       /** The dialog's name when its title is not a heading (axe
        *  aria-dialog-name: the coin history, the bank, the build modals). */
       label?: string;
+      /** Runs once when the modal closes by the manager (Escape, the scrim,
+       *  Back, a sweep), its × or closeCenteredModal. */
+      onClose?: () => void;
     } = {},
   ): HTMLElement {
     const modal = document.createElement('div');
+    let closed = false;
+    const closedOnce = (): void => {
+      if (closed) return;
+      closed = true;
+      opts.onClose?.();
+    };
+    this.modalClosed.set(modal, closedOnce);
     this.panels.open(id, {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
-      close: () => modal.remove(),
+      close: () => {
+        modal.remove();
+        closedOnce();
+      },
       el: modal, // a removed modal pops even if its close path never notifies
       allow: opts.allow,
       label: opts.label,
@@ -2183,10 +2217,7 @@ export class SimpleUI {
       justifyContent: 'center',
       padding: '0',
     });
-    close.addEventListener('click', () => {
-      modal.remove();
-      this.panels.notifyClosed(id);
-    });
+    close.addEventListener('click', () => this.closeCenteredModal(modal, id));
     modal.appendChild(close);
     // Short landscape: a scroll cue on a modal taller than the screen (D5).
     // A frame later, once its caller has filled and appended it.
@@ -2196,6 +2227,16 @@ export class SimpleUI {
       });
     }
     return modal;
+  }
+
+  /** Each centred modal's close hook (buildCenteredModal's onClose). */
+  private readonly modalClosed = new WeakMap<HTMLElement, () => void>();
+
+  /** Close a centred modal from one of its own controls: what its × does. */
+  private closeCenteredModal(modal: HTMLElement, id: string): void {
+    modal.remove();
+    this.panels.notifyClosed(id);
+    this.modalClosed.get(modal)?.();
   }
 
   /**
@@ -4528,6 +4569,7 @@ export class SimpleUI {
           <button data-board="guestbook" style="${tile}">✍️ Guestbook</button>
           <button data-board="times" style="${tile}">📰 Island Times</button>
         </div>
+        <button data-controls style="${tile}display:block;width:100%;margin-top:8px;">⌨️ Controls &amp; settings</button>
       </div>`;
 
     // close button: named, and the 44px box every other × has (it measured
@@ -4568,6 +4610,10 @@ export class SimpleUI {
       this.togglePortfolioMenu();
       this.showInventory();
     });
+    menu.querySelector('button[data-controls]')?.addEventListener('click', () => {
+      this.togglePortfolioMenu();
+      this.showControls('menu');
+    });
     menu.querySelector('button[data-journal]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
       this.showJournal();
@@ -4584,6 +4630,404 @@ export class SimpleUI {
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);
     if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgba(12, 12, 20, 0.95)');
+  }
+
+  // ── Controls & settings (D8) ───────────────────────────────────────────
+  // One reference for every control, a "Things to do" list that points the
+  // compass, and the settings the input layer reads. Opened by ? or H, the
+  // Portfolio menu, the phone drawer and a strip on both welcome cards.
+
+  /** The keyboard rows. `run` and `zoom` depend on html[data-run-key] (A11
+   *  ships the Shift run and the wheel zoom together, in wave 3). */
+  private controlsKeyboardRows(): Array<[string, string]> {
+    const runKey = document.documentElement.getAttribute('data-run-key');
+    const rows: Array<[string, string]> = [
+      ['Move', '<kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or the arrow keys'],
+      [
+        'Look',
+        'drag with the mouse · <kbd>J</kbd> <kbd>L</kbd> turn · <kbd>I</kbd> <kbd>K</kbd> tilt · <kbd>R</kbd> recentre',
+      ],
+    ];
+    if (runKey) rows.push(['Zoom', 'mouse wheel, or <kbd>=</kbd> and <kbd>−</kbd>']);
+    rows.push(
+      [
+        'Run',
+        runKey === 'shift'
+          ? 'hold <kbd>Shift</kbd> while moving'
+          : 'hold <kbd>Space</kbd> while moving',
+      ],
+      ['Jump', '<kbd>Space</kbd> (hold in water to stay afloat)'],
+      ['Dive', 'hold <kbd>Shift</kbd> in water'],
+      ['Use', '<kbd>E</kbd> — talk, enter, sit, whatever the prompt says'],
+      ['Wave', '<kbd>Q</kbd>'],
+      ['Map', '<kbd>M</kbd>'],
+      ['Feed', '<kbd>F</kbd>, with feed from the shop'],
+      ['Eat', '<kbd>G</kbd>, with a cooked meal'],
+      ['Chat', '<kbd>Enter</kbd>'],
+      ['Talk aloud', 'hold <kbd>V</kbd>'],
+      ['Photo', '<kbd>P</kbd>'],
+      ['Appearance', '<kbd>C</kbd>'],
+      ['Close', '<kbd>Esc</kbd>'],
+      ['This sheet', '<kbd>?</kbd> or <kbd>H</kbd>'],
+    );
+    return rows;
+  }
+
+  private static readonly CONTROLS_TOUCH_ROWS: ReadonlyArray<[string, string]> = [
+    ['Move', 'drag the joystick, bottom left'],
+    ['Look', 'swipe anywhere on the world'],
+    ['Use', '👆 USE — talk, enter, sit, whatever the prompt says'],
+    ['Jump', '⤒ JUMP (hold in water to stay afloat)'],
+    ['Wave', '👋 WAVE'],
+    ['Dive', '🤿 DIVE, shown while you swim'],
+    ['Feed', '🌾 FEED, shown once you carry feed'],
+    ['Eat', '🍽️ EAT, shown once you carry a meal'],
+    ['Chat', '💬 above the joystick'],
+    ['Talk aloud', 'hold 🎤'],
+    ['Map', 'tap the compass pill or the minimap'],
+    ['Menu', '☰ — Work with me, Portfolio, photo, sound and this sheet'],
+  ];
+
+  /** One line per system; `key` is a 'ds:guide-to' key the compass can take. */
+  private thingsToDo(): Array<{ icon: string; title: string; how: string; key?: string }> {
+    const pp = this.passport;
+    const nextStamp = pp ? PASSPORT_ZONES.find((z) => !pp.has(z)) : PASSPORT_ZONES[0];
+    // The action in the visitor's own scheme: a key, or the touch button.
+    const use = this.isTouch ? 'tap 👆 USE' : 'press E';
+    const feed = this.isTouch ? 'tap 🌾 FEED' : 'press F';
+    const eat = this.isTouch ? 'tap 🍽️ EAT' : 'press G';
+    const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+    return [
+      {
+        icon: '🎣',
+        title: 'Fishing',
+        how: `Buy a rod at the shop, stand at a shore and ${use} to cast. The Fisherman buys the catch.`,
+        key: 'shore',
+      },
+      {
+        icon: '🪓',
+        title: 'Chopping',
+        how: 'An axe from the shop fells trees. Sell the timber to the Carpenter, or build with it.',
+        key: 'carpenter',
+      },
+      {
+        icon: '🐦',
+        title: 'Feeding birds',
+        how: `Feed from the shop calls nearby birds, cats or fish: ${feed}.`,
+      },
+      {
+        icon: '🍽️',
+        title: 'Eating',
+        how: `A cooked meal refills your stamina: ${eat}.`,
+      },
+      {
+        icon: '🔨',
+        title: 'Building',
+        how: `Hammer stakes mark free plots. Bring timber and coins, and ${use} at a stake.`,
+        key: 'stake:nearest',
+      },
+      {
+        icon: '🏁',
+        title: 'Races',
+        how: 'Board a vehicle and cross a start line. Your best lap goes on the Leaderboard.',
+        key: 'race:land',
+      },
+      {
+        icon: '📦',
+        title: 'Deliveries',
+        how: `A glowing mailbox holds a delivery. ${cap(use)} to collect it, and the next one lights up.`,
+        key: 'mailbox:next',
+      },
+      {
+        icon: '🏫',
+        title: 'The School’s lessons',
+        how: 'Each lesson at the School teaches one of the island’s trades, and pays a few coins.',
+        key: 'school',
+      },
+      {
+        icon: '🛒',
+        title: 'The shop',
+        how: 'Tools, hats, feed and food, for the coins you find and earn.',
+        key: 'kiosk',
+      },
+      {
+        icon: '🛂',
+        title: 'Passport stamps',
+        how: 'Walk into each district’s hall to stamp your passport. A full passport earns a crown.',
+        ...(nextStamp ? { key: `district:${nextStamp}` } : {}),
+      },
+    ];
+  }
+
+  /** Write a setting and tell the input layer (SimpleInputManager re-reads
+   *  its three look keys on 'ds:settings'). */
+  private writeSetting(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      /* storage blocked: the setting holds for nothing, and says nothing */
+    }
+    try {
+      window.dispatchEvent(new CustomEvent('ds:settings', { detail: { key } }));
+    } catch {
+      /* no CustomEvent: nothing listens either */
+    }
+  }
+
+  /**
+   * The Controls & settings sheet. `source` says where it was opened from
+   * (controls_opened); `tab` opens it on a tab other than Controls.
+   *
+   * Opened from the welcome card (its strip, or ? while it is up), the card
+   * steps aside unread and comes back when the sheet closes: it is parked,
+   * not dismissed, so ds_welcomed is not burned and isWelcomeVisible() stays
+   * true for main-simple (the world takes no input, and First steps waits
+   * for the card's own Explore).
+   */
+  public showControls(
+    source: 'key' | 'menu' | 'drawer' | 'welcome' = 'menu',
+    tab: 'controls' | 'todo' | 'settings' = 'controls',
+  ): void {
+    if (this.welcomeDiv) {
+      this.welcomeParked = true;
+      this.hideWelcome(false); // not a dismissal: the sheet's close re-shows it
+    }
+    const modal = this.buildCenteredModal('min(560px, calc(100vw - 32px))', 'controls', {
+      // A task later: the manager is still closing the sheet when this runs.
+      onClose: () => queueMicrotask(() => this.unparkWelcome()),
+    });
+    modal.classList.add('ds-controls');
+    track('controls_opened', { source });
+
+    const readFlag = (key: string): boolean => {
+      try {
+        return localStorage.getItem(key) === '1';
+      } catch {
+        return false;
+      }
+    };
+    let sens = 1;
+    try {
+      const v = Number.parseFloat(localStorage.getItem('ds_look_sens') ?? '');
+      if (Number.isFinite(v)) sens = Math.min(2, Math.max(0.5, v));
+    } catch {
+      /* the default */
+    }
+
+    const rows = (list: ReadonlyArray<[string, string]>): string =>
+      `<dl class="ds-controls-rows">${list
+        .map(([what, how]) => `<div><dt>${what}</dt><dd>${how}</dd></div>`)
+        .join('')}</dl>`;
+    const todo = this.thingsToDo();
+    const tabs: Array<[typeof tab, string]> = [
+      ['controls', 'Controls'],
+      ['todo', 'Things to do'],
+      ['settings', 'Settings'],
+    ];
+    const check = (id: string, label: string, hint: string, on: boolean): string =>
+      `<label class="ds-controls-setting" for="${id}">
+         <input type="checkbox" id="${id}" ${on ? 'checked' : ''} />
+         <span><strong>${label}</strong><small>${hint}</small></span>
+       </label>`;
+
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 12px;color:#8a9bff;">Controls &amp; settings</h2>
+       <div role="tablist" aria-label="Controls and settings">
+         ${tabs
+           .map(
+             ([id, label]) =>
+               `<button type="button" role="tab" id="ds-ctl-tab-${id}" data-tab="${id}" aria-controls="ds-ctl-panel-${id}"
+                  aria-selected="${id === tab}" tabindex="${id === tab ? 0 : -1}">${label}</button>`,
+           )
+           .join('')}
+       </div>
+       <div role="tabpanel" id="ds-ctl-panel-controls" aria-labelledby="ds-ctl-tab-controls" ${tab === 'controls' ? '' : 'hidden'}>
+         <div class="ds-controls-switch" role="group" aria-label="Control scheme">
+           <button type="button" data-scheme="keys" aria-pressed="${!this.isTouch}">Keyboard &amp; mouse</button>
+           <button type="button" data-scheme="touch" aria-pressed="${this.isTouch}">Touch</button>
+         </div>
+         <div data-scheme-rows="keys" ${this.isTouch ? 'hidden' : ''}>${rows(this.controlsKeyboardRows())}</div>
+         <div data-scheme-rows="touch" ${this.isTouch ? '' : 'hidden'}>${rows(SimpleUI.CONTROLS_TOUCH_ROWS)}</div>
+       </div>
+       <div role="tabpanel" id="ds-ctl-panel-todo" aria-labelledby="ds-ctl-tab-todo" ${tab === 'todo' ? '' : 'hidden'}>
+         <ul class="ds-controls-todo">
+           ${todo
+             .map(
+               (it) =>
+                 `<li><span class="ds-controls-todo-text"><strong>${it.icon} ${it.title}</strong>
+                    <span>${it.how}</span></span>${
+                      it.key
+                        ? `<button type="button" data-show-me="${it.key}" aria-label="Show me: ${it.title}">Show me</button>`
+                        : ''
+                    }</li>`,
+             )
+             .join('')}
+         </ul>
+       </div>
+       <div role="tabpanel" id="ds-ctl-panel-settings" aria-labelledby="ds-ctl-tab-settings" ${tab === 'settings' ? '' : 'hidden'}>
+         <label class="ds-controls-setting ds-controls-range" for="ds-set-sens">
+           <span><strong>Look sensitivity</strong><small>How far the view turns for the same drag or swipe.</small></span>
+           <span class="ds-controls-range-row">
+             <input type="range" id="ds-set-sens" min="0.5" max="2" step="0.1" value="${sens}" />
+             <output for="ds-set-sens">${sens.toFixed(1)}×</output>
+           </span>
+         </label>
+         ${check('ds-set-invert', 'Invert vertical look', 'Dragging down tilts the view up.', readFlag('ds_look_invert'))}
+         ${
+           this.isTouch
+             ? ''
+             : check(
+                 'ds-set-lock',
+                 'Mouse lock',
+                 'Opt in: a click captures the cursor and the view follows the mouse without a drag. Esc releases it.',
+                 readFlag('ds_mouse_lock'),
+               )
+         }
+         ${
+           this.isTouch
+             ? check(
+                 'ds-set-haptics',
+                 'Haptics',
+                 'A short buzz on the touch buttons, where the phone supports it.',
+                 hapticsEnabled(),
+               )
+             : ''
+         }
+       </div>`,
+    );
+
+    // Tabs: click, and Left/Right/Home/End with a roving tabindex.
+    const tabEls = [...modal.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const select = (id: string, focus: boolean): void => {
+      for (const t of tabEls) {
+        const on = t.dataset.tab === id;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        const panel = modal.querySelector<HTMLElement>(`#ds-ctl-panel-${t.dataset.tab}`);
+        if (panel) panel.hidden = !on;
+        if (on && focus) t.focus();
+      }
+      modal.scrollTop = 0;
+    };
+    for (const [i, t] of tabEls.entries()) {
+      t.addEventListener('click', () => select(t.dataset.tab ?? 'controls', false));
+      t.addEventListener('keydown', (e) => {
+        const step =
+          e.key === 'ArrowRight'
+            ? 1
+            : e.key === 'ArrowLeft'
+              ? -1
+              : e.key === 'Home'
+                ? -i
+                : e.key === 'End'
+                  ? tabEls.length - 1 - i
+                  : 0;
+        if (!step) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const next = tabEls[(i + step + tabEls.length) % tabEls.length];
+        select(next.dataset.tab ?? 'controls', true);
+      });
+    }
+    // Keyboard & mouse · Touch.
+    const schemeBtns = [...modal.querySelectorAll<HTMLButtonElement>('button[data-scheme]')];
+    for (const b of schemeBtns) {
+      b.addEventListener('click', () => {
+        for (const o of schemeBtns) o.setAttribute('aria-pressed', String(o === b));
+        for (const r of modal.querySelectorAll<HTMLElement>('[data-scheme-rows]')) {
+          r.hidden = r.dataset.schemeRows !== b.dataset.scheme;
+        }
+      });
+    }
+    // Show me: the compass takes it from here, and the sheet steps aside (a
+    // parked welcome card comes back over the island, with the compass set).
+    for (const b of modal.querySelectorAll<HTMLButtonElement>('button[data-show-me]')) {
+      b.addEventListener('click', () => {
+        const key = b.dataset.showMe ?? '';
+        this.closeCenteredModal(modal, 'controls');
+        this.guideTo(key, 'controls');
+      });
+    }
+    // Settings write through at once: no Save button to forget.
+    const sensEl = modal.querySelector<HTMLInputElement>('#ds-set-sens');
+    const sensOut = modal.querySelector<HTMLOutputElement>('output[for="ds-set-sens"]');
+    sensEl?.addEventListener('input', () => {
+      const v = Math.min(2, Math.max(0.5, Number.parseFloat(sensEl.value) || 1));
+      if (sensOut) sensOut.textContent = `${v.toFixed(1)}×`;
+      this.writeSetting('ds_look_sens', String(v));
+    });
+    // The slider owns the keys that move it: they must not reach the world.
+    // Escape and Tab still go on to the manager (a blanket stop here left
+    // Escape dead while the slider had focus).
+    sensEl?.addEventListener('keydown', (e) => {
+      if (/^(Arrow(Up|Down|Left|Right)|Home|End|PageUp|PageDown)$/.test(e.key)) {
+        e.stopPropagation();
+      }
+    });
+    const wire = (id: string, key: string): void => {
+      const el = modal.querySelector<HTMLInputElement>(`#${id}`);
+      el?.addEventListener('change', () => this.writeSetting(key, el.checked ? '1' : '0'));
+    };
+    wire('ds-set-invert', 'ds_look_invert');
+    wire('ds-set-lock', 'ds_mouse_lock');
+    wire('ds-set-haptics', 'ds_haptics');
+
+    this.overlay.appendChild(modal);
+  }
+
+  /** The welcome card stepped aside for the Controls sheet (showControls). */
+  private welcomeParked = false;
+  /** What the open (or parked) welcome card was shown with. */
+  private welcomeArgs: AwayDelta | null | undefined = undefined;
+
+  /** The sheet closed: the parked welcome card comes back. */
+  private unparkWelcome(): void {
+    if (!this.welcomeParked) return;
+    this.welcomeParked = false;
+    if (!this.messagesStopped && !this.welcomeDiv) this.showWelcome(this.welcomeArgs);
+  }
+
+  /** ? or H opens the sheet, and closes it again (D8). Typing never does:
+   *  a field, or a panel that owns the keyboard, keeps the key. */
+  private readonly onControlsKey = (e: KeyboardEvent): void => {
+    if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key !== '?' && e.key !== 'h' && e.key !== 'H') return;
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.isContentEditable || t.matches('input, textarea, select, [role="textbox"]'))
+    ) {
+      return;
+    }
+    if (this.isLoadingVisible() || this.nameModalDiv) return;
+    const top = this.panels.current();
+    if (top === 'controls') {
+      this.panels.closeTop('escape');
+      return;
+    }
+    // Over the bare island, the welcome card, the menu or the drawer only:
+    // any other panel (a hall panel, a shop, a chat) keeps its place.
+    if (top !== null && top !== 'welcome' && top !== 'portfolio-menu' && top !== 'drawer') return;
+    e.preventDefault();
+    this.showControls(top === 'welcome' ? 'welcome' : 'key');
+  };
+
+  /** The phone drawer's Controls row (D8). Desktop reaches the sheet from
+   *  the Portfolio menu and by ? or H, so it gets no chip of its own. */
+  private createControlsRow(): void {
+    if (!this.isTouch) return;
+    const btn = document.createElement('div');
+    btn.textContent = '⌨️ Controls & settings';
+    btn.dataset.controlsRow = '1';
+    Object.assign(btn.style, { ...CHIP });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showControls('drawer');
+    });
+    this.makeHudButtonAccessible(btn, 'Controls and settings');
+    // After the ten rows that were there: the drawer's order is Abbas's.
+    this.chipHost(btn, { drawer: true, order: 11 });
   }
 
   /**
@@ -5184,6 +5628,8 @@ export class SimpleUI {
    * Show welcome message
    */
   showWelcome(awayDelta?: AwayDelta | null): void {
+    this.welcomeArgs = awayDelta;
+    this.welcomeParked = false;
     if (!this.welcomeDiv) {
       this.welcomeDiv = document.createElement('div');
       Object.assign(this.welcomeDiv.style, {
@@ -5338,6 +5784,18 @@ export class SimpleUI {
            <span id="wlc-gb">✍️ checking the guestbook…</span>
          </div>`
       : '';
+    // The way to every control, on both cards (D8): a 13 px text link, not a
+    // fifth button. The card steps aside for the sheet and comes back after.
+    const stripTap = this.isTouch
+      ? 'display:inline-flex; align-items:center; justify-content:center; min-height:44px; min-width:44px;'
+      : '';
+    const controlsStrip = `
+      <p data-controls-strip style="margin:8px 0 0; font-size:13px; line-height:1.4; color:#aab6c8;">
+        <a href="#controls" data-controls style="color:#c9d4ff; text-decoration:underline; ${stripTap}">Controls &amp; settings</a>${
+          this.isTouch
+            ? ''
+            : ' (press <kbd style="font:inherit; padding:0 5px; border:1px solid rgba(255,255,255,0.3); border-radius:4px;">?</kbd>)'
+        }</p>`;
     // The returning card shows progress (D9): the passport, stamp by stamp.
     const progressHtml = this.passportProgressLine();
     // The returning card is a HELLO, not a menu: progress + delta + the
@@ -5352,7 +5810,8 @@ export class SimpleUI {
          ${awayHtml}
          ${recruiterPill}
          ${ctaRow}
-         ${exploreBtn}`
+         ${exploreBtn}
+         ${controlsStrip}`
       : `
       <h1 style="margin: 0 0 8px 0; font-size: 1.5em; color: #4CAF50;">DigiScalability Life Island</h1>
       <p style="margin: 0 0 10px 0; font-size:15px; line-height:1.5;">
@@ -5369,7 +5828,13 @@ export class SimpleUI {
       ${ctaRow}
       ${exploreBtn}
       ${secondaryRow}
+      ${controlsStrip}
     `;
+    this.welcomeDiv.querySelector('a[data-controls]')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.showControls('welcome');
+    });
     // The disclosure: the three guided ways in, shown on request.
     const more = this.welcomeDiv.querySelector<HTMLButtonElement>('button[data-more]');
     const moreRow = this.welcomeDiv.querySelector<HTMLElement>('#wlc-more');
@@ -5668,7 +6133,9 @@ export class SimpleUI {
   isWelcomeVisible(): boolean {
     // The name modal counts as blocking too, so movement/interaction stays
     // suspended (and typing your name never drives the player).
-    return this.welcomeDiv !== null || this.nameModalDiv !== null;
+    // A card parked under the Controls sheet is still the visitor's next
+    // screen: the world keeps waiting for it (D8).
+    return this.welcomeDiv !== null || this.nameModalDiv !== null || this.welcomeParked;
   }
 
   /** Any PanelManager panel (zone card, modal, menu, sheet) open right now?
@@ -9710,6 +10177,7 @@ export class SimpleUI {
     this.stopMessages();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
+    window.removeEventListener('keydown', this.onControlsKey);
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {
       this.overlay.removeEventListener(type, this.onPanelAction, true);
     }

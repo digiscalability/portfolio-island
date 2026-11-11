@@ -6,10 +6,14 @@
 // directly. What needs layout (ArrowDown scrolling a focused panel, small
 // targets measured in pixels) is keyboard.cjs's and phone.cjs's job; these
 // hold the contract that makes it work.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { a11y } from '../Accessibility';
 import { type CloseReason, PanelManager, type PanelSpec } from '../PanelManager';
-import { SimpleUI } from '../SimpleUI';
+import { Passport } from '../Passport';
+import { hapticPulse, hapticsEnabled, SimpleUI } from '../SimpleUI';
 
 // The boards are Firebase reads; here they answer at once, empty.
 vi.mock('../Boards', () => ({
@@ -359,6 +363,7 @@ describe('dialog names and keyboard scrolling', () => {
 
 describe('the drawer waits for the keyboard', () => {
   beforeEach(() => {
+    ui.dispose(); // the desktop one: its window listeners must not outlive it
     history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
     document.body.innerHTML = '<div id="ui-overlay"></div>';
     ui = new SimpleUI('ui-overlay');
@@ -412,6 +417,7 @@ describe('the NPC chat: named buttons, 44 px thumb targets on touch', () => {
   });
 
   test('on touch the ✕, the voice toggle, the mic, the field and Send are 44 px boxes', () => {
+    ui.dispose(); // the desktop one: its window listeners must not outlive it
     history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
     document.body.innerHTML = '<div id="ui-overlay"></div>';
     ui = new SimpleUI('ui-overlay');
@@ -532,5 +538,502 @@ describe('UX-15: the name prompt, the swatches, the emote wheel and the map lege
     expect(chips[0].style.minHeight).toBe('36px');
     chips[0].click();
     expect(picks).toEqual(['Ore vein@2']); // the nearest of the three
+  });
+});
+
+// D8: one reference for every control, a "Things to do" list that points the
+// compass, and the settings the input layer reads. Opened by ? or H, from the
+// Portfolio menu, from the phone drawer and from a strip on both welcome
+// cards. What needs layout (two columns at 520 px, axe at 1440 and 390) is
+// the probes' job.
+describe('the Controls & settings sheet (D8)', () => {
+  const sheet = (): HTMLElement | null => document.querySelector<HTMLElement>('.ds-controls');
+  const opened = (): unknown[] =>
+    (window.__analyticsLog ?? []).filter((e) => e.name === 'controls_opened').map((e) => e.props);
+  const txt = (el: Element | null | undefined): string =>
+    (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  const rowsOf = (scheme: 'keys' | 'touch'): Record<string, string> =>
+    Object.fromEntries(
+      [...sheet()!.querySelectorAll(`[data-scheme-rows="${scheme}"] dl > div`)].map((d) => [
+        txt(d.querySelector('dt')),
+        txt(d.querySelector('dd')),
+      ]),
+    );
+  const touchUi = (): void => {
+    ui.dispose();
+    history.replaceState(null, '', '/?touch=1'); // ?touch selects the phone scheme
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+  };
+
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-run-key');
+  });
+
+  test('Shift+/ and H open it; Escape closes it and focus returns to the opener', async () => {
+    const pill = chip('Open portfolio menu');
+    pill.focus();
+    key('?', pill, { shiftKey: true });
+    await tick();
+    expect(ui.panels.current()).toBe('controls');
+    const el = sheet()!;
+    expect(el.getAttribute('role')).toBe('dialog');
+    expect(el.getAttribute('aria-modal')).toBe('true');
+    expect(txt(el.querySelector('h2'))).toBe('Controls & settings');
+    expect(document.activeElement).toBe(el.querySelector('h2'));
+    key('Escape');
+    expect(ui.panels.current()).toBeNull();
+    expect(sheet()).toBeNull();
+    expect(document.activeElement).toBe(pill);
+    key('h', pill);
+    await tick();
+    expect(ui.panels.current()).toBe('controls');
+    key('H', document.body); // the same key closes it again
+    expect(ui.panels.current()).toBeNull();
+    expect(opened()).toEqual([{ source: 'key' }, { source: 'key' }]);
+  });
+
+  test('typing never opens it, and neither does a key held with Ctrl, Alt or Meta', async () => {
+    ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'menu' });
+    await tick();
+    const field = document.querySelector<HTMLInputElement>('#lead-name')!;
+    field.focus();
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'h', bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true }));
+    expect(ui.panels.current()).toBe('zone');
+    // ...and not over a panel either, from anywhere in it: the hall keeps its place.
+    key('?', document.body);
+    expect(ui.panels.current()).toBe('zone');
+    ui.hideZonePanel();
+    for (const mod of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      key('h', document.body, mod);
+      expect(ui.panels.current(), JSON.stringify(mod)).toBeNull();
+    }
+    ui.openChatInput();
+    const chat = document.querySelector<HTMLInputElement>('#ui-overlay input')!;
+    chat.dispatchEvent(new KeyboardEvent('keydown', { key: 'h', bubbles: true }));
+    expect(ui.panels.isOpen('controls')).toBe(false);
+  });
+
+  test('the Portfolio menu lists Controls, and the row opens the sheet', async () => {
+    chip('Open portfolio menu').click();
+    await tick();
+    const row = document.querySelector<HTMLButtonElement>('button[data-controls]')!;
+    expect(txt(row)).toBe('⌨️ Controls & settings');
+    row.click();
+    await tick();
+    expect(ui.panels.current()).toBe('controls');
+    expect(document.querySelector('#ds-portfolio-menu-title')).toBeNull(); // the menu gave way
+    expect(opened()).toEqual([{ source: 'menu' }]);
+  });
+
+  test('the phone drawer lists Controls, last, after the ten rows that were there', async () => {
+    touchUi();
+    chip('Open island menu').click();
+    const list = document.getElementById('ds-drawer')!;
+    const row = list.querySelector<HTMLElement>('[data-controls-row]')!;
+    expect(txt(row)).toBe('⌨️ Controls & settings');
+    expect(row.style.order).toBe('11');
+    // Work with me keeps slot #1 (Abbas's ruling), and no two rows share an order.
+    const orders = [...list.children].map((c) => (c as HTMLElement).style.order);
+    expect(new Set(orders).size).toBe(orders.length);
+    const first = [...list.children].find((c) => (c as HTMLElement).style.order === '1');
+    expect(txt(first)).toContain('Work with me');
+    row.click();
+    await tick();
+    expect(ui.panels.current()).toBe('controls');
+    expect(opened()).toEqual([{ source: 'drawer' }]);
+    // A phone opens on the Touch rows, and names no keys in Things to do.
+    expect(rowsOf('touch').Move).toContain('joystick');
+    expect(sheet()!.querySelector<HTMLElement>('[data-scheme-rows="keys"]')!.hidden).toBe(true);
+    const todo = txt(sheet()!.querySelector('.ds-controls-todo'));
+    expect(todo).not.toMatch(/press [EFG]\b/i);
+    expect(todo).toContain('tap 🌾 FEED');
+    expect(todo).toContain('Tap 👆 USE to collect it');
+  });
+
+  test('desktop gets no chip of its own for it', () => {
+    expect(document.querySelector('[data-controls-row]')).toBeNull();
+  });
+
+  describe('from the welcome card', () => {
+    test('both cards carry a 13 px strip, a link and not a fifth button', () => {
+      for (const returning of [false, true]) {
+        if (returning) localStorage.setItem('ds_welcomed', '1');
+        ui.showWelcome(null);
+        const strip = document.querySelector<HTMLElement>('[data-controls-strip]')!;
+        expect(parseFloat(strip.style.fontSize), `returning ${returning}`).toBeGreaterThanOrEqual(
+          13,
+        );
+        const link = strip.querySelector<HTMLAnchorElement>('a[data-controls]')!;
+        expect(txt(link)).toBe('Controls & settings');
+        expect(strip.querySelector('button')).toBeNull();
+        ui.hideWelcome(false);
+      }
+    });
+
+    test('the card steps aside unread and comes back when the sheet closes', async () => {
+      ui.showWelcome(null);
+      await tick();
+      document.querySelector<HTMLAnchorElement>('a[data-controls]')!.click();
+      await tick();
+      expect(ui.panels.current()).toBe('controls');
+      expect(
+        document.querySelector('[aria-label="Welcome to DigiScalability Life Island"]'),
+      ).toBeNull();
+      expect(ui.isWelcomeVisible()).toBe(true); // parked: the world still waits for it
+      expect(localStorage.getItem('ds_welcomed')).toBeNull(); // and nothing was burned
+      key('Escape');
+      await tick();
+      await tick();
+      expect(ui.panels.current()).toBe('welcome');
+      const card = document.querySelector<HTMLElement>(
+        '[aria-label="Welcome to DigiScalability Life Island"]',
+      )!;
+      expect(card.querySelector('button[data-dismiss]')).not.toBeNull();
+      expect(localStorage.getItem('ds_welcomed')).toBeNull();
+      expect(opened()).toEqual([{ source: 'welcome' }]);
+      // Explore still closes it for good.
+      card.querySelector<HTMLButtonElement>('button[data-dismiss]')!.click();
+      expect(ui.isWelcomeVisible()).toBe(false);
+      expect(localStorage.getItem('ds_welcomed')).toBe('1');
+    });
+
+    test('? while the card is up does the same; the × brings the card back too', async () => {
+      ui.showWelcome(null);
+      await tick();
+      key('?', document.body, { shiftKey: true });
+      await tick();
+      expect(ui.panels.current()).toBe('controls');
+      sheet()!.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click();
+      await tick();
+      await tick();
+      expect(ui.panels.current()).toBe('welcome');
+      expect(opened()).toEqual([{ source: 'welcome' }]);
+    });
+  });
+
+  describe('the keyboard rows', () => {
+    test('every binding the README lists, and this sheet', async () => {
+      ui.showControls('key');
+      await tick();
+      const rows = rowsOf('keys');
+      expect(Object.keys(rows)).toEqual([
+        'Move',
+        'Look',
+        'Run',
+        'Jump',
+        'Dive',
+        'Use',
+        'Wave',
+        'Map',
+        'Feed',
+        'Eat',
+        'Chat',
+        'Talk aloud',
+        'Photo',
+        'Appearance',
+        'Close',
+        'This sheet',
+      ]);
+      expect(rows.Look).toBe('drag with the mouse · J L turn · I K tilt · R recentre');
+      expect(rows.Use).toMatch(/^E\b/);
+      expect(rows['Talk aloud']).toBe('hold V');
+      expect(rows['This sheet']).toBe('? or H');
+      expect(rows.Look).not.toMatch(/mouse to look|click/i);
+    });
+
+    test('before A11 (no html[data-run-key]): run is Space, and there is no zoom row', async () => {
+      ui.showControls('key');
+      await tick();
+      const rows = rowsOf('keys');
+      expect(rows.Run).toBe('hold Space while moving');
+      expect(rows.Zoom).toBeUndefined();
+    });
+
+    test("with html[data-run-key='shift']: run is Shift, and the zoom row shows", async () => {
+      document.documentElement.setAttribute('data-run-key', 'shift');
+      ui.showControls('key');
+      await tick();
+      const rows = rowsOf('keys');
+      expect(rows.Run).toBe('hold Shift while moving');
+      expect(rows.Zoom).toBe('mouse wheel, or = and −');
+    });
+
+    test('the segmented switch shows Keyboard & mouse or Touch', async () => {
+      ui.showControls('key');
+      await tick();
+      const [keys, touch] = [
+        ...sheet()!.querySelectorAll<HTMLButtonElement>('button[data-scheme]'),
+      ];
+      expect([txt(keys), txt(touch)]).toEqual(['Keyboard & mouse', 'Touch']);
+      expect(keys.getAttribute('aria-pressed')).toBe('true');
+      touch.click();
+      expect(touch.getAttribute('aria-pressed')).toBe('true');
+      expect(keys.getAttribute('aria-pressed')).toBe('false');
+      expect(sheet()!.querySelector<HTMLElement>('[data-scheme-rows="touch"]')!.hidden).toBe(false);
+      expect(sheet()!.querySelector<HTMLElement>('[data-scheme-rows="keys"]')!.hidden).toBe(true);
+      expect(rowsOf('touch').Look).toBe('swipe anywhere on the world');
+    });
+  });
+
+  describe('the tabs', () => {
+    test('three tabs with a roving tabindex; ←/→, Home and End move between them', async () => {
+      ui.showControls('key');
+      await tick();
+      const tabs = [...sheet()!.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+      expect(tabs.map((t) => txt(t))).toEqual(['Controls', 'Things to do', 'Settings']);
+      const selected = (): string[] => tabs.map((t) => t.getAttribute('aria-selected')!);
+      const panelOf = (t: HTMLElement): HTMLElement =>
+        document.getElementById(t.getAttribute('aria-controls')!)!;
+      expect(selected()).toEqual(['true', 'false', 'false']);
+      for (const t of tabs) {
+        expect(panelOf(t).getAttribute('role')).toBe('tabpanel');
+        expect(panelOf(t).getAttribute('aria-labelledby')).toBe(t.id);
+      }
+      tabs[0].focus();
+      key('ArrowRight', tabs[0]);
+      expect(selected()).toEqual(['false', 'true', 'false']);
+      expect(document.activeElement).toBe(tabs[1]);
+      expect(tabs.map((t) => t.tabIndex)).toEqual([-1, 0, -1]);
+      expect(panelOf(tabs[0]).hidden).toBe(true);
+      expect(panelOf(tabs[1]).hidden).toBe(false);
+      key('End', tabs[1]);
+      expect(document.activeElement).toBe(tabs[2]);
+      key('ArrowRight', tabs[2]); // wraps
+      expect(document.activeElement).toBe(tabs[0]);
+      key('ArrowLeft', tabs[0]);
+      expect(document.activeElement).toBe(tabs[2]);
+      key('Home', tabs[2]);
+      expect(selected()).toEqual(['true', 'false', 'false']);
+      tabs[2].click();
+      expect(panelOf(tabs[2]).hidden).toBe(false);
+    });
+
+    test('showControls(source, tab) opens on that tab', async () => {
+      ui.showControls('menu', 'todo');
+      await tick();
+      expect(
+        sheet()!.querySelector('[role="tab"][aria-selected="true"]')!.getAttribute('data-tab'),
+      ).toBe('todo');
+      expect(document.getElementById('ds-ctl-panel-controls')!.hidden).toBe(true);
+    });
+  });
+
+  describe('Things to do', () => {
+    const items = (): HTMLElement[] => [
+      ...sheet()!.querySelectorAll<HTMLElement>('.ds-controls-todo li'),
+    ];
+
+    test('one line per system: eight or more, each with what to do', async () => {
+      ui.showControls('menu', 'todo');
+      await tick();
+      const titles = items().map((li) => txt(li.querySelector('strong')));
+      expect(titles.length).toBeGreaterThanOrEqual(8);
+      for (const want of [
+        'Fishing',
+        'Chopping',
+        'Feeding birds',
+        'Eating',
+        'Building',
+        'Races',
+        'Deliveries',
+        'The School’s lessons',
+        'The shop',
+        'Passport stamps',
+      ]) {
+        expect(
+          titles.some((t) => t.endsWith(want)),
+          want,
+        ).toBe(true);
+      }
+      for (const li of items()) {
+        expect(txt(li.querySelector('.ds-controls-todo-text > span')).length).toBeGreaterThan(20);
+      }
+      // No counts typed, and villagers are never agents (the Fact Sheet).
+      expect(txt(sheet()!.querySelector('.ds-controls-todo'))).not.toMatch(
+        /\b\d+\b|agent|live AI/i,
+      );
+    });
+
+    test("each Show me dispatches 'ds:guide-to' {key, source:'controls'} and closes the sheet", async () => {
+      const seen: Array<{ key: string; source: string }> = [];
+      const on = (e: Event): void => void seen.push((e as CustomEvent).detail);
+      window.addEventListener('ds:guide-to', on);
+      try {
+        ui.showControls('menu', 'todo');
+        await tick();
+        const keys = [...sheet()!.querySelectorAll<HTMLButtonElement>('button[data-show-me]')].map(
+          (b) => b.dataset.showMe!,
+        );
+        expect(keys).toEqual([
+          'shore',
+          'carpenter',
+          'stake:nearest',
+          'race:land',
+          'mailbox:next',
+          'school',
+          'kiosk',
+          'district:professional', // the first stamp still missing
+        ]);
+        for (const k of keys) {
+          if (!sheet()) {
+            ui.showControls('menu', 'todo');
+            await tick();
+          }
+          sheet()!.querySelector<HTMLButtonElement>(`button[data-show-me="${k}"]`)!.click();
+          expect(ui.panels.current(), k).toBeNull();
+          expect(sheet(), k).toBeNull();
+        }
+        expect(seen).toEqual(keys.map((k) => ({ key: k, source: 'controls' })));
+      } finally {
+        window.removeEventListener('ds:guide-to', on);
+      }
+    });
+
+    test('the passport row points at the next stamp still missing, and drops Show me when complete', async () => {
+      localStorage.setItem('ds_passport', JSON.stringify(['professional', 'projects']));
+      ui.setPassport(new Passport());
+      ui.showControls('menu', 'todo');
+      await tick();
+      const row = items().find((li) => txt(li).includes('Passport stamps'))!;
+      expect(row.querySelector<HTMLButtonElement>('button')!.dataset.showMe).toBe(
+        'district:personal',
+      );
+      ui.panels.closeAll();
+      localStorage.setItem(
+        'ds_passport',
+        JSON.stringify(['professional', 'projects', 'personal', 'contact']),
+      );
+      ui.setPassport(new Passport());
+      ui.showControls('menu', 'todo');
+      await tick();
+      const done = items().find((li) => txt(li).includes('Passport stamps'))!;
+      expect(done.querySelector('button')).toBeNull();
+    });
+
+    test('Show me from a sheet opened over the welcome card brings the card back, compass set', async () => {
+      const seen: unknown[] = [];
+      const on = (e: Event): void => void seen.push((e as CustomEvent).detail);
+      window.addEventListener('ds:guide-to', on);
+      try {
+        ui.showWelcome(null);
+        await tick();
+        ui.showControls('welcome', 'todo');
+        await tick();
+        sheet()!.querySelector<HTMLButtonElement>('button[data-show-me="kiosk"]')!.click();
+        await tick();
+        await tick();
+        expect(seen).toEqual([{ key: 'kiosk', source: 'controls' }]);
+        expect(ui.panels.current()).toBe('welcome');
+        expect(localStorage.getItem('ds_welcomed')).toBeNull();
+      } finally {
+        window.removeEventListener('ds:guide-to', on);
+      }
+    });
+  });
+
+  describe('Settings', () => {
+    let settings: string[] = [];
+    const onSetting = (e: Event): void =>
+      void settings.push((e as CustomEvent<{ key: string }>).detail.key);
+    beforeEach(() => {
+      settings = [];
+      window.addEventListener('ds:settings', onSetting);
+    });
+    afterEach(() => window.removeEventListener('ds:settings', onSetting));
+
+    test('look sensitivity writes ds_look_sens, clamped to 0.5–2, then says so', async () => {
+      ui.showControls('menu', 'settings');
+      await tick();
+      const range = document.querySelector<HTMLInputElement>('#ds-set-sens')!;
+      expect(range.getAttribute('min')).toBe('0.5');
+      expect(range.getAttribute('max')).toBe('2');
+      expect(range.value).toBe('1');
+      expect(document.querySelector('label[for="ds-set-sens"]')).not.toBeNull();
+      range.value = '2';
+      range.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(localStorage.getItem('ds_look_sens')).toBe('2');
+      expect(txt(document.querySelector('output[for="ds-set-sens"]'))).toBe('2.0×');
+      expect(settings).toEqual(['ds_look_sens']);
+      // The slider's arrow keys stay with the slider.
+      const arrow = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true });
+      const leaked = vi.fn();
+      document.addEventListener('keydown', leaked);
+      range.dispatchEvent(arrow);
+      document.removeEventListener('keydown', leaked);
+      expect(leaked).not.toHaveBeenCalled();
+      // ...but Escape on the slider still closes the sheet (a blanket stop
+      // on its keydown left the key dead while the slider had focus).
+      range.focus();
+      key('Escape', range);
+      expect(ui.panels.current()).toBeNull();
+      // Reopened, it shows what was saved.
+      ui.showControls('menu', 'settings');
+      await tick();
+      expect(document.querySelector<HTMLInputElement>('#ds-set-sens')!.value).toBe('2');
+    });
+
+    test('invert and mouse lock write their keys as 1 or 0, each with its event', async () => {
+      ui.showControls('menu', 'settings');
+      await tick();
+      const invert = document.querySelector<HTMLInputElement>('#ds-set-invert')!;
+      const lock = document.querySelector<HTMLInputElement>('#ds-set-lock')!;
+      expect(invert.checked).toBe(false);
+      expect(lock.checked).toBe(false);
+      invert.click();
+      lock.click();
+      expect(localStorage.getItem('ds_look_invert')).toBe('1');
+      expect(localStorage.getItem('ds_mouse_lock')).toBe('1');
+      lock.click();
+      expect(localStorage.getItem('ds_mouse_lock')).toBe('0');
+      expect(settings).toEqual(['ds_look_invert', 'ds_mouse_lock', 'ds_mouse_lock']);
+      // Desktop has no vibration to switch.
+      expect(document.querySelector('#ds-set-haptics')).toBeNull();
+    });
+
+    test('touch: haptics is a switch, and mouse lock is not offered', async () => {
+      touchUi();
+      ui.showControls('drawer', 'settings');
+      await tick();
+      expect(document.querySelector('#ds-set-lock')).toBeNull();
+      const haptics = document.querySelector<HTMLInputElement>('#ds-set-haptics')!;
+      expect(haptics.checked).toBe(true); // the default with motion allowed
+      haptics.click();
+      expect(localStorage.getItem('ds_haptics')).toBe('0');
+      expect(settings).toEqual(['ds_haptics']);
+    });
+
+    test('hapticPulse follows the setting, with the old reduced-motion gate as its default', () => {
+      const vibrate = vi.fn();
+      Object.defineProperty(navigator, 'vibrate', { value: vibrate, configurable: true });
+      const was = a11y.reducedMotion;
+      try {
+        a11y.reducedMotion = false;
+        expect(hapticsEnabled()).toBe(true);
+        hapticPulse(8);
+        expect(vibrate).toHaveBeenCalledTimes(1);
+        localStorage.setItem('ds_haptics', '0');
+        hapticPulse(8);
+        expect(vibrate).toHaveBeenCalledTimes(1); // switched off
+        a11y.reducedMotion = true;
+        localStorage.removeItem('ds_haptics');
+        expect(hapticsEnabled()).toBe(false); // unset: reduced motion keeps it off, as before
+        hapticPulse(8);
+        expect(vibrate).toHaveBeenCalledTimes(1);
+        localStorage.setItem('ds_haptics', '1'); // ...and can now turn it on: a buzz is not motion
+        hapticPulse(8);
+        expect(vibrate).toHaveBeenCalledTimes(2);
+      } finally {
+        a11y.reducedMotion = was;
+        Reflect.deleteProperty(navigator, 'vibrate');
+      }
+    });
+  });
+
+  test("index.html's dead #controls-guide CSS is gone; the sheet's keycaps live in style.css", () => {
+    // (securityHeaders holds the inline-script count: this was style only.)
+    expect(readFileSync(join(process.cwd(), 'index.html'), 'utf8')).not.toContain('controls-guide');
+    expect(readFileSync(join(process.cwd(), 'style.css'), 'utf8')).toContain('.ds-controls kbd');
   });
 });

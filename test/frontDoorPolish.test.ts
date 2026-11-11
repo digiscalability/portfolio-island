@@ -1135,13 +1135,12 @@ describe('the welcome cards say less and show progress (D9)', () => {
   const shown = (el: Element): boolean => !el.closest('[hidden]');
   const visibleButtons = (): HTMLButtonElement[] =>
     [...card().querySelectorAll<HTMLButtonElement>('button')].filter(shown);
-  const words = (): number =>
-    [...card().querySelectorAll<HTMLElement>('h1, p, button, a')]
-      .filter(shown)
-      .map((el) => text(el))
-      .join(' ')
-      .split(/\s+/)
-      .filter(Boolean).length;
+  /** The card's visible words, as fm.cjs's cardGeo counts them (innerText). */
+  const words = (): number => {
+    const seen = card().cloneNode(true) as HTMLElement;
+    for (const h of seen.querySelectorAll('[hidden]')) h.remove();
+    return text(seen).split(/\s+/).filter(Boolean).length;
+  };
 
   test('first run: 80 words or fewer, four buttons plus the disclosure', () => {
     ui.showWelcome(null);

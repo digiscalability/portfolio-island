@@ -137,7 +137,12 @@ describe('the welcome card hierarchy matches the audience', () => {
     const ctas = w.indexOf('data-cta="projects"');
     expect(pill).toBeGreaterThan(-1);
     expect(ctas).toBeGreaterThan(-1);
-    expect(w).not.toContain('text-decoration:underline'); // the old 12px footnote
+    // The old 12px footnote was an underlined link: the Hiring control is a
+    // button. (D8's Controls strip is the card's one text link.)
+    const hiring = w.slice(w.indexOf('const recruiterPill'), w.indexOf('const outline'));
+    expect(hiring).toContain('<button data-recruit');
+    expect(hiring).not.toContain('text-decoration');
+    expect(w.split('text-decoration:underline')).toHaveLength(2); // the strip, once
     // template order: recruiterPill is rendered above ctaRow in the first-run
     // branch AND (since the returning card carries it too) the returning one
     const { returningBranch, firstRun } = branches(w);

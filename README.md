@@ -147,6 +147,7 @@ run the evals, see [evals/README.md](evals/README.md).
 | P | Take a photo postcard |
 | C | Change your look |
 | Esc | Close panels |
+| ? or H | Controls & settings: every control, things to do, look sensitivity |
 
 On a phone: a joystick to move, swipe to look, and on-screen buttons.
 
