@@ -1202,3 +1202,50 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     expect(fs.existsSync(path.resolve(__dirname, '..', c.module))).toBe(true);
   });
 });
+
+// Wave-2 amendments (process): the gate runs alone on a quiet host. A profile
+// measured while other processes held the machine says so under its verdict.
+describe('perf gate: the quiet-host note (wave-2 amendments)', () => {
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    QUIET_OTHER_PCT: number;
+    THRESHOLDS: Record<string, Record<string, number>>;
+    hostNote: (
+      other: { p50: number | null; max: number | null } | null,
+      verdict: string,
+    ) => string | null;
+  };
+
+  test('quiet is 10% of the machine or less to other processes: no note', () => {
+    expect(gate.QUIET_OTHER_PCT).toBe(10);
+    expect(gate.hostNote({ p50: 6.2, max: 13.9 }, 'pass')).toBeNull();
+    expect(gate.hostNote({ p50: 10, max: 40 }, 'inconclusive')).toBeNull();
+    expect(gate.hostNote(null, 'pass')).toBeNull();
+    expect(gate.hostNote({ p50: null, max: null }, 'pass')).toBeNull();
+  });
+
+  test('a busy host is named, and an inconclusive verdict is put down to it', () => {
+    const busy = gate.hostNote({ p50: 42.5, max: 80 }, 'inconclusive');
+    expect(busy).toMatch(/host not quiet: other processes took 42\.5% of the machine/);
+    expect(busy).toMatch(/Run the gate alone/);
+    expect(busy).toMatch(/the host's, not the build's/);
+    expect(gate.hostNote({ p50: 30, max: 50 }, 'fail')).toMatch(
+      /confirm any timing fail on a quiet host/,
+    );
+    expect(gate.hostNote({ p50: 30, max: 50 }, 'pass')).toMatch(/passed in spite of it/);
+  });
+
+  test("P2-B6 at 21 h reads 'no GPU regression': the desktop GPU p50 budget judges it", () => {
+    // The 0.5 ms improvement the plan asked for is inside this rig's band
+    // (sigma 1.08 hub-wide), so the row is held to the budget, not to a gain.
+    expect(gate.THRESHOLDS.desktop.gpuP50).toBe(2.0);
+    const readme = createRequire(import.meta.url)('node:fs').readFileSync(
+      createRequire(import.meta.url)('node:path').resolve(
+        __dirname,
+        '../tools/ux-probes/README.md',
+      ),
+      'utf8',
+    ) as string;
+    expect(readme).toMatch(/no GPU regression at 21 h/);
+    expect(readme).not.toMatch(/GPU at 21 h improves by 0\.5 ms or more"\s+is/);
+  });
+});

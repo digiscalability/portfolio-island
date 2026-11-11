@@ -1661,6 +1661,18 @@ function bundleOf(dist) {
  * that reads it says so.
  */
 const QUIET_OTHER_PCT = 10;
+/**
+ * Was the host quiet for a profile's loads? otherBusyPct is { p50, max }, the
+ * share of the machine other processes took. Over QUIET_OTHER_PCT the timing
+ * rows are noise: an inconclusive verdict is then the host's, not the
+ * build's, and the run is to be made again, alone (wave-2 amendments).
+ */
+function hostNote(otherBusyPct, verdict) {
+  if (!otherBusyPct || !isNum(otherBusyPct.p50)) return null;
+  if (otherBusyPct.p50 <= QUIET_OTHER_PCT) return null;
+  const what = verdict === 'inconclusive' ? 'this inconclusive verdict is the host\'s, not the build\'s' : verdict === 'fail' ? 'counters hold, but confirm any timing fail on a quiet host' : 'timing rows passed in spite of it';
+  return `host not quiet: other processes took ${otherBusyPct.p50}% of the machine (median; quiet is ${QUIET_OTHER_PCT}% or less). Run the gate alone: ${what}`;
+}
 function floorQuiet(floor) {
   const q = floor && floor.recorded && floor.recorded.quiet;
   if (!q || typeof q !== 'object') return { known: false, busy: [] };
@@ -2037,6 +2049,8 @@ function printSummary(data) {
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
+      const note = hostNote(p.otherBusyPct, p.verdict);
+      if (note) lines.push(`    note: ${note}`);
       if (p.checkpoints && p.checkpoints.length > 1) lines.push(`    checkpoints: ${p.checkpoints.map((c) => `${c.cycles} cycles ${c.verdict}${c.fails.length ? ` (FAIL ${c.fails.join(', ')})` : ''}`).join('; ')}`);
       if (p.poseCheck) lines.push(`    pose check: ${p.poseCheck.equal ? 'equal' : 'DIFFERENT (the run cannot pass)'}; ${Object.entries(p.poseCheck.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad, orbit pitch A ${r.ocPitch.medianA} B ${r.ocPitch.medianB}`).join('; ')}`);
       for (const [k, r] of Object.entries(p.metrics)) {
@@ -2118,4 +2132,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
