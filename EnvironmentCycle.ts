@@ -1,8 +1,13 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
+import { fx } from './FxBudget';
 import { isRealTheme } from './Theme';
 import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
+
+// P2-C1: the sun, the moon and the sky's warm lobe run in the visitor's own
+// frame (switch 'localSun'; off gives the world-anchored sun back).
+fx.register('localSun', { desktop: true, low: true });
 
 // Weather fog was authored as flat +0.010 (rain) / +0.005 (grey) ON TOP of the
 // R=50 base density (FOG_DENSITY_X_RADIUS / REFERENCE_RADIUS = 0.009). As the
@@ -76,6 +81,31 @@ const PALETTE = {
  * against full daylight — so the flip never pops.
  */
 export const EXTERIOR_LIGHTS_DAY_CUTOFF = 0.85;
+
+/**
+ * The key light's ceiling, as the y of its unit direction: 65 degrees. With
+ * the sun in the visitor's own frame a noon key would stand at the zenith
+ * over every district, where each wall gets N.L = 0 and the cel ramp gives
+ * all four sides of a building the same middle band. Held at 65 degrees the
+ * walls keep a lit side and a shaded side; flat ground stays in the top band
+ * (N.L 0.91). The sun DISC keeps its true height.
+ */
+export const KEY_ELEVATION_CAP = Math.sin(1.13);
+
+// The local frame's policy (see stepLocalFrame). Angles in radians.
+/** A jump of the visitor's up-axis this large in one frame is a teleport
+ *  (fast travel, a respawn, leaving a room): 3.4 degrees is 6 u at R = 100,
+ *  more than any vehicle covers in a frame. */
+const FRAME_TELEPORT_STEP = 0.06;
+/** Below this the visitor counts as standing: 0.3 u/s at R = 100. */
+const FRAME_STILL_SPEED = 0.003;
+/** How long they must stand before the light starts to turn. */
+const FRAME_STILL_HOLD = 0.15;
+/** The turn: at least 6 degrees a second, faster while far off (1.6 x the
+ *  error per second), so a short walk settles unnoticed and a long one takes
+ *  about two seconds. */
+const FRAME_MIN_RATE = 0.105;
+const FRAME_GAIN = 1.6;
 
 // Hoisted out of update() — both were re-created every frame (object literal +
 // array literal) in the unconditional day/night tick. Pure constants now.
@@ -164,6 +194,88 @@ export class EnvironmentCycle {
   public getHour(): number {
     return this.currentHour();
   }
+
+  // ── The visitor's own sky (P2-C1) ───────────────────────────────────────
+  // The sun arc is built around world +Y, which is "up" only at the hub. The
+  // four districts stand 63 degrees from the pole, so the same sun that is
+  // high over the hub sat 5.7 degrees over Professional Experience at 10:30
+  // (the hour every first visit gets) and below the horizon of two districts
+  // at 09:00 and 15:00, under a midday sky. Both frames below rotate world +Y
+  // onto the visitor's up-axis, so the arc is the same everywhere.
+  //
+  // qSky is the visitor's frame this frame. The sun and moon discs and the
+  // sky's warm lobe use it: they cast nothing, so they can follow every step
+  // and stay put in the visitor's sky.
+  //
+  // qLight is the KEY LIGHT's frame, and it only turns while the visitor
+  // stands still. GameScene.updateSunShadow snaps the shadow box to texels on
+  // a basis built from the sun's direction, so any turn of the light
+  // re-quantises every shadow edge in the map; turned every frame of a walk
+  // (0.05 degrees a frame at walking speed) the edges boil and every shadow
+  // slides. MEASURED before choosing, walking 3 s past static shadows, mean
+  // per-frame change on their edge pixels (0-255 luma), desktop / phone:
+  // world-anchored 0.042 / 0.108; re-based every frame 0.375 / 0.725;
+  // re-based every 0.5 degrees 0.119 / 0.282 (a pop each 0.9 u). Held while
+  // walking, the light turns 0.000 degrees over the same walk.
+  private readonly qSky = new THREE.Quaternion();
+  private readonly qLight = new THREE.Quaternion();
+  private readonly _upNow = new THREE.Vector3(0, 1, 0);
+  private readonly _upPrev = new THREE.Vector3(0, 1, 0);
+  private frameReady = false;
+  private stillFor = 0;
+  private localSunOn = false;
+  // stepLocalFrame's arguments (it is called through fx.time, bound once).
+  private _framePos: THREE.Vector3 = this._upNow;
+  private _frameDt = 0;
+
+  /**
+   * The key light's frame: the rotation from world +Y to the visitor's up
+   * that the light is using now. Read-only; it trails the visitor while they
+   * walk and catches up when they stand (identity with 'localSun' off).
+   */
+  public getLocalFrame(): Readonly<THREE.Quaternion> {
+    return this.qLight;
+  }
+
+  /**
+   * Advance both frames. Bound once (an arrow property), so fx.time gets the
+   * same function every frame and nothing is allocated.
+   */
+  private readonly stepLocalFrame = (): void => {
+    this.localSunOn = fx.on('localSun');
+    if (!this.localSunOn) {
+      this.qSky.identity();
+      this.qLight.identity();
+      this.frameReady = false;
+      return;
+    }
+    const pos = this._framePos;
+    if (pos.lengthSq() < 1e-8) return;
+    this._upNow.copy(pos).normalize();
+    this.qSky.setFromUnitVectors(this._up, this._upNow);
+    const step = this.frameReady ? this._upNow.angleTo(this._upPrev) : Infinity;
+    this._upPrev.copy(this._upNow);
+    if (step > FRAME_TELEPORT_STEP) {
+      // First frame, or the visitor was moved: nothing to ease from.
+      this.qLight.copy(this.qSky);
+      this.frameReady = true;
+      this.stillFor = 0;
+      return;
+    }
+    const dt = this._frameDt;
+    if (dt <= 0) return;
+    if (step > FRAME_STILL_SPEED * dt) {
+      this.stillFor = 0; // walking, riding or sailing: hold the light
+      return;
+    }
+    this.stillFor += dt;
+    if (this.stillFor < FRAME_STILL_HOLD) return;
+    const err = this.qLight.angleTo(this.qSky);
+    if (err < 1e-5) return;
+    // Reduced motion: no world-wide swing of the light, it is simply right.
+    if (a11y.reducedMotion) this.qLight.copy(this.qSky);
+    else this.qLight.rotateTowards(this.qSky, Math.max(FRAME_MIN_RATE, err * FRAME_GAIN) * dt);
+  };
 
   // Scratch
   private readonly _c1 = new THREE.Color();
@@ -709,6 +821,17 @@ export class EnvironmentCycle {
     this.scene.add(this.precip);
   }
 
+  /** Lower a unit direction to at most `maxY` of height, keeping its bearing. */
+  private static capElevation(v: THREE.Vector3, maxY: number): void {
+    if (v.y <= maxY) return;
+    const flat = Math.hypot(v.x, v.z);
+    const reach = Math.sqrt(1 - maxY * maxY);
+    // Straight up has no bearing: lean it toward +X (noon on the arc is -X/+X
+    // by a hair either way, so the choice is never seen).
+    if (flat < 1e-6) v.set(reach, maxY, 0);
+    else v.set((v.x / flat) * reach, maxY, (v.z / flat) * reach);
+  }
+
   /** Call every frame with the player's world position. */
   public update(deltaTime: number, playerPos: THREE.Vector3, time: number): void {
     // One-shot late pass for props placed after construction (TownPlanner)
@@ -716,6 +839,10 @@ export class EnvironmentCycle {
       this.rescanned = true;
       this.collectNightAssets();
     }
+    // The visitor's frame first: everything below that points at the sky uses it.
+    this._framePos = playerPos;
+    this._frameDt = deltaTime;
+    fx.time('localSun', this.stepLocalFrame);
     const hour = this.currentHour();
     // Sun elevation anchored to the location's REAL sunrise/sunset (fetched
     // with the weather); 6am/6pm approximation until/unless that arrives.
@@ -782,6 +909,11 @@ export class EnvironmentCycle {
       );
       this._v1.lerp(this._v2, w).normalize();
     }
+    if (this.localSunOn) {
+      // 65 degrees at most (KEY_ELEVATION_CAP), then into the light's frame.
+      EnvironmentCycle.capElevation(this._v1, KEY_ELEVATION_CAP);
+      this._v1.applyQuaternion(this.qLight);
+    }
     this.sun.position.copy(this._v1).multiplyScalar(60);
 
     // Weather dimming
@@ -813,6 +945,7 @@ export class EnvironmentCycle {
         se,
         Math.sin(azimuth) * Math.sqrt(1 - se * se),
       )
+      .applyQuaternion(this.qSky)
       .multiplyScalar(640);
     this.sunDisc.lookAt(0, 0, 0);
     this.sunDisc.scale.setScalar(1 + 0.6 * duskFactor);
@@ -855,7 +988,8 @@ export class EnvironmentCycle {
             se2,
             Math.sin(azimuth) * Math.sqrt(1 - se2 * se2),
           )
-          .normalize();
+          .normalize()
+          .applyQuaternion(this.qSky);
         this.sky.sunWarmth.value =
           Math.max(0, Math.min(1, duskFactor * 1.2)) *
           Math.max(0, Math.min(1, (elev + 0.02) * 12)) *
@@ -892,6 +1026,7 @@ export class EnvironmentCycle {
           mElev,
           Math.sin(mAz) * Math.sqrt(1 - mElev * mElev),
         )
+        .applyQuaternion(this.qSky)
         .multiplyScalar(640);
       this.moon.lookAt(0, 0, 0);
       this.moonMat.opacity =

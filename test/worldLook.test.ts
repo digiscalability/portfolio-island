@@ -31,11 +31,14 @@ import * as THREE from 'three';
 import * as ts from 'typescript';
 import { describe, expect, test, vi } from 'vitest';
 
+import { a11y } from '../Accessibility';
 import { addGroupHulls, setInkVisible } from '../CelLook';
+import { EnvironmentCycle, KEY_ELEVATION_CAP } from '../EnvironmentCycle';
 import type { Island } from '../Island';
 import { Mailbox } from '../Mailbox';
 import { Materials } from '../Materials';
 import { Zone } from '../Zones';
+import { installHeadlessCanvas } from './helpers/headlessDom';
 
 // ---- AST slicing ------------------------------------------------------------
 // File-local until E's test/helpers/astSlice.ts lands (CO-E1), same contract:
@@ -1035,5 +1038,193 @@ describe('a compile pass is sent to the GPU, not left queued (wave 1, welcome_vi
     // program and every link after it.
     const helper = decl('Materials.ts', 'flushAfterCompile');
     expect(helper).toMatch(/queueMicrotask\(\(\) => \{[\s\S]*renderer\.getContext\(\)\.flush\(\)/);
+  });
+});
+
+// ---- wave 2: the light rig ---------------------------------------------------
+
+/** A day/night cycle on a bare scene, with the lights GameScene hands it. */
+const makeCycle = (): {
+  env: EnvironmentCycle;
+  scene: THREE.Scene;
+  sun: THREE.DirectionalLight;
+  hemi: THREE.HemisphereLight;
+  sunDir: THREE.Vector3;
+} => {
+  installHeadlessCanvas();
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x79b7e6, 0.0045);
+  const sun = new THREE.DirectionalLight(0xffe9c0, 1.6);
+  const hemi = new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62);
+  const sunDir = new THREE.Vector3(0, 1, 0);
+  const env = new EnvironmentCycle(scene, sun, hemi, {
+    topColor: { value: new THREE.Color() },
+    bottomColor: { value: new THREE.Color() },
+    horizonColor: { value: new THREE.Color() },
+    zenithColor: { value: new THREE.Color() },
+    sunDir: { value: sunDir },
+    sunWarmth: { value: 0 },
+  });
+  return { env, scene, sun, hemi, sunDir };
+};
+
+/** Unit direction at (lon, lat), as Island.dirAt and Districts.dirFor build it. */
+const dirAt = (lon: number, lat: number): THREE.Vector3 =>
+  new THREE.Vector3(
+    Math.cos(lon) * Math.cos(lat),
+    Math.sin(lat),
+    Math.sin(lon) * Math.cos(lat),
+  ).normalize();
+
+const R = 100;
+/** A standing spot at the hub, and the four district centres (Districts.ts). */
+const HUB = dirAt(0.6, 1.4);
+const DISTRICT_DIRS = [0, 0.5, 1, 1.5].map((k) => dirAt(Math.PI * k, 0.4636));
+
+/** The key light's height above the visitor's own horizon, in degrees. */
+const localElevation = (sun: THREE.DirectionalLight, up: THREE.Vector3): number =>
+  THREE.MathUtils.radToDeg(Math.asin(sun.position.clone().normalize().dot(up)));
+
+/** The key light's ceiling (KEY_ELEVATION_CAP): 1.13 rad is 64.7 degrees. */
+const CAP_DEG = THREE.MathUtils.radToDeg(1.13);
+
+/** Run fn with an FxBudget switch forced, then put the switch back. */
+const withFx = (name: string, on: boolean, fn: () => void): void => {
+  const g = (globalThis.__dsFx ??= {});
+  const before = g[name];
+  g[name] = on;
+  try {
+    fn();
+  } finally {
+    if (before === undefined) delete g[name];
+    else g[name] = before;
+  }
+};
+
+describe("the sun shines in each visitor's own sky (P2-C1)", () => {
+  // The sun arc is built around world +Y. The districts stand 63 degrees from
+  // the pole, so at 10:30 (the hour every first visit gets) the world sun sat
+  // 5.7 degrees over Professional Experience under a midday sky, and below
+  // the horizon of two districts at 09:00 and 15:00.
+
+  test('from 09 to 15 h the key stands 40 to 65 degrees up, the same over the hub and every district', () => {
+    for (const hour of [9, 10.5, 12, 15]) {
+      const elevations = [HUB, ...DISTRICT_DIRS].map((up) => {
+        const { env, sun } = makeCycle();
+        env.debugHour = hour;
+        env.update(1 / 60, up.clone().multiplyScalar(R), 0);
+        return localElevation(sun, up);
+      });
+      for (const e of elevations) {
+        expect(e).toBeGreaterThanOrEqual(40);
+        expect(e).toBeLessThanOrEqual(CAP_DEG + 1e-6);
+        expect(e).toBeCloseTo(elevations[0], 6);
+      }
+    }
+  });
+
+  test("with the switch off the sun is the world's again (what main shipped)", () => {
+    withFx('localSun', false, () => {
+      const elevations = DISTRICT_DIRS.map((up) => {
+        const { env, sun } = makeCycle();
+        env.debugHour = 10.5;
+        env.update(1 / 60, up.clone().multiplyScalar(R), 0);
+        return localElevation(sun, up);
+      });
+      // Measured on main at 10:30: 5.7, 16.0, 33.4 and 46.6 degrees.
+      expect(Math.min(...elevations)).toBeLessThan(10);
+      expect(Math.max(...elevations) - Math.min(...elevations)).toBeGreaterThan(30);
+      const { env } = makeCycle();
+      env.update(1 / 60, DISTRICT_DIRS[0].clone().multiplyScalar(R), 0);
+      expect(env.getLocalFrame().equals(new THREE.Quaternion())).toBe(true);
+    });
+  });
+
+  test('noon: 65 degrees, not the zenith, so walls keep a lit side', () => {
+    expect(KEY_ELEVATION_CAP).toBeCloseTo(Math.sin(1.13), 12);
+    const { env, sun } = makeCycle();
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(localElevation(sun, HUB)).toBeCloseTo(CAP_DEG, 4);
+  });
+
+  test('the light holds still while the visitor walks, and turns once they stand', () => {
+    const { env, sun, sunDir } = makeCycle();
+    env.debugHour = 10.5;
+    const up = DISTRICT_DIRS[1].clone();
+    const axis = new THREE.Vector3(0, 1, 0).cross(up).normalize();
+    const dt = 1 / 60;
+    env.update(dt, up.clone().multiplyScalar(R), 0);
+    const held = sun.position.clone();
+    const discElevation = sunDir.dot(up);
+    // 3 s at walking pace (5.6 u/s): 9.6 degrees round the planet.
+    for (let f = 1; f <= 180; f++) {
+      up.applyAxisAngle(axis, (5.6 * dt) / R).normalize();
+      env.update(dt, up.clone().multiplyScalar(R), f * dt);
+      // Not one bit of turn: the shadow map's texel grid follows this vector.
+      expect(sun.position.equals(held)).toBe(true);
+      // The sky's warm lobe (and the discs, on the same frame) stay put in the
+      // visitor's sky instead.
+      expect(sunDir.dot(up)).toBeCloseTo(discElevation, 9);
+    }
+    // The light's frame is now 9.6 degrees behind the visitor.
+    const want = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+    let last = env.getLocalFrame().angleTo(want);
+    expect(THREE.MathUtils.radToDeg(last)).toBeCloseTo(9.63, 1);
+    // Standing: it eases round, never overshooting, and is right within 3 s.
+    for (let f = 0; f < 180; f++) {
+      env.update(dt, up.clone().multiplyScalar(R), 3 + f * dt);
+      const off = env.getLocalFrame().angleTo(want);
+      expect(off).toBeLessThanOrEqual(last + 1e-9);
+      last = off;
+    }
+    expect(last).toBeLessThan(1e-4);
+    expect(localElevation(sun, up)).toBeCloseTo(CAP_DEG, 2);
+  });
+
+  test('a teleport re-bases at once; reduced motion never swings the light', () => {
+    const { env, sun } = makeCycle();
+    env.debugHour = 10.5;
+    env.update(1 / 60, DISTRICT_DIRS[0].clone().multiplyScalar(R), 0);
+    // Fast travel to the far district: right on the next frame.
+    env.update(1 / 60, DISTRICT_DIRS[2].clone().multiplyScalar(R), 1 / 60);
+    expect(localElevation(sun, DISTRICT_DIRS[2])).toBeCloseTo(CAP_DEG, 4);
+
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      const up = DISTRICT_DIRS[2].clone();
+      const axis = new THREE.Vector3(0, 1, 0).cross(up).normalize();
+      for (let f = 0; f < 120; f++) {
+        up.applyAxisAngle(axis, 5.6 / 60 / R).normalize();
+        env.update(1 / 60, up.clone().multiplyScalar(R), 1 + f / 60);
+      }
+      const want = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      expect(env.getLocalFrame().angleTo(want)).toBeGreaterThan(0.1);
+      // Stand for a quarter of a second: one step, no animation.
+      const seen = new Set<string>();
+      for (let f = 0; f < 15; f++) {
+        env.update(1 / 60, up.clone().multiplyScalar(R), 3 + f / 60);
+        seen.add(env.getLocalFrame().angleTo(want).toFixed(6));
+      }
+      expect(seen.size).toBe(2);
+      expect(localElevation(sun, up)).toBeCloseTo(CAP_DEG, 4);
+    } finally {
+      a11y.reducedMotion = was;
+    }
+  });
+
+  test('one switch, timed through FxBudget on a method bound once', () => {
+    const env = stripped('EnvironmentCycle.ts');
+    expect(env).toContain("fx.register('localSun', { desktop: true, low: true })");
+    expect(decl('EnvironmentCycle.ts', 'update')).toContain(
+      "fx.time('localSun', this.stepLocalFrame)",
+    );
+    // An arrow property: the same function object every frame.
+    expect(env).toMatch(/private readonly stepLocalFrame = \(\): void => \{/);
+    // The discs and the sky's lobe ride the visitor's frame, the light its own.
+    const update = decl('EnvironmentCycle.ts', 'update');
+    expect(update.match(/\.applyQuaternion\(this\.qSky\)/g)).toHaveLength(3);
+    expect(update.match(/\.applyQuaternion\(this\.qLight\)/g)).toHaveLength(1);
   });
 });
