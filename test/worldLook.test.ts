@@ -1604,3 +1604,72 @@ describe('a sea that stays blue (C2)', () => {
     ).toHaveLength(1);
   });
 });
+
+describe('the Sailor tells visitors the beach-house code (P2-C6, decision P2-2)', () => {
+  // The islet's beach house has a coded door, and nothing in the world said
+  // what the code was. The Sailor gives it now; D's pin pad sends people to
+  // him after a wrong try (P2-D9).
+
+  /** A villager's authored lines, read from Island's NPC table. */
+  const linesOf = (name: string): string[] => {
+    const p = parse('Island.ts');
+    let found: string[] | null = null;
+    const visit = (n: ts.Node): void => {
+      if (found) return;
+      if (ts.isObjectLiteralExpression(n)) {
+        const prop = (key: string): ts.Expression | undefined =>
+          n.properties
+            .filter(ts.isPropertyAssignment)
+            .find((q) => ts.isIdentifier(q.name) && q.name.text === key)?.initializer;
+        const who = prop('name');
+        const lines = prop('dialogue');
+        if (
+          who &&
+          ts.isStringLiteral(who) &&
+          who.text === name &&
+          lines &&
+          ts.isArrayLiteralExpression(lines)
+        ) {
+          found = lines.elements.map((e) => (ts.isStringLiteralLike(e) ? e.text : ''));
+          return;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(p.sf);
+    expect(found, `${name} has no dialogue in Island.ts`).not.toBeNull();
+    return found as unknown as string[];
+  };
+
+  test('his lines give the code, and still say where the house is', () => {
+    const lines = linesOf('Sailor');
+    const withCode = lines.filter((l) => l.includes('5673'));
+    expect(withCode).toHaveLength(1);
+    expect(withCode[0]).toContain('beach house on the islet out south');
+    expect(withCode[0]).toContain('door code');
+    // Four digits, as the pin pad takes.
+    expect(withCode[0]).toMatch(/\b\d{4}\b/);
+  });
+
+  test('it is his first written reply: one question is enough when replies are offline', () => {
+    // main-simple opens with line 0 (or a live greeting) and cycles the
+    // written fallbacks from index 1.
+    const lines = linesOf('Sailor');
+    expect(lines[1]).toContain('5673');
+    expect(lines[0]).not.toContain('5673');
+    expect(lines).toHaveLength(4);
+  });
+
+  test('nobody else gives it away, and the copy keeps to the Fact Sheet', () => {
+    const p = parse('Island.ts');
+    const hits: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isStringLiteralLike(n) && n.text.includes('5673')) hits.push(n.text);
+      ts.forEachChild(n, visit);
+    };
+    visit(p.sf);
+    expect(hits).toHaveLength(1);
+    // Villagers are villagers: never 'agents', never 'live AI'.
+    for (const l of linesOf('Sailor')) expect(l).not.toMatch(/\bagents?\b|live AI/i);
+  });
+});

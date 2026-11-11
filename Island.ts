@@ -3292,10 +3292,16 @@ export class Island {
       },
       {
         name: 'Sailor',
+        // The beach house on the islet has a coded door (decision P2-2: a
+        // visitor can find the code in the world). The Sailor gives it, and
+        // the pin pad sends people to him after a wrong try. It is his first
+        // WRITTEN reply on purpose: main-simple cycles these from index 1
+        // when the villagers' replies are offline, so one question is enough.
+        // A game mechanic, not a secret: the code already ships in the client.
         dialogue: [
           'Ahoy! Finest little harbour on any sphere.',
+          'My brother keeps a beach house on the islet out south. Tell him I said hello — his door code is our old boat number, 5673.',
           'The waves here follow real maths, you know.',
-          'My brother keeps a beach house on the islet out south — tell him I said hello.',
           'Swim out sometime — the water is warmer than it looks.',
         ],
       },
