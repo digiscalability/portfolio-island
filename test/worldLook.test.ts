@@ -1673,3 +1673,140 @@ describe('the Sailor tells visitors the beach-house code (P2-C6, decision P2-2)'
     for (const l of linesOf('Sailor')) expect(l).not.toMatch(/\bagents?\b|live AI/i);
   });
 });
+
+describe('district beacons keep their colours by day and by night (P2-C5)', () => {
+  // The beacon on each hall's roof is the far-read cue for its district. It
+  // was tagged isNightEmissive, the drive for windows and bulbs: 0.15 by day
+  // (the cue was out), and at night 30% toward amber, which turned
+  // Professional's blue (#2196f3) into a grey lavender (#9798d2) while the
+  // HUD and the minimap kept the district colours.
+  const DISTRICT_COLOURS: Array<[string, number]> = [
+    ['welcome', 0x4caf50],
+    ['professional', 0x2196f3],
+    ['personal', 0xe91e63],
+    ['contact', 0x9c27b0],
+    ['projects', 0xff9800],
+  ];
+  const stubIsland = {
+    sampleSurfaceByDirection: () => {
+      throw new Error('stub: Zone falls back to an ideal-sphere seat');
+    },
+    getRadius: () => 100,
+  } as unknown as Island;
+
+  type Emissive = THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+  const matOf = (o: THREE.Object3D | undefined): Emissive => (o as THREE.Mesh).material as Emissive;
+
+  /** The five halls on a scene, and a cycle built over them. */
+  const town = (): {
+    env: EnvironmentCycle;
+    halls: Array<{ id: string; colour: number; marker: THREE.Object3D }>;
+  } => {
+    installHeadlessCanvas();
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x79b7e6, 0.0045);
+    const halls = DISTRICT_COLOURS.map(([id, colour], i) => {
+      const zone = new Zone(
+        {
+          id,
+          name: id,
+          description: '',
+          position: dirAt(i * 1.2, 0.46).multiplyScalar(R),
+          color: colour,
+          icon: 'x',
+        },
+        stubIsland,
+      );
+      scene.add(zone.marker);
+      return { id, colour, marker: zone.marker };
+    });
+    const env = new EnvironmentCycle(
+      scene,
+      new THREE.DirectionalLight(0xffe9c0, 1.6),
+      new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62),
+      {
+        topColor: { value: new THREE.Color() },
+        bottomColor: { value: new THREE.Color() },
+        horizonColor: { value: new THREE.Color() },
+      },
+    );
+    return { env, halls };
+  };
+
+  test('1.0 by day and 1.3 at night, in the authored colour at every hour', () => {
+    const { env, halls } = town();
+    for (const [hour, want] of [
+      [12, 1.0],
+      [18, 1.0],
+      [21, 1.3],
+      [0, 1.3],
+      [9, 1.0],
+    ]) {
+      env.debugHour = hour;
+      env.update(1 / 60, HUB.clone().multiplyScalar(R), hour);
+      for (const h of halls) {
+        const mat = matOf(h.marker.getObjectByName('zone-beacon'));
+        expect(mat.emissiveIntensity).toBeCloseTo(want, 9);
+        expect(mat.emissive.getHex()).toBe(h.colour);
+      }
+    }
+  });
+
+  test('windows and the door lamp keep the old drive: dim by day, amber at night', () => {
+    const { env, halls } = town();
+    const hall = halls[1].marker;
+    const tagged: Emissive[] = [];
+    hall.traverse((o) => {
+      if (o.userData.isNightEmissive) tagged.push(matOf(o));
+    });
+    expect(tagged.length).toBeGreaterThan(4);
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    for (const m of tagged) expect(m.emissiveIntensity).toBeCloseTo(0.15, 9);
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    const amber = new THREE.Color(0xffe6a8).lerp(new THREE.Color(0xff9c46), 0.3).getHex();
+    for (const m of tagged) {
+      expect(m.emissiveIntensity).toBeCloseTo(1.3, 9);
+      expect(m.emissive.getHex()).toBe(amber);
+    }
+  });
+
+  test('the beacon carries no night tag, and is found by name whatever it is tagged', () => {
+    const { halls } = town();
+    for (const h of halls) {
+      const beacon = h.marker.getObjectByName('zone-beacon');
+      expect(beacon).toBeDefined();
+      expect(beacon?.userData.isNightEmissive).toBeUndefined();
+    }
+    // A stale tag (an old save of the scene, a future edit) cannot put a
+    // beacon back on the window drive: the name wins.
+    const scene = new THREE.Scene();
+    const stale = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.26, 0),
+      new THREE.MeshStandardMaterial({ color: 0x2196f3, emissive: 0x2196f3 }),
+    );
+    stale.name = 'zone-beacon';
+    stale.userData.isNightEmissive = true;
+    scene.add(stale);
+    installHeadlessCanvas();
+    const env = new EnvironmentCycle(
+      scene,
+      new THREE.DirectionalLight(0xffe9c0, 1.6),
+      new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62),
+      {
+        topColor: { value: new THREE.Color() },
+        bottomColor: { value: new THREE.Color() },
+        horizonColor: { value: new THREE.Color() },
+      },
+    );
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(matOf(stale).emissive.getHex()).toBe(0x2196f3);
+    expect(matOf(stale).emissiveIntensity).toBeCloseTo(1.3, 9);
+    // The tag is gone from the source too; the other four tags in Zones stay.
+    const building = decl('Zones.ts', 'createBuilding');
+    expect(building).not.toContain('beacon.userData.isNightEmissive');
+    expect(stripped('Zones.ts').match(/userData\.isNightEmissive = true/g)).toHaveLength(4);
+  });
+});

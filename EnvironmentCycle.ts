@@ -311,6 +311,15 @@ export class EnvironmentCycle {
     mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
     base: THREE.Color;
   }> = [];
+  // District beacons (the 'zone-beacon' on each hall's roof), with the
+  // colour each was authored in. Their own list, never nightEmissives: a
+  // beacon is the far-read cue for a district, so it is lit all day and its
+  // hue is the district's at every hour (P2-C5).
+  private beacons: Array<{
+    mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+    base: THREE.Color;
+  }> = [];
+  private readonly seenBeacon = new Set<THREE.Material>();
   // Dedupe across collection passes (constructor + the late rescan)
   private readonly seenGlow = new Set<THREE.Light>();
   private readonly seenEmissive = new Set<THREE.Material>();
@@ -614,7 +623,8 @@ export class EnvironmentCycle {
 
   /**
    * Collect the lamp lights so they can brighten at night, plus the
-   * isNightEmissive-tagged meshes (house windows, lamp bulbs).
+   * isNightEmissive-tagged meshes (house windows, lamp bulbs) and the
+   * district beacons (by name, into a list of their own).
    * The constructor pass runs after GameScene's toonify pass, so the
    * collected materials are the live toon clones; every tagged mesh owns a
    * private material (created inline in Island, and the toonify cache is
@@ -657,6 +667,19 @@ export class EnvironmentCycle {
               base: pMat.color.clone(),
               emBase: (pMat.emissive ?? new THREE.Color(0x000000)).clone(),
             });
+          }
+        }
+        return;
+      }
+      // Beacons first, by name: whatever they are tagged, they never join
+      // the window-and-bulb drive below.
+      if (obj.name === 'zone-beacon') {
+        const bMesh = obj as THREE.Mesh;
+        if (bMesh.isMesh && !Array.isArray(bMesh.material)) {
+          const bMat = bMesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+          if (bMat.emissive && !this.seenBeacon.has(bMat)) {
+            this.seenBeacon.add(bMat);
+            this.beacons.push({ mat: bMat, base: bMat.emissive.clone() });
           }
         }
         return;
@@ -1279,6 +1302,14 @@ export class EnvironmentCycle {
       e.mat.emissive.copy(e.base).lerp(this._c2, nightF * 0.3);
     }
 
+    // District beacons: 1.0 by day, 1.3 at night (the night factor, so they
+    // do not swell through golden hour), always in the authored colour.
+    const beaconGlow = 1 + 0.3 * night;
+    for (const b of this.beacons) {
+      b.mat.emissiveIntensity = beaconGlow;
+      b.mat.emissive.copy(b.base);
+    }
+
     // Pavement at night: MOONLIT STONE, not asphalt. The road is the thing a
     // visitor navigates by after dark, and it used to be the thing that
     // disappeared — the ribbon was lerped 85% toward 0x3c3f48 while its
@@ -1341,6 +1372,8 @@ export class EnvironmentCycle {
     }
     this.starLayers.length = 0;
     this.nightEmissives.length = 0;
+    this.beacons.length = 0;
+    this.seenBeacon.clear();
     this.glowLights.length = 0;
     this.pavementMats.length = 0;
     this.seenGlow.clear();

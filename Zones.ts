@@ -277,6 +277,11 @@ export class Zone {
 
     // Rooftop beacon — the far-read navigation cue that replaces the tall beam.
     // Saturated emissive so it reads without bloom (mobile has no composer).
+    // NOT tagged isNightEmissive (P2-C5): that drive is for windows and bulbs,
+    // which dim to 0.15 by day and warm 30% toward amber at night. On a beacon
+    // it put out the cue by day and at night turned Professional's blue to a
+    // grey lavender, away from the HUD and minimap colours. EnvironmentCycle
+    // finds the beacons by NAME and drives them on their own.
     const beacon = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.26, 0),
       new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.0 }),
@@ -286,7 +291,6 @@ export class Zone {
     // The old (bh + 1.7) put the pitch-roof beacon only 0.3 over the apex —
     // its bottom vertex dipped to apex−0.08 at the bob's low point.
     beacon.position.y = roofPeakY + 0.5;
-    beacon.userData.isNightEmissive = true;
     g.add(beacon);
 
     // Per-district accent prop
