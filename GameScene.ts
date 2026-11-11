@@ -119,6 +119,10 @@ interface LightRigSource {
 // the rig is the authored one.
 fx.register('lightRig', { desktop: true, low: true });
 
+// The avatar fades when the camera comes close (B11; the fade itself is
+// SimplePlayer.updateCloseFade).
+fx.register('avatarFade', { desktop: true, low: true });
+
 /** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
  *  (geometry and material are shared). */
 const ARRIVAL_TRAIL_COINS = 5;
@@ -807,6 +811,12 @@ export class GameScene extends THREE.Scene {
   private rigDt = 0;
   private rigParked = true;
   private readonly boundLightRig = (): void => this.updateLightRig();
+  // The close-camera fade (B11): the torso's height above the player's
+  // origin, the frame's dt, and the method fx.time runs.
+  private static readonly AVATAR_FADE_TORSO = 0.35;
+  private readonly _fadeAnchor = new THREE.Vector3();
+  private avatarFadeDt = 0;
+  private readonly boundAvatarFade = (): void => this.updateAvatarFade();
   private _sunDir = new THREE.Vector3();
   // Shadow-box texel snapping (updateSunShadow) — the basis three's shadow
   // camera uses, plus the rounded box centre.
@@ -11014,6 +11024,7 @@ export class GameScene extends THREE.Scene {
       this.orbitCamera.setFocusPoint(this.getCameraFocus());
       this.orbitCamera.update(deltaTime);
     }
+    this.tickAvatarFade(deltaTime);
 
     // Update GLTF animations (for-of, not forEach — no per-frame closure alloc,
     // matching cloudPivots/birds/swayTrees below)
@@ -12548,6 +12559,30 @@ export class GameScene extends THREE.Scene {
     this.rigWeatherShadow +=
       (weatherShadow - this.rigWeatherShadow) * Math.min(1, this.rigDt * 0.5);
     sun.shadow.intensity *= (1 - 0.5 * night) * this.rigWeatherShadow;
+  }
+
+  /**
+   * The close-camera fade (B11), outdoors and in a room alike. The distance
+   * runs from the camera to the avatar's torso, taken from player.position:
+   * the visual group, which is the room-space one indoors. (Never
+   * getWorldPosition() or Box3.setFromObject(player) in a room: the physics
+   * state stays at the doorstep, and SimplePlayer's updateWorldMatrix snaps
+   * the visual back to it.) With fx 'avatarFade' off the avatar is handed an
+   * infinite distance, so a fade in progress runs back out.
+   */
+  private tickAvatarFade(deltaTime: number): void {
+    this.avatarFadeDt = deltaTime;
+    if (fx.on('avatarFade')) fx.time('avatarFade', this.boundAvatarFade);
+    else this.player.updateCloseFade(Infinity, deltaTime);
+  }
+
+  private updateAvatarFade(): void {
+    const player = this.player;
+    this._fadeAnchor
+      .set(0, GameScene.AVATAR_FADE_TORSO, 0)
+      .applyQuaternion(player.quaternion)
+      .add(player.position);
+    player.updateCloseFade(this.camera.position.distanceTo(this._fadeAnchor), this.avatarFadeDt);
   }
 
   /** fx 'lightRig' off: the fill and the rim go back where setupLighting put
@@ -15789,6 +15824,8 @@ export class GameScene extends THREE.Scene {
       this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
       this.camera.lookAt(p.x, p.y + 0.85, p.z);
     }
+    // A wall behind the camera brings it close: the avatar fades (B11).
+    this.tickAvatarFade(deltaTime);
 
     // Fixtures: curtains slide, the lamp fades. Both eased rather than snapped
     // so pressing E reads as working something, not as a state flip.

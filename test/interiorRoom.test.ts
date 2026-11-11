@@ -69,6 +69,8 @@ const THEMES = ['office', 'workshop', 'home', 'post', 'hall', 'cottage', 'beach'
 const DOOR = 'leave';
 
 let scene: Room;
+/** The camera-to-torso distance the last room frame gave the avatar's fade. */
+let fadeDistance = Infinity;
 const room = (): { x: number; z: number } => {
   const o = statics.INTERIOR_ORIGIN;
   const p = (scene.player as { position: THREE.Vector3 }).position;
@@ -105,6 +107,10 @@ beforeAll(() => {
     tickInteriorAnimation: () => {},
     getWalkCyclePhase: () => 0,
     applyPartyDance: () => {},
+    // The close-camera fade (B11): the distance each room frame hands it.
+    updateCloseFade: (camDistance: number) => {
+      fadeDistance = camDistance;
+    },
   };
   scene.camera = new THREE.PerspectiveCamera(50, 1.6, 0.1, 2000);
   scene.island = { houseDoors: [], npcTargets: [] };
@@ -132,6 +138,27 @@ describe('a visit starts clear of the door', () => {
     const s = statics.INTERIOR_SPAWN;
     const door = scene.interiorHotspotsFor('cottage').find((h) => h.action === DOOR)!;
     expect(Math.hypot(s.x - door.x, s.z - door.z)).toBeCloseTo(1.43, 2);
+  });
+});
+
+describe('a wall behind the camera fades the avatar (B11)', () => {
+  // The room camera trails 2.4 u behind the avatar and is clamped inside the
+  // walls, so a visitor with their back to a wall has it at their shoulder.
+  test('measured from the room-space avatar: far at the spawn, near against the door wall', () => {
+    enter('hall');
+    scene.updateInteriorMode(1 / 60);
+    // SimplePlayer fades in under 1.1 u and back out over 1.3 u.
+    expect(fadeDistance).toBeGreaterThan(1.3);
+    // Back against the front wall, still facing into the room.
+    const o = statics.INTERIOR_ORIGIN;
+    const p = (scene.player as { position: THREE.Vector3 }).position;
+    p.set(o.x - 0.5, p.y, o.z + 3.3);
+    for (let i = 0; i < 90; i++) scene.updateInteriorMode(1 / 60);
+    expect(fadeDistance).toBeLessThan(1.1);
+    // The stand-in's getWorldPosition() is the doorstep, 376 u away: the
+    // distance came from player.position, the group that is in the room.
+    expect(fadeDistance).toBeGreaterThan(0.5);
+    scene.exitInterior();
   });
 });
 

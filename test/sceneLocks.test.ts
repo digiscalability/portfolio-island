@@ -565,6 +565,74 @@ describe('the light rig follows the camera and the sun (P2-B5)', () => {
   });
 });
 
+describe('the close-camera fade is driven from the visual group (B11)', () => {
+  test('the camera-to-torso distance comes from player.position, outdoors and in a room', () => {
+    const fed: Array<[number, number]> = [];
+    const player = {
+      position: new THREE.Vector3(10, 60, 0),
+      quaternion: new THREE.Quaternion(),
+      // The physics position: indoors it stays at the doorstep.
+      getWorldPosition: () => {
+        throw new Error('the fade must not read the physics position');
+      },
+      updateCloseFade: (d: number, dt: number) => fed.push([d, dt]),
+    };
+    const camera = new THREE.PerspectiveCamera();
+    const scene = Object.setPrototypeOf(new THREE.Scene(), GameScene.prototype) as unknown as {
+      tickAvatarFade(dt: number): void;
+    };
+    Object.assign(scene, {
+      player,
+      camera,
+      _fadeAnchor: new THREE.Vector3(),
+      avatarFadeDt: 0,
+      boundAvatarFade: () =>
+        (GameScene.prototype as unknown as Record<string, () => void>)['updateAvatarFade'].call(
+          scene,
+        ),
+    });
+    // 0.8 u behind the torso (the origin plus 0.35 along the avatar's up).
+    camera.position.set(10, 60.35, 0.8);
+    scene.tickAvatarFade(1 / 60);
+    expect(fed[0][0]).toBeCloseTo(0.8, 6);
+    expect(fed[0][1]).toBeCloseTo(1 / 60, 9);
+    // The avatar's own up, not world +Y: lying on its side the torso is beside it.
+    player.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
+    camera.position.set(10.35, 60, 2);
+    scene.tickAvatarFade(1 / 60);
+    expect(fed[1][0]).toBeCloseTo(2, 6);
+    // Off, the avatar is told the camera is far away, so a fade runs back out.
+    const g = globalThis as { __dsFx?: Record<string, unknown> };
+    g.__dsFx = { ...(g.__dsFx ?? {}), avatarFade: false };
+    try {
+      scene.tickAvatarFade(1 / 60);
+      expect(fed[2][0]).toBe(Infinity);
+    } finally {
+      delete g.__dsFx.avatarFade;
+    }
+  });
+
+  test('one budgeted effect, bound once, ticked on both update paths', () => {
+    const g = stripped('GameScene.ts');
+    expect(g).toContain("fx.register('avatarFade', { desktop: true, low: true });");
+    const tick = bodyOf(g, 'private tickAvatarFade(');
+    expect(tick).toContain("if (fx.on('avatarFade')) fx.time('avatarFade', this.boundAvatarFade);");
+    expect(g).toContain('private readonly boundAvatarFade = (): void => this.updateAvatarFade();');
+    const fade = bodyOf(g, 'private updateAvatarFade()');
+    expect(fade).not.toMatch(/\bnew\b/);
+    expect(fade).not.toContain('getWorldPosition');
+    expect(fade).not.toContain('setFromObject');
+    expect(bodyOf(g, 'public update(deltaTime: number)')).toContain(
+      'this.tickAvatarFade(deltaTime);',
+    );
+    expect(bodyOf(g, 'private updateInteriorMode(')).toContain('this.tickAvatarFade(deltaTime);');
+    // The shared ink material is never the fade's to write (CelLook owns it).
+    const p = stripped('SimplePlayer.ts');
+    expect(bodyOf(p, 'private applyCloseFade(')).toContain('h.visible = solid');
+    expect(p).not.toContain('setInkVisible');
+  });
+});
+
 describe('the sky ends like every built-in material (P2-B4)', () => {
   test('the dome applies the frame’s tone mapping, then its output encoding', () => {
     // MEASURED on the low tier, which draws straight to the canvas: the dome
