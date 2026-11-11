@@ -22,6 +22,7 @@ import {
   DISTRICT_SHIFT,
   districtAccentAt,
 } from './Districts';
+import { DAY_FACTOR_UNIFORM } from './EnvironmentCycle';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
 import { SimplePlayer } from './SimplePlayer';
@@ -295,9 +296,12 @@ export class Island {
    *
    * calibrateSurfBands() solves for the depth that lands each band at its
    * authored METRE offset on THIS island, so the surf reads the same at any
-   * radius — and reproduces 1.6/2.4/3.2 at R=75 by construction.
+   * radius — and reproduces 2.2/2.4/3.2 at R=75 by construction.
+   *
+   * The collar was 1.6 (3.75 m of water). At the shipped camera no white
+   * edge read at all (0 px in every column probed), so it is 2.2 now (C2).
    */
-  private seaBandsUniform = { value: new THREE.Vector3(1.6, 2.4, 3.2) };
+  private seaBandsUniform = { value: new THREE.Vector3(2.2, 2.4, 3.2) };
 
   public seaTimeUniform: { value: number } = { value: 0 };
   // Slow rise/fall of the whole sea surface, shared by the shader and the CPU
@@ -1706,6 +1710,9 @@ export class Island {
       shader.uniforms.uTide = this.seaTideUniform;
       shader.uniforms.uSkyHorizon = this.seaSkyHorizonUniform;
       shader.uniforms.uBands = this.seaBandsUniform;
+      // EnvironmentCycle's day factor, shared by reference: written once a
+      // frame there, read here with no plumbing.
+      shader.uniforms.uDayFactor = DAY_FACTOR_UNIFORM;
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
@@ -1764,7 +1771,7 @@ export class Island {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
-          '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uBands;\nuniform vec3 uSkyHorizon;',
+          '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uBands;\nuniform vec3 uSkyHorizon;\nuniform float uDayFactor;',
         )
         .replace(
           '#include <color_fragment>',
@@ -1781,8 +1788,11 @@ export class Island {
             // GLSL literals are LINEAR-space like every colour in this block.
             'float d = vDepth - uTide;',
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.006, 0.105, 0.32), smoothstep(0.5, 2.3, d) * 0.6);',
-            // Deepen the wave troughs toward a dark teal for a sense of depth
-            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03,0.11,0.20), smoothstep(0.0,-1.4,vWave)*0.45);',
+            // Deepen the wave troughs toward a dark teal for a sense of depth.
+            // Half as much by night (C2): under a dim key the full tint took
+            // the troughs to near-black and, with the dusk horizon mixed in,
+            // to rust.
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03,0.11,0.20), smoothstep(0.0,-1.4,vWave)*0.45*(0.5 + 0.5*uDayFactor));',
             // Whitecaps. Thresholds re-tuned for the new 1.8 wave peak; a
             // narrow band keeps foam on the crest tips instead of washing the
             // whole surface pale.
@@ -1802,8 +1812,11 @@ export class Island {
             // this block now): at the old range the open ocean (d≈2.5) still
             // carried ~0.16 of this tint — a big part of the milky noon look.
             // It now dies exactly where the depth gradient takes over.
+            // C2: toward #3cc6c0 (linear 0.045, 0.565, 0.527) by 0.85, from
+            // (0.20, 0.70, 0.72) by 0.7. Seen from above the near-shore band
+            // read as seabed green-grey, not as turquoise water.
             'float shallow = 1.0 - smoothstep(0.0, uBands.y, d);',
-            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20,0.70,0.72), shallow*shallow*0.7);',
+            'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.045,0.565,0.527), shallow*shallow*0.85);',
             'float edge = 1.0 - smoothstep(0.0, uBands.z, d);',
             'float s1 = sin(d * 2.6 - uTime * 1.9);',
             'float s2 = sin(d * 4.3 - uTime * 2.7 + 1.7);',
@@ -1815,11 +1828,27 @@ export class Island {
             // phone DPR.
             'float fn = fract(sin(dot(floor(vFoamUv * 38.0), vec2(12.9898, 78.233))) * 43758.5453);',
             'float foam = edge * smoothstep(0.2, 0.9, surf + (fn - 0.5) * 0.45);',
+            // The surf's three bands overlap into a sheet across a flat
+            // shelf, and under a high sun the sheet is white: it hid the
+            // turquoise wherever the water was shallow. In the shallows the
+            // bands are held to a third of their strength (C2), so they read
+            // as pale streaks moving over turquoise; past the shallow band
+            // they are as they were.
+            'foam *= 1.0 - 0.65 * shallow * shallow;',
             // Permanent foam collar at the waterline, under the moving surf.
             // The shallowest sea verts hide UNDER the beach, so the visible rim
-            // sits at d≈0.2–0.8 — the old 0.9 range faded to nothing exactly
-            // there and no line survived. 1.6 keeps an unbroken white edge.
-            'foam = max(foam, (1.0 - smoothstep(0.05, uBands.x, d)) * 0.9);',
+            // sits at d≈0.2–0.8. The collar used to be one ramp from 0.05 out
+            // to uBands.x: full white only where the beach hides it, a thin
+            // milk over everything shallower than the band, and at the shipped
+            // camera no white edge at all. It is an EDGE now (C2): solid to
+            // 0.1 of the band, then gone within another 0.1 of it OR three pixels,
+            // whichever is wider. Depth is all the shader knows of the shore,
+            // and a shelf can be flat for metres or drop in one: the pixel
+            // floor keeps a line on the steep shores, the short depth range
+            // keeps it a line on the flat ones.
+            'float collarIn = uBands.x * 0.1;',
+            'float collarFade = max(uBands.x * 0.1, fwidth(d) * 3.0);',
+            'foam = max(foam, (1.0 - smoothstep(collarIn, collarIn + collarFade, d)) * 0.9);',
             'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95,0.98,1.0), clamp(foam, 0.0, 1.0) * 0.9);',
           ].join('\n'),
         )
@@ -1841,9 +1870,33 @@ export class Island {
           '#include <opaque_fragment>',
           [
             'float fres = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);',
+            // ── A sea that stays blue (C2) ────────────────────────────────
+            // The fresnel mixed the live sky horizon in at 0.4 and the haze at
+            // 0.45, so at dawn and dusk the orange horizon WAS the sea: its
+            // mean hue measured 356 deg at 06:00 and 18 deg at 18:00 (rust),
+            // against 205 at noon. seaHorizon is the horizon with its hue
+            // LOCKED: the luminance is the sky's (40%) and deep-sea blue's
+            // (60%, #1d5f8f, dimmed with the sky so the sea still goes dark
+            // at night), and the hue is the sea's alone, 60% saturated.
+            // (The plan kept 35% of the horizon's own chroma and went half
+            // way to the blue; under a dusk horizon that is mauve, hue 276.
+            // An orange that strong cannot be kept in part.) Derived HERE,
+            // per fragment, because uSkyHorizon is EnvironmentCycle's live
+            // Color bound by reference (bindSeaSkyColor): a value derived
+            // when it is bound would freeze at the boot horizon.
+            'float skyLuma = dot(uSkyHorizon, vec3(0.2126, 0.7152, 0.0722));',
+            'float seaLuma = 0.4 * skyLuma + 0.6 * 0.1043 * clamp(skyLuma * 2.3, 0.12, 1.0);',
+            // (0.471, 1.058, 1.980) is #1d5f8f at luminance 1, 60% saturated.
+            'vec3 seaHorizon = seaLuma * vec3(0.471, 1.058, 1.980);',
+            // The FAR band is the last two and a half degrees before the limb
+            // (fres is (1 - N.V)^3): there the water takes the true horizon
+            // colour, and more of it, so the sea still meets the sky on one
+            // colour. The limb is only 24-30 u away at walking height, so a
+            // distance key never reached it.
+            'float farBand = smoothstep(0.88, 0.995, fres);',
             isRealTheme()
               ? '// real theme: envmap supplies the sky reflection'
-              : 'outgoingLight = mix(outgoingLight, uSkyHorizon, fres * 0.4);',
+              : 'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), fres * mix(0.4, 0.8, farBand));',
             // Horizon haze: dissolve the distant sea into the LIVE sky-horizon
             // colour so the water no longer meets the sky as a hard line — the
             // single biggest "sells a world, not an object on a table" cue.
@@ -1855,9 +1908,14 @@ export class Island {
             // live horizon) still supplies the soft far blend, so this now
             // just feathers the last band and the horizon reads as a LINE
             // with colour depth behind it. Applies to both themes.
+            // The haze takes the hue-locked seaHorizon too (C2), and the true
+            // horizon colour only in the far band.
             'float horizonHaze = smoothstep(30.0, 64.0, length(vViewPosition));',
-            'outgoingLight = mix(outgoingLight, uSkyHorizon, horizonHaze * 0.45);',
+            'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), horizonHaze * 0.45);',
             'diffuseColor.a = mix(0.85, 0.97, fres);',
+            // Shallows are opaque (C2): under about 1.2 of depth the 0.85
+            // alpha let the seabed through, which is what read as murk.
+            'diffuseColor.a = mix(diffuseColor.a, 0.97, 1.0 - smoothstep(1.0, 1.4, d));',
             '#include <opaque_fragment>',
           ].join('\n'),
         );
@@ -5727,8 +5785,10 @@ export class Island {
 
   /** Radius of the calm water surface (matches the sea mesh). */
   /** Authored surf-band offsets in METRES from the waterline. Measured at
-   *  R=75, where they correspond to depths 1.6 / 2.4 / 3.2. */
-  private static readonly SURF_BAND_METRES = [3.75, 6.0, 8.0] as const;
+   *  R=75, where they correspond to depths 2.2 / 2.4 / 3.2. (The collar's
+   *  5.15 m is the old 3.75 m scaled by 2.2 / 1.6; the shallow band's own
+   *  offset stays, and the ordering clamp below keeps it outside the collar.) */
+  private static readonly SURF_BAND_METRES = [5.15, 6.0, 8.0] as const;
 
   /**
    * Solve the depth at each authored metre-offset offshore, so the surf bands
@@ -5778,7 +5838,7 @@ export class Island {
     };
     // Fallbacks are the authored R=75 depths, so a pathological island (or a
     // radius where the shelf never reaches these depths) degrades to today.
-    const b = new THREE.Vector3(median(acc[0], 1.6), median(acc[1], 2.4), median(acc[2], 3.2));
+    const b = new THREE.Vector3(median(acc[0], 2.2), median(acc[1], 2.4), median(acc[2], 3.2));
     // Keep them ordered and sane whatever the sampler returned.
     b.y = Math.max(b.y, b.x + 0.2);
     b.z = Math.max(b.z, b.y + 0.2);

@@ -1507,3 +1507,100 @@ describe('faces readable at night, the dark patches kept (C5)', () => {
     expect(decl('EnvironmentCycle.ts', 'update')).toContain('setCelNight(night)');
   });
 });
+
+describe('a sea that stays blue (C2)', () => {
+  // The sea's fresnel and haze mixed the live sky horizon in, so at dawn and
+  // dusk the orange horizon WAS the sea (mean hue 356 at 06:00 and 18 at
+  // 18:00, rust, against 205 at noon), the shallows showed the seabed as murk
+  // and no white edge read at the waterline. Colour only: the wave sum, the
+  // normals and waveHeightAt are untouched (waveMirror pins them).
+  const hook = (): string => statement('Island.ts', 'seaMat.onBeforeCompile =');
+
+  test('the horizon in the water is hue-locked, per fragment, from the live colour', () => {
+    const sea = hook();
+    // #1d5f8f, the deep-sea blue: its luminance, and itself at luminance 1
+    // mixed 60% with white. The shader's literals are those numbers.
+    const deep = new THREE.Color(0x1d5f8f);
+    const luma = 0.2126 * deep.r + 0.7152 * deep.g + 0.0722 * deep.b;
+    expect(luma).toBeCloseTo(0.1043, 3);
+    const tint = [deep.r, deep.g, deep.b].map((c) => 0.4 + (0.6 * c) / luma);
+    expect(tint[0]).toBeCloseTo(0.471, 2);
+    expect(tint[1]).toBeCloseTo(1.058, 2);
+    expect(tint[2]).toBeCloseTo(1.98, 2);
+    expect(sea).toContain("'float skyLuma = dot(uSkyHorizon, vec3(0.2126, 0.7152, 0.0722));'");
+    expect(sea).toContain(
+      "'float seaLuma = 0.4 * skyLuma + 0.6 * 0.1043 * clamp(skyLuma * 2.3, 0.12, 1.0);'",
+    );
+    expect(sea).toContain("'vec3 seaHorizon = seaLuma * vec3(0.471, 1.058, 1.980);'");
+    // Derived in the shader: bindSeaSkyColor still shares the live Color by
+    // reference, and nothing derives a colour from it when it is bound.
+    expect(decl('Island.ts', 'bindSeaSkyColor')).toContain(
+      'this.seaSkyHorizonUniform.value = horizon',
+    );
+    expect(sea).toContain('shader.uniforms.uSkyHorizon = this.seaSkyHorizonUniform');
+  });
+
+  test('the fresnel and the haze use it; only the far band keeps the true horizon', () => {
+    const sea = hook();
+    expect(sea).toContain("'float farBand = smoothstep(0.88, 0.995, fres);'");
+    expect(sea).toContain(
+      "'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), fres * mix(0.4, 0.8, farBand));'",
+    );
+    expect(sea).toContain(
+      "'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), horizonHaze * 0.45);'",
+    );
+    // The raw horizon never goes straight into the water any more.
+    expect(sea).not.toContain('mix(outgoingLight, uSkyHorizon,');
+  });
+
+  test('the trough tint follows the day factor, shared by reference', () => {
+    const sea = hook();
+    expect(sea).toContain('shader.uniforms.uDayFactor = DAY_FACTOR_UNIFORM');
+    expect(sea).toContain('uniform float uDayFactor;');
+    expect(sea).toContain('smoothstep(0.0,-1.4,vWave)*0.45*(0.5 + 0.5*uDayFactor)');
+    // EnvironmentCycle writes that same object once a frame.
+    const { env } = makeCycle();
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(0);
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(1);
+  });
+
+  test('shallows: turquoise and opaque, the surf held back over them, a white edge at the rim', () => {
+    const sea = hook();
+    // #3cc6c0 in linear, mixed in at 0.85.
+    const turquoise = new THREE.Color(0x3cc6c0);
+    expect(turquoise.r).toBeCloseTo(0.045, 2);
+    expect(turquoise.g).toBeCloseTo(0.565, 2);
+    expect(turquoise.b).toBeCloseTo(0.527, 2);
+    expect(sea).toContain(
+      "'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.045,0.565,0.527), shallow*shallow*0.85);'",
+    );
+    expect(sea).toContain(
+      "'diffuseColor.a = mix(diffuseColor.a, 0.97, 1.0 - smoothstep(1.0, 1.4, d));'",
+    );
+    expect(sea).toContain("'foam *= 1.0 - 0.65 * shallow * shallow;'");
+    // The collar is an edge: a short depth range or three pixels, whichever is wider.
+    expect(sea).toContain("'float collarFade = max(uBands.x * 0.1, fwidth(d) * 3.0);'");
+    expect(sea).toContain(
+      "'foam = max(foam, (1.0 - smoothstep(collarIn, collarIn + collarFade, d)) * 0.9);'",
+    );
+    expect(sea).not.toContain('smoothstep(0.05, uBands.x, d)');
+    // The collar band is authored at 2.2 of depth (5.15 m of water at R = 75).
+    expect(decl('Island.ts', 'SURF_BAND_METRES')).toContain('[5.15, 6.0, 8.0]');
+  });
+
+  test('the waves are not touched: one sea program, the same displacement', () => {
+    const sea = hook();
+    // The sum the CPU mirrors (waveMirror.test.ts proves the parity).
+    expect(sea).toContain("'float w = sin(nrm.x * 9.0 + uTime * 1.3) * 0.6'");
+    expect(sea).toContain("'transformed += nrm * (w * uAmp + uTide);'");
+    // No define, no second material: the program count cannot move.
+    expect(sea).not.toContain('defines');
+    expect(
+      stripped('Island.ts').match(/const seaMat = new THREE\.MeshStandardMaterial\(/g),
+    ).toHaveLength(1);
+  });
+});
