@@ -10,8 +10,9 @@ and phone rules). A text surface is read a paragraph or list item at a time,
 so a claim wrapped over two lines still matches.
 
 Surfaces: index.html, public/llms.txt, public/hire.html (when present),
-public/manifest.webmanifest, and the string literals of SimpleUI.ts, Share.ts
-and api/z.js (parsed with the TypeScript compiler by tools/dump_personas.mjs).
+public/manifest.webmanifest, and the string literals of SimpleUI.ts, Share.ts,
+api/z.js, Guide.ts and GuideCard.ts (parsed with the TypeScript compiler by
+tools/dump_personas.mjs).
 
 Files that predate the fact sheet carry known hits in
 ``data/claims_baseline.toml``. Those hits are tolerated only while the file is
@@ -43,7 +44,7 @@ HTML_SURFACES = ["index.html", "public/hire.html"]
 TEXT_SURFACES = ["public/llms.txt"]
 JSON_SURFACES = ["public/manifest.webmanifest"]
 # String-literal surfaces come from the dump (surfaces.json): SimpleUI.ts,
-# Share.ts, api/z.js.
+# Share.ts, api/z.js, Guide.ts, GuideCard.ts.
 
 _FLAG_BITS = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
 
