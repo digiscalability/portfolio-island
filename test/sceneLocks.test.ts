@@ -416,18 +416,44 @@ describe('the light rig follows the camera and the sun (P2-B5)', () => {
   const HUB = new THREE.Vector3(0, 76, 0);
   const HIGH_SUN = new THREE.Vector3(0.3, 0.9, 0.3); // well above the hub's horizon
 
-  test('the fill shines from the camera onto the player', () => {
+  test('the fill shines from the camera onto the player, 10 degrees up at most', () => {
     const s = rig();
     const at = new THREE.Vector3(10, 74, 5);
-    for (const cam of [new THREE.Vector3(14, 78, -3), new THREE.Vector3(2, 75, 12)]) {
+    const up = at.clone().normalize();
+    const flat = (v: THREE.Vector3): THREE.Vector3 =>
+      v.clone().addScaledVector(up, -v.dot(up)).normalize();
+    // A chase camera above the player, one beside it, and one level with it.
+    const level = at.clone().add(flat(new THREE.Vector3(1, 0, 1)).multiplyScalar(6));
+    for (const cam of [new THREE.Vector3(14, 78, -3), new THREE.Vector3(2, 75, 12), level]) {
       s.camera.position.copy(cam);
       frame(s, at, HIGH_SUN);
       const want = cam.clone().sub(at).normalize();
-      expect(deg(dirOf(s.fillLight).angleTo(want))).toBeLessThan(0.01);
+      const fill = dirOf(s.fillLight);
+      // From the camera's side of the player...
+      expect(deg(flat(fill).angleTo(flat(want)))).toBeLessThan(0.01);
+      // ...as high as the camera stands, up to 10 degrees, and never higher.
+      const camUp = deg(Math.asin(Math.min(1, want.dot(up))));
+      expect(deg(Math.asin(fill.dot(up)))).toBeCloseTo(Math.min(camUp, 10), 3);
     }
   });
 
-  test('the rim stands opposite the sun at the player, 30 degrees up, wherever they are', () => {
+  test('under a low sun the fill keeps the camera’s full height', () => {
+    const s = rig();
+    const at = new THREE.Vector3(10, 74, 5);
+    const up = at.clone().normalize();
+    const cam = new THREE.Vector3(14, 78, -3);
+    s.camera.position.copy(cam);
+    // 20 degrees above the player's horizon: golden hour.
+    const flatSun = new THREE.Vector3(1, 0, 0).addScaledVector(up, -up.x).normalize();
+    const low = flatSun
+      .multiplyScalar(Math.cos(Math.PI / 9))
+      .addScaledVector(up, Math.sin(Math.PI / 9));
+    frame(s, at, low);
+    const want = cam.clone().sub(at).normalize();
+    expect(deg(dirOf(s.fillLight).angleTo(want))).toBeLessThan(0.01);
+  });
+
+  test('the rim stands opposite the sun at the player, 20-30 degrees up, wherever they are', () => {
     const s = rig();
     const sunDir = new THREE.Vector3(0.6, 0.5, -0.3).normalize();
     // The hub and four points round the ring, a quarter of the planet apart.
@@ -445,7 +471,9 @@ describe('the light rig follows the camera and the sun (P2-B5)', () => {
       const rim = dirOf(s.rimLight);
       // Opposite the sun's horizontal direction (the acceptance allows 15).
       expect(deg(flat(rim).angleTo(flat(sunDir).negate()))).toBeLessThan(0.5);
-      expect(deg(Math.asin(rim.dot(up)))).toBeCloseTo(30, 3);
+      // 30 degrees up under a sun 45 degrees high or lower, 20 from 60.
+      const high = THREE.MathUtils.smoothstep(sunDir.dot(up), Math.SQRT1_2, Math.sin(Math.PI / 3));
+      expect(deg(Math.asin(rim.dot(up)))).toBeCloseTo(30 - 10 * high, 3);
     }
     // Its level is the day curve's, unchanged.
     expect(s.rimLight.intensity).toBeCloseTo(0.55, 6);
@@ -457,9 +485,14 @@ describe('the light rig follows the camera and the sun (P2-B5)', () => {
   test('a sun straight overhead keeps the rim where it was', () => {
     const s = rig();
     frame(s, HUB, new THREE.Vector3(1, 0.5, 0));
-    const before = dirOf(s.rimLight);
+    const up = HUB.clone().normalize();
+    const flat = (v: THREE.Vector3): THREE.Vector3 =>
+      v.clone().addScaledVector(up, -v.dot(up)).normalize();
+    const before = flat(dirOf(s.rimLight));
     frame(s, HUB, new THREE.Vector3(0, 1, 0));
-    expect(deg(dirOf(s.rimLight).angleTo(before))).toBeLessThan(0.01);
+    // Its bearing holds; only its height follows the sun's (20 degrees now).
+    expect(deg(flat(dirOf(s.rimLight)).angleTo(before))).toBeLessThan(0.01);
+    expect(deg(Math.asin(dirOf(s.rimLight).dot(up)))).toBeCloseTo(20, 3);
   });
 
   test('golden hour is not night: full shadows and the day fill at 06 h and 18 h', () => {

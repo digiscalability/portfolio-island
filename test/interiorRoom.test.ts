@@ -289,6 +289,9 @@ describe('a room borrows the island’s light rig (P2-B9)', () => {
       enter('hall');
       scene.updateInteriorMode(1 / 60);
       expect([l.sun.color.getHex(), l.sun.intensity]).toEqual([hex(0xffd59a), 1.25]);
+      // ...and comes lower, a lamp at head height, onto the visitor's side.
+      const nightKey = new THREE.Vector3(0.35, 0.6, 0.7).normalize();
+      expect(dirOf(l.sun).angleTo(nightKey)).toBeLessThan(1e-6);
       expect(l.rim.intensity).toBeCloseTo(0.1, 9);
       // Golden hour is still day (EnvironmentCycle's day factor at 06 h and 18 h).
       scene.exitInterior();

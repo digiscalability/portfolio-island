@@ -822,8 +822,28 @@ export class GameScene extends THREE.Scene {
   /** The fill's level by day, and at night until EnvironmentCycle says
    *  otherwise (getNightFill, C's lever). */
   private static readonly FILL_DAY = 0.18;
-  /** The rim stands this far above the horizon, opposite the sun. */
-  private static readonly RIM_LIFT = Math.PI / 6;
+  /** Under a high sun, the highest the fill stands above the player's
+   *  horizon: sin(10 deg). Aimed straight along the chase camera it came
+   *  from ~25 degrees up and lit the ground too. MEASURED at the hub at noon,
+   *  the rig with the full camera direction and a 30 degree rim put the
+   *  ground +1.6 L* (desktop) and +2.0 (phone) over main; the rig off matched
+   *  main exactly. A lower sun lifts the cap (updateLightRig's sunHigh).
+   *  Capped from 30 degrees of sun, desktop's ground fell 1.2-1.9 L* at
+   *  06 h and 18 h (23.6 degrees) and the Professional district's 2.8 L*
+   *  further below the hub's at 15 h (45 degrees). */
+  private static readonly FILL_MAX_LIFT = Math.sin(Math.PI / 18);
+  /** The sun's height (sine) where the cap and the lower rim begin: 45 deg. */
+  private static readonly SUN_HIGH_FROM = Math.SQRT1_2;
+  /** ...and where they are whole: 60 degrees. Noon stands at 64.7. */
+  private static readonly SUN_HIGH_AT = Math.sin(Math.PI / 3);
+  /** Under a high sun the rim stands this far above the horizon, opposite
+   *  the sun: 20 degrees. With the fill capped, the same noon view read
+   *  -0.2 L* (desktop) and +0.1 (phone) against main at 20 degrees,
+   *  +0.9 / +1.2 at 30 and -1.3 / -1.2 at 15 (wave-2 integration build,
+   *  ?hour=12). */
+  private static readonly RIM_LIFT = Math.PI / 9;
+  /** Under a sun 45 degrees high or lower the rim stands 30 degrees up. */
+  private static readonly RIM_LIFT_LOW_SUN = Math.PI / 6;
   /** Weather's share of the sun's shadow, eased at cloudWet's rate. */
   private rigWeatherShadow = 1;
   /** The rim's last horizontal direction, kept while the sun is overhead. */
@@ -12631,13 +12651,16 @@ export class GameScene extends THREE.Scene {
    * (_sunDir), the player's up (_shadowUpAxis) and the local-horizon fade.
    *
    * - FILL: aimed along camera - player, so the side of a face or a wall the
-   *   camera sees is never the unlit one. (It used to shine up from under the
-   *   planet, on undersides.) 0.18 by day. At night it takes
+   *   camera sees is never the unlit one; under a sun 60 degrees high or
+   *   more held within FILL_MAX_LIFT of the horizon, so it leaves the ground
+   *   alone. (It used to shine up from under the planet, on undersides.)
+   *   0.18 by day. At night it takes
    *   EnvironmentCycle's getNightFill() level, which C tunes together with
    *   its night key and hemisphere (C5); until that getter exists, 0.18.
    * - RIM: opposite the sun's horizontal direction at the player, raised 30
-   *   degrees. The fixed world direction it had was a rim at one longitude
-   *   and a second key at another.
+   *   degrees under a sun up to 45 degrees high and 20 under one 60 or more
+   *   (RIM_LIFT). The fixed world direction it had was a rim at one
+   *   longitude and a second key at another.
    * - MOON SHADOWS: half strength in deep night.
    * - WEATHER SHADOWS: 0.45 under cloud, 0.4 in snow, 0.2 in rain, eased at
    *   cloudWet's rate. An overcast sky is a soft box, and a hard cel shadow
@@ -12651,13 +12674,37 @@ export class GameScene extends THREE.Scene {
     const day = env ? env.getDayFactor() : 1;
     const night = this.nightFactor(day);
     const up = this._shadowUpAxis;
+    // How high the sun stands at the player: 0 up to 45 degrees, 1 from 60
+    // (SUN_HIGH_FROM, SUN_HIGH_AT). A high sun lights the ground on its own,
+    // so the fill keeps off it and the rim comes down (FILL_MAX_LIFT,
+    // RIM_LIFT). A lower one leaves the ground short (C1's golden-hour and
+    // district bars), so there the fill keeps the full camera direction and
+    // the rim its 30 degrees.
+    const sunHigh = THREE.MathUtils.smoothstep(
+      this._sunDir.dot(up),
+      GameScene.SUN_HIGH_FROM,
+      GameScene.SUN_HIGH_AT,
+    );
     const fill = this.fillLight;
     if (fill) {
       // A DirectionalLight shines along position - target, and this target
       // stays at the origin (it is not in the scene graph), so the position
       // is the direction.
       this._rigDir.copy(this.camera.position).sub(this._rigPlayerPos);
-      if (this._rigDir.lengthSq() > 1e-6) fill.position.copy(this._rigDir.setLength(40));
+      if (this._rigDir.lengthSq() > 1e-6) {
+        // Held under the cap above the horizon: on faces and walls, not on
+        // the ground the camera looks down at.
+        const d = this._rigDir.normalize();
+        const lift = d.dot(up);
+        const cap = 1 + (GameScene.FILL_MAX_LIFT - 1) * sunHigh;
+        if (lift > cap) {
+          d.addScaledVector(up, -lift);
+          if (d.lengthSq() > 1e-6) {
+            d.setLength(Math.sqrt(1 - cap * cap)).addScaledVector(up, cap);
+          } else d.copy(up);
+        }
+        fill.position.copy(d.setLength(40));
+      }
       const nightFill = (env as unknown as LightRigSource | null)?.getNightFill?.();
       const atNight = typeof nightFill === 'number' ? nightFill : GameScene.FILL_DAY;
       fill.intensity = GameScene.FILL_DAY + (atNight - GameScene.FILL_DAY) * night;
@@ -12668,10 +12715,12 @@ export class GameScene extends THREE.Scene {
       // taken out, reversed. Overhead it has no horizontal part: hold the last.
       this._rigDir.copy(this._sunDir).addScaledVector(up, -this._sunDir.dot(up));
       if (this._rigDir.lengthSq() > 1e-4) this._rigRimFlat.copy(this._rigDir).normalize().negate();
+      const rimLift =
+        GameScene.RIM_LIFT_LOW_SUN + (GameScene.RIM_LIFT - GameScene.RIM_LIFT_LOW_SUN) * sunHigh;
       rim.position
         .copy(this._rigRimFlat)
-        .multiplyScalar(Math.cos(GameScene.RIM_LIFT))
-        .addScaledVector(up, Math.sin(GameScene.RIM_LIFT))
+        .multiplyScalar(Math.cos(rimLift))
+        .addScaledVector(up, Math.sin(rimLift))
         .multiplyScalar(52);
     }
     const w = env ? env.getWeather() : 'clear';
@@ -13349,6 +13398,12 @@ export class GameScene extends THREE.Scene {
   // window's rim falls away. LAMP OFF: the window is the key (daylight, or
   // moonlight at a fraction of it), over a dim cool hemisphere.
   private static readonly ROOM_KEY_ON_DIR = new THREE.Vector3(0.35, 0.9, 0.45).normalize();
+  /** Lamp on at night: the key comes lower, a lamp at head height rather
+   *  than daylight from above, so it lights the visitor's side more than the
+   *  floor. MEASURED on the phone at 22 h (wave-2 integration build, house_0,
+   *  from behind): the avatar +4.6 L* over the room around it with the day
+   *  direction, +5.6 with this one, +5.8 with (0.35, 0.45, 0.8). */
+  private static readonly ROOM_KEY_ON_NIGHT_DIR = new THREE.Vector3(0.35, 0.6, 0.7).normalize();
   private static readonly ROOM_KEY_OFF_DIR = new THREE.Vector3(0.1, 0.35, 1).normalize();
   private static readonly ROOM_RIM_DIR = new THREE.Vector3(-0.2, 0.3, 1).normalize();
   private static readonly ROOM_ON = {
@@ -13520,7 +13575,9 @@ export class GameScene extends THREE.Scene {
     const windowLight = 1 - (1 - GameScene.ROOM_CURTAIN_KEEP) * this.interiorCurtainT;
     if (this.interiorLampOn) {
       const P = GameScene.ROOM_ON;
-      out.keyDir.copy(GameScene.ROOM_KEY_ON_DIR);
+      out.keyDir
+        .lerpVectors(GameScene.ROOM_KEY_ON_DIR, GameScene.ROOM_KEY_ON_NIGHT_DIR, night)
+        .normalize();
       out.keyColor.lerpColors(P.keyDay, P.keyNight, night);
       out.key = P.key;
       out.sky.copy(P.sky);
@@ -15657,9 +15714,15 @@ export class GameScene extends THREE.Scene {
    * synchronous slices (compileInteriorPass) against the frame's own render
    * target, with the room shown and then hidden (one set of programs either
    * way; the second pass is cache hits), then polled ready and first-used
-   * (settleWarmPrograms), all off the render path. MEASURED cold: the warm
-   * adds 7 programs on desktop and 5 on the low tier, where it added 23 and
-   * 21. The window view needs no pass of its own: it draws with the frame's
+   * (settleWarmPrograms), all off the render path. MEASURED cold at ?hour=12
+   * on the wave-2 integration build, counting what the warm's own compile
+   * calls create: 4 programs on desktop and 4 on the phone (the window pane,
+   * the posters', one more standard and one more basic), each compile call
+   * under 1.1 ms; before the borrowed
+   * rig it added 23 and 21. A phone frame that compiles 4-5 more just after
+   * the welcome card is not the warm's: it is the first opaque frame after
+   * Island's GLB fade-in, and it is there with the warm switched off too.
+   * The window view needs no pass of its own: it draws with the frame's
    * programs (syncInteriorViewOutput).
    *
    * Without KHR_parallel_shader_compile a background warm cannot tell when a
