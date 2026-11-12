@@ -51,6 +51,7 @@ import {
   keyLevelAt,
   moonWeightAt,
   NIGHT_KEY_FLOOR,
+  NIGHT_KEY_SHARE,
   nightFactorAt,
   sunUpAt,
 } from '../EnvironmentCycle';
@@ -1320,7 +1321,7 @@ describe('a golden hour that holds (C1)', () => {
     expect(0.32 + 0.68 * dayAt(0)).toBeCloseTo(0.455, 3);
     expect(keyLevelAt(1, 1)).toBe(1);
     expect(hemiLevelAt(1, 1)).toBe(1);
-    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12, 12);
+    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12 * NIGHT_KEY_SHARE, 12);
     expect(hemiLevelAt(0, -1)).toBeCloseTo(0.32, 12);
   });
 
@@ -1386,7 +1387,7 @@ describe('a golden hour that holds (C1)', () => {
     expect(env.getNightFactor()).toBe(1);
     expect(env.getDuskFactor()).toBe(0);
     expect(DAY_FACTOR_UNIFORM.value).toBe(0);
-    expect(sun.intensity).toBeCloseTo(1.6 * 0.12, 9);
+    expect(sun.intensity).toBeCloseTo(1.6 * 0.12 * NIGHT_KEY_SHARE, 9);
     expect(hex(sun.color)).toBe('9db3e6');
     expect(hemi.intensity).toBeCloseTo(0.62 * 0.32, 9);
   });
@@ -1430,15 +1431,19 @@ describe('faces readable at night, the dark patches kept (C5)', () => {
       last = keyFloorAt(elev);
     }
     // The plan's 0.20 and 0.60 night levels are NOT taken: they lifted beach
-    // ground +13.7 L* and highland +7.5 at 21 h. The day ramp's floors stand.
-    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12, 12);
+    // ground +13.7 L* and highland +7.5 at 21 h. The hemisphere's floor
+    // stands; the key, standing higher in every visitor's sky (P2-C1), takes
+    // 0.4 of its floor, which brought the beach band from +4.2 to +2.2 L*
+    // over main at 21 h on the integration build.
+    expect(NIGHT_KEY_SHARE).toBe(0.4);
+    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12 * NIGHT_KEY_SHARE, 12);
     expect(hemiLevelAt(0, -1)).toBeCloseTo(0.32, 12);
 
     const { env, sun, hemi } = makeCycle();
     for (const hour of [21, 0, 3]) {
       env.debugHour = hour;
       env.update(1 / 60, HUB.clone().multiplyScalar(R), hour);
-      expect(sun.intensity).toBeCloseTo(1.6 * 0.12, 9);
+      expect(sun.intensity).toBeCloseTo(1.6 * 0.12 * NIGHT_KEY_SHARE, 9);
       expect(hemi.intensity).toBeCloseTo(0.62 * 0.32, 9);
       // 35.5 degrees or more, whatever the moon is doing tonight.
       const up = localElevation(sun, HUB);
@@ -1713,8 +1718,8 @@ describe('a sea that stays blue (C2)', () => {
     );
     expect(sea).not.toContain('indirectDiffuse');
     const island = stripped('Island.ts');
-    expect(island).toContain('public static readonly SEA_GLARE = 0.35;');
-    expect(island).toContain('public static readonly SEA_KEY = 0.7;');
+    expect(island).toContain('public static readonly SEA_GLARE = 0.25;');
+    expect(island).toContain('public static readonly SEA_KEY = 0.5;');
     // The patch lands in a real three chunk, once.
     expect(
       THREE.ShaderLib.standard.fragmentShader.split('#include <lights_fragment_end>'),

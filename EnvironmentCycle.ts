@@ -163,9 +163,10 @@ export function sunUpAt(elev: number): number {
 // under it.
 //
 // So the night is split in two (the plan's fallback path):
-// - the WORLD keeps its levels. The key stays at the day ramp's floor (0.12);
-//   it only stands higher (NIGHT_KEY_FLOOR), which costs flat ground one band
-//   of a dim light and gives the night shadows and top-lit forms. The
+// - the WORLD keeps its levels. The key stands higher (NIGHT_KEY_FLOOR),
+//   which costs flat ground one band of a dim light and gives the night
+//   shadows and top-lit forms, so it pays for that band in intensity: it
+//   takes NIGHT_KEY_SHARE of the day ramp's floor (0.12). The
 //   hemisphere keeps its floor too and turns moonlit blue (NIGHT_HEMI_GAIN).
 //   The camera fill, which lights whatever the camera faces, the ground
 //   included, is turned DOWN at night (NIGHT_FILL);
@@ -231,10 +232,31 @@ export function keyFloorAt(elev: number): number {
 const GOLDEN_KEY_LEVEL = 0.92;
 const GOLDEN_HEMI_LEVEL = 0.8;
 
+/**
+ * The night key's share of the day ramp's floor (0.12), at full night.
+ *
+ * P2-C1 stands the key in every visitor's own sky, so at night the moonlight
+ * falls on a beach from NIGHT_KEY_FLOOR (35.5 degrees) where it used to come
+ * in low from over the hub. That put the beach band in the cel ramp's top
+ * band: on the wave-2 integration build (B reading getHemiTint) p2/daycycle
+ * read it at 21 h +4.2 L* over main on desktop (15.0 vs 10.8) and +3.9 on the
+ * phone (14.6 vs 10.7), against a bound of +3. At 0.4 of the floor (0.048)
+ * the same probe reads 13.0 / 12.7 (+2.2 / +2.0); hub ground 15.7 / 15.5
+ * (main 14.8 / 14.7), the highland 9.7 on both, the player's median 27.1 /
+ * 25.8 (CelLook's own night light, not the key). The key keeps its height,
+ * so the night still has shadows and top-lit forms.
+ */
+export const NIGHT_KEY_SHARE = 0.4;
+
 /** The key's intensity as a fraction of its base, before weather. Night
- *  keeps the day ramp's floor (0.12). */
+ *  takes NIGHT_KEY_SHARE of the day ramp's floor (0.12); golden hour has
+ *  no night in it, so it is untouched. */
 export function keyLevelAt(dayFactor: number, elev: number): number {
-  return Math.max(0.12 + 0.88 * dayFactor, GOLDEN_KEY_LEVEL * duskFactorAt(elev) * sunUpAt(elev));
+  const floor = 0.12 * (1 - (1 - NIGHT_KEY_SHARE) * nightFactorAt(elev));
+  return Math.max(
+    floor + (1 - floor) * dayFactor,
+    GOLDEN_KEY_LEVEL * duskFactorAt(elev) * sunUpAt(elev),
+  );
 }
 
 /** The hemisphere's intensity as a fraction of its base, before weather.

@@ -306,8 +306,8 @@ export class Island {
    *  (SEA_KEY) the sea keeps, now that the key stands high in every
    *  visitor's sky (see the sea's lights_fragment_end patch). Measured, not
    *  reasoned: 1 is main's. */
-  public static readonly SEA_GLARE = 0.35;
-  public static readonly SEA_KEY = 0.7;
+  public static readonly SEA_GLARE = 0.25;
+  public static readonly SEA_KEY = 0.5;
 
   public seaTimeUniform: { value: number } = { value: 0 };
   // Slow rise/fall of the whole sea surface, shared by the shader and the CPU
@@ -1786,10 +1786,12 @@ export class Island {
         // every visitor's own sky, and the sea under it measured L* 43-60 at
         // noon (median 48.5 on the phone) against main's 37-46 (median 41.8)
         // on lum's beach view, 12 frames a second apart. With 'localSun' off
-        // the same frames read 32-42. Held to 0.7 and 0.35 the medians are
-        // 42.9 phone / 45.1 desktop against main's 41.8 / 44.4, and the
-        // crests still catch the sun. The hemisphere and the haze are as
-        // they were.
+        // the same frames read 32-42. Held to 0.7 and 0.35 the medians were
+        // 42.9 phone / 45.1 desktop on C alone, but on the wave-2
+        // integration build (7 frames a second apart) 46.6 / 48.2 against
+        // main's 42.0 / 44.8. Held to 0.5 and 0.25 they read 41.6 / 43.3
+        // there, and the crests still catch the sun. The hemisphere and the
+        // haze are as they were.
         .replace(
           '#include <lights_fragment_end>',
           `#include <lights_fragment_end>\nreflectedLight.directSpecular *= ${Island.SEA_GLARE.toFixed(2)};\nreflectedLight.directDiffuse *= ${Island.SEA_KEY.toFixed(2)};`,
