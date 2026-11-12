@@ -326,14 +326,14 @@ export class SimpleUI {
     this.zonePrewarmQueue = ['welcome', 'professional', 'projects', 'personal', 'contact', 'hire'];
     const step = (): void => {
       const id = this.zonePrewarmQueue?.shift();
-      if (!id) return;
+      if (!id || this.messagesStopped) return;
       try {
         this.layoutZoneOffscreen(id);
         this.zonePrewarmed++;
+        if (this.zonePrewarmQueue?.length) this.whenIdle(step, 600);
       } catch {
         /* a prewarm never breaks the page; the real call builds it anyway */
       }
-      if (this.zonePrewarmQueue?.length) this.whenIdle(step, 600);
     };
     this.whenIdle(step, 1200);
   }
