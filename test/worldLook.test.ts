@@ -32,7 +32,14 @@ import * as ts from 'typescript';
 import { describe, expect, test, vi } from 'vitest';
 
 import { a11y } from '../Accessibility';
-import { addGroupHulls, applyCelRim, setCelNight, setInkVisible } from '../CelLook';
+import {
+  addGroupHulls,
+  applyCelRim,
+  CEL_INDOOR_RADIUS,
+  celCameraIndoors,
+  setCelNight,
+  setInkVisible,
+} from '../CelLook';
 import {
   DAY_FACTOR_UNIFORM,
   duskFactorAt,
@@ -1530,6 +1537,67 @@ describe('faces readable at night, the dark patches kept (C5)', () => {
       expect(night.value).toBe(want);
     }
     expect(decl('EnvironmentCycle.ts', 'update')).toContain('setCelNight(night)');
+  });
+
+  test('the night stays outside: a room draw takes 0, the window view keeps the night', () => {
+    // The cycle does not run inside (GameScene.update returns into the
+    // interior mode first), so the gate is the camera, read per draw.
+    const mat = new THREE.MeshToonMaterial();
+    applyCelRim(mat);
+    applyCelRim(mat); // dressing twice still gates once
+    const night = compile(mat).uniforms.uCelNight;
+    const at = (x: number, y: number, z: number) => {
+      const cam = new THREE.PerspectiveCamera();
+      cam.position.set(x, y, z);
+      cam.updateMatrixWorld(true);
+      return cam;
+    };
+    const draw = (cam: THREE.Camera) =>
+      mat.onBeforeRender(
+        {} as THREE.WebGLRenderer,
+        new THREE.Scene(),
+        cam,
+        new THREE.BufferGeometry(),
+        new THREE.Mesh(),
+        null,
+      );
+    const room = at(0, -300 + 1.6, 3.05); // GameScene.INTERIOR_ORIGIN plus the room camera
+    const outdoors = at(0, R + 12, 0); // the orbit's farthest, over the north pole
+    const southPole = at(0, -(R + 30), 0); // terrain plus the orbit, with margin
+    expect(celCameraIndoors(room)).toBe(true);
+    expect(celCameraIndoors(outdoors)).toBe(false);
+    expect(celCameraIndoors(southPole)).toBe(false);
+    expect(CEL_INDOOR_RADIUS).toBe(R * 2);
+
+    setCelNight(1);
+    draw(room);
+    expect(night.value).toBe(0);
+    draw(outdoors); // the window pass in the same interior frame
+    expect(night.value).toBe(1);
+    draw(room);
+    expect(night.value).toBe(0);
+    // Back outside the next cycle update writes the level straight through.
+    setCelNight(1);
+    expect(night.value).toBe(1);
+    setCelNight(0);
+    draw(outdoors);
+    expect(night.value).toBe(0);
+    // An earlier onBeforeRender still runs.
+    const other = new THREE.MeshToonMaterial();
+    let called = 0;
+    other.onBeforeRender = () => {
+      called++;
+    };
+    applyCelRim(other);
+    other.onBeforeRender(
+      {} as THREE.WebGLRenderer,
+      new THREE.Scene(),
+      room,
+      new THREE.BufferGeometry(),
+      new THREE.Mesh(),
+      null,
+    );
+    expect(called).toBe(1);
   });
 });
 

@@ -24,6 +24,7 @@ import * as THREE from 'three';
 import { fx } from './FxBudget';
 import { SimpleRenderer } from './SimpleRenderer';
 import { isRealTheme } from './Theme';
+import { WORLD_RADIUS } from './WorldScale';
 
 /** The cel kit runs whenever the real theme ISN'T forced. */
 export function isCelTheme(): boolean {
@@ -75,6 +76,37 @@ const CEL_NIGHT_RIM = 0.15;
 /** The night level, ONE uniform object shared by every rim material: a
  *  frame's update is a single write, however many villagers are dressed. */
 const celNight = { value: 0 };
+/** What the cycle last asked for. celNight carries it outdoors only. */
+let celNightLevel = 0;
+
+/**
+ * Rooms are lit by their own rig, and the world's night must not follow the
+ * visitor in. GameScene.update returns into the interior mode before the
+ * cycle's update, so the last outdoor night level would otherwise hold for
+ * the whole visit: the player and the room's villagers in a lit room with the
+ * night fill and a blue moon rim. The gate is the camera, read per draw: every
+ * room sits about 300 u from the planet's centre (200 u under the south pole),
+ * and no outdoor camera gets past the terrain plus the orbit's 12 u, so twice
+ * the world radius splits them with margin both ways. Per draw rather than per
+ * frame because one interior frame draws both: the room, and the window's
+ * view of the night outside, which keeps its night.
+ */
+export const CEL_INDOOR_RADIUS = WORLD_RADIUS * 2;
+const CEL_INDOOR_RADIUS_SQ = CEL_INDOOR_RADIUS * CEL_INDOOR_RADIUS;
+
+/** True for a camera inside a room (far outside the world's sphere). */
+export function celCameraIndoors(camera: THREE.Camera): boolean {
+  const e = camera.matrixWorld.elements;
+  return e[12] * e[12] + e[13] * e[13] + e[14] * e[14] > CEL_INDOOR_RADIUS_SQ;
+}
+
+/** Material.onBeforeRender for the cast: three calls it per draw, before the
+ *  program and its uniforms are bound, and resets its bound material at the
+ *  start of every render, so a room pass and a window pass each upload their
+ *  own value. One comparison per cast draw. */
+function celNightForCamera(_r: THREE.WebGLRenderer, _s: THREE.Scene, camera: THREE.Camera): void {
+  celNight.value = celCameraIndoors(camera) ? 0 : celNightLevel;
+}
 
 fx.register('celNightRim', { desktop: true, low: true });
 
@@ -84,7 +116,8 @@ fx.register('celNightRim', { desktop: true, low: true });
  * 'celNightRim' switch off the cast's night terms stay at 0.
  */
 export function setCelNight(night: number): void {
-  celNight.value = fx.on('celNightRim') ? night : 0;
+  celNightLevel = fx.on('celNightRim') ? night : 0;
+  celNight.value = celNightLevel;
 }
 
 /**
@@ -129,6 +162,16 @@ export function applyCelRim(mat: THREE.Material): void {
   // shared program with per-material uniforms. v2 (the night terms) REPLACES
   // v1: every rim material takes this key, so the program count is unchanged.
   mat.customProgramCacheKey = () => 'cel-rim-v2';
+  // Indoors the night terms are off (celNightForCamera). Chains any existing
+  // hook, as onBeforeCompile does above.
+  const prevRender = mat.onBeforeRender;
+  mat.onBeforeRender =
+    prevRender === THREE.Material.prototype.onBeforeRender || prevRender === celNightForCamera
+      ? celNightForCamera
+      : function (this: THREE.Material, ...args: Parameters<THREE.Material['onBeforeRender']>) {
+          prevRender.apply(this, args);
+          celNightForCamera(args[0], args[1], args[2]);
+        };
   mat.needsUpdate = true;
 }
 
