@@ -793,10 +793,17 @@ low tier's vehicle draws are the drive's mean frame, so half rate takes
 about half the shadow pass off them (921 → 852); its posed views count a
 whole frame with the pass, so they stay where main's are (573 against 572).
 
-The floor file has no entry for the new rows yet: `--record-floor` writes
-them on the next quiet-host A/A (this branch was built with other builders
-on the machine, where an A/B reads inconclusive). Until then a counter is
-judged at its ledger value and a timing by the sigma rule.
+The floor file carries the new rows since 2026-11-12: a 24-cycle A/A of
+wave-1 main (`main-CwSY888O.js`) at `?hour=12`, quiet on all three profiles
+(other processes 7.5%, 7.2% and 7.5% of the machine at the median; one
+low-tier load at 37.5%). Its desktop world_gen and longest-task floors are
+14.6 and 13.9 ms (the busy-host floor the integration recorded first: 20.0
+and 18.9). The desktop A/B of the merged build against it, run alone the
+same evening (`--profiles desktop --cycles 24`, others about 5% from cycle
+5), passes: world_gen Δ 1.5 σ 14.7, the longest task Δ 2.5 σ 13.9 (the
+integration's busy run: σ 26.2 and 25.7, inconclusive). The room view on
+58c8849 (report mode, low tier, `?hour=12`): the first door's longest frame
+1,211 ms, +33 programs, a 1.8 s black interval, 74 draws.
 
 **Dusk check (P2-E3; LT-03, P2-B6, P2-C4).** `--dusk` boots at `?hour=17` in
 a browser of its own (a cold GPU program cache), waits 13 s for the interior
