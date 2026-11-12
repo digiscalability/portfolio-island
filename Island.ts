@@ -22,7 +22,7 @@ import {
   DISTRICT_SHIFT,
   districtAccentAt,
 } from './Districts';
-import { DAY_FACTOR_UNIFORM } from './EnvironmentCycle';
+import { DAY_FACTOR_UNIFORM, DUSK_FACTOR_UNIFORM } from './EnvironmentCycle';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
 import { SimplePlayer } from './SimplePlayer';
@@ -1713,6 +1713,7 @@ export class Island {
       // EnvironmentCycle's day factor, shared by reference: written once a
       // frame there, read here with no plumbing.
       shader.uniforms.uDayFactor = DAY_FACTOR_UNIFORM;
+      shader.uniforms.uDusk = DUSK_FACTOR_UNIFORM;
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
@@ -1771,7 +1772,7 @@ export class Island {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
-          '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uBands;\nuniform vec3 uSkyHorizon;\nuniform float uDayFactor;',
+          '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uBands;\nuniform vec3 uSkyHorizon;\nuniform float uDayFactor;\nuniform float uDusk;',
         )
         .replace(
           '#include <color_fragment>',
@@ -1893,7 +1894,12 @@ export class Island {
             // colour, and more of it, so the sea still meets the sky on one
             // colour. The limb is only 24-30 u away at walking height, so a
             // distance key never reached it.
-            'float farBand = smoothstep(0.88, 0.995, fres);',
+            // Only at dusk (uDusk, the cycle's dusk factor): the band is
+            // there to hide the step against a bright orange horizon. By day
+            // it mixed the pale sky in at up to 0.8 and lifted the open sea
+            // to L* 52-66 (main 40-53); at noon the fresnel is back to main's
+            // 0.4, on the hue-locked colour.
+            'float farBand = smoothstep(0.88, 0.995, fres) * uDusk;',
             isRealTheme()
               ? '// real theme: envmap supplies the sky reflection'
               : 'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), fres * mix(0.4, 0.8, farBand));',

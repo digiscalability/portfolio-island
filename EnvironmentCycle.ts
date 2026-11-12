@@ -260,6 +260,11 @@ const HEMI_GROUND_NIGHT = new THREE.Color(0x26331f).multiplyScalar(NIGHT_HEMI_GA
  */
 export const DAY_FACTOR_UNIFORM: { value: number } = { value: 1 };
 
+/** The dusk factor (duskFactorAt: 1 with the sun on the horizon, 0 by day
+ *  and at night) as a shader uniform, written once a frame beside the day
+ *  factor. The sea's far band reads it as uDusk. */
+export const DUSK_FACTOR_UNIFORM: { value: number } = { value: 0 };
+
 // Hoisted out of update() — both were re-created every frame (object literal +
 // array literal) in the unconditional day/night tick. Pure constants now.
 const WEATHER_DIM: Record<WeatherKind, number> = { clear: 1, cloudy: 0.55, rain: 0.35, snow: 0.5 };
@@ -1102,6 +1107,7 @@ export class EnvironmentCycle {
     this.lastDuskFactor = duskFactor;
     this.lastNightFactor = night;
     DAY_FACTOR_UNIFORM.value = dayFactor;
+    DUSK_FACTOR_UNIFORM.value = duskFactor;
     // The cast's own night light (CelLook): people only, never the ground.
     setCelNight(night);
 

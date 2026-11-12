@@ -42,6 +42,7 @@ import {
 } from '../CelLook';
 import {
   DAY_FACTOR_UNIFORM,
+  DUSK_FACTOR_UNIFORM,
   duskFactorAt,
   EnvironmentCycle,
   hemiLevelAt,
@@ -1635,7 +1636,24 @@ describe('a sea that stays blue (C2)', () => {
 
   test('the fresnel and the haze use it; only the far band keeps the true horizon', () => {
     const sea = hook();
-    expect(sea).toContain("'float farBand = smoothstep(0.88, 0.995, fres);'");
+    expect(sea).toContain("'float farBand = smoothstep(0.88, 0.995, fres) * uDusk;'");
+    // The far band is a dusk measure only: the cycle's dusk factor, shared.
+    expect(sea).toContain('shader.uniforms.uDusk = DUSK_FACTOR_UNIFORM');
+    expect(sea).toContain('uniform float uDusk;');
+    expect(decl('EnvironmentCycle.ts', 'update')).toContain(
+      'DUSK_FACTOR_UNIFORM.value = duskFactor',
+    );
+    const { env } = makeCycle();
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(DUSK_FACTOR_UNIFORM.value).toBe(0);
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(DUSK_FACTOR_UNIFORM.value).toBe(0);
+    env.debugHour = 18;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 2);
+    expect(DUSK_FACTOR_UNIFORM.value).toBeGreaterThan(0.5);
+    expect(DUSK_FACTOR_UNIFORM.value).toBe(env.getDuskFactor());
     expect(sea).toContain(
       "'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), fres * mix(0.4, 0.8, farBand));'",
     );
