@@ -739,6 +739,24 @@ describe('from visualPolish.test.ts', () => {
     );
   });
 
+  test('the welcome-card pill and the trail-end hint nits (w1-fix)', () => {
+    const main = stripped('main-simple.ts');
+    // The pill waits behind the card while First steps will arm as it closes.
+    expect(main).toMatch(
+      /st\.guidePending =\s*!!g && g\.eligible\(\) && !g\.running\(\) && this\.ui\.isWelcomeVisible\(\) && !this\.tour;/,
+    );
+    expect(main.indexOf('st.guidePending =')).toBeLessThan(
+      main.indexOf('switch (compassTarget(st))'),
+    );
+    // Skip's hint already said what the gold arrow does: the trail's end
+    // drops that clause after it.
+    const skipped = blockOf(main, 'skipped: () =>');
+    expect(skipped).toContain('this.guideSkipHintShown = true;');
+    const trail = blockOf(main, 'this.scene.setOnArrivalTrail(() =>');
+    expect(trail).toContain('this.guideSkipHintShown');
+    expect(trail).toContain("'🏝️ You’ve got the hang of it.'");
+  });
+
   test('both room warms ask SimpleUI to lay the zone panel out ahead (CO-A5 remainder)', () => {
     // The first showZonePanel cost 156-184 ms at 4x CPU inside the fade
     // callback. D adds prewarmZonePanel(); A merges first, so the call is

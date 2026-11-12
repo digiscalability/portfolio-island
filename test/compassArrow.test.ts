@@ -110,6 +110,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
   const none: CompassState = {
     mapPick: false,
     arrivalHold: false,
+    guidePending: false,
     raceGuide: false,
     aiGuide: false,
     trailVillager: false,
@@ -124,6 +125,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
   const all: CompassState = {
     mapPick: true,
     arrivalHold: true,
+    guidePending: false,
     raceGuide: true,
     aiGuide: true,
     trailVillager: true,
@@ -162,6 +164,30 @@ describe('compassTarget: the pill picks one target, in order', () => {
     expect(compassTarget({ ...none, goal: true })).toBe('goal');
     expect(compassTarget({ ...none, goal: true, districtUnstamped: true })).toBe('district');
     expect(compassTarget(none)).toBeNull();
+  });
+
+  test('behind the welcome card, with First steps about to arm, the pill waits (w1-fix nit)', () => {
+    // On a reload it read Projects behind the card, then the villager once
+    // Explore armed the guide.
+    // Only the fallbacks wait: Projects, a district, a parcel, a goal.
+    const pending: CompassState = {
+      ...none,
+      guidePending: true,
+      projectsUnstamped: true,
+      districtUnstamped: true,
+      parcelActive: true,
+      deliveryOptIn: true,
+      goal: true,
+    };
+    expect(compassTarget(pending)).toBeNull();
+    // Everything above them still wins, the first-visit trail villager too.
+    expect(compassTarget({ ...pending, mapPick: true })).toBe('map');
+    expect(compassTarget({ ...pending, arrivalHold: true })).toBe('hold');
+    expect(compassTarget({ ...pending, raceGuide: true })).toBe('race');
+    expect(compassTarget({ ...pending, trailVillager: true })).toBe('trail');
+    expect(compassTarget({ ...pending, talkStep: true })).toBe('talk');
+    // The guide armed (or the card closed): the order table again.
+    expect(compassTarget({ ...pending, guidePending: false })).toBe('projects');
   });
 
   test('no candidate, so the branch is skipped', () => {

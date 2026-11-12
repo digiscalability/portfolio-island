@@ -274,6 +274,9 @@ export class SimpleApp {
    * Optional: A merges before D, and on main SimpleUI has no such method.
    * It is idempotent, and it schedules its own idle work.
    */
+  /** Skip's compass hint has shown this visit: the trail-end toast then
+   *  leaves out its own clause about the gold ➤ (w1-fix nit). */
+  private guideSkipHintShown = false;
   private bootTarget: THREE.WebGLRenderTarget | null = null;
   /**
    * The render target the boot pre-compile binds (w1-fix): a 1x1 stand-in
@@ -1020,9 +1023,13 @@ export class SimpleApp {
         // landed on the look or talk card, or over the villager's chat. Else
         // a hint toast (D6 holds it behind panels), naming no place the pill
         // might not show.
+        // With the guide skipped this visit, Skip's own hint has just said
+        // what the gold ➤ does; the trail's end does not say it again.
         if (!this.guideHoldsHints()) {
           this.ui.toast(
-            '🏝️ You’ve got the hang of it — the gold ➤ up top points to your next stop.',
+            this.guideSkipHintShown
+              ? '🏝️ You’ve got the hang of it.'
+              : '🏝️ You’ve got the hang of it — the gold ➤ up top points to your next stop.',
             {
               hint: true,
             },
@@ -3851,6 +3858,11 @@ export class SimpleApp {
     const st = this._compassState;
     st.mapPick = this.mapGuideTarget !== null;
     st.arrivalHold = this.arrivalHold !== null;
+    // Behind the welcome card, while First steps will arm as it closes, the
+    // pill waits: it named Projects there and the villager after Explore.
+    const g = this.guide;
+    st.guidePending =
+      !!g && g.eligible() && !g.running() && this.ui.isWelcomeVisible() && !this.tour;
     st.raceGuide = this.raceGuideTarget !== null;
     st.aiGuide = this.aiGuideTarget !== null;
     st.trailVillager = trailPos !== null;
@@ -3991,6 +4003,7 @@ export class SimpleApp {
   private readonly _compassState: CompassState = {
     mapPick: false,
     arrivalHold: false,
+    guidePending: false,
     raceGuide: false,
     aiGuide: false,
     trailVillager: false,
@@ -4394,6 +4407,7 @@ export class SimpleApp {
         skipped: () => {
           // Skip fires the compass hint instead; the gate is open by now.
           this.renderGuide();
+          this.guideSkipHintShown = true;
           this.ui.toast(
             '🧭 The gold ➤ up top points to your next stop — tap it for the island map.',
             { hint: true },

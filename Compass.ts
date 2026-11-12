@@ -88,6 +88,11 @@ export interface CompassState {
   mapPick: boolean;
   /** A map pick was reached under 8 s ago: the pill holds on it. */
   arrivalHold: boolean;
+  /** The welcome card is up and First steps arms as it closes. With no
+   *  trail or talk villager yet, the pill waits for the guide rather than
+   *  fall back: on a reload it read Projects behind the card and then
+   *  switched to the villager the moment Explore armed the guide. */
+  guidePending: boolean;
   /** "Beat the lap record": the start gate. */
   raceGuide: boolean;
   /** "Ask the townsfolk": the Storyteller. */
@@ -119,6 +124,8 @@ export function compassTarget(s: CompassState): CompassSource | null {
   if (s.aiGuide) return 'ai';
   if (s.trailVillager) return 'trail';
   if (s.talkStep) return 'talk';
+  // Not yet the fallbacks: the guide's villager takes the pill once it arms.
+  if (s.guidePending) return null;
   if (s.projectsUnstamped) return 'projects';
   if (s.districtUnstamped) return 'district';
   if (s.parcelActive && (s.passportComplete || s.deliveryOptIn)) return 'parcel';
