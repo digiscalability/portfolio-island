@@ -592,6 +592,32 @@ describe('from visualPolish.test.ts', () => {
     expect(prime).toBeLessThan(compile);
   });
 
+  test('the boot precompile binds the target the first frame draws into, and flushes (w1-fix)', () => {
+    const main = stripped('main-simple.ts');
+    // Compiled against the canvas, the boot pass built canvas variants and
+    // the first composer frame linked ~47 more synchronously.
+    const bind = main.indexOf('three.setRenderTarget(sceneTarget);');
+    const compile = main.indexOf('compileAsync(this.scene');
+    const unbind = main.indexOf('three.setRenderTarget(bound);', compile);
+    const flush = main.indexOf('Materials.flushAfterCompile(three);');
+    const wait = main.indexOf('if (pending) await pending;');
+    expect(bind).toBeGreaterThan(-1);
+    expect(bind).toBeLessThan(compile);
+    expect(compile).toBeLessThan(unbind);
+    expect(unbind).toBeLessThan(flush);
+    expect(flush).toBeLessThan(wait);
+    // A stand-in for the composer's buffer only where a composer exists; the
+    // low tier draws to the canvas and compiles against it.
+    const pick = bodyOf(main, 'private bootCompileTarget(): THREE.WebGLRenderTarget | null');
+    expect(pick).toContain('if (!this.renderer.isPostProcessingAvailable()) return null;');
+    // warmUp's renderer.compile reads the bound target too.
+    const warm = main.indexOf('this.renderer.warmUp(this.scene, this.scene.getCamera());');
+    const before = main.lastIndexOf('three.setRenderTarget(this.bootCompileTarget());', warm);
+    expect(before).toBeGreaterThan(-1);
+    expect(warm - before).toBeLessThan(120);
+    expect(main.indexOf('this.disposeBootCompileTarget();', warm)).toBeGreaterThan(warm);
+  });
+
   test('the camera size filter applies to every root', () => {
     const cam = stripped('OrbitCamera.ts');
     // `&& rootIndex !== 0` exempted every DESCENDANT of the island group, not

@@ -31,6 +31,7 @@ import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
 import { worldInputBlocked } from './keyGuards';
+import { Materials } from './Materials';
 import { Multiplayer } from './Multiplayer';
 import {
   AI_NPCS,
@@ -273,6 +274,22 @@ export class SimpleApp {
    * Optional: A merges before D, and on main SimpleUI has no such method.
    * It is idempotent, and it schedules its own idle work.
    */
+  private bootTarget: THREE.WebGLRenderTarget | null = null;
+  /**
+   * The render target the boot pre-compile binds (w1-fix): a 1x1 stand-in
+   * for the composer's buffer where there is a composer, and the canvas
+   * (null) on the low tier, which never builds one. Only bound for compile
+   * calls; nothing is ever drawn into it.
+   */
+  private bootCompileTarget(): THREE.WebGLRenderTarget | null {
+    if (!this.renderer.isPostProcessingAvailable()) return null;
+    this.bootTarget ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+    return this.bootTarget;
+  }
+  private disposeBootCompileTarget(): void {
+    this.bootTarget?.dispose();
+    this.bootTarget = null;
+  }
   private prewarmZonePanel(): void {
     (this.ui as SimpleUI & { prewarmZonePanel?: () => void }).prewarmZonePanel?.();
   }
@@ -1368,11 +1385,34 @@ export class SimpleApp {
         // first daylight frame invalidated every lit program at once, mid
         // fly-in. See GameScene.primeExteriorLightGate.
         this.scene.primeExteriorLightGate();
-        if (typeof gl.compileAsync === 'function') {
-          await gl.compileAsync(this.scene, this.scene.getCamera());
-        } else {
-          gl.compile(this.scene, this.scene.getCamera());
+        // ...and against the target the first frame draws into (w1-fix).
+        // three keys every program on the bound render target (output colour
+        // space, tone mapping): compiled against the canvas, the boot pass
+        // built its 44 programs as TONE_MAPPING variants, and the first
+        // composer frame linked about 47 more, synchronously. Desktop draws
+        // the scene into the composer's buffer, and any non-XR target gives
+        // the same keys, so a 1x1 stand-in binds them. The low tier has no
+        // composer and draws to the canvas, so it compiles against that.
+        const three = this.renderer.getRenderer();
+        const sceneTarget = this.bootCompileTarget();
+        let pending: Promise<unknown> | null = null;
+        const bound = three.getRenderTarget();
+        three.setRenderTarget(sceneTarget);
+        try {
+          // compileAsync compiles synchronously and then polls, so the
+          // target only has to be bound for the call itself.
+          if (typeof gl.compileAsync === 'function') {
+            pending = gl.compileAsync(this.scene, this.scene.getCamera());
+          } else {
+            gl.compile(this.scene, this.scene.getCamera());
+          }
+        } finally {
+          three.setRenderTarget(bound);
         }
+        // Behind the loader no frame is drawn and compileAsync never flushes:
+        // send the queued links now (C's hook asks too; one flush per task).
+        Materials.flushAfterCompile(three);
+        if (pending) await pending;
         console.log('✓ Shaders pre-compiled');
       } catch (e) {
         console.warn('Shader pre-compile skipped:', e);
@@ -1707,7 +1747,21 @@ export class SimpleApp {
       // Warm the post-processing + shadow shaders on a hidden frame (camera is
       // already at the distant fly-in start) so the first VISIBLE frame doesn't
       // hitch — a cause of the reveal flash.
-      this.renderer.warmUp(this.scene, this.scene.getCamera());
+      // warmUp's renderer.compile runs against whatever is bound, so bind the
+      // boot compile's target for it too, or it re-links the 44 programs as
+      // canvas variants, synchronously. Its composer.render binds its own
+      // targets and puts this one back.
+      {
+        const three = this.renderer.getRenderer();
+        const bound = three.getRenderTarget();
+        three.setRenderTarget(this.bootCompileTarget());
+        try {
+          this.renderer.warmUp(this.scene, this.scene.getCamera());
+        } finally {
+          three.setRenderTarget(bound);
+          this.disposeBootCompileTarget();
+        }
+      }
 
       // Start render loop
       this.startRenderLoop();
