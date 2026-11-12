@@ -171,19 +171,31 @@ describe('the tokens are worn where AA failed', () => {
     expect(work.classList.contains('ds-press')).toBe(true);
   });
 
-  test('the welcome card has one filled primary, Explore; See the work is an outline', () => {
+  // Changed deliberately in D9: the one filled primary was Explore. It is the
+  // Hiring pill now, and Explore is a neutral outline (green is Work with
+  // me's alone, and a card with two fills has no primary).
+  test('the welcome card has one filled primary, the Hiring pill; the rest are outlines', () => {
     ui.showWelcome(null);
+    const hiring = document.querySelector<HTMLElement>('button[data-recruit]')!;
     const explore = document.querySelector<HTMLElement>('button[data-dismiss]')!;
     const work = document.querySelector<HTMLElement>('button[data-cta="projects"]')!;
-    expect(fill(explore)).toBe(DS.primary);
-    expect(work.getAttribute('style')).not.toContain('linear-gradient');
+    expect(fill(hiring)).toBe(DS.primary);
+    expect(hiring.classList.contains('ds-press')).toBe(true);
+    expect(hiring.style.minHeight).toBe('46px');
+    expect(hiring.style.fontSize).toBe('15px');
+    expect(hiring.style.fontWeight).toBe('700');
+    expect(hiring.style.width).toBe('100%');
+    for (const b of [explore, work]) {
+      expect(b.getAttribute('style')).not.toContain('linear-gradient');
+      expect(b.style.border).toMatch(/1px solid/);
+    }
     const filled = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter(
       (b) => (b.getAttribute('style') ?? '').includes('linear-gradient'),
     );
-    expect(filled).toEqual([explore]);
+    expect(filled).toEqual([hiring]);
     // and no green fill on the card: green belongs to Work with me
     for (const b of document.querySelectorAll<HTMLElement>('[role="dialog"] button')) {
-      expect(b.getAttribute('style') ?? '').not.toMatch(/#12b76a|#0e9f6e|#4caf50/i);
+      expect(b.getAttribute('style') ?? '').not.toMatch(/#12b76a|#0e9f6e|#4caf50|#087a4c/i);
     }
   });
 

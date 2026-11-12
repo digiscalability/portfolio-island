@@ -84,6 +84,65 @@ describe('roster', () => {
   });
 });
 
+describe('roster mutes survive a reload (security)', () => {
+  test("a peer Chat muted last visit reads Muted, though the provider's flag is false", () => {
+    localStorage.setItem('ds_muted_peers', JSON.stringify(['peer-1']));
+    ui.setRosterProvider(() => [
+      { id: 'peer-1', name: 'Sam', muted: false },
+      { id: 'peer-2', name: 'Ali', muted: false },
+    ]);
+    ui.showRoster();
+    const btn = (id: string) => document.querySelector(`button[data-mute="${id}"]`)!;
+    expect(btn('peer-1').textContent?.trim()).toBe('🔇 Muted');
+    expect(btn('peer-2').textContent?.trim()).toBe('🔊 Mute');
+  });
+
+  test('an unreadable ds_muted_peers leaves the provider in charge', () => {
+    localStorage.setItem('ds_muted_peers', '{not json');
+    ui.setRosterProvider(() => [{ id: 'peer-1', name: 'Sam', muted: true }]);
+    expect(() => ui.showRoster()).not.toThrow();
+    expect(document.querySelector('button[data-mute="peer-1"]')!.textContent?.trim()).toBe(
+      '🔇 Muted',
+    );
+  });
+});
+
+describe('authored values in innerHTML are escaped (security)', () => {
+  const evil = '<img src=x onerror=alert(1)>';
+
+  test("showDialogue's name renders as text", () => {
+    ui.showDialogue(evil, ['Hello.']);
+    const box = document.getElementById('dialogue-text')!.parentElement!.parentElement!;
+    expect(box.querySelector('img')).toBeNull();
+    expect(box.textContent).toContain(evil);
+    ui.hideDialogue(); // the typewriter stops with the test
+  });
+
+  test("showQuestComplete's name and reward render as text", () => {
+    ui.showQuestComplete({ name: evil, reward: { value: `${evil} & 5 coins` } });
+    const overlay = document.getElementById('ui-overlay')!;
+    expect(overlay.querySelector('img')).toBeNull();
+    expect(overlay.textContent).toContain(evil);
+    expect(overlay.textContent).toContain(`${evil} & 5 coins`);
+  });
+
+  test("the zone panel's fallback (an unknown id) renders its name and text as text", () => {
+    ui.showZonePanel({ id: 'nowhere', name: evil, description: evil }, { source: 'menu' });
+    const h2 = document.querySelector('#ds-zone-title')!;
+    expect(h2.textContent).toBe(evil);
+    expect(h2.parentElement!.querySelector('img')).toBeNull();
+    ui.hideZonePanel();
+  });
+
+  test('a fallback with no description shows no stray "undefined"', () => {
+    ui.showZonePanel({ id: 'nowhere', name: 'Somewhere' }, { source: 'menu' });
+    expect(document.querySelector('#ds-zone-title')!.parentElement!.textContent).not.toContain(
+      'undefined',
+    );
+    ui.hideZonePanel();
+  });
+});
+
 describe('returning-visitor welcome card', () => {
   test('a headline with markup renders as text and adds no element', () => {
     localStorage.setItem('ds_welcomed', '1');

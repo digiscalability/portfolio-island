@@ -153,11 +153,14 @@ function fallbackReply(reason: string, opening: boolean): NpcReply {
   return { reply: null, fallback: true, reason };
 }
 
-export async function askNpc(npcName: string, message: string, opening = false): Promise<NpcReply> {
-  const npcId = AI_NPCS[npcName];
-  if (!npcId) return { reply: null, fallback: true, reason: 'not-ai' };
-  const text = message.trim().slice(0, 300);
-  if (!text) return { reply: null, fallback: true, reason: 'empty' };
+/** A villager's model call that has not answered by now falls back to the
+ *  written lines (D10): a stalled call left the bare '…' up with no end. */
+export const NPC_TIMEOUT_MS = 12000;
+
+/** What the callable came back with, before it is counted or voiced. */
+type NpcOutcome = { reply: NpcReply } | { fallback: string };
+
+async function callNpc(npcId: string, text: string, opening: boolean): Promise<NpcOutcome> {
   try {
     const [{ getFirebaseApp }, fns] = await Promise.all([
       import('./firebaseClient'),
@@ -168,33 +171,62 @@ export async function askNpc(npcName: string, message: string, opening = false):
     const call = fns.httpsCallable<{ npcId: string; message: string; opening?: boolean }, NpcReply>(
       functions,
       'npcChat',
+      { timeout: NPC_TIMEOUT_MS },
     );
     const res = await call(
       opening ? { npcId, message: text, opening: true } : { npcId, message: text },
     );
     const d = res.data;
     if (d && typeof d.fallback === 'boolean') {
-      if (d.fallback) return fallbackReply(String(d.reason ?? 'unknown').slice(0, 40), opening);
+      if (d.fallback) return { fallback: String(d.reason ?? 'unknown').slice(0, 40) };
       // A "success" with no text is still a written line on screen.
-      if (!d.reply) return fallbackReply('empty-reply', opening);
-      // Cloud voice: start fetching the ElevenLabs audio NOW (it synthesizes
-      // while the typewriter animates) and offer it to Speech keyed by the
-      // exact reply text — speak() will play it instead of the browser voice.
-      // Any failure quietly resolves null and the on-device voice takes over.
-      if (typeof d.voiceKey === 'string') offerCloudVoice(d.reply, fetchNpcVoice(d.voiceKey));
-      return d;
+      if (!d.reply) return { fallback: 'empty-reply' };
+      return { reply: d };
     }
-    return fallbackReply('bad-shape', opening);
+    return { fallback: 'bad-shape' };
   } catch (e) {
     // Offline, App Check rejected or not configured, function not deployed,
     // timeout — all degrade to canned lines. The NPC never appears broken,
     // and the error code says which it was.
     const code = (e as { code?: unknown } | null)?.code;
-    return fallbackReply(
-      typeof code === 'string' ? `client:${code}`.slice(0, 60) : 'client-error',
-      opening,
-    );
+    return { fallback: typeof code === 'string' ? `client:${code}`.slice(0, 60) : 'client-error' };
   }
+}
+
+export async function askNpc(npcName: string, message: string, opening = false): Promise<NpcReply> {
+  const npcId = AI_NPCS[npcName];
+  if (!npcId) return { reply: null, fallback: true, reason: 'not-ai' };
+  const text = message.trim().slice(0, 300);
+  if (!text) return { reply: null, fallback: true, reason: 'empty' };
+  // The callable carries the timeout, and this clock covers what comes before
+  // it: the chunk loads, the sign-in and App Check, any of which can stall
+  // with the call never made. Whichever answers first is the one counted.
+  return new Promise<NpcReply>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(fallbackReply('client:timeout', opening));
+    }, NPC_TIMEOUT_MS);
+    void callNpc(npcId, text, opening).then((out) => {
+      if (settled) return; // the visitor already has a written line
+      settled = true;
+      clearTimeout(timer);
+      if ('fallback' in out) {
+        resolve(fallbackReply(out.fallback, opening));
+        return;
+      }
+      const d = out.reply;
+      // Cloud voice: start fetching the ElevenLabs audio NOW (it synthesizes
+      // while the typewriter animates) and offer it to Speech keyed by the
+      // exact reply text — speak() will play it instead of the browser voice.
+      // Any failure quietly resolves null and the on-device voice takes over.
+      if (typeof d.voiceKey === 'string' && d.reply) {
+        offerCloudVoice(d.reply, fetchNpcVoice(d.voiceKey));
+      }
+      resolve(d);
+    });
+  });
 }
 
 /** Fetch the ElevenLabs audio (base64 MP3) for a reply id. Never throws —
@@ -227,4 +259,228 @@ async function fetchNpcVoice(voiceKey: string): Promise<string | null> {
  */
 export async function askNpcOpening(npcName: string, composedGreeting: string): Promise<NpcReply> {
   return askNpc(npcName, composedGreeting, true);
+}
+
+// ── Question routes (P2-D4) ──────────────────────────────────────────────────
+// A visitor who asks a villager "what does he build?" or "where is the shop?"
+// should leave with the answer and one button that takes them there, whether
+// the model answered or not. routeQuestion is pure and client-side: keyword
+// routes onto the four portfolio surfaces and the hire card, and "where is"
+// questions onto a place the compass can point at ('ds:guide-to' keys).
+//
+// Copy rules: the lines restate what the panels already say, type no counts,
+// and never call a villager anything but a villager. The availability line
+// stays on the hire card alone, so no line here states it.
+//
+// NOTE for whoever adds a route: the roster order tests read this file from
+// the villager list to its end for quoted persona ids, so nothing down here
+// may carry a property named like the roster's id field with a quoted value.
+
+export type RouteKind = 'projects' | 'professional' | 'personal' | 'contact' | 'hire' | 'place';
+
+/** The one button offered under the reply. Exactly one of zone, hire and
+ *  guideKey is set. */
+export interface RouteAction {
+  label: string;
+  /** Open this Portfolio panel. */
+  zone?: 'projects' | 'professional' | 'personal';
+  /** Open the hire card (CV, experience, contact). */
+  hire?: true;
+  /** Point the compass at this 'ds:guide-to' key. */
+  guideKey?: string;
+}
+
+export interface QuestionRoute {
+  kind: RouteKind;
+  /** What the villager says when the model could not answer. */
+  line: string;
+  action?: RouteAction;
+}
+
+const SHOW_ME = 'Show me';
+
+const BEACH_HOUSE_LINE =
+  'The beach house is on the islet out south. Its door wants a code — ask the Sailor at the harbour.';
+/** The Sailor knows the code: it is his brother's house (P2-C6 gives the
+ *  same number in his written line). */
+const SAILOR_CODE_LINE =
+  'The beach house is my brother’s, on the islet out south. His door code is our old boat number: 5673.';
+
+/** The beach house or its door code, asked any way at all ("How do I get
+ *  into the beach house?", "What is the door code?"), not only as a "where". */
+const BEACH_HOUSE =
+  /\bbeach ?house\b|\bislet\b|\bdoor ?code\b|\b(?:code|pin|password)\b[^?.!]{0,24}\b(?:door|lock)\b|\b(?:door|lock)\b[^?.!]{0,24}\b(?:code|pin)\b/;
+
+/** The question is about Abbas, not the villager or the island ("his CV",
+ *  "has he shipped", "a role for Abbas"). */
+const ABOUT_ABBAS = /\b(?:he|he's|him|his|abbas)\b/;
+/** The visitor speaks as an employer ("We have a role open"). */
+const EMPLOYER = /\b(?:we|we're|we've|our|my (?:company|team|startup|firm))\b/;
+
+/** Places a "where is" question can name: [pattern, guide key, line]. The
+ *  first match wins, so the specific names come before the district words.
+ *  A null key is a place the compass cannot point at (the liner moves), so
+ *  the villager answers with no button. */
+const PLACE_ROUTES: Array<[RegExp, string | null, string]> = [
+  [
+    /\b(cruise|liner|ocean liner)\b|\bship\b/,
+    null,
+    'That’s the cruise liner. She sails a slow lap of the southern sea and never stops, so watch for her from the south shore.',
+  ],
+  [
+    /\bschool\b|\blessons?\b/,
+    'school',
+    'The School is in the Personal district. Its lessons teach how the island works.',
+  ],
+  [
+    /\b(shop|kiosk|store|market|stalls?)\b/,
+    'kiosk',
+    'The shop kiosk sells tools, hats, feed and food for coins.',
+  ],
+  [
+    /\bbank\b|\bvault\b/,
+    'bank',
+    'The Bank is in the Hub. It assays ore and keeps a vault for your coins.',
+  ],
+  [
+    /\b(harbou?r|jetty|dock|pier|shore|fishing|fish)\b/,
+    'shore',
+    'The Fisherman’s jetty is down on the shore, the place to cast a line. Bring a rod from the shop.',
+  ],
+  [
+    /\b(race|races|racing|circuit|start line|starting line)\b/,
+    'race:land',
+    'The land circuit has a start line. Board a vehicle and cross it to begin.',
+  ],
+  [
+    /\b(projects?|portfolio|ventures?)\b|\bhis work\b|\bthe work\b/,
+    'district:projects',
+    'Projects is its own district: every venture has a site there, with this island as the flagship.',
+  ],
+  [
+    /\b(contact|post office|get in touch)\b/,
+    'district:contact',
+    'Contact is its own district. The Post Office there sends Abbas a real email.',
+  ],
+  [
+    /\b(professional|experience|career)\b/,
+    'district:professional',
+    'Professional is its own district: Abbas’s experience, role by role.',
+  ],
+  [
+    /\bpersonal\b/,
+    'district:personal',
+    'Personal is the cottage district: kitchens, family recipes and the creative side.',
+  ],
+  [
+    /\b(hub|town square|town hall|plaza)\b/,
+    'district:welcome',
+    'The Hub is the town square at the top of the island.',
+  ],
+];
+
+/** "where is…", "how do I get to…", "take me to…", "which way to…". */
+const WHERE =
+  /\bwhere(?:'s| is| are| can i find| do i find)?\b|\bhow (?:do|can) i (?:get|go) to\b|\b(?:take|guide|lead|point) me to\b|\bwhich way\b|\bdirections? to\b|\bhow (?:do|can) i find\b/;
+
+const HIRE =
+  /\b(hire|hiring|recruit(?:er|ing)?|cv|resume|job|jobs|vacancy|available|availability|employ(?:er|ment)?)\b/;
+/** "Role" and "position" are hiring words only about Abbas or from an
+ *  employer: "What role do you play here?" is small talk with the villager. */
+const HIRE_IF_ABOUT = /\b(roles?|positions?)\b/;
+const CONTACT =
+  /\b(contact|email|e-mail|reach|get in touch|message (?:him|abbas)|talk to (?:him|abbas)|speak (?:to|with) (?:him|abbas)|linkedin)\b/;
+/** Who made this, who is he: the person, not the villager being asked. */
+const WHO =
+  /\bwho(?:'s| is| was)? (?:abbas|he|him|the (?:owner|maker|builder|creator|founder|developer))\b|\bwho (?:made|built|created|runs|owns|designed)\b|\babout (?:abbas|him|the (?:owner|maker|builder|creator|founder))\b/;
+const PROJECTS =
+  /\b(projects?|portfolio|built|builds?|ventures?|products?|rankpilot|chocomate|cookbook|digiscalability)\b|\b(?:his|abbas's|abbas'|the) work\b|\bwork(?:s|ed|ing)? on\b|\binsta services\b/;
+/** "Ship" and "building" name the liner and the town's houses unless the
+ *  question is about Abbas ("has he shipped anything"). */
+const PROJECTS_IF_ABOUT = /\b(ship(?:s|ped|ping)?|building)\b/;
+/** "How do I build a house?" is about the island's own building, not the portfolio. */
+const OWN_BUILD = /\b(?:i|we|me|my)\b[^?.!]{0,16}\bbuild/;
+const PROFESSIONAL =
+  /\b(experience|background|career|skills?|stack|qualifications?|education|degree|studied|professional)\b/;
+const PERSONAL =
+  /\b(hobby|hobbies|family|personal|outside (?:of )?work|free time|spare time|chef|kitchens?)\b/;
+
+/**
+ * Route a visitor's question. Null when it names nothing the portfolio or
+ * the compass can answer ("Nice weather?"): the villager's own reply stands.
+ */
+export function routeQuestion(text: string, npcName?: string): QuestionRoute | null {
+  if (typeof text !== 'string') return null;
+  const q = text
+    .slice(0, 300)
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/é/g, 'e')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!q) return null;
+  const about = ABOUT_ABBAS.test(q);
+  if (BEACH_HOUSE.test(q)) {
+    const sailor = typeof npcName === 'string' && /\bsailor\b/i.test(npcName);
+    return {
+      kind: 'place',
+      line: sailor ? SAILOR_CODE_LINE : BEACH_HOUSE_LINE,
+      action: { label: SHOW_ME, guideKey: 'beach-house' },
+    };
+  }
+  if (WHERE.test(q)) {
+    for (const [re, guideKey, line] of PLACE_ROUTES) {
+      if (!re.test(q)) continue;
+      return guideKey
+        ? { kind: 'place', line, action: { label: SHOW_ME, guideKey } }
+        : { kind: 'place', line };
+    }
+    // A "where" that names no place the island knows ("Where's the
+    // lighthouse?") is the villager's to answer, unless it is about Abbas
+    // ("where is his résumé").
+    if (!about) return null;
+  }
+  if (HIRE.test(q) || (HIRE_IF_ABOUT.test(q) && (about || EMPLOYER.test(q)))) {
+    return {
+      kind: 'hire',
+      line: 'Abbas is an AI and software engineer in Melbourne. His CV, experience and contact details are on one card.',
+      action: { label: 'Hiring? CV & contact', hire: true },
+    };
+  }
+  if (CONTACT.test(q)) {
+    return {
+      kind: 'contact',
+      line: 'You can reach Abbas directly: his email, LinkedIn and a message form are on one card.',
+      action: { label: 'Hiring? CV & contact', hire: true },
+    };
+  }
+  if (WHO.test(q)) {
+    return {
+      kind: 'professional',
+      line: 'Abbas built this island. He is an AI and software engineer in Melbourne, and the founder of DigiScalability. Professional has his experience.',
+      action: { label: 'Open Professional', zone: 'professional' },
+    };
+  }
+  if ((PROJECTS.test(q) || (about && PROJECTS_IF_ABOUT.test(q))) && !OWN_BUILD.test(q)) {
+    return {
+      kind: 'projects',
+      line: 'Abbas builds AI products end to end. This island is the flagship, and the rest of his work is in Projects.',
+      action: { label: 'Open Projects', zone: 'projects' },
+    };
+  }
+  if (PROFESSIONAL.test(q)) {
+    return {
+      kind: 'professional',
+      line: 'Abbas is an AI and software engineer in Melbourne, and the founder of DigiScalability. Professional has his experience and education.',
+      action: { label: 'Open Professional', zone: 'professional' },
+    };
+  }
+  if (PERSONAL.test(q)) {
+    return {
+      kind: 'personal',
+      line: 'Not everything here is software: years in Melbourne kitchens, his mother’s handwritten recipes and a creative studio. Personal has that side.',
+      action: { label: 'Open Personal', zone: 'personal' },
+    };
+  }
+  return null;
 }

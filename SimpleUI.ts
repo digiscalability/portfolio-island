@@ -1,10 +1,12 @@
 import { a11y } from './Accessibility';
 import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
+import type { BoardRead } from './Boards';
 import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
-import { checkName } from './Moderation';
+import { GUIDE_KEY, GUIDE_STEPS, type GuideStep } from './Guide';
+import { checkName, safePeerName } from './Moderation';
 import { ACTIVITY_DEFS } from './NpcActivities';
-import { AI_NPCS } from './NpcChat';
+import { AI_NPCS, routeQuestion, type QuestionRoute } from './NpcChat';
 import { PanelManager } from './PanelManager';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import { rumorOfTheDay } from './Secrets';
@@ -19,16 +21,35 @@ import {
   startListening,
 } from './Speech';
 import { DS } from './ui/tokens';
+import { WORLD_ERA } from './WorldScale';
 import { EVENT_META } from './WorldState';
 import type { NoticeState, NpcPlan } from './WorldState';
 
 /**
+ * Haptics on? The settings sheet's switch (ds_haptics: '1' on, '0' off)
+ * decides (D8, HAPTIC-01). Until the visitor has chosen, it follows the gate
+ * it replaces: off under reduced motion, on otherwise. A buzz is not motion,
+ * so a reduced-motion visitor can now turn it on, and anyone can turn it off.
+ */
+export function hapticsEnabled(): boolean {
+  try {
+    const v = localStorage.getItem('ds_haptics');
+    if (v === '1') return true;
+    if (v === '0') return false;
+  } catch {
+    /* storage blocked: the default */
+  }
+  return !a11y.reducedMotion;
+}
+
+/**
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
- * harmless no-op). Gated OFF under reduced motion. Exported so game events
- * elsewhere (landings, race checkpoints, coins) can adopt it too.
+ * harmless no-op). Off when the Haptics setting is (see hapticsEnabled).
+ * Exported so game events elsewhere (landings, race checkpoints, coins) can
+ * adopt it too.
  */
 export function hapticPulse(ms: number): void {
-  if (a11y.reducedMotion) return;
+  if (!hapticsEnabled()) return;
   try {
     navigator.vibrate?.(ms);
   } catch {
@@ -163,6 +184,9 @@ interface QueuedMessage {
   shownAt: number;
   /** Inside a building (the Leave pill up) when it last showed. */
   inside: boolean;
+  /** Where the visitor stood when it last showed: the radar distance to each
+   *  fixed landmark (null before the minimap's first update). */
+  place: number[] | null;
 }
 
 /** A message on screen this long has been read: a modal, an outcome or the
@@ -173,6 +197,10 @@ interface QueuedMessage {
 const READ_MS = { outcome: 1000, hint: 1500 } as const;
 /** The first show and one more after a step aside, never a third. */
 const MAX_SHOWS = 2;
+/** A visitor this far (radar units: 1 is the 1.35 rad radar edge, so 0.15 is
+ *  about 20 u on the radius-100 world) from where a message last showed has
+ *  left that place: a message stepped aside there does not come back. */
+const PLACE_MOVE = 0.15;
 
 /** A message stays inside a panel for this long after the visitor's last
  *  action there counts as that panel's own outcome (P2-D3). The message
@@ -228,10 +256,16 @@ export class SimpleUI {
 
   // ── Interior enter/exit chrome ─────────────────────────────────────────
   private fadeDiv: HTMLElement | null = null;
-  /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
-  fadeThrough(midCb: () => void): void {
+  /**
+   * The door veil, made ahead. Made in the same task as its first use, the
+   * div went in at opacity 0 and was set to 1 before any style pass, so the
+   * first door cut straight to black and held the whole 470 ms there.
+   */
+  private ensureFadeDiv(): HTMLElement {
     if (!this.fadeDiv) {
       this.fadeDiv = document.createElement('div');
+      this.fadeDiv.dataset.veil = '1';
+      this.fadeDiv.setAttribute('aria-hidden', 'true');
       Object.assign(this.fadeDiv.style, {
         position: 'fixed',
         inset: '0',
@@ -244,8 +278,15 @@ export class SimpleUI {
         zIndex: '2000',
       });
       this.overlay.appendChild(this.fadeDiv);
+      // Its opacity-0 style is computed now, so the next change transitions.
+      void getComputedStyle(this.fadeDiv).opacity;
     }
-    const d = this.fadeDiv;
+    return this.fadeDiv;
+  }
+
+  /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
+  fadeThrough(midCb: () => void): void {
+    const d = this.ensureFadeDiv();
     d.style.pointerEvents = 'auto';
     d.style.opacity = '1';
     window.setTimeout(() => {
@@ -263,16 +304,124 @@ export class SimpleUI {
     }, 470);
   }
 
-  private leaveBtn: HTMLElement | null = null;
-  /** "← Leave" button shown while inside a building. */
-  showLeaveButton(onLeave: () => void): void {
+  /** The sections left to lay out ahead; null until the prewarm starts. */
+  private zonePrewarmQueue: string[] | null = null;
+  /** How many sections the prewarm has laid out (read by the probes). */
+  zonePrewarmed = 0;
+
+  /**
+   * Lay the zone panel out once ahead, in idle time (w1-fix, CO-A5). The
+   * first showZonePanel cost 155-198 ms at 4x CPU, inside the first door's
+   * fade, against 11-17 ms on the next call: nearly all of it the first
+   * style, layout and glyph pass over the panel's markup (its emoji and text
+   * runs), not the markup itself. This lays a hidden copy of each section's
+   * panel out, one section per idle slice, hall sections first, and makes
+   * the door veil ahead so its first use fades. Nothing is opened, tracked
+   * or stamped, and the copy leaves the document in the same task.
+   * Idempotent: showWelcome starts it, and A's room warm may call it too.
+   */
+  prewarmZonePanel(): void {
+    this.ensureFadeDiv();
+    if (this.zonePrewarmQueue) return;
+    this.zonePrewarmQueue = ['welcome', 'professional', 'projects', 'personal', 'contact', 'hire'];
+    const step = (): void => {
+      const id = this.zonePrewarmQueue?.shift();
+      if (!id || this.messagesStopped) return;
+      try {
+        this.layoutZoneOffscreen(id);
+        this.zonePrewarmed++;
+        if (this.zonePrewarmQueue?.length) this.whenIdle(step, 600);
+      } catch {
+        /* a prewarm never breaks the page; the real call builds it anyway */
+      }
+    };
+    this.whenIdle(step, 1200);
+  }
+
+  /** requestIdleCallback with a deadline, or a timeout where there is none. */
+  private whenIdle(cb: () => void, timeout: number): void {
+    const ric = (
+      window as unknown as {
+        requestIdleCallback?: (c: () => void, o?: { timeout: number }) => number;
+      }
+    ).requestIdleCallback;
+    if (typeof ric === 'function') ric.call(window, cb, { timeout });
+    else window.setTimeout(cb, Math.min(timeout, 200));
+  }
+
+  /** One section's panel, built and laid out where no one sees it, then gone. */
+  private layoutZoneOffscreen(id: string): void {
+    const compact = window.innerHeight <= 500;
+    const box = document.createElement('div');
+    box.setAttribute('aria-hidden', 'true');
+    box.setAttribute('inert', '');
+    Object.assign(box.style, {
+      position: 'fixed',
+      left: '0',
+      top: '0',
+      visibility: 'hidden',
+      pointerEvents: 'none',
+      contain: 'layout style',
+      color: 'white',
+      padding: '20px',
+      textAlign: 'center',
+      fontSize: '14.5px',
+      width: 'min(500px, calc(100vw - 24px))',
+      boxSizing: 'border-box',
+    });
+    // Parsed in a template (an inert document: nothing loads), and without
+    // its images, so the prewarm fetches nothing.
+    const tpl = document.createElement('template');
+    tpl.innerHTML = this.getZoneContent({ id, name: id });
+    tpl.content.querySelectorAll('img, iframe, video, audio, source').forEach((n) => n.remove());
+    box.appendChild(document.importNode(tpl.content, true));
+    const nav = this.sectionNav(id, compact);
+    if (nav) box.prepend(nav);
+    box.appendChild(this.makeShareButton('🔗 Share this zone', { surface: 'prewarm', url: '' }));
+    this.overlay.appendChild(box);
+    void box.offsetHeight; // the style, layout and glyph pass, now
+    box.remove();
+  }
+
+  private leaveBtn: HTMLButtonElement | null = null;
+  /** The building's name came with the call (else the hall panel names it). */
+  private leaveTitled = false;
+  /** The visitor's last real input: a trusted key, or a pointer. Local to
+   *  the Leave button for now; D7 generalises it in wave 3. */
+  private lastInput: 'keyboard' | 'pointer' = 'pointer';
+  private readonly onInputKey = (e: KeyboardEvent): void => {
+    // The touch buttons send synthetic keys (USE is 'e'): not a keyboard.
+    if (e.isTrusted) this.lastInput = 'keyboard';
+  };
+  private readonly onInputPointer = (): void => {
+    this.lastInput = 'pointer';
+  };
+
+  /**
+   * "← Leave", shown while inside a building (P2-D2, INT-07): a real button
+   * with a name, a focus ring and a 44 px box, where there was a div only a
+   * mouse could use. It is the overlay's FIRST child, so the first Tab from
+   * the room lands on it, and it takes focus itself when the visitor came in
+   * by keyboard. The HUD steps aside for the room ('interior' mode: the
+   * minimap, the weather chip and stamina, and the touch actions with no
+   * use indoors), and the live region says where the visitor is and how to
+   * get out, once per entry.
+   *
+   * `title` is the building's name. Without one, a hall's panel names it
+   * (showZonePanel, in the same task), else it is 'the building'.
+   */
+  showLeaveButton(onLeave: () => void, title?: string): void {
     this.hideLeaveButton();
-    const b = document.createElement('div');
+    const b = document.createElement('button');
+    b.type = 'button';
     b.textContent = '← Leave';
+    b.dataset.leave = '1';
     Object.assign(b.style, {
       position: 'fixed',
       top: 'calc(var(--sat, 0px) + 14px)',
       left: 'calc(var(--sal, 0px) + 14px)',
+      boxSizing: 'border-box',
+      minHeight: '44px',
       background: 'rgba(12,16,28,0.82)',
       color: '#fff',
       padding: '9px 16px',
@@ -289,14 +438,61 @@ export class SimpleUI {
     });
     b.addEventListener('click', () => onLeave());
     // Never inert: a hall panel (a modal) is open whenever this is, and the
-    // way out must stay a click away over it (D4; P2-D2 gives it a role).
+    // way out must stay a click away over it (D4).
     b.dataset.neverInert = '1';
     this.leaveBtn = b;
-    this.overlay.appendChild(b);
+    this.leaveTitled = false;
+    this.overlay.prepend(b);
+    this.setLeaveTitle(title?.trim() || '');
+    this.leaveTitled = !!title?.trim();
+    this.panels.setMode('interior', { hides: ['ambient-info', 'outdoor-actions'], hard: true });
+    // By keyboard (E at the door): focus goes to the way out. A hall's panel
+    // takes it from here a moment later, and hands it back to the room.
+    if (this.lastInput === 'keyboard') {
+      try {
+        b.focus({ preventScroll: true });
+      } catch {
+        b.focus();
+      }
+    }
+    // A task later: a hall's panel, opened right after this, may name the
+    // building. Said once per entry.
+    queueMicrotask(() => {
+      if (this.leaveBtn !== b) return;
+      const name = b.dataset.title || 'the building';
+      this.announce(
+        this.isTouch
+          ? `Inside ${name}. Tap Leave or walk to the door to leave.`
+          : `Inside ${name}. Press Escape or walk to the door to leave.`,
+        SimpleUI.ROOM_ANNOUNCE_HOLD_MS,
+      );
+    });
   }
+
+  /** The room announcement keeps the live region this long. */
+  private static readonly ROOM_ANNOUNCE_HOLD_MS = 2500;
+
+  /** Name the building on the Leave button ('' : the default). */
+  private setLeaveTitle(title: string): void {
+    const b = this.leaveBtn;
+    if (!b) return;
+    if (title) b.dataset.title = title;
+    else delete b.dataset.title;
+    const label = `Leave ${title || 'the building'}`;
+    b.setAttribute('aria-label', label);
+    b.title = label;
+  }
+
   hideLeaveButton(): void {
-    this.leaveBtn?.remove();
+    const b = this.leaveBtn;
+    if (!b) return;
+    // Focus goes back to the body: a removed button would strand it.
+    if (document.activeElement === b) b.blur();
+    b.remove();
     this.leaveBtn = null;
+    this.leaveTitled = false;
+    this.liveHoldUntil = 0; // outdoors again: the room line holds nothing back
+    this.panels.setMode('interior', null);
   }
 
   constructor(id: string) {
@@ -348,9 +544,15 @@ export class SimpleUI {
     this.createSayHiButton();
     this.createCompletionButton();
     this.createInventoryButton();
+    this.createControlsRow();
     this.createEmoteButton();
     this.createTouchControls();
     this.initResponsiveHud();
+    // ? or H: the Controls & settings sheet (D8).
+    window.addEventListener('keydown', this.onControlsKey);
+    // Keyboard or pointer: where the Leave button puts focus (P2-D2).
+    document.addEventListener('keydown', this.onInputKey, true);
+    document.addEventListener('pointerdown', this.onInputPointer, true);
   }
 
   /**
@@ -1302,7 +1504,31 @@ export class SimpleUI {
     hint: boolean,
     until?: () => boolean,
   ): QueuedMessage {
-    return { text, hint, kind, until, shows: 0, seenMs: 0, shownAt: 0, inside: false };
+    return {
+      text,
+      hint,
+      kind,
+      until,
+      shows: 0,
+      seenMs: 0,
+      shownAt: 0,
+      inside: false,
+      place: null,
+    };
+  }
+
+  /** The radar distance to each fixed landmark, from the last minimap update
+   *  (the cruise liner moves, so it is left out). */
+  private placeFix: number[] | null = null;
+
+  /** The visitor has gone in or out, or walked off from where `m` showed. */
+  private leftPlace(m: QueuedMessage): boolean {
+    if (m.inside !== this.isInside()) return true;
+    const a = m.place;
+    const b = this.placeFix;
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > PLACE_MOVE) return true;
+    return false;
   }
 
   private enqueue(m: QueuedMessage): void {
@@ -1370,7 +1596,7 @@ export class SimpleUI {
   private takeToast(): QueuedMessage | null {
     const inside = this.isInside();
     this.toastQueue = this.toastQueue.filter(
-      (q) => !q.until?.() && !(q.shows > 0 && q.inside !== inside),
+      (q) => !q.until?.() && !(q.shows > 0 && (q.inside !== inside || this.leftPlace(q))),
     );
     const pick =
       this.toastQueue.find((q) => !q.hint && this.mayShow(q)) ??
@@ -1420,7 +1646,11 @@ export class SimpleUI {
         }
         return;
       }
-      if (this.mayShow(m, true) && !m.until?.()) {
+      // On screen as the visitor goes through a door: it goes, and takeToast
+      // drops it rather than bring it back (re-verify: 'The Hub - the town
+      // square' stayed up into the beach house). Walking on does not take it
+      // down; only a message that already stepped aside stays behind.
+      if (this.mayShow(m, true) && !m.until?.() && m.inside === this.isInside()) {
         reanchor();
         return;
       }
@@ -1458,10 +1688,13 @@ export class SimpleUI {
       this.toastTimer,
       this.panelNoteTimer,
       this.liveTimer,
+      this.liveHoldTimer,
       this.promptAnnounceTimer,
     ]) {
       if (t) clearTimeout(t);
     }
+    this.liveHoldTimer = 0;
+    this.liveHeld = null;
     if (this.shownWatch) window.clearInterval(this.shownWatch);
     this.unwatchGuide();
     this.pumpTimer = 0;
@@ -1541,6 +1774,7 @@ export class SimpleUI {
     m.shows += 1;
     m.shownAt = Date.now();
     m.inside = this.isInside();
+    m.place = this.placeFix ? [...this.placeFix] : null;
     // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
     // a 120-char school lesson (shown only via toast, key already spent)
     // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
@@ -1708,9 +1942,35 @@ export class SimpleUI {
    *  UX-05: every notice was silent to screen readers). */
   private liveEl: HTMLDivElement | null = null;
   private liveTimer = 0;
+  /** A line that must be heard out (the room announcement) holds the region
+   *  until this time; the latest line that arrives meanwhile follows it. */
+  private liveHoldUntil = 0;
+  private liveHeld: string | null = null;
+  private liveHoldTimer = 0;
 
-  private announce(text: string): void {
+  /**
+   * Say `text` through the live region. `holdMs` keeps it there that long:
+   * entering a hall stamps the passport, the compass retargets, and
+   * 'Compass: Personal' replaced 'Inside Project Portfolio…' 15 ms after it
+   * was written, before a screen reader could have read a word of it.
+   */
+  private announce(text: string, holdMs = 0): void {
     if (!text || this.messagesStopped) return;
+    const now = Date.now();
+    if (now < this.liveHoldUntil) {
+      this.liveHeld = text; // the latest state is the one worth saying next
+      if (!this.liveHoldTimer) {
+        this.liveHoldTimer = window.setTimeout(() => {
+          this.liveHoldTimer = 0;
+          const next = this.liveHeld;
+          this.liveHeld = null;
+          this.liveHoldUntil = 0;
+          if (next) this.announce(next);
+        }, this.liveHoldUntil - now);
+      }
+      return;
+    }
+    if (holdMs > 0) this.liveHoldUntil = now + holdMs;
     if (!this.liveEl) {
       const el = document.createElement('div');
       el.className = 'ds-sr-only';
@@ -2121,13 +2381,26 @@ export class SimpleUI {
       /** The dialog's name when its title is not a heading (axe
        *  aria-dialog-name: the coin history, the bank, the build modals). */
       label?: string;
+      /** Runs once when the modal closes by the manager (Escape, the scrim,
+       *  Back, a sweep), its × or closeCenteredModal. */
+      onClose?: () => void;
     } = {},
   ): HTMLElement {
     const modal = document.createElement('div');
+    let closed = false;
+    const closedOnce = (): void => {
+      if (closed) return;
+      closed = true;
+      opts.onClose?.();
+    };
+    this.modalClosed.set(modal, closedOnce);
     this.panels.open(id, {
       kind: 'modal',
       hides: ['nav-chips', 'touch-controls', 'aux-controls'],
-      close: () => modal.remove(),
+      close: () => {
+        modal.remove();
+        closedOnce();
+      },
       el: modal, // a removed modal pops even if its close path never notifies
       allow: opts.allow,
       label: opts.label,
@@ -2180,10 +2453,7 @@ export class SimpleUI {
       justifyContent: 'center',
       padding: '0',
     });
-    close.addEventListener('click', () => {
-      modal.remove();
-      this.panels.notifyClosed(id);
-    });
+    close.addEventListener('click', () => this.closeCenteredModal(modal, id));
     modal.appendChild(close);
     // Short landscape: a scroll cue on a modal taller than the screen (D5).
     // A frame later, once its caller has filled and appended it.
@@ -2193,6 +2463,16 @@ export class SimpleUI {
       });
     }
     return modal;
+  }
+
+  /** Each centred modal's close hook (buildCenteredModal's onClose). */
+  private readonly modalClosed = new WeakMap<HTMLElement, () => void>();
+
+  /** Close a centred modal from one of its own controls: what its × does. */
+  private closeCenteredModal(modal: HTMLElement, id: string): void {
+    modal.remove();
+    this.panels.notifyClosed(id);
+    this.modalClosed.get(modal)?.();
   }
 
   /**
@@ -2362,8 +2642,6 @@ export class SimpleUI {
     );
     trackOnce('leaderboard_opened');
     this.overlay.appendChild(modal);
-    const { getLeaderboard } = await import('./Boards');
-    const [land, water] = await Promise.all([getLeaderboard('land'), getLeaderboard('water')]);
     const fmt = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
     const section = (title: string, entries: Array<{ name: string; timeMs: number }>) =>
       `<h3 style="margin:14px 0 6px;font-size:14px;color:#cdd;">${title}</h3>` +
@@ -2377,10 +2655,79 @@ export class SimpleUI {
             )
             .join('')
         : `<p style="margin:2px 0 0;font-size:12px;color:#889;">No times yet — be the first!</p>`);
-    const body = modal.querySelector('#lb-body');
-    if (body)
-      body.innerHTML = section('🚗 Land circuit', land) + section('⛵ Water circuit', water);
+    const body = modal.querySelector<HTMLElement>('#lb-body');
+    // A failed read says so, with a Retry (D10): it used to print 'No times
+    // yet — be the first!' over a blocked or offline backend.
+    const load = async (): Promise<void> => {
+      if (body) body.textContent = 'Loading…';
+      // Both circuits or the error: half a leaderboard reads as a quiet one.
+      const res = await this.readBoard(async (b) => {
+        const [land, water] = await Promise.all([
+          b.readLeaderboard('land'),
+          b.readLeaderboard('water'),
+        ]);
+        return land.ok && water.ok
+          ? { ok: true as const, entries: [land.entries, water.entries] }
+          : { ok: false as const };
+      });
+      if (!body || !modal.isConnected) return;
+      if (!res.ok) {
+        this.boardError(body, "Couldn't reach the leaderboard. Check your connection.", load);
+        return;
+      }
+      body.innerHTML =
+        section('🚗 Land circuit', res.entries[0]) + section('⛵ Water circuit', res.entries[1]);
+    };
+    await load();
     modal.appendChild(this.makeRaceGuideButton(modal, 'leaderboard', 'leaderboard'));
+  }
+
+  /** A Boards read as a result. The import sits inside the try: Boards is
+   *  its own chunk, and a failed chunk load is a failed read too. */
+  private async readBoard<T>(
+    read: (boards: typeof import('./Boards')) => Promise<BoardRead<T>>,
+  ): Promise<BoardRead<T>> {
+    try {
+      return await read(await import('./Boards'));
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  /** A board that could not be read: the line, and a 44 px Retry (D10). */
+  private boardError(body: HTMLElement, message: string, retry: () => Promise<void>): void {
+    body.textContent = '';
+    const line = document.createElement('p');
+    line.setAttribute('role', 'alert');
+    line.dataset.boardError = '1';
+    line.textContent = message;
+    Object.assign(line.style, {
+      margin: '4px 0 10px',
+      fontSize: '13px',
+      lineHeight: '1.4',
+      color: '#ffb4a8',
+    });
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Retry';
+    btn.dataset.boardRetry = '1';
+    Object.assign(btn.style, {
+      minHeight: '44px',
+      minWidth: '96px',
+      padding: '0 18px',
+      borderRadius: '10px',
+      border: '1px solid rgba(143,155,255,0.8)',
+      background: 'rgba(76,91,224,0.14)',
+      color: '#fff',
+      fontSize: '14px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      void retry();
+    });
+    body.append(line, btn);
   }
 
   /** "Take me to the start line" — closes the modal and compass-guides there.
@@ -2439,7 +2786,10 @@ export class SimpleUI {
            ? `Your run: <strong style="color:#ffd54a;">${fmt(playerTimeMs)}</strong>`
            : 'Global top times'
        }</p>
-       <div id="rlb-body" style="text-align:left;">Loading…</div>`,
+       <p id="rlb-status" role="status" style="margin:0 0 10px;font-size:13.5px;line-height:1.4;color:#dfe6ff;">${
+         playerTimeMs != null ? 'Saving your time…' : 'Loading…'
+       }</p>
+       <div id="rlb-body" style="text-align:left;"></div>`,
     );
     trackOnce('leaderboard_opened');
     const shareRow = document.createElement('div');
@@ -2462,31 +2812,92 @@ export class SimpleUI {
     modal.appendChild(shareRow);
     modal.appendChild(this.makeRaceGuideButton(modal, 'race_finish', 'race-leaderboard'));
     this.overlay.appendChild(modal);
-    const { getLeaderboard } = await import('./Boards');
-    const entries = await getLeaderboard(circuit);
-    const body = modal.querySelector('#rlb-body');
-    if (!body) return;
-    if (!entries.length) {
-      body.innerHTML = `<p style="margin:2px 0 0;font-size:13px;color:#889;">No times yet — you're on the board!</p>`;
-      return;
+    const status = modal.querySelector<HTMLElement>('#rlb-status');
+    const body = modal.querySelector<HTMLElement>('#rlb-body');
+    if (!status || !body) return;
+    // The visitor's best lap, which RaceSystem keeps on this device whatever
+    // the backend does.
+    let localBestMs: number | null = null;
+    try {
+      const v = parseFloat(localStorage.getItem(`ds_race_best_${WORLD_ERA}_${circuit}`) ?? '');
+      if (Number.isFinite(v) && v > 0) localBestMs = Math.round(v * 1000);
+    } catch {
+      /* no storage: the run's own time stands in */
     }
-    let highlighted = false;
-    body.innerHTML = entries
-      .map((e, i) => {
-        const mine =
-          !highlighted &&
-          playerTimeMs != null &&
-          e.name === playerName &&
-          e.timeMs === playerTimeMs;
-        if (mine) highlighted = true;
-        return `<div style="display:flex;justify-content:space-between;padding:6px 9px;border-radius:8px;
-          background:${mine ? 'rgba(245,179,1,0.22)' : i === 0 ? 'rgba(245,179,1,0.10)' : 'rgba(255,255,255,0.03)'};
-          margin:3px 0;font-size:13px;${mine ? 'outline:1px solid rgba(245,179,1,0.5);' : ''}">
-          <span>${i + 1}. ${this.escapeHtml(e.name)}${mine ? ' (you)' : ''}</span>
+    const bestMs = localBestMs ?? playerTimeMs;
+    const boardName = safePeerName(playerName);
+    const mineIn = (entries: Array<{ name: string; timeMs: number }>): number =>
+      playerTimeMs == null
+        ? -1
+        : entries.findIndex(
+            (e) => e.timeMs === playerTimeMs && (e.name === playerName || e.name === boardName),
+          );
+    // An honest finish (P2-D6): 'Saving your time…' until the read returns,
+    // "You're #N" only when the read-back holds this run, the failure with a
+    // Retry, and no claim at all on an empty or failed read. It used to claim
+    // a place on the board whenever the read came back empty, which is also
+    // what a blocked backend returned.
+    const load = async (): Promise<void> => {
+      status.textContent = playerTimeMs != null ? 'Saving your time…' : 'Loading…';
+      status.style.color = '#dfe6ff';
+      body.textContent = '';
+      let res = await this.readBoard((b) => b.readLeaderboard(circuit));
+      // A new best is written as the race ends and read here 1.2 s later: a
+      // read that beat the write gets one more look.
+      if (
+        res.ok &&
+        playerTimeMs != null &&
+        playerTimeMs === localBestMs &&
+        mineIn(res.entries) < 0
+      ) {
+        await new Promise<void>((r) => window.setTimeout(r, SimpleUI.RACE_REREAD_MS));
+        if (!modal.isConnected) return;
+        const again = await this.readBoard((b) => b.readLeaderboard(circuit));
+        if (again.ok) res = again;
+      }
+      if (!modal.isConnected) return;
+      if (!res.ok) {
+        status.textContent = '';
+        this.boardError(
+          body,
+          bestMs != null
+            ? `Couldn't reach the leaderboard — your best ${fmt(bestMs)} is saved on this device.`
+            : "Couldn't reach the leaderboard.",
+          load,
+        );
+        return;
+      }
+      const entries = res.entries;
+      const mine = mineIn(entries);
+      if (!entries.length) {
+        status.textContent =
+          bestMs != null
+            ? `No times on the leaderboard yet. Your best ${fmt(bestMs)} is saved on this device.`
+            : 'No times on the leaderboard yet.';
+        return;
+      }
+      if (mine >= 0) {
+        status.textContent = `You're #${mine + 1} on the leaderboard.`;
+        status.style.color = '#ffd54a';
+      } else {
+        status.textContent = 'Top times on this circuit:';
+      }
+      body.innerHTML = entries
+        .map((e, i) => {
+          const me = i === mine;
+          return `<div style="display:flex;justify-content:space-between;padding:6px 9px;border-radius:8px;
+          background:${me ? 'rgba(245,179,1,0.22)' : i === 0 ? 'rgba(245,179,1,0.10)' : 'rgba(255,255,255,0.03)'};
+          margin:3px 0;font-size:13px;${me ? 'outline:1px solid rgba(245,179,1,0.5);' : ''}">
+          <span>${i + 1}. ${this.escapeHtml(e.name)}${me ? ' (you)' : ''}</span>
           <span style="font-variant-numeric:tabular-nums;">${fmt(e.timeMs)}</span></div>`;
-      })
-      .join('');
+        })
+        .join('');
+    };
+    await load();
   }
+
+  /** The wait before the race finish reads the board a second time. */
+  private static readonly RACE_REREAD_MS = 1500;
 
   /** Guestbook: read recent notes + leave one. */
   async showGuestbook(): Promise<void> {
@@ -2520,11 +2931,20 @@ export class SimpleUI {
     if (gbInput) this.clearFormErrorOnInput(gbError, [gbInput]);
     trackOnce('guestbook_opened');
     this.overlay.appendChild(modal);
-    const { getGuestbook, signGuestbook } = await import('./Boards');
-    const body = modal.querySelector('#gb-body');
-    const render = async () => {
-      const entries = await getGuestbook();
-      if (!body) return;
+    const body = modal.querySelector<HTMLElement>('#gb-body');
+    // A failed read says so, with a Retry (D10): 'No notes yet — be the
+    // first to sign!' was what a blocked or offline backend printed too.
+    const render = async (): Promise<void> => {
+      const res = await this.readBoard((b) => b.readGuestbook());
+      if (!body || !modal.isConnected) return;
+      if (!res.ok) {
+        this.boardError(body, "Couldn't reach the guestbook. Check your connection.", async () => {
+          body.textContent = 'Loading…';
+          await render();
+        });
+        return;
+      }
+      const entries = res.entries;
       body.innerHTML = entries.length
         ? entries
             .map(
@@ -2549,7 +2969,15 @@ export class SimpleUI {
     const sign = async () => {
       const msg = input?.value.trim();
       if (!msg) return;
-      const ok = await signGuestbook(name, msg);
+      // The import sits inside the try (as the lead form's does): Boards is
+      // its own chunk, and a failed chunk load is a note that was not posted.
+      let ok = false;
+      try {
+        const { signGuestbook } = await import('./Boards');
+        ok = await signGuestbook(name, msg);
+      } catch {
+        ok = false;
+      }
       if (ok) {
         if (input) input.value = '';
         syncSign();
@@ -4377,6 +4805,7 @@ export class SimpleUI {
           <button data-board="guestbook" style="${tile}">✍️ Guestbook</button>
           <button data-board="times" style="${tile}">📰 Island Times</button>
         </div>
+        <button data-controls style="${tile}display:block;width:100%;margin-top:8px;">⌨️ Controls &amp; settings</button>
       </div>`;
 
     // close button: named, and the 44px box every other × has (it measured
@@ -4417,6 +4846,10 @@ export class SimpleUI {
       this.togglePortfolioMenu();
       this.showInventory();
     });
+    menu.querySelector('button[data-controls]')?.addEventListener('click', () => {
+      this.togglePortfolioMenu();
+      this.showControls('menu');
+    });
     menu.querySelector('button[data-journal]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
       this.showJournal();
@@ -4433,6 +4866,421 @@ export class SimpleUI {
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);
     if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgba(12, 12, 20, 0.95)');
+  }
+
+  // ── Controls & settings (D8) ───────────────────────────────────────────
+  // One reference for every control, a "Things to do" list that points the
+  // compass, and the settings the input layer reads. Opened by ? or H, the
+  // Portfolio menu, the phone drawer and a strip on both welcome cards.
+
+  /** The keyboard rows. `run` and `zoom` depend on html[data-run-key] (A11
+   *  ships the Shift run and the wheel zoom together, in wave 3). */
+  private controlsKeyboardRows(): Array<[string, string]> {
+    const runKey = document.documentElement.getAttribute('data-run-key');
+    const rows: Array<[string, string]> = [
+      ['Move', '<kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or the arrow keys'],
+      [
+        'Look',
+        'drag with the mouse · <kbd>J</kbd> <kbd>L</kbd> turn · <kbd>I</kbd> <kbd>K</kbd> tilt · <kbd>R</kbd> recentre',
+      ],
+    ];
+    if (runKey) rows.push(['Zoom', 'mouse wheel, or <kbd>=</kbd> and <kbd>−</kbd>']);
+    rows.push(
+      [
+        'Run',
+        runKey === 'shift'
+          ? 'hold <kbd>Shift</kbd> while moving'
+          : 'hold <kbd>Space</kbd> while moving',
+      ],
+      ['Jump', '<kbd>Space</kbd> (hold in water to stay afloat)'],
+      ['Dive', 'hold <kbd>Shift</kbd> in water'],
+      ['Use', '<kbd>E</kbd> — talk, enter, sit, whatever the prompt says'],
+      ['Wave', '<kbd>Q</kbd>'],
+      ['Map', '<kbd>M</kbd>'],
+      ['Feed', '<kbd>F</kbd>, with feed from the shop'],
+      ['Eat', '<kbd>G</kbd>, with a cooked meal'],
+      ['Chat', '<kbd>Enter</kbd>'],
+      ['Talk aloud', 'hold <kbd>V</kbd>'],
+      ['Photo', '<kbd>P</kbd>'],
+      ['Appearance', '<kbd>C</kbd>'],
+      ['Close', '<kbd>Esc</kbd>'],
+      ['This sheet', '<kbd>?</kbd> or <kbd>H</kbd>'],
+    );
+    return rows;
+  }
+
+  private static readonly CONTROLS_TOUCH_ROWS: ReadonlyArray<[string, string]> = [
+    ['Move', 'drag the joystick, bottom left'],
+    ['Look', 'swipe anywhere on the world'],
+    ['Use', '👆 USE — talk, enter, sit, whatever the prompt says'],
+    ['Jump', '⤒ JUMP (hold in water to stay afloat)'],
+    ['Wave', '👋 WAVE'],
+    ['Dive', '🤿 DIVE, shown while you swim'],
+    ['Feed', '🌾 FEED, shown once you carry feed'],
+    ['Eat', '🍽️ EAT, shown once you carry a meal'],
+    ['Chat', '💬 above the joystick'],
+    ['Talk aloud', 'hold 🎤'],
+    ['Map', 'tap the compass pill or the minimap'],
+    ['Menu', '☰ — Work with me, Portfolio, photo, sound and this sheet'],
+  ];
+
+  /** One line per system; `key` is a 'ds:guide-to' key the compass can take. */
+  private thingsToDo(): Array<{ icon: string; title: string; how: string; key?: string }> {
+    const pp = this.passport;
+    const nextStamp = pp ? PASSPORT_ZONES.find((z) => !pp.has(z)) : PASSPORT_ZONES[0];
+    // The action in the visitor's own scheme: a key, or the touch button.
+    const use = this.isTouch ? 'tap 👆 USE' : 'press E';
+    const feed = this.isTouch ? 'tap 🌾 FEED' : 'press F';
+    const eat = this.isTouch ? 'tap 🍽️ EAT' : 'press G';
+    const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+    return [
+      {
+        icon: '🎣',
+        title: 'Fishing',
+        how: `Buy a rod at the shop, stand at a shore and ${use} to cast. The Fisherman buys the catch.`,
+        key: 'shore',
+      },
+      {
+        icon: '🪓',
+        title: 'Chopping',
+        how: 'An axe from the shop fells trees. Sell the timber to the Carpenter, or build with it.',
+        key: 'carpenter',
+      },
+      {
+        icon: '🐦',
+        title: 'Feeding birds',
+        how: `Feed from the shop calls nearby birds, cats or fish: ${feed}.`,
+      },
+      {
+        icon: '🍽️',
+        title: 'Eating',
+        how: `A cooked meal refills your stamina: ${eat}.`,
+      },
+      {
+        icon: '🔨',
+        title: 'Building',
+        how: `Hammer stakes mark free plots. Bring timber and coins, and ${use} at a stake.`,
+        key: 'stake:nearest',
+      },
+      {
+        icon: '🏁',
+        title: 'Races',
+        how: 'Board a vehicle and cross a start line. Your best lap goes on the Leaderboard.',
+        key: 'race:land',
+      },
+      {
+        icon: '📦',
+        title: 'Deliveries',
+        how: `A glowing mailbox holds a delivery. ${cap(use)} to collect it, and the next one lights up.`,
+        key: 'mailbox:next',
+      },
+      {
+        icon: '🏫',
+        title: 'The School’s lessons',
+        how: 'Each lesson at the School teaches one of the island’s trades, and pays a few coins.',
+        key: 'school',
+      },
+      {
+        icon: '🛒',
+        title: 'The shop',
+        how: 'Tools, hats, feed and food, for the coins you find and earn.',
+        key: 'kiosk',
+      },
+      {
+        icon: '🛂',
+        title: 'Passport stamps',
+        how: 'Walk into each district’s hall to stamp your passport. A full passport earns a crown.',
+        ...(nextStamp ? { key: `district:${nextStamp}` } : {}),
+      },
+      // Decision P2-2: the beach house is findable. Its door has a code, and
+      // the Sailor is who to ask (P2-D9; his line is package C's P2-C6).
+      {
+        icon: '🏖️',
+        title: 'The beach house',
+        how: 'Visit the beach house on the islet (ask the Sailor).',
+        key: 'beach-house',
+      },
+    ];
+  }
+
+  /** Write a setting and tell the input layer (SimpleInputManager re-reads
+   *  its three look keys on 'ds:settings'). */
+  private writeSetting(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      /* storage blocked: the setting holds for nothing, and says nothing */
+    }
+    try {
+      window.dispatchEvent(new CustomEvent('ds:settings', { detail: { key } }));
+    } catch {
+      /* no CustomEvent: nothing listens either */
+    }
+  }
+
+  /**
+   * The Controls & settings sheet. `source` says where it was opened from
+   * (controls_opened); `tab` opens it on a tab other than Controls.
+   *
+   * Opened from the welcome card (its strip, or ? while it is up), the card
+   * steps aside unread and comes back when the sheet closes: it is parked,
+   * not dismissed, so ds_welcomed is not burned and isWelcomeVisible() stays
+   * true for main-simple (the world takes no input, and First steps waits
+   * for the card's own Explore).
+   */
+  public showControls(
+    source: 'key' | 'menu' | 'drawer' | 'welcome' = 'menu',
+    tab: 'controls' | 'todo' | 'settings' = 'controls',
+  ): void {
+    if (this.welcomeDiv) {
+      this.welcomeParked = true;
+      this.hideWelcome(false); // not a dismissal: the sheet's close re-shows it
+    }
+    const modal = this.buildCenteredModal('min(560px, calc(100vw - 32px))', 'controls', {
+      // A task later: the manager is still closing the sheet when this runs.
+      onClose: () => queueMicrotask(() => this.unparkWelcome()),
+    });
+    modal.classList.add('ds-controls');
+    track('controls_opened', { source });
+
+    // Mouse lock is offered wherever there is a mouse: every desktop, and a
+    // touchscreen laptop (the touch scheme, but a fine pointer as well).
+    let finePointer = false;
+    try {
+      finePointer = window.matchMedia?.('(any-pointer: fine)').matches === true;
+    } catch {
+      /* no matchMedia: the touch scheme alone decides */
+    }
+    const hasMouse = !this.isTouch || finePointer;
+    const readFlag = (key: string): boolean => {
+      try {
+        return localStorage.getItem(key) === '1';
+      } catch {
+        return false;
+      }
+    };
+    let sens = 1;
+    try {
+      const v = Number.parseFloat(localStorage.getItem('ds_look_sens') ?? '');
+      if (Number.isFinite(v)) sens = Math.min(2, Math.max(0.5, v));
+    } catch {
+      /* the default */
+    }
+
+    const rows = (list: ReadonlyArray<[string, string]>): string =>
+      `<dl class="ds-controls-rows">${list
+        .map(([what, how]) => `<div><dt>${what}</dt><dd>${how}</dd></div>`)
+        .join('')}</dl>`;
+    const todo = this.thingsToDo();
+    const tabs: Array<[typeof tab, string]> = [
+      ['controls', 'Controls'],
+      ['todo', 'Things to do'],
+      ['settings', 'Settings'],
+    ];
+    const check = (id: string, label: string, hint: string, on: boolean): string =>
+      `<label class="ds-controls-setting" for="${id}">
+         <input type="checkbox" id="${id}" ${on ? 'checked' : ''} />
+         <span><strong>${label}</strong><small>${hint}</small></span>
+       </label>`;
+
+    modal.insertAdjacentHTML(
+      'beforeend',
+      `<h2 style="margin:0 0 12px;color:#8a9bff;">Controls &amp; settings</h2>
+       <div role="tablist" aria-label="Controls and settings">
+         ${tabs
+           .map(
+             ([id, label]) =>
+               `<button type="button" role="tab" id="ds-ctl-tab-${id}" data-tab="${id}" aria-controls="ds-ctl-panel-${id}"
+                  aria-selected="${id === tab}" tabindex="${id === tab ? 0 : -1}">${label}</button>`,
+           )
+           .join('')}
+       </div>
+       <div role="tabpanel" id="ds-ctl-panel-controls" aria-labelledby="ds-ctl-tab-controls" ${tab === 'controls' ? '' : 'hidden'}>
+         <div class="ds-controls-switch" role="group" aria-label="Control scheme">
+           <button type="button" data-scheme="keys" aria-pressed="${!this.isTouch}">Keyboard &amp; mouse</button>
+           <button type="button" data-scheme="touch" aria-pressed="${this.isTouch}">Touch</button>
+         </div>
+         <div data-scheme-rows="keys" ${this.isTouch ? 'hidden' : ''}>${rows(this.controlsKeyboardRows())}</div>
+         <div data-scheme-rows="touch" ${this.isTouch ? '' : 'hidden'}>${rows(SimpleUI.CONTROLS_TOUCH_ROWS)}</div>
+       </div>
+       <div role="tabpanel" id="ds-ctl-panel-todo" aria-labelledby="ds-ctl-tab-todo" ${tab === 'todo' ? '' : 'hidden'}>
+         <ul class="ds-controls-todo">
+           ${todo
+             .map(
+               (it) =>
+                 `<li><span class="ds-controls-todo-text"><strong>${it.icon} ${it.title}</strong>
+                    <span>${it.how}</span></span>${
+                      it.key
+                        ? `<button type="button" data-show-me="${it.key}" aria-label="Show me: ${it.title}">Show me</button>`
+                        : ''
+                    }</li>`,
+             )
+             .join('')}
+         </ul>
+       </div>
+       <div role="tabpanel" id="ds-ctl-panel-settings" aria-labelledby="ds-ctl-tab-settings" ${tab === 'settings' ? '' : 'hidden'}>
+         <label class="ds-controls-setting ds-controls-range" for="ds-set-sens">
+           <span><strong>Look sensitivity</strong><small>How far the view turns for the same drag or swipe.</small></span>
+           <span class="ds-controls-range-row">
+             <input type="range" id="ds-set-sens" min="0.5" max="2" step="0.1" value="${sens}" />
+             <output for="ds-set-sens">${sens.toFixed(1)}×</output>
+           </span>
+         </label>
+         ${check('ds-set-invert', 'Invert vertical look', 'Dragging down tilts the view up.', readFlag('ds_look_invert'))}
+         ${
+           !hasMouse
+             ? ''
+             : check(
+                 'ds-set-lock',
+                 'Mouse lock',
+                 'Opt in: a click captures the cursor and the view follows the mouse without a drag. Esc releases it.',
+                 readFlag('ds_mouse_lock'),
+               )
+         }
+         ${
+           this.isTouch
+             ? check(
+                 'ds-set-haptics',
+                 'Haptics',
+                 'A short buzz on the touch buttons, where the phone supports it.',
+                 hapticsEnabled(),
+               )
+             : ''
+         }
+       </div>`,
+    );
+
+    // Tabs: click, and Left/Right/Home/End with a roving tabindex.
+    const tabEls = [...modal.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const select = (id: string, focus: boolean): void => {
+      for (const t of tabEls) {
+        const on = t.dataset.tab === id;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        const panel = modal.querySelector<HTMLElement>(`#ds-ctl-panel-${t.dataset.tab}`);
+        if (panel) panel.hidden = !on;
+        if (on && focus) t.focus();
+      }
+      modal.scrollTop = 0;
+    };
+    for (const [i, t] of tabEls.entries()) {
+      t.addEventListener('click', () => select(t.dataset.tab ?? 'controls', false));
+      t.addEventListener('keydown', (e) => {
+        const step =
+          e.key === 'ArrowRight'
+            ? 1
+            : e.key === 'ArrowLeft'
+              ? -1
+              : e.key === 'Home'
+                ? -i
+                : e.key === 'End'
+                  ? tabEls.length - 1 - i
+                  : 0;
+        if (!step) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const next = tabEls[(i + step + tabEls.length) % tabEls.length];
+        select(next.dataset.tab ?? 'controls', true);
+      });
+    }
+    // Keyboard & mouse · Touch.
+    const schemeBtns = [...modal.querySelectorAll<HTMLButtonElement>('button[data-scheme]')];
+    for (const b of schemeBtns) {
+      b.addEventListener('click', () => {
+        for (const o of schemeBtns) o.setAttribute('aria-pressed', String(o === b));
+        for (const r of modal.querySelectorAll<HTMLElement>('[data-scheme-rows]')) {
+          r.hidden = r.dataset.schemeRows !== b.dataset.scheme;
+        }
+      });
+    }
+    // Show me: the compass takes it from here, and the sheet steps aside (a
+    // parked welcome card comes back over the island, with the compass set).
+    for (const b of modal.querySelectorAll<HTMLButtonElement>('button[data-show-me]')) {
+      b.addEventListener('click', () => {
+        const key = b.dataset.showMe ?? '';
+        this.closeCenteredModal(modal, 'controls');
+        this.guideTo(key, 'controls');
+      });
+    }
+    // Settings write through at once: no Save button to forget.
+    const sensEl = modal.querySelector<HTMLInputElement>('#ds-set-sens');
+    const sensOut = modal.querySelector<HTMLOutputElement>('output[for="ds-set-sens"]');
+    sensEl?.addEventListener('input', () => {
+      const v = Math.min(2, Math.max(0.5, Number.parseFloat(sensEl.value) || 1));
+      if (sensOut) sensOut.textContent = `${v.toFixed(1)}×`;
+      this.writeSetting('ds_look_sens', String(v));
+    });
+    // The slider owns the keys that move it: they must not reach the world.
+    // Escape and Tab still go on to the manager (a blanket stop here left
+    // Escape dead while the slider had focus).
+    sensEl?.addEventListener('keydown', (e) => {
+      if (/^(Arrow(Up|Down|Left|Right)|Home|End|PageUp|PageDown)$/.test(e.key)) {
+        e.stopPropagation();
+      }
+    });
+    const wire = (id: string, key: string): void => {
+      const el = modal.querySelector<HTMLInputElement>(`#${id}`);
+      el?.addEventListener('change', () => this.writeSetting(key, el.checked ? '1' : '0'));
+    };
+    wire('ds-set-invert', 'ds_look_invert');
+    wire('ds-set-lock', 'ds_mouse_lock');
+    wire('ds-set-haptics', 'ds_haptics');
+
+    this.overlay.appendChild(modal);
+  }
+
+  /** The welcome card stepped aside for the Controls sheet (showControls). */
+  private welcomeParked = false;
+  /** What the open (or parked) welcome card was shown with. */
+  private welcomeArgs: AwayDelta | null | undefined = undefined;
+
+  /** The sheet closed: the parked welcome card comes back. */
+  private unparkWelcome(): void {
+    if (!this.welcomeParked) return;
+    this.welcomeParked = false;
+    if (!this.messagesStopped && !this.welcomeDiv) this.showWelcome(this.welcomeArgs);
+  }
+
+  /** ? or H opens the sheet, and closes it again (D8). Typing never does:
+   *  a field, or a panel that owns the keyboard, keeps the key. */
+  private readonly onControlsKey = (e: KeyboardEvent): void => {
+    if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key !== '?' && e.key !== 'h' && e.key !== 'H') return;
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.isContentEditable || t.matches('input, textarea, select, [role="textbox"]'))
+    ) {
+      return;
+    }
+    if (this.isLoadingVisible() || this.nameModalDiv) return;
+    const top = this.panels.current();
+    if (top === 'controls') {
+      this.panels.closeTop('escape');
+      return;
+    }
+    // Over the bare island, the welcome card, the menu or the drawer only:
+    // any other panel (a hall panel, a shop, a chat) keeps its place.
+    if (top !== null && top !== 'welcome' && top !== 'portfolio-menu' && top !== 'drawer') return;
+    e.preventDefault();
+    this.showControls(top === 'welcome' ? 'welcome' : 'key');
+  };
+
+  /** The phone drawer's Controls row (D8). Desktop reaches the sheet from
+   *  the Portfolio menu and by ? or H, so it gets no chip of its own. */
+  private createControlsRow(): void {
+    if (!this.isTouch) return;
+    const btn = document.createElement('div');
+    btn.textContent = '⌨️ Controls & settings';
+    btn.dataset.controlsRow = '1';
+    Object.assign(btn.style, { ...CHIP });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.showControls('drawer');
+    });
+    this.makeHudButtonAccessible(btn, 'Controls and settings');
+    // After the ten rows that were there: the drawer's order is Abbas's.
+    this.chipHost(btn, { drawer: true, order: 11 });
   }
 
   /**
@@ -4658,8 +5506,15 @@ export class SimpleUI {
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
     makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide = 'use-button';
-    makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump);
-    makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave);
+    // JUMP, WAVE and the contextual DIVE, FEED and EAT have no use inside a
+    // room: the 'interior' mode takes this layer out (P2-D2). USE, the
+    // joystick, chat and the mic stay.
+    const outdoor = (btn: HTMLElement): HTMLElement => {
+      this.panels.registerLayer('outdoor-actions', btn);
+      return btn;
+    };
+    outdoor(makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump));
+    outdoor(makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave));
     // DIVE — touch's only route to the free dive (Shift is desktop-only).
     // Contextual like FEED/EAT: it exists only while actually SWIMMING, so a
     // walker never sees it. Gated on isSwimming(), NOT isInWater(): the
@@ -4681,6 +5536,7 @@ export class SimpleUI {
       'aux-controls',
     );
     this.diveBtnEl.style.visibility = 'hidden';
+    outdoor(this.diveBtnEl);
     // FEED goes in a SECOND COLUMN beside USE rather than extending the stack
     // to 374px: on a short landscape phone (the UI explicitly supports
     // max-height 500px) a 4th row would sit over the coin chip and the icon
@@ -4706,6 +5562,8 @@ export class SimpleUI {
     this.eatBtnEl = makeButton('🍽️', 'EAT', '124px', 'KeyG', 'g', DS.ringEat, 112, 'aux-controls');
     this.feedBtnEl.style.visibility = 'hidden';
     this.eatBtnEl.style.visibility = 'hidden';
+    outdoor(this.feedBtnEl);
+    outdoor(this.eatBtnEl);
 
     // Proximity chat: 💬 opens the text input, 🎤 is press-hold-to-talk.
     // Stacked above the joystick (which spans bottom 26–136px here) so
@@ -5033,6 +5891,10 @@ export class SimpleUI {
    * Show welcome message
    */
   showWelcome(awayDelta?: AwayDelta | null): void {
+    this.welcomeArgs = awayDelta;
+    this.welcomeParked = false;
+    // The first door's panel and veil, laid out in idle time behind the card.
+    this.prewarmZonePanel();
     if (!this.welcomeDiv) {
       this.welcomeDiv = document.createElement('div');
       Object.assign(this.welcomeDiv.style, {
@@ -5040,7 +5902,9 @@ export class SimpleUI {
         top: '50%',
         left: '50%',
         transform: 'translate(-50%, -50%)',
-        background: 'rgba(0, 0, 0, 0.9)',
+        // Opaque (D9): at 0.9 the Mayor's bubble and his pin read through
+        // the card on a phone, where it covers the plaza.
+        background: 'rgb(8, 10, 16)',
         color: 'white',
         padding: '22px',
         borderRadius: '15px',
@@ -5106,64 +5970,68 @@ export class SimpleUI {
     // Every card button is a 44px thumb target on touch (phone.cjs: the
     // Hiring pill measured 40 and Explore 42).
     const tap = this.isTouch ? 'min-height:44px;' : '';
-    const controlsLine = this.isTouch
-      ? 'Drag the joystick to move · 👆 USE to interact · ⤒ JUMP (hold to swim) · 👋 WAVE.'
-      : 'WASD to move · drag or J/L to look · space to jump · Q to wave.';
+    // A phone on its side (height 500 or less): the card drops the villager
+    // line and tightens its padding, so Explore is on screen without a scroll
+    // (at 844x390 the full card was 68 px taller than the screen).
+    const compact = window.innerHeight <= 500;
+    this.welcomeDiv.style.padding = compact ? '14px 22px' : '22px';
 
-    // Primary CTAs: the work and the contact path. A recruiter who won't
-    // explore still reaches everything in one click. See the work is an
-    // indigo outline: the card has ONE filled primary, Explore (D3).
+    // The card says less (D9, FM-11): one filled primary, two outline CTAs,
+    // a neutral way in, and the rest behind one disclosure. The controls line
+    // and the compass footnote are gone: First steps teaches both, a step at
+    // a time, once the card closes (A6).
+
+    // The recruiter pill is the card's ONE filled primary, in the indigo
+    // (decision 2 covers the HUD pill, not this card): full width, 15 px/700,
+    // 46 px tall. Same data-recruit contract. It opens the HIRE CARD at once
+    // (showHireCard); the highlights tour is a secondary button inside it.
+    const recruiterPill = `
+      <button data-recruit class="ds-press" style="width:100%; min-height:46px; box-sizing:border-box; padding:10px 14px; margin:0 0 10px;
+        border:none; border-radius:10px; background:${DS.primary}; color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
+        📄 Hiring? CV, experience and contact</button>`;
+
+    // The work and the contact path, as outlines: a recruiter who won't
+    // explore still reaches everything in one click.
+    const outline =
+      'background:rgba(76,91,224,0.14); color:#fff; border:1px solid rgba(143,155,255,0.8);';
     const ctaRow = `
       <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:0 0 10px;">
-        <button data-cta="projects" style="flex:1 1 140px; ${tap}padding:12px 14px; border:1px solid rgba(143,155,255,0.8); border-radius:10px;
-          background:rgba(76,91,224,0.14); color:#fff; font-size:15px; font-weight:600; cursor:pointer;">
+        <button data-cta="projects" style="flex:1 1 140px; ${tap}padding:12px 14px; border-radius:10px;
+          ${outline} font-size:15px; font-weight:600; cursor:pointer;">
           🚀 See the work</button>
         <button data-cta="contact" style="flex:1 1 140px; ${tap}padding:12px 14px; border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.18); font-size:15px; font-weight:600; cursor:pointer;">
+          ${outline} font-size:15px; font-weight:600; cursor:pointer;">
           📬 Get in touch</button>
       </div>`;
 
-    // The recruiter pill — PROMOTED from a 12px footnote link below the
-    // controls line. The primary audience got the least visible control on
-    // the card while "Beat the lap record" had a real button: hierarchy
-    // exactly inverted from the audience priority. Same data-recruit
-    // contract; amber border borrowed from the old meet-AI button.
-    // It opens the HIRE CARD at once (showHireCard). It used to start a 37 s
-    // camera tour that ended on a client pitch; that tour is now a secondary
-    // button inside the card, and it ends back on the card.
-    const recruiterPill = `
-      <button data-recruit style="width:100%; ${tap}padding:10px 14px; margin:0 0 12px; border-radius:10px;
-        background:rgba(38,38,51,0.5); color:#ffe3a3; border:1px solid rgba(255,212,121,0.45); font-size:13.5px; font-weight:600; cursor:pointer;">
-        📄 Hiring? CV, experience and contact</button>`;
-
-    // Explicit dismiss button so the pitch stays put until the visitor chooses
-    // to leave it (moving with WASD no longer evaporates it). The line under
-    // it names the compass pill — the card's one pointer at the persistent
-    // wayfinding surface that is literally on screen behind it.
+    // Explicit dismiss, so the pitch stays put until the visitor chooses to
+    // leave it. A NEUTRAL outline: green is Work with me's alone, and the
+    // filled primary is the Hiring pill's. A returning visitor who left First
+    // steps unfinished is told how much of it is left.
+    const stepsLeft = returning ? this.guideStepsLeft() : null;
+    const exploreLabel =
+      stepsLeft === null
+        ? '🧭 Explore the island →'
+        : `🧭 Explore (${stepsLeft} quick step${stepsLeft === 1 ? '' : 's'} left)`;
     const exploreBtn = `
-      <button data-dismiss="1" class="ds-press" style="width:100%; ${tap}padding:11px 14px; margin:0 0 4px; border:none; border-radius:10px;
-        background:${DS.primary}; color:#fff; font-size:15px; font-weight:700; cursor:pointer;">
-        🧭 Explore the island →</button>
-      <p style="margin:0 0 12px; font-size:11px; color:#8fa0b5;">
-        The gold ➤ pill at the top of your screen points to your next stop.</p>`;
+      <button data-dismiss="1" style="width:100%; ${tap}padding:11px 14px; margin:0 0 10px; border-radius:10px;
+        background:rgba(38,38,51,0.5); color:#fff; border:1px solid rgba(255,255,255,0.28); font-size:15px; font-weight:600; cursor:pointer;">
+        ${exploreLabel}</button>`;
 
-    // Tertiary chip row: three near-duplicate "guided experiences" (meet-AI /
-    // tour / race) collapsed from two full-width tiers into one 13px line —
-    // seven same-weight buttons was choice overload, and two of these call
-    // the same tour rail anyway. Same data-* analytics contracts. 44px-tall
-    // touch targets via padding despite the small type.
+    // The three guided experiences (meet a villager, the full tour, a race)
+    // wait behind one disclosure: seven same-weight buttons was choice
+    // overload. Same data-* analytics contracts; 44 px targets on touch.
     const chipPad = this.isTouch ? `${tap}padding:12px 8px;` : 'padding:8px 8px;';
+    const chip =
+      'border-radius:10px; background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;';
     const secondaryRow = `
-      <div style="display:flex; gap:8px; margin:0 0 12px;">
-        <button data-meet-ai="1" style="flex:1; ${chipPad} border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🤖 Ask the townsfolk</button>
-        <button data-tour="1" style="flex:1; ${chipPad} border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🎬 Full tour</button>
-        <button data-race="1" style="flex:1; ${chipPad} border-radius:10px;
-          background:rgba(38,38,51,0.5); color:#dfe6f2; border:1px solid rgba(255,255,255,0.16); font-size:13px; cursor:pointer;">
-          🏁 Try a race</button>
+      <button type="button" data-more aria-expanded="false" aria-controls="wlc-more" style="${tap}padding:6px 10px; margin:0;
+        background:none; border:none; color:#b9c6da; font-size:13px; cursor:pointer;">
+        More ways to explore ▾</button>
+      <div id="wlc-more" hidden style="gap:8px; margin:6px 0 0;">
+        <button data-meet-ai="1" style="flex:1; ${chipPad} ${chip}">💬 Ask the townsfolk</button>
+        <button data-tour="1" style="flex:1; ${chipPad} ${chip}">🎬 Full tour</button>
+        <button data-race="1" style="flex:1; ${chipPad} ${chip}">🏁 Try a race</button>
       </div>`;
 
     // "While you were away": the living world's deltas, so a return visit is
@@ -5181,42 +6049,69 @@ export class SimpleUI {
            <span id="wlc-gb">✍️ checking the guestbook…</span>
          </div>`
       : '';
-    // The returning card is a HELLO, not a menu: delta + the Hiring pill + the
-    // two primary CTAs + an explicit way in. The tour/race/meet-AI chips were
-    // five same-moment choices on a short-lived card — and a returning visitor
-    // already knows those exist (owner's call). The Explore button is the
-    // obvious manual way out: the card no longer auto-closes (see below), so
-    // it stays until the visitor chooses.
+    // The way to every control, on both cards (D8): a 13 px text link, not a
+    // fifth button. The card steps aside for the sheet and comes back after.
+    const stripTap = this.isTouch
+      ? 'display:inline-flex; align-items:center; justify-content:center; min-height:44px; min-width:44px;'
+      : '';
+    const controlsStrip = `
+      <p data-controls-strip style="margin:8px 0 0; font-size:13px; line-height:1.4; color:#aab6c8;">
+        <a href="#controls" data-controls style="color:#c9d4ff; text-decoration:underline; ${stripTap}">Controls &amp; settings</a>${
+          this.isTouch
+            ? ''
+            : ' (press <kbd style="font:inherit; padding:0 5px; border:1px solid rgba(255,255,255,0.3); border-radius:4px;">?</kbd>)'
+        }</p>`;
+    // The returning card shows progress (D9): the passport, stamp by stamp.
+    const progressHtml = this.passportProgressLine();
+    // The returning card is a HELLO, not a menu: progress + delta + the
+    // Hiring pill + the two CTAs + an explicit way in. The guided chips stay
+    // on the first-run card (a returning visitor already knows they exist).
+    // The card never auto-closes, so Explore is the obvious way out.
     // The title is the page's h1 (axe: no level-one heading), sized as the
     // h2 it replaced.
     this.welcomeDiv.innerHTML = returning
       ? `<h1 style="margin: 0 0 12px 0; font-size: 1.5em; color: #4CAF50;">👋 Welcome back!</h1>
+         ${progressHtml}
          ${awayHtml}
          ${recruiterPill}
          ${ctaRow}
-         ${exploreBtn}`
+         ${exploreBtn}
+         ${controlsStrip}`
       : `
       <h1 style="margin: 0 0 8px 0; font-size: 1.5em; color: #4CAF50;">DigiScalability Life Island</h1>
-      <p style="margin: 0 0 12px 0; font-size:15px; line-height:1.5;">
+      <p style="margin: 0 0 10px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI products end to end, and this island is my
         portfolio. Walk up to a district to open it, or jump straight there below.</p>
       ${
-        // Progressive disclosure on short phones (SE 667px): the AI-agent
-        // detail paragraph is the "Ask the townsfolk" chip's job — on a
-        // screen this size the full pitch pushed the CTAs below the fold.
-        this.isTouch && window.innerHeight < 700
+        compact
           ? ''
-          : `<p style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
-        ${Object.keys(AI_NPCS).length} of the townsfolk talk through
-        <strong>Claude Haiku 4.5</strong> — a planner agent sets their jobs each morning,
-        and an analyst agent reports nightly. Walk up to one and ask them anything.</p>`
+          : `<p data-ai-line style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
+        ${Object.keys(AI_NPCS).length} villagers talk through <strong>Claude Haiku 4.5</strong> —
+        walk up and ask them anything.</p>`
       }
       ${recruiterPill}
       ${ctaRow}
       ${exploreBtn}
       ${secondaryRow}
-      <p style="margin: 0; font-size: 12px; color: #9aa;">${controlsLine}</p>
+      ${controlsStrip}
     `;
+    this.welcomeDiv.querySelector('a[data-controls]')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.showControls('welcome');
+    });
+    // The disclosure: the three guided ways in, shown on request.
+    const more = this.welcomeDiv.querySelector<HTMLButtonElement>('button[data-more]');
+    const moreRow = this.welcomeDiv.querySelector<HTMLElement>('#wlc-more');
+    more?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!moreRow) return;
+      const open = moreRow.hidden;
+      moreRow.hidden = !open;
+      moreRow.style.display = open ? 'flex' : 'none';
+      more.setAttribute('aria-expanded', String(open));
+      more.textContent = open ? 'More ways to explore ▴' : 'More ways to explore ▾';
+    });
 
     // Dismiss only on an explicit choice — a CTA, the Explore button, or
     // Escape. The old "any key / click-outside" dismiss evaporated the pitch
@@ -5444,6 +6339,48 @@ export class SimpleUI {
     }
   }
 
+  /**
+   * First steps' quick steps still to do, for the returning card's Explore
+   * (D9): read from ds_guide_v1 = {v:1, done[], finished, skipped, t}, which
+   * package A's guide writes. Null when there is nothing to say: the key is
+   * absent or unparseable, or the guide was finished or skipped.
+   */
+  private guideStepsLeft(): number | null {
+    try {
+      const raw = localStorage.getItem(GUIDE_KEY);
+      if (!raw) return null;
+      const save = JSON.parse(raw) as {
+        v?: unknown;
+        done?: unknown;
+        finished?: unknown;
+        skipped?: unknown;
+      } | null;
+      if (!save || save.v !== 1 || !Array.isArray(save.done)) return null;
+      if (save.finished === true || save.skipped === true) return null;
+      const done = new Set(
+        save.done.filter((s): s is GuideStep => (GUIDE_STEPS as readonly unknown[]).includes(s)),
+      );
+      const left = GUIDE_STEPS.length - done.size;
+      return left > 0 ? left : null;
+    } catch {
+      return null; // no storage, or not JSON
+    }
+  }
+
+  /** The returning card's passport line (D9): how far, and what is left.
+   *  Empty before the passport is wired (setPassport). */
+  private passportProgressLine(): string {
+    const pp = this.passport;
+    if (!pp) return '';
+    const left = PASSPORT_ZONES.filter((z) => !pp.has(z)).map((z) => PASSPORT_META[z].label);
+    const text = pp.isComplete()
+      ? '🛂 Passport complete — every district stamped 👑'
+      : left.length === PASSPORT_ZONES.length
+        ? `🛂 Passport: no stamps yet — ${left.join(', ')} to visit`
+        : `🛂 Passport: ${pp.count()} of ${pp.total()} stamps — ${left.join(', ')} to go`;
+    return `<p data-passport-progress style="margin:0 0 12px; font-size:13.5px; line-height:1.45; color:#dfe6f2;">${text}</p>`;
+  }
+
   /** Set by a welcome CTA that opens a panel or the tour; read once by
    *  hideWelcome to skip the first-run compass hint. */
   private skipCompassHint = false;
@@ -5461,7 +6398,9 @@ export class SimpleUI {
   isWelcomeVisible(): boolean {
     // The name modal counts as blocking too, so movement/interaction stays
     // suspended (and typing your name never drives the player).
-    return this.welcomeDiv !== null || this.nameModalDiv !== null;
+    // A card parked under the Controls sheet is still the visitor's next
+    // screen: the world keeps waiting for it (D8).
+    return this.welcomeDiv !== null || this.nameModalDiv !== null || this.welcomeParked;
   }
 
   /** Any PanelManager panel (zone card, modal, menu, sheet) open right now?
@@ -5774,9 +6713,25 @@ export class SimpleUI {
     this.onPeerMuteToggle = fn;
   }
 
+  /** The peer ids Chat persists as muted (ds_muted_peers); empty if unreadable. */
+  private static savedMutedPeers(): Set<string> {
+    try {
+      const raw: unknown = JSON.parse(localStorage.getItem('ds_muted_peers') ?? '[]');
+      return new Set(Array.isArray(raw) ? raw.map((x) => String(x)) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
   /** Roster panel: who's on the island right now, with a per-peer mute toggle. */
   showRoster(): void {
-    const peers = this.rosterProvider?.() ?? [];
+    // Chat keeps the visitor's mutes across reloads (ds_muted_peers) and drops
+    // those peers' text and voice; the provider's flag starts false on every
+    // load, so a muted peer read 'Mute' here. Either source counts.
+    const saved = SimpleUI.savedMutedPeers();
+    const peers = (this.rosterProvider?.() ?? []).map((p) =>
+      saved.has(String(p.id)) ? { ...p, muted: true } : p,
+    );
     const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'roster');
     let rowsHtml: string;
     if (peers.length === 0) {
@@ -5972,6 +6927,8 @@ export class SimpleUI {
     peers?: Array<{ rx: number; ry: number; dist: number; waving: boolean }>;
     online?: number;
   }): void {
+    // Where the visitor stands, for the message queue (leftPlace).
+    this.placeFix = data.zones.filter((z) => z.label !== 'Cruise').map((z) => z.dist);
     const D = 172; // square canvas (the radar disc), in CSS px
     if (!this.mapCanvas) {
       this.mapCanvas = document.createElement('canvas');
@@ -6067,6 +7024,18 @@ export class SimpleUI {
     // shape. Overlap-skip keeps crossings (two rim dots close together)
     // from smearing text over text.
     const rimLabels: Array<{ x: number; y: number }> = [];
+    // A name wider than its spot allows slides in along its row, so
+    // 'Professional' near the east or west rim stays whole: the disc clips
+    // whatever crosses it ('Work' never reached that far). Call with the
+    // label's font set; y is the row's middle.
+    const fitX = (label: string, x: number, y: number): number => {
+      const half = ctx.measureText(label).width / 2 + 2;
+      const reach = Math.max(
+        0,
+        Math.sqrt(Math.max(0, (R - 2) * (R - 2) - (y - cy) * (y - cy))) - half,
+      );
+      return cx + Math.max(-reach, Math.min(reach, x - cx));
+    };
     for (const z of data.zones) {
       const p = place(z);
       if (p.edge) {
@@ -6079,10 +7048,10 @@ export class SimpleUI {
         if (z.label && !rimLabels.some((r) => Math.hypot(r.x - p.x, r.y - p.y) < 26)) {
           rimLabels.push({ x: p.x, y: p.y });
           // Nudge the text toward the centre so it stays inside the disc.
-          const nx = p.x + (cx - p.x) * 0.16;
           const ny = p.y + (cy - p.y) * 0.16;
           ctx.save();
           ctx.font = `600 ${(8 * ts).toFixed(1)}px system-ui, sans-serif`;
+          const nx = fitX(z.label, p.x + (cx - p.x) * 0.16, ny);
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.lineWidth = 2.5;
@@ -6111,9 +7080,10 @@ export class SimpleUI {
         ctx.textBaseline = 'top';
         ctx.lineWidth = 2.5;
         ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-        ctx.strokeText(z.label, p.x, p.y + 5.5);
+        const lx = fitX(z.label, p.x, p.y + 5.5 + 4.5 * ts);
+        ctx.strokeText(z.label, lx, p.y + 5.5);
         ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        ctx.fillText(z.label, p.x, p.y + 5.5);
+        ctx.fillText(z.label, lx, p.y + 5.5);
         ctx.restore();
       }
       ctx.strokeStyle = z.color;
@@ -7181,8 +8151,8 @@ export class SimpleUI {
     });
     div.innerHTML = `
       <div style="font-size:28px;margin-bottom:8px;">🎉 Quest Complete!</div>
-      <div style="color:#4CAF50;font-weight:bold;">${quest.name}</div>
-      ${quest.reward ? `<div style="margin-top:8px;font-size:14px;color:#ccc;">${quest.reward.value}</div>` : ''}
+      <div style="color:#4CAF50;font-weight:bold;">${this.escapeHtml(quest.name)}</div>
+      ${quest.reward ? `<div style="margin-top:8px;font-size:14px;color:#ccc;">${this.escapeHtml(quest.reward.value)}</div>` : ''}
     `;
     this.overlay.appendChild(div);
     setTimeout(() => {
@@ -7319,7 +8289,7 @@ export class SimpleUI {
    * guardrails in this island's code, and LinkedIn / CV / code / email. A zone
    * panel with id 'hire', so ?zone=hire (and /z/hire) deep-link to it.
    */
-  public showHireCard(source: 'menu' | 'deeplink' | 'cta' = 'cta'): void {
+  public showHireCard(source: 'menu' | 'deeplink' | 'cta' | 'npc' = 'cta'): void {
     this.showZonePanel({ id: 'hire', name: 'Hiring' }, { source });
   }
 
@@ -7332,11 +8302,18 @@ export class SimpleUI {
   showZonePanel(
     zone: any,
     opts?: {
-      source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' | 'landmark';
+      /** 'npc': a villager's route button (P2-D4). */
+      source?: 'proximity' | 'menu' | 'deeplink' | 'cta' | 'strip' | 'landmark' | 'npc';
       anchor?: string;
     },
   ): void {
     const source = opts?.source ?? 'menu';
+    // Inside a hall, its own panel (opened by the door) names the building
+    // for the Leave button, when the caller gave no name (P2-D2).
+    if (source === 'proximity' && this.leaveBtn && !this.leaveTitled) {
+      const name = typeof zone?.name === 'string' ? zone.name.trim() : '';
+      if (name && name !== zone?.id) this.setLeaveTitle(name);
+    }
     // A switch along the section strip keeps the panel's history mode: a
     // deep-linked card never pushes an entry, and Back from it still leaves.
     const history = source === 'strip' ? this.zoneHistory : source !== 'deeplink';
@@ -8260,7 +9237,11 @@ export class SimpleUI {
       `,
     };
 
-    return contents[zone.id] || `<h2>${zone.name}</h2><p>${zone.description}</p>`;
+    // The fallback takes a ?zone= deep link's own text: escaped (security).
+    return (
+      contents[zone.id] ||
+      `<h2>${this.escapeHtml(zone.name)}</h2><p>${this.escapeHtml(zone.description)}</p>`
+    );
   }
 
   /**
@@ -8328,34 +9309,60 @@ export class SimpleUI {
       alignItems: 'center',
       gap: '10px',
     });
+    // The name and the model chip share one wrapping group. On one line the
+    // longer chip broke 'Lighthouse Keeper' in two at 390 px and pushed the
+    // close button off the header at 320 px: the chip now drops under the
+    // name when the row is short, and a name longer than the row ellipsises.
+    const who = document.createElement('span');
+    Object.assign(who.style, {
+      display: 'flex',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      gap: '4px 10px',
+      flex: '1 1 auto',
+      minWidth: '0',
+    });
     const title = document.createElement('span');
     title.textContent = name;
-    header.appendChild(title);
+    Object.assign(title.style, {
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      maxWidth: '100%',
+    });
+    who.appendChild(title);
     // The differentiator, made legible: this is a REAL model conversation, not
     // a dialogue tree — visitors couldn't tell (fallbacks look identical).
-    // The badge names the model and nothing more (the Fact Sheet's wording,
+    // The chip names the model and nothing more (the Fact Sheet's wording,
     // as on First steps' talk card): villagers are chat characters, one
-    // model call a message. Its old label is banned copy (claimsPanels).
+    // model call a message. Neutral, 12 px (D10): the amber pill read as a
+    // status light. Its old label is banned copy (claimsPanels).
     const aiBadge = document.createElement('span');
     aiBadge.textContent = 'Claude Haiku 4.5';
+    aiBadge.dataset.npcModel = '1';
     Object.assign(aiBadge.style, {
-      fontSize: '10.5px',
-      fontWeight: '700',
-      color: '#ffd479',
-      border: '1px solid rgba(255,212,121,0.5)',
+      flex: 'none',
+      fontSize: '12px',
+      fontWeight: '600',
+      lineHeight: '1.3',
+      color: '#cfd8e6',
+      background: 'rgba(255,255,255,0.06)',
+      border: '1px solid rgba(207,216,230,0.4)',
       borderRadius: '20px',
-      padding: '2px 8px',
+      padding: '1px 8px',
       whiteSpace: 'nowrap',
     });
     aiBadge.title =
       'This villager talks through Claude Haiku 4.5: one model call per message. ' +
-      "If the model can't be reached, it answers with its written lines and this badge says so.";
-    header.appendChild(aiBadge);
+      "If the model can't be reached, it answers with its written lines and this chip says so.";
+    who.appendChild(aiBadge);
+    header.appendChild(who);
     this.npcChatBadge = aiBadge; // markNpcChatOffline re-labels it on a fallback
     const touch = this.isTouch;
     const controls = document.createElement('span');
     Object.assign(controls.style, {
       display: 'flex',
+      flex: 'none', // the name gives way, never the close button
       gap: touch ? '0' : '12px', // on touch the two 44 px boxes sit edge to edge
       alignItems: 'center',
     });
@@ -8465,9 +9472,19 @@ export class SimpleUI {
       line.append(row, whole);
       log.appendChild(line);
       if (voiced) speak(text, voice.rate, voice.pitch, voice.variant);
+      // 'ds:npc-speaking' while this line types (D10; B8's nod and sway). The
+      // latest line owns the signal: an earlier one still typing must not
+      // end it early.
+      const turn = ++this.npcSpeakTurn;
+      const done = (): void => {
+        if (this.npcSpeakTurn === turn) this.setNpcSpeaking(name, false);
+      };
+      this.setNpcSpeaking(name, true);
       if (a11y.reducedMotion) {
         row.textContent = text;
         log.scrollTop = log.scrollHeight;
+        // Nothing types: the line counts as spoken for its reading time.
+        this.npcSpeakTimer = window.setTimeout(done, Math.min(6000, text.length * 18));
         return;
       }
       let i = 0;
@@ -8477,6 +9494,8 @@ export class SimpleUI {
         if (i < text.length) {
           i += 1;
           this.npcTypeTimer = window.setTimeout(step, 18);
+        } else {
+          done();
         }
       };
       step();
@@ -8547,6 +9566,13 @@ export class SimpleUI {
     // Typing must not drive the player: stop key events reaching window/document.
     for (const ev of ['keydown', 'keyup', 'keypress'])
       input.addEventListener(ev, (e) => e.stopPropagation());
+    // 'ds:npc-typing' (D10; B8 leans the villager in): true on input, false
+    // 1.5 s after the last keystroke, or on send.
+    input.addEventListener('input', () => {
+      this.setNpcTyping(name, true);
+      if (this.npcTypingTimer) clearTimeout(this.npcTypingTimer);
+      this.npcTypingTimer = window.setTimeout(() => this.setNpcTyping(name, false), 1500);
+    });
     let busy = false;
     const doSend = async (): Promise<void> => {
       const text = input.value.trim();
@@ -8554,6 +9580,7 @@ export class SimpleUI {
       busy = true;
       input.value = '';
       send.disabled = true;
+      this.setNpcTyping(name, false); // sent: the visitor has stopped typing
       // The input stays ENABLED: disabling a focused field blurs it, which
       // collapses the phone keyboard on every message — and the later
       // programmatic focus() can't reopen it without a user gesture. The
@@ -8565,17 +9592,35 @@ export class SimpleUI {
       playerLine(text);
       const thinking = document.createElement('div');
       thinking.textContent = '…';
+      thinking.dataset.npcThinking = '1';
       Object.assign(thinking.style, { alignSelf: 'flex-start', color: '#8ea2d8' });
       log.appendChild(thinking);
       log.scrollTop = log.scrollHeight;
+      // A slow model call says so after 3 s (D10): the bare '…' read as a
+      // hang. NpcChat gives up at 12 s and the written lines take over.
+      const slow = window.setTimeout(() => {
+        thinking.textContent = `${name} is thinking…`;
+        log.scrollTop = log.scrollHeight;
+      }, SimpleUI.NPC_THINKING_MS);
+      // What the question is about, if the portfolio or the compass can
+      // answer it (P2-D4). The send goes to the model either way.
+      const route = routeQuestion(text, name);
+      this.npcSendFellBack = false;
       let reply = '…';
       try {
         reply = await onSend(text);
       } catch {
         reply = '…';
       }
+      clearTimeout(slow);
       thinking.remove();
-      npcLine(reply);
+      if (this.npcChatDiv !== panel) return; // closed while the villager thought
+      // The model could not answer (markNpcChatOffline fired during the
+      // send): a routed question gets its answer, not the next written line,
+      // which had nothing to do with what was asked.
+      npcLine(route && this.npcSendFellBack ? route.line : reply);
+      if (route?.action) log.appendChild(this.npcRouteButton(route));
+      log.scrollTop = log.scrollHeight;
       busy = false;
       send.disabled = false;
       // Only re-focus if focus was actually lost (desktop click on Send blurs
@@ -8677,6 +9722,99 @@ export class SimpleUI {
   }
 
   private npcChatBadge: HTMLElement | null = null;
+  /** The send in flight came back as a written line (markNpcChatOffline). */
+  private npcSendFellBack = false;
+
+  /**
+   * The next action under a routed reply (P2-D4): one 44 px indigo-outline
+   * button that opens the panel, the hire card, or points the compass. Green
+   * stays Work with me's alone.
+   */
+  private npcRouteButton(route: QuestionRoute): HTMLButtonElement {
+    const action = route.action!;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = action.label;
+    b.dataset.npcRoute = route.kind;
+    Object.assign(b.style, {
+      alignSelf: 'flex-start',
+      minHeight: '44px',
+      padding: '0 16px',
+      borderRadius: '10px',
+      border: '1px solid rgba(143,155,255,0.8)',
+      background: 'rgba(76,91,224,0.14)',
+      color: '#fff',
+      font: 'inherit',
+      fontSize: '14px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (action.hire) {
+        track('npc_route', { to: 'hire' });
+        this.showHireCard('npc'); // the modal sweeps the chat closed
+      } else if (action.zone) {
+        track('npc_route', { to: action.zone });
+        this.showZonePanel({ id: action.zone, name: action.zone }, { source: 'npc' });
+      } else if (action.guideKey) {
+        track('npc_route', { to: action.guideKey });
+        // The visitor is about to walk: the conversation ends here.
+        this.closeNpcChat();
+        this.guideTo(action.guideKey, 'npc');
+      }
+    });
+    return b;
+  }
+
+  /**
+   * 'Show me': point the compass at a place by key, through the one seam
+   * main-simple listens on ('ds:guide-to' {key, source}, P2-A5). With no
+   * event to send, the island map opens instead, so the button never
+   * dead-ends.
+   */
+  private guideTo(key: string, source: string): void {
+    try {
+      window.dispatchEvent(new CustomEvent('ds:guide-to', { detail: { key, source } }));
+    } catch {
+      this.onOpenMap?.();
+    }
+  }
+
+  /** '<name> is thinking…' replaces the bare '…' after this long. */
+  private static readonly NPC_THINKING_MS = 3000;
+
+  // 'ds:npc-speaking' and 'ds:npc-typing' (D10): what each last said, so an
+  // event fires on a change only, and a close ends whatever was on.
+  private npcSpeakingName: string | null = null;
+  private npcTypingName: string | null = null;
+  private npcSpeakTurn = 0;
+  private npcSpeakTimer = 0;
+  private npcTypingTimer = 0;
+
+  private setNpcSpeaking(name: string, speaking: boolean): void {
+    if ((this.npcSpeakingName === name) === speaking) return;
+    this.npcSpeakingName = speaking ? name : null;
+    this.npcSignal('ds:npc-speaking', { name, speaking });
+  }
+
+  private setNpcTyping(name: string, typing: boolean): void {
+    if (!typing && this.npcTypingTimer) {
+      clearTimeout(this.npcTypingTimer);
+      this.npcTypingTimer = 0;
+    }
+    if ((this.npcTypingName === name) === typing) return;
+    this.npcTypingName = typing ? name : null;
+    this.npcSignal('ds:npc-typing', { name, typing });
+  }
+
+  private npcSignal(type: string, detail: Record<string, unknown>): void {
+    try {
+      window.dispatchEvent(new CustomEvent(type, { detail }));
+    } catch {
+      /* no CustomEvent: nothing listens either */
+    }
+  }
 
   /**
    * The villager answered from its written lines: the model call fell back
@@ -8687,12 +9825,13 @@ export class SimpleUI {
   public markNpcChatOffline(name: string): void {
     const badge = this.npcChatBadge;
     if (!badge || !this.npcChatDiv || this.npcChatAppend?.name !== name) return;
+    this.npcSendFellBack = true; // showNpcChat's send reads it (P2-D4)
     badge.textContent = 'offline replies';
     badge.dataset.offline = '1';
     badge.style.color = '#b8c2d0';
     badge.style.borderColor = 'rgba(184,194,208,0.45)';
     badge.title =
-      'The live model is unavailable right now, so this villager is answering with its written lines.';
+      "Claude Haiku 4.5 can't be reached right now, so this villager is answering with its written lines.";
   }
 
   public closeNpcChat(): void {
@@ -8702,6 +9841,14 @@ export class SimpleUI {
       clearTimeout(this.npcTypeTimer);
       this.npcTypeTimer = 0;
     }
+    if (this.npcSpeakTimer) {
+      clearTimeout(this.npcSpeakTimer);
+      this.npcSpeakTimer = 0;
+    }
+    // The villager stops talking and the visitor stops typing with the panel.
+    this.npcSpeakTurn += 1;
+    if (this.npcSpeakingName) this.setNpcSpeaking(this.npcSpeakingName, false);
+    if (this.npcTypingName) this.setNpcTyping(this.npcTypingName, false);
     cancelSpeech();
     // Null the panel BEFORE stopping dictation so the recogniser's onEnd guard
     // (npcChatDiv === panel) sees it's gone and skips the auto-send.
@@ -9001,6 +10148,8 @@ export class SimpleUI {
   // ── Door PIN pad (the beach house's coded lock) ────────────────────────
   // A game mechanic, not security: the code ships in the client bundle.
   private pinDiv: HTMLElement | null = null;
+  /** A wrong code was entered this session: the pad says who knows it. */
+  private pinMissed = false;
 
   public showPinPad(expected: string, onSuccess: () => void): void {
     this.closePinPad();
@@ -9038,6 +10187,23 @@ export class SimpleUI {
       <div id="pin-dots" style="letter-spacing:8px; font-size:22px; min-height:28px; margin-bottom:10px;">····</div>
     `;
     const dots = panel.querySelector('#pin-dots') as HTMLElement;
+    // The locked door points to the Sailor (P2-D9, decision P2-2): after the
+    // first wrong code of the session, one line under the pad, once. A pad
+    // reopened later in the session carries it from the start.
+    const hint = (): void => {
+      if (panel.querySelector('[data-pin-hint]')) return;
+      const line = document.createElement('div');
+      line.dataset.pinHint = '1';
+      line.setAttribute('role', 'status');
+      line.textContent = 'Ask the Sailor at the harbour.';
+      Object.assign(line.style, {
+        marginTop: '12px',
+        fontSize: '13px',
+        lineHeight: '1.4',
+        color: '#cfd8e6',
+      });
+      panel.appendChild(line);
+    };
     let entered = '';
     const paint = (): void => {
       dots.textContent = (entered.replace(/./g, '●') + '····').slice(0, 4);
@@ -9051,6 +10217,8 @@ export class SimpleUI {
           this.closePinPad();
           onSuccess();
         } else {
+          this.pinMissed = true;
+          hint();
           dots.style.color = '#ff8a8a';
           panel.style.transform = 'translate(-50%, -50%) translateX(6px)';
           window.setTimeout(() => {
@@ -9093,6 +10261,7 @@ export class SimpleUI {
       grid.appendChild(b);
     }
     panel.appendChild(grid);
+    if (this.pinMissed) hint();
     // Keyboard digits work too (stopPropagation keeps them out of the game)
     const keyHandler = (e: KeyboardEvent): void => {
       if (/^[0-9]$/.test(e.key)) press(e.key);
@@ -9208,7 +10377,7 @@ export class SimpleUI {
         letter-spacing: 1px;
         text-transform: uppercase;
         color: rgba(160, 200, 255, 0.9);
-      ">${name}</div>
+      ">${this.escapeHtml(name)}</div>
       <div style="padding: clamp(10px, 1.8vh, 16px) clamp(14px, 4vw, 20px); min-height: clamp(36px, 7vh, 60px);">
         <div id="dialogue-sr" class="ds-sr-only" role="status" aria-live="polite"></div>
         <div id="dialogue-text" aria-hidden="true" style="
@@ -9323,6 +10492,9 @@ export class SimpleUI {
     this.stopMessages();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
+    window.removeEventListener('keydown', this.onControlsKey);
+    document.removeEventListener('keydown', this.onInputKey, true);
+    document.removeEventListener('pointerdown', this.onInputPointer, true);
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {
       this.overlay.removeEventListener(type, this.onPanelAction, true);
     }

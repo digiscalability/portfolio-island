@@ -31,7 +31,10 @@ export interface District {
    *  terrain, grass, props, atmosphere. Deliberately muted (never the raw
    *  `color`) so districts read as distinct-but-cohesive, not theme-park. */
   accent: number;
-  /** Short radar label for the minimap. */
+  /** The district's one short name (D10): the minimap label and the gate
+   *  board (Island prints it), the same word the passport, the Portfolio
+   *  menu and the compass use. 'Work' and 'Life' were a second vocabulary
+   *  for Professional and Personal that only the radar and the gates spoke. */
   radar: string;
 }
 
@@ -56,7 +59,7 @@ export const DISTRICTS: District[] = [
     lat: ZONE_LAT,
     color: 0x2196f3,
     accent: 0x7fa8c9,
-    radar: 'Work',
+    radar: 'Professional',
   },
   {
     id: 'projects',
@@ -74,7 +77,7 @@ export const DISTRICTS: District[] = [
     lat: ZONE_LAT,
     color: 0xe91e63,
     accent: 0xd9a8b8,
-    radar: 'Life',
+    radar: 'Personal',
   },
   {
     id: 'contact',

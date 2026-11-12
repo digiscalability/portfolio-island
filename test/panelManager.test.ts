@@ -21,6 +21,7 @@ import { SimpleUI } from '../SimpleUI';
 // The boards are Firebase reads; here they answer at once, empty.
 vi.mock('../Boards', () => ({
   getLeaderboard: vi.fn(async () => []),
+  readLeaderboard: vi.fn(async () => ({ ok: true, entries: [] })),
 }));
 
 function spec(over: Partial<PanelSpec> = {}): PanelSpec {
@@ -726,5 +727,78 @@ describe('Back closes the panel, not the island (the island UI)', () => {
     await settle();
     expect(h.length).toBe(1);
     expect(h.left).toBe(false);
+  });
+});
+
+describe('PanelManager.setMode: a mode is not a panel (P2-D2)', () => {
+  const layer = (): HTMLElement => {
+    const el = document.createElement('div');
+    el.style.display = 'flex';
+    document.body.appendChild(el);
+    return el;
+  };
+
+  test('touch: a mode hides its layers; a panel and a mode add up; clearing restores the base display', () => {
+    const pm = new PanelManager(overlay, true);
+    const info = layer();
+    const chips = layer();
+    pm.registerLayer('ambient-info', info);
+    pm.registerLayer('nav-chips', chips);
+    pm.setMode('interior', { hides: ['ambient-info'], hard: true });
+    expect(info.style.display).toBe('none');
+    expect(chips.style.display).toBe('flex');
+    expect(pm.current()).toBeNull();
+    expect(pm.isOpen()).toBe(false);
+    pm.open('p', spec({ hides: ['nav-chips'] }));
+    expect(chips.style.display).toBe('none');
+    pm.closeAll(); // the sweep closes panels, never a mode
+    expect(chips.style.display).toBe('flex');
+    expect(info.style.display).toBe('none');
+    expect(pm.inMode('interior')).toBe(true);
+    pm.setMode('interior', null);
+    expect(info.style.display).toBe('flex');
+    pm.dispose();
+  });
+
+  test('desktop: hard takes the layer out, a soft mode dims it like a panel', () => {
+    const pm = new PanelManager(overlay, false);
+    const info = layer();
+    pm.registerLayer('ambient-info', info);
+    pm.setMode('soft', { hides: ['ambient-info'] });
+    expect(info.style.opacity).toBe('0.35');
+    expect(info.style.display).toBe('flex');
+    pm.setMode('soft', null);
+    expect(info.style.opacity).toBe('');
+    pm.setMode('hard', { hides: ['ambient-info'], hard: true });
+    expect(info.style.display).toBe('none');
+    expect(info.style.opacity).toBe('');
+    pm.setMode('hard', null);
+    expect(info.style.display).toBe('flex');
+    pm.dispose();
+  });
+
+  test('an element in two layers keeps one base display, and hides when either layer does', () => {
+    const pm = new PanelManager(overlay, true);
+    const jump = layer();
+    pm.registerLayer('touch-controls', jump);
+    pm.open('p', spec({ hides: ['touch-controls'] }));
+    pm.registerLayer('outdoor-actions', jump); // registered while hidden: the base is still flex
+    pm.closeAll();
+    expect(jump.style.display).toBe('flex');
+    pm.setMode('interior', { hides: ['outdoor-actions'], hard: true });
+    expect(jump.style.display).toBe('none');
+    pm.setMode('interior', null);
+    expect(jump.style.display).toBe('flex');
+    pm.dispose();
+  });
+
+  test('Escape and the scrim never touch a mode', () => {
+    const pm = new PanelManager(overlay, true);
+    pm.setMode('interior', { hides: ['ambient-info'], hard: true });
+    expect(pm.closeTop('escape')).toBe(false);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    overlay.querySelector<HTMLElement>('div')!.click(); // the scrim
+    expect(pm.inMode('interior')).toBe(true);
+    pm.dispose();
   });
 });

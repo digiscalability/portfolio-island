@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { entryAttribution, isOwnerVisit, track, trackOnce } from '../Analytics';
 import { AI_NPCS } from '../NpcChat';
+import { Passport } from '../Passport';
 import { appendReceptionDesk } from '../ReceptionDesk';
 import { SimpleUI } from '../SimpleUI';
 
@@ -527,6 +528,82 @@ describe('messages: read once, shown twice at most', () => {
     expect(toastEl()).toBeUndefined();
   });
 
+  // Wave-1 re-verify: '🏝️ The Hub — the town square' showed 1.5 s at the hub,
+  // stepped aside for the beach-house PIN pad, came back as the pad closed
+  // and stayed up while the visitor went inside.
+  describe('a place message stays where it was shown', () => {
+    /** One minimap update: the radar distance to five fixed landmarks and the cruise liner. */
+    const standAt = (d: number[], cruise = 0.5): void =>
+      ui.updateMinimap({
+        heading: 0,
+        npcs: [],
+        zones: [
+          ...d.map((dist, i) => ({ rx: 0, ry: dist, dist, color: '#fff', label: `Z${i}` })),
+          { rx: 0, ry: cruise, dist: cruise, color: '#f00', label: 'Cruise' },
+        ],
+        delivery: null,
+      });
+    const HUB = [0.05, 0.4, 0.45, 0.5, 0.6];
+    const ISLET = [0.9, 0.7, 1.1, 0.8, 0.95];
+    const HUB_LINE = '🏝️ The Hub — the town square. Every avenue starts here.';
+
+    test('stepped aside at the hub, it does not come back at the islet', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(1000); // on screen, not yet read
+      expect(text(toastEl())).toBe(HUB_LINE);
+      ui.showHireCard('cta'); // the PIN pad, a modal
+      standAt(ISLET); // the visitor is at the beach-house door
+      ui.hideZonePanel(); // the pad closes
+      for (let t = 0; t < 4000; t += 200) {
+        vi.advanceTimersByTime(200);
+        expect(toastEl()!.style.opacity).toBe('0');
+      }
+    });
+
+    test('stepped aside where the visitor still stands, it comes back once', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(1000);
+      ui.showHireCard('cta');
+      standAt(
+        HUB.map((d) => d + 0.03),
+        0.9,
+      ); // a step or two; the liner sails on
+      ui.hideZonePanel();
+      vi.advanceTimersByTime(800);
+      expect(text(toastEl())).toBe(HUB_LINE);
+      expect(toastEl()!.style.opacity).toBe('1');
+    });
+
+    test('on screen as the visitor goes through a door, it goes and stays gone', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(500);
+      ui.showLeaveButton(() => {}); // in, with no modal on the way
+      vi.advanceTimersByTime(200);
+      expect(toastEl()!.style.opacity).toBe('0');
+      for (let t = 0; t < 4000; t += 200) {
+        vi.advanceTimersByTime(200);
+        expect(toastEl()!.style.opacity).toBe('0');
+      }
+    });
+
+    test('walking on does not take a message on screen down', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(500);
+      standAt(ISLET); // far, at a run
+      vi.advanceTimersByTime(1000);
+      expect(text(toastEl())).toBe(HUB_LINE);
+      expect(toastEl()!.style.opacity).toBe('1');
+    });
+  });
+
   test('a re-shown line is not read out again', () => {
     vi.useFakeTimers();
     ui.toast('💬 talk hint', { hint: true });
@@ -998,6 +1075,279 @@ describe('the NPC chat admits offline replies', () => {
     expect(badge.title).toContain('written lines');
   });
   // (that main-simple marks it on the canned branch is package A's mainLocks)
+
+  test('the chip is a neutral 12 px name of the model, not an amber status light (D10)', () => {
+    ui.showNpcChat('Lighthouse Keeper', 'Evening.', async () => 'A written line.');
+    const chip = document.querySelector<HTMLElement>('[data-npc-model]')!;
+    expect(text(chip)).toBe('Claude Haiku 4.5');
+    expect(chip.style.fontSize).toBe('12px');
+    expect(chip.style.color).not.toMatch(/ffd479|255, ?212, ?121/i);
+    // The name and the chip wrap as a pair; the name ellipsises before the
+    // close button gives way (it broke in two at 390 px beside the chip).
+    const who = chip.parentElement!;
+    expect(who.style.flexWrap).toBe('wrap');
+    expect(who.style.minWidth).toMatch(/^0(px)?$/);
+    const name = who.firstElementChild as HTMLElement;
+    expect(text(name)).toBe('Lighthouse Keeper');
+    expect(name.style.textOverflow).toBe('ellipsis');
+    expect(name.style.whiteSpace).toBe('nowrap');
+    const close = document.querySelector<HTMLElement>('button[aria-label="Close chat"]')!;
+    expect(close.parentElement!.style.flex).toMatch(/^(none|0 0 auto)$/);
+  });
+});
+
+describe('the NPC chat says when the villager speaks and when the visitor types (D10)', () => {
+  type Sig = { type: string; name: unknown; on: unknown };
+  let seen: Sig[] = [];
+  const onSpeak = (e: Event): void => {
+    const d = (e as CustomEvent<{ name: string; speaking: boolean }>).detail;
+    seen.push({ type: 'speaking', name: d.name, on: d.speaking });
+  };
+  const onType = (e: Event): void => {
+    const d = (e as CustomEvent<{ name: string; typing: boolean }>).detail;
+    seen.push({ type: 'typing', name: d.name, on: d.typing });
+  };
+  const field = (): HTMLInputElement =>
+    document.querySelector<HTMLInputElement>('input[placeholder^="Say something to"]')!;
+
+  beforeEach(() => {
+    seen = [];
+    vi.useFakeTimers();
+    window.addEventListener('ds:npc-speaking', onSpeak);
+    window.addEventListener('ds:npc-typing', onType);
+  });
+  afterEach(() => {
+    window.removeEventListener('ds:npc-speaking', onSpeak);
+    window.removeEventListener('ds:npc-typing', onType);
+  });
+
+  test("'ds:npc-speaking' is true while a line types and false when it has", () => {
+    ui.showNpcChat('Gardener', 'Morning!', async () => 'A written line.');
+    expect(seen).toEqual([{ type: 'speaking', name: 'Gardener', on: true }]);
+    vi.advanceTimersByTime(18 * 'Morning!'.length + 40);
+    expect(seen).toEqual([
+      { type: 'speaking', name: 'Gardener', on: true },
+      { type: 'speaking', name: 'Gardener', on: false },
+    ]);
+  });
+
+  test('closing the chat mid-line ends the speaking signal', () => {
+    ui.showNpcChat('Gardener', 'A much longer greeting than that.', async () => '…');
+    ui.closeNpcChat();
+    expect(seen.at(-1)).toEqual({ type: 'speaking', name: 'Gardener', on: false });
+    vi.advanceTimersByTime(5000);
+    expect(seen.filter((s) => s.type === 'speaking')).toHaveLength(2); // nothing after the close
+  });
+
+  test("'ds:npc-typing' is true on input, once, and false 1.5 s after the last keystroke", () => {
+    ui.showNpcChat('Gardener', 'Hi', async () => '…');
+    vi.advanceTimersByTime(200);
+    seen = [];
+    const input = field();
+    input.value = 'H';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    vi.advanceTimersByTime(1000);
+    input.value = 'He';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    vi.advanceTimersByTime(1400); // 1.4 s after the LAST keystroke: still typing
+    expect(seen).toEqual([{ type: 'typing', name: 'Gardener', on: true }]);
+    vi.advanceTimersByTime(150);
+    expect(seen).toEqual([
+      { type: 'typing', name: 'Gardener', on: true },
+      { type: 'typing', name: 'Gardener', on: false },
+    ]);
+  });
+
+  test('a send ends typing at once', async () => {
+    ui.showNpcChat('Gardener', 'Hi', async () => 'A written line.');
+    vi.advanceTimersByTime(200);
+    seen = [];
+    const input = field();
+    input.value = 'Hello';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(seen.filter((s) => s.type === 'typing')).toEqual([
+      { type: 'typing', name: 'Gardener', on: true },
+      { type: 'typing', name: 'Gardener', on: false },
+    ]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(seen.filter((s) => s.type === 'typing')).toHaveLength(2); // the 1.5 s timer went with it
+  });
+
+  test("a slow reply reads '<name> is thinking…' after 3 s, then the reply replaces it", async () => {
+    let answer!: (line: string) => void;
+    ui.showNpcChat('Gardener', 'Hi', () => new Promise<string>((r) => (answer = r)));
+    const input = field();
+    input.value = 'How are the flowers?';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const thinking = (): string => text(document.querySelector('[data-npc-thinking]'));
+    expect(thinking()).toBe('…');
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(thinking()).toBe('…');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(thinking()).toBe('Gardener is thinking…');
+    answer('The roses are thirsty today.');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(document.querySelector('[data-npc-thinking]')).toBeNull();
+    expect(text(document.querySelector('[role="log"]'))).toContain('The roses are thirsty today.');
+  });
+
+  test('a reply that lands after the chat closed is not typed or spoken', async () => {
+    let answer!: (line: string) => void;
+    ui.showNpcChat('Gardener', 'Hi', () => new Promise<string>((r) => (answer = r)));
+    const input = field();
+    input.value = 'Anyone home?';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    ui.closeNpcChat();
+    seen = [];
+    answer('Too late.');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('the welcome cards say less and show progress (D9)', () => {
+  const card = (): HTMLElement => document.querySelector<HTMLElement>('[role="dialog"]')!;
+  const shown = (el: Element): boolean => !el.closest('[hidden]');
+  const visibleButtons = (): HTMLButtonElement[] =>
+    [...card().querySelectorAll<HTMLButtonElement>('button')].filter(shown);
+  /** The card's visible words, as fm.cjs's cardGeo counts them (innerText). */
+  const words = (): number => {
+    const seen = card().cloneNode(true) as HTMLElement;
+    for (const h of seen.querySelectorAll('[hidden]')) h.remove();
+    return text(seen).split(/\s+/).filter(Boolean).length;
+  };
+
+  test('first run: 80 words or fewer, four buttons plus the disclosure', () => {
+    ui.showWelcome(null);
+    expect(words()).toBeLessThanOrEqual(80);
+    const buttons = visibleButtons();
+    const disclosure = buttons.filter((b) => b.hasAttribute('aria-expanded'));
+    expect(disclosure).toHaveLength(1);
+    expect(buttons.filter((b) => !b.hasAttribute('aria-expanded')).map((b) => text(b))).toEqual([
+      '📄 Hiring? CV, experience and contact',
+      '🚀 See the work',
+      '📬 Get in touch',
+      '🧭 Explore the island →',
+    ]);
+    expect(text(card())).toContain(
+      `${Object.keys(AI_NPCS).length} villagers talk through Claude Haiku 4.5 — walk up and ask them anything.`,
+    );
+    expect(card().style.background).toMatch(/rgb\(8, 10, 16\)/);
+  });
+
+  test('the disclosure opens the three guided ways in, and their contracts still fire', () => {
+    const onTour = vi.fn();
+    ui.setOnTour(onTour);
+    ui.showWelcome(null);
+    const more = card().querySelector<HTMLButtonElement>('button[data-more]')!;
+    const tour = card().querySelector<HTMLButtonElement>('button[data-tour]')!;
+    expect(shown(tour)).toBe(false);
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    more.click();
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    expect(ui.isWelcomeVisible()).toBe(true); // the disclosure never closes the card
+    for (const sel of ['button[data-meet-ai]', 'button[data-tour]', 'button[data-race]']) {
+      expect(shown(card().querySelector(sel)!), sel).toBe(true);
+    }
+    more.click();
+    expect(shown(tour)).toBe(false);
+    more.click();
+    tour.click();
+    expect(onTour).toHaveBeenCalledTimes(1);
+    expect(ui.isWelcomeVisible()).toBe(false);
+    // (the disclosure itself is not an event: welcome_cta counts choices)
+    expect(
+      (window.__analyticsLog ?? [])
+        .filter((e) => e.name === 'welcome_cta')
+        .map((e) => e.props?.cta),
+    ).toEqual(['tour']);
+  });
+
+  describe('the returning card', () => {
+    beforeEach(() => localStorage.setItem('ds_welcomed', '1'));
+    const progress = (): string => text(card().querySelector('[data-passport-progress]'));
+    const explore = (): string => text(card().querySelector('button[data-dismiss]'));
+
+    test('shows the passport progress line: how many, and which are left', () => {
+      localStorage.setItem('ds_passport', JSON.stringify(['projects', 'contact']));
+      ui.setPassport(new Passport());
+      ui.showWelcome(null);
+      expect(progress()).toBe('🛂 Passport: 2 of 4 stamps — Professional, Personal to go');
+      expect(card().querySelector('button[data-more]')).toBeNull(); // a hello, not a menu
+    });
+
+    test('a complete passport says so', () => {
+      localStorage.setItem(
+        'ds_passport',
+        JSON.stringify(['professional', 'projects', 'personal', 'contact']),
+      );
+      ui.setPassport(new Passport());
+      ui.showWelcome(null);
+      expect(progress()).toContain('Passport complete');
+    });
+
+    test("Explore counts First steps' quick steps left, from ds_guide_v1", () => {
+      localStorage.setItem(
+        'ds_guide_v1',
+        JSON.stringify({ v: 1, done: ['move', 'look'], finished: false, skipped: false, t: 1 }),
+      );
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore (3 quick steps left)');
+      ui.hideWelcome(false);
+      localStorage.setItem(
+        'ds_guide_v1',
+        JSON.stringify({
+          v: 1,
+          done: ['move', 'look', 'talk', 'portfolio'],
+          finished: false,
+          skipped: false,
+          t: 2,
+        }),
+      );
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore (1 quick step left)');
+    });
+
+    test.each([
+      ['absent', null],
+      ['unparseable', '{not json'],
+      ['another version', JSON.stringify({ v: 2, done: [] })],
+      ['finished', JSON.stringify({ v: 1, done: ['move'], finished: true, skipped: false, t: 1 })],
+      ['skipped', JSON.stringify({ v: 1, done: ['move'], finished: false, skipped: true, t: 1 })],
+    ])('the count is omitted when ds_guide_v1 is %s', (_name, value) => {
+      if (value !== null) localStorage.setItem('ds_guide_v1', value);
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore the island →');
+    });
+
+    test('a first-run card never counts steps, whatever the key says', () => {
+      localStorage.removeItem('ds_welcomed');
+      localStorage.setItem(
+        'ds_guide_v1',
+        JSON.stringify({ v: 1, done: [], finished: false, skipped: false, t: 1 }),
+      );
+      ui.showWelcome(null);
+      expect(explore()).toBe('🧭 Explore the island →');
+    });
+  });
+
+  test('a phone on its side drops the villager line and tightens the padding', () => {
+    const height = window.innerHeight;
+    try {
+      Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
+      ui.showWelcome(null);
+      expect(card().querySelector('[data-ai-line]')).toBeNull();
+      expect(card().style.padding).toBe('14px 22px');
+      expect(visibleButtons().length).toBe(5); // the four, and the disclosure
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { value: height, configurable: true });
+    }
+    ui.hideWelcome(false);
+    ui.showWelcome(null);
+    expect(card().querySelector('[data-ai-line]')).not.toBeNull();
+    expect(card().style.padding).toBe('22px');
+  });
 });
 
 describe('accessibility quick wins', () => {
@@ -1030,6 +1380,15 @@ describe('accessibility quick wins', () => {
     expect(rule).toContain('touch-action: manipulation');
   });
 
+  test('the receptionist is a voice assistant set up on ElevenLabs (decision 11)', () => {
+    const box = document.createElement('div');
+    appendReceptionDesk(box);
+    expect(text(box)).toContain(
+      'A voice assistant I set up on ElevenLabs — ask it about my work, or your project.',
+    );
+    expect(text(box)).not.toMatch(/voice agent|I built/i);
+  });
+
   test('the receptionist says the call streams live audio to ElevenLabs', () => {
     const box = document.createElement('div');
     appendReceptionDesk(box);
@@ -1039,14 +1398,15 @@ describe('accessibility quick wins', () => {
 
 // Stage 1 (A3, A4) made looking a press-and-drag with the left or right mouse
 // button, a swipe on touch, and J/L on the keyboard; pointer lock is opt-in.
-// "mouse to look" taught a click and a move, which now turns nothing. (D9
-// later drops the card's controls line, and these card checks with it.)
+// "mouse to look" taught a click and a move, which now turns nothing. D9
+// dropped the welcome card's controls line (First steps teaches the controls,
+// a step at a time), so the card now has no such line to get wrong.
 describe('the controls copy teaches the stage-1 look', () => {
   const lookLine = (root: Element | null | undefined): string =>
     text([...(root?.querySelectorAll('p') ?? [])].find((p) => text(p).includes('to move')));
-  const cardLine = (): string => {
+  const cardText = (): string => {
     ui.showWelcome(null);
-    return lookLine(document.querySelector('[role="dialog"]'));
+    return text(document.querySelector('[role="dialog"]'));
   };
   const hubLine = (): string => {
     ui.hideWelcome(false);
@@ -1058,11 +1418,11 @@ describe('the controls copy teaches the stage-1 look', () => {
     return lookLine(hub);
   };
 
-  test('desktop: drag or J/L to look, on the card and in the Welcome Hub', () => {
+  test('desktop: drag or J/L to look in the Welcome Hub; the card teaches no controls', () => {
     expect(ui.isTouchDevice()).toBe(false);
-    const card = cardLine();
+    const card = cardText();
     const hub = hubLine();
-    expect(card).toBe('WASD to move · drag or J/L to look · space to jump · Q to wave.');
+    expect(card).not.toMatch(/WASD|to move|to jump|to wave|J\/L/i);
     expect(hub).toContain('WASD to move, drag or J/L to look, E to interact.');
     for (const line of [card, hub]) expect(line).not.toMatch(/mouse/i);
   });
@@ -1073,9 +1433,9 @@ describe('the controls copy teaches the stage-1 look', () => {
       document.body.innerHTML = '<div id="ui-overlay"></div>';
       ui = new SimpleUI('ui-overlay');
       expect(ui.isTouchDevice()).toBe(true);
-      const card = cardLine();
+      const card = cardText();
       const hub = hubLine();
-      expect(card).toContain('Drag the joystick to move');
+      expect(card).not.toMatch(/joystick|USE to interact|JUMP|WAVE/);
       expect(hub).toContain('Drag the joystick to move, swipe to look, 👆 USE to interact.');
       for (const line of [card, hub]) {
         expect(line).not.toMatch(/mouse|J\/L|WASD|drag to look/i);

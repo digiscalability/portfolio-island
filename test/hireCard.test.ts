@@ -559,6 +559,7 @@ describe('the recruiter path in one click (D5)', () => {
       'Leaderboard',
       'Guestbook',
       'Island',
+      'Controls', // D8: the Controls & settings sheet, under the tiles
     ]);
     const filled = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter(
       (b) => /background:\s*(#ffd479|rgb\(255, 212, 121\))/i.test(b.getAttribute('style') ?? ''),

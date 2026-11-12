@@ -1194,6 +1194,186 @@ html.reduced-motion #ld-orbit {
 .hud-btn:hover {
   filter: brightness(1.18);
 }
+/* The Controls & settings sheet (D8). Its keycaps take over the styling of
+   index.html's old #controls-guide block, which nothing had used since the
+   in-page guide was removed. Layout only: no animation, no backdrop-filter. */
+.ds-controls {
+  text-align: left !important;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.ds-controls [role='tablist'] {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.ds-controls [role='tab'] {
+  flex: 1 1 0;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: none;
+  color: #c5cfdd;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ds-controls [role='tab'][aria-selected='true'] {
+  background: rgba(76, 91, 224, 0.28);
+  border-color: rgba(143, 155, 255, 0.8);
+  color: #fff;
+}
+.ds-controls-switch {
+  display: inline-flex;
+  margin: 0 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ds-controls-switch button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: none;
+  background: none;
+  color: #c5cfdd;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ds-controls-switch button[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.ds-controls-rows {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px 22px;
+  margin: 0;
+}
+.ds-controls-rows > div {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ds-controls-rows dt {
+  flex: 0 0 84px;
+  font-weight: 700;
+  color: #f3f6fb;
+}
+.ds-controls-rows dd {
+  margin: 0;
+  color: #c5cfdd;
+}
+.ds-controls kbd {
+  display: inline-block;
+  min-width: 1.1em;
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font:
+    600 12.5px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  text-align: center;
+}
+.ds-controls-todo {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ds-controls-todo li {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ds-controls-todo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ds-controls-todo-text > span {
+  color: #c5cfdd;
+  font-size: 13px;
+}
+.ds-controls-todo button {
+  flex: none;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(143, 155, 255, 0.8);
+  border-radius: 10px;
+  background: rgba(76, 91, 224, 0.14);
+  color: #fff;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ds-controls-setting {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+.ds-controls-setting input[type='checkbox'] {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  accent-color: #6f7dff;
+}
+.ds-controls-setting > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ds-controls-setting small {
+  color: #c5cfdd;
+  font-size: 12.5px;
+}
+.ds-controls-range {
+  flex-direction: column;
+  align-items: stretch;
+}
+.ds-controls-range-row {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 12px !important;
+}
+.ds-controls-range-row input {
+  flex: 1 1 auto;
+  min-height: 32px;
+  accent-color: #6f7dff;
+}
+.ds-controls-range-row output {
+  flex: 0 0 3.2em;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+}
+@media (min-width: 520px) {
+  .ds-controls-rows {
+    grid-template-columns: 1fr 1fr;
+  }
+}
 /* Filled actions (the primary and Work-with-me fills) darken on hover and
    press, so white text never drops below AA, where the chips' brighten would. */
 .ds-press:hover,
