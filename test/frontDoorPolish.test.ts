@@ -528,6 +528,82 @@ describe('messages: read once, shown twice at most', () => {
     expect(toastEl()).toBeUndefined();
   });
 
+  // Wave-1 re-verify: '🏝️ The Hub — the town square' showed 1.5 s at the hub,
+  // stepped aside for the beach-house PIN pad, came back as the pad closed
+  // and stayed up while the visitor went inside.
+  describe('a place message stays where it was shown', () => {
+    /** One minimap update: the radar distance to five fixed landmarks and the cruise liner. */
+    const standAt = (d: number[], cruise = 0.5): void =>
+      ui.updateMinimap({
+        heading: 0,
+        npcs: [],
+        zones: [
+          ...d.map((dist, i) => ({ rx: 0, ry: dist, dist, color: '#fff', label: `Z${i}` })),
+          { rx: 0, ry: cruise, dist: cruise, color: '#f00', label: 'Cruise' },
+        ],
+        delivery: null,
+      });
+    const HUB = [0.05, 0.4, 0.45, 0.5, 0.6];
+    const ISLET = [0.9, 0.7, 1.1, 0.8, 0.95];
+    const HUB_LINE = '🏝️ The Hub — the town square. Every avenue starts here.';
+
+    test('stepped aside at the hub, it does not come back at the islet', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(1000); // on screen, not yet read
+      expect(text(toastEl())).toBe(HUB_LINE);
+      ui.showHireCard('cta'); // the PIN pad, a modal
+      standAt(ISLET); // the visitor is at the beach-house door
+      ui.hideZonePanel(); // the pad closes
+      for (let t = 0; t < 4000; t += 200) {
+        vi.advanceTimersByTime(200);
+        expect(toastEl()!.style.opacity).toBe('0');
+      }
+    });
+
+    test('stepped aside where the visitor still stands, it comes back once', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(1000);
+      ui.showHireCard('cta');
+      standAt(
+        HUB.map((d) => d + 0.03),
+        0.9,
+      ); // a step or two; the liner sails on
+      ui.hideZonePanel();
+      vi.advanceTimersByTime(800);
+      expect(text(toastEl())).toBe(HUB_LINE);
+      expect(toastEl()!.style.opacity).toBe('1');
+    });
+
+    test('on screen as the visitor goes through a door, it goes and stays gone', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(500);
+      ui.showLeaveButton(() => {}); // in, with no modal on the way
+      vi.advanceTimersByTime(200);
+      expect(toastEl()!.style.opacity).toBe('0');
+      for (let t = 0; t < 4000; t += 200) {
+        vi.advanceTimersByTime(200);
+        expect(toastEl()!.style.opacity).toBe('0');
+      }
+    });
+
+    test('walking on does not take a message on screen down', () => {
+      vi.useFakeTimers();
+      standAt(HUB);
+      ui.toast(HUB_LINE, { hint: true });
+      vi.advanceTimersByTime(500);
+      standAt(ISLET); // far, at a run
+      vi.advanceTimersByTime(1000);
+      expect(text(toastEl())).toBe(HUB_LINE);
+      expect(toastEl()!.style.opacity).toBe('1');
+    });
+  });
+
   test('a re-shown line is not read out again', () => {
     vi.useFakeTimers();
     ui.toast('💬 talk hint', { hint: true });

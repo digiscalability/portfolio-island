@@ -184,6 +184,9 @@ interface QueuedMessage {
   shownAt: number;
   /** Inside a building (the Leave pill up) when it last showed. */
   inside: boolean;
+  /** Where the visitor stood when it last showed: the radar distance to each
+   *  fixed landmark (null before the minimap's first update). */
+  place: number[] | null;
 }
 
 /** A message on screen this long has been read: a modal, an outcome or the
@@ -194,6 +197,10 @@ interface QueuedMessage {
 const READ_MS = { outcome: 1000, hint: 1500 } as const;
 /** The first show and one more after a step aside, never a third. */
 const MAX_SHOWS = 2;
+/** A visitor this far (radar units: 1 is the 1.35 rad radar edge, so 0.15 is
+ *  about 20 u on the radius-100 world) from where a message last showed has
+ *  left that place: a message stepped aside there does not come back. */
+const PLACE_MOVE = 0.15;
 
 /** A message stays inside a panel for this long after the visitor's last
  *  action there counts as that panel's own outcome (P2-D3). The message
@@ -1497,7 +1504,31 @@ export class SimpleUI {
     hint: boolean,
     until?: () => boolean,
   ): QueuedMessage {
-    return { text, hint, kind, until, shows: 0, seenMs: 0, shownAt: 0, inside: false };
+    return {
+      text,
+      hint,
+      kind,
+      until,
+      shows: 0,
+      seenMs: 0,
+      shownAt: 0,
+      inside: false,
+      place: null,
+    };
+  }
+
+  /** The radar distance to each fixed landmark, from the last minimap update
+   *  (the cruise liner moves, so it is left out). */
+  private placeFix: number[] | null = null;
+
+  /** The visitor has gone in or out, or walked off from where `m` showed. */
+  private leftPlace(m: QueuedMessage): boolean {
+    if (m.inside !== this.isInside()) return true;
+    const a = m.place;
+    const b = this.placeFix;
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > PLACE_MOVE) return true;
+    return false;
   }
 
   private enqueue(m: QueuedMessage): void {
@@ -1565,7 +1596,7 @@ export class SimpleUI {
   private takeToast(): QueuedMessage | null {
     const inside = this.isInside();
     this.toastQueue = this.toastQueue.filter(
-      (q) => !q.until?.() && !(q.shows > 0 && q.inside !== inside),
+      (q) => !q.until?.() && !(q.shows > 0 && (q.inside !== inside || this.leftPlace(q))),
     );
     const pick =
       this.toastQueue.find((q) => !q.hint && this.mayShow(q)) ??
@@ -1615,7 +1646,11 @@ export class SimpleUI {
         }
         return;
       }
-      if (this.mayShow(m, true) && !m.until?.()) {
+      // On screen as the visitor goes through a door: it goes, and takeToast
+      // drops it rather than bring it back (re-verify: 'The Hub - the town
+      // square' stayed up into the beach house). Walking on does not take it
+      // down; only a message that already stepped aside stays behind.
+      if (this.mayShow(m, true) && !m.until?.() && m.inside === this.isInside()) {
         reanchor();
         return;
       }
@@ -1739,6 +1774,7 @@ export class SimpleUI {
     m.shows += 1;
     m.shownAt = Date.now();
     m.inside = this.isInside();
+    m.place = this.placeFix ? [...this.placeFix] : null;
     // Dwell scales with LENGTH: the flat 2000ms burned one-shot content —
     // a 120-char school lesson (shown only via toast, key already spent)
     // vanished half-read. ~180wpm reading rate ≈ 50ms/char, floor 2s, cap 6s.
@@ -6891,6 +6927,8 @@ export class SimpleUI {
     peers?: Array<{ rx: number; ry: number; dist: number; waving: boolean }>;
     online?: number;
   }): void {
+    // Where the visitor stands, for the message queue (leftPlace).
+    this.placeFix = data.zones.filter((z) => z.label !== 'Cruise').map((z) => z.dist);
     const D = 172; // square canvas (the radar disc), in CSS px
     if (!this.mapCanvas) {
       this.mapCanvas = document.createElement('canvas');

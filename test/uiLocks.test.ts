@@ -331,13 +331,18 @@ describe('D6: one message at a time', () => {
     expect(flash).not.toContain('createElement');
   });
 
-  // Changed deliberately (wave-1 integration): until() drops an outcome too,
-  // and so does a message that showed, stepped aside and changed place.
+  // Changed deliberately (wave-1 integration, wave-2 re-verify): until() drops
+  // an outcome too, and so does a message that showed, stepped aside and
+  // changed place (a door, or a walk away from where it showed).
   test('nothing paints over a modal; outcomes go first; stale messages drop', () => {
     const may = bodyOf(ui, 'private mayShow(m: QueuedMessage, shown = false): boolean');
     expect(may.indexOf('this.panels.isModalOpen()')).toBeLessThan(may.indexOf('if (!m.hint)'));
     const take = bodyOf(ui, 'private takeToast(): QueuedMessage | null');
-    expect(take).toContain('!q.until?.() && !(q.shows > 0 && q.inside !== inside)');
+    // Wave-2 (re-verify): a message that stepped aside drops once the visitor
+    // has left the place it showed in, not only on a door crossing.
+    expect(take).toContain(
+      '!q.until?.() && !(q.shows > 0 && (q.inside !== inside || this.leftPlace(q)))',
+    );
     expect(take.indexOf('!q.hint && this.mayShow(q)')).toBeLessThan(
       take.indexOf('q.hint && this.mayShow(q)'),
     );
