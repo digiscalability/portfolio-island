@@ -542,7 +542,6 @@ npm run perf:gate -- --dist dist --port <n> --dusk        # the dusk check alone
 npm run perf:gate -- --dist dist --port <n> --hour 21     # the night run: the card, the longest task before it, programs at +30 s
 ```
 
-- Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
 **Run it alone, on a quiet host (wave-2 amendments).** A verdict taken
 while other builders, probes or builds hold the CPU reads inconclusive: the
 timing rows' sigma goes over T/2 and nothing resolves. Every load records
@@ -553,6 +552,7 @@ bytes, the bundle) hold on a busy host; timings do not. The integration runs
 `--ab` by itself after the builders have stopped, and a floor recorded on a
 busy host is marked and re-recorded.
 
+- Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
   (GPU timer queries off).
 - Each load: the startup marks, then 30 s after the card (past the interior
   warm and the late compiles) programs, nodes and textures, then the views
@@ -773,7 +773,6 @@ This branch, with the host 86-94% busy: 94 ms on desktop and a 200 ms frame
 on the low tier, 0 programs and the same lights on both, so the low tier
 reads inconclusive there.
 
-**Bundle check (wave-2 amendments).** Wave 1 took the main chunk over
 **P2-B6's GPU line, restated (wave-2 amendments).** The plan's "scene GPU
 at 21 h improves by 0.5 ms or more" cannot be read on this rig: the wave-1
 integration's 21 h desktop A/B (6 cycles) gave GPU p50 +0.13 ms at the
@@ -786,6 +785,7 @@ P2-B6's other lines are counts and are unchanged: programs at +30 s (-48 at
 21 h), the 21 h card within +300 ms of the 12 h one (`p2/bootcost`), and
 the dusk flip under 100 ms (`--dusk`, `p2/duskflip`).
 
+**Bundle check (wave-2 amendments).** Wave 1 took the main chunk over
 Vite's 1,000 kB chunk warning. The limit in `vite.config.ts` stays at 1,000.
 Every report (`perf:gate -- --dist dist --port <n>`) measures the dist's
 `assets/main-*.js` the way Vite prints it (bytes / 1000, gzip at the default
