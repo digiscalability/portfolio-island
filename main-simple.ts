@@ -252,6 +252,58 @@ export class SimpleApp {
       canvas.style.opacity = '';
     }, 700);
   }
+  /**
+   * A calm entry's card waits for the late models' first draws (w2
+   * integration). The player, villager and bench GLBs land after the boot
+   * pre-compile, so their skinned and instanced toon programs can only link
+   * on the frames that first draw them. The fly-in hides those frames before
+   * its card; a calm entry showed the card at once, so they fell after it.
+   * MEASURED, low tier without KHR_parallel_shader_compile: +4 programs in a
+   * 224 ms frame and +4 in a 274 ms one, 0-0.3 s after the card (main, with
+   * the fly-in, linked the same 8 before its card). So afterIntro runs once
+   * no program has linked for LATE_LINK_QUIET_MS over at least two frames,
+   * and never sooner than the loader's fade, nor later than LATE_LINK_CAP_MS
+   * (a slow network or a hidden tab must not hold the card back).
+   */
+  private whenLateModelsLinked(then: () => void): void {
+    const LATE_LINK_MIN_MS = 600;
+    const LATE_LINK_QUIET_MS = 400;
+    const LATE_LINK_CAP_MS = 3000;
+    const info = this.renderer.getRenderer().info;
+    const count = (): number => info.programs?.length ?? 0;
+    const start = performance.now();
+    let last = count();
+    let quietSince = start;
+    let quietFrames = 0;
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(cap);
+      then();
+    };
+    const cap = window.setTimeout(finish, LATE_LINK_CAP_MS);
+    const tick = (): void => {
+      if (done) return;
+      const now = performance.now();
+      const n = count();
+      if (n !== last) {
+        last = n;
+        quietSince = now;
+        quietFrames = 0;
+      } else quietFrames++;
+      if (
+        now - start >= LATE_LINK_MIN_MS &&
+        now - quietSince >= LATE_LINK_QUIET_MS &&
+        quietFrames >= 2
+      ) {
+        finish();
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
   private roomsWarmStarted = false;
   /**
    * CO-A5. At 4x CPU the idle warm's 9 s ceiling fires 6-7 s late on a busy
@@ -491,6 +543,14 @@ export class SimpleApp {
   private airborneTime: number = 0;
   private prevJumpHeld: boolean = false;
   private lastSwimWarnAt = 0; // throttle for the shoreline-barrier hint
+  /**
+   * In the water with a villager in reach (last frame's prompt chain): the
+   * visitor stays afloat without Space, and the talk prompt outranks the
+   * swim hint (w2 integration). The Sailor drifts 5 u off the jetty, so his
+   * prompt showed only while Space was held: on a phone, JUMP held and USE
+   * tapped at once, no thumb left to steer. The beach-house code is his line.
+   */
+  private talkAfloat = false;
   private currentThrottle = 0; // last vehicle throttle magnitude (for engine sfx)
 
   // Scratch vectors reused every frame to keep the update loop allocation-free
@@ -1515,8 +1575,7 @@ export class SimpleApp {
         // behind the card on; phones end the intro facing them (A7), with the
         // coins that lead there on screen.
         this.visitStartedAt = performance.now(); // the visit's minutes ('ds:goals')
-        this.trailVillager = this.pickTrailVillager();
-        this.faceTrailVillager();
+        this.chooseTrailVillager();
         let saved: string | null = null;
         try {
           saved = localStorage.getItem('ds_player_name');
@@ -1573,7 +1632,13 @@ export class SimpleApp {
         canvas.style.opacity = '0';
         this.calmEntryCanvas = canvas;
         this.scene.getOrbitCamera().snapToPlayer();
-        afterIntro();
+        // Faced now, before the first frame: afterIntro's own call would
+        // turn the camera in clear view once the world has faded in.
+        this.chooseTrailVillager();
+        // The card waits for the late GLBs' first draws (whenLateModelsLinked).
+        this.whenLateModelsLinked(() => {
+          afterIntro();
+        });
       } else {
         // INTRO-LITE: the fly-in is the single heaviest view in the game — the
         // whole planet in frustum, so chunk culling recovers nothing and every
@@ -2844,6 +2909,10 @@ export class SimpleApp {
         this.scene.setPlayerMovement(0, 0);
         this.ui.hideInteractionPrompt();
         this.applyLook(deltaTime);
+        // Talking from the water (the Sailor's boat): afloat for the whole
+        // conversation, never held on Space while typing (talkAfloat).
+        const talker = this.scene.getPlayer();
+        if (talker?.isInWater()) talker.setSwimIntent(true);
 
         if (this.ui.isDialogueActive()) {
           if (this.inputManager.consumeKeyPress('e')) {
@@ -2934,8 +3003,9 @@ export class SimpleApp {
         // the visitor stands still.
         this.scene.getOrbitCamera().setMoveInput(walkForward, walkStrafe);
         const player = this.scene.getPlayer();
-        // Swim: hold Space to stay afloat in water (same key jumps on land)
-        if (player) player.setSwimIntent(jumpInput);
+        // Swim: hold Space to stay afloat in water (same key jumps on land).
+        // A villager in reach keeps the visitor afloat too (talkAfloat).
+        if (player) player.setSwimIntent(jumpInput || this.talkAfloat);
         // Free dive: hold Shift in water to swim DOWN. Independent of Space,
         // so you can hold both; the dive branch outranks the float branch.
         if (player) {
@@ -3085,6 +3155,7 @@ export class SimpleApp {
         let buildOpp: ReturnType<SimpleApp['nearestBuildOpportunity']> = null;
         const board = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
+        this.talkAfloat = !!player && player.isInWater() && nearby?.type === 'npc';
         // Nearest thing wins: the vehicle only takes the prompt when it is
         // actually the closest interactable — a parked car used to shadow
         // every NPC, mailbox and cottage door within its 3.2u board range.
@@ -3099,8 +3170,9 @@ export class SimpleApp {
             sfx.blip();
             track('vehicle_enter', { kind });
           }
-        } else if (player && player.isInWater() && !player.isSwimming()) {
-          // In the water and sinking: tell them how to swim
+        } else if (player && player.isInWater() && !player.isSwimming() && !this.talkAfloat) {
+          // In the water and sinking: tell them how to swim. A villager in
+          // reach outranks it (talkAfloat): the talk prompt shows below.
           this.ui.showInteractionPrompt('🏊 Hold <strong>Space</strong> to swim');
         } else if (this.scene.isFishingActive()) {
           // Line is in the water: reeling outranks every other interaction.
@@ -4075,6 +4147,19 @@ export class SimpleApp {
    * nearest awake AI villager within 30 u, and with none the branch is
    * skipped. Reads positions only: no draw from any random stream.
    */
+  private trailChosen = false;
+  /**
+   * The trail villager is chosen once per load, then faced (A7). afterIntro
+   * calls this; a calm entry calls it first, before the first frame, since
+   * its afterIntro waits for the late models (whenLateModelsLinked).
+   */
+  private chooseTrailVillager(): void {
+    if (this.trailChosen) return;
+    this.trailChosen = true;
+    this.trailVillager = this.pickTrailVillager();
+    this.faceTrailVillager();
+  }
+
   private pickTrailVillager(): string | null {
     const player = this.scene.getPlayer();
     if (!player) return null;
@@ -5317,7 +5402,25 @@ export class SimpleApp {
     look: THREE.Vector3; // eased look target
     prevFov: number;
     ending: number; // <0 = active; >=0 = seconds into the release glide
+    /** The pose the release glide starts from (its first frame sets it). */
+    from: { pos: THREE.Vector3; look: THREE.Vector3; up: THREE.Vector3; fov: number } | null;
   } | null = null;
+  /** The release glide's length: the old 0.35 s whip-panned the last frame (w2 integration). */
+  private static readonly NPC_CINE_RELEASE_S = 0.6;
+  private readonly _cineGoalPos = new THREE.Vector3();
+  private readonly _cineGoalLook = new THREE.Vector3();
+  private readonly _cineOffA = new THREE.Vector3();
+  private readonly _cineOffB = new THREE.Vector3();
+  private readonly _cineQuat = new THREE.Quaternion();
+  private readonly _cineQuatId = new THREE.Quaternion();
+  private readonly _cineQuatTo = new THREE.Quaternion();
+  private readonly _cineNormal = new THREE.Vector3();
+  /** The surface normal under the player: the orbit camera's up. */
+  private cineNormal(): THREE.Vector3 {
+    const p = this.scene.getPlayer();
+    return p ? p.getSurfaceNormalInto(this._cineNormal) : this._cineNormal.copy(this.camera0Up);
+  }
+  private readonly camera0Up = new THREE.Vector3(0, 1, 0);
   private chatWalkAwayT = 0; // sustained walk intent closes the chat
   private watchOpenedAt = 0; // wall-screen open time — same-press close guard
   private isletUnlocked = false; // beach-house door code accepted this session
@@ -5493,6 +5596,7 @@ export class SimpleApp {
       look: player.getWorldPosition().clone(),
       prevFov: cam.fov,
       ending: -1,
+      from: null,
     };
     this.scene.setCameraSuspended(true);
   }
@@ -5558,24 +5662,62 @@ export class SimpleApp {
       cam.fov = expDecay(cam.fov, c.prevFov - 8, 1.3, dt);
       cam.updateProjectionMatrix();
     } else {
-      // Release glide: look eases back onto the player and FOV restores, THEN
-      // the orbit camera resumes \u2014 its own position ease carries the camera
-      // home without a whip-pan (rotation snaps on resume, so the final look
-      // target must already be near the player).
-      c.ending += dt;
-      if (playerPos) {
-        const up = this._cineUp.copy(playerPos).normalize();
-        expDecayV3(c.look, this._cineTmp.copy(playerPos).addScaledVector(up, 1.4), 10, dt);
+      // Release glide (w2 integration): the camera glides ONTO the orbit
+      // camera's follow pose (position, look target, up and FOV), so the
+      // resume frame's lookAt turns nothing. It used to ease only the look
+      // toward the player for 0.35 s and leave the rest to the resume, whose
+      // lookAt snapped onto the orbit target: 15 deg in one frame on main,
+      // and 50-112 deg when the follow sat on the far side, the position ease
+      // then swinging the camera past the avatar's head. The follow is first
+      // turned to the two-shot's side (adoptView), and the offset turns about
+      // the look target, so the path never cuts through the avatar.
+      const oc = this.scene.getOrbitCamera();
+      if (!c.from) {
+        if (playerPos) oc.adoptView(c.pos);
+        c.from = { pos: c.pos.clone(), look: c.look.clone(), up: cam.up.clone(), fov: cam.fov };
       }
-      cam.fov = expDecay(cam.fov, c.prevFov, 12, dt);
-      cam.updateProjectionMatrix();
-      if (c.ending > 0.35) {
+      c.ending += dt;
+      const f = c.from;
+      const u = Math.min(1, c.ending / SimpleApp.NPC_CINE_RELEASE_S);
+      const k = u * u * (3 - 2 * u); // smoothstep: no step at either end
+      if (u >= 1 || !playerPos) {
         cam.fov = c.prevFov; // exact restore \u2014 updateFov may never run (pre-ride)
         cam.updateProjectionMatrix();
+        if (playerPos) {
+          oc.getFollowPose(this._cineGoalPos, this._cineGoalLook);
+          cam.position.copy(this._cineGoalPos);
+          cam.up.copy(this.cineNormal());
+          cam.lookAt(this._cineGoalLook);
+        }
         this.scene.setCameraSuspended(false);
         this.npcCine = null;
         return;
       }
+      oc.getFollowPose(this._cineGoalPos, this._cineGoalLook);
+      c.look.lerpVectors(f.look, this._cineGoalLook, k);
+      // The offset from the look target: its direction slerps, its length lerps.
+      const offA = this._cineOffA.subVectors(f.pos, f.look);
+      const offB = this._cineOffB.subVectors(this._cineGoalPos, this._cineGoalLook);
+      const lenA = offA.length();
+      const lenB = offB.length();
+      if (lenA > 1e-6 && lenB > 1e-6) {
+        offA.divideScalar(lenA);
+        offB.divideScalar(lenB);
+        // The full turn, then k of it (slerpQuaternions copies its first
+        // argument into the target first, so the two must not alias).
+        this._cineQuatTo.setFromUnitVectors(offA, offB);
+        this._cineQuat.slerpQuaternions(this._cineQuatId, this._cineQuatTo, k);
+        offA.applyQuaternion(this._cineQuat).multiplyScalar(lenA + (lenB - lenA) * k);
+        c.pos.copy(c.look).add(offA);
+      } else {
+        c.pos.lerpVectors(f.pos, this._cineGoalPos, k);
+      }
+      cam.fov = f.fov + (c.prevFov - f.fov) * k;
+      cam.updateProjectionMatrix();
+      cam.position.copy(c.pos);
+      cam.up.lerpVectors(f.up, this.cineNormal(), k).normalize();
+      cam.lookAt(c.look);
+      return;
     }
     cam.position.copy(c.pos);
     cam.up.copy(this._cineUp.copy(c.pos).normalize());

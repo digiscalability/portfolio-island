@@ -790,3 +790,31 @@ describe('the intro fly-in: a curved approach that never swings the view (A10)',
     expect(f.step()).toBe(false); // no animation frame was ever asked for
   });
 });
+
+describe('handing the camera back from a rail (w2 integration, conversation release)', () => {
+  test('adoptView puts the follow on the side of the given point; getFollowPose moves nothing', () => {
+    const { camera, player, cam } = rig();
+    const before = camera.position.clone();
+    const pos = new THREE.Vector3();
+    const look = new THREE.Vector3();
+    cam.getFollowPose(pos, look);
+    // reading the pose leaves the camera where it was
+    expect(camera.position.distanceTo(before)).toBeLessThan(1e-9);
+    // a rail left the camera on the other side of the player
+    const n = player.pos.clone().normalize();
+    const away = before.clone().sub(player.pos);
+    away.addScaledVector(n, -away.dot(n));
+    const other = player.pos.clone().addScaledVector(away.normalize(), -3).addScaledVector(n, 1.5);
+    cam.adoptView(other);
+    cam.getFollowPose(pos, look);
+    const side = (p: THREE.Vector3) => {
+      const d = p.clone().sub(player.pos);
+      return d.addScaledVector(n, -d.dot(n)).normalize();
+    };
+    // the follow pose now sits on the rail's side: the resume swings nothing round
+    expect(side(pos).dot(side(other))).toBeGreaterThan(0.999);
+    // and the pose is what update() eases to: a snap lands on it exactly
+    cam.snapToPlayer();
+    expect(camera.position.distanceTo(pos)).toBeLessThan(1e-6);
+  });
+});

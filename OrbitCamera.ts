@@ -463,6 +463,36 @@ export class OrbitCamera {
     if (Number.isFinite(this.targetPosition.x)) this.camera.lookAt(this.targetPosition);
   }
 
+  /**
+   * The follow pose update() would ease to, written into outPos and
+   * outTarget, without moving the camera. A rail that hands the camera back
+   * (the conversation release) glides onto it, so the resume frame's lookAt
+   * turns nothing.
+   */
+  public getFollowPose(outPos: THREE.Vector3, outTarget: THREE.Vector3): void {
+    this.updateCameraPosition(0);
+    outPos.copy(this.cameraPosition);
+    outTarget.copy(this.targetPosition);
+  }
+
+  /**
+   * Turn the follow to the side of the player that `from` is on (a camera a
+   * rail left there). The conversation's two-shot sits behind the player's
+   * shoulder; a follow left on the other side swung the released camera
+   * round past the avatar's head, up to 112 deg in one frame (w2
+   * integration, camera talk).
+   */
+  public adoptView(from: THREE.Vector3): void {
+    const p = this.player.getWorldPositionInto(this._camPlayerPos);
+    const n = this.player.getSurfaceNormalInto(this._camNormal);
+    const d = this._desired.subVectors(from, p);
+    d.addScaledVector(n, -d.dot(n));
+    if (d.lengthSq() < 1e-6) return;
+    if (!this.followDir) this.followDir = new THREE.Vector3();
+    this.followDir.copy(d).normalize();
+    this.yawStepPending = 0;
+  }
+
   /** Soft camera interest in a world point (null = fade back out). */
   public setFocusPoint(p: THREE.Vector3 | null): void {
     if (p) {

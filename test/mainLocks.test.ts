@@ -1002,10 +1002,20 @@ describe('A7: one compass target at a time (the zone branch, replaced)', () => {
     const m = stripped('main-simple.ts');
     const intro = bodyOf(m, 'const afterIntro = () =>');
     // chosen once, at the end of the intro, then faced
-    const pick = intro.indexOf('this.trailVillager = this.pickTrailVillager();');
+    expect(intro).toContain('this.chooseTrailVillager();');
+    const choose = bodyOf(m, 'private chooseTrailVillager(');
+    expect(choose).toContain('if (this.trailChosen) return;');
+    const pick = choose.indexOf('this.trailVillager = this.pickTrailVillager();');
     expect(pick).toBeGreaterThan(-1);
-    expect(pick).toBeLessThan(intro.indexOf('this.faceTrailVillager();'));
+    expect(pick).toBeLessThan(choose.indexOf('this.faceTrailVillager();'));
     expect(m.split('this.trailVillager = ').length - 1).toBe(1);
+    // a calm entry faces before the first frame: its afterIntro waits for
+    // the late models, and a setYaw then would turn the view in clear sight
+    const calm = bodyOf(m, '} else if (this.calmEntry) {', m.indexOf('const afterIntro'));
+    expect(calm.indexOf('this.chooseTrailVillager();')).toBeGreaterThan(-1);
+    expect(calm.indexOf('this.chooseTrailVillager();')).toBeLessThan(
+      calm.indexOf('this.whenLateModelsLinked('),
+    );
     const face = bodyOf(m, 'private faceTrailVillager(');
     expect(face).toContain('if (!this.coarsePointer) return;');
     expect(face).toContain('const bearing = compassBearing(fwd.normalize(), to.normalize(), n);');
@@ -1449,6 +1459,24 @@ describe('A10: a smoother desktop intro, and a calm entry on phones only', () =>
     );
   });
 
+  test("a calm entry's card waits for the late models' programs to link, capped (w2 integration)", () => {
+    const calm = bodyOf(m(), '} else if (this.calmEntry) {', m().indexOf('const afterIntro'));
+    const wait = calm.indexOf('this.whenLateModelsLinked(() => {');
+    expect(wait).toBeGreaterThan(-1);
+    expect(wait).toBeLessThan(calm.indexOf('afterIntro();'));
+    const body = bodyOf(m(), 'private whenLateModelsLinked(');
+    // quiet means no program linked over a span of frames
+    expect(body).toContain('info.programs?.length ?? 0');
+    expect(body).toContain('const LATE_LINK_QUIET_MS = 400;');
+    // never before the loader's fade, never held past the cap (hidden tab, slow net)
+    expect(body).toContain('const LATE_LINK_MIN_MS = 600;');
+    expect(body).toContain('const LATE_LINK_CAP_MS = 3000;');
+    expect(body).toContain('const cap = window.setTimeout(finish, LATE_LINK_CAP_MS);');
+    expect(body).toContain('if (done) return;');
+    // the fly-in and reduced motion are untouched
+    expect(intro().split('whenLateModelsLinked').length - 1).toBe(1);
+  });
+
   test('reduced motion is unchanged: the snap, with no fade', () => {
     const reduced = bodyOf(m(), 'if (a11y.reducedMotion) {', m().indexOf('const afterIntro'));
     expect(reduced).toContain('this.scene.getOrbitCamera().snapToPlayer();');
@@ -1687,5 +1715,56 @@ describe('P2-A12: the Next chip, wired into main-simple', () => {
     expect(bodyOf(s, 'private guideTick(')).toContain(
       'if (on && this.goalsPublishT >= 15) this.publishGoals();',
     );
+  });
+});
+
+describe('w2 integration: the Sailor from the water, and the conversation release', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test('a villager in reach outranks the swim hint and keeps the visitor afloat', () => {
+    const s = m();
+    // last frame's chain decides: in the water, a villager in reach
+    expect(s).toContain(
+      "this.talkAfloat = !!player && player.isInWater() && nearby?.type === 'npc';",
+    );
+    expect(s).toContain('if (player) player.setSwimIntent(jumpInput || this.talkAfloat);');
+    // the swim hint stands aside for the talk prompt
+    expect(s).toContain(
+      '} else if (player && player.isInWater() && !player.isSwimming() && !this.talkAfloat) {',
+    );
+    // set before the chain reads it, after the nearby lookup
+    expect(s.indexOf('this.talkAfloat = !!player')).toBeGreaterThan(
+      s.indexOf('const nearby = this.scene.getNearbyInteractable();'),
+    );
+    expect(s.indexOf('this.talkAfloat = !!player')).toBeLessThan(
+      s.indexOf('Hold <strong>Space</strong> to swim'),
+    );
+    // a conversation from the water floats without Space held
+    const talk = s.slice(
+      s.indexOf('} else if (this.ui.isDialogueActive() || this.ui.isNpcChatOpen()) {'),
+      s.indexOf('} else if (this.scene.isPlayerSeated()) {'),
+    );
+    expect(talk).toContain('if (talker?.isInWater()) talker.setSwimIntent(true);');
+  });
+
+  test('the release glides onto the follow pose, on the two-shot side, then resumes', () => {
+    const cine = bodyOf(m(), 'private updateNpcCine(');
+    expect(cine).toContain('if (playerPos) oc.adoptView(c.pos);');
+    expect(cine).toContain('oc.getFollowPose(this._cineGoalPos, this._cineGoalLook);');
+    expect(cine).toContain('const u = Math.min(1, c.ending / SimpleApp.NPC_CINE_RELEASE_S);');
+    expect(cine).toContain('const k = u * u * (3 - 2 * u);');
+    // the offset turns about the look target: never a chord through the avatar
+    expect(cine).toContain('this._cineQuatTo.setFromUnitVectors(offA, offB);');
+    expect(cine).toContain(
+      'this._cineQuat.slerpQuaternions(this._cineQuatId, this._cineQuatTo, k);',
+    );
+    // the resume frame sits exactly on the pose the orbit camera eases to
+    const end = cine.slice(cine.indexOf('if (u >= 1 || !playerPos) {'));
+    expect(end.indexOf('cam.lookAt(this._cineGoalLook);')).toBeLessThan(
+      end.indexOf('this.scene.setCameraSuspended(false);'),
+    );
+    expect(m()).toContain('private static readonly NPC_CINE_RELEASE_S = 0.6;');
+    // the old whip: look-only ease, resume after 0.35 s
+    expect(cine).not.toContain('c.ending > 0.35');
   });
 });
