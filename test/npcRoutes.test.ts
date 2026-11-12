@@ -98,8 +98,61 @@ describe('routeQuestion: the route table', () => {
     'do you like the sea',
     '',
     '   ',
+    // Integration (wave 2): these got a hiring pitch where main answered in
+    // character. 'Building', 'ship', 'role' and 'position' only route when
+    // the question is about Abbas, and a 'where' naming no place is the
+    // villager's to answer.
+    "What's that building?",
+    'What role do you play here?',
+    "What's your position on the weather?",
+    'Where is the lighthouse?',
+    'where are you going',
   ])('small talk and island chores keep the villager’s own line: %s', (q) => {
     expect(routeQuestion(q)).toBeNull();
+  });
+
+  test.each([
+    ['What is he building?', 'projects:projects'],
+    ['has he shipped anything', 'projects:projects'],
+    ['Is there a role for Abbas?', 'hire:hire'],
+    ['What position is he after?', 'hire:hire'],
+    ['We have a position open', 'hire:hire'],
+  ])('ship, building, role and position still route when about Abbas: %s', (q, want) => {
+    expect(to(q)).toBe(want);
+  });
+
+  test.each(["Where's the cruise ship?", 'where is the liner', 'Where does that ship go?'])(
+    'the cruise liner is a place with no compass key (it moves), so no button: %s',
+    (q) => {
+      expect(to(q)).toBe('place:-');
+      const r = routeQuestion(q)!;
+      expect(r.action).toBeUndefined();
+      expect(r.line).toContain('cruise liner');
+      expect(r.line).not.toMatch(/Abbas|Projects/);
+    },
+  );
+
+  test.each([
+    'How do I get into the beach house?',
+    'What is the door code?',
+    "what's the code for the door",
+    'how do I open the beach house',
+    'is there a pin for the lock?',
+  ])('the beach house and its door code route to the beach house: %s', (q) => {
+    expect(to(q)).toBe('place:beach-house');
+    expect(routeQuestion(q)?.line).toContain('ask the Sailor');
+    expect(routeQuestion(q)?.line).not.toContain('5673');
+    expect(routeQuestion(q, 'Mayor')?.line).toContain('ask the Sailor');
+  });
+
+  test('the Sailor answers the door-code question with the code itself', () => {
+    for (const q of ['How do I get into the beach house?', 'What is the door code?']) {
+      const r = routeQuestion(q, 'Sailor')!;
+      expect(r.line, q).toContain('5673');
+      expect(r.line, q).toContain('islet out south');
+      expect(r.action?.guideKey, q).toBe('beach-house');
+      expect(r.line.length, q).toBeLessThanOrEqual(180);
+    }
   });
 
   test('every place key is one the compass seam answers (P2-A5: Guide.ts GUIDE_KEYS)', () => {
@@ -277,6 +330,29 @@ describe('showNpcChat: the routed line offline, and one button under the reply',
     } finally {
       window.removeEventListener('ds:guide-to', on);
     }
+  });
+
+  test("offline, the Sailor asked 'How do I get into the beach house?' gives the code; the Mayor points to him", async () => {
+    ui.showNpcChat('Sailor', 'Ahoy!', async () => {
+      ui.markNpcChatOffline('Sailor');
+      return 'The waves here follow real maths, you know.';
+    });
+    await ask('How do I get into the beach house?');
+    expect(text(log())).toContain('5673');
+    expect(text(log())).not.toContain('real maths');
+    expect(text(button())).toBe('Show me');
+    ui.closeNpcChat();
+    open(true);
+    await ask('What is the door code?');
+    expect(text(log())).toContain('ask the Sailor');
+    expect(text(log())).not.toContain('5673');
+  });
+
+  test("offline, 'Where's the cruise ship?': the liner line, and no button", async () => {
+    open(true);
+    await ask("Where's the cruise ship?");
+    expect(text(log())).toContain('cruise liner');
+    expect(button()).toBeNull();
   });
 
   test("offline, 'Nice weather?': the written line stands, and no button", async () => {

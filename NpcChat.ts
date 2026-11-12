@@ -299,13 +299,33 @@ export interface QuestionRoute {
 
 const SHOW_ME = 'Show me';
 
+const BEACH_HOUSE_LINE =
+  'The beach house is on the islet out south. Its door wants a code — ask the Sailor at the harbour.';
+/** The Sailor knows the code: it is his brother's house (P2-C6 gives the
+ *  same number in his written line). */
+const SAILOR_CODE_LINE =
+  'The beach house is my brother’s, on the islet out south. His door code is our old boat number: 5673.';
+
+/** The beach house or its door code, asked any way at all ("How do I get
+ *  into the beach house?", "What is the door code?"), not only as a "where". */
+const BEACH_HOUSE =
+  /\bbeach ?house\b|\bislet\b|\bdoor ?code\b|\b(?:code|pin|password)\b[^?.!]{0,24}\b(?:door|lock)\b|\b(?:door|lock)\b[^?.!]{0,24}\b(?:code|pin)\b/;
+
+/** The question is about Abbas, not the villager or the island ("his CV",
+ *  "has he shipped", "a role for Abbas"). */
+const ABOUT_ABBAS = /\b(?:he|he's|him|his|abbas)\b/;
+/** The visitor speaks as an employer ("We have a role open"). */
+const EMPLOYER = /\b(?:we|we're|we've|our|my (?:company|team|startup|firm))\b/;
+
 /** Places a "where is" question can name: [pattern, guide key, line]. The
- *  first match wins, so the specific names come before the district words. */
-const PLACE_ROUTES: Array<[RegExp, string, string]> = [
+ *  first match wins, so the specific names come before the district words.
+ *  A null key is a place the compass cannot point at (the liner moves), so
+ *  the villager answers with no button. */
+const PLACE_ROUTES: Array<[RegExp, string | null, string]> = [
   [
-    /\bbeach ?house\b|\bislet\b/,
-    'beach-house',
-    'The beach house is on the islet out south. Its door wants a code — ask the Sailor at the harbour.',
+    /\b(cruise|liner|ocean liner)\b|\bship\b/,
+    null,
+    'That’s the cruise liner. She sails a slow lap of the southern sea and never stops, so watch for her from the south shore.',
   ],
   [
     /\bschool\b|\blessons?\b/,
@@ -364,14 +384,20 @@ const WHERE =
   /\bwhere(?:'s| is| are| can i find| do i find)?\b|\bhow (?:do|can) i (?:get|go) to\b|\b(?:take|guide|lead|point) me to\b|\bwhich way\b|\bdirections? to\b|\bhow (?:do|can) i find\b/;
 
 const HIRE =
-  /\b(hire|hiring|recruit(?:er|ing)?|cv|resume|role|roles|job|jobs|vacancy|position|available|availability|employ(?:er|ment)?)\b/;
+  /\b(hire|hiring|recruit(?:er|ing)?|cv|resume|job|jobs|vacancy|available|availability|employ(?:er|ment)?)\b/;
+/** "Role" and "position" are hiring words only about Abbas or from an
+ *  employer: "What role do you play here?" is small talk with the villager. */
+const HIRE_IF_ABOUT = /\b(roles?|positions?)\b/;
 const CONTACT =
   /\b(contact|email|e-mail|reach|get in touch|message (?:him|abbas)|talk to (?:him|abbas)|speak (?:to|with) (?:him|abbas)|linkedin)\b/;
 /** Who made this, who is he: the person, not the villager being asked. */
 const WHO =
   /\bwho(?:'s| is| was)? (?:abbas|he|him|the (?:owner|maker|builder|creator|founder|developer))\b|\bwho (?:made|built|created|runs|owns|designed)\b|\babout (?:abbas|him|the (?:owner|maker|builder|creator|founder))\b/;
 const PROJECTS =
-  /\b(projects?|portfolio|built|builds?|building|ship(?:s|ped|ping)?|ventures?|products?|rankpilot|chocomate|cookbook|digiscalability)\b|\b(?:his|abbas's|abbas'|the) work\b|\bwork(?:s|ed|ing)? on\b|\binsta services\b/;
+  /\b(projects?|portfolio|built|builds?|ventures?|products?|rankpilot|chocomate|cookbook|digiscalability)\b|\b(?:his|abbas's|abbas'|the) work\b|\bwork(?:s|ed|ing)? on\b|\binsta services\b/;
+/** "Ship" and "building" name the liner and the town's houses unless the
+ *  question is about Abbas ("has he shipped anything"). */
+const PROJECTS_IF_ABOUT = /\b(ship(?:s|ped|ping)?|building)\b/;
 /** "How do I build a house?" is about the island's own building, not the portfolio. */
 const OWN_BUILD = /\b(?:i|we|me|my)\b[^?.!]{0,16}\bbuild/;
 const PROFESSIONAL =
@@ -383,7 +409,7 @@ const PERSONAL =
  * Route a visitor's question. Null when it names nothing the portfolio or
  * the compass can answer ("Nice weather?"): the villager's own reply stands.
  */
-export function routeQuestion(text: string): QuestionRoute | null {
+export function routeQuestion(text: string, npcName?: string): QuestionRoute | null {
   if (typeof text !== 'string') return null;
   const q = text
     .slice(0, 300)
@@ -393,12 +419,28 @@ export function routeQuestion(text: string): QuestionRoute | null {
     .replace(/\s+/g, ' ')
     .trim();
   if (!q) return null;
+  const about = ABOUT_ABBAS.test(q);
+  if (BEACH_HOUSE.test(q)) {
+    const sailor = typeof npcName === 'string' && /\bsailor\b/i.test(npcName);
+    return {
+      kind: 'place',
+      line: sailor ? SAILOR_CODE_LINE : BEACH_HOUSE_LINE,
+      action: { label: SHOW_ME, guideKey: 'beach-house' },
+    };
+  }
   if (WHERE.test(q)) {
     for (const [re, guideKey, line] of PLACE_ROUTES) {
-      if (re.test(q)) return { kind: 'place', line, action: { label: SHOW_ME, guideKey } };
+      if (!re.test(q)) continue;
+      return guideKey
+        ? { kind: 'place', line, action: { label: SHOW_ME, guideKey } }
+        : { kind: 'place', line };
     }
+    // A "where" that names no place the island knows ("Where's the
+    // lighthouse?") is the villager's to answer, unless it is about Abbas
+    // ("where is his résumé").
+    if (!about) return null;
   }
-  if (HIRE.test(q)) {
+  if (HIRE.test(q) || (HIRE_IF_ABOUT.test(q) && (about || EMPLOYER.test(q)))) {
     return {
       kind: 'hire',
       line: 'Abbas is an AI and software engineer in Melbourne. His CV, experience and contact details are on one card.',
@@ -419,7 +461,7 @@ export function routeQuestion(text: string): QuestionRoute | null {
       action: { label: 'Open Professional', zone: 'professional' },
     };
   }
-  if (PROJECTS.test(q) && !OWN_BUILD.test(q)) {
+  if ((PROJECTS.test(q) || (about && PROJECTS_IF_ABOUT.test(q))) && !OWN_BUILD.test(q)) {
     return {
       kind: 'projects',
       line: 'Abbas builds AI products end to end. This island is the flagship, and the rest of his work is in Projects.',

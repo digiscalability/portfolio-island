@@ -9604,7 +9604,7 @@ export class SimpleUI {
       }, SimpleUI.NPC_THINKING_MS);
       // What the question is about, if the portfolio or the compass can
       // answer it (P2-D4). The send goes to the model either way.
-      const route = routeQuestion(text);
+      const route = routeQuestion(text, name);
       this.npcSendFellBack = false;
       let reply = '…';
       try {

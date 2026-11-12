@@ -40,7 +40,7 @@ Six stops, in order. Each one is short and says why it is built that way.
    whatever the model writes, only pool ids reach the world, so no planner text
    reaches a public surface.
 4. **[The agentSession gate](https://github.com/digiscalability/portfolio-island/blob/main/functions/src/agentSession.ts#L1-L34)**
-   (`functions/src/agentSession.ts`). A voice agent connects the browser
+   (`functions/src/agentSession.ts`). A voice assistant connects the browser
    straight to the vendor, so this function mints the short-lived signed URL
    the browser needs. Its header lists the five defence layers in order and
    the incident that prompted them.
@@ -76,7 +76,7 @@ Then [ARCHITECTURE.md](ARCHITECTURE.md) for a reading path through the rest.
 - **Voice.** A villager's reply can be spoken by ElevenLabs through
   `npcVoice`, a capped function that only voices text `npcChat` just produced;
   the browser's own speech is the fallback. Visitors can also speak to
-  villagers (speech-to-text in the browser). The reception desk's voice agent
+  villagers (speech-to-text in the browser). The reception desk's voice assistant
   gets its session from `agentSession`.
 - **No model in the world's mood.** A rule-based `director` picks the island's
   mood and headline every six hours from pre-written lists.
