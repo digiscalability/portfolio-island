@@ -328,7 +328,7 @@ describe('strafing walks a straight line (A5)', () => {
     expect(followDirOf(cam).angleTo(behind) * DEG).toBeLessThan(2);
   });
 
-  test('the swing never turns faster than 1.2 rad/s on foot, 2.4 riding', () => {
+  test('the swing never turns faster than 1.2 rad/s on foot, 4.0 riding', () => {
     for (const ride of [false, true]) {
       const { player, cam } = rig();
       (cam as unknown as { followStrength: number }).followStrength = 50; // make the cap bind
@@ -343,9 +343,34 @@ describe('strafing walks a straight line (A5)', () => {
         fastest = Math.max(fastest, prev.angleTo(followDirOf(cam)) * 60);
         prev = followDirOf(cam).clone();
       }
-      expect(fastest, `ride=${ride}`).toBeLessThanOrEqual((ride ? 2.4 : 1.2) + 1e-6);
-      expect(fastest, `ride=${ride}`).toBeGreaterThan((ride ? 2.4 : 1.2) * 0.9);
+      expect(fastest, `ride=${ride}`).toBeLessThanOrEqual((ride ? 4.0 : 1.2) + 1e-6);
+      expect(fastest, `ride=${ride}`).toBeGreaterThan((ride ? 4.0 : 1.2) * 0.9);
     }
+  });
+
+  test('riding, motion toward the camera still swings it behind (the gate is open)', () => {
+    // Boarding facing away: the car drives at the camera. On foot that is the
+    // step the gate leaves alone; a craft cannot strafe, so riding follows it
+    // (stage-1 carry-over: 15.1 deg/s against main's 37.2).
+    const turned = (ride: boolean): number => {
+      const { player, cam } = rig();
+      cam.setRideMode(ride);
+      const f0 = followDirOf(cam).clone();
+      walk(cam, player, new THREE.Vector3(0, 0, 1), 0.5, [1, 0]); // toward the camera
+      return followYaw(f0, followDirOf(cam));
+    };
+    expect(Math.abs(turned(false))).toBeLessThan(0.5);
+    expect(Math.abs(turned(true))).toBeGreaterThan(20);
+  });
+
+  test('riding with the stick back keeps the gate: S drives at the camera, no circling', () => {
+    // Steering is camera-relative and a craft has no reverse: open, the
+    // camera would swing behind and the craft turn round again.
+    const { player, cam } = rig();
+    cam.setRideMode(true);
+    const f0 = followDirOf(cam).clone();
+    walk(cam, player, new THREE.Vector3(0, 0, 1), 1, [-1, 0]); // S, toward the camera
+    expect(Math.abs(followYaw(f0, followDirOf(cam)))).toBeLessThan(0.5);
   });
 
   test('the follow waits 0.35 s after the input direction turns by more than 45°', () => {

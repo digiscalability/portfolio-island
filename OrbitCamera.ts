@@ -72,14 +72,19 @@ export class OrbitCamera {
   // The follow swung the camera behind ANY motion, so holding D (strafe)
   // turned the view at ~145°/s and walked the avatar round in a circle.
   // Now a sideways or backward step leaves the camera be; motion away from
-  // it is followed through a smoothstep gate, at most 1.2 rad/s on foot and
-  // 2.4 rad/s riding. Under reduced motion the same gate holds at a gentler
-  // cap: 0.59 rad/s on foot (the recentre's own rate), 0.6 riding.
+  // it is followed through a smoothstep gate, at most 1.2 rad/s on foot.
+  // Riding the gate is open and the cap 4.0 rad/s: boarding facing away, the
+  // gated 2.4 rad/s follow turned 15.1 deg/s against main's 37.2 while the
+  // car U-turned toward the camera (stage-1 carry-over; measured 39 at 4.0).
+  // Under reduced motion the gate holds at a gentler cap: 0.59 rad/s on foot
+  // (the recentre's own rate), 0.6 riding.
   private static readonly FOLLOW_CAP_FOOT = 1.2; // rad/s
-  private static readonly FOLLOW_CAP_RIDE = 2.4; // rad/s
+  private static readonly FOLLOW_CAP_RIDE = 4.0; // rad/s
   private static readonly FOLLOW_CAP_RIDE_REDUCED = 0.6; // rad/s
   // This frame's movement input in the camera's frame (setMoveInput).
   private moveForward = 0;
+  // This frame's forward input, kept for the follow (riding: the throttle).
+  private rideThrottle = 0;
   private moveStrafe = 0;
   // The follow pauses for 0.35 s after the input direction turns > 45°.
   private moveRefAngle: number | null = null;
@@ -610,14 +615,22 @@ export class OrbitCamera {
 
   /**
    * How hard the camera swings behind motion that is `away` (0..1) from it:
-   * the follow strength (1.8× riding) through smoothstep(0.35, 0.9, away),
-   * times the manual-look hold. Zero while the input direction has just
+   * the follow strength (1.8× riding) through smoothstep(0.35, 0.9, away)
+   * on foot (riding, the gate is open), times the manual-look hold. Zero while the input direction has just
    * turned. Reduced motion keeps the gate and slows the turn instead
    * (turnFollowToward's cap): a strafe (away near 0) still turns nothing.
    */
   private followStrengthFor(away: number): number {
     if (this.followHold > 0) return 0;
-    const t = Math.min(1, Math.max(0, (away - 0.35) / (0.9 - 0.35)));
+    // Riding on the throttle, the gate is open (stage-1 carry-over): a craft
+    // cannot strafe, so its motion is never the sideways step the gate
+    // exists for, and gated, boarding facing away left the camera at 15.1
+    // deg/s against main's 37.2 while the car U-turned toward it. Steering is
+    // camera-relative and a craft has no reverse, so S drives AT the camera:
+    // open, the camera would swing behind and the craft turn round again,
+    // a circle. With the stick back the gate stays.
+    const open = this.rideMode && this.rideThrottle >= 0;
+    const t = open ? 1 : Math.min(1, Math.max(0, (away - 0.35) / (0.9 - 0.35)));
     const gate = t * t * (3 - 2 * t);
     const base = this.rideMode ? this.followStrength * 1.8 : this.followStrength;
     return base * gate * this.followGain();
@@ -626,7 +639,7 @@ export class OrbitCamera {
   /**
    * Turn followDir toward `desired` about `n` by min(angle·(1 − e^(−strength·dt)),
    * cap·dt): the old lerp-and-normalize, with its angular speed capped at
-   * 1.2 rad/s on foot, 2.4 riding (0.59 on foot and 0.6 riding under reduced
+   * 1.2 rad/s on foot, 4.0 riding (0.59 on foot and 0.6 riding under reduced
    * motion).
    */
   private turnFollowToward(
@@ -712,6 +725,8 @@ export class OrbitCamera {
   private trackMoveInput(dt: number): void {
     this.inputHeld = this.moveHeld;
     this.moveHeld = false;
+    // The follow reads this frame's throttle after the input is cleared.
+    this.rideThrottle = this.inputHeld ? 0 : this.moveForward;
     if (this.inputHeld) {
       // Paused, not idle: the idle clock, the turn hold and its reference
       // direction all keep their values.
