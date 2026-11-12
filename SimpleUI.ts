@@ -6677,9 +6677,25 @@ export class SimpleUI {
     this.onPeerMuteToggle = fn;
   }
 
+  /** The peer ids Chat persists as muted (ds_muted_peers); empty if unreadable. */
+  private static savedMutedPeers(): Set<string> {
+    try {
+      const raw: unknown = JSON.parse(localStorage.getItem('ds_muted_peers') ?? '[]');
+      return new Set(Array.isArray(raw) ? raw.map((x) => String(x)) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
   /** Roster panel: who's on the island right now, with a per-peer mute toggle. */
   showRoster(): void {
-    const peers = this.rosterProvider?.() ?? [];
+    // Chat keeps the visitor's mutes across reloads (ds_muted_peers) and drops
+    // those peers' text and voice; the provider's flag starts false on every
+    // load, so a muted peer read 'Mute' here. Either source counts.
+    const saved = SimpleUI.savedMutedPeers();
+    const peers = (this.rosterProvider?.() ?? []).map((p) =>
+      saved.has(String(p.id)) ? { ...p, muted: true } : p,
+    );
     const modal = this.buildCenteredModal('min(340px, calc(100vw - 32px))', 'roster');
     let rowsHtml: string;
     if (peers.length === 0) {
@@ -8097,8 +8113,8 @@ export class SimpleUI {
     });
     div.innerHTML = `
       <div style="font-size:28px;margin-bottom:8px;">🎉 Quest Complete!</div>
-      <div style="color:#4CAF50;font-weight:bold;">${quest.name}</div>
-      ${quest.reward ? `<div style="margin-top:8px;font-size:14px;color:#ccc;">${quest.reward.value}</div>` : ''}
+      <div style="color:#4CAF50;font-weight:bold;">${this.escapeHtml(quest.name)}</div>
+      ${quest.reward ? `<div style="margin-top:8px;font-size:14px;color:#ccc;">${this.escapeHtml(quest.reward.value)}</div>` : ''}
     `;
     this.overlay.appendChild(div);
     setTimeout(() => {
@@ -9183,7 +9199,11 @@ export class SimpleUI {
       `,
     };
 
-    return contents[zone.id] || `<h2>${zone.name}</h2><p>${zone.description}</p>`;
+    // The fallback takes a ?zone= deep link's own text: escaped (security).
+    return (
+      contents[zone.id] ||
+      `<h2>${this.escapeHtml(zone.name)}</h2><p>${this.escapeHtml(zone.description)}</p>`
+    );
   }
 
   /**
@@ -10319,7 +10339,7 @@ export class SimpleUI {
         letter-spacing: 1px;
         text-transform: uppercase;
         color: rgba(160, 200, 255, 0.9);
-      ">${name}</div>
+      ">${this.escapeHtml(name)}</div>
       <div style="padding: clamp(10px, 1.8vh, 16px) clamp(14px, 4vw, 20px); min-height: clamp(36px, 7vh, 60px);">
         <div id="dialogue-sr" class="ds-sr-only" role="status" aria-live="polite"></div>
         <div id="dialogue-text" aria-hidden="true" style="
