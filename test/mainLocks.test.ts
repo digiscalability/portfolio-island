@@ -712,6 +712,23 @@ describe('from visualPolish.test.ts', () => {
       walk.indexOf('this.scene.setPlayerMovement(walkForward, walkStrafe);'),
     );
   });
+
+  test('both room warms ask SimpleUI to lay the zone panel out ahead (CO-A5 remainder)', () => {
+    // The first showZonePanel cost 156-184 ms at 4x CPU inside the fade
+    // callback. D adds prewarmZonePanel(); A merges first, so the call is
+    // optional and the branch is green on a SimpleUI without it.
+    const main = stripped('main-simple.ts');
+    for (const marker of [
+      'private readonly warmRoomsEarly = (): void =>',
+      'private readonly warmRoomsIdle = (): void =>',
+    ]) {
+      const body = bodyOf(main, marker);
+      expect(body.indexOf('this.prewarmZonePanel();')).toBeGreaterThan(
+        body.indexOf('void this.scene.warmInterior();'),
+      );
+    }
+    expect(bodyOf(main, 'private prewarmZonePanel(): void')).toContain('.prewarmZonePanel?.();');
+  });
 });
 
 // ---- A's own stage-1 wiring ------------------------------------------------
