@@ -1348,3 +1348,66 @@ describe('the locked beach-house door points to the Sailor (P2-D9)', () => {
     expect(document.querySelector('.ds-controls')!.textContent).not.toMatch(/\d{4}/);
   });
 });
+
+describe('the zone panel and the door veil are made ahead (w1-fix, CO-A5)', () => {
+  // The idle slices run when the test says so.
+  let idle: Array<() => void> = [];
+  beforeEach(() => {
+    idle = [];
+    (window as unknown as { requestIdleCallback: unknown }).requestIdleCallback = (
+      cb: () => void,
+    ) => idle.push(cb);
+  });
+  afterEach(() => {
+    delete (window as unknown as { requestIdleCallback?: unknown }).requestIdleCallback;
+  });
+  const drain = (): void => {
+    for (let i = 0; i < 20 && idle.length; i++) idle.shift()!();
+  };
+
+  test('the welcome card starts it; every section is laid out once, in its own slice', () => {
+    ui.showWelcome();
+    expect(ui.zonePrewarmed).toBe(0); // nothing in the card's own task
+    expect(idle.length).toBe(1);
+    idle.shift()!();
+    expect(ui.zonePrewarmed).toBe(1);
+    drain();
+    expect(ui.zonePrewarmed).toBe(6);
+    ui.prewarmZonePanel(); // idempotent: A's room warm may call it again
+    drain();
+    expect(ui.zonePrewarmed).toBe(6);
+  });
+
+  test('it opens nothing, tracks nothing, stamps nothing and leaves nothing behind', () => {
+    const before = document.querySelectorAll('#ui-overlay > *').length;
+    ui.prewarmZonePanel();
+    drain();
+    expect(ui.panels.current()).toBeNull();
+    expect(new URL(location.href).searchParams.get('zone')).toBeNull();
+    expect((window.__analyticsLog ?? []).map((e: { name?: string }) => e.name)).not.toContain(
+      'zone_explored',
+    );
+    // The veil is the one element it adds.
+    expect(document.querySelectorAll('#ui-overlay > *').length).toBe(before + 1);
+    expect(document.querySelector('[data-veil]')).not.toBeNull();
+    expect(document.querySelectorAll('#ui-overlay img').length).toBe(0);
+  });
+
+  test('the veil exists before the first door, at opacity 0, and the door reuses it', () => {
+    ui.prewarmZonePanel();
+    const veil = document.querySelector<HTMLElement>('[data-veil]')!;
+    expect(veil.style.opacity).toBe('0');
+    expect(veil.style.transition).toContain('opacity');
+    expect(veil.getAttribute('aria-hidden')).toBe('true');
+    ui.fadeThrough(() => {});
+    expect(document.querySelectorAll('[data-veil]').length).toBe(1);
+    expect(veil.style.opacity).toBe('1');
+  });
+
+  test('a door before any prewarm still makes one veil, and the panel still opens', () => {
+    ui.fadeThrough(() => {});
+    expect(document.querySelectorAll('[data-veil]').length).toBe(1);
+    ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
+    expect(ui.panels.current()).toBe('zone');
+  });
+});

@@ -249,10 +249,16 @@ export class SimpleUI {
 
   // ── Interior enter/exit chrome ─────────────────────────────────────────
   private fadeDiv: HTMLElement | null = null;
-  /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
-  fadeThrough(midCb: () => void): void {
+  /**
+   * The door veil, made ahead. Made in the same task as its first use, the
+   * div went in at opacity 0 and was set to 1 before any style pass, so the
+   * first door cut straight to black and held the whole 470 ms there.
+   */
+  private ensureFadeDiv(): HTMLElement {
     if (!this.fadeDiv) {
       this.fadeDiv = document.createElement('div');
+      this.fadeDiv.dataset.veil = '1';
+      this.fadeDiv.setAttribute('aria-hidden', 'true');
       Object.assign(this.fadeDiv.style, {
         position: 'fixed',
         inset: '0',
@@ -265,8 +271,15 @@ export class SimpleUI {
         zIndex: '2000',
       });
       this.overlay.appendChild(this.fadeDiv);
+      // Its opacity-0 style is computed now, so the next change transitions.
+      void getComputedStyle(this.fadeDiv).opacity;
     }
-    const d = this.fadeDiv;
+    return this.fadeDiv;
+  }
+
+  /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
+  fadeThrough(midCb: () => void): void {
+    const d = this.ensureFadeDiv();
     d.style.pointerEvents = 'auto';
     d.style.opacity = '1';
     window.setTimeout(() => {
@@ -282,6 +295,85 @@ export class SimpleUI {
         d.style.pointerEvents = 'none';
       }, 520);
     }, 470);
+  }
+
+  /** The sections left to lay out ahead; null until the prewarm starts. */
+  private zonePrewarmQueue: string[] | null = null;
+  /** How many sections the prewarm has laid out (read by the probes). */
+  zonePrewarmed = 0;
+
+  /**
+   * Lay the zone panel out once ahead, in idle time (w1-fix, CO-A5). The
+   * first showZonePanel cost 155-198 ms at 4x CPU, inside the first door's
+   * fade, against 11-17 ms on the next call: nearly all of it the first
+   * style, layout and glyph pass over the panel's markup (its emoji and text
+   * runs), not the markup itself. This lays a hidden copy of each section's
+   * panel out, one section per idle slice, hall sections first, and makes
+   * the door veil ahead so its first use fades. Nothing is opened, tracked
+   * or stamped, and the copy leaves the document in the same task.
+   * Idempotent: showWelcome starts it, and A's room warm may call it too.
+   */
+  prewarmZonePanel(): void {
+    this.ensureFadeDiv();
+    if (this.zonePrewarmQueue) return;
+    this.zonePrewarmQueue = ['welcome', 'professional', 'projects', 'personal', 'contact', 'hire'];
+    const step = (): void => {
+      const id = this.zonePrewarmQueue?.shift();
+      if (!id) return;
+      try {
+        this.layoutZoneOffscreen(id);
+        this.zonePrewarmed++;
+      } catch {
+        /* a prewarm never breaks the page; the real call builds it anyway */
+      }
+      if (this.zonePrewarmQueue?.length) this.whenIdle(step, 600);
+    };
+    this.whenIdle(step, 1200);
+  }
+
+  /** requestIdleCallback with a deadline, or a timeout where there is none. */
+  private whenIdle(cb: () => void, timeout: number): void {
+    const ric = (
+      window as unknown as {
+        requestIdleCallback?: (c: () => void, o?: { timeout: number }) => number;
+      }
+    ).requestIdleCallback;
+    if (typeof ric === 'function') ric.call(window, cb, { timeout });
+    else window.setTimeout(cb, Math.min(timeout, 200));
+  }
+
+  /** One section's panel, built and laid out where no one sees it, then gone. */
+  private layoutZoneOffscreen(id: string): void {
+    const compact = window.innerHeight <= 500;
+    const box = document.createElement('div');
+    box.setAttribute('aria-hidden', 'true');
+    box.setAttribute('inert', '');
+    Object.assign(box.style, {
+      position: 'fixed',
+      left: '0',
+      top: '0',
+      visibility: 'hidden',
+      pointerEvents: 'none',
+      contain: 'layout style',
+      color: 'white',
+      padding: '20px',
+      textAlign: 'center',
+      fontSize: '14.5px',
+      width: 'min(500px, calc(100vw - 24px))',
+      boxSizing: 'border-box',
+    });
+    // Parsed in a template (an inert document: nothing loads), and without
+    // its images, so the prewarm fetches nothing.
+    const tpl = document.createElement('template');
+    tpl.innerHTML = this.getZoneContent({ id, name: id });
+    tpl.content.querySelectorAll('img, iframe, video, audio, source').forEach((n) => n.remove());
+    box.appendChild(document.importNode(tpl.content, true));
+    const nav = this.sectionNav(id, compact);
+    if (nav) box.prepend(nav);
+    box.appendChild(this.makeShareButton('🔗 Share this zone', { surface: 'prewarm', url: '' }));
+    this.overlay.appendChild(box);
+    void box.offsetHeight; // the style, layout and glyph pass, now
+    box.remove();
   }
 
   private leaveBtn: HTMLButtonElement | null = null;
@@ -5765,6 +5857,8 @@ export class SimpleUI {
   showWelcome(awayDelta?: AwayDelta | null): void {
     this.welcomeArgs = awayDelta;
     this.welcomeParked = false;
+    // The first door's panel and veil, laid out in idle time behind the card.
+    this.prewarmZonePanel();
     if (!this.welcomeDiv) {
       this.welcomeDiv = document.createElement('div');
       Object.assign(this.welcomeDiv.style, {
