@@ -763,3 +763,10 @@ describe('the night watch is posted before the arrival trail is laid (wave-2 dec
     expect(body).toMatch(/spawnDir: GameScene\.SPAWN_DIR/);
   });
 });
+
+describe('dead code stays gone (wave-2 amendment, older)', () => {
+  test('GameScene.hasVillagerWithin is deleted, with its scratch vector', () => {
+    expect(src('GameScene.ts')).not.toMatch(/\bhasVillagerWithin\b/);
+    expect(src('GameScene.ts')).not.toContain('_nearNpcPos');
+  });
+});

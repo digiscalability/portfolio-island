@@ -858,7 +858,6 @@ export class GameScene extends THREE.Scene {
   private readonly _racePos = new THREE.Vector3();
   private readonly _puffPlayerPos = new THREE.Vector3();
   private readonly _collidePos = new THREE.Vector3();
-  private readonly _nearNpcPos = new THREE.Vector3();
   private readonly _nearPos = new THREE.Vector3();
   private readonly _radarPos = new THREE.Vector3();
   private readonly _crabPlayerPos = new THREE.Vector3();
@@ -12824,17 +12823,6 @@ export class GameScene extends THREE.Scene {
    *  (the talk hint fires at 4x this range, while approaching). */
   public getInteractionRange(): number {
     return this.interactionRange;
-  }
-
-  /** Any visible villager within `radius` of the player? Same visibility rule
-   *  as the cached-NPC revalidation in getNearbyInteractable, so the one-time
-   *  talk hint never advertises someone indoors or hidden. */
-  public hasVillagerWithin(radius: number): boolean {
-    if (!this.player) return false;
-    const p = this.player.getWorldPositionInto(this._nearNpcPos);
-    return this.island.npcTargets.some(
-      (n) => n.meshRef.visible && n.meshRef.position.distanceTo(p) < radius,
-    );
   }
 
   public getNearbyInteractable():
