@@ -20,6 +20,7 @@ npm run probe -- list
 | `--dist <dir> --port <n>` | Serve `<dir>` with `vite preview --strictPort`. The child is killed by PID on exit and on Ctrl+C. A busy port is an error, never reused. |
 | `--base <url>` | Attach to a preview that is already running instead, or to production (`https://island.digiscalability.com`; see App Check under Safety). |
 | `--profile desktop\|phone\|lowtier` | Run one profile instead of the probe's defaults. |
+| `--hour <n>\|live` | The world clock for every boot that does not name its own hour. The default is 12: the clock follows the machine's local time, and an unpinned probe is judged on whenever it ran (at night First steps skips the talk step and villagers sleep). `live` leaves the clock alone. A probe that sets hours itself (`contrast`, `lum`, `p2/npcs`, `guide`'s night session) is not affected. |
 | `--out <dir>` | Output folder (default `<os tmpdir>/ux-probes/<name>`). |
 | `--compare <dir> --compare-port <m>` | A second build, for `rig` and `strafe`. |
 | `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`: runs desktop, low tier and phone, adds the pause-near-door entry, and judges the black interval by pixels). |

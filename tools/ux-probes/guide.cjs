@@ -9,12 +9,24 @@
 // - document.getAnimations() inside #ds-guide under reduced motion (none);
 // - the card's rect, at every step, with the chip up and at the finale,
 //   against the joystick (bottom-left 166x166), the action column,
-//   [data-hud=prompt], the minimap and the viewport edges (no overlap);
+//   [data-hud=prompt], the minimap, the compass pill and the viewport edges,
+//   and, sampled every 300 ms for the whole flow, against any toast or flash
+//   that comes up (no overlap);
 // - the compass label after the finale's 'Show me' buttons (Projects, School);
-// - legacy storage: the controls card once, then the first undone step;
+// - legacy storage: the controls card once, then, after that card has gone
+//   (its OK or its 8 s), the first undone step;
 // - hint toasts shown while the guide is active (none, once D6 lands);
-// - B10: the last trail coin's distance to the nearest villager, and whether
-//   that villager talks through Claude Haiku 4.5 (its prompt says 'ask anything').
+// - B10: the last trail coin's distance to the seat of the villager the
+//   trail leads to (scene.getTrailVillager(); the nearest villager on a build
+//   without it), and whether that villager talks through Claude Haiku 4.5
+//   (its prompt says 'ask anything');
+// - night (?hour=23, after 12 s on the welcome card so the night's sleep
+//   goals have landed): the talk step names an awake villager within 30 u and
+//   the arrival coins lead to an awake villager (the wave-1 re-verify's
+//   decision: B keeps a talking villager awake by the spawn overnight).
+//
+// Every session boots at ?hour=12 (lib.bootQuery; --hour <n> moves them all)
+// except the night session, which names its own hour (--night-hour, 23).
 //
 // The guide is read only through its contract: #ds-guide (data-active, the
 // 'n/5' header, Skip, the Resume chip, the finale buttons), localStorage
@@ -104,7 +116,14 @@ const GEOMETRY = () => {
   inter('prompt', document.querySelector('[data-hud="prompt"]') || (window.__app && window.__app.ui && window.__app.ui.interactionDiv));
   // The minimap (top +40, left +10, 104-172 px): A6's short-landscape lane
   // (top +56, left +16, 300 px) and its chip sit over it (waves critique).
-  inter('minimap', document.querySelector('[data-hud="minimap"], [data-guide="minimap"]') || (window.__app && window.__app.ui && window.__app.ui.mapCanvas));
+  const ui = window.__app && window.__app.ui;
+  inter('minimap', document.querySelector('[data-hud="minimap"], [data-guide="minimap"]') || (ui && ui.mapCanvas));
+  // The compass pill, and whatever message is up: a toast lifts over the card
+  // and a flash goes above or below it (wave 1's D fixes), which this check
+  // could not see while it left them out.
+  inter('compass pill', document.querySelector('[data-hud="compass"], [data-guide="compass"]') || (ui && ui.compassDiv));
+  inter('toast', ui && ui.toastEl);
+  inter('flash', ui && ui.flashEl);
   const edges = [];
   if (card.left < 0) edges.push('left');
   if (card.top < 0) edges.push('top');
@@ -144,9 +163,25 @@ const TRAIL = () => {
     const d = p.distanceTo(last);
     if (!best || d < best.d) best = { name: n.name, d: +d.toFixed(2) };
   }
-  // B10's own word for the villager the trail leads to, when the build has it.
+  // B10's own word for the villager the trail leads to, when the build has
+  // it. The trail is laid toward their seat (npcTargets[].position), and they
+  // walk about: the live distance read 3.15 u about one run in six, so the
+  // check measures to the seat and reports the live distance beside it.
   const named = typeof sc.getTrailVillager === 'function' ? sc.getTrailVillager() : undefined;
-  return { coins: coins.length, last: last.toArray().map((x) => +x.toFixed(2)), nearest: best, named };
+  const tg = named ? (sc.getIsland().npcTargets || []).find((n) => n.name === named) : null;
+  const seat = tg && tg.position ? { name: named, d: +tg.position.distanceTo(last).toFixed(2), liveD: tg.meshRef ? +tg.meshRef.getWorldPosition(last.clone()).distanceTo(last).toFixed(2) : null } : null;
+  return { coins: coins.length, last: last.toArray().map((x) => +x.toFixed(2)), nearest: best, named, seat };
+};
+
+/** Who is awake: every villager in the world, their activity and distance from the visitor. */
+const AWAKE = () => {
+  const sc = window.__app.scene;
+  const p = sc.getPlayer().getWorldPosition();
+  const act = (n) => (typeof sc.getNpcActivity === 'function' ? sc.getNpcActivity(n) || null : null);
+  const rows = (sc.getIsland().npcTargets || []).map((t) => ({ name: t.name, awake: !!(t.meshRef && t.meshRef.visible) && act(t.name) !== 'sleep', activity: act(t.name), d: t.meshRef ? +t.meshRef.position.distanceTo(p).toFixed(1) : null }));
+  const env = sc.getEnvironmentCycle ? sc.getEnvironmentCycle() : null;
+  const named = typeof sc.getTrailVillager === 'function' ? sc.getTrailVillager() : null;
+  return { hour: env ? +env.getHour().toFixed(2) : null, rows, trailVillager: named, coinsDown: typeof sc.hasTrailCoins === 'function' ? sc.hasTrailCoins() : null };
 };
 
 // ---------------------------------------------------------------- the double
@@ -468,10 +503,20 @@ async function flow(t, v) {
   }
   // Sample toasts in the background: none may be a hint while the guide is active.
   let sampling = true;
+  // The same loop catches a toast or a flash over the card: they come and go
+  // between the per-step reads.
+  r.messagesOverCard = [];
+  r.messageSamples = 0;
   const sampler = (async () => {
     while (sampling) {
       const x = await page.evaluate(TOAST_NOW).catch(() => null);
       if (x && x.guideActive && x.toast && HINT_RE.test(x.toast) && !r.hintsWhileActive.includes(x.toast)) r.hintsWhileActive.push(x.toast);
+      const g = await page.evaluate(GEOMETRY).catch(() => null);
+      if (g) {
+        r.messageSamples++;
+        const hit = g.overlaps.filter((o) => /^(toast|flash) /.test(o));
+        if (hit.length && r.messagesOverCard.length < 12) r.messagesOverCard.push({ card: g.card, overlaps: hit, toast: x ? x.toast : null });
+      }
       await lib.sleep(300);
     }
   })();
@@ -552,9 +597,13 @@ async function flow(t, v) {
   sampling = false;
   await sampler;
   const overl = r.geometry.filter((x) => x.overlaps.length || x.edges.length);
-  t.check(tagOf(t, `${v.tag}: the card never overlaps the joystick, the action column, the prompt, the minimap or an edge`), r.geometry.length ? overl.length === 0 : null, overl.length ? overl.map((x) => `${x.step}: ${[...x.overlaps, ...x.edges].join(', ')}`) : 'clear', 'clear');
+  t.check(tagOf(t, `${v.tag}: the card never overlaps the joystick, the action column, the prompt, the minimap, the compass pill or an edge`), r.geometry.length ? overl.length === 0 : null, overl.length ? overl.map((x) => `${x.step}: ${[...x.overlaps, ...x.edges].join(', ')}`) : 'clear', 'clear');
+  t.check(tagOf(t, `${v.tag}: no toast or flash lands on the card (sampled every 300 ms)`), r.messageSamples ? r.messagesOverCard.length === 0 : null, r.messagesOverCard.length ? r.messagesOverCard.slice(0, 4) : `clear in ${r.messageSamples} samples`, 'clear');
   t.check(tagOf(t, `${v.tag}: no hint toast while the guide is active`), r.hintsWhileActive.length === 0, r.hintsWhileActive.length ? r.hintsWhileActive : 'none', 'none (D6)');
   t.data[v.tag] = r;
+  // Each part closes its page: nine live worlds in one browser slowed the
+  // last ones enough that the 8 s controls card took over 13 s.
+  await s.close();
   return r;
 }
 
@@ -584,7 +633,10 @@ async function skipAndTrail(t, prof) {
     r.skip = { button: !!sk, present: after.present, store: after.store };
     t.check(tagOf(t, `${prof}: Skip writes skipped and hides the card`), !!sk && !after.present && !!(after.store && after.store.skipped), r.skip, 'skipped:true, card hidden');
   } else t.check(tagOf(t, `${prof}: Skip writes skipped and hides the card`), null, 'no guide card', 'skipped:true, card hidden');
-  if (prof === 'desktop' && r.trail && r.trail.nearest) {
+  if (prof === 'desktop' && r.trail && (r.trail.seat || r.trail.nearest)) {
+    // The trail's villager: B10's own (their seat), else the nearest one.
+    const who = r.trail.seat ? r.trail.seat.name : r.trail.nearest.name;
+    const d = r.trail.seat ? r.trail.seat.d : r.trail.nearest.d;
     // Is the villager at the trail's end one who talks through Claude Haiku 4.5?
     r.trail.prompt = await page.evaluate((name) => {
       const sc = window.__app.scene;
@@ -596,18 +648,19 @@ async function skipAndTrail(t, prof) {
       p.setLength(c.length() + 0.6);
       sc.getPlayer().setWorldPosition(p);
       return name;
-    }, r.trail.nearest.name);
+    }, who);
     // The villager walks on: take the first prompt that names them within 3 s.
     r.trail.talkPrompt = null;
     for (let i = 0; i < 30 && !r.trail.talkPrompt; i++) {
       await lib.sleep(100);
       const pr = await page.evaluate(() => (window.__app.ui.interactionDiv ? (window.__app.ui.interactionDiv.textContent || '').trim() : null));
-      if (pr && pr.includes(r.trail.nearest.name)) r.trail.talkPrompt = pr;
+      if (pr && pr.includes(who)) r.trail.talkPrompt = pr;
     }
     const ai = /ask anything/i.test(r.trail.talkPrompt || '');
-    t.check(`at Explore: the last trail coin is within 3 u of a villager who talks through Claude Haiku 4.5 (B10)`, r.trail.nearest.d <= 3 && ai, { villager: r.trail.nearest.name, distanceU: r.trail.nearest.d, prompt: r.trail.talkPrompt, getTrailVillager: r.trail.named }, '<= 3 u, "ask anything"');
+    t.check(`at Explore: the last trail coin is within 3 u of the seat of a villager who talks through Claude Haiku 4.5 (B10)`, d <= 3 && ai, { villager: who, measuredTo: r.trail.seat ? 'seat (getTrailVillager)' : 'live position (no getTrailVillager)', distanceU: d, liveDistanceU: r.trail.seat ? r.trail.seat.liveD : r.trail.nearest.d, nearestLive: r.trail.nearest, prompt: r.trail.talkPrompt }, '<= 3 u, "ask anything"');
   }
   t.data[`skip-${prof}`] = r;
+  await s.close();
 }
 
 async function reducedMotion(t, prof) {
@@ -633,6 +686,7 @@ async function reducedMotion(t, prof) {
   await sampling;
   t.data[`reduced-${prof}`] = { animations: [...seen] };
   t.check(tagOf(t, `${prof}, reduced motion: getAnimations() lists no guide animation`), seen.size === 0, seen.size ? [...seen] : 'none', 'none');
+  await s.close();
 }
 
 async function legacy(t) {
@@ -647,28 +701,117 @@ async function legacy(t) {
       return hit ? hit.textContent.replace(/\s+/g, ' ').trim().slice(0, 100) : null;
     });
   const c1 = await controls();
-  const st = await waitFor(page, (x) => x.present, 3000);
+  const t1 = await ptime(page);
+  // The controls card holds the guide for 8 s (or until its OK): the step is
+  // read once the card has gone, not while it is up ('controls').
+  const onStep = (x) => x.present && (x.stepNo !== null || (!!x.event && STEPS.includes(x.event.step)));
+  const st = await waitFor(page, onStep, 20000);
+  const stepAfterMs = st ? st.t - t1 + 1500 : null;
+  const stuck = st ? null : await page.evaluate(STATE).catch(() => null);
   await t.boot(s);
   await explore(page, false);
   await lib.sleep(1500);
   const c2 = await controls();
-  t.data.legacy = { controlsCard: c1, controlsCardAfterReload: c2, guide: st ? { stepNo: st.stepNo, event: st.event, done: st.store && st.store.done } : null };
+  // After the reload there is no controls card, so the step is up at once.
+  const st2 = await waitFor(page, onStep, 3000);
+  const at3 = (x) => !!x && (x.stepNo === 3 || (!!x.event && x.event.step === 'talk'));
+  t.data.legacy = { controlsCard: c1, controlsCardAfterReload: c2, stepAfterExploreMs: stepAfterMs, guide: st ? { stepNo: st.stepNo, event: st.event, done: st.store && st.store.done } : null, stateAt20s: stuck, guideAfterReload: st2 ? { stepNo: st2.stepNo, event: st2.event } : null };
   t.check(tagOf(t, 'legacy storage: the controls card shows once'), !!c1 && !c2, { first: c1, afterReload: c2 }, 'shown, then not again');
-  t.check(tagOf(t, 'legacy storage: the guide starts at the first undone step (3/5, talk)'), !!st && (st.stepNo === 3 || (st.event && st.event.step === 'talk')), st ? st.stepNo || (st.event && st.event.step) : 'no guide card', '3/5');
+  t.check(tagOf(t, 'legacy storage: after the controls card the guide starts at the first undone step (3/5, talk)'), at3(st), st ? { step: st.stepNo || (st.event && st.event.step), msAfterExplore: stepAfterMs } : 'no step within 20 s of the controls card', '3/5');
+  t.check(tagOf(t, 'legacy storage: after a reload the guide is at 3/5 with no controls card'), at3(st2), st2 ? st2.stepNo || (st2.event && st2.event.step) : 'no step within 3 s', '3/5');
+  await s.close();
+}
+
+/**
+ * Night (wave-1 re-verify). From about 22:00 to 08:00 First steps skipped the
+ * talk step when no talking villager was awake within 30 u, and the arrival
+ * coins led to a sleeping villager's seat. The decision: B keeps one talking
+ * villager awake near the spawn overnight and the trail leads to them; A's
+ * skip stays as the fallback. So at ?hour=23 (a fresh visitor, desktop): the
+ * coins lead to an awake villager, and after walk and look the card is on
+ * 3/5 and names an awake villager within 30 u.
+ */
+async function night(t) {
+  const hour = t.args.nightHour !== undefined && t.args.nightHour !== true ? Number(t.args.nightHour) : 23;
+  const s = await newSession(t, 'desktop');
+  const { page } = s;
+  const r = { hour };
+  r.boot = await t.boot(s, { query: `hour=${hour}` });
+  // The night's sleep goals reach the villagers over the first seconds after
+  // boot (the Mayor was still up 8 s after a quick Explore in one run and in
+  // bed at Explore in the next), so the visitor reads the card for 12 s first.
+  const cardS = t.args.nightWait !== undefined && t.args.nightWait !== true ? Number(t.args.nightWait) : 12;
+  r.cardS = cardS;
+  await lib.sleep(cardS * 1000);
+  await explore(page, false);
+  const first = await waitFor(page, (x) => x.present, 3000);
+  r.atExplore = await page.evaluate(AWAKE);
+  // The trail's villager, read at Explore and again once the visitor has
+  // walked and looked (5 s or more later): the night's sleep goal takes a few
+  // seconds to send a villager home, so one read at Explore finds them up.
+  const leadCheck = (later) => {
+    const who = r.atExplore.trailVillager;
+    const a = r.atExplore.rows.find((x) => x.name === who) || null;
+    const b = later ? later.rows.find((x) => x.name === who) || null : null;
+    const ok = !!a && a.awake && (!later || (!!b && b.awake));
+    t.check(tagOf(t, `night (?hour=${hour}): the arrival coins lead to an awake villager`), who ? ok : null, who ? { villager: who, atExplore: a ? { awake: a.awake, activity: a.activity, distanceU: a.d } : null, afterWalkAndLook: b ? { awake: b.awake, activity: b.activity, distanceU: b.d } : later ? 'gone' : 'not read', clock: r.atExplore.hour } : 'no getTrailVillager on this build', 'awake at Explore and after');
+  };
+  if (!first) {
+    leadCheck(null);
+    t.check(tagOf(t, `night (?hour=${hour}): the talk step names an awake villager within 30 u`), false, 'no guide card after Explore', 'an awake villager, <= 30 u');
+    t.data.night = r;
+    await s.close();
+    return;
+  }
+  for (const step of ['move', 'look']) {
+    const pre = await page.evaluate(STATE);
+    if (!isDone(pre, step)) await act(page, step, false, null, {});
+    await waitFor(page, (x) => isDone(x, step), 6000);
+  }
+  // The talk step, or what the guide did in its place.
+  const st = await waitFor(page, (x) => x.present && (x.stepNo !== null || x.finale), 4000);
+  const world = await page.evaluate(AWAKE);
+  leadCheck(world);
+  const awakeNear = world.rows.filter((x) => x.awake && x.d !== null && x.d <= 30).sort((a, b) => a.d - b.d);
+  const m = st ? /walk up to (?:the )?(.+?) and (?:press|tap)/i.exec(st.text || '') : null;
+  const name = m ? m[1].trim() : null;
+  const row = name ? world.rows.find((x) => x.name === name) || null : null;
+  const skipped = !!(st && st.store && Array.isArray(st.store.done) && st.store.done.includes('talk'));
+  r.talk = { stepNo: st ? st.stepNo : null, card: st ? st.text.slice(0, 120) : null, names: name, villager: row, skipped, awakeWithin30: awakeNear.map((x) => `${x.name} ${x.d}`), clock: world.hour };
+  await t.shot(page, `guide-night-h${hour}-talk.png`);
+  let ok = !!st && st.stepNo === 3 && !!row && row.awake && row.d <= 30;
+  // ...and they stay up: 10 s on, the card is still on 3/5 naming someone awake.
+  if (ok) {
+    await lib.sleep(10000);
+    const st2 = await page.evaluate(STATE);
+    const w2 = await page.evaluate(AWAKE);
+    const m2 = /walk up to (?:the )?(.+?) and (?:press|tap)/i.exec(st2.text || '');
+    const row2 = m2 ? w2.rows.find((x) => x.name === m2[1].trim()) || null : null;
+    r.talk.after10s = { stepNo: st2.stepNo, names: m2 ? m2[1].trim() : null, villager: row2 };
+    ok = st2.stepNo === 3 && !!row2 && row2.awake && row2.d <= 30;
+  }
+  const why = !st ? 'no guide card' : skipped ? `the talk step was skipped (card at ${st.stepNo || 'the finale'}/5); awake within 30 u: ${awakeNear.length ? awakeNear.map((x) => x.name).join(', ') : 'nobody'}` : r.talk;
+  t.check(tagOf(t, `night (?hour=${hour}): the talk step names an awake villager within 30 u`), ok, ok ? { villager: name, distanceU: row.d, activity: row.activity, after10s: r.talk.after10s.names } : why, 'on 3/5, an awake villager, <= 30 u, still so 10 s on');
+  t.data.night = r;
+  await s.close();
 }
 
 async function guide(t) {
   const only = t.args.profile ? String(t.args.profile) : null;
-  for (const v of VIEWPORTS) if (!only || only === v.prof) await flow(t, v);
-  for (const prof of ['desktop', 'phone']) if (!only || only === prof) await skipAndTrail(t, prof);
-  for (const prof of ['desktop', 'phone']) if (!only || only === prof) await reducedMotion(t, prof);
-  if (!only || only === 'desktop') await legacy(t);
+  // --part flow|skip|reduced|legacy|night runs one part (all of them by default).
+  const part = t.args.part && t.args.part !== true ? String(t.args.part) : null;
+  const on = (p) => !part || part === p;
+  if (on('flow')) for (const v of VIEWPORTS) if (!only || only === v.prof) await flow(t, v);
+  if (on('skip')) for (const prof of ['desktop', 'phone']) if (!only || only === prof) await skipAndTrail(t, prof);
+  if (on('reduced')) for (const prof of ['desktop', 'phone']) if (!only || only === prof) await reducedMotion(t, prof);
+  if (on('legacy') && (!only || only === 'desktop')) await legacy(t);
+  if (on('night') && (!only || only === 'desktop')) await night(t);
   t.data.double = !!t.args.double;
   t.data.introEvents = 'see events.cjs';
 }
 
 module.exports = {
-  guide: { item: 'A6, B10 (E6a)', title: "First steps at 1440x900, 390x844, 844x390, 667x375: step timing, finale, Skip, resume, the chip, reduced motion, geometry, 'Show me', legacy, the trail's villager", profiles: ['desktop'], run: guide },
+  guide: { item: 'A6, B10 (E6a)', title: "First steps at 1440x900, 390x844, 844x390, 667x375 (?hour=12): step timing, finale, Skip, resume, the chip, reduced motion, geometry incl. toasts and flashes, 'Show me', legacy, the trail's villager; one night session (?hour=23)", profiles: ['desktop'], run: guide },
   STATE,
   DOUBLE,
 };

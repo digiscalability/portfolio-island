@@ -97,8 +97,9 @@ function makeContext({ name, def, args, out, server, compare, browser }) {
       };
       return s;
     },
+    /** Boots at ?hour=12 unless the probe's query, or --hour <n|live>, says otherwise (lib.bootQuery). */
     async boot(s, opts = {}) {
-      return lib.boot(s, opts.base || t.base, opts);
+      return lib.boot(s, opts.base || t.base, { hour: args.hour, ...opts });
     },
     check(checkName, pass, value, expect, note) {
       const c = { name: checkName, pass: pass === null || pass === undefined ? null : !!pass, value, expect };
@@ -121,7 +122,7 @@ function makeContext({ name, def, args, out, server, compare, browser }) {
 
 async function main() {
   const argv = process.argv.slice(2);
-  const args = normaliseArgs(lib.parseArgs(argv, { bool: ['noKhr', 'quiet', 'help', 'bless', 'selftestLeak', 'reducedMotion', 'pauseNearDoor', 'first', 'record', 'bloom', 'sweep', 'keep', 'borrow', 'noSailor'] }));
+  const args = normaliseArgs(lib.parseArgs(argv, { bool: ['noKhr', 'quiet', 'help', 'bless', 'selftestLeak', 'reducedMotion', 'pauseNearDoor', 'first', 'record', 'bloom', 'sweep', 'keep', 'borrow', 'noSailor', 'sceneProps'] }));
   const reg = registry();
   const name = args._[0];
   if (!name || args.help) {

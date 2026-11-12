@@ -351,3 +351,129 @@ describe('exit codes: 0 pass, 1 fail, 2 leak, 3 inconclusive', () => {
     expect(lib.verdict([{ name: 'a', pass: true }], null, { requireSignUp: false }).code).toBe(0);
   });
 });
+
+// Wave-2 amendments: what every probe run takes from the harness whether or
+// not its author remembers to ask. Speech ignores --mute-audio, and the world
+// clock follows the machine's local time.
+describe('probe conventions: silent speech and a pinned clock (wave-2 amendments)', () => {
+  const req = createRequire(import.meta.url);
+  const fs = req('node:fs') as typeof import('node:fs');
+  const path = req('node:path') as typeof import('node:path');
+  const conv = req('../tools/ux-probes/lib.cjs') as {
+    SILENT_TTS: string;
+    DEFAULT_HOUR: number;
+    bootQuery: (profileQuery?: string, query?: string, hour?: unknown) => string;
+    baseInitScripts: (o?: {
+      noKhr?: boolean;
+      clock?: boolean;
+      recaptchaStub?: boolean;
+    }) => string[];
+  };
+
+  test('every session gets SILENT_TTS, whatever its options', () => {
+    for (const o of [{}, { noKhr: true }, { clock: true }, { recaptchaStub: false }])
+      expect(conv.baseInitScripts(o)).toContain(conv.SILENT_TTS);
+  });
+
+  test('SILENT_TTS speaks at volume 0 and keeps the utterance', () => {
+    const spoken: Array<{ volume: number; text: string }> = [];
+    const proto = {
+      speak(u: { volume: number; text: string }) {
+        spoken.push({ volume: u.volume, text: u.text });
+      },
+    };
+    const g: Record<string, unknown> = { speechSynthesis: Object.create(proto) };
+    g.window = g;
+    vm.createContext(g);
+    vm.runInContext(conv.SILENT_TTS, g);
+    (g.speechSynthesis as typeof proto).speak({ volume: 1, text: 'G’day' });
+    expect(spoken).toEqual([{ volume: 0, text: 'G’day' }]);
+    expect(g.__ttsSpoken).toBe(1);
+    // A browser without speech is left alone.
+    const bare: Record<string, unknown> = {};
+    bare.window = bare;
+    vm.createContext(bare);
+    expect(() => vm.runInContext(conv.SILENT_TTS, bare)).not.toThrow();
+  });
+
+  test('only the harness launches a browser or opens a context', () => {
+    // An ad hoc script that made its own context would skip the init scripts
+    // (SILENT_TTS, the WebSocket stub) and the routes. Every script under
+    // tools/ and evals/ goes through lib.launch() and lib.openSession().
+    const root = path.resolve(__dirname, '..');
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === 'node_modules' || e.name === '.venv' || e.name === 'generated') continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(cjs|mjs|js)$/.test(e.name)) files.push(p);
+      }
+    };
+    walk(path.join(root, 'tools'));
+    walk(path.join(root, 'evals'));
+    expect(files.length).toBeGreaterThan(20);
+    const own = path.join(root, 'tools', 'ux-probes', 'lib.cjs');
+    const offenders = files
+      .filter((f) => f !== own)
+      .filter((f) =>
+        /\.newContext\(|\.launch(PersistentContext)?\(\s*\{|require\(['"]playwright(-core)?['"]\)/.test(
+          fs.readFileSync(f, 'utf8'),
+        ),
+      )
+      .map((f) => path.relative(root, f));
+    expect(offenders).toEqual([]);
+    const lib = fs.readFileSync(own, 'utf8');
+    expect(lib).toMatch(
+      /for \(const s of baseInitScripts\([^)]*\)\) await ctx\.addInitScript\(s\)/,
+    );
+  });
+
+  test('a boot is pinned to noon unless the probe, --hour or --hour live says otherwise', () => {
+    expect(conv.DEFAULT_HOUR).toBe(12);
+    expect(conv.bootQuery()).toBe('?owner=1&hour=12');
+    expect(conv.bootQuery('&touch=1', 'zone=hire')).toBe('?owner=1&touch=1&zone=hire&hour=12');
+    // The probe's own hour wins over --hour; --hour moves the rest.
+    expect(conv.bootQuery('', 'hour=21', 6)).toBe('?owner=1&hour=21');
+    expect(conv.bootQuery('', '?perf=1', '23')).toBe('?owner=1&perf=1&hour=23');
+    expect(conv.bootQuery('', '', 10.5)).toBe('?owner=1&hour=10.5');
+    // The live clock only when asked for.
+    expect(conv.bootQuery('', '', 'live')).toBe('?owner=1');
+    for (const bad of ['noon', 24, -1]) expect(() => conv.bootQuery('', '', bad)).toThrow(/--hour/);
+  });
+
+  test('the runner hands --hour to every boot', () => {
+    const run = fs.readFileSync(path.resolve(__dirname, '../tools/ux-probes/run.cjs'), 'utf8');
+    expect(run).toMatch(
+      /lib\.boot\(s, opts\.base \|\| t\.base, \{ hour: args\.hour, \.\.\.opts \}\)/,
+    );
+  });
+});
+
+// The probe fixes the wave-1 fix pass and re-verify asked for.
+describe('probe fixes from wave 1 (wave-2 amendments)', () => {
+  const req = createRequire(import.meta.url);
+  const fs = req('node:fs') as typeof import('node:fs');
+  const path = req('node:path') as typeof import('node:path');
+  const src = (rel: string) =>
+    fs.readFileSync(path.resolve(__dirname, '../tools/ux-probes', rel), 'utf8');
+
+  test("guide: the card's overlap check sees the toast, the flash, the compass pill and the minimap", () => {
+    const g = src('guide.cjs');
+    const geometry = g.slice(g.indexOf('const GEOMETRY = '), g.indexOf('const GUIDE_ANIMATIONS'));
+    for (const name of [
+      "inter('minimap'",
+      "inter('compass pill'",
+      "inter('toast'",
+      "inter('flash'",
+      "inter('joystick'",
+      "inter('prompt'",
+    ])
+      expect(geometry).toContain(name);
+    // The trail is measured to its villager's seat, the legacy step is read
+    // after the controls card, and one session runs at night.
+    expect(g).toMatch(/tg\.position\.distanceTo\(last\)/);
+    expect(g).toMatch(/waitFor\(page, onStep, 20000\)/);
+    expect(g).toMatch(/query: `hour=\$\{hour\}`/);
+  });
+});
