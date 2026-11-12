@@ -6,7 +6,13 @@
 // It runs for real here: Enter belongs to whatever already used it.
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { enterOpensChat, WALKABLE, worldInputBlocked, type EnterGuardUi } from '../keyGuards';
+import {
+  enterOpensChat,
+  focusedControlOwnsKey,
+  WALKABLE,
+  worldInputBlocked,
+  type EnterGuardUi,
+} from '../keyGuards';
 
 const enter = (init: KeyboardEventInit = {}): KeyboardEvent =>
   new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
@@ -110,25 +116,29 @@ describe('the world takes input only beside a walkable panel', () => {
   });
 
   test('the walkable sheets keep the world live', () => {
-    for (const id of ['npc-chat', 'dialogue', 'chat-input', 'customize', 'tour']) {
+    for (const id of ['npc-chat', 'dialogue', 'chat-input', 'customize', 'tour', 'emote-wheel']) {
       expect(worldInputBlocked(id), id).toBe(false);
     }
     expect([...WALKABLE].sort()).toEqual(
-      ['chat-input', 'customize', 'dialogue', 'npc-chat', 'tour'].sort(),
+      ['chat-input', 'customize', 'dialogue', 'emote-wheel', 'npc-chat', 'tour'].sort(),
     );
+  });
+
+  test('the emote wheel is walkable: W walks with it open, as it did before the allow-list (CO-A4)', () => {
+    expect(WALKABLE.has('emote-wheel')).toBe(true);
+    expect(worldInputBlocked('emote-wheel')).toBe(false);
   });
 
   test('every other panel owns the keyboard', () => {
     // The ids SimpleUI opens today: zone panels (Projects, Contact, the hire
     // card), the Portfolio menu, the phone drawer, the welcome card, the shop,
-    // the emote wheel, the interior pickers and every centred modal.
+    // the interior pickers and every centred modal.
     for (const id of [
       'zone',
       'portfolio-menu',
       'drawer',
       'welcome',
       'shop',
-      'emote-wheel',
       'watch-picker',
       'pin-pad',
       'receipt',
@@ -141,5 +151,38 @@ describe('the world takes input only beside a walkable panel', () => {
   test('a panel nobody has classified yet blocks by default', () => {
     expect(worldInputBlocked('controls')).toBe(true);
     expect(worldInputBlocked('some-new-sheet')).toBe(true);
+  });
+});
+
+// The wheel takes focus on its first emote (PanelManager's initialFocus) and
+// its arrows walk the 4x2 grid. Walkable, it would hand the same arrow to the
+// avatar: the menu keeps its arrows, the world keeps W, A, S and D.
+describe('a focused menu item keeps the keys its menu uses (CO-A4)', () => {
+  const wheel = (): HTMLButtonElement => {
+    const menu = mount<HTMLDivElement>(
+      '<div role="menu" aria-label="Emotes"><button type="button" role="menuitem">👋</button></div>',
+    );
+    return menu.querySelector('button') as HTMLButtonElement;
+  };
+
+  test('the arrows, Space and Enter are the wheel’s', () => {
+    const item = wheel();
+    for (const k of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' ', 'Enter']) {
+      expect(focusedControlOwnsKey(k, item), k).toBe(true);
+    }
+  });
+
+  test('W, A, S, D, E and Q still reach the world', () => {
+    const item = wheel();
+    for (const k of ['w', 'a', 's', 'd', 'e', 'q', 'W']) {
+      expect(focusedControlOwnsKey(k, item), k).toBe(false);
+    }
+  });
+
+  test('a plain button still owns only Space and Enter', () => {
+    const btn = mount<HTMLButtonElement>('<button type="button">Send</button>');
+    expect(focusedControlOwnsKey('ArrowUp', btn)).toBe(false);
+    expect(focusedControlOwnsKey('Enter', btn)).toBe(true);
+    expect(focusedControlOwnsKey('w', btn)).toBe(false);
   });
 });

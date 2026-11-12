@@ -72,26 +72,37 @@ export class OrbitCamera {
   // The follow swung the camera behind ANY motion, so holding D (strafe)
   // turned the view at ~145°/s and walked the avatar round in a circle.
   // Now a sideways or backward step leaves the camera be; motion away from
-  // it is followed through a smoothstep gate, at most 1.2 rad/s on foot and
-  // 2.4 rad/s riding.
+  // it is followed through a smoothstep gate, at most 1.2 rad/s on foot.
+  // Riding the gate is open and the cap 4.0 rad/s: boarding facing away, the
+  // gated 2.4 rad/s follow turned 15.1 deg/s against main's 37.2 while the
+  // car U-turned toward the camera (stage-1 carry-over; measured 39 at 4.0).
+  // Under reduced motion the gate holds at a gentler cap: 0.59 rad/s on foot
+  // (the recentre's own rate), 0.6 riding.
   private static readonly FOLLOW_CAP_FOOT = 1.2; // rad/s
-  private static readonly FOLLOW_CAP_RIDE = 2.4; // rad/s
+  private static readonly FOLLOW_CAP_RIDE = 4.0; // rad/s
   private static readonly FOLLOW_CAP_RIDE_REDUCED = 0.6; // rad/s
   // This frame's movement input in the camera's frame (setMoveInput).
   private moveForward = 0;
+  // This frame's forward input, kept for the follow (riding: the throttle).
+  private rideThrottle = 0;
   private moveStrafe = 0;
   // The follow pauses for 0.35 s after the input direction turns > 45°.
   private moveRefAngle: number | null = null;
   private followHold = 0;
   private static readonly TURN_HOLD_S = 0.35;
   private static readonly TURN_HOLD_ANGLE = Math.PI / 4;
-  // Reduced motion never follows on foot; once the visitor has stood still
-  // for 0.5 s, the camera recentres behind their facing at under 34°/s, once
-  // per stop (a manual look cancels it).
+  // Reduced motion: once the visitor has stood still for 0.5 s, the camera
+  // recentres behind their facing at under 34°/s, once per stop (a manual
+  // look cancels it). On foot it also follows motion AWAY from the camera,
+  // through the same gate as everyone's, no faster than that recentre
+  // (CO-A2). With no follow at all, W plus a side key walked a straight
+  // diagonal: a keyboard visitor steering by the compass arrow walked away
+  // from the target (measured: 103 m out to 211 m), with J/L the only turn.
   private sinceMoveInput = Number.POSITIVE_INFINITY;
   private reducedRecentrePending = false;
   private static readonly REDUCED_IDLE_S = 0.5;
   private static readonly REDUCED_RECENTRE_RATE = 0.59; // rad/s
+  private static readonly FOLLOW_CAP_FOOT_REDUCED = OrbitCamera.REDUCED_RECENTRE_RATE;
   // A frame the world takes no input (holdMoveInput) is not a still frame:
   // the movement tracker and the recentre sit it out. `moveHeld` is the
   // request, `inputHeld` what this update() read from it.
@@ -452,6 +463,36 @@ export class OrbitCamera {
     if (Number.isFinite(this.targetPosition.x)) this.camera.lookAt(this.targetPosition);
   }
 
+  /**
+   * The follow pose update() would ease to, written into outPos and
+   * outTarget, without moving the camera. A rail that hands the camera back
+   * (the conversation release) glides onto it, so the resume frame's lookAt
+   * turns nothing.
+   */
+  public getFollowPose(outPos: THREE.Vector3, outTarget: THREE.Vector3): void {
+    this.updateCameraPosition(0);
+    outPos.copy(this.cameraPosition);
+    outTarget.copy(this.targetPosition);
+  }
+
+  /**
+   * Turn the follow to the side of the player that `from` is on (a camera a
+   * rail left there). The conversation's two-shot sits behind the player's
+   * shoulder; a follow left on the other side swung the released camera
+   * round past the avatar's head, up to 112 deg in one frame (w2
+   * integration, camera talk).
+   */
+  public adoptView(from: THREE.Vector3): void {
+    const p = this.player.getWorldPositionInto(this._camPlayerPos);
+    const n = this.player.getSurfaceNormalInto(this._camNormal);
+    const d = this._desired.subVectors(from, p);
+    d.addScaledVector(n, -d.dot(n));
+    if (d.lengthSq() < 1e-6) return;
+    if (!this.followDir) this.followDir = new THREE.Vector3();
+    this.followDir.copy(d).normalize();
+    this.yawStepPending = 0;
+  }
+
   /** Soft camera interest in a world point (null = fade back out). */
   public setFocusPoint(p: THREE.Vector3 | null): void {
     if (p) {
@@ -604,14 +645,22 @@ export class OrbitCamera {
 
   /**
    * How hard the camera swings behind motion that is `away` (0..1) from it:
-   * the follow strength (1.8× riding) through smoothstep(0.35, 0.9, away),
-   * times the manual-look hold. Zero while the input direction has just
-   * turned, and on foot under reduced motion.
+   * the follow strength (1.8× riding) through smoothstep(0.35, 0.9, away)
+   * on foot (riding, the gate is open), times the manual-look hold. Zero while the input direction has just
+   * turned. Reduced motion keeps the gate and slows the turn instead
+   * (turnFollowToward's cap): a strafe (away near 0) still turns nothing.
    */
   private followStrengthFor(away: number): number {
-    if (a11y.reducedMotion && !this.rideMode) return 0;
     if (this.followHold > 0) return 0;
-    const t = Math.min(1, Math.max(0, (away - 0.35) / (0.9 - 0.35)));
+    // Riding on the throttle, the gate is open (stage-1 carry-over): a craft
+    // cannot strafe, so its motion is never the sideways step the gate
+    // exists for, and gated, boarding facing away left the camera at 15.1
+    // deg/s against main's 37.2 while the car U-turned toward it. Steering is
+    // camera-relative and a craft has no reverse, so S drives AT the camera:
+    // open, the camera would swing behind and the craft turn round again,
+    // a circle. With the stick back the gate stays.
+    const open = this.rideMode && this.rideThrottle >= 0;
+    const t = open ? 1 : Math.min(1, Math.max(0, (away - 0.35) / (0.9 - 0.35)));
     const gate = t * t * (3 - 2 * t);
     const base = this.rideMode ? this.followStrength * 1.8 : this.followStrength;
     return base * gate * this.followGain();
@@ -620,7 +669,8 @@ export class OrbitCamera {
   /**
    * Turn followDir toward `desired` about `n` by min(angle·(1 − e^(−strength·dt)),
    * cap·dt): the old lerp-and-normalize, with its angular speed capped at
-   * 1.2 rad/s on foot, 2.4 riding (0.6 riding under reduced motion).
+   * 1.2 rad/s on foot, 4.0 riding (0.59 on foot and 0.6 riding under reduced
+   * motion).
    */
   private turnFollowToward(
     desired: THREE.Vector3,
@@ -630,11 +680,13 @@ export class OrbitCamera {
   ): void {
     const fd = this.followDir;
     if (!fd) return;
-    const cap = !this.rideMode
-      ? OrbitCamera.FOLLOW_CAP_FOOT
-      : a11y.reducedMotion
+    const cap = a11y.reducedMotion
+      ? this.rideMode
         ? OrbitCamera.FOLLOW_CAP_RIDE_REDUCED
-        : OrbitCamera.FOLLOW_CAP_RIDE;
+        : OrbitCamera.FOLLOW_CAP_FOOT_REDUCED
+      : this.rideMode
+        ? OrbitCamera.FOLLOW_CAP_RIDE
+        : OrbitCamera.FOLLOW_CAP_FOOT;
     const angle = Math.atan2(this._followCross.copy(fd).cross(desired).dot(n), fd.dot(desired));
     const step = Math.min(Math.abs(angle) * (1 - Math.exp(-strength * dt)), cap * dt);
     if (step > 0) {
@@ -703,6 +755,8 @@ export class OrbitCamera {
   private trackMoveInput(dt: number): void {
     this.inputHeld = this.moveHeld;
     this.moveHeld = false;
+    // The follow reads this frame's throttle after the input is cleared.
+    this.rideThrottle = this.inputHeld ? 0 : this.moveForward;
     if (this.inputHeld) {
       // Paused, not idle: the idle clock, the turn hold and its reference
       // direction all keep their values.
@@ -918,8 +972,29 @@ export class OrbitCamera {
     this.snapToPlayer();
   }
 
+  /** The fly-in never turns the view more than this in one frame (A10). */
+  public static readonly FLY_IN_MAX_TURN = (1.4 * Math.PI) / 180;
+  /** The view starts turning from the planet to the follow view this far in. */
+  private static readonly FLY_IN_TURN_FROM = 0.3;
+
   /**
-   * Cinematic fly-in from distant view (like Messenger title screen)
+   * Cinematic fly-in from distant view (like Messenger title screen).
+   *
+   * A curved approach, not a line (A10, MOT-10). The old path lerped straight
+   * from 244 u out to the follow pose with lookAt on the player, so the
+   * camera looked down for most of the flight and then swung 3.0-3.3° a
+   * frame in the last 6 u. Now:
+   * - position: the bearing (the direction from the planet's centre) slerps
+   *   from the start to the follow pose while the radius comes in as
+   *   r(t) = rFollow + (rStart − rFollow)(1 − easeOutCubic(t)), so the camera
+   *   is over its landing spot early and settles onto it;
+   * - orientation: 'look at the island's centre' for the first 30%, then a
+   *   slerp to the follow view on easeInOutSine over t in [0.3, 1], which
+   *   spreads the pitch-up over 1.75 s. One frame never turns the view more
+   *   than FLY_IN_MAX_TURN: a slow frame makes the turn fall behind and catch
+   *   up, never jump.
+   * The 2.5 s clock is unchanged, and still stall-immune. The swoop ends
+   * exactly on the follow pose it started from.
    */
   public async flyInFromDistant(
     duration: number = 2000,
@@ -944,12 +1019,42 @@ export class OrbitCamera {
         .add(targetOffset || new THREE.Vector3(0, 25, 40))
         .multiplyScalar(2.5);
 
+      // The path's two ends about the planet's centre: bearing and radius.
+      const rStart = farAwayPos.length();
+      const rFollow = startPos.length();
+      const dirStart = farAwayPos.clone().divideScalar(rStart || 1);
+      const dirFollow = startPos.clone().divideScalar(rFollow || 1);
+      const arc = dirStart.angleTo(dirFollow);
+      const arcAxis = dirStart.clone().cross(dirFollow);
+      // (anti)parallel ends: no arc to sweep, the radius does all the work
+      const sweeps = arcAxis.lengthSq() > 1e-10 && arc > 1e-6;
+      if (sweeps) arcAxis.normalize();
+
+      // The view's two ends. The follow view: at the follow pose, looking at
+      // the look target, up along the surface normal (what update() resumes
+      // on). The planet view keeps 'ahead' (where the follow view will look)
+      // at the top of the screen, so the turn between them is a pitch-up with
+      // no roll.
+      const look = new THREE.Matrix4();
+      const followQuat = new THREE.Quaternion().setFromRotationMatrix(
+        look.lookAt(startPos, this.targetPosition, this.camera.up),
+      );
+      const ahead = this.targetPosition.clone().sub(startPos);
+      if (ahead.lengthSq() < 1e-8) ahead.copy(this.camera.up);
+      ahead.normalize();
+      const centre = new THREE.Vector3();
+      const planetQuat = new THREE.Quaternion();
+      const wantQuat = new THREE.Quaternion();
+      const arcQuat = new THREE.Quaternion();
+      const dir = new THREE.Vector3();
+
       this.cameraPosition.copy(farAwayPos);
       this.camera.position.copy(farAwayPos);
+      this.camera.quaternion.setFromRotationMatrix(look.lookAt(farAwayPos, centre, ahead));
 
       // Take the camera off the follow-update for the duration of the swoop —
       // update() no-ops while this holds, so the fly-in is the SOLE writer and
-      // its smooth lerp is what renders (not a lerp fighting the follow).
+      // its path is what renders (not a path fighting the follow).
       this.flyingIn = true;
 
       // Stall-immune clock: elapsed accrues from the FIRST animation frame
@@ -958,6 +1063,7 @@ export class OrbitCamera {
       // whole window before any frame drew — the fly-in appeared skipped.
       let elapsed = 0;
       let last: number | null = null;
+      let first = true;
 
       const animate = () => {
         const now = Date.now();
@@ -965,21 +1071,32 @@ export class OrbitCamera {
         last = now;
         const progress = Math.min(elapsed / duration, 1);
 
-        // Ease in-out cubic
-        const easeProgress =
-          progress < 0.5
-            ? 4 * progress * progress * progress
-            : 1 - Math.pow(-2 * progress + 2, 3) / 2;
-
-        this.cameraPosition.lerpVectors(farAwayPos, startPos, easeProgress);
+        // Position: ease-out cubic along the arc and down the radius.
+        const e = 1 - Math.pow(1 - progress, 3);
+        dir.copy(dirStart);
+        if (sweeps) dir.applyQuaternion(arcQuat.setFromAxisAngle(arcAxis, arc * e));
+        this.cameraPosition.copy(dir).multiplyScalar(rFollow + (rStart - rFollow) * (1 - e));
         this.camera.position.copy(this.cameraPosition);
-        this.camera.lookAt(this.targetPosition);
 
-        if (progress < 1) {
+        // Orientation: the planet view, turning to the follow view from 30%.
+        const k = (progress - OrbitCamera.FLY_IN_TURN_FROM) / (1 - OrbitCamera.FLY_IN_TURN_FROM);
+        const turn = k <= 0 ? 0 : 0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, k)); // easeInOutSine
+        planetQuat.setFromRotationMatrix(look.lookAt(this.cameraPosition, centre, ahead));
+        wantQuat.slerpQuaternions(planetQuat, followQuat, turn);
+        if (first) this.camera.quaternion.copy(wantQuat);
+        else this.camera.quaternion.rotateTowards(wantQuat, OrbitCamera.FLY_IN_MAX_TURN);
+        first = false;
+
+        // Landed: the clock has run out and the view has caught up (it trails
+        // only after slow frames, by a few frames at most).
+        if (progress < 1 || this.camera.quaternion.angleTo(followQuat) > 1e-4) {
           requestAnimationFrame(animate);
         } else {
           // Hand the camera back to the follow-update on the pose the swoop
           // ended on (== startPos, the settled follow pose) — seamless resume.
+          this.cameraPosition.copy(startPos);
+          this.camera.position.copy(startPos);
+          this.camera.quaternion.copy(followQuat);
           this.flyingIn = false;
           resolve();
         }

@@ -66,7 +66,10 @@ export function compassBearing(camForward: Vec3Like, toTarget: Vec3Like, normal:
  * 8. a parcel, but only once the passport is complete or the visitor has
  *    collected a parcel this session: the ten-stop courier chain used to take
  *    the pill at the first stamp and never give it back;
- * 9. nothing.
+ * 9. the Next chip's goal (P2-A12), when it names a place: last, so it only
+ *    has the pill when nothing above sets a target, and rung 1 (Projects,
+ *    then the other districts) always comes first;
+ * 10. nothing.
  */
 export type CompassSource =
   | 'map'
@@ -77,13 +80,19 @@ export type CompassSource =
   | 'talk'
   | 'projects'
   | 'district'
-  | 'parcel';
+  | 'parcel'
+  | 'goal';
 
 export interface CompassState {
   /** An island-map pick (or a 'ds:guide-to' key) is set. */
   mapPick: boolean;
   /** A map pick was reached under 8 s ago: the pill holds on it. */
   arrivalHold: boolean;
+  /** The welcome card is up and First steps arms as it closes. With no
+   *  trail or talk villager yet, the pill waits for the guide rather than
+   *  fall back: on a reload it read Projects behind the card and then
+   *  switched to the villager the moment Explore armed the guide. */
+  guidePending: boolean;
   /** "Beat the lap record": the start gate. */
   raceGuide: boolean;
   /** "Ask the townsfolk": the Storyteller. */
@@ -104,6 +113,8 @@ export interface CompassState {
   passportComplete: boolean;
   /** A parcel was collected this session. */
   deliveryOptIn: boolean;
+  /** The Next chip is on and its goal names a place (P2-A12). */
+  goal: boolean;
 }
 
 export function compassTarget(s: CompassState): CompassSource | null {
@@ -113,9 +124,12 @@ export function compassTarget(s: CompassState): CompassSource | null {
   if (s.aiGuide) return 'ai';
   if (s.trailVillager) return 'trail';
   if (s.talkStep) return 'talk';
+  // Not yet the fallbacks: the guide's villager takes the pill once it arms.
+  if (s.guidePending) return null;
   if (s.projectsUnstamped) return 'projects';
   if (s.districtUnstamped) return 'district';
   if (s.parcelActive && (s.passportComplete || s.deliveryOptIn)) return 'parcel';
+  if (s.goal) return 'goal';
   return null;
 }
 

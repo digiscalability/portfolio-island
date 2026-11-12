@@ -15,19 +15,23 @@ import { GameScene } from './GameScene';
 import {
   Guide,
   guideCopy,
+  NextChip,
   readGuideTo,
+  RecruiterRoute,
   resolveGuideKey,
   type GuideArm,
   type GuideButton,
   type GuideFrame,
   type GuideStore,
   type GuideWorld,
+  type RouteSource,
 } from './Guide';
 import { GuideCard } from './GuideCard';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
 import { worldInputBlocked } from './keyGuards';
+import { Materials } from './Materials';
 import { Multiplayer } from './Multiplayer';
 import {
   AI_NPCS,
@@ -49,6 +53,7 @@ import {
   loadProfile,
   saveProfile,
 } from './profileSync';
+import type { RaceEvent } from './RaceSystem';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
@@ -215,6 +220,90 @@ export class SimpleApp {
   /** A coarse pointer (phones, tablets): the rooms warm early (CO-A5). */
   private readonly coarsePointer =
     typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  /**
+   * A phone or tablet: a coarse pointer that cannot hover. It takes the calm
+   * entry instead of the intro fly-in (A10, decision 6). Not
+   * isLowTierDevice(), which also catches laptops with 4 cores or fewer; a
+   * fine pointer always flies in.
+   */
+  private readonly calmEntry =
+    this.coarsePointer && typeof matchMedia === 'function' && matchMedia('(hover: none)').matches;
+  /** The canvas a calm entry holds at opacity 0 until the loader starts to fade. */
+  private calmEntryCanvas: HTMLCanvasElement | null = null;
+  /** The fly-in's second priming of its ink and shadow levers (see init). */
+  private primeIntroAgain: (() => void) | null = null;
+
+  /**
+   * The calm entry's cross-fade: the world comes up over 600 ms while the
+   * loader fades out above it. Opacity only, so it stays on the compositor.
+   * The inline styles are cleared afterwards whether or not a frame ever ran
+   * the transition (a hidden tab): the canvas can never be left invisible.
+   */
+  private startCalmEntryFade(): void {
+    const canvas = this.calmEntryCanvas;
+    if (!canvas) return;
+    this.calmEntryCanvas = null;
+    canvas.style.transition = 'opacity 600ms ease-out';
+    requestAnimationFrame(() => {
+      canvas.style.opacity = '1';
+    });
+    window.setTimeout(() => {
+      canvas.style.transition = '';
+      canvas.style.opacity = '';
+    }, 700);
+  }
+  /**
+   * A calm entry's card waits for the late models' first draws (w2
+   * integration). The player, villager and bench GLBs land after the boot
+   * pre-compile, so their skinned and instanced toon programs can only link
+   * on the frames that first draw them. The fly-in hides those frames before
+   * its card; a calm entry showed the card at once, so they fell after it.
+   * MEASURED, low tier without KHR_parallel_shader_compile: +4 programs in a
+   * 224 ms frame and +4 in a 274 ms one, 0-0.3 s after the card (main, with
+   * the fly-in, linked the same 8 before its card). So afterIntro runs once
+   * no program has linked for LATE_LINK_QUIET_MS over at least two frames,
+   * and never sooner than the loader's fade, nor later than LATE_LINK_CAP_MS
+   * (a slow network or a hidden tab must not hold the card back).
+   */
+  private whenLateModelsLinked(then: () => void): void {
+    const LATE_LINK_MIN_MS = 600;
+    const LATE_LINK_QUIET_MS = 400;
+    const LATE_LINK_CAP_MS = 3000;
+    const info = this.renderer.getRenderer().info;
+    const count = (): number => info.programs?.length ?? 0;
+    const start = performance.now();
+    let last = count();
+    let quietSince = start;
+    let quietFrames = 0;
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(cap);
+      then();
+    };
+    const cap = window.setTimeout(finish, LATE_LINK_CAP_MS);
+    const tick = (): void => {
+      if (done) return;
+      const now = performance.now();
+      const n = count();
+      if (n !== last) {
+        last = n;
+        quietSince = now;
+        quietFrames = 0;
+      } else quietFrames++;
+      if (
+        now - start >= LATE_LINK_MIN_MS &&
+        now - quietSince >= LATE_LINK_QUIET_MS &&
+        quietFrames >= 2
+      ) {
+        finish();
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
   private roomsWarmStarted = false;
   /**
    * CO-A5. At 4x CPU the idle warm's 9 s ceiling fires 6-7 s late on a busy
@@ -228,7 +317,37 @@ export class SimpleApp {
     if (this.roomsWarmStarted || !this.coarsePointer) return;
     this.roomsWarmStarted = true;
     void this.scene.warmInterior();
+    this.prewarmZonePanel();
   };
+  /**
+   * CO-A5 remainder (w1-fix). The first showZonePanel cost 156-184 ms at 4x
+   * CPU inside the door fade's callback. D's SimpleUI.prewarmZonePanel lays
+   * the panels out ahead in idle slices; both room warms ask for it.
+   * Optional: A merges before D, and on main SimpleUI has no such method.
+   * It is idempotent, and it schedules its own idle work.
+   */
+  /** Skip's compass hint has shown this visit: the trail-end toast then
+   *  leaves out its own clause about the gold ➤ (w1-fix nit). */
+  private guideSkipHintShown = false;
+  private bootTarget: THREE.WebGLRenderTarget | null = null;
+  /**
+   * The render target the boot pre-compile binds (w1-fix): a 1x1 stand-in
+   * for the composer's buffer where there is a composer, and the canvas
+   * (null) on the low tier, which never builds one. Only bound for compile
+   * calls; nothing is ever drawn into it.
+   */
+  private bootCompileTarget(): THREE.WebGLRenderTarget | null {
+    if (!this.renderer.isPostProcessingAvailable()) return null;
+    this.bootTarget ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+    return this.bootTarget;
+  }
+  private disposeBootCompileTarget(): void {
+    this.bootTarget?.dispose();
+    this.bootTarget = null;
+  }
+  private prewarmZonePanel(): void {
+    (this.ui as SimpleUI & { prewarmZonePanel?: () => void }).prewarmZonePanel?.();
+  }
   /**
    * The 9 s idle ceiling, on every device. Once the early warm has started
    * it stands down: warmInterior would return at once (it is idempotent),
@@ -239,6 +358,7 @@ export class SimpleApp {
     if (this.roomsWarmStarted) return;
     this.roomsWarmStarted = true;
     void this.scene.warmInterior();
+    this.prewarmZonePanel();
   };
 
   // Island shop (hat cosmetics, paid with meadow coins)
@@ -423,6 +543,14 @@ export class SimpleApp {
   private airborneTime: number = 0;
   private prevJumpHeld: boolean = false;
   private lastSwimWarnAt = 0; // throttle for the shoreline-barrier hint
+  /**
+   * In the water with a villager in reach (last frame's prompt chain): the
+   * visitor stays afloat without Space, and the talk prompt outranks the
+   * swim hint (w2 integration). The Sailor drifts 5 u off the jetty, so his
+   * prompt showed only while Space was held: on a phone, JUMP held and USE
+   * tapped at once, no thumb left to steer. The beach-house code is his line.
+   */
+  private talkAfloat = false;
   private currentThrottle = 0; // last vehicle throttle magnitude (for engine sfx)
 
   // Scratch vectors reused every frame to keep the update loop allocation-free
@@ -451,6 +579,8 @@ export class SimpleApp {
     guideTo?: (event: Event) => void;
     guideWelcomeClick?: (event: Event) => void;
     guideWelcomeKey?: (event: KeyboardEvent) => void;
+    interiorEscape?: (event: KeyboardEvent) => void;
+    guideModal?: (event: Event) => void;
   } = {};
 
   constructor() {
@@ -800,111 +930,7 @@ export class SimpleApp {
       }
 
       // Setup NPC interaction callback (quest dialogue wins when relevant)
-      this.scene.setOnNPCInteract((npcData) => {
-        console.log(`💬 Talking to: ${npcData.name}`);
-        // The Market Vendor runs the island shop.
-        if (npcData.name === 'Market Vendor') {
-          sfx.blip();
-          this.openShop();
-          return;
-        }
-        // Quest steps take PRIORITY over idle chat, so a quest-giver still gives
-        // its quest (and fetch pickups / completions still fire) even though it
-        // is also an AI NPC. When it has no active quest step, it falls through
-        // to free-text chat below.
-        const talk = this.npcQuests.onTalk(npcData.name, this.scene.getCoinsCollected());
-        if (talk) {
-          this.guide?.complete('talk');
-          this.ui.showDialogue(npcData.name, talk.lines);
-          this.beginNpcDialogue(npcData.name);
-          if (talk.accepted) {
-            sfx.blip();
-            this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
-          }
-          // Fetch quest: picked the fish up at the Fisherman — carry it in hand
-          if (talk.pickedUp) {
-            sfx.collect();
-            this.scene.setPlayerCarryingFish(true);
-          }
-          if (talk.completed) {
-            const q = talk.completed;
-            // Delivering the fish → the Baker bakes it into a pie before your eyes
-            if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
-            this.scene.addCoins(q.rewardCoins);
-            this.scene.floatCoinsAtPlayer(q.rewardCoins);
-            this.scene.logTransaction('Quest reward', q.rewardCoins);
-            sfx.questComplete();
-            this.ui.showQuestComplete({
-              name: `${q.giverName}'s request`,
-              reward: { type: 'message', value: `+${q.rewardCoins} 🪙 reward` },
-            } as any);
-            this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
-          }
-          return;
-        }
-        // No active quest for this NPC → intelligent free-text conversation if it
-        // has a brain wired up. On ANY failure (function/App Check/rate/spend
-        // cap/moderation/offline) askNpc returns a fallback and we cycle the
-        // NPC's authored canned lines, so the NPC never appears broken.
-        if (isAiNpc(npcData.name)) {
-          this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
-          this.markDone('ds_npc_chatted');
-          this.guide?.complete('talk');
-          sfx.blip();
-          const canned = npcData.dialogue;
-          let ci = 1; // first fallback skips the opening line (canned[0])
-          // Aware opening: same live-state composition as the proximity bubble
-          // (planner-assigned activity + hour + day-theme), so the walk-up line
-          // and the conversation flow as one — no more static canned[0].
-          const aware = composeAwareGreeting({
-            activity: this.scene.getNpcActivity(npcData.name),
-            hour: this.scene.getEnvironmentCycle()?.getHour() ?? 12,
-            event: getWorldState()?.npcPlan?.event,
-          });
-          this.ui.showNpcChat(
-            npcData.name,
-            aware || canned[0] || 'Hello, traveller.',
-            async (text) => {
-              track('npc_chat_sent', { npc: npcData.name });
-              const res = await askNpc(npcData.name, text);
-              if (res.reply && !res.fallback) return res.reply;
-              // A written line stands in (askNpc counted it as npc_fallback),
-              // so the header stops promising a generated reply.
-              this.ui.markNpcChatOffline(npcData.name);
-              return canned[ci++ % canned.length] ?? '…';
-            },
-            voiceProfileFor(npcData.name),
-          );
-          this.beginNpcDialogue(npcData.name);
-          try {
-            // Found the feature themselves — the discovery hint would only
-            // teach what they already know.
-            localStorage.setItem('ds_hint_talk', '1');
-          } catch {
-            /* no storage */
-          }
-          // Deepen the opening in the background: the composed line shows
-          // instantly; when the persona's generated continuation arrives the
-          // NPC simply keeps talking. Failures resolve silently — the
-          // composed opening already stands on its own.
-          // NPC memory: visitor facts ride the LLM-ONLY copy of the greeting
-          // (the displayed bubble stays clean) — the model naturally works
-          // "back after three days, still in that crown" into its reply.
-          // Facts are data inside the greeting quote, within the 300-char cap.
-          void askNpcOpening(npcData.name, this.withVisitorFacts(aware)).then((res) => {
-            if (res.reply && !res.fallback) {
-              this.ui.appendNpcChatLine(npcData.name, res.reply);
-            }
-          });
-          return;
-        }
-        // Non-AI, non-quest NPC → canned dialogue, led by a living-world mood line.
-        let lines = npcData.dialogue;
-        const flavor = moodNpcFlavor();
-        if (flavor) lines = [flavor, ...lines];
-        this.ui.showDialogue(npcData.name, lines);
-        this.beginNpcDialogue(npcData.name);
-      });
+      this.scene.setOnNPCInteract((npcData) => this.onNpcInteract(npcData));
       // Release the hold + camera the moment the chat panel closes by any
       // path (✕, Escape, replaced by a new chat) — the per-frame poll below
       // is the belt for the canned-dialogue panel, this is the braces.
@@ -1057,9 +1083,13 @@ export class SimpleApp {
         // landed on the look or talk card, or over the villager's chat. Else
         // a hint toast (D6 holds it behind panels), naming no place the pill
         // might not show.
+        // With the guide skipped this visit, Skip's own hint has just said
+        // what the gold ➤ does; the trail's end does not say it again.
         if (!this.guideHoldsHints()) {
           this.ui.toast(
-            '🏝️ You’ve got the hang of it — the gold ➤ up top points to your next stop.',
+            this.guideSkipHintShown
+              ? '🏝️ You’ve got the hang of it.'
+              : '🏝️ You’ve got the hang of it — the gold ➤ up top points to your next stop.',
             {
               hint: true,
             },
@@ -1251,65 +1281,7 @@ export class SimpleApp {
       });
 
       // Vehicle time-trials: banner on start/checkpoint/finish + live lap HUD
-      this.scene.setOnRaceEvent((e) => {
-        if (e.kind === 'finish') {
-          sfx.questComplete();
-          // Racing paid NOTHING before — the most complete loop in the game had
-          // no reward. Every finish now pays out (bigger on a PB).
-          const reward = e.improved ? 15 : 5;
-          this.scene.addCoins(reward);
-          this.scene.floatCoinsAtPlayer(reward);
-          this.scene.logTransaction(e.improved ? 'Race — new best!' : 'Race finish', reward);
-          this.ui.updateCoinCounter(this.scene.getCoinsCollected());
-          this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
-          // ?race=&beat= challenge verdict (one-shot: cleared either way).
-          if (
-            this.raceChallenge &&
-            e.circuit === this.raceChallenge.kind &&
-            typeof e.timeSec === 'number'
-          ) {
-            const beaten = e.timeSec * 1000 < this.raceChallenge.ms;
-            window.setTimeout(
-              () =>
-                this.ui.flashMessage(
-                  beaten
-                    ? '🏆 Challenge beaten — send them YOUR time!'
-                    : '⚔️ Challenge stands — one more lap?',
-                ),
-              2000,
-            );
-            track('race_challenge_result', { beaten });
-            if (beaten) {
-              this.raceChallenge = null;
-              if (e.circuit) this.scene.setRaceChallenge(e.circuit, null);
-            }
-          }
-          track('race_finish', {
-            circuit: e.circuit ?? 'unknown',
-            timeMs: Math.round((e.timeSec ?? 0) * 1000),
-            improved: !!e.improved,
-          });
-          this.markDone('ds_raced');
-          const name = this.multiplayer?.selfName ?? 'Guest';
-          if (e.improved && e.circuit && typeof e.timeSec === 'number') {
-            void import('./Boards').then((b) => b.submitRaceTime(e.circuit!, e.timeSec!, name));
-          }
-          // Surface the (otherwise buried) global leaderboard a beat after the
-          // finish, with a Share button — turns every PB into a share prompt.
-          if (e.circuit) {
-            const circuit = e.circuit;
-            const tMs = typeof e.timeSec === 'number' ? Math.round(e.timeSec * 1000) : null;
-            window.setTimeout(() => void this.ui.showRaceLeaderboard(circuit, tMs, name), 1200);
-          }
-          return;
-        }
-        this.ui.flashMessage(e.text);
-        if (e.kind === 'start') {
-          sfx.raceGo();
-          this.raceGuideTarget = null; // the guide CTA is fulfilled
-          track('race_start', { circuit: e.circuit ?? 'unknown' });
-        } else if (e.kind === 'checkpoint') sfx.checkpoint();
-      });
+      this.scene.setOnRaceEvent((e) => this.onRaceEvent(e));
       this.scene.setOnRaceHud((s) => this.ui.updateRaceHud(s));
 
       // "Meet the AI townsfolk" welcome CTA: compass-guide to the Storyteller
@@ -1447,6 +1419,12 @@ export class SimpleApp {
       window.addEventListener('keydown', this.boundHandlers.chatKeydown);
       window.addEventListener('keyup', this.boundHandlers.chatKeyup);
 
+      // Indoors, Escape leaves (P2-A1). Capture phase on window: it reads the
+      // panels as they stood when the key went down, before PanelManager's
+      // document listener closes the top one.
+      this.boundHandlers.interiorEscape = (e: KeyboardEvent) => this.onInteriorEscape(e);
+      window.addEventListener('keydown', this.boundHandlers.interiorEscape, true);
+
       // Setup cleanup on page unload
       this.boundHandlers.beforeUnload = () => this.dispose();
       window.addEventListener('beforeunload', this.boundHandlers.beforeUnload);
@@ -1474,11 +1452,34 @@ export class SimpleApp {
         // first daylight frame invalidated every lit program at once, mid
         // fly-in. See GameScene.primeExteriorLightGate.
         this.scene.primeExteriorLightGate();
-        if (typeof gl.compileAsync === 'function') {
-          await gl.compileAsync(this.scene, this.scene.getCamera());
-        } else {
-          gl.compile(this.scene, this.scene.getCamera());
+        // ...and against the target the first frame draws into (w1-fix).
+        // three keys every program on the bound render target (output colour
+        // space, tone mapping): compiled against the canvas, the boot pass
+        // built its 44 programs as TONE_MAPPING variants, and the first
+        // composer frame linked about 47 more, synchronously. Desktop draws
+        // the scene into the composer's buffer, and any non-XR target gives
+        // the same keys, so a 1x1 stand-in binds them. The low tier has no
+        // composer and draws to the canvas, so it compiles against that.
+        const three = this.renderer.getRenderer();
+        const sceneTarget = this.bootCompileTarget();
+        let pending: Promise<unknown> | null = null;
+        const bound = three.getRenderTarget();
+        three.setRenderTarget(sceneTarget);
+        try {
+          // compileAsync compiles synchronously and then polls, so the
+          // target only has to be bound for the call itself.
+          if (typeof gl.compileAsync === 'function') {
+            pending = gl.compileAsync(this.scene, this.scene.getCamera());
+          } else {
+            gl.compile(this.scene, this.scene.getCamera());
+          }
+        } finally {
+          three.setRenderTarget(bound);
         }
+        // Behind the loader no frame is drawn and compileAsync never flushes:
+        // send the queued links now (C's hook asks too; one flush per task).
+        Materials.flushAfterCompile(three);
+        if (pending) await pending;
         console.log('✓ Shaders pre-compiled');
       } catch (e) {
         console.warn('Shader pre-compile skipped:', e);
@@ -1573,8 +1574,8 @@ export class SimpleApp {
         // The trail villager is chosen once, here, so the pill names them from
         // behind the card on; phones end the intro facing them (A7), with the
         // coins that lead there on screen.
-        this.trailVillager = this.pickTrailVillager();
-        this.faceTrailVillager();
+        this.visitStartedAt = performance.now(); // the visit's minutes ('ds:goals')
+        this.chooseTrailVillager();
         let saved: string | null = null;
         try {
           saved = localStorage.getItem('ds_player_name');
@@ -1618,6 +1619,26 @@ export class SimpleApp {
         window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene.getOrbitCamera().snapToPlayer();
         afterIntro();
+      } else if (this.calmEntry) {
+        // CALM ENTRY (A10, decision 6): a phone skips the swoop. MEASURED on
+        // the phone profile at 4x CPU (PERF-08): the fly-in drew 28 frames at
+        // 7 fps and the welcome card came up at 14.6 s; with this entry, the
+        // reduced-motion one, it came up at 9.8 s with 6 long tasks before it
+        // instead of 35. Keyed on a coarse pointer that cannot hover, never on
+        // isLowTierDevice(): that also catches 4-core laptops, which keep the
+        // fly-in. The camera is seated in the follow pose and the world fades
+        // in under the loader's own fade (startCalmEntryFade): opacity only.
+        window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
+        canvas.style.opacity = '0';
+        this.calmEntryCanvas = canvas;
+        this.scene.getOrbitCamera().snapToPlayer();
+        // Faced now, before the first frame: afterIntro's own call would
+        // turn the camera in clear view once the world has faded in.
+        this.chooseTrailVillager();
+        // The card waits for the late GLBs' first draws (whenLateModelsLinked).
+        this.whenLateModelsLinked(() => {
+          afterIntro();
+        });
       } else {
         // INTRO-LITE: the fly-in is the single heaviest view in the game — the
         // whole planet in frustum, so chunk culling recovers nothing and every
@@ -1692,7 +1713,7 @@ export class SimpleApp {
         // moment the player first looks at the island — read as the screen
         // "glitching". The brightness half of that is gone now, but grass
         // 0.3 -> 1.0 is still a whole-image change, so it keeps riding in under
-        // the motion at 1.5s of a 2.5s flight. The heavy part of the swoop —
+        // the motion, 1.1s into a 2.5s flight. The heavy part of the swoop —
         // the whole planet in frustum — is the FIRST second, which still runs
         // lean, so the judder this was protecting is intact.
         //
@@ -1704,7 +1725,7 @@ export class SimpleApp {
         // users (who skip this block) ever got a warmed composer.
         // GRASS and BLOOM want OPPOSITE restore timing.
         //   Grass 0.3 -> 1.0 is a whole-image change, so it rides in mid-swoop
-        //   (1500ms) where the camera's own motion HIDES the pop.
+        //   (1100ms) where the camera's own motion HIDES the pop.
         //   Bloom is the reverse: turning it on mid-swoop is the "world
         //   first-loading bloom flicker". Bloom is half-res, so on a fast-moving
         //   bright planet rim at intro-lite fps its halo lags the edge frame to
@@ -1713,19 +1734,28 @@ export class SimpleApp {
         //   on for ~1s of motion. So bloom waits for ARRIVAL, when the camera is
         //   still and there is nothing to ghost (the on-step itself is
         //   imperceptible — measured mean +0.24/255 at the settled view).
-        // Restores ALL four intro-lite levers at once (grass, resolution,
-        // shadows, ink). Fired at 1500ms — under camera motion, ~74% of the way in
-        // (ease-in-out), where the whole-image change hides and the frame has
-        // lightened enough (closer camera, more culled) to afford full quality
-        // for the final approach. Idempotent, so the arrival .then can call it
-        // again to cover a skipped/short flight.
-        const restoreIntroQuality = (): void => {
-          this.scene.getIsland().setGrassBudget(1);
-          this.renderer.setIntroResolution(null);
+        // The four intro-lite levers come back STAGGERED, under camera motion
+        // (A10, MOT-10): grass at 1.1 s, resolution and ink at 1.5 s, shadows
+        // at 1.9 s, each in a timer of its own. All four in one task cost a
+        // 123 ms frame 1.43 s into the flight, at the moment the view turned
+        // fastest. By 1.1 s the camera is about 40 u up and still closing at
+        // speed, so the whole-image changes hide in the motion and the frame
+        // has lightened enough (closer camera, more culled) to afford full
+        // quality for the final approach. Each is idempotent, so the arrival
+        // .then calls all three again to cover a skipped/short flight.
+        let inkBack = false;
+        let shadowsBack = false;
+        const restoreIntroGrass = (): void => this.scene.getIsland().setGrassBudget(1);
+        const restoreIntroShadows = (): void => {
+          shadowsBack = true;
           this.renderer.setShadowFreeze(false);
+        };
+        const restoreIntroQuality = (): void => {
+          inkBack = true;
+          this.renderer.setIntroResolution(null);
           setInkVisible(true);
         };
-        // The 1.5s clock starts at the swoop's FIRST FRAME, like the fly-in's
+        // Every clock starts at the swoop's FIRST FRAME, like the fly-in's
         // own stall-immune clock. Started here, it ran out before any frame
         // drew: warmUp below compiles every program synchronously. MEASURED
         // (hardware GL, dev server): scheduled at 2253ms, render loop at
@@ -1733,13 +1763,50 @@ export class SimpleApp {
         // shows the same ~2.5s from world gen to the first frame. So all four
         // levers were restored before the visitor saw the swoop: the
         // intro-lite never engaged.
+        requestAnimationFrame(() => window.setTimeout(restoreIntroGrass, 1100));
         requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500));
+        requestAnimationFrame(() => window.setTimeout(restoreIntroShadows, 1900));
+        // PRIME UNDER THE LOADER. Hidden ink and a frozen shadow pass are not
+        // drawn in warmUp's hidden frame, so their programs linked when the
+        // levers came back, in clear view. MEASURED on the staggered timers:
+        // +2 programs and a 90 ms frame as the ink returned, +5 and 160 ms as
+        // the shadow pass resumed (before the stagger: +7 in one 170-220 ms
+        // frame). Two frames behind the loader draw them instead: one draws
+        // the ink, the next runs the shadow pass, and each lever goes back on
+        // the frame after. Two frames, not one: the fly-in clock forgives
+        // 100 ms a frame, so two shorter stalls cost the flight less than one
+        // long one. The shadow map also holds a real frame through the swoop
+        // now, where it was empty until the unfreeze.
+        //
+        // It runs twice: on the swoop's first frame, and again as the loader
+        // starts to fade (below, beside hideLoading). The avatar GLBs land
+        // about half a second in, and their SKINNED ink and depth variants
+        // cannot link before the meshes exist: after one priming, MEASURED
+        // one program still linked at each restore (a 60-80 ms frame each).
+        // A lever that is back for good is never touched again.
+        const primeIntroLevers = (): void => {
+          if (inkBack || shadowsBack) return;
+          setInkVisible(true);
+          requestAnimationFrame(() => {
+            if (!inkBack) setInkVisible(false);
+            if (shadowsBack) return;
+            this.renderer.setShadowFreeze(false);
+            requestAnimationFrame(() => {
+              if (!shadowsBack) this.renderer.setShadowFreeze(true);
+            });
+          });
+        };
+        requestAnimationFrame(primeIntroLevers);
+        this.primeIntroAgain = primeIntroLevers;
         window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));
         this.scene
           .getOrbitCamera()
           .flyInFromDistant(2500)
           .then(() => {
-            restoreIntroQuality(); // idempotent — covers a skipped/short flight
+            // idempotent — covers a skipped/short flight
+            restoreIntroGrass();
+            restoreIntroQuality();
+            restoreIntroShadows();
             // FADE bloom in, don't snap it. Enabling at arrival avoids the
             // rim-ghosting-during-motion, but a hard enable is a bloom POP right
             // as the reveal settles and the eye lands on the scene — read as a
@@ -1752,7 +1819,21 @@ export class SimpleApp {
       // Warm the post-processing + shadow shaders on a hidden frame (camera is
       // already at the distant fly-in start) so the first VISIBLE frame doesn't
       // hitch — a cause of the reveal flash.
-      this.renderer.warmUp(this.scene, this.scene.getCamera());
+      // warmUp's renderer.compile runs against whatever is bound, so bind the
+      // boot compile's target for it too, or it re-links the 44 programs as
+      // canvas variants, synchronously. Its composer.render binds its own
+      // targets and puts this one back.
+      {
+        const three = this.renderer.getRenderer();
+        const bound = three.getRenderTarget();
+        three.setRenderTarget(this.bootCompileTarget());
+        try {
+          this.renderer.warmUp(this.scene, this.scene.getCamera());
+        } finally {
+          three.setRenderTarget(bound);
+          this.disposeBootCompileTarget();
+        }
+      }
 
       // Start render loop
       this.startRenderLoop();
@@ -1761,6 +1842,14 @@ export class SimpleApp {
       // Hold the loader a touch longer so a couple of clean frames render
       // before it fades over them (was 350ms — too eager, revealed mid-warmup).
       setTimeout(() => this.ui.hideLoading(), 500);
+      // A calm entry (A10) brings the world up under that same fade.
+      setTimeout(() => this.startCalmEntryFade(), 500);
+      // The fly-in primes its two levers once more while the loader is still
+      // all but opaque: the avatar GLBs are usually in by now.
+      setTimeout(() => {
+        this.primeIntroAgain?.();
+        this.primeIntroAgain = null;
+      }, 500);
 
       // Register the service worker for instant repeat visits + offline shell.
       // Production only (SW caching would fight Vite HMR in dev), on load so it
@@ -1878,6 +1967,10 @@ export class SimpleApp {
     }
     this.scene.equipPlayerHat(hat as HatId);
     this.multiplayer?.setHat(hat as HatId);
+    // The crown's card reads the latest 'ds:goals' (P2-D10): send it the
+    // ladder as it stands with this stamp, before the card opens.
+    this.syncGoals(this.goalsWereOn);
+    this.publishGoals();
     this.ui.showPassportComplete();
   }
 
@@ -2284,6 +2377,9 @@ export class SimpleApp {
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
       this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
+      // No carry-over (INT-12): a key pressed on the doorstep, in the gap
+      // between the last outdoor frame and this swap, never fires in the room.
+      this.inputManager.clearLatched();
       // Leave FIRST, and the panel in its own try. The fourth passport stamp
       // lands inside showZonePanel and its celebration used to sweep the hall
       // panel mid-build, so the panel threw (INT-02); fadeThrough's catch
@@ -2300,13 +2396,44 @@ export class SimpleApp {
     });
   }
 
+  /** The door veil is already closing on the way out: a second Leave, E at
+   *  the door or Escape must not start another. */
+  private leavingBuilding = false;
+
   private exitBuilding(isZone: boolean): void {
+    if (this.leavingBuilding) return;
+    this.leavingBuilding = true;
     this.ui.closeWatchFrame(); // stop any wall-screen playback (fires onClose)
     this.ui.fadeThrough(() => {
+      this.leavingBuilding = false;
       this.scene.exitInterior();
+      // No carry-over (INT-12): Q pressed in the room, in the gap before
+      // this swap, used to wave on the first frame outside.
+      this.inputManager.clearLatched();
       this.ui.hideLeaveButton();
       if (isZone) this.ui.hideZonePanel();
     });
+  }
+
+  /**
+   * Indoors, Escape leaves (P2-A1). Heard on window in the capture phase, so
+   * it reads the room as it stood when the key went down: PanelManager and
+   * SimpleInputManager listen on the document, which runs later. With a panel
+   * open (the hall panel, the emote wheel, the chat line) or the name prompt
+   * up, the press is theirs: the panel closes and the visitor stays inside.
+   * With the wall screen on, it steps away from the screen. Only a press that
+   * finds nothing open leaves, so one Escape never does both, whatever order
+   * the document listeners run in.
+   */
+  private onInteriorEscape(e: KeyboardEvent): void {
+    if (e.key !== 'Escape' || e.repeat || e.defaultPrevented) return;
+    if (!this.scene?.isInsideInterior()) return;
+    if (this.ui.panels.isOpen() || this.ui.isWelcomeVisible()) return;
+    if (this.ui.isWatchOpen()) {
+      this.ui.closeWatchFrame();
+      return;
+    }
+    this.exitBuilding(this.insideIsZone);
   }
 
   /** Open a section directly from a /?zone=<id> deep link, if present + valid. */
@@ -2320,6 +2447,9 @@ export class SimpleApp {
       // api/z.js serves its /z/hire share route.
       if (['welcome', 'professional', 'projects', 'personal', 'contact', 'hire'].includes(z)) {
         this.ui.hideWelcome();
+        // A /z/hire visitor has seen no welcome card: the route that follows
+        // the hire card opens with where they are (P2-A4).
+        if (z === 'hire') this.hireCardSource = 'deeplink';
         this.ui.showZonePanel({ id: z, name: z }, { source: 'deeplink' });
         return true;
       }
@@ -2329,9 +2459,103 @@ export class SimpleApp {
     return false;
   }
 
+  /**
+   * Vehicle time-trials: the banner on start, checkpoint and finish. A finish
+   * pays out, answers a ?race=&beat= challenge, and goes to the board under
+   * the visitor's name (P2-A7).
+   */
+  private onRaceEvent(e: RaceEvent): void {
+    if (e.kind === 'finish') {
+      sfx.questComplete();
+      // Racing paid NOTHING before — the most complete loop in the game had
+      // no reward. Every finish now pays out (bigger on a PB).
+      const reward = e.improved ? 15 : 5;
+      this.scene.addCoins(reward);
+      this.scene.floatCoinsAtPlayer(reward);
+      this.scene.logTransaction(e.improved ? 'Race — new best!' : 'Race finish', reward);
+      this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+      this.ui.flashMessage(`${e.text}  ·  +${reward} 🪙`);
+      // ?race=&beat= challenge verdict (one-shot: cleared either way).
+      if (
+        this.raceChallenge &&
+        e.circuit === this.raceChallenge.kind &&
+        typeof e.timeSec === 'number'
+      ) {
+        const beaten = e.timeSec * 1000 < this.raceChallenge.ms;
+        window.setTimeout(
+          () =>
+            this.ui.flashMessage(
+              beaten
+                ? '🏆 Challenge beaten — send them YOUR time!'
+                : '⚔️ Challenge stands — one more lap?',
+            ),
+          2000,
+        );
+        track('race_challenge_result', { beaten });
+        if (beaten) {
+          this.raceChallenge = null;
+          if (e.circuit) this.scene.setRaceChallenge(e.circuit, null);
+        }
+      }
+      track('race_finish', {
+        circuit: e.circuit ?? 'unknown',
+        timeMs: Math.round((e.timeSec ?? 0) * 1000),
+        improved: !!e.improved,
+      });
+      this.markDone('ds_raced');
+      if (e.circuit) {
+        const circuit = e.circuit;
+        const timeSec = typeof e.timeSec === 'number' ? e.timeSec : null;
+        // The board shows a name, so the first finish asks for one (decision
+        // P2-8): once a session, and Skip goes up as 'Guest'. Times used to go
+        // up under the placeholder minted for the name tag ('Sunny Courier').
+        this.ensureNamed(() => {
+          const name = this.boardName();
+          // EVERY finish is sent, not only a local best: Boards keeps the
+          // better time itself, and a best set while the write failed (or
+          // before the visitor had a name) never reached the board otherwise.
+          if (timeSec !== null) this.submitRaceTime(circuit, timeSec, name);
+          // Surface the (otherwise buried) global leaderboard a beat after
+          // the finish, with a Share button — turns every PB into a share
+          // prompt.
+          const tMs = timeSec !== null ? Math.round(timeSec * 1000) : null;
+          window.setTimeout(() => void this.ui.showRaceLeaderboard(circuit, tMs, name), 1200);
+        });
+      }
+      return;
+    }
+    this.ui.flashMessage(e.text);
+    if (e.kind === 'start') {
+      sfx.raceGo();
+      this.raceGuideTarget = null; // the guide CTA is fulfilled
+      track('race_start', { circuit: e.circuit ?? 'unknown' });
+    } else if (e.kind === 'checkpoint') sfx.checkpoint();
+  }
+
+  /** The name a race time goes up under: the one the visitor chose, else
+   *  'Guest'. Never the placeholder minted for the name tag. */
+  private boardName(): string {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem('ds_player_name');
+    } catch {
+      /* no storage: a name typed this session still counts */
+    }
+    if (!saved && !this.nameTyped) return 'Guest';
+    return this.multiplayer?.selfName ?? saved ?? 'Guest';
+  }
+
+  /** Boards loads lazily (Firebase stays off the boot path), and the write
+   *  is fire-and-forget: Boards.submitRaceTime never throws. */
+  private submitRaceTime(circuit: 'land' | 'water', timeSec: number, name: string): void {
+    void import('./Boards').then((b) => b.submitRaceTime(circuit, timeSec, name));
+  }
+
   /** "Skip — just browsing" is remembered for the session (instance flag +
    *  sessionStorage, so a reload in the same tab keeps it). */
   private nameSkipped = false;
+  /** The visitor typed a name at the prompt this session (storage may not keep it). */
+  private nameTyped = false;
   private static readonly NAME_SKIP_KEY = 'ds_name_skipped';
 
   /**
@@ -2362,6 +2586,7 @@ export class SimpleApp {
     }
     this.ui.promptName('', (name) => {
       if (name) {
+        this.nameTyped = true;
         this.multiplayer?.setName(name);
         saveProfile({ name });
       } else {
@@ -2472,15 +2697,18 @@ export class SimpleApp {
     // The secret-spot proximity sweep rides the same 2.5s cadence — nine
     // distance checks against static points, effectively free.
     // Wall time spent actually IN the world (welcome dismissed) — feeds the
-    // lost-visitor recovery hint below.
-    if (!this.ui.isWelcomeVisible()) this.lostAccum += deltaTime;
+    // lost-visitor recovery hint below. A room is not the world: nobody is
+    // lost in one, so the clock stops at the door (P2-A1, INT-11).
+    const indoors = this.scene.isInsideInterior();
+    if (!this.ui.isWelcomeVisible() && !indoors) this.lostAccum += deltaTime;
     this.completionAccum += deltaTime;
     if (this.completionAccum > 2.5) {
       this.completionAccum = 0;
       this.refreshCompletion();
       this.sweepSecrets();
-      // main-simple's own hints held while the guide ran (A6) go out now.
-      if (this.heldHints.length && !this.guideHoldsHints()) {
+      // main-simple's own hints held while the guide ran (A6) go out now;
+      // indoors they wait for the door (hintLater holds them there too).
+      if (this.heldHints.length && !indoors && !this.guideHoldsHints()) {
         for (const m of this.heldHints.splice(0)) this.ui.toast(m, { hint: true });
       }
       const hintsHeld = this.guideHoldsHints();
@@ -2492,8 +2720,11 @@ export class SimpleApp {
       try {
         // hasTrailCoins guard: minute one's toast budget belongs to the
         // orientation + talk hints — district cards start after the arrival
-        // trail is done.
+        // trail is done. Never indoors (P2-A1): the avatar stands frozen at
+        // the door outside, so every outdoor hint below read that spot and
+        // fired over the room ('a villager nearby…', a district's card).
         if (
+          !indoors &&
           !hintsHeld &&
           !this.ui.isWelcomeVisible() &&
           !this.tour &&
@@ -2525,7 +2756,7 @@ export class SimpleApp {
             const key = `ds_hint_district_${bestId}`;
             if (bestDot > 0.9 && DISTRICT_INTRO[bestId] && !localStorage.getItem(key)) {
               localStorage.setItem(key, '1');
-              this.ui.toast(DISTRICT_INTRO[bestId], { hint: true });
+              this.ui.toast(DISTRICT_INTRO[bestId], { hint: true, until: this.indoorsNow });
             }
           }
         }
@@ -2540,6 +2771,7 @@ export class SimpleApp {
       try {
         if (
           this.lostAccum > 60 &&
+          !indoors &&
           !hintsHeld &&
           !this.tour &&
           !localStorage.getItem('ds_hint_map') &&
@@ -2568,6 +2800,7 @@ export class SimpleApp {
       try {
         if (
           !localStorage.getItem('ds_hint_talk') &&
+          !indoors &&
           !hintsHeld &&
           !this.ui.isWelcomeVisible() &&
           !this.tour &&
@@ -2578,7 +2811,7 @@ export class SimpleApp {
             this.ui.isTouchDevice()
               ? '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and tap USE to ask anything.'
               : '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and press E to ask anything.',
-            { hint: true },
+            { hint: true, until: this.talkHintStale },
           );
         }
       } catch {
@@ -2676,6 +2909,10 @@ export class SimpleApp {
         this.scene.setPlayerMovement(0, 0);
         this.ui.hideInteractionPrompt();
         this.applyLook(deltaTime);
+        // Talking from the water (the Sailor's boat): afloat for the whole
+        // conversation, never held on Space while typing (talkAfloat).
+        const talker = this.scene.getPlayer();
+        if (talker?.isInWater()) talker.setSwimIntent(true);
 
         if (this.ui.isDialogueActive()) {
           if (this.inputManager.consumeKeyPress('e')) {
@@ -2766,8 +3003,9 @@ export class SimpleApp {
         // the visitor stands still.
         this.scene.getOrbitCamera().setMoveInput(walkForward, walkStrafe);
         const player = this.scene.getPlayer();
-        // Swim: hold Space to stay afloat in water (same key jumps on land)
-        if (player) player.setSwimIntent(jumpInput);
+        // Swim: hold Space to stay afloat in water (same key jumps on land).
+        // A villager in reach keeps the visitor afloat too (talkAfloat).
+        if (player) player.setSwimIntent(jumpInput || this.talkAfloat);
         // Free dive: hold Shift in water to swim DOWN. Independent of Space,
         // so you can hold both; the dive branch outranks the float branch.
         if (player) {
@@ -2917,6 +3155,7 @@ export class SimpleApp {
         let buildOpp: ReturnType<SimpleApp['nearestBuildOpportunity']> = null;
         const board = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
+        this.talkAfloat = !!player && player.isInWater() && nearby?.type === 'npc';
         // Nearest thing wins: the vehicle only takes the prompt when it is
         // actually the closest interactable — a parked car used to shadow
         // every NPC, mailbox and cottage door within its 3.2u board range.
@@ -2931,8 +3170,9 @@ export class SimpleApp {
             sfx.blip();
             track('vehicle_enter', { kind });
           }
-        } else if (player && player.isInWater() && !player.isSwimming()) {
-          // In the water and sinking: tell them how to swim
+        } else if (player && player.isInWater() && !player.isSwimming() && !this.talkAfloat) {
+          // In the water and sinking: tell them how to swim. A villager in
+          // reach outranks it (talkAfloat): the talk prompt shows below.
           this.ui.showInteractionPrompt('🏊 Hold <strong>Space</strong> to swim');
         } else if (this.scene.isFishingActive()) {
           // Line is in the water: reeling outranks every other interaction.
@@ -2943,6 +3183,7 @@ export class SimpleApp {
           );
           if (this.inputManager.consumeKeyPress('e')) {
             if (this.scene.reelLine() === 'fish') {
+              this.fishEver = true; // a rung-2 goal (P2-A12)
               this.fishCaught++;
               this.persistFish();
               sfx.coin();
@@ -3305,9 +3546,20 @@ export class SimpleApp {
           } else if (nearby.type === 'npc') {
             // AI townsfolk advertise free-text chat — "talk" alone reads as a
             // canned dialogue tree, and visitors never discover the real LLM.
-            text = isAiNpc(nearby.npcData.name)
-              ? `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong> — ask anything`
-              : `💬 Press <strong>E</strong> to talk to <strong>${esc(nearby.npcData.name)}</strong>`;
+            // The prompt says what THIS press does (P2-A7): a quest giver has
+            // a request, an errand's next villager is expecting the visitor,
+            // and 'ask anything' shows only when E opens the chat.
+            const who = nearby.npcData.name;
+            const held = this.scene.getCoinsCollected();
+            const quest = this.npcQuests.talkKind(who, held);
+            text =
+              quest === 'offer'
+                ? `💬 Press <strong>E</strong> — <strong>${esc(who)}</strong> has a request`
+                : quest === 'errand'
+                  ? `💬 Press <strong>E</strong> — <strong>${esc(who)}</strong> is expecting you`
+                  : isAiNpc(who) && !this.questLinesFirst(who, held)
+                    ? `💬 Press <strong>E</strong> to talk to <strong>${esc(who)}</strong> — ask anything`
+                    : `💬 Press <strong>E</strong> to talk to <strong>${esc(who)}</strong>`;
           } else if (nearby.type === 'bench') {
             text = '🪑 Press <strong>E</strong> to sit down';
           }
@@ -3604,6 +3856,16 @@ export class SimpleApp {
     }
     // Into-variants write the scratches directly — the old .copy(clone())
     // pattern kept the scratch but still paid the allocation each frame.
+    // Indoors the pill is hidden (P2-A1, INT-11): the avatar stands frozen at
+    // the door outside, so the pill kept a bearing and a label for a walk the
+    // room cannot make. Picks, stamps and the "Next:" flash wait at the door.
+    if (this.scene.isInsideInterior()) {
+      this.arrivalHold = null;
+      this.lastCompassTarget = null;
+      this.compassLabel = '';
+      this.ui.updateQuestCompass(null);
+      return;
+    }
     const playerPos = player.getWorldPositionInto(this._qcPlayerPos);
     const normal = player.getSurfaceNormalInto(this._qcNormal);
     const now = performance.now();
@@ -3668,6 +3930,11 @@ export class SimpleApp {
     const st = this._compassState;
     st.mapPick = this.mapGuideTarget !== null;
     st.arrivalHold = this.arrivalHold !== null;
+    // Behind the welcome card, while First steps will arm as it closes, the
+    // pill waits: it named Projects there and the villager after Explore.
+    const g = this.guide;
+    st.guidePending =
+      !!g && g.eligible() && !g.running() && this.ui.isWelcomeVisible() && !this.tour;
     st.raceGuide = this.raceGuideTarget !== null;
     st.aiGuide = this.aiGuideTarget !== null;
     st.trailVillager = trailPos !== null;
@@ -3677,6 +3944,7 @@ export class SimpleApp {
     st.parcelActive = !!delivery?.destination;
     st.passportComplete = passport?.isComplete() ?? false;
     st.deliveryOptIn = this.deliveryOptIn;
+    st.goal = this.goalTarget !== null;
     let targetPos: THREE.Vector3 | null = null;
     let label = '';
     switch (compassTarget(st)) {
@@ -3721,6 +3989,11 @@ export class SimpleApp {
         // Its own glyph: 📬 means the Contact district only.
         targetPos = delivery?.destination?.mesh.position ?? null;
         label = '📦 Parcel';
+        break;
+      case 'goal':
+        // The Next chip's goal (P2-A12): only when nothing above has the pill.
+        targetPos = this.goalTarget?.pos ?? null;
+        label = this.goalTarget?.label ?? '';
         break;
     }
     this.lastCompassTarget = targetPos ?? null;
@@ -3802,6 +4075,7 @@ export class SimpleApp {
   private readonly _compassState: CompassState = {
     mapPick: false,
     arrivalHold: false,
+    guidePending: false,
     raceGuide: false,
     aiGuide: false,
     trailVillager: false,
@@ -3811,6 +4085,7 @@ export class SimpleApp {
     parcelActive: false,
     passportComplete: false,
     deliveryOptIn: false,
+    goal: false,
   };
 
   /** The districts' door positions, read once: zones never move, and
@@ -3872,6 +4147,19 @@ export class SimpleApp {
    * nearest awake AI villager within 30 u, and with none the branch is
    * skipped. Reads positions only: no draw from any random stream.
    */
+  private trailChosen = false;
+  /**
+   * The trail villager is chosen once per load, then faced (A7). afterIntro
+   * calls this; a calm entry calls it first, before the first frame, since
+   * its afterIntro waits for the late models (whenLateModelsLinked).
+   */
+  private chooseTrailVillager(): void {
+    if (this.trailChosen) return;
+    this.trailChosen = true;
+    this.trailVillager = this.pickTrailVillager();
+    this.faceTrailVillager();
+  }
+
   private pickTrailVillager(): string | null {
     const player = this.scene.getPlayer();
     if (!player) return null;
@@ -3997,7 +4285,7 @@ export class SimpleApp {
       this.ui.isTouchDevice()
         ? '🗺️ Lost? Tap the radar for the island map — pick a spot and the gold arrow guides you.'
         : '🗺️ Lost? Click the radar or press M for the island map — pick a spot and the gold arrow guides you.',
-      { hint: true },
+      { hint: true, until: this.indoorsNow },
     );
   }
 
@@ -4111,6 +4399,16 @@ export class SimpleApp {
    * unknown key opens the island map instead, so a 'Show me' never dead-ends.
    */
   private guideTo(key: string, label: string | null, source: string): void {
+    // Two ladder goals are panels, not places (P2-A12): their 'Show me'
+    // opens them, whoever sends the key.
+    if (key === 'panel:hire') {
+      this.ui.showHireCard('menu');
+      return;
+    }
+    if (key === 'panel:guestbook') {
+      void this.ui.showGuestbook();
+      return;
+    }
     const hit = resolveGuideKey(key, this.guideWorld);
     if (!hit) {
       this.openIslandMap();
@@ -4143,6 +4441,32 @@ export class SimpleApp {
     yaw: 0,
     targetDist: null,
   };
+  /** The recruiter route (P2-A4), made with the guide. */
+  private route: RecruiterRoute | null = null;
+  /** How far the visitor has walked since the page loaded, u. */
+  private walkedSinceLoad = 0;
+  /** How the hire card now open was opened, when not by the pill or a chip. */
+  private hireCardSource: RouteSource | null = null;
+  // ── The goal ladder and the Next chip (P2-A12) ──────────────────────
+  private nextChip: NextChip | null = null;
+  /** Which surface #ds-guide last drew: one at a time on the one card. */
+  private guideSurface: 'route' | 'steps' | 'next' | null = null;
+  private goalsT = 0;
+  private goalsPublishT = 0;
+  private goalsWereOn = false;
+  /** Where the chip's goal is, when it names a place: the compass's last
+   *  resort (Compass.compassTarget's 'goal'). */
+  private goalTarget: { pos: THREE.Vector3; label: string } | null = null;
+  private readonly _goalPos = new THREE.Vector3();
+  private readonly _goalFacts: Record<string, boolean> = {};
+  // What only this session saw happen (the rest is read from the world).
+  private hireSeen = false;
+  private fishEver = false;
+  private shopOpened = false;
+  private readonly villagersTalked = new Set<string>();
+  private coinsEarned = 0;
+  private coinsSeen = -1;
+  private visitStartedAt = 0;
   /** Bound once: FxBudget times it every frame. */
   private readonly boundGuideTick = (): void => this.guideTick();
   /** main-simple's own unprompted hints, held while the guide runs. */
@@ -4168,6 +4492,7 @@ export class SimpleApp {
         skipped: () => {
           // Skip fires the compass hint instead; the gate is open by now.
           this.renderGuide();
+          this.guideSkipHintShown = true;
           this.ui.toast(
             '🧭 The gold ➤ up top points to your next stop — tap it for the island map.',
             { hint: true },
@@ -4186,6 +4511,15 @@ export class SimpleApp {
         controlsCard: !this.ui.isTouchDevice(),
       },
     );
+    // The recruiter route (P2-A4) arms when a hire card closes. D4's 'ds:modal'
+    // says which panel that was: {open: false, id: 'zone', zone: 'hire'}.
+    this.route = new RecruiterRoute({ track: (name, props) => track(name, props) });
+    // The Next chip (P2-A12) takes the card once the first steps are over.
+    if (this.guide) {
+      this.nextChip = new NextChip(this.guide, { track: (name, props) => track(name, props) });
+    }
+    this.boundHandlers.guideModal = (e: Event) => this.onModalEvent((e as CustomEvent).detail);
+    window.addEventListener('ds:modal', this.boundHandlers.guideModal);
     // No card yet: #ds-guide is made when the guide first arms (renderGuide).
     // How the welcome card closes decides how the guide arms. Capture phase,
     // ahead of the buttons' own handlers: arming writes ds_hint_compass
@@ -4248,18 +4582,68 @@ export class SimpleApp {
     return true;
   }
 
+  /**
+   * A modal opened or closed (D4's 'ds:modal'). A hire card closing arms the
+   * recruiter route for a visitor who has not walked anywhere yet: one who
+   * read the card and closed it stood on an island nobody had explained.
+   */
+  private onModalEvent(detail: unknown): void {
+    const d = detail as { open?: unknown; id?: unknown; zone?: unknown } | null;
+    if (!d || d.id !== 'zone' || d.zone !== 'hire') return;
+    if (d.open === true) this.hireSeen = true; // a rung-1 goal (P2-A12)
+    if (d.open !== false) return;
+    const source = this.hireCardSource ?? 'hire';
+    this.hireCardSource = null;
+    this.armRoute(source);
+  }
+
+  /** Arm the route; like arming First steps, that counts as the compass hint
+   *  shown (ds_hint_compass). */
+  private armRoute(source: RouteSource): boolean {
+    if (!this.route?.arm(source, this.walkedSinceLoad)) return false;
+    try {
+      localStorage.setItem('ds_hint_compass', '1');
+    } catch {
+      /* no storage */
+    }
+    this.renderGuide();
+    return true;
+  }
+
   /** While the guide runs, or may arm as the welcome card closes, main-simple
    *  fires no unprompted hints: talk, coin, lost, district, specials. */
   private guideHoldsHints(): boolean {
     const g = this.guide;
     if (!g) return false;
-    if (g.isActive()) return true;
+    // The recruiter route holds them the same way while it is up.
+    if (g.isActive() || this.route?.showing()) return true;
     return g.eligible() && !g.running() && (!this.introSettled || this.ui.isWelcomeVisible());
   }
 
-  /** One of main-simple's own unprompted hints: now, or once the guide lets go. */
+  /**
+   * A place hint that has not shown by the time the visitor is in a room is
+   * dropped (D6's until()). On a phone a hint waits while a prompt is up, so
+   * one fired on a doorstep came up over the room once the hall panel closed
+   * (measured at 390x844: 'A villager nearby talks…', indoors).
+   */
+  private readonly indoorsNow = (): boolean => this.scene.isInsideInterior();
+  /** The talk hint, dropped the same way, hands its once-ever key back
+   *  unless the visitor has talked to a villager by then: it is the one
+   *  line that says the villagers answer, and it fires again outside. */
+  private readonly talkHintStale = (): boolean => {
+    if (!this.scene.isInsideInterior()) return false;
+    try {
+      if (localStorage.getItem('ds_npc_chatted') !== '1') localStorage.removeItem('ds_hint_talk');
+    } catch {
+      /* no storage */
+    }
+    return true;
+  };
+
+  /** One of main-simple's own unprompted hints: now, or once the guide lets
+   *  go; one that comes due inside a room waits for the door (P2-A1). */
   private hintLater(message: string): void {
-    if (!this.guideHoldsHints()) {
+    if (!this.guideHoldsHints() && !this.scene.isInsideInterior()) {
       this.ui.toast(message, { hint: true });
       return;
     }
@@ -4269,8 +4653,7 @@ export class SimpleApp {
   /** The guide's frame (FxBudget 'guide'): DOM writes only when it changed. */
   private guideTick(): void {
     const g = this.guide;
-    // A finished save still runs its finale (a clock, the pause rules).
-    if (!g || (!g.eligible() && !g.running())) return;
+    if (!g) return;
     const ui = this.ui;
     if (
       this.guideArmOnPanelsClosed &&
@@ -4299,11 +4682,37 @@ export class SimpleApp {
       this._guidePrev.copy(p);
       this.guidePrevValid = true;
       if (this.lastCompassTarget) f.targetDist = p.distanceTo(this.lastCompassTarget);
+      // a teleport (respawn, a room) is not a walk
+      if (f.walked > 0 && f.walked < 5) this.walkedSinceLoad += f.walked;
     }
     f.moveMag = this.guideMoveMag;
     f.yaw = this.scene.getOrbitCamera().getYaw();
-    g.setCompassLabel(this.compassLabel);
-    g.frame(f);
+    // The recruiter route has the card while it shows: First steps waits
+    // behind it like behind a panel, and comes back 600 ms after it goes.
+    const route = this.route;
+    route?.frame(f.dt, f.blocked);
+    if (route?.showing()) f.blocked = true;
+    // A finished save still runs its finale (a clock, the pause rules).
+    if (g.eligible() || g.running()) {
+      g.setCompassLabel(this.compassLabel);
+      g.frame(f);
+    }
+    // The Next chip (P2-A12): what is done is read twice a second, and at
+    // once when the first steps end, so the chip follows them within a frame.
+    const chip = this.nextChip;
+    if (chip) {
+      this.goalsT += f.dt;
+      const on = g.over() && !route?.showing();
+      if (this.goalsT >= 0.5 || on !== this.goalsWereOn) {
+        this.goalsT = 0;
+        this.syncGoals(on);
+      }
+      // Walking off folds the list: it is for choosing where to go.
+      if (this.guideMoveMag > 0.3) chip.fold();
+      chip.frame(f.dt, f.blocked);
+      this.goalsPublishT += f.dt;
+      if (on && this.goalsPublishT >= 15) this.publishGoals();
+    }
     this.renderGuide();
     this.guidePromptT += f.dt;
     if (this.guidePromptT > 0.25) {
@@ -4323,8 +4732,32 @@ export class SimpleApp {
    */
   private renderGuide(): void {
     const g = this.guide;
-    if (!g || (!this.guideCard && !g.running())) return;
+    if (!g) return;
+    const route = this.route ?? null;
+    const chip = this.nextChip ?? null;
+    const routeUp = route !== null && route.showing();
+    const chipUp = chip !== null && chip.showing();
+    if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;
     const card = (this.guideCard ??= this.createGuideCard());
+    // One surface at a time on the one card: the recruiter route while it
+    // shows, else First steps while it runs, else the Next chip. With none
+    // wanted, the one that was up draws its own end (the card goes, and
+    // 'ds:guide' says so).
+    const want = routeUp ? 'route' : g.running() ? 'steps' : chipUp ? 'next' : null;
+    const surface = want ?? this.guideSurface ?? null;
+    this.guideSurface = want;
+    if (surface === 'route' && route !== null) {
+      if (card.version() !== route.version()) card.render(route.view(), route.copy());
+      return;
+    }
+    if (surface === 'next' && chip !== null) {
+      if (card.version() !== chip.version()) {
+        // the same rule as GuideCard's rows: side by side on a phone or in
+        // a short window
+        card.render(chip.view(), chip.copy(this.ui.isTouchDevice() || innerHeight <= 500));
+      }
+      return;
+    }
     if (card.version() === g.version()) return;
     const v = g.view();
     const root = document.documentElement;
@@ -4336,6 +4769,14 @@ export class SimpleApp {
         runKey: root.getAttribute('data-run-key'),
         compassLabel: this.compassLabel,
         finaleLabel: PASSPORT_META[this.guideFinaleDistrict()].label,
+        // P2-A7: with quest lines to say first, E does not open the chat.
+        talkQuest:
+          v.step === 'talk' &&
+          v.talkTarget !== null &&
+          this.questLinesFirst(v.talkTarget, this.scene.getCoinsCollected()),
+        // '?' is named only where D8's Controls & settings sheet answers it.
+        controlsSheet:
+          typeof (this.ui as unknown as { showControls?: unknown }).showControls === 'function',
       }),
     );
   }
@@ -4357,7 +4798,28 @@ export class SimpleApp {
     else if (id === 'resume') g.expand();
     else if (id === 'ok') g.controlsDone();
     else if (id === 'close') g.finish();
-    else {
+    else if (id === 'stay') this.route?.stay();
+    else if (id === 'next') this.nextChip?.toggle();
+    else if (id.startsWith('goal:')) {
+      // A goal's 'Show me', through the same seam (P2-A5).
+      const goal = this.nextChip?.pick(id.slice('goal:'.length));
+      if (goal) {
+        window.dispatchEvent(
+          new CustomEvent('ds:guide-to', { detail: { key: goal.guideKey, source: 'next' } }),
+        );
+      }
+    } else if (id.startsWith('route:')) {
+      // A stop's 'Show me': the compass goes there through the seam every
+      // producer uses (P2-A5), and First steps arms, because a visitor who
+      // has only read a card has not been shown how to walk.
+      const stop = id.slice('route:'.length);
+      if (this.route?.pick(stop)) {
+        window.dispatchEvent(
+          new CustomEvent('ds:guide-to', { detail: { key: `district:${stop}`, source: 'route' } }),
+        );
+        this.armGuide('cta');
+      }
+    } else {
       const key = id === 'school' ? 'school' : `district:${this.guideFinaleDistrict()}`;
       g.finish();
       // The finale's 'Show me' goes through the seam every producer uses
@@ -4365,6 +4827,98 @@ export class SimpleApp {
       window.dispatchEvent(new CustomEvent('ds:guide-to', { detail: { key, source: 'guide' } }));
     }
     this.renderGuide();
+  }
+
+  /** A '1' flag in storage (the one-shot acts refreshCompletion reads too). */
+  private storedFlag(key: string): boolean {
+    try {
+      return localStorage.getItem(key) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  /** What is done on the ladder right now (P2-A12): goal id to done. One
+   *  object, refilled twice a second. */
+  private goalFacts(): Record<string, boolean> {
+    const f = this._goalFacts;
+    const passport = this.passport;
+    for (const z of PASSPORT_ZONES) f[`stamp:${z}`] = passport?.has(z) ?? false;
+    f.hire = this.hireSeen;
+    f.talk = this.villagersTalked.size > 0 || this.storedFlag('ds_npc_chatted');
+    f.race = this.storedFlag('ds_raced');
+    f.catch = this.fishEver || this.fishCaught > 0;
+    f.lesson = this.lessons.length > 0;
+    f.shop =
+      this.shopOpened || this.ownedRod || this.ownedAxe || this.ownedSickle || this.ownedPickaxe;
+    f.build = this.ownBuilds.size > 0;
+    f.guestbook = this.storedFlag('ds_said_hi');
+    const total = this.deliverySystem?.getTotalCount?.() ?? 0;
+    f.deliveries =
+      this.storedFlag('ds_courier_reward') ||
+      (total > 0 && (this.deliverySystem?.getCompletedCount?.() ?? 0) >= total);
+    f.crown = this.ownedHats.has('crown');
+    return f;
+  }
+
+  /**
+   * Feed the Next chip what is true now: the done goals, the goal the
+   * compass is on (so the chip and the pill name the same district), and the
+   * accepted quests. Then find where its goal is, for the compass's last
+   * resort. `on`: the first steps are over and the route card is not up.
+   */
+  private syncGoals(on: boolean): void {
+    const chip = this.nextChip;
+    if (!chip) return;
+    const coins = this.scene.getCoinsCollected();
+    if (this.coinsSeen >= 0 && coins > this.coinsSeen) this.coinsEarned += coins - this.coinsSeen;
+    this.coinsSeen = coins;
+    const quests = this.npcQuests
+      .getActiveQuests(coins)
+      .map((q) => `${q.giver}: ${q.label} ${q.progress}`);
+    const passport = this.passport;
+    const preferred =
+      passport && !passport.isComplete() ? `stamp:${this.guideFinaleDistrict()}` : null;
+    const grew = chip.sync(on, this.goalFacts(), preferred, quests);
+    const next = on ? chip.next() : null;
+    const hit = next ? resolveGuideKey(next.guideKey, this.guideWorld) : null;
+    this.goalTarget = hit
+      ? {
+          pos: this._goalPos.set(hit.pos.x, hit.pos.y, hit.pos.z),
+          label: `${hit.icon} ${hit.label}`,
+        }
+      : null;
+    if (grew || on !== this.goalsWereOn) {
+      this.goalsWereOn = on;
+      this.publishGoals();
+    }
+  }
+
+  /**
+   * window 'ds:goals' {done, total, next, goals, visit}: the ladder for D's
+   * Things to do, and the visit's numbers for the crown's summary (P2-D10).
+   * Sent when a goal is done, when the chip comes on, every 15 s while it is
+   * on, and as the passport completes.
+   */
+  private publishGoals(): void {
+    const chip = this.nextChip;
+    if (!chip) return;
+    this.goalsPublishT = 0;
+    const started = this.visitStartedAt || performance.now();
+    window.dispatchEvent(
+      new CustomEvent('ds:goals', {
+        detail: {
+          ...chip.summary(),
+          visit: {
+            stamps: this.passport?.count() ?? 0,
+            villagers: this.villagersTalked.size,
+            coins: this.coinsEarned,
+            secrets: this.secrets.count(),
+            minutes: Math.round((performance.now() - started) / 60000),
+          },
+        },
+      }),
+    );
   }
 
   /** Assemble every shop/provider/build-spot POI and open the island map.
@@ -4822,7 +5376,10 @@ export class SimpleApp {
     if (recruiter && !skipped) {
       // The play-to-hire path CONVERTS: the highlights end on the hire card
       // (CV, experience, LinkedIn, email), not on an empty meadow — and not
-      // on the old client-services contact pitch.
+      // on the old client-services contact pitch. When that card closes the
+      // recruiter route takes over (P2-A4): the tour used to end on 20 s of
+      // nothing.
+      this.hireCardSource = 'tour';
       this.ui.showHireCard('cta');
       return;
     }
@@ -4845,7 +5402,25 @@ export class SimpleApp {
     look: THREE.Vector3; // eased look target
     prevFov: number;
     ending: number; // <0 = active; >=0 = seconds into the release glide
+    /** The pose the release glide starts from (its first frame sets it). */
+    from: { pos: THREE.Vector3; look: THREE.Vector3; up: THREE.Vector3; fov: number } | null;
   } | null = null;
+  /** The release glide's length: the old 0.35 s whip-panned the last frame (w2 integration). */
+  private static readonly NPC_CINE_RELEASE_S = 0.6;
+  private readonly _cineGoalPos = new THREE.Vector3();
+  private readonly _cineGoalLook = new THREE.Vector3();
+  private readonly _cineOffA = new THREE.Vector3();
+  private readonly _cineOffB = new THREE.Vector3();
+  private readonly _cineQuat = new THREE.Quaternion();
+  private readonly _cineQuatId = new THREE.Quaternion();
+  private readonly _cineQuatTo = new THREE.Quaternion();
+  private readonly _cineNormal = new THREE.Vector3();
+  /** The surface normal under the player: the orbit camera's up. */
+  private cineNormal(): THREE.Vector3 {
+    const p = this.scene.getPlayer();
+    return p ? p.getSurfaceNormalInto(this._cineNormal) : this._cineNormal.copy(this.camera0Up);
+  }
+  private readonly camera0Up = new THREE.Vector3(0, 1, 0);
   private chatWalkAwayT = 0; // sustained walk intent closes the chat
   private watchOpenedAt = 0; // wall-screen open time — same-press close guard
   private isletUnlocked = false; // beach-house door code accepted this session
@@ -4856,7 +5431,154 @@ export class SimpleApp {
   private readonly _cineLookT = new THREE.Vector3();
   private readonly _cineTmp = new THREE.Vector3();
 
+  /**
+   * E on a villager: the shop for the Market Vendor, a quest step or the
+   * quest lines first where there are any (questLinesFirst), then the chat
+   * for a villager who talks through Claude Haiku 4.5, else their own lines.
+   */
+  private onNpcInteract(npcData: { name: string; dialogue: string[] }): void {
+    console.log(`💬 Talking to: ${npcData.name}`);
+    // The Market Vendor runs the island shop.
+    if (npcData.name === 'Market Vendor') {
+      sfx.blip();
+      this.openShop();
+      return;
+    }
+    // Quest steps take PRIORITY over idle chat, so a quest-giver still gives
+    // its quest (and fetch pickups / completions still fire) even though it
+    // is also an AI NPC. When it has no active quest step, it falls through
+    // to free-text chat below.
+    // A reminder or a thank-you ('status') is not a step: it shows once a
+    // session, and after that E opens the chat (P2-A7). A quest giver who
+    // talks through Claude Haiku 4.5 used to answer every press with the
+    // same written line for the rest of the visit, quest done or not.
+    const coins = this.scene.getCoinsCollected();
+    const talk = this.questLinesFirst(npcData.name, coins)
+      ? this.npcQuests.onTalk(npcData.name, coins)
+      : null;
+    if (talk) {
+      this.questLinesShown.add(npcData.name);
+      this.guide?.complete('talk');
+      this.ui.showDialogue(npcData.name, talk.lines);
+      this.beginNpcDialogue(npcData.name);
+      if (talk.accepted) {
+        sfx.blip();
+        this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+      }
+      // Fetch quest: picked the fish up at the Fisherman — carry it in hand
+      if (talk.pickedUp) {
+        sfx.collect();
+        this.scene.setPlayerCarryingFish(true);
+      }
+      if (talk.completed) {
+        const q = talk.completed;
+        // Delivering the fish → the Baker bakes it into a pie before your eyes
+        if (q.id === 'baker_catch') this.scene.deliverFishToBaker();
+        this.scene.addCoins(q.rewardCoins);
+        this.scene.floatCoinsAtPlayer(q.rewardCoins);
+        this.scene.logTransaction('Quest reward', q.rewardCoins);
+        sfx.questComplete();
+        this.ui.showQuestComplete({
+          name: `${q.giverName}'s request`,
+          reward: { type: 'message', value: `+${q.rewardCoins} 🪙 reward` },
+        } as any);
+        this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
+      }
+      return;
+    }
+    // No active quest for this NPC → intelligent free-text conversation if it
+    // has a brain wired up. On ANY failure (function/App Check/rate/spend
+    // cap/moderation/offline) askNpc returns a fallback and we cycle the
+    // NPC's authored canned lines, so the NPC never appears broken.
+    if (isAiNpc(npcData.name)) {
+      this.openVillagerChat(npcData);
+      return;
+    }
+    // Non-AI, non-quest NPC → canned dialogue, led by a living-world mood line.
+    let lines = npcData.dialogue;
+    const flavor = moodNpcFlavor();
+    if (flavor) lines = [flavor, ...lines];
+    this.ui.showDialogue(npcData.name, lines);
+    this.beginNpcDialogue(npcData.name);
+  }
+
+  /**
+   * The free-text conversation with a villager who talks through Claude
+   * Haiku 4.5. On ANY failure (function, App Check, rate or spend cap,
+   * moderation, offline) askNpc returns a fallback and the villager cycles
+   * their authored lines, so they never appear broken.
+   */
+  private openVillagerChat(npcData: { name: string; dialogue: string[] }): void {
+    this.aiGuideTarget = null; // meet-the-townsfolk guide fulfilled
+    this.markDone('ds_npc_chatted');
+    this.guide?.complete('talk');
+    sfx.blip();
+    const canned = npcData.dialogue;
+    let ci = 1; // first fallback skips the opening line (canned[0])
+    // Aware opening: same live-state composition as the proximity bubble
+    // (planner-assigned activity + hour + day-theme), so the walk-up line
+    // and the conversation flow as one — no more static canned[0].
+    const aware = composeAwareGreeting({
+      activity: this.scene.getNpcActivity(npcData.name),
+      hour: this.scene.getEnvironmentCycle()?.getHour() ?? 12,
+      event: getWorldState()?.npcPlan?.event,
+    });
+    this.ui.showNpcChat(
+      npcData.name,
+      aware || canned[0] || 'Hello, traveller.',
+      async (text) => {
+        track('npc_chat_sent', { npc: npcData.name });
+        const res = await askNpc(npcData.name, text);
+        if (res.reply && !res.fallback) return res.reply;
+        // A written line stands in (askNpc counted it as npc_fallback),
+        // so the header stops promising a generated reply.
+        this.ui.markNpcChatOffline(npcData.name);
+        return canned[ci++ % canned.length] ?? '…';
+      },
+      voiceProfileFor(npcData.name),
+    );
+    this.beginNpcDialogue(npcData.name);
+    try {
+      // Found the feature themselves — the discovery hint would only
+      // teach what they already know.
+      localStorage.setItem('ds_hint_talk', '1');
+    } catch {
+      /* no storage */
+    }
+    // Deepen the opening in the background: the composed line shows
+    // instantly; when the persona's generated continuation arrives the
+    // NPC simply keeps talking. Failures resolve silently — the
+    // composed opening already stands on its own.
+    // NPC memory: visitor facts ride the LLM-ONLY copy of the greeting
+    // (the displayed bubble stays clean) — the model naturally works
+    // "back after three days, still in that crown" into its reply.
+    // Facts are data inside the greeting quote, within the 300-char cap.
+    void askNpcOpening(npcData.name, this.withVisitorFacts(aware)).then((res) => {
+      if (res.reply && !res.fallback) {
+        this.ui.appendNpcChatLine(npcData.name, res.reply);
+      }
+    });
+  }
+
+  /** Villagers whose quest lines have shown this session (P2-A7). */
+  private readonly questLinesShown = new Set<string>();
+
+  /**
+   * Does E on this villager open quest dialogue (true), or go on to the chat
+   * or their ambient lines (false)? A step always does: a request to accept,
+   * a pickup, a delivery, a completion. A reminder or a thank-you does once a
+   * session for a villager who talks through Claude Haiku 4.5; one of the
+   * scripted few has nothing else to say, so theirs always shows.
+   */
+  private questLinesFirst(name: string, coins: number): boolean {
+    const kind = this.npcQuests.talkKind(name, coins);
+    if (kind === null) return false;
+    if (kind !== 'status') return true;
+    return !(isAiNpc(name) && this.questLinesShown.has(name));
+  }
+
   private beginNpcDialogue(name: string): void {
+    this.villagersTalked.add(name); // the visit's count, and a rung-2 goal (P2-A12)
     this.npcDialogueName = name;
     this.chatWalkAwayT = 0;
     this.trailDone = true; // talking to a villager is what the trail was for
@@ -4874,6 +5596,7 @@ export class SimpleApp {
       look: player.getWorldPosition().clone(),
       prevFov: cam.fov,
       ending: -1,
+      from: null,
     };
     this.scene.setCameraSuspended(true);
   }
@@ -4939,24 +5662,62 @@ export class SimpleApp {
       cam.fov = expDecay(cam.fov, c.prevFov - 8, 1.3, dt);
       cam.updateProjectionMatrix();
     } else {
-      // Release glide: look eases back onto the player and FOV restores, THEN
-      // the orbit camera resumes \u2014 its own position ease carries the camera
-      // home without a whip-pan (rotation snaps on resume, so the final look
-      // target must already be near the player).
-      c.ending += dt;
-      if (playerPos) {
-        const up = this._cineUp.copy(playerPos).normalize();
-        expDecayV3(c.look, this._cineTmp.copy(playerPos).addScaledVector(up, 1.4), 10, dt);
+      // Release glide (w2 integration): the camera glides ONTO the orbit
+      // camera's follow pose (position, look target, up and FOV), so the
+      // resume frame's lookAt turns nothing. It used to ease only the look
+      // toward the player for 0.35 s and leave the rest to the resume, whose
+      // lookAt snapped onto the orbit target: 15 deg in one frame on main,
+      // and 50-112 deg when the follow sat on the far side, the position ease
+      // then swinging the camera past the avatar's head. The follow is first
+      // turned to the two-shot's side (adoptView), and the offset turns about
+      // the look target, so the path never cuts through the avatar.
+      const oc = this.scene.getOrbitCamera();
+      if (!c.from) {
+        if (playerPos) oc.adoptView(c.pos);
+        c.from = { pos: c.pos.clone(), look: c.look.clone(), up: cam.up.clone(), fov: cam.fov };
       }
-      cam.fov = expDecay(cam.fov, c.prevFov, 12, dt);
-      cam.updateProjectionMatrix();
-      if (c.ending > 0.35) {
+      c.ending += dt;
+      const f = c.from;
+      const u = Math.min(1, c.ending / SimpleApp.NPC_CINE_RELEASE_S);
+      const k = u * u * (3 - 2 * u); // smoothstep: no step at either end
+      if (u >= 1 || !playerPos) {
         cam.fov = c.prevFov; // exact restore \u2014 updateFov may never run (pre-ride)
         cam.updateProjectionMatrix();
+        if (playerPos) {
+          oc.getFollowPose(this._cineGoalPos, this._cineGoalLook);
+          cam.position.copy(this._cineGoalPos);
+          cam.up.copy(this.cineNormal());
+          cam.lookAt(this._cineGoalLook);
+        }
         this.scene.setCameraSuspended(false);
         this.npcCine = null;
         return;
       }
+      oc.getFollowPose(this._cineGoalPos, this._cineGoalLook);
+      c.look.lerpVectors(f.look, this._cineGoalLook, k);
+      // The offset from the look target: its direction slerps, its length lerps.
+      const offA = this._cineOffA.subVectors(f.pos, f.look);
+      const offB = this._cineOffB.subVectors(this._cineGoalPos, this._cineGoalLook);
+      const lenA = offA.length();
+      const lenB = offB.length();
+      if (lenA > 1e-6 && lenB > 1e-6) {
+        offA.divideScalar(lenA);
+        offB.divideScalar(lenB);
+        // The full turn, then k of it (slerpQuaternions copies its first
+        // argument into the target first, so the two must not alias).
+        this._cineQuatTo.setFromUnitVectors(offA, offB);
+        this._cineQuat.slerpQuaternions(this._cineQuatId, this._cineQuatTo, k);
+        offA.applyQuaternion(this._cineQuat).multiplyScalar(lenA + (lenB - lenA) * k);
+        c.pos.copy(c.look).add(offA);
+      } else {
+        c.pos.lerpVectors(f.pos, this._cineGoalPos, k);
+      }
+      cam.fov = f.fov + (c.prevFov - f.fov) * k;
+      cam.updateProjectionMatrix();
+      cam.position.copy(c.pos);
+      cam.up.lerpVectors(f.up, this.cineNormal(), k).normalize();
+      cam.lookAt(c.look);
+      return;
     }
     cam.position.copy(c.pos);
     cam.up.copy(this._cineUp.copy(c.pos).normalize());
@@ -5162,6 +5923,7 @@ export class SimpleApp {
    * re-renders after every action so balances and buttons stay current.
    */
   private openShop(): void {
+    this.shopOpened = true; // a rung-2 goal (P2-A12)
     const render = () => {
       this.ui.showShop(
         {
@@ -6643,6 +7405,14 @@ export class SimpleApp {
 
     if (this.boundHandlers.guideWelcomeKey) {
       window.removeEventListener('keydown', this.boundHandlers.guideWelcomeKey, true);
+    }
+
+    if (this.boundHandlers.interiorEscape) {
+      window.removeEventListener('keydown', this.boundHandlers.interiorEscape, true);
+    }
+
+    if (this.boundHandlers.guideModal) {
+      window.removeEventListener('ds:modal', this.boundHandlers.guideModal);
     }
 
     this.guideCard?.dispose();

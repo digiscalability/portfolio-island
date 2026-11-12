@@ -592,6 +592,32 @@ describe('from visualPolish.test.ts', () => {
     expect(prime).toBeLessThan(compile);
   });
 
+  test('the boot precompile binds the target the first frame draws into, and flushes (w1-fix)', () => {
+    const main = stripped('main-simple.ts');
+    // Compiled against the canvas, the boot pass built canvas variants and
+    // the first composer frame linked ~47 more synchronously.
+    const bind = main.indexOf('three.setRenderTarget(sceneTarget);');
+    const compile = main.indexOf('compileAsync(this.scene');
+    const unbind = main.indexOf('three.setRenderTarget(bound);', compile);
+    const flush = main.indexOf('Materials.flushAfterCompile(three);');
+    const wait = main.indexOf('if (pending) await pending;');
+    expect(bind).toBeGreaterThan(-1);
+    expect(bind).toBeLessThan(compile);
+    expect(compile).toBeLessThan(unbind);
+    expect(unbind).toBeLessThan(flush);
+    expect(flush).toBeLessThan(wait);
+    // A stand-in for the composer's buffer only where a composer exists; the
+    // low tier draws to the canvas and compiles against it.
+    const pick = bodyOf(main, 'private bootCompileTarget(): THREE.WebGLRenderTarget | null');
+    expect(pick).toContain('if (!this.renderer.isPostProcessingAvailable()) return null;');
+    // warmUp's renderer.compile reads the bound target too.
+    const warm = main.indexOf('this.renderer.warmUp(this.scene, this.scene.getCamera());');
+    const before = main.lastIndexOf('three.setRenderTarget(this.bootCompileTarget());', warm);
+    expect(before).toBeGreaterThan(-1);
+    expect(warm - before).toBeLessThan(120);
+    expect(main.indexOf('this.disposeBootCompileTarget();', warm)).toBeGreaterThan(warm);
+  });
+
   test('the camera size filter applies to every root', () => {
     const cam = stripped('OrbitCamera.ts');
     // `&& rootIndex !== 0` exempted every DESCENDANT of the island group, not
@@ -711,6 +737,41 @@ describe('from visualPolish.test.ts', () => {
     expect(call).toBeLessThan(
       walk.indexOf('this.scene.setPlayerMovement(walkForward, walkStrafe);'),
     );
+  });
+
+  test('the welcome-card pill and the trail-end hint nits (w1-fix)', () => {
+    const main = stripped('main-simple.ts');
+    // The pill waits behind the card while First steps will arm as it closes.
+    expect(main).toMatch(
+      /st\.guidePending =\s*!!g && g\.eligible\(\) && !g\.running\(\) && this\.ui\.isWelcomeVisible\(\) && !this\.tour;/,
+    );
+    expect(main.indexOf('st.guidePending =')).toBeLessThan(
+      main.indexOf('switch (compassTarget(st))'),
+    );
+    // Skip's hint already said what the gold arrow does: the trail's end
+    // drops that clause after it.
+    const skipped = blockOf(main, 'skipped: () =>');
+    expect(skipped).toContain('this.guideSkipHintShown = true;');
+    const trail = blockOf(main, 'this.scene.setOnArrivalTrail(() =>');
+    expect(trail).toContain('this.guideSkipHintShown');
+    expect(trail).toContain("'🏝️ You’ve got the hang of it.'");
+  });
+
+  test('both room warms ask SimpleUI to lay the zone panel out ahead (CO-A5 remainder)', () => {
+    // The first showZonePanel cost 156-184 ms at 4x CPU inside the fade
+    // callback. D adds prewarmZonePanel(); A merges first, so the call is
+    // optional and the branch is green on a SimpleUI without it.
+    const main = stripped('main-simple.ts');
+    for (const marker of [
+      'private readonly warmRoomsEarly = (): void =>',
+      'private readonly warmRoomsIdle = (): void =>',
+    ]) {
+      const body = bodyOf(main, marker);
+      expect(body.indexOf('this.prewarmZonePanel();')).toBeGreaterThan(
+        body.indexOf('void this.scene.warmInterior();'),
+      );
+    }
+    expect(bodyOf(main, 'private prewarmZonePanel(): void')).toContain('.prewarmZonePanel?.();');
   });
 });
 
@@ -941,10 +1002,20 @@ describe('A7: one compass target at a time (the zone branch, replaced)', () => {
     const m = stripped('main-simple.ts');
     const intro = bodyOf(m, 'const afterIntro = () =>');
     // chosen once, at the end of the intro, then faced
-    const pick = intro.indexOf('this.trailVillager = this.pickTrailVillager();');
+    expect(intro).toContain('this.chooseTrailVillager();');
+    const choose = bodyOf(m, 'private chooseTrailVillager(');
+    expect(choose).toContain('if (this.trailChosen) return;');
+    const pick = choose.indexOf('this.trailVillager = this.pickTrailVillager();');
     expect(pick).toBeGreaterThan(-1);
-    expect(pick).toBeLessThan(intro.indexOf('this.faceTrailVillager();'));
+    expect(pick).toBeLessThan(choose.indexOf('this.faceTrailVillager();'));
     expect(m.split('this.trailVillager = ').length - 1).toBe(1);
+    // a calm entry faces before the first frame: its afterIntro waits for
+    // the late models, and a setYaw then would turn the view in clear sight
+    const calm = bodyOf(m, '} else if (this.calmEntry) {', m.indexOf('const afterIntro'));
+    expect(calm.indexOf('this.chooseTrailVillager();')).toBeGreaterThan(-1);
+    expect(calm.indexOf('this.chooseTrailVillager();')).toBeLessThan(
+      calm.indexOf('this.whenLateModelsLinked('),
+    );
     const face = bodyOf(m, 'private faceTrailVillager(');
     expect(face).toContain('if (!this.coarsePointer) return;');
     expect(face).toContain('const bearing = compassBearing(fwd.normalize(), to.normalize(), n);');
@@ -1045,7 +1116,10 @@ describe('A6: First steps, wired into main-simple', () => {
       'return new GuideCard(this.ui.getOverlay(), {',
     );
     const render = bodyOf(m, 'private renderGuide(');
-    expect(render).toContain('if (!g || (!this.guideCard && !g.running())) return;');
+    // ...or the recruiter route shows (P2-A4): a visit that never arms either
+    // still carries no #ds-guide
+    // ...or the Next chip (P2-A12)
+    expect(render).toContain('if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;');
     expect(render).toContain('const card = (this.guideCard ??= this.createGuideCard());');
     expect(m.split('this.createGuideCard()').length - 1).toBe(1);
     expect(bodyOf(m, 'private armGuide(')).toContain('this.renderGuide();');
@@ -1166,17 +1240,22 @@ describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
     for (const l of labels) expect(l[0], l).toBe(l[0].toUpperCase());
   });
 
-  test("'ds:intro': one start as the fly-in or the calm entry begins, one settled in afterIntro", () => {
+  test("'ds:intro': one start as the fly-in or a calm entry begins, one settled in afterIntro", () => {
     const m = stripped('main-simple.ts');
     const start =
       "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'start' } }));";
     const settled =
       "window.dispatchEvent(new CustomEvent('ds:intro', { detail: { phase: 'settled' } }));";
-    expect(m.split(start).length - 1).toBe(2);
+    // one per entry: reduced motion, a phone's calm entry (A10), the fly-in
+    expect(m.split(start).length - 1).toBe(3);
     expect(m.split(settled).length - 1).toBe(1);
     expect(bodyOf(m, 'const afterIntro = () =>')).toContain(settled);
-    // the calm entry: start before the snap and afterIntro
-    const calm = blockOf(m, 'if (a11y.reducedMotion) {', m.indexOf('const afterIntro'));
+    // reduced motion: start before the snap and afterIntro
+    const reduced = bodyOf(m, 'if (a11y.reducedMotion) {', m.indexOf('const afterIntro'));
+    expect(reduced.indexOf(start)).toBeGreaterThan(-1);
+    expect(reduced.indexOf(start)).toBeLessThan(reduced.indexOf('afterIntro()'));
+    // the calm entry: the same order
+    const calm = bodyOf(m, '} else if (this.calmEntry) {', m.indexOf('const afterIntro'));
     expect(calm.indexOf(start)).toBeGreaterThan(-1);
     expect(calm.indexOf(start)).toBeLessThan(calm.indexOf('afterIntro()'));
     // the fly-in: start right before the swoop
@@ -1184,5 +1263,508 @@ describe('A8: hints after minute one, capitalised specials, ds:intro', () => {
     expect(m.lastIndexOf(start, fly)).toBeGreaterThan(
       m.lastIndexOf('const restoreIntroQuality', fly),
     );
+  });
+});
+
+// ---- stage-2 wiring (wave 2) ---------------------------------------------
+// interiorEntry.test.ts runs onInteriorEscape, enterBuilding and exitBuilding
+// for real; these pin what only main-simple's own text can show: where the
+// listener is hooked, and that update() keeps the outdoors out of a room.
+describe('P2-A1: indoors, Escape leaves and the outdoors stays out', () => {
+  const m = (): string => stripped('main-simple.ts');
+  const update = (): string => bodyOf(m(), 'private update(');
+
+  test('Escape is heard on window in the capture phase, and unhooked on teardown', () => {
+    expect(m()).toContain(
+      'this.boundHandlers.interiorEscape = (e: KeyboardEvent) => this.onInteriorEscape(e);',
+    );
+    expect(m()).toContain(
+      "window.addEventListener('keydown', this.boundHandlers.interiorEscape, true);",
+    );
+    expect(bodyOf(m(), 'private dispose(')).toContain(
+      "window.removeEventListener('keydown', this.boundHandlers.interiorEscape, true);",
+    );
+    const esc = bodyOf(m(), 'private onInteriorEscape(');
+    // a panel or the name prompt owns the press: checked before anything leaves
+    const guard = esc.indexOf('if (this.ui.panels.isOpen() || this.ui.isWelcomeVisible()) return;');
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(esc.indexOf('this.exitBuilding(this.insideIsZone);'));
+    expect(esc).toContain('if (!this.scene?.isInsideInterior()) return;');
+  });
+
+  test('both door swaps drop the latched presses, inside the veil', () => {
+    const enter = bodyOf(m(), 'private enterBuilding(');
+    expect(enter.indexOf('this.inputManager.clearLatched();')).toBeGreaterThan(
+      enter.indexOf('this.scene.enterInterior('),
+    );
+    const exit = bodyOf(m(), 'private exitBuilding(');
+    expect(exit.indexOf('this.inputManager.clearLatched();')).toBeGreaterThan(
+      exit.indexOf('this.scene.exitInterior();'),
+    );
+    // one veil at a time on the way out
+    expect(exit).toContain('if (this.leavingBuilding) return;');
+  });
+
+  test('no outdoor hint fires in a room, and the lost clock stops at the door', () => {
+    const u = update();
+    expect(u).toContain('const indoors = this.scene.isInsideInterior();');
+    expect(u).toContain(
+      'if (!this.ui.isWelcomeVisible() && !indoors) this.lostAccum += deltaTime;',
+    );
+    // the district card, the once-ever lost hint and the talk hint
+    expect(u).toMatch(/!indoors &&\s*!hintsHeld &&\s*!this\.ui\.isWelcomeVisible\(\) &&/);
+    expect(blockOf(u, 'this.lostAccum > 60 &&')).toContain('!indoors &&');
+    expect(blockOf(u, "!localStorage.getItem('ds_hint_talk') &&")).toContain('!indoors &&');
+    // held hints wait for the door, and one that comes due indoors is held
+    expect(u).toContain('if (this.heldHints.length && !indoors && !this.guideHoldsHints()) {');
+    expect(bodyOf(m(), 'private hintLater(')).toContain(
+      'if (!this.guideHoldsHints() && !this.scene.isInsideInterior()) {',
+    );
+  });
+
+  test('a place hint still waiting in the queue is dropped once the visitor is in a room', () => {
+    // D6 holds a hint while a prompt is up on a phone: one fired on the
+    // doorstep used to come up over the room when the hall panel closed.
+    const u = update();
+    expect(u).toContain(
+      'this.ui.toast(DISTRICT_INTRO[bestId], { hint: true, until: this.indoorsNow });',
+    );
+    expect(u).toContain('{ hint: true, until: this.talkHintStale },');
+    expect(bodyOf(m(), 'private showLostHint(')).toContain(
+      '{ hint: true, until: this.indoorsNow },',
+    );
+    expect(m()).toContain(
+      'private readonly indoorsNow = (): boolean => this.scene.isInsideInterior();',
+    );
+    // the talk hint hands its once-ever key back, unless they have talked
+    const stale = bodyOf(m(), 'private readonly talkHintStale = (): boolean =>');
+    expect(stale).toContain('if (!this.scene.isInsideInterior()) return false;');
+    expect(stale).toContain(
+      "if (localStorage.getItem('ds_npc_chatted') !== '1') localStorage.removeItem('ds_hint_talk');",
+    );
+  });
+
+  test('indoors the pill is hidden: no bearing, no label', () => {
+    const qc = bodyOf(m(), 'private updateQuestCompass(');
+    const inside = bodyOf(qc, 'if (this.scene.isInsideInterior()) {');
+    expect(inside).toContain("this.compassLabel = '';");
+    expect(inside).toContain('this.ui.updateQuestCompass(null);');
+    expect(inside).toMatch(/return;\s*\}$/);
+    // before any target is worked out
+    expect(qc.indexOf('if (this.scene.isInsideInterior()) {')).toBeLessThan(
+      qc.indexOf('switch (compassTarget(st)) {'),
+    );
+  });
+});
+
+// questTracker.test.ts runs onNpcInteract, questLinesFirst, onRaceEvent and
+// boardName for real; these pin the two places a unit test cannot reach: the
+// talk prompt inside update(), and the seams the stubs stand in for.
+describe('P2-A7: quest givers say so, and race times go up under a real name', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test('the talk prompt says what this press does', () => {
+    const npc = blockOf(bodyOf(m(), 'private update('), 'const who = nearby.npcData.name;');
+    expect(npc).toContain('const quest = this.npcQuests.talkKind(who, held);');
+    expect(npc).toContain('<strong>${esc(who)}</strong> has a request`');
+    expect(npc).toContain('<strong>${esc(who)}</strong> is expecting you`');
+    // 'ask anything' only when E opens the chat: a villager who talks through
+    // Claude Haiku 4.5 with no quest lines to say first
+    expect(npc).toMatch(
+      /: isAiNpc\(who\) && !this\.questLinesFirst\(who, held\)\s*\? `💬 Press <strong>E<\/strong> to talk to <strong>\$\{esc\(who\)\}<\/strong> — ask anything`/,
+    );
+    // the offer comes before the errand, and both before the chat's line
+    expect(npc.indexOf("quest === 'offer'")).toBeLessThan(npc.indexOf("quest === 'errand'"));
+    expect(npc.indexOf("quest === 'errand'")).toBeLessThan(npc.indexOf('ask anything'));
+  });
+
+  test('the scene hands villager talks and race events to the two methods', () => {
+    expect(m()).toContain('this.scene.setOnNPCInteract((npcData) => this.onNpcInteract(npcData));');
+    expect(m()).toContain('this.scene.setOnRaceEvent((e) => this.onRaceEvent(e));');
+    const talk = bodyOf(m(), 'private onNpcInteract(');
+    // the pure read decides before onTalk may change anything
+    expect(talk).toMatch(
+      /const talk = this\.questLinesFirst\(npcData\.name, coins\)\s*\? this\.npcQuests\.onTalk\(npcData\.name, coins\)\s*: null;/,
+    );
+    expect(talk).toContain('this.questLinesShown.add(npcData.name);');
+    expect(talk).toContain('this.openVillagerChat(npcData);');
+    // First steps hears a conversation from both branches
+    expect(talk).toContain("this.guide?.complete('talk');");
+    expect(bodyOf(m(), 'private openVillagerChat(')).toContain("this.guide?.complete('talk');");
+  });
+
+  test('the First steps card reads the same rule for its talk step', () => {
+    expect(bodyOf(m(), 'private renderGuide(')).toMatch(
+      /talkQuest:\s*v\.step === 'talk' &&\s*v\.talkTarget !== null &&\s*this\.questLinesFirst\(v\.talkTarget, this\.scene\.getCoinsCollected\(\)\),/,
+    );
+  });
+
+  test('every finish is sent through ensureNamed; Boards stays a lazy import', () => {
+    const race = bodyOf(m(), 'private onRaceEvent(');
+    const named = bodyOf(race, 'this.ensureNamed(() => {');
+    expect(named).toContain('const name = this.boardName();');
+    expect(named).toContain('if (timeSec !== null) this.submitRaceTime(circuit, timeSec, name);');
+    expect(named).toContain('this.ui.showRaceLeaderboard(circuit, tMs, name), 1200);');
+    // not only a local best any more
+    expect(race).not.toContain('if (e.improved && e.circuit');
+    expect(bodyOf(m(), 'private submitRaceTime(')).toContain(
+      "void import('./Boards').then((b) => b.submitRaceTime(circuit, timeSec, name));",
+    );
+    expect(m()).not.toMatch(/^import .* from '\.\/Boards';$/m);
+    // 'Guest' unless the visitor chose a name: never the name tag's placeholder
+    const name = bodyOf(m(), 'private boardName(');
+    expect(name).toContain("if (!saved && !this.nameTyped) return 'Guest';");
+  });
+});
+
+// orbitCamera.test.ts flies the fly-in for real; these pin the intro block in
+// main-simple.init, which no unit test can run.
+describe('A10: a smoother desktop intro, and a calm entry on phones only', () => {
+  const m = (): string => stripped('main-simple.ts');
+  const intro = (): string =>
+    blockOf(m(), 'if (a11y.reducedMotion) {', m().indexOf('const afterIntro'));
+
+  test('the calm entry is keyed on a coarse pointer that cannot hover, never the low tier', () => {
+    const field = m().slice(
+      m().indexOf('private readonly calmEntry ='),
+      m().indexOf('private calmEntryCanvas'),
+    );
+    expect(field).toContain('this.coarsePointer &&');
+    expect(field).toContain("matchMedia('(hover: none)').matches");
+    // isLowTierDevice() also catches 4-core laptops, which keep the fly-in
+    expect(field).not.toContain('isLowTierDevice');
+    expect(intro()).not.toContain('isLowTierDevice');
+  });
+
+  test('a phone snaps into the follow view under a 600 ms opacity fade; nothing flies', () => {
+    const calm = bodyOf(m(), '} else if (this.calmEntry) {', m().indexOf('const afterIntro'));
+    const snap = calm.indexOf('this.scene.getOrbitCamera().snapToPlayer();');
+    expect(snap).toBeGreaterThan(-1);
+    expect(snap).toBeLessThan(calm.indexOf('afterIntro();'));
+    expect(calm).toContain("canvas.style.opacity = '0';");
+    expect(calm).toContain('this.calmEntryCanvas = canvas;');
+    // none of the fly-in's machinery: no flight, no intro-lite levers
+    for (const no of ['flyInFromDistant', 'setGrassBudget', 'setShadowFreeze', 'setInkVisible']) {
+      expect(calm, no).not.toContain(no);
+    }
+    // the fade starts with the loader's own fade, and is opacity only
+    expect(m()).toContain('setTimeout(() => this.startCalmEntryFade(), 500);');
+    const fade = bodyOf(m(), 'private startCalmEntryFade(');
+    expect(fade).toContain("canvas.style.transition = 'opacity 600ms ease-out';");
+    expect(fade).toContain("canvas.style.opacity = '1';");
+    expect(fade).not.toContain('transform');
+    // whatever happens, the canvas is never left invisible
+    expect(fade).toMatch(
+      /window\.setTimeout\(\(\) => \{\s*canvas\.style\.transition = '';\s*canvas\.style\.opacity = '';\s*\}, 700\);/,
+    );
+  });
+
+  test("a calm entry's card waits for the late models' programs to link, capped (w2 integration)", () => {
+    const calm = bodyOf(m(), '} else if (this.calmEntry) {', m().indexOf('const afterIntro'));
+    const wait = calm.indexOf('this.whenLateModelsLinked(() => {');
+    expect(wait).toBeGreaterThan(-1);
+    expect(wait).toBeLessThan(calm.indexOf('afterIntro();'));
+    const body = bodyOf(m(), 'private whenLateModelsLinked(');
+    // quiet means no program linked over a span of frames
+    expect(body).toContain('info.programs?.length ?? 0');
+    expect(body).toContain('const LATE_LINK_QUIET_MS = 400;');
+    // never before the loader's fade, never held past the cap (hidden tab, slow net)
+    expect(body).toContain('const LATE_LINK_MIN_MS = 600;');
+    expect(body).toContain('const LATE_LINK_CAP_MS = 3000;');
+    expect(body).toContain('const cap = window.setTimeout(finish, LATE_LINK_CAP_MS);');
+    expect(body).toContain('if (done) return;');
+    // the fly-in and reduced motion are untouched
+    expect(intro().split('whenLateModelsLinked').length - 1).toBe(1);
+  });
+
+  test('reduced motion is unchanged: the snap, with no fade', () => {
+    const reduced = bodyOf(m(), 'if (a11y.reducedMotion) {', m().indexOf('const afterIntro'));
+    expect(reduced).toContain('this.scene.getOrbitCamera().snapToPlayer();');
+    expect(reduced).not.toContain('calmEntryCanvas');
+    expect(reduced).not.toContain('opacity');
+    // and it is asked first: a phone that prefers reduced motion takes this branch
+    expect(intro().indexOf('if (a11y.reducedMotion) {')).toBeLessThan(
+      intro().indexOf('} else if (this.calmEntry) {'),
+    );
+  });
+
+  test('the intro-lite levers come back in three timers: grass 1.1 s, ink and resolution 1.5 s, shadows 1.9 s', () => {
+    const s = m();
+    expect(s).toContain('requestAnimationFrame(() => window.setTimeout(restoreIntroGrass, 1100));');
+    expect(s).toContain(
+      'requestAnimationFrame(() => window.setTimeout(restoreIntroQuality, 1500));',
+    );
+    expect(s).toContain(
+      'requestAnimationFrame(() => window.setTimeout(restoreIntroShadows, 1900));',
+    );
+    expect(s).toContain(
+      'const restoreIntroGrass = (): void => this.scene.getIsland().setGrassBudget(1);',
+    );
+    const shadows = bodyOf(s, 'const restoreIntroShadows');
+    expect(shadows).toContain('this.renderer.setShadowFreeze(false);');
+    expect(shadows).not.toContain('setGrassBudget');
+    const quality = bodyOf(s, 'const restoreIntroQuality');
+    expect(quality).toContain('this.renderer.setIntroResolution(null);');
+    expect(quality).toContain('setInkVisible(true);');
+    expect(quality).not.toContain('setGrassBudget');
+    expect(quality).not.toContain('setShadowFreeze');
+    // the arrival covers a skipped or short flight: all three, then the bloom
+    const fly = s.indexOf('.flyInFromDistant(2500)');
+    const land = s.slice(fly, s.indexOf('afterIntro();', fly));
+    for (const call of [
+      'restoreIntroGrass();',
+      'restoreIntroQuality();',
+      'restoreIntroShadows();',
+    ]) {
+      expect(land, call).toContain(call);
+      expect(land.indexOf(call), call).toBeLessThan(
+        land.indexOf('this.renderer.fadeBloomIn(650);'),
+      );
+    }
+  });
+
+  test('the ink and the shadow pass link their programs behind the loader, not as the levers return', () => {
+    // Hidden ink and a frozen shadow pass are not drawn in warmUp's hidden
+    // frame, so their programs linked mid-flight, in clear view (measured:
+    // +2 programs in a 90 ms frame and +5 in a 160 ms frame). Two frames
+    // behind the loader draw them instead.
+    const s = m();
+    const prime = bodyOf(s, 'const primeIntroLevers = (): void =>');
+    // frame 1: the ink; frame 2: the ink off again and the shadow pass on;
+    // frame 3: the shadow pass frozen again
+    const order = [
+      'setInkVisible(true);',
+      'if (!inkBack) setInkVisible(false);',
+      'this.renderer.setShadowFreeze(false);',
+      'if (!shadowsBack) this.renderer.setShadowFreeze(true);',
+    ].map((x) => prime.indexOf(x));
+    for (const i of order) expect(i).toBeGreaterThan(-1);
+    expect([...order].sort((x, y) => x - y)).toEqual(order);
+    expect(prime.split('requestAnimationFrame(').length - 1).toBe(2);
+    // a lever that is back for good is never touched again
+    expect(prime).toContain('if (inkBack || shadowsBack) return;');
+    expect(bodyOf(s, 'const restoreIntroQuality')).toContain('inkBack = true;');
+    expect(bodyOf(s, 'const restoreIntroShadows')).toContain('shadowsBack = true;');
+    // twice: on the swoop's first frame...
+    const first = s.indexOf('requestAnimationFrame(primeIntroLevers);');
+    expect(first).toBeGreaterThan(s.indexOf('const primeIntroLevers'));
+    expect(first).toBeLessThan(s.indexOf('.flyInFromDistant(2500)'));
+    // ...and as the loader starts to fade, when the avatar GLBs are usually
+    // in (their skinned ink and depth variants cannot link before that)
+    expect(s).toContain('this.primeIntroAgain = primeIntroLevers;');
+    const again = s.indexOf('this.primeIntroAgain?.();');
+    expect(again).toBeGreaterThan(s.indexOf('setTimeout(() => this.ui.hideLoading(), 500);'));
+    expect(s.slice(again, again + 120)).toMatch(/this\.primeIntroAgain = null;\s*\}, 500\);/);
+  });
+
+  test('the fly-in keeps its 2.5 s and its stall-immune clock, and caps the turn per frame', () => {
+    const fly = bodyOf(stripped('OrbitCamera.ts'), 'public async flyInFromDistant');
+    expect(m()).toContain('.flyInFromDistant(2500)');
+    expect(fly).toContain('if (last !== null) elapsed += Math.min(now - last, 100);');
+    // the radius: rFollow + (rStart - rFollow)(1 - easeOutCubic(t))
+    expect(fly).toContain('const e = 1 - Math.pow(1 - progress, 3);');
+    expect(fly).toContain('multiplyScalar(rFollow + (rStart - rFollow) * (1 - e));');
+    // the view: easeInOutSine over t in [0.3, 1], then the per-frame cap
+    expect(stripped('OrbitCamera.ts')).toContain('private static readonly FLY_IN_TURN_FROM = 0.3;');
+    expect(fly).toContain('0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, k))');
+    expect(fly).toContain(
+      'this.camera.quaternion.rotateTowards(wantQuat, OrbitCamera.FLY_IN_MAX_TURN);',
+    );
+    expect(stripped('OrbitCamera.ts')).toContain(
+      'public static readonly FLY_IN_MAX_TURN = (1.4 * Math.PI) / 180;',
+    );
+  });
+});
+
+// guide.test.ts runs the route, its card and main-simple's handlers for real;
+// these pin where main-simple hooks them.
+describe('P2-A4: the recruiter route, wired into main-simple', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test("a hire card closing arms it: D4's 'ds:modal' {open: false, id: 'zone', zone: 'hire'}", () => {
+    const setup = bodyOf(m(), 'private setupGuide(');
+    expect(setup).toContain("window.addEventListener('ds:modal', this.boundHandlers.guideModal);");
+    expect(bodyOf(m(), 'private dispose(')).toContain(
+      "window.removeEventListener('ds:modal', this.boundHandlers.guideModal);",
+    );
+    const modal = bodyOf(m(), 'private onModalEvent(');
+    expect(modal).toContain("if (!d || d.id !== 'zone' || d.zone !== 'hire') return;");
+    // its opening is a rung-1 goal (P2-A12); only its closing arms the route
+    expect(modal).toContain('if (d.open === true) this.hireSeen = true;');
+    expect(modal).toContain('if (d.open !== false) return;');
+    expect(modal).toContain("const source = this.hireCardSource ?? 'hire';");
+    // only a visitor who has not walked off, and the compass hint counts as shown
+    const arm = bodyOf(m(), 'private armRoute(');
+    expect(arm).toContain('if (!this.route?.arm(source, this.walkedSinceLoad)) return false;');
+    expect(arm).toContain("localStorage.setItem('ds_hint_compass', '1');");
+    // walked since load: counted every frame, teleports left out
+    expect(bodyOf(m(), 'private guideTick(')).toContain(
+      'if (f.walked > 0 && f.walked < 5) this.walkedSinceLoad += f.walked;',
+    );
+  });
+
+  test('the recruiter tour and a /z/hire link say how their hire card was opened', () => {
+    const end = bodyOf(m(), 'private endTour');
+    const tour = end.indexOf("this.hireCardSource = 'tour';");
+    expect(tour).toBeGreaterThan(-1);
+    expect(tour).toBeLessThan(end.indexOf("this.ui.showHireCard('cta');"));
+    const link = bodyOf(m(), 'private openDeepLinkZone(');
+    const deep = link.indexOf("if (z === 'hire') this.hireCardSource = 'deeplink';");
+    expect(deep).toBeGreaterThan(-1);
+    expect(deep).toBeLessThan(link.indexOf('this.ui.showZonePanel('));
+  });
+
+  test('it has the card while it shows, holds hints, and First steps waits behind it', () => {
+    const tick = bodyOf(m(), 'private guideTick(');
+    const frame = tick.indexOf('route?.frame(f.dt, f.blocked);');
+    expect(frame).toBeGreaterThan(-1);
+    expect(tick.indexOf('if (route?.showing()) f.blocked = true;')).toBeGreaterThan(frame);
+    expect(tick.indexOf('g.frame(f);')).toBeGreaterThan(
+      tick.indexOf('if (route?.showing()) f.blocked = true;'),
+    );
+    expect(bodyOf(m(), 'private guideHoldsHints(')).toContain(
+      'if (g.isActive() || this.route?.showing()) return true;',
+    );
+  });
+
+  test("a stop's 'Show me' goes through 'ds:guide-to' and arms First steps; Stay only closes", () => {
+    const btn = bodyOf(m(), 'private onGuideButton(');
+    expect(btn).toContain("else if (id === 'stay') this.route?.stay();");
+    const pick = bodyOf(btn, "else if (id.startsWith('route:')) {");
+    expect(pick).toContain('if (this.route?.pick(stop)) {');
+    expect(pick).toMatch(
+      /new CustomEvent\('ds:guide-to', \{ detail: \{ key: `district:\$\{stop\}`, source: 'route' \} \}\)/,
+    );
+    expect(pick.indexOf("this.armGuide('cta');")).toBeGreaterThan(pick.indexOf("'ds:guide-to'"));
+  });
+
+  test("the legacy controls card names '?' only where D8's sheet answers it", () => {
+    expect(bodyOf(m(), 'private renderGuide(')).toMatch(
+      /controlsSheet:\s*typeof \(this\.ui as unknown as \{ showControls\?: unknown \}\)\.showControls === 'function',/,
+    );
+  });
+});
+
+// ---- P2-A12: the Next chip and the goal ladder ------------------------------
+describe('P2-A12: the Next chip, wired into main-simple', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test('the chip is made with the guide and fed by the guide tick, twice a second', () => {
+    const setup = bodyOf(m(), 'private setupGuide(');
+    expect(setup).toContain('this.nextChip = new NextChip(this.guide, {');
+    const tick = bodyOf(m(), 'private guideTick(');
+    expect(tick).toContain('const on = g.over() && !route?.showing();');
+    expect(tick).toContain('if (this.goalsT >= 0.5 || on !== this.goalsWereOn) {');
+    expect(tick).toContain('this.syncGoals(on);');
+    // walking off folds the list; panels, tours and rooms hide it
+    expect(tick).toContain('if (this.guideMoveMag > 0.3) chip.fold();');
+    expect(tick).toContain('chip.frame(f.dt, f.blocked);');
+    // the order: the route, First steps, the chip, then one redraw
+    const order = [
+      'route?.frame(f.dt, f.blocked);',
+      'g.frame(f);',
+      'chip.frame(f.dt, f.blocked);',
+      'this.renderGuide();',
+    ].map((x) => tick.indexOf(x));
+    for (const i of order) expect(i).toBeGreaterThan(-1);
+    expect([...order].sort((x, y) => x - y)).toEqual(order);
+  });
+
+  test('one surface on the one card: the route, else First steps, else the chip', () => {
+    const render = bodyOf(m(), 'private renderGuide(');
+    expect(render).toContain(
+      "const want = routeUp ? 'route' : g.running() ? 'steps' : chipUp ? 'next' : null;",
+    );
+    // the surface that was up draws its own end before the next one draws
+    expect(render).toContain('const surface = want ?? this.guideSurface ?? null;');
+    // still exactly one card, however many surfaces
+    expect(m().split('new GuideCard(').length - 1).toBe(1);
+  });
+
+  test("its buttons: 'next' folds and unfolds; 'goal:<id>' goes through 'ds:guide-to' with source next", () => {
+    const btn = bodyOf(m(), 'private onGuideButton(');
+    expect(btn).toContain("else if (id === 'next') this.nextChip?.toggle();");
+    expect(btn).toContain("const goal = this.nextChip?.pick(id.slice('goal:'.length));");
+    expect(btn).toContain(
+      "new CustomEvent('ds:guide-to', { detail: { key: goal.guideKey, source: 'next' } }),",
+    );
+  });
+
+  test('the compass takes the goal last, and the two panel goals open panels', () => {
+    const compass = bodyOf(m(), 'private updateQuestCompass(');
+    expect(compass).toContain('st.goal = this.goalTarget !== null;');
+    expect(compass).toContain("case 'goal':");
+    const to = bodyOf(m(), 'private guideTo(');
+    expect(to).toContain("if (key === 'panel:hire') {");
+    expect(to).toContain("this.ui.showHireCard('menu');");
+    expect(to).toContain("if (key === 'panel:guestbook') {");
+    expect(to.indexOf("if (key === 'panel:hire') {")).toBeLessThan(
+      to.indexOf('resolveGuideKey(key, this.guideWorld)'),
+    );
+  });
+
+  test("'ds:goals' is sent from one place, with the visit's numbers", () => {
+    const s = m();
+    expect(s.split("new CustomEvent('ds:goals'").length - 1).toBe(1);
+    const pub = bodyOf(s, 'private publishGoals(');
+    for (const k of ['stamps:', 'villagers:', 'coins:', 'secrets:', 'minutes:']) {
+      expect(pub, k).toContain(k);
+    }
+    const sync = bodyOf(s, 'private syncGoals(');
+    expect(sync).toContain('if (grew || on !== this.goalsWereOn) {');
+    expect(bodyOf(s, 'private guideTick(')).toContain(
+      'if (on && this.goalsPublishT >= 15) this.publishGoals();',
+    );
+  });
+});
+
+describe('w2 integration: the Sailor from the water, and the conversation release', () => {
+  const m = (): string => stripped('main-simple.ts');
+
+  test('a villager in reach outranks the swim hint and keeps the visitor afloat', () => {
+    const s = m();
+    // last frame's chain decides: in the water, a villager in reach
+    expect(s).toContain(
+      "this.talkAfloat = !!player && player.isInWater() && nearby?.type === 'npc';",
+    );
+    expect(s).toContain('if (player) player.setSwimIntent(jumpInput || this.talkAfloat);');
+    // the swim hint stands aside for the talk prompt
+    expect(s).toContain(
+      '} else if (player && player.isInWater() && !player.isSwimming() && !this.talkAfloat) {',
+    );
+    // set before the chain reads it, after the nearby lookup
+    expect(s.indexOf('this.talkAfloat = !!player')).toBeGreaterThan(
+      s.indexOf('const nearby = this.scene.getNearbyInteractable();'),
+    );
+    expect(s.indexOf('this.talkAfloat = !!player')).toBeLessThan(
+      s.indexOf('Hold <strong>Space</strong> to swim'),
+    );
+    // a conversation from the water floats without Space held
+    const talk = s.slice(
+      s.indexOf('} else if (this.ui.isDialogueActive() || this.ui.isNpcChatOpen()) {'),
+      s.indexOf('} else if (this.scene.isPlayerSeated()) {'),
+    );
+    expect(talk).toContain('if (talker?.isInWater()) talker.setSwimIntent(true);');
+  });
+
+  test('the release glides onto the follow pose, on the two-shot side, then resumes', () => {
+    const cine = bodyOf(m(), 'private updateNpcCine(');
+    expect(cine).toContain('if (playerPos) oc.adoptView(c.pos);');
+    expect(cine).toContain('oc.getFollowPose(this._cineGoalPos, this._cineGoalLook);');
+    expect(cine).toContain('const u = Math.min(1, c.ending / SimpleApp.NPC_CINE_RELEASE_S);');
+    expect(cine).toContain('const k = u * u * (3 - 2 * u);');
+    // the offset turns about the look target: never a chord through the avatar
+    expect(cine).toContain('this._cineQuatTo.setFromUnitVectors(offA, offB);');
+    expect(cine).toContain(
+      'this._cineQuat.slerpQuaternions(this._cineQuatId, this._cineQuatTo, k);',
+    );
+    // the resume frame sits exactly on the pose the orbit camera eases to
+    const end = cine.slice(cine.indexOf('if (u >= 1 || !playerPos) {'));
+    expect(end.indexOf('cam.lookAt(this._cineGoalLook);')).toBeLessThan(
+      end.indexOf('this.scene.setCameraSuspended(false);'),
+    );
+    expect(m()).toContain('private static readonly NPC_CINE_RELEASE_S = 0.6;');
+    // the old whip: look-only ease, resume after 0.35 s
+    expect(cine).not.toContain('c.ending > 0.35');
   });
 });
