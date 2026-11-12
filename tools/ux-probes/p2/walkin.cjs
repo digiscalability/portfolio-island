@@ -132,6 +132,72 @@ async function walkin(t) {
   }
 }
 
+/**
+ * p2/nokhr-door (stage-1 carry-over): the first door on a browser without
+ * KHR_parallel_shader_compile. There the idle warm does not run, so the
+ * near-door warm (stand still within reach of a door) is the only one, and a
+ * visitor who walks straight in gets none: stage 1 measured the veil opaque
+ * for 1.37-1.49 s (plan: 1.0 s or less) around one frame of 851-977 ms.
+ * `hitch --no-khr` measures this through enterBuilding() inside a 25 s hitch
+ * run; this is the cheap, targeted version through the visitor's own path.
+ *
+ *   npm run probe -- p2/nokhr-door [--pauses 0,3] [--settle 0] [--device desk|lowtier|phone] --dist dist --port <n>
+ *
+ * Per device and per pause (seconds stood still at the door before E), in a
+ * browser of its own (a cold program cache, so every entry is a first door):
+ * Explore, then at once to the Professional hall's door (2 u out on its
+ * axis, as p2/walkin --cpu does), the walk to the prompt, the pause, E.
+ * --settle <s> waits on the island first (a visitor who stands at the spawn
+ * is within the near-door range of the Welcome Hub, so the warm fires there).
+ * Reported: whether the near-door warm had run before E, the programs the
+ * entry adds, its longest frame and the veil (fade opacity 0.95 or more).
+ * Bars: with the longest pause the warm ran before E; the veil is opaque
+ * 1.0 s or less on every row.
+ */
+async function nokhrDoor(t) {
+  const hour = String(t.args.hour || '12');
+  const pauses = String(t.args.pauses === undefined || t.args.pauses === true ? '0,3' : t.args.pauses).split(',').map(Number).filter((x) => Number.isFinite(x) && x >= 0);
+  const settleS = Number(t.args.settle === undefined || t.args.settle === true ? 0 : t.args.settle);
+  const longest = Math.max(...pauses);
+  for (const prof of t.profiles(['desktop', 'lowtier', 'phone'])) {
+    const touch = lib.isTouchProfile(prof);
+    const rows = [];
+    for (const pause of pauses) {
+      const s = await t.freshSession(prof, { noKhr: true, init: [R.REWARD_INIT] });
+      const { page } = s;
+      const T = touch ? await lib.touch(s) : null;
+      await t.boot(s, { query: `hour=${hour}` });
+      await R.install(page);
+      if (touch) await page.tap(`${lib.WELCOME} button[data-dismiss]`).catch(() => lib.dismissWelcome(page));
+      else await lib.dismissWelcome(page);
+      // The extension really is absent, and no idle warm has run by the door.
+      const khr = await page.evaluate(() => {
+        const gl = window.__app.renderer.getRenderer().getContext();
+        return gl.getExtension('KHR_parallel_shader_compile') !== null;
+      });
+      if (settleS > 0) await page.waitForTimeout(settleS * 1000);
+      const before = await page.evaluate(() => ({ idle: !!window.__app.scene.interiorWarmed, nearDoor: !!window.__app.scene.interiorNearDoorWarmed }));
+      const idleWarmed = before.idle;
+      // fromCard: no settle and one in-page wait for the prompt, so the
+      // visitor is never still for the near-door warm's 1 s unless they pause.
+      const v = await visit(page, 'professional', touch, T, { standStillMs: pause * 1000, fromCard: settleS === 0 });
+      const under = (v.over50 || []).filter((x) => x[1] >= 0).map((x) => x[1]);
+      rows.push({ pauseS: pause, khrPresent: khr, idleWarmedBeforeDoor: idleWarmed, nearDoorWarmAfterExplore: before.nearDoor, walkMs: v.walkMs, nearDoorWarmBeforeE: v.nearDoorWarmBeforeE, press: v.press, inside: v.inside, programsAdded: v.programsAdded, maxDt: v.maxDt, framesOver50: under.length, blackMs: v.blackMs, firstInsideAt: v.firstInsideAt });
+      await t.shot(page, `nokhr-door-${prof}-pause${pause}.png`);
+      await s.close();
+    }
+    t.data[prof] = { hour, settleS, rows };
+    t.check(`${prof}: the browser has no KHR_parallel_shader_compile`, rows.every((x) => x.khrPresent === false), rows.map((x) => x.khrPresent), 'absent');
+    t.check(`${prof}: every entry ends inside the hall`, rows.every((x) => x.inside), rows.map((x) => `${x.pauseS} s: ${x.inside ? 'in' : 'OUT'} (${x.press})`), 'all inside');
+    for (const x of rows) {
+      const how = x.pauseS === 0 ? 'walk straight in' : `after ${x.pauseS} s at the door`;
+      if (x.pauseS === longest && longest > 0) t.check(`${prof}, no KHR, ${how}: the near-door warm ran before E`, x.nearDoorWarmBeforeE === true, x.nearDoorWarmBeforeE, true);
+      t.check(`${prof}, no KHR, ${how}: the veil is opaque (ms)`, x.inside ? x.blackMs <= 1000 : false, { blackMs: x.blackMs, longestFrameMs: x.maxDt, programsAdded: x.programsAdded, nearDoorWarmBeforeE: x.nearDoorWarmBeforeE }, '<= 1000');
+    }
+  }
+}
+
 module.exports = {
+  'nokhr-door': { item: 'CO-B (stage-1 carry-over; B2)', title: 'the first door without KHR_parallel_shader_compile: walk straight in, and after a pause at the door (the near-door warm): veil, longest frame, programs', profiles: ['desktop', 'lowtier', 'phone'], run: nokhrDoor },
   walkin: { item: 'P2-E1a (INT-01, CO-A5)', title: 'walk straight in: the first door, a later door and a cottage; --cpu 4 enters the Welcome Hub 2.5 s after the card', profiles: ['phone'], run: walkin },
 };
