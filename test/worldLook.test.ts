@@ -31,11 +31,35 @@ import * as THREE from 'three';
 import * as ts from 'typescript';
 import { describe, expect, test, vi } from 'vitest';
 
-import { addGroupHulls, setInkVisible } from '../CelLook';
+import { a11y } from '../Accessibility';
+import {
+  addGroupHulls,
+  applyCelRim,
+  CEL_INDOOR_RADIUS,
+  celCameraIndoors,
+  setCelNight,
+  setInkVisible,
+} from '../CelLook';
+import {
+  DAY_FACTOR_UNIFORM,
+  DUSK_FACTOR_UNIFORM,
+  duskFactorAt,
+  EnvironmentCycle,
+  hemiLevelAt,
+  KEY_ELEVATION_CAP,
+  keyFloorAt,
+  keyLevelAt,
+  moonWeightAt,
+  NIGHT_KEY_FLOOR,
+  NIGHT_KEY_SHARE,
+  nightFactorAt,
+  sunUpAt,
+} from '../EnvironmentCycle';
 import type { Island } from '../Island';
 import { Mailbox } from '../Mailbox';
 import { Materials } from '../Materials';
 import { Zone } from '../Zones';
+import { installHeadlessCanvas } from './helpers/headlessDom';
 
 // ---- AST slicing ------------------------------------------------------------
 // File-local until E's test/helpers/astSlice.ts lands (CO-E1), same contract:
@@ -1035,5 +1059,888 @@ describe('a compile pass is sent to the GPU, not left queued (wave 1, welcome_vi
     // program and every link after it.
     const helper = decl('Materials.ts', 'flushAfterCompile');
     expect(helper).toMatch(/queueMicrotask\(\(\) => \{[\s\S]*renderer\.getContext\(\)\.flush\(\)/);
+  });
+});
+
+// ---- wave 2: the light rig ---------------------------------------------------
+
+/** A day/night cycle on a bare scene, with the lights GameScene hands it. */
+const makeCycle = (): {
+  env: EnvironmentCycle;
+  scene: THREE.Scene;
+  sun: THREE.DirectionalLight;
+  hemi: THREE.HemisphereLight;
+  sunDir: THREE.Vector3;
+} => {
+  installHeadlessCanvas();
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x79b7e6, 0.0045);
+  const sun = new THREE.DirectionalLight(0xffe9c0, 1.6);
+  const hemi = new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62);
+  const sunDir = new THREE.Vector3(0, 1, 0);
+  const env = new EnvironmentCycle(scene, sun, hemi, {
+    topColor: { value: new THREE.Color() },
+    bottomColor: { value: new THREE.Color() },
+    horizonColor: { value: new THREE.Color() },
+    zenithColor: { value: new THREE.Color() },
+    sunDir: { value: sunDir },
+    sunWarmth: { value: 0 },
+  });
+  return { env, scene, sun, hemi, sunDir };
+};
+
+/** Unit direction at (lon, lat), as Island.dirAt and Districts.dirFor build it. */
+const dirAt = (lon: number, lat: number): THREE.Vector3 =>
+  new THREE.Vector3(
+    Math.cos(lon) * Math.cos(lat),
+    Math.sin(lat),
+    Math.sin(lon) * Math.cos(lat),
+  ).normalize();
+
+const R = 100;
+/** A standing spot at the hub, and the four district centres (Districts.ts). */
+const HUB = dirAt(0.6, 1.4);
+const DISTRICT_DIRS = [0, 0.5, 1, 1.5].map((k) => dirAt(Math.PI * k, 0.4636));
+
+/** The key light's height above the visitor's own horizon, in degrees. */
+const localElevation = (sun: THREE.DirectionalLight, up: THREE.Vector3): number =>
+  THREE.MathUtils.radToDeg(Math.asin(sun.position.clone().normalize().dot(up)));
+
+/** The key light's ceiling (KEY_ELEVATION_CAP): 1.13 rad is 64.7 degrees. */
+const CAP_DEG = THREE.MathUtils.radToDeg(1.13);
+
+/** Run fn with an FxBudget switch forced, then put the switch back. */
+const withFx = (name: string, on: boolean, fn: () => void): void => {
+  const g = (globalThis.__dsFx ??= {});
+  const before = g[name];
+  g[name] = on;
+  try {
+    fn();
+  } finally {
+    if (before === undefined) delete g[name];
+    else g[name] = before;
+  }
+};
+
+describe("the sun shines in each visitor's own sky (P2-C1)", () => {
+  // The sun arc is built around world +Y. The districts stand 63 degrees from
+  // the pole, so at 10:30 (the hour every first visit gets) the world sun sat
+  // 5.7 degrees over Professional Experience under a midday sky, and below
+  // the horizon of two districts at 09:00 and 15:00.
+
+  test('from 09 to 15 h the key stands 40 to 65 degrees up, the same over the hub and every district', () => {
+    for (const hour of [9, 10.5, 12, 15]) {
+      const elevations = [HUB, ...DISTRICT_DIRS].map((up) => {
+        const { env, sun } = makeCycle();
+        env.debugHour = hour;
+        env.update(1 / 60, up.clone().multiplyScalar(R), 0);
+        return localElevation(sun, up);
+      });
+      for (const e of elevations) {
+        expect(e).toBeGreaterThanOrEqual(40);
+        expect(e).toBeLessThanOrEqual(CAP_DEG + 1e-6);
+        expect(e).toBeCloseTo(elevations[0], 6);
+      }
+    }
+  });
+
+  test("with the switch off the sun is the world's again (what main shipped)", () => {
+    withFx('localSun', false, () => {
+      const elevations = DISTRICT_DIRS.map((up) => {
+        const { env, sun } = makeCycle();
+        env.debugHour = 10.5;
+        env.update(1 / 60, up.clone().multiplyScalar(R), 0);
+        return localElevation(sun, up);
+      });
+      // Measured on main at 10:30: 5.7, 16.0, 33.4 and 46.6 degrees.
+      expect(Math.min(...elevations)).toBeLessThan(10);
+      expect(Math.max(...elevations) - Math.min(...elevations)).toBeGreaterThan(30);
+      const { env } = makeCycle();
+      env.update(1 / 60, DISTRICT_DIRS[0].clone().multiplyScalar(R), 0);
+      expect(env.getLocalFrame().equals(new THREE.Quaternion())).toBe(true);
+    });
+  });
+
+  test('noon: 65 degrees, not the zenith, so walls keep a lit side', () => {
+    expect(KEY_ELEVATION_CAP).toBeCloseTo(Math.sin(1.13), 12);
+    const { env, sun } = makeCycle();
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(localElevation(sun, HUB)).toBeCloseTo(CAP_DEG, 4);
+  });
+
+  test('the light holds still while the visitor walks, and turns once they stand', () => {
+    const { env, sun, sunDir } = makeCycle();
+    env.debugHour = 10.5;
+    const up = DISTRICT_DIRS[1].clone();
+    const axis = new THREE.Vector3(0, 1, 0).cross(up).normalize();
+    const dt = 1 / 60;
+    env.update(dt, up.clone().multiplyScalar(R), 0);
+    const held = sun.position.clone();
+    const discElevation = sunDir.dot(up);
+    // 3 s at walking pace (5.6 u/s): 9.6 degrees round the planet.
+    for (let f = 1; f <= 180; f++) {
+      up.applyAxisAngle(axis, (5.6 * dt) / R).normalize();
+      env.update(dt, up.clone().multiplyScalar(R), f * dt);
+      // Not one bit of turn: the shadow map's texel grid follows this vector.
+      expect(sun.position.equals(held)).toBe(true);
+      // The sky's warm lobe (and the discs, on the same frame) stay put in the
+      // visitor's sky instead.
+      expect(sunDir.dot(up)).toBeCloseTo(discElevation, 9);
+    }
+    // The light's frame is now 9.6 degrees behind the visitor.
+    const want = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+    let last = env.getLocalFrame().angleTo(want);
+    expect(THREE.MathUtils.radToDeg(last)).toBeCloseTo(9.63, 1);
+    // Standing: it eases round, never overshooting, and is right within 3 s.
+    for (let f = 0; f < 180; f++) {
+      env.update(dt, up.clone().multiplyScalar(R), 3 + f * dt);
+      const off = env.getLocalFrame().angleTo(want);
+      expect(off).toBeLessThanOrEqual(last + 1e-9);
+      last = off;
+    }
+    expect(last).toBeLessThan(1e-4);
+    expect(localElevation(sun, up)).toBeCloseTo(CAP_DEG, 2);
+  });
+
+  test('a teleport re-bases at once; reduced motion never swings the light', () => {
+    const { env, sun } = makeCycle();
+    env.debugHour = 10.5;
+    env.update(1 / 60, DISTRICT_DIRS[0].clone().multiplyScalar(R), 0);
+    // Fast travel to the far district: right on the next frame.
+    env.update(1 / 60, DISTRICT_DIRS[2].clone().multiplyScalar(R), 1 / 60);
+    expect(localElevation(sun, DISTRICT_DIRS[2])).toBeCloseTo(CAP_DEG, 4);
+
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      const up = DISTRICT_DIRS[2].clone();
+      const axis = new THREE.Vector3(0, 1, 0).cross(up).normalize();
+      for (let f = 0; f < 120; f++) {
+        up.applyAxisAngle(axis, 5.6 / 60 / R).normalize();
+        env.update(1 / 60, up.clone().multiplyScalar(R), 1 + f / 60);
+      }
+      const want = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      expect(env.getLocalFrame().angleTo(want)).toBeGreaterThan(0.1);
+      // Stand for a quarter of a second: one step, no animation.
+      const seen = new Set<string>();
+      for (let f = 0; f < 15; f++) {
+        env.update(1 / 60, up.clone().multiplyScalar(R), 3 + f / 60);
+        seen.add(env.getLocalFrame().angleTo(want).toFixed(6));
+      }
+      expect(seen.size).toBe(2);
+      expect(localElevation(sun, up)).toBeCloseTo(CAP_DEG, 4);
+    } finally {
+      a11y.reducedMotion = was;
+    }
+  });
+
+  test('standing still is free: the settled light is not touched, and idle sway is not a walk', () => {
+    const { env, sun } = makeCycle();
+    env.debugHour = 10.5;
+    const up = DISTRICT_DIRS[3].clone();
+    const axis = new THREE.Vector3(0, 1, 0).cross(up).normalize();
+    env.update(1 / 60, up.clone().multiplyScalar(R), 0);
+    const held = sun.position.clone();
+    const frame = env.getLocalFrame().clone();
+    // An idle avatar sways by fractions of a millimetre: 1e-7 rad a frame is
+    // 0.0006 u/s at R = 100, far under the standing limit (0.3 u/s).
+    for (let f = 1; f <= 120; f++) {
+      up.applyAxisAngle(axis, f % 2 ? 1e-7 : -1e-7).normalize();
+      env.update(1 / 60, up.clone().multiplyScalar(R), f / 60);
+      expect(sun.position.equals(held)).toBe(true);
+      expect(env.getLocalFrame().equals(frame)).toBe(true);
+    }
+    // The step itself: no angle is taken per frame (a dot product decides).
+    const step = decl('EnvironmentCycle.ts', 'stepLocalFrame');
+    expect(step).toContain('this._upNow.dot(this._upPrev)');
+    expect(step).toContain('if (this.frameSettled) return;');
+    // One angle in the whole step, and only once the visitor has stood still.
+    expect(step.split('.angleTo(')).toHaveLength(2);
+    expect(step.indexOf('if (this.frameSettled) return;')).toBeLessThan(step.indexOf('.angleTo('));
+  });
+
+  test('one switch, timed through FxBudget on a method bound once', () => {
+    const env = stripped('EnvironmentCycle.ts');
+    expect(env).toContain("fx.register('localSun', { desktop: true, low: true })");
+    expect(decl('EnvironmentCycle.ts', 'update')).toContain(
+      "fx.time('localSun', this.stepLocalFrame)",
+    );
+    // An arrow property: the same function object every frame.
+    expect(env).toMatch(/private readonly stepLocalFrame = \(\): void => \{/);
+    // The discs and the sky's lobe ride the visitor's frame, the light its own.
+    const update = decl('EnvironmentCycle.ts', 'update');
+    expect(update.match(/\.applyQuaternion\(this\.qSky\)/g)).toHaveLength(3);
+    expect(update.match(/\.applyQuaternion\(this\.qLight\)/g)).toHaveLength(1);
+  });
+});
+
+describe('a golden hour that holds (C1)', () => {
+  // Dawn and dusk were a silhouette world: ground L* 20-26 under a sky at
+  // 60-70. Three causes, each pinned below: the key stood 3.4 degrees up (the
+  // cel ramp's top band needs 19.5), it came from the moon at sunset itself,
+  // and it ran at 0.29 of its base tinted 80% toward night.
+
+  /** update()'s day ramp, for the helpers that take it. */
+  const dayAt = (elev: number): number => THREE.MathUtils.smoothstep(elev, -0.12, 0.3);
+  const hex = (c: THREE.Color): string => c.getHexString();
+
+  test('the night factor is 0 through golden hour and engages under the horizon', () => {
+    // The plan's first formula, smoothstep(elev, 0.0, -0.15), is 0 here.
+    expect(nightFactorAt(-0.2)).toBeGreaterThan(0.5);
+    expect(nightFactorAt(-0.3)).toBe(1);
+    expect(nightFactorAt(-1)).toBe(1);
+    for (const elev of [1, 0.35, 0.1, 0, -0.02, -0.05]) expect(nightFactorAt(elev)).toBe(0);
+    // 1 - dayFactor, which the old tint used, is already 0.8 at sunset.
+    expect(1 - dayAt(0)).toBeCloseTo(0.802, 3);
+  });
+
+  test('the sun stays the key through golden hour; the moon takes over below it', () => {
+    expect(moonWeightAt(-0.02, 0.9)).toBe(0);
+    expect(moonWeightAt(0, 0.9)).toBe(0);
+    expect(moonWeightAt(0.2, 0.9)).toBe(0);
+    expect(moonWeightAt(-0.25, 0.9)).toBe(1);
+    // A moon under the horizon never takes the key.
+    expect(moonWeightAt(-1, 0.02)).toBe(0);
+  });
+
+  test('the key stands 23.6 degrees up at the horizon, where the ramp lights flat ground', () => {
+    expect(keyFloorAt(0)).toBeCloseTo(0.4, 12);
+    expect(keyFloorAt(0)).toBeGreaterThan(1 / 3);
+    // Away from the horizon by day it is the old 0.06 (night has its own, C5).
+    expect(keyFloorAt(0.35)).toBeCloseTo(0.06, 12);
+    expect(keyFloorAt(1)).toBeCloseTo(0.06, 12);
+  });
+
+  test('golden hour holds the key and the hemisphere up; noon and night keep their levels', () => {
+    expect(duskFactorAt(0)).toBe(1);
+    expect(keyLevelAt(dayAt(0), 0)).toBeCloseTo(0.92, 12);
+    expect(hemiLevelAt(dayAt(0), 0)).toBeCloseTo(0.8, 12);
+    // Main at the horizon: 0.29 and 0.45.
+    expect(0.12 + 0.88 * dayAt(0)).toBeCloseTo(0.294, 3);
+    expect(0.32 + 0.68 * dayAt(0)).toBeCloseTo(0.455, 3);
+    expect(keyLevelAt(1, 1)).toBe(1);
+    expect(hemiLevelAt(1, 1)).toBe(1);
+    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12 * NIGHT_KEY_SHARE, 12);
+    expect(hemiLevelAt(0, -1)).toBeCloseTo(0.32, 12);
+  });
+
+  test('the warm key ends with the sun, on a ramp: no frame pops', () => {
+    expect(sunUpAt(0)).toBe(1);
+    expect(sunUpAt(-0.02)).toBe(1);
+    expect(sunUpAt(-0.08)).toBe(0);
+    // Sunset to night in steps of 0.001 of height (about 14 s of clock).
+    let last = keyLevelAt(dayAt(0.4), 0.4);
+    let lastHemi = hemiLevelAt(dayAt(0.4), 0.4);
+    for (let elev = 0.4; elev >= -0.4; elev -= 0.001) {
+      const key = keyLevelAt(dayAt(elev), elev);
+      const hemi = hemiLevelAt(dayAt(elev), elev);
+      expect(Math.abs(key - last)).toBeLessThan(0.025);
+      expect(Math.abs(hemi - lastHemi)).toBeLessThan(0.01);
+      last = key;
+      lastHemi = hemi;
+    }
+  });
+
+  test('18:00 on the island: a warm key at 0.92, 23.6 degrees up, and a tinted hemisphere', () => {
+    const { env, sun, hemi } = makeCycle();
+    env.debugHour = 18;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(env.getDuskFactor()).toBeCloseTo(1, 9);
+    expect(env.getNightFactor()).toBe(0);
+    expect(sun.intensity).toBeCloseTo(1.6 * 0.92, 6);
+    expect(localElevation(sun, HUB)).toBeCloseTo(23.58, 1);
+    // #fff2dd, 85% of the way to #ffc58a, and not a step toward night.
+    expect(hex(sun.color)).toBe(
+      hex(new THREE.Color(0xfff2dd).lerp(new THREE.Color(0xffc58a), 0.85)),
+    );
+    expect(hemi.intensity).toBeCloseTo(0.62 * 0.8, 6);
+    // The tint is handed out for GameScene's underwater grade to start from,
+    // and written to the light for anything that has no such grade.
+    const tint = env.getHemiTint();
+    expect(env.getHemiTint()).toBe(tint);
+    expect(hex(hemi.color)).toBe(hex(tint.sky));
+    expect(hex(hemi.groundColor)).toBe(hex(tint.ground));
+    expect(hex(tint.ground)).toBe(
+      hex(new THREE.Color(0x4a6b32).lerp(new THREE.Color(0x6b5a3a), 0.25)),
+    );
+    // Warmer than the day sky side (#aacdf7): pulled toward the dusk horizon.
+    expect(tint.sky.r).toBeGreaterThan(new THREE.Color(0xaacdf7).r);
+    expect(tint.sky.b).toBeLessThan(new THREE.Color(0xaacdf7).b);
+  });
+
+  test('noon is untouched, and midnight is moonlit blue at the old levels', () => {
+    const { env, sun, hemi } = makeCycle();
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(sun.intensity).toBeCloseTo(1.6, 9);
+    expect(hex(sun.color)).toBe('fff2dd');
+    expect(hemi.intensity).toBeCloseTo(0.62, 9);
+    expect(hex(hemi.color)).toBe('aacdf7');
+    expect(hex(hemi.groundColor)).toBe('4a6b32');
+    expect(env.getDuskFactor()).toBe(0);
+    expect(env.getNightFactor()).toBe(0);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(1);
+
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(env.getNightFactor()).toBe(1);
+    expect(env.getDuskFactor()).toBe(0);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(0);
+    expect(sun.intensity).toBeCloseTo(1.6 * 0.12 * NIGHT_KEY_SHARE, 9);
+    expect(hex(sun.color)).toBe('9db3e6');
+    expect(hemi.intensity).toBeCloseTo(0.62 * 0.32, 9);
+  });
+
+  test('the pinned night code is still there: one cutoff, the glow formula', () => {
+    const update = decl('EnvironmentCycle.ts', 'update');
+    expect(update).toContain('const glow = 0.25 + (1 - dayFactor) * 1.05');
+    expect(update).toContain('const exteriorLightsOn = dayFactor < EXTERIOR_LIGHTS_DAY_CUTOFF');
+    // The day factor reaches shaders as one shared uniform object.
+    expect(update).toContain('DAY_FACTOR_UNIFORM.value = dayFactor');
+  });
+});
+
+describe('faces readable at night, the dark patches kept (C5)', () => {
+  // The avatar at night was a black cut-out (L* 5-7). Abbas asked to keep the
+  // beaches and the mountains dark, and every light in the rig is global, so
+  // the WORLD keeps its night levels and PEOPLE get a light of their own in
+  // the cast's shader. Measured at 21 h and 00 h in the wave-2 report.
+
+  /** What three hands a material's onBeforeCompile. */
+  const fakeShader = (): {
+    uniforms: Record<string, { value: unknown }>;
+    fragmentShader: string;
+  } => ({
+    uniforms: {},
+    fragmentShader: 'void main() {\n#include <opaque_fragment>\n}',
+  });
+  const compile = (mat: THREE.Material): ReturnType<typeof fakeShader> => {
+    const shader = fakeShader();
+    (mat.onBeforeCompile as unknown as (s: unknown, r: unknown) => void)(shader, null);
+    return shader;
+  };
+
+  test('the world keeps its night levels: the key only stands higher', () => {
+    expect(NIGHT_KEY_FLOOR).toBeCloseTo(Math.sin(0.62), 12);
+    expect(keyFloorAt(-1)).toBe(NIGHT_KEY_FLOOR);
+    // No step between the dusk floor and the night floor.
+    let last = keyFloorAt(0.4);
+    for (let elev = 0.4; elev >= -0.5; elev -= 0.001) {
+      expect(Math.abs(keyFloorAt(elev) - last)).toBeLessThan(0.006);
+      last = keyFloorAt(elev);
+    }
+    // The plan's 0.20 and 0.60 night levels are NOT taken: they lifted beach
+    // ground +13.7 L* and highland +7.5 at 21 h. The hemisphere's floor
+    // stands; the key, standing higher in every visitor's sky (P2-C1), takes
+    // 0.4 of its floor, which brought the beach band from +4.2 to +2.2 L*
+    // over main at 21 h on the integration build.
+    expect(NIGHT_KEY_SHARE).toBe(0.4);
+    expect(keyLevelAt(0, -1)).toBeCloseTo(0.12 * NIGHT_KEY_SHARE, 12);
+    expect(hemiLevelAt(0, -1)).toBeCloseTo(0.32, 12);
+
+    const { env, sun, hemi } = makeCycle();
+    for (const hour of [21, 0, 3]) {
+      env.debugHour = hour;
+      env.update(1 / 60, HUB.clone().multiplyScalar(R), hour);
+      expect(sun.intensity).toBeCloseTo(1.6 * 0.12 * NIGHT_KEY_SHARE, 9);
+      expect(hemi.intensity).toBeCloseTo(0.62 * 0.32, 9);
+      // 35.5 degrees or more, whatever the moon is doing tonight.
+      const up = localElevation(sun, HUB);
+      expect(up).toBeGreaterThanOrEqual(THREE.MathUtils.radToDeg(0.62) - 1e-6);
+      expect(up).toBeLessThanOrEqual(CAP_DEG + 1e-6);
+    }
+  });
+
+  test('the night hemisphere is moonlit blue at the old brightness: the tint carries the level', () => {
+    const { env } = makeCycle();
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    const tint = env.getHemiTint();
+    const sky = new THREE.Color(0x7c93c8).multiplyScalar(0.6 / 0.32);
+    const ground = new THREE.Color(0x26331f).multiplyScalar(0.6 / 0.32);
+    for (const k of ['r', 'g', 'b'] as const) {
+      expect(tint.sky[k]).toBeCloseTo(sky[k], 9);
+      expect(tint.ground[k]).toBeCloseTo(ground[k], 9);
+    }
+    // In luminance, about what shipped: 0.32 x #aacdf7 then, 0.60 x #7c93c8 now.
+    const lum = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    const was = 0.32 * lum(new THREE.Color(0xaacdf7));
+    const now = 0.32 * lum(tint.sky);
+    expect(now / was).toBeGreaterThan(0.85);
+    expect(now / was).toBeLessThan(1);
+    // Where nothing applies the tint, the level alone decides, and it is the
+    // old one: the constant is a gain on the colours, not on the intensity.
+    expect(stripped('EnvironmentCycle.ts')).toContain('const NIGHT_HEMI_GAIN = 0.6 / 0.32');
+  });
+
+  test("the camera fill is turned down at night, through GameScene's getter", () => {
+    const { env } = makeCycle();
+    // 0.18 is its day level (GameScene); aimed from the camera it lights the
+    // ground in view, so at night it goes down, not up.
+    expect(env.getNightFill()).toBe(0.08);
+    expect(env.getNightFill()).toBeLessThan(0.18);
+  });
+
+  test('people get their own night light: one shared uniform, in the cast shader only', () => {
+    const a = new THREE.MeshToonMaterial();
+    const b = new THREE.MeshToonMaterial();
+    applyCelRim(a);
+    applyCelRim(b);
+    // v2 replaces v1: every rim material shares the one program.
+    expect(a.customProgramCacheKey()).toBe('cel-rim-v2');
+    expect(b.customProgramCacheKey()).toBe('cel-rim-v2');
+    expect(stripped('CelLook.ts')).not.toContain('cel-rim-v1');
+    const sa = compile(a);
+    const sb = compile(b);
+    // The same uniform OBJECT in both: a frame's update is one write.
+    expect(sa.uniforms.uCelNight).toBe(sb.uniforms.uCelNight);
+    expect(sa.uniforms.uCelSunDir).not.toBe(sb.uniforms.uCelSunDir);
+    expect(sa.fragmentShader).toContain('uniform float uCelNight;');
+    expect(sa.fragmentShader).toContain(
+      'outgoingLight += diffuseColor.rgb * ( 0.6 + 0.4 * ( 1.0 - celFres ) ) * 0.075 * uCelNight;',
+    );
+    expect(sa.fragmentShader).toContain(
+      'outgoingLight += vec3( 0.55, 0.65, 0.90 ) * smoothstep( 0.62, 0.70, celFres ) * 0.150 * uCelNight;',
+    );
+    // The day rim is as it was.
+    expect(sa.fragmentShader).toContain(
+      'outgoingLight += vec3( 1.05, 1.0, 0.92 ) * celRim * 0.28 * uCelRim;',
+    );
+
+    setCelNight(1);
+    expect(sa.uniforms.uCelNight.value).toBe(1);
+    withFx('celNightRim', false, () => {
+      setCelNight(1);
+      expect(sa.uniforms.uCelNight.value).toBe(0);
+    });
+    setCelNight(0);
+    expect(stripped('CelLook.ts')).toContain(
+      "fx.register('celNightRim', { desktop: true, low: true })",
+    );
+    // The cast only: Island dresses the villagers (the player's is in
+    // SimplePlayer); nothing else in C's world asks for the rim.
+    for (const file of ['Zones.ts', 'Mailbox.ts', 'Traffic.ts', 'Materials.ts']) {
+      expect(stripped(file)).not.toContain('applyCelRim(');
+    }
+    expect(stripped('Island.ts').match(/applyCelRim\(/g)).toHaveLength(2);
+  });
+
+  test('the cycle drives it with the night factor: off through golden hour', () => {
+    const mat = new THREE.MeshToonMaterial();
+    applyCelRim(mat);
+    const night = compile(mat).uniforms.uCelNight;
+    const { env } = makeCycle();
+    for (const [hour, want] of [
+      [12, 0],
+      [18, 0],
+      [6, 0],
+      [0, 1],
+      [21, 1],
+    ]) {
+      env.debugHour = hour;
+      env.update(1 / 60, HUB.clone().multiplyScalar(R), hour);
+      expect(night.value).toBe(want);
+    }
+    expect(decl('EnvironmentCycle.ts', 'update')).toContain('setCelNight(night)');
+  });
+
+  test('the night stays outside: a room draw takes 0, the window view keeps the night', () => {
+    // The cycle does not run inside (GameScene.update returns into the
+    // interior mode first), so the gate is the camera, read per draw.
+    const mat = new THREE.MeshToonMaterial();
+    applyCelRim(mat);
+    applyCelRim(mat); // dressing twice still gates once
+    const night = compile(mat).uniforms.uCelNight;
+    const at = (x: number, y: number, z: number) => {
+      const cam = new THREE.PerspectiveCamera();
+      cam.position.set(x, y, z);
+      cam.updateMatrixWorld(true);
+      return cam;
+    };
+    const draw = (cam: THREE.Camera) =>
+      mat.onBeforeRender(
+        {} as THREE.WebGLRenderer,
+        new THREE.Scene(),
+        cam,
+        new THREE.BufferGeometry(),
+        new THREE.Mesh(),
+        null,
+      );
+    const room = at(0, -300 + 1.6, 3.05); // GameScene.INTERIOR_ORIGIN plus the room camera
+    const outdoors = at(0, R + 12, 0); // the orbit's farthest, over the north pole
+    const southPole = at(0, -(R + 30), 0); // terrain plus the orbit, with margin
+    expect(celCameraIndoors(room)).toBe(true);
+    expect(celCameraIndoors(outdoors)).toBe(false);
+    expect(celCameraIndoors(southPole)).toBe(false);
+    expect(CEL_INDOOR_RADIUS).toBe(R * 2);
+
+    setCelNight(1);
+    draw(room);
+    expect(night.value).toBe(0);
+    draw(outdoors); // the window pass in the same interior frame
+    expect(night.value).toBe(1);
+    draw(room);
+    expect(night.value).toBe(0);
+    // Back outside the next cycle update writes the level straight through.
+    setCelNight(1);
+    expect(night.value).toBe(1);
+    setCelNight(0);
+    draw(outdoors);
+    expect(night.value).toBe(0);
+    // An earlier onBeforeRender still runs.
+    const other = new THREE.MeshToonMaterial();
+    let called = 0;
+    other.onBeforeRender = () => {
+      called++;
+    };
+    applyCelRim(other);
+    other.onBeforeRender(
+      {} as THREE.WebGLRenderer,
+      new THREE.Scene(),
+      room,
+      new THREE.BufferGeometry(),
+      new THREE.Mesh(),
+      null,
+    );
+    expect(called).toBe(1);
+  });
+});
+
+describe('a sea that stays blue (C2)', () => {
+  // The sea's fresnel and haze mixed the live sky horizon in, so at dawn and
+  // dusk the orange horizon WAS the sea (mean hue 356 at 06:00 and 18 at
+  // 18:00, rust, against 205 at noon), the shallows showed the seabed as murk
+  // and no white edge read at the waterline. Colour only: the wave sum, the
+  // normals and waveHeightAt are untouched (waveMirror pins them).
+  const hook = (): string => statement('Island.ts', 'seaMat.onBeforeCompile =');
+
+  test('the horizon in the water is hue-locked, per fragment, from the live colour', () => {
+    const sea = hook();
+    // #1d5f8f, the deep-sea blue: its luminance, and itself at luminance 1
+    // mixed 60% with white. The shader's literals are those numbers.
+    const deep = new THREE.Color(0x1d5f8f);
+    const luma = 0.2126 * deep.r + 0.7152 * deep.g + 0.0722 * deep.b;
+    expect(luma).toBeCloseTo(0.1043, 3);
+    const tint = [deep.r, deep.g, deep.b].map((c) => 0.4 + (0.6 * c) / luma);
+    expect(tint[0]).toBeCloseTo(0.471, 2);
+    expect(tint[1]).toBeCloseTo(1.058, 2);
+    expect(tint[2]).toBeCloseTo(1.98, 2);
+    expect(sea).toContain("'float skyLuma = dot(uSkyHorizon, vec3(0.2126, 0.7152, 0.0722));'");
+    expect(sea).toContain(
+      "'float seaLuma = 0.4 * skyLuma + 0.6 * 0.1043 * clamp(skyLuma * 2.3, 0.12, 1.0);'",
+    );
+    expect(sea).toContain("'vec3 seaHorizon = seaLuma * vec3(0.471, 1.058, 1.980);'");
+    // Derived in the shader: bindSeaSkyColor still shares the live Color by
+    // reference, and nothing derives a colour from it when it is bound.
+    expect(decl('Island.ts', 'bindSeaSkyColor')).toContain(
+      'this.seaSkyHorizonUniform.value = horizon',
+    );
+    expect(sea).toContain('shader.uniforms.uSkyHorizon = this.seaSkyHorizonUniform');
+  });
+
+  test('the fresnel and the haze use it; only the far band keeps the true horizon', () => {
+    const sea = hook();
+    expect(sea).toContain("'float farBand = smoothstep(0.88, 0.995, fres) * uDusk;'");
+    // The far band is a dusk measure only: the cycle's dusk factor, shared.
+    expect(sea).toContain('shader.uniforms.uDusk = DUSK_FACTOR_UNIFORM');
+    expect(sea).toContain('uniform float uDusk;');
+    expect(decl('EnvironmentCycle.ts', 'update')).toContain(
+      'DUSK_FACTOR_UNIFORM.value = duskFactor',
+    );
+    const { env } = makeCycle();
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(DUSK_FACTOR_UNIFORM.value).toBe(0);
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(DUSK_FACTOR_UNIFORM.value).toBe(0);
+    env.debugHour = 18;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 2);
+    expect(DUSK_FACTOR_UNIFORM.value).toBeGreaterThan(0.5);
+    expect(DUSK_FACTOR_UNIFORM.value).toBe(env.getDuskFactor());
+    expect(sea).toContain(
+      "'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), fres * mix(0.4, 0.8, farBand));'",
+    );
+    expect(sea).toContain(
+      "'outgoingLight = mix(outgoingLight, mix(seaHorizon, uSkyHorizon, farBand), horizonHaze * 0.45);'",
+    );
+    // The raw horizon never goes straight into the water any more.
+    expect(sea).not.toContain('mix(outgoingLight, uSkyHorizon,');
+  });
+
+  test('the trough tint follows the day factor, shared by reference', () => {
+    const sea = hook();
+    expect(sea).toContain('shader.uniforms.uDayFactor = DAY_FACTOR_UNIFORM');
+    expect(sea).toContain('uniform float uDayFactor;');
+    expect(sea).toContain('smoothstep(0.0,-1.4,vWave)*0.45*(0.5 + 0.5*uDayFactor)');
+    // EnvironmentCycle writes that same object once a frame.
+    const { env } = makeCycle();
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(0);
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(DAY_FACTOR_UNIFORM.value).toBe(1);
+  });
+
+  test('shallows: turquoise and opaque, the surf held back over them, a white edge at the rim', () => {
+    const sea = hook();
+    // #3cc6c0 in linear, mixed in at 0.85.
+    const turquoise = new THREE.Color(0x3cc6c0);
+    expect(turquoise.r).toBeCloseTo(0.045, 2);
+    expect(turquoise.g).toBeCloseTo(0.565, 2);
+    expect(turquoise.b).toBeCloseTo(0.527, 2);
+    expect(sea).toContain(
+      "'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.045,0.565,0.527), shallow*shallow*0.85);'",
+    );
+    expect(sea).toContain(
+      "'diffuseColor.a = mix(diffuseColor.a, 0.97, 1.0 - smoothstep(1.0, 1.4, d));'",
+    );
+    expect(sea).toContain("'foam *= 1.0 - 0.65 * shallow * shallow;'");
+    // The collar is an edge: a short depth range or three pixels, whichever is wider.
+    expect(sea).toContain("'float collarFade = max(uBands.x * 0.1, fwidth(d) * 3.0);'");
+    expect(sea).toContain(
+      "'foam = max(foam, (1.0 - smoothstep(collarIn, collarIn + collarFade, d)) * 0.9);'",
+    );
+    expect(sea).not.toContain('smoothstep(0.05, uBands.x, d)');
+    // The collar band is authored at 2.2 of depth (5.15 m of water at R = 75).
+    expect(decl('Island.ts', 'SURF_BAND_METRES')).toContain('[5.15, 6.0, 8.0]');
+  });
+
+  test('the key on the sea is held: diffuse and glare, after the lights, nothing else', () => {
+    const sea = hook();
+    // The key now stands high in every visitor's own sky (P2-C1); on the sea
+    // it is held to the measured shares, the hemisphere is untouched.
+    expect(sea).toContain("'#include <lights_fragment_end>'");
+    expect(sea).toContain(
+      '`#include <lights_fragment_end>\\nreflectedLight.directSpecular *= ${Island.SEA_GLARE.toFixed(2)};\\nreflectedLight.directDiffuse *= ${Island.SEA_KEY.toFixed(2)};`',
+    );
+    expect(sea).not.toContain('indirectDiffuse');
+    const island = stripped('Island.ts');
+    expect(island).toContain('public static readonly SEA_GLARE = 0.25;');
+    expect(island).toContain('public static readonly SEA_KEY = 0.5;');
+    // The patch lands in a real three chunk, once.
+    expect(
+      THREE.ShaderLib.standard.fragmentShader.split('#include <lights_fragment_end>'),
+    ).toHaveLength(2);
+  });
+
+  test('the waves are not touched: one sea program, the same displacement', () => {
+    const sea = hook();
+    // The sum the CPU mirrors (waveMirror.test.ts proves the parity).
+    expect(sea).toContain("'float w = sin(nrm.x * 9.0 + uTime * 1.3) * 0.6'");
+    expect(sea).toContain("'transformed += nrm * (w * uAmp + uTide);'");
+    // No define, no second material: the program count cannot move.
+    expect(sea).not.toContain('defines');
+    expect(
+      stripped('Island.ts').match(/const seaMat = new THREE\.MeshStandardMaterial\(/g),
+    ).toHaveLength(1);
+  });
+});
+
+describe('the Sailor tells visitors the beach-house code (P2-C6, decision P2-2)', () => {
+  // The islet's beach house has a coded door, and nothing in the world said
+  // what the code was. The Sailor gives it now; D's pin pad sends people to
+  // him after a wrong try (P2-D9).
+
+  /** A villager's authored lines, read from Island's NPC table. */
+  const linesOf = (name: string): string[] => {
+    const p = parse('Island.ts');
+    let found: string[] | null = null;
+    const visit = (n: ts.Node): void => {
+      if (found) return;
+      if (ts.isObjectLiteralExpression(n)) {
+        const prop = (key: string): ts.Expression | undefined =>
+          n.properties
+            .filter(ts.isPropertyAssignment)
+            .find((q) => ts.isIdentifier(q.name) && q.name.text === key)?.initializer;
+        const who = prop('name');
+        const lines = prop('dialogue');
+        if (
+          who &&
+          ts.isStringLiteral(who) &&
+          who.text === name &&
+          lines &&
+          ts.isArrayLiteralExpression(lines)
+        ) {
+          found = lines.elements.map((e) => (ts.isStringLiteralLike(e) ? e.text : ''));
+          return;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(p.sf);
+    expect(found, `${name} has no dialogue in Island.ts`).not.toBeNull();
+    return found as unknown as string[];
+  };
+
+  test('his lines give the code, and still say where the house is', () => {
+    const lines = linesOf('Sailor');
+    const withCode = lines.filter((l) => l.includes('5673'));
+    expect(withCode).toHaveLength(1);
+    expect(withCode[0]).toContain('beach house on the islet out south');
+    expect(withCode[0]).toContain('door code');
+    // Four digits, as the pin pad takes.
+    expect(withCode[0]).toMatch(/\b\d{4}\b/);
+  });
+
+  test('it is his first written reply: one question is enough when replies are offline', () => {
+    // main-simple opens with line 0 (or a live greeting) and cycles the
+    // written fallbacks from index 1.
+    const lines = linesOf('Sailor');
+    expect(lines[1]).toContain('5673');
+    expect(lines[0]).not.toContain('5673');
+    expect(lines).toHaveLength(4);
+  });
+
+  test('nobody else gives it away, and the copy keeps to the Fact Sheet', () => {
+    const p = parse('Island.ts');
+    const hits: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isStringLiteralLike(n) && n.text.includes('5673')) hits.push(n.text);
+      ts.forEachChild(n, visit);
+    };
+    visit(p.sf);
+    expect(hits).toHaveLength(1);
+    // Villagers are villagers: never 'agents', never 'live AI'.
+    for (const l of linesOf('Sailor')) expect(l).not.toMatch(/\bagents?\b|live AI/i);
+  });
+});
+
+describe('district beacons keep their colours by day and by night (P2-C5)', () => {
+  // The beacon on each hall's roof is the far-read cue for its district. It
+  // was tagged isNightEmissive, the drive for windows and bulbs: 0.15 by day
+  // (the cue was out), and at night 30% toward amber, which turned
+  // Professional's blue (#2196f3) into a grey lavender (#9798d2) while the
+  // HUD and the minimap kept the district colours.
+  const DISTRICT_COLOURS: Array<[string, number]> = [
+    ['welcome', 0x4caf50],
+    ['professional', 0x2196f3],
+    ['personal', 0xe91e63],
+    ['contact', 0x9c27b0],
+    ['projects', 0xff9800],
+  ];
+  const stubIsland = {
+    sampleSurfaceByDirection: () => {
+      throw new Error('stub: Zone falls back to an ideal-sphere seat');
+    },
+    getRadius: () => 100,
+  } as unknown as Island;
+
+  type Emissive = THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+  const matOf = (o: THREE.Object3D | undefined): Emissive => (o as THREE.Mesh).material as Emissive;
+
+  /** The five halls on a scene, and a cycle built over them. */
+  const town = (): {
+    env: EnvironmentCycle;
+    halls: Array<{ id: string; colour: number; marker: THREE.Object3D }>;
+  } => {
+    installHeadlessCanvas();
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x79b7e6, 0.0045);
+    const halls = DISTRICT_COLOURS.map(([id, colour], i) => {
+      const zone = new Zone(
+        {
+          id,
+          name: id,
+          description: '',
+          position: dirAt(i * 1.2, 0.46).multiplyScalar(R),
+          color: colour,
+          icon: 'x',
+        },
+        stubIsland,
+      );
+      scene.add(zone.marker);
+      return { id, colour, marker: zone.marker };
+    });
+    const env = new EnvironmentCycle(
+      scene,
+      new THREE.DirectionalLight(0xffe9c0, 1.6),
+      new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62),
+      {
+        topColor: { value: new THREE.Color() },
+        bottomColor: { value: new THREE.Color() },
+        horizonColor: { value: new THREE.Color() },
+      },
+    );
+    return { env, halls };
+  };
+
+  test('1.0 by day and 1.3 at night, in the authored colour at every hour', () => {
+    const { env, halls } = town();
+    for (const [hour, want] of [
+      [12, 1.0],
+      [18, 1.0],
+      [21, 1.3],
+      [0, 1.3],
+      [9, 1.0],
+    ]) {
+      env.debugHour = hour;
+      env.update(1 / 60, HUB.clone().multiplyScalar(R), hour);
+      for (const h of halls) {
+        const mat = matOf(h.marker.getObjectByName('zone-beacon'));
+        expect(mat.emissiveIntensity).toBeCloseTo(want, 9);
+        expect(mat.emissive.getHex()).toBe(h.colour);
+      }
+    }
+  });
+
+  test('windows and the door lamp keep the old drive: dim by day, amber at night', () => {
+    const { env, halls } = town();
+    const hall = halls[1].marker;
+    const tagged: Emissive[] = [];
+    hall.traverse((o) => {
+      if (o.userData.isNightEmissive) tagged.push(matOf(o));
+    });
+    expect(tagged.length).toBeGreaterThan(4);
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    for (const m of tagged) expect(m.emissiveIntensity).toBeCloseTo(0.15, 9);
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    const amber = new THREE.Color(0xffe6a8).lerp(new THREE.Color(0xff9c46), 0.3).getHex();
+    for (const m of tagged) {
+      expect(m.emissiveIntensity).toBeCloseTo(1.3, 9);
+      expect(m.emissive.getHex()).toBe(amber);
+    }
+  });
+
+  test('the beacon carries no night tag, and is found by name whatever it is tagged', () => {
+    const { halls } = town();
+    for (const h of halls) {
+      const beacon = h.marker.getObjectByName('zone-beacon');
+      expect(beacon).toBeDefined();
+      expect(beacon?.userData.isNightEmissive).toBeUndefined();
+    }
+    // A stale tag (an old save of the scene, a future edit) cannot put a
+    // beacon back on the window drive: the name wins.
+    const scene = new THREE.Scene();
+    const stale = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.26, 0),
+      new THREE.MeshStandardMaterial({ color: 0x2196f3, emissive: 0x2196f3 }),
+    );
+    stale.name = 'zone-beacon';
+    stale.userData.isNightEmissive = true;
+    scene.add(stale);
+    installHeadlessCanvas();
+    const env = new EnvironmentCycle(
+      scene,
+      new THREE.DirectionalLight(0xffe9c0, 1.6),
+      new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62),
+      {
+        topColor: { value: new THREE.Color() },
+        bottomColor: { value: new THREE.Color() },
+        horizonColor: { value: new THREE.Color() },
+      },
+    );
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    expect(matOf(stale).emissive.getHex()).toBe(0x2196f3);
+    expect(matOf(stale).emissiveIntensity).toBeCloseTo(1.3, 9);
+    // The tag is gone from the source too; the other four tags in Zones stay.
+    const building = decl('Zones.ts', 'createBuilding');
+    expect(building).not.toContain('beacon.userData.isNightEmissive');
+    expect(stripped('Zones.ts').match(/userData\.isNightEmissive = true/g)).toHaveLength(4);
   });
 });
