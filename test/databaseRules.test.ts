@@ -156,6 +156,33 @@ describe('presence and meta writes match Multiplayer', () => {
   });
 });
 
+describe('chat and voice entries clean themselves up', () => {
+  // The rules allow a remove only when the stored entry's id is the writer's
+  // (`data.child('id')`), and the server checks an onDisconnect when it is
+  // registered. Registered before set resolves, there is no data yet, so the
+  // server denied it and a crashed tab left its blob behind.
+  test('the remove branch needs the stored id', () => {
+    for (const node of ['chat', 'voice']) {
+      expect(at(node, 'island', '$entry')['.write'], node).toContain(
+        "!newData.exists() && data.child('id').val() === auth.uid",
+      );
+    }
+  });
+
+  test('onDisconnect is registered after the entry is written', () => {
+    const send = block(
+      'Multiplayer.ts',
+      "if (msg.kind === 'chat' || msg.kind === 'voice') {",
+      'return;',
+    );
+    const write = send.indexOf('void set(entryRef, {');
+    const hook = send.indexOf('.then(() => onDisconnect(entryRef).remove())');
+    expect(write).toBeGreaterThan(-1);
+    expect(hook).toBeGreaterThan(write);
+    expect(send.match(/onDisconnect\(/g)).toHaveLength(1);
+  });
+});
+
 describe('leaderboard matches Boards.submitRaceTime', () => {
   const write = (): string =>
     at('leaderboard', 'island', '$era', '$circuit', '$uid')['.write'] as string;

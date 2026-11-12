@@ -307,17 +307,19 @@ export class Multiplayer {
       if (msg.kind === 'chat' || msg.kind === 'voice') {
         const path = msg.kind === 'chat' ? 'chat/island' : 'voice/island';
         const entryRef = push(ref(db, path));
-        // Auto-remove on disconnect (covers tab close/crash before the timer).
-        onDisconnect(entryRef)
-          .remove()
-          .catch(() => {});
         void set(entryRef, {
           id: uid,
           text: msg.text ?? null,
           audio: msg.audio ?? null,
           dur: msg.dur ?? null,
           t: Date.now(),
-        }).catch(() => {});
+        })
+          // Auto-remove on disconnect (covers tab close/crash before the timer).
+          // Registered once the entry exists: the rules let a visitor remove
+          // only an entry whose id is theirs, and the server checks that when
+          // the onDisconnect is registered, so registering it first is denied.
+          .then(() => onDisconnect(entryRef).remove())
+          .catch(() => {});
         // Normal-case cleanup so the path never accumulates blobs.
         window.setTimeout(() => {
           void remove(entryRef).catch(() => {});
