@@ -57,6 +57,23 @@ const TP_NEAR = ({ p, dist }) => {
   return true;
 };
 
+/** Stand 1.4 u from a villager, re-placed every poll (they walk), until the talk prompt names them. */
+async function besideNpc(page, name, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const pos = await page.evaluate((n) => {
+      const p = window.__app.scene.getNpcPosition(n);
+      return p ? p.toArray() : null;
+    }, name);
+    if (!pos) return 'no npc';
+    await page.evaluate(TP_NEAR, { p: pos, dist: 1.4 });
+    await lib.sleep(200);
+    const prompt = await page.evaluate(() => (window.__app.ui.interactionDiv ? window.__app.ui.interactionDiv.textContent : ''));
+    if (new RegExp(name).test(prompt || '')) return 'prompt';
+  }
+  return 'timeout';
+}
+
 // ---------------------------------------------------------------- firstplay
 const CHAT = () => {
   const ui = window.__app.ui;
@@ -76,6 +93,18 @@ const TOP = () => {
   const p = ui.zonePanelDiv;
   const text = p && p.isConnected ? (p.innerText || '').replace(/\s+/g, ' ') : '';
   return { panel: ui.panels.current(), h2: p && p.isConnected && p.querySelector('h2') ? p.querySelector('h2').textContent.trim() : null, hire: /LinkedIn/.test(text) && /CV/.test(text), compass: window.__h && window.__h.compassFull ? window.__h.compassFull() : null };
+};
+
+/** The buttons a reply added: the after-set less the before-set, as multisets
+ * (the chat's own 🎤 sits after the log, so a slice by count returns it). */
+const newButtons = (before, after) => {
+  const left = new Map();
+  for (const b of before) left.set(b, (left.get(b) || 0) + 1);
+  return after.filter((b) => {
+    const n = left.get(b) || 0;
+    if (n > 0) left.set(b, n - 1);
+    return n === 0;
+  });
 };
 
 const QUESTIONS = [
@@ -99,6 +128,16 @@ async function openChat(page, touch, T, name) {
     const w2 = await G.walkToNpc(page, name, 6000);
     if (w2 === 'prompt') await useKey(page, touch, T);
     await lib.sleep(2400);
+  }
+  // A villager on a route (P2-C's walks) can step out of reach between the
+  // prompt and E: stand beside them and press E with their prompt up.
+  if (!(await page.evaluate(CHAT)) && !(await page.evaluate(() => window.__app.ui.isDialogueActive()))) {
+    if ((await besideNpc(page, name, 4000)) === 'prompt') await useKey(page, touch, T);
+    await lib.sleep(2400);
+    for (let i = 0; i < 10 && (await page.evaluate(() => window.__app.ui.isDialogueActive())); i++) {
+      await useKey(page, touch, T);
+      await lib.sleep(600);
+    }
   }
   return { walk, chat: await page.evaluate(CHAT) };
 }
@@ -151,7 +190,7 @@ async function firstplay(t) {
         continue;
       }
       const before = chat.lines.length;
-      const b0 = chat.buttons.length;
+      const b0 = chat.buttons.slice();
       await page.evaluate(() => {
         const i = window.__app.ui.npcChatDiv.querySelector('input');
         if (i) i.focus();
@@ -174,7 +213,7 @@ async function firstplay(t) {
         if (now === last) break;
         last = now;
       }
-      const row = { q, replyMs: Date.now() - sent, reply: after ? after.lines.slice(before + 1).join(' / ').slice(0, 300) : null, buttons: after ? after.buttons.slice(b0) : [], badge: after ? after.badge : null };
+      const row = { q, replyMs: Date.now() - sent, reply: after ? after.lines.slice(before + 1).join(' / ').slice(0, 300) : null, buttons: after ? newButtons(b0, after.buttons) : [], badge: after ? after.badge : null };
       await t.shot(page, `firstplay-${prof}-${key}.png`);
       // Press the reply's button, and read where it leads.
       if (row.buttons.length) {
@@ -381,6 +420,10 @@ async function driveLap(page, driver, maxMs) {
 const FINISH = () => {
   const ov = document.getElementById('ui-overlay');
   const tops = [...ov.children].filter((d) => getComputedStyle(d).display !== 'none' && +getComputedStyle(d).zIndex >= 1500 && d.getBoundingClientRect().width > 120);
+  // The panel manager's open modal too, wherever it sits in the overlay.
+  const pm = window.__app.ui.panels;
+  const top = pm && typeof pm.topModal === 'function' ? pm.topModal() : null;
+  if (top && top.el && top.el.isConnected && !tops.some((d) => d === top.el || d.contains(top.el))) tops.push(top.el);
   const text = tops.map((d) => (d.innerText || '').replace(/\s+/g, ' ').trim()).join(' || ');
   const nameInput = [...document.querySelectorAll('#ui-overlay input')].find((i) => /name/i.test(`${i.placeholder || ''} ${i.getAttribute('aria-label') || ''}`) && i.getBoundingClientRect().width > 2);
   const mp = window.__app.multiplayer;
@@ -410,6 +453,22 @@ async function race(t) {
     await lib.sleep(2500);
     out.finish = await page.evaluate(FINISH);
     await t.shot(page, `race-${prof}-${kind}-finish.png`);
+    // The name prompt sits over the finish modal: skip it, as a browsing
+    // visitor would, and read the finish behind it (D10's 'Couldn't reach').
+    if (out.finish.namePrompt) {
+      out.namePromptText = out.finish.text.slice(0, 160);
+      const xy = await page.evaluate(() => {
+        const m = window.__app.ui.nameModalDiv;
+        const b = m && [...m.querySelectorAll('button')].find((x) => /^skip/i.test((x.textContent || '').trim()));
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return [r.left + r.width / 2, r.top + r.height / 2];
+      });
+      out.nameSkipped = await tapOrClick(page, touch, xy);
+      await lib.sleep(2500);
+      out.finish = { ...(await page.evaluate(FINISH)), namePrompt: true };
+      await t.shot(page, `race-${prof}-${kind}-finish-after-name.png`);
+    }
     // A second finish must not ask for the name again (reported when the lap finished).
     t.data[prof] = out;
     const cps = out.lap.checkpoints;
@@ -485,9 +544,10 @@ async function quests(t) {
       return { name: n.name, pos: n.meshRef.getWorldPosition(sc.getPlayer().getWorldPosition().clone()).toArray(), visible: n.meshRef.visible };
     });
     if (sage) {
-      await page.evaluate(TP_NEAR, { p: sage.pos, dist: 4 });
-      await lib.sleep(800);
-      const walk = await G.walkToNpc(page, sage.name, 15000);
+      // Teleport beside her and keep station until her prompt shows (the walk
+      // from 4 u timed out on the wave-2 build); walk only as a fallback.
+      let walk = await besideNpc(page, sage.name, 6000);
+      if (walk !== 'prompt') walk = await G.walkToNpc(page, sage.name, 15000);
       const prompt = await page.evaluate(() => window.__g.prompt());
       out.sage = { walk, prompt };
       if (walk === 'prompt') {
@@ -501,7 +561,8 @@ async function quests(t) {
           await lib.sleep(650);
         }
         await lib.sleep(600);
-        const again = await G.walkToNpc(page, sage.name, 6000);
+        let again = await besideNpc(page, sage.name, 4000);
+        if (again !== 'prompt') again = await G.walkToNpc(page, sage.name, 6000);
         if (again === 'prompt') await useKey(page, touch, T);
         await lib.sleep(2200);
         out.sage.secondE = await page.evaluate(() => ({ dialogue: window.__app.ui.isDialogueActive(), panel: window.__app.ui.panels.current() }));

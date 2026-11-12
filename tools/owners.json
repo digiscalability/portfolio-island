@@ -57,7 +57,8 @@
         "guide",
         "introTourLocks",
         "mainLocks",
-        "interiorEntry"
+        "interiorEntry",
+        "questTracker"
       ],
       "testFiles": []
     },
@@ -179,7 +180,9 @@
         "motionRules",
         "a11yPanels",
         "uiLocks",
-        "passportInterior"
+        "passportInterior",
+        "npcRoutes",
+        "raceBoard"
       ],
       "testFiles": []
     }

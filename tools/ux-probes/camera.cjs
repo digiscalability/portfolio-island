@@ -372,7 +372,12 @@ async function force(t, prof, u) {
           // Hold the distance: the orbit eases back toward its target otherwise.
           oc.distance = dist;
           oc.distanceTarget = dist;
-          out.push({ t: Math.round(now - t0), o: +read().toFixed(3), d: +sc.getCamera().position.distanceTo(sc.getPlayer().getWorldPosition()).toFixed(2) });
+          // fd: the distance B11's fade reads, camera to the torso (0.35 u up from the player's origin).
+          const pl = sc.getPlayer();
+          const wp = pl.getWorldPosition();
+          const anchor = pl.position && pl.quaternion ? wp.clone().set(0, 0.35, 0).applyQuaternion(pl.quaternion).add(pl.position) : wp.clone().addScaledVector(wp.clone().normalize(), 0.35);
+          const cam = sc.getCamera().position;
+          out.push({ t: Math.round(now - t0), o: +read().toFixed(3), d: +cam.distanceTo(wp).toFixed(2), fd: +cam.distanceTo(anchor).toFixed(2) });
           if (now - t0 < 800) requestAnimationFrame(tick);
           else res(out);
         };
@@ -392,8 +397,25 @@ async function force(t, prof, u) {
   await lib.sleep(900);
   const restored = await page.evaluate(AVATAR);
   await s.close();
+  // B11's 150 ms runs from the frame the camera crosses the fade's 1.1 u (to
+  // the torso), not from the force: the orbit glides in over a few hundred ms.
+  const cross = rows.find((r) => r.fd < 1.1);
+  const t1 = cross ? cross.t : null;
   const hit = rows.find((r) => Math.abs(r.o - 0.35) <= 0.05);
-  return { forcedU: u, before, close, restored, cameraDistanceReachedU: rows.length ? rows[rows.length - 1].d : null, opacityAt150ms: (rows.filter((r) => r.t <= 150).pop() || {}).o ?? null, reached035AtMs: hit ? hit.t : null, minOpacity: rows.length ? Math.min(...rows.map((r) => r.o)) : null };
+  return {
+    forcedU: u,
+    before,
+    close,
+    restored,
+    cameraDistanceReachedU: rows.length ? rows[rows.length - 1].d : null,
+    fadeDistanceReachedU: rows.length ? rows[rows.length - 1].fd : null,
+    crossed11AtMs: t1,
+    opacityAt150ms: t1 === null ? null : ((rows.filter((r) => r.t <= t1 + 150).pop() || {}).o ?? null),
+    opacityAt150msFromForce: (rows.filter((r) => r.t <= 150).pop() || {}).o ?? null,
+    reached035AtMs: hit ? hit.t : null,
+    reached035AfterCrossMs: hit && t1 !== null ? hit.t - t1 : null,
+    minOpacity: rows.length ? Math.min(...rows.map((r) => r.o)) : null,
+  };
 }
 
 async function camera(t) {
@@ -440,7 +462,7 @@ async function camera(t) {
       await run('force', () => force(t, prof, u));
       const k = out.force;
       // B11.
-      t.check(`${prof}: at ${u} u the avatar fades to 0.35 within 150 ms`, k.error ? null : k.opacityAt150ms !== null && Math.abs(k.opacityAt150ms - 0.35) <= 0.05, k.error || { at150ms: k.opacityAt150ms, min: k.minOpacity, reached035AtMs: k.reached035AtMs, cameraAtU: k.cameraDistanceReachedU }, '0.35 +-0.05');
+      t.check(`${prof}: forced to ${u} u, the avatar fades to 0.35 within 150 ms of the camera crossing 1.1 u`, k.error ? null : k.opacityAt150ms !== null && Math.abs(k.opacityAt150ms - 0.35) <= 0.05, k.error || { at150ms: k.opacityAt150ms, crossedAtMs: k.crossed11AtMs, reached035AfterCrossMs: k.reached035AfterCrossMs, min: k.minOpacity, fadeDistanceU: k.fadeDistanceReachedU, cameraAtU: k.cameraDistanceReachedU }, '0.35 +-0.05');
       t.check(`${prof}: the avatar is opaque again past 1.3 u`, k.error ? null : k.restored.opacity >= 0.99, k.error || { opacity: k.restored.opacity, cameraAtU: k.restored.dist }, '1');
       t.check(`${prof}: programs with the camera forced close`, k.error ? null : k.close.programs === k.before.programs && k.restored.programs === k.before.programs, k.error || { before: k.before.programs, close: k.close.programs, restored: k.restored.programs }, 'unchanged');
     }

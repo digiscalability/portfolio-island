@@ -189,13 +189,19 @@ async function roomA11y(t) {
     await closePanels(page);
     await page.waitForTimeout(300);
     // Leave: a button with a name, reachable by Tab, clear of the HUD.
-    await page.evaluate(() => {
-      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    });
+    // Focus the panel's close handed back to Leave counts as 0 presses: a
+    // blur() there would leave Chromium's focus-navigation start on Leave, so
+    // the next Tab steps past it.
+    const onLeave = await page.evaluate(LEAVE);
+    let reached = onLeave && onLeave.focused ? 0 : null;
+    if (reached === null) {
+      await page.evaluate(() => {
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      });
+    }
     const leave0 = await page.evaluate(LEAVE);
     out.leave = leave0;
     t.check(`${prof}: Leave is a button with a name`, leave0 ? (leave0.tag === 'BUTTON' || leave0.role === 'button') && leave0.tabIndex >= 0 && /leave/i.test(leave0.name) : false, leave0 ? { tag: leave0.tag, role: leave0.role, tabIndex: leave0.tabIndex, name: leave0.name } : 'no Leave control', 'BUTTON, tabIndex >= 0, named Leave');
-    let reached = null;
     const tabs = [];
     for (let i = 1; i <= 3 && reached === null; i++) {
       await page.keyboard.press('Tab');

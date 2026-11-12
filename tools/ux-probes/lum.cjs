@@ -5,7 +5,11 @@
 // p2/L.cjs's exact masks (the audit averaged boxes, which mixed ground into
 // the player's number), and checked against what it recorded on 58c8849.
 //
-//   npm run probe -- lum [--hours 6,12,18,21] [--profile desktop|phone] --dist dist --port <n>
+//   npm run probe -- lum [--hours 6,12,18,21] [--frames 5] [--profile desktop|phone] --dist dist --port <n>
+//
+// Each view is captured --frames times (default 5, 300 ms apart) and every
+// number is the median over them: one frame per hour let a cloud, a wave
+// crest or a villager crossing the frame move a row.
 //
 // At ?hour=6/12/18/21, on 1440 and on 390 (the low tier):
 // - the hub-wide frame: ground and sky L*, and the sky-to-ground luminance ratio;
@@ -63,7 +67,20 @@ function horizonStep(normalFile, maskFile) {
   return { columns: steps.length, stepL: +steps[Math.floor(steps.length / 2)].toFixed(1), p90: +steps[Math.floor(steps.length * 0.9)].toFixed(1), horizonRow: Math.round(rowSum / steps.length) };
 }
 
+const median = (xs) => {
+  const v = xs.filter((x) => typeof x === 'number' && Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return +(v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2).toFixed(2);
+};
+/** The frame whose key is the median one (for the fields that travel together: a sea's rgb and hue, a horizon's row). */
+const medianFrame = (rows, key) => {
+  const v = rows.filter((x) => x && typeof key(x) === 'number').sort((a, b) => key(a) - key(b));
+  return v.length ? v[(v.length - 1) >> 1] : null;
+};
+
 async function lum(t) {
+  const frames = Math.max(1, Number(t.args.frames && t.args.frames !== true ? t.args.frames : 5));
   const hours = t.args.hours && t.args.hours !== true ? String(t.args.hours).split(',').map(Number) : HOURS;
   const profiles = t.profiles(['desktop', 'phone']);
   const rows = {};
@@ -79,22 +96,42 @@ async function lum(t) {
         const where = await page.evaluate(W.VIEW, W.viewArg(view));
         if (!where) continue;
         await page.waitForTimeout(700);
-        const stem = path.join(t.out, `lum-${prof}-h${h}-${view === 'beach' ? 'sea' : view}`);
-        const pair = await L.capturePair(page, stem, { hideUi: true, zones: true });
-        const st = L.frameStats(pair.a, pair.m);
-        const c = st.cats;
-        if (view === 'hub') {
-          row.ground = (c.groundAll || {}).Lstar ?? null;
-          row.sky = (c.sky || {}).Lstar ?? null;
-          row.skyToGround = c.sky && c.groundAll && c.groundAll.Y ? +(c.sky.Y / c.groundAll.Y).toFixed(2) : null;
-          row.player = (c.player || {}).Lstar ?? null;
-        } else {
-          row.sea = c.sea ? { Lstar: c.sea.Lstar, rgb: c.sea.rgb, ...L.hueOf(c.sea.rgb), share: c.sea.frac } : null;
-          row.seaSky = (c.sky || {}).Lstar ?? null;
-          row.horizon = horizonStep(pair.a, pair.m);
+        const per = [];
+        for (let k = 0; k < frames; k++) {
+          if (k) await page.waitForTimeout(300);
+          const stem = path.join(t.out, `lum-${prof}-h${h}-${view === 'beach' ? 'sea' : view}${k ? `-f${k}` : ''}`);
+          const pair = await L.capturePair(page, stem, { hideUi: true, zones: true });
+          const c = L.frameStats(pair.a, pair.m).cats;
+          if (view === 'hub') {
+            per.push({
+              ground: (c.groundAll || {}).Lstar ?? null,
+              sky: (c.sky || {}).Lstar ?? null,
+              skyToGround: c.sky && c.groundAll && c.groundAll.Y ? +(c.sky.Y / c.groundAll.Y).toFixed(2) : null,
+              player: (c.player || {}).Lstar ?? null,
+            });
+          } else {
+            per.push({
+              sea: c.sea ? { Lstar: c.sea.Lstar, rgb: c.sea.rgb, ...L.hueOf(c.sea.rgb), share: c.sea.frac } : null,
+              seaSky: (c.sky || {}).Lstar ?? null,
+              horizon: horizonStep(pair.a, pair.m),
+            });
+          }
+          fs.rmSync(pair.m, { force: true });
+          if (k) fs.rmSync(pair.a, { force: true });
+          else t.data.frames = [...(t.data.frames || []), pair.a];
         }
-        fs.rmSync(pair.m, { force: true });
-        t.data.frames = [...(t.data.frames || []), pair.a];
+        if (view === 'hub') {
+          for (const k of ['ground', 'sky', 'skyToGround', 'player']) row[k] = median(per.map((p) => p[k]));
+        } else {
+          const seas = per.map((p) => p.sea).filter(Boolean);
+          const mid = medianFrame(seas, (x) => x.Lstar);
+          row.sea = mid ? { ...mid, Lstar: median(seas.map((x) => x.Lstar)), hue: median(seas.map((x) => x.hue)) } : null;
+          row.seaSky = median(per.map((p) => p.seaSky));
+          const hz = per.map((p) => p.horizon).filter((x) => x && x.stepL !== null);
+          const hm = medianFrame(hz, (x) => x.stepL);
+          row.horizon = hm ? { ...hm, stepL: median(hz.map((x) => x.stepL)), perFrame: hz.map((x) => x.stepL) } : { columns: 0, stepL: null };
+        }
+        row.frames = frames;
       }
       rows[prof][h] = row;
       t.log(`${prof} ${h} h: ${JSON.stringify(row)}`);

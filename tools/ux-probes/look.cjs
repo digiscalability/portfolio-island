@@ -557,7 +557,15 @@ async function strafeSession(t, base, { reduced }) {
         break;
       }
     }
-    return { idx, set: via !== null, wantDeg: deg, gotDeg: +offset().deg.toFixed(1), via };
+    // setYaw counts as a manual look, and the orbit holds its follow for
+    // FOLLOW_HOLD_S after one: a visitor who boards has not just looked, so
+    // the pose is handed over as boarded (the 5b007a6 carry-over fix shows).
+    let released = false;
+    if ('sinceManualLook' in oc) {
+      oc.sinceManualLook = Number.POSITIVE_INFINITY;
+      released = true;
+    }
+    return { idx, set: via !== null, wantDeg: deg, gotDeg: +offset().deg.toFixed(1), via, followReleased: released };
   };
   const vehicles = {};
   for (const variant of ['aligned', 'asBoarded']) {
@@ -639,13 +647,19 @@ async function strafe(t) {
       t.check(`${pose}: camera distance within 5% of the compare build (%)`, dd !== null && dd <= 5, dd, '<= 5');
       t.check(`${pose}: camera pitch within 5% of the compare build (%)`, dp !== null && dp <= 5, dp, '<= 5');
     }
-    // As boarded, facing away: the camera swings behind the car as fast as on the compare build (plan +-10%).
+    // As boarded, facing away: the camera swings behind the car at least as
+    // fast as on the compare build (plan -10%; faster is the fix, not a fault).
     const a = std.poses.vehicleChaseAsBoarded;
     const b = cmp.poses.vehicleChaseAsBoarded;
     const both = a && b && oriented(a) && oriented(b);
-    const dr = both ? pctDiff(a.cameraYawAbsDegS, b.cameraYawAbsDegS) : null;
-    t.check('vehicleChaseAsBoarded: camera yaw deg/s within 10% of the compare build (%)', both ? dr !== null && dr <= 10 : null, both ? { subject: a.cameraYawAbsDegS, compare: b.cameraYawAbsDegS, diffPct: dr } : a && b ? { notTurned: { subject: a.vehicle, compare: b.vehicle } } : 'pose missing', '<= 10');
+    const dr = both && b.cameraYawAbsDegS ? lib.round((100 * (a.cameraYawAbsDegS - b.cameraYawAbsDegS)) / b.cameraYawAbsDegS, 2) : null;
+    t.check('vehicleChaseAsBoarded: camera yaw deg/s no more than 10% below the compare build (%)', both ? dr !== null && dr >= -10 : null, both ? { subject: a.cameraYawAbsDegS, compare: b.cameraYawAbsDegS, diffPct: dr } : a && b ? { notTurned: { subject: a.vehicle, compare: b.vehicle } } : 'pose missing', '>= -10');
   }
+  // The absolute bar: 37.2 deg/s, the pre-A5 build's swing as boarded facing
+  // away (58c8849), within 10% (main 8662b27 carries A5's slowdown, so a
+  // compare against it alone cannot show the carry-over fix).
+  const ab = std.poses.vehicleChaseAsBoarded;
+  if (ab) t.check('vehicleChaseAsBoarded: camera yaw (deg/s) against the pre-A5 37.2', ab.vehicle && ab.vehicle.set !== false ? ab.cameraYawAbsDegS >= 37.2 * 0.9 : null, { degS: ab.cameraYawAbsDegS, vehicle: ab.vehicle }, '>= 33.5 (37.2 -10%)');
   if (std.poses.vehicleChaseAsBoarded) t.data.vehicleChaseAsBoardedCameraYawDegS = std.poses.vehicleChaseAsBoarded.cameraYawAbsDegS;
 }
 

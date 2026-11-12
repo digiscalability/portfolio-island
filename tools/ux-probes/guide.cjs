@@ -76,6 +76,8 @@ const STATE = () => {
     stepNo: m ? +m[1] : null,
     chip: !!text && /resume/i.test(text),
     finale: !!text && /you['’]re set/i.test(text),
+    // P2-A12's Next chip ('folded' or 'open'): the card after First steps ends.
+    next: g && g.dataset.next ? g.dataset.next : !!text && /^Next:/.test(text) ? 'folded' : null,
     store,
     event: evs.length ? evs[evs.length - 1].detail : null,
     rect: b ? [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)] : null,
@@ -630,8 +632,9 @@ async function skipAndTrail(t, prof) {
     }
     await lib.sleep(700);
     const after = await page.evaluate(STATE);
-    r.skip = { button: !!sk, present: after.present, store: after.store };
-    t.check(tagOf(t, `${prof}: Skip writes skipped and hides the card`), !!sk && !after.present && !!(after.store && after.store.skipped), r.skip, 'skipped:true, card hidden');
+    // Since P2-A12 a skipped card folds into the Next chip: that counts as hidden.
+    r.skip = { button: !!sk, present: after.present, next: after.next, text: after.text.slice(0, 60), store: after.store };
+    t.check(tagOf(t, `${prof}: Skip writes skipped and hides the card`), !!sk && (!after.present || !!after.next) && !!(after.store && after.store.skipped), r.skip, 'skipped:true, card hidden (or folded into the Next chip)');
   } else t.check(tagOf(t, `${prof}: Skip writes skipped and hides the card`), null, 'no guide card', 'skipped:true, card hidden');
   if (prof === 'desktop' && r.trail && (r.trail.seat || r.trail.nearest)) {
     // The trail's villager: B10's own (their seat), else the nearest one.

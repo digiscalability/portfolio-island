@@ -118,12 +118,13 @@ async function recruiter(t) {
         } else {
           await t.boot(s, { query: 'hour=12' });
           const xy = await centreOf(page, (sel) => {
-            const b = document.querySelector(`${sel} button[data-cta="contact"]`);
+            // The Hiring button (data-recruit) opens the hire card; data-cta=contact is Get In Touch.
+            const b = document.querySelector(`${sel} button[data-recruit]`);
             if (!b) return null;
             const r = b.getBoundingClientRect();
             return [r.left + r.width / 2, r.top + r.height / 2];
           }, lib.WELCOME);
-          if (!xy) throw new Error('hook missing: the welcome card\'s button[data-cta="contact"]');
+          if (!xy) throw new Error("hook missing: the welcome card's button[data-recruit]");
           const c0 = Date.now();
           await click(page, touch, xy);
           await page.waitForFunction(HIRE_OPEN, null, { timeout: 15000, polling: 50 });
@@ -318,17 +319,25 @@ async function sailor(t, prof, touch) {
     row.name = where.name;
     row.overWater = where.overWater;
     row.walk = 'timeout';
-    for (let i = 0; i < 40 && row.walk !== 'prompt'; i++) {
-      await lib.sleep(120);
-      where = await page.evaluate(BESIDE);
-      if (new RegExp(where.name).test(where.prompt)) row.walk = 'prompt';
-    }
-    row.promptBesideHim = where.prompt.slice(0, 80);
-    if (row.walk === 'prompt') {
-      if (touch) {
-        const u = await T.useBtn();
-        if (u) await T.tap(u[0], u[1]);
-      } else await page.keyboard.press('e');
+    // On the water an idle visitor sinks and 'Hold Space to swim' outranks his
+    // talk prompt, so swim (Space held) alongside him, as a visitor would.
+    await page.keyboard.down('Space');
+    row.swimming = true;
+    try {
+      for (let i = 0; i < 40 && row.walk !== 'prompt'; i++) {
+        await lib.sleep(120);
+        where = await page.evaluate(BESIDE);
+        if (new RegExp(where.name).test(where.prompt)) row.walk = 'prompt';
+      }
+      row.promptBesideHim = where.prompt.slice(0, 80);
+      if (row.walk === 'prompt') {
+        if (touch) {
+          const u = await T.useBtn();
+          if (u) await T.tap(u[0], u[1]);
+        } else await page.keyboard.press('e');
+      }
+    } finally {
+      await page.keyboard.up('Space');
     }
     await lib.sleep(2500);
     // Everything he says: the chat's opening line and three offline replies, or his scripted lines.
@@ -406,6 +415,16 @@ const COPY = () => {
   return out;
 };
 const PANEL_TEXT = () => {
+  const clean = (el) => (el.innerText || '').replace(/[ \t]+/g, ' ').trim();
+  const shown = (el) => el && el.isConnected && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 100;
+  // The open modal as the panel manager knows it (wave 2's modals no longer
+  // sit at z-index >= 1500 as overlay children), then the top role=dialog,
+  // then the old overlay scan.
+  const pm = window.__app.ui.panels;
+  const top = pm && typeof pm.topModal === 'function' ? pm.topModal() : null;
+  if (top && shown(top.el) && clean(top.el)) return clean(top.el);
+  const dialogs = [...document.querySelectorAll('[role=dialog],[aria-modal=true]')].filter((d) => shown(d) && !d.closest('[aria-label="Welcome to DigiScalability Life Island"]') && clean(d));
+  if (dialogs.length) return clean(dialogs[dialogs.length - 1]);
   const ov = document.getElementById('ui-overlay');
   const tops = [...ov.children].filter((d) => getComputedStyle(d).display !== 'none' && +getComputedStyle(d).zIndex >= 1500 && d.getBoundingClientRect().width > 100);
   tops.sort((x, y) => +getComputedStyle(y).zIndex - +getComputedStyle(x).zIndex);
