@@ -1077,6 +1077,9 @@ export class GameScene extends THREE.Scene {
 
       // Navigation + traversal rewards
       this.createGuideSparkles();
+      // A visit that starts at night finds the Night Watch at the square, so
+      // the arrival trail below leads to him (positions only: no draw).
+      this.postNightWatch();
       this.createCoins(); // includes createArrivalTrail
       this.seedMark('coins');
       this.createVehicles();
@@ -9783,6 +9786,7 @@ export class GameScene extends THREE.Scene {
       benches: this.island.benchSites,
       lighthouseDir: this.island.lighthouseDir,
       vistas,
+      spawnDir: GameScene.SPAWN_DIR,
       // Economy P2: fixed sites until the buildings land in P3. Same pattern
       // as the Carpenter — functional first, dressing later.
       school: [this.schoolPos()].filter((v): v is THREE.Vector3 => !!v),
@@ -9804,7 +9808,10 @@ export class GameScene extends THREE.Scene {
       const personas: Array<{ id: string; home: THREE.Vector3 }> = [];
       this.island.npcTargets.forEach((n, i) => {
         const id = this.npcPersonaIds[i];
-        if (id) personas.push({ id, home: n.meshRef.position.clone().normalize() });
+        // The Night Watch's own seat, not his night post: the doors are shared
+        // out the same whatever the hour a visit starts.
+        const seat = n.name === GameScene.NIGHT_WATCH ? this.nightWatchSeat : null;
+        if (id) personas.push({ id, home: (seat ?? n.meshRef.position).clone().normalize() });
       });
       const cap = Math.ceil(personas.length / doorDirs.length);
       const load = new Array<number>(doorDirs.length).fill(0);
@@ -9819,6 +9826,58 @@ export class GameScene extends THREE.Scene {
       }
       NpcActivities.setDoorAssignments(assign);
     }
+  }
+
+  /** The player's spawn direction (createArrivalTrail and the night post). */
+  private static readonly SPAWN_DIR = new THREE.Vector3(0.1, 1, 0.1).normalize();
+  private static readonly NIGHT_WATCH = 'Night Watch';
+  /** The Night Watch's authored seat, kept when postNightWatch moved him. */
+  private nightWatchSeat: THREE.Vector3 | null = null;
+
+  /**
+   * The hour the visit starts at, as main-simple will set the clock after the
+   * scene is built: a valid ?hour= wins; a first visit (no ds_visited) lands
+   * at 10.5; anyone else gets the local clock. The world is built before
+   * EnvironmentCycle exists, so it is read here.
+   */
+  private static bootHour(): number {
+    try {
+      const raw = new URLSearchParams(location.search).get('hour');
+      if (raw !== null) {
+        const h = Number(raw);
+        if (Number.isFinite(h) && h >= 0 && h <= 24) return h % 24;
+      }
+    } catch {
+      /* no URL */
+    }
+    try {
+      if (!localStorage.getItem('ds_visited')) return 10.5;
+    } catch {
+      /* no storage: main-simple keeps the clock */
+    }
+    const now = new Date();
+    return now.getHours() + now.getMinutes() / 60;
+  }
+
+  /**
+   * From 20:00 to 08:00 every other villager who talks goes to bed, and First
+   * steps skips its talk step when nobody awake is within 30 u (wave-2
+   * decision). A visit that starts in those hours finds the Night Watch on his
+   * round of the square's lamps, by the spawn: he is seated at the nearest
+   * post before the arrival trail is laid, so the trail and the guide lead to
+   * him. Positions only, from the island's lamp sites: no draw, so the seeded
+   * window is unchanged. By day nothing moves; at 20:00 he walks there.
+   */
+  private postNightWatch(): void {
+    if (!NpcActivities.isNightWatchHour(GameScene.bootHour())) return;
+    const t = this.island.npcTargets?.find((n) => n.name === GameScene.NIGHT_WATCH);
+    if (!t) return;
+    const post = NpcActivities.watchPosts(this.island.lampSites, GameScene.SPAWN_DIR)[0];
+    if (!post) return;
+    this.nightWatchSeat = t.meshRef.position.clone();
+    const at = this.island.sampleSurfaceByDirection(post, 0.02).position;
+    t.meshRef.position.copy(at);
+    t.position.copy(at);
   }
 
   /** Apply a daily server plan (world/island/npcPlan) to the activity engine. */
@@ -9890,7 +9949,7 @@ export class GameScene extends THREE.Scene {
    * visit (ds_arrived), and finishing the trail fires onArrivalTrail.
    */
   private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
-    const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
+    const spawnDir = GameScene.SPAWN_DIR; // matches player spawn
     // Nearest villager to the spawn who talks through the chat (isAiNpc):
     // the trail ends at a conversation, never at one of the villagers with
     // only written lines (the market vendors, the First Mate and the

@@ -80,6 +80,7 @@ type AnchorSource =
   | 'bandstand'
   | 'easel'
   | 'lamps'
+  | 'watch'
   | 'mailboxes'
   | 'stalls'
   | 'benches'
@@ -150,12 +151,15 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
     anchorSource: 'bandstand',
     dwell: [50, 90],
   },
+  // The Night Watch's overnight duty: a round of the town square's lamps,
+  // within sight of the spawn (anchor 'watch'), so a visitor who arrives
+  // after dark still finds a villager awake to talk to.
   lamp_round: {
-    label: 'checking the lamps for the night',
-    short: 'checking lamps',
+    label: 'keeping watch over the square and its lamps',
+    short: 'on watch',
     emoji: '🔦',
     pose: 'watch',
-    anchorSource: 'lamps',
+    anchorSource: 'watch',
     dwell: [7, 13],
   },
   paint_vista: {
@@ -276,6 +280,45 @@ export const POSE_PRESETS: Record<
 };
 
 // ── Schedules ────────────────────────────────────────────────────────────────
+/** The Night Watch's shift, in schedule hours (to > 24 wraps past midnight). */
+export const NIGHT_WATCH_FROM = 20;
+export const NIGHT_WATCH_TO = 32; // 08:00
+/** Is the Night Watch on his shift at this hour (0–24)? */
+export function isNightWatchHour(hour: number): boolean {
+  return hour >= NIGHT_WATCH_FROM || hour < NIGHT_WATCH_TO - 24;
+}
+/** How far from the spawn a lamp may stand and still be on the watch's round:
+ *  the guide names an awake villager within 30 u of the visitor. */
+export const WATCH_RANGE_U = 22;
+/** How far the watch stands off a lamp, toward the spawn (not in its post). */
+const WATCH_OFFSET_U = 0.9;
+
+/**
+ * The Night Watch's posts: the lamps within WATCH_RANGE_U of the spawn, each
+ * stood WATCH_OFFSET_U toward it and more than the arrival trail's 0.04 rad
+ * out, nearest first, as unit dirs. Pure, and draws nothing, so the scene can
+ * call it inside the seeded window. Empty when no lamp is that close.
+ */
+export function watchPosts(lamps: THREE.Vector3[], spawnDir: THREE.Vector3): THREE.Vector3[] {
+  const spawn = spawnDir.clone().normalize();
+  const posts: Array<{ d: number; dir: THREE.Vector3 }> = [];
+  for (const l of lamps) {
+    const r = l.length();
+    if (r <= 0) continue;
+    const at = spawn.clone().multiplyScalar(r);
+    const d = l.distanceTo(at);
+    if (d > WATCH_RANGE_U || d <= WATCH_OFFSET_U) continue;
+    const dir = l
+      .clone()
+      .lerp(at, WATCH_OFFSET_U / d)
+      .normalize();
+    if (dir.angleTo(spawn) <= 0.04) continue;
+    posts.push({ d, dir });
+  }
+  posts.sort((a, b) => a.d - b.d);
+  return posts.map((p) => p.dir);
+}
+
 // Hour bands (0–24; use to > 24 to wrap past midnight). `moods` swaps the
 // activity when the island is in that mood. Personas absent here use GENERIC.
 
@@ -321,9 +364,12 @@ const DEFAULT_SCHEDULES: Record<string /* personaId */, ScheduleRow[]> = {
     { from: 20, to: 21, activity: 'bench_rest' },
     { from: 21, to: 34, activity: 'sleep' },
   ],
+  // The one villager who talks and stays up all night, at the square by the
+  // spawn: 20:00 → 08:00 covers the hours when everyone else is in bed.
+  // GameScene.postNightWatch seats him there when a visit starts at night.
   night_watch: [
-    { from: 20, to: 30, activity: 'lamp_round' }, // 20:00 → 06:00
-    { from: 6, to: 20, activity: 'sleep' },
+    { from: NIGHT_WATCH_FROM, to: NIGHT_WATCH_TO, activity: 'lamp_round' },
+    { from: NIGHT_WATCH_TO - 24, to: NIGHT_WATCH_FROM, activity: 'sleep' },
   ],
   // The Sailor never enters the wander loop (GameScene anchors him to his
   // boat, Fisherman-style) — this schedule only labels his badge/Island Times.
@@ -405,6 +451,7 @@ interface AnchorSet {
   bandstand: THREE.Vector3[]; // the Musician's stage
   easel: THREE.Vector3[]; // the Artist's easel
   lamps: THREE.Vector3[];
+  watch: THREE.Vector3[]; // the Night Watch's round of the square's lamps
   mailboxes: THREE.Vector3[];
   stalls: THREE.Vector3[];
   benches: THREE.Vector3[];
@@ -471,6 +518,8 @@ export function setAnchors(a: {
   benches: THREE.Vector3[];
   lighthouseDir: THREE.Vector3 | null;
   vistas: THREE.Vector3[];
+  /** The spawn's direction: the Night Watch's round is the lamps near it. */
+  spawnDir?: THREE.Vector3;
   doors?: THREE.Vector3[];
   school?: THREE.Vector3[];
   bank?: THREE.Vector3[];
@@ -483,6 +532,7 @@ export function setAnchors(a: {
     bandstand: (a.bandstand.length ? a.bandstand : []).map(toDir),
     easel: (a.easel.length ? a.easel : []).map(toDir),
     lamps: a.lamps.map(toDir),
+    watch: a.spawnDir ? watchPosts(a.lamps, a.spawnDir).map(toDir) : [],
     mailboxes: a.mailboxes.map(toDir),
     stalls: a.stalls.map(toDir),
     benches: a.benches.map(toDir),
@@ -690,6 +740,8 @@ function pickAnchor(
     return true;
   }
   if (!ANCHORS) return false;
+  // No lamp near the spawn: the watch walks the island's lamps, as it did.
+  if (source === 'watch' && !ANCHORS.watch.length) source = 'lamps';
   const list = ANCHORS[source as keyof AnchorSet] as THREE.Vector3[] | undefined;
   if (!list || !list.length) return false;
   outDir.copy(list[s.rot % list.length]);
@@ -735,6 +787,8 @@ export function getGoal(
     planned !== 'sleep' &&
     Object.prototype.hasOwnProperty.call(ACTIVITY_DEFS, planned) &&
     activity !== 'sleep' &&
+    // ...nor off the night watch: it runs to 08:00, inside the plan's hours.
+    activity !== 'lamp_round' &&
     hour >= 6 &&
     hour < 20
   ) {

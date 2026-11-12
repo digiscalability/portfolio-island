@@ -745,3 +745,21 @@ describe('the sky ends like every built-in material (P2-B4)', () => {
     expect(mat.lights).toBe(false);
   });
 });
+
+describe('the night watch is posted before the arrival trail is laid (wave-2 decision)', () => {
+  test('postNightWatch runs before createCoins, and draws nothing', () => {
+    const s = stripped('GameScene.ts');
+    const call = s.indexOf('this.postNightWatch();');
+    expect(call).toBeGreaterThan(-1);
+    expect(call).toBeLessThan(s.indexOf('this.createCoins();'));
+    const body = bodyOf(s, 'private postNightWatch(): void');
+    expect(body).not.toMatch(/Math\.random|new THREE\.(Mesh|Material|Mesh\w+Material)\b/);
+    expect(body).toMatch(/isNightWatchHour\(GameScene\.bootHour\(\)\)/);
+  });
+
+  test('the doors are shared out from his own seat, not the night post', () => {
+    const body = bodyOf(stripped('GameScene.ts'), 'private setupNpcActivities(): void');
+    expect(body).toMatch(/this\.nightWatchSeat/);
+    expect(body).toMatch(/spawnDir: GameScene\.SPAWN_DIR/);
+  });
+});
