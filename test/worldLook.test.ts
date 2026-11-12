@@ -1703,6 +1703,24 @@ describe('a sea that stays blue (C2)', () => {
     expect(decl('Island.ts', 'SURF_BAND_METRES')).toContain('[5.15, 6.0, 8.0]');
   });
 
+  test('the key on the sea is held: diffuse and glare, after the lights, nothing else', () => {
+    const sea = hook();
+    // The key now stands high in every visitor's own sky (P2-C1); on the sea
+    // it is held to the measured shares, the hemisphere is untouched.
+    expect(sea).toContain("'#include <lights_fragment_end>'");
+    expect(sea).toContain(
+      '`#include <lights_fragment_end>\\nreflectedLight.directSpecular *= ${Island.SEA_GLARE.toFixed(2)};\\nreflectedLight.directDiffuse *= ${Island.SEA_KEY.toFixed(2)};`',
+    );
+    expect(sea).not.toContain('indirectDiffuse');
+    const island = stripped('Island.ts');
+    expect(island).toContain('public static readonly SEA_GLARE = 0.35;');
+    expect(island).toContain('public static readonly SEA_KEY = 0.7;');
+    // The patch lands in a real three chunk, once.
+    expect(
+      THREE.ShaderLib.standard.fragmentShader.split('#include <lights_fragment_end>'),
+    ).toHaveLength(2);
+  });
+
   test('the waves are not touched: one sea program, the same displacement', () => {
     const sea = hook();
     // The sum the CPU mirrors (waveMirror.test.ts proves the parity).

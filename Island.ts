@@ -302,6 +302,12 @@ export class Island {
    * edge read at all (0 px in every column probed), so it is 2.2 now (C2).
    */
   private seaBandsUniform = { value: new THREE.Vector3(2.2, 2.4, 3.2) };
+  /** The share of the key's direct specular (SEA_GLARE) and direct diffuse
+   *  (SEA_KEY) the sea keeps, now that the key stands high in every
+   *  visitor's sky (see the sea's lights_fragment_end patch). Measured, not
+   *  reasoned: 1 is main's. */
+  public static readonly SEA_GLARE = 0.35;
+  public static readonly SEA_KEY = 0.7;
 
   public seaTimeUniform: { value: number } = { value: 0 };
   // Slow rise/fall of the whole sea surface, shared by the shader and the CPU
@@ -1773,6 +1779,20 @@ export class Island {
         .replace(
           '#include <common>',
           '#include <common>\nvarying float vWave;\nvarying float vDepth;\nvarying vec2 vFoamUv;\nuniform float uTime;\nuniform float uTide;\nuniform vec3 uBands;\nuniform vec3 uSkyHorizon;\nuniform float uDayFactor;\nuniform float uDusk;',
+        )
+        // The key on the open sea, held to SEA_KEY (diffuse) and SEA_GLARE
+        // (specular). C2 x P2-C1: the key used to hang over the hub, so from
+        // a beach it stood low in the sky; it now stands 65 degrees up in
+        // every visitor's own sky, and the sea under it measured L* 43-60 at
+        // noon (median 48.5 on the phone) against main's 37-46 (median 41.8)
+        // on lum's beach view, 12 frames a second apart. With 'localSun' off
+        // the same frames read 32-42. Held to 0.7 and 0.35 the medians are
+        // 42.9 phone / 45.1 desktop against main's 41.8 / 44.4, and the
+        // crests still catch the sun. The hemisphere and the haze are as
+        // they were.
+        .replace(
+          '#include <lights_fragment_end>',
+          `#include <lights_fragment_end>\nreflectedLight.directSpecular *= ${Island.SEA_GLARE.toFixed(2)};\nreflectedLight.directDiffuse *= ${Island.SEA_KEY.toFixed(2)};`,
         )
         .replace(
           '#include <color_fragment>',
