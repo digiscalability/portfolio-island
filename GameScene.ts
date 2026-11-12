@@ -7,6 +7,7 @@ import { buildCloudFormations } from './CloudFormations';
 import { DISTRICTS, RING_DISTRICT_LONS, ZONE_LAT, districtAccentAt } from './Districts';
 import { EnvironmentCycle, EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle';
 import { framingFov } from './Framing';
+import { fx } from './FxBudget';
 import { Island } from './Island';
 import { expDecayV3, squash } from './Juice';
 import { Mailbox } from './Mailbox';
@@ -95,6 +96,54 @@ interface WarmProgram {
   getUniforms(): unknown;
   getAttributes(): unknown;
 }
+
+/**
+ * What the light rig reads from EnvironmentCycle once C's wave-2 getters exist
+ * (C merges after B, so each is optional and has today's value as its
+ * fallback): the night factor, the night level of the camera fill, and the
+ * hemisphere's live tint.
+ */
+interface LightRigSource {
+  getNightFactor?(): number;
+  getNightFill?(): number;
+  getHemiTint?(): {
+    sky?: THREE.Color;
+    ground?: THREE.Color;
+    color?: THREE.Color;
+    groundColor?: THREE.Color;
+  } | null;
+}
+
+/** A room's lit material: toon under the cel theme (P2-B10), standard as
+ *  authored under ?theme=real. Both carry colour, map and emissive. */
+type RoomMat = THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+
+/**
+ * One state of the scene's five lights as a room sets them (P2-B9): the key's
+ * direction (room space, toward the light), colour and level; the hemisphere;
+ * the ambient; and the rim's and the fill's levels.
+ */
+interface RoomRig {
+  keyDir: THREE.Vector3;
+  keyColor: THREE.Color;
+  key: number;
+  sky: THREE.Color;
+  ground: THREE.Color;
+  hemi: number;
+  ambientColor: THREE.Color;
+  ambient: number;
+  rim: number;
+  fill: number;
+}
+
+// The light rig's per-frame half (P2-B5): the camera fill, the rim opposite
+// the sun, and the moon's and the weather's share of the sun's shadow. Off,
+// the rig is the authored one.
+fx.register('lightRig', { desktop: true, low: true });
+
+// The avatar fades when the camera comes close (B11; the fade itself is
+// SimplePlayer.updateCloseFade).
+fx.register('avatarFade', { desktop: true, low: true });
 
 /** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
  *  (geometry and material are shared). */
@@ -764,6 +813,52 @@ export class GameScene extends THREE.Scene {
   // still cover what the chase camera can see behind the player.
   private static readonly SHADOW_EXTENT = 17;
   private rimLight?: THREE.DirectionalLight;
+  /** The cool fill (setupLighting). updateLightRig aims it from the camera. */
+  private fillLight?: THREE.DirectionalLight;
+  /** Where setupLighting leaves the fill and the rim: the rig with fx
+   *  'lightRig' off. */
+  private static readonly FILL_HOME = new THREE.Vector3(-20, -30, -20);
+  private static readonly RIM_HOME = new THREE.Vector3(-34, 26, -30);
+  /** The fill's level by day, and at night until EnvironmentCycle says
+   *  otherwise (getNightFill, C's lever). */
+  private static readonly FILL_DAY = 0.18;
+  /** Under a high sun, the highest the fill stands above the player's
+   *  horizon: sin(10 deg). Aimed straight along the chase camera it came
+   *  from ~25 degrees up and lit the ground too. MEASURED at the hub at noon,
+   *  the rig with the full camera direction and a 30 degree rim put the
+   *  ground +1.6 L* (desktop) and +2.0 (phone) over main; the rig off matched
+   *  main exactly. A lower sun lifts the cap (updateLightRig's sunHigh).
+   *  Capped from 30 degrees of sun, desktop's ground fell 1.2-1.9 L* at
+   *  06 h and 18 h (23.6 degrees) and the Professional district's 2.8 L*
+   *  further below the hub's at 15 h (45 degrees). */
+  private static readonly FILL_MAX_LIFT = Math.sin(Math.PI / 18);
+  /** The sun's height (sine) where the cap and the lower rim begin: 45 deg. */
+  private static readonly SUN_HIGH_FROM = Math.SQRT1_2;
+  /** ...and where they are whole: 60 degrees. Noon stands at 64.7. */
+  private static readonly SUN_HIGH_AT = Math.sin(Math.PI / 3);
+  /** Under a high sun the rim stands this far above the horizon, opposite
+   *  the sun: 20 degrees. With the fill capped, the same noon view read
+   *  -0.2 L* (desktop) and +0.1 (phone) against main at 20 degrees,
+   *  +0.9 / +1.2 at 30 and -1.3 / -1.2 at 15 (wave-2 integration build,
+   *  ?hour=12). */
+  private static readonly RIM_LIFT = Math.PI / 9;
+  /** Under a sun 45 degrees high or lower the rim stands 30 degrees up. */
+  private static readonly RIM_LIFT_LOW_SUN = Math.PI / 6;
+  /** Weather's share of the sun's shadow, eased at cloudWet's rate. */
+  private rigWeatherShadow = 1;
+  /** The rim's last horizontal direction, kept while the sun is overhead. */
+  private readonly _rigRimFlat = new THREE.Vector3(1, 0, 0);
+  private readonly _rigDir = new THREE.Vector3();
+  private readonly _rigPlayerPos = new THREE.Vector3();
+  private rigDt = 0;
+  private rigParked = true;
+  private readonly boundLightRig = (): void => this.updateLightRig();
+  // The close-camera fade (B11): the torso's height above the player's
+  // origin, the frame's dt, and the method fx.time runs.
+  private static readonly AVATAR_FADE_TORSO = 0.35;
+  private readonly _fadeAnchor = new THREE.Vector3();
+  private avatarFadeDt = 0;
+  private readonly boundAvatarFade = (): void => this.updateAvatarFade();
   private _sunDir = new THREE.Vector3();
   // Shadow-box texel snapping (updateSunShadow) — the basis three's shadow
   // camera uses, plus the rounded box centre.
@@ -783,7 +878,6 @@ export class GameScene extends THREE.Scene {
   private readonly _racePos = new THREE.Vector3();
   private readonly _puffPlayerPos = new THREE.Vector3();
   private readonly _collidePos = new THREE.Vector3();
-  private readonly _nearNpcPos = new THREE.Vector3();
   private readonly _nearPos = new THREE.Vector3();
   private readonly _radarPos = new THREE.Vector3();
   private readonly _crabPlayerPos = new THREE.Vector3();
@@ -1002,6 +1096,9 @@ export class GameScene extends THREE.Scene {
 
       // Navigation + traversal rewards
       this.createGuideSparkles();
+      // A visit that starts at night finds the Night Watch at the square, so
+      // the arrival trail below leads to him (positions only: no draw).
+      this.postNightWatch();
       this.createCoins(); // includes createArrivalTrail
       this.seedMark('coins');
       this.createVehicles();
@@ -1296,13 +1393,15 @@ export class GameScene extends THREE.Scene {
     const BARS = 7;
     const mesh = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(1, 1),
-      new THREE.MeshStandardMaterial({
-        color: 0xe8e2d2,
-        roughness: 0.9,
-        polygonOffset: true,
-        polygonOffsetFactor: -4,
-        polygonOffsetUnits: -4,
-      }),
+      GameScene.celMat(
+        new THREE.MeshStandardMaterial({
+          color: 0xe8e2d2,
+          roughness: 0.9,
+          polygonOffset: true,
+          polygonOffsetFactor: -4,
+          polygonOffsetUnits: -4,
+        }),
+      ),
       RING_DISTRICT_LONS.length * BARS,
     );
     mesh.name = 'road_markings_instanced';
@@ -1591,15 +1690,20 @@ export class GameScene extends THREE.Scene {
     this.hemiBaseGround = hemiLight.groundColor.clone();
 
     // Soft fill from below-opposite so the planet's far side isn't pure black
-    const fillLight = new THREE.DirectionalLight(0xd4e8ff, 0.18);
-    fillLight.position.set(-20, -30, -20);
+    // (updateLightRig re-aims it from the camera each frame: P2-B5.)
+    const fillLight = new THREE.DirectionalLight(0xd4e8ff, GameScene.FILL_DAY);
+    fillLight.position.copy(GameScene.FILL_HOME);
+    fillLight.name = 'rig_fill';
     this.add(fillLight);
+    this.fillLight = fillLight;
 
     // RIM: a cool back-light roughly opposite the key. This is what separates
     // a prop's silhouette from the terrain behind it — the single biggest
     // reason stylised scenes read as "lit" rather than "flat shaded".
+    // (updateLightRig keeps it opposite the sun at the player: P2-B5.)
     const rimLight = new THREE.DirectionalLight(0xcfe6ff, 0.55);
-    rimLight.position.set(-34, 26, -30);
+    rimLight.position.copy(GameScene.RIM_HOME);
+    rimLight.name = 'rig_rim';
     this.add(rimLight);
     this.rimLight = rimLight;
 
@@ -3175,6 +3279,17 @@ export class GameScene extends THREE.Scene {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
     return geo;
+  }
+
+  /**
+   * A prop's standard material in the island's look (B15): toon on the shared
+   * ramp under the cel theme, as authored under ?theme=real. The conversion
+   * draws its uuid from Materials.toonify's own generator, so a prop built
+   * inside the seeded window costs the stream what it always cost: the one
+   * standard material.
+   */
+  private static celMat(mat: THREE.MeshStandardMaterial): THREE.Material {
+    return isRealTheme() ? mat : Materials.toonify(mat);
   }
 
   private static birdMatCache = new Map<number, THREE.MeshToonMaterial>();
@@ -5677,10 +5792,18 @@ export class GameScene extends THREE.Scene {
    * the group + local counter slot positions where sold fish are laid out. */
   private buildFishShop(): { group: THREE.Group; slots: THREE.Vector3[] } {
     const g = new THREE.Group();
-    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f });
-    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
-    const stripe = new THREE.MeshToonMaterial({ color: 0x2f7fae, side: THREE.DoubleSide });
-    const stripe2 = new THREE.MeshToonMaterial({ color: 0xf2f2f2, side: THREE.DoubleSide });
+    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f, gradientMap: Materials.toonRamp() });
+    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22, gradientMap: Materials.toonRamp() });
+    const stripe = new THREE.MeshToonMaterial({
+      color: 0x2f7fae,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
+    const stripe2 = new THREE.MeshToonMaterial({
+      color: 0xf2f2f2,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
     // Counter (front toward the beach = −Z), on legs
     const counter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.14, 0.95), wood);
     counter.position.set(0, 0.92, -0.95);
@@ -5712,7 +5835,7 @@ export class GameScene extends THREE.Scene {
     // Ice crate on the counter
     const crate = new THREE.Mesh(
       new THREE.BoxGeometry(0.95, 0.22, 0.66),
-      new THREE.MeshToonMaterial({ color: 0xd4eaf4 }),
+      new THREE.MeshToonMaterial({ color: 0xd4eaf4, gradientMap: Materials.toonRamp() }),
     );
     crate.position.set(-0.72, 1.1, -0.95);
     g.add(crate);
@@ -5847,7 +5970,7 @@ export class GameScene extends THREE.Scene {
     const rig = new THREE.Group();
     const rod = new THREE.Mesh(
       new THREE.CylinderGeometry(0.018, 0.03, 1.4, 6),
-      new THREE.MeshToonMaterial({ color: 0x6b4a2a }),
+      new THREE.MeshToonMaterial({ color: 0x6b4a2a, gradientMap: Materials.toonRamp() }),
     );
     rod.castShadow = true;
     rig.add(rod);
@@ -5860,7 +5983,11 @@ export class GameScene extends THREE.Scene {
     rig.add(line);
     const bobber = new THREE.Mesh(
       new THREE.SphereGeometry(0.07, 8, 6),
-      new THREE.MeshToonMaterial({ color: 0xdd3b3b, emissive: 0x551111 }),
+      new THREE.MeshToonMaterial({
+        color: 0xdd3b3b,
+        emissive: 0x551111,
+        gradientMap: Materials.toonRamp(),
+      }),
     );
     rig.add(bobber);
     this.add(rig);
@@ -6876,7 +7003,7 @@ export class GameScene extends THREE.Scene {
     const seat = this.plotSample(`b${plot}`, site[0], site[1]);
     if (!seat) return;
     const g = new THREE.Group();
-    const wood = new THREE.MeshToonMaterial({ color: 0x9a7648 });
+    const wood = new THREE.MeshToonMaterial({ color: 0x9a7648, gradientMap: Materials.toonRamp() });
     const plank = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.09, 0.45), wood);
     plank.position.y = 0.42;
     const back = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 0.07), wood);
@@ -7554,8 +7681,14 @@ export class GameScene extends THREE.Scene {
     const base = new THREE.Group();
     base.position.copy(seat.position);
     base.quaternion.setFromUnitVectors(GameScene.AXIS_Y, seat.normal);
-    const steel = new THREE.MeshToonMaterial({ color: 0x8a93a6 });
-    const bright = new THREE.MeshToonMaterial({ color: 0xd4574a });
+    const steel = new THREE.MeshToonMaterial({
+      color: 0x8a93a6,
+      gradientMap: Materials.toonRamp(),
+    });
+    const bright = new THREE.MeshToonMaterial({
+      color: 0xd4574a,
+      gradientMap: Materials.toonRamp(),
+    });
     // Merry-go-round: disc + 4 spokes, one rotating group.
     const spin = new THREE.Group();
     const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.08, 12), bright);
@@ -7935,14 +8068,14 @@ export class GameScene extends THREE.Scene {
     const g = new THREE.Group();
     const tin = new THREE.Mesh(
       new THREE.CylinderGeometry(0.16, 0.14, 0.06, 12),
-      new THREE.MeshToonMaterial({ color: 0x8a5a2f }),
+      new THREE.MeshToonMaterial({ color: 0x8a5a2f, gradientMap: Materials.toonRamp() }),
     );
     tin.position.y = 0.03;
     tin.castShadow = true;
     g.add(tin);
     const crust = new THREE.Mesh(
       new THREE.SphereGeometry(0.15, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2),
-      new THREE.MeshToonMaterial({ color: 0xe2b566 }),
+      new THREE.MeshToonMaterial({ color: 0xe2b566, gradientMap: Materials.toonRamp() }),
     );
     crust.scale.y = 0.55;
     crust.position.y = 0.06;
@@ -7951,7 +8084,7 @@ export class GameScene extends THREE.Scene {
     if (fishTopped) {
       const fish = new THREE.Mesh(
         new THREE.OctahedronGeometry(0.07),
-        new THREE.MeshToonMaterial({ color: 0xff7a33 }),
+        new THREE.MeshToonMaterial({ color: 0xff7a33, gradientMap: Materials.toonRamp() }),
       );
       fish.scale.set(0.5, 0.45, 1.4);
       fish.position.set(0, 0.14, 0);
@@ -7970,9 +8103,12 @@ export class GameScene extends THREE.Scene {
     ovenGlow: THREE.Mesh;
   } {
     const g = new THREE.Group();
-    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f });
-    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22 });
-    const brick = new THREE.MeshToonMaterial({ color: 0x9a5140 });
+    const wood = new THREE.MeshToonMaterial({ color: 0x9c6b3f, gradientMap: Materials.toonRamp() });
+    const dark = new THREE.MeshToonMaterial({ color: 0x5c3d22, gradientMap: Materials.toonRamp() });
+    const brick = new THREE.MeshToonMaterial({
+      color: 0x9a5140,
+      gradientMap: Materials.toonRamp(),
+    });
     const box = (
       w: number,
       h: number,
@@ -7999,8 +8135,16 @@ export class GameScene extends THREE.Scene {
       post.castShadow = true;
       g.add(post);
     }
-    const awnA = new THREE.MeshToonMaterial({ color: 0xd9843a, side: THREE.DoubleSide });
-    const awnB = new THREE.MeshToonMaterial({ color: 0xf2e0c0, side: THREE.DoubleSide });
+    const awnA = new THREE.MeshToonMaterial({
+      color: 0xd9843a,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
+    const awnB = new THREE.MeshToonMaterial({
+      color: 0xf2e0c0,
+      side: THREE.DoubleSide,
+      gradientMap: Materials.toonRamp(),
+    });
     for (let i = 0; i < 5; i++) {
       const panel = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.05, 1.7), i % 2 ? awnB : awnA);
       panel.position.set(-1.04 + i * 0.52, 1.77, -0.55);
@@ -8016,7 +8160,15 @@ export class GameScene extends THREE.Scene {
     dome.position.set(1.75, 1.0, 0.35);
     dome.castShadow = true;
     g.add(dome);
-    box(0.55, 0.55, 0.12, new THREE.MeshToonMaterial({ color: 0x160b04 }), 1.75, 0.5, -0.22);
+    box(
+      0.55,
+      0.55,
+      0.12,
+      new THREE.MeshToonMaterial({ color: 0x160b04, gradientMap: Materials.toonRamp() }),
+      1.75,
+      0.5,
+      -0.22,
+    );
     const ovenGlow = new THREE.Mesh(
       new THREE.PlaneGeometry(0.5, 0.5),
       new THREE.MeshBasicMaterial({
@@ -8219,11 +8371,13 @@ export class GameScene extends THREE.Scene {
     const navy = GameScene.birdMat(0x24384c);
     const deckMat = GameScene.birdMat(0xd9dee4);
     const funnelMat = GameScene.birdMat(0xd94a3a);
-    const glowMat = new THREE.MeshStandardMaterial({
-      color: 0xffe6a8,
-      emissive: 0xffc966,
-      emissiveIntensity: 0.35,
-    });
+    const glowMat = GameScene.celMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xffe6a8,
+        emissive: 0xffc966,
+        emissiveIntensity: 0.35,
+      }),
+    );
     glowMat.userData.isNightEmissive = true; // EnvironmentCycle ramps it at dusk
     const ship = new THREE.Group();
     // Lower hull (navy) + main hull (white); bow tapers toward -Z.
@@ -8308,11 +8462,13 @@ export class GameScene extends THREE.Scene {
     const trim = GameScene.birdMat(0x8a6a42);
     const roofMat = GameScene.birdMat(0x4a8ea6);
     const stone = GameScene.birdMat(0x7a7168);
-    const glow = new THREE.MeshStandardMaterial({
-      color: 0xffe6a8,
-      emissive: 0xffc966,
-      emissiveIntensity: 0.4,
-    });
+    const glow = GameScene.celMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xffe6a8,
+        emissive: 0xffc966,
+        emissiveIntensity: 0.4,
+      }),
+    );
     glow.userData.isNightEmissive = true;
 
     const house = new THREE.Group();
@@ -8462,7 +8618,7 @@ export class GameScene extends THREE.Scene {
     const dough = new THREE.Group();
     const ball = new THREE.Mesh(
       new THREE.SphereGeometry(0.14, 10, 8),
-      new THREE.MeshToonMaterial({ color: 0xf0e2c0 }),
+      new THREE.MeshToonMaterial({ color: 0xf0e2c0, gradientMap: Materials.toonRamp() }),
     );
     ball.scale.y = 0.65;
     ball.castShadow = true;
@@ -8823,13 +8979,17 @@ export class GameScene extends THREE.Scene {
    */
   private createButterflies(): void {
     const WING_COLORS = [0xffa04a, 0xf5f5ff, 0xc48ae0, 0xffd34a, 0x7ab8ff];
-    const bodyMat = new THREE.MeshToonMaterial({ color: 0x33302a });
+    const bodyMat = new THREE.MeshToonMaterial({
+      color: 0x33302a,
+      gradientMap: Materials.toonRamp(),
+    });
     for (let i = 0; i < this.island.flowerSites.length; i++) {
       const site = this.island.flowerSites[i];
       const group = new THREE.Group();
       const wingMat = new THREE.MeshToonMaterial({
         color: WING_COLORS[i % WING_COLORS.length],
         side: THREE.DoubleSide,
+        gradientMap: Materials.toonRamp(),
       });
       const wingGeo = new THREE.PlaneGeometry(0.09, 0.07);
       wingGeo.translate(0.045, 0, 0); // hinge at the body
@@ -9645,6 +9805,7 @@ export class GameScene extends THREE.Scene {
       benches: this.island.benchSites,
       lighthouseDir: this.island.lighthouseDir,
       vistas,
+      spawnDir: GameScene.SPAWN_DIR,
       // Economy P2: fixed sites until the buildings land in P3. Same pattern
       // as the Carpenter — functional first, dressing later.
       school: [this.schoolPos()].filter((v): v is THREE.Vector3 => !!v),
@@ -9666,7 +9827,10 @@ export class GameScene extends THREE.Scene {
       const personas: Array<{ id: string; home: THREE.Vector3 }> = [];
       this.island.npcTargets.forEach((n, i) => {
         const id = this.npcPersonaIds[i];
-        if (id) personas.push({ id, home: n.meshRef.position.clone().normalize() });
+        // The Night Watch's own seat, not his night post: the doors are shared
+        // out the same whatever the hour a visit starts.
+        const seat = n.name === GameScene.NIGHT_WATCH ? this.nightWatchSeat : null;
+        if (id) personas.push({ id, home: (seat ?? n.meshRef.position).clone().normalize() });
       });
       const cap = Math.ceil(personas.length / doorDirs.length);
       const load = new Array<number>(doorDirs.length).fill(0);
@@ -9681,6 +9845,58 @@ export class GameScene extends THREE.Scene {
       }
       NpcActivities.setDoorAssignments(assign);
     }
+  }
+
+  /** The player's spawn direction (createArrivalTrail and the night post). */
+  private static readonly SPAWN_DIR = new THREE.Vector3(0.1, 1, 0.1).normalize();
+  private static readonly NIGHT_WATCH = 'Night Watch';
+  /** The Night Watch's authored seat, kept when postNightWatch moved him. */
+  private nightWatchSeat: THREE.Vector3 | null = null;
+
+  /**
+   * The hour the visit starts at, as main-simple will set the clock after the
+   * scene is built: a valid ?hour= wins; a first visit (no ds_visited) lands
+   * at 10.5; anyone else gets the local clock. The world is built before
+   * EnvironmentCycle exists, so it is read here.
+   */
+  private static bootHour(): number {
+    try {
+      const raw = new URLSearchParams(location.search).get('hour');
+      if (raw !== null) {
+        const h = Number(raw);
+        if (Number.isFinite(h) && h >= 0 && h <= 24) return h % 24;
+      }
+    } catch {
+      /* no URL */
+    }
+    try {
+      if (!localStorage.getItem('ds_visited')) return 10.5;
+    } catch {
+      /* no storage: main-simple keeps the clock */
+    }
+    const now = new Date();
+    return now.getHours() + now.getMinutes() / 60;
+  }
+
+  /**
+   * From 20:00 to 08:00 every other villager who talks goes to bed, and First
+   * steps skips its talk step when nobody awake is within 30 u (wave-2
+   * decision). A visit that starts in those hours finds the Night Watch on his
+   * round of the square's lamps, by the spawn: he is seated at the nearest
+   * post before the arrival trail is laid, so the trail and the guide lead to
+   * him. Positions only, from the island's lamp sites: no draw, so the seeded
+   * window is unchanged. By day nothing moves; at 20:00 he walks there.
+   */
+  private postNightWatch(): void {
+    if (!NpcActivities.isNightWatchHour(GameScene.bootHour())) return;
+    const t = this.island.npcTargets?.find((n) => n.name === GameScene.NIGHT_WATCH);
+    if (!t) return;
+    const post = NpcActivities.watchPosts(this.island.lampSites, GameScene.SPAWN_DIR)[0];
+    if (!post) return;
+    this.nightWatchSeat = t.meshRef.position.clone();
+    const at = this.island.sampleSurfaceByDirection(post, 0.02).position;
+    t.meshRef.position.copy(at);
+    t.position.copy(at);
   }
 
   /** Apply a daily server plan (world/island/npcPlan) to the activity engine. */
@@ -9709,7 +9925,7 @@ export class GameScene extends THREE.Scene {
       /* counter starts at 0 */
     }
     const geo = new THREE.CylinderGeometry(0.16, 0.16, 0.045, 12);
-    const mat = new THREE.MeshToonMaterial({ color: 0xffd34a });
+    const mat = new THREE.MeshToonMaterial({ color: 0xffd34a, gradientMap: Materials.toonRamp() });
     mat.emissive = new THREE.Color(0x554411);
     const golden = Math.PI * (3 - Math.sqrt(5));
     const dir = new THREE.Vector3();
@@ -9752,7 +9968,7 @@ export class GameScene extends THREE.Scene {
    * visit (ds_arrived), and finishing the trail fires onArrivalTrail.
    */
   private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
-    const spawnDir = new THREE.Vector3(0.1, 1, 0.1).normalize(); // matches player spawn
+    const spawnDir = GameScene.SPAWN_DIR; // matches player spawn
     // Nearest villager to the spawn who talks through the chat (isAiNpc):
     // the trail ends at a conversation, never at one of the villagers with
     // only written lines (the market vendors, the First Mate and the
@@ -10600,43 +10816,19 @@ export class GameScene extends THREE.Scene {
     }
   }
 
+  /**
+   * The island's opaque standard materials become toon, through the one
+   * converter every prop uses (Materials.toonify, C3; B15): the shared ramp,
+   * the source's colour, map, emissive and vertex colours, its shader
+   * injections (the terrain's wet-sand band keeps its program), and every
+   * base Material flag. The loop this replaces carried only the first five,
+   * so a double-sided awning or a polygon-offset decal lost that on the way.
+   * Transparent materials (sea, glass, glows) stay as authored, and a
+   * material shared by many meshes converts once.
+   */
   private toonifyIslandMaterialsShielded(): void {
-    const gradientMap = Materials.toonRamp(); // shared: island bands like the props
-    const cache = new Map<string, THREE.MeshToonMaterial>();
-    const convert = (mat: THREE.Material): THREE.Material => {
-      if (!(mat instanceof THREE.MeshStandardMaterial)) return mat;
-      if (mat.transparent) return mat;
-      const cached = cache.get(mat.uuid);
-      if (cached) return cached;
-      const toon = new THREE.MeshToonMaterial({
-        color: mat.color.clone(),
-        emissive: mat.emissive.clone(),
-        emissiveIntensity: mat.emissiveIntensity,
-        map: mat.map,
-        vertexColors: mat.vertexColors,
-        gradientMap,
-      });
-      // Carry custom onBeforeCompile injections through the swap (currently
-      // just the terrain material's wet-sand band). The chunks they target
-      // (<common>, <begin_vertex>, <color_fragment>) exist in the toon shaders
-      // too, and Material.onBeforeCompile defaults to a no-op, so copying it
-      // is free for every uncustomised material — and the default
-      // customProgramCacheKey (onBeforeCompile.toString()) keeps the terrain
-      // toon clone on its own shader program without splitting the others.
-      toon.onBeforeCompile = mat.onBeforeCompile;
-      cache.set(mat.uuid, toon);
-      return toon;
-    };
-    this.island.mesh.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      if (Array.isArray(mesh.material)) {
-        mesh.material = mesh.material.map(convert);
-      } else if (mesh.material) {
-        mesh.material = convert(mesh.material);
-      }
-    });
-    console.log('🎨 Toonified island materials:', cache.size, 'unique materials converted');
+    const swapped = Materials.toonifyTree(this.island.mesh);
+    console.log('🎨 Toonified island materials:', swapped, 'material slots converted');
   }
 
   private createSkyDome(): void {
@@ -10763,6 +10955,15 @@ export class GameScene extends THREE.Scene {
           sunAmt *= smoothstep(0.0, 0.12, abs(h)); // exactly horizonColor at h=0
           sky = mix(sky, horizonColor * vec3(1.25, 1.02, 0.82), sunAmt * 0.55);
           gl_FragColor = vec4(sky, 1.0);
+          // The frame's own tone mapping and output encoding, as every
+          // built-in material ends (P2-B4). Drawn into the composer's linear
+          // buffer (desktop) both are no-ops and the output pass grades the
+          // sky with the rest. Drawn straight to the canvas (the low tier, no
+          // composer) the dome used to skip both: its linear colours went to
+          // the screen as if they were display colours, MEASURED 18-23 L*
+          // below desktop by day and 2-3 against 14-15 at night.
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });
@@ -10911,6 +11112,9 @@ export class GameScene extends THREE.Scene {
         const inst = rock.scene.clone(true);
         placeOnSphere(inst, i * GOLDEN + 1.0, 0.3 + Math.random() * 0.8); // above-shore band (was -0.8..0.8: half sat underwater)
         inst.scale.multiplyScalar(0.6 + Math.random() * 0.6);
+        // The island's look for the GLB's stone too (one conversion: the
+        // clones share its material). B15.
+        if (!isRealTheme()) Materials.toonifyTree(inst);
         enableShadows(inst);
         this.add(inst);
         rockCount++;
@@ -10957,6 +11161,7 @@ export class GameScene extends THREE.Scene {
       this.orbitCamera.setFocusPoint(this.getCameraFocus());
       this.orbitCamera.update(deltaTime);
     }
+    this.tickAvatarFade(deltaTime);
 
     // Update GLTF animations (for-of, not forEach — no per-frame closure alloc,
     // matching cloudPivots/birds/swayTrees below)
@@ -11288,7 +11493,10 @@ export class GameScene extends THREE.Scene {
           tr.group.visible = false;
           if (!tr.stump) {
             GameScene._stumpGeo ??= new THREE.CylinderGeometry(0.22, 0.3, 0.42, 8);
-            const mat = new THREE.MeshToonMaterial({ color: 0x6b4a2a });
+            const mat = new THREE.MeshToonMaterial({
+              color: 0x6b4a2a,
+              gradientMap: Materials.toonRamp(),
+            });
             tr.stump = new THREE.Mesh(GameScene._stumpGeo, mat);
             tr.stump.castShadow = false;
             this.add(tr.stump);
@@ -12129,7 +12337,7 @@ export class GameScene extends THREE.Scene {
     // perfectly static, losing the "this is alive, come here" affordance.
     this.zonesManager.update(time);
     // AFTER the cycle, which owns the sun's direction each frame
-    this.updateSunShadow(playerPos);
+    this.updateSunShadow(playerPos, deltaTime);
   }
 
   /**
@@ -12268,6 +12476,9 @@ export class GameScene extends THREE.Scene {
     }
     // ?look=soft: the composer's grade pass + bloom breathe with the cycle.
     this.rendererRef?.setGradeDayFactor?.(day);
+    // Night bloom stays on the bulbs: the renderer lifts its threshold after
+    // dark (E's P2-E5; a no-op until it merges, and where there is no composer).
+    this.rendererRef?.setBloomNight?.(day);
     // Cel rim: sun direction into view space for every registered cast shader.
     if (this.lights.sun && this.camera) {
       GameScene._celSunDir
@@ -12287,8 +12498,11 @@ export class GameScene extends THREE.Scene {
     // Submerged look: when the CAMERA dips below the live wave surface, grade
     // the frame into teal murk. Fog color/density are rewritten by
     // EnvironmentCycle at the top of every frame, so this override MUST stay
-    // in this post-envCycle block — restore is automatic. The hemi tint has
-    // no per-frame owner, so at f=0 the exact cached bases are written back.
+    // in this post-envCycle block — restore is automatic. The hemi tint is
+    // lerped from EnvironmentCycle's live tint (getHemiTint, C1), so its
+    // golden-hour and night colours survive this write. Until that getter
+    // exists the tint has no per-frame owner, and at f=0 the exact cached
+    // bases are written back, as before.
     if (this.island && this.camera && this.fog) {
       this._camDirScratch.copy(this.camera.position).normalize();
       const waveR = this.island.waveHeightAt(this._camDirScratch, this.island.seaTimeUniform.value);
@@ -12309,8 +12523,11 @@ export class GameScene extends THREE.Scene {
         fog.density += (UNDERWATER_FOG_DENSITY - fog.density) * f;
       }
       if (this.hemiLight && this.hemiBaseSky && this.hemiBaseGround) {
-        this.hemiLight.color.copy(this.hemiBaseSky).lerp(GameScene._underHemiSky, f);
-        this.hemiLight.groundColor.copy(this.hemiBaseGround).lerp(GameScene._underHemiGround, f);
+        const tint = (this.envCycle as unknown as LightRigSource).getHemiTint?.();
+        const sky = tint?.sky ?? tint?.color ?? this.hemiBaseSky;
+        const ground = tint?.ground ?? tint?.groundColor ?? this.hemiBaseGround;
+        this.hemiLight.color.copy(sky).lerp(GameScene._underHemiSky, f);
+        this.hemiLight.groundColor.copy(ground).lerp(GameScene._underHemiGround, f);
       }
     }
   }
@@ -12327,7 +12544,7 @@ export class GameScene extends THREE.Scene {
    * them, so the tight ortho box is always spent where the camera is looking
    * instead of being smeared across the whole planet.
    */
-  private updateSunShadow(playerPos: THREE.Vector3): void {
+  private updateSunShadow(playerPos: THREE.Vector3, deltaTime = 0): void {
     const sun = this.lights.sun;
     if (!sun) return;
     this._sunDir.copy(sun.position).normalize();
@@ -12404,6 +12621,149 @@ export class GameScene extends THREE.Scene {
       const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
       this.rimLight.intensity = 0.12 + 0.43 * day;
     }
+    // The rig's per-frame half, after the fade above (it scales that shadow).
+    if (fx.on('lightRig')) {
+      this._rigPlayerPos.copy(playerPos);
+      this.rigDt = deltaTime;
+      fx.time('lightRig', this.boundLightRig);
+    } else if (!this.rigParked) {
+      this.parkLightRig();
+    }
+  }
+
+  /**
+   * 0 by day and through golden hour, 1 in deep night. EnvironmentCycle's
+   * getNightFactor() when it has one (C1); until then a ramp over the bottom
+   * of the day factor. NEVER 1 - getDayFactor(): that is 0.8 at 06 h and 18 h
+   * (day factor 0.198), which would halve golden-hour shadows and lift the
+   * golden-hour fill.
+   */
+  private nightFactor(day: number): number {
+    const live = (this.envCycle as unknown as LightRigSource | null)?.getNightFactor?.();
+    if (typeof live === 'number') return THREE.MathUtils.clamp(live, 0, 1);
+    return 1 - THREE.MathUtils.smoothstep(day, 0.02, 0.15);
+  }
+
+  /**
+   * The light rig's per-frame half (P2-B5). Directions and levels only: no
+   * light is added, shown or hidden, so no program re-keys and nothing draws.
+   * Runs from updateSunShadow, which has just set the sun's direction
+   * (_sunDir), the player's up (_shadowUpAxis) and the local-horizon fade.
+   *
+   * - FILL: aimed along camera - player, so the side of a face or a wall the
+   *   camera sees is never the unlit one; under a sun 60 degrees high or
+   *   more held within FILL_MAX_LIFT of the horizon, so it leaves the ground
+   *   alone. (It used to shine up from under the planet, on undersides.)
+   *   0.18 by day. At night it takes
+   *   EnvironmentCycle's getNightFill() level, which C tunes together with
+   *   its night key and hemisphere (C5); until that getter exists, 0.18.
+   * - RIM: opposite the sun's horizontal direction at the player, raised 30
+   *   degrees under a sun up to 45 degrees high and 20 under one 60 or more
+   *   (RIM_LIFT). The fixed world direction it had was a rim at one
+   *   longitude and a second key at another.
+   * - MOON SHADOWS: half strength in deep night.
+   * - WEATHER SHADOWS: 0.45 under cloud, 0.4 in snow, 0.2 in rain, eased at
+   *   cloudWet's rate. An overcast sky is a soft box, and a hard cel shadow
+   *   under rain read as a second sun.
+   */
+  private updateLightRig(): void {
+    const sun = this.lights.sun;
+    if (!sun || !this.camera) return;
+    this.rigParked = false;
+    const env = this.envCycle;
+    const day = env ? env.getDayFactor() : 1;
+    const night = this.nightFactor(day);
+    const up = this._shadowUpAxis;
+    // How high the sun stands at the player: 0 up to 45 degrees, 1 from 60
+    // (SUN_HIGH_FROM, SUN_HIGH_AT). A high sun lights the ground on its own,
+    // so the fill keeps off it and the rim comes down (FILL_MAX_LIFT,
+    // RIM_LIFT). A lower one leaves the ground short (C1's golden-hour and
+    // district bars), so there the fill keeps the full camera direction and
+    // the rim its 30 degrees.
+    const sunHigh = THREE.MathUtils.smoothstep(
+      this._sunDir.dot(up),
+      GameScene.SUN_HIGH_FROM,
+      GameScene.SUN_HIGH_AT,
+    );
+    const fill = this.fillLight;
+    if (fill) {
+      // A DirectionalLight shines along position - target, and this target
+      // stays at the origin (it is not in the scene graph), so the position
+      // is the direction.
+      this._rigDir.copy(this.camera.position).sub(this._rigPlayerPos);
+      if (this._rigDir.lengthSq() > 1e-6) {
+        // Held under the cap above the horizon: on faces and walls, not on
+        // the ground the camera looks down at.
+        const d = this._rigDir.normalize();
+        const lift = d.dot(up);
+        const cap = 1 + (GameScene.FILL_MAX_LIFT - 1) * sunHigh;
+        if (lift > cap) {
+          d.addScaledVector(up, -lift);
+          if (d.lengthSq() > 1e-6) {
+            d.setLength(Math.sqrt(1 - cap * cap)).addScaledVector(up, cap);
+          } else d.copy(up);
+        }
+        fill.position.copy(d.setLength(40));
+      }
+      const nightFill = (env as unknown as LightRigSource | null)?.getNightFill?.();
+      const atNight = typeof nightFill === 'number' ? nightFill : GameScene.FILL_DAY;
+      fill.intensity = GameScene.FILL_DAY + (atNight - GameScene.FILL_DAY) * night;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      // The sun's direction with its vertical part (along the player's up)
+      // taken out, reversed. Overhead it has no horizontal part: hold the last.
+      this._rigDir.copy(this._sunDir).addScaledVector(up, -this._sunDir.dot(up));
+      if (this._rigDir.lengthSq() > 1e-4) this._rigRimFlat.copy(this._rigDir).normalize().negate();
+      const rimLift =
+        GameScene.RIM_LIFT_LOW_SUN + (GameScene.RIM_LIFT - GameScene.RIM_LIFT_LOW_SUN) * sunHigh;
+      rim.position
+        .copy(this._rigRimFlat)
+        .multiplyScalar(Math.cos(rimLift))
+        .addScaledVector(up, Math.sin(rimLift))
+        .multiplyScalar(52);
+    }
+    const w = env ? env.getWeather() : 'clear';
+    const weatherShadow = w === 'rain' ? 0.2 : w === 'snow' ? 0.4 : w === 'cloudy' ? 0.45 : 1;
+    this.rigWeatherShadow +=
+      (weatherShadow - this.rigWeatherShadow) * Math.min(1, this.rigDt * 0.5);
+    sun.shadow.intensity *= (1 - 0.5 * night) * this.rigWeatherShadow;
+  }
+
+  /**
+   * The close-camera fade (B11), outdoors and in a room alike. The distance
+   * runs from the camera to the avatar's torso, taken from player.position:
+   * the visual group, which is the room-space one indoors. (Never
+   * getWorldPosition() or Box3.setFromObject(player) in a room: the physics
+   * state stays at the doorstep, and SimplePlayer's updateWorldMatrix snaps
+   * the visual back to it.) With fx 'avatarFade' off the avatar is handed an
+   * infinite distance, so a fade in progress runs back out.
+   */
+  private tickAvatarFade(deltaTime: number): void {
+    this.avatarFadeDt = deltaTime;
+    if (fx.on('avatarFade')) fx.time('avatarFade', this.boundAvatarFade);
+    else this.player.updateCloseFade(Infinity, deltaTime);
+  }
+
+  private updateAvatarFade(): void {
+    const player = this.player;
+    this._fadeAnchor
+      .set(0, GameScene.AVATAR_FADE_TORSO, 0)
+      .applyQuaternion(player.quaternion)
+      .add(player.position);
+    player.updateCloseFade(this.camera.position.distanceTo(this._fadeAnchor), this.avatarFadeDt);
+  }
+
+  /** fx 'lightRig' off: the fill and the rim go back where setupLighting put
+   *  them. (The shadow needs nothing: updateSunShadow rewrites it each frame.) */
+  private parkLightRig(): void {
+    this.rigParked = true;
+    this.rigWeatherShadow = 1;
+    if (this.fillLight) {
+      this.fillLight.position.copy(GameScene.FILL_HOME);
+      this.fillLight.intensity = GameScene.FILL_DAY;
+    }
+    this.rimLight?.position.copy(GameScene.RIM_HOME);
   }
 
   public getEnvironmentCycle(): EnvironmentCycle | null {
@@ -12512,17 +12872,6 @@ export class GameScene extends THREE.Scene {
    *  (the talk hint fires at 4x this range, while approaching). */
   public getInteractionRange(): number {
     return this.interactionRange;
-  }
-
-  /** Any visible villager within `radius` of the player? Same visibility rule
-   *  as the cached-NPC revalidation in getNearbyInteractable, so the one-time
-   *  talk hint never advertises someone indoors or hidden. */
-  public hasVillagerWithin(radius: number): boolean {
-    if (!this.player) return false;
-    const p = this.player.getWorldPositionInto(this._nearNpcPos);
-    return this.island.npcTargets.some(
-      (n) => n.meshRef.visible && n.meshRef.position.distanceTo(p) < radius,
-    );
   }
 
   public getNearbyInteractable():
@@ -12951,11 +13300,22 @@ export class GameScene extends THREE.Scene {
   // collider changes (the exact blockers the design flagged), no 2nd scene.
   private insideInterior = false;
   private interiorGroup: THREE.Group | null = null;
-  private interiorWallMat: THREE.MeshStandardMaterial | null = null;
-  private interiorRugMat: THREE.MeshStandardMaterial | null = null;
+  private interiorWallMat: RoomMat | null = null;
+  private interiorRugMat: RoomMat | null = null;
+  /** The room's trim (dado and picture rails, stiles, skirting): tinted per
+   *  building from its district's accent (enterInterior). */
+  private interiorTrim: Array<{ mat: RoomMat; base: THREE.Color }> = [];
+  /** How far the trim leans toward the district accent, and how much darker
+   *  than the accent it sits, so it still reads as painted wood. */
+  private static readonly ROOM_TRIM_TINT = 0.55;
+  private static readonly ROOM_TRIM_SHADE = 0.62;
+  /** Ink goes on a set's big pieces only (world radius, u): a desk, a bed, a
+   *  cabinet. Legs, jars and books would double the room's draws for lines
+   *  thinner than a pixel. */
+  private static readonly ROOM_INK_MIN_RADIUS = 0.5;
+  private readonly _trimAccent = new THREE.Color();
   private interiorPosters: Array<{ ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
   private interiorSets: Record<string, THREE.Group> = {};
-  private interiorFire: THREE.PointLight | null = null;
   private interiorTime = 0;
   private onHouseEnterCb: ((id: string) => void) | null = null;
   private static readonly INTERIOR_ORIGIN = new THREE.Vector3(0, -300, 0);
@@ -13007,20 +13367,333 @@ export class GameScene extends THREE.Scene {
   private interiorCurtains: Array<{ mesh: THREE.Mesh; open: number; shut: number }> = [];
   private interiorCurtainT = 0; // 0 = open, 1 = drawn
   private interiorCurtainsShut = false;
-  private interiorLamp: THREE.PointLight | null = null;
   private interiorBulb: THREE.Mesh | null = null;
   private interiorLampOn = true;
-  private interiorRoomLamp: THREE.PointLight | null = null;
-  private interiorRoomFill: THREE.PointLight | null = null;
-  // The house level each room light eases toward (lamp switch, club dim);
-  // the party's own light rides on top of it. Seeded from the built lights.
-  private interiorLampLevel = 0;
-  private interiorRoomLampLevel = 0;
-  private interiorRoomFillLevel = 0;
-  // Their authored colours, which they ease back to when a party ends.
-  private readonly interiorLampHome = new THREE.Color();
-  private readonly interiorRoomLampHome = new THREE.Color();
-  private readonly interiorRoomFillHome = new THREE.Color();
+  /** The lamp shades (the pendant's, the Personal floor lamp's): they glow
+   *  while the lamp is on. `glow` is the emissive level when lit. */
+  private interiorShades: Array<{ mat: RoomMat; glow: number }> = [];
+  private interiorShadeLevel = 1;
+  /** Each hearth room's fire: the ember plane and the warm pool it throws on
+   *  the floor. Both flicker (updateInteriorMode); neither is a light. */
+  private interiorHearths: Record<
+    string,
+    { glow: THREE.MeshBasicMaterial; pool: THREE.MeshBasicMaterial }
+  > = {};
+  private static readonly _hearthGlow = new THREE.Color(0xff8c3a);
+  private static readonly HEARTH_POOL_OPACITY = 0.3;
+
+  // ── The borrowed light rig (P2-B9) ─────────────────────────────────────
+  // A room has NO LIGHTS OF ITS OWN. three bakes light counts into every lit
+  // program, so the room's four PointLights re-keyed the whole scene at every
+  // door (the warm exists to hide that), and they lit a room at midnight
+  // exactly as at noon. Indoors the scene's own five lights (sun, hemisphere,
+  // ambient, fill, rim) are borrowed instead: enterInterior remembers where
+  // the island left them, the room sets them to a preset in room space, the
+  // window pass puts the island's values back around its render, and
+  // exitInterior hands them back. Same lights indoors and out, so a door
+  // changes no program.
+  //
+  // LAMP ON: a warm key from over the visitor's shoulder, a cream hemisphere
+  // and a cool rim from the window. At night the key turns amber and the
+  // window's rim falls away. LAMP OFF: the window is the key (daylight, or
+  // moonlight at a fraction of it), over a dim cool hemisphere.
+  private static readonly ROOM_KEY_ON_DIR = new THREE.Vector3(0.35, 0.9, 0.45).normalize();
+  /** Lamp on at night: the key comes lower, a lamp at head height rather
+   *  than daylight from above, so it lights the visitor's side more than the
+   *  floor. MEASURED on the phone at 22 h (wave-2 integration build, house_0,
+   *  from behind): the avatar +4.6 L* over the room around it with the day
+   *  direction, +5.6 with this one, +5.8 with (0.35, 0.45, 0.8). */
+  private static readonly ROOM_KEY_ON_NIGHT_DIR = new THREE.Vector3(0.35, 0.6, 0.7).normalize();
+  private static readonly ROOM_KEY_OFF_DIR = new THREE.Vector3(0.1, 0.35, 1).normalize();
+  private static readonly ROOM_RIM_DIR = new THREE.Vector3(-0.2, 0.3, 1).normalize();
+  private static readonly ROOM_ON = {
+    keyDay: new THREE.Color(0xffe2bc),
+    keyNight: new THREE.Color(0xffd59a),
+    key: 1.25,
+    sky: new THREE.Color(0xfff0dc),
+    ground: new THREE.Color(0x6b5640),
+    hemi: 0.95,
+    ambientColor: new THREE.Color(0xfff6e8),
+    ambient: 0.22,
+    rimDay: 0.25,
+    rimNight: 0.1,
+  };
+  private static readonly ROOM_OFF = {
+    keyDay: new THREE.Color(0xcfe0ff),
+    keyNight: new THREE.Color(0x9db3e6),
+    keyLevelDay: 0.45,
+    keyLevelNight: 0.2,
+    sky: new THREE.Color(0xd8e4f2),
+    ground: new THREE.Color(0x4a4038),
+    hemi: 0.5,
+    ambientColor: new THREE.Color(0xdfe6f2),
+    ambient: 0.12,
+    rimDay: 0.35,
+    rimNight: 0.14,
+  };
+  private static readonly ROOM_RIM_COLOR = new THREE.Color(0xcfe6ff);
+  /** The fill, aimed along the room camera so the avatar stands out. */
+  private static readonly ROOM_FILL = 0.2;
+  /** Drawn curtains keep this share of the window's light. */
+  private static readonly ROOM_CURTAIN_KEEP = 0.2;
+  /** The house lights during a party: a club's dim, under the beat. */
+  private static readonly ROOM_CLUB = {
+    key: 0.14,
+    hemi: 0.16,
+    ambient: 0.08,
+    rim: 0.08,
+    fill: 0.1,
+  };
+  /** The party's light per unit of its drive: the beat flash on the key, the
+   *  ball's glow on the hemisphere, the club's colour on the rim. */
+  private static readonly ROOM_PARTY_GAIN = { flash: 0.3, glow: 0.14, tint: 0.45 };
+  /** How fast the rig eases to its preset (per second); a party's dim is slower. */
+  private static readonly ROOM_RIG_RATE = 9;
+  private static readonly ROOM_CLUB_RATE = 3.5;
+  private static newRoomRig(): RoomRig {
+    return {
+      keyDir: new THREE.Vector3(0, 1, 0),
+      keyColor: new THREE.Color(),
+      key: 0,
+      sky: new THREE.Color(),
+      ground: new THREE.Color(),
+      hemi: 0,
+      ambientColor: new THREE.Color(),
+      ambient: 0,
+      rim: 0,
+      fill: 0,
+    };
+  }
+  /** The preset the room is easing to, and where it has got to. */
+  private readonly roomRigWant = GameScene.newRoomRig();
+  private readonly roomRigNow = GameScene.newRoomRig();
+  /** The island's rig as enterInterior found it. `held` while a visit borrows it. */
+  private readonly rigHome = {
+    held: false,
+    sunPos: new THREE.Vector3(),
+    sunTarget: new THREE.Vector3(),
+    sunColor: new THREE.Color(),
+    sun: 0,
+    sunShadow: 1,
+    hemiPos: new THREE.Vector3(0, 1, 0),
+    sky: new THREE.Color(),
+    ground: new THREE.Color(),
+    hemi: 0,
+    ambientColor: new THREE.Color(),
+    ambient: 0,
+    fillPos: new THREE.Vector3(),
+    fillColor: new THREE.Color(),
+    fill: 0,
+    rimPos: new THREE.Vector3(),
+    rimColor: new THREE.Color(),
+    rim: 0,
+  };
+  private readonly _roomRigDir = new THREE.Vector3();
+
+  /** enterInterior: remember the island's rig, to the last value. */
+  private snapshotOutdoorRig(): void {
+    const h = this.rigHome;
+    h.held = true;
+    const sun = this.lights.sun;
+    if (sun) {
+      h.sunPos.copy(sun.position);
+      h.sunTarget.copy(sun.target.position);
+      h.sunColor.copy(sun.color);
+      h.sun = sun.intensity;
+      h.sunShadow = sun.shadow.intensity;
+    }
+    const hemi = this.hemiLight;
+    if (hemi) {
+      h.hemiPos.copy(hemi.position);
+      h.sky.copy(hemi.color);
+      h.ground.copy(hemi.groundColor);
+      h.hemi = hemi.intensity;
+    }
+    const ambient = this.lights.ambient;
+    if (ambient) {
+      h.ambientColor.copy(ambient.color);
+      h.ambient = ambient.intensity;
+    }
+    const fill = this.fillLight;
+    if (fill) {
+      h.fillPos.copy(fill.position);
+      h.fillColor.copy(fill.color);
+      h.fill = fill.intensity;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      h.rimPos.copy(rim.position);
+      h.rimColor.copy(rim.color);
+      h.rim = rim.intensity;
+    }
+  }
+
+  /** Put the island's rig back: around the window's render, and on the way out. */
+  private restoreOutdoorRig(): void {
+    const h = this.rigHome;
+    if (!h.held) return;
+    const sun = this.lights.sun;
+    if (sun) {
+      sun.position.copy(h.sunPos);
+      sun.target.position.copy(h.sunTarget);
+      sun.target.updateMatrixWorld();
+      sun.color.copy(h.sunColor);
+      sun.intensity = h.sun;
+      sun.shadow.intensity = h.sunShadow;
+    }
+    const hemi = this.hemiLight;
+    if (hemi) {
+      hemi.position.copy(h.hemiPos);
+      hemi.color.copy(h.sky);
+      hemi.groundColor.copy(h.ground);
+      hemi.intensity = h.hemi;
+    }
+    const ambient = this.lights.ambient;
+    if (ambient) {
+      ambient.color.copy(h.ambientColor);
+      ambient.intensity = h.ambient;
+    }
+    const fill = this.fillLight;
+    if (fill) {
+      fill.position.copy(h.fillPos);
+      fill.color.copy(h.fillColor);
+      fill.intensity = h.fill;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      rim.position.copy(h.rimPos);
+      rim.color.copy(h.rimColor);
+      rim.intensity = h.rim;
+    }
+  }
+
+  /** The preset for the room as it stands: lamp, hour, curtains, party. */
+  private roomRigTarget(out: RoomRig): void {
+    const day = this.envCycle ? this.envCycle.getDayFactor() : 1;
+    const night = this.nightFactor(day);
+    // The window's share: drawn curtains keep most of it out.
+    const windowLight = 1 - (1 - GameScene.ROOM_CURTAIN_KEEP) * this.interiorCurtainT;
+    if (this.interiorLampOn) {
+      const P = GameScene.ROOM_ON;
+      out.keyDir
+        .lerpVectors(GameScene.ROOM_KEY_ON_DIR, GameScene.ROOM_KEY_ON_NIGHT_DIR, night)
+        .normalize();
+      out.keyColor.lerpColors(P.keyDay, P.keyNight, night);
+      out.key = P.key;
+      out.sky.copy(P.sky);
+      out.ground.copy(P.ground);
+      out.hemi = P.hemi;
+      out.ambientColor.copy(P.ambientColor);
+      out.ambient = P.ambient;
+      out.rim = (P.rimDay + (P.rimNight - P.rimDay) * night) * windowLight;
+    } else {
+      const P = GameScene.ROOM_OFF;
+      out.keyDir.copy(GameScene.ROOM_KEY_OFF_DIR);
+      out.keyColor.lerpColors(P.keyDay, P.keyNight, night);
+      out.key = (P.keyLevelDay + (P.keyLevelNight - P.keyLevelDay) * night) * windowLight;
+      out.sky.copy(P.sky);
+      out.ground.copy(P.ground);
+      out.hemi = P.hemi;
+      out.ambientColor.copy(P.ambientColor);
+      out.ambient = P.ambient;
+      out.rim = (P.rimDay + (P.rimNight - P.rimDay) * night) * windowLight;
+    }
+    out.fill = GameScene.ROOM_FILL;
+    if (this.partyMode) {
+      // The house lights come right down, so the ball, the lasers and the
+      // lit floor are what you see. The beat rides on top (applyRoomRig).
+      const C = GameScene.ROOM_CLUB;
+      out.key = C.key;
+      out.hemi = C.hemi;
+      out.ambient = C.ambient;
+      out.rim = C.rim;
+      out.fill = C.fill;
+    }
+  }
+
+  /** Jump the rig to its preset (an entry, under the door veil). */
+  private snapRoomRig(): void {
+    this.roomRigTarget(this.roomRigNow);
+    this.applyRoomRig();
+  }
+
+  /** Ease the rig toward its preset and write it to the lights. */
+  private updateRoomRig(deltaTime: number): void {
+    const want = this.roomRigWant;
+    const now = this.roomRigNow;
+    this.roomRigTarget(want);
+    const rate = this.partyMode ? GameScene.ROOM_CLUB_RATE : GameScene.ROOM_RIG_RATE;
+    const k = Math.min(1, rate * deltaTime);
+    now.keyDir.lerp(want.keyDir, k).normalize();
+    now.keyColor.lerp(want.keyColor, k);
+    now.key += (want.key - now.key) * k;
+    now.sky.lerp(want.sky, k);
+    now.ground.lerp(want.ground, k);
+    now.hemi += (want.hemi - now.hemi) * k;
+    now.ambientColor.lerp(want.ambientColor, k);
+    now.ambient += (want.ambient - now.ambient) * k;
+    now.rim += (want.rim - now.rim) * k;
+    now.fill += (want.fill - now.fill) * k;
+    this.applyRoomRig();
+  }
+
+  /**
+   * Write the room's rig to the borrowed lights, in room space (directions
+   * about INTERIOR_ORIGIN). Levels, colours and directions only: no light is
+   * added, shown or hidden, so no program re-keys. The sun's shadow is off
+   * for the visit: the map is parked outdoors (setShadowFreeze) and nothing
+   * in a room receives it. A party's light rides on the eased levels: the
+   * beat flash on the key, the ball's glow on the hemisphere, the club's
+   * colour on the rim.
+   */
+  private applyRoomRig(): void {
+    const now = this.roomRigNow;
+    const o = GameScene.INTERIOR_ORIGIN;
+    const party = this.partyMode;
+    const G = GameScene.ROOM_PARTY_GAIN;
+    const sun = this.lights.sun;
+    if (sun) {
+      sun.position.copy(o).addScaledVector(now.keyDir, 55);
+      sun.target.position.copy(o);
+      sun.target.updateMatrixWorld();
+      sun.color.copy(now.keyColor);
+      sun.intensity = now.key;
+      sun.shadow.intensity = 0;
+      if (party) {
+        sun.intensity += this.partyFlash * G.flash;
+        // Each beat takes the next hue; reduced motion keeps the lamp's own.
+        if (!a11y.reducedMotion) sun.color.setHSL(this.partyFlashHue, 0.55, 0.82);
+      }
+    }
+    const hemi = this.hemiLight;
+    if (hemi) {
+      hemi.position.copy(GameScene._localUp); // the room's up is +Y
+      hemi.color.copy(now.sky);
+      hemi.groundColor.copy(now.ground);
+      hemi.intensity = now.hemi + (party ? this.partyGlow * G.glow : 0);
+    }
+    const ambient = this.lights.ambient;
+    if (ambient) {
+      ambient.color.copy(now.ambientColor);
+      ambient.intensity = now.ambient;
+    }
+    const fill = this.fillLight;
+    if (fill && this.camera && this.player) {
+      // Along the room camera (its target stays at the origin: P2-B5).
+      this._roomRigDir.copy(this.camera.position).sub(this.player.position);
+      if (this._roomRigDir.lengthSq() > 1e-6) fill.position.copy(this._roomRigDir.setLength(40));
+      fill.intensity = now.fill;
+    }
+    const rim = this.rimLight;
+    if (rim) {
+      rim.position.copy(GameScene.ROOM_RIM_DIR).multiplyScalar(52);
+      rim.intensity = now.rim + (party ? this.partyTint * G.tint : 0);
+      if (party) rim.color.setHSL(this.partyTintHue, 0.9, 0.6);
+      else rim.color.copy(GameScene.ROOM_RIM_COLOR);
+    }
+    // The cast's cel rim follows the room's key, not the sun left outside.
+    if (this.camera) updateCelRim(now.keyDir, this.camera);
+  }
 
   /** Work a room fixture. Returns the line to flash. */
   public toggleInteriorFixture(which: string): string {
@@ -13048,17 +13721,19 @@ export class GameScene extends THREE.Scene {
   // spots): MEASURED on desktop, entering the beach house added 17 programs
   // in a 2.4 s frame behind 2.6 s of black, and each toggle cost 150-270 ms
   // frames. The beat flash, the ball glow and the club colour now ride the
-  // room's own three lights (uniforms only), and the floor sweeps are
-  // additive discs, so the beach house carries exactly a cottage's lights.
+  // room's borrowed rig (uniforms only: applyRoomRig), and the floor sweeps
+  // are additive discs, so the beach house carries exactly a cottage's
+  // lights, which are the island's.
   private partyMode = false;
   private partyBeatClock = 0;
   private partyBeatIndex = -1;
-  /** The party's light, added by updateInteriorMode onto the club levels:
-   *  the beat flash (room lamp), the ball glow (pendant), the club tint (fill). */
+  /** The party's light, added by applyRoomRig onto the club levels: the beat
+   *  flash (the key), the ball glow (the hemisphere), the club tint (the rim). */
   private partyFlash = 0;
   private partyFlashHue = 0;
   private partyGlow = 0;
   private partyTint = 0;
+  private partyTintHue = 0;
   /** The dance floor's centre, room-local. */
   private static readonly PARTY_FLOOR = { x: 0.9, z: 0.6 };
   /** Where the guests dance, room-local: each 2.1 u from the floor centre,
@@ -13115,23 +13790,33 @@ export class GameScene extends THREE.Scene {
     );
     rod.position.set(0.9, 3.35, 0.6);
     group.add(rod);
+    // Faceted = mirror tiles at this poly count. The facets are in the
+    // GEOMETRY (unshared vertices, a normal per face), not a flatShading
+    // material: that flag is a program of its own, and the ball's toon
+    // material draws with the one every toon prop shares.
+    const ballGeo = new THREE.SphereGeometry(0.32, 12, 10).toNonIndexed();
+    ballGeo.computeVertexNormals();
     const ball = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 12, 10),
-      new THREE.MeshStandardMaterial({
-        color: 0xd8dce4,
-        metalness: 0.9,
-        roughness: 0.18,
-        flatShading: true, // faceted = mirror tiles at this poly count
-      }),
+      ballGeo,
+      GameScene.celMat(
+        new THREE.MeshStandardMaterial({
+          color: 0xd8dce4,
+          metalness: 0.9,
+          roughness: 0.18,
+          flatShading: true, // ?theme=real keeps the standard material, faceted
+        }),
+      ),
     );
     ball.position.set(0.9, 2.95, 0.6);
     group.add(ball);
     // Sparkle ring — children of the ball, so they orbit as it spins.
-    const sparkMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      emissive: 0xffffff,
-      emissiveIntensity: 1.4,
-    });
+    const sparkMat = GameScene.celMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: 0xffffff,
+        emissiveIntensity: 1.4,
+      }),
+    );
     const sparkGeo = new THREE.PlaneGeometry(0.05, 0.05);
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
@@ -13144,8 +13829,10 @@ export class GameScene extends THREE.Scene {
     // updateInteriorParty.)
     // Fairy-light strands along the two far walls.
     const strandGeo = new THREE.SphereGeometry(0.045, 6, 5);
-    const strandMats = [0xff6a7a, 0x6ad0ff, 0xffd36a].map(
-      (c) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9 }),
+    const strandMats = [0xff6a7a, 0x6ad0ff, 0xffd36a].map((c) =>
+      GameScene.celMat(
+        new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.9 }),
+      ),
     );
     for (let i = 0; i < 10; i++) {
       const bulbA = new THREE.Mesh(strandGeo, strandMats[i % 3]);
@@ -13158,14 +13845,15 @@ export class GameScene extends THREE.Scene {
     // Drifting confetti pool — respawns at the ceiling forever.
     const confetti: Array<{ m: THREE.Mesh; speed: number; phase: number }> = [];
     const confGeo = new THREE.PlaneGeometry(0.07, 0.07);
-    const confMats = [0xff6a7a, 0x6ad0ff, 0xffd36a, 0x8affc1, 0xd9a0ff].map(
-      (c) =>
+    const confMats = [0xff6a7a, 0x6ad0ff, 0xffd36a, 0x8affc1, 0xd9a0ff].map((c) =>
+      GameScene.celMat(
         new THREE.MeshStandardMaterial({
           color: c,
           emissive: c,
           emissiveIntensity: 0.5,
           side: THREE.DoubleSide,
         }),
+      ),
     );
     for (let i = 0; i < 22; i++) {
       const m = new THREE.Mesh(confGeo, confMats[i % confMats.length]);
@@ -13414,16 +14102,13 @@ export class GameScene extends THREE.Scene {
     // off-beat. Calm completes what the flash gate above started: the club
     // keeps its colour and dim, loses every beat-locked luminance pulse, and
     // the confetti falls slow and untumbling like ash instead of a storm.
-    // Colour and intensity only (updateInteriorMode adds these to the club
-    // levels): uniforms, so the room keeps a cottage's light count.
+    // Colour and intensity only (applyRoomRig adds these to the club levels
+    // of the borrowed rig): uniforms, so the room keeps the island's lights.
+    // The flash takes the beat's hue on the key unless calm, which keeps the
+    // lamp's own colour.
     this.partyGlow = calm ? 0.9 : 0.5 + Math.max(0, Math.sin(beat)) * 1.3;
     this.partyTint = calm ? 0.45 : 0.3 + Math.max(0, Math.sin(beat + Math.PI / 2)) * 0.35;
-    if (this.interiorRoomLamp) {
-      if (calm) this.interiorRoomLamp.color.copy(this.interiorRoomLampHome);
-      else this.interiorRoomLamp.color.setHSL(this.partyFlashHue, 0.55, 0.82);
-    }
-    this.interiorLamp?.color.setHSL(0, 0, 1);
-    this.interiorRoomFill?.color.setHSL((time * 0.05) % 1, 0.9, 0.6);
+    this.partyTintHue = (time * 0.05) % 1;
     for (const c of P.confetti) {
       c.m.position.y -= c.speed * (calm ? 0.25 : 1) * deltaTime;
       if (c.m.position.y < 0.25) c.m.position.y = 3.4;
@@ -13528,11 +14213,13 @@ export class GameScene extends THREE.Scene {
   private rendererRef: {
     getRenderer(): THREE.WebGLRenderer;
     setGradeDayFactor?(day: number): void;
+    setBloomNight?(day: number): void;
     setShadowFreeze?(frozen: boolean): void;
   } | null = null;
   public setRendererRef(r: {
     getRenderer(): THREE.WebGLRenderer;
     setGradeDayFactor?(day: number): void;
+    setBloomNight?(day: number): void;
     setShadowFreeze?(frozen: boolean): void;
   }): void {
     this.rendererRef = r;
@@ -13550,15 +14237,46 @@ export class GameScene extends THREE.Scene {
     const g = new THREE.Group();
     g.position.copy(GameScene.INTERIOR_ORIGIN);
     g.visible = false;
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.92 });
+    // THE ISLAND'S LOOK (P2-B10). Every lit material in a room is toon on the
+    // shared ramp, through the converter the island's props use, so a room
+    // bands like the street outside and draws with its programs. Authored as
+    // standard and converted once (GameScene.celMat), so ?theme=real keeps the
+    // rooms as they were. Left as authored: the posters (their text is a map
+    // on a transparent sheet), the window pane (unlit: it shows a render) and
+    // the party's floor tiles and additive discs.
+    const lit = (params: THREE.MeshStandardMaterialParameters): RoomMat =>
+      GameScene.celMat(new THREE.MeshStandardMaterial(params)) as RoomMat;
+    // Limewash: soft vertical streaks in four near-white tones. Near-white
+    // because the wall's colour is re-tinted per building and a map
+    // MULTIPLIES: anything darker would mute every room. (It replaces a
+    // 2,400-dot speckle that read as dirt on a banded wall.)
+    const wcv = document.createElement('canvas');
+    wcv.width = 64;
+    wcv.height = 64;
+    const wx2 = wcv.getContext('2d');
+    if (wx2) {
+      const tones = ['#ffffff', '#f8f5ef', '#f1ede5', '#fbf9f4'];
+      const widths = [3, 5, 2, 6, 4, 3, 7, 2, 5, 4, 6, 3, 5, 4, 5];
+      let x = 0;
+      widths.forEach((w, i) => {
+        wx2.fillStyle = tones[(i * 3 + 1) % tones.length];
+        wx2.fillRect(x, 0, w, 64);
+        x += w;
+      });
+    }
+    const wtex = new THREE.CanvasTexture(wcv);
+    wtex.colorSpace = THREE.SRGBColorSpace;
+    wtex.wrapS = wtex.wrapT = THREE.RepeatWrapping;
+    wtex.repeat.set(3, 1);
+    const wallMat = lit({ color: 0xe8e2d6, roughness: 0.92, map: wtex });
     this.interiorWallMat = wallMat;
     // Shared material cache: themed sets reuse one material per colour so the
     // whole six-room wardrobe costs a handful of materials, not one per prop.
-    const mats = new Map<number, THREE.MeshStandardMaterial>();
-    const matFor = (color: number, rough = 0.85): THREE.MeshStandardMaterial => {
+    const mats = new Map<number, RoomMat>();
+    const matFor = (color: number, rough = 0.85): RoomMat => {
       let m = mats.get(color);
       if (!m) {
-        m = new THREE.MeshStandardMaterial({ color, roughness: rough });
+        m = lit({ color, roughness: rough });
         mats.set(color, m);
       }
       return m;
@@ -13620,17 +14338,17 @@ export class GameScene extends THREE.Scene {
     ftex.repeat.set(2, 2);
     const floor = new THREE.Mesh(
       new THREE.BoxGeometry(8, 0.2, 8),
-      new THREE.MeshStandardMaterial({ map: ftex, roughness: 0.9 }),
+      lit({ map: ftex, roughness: 0.9 }),
     );
     g.add(floor);
-    box(g, 8, 0.2, 8, 0xe8e2d6, 0, 4, 0).material = wallMat; // ceiling (wall tint)
-    const rug = new THREE.Mesh(
-      new THREE.BoxGeometry(4.6, 0.06, 3.4),
-      new THREE.MeshStandardMaterial({ color: 0xb06a72, roughness: 0.9 }),
-    );
+    const ceiling = new THREE.Mesh(new THREE.BoxGeometry(8, 0.2, 8), wallMat); // wall tint
+    ceiling.position.set(0, 4, 0);
+    g.add(ceiling);
+    const rugMat = lit({ color: 0xb06a72, roughness: 0.9 });
+    const rug = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.06, 3.4), rugMat);
     rug.position.set(0, 0.13, 0.3);
     g.add(rug);
-    this.interiorRugMat = rug.material as THREE.MeshStandardMaterial;
+    this.interiorRugMat = rugMat;
     for (const [x, z, ry] of [
       [0, -4, 0],
       [0, 4, 0],
@@ -13655,29 +14373,17 @@ export class GameScene extends THREE.Scene {
     // panelled wainscot below the hand, a dado rail capping it, a picture rail
     // near the ceiling. That is three horizontals and a rhythm of verticals,
     // and it costs a few boxes. In the SHELL, so all six themes inherit it.
-    const wcv = document.createElement('canvas');
-    wcv.width = 128;
-    wcv.height = 128;
-    const wx2 = wcv.getContext('2d');
-    if (wx2) {
-      // Near-white speckle: the material's colour is re-tinted per building
-      // and a map MULTIPLIES, so anything darker here would mute every room.
-      wx2.fillStyle = '#ffffff';
-      wx2.fillRect(0, 0, 128, 128);
-      for (let i = 0; i < 2400; i++) {
-        wx2.fillStyle = `rgba(122,112,98,${0.03 + Math.random() * 0.05})`;
-        wx2.fillRect(Math.random() * 128, Math.random() * 128, 1.5, 1.5);
-      }
-    }
-    const wtex = new THREE.CanvasTexture(wcv);
-    wtex.colorSpace = THREE.SRGBColorSpace;
-    wtex.wrapS = wtex.wrapT = THREE.RepeatWrapping;
-    wtex.repeat.set(3, 1.6);
-    wallMat.map = wtex;
-    wallMat.needsUpdate = true;
-
-    const panelMat = matFor(0xdcd5c7, 0.94);
+    // The field sits two steps under the wall, so the wainscot reads as
+    // panelling. (At the wall's own tone, with a stile every metre, it read
+    // as a fence standing in front of the wall.)
+    const panelMat = matFor(0xb9a98f, 0.94);
     const railMat = matFor(0x8a7355, 0.8);
+    // The trim is the building's: enterInterior leans it toward the
+    // district's accent. The skirting (the only 0x74573a in the room) with it.
+    this.interiorTrim = [railMat, matFor(0x74573a)].map((mat) => ({
+      mat,
+      base: mat.color.clone(),
+    }));
     // Built once facing +z and rotated onto each wall. Room-ward is DECREASING
     // z here: the wall's inner face is 3.9, so the field sits at 3.875 and the
     // stiles stand proud of it at 3.855.
@@ -13704,11 +14410,11 @@ export class GameScene extends THREE.Scene {
         const picture = new THREE.Mesh(new THREE.BoxGeometry(width, 0.07, 0.06), railMat);
         picture.position.set(cx, 3.12, 3.86);
         w.add(picture);
-        // Stiles roughly every metre, and always one at each end of the span
-        // so a run never stops in mid-air beside the doorway.
-        const n = Math.max(1, Math.round(width / 0.98));
+        // Slim stiles every 1.6 u or so, and always one at each end of the
+        // span so a run never stops in mid-air beside the doorway.
+        const n = Math.max(1, Math.round(width / 1.6));
         for (let i = 0; i <= n; i++) {
-          const stile = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.74, 0.05), railMat);
+          const stile = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.74, 0.05), railMat);
           stile.position.set(a + (width * i) / n, 0.66, 3.855);
           w.add(stile);
         }
@@ -13762,15 +14468,25 @@ export class GameScene extends THREE.Scene {
       this.interiorCurtains.push({ mesh: c, open, shut: 1.8 + side * 0.41 });
     }
     box(g, 2.75, 0.1, 0.12, 0x4a3a28, 1.8, 3.02, 3.74); // curtain rail, wider than the pull
-    // Pendant lamp over the middle of the room.
+    // Pendant lamp over the middle of the room. Its shade gets a material of
+    // its own: it is seen from inside as well, and it glows while the lamp is
+    // on (updateInteriorMode). No light hangs in it: the room is lit by the
+    // borrowed rig (P2-B9), and the bulb and shade only have to look lit.
     box(g, 0.04, 0.55, 0.04, 0x3a3a3a, 0, 3.7, 0);
+    const pendantShadeMat = lit({
+      color: 0x5c4127,
+      roughness: 0.85,
+      side: THREE.DoubleSide,
+      emissive: 0xffc27a,
+      emissiveIntensity: 0.55,
+    });
+    this.interiorShades.push({ mat: pendantShadeMat, glow: 0.55 });
     const pendantShade = new THREE.Mesh(
       new THREE.ConeGeometry(0.34, 0.3, 10, 1, true),
-      matFor(0x5c4127),
+      pendantShadeMat,
     );
     pendantShade.position.set(0, 3.4, 0);
     pendantShade.rotation.x = Math.PI;
-    (pendantShade.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
     g.add(pendantShade);
     const bulb = new THREE.Mesh(
       new THREE.SphereGeometry(0.1, 10, 8),
@@ -13779,12 +14495,6 @@ export class GameScene extends THREE.Scene {
     bulb.position.set(0, 3.32, 0);
     g.add(bulb);
     this.interiorBulb = bulb;
-    const pendantLight = new THREE.PointLight(0xffd9a0, 1.35, 11, 2);
-    pendantLight.position.set(0, 3.25, 0);
-    g.add(pendantLight);
-    this.interiorLamp = pendantLight;
-    this.interiorLampLevel = pendantLight.intensity;
-    this.interiorLampHome.copy(pendantLight.color);
     // Light switch by the door, at hand height.
     box(g, 0.14, 0.2, 0.05, 0xf0ece2, -2.75, 1.35, 3.82);
 
@@ -13801,17 +14511,20 @@ export class GameScene extends THREE.Scene {
 
     // office — the Professional HQ: desk, monitor, chair, cabinet, plant, clock.
     const office = set('office');
-    box(office, 2.4, 0.12, 1.0, D, 0, 0.95, -2.6);
+    // DESKS AND BENCHES stand at 0.8 of the height they were built at
+    // (P2-B10): a desk top at 0.95 came to the 1.58 u avatar's chest, a
+    // counter to its shoulders. What stands on one comes down with it.
+    box(office, 2.4, 0.12, 1.0, D, 0, 0.76, -2.6);
     for (const [lx, lz] of [
       [-1.05, -2.25],
       [1.05, -2.25],
       [-1.05, -2.95],
       [1.05, -2.95],
     ] as const)
-      box(office, 0.12, 0.9, 0.12, D, lx, 0.45, lz);
-    box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.66, -2.75); // monitor
-    box(office, 0.12, 0.3, 0.12, 0x33383f, 0, 1.16, -2.75);
-    box(office, 0.6, 0.09, 0.35, 0xd7dbe0, 0.65, 1.06, -2.45); // keyboard? papers
+      box(office, 0.12, 0.7, 0.12, D, lx, 0.35, lz);
+    box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.47, -2.75); // monitor
+    box(office, 0.12, 0.3, 0.12, 0x33383f, 0, 0.97, -2.75);
+    box(office, 0.6, 0.09, 0.35, 0xd7dbe0, 0.65, 0.87, -2.45); // keyboard? papers
     box(office, 0.55, 0.1, 0.55, 0x3a3f47, 0, 0.62, -1.65); // chair seat
     box(office, 0.55, 0.72, 0.09, 0x3a3f47, 0, 1.05, -1.94);
     cyl(office, 0.06, 0.06, 0.5, 0x22262e, 0, 0.3, -1.65);
@@ -13827,19 +14540,19 @@ export class GameScene extends THREE.Scene {
 
     // workshop — Projects: workbench, pegboard + tools, blueprint table, crates.
     const shop = set('workshop');
-    box(shop, 2.6, 0.14, 1.0, W, 0, 0.95, -2.6); // bench top
+    box(shop, 2.6, 0.14, 1.0, W, 0, 0.76, -2.6); // bench top
     for (const lx of [-1.15, 1.15] as const) {
-      box(shop, 0.14, 0.9, 0.14, D, lx, 0.45, -2.25);
-      box(shop, 0.14, 0.9, 0.14, D, lx, 0.45, -2.95);
+      box(shop, 0.14, 0.7, 0.14, D, lx, 0.35, -2.25);
+      box(shop, 0.14, 0.7, 0.14, D, lx, 0.35, -2.95);
     }
-    box(shop, 0.5, 0.22, 0.3, 0x7d838c, -0.6, 1.13, -2.6); // vice-ish block
+    box(shop, 0.5, 0.22, 0.3, 0x7d838c, -0.6, 0.94, -2.6); // vice-ish block
     box(shop, 1.8, 1.1, 0.06, 0xcdb289, -2.85, 2.1, -3.86); // pegboard
     box(shop, 0.09, 0.5, 0.05, 0x8a2f2b, -3.35, 2.1, -3.8); // tools on it
     box(shop, 0.4, 0.09, 0.05, 0x55595e, -2.85, 2.3, -3.8);
     box(shop, 0.09, 0.4, 0.05, 0x2e6b8a, -2.35, 2.0, -3.8);
-    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.98, -1.7, 0, -0.35); // drafting table
+    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.78, -1.7, 0, -0.35); // drafting table
     const bp = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.8), matFor(0x2f5aa0, 0.95));
-    bp.position.set(2.6, 1.05, -1.68);
+    bp.position.set(2.6, 0.85, -1.68);
     bp.rotation.x = -Math.PI / 2 - 0.35;
     shop.add(bp);
     for (const [lx, lz] of [
@@ -13848,7 +14561,7 @@ export class GameScene extends THREE.Scene {
       [2.0, -2.05],
       [3.2, -2.05],
     ] as const)
-      box(shop, 0.1, 0.95, 0.1, D, lx, 0.48, lz);
+      box(shop, 0.1, 0.76, 0.1, D, lx, 0.38, lz);
     cyl(shop, 0.25, 0.28, 0.55, W, 1.1, 0.38, -1.4); // stool
     box(shop, 0.85, 0.75, 0.85, 0xb5854e, -3.0, 0.48, -2.55); // crates
     box(shop, 0.7, 0.6, 0.7, 0xc09055, -2.85, 1.16, -2.7);
@@ -13867,7 +14580,7 @@ export class GameScene extends THREE.Scene {
       [1.3, 1.42],
     ] as const)
       box(home, 0.08, 0.42, 0.08, D, lx, 0.24, lz);
-    this.buildFireplace(home, -1); // left wall
+    this.buildFireplace(home, -1, 'home'); // left wall
     box(home, 0.38, 2.2, 1.6, D, 3.6, 1.28, -2.2); // bookshelf
     for (const [by, bc] of [
       [0.7, 0xa54242],
@@ -13879,17 +14592,21 @@ export class GameScene extends THREE.Scene {
     // so its collider) stood in the doorway, through the arriving avatar,
     // with the shade filling the middle of the entry shot.
     cyl(home, 0.045, 0.045, 1.7, 0x2c2c2c, -3.3, 0.95, 3.3);
-    const shade = new THREE.Mesh(
-      new THREE.ConeGeometry(0.3, 0.35, 12, 1, true),
-      matFor(0xf0d9a8, 0.7),
-    );
+    const floorShadeMat = lit({
+      color: 0xf0d9a8,
+      roughness: 0.7,
+      emissive: 0xffd9a0,
+      emissiveIntensity: 0.4,
+    });
+    this.interiorShades.push({ mat: floorShadeMat, glow: 0.4 });
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.35, 12, 1, true), floorShadeMat);
     shade.position.set(-3.3, 1.95, 3.3);
     home.add(shade);
 
     // post — Contact: service counter, pigeonhole wall, parcels, brass scale.
     const post = set('post');
-    box(post, 2.8, 1.0, 0.7, W, 0, 0.6, -1.9); // counter
-    box(post, 3.1, 0.1, 0.95, D, 0, 1.13, -1.9);
+    box(post, 2.8, 0.8, 0.7, W, 0, 0.5, -1.9); // counter
+    box(post, 3.1, 0.1, 0.95, D, 0, 0.93, -1.9);
     box(post, 0.28, 1.75, 2.4, D, 3.8, 1.6, -2.2); // pigeonholes backing
     for (const sy of [1.05, 1.6, 2.15] as const)
       box(post, 0.3, 0.06, 2.4, 0xcdb289, 3.78, sy, -2.2);
@@ -13898,15 +14615,15 @@ export class GameScene extends THREE.Scene {
     box(post, 0.7, 0.55, 0.6, 0xb5854e, -2.9, 0.38, -2.7); // parcels
     box(post, 0.55, 0.45, 0.5, 0xc09055, -2.75, 0.88, -2.85);
     box(post, 0.45, 0.4, 0.45, 0xb5854e, -2.2, 0.3, -3.0);
-    cyl(post, 0.16, 0.2, 0.08, 0xc9a227, 0.8, 1.22, -1.9); // scale base
-    cyl(post, 0.03, 0.03, 0.4, 0xc9a227, 0.8, 1.45, -1.9);
-    cyl(post, 0.18, 0.18, 0.03, 0xc9a227, 0.8, 1.68, -1.9);
+    cyl(post, 0.16, 0.2, 0.08, 0xc9a227, 0.8, 1.02, -1.9); // scale base
+    cyl(post, 0.03, 0.03, 0.4, 0xc9a227, 0.8, 1.25, -1.9);
+    cyl(post, 0.18, 0.18, 0.03, 0xc9a227, 0.8, 1.48, -1.9);
 
     // hall — Welcome town hall: podium, banners, visitor benches, notice board.
     const hall = set('hall');
     box(hall, 1.2, 0.5, 1.2, D, 0, 0.35, -2.5); // dais
-    box(hall, 0.5, 1.05, 0.5, W, 0, 1.12, -2.5); // lectern
-    box(hall, 0.7, 0.08, 0.55, D, 0, 1.68, -2.42, 0, -0.3);
+    box(hall, 0.5, 0.84, 0.5, W, 0, 1.02, -2.5); // lectern
+    box(hall, 0.7, 0.08, 0.55, D, 0, 1.47, -2.42, 0, -0.3);
     for (const bx of [-2.5, 2.5] as const) {
       const banner = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 2.1), matFor(0x4caf50, 0.9));
       banner.position.set(bx, 2.55, -3.78);
@@ -13914,9 +14631,9 @@ export class GameScene extends THREE.Scene {
       box(hall, 0.9, 0.07, 0.07, W, bx, 3.66, -3.76);
     }
     for (const bz of [0.7, 1.9] as const) {
-      box(hall, 2.1, 0.12, 0.5, W, 0, 0.5, bz);
-      box(hall, 0.12, 0.5, 0.45, D, -0.9, 0.25, bz);
-      box(hall, 0.12, 0.5, 0.45, D, 0.9, 0.25, bz);
+      box(hall, 2.1, 0.12, 0.5, W, 0, 0.4, bz);
+      box(hall, 0.12, 0.4, 0.45, D, -0.9, 0.2, bz);
+      box(hall, 0.12, 0.4, 0.45, D, 0.9, 0.2, bz);
     }
     box(hall, 1.5, 1.05, 0.07, 0xcdb289, 3.8, 2.05, -2.2, Math.PI / 2); // notice board
     for (const [py, pz] of [
@@ -13960,7 +14677,7 @@ export class GameScene extends THREE.Scene {
       bch.add(tvFrame);
       const tvScreen = new THREE.Mesh(
         new THREE.PlaneGeometry(T.hw * 2, T.hh * 2),
-        new THREE.MeshStandardMaterial({
+        lit({
           color: 0x0b0e14,
           emissive: 0x101722,
           emissiveIntensity: 0.35,
@@ -13977,7 +14694,7 @@ export class GameScene extends THREE.Scene {
     box(cot, 0.8, 0.14, 0.42, 0xf7f3ea, -3.0, 0.68, -3.25);
     // Blanket gets a DEDICATED material: its colour varies per house, and the
     // shared matFor cache would tint every 0xa54242 prop island-wide with it.
-    this.cottageBlanketMat = new THREE.MeshStandardMaterial({ color: 0xa54242, roughness: 0.9 });
+    this.cottageBlanketMat = lit({ color: 0xa54242, roughness: 0.9 });
     const blanket = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.15, 1.05), this.cottageBlanketMat);
     blanket.position.set(-3.0, 0.63, -2.05);
     cot.add(blanket);
@@ -13985,7 +14702,7 @@ export class GameScene extends THREE.Scene {
     cyl(cot, 0.09, 0.12, 0.82, D, 1.6, 0.41, -1.6);
     cyl(cot, 0.24, 0.26, 0.5, D, 0.75, 0.29, -1.3); // stools
     cyl(cot, 0.24, 0.26, 0.5, D, 2.45, 0.29, -1.9);
-    this.buildFireplace(cot, 1); // right wall
+    this.buildFireplace(cot, 1, 'cottage'); // right wall
     box(cot, 1.6, 0.08, 0.4, W, -2.4, 1.7, -3.78); // kitchen shelf
     cyl(cot, 0.12, 0.12, 0.28, 0x8a9a5b, -2.9, 1.88, -3.78);
     cyl(cot, 0.1, 0.1, 0.24, 0xb0603e, -2.45, 1.86, -3.78);
@@ -14049,12 +14766,8 @@ export class GameScene extends THREE.Scene {
     clasp.position.set(-3.05, 0.48, -0.88);
     chest.add(clasp);
 
-    // Fireplace glow — one shared light, repositioned per themed set and only
-    // switched on for sets that have a hearth. Flicker runs in the interior
-    // camera update (zero cost while outside).
-    const fire = new THREE.PointLight(0xff9a3c, 0, 7, 1.4);
-    g.add(fire);
-    this.interiorFire = fire;
+    // (No fireplace light: each hearth's ember plane and floor pool flicker
+    // instead, in updateInteriorMode. See buildFireplace.)
     // Three framed posters — a big title on the back wall + a content panel on
     // each side wall — all re-drawn per building on enter (so you SEE the
     // portfolio content inside the building, not just a title).
@@ -14078,23 +14791,22 @@ export class GameScene extends THREE.Scene {
     makePoster(3.6, 1.9, 0, 2.5, -3.88, 0); // back — title
     makePoster(2.6, 1.7, -3.88, 1.95, 0.4, Math.PI / 2); // left — content
     makePoster(2.6, 1.7, 3.88, 1.95, 0.4, -Math.PI / 2); // right — content
-    // Bright, linear-falloff room light so all four walls read clearly (the
-    // island's scene ambient is deliberately low, and the sun may face away
-    // from a room 300u under the map). A second low fill kills dark corners.
-    const lamp = new THREE.PointLight(0xfff4e0, 3.2, 24, 1);
-    lamp.position.set(0, 3.4, 0);
-    g.add(lamp);
-    const fill = new THREE.PointLight(0xd8e2ff, 1.2, 20, 1);
-    fill.position.set(2.5, 1.6, 2.5);
-    g.add(fill);
-    // Held so party mode can pull the house lights down to a club level and
-    // ease them back up afterwards (updateInteriorMode owns the easing).
-    this.interiorRoomLamp = lamp;
-    this.interiorRoomFill = fill;
-    this.interiorRoomLampLevel = lamp.intensity;
-    this.interiorRoomFillLevel = fill.intensity;
-    this.interiorRoomLampHome.copy(lamp.color);
-    this.interiorRoomFillHome.copy(fill.color);
+    // INK on each themed set's big pieces, as on the props outdoors: an
+    // inverted hull on the shared ink material. Desktop and cel theme only
+    // (addGroupHulls returns at once on the low tier and under ?theme=real).
+    // Per mesh, so the flat ones are left out: a hull on a plane (a banner, a
+    // blueprint, the firelight pool) is a second quad nobody can see.
+    for (const themed of Object.values(this.interiorSets)) {
+      const pieces: THREE.Mesh[] = [];
+      themed.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || m.geometry.type === 'PlaneGeometry') return;
+        if (Array.isArray(m.material) || m.material.transparent) return;
+        pieces.push(m);
+      });
+      for (const m of pieces) addGroupHulls(m, GameScene.ROOM_INK_MIN_RADIUS);
+    }
+    // (No room lights: the visit borrows the island's rig. See roomRigTarget.)
     this.interiorGroup = g;
     // The party rig is part of the room, hidden until the beach house turns
     // it on, so the interior warm compiles its materials with the rest.
@@ -14104,11 +14816,17 @@ export class GameScene extends THREE.Scene {
 
   /** A brick hearth with a glowing firebox, against the left (side=-1) or
    *  right (side=+1) wall at z≈-2 — clear of that wall's content poster. */
-  private buildFireplace(parent: THREE.Group, side: -1 | 1): void {
-    const brick = new THREE.MeshStandardMaterial({ color: 0x9a5a48, roughness: 0.95 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x1c1512, roughness: 1 });
-    const wood = new THREE.MeshStandardMaterial({ color: 0x6e5236, roughness: 0.85 });
-    const glow = new THREE.MeshBasicMaterial({ color: 0xff8c3a });
+  private buildFireplace(parent: THREE.Group, side: -1 | 1, theme: string): void {
+    const brick = GameScene.celMat(
+      new THREE.MeshStandardMaterial({ color: 0x9a5a48, roughness: 0.95 }),
+    );
+    const dark = GameScene.celMat(
+      new THREE.MeshStandardMaterial({ color: 0x1c1512, roughness: 1 }),
+    );
+    const wood = GameScene.celMat(
+      new THREE.MeshStandardMaterial({ color: 0x6e5236, roughness: 0.85 }),
+    );
+    const glow = new THREE.MeshBasicMaterial({ color: GameScene._hearthGlow });
     const addBox = (
       geo: THREE.BoxGeometry,
       mat: THREE.Material,
@@ -14129,9 +14847,44 @@ export class GameScene extends THREE.Scene {
     fire.rotation.y = side === -1 ? Math.PI / 2 : -Math.PI / 2;
     parent.add(fire);
     addBox(new THREE.BoxGeometry(0.16, 0.14, 0.7), dark, side * 3.34, 0.22, -2.0); // log
+    // The firelight on the floor: a warm additive pool in front of the grate,
+    // where the hearth's PointLight used to fall. It and the ember plane
+    // flicker together (updateInteriorMode). Lifted in depth, not position,
+    // so it lies on the boards and the rug alike (the party sweeps' trick).
+    const pcv = document.createElement('canvas');
+    pcv.width = pcv.height = 64;
+    const px = pcv.getContext('2d');
+    if (px) {
+      const grad = px.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.35)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      px.fillStyle = grad;
+      px.fillRect(0, 0, 64, 64);
+    }
+    const poolMap = new THREE.CanvasTexture(pcv);
+    poolMap.colorSpace = THREE.SRGBColorSpace;
+    const pool = new THREE.MeshBasicMaterial({
+      color: 0xff9a3c,
+      map: poolMap,
+      transparent: true,
+      opacity: GameScene.HEARTH_POOL_OPACITY,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    const disc = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 3.4), pool);
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(side * 2.55, 0.17, -2.0);
+    disc.renderOrder = 2;
+    disc.userData.isLightPool = true; // light on the floor: nothing to walk into
+    parent.add(disc);
+    this.interiorHearths[theme] = { glow, pool };
   }
 
-  /** Rug tint + hearth-light anchor per themed set (hearth rooms only). */
+  /** Rug tint per themed set. */
   private static readonly INTERIOR_RUGS: Record<string, number> = {
     office: 0x51687d,
     workshop: 0xa8793e,
@@ -14140,10 +14893,6 @@ export class GameScene extends THREE.Scene {
     hall: 0x5d8a58,
     cottage: 0x9c5f4e,
     beach: 0xd9c48a, // woven sand-mat
-  };
-  private static readonly INTERIOR_FIRE_POS: Record<string, [number, number, number]> = {
-    home: [-3.05, 0.85, -2.0],
-    cottage: [3.05, 0.85, -2.0],
   };
 
   // ── Interior free-walk mode ──
@@ -14420,7 +15169,7 @@ export class GameScene extends THREE.Scene {
   private interiorZzz: THREE.Sprite | null = null;
   // Cottage variation: seeded per-house decor — dedicated tint materials plus
   // optional prop groups toggled per house (2 of 4 shown).
-  private cottageBlanketMat: THREE.MeshStandardMaterial | null = null;
+  private cottageBlanketMat: RoomMat | null = null;
   private cottageExtras: THREE.Group[] = [];
 
   /** Show the NPCs sleeping behind THIS cottage's door (cap 2: bed + rug).
@@ -14559,6 +15308,7 @@ export class GameScene extends THREE.Scene {
     const b = new THREE.Box3();
     for (const child of set.children) {
       if ((child as THREE.Sprite).isSprite) continue; // markers (💤) never block
+      if (child.userData.isLightPool) continue; // nor does firelight on the floor
       b.setFromObject(child);
       if (b.isEmpty()) continue;
       if (b.min.y - o.y > 1.45) continue; // overhead — walk under it
@@ -14573,10 +15323,9 @@ export class GameScene extends THREE.Scene {
     this.interiorColliders[theme] = boxes;
 
     // CONTACT SHADOWS, for free, from the boxes we just measured.
-    // No interior mesh casts or receives a shadow and every interior light is
-    // an unshadowed point light, so all the furniture floats a little. A real
-    // shadow-casting point light would be a six-face cube depth render; a soft
-    // blob under each footprint reads almost as well for one unlit quad.
+    // No interior mesh casts or receives a shadow (the borrowed sun's shadow
+    // is off indoors), so all the furniture floats a little. A soft blob
+    // under each footprint reads almost as well as a shadow, for one unlit quad.
     // The AABB pass above is already exactly the right filter — it skips
     // sprites and skips anything mounted above head height.
     const blobMat = this.ensureInteriorBlobMat();
@@ -14950,17 +15699,29 @@ export class GameScene extends THREE.Scene {
    * doesn't pay for them — and never let a rendered frame use a variant that
    * is still compiling.
    *
-   * The room carries 4 PointLights and three bakes light COUNTS into every lit
-   * program's cache key, so showing the room re-keys the whole scene. MEASURED
-   * on main: the old warm made the room visible and awaited compileAsync, the
-   * render loop drew the next frame with the room-lit variants, and that frame
-   * blocked 2,043 ms finishing them and creating 38 more (compile() had run
-   * against the canvas, the frame draws into the composer's buffer). Its
-   * synchronous compile was a 210 ms task of its own.
+   * HISTORY. The room used to carry 4 PointLights, and three bakes light
+   * COUNTS into every lit program's cache key, so showing the room re-keyed
+   * the whole scene. MEASURED then: the old warm made the room visible and
+   * awaited compileAsync, the render loop drew the next frame with the
+   * room-lit variants, and that frame blocked 2,043 ms finishing them and
+   * creating 38 more (compile() had run against the canvas, the frame draws
+   * into the composer's buffer). Its synchronous compile was a 210 ms task of
+   * its own.
    *
-   * Now the room-lit and outdoor permutations are compiled in synchronous
-   * slices (compileInteriorPass) against the frame's own render target, then
-   * polled ready and first-used (settleWarmPrograms), all off the render path.
+   * NOW the room has no lights: a visit borrows the island's rig (P2-B9), so
+   * the light set is the same indoors and out, and a door re-keys nothing.
+   * What is left to warm is the room's own materials. They are compiled in
+   * synchronous slices (compileInteriorPass) against the frame's own render
+   * target, with the room shown and then hidden (one set of programs either
+   * way; the second pass is cache hits), then polled ready and first-used
+   * (settleWarmPrograms), all off the render path. MEASURED cold at ?hour=12
+   * on the wave-2 integration build, counting what the warm's own compile
+   * calls create: 4 programs on desktop and 4 on the phone (the window pane,
+   * the posters', one more standard and one more basic), each compile call
+   * under 1.1 ms; before the borrowed
+   * rig it added 23 and 21. A phone frame that compiles 4-5 more just after
+   * the welcome card is not the warm's: it is the first opaque frame after
+   * Island's GLB fade-in, and it is there with the warm switched off too.
    * The window view needs no pass of its own: it draws with the frame's
    * programs (syncInteriorViewOutput).
    *
@@ -15029,10 +15790,10 @@ export class GameScene extends THREE.Scene {
       }
     };
     try {
-      // Room-lit first: the variants a door needs. Nothing can flash on screen
-      // even within a slice — no frame is drawn while the room is visible, and
-      // it sits at INTERIOR_ORIGIN, 200u below the south pole. The outdoor
-      // pass covers leaving, which re-keys too.
+      // The room first: what a door needs. Nothing can flash on screen even
+      // within a slice — no frame is drawn while the room is visible, and it
+      // sits at INTERIOR_ORIGIN, 200u below the south pole. The outdoor pass
+      // covers the world's lit materials no frame has drawn yet.
       await warm(true);
       await warm(false);
     } catch {
@@ -15107,18 +15868,32 @@ export class GameScene extends THREE.Scene {
     if (this.interiorWallMat) {
       this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
     }
+    // The trim takes the district's accent (DISTRICTS[].accent). A hall is
+    // handed its own as the wall colour; a house takes the accent of the
+    // district it stands in, weighted by how far inside it is (the player is
+    // still on the doorstep here). Out on the islet the trim stays wood.
+    let accentWeight = 1;
+    if (houseId === undefined) this._trimAccent.set(wallColor);
+    else {
+      accentWeight = districtAccentAt(this.player.getWorldPosition().normalize(), this._trimAccent);
+    }
+    if (accentWeight > 0) this._trimAccent.multiplyScalar(GameScene.ROOM_TRIM_SHADE);
+    for (const t of this.interiorTrim) {
+      t.mat.color.copy(t.base);
+      if (accentWeight > 0) {
+        t.mat.color.lerp(this._trimAccent, GameScene.ROOM_TRIM_TINT * accentWeight);
+      }
+    }
     const active = this.interiorSets[theme] ? theme : 'cottage';
     for (const [name, s] of Object.entries(this.interiorSets)) s.visible = name === active;
     this.interiorRugMat?.color.set(GameScene.INTERIOR_RUGS[active] ?? 0xb06a72);
-    if (this.interiorFire) {
-      const fp = GameScene.INTERIOR_FIRE_POS[active];
-      this.interiorFire.intensity = fp ? 1.6 : 0;
-      if (fp) this.interiorFire.position.set(fp[0], fp[1], fp[2]);
-    }
     this.drawPoster(0, title, true);
     this.drawPoster(1, left, false);
     this.drawPoster(2, right, false);
     if (this.interiorGroup) this.interiorGroup.visible = true;
+    // Borrow the island's light rig for the visit (P2-B9). Taken once: a
+    // second entry without an exit must not remember the room's values.
+    if (!this.rigHome.held) this.snapshotOutdoorRig();
     this.insideInterior = true;
     // Free-walk: place the player's VISUAL group just inside the door and hold
     // the broadcast position at the door outside (peers keep seeing them
@@ -15179,6 +15954,10 @@ export class GameScene extends THREE.Scene {
     this.interiorOccupants = [];
     if (this.interiorZzz) this.interiorZzz.visible = false;
     if (active === 'cottage' && houseId) this.placeCottageOccupants(houseId);
+    // The room's light, at its preset from the first frame: the entry is
+    // drawn under the door veil, and an ease from the island's values would
+    // show as the veil lifts. (Last, so a party already has its club dim.)
+    this.snapRoomRig();
   }
 
   /**
@@ -15356,10 +16135,15 @@ export class GameScene extends THREE.Scene {
     const skyUp = this.skyUpUniform;
     const skyUpHome = skyUp ? this._npcColWorld.copy(skyUp.value) : null;
     if (skyUp) skyUp.value.copy(cam.up);
+    // The window shows the island, so the island's light goes back on for the
+    // pass (the room has borrowed the rig), and the room's after it.
+    const borrowed = this.insideInterior && this.rigHome.held;
+    if (borrowed) this.restoreOutdoorRig();
     const prevTarget = renderer.getRenderTarget();
     renderer.setRenderTarget(this.interiorViewTarget);
     renderer.render(this, cam);
     renderer.setRenderTarget(prevTarget);
+    if (borrowed) this.applyRoomRig();
     if (skyUp && skyUpHome) skyUp.value.copy(skyUpHome);
     if (rain && rainHome) rain.position.copy(rainHome);
     if (this.interiorGroup) this.interiorGroup.visible = roomWasVisible;
@@ -15408,6 +16192,9 @@ export class GameScene extends THREE.Scene {
     this.sendPartyGuestsHome(); // …including any the party let go indoors
     if (this.interiorGroup) this.interiorGroup.visible = false;
     this.interiorHotspot = null;
+    // Hand the island its light rig back, exactly as it was left (P2-B9).
+    this.restoreOutdoorRig();
+    this.rigHome.held = false;
     this.restoreShadowAutoUpdate();
     // Borrowed sleepers: hide now; the wander loop re-claims their position,
     // orientation, and visibility on the first world frame after exit.
@@ -15471,13 +16258,16 @@ export class GameScene extends THREE.Scene {
         this.refreshInteriorView();
       }
     }
-    // Hearth flicker (fire is 0 in hearthless rooms).
-    if (this.interiorFire && this.interiorFire.intensity > 0) {
+    // Hearth flicker, on the fire itself: the ember plane and the pool it
+    // throws on the floor (hearthless rooms have neither). The campfire's
+    // recipe, with the same reduced-motion trim of the >3 Hz term.
+    const hearth = this.interiorHearths[this.interiorActiveTheme];
+    if (hearth) {
       const t = this.interiorTime;
-      // Same recipe as the campfire — and the same reduced-motion trim of
-      // the >3 Hz term; here it is a primary room light at close range.
-      this.interiorFire.intensity =
-        1.55 + Math.sin(t * 11) * 0.22 + (a11y.reducedMotion ? 0 : Math.sin(t * 23 + 1.7) * 0.14);
+      const flicker =
+        1 + Math.sin(t * 11) * 0.14 + (a11y.reducedMotion ? 0 : Math.sin(t * 23 + 1.7) * 0.09);
+      hearth.glow.color.copy(GameScene._hearthGlow).multiplyScalar(flicker);
+      hearth.pool.opacity = GameScene.HEARTH_POOL_OPACITY * flicker;
     }
 
     const o = GameScene.INTERIOR_ORIGIN;
@@ -15631,6 +16421,8 @@ export class GameScene extends THREE.Scene {
       this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
       this.camera.lookAt(p.x, p.y + 0.85, p.z);
     }
+    // A wall behind the camera brings it close: the avatar fades (B11).
+    this.tickAvatarFade(deltaTime);
 
     // Fixtures: curtains slide, the lamp fades. Both eased rather than snapped
     // so pressing E reads as working something, not as a state flip.
@@ -15641,38 +16433,22 @@ export class GameScene extends THREE.Scene {
         c.mesh.position.x = c.open + (c.shut - c.open) * this.interiorCurtainT;
       }
     }
-    // House lights. Party mode pulls them right down so the disco ball, the
-    // lasers and the lit floor are what you actually see — a fully lit room
-    // washes all three out. Everything eases rather than snapping, and the
-    // same easing carries them back up when the party stops. The party's
-    // own light rides on top of those levels (updateInteriorParty): the beat
-    // flash on the room lamp, the ball glow on the pendant, the club tint on
-    // the fill, and their colours, which ease home once it ends.
-    const clubK = Math.min(1, 3.5 * deltaTime);
-    const party = this.partyMode;
-    if (this.interiorLamp) {
-      const lampWant = party ? 0.1 : this.interiorLampOn ? 1.35 : 0;
-      this.interiorLampLevel += (lampWant - this.interiorLampLevel) * Math.min(1, 9 * deltaTime);
-      this.interiorLamp.intensity = this.interiorLampLevel + (party ? this.partyGlow : 0);
-      if (!party) this.interiorLamp.color.lerp(this.interiorLampHome, clubK);
-      if (this.interiorBulb) {
-        (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
-          this.interiorLampOn && !party ? 0xffe8b8 : 0x6b6a63,
-        );
-      }
+    // House lights: the borrowed rig eases to the room's preset (lamp on or
+    // off, the hour, the curtains, a party's club dim), and the party's own
+    // light rides on top of it (applyRoomRig). Everything eases rather than
+    // snapping, so pressing E reads as working a switch.
+    this.updateRoomRig(deltaTime);
+    const lampLit = this.interiorLampOn && !this.partyMode;
+    if (this.interiorBulb) {
+      (this.interiorBulb.material as THREE.MeshBasicMaterial).color.setHex(
+        lampLit ? 0xffe8b8 : 0x6b6a63,
+      );
     }
-    if (this.interiorRoomLamp) {
-      const want = party ? 0.35 : 3.2;
-      this.interiorRoomLampLevel += (want - this.interiorRoomLampLevel) * clubK;
-      this.interiorRoomLamp.intensity = this.interiorRoomLampLevel + (party ? this.partyFlash : 0);
-      if (!party) this.interiorRoomLamp.color.lerp(this.interiorRoomLampHome, clubK);
-    }
-    if (this.interiorRoomFill) {
-      const want = party ? 0.14 : 1.2;
-      this.interiorRoomFillLevel += (want - this.interiorRoomFillLevel) * clubK;
-      this.interiorRoomFill.intensity = this.interiorRoomFillLevel + (party ? this.partyTint : 0);
-      if (!party) this.interiorRoomFill.color.lerp(this.interiorRoomFillHome, clubK);
-    }
+    // The shades glow with the lamp, on its own ease.
+    this.interiorShadeLevel +=
+      ((lampLit ? 1 : 0) - this.interiorShadeLevel) *
+      Math.min(1, GameScene.ROOM_RIG_RATE * deltaTime);
+    for (const s of this.interiorShades) s.mat.emissiveIntensity = s.glow * this.interiorShadeLevel;
 
     // Floating 💤 bob while a sleeper occupies the bed.
     if (this.interiorZzz?.visible) {

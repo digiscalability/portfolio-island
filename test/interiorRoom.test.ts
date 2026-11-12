@@ -69,6 +69,8 @@ const THEMES = ['office', 'workshop', 'home', 'post', 'hall', 'cottage', 'beach'
 const DOOR = 'leave';
 
 let scene: Room;
+/** The camera-to-torso distance the last room frame gave the avatar's fade. */
+let fadeDistance = Infinity;
 const room = (): { x: number; z: number } => {
   const o = statics.INTERIOR_ORIGIN;
   const p = (scene.player as { position: THREE.Vector3 }).position;
@@ -105,6 +107,10 @@ beforeAll(() => {
     tickInteriorAnimation: () => {},
     getWalkCyclePhase: () => 0,
     applyPartyDance: () => {},
+    // The close-camera fade (B11): the distance each room frame hands it.
+    updateCloseFade: (camDistance: number) => {
+      fadeDistance = camDistance;
+    },
   };
   scene.camera = new THREE.PerspectiveCamera(50, 1.6, 0.1, 2000);
   scene.island = { houseDoors: [], npcTargets: [] };
@@ -132,6 +138,483 @@ describe('a visit starts clear of the door', () => {
     const s = statics.INTERIOR_SPAWN;
     const door = scene.interiorHotspotsFor('cottage').find((h) => h.action === DOOR)!;
     expect(Math.hypot(s.x - door.x, s.z - door.z)).toBeCloseTo(1.43, 2);
+  });
+});
+
+describe('a room borrows the island’s light rig (P2-B9)', () => {
+  // MEASURED on main (desktop, the Welcome Hub from its entry pose): lamp on,
+  // the room read 46.6 L* at 12 h and 34.9 at 21 h; the lamp switch moved it
+  // 0.8-1.2 L*; the avatar's median stood 16-26 L* BELOW its surroundings; and
+  // the room's four PointLights re-keyed every lit program at each door.
+  interface Rig {
+    lights: { sun?: THREE.DirectionalLight; ambient?: THREE.AmbientLight };
+    hemiLight: THREE.HemisphereLight | null;
+    fillLight?: THREE.DirectionalLight;
+    rimLight?: THREE.DirectionalLight;
+    envCycle: unknown;
+    interiorGroup: THREE.Group;
+    interiorSets: Record<string, THREE.Group>;
+    interiorHearths: Record<string, { glow: THREE.MeshBasicMaterial; pool: THREE.Material }>;
+    interiorShades: Array<{ mat: THREE.MeshStandardMaterial; glow: number }>;
+    interiorWindowMat: THREE.MeshBasicMaterial;
+    rendererRef: unknown;
+    toggleInteriorFixture(which: string): string;
+    refreshInteriorView(): void;
+    setPartyMode(on: boolean): void;
+    partyFlash: number;
+  }
+  const rig = (): Rig => scene as unknown as Rig;
+  const env = { day: 1 };
+  /** The island's five lights, as an afternoon leaves them. */
+  const island = (): {
+    sun: THREE.DirectionalLight;
+    hemi: THREE.HemisphereLight;
+    ambient: THREE.AmbientLight;
+    fill: THREE.DirectionalLight;
+    rim: THREE.DirectionalLight;
+  } => {
+    const sun = new THREE.DirectionalLight(0xffe9c0, 1.37);
+    sun.position.set(31, 120, 12);
+    sun.target.position.set(4, 76, 3);
+    sun.shadow.intensity = 0.83;
+    const hemi = new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.57);
+    const ambient = new THREE.AmbientLight(0xfff6e8, 0.21);
+    const fill = new THREE.DirectionalLight(0xd4e8ff, 0.18);
+    fill.position.set(7, 11, -38);
+    const rim = new THREE.DirectionalLight(0xcfe6ff, 0.51);
+    rim.position.set(-40, 26, 20);
+    const r = rig();
+    r.lights = { sun, ambient };
+    r.hemiLight = hemi;
+    r.fillLight = fill;
+    r.rimLight = rim;
+    r.envCycle = { getDayFactor: () => env.day, getHour: () => 12, getWeather: () => 'clear' };
+    return { sun, hemi, ambient, fill, rim };
+  };
+  const unrig = (): void => {
+    const r = rig();
+    r.lights = {};
+    r.hemiLight = null;
+    r.fillLight = undefined;
+    r.rimLight = undefined;
+    r.envCycle = null;
+    env.day = 1;
+  };
+  /** What a renderer reads: every light's direction, colour and level. */
+  const read = (l: ReturnType<typeof island>): Record<string, unknown> => ({
+    sunPos: l.sun.position.toArray(),
+    sunTarget: l.sun.target.position.toArray(),
+    sun: [l.sun.color.getHex(), l.sun.intensity, l.sun.shadow.intensity],
+    hemiPos: l.hemi.position.toArray(),
+    hemi: [l.hemi.color.getHex(), l.hemi.groundColor.getHex(), l.hemi.intensity],
+    ambient: [l.ambient.color.getHex(), l.ambient.intensity],
+    fillPos: l.fill.position.toArray(),
+    fill: [l.fill.color.getHex(), l.fill.intensity],
+    rimPos: l.rim.position.toArray(),
+    rim: [l.rim.color.getHex(), l.rim.intensity],
+  });
+  const dirOf = (l: THREE.DirectionalLight): THREE.Vector3 =>
+    l.position.clone().sub(l.target.position).normalize();
+  const settle = (seconds = 2): void => {
+    for (let i = 0; i < seconds * 60; i++) scene.updateInteriorMode(1 / 60);
+  };
+  const hex = (n: number): number => new THREE.Color(n).getHex();
+
+  test('the room is built without a light', () => {
+    let lights = 0;
+    rig().interiorGroup.traverse((o) => {
+      if ((o as THREE.Light).isLight) lights++;
+    });
+    expect(lights).toBe(0);
+  });
+
+  test('lamp on, by day: a warm key over the shoulder, cream hemisphere, cool window rim', () => {
+    const l = island();
+    try {
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      const o = statics.INTERIOR_ORIGIN;
+      // In room space: aimed at the room's origin, 300 u under the island.
+      expect(l.sun.target.position.equals(o)).toBe(true);
+      const key = new THREE.Vector3(0.35, 0.9, 0.45).normalize();
+      expect(dirOf(l.sun).angleTo(key)).toBeLessThan(1e-6);
+      expect([l.sun.color.getHex(), l.sun.intensity]).toEqual([hex(0xffe2bc), 1.25]);
+      // Nothing in a room receives the island's shadow map.
+      expect(l.sun.shadow.intensity).toBe(0);
+      expect(l.hemi.position.toArray()).toEqual([0, 1, 0]);
+      expect([l.hemi.color.getHex(), l.hemi.groundColor.getHex(), l.hemi.intensity]).toEqual([
+        hex(0xfff0dc),
+        hex(0x6b5640),
+        0.95,
+      ]);
+      expect(l.ambient.intensity).toBe(0.22);
+      expect(dirOf(l.rim).angleTo(new THREE.Vector3(-0.2, 0.3, 1).normalize())).toBeLessThan(1e-6);
+      expect([l.rim.color.getHex(), l.rim.intensity]).toEqual([hex(0xcfe6ff), 0.25]);
+      // The fill comes from the room camera, onto the avatar.
+      const p = (scene.player as { position: THREE.Vector3 }).position;
+      const along = scene.camera.position.clone().sub(p).normalize();
+      expect(dirOf(l.fill).angleTo(along)).toBeLessThan(1e-6);
+      expect(l.fill.intensity).toBeCloseTo(0.2, 9);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the island gets its rig back exactly, on the way out', () => {
+    const l = island();
+    try {
+      const before = read(l);
+      enter('cottage');
+      settle(1);
+      expect(read(l)).not.toEqual(before);
+      scene.exitInterior();
+      expect(read(l)).toEqual(before);
+      // A second entry with no exit between keeps the island's values, not the room's.
+      enter('hall');
+      enter('office');
+      settle(0.5);
+      scene.exitInterior();
+      expect(read(l)).toEqual(before);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('at night the key turns amber and the window’s rim falls away', () => {
+    const l = island();
+    try {
+      env.day = 0;
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect([l.sun.color.getHex(), l.sun.intensity]).toEqual([hex(0xffd59a), 1.25]);
+      // ...and comes lower, a lamp at head height, onto the visitor's side.
+      const nightKey = new THREE.Vector3(0.35, 0.6, 0.7).normalize();
+      expect(dirOf(l.sun).angleTo(nightKey)).toBeLessThan(1e-6);
+      expect(l.rim.intensity).toBeCloseTo(0.1, 9);
+      // Golden hour is still day (EnvironmentCycle's day factor at 06 h and 18 h).
+      scene.exitInterior();
+      env.day = 0.198;
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect(l.sun.color.getHex()).toBe(hex(0xffe2bc));
+      expect(l.rim.intensity).toBeCloseTo(0.25, 9);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the lamp switch eases the room to window light, and back', () => {
+    const l = island();
+    try {
+      enter('hall');
+      scene.updateInteriorMode(1 / 60);
+      expect(rig().toggleInteriorFixture('lamp')).toContain('off');
+      // One frame in, it has moved 15% of the way (9 per second), not jumped.
+      scene.updateInteriorMode(1 / 60);
+      expect(l.sun.intensity).toBeCloseTo(1.25 + (0.45 - 1.25) * 0.15, 6);
+      settle();
+      const window = new THREE.Vector3(0.1, 0.35, 1).normalize();
+      expect(dirOf(l.sun).angleTo(window)).toBeLessThan(1e-4);
+      expect(l.sun.color.getHex()).toBe(hex(0xcfe0ff));
+      expect(l.sun.intensity).toBeCloseTo(0.45, 6);
+      expect(l.hemi.intensity).toBeCloseTo(0.5, 6);
+      expect([l.hemi.color.getHex(), l.hemi.groundColor.getHex()]).toEqual([
+        hex(0xd8e4f2),
+        hex(0x4a4038),
+      ]);
+      expect(l.ambient.intensity).toBeCloseTo(0.12, 6);
+      expect(l.rim.intensity).toBeCloseTo(0.35, 6);
+      // The shades stop glowing with the lamp.
+      for (const s of rig().interiorShades) expect(s.mat.emissiveIntensity).toBeLessThan(0.001);
+      // By moonlight the window gives a fraction of it.
+      env.day = 0;
+      settle();
+      expect(l.sun.color.getHex()).toBe(hex(0x9db3e6));
+      expect(l.sun.intensity).toBeCloseTo(0.2, 6);
+      // Draw the curtains and most of what the window gave is gone.
+      env.day = 1;
+      settle();
+      expect(rig().toggleInteriorFixture('curtains')).toContain('draw');
+      settle();
+      expect(l.sun.intensity).toBeCloseTo(0.45 * 0.2, 3);
+      expect(l.rim.intensity).toBeCloseTo(0.35 * 0.2, 3);
+      rig().toggleInteriorFixture('curtains');
+      // Back on.
+      expect(rig().toggleInteriorFixture('lamp')).toContain('on');
+      settle();
+      expect(l.sun.intensity).toBeCloseTo(1.25, 6);
+      expect(l.hemi.intensity).toBeCloseTo(0.95, 6);
+      for (const s of rig().interiorShades) expect(s.mat.emissiveIntensity).toBeCloseTo(s.glow, 3);
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the window pass sees the island’s light, the room frame the room’s', () => {
+    const l = island();
+    const r = rig();
+    const seen: Array<Record<string, unknown>> = [];
+    r.rendererRef = {
+      getRenderer: () => ({
+        getRenderTarget: () => null,
+        setRenderTarget: () => {},
+        render: () => seen.push(read(l)),
+      }),
+    };
+    try {
+      const before = read(l);
+      enter('hall');
+      settle(0.2); // the second room frame paints the window
+      expect(seen.length).toBeGreaterThan(0);
+      for (const during of seen) expect(during).toEqual(before);
+      // And the room's rig is back on for the frame that follows.
+      expect(l.sun.intensity).toBe(1.25);
+      expect(l.sun.shadow.intensity).toBe(0);
+      expect(l.sun.target.position.equals(statics.INTERIOR_ORIGIN)).toBe(true);
+    } finally {
+      scene.exitInterior();
+      r.rendererRef = null;
+      unrig();
+    }
+  });
+
+  test('a party dims the house lights and rides the beat on the same five', () => {
+    const l = island();
+    const r = rig();
+    try {
+      enter('beach'); // the beach house is already a party
+      scene.updateInteriorMode(1 / 60);
+      // Club levels from the first frame: no ease down from the lamp-lit room.
+      expect(l.sun.intensity - r.partyFlash * 0.3).toBeCloseTo(0.14, 6);
+      expect(l.ambient.intensity).toBeCloseTo(0.08, 6);
+      // The beat's flash is on the key; nothing was added to the scene for it.
+      r.partyFlash = 3.4;
+      scene.updateInteriorMode(0);
+      expect(l.sun.intensity).toBeCloseTo(0.14 + 3.4 * 0.3, 6);
+      let lights = 0;
+      r.interiorGroup.traverse((o) => {
+        if ((o as THREE.Light).isLight) lights++;
+      });
+      expect(lights).toBe(0);
+      // Party over: the lamp-lit room comes back up, and the rim is the window's again.
+      r.setPartyMode(false);
+      settle();
+      expect(l.sun.intensity).toBeCloseTo(1.25, 4);
+      expect(l.rim.color.getHex()).toBe(hex(0xcfe6ff));
+    } finally {
+      scene.exitInterior();
+      unrig();
+    }
+  });
+
+  test('the hearth’s firelight flickers on the embers and a pool, and blocks nobody', () => {
+    const r = rig();
+    expect(Object.keys(r.interiorHearths).sort()).toEqual(['cottage', 'home']);
+    enter('home');
+    try {
+      const { glow, pool } = r.interiorHearths.home;
+      const reds = new Set<number>();
+      const pools = new Set<number>();
+      for (let i = 0; i < 30; i++) {
+        scene.updateInteriorMode(1 / 60);
+        reds.add(+glow.color.r.toFixed(4));
+        pools.add(+pool.opacity.toFixed(4));
+      }
+      expect(reds.size).toBeGreaterThan(10);
+      expect(pools.size).toBeGreaterThan(10);
+      // The pool lies on the floor in front of the grate: no collider for it.
+      expect(scene.interiorFurnitureBlocked(-2.2, -0.9)).toBe(false);
+    } finally {
+      scene.exitInterior();
+    }
+  });
+});
+
+describe('rooms wear the island’s cel look (P2-B10)', () => {
+  // MEASURED on main: 92 lit, opaque MeshStandard materials in the room, shaded
+  // smooth beside a banded island, on programs of their own.
+  interface Look {
+    interiorGroup: THREE.Group;
+    interiorSets: Record<string, THREE.Group>;
+    interiorWallMat: THREE.MeshToonMaterial;
+    interiorTrim: Array<{ mat: THREE.MeshToonMaterial; base: THREE.Color }>;
+    partyProps: { tiles: THREE.Mesh[]; ball: THREE.Mesh };
+  }
+  const look = (): Look => scene as unknown as Look;
+  type Mat = THREE.Material & {
+    isMeshStandardMaterial?: boolean;
+    isMeshToonMaterial?: boolean;
+    gradientMap?: THREE.Texture | null;
+    map?: THREE.Texture | null;
+  };
+  /** Every material in the room with the meshes that carry it. */
+  const census = (): Map<Mat, THREE.Mesh[]> => {
+    const out = new Map<Mat, THREE.Mesh[]>();
+    look().interiorGroup.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.userData.isCelHull) return;
+      for (const mat of (Array.isArray(m.material) ? m.material : [m.material]) as Mat[]) {
+        out.set(mat, [...(out.get(mat) ?? []), m]);
+      }
+    });
+    return out;
+  };
+  const hullsUnder = (root: THREE.Object3D): number => {
+    let n = 0;
+    root.traverse((o) => {
+      if (o.userData.isCelHull) n++;
+    });
+    return n;
+  };
+
+  test('standard shading is left on the posters and the party tiles only', () => {
+    const tiles = new Set(look().partyProps.tiles);
+    let ramp: THREE.Texture | null = null;
+    let toon = 0;
+    for (const [mat, meshes] of census()) {
+      if (mat.isMeshStandardMaterial) {
+        // A poster (its text is a map on a transparent sheet) or a floor tile.
+        const poster = mat.transparent && !!mat.map;
+        expect(poster || meshes.every((m) => tiles.has(m)), mat.type).toBe(true);
+        continue;
+      }
+      if (!mat.isMeshToonMaterial) continue; // the unlit ones: pane, bulb, embers, discs
+      toon++;
+      expect(mat.gradientMap).toBeTruthy();
+      ramp = ramp ?? mat.gradientMap ?? null;
+      expect(mat.gradientMap).toBe(ramp); // the one ramp, shared
+    }
+    expect(toon).toBeGreaterThan(60);
+    // The disco ball is faceted in its geometry, so it needs no program of its own.
+    const ball = look().partyProps.ball;
+    expect((ball.material as Mat).isMeshToonMaterial).toBe(true);
+    expect(ball.geometry.index).toBeNull();
+    expect((ball.material as THREE.Material & { flatShading?: boolean }).flatShading).not.toBe(
+      true,
+    );
+  });
+
+  test('ink on every set’s big pieces, or on none (the low tier)', () => {
+    const counts = Object.entries(look().interiorSets).map(([name, s]) => [name, hullsUnder(s)]);
+    const inked = counts.filter(([, n]) => (n as number) > 0);
+    // addGroupHulls decides by tier: all seven sets on desktop, none on a phone.
+    expect([0, THEMES.length]).toContain(inked.length);
+    // Never on the shell, and never on a flat piece (a banner, the firelight pool).
+    let shell = 0;
+    let flat = 0;
+    look().interiorGroup.traverse((o) => {
+      if (!o.userData.isCelHull) return;
+      const host = o.parent as THREE.Mesh;
+      if (!Object.values(look().interiorSets).some((s) => under(host, s))) shell++;
+      if (host.geometry.type === 'PlaneGeometry') flat++;
+    });
+    expect([shell, flat]).toEqual([0, 0]);
+  });
+
+  test('the wainscot is panelling: a darker field, slim stiles 1.6 u apart', () => {
+    const g = look().interiorGroup;
+    const stiles: THREE.Mesh[] = [];
+    const fields: THREE.Mesh[] = [];
+    g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.geometry.type !== 'BoxGeometry') return;
+      const p = (m.geometry as THREE.BoxGeometry).parameters;
+      if (p.height === 0.74 && p.depth === 0.05) stiles.push(m);
+      if (p.height === 0.74 && p.depth === 0.03) fields.push(m);
+    });
+    expect(stiles.length).toBeGreaterThan(12);
+    for (const s of stiles) {
+      expect((s.geometry as THREE.BoxGeometry).parameters.width).toBe(0.05);
+    }
+    // The back wall's run (7.76 u): 5 bays, so 6 stiles 1.55 u apart.
+    const back = stiles
+      .filter((s) => Math.abs(s.parent!.rotation.y - Math.PI) < 1e-6)
+      .map((s) => s.position.x)
+      .sort((a, b) => a - b);
+    expect(back).toHaveLength(6);
+    expect(back[1] - back[0]).toBeCloseTo(1.552, 3);
+    // Two steps under the wall, and the wall's limewash is a small soft map.
+    const field = fields[0].material as THREE.MeshToonMaterial;
+    expect(field.color.getHex()).toBe(new THREE.Color(0xb9a98f).getHex());
+    const wash = look().interiorWallMat.map as THREE.Texture;
+    expect([wash.image.width, wash.image.height]).toEqual([64, 64]);
+  });
+
+  test('the trim takes the district’s accent, and goes back to wood without one', () => {
+    const trim = look().interiorTrim;
+    expect(trim).toHaveLength(2); // the rails and stiles, and the skirting
+    const want = (accent: number, t: { base: THREE.Color }): number =>
+      t.base.clone().lerp(new THREE.Color(accent).multiplyScalar(0.62), 0.55).getHex();
+    // A hall is handed its district's accent as the wall colour.
+    scene.enterInterior('Work', 0x7fa8c9, '', '', 'office');
+    for (const t of trim) expect(t.mat.color.getHex()).toBe(want(0x7fa8c9, t));
+    scene.exitInterior();
+    scene.enterInterior('Projects', 0xc9a06a, '', '', 'workshop');
+    for (const t of trim) expect(t.mat.color.getHex()).toBe(want(0xc9a06a, t));
+    scene.exitInterior();
+    // A house takes the accent of the district it stands in, by its doorstep.
+    // Far from every plaza (the far side of the planet) there is none: wood.
+    const player = scene.player as { getWorldPosition: () => THREE.Vector3 };
+    const doorstep = player.getWorldPosition;
+    player.getWorldPosition = () => new THREE.Vector3(0, -76, 0);
+    try {
+      scene.enterInterior('A cosy home', 0xe0c9a8, '', '', 'cottage', 'house_0');
+      for (const t of trim) expect(t.mat.color.getHex()).toBe(t.base.getHex());
+      scene.exitInterior();
+    } finally {
+      player.getWorldPosition = doorstep;
+    }
+  });
+
+  test('desks, benches and counters stand at 0.8 of their old height', () => {
+    /** The top of a set's box of this size (width, height, depth), room-local. */
+    const topOf = (theme: string, w: number, h: number, d: number): number => {
+      let top = -Infinity;
+      look().interiorSets[theme].traverse((n) => {
+        const m = n as THREE.Mesh;
+        if (!m.isMesh || m.geometry.type !== 'BoxGeometry' || m.userData.isCelHull) return;
+        const p = (m.geometry as THREE.BoxGeometry).parameters;
+        if (p.width !== w || p.height !== h || p.depth !== d) return;
+        top = Math.max(top, m.position.y + p.height / 2);
+      });
+      return top;
+    };
+    // Was 1.01 (desk), 1.02 (workbench), 1.18 (counter), 0.56 (visitor bench).
+    expect(topOf('office', 2.4, 0.12, 1.0)).toBeCloseTo(0.82, 6);
+    expect(topOf('workshop', 2.6, 0.14, 1.0)).toBeCloseTo(0.83, 6);
+    expect(topOf('post', 3.1, 0.1, 0.95)).toBeCloseTo(0.98, 6);
+    expect(topOf('hall', 2.1, 0.12, 0.5)).toBeCloseTo(0.46, 6);
+    // Their legs reach them and stop: none stands proud of its top.
+    expect(topOf('office', 0.12, 0.7, 0.12)).toBeCloseTo(0.7, 6);
+    expect(topOf('workshop', 0.14, 0.7, 0.14)).toBeCloseTo(0.7, 6);
+    expect(topOf('hall', 0.12, 0.4, 0.45)).toBeCloseTo(0.4, 6);
+    // What stood on the desk came down with it: the monitor's stand sits on it.
+    expect(topOf('office', 0.12, 0.3, 0.12) - 0.3).toBeCloseTo(0.82, 6);
+  });
+});
+
+describe('a wall behind the camera fades the avatar (B11)', () => {
+  // The room camera trails 2.4 u behind the avatar and is clamped inside the
+  // walls, so a visitor with their back to a wall has it at their shoulder.
+  test('measured from the room-space avatar: far at the spawn, near against the door wall', () => {
+    enter('hall');
+    scene.updateInteriorMode(1 / 60);
+    // SimplePlayer fades in under 1.1 u and back out over 1.3 u.
+    expect(fadeDistance).toBeGreaterThan(1.3);
+    // Back against the front wall, still facing into the room.
+    const o = statics.INTERIOR_ORIGIN;
+    const p = (scene.player as { position: THREE.Vector3 }).position;
+    p.set(o.x - 0.5, p.y, o.z + 3.3);
+    for (let i = 0; i < 90; i++) scene.updateInteriorMode(1 / 60);
+    expect(fadeDistance).toBeLessThan(1.1);
+    // The stand-in's getWorldPosition() is the doorstep, 376 u away: the
+    // distance came from player.position, the group that is in the room.
+    expect(fadeDistance).toBeGreaterThan(0.5);
+    scene.exitInterior();
   });
 });
 
@@ -534,10 +1017,28 @@ describe('the warm prepares the first door first (CO-A5)', () => {
       expect(fed[0]).toContain(lamp);
       expect(fed[1]).not.toContain(lamp); // the next slice counts it as a frame would
       for (const lights of fed) expect(lights).not.toContain(parked);
-      expect(fed[0].some((l) => under(l, g))).toBe(true); // the room is shown in the slice
-      fed.length = 0;
-      await w.compileInteriorPass(gl, g, items.slice(0, 1), false, null);
-      expect(fed[0].some((l) => under(l, g))).toBe(false);
+      // The room brings no light of its own (P2-B9): shown or hidden, a slice
+      // is fed the same lights, so the two passes compile one set of programs.
+      expect(fed.flat().some((l) => under(l, g))).toBe(false);
+      lamp.visible = true;
+      const shown: THREE.Object3D[][] = [];
+      const hidden: THREE.Object3D[][] = [];
+      await w.compileInteriorPass(
+        fakeGl((l) => shown.push(l), 13),
+        g,
+        items.slice(0, 1),
+        true,
+        null,
+      );
+      await w.compileInteriorPass(
+        fakeGl((l) => hidden.push(l), 13),
+        g,
+        items.slice(0, 1),
+        false,
+        null,
+      );
+      expect(shown[0]).toEqual(hidden[0]);
+      expect(shown[0]).toContain(lamp);
       expect(g.visible).toBe(false); // and hidden again after it
     } finally {
       walk.mockRestore();

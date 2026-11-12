@@ -353,3 +353,453 @@ describe('the arrival trail leads to a villager who talks (B10)', () => {
     expect(waits).toBeLessThan(loop.indexOf('if (c.trail) {'));
   });
 });
+
+describe('the light rig follows the camera and the sun (P2-B5)', () => {
+  type Rig = {
+    lights: { sun: THREE.DirectionalLight };
+    fillLight: THREE.DirectionalLight;
+    rimLight: THREE.DirectionalLight;
+    camera: THREE.PerspectiveCamera;
+    envCycle: {
+      getDayFactor(): number;
+      getWeather(): string;
+      getNightFactor?(): number;
+      getNightFill?(): number;
+    };
+    updateSunShadow(playerPos: THREE.Vector3, dt?: number): void;
+  };
+  const statics = GameScene as unknown as { FILL_HOME: THREE.Vector3; RIM_HOME: THREE.Vector3 };
+  const env = { day: 1, weather: 'clear' };
+  /** The real updateSunShadow, and the rig it runs, on a stand-in scene. */
+  const rig = (): Rig => {
+    env.day = 1;
+    env.weather = 'clear';
+    const scene = Object.setPrototypeOf(new THREE.Scene(), GameScene.prototype) as unknown as Rig;
+    const fill = new THREE.DirectionalLight(0xd4e8ff, 0.18);
+    fill.position.copy(statics.FILL_HOME);
+    const rim = new THREE.DirectionalLight(0xcfe6ff, 0.55);
+    rim.position.copy(statics.RIM_HOME);
+    // The instance fields the constructor makes (the borrow pattern above).
+    Object.assign(scene, {
+      lights: { sun: new THREE.DirectionalLight(0xffffff, 1.6) },
+      fillLight: fill,
+      rimLight: rim,
+      camera: new THREE.PerspectiveCamera(),
+      envCycle: { getDayFactor: () => env.day, getWeather: () => env.weather },
+      _sunDir: new THREE.Vector3(),
+      _shadowRight: new THREE.Vector3(),
+      _shadowUp: new THREE.Vector3(),
+      _shadowCentre: new THREE.Vector3(),
+      _shadowUpAxis: new THREE.Vector3(),
+      _rigRimFlat: new THREE.Vector3(1, 0, 0),
+      _rigDir: new THREE.Vector3(),
+      _rigPlayerPos: new THREE.Vector3(),
+      rigWeatherShadow: 1,
+      rigDt: 0,
+      rigParked: true,
+      boundLightRig: () =>
+        (GameScene.prototype as unknown as Record<string, () => void>)['updateLightRig'].call(
+          scene,
+        ),
+    });
+    return scene;
+  };
+  /** One frame with the sun shining from `sunDir` and the player at `at`. */
+  const frame = (s: Rig, at: THREE.Vector3, sunDir: THREE.Vector3, dt = 1 / 60): void => {
+    // As EnvironmentCycle leaves it: the direction from the origin, times 60.
+    s.lights.sun.position.copy(sunDir).normalize().multiplyScalar(60);
+    s.updateSunShadow(at, dt);
+  };
+  const dirOf = (l: THREE.DirectionalLight): THREE.Vector3 =>
+    l.position.clone().sub(l.target.position).normalize();
+  const deg = (rad: number): number => (rad * 180) / Math.PI;
+  const HUB = new THREE.Vector3(0, 76, 0);
+  const HIGH_SUN = new THREE.Vector3(0.3, 0.9, 0.3); // well above the hub's horizon
+
+  test('the fill shines from the camera onto the player, 10 degrees up at most', () => {
+    const s = rig();
+    const at = new THREE.Vector3(10, 74, 5);
+    const up = at.clone().normalize();
+    const flat = (v: THREE.Vector3): THREE.Vector3 =>
+      v.clone().addScaledVector(up, -v.dot(up)).normalize();
+    // A chase camera above the player, one beside it, and one level with it.
+    const level = at.clone().add(flat(new THREE.Vector3(1, 0, 1)).multiplyScalar(6));
+    for (const cam of [new THREE.Vector3(14, 78, -3), new THREE.Vector3(2, 75, 12), level]) {
+      s.camera.position.copy(cam);
+      frame(s, at, HIGH_SUN);
+      const want = cam.clone().sub(at).normalize();
+      const fill = dirOf(s.fillLight);
+      // From the camera's side of the player...
+      expect(deg(flat(fill).angleTo(flat(want)))).toBeLessThan(0.01);
+      // ...as high as the camera stands, up to 10 degrees, and never higher.
+      const camUp = deg(Math.asin(Math.min(1, want.dot(up))));
+      expect(deg(Math.asin(fill.dot(up)))).toBeCloseTo(Math.min(camUp, 10), 3);
+    }
+  });
+
+  test('under a low sun the fill keeps the camera’s full height', () => {
+    const s = rig();
+    const at = new THREE.Vector3(10, 74, 5);
+    const up = at.clone().normalize();
+    const cam = new THREE.Vector3(14, 78, -3);
+    s.camera.position.copy(cam);
+    // 20 degrees above the player's horizon: golden hour.
+    const flatSun = new THREE.Vector3(1, 0, 0).addScaledVector(up, -up.x).normalize();
+    const low = flatSun
+      .multiplyScalar(Math.cos(Math.PI / 9))
+      .addScaledVector(up, Math.sin(Math.PI / 9));
+    frame(s, at, low);
+    const want = cam.clone().sub(at).normalize();
+    expect(deg(dirOf(s.fillLight).angleTo(want))).toBeLessThan(0.01);
+  });
+
+  test('the rim stands opposite the sun at the player, 20-30 degrees up, wherever they are', () => {
+    const s = rig();
+    const sunDir = new THREE.Vector3(0.6, 0.5, -0.3).normalize();
+    // The hub and four points round the ring, a quarter of the planet apart.
+    for (const at of [
+      HUB,
+      new THREE.Vector3(60, 45, 0),
+      new THREE.Vector3(0, 45, 60),
+      new THREE.Vector3(-60, 45, 0),
+      new THREE.Vector3(0, 45, -60),
+    ]) {
+      frame(s, at, sunDir);
+      const up = at.clone().normalize();
+      const flat = (v: THREE.Vector3): THREE.Vector3 =>
+        v.clone().addScaledVector(up, -v.dot(up)).normalize();
+      const rim = dirOf(s.rimLight);
+      // Opposite the sun's horizontal direction (the acceptance allows 15).
+      expect(deg(flat(rim).angleTo(flat(sunDir).negate()))).toBeLessThan(0.5);
+      // 30 degrees up under a sun 45 degrees high or lower, 20 from 60.
+      const high = THREE.MathUtils.smoothstep(sunDir.dot(up), Math.SQRT1_2, Math.sin(Math.PI / 3));
+      expect(deg(Math.asin(rim.dot(up)))).toBeCloseTo(30 - 10 * high, 3);
+    }
+    // Its level is the day curve's, unchanged.
+    expect(s.rimLight.intensity).toBeCloseTo(0.55, 6);
+    env.day = 0;
+    frame(s, HUB, sunDir);
+    expect(s.rimLight.intensity).toBeCloseTo(0.12, 6);
+  });
+
+  test('a sun straight overhead keeps the rim where it was', () => {
+    const s = rig();
+    frame(s, HUB, new THREE.Vector3(1, 0.5, 0));
+    const up = HUB.clone().normalize();
+    const flat = (v: THREE.Vector3): THREE.Vector3 =>
+      v.clone().addScaledVector(up, -v.dot(up)).normalize();
+    const before = flat(dirOf(s.rimLight));
+    frame(s, HUB, new THREE.Vector3(0, 1, 0));
+    // Its bearing holds; only its height follows the sun's (20 degrees now).
+    expect(deg(flat(dirOf(s.rimLight)).angleTo(before))).toBeLessThan(0.01);
+    expect(deg(Math.asin(dirOf(s.rimLight).dot(up)))).toBeCloseTo(20, 3);
+  });
+
+  test('golden hour is not night: full shadows and the day fill at 06 h and 18 h', () => {
+    const s = rig();
+    env.day = 0.198; // EnvironmentCycle's day factor at 06 h and 18 h
+    frame(s, HUB, HIGH_SUN);
+    expect(s.lights.sun.shadow.intensity).toBeCloseTo(1, 6);
+    expect(s.fillLight.intensity).toBeCloseTo(0.18, 6);
+    // 1 - getDayFactor() would read 0.8 here, and put the shadow at 0.6.
+    const proto = GameScene.prototype as unknown as Record<string, (day: number) => number>;
+    expect(proto['nightFactor'].call(s, 0.198)).toBe(0);
+    expect(proto['nightFactor'].call(s, 0)).toBe(1);
+    expect(proto['nightFactor'].call(s, 1)).toBe(0);
+  });
+
+  test('moon shadows are half strength, and the night fill is the cycle’s to set', () => {
+    const s = rig();
+    env.day = 0;
+    frame(s, HUB, HIGH_SUN);
+    expect(s.lights.sun.shadow.intensity).toBeCloseTo(0.5, 6);
+    // Until C's getNightFill exists, the fill keeps its day level at night.
+    expect(s.fillLight.intensity).toBeCloseTo(0.18, 6);
+    s.envCycle.getNightFill = () => 0.3;
+    frame(s, HUB, HIGH_SUN);
+    expect(s.fillLight.intensity).toBeCloseTo(0.3, 6);
+    // C's night factor wins over the fallback ramp.
+    s.envCycle.getNightFactor = () => 0.5;
+    frame(s, HUB, HIGH_SUN);
+    expect(s.fillLight.intensity).toBeCloseTo(0.24, 6);
+    expect(s.lights.sun.shadow.intensity).toBeCloseTo(0.75, 6);
+  });
+
+  test('weather softens the shadow: cloud 0.45, snow 0.4, rain 0.2, eased', () => {
+    const s = rig();
+    for (const [weather, want] of [
+      ['cloudy', 0.45],
+      ['snow', 0.4],
+      ['rain', 0.2],
+      ['clear', 1],
+    ] as const) {
+      env.weather = weather;
+      frame(s, HUB, HIGH_SUN);
+      // One frame in it has barely moved (cloudWet's 0.5/s ease)...
+      if (weather === 'cloudy') expect(s.lights.sun.shadow.intensity).toBeGreaterThan(0.95);
+      for (let i = 0; i < 1500; i++) frame(s, HUB, HIGH_SUN); // ...25 s on it is there
+      expect(s.lights.sun.shadow.intensity).toBeCloseTo(want, 3);
+    }
+  });
+
+  test('with fx lightRig off, the rig is the authored one', () => {
+    const s = rig();
+    env.day = 0;
+    s.camera.position.set(5, 80, 5);
+    frame(s, HUB, HIGH_SUN);
+    expect(s.lights.sun.shadow.intensity).toBeCloseTo(0.5, 6);
+    const g = globalThis as { __dsFx?: Record<string, unknown> };
+    g.__dsFx = { ...(g.__dsFx ?? {}), lightRig: false };
+    try {
+      frame(s, HUB, HIGH_SUN);
+      expect(s.fillLight.position.equals(statics.FILL_HOME)).toBe(true);
+      expect(s.rimLight.position.equals(statics.RIM_HOME)).toBe(true);
+      expect(s.fillLight.intensity).toBe(0.18);
+      expect(s.lights.sun.shadow.intensity).toBe(1);
+    } finally {
+      delete g.__dsFx.lightRig;
+    }
+  });
+
+  test('the rig is one budgeted effect, bound once, and builds nothing', () => {
+    const g = stripped('GameScene.ts');
+    expect(g).toContain("fx.register('lightRig', { desktop: true, low: true });");
+    const shadow = bodyOf(g, 'private updateSunShadow(');
+    expect(shadow).toContain("if (fx.on('lightRig')) {");
+    expect(shadow).toContain("fx.time('lightRig', this.boundLightRig);");
+    expect(g).toContain('private readonly boundLightRig = (): void => this.updateLightRig();');
+    // Directions and levels only: nothing is made, added, shown or hidden.
+    for (const body of [
+      bodyOf(g, 'private updateLightRig()'),
+      bodyOf(g, 'private parkLightRig()'),
+    ]) {
+      expect(body).not.toMatch(/\bnew\b/);
+      expect(body).not.toContain('.clone()');
+      expect(body).not.toMatch(/\.(add|remove)\(/);
+      expect(body).not.toContain('.visible');
+    }
+    // setupLighting runs inside the seeded window and still builds exactly
+    // its five lights; the rig only keeps a reference to the fill.
+    const setup = bodyOf(g, 'private setupLighting()');
+    expect(setup.match(/new THREE\.\w*Light\(/g) ?? []).toHaveLength(5);
+    expect(setup).toContain('this.fillLight = fillLight;');
+  });
+
+  test('the grade feeds the night bloom, and the hemisphere keeps a live tint', () => {
+    const grade = bodyOf(stripped('GameScene.ts'), 'private updateAtmosphereGrade(');
+    const at = grade.indexOf('this.rendererRef?.setGradeDayFactor?.(day);');
+    expect(at).toBeGreaterThan(-1);
+    expect(grade.slice(at, at + 140)).toContain('this.rendererRef?.setBloomNight?.(day);');
+    // The underwater grade starts from EnvironmentCycle's live tint when it
+    // has one (C1), and from the cached bases until then.
+    expect(grade).toContain('getHemiTint?.()');
+    expect(grade).toContain('?? this.hemiBaseSky');
+    expect(grade).toContain('?? this.hemiBaseGround');
+  });
+});
+
+describe('every prop of the scene shares the toon look (B15)', () => {
+  /** Each `new THREE.<type>(...)` call in a file, to its closing bracket. */
+  const calls = (file: string, type: string): string[] => {
+    const s = stripped(file);
+    const out: string[] = [];
+    const head = `new THREE.${type}(`;
+    for (let at = s.indexOf(head); at > -1; at = s.indexOf(head, at + 1)) {
+      let depth = 0;
+      for (let i = at + head.length - 1; i < s.length; i++) {
+        if (s[i] === '(') depth++;
+        else if (s[i] === ')' && --depth === 0) {
+          out.push(s.slice(at, i + 1));
+          break;
+        }
+      }
+    }
+    return out;
+  };
+
+  test('no toon material is built without the shared ramp', () => {
+    // MEASURED on main: 28 ramp-less MeshToon materials (the fish shop, the
+    // bakery, the play structures, butterflies, coins, the rod), on three's
+    // built-in two-band shading beside the three-band ramp everywhere else.
+    for (const file of ['GameScene.ts', 'SimplePlayer.ts', 'RaceSystem.ts']) {
+      const bare = calls(file, 'MeshToonMaterial').filter((c) => !c.includes('gradientMap'));
+      expect(bare, file).toEqual([]);
+    }
+  });
+
+  test('a standard prop converts through the island’s converter, for free', () => {
+    const celMat = (
+      GameScene as unknown as { celMat(m: THREE.MeshStandardMaterial): THREE.Material }
+    ).celMat;
+    const std = new THREE.MeshStandardMaterial({
+      color: 0xffe6a8,
+      emissive: 0xffc966,
+      emissiveIntensity: 0.35,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+    });
+    // Inside the seeded window the stream must pay what it always paid: the
+    // one standard material above. The toon's uuid comes from elsewhere.
+    const spy = vi.spyOn(Math, 'random');
+    spy.mockClear();
+    const toon = celMat(std) as THREE.MeshToonMaterial;
+    const drawn = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(drawn).toBe(0);
+    expect(toon.isMeshToonMaterial).toBe(true);
+    expect(toon.gradientMap).toBeTruthy();
+    expect([toon.color.getHex(), toon.emissive.getHex(), toon.emissiveIntensity]).toEqual([
+      0xffe6a8, 0xffc966, 0.35,
+    ]);
+    expect([toon.polygonOffset, toon.polygonOffsetFactor]).toEqual([true, -4]);
+  });
+
+  test('the lit, opaque standard materials left in the scene are the rooms’ (P2-B10)', () => {
+    const g = stripped('GameScene.ts');
+    // The road paint, the cruise ship's and the beach house's window glow.
+    expect(bodyOf(g, 'private createRoadMarkings()')).toContain('GameScene.celMat(');
+    expect(bodyOf(g, 'private setupCruise()')).toContain('GameScene.celMat(');
+    expect(bodyOf(g, 'private setupIsletBeachHouse()')).toContain('GameScene.celMat(');
+    // The rock.glb clones, after their load.
+    expect(g).toContain('if (!isRealTheme()) Materials.toonifyTree(inst);');
+    // The race gates' posts; the rings stay transparent standard.
+    const race = stripped('RaceSystem.ts');
+    expect(race).toContain('isRealTheme() ? postStd : Materials.toonify(postStd)');
+    // The player's dress and the hats (behaviour: limbLayers).
+    const p = stripped('SimplePlayer.ts');
+    expect(bodyOf(p, 'private async loadGLTFCharacter()')).toContain(
+      'if (isCelTheme()) Materials.toonifyTree(this.gltfModel);',
+    );
+    expect(bodyOf(p, 'public static buildHat(')).toContain(
+      'if (isCelTheme()) Materials.toonifyTree(g);',
+    );
+  });
+
+  test('the island’s own pass delegates to the same converter', () => {
+    const g = stripped('GameScene.ts');
+    const shielded = bodyOf(g, 'private toonifyIslandMaterialsShielded()');
+    expect(shielded).toContain('Materials.toonifyTree(this.island.mesh)');
+    expect(shielded).not.toContain('new THREE.MeshToonMaterial');
+    // (That it converts, spares glass and draws nothing: 'toonify RNG shield'.)
+  });
+});
+
+describe('the close-camera fade is driven from the visual group (B11)', () => {
+  test('the camera-to-torso distance comes from player.position, outdoors and in a room', () => {
+    const fed: Array<[number, number]> = [];
+    const player = {
+      position: new THREE.Vector3(10, 60, 0),
+      quaternion: new THREE.Quaternion(),
+      // The physics position: indoors it stays at the doorstep.
+      getWorldPosition: () => {
+        throw new Error('the fade must not read the physics position');
+      },
+      updateCloseFade: (d: number, dt: number) => fed.push([d, dt]),
+    };
+    const camera = new THREE.PerspectiveCamera();
+    const scene = Object.setPrototypeOf(new THREE.Scene(), GameScene.prototype) as unknown as {
+      tickAvatarFade(dt: number): void;
+    };
+    Object.assign(scene, {
+      player,
+      camera,
+      _fadeAnchor: new THREE.Vector3(),
+      avatarFadeDt: 0,
+      boundAvatarFade: () =>
+        (GameScene.prototype as unknown as Record<string, () => void>)['updateAvatarFade'].call(
+          scene,
+        ),
+    });
+    // 0.8 u behind the torso (the origin plus 0.35 along the avatar's up).
+    camera.position.set(10, 60.35, 0.8);
+    scene.tickAvatarFade(1 / 60);
+    expect(fed[0][0]).toBeCloseTo(0.8, 6);
+    expect(fed[0][1]).toBeCloseTo(1 / 60, 9);
+    // The avatar's own up, not world +Y: lying on its side the torso is beside it.
+    player.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
+    camera.position.set(10.35, 60, 2);
+    scene.tickAvatarFade(1 / 60);
+    expect(fed[1][0]).toBeCloseTo(2, 6);
+    // Off, the avatar is told the camera is far away, so a fade runs back out.
+    const g = globalThis as { __dsFx?: Record<string, unknown> };
+    g.__dsFx = { ...(g.__dsFx ?? {}), avatarFade: false };
+    try {
+      scene.tickAvatarFade(1 / 60);
+      expect(fed[2][0]).toBe(Infinity);
+    } finally {
+      delete g.__dsFx.avatarFade;
+    }
+  });
+
+  test('one budgeted effect, bound once, ticked on both update paths', () => {
+    const g = stripped('GameScene.ts');
+    expect(g).toContain("fx.register('avatarFade', { desktop: true, low: true });");
+    const tick = bodyOf(g, 'private tickAvatarFade(');
+    expect(tick).toContain("if (fx.on('avatarFade')) fx.time('avatarFade', this.boundAvatarFade);");
+    expect(g).toContain('private readonly boundAvatarFade = (): void => this.updateAvatarFade();');
+    const fade = bodyOf(g, 'private updateAvatarFade()');
+    expect(fade).not.toMatch(/\bnew\b/);
+    expect(fade).not.toContain('getWorldPosition');
+    expect(fade).not.toContain('setFromObject');
+    expect(bodyOf(g, 'public update(deltaTime: number)')).toContain(
+      'this.tickAvatarFade(deltaTime);',
+    );
+    expect(bodyOf(g, 'private updateInteriorMode(')).toContain('this.tickAvatarFade(deltaTime);');
+    // The shared ink material is never the fade's to write (CelLook owns it).
+    const p = stripped('SimplePlayer.ts');
+    expect(bodyOf(p, 'private applyCloseFade(')).toContain('h.visible = solid');
+    expect(p).not.toContain('setInkVisible');
+  });
+});
+
+describe('the sky ends like every built-in material (P2-B4)', () => {
+  test('the dome applies the frame’s tone mapping, then its output encoding', () => {
+    // MEASURED on the low tier, which draws straight to the canvas: the dome
+    // wrote linear colours as display colours, 18-23 L* below desktop by day.
+    const scene = Object.setPrototypeOf(new THREE.Scene(), GameScene.prototype) as THREE.Scene;
+    (GameScene.prototype as unknown as Record<string, () => void>)['createSkyDome'].call(scene);
+    const dome = scene.getObjectByName('SkyDome') as THREE.Mesh;
+    const mat = dome.material as THREE.ShaderMaterial;
+    const frag = mat.fragmentShader.replace(/\/\/.*$/gm, '');
+    const out = frag.indexOf('gl_FragColor = vec4(sky, 1.0);');
+    const tone = frag.indexOf('#include <tonemapping_fragment>');
+    const encode = frag.indexOf('#include <colorspace_fragment>');
+    expect(out).toBeGreaterThan(-1);
+    expect(tone).toBeGreaterThan(out);
+    expect(encode).toBeGreaterThan(tone);
+    // Nothing writes the colour after them.
+    expect(frag.slice(encode)).not.toContain('gl_FragColor');
+    // three resolves both by name; a renamed chunk would make them no-ops.
+    expect(THREE.ShaderChunk.tonemapping_fragment).toContain('toneMapping(');
+    expect(THREE.ShaderChunk.colorspace_fragment).toContain('linearToOutputTexel(');
+    // The renderer's tone mapping reaches it (WebGLPrograms reads toneMapped).
+    expect(mat.toneMapped).toBe(true);
+    // Still one unlit shader program: nothing here keys on the lights.
+    expect(mat.lights).toBe(false);
+  });
+});
+
+describe('the night watch is posted before the arrival trail is laid (wave-2 decision)', () => {
+  test('postNightWatch runs before createCoins, and draws nothing', () => {
+    const s = stripped('GameScene.ts');
+    const call = s.indexOf('this.postNightWatch();');
+    expect(call).toBeGreaterThan(-1);
+    expect(call).toBeLessThan(s.indexOf('this.createCoins();'));
+    const body = bodyOf(s, 'private postNightWatch(): void');
+    expect(body).not.toMatch(/Math\.random|new THREE\.(Mesh|Material|Mesh\w+Material)\b/);
+    expect(body).toMatch(/isNightWatchHour\(GameScene\.bootHour\(\)\)/);
+  });
+
+  test('the doors are shared out from his own seat, not the night post', () => {
+    const body = bodyOf(stripped('GameScene.ts'), 'private setupNpcActivities(): void');
+    expect(body).toMatch(/this\.nightWatchSeat/);
+    expect(body).toMatch(/spawnDir: GameScene\.SPAWN_DIR/);
+  });
+});
+
+describe('dead code stays gone (wave-2 amendment, older)', () => {
+  test('GameScene.hasVillagerWithin is deleted, with its scratch vector', () => {
+    expect(src('GameScene.ts')).not.toMatch(/\bhasVillagerWithin\b/);
+    expect(src('GameScene.ts')).not.toContain('_nearNpcPos');
+  });
+});

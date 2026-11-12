@@ -211,3 +211,209 @@ describe('post-mixer limb poses compose onto the clip (MOT-01)', () => {
     peer.dispose();
   });
 });
+
+// The dress in the island's look (B15), on the shipped player.glb.
+describe('the avatar wears the island’s toon look (B15)', () => {
+  const dressOf = (root: THREE.Object3D): THREE.Material[] => {
+    const mats: THREE.Material[] = [];
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !m.material) return;
+      for (const x of Array.isArray(m.material) ? m.material : [m.material]) {
+        if (!mats.includes(x)) mats.push(x);
+      }
+    });
+    return mats;
+  };
+  const PARTS = ['Blush', 'Eye', 'EyeShine', 'Hair', 'Jacket', 'Outline', 'Pants', 'Shoe', 'Skin'];
+
+  test(
+    'the local dress: toon on the shared ramp, names and colours kept',
+    { timeout: 30000 },
+    async () => {
+      // MEASURED on main: the nine dress materials were the only lit, opaque
+      // MeshStandard on a character, shaded smooth among banded villagers.
+      const { player, model } = await standingPlayer();
+      const mats = dressOf(model);
+      expect(mats.map((m) => m.name).sort()).toEqual(PARTS);
+      // The one ramp every toon prop shares: a hat built toon carries it.
+      const ramp = (dressOf(SimplePlayer.buildHat('party'))[0] as THREE.MeshToonMaterial)
+        .gradientMap;
+      expect(ramp).toBeTruthy();
+      for (const m of mats) {
+        const toon = m as THREE.MeshToonMaterial;
+        expect(toon.isMeshToonMaterial, m.name).toBe(true);
+        expect(toon.gradientMap, m.name).toBe(ramp);
+      }
+      // The customiser still finds a part by its material's name.
+      player.setBodyColor('outfit', 0x3366cc);
+      const jacket = mats.find((m) => m.name === 'Jacket') as THREE.MeshToonMaterial;
+      expect(jacket.color.getHex()).toBe(0x3366cc);
+    },
+  );
+
+  test('a peer’s dress and the standard hats take it too', { timeout: 30000 }, async () => {
+    const peer = await SimplePlayer.createRemoteAvatar();
+    expect(peer, 'createRemoteAvatar').not.toBeNull();
+    if (!peer) return;
+    const mats = dressOf(peer.body);
+    expect(mats.map((m) => m.name).sort()).toEqual(PARTS);
+    for (const m of mats)
+      expect((m as THREE.MeshToonMaterial).isMeshToonMaterial, m.name).toBe(true);
+    // Each peer owns its materials (their colours sync per peer).
+    const other = await SimplePlayer.createRemoteAvatar();
+    if (other) {
+      for (const m of dressOf(other.body)) expect(mats).not.toContain(m);
+      other.dispose();
+    }
+    peer.dispose();
+    // Every hat, the gold crown and the glowing halo included.
+    const ramp = (dressOf(SimplePlayer.buildHat('party'))[0] as THREE.MeshToonMaterial).gradientMap;
+    const hats = [
+      'party',
+      'top',
+      'crown',
+      'cap',
+      'flower',
+      'wizard',
+      'halo',
+      'pirate',
+      'chef',
+      'headphones',
+    ] as const;
+    for (const id of hats) {
+      for (const m of dressOf(SimplePlayer.buildHat(id))) {
+        const toon = m as THREE.MeshToonMaterial;
+        if (m.transparent) continue; // glass and glows stay as authored
+        expect(toon.isMeshToonMaterial, id).toBe(true);
+        expect(toon.gradientMap, id).toBe(ramp);
+      }
+    }
+  });
+});
+
+// The close-camera fade (B11), on the shipped player.glb.
+describe('the avatar fades when the camera comes close (B11)', () => {
+  interface Fade {
+    closeFadeMats: THREE.Material[];
+    closeFadeHulls: THREE.Object3D[];
+    getHandAnchor(): THREE.Object3D | null;
+  }
+  /** three's own rule for the OPAQUE program variant (WebGLPrograms, r180). */
+  const opaqueVariant = (m: THREE.Material): boolean =>
+    m.transparent === false && m.blending === THREE.NormalBlending && m.alphaToCoverage === false;
+  const FRAME = 1 / 60;
+
+  test('to 0.35 within 150 ms under 1.1 u, and back above 1.3 u', { timeout: 30000 }, async () => {
+    const { player } = await standingPlayer();
+    const f = player as unknown as Fade;
+    const names = f.closeFadeMats.map((m) => m.name).sort();
+    expect(names).toEqual(
+      ['Blush', 'Eye', 'EyeShine', 'Hair', 'Jacket', 'Pants', 'Shoe', 'Skin'].sort(),
+    );
+    // The authored outline is a hull: hidden while faded, its material left alone.
+    expect(f.closeFadeHulls.map((h) => h.name)).toEqual(['PlayerOutline']);
+    const outline = (f.closeFadeHulls[0] as THREE.Mesh).material as THREE.Material;
+
+    // Solid: opaque list, no blending in effect, full opacity.
+    for (const m of f.closeFadeMats) {
+      expect(m.transparent).toBe(false);
+      expect(m.opacity).toBe(1);
+      expect([m.blending, m.blendSrc, m.blendDst]).toEqual([
+        THREE.CustomBlending,
+        THREE.OneFactor,
+        THREE.ZeroFactor,
+      ]);
+    }
+    expect(player.getCloseFadeAlpha()).toBe(1);
+
+    // The camera forced to 0.8 u: 0.35 within 150 ms (nine 60 fps frames).
+    for (let k = 0; k < 9; k++) player.updateCloseFade(0.8, FRAME);
+    expect(player.getCloseFadeAlpha()).toBeCloseTo(SimplePlayer.CLOSE_FADE_ALPHA, 6);
+    for (const m of f.closeFadeMats) {
+      expect(m.opacity).toBeCloseTo(0.35, 6);
+      expect(m.transparent).toBe(true);
+      expect(m.blending).toBe(THREE.NormalBlending);
+      expect(m.forceSinglePass).toBe(true); // one draw each, double-sided or not
+    }
+    expect(f.closeFadeHulls[0].visible).toBe(false);
+    expect([outline.opacity, outline.transparent]).toEqual([1, false]);
+
+    // Between the two thresholds it holds: no flicker at the edge.
+    for (let k = 0; k < 30; k++) player.updateCloseFade(1.2, FRAME);
+    expect(player.getCloseFadeAlpha()).toBeCloseTo(0.35, 6);
+
+    // Past 1.3 u everything comes back, in the same 120 ms.
+    player.updateCloseFade(1.31, FRAME);
+    expect(player.getCloseFadeAlpha()).toBeGreaterThan(0.35);
+    for (let k = 0; k < 8; k++) player.updateCloseFade(1.31, FRAME);
+    expect(player.getCloseFadeAlpha()).toBe(1);
+    for (const m of f.closeFadeMats) {
+      expect([m.opacity, m.transparent, m.blending]).toEqual([1, false, THREE.CustomBlending]);
+    }
+    expect(f.closeFadeHulls[0].visible).toBe(true);
+  });
+
+  test(
+    'no program changes hands: solid and faded share one variant',
+    { timeout: 30000 },
+    async () => {
+      // three keys a program on its material being opaque. Flipping
+      // `transparent` alone at fade time compiles a second variant of every
+      // dress program, in the frame the camera closes in.
+      const { player } = await standingPlayer();
+      const f = player as unknown as Fade;
+      const versions = f.closeFadeMats.map((m) => m.version);
+      const solid = f.closeFadeMats.map(opaqueVariant);
+      for (let k = 0; k < 9; k++) player.updateCloseFade(0.8, FRAME);
+      const faded = f.closeFadeMats.map(opaqueVariant);
+      for (let k = 0; k < 9; k++) player.updateCloseFade(5, FRAME);
+      expect(solid.every((o) => o === false)).toBe(true);
+      expect(faded).toEqual(solid);
+      // And nothing asked three for a new program (needsUpdate bumps version).
+      expect(f.closeFadeMats.map((m) => m.version)).toEqual(versions);
+    },
+  );
+
+  test(
+    'the hat fades with the body; a shared material in the hand does not',
+    { timeout: 30000 },
+    async () => {
+      const { player } = await standingPlayer();
+      const f = player as unknown as Fade;
+      const body = f.closeFadeMats.length;
+      // Something hand-held, built from a material the world also uses.
+      const shared = new THREE.MeshToonMaterial({ color: 0x8a6a42 });
+      const rod = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.6, 0.02), shared);
+      f.getHandAnchor()?.add(rod);
+      player.equipHat('party');
+      expect(f.closeFadeMats.length).toBeGreaterThan(body);
+      expect(f.closeFadeMats).not.toContain(shared);
+      const hatMats = f.closeFadeMats.slice(body);
+
+      for (let k = 0; k < 9; k++) player.updateCloseFade(0.8, FRAME);
+      for (const m of hatMats) expect(m.opacity).toBeCloseTo(0.35, 6);
+      expect([shared.opacity, shared.transparent, shared.blending]).toEqual([
+        1,
+        false,
+        THREE.NormalBlending,
+      ]);
+
+      // Taking the hat off takes its materials off the list.
+      player.equipHat(null);
+      expect(f.closeFadeMats).toHaveLength(body);
+      for (let k = 0; k < 9; k++) player.updateCloseFade(5, FRAME);
+      expect(player.getCloseFadeAlpha()).toBe(1);
+    },
+  );
+
+  test('a settled avatar is left alone', { timeout: 30000 }, async () => {
+    const { player } = await standingPlayer();
+    const f = player as unknown as Fade;
+    const first = f.closeFadeMats[0];
+    first.opacity = 0.9; // a write the fade would overwrite if it ran
+    for (let k = 0; k < 10; k++) player.updateCloseFade(4.4, FRAME);
+    expect(first.opacity).toBe(0.9);
+    first.opacity = 1;
+  });
+});

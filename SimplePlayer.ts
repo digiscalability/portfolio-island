@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
-import { applyCelRim } from './CelLook';
+import { applyCelRim, isCelTheme } from './CelLook';
 import { easeOutBack, tween as juiceTween } from './Juice';
 import { Materials } from './Materials';
 import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
@@ -569,6 +569,7 @@ export class SimplePlayer extends THREE.Group {
 
     this.mesh = group;
     this.add(this.mesh);
+    this.collectCloseFadeParts(this.mesh); // the close-camera fade's list (B11)
 
     // Start at center with player height above ground
     this.playerPosition.set(0, 0.7, 0);
@@ -714,6 +715,7 @@ export class SimplePlayer extends THREE.Group {
     if (this.currentHat) {
       this.currentHat.parent?.remove(this.currentHat);
       this.currentHat = null;
+      this.collectCloseFadeParts(); // the old hat leaves the fade's list (B11)
     }
     if (!id) return;
     const hat = SimplePlayer.buildHat(id);
@@ -722,11 +724,132 @@ export class SimplePlayer extends THREE.Group {
     hat.position.set(0, this.gltfModel ? 0.36 : 0.95, 0);
     parent.add(hat);
     this.currentHat = hat;
+    this.collectCloseFadeParts(); // the new hat fades with the body (B11)
     // Equip ceremony: the hat scale-pops in with a settle (easeOutBack) —
     // pure root-scale tween, no bones touched.
     const base = hat.scale.x;
     hat.scale.setScalar(0.01);
     juiceTween(0.32, easeOutBack, (v) => hat.scale.setScalar(Math.max(0.01, base * v)));
+  }
+
+  // ── The close-camera fade (B11) ─────────────────────────────────────────
+  // With the camera nearer than CLOSE_FADE_IN the avatar and its hat fade to
+  // CLOSE_FADE_ALPHA, so a camera pressed up against the player (a wall
+  // behind it, a small room) looks through them instead of into the back of
+  // their head. Past CLOSE_FADE_OUT they come back.
+  //
+  // NO PROGRAM CHANGES HANDS. three keys every program on whether its material
+  // is opaque (transparent false, NormalBlending), so flipping `transparent`
+  // at fade time would compile a second variant of each dress program in the
+  // very frame the camera closes in. The dress therefore always runs the
+  // non-opaque variant, from the first compile: solid, it is drawn in the
+  // opaque list with CustomBlending One/Zero, which writes exactly what no
+  // blending writes; faded, it moves to the transparent list with
+  // NormalBlending. Both states share one cache key, and a fade is uniform
+  // and render-state writes only.
+  //
+  // OWN MATERIALS ONLY: the body's are collected when the model lands and the
+  // hat's when it is equipped, both built for this player. Anything attached
+  // later (a rod, a tool) may share a cached material with the world, and the
+  // shared ink material is never written: the hull meshes are hidden instead.
+  private static readonly CLOSE_FADE_IN = 1.1;
+  private static readonly CLOSE_FADE_OUT = 1.3;
+  public static readonly CLOSE_FADE_ALPHA = 0.35;
+  private static readonly CLOSE_FADE_S = 0.12;
+  private closeFadeBodyMats: THREE.Material[] = [];
+  private closeFadeBodyHulls: THREE.Object3D[] = [];
+  /** The body's and the hat's, flattened: what a fade frame walks. */
+  private closeFadeMats: THREE.Material[] = [];
+  private closeFadeHulls: THREE.Object3D[] = [];
+  /** 0 solid .. 1 fully faded. */
+  private closeFade = 0;
+  private closeFadeNear = false;
+
+  /** The avatar's own materials and hull meshes under `root`, as built. */
+  private static closeFadePartsOf(
+    root: THREE.Object3D,
+    mats: THREE.Material[],
+    hulls: THREE.Object3D[],
+  ): void {
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      // The authored outline (player.glb's PlayerOutline) and any baked ink.
+      if (
+        mesh.userData.isCelHull ||
+        mesh.name === 'PlayerOutline' ||
+        list.some((m) => m.name === 'Outline')
+      ) {
+        hulls.push(mesh);
+        return;
+      }
+      for (const m of list) if (m && !mats.includes(m)) mats.push(m);
+    });
+  }
+
+  /**
+   * Rebuild the fade's lists. `body` is passed when a body lands (the
+   * procedural one, then the GLB): its materials are collected then and never
+   * again. Every call re-reads the hat. Cel theme only.
+   */
+  private collectCloseFadeParts(body?: THREE.Object3D): void {
+    if (!isCelTheme()) return;
+    if (body) {
+      this.applyCloseFade(0); // hand the old body back solid
+      this.closeFadeBodyMats = [];
+      this.closeFadeBodyHulls = [];
+      SimplePlayer.closeFadePartsOf(body, this.closeFadeBodyMats, this.closeFadeBodyHulls);
+    }
+    const mats = [...this.closeFadeBodyMats];
+    const hulls = [...this.closeFadeBodyHulls];
+    if (this.currentHat) SimplePlayer.closeFadePartsOf(this.currentHat, mats, hulls);
+    this.closeFadeMats = mats;
+    this.closeFadeHulls = hulls;
+    for (const m of mats) {
+      if (m.forceSinglePass) continue; // prepared on an earlier call
+      m.forceSinglePass = true; // one draw each when faded, double-sided or not
+      m.needsUpdate = true; // pick the non-opaque variant before its first draw
+    }
+    this.applyCloseFade(this.closeFade);
+  }
+
+  /** Write fade `f` (0 solid .. 1 faded) to the lists: uniforms and render
+   *  state only, the same program either way. */
+  private applyCloseFade(f: number): void {
+    const solid = f <= 0;
+    const alpha = 1 - (1 - SimplePlayer.CLOSE_FADE_ALPHA) * f;
+    for (const m of this.closeFadeMats) {
+      m.opacity = alpha;
+      m.transparent = !solid;
+      m.blending = solid ? THREE.CustomBlending : THREE.NormalBlending;
+      m.blendSrc = THREE.OneFactor;
+      m.blendDst = THREE.ZeroFactor;
+    }
+    for (const h of this.closeFadeHulls) h.visible = solid;
+  }
+
+  /**
+   * Per frame: `camDistance` is the camera's distance to the avatar's torso.
+   * Fades in under CLOSE_FADE_IN, out over CLOSE_FADE_OUT, linearly over
+   * CLOSE_FADE_S. Does nothing, and allocates nothing, while settled.
+   */
+  public updateCloseFade(camDistance: number, deltaTime: number): void {
+    if (camDistance < SimplePlayer.CLOSE_FADE_IN) this.closeFadeNear = true;
+    else if (camDistance > SimplePlayer.CLOSE_FADE_OUT) this.closeFadeNear = false;
+    const target = this.closeFadeNear ? 1 : 0;
+    if (this.closeFade === target) return;
+    const step = Math.max(0, deltaTime) / SimplePlayer.CLOSE_FADE_S;
+    this.closeFade =
+      target > this.closeFade
+        ? Math.min(1, this.closeFade + step)
+        : Math.max(0, this.closeFade - step);
+    this.applyCloseFade(this.closeFade);
+  }
+
+  /** The avatar's current opacity: 1 solid, CLOSE_FADE_ALPHA fully faded. */
+  public getCloseFadeAlpha(): number {
+    return 1 - (1 - SimplePlayer.CLOSE_FADE_ALPHA) * this.closeFade;
   }
 
   // Base model loaded once, then skeleton-cloned per remote player.
@@ -755,20 +878,21 @@ export class SimplePlayer extends THREE.Group {
     // SkeletonUtils.clone SHARES materials with the base (and every other peer),
     // so per-peer body-colour sync needs independent material instances. Clone
     // them once here (geometry stays shared — cheap) and track for disposal.
+    // Each clone also takes the island's toon look, as the local player's
+    // dress does (B15): a peer wears what they see themselves wearing.
     const clonedMats: THREE.Material[] = [];
+    const own = (x: THREE.Material): THREE.Material => {
+      const c = SimplePlayer.celDress(x.clone());
+      clonedMats.push(c);
+      return c;
+    };
     model.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh && !(m as THREE.SkinnedMesh).isSkinnedMesh) return;
       if (Array.isArray(m.material)) {
-        m.material = m.material.map((x) => {
-          const c = x.clone();
-          clonedMats.push(c);
-          return c;
-        });
+        m.material = m.material.map(own);
       } else if (m.material) {
-        const c = (m.material as THREE.Material).clone();
-        clonedMats.push(c);
-        m.material = c;
+        m.material = own(m.material as THREE.Material);
       }
     });
     const body = new THREE.Group();
@@ -1013,6 +1137,19 @@ export class SimplePlayer extends THREE.Group {
     return { body, headBone, update, setPose, setSwimMotion, wave, dispose };
   }
 
+  /**
+   * A dress material in the island's look (B15): an opaque standard material
+   * becomes toon on the shared ramp under the cel theme (Materials.toonify:
+   * its uuid comes from the converter's own generator, never the world's
+   * seeded stream). Anything else, and everything under ?theme=real, is
+   * returned as it came.
+   */
+  private static celDress(mat: THREE.Material): THREE.Material {
+    const std = mat as THREE.MeshStandardMaterial;
+    if (!isCelTheme() || !std.isMeshStandardMaterial || std.transparent) return mat;
+    return Materials.toonify(std);
+  }
+
   /** Procedural toon hats sold in the island shop (also used by remote avatars). */
   public static buildHat(id: HatId): THREE.Group {
     const g = new THREE.Group();
@@ -1197,6 +1334,9 @@ export class SimplePlayer extends THREE.Group {
     g.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
+    // The crown's gold, the star and the halo are authored standard: toon, on
+    // the shared ramp, like the hats built toon above (B15).
+    if (isCelTheme()) Materials.toonifyTree(g);
     return g;
   }
 
@@ -1902,6 +2042,11 @@ export class SimplePlayer extends THREE.Group {
         // Add the GLTF model
         this.gltfModel = gltfResult.scene;
         this.add(this.gltfModel);
+        // The dress in the island's look (B15): player.glb's standard
+        // materials become toon on the shared ramp, before the rim and the
+        // close-camera fade pick them up by name. Names, colours and shader
+        // hooks carry over, so setBodyColor still finds every part.
+        if (isCelTheme()) Materials.toonifyTree(this.gltfModel);
 
         // Self-calibrate: place the model's feet at local -playerHeight (0.7)
         // regardless of where the exporter put the mesh origin.
@@ -2003,6 +2148,10 @@ export class SimplePlayer extends THREE.Group {
         // material) — no runtime cap. The old procedural hair_cap sphere
         // could not hug the rounded head; its rim always poked out somewhere
         // and read as a beard or a floating band.
+
+        // The close-camera fade's list (B11): the fresh model's own materials,
+        // before a hat or anything hand-held is attached.
+        if (this.gltfModel) this.collectCloseFadeParts(this.gltfModel);
 
         // Apply a hat equipped before the model finished loading
         if (this.pendingHatId) {
