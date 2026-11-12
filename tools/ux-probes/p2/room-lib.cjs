@@ -716,7 +716,14 @@ async function enterRoom(page, id, { touch = false, T = null, back = 3.0, walkMs
   if (!touch) await page.keyboard.up('KeyW');
   out.walkMs = Date.now() - t0;
   out.promptOutside = await prompt(page);
-  if (standStillMs) await page.waitForTimeout(standStillMs);
+  if (standStillMs) {
+    await page.waitForTimeout(standStillMs);
+    // A villager can walk up during the pause and take the prompt; E would
+    // then start a chat. The prompt is read again, so the press below goes
+    // through the door's own callback when the door no longer holds it.
+    out.promptBeforePause = out.promptOutside;
+    out.promptOutside = await prompt(page);
+  }
   if (beforePress) await beforePress();
   out.p0 = await programs(page);
   out.nearDoorWarmBeforeE = await page.evaluate(() => !!window.__app.scene.interiorNearDoorWarmed);

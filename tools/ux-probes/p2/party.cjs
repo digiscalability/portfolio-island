@@ -6,6 +6,11 @@
 // the beach house, press E (or tap USE), type the code on its pad; then the
 // party off and on inside, leave, and re-enter. Each step records the
 // programs it adds, the longest frame, the veil and the visible lights.
+// An entry's programs are counted from the door (enterRoom's p0, read as E
+// is pressed): the walk across the islet to the door first draws its casters
+// into the shadow pass and links their depth variants, +1 on every run, which
+// made the entry read +1 or +2 from run to run. The walk's own programs are
+// reported beside it (programsBeforeDoor).
 // P2-B2's bar: the entry adds 1 program or fewer, its longest frame is
 // 100 ms or less on desktop (200 ms on the phone at 1x); toggling adds 0
 // programs, frames 50 ms or less on desktop; the beach house has as many
@@ -28,12 +33,23 @@ const LIGHTS = () => {
 async function step(page, name, fn, ms = 3200) {
   const p0 = await R.programs(page);
   await page.evaluate(() => window.__ia.start());
-  await fn();
+  const ret = await fn();
   await page.waitForTimeout(ms);
   const fr = await page.evaluate(() => window.__ia.stop());
   const p1 = await R.programs(page);
   const tr = R.transition(fr, p0);
-  return { name, programsAdded: p1 - p0, maxDt: tr.maxDt, maxRen: tr.maxRen, over50: tr.over50, blackMs: tr.blackMs, inside: tr.inside, lights: await page.evaluate(LIGHTS) };
+  return entryPrograms({ name, maxDt: tr.maxDt, maxRen: tr.maxRen, over50: tr.over50, blackMs: tr.blackMs, inside: tr.inside, lights: await page.evaluate(LIGHTS) }, p0, p1, ret);
+}
+
+/**
+ * A step's program count. p0 is the count before the step began and p1 after
+ * it; when the step was an enterRoom() its record carries the count at the
+ * door (ret.p0), and the entry is counted from there.
+ */
+function entryPrograms(row, p0, p1, ret) {
+  const atDoor = ret && typeof ret.p0 === 'number' ? ret.p0 : null;
+  if (atDoor === null) return { ...row, programsAdded: p1 - p0 };
+  return { ...row, programsAdded: p1 - atDoor, programsBeforeDoor: atDoor - p0, programsFromStepStart: p1 - p0, countedFrom: 'the door (E)' };
 }
 
 const toggleParty = (page) => page.evaluate(() => window.__app.ui.flashMessage(window.__app.scene.toggleInteriorFixture('party')));
@@ -70,7 +86,7 @@ async function party(t) {
     const by = Object.fromEntries(out.steps.map((x) => [x.name, x]));
     const e = by['enter-beach'];
     const frameCap = touch ? 200 : 100;
-    t.check(`${prof}: entering the beach house adds programs`, e.inside ? e.programsAdded <= 1 : false, e.inside ? e.programsAdded : 'not inside', '<= 1');
+    t.check(`${prof}: entering the beach house adds programs`, e.inside ? e.programsAdded <= 1 : false, e.inside ? { fromTheDoor: e.programsAdded, onTheWalkToIt: e.programsBeforeDoor } : 'not inside', '<= 1 from the door');
     t.check(`${prof}: the beach-house entry's longest frame (ms)`, e.inside && e.maxDt !== null ? e.maxDt <= frameCap : false, e.maxDt, `<= ${frameCap}`);
     for (const k of ['party-off', 'party-on']) {
       const x = by[k];
@@ -125,4 +141,5 @@ async function partyoff(t) {
 module.exports = {
   party: { item: 'P2-E1a (INT-08, P2-B2)', title: 'the beach-house entry and the party off/on: programs, longest frame, veil and visible lights (--first: the session\'s first door)', profiles: ['desktop'], run: party },
   partyoff: { item: 'P2-E1a (INT-08, P2-B2)', title: "3 s after 'Party over': borrowed dancers still in the room, visible and frozen", profiles: ['desktop'], run: partyoff },
+  entryPrograms,
 };

@@ -108,7 +108,16 @@ const SAMPLER = `(() => {
         const b = pr.getBoundingClientRect();
         const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
         const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
-        FM.toastPrompt.push({ t, overlap: w > 0 && h > 0 ? [Math.round(w), Math.round(h)] : null, promptW: Math.round(b.width), toast: tv.slice(0, 60) });
+        // The prompt's width on its own: the toast is taken out of layout and
+        // put back inside this task, so nothing is painted in between. A
+        // prompt is as wide as its line (167-322 px on the phone), so a fixed
+        // 300 px bar misreads a short door prompt as squeezed.
+        const te = ui.toastEl;
+        const was = te.style.display;
+        te.style.display = 'none';
+        const alone = pr.getBoundingClientRect().width;
+        te.style.display = was;
+        FM.toastPrompt.push({ t, overlap: w > 0 && h > 0 ? [Math.round(w), Math.round(h)] : null, promptW: Math.round(b.width), promptAloneW: Math.round(alone), prompt: (pr.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 60), toast: tv.slice(0, 60) });
       }
     }
   };
@@ -482,11 +491,13 @@ async function activePhone(t) {
   await untilPage(p, tw + 125000);
   const d = await dump(p);
   const overlaps = (d.toastPrompt || []).filter((x) => x.overlap);
-  const narrow = (d.toastPrompt || []).filter((x) => x.promptW < 300);
+  // Narrower beside a toast than on its own (1 px of rounding allowed).
+  const narrow = (d.toastPrompt || []).filter((x) => typeof x.promptAloneW === 'number' && x.promptW < x.promptAloneW - 1);
+  const widths = [...new Set((d.toastPrompt || []).map((x) => `${x.promptW}/${x.promptAloneW}`))];
   t.data['m-active'] = { boot: b, exploreAtMs: tx, menu, both: d.both, toastPrompt: d.toastPrompt, samples: d.samples, hints: hintsAfter(d.events || [], tx) };
   t.check('m-active: no sample shows a flash and a toast together', d.samples > 0 ? d.both.length === 0 : null, d.both.length ? d.both.slice(0, 5) : `0 of ${d.samples} samples`, 'none');
   t.check('m-active: the toast and the prompt never intersect at 390x844', (d.toastPrompt || []).length ? overlaps.length === 0 : null, overlaps.length ? overlaps.slice(0, 4) : `${(d.toastPrompt || []).length} samples with both up`, 'none');
-  t.check('m-active: the prompt is 300 px wide or more beside a toast', (d.toastPrompt || []).length ? narrow.length === 0 : null, narrow.length ? narrow.slice(0, 4).map((x) => x.promptW) : 'ok', '>= 300');
+  t.check('m-active: a prompt is as wide beside a toast as on its own (px beside/alone)', (d.toastPrompt || []).length ? narrow.length === 0 : null, narrow.length ? narrow.slice(0, 4).map((x) => ({ prompt: x.prompt, beside: x.promptW, alone: x.promptAloneW })) : widths, 'beside >= alone');
 }
 
 async function tours(t) {

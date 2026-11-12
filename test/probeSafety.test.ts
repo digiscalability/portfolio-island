@@ -458,6 +458,49 @@ describe('probe fixes from wave 1 (wave-2 amendments)', () => {
   const src = (rel: string) =>
     fs.readFileSync(path.resolve(__dirname, '../tools/ux-probes', rel), 'utf8');
 
+  test("p2/party counts an entry's programs from the door, and reports the walk apart", () => {
+    const { entryPrograms } = req('../tools/ux-probes/p2/party.cjs') as {
+      entryPrograms: (
+        row: Record<string, unknown>,
+        p0: number,
+        p1: number,
+        ret?: { p0?: number } | null,
+      ) => Record<string, unknown>;
+    };
+    // The walk across the islet links one shadow-depth program before E.
+    expect(entryPrograms({ name: 'enter-beach' }, 160, 162, { p0: 161 })).toEqual({
+      name: 'enter-beach',
+      programsAdded: 1,
+      programsBeforeDoor: 1,
+      programsFromStepStart: 2,
+      countedFrom: 'the door (E)',
+    });
+    // A step that is not an entry (the party toggle) counts as before.
+    expect(entryPrograms({ name: 'party-off' }, 162, 162, 'Party over')).toEqual({
+      name: 'party-off',
+      programsAdded: 0,
+    });
+    expect(entryPrograms({ name: 'exit' }, 162, 163, undefined).programsAdded).toBe(1);
+  });
+
+  test('axe scans the 20 surfaces of the wave-1 verify on each device', () => {
+    const { AXE_SURFACES } = req('../tools/ux-probes/a11y.cjs') as { AXE_SURFACES: string[] };
+    expect(AXE_SURFACES).toHaveLength(20);
+    expect(new Set(AXE_SURFACES).size).toBe(20);
+    for (const s of [
+      'hud',
+      'menu',
+      'hire',
+      'zone-contact',
+      'passport',
+      'island-map',
+      'say-hi',
+      'npc-chat',
+      'name-prompt',
+    ])
+      expect(AXE_SURFACES).toContain(s);
+  });
+
   test("guide: the card's overlap check sees the toast, the flash, the compass pill and the minimap", () => {
     const g = src('guide.cjs');
     const geometry = g.slice(g.indexOf('const GEOMETRY = '), g.indexOf('const GUIDE_ANIMATIONS'));
@@ -475,5 +518,17 @@ describe('probe fixes from wave 1 (wave-2 amendments)', () => {
     expect(g).toMatch(/tg\.position\.distanceTo\(last\)/);
     expect(g).toMatch(/waitFor\(page, onStep, 20000\)/);
     expect(g).toMatch(/query: `hour=\$\{hour\}`/);
+  });
+
+  test("fm compares a prompt beside a toast with its own width; census reports B's scene props apart", () => {
+    const fm = src('fm.cjs');
+    expect(fm).toContain('promptAloneW');
+    expect(fm).not.toMatch(/promptW < 300/);
+    const census = src('census.cjs');
+    expect(census).toMatch(/return 'scene props';/);
+    expect(census).toMatch(/const SCENE_PROPS_JUDGED = false;/);
+    expect(census).toMatch(
+      /const IN_SCOPE = \['zone halls', 'trees', 'villagers', 'props', 'terrain'\];/,
+    );
   });
 });
