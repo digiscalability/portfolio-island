@@ -1,8 +1,8 @@
 """Public copy says only what the fact sheet allows.
 
 Scans index.html, public/llms.txt, public/hire.html (when present),
-public/manifest.webmanifest and the string literals of SimpleUI.ts, Share.ts
-and api/z.js with the rules in data/banned_claims.toml.
+public/manifest.webmanifest and the string literals of SimpleUI.ts, Share.ts,
+api/z.js, Guide.ts and GuideCard.ts with the rules in data/banned_claims.toml.
 
 Hits in files that predate the fact sheet are listed in
 data/claims_baseline.toml and tolerated only while the file is unchanged: the
@@ -53,7 +53,8 @@ def test_a_text_surface_is_read_a_paragraph_at_a_time():
 
 
 def test_the_core_surfaces_are_scanned(scanned):
-    for rel in ("index.html", "public/llms.txt", "SimpleUI.ts"):
+    # Guide.ts and GuideCard.ts: First steps' copy (wave 1) is public copy too.
+    for rel in ("index.html", "public/llms.txt", "SimpleUI.ts", "Guide.ts", "GuideCard.ts"):
         assert rel in scanned, f"{rel} was not scanned"
 
 

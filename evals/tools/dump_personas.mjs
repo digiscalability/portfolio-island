@@ -26,8 +26,10 @@ const SRC = join(ROOT, 'functions', 'src');
 const LIB = join(ROOT, 'functions', 'lib');
 const OUT = join(EVALS, 'fixtures', 'generated');
 
-/** Client files whose string literals are public copy (claims scan). */
-const UI_SOURCES = ['SimpleUI.ts', 'Share.ts', 'api/z.js'];
+/** Client files whose string literals are public copy (claims scan).
+ *  Guide.ts and GuideCard.ts carry First steps (wave 1), the first copy a
+ *  visitor reads after the welcome card. */
+const UI_SOURCES = ['SimpleUI.ts', 'Share.ts', 'api/z.js', 'Guide.ts', 'GuideCard.ts'];
 
 /** The functions modules the fixtures come from. */
 const MODULES = ['personas', 'constants', 'plannerPrompt', 'npcPlanner', 'tts', 'moderation'];

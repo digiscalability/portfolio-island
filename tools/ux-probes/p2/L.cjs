@@ -117,6 +117,29 @@ function rigDump() {
   };
 }
 
+// The key light (the shadow-casting DirectionalLight): its elevation above the
+// player's own horizon (asin(dir . up)), intensity, colour and shadow strength.
+function sunState() {
+  const sc = window.__app.scene;
+  const up = sc.getPlayer().position.clone().normalize();
+  let sun = null;
+  sc.traverse((o) => { if (!sun && o.isDirectionalLight && o.castShadow) sun = o; });
+  if (!sun) return null;
+  const a = sun.getWorldPosition(up.clone());
+  const b = sun.target.getWorldPosition(up.clone());
+  const d = a.sub(b).normalize();
+  const env = sc.getEnvironmentCycle();
+  return {
+    elevDeg: +((Math.asin(Math.max(-1, Math.min(1, d.dot(up)))) * 180) / Math.PI).toFixed(1),
+    intensity: +sun.intensity.toFixed(3),
+    color: '#' + sun.color.getHexString(),
+    shadowIntensity: sun.shadow && typeof sun.shadow.intensity === 'number' ? +sun.shadow.intensity.toFixed(3) : null,
+    hour: env ? +env.getHour().toFixed(2) : null,
+    day: env ? +env.getDayFactor().toFixed(3) : null,
+    weather: env && env.getWeather ? env.getWeather() : null,
+  };
+}
+
 // ---- frame snapshot with category mask -------------------------------------
 // Renders one normal frame (loop paused), then the same frame with every
 // drawable swapped to a flat MeshBasic category colour (fog off). The caller
@@ -129,8 +152,23 @@ const CATS = {
   sea: [0.0, 0.0, 0.6],
   sky: [0.0, 0.6, 0.0],
   prop: [0.6, 0.0, 0.0],
-  label: [0.3, 0.3, 0.6],
+  label: [0.0, 0.3, 0.3],
+  // With { zones: true } the terrain is split by Island's own dark-zone rule
+  // (the lamp scatter, 'no lamp on the beach band or up the highland
+  // shoulder'): beach = dir.y < sin(0.32); highland = more than
+  // MAX_DISPLACEMENT x 0.42 x reliefScale above the sea. C5's bound is
+  // measured on these two (P2-E1b). frameStats reports them, plus groundAll
+  // (the whole terrain, the audit's 'ground').
+  beach: [0.3, 0.3, 0.0],
+  highland: [0.3, 0.6, 0.0],
+  // Night-emissive meshes (userData.isNightEmissive: windows, sconces, lamp
+  // bulbs, beacons), with { bulbs: true }: P2-E5's bloom check.
+  bulb: [0.6, 0.0, 0.3],
 };
+// Every category colour keeps one channel at 0. Under the composer (desktop)
+// OutputPass tone-maps the mask too, toneMapped or not, and the Neutral curve
+// subtracts 0.04 from a colour whose smallest channel is 0.08 or more: a
+// colour with a zero channel comes through unchanged on both tiers.
 function pauseLoop() {
   const sr = window.__app.renderer;
   sr.stopRenderLoop();
@@ -147,7 +185,11 @@ function renderOnce() {
   sr.render();
   return true;
 }
-function maskBegin(CATSIN) {
+function maskBegin(arg) {
+  // Either the category table, or { cats, zones, bulbs }.
+  const CATSIN = arg.cats || arg;
+  const ZONES = !!arg.zones;
+  const BULBS = !!arg.bulbs;
   const app = window.__app;
   const sc = app.scene;
   const player = sc.getPlayer();
@@ -156,6 +198,7 @@ function maskBegin(CATSIN) {
   const swapped = [];
   const hidden = [];
   const matCache = {};
+  let zoneSwap = null;
   // find a MeshBasicMaterial constructor in the scene
   let Basic = null;
   sc.traverse((o) => { if (!Basic && o.material && !Array.isArray(o.material) && o.material.type === 'MeshBasicMaterial') Basic = o.material.constructor; });
@@ -202,18 +245,55 @@ function maskBegin(CATSIN) {
       cat = isUnder(o, player) ? 'player' : underNpc(o) ? 'npc' : 'prop';
     }
     if (!cat) { if (o.visible) { hidden.push(o); o.visible = false; } return; }
+    if (BULBS && cat === 'prop' && o.userData && o.userData.isNightEmissive) cat = 'bulb';
     swapped.push([o, o.material]);
     const side = Array.isArray(o.material) ? 0 : o.material.side || 0;
+    if (ZONES && o === terrain && o.geometry && o.geometry.attributes.position) {
+      // The terrain by zone, as vertex colours on a flat material.
+      const G = isl.constructor;
+      const thr = (G.MAX_DISPLACEMENT || 0) * 0.42 * (isl.reliefScale || 1);
+      if (thr > 0) {
+        const g = o.geometry;
+        const pos = g.attributes.position;
+        const col = new Float32Array(pos.count * 3);
+        const sea = isl.seaLevel();
+        const beachY = Math.sin(0.32);
+        o.updateWorldMatrix(true, false);
+        const e = o.matrixWorld.elements; // the terrain mesh is rotated: classify in world space
+        for (let i = 0; i < pos.count; i++) {
+          const lx = pos.getX(i), ly = pos.getY(i), lz = pos.getZ(i);
+          const x = e[0] * lx + e[4] * ly + e[8] * lz + e[12];
+          const y = e[1] * lx + e[5] * ly + e[9] * lz + e[13];
+          const z = e[2] * lx + e[6] * ly + e[10] * lz + e[14];
+          const r = Math.sqrt(x * x + y * y + z * z) || 1;
+          const c = CATSIN[r - sea > thr ? 'highland' : y / r < beachY ? 'beach' : 'ground'];
+          col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+        }
+        zoneSwap = { g, orig: g.attributes.color || null };
+        g.setAttribute('color', new pos.constructor(col, 3));
+        const m = new Basic({ fog: false, vertexColors: true });
+        m.toneMapped = false;
+        m.side = side;
+        matCache['zones'] = m;
+        o.material = m;
+        return;
+      }
+    }
     o.material = mk(cat, side);
   });
-  window.__L.mask = { swapped, hidden, matCache };
-  return { swapped: swapped.length, hidden: hidden.length, npcRoots: npcRoots.size };
+  window.__L.mask = { swapped, hidden, matCache, zoneSwap };
+  return { swapped: swapped.length, hidden: hidden.length, npcRoots: npcRoots.size, zones: !!zoneSwap };
 }
 function maskEnd() {
   const m = window.__L.mask;
   if (!m) return false;
   for (const [o, mat] of m.swapped) o.material = mat;
   for (const o of m.hidden) o.visible = true;
+  if (m.zoneSwap) {
+    if (m.zoneSwap.orig) m.zoneSwap.g.setAttribute('color', m.zoneSwap.orig);
+    else m.zoneSwap.g.deleteAttribute('color');
+  }
+  for (const mat of Object.values(m.matCache)) if (mat && mat.dispose) mat.dispose();
   window.__L.mask = null;
   return true;
 }
@@ -251,21 +331,27 @@ function frameStats(normalFile, maskFile, opts = {}) {
       if (!c) continue;
       const k = (y * W + x) * 4;
       const Y = 0.2126 * LUT[A.data[k]] + 0.7152 * LUT[A.data[k + 1]] + 0.0722 * LUT[A.data[k + 2]];
-      const e = (acc[c] = acc[c] || { n: 0, sumY: 0, ys: [], r: 0, g: 0, b: 0 });
-      e.n++; e.sumY += Y; e.r += A.data[k]; e.g += A.data[k + 1]; e.b += A.data[k + 2];
-      if (e.ys.length < 400000) e.ys.push(Y);
+      // The whole terrain too (the zones split it into ground, beach and highland).
+      for (const key of c === 'ground' || c === 'beach' || c === 'highland' ? [c, 'groundAll'] : [c]) {
+        const e = (acc[key] = acc[key] || { n: 0, sumY: 0, ys: [], r: 0, g: 0, b: 0 });
+        e.n++; e.sumY += Y; e.r += A.data[k]; e.g += A.data[k + 1]; e.b += A.data[k + 2];
+        if (e.ys.length < 400000) e.ys.push(Y);
+      }
       if (c === 'player') { if (x < px0) px0 = x; if (x > px1) px1 = x; if (y < py0) py0 = y; if (y > py1) py1 = y; }
     }
   const out = { size: [W, H], cats: {} };
   for (const [c, e] of Object.entries(acc)) {
     e.ys.sort((a, b) => a - b);
     const q = (p) => e.ys[Math.min(e.ys.length - 1, Math.floor(p * e.ys.length))];
-    out.cats[c] = { frac: +(e.n / (W * H)).toFixed(4), Lstar: +Lstar(e.sumY / e.n).toFixed(1), L10: +Lstar(q(0.1)).toFixed(1), L50: +Lstar(q(0.5)).toFixed(1), L90: +Lstar(q(0.9)).toFixed(1), rgb: [Math.round(e.r / e.n), Math.round(e.g / e.n), Math.round(e.b / e.n)] };
+    // Y is the mean relative luminance (ratios between categories use it).
+    out.cats[c] = { frac: +(e.n / (W * H)).toFixed(4), Lstar: +Lstar(e.sumY / e.n).toFixed(1), Y: +(e.sumY / e.n).toFixed(5), L10: +Lstar(q(0.1)).toFixed(1), L50: +Lstar(q(0.5)).toFixed(1), L90: +Lstar(q(0.9)).toFixed(1), rgb: [Math.round(e.r / e.n), Math.round(e.g / e.n), Math.round(e.b / e.n)] };
   }
   // local contrast: player vs non-player pixels in a ring around the player bbox
   if (px1 >= 0) {
     const bw = px1 - px0 + 1, bh = py1 - py0 + 1;
-    const pad = Math.max(6, Math.round(Math.max(bw, bh) * 0.6));
+    // opts.ringPad: the ring's width as a share of the avatar's larger side
+    // (0.6 by default; avlum uses 0.2, the room right around the avatar).
+    const pad = Math.max(6, Math.round(Math.max(bw, bh) * (typeof opts.ringPad === 'number' ? opts.ringPad : 0.6)));
     const ring = { n: 0, sumY: 0 };
     const ringCats = {};
     for (let y = Math.max(0, py0 - pad); y <= Math.min(H - 1, py1 + pad); y++)
@@ -313,7 +399,7 @@ async function capturePair(page, base, opts = {}) {
   await page.evaluate(renderOnce);
   await page.waitForTimeout(60);
   const a = await shot(page, base + '.png');
-  const info = await page.evaluate(maskBegin, CATS);
+  const info = await page.evaluate(maskBegin, { cats: CATS, zones: !!opts.zones, bulbs: !!opts.bulbs });
   await page.evaluate(renderOnce);
   await page.waitForTimeout(60);
   const m = await shot(page, base + '.mask.png');
@@ -324,4 +410,20 @@ async function capturePair(page, base, opts = {}) {
   return { a, m, info };
 }
 
-module.exports = { setUi, installHelpers, rigDump, CATS, pauseLoop, resumeLoop, renderOnce, maskBegin, maskEnd, frameStats, regionStats, readPNG, Lstar, LUT, shot, capturePair };
+/** HSL hue (degrees) and saturation of an sRGB triple. */
+function hueOf([r, g, b]) {
+  const R = r / 255, G = g / 255, B = b / 255;
+  const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
+  const d = mx - mn;
+  if (d < 1e-6) return { hue: null, sat: 0 };
+  let h = mx === R ? ((G - B) / d) % 6 : mx === G ? (B - R) / d + 2 : (R - G) / d + 4;
+  h = (h * 60 + 360) % 360;
+  const l = (mx + mn) / 2;
+  return { hue: +h.toFixed(1), sat: +(d / (1 - Math.abs(2 * l - 1))).toFixed(3) };
+}
+/** The difference between two hues, in degrees (0-180). */
+const hueDiff = (a, b) => (a === null || b === null ? null : Math.abs(((a - b + 540) % 360) - 180));
+/** Relative luminance of an sRGB pixel at byte offset k. */
+const lumAt = (img, k) => 0.2126 * LUT[img.data[k]] + 0.7152 * LUT[img.data[k + 1]] + 0.0722 * LUT[img.data[k + 2]];
+
+module.exports = { setUi, installHelpers, rigDump, sunState, CATS, pauseLoop, resumeLoop, renderOnce, maskBegin, maskEnd, frameStats, regionStats, readPNG, classify, Lstar, LUT, lumAt, hueOf, hueDiff, shot, capturePair };

@@ -7,14 +7,23 @@
 //   perf:gate -- --dist dist --port 5191 --fx <name>     one __dsFx effect: per-view draws and programs, then 6 x 1.5 s per side
 //   perf:gate -- --ab <distA> <distB> --ports pA,pB [--cycles 6]   whole build B against A, ABAB, fresh context per cycle
 //   perf:gate -- --rejudge <perf-gate-ab.json>           the verdict maths again on a saved A/B's loads (no browser)
+//   perf:gate -- --dist dist --port 5191 --dusk          the dusk check alone: ?hour=17, then the clock to 17.5 after the warm
 //   add --seed to compare window.__dsSeedDraws with the subject's test/golden/seedDraws.json (--golden <path> overrides)
-//   --profiles desktop,lowtier,startup  (default: all three; --fx uses desktop,lowtier)
-//   --hour <h|live>                                       the world clock (default 12: noon, as the audit measured)
+//   add --dusk to --ab for the dusk check on each side (side B is held to it)
+//   --profiles desktop,lowtier,startup  (default: all three; --fx and --dusk use desktop,lowtier)
+//   --hour <h|live>                                       the world clock (default 12: noon, as the audit measured);
+//                                                         --hour 21 is the night run: the card, the longest task before it, programs at +30 s
 //   --out <dir>                                           JSON + ledger.md (default <os tmpdir>/ux-probes/perf-gate)
 //
 // Profiles: desktop 1440x900 DPR 1; low tier 390x844 touch DPR 2 at 1x CPU;
 // startup-only at 4x CPU with GPU timer queries off (they inflate throttled
 // CPU time by ~15%). Hardware GL (ANGLE D3D11 on Windows; PERF_GL overrides).
+//
+// Views per load, after the card: idle spawn, hub-wide and Projects (posed);
+// then the vehicle view (the car nearest the land circuit's start, W held 3 s
+// down the leg from ring 0 toward ring 1) and the room view (the Professional
+// hall by its door: the first door's longest frame, the black interval by
+// pixels, the programs it adds, then the steady room's draws and render p50).
 //
 // Verdict per metric (plan-r3 › perfBudget, critique-r3), against T, the
 // budget, and the metric's floor from tools/perf-gate.floor.json (a 24-cycle
@@ -31,7 +40,13 @@
 //   too, when side B has FxBudget timings. A paired sign test fails any
 //   timing, valid or not, when nearly every pair is over T (19 of 24, 11 of
 //   12: one-sided 0.005), so a shift every pair agrees on fails although a
-//   bimodal side inflates sigma.
+//   bimodal side inflates sigma. The same test passes a timing the sigma
+//   rule left inconclusive when, at 24 cycles or more, no pair is over T
+//   (wave-1 re-verify: welcome_visible 578 ms earlier, 22 of 24 pairs earlier
+//   and 0 over T, read inconclusive on sigma 369 against T/2 75). A median
+//   shift of T or more gives 0 of 24 with probability 6e-8 or less. For
+//   welcome_visible the pairs counted are the cycle-order ones, since the
+//   mode-matched pairing can leave as few as 7.
 // - counters (draws, triangles, programs, nodes, long tasks, bytes): delta =
 //   median(B) - median(A), except programs, which ride the boot race and are
 //   judged on its mix (judgeMixCounter: each side's mode medians weighted by
@@ -58,15 +73,37 @@
 //   what other processes took while it ran.
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const lib = require('./ux-probes/lib.cjs');
+// The room view enters by the door with the room probes' kit and judges the
+// black interval with hitch's screencast.
+const R = require('./ux-probes/p2/room-lib.cjs');
+const F = require('./ux-probes/frames.cjs');
 
 // ---------------------------------------------------------------- budgets
 // plan-r3 perfBudget. CPU p50 has no budget (report-only); the startup
 // budgets for the 1x profiles are desktop's, the 'startup' profile is 4x.
+// P2-E3 adds the vehicle view (draws, as for the Projects view) and the room
+// view: its draws against main, and two absolute bars on the first door (the
+// longest frame of the entry and the programs it adds).
 const THRESHOLDS = {
-  desktop: { cpuP95: 1.0, gpuP50: 2.0, drawsSpawn: 50, drawsHub: 80, drawsProjects: 60, programs: 5, welcomeMs: 150, worldGenMs: 50, longTasksBeforeCard: 1, longestTaskBeforeCardMs: 50, bytesBeforeCardKB: 50 },
-  lowtier: { cpuP95: 0.75, drawsSpawn: 20, drawsHub: 30, drawsProjects: 25, programs: 3, nodes: 150, textureMB: 6, bytesBeforeCardKB: 50 },
+  desktop: { cpuP95: 1.0, gpuP50: 2.0, drawsSpawn: 50, drawsHub: 80, drawsProjects: 60, drawsVehicle: 60, drawsRoom: 25, roomFirstDoorMs: 100, roomProgramsAdded: 3, programs: 5, welcomeMs: 150, worldGenMs: 50, longTasksBeforeCard: 1, longestTaskBeforeCardMs: 50, bytesBeforeCardKB: 50 },
+  lowtier: { cpuP95: 0.75, drawsSpawn: 20, drawsHub: 30, drawsProjects: 25, drawsVehicle: 25, drawsRoom: 0, roomFirstDoorMs: 200, roomProgramsAdded: 3, programs: 3, nodes: 150, textureMB: 6, bytesBeforeCardKB: 50 },
   startup: { welcomeMs: 400, worldGenMs: 200, longTasksBeforeCard: 2, longestTaskBeforeCardMs: 50, bytesBeforeCardKB: 50 },
+};
+// The dusk check (P2-B6, P2-C4): no long task of this or more crossing 17:00 to 17:30.
+const DUSK_LONGEST_MS = 100;
+// What an effect is expected to SAVE (a credit: B - A at or below it), which
+// --fx <name> holds it to beside the budgets. E2 with P2-E4's restated
+// acceptance: on the low tier half-rate shadows save 0.6 ms of GPU p50 and
+// 0.4 ms of mean CPU (the mean, because frames alternate with and without the
+// shadow pass, so p50 hides it), and the spawn view's 94-95 shadow draws a
+// frame become 47.5 +-3. Desktop stays at full rate (decision 12).
+const FX_CREDIT = {
+  halfShadow: {
+    lowtier: { gpuP50: -0.6, cpuMean: -0.4, shadowDrawsSpawn: { value: 47.5, tol: 3 } },
+    desktop: { shadowDrawsUnchanged: true },
+  },
 };
 // FxBudget µs per frame: each effect, and the sum of every effect.
 const FX_US = { desktop: 150, lowtier: 80, totalDesktop: 600, totalLowtier: 300 };
@@ -112,9 +149,10 @@ const BASELINE = {
   desktop: { idleCpuP95: 16.4, programs: 216, programsTol: 5, draws: { spawn: 658, hub: 1777, projects: 1233 } },
   lowtier: { programs: 118, programsTol: 3, draws: { spawn: 658 } },
 };
-// The fixed views, in measuring order. A view is a POSE ({ view }) plus the
-// time the world needs to settle after it, and its draw budget key. P2-E3
-// adds a vehicle view and a room view here.
+// The posed views, in measuring order. A view is a POSE ({ view }) plus the
+// time the world needs to settle after it, and its draw budget key. P2-E3's
+// vehicle and room views follow them in a load (vehicleView, roomView): they
+// are driven, not posed, so --fx does not pair them.
 const VIEW_DEFS = [
   { name: 'spawn', settleMs: 0, fxSettleMs: 600, drawKey: 'drawsSpawn', poseCheck: false },
   { name: 'hub', settleMs: 1200, fxSettleMs: 1200, drawKey: 'drawsHub', poseCheck: true },
@@ -132,7 +170,7 @@ const POSE_TOL_RAD = 0.01;
 const GATE_INIT = (opts) => `(() => {
   if (window.top !== window) return;
   const OPTS = ${JSON.stringify(opts)};
-  const G = (window.__gate = { frames: [], longtasks: [], renders: [], compiles: [], welcomeAt: null, hooked: false, err: null });
+  const G = (window.__gate = { frames: [], longtasks: [], renders: [], compiles: [], welcomeAt: null, hooked: false, err: null, shadowNow: 0 });
   try { new PerformanceObserver((l) => { for (const e of l.getEntries()) G.longtasks.push([Math.round(e.startTime), Math.round(e.duration)]); }).observe({ type: 'longtask', buffered: true }); } catch (e) {}
   const W = '[role=dialog][aria-label="Welcome to DigiScalability Life Island"]';
   const tick = () => {
@@ -176,9 +214,22 @@ const GATE_INIT = (opts) => `(() => {
       }
       if (pending.length > 200) pending.splice(0, pending.length - 200);
     };
+    // Shadow draws of the frame: the calls WebGLShadowMap.render adds (0 on a
+    // frame whose pass is skipped: autoUpdate off and needsUpdate not set).
+    const sm = R.shadowMap;
+    if (sm && typeof sm.render === 'function') {
+      const origS = sm.render;
+      sm.render = function () {
+        const c0 = R.info.render.calls;
+        const r = origS.apply(this, arguments);
+        G.shadowNow += R.info.render.calls - c0;
+        return r;
+      };
+    }
     const protoRender = Object.getPrototypeOf(sr).render;
     sr.render = function () {
       R.info.reset();
+      G.shadowNow = 0;
       const t0 = performance.now();
       let q = null;
       if (ext && cur) { q = pool.pop() || gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, q); }
@@ -188,6 +239,7 @@ const GATE_INIT = (opts) => `(() => {
         cur.ren = performance.now() - t0;
         cur.calls = R.info.render.calls;
         cur.tris = R.info.render.triangles;
+        cur.shadow = G.shadowNow;
         cur.progs = progs();
         G.frames.push(cur);
         if (G.frames.length > 40000) G.frames.splice(0, 10000);
@@ -332,10 +384,15 @@ const WHOLE_FRAME = () => {
   const sr = window.__app.renderer;
   const R = sr.getRenderer();
   sr.stopRenderLoop();
+  // The counted frame always holds a shadow pass (unless the interior freeze
+  // parks it): at half rate (E2, the low tier) every other frame has none, so
+  // a single frame would read 476 or 572 draws by the phase it landed on, and
+  // the draw budgets would be judged on that coin toss. A no-op at full rate.
+  if (!sr.shadowFrozen) R.shadowMap.needsUpdate = true;
   R.info.reset();
   sr.render();
   const i = R.info;
-  const out = { draws: i.render.calls, triangles: i.render.triangles, programs: i.programs ? i.programs.length : null, textures: i.memory.textures, geometries: i.memory.geometries };
+  const out = { draws: i.render.calls, triangles: i.render.triangles, shadowDraws: window.__gate ? window.__gate.shadowNow : null, programs: i.programs ? i.programs.length : null, textures: i.memory.textures, geometries: i.memory.geometries };
   sr.isRunning = false;
   sr.startRenderLoop(sr.scene, sr.camera, sr.renderCallback);
   return out;
@@ -372,13 +429,220 @@ const CENSUS = () => {
 
 const FRAME_STATS = ([t0, t1]) => {
   const fr = window.__gate.frames.filter((f) => f.t >= t0 && f.t < t1);
-  return { n: fr.length, cpu: fr.map((f) => f.upd + f.ren), gpu: fr.filter((f) => f.gpu !== null).map((f) => f.gpu), calls: fr.map((f) => f.calls) };
+  return {
+    n: fr.length,
+    cpu: fr.map((f) => f.upd + f.ren),
+    ren: fr.map((f) => f.ren),
+    gpu: fr.filter((f) => f.gpu !== null).map((f) => f.gpu),
+    calls: fr.map((f) => f.calls),
+    tris: fr.map((f) => f.tris),
+    shadow: fr.map((f) => f.shadow || 0),
+  };
 };
 
 const FX_SNAPSHOT = () => {
   const g = window.__dsFx || {};
   return { stats: JSON.parse(JSON.stringify(g.stats || {})), effects: JSON.parse(JSON.stringify(g.effects || {})) };
 };
+
+// ------------------------------------------------- vehicle and room views
+/**
+ * The vehicle view (P2-E3, GP-14): board the car nearest the land circuit's
+ * start, put it on ring 0 heading down the leg to ring 1, and turn the chase
+ * camera behind it. The drive itself is W held for 3 s (VEHICLE_DRIVE_MS): no
+ * pointer input, so the car runs the leg's great circle at its 13 u/s.
+ */
+const VEHICLE_SETUP = () => {
+  const sc = window.__app.scene;
+  if (typeof sc.boardVehicle !== 'function' || typeof sc.vehicleKind !== 'function' || !Array.isArray(sc.vehicles)) return { error: 'hook missing: scene.boardVehicle / vehicleKind / vehicles' };
+  const start = typeof sc.getRaceStartPosition === 'function' ? sc.getRaceStartPosition('land') : null;
+  const land = sc.races && sc.races.circuits ? sc.races.circuits.land : null;
+  if (!start || !land || !land.dirs || land.dirs.length < 2) return { error: 'hook missing: the land circuit (scene.getRaceStartPosition, races.circuits.land.dirs)' };
+  let idx = -1;
+  let best = Infinity;
+  for (let i = 0; i < sc.vehicles.length; i++) {
+    if (sc.vehicleKind(i) !== 'car' || sc.vehicles[i].occupied) continue;
+    const d = sc.vehicles[i].group.position.distanceTo(start);
+    if (d < best) {
+      best = d;
+      idx = i;
+    }
+  }
+  if (idx < 0) return { error: 'no free car' };
+  const v = sc.vehicles[idx];
+  const isl = sc.getIsland ? sc.getIsland() : sc.island;
+  const a = land.dirs[0].clone().normalize();
+  const b = land.dirs[1].clone().normalize();
+  const fwd = b.clone().addScaledVector(a, -b.dot(a)).normalize();
+  sc.boardVehicle(idx);
+  if (!sc.isRidingVehicle()) return { error: 'boardVehicle did not board the car' };
+  v.dir.copy(a);
+  v.forward.copy(fwd);
+  const s = isl.sampleSurfaceByDirection(v.dir, 0);
+  v.radius = s.position.length() + 0.06;
+  v.normal.copy(s.normal);
+  sc.getPlayer().setWorldPosition(v.dir.clone().multiplyScalar(v.radius + 0.72));
+  window.__gateCar = { idx, a, fwd };
+  return { idx, carToStartU: +best.toFixed(1), legU: +(a.angleTo(b) * isl.getRadius()).toFixed(1) };
+};
+
+/**
+ * Turn the chase camera until it looks down the leg (within 1 degree): by
+ * the follow direction, or by setYaw where the follow direction is derived
+ * from yaw. Returns the angle left, in degrees.
+ */
+const VEHICLE_AIM = ([way, sign]) => {
+  const sc = window.__app.scene;
+  const g = window.__gateCar;
+  const oc = sc.getOrbitCamera();
+  const cam = sc.getCamera();
+  const V3 = g.fwd.constructor;
+  const up = sc.getPlayer().position.clone().normalize();
+  const flat = (x) => x.clone().addScaledVector(up, -x.dot(up)).normalize();
+  const off = () => {
+    const f = flat(g.fwd);
+    const c = flat(cam.getWorldDirection(new V3()));
+    return (Math.atan2(f.clone().cross(c).dot(up), f.dot(c)) * 180) / Math.PI;
+  };
+  const err = off();
+  if (Math.abs(err) < 1) return { deg: +err.toFixed(2), done: true };
+  if (way === 'followDir' && oc.followDir) {
+    oc.followDir.copy(flat(g.fwd)).negate();
+    if (typeof oc.snapToPlayer === 'function') oc.snapToPlayer();
+  } else if (way === 'setYaw' && typeof oc.setYaw === 'function' && typeof oc.getYaw === 'function') {
+    oc.setYaw(oc.getYaw() + (sign * err * Math.PI) / 180);
+    if (typeof oc.snapToPlayer === 'function') oc.snapToPlayer();
+  }
+  return { deg: +err.toFixed(2), done: false };
+};
+
+/** Where the car is against the leg's great circle: distance along it and off it (u). */
+const VEHICLE_READ = () => {
+  const sc = window.__app.scene;
+  const g = window.__gateCar;
+  const v = sc.vehicles[g.idx];
+  const R = (sc.getIsland ? sc.getIsland() : sc.island).getRadius();
+  const n = g.a.clone().cross(g.fwd).normalize(); // the leg's plane
+  const d = v.dir.clone().normalize();
+  const inPlane = d.clone().addScaledVector(n, -d.dot(n)).normalize();
+  return { alongU: +(g.a.angleTo(inPlane) * R).toFixed(2), offPathU: +(Math.asin(Math.max(-1, Math.min(1, d.dot(n)))) * R).toFixed(2), riding: sc.isRidingVehicle() };
+};
+const VEHICLE_DRIVE_MS = 3000;
+
+async function vehicleView(page) {
+  const setup = await page.evaluate(VEHICLE_SETUP);
+  if (setup.error) throw new Error(setup.error);
+  // The ride camera eases back to its ride distance; aim it down the leg.
+  let aim = null;
+  for (const way of ['followDir', 'setYaw']) {
+    let sign = -1;
+    let last = null;
+    for (let i = 0; i < 10; i++) {
+      aim = await page.evaluate(VEHICLE_AIM, [way, sign]);
+      if (aim.done) break;
+      // No progress: the turn went the other way, so reverse it.
+      if (last !== null && Math.abs(aim.deg) > Math.abs(last) - 0.5) sign = -sign;
+      last = aim.deg;
+      await lib.nextFrames(page, 3);
+    }
+    if (aim && aim.done) {
+      aim.via = way;
+      break;
+    }
+  }
+  await page.waitForTimeout(1200);
+  const settled = await page.evaluate(VEHICLE_AIM, ['none', 0]);
+  // W drives along the camera's forward: off the leg, the path is not the leg's.
+  if (Math.abs(settled.deg) > 5) throw new Error(`hook missing: the chase camera could not be aimed down the leg (${settled.deg} deg off; followDir / setYaw)`);
+  const pose = await page.evaluate(POSE_READ);
+  const atStart = await page.evaluate(WHOLE_FRAME);
+  await page.waitForTimeout(250);
+  const t0 = await page.evaluate(() => performance.now());
+  const fx0 = await page.evaluate(FX_SNAPSHOT);
+  await page.keyboard.down('KeyW');
+  await page.waitForTimeout(VEHICLE_DRIVE_MS / 2);
+  const tm = await page.evaluate(() => performance.now());
+  await page.keyboard.down('KeyW'); // a held key repeats
+  await page.waitForTimeout(VEHICLE_DRIVE_MS / 2);
+  const t1 = await page.evaluate(() => performance.now());
+  const fx1 = await page.evaluate(FX_SNAPSHOT);
+  await page.keyboard.up('KeyW');
+  const drive = await page.evaluate(VEHICLE_READ);
+  const all = await page.evaluate(FRAME_STATS, [t0, t1]);
+  const w1 = frameNumbers(await page.evaluate(FRAME_STATS, [t0, tm]), tm - t0);
+  const w2 = frameNumbers(await page.evaluate(FRAME_STATS, [tm, t1]), t1 - tm);
+  const fxUs = {};
+  for (const [name, s] of Object.entries(fx1.stats)) fxUs[name] = all.n ? round((s.us - (fx0.stats[name] || { us: 0 }).us) / all.n, 2) : null;
+  const pooled = frameNumbers(all, t1 - t0);
+  await page.evaluate(() => window.__app.scene.disembarkVehicle());
+  await page.waitForTimeout(600);
+  return {
+    // Draws and triangles are the drive's mean whole frame: the car moves,
+    // so one paused frame would be one point of the leg.
+    draws: pooled.drawsMean,
+    triangles: pooled.trianglesMean,
+    programs: atStart.programs,
+    ...pooled,
+    fxUsPerFrame: fxUs,
+    effects: fx1.effects,
+    atStart: { draws: atStart.draws, triangles: atStart.triangles },
+    windows: [w1, w2].map((w) => ({ frames: w.frames, cpuP95: w.cpuP95, gpuP50: w.gpuP50, drawsMean: w.drawsMean })),
+    pose,
+    drive: { ...setup, aimVia: aim ? aim.via || null : null, aimDeg: settled.deg, ...drive },
+  };
+}
+
+/**
+ * The room view (P2-E3): the Professional hall by its door, the way a visitor
+ * enters (p2/room-lib's enterRoom: walk at the door, E or USE at its prompt).
+ * The entry: its longest frame, the black interval judged by pixels (a CDP
+ * screencast, the veil hiding 95% or more of the world) and by the veil's
+ * opacity, the programs it adds. Then the steady room, the hall's panel
+ * closed, from the door end: one whole frame's draws and a 1.5 s window.
+ */
+const ROOM_ID = 'professional';
+async function roomView(session, prof) {
+  const { page, ctx } = session;
+  const touch = lib.isTouchProfile(session.profile);
+  await R.install(page);
+  const T = touch ? await lib.touch(session) : null;
+  const cdp = await ctx.newCDPSession(page);
+  const run = async () => {
+    const e = await R.enterRoom(page, ROOM_ID, { touch, T, back: 3.0, record: true });
+    await page.waitForTimeout(3200);
+    return { e, fr: await page.evaluate(() => window.__ia.stop()) };
+  };
+  const { out, pixels } = await F.screencastBlack(page, cdp, run);
+  await cdp.detach().catch(() => {});
+  const tr = R.transition(out.fr, out.e.p0);
+  const firstIn = out.fr.findIndex((f) => f.inside);
+  const room = {
+    id: ROOM_ID,
+    press: out.e.press,
+    walkMs: out.e.walkMs,
+    inside: !!tr.inside,
+    firstDoorFrameMs: tr.maxDt,
+    toFirstInsideFrameMs: firstIn >= 0 ? Math.max(...out.fr.slice(0, firstIn + 2).map((f) => f.dt)) : null,
+    firstInsideFrameMs: tr.firstInsideFrameMs,
+    programsAdded: tr.programsAdded,
+    blackMsPixels: pixels.blackMs,
+    blackMsOpacity: tr.blackMs,
+    windowPass: tr.rtPass.slice(0, 3),
+  };
+  if (!room.inside) return { ...room, error: `not inside ${ROOM_ID} after the entry (${out.e.press}; prompt '${out.e.promptOutside}')` };
+  await page.evaluate(() => {
+    const a = window.__app;
+    if (a.ui.panels && a.ui.panels.closeAll) a.ui.panels.closeAll();
+    window.__ia.pose(0, 0.6, Math.PI);
+  });
+  await page.waitForTimeout(700);
+  const counters = await page.evaluate(WHOLE_FRAME);
+  await page.waitForTimeout(250);
+  const timing = await windowStats(page, 1500);
+  Object.assign(room, { draws: counters.draws, triangles: counters.triangles, programs: counters.programs, renP50: timing.renP50, cpuP50: timing.cpuP50, cpuP95: timing.cpuP95, gpuP50: timing.gpuP50, fps: timing.fps });
+  await R.outdoors(page);
+  return room;
+}
 
 const PIN_GOVERNOR = () => {
   // A resolution or rung change must not masquerade as cost.
@@ -410,15 +674,30 @@ async function windowStats(page, ms) {
     fxUs[name] = f.n ? round((s.us - a.us) / f.n, 2) : null;
   }
   return {
-    frames: f.n,
-    fps: round(f.n / ((t1 - t0) / 1000), 1),
-    cpuP50: round(pct(f.cpu, 50), 3),
-    cpuP95: round(pct(f.cpu, 95), 3),
-    gpuP50: f.gpu.length ? round(pct(f.gpu, 50), 3) : null,
-    drawsMean: f.calls.length ? round(f.calls.reduce((s, x) => s + x, 0) / f.calls.length, 1) : null,
+    ...frameNumbers(f, t1 - t0),
     fxUsPerFrame: fxUs,
     effects: fx1.effects,
     animatedMax: [an0, an1, an2].some((x) => typeof x === 'number') ? Math.max(...[an0, an1, an2].filter((x) => typeof x === 'number')) : null,
+  };
+}
+
+/** The numbers of one window of frames (FRAME_STATS over ms). */
+function frameNumbers(f, ms) {
+  const avg = (a) => (a && a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
+  return {
+    frames: f.n,
+    fps: round(f.n / (ms / 1000), 1),
+    cpuP50: round(pct(f.cpu, 50), 3),
+    cpuP95: round(pct(f.cpu, 95), 3),
+    // The mean frame: a half-rate pass alternates heavy and light frames, so
+    // p50 lands on one kind or the other and hides the saving (P2-E4).
+    cpuMean: round(avg(f.cpu), 3),
+    renP50: round(pct(f.ren || [], 50), 3),
+    gpuP50: f.gpu.length ? round(pct(f.gpu, 50), 3) : null,
+    gpuMean: f.gpu.length ? round(avg(f.gpu), 3) : null,
+    drawsMean: f.calls.length ? round(avg(f.calls), 1) : null,
+    trianglesMean: f.tris && f.tris.length ? round(avg(f.tris), 0) : null,
+    shadowDrawsMean: f.shadow && f.shadow.length ? round(avg(f.shadow), 1) : null,
   };
 }
 
@@ -448,7 +727,7 @@ async function settleAfterCard(page, atS) {
  * interior warm and the late compiles) programs, nodes and textures, then the
  * three views' counters and timing windows.
  */
-async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS = 30, seed = false, hour = '12' }) {
+async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS = 30, seed = false, hour = '12', scenarios = true }) {
   const p = lib.profile(prof === 'startup' ? 'lowtier' : prof);
   const profObj = prof === 'startup' ? { ...p, name: 'startup', cpu: 4 } : p;
   // The machine's load over the load, split between this browser and the rest.
@@ -500,6 +779,13 @@ async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS 
     }
     out.programsAfterViews = (await page.evaluate(WHOLE_FRAME)).programs;
     out.renderProgramAdds = await page.evaluate(() => window.__gate.renders.filter((r) => !r.inCompile).map((r) => ({ label: r.label, added: r.added, ms: r.ms })));
+    // P2-E3: the vehicle view, then the room view (the session's first door),
+    // after the posed views so their numbers stay what the floor recorded.
+    if (scenarios) {
+      out.views.vehicle = await vehicleView(page);
+      out.room = await roomView(s, prof);
+      out.programsAfterScenarios = (await page.evaluate(WHOLE_FRAME)).programs;
+    }
   } finally {
     // Everything on the machine (hostBusyPct, this browser included) and what
     // other processes took (otherBusyPct), over the load, read before the
@@ -515,8 +801,106 @@ async function loadCycle(browser, base, prof, { nogpu, startupOnly, programsAtS 
   return out;
 }
 
+/**
+ * The dusk check (P2-E3; LT-03, P2-B6, P2-C4). A visitor playing through dusk
+ * crosses the exterior-lights cutoff once; when that changes the light count
+ * every lit program re-links in one task. A fresh browser (a cold GPU program
+ * cache): boot at ?hour=17, wait out the interior warm, move the clock to
+ * 17.5 h through EnvironmentCycle.debugHour, and take the longest long task,
+ * long animation frame or frame gap of the next 6 s.
+ */
+const DUSK_STATE = () => {
+  const sc = window.__app.scene;
+  const env = sc.getEnvironmentCycle();
+  const lights = {};
+  sc.traverseVisible((o) => {
+    if (o.isLight) lights[o.type] = (lights[o.type] || 0) + 1;
+  });
+  return { lights, programs: window.__app.renderer.getRenderer().info.programs.length, hour: +env.getHour().toFixed(2), day: +env.getDayFactor().toFixed(3) };
+};
+async function duskCheck(base, prof, { warmMs = 13000 } = {}) {
+  const browser = await lib.launch();
+  const p = lib.profile(prof);
+  const s = await lib.openSession(browser, p, { init: [R.LONGTASKS_INIT] });
+  const { page } = s;
+  const out = { profile: prof };
+  try {
+    await bootPage(page, base, p, '17');
+    await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
+    await page.waitForTimeout(warmMs);
+    out.before = await page.evaluate(DUSK_STATE);
+    const t0 = await page.evaluate(() => {
+      const env = window.__app.scene.getEnvironmentCycle();
+      if (!('debugHour' in env)) return null;
+      env.debugHour = 17.5;
+      return performance.now();
+    });
+    if (t0 === null) throw new Error('hook missing: EnvironmentCycle.debugHour');
+    await page.waitForTimeout(6000);
+    out.after = await page.evaluate(DUSK_STATE);
+    const lt = await page.evaluate((x) => {
+      const L = window.__lt || { longtasks: [], loaf: [], gaps: [] };
+      const after = (a) => a.filter(([st]) => st >= x - 50).map((e) => e[1]);
+      return { longtasks: after(L.longtasks), loaf: after(L.loaf), gaps: after(L.gaps) };
+    }, t0);
+    // Three views of the same freeze: one observer missing an entry cannot hide it.
+    out.longestMs = Math.max(0, ...lt.longtasks, ...lt.loaf, ...lt.gaps);
+    out.longTasks = lt.longtasks;
+    out.frameGaps = lt.gaps;
+    out.programsAdded = out.after.programs - out.before.programs;
+    // The flip is a re-link: the light set changes and programs are added in
+    // one long task. A long frame with neither is the host (another session
+    // holding the CPU), so it leaves the check open instead of failing it.
+    out.relinked = out.programsAdded > 0 || JSON.stringify(out.before.lights) !== JSON.stringify(out.after.lights);
+    out.pass = out.longestMs < DUSK_LONGEST_MS ? true : out.relinked ? false : null;
+    if (out.pass === null) out.note = 'a long frame with no light or program change: the host, not the dusk flip';
+  } catch (e) {
+    out.error = String((e && e.message) || e).slice(0, 300);
+    out.pass = null;
+  } finally {
+    await s.close({ waitSignUpMs: 20000 });
+    out.net = { signUpSeen: s.net.signUpSeen, bootProofSeen: !!s.net.bootProofSeen, leaks: s.net.leaks.slice() };
+    await browser.close().catch(() => {});
+  }
+  return out;
+}
+
+/** The dusk check on each profile of one build; adds its leaks and missing boot proofs to data. */
+async function duskRuns(base, profiles, data) {
+  const out = {};
+  for (const prof of profiles.filter((p) => p !== 'startup')) {
+    const r = await duskCheck(base, prof);
+    if (r.net.leaks.length) data.leaks.push(...r.net.leaks);
+    if (!r.net.signUpSeen && !r.net.bootProofSeen) data.signUpMissing++;
+    out[prof] = r;
+    process.stdout.write(`  dusk ${prof}: ${r.error ? `error ${r.error}` : `longest ${r.longestMs} ms, lights ${JSON.stringify(r.before.lights)} -> ${JSON.stringify(r.after.lights)}, programs +${r.programsAdded}`}\n`);
+  }
+  return out;
+}
+const duskVerdict = (runs) => {
+  const rs = Object.values(runs || {});
+  if (rs.some((r) => r.pass === false)) return 'fail';
+  if (!rs.length || rs.some((r) => r.pass === null)) return 'inconclusive';
+  return 'pass';
+};
+
+/** --dusk with no --ab: the dusk check alone, on one build. */
+async function modeDusk(args) {
+  const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
+  const profiles = String(args.profiles || 'desktop,lowtier').split(',');
+  const data = { mode: 'dusk', profiles: {}, leaks: [], signUpMissing: 0 };
+  try {
+    data.dusk = await duskRuns(server.url, profiles, data);
+  } finally {
+    await server.stop();
+  }
+  const v = duskVerdict(data.dusk);
+  data.verdict = data.leaks.length ? 'fail-closed' : v === 'pass' && data.signUpMissing ? 'inconclusive' : v;
+  return data;
+}
+
 // ---------------------------------------------------------------- verdicts
-const T975 = [null, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131, 2.12, 2.11, 2.101, 2.093, 2.086, 2.08, 2.074, 2.069, 2.064, 2.06, 2.056, 2.052, 2.048, 2.045, 2.042];
+const T975 =[null, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131, 2.12, 2.11, 2.101, 2.093, 2.086, 2.08, 2.074, 2.069, 2.064, 2.06, 2.056, 2.052, 2.048, 2.045, 2.042];
 /** Two-sided 95% Student t quantile; past 30 df the table rounds df down (conservative). */
 const t975 = (df) => (df < 1 ? null : df <= 30 ? T975[df] : df <= 40 ? 2.042 : df <= 60 ? 2.021 : df <= 120 ? 2.0 : 1.98);
 const isNum = (x) => typeof x === 'number' && Number.isFinite(x);
@@ -534,6 +918,15 @@ const sampleSd = (a) => {
  * run in 700,000.
  */
 const SIGN_ALPHA = 0.005;
+/** The fewest pairs the sign test's pass path needs (none of them over T): 24, the gate's last escalation. */
+const SIGN_PASS_MIN = 24;
+/** Pairs (b - a) over T, in the order given; pass when there are SIGN_PASS_MIN or more and none is over. */
+function signPass(a, b, threshold) {
+  const d = [];
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (isNum(a[i]) && isNum(b[i])) d.push(b[i] - a[i]);
+  const over = d.filter((x) => x > threshold).length;
+  return { over, n: d.length, pass: d.length >= SIGN_PASS_MIN && over === 0 };
+}
 /** The fewest of n pairs over T that the sign test fails on, or null when even n of n is not enough. */
 function signCritical(n, alpha = SIGN_ALPHA) {
   if (!(n >= 1)) return null;
@@ -562,7 +955,10 @@ function signCritical(n, alpha = SIGN_ALPHA) {
  *   above T that the pairs agree on (wave 1's welcome_visible: +341 ms, every
  *   pair later and 23 of 24 over T, but sigma 141 against T 150, because
  *   main's loads sat in boot-race modes ~650 ms apart and the build's in
- *   one). Otherwise an invalid result never fails. sigmaSplitA is the plan's single split,
+ *   one). Otherwise an invalid result never fails. The pass path: a result
+ *   the sigma rule leaves inconclusive passes when n >= SIGN_PASS_MIN and no
+ *   difference is over the threshold (passedBy 'sign'); it never turns a
+ *   fail into a pass. sigmaSplitA is the plan's single split,
  * |median(A_odd) - median(A_even)|, kept for the record: one 3-vs-3 split
  * routinely understates the spread, so it does not decide anything.
  */
@@ -593,11 +989,16 @@ function judge(a, b, threshold) {
   const valid = sigma !== null && sigma <= threshold / 2;
   const over = d.filter((x) => x > threshold).length;
   const needed = signCritical(n);
-  const sign = { over, n, needed, fail: needed !== null && over >= needed };
+  const sign = { over, n, needed, fail: needed !== null && over >= needed, pass: n >= SIGN_PASS_MIN && over === 0 };
   let verdict = 'inconclusive';
+  let passedBy = null;
   if (valid && delta <= threshold) verdict = 'pass';
   else if ((valid && delta > threshold + sigma) || sign.fail) verdict = 'fail';
-  return { verdict, ...out, threshold, valid, sign, withinThreshold: Math.abs(delta) <= threshold };
+  else if (sign.pass) {
+    verdict = 'pass';
+    passedBy = 'sign';
+  }
+  return { verdict, ...out, threshold, valid, sign, ...(passedBy ? { passedBy } : {}), withinThreshold: Math.abs(delta) <= threshold };
 }
 
 /**
@@ -724,6 +1125,23 @@ function aaSpread({ a, b, ma = null, mb = null }, { name = '', n = null, resampl
   return round(ds[Math.min(ds.length - 1, Math.floor(q * ds.length))], 4);
 }
 
+/**
+ * A credit (FX_CREDIT): what an effect must SAVE, as B - A at or below a
+ * negative number, on judge()'s paired delta and band. Pass when delta is at
+ * or below the credit (with ciUpper: when delta + sigma is, the 95% band's
+ * upper bound); fail when even the band's lower bound misses it
+ * (delta - sigma > credit); otherwise inconclusive.
+ */
+function judgeCredit(a, b, credit, { ciUpper = false } = {}) {
+  const r = judge(a, b, null);
+  if (!r.n || !isNum(credit)) return { ...r, verdict: 'n/a' };
+  const sigma = isNum(r.sigma) ? r.sigma : null;
+  let verdict = 'inconclusive';
+  if (ciUpper ? sigma !== null && r.delta + sigma <= credit : r.delta <= credit) verdict = 'pass';
+  else if (sigma !== null && r.delta - sigma > credit) verdict = 'fail';
+  return { ...r, verdict, threshold: credit, rule: ciUpper ? 'credit: the band\'s upper bound (delta + sigma) at or below it' : 'credit: delta at or below it' };
+}
+
 /** The exact rule: |delta| <= threshold, and an A/A side must not move at all. */
 function judgeExact(a, b, threshold) {
   const r = judge(a, b, null);
@@ -731,6 +1149,27 @@ function judgeExact(a, b, threshold) {
   if (threshold === undefined || threshold === null) return { ...r, verdict: 'n/a' };
   const delta = median(b.filter(isNum)) - median(a.filter(isNum));
   return { ...r, delta: round(delta, 3), threshold, verdict: delta <= threshold ? 'pass' : 'fail', withinThreshold: Math.abs(delta) <= threshold };
+}
+
+/**
+ * An absolute bar on side B (the room view's first door: its longest frame
+ * and the programs it adds). Pass when B's median is within the bar; fail
+ * when it is over and nearly every load is (the sign test's count: 11 of 12,
+ * 19 of 24, never at 6), or at 24 cycles; otherwise inconclusive. Side A is
+ * reported beside it, so the row shows what main does.
+ */
+function judgeAbsolute(a, b, bar, { cycles = null } = {}) {
+  const A = a.filter(isNum);
+  const B = b.filter(isNum);
+  if (!B.length) return { verdict: 'n/a', n: 0 };
+  const out = { n: B.length, medianA: A.length ? round(median(A), 3) : null, medianB: round(median(B), 3), delta: A.length ? round(median(B) - median(A), 3) : null, range: [round(Math.min(...B), 3), round(Math.max(...B), 3)] };
+  if (bar === undefined || bar === null) return { verdict: 'n/a', ...out };
+  const over = B.filter((x) => x > bar).length;
+  const needed = signCritical(B.length);
+  let verdict = 'inconclusive';
+  if (median(B) <= bar) verdict = 'pass';
+  else if ((needed !== null && over >= needed) || (cycles !== null && cycles >= 24)) verdict = 'fail';
+  return { verdict, ...out, threshold: bar, sign: { over, n: B.length, needed } };
 }
 
 /**
@@ -813,12 +1252,26 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
    * sigma is still over T/2 at 24 cycles (then the CPU proxy, or
    * unresolvable). The paired sign test fails a shift above T on every rule.
    */
-  const timing = (name, f, thr, { proxyOf = null, a = null, b = null, extra = {} } = {}) => {
+  const timing = (name, f, thr, { proxyOf = null, a = null, b = null, order = null, extra = {} } = {}) => {
     const A = a || pick(cyclesA, f);
     const B = b || pick(cyclesB, f);
     const floorV = fl(name);
     const r = { kind: 'timing', ...judge(A, B, thr), floor: floorV, ...extra };
     const signFail = !!(r.sign && r.sign.fail);
+    // The pass path on the cycle-order pairs, when the row was paired some
+    // other way (welcome_visible by boot-race mode) and stayed inconclusive.
+    if (order && r.verdict === 'inconclusive' && thr !== undefined && thr !== null) {
+      const sp = signPass(order.a, order.b, thr);
+      r.signInCycleOrder = sp;
+      if (sp.pass) {
+        r.verdict = 'pass';
+        r.passedBy = 'sign';
+      }
+    }
+    const passRule = () => {
+      const sp = r.signInCycleOrder && r.signInCycleOrder.pass ? r.signInCycleOrder : r.sign;
+      return `sign test: ${sp.over} of ${sp.n} pairs over T${sp === r.sign ? '' : ' in cycle order'} (passes at 0 of ${SIGN_PASS_MIN} or more)`;
+    };
     const byProxy = () => {
       const p = proxy();
       r.rule = 'proxy: FxBudget µs per effect';
@@ -846,7 +1299,7 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
       r.unresolvable = `sigma ${r.sigma} > T/2 ${thr / 2} at ${cycles} cycles`;
       r.directVerdict = r.verdict;
       byProxy();
-    } else r.rule = thr === undefined || thr === null ? 'report only' : signFail ? signRule : 'sigma';
+    } else r.rule = thr === undefined || thr === null ? 'report only' : signFail ? signRule : r.passedBy === 'sign' ? passRule() : 'sigma';
     rows[name] = r;
   };
   // The boot race's mode for a load: its programs 30 s after the card, or at
@@ -867,10 +1320,16 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
   const exact = (name, f, thr) => {
     rows[name] = { kind: 'exact', rule: thr === undefined || thr === null ? 'exact (A/A equal), no budget' : 'exact', ...judgeExact(pick(cyclesA, f), pick(cyclesB, f), thr) };
   };
+  /** An absolute bar on side B (the first door's frame and programs). */
+  const absolute = (name, f, bar) => {
+    rows[name] = { kind: 'absolute', rule: bar === undefined || bar === null ? 'report only' : 'absolute: side B within the bar', ...judgeAbsolute(pick(cyclesA, f), pick(cyclesB, f), bar, { cycles }) };
+  };
   const startupRows = (suffix) => {
     // welcome_visible, compared like with like across the boot race's modes.
-    const st = stratify(pick(cyclesA, (c) => c.welcomeMs), pick(cyclesB, (c) => c.welcomeMs), pick(cyclesA, modeOf), pick(cyclesB, modeOf));
-    timing(`welcome_visible ms${suffix}`, null, T.welcomeMs, { a: st.a, b: st.b, extra: { stratified: st.stratified, strata: st.strata } });
+    const wA = pick(cyclesA, (c) => c.welcomeMs);
+    const wB = pick(cyclesB, (c) => c.welcomeMs);
+    const st = stratify(wA, wB, pick(cyclesA, modeOf), pick(cyclesB, modeOf));
+    timing(`welcome_visible ms${suffix}`, null, T.welcomeMs, { a: st.a, b: st.b, order: st.stratified ? { a: wA, b: wB } : null, extra: { stratified: st.stratified, strata: st.strata } });
     timing(`world_gen ms${suffix}`, (c) => c.worldGenMs, T.worldGenMs);
     timing(`longest task before the card ms${suffix}`, (c) => c.longestTaskBeforeCardMs, T.longestTaskBeforeCardMs);
     counter(`long tasks > 50 ms before the card${suffix}`, (c) => c.longTasksBeforeCard, T.longTasksBeforeCard);
@@ -890,6 +1349,18 @@ function metricTable(prof, cyclesA, cyclesB, floor = null, { cycles = null } = {
     counter(`${v}: draws`, (c) => c.views[v].draws, T[DRAW_KEY[v]]);
     counter(`${v}: triangles`, (c) => c.views[v].triangles, null);
   }
+  // P2-E3: the vehicle view (the 3 s drive's frames) and the room view. A
+  // load without them (a run saved before P2-E3) leaves these rows n/a.
+  timing('vehicle: CPU p50 ms', (c) => c.views.vehicle.cpuP50, null);
+  timing('vehicle: CPU p95 ms', (c) => c.views.vehicle.cpuP95, T.cpuP95, { proxyOf: 'cpu' });
+  if (T.gpuP50) timing('vehicle: GPU p50 ms', (c) => c.views.vehicle.gpuP50, T.gpuP50);
+  counter('vehicle: draws', (c) => c.views.vehicle.draws, T.drawsVehicle);
+  counter('vehicle: triangles', (c) => c.views.vehicle.triangles, null);
+  absolute('room: first-door longest frame ms', (c) => c.room.firstDoorFrameMs, T.roomFirstDoorMs);
+  absolute('room: programs added on entry', (c) => c.room.programsAdded, T.roomProgramsAdded);
+  timing('room: black interval ms (pixels)', (c) => c.room.blackMsPixels, null);
+  counter('room: draws', (c) => c.room.draws, T.drawsRoom);
+  timing('room: render p50 ms', (c) => c.room.renP50, null);
   // Programs ride the boot race (on s1-int desktop 154 or 165, the low tier
   // 101), so they are judged on its mix; nodes wander by a few. Counters
   // with floors.
@@ -926,7 +1397,8 @@ function aaSummary(profiles) {
         out.exactCounters.push({ profile: prof, metric: k, range: r.range, equal });
         if (!equal) out.exactCountersEqual = false;
       }
-      if (r.threshold === undefined || r.threshold === null || !isNum(r.delta)) continue;
+      // An absolute row's threshold is a bar on side B, not on the delta.
+      if (r.kind === 'absolute' || r.threshold === undefined || r.threshold === null || !isNum(r.delta)) continue;
       const tc = Math.max(r.threshold, isNum(r.floor) ? r.floor : 0);
       const within = r.withinThreshold === false ? false : Math.abs(r.delta) <= tc;
       if (!within) out.outsideThreshold.push({ profile: prof, metric: k, delta: r.delta, sigma: r.sigma, threshold: r.threshold, floor: isNum(r.floor) ? r.floor : null });
@@ -979,7 +1451,8 @@ async function modeAB(args) {
     throw e;
   }
   const browser = await lib.launch();
-  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, sameDist: srvA.dist === srvB.dist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, floorQuiet: floor ? floorQuiet(floor) : null, profiles: {}, leaks: [], signUpMissing: 0 };
+  const sizeA = bundleSize(srvA.dist);
+  const data = { mode: 'ab', distA: srvA.dist, distB: srvB.dist, bundle: { A: sizeA, B: bundleCheck(bundleSize(srvB.dist), sizeA || BUNDLE.main), againstMain: bundleCheck(bundleSize(srvB.dist)) }, sameDist: srvA.dist === srvB.dist, floorFile: floorFile.replace(/\\/g, '/'), floorRecorded: floor ? floor.recorded || null : null, floorQuiet: floor ? floorQuiet(floor) : null, profiles: {}, leaks: [], signUpMissing: 0 };
   if (recordFloor && !data.sameDist) throw new lib.HarnessError('--record-floor needs an A/A run: --ab <dist> <dist>');
   try {
     for (const prof of profiles) {
@@ -1035,6 +1508,8 @@ async function modeAB(args) {
       };
       if (pose) process.stdout.write(`  ${prof} pose check: ${pose.equal ? 'equal' : 'DIFFERENT'} — ${Object.entries(pose.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad`).join('; ')}\n`);
     }
+    // --dusk: the dusk check once per side, each in a browser of its own.
+    if (args.dusk) data.dusk = { A: await duskRuns(srvA.url, profiles, data), B: await duskRuns(srvB.url, profiles, data) };
   } finally {
     await browser.close().catch(() => {});
     await srvA.stop();
@@ -1042,6 +1517,12 @@ async function modeAB(args) {
   }
   const verdicts = Object.values(data.profiles).map((p) => p.verdict);
   let v = verdicts.includes('fail') ? 'fail' : verdicts.includes('inconclusive') ? 'inconclusive' : 'pass';
+  if (data.dusk) {
+    // Side B is held to the bar; side A is there to show what main does.
+    data.duskVerdict = duskVerdict(data.dusk.B);
+    if (data.duskVerdict === 'fail') v = 'fail';
+    else if (data.duskVerdict === 'inconclusive' && v === 'pass') v = 'inconclusive';
+  }
   if (data.signUpMissing) v = v === 'fail' ? v : 'inconclusive';
   if (data.sameDist) {
     // A/A: pass or inconclusive, never fail; every |delta| within
@@ -1111,6 +1592,59 @@ function modeRejudge(args) {
   return data;
 }
 
+/**
+ * The main chunk's size (wave-2 amendments). Wave 1 took it over Vite's
+ * 1,000 kB chunk warning (vite.config.ts chunkSizeWarningLimit, which stays
+ * where it is). kB are Vite's: bytes / 1000, gzip at zlib's default level.
+ * - main: the merged wave-1 main (8662b27), the baseline every report is
+ *   held against; beforeWave1 is main before it (d5e0e96), for the record.
+ * - gzipBudgetKB: the plan's '+50 KB transferred before the card' (the main
+ *   chunk is fetched before the card); the gating half of the check.
+ * - lazyCandidate: the largest whole module in the chunk that nothing needs
+ *   before the welcome card, measured on ux/w2-perf-gate by minifying each
+ *   module of the chunk on its own (esbuild, then gzip). GameScene.ts,
+ *   SimpleUI.ts, Island.ts and main-simple.ts are 69% of the chunk and are
+ *   not candidates as whole files. Its owner moves it in wave 3.
+ */
+const BUNDLE = {
+  warnKB: 1000,
+  main: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
+  beforeWave1: { rawKB: 930.89, gzipKB: 288.04, at: 'main before wave 1 (d5e0e96)' },
+  gzipBudgetKB: 50,
+  lazyCandidate: {
+    module: 'Multiplayer.ts',
+    minKB: 14.07,
+    gzipKB: 5.17,
+    owners: 'A imports it (main-simple.ts), B owns the file',
+    how: "main-simple.ts builds it after the world, so a dynamic import() there moves it out; Chat.ts (7.0 kB, 2.77 gzip) can follow once SimpleUI.ts stops importing Chat's VOICE_MAX_MS",
+  },
+};
+const kB = (bytes) => round(bytes / 1000, 2);
+/** A dist's main chunk: { file, rawKB, gzipKB }, or null when the dist has none (a --base run). */
+function bundleSize(dist) {
+  try {
+    const dir = path.join(dist, 'assets');
+    const file = fs.readdirSync(dir).find((f) => /^main-[\w-]+\.js$/.test(f));
+    if (!file) return null;
+    const buf = fs.readFileSync(path.join(dir, file));
+    return { file, rawKB: kB(buf.length), gzipKB: kB(zlib.gzipSync(buf).length) };
+  } catch (e) {
+    return null;
+  }
+}
+/**
+ * A main chunk against a baseline ({ rawKB, gzipKB }; BUNDLE.main unless side
+ * A of an A/B is given). pass: gzip grew by no more than gzipBudgetKB.
+ * overWarning is reported, never gating: the chunk was already over on main.
+ */
+function bundleCheck(size, base = BUNDLE.main) {
+  if (!size) return null;
+  const deltaRawKB = round(size.rawKB - base.rawKB, 2);
+  const deltaGzipKB = round(size.gzipKB - base.gzipKB, 2);
+  const overWarningKB = round(size.rawKB - BUNDLE.warnKB, 2);
+  return { ...size, base, deltaRawKB, deltaGzipKB, overWarning: overWarningKB > 0, overWarningKB, pass: deltaGzipKB <= BUNDLE.gzipBudgetKB };
+}
+
 /** A dist's entry bundle (main-<hash>.js), or its folder name when it has none. */
 function bundleOf(dist) {
   try {
@@ -1127,6 +1661,18 @@ function bundleOf(dist) {
  * that reads it says so.
  */
 const QUIET_OTHER_PCT = 10;
+/**
+ * Was the host quiet for a profile's loads? otherBusyPct is { p50, max }, the
+ * share of the machine other processes took. Over QUIET_OTHER_PCT the timing
+ * rows are noise: an inconclusive verdict is then the host's, not the
+ * build's, and the run is to be made again, alone (wave-2 amendments).
+ */
+function hostNote(otherBusyPct, verdict) {
+  if (!otherBusyPct || !isNum(otherBusyPct.p50)) return null;
+  if (otherBusyPct.p50 <= QUIET_OTHER_PCT) return null;
+  const what = verdict === 'inconclusive' ? 'this inconclusive verdict is the host\'s, not the build\'s' : verdict === 'fail' ? 'counters hold, but confirm any timing fail on a quiet host' : 'timing rows passed in spite of it';
+  return `host not quiet: other processes took ${otherBusyPct.p50}% of the machine (median; quiet is ${QUIET_OTHER_PCT}% or less). Run the gate alone: ${what}`;
+}
 function floorQuiet(floor) {
   const q = floor && floor.recorded && floor.recorded.quiet;
   if (!q || typeof q !== 'object') return { known: false, busy: [] };
@@ -1200,14 +1746,16 @@ const FX_PAIR = ({ name }) => {
     window.__dsFx[name] = v;
     let draws = 0;
     let triangles = 0;
+    let shadow = 0;
     for (let k = 0; k < 2; k++) {
       sr.renderCallback(1 / 240);
       R.info.reset();
       sr.render();
       draws += R.info.render.calls;
       triangles += R.info.render.triangles;
+      shadow += window.__gate.shadowNow || 0;
     }
-    return { draws: draws / 2, triangles: triangles / 2, programs: R.info.programs ? R.info.programs.length : null };
+    return { draws: draws / 2, triangles: triangles / 2, shadowDraws: shadow / 2, programs: R.info.programs ? R.info.programs.length : null };
   };
   const off = side(false);
   const on = side(true);
@@ -1302,8 +1850,21 @@ async function modeFx(args) {
             'spawn: CPU p50 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP50), onW.map((x) => x.cpuP50), T.cpuP50) },
             'spawn: CPU p95 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
           };
-          if (T.gpuP50) rows['spawn: GPU p50 ms'] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50) };
+          rows['spawn: CPU mean ms'] = { kind: 'timing', ...judge(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), null) };
+          rows['spawn: GPU p50 ms'] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50 ?? null) };
           for (const view of VIEWS) rows[`${view}: draws`] = { kind: 'counter', ...counters[view].draws };
+          // What the effect is meant to save (FX_CREDIT), held beside the budgets.
+          const credit = (FX_CREDIT[name] || {})[prof] || null;
+          if (credit) {
+            if (isNum(credit.gpuP50)) rows['credit: spawn GPU p50 ms'] = { kind: 'credit', ...judgeCredit(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), credit.gpuP50) };
+            if (isNum(credit.cpuMean)) rows['credit: spawn mean CPU ms'] = { kind: 'credit', ...judgeCredit(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), credit.cpuMean, { ciUpper: true }) };
+            const sd = (side) => median(counters.spawn[side].map((x) => x.shadowDraws));
+            if (credit.shadowDrawsSpawn) {
+              const { value, tol } = credit.shadowDrawsSpawn;
+              rows['credit: spawn shadow draws with the effect on'] = { kind: 'credit', verdict: Math.abs(sd('on') - value) <= tol ? 'pass' : 'fail', medianA: round(sd('off'), 1), medianB: round(sd('on'), 1), delta: round(sd('on') - sd('off'), 1), threshold: `${value} +-${tol}`, n: counters.spawn.on.length };
+            }
+            if (credit.shadowDrawsUnchanged) rows['credit: spawn shadow draws unchanged'] = { kind: 'credit', verdict: Math.abs(sd('on') - sd('off')) <= 0.5 ? 'pass' : 'fail', medianA: round(sd('off'), 1), medianB: round(sd('on'), 1), delta: round(sd('on') - sd('off'), 1), threshold: 'on = off', n: counters.spawn.on.length };
+          }
           rows['programs the effect adds'] = { kind: 'counter', verdict: programsAdded <= T.programs ? 'pass' : 'fail', delta: programsAdded, threshold: T.programs, n: 1 };
           const us = onW.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
           // The effect's own ledger line when plan-r3 gives one, inside the tier's per-effect cap.
@@ -1387,6 +1948,17 @@ async function modeReport(args) {
       if (prof === 'desktop') check('desktop: idle CPU p95 ms (sanity, report-only)', null, r.views.spawn.cpuP95, `~${BASELINE.desktop.idleCpuP95} ±15% on the audit rig`, true);
       check(`${prof}: render() calls that created programs (B2 ledger, report-only)`, null, r.renderProgramAdds.map((x) => `+${x.added} ${x.ms} ms`), 'none after B2', true);
       check(`${prof}: host CPU busy during the load (report-only)`, null, r.hostBusyPct, 'other sessions add timing noise', true);
+      // P2-E3: the vehicle and room views. The room's draws are gated by the
+      // A/B (main + 25 on desktop, main + 0 on the low tier); its first door
+      // is held to the ledger's absolute bars here too.
+      const veh = r.views.vehicle;
+      const room = r.room;
+      const T = THRESHOLDS[prof];
+      check(`${prof}: the vehicle view has more draws than the idle spawn (report-only)`, null, { vehicle: veh.draws, spawn: r.views.spawn.draws, offPathU: veh.drive.offPathU, alongU: veh.drive.alongU }, 'vehicle > spawn', true);
+      check(`${prof}: room, the first door's longest frame ms`, room.inside ? room.firstDoorFrameMs <= T.roomFirstDoorMs : false, room.inside ? room.firstDoorFrameMs : room.error, `<= ${T.roomFirstDoorMs}`);
+      check(`${prof}: room, programs added on entry`, room.inside ? room.programsAdded <= T.roomProgramsAdded : false, room.programsAdded, `<= ${T.roomProgramsAdded}`);
+      check(`${prof}: room, black interval ms (report-only)`, null, { pixels: room.blackMsPixels, opacity: room.blackMsOpacity, press: room.press }, 'reported', true);
+      check(`${prof}: room draws and render p50 ms (report-only; A/B gates the draws)`, null, { draws: room.draws, renP50: room.renP50 }, prof === 'desktop' ? `main + ${T.drawsRoom}` : 'no more than main', true);
       if (args.seed) {
         const g = lib.goldenFor(golden, prof);
         const rel = path.relative(process.cwd(), goldenFile);
@@ -1400,6 +1972,16 @@ async function modeReport(args) {
     await browser.close().catch(() => {});
     await server.stop();
   }
+  // The main chunk against wave-1 main (needs a dist on disk; a --base run has none).
+  const bundle = bundleCheck(server.dist ? bundleSize(server.dist) : null);
+  data.bundle = bundle;
+  if (bundle) {
+    const m = BUNDLE.main;
+    const c = BUNDLE.lazyCandidate;
+    check(`bundle: main chunk gzip kB against main (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB }, `<= main ${m.gzipKB} + ${BUNDLE.gzipBudgetKB} (${m.at})`);
+    check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
+    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `best lazy-load candidate: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners})`, true);
+  } else check('bundle: main chunk size (report-only)', null, 'no dist on disk (a --base run)', 'reported with --dist', true);
   const gating = data.checks.filter((c) => !c.reportOnly);
   data.verdict = data.leaks.length ? 'fail-closed' : gating.some((c) => c.pass === false) ? 'fail' : data.signUpMissing ? 'inconclusive' : 'pass';
   return data;
@@ -1459,10 +2041,16 @@ function printSummary(data) {
   if (data.mode === 'rejudge' && data.source) lines.push(`  re-judged ${data.source} (it read ${data.sourceVerdict}) against ${data.floorFile}`);
   if (data.floorQuiet && data.floorQuiet.busy.length) lines.push(`  note: the floor file was recorded on a busy host (${data.floorQuiet.busy.join(', ')}: other processes over ${QUIET_OTHER_PCT}% of the machine); re-record it on a quiet one`);
   else if (data.floorQuiet && !data.floorQuiet.known) lines.push('  note: the floor file does not say how quiet the host was; re-record it with --record-floor');
+  if (data.mode === 'ab' && data.bundle && data.bundle.B) {
+    const b = data.bundle.B;
+    lines.push(`  bundle: main chunk B ${b.rawKB} kB raw, ${b.gzipKB} kB gzip; against A ${b.deltaRawKB >= 0 ? '+' : ''}${b.deltaRawKB} raw, ${b.deltaGzipKB >= 0 ? '+' : ''}${b.deltaGzipKB} gzip${b.overWarning ? `; over Vite's ${BUNDLE.warnKB} kB warning by ${b.overWarningKB}` : ''} (report-only here; --report gates gzip)`);
+  }
   if (data.mode === 'report') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
+      const note = hostNote(p.otherBusyPct, p.verdict);
+      if (note) lines.push(`    note: ${note}`);
       if (p.checkpoints && p.checkpoints.length > 1) lines.push(`    checkpoints: ${p.checkpoints.map((c) => `${c.cycles} cycles ${c.verdict}${c.fails.length ? ` (FAIL ${c.fails.join(', ')})` : ''}`).join('; ')}`);
       if (p.poseCheck) lines.push(`    pose check: ${p.poseCheck.equal ? 'equal' : 'DIFFERENT (the run cannot pass)'}; ${Object.entries(p.poseCheck.views).map(([v, r]) => `${v} camera pitch A ${r.camPitch.medianA} B ${r.camPitch.medianB} rad, orbit pitch A ${r.ocPitch.medianA} B ${r.ocPitch.medianB}`).join('; ')}`);
       for (const [k, r] of Object.entries(p.metrics)) {
@@ -1472,6 +2060,10 @@ function printSummary(data) {
           lines.push(`    ${String(r.verdict).padEnd(12)} ${k}: sum ${r.sum ?? '-'} µs (each <= ${r.each ?? '-'}, all <= ${r.total ?? '-'})${r.over && r.over.length ? `, over: ${r.over.join(', ')}` : ''}${r.note ? ` (${r.note})` : ''}`);
           continue;
         }
+        if (r.kind === 'absolute') {
+          lines.push(`    ${String(r.verdict).padEnd(12)} ${k}: B ${r.medianB} (A ${r.medianA ?? '-'}) bar ${r.threshold ?? '-'}${r.sign && r.verdict !== 'pass' ? `, ${r.sign.over} of ${r.sign.n} loads over` : ''}`);
+          continue;
+        }
         const why = r.verdict === 'inconclusive' && r.valid === false ? '  (sigma > thr/2)' : '';
         const fl = isNum(r.floor) ? ` floor ${r.floor}` : '';
         const tc = isNum(r.thresholdUsed) && r.thresholdUsed !== r.threshold ? ` (judged at ${r.thresholdUsed})` : '';
@@ -1479,6 +2071,11 @@ function printSummary(data) {
         lines.push(`    ${String(r.verdict).padEnd(12)} ${k}: Δ ${r.delta ?? r.medianB} σ ${r.sigma ?? '-'} thr ${r.threshold ?? '-'}${fl}${tc}${why}${rule}`);
       }
     }
+  if (data.dusk) {
+    const sides = data.mode === 'dusk' ? { '': data.dusk } : data.dusk;
+    for (const [side, runs] of Object.entries(sides))
+      for (const [prof, r] of Object.entries(runs)) lines.push(`  ${r.pass === true ? 'PASS' : r.pass === false ? 'FAIL' : '  ? '} dusk${side ? ` (${side})` : ''} ${prof}: ${r.error ? r.error : `longest task ${r.longestMs} ms crossing 17:00 to 17:30 (want < ${DUSK_LONGEST_MS}); lights ${JSON.stringify(r.before.lights)} -> ${JSON.stringify(r.after.lights)}, programs +${r.programsAdded}${r.note ? ` (${r.note})` : ''}`}`);
+  }
   if (data.aa) {
     lines.push(`  A/A: verdict never fail ${data.aa.verdictNeverFail}; exact counters equal ${data.aa.exactCountersEqual}; |Δ| over max(T, floor): ${data.aa.outsideThreshold.length ? data.aa.outsideThreshold.map((x) => `${x.profile} ${x.metric} ${x.delta}`).join('; ') : 'none'}`);
   }
@@ -1492,9 +2089,9 @@ function printSummary(data) {
 }
 
 async function main() {
-  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor'] });
+  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor', 'dusk'] });
   if (args.help) {
-    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 34).join('\n') + '\n');
+    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 43).join('\n') + '\n');
     return 0;
   }
   const out = lib.outDir(args, 'perf-gate');
@@ -1504,9 +2101,10 @@ async function main() {
     if (args.rejudge) data = modeRejudge(args);
     else if (args.ab) data = await modeAB(args);
     else if (args.fx) data = await modeFx(args);
+    else if (args.dusk) data = await modeDusk(args);
     else data = await modeReport(args);
   } catch (e) {
-    data = { mode: args.rejudge ? 'rejudge' : args.ab ? 'ab' : args.fx ? 'fx' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
+    data = { mode: args.rejudge ? 'rejudge' : args.ab ? 'ab' : args.fx ? 'fx' : args.dusk ? 'dusk' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
   }
   data.startedAt = startedAt;
   data.finishedAt = new Date().toISOString();
@@ -1534,4 +2132,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { judge, signCritical, SIGN_ALPHA, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

@@ -588,12 +588,17 @@ describe('perf gate: the sign test and the 24-cycle CPU proxy (wave-1 integratio
     rule?: string;
     unresolvable?: string;
     directVerdict?: string;
-    sign?: { over: number; n: number; needed: number | null; fail: boolean };
+    sign?: { over: number; n: number; needed: number | null; fail: boolean; pass?: boolean };
+    signInCycleOrder?: { over: number; n: number; pass: boolean };
+    passedBy?: string;
+    stratified?: boolean;
     strata?: Record<string, unknown>;
   };
   type Cycle = Record<string, unknown>;
   const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
     SIGN_ALPHA: number;
+    SIGN_PASS_MIN: number;
+    signPass: (a: number[], b: number[], t: number) => { over: number; n: number; pass: boolean };
     signCritical: (n: number, alpha?: number) => number | null;
     judge: (a: number[], b: number[], threshold: number | null) => Row;
     stratify: (
@@ -761,5 +766,486 @@ describe('perf gate: the sign test and the 24-cycle CPU proxy (wave-1 integratio
     expect(r.unresolvable).toMatch(/T 50 < 2 x floor 30/);
     expect(r.rule).toMatch(/sign test: 24 of 24 pairs over T/);
     expect(r.verdict).toBe('fail');
+  });
+
+  // Wave-1 re-verify: the gate could not return PASS for a timing that
+  // improved a lot. The 24 desktop pairs, main in two boot-race modes.
+  const rvMain = [
+    5230, 5249, 5241, 4640, 5236, 5222, 5228, 5244, 5219, 5232, 4655, 5240, 5226, 5231, 5238, 5247,
+    5225, 5229, 4633, 5234, 5243, 5221, 5237, 5227,
+  ];
+  const rvBuild = rvMain.map((x, i) =>
+    i === 3 ? x + 17 : i === 18 ? x + 48 : x > 5000 ? x - 600 : x - 40,
+  );
+
+  test('a timing that improved passes at 24 cycles when no pair is over T', () => {
+    expect(gate.SIGN_PASS_MIN).toBe(24);
+    const r = gate.judge(rvMain, rvBuild, 150);
+    // 22 of 24 pairs earlier, 2 later (+17 and +48 ms), none over T; sigma over T/2.
+    expect(r.valid).toBe(false);
+    expect(r.sign).toMatchObject({ over: 0, n: 24, fail: false, pass: true });
+    expect(r.verdict).toBe('pass');
+    expect(r.passedBy).toBe('sign');
+    // Before 24 cycles the run escalates, as it did.
+    const twelve = gate.judge(rvMain.slice(0, 12), rvBuild.slice(0, 12), 150);
+    expect(twelve.sign?.pass).toBe(false);
+    expect(twelve.verdict).toBe('inconclusive');
+    // One pair over T at 24 cycles: no pass by sign.
+    const one = gate.judge(
+      rvMain,
+      rvBuild.map((x, i) => (i === 5 ? rvMain[i] + 151 : x)),
+      150,
+    );
+    expect(one.sign).toMatchObject({ over: 1, pass: false });
+    expect(one.verdict).toBe('inconclusive');
+    // The sigma rule's own pass is not relabelled.
+    const quiet = gate.judge(
+      rvMain.map(() => 5000),
+      rvMain.map((_, i) => 5010 + (i % 2)),
+      150,
+    );
+    expect(quiet.verdict).toBe('pass');
+    expect(quiet.passedBy).toBeUndefined();
+  });
+
+  test('the pass path never rescues a fail, and the fail path is as it was', () => {
+    // Every pair over T: the sign test fails it at 24 and at 12.
+    const worse = rvMain.map((x) => x + 400);
+    expect(gate.judge(rvMain, worse, 150).verdict).toBe('fail');
+    expect(gate.judge(rvMain, worse, 150).passedBy).toBeUndefined();
+    expect(gate.signCritical(24)).toBe(19);
+    // A valid fail (delta over T + sigma) with no sign-test fail stays a fail.
+    const flat = rvMain.map(() => 5000);
+    const r = gate.judge(
+      flat,
+      flat.map((x, i) => x + (i < 14 ? 160 : 140)),
+      150,
+    );
+    expect(r.sign?.fail).toBe(false);
+    expect(r.valid).toBe(true);
+    expect(r.verdict).toBe('fail');
+    // signPass counts in the order given and needs 24 pairs.
+    expect(gate.signPass(rvMain, rvBuild, 150)).toEqual({ over: 0, n: 24, pass: true });
+    expect(gate.signPass(rvMain.slice(0, 23), rvBuild.slice(0, 23), 150).pass).toBe(false);
+  });
+
+  test('welcome_visible paired by boot-race mode passes on its cycle-order pairs, and says so', () => {
+    // Main mostly in the late mode, the build mostly in the early one: the
+    // mode-matched pairing keeps 6 pairs (and a wide sigma), too few for the pass path.
+    const progsA = rvMain.map((x) => (x > 5000 ? 165 : 154));
+    const progsB = rvMain.map((_, i) => (i % 8 === 0 ? 165 : 154));
+    const a = rvMain.map((w, i) => ({
+      ...cyc(17, { guide: 5 }),
+      welcomeMs: w,
+      programs: progsA[i],
+    }));
+    const b = rvBuild.map((w, i) => ({
+      ...cyc(17, { guide: 5 }),
+      welcomeMs: w + (i % 8 === 0 ? [560, 300, 700][i / 8] : 0),
+      programs: progsB[i],
+    }));
+    const row = gate.metricTable('desktop', a, b, null, { cycles: 24 })['welcome_visible ms'];
+    expect(row.stratified).toBe(true);
+    expect((row.sign as { n: number }).n).toBeLessThan(24);
+    expect(row.signInCycleOrder).toEqual({ over: 0, n: 24, pass: true });
+    expect(row.verdict).toBe('pass');
+    expect(row.rule).toMatch(/sign test: 0 of 24 pairs over T in cycle order/);
+    // At 12 cycles it is still inconclusive.
+    const early = gate.metricTable('desktop', a.slice(0, 12), b.slice(0, 12), null, { cycles: 12 });
+    expect(early['welcome_visible ms'].verdict).toBe('inconclusive');
+    // A cycle-order pair over T keeps it inconclusive.
+    const b2 = b.map((c, i) =>
+      i === 1 ? { ...c, welcomeMs: (a[1].welcomeMs as number) + 200 } : c,
+    );
+    const row2 = gate.metricTable('desktop', a, b2, null, { cycles: 24 })['welcome_visible ms'];
+    expect(row2.signInCycleOrder?.pass).toBe(false);
+    expect(row2.verdict).not.toBe('pass');
+  });
+});
+
+// P2-E3: the gate measures a vehicle view and a room view per load, and has a
+// dusk check; --fx holds an effect to what it is meant to save (FX_CREDIT).
+describe('perf gate: the vehicle and room views, the dusk check and credits (P2-E3)', () => {
+  type Row = {
+    verdict: string;
+    kind?: string;
+    rule?: string;
+    delta?: number | null;
+    medianA?: number | null;
+    medianB?: number | null;
+    threshold?: number | string;
+    thresholdUsed?: number;
+    sign?: { over: number; n: number; needed: number | null };
+  };
+  type Cycle = Record<string, unknown>;
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    THRESHOLDS: Record<string, Record<string, number>>;
+    FX_CREDIT: Record<string, Record<string, Record<string, unknown>>>;
+    DUSK_LONGEST_MS: number;
+    judgeAbsolute: (
+      a: Array<number | null>,
+      b: Array<number | null>,
+      bar: number | null,
+      o?: { cycles?: number },
+    ) => Row;
+    judgeCredit: (a: number[], b: number[], credit: number, o?: { ciUpper?: boolean }) => Row;
+    duskVerdict: (runs: Record<string, { pass: boolean | null }> | null) => string;
+    frameNumbers: (
+      f: Record<string, number[] | number>,
+      ms: number,
+    ) => Record<string, number | null>;
+    metricTable: (
+      prof: string,
+      a: Cycle[],
+      b: Cycle[],
+      floor?: unknown,
+      o?: { cycles?: number },
+    ) => Record<string, Row>;
+    overall: (rows: Record<string, Row>) => string;
+    aaSummary: (profiles: Record<string, unknown>) => {
+      outsideThreshold: Array<{ metric: string }>;
+    };
+  };
+
+  /** A load with the three posed views, the vehicle view and the room view. */
+  const load = (
+    o: {
+      vehicleDraws?: number;
+      roomDraws?: number;
+      firstDoorMs?: number;
+      programsAdded?: number;
+    } = {},
+  ): Cycle => {
+    const view = (draws: number) => ({
+      cpuP50: 7,
+      cpuP95: 9,
+      gpuP50: 5,
+      draws,
+      triangles: 1e6,
+      fxUsPerFrame: {},
+      pose: { camPitch: 0.5, ocPitch: -0.5 },
+    });
+    return {
+      views: {
+        spawn: view(650),
+        hub: view(1780),
+        projects: view(1250),
+        vehicle: view(o.vehicleDraws ?? 1466),
+      },
+      room: {
+        inside: true,
+        firstDoorFrameMs: o.firstDoorMs ?? 60,
+        programsAdded: o.programsAdded ?? 0,
+        blackMsPixels: 680,
+        draws: o.roomDraws ?? 105,
+        renP50: 8.9,
+      },
+      programs: 139,
+      programsAfterViews: 139,
+      nodes: 7400,
+      textureMB: 18.5,
+      welcomeMs: 5000,
+      worldGenMs: 1400,
+      longestTaskBeforeCardMs: 300,
+      longTasksBeforeCard: 6,
+      bytesBeforeCardKB: 811,
+    };
+  };
+  const six = (o?: Parameters<typeof load>[0]): Cycle[] => Array.from({ length: 6 }, () => load(o));
+
+  test('the ledger: the draws of the vehicle view and the bars of the room view', () => {
+    expect(gate.THRESHOLDS.desktop).toMatchObject({
+      drawsVehicle: 60,
+      drawsRoom: 25,
+      roomFirstDoorMs: 100,
+      roomProgramsAdded: 3,
+    });
+    expect(gate.THRESHOLDS.lowtier).toMatchObject({
+      drawsVehicle: 25,
+      drawsRoom: 0,
+      roomFirstDoorMs: 200,
+      roomProgramsAdded: 3,
+    });
+    expect(gate.DUSK_LONGEST_MS).toBe(100);
+  });
+
+  test('an absolute bar judges side B alone, and never fails on 6 loads', () => {
+    const main = [60, 55, 70, 62, 58, 66];
+    expect(gate.judgeAbsolute(main, main, 100).verdict).toBe('pass');
+    // Main over the bar does not excuse the branch, and the branch under it passes.
+    const slow = main.map((x) => x + 1300);
+    expect(gate.judgeAbsolute(slow, main, 100).verdict).toBe('pass');
+    // Every load over the bar: inconclusive at 6 (the sign test needs 11 of 12), fail at 12.
+    expect(gate.judgeAbsolute(main, slow, 100, { cycles: 6 }).verdict).toBe('inconclusive');
+    const twelve = [...slow, ...slow];
+    const r = gate.judgeAbsolute([...main, ...main], twelve, 100, { cycles: 12 });
+    expect(r.verdict).toBe('fail');
+    expect(r.sign).toEqual({ over: 12, n: 12, needed: 11 });
+    // One slow load in six leaves the median under the bar.
+    expect(gate.judgeAbsolute(main, [60, 55, 900, 62, 58, 66], 100).verdict).toBe('pass');
+    // A median over the bar at 24 cycles fails, however the loads split.
+    const split = Array.from({ length: 24 }, (_, i) => (i % 2 ? 90 : 140));
+    expect(gate.judgeAbsolute(split, split, 100, { cycles: 24 }).verdict).toBe('fail');
+    // No loads, or no bar: reported.
+    expect(gate.judgeAbsolute([], [], 100).verdict).toBe('n/a');
+    expect(gate.judgeAbsolute(main, main, null).verdict).toBe('n/a');
+  });
+
+  test('the table gains the vehicle and room rows, judged by the ledger', () => {
+    const rows = gate.metricTable('desktop', six(), six(), null, { cycles: 6 });
+    expect(rows['vehicle: draws']).toMatchObject({ verdict: 'pass', threshold: 60 });
+    expect(rows['vehicle: CPU p95 ms'].verdict).toBe('pass');
+    expect(rows['room: draws']).toMatchObject({ verdict: 'pass', threshold: 25 });
+    expect(rows['room: first-door longest frame ms']).toMatchObject({
+      kind: 'absolute',
+      verdict: 'pass',
+      medianB: 60,
+      threshold: 100,
+    });
+    expect(rows['room: programs added on entry']).toMatchObject({ verdict: 'pass', threshold: 3 });
+    expect(gate.overall(rows)).toBe('pass');
+    // +70 draws in the vehicle view is over its +60.
+    const heavy = gate.metricTable('desktop', six(), six({ vehicleDraws: 1536 }), null, {
+      cycles: 6,
+    });
+    expect(heavy['vehicle: draws'].verdict).toBe('fail');
+    // The low tier's room may not draw more than main's: +1 fails, 0 passes.
+    expect(
+      gate.metricTable('lowtier', six({ roomDraws: 74 }), six({ roomDraws: 75 }), null, {
+        cycles: 6,
+      })['room: draws'].verdict,
+    ).toBe('fail');
+    expect(
+      gate.metricTable('lowtier', six({ roomDraws: 74 }), six({ roomDraws: 74 }), null, {
+        cycles: 6,
+      })['room: draws'].verdict,
+    ).toBe('pass');
+    // 58c8849's first door on the low tier (1.4 s, +33 programs) against the 200 ms bar.
+    const old = Array.from({ length: 12 }, () => load({ firstDoorMs: 1414, programsAdded: 33 }));
+    const good = Array.from({ length: 12 }, () => load());
+    const t = gate.metricTable('lowtier', good, old, null, { cycles: 12 });
+    expect(t['room: first-door longest frame ms'].verdict).toBe('fail');
+    expect(t['room: programs added on entry'].verdict).toBe('fail');
+  });
+
+  test('a run saved before P2-E3 leaves the new rows n/a and its verdict alone', () => {
+    const strip = (c: Cycle): Cycle => {
+      const views = { ...(c.views as Record<string, unknown>) };
+      delete views.vehicle;
+      return { ...c, views, room: undefined };
+    };
+    const old = six().map(strip);
+    const rows = gate.metricTable('desktop', old, old, null, { cycles: 6 });
+    for (const k of [
+      'vehicle: draws',
+      'vehicle: CPU p95 ms',
+      'room: draws',
+      'room: first-door longest frame ms',
+      'room: programs added on entry',
+    ]) {
+      expect(rows[k].verdict, k).toBe('n/a');
+    }
+    expect(gate.overall(rows)).toBe('pass');
+  });
+
+  test('the A/A summary does not read an absolute bar as a delta budget', () => {
+    const rows = gate.metricTable('desktop', six(), six(), null, { cycles: 6 });
+    const aa = gate.aaSummary({ desktop: { verdict: 'pass', metrics: rows } });
+    expect(aa.outsideThreshold.map((x) => x.metric)).toEqual([]);
+  });
+
+  test('the dusk check: side B over the bar fails, an error is inconclusive', () => {
+    expect(gate.duskVerdict({ desktop: { pass: true }, lowtier: { pass: true } })).toBe('pass');
+    expect(gate.duskVerdict({ desktop: { pass: true }, lowtier: { pass: false } })).toBe('fail');
+    expect(gate.duskVerdict({ desktop: { pass: null } })).toBe('inconclusive');
+    expect(gate.duskVerdict({})).toBe('inconclusive');
+  });
+
+  test('a credit is what an effect must save: E2 on the low tier', () => {
+    expect(gate.FX_CREDIT.halfShadow.lowtier).toEqual({
+      gpuP50: -0.6,
+      cpuMean: -0.4,
+      shadowDrawsSpawn: { value: 47.5, tol: 3 },
+    });
+    expect(gate.FX_CREDIT.halfShadow.desktop).toEqual({ shadowDrawsUnchanged: true });
+    const off = [6.4, 6.5, 6.3, 6.6, 6.4, 6.5, 6.4, 6.5];
+    // -0.9 ms on every pair: at or below the -0.6 credit.
+    expect(
+      gate.judgeCredit(
+        off,
+        off.map((x) => x - 0.9),
+        -0.6,
+      ).verdict,
+    ).toBe('pass');
+    // -0.2 ms on every pair misses it outright.
+    expect(
+      gate.judgeCredit(
+        off,
+        off.map((x) => x - 0.2),
+        -0.6,
+      ).verdict,
+    ).toBe('fail');
+    // The upper bound of the band: a -0.5 ms saving with 0.3 of noise either
+    // way does not prove -0.4 (inconclusive), while a steady -0.5 does.
+    const noisy = off.map((x, i) => x - 0.5 + (i % 2 ? 0.3 : -0.3));
+    expect(gate.judgeCredit(off, noisy, -0.4, { ciUpper: true }).verdict).toBe('inconclusive');
+    expect(
+      gate.judgeCredit(
+        off,
+        off.map((x) => x - 0.5),
+        -0.4,
+        { ciUpper: true },
+      ).verdict,
+    ).toBe('pass');
+  });
+
+  test('a window reports the mean frame beside p50: a half-rate pass hides in p50', () => {
+    // Frames alternate 6 ms (with the shadow pass) and 4 ms (without it).
+    const cpu = Array.from({ length: 90 }, (_, i) => (i % 2 ? 4 : 6));
+    const shadow = Array.from({ length: 90 }, (_, i) => (i % 2 ? 0 : 96));
+    const n = gate.frameNumbers(
+      { n: 90, cpu, ren: cpu, gpu: cpu, calls: cpu.map(() => 600), tris: cpu, shadow },
+      1500,
+    );
+    expect(n.cpuMean).toBe(5);
+    expect([4, 6]).toContain(n.cpuP50);
+    expect(n.shadowDrawsMean).toBe(48);
+    expect(n.fps).toBe(60);
+  });
+});
+
+// Wave-2 amendments: wave 1 took the main chunk over Vite's 1,000 kB warning.
+// The gate's report holds it against the merged main and names the lazy-load
+// candidate; the warning limit itself stays where it is.
+describe('perf gate: the bundle check (wave-2 amendments)', () => {
+  type Size = { file: string; rawKB: number; gzipKB: number };
+  type Check = Size & {
+    deltaRawKB: number;
+    deltaGzipKB: number;
+    overWarning: boolean;
+    overWarningKB: number;
+    pass: boolean;
+  };
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    BUNDLE: {
+      warnKB: number;
+      gzipBudgetKB: number;
+      main: { rawKB: number; gzipKB: number };
+      beforeWave1: { rawKB: number; gzipKB: number };
+      lazyCandidate: { module: string; minKB: number; gzipKB: number };
+    };
+    bundleSize: (dist: string) => Size | null;
+    bundleCheck: (size: Size | null, base?: { rawKB: number; gzipKB: number }) => Check | null;
+  };
+  const nodeRequire = createRequire(import.meta.url);
+  const fs = nodeRequire('node:fs') as typeof import('node:fs');
+  const os = nodeRequire('node:os') as typeof import('node:os');
+  const path = nodeRequire('node:path') as typeof import('node:path');
+  const zlib = nodeRequire('node:zlib') as typeof import('node:zlib');
+
+  test('the baseline is the merged wave-1 main, and the warning limit is not raised', () => {
+    expect(gate.BUNDLE.warnKB).toBe(1000);
+    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1004.45, gzipKB: 311.85 });
+    expect(gate.BUNDLE.beforeWave1).toMatchObject({ rawKB: 930.89, gzipKB: 288.04 });
+    const cfg = fs.readFileSync(path.resolve(__dirname, '../vite.config.ts'), 'utf8');
+    expect(cfg).toMatch(/chunkSizeWarningLimit:\s*1000\b/);
+  });
+
+  test('a dist is measured as Vite reports it: bytes / 1000, gzip at the default level', () => {
+    const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-bundle-'));
+    try {
+      fs.mkdirSync(path.join(dist, 'assets'));
+      const code = Buffer.from('export const island = "life";\n'.repeat(4000));
+      fs.writeFileSync(path.join(dist, 'assets', 'main-Ab_c-12.js'), code);
+      fs.writeFileSync(path.join(dist, 'assets', 'three-xyz.js'), 'x');
+      const size = gate.bundleSize(dist);
+      expect(size).toEqual({
+        file: 'main-Ab_c-12.js',
+        rawKB: Math.round(code.length / 10) / 100,
+        gzipKB: Math.round(zlib.gzipSync(code).length / 10) / 100,
+      });
+      // No main chunk (or no dist at all): nothing to report.
+      fs.rmSync(path.join(dist, 'assets', 'main-Ab_c-12.js'));
+      expect(gate.bundleSize(dist)).toBeNull();
+      expect(gate.bundleSize(path.join(dist, 'missing'))).toBeNull();
+      expect(gate.bundleCheck(null)).toBeNull();
+    } finally {
+      fs.rmSync(dist, { recursive: true, force: true });
+    }
+  });
+
+  test('gzip gates at main + 50 kB; being over the warning is reported, not a fail', () => {
+    const at = (rawKB: number, gzipKB: number) =>
+      gate.bundleCheck({ file: 'main-x.js', rawKB, gzipKB }) as Check;
+    const same = at(1004.45, 311.85);
+    expect(same).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, overWarning: true, pass: true });
+    expect(same.overWarningKB).toBe(4.45);
+    expect(at(1100, 361.85).pass).toBe(true);
+    expect(at(1100, 361.86).pass).toBe(false);
+    // Under the warning again once the candidate moves out.
+    const moved = at(991.5, 307);
+    expect(moved).toMatchObject({ overWarning: false, pass: true });
+    expect(moved.deltaRawKB).toBe(-12.95);
+    // Side A of an A/B is the baseline there.
+    const ab = gate.bundleCheck(
+      { file: 'main-b.js', rawKB: 1005.55, gzipKB: 312.11 },
+      { rawKB: 1004.45, gzipKB: 311.85 },
+    ) as Check;
+    expect([ab.deltaRawKB, ab.deltaGzipKB]).toEqual([1.1, 0.26]);
+  });
+
+  test('the report names a lazy-load candidate with its measured size', () => {
+    const c = gate.BUNDLE.lazyCandidate;
+    expect(c.module).toBe('Multiplayer.ts');
+    expect(c.minKB).toBeGreaterThan(gate.BUNDLE.main.rawKB - gate.BUNDLE.warnKB);
+    expect(c.gzipKB).toBeGreaterThan(0);
+    expect(fs.existsSync(path.resolve(__dirname, '..', c.module))).toBe(true);
+  });
+});
+
+// Wave-2 amendments (process): the gate runs alone on a quiet host. A profile
+// measured while other processes held the machine says so under its verdict.
+describe('perf gate: the quiet-host note (wave-2 amendments)', () => {
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    QUIET_OTHER_PCT: number;
+    THRESHOLDS: Record<string, Record<string, number>>;
+    hostNote: (
+      other: { p50: number | null; max: number | null } | null,
+      verdict: string,
+    ) => string | null;
+  };
+
+  test('quiet is 10% of the machine or less to other processes: no note', () => {
+    expect(gate.QUIET_OTHER_PCT).toBe(10);
+    expect(gate.hostNote({ p50: 6.2, max: 13.9 }, 'pass')).toBeNull();
+    expect(gate.hostNote({ p50: 10, max: 40 }, 'inconclusive')).toBeNull();
+    expect(gate.hostNote(null, 'pass')).toBeNull();
+    expect(gate.hostNote({ p50: null, max: null }, 'pass')).toBeNull();
+  });
+
+  test('a busy host is named, and an inconclusive verdict is put down to it', () => {
+    const busy = gate.hostNote({ p50: 42.5, max: 80 }, 'inconclusive');
+    expect(busy).toMatch(/host not quiet: other processes took 42\.5% of the machine/);
+    expect(busy).toMatch(/Run the gate alone/);
+    expect(busy).toMatch(/the host's, not the build's/);
+    expect(gate.hostNote({ p50: 30, max: 50 }, 'fail')).toMatch(
+      /confirm any timing fail on a quiet host/,
+    );
+    expect(gate.hostNote({ p50: 30, max: 50 }, 'pass')).toMatch(/passed in spite of it/);
+  });
+
+  test("P2-B6 at 21 h reads 'no GPU regression': the desktop GPU p50 budget judges it", () => {
+    // The 0.5 ms improvement the plan asked for is inside this rig's band
+    // (sigma 1.08 hub-wide), so the row is held to the budget, not to a gain.
+    expect(gate.THRESHOLDS.desktop.gpuP50).toBe(2.0);
+    const readme = createRequire(import.meta.url)('node:fs').readFileSync(
+      createRequire(import.meta.url)('node:path').resolve(
+        __dirname,
+        '../tools/ux-probes/README.md',
+      ),
+      'utf8',
+    ) as string;
+    expect(readme).toMatch(/no GPU regression at 21 h/);
+    expect(readme).not.toMatch(/GPU at 21 h improves by 0\.5 ms or more"\s+is/);
   });
 });

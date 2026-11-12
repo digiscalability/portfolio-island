@@ -20,6 +20,7 @@ npm run probe -- list
 | `--dist <dir> --port <n>` | Serve `<dir>` with `vite preview --strictPort`. The child is killed by PID on exit and on Ctrl+C. A busy port is an error, never reused. |
 | `--base <url>` | Attach to a preview that is already running instead, or to production (`https://island.digiscalability.com`; see App Check under Safety). |
 | `--profile desktop\|phone\|lowtier` | Run one profile instead of the probe's defaults. |
+| `--hour <n>\|live` | The world clock for every boot that does not name its own hour. The default is 12: the clock follows the machine's local time, and an unpinned probe is judged on whenever it ran (at night First steps skips the talk step and villagers sleep). `live` leaves the clock alone. A probe that sets hours itself (`contrast`, `lum`, `p2/npcs`, `guide`'s night session) is not affected. |
 | `--out <dir>` | Output folder (default `<os tmpdir>/ux-probes/<name>`). |
 | `--compare <dir> --compare-port <m>` | A second build, for `rig` and `strafe`. |
 | `--no-khr` | `getExtension('KHR_parallel_shader_compile')` returns null (`hitch`: runs desktop, low tier and phone, adds the pause-near-door entry, and judges the black interval by pixels). |
@@ -32,8 +33,32 @@ npm run probe -- list
 | `--double` | `guide`: inject a stand-in for A6's card that follows the guide's contract (see Stage-2 probes). |
 | `--url <url>`, `--device desk\|phone` | The phase-2 probes' spellings of `--base` and `--profile`; both work everywhere. |
 
-Phase-2 probes live in `p2/` and run by their path, `npm run probe -- p2/walkin --dist dist --port <n>`.
-They write to `tools/ux-probes/out/p2/<name>/` (git-ignored) unless `--out` is given.
+### Running a phase-2 probe
+
+Phase-2 probes live in `p2/` and run by their path, `npm run probe --
+p2/walkin --dist dist --port <n>`. They write to
+`tools/ux-probes/out/p2/<name>/` (git-ignored) unless `--out` is given.
+
+The phase-2 audits wrote their scripts with their own flag spellings, and the
+plan's items quote them. The runner takes both on every probe, stage-1 and
+stage-2 ones included:
+
+| The plan's spelling | The runner's | Notes |
+|---|---|---|
+| `--url <url>` | `--base <url>` | attach to a preview that is already up |
+| `--device desk` | `--profile desktop` | 1440x900, DPR 1 |
+| `--device phone` | `--profile phone` | 390x844, touch, DPR 2 |
+| (none) | `--profile lowtier` | the perf gate's low tier: the phone context with `?touch=1`. `landscape`, `landscape667`, `tablet` and `desktop1024` have no `--device` spelling either |
+| `p2/daycycle.cjs` | `p2/daycycle` | a probe's name is its export's name, not its file's: `p2/light.cjs` holds `p2/daycycle`, `p2/weather`, `p2/beacons`, `p2/shadowdraws` and `p2/edge-crawl`; `p2/rooms.cjs` holds `p2/room-a11y`, `p2/room-phone`, `p2/room-light`, `p2/room-rig`, `p2/avlum`, `p2/warmtest` and `p2/room-census`; `p2/guidance.cjs` holds `p2/recruiter`, `p2/npcs` and `p2/copy`; `p2/play.cjs` holds `p2/firstplay`, `p2/race` and `p2/quests`. `npm run probe -- list` prints them all |
+
+`--dist <dir> --port <n>` serves a build for the run, as for every probe.
+With neither `--profile` nor `--device` a probe runs its own default
+profiles (its row says which). The hour is pinned: the lighting and room
+probes set it through `EnvironmentCycle.debugHour`, the field `?hour=`
+itself writes, so one load covers every hour (`--hours 12,21` picks them);
+the others boot at `?hour=12` unless their row names an hour. `--compare
+<main dist> --compare-port <m>` adds the same measurement on a second build
+for `p2/daycycle` and `p2/edge-crawl`.
 
 Ports are always arguments. Suggested ranges, so parallel builders do not
 collide: E 5190-5199, A 5200-5209, B 5210-5219, D 5220-5229, C 5230-5239.
@@ -191,6 +216,12 @@ holds the hook.
 | phase 2: `__app.scene.boardVehicle(i)`, `vehicleKind(i)`, `isRidingVehicle()`, `disembarkVehicle()`, `vehicles[i].forward` | B | strafe (the vehicle chases), perf gate (P2-E3) |
 | phase 2: p2/L.cjs's mask material swap, keyed on `SkyDome`, `userData.isPavement`, `userData.isCelHull`, `island.surfaceMesh` and `island.npcTargets` | B, C | p2/L.cjs (and the lighting probes in later waves) |
 | stage 2: `#ds-guide` (`data-active`, its Skip button and resume chip), window events `ds:intro`, `ds:modal`, `ds:guide`, `ds:guide-to`, `ds:goals`, `ds:npc-speaking`, `ds:npc-typing`, `ds:coin`, `ds:settings`; `[data-guide=*]` anchors and `[data-hud=prompt]` | A, D | guide, events, fm |
+| wave 2, the renderer's levers: `__app.renderer.bloomPass` (`enabled`, `threshold`, `strength`), `setBloomEnabled(on)`, `setBloomNight(day)` (P2-E5), `shadowFrozen`; `getRenderer().shadowMap.render` (wrapped to count shadow draws), `.autoUpdate`, `.needsUpdate`; `window.__dsFx.halfShadow` and `.bloomNight` | E | perf gate (`--fx`, whole frames), p2/shadowdraws, p2/daycycle `--bloom`, p2/beacons, camera |
+| wave 2, light: `getEnvironmentCycle().setWeather(kind)`, `getWeather()`; the key light (the `DirectionalLight` with `castShadow`: its `shadow.intensity`, `shadow.mapSize`, position and target); `userData.isNightEmissive` on windows, sconces, bulbs and beacons; a zone's `marker.getObjectByName('zone-beacon')`; `Island.MAX_DISPLACEMENT`, `island.reliefScale`, `isOverWater(dir)`, `analyticSurface(dir)` (the beach-band and highland-shoulder masks follow Island's own dark-zone rule) | C, B | p2/L.cjs, p2/daycycle, p2/weather, p2/beacons, p2/edge-crawl, lum |
+| wave 2, rooms: `scene.toggleInteriorFixture('lamp' \| 'curtains')`, `interiorLamp`, `interiorRoomLamp`, `interiorRoomFill`, `interiorFire` (the room's own lights), `interiorWindowMat` (the pane), `partyProps.group`, `interiorSets`, `warmInterior()` (wrapped by p2/warmtest before it first runs), `player.waveTime`; the 74 px JUMP and WAVE discs and the 💬 and 🎤 buttons | B, D | p2/room-light, p2/room-rig, p2/room-census, p2/warmtest, p2/room-a11y, p2/room-phone |
+| wave 2, vehicles and races: `scene.vehicles[i]` (`dir`, `forward`, `radius`, `normal`, `group`, `occupied`), `getRaceStartPosition(kind)`, `races.circuits[kind].dirs` and `.surfaceR`, `races.state`, `races.nextIdx`; `ui.raceDiv` | B, D | perf gate (the vehicle view), p2/race |
+| wave 2, villagers and copy: `scene.getNpcActivity(name)`, `npcTargets[i].dialogue`, `__app.talkVillager(current)` (who First steps names; null skips the step), `__app.constructor.LESSONS`, `ui.touchifyPlain(text)`, `ui.npcChatBadge`, the chat's `[role=log]`, its `input` and any button a reply adds, `ui.completionBtn`, `ui.showJournal()`, `multiplayer.selfName` | A, B, D | p2/npcs, p2/copy, p2/firstplay, p2/quests, p2/race |
+| wave 2, intro and camera: `ui.fadeThrough(cb)`, the app loader (the overlay child holding `#ld-bar`), `button[data-tour]`, `__app.endTour()`, `getOrbitCamera().collisionMeshes`, `.raycaster`, `.minDistance` (written first to force the distance under 2 u) | A, D | intro, camera |
 
 The probes write only through the same hooks (a teleport, a camera pose, a
 clock hour, a panel close), and only inside their own browser context.
@@ -388,6 +419,24 @@ finale. The double sits in A6's short-landscape lane (top +56, left +16,
 the other failure being the hint toasts). At 1440x900 and 390x844 it reads
 clear.
 
+### Stage-2 probes, wave 2: intro, camera and luminance (E6b)
+
+The audit's own scripts (`motion/intro_ui`, `veil2`, `analyze_intro`,
+`camprobe`, `camprobe2` and `design-assets/lum.cjs`) were session temp
+files, gone by wave 2. These three are rebuilt from the audit's reports
+(`docs/history/2026-11-03-ux-audit/motion.json` and `design.json`, in the
+main checkout) and checked against the numbers recorded there. Baselines:
+2026-11-11 and 12, 58c8849's dist and wave-1 main 8662b27 (as built in
+`w1-int`), four other builders on the machine: degrees, counts and L\* hold,
+milliseconds are provisional. Every run: 0 leaks, a boot proof in every
+session, the port free afterwards. All three exit 1 on both builds.
+
+| Probe | Item | What it measures | 58c8849 | wave-1 main |
+|---|---|---|---|---|
+| `intro` | MOT-09, MOT-10; A10 | desktop, a cold load with a per-frame recorder from the first script: the camera's turn per frame through the fly-in (or the calm entry) once the loader has faded, with the distance it happens at; frames over 50 ms after the loader fades; when the welcome card shows (`welcome_visible`); the first-frame opacity and ramp of the welcome card, the hire card, the Portfolio menu and a zone panel; the door veil's first and second use (first-frame opacity, the ramp to black, how long it holds) | the largest turn 3.48° in a frame, 6.2 u from the player (the bar is 1.5°); 2 frames over 50 ms after the fade (60 and 120 ms); the card at 6.6 s; all four surfaces at opacity 1 on their first frame, a 0 ms ramp; the veil's first use starts opaque (a hard cut, the audit's finding) and holds 2.7 s, its second ramps over 360 ms | 2.89° at 8 u; 1 frame over 50 ms (150 ms); the card at 6.6 s, 31 ms after `ds:intro` settled; the four surfaces as on 58c8849; the veil's first use a hard cut held 0.5 s (wave 1's warm), its second a 392 ms ramp |
+| `camera` | MOT-05, MOT-06, MOT-18; B11 | desktop, the camera's turn per frame from a per-frame recorder with key marks: a conversation's push-in (its first frame), its release and the frames after; the guided tour (`--mode tour`): the first frame, the largest turn, frames with the camera inside a building's box; parked 1.2 u from a wall (`parked`): frames with the wall between the player and the camera, and the camera's distance; leaving a room by its door (`door`); `force`: OrbitCamera's distance set to 0.8 u, the avatar's opacity within 150 ms and after the camera is let back, programs before, close and restored | the push-in's first frame 1.6° in this run (it rides on where the villager stands: 10-12.5° in the other three runs on the two builds); the release 15.7° in a frame; the tour's first frame 9.43° (the audit: a cut on the first frame), its largest 11.9° (530°/s), 0 frames inside a building; parked: the wall between in 39 of 39 frames, the camera 2.22 u out with the wall at 1.22 u; the door 0 of 47; at 0.8 u the avatar stays at opacity 1 (no fade); programs 212 throughout | the push-in 12.5°, the release 20.3°; the tour 9.42° and 11.0° (549°/s), 0 inside; parked 45 of 45 at 2.22 u; the door 0 of 38; no fade; programs 130 throughout |
+| `lum` | DA-02, DA-03; C1, C2, P2-B4 | `?hour=6/12/18/21` at 1440x900 and 390x844, hub-wide, by mask: ground, sky, player and open-sea L\*, the sea's hue and saturation, sky to ground as a luminance ratio, and the L\* step across the horizon row (sky above against sea below, the median over the columns where they meet) | desktop ground 22.0 / 57.4 / 22.8 / 16.7, sky 70.5 / 75.8 / 70.4 / 13.9: sky to ground 11.8:1 at 6 h and 11.0:1 at 18 h; the sea's hue 14.5° at 6 h and 14.7° at 18 h against 205° at noon (a brown sea under a low sun), L\* 45.6 at noon; the horizon step 20.3 / 32.3 / 33.6 / 2.3; the phone's sky 18.9 L\* under desktop's at 6 h (18.5, 17.7 and 11.1 at 12, 18 and 21 h), its ratio 5.8:1 | ground 21.4 at 6 h and 21.6 at 18 h, 12.4:1 and 12.1:1; the sea's hue 15.7° and 16.2°, L\* 41.2 at noon; the horizon step 21.8 / 30.1 / 31.2 / 2.3; the phone's sky 19.0 under desktop's at 6 h, 6.4:1 |
+
 ### Phase-2 probes, wave 1 (P2-E1a, P2-E2a)
 
 In `p2/`, CommonJS on `lib.cjs`, run by path (`npm run probe -- p2/<name>`),
@@ -418,6 +467,105 @@ PNG reader is playwright-core's), `p2/play-lib.cjs` (the gameplay kit) and
 `p2/guide-lib.cjs` (the guidance kit: readout, the compass follower, the
 villager walk, the timeline) are libraries, not probes.
 
+### Phase-2 probes, wave 2: rooms and light (P2-E1b)
+
+The audits' own scripts were session temp files, and they were gone by wave
+2. These probes are rebuilt from the audit reports
+(`docs/history/2026-11-03-ux-audit/phase2/building.json` and
+`lighting,.json`): the same views, hours, poses and masks, checked against
+the numbers the audits recorded on 58c8849 (in brackets below where the
+report gives one). Baselines: 2026-11-11 and 12, the same rig and the same
+two dists as wave 1 (58c8849, and wave-1 main 8662b27 as built in `w1-int`),
+with four other builders on the machine, so counts and L\* hold and
+milliseconds are provisional. Every run: 0 leaks, a boot proof in every
+session, the port free afterwards. Each row exits 1 on both builds unless
+it says otherwise: they have none of wave 2's fixes.
+
+| Probe | Item | What it measures | 58c8849 | wave-1 main |
+|---|---|---|---|---|
+| `p2/daycycle` | LT-01, LT-02, LT-05, LT-06; P2-C1, C1, C5, P2-B4, P2-B5 | exact per-pixel masks (`p2/L.cjs`): ground, path, player, villager, sky and sea L\* at 8 views (hub-wide, spawn, the four districts, the beach band, the highland shoulder) x 8 hours (0, 6, 9, 10.5, 12, 15, 18, 21; `--hours`, `--views`) on desktop and the phone, with the key light's elevation over the player's own horizon and its shadow strength. The terrain is split by Island's dark-zone rule into beach band (`dir.y < sin 0.32`), highland shoulder and the rest; "ground" in a check is the whole terrain. `--compare <main dist>`: noon hub ground within ±1.2 of main, beach band and highland at 21 h within +3, the 21 h sky within ±2. The frames for 6, 12, 18 and 21 h at the hub, the beach and the highland are kept (`--keep` keeps all) | hub ground by hour on desktop 15.9 / 22.6 / 57.3 / 57.2 / 57.3 / 56.9 / 22.8 / 16.7 (the audit: 16.9 / 25.8 / 57.4 / 58.8 / 57.5 / 58.3 / 23.2 / 16.9; 06 h rides the moon's phase); at 10.5 h Professional 40.9 under a 5.7° sun at shadow strength 0.337, Projects 49.1, Personal 53.4, Contact 41.2 (40.8, 49.1, 53.2, 41.0): Professional is 16.3 L\* below the hub, Contact 21.8 below on the phone; the lowest sun −8.1° (Contact, 9 h); 21 h player median 4.4, p90 9.6; sky to ground 11.3:1 at 6 h; the phone's sky 57.5 at noon and 2.4 at 21 h against desktop's 75.6 and 13.5 (18.8 apart at 6 h); beach band 12.2 and highland 14.3 at 21 h | the same light: hub 14.9 / 21.4 / 57.2 / 57.3 / 57.3 / 56.9 / 21.7 / 14.8; Professional 40.8 (16.5 below the hub; the phone's Contact 21.9 below); 21 h player median 4.7, p90 8.2; sky to ground 12.4:1 at 6 h; the phone's sky 19.2 below desktop's at 6 h; beach band 10.8, highland 14.3 at 21 h |
+| `p2/daycycle --bloom` | P2-E5 | desktop, one frozen frame (the loop stopped) at 12 and 21 h, at Professional and the hub, under today's bloom, the decided night threshold (the build's own `setBloomNight` where it has one; else the probe writes the curve's value, and the check names which) and the bloom pass off: ground, player, bulb (the `isNightEmissive` meshes) and halo (within 6 px of a bulb) L\*. `--sweep` adds thresholds 0.90 and 0.95 | 21 h, Professional: today's bloom against bloom-off lifts the ground +3.8 L\*, the player +17.6, the halo +32.3 and the bulbs +2.6; at 1.0 (written by the probe) all four are +0.0, and already at 0.95; at the hub ground +0.2, halo +11.5, bulbs +1.1, and 0.0 at 1.0. Noon: 0.0 at every threshold. Exits 1 on the bulb bar | 21 h, Professional: ground +3.3, player +17.3, halo +21.7, bulbs +3.6 under today's bloom; at 0.95 still +1.1, +12.2, +14.7, +1.9; at 1.0 all +0.0; at the hub ground 0.0, halo +11.7, bulbs +1.0, gone by 0.95. Noon: 0.0. Exits 1 on the bulb bar. This branch (P2-E5, the build's own `setBloomNight`): +2.9, +17.7, +27.5, +2.8 today and 0.0 at 1.0 |
+| `p2/weather` | LT-08, P2-B5 | noon, hub-wide, in clear, cloudy, rain and snow (`EnvironmentCycle.setWeather`): ground L\*, the sun's intensity and shadow strength, and the shadow's contrast on the ground (1 − Y as rendered / Y with the key's shadows off, the median over the pixels the shadow darkens) | ground 57.4 / 48.3 / 44.1 / 49.8 (57.5 / 48.3 / 44.2 / 50.4), the sun 1.6 / 0.88 / 0.56 / 0.8, shadow strength 1 in all four; contrast 0.32 clear, 0.33 in rain: 1.02x | the same ground and sun; contrast 0.30 clear, 0.32 in rain: 1.05x |
+| `p2/beacons` | LT-09, P2-C5 | each district beacon at 12 and 21 h: the material's emissive and intensity, the rendered beacon's hue (its own pixels, by a one-mesh mask) against the district colour, and on desktop the 8 px around it with the bloom pass on and off | intensity 0.15 at 12 h and 1.3 at 21 h; at 21 h the emissive reads #a0aa4d, #9798d2, #ff9925, #f05d5b, #c15f9a (the audit's five) and the rendered hue is off by 55° (Welcome), 33° (Professional), 20° (Personal), 30° (Contact), 6.5° (Projects); at noon all five are within 5.2° | the same: 54°, 31°, 20°, 29°, 6.3° at 21 h; within 3° at noon |
+| `p2/shadowdraws` | LT-08, E2 | desktop and the low tier: shadow draws per pass (counted where `WebGLShadowMap.render` adds them) and passes per 60 frames at the spawn, hub-wide and Projects at 12 h and the spawn at 21 h; then W held 2 s on the frozen 1/60 s sim: the contact shadow's offset from the feet, which is how far the player walked since the last pass | 95 at the spawn and hub-wide, 122.5-124 at Projects, 134-135 at 21 h (the audit: 94-95, 145-148 at its Projects view); a pass every frame on both tiers; offset 0 | 96, 96, 118-124, 138; a pass every frame on both tiers; offset 0. This branch (E2): the low tier 30 passes in 60 frames, 48 draws a frame, offset 0.093 u at 5.6 u/s; desktop unchanged; exits 0 |
+| `p2/edge-crawl` | LT-01, P2-C1 (new: the phase-2 critique asked for it) | desktop, a fixed camera 16 u over the path, the sim frozen at 1/60 s, hour 10: the L\* of shadow-edge pixels frame to frame (edges: where the key's shadow darkens the frame by 15-85% of the full step), on the edges that held still while the player stood 1.5 s (a swaying tree's shadow is not crawl), over the lower 90% of those pixels (a villager's shadow crossing moves a few of them a lot); standing 1 s, then W for 3 s. `--compare <main dist>`: within 10% of main, or 0.01 L\* | walking 0.0027 L\* a frame against 0.0013 standing: crawl 0.0014, on 1,592 static edge pixels of 3,189 (all edge pixels, untrimmed: 0.086 walking, 0.013 standing: the villagers' shadows). Exits 0: it has no bar without `--compare` | 0.0000 walking and standing on 6,346 static edge pixels of 6,897 (untrimmed 0.0020 and 0.0018). Exits 0 |
+| `p2/room-a11y` | INT-03, INT-07, INT-11; P2-A1, P2-D2 | desktop keyboard: E 0.7 s after entering a cottage; out by the door; in the Professional hall W for 1 s and E behind its panel, a 16-stop Tab walk, Escape once; Leave as a control (tag, name, tabIndex), Tab to it within 3 presses, its box against every visible HUD element, a live region naming the room, axe; a 60 s listener (`--listen`) for outdoor hints and the compass pill; Escape again; Q inside against a wave after the exit | E puts the visitor back outside; W behind the panel walks 1.94 u; Leave is a DIV, tabIndex −1, never reached by Tab, over the Day chip (60x22) and the minimap (86x9); no live region; the compass pill on screen in 113 of 113 samples; a second Escape does nothing; Q waves after the exit; axe 0 | E keeps the visitor inside and W behind the panel moves 0 u (wave 1); Leave, Tab, the overlaps, the compass pill (112 of 112) and the second Escape as on 58c8849; no live region names the room; Q does not carry over |
+| `p2/room-phone` | INT-12, INT-03; P2-A1, P2-D2 | phone, a cottage by the joystick and USE: a USE tap 0.6 s after entry; which touch controls stay (USE, the joystick, 💬, 🎤, JUMP, WAVE, the drawer toggle, Leave); Leave as a 44 px target and against the HUD; the joystick indoors; out by a tap on Leave | the USE tap puts the visitor outside; JUMP and WAVE stay on screen; Leave is 86x39, over the Day chip and the minimap; the joystick walks 2.5 u in 1.2 s | the USE tap keeps the visitor inside; the rest as on 58c8849 (2.4 u) |
+| `p2/room-light` | INT-09, LT-04; P2-B9 | a cottage and the Professional hall at 12, 21 and 22 h (`--hours`), both tiers, the back-wall pose: room L\* with the lamp on and off, the back wall's R/B, visible lights indoors against outdoors; the front pose: the window pane's L\* (its own screen box) and the curtains | the lamp off against on changes the room by −0.7 L\* at 12 h and −1.0 at 21 h in the cottage, −0.7 and −0.9 in the hall (the audit: about −1); phone −1.2 to −1.6; lamp on, 21 h against 12 h: −13.3 (43.7 → 30.4) in the cottage and −14.7 (42.5 → 27.8) in the hall; lights indoors against outdoors 9 against 5 at 12 h and 21 against 17 at 21 and 22 h; the window pane 51.2 at 12 h and 15.5 at 22 h; the back wall's R/B 1.43 at 22 h | the same room: lamp −0.7 and −0.9 in both (phone −1.1 to −1.4); −13.0 and −14.7 from 12 to 21 h; lights 9 against 5 at every hour (wave 1 took the porch and lighthouse lights out); the pane 51.3 and 14.3; R/B 1.42 |
+| `p2/room-rig` | LT-04; P2-B9 | the five halls at 12 and 21 h, both tiers: room L\*, the same frame with the outdoor rig dark (what the frozen sun, hemisphere, fill and rim add through the walls), visible lights and programs inside. `--borrow`: the frame with the room's own lights dark instead (the room on the outdoor rig alone) | desktop halls 42.3-45.4 at 12 h and 27.6-31.1 at 21 h, 13.8-14.7 apart (the audit: 42.3-50.4 and 29.2-31.8); the outdoor rig adds 16.0-17.9 L\* at noon (16.2) and 2.4-3.2 at 21 h; lights 9 indoors against 5 by day, 21 against 17 at night; programs inside 215-218 by day and 269-275 at 21 h (phone 148-156 and 231-245) | the same L\* (13.7-14.7 apart); lights 9 against 5 at both hours; programs 135-141 (phone 77-84) |
+| `p2/avlum` | INT-09; P2-B9 | a cottage at 12 and 22 h, both tiers, the back-wall pose, by mask: the avatar's L\* against the band of room right beside it (a fifth of its height wide) | the avatar 32.8 against 44.6 at noon and 16.0 against 30.4 at 22 h (−14.4); phone 14.2 against 29.8 (the audit: the core at 14-15, against a darker surround of 19-23 by its own box) | 32.5 against 44.7, and 15.0 against 30.9 at 22 h (−15.9); phone 13.5 against 29.8 |
+| `p2/warmtest` | LT-04; P2-B9 | cold, a fresh browser per hour (12 and 21) and tier: `scene.warmInterior` is wrapped before it first runs, the app's own idle warm is waited for (the probe calls it after 12 s if it has not come): programs added, and the longest long task, long animation frame or frame gap in its window | desktop +96 programs (119 → 215, the audit's numbers) and a 2,420 ms task at 12 h, +155 and 4,831 ms at 21 h (the audit: 1.66-1.80 s and 3.55 s on a quiet host); phone +59 and 580 ms, +73 and 945 ms | +23 programs on desktop at both hours, the longest task 70 and 0 ms; phone +21, 50 and 140 ms (the warm starts with the card there) |
+| `p2/room-census` | INT-06; P2-B10 | the room sets by material: lit materials off the toon model outside the window pane, the posters and the party props; ink hulls per set (wanted on desktop, none on the low tier); shadow casters | 7 sets; every lit material is MeshStandard: the shell 78 of 80 meshes, office 18, workshop 19, home 19 of 20, post 16, hall 17, beach 18 of 29, cottage 29 of 30 (the audit's set sizes); 0 ink hulls, 0 casters on both tiers | the same |
+
+**What the bloom rows show.** At 21 h, Professional, today's bloom lifts the
+ground, the player and the halo by 3-4, 17-18 and 22-32 L\* over bloom-off. At the decided
+threshold of 1.0 all three equal bloom-off, and so do the bulbs: the plan's
+third bar (bulb pixels 5 L\* above bloom-off) is not met on any build, and no
+threshold meets it. The windows' own pixels gain 1-3 L\* even under today's
+bloom, the haze is their glow, and nothing in either view is brighter than
+1.0 at 21 h. A glow on the bulbs alone needs the bulbs (not the windows)
+driven past the threshold, which is `EnvironmentCycle`'s emissive drive
+(C's), or a different bar.
+
+### Phase-2 probes, wave 2: guidance and play (P2-E2b)
+
+On `p2/guide-lib.cjs` and `p2/play-lib.cjs`, rebuilt from the audit reports
+(`phase2/a.json` and `phase2/gameplay.json`) for the same reason. The
+backend stays blocked, so every villager reply is the written fallback, and
+a probe never reads a secret from the source to pass a check (the Sailor's
+code comes from his words or not at all). Sounds are logged by wrapping
+OscillatorNode and AudioBufferSourceNode starts (`play-lib`'s `AUDIO`).
+Baselines as above: 2026-11-11 and 12, 0 leaks, a boot proof in every
+session, the port free afterwards. Every row exits 1 on both builds.
+
+| Probe | Item | What it measures | 58c8849 | wave-1 main |
+|---|---|---|---|---|
+| `p2/recruiter` | GD-02; P2-A4 | desktop and the phone, three visits: Work with me from the welcome card, then the hire card closed: seconds to the first guide surface (a First steps card, a route card, a hint toast or the compass pill gaining a target) in 60 s, and whether its 'Show me' sets the compass to Projects; `?zone=hire`: the same after the deep link's card closes, and `ds_welcomed` left unset; the recruiter tour from the hire card's `button[data-hire-tour]`: a guide surface within 2 s of the card closing | no guide surface in 60 s after the hire card closes, on either device (the audit: none in 50 s), and none after the `?zone=hire` card; `ds_welcomed` stays unset; the tour check reads 'hook missing' | a guide surface 0.8 s after the hire card closes on both devices (First steps, wave 1), with no 'Show me' on it; after the `?zone=hire` card none in 60 s; `ds_welcomed` stays unset; the tour check reads 'hook missing' (no `data-hire-tour` yet) |
+| `p2/firstplay` | GP-02, GP-08; P2-D4 | desktop and the phone at `?hour=12`: Explore, the arrival trail's coins, the villager it ends at, a chat with them, and five questions typed with the backend blocked ('What does Abbas build, and how do I contact him?', 'What does Abbas build?', 'How do I contact him?', 'Where is the shop?', 'Nice weather?'): the reply, any button on it, where the button leads; the badge; a talk hint after the chat; sounds started | the trail's 4 coins, then the Mayor (the nearest villager); 'What does Abbas build, and how do I contact him?' gets 'The town hall is always open — that is a campaign promise.' and no button (the audit's finding); the other four get one of his three written lines, no button; the badge reads '✨ live AI' until the first reply, then 'offline replies'; no talk hint returns | the trail ends at the Mayor (`getTrailVillager`); all five get one of his written lines and no button ('Deliveries up, complaints down. A fine term so far.' to the Projects question); the badge reads 'offline replies'; no talk hint returns |
+| `p2/npcs` | GD-12, GD-05; P2-C6 | desktop, a fresh load at 10.5, 18, 21, 23, 2 and 6 h (`--hours`): the villagers awake within 30 u of the spawn, how many are asleep, when the talk hint shows in 12 s, and who First steps' talk step names; then (`--no-sailor` skips it) the Sailor, by keeping pace 1.6 u off his boat until his prompt shows: everything he says, a 4-digit code in it, and that code typed at the beach house's door | awake within 30 u: 3, 3 and 2 at 10.5, 18 and 21 h, none at 23, 2 and 6 h (16, 16 and 9 of 28 asleep), and the talk hint still shows at 4.1-4.3 s at those three hours; the Sailor: no talk prompt beside his boat in 5 s (the swim prompt shows), so no code is heard | the same villagers; no talk hint in 12 s at any hour (First steps is up); its talk step names the Mayor, the Mayor and the Elder Sage at 10.5, 18 and 21 h and is skipped at 23, 2 and 6 h; the Sailor as on 58c8849 |
+| `p2/copy` | GD-08 | the phone and desktop: the six lessons, every villager's written lines (85), the Journal and the checklist, read for keyboard keys in copy a phone shows and for wrong facts, banned words ('agents', 'live AI') and typed counts | on the phone 4 key names (WASD and Space in lesson 1, 'E to cast' in lesson 2, the Nurse's 'hold Space'); facts: 'Two dozen of them will really talk' (a typed count), 'five zones' (Island Explorer, Cartographer), 'your next delivery', 'the Project Portfolio zone'; the chat badge reads '✨ live AI' before the first reply | the same lists |
+| `p2/race` | GP-03, GP-05; P2-A7, D10 | desktop and the phone: the land circuit driven ring to ring (`--driver gates`, steering at each ring's position) or by the compass pill's bearing alone (`--driver compass`, A1's sign: positive is to the right): the lap, stalls, at each of the 5 checkpoints whether the next ring is below the horizon and what the pill names; the share of the pill the race HUD covers; district toasts between 'Go!' and the finish; the finish card's words with the backend blocked; a name prompt for a fresh visitor | the next ring below the horizon at 10 of 10 checkpoints; the HUD covers 73% of the pill on desktop and 100% on the phone; the pill names districts (Projects, Personal, Contact, Contact, Professional), never a ring; laps 59.7 and 54.2 s; the finish says 'No times yet — you're on the board!' with the board unreachable, no Retry; no name prompt (a random 'Brave Scout') | 10 of 10; the HUD covers 83% and 88%; the pill names the Mayor (First steps' target) at all five; laps 55.7 and 58.7 s; the finish and the name as on 58c8849. `--driver compass` does not finish a lap on either build (0 checkpoints in 150 s: the pill never points at a ring), which is what A's ring bearing changes |
+| `p2/quests` | GP-04, GP-07, GP-10; P2-A7 | desktop: six E presses at the School (coins paid); the Elder Sage's prompt; E after her quest lines | six presses pay +60 (the audit's number); her prompt reads 'Press E to talk to Elder Sage — ask anything' with no word of a request; after her lines E opens the scripted dialogue again, not the chat | the same |
+
+### Probe fixes from the wave-2 integration
+
+The wave-2 integration read probe defects as product faults. Each was checked
+by hand there; these are the probe sides of those hand-offs. Run 2026-11-12
+on the merged build (`w2-int`, 95202a6) at `?hour=12`, port 5240, with other
+fixers on the machine: counts hold, milliseconds are provisional.
+
+| Probe | Hand-off | What changed | Merged build |
+|---|---|---|---|
+| `guide` | A (P2-A12) | Skip passes when the card is hidden or folded into the Next chip (`#ds-guide[data-next]`, 'Next: ...'); STATE reports `next` | Skip: 'Next: Projects' folded, `skipped:true`, desktop and phone. Wave-1 main: the card hidden, as before |
+| `p2/recruiter` | A (P2-A4) | the 'card' and 'tour' visits press the welcome card's Hiring button (`button[data-recruit]`, the hire card); `data-cta=contact` is Get In Touch | 10 of 10: a guide surface 0.6-0.8 s after the hire card closes, 'Show me' sets the pill to Projects, the tour's `data-hire-tour` found |
+| `p2/firstplay` | D (P2-D4) | a reply's buttons are the chat's buttons after it less those before, as multisets (a slice by count returned the chat's 🎤); a villager who walked off between the prompt and E is stood beside and asked again | 16 of 16: 'Open Projects' opens Projects, the contact reply leads to the hire card, 'Show me' on the shop |
+| `p2/npcs` | C (P2-C6) | Space is held (swimming) while keeping station beside the Sailor: on the water an idle visitor's 'Hold Space to swim' outranks his talk prompt | the code heard by chat; it opens the beach house |
+| `p2/room-a11y` | D | focus already on Leave when the panel closes counts as 0 presses; the probe blurs only when it is elsewhere (a blur leaves Chromium's focus-navigation start on Leave, so Tab stepped past it) | Tab reaches Leave: 0 presses (focus handed back to it), a named BUTTON |
+| `p2/copy` | D | the Journal and the checklist are read from `panels.topModal().el`, then the top `role=dialog`, then the old overlay z-index scan (wave 2's modals are not overlay children at z-index 1500) | both read on both devices; their lines now reach the key and fact rules |
+| `p2/race` | D (D10) | the name prompt is skipped ('Skip — just browsing') and the finish modal read behind it; FINISH also reads the panel manager's open modal | phone: "Couldn't reach the leaderboard ... saved on this device" + Retry |
+| `p2/quests` | A | the Elder Sage is approached by standing 1.4 u beside her, re-placed each poll (`besideNpc`), with the walk as the fallback | her prompt: 'Elder Sage has a request'; after her lines E opens the chat |
+| `p2/journey` | A (P2-A1, P2-A12) | after stamps 1-3 the pill is read from the moment the visitor is outside again, for 1 s (P2-A1 hides it in the hall); new Next-chip rows in follow: the chip within 1 s of Skip, and it names a district at each leg until four stamps; a new `chip` scenario (fresh session; after four stamps the chip's rows are the hire card, a race, fishing): its first 'Show me' row sets the pill to that district, and a quest accepted with the chip open (`npcQuests.onTalk('Elder Sage')`) shows in it within 1 s | follow: 4 of 4 halls by 6 min on both devices; after stamps 1-3 the pill names the next district 1-90 ms after the exit; the chip 80 and 54 ms after Skip, a district at all 4 legs. chip: 'Projects' sets the pill to '🚀 Projects'; the quest in the chip after 188 and 245 ms |
+| `camera` | B (B11) | `force` times the fade from the frame the camera crosses 1.1 u to the torso (0.35 u above the player's origin, the distance B11's fade reads), not from the force: the orbit glides in for about 300 ms; `opacityAt150msFromForce` keeps the old reading | crossed 1.1 u at 290 ms, 0.35 at 112 ms after it; the camera stops 1.16 u from the feet, 0.94 u from the torso |
+| `strafe` | A (A5) | 'as boarded' sets `sinceManualLook = Infinity` after posing (setYaw counts as a manual look and holds the follow); the compare row is one-sided (no more than 10% slower than the compare build), and a new row holds the swing to the pre-A5 37.2°/s (-10%) | 39 °/s as boarded against main's 17 (`followReleased: true`) |
+| `lum` | C | each view is the median of `--frames` captures (default 5, 300 ms apart): one frame let a wave crest move the horizon step by 20 L\* | per-frame horizon steps at noon on desktop: 15.6-37.7 L\*, median 33.4 |
+
+### Probe fixes from wave 1 (wave-2 amendments)
+
+The wave-1 fix pass and re-verify found probes that misread the product.
+Every boot is now pinned to `?hour=12` (`lib.bootQuery`, `--hour <n|live>`
+above), so no probe is judged on the machine's local clock. Baselines
+2026-11-12, this branch's dist and wave-1 main (`w1-int`), four other
+builders on the machine: counts hold, milliseconds are provisional.
+
+| Probe | Line | What changed | This branch | wave-1 main |
+|---|---|---|---|---|
+| `guide` | w1-fix, re-verify | the card's overlap check also covers the compass pill, and a 300 ms sampler covers any toast or flash for the whole flow; legacy storage reads the step after the 8 s controls card (20 s window) and again after a reload; B10 measures the last coin to the seat of `scene.getTrailVillager()` (the nearest villager on a build without it) and reports the live distance beside it; each part closes its page; `--part flow\|skip\|reduced\|legacy\|night` runs one part. New night session (`?hour=23`, `--night-hour`, 12 s on the card first): the coins lead to an awake villager, and the talk step names an awake villager within 30 u and still does 10 s on | 60 of 62: every flow, geometry (84-92 samples clear at each size), Skip, reduced-motion and legacy check passes (the step at 3/5, 8.9 s after Explore); B10 1.53 u to the Mayor's seat, "ask anything". The two night checks fail: the Mayor is asleep 20.7 u off at Explore and the card skips to 4/5 with nobody awake within 30 u (screenshot: 'First steps 4/5, See the work') | the same 60; the night checks passed in one run (the Mayor up 6.9-10.4 u away at 23 h) and failed in the next (asleep 18 u off): the sleep goal lands a few seconds after boot. Both are B's to fix (a night watch by the spawn) |
+| `fm` | re-verify | m-active compares a prompt beside a toast with the same prompt's width alone (the toast is taken out of layout in the same task), not with a fixed 300 px | 10 samples with both up, 291/291 and 289/289 px: passes (the old bar failed the 289 px door prompt) | not re-run |
+| `census` | w1-fix | "props" is what Island builds under `island.mesh` (C3's targets); what GameScene and RaceSystem add to the scene (race gates, the cruise ship, the islet house, road markings, rocks, coins) is "scene props", reported apart until B15; `--scene-props` judges them, and `SCENE_PROPS_JUDGED` folds them in once B15 is on main | C3's scope passes on desktop and the phone; `--scene-props`: 15 lit opaque non-toon (the race gates' MeshStandard #223344 first) and 28 toon without the ramp | not re-run |
+| `p2/party` | w1-fix, re-verify | the entry's programs are counted from `enterRoom`'s p0 at the door; the walk across the islet (one shadow-depth program) is reported beside it as `programsBeforeDoor` | +1 from the door, +1 on the walk (bar: 1 or fewer from the door); the frame bars read 193, 60 and 91 ms on a busy host in one run and 49, 17, 22 ms in the previous one | not re-run |
+| `p2/nokhr-door` | w1-fix (new) | the first door without `KHR_parallel_shader_compile` through the visitor's own path: Explore, straight to the Professional hall's door, E, in a fresh browser per row; `--pauses 0,3` seconds stood at the door first, `--settle <s>` on the island first; reports whether the near-door warm ran before E, programs, the longest frame and the veil (bar: opaque 1.0 s or less, and the warm ran with the longest pause) | after 3 s at the door: the warm ran, +0 programs, 706-782 ms veil on all three devices. Straight in: it depends on whether the walk outlasted the warm's 1 s: desktop and the low tier caught it (813 and 736 ms), the phone did not (+11 programs, a 1,127 ms frame, 1,709 ms veil); an earlier run missed it on all three (1,665-1,841 ms) | after 3 s: 660-693 ms; straight in, desktop missed the warm (+11, 973 ms frame, 1,536 ms veil), the low tier and the phone caught it (688-689 ms) |
+| `axe` | re-verify | from 5 surfaces to the 20 of the wave-1 verify on each device (40): the HUD, the Portfolio menu (the drawer on the phone), the hire card, the four zone panels, 11 modals (passport, island times, pack, journal, leaderboard, guestbook, roster, island map, receipt, say hi, completion), the NPC chat and the name prompt, each opened through the UI's own entry point | 20 of 20 scanned on each device, 0 serious or critical, 0 colour-contrast on the welcome card, the hire card and the NPC chat | the same: 40 scanned, 0 serious or critical |
+
 ## Perf gate
 
 `npm run perf:gate` (`tools/perf-gate.cjs`, items E1 and CO-E2) runs on the
@@ -430,7 +578,19 @@ npm run perf:gate -- --dist dist --port <n> --fx <name>  # one __dsFx effect: dr
 npm run perf:gate -- --ab <mainDist> <branchDist> --ports <a>,<b> --cycles 6
 npm run perf:gate -- --ab <dist> <dist> --ports <a>,<b> --record-floor   # 24 A/A cycles: writes tools/perf-gate.floor.json
 npm run perf:gate -- --rejudge <perf-gate-ab.json>        # the verdict maths again on a saved A/B's loads (no browser)
+npm run perf:gate -- --dist dist --port <n> --dusk        # the dusk check alone (add --dusk to --ab to run it on each side)
+npm run perf:gate -- --dist dist --port <n> --hour 21     # the night run: the card, the longest task before it, programs at +30 s
 ```
+
+**Run it alone, on a quiet host (wave-2 amendments).** A verdict taken
+while other builders, probes or builds hold the CPU reads inconclusive: the
+timing rows' sigma goes over T/2 and nothing resolves. Every load records
+the share of the machine other processes took; when a profile's median is
+over 10% (`QUIET_OTHER_PCT`) the summary prints `note: host not quiet ...
+Run the gate alone` under it (`hostNote`). Counters (draws, programs, nodes,
+bytes, the bundle) hold on a busy host; timings do not. The integration runs
+`--ab` by itself after the builders have stopped, and a floor recorded on a
+busy host is marked and re-recorded.
 
 - Profiles: desktop 1440x900, the 1x low tier, and startup-only at 4x CPU
   (GPU timer queries off).
@@ -438,10 +598,10 @@ npm run perf:gate -- --rejudge <perf-gate-ab.json>        # the verdict maths ag
   warm and the late compiles) programs, nodes and textures, then the views
   in `VIEW_DEFS`: idle spawn, hub-wide and the Projects district, posed with
   the design audit's framing (follow direction, pitch, distance, teleport).
-  P2-E3 adds a vehicle view and a room view there. Counters are one whole
-  frame with the loop paused (draws, triangles, programs, textures); timings
-  are 1.5 s windows (CPU per app frame, GPU timer queries, fps).
-  `programs after the views` is judged too.
+  Counters are one whole frame with the loop paused (draws, triangles,
+  programs, textures); timings are 1.5 s windows (CPU per app frame, GPU
+  timer queries, fps). `programs after the views` is judged too. Then the
+  two driven views of P2-E3, the vehicle view and the room view (below).
 - The pose sets the OrbitCamera's `pitchTarget` with its pitch. A4 eases
   pitch toward pitchTarget within a view's 1.2-1.5 s settle, so stage 1,
   which set only the pitch, measured s1-int's hub-wide and Projects views at
@@ -458,8 +618,8 @@ Budgets (`THRESHOLDS`, from plan-r3 › perfBudget), as B − A:
 
 | Profile | Budget |
 |---|---|
-| desktop | CPU p95 +1.0 ms; GPU p50 +2.0 ms; draws spawn +50, hub-wide +80, Projects +60; programs +5; welcome_visible +150 ms; world_gen +50 ms; before the card: long tasks over 50 ms main + 1, the longest task +50 ms, +50 KB transferred |
-| low tier (1x) | CPU p95 +0.75 ms; draws spawn +20, hub-wide +30, Projects +25; programs +3; scene nodes +150; textures +6 MB; +50 KB before the card |
+| desktop | CPU p95 +1.0 ms; GPU p50 +2.0 ms; draws spawn +50, hub-wide +80, Projects +60, vehicle +60, room main + 25; programs +5; welcome_visible +150 ms; world_gen +50 ms; before the card: long tasks over 50 ms main + 1, the longest task +50 ms, +50 KB transferred. The first door (absolute, side B): its longest frame 100 ms or less, 3 programs or fewer |
+| low tier (1x) | CPU p95 +0.75 ms; draws spawn +20, hub-wide +30, Projects +25, vehicle +25, room no more than main; programs +3; scene nodes +150; textures +6 MB; +50 KB before the card. The first door: its longest frame 200 ms or less, 3 programs or fewer |
 | startup (4x) | welcome_visible +400 ms; world_gen +200 ms; long tasks main + 2, the longest task +50 ms; +50 KB before the card |
 | FxBudget (`FX_US`) | per effect 150 µs a frame on desktop and 80 on the low tier; all effects 600 and 300. An effect in plan-r3's ledger (`FX_LEDGER`) is held to its ledger value where that is lower, in `--fx` and in the CPU proxy |
 
@@ -487,6 +647,20 @@ Verdicts, per metric:
   fails on it in about 1 run in 700,000 (11 of 12 pairs over T; 19 of 24
   is rarer still). Re-judged against the same floor, none of the nine
   saved runs (four of them A/As) changes verdict except that A/B.
+- The same test has a pass path (wave-1 re-verify): a timing the sigma
+  rule leaves inconclusive passes when it has 24 pairs or more and none is
+  over T (`sign.pass`, `passedBy: 'sign'`, and the row's rule says so). A
+  true median shift of T or more gives 0 of 24 with probability 6e-8 or
+  less. It never turns a fail into a pass, and the fail path is unchanged.
+  welcome_visible, which is paired by boot-race mode, counts its
+  cycle-order pairs for this (`signInCycleOrder`), since the mode-matched
+  pairing can leave as few as 7. Why: on the re-verify's 24-cycle A/B the
+  desktop card was 578 ms earlier (22 of 24 pairs earlier, the other two
+  +17 and +48 ms, 0 over T 150) and the row read inconclusive on sigma 369
+  against T/2 75. Re-judged (`--rejudge`), that row passes and desktop
+  reads pass after 24 cycles; the low tier is unchanged (pass). 4x
+  world_gen stays inconclusive: delta -20 ms, but 2 of its 24 pairs are
+  over T 200 (+217 and +424 ms).
 - CPU p95 whose sigma is still over T/2 at 24 cycles is judged by the
   FxBudget proxy, as a CPU p95 under 2 x its floor is, and the row says so
   (`unresolvable: sigma … > T/2 … at 24 cycles`, `rule: proxy …`). When
@@ -569,6 +743,148 @@ Verdicts, per metric:
 - Output: `perf-gate-<mode>.json` and `ledger.md` in `--out`: one row per
   registered effect (tier default, switch, µs/frame); `--fx <name>` fills
   its row's draws per view and programs.
+
+**Vehicle and room views (P2-E3).** After the posed views every load drives
+two more, so `programs after the views` and the three posed views' rows keep
+the meaning the floor recorded.
+
+- *Vehicle.* The car nearest the land circuit's start is boarded through
+  `scene.boardVehicle`, put on ring 0 heading down the leg to ring 1, and the
+  chase camera is turned behind it (the follow direction, or `setYaw` where
+  yaw drives it; over 5° off the leg is a missing hook). Then W is held for
+  3 s with no pointer input: 38-40 u of the 115.5 u leg, 0.1-1.0 u off its
+  great circle. The view's draws and triangles are the drive's mean whole
+  frame; its timings pool both 1.5 s windows (each is kept in `windows`).
+  Rows: `vehicle: CPU p95 ms`, `vehicle: GPU p50 ms`, `vehicle: draws`
+  (+60 desktop, +25 low tier).
+- *Room.* The Professional hall by its door, the session's first, the way a
+  visitor enters (`p2/room-lib.cjs`'s `enterRoom`: W or the joystick to the
+  prompt, then E or a USE tap). The entry records the longest frame, the
+  black interval by pixels (hitch's CDP screencast: the veil hides 95% or
+  more of the world) and by the veil's opacity, and the programs it adds;
+  then, the hall's panel closed, one whole frame's draws and a 1.5 s window
+  (`render p50`) from the door end. Rows: `room: first-door longest frame ms`
+  and `room: programs added on entry` are absolute bars on side B
+  (`judgeAbsolute`: pass when B's median is within the bar; fail when it is
+  over and the sign test's count of loads is, 11 of 12 or 19 of 24, or at 24
+  cycles; side A is shown beside it); `room: draws` is a counter against
+  main; the black interval and `render p50` are reported.
+- A whole-frame count always holds a shadow pass: at half rate (E2, the low
+  tier's default) every other frame has none, and a single frame would read
+  476 or 572 draws by its phase.
+- The report mode (`--dist`) holds the first door to the same bars and lists
+  the rest.
+
+One report load per tier, 2026-11-11, with four other builders on the
+machine (54-79% busy, so the milliseconds are provisional; the counts are
+not):
+
+| Build | Tier | Vehicle draws (idle spawn) | First door: longest frame | Programs added | Black, pixels (opacity) | Room draws | Room render p50 |
+|---|---|---|---|---|---|---|---|
+| 58c8849 | desktop | 1,474 (655) | 247 ms | +2 | 888 ms (793) | 107 | 8.0 ms |
+| 58c8849 | low tier | 924 (645) | 1,414 ms | +33 | 2,007 ms (1,941) | 74 | 5.0 ms |
+| wave-1 main | desktop | 1,466 (664) | 96 ms | +0 | 682 ms (590) | 105 | 8.9 ms |
+| wave-1 main | low tier | 921 (572) | 61 ms | +0 | 681 ms (570) | 74 | 4.5 ms |
+
+This branch (E2's half-rate shadows on the low tier), same rig: desktop
+vehicle 1,466 (672), first door 82 ms, +0, 720 ms (604), 105 draws; low
+tier vehicle 852 (573), first door 96 ms, +0, 670 ms (560), 74 draws. The
+low tier's vehicle draws are the drive's mean frame, so half rate takes
+about half the shadow pass off them (921 → 852); its posed views count a
+whole frame with the pass, so they stay where main's are (573 against 572).
+
+The floor file carries the new rows since 2026-11-12: a 24-cycle A/A of
+wave-1 main (`main-CwSY888O.js`) at `?hour=12`, quiet on all three profiles
+(other processes 7.5%, 7.2% and 7.5% of the machine at the median; one
+low-tier load at 37.5%). Its desktop world_gen and longest-task floors are
+14.6 and 13.9 ms (the busy-host floor the integration recorded first: 20.0
+and 18.9). The desktop A/B of the merged build against it, run alone the
+same evening (`--profiles desktop --cycles 24`, others about 5% from cycle
+5), passes: world_gen Δ 1.5 σ 14.7, the longest task Δ 2.5 σ 13.9 (the
+integration's busy run: σ 26.2 and 25.7, inconclusive). The room view on
+58c8849 (report mode, low tier, `?hour=12`): the first door's longest frame
+1,211 ms, +33 programs, a 1.8 s black interval, 74 draws.
+
+**Dusk check (P2-E3; LT-03, P2-B6, P2-C4).** `--dusk` boots at `?hour=17` in
+a browser of its own (a cold GPU program cache), waits 13 s for the interior
+warm, moves the clock to 17.5 h through `EnvironmentCycle.debugHour`, and
+takes the longest long task, long animation frame or frame gap of the next
+6 s. The bar is under 100 ms. A longer frame fails only when the light set
+changed or programs were added across it (the flip is a re-link); with
+neither, it was the host, and the check is inconclusive. With `--ab` it
+runs once per side after the cycles, and side B is held to it. 58c8849:
+3,846 ms on desktop and 4,183 ms on the low tier, the lights going from 5
+to 17 (10 point and 2 spot lights join) and 34 and 37 programs re-linking.
+Wave-1 main: 0 ms on both, the same 5 lights before and after, 0 programs.
+This branch, with the host 86-94% busy: 94 ms on desktop and a 200 ms frame
+on the low tier, 0 programs and the same lights on both, so the low tier
+reads inconclusive there.
+
+**P2-B6's GPU line, restated (wave-2 amendments).** The plan's "scene GPU
+at 21 h improves by 0.5 ms or more" cannot be read on this rig: the wave-1
+integration's 21 h desktop A/B (6 cycles) gave GPU p50 +0.13 ms at the
+spawn, -0.14 ms hub-wide (sigma 1.08) and -0.09 ms at Projects, on absolute
+values of 4.8, 9.4 and 5.9 ms, so the 0.5 ms target sits inside the band.
+The line is now "no GPU regression at 21 h": `perf:gate -- --ab <main>
+<build> --ports <a>,<b> --hour 21`, and no `GPU p50 ms` row fails (each is
+held to the desktop budget, +2.0 ms, by the sigma rule and the sign test).
+P2-B6's other lines are counts and are unchanged: programs at +30 s (-48 at
+21 h), the 21 h card within +300 ms of the 12 h one (`p2/bootcost`), and
+the dusk flip under 100 ms (`--dusk`, `p2/duskflip`).
+
+**Bundle check (wave-2 amendments).** Wave 1 took the main chunk over
+Vite's 1,000 kB chunk warning. The limit in `vite.config.ts` stays at 1,000.
+Every report (`perf:gate -- --dist dist --port <n>`) measures the dist's
+`assets/main-*.js` the way Vite prints it (bytes / 1000, gzip at the default
+level) against the merged wave-1 main (`BUNDLE.main`):
+
+| Build | raw kB | gzip kB |
+|---|---|---|
+| main before wave 1 (d5e0e96) | 930.89 | 288.04 |
+| wave-1 main (8662b27), the baseline | 1,004.45 | 311.85 |
+| ux/w2-perf-gate | 1,005.55 | 312.11 |
+
+One line gates: gzip no more than main + 50 kB (the plan's "+50 KB
+transferred before the card"; the chunk is fetched before the card). Raw
+size and "over the warning by N kB" are reported. `--ab` prints side B
+against side A and stores both (`bundle` in the JSON). A `--base` run has no
+dist on disk and says so.
+
+The lazy-load candidate the report names is `Multiplayer.ts`: 14.07 kB
+minified, 5.17 kB gzip, measured on this branch by minifying each module of
+the chunk on its own (esbuild) and gzipping it. It is the largest whole
+module in the chunk that nothing needs before the welcome card:
+`main-simple.ts` builds it after the world and is its only static importer,
+so a dynamic `import()` there (A; the file is B's) moves it out and leaves
+the chunk about 8 kB under the warning. `Chat.ts` (7.0 kB, 2.77 gzip) can
+follow once `SimpleUI.ts` no longer imports its `VOICE_MAX_MS`. That is all
+the headroom whole modules give: `GameScene.ts` (257 kB minified),
+`SimpleUI.ts` (202), `Island.ts` (145) and `main-simple.ts` (115) are 69% of
+the chunk, and the next whole modules that could wait are `Sfx.ts` (11.3),
+`RaceSystem.ts` (6.9), `Speech.ts` (6.6) and `DeliverySystem.ts` (5.8), each
+imported statically by `GameScene.ts` or `main-simple.ts`. `three-mesh-bvh`
+(58.7 kB minified, 42 modules) also sits in the main chunk; it is needed
+before the card, so it is not a lazy-load candidate, but
+`manualChunks` could move it beside `three`.
+
+**Nights.** `--hour 21` is the night run: every mode takes it, and the card
+time, the longest task before the card and the programs 30 s after it are
+the rows it already has. (The phase-2 plan asked for an "`--hour 21`
+profile"; the flag is that profile.)
+
+**Credits (`--fx`).** `FX_CREDIT` lists what an effect is meant to save, and
+`--fx <name>` holds it to that beside the budgets (`judgeCredit`: pass when
+the paired delta is at or below the credit, or, for mean CPU, when the 95%
+band's upper bound is; fail when even the lower bound misses it). A window
+reports the mean frame beside p50 and p95, and `--fx` pairs count shadow
+draws. E2's credit, on the low tier: GPU p50 −0.6 ms, mean CPU −0.4 ms, and
+47.5 ±3 shadow draws a frame at the spawn; on desktop the switch must change
+nothing. `--fx halfShadow --cycles 20` on this branch, 24 cycles, the host
+busy: low tier GPU p50 −0.88 ms (σ 0.21), mean CPU −1.46 ms (σ 0.53), CPU
+p50 −1.5 ms, shadow draws 96 → 48, draws −48 at the spawn and hub-wide and
+−58.5 at Projects, 0 programs; desktop 96 → 96, draws ±0. The run reads
+inconclusive on `spawn: CPU p95` alone (σ 1.19 against T/2 0.375 on the
+busy host); a quiet host settles it.
 
 **What is not exact on main.** Per-view draws vary from load to load:
 villagers, cats, ground birds, herons, birds, clouds and cars move through
@@ -702,10 +1018,17 @@ resolves.
   `desktop1024` profiles, `touch(session)` (trusted CDP touches: tap, drag,
   the joystick, the USE disc) and `__h.compassFull()` (the pill's full
   label; under 480 px the pill shows only its icon).
-- Phase 2, wave 1, in `p2/`: `walkin.cjs`, `survey.cjs`,
+- Phase 2, wave 1, in `p2/`: `walkin.cjs` (walkin, nokhr-door), `survey.cjs`,
   `passport-interior.cjs`, `party.cjs` (party, partyoff), `bootcost.cjs`,
   `duskflip.cjs`, `journey.cjs`, and the `room-lib.cjs`, `L.cjs`,
   `play-lib.cjs` and `guide-lib.cjs` libraries.
+- Stage 2, wave 2: `intro.cjs`, `camera.cjs`, `lum.cjs`.
+- Phase 2, wave 2, in `p2/`: `light.cjs` (daycycle, weather, beacons,
+  shadowdraws, edge-crawl), `rooms.cjs` (room-a11y, room-phone, room-light,
+  room-rig, avlum, warmtest, room-census), `guidance.cjs` (recruiter, npcs,
+  copy) and `play.cjs` (firstplay, race, quests). `L.cjs` adds the terrain
+  zones, the bulb mask and the hue helpers; `room-lib.cjs` adds `IA.lum`,
+  `IA.lights` and `IA.windowRegion`.
 - `lock-census.cjs` the static census over `tools/owners.json`.
 - `../owners.json` the ownership table and the contract-check allow-list.
 - `test/probeSafety.test.ts` pins `classify()`, `leakReason()`, the boot

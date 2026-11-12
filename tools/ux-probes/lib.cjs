@@ -723,10 +723,30 @@ async function serve({ base, dist, port, label }) {
 
 // ---------------------------------------------------------------------- boot
 const APP_QUERY = '?owner=1';
+/**
+ * The world clock follows the machine's local time, so a probe that boots
+ * without an hour is judged on whenever it ran (wave-1 re-verify: guide
+ * failed 8 checks after about 22:00, when First steps skips the talk step).
+ * Every boot is pinned to noon, as the perf gate's loads are, unless the
+ * probe's own query names an hour, --hour <n> does, or --hour live asks for
+ * the clock.
+ */
+const DEFAULT_HOUR = 12;
+/** The query a boot loads: owner mode, the profile's flags, the probe's query, and the pinned hour. */
+function bootQuery(profileQuery = '', query = '', hour = undefined) {
+  let q = APP_QUERY + (profileQuery || '') + (query ? '&' + String(query).replace(/^[?&]/, '') : '');
+  const live = hour === 'live' || hour === false;
+  if (!live && !/[?&]hour=/.test(q)) {
+    const h = hour === undefined || hour === null || hour === true || hour === '' ? DEFAULT_HOUR : Number(hour);
+    if (!Number.isFinite(h) || h < 0 || h >= 24) throw new HarnessError(`--hour takes 0 to 24 (or 'live'), not ${JSON.stringify(hour)}`);
+    q += `&hour=${h}`;
+  }
+  return q;
+}
 
-async function boot(session, base, { query = '', waitWelcome = true, timeout = 240000 } = {}) {
+async function boot(session, base, { query = '', hour = undefined, waitWelcome = true, timeout = 240000 } = {}) {
   const { page } = session;
-  const q = APP_QUERY + (session.profile.query || '') + (query ? '&' + query.replace(/^[?&]/, '') : '');
+  const q = bootQuery(session.profile.query, query, hour);
   const t0 = Date.now();
   await page.goto(`${base}/${q}`, { waitUntil: 'domcontentloaded', timeout });
   await page.waitForFunction(() => window.__lifeIslandReady === true, null, { timeout, polling: 100 });
@@ -1157,6 +1177,8 @@ module.exports = {
   portInUse,
   startPreview,
   serve,
+  DEFAULT_HOUR,
+  bootQuery,
   boot,
   dismissWelcome,
   nextFrames,

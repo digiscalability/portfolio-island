@@ -330,10 +330,44 @@ const MARK = (pick) => {
   if (pick === 'npcChat') el = ui.npcChatDiv;
   else if (pick === 'zone') el = window.__h.zonePanel();
   else if (pick === 'modal') el = [...document.querySelectorAll('#ui-overlay > [role=dialog]')].filter((e) => window.__h.visible(e)).pop() || window.__h.zonePanel();
-  else el = document.querySelector(pick);
+  else if (pick === 'top') {
+    // The top panel's own element (PanelManager's stack), else the last dialog.
+    const st = (ui.panels && ui.panels.stack) || [];
+    const top = st[st.length - 1];
+    el = top && top.spec ? top.spec.el : null;
+    if (!el) el = [...document.querySelectorAll('#ui-overlay > [role=dialog]')].pop() || null;
+  } else if (pick === 'overlay') el = document.getElementById('ui-overlay');
+  else if (pick === 'drawer') el = ui.drawerListEl || null;
+  else if (pick === 'name-prompt') {
+    const inp = [...document.querySelectorAll('input')].find((i) => i.placeholder === 'Your name' && i.getBoundingClientRect().width > 2);
+    el = inp ? inp.closest('[role=dialog]') || inp.parentElement.parentElement : null;
+  } else el = document.querySelector(pick);
   if (el) el.setAttribute('data-ux-scope', '1');
   return !!el;
 };
+
+// The surfaces, in the order a session opens them: the welcome card, then the
+// 20 the wave-1 verify scanned on each device (40 in all, 0 serious or
+// critical there): the HUD, the Portfolio menu (the drawer on the phone), the
+// hire card, the four zone panels, the eight centred modals (passport, island
+// times, pack, journal, leaderboard, guestbook, roster, island map), the
+// receipt, say-hi and completion modals, the NPC chat and the name prompt.
+// Each is opened through the UI's own entry point, with the backend blocked.
+const ZONES = ['professional', 'projects', 'personal', 'contact'];
+const MODALS = [
+  ['passport', () => window.__app.ui.showPassport()],
+  ['island-times', () => void window.__app.ui.showIslandTimes()],
+  ['pack', () => window.__app.ui.showInventory()],
+  ['journal', () => window.__app.ui.showJournal()],
+  ['leaderboard', () => void window.__app.ui.showLeaderboard()],
+  ['guestbook', () => void window.__app.ui.showGuestbook()],
+  ['roster', () => window.__app.ui.showRoster()],
+  ['island-map', () => window.__app.openIslandMap()],
+  ['receipt', () => window.__app.ui.showReceipt([{ label: 'Probe coin', amount: 1, t: Date.now() }])],
+  ['say-hi', () => window.__app.ui.showSayHi()],
+  ['completion', () => window.__app.ui.showCompletionModal()],
+];
+const AXE_SURFACES = ['hud', 'menu', 'hire', ...ZONES.map((z) => `zone-${z}`), ...MODALS.map((m) => m[0]), 'npc-chat', 'name-prompt'];
 
 async function axe(t) {
   const src = lib.axeSource();
@@ -342,39 +376,78 @@ async function axe(t) {
     const s = await t.session(prof);
     const b = await t.boot(s);
     const { page } = s;
-    const inject = () => page.addScriptTag({ content: src });
-    await inject();
+    await page.addScriptTag({ content: src });
     const res = {};
-    const run = async (name, pick) => {
-      const ok = await page.evaluate(MARK, pick);
-      res[name] = ok ? await axeOn(page, '[data-ux-scope]') : { missing: true };
+    const closeAll = () => page.evaluate(() => window.__app.ui.panels.closeAll()).catch(() => {});
+    /** Open a surface, scan its element, close everything again (keep: leave it up). */
+    const run = async (name, open, pick, wait = 800, keep = false) => {
+      try {
+        if (open) await open();
+        await page.waitForTimeout(wait);
+        const ok = await page.evaluate(MARK, pick);
+        res[name] = ok ? await axeOn(page, '[data-ux-scope]') : { missing: true };
+      } catch (e) {
+        res[name] = { error: String(e && e.message ? e.message : e).slice(0, 200) };
+      }
+      if (keep) return;
+      await closeAll();
+      await page.waitForTimeout(250);
     };
-    await run('welcome', W);
-    await (touch ? page.tap(`${W} button[data-dismiss]`) : page.click(`${W} button[data-dismiss]`));
-    await page.waitForTimeout(1200);
-    res.hud = await axeOn(page, '#ui-overlay');
-    await page.evaluate(() => window.__app.ui.showHireCard('menu'));
-    await page.waitForTimeout(700);
-    await run('hire', 'modal');
-    await page.evaluate(() => window.__app.ui.panels.closeAll());
-    await page.evaluate(() => window.__app.ui.showZonePanel({ id: 'projects', name: 'projects' }));
-    await page.waitForTimeout(700);
-    await run('projects', 'zone');
-    await page.evaluate(() => window.__app.ui.panels.closeAll());
-    await page.evaluate(() => window.__app.ui.showNpcChat('Probe', 'Hello.', async () => 'Thanks.'));
-    await page.waitForTimeout(500);
-    await run('npc-chat', 'npcChat');
-    await page.evaluate(() => window.__app.ui.closeNpcChat());
-    t.data[prof] = { boot: b, surfaces: res };
+    // The welcome card stays up: its Explore button is pressed next.
+    await run('welcome', null, W, 0, true);
+    await (touch ? page.tap(`${W} button[data-dismiss]`).catch(() => page.click(`${W} button[data-dismiss]`)) : page.click(`${W} button[data-dismiss]`));
+    await page.waitForTimeout(1500);
+    await run('hud', null, 'overlay', 300);
+    if (!touch) {
+      await run('menu', async () => {
+        const pill = await page.$('.hud-btn[aria-label="Open portfolio menu"]');
+        if (pill) await pill.click();
+      }, 'top');
+    } else {
+      await run('menu', async () => {
+        const tg = await page.$('[aria-label="Open island menu"]');
+        if (tg) await tg.tap().catch(() => tg.click());
+      }, 'drawer');
+      const tg = await page.$('[aria-label="Close island menu"], [aria-label="Open island menu"]');
+      if (tg && (await page.evaluate(() => !!(window.__app.ui.drawerListEl && window.__app.ui.drawerListEl.getBoundingClientRect().height > 2)))) await tg.tap().catch(() => {});
+      await page.waitForTimeout(400);
+    }
+    await run('hire', () => page.evaluate(() => window.__app.ui.showHireCard('menu')), 'top');
+    for (const z of ZONES) await run(`zone-${z}`, () => page.evaluate((id) => window.__app.ui.showZonePanel({ id, name: id }), z), 'top');
+    for (const [name, open] of MODALS) await run(name, () => page.evaluate(open), 'top', 1200);
+    await run('npc-chat', () => page.evaluate(() => window.__app.ui.showNpcChat('Probe', 'Hello.', async () => 'Thanks.')), 'npcChat', 600);
+    await page.evaluate(() => window.__app.ui.closeNpcChat && window.__app.ui.closeNpcChat()).catch(() => {});
+    await run('name-prompt', () => page.evaluate(() => window.__app.ui.promptName('', () => {})), 'name-prompt', 600);
+    await page.keyboard.press('Escape').catch(() => {});
+    t.data[prof] = { boot: b, surfaces: res, pageErrors: s.sink && s.sink.pageerrors ? s.sink.pageerrors.slice(0, 5) : [] };
     for (const name of ['welcome', 'hire', 'npc-chat']) {
       const r = res[name];
       const cc = r && r.violations ? r.violations.find((v) => v.id === 'color-contrast') : null;
-      t.check(`${prof}: axe color-contrast on ${name}`, r && !r.missing ? !cc : null, r && r.missing ? 'surface not found' : cc ? `${cc.nodes} nodes` : 0, 0);
+      t.check(`${prof}: axe color-contrast on ${name}`, r && r.violations ? !cc : null, r && r.missing ? 'surface not found' : r && r.error ? r.error : cc ? `${cc.nodes} nodes` : 0, 0);
     }
+    // The verify's line: no serious or critical violation on any of the 20.
+    const bad = {};
+    const unseen = [];
+    const minor = {};
+    for (const name of AXE_SURFACES) {
+      const r = res[name];
+      if (!r || !r.violations) {
+        unseen.push(`${name}: ${r && r.error ? r.error.slice(0, 80) : 'not found'}`);
+        continue;
+      }
+      const sc = r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+      if (sc.length) bad[name] = sc.map((v) => `${v.id} (${v.impact}) x${v.nodes}: ${v.targets[0] || ''}`);
+      const rest = r.violations.filter((v) => v.impact !== 'serious' && v.impact !== 'critical');
+      if (rest.length) minor[name] = rest.map((v) => v.id);
+    }
+    t.data[prof].summary = { scanned: AXE_SURFACES.length - unseen.length, seriousOrCritical: bad, minorOrModerate: minor, unseen };
+    t.check(`${prof}: every one of the ${AXE_SURFACES.length} surfaces was opened and scanned`, unseen.length === 0, unseen.length ? unseen : AXE_SURFACES.length, AXE_SURFACES.length);
+    t.check(`${prof}: axe serious or critical violations on the ${AXE_SURFACES.length} surfaces`, Object.keys(bad).length === 0, Object.keys(bad).length ? bad : 0, 0);
   }
 }
 
 module.exports = {
   contrast: { item: 'D3', title: 'label-on-fill contrast at ?hour=6/12/18/21 on 1440 and 390, captions, focus ring', profiles: ['desktop', 'phone'], run: contrast },
-  axe: { item: 'D3, D4, D8', title: 'axe-core 4.10.3 on the welcome card, HUD, hire card, Projects and NPC chat', profiles: ['desktop', 'phone'], run: axe },
+  axe: { item: 'D3, D4, D8', title: 'axe-core 4.10.3 on the welcome card and 20 surfaces per device (40): HUD, menu or drawer, hire card, 4 zone panels, 11 modals, NPC chat, name prompt', profiles: ['desktop', 'phone'], run: axe },
+  AXE_SURFACES,
 };

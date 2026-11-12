@@ -3,7 +3,13 @@
 // side lists every material by type and ramp, and the lit, opaque materials
 // that are not MeshToon (C3's 'one shading model': MeshStandard only on
 // transparent materials, plus the player's dress until B15), grouped by where
-// they sit: the zone halls, tree.glb, villagers, the player and the props.
+// they sit: the zone halls, tree.glb, villagers, the player, the props (what
+// Island builds under island.mesh: C3's targets) and the scene props (what
+// GameScene and RaceSystem add to the scene themselves: the race gates, the
+// cruise ship, the islet beach house, road markings, rock.glb, the coins).
+// The scene props are B's and wait for B15, so they are reported apart and
+// judged only with --scene-props; once B15 is on main they fold into the
+// default scope (SCENE_PROPS_JUDGED below).
 // It also records the renderer's programs, draws and textures at a fixed
 // time after the card; with --compare <main dist> it checks the subject has
 // no more programs than main. The DOM side tallies radii, shadows, fonts,
@@ -36,7 +42,10 @@ const SCENE_CENSUS = () => {
     if (under(o, (p) => /tree/i.test(p.name || '') || (p.userData && /tree\.glb/.test(p.userData.src || '')))) return 'trees';
     if (sc.interiorGroup && under(o, (p) => p === sc.interiorGroup)) return 'interiors';
     if (isl && o === isl.surfaceMesh) return 'terrain';
-    return 'props';
+    // Island's own props hang under island.mesh; anything else is added to
+    // the scene by GameScene or RaceSystem.
+    if (isl && isl.mesh && under(o, (p) => p === isl.mesh)) return 'props';
+    return 'scene props';
   };
   const LIT = new Set(['MeshStandardMaterial', 'MeshPhysicalMaterial', 'MeshLambertMaterial', 'MeshPhongMaterial', 'MeshToonMaterial']);
   const mats = new Map();
@@ -78,7 +87,7 @@ const SCENE_CENSUS = () => {
     materials: rows.length,
     byType,
     notToon: { count: off.length, byWhere: Object.fromEntries(Object.entries(offBy).map(([k, v]) => [k, { count: v.length, samples: v.slice(0, 25) }])) },
-    toonWithoutRamp: { count: toonNoRamp.length, byWhere: noRampBy, samples: toonNoRamp.slice(0, 20).map((e) => `${e.color} users=${e.users} on=${e.sample}`) },
+    toonWithoutRamp: { count: toonNoRamp.length, byWhere: noRampBy, samples: toonNoRamp.slice(0, 20).map((e) => `${e.color} users=${e.users} on=${e.sample} [${[...e.where].join(', ')}]`) },
     rampWidths: [...ramps],
     renderer: { programs: R.info.programs ? R.info.programs.length : null, textures: R.info.memory.textures, geometries: R.info.memory.geometries },
   };
@@ -134,13 +143,17 @@ async function censusOne(t, base, prof, label) {
   return { boot: b, scene, dom };
 }
 
+/** Flip to true once B15 (the scene props' conversion) is on main: they are judged by default from then on. */
+const SCENE_PROPS_JUDGED = false;
+
 async function census(t) {
+  const judgeSceneProps = SCENE_PROPS_JUDGED || !!t.args.sceneProps;
   for (const prof of t.profiles(['desktop', 'phone'])) {
     const r = await censusOne(t, t.base, prof, 'subject');
     t.data[prof] = r;
-    // C3's scope: the zone halls, tree.glb, the villagers and the props. The
-    // player's dress waits for B15, and the interiors are wave 2's PR; both
-    // are reported, not judged.
+    // C3's scope: the zone halls, tree.glb, the villagers and Island's props.
+    // The player's dress and the scene props wait for B15, and the interiors
+    // are wave 2's PR; they are reported, not judged.
     const IN_SCOPE = ['zone halls', 'trees', 'villagers', 'props', 'terrain'];
     const off = r.scene.notToon;
     const offIn = Object.entries(off.byWhere).filter(([w]) => IN_SCOPE.includes(w));
@@ -149,7 +162,14 @@ async function census(t) {
     const noRamp = Object.entries(r.scene.toonWithoutRamp.byWhere || {}).filter(([w]) => IN_SCOPE.includes(w));
     const nNoRamp = noRamp.reduce((n, [, v]) => n + v, 0);
     t.check(`${prof}: every MeshToon material there carries the one shared ramp`, nNoRamp === 0 && r.scene.rampWidths.length <= 1, { withoutRamp: Object.fromEntries(noRamp), rampWidths: r.scene.rampWidths }, 'all with one ramp');
-    t.data[prof].reportOnly = { player: off.byWhere.player ? off.byWhere.player.count : 0, interiors: off.byWhere.interiors ? off.byWhere.interiors.count : 0 };
+    const sp = off.byWhere['scene props'] || { count: 0, samples: [] };
+    const spNoRamp = (r.scene.toonWithoutRamp.byWhere || {})['scene props'] || 0;
+    t.data[prof].reportOnly = { player: off.byWhere.player ? off.byWhere.player.count : 0, interiors: off.byWhere.interiors ? off.byWhere.interiors.count : 0, ...(judgeSceneProps ? {} : { sceneProps: { notToon: sp.count, toonWithoutRamp: spNoRamp, samples: sp.samples } }) };
+    if (judgeSceneProps) {
+      // B15's acceptance: no lit opaque non-toon scene prop, no toon without the ramp.
+      t.check(`${prof}: one shading model in the scene props (B15: race gates, cruise ship, islet house, road markings, rocks)`, sp.count === 0, sp.count ? { count: sp.count, samples: sp.samples.slice(0, 8) } : 0, 0);
+      t.check(`${prof}: every MeshToon scene prop carries the shared ramp (B15)`, spNoRamp === 0, spNoRamp, 0);
+    } else t.log(`${prof}: scene props (B15, reported apart): ${sp.count} lit opaque non-toon, ${spNoRamp} toon without the ramp`);
     if (t.compareBase) {
       const c = await censusOne(t, t.compareBase, prof, 'compare');
       t.data[`${prof}Compare`] = { scene: { byType: c.scene.byType, notToon: c.scene.notToon.count, renderer: c.scene.renderer } };
@@ -163,5 +183,5 @@ async function census(t) {
 }
 
 module.exports = {
-  census: { item: 'C3 (E6a)', title: 'scene material census (one shading model, the shared ramp, programs) and the DOM style census', profiles: ['desktop', 'phone'], compare: true, run: census },
+  census: { item: 'C3, B15 (E6a)', title: "scene material census (one shading model, the shared ramp, programs) on C3's targets; B's scene props reported apart (--scene-props judges them); the DOM style census", profiles: ['desktop', 'phone'], compare: true, run: census },
 };

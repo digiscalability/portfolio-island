@@ -194,8 +194,9 @@ describe('shadowMap.autoUpdate has exactly one owner', () => {
     const s = src('SimpleRenderer.ts');
     const writes = s.match(/shadowMap\.autoUpdate =/g) ?? [];
     // ONE raw writer now: applyShadowPolicy. Construction routes THROUGH the
-    // policy (not a second raw write) so ?halfshadow=1 takes effect from frame
-    // 1 — a single owner is even cleaner than the old construction+policy pair.
+    // policy (not a second raw write) so half rate (the low tier's default, or
+    // ?halfshadow=1) holds from frame 1 — a single owner is even cleaner than
+    // the old construction+policy pair.
     expect(writes).toHaveLength(1);
     expect(s).toContain('this.applyShadowPolicy();');
     // The policy derives the field from freeze + rung + the always-half lever.
@@ -210,6 +211,47 @@ describe('shadowMap.autoUpdate has exactly one owner', () => {
       'if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.shadowFrozen) {',
     );
     expect(s).toContain('if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;');
+  });
+
+  test('half rate is the low tier default, and the URL pins it either way (E2)', () => {
+    const s = src('SimpleRenderer.ts');
+    // Registered from the renderer's own module, off on desktop (decision 12).
+    expect(s).toContain("fx.register('halfShadow', { desktop: false, low: true });");
+    // ?halfshadow=1 or =0 wins on any tier; else the low tier's fx switch.
+    expect(s).toContain("return v === '1' ? true : v === '0' ? false : null;");
+    expect(s).toContain('if (this.halfShadowParam !== null) return this.halfShadowParam;');
+    expect(s).toContain("return this.lowTier && fx.on('halfShadow');");
+    // A getter: the perf gate flips the switch mid-page.
+    expect(s).toContain('private get alwaysHalfShadow(): boolean {');
+  });
+
+  test('a flip of the lever re-runs the policy before the re-arm (E2, critique)', () => {
+    // --fx halfShadow turns the lever off mid-page. autoUpdate was false and
+    // the re-arm below stops, so without this the map froze on the off side
+    // and the A/B measured a frozen map against half rate.
+    const s = src('SimpleRenderer.ts');
+    const body = s.slice(
+      s.indexOf('private render(): void'),
+      s.indexOf('public setPostProcessingEnabled'),
+    );
+    const flip = body.indexOf(
+      'if (this.alwaysHalfShadow !== this.halfShadowApplied) this.applyShadowPolicy();',
+    );
+    const rearm = body.indexOf('if ((this.qualityRung >= 2 || this.alwaysHalfShadow)');
+    expect(flip).toBeGreaterThan(-1);
+    expect(rearm).toBeGreaterThan(flip);
+    // The policy records what it derived the field from.
+    expect(s).toContain('this.halfShadowApplied = this.alwaysHalfShadow;');
+  });
+
+  test('warmUp still primes the shadow pass at half rate (E2)', () => {
+    // autoUpdate is off at half rate, so the throwaway frame would skip the
+    // depth pass and its programs would compile on the first visible frame.
+    const s = src('SimpleRenderer.ts');
+    const body = s.slice(s.indexOf('public warmUp('), s.indexOf('public startRenderLoop('));
+    const arm = body.indexOf('if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;');
+    expect(arm).toBeGreaterThan(body.indexOf('this.renderer.compile(scene, camera);'));
+    expect(arm).toBeLessThan(body.indexOf('this.composer.render();'));
   });
 
   test('unfreezing refreshes the map once, whatever the rung', () => {
@@ -286,7 +328,7 @@ describe('the resolution governor can actually recover', () => {
     expect(body).not.toContain('this.qualityAccum = 0;');
   });
 
-  test('the ladder steps OVER rung 1 where it is inert (low tier)', () => {
+  test('the ladder steps OVER every rung that is inert (low tier)', () => {
     // The low tier never builds a composer, so bloomPass is undefined and
     // rung 1 sheds nothing — yet engaging it reset the cooldown, making a
     // drowning low-tier machine wait a full extra engage window (4s) before
@@ -294,11 +336,19 @@ describe('the resolution governor can actually recover', () => {
     // at the inert rung for a release window (12s) before the claw-back
     // (gated on rung 0) could start. Both decision sites route through
     // rungStep, which skips 1 in either direction when the pass is absent.
+    // E2 made half-rate shadows the low tier's default, which leaves rung 2
+    // (shadow half rate) just as inert there, so rungStep skips any inert
+    // rung (test/perfLevers.test.ts drives the walk).
     const s = src('SimpleRenderer.ts')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
     expect(s).toContain('private rungStep(dir: 1 | -1): number');
-    expect(s).toContain('next === 1 && !this.bloomPass ? this.qualityRung + 2 * dir : next');
+    expect(s).toContain(
+      'return (rung === 1 && !this.bloomPass) || (rung === 2 && this.alwaysHalfShadow);',
+    );
+    expect(s).toContain(
+      'while (next > 0 && next < SimpleRenderer.MAX_QUALITY_RUNG && this.rungInert(next)) next += dir;',
+    );
     expect(s).toContain('this.setQualityRung(this.rungStep(1))');
     expect(s).toContain('this.setQualityRung(this.rungStep(-1))');
     // the raw ±1 decisions must be gone (setQualityRung's internal walk stays)

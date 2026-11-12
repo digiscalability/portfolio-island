@@ -4,7 +4,7 @@
 // Explore. The backend stays blocked, so villager replies take the written
 // fallback.
 //
-//   npm run probe -- p2/journey [--scenario follow,mappick] [--profile desktop|phone] [--cap 540] --dist dist --port <n>
+//   npm run probe -- p2/journey [--scenario follow,mappick,chip] [--profile desktop|phone] [--cap 540] --dist dist --port <n>
 //
 // follow: Explore, walk the trail coins, talk to the trail's villager, then
 //   follow the compass wherever it points (districts, deliveries), entering
@@ -23,9 +23,12 @@
 // walk goes on, and E is pressed only with the prompt it is meant for up.
 //
 // A7's bar, at 1440x900 and 390x844 touch: all four halls entered within 6
-// minutes; after each of stamps 1-3 the pill names a district within 1 s; a
-// map pick of each district ends with its door prompt up and the pill still
-// on it.
+// minutes; after each of stamps 1-3 the pill names a district within 1 s of
+// leaving the hall (P2-A1 hides it inside); a map pick of each district ends
+// with its door prompt up and the pill still on it. P2-A12's (follow): the
+// Next chip within 1 s of Skip, naming a district at each leg until four
+// stamps. chip: in a fresh session, the chip's first 'Show me' row sets the
+// pill to that district, and an accepted quest shows in the chip within 1 s.
 const lib = require('../lib.cjs');
 const G = require('./guide-lib.cjs');
 
@@ -129,6 +132,97 @@ async function skipGuide(page, touch) {
   });
 }
 
+/** P2-A12's Next chip: its words when #ds-guide shows 'Next: ...', else null. */
+const CHIP = () => {
+  const g = document.getElementById('ds-guide');
+  if (!g || !g.isConnected) return null;
+  const cs = getComputedStyle(g);
+  const r = g.getBoundingClientRect();
+  if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity < 0.1 || r.width < 2) return null;
+  const text = (g.innerText || '').replace(/\s+/g, ' ').trim();
+  return /^Next:/.test(text) ? { text: text.slice(0, 240), state: g.dataset.next || null } : null;
+};
+const CHIP_DISTRICT = /^Next:\s*\W*\s*(Projects|Project Portfolio|Professional|Personal|Contact|Get In Touch)/i;
+/** Poll the chip for up to ms; the time it took, or null. */
+async function chipWithin(page, ms) {
+  const t0 = Date.now();
+  do {
+    const c = await page.evaluate(CHIP);
+    if (c) return { ms: Date.now() - t0, ...c };
+    await lib.sleep(50);
+  } while (Date.now() - t0 < ms);
+  return null;
+}
+/** Open the chip, press its first 'Show me' row, then accept the Elder Sage's quest: what the chip and the pill say. */
+async function chipRoutes(page) {
+  const out = {};
+  out.opened = await page.evaluate(() => {
+    const g = document.getElementById('ds-guide');
+    const b = g && [...g.querySelectorAll('button')].find((x) => /^Next:/.test((x.innerText || '').trim()));
+    if (!b) return false;
+    if (g.dataset.next !== 'open') b.click();
+    return true;
+  });
+  await lib.sleep(500);
+  const SHOW_ME = /show me/i;
+  out.showMe = await page.evaluate((src) => {
+    const re = new RegExp(src, 'i');
+    const g = document.getElementById('ds-guide');
+    const b = g && [...g.querySelectorAll('button')].find((x) => re.test(x.innerText || x.getAttribute('aria-label') || ''));
+    if (!b) return null;
+    // The row: the largest ancestor that holds this one 'Show me' and no other.
+    let row = b;
+    while (row.parentElement && row.parentElement !== g && [...row.parentElement.querySelectorAll('button')].filter((x) => re.test(x.innerText || x.getAttribute('aria-label') || '')).length === 1) row = row.parentElement;
+    const label = (row.innerText || '').replace(re, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    b.click();
+    return { row: label };
+  }, SHOW_ME.source);
+  await lib.sleep(700);
+  if (out.showMe) out.showMe.compass = (await G.readout(page)).compass;
+  // The quest list is drawn in the open chip: open it again if Show me folded it.
+  await page.evaluate(() => {
+    const ui = window.__app.ui;
+    if (ui.panels && ui.panels.current()) ui.panels.closeAll();
+    const g = document.getElementById('ds-guide');
+    const b = g && [...g.querySelectorAll('button')].find((x) => /^Next:/.test((x.innerText || '').trim()));
+    if (b && g.dataset.next !== 'open') b.click();
+  });
+  await lib.sleep(400);
+  out.quest = await page.evaluate(() => {
+    const q = window.__app.npcQuests;
+    if (!q || typeof q.onTalk !== 'function') return { error: 'no npcQuests.onTalk' };
+    q.onTalk('Elder Sage', window.__app.scene.getCoinsCollected());
+    return { active: q.getActiveQuests(window.__app.scene.getCoinsCollected()).map((x) => `${x.giver}: ${x.label}`) };
+  });
+  const t1 = Date.now();
+  out.quest.ms = null;
+  while (Date.now() - t1 < 1500) {
+    const c = await page.evaluate(() => (document.getElementById('ds-guide') ? document.getElementById('ds-guide').innerText.replace(/\s+/g, ' ') : ''));
+    if (/Elder Sage/.test(c)) {
+      out.quest.ms = Date.now() - t1;
+      out.quest.chip = c.slice(0, 200);
+      break;
+    }
+    await lib.sleep(50);
+  }
+  return out;
+}
+
+/** Leave a hall and read the pill as the visitor steps out: the first label within 1 s of the exit. */
+async function pillAfterExit(page) {
+  const t0 = Date.now();
+  let last = null;
+  do {
+    const c = strip((await G.readout(page)).compass);
+    if (c) {
+      last = c;
+      if (isDistrictLabel(c)) return { label: c, ms: Date.now() - t0 };
+    }
+    await lib.sleep(80);
+  } while (Date.now() - t0 < 1000);
+  return { label: last, ms: null };
+}
+
 async function closeZonePanel(page, touch) {
   await page.evaluate(() => {
     const p = window.__app.ui.zonePanelDiv;
@@ -225,7 +319,13 @@ async function enterAndRead(t, page, touch, leg, tag) {
   await closeZonePanel(page, touch);
   await lib.sleep(1800);
   await leaveBuilding(page, touch);
-  await lib.sleep(1800);
+  // P2-A1 hides the pill inside a hall, so it is read from the exit: the
+  // moment the visitor is outside again, then for 1 s.
+  const out0 = Date.now();
+  while (Date.now() - out0 < 6000 && (await page.evaluate(() => window.__app.scene.isInsideInterior()))) await lib.sleep(60);
+  leg.exitMs = Date.now() - out0;
+  leg.pillAfterExit = await pillAfterExit(page);
+  await lib.sleep(800);
   await stepOff(page);
   return complete;
 }
@@ -241,6 +341,8 @@ async function follow(t, prof) {
   await lib.sleep(1500);
   const EXPLORE_AT = await explore(page, touch);
   R.guideSkipped = await skipGuide(page, touch);
+  // P2-A12: Skip folds First steps into the Next chip.
+  R.chip = { afterSkip: R.guideSkipped ? await chipWithin(page, 1000) : null, legs: [] };
   const now = async () => +(((await G.ptime(page)) - EXPLORE_AT) / 1000).toFixed(1);
   const stopTL = G.startTimeline(page, EXPLORE_AT);
   await lib.sleep(1500);
@@ -309,6 +411,8 @@ async function follow(t, prof) {
     const strayAtStart = await G.closeNpcChat(page);
     const r0 = await G.readout(page);
     if (r0.stamps >= 4) break;
+    const chipNow = await page.evaluate(CHIP);
+    R.chip.legs.push({ n, stamps: r0.stamps, chip: chipNow ? chipNow.text.slice(0, 80) : null });
     const label = strip(r0.compass);
     const leg = { n, label, startS: await now() };
     if (strayAtStart) leg.strayChatClosed = true;
@@ -398,10 +502,49 @@ async function follow(t, prof) {
   t.data[tag] = R;
   t.check(`${prof}: all four district halls entered within 6 minutes of Explore`, by6 >= 4, `${by6} of 4 by 6 min (${by9} by 9 min)`, '4 of 4');
   for (let n = 1; n <= 3; n++) {
+    // Read at the hall's exit (P2-A1 hides the pill inside); the timeline's
+    // pill 1 s after the stamp is the fallback for a leg with no exit read.
+    const leg = R.legs.find((l) => l.inside && l.inside.stamps === n && l.pillAfterExit);
     const x = R.stamps.find((y) => y.n === n);
-    t.check(`${prof}: after stamp ${n}, the pill names a district within 1 s`, x ? isDistrictLabel(x.pillAfter1s) : null, x ? x.pillAfter1s : `no stamp ${n} in the run`, 'a district');
+    const v = leg ? leg.pillAfterExit : null;
+    t.check(`${prof}: after stamp ${n}, the pill names a district within 1 s of leaving the hall`, v ? isDistrictLabel(v.label) : x ? isDistrictLabel(x.pillAfter1s) : null, v ? (v.ms !== null ? `${v.label} at ${v.ms} ms` : v.label || '(hidden)') : x ? x.pillAfter1s : `no stamp ${n} in the run`, 'a district');
   }
   mapPickChecks(t, prof, R.mapPicks);
+  // P2-A12's Next chip.
+  const C = R.chip;
+  const ca = C.afterSkip;
+  t.check(`${prof}: after Skip, the Next chip within 1 s (ms)`, R.guideSkipped ? !!ca : null, ca ? ca.ms : R.guideSkipped ? 'no Next chip in 1 s' : 'no First steps card to skip', '<= 1000');
+  const until4 = C.legs.filter((l) => l.stamps < 4);
+  const bad = until4.filter((l) => !CHIP_DISTRICT.test(l.chip || ''));
+  t.check(`${prof}: the Next chip names a district until four stamps`, ca && until4.length ? bad.length === 0 : null, ca ? (bad.length ? bad.slice(0, 4) : `${until4.length} legs, all a district`) : 'no Next chip', 'a district at every leg');
+}
+
+/**
+ * P2-A12's routes, in a session of their own (they move the pill, and after
+ * four stamps the chip's rows are no longer districts): Explore, Skip, the
+ * chip's first 'Show me' row (a district at the start), then a quest
+ * accepted with the chip open.
+ */
+async function chip(t, prof) {
+  const touch = lib.isTouchProfile(prof);
+  const tag = `${prof}-chip`;
+  const s = await t.session(prof);
+  const { page } = s;
+  const R = {};
+  R.boot = await t.boot(s);
+  await lib.sleep(1500);
+  await explore(page, touch);
+  R.guideSkipped = await skipGuide(page, touch);
+  R.afterSkip = R.guideSkipped ? await chipWithin(page, 1000) : null;
+  await lib.sleep(600);
+  R.routes = R.afterSkip ? await chipRoutes(page) : null;
+  await t.shot(page, `journey-${tag}.png`);
+  t.data[tag] = R;
+  const rt = R.routes;
+  const sm = rt && rt.showMe;
+  const smDistrict = sm ? DISTRICTS.find((d) => d.re.test(sm.row)) : null;
+  t.check(`${prof}: the chip's first 'Show me' row sets the pill to its district`, rt ? !!sm && !!smDistrict && smDistrict.re.test(sm.compass || '') : null, rt ? (sm ? { row: sm.row, pill: sm.compass } : "no 'Show me' row in the open chip") : 'no Next chip', "the row's district");
+  t.check(`${prof}: an accepted quest shows in the open chip within 1 s (ms)`, rt && rt.quest && !rt.quest.error ? rt.quest.ms !== null && rt.quest.ms <= 1000 : null, rt ? rt.quest.error || (rt.quest.ms !== null ? rt.quest.ms : `not in 1.5 s (active: ${(rt.quest.active || []).join('; ')})`) : 'no Next chip', '<= 1000');
 }
 
 /**
@@ -476,10 +619,11 @@ async function mappick(t, prof) {
 }
 
 async function journey(t) {
-  const scenarios = String(t.args.scenario || 'follow,mappick').split(',');
+  const scenarios = String(t.args.scenario || 'follow,mappick,chip').split(',');
   for (const prof of t.profiles(['desktop', 'phone'])) {
     if (scenarios.includes('follow')) await follow(t, prof);
     if (scenarios.includes('mappick')) await mappick(t, prof);
+    if (scenarios.includes('chip')) await chip(t, prof);
   }
 }
 

@@ -36,7 +36,18 @@ def _source() -> str:
         ).stdout.strip()
 
     head = git("rev-parse", "--short", "HEAD") or "unknown"
-    paths = ("functions", "evals", "index.html", "public", "SimpleUI.ts", "Share.ts", "api", "NpcChat.ts")
+    paths = (
+        "functions",
+        "evals",
+        "index.html",
+        "public",
+        "SimpleUI.ts",
+        "Share.ts",
+        "Guide.ts",
+        "GuideCard.ts",
+        "api",
+        "NpcChat.ts",
+    )
     dirty = bool(git("status", "--porcelain", "--", *paths))
     return f"commit {head}" + (" plus uncommitted changes" if dirty else "")
 
