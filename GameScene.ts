@@ -9925,6 +9925,19 @@ export class GameScene extends THREE.Scene {
 
   /** The factor that keeps a sprite `worldW` wide at `dist` from the camera
    *  within 60% of the viewport's width (B8, UX-14); 1 when it fits. */
+  /** A point's depth along the camera's view axis: the distance a
+   *  camera-facing sprite's on-screen width divides by (the straight-line
+   *  distance overstates it off-centre, and the clamp let a bubble reach
+   *  64% of the width). Falls back to the straight line behind the camera. */
+  private viewDepth(p: THREE.Vector3): number {
+    const cam = this.camera;
+    const d = GameScene._viewRel.copy(p).sub(cam.position);
+    const z = d.dot(cam.getWorldDirection(GameScene._viewFwd));
+    return z > 1e-3 ? z : d.length();
+  }
+  private static readonly _viewRel = new THREE.Vector3();
+  private static readonly _viewFwd = new THREE.Vector3();
+
   private spriteWidthClamp(worldW: number, dist: number): number {
     const cam = this.camera;
     if (!cam || dist <= 0) return 1;
@@ -9974,6 +9987,12 @@ export class GameScene extends THREE.Scene {
   } | null = null;
   private npcBubbleFor = -1;
   private npcBubbleUntil = 0;
+  /** A message is up (its window has not run out). The sprite's own
+   *  visible flag also drops while the bubble is faded for a chat, so a
+   *  faded bubble neither draws nor has bounds on screen (B8). */
+  private npcBubbleLive = false;
+  /** The quest "!" top above its villager's feet: 2.7 + 0.30 + the 0.12 bob. */
+  private static readonly QUEST_MARK_TOP = 3.12;
   private static readonly NPC_BUBBLE_W = 3.4;
   private static readonly NPC_BUBBLE_H = 1.06;
   /** The bubble's handwriting (B8): painted once document.fonts says it is
@@ -10086,7 +10105,8 @@ export class GameScene extends THREE.Scene {
     ctx.textBaseline = 'middle';
     lines.forEach((ln, k) => ctx.fillText(ln, 256, top + 24 + k * lh));
     tex.needsUpdate = true;
-    sprite.visible = time + 6.5 > performance.now() / 1000;
+    this.npcBubbleLive = time + 6.5 > performance.now() / 1000;
+    sprite.visible = this.npcBubbleLive;
     this.npcBubbleFor = i;
   }
 
@@ -12728,7 +12748,9 @@ export class GameScene extends THREE.Scene {
       const dist = this.camera.position.distanceTo(tag.sprite.position);
       // Constant-ish on-screen size: sprites attenuate ∝1/dist, so scale ∝dist.
       // Never wider than 60% of the viewport (B8, UX-14).
-      const s = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6) * this.spriteWidthClamp(1.7, dist);
+      const s =
+        THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6) *
+        this.spriteWidthClamp(1.7, this.viewDepth(tag.sprite.position));
       // 0.63 aspect matches the 256×96 two-line pill canvas (0.42 was the old
       // 64px canvas — it squished the role+activity pill every frame).
       tag.sprite.scale.set(s * 1.7, s * 0.63, 1);
@@ -12759,32 +12781,39 @@ export class GameScene extends THREE.Scene {
     }
 
     // Speech bubble follows its speaker just above the name pin; auto-hides.
-    if (this.npcBubble && this.npcBubble.sprite.visible) {
+    if (this.npcBubble && this.npcBubbleLive) {
       const tag = this.nameTags[this.npcBubbleFor];
       if (time > this.npcBubbleUntil || !tag || !tag.target.meshRef.visible) {
+        this.npcBubbleLive = false;
         this.npcBubble.sprite.visible = false;
       } else {
         // Both sprites are bottom-anchored, so the pill's current world
         // height IS its scale.y — seat the bubble 0.12 above the pill's top
         // so the distance-scaled pill can never grow up into it.
+        // A quest giver's "!" (2.7 u up, bobbing to 3.12) would sit inside
+        // the bubble at chat range: seat the bubble above it instead.
+        let lift = tag.sprite.scale.y + 0.12;
+        if (this.questMarkers.some((m) => m.npcName === tag.target.name)) {
+          const pinUp = tag.sprite.position.length() - tag.target.position.length();
+          lift = Math.max(lift, GameScene.QUEST_MARK_TOP + 0.06 - pinUp);
+        }
         this.npcBubble.sprite.position
           .copy(tag.sprite.position)
-          .addScaledVector(
-            this._tagNormal.copy(tag.target.position).normalize(),
-            tag.sprite.scale.y + 0.12,
-          );
+          .addScaledVector(this._tagNormal.copy(tag.target.position).normalize(), lift);
         // Never wider than 60% of the viewport (B8, UX-14), and gone with
         // the pin while its villager is in a chat.
         const bs = this.spriteWidthClamp(
           GameScene.NPC_BUBBLE_W,
-          this.camera.position.distanceTo(this.npcBubble.sprite.position),
+          this.viewDepth(this.npcBubble.sprite.position),
         );
         this.npcBubble.sprite.scale.set(
           GameScene.NPC_BUBBLE_W * bs,
           GameScene.NPC_BUBBLE_H * bs,
           1,
         );
-        (this.npcBubble.sprite.material as THREE.SpriteMaterial).opacity = tag.talkFade ?? 1;
+        const bo = tag.talkFade ?? 1;
+        (this.npcBubble.sprite.material as THREE.SpriteMaterial).opacity = bo;
+        this.npcBubble.sprite.visible = bo > 0.02;
       }
     }
 

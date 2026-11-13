@@ -30,6 +30,7 @@ interface Talk {
   setNpcDialogueHold(name: string | null): void;
   updateNpcTalk(now: number, dt: number): void;
   spriteWidthClamp(worldW: number, dist: number): number;
+  viewDepth(p: THREE.Vector3): number;
   showNpcSpeechBubble(i: number, text: string, time: number): void;
   paintNpcSpeechBubble(i: number, text: string, time: number): void;
   bubbleFont: string;
@@ -228,6 +229,49 @@ describe('bubbles and pins you can read (B8)', () => {
     expect(scene.spriteWidthClamp(3.4, 40)).toBe(1);
     scene.camera.fov = 50;
     scene.camera.aspect = 1.6;
+  });
+
+  test('the clamp reads view depth, so an off-centre sprite holds 60% too', () => {
+    // E's npc.cjs measured the conversing villager's bubble at 917 of 1440 px
+    // (64%): the clamp took the straight-line distance, which overstates the
+    // depth a camera-facing sprite's width divides by.
+    const cam = scene.camera;
+    cam.position.set(0, 0, 0);
+    cam.lookAt(0, 0, -1);
+    cam.updateMatrixWorld(true);
+    const p = new THREE.Vector3(2, 1.5, -3);
+    expect(scene.viewDepth(p)).toBeCloseTo(3, 6);
+    expect(p.length()).toBeGreaterThan(3.5);
+    // Projected width at that depth is exactly 60% of the view.
+    const k = scene.spriteWidthClamp(3.4, scene.viewDepth(p));
+    const viewW = 2 * 3 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) * cam.aspect;
+    expect((3.4 * k) / viewW).toBeCloseTo(0.6, 6);
+    // Behind the camera it falls back to the straight line.
+    expect(scene.viewDepth(new THREE.Vector3(0, 0, 2))).toBeCloseTo(2, 6);
+  });
+
+  test('a bubble faded for a chat is not drawn, and comes back after', () => {
+    const g = src('GameScene.ts');
+    const at = g.indexOf('if (this.npcBubble && this.npcBubbleLive) {');
+    expect(at).toBeGreaterThan(-1);
+    const block = g.slice(at, g.indexOf('// Drain colliders', at));
+    expect(block).toContain('this.viewDepth(this.npcBubble.sprite.position)');
+    expect(block).toContain('this.npcBubble.sprite.visible = bo > 0.02;');
+    expect(block).toContain('this.npcBubbleLive = false;');
+    expect(g).toContain('this.spriteWidthClamp(1.7, this.viewDepth(tag.sprite.position))');
+  });
+
+  test("a quest giver's bubble sits above its '!' (bubble.cjs: the mark cut the text)", () => {
+    const g = src('GameScene.ts');
+    // The mark: 2.7 u up, its bar reaching +0.30 and bobbing 0.12.
+    expect(g).toContain('marker.position.copy(base).addScaledVector(normal, 2.7);');
+    expect(g).toContain('bar.position.y = 0.14;');
+    expect(g).toContain('new THREE.BoxGeometry(0.09, 0.32, 0.09)');
+    expect((GameScene as unknown as { QUEST_MARK_TOP: number }).QUEST_MARK_TOP).toBeCloseTo(
+      2.7 + 0.14 + 0.16 + 0.12,
+      6,
+    );
+    expect(g).toContain('lift = Math.max(lift, GameScene.QUEST_MARK_TOP + 0.06 - pinUp);');
   });
 
   test('the pin sits above the measured head top', () => {
