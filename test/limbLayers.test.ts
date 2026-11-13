@@ -149,8 +149,12 @@ describe('post-mixer limb poses compose onto the clip (MOT-01)', () => {
 
     player.jump();
     let airborne = 0;
+    // In the MODEL's own frame: B4's touchdown squash scales the whole body
+    // about the feet by design (sy 0.82 in one frame), which moves a hand
+    // ~0.1 u in the player frame. The bug this pins is limbs stacking, so the
+    // body's own scale and pivot are divided out.
     const handStep = largestHandStep(
-      player,
+      model,
       hands,
       () => {
         player.update(DT);
@@ -582,6 +586,68 @@ describe('feet that plant: the gait layer (B3)', () => {
       expect(t90, 't90 (s)').not.toBeNull();
       expect(t90 as number).toBeGreaterThanOrEqual(0.28);
       expect(t90 as number).toBeLessThanOrEqual(0.36);
+    },
+  );
+});
+
+// ── Landings that land (B4) ─────────────────────────────────────────────────
+// The old landing scaled the model about its origin (mid-body), so the 0.85
+// squash lifted the soles off the ground; loco.cjs read 0.087 u on main, with
+// the squash's minimum 4-7 frames after touchdown.
+
+/** The lowest skinned vertex, in the player group's own frame (the ground
+ *  under a grounded player sits at y = −0.7 there). */
+function soleY(player: SimplePlayer, model: THREE.Object3D): number {
+  player.updateMatrixWorld(true);
+  let min = Infinity;
+  model.traverse((o) => {
+    const mesh = o as THREE.SkinnedMesh;
+    if (!mesh.isSkinnedMesh) return;
+    const n = mesh.geometry.attributes.position.count;
+    for (let i = 0; i < n; i += 3) {
+      const p = player.worldToLocal(mesh.getVertexPosition(i, _v).applyMatrix4(mesh.matrixWorld));
+      if (p.y < min) min = p.y;
+    }
+  });
+  return min;
+}
+
+describe('landings that land (B4)', () => {
+  test(
+    'soles stay on the ground through the landing, and the squash bottoms at touchdown',
+    { timeout: 60000 },
+    async () => {
+      const { player, model } = await standingPlayer();
+      for (let k = 0; k < 120; k++) player.update(DT);
+      const rest = soleY(player, model);
+      expect(Math.abs(rest + 0.7), 'standing sole on the ground').toBeLessThan(0.01);
+      player.jump();
+      let touchdown = -1;
+      let minScaleFrame = -1;
+      let minScale = Infinity;
+      let worstAbove = 0;
+      for (let k = 0; k < 75; k++) {
+        const wasGrounded = player.getIsGrounded();
+        player.update(DT);
+        if (k > 2 && !wasGrounded && player.getIsGrounded() && touchdown < 0) touchdown = k;
+        if (touchdown >= 0 && player.getIsGrounded()) {
+          worstAbove = Math.max(worstAbove, soleY(player, model) + 0.7);
+          if (model.scale.y < minScale) {
+            minScale = model.scale.y;
+            minScaleFrame = k;
+          }
+        }
+      }
+      expect(touchdown, 'landed').toBeGreaterThan(0);
+      expect(
+        worstAbove,
+        'soles above the ground on grounded landing frames (u)',
+      ).toBeLessThanOrEqual(0.01);
+      expect(minScale, 'it did squash').toBeLessThan(0.88 * 0.9);
+      expect(
+        minScaleFrame - touchdown,
+        'squash minimum after touchdown (frames)',
+      ).toBeLessThanOrEqual(2);
     },
   );
 });

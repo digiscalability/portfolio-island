@@ -205,6 +205,7 @@ export function headingStep(arc: number, dt: number, pivot: number): number {
   return THREE.MathUtils.clamp(eased, -cap, cap);
 }
 fx.register('gait', { desktop: true, low: true });
+fx.register('squash', { desktop: true, low: true });
 
 /**
  * THE CLIP LAYER: world law 2's cached-quaternion rule, applied to the
@@ -332,6 +333,14 @@ export class SimplePlayer extends THREE.Group {
   private modelBaseY: number | null = null;
   private bodyDip = 0;
   private readonly boundGait: () => void;
+  // The landing spring (B4): vertical scale, its velocity, the leg absorb.
+  private landSy = 1;
+  private landVy = 0;
+  private legAbsorbT = 0;
+  private squashDt = 0;
+  private modelBaseScale: THREE.Vector3 | null = null;
+  private static readonly LEG_ABSORB_S = 0.08;
+  private readonly boundSquash: () => void;
 
   private speed: number = 5.6; // movement speed. Was 8.0 (bumped 5.5→7.0→8.0 with the R30→40→50 grows — but 8.0 is a 28.8km/h SPRINT next to the 1.4u/s villagers). Calmed to 5.6 (~20km/h brisk walk, island crossing ~31s): relaxed pacing IS the product now, and vehicles exist for distance.
   // Hospital checkup buff (economy P3): multiplies the base speed until the
@@ -501,6 +510,7 @@ export class SimplePlayer extends THREE.Group {
 
   // Jump/air pose (on-foot only): eases 0→1 while airborne, back on land.
   private airPoseWeight = 0;
+  private airLegWeight = 0; // the legs' share, faded faster on landing (B4)
   // The mixer's last output for the four limbs (see LimbClip).
   private readonly limbClip = new LimbClip((k) =>
     k === 'armL'
@@ -575,6 +585,7 @@ export class SimplePlayer extends THREE.Group {
     super();
     this.name = 'SimplePlayer';
     this.boundGait = this.applyGait.bind(this);
+    this.boundSquash = this.applyLandSquash.bind(this);
 
     const group = new THREE.Group();
 
@@ -745,6 +756,7 @@ export class SimplePlayer extends THREE.Group {
       this.inWater = false;
       this.swimming = false;
       this.airPoseWeight = 0;
+      this.airLegWeight = 0;
     } else {
       // Back to swimming/walking: neutralise the posed bones + model tilt so
       // the mixer / swim pose take over cleanly.
@@ -1841,8 +1853,14 @@ export class SimplePlayer extends THREE.Group {
    * update() returns earlier for swim/ride/seat, so isGrounded is the gate.
    */
   private applyAirWavePose(dt: number): void {
+    // B4: the air pose rises at 10/s and fades at 25/s on the LEGS, so the
+    // tucked knees are gone by the landing frame instead of lifting the soles
+    // through it. The arms keep the 10/s fade: they lift no sole, and a 25/s
+    // drop on top of the touchdown squash jerked the hands 0.2 u in a frame.
     const k = Math.min(1, 10 * dt);
+    const kLeg = Math.min(1, (this.isGrounded ? 25 : 10) * dt);
     this.airPoseWeight += ((this.isGrounded ? 0 : 1) - this.airPoseWeight) * k;
+    this.airLegWeight += ((this.isGrounded ? 0 : 1) - this.airLegWeight) * kLeg;
     const aw = this.airPoseWeight;
     let waveEnv = 0;
     let waveElapsed = 0;
@@ -1936,7 +1954,14 @@ export class SimplePlayer extends THREE.Group {
       const g = this.gaitAdd;
       const addArmL = -0.85 * air + (tossing ? tossLean : 0) + g.armL;
       const addArmR = -0.85 * air + g.armR;
-      const addLeg = -0.45 * air + (tossing ? 0.5 * tossCrouch : 0);
+      // B4's 80 ms leg absorb at touchdown: a small forward flex, 0.12 rad at
+      // its peak (a straight leg lifts its sole 0.61·(1 − cos 0.12) = 0.004 u).
+      const absorb =
+        this.legAbsorbT > 0
+          ? -0.12 * Math.sin(Math.PI * (1 - this.legAbsorbT / SimplePlayer.LEG_ABSORB_S))
+          : 0;
+      const airLeg = this.airLegWeight > 0.001 ? this.airLegWeight : 0;
+      const addLeg = -0.45 * airLeg + (tossing ? 0.5 * tossCrouch : 0) + absorb;
       if (addArmL !== 0) this.limbClip.onClip('armL', addArmL);
       if (addArmR !== 0) this.limbClip.onClip('armR', addArmR);
       if (addLeg + g.legL !== 0) this.limbClip.onClip('legL', addLeg + g.legL);
@@ -2151,10 +2176,46 @@ export class SimplePlayer extends THREE.Group {
     const m = this.gltfModel;
     if (!m) return;
     if (this.modelBaseY !== null) {
-      m.position.y = this.modelBaseY - 0.09 * this.bodyDip - this.gaitBob;
+      // The landing pivot: scaling y by landSy about the model origin moves
+      // the soles by (1 − sy)·S, S the sole's offset from that origin. The
+      // sole sits at −0.7 (the seating), so S = −0.7 − modelBaseY.
+      const sole = -0.7 - this.modelBaseY;
+      m.position.y =
+        this.modelBaseY - 0.09 * this.bodyDip - this.gaitBob + (1 - this.landSy) * sole;
     }
     m.rotation.z = this.leanRoll + this.gaitRoll;
     m.rotation.x = this.gaitLean;
+  }
+
+  /**
+   * The landing spring (B4), on the rigged model's vertical scale `landSy`:
+   * - rising (radial velocity > 0): stretch up to 1.15, eased by the spring;
+   * - touchdown: sy snaps to 0.82 (reduced motion 0.93) and springs home
+   *   at ω 18, ζ 0.45, so the deepest squash is the touchdown frame;
+   * - an 80 ms leg absorb rides the same touchdown (legAbsorb, onClip).
+   * writeBody adds the pivot that keeps the soles on the ground.
+   */
+  private applyLandSquash(): void {
+    const dt = this.squashDt;
+    const reduced = a11y.reducedMotion;
+    let target = 1;
+    if (!this.isGrounded) {
+      const n = this.getSurfaceNormalInto(this._normalScratch);
+      const vRad = this.velocity.dot(n);
+      if (vRad > 0) target = Math.min(1.15, 1 + vRad * 0.02);
+      this.wasAirborne = true;
+    } else if (this.wasAirborne) {
+      this.wasAirborne = false;
+      this.landSy = reduced ? 1 - 0.18 * 0.4 : 0.82;
+      this.landVy = 0;
+      this.legAbsorbT = SimplePlayer.LEG_ABSORB_S;
+    }
+    // Semi-implicit spring toward the target.
+    const w = 18;
+    const z = 0.45;
+    this.landVy += ((target - this.landSy) * w * w - 2 * z * w * this.landVy) * dt;
+    this.landSy += this.landVy * dt;
+    this.legAbsorbT = Math.max(0, this.legAbsorbT - dt);
   }
 
   /** The gait layer's state this frame (probes read it; B3). */
@@ -2517,6 +2578,7 @@ export class SimplePlayer extends THREE.Group {
       this.swimPoseActive = false;
       this.leanRoll = 0;
       this.airPoseWeight = 0;
+      this.airLegWeight = 0;
       for (const b of [this.armLBone, this.armRBone, this.legLBone, this.legRBone]) {
         if (b) b.rotation.x = 0;
       }
@@ -2551,11 +2613,18 @@ export class SimplePlayer extends THREE.Group {
       }
     }
 
-    // Squash-and-stretch on whichever model is active (rigged GLTF or the
-    // procedural fallback): elongate while airborne, squash on landing,
-    // spring back to neutral. Scales relative to the model's base scale.
-    {
-      const activeModel: THREE.Object3D = this.gltfModel ?? this.mesh;
+    // Squash-and-stretch. The rigged model (B4) runs a landing spring scaled
+    // about the FEET (landSquash, writeBody's pivot term); the procedural
+    // fallback keeps its old eased pulse about its origin.
+    if (this.gltfModel) {
+      this.squashDt = safeDeltaTime;
+      if (fx.on('squash')) fx.time('squash', this.boundSquash);
+      else this.landSy = 1;
+      const base = this.modelBaseScale ?? (this.modelBaseScale = this.gltfModel.scale.clone());
+      const inv = 1 / Math.sqrt(this.landSy);
+      this.gltfModel.scale.set(base.x * inv, base.y * this.landSy, base.z * inv);
+    } else {
+      const activeModel: THREE.Object3D = this.mesh;
       const ud = activeModel.userData as { baseScale?: THREE.Vector3 };
       if (!ud.baseScale) ud.baseScale = activeModel.scale.clone();
       const base = ud.baseScale;

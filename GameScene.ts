@@ -358,6 +358,12 @@ export class GameScene extends THREE.Scene {
   private readonly _npcLimbQ = new THREE.Quaternion();
   private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
   private static readonly AXIS_Y = new THREE.Vector3(0, 1, 0);
+  /** Feet in the player group's local frame: the GLB is seated with its sole
+   *  at −playerHeight (SimplePlayer.loadGLTFCharacter). Juice.squash pivots
+   *  there (B4). */
+  private static readonly PLAYER_FEET_Y = -0.7;
+  /** A cat's paws, ~0.12 below its origin (buildCat's leg comment). */
+  private static readonly CAT_FEET_Y = -0.12;
 
   // Cats prowling the grass near the villages: they sit, stroll to a nearby
   // spot, step away if you crowd them, and trot in to eat thrown cat treats.
@@ -4082,7 +4088,7 @@ export class GameScene extends THREE.Scene {
     // shipped without it. The swish and the camera interest stay.
     if (!a11y.reducedMotion) {
       this.player?.triggerFeedToss();
-      if (this.player) squash(this.player, 0.07, 0.16);
+      if (this.player) squash(this.player, 0.07, 0.16, { pivotY: GameScene.PLAYER_FEET_Y });
     }
     sfx.toss();
     (this.feedFocusPos ??= new THREE.Vector3()).copy(pilePos);
@@ -4104,7 +4110,7 @@ export class GameScene extends THREE.Scene {
     this.floatCoins(providerPos.clone().addScaledVector(up, 1.0), opts.coins);
     if (!a11y.reducedMotion) {
       this.player?.triggerFeedToss();
-      if (this.player) squash(this.player, 0.06, 0.15);
+      if (this.player) squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y });
       const pops = Math.min(1 + Math.floor(opts.coins / 12), 3);
       for (let k = 0; k < pops; k++) {
         window.setTimeout(
@@ -4131,7 +4137,7 @@ export class GameScene extends THREE.Scene {
   public showEatGesture(): void {
     if (!this.player) return;
     const p = this.player.getWorldPosition();
-    if (!a11y.reducedMotion) squash(this.player, 0.06, 0.15);
+    if (!a11y.reducedMotion) squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y });
     const head = p.clone().addScaledVector(p.clone().normalize(), 1.5);
     this.spawnDust(head, 3);
     this.setInteractionFocus(p, 1.6);
@@ -4824,7 +4830,7 @@ export class GameScene extends THREE.Scene {
             c.analBase = s.radius;
             c.mode = 'eat';
             // A happy little arrival pounce (root scale only, restores exactly)
-            squash(c.cat, 0.16, 0.22);
+            squash(c.cat, 0.16, 0.22, { pivotY: GameScene.CAT_FEET_Y });
           } else {
             c.mode = 'sit';
             c.stateUntil = time + 2 + Math.random() * 4;
@@ -12360,7 +12366,7 @@ export class GameScene extends THREE.Scene {
             data.lastGreetAt = time;
             // Greet ceremony: a happy squash-stretch rides the existing hop
             // (root scale only — bones untouched, restores exactly).
-            squash(npc.meshRef, 0.14, 0.3);
+            squash(npc.meshRef, 0.14, 0.3, { pivotY: 0 });
             // Aware proximity greeting: AI townsfolk SPEAK first — a bubble +
             // voice line composed from live state (their planner-assigned
             // activity, the hour, the day-theme). Throttled per NPC; one
@@ -13756,7 +13762,7 @@ export class GameScene extends THREE.Scene {
       }
       if (target) {
         (target.meshRef.userData as { greetT0?: number }).greetT0 = performance.now() / 1000;
-        squash(target.meshRef, 0.12, 0.26);
+        squash(target.meshRef, 0.12, 0.26, { pivotY: 0 });
         // Soft camera interest toward whoever you addressed — carries the
         // shop moment (chat NPCs suspend the orbit cam a beat later anyway).
         this.setInteractionFocus(

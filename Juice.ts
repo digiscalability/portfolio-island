@@ -20,6 +20,8 @@
  */
 import * as THREE from 'three';
 
+import { a11y } from './Accessibility';
+
 /** Frame-rate-independent exponential approach: returns the new value of `a`
  *  moving toward `b` with rate `k` (higher = snappier; ~5-15 typical).
  *  NOTE the exact form: `b + (a-b)*exp(-k*dt)`. Sites written as the lerp-FACTOR
@@ -122,39 +124,117 @@ export function tick(dt: number): void {
 
 // ── squash & stretch ────────────────────────────────────────────────────────
 
-const squashing = new WeakSet<THREE.Object3D>();
+/** The squash spring (B4): s(t) = 1 + A·e^(−ζωt)·sin(ωt), ω = 2π / 0.24 s,
+ *  ζ = 0.32, over 0.45 s. It peaks at t = atan(1/ζ)/ω ≈ 48 ms, undershoots at
+ *  ≈ 168 ms and sits within 1% of rest by 450 ms. */
+export const SQUASH_OMEGA = (2 * Math.PI) / 0.24;
+export const SQUASH_ZETA = 0.32;
+export const SQUASH_DUR = 0.45;
+
+/** The spring's first peak for A = 1, so `amount` stays the visible peak
+ *  (the callers' amounts were tuned as peaks under the old envelope). */
+const springPeak = (zeta: number): number => {
+  const t = Math.atan(1 / zeta) / SQUASH_OMEGA;
+  return Math.exp(-zeta * SQUASH_OMEGA * t) * Math.sin(SQUASH_OMEGA * t);
+};
+
+/** s(t) for an impulse of visible peak `amount`. Reduced motion: 40% of the
+ *  amount, critically damped (ζ = 1: the impulse response ωt·e^(−ωt), which
+ *  swells once and settles without crossing back), peaking at 1/ω ≈ 38 ms. */
+export function squashSpring(t: number, amount: number, reduced = false): number {
+  if (reduced) {
+    const x = SQUASH_OMEGA * t;
+    return 1 + 0.4 * amount * Math.E * x * Math.exp(-x);
+  }
+  const a = amount / springPeak(SQUASH_ZETA);
+  return 1 + a * Math.exp(-SQUASH_ZETA * SQUASH_OMEGA * t) * Math.sin(SQUASH_OMEGA * t);
+}
+
+interface SquashLive {
+  /** The object's own scale, cached on the first trigger of an impulse. */
+  base: THREE.Vector3;
+  /** Bumped by every trigger: a superseded tween goes quiet. */
+  gen: number;
+  active: boolean;
+  /** The pivot offset last added to position, and the position it left. */
+  offset: THREE.Vector3;
+  wrote: THREE.Vector3;
+}
+
+const squashLive = new WeakMap<THREE.Object3D, SquashLive>();
+const _sqUp = new THREE.Vector3();
+
+/** Take this impulse's pivot offset back out, unless something else has
+ *  rewritten the position since (a mover that writes it every frame). */
+function unpivot(obj: THREE.Object3D, live: SquashLive): void {
+  if (live.offset.lengthSq() > 0 && obj.position.distanceToSquared(live.wrote) < 1e-12) {
+    obj.position.sub(live.offset);
+  }
+  live.offset.set(0, 0, 0);
+}
 
 /**
- * Volume-preserving squash-and-stretch pop on an object's root scale.
- * amount > 0 stretches tall (jump take-off), < 0 squashes flat (landing).
- * Writes SCALE ONLY (never bone rotations — the documented rest-pose trap),
- * and restores the object's own base scale exactly. Re-entrant calls on the
- * same object are ignored until the current pop settles.
+ * Volume-preserving squash-and-stretch on an object's root scale: a damped
+ * spring impulse (B4). amount > 0 stretches tall first (jump take-off, a
+ * greet), < 0 squashes flat first (landing). x and z scale by 1/√s.
+ * Writes SCALE (and, with a pivot, POSITION) only — never bone rotations, the
+ * documented rest-pose trap — and restores the object's own base scale.
  *
- * NOTE for GLB avatars: scale the wrapper/root whose origin is at FOOT level
- * (SimplePlayer's group origin is mid-body but the gltfModel sits inside it;
- * scaling the player group keeps feet planted well enough at these
- * amplitudes — 60-120ms, ≤12%).
+ * - A re-trigger restarts the impulse from the cached base scale (cached on
+ *   the first trigger while none runs), so pops never compound.
+ * - `opts.pivotY`: the object's foot height in its own local units (the
+ *   player group's feet sit at −0.7). The object is scaled about that point
+ *   instead of its origin, so the feet stay planted.
+ * - `dur` is accepted and ignored: the spring sets the length (0.45 s).
  */
-export function squash(obj: THREE.Object3D, amount = 0.12, dur = 0.16): void {
-  if (squashing.has(obj)) return;
-  squashing.add(obj);
-  const bx = obj.scale.x;
-  const by = obj.scale.y;
-  const bz = obj.scale.z;
+export function squash(
+  obj: THREE.Object3D,
+  amount = 0.12,
+  dur = SQUASH_DUR,
+  opts?: { pivotY?: number },
+): void {
+  void dur;
+  let live = squashLive.get(obj);
+  if (!live) {
+    live = {
+      base: obj.scale.clone(),
+      gen: 0,
+      active: false,
+      offset: new THREE.Vector3(),
+      wrote: new THREE.Vector3(),
+    };
+    squashLive.set(obj, live);
+  } else if (!live.active) {
+    live.base.copy(obj.scale);
+  }
+  const L = live;
+  const gen = ++L.gen;
+  L.active = true;
+  const pivotY = opts?.pivotY ?? 0;
+  const reduced = a11y.reducedMotion;
+  const b = L.base;
   tween(
-    dur,
-    easeOutBack,
+    SQUASH_DUR,
+    (t) => t,
     (v) => {
-      // v runs 0→1 with overshoot; envelope peaks early then settles.
-      const env = Math.sin(Math.min(1, v) * Math.PI); // 0→1→0
-      const s = 1 + amount * env;
-      const inv = 1 / Math.sqrt(Math.max(0.25, s));
-      obj.scale.set(bx * inv, by * s, bz * inv);
+      if (L.gen !== gen) return;
+      const s = Math.max(0.25, squashSpring(v * SQUASH_DUR, amount, reduced));
+      const inv = 1 / Math.sqrt(s);
+      obj.scale.set(b.x * inv, b.y * s, b.z * inv);
+      if (pivotY !== 0) {
+        unpivot(obj, L);
+        // The foot sits at position + up · scale.y · pivotY: hold it still.
+        _sqUp.set(0, 1, 0).applyQuaternion(obj.quaternion);
+        L.offset.copy(_sqUp).multiplyScalar(b.y * (1 - s) * pivotY);
+        obj.position.add(L.offset);
+        L.wrote.copy(obj.position);
+      }
     },
     () => {
-      obj.scale.set(bx, by, bz);
-      squashing.delete(obj);
+      if (L.gen !== gen) return;
+      obj.scale.copy(b);
+      unpivot(obj, L);
+      L.active = false;
     },
   );
 }
