@@ -29,6 +29,7 @@ import {
   DISTRICT_GLYPHS,
 } from './ui/icons';
 import { type InputMode, keyTextPlain, promptKeysHtml, renderKeyText } from './ui/keycaps';
+import { mapUV } from './ui/mapProjection';
 import { DS } from './ui/tokens';
 import { WORLD_ERA } from './WorldScale';
 import { EVENT_META } from './WorldState';
@@ -1359,18 +1360,45 @@ export class SimpleUI {
       Math.floor(window.innerHeight * 0.62),
     );
     const dpr = Math.min(window.devicePixelRatio || 1, 2); // the minimap DPR lesson
+    const R = D / 2 - 6;
+    // D18: a fixed D x D box. The vector map (ui/islandMap.ts, its own chunk)
+    // slots in under the canvas when it loads, with no layout shift; until
+    // then the box's own disc stands in for sea and land.
+    const mapBox = document.createElement('div');
+    mapBox.dataset.islandMap = '1';
+    Object.assign(mapBox.style, {
+      position: 'relative',
+      width: `${D}px`,
+      height: `${D}px`,
+      margin: '0 auto',
+      borderRadius: '50%',
+      background: `radial-gradient(circle closest-side, #4d8a46 ${R * 0.94}px, #17435e ${R * 0.94}px, #17435e ${R}px, transparent ${R}px)`,
+    });
     const canvas = document.createElement('canvas');
     canvas.width = D * dpr;
     canvas.height = D * dpr;
+    canvas.setAttribute('aria-hidden', 'true'); // the legend is the accessible map
     Object.assign(canvas.style, {
+      position: 'relative',
       width: `${D}px`,
       height: `${D}px`,
       borderRadius: '50%',
       cursor: 'pointer',
       display: 'block',
-      margin: '0 auto',
     });
-    modal.appendChild(canvas);
+    mapBox.appendChild(canvas);
+    modal.appendChild(mapBox);
+    void import('./ui/islandMap')
+      .then(({ islandMapSvg }) => {
+        const art = document.createElement('div');
+        art.setAttribute('aria-hidden', 'true');
+        Object.assign(art.style, { position: 'absolute', inset: '6px', pointerEvents: 'none' });
+        art.innerHTML = islandMapSvg();
+        mapBox.insertBefore(art, canvas);
+      })
+      .catch(() => {
+        /* offline or blocked: the stand-in disc stays */
+      });
     const ctx = canvas.getContext('2d');
     const hits: Array<{ x: number; y: number; poi: (typeof pois)[number] }> = [];
     // The parcel and Contact's mail never share a glyph (P2-D8).
@@ -1387,31 +1415,13 @@ export class SimpleUI {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       const cx = D / 2;
       const cy = D / 2;
-      const R = D / 2 - 6;
-      // Polar projection from the pole: r grows with distance from the pole
-      // (lat π/2 = centre, shore lat ~0.24 = rim).
-      const SHORE_LAT = 0.2;
+      // Polar projection from the pole (ui/mapProjection.ts, shared with the
+      // vector map under this canvas): lat pi/2 = centre, shore lat 0.2 = rim.
+      // The canvas is the marker layer only; sea, land and roads are the SVG's.
       const project = (pos: { x: number; y: number; z: number }): { x: number; y: number } => {
-        const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
-        const lat = Math.asin(Math.max(-1, Math.min(1, pos.y / len)));
-        const lon = Math.atan2(pos.z, pos.x);
-        const r = (R * (Math.PI / 2 - lat)) / (Math.PI / 2 - SHORE_LAT);
-        return { x: cx + Math.cos(lon) * Math.min(r, R), y: cy + Math.sin(lon) * Math.min(r, R) };
+        const { u, v } = mapUV(pos);
+        return { x: cx + u * R, y: cy + v * R };
       };
-      // Sea, land, plaza ring.
-      ctx.fillStyle = '#17435e';
-      ctx.beginPath();
-      ctx.arc(cx, cy, R, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#4d8a46';
-      ctx.beginPath();
-      ctx.arc(cx, cy, R * 0.94, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(232, 217, 184, 0.5)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(cx, cy, (R * (Math.PI / 2 - 0.4636)) / (Math.PI / 2 - SHORE_LAT), 0, Math.PI * 2);
-      ctx.stroke();
       // POIs.
       ctx.font = '16px system-ui, sans-serif';
       ctx.textAlign = 'center';

@@ -29,8 +29,11 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, test } from 'vitest';
 
+import { DISTRICTS } from '../Districts';
 import { SimpleUI } from '../SimpleUI';
 import { DISTRICT_GLYPHS, ICON_NAMES, PARCEL_GLYPH, icon, spriteMarkup } from '../ui/icons';
+import { ISLAND_MAP_SPOTS, islandMapSvg } from '../ui/islandMap';
+import { mapUVLonLat } from '../ui/mapProjection';
 
 /** visualPolish.test.ts's reader: CRLF folded, comments stripped before
  *  matching, so a lock can never be satisfied by its own explanatory prose. */
@@ -608,5 +611,49 @@ describe('D13: one icon set, the drawer in order', () => {
     expect(body).toContain("'calc(var(--sar, 0px) + 238px)'");
     // The six 30 px icon chips sit at +10 .. +200 on a 38 px pitch: they end at +230.
     expect(238).toBeGreaterThan(200 + 30);
+  });
+});
+
+// D18: the vector island map under the canvas markers.
+describe('D18: the vector map sits under the markers', () => {
+  test('the SVG is 6 KB gzip or less, decorative, and clipped to the disc', () => {
+    const svg = islandMapSvg();
+    expect(gzipSync(svg).length).toBeLessThanOrEqual(6 * 1024);
+    expect(svg).toContain('aria-hidden="true"');
+    expect(svg).toContain('viewBox="-1000 -1000 2000 2000"');
+    expect(svg).toContain('clip-path="url(#ds-map-disc)"');
+  });
+
+  test.each([430, 312, 240])(
+    'at D = %i px the five plazas sit within 4 px of their markers',
+    (D) => {
+      const R = D / 2 - 6; // showIslandMap's disc
+      // The SVG fills the disc's box (inset 6 px): 1000 map units = R px.
+      expect(ISLAND_MAP_SPOTS.map((s) => s.id).sort()).toEqual([
+        'contact',
+        'personal',
+        'professional',
+        'projects',
+        'welcome',
+      ]);
+      for (const d of DISTRICTS) {
+        const spot = ISLAND_MAP_SPOTS.find((s) => s.id === d.id)!;
+        const m = mapUVLonLat(d.lon, d.lat);
+        const marker = { x: D / 2 + m.u * R, y: D / 2 + m.v * R };
+        const drawn = { x: D / 2 + (spot.x / 1000) * R, y: D / 2 + (spot.y / 1000) * R };
+        expect(Math.hypot(marker.x - drawn.x, marker.y - drawn.y), d.id).toBeLessThanOrEqual(4);
+      }
+    },
+  );
+
+  test('SimpleUI loads it on first open, as its own chunk; the canvas and art are aria-hidden', () => {
+    const s = src('SimpleUI.ts');
+    expect(s).toContain("import('./ui/islandMap')");
+    expect(s).not.toMatch(/^import .* from '\.\/ui\/islandMap';/m);
+    const i = s.indexOf('public showIslandMap(');
+    const body = s.slice(i, i + 4000);
+    expect(body).toContain("canvas.setAttribute('aria-hidden', 'true')");
+    expect(body).toContain("art.setAttribute('aria-hidden', 'true')");
+    expect(body).toContain('const { u, v } = mapUV(pos);');
   });
 });
