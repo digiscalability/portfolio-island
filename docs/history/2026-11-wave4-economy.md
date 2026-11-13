@@ -27,7 +27,7 @@ changes meaning.
 | Shop items enabled on the first kiosk visit (trail coins) | 2 of 20; hats 0 of 10 | p2/shop |
 | School: coins paid for six presses on a fresh visitor | +60 | p2/quests |
 | Coin delta at a delivery hop | 0 (setOnDeliveryComplete pays nothing) | code read; E's p2/gather row |
-| Meadow coins per minute (greedy walk) | not measured here: E's p2/coinhunt | p2/coinhunt |
+| Meadow coins per minute (greedy walk) | 17.0/min; 2 of 80 within 30 u, 5 after the trail | p2/coinhunt (w4-E) |
 
 ## The change
 
@@ -46,3 +46,4 @@ changes meaning.
 | School: six presses on a fresh visitor | +60 | +10 (lesson 1 at enrolment) | p2/quests |
 | A first cast after enrolment | n/a | +10 (lesson 2) | scratch probe |
 | Coin delta at a delivery hop | 0 | +3 | scratch probe |
+| Meadow coins per minute (greedy walk) | 17.0/min; 2 of 80 within 30 u, 5 after the trail | 16.7/min; 2 of 80, 5 after the trail (pickups unchanged; the change is in pays) | p2/coinhunt (w4-E) |
