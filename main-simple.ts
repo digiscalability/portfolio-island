@@ -70,6 +70,7 @@ import type { RaceEvent } from './RaceSystem';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
+import { PROJECT_BOARDS } from './SignPainter';
 import { SimpleInputManager, consumePinchZoomFactor } from './SimpleInputManager';
 import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
@@ -3314,6 +3315,10 @@ export class SimpleApp {
         let buildOpp: ReturnType<SimpleApp['nearestBuildOpportunity']> = null;
         const board = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
+        // P2-A13: a Projects work site within 3.5 u (5 squared distances).
+        const landmark = player
+          ? this.nearestLandmark(player.getWorldPositionInto(this._landmarkPos))
+          : null;
         this.talkAfloat = !!player && player.isInWater() && nearby?.type === 'npc';
         // Nearest thing wins: the vehicle only takes the prompt when it is
         // actually the closest interactable — a parked car used to shadow
@@ -3636,7 +3641,10 @@ export class SimpleApp {
           ) &&
           // Nor a nearer interactable: the courier tour's first mailbox
           // stands 3-6 u from a bench plot's advert.
-          !(nearby && nearby.distance < buildOpp.dist)
+          !(nearby && nearby.distance < buildOpp.dist) &&
+          // Nor a work site's info prompt (P2-A13): RankPilot's site showed
+          // only the bench plot's advert. An own build still wins its slot.
+          !(landmark && landmark.dist < 3.5 && !buildOpp.own)
         ) {
           const b = buildOpp;
           if (b.own) {
@@ -3688,7 +3696,9 @@ export class SimpleApp {
             }
           }
         } else if (this.scene.isNearBank()) {
-          this.ui.showInteractionPrompt('🏦 Press <strong>E</strong> to visit the vault');
+          this.ui.showInteractionPrompt(
+            '🏦 Press <strong>E</strong> — the vault keeps your coins safe between visits',
+          );
           if (this.inputManager.consumeKeyPress('e')) void this.openVault();
         } else if (this.scene.isNearKiosk()) {
           this.ui.showInteractionPrompt('🛒 Press <strong>E</strong> to browse the kiosk');
@@ -3746,6 +3756,20 @@ export class SimpleApp {
 
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.interactWith(nearby);
+          }
+        } else if (landmark && !this.toolActionHere()) {
+          // P2-A13: a Projects work site says what it is, from the boards'
+          // table, and E opens Projects at its card. Below talk, doors,
+          // vehicles and tool actions; 'landmark' never stamps the passport.
+          const site = PROJECT_BOARDS[landmark.i];
+          this.ui.showInteractionPrompt(
+            `🏗️ Press <strong>E</strong> — ${esc(site?.name ?? 'Projects')} · ${esc(site?.status ?? '')}`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.ui.showZonePanel(
+              { id: 'projects', name: 'projects' },
+              { source: 'landmark', anchor: SimpleApp.LANDMARK_ANCHORS[landmark.i] },
+            );
           }
         } else if (this.ownedAxe && this.scene.nearestChoppableTree()) {
           const t = this.scene.nearestChoppableTree();
@@ -5382,11 +5406,13 @@ export class SimpleApp {
         9.5,
         14,
       );
+      // P2-A13 (C8 hand-off): the stop frames the work sites, not the hall.
+      const sites = this.workSitesCentre();
       addStop(
-        zones.get('projects'),
+        sites ?? zones.get('projects'),
         'The Projects District \u2014 this island, RankPilot (pre-launch), Bano\u2019s Cookbook and more.',
-        9.5,
-        14,
+        sites ? SimpleApp.SITES_TOUR_ALT : 9.5,
+        sites ? SimpleApp.SITES_TOUR_BACK : 14,
       );
       addStop(
         gardener,
@@ -7039,6 +7065,85 @@ export class SimpleApp {
       /* no storage */
     }
     saveProfile({ lessons: this.lessons });
+  }
+
+  // ── Work-site landmarks (P2-A13) ────────────────────────────────────
+  /** The Projects card each construction_<i> site opens, in WORK_SITES
+   *  order (SignPainter.PROJECT_BOARDS names the same five). */
+  private static readonly LANDMARK_ANCHORS = ['rankpilot', 'chocomate', 'island', 'banos', 'insta'];
+  private static readonly LANDMARK_U = 3.5;
+  /** The five sites' world positions, read once (they never move). */
+  private landmarkSites: Array<THREE.Vector3 | null> | null = null;
+  private readonly _landmarkPos = new THREE.Vector3();
+  private readonly _landmark = { i: 0, dist: 0 };
+
+  /** The nearest work site within 3.5 u, or null. The returned object is
+   *  reused frame to frame. */
+  private nearestLandmark(p: THREE.Vector3): { i: number; dist: number } | null {
+    if (!this.landmarkSites) {
+      const root = this.scene.getIsland()?.mesh;
+      if (!root) return null;
+      const sites: Array<THREE.Vector3 | null> = [];
+      let found = 0;
+      for (let i = 0; i < SimpleApp.LANDMARK_ANCHORS.length; i++) {
+        const o = root.getObjectByName(`construction_${i}`);
+        sites.push(o ? o.getWorldPosition(new THREE.Vector3()) : null);
+        if (o) found++;
+      }
+      if (found === 0) return null; // not built yet: look again next frame
+      this.landmarkSites = sites;
+    }
+    const max = SimpleApp.LANDMARK_U * SimpleApp.LANDMARK_U;
+    let best = -1;
+    let bestD = max;
+    for (let i = 0; i < this.landmarkSites.length; i++) {
+      const s = this.landmarkSites[i];
+      if (!s) continue;
+      const d = s.distanceToSquared(p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    if (best < 0) return null;
+    this._landmark.i = best;
+    this._landmark.dist = Math.sqrt(bestD);
+    return this._landmark;
+  }
+
+  /** The tour's Projects stop (P2-A13): the five sites ring the hall 20-76 u
+   *  apart, too wide for one frame, so the stop studies the centre of the
+   *  closest three, RankPilot, Bano's Cookbook and Insta Services API
+   *  (20-45 u apart). Measured at 1440x900: the Insta Services API and
+   *  Bano's Cookbook dioramas are in frame (the hall stop showed none). */
+  private static readonly SITES_TOUR = [0, 3, 4];
+  private static readonly SITES_TOUR_ALT = 16;
+  private static readonly SITES_TOUR_BACK = 20;
+
+  /** The tour's sites' centre on the surface; null before the island has them. */
+  private workSitesCentre(): THREE.Vector3 | null {
+    this.nearestLandmark(this._landmarkPos.set(0, 0, 0));
+    const all = this.landmarkSites ?? [];
+    const sites = SimpleApp.SITES_TOUR.map((i) => all[i]).filter((s): s is THREE.Vector3 => !!s);
+    if (sites.length === 0) return null;
+    const c = new THREE.Vector3();
+    let r = 0;
+    for (const s of sites) {
+      c.add(s);
+      r += s.length();
+    }
+    return c.normalize().multiplyScalar(r / sites.length);
+  }
+
+  /** A tool action is available here (chop, harvest, ore, cast): it
+   *  outranks a landmark's info prompt. */
+  private toolActionHere(): boolean {
+    return (
+      (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
+      (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
+      (this.ownedPickaxe && this.scene.nearestOreNode() !== null) ||
+      (this.ownedRod && this.scene.canCastHere())
+    );
   }
 
   // ── The economy's first-visit pays (P2-A9) ──────────────────────────

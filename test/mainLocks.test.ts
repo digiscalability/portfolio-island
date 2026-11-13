@@ -1908,3 +1908,27 @@ describe('wave 4 P2-A10: night feed, stale hints, the meadow counter', () => {
     expect(s).toContain('this.scene.setOnMeadowCoin((e) => this.npcQuests.onMeadowCoin(e));');
   });
 });
+
+describe('wave 4 P2-A13: work sites, the School and the Bank explain themselves', () => {
+  test('a work site prompt names the board and opens Projects at its card, never stamping', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).toContain("import { PROJECT_BOARDS } from './SignPainter';");
+    expect(s).toContain("['rankpilot', 'chocomate', 'island', 'banos', 'insta']");
+    const at = s.indexOf('} else if (landmark && !this.toolActionHere()) {');
+    const lm = s.slice(at, s.indexOf('} else if (this.ownedAxe', at));
+    expect(lm).toContain('PROJECT_BOARDS[landmark.i]');
+    expect(lm).toContain("{ source: 'landmark', anchor: SimpleApp.LANDMARK_ANCHORS[landmark.i] }");
+    expect(lm).not.toContain("'proximity'");
+    // ranked after talk and doors (nearby), before the tools
+    expect(s.indexOf('} else if (landmark && !this.toolActionHere()) {')).toBeGreaterThan(
+      s.indexOf('} else if (nearby) {'),
+    );
+    expect(s).toContain('!(landmark && landmark.dist < 3.5 && !buildOpp.own)');
+  });
+
+  test('the Bank says what the vault does; the tour frames the work sites', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).toContain('the vault keeps your coins safe between visits');
+    expect(bodyOf(s, 'private startTour(')).toContain('sites ?? zones.get(');
+  });
+});
