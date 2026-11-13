@@ -1065,7 +1065,7 @@ describe('inside a building: the Leave button, the interior mode, the announceme
     (document.querySelector('#ui-overlay > .ds-sr-only[role="status"]')?.textContent ?? '').trim();
   /** The visitor's last real input, as the trusted listeners would record it
    *  (happy-dom's dispatched events are never trusted). */
-  const lastInput = (kind: 'keyboard' | 'pointer'): void => {
+  const lastInput = (kind: 'keyboard' | 'mouse'): void => {
     (ui as unknown as { lastInput: string }).lastInput = kind;
   };
   const touchUi = (): void => {
@@ -1167,7 +1167,7 @@ describe('inside a building: the Leave button, the interior mode, the announceme
   });
 
   test('it takes focus on a keyboard entry, never on a pointer one; focus goes back to the body on exit', () => {
-    lastInput('pointer');
+    lastInput('mouse');
     ui.showLeaveButton(() => {});
     expect(document.activeElement).not.toBe(leave());
     ui.hideLeaveButton();

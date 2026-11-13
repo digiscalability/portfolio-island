@@ -223,8 +223,11 @@ describe('moved from visualPolish.test.ts (B): HUD — one chip recipe for the t
 
   test('per-frame HUD writers skip unchanged values (sweep round 2)', () => {
     const ui = src('SimpleUI.ts');
-    // Interaction prompt: innerHTML parse only when the TEXT changes.
-    expect(ui).toContain('if (text === this.lastPromptText && this.interactionDiv) return');
+    // Interaction prompt: innerHTML parse only when the text or the input
+    // mode changes (D7: a switch from keys to touch re-renders it).
+    expect(ui).toContain(
+      'if (text === this.lastPromptText && mode === this.lastPromptMode && this.interactionDiv) return',
+    );
     // Race panel: null-first so on-foot visitors never get the DOM built,
     // and show/hide writes only on the transition.
     const race = ui.slice(ui.indexOf('updateRaceHud(status'));
@@ -326,7 +329,8 @@ describe('D6: one message at a time', () => {
 
   test('a flash is a queued message, not a DOM write of its own', () => {
     const flash = bodyOf(ui, 'flashMessage(text: string): void');
-    expect(flash).toContain("this.queued(this.touchifyPlain(text), 'flash', false)");
+    // D7: queued as written; its keys render as nodes in the mode in use when it shows.
+    expect(flash).toContain("this.queued(text, 'flash', false)");
     expect(flash).toContain('this.enqueue(');
     expect(flash).not.toContain('createElement');
   });
@@ -350,7 +354,9 @@ describe('D6: one message at a time', () => {
 
   test('the prompt is announced after the per-frame guard, debounced, never per frame', () => {
     const prompt = bodyOf(ui, 'showInteractionPrompt(text: string): void');
-    const guard = prompt.indexOf('if (text === this.lastPromptText && this.interactionDiv) return');
+    const guard = prompt.indexOf(
+      'if (text === this.lastPromptText && mode === this.lastPromptMode && this.interactionDiv) return',
+    );
     expect(guard).toBeGreaterThan(-1);
     expect(prompt.indexOf('this.announce(')).toBeGreaterThan(guard);
     expect(prompt).toContain('}, 600);');

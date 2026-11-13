@@ -20,6 +20,7 @@ import {
   isSttSupported,
   startListening,
 } from './Speech';
+import { type InputMode, keyTextPlain, promptKeysHtml, renderKeyText } from './ui/keycaps';
 import { DS } from './ui/tokens';
 import { WORLD_ERA } from './WorldScale';
 import { EVENT_META } from './WorldState';
@@ -241,18 +242,41 @@ export class SimpleUI {
   // One registry for every panel (mobile-HUD Round 3): exclusivity, scrim,
   // Escape, and the chip/touch-control hide policy. See PanelManager.ts.
   public panels!: PanelManager;
-  // Touch device? Drives on-screen buttons + rewrites key-name prompts
-  // ("Press E") into tap language ("Tap USE") pointing at those buttons.
-  private readonly isTouch: boolean =
-    typeof window !== 'undefined' &&
-    ('ontouchstart' in window ||
-      (navigator.maxTouchPoints ?? 0) > 0 ||
-      // ?touch forces the mobile control scheme on desktop for testing
-      (typeof location !== 'undefined' && location.search.includes('touch')));
+  // The touch control scheme at boot (D7): on-screen buttons and the phone
+  // drawer. A coarse pointer that cannot hover (a phone, a tablet), or the
+  // dev flag ?touch=1 exactly. A touchscreen laptop boots the desktop scheme;
+  // its first trusted touch on the world reveals the touch controls.
+  private readonly isTouch: boolean = SimpleUI.bootTouchScheme();
 
-  /** Whether the touch control scheme is active (used as an analytics dimension). */
+  /** The boot scheme's test: (pointer: coarse) and (hover: none), or ?touch=1. */
+  static bootTouchScheme(): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+      if (new URLSearchParams(window.location.search).get('touch') === '1') return true;
+    } catch {
+      /* no location: the media queries decide */
+    }
+    try {
+      const mm = window.matchMedia;
+      if (typeof mm !== 'function') return false;
+      return (
+        mm.call(window, '(pointer: coarse)').matches && mm.call(window, '(hover: none)').matches
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** The touch scheme at boot. A11 and A13 choose copy with it; the input
+   *  in use now is getInputMode(). */
   isTouchDevice(): boolean {
     return this.isTouch;
+  }
+
+  /** The input in use now (D7): the last trusted key, or the last trusted
+   *  pointer's type (a mouse counts as the keyboard scheme). */
+  getInputMode(): InputMode {
+    return this.lastInput === 'touch' ? 'touch' : 'keyboard';
   }
 
   /** The HUD root — photo mode hides it for one frame to shoot a clean scene. */
@@ -392,16 +416,74 @@ export class SimpleUI {
   private leaveBtn: HTMLButtonElement | null = null;
   /** The building's name came with the call (else the hall panel names it). */
   private leaveTitled = false;
-  /** The visitor's last real input: a trusted key, or a pointer. Local to
-   *  the Leave button for now; D7 generalises it in wave 3. */
-  private lastInput: 'keyboard' | 'pointer' = 'pointer';
+  /**
+   * The visitor's last real input (D7, replacing P2-D2's local flag): a
+   * trusted key, or a trusted pointerdown's pointerType. The touch buttons,
+   * the prompt's own click and the touch discs send untrusted keys, which
+   * never flip it to the keyboard: the trusted pointerdown before them has
+   * already said 'touch' or 'mouse'.
+   */
+  private lastInput: 'keyboard' | 'mouse' | 'touch' = this.isTouch ? 'touch' : 'mouse';
   private readonly onInputKey = (e: KeyboardEvent): void => {
-    // The touch buttons send synthetic keys (USE is 'e'): not a keyboard.
-    if (e.isTrusted) this.lastInput = 'keyboard';
+    if (e.isTrusted) this.setInput('keyboard');
   };
-  private readonly onInputPointer = (): void => {
-    this.lastInput = 'pointer';
+  private readonly onInputPointer = (e: Event): void => {
+    if (!e.isTrusted) return;
+    const type = (e as PointerEvent).pointerType;
+    const touch = type === 'touch' || type === 'pen';
+    this.setInput(touch ? 'touch' : 'mouse');
+    // A touchscreen laptop boots the desktop scheme: its first trusted touch
+    // on the world brings the touch controls in, beside the desktop chips.
+    if (touch && !this.isTouch && e.target instanceof HTMLCanvasElement) {
+      this.revealTouchControls();
+    }
   };
+
+  /** Touch controls fade to 0.35 (style.css, data-touch-idle) after this
+   *  long of keyboard-only play. */
+  private static readonly TOUCH_IDLE_MS = 10_000;
+  private touchIdleTimer = 0;
+
+  /** Record the input in use; a change of mode re-renders the prompt. */
+  private setInput(input: 'keyboard' | 'mouse' | 'touch'): void {
+    const before = this.getInputMode();
+    this.lastInput = input;
+    const mode = this.getInputMode();
+    trackOnce('input_mode', { mode });
+    if (input === 'keyboard') {
+      // Ten seconds of keys and nothing else: the touch controls step back.
+      if (!this.touchIdleTimer && !this.overlay.hasAttribute('data-touch-idle')) {
+        this.touchIdleTimer = window.setTimeout(() => {
+          this.touchIdleTimer = 0;
+          if (this.lastInput === 'keyboard') this.overlay.setAttribute('data-touch-idle', '1');
+        }, SimpleUI.TOUCH_IDLE_MS);
+      }
+    } else {
+      if (this.touchIdleTimer) {
+        clearTimeout(this.touchIdleTimer);
+        this.touchIdleTimer = 0;
+      }
+      if (input === 'touch') this.overlay.removeAttribute('data-touch-idle');
+    }
+    if (mode !== before) this.rerenderPrompt();
+  }
+
+  /** The touch controls came in on a desktop-scheme device (D7). */
+  private touchRevealed = false;
+  private revealTouchControls(): void {
+    if (this.touchRevealed || this.isTouch) return;
+    this.touchRevealed = true;
+    this.createTouchControls(true);
+    track('touch_controls_revealed');
+  }
+
+  /** The prompt in the mode now in use (its text has not changed). */
+  private rerenderPrompt(): void {
+    const text = this.lastPromptText;
+    if (!text || !this.interactionDiv) return;
+    this.lastPromptMode = null;
+    this.showInteractionPrompt(text);
+  }
 
   /**
    * "← Leave", shown while inside a building (P2-D2, INT-07): a real button
@@ -1500,7 +1582,7 @@ export class SimpleUI {
    * scene.isInsideInterior()`).
    */
   public toast(message: string, opts?: { hint?: boolean; until?: () => boolean }): void {
-    this.enqueue(this.queued(this.touchifyPlain(message), 'toast', !!opts?.hint, opts?.until));
+    this.enqueue(this.queued(message, 'toast', !!opts?.hint, opts?.until));
   }
 
   /** A fresh queue entry: never shown yet. */
@@ -1790,7 +1872,7 @@ export class SimpleUI {
     else this.showToast(m.text, dwell);
     // Read out on its first show only: a re-show after a step aside is the
     // same line, and the live region read 'Lost?' seven times in 33 s.
-    if (m.shows === 1) this.announce(m.text);
+    if (m.shows === 1) this.announce(keyTextPlain(m.text, this.getInputMode()));
     this.watchShown(m);
   }
 
@@ -1822,7 +1904,9 @@ export class SimpleUI {
       });
       this.overlay.appendChild(this.toastEl);
     }
-    this.toastEl.textContent = text;
+    // Keys as k() nodes, built from text nodes: a toast can carry a
+    // visitor's name, so its text never becomes markup (D7).
+    renderKeyText(this.toastEl, text, this.getInputMode());
     this.applyToastAnchor(this.toastEl); // the lanes depend on what else is up
     this.toastEl.style.opacity = '1';
     if (this.toastTimer) clearTimeout(this.toastTimer);
@@ -1897,7 +1981,7 @@ export class SimpleUI {
         });
         el.appendChild(note);
       }
-      note.textContent = m.text;
+      renderKeyText(note, m.text, this.getInputMode());
       const shown = note;
       if (this.panelNoteTimer) clearTimeout(this.panelNoteTimer);
       this.panelNoteTimer = window.setTimeout(
@@ -5453,8 +5537,8 @@ export class SimpleUI {
    * input path (interaction, dialogue advance, jump) works unchanged;
    * the analog joystick is merged into movement in main-simple.
    */
-  private createTouchControls(): void {
-    if (!this.isTouch) return;
+  private createTouchControls(revealed = false): void {
+    if (!this.isTouch && !revealed) return;
 
     // Joystick — the visible ring sits inside a larger INVISIBLE hit region
     // (the whole ~166px lower-left corner): a blind thumb landing a little
@@ -5496,6 +5580,7 @@ export class SimpleUI {
     base.appendChild(thumb);
     base.dataset.guide = 'joystick'; // First steps' ghost thumb sits on the ring (A6)
     hit.appendChild(base);
+    hit.classList.add('ds-touch-ctl'); // fades after keyboard-only play (D7)
     this.overlay.appendChild(hit);
     this.panels.registerLayer('touch-controls', hit);
 
@@ -5600,6 +5685,7 @@ export class SimpleUI {
       layer: 'touch-controls' | 'aux-controls' = 'touch-controls',
     ): HTMLElement => {
       const btn = document.createElement('div');
+      btn.classList.add('ds-touch-ctl');
       btn.innerHTML =
         `<div style="font-size:24px;line-height:1;">${icon}</div>` +
         `<div style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
@@ -6713,8 +6799,11 @@ export class SimpleUI {
     // Called every frame while a target is in range — skip the innerHTML
     // parse/replace when the prompt hasn't changed (it changes only when the
     // TARGET changes). Cleared in hideInteractionPrompt.
-    if (text === this.lastPromptText && this.interactionDiv) return;
+    // Text plus input mode: a switch from keys to touch re-renders it (D7).
+    const mode = this.getInputMode();
+    if (text === this.lastPromptText && mode === this.lastPromptMode && this.interactionDiv) return;
     this.lastPromptText = text;
+    this.lastPromptMode = mode;
     if (!this.interactionDiv) {
       this.interactionDiv = document.createElement('div');
       // The guide card's anchor (A6 keeps 8 px above it).
@@ -6756,7 +6845,7 @@ export class SimpleUI {
       });
     }
 
-    this.interactionDiv.innerHTML = this.touchify(text);
+    this.interactionDiv.innerHTML = this.touchify(text, mode);
     // Read out once the text has held for 600 ms: this runs every frame while
     // a target is in range, and only a CHANGE gets this far (D6).
     if (this.promptAnnounceTimer) clearTimeout(this.promptAnnounceTimer);
@@ -6775,34 +6864,22 @@ export class SimpleUI {
   private promptAnnounceTimer = 0;
 
   /**
-   * Rewrite keyboard prompts into touch language on phones/tablets. Desktop
-   * gets the text unchanged. Maps each key to the on-screen button that fires
-   * it so "Press E / Space / Q" becomes "Tap USE / JUMP / WAVE".
+   * The prompt's keys in the input in use (D7): 'Press <strong>X</strong>'
+   * (any case, a keyboard-emoji prefix dropped) and '[Key]' tokens become a
+   * keycap on the keyboard, and the glyph pill of the button that fires the
+   * key on touch ('Tap USE', 'Hold JUMP', 'eat with EAT').
    */
-  private touchify(html: string): string {
-    if (!this.isTouch) return html;
-    return (
-      html
-        .replace(/Press <strong>E<\/strong>/g, 'Tap <strong>👆 USE</strong>')
-        .replace(/Press <strong>Space<\/strong>/g, 'Tap <strong>⤒ JUMP</strong>')
-        .replace(/Hold <strong>Space<\/strong>/g, 'Hold <strong>⤒ JUMP</strong>')
-        .replace(/Press <strong>Q<\/strong>/g, 'Tap <strong>👋 WAVE</strong>')
-        // The eat verb: G on a keyboard, the contextual 🍽 EAT button on touch
-        // (it exists whenever a meal is held — exactly when this copy shows).
-        .replace(/eat with G\b/g, 'eat with <strong>🍽 EAT</strong>')
-    );
+  private touchify(html: string, mode: InputMode = this.getInputMode()): string {
+    return promptKeysHtml(html, mode);
   }
 
   /**
-   * Plain-text sibling of touchify for surfaces that render via textContent
-   * (toast, flashMessage) — markup would leak there as literal angle brackets.
+   * Plain-text sibling of touchify, for text that is escaped into markup
+   * elsewhere (the pack's hints). Toasts and flashes do not use it: they
+   * render their keys as nodes when they show (renderKeyText).
    */
   private touchifyPlain(text: string): string {
-    if (!this.isTouch) return text;
-    return text
-      .replace(/[Pp]ress G\b/g, 'tap 🍽 EAT')
-      .replace(/[Pp]ress E\b/g, 'tap 👆 USE')
-      .replace(/[Pp]ress Q\b/g, 'tap 👋 WAVE');
+    return keyTextPlain(text, this.getInputMode());
   }
 
   /**
@@ -7869,6 +7946,7 @@ export class SimpleUI {
   // 0.12s width transition; opacities compare by exact string (they vary
   // continuously while swimming, and quantizing would step the fade).
   private lastPromptText: string | null = null;
+  private lastPromptMode: InputMode | null = null;
   private raceVisible = false;
   private raceLastLine1: string | null = null;
   private raceLastLine2: string | null = null;
@@ -8073,7 +8151,7 @@ export class SimpleUI {
    * found' across the Projects text), and dwells 50 ms a character, 2-6 s.
    */
   flashMessage(text: string): void {
-    this.enqueue(this.queued(this.touchifyPlain(text), 'flash', false));
+    this.enqueue(this.queued(text, 'flash', false));
   }
 
   private showFlash(text: string, dwell: number): void {
@@ -8083,7 +8161,7 @@ export class SimpleUI {
     this.flashEl?.remove();
     const el = document.createElement('div');
     this.flashEl = el;
-    el.textContent = text;
+    renderKeyText(el, text, this.getInputMode());
     Object.assign(el.style, {
       position: 'absolute',
       top: '38%',
@@ -10660,6 +10738,7 @@ export class SimpleUI {
     window.removeEventListener('keydown', this.onControlsKey);
     document.removeEventListener('keydown', this.onInputKey, true);
     document.removeEventListener('pointerdown', this.onInputPointer, true);
+    if (this.touchIdleTimer) clearTimeout(this.touchIdleTimer);
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {
       this.overlay.removeEventListener(type, this.onPanelAction, true);
     }
