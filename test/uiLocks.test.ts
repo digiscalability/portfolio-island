@@ -657,3 +657,25 @@ describe('D18: the vector map sits under the markers', () => {
     expect(body).toContain('const { u, v } = mapUV(pos);');
   });
 });
+
+// Chat lazy load, D's half (wave-4 carry-over). SimpleUI.ts imports nothing
+// from Chat.ts as a value, so A can load Chat with import(); the voice clip
+// limit is a local copy, pinned here to Chat.ts's value. Chat.ts is unowned
+// code, so this read is rule 5 in lock-census.
+describe('Chat lazy load: SimpleUI does not import Chat.ts as a value', () => {
+  test('no value import of ./Chat; a type-only import stays allowed', () => {
+    const s = src('SimpleUI.ts');
+    const imports = s.match(/^import\s+(?!type\b)[^;]*from\s+'\.\/Chat';/gm) || [];
+    expect(imports).toEqual([]);
+  });
+
+  test("the local VOICE_MAX_MS equals Chat.ts's", () => {
+    const local = /^const VOICE_MAX_MS = ([\d_]+);/m.exec(src('SimpleUI.ts'));
+    const chat = /^export const VOICE_MAX_MS = ([\d_]+);/m.exec(
+      raw('Chat.ts').replace(/\r\n/g, '\n'),
+    );
+    expect(local, 'SimpleUI.ts declares VOICE_MAX_MS').not.toBeNull();
+    expect(chat, 'Chat.ts exports VOICE_MAX_MS').not.toBeNull();
+    expect(Number(local![1].replace(/_/g, ''))).toBe(Number(chat![1].replace(/_/g, '')));
+  });
+});

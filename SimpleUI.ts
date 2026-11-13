@@ -1,7 +1,6 @@
 import { a11y } from './Accessibility';
 import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import type { BoardRead } from './Boards';
-import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
 import { GUIDE_KEY, GUIDE_STEPS, type GoalsSummary, type GuideStep } from './Guide';
 import { checkName, safePeerName } from './Moderation';
@@ -244,6 +243,11 @@ const PLACE_MOVE = 0.15;
  *  clocks read Date.now(), which the suites' fake timers move along with
  *  the timers; performance.now() they leave alone. */
 const PANEL_ACTION_MS = 8000;
+
+/** The longest voice clip, Chat.ts's VOICE_MAX_MS. Kept local so SimpleUI
+ *  imports nothing from Chat.ts as a value and A can load Chat with
+ *  import() (wave 4); uiLocks pins the two equal. */
+const VOICE_MAX_MS = 8000;
 
 export class SimpleUI {
   private overlay: HTMLElement;
