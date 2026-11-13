@@ -6526,6 +6526,10 @@ export class GameScene extends THREE.Scene {
       4,
     );
     sfx.toss();
+    // The camera's side bias starts with the cast, so it has turned by the
+    // time the float lands; a look input ends it (updateFishingBias).
+    this.fishBiasYaw0 = this.orbitCamera?.getYawTarget() ?? 0;
+    this.fishBiasReleased = false;
     return true;
   }
 
@@ -7920,10 +7924,8 @@ export class GameScene extends THREE.Scene {
         this.spawnRipple(F.bobber.position.clone(), 1.2, 1.0);
         this.spawnSpray(F.bobber.position.clone(), F.dir.clone(), 5, 3);
         sfx.splash();
-        // The wait's camera bias starts here; a look input ends it.
-        this.fishBiasYaw0 = this.orbitCamera?.getYawTarget() ?? 0;
-        this.fishBiasReleased = false;
       }
+      this.updateFishingBias();
       return;
     }
     // Ride the real waves, exactly like the fisherman's bobber.
@@ -8007,15 +8009,21 @@ export class GameScene extends THREE.Scene {
   }
 
   /**
-   * While the float waits or bites and the visitor stays within the 5 u
-   * tether, keep the camera's soft interest on the float, offset to the
-   * cast's right, so the float sits beside the avatar rather than behind
-   * it; and hand A's orbit camera a 30 degree interest yaw when it takes
-   * one. A look input releases both for the cast; reduced motion has none.
+   * From the cast's flick, through the flight, the wait and the bite, while
+   * the visitor stays within the 5 u tether, keep the camera's soft interest
+   * square to the cast's right, so the float sits beside the avatar rather
+   * than behind it; and hand A's orbit camera a 30 degree interest yaw when
+   * it takes one. Starting at the flick (not the landing) gives both eases
+   * the 0.55 s flight to turn. A look input releases both for the cast;
+   * reduced motion has none.
    */
   private updateFishingBias(): void {
     const F = this.playerFishing;
-    if (!F.bobber || (F.phase !== 'wait' && F.phase !== 'bite') || a11y.reducedMotion) {
+    if (
+      !F.bobber ||
+      (F.phase !== 'fly' && F.phase !== 'wait' && F.phase !== 'bite') ||
+      a11y.reducedMotion
+    ) {
       this.releaseFishingBias();
       return;
     }
@@ -8027,9 +8035,13 @@ export class GameScene extends THREE.Scene {
       return;
     }
     const up = F.dir;
-    // The cast's right on the water: (player to float) x up.
+    // The cast's right on the water: (player to where the float lands) x up.
+    // The landing point, not the float, so the side is steady in flight.
     const p = this.player.getWorldPosition();
-    this._fishBiasAt.copy(F.bobber.position).sub(p);
+    this._fishBiasAt
+      .copy(up)
+      .multiplyScalar(this.island?.seaLevel() ?? p.length())
+      .sub(p);
     this._fishBiasSide.crossVectors(this._fishBiasAt, up);
     if (this._fishBiasSide.lengthSq() < 1e-6) return;
     this._fishBiasSide.normalize();

@@ -995,3 +995,81 @@ describe('Multiplayer.ts has no import-time side effects (wave-3 bundle carry-ov
     }
   });
 });
+
+describe('the fishing bias starts with the cast (P2-B7, bobber.cjs at 400 ms after landing)', () => {
+  type Fish = { bobber: unknown; phase: string; dir: THREE.Vector3 };
+  const rig = () => {
+    const init = vi
+      .spyOn(GameScene.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+      .mockResolvedValue(undefined);
+    const sc = new GameScene() as unknown as {
+      playerFishing: Fish;
+      player: unknown;
+      island: unknown;
+      orbitCamera: unknown;
+      fishBiasReleased: boolean;
+      fishBiasYaw0: number;
+      updateFishingBias(): void;
+      setInteractionFocus(p: THREE.Vector3, s: number): void;
+    };
+    init.mockRestore();
+    // The player stands on the shore at +Y; the cast lands 6 u out along +Z.
+    const R = 75;
+    const playerPos = new THREE.Vector3(0, R, 0);
+    const landing = new THREE.Vector3(0, R, 6);
+    sc.player = { getWorldPosition: () => playerPos.clone() };
+    sc.island = { seaLevel: () => landing.length() };
+    let yawTarget = 0.4;
+    const setInterestYaw = vi.fn();
+    sc.orbitCamera = { getYawTarget: () => yawTarget, setInterestYaw };
+    sc.playerFishing.bobber = {};
+    sc.playerFishing.dir = landing.clone().normalize();
+    sc.playerFishing.phase = 'fly';
+    sc.fishBiasYaw0 = yawTarget;
+    sc.fishBiasReleased = false;
+    const focus = vi.spyOn(sc, 'setInteractionFocus');
+    return { sc, focus, setInterestYaw, look: (y: number) => (yawTarget = y), playerPos };
+  };
+
+  test('in flight the focus sits square to the cast, and A gets 30 degrees', () => {
+    const { sc, focus, setInterestYaw, playerPos } = rig();
+    sc.updateFishingBias();
+    expect(focus).toHaveBeenCalledTimes(1);
+    const at = (focus.mock.calls[0][0] as THREE.Vector3).clone().sub(playerPos);
+    // (landing - player) x up for a +Z cast with +Y up is -X: the cast's right.
+    expect(at.x).toBeLessThan(-5);
+    expect(Math.abs(at.z)).toBeLessThan(0.5);
+    expect(setInterestYaw).toHaveBeenCalledWith(Math.PI / 6);
+  });
+
+  test('a look input releases it; idle and reduced motion never bias', async () => {
+    const { a11y } = await import('../Accessibility');
+    const a = rig();
+    a.look(0.9);
+    a.sc.updateFishingBias();
+    expect(a.focus).not.toHaveBeenCalled();
+    expect(a.sc.fishBiasReleased).toBe(true);
+    const b = rig();
+    b.sc.playerFishing.phase = 'idle';
+    b.sc.updateFishingBias();
+    expect(b.focus).not.toHaveBeenCalled();
+    const c = rig();
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      c.sc.updateFishingBias();
+    } finally {
+      a11y.reducedMotion = was;
+    }
+    expect(c.focus).not.toHaveBeenCalled();
+    expect(c.setInterestYaw).not.toHaveBeenCalled();
+  });
+
+  test('the cast arms it and the flight runs it', () => {
+    const s = stripped('GameScene.ts');
+    const cast = bodyOf(s, 'public tryCastLine(');
+    expect(cast).toContain('this.fishBiasReleased = false;');
+    const fly = bodyOf(s, "if (F.phase === 'fly') {");
+    expect(fly).toMatch(/this\.updateFishingBias\(\);\s*return;/);
+  });
+});
