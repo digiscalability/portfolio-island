@@ -24,6 +24,7 @@ type Fn = (...a: unknown[]) => unknown;
 let enterBuilding: Fn;
 let exitBuilding: Fn;
 let onInteriorEscape: Fn;
+let openHallPanel: Fn;
 
 beforeAll(async () => {
   (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
@@ -32,6 +33,7 @@ beforeAll(async () => {
   enterBuilding = proto.enterBuilding;
   exitBuilding = proto.exitBuilding;
   onInteriorEscape = proto.onInteriorEscape;
+  openHallPanel = proto.openHallPanel;
 }, 120000);
 
 /** The app's fields enterBuilding reads, with SimpleUI.fadeThrough's own guard. */
@@ -65,6 +67,10 @@ function stubApp(showZonePanel: Fn) {
     touchCopy: () => false,
     insideZone: null,
     insideIsZone: false,
+    // P2-A9: the hall's panel opens through openHallPanel, which pays the
+    // stamp it lands at once (payStamps is the economy test's to drive).
+    payStamps: vi.fn(() => calls.push('payStamps')),
+    openHallPanel: (...a: unknown[]) => openHallPanel.call(app, ...a),
   };
   return { app, ui, calls, inputManager };
 }
@@ -78,6 +84,8 @@ describe('enterBuilding (P2-A2)', () => {
     enterBuilding.call(app, 'contact', true, { id: 'contact', name: 'Get In Touch' });
     expect(ui.showLeaveButton).toHaveBeenCalledTimes(1);
     expect(ui.showZonePanel).toHaveBeenCalledTimes(1);
+    // A stamp that landed before the panel threw is still paid (P2-A9).
+    expect(app.payStamps).toHaveBeenCalledTimes(1);
     // The panel's error is logged where it happens, not swallowed by the fade.
     expect(calls).not.toContain('fadeThrough swallowed an error');
     expect(warn).toHaveBeenCalled();
@@ -87,7 +95,7 @@ describe('enterBuilding (P2-A2)', () => {
   test('Leave comes before the panel, and the panel still opens', () => {
     const { app, calls } = stubApp(() => undefined);
     enterBuilding.call(app, 'projects', true, { id: 'projects', name: 'Project Portfolio' });
-    expect(calls).toEqual(['enterInterior', 'showLeaveButton', 'showZonePanel']);
+    expect(calls).toEqual(['enterInterior', 'showLeaveButton', 'showZonePanel', 'payStamps']);
   });
 
   test('a cottage gets Leave and no panel', () => {
