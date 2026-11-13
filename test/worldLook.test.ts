@@ -41,6 +41,7 @@ import {
   setInkVisible,
 } from '../CelLook';
 import {
+  BULB_NIGHT_BLOOM_LIFT,
   DAY_FACTOR_UNIFORM,
   DUSK_FACTOR_UNIFORM,
   duskFactorAt,
@@ -1889,19 +1890,24 @@ describe('district beacons keep their colours by day and by night (P2-C5)', () =
   test('windows and the door lamp keep the old drive: dim by day, amber at night', () => {
     const { env, halls } = town();
     const hall = halls[1].marker;
-    const tagged: Emissive[] = [];
+    const tagged: Array<{ m: Emissive; bulb: boolean }> = [];
     hall.traverse((o) => {
-      if (o.userData.isNightEmissive) tagged.push(matOf(o));
+      if (o.userData.isNightEmissive) {
+        const geo = (o as THREE.Mesh).geometry;
+        tagged.push({ m: matOf(o), bulb: geo?.type === 'SphereGeometry' });
+      }
     });
     expect(tagged.length).toBeGreaterThan(4);
+    expect(tagged.filter((t) => t.bulb).length).toBe(1); // the door lamp
     env.debugHour = 12;
     env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
-    for (const m of tagged) expect(m.emissiveIntensity).toBeCloseTo(0.15, 9);
+    for (const { m } of tagged) expect(m.emissiveIntensity).toBeCloseTo(0.15, 9);
     env.debugHour = 0;
     env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
     const amber = new THREE.Color(0xffe6a8).lerp(new THREE.Color(0xff9c46), 0.3).getHex();
-    for (const m of tagged) {
-      expect(m.emissiveIntensity).toBeCloseTo(1.3, 9);
+    for (const { m, bulb } of tagged) {
+      // P2-E5: on desktop the door lamp (a bulb) takes the night bloom lift.
+      expect(m.emissiveIntensity).toBeCloseTo(bulb ? 1.3 + BULB_NIGHT_BLOOM_LIFT : 1.3, 9);
       expect(m.emissive.getHex()).toBe(amber);
     }
   });
@@ -1942,5 +1948,21 @@ describe('district beacons keep their colours by day and by night (P2-C5)', () =
     const building = decl('Zones.ts', 'createBuilding');
     expect(building).not.toContain('beacon.userData.isNightEmissive');
     expect(stripped('Zones.ts').match(/userData\.isNightEmissive = true/g)).toHaveLength(4);
+  });
+});
+
+describe('the bulbs glow at night (P2-E5, ruling 2026-11-13)', () => {
+  test('a desktop-only lift on the bulbs, by the night factor, panes untouched', () => {
+    const src = stripped('EnvironmentCycle.ts');
+    // Desktop only: the low tier has no bloom pass to halo them.
+    expect(src).toContain("fx.register('bulbBloom', { desktop: true, low: false })");
+    // The NIGHT factor (zero by day and through golden hour), not 1 - day.
+    expect(src).toContain("(fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0)");
+    // Only the spheres (bulbs, lanterns) take it; the window panes do not.
+    expect(src).toContain("const bulb = mesh.geometry?.type === 'SphereGeometry'");
+    expect(src).toContain('e.mat.emissiveIntensity = e.bulb ? bulbIntensity : emIntensity');
+    // No light, no new material: the drive writes intensities only.
+    const update = decl('EnvironmentCycle.ts', 'update');
+    expect(update).not.toMatch(/new THREE\.(PointLight|SpotLight|Mesh\w*Material)/);
   });
 });

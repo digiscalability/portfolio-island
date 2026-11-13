@@ -10,6 +10,19 @@ import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
 // frame (switch 'localSun'; off gives the world-anchored sun back).
 fx.register('localSun', { desktop: true, low: true });
 
+/**
+ * P2-E5 (Abbas, 2026-11-13: "make the bulbs glow"). The night bloom threshold
+ * (SimpleRenderer.bloomNightThreshold) is 1.0 after dark, and the bulbs
+ * topped out under it at the old night intensity of 1.3: bloom on and
+ * off measured identical at 21 h. This lifts the isNightEmissive drive by the
+ * NIGHT factor (zero by day and through golden hour, so noon and dusk are
+ * unchanged) far enough over the threshold that the bloom pass halos them.
+ * Desktop only: the low tier has no bloom pass, so there the lift would only
+ * brighten the panes (its bar: within 2 L* of today). No light, no program.
+ */
+fx.register('bulbBloom', { desktop: true, low: false });
+export const BULB_NIGHT_BLOOM_LIFT = 3.0;
+
 // Weather fog was authored as flat +0.010 (rain) / +0.005 (grey) ON TOP of the
 // R=50 base density (FOG_DENSITY_X_RADIUS / REFERENCE_RADIUS = 0.009). As the
 // base scales with the world those flat deltas silently changed the WEATHER
@@ -338,6 +351,8 @@ export class EnvironmentCycle {
   private nightEmissives: Array<{
     mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
     base: THREE.Color;
+    /** A bulb or lantern (a sphere), not a window pane: P2-E5 lifts these. */
+    bulb: boolean;
   }> = [];
   // District beacons (the 'zone-beacon' on each hall's roof), with the
   // colour each was authored in. Their own list, never nightEmissives: a
@@ -730,7 +745,10 @@ export class EnvironmentCycle {
       const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
       if (!mat.emissive || this.seenEmissive.has(mat)) return;
       this.seenEmissive.add(mat);
-      this.nightEmissives.push({ mat, base: mat.emissive.clone() });
+      // Bulbs and lanterns are spheres (street and plaza lamps, door lamps,
+      // gate lanterns); window panes are boxes and planes.
+      const bulb = mesh.geometry?.type === 'SphereGeometry';
+      this.nightEmissives.push({ mat, base: mat.emissive.clone(), bulb });
     });
   }
 
@@ -1344,13 +1362,16 @@ export class EnvironmentCycle {
     }
 
     // Window panes + lamp bulbs: dim by day, glowing after dark, emissive
-    // deepened toward amber. 1.3 clears the 0.85 bloom threshold, so the
-    // bloom pass wraps them in halos at night for free.
+    // deepened toward amber. On desktop the night factor lifts the BULBS over
+    // the night bloom threshold (1.0) so the bloom pass halos them (P2-E5);
+    // the panes stay under it, or a hall's wall of windows hazes everything
+    // round it (measured: +18.6 L* on the player beside Professional).
     const nightF = 1 - dayFactor;
     const emIntensity = 0.15 + nightF * 1.15;
+    const bulbIntensity = emIntensity + (fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0);
     this._c2.set(0xff9c46);
     for (const e of this.nightEmissives) {
-      e.mat.emissiveIntensity = emIntensity;
+      e.mat.emissiveIntensity = e.bulb ? bulbIntensity : emIntensity;
       e.mat.emissive.copy(e.base).lerp(this._c2, nightF * 0.3);
     }
 
