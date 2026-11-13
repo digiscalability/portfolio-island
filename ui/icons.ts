@@ -71,6 +71,12 @@ const P = {
   copy: 'M8 8h12v12H8zM16 8V4H4v12h4',
   chat: 'M4 5h16v11H10l-5 4v-4H4zM8 10.5h.01M12 10.5h.01M16 10.5h.01',
   mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7',
+  // The touch action buttons (D15 made them named buttons, so their glyphs
+  // are chrome): wave, dive, feed and eat.
+  wave: 'M9 14V7a1.5 1.5 0 0 1 3 0v4M12 11V5.5a1.5 1.5 0 0 1 3 0V11M15 11V7a1.5 1.5 0 0 1 3 0v7a6 6 0 0 1-6 6h-1a5 5 0 0 1-4-2l-2.5-3.5a1.5 1.5 0 0 1 2.4-1.8L9 15M4 4.5a5 5 0 0 0-1.5 3.5M6.5 3a6.5 6.5 0 0 0-2 2',
+  dive: 'M3 9h18v4a3 3 0 0 1-3 3h-2.5l-2-2h-3l-2 2H6a3 3 0 0 1-3-3zM19 9V5M3 20c2 0 2-1.5 4.5-1.5S10 20 12 20s2-1.5 4.5-1.5S19 20 21 20',
+  feed: 'M12 21V9M12 13c-2.5 0-4-1.5-4-4 2.5 0 4 1.5 4 4zM12 13c2.5 0 4-1.5 4-4-2.5 0-4 1.5-4 4zM12 9c-2 0-3-1.3-3-3.3 2 0 3 1.3 3 3.3zM12 9c2 0 3-1.3 3-3.3-2 0-3 1.3-3 3.3z',
+  eat: 'M7 3v7a2 2 0 0 0 4 0V3M9 3v18M17 21V3c-2 1-3 3.5-3 7h3',
 } as const;
 
 export type IconName = keyof typeof P;

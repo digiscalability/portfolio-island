@@ -61,9 +61,12 @@ export function hapticsEnabled(): boolean {
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
  * harmless no-op). Off when the Haptics setting is (see hapticsEnabled).
  * Exported so game events elsewhere (landings, race checkpoints, coins) can
- * adopt it too.
+ * adopt it too. The vocabulary (D15, HAPTIC-01): stick engage 10 ms, a
+ * button press 12 ms, the stick reaching its run colour 10 ms, an
+ * interaction that worked (a door, a talk) 18 ms, and [12, 40, 12] when the
+ * shop refuses a purchase.
  */
-export function hapticPulse(ms: number): void {
+export function hapticPulse(ms: number | number[]): void {
   if (!hapticsEnabled()) return;
   try {
     navigator.vibrate?.(ms);
@@ -342,6 +345,7 @@ export class SimpleUI {
 
   /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
   fadeThrough(midCb: () => void): void {
+    hapticPulse(18); // D15: an interaction that worked (a door)
     const d = this.ensureFadeDiv();
     d.style.pointerEvents = 'auto';
     d.style.opacity = '1';
@@ -5832,43 +5836,118 @@ export class SimpleUI {
     });
     base.appendChild(thumb);
     base.dataset.guide = 'joystick'; // First steps' ghost thumb sits on the ring (A6)
+    // D15: the 11 px uppercase MOVE caption under the ring, for the first
+    // session only (until the stick is first engaged; without storage, for
+    // the page's life).
+    let moveSeen = false;
+    try {
+      moveSeen = localStorage.getItem('ds_move_seen') === '1';
+    } catch {
+      /* storage blocked: show it */
+    }
+    let caption: HTMLDivElement | null = null;
+    if (!moveSeen) {
+      caption = document.createElement('div');
+      caption.className = 'ds-caption';
+      caption.textContent = 'Move';
+      Object.assign(caption.style, {
+        position: 'absolute',
+        left: '0',
+        top: 'calc(100% + 3px)',
+        width: '100%',
+        textAlign: 'center',
+        pointerEvents: 'none',
+        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+      });
+      base.appendChild(caption);
+    }
     hit.appendChild(base);
     hit.classList.add('ds-touch-ctl'); // fades after keyboard-only play (D7)
     this.overlay.appendChild(hit);
     this.panels.registerLayer('touch-controls', hit);
 
+    // Thumb and ring move by transform (D11's compositor-only rule); the
+    // ring's left/bottom stay at its 26 px rest spot.
     const moveThumb = (dx: number, dy: number) => {
-      thumb.style.left = `${31 + dx}px`;
-      thumb.style.top = `${31 + dy}px`;
+      thumb.style.transform = dx || dy ? `translate(${dx}px, ${dy}px)` : '';
+    };
+    // D15 (JOY-01): a FLOATING origin. The stick's zero is wherever the
+    // thumb lands, so a touchdown anywhere in the 166 px square reads |v| = 0
+    // instead of a full-speed lurch. The ring follows the thumb but is
+    // clamped so the 110 px ring stays inside the square (its centre within
+    // 55..111 px of the square's left and top); a landing beyond the clamp
+    // shows the thumb off-centre in the ring, still at rest.
+    const HIT = 166;
+    const RING = 110;
+    const REST = 26; // the ring's home: left/bottom 26 px
+    const MAX = 40; // the thumb's travel
+    // Hysteresis: engage at 12% deflection; once engaged, release only below
+    // 8%, renormalised from 8% so the output is continuous on the way down.
+    const ENGAGE = 0.12;
+    const RELEASE = 0.08;
+    // The run colour mirrors A's rim run (main-simple's STICK_RUN_MAG 0.95
+    // held for STICK_RUN_MS 250): D reads no A code, so the two are named
+    // here and must move together.
+    const STICK_RUN_MAG = 0.95;
+    const STICK_RUN_MS = 250;
+    const RING_BORDER = '2px solid rgba(255,255,255,0.25)';
+    const RING_RUN = '2px solid #ffb547';
+    let originX = 0;
+    let originY = 0;
+    let ringCx = 0; // the ring centre, client px, for the thumb's offset
+    let ringCy = 0;
+    let engaged = false;
+    let runTimer: number | null = null;
+    let running = false;
+    const setRun = (on: boolean): void => {
+      if (running === on) return;
+      running = on;
+      base.style.border = on ? RING_RUN : RING_BORDER;
+      if (on) hapticPulse(10);
+    };
+    const clearRun = (): void => {
+      if (runTimer !== null) window.clearTimeout(runTimer);
+      runTimer = null;
+      setRun(false);
     };
     // Identifier-tracked: e.touches[0] is the earliest finger ON THE PAGE,
     // so with a camera finger already down the joystick read the WRONG
     // finger and movement lurched. Track the pad's own finger by identifier.
     let joyTouchId: number | null = null;
     const applyJoyTouch = (t: Touch) => {
-      const rect = base.getBoundingClientRect();
-      let dx = t.clientX - (rect.left + rect.width / 2);
-      let dy = t.clientY - (rect.top + rect.height / 2);
+      const dx = t.clientX - originX;
+      const dy = t.clientY - originY;
       const len = Math.hypot(dx, dy);
-      const max = 40;
-      if (len > max) {
-        dx = (dx / len) * max;
-        dy = (dy / len) * max;
+      const mag = Math.min(1, len / MAX);
+      // The thumb shows where the finger is relative to the drawn ring.
+      let tx = t.clientX - ringCx;
+      let ty = t.clientY - ringCy;
+      const tl = Math.hypot(tx, ty);
+      if (tl > MAX) {
+        tx = (tx / tl) * MAX;
+        ty = (ty / tl) * MAX;
       }
-      moveThumb(dx, dy);
-      // ~12% radial dead zone, renormalized so the range past it still spans
-      // 0..1: a resting thumb's 2-3px jitter must not creep the player or
-      // flicker the idle/walk animation.
-      const DEAD = 0.12;
-      const mag = Math.min(1, len / max);
-      if (mag < DEAD) {
+      moveThumb(tx, ty);
+      if (!engaged && mag >= ENGAGE) engaged = true;
+      else if (engaged && mag < RELEASE) engaged = false;
+      const out = engaged ? (mag - RELEASE) / (1 - RELEASE) : 0;
+      if (out > 0 && len > 0) {
+        this.joyState.strafe = (dx / len) * out;
+        this.joyState.forward = (-dy / len) * out;
+      } else {
         this.joyState.strafe = 0;
         this.joyState.forward = 0;
-      } else {
-        const scale = (mag - DEAD) / (1 - DEAD) / (mag * max);
-        this.joyState.strafe = dx * scale;
-        this.joyState.forward = -dy * scale;
       }
+      if (out >= STICK_RUN_MAG) {
+        if (runTimer === null && !running) {
+          runTimer = window.setTimeout(() => {
+            runTimer = null;
+            const j = this.joyState;
+            if (joyTouchId !== null && Math.hypot(j.forward, j.strafe) >= STICK_RUN_MAG)
+              setRun(true);
+          }, STICK_RUN_MS);
+        }
+      } else clearRun();
     };
     hit.addEventListener(
       'touchstart',
@@ -5878,7 +5957,28 @@ export class SimpleUI {
         if (joyTouchId !== null || e.changedTouches.length === 0) return;
         const t = e.changedTouches[0];
         joyTouchId = t.identifier;
-        hapticPulse(5); // first-engage tick
+        engaged = false;
+        // The ring jumps to the thumb (no transition on the way in).
+        const r = hit.getBoundingClientRect();
+        const cx = Math.max(RING / 2, Math.min(HIT - RING / 2, t.clientX - r.left));
+        const cy = Math.max(RING / 2, Math.min(HIT - RING / 2, t.clientY - r.top));
+        base.style.transition = 'none';
+        thumb.style.transition = 'none';
+        base.style.transform = `translate(${cx - RING / 2 - REST}px, ${cy - (HIT - REST - RING / 2)}px)`;
+        originX = t.clientX;
+        originY = t.clientY;
+        ringCx = r.left + cx;
+        ringCy = r.top + cy;
+        hapticPulse(10); // first-engage tick
+        if (caption) {
+          caption.remove();
+          caption = null;
+          try {
+            localStorage.setItem('ds_move_seen', '1');
+          } catch {
+            /* storage blocked: the caption simply returns next visit */
+          }
+        }
         applyJoyTouch(t);
       },
       { passive: false },
@@ -5908,9 +6008,17 @@ export class SimpleUI {
       for (let i = 0; i < e.changedTouches.length; i++) {
         if (e.changedTouches[i].identifier === joyTouchId) {
           joyTouchId = null;
+          engaged = false;
+          clearRun();
           this.joyState.forward = 0;
           this.joyState.strafe = 0;
+          // D15: the thumb eases home over 120 ms (release only; set
+          // synchronously, before the move, so it is readable at once) and
+          // the ring drifts back to its rest spot over 200 ms.
+          thumb.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1)';
+          base.style.transition = 'transform 200ms ease-out';
           moveThumb(0, 0);
+          base.style.transform = '';
           break;
         }
       }
@@ -5939,6 +6047,13 @@ export class SimpleUI {
     ): HTMLElement => {
       const btn = document.createElement('div');
       btn.classList.add('ds-touch-ctl');
+      // D15: a named button for assistive tech: 'Use (E)', 'Jump (Space)'.
+      const keyName = key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key;
+      btn.setAttribute('role', 'button');
+      btn.setAttribute(
+        'aria-label',
+        `${caption.charAt(0)}${caption.slice(1).toLowerCase()} (${keyName})`,
+      );
       btn.innerHTML =
         `<div style="font-size:24px;line-height:1;">${icon}</div>` +
         `<div style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
@@ -5982,7 +6097,7 @@ export class SimpleUI {
           e.stopPropagation();
           btn.style.transform = 'scale(0.9)';
           btn.style.filter = 'brightness(1.15)';
-          hapticPulse(8);
+          hapticPulse(12);
           fire('keydown');
           if (holdRepeat === null) {
             holdRepeat = window.setInterval(() => fire('keydown', true), 700);
@@ -6019,7 +6134,7 @@ export class SimpleUI {
       return btn;
     };
     outdoor(makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump));
-    outdoor(makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave));
+    outdoor(makeButton(icon('wave', 26), 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave));
     // DIVE — touch's only route to the free dive (Shift is desktop-only).
     // Contextual like FEED/EAT: it exists only while actually SWIMMING, so a
     // walker never sees it. Gated on isSwimming(), NOT isInWater(): the
@@ -6031,7 +6146,7 @@ export class SimpleUI {
     // (the exact collision the FEED comment below documents). It also sat in
     // the tappable prompt lane (bottom+300) in portrait.
     this.diveBtnEl = makeButton(
-      '🤿',
+      icon('dive', 26),
       'DIVE',
       '212px',
       'ShiftLeft',
@@ -6054,7 +6169,7 @@ export class SimpleUI {
     // inventory changes; visibility (not display) so PanelManager's layer
     // display toggling and this contextual gate never fight over one prop.
     this.feedBtnEl = makeButton(
-      '🌾',
+      icon('feed', 26),
       'FEED',
       '36px',
       'KeyF',
@@ -6064,7 +6179,16 @@ export class SimpleUI {
       'aux-controls',
     );
     // EAT stacks over FEED in the second column (124px over 36px, same 112 inset)
-    this.eatBtnEl = makeButton('🍽️', 'EAT', '124px', 'KeyG', 'g', DS.ringEat, 112, 'aux-controls');
+    this.eatBtnEl = makeButton(
+      icon('eat', 26),
+      'EAT',
+      '124px',
+      'KeyG',
+      'g',
+      DS.ringEat,
+      112,
+      'aux-controls',
+    );
     this.feedBtnEl.style.visibility = 'hidden';
     this.eatBtnEl.style.visibility = 'hidden';
     outdoor(this.feedBtnEl);
@@ -7317,6 +7441,9 @@ export class SimpleUI {
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
+        // D15: a 44 px touch target on phones, as the compass pill has
+        // (34 px line + 2 × 5 px padding).
+        ...(this.isTouch ? { lineHeight: '34px', minWidth: '44px', boxSizing: 'border-box' } : {}),
       });
       this.envBadgeDiv.title = 'Live weather settings';
       this.envBadgeDiv.addEventListener('click', (e) => {
@@ -7995,6 +8122,20 @@ export class SimpleUI {
     });
     this.overlay.appendChild(this.shopDiv);
     bindRows();
+    // D15: a tap on a refused (disabled, unaffordable) buy buzzes
+    // [12, 40, 12]. A disabled button fires no click, but its touchstart
+    // still bubbles here.
+    this.shopDiv!.querySelector('#shop-rows')?.addEventListener(
+      'touchstart',
+      (e) => {
+        const b = (e.target as Element | null)?.closest?.('button[data-shop-id]');
+        const it = b && state.items.find((x) => x.id === b.getAttribute('data-shop-id'));
+        if (b && (b as HTMLButtonElement).disabled && it && !it.owned && state.coins < it.price) {
+          hapticPulse([12, 40, 12]);
+        }
+      },
+      { passive: true },
+    );
     // Panel registry: exclusivity + chip/touch-control hiding. ownEscape —
     // the document-level Esc handler below already owns the key (letting the
     // manager also act would double-fire onClose). The SAME-ID RE-OPEN rule
@@ -10896,6 +11037,7 @@ export class SimpleUI {
   }
 
   showDialogue(name: string, lines: string[]): void {
+    hapticPulse(18); // D15: an interaction that worked (a talk)
     this.dialogueLines = lines;
     this.dialogueIndex = 0;
     this.dialogueActive = true;
