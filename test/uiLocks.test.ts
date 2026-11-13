@@ -29,11 +29,11 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, test } from 'vitest';
 
-import { DISTRICTS } from '../Districts';
+import { DISTRICTS, dirFor } from '../Districts';
 import { SimpleUI } from '../SimpleUI';
 import { DISTRICT_GLYPHS, ICON_NAMES, PARCEL_GLYPH, icon, spriteMarkup } from '../ui/icons';
 import { ISLAND_MAP_SPOTS, islandMapSvg } from '../ui/islandMap';
-import { mapUVLonLat } from '../ui/mapProjection';
+import { mapUV, mapUVLonLat } from '../ui/mapProjection';
 
 /** visualPolish.test.ts's reader: CRLF folded, comments stripped before
  *  matching, so a lock can never be satisfied by its own explanatory prose. */
@@ -638,10 +638,19 @@ describe('D18: the vector map sits under the markers', () => {
       ]);
       for (const d of DISTRICTS) {
         const spot = ISLAND_MAP_SPOTS.find((s) => s.id === d.id)!;
-        const m = mapUVLonLat(d.lon, d.lat);
-        const marker = { x: D / 2 + m.u * R, y: D / 2 + m.v * R };
         const drawn = { x: D / 2 + (spot.x / 1000) * R, y: D / 2 + (spot.y / 1000) * R };
-        expect(Math.hypot(marker.x - drawn.x, marker.y - drawn.y), d.id).toBeLessThanOrEqual(4);
+        // The canvas side's own input: showIslandMap projects each district
+        // POI's WORLD position (ZonesManager seats a zone at dirFor(lon, lat)
+        // scaled to the surface) through mapUV, not the lon/lat pair.
+        for (const radius of [1, 47.5, 60]) {
+          const m = mapUV(dirFor(d.lon, d.lat).multiplyScalar(radius));
+          const marker = { x: D / 2 + m.u * R, y: D / 2 + m.v * R };
+          expect(Math.hypot(marker.x - drawn.x, marker.y - drawn.y), d.id).toBeLessThanOrEqual(4);
+        }
+        // ...and the lon/lat form the SVG was built from agrees with it.
+        const ll = mapUVLonLat(d.lon, d.lat);
+        const llPx = { x: D / 2 + ll.u * R, y: D / 2 + ll.v * R };
+        expect(Math.hypot(llPx.x - drawn.x, llPx.y - drawn.y), d.id).toBeLessThanOrEqual(4);
       }
     },
   );
@@ -655,6 +664,9 @@ describe('D18: the vector map sits under the markers', () => {
     expect(body).toContain("canvas.setAttribute('aria-hidden', 'true')");
     expect(body).toContain("art.setAttribute('aria-hidden', 'true')");
     expect(body).toContain('const { u, v } = mapUV(pos);');
+    // The district POIs the canvas projects are the zones' world positions,
+    // seated along dirFor(lon, lat): the direction the lock above feeds mapUV.
+    expect(src('ZonesManager.ts')).toContain('position: dirFor(d.lon, d.lat).multiplyScalar(R)');
   });
 });
 
