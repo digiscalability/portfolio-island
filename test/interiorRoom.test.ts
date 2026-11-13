@@ -20,6 +20,7 @@
 import * as THREE from 'three';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 
+import { a11y } from '../Accessibility';
 import { GameScene } from '../GameScene';
 import { installHeadlessCanvas } from './helpers/headlessDom';
 
@@ -598,22 +599,192 @@ describe('rooms wear the island’s cel look (P2-B10)', () => {
 });
 
 describe('a wall behind the camera fades the avatar (B11)', () => {
-  // The room camera trails 2.4 u behind the avatar and is clamped inside the
+  // The room camera trails 3.0 u behind the avatar and is clamped inside the
   // walls, so a visitor with their back to a wall has it at their shoulder.
   test('measured from the room-space avatar: far at the spawn, near against the door wall', () => {
     enter('hall');
     scene.updateInteriorMode(1 / 60);
     // SimplePlayer fades in under 1.1 u and back out over 1.3 u.
     expect(fadeDistance).toBeGreaterThan(1.3);
-    // Back against the front wall, still facing into the room.
+    // Back against the front wall, still facing into the room, once the
+    // entry shot (P2-B11) has eased into the follow.
     const o = statics.INTERIOR_ORIGIN;
     const p = (scene.player as { position: THREE.Vector3 }).position;
     p.set(o.x - 0.5, p.y, o.z + 3.3);
-    for (let i = 0; i < 90; i++) scene.updateInteriorMode(1 / 60);
-    expect(fadeDistance).toBeLessThan(1.1);
+    for (let i = 0; i < 300; i++) scene.updateInteriorMode(1 / 60);
+    // P2-B11's camera stands 1.55 u above the floor-standing avatar, so even
+    // at the wall it is 1.2 u over the torso: the clamped camera 0.3 u behind
+    // it is 1.24 u away, inside SimplePlayer's 1.1-1.3 u hysteresis.
     // The stand-in's getWorldPosition() is the doorstep, 376 u away: the
     // distance came from player.position, the group that is in the room.
-    expect(fadeDistance).toBeGreaterThan(0.5);
+    expect(fadeDistance).toBeCloseTo(Math.hypot(3.6 - 3.3, 0.8 + 1.55 - (0.8 + 0.35)), 4);
+    scene.exitInterior();
+  });
+});
+
+/** The room camera's private surface (P2-B11). */
+interface RoomCam {
+  interiorCamYaw: number;
+  interiorYaw: number;
+  interiorCamPull: number;
+  interiorCamBlockers: Record<
+    string,
+    Array<{ minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number }>
+  >;
+  setInteriorLook(dYaw: number): void;
+}
+const cam = (): RoomCam => scene as unknown as RoomCam;
+/** The camera in room space. */
+const camAt = (): THREE.Vector3 => scene.camera.position.clone().sub(statics.INTERIOR_ORIGIN);
+/** Stand the avatar at (x, z) facing yaw, the camera already behind it. */
+const pose = (x: number, z: number, yaw: number): void => {
+  const o = statics.INTERIOR_ORIGIN;
+  const p = (scene.player as { position: THREE.Vector3 }).position;
+  p.set(o.x + x, p.y, o.z + z);
+  cam().interiorYaw = yaw;
+  cam().interiorCamYaw = yaw;
+};
+const frames = (n: number): void => {
+  for (let i = 0; i < n; i++) scene.updateInteriorMode(1 / 60);
+};
+
+describe('the room camera frames the room (P2-B11)', () => {
+  test('the entry shot holds in the front corner for 1.2 s, then eases into the follow', () => {
+    enter('hall');
+    frames(1);
+    expect(camAt().x).toBeCloseTo(3.3, 6);
+    expect(camAt().y).toBeCloseTo(2.9, 6);
+    expect(camAt().z).toBeCloseTo(3.3, 6);
+    // Looking at (-0.5, 1.4, -2.5) from there.
+    const look = new THREE.Vector3(-0.5, 1.4, -2.5).sub(camAt()).normalize();
+    const dir = scene.camera.getWorldDirection(new THREE.Vector3());
+    expect(dir.dot(look)).toBeGreaterThan(0.99999);
+    frames(68); // 1.15 s in: still held
+    expect(camAt().x).toBeCloseTo(3.3, 6);
+    frames(12); // 1.35 s in: on its way, not cut
+    const x = camAt().x;
+    expect(x).toBeLessThan(3.3);
+    expect(x).toBeGreaterThan(0);
+    frames(240);
+    // Settled behind the avatar at the spawn (facing into the room, so
+    // the camera stands toward the door wall, clamped at 3.6).
+    const s = statics.INTERIOR_SPAWN;
+    expect(camAt().x).toBeCloseTo(s.x, 3);
+    expect(camAt().z).toBeCloseTo(3.6, 3);
+    scene.exitInterior();
+  });
+
+  test('the first input ends the hold', () => {
+    enter('hall');
+    frames(6);
+    scene.setInteriorMove(1, 0);
+    frames(1);
+    scene.setInteriorMove(0, 0);
+    frames(5);
+    expect(camAt().x).toBeLessThan(3.29);
+    scene.exitInterior();
+  });
+
+  test('reduced motion cuts from the entry shot to the follow', () => {
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      enter('hall');
+      frames(72); // 1.2 s: the hold is over on the next frame
+      frames(1);
+      const s = statics.INTERIOR_SPAWN;
+      expect(camAt().x).toBeCloseTo(s.x, 6);
+      expect(camAt().z).toBeCloseTo(3.6, 6);
+      scene.exitInterior();
+    } finally {
+      a11y.reducedMotion = was;
+    }
+  });
+
+  test.each([
+    [1.6, 3.0, 1.55],
+    [0.46, 3.4, 1.9],
+  ])('aspect %s: %s u behind, %s u above the floor-standing avatar', (aspect, back, up) => {
+    scene.camera.aspect = aspect;
+    try {
+      enter('hall');
+      frames(300);
+      // The open middle of the hall, facing the back wall: nothing behind.
+      pose(0.8, -0.2, Math.PI);
+      frames(2);
+      const c = camAt();
+      expect(Math.hypot(c.x - 0.8, c.z + 0.2)).toBeCloseTo(back, 6);
+      expect(c.y).toBeCloseTo(0.8 + up, 6);
+      // Looking at p.y + 0.95.
+      const dir = scene.camera.getWorldDirection(new THREE.Vector3());
+      const want = new THREE.Vector3(0.8, 0.8 + 0.95, -0.2).sub(c).normalize();
+      expect(dir.dot(want)).toBeGreaterThan(0.99999);
+      scene.exitInterior();
+    } finally {
+      scene.camera.aspect = 1.6;
+    }
+  });
+
+  test('the blockers are the tall props of the theme set only', () => {
+    for (const theme of THEMES) {
+      enter(theme);
+      const boxes = cam().interiorCamBlockers[theme];
+      expect(boxes.length).toBeGreaterThan(0);
+      expect(boxes.length).toBeLessThanOrEqual(20); // at most 20 x 6 tests a frame
+      for (const b of boxes) expect(b.maxY).toBeGreaterThan(1.4);
+      scene.exitInterior();
+    }
+  });
+
+  test('a wardrobe behind the avatar pulls the camera in, never inside it', () => {
+    enter('home');
+    frames(300);
+    // Facing +x with the wardrobe (x -3.88..-3.36, z -2.71..-1.29, 2.6 u
+    // tall) straight behind: the wanted point at the wall clamp is inside it.
+    pose(-1.6, -2.0, Math.PI / 2);
+    const wardrobe = cam().interiorCamBlockers.home.find(
+      (b) => b.minX < -3.3 && b.maxY > 2.5 && b.minZ < -2 && b.maxZ > -1.5,
+    )!;
+    expect(wardrobe).toBeDefined();
+    let inside = 0;
+    for (let i = 0; i < 120; i++) {
+      frames(1);
+      const c = camAt();
+      if (
+        c.x > wardrobe.minX &&
+        c.x < wardrobe.maxX &&
+        c.y < wardrobe.maxY &&
+        c.z > wardrobe.minZ &&
+        c.z < wardrobe.maxZ
+      ) {
+        inside++;
+      }
+    }
+    expect(inside).toBe(0);
+    // Settled clear of the grown box, closer than the follow distance.
+    const c = camAt();
+    expect(c.x).toBeGreaterThan(wardrobe.maxX + 0.1);
+    expect(Math.hypot(c.x + 1.6, c.z + 2.0)).toBeLessThan(2.0);
+    expect(cam().interiorCamPull).toBeLessThan(1);
+    // Turned away again, it eases back out at 4/s rather than snapping.
+    pose(-1.6, -2.0, -Math.PI / 2);
+    frames(1);
+    expect(cam().interiorCamPull).toBeLessThan(0.9);
+    frames(180);
+    expect(cam().interiorCamPull).toBe(1);
+    scene.exitInterior();
+  });
+
+  test('setInteriorLook turns the camera up to 120 degrees, then it eases back behind', () => {
+    enter('hall');
+    frames(300);
+    pose(0.8, -0.2, Math.PI);
+    cam().setInteriorLook(3);
+    expect(cam().interiorCamYaw - Math.PI).toBeCloseTo((Math.PI * 2) / 3, 6);
+    frames(60); // held for 1.5 s
+    expect(cam().interiorCamYaw - Math.PI).toBeCloseTo((Math.PI * 2) / 3, 6);
+    frames(300);
+    expect(cam().interiorCamYaw).toBeCloseTo(Math.PI, 3);
     scene.exitInterior();
   });
 });

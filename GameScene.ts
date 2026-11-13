@@ -88,6 +88,19 @@ interface InteriorHotspot {
   label: string;
   action: string;
   text?: string;
+  /** What the action acts on (P2-B12): 'hire', 'copy:email', 'compass',
+   *  'project' or 'project:<id>', 'times'. Read by main-simple from wave 4. */
+  arg?: string;
+}
+
+/** A room-local axis-aligned box: a prop's collider or camera blocker. */
+interface RoomBox {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
 }
 
 /** The slice of three's WebGLProgram the interior warm drives. */
@@ -144,6 +157,10 @@ fx.register('lightRig', { desktop: true, low: true });
 // The avatar fades when the camera comes close (B11; the fade itself is
 // SimplePlayer.updateCloseFade).
 fx.register('avatarFade', { desktop: true, low: true });
+
+// The room camera's pull-in and guest rise (P2-B11). Off, the camera follows
+// at the full distance and only the wall clamp bounds it.
+fx.register('interiorCam', { desktop: true, low: true });
 
 /** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
  *  (geometry and material are shared). */
@@ -14905,10 +14922,26 @@ export class GameScene extends THREE.Scene {
   private interiorYaw = Math.PI;
   private interiorCamYaw = Math.PI;
   private interiorActiveTheme = 'cottage';
-  private interiorColliders: Record<
-    string,
-    Array<{ minX: number; maxX: number; minZ: number; maxZ: number }>
-  > = {};
+  private interiorColliders: Record<string, RoomBox[]> = {};
+  /** Per theme, the props the room camera keeps out of (P2-B11): every piece
+   *  of the themed set that stands taller than 1.4 u. The shell (curtains,
+   *  pendant, window pane) is never one; the ±3.6 wall clamp bounds it. */
+  private interiorCamBlockers: Record<string, RoomBox[]> = {};
+  // The room camera (P2-B11). The entry shot holds for ENTRY_HOLD s or until
+  // the first input, then eases into the follow; the pull-in is the fraction
+  // of the follow distance the camera keeps; the rise lifts it over a guest.
+  private interiorEntryHold = 0;
+  private interiorEntryBlend = 1;
+  private interiorCamPull = 1;
+  private interiorCamRise = 0;
+  /** Seconds since the last setInteriorLook: the camera stays where the
+   *  visitor turned it for 1.5 s, then eases back behind the heading. */
+  private interiorLookIdle = Infinity;
+  private interiorCamDt = 0;
+  private readonly boundInteriorCam = (): void => this.updateInteriorCamera(this.interiorCamDt);
+  private readonly _icFollow = new THREE.Vector3();
+  private readonly _icLook = new THREE.Vector3();
+  private readonly _icPt = new THREE.Vector3();
   private interiorHotspot: { label: string; action: string; text?: string } | null = null;
   // The beach-house wall screen (room-local centre + half extents). The
   // watch overlay is a DOM iframe that SimpleApp pins to this plane's
@@ -15304,23 +15337,31 @@ export class GameScene extends THREE.Scene {
     set.visible = true; // Box3.setFromObject ignores invisible subtrees
     this.interiorGroup.updateMatrixWorld(true);
     const o = GameScene.INTERIOR_ORIGIN;
-    const boxes: Array<{ minX: number; maxX: number; minZ: number; maxZ: number }> = [];
+    const boxes: RoomBox[] = [];
+    const blockers: RoomBox[] = [];
     const b = new THREE.Box3();
     for (const child of set.children) {
       if ((child as THREE.Sprite).isSprite) continue; // markers (💤) never block
       if (child.userData.isLightPool) continue; // nor does firelight on the floor
       b.setFromObject(child);
       if (b.isEmpty()) continue;
-      if (b.min.y - o.y > 1.45) continue; // overhead — walk under it
-      boxes.push({
+      const box: RoomBox = {
         minX: b.min.x - o.x,
         maxX: b.max.x - o.x,
+        minY: b.min.y - o.y,
+        maxY: b.max.y - o.y,
         minZ: b.min.z - o.z,
         maxZ: b.max.z - o.z,
-      });
+      };
+      // Anything taller than 1.4 u can stand between the room camera (at
+      // head height and above) and the avatar, overhead pieces included.
+      if (box.maxY > 1.4) blockers.push(box);
+      if (box.minY > 1.45) continue; // overhead — walk under it
+      boxes.push(box);
     }
     set.visible = wasVisible;
     this.interiorColliders[theme] = boxes;
+    this.interiorCamBlockers[theme] = blockers;
 
     // CONTACT SHADOWS, for free, from the boxes we just measured.
     // No interior mesh casts or receives a shadow (the borrowed sun's shadow
@@ -15920,6 +15961,13 @@ export class GameScene extends THREE.Scene {
     this.player.position.set(o.x + spawn.x, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + spawn.z);
     this.interiorYaw = Math.PI; // facing into the room (model +z convention)
     this.interiorCamYaw = Math.PI;
+    // The entry shot (P2-B11): the front corner across the room, held until
+    // the first input or 1.2 s, then eased into the follow.
+    this.interiorEntryHold = GameScene.INTERIOR_ENTRY_HOLD;
+    this.interiorEntryBlend = 0;
+    this.interiorCamPull = 1;
+    this.interiorCamRise = 0;
+    this.interiorLookIdle = Infinity;
     this.player.quaternion.setFromAxisAngle(GameScene._localUp, Math.PI);
     this.interiorMoveF = 0;
     this.interiorMoveS = 0;
@@ -16211,6 +16259,197 @@ export class GameScene extends THREE.Scene {
     this.orbitCamera?.snapToPlayer();
   }
 
+  /** Follow distance and height above the floor-standing player (P2-B11);
+   *  phones (aspect under 0.8) sit further back and higher. */
+  private static readonly INTERIOR_CAM = { back: 3.0, up: 1.55, look: 0.95 };
+  private static readonly INTERIOR_CAM_PHONE = { back: 3.4, up: 1.9, look: 0.95 };
+  /** The entry shot: the front corner, looking across the room at the title
+   *  wall, held this long or until the first input. */
+  private static readonly INTERIOR_ENTRY_CAM = { x: 3.3, y: 2.9, z: 3.3 };
+  private static readonly INTERIOR_ENTRY_LOOK = { x: -0.5, y: 1.4, z: -2.5 };
+  /** On a phone the frame is too narrow for the title wall from that look:
+   *  MEASURED at 390x844 (fov 68), the poster showed 82%. Aimed at the wall
+   *  itself it shows 100%. */
+  private static readonly INTERIOR_ENTRY_LOOK_PHONE = { x: -0.3, y: 1.9, z: -3.9 };
+  private static readonly INTERIOR_ENTRY_HOLD = 1.2;
+  /** How far a visitor can turn the room camera off their heading. */
+  private static readonly INTERIOR_LOOK_MAX = (Math.PI * 2) / 3;
+  private static readonly INTERIOR_LOOK_IDLE_S = 1.5;
+  /** A blocker is grown by this much before the camera may stand next to it. */
+  private static readonly INTERIOR_CAM_PAD = 0.15;
+
+  /**
+   * Turn the room camera (P2-B11): offsets interiorCamYaw from the heading by
+   * up to ±120°. It holds there for 1.5 s after the last turn, then eases
+   * back behind the heading. interiorCamYaw is the walk basis, so the turn
+   * steers the walk too. A turn ends the entry shot, like any input.
+   * main-simple calls it from wave 4 (P2-A11) as scene.setInteriorLook?.().
+   */
+  public setInteriorLook(dYaw: number): void {
+    if (!this.insideInterior || !Number.isFinite(dYaw) || dYaw === 0) return;
+    this.interiorEntryHold = 0;
+    this.interiorLookIdle = 0;
+    let off = this.interiorCamYaw + dYaw - this.interiorYaw;
+    while (off > Math.PI) off -= Math.PI * 2;
+    while (off < -Math.PI) off += Math.PI * 2;
+    const M = GameScene.INTERIOR_LOOK_MAX;
+    this.interiorCamYaw = this.interiorYaw + THREE.MathUtils.clamp(off, -M, M);
+  }
+
+  /** The follow camera's frame: yaw, then the pose (fx-timed), then the
+   *  entry shot's blend over it. */
+  private updateInteriorFollow(deltaTime: number): void {
+    // Eased behind the player's heading, unless the visitor turned it lately.
+    this.interiorLookIdle += deltaTime;
+    if (this.interiorLookIdle > GameScene.INTERIOR_LOOK_IDLE_S) {
+      let dCam = this.interiorYaw - this.interiorCamYaw;
+      while (dCam > Math.PI) dCam -= Math.PI * 2;
+      while (dCam < -Math.PI) dCam += Math.PI * 2;
+      this.interiorCamYaw += dCam * Math.min(1, 3 * deltaTime);
+    }
+    this.interiorCamDt = deltaTime;
+    if (fx.on('interiorCam')) fx.time('interiorCam', this.boundInteriorCam);
+    else {
+      this.interiorCamPull = 1;
+      this.interiorCamRise = 0;
+      this.followPose(false);
+    }
+    const o = GameScene.INTERIOR_ORIGIN;
+    // The entry shot, then a 3/s ease into the follow (a cut under reduced
+    // motion). The blend runs on the pose the follow just computed.
+    if (this.interiorEntryHold > 0) {
+      this.interiorEntryHold = Math.max(0, this.interiorEntryHold - deltaTime);
+      this.interiorEntryBlend = 0;
+    } else if (this.interiorEntryBlend < 1) {
+      this.interiorEntryBlend = a11y.reducedMotion
+        ? 1
+        : this.interiorEntryBlend + (1 - this.interiorEntryBlend) * (1 - Math.exp(-3 * deltaTime));
+      if (this.interiorEntryBlend > 0.999) this.interiorEntryBlend = 1;
+    }
+    const k = this.interiorEntryBlend;
+    if (k < 1) {
+      const E = GameScene.INTERIOR_ENTRY_CAM;
+      const L =
+        this.camera.aspect < 0.8
+          ? GameScene.INTERIOR_ENTRY_LOOK_PHONE
+          : GameScene.INTERIOR_ENTRY_LOOK;
+      this._icPt.set(o.x + E.x, o.y + E.y, o.z + E.z);
+      this._icFollow.lerpVectors(this._icPt, this._icFollow, k);
+      this._icPt.set(o.x + L.x, o.y + L.y, o.z + L.z);
+      this._icLook.lerpVectors(this._icPt, this._icLook, k);
+    }
+    this.camera.up.set(0, 1, 0);
+    this.camera.position.copy(this._icFollow);
+    this.camera.lookAt(this._icLook);
+  }
+
+  /** fx 'interiorCam': the follow pose with the pull-in and the guest rise. */
+  private updateInteriorCamera(deltaTime: number): void {
+    this.followPose(true, deltaTime);
+  }
+
+  /**
+   * The follow pose into _icFollow (camera) and _icLook (target): behind the
+   * heading at the follow distance, clamped inside the walls. With `avoid`,
+   * a wanted point inside a theme blocker (grown by 0.15) pulls in along
+   * camera to target by a 6-step binary search, eased in at 12/s and out at
+   * 4/s but never left inside a bare blocker; and a party guest within 0.5 u
+   * of the sightline lifts the camera 0.4 u.
+   */
+  private followPose(avoid: boolean, deltaTime = 0): void {
+    const o = GameScene.INTERIOR_ORIGIN;
+    const p = this.player.position;
+    const C = this.camera.aspect < 0.8 ? GameScene.INTERIOR_CAM_PHONE : GameScene.INTERIOR_CAM;
+    const cy = this.interiorCamYaw;
+    const tx = p.x - o.x;
+    const ty = p.y - o.y + C.look;
+    const tz = p.z - o.z;
+    const wx = THREE.MathUtils.clamp(tx - Math.sin(cy) * C.back, -3.6, 3.6);
+    const wy = GameScene.INTERIOR_PLAYER_Y + C.up;
+    const wz = THREE.MathUtils.clamp(tz - Math.cos(cy) * C.back, -3.6, 3.6);
+    let pull = 1;
+    let rise = 0;
+    if (avoid) {
+      const blockers = this.interiorCamBlockers[this.interiorActiveTheme] ?? [];
+      const at = (t: number, pad: number): boolean =>
+        this.roomBoxHit(blockers, tx + (wx - tx) * t, ty + (wy - ty) * t, tz + (wz - tz) * t, pad);
+      const PAD = GameScene.INTERIOR_CAM_PAD;
+      let allowed = 1;
+      if (at(1, PAD)) {
+        let lo = 0;
+        let hi = 1;
+        for (let i = 0; i < 6; i++) {
+          const mid = (lo + hi) / 2;
+          if (at(mid, PAD)) hi = mid;
+          else lo = mid;
+        }
+        allowed = lo;
+      }
+      const rate = allowed < this.interiorCamPull ? 12 : 4;
+      this.interiorCamPull += (allowed - this.interiorCamPull) * (1 - Math.exp(-rate * deltaTime));
+      if (this.interiorCamPull > 0.999 && allowed === 1) this.interiorCamPull = 1;
+      // The ease never leaves the camera inside the prop itself.
+      if (this.interiorCamPull > allowed && at(this.interiorCamPull, 0)) {
+        this.interiorCamPull = allowed;
+      }
+      pull = this.interiorCamPull;
+      // A dancing guest between the camera and the avatar: rise over them.
+      let want = 0;
+      for (const g of this.partyGuests) {
+        const gp = g.npc.meshRef.position;
+        if (this.segmentDistXZ(gp.x - o.x, gp.z - o.z, tx, tz, wx, wz) < 0.5) {
+          want = 0.4;
+          break;
+        }
+      }
+      this.interiorCamRise += (want - this.interiorCamRise) * (1 - Math.exp(-4 * deltaTime));
+      rise = this.interiorCamRise;
+    }
+    this._icFollow.set(
+      o.x + tx + (wx - tx) * pull,
+      o.y + ty + (wy - ty) * pull + rise,
+      o.z + tz + (wz - tz) * pull,
+    );
+    this._icLook.set(p.x, p.y + C.look, p.z);
+  }
+
+  /** Whether a room-local point lies inside any box grown by `pad`. */
+  private roomBoxHit(boxes: RoomBox[], x: number, y: number, z: number, pad: number): boolean {
+    for (const b of boxes) {
+      if (
+        x > b.minX - pad &&
+        x < b.maxX + pad &&
+        y > b.minY - pad &&
+        y < b.maxY + pad &&
+        z > b.minZ - pad &&
+        z < b.maxZ + pad
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Distance on the floor plane from (px, pz) to the segment a to b, counted
+   *  only strictly between its ends (a guest behind the camera or beyond the
+   *  avatar is not in the way). */
+  private segmentDistXZ(
+    px: number,
+    pz: number,
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+  ): number {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len2 = dx * dx + dz * dz;
+    if (len2 < 1e-8) return Infinity;
+    const t = ((px - ax) * dx + (pz - az) * dz) / len2;
+    if (t <= 0 || t >= 1) return Infinity;
+    return Math.hypot(ax + dx * t - px, az + dz * t - pz);
+  }
+
   /** The interior frame: walk the player, follow with the camera, flicker the
    *  hearth, and detect the nearest interaction hotspot. Room space is flat
    *  (+y up), so this never touches the spherical-physics machinery. */
@@ -16409,19 +16648,11 @@ export class GameScene extends THREE.Scene {
       this.camera.position.lerp(this._interiorCamPos, k);
       this.camera.lookAt(o.x + T.x, o.y + T.y, o.z + T.z);
     } else {
-      // Follow camera: eased behind the player's heading, clamped inside walls.
-      let dCam = this.interiorYaw - this.interiorCamYaw;
-      while (dCam > Math.PI) dCam -= Math.PI * 2;
-      while (dCam < -Math.PI) dCam += Math.PI * 2;
-      this.interiorCamYaw += dCam * Math.min(1, 3 * deltaTime);
-      const cy = this.interiorCamYaw;
-      const camX = THREE.MathUtils.clamp(p.x - o.x - Math.sin(cy) * 2.4, -3.6, 3.6);
-      const camZ = THREE.MathUtils.clamp(p.z - o.z - Math.cos(cy) * 2.4, -3.6, 3.6);
-      this.camera.up.set(0, 1, 0);
-      this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
-      this.camera.lookAt(p.x, p.y + 0.85, p.z);
+      if (wantMove) this.interiorEntryHold = 0; // the first input ends the entry shot
+      this.updateInteriorFollow(deltaTime);
     }
-    // A wall behind the camera brings it close: the avatar fades (B11).
+    // A wall or a prop behind the camera brings it close: the avatar fades
+    // (B11), measured from player.position after the camera's write.
     this.tickAvatarFade(deltaTime);
 
     // Fixtures: curtains slide, the lamp fades. Both eased rather than snapped
