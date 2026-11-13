@@ -120,6 +120,8 @@ const FX_LEDGER = {
   swim: 10,
   npcGait: 80,
   npcTalk: 20,
+  // P2-B11's acceptance: the interior follow camera, 20 µs per frame or less.
+  interiorCam: 20,
   coins: 20,
   avatarFade: 5,
   idleLife: { desktop: 40, lowtier: 15 },
@@ -1939,6 +1941,56 @@ async function modeModal(args) {
   return data;
 }
 
+/**
+ * The scenario an effect's timing windows need, for effects fx.time only
+ * runs in a state the spawn never reaches: npcTalk (B8) runs while a
+ * villager is held in conversation (GameScene's wander loop, under
+ * setNpcDialogueHold), interiorCam (P2-B11) only inside a room. Without
+ * the scenario both read 'not timed by fx.time' and the verdict is n/a.
+ */
+const FX_SCENE = { npcTalk: 'chat', interiorCam: 'room' };
+
+/** Hold the nearest wandering villager in conversation, speaking (B8's events). */
+const CHAT_HOLD = () => {
+  const sc = window.__app.scene;
+  const p = sc.player.position;
+  let best = null;
+  for (const npc of sc.island.npcTargets) {
+    if (sc.fisherman && npc === sc.fisherman.npc) continue;
+    if (sc.baker && npc === sc.baker.npc) continue;
+    if (sc.pinnedNpcs && sc.pinnedNpcs.has(npc)) continue;
+    const d = npc.meshRef.position.distanceTo(p);
+    if (!best || d < best.d) best = { name: npc.name, d };
+  }
+  if (!best || typeof sc.setNpcDialogueHold !== 'function') return { held: null };
+  sc.setNpcDialogueHold(best.name);
+  window.dispatchEvent(new CustomEvent('ds:npc-speaking', { detail: { name: best.name, speaking: true } }));
+  return { held: best.name, distance: +best.d.toFixed(1) };
+};
+const CHAT_RELEASE = () => {
+  const sc = window.__app.scene;
+  const name = sc.heldNpcName;
+  if (name) window.dispatchEvent(new CustomEvent('ds:npc-speaking', { detail: { name, speaking: false } }));
+  if (typeof sc.setNpcDialogueHold === 'function') sc.setNpcDialogueHold(null);
+};
+
+/** Into the Professional hall the visitor's way (room-lib), its panel closed, at the door end. */
+async function fxRoomEnter(session) {
+  const { page } = session;
+  const touch = lib.isTouchProfile(session.profile);
+  await R.install(page);
+  const T = touch ? await lib.touch(session) : null;
+  const e = await R.enterRoom(page, ROOM_ID, { touch, T, back: 3.0 });
+  await page.waitForTimeout(2500);
+  const inside = await page.evaluate(() => {
+    const a = window.__app;
+    if (a.ui.panels && a.ui.panels.closeAll) a.ui.panels.closeAll();
+    return a.scene.isInsideInterior();
+  });
+  await page.waitForTimeout(800);
+  return { room: ROOM_ID, press: e.press, inside };
+}
+
 async function modeFx(args) {
   const name = String(args.fx);
   // E4's modal divisor is measured behind a panel on the 4x low tier, not by off/on frame pairs.
@@ -1998,9 +2050,18 @@ async function modeFx(args) {
             on,
           };
         }
-        // Timing at the spawn, interleaved.
+        // Timing at the spawn, interleaved; or in the effect's own scenario
+        // (FX_SCENE), where fx.time runs.
         await page.evaluate(POSE, { view: 'spawn' });
         await page.waitForTimeout(800);
+        const scene = FX_SCENE[name] || null;
+        let sceneState = null;
+        if (scene === 'chat') {
+          sceneState = await page.evaluate(CHAT_HOLD);
+          await page.waitForTimeout(600);
+        } else if (scene === 'room') {
+          sceneState = await fxRoomEnter(s);
+        }
         const offW = [];
         const onW = [];
         let cycles = Number(args.cycles || 6);
@@ -2016,12 +2077,13 @@ async function modeFx(args) {
             onW.push(await windowStats(page, 1500));
           }
           done = cycles;
+          const at = scene || 'spawn';
           rows = {
-            'spawn: CPU p50 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP50), onW.map((x) => x.cpuP50), T.cpuP50) },
-            'spawn: CPU p95 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
+            [`${at}: CPU p50 ms`]: { kind: 'timing', ...judge(offW.map((x) => x.cpuP50), onW.map((x) => x.cpuP50), T.cpuP50) },
+            [`${at}: CPU p95 ms`]: { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
           };
-          rows['spawn: CPU mean ms'] = { kind: 'timing', ...judge(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), null) };
-          rows['spawn: GPU p50 ms'] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50 ?? null) };
+          rows[`${at}: CPU mean ms`] = { kind: 'timing', ...judge(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), null) };
+          rows[`${at}: GPU p50 ms`] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50 ?? null) };
           for (const view of VIEWS) rows[`${view}: draws`] = { kind: 'counter', ...counters[view].draws };
           // What the effect is meant to save (FX_CREDIT), held beside the budgets.
           const credit = (FX_CREDIT[name] || {})[prof] || null;
@@ -2039,7 +2101,7 @@ async function modeFx(args) {
           const us = onW.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
           // The effect's own ledger line when plan-r3 gives one, inside the tier's per-effect cap.
           const usCap = Math.min(FX_US[prof], ledgerUs(name, prof) ?? FX_US[prof]);
-          rows['µs per frame (FxBudget)'] = us.length ? { kind: 'µs', verdict: median(us) <= usCap ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: usCap, ledger: ledgerUs(name, prof) } : { kind: 'µs', verdict: 'n/a', note: 'not timed by fx.time (unregistered or ?perf=1 off)' };
+          rows['µs per frame (FxBudget)'] = us.length ? { kind: 'µs', verdict: median(us) <= usCap ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: usCap, ledger: ledgerUs(name, prof), scene: at } : { kind: 'µs', verdict: 'n/a', note: scene ? `not timed by fx.time in the ${scene} scenario (${JSON.stringify(sceneState)})` : 'not timed by fx.time (unregistered or ?perf=1 off)' };
           // plan-r3 rules: at most 3 animated elements at once.
           const anim = onW.map((x) => x.animatedMax).filter(isNum);
           rows['animated elements with the effect on (max)'] = anim.length ? { kind: 'counter', verdict: Math.max(...anim) <= 3 ? 'pass' : 'fail', medianB: Math.max(...anim), threshold: 3 } : { kind: 'counter', verdict: 'n/a' };
@@ -2047,8 +2109,10 @@ async function modeFx(args) {
           cycles = Math.min(24, cycles * 2);
         }
         await set(null);
+        if (scene === 'chat') await page.evaluate(CHAT_RELEASE);
         const fxNow = await page.evaluate(FX_SNAPSHOT);
         data.profiles[prof] = {
+          scene: scene ? { name: scene, ...sceneState } : null,
           cycles: done,
           verdict: overall(rows),
           metrics: rows,
