@@ -69,6 +69,8 @@ const P = {
   pin: 'M12 21s7-6.2 7-12a7 7 0 0 0-14 0c0 5.8 7 12 7 12zM12 7a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
   sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z',
   copy: 'M8 8h12v12H8zM16 8V4H4v12h4',
+  chat: 'M4 5h16v11H10l-5 4v-4H4zM8 10.5h.01M12 10.5h.01M16 10.5h.01',
+  mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7',
 } as const;
 
 export type IconName = keyof typeof P;

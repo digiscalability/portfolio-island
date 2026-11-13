@@ -536,6 +536,24 @@ describe('D13: one icon set, the drawer in order', () => {
     expect([...actions].filter((a) => PICTO.test(a.textContent ?? ''))).toEqual([]);
   });
 
+  test('phone HUD: USE, chat and the mic draw sprite icons, not emoji', () => {
+    boot('/?touch=1');
+    const use = document.querySelector<HTMLElement>('[data-guide="use-button"]')!;
+    const chat = document.querySelector<HTMLElement>('[aria-label="Open chat"]')!;
+    const mic = document.querySelector<HTMLElement>('[aria-label^="Hold to talk"]')!;
+    const want: Array<[HTMLElement, string]> = [
+      [use, 'hand'],
+      [chat, 'chat'],
+      [mic, 'mic'],
+    ];
+    for (const [el, name] of want) {
+      expect(el.querySelector('svg.ds-ic')!.getAttribute('data-icon'), name).toBe(name);
+      expect(PICTO.test(el.textContent ?? ''), name).toBe(false);
+    }
+    expect((use.textContent ?? '').trim()).toBe('USE');
+    expect(chromeEmoji(document.getElementById('ui-overlay')!)).toEqual([]);
+  });
+
   test('Reduce motion wears the motion-off icon; CV and Hiring, Code and Source differ', () => {
     boot('/');
     const rm = document.querySelector<HTMLElement>('[aria-label="Toggle reduced motion"]')!;

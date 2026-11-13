@@ -1299,6 +1299,10 @@ html.reduced-motion #ld-orbit {
   stroke-linejoin: round;
   pointer-events: none;
 }
+/* The touch chat and mic discs centre their icon on the 52px line box. */
+.ds-aux-disc > .ds-ic {
+  vertical-align: middle;
+}
 .hud-btn > .ds-chip-label,
 .hud-btn > .ds-ic-slot {
   pointer-events: none;

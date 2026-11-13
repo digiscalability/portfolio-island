@@ -128,6 +128,7 @@ describe('D7: one key renderer, and the input mode it follows', () => {
   type Inner = {
     setInput(i: 'keyboard' | 'mouse' | 'touch'): void;
     interactionDiv: HTMLElement | null;
+    onInputKey(e: KeyboardEvent): void;
   };
   const inner = (u: SimpleUI): Inner => u as unknown as Inner;
 
@@ -207,6 +208,26 @@ describe('D7: one key renderer, and the input mode it follows', () => {
     expect(u.getInputMode()).toBe('keyboard'); // a mouse is the desktop scheme
     inner(u).setInput('touch');
     expect(u.getInputMode()).toBe('touch');
+  });
+
+  test("typing into the chat field on a touch boot leaves the mode at 'touch'", () => {
+    const u = boot('/?touch=1');
+    const key = inner(u).onInputKey;
+    const press = (target: EventTarget, k: string, isComposing = false): void =>
+      key({ isTrusted: true, key: k, isComposing, target } as unknown as KeyboardEvent);
+    const input = document.createElement('input');
+    const area = document.createElement('textarea');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    document.body.append(input, area, editable);
+    for (const t of [input, area, editable]) press(t, 'h');
+    press(document.body, 'Unidentified'); // Android's soft keyboard
+    press(document.body, 'Process'); // an IME
+    press(document.body, 'a', true); // mid-composition
+    expect(u.getInputMode()).toBe('touch');
+    // A hardware keyboard outside a field still switches the scheme.
+    press(document.body, 'e');
+    expect(u.getInputMode()).toBe('keyboard');
   });
 
   test('a switch of input mode re-renders the same prompt', () => {

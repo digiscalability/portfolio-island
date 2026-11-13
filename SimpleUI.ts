@@ -433,7 +433,19 @@ export class SimpleUI {
    */
   private lastInput: 'keyboard' | 'mouse' | 'touch' = this.isTouch ? 'touch' : 'mouse';
   private readonly onInputKey = (e: KeyboardEvent): void => {
-    if (e.isTrusted) this.setInput('keyboard');
+    if (!e.isTrusted) return;
+    // A phone's soft keyboard sends trusted keys too: typing into the chat
+    // field, or an IME composing, says nothing about the scheme. A hardware
+    // keyboard still switches the mode with any key pressed outside a field.
+    if (e.isComposing || e.key === 'Process' || e.key === 'Unidentified') return;
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.isContentEditable || t.matches('input, textarea, select, [contenteditable]'))
+    ) {
+      return;
+    }
+    this.setInput('keyboard');
   };
   private readonly onInputPointer = (e: Event): void => {
     if (!e.isTrusted) return;
@@ -1641,6 +1653,8 @@ export class SimpleUI {
     fontSize: '20px',
     lineHeight: '52px',
     textAlign: 'center',
+    // The chat and mic glyphs are ui/icons.ts strokes in currentColor (D13).
+    color: 'white',
     pointerEvents: 'auto',
     userSelect: 'none',
   };
@@ -5976,7 +5990,9 @@ export class SimpleUI {
     };
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
-    makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide = 'use-button';
+    // D13: the chrome draws its glyphs from ui/icons.ts, not emoji.
+    makeButton(icon('hand', 26), 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide =
+      'use-button';
     // JUMP, WAVE and the contextual DIVE, FEED and EAT have no use inside a
     // room: the 'interior' mode takes this layer out (P2-D2). USE, the
     // joystick, chat and the mic stay.
@@ -6040,7 +6056,8 @@ export class SimpleUI {
     // Stacked above the joystick (which spans bottom 26–136px here) so
     // neither control overlaps it.
     const chatBtn = document.createElement('div');
-    chatBtn.textContent = '💬';
+    chatBtn.innerHTML = icon('chat', 22);
+    chatBtn.classList.add('ds-aux-disc');
     Object.assign(chatBtn.style, {
       ...SimpleUI.AUX_DISC,
       left: 'calc(var(--sal, 0px) + 26px)',
@@ -6069,7 +6086,8 @@ export class SimpleUI {
 
     const micBtn = document.createElement('div');
     this.micBtn = micBtn;
-    micBtn.textContent = '🎤';
+    micBtn.innerHTML = icon('mic', 22);
+    micBtn.classList.add('ds-aux-disc');
     Object.assign(micBtn.style, {
       ...SimpleUI.AUX_DISC,
       // 8px above 💬 (174 + 52 + 8); short landscape moves it beside 💬
