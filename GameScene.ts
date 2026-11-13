@@ -176,6 +176,10 @@ fx.register('lightRig', { desktop: true, low: true });
 // SimplePlayer.updateCloseFade).
 fx.register('avatarFade', { desktop: true, low: true });
 
+// Villagers gesture as they talk (B8): the beats, the nod and sway while they
+// speak, the lean while the visitor types. Off, today's slow talk sway.
+fx.register('npcTalk', { desktop: true, low: true });
+
 // The room camera's pull-in and guest rise (P2-B11). Off, the camera follows
 // at the full distance and only the wall clamp bounds it.
 fx.register('interiorCam', { desktop: true, low: true });
@@ -6139,6 +6143,10 @@ export class GameScene extends THREE.Scene {
       const l = limbs[n];
       if (moving) {
         l.ang = swing * GameScene.NPC_LIMB_MIX[n];
+      } else if (talkTime >= 0 && n >= 2 && fx.on('npcTalk')) {
+        // Talk beats (B8): the pose updateNpcTalk wrote for bones 2-3
+        // (armL/armR per NPC_LIMB_BONES), composed onto the rest below.
+        l.ang = this.talkArm[n - 2];
       } else if (talkTime >= 0 && n >= 2) {
         // Dialogue-hold gesticulation: a slow asymmetric arm sway (bones
         // 2-3 are armL/armR per NPC_LIMB_BONES). Legs stay at rest; the
@@ -9707,7 +9715,13 @@ export class GameScene extends THREE.Scene {
   // so the pill can be redrawn when the activity changes (a few times/day).
   private nameTags: Array<{
     sprite: THREE.Sprite;
-    target: { position: THREE.Vector3; meshRef: THREE.Object3D };
+    target: { position: THREE.Vector3; meshRef: THREE.Object3D; name?: string };
+    /** The villager's head top above its feet, measured once from its
+     *  model (B8): the pin sits above it, so a taller model's status line
+     *  is never behind its own head. Undefined until measured. */
+    headTop?: number;
+    /** 1, or easing to 0 over 150 ms while the visitor talks to this one. */
+    talkFade?: number;
     ctx: CanvasRenderingContext2D | null;
     tex: THREE.CanvasTexture;
     emoji: string;
@@ -9772,7 +9786,9 @@ export class GameScene extends THREE.Scene {
     Cartographer: { emoji: '🗺️', role: 'Mapmaker' },
     Philosopher: { emoji: '🤔', role: 'Philosopher' },
     Courier: { emoji: '✉️', role: 'Courier' },
-    'Night Watch': { emoji: '🔦', role: 'Watch' },
+    // 'Night Watch' over 'on his round' (wave-2 play issue 7): 'Watch' over
+    // 'on watch' said one thing twice.
+    'Night Watch': { emoji: '🔦', role: 'Night Watch' },
   };
 
   /** Build a floating identity pin above every NPC (once, after placement). */
@@ -9831,11 +9847,15 @@ export class GameScene extends THREE.Scene {
    *  gold line below it — identity stays readable while the badge shows work. */
   /** Touch/phone check for HUD sprite sizing (matches SimpleUI's isTouch). */
   private static isCoarsePointer(): boolean {
+    // ?touch=1 exactly (B8; D7 reads it the same way in SimpleUI): a bare
+    // includes('touch') matched ?utm_content=get-in-touch and gave desktop
+    // visitors from that link the phone's larger pins.
     return (
       typeof window !== 'undefined' &&
       ('ontouchstart' in window ||
         (navigator.maxTouchPoints ?? 0) > 0 ||
-        (typeof location !== 'undefined' && location.search.includes('touch')))
+        (typeof location !== 'undefined' &&
+          new URLSearchParams(location.search).get('touch') === '1'))
     );
   }
 
@@ -9891,6 +9911,45 @@ export class GameScene extends THREE.Scene {
     tag.tex.needsUpdate = true;
   }
 
+  /** The factor that keeps a sprite `worldW` wide at `dist` from the camera
+   *  within 60% of the viewport's width (B8, UX-14); 1 when it fits. */
+  private spriteWidthClamp(worldW: number, dist: number): number {
+    const cam = this.camera;
+    if (!cam || dist <= 0) return 1;
+    const viewW = 2 * dist * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) * cam.aspect;
+    const frac = worldW / Math.max(1e-6, viewW);
+    return frac > 0.6 ? 0.6 / frac : 1;
+  }
+
+  /** A villager's head top above its feet, in world units, from its meshes'
+   *  bind-pose boxes in the villager's own frame (plumb, so its local y is
+   *  up). Undefined while the model has not loaded; 0 for a meshless one. */
+  private static measureHeadTop(ref: THREE.Object3D): number | undefined {
+    let meshes = 0;
+    let top = -Infinity;
+    ref.updateMatrixWorld(true);
+    const inv = GameScene._headInv.copy(ref.matrixWorld).invert();
+    ref.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !m.geometry) return;
+      meshes++;
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox!;
+      GameScene._headMat.multiplyMatrices(inv, m.matrixWorld);
+      for (const x of [b.min.x, b.max.x])
+        for (const y of [b.min.y, b.max.y])
+          for (const z of [b.min.z, b.max.z]) {
+            const ly = GameScene._headPt.set(x, y, z).applyMatrix4(GameScene._headMat).y;
+            if (ly > top) top = ly;
+          }
+    });
+    if (meshes === 0) return undefined;
+    return Number.isFinite(top) ? top * ref.scale.y : 0;
+  }
+  private static readonly _headInv = new THREE.Matrix4();
+  private static readonly _headMat = new THREE.Matrix4();
+  private static readonly _headPt = new THREE.Vector3();
+
   // ── NPC speech bubble ──
   // ONE shared in-world bubble (only one NPC speaks at a time): shown above an
   // AI NPC when the visitor walks up, carrying the aware proximity greeting.
@@ -9903,8 +9962,59 @@ export class GameScene extends THREE.Scene {
   } | null = null;
   private npcBubbleFor = -1;
   private npcBubbleUntil = 0;
+  private static readonly NPC_BUBBLE_W = 3.4;
+  private static readonly NPC_BUBBLE_H = 1.06;
+  /** The bubble's handwriting (B8): painted once document.fonts says it is
+   *  loaded or 3 s have passed, and painted again if it lands after that. */
+  private bubbleFont: 'idle' | 'waiting' | 'ready' | 'fallback' = 'idle';
+  private bubbleLast: { i: number; text: string; time: number } | null = null;
+
+  private waitForBubbleFont(): void {
+    if (this.bubbleFont !== 'idle') return;
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+    if (!fonts || typeof fonts.load !== 'function') {
+      this.bubbleFont = 'ready';
+      return;
+    }
+    this.bubbleFont = 'waiting';
+    const repaint = (): void => {
+      const last = this.bubbleLast;
+      if (last) this.paintNpcSpeechBubble(last.i, last.text, last.time);
+    };
+    const timer = setTimeout(() => {
+      if (this.bubbleFont !== 'waiting') return;
+      this.bubbleFont = 'fallback'; // paint in the fallback face now
+      repaint();
+    }, 3000);
+    fonts
+      .load(`26px 'Patrick Hand'`)
+      .then(() => {
+        clearTimeout(timer);
+        const was = this.bubbleFont;
+        this.bubbleFont = 'ready';
+        // First paint, or the repaint in the real face after the fallback.
+        if (was === 'waiting' || was === 'fallback') repaint();
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        if (this.bubbleFont === 'waiting') {
+          this.bubbleFont = 'fallback';
+          repaint();
+        }
+      });
+  }
 
   private showNpcSpeechBubble(i: number, text: string, time: number): void {
+    this.bubbleLast = { i, text, time };
+    this.waitForBubbleFont();
+    // The visible window starts now, whether the paint waits or not.
+    this.npcBubbleFor = i;
+    this.npcBubbleUntil = time + 6.5;
+    if (this.bubbleFont === 'waiting') return; // painted when the font says
+    this.paintNpcSpeechBubble(i, text, time);
+  }
+
+  private paintNpcSpeechBubble(i: number, text: string, time: number): void {
     if (!this.npcBubble) {
       const canvas = document.createElement('canvas');
       // 2× the logical 512×160 (draw code scales its transform): on retina
@@ -9921,7 +10031,7 @@ export class GameScene extends THREE.Scene {
       const sprite = new THREE.Sprite(
         new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
       );
-      sprite.scale.set(3.4, 1.06, 1);
+      sprite.scale.set(GameScene.NPC_BUBBLE_W, GameScene.NPC_BUBBLE_H, 1);
       // Bottom-anchored so it stacks cleanly on top of the (also bottom-
       // anchored) name pill without ever growing down into it.
       sprite.center.set(0.5, 0);
@@ -9949,22 +10059,23 @@ export class GameScene extends THREE.Scene {
     const lh = 34;
     const h = 28 + lines.length * lh;
     const top = (160 - h) / 2;
-    ctx.fillStyle = 'rgba(250,248,242,0.93)';
+    // Opaque paper, a dark rim and near-black ink (B8): the old 93% cream
+    // with a 30% rim read 2.9:1 under bloom.
+    ctx.fillStyle = '#e8e2d4';
     ctx.beginPath();
     ctx.roundRect(16, top, 480, h, 18);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(60,50,40,0.3)';
+    ctx.strokeStyle = '#3a3128';
     ctx.lineWidth = 2;
     ctx.stroke();
-    ctx.fillStyle = '#2c2620';
-    ctx.font = '500 26px "Patrick Hand", system-ui, sans-serif';
+    ctx.fillStyle = '#1f1a14';
+    ctx.font = '600 26px "Patrick Hand", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     lines.forEach((ln, k) => ctx.fillText(ln, 256, top + 24 + k * lh));
     tex.needsUpdate = true;
-    sprite.visible = true;
+    sprite.visible = time + 6.5 > performance.now() / 1000;
     this.npcBubbleFor = i;
-    this.npcBubbleUntil = time + 6.5;
   }
 
   // ── Dialogue hold ──────────────────────────────────────────────────
@@ -9979,7 +10090,141 @@ export class GameScene extends THREE.Scene {
    * their own routines and stay at their posts, so they need no hold.
    */
   public setNpcDialogueHold(name: string | null): void {
+    if (name !== this.heldNpcName) {
+      this.talkT0 = performance.now() / 1000;
+      this.talkBeatK = 0;
+      this.talkBeatStart = GameScene.talkBeatGap(name ?? '', 0);
+      this.talkHopAt = -1;
+    }
     this.heldNpcName = name;
+    this.listenToNpcTalk();
+  }
+
+  // ── Talk body language (B8) ──
+  // SimpleUI's 'ds:npc-speaking' {name, speaking} and 'ds:npc-typing' {name,
+  // typing} (D10). The held villager beats with an arm every 0.9-1.6 s,
+  // nods and sways while speaking, leans in while the visitor types, and
+  // hops once when a reply ends.
+  private talkSpeaking: string | null = null;
+  private talkTyping: string | null = null;
+  private talkT0 = 0;
+  private talkBeatK = 0;
+  private talkBeatStart = 0;
+  /** When the end-of-reply hop is due (seconds), or -1; and for whom. */
+  private talkHopAt = -1;
+  private talkHopFor: string | null = null;
+  private talkListening = false;
+  /** The held villager's talk pose, written by the 'npcTalk' effect. */
+  private readonly talkArm = [0, 0];
+  private talkPitch = 0;
+  private talkRoll = 0;
+  private talkNow = 0;
+  private talkDt = 0;
+  private readonly boundNpcTalk = (): void => this.updateNpcTalk(this.talkNow, this.talkDt);
+  private readonly _npcTalkQ = new THREE.Quaternion();
+  private readonly _npcTalkE = new THREE.Euler();
+
+  private listenToNpcTalk(): void {
+    if (this.talkListening || typeof window === 'undefined') return;
+    this.talkListening = true;
+    window.addEventListener('ds:npc-speaking', (e: Event) => {
+      const d = (e as CustomEvent<{ name?: string; speaking?: boolean }>).detail ?? {};
+      if (!d.name) return;
+      if (d.speaking) {
+        this.talkSpeaking = d.name;
+        this.talkHopAt = -1;
+      } else if (this.talkSpeaking === d.name) {
+        this.talkSpeaking = null;
+        // A reply that ended: one hop, a beat later, and only if the chat is
+        // still open with them (a panel close also sends speaking:false,
+        // and releases the hold in the same task).
+        this.talkHopAt = performance.now() / 1000 + 0.15;
+        this.talkHopFor = d.name;
+      }
+    });
+    window.addEventListener('ds:npc-typing', (e: Event) => {
+      const d = (e as CustomEvent<{ name?: string; typing?: boolean }>).detail ?? {};
+      if (!d.name) return;
+      if (d.typing) this.talkTyping = d.name;
+      else if (this.talkTyping === d.name) this.talkTyping = null;
+    });
+  }
+
+  /** A stable 0..1 from a villager's name and a salt (no Math.random: the
+   *  same villager gestures the same way on every visit). */
+  private static talkHash(name: string, k: number, salt: number): number {
+    let h = 2166136261 ^ (k * 374761393) ^ (salt * 668265263);
+    for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 16777619);
+    h = Math.imul(h ^ (h >>> 15), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
+  /** The gap before beat k: 0.9-1.6 s, seeded per name. */
+  private static talkBeatGap(name: string, k: number): number {
+    return 0.9 + 0.7 * GameScene.talkHash(name, k, 1);
+  }
+
+  /** A beat's envelope at `u` s into it: 180 ms in, 250 ms held, 300 ms out. */
+  private static talkEnvelope(u: number): number {
+    if (u < 0) return 0;
+    if (u < 0.18) {
+      const x = u / 0.18;
+      return x * x * (3 - 2 * x);
+    }
+    if (u < 0.43) return 1;
+    if (u < 0.73) {
+      const x = 1 - (u - 0.43) / 0.3;
+      return x * x * (3 - 2 * x);
+    }
+    return 0;
+  }
+
+  /** Arms hang at rest between beats. */
+  private static readonly TALK_ARM_REST = 0;
+  /** A beat's reach, seeded per name and beat: 0.70-0.80 rad, the top of
+   *  plan-r3's 0.55-0.8 band, so any beat sweeps the arm 40 degrees (0.70
+   *  rad, the acceptance) from rest. */
+  private static readonly TALK_BEAT_MIN = 0.7;
+  private static readonly TALK_BEAT_SPAN = 0.1;
+
+  /**
+   * The held villager's talk pose at `now` (fx 'npcTalk'): the arms (the
+   * beat on one, rest on the other), and the root's nod and sway while they
+   * speak and lean while the visitor types, all eased. Reduced motion: beats
+   * at half amplitude, no nod, sway or hop.
+   */
+  private updateNpcTalk(now: number, dt: number): void {
+    const name = this.heldNpcName ?? '';
+    const t = now - this.talkT0;
+    // Advance to the latest beat that has started.
+    for (let guard = 0; guard < 64; guard++) {
+      const next = this.talkBeatStart + GameScene.talkBeatGap(name, this.talkBeatK + 1);
+      if (t < next) break;
+      this.talkBeatStart = next;
+      this.talkBeatK++;
+    }
+    const k = this.talkBeatK;
+    const reduced = a11y.reducedMotion;
+    const amp =
+      (GameScene.TALK_BEAT_MIN + GameScene.TALK_BEAT_SPAN * GameScene.talkHash(name, k, 2)) *
+      (reduced ? 0.5 : 1);
+    const side = GameScene.talkHash(name, k, 3) < 0.5 ? 0 : 1;
+    const env = GameScene.talkEnvelope(t - this.talkBeatStart);
+    const ease = 1 - Math.exp(-14 * dt);
+    for (let a = 0; a < 2; a++) {
+      const want = GameScene.TALK_ARM_REST + (a === side ? -amp * env : 0);
+      // The envelope is the motion: follow it closely, settle the other arm.
+      this.talkArm[a] += (want - this.talkArm[a]) * (a === side ? 1 : ease);
+    }
+    const speaking = !reduced && this.talkSpeaking === name;
+    const typing = this.talkTyping === name;
+    const nod = speaking ? Math.sin(t * 2.2 * Math.PI * 2) * 0.05 : 0;
+    const sway = speaking ? Math.sin(t * 0.35 * Math.PI * 2) * 0.035 : 0;
+    const lean = typing ? 0.07 : 0;
+    const k2 = 1 - Math.exp(-20 * dt); // a lean shows inside 200 ms
+    this.talkPitch += (lean + nod - this.talkPitch) * k2;
+    this.talkRoll += (sway - this.talkRoll) * k2;
   }
 
   /** Distance from `pos` to the nearest cat (Infinity when none) — drives
@@ -11780,7 +12025,6 @@ export class GameScene extends THREE.Scene {
           greetT0?: number;
           lastGreetAt?: number;
           lastSpokeAt?: number; // aware proximity-greeting throttle
-          nextTalkHopAt?: number; // dialogue-hold conversational hop cadence
           wander?: {
             home: THREE.Vector3;
             dir: THREE.Vector3;
@@ -11831,15 +12075,14 @@ export class GameScene extends THREE.Scene {
         if (held) {
           if (w.state === 'walk') w.state = 'idle';
           w.until = Math.max(w.until, time + 0.6);
-          // Conversational body language: an occasional cheerful hop.
-          if (data.nextTalkHopAt === undefined) {
-            data.nextTalkHopAt = time + 4 + Math.random() * 5;
-          } else if (time > data.nextTalkHopAt) {
-            data.greetT0 = time;
-            data.nextTalkHopAt = time + 6 + Math.random() * 7;
+          // A reply that ended (B8): one hop, while the chat is still open.
+          if (this.talkHopAt >= 0 && time >= this.talkHopAt) {
+            if (this.talkHopFor === npc.name && !a11y.reducedMotion) data.greetT0 = time;
+            this.talkHopAt = -1;
           }
-        } else if (data.nextTalkHopAt !== undefined) {
-          data.nextTalkHopAt = undefined;
+          this.talkNow = time;
+          this.talkDt = deltaTime;
+          if (fx.on('npcTalk')) fx.time('npcTalk', this.boundNpcTalk);
         }
         let moving = false;
         if (w.state === 'idle') {
@@ -12123,6 +12366,13 @@ export class GameScene extends THREE.Scene {
           .copy(this._swayQuat)
           .multiply(this._wanderYawQ.setFromAxisAngle(GameScene._localUp, w.yaw))
           .multiply(this._npcRollQ.setFromAxisAngle(GameScene._localForward, w.roll));
+        // Talk (B8): the nod and the lean pitch about the villager's side
+        // axis (+x tips the head toward +z, their front), the sway rolls.
+        if (held && fx.on('npcTalk')) {
+          npc.meshRef.quaternion.multiply(
+            this._npcTalkQ.setFromEuler(this._npcTalkE.set(this.talkPitch, 0, this.talkRoll)),
+          );
+        }
       }
 
       // Grass wind (GPU-side — just advance the shared uniform)
@@ -12453,15 +12703,20 @@ export class GameScene extends THREE.Scene {
     for (const tag of this.nameTags) {
       const pos = tag.target.position;
       this._tagNormal.copy(pos).normalize();
-      // Bottom-anchored (see createNameTags), so 1.55 IS the pill's bottom
-      // edge: 0.17 above the tallest dressed head (wizard hat ≈1.33 world
-      // after the 0.6×1.07 NPC group scale) at every camera distance.
+      // Bottom-anchored (see createNameTags), so this IS the pill's bottom
+      // edge: 1.55, 0.17 above the tallest dressed head (wizard hat ≈1.33
+      // world after the 0.6×1.07 NPC group scale), or 0.15 above this
+      // villager's own measured head top when that is higher (B8: the Night
+      // Watch's taller model hid the pin's status line behind his head).
+      if (tag.headTop === undefined) tag.headTop = GameScene.measureHeadTop(tag.target.meshRef);
+      const anchor = Math.max(1.55, (tag.headTop ?? 0) + 0.15);
       tag.sprite.position
         .copy(pos)
-        .addScaledVector(this._tagNormal, 1.55 + Math.sin(time * 2 + pos.x) * 0.05);
+        .addScaledVector(this._tagNormal, anchor + Math.sin(time * 2 + pos.x) * 0.05);
       const dist = this.camera.position.distanceTo(tag.sprite.position);
       // Constant-ish on-screen size: sprites attenuate ∝1/dist, so scale ∝dist.
-      const s = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6);
+      // Never wider than 60% of the viewport (B8, UX-14).
+      const s = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6) * this.spriteWidthClamp(1.7, dist);
       // 0.63 aspect matches the 256×96 two-line pill canvas (0.42 was the old
       // 64px canvas — it squished the role+activity pill every frame).
       tag.sprite.scale.set(s * 1.7, s * 0.63, 1);
@@ -12476,10 +12731,19 @@ export class GameScene extends THREE.Scene {
               : dist < 88
                 ? 1 - (dist - 62) / 26
                 : 0;
+      // The villager you are talking to: the chat panel carries the words,
+      // so their pin fades out over 150 ms, and back in after (B8).
+      const talking = this.heldNpcName !== null && tag.target.name === this.heldNpcName;
+      const fadeStep = deltaTime / 0.15;
+      tag.talkFade = THREE.MathUtils.clamp(
+        (tag.talkFade ?? 1) + (talking ? -fadeStep : fadeStep),
+        0,
+        1,
+      );
       const mat = tag.sprite.material as THREE.SpriteMaterial;
-      mat.opacity = op;
+      mat.opacity = op * tag.talkFade;
       // No pin over an empty doorstep while its NPC sleeps "inside".
-      tag.sprite.visible = op > 0.02 && tag.target.meshRef.visible;
+      tag.sprite.visible = mat.opacity > 0.02 && tag.target.meshRef.visible;
     }
 
     // Speech bubble follows its speaker just above the name pin; auto-hides.
@@ -12497,6 +12761,18 @@ export class GameScene extends THREE.Scene {
             this._tagNormal.copy(tag.target.position).normalize(),
             tag.sprite.scale.y + 0.12,
           );
+        // Never wider than 60% of the viewport (B8, UX-14), and gone with
+        // the pin while its villager is in a chat.
+        const bs = this.spriteWidthClamp(
+          GameScene.NPC_BUBBLE_W,
+          this.camera.position.distanceTo(this.npcBubble.sprite.position),
+        );
+        this.npcBubble.sprite.scale.set(
+          GameScene.NPC_BUBBLE_W * bs,
+          GameScene.NPC_BUBBLE_H * bs,
+          1,
+        );
+        (this.npcBubble.sprite.material as THREE.SpriteMaterial).opacity = tag.talkFade ?? 1;
       }
     }
 

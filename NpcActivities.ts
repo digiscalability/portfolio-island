@@ -156,7 +156,7 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
   // after dark still finds a villager awake to talk to.
   lamp_round: {
     label: 'keeping watch over the square and its lamps',
-    short: 'on watch',
+    short: 'on his round',
     emoji: '🔦',
     pose: 'watch',
     anchorSource: 'watch',
@@ -173,7 +173,7 @@ export const ACTIVITY_DEFS: Record<ActivityId, ActivityDef> = {
   },
   keep_light: {
     label: 'keeping the lighthouse',
-    short: 'on watch',
+    short: 'tending the light',
     emoji: '🗼',
     pose: 'watch',
     anchorSource: 'lighthouse',

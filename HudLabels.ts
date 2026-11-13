@@ -16,10 +16,11 @@
  */
 import * as THREE from 'three';
 
-/** Promote under 14u, demote over 16u — 2u hysteresis so a bobbing camera
- *  never flickers the representation at the boundary. */
-const PROMOTE_DIST = 14;
-const DEMOTE_DIST = 16;
+/** Promote under 20u, demote over 22u — 2u hysteresis so a bobbing camera
+ *  never flickers the representation at the boundary. (B8: from 14 and 16,
+ *  so a bubble across a plaza is read as crisp text too.) */
+const PROMOTE_DIST = 20;
+const DEMOTE_DIST = 22;
 const MAX_TWINS = 4;
 const FADE_MS = 150;
 
@@ -121,11 +122,13 @@ export class HudLabels {
     const themed =
       c.theme === 'npc'
         ? {
-            background: 'rgba(250,248,242,0.93)',
-            color: '#2c2620',
-            border: '1px solid rgba(60,50,40,0.3)',
+            // The sprite bubble's paper, rim and ink (B8).
+            background: '#e8e2d4',
+            color: '#1f1a14',
+            border: '2px solid #3a3128',
             fontFamily: '"Patrick Hand", system-ui, sans-serif',
             fontSize: '15px',
+            fontWeight: '600',
           }
         : {
             background: 'rgba(20,20,28,0.82)',
