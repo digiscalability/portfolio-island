@@ -618,6 +618,21 @@ every session, the port free afterwards, four other builders on the machine
 | `mobile` (plateau rows) | B3 | the phone, trusted CDP touches: the stick held at 0.15 and 0.7 of its own radius (the ring's half-width, found from the 166 px hit square as today; 55 px on both builds) for 1.8 s: the speed. B3 wants 2.0 ±0.2 and 5.6 ±0.3 u/s | 5.6 and 5.6 u/s. 0.15 fails | 5.6 and 8.12 u/s (0.7 of the radius already runs, A11's touch run). Both fail |
 <!-- e6d-rows -->
 
+### Phase-2 probes, wave 4 (P2-E2d)
+
+In `p2/`, rebuilt from the gameplay and guidance audits' reports
+(`phase2-audit/results/gameplay.json` GP-03, GP-04, GP-08, GP-13 and
+`a.json` GD-09; `phase2-audit/gameplay/` and `guidance/work/` are empty).
+Race legs and the boat are flags on `p2/race`, not probes of their own.
+Every row reads a wave-4 feature optionally. Baselines as above; these are
+also P2-A9's in-repo before-numbers (the Vercel Web Analytics baseline does
+not exist).
+
+| Probe | Item | What it measures | 58c8849 | wave-3 main (fcaa649) |
+|---|---|---|---|---|
+| `p2/feed` | GP-13; P2-A10 | desktop at the spawn on the hub lawn (no cat in aim), the card dismissed, First steps skipped, every `ui.flashMessage` recorded; the persisted counts (`ds_bird_feed`, `ds_cat_feed`) seeded per session. 21 h, bird feed only: the flash (P2-A10: /roost/i) and the count (unchanged). 21 h with cat feed held: a cat throw (the cat count drops by 1). 12 h control: one spent and the ground birds within 2 u of where the pile landed, 6 s later | dayFactor 0 at 21 h: '🌾 Not here — try over open ground', 3 -> 3; with cat feed the same flash and no cat throw (2 -> 2); noon: 3 -> 2, 8 birds. Exits 1 | the same. Exits 1 |
+<!-- p2e2d-rows -->
+
 ### Probe fixes from the wave-2 integration
 
 The wave-2 integration read probe defects as product faults. Each was checked
