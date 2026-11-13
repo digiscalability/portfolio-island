@@ -679,3 +679,14 @@ describe('Chat lazy load: SimpleUI does not import Chat.ts as a value', () => {
     expect(Number(local![1].replace(/_/g, ''))).toBe(Number(chat![1].replace(/_/g, '')));
   });
 });
+
+// D to C11 (wave-4 contract): C re-exports chocomate.webp at 808 x 384, and
+// the Projects card's <img> declares that box so the reserved space matches
+// the new file (c33884c). The thumb helper's width/height attributes.
+describe('C11 contract: the ChocoMate card declares 808 x 384', () => {
+  test('the ChocoMate thumb is 808 x 384', () => {
+    const s = src('SimpleUI.ts');
+    expect(s).toMatch(/thumb\('\/assets\/panels\/chocomate\.webp', '[^']*', 808, 384\)/);
+    expect(s).not.toMatch(/chocomate\.webp', '[^']*', 820,/);
+  });
+});
