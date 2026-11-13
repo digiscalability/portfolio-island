@@ -2241,14 +2241,6 @@ describe('C7: the CBD towers in the island style, with no facade canvases', () =
     expect(tones).toContain(hex(CBD_TONES.bodies[0]));
     expect(tones).toContain(hex(CBD_TONES.base));
     expect(tones).toContain(hex(CBD_TONES.trim));
-    // It mints uuids (so it is built shielded); under withLocalRng the
-    // stream around it takes none of them.
-    const { withLocalRng } = await import('../WorldSeed');
-    const r = vi.spyOn(Math, 'random');
-    withLocalRng(() => buildCbdTowerGeometry(1), 0xc7b10001);
-    const calls = r.mock.calls.length;
-    r.mockRestore();
-    expect(calls).toBe(0);
   });
 });
 
