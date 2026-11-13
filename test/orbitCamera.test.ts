@@ -916,7 +916,7 @@ describe('A12: a jump lifts the camera 30% of the hop', () => {
 });
 
 describe('the interest yaw (for P2-B7)', () => {
-  test('eases toward the asked yaw, lets go on a manual look, and is ignored under reduced motion', () => {
+  test('eases toward the asked yaw, releases in place on a manual look, and is ignored under reduced motion', () => {
     const { cam, camera } = rig();
     run(cam, 0.5, 1 / 60);
     const h0 = heading(camera);
@@ -927,8 +927,20 @@ describe('the interest yaw (for P2-B7)', () => {
     cam.update(1 / 60);
     const hHeld = heading(camera);
     run(cam, 4, 1 / 60);
-    // Let go: it eases back by the 30 deg it had leant.
-    expect(Math.abs(heading(camera) - hHeld)).toBeGreaterThan(20);
+    // Released in place: the camera stays where the visitor aimed it.
+    expect(Math.abs(heading(camera) - hHeld)).toBeLessThan(1);
+    // A caller that keeps asking during the same cast does not re-lean...
+    cam.setInterestYaw(Math.PI / 6);
+    run(cam, 4, 1 / 60);
+    expect(Math.abs(heading(camera) - hHeld)).toBeLessThan(1);
+    // ...but a fresh ask after letting go (null) leans again, and null eases back.
+    cam.setInterestYaw(null);
+    cam.setInterestYaw(-Math.PI / 6);
+    run(cam, 4, 1 / 60);
+    expect(Math.abs(heading(camera) - hHeld)).toBeGreaterThan(25);
+    cam.setInterestYaw(null);
+    run(cam, 6, 1 / 60);
+    expect(Math.abs(heading(camera) - hHeld)).toBeLessThan(1);
 
     const r = rig();
     a11y.reducedMotion = true;

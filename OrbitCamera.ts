@@ -260,6 +260,8 @@ export class OrbitCamera {
   /** A yaw offset (rad) a scene may ask for, e.g. toward a cast; null = none. */
   private interestYawTarget: number | null = null;
   private interestYawApplied = 0;
+  /** Set by a manual look; a new lean waits until the caller lets go (null). */
+  private interestYawReleased = false;
   private static readonly INTEREST_K = 1.5;
   private _flattenScale = new THREE.Vector3();
 
@@ -644,12 +646,19 @@ export class OrbitCamera {
 
   /**
    * Ask the camera to lean its yaw `rad` off the follow (a fishing cast, say),
-   * or null to let go. It eases in and out at 1.5/s, lets go on any manual
-   * look, and is ignored under reduced motion. B's fishing bias reads it as
-   * an optional call (P2-B7).
+   * or null to let go. It eases in and out at 1.5/s and is ignored under
+   * reduced motion. A manual look releases it in place: the lean already in
+   * the follow direction stays where the visitor put it (nothing unwinds),
+   * and further leans are ignored until the caller passes null. B's fishing
+   * bias reads it as an optional call (P2-B7).
    */
   public setInterestYaw(rad: number | null): void {
-    if (rad !== null && (!Number.isFinite(rad) || a11y.reducedMotion)) return;
+    if (rad === null) {
+      this.interestYawReleased = false;
+      this.interestYawTarget = null;
+      return;
+    }
+    if (!Number.isFinite(rad) || a11y.reducedMotion || this.interestYawReleased) return;
     this.interestYawTarget = rad;
   }
 
@@ -727,8 +736,17 @@ export class OrbitCamera {
     // Safely validate inputs
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.05)); // Clamp to prevent jumps
 
-    // A manual look since the last frame lets go of the interest yaw.
-    if (this.sinceManualLook === 0) this.interestYawTarget = null;
+    // A manual look since the last frame releases the interest yaw in place:
+    // forget the lean (it is already folded into followDir) so nothing eases
+    // back against the visitor's aim.
+    if (
+      this.sinceManualLook === 0 &&
+      (this.interestYawTarget !== null || this.interestYawApplied !== 0)
+    ) {
+      this.interestYawTarget = null;
+      this.interestYawApplied = 0;
+      this.interestYawReleased = true;
+    }
 
     // Touch fling: keep turning after a fast swipe, ω decaying by
     // exp(−dt/0.15 s), never more than 30° in all. It feeds the yaw TARGET,
