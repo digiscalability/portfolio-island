@@ -289,6 +289,7 @@ async function gather(t) {
       await lib.sleep(900);
       out.mailbox = { prompt: await prompt(page) };
       const since = await page.evaluate(() => Math.round(performance.now()));
+      const coinsBeforeHop = await coins(page);
       await useKey(page, touch, T);
       // The toast queues behind whatever is on screen (the arrival toast, a
       // quest card), so it is read for up to 8 s, not 2.5: the integration
@@ -305,10 +306,14 @@ async function gather(t) {
       out.mailbox.toasts = [...new Set(ev.map((e) => e.text.slice(0, 140)))].slice(0, 6);
       out.mailbox.nextDistrictToast = hit ? hit.text.slice(0, 140) : null;
       out.mailbox.nextDistrictToastAfterMs = hit ? Math.round(hit.t - since) : null;
+      // P2-A9 (wave 4): the coin delta of this delivery hop (main fcaa649: 0).
+      out.mailbox.hopCoins = (await coins(page)) - coinsBeforeHop;
+      out.mailbox.delivered = !!(hit || ev.some((e) => /deliver/i.test(e.text)));
     }
     const mp = out.mailbox ? out.mailbox.prompt : null;
     t.check(`${prof}: the mailbox prompt names its key`, mp === null ? null : touch ? /Tap|USE/i.test(mp) : /Press\s*(<strong>)?\s*E|\[E\]/i.test(mp), mp || 'no active delivery mailbox', touch ? "'Tap USE'" : "'Press E' (58c8849: the bubble text alone)");
     t.check(`${prof}: after a collect, a toast names the next delivery's district`, out.mailbox ? !!out.mailbox.nextDistrictToast : null, out.mailbox ? out.mailbox.nextDistrictToast || out.mailbox.toasts : 'no mailbox', 'a district name');
+    t.check(`${prof}: a delivery hop pays +3 coins (P2-A9)`, out.mailbox && out.mailbox.delivered ? out.mailbox.hopCoins === 3 : null, out.mailbox ? (out.mailbox.delivered ? out.mailbox.hopCoins : 'the parcel was not delivered') : 'no active delivery mailbox', '+3 (main fcaa649: 0)');
     // 4. The delivery chain: hop lengths in the order the deliveries unlock.
     out.chain = await page.evaluate(() => {
       const d = window.__app.deliverySystem;
@@ -596,6 +601,54 @@ const SHOP_VS_AVATAR = () => {
   return { shop: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], avatar: c.map(Math.round), inside: c[0] >= r.left && c[0] <= r.right && c[1] >= r.top && c[1] <= r.bottom };
 };
 
+/**
+ * P2-A14's mirror pose: the camera's view direction against the avatar's
+ * visual forward (+Z, flattened on the local up), and the avatar's projected
+ * box (its posed vertices, as FLOAT_VS_AVATAR samples them) against the shop.
+ */
+const MIRROR_POSE = () => {
+  const sc = window.__app.scene;
+  const cam = sc.getCamera();
+  const oc = sc.getOrbitCamera();
+  const pl = sc.getPlayer();
+  const p = pl.getWorldPosition();
+  const V = p.constructor;
+  const up = p.clone().normalize();
+  const fwd = new V(0, 0, 1).applyQuaternion(pl.quaternion);
+  fwd.addScaledVector(up, -fwd.dot(up)).normalize();
+  const dir = cam.getWorldDirection(new V());
+  dir.addScaledVector(up, -dir.dot(up)).normalize();
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const tmp = new V();
+  pl.traverse((m) => {
+    if (!m.isMesh || !m.geometry || !m.visible || !m.geometry.attributes.position) return;
+    const a = m.geometry.attributes.position;
+    const step = Math.max(1, Math.floor(a.count / 300));
+    for (let i = 0; i < a.count; i += step) {
+      if (m.isSkinnedMesh) m.getVertexPosition(i, tmp);
+      else tmp.fromBufferAttribute(a, i);
+      const v = tmp.applyMatrix4(m.matrixWorld).project(cam);
+      minX = Math.min(minX, v.x);
+      maxX = Math.max(maxX, v.x);
+      minY = Math.min(minY, v.y);
+      maxY = Math.max(maxY, v.y);
+    }
+  });
+  const c = [(((minX + maxX) / 2 + 1) / 2) * innerWidth, ((1 - (minY + maxY) / 2) / 2) * innerHeight].map(Math.round);
+  const d = window.__app.ui.shopDiv;
+  const r = d && d.isConnected ? d.getBoundingClientRect() : null;
+  return {
+    hasMirrorPose: !!oc && typeof oc.setMirrorPose === 'function',
+    dot: Math.round(dir.dot(fwd) * 100) / 100,
+    centre: c,
+    shop: r ? [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] : null,
+    inside: r ? c[0] >= r.left && c[0] <= r.right && c[1] >= r.top && c[1] <= r.bottom : false,
+  };
+};
+
 async function openKiosk(page, touch, T) {
   const kp = await page.evaluate(() => {
     const p = window.__app.scene.kioskPos();
@@ -636,6 +689,9 @@ async function shop(t) {
     out.opened = await openKiosk(page, touch, T);
     out.count = await SHOP_COUNT(page);
     t.check(`${prof}: items affordable with the trail's ${want} coins`, out.count ? true : null, out.count ? `${out.count.enabled}/${out.count.total} (${JSON.stringify(out.count.per)})` : 'no shop', 'reported (58c8849: 2 of 20)');
+    // P2-A9 (wave 4): the Explorer Cap at 5 makes a hat affordable with the trail's coins.
+    const hats = out.count && out.count.per.hats;
+    t.check(`${prof}: a hat is enabled on the first kiosk visit after the trail (P2-A9)`, hats && hats.n ? hats.enabled >= 1 : null, hats ? `${hats.enabled} of ${hats.n} hats with ${want} coins` : 'no Hats tab', '>= 1 (main fcaa649: 0, the cap costs 8)');
     // The 'Show me' line with nothing affordable (P2-D7).
     await page.evaluate(() => window.__app.ui.panels.closeAll());
     await page.evaluate(() => {
@@ -704,6 +760,16 @@ async function shop(t) {
     const note = bought ? bought.notes.find((x) => HAT.test(x.text) && x.afterClickMs !== null && x.afterClickMs <= 1000) || null : null;
     out.equip = { bought, toast: ev.find((x) => HAT.test(x) && !/Island Shop/.test(x)) || null, note };
     t.check(`${prof}: equipping a hat says so (a toast, or the shop's [data-panel-note] within 1 s)`, bought ? !!(out.equip.toast || out.equip.note) : null, out.equip.note ? `note ${out.equip.note.afterClickMs} ms after the click${out.equip.note.inShop ? ', inside the shop' : ''}: ${out.equip.note.text}` : out.equip, 'a toast or a note (58c8849: none)');
+    // P2-A14 (wave 4): after the equip the mirror pose turns the camera to the
+    // avatar's front (dot(camera dir, avatar forward) < -0.3) and keeps the
+    // avatar's projected box centre outside the shop. The 0.6 s ease has run
+    // by now (700 ms above). Null on a build without OrbitCamera.setMirrorPose.
+    if (!touch) {
+      out.mirror = await page.evaluate(MIRROR_POSE);
+      const m = out.mirror;
+      t.check(`${prof}: after an equip the camera is in the avatar's front hemisphere (P2-A14)`, m && m.hasMirrorPose && bought ? m.dot < -0.3 : null, m ? (m.hasMirrorPose ? `dot ${m.dot}` : `no setMirrorPose on this build (dot ${m.dot})`) : 'no shop', '< -0.3 (screenshot shop-desktop-equipped.png shows the hat)');
+      t.check(`${prof}: after an equip the avatar's box centre is outside the shop (P2-A14)`, m && m.hasMirrorPose && bought ? !m.inside : null, m ? { centre: m.centre, shop: m.shop, inside: m.inside } : 'no shop', 'outside');
+    }
     t.data[prof] = out;
   }
 }
@@ -770,7 +836,8 @@ async function tour(t) {
     out.cardNext = nextM ? nextM[1].trim().slice(0, 80) : null;
     out.cardVisit = visitM ? card.text.slice(card.text.search(/Your visit/i), card.text.search(/Your visit/i) + 160) : null;
     t.check(`${prof}: all four districts stamped`, out.visit.stamps === null ? null : out.visit.stamps >= 4, out.visit.stamps, '4');
-    t.check(`${prof}: coins after the four districts`, true, out.visit.coins, `reported (58c8849, walked: 5; wave 4 P2-A10 wants 25 or more)`);
+    // P2-A9 (wave 4): trail 5 + four stamps x 5 = 25 on a first visit.
+    t.check(`${prof}: coins after the four districts (P2-A9)`, typeof out.visit.coins === 'number' ? out.visit.coins >= 25 : null, out.visit.coins, '>= 25 (58c8849 and fcaa649, walked: 5)');
     t.check(`${prof}: the celebration names a 'Next:' goal`, card.text ? (out.cardNext ? true : null) : null, out.cardNext || card.text || `no celebration card (panel ${card.panel})`, "'Next: <goal>' (null: not built yet)");
     const v = out.visit.goals && out.visit.goals.visit;
     t.check(`${prof}: the celebration's 'Your visit' block matches the counts`, out.cardVisit ? (v ? new RegExp(`\\b${v.stamps}\\b`).test(out.cardVisit) : null) : null, { card: out.cardVisit, goals: v }, "'Your visit' with the ds:goals counts (null: not built yet)");
@@ -785,3 +852,6 @@ module.exports = {
   shop: { item: 'P2-E2c (GP-04, GP-09; P2-D7)', title: "the kiosk with the trail's coins (what is affordable), 'Show me' with none, the Hats tab against the avatar, the equip toast", profiles: ['desktop', 'phone'], run: shop },
   tour: { item: 'P2-E2c (GP-01, GP-04; P2-D10, P2-A10)', title: "the four districts walked and stamped: coins, minutes, the ds:goals visit, and the celebration's 'Next:' and 'Your visit'", profiles: ['desktop', 'phone'], run: tour },
 };
+
+// Shared with p2/quests (P2-A9's first-cast row): find a cast spot, cast, wait idle.
+module.exports.fishKit = { toShore, cast, FISH, untilIdle };

@@ -653,26 +653,71 @@ async function quests(t) {
       return p ? p.toArray() : null;
     });
     if (!school) throw new Error('hook missing: scene.schoolPos()');
+    // P2-A9 (wave 4): the coins a fresh visitor holds on reaching the School
+    // (the trail and anything on the way; report-only).
+    const cArrive = await page.evaluate(() => window.__app.scene.getCoinsCollected());
     await page.evaluate(TP_NEAR, { p: school, dist: 1.2 });
     await lib.sleep(1200);
     const c0 = await page.evaluate(() => window.__app.scene.getCoinsCollected());
     const prompt0 = await page.evaluate(() => window.__g.prompt());
     const at = await G.ptime(page);
     const t0 = Date.now();
+    const perPress = [];
     for (let i = 0; i < 6; i++) {
+      const b = await page.evaluate(() => window.__app.scene.getCoinsCollected());
       await useKey(page, touch, T);
       await lib.sleep(380);
+      perPress.push((await page.evaluate(() => window.__app.scene.getCoinsCollected())) - b);
     }
     const pressMs = Date.now() - t0;
     await lib.sleep(1200);
     const c1 = await page.evaluate(() => window.__app.scene.getCoinsCollected());
+    // A9's enrolment flag; null on a build without it (fcaa649 and before).
+    const enrolled = await page.evaluate(() => {
+      try {
+        return localStorage.getItem('ds_school_enrolled');
+      } catch (e) {
+        return null;
+      }
+    });
     await t.shot(page, `quests-${prof}-school.png`);
+    // Close the lessons sheet A9 opens, if any, before the rest of the run.
+    await page.evaluate(() => {
+      const ui = window.__app.ui;
+      if (ui.panels && ui.panels.closeAll) ui.panels.closeAll();
+    });
     await lib.sleep(9000);
     const lessonToasts = (await P.gpEvents(page, at)).filter((e) => (e.ev === 'show' || e.ev === 'text') && /Lesson/i.test(e.text)).map((e) => e.text.slice(0, 110));
-    out.school = { prompt: prompt0, coinsBefore: c0, coinsAfter: c1, paid: c1 - c0, pressSeconds: +(pressMs / 1000).toFixed(1), lessonToasts: [...new Set(lessonToasts)] };
+    out.school = { coinsOnArrival: cArrive, prompt: prompt0, coinsBefore: c0, coinsAfter: c1, paid: c1 - c0, perPress, enrolled, pressSeconds: +(pressMs / 1000).toFixed(1), lessonToasts: [...new Set(lessonToasts)] };
     t.log(`${prof} school: ${JSON.stringify(out.school)}`);
-    // GP-04: six presses used to pay +60 in 2 s; the fix pays one lesson (+10) a visit.
-    t.check(`${prof}: six presses at the School pay (coins)`, /lesson/i.test(prompt0 || '') ? out.school.paid <= 10 : null, /lesson/i.test(prompt0 || '') ? out.school.paid : `no lesson prompt at the School: '${prompt0}'`, '<= +10 (main: +60)');
+    // GP-04 and P2-A9: six presses used to pay +60 in 2 s; A9 pays 'move' once
+    // at enrolment (+10) and nothing more for the presses.
+    const lessonPrompt = /lesson|school/i.test(prompt0 || '');
+    t.check(`${prof}: six presses at the School pay exactly +10 on a fresh visitor (P2-A9)`, lessonPrompt ? out.school.paid === 10 : null, lessonPrompt ? `${out.school.paid} (per press ${perPress.join(', ')})` : `no lesson prompt at the School: '${prompt0}'`, '+10 exactly (main fcaa649: +60)');
+    t.check(`${prof}: enrolment pays the move lesson on the first press, then nothing (P2-A9)`, enrolled ? perPress[0] === 10 && perPress.slice(1).every((d) => d === 0) : null, enrolled ? perPress : 'no ds_school_enrolled on this build', '[10, 0, 0, 0, 0, 0] (null: no enrolment)');
+
+    // P2-A9: after enrolment, the first cast pays lesson 2 (+10). The rod is
+    // handed over in-page (ownedRod) so the cast is the lesson's first action.
+    if (enrolled) {
+      const F = require('./loops.cjs').fishKit;
+      await page.evaluate(() => {
+        window.__app.ownedRod = true;
+      });
+      const sp = await F.toShore(page).catch(() => null);
+      if (sp) {
+        const b = await page.evaluate(() => window.__app.scene.getCoinsCollected());
+        const r = await F.cast(page, touch, T);
+        await lib.sleep(1500);
+        const a = await page.evaluate(() => window.__app.scene.getCoinsCollected());
+        out.firstCast = { spot: sp, landedMs: r.landedMs, paid: a - b };
+        await page.evaluate(() => {
+          const sc = window.__app.scene;
+          if (sc.isFishingActive()) sc.reelLine();
+        });
+        await F.untilIdle(page, 4000);
+      } else out.firstCast = { why: 'no shore spot offered the cast' };
+    } else out.firstCast = { why: 'no ds_school_enrolled on this build' };
+    t.check(`${prof}: the first cast after enrolment pays lesson 2, +10 (P2-A9)`, out.firstCast.paid !== undefined ? out.firstCast.paid === 10 : null, out.firstCast.paid !== undefined ? out.firstCast.paid : out.firstCast.why, '+10 (null: no enrolment or no shore spot)');
 
     // P2-E2c: the canteen double press (P2-A6). Two E presses 150 ms apart,
     // empty-handed: coins and soups before and after.
