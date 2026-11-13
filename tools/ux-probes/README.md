@@ -527,6 +527,70 @@ session, the port free afterwards. Every row exits 1 on both builds.
 | `p2/race` | GP-03, GP-05; P2-A7, D10 | desktop and the phone: the land circuit driven ring to ring (`--driver gates`, steering at each ring's position) or by the compass pill's bearing alone (`--driver compass`, A1's sign: positive is to the right): the lap, stalls, at each of the 5 checkpoints whether the next ring is below the horizon and what the pill names; the share of the pill the race HUD covers; district toasts between 'Go!' and the finish; the finish card's words with the backend blocked; a name prompt for a fresh visitor | the next ring below the horizon at 10 of 10 checkpoints; the HUD covers 73% of the pill on desktop and 100% on the phone; the pill names districts (Projects, Personal, Contact, Contact, Professional), never a ring; laps 59.7 and 54.2 s; the finish says 'No times yet — you're on the board!' with the board unreachable, no Retry; no name prompt (a random 'Brave Scout') | 10 of 10; the HUD covers 83% and 88%; the pill names the Mayor (First steps' target) at all five; laps 55.7 and 58.7 s; the finish and the name as on 58c8849. `--driver compass` does not finish a lap on either build (0 checkpoints in 150 s: the pill never points at a ring), which is what A's ring bearing changes |
 | `p2/quests` | GP-04, GP-07, GP-10; P2-A7 | desktop: six E presses at the School (coins paid); the Elder Sage's prompt; E after her quest lines | six presses pay +60 (the audit's number); her prompt reads 'Press E to talk to Elder Sage — ask anything' with no word of a request; after her lines E opens the scripted dialogue again, not the chat | the same |
 
+### Stage-2 probes, wave 3 (E6c)
+
+Top-level probes, registered in `run.cjs`'s `GROUPS`. The motion, controls
+and design audits' scripts (locomotion, analyze_loco, mixerprobe, npcprobe,
+analyze_npc, npcshots, bubble-ab, p4-mobile, p5-hybrid-extra, p7-touchparam,
+p8-layout) were session temp files and are gone, so these are rebuilt from
+their reports (`ux-audit/results/motion.json`, `controls.json`,
+`design.json`) and checked against the numbers recorded there. Every row
+reads a wave-3 feature optionally: `html[data-run-key]` (A11), D7's keycap
+markup and input mode, B8's pin scale through `GameScene.isCoarsePointer`.
+Baselines 2026-11-13 at `?hour=12` (`bubble` also at 21 h): 58c8849
+(`ux-audit/dist`) and wave-2 main (`w2-int/dist`, tree-identical to 29edc9b
+but for comments), 0 leaks and a boot proof in every session, the port free
+afterwards, four other builders on the machine (counts hold, milliseconds
+are provisional).
+
+| Probe | Item | What it measures | 58c8849 | wave-2 main |
+|---|---|---|---|---|
+| `loco` | MOT-01, MOT-04, MOT-07, MOT-14, MOT-15, RUN-01; A11, A13, B | desktop: `--run shift` (default) or `--run space` (adds `?legacyrun=1` only on a build that sets `html[data-run-key]`): W held 1.5 s, then the run key: airborne frames, speed at 0.6 s, time to 95% of 7.9 u/s; with Shift as the run key, Space held while walking must only jump. A standing jump: the soles' lowest skinned vertex over the terrain on the 12 grounded frames after touchdown, the squash minimum's frame, how far the camera rises against the player. The wave: the hand anchor's height over the feet each frame, and three 320 px crops from the chase camera. Footfalls: the walk phase each time the footstep's dust puff fires. Hints (A13): every `{hint:true}` toast, how often, and whether a panel, the guide or a room was up | Space: 23 airborne frames, 95% at 0.89 s (the audit: 34, 0.78 s); Shift walks (5.5 u/s, null: no run key); soles 0.087 u on landing; the squash minimum 4 frames after touchdown; the camera rises 1.1 u for a 1.21 u jump; hand peak +0.42 u (the anchor; the audit's 0.91 u was another point); footfalls at 0.25/0.75; the talk hint once, uncovered | Space: 32 airborne frames, 0.80 s; Shift as on 58c8849; soles 0.09 u; squash minimum 5 frames; the camera 1.1 u for 1.21 u; footfalls 0.25/0.75; no hint fired (First steps holds them) |
+| `npc` | MOT-11, MOT-12, MOT-13; B8 | desktop, 9 s of every visible villager (from `meshRef.userData`): bob and roll cycles per leg cycle while walking, the leg's one-frame jump on a walk start, the soles' lowest skinned vertex walking, sitting and kneeling; the Elder Sage held in dialogue (the chat opened by E) for 4 s: arm range and the first 10° gesture; her tilt from plumb while the visitor types (B8's lean); then, desktop and phone, a bubble on her: the bubble's and the pin's projected rects inside the viewport, and the pin's bottom against the head's projected top | bob 1 and roll 0.5 per leg cycle; the walk-start pop up to 19.4° (the audit: 8-11° typical); soles 0.023-0.114 u walking, 0.043 u sitting, 0.023 u kneeling (the audit: -0.121 and -0.089 u: the poses moved since); arm range 12°, first gesture 1.2 s; no lean; at 1440 the bubble runs off the top (y -257) and the pin's bottom sits below the head's top, the same at 390 | the same gait and talk numbers (kneeling -0.117 u, no 10° gesture in 4 s); the same framing |
+| `bubble` | DA-08; B8 | desktop: a villager held, a bubble on her, the camera about 18 u away (`--dists`), bloom on and off on the same pose at 12 h and 21 h: text (2nd percentile luminance in the bubble's rect) against fill (90th) | 3.38:1 bloom on, 15.76:1 off at 12 h; 3.29:1 and 14.47:1 at 21 h (the audit: 2.93 and 15.38 at noon) | 3.04:1 and 15.76:1 at 12 h; 13.29:1 and 12.23:1 at 21 h (P2-E5's night threshold) |
+| `mobile` | JOY-01, HAPTIC-01, RUN-01, PROMPT-01; A11, D7 | the phone, trusted CDP touches: \|v\| at touchdown on 5 rim points of the stick's hit square; speed after 1.8 s at dy -10, -20, -40 px; the thumb's transition-duration on release; the stick pushed 70 px out for 2.2 s (A11's touch run); the villager prompt's wording; every `navigator.vibrate` pulse | \|v\| 1.00 at all 5; 5.53-5.6 u/s at all three; 0s; walking at 5.6, not running; 'Tap 👆 USE to talk to Elder Sage'; 5 ms pulses only | the same |
+| `hybrid` | DEVICE-01; D7 | a 1440x900 desktop context with no `hasTouch` and `navigator.maxTouchPoints = 5`, touches by CDP `Input.dispatchTouchEvent`: whether they arrive trusted (critique-r3); the scheme (chips or drawer); the villager prompt after a key and after a tap (D7's keycap markup, null without it) | **CDP touches arrive trusted without touch emulation** (pointerdown and touchstart `isTrusted: true`); the phone scheme (drawer, `isTouch` true); 'Tap 👆 USE' after the key (no keycap: null) and after the tap | the same |
+| `touchparam` | DEVICE-01; D7, B8 | a plain 1440x900 desktop at `?utm_content=get-in-touch`: `isTouchDevice()`, the joystick, chips or drawer, 'Drag the joystick' copy, `GameScene.isCoarsePointer` | the phone scheme: `isTouch` true, the joystick shown, the drawer, pins coarse | the same |
+| `layout` | BIND-01; A13 | AZERTY through CDP `Input.dispatchKeyEvent` (the W position is code KeyW with key 'z', the A position KeyA with 'q'), 0.8 s each: distance walked, the move against the starting facing, a wave | QWERTY W 4.42 u; AZERTY W 0 u; the A position waves and moves 0 u | QWERTY W 4.53 u; the rest the same |
+
+### Phase-2 probes, wave 3: rooms (P2-E1c)
+
+In `p2/building.cjs` on `p2/room-lib.cjs`, rebuilt from the interiors audit's
+report (`phase2-audit/results/building.json`; `phase2-audit/interiors/` is
+empty). `sweep` and `clip` drive the player (a room pose) and then run the
+build's own interior camera (`updateInteriorMode`, one simulated second)
+before they read the live camera, so B's P2-B11 is measured as built; they
+never write the camera. "Inside a prop" is judged against each prop mesh's
+own world bounds (geometry bounds x matrixWorld), not B's colliders or
+camBlockers. The near-plane share counts every pose within 0.1 u of a prop
+box, the strictly-inside ones included, as the audit counted it. Baselines
+as above.
+
+| Probe | Item | What it measures | 58c8849 | wave-2 main |
+|---|---|---|---|---|
+| `p2/sweep` | INT-04; P2-B11 | desktop, one building per theme (`--ids`): every walkable 0.3 u grid point x 16 headings | strictly inside: Personal 4.6% (chimney breast 136 poses, bookshelf 156, lamp shade 18), cottage 0.9%, beach 0.4%, others 0; near plane: Contact 3.3%, cottage 2.5%, Professional 0.3%, Personal 5.7%, beach 1.0%: the audit's numbers exactly | Personal 6.8% (near 7.7%), cottage 0.9 (2.5), beach 0.4 (1.0), Contact near 3.3, Professional 0 |
+| `p2/clip` | INT-04; P2-B11 | desktop and phone: Personal's chimney breast and bookshelf (found by their boxes), the player 1.9 u in front facing away: the camera inside the prop, a prop between the camera and the torso, the avatar's share of the frame; screenshots | both poses put the camera inside the prop (the avatar 12.6% desktop, 29.4% phone); the bookshelf also occludes the torso | both inside the prop; no occlusion |
+| `p2/rtkeys` | INT-01 (diagnostic) | phone and desktop, after the interior warm: the first door's new programs by shader name and output colour space | phone +31: 13 toon, 4 standard, 6 basic and the rest, all srgb-linear (the audit: 28-31); desktop +3 | +0 and +0 (P2-B9's borrowed rig) |
+
+### Phase-2 probes, wave 3: play (P2-E2c)
+
+In `p2/loops.cjs` on `p2/play-lib.cjs`, rebuilt from the gameplay audit's
+report (`phase2-audit/results/gameplay.json`; `phase2-audit/gameplay/` is
+empty). `play-lib`'s `walkTo({run})` holds Shift when `html[data-run-key]` is
+'shift' and Space otherwise. Rows read wave-3 features optionally (the '!'
+sprite, the Hats-tab dock, 'Next:', 'Your visit', the wait prompt) and use
+`isFishingActive`, `getTrailVillager` and the `ds:goals` detail. Baselines
+as above.
+
+| Probe | Item | What it measures | 58c8849 | wave-2 main |
+|---|---|---|---|---|
+| `p2/fishing` | GP-06; P2-A6 | desktop and phone with a rod, at a shore spot by the fisherman whose prompt reads 'cast' (a wandering villager takes the prompt, so spots are re-found): E 1.4 s after the cast, the wait prompt, a 0.6 s E hold in the wait, the bite's time and its catch | E at 1.4 s loses the cast (`isFishingActive` false); the wait prompt 'Press E to reel in' ('Tap 👆 USE to reel in'); the hold reels at once; bites 4.7 and 4.2 s, caught | the same, with '…nothing yet. Wait for the float to dip.'; bites 7.9 and 7.8 s |
+| `p2/gather` | GP-12, GP-01, GP-07; P2-A6 | desktop and phone with a sickle: 4 E presses at spots within 16 u of the farm where a stake under 3.5 u and a ripe crop are both in reach (the crop scan's 5 Hz cache is cleared per spot); E at a bare stake; the active delivery's mailbox prompt, and the toasts after collecting; the chain's hop lengths in delivery order | 0 of 4 harvest (all open the build chooser; the audit's 1 of 4 was presses across the farm); the bare stake opens the chooser; the mailbox prompt is its bubble text, '📬 Welcome package for new resident!', no key; the collect toast names no district; the chain 1,547 u | the same |
+| `p2/bobber` | GP-06; P2-B7 | desktop and phone: 8 casts from shore spots, the avatar faced to the water by one short step and the camera settled behind it: the float against the avatar's projected box (posed vertices, the rod and line left out), off-screen floats counted apart; at 12, 18 and 21 h the bite, and a sprite over the float at the bite that was not there in the wait (a lamp's glow is in both), screenshots | the float inside the avatar's box in 8 of 8 casts on both devices (the cast's interest focus eases the camera onto the float, which centres it behind the avatar; the audit, with its own camera, 3 of 8); no new sprite at the bite at 12, 18 and 21 h (null); a bite missed in 15 s or no free shore spot (a villager held the prompt) at some hours | inside in 7 of 8 on desktop (1 off screen) and 8 of 8 on the phone; no new sprite; bites missed as on 58c8849 |
+| `p2/shop` | GP-04, GP-09; P2-D7 | desktop and phone: the kiosk with the trail's 5 coins (what is enabled per tab); with 0 coins, a 'Show me' line; the Hats tab: the avatar's centre against the shop's rect (desktop); buy and equip a hat: a toast | 2 of 20 enabled (2 supplies); no 'Show me'; the avatar's centre inside the shop; no toast | the same |
+| `p2/tour` | GP-01, GP-04; P2-D10, P2-A10 | desktop and phone: the four districts walked (play-lib's steerer, run held) and entered by the door: stamps, coins, minutes, the last `ds:goals` visit; after the fourth stamp the celebration's text: 'Next:' and 'Your visit' | 4 stamps, 6 and 5 coins, about 2 min; the card reads 'Portfolio complete! … Wear it with pride', no 'Next:' and no visit block (null); no `ds:goals` | 4 stamps, 5 and 8 coins; the same card; `ds:goals` visit {stamps 4, villagers 0, coins 5/8, secrets 1/2, minutes 2} |
+| `p2/quests` (canteen row) | P2-A6 | desktop: empty-handed at the canteen, two E presses 150 ms apart: soups and coins | 2 soups, -6 coins | the same |
+
 ### Probe fixes from the wave-2 integration
 
 The wave-2 integration read probe defects as product faults. Each was checked
@@ -885,6 +949,43 @@ p50 −1.5 ms, shadow draws 96 → 48, draws −48 at the spawn and hub-wide and
 −58.5 at Projects, 0 programs; desktop 96 → 96, draws ±0. The run reads
 inconclusive on `spawn: CPU p95` alone (σ 1.19 against T/2 0.375 on the
 busy host); a quiet host settles it.
+
+**The governor on a CPU-bound phone (E3).** `--governor` loads the
+`lowtier4x` profile (390x844, DPR 2, touch, 4x CPU, timer queries off) with
+the governor live, never pinned, idles at the spawn after the card, and
+reads `getGovernorState()` each second for 30 s (the private fields on a
+build without it), then the app frames of the last 5 s. Bars: renderScale
+0.9 or more and 16 fps or more. `--gpuheavy` loads the 1x low tier with
+`?gpuheavy=1` (the renderer's GPU-bound test case: 40 full-screen draws of
+a uniform-bounded loop that write nothing) and records when renderScale
+first drops under 0.9 (bar: 20 s). Single runs on 2026-11-13, other
+builders on the machine (other processes 43-66% of the host), so the fps
+are provisional: wave-2 main 0.48 at 30 s, 13.4 and 20.2 fps in two runs;
+this branch 1.0 and 20 fps (CPU-bound from the first second, rung 3).
+`?gpuheavy=1` on this branch: under 0.9 at 17 s (0.81 at 18 s, fps 33 to
+49). The GPU-heavy pass has to be about 60 ms of GPU on this rig: the low
+tier here estimates 75 Hz and delivers 37.5 fps under its 60 cap, so its
+shed bar is 28 fps, and headless rAF ignores GPU work until the queue
+backs up. A frame stalled by GPU back-pressure also reads as CPU time, so
+`cpuBound` flickers under `?gpuheavy=1`; the resolution still sheds.
+
+**Behind a modal (E4).** `--fx modalDivisor` runs the modal scenario on
+`lowtier4x` instead of the off/on frame pairs (`--pairs` keeps those): the
+Projects panel opened through the drawer and the Portfolio menu, then the
+switch alternated off and on behind it, 4 s a side for `--cycles` (default
+4): main-thread busy ms per second (long tasks and long animation frames
+merged), Event Timing durations (`durationThreshold` 16) of taps on the
+panel's own buttons (`--no-taps` leaves the panel alone), the panel region's
+pixels on against off (`modal-panel-on.png` and `-off.png` beside the JSON)
+and the governor rung before and after. Bar: busy under 400 ms/s with the
+switch on. Wave-2 main (no divisor, both sides the same): 964 ms/s on
+median, taps 272-280 ms. This branch: 334 ms/s on against 743 off on a
+calmer host, 518 against 956 with two probe lanes running beside it; taps
+80-96 ms on against 160-320 off; the panel region identical; the rung 3
+before and after. The divisor counts rAF frames AND holds at least 3x the
+last frame's CPU time of wall per rendered frame: the count alone left
+890 ms/s busy, because a CPU-bound phone's skipped ticks cost nothing and
+its costly frames still ran back to back.
 
 **What is not exact on main.** Per-view draws vary from load to load:
 villagers, cats, ground birds, herons, birds, clouds and cars move through
