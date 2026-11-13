@@ -618,7 +618,9 @@ describe('the Controls & settings sheet (D8)', () => {
     chip('Open portfolio menu').click();
     await tick();
     const row = document.querySelector<HTMLButtonElement>('button[data-controls]')!;
-    expect(txt(row)).toBe('⌨️ Controls & settings');
+    // D13: the sprite's keyboard icon, not an emoji.
+    expect(txt(row)).toBe('Controls & settings');
+    expect(row.querySelector('svg.ds-ic')?.getAttribute('data-icon')).toBe('keyboard');
     row.click();
     await tick();
     expect(ui.panels.current()).toBe('controls');
@@ -631,7 +633,7 @@ describe('the Controls & settings sheet (D8)', () => {
     chip('Open island menu').click();
     const list = document.getElementById('ds-drawer')!;
     const row = list.querySelector<HTMLElement>('[data-controls-row]')!;
-    expect(txt(row)).toBe('⌨️ Controls & settings');
+    expect(txt(row)).toBe('Controls & settings'); // D13: the keyboard icon from the sprite
     expect(row.style.order).toBe('11');
     // Work with me keeps slot #1 (Abbas's ruling), and no two rows share an order.
     const orders = [...list.children].map((c) => (c as HTMLElement).style.order);

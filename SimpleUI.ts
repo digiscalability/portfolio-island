@@ -20,6 +20,7 @@ import {
   isSttSupported,
   startListening,
 } from './Speech';
+import { ensureIconSprite, icon, iconNode, type IconName } from './ui/icons';
 import { type InputMode, keyTextPlain, promptKeysHtml, renderKeyText } from './ui/keycaps';
 import { DS } from './ui/tokens';
 import { WORLD_ERA } from './WorldScale';
@@ -585,6 +586,8 @@ export class SimpleUI {
 
   constructor(id: string) {
     // Create or get overlay
+    // The chrome's icon sprite (D13), once per page.
+    if (typeof document !== 'undefined' && document.body) ensureIconSprite();
     this.overlay = document.getElementById(id) as HTMLElement;
     if (!this.overlay) {
       this.overlay = document.createElement('div');
@@ -1001,6 +1004,9 @@ export class SimpleUI {
       this.panels.registerLayer('nav-chips', el);
       return;
     }
+    // One row shape for every item (D13): 44 px tall, a 24 px icon, then a
+    // 15 px/600 label, so every label starts at the same x. An icon-only chip
+    // takes its label inside it; a frozen label's emoji takes the icon slot.
     Object.assign(el.style, {
       // relative, NOT static — same in-flow layout, but the chip stays a
       // containing block for its .hud-btn::after tap pad (see tierChip).
@@ -1009,45 +1015,32 @@ export class SimpleUI {
       right: '',
       left: '',
       bottom: '',
-      height: '', // clear the CHIP recipe's fixed 30px — drawer rows are 40px
+      height: '', // clear the CHIP recipe's fixed 30px — drawer rows are 44px
+      width: '100%',
       boxSizing: 'border-box',
-      minHeight: '40px',
+      minHeight: '44px',
       display: 'flex',
       alignItems: 'center',
+      justifyContent: 'flex-start',
+      gap: '12px',
+      padding: '0 12px',
       borderRadius: '10px',
-      fontSize: '13px',
+      fontSize: '15px',
+      fontWeight: '600',
     });
-    let item: HTMLElement = el;
-    if (opts.label) {
-      const row = document.createElement('div');
-      Object.assign(row.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        minHeight: '40px',
-        padding: '0 4px',
-        borderRadius: '10px',
-        cursor: 'pointer',
-        pointerEvents: 'auto',
-      });
-      const span = document.createElement('span');
-      span.textContent = opts.label;
-      Object.assign(span.style, { fontSize: '13px', fontWeight: '600', color: '#fff' });
-      row.appendChild(el);
-      row.appendChild(span);
-      // Tapping the label fires the chip. composedPath guard: el.click()
-      // bubbles back through this row — without it, infinite recursion.
-      row.addEventListener('click', (e) => {
-        if (!e.composedPath().includes(el)) el.click();
-      });
-      item = row;
-    } else {
-      Object.assign(el.style, { width: '100%' });
-    }
+    el.classList.add('ds-drawer-row');
+    // The CHIP recipe's 1 px border on every row, so a borderless pill's
+    // label does not start a pixel left of the rest.
+    if (!el.style.borderStyle) el.style.border = '1px solid transparent';
+    if (opts.label) SimpleUI.chipText(el, opts.label);
+    else SimpleUI.slotLeadingEmoji(el);
+    // The CTA rows (Work with me, Hiring) carry a 3 px left accent, drawn
+    // inside the row so it moves no label.
+    if (opts.order === 1 || opts.order === 2) el.classList.add('ds-drawer-cta');
     // Business priority beats creation order: flex `order` puts Work-with-me
     // in slot #1 regardless of which create* ran first.
-    if (opts.order !== undefined) item.style.order = String(opts.order);
-    this.getDrawerList().appendChild(item);
+    if (opts.order !== undefined) el.style.order = String(opts.order);
+    this.getDrawerList().appendChild(el);
   }
 
   /** The drawer's (initially hidden) pill column + the ☰ toggle that owns it. */
@@ -1083,7 +1076,7 @@ export class SimpleUI {
     this.drawerListEl = list;
 
     const t = document.createElement('div');
-    t.textContent = '☰';
+    t.appendChild(iconNode('menu', 22));
     Object.assign(t.style, {
       width: '44px',
       height: '44px',
@@ -1141,6 +1134,7 @@ export class SimpleUI {
     this.makeHudButtonAccessible(t, 'Open island menu');
     t.dataset.guide = 'drawer-toggle'; // First steps rings it (A6)
     list.id = 'ds-drawer';
+    list.setAttribute('role', 'group');
     list.setAttribute('aria-label', 'Island menu');
     t.setAttribute('aria-controls', 'ds-drawer');
     t.setAttribute('aria-expanded', 'false');
@@ -2695,8 +2689,12 @@ export class SimpleUI {
     opts: { surface: string; url: string; title?: string; text?: string },
   ): HTMLButtonElement {
     const btn = document.createElement('button');
-    btn.textContent = label;
+    // The share icon from the sprite, in place of a leading emoji (D13).
+    SimpleUI.chipContent(btn, 'share', label.replace(/^\p{Extended_Pictographic}\uFE0F?\s*/u, ''));
     Object.assign(btn.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '7px',
       padding: '9px 16px',
       minHeight: this.isTouch ? '44px' : '', // a thumb target (it measured 38)
       borderRadius: '10px',
@@ -3357,7 +3355,7 @@ export class SimpleUI {
    *  moderation and muting for free — no separate protocol. */
   private createEmoteButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '😀';
+    SimpleUI.chipContent(btn, 'smile');
     Object.assign(btn.style, {
       ...CHIP_ICON,
       top: 'calc(var(--sat, 0px) + 88px)',
@@ -3652,6 +3650,64 @@ export class SimpleUI {
    * state via aria-pressed. Pairs with the `.hud-btn:focus-visible` ring in
    * style.css.
    */
+  /** A chip's content (D13): an icon from the sprite, then its text. */
+  private static chipContent(el: HTMLElement, name: IconName | null, text = ''): void {
+    const kids: Node[] = [];
+    if (name) kids.push(iconNode(name, 18));
+    if (text) {
+      const s = document.createElement('span');
+      s.className = 'ds-chip-label';
+      s.textContent = text;
+      kids.push(s);
+    }
+    el.replaceChildren(...kids);
+  }
+
+  /** Swap a chip's icon, keeping its text. */
+  private static chipIcon(el: HTMLElement, name: IconName): void {
+    const old = [...el.children].find((c) => c.classList.contains('ds-ic'));
+    const next = iconNode(name, 18);
+    if (old) old.replaceWith(next);
+    else el.prepend(next);
+  }
+
+  /** Set a chip's text, keeping its icon. */
+  private static chipText(el: HTMLElement, text: string): void {
+    let s = [...el.children].find((c) => c.classList.contains('ds-chip-label'));
+    if (!s) {
+      s = document.createElement('span');
+      s.className = 'ds-chip-label';
+      el.appendChild(s);
+    }
+    if (s.textContent !== text) s.textContent = text;
+  }
+
+  /**
+   * A frozen label in a drawer row ('💼 Work with me', '📖 Portfolio'): its
+   * emoji goes in the row's 24 px icon slot and its words line up with every
+   * other label. The text is unchanged: the whitespace node between the two
+   * spans keeps textContent as ruled, and a flex row lays it out as nothing.
+   */
+  private static slotLeadingEmoji(el: HTMLElement): void {
+    if (el.querySelector('.ds-ic, .ds-ic-slot')) return;
+    const t = el.textContent ?? '';
+    const m = /^(\p{Extended_Pictographic}\uFE0F?)(\s+)(.+)$/u.exec(t);
+    if (!m) return;
+    const slot = document.createElement('span');
+    slot.className = 'ds-ic-slot';
+    slot.setAttribute('aria-hidden', 'true');
+    slot.textContent = m[1];
+    const label = document.createElement('span');
+    label.className = 'ds-chip-label';
+    label.textContent = m[3];
+    el.replaceChildren(slot, document.createTextNode(m[2]), label);
+  }
+
+  /** Mute's icon: silent whenever the game is effectively silent. */
+  private setMuteIcon(silent: boolean): void {
+    if (this.muteBtn) SimpleUI.chipIcon(this.muteBtn, silent ? 'volume-x' : 'volume');
+  }
+
   private makeHudButtonAccessible(el: HTMLElement, label: string, pressed?: boolean): void {
     el.setAttribute('role', 'button');
     el.setAttribute('tabindex', '0');
@@ -4050,7 +4106,7 @@ export class SimpleUI {
     // 🔇 whenever the game is EFFECTIVELY silent — muted OR volume 0. The
     // slider path already hinted 🔇 at zero, but a reload with a persisted
     // volume of 0 booted showing 🔊 over a silent game.
-    this.muteBtn.textContent = muted || volume === 0 ? '🔇' : '🔊';
+    this.setMuteIcon(muted || volume === 0);
     Object.assign(this.muteBtn.style, {
       ...CHIP_ICON,
       top: 'calc(var(--sat, 0px) + 88px)',
@@ -4064,7 +4120,7 @@ export class SimpleUI {
       // Volume 0 keeps the 🔇 even when unmuted — unmuting a zero-volume game
       // produces no sound, and an icon that claims otherwise is the same
       // lying-control class Ctrl+B just got fixed for.
-      this.muteBtn.textContent = nowMuted || this.hudVolume === 0 ? '🔇' : '🔊';
+      this.setMuteIcon(nowMuted || this.hudVolume === 0);
       this.muteBtn.setAttribute('aria-pressed', String(nowMuted));
       // Tapping the button also surfaces the volume pill for a few seconds —
       // the only mobile path to the slider (no hover on touch).
@@ -4104,7 +4160,10 @@ export class SimpleUI {
     Object.assign(pill.style, {
       position: 'absolute',
       top: 'calc(var(--sat, 0px) + 88px)',
-      right: 'calc(var(--sar, 0px) + 48px)', // opens at the ♿ slot's edge
+      // Desktop (D13): left of the whole icon row (its six 30 px chips end at
+      // +230), so it covers none of its neighbours. Touch keeps the ♿ slot's
+      // edge: there the icons live in the drawer, closed by then.
+      right: this.isTouch ? 'calc(var(--sar, 0px) + 48px)' : 'calc(var(--sar, 0px) + 238px)',
       background: 'rgba(0, 0, 0, 0.85)',
       padding: '8px 12px',
       borderRadius: '10px',
@@ -4138,7 +4197,7 @@ export class SimpleUI {
         this.hudMuted = this.onMuteToggle();
       }
       if (this.muteBtn) {
-        this.muteBtn.textContent = this.hudMuted || v === 0 ? '🔇' : '🔊';
+        this.setMuteIcon(this.hudMuted || v === 0);
         this.muteBtn.setAttribute('aria-pressed', String(this.hudMuted));
       }
       this.showVolumePill(3500); // keep it up while adjusting
@@ -4199,7 +4258,7 @@ export class SimpleUI {
   /** 🎨 button (also bound to the C key): opens the appearance editor. */
   private createCustomizeButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '🎨';
+    SimpleUI.chipContent(btn, 'palette');
     btn.title = 'Customize appearance (C)';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4220,7 +4279,7 @@ export class SimpleUI {
   /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
   private createReducedMotionButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '♿';
+    SimpleUI.chipContent(btn, 'motion-off');
     btn.title = 'Reduced motion — dampens the fly-in, camera swoop, and pulsing effects';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4404,8 +4463,9 @@ export class SimpleUI {
    */
   private createHiringChip(): void {
     const btn = document.createElement('div');
-    btn.innerHTML =
-      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true" style="color:#ffd479;flex:none"><path d="M4 1.5h5l3.5 3.5v9.5h-8.5z"/><path d="M9 1.5v3.5h3.5M6 9h4.5M6 11.5h4.5"/></svg><span>Hiring? CV &amp; contact</span>';
+    // The sprite's file-text icon (D13), distinct from the CV's file-user.
+    SimpleUI.chipContent(btn, 'file-text', 'Hiring? CV & contact');
+    (btn.firstElementChild as SVGElement | null)?.style.setProperty('color', '#ffd479');
     btn.dataset.hiringChip = '1';
     Object.assign(btn.style, {
       ...CHIP,
@@ -4432,7 +4492,7 @@ export class SimpleUI {
    *  was the screenshotted clutter). The P shortcut lives in the tooltip. */
   private createPhotoButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '📸';
+    SimpleUI.chipContent(btn, 'camera');
     btn.title = 'Take a photo (P)';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4570,7 +4630,7 @@ export class SimpleUI {
    */
   private createSayHiButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '👋 Say hi';
+    SimpleUI.chipContent(btn, 'hand', 'Say hi');
     Object.assign(btn.style, {
       ...CHIP,
       top: 'calc(var(--sat, 0px) + 202px)', // row below Work-with-me (38px pitch)
@@ -4690,7 +4750,7 @@ export class SimpleUI {
    *  from its own pill row with 📸); touch re-homes it into the ☰ drawer. */
   private createInventoryButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '🎒';
+    SimpleUI.chipContent(btn, 'backpack');
     btn.title = 'Your pack (inventory)';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4707,7 +4767,7 @@ export class SimpleUI {
 
   private createCompletionButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '🏝 …';
+    SimpleUI.chipContent(btn, 'map', '…');
     Object.assign(btn.style, {
       ...CHIP,
       top: 'calc(var(--sat, 0px) + 240px)', // last row of the column
@@ -4718,7 +4778,7 @@ export class SimpleUI {
       this.showCompletionModal();
     });
     this.makeHudButtonAccessible(btn, 'Island completion checklist');
-    this.chipHost(btn, { drawer: true, label: 'Progress', order: 8 });
+    this.chipHost(btn, { drawer: true, label: 'Progress · 0%', order: 8 });
     this.completionBtn = btn;
   }
 
@@ -4740,7 +4800,11 @@ export class SimpleUI {
     // first visit. Touch keeps the compact form (the drawer already labels
     // it "Progress", and the tier-1 row has no room for prose).
     if (this.completionBtn) {
-      this.completionBtn.textContent = this.isTouch ? `🏝 ${pct}%` : `🏝 ${pct}% explored`;
+      // The drawer row reads 'Progress · n%' (D13); desktop keeps its words.
+      SimpleUI.chipText(
+        this.completionBtn,
+        this.isTouch ? `Progress · ${pct}%` : `${pct}% explored`,
+      );
     }
     // Introduce the checklist at the FIRST increment — the moment the number
     // visibly moves is the discovery moment; a welcome-close toast would
@@ -4969,54 +5033,56 @@ export class SimpleUI {
     // island's. It mixed 6 portfolio items with 7 game items under one title,
     // with Passport, a game item, first and the only filled button. Now the
     // Hiring row leads as the one filled button (#ffd479 on #1b1400, 13:1).
-    const sections: Array<{ id: string; label: string }> = [
+    // The sprite's icons in the rows (D13): Hiring's file-text, the
+    // districts' glyphs (DISTRICT_GLYPHS), no emoji in the chrome.
+    const sections: Array<{ id: string; label: string; icon: IconName }> = [
       // The hire card is reachable from here too: a recruiter who dismissed
       // the welcome card must not have to find the pill again.
-      { id: 'hire', label: '📄 Hiring? CV, experience and contact' },
-      { id: 'welcome', label: '🏠 About this world' },
-      { id: 'professional', label: '💼 Professional' },
-      { id: 'projects', label: '🚀 Projects' },
-      { id: 'personal', label: '🎨 Personal' },
-      { id: 'contact', label: '📬 Get in touch' },
+      { id: 'hire', label: 'Hiring? CV, experience and contact', icon: 'file-text' },
+      { id: 'welcome', label: 'About this world', icon: 'home' },
+      { id: 'professional', label: 'Professional', icon: 'briefcase' },
+      { id: 'projects', label: 'Projects', icon: 'rocket' },
+      { id: 'personal', label: 'Personal', icon: 'heart' },
+      { id: 'contact', label: 'Get in touch', icon: 'mail' },
     ];
     const row =
-      'display:block;width:100%;min-height:44px;margin:6px 0;padding:11px 12px;border-radius:10px;font-size:15px;cursor:pointer;text-align:left;';
+      'display:flex;align-items:center;gap:10px;width:100%;min-height:44px;margin:6px 0;padding:11px 12px;border-radius:10px;font-size:15px;cursor:pointer;text-align:left;';
     const rows = sections
       .map((s) =>
         s.id === 'hire'
-          ? `<button data-section="${s.id}" style="${row}background:#ffd479;color:#1b1400;border:1px solid #ffd479;font-weight:700;">${s.label}</button>`
-          : `<button data-section="${s.id}" style="${row}background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);">${s.label}</button>`,
+          ? `<button data-section="${s.id}" style="${row}background:#ffd479;color:#1b1400;border:1px solid #ffd479;font-weight:700;">${icon(s.icon)}<span>${s.label}</span></button>`
+          : `<button data-section="${s.id}" style="${row}background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);">${icon(s.icon)}<span>${s.label}</span></button>`,
       )
       .join('');
     const pp = this.passport;
     const ppLabel = pp
       ? pp.isComplete()
-        ? '🛂 Passport 👑'
-        : `🛂 Passport ${pp.count()}/${pp.total()}`
-      : '🛂 Passport';
+        ? `<span>Passport</span>${icon('crown', 16)}`
+        : `<span>Passport ${pp.count()}/${pp.total()}</span>`
+      : '<span>Passport</span>';
     const tile =
-      'min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
-    const group =
-      'margin:14px 0 2px;font-size:11.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9fb0c8;text-align:left;';
+      'display:flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
+    // The group headers take the 11 px uppercase caption class (D13).
+    const group = 'margin:14px 0 2px;text-align:left;';
     menu.innerHTML = `
-      <h2 id="ds-portfolio-menu-title" style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
+      <h2 id="ds-portfolio-menu-title" style="margin:0 0 4px; color:#8a9bff;display:flex;align-items:center;justify-content:center;gap:8px;">${icon('book', 22)}<span>Portfolio</span></h2>
       <p style="margin:0 0 4px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
       <div role="group" aria-labelledby="ds-menu-group-portfolio">
-        <h3 id="ds-menu-group-portfolio" style="${group}">Portfolio</h3>
+        <h3 id="ds-menu-group-portfolio" class="ds-caption" style="${group}">Portfolio</h3>
         ${rows}
       </div>
       <div role="group" aria-labelledby="ds-menu-group-island">
-        <h3 id="ds-menu-group-island" style="${group}">Island</h3>
+        <h3 id="ds-menu-group-island" class="ds-caption" style="${group}">Island</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
-          <button data-journal style="${tile}">📔 Journal</button>
-          <button data-pack style="${tile}">🎒 Pack</button>
-          <button data-passport="1" style="${tile}">${ppLabel}</button>
-          <button data-board="leaderboard" style="${tile}">🏁 Leaderboard</button>
-          <button data-board="guestbook" style="${tile}">✍️ Guestbook</button>
-          <button data-board="times" style="${tile}">📰 Island Times</button>
+          <button data-journal style="${tile}">${icon('book', 16)}<span>Journal</span></button>
+          <button data-pack style="${tile}">${icon('backpack', 16)}<span>Pack</span></button>
+          <button data-passport="1" style="${tile}">${icon('passport', 16)}${ppLabel}</button>
+          <button data-board="leaderboard" style="${tile}">${icon('trophy', 16)}<span>Leaderboard</span></button>
+          <button data-board="guestbook" style="${tile}">${icon('pen', 16)}<span>Guestbook</span></button>
+          <button data-board="times" style="${tile}">${icon('news', 16)}<span>Island Times</span></button>
         </div>
-        <button data-visit style="${tile}display:block;width:100%;margin-top:8px;">🧭 Your visit</button>
-        <button data-controls style="${tile}display:block;width:100%;margin-top:8px;">⌨️ Controls &amp; settings</button>
+        <button data-visit style="${tile}width:100%;margin-top:8px;">${icon('compass', 16)}<span>Your visit</span></button>
+        <button data-controls style="${tile}width:100%;margin-top:8px;">${icon('keyboard', 16)}<span>Controls &amp; settings</span></button>
       </div>`;
 
     // close button: named, and the 44px box every other × has (it measured
@@ -5519,7 +5585,7 @@ export class SimpleUI {
   private createControlsRow(): void {
     if (!this.isTouch) return;
     const btn = document.createElement('div');
-    btn.textContent = '⌨️ Controls & settings';
+    SimpleUI.chipContent(btn, 'keyboard', 'Controls & settings');
     btn.dataset.controlsRow = '1';
     Object.assign(btn.style, { ...CHIP });
     btn.addEventListener('click', (e) => {
@@ -7754,7 +7820,7 @@ export class SimpleUI {
         this.overlay.appendChild(this.coinDiv);
         this.panels.registerLayer('nav-chips', this.coinDiv);
       }
-      this.coinDiv.textContent = `🪙 ${total}`;
+      SimpleUI.chipContent(this.coinDiv, 'coin', String(total));
       this._coinShown = total;
       return; // no bump on first render
     }
@@ -7762,7 +7828,7 @@ export class SimpleUI {
     const delta = total - from;
     // Reduced motion: no count-up, no pop — just the value.
     if (a11y.reducedMotion || delta === 0) {
-      this.coinDiv.textContent = `🪙 ${total}`;
+      SimpleUI.chipText(this.coinDiv, String(total));
       this._coinShown = total;
       return;
     }
@@ -7784,12 +7850,12 @@ export class SimpleUI {
     const step = (): void => {
       const p = Math.min(1, (performance.now() - start) / dur);
       const v = Math.round(from + delta * (1 - (1 - p) * (1 - p)));
-      el.textContent = `🪙 ${v}`;
+      SimpleUI.chipText(el, String(v));
       this._coinShown = v;
       if (p < 1) {
         this._coinAnim = requestAnimationFrame(step);
       } else {
-        el.textContent = `🪙 ${total}`;
+        SimpleUI.chipText(el, String(total));
         this._coinShown = total;
         this._coinAnim = 0;
       }
@@ -8206,7 +8272,12 @@ export class SimpleUI {
    */
   updatePlayerCount(count: number): void {
     if (this.playerCountDiv) {
-      this.playerCountDiv.textContent = `👥 ${count} online`;
+      const text = `${count} online`;
+      if (!this.playerCountDiv.querySelector('.ds-ic')) {
+        SimpleUI.chipContent(this.playerCountDiv, 'users', text);
+      } else {
+        SimpleUI.chipText(this.playerCountDiv, text);
+      }
     }
   }
 
@@ -9175,6 +9246,33 @@ export class SimpleUI {
   /**
    * Get content for zone
    */
+  /**
+   * A link's or a button's label in the chrome (D13): a leading emoji becomes
+   * the sprite's icon. CV and Hiring differ (file-user, file-text), and so do
+   * Code and Source (code, source). A label with no known emoji is unchanged.
+   */
+  private static iconLabel(label: string): string {
+    const m = /^(\p{Extended_Pictographic}\uFE0F?|↗)\s*(.+)$/u.exec(label);
+    if (!m) return label;
+    const [, mark, text] = m;
+    const pick: Record<string, IconName> = {
+      '🔗': 'user',
+      '📄': 'file-user',
+      '💻': /\bsource\b/i.test(text) ? 'source' : 'code',
+      '🌐': 'link',
+      '🧭': 'compass',
+      '↗': 'external',
+      '▶️': 'play',
+      '▶': 'play',
+      '📸': 'camera',
+      '✉️': 'mail',
+      '✉': 'mail',
+      '🎬': 'play',
+    };
+    const name = pick[mark];
+    return name ? `${icon(name, 16)}<span>${text}</span>` : label;
+  }
+
   private getZoneContent(zone: any): string {
     // Shared button styles for the clickable portfolio links. Links are the
     // owner's own curated URLs (a visitor chooses to click), opened in a new
@@ -9196,7 +9294,7 @@ export class SimpleUI {
         ? base + size + `background:${DS.primary};color:#fff;font-weight:600;border:none;`
         : base + size + 'background:#2a2a37;color:#e8e8f0;border:1px solid rgba(255,255,255,0.14);';
       const cls = opts.primary ? ' class="ds-press"' : '';
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer"${cls} style="${style}">${label}</a>`;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer"${cls} style="${style}">${SimpleUI.iconLabel(label)}</a>`;
     };
     // Counted from the client roster, never typed: the panel said 18 while the
     // roster (and the server personas it must match) had grown to 24.
@@ -9425,7 +9523,7 @@ export class SimpleUI {
       // the fact sheet makes LinkedIn the primary hiring link, and hire.html
       // and digiscalability.com/about lead with it too.
       hire: `
-        <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;">📄 Hiring?</div>
+        <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;display:flex;align-items:center;justify-content:center;gap:6px;">${icon('file-text', 16)}<span>Hiring?</span></div>
         <h2 style="margin:0 0 2px;color:#fff;font-size:26px;">Abbas Ali</h2>
         <p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
         <p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:#dde3ee;">I build AI
@@ -9441,11 +9539,11 @@ export class SimpleUI {
         ${emailRow(false)}
         <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:10px 0 0;">
           <button type="button" data-hire-contact style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;">
-            ✉️ Send a message</button>
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            ${icon('send', 16)}<span>Send a message</span></button>
           <button type="button" data-hire-tour style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
-            🎬 Or watch the highlights tour (under a minute)</button>
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            ${icon('play', 16)}<span>Or watch the highlights tour (under a minute)</span></button>
         </div>
         <div data-selected-work style="margin:16px 0 0;text-align:left;">
           <h3 style="margin:0 0 2px;font-size:15px;">Selected work</h3>

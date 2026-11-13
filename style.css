@@ -1288,6 +1288,54 @@ html.reduced-motion #ld-orbit {
     monospace;
   text-align: center;
 }
+/* D13: one icon set. Sprite icons are decorative and take no hits, so
+   elementFromPoint at a control's centre returns the control itself. */
+.ds-ic {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.hud-btn > .ds-chip-label,
+.hud-btn > .ds-ic-slot {
+  pointer-events: none;
+}
+/* The 11 px uppercase caption: group headers in the menu and the drawer. */
+.ds-caption {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9fb0c8;
+}
+/* Phone drawer rows (layout unchanged): 44 px rows, 24 px icons and
+   15 px/600 labels, every label at the same x. */
+#ds-drawer .ds-drawer-row > .ds-ic {
+  width: 24px;
+  height: 24px;
+}
+#ds-drawer .ds-ic-slot {
+  flex: none;
+  width: 24px;
+  font-size: 18px;
+  line-height: 24px;
+  text-align: center;
+}
+#ds-drawer .ds-chip-label {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The CTA rows' 3 px left accent, inside the row so no label moves. */
+#ds-drawer .ds-drawer-cta {
+  box-shadow: inset 3px 0 0 #ffd479 !important;
+}
+#ds-drawer .ds-drawer-cta[data-cta='work-with-me'] {
+  box-shadow: inset 3px 0 0 #a6f4c5 !important;
+}
 /* D7: one renderer for keys. A keycap on the keyboard; on touch, the glyph
    pill of the button that fires the key, in that button's ring tint at 0.85
    with #0b1220 text (9:1 or better on all three tints). */
