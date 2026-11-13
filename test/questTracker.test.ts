@@ -623,3 +623,151 @@ describe('main-simple: run intent, first-use hint gates and heel-strike footfall
     }
   });
 });
+
+// ---- P2-A9: learning about Abbas pays, and the School teaches by doing ------
+describe('main-simple: the first-visit economy (P2-A9)', () => {
+  type M = (this: unknown, ...a: unknown[]) => unknown;
+  let p: Record<string, M>;
+  let LESSONS: Array<[string, string]> = [];
+  let S: Record<string, number>;
+  beforeAll(async () => {
+    (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
+    const mod = await import('../main-simple');
+    p = mod.SimpleApp.prototype as unknown as Record<string, M>;
+    S = mod.SimpleApp as unknown as Record<string, number>;
+    LESSONS = (mod.SimpleApp as unknown as { LESSONS: Array<[string, string]> }).LESSONS;
+  }, 120000);
+
+  /** A stub app wired with the real pay methods; coins and tracks are recorded. */
+  const stub = (o: { stamps?: number; touch?: boolean } = {}) => {
+    const log: Array<[string, number]> = [];
+    const events: Array<[string, unknown]> = [];
+    let coins = 0;
+    const app: Record<string, unknown> = {
+      lessons: [] as string[],
+      lessonActs: new Set<string>(),
+      schoolEnrolled: false,
+      stampsPaid: -1,
+      ownedRod: false,
+      ownedAxe: false,
+      passport: { count: () => o.stamps ?? 0 },
+      scene: {
+        addCoins: (n: number) => (coins += n),
+        floatCoinsAtPlayer: () => undefined,
+        logTransaction: (why: string, n: number) => log.push([why, n]),
+        getCoinsCollected: () => coins,
+      },
+      ui: {
+        updateCoinCounter: () => undefined,
+        toast: () => undefined,
+        isTouchDevice: () => !!o.touch,
+        showLessons: vi.fn(),
+      },
+      persistLessons: () => undefined,
+    };
+    for (const k of [
+      'payCoins',
+      'payStamps',
+      'persistStampsPaid',
+      'openSchool',
+      'learnLesson',
+      'noteLessonAct',
+      'payLesson',
+      'lessonTitle',
+      'lessonGuideKey',
+      'lessonCopy',
+    ]) {
+      app[k] = p[k].bind(app);
+    }
+    return { app, log, events, coins: () => coins };
+  };
+
+  test('the first-visit sum: trail 5 + four stamps x 5 = 25 (the tour bar)', () => {
+    expect(S.STAMP_PAY).toBe(5);
+    const trail = 5; // ARRIVAL_TRAIL coins: the five-coin breadcrumb trail
+    const stamps = 4;
+    expect(trail + stamps * S.STAMP_PAY).toBe(25);
+    // and the Explorer Cap costs what the trail pays
+    const src = readFileSync(join(process.cwd(), 'main-simple.ts'), 'utf8');
+    expect(src).toContain("{ id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 5 }");
+  });
+
+  test('stamps pay +5 each from the first record; a returning visitor gets no back-pay', () => {
+    const s = stub({ stamps: 2 });
+    s.app.payStamps();
+    expect(s.coins()).toBe(0); // no record: it starts at today's count
+    expect(localStorage.getItem('ds_stamp_paid')).toBe('2');
+    (s.app.passport as { count: () => number }).count = () => 4;
+    s.app.payStamps();
+    expect(s.coins()).toBe(10);
+    expect(s.log).toEqual([['Passport stamp', 10]]);
+    s.app.payStamps();
+    expect(s.coins()).toBe(10);
+    // a fresh page reads the record
+    const t = stub({ stamps: 5 });
+    t.app.payStamps();
+    expect(t.coins()).toBe(5);
+  });
+
+  test('six School presses pay exactly +10 on a fresh visitor; a first cast then pays +10', () => {
+    const s = stub();
+    for (let i = 0; i < 6; i++) s.app.openSchool();
+    expect(s.coins()).toBe(10);
+    expect(s.app.lessons).toEqual(['move']);
+    expect(localStorage.getItem('ds_school_enrolled')).toBe('1');
+    s.app.learnLesson('fish');
+    expect(s.coins()).toBe(20);
+    s.app.learnLesson('fish');
+    expect(s.coins()).toBe(20);
+    expect(s.log.every(([why, n]) => why === 'School lesson' && n === 10)).toBe(true);
+  });
+
+  test('actions before enrolment are paid once at enrolment, not before', () => {
+    const s = stub();
+    s.app.learnLesson('feed');
+    s.app.learnLesson('chop');
+    expect(s.coins()).toBe(0);
+    s.app.openSchool();
+    expect(s.coins()).toBe(30); // move, chop, feed
+    s.app.openSchool();
+    expect(s.coins()).toBe(30);
+  });
+
+  test("an old save's lessons count as done and are not paid again", () => {
+    const s = stub();
+    s.app.lessons = ['move', 'fish'];
+    s.app.openSchool();
+    s.app.learnLesson('fish');
+    expect(s.coins()).toBe(0);
+  });
+
+  test('the card: six rows, Show me keys as amended, touch titles with no keys', () => {
+    const s = stub({ touch: true });
+    s.app.openSchool();
+    const rows = (s.app.ui as { showLessons: ReturnType<typeof vi.fn> }).showLessons.mock
+      .calls[0][0] as Array<{ id: string; title: string; done: boolean; guideKey?: string }>;
+    expect(rows.map((r) => r.id)).toEqual(LESSONS.map(([id]) => id));
+    expect(rows.map((r) => r.guideKey)).toEqual([
+      undefined,
+      'kiosk',
+      'kiosk',
+      'kiosk',
+      'villager:ai-nearest',
+      'stake:nearest',
+    ]);
+    expect(rows[0].done).toBe(true);
+    for (const r of rows) expect(r.title, r.id).not.toMatch(/\bWASD\b|\bSpace\b|\bShift\b/);
+    s.app.ownedRod = true;
+    s.app.ownedAxe = true;
+    expect(s.app.lessonGuideKey('fish')).toBe('shore');
+    expect(s.app.lessonGuideKey('chop')).toBe('carpenter');
+  });
+
+  test('lesson_learned replaces lesson_done, and deliveries pay +3', () => {
+    const src = readFileSync(join(process.cwd(), 'main-simple.ts'), 'utf8');
+    expect(src).not.toContain("track('lesson_done'");
+    expect(src).toContain("track('lesson_learned', { id, n: this.lessons.length });");
+    expect(S.DELIVERY_PAY).toBe(3);
+    expect(src).toContain("this.payCoins(SimpleApp.DELIVERY_PAY, 'Delivery');");
+  });
+});

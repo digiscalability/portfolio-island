@@ -420,7 +420,8 @@ export class SimpleApp {
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
-    { id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 8 },
+    // 5, not 8 (P2-A9): the arrival trail's 5 coins buy a first hat.
+    { id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 5 },
     { id: 'party', icon: '🥳', name: 'Party Hat', price: 10 },
     { id: 'flower', icon: '🌸', name: 'Flower Crown', price: 12 },
     { id: 'chef', icon: '👨‍🍳', name: "Chef's Toque", price: 14 },
@@ -832,6 +833,8 @@ export class SimpleApp {
       // Pickup ding + analytics on every completed delivery
       this.deliverySystem.setOnDeliveryComplete((d) => {
         sfx.collect();
+        // P2-A9: a delivery pays +3 (the chain's halo still waits at the end).
+        this.payCoins(SimpleApp.DELIVERY_PAY, 'Delivery');
         // The visitor chose the courier chain: from now on the pill may point
         // at parcels (after the districts, compassTarget's branch 7).
         this.deliveryOptIn = true;
@@ -898,6 +901,10 @@ export class SimpleApp {
         this.lessons = mergeLessons(
           [],
           JSON.parse(localStorage.getItem('ds_lessons') ?? '[]') as unknown,
+        );
+        this.schoolEnrolled = localStorage.getItem('ds_school_enrolled') === '1';
+        this.lessonActs = new Set(
+          mergeLessons([], JSON.parse(localStorage.getItem('ds_lesson_acts') ?? '[]') as unknown),
         );
         this.timber = Math.max(0, parseInt(localStorage.getItem('ds_timber') ?? '0', 10) || 0);
         this.ownedSickle = localStorage.getItem('ds_sickle') === '1';
@@ -1003,6 +1010,9 @@ export class SimpleApp {
       // Portfolio Passport: visiting all four work zones unlocks the Founder's
       // Golden Crown — the mechanic that routes explorers through the real work.
       this.passport = new Passport();
+      // P2-A9: seed the paid-stamps record now, before any stamp of this
+      // visit can land, so a fresh visitor's first stamp pays.
+      this.payStamps();
       this.passport.setOnComplete(() => this.grantPassportReward());
       this.ui.setPassport(this.passport);
       // First steps (A6): the guide and its card, armed later by the welcome
@@ -3605,22 +3615,14 @@ export class SimpleApp {
             );
           }
         } else if (this.lessons.length < SimpleApp.LESSONS.length && this.scene.isNearSchool()) {
-          const next = SimpleApp.LESSONS.find(([id]) => !this.lessons.includes(id));
-          if (next) {
-            this.ui.showInteractionPrompt(
-              `📚 Press <strong>E</strong> to take lesson ${this.lessons.length + 1}/${SimpleApp.LESSONS.length} (+10 🪙)`,
-            );
-            if (this.inputManager.consumeKeyPress('e')) {
-              this.lessons.push(next[0]);
-              this.persistLessons();
-              this.scene.addCoins(10);
-              this.scene.floatCoinsAtPlayer(10);
-              this.scene.logTransaction('School lesson', 10);
-              sfx.coin();
-              this.ui.toast(this.lessonCopy(next));
-              track('lesson_done', { id: next[0], total: this.lessons.length });
-            }
-          }
+          // P2-A9: the School teaches by doing. E enrols and opens the
+          // lessons card; a lesson pays the first time its action happens.
+          this.ui.showInteractionPrompt(
+            this.schoolEnrolled
+              ? `📚 Press <strong>E</strong> for your lessons (${this.lessons.length}/${SimpleApp.LESSONS.length} learned)`
+              : '📚 Press <strong>E</strong> — the School: learn by doing, 10 🪙 a lesson',
+          );
+          if (this.inputManager.consumeKeyPress('e')) this.openSchool();
         } else if (
           (buildOpp = this.nearestBuildOpportunity()) !== null &&
           // A stake never shadows an actionable tool prompt (the farm's edge
@@ -3758,6 +3760,7 @@ export class SimpleApp {
               this.persistTimber();
               this.packToast(`🪵 Timber! +${r.timber} (${this.timber} in the pack)`);
               track('tree_felled', { timber: this.timber });
+              this.learnLesson('chop');
             }
           }
         } else if (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) {
@@ -3803,7 +3806,7 @@ export class SimpleApp {
           // over casting, so the shore never shadows a conversation.
           this.ui.showInteractionPrompt('🎣 Press <strong>E</strong> to cast a line');
           if (this.inputManager.consumeKeyPress('e')) {
-            this.scene.tryCastLine(performance.now() / 1000);
+            if (this.scene.tryCastLine(performance.now() / 1000)) this.learnLesson('fish');
           }
         } else if (!this.ownedPickaxe && this.scene.nearestOreNode() !== null) {
           // Advert only — AFTER the cast branch so it never shadows an action.
@@ -5842,6 +5845,7 @@ export class SimpleApp {
       aware || canned[0] || 'Hello, traveller.',
       async (text) => {
         track('npc_chat_sent', { npc: npcData.name });
+        this.learnLesson('chat');
         const res = await askNpc(npcData.name, text);
         if (res.reply && !res.fallback) return res.reply;
         // A written line stands in (askNpc counted it as npc_fallback),
@@ -6145,6 +6149,8 @@ export class SimpleApp {
    * inside the UI layer surface without extra wiring).
    */
   private refreshCompletion(): void {
+    // P2-A9: new stamps pay +5 each (the cadence and every flag site land here).
+    this.payStamps();
     const flag = (k: string): boolean => {
       try {
         return localStorage.getItem(k) === '1';
@@ -6948,6 +6954,7 @@ export class SimpleApp {
     }
     sfx.coin();
     track('build_placed', { system: b.system, kind: b.name, plot: b.plot, slot: res });
+    this.learnLesson('build');
     const PAYOFF: Record<string, string> = {
       signpost: '🪧 Raised! Travellers will read it forever.',
       lantern: '🏮 Raised! Watch it light when night falls.',
@@ -7032,6 +7039,174 @@ export class SimpleApp {
       /* no storage */
     }
     saveProfile({ lessons: this.lessons });
+  }
+
+  // ── The economy's first-visit pays (P2-A9) ──────────────────────────
+  private static readonly LESSON_PAY = 10;
+  private static readonly STAMP_PAY = 5;
+  private static readonly DELIVERY_PAY = 3;
+  /** The School has been opened once (ds_school_enrolled). */
+  private schoolEnrolled = false;
+  /** Lesson actions that have happened on this device (ds_lesson_acts),
+   *  paid or not: enrolment pays the ones already done. */
+  private lessonActs = new Set<string>();
+  /** Passport stamps already paid (ds_stamp_paid); -1 until first read. */
+  private stampsPaid = -1;
+
+  /** One of A's pays: coins, the float, the ledger line and the counter.
+   *  Never 'ds:coin' (B9 fires it for pickups only); D11's chip pops
+   *  through the counter delta. */
+  private payCoins(n: number, why: string): void {
+    this.scene.addCoins(n);
+    this.scene.floatCoinsAtPlayer(n);
+    this.scene.logTransaction(why, n);
+    this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+  }
+
+  /**
+   * Passport stamps pay +5 each, compared against ds_stamp_paid. With no
+   * record yet, the record starts at today's count: a returning visitor
+   * gets no back-pay. Passport.ts is unchanged.
+   */
+  private payStamps(): void {
+    const passport = this.passport;
+    if (!passport) return;
+    const n = passport.count();
+    if (this.stampsPaid < 0) {
+      let saved: number | null = null;
+      try {
+        const raw = localStorage.getItem('ds_stamp_paid');
+        if (raw !== null) saved = Math.max(0, parseInt(raw, 10) || 0);
+      } catch {
+        /* no storage: count from now */
+      }
+      this.stampsPaid = saved ?? n;
+      if (saved === null) this.persistStampsPaid();
+    }
+    if (n <= this.stampsPaid) return;
+    const pay = (n - this.stampsPaid) * SimpleApp.STAMP_PAY;
+    this.stampsPaid = n;
+    this.persistStampsPaid();
+    this.payCoins(pay, 'Passport stamp');
+  }
+
+  private persistStampsPaid(): void {
+    try {
+      localStorage.setItem('ds_stamp_paid', String(this.stampsPaid));
+    } catch {
+      /* session only */
+    }
+  }
+
+  /** A lesson's row title, in the visitor's scheme (A11): no WASD or Space
+   *  on touch. */
+  private lessonTitle(id: string): string {
+    const touch = this.ui.isTouchDevice();
+    switch (id) {
+      case 'move':
+        if (touch) return 'Walk with the joystick, push it to the edge to run';
+        return SimpleApp.LEGACY_RUN
+          ? 'Walk with WASD, hold Space while moving to run'
+          : 'Walk with WASD, hold Shift to run';
+      case 'fish':
+        return 'Cast a line at any shore';
+      case 'chop':
+        return 'Fell a tree with the axe';
+      case 'feed':
+        return 'Throw feed to the birds, cats or fish';
+      case 'chat':
+        return 'Ask a villager anything';
+      case 'build':
+        return 'Raise something at a build stake';
+      default:
+        return id;
+    }
+  }
+
+  /** Where a lesson's 'Show me' sends the compass (none for moving). */
+  private lessonGuideKey(id: string): string | undefined {
+    switch (id) {
+      case 'fish':
+        return this.ownedRod ? 'shore' : 'kiosk';
+      case 'chop':
+        return this.ownedAxe ? 'carpenter' : 'kiosk';
+      case 'feed':
+        return 'kiosk';
+      case 'chat':
+        return 'villager:ai-nearest';
+      case 'build':
+        return 'stake:nearest';
+      default:
+        return undefined;
+    }
+  }
+
+  /** The School's E: enrol on the first visit (paying every lesson whose
+   *  action has already happened; moving always has), then the card. */
+  private openSchool(): void {
+    if (!this.schoolEnrolled) {
+      this.schoolEnrolled = true;
+      try {
+        localStorage.setItem('ds_school_enrolled', '1');
+      } catch {
+        /* session only */
+      }
+      this.noteLessonAct('move');
+      let paid = 0;
+      for (const [id] of SimpleApp.LESSONS) {
+        if (this.lessonActs.has(id) && !this.lessons.includes(id)) {
+          this.payLesson(id, false);
+          paid += SimpleApp.LESSON_PAY;
+        }
+      }
+      if (paid > 0) {
+        sfx.coin();
+        this.ui.toast(`📚 Enrolled — +${paid} 🪙 for what you have already learned.`);
+      }
+    }
+    this.ui.showLessons(
+      SimpleApp.LESSONS.map(([id]) => ({
+        id,
+        title: this.lessonTitle(id),
+        done: this.lessons.includes(id),
+        reward: SimpleApp.LESSON_PAY,
+        guideKey: this.lessonGuideKey(id),
+      })),
+    );
+  }
+
+  /** Record a lesson's action; once enrolled, its first time pays. */
+  private learnLesson(id: string): void {
+    this.noteLessonAct(id);
+    if (!this.schoolEnrolled || this.lessons.includes(id)) return;
+    this.payLesson(id, true);
+  }
+
+  private noteLessonAct(id: string): void {
+    if (this.lessonActs.has(id)) return;
+    this.lessonActs.add(id);
+    try {
+      localStorage.setItem('ds_lesson_acts', JSON.stringify([...this.lessonActs]));
+    } catch {
+      /* session only */
+    }
+  }
+
+  /**
+   * Pay one lesson once. lesson_learned {id, n} replaces lesson_done, whose
+   * meaning (a School press) this would change; the two series never mix.
+   */
+  private payLesson(id: string, announce: boolean): void {
+    if (this.lessons.includes(id)) return;
+    this.lessons.push(id);
+    this.persistLessons();
+    this.payCoins(SimpleApp.LESSON_PAY, 'School lesson');
+    track('lesson_learned', { id, n: this.lessons.length });
+    const lesson = SimpleApp.LESSONS.find(([l]) => l === id);
+    if (announce && lesson) {
+      sfx.coin();
+      this.ui.toast(`${this.lessonCopy(lesson)} (+${SimpleApp.LESSON_PAY} 🪙)`);
+    }
   }
 
   private persistHarvest(): void {
@@ -7236,6 +7411,7 @@ export class SimpleApp {
       this.persistFishFeed();
       this.refreshFeedHud();
       track('fish_feed_thrown', { left: this.fishFeed });
+      this.learnLesson('feed');
       return;
     }
     // Land: try the feed for the animal you're aiming at first, then the other.
@@ -7250,6 +7426,7 @@ export class SimpleApp {
         this.persistCatFeed();
         this.refreshFeedHud();
         track('cat_feed_thrown', { left: this.catFeed });
+        this.learnLesson('feed');
         return;
       }
       if (kind === 'bird' && this.birdFeed > 0) {
@@ -7270,6 +7447,7 @@ export class SimpleApp {
         this.persistBirdFeed();
         this.refreshFeedHud();
         track('bird_feed_thrown', { left: this.birdFeed });
+        this.learnLesson('feed');
         return;
       }
     }
