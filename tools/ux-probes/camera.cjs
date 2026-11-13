@@ -192,26 +192,38 @@ async function talk(t, prof) {
 async function tour(t, prof) {
   const s = await open(t, prof, { card: true });
   const { page } = s;
+  // D9 put Full tour behind 'More ways to explore' (wave-4 carry-over): until
+  // it opens the button's rect is 0x0 and a click there starts nothing, so
+  // every tour row passed on an idle camera.
+  const disclosure = await lib.openWelcomeDisclosure(page, 'button[data-tour]');
   const xy = await page.evaluate((sel) => {
     const b = document.querySelector(`${sel} button[data-tour]`);
     if (!b) return null;
     b.scrollIntoView({ block: 'center' });
     const r = b.getBoundingClientRect();
-    return [r.left + r.width / 2, r.top + r.height / 2];
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
   }, lib.WELCOME);
   if (!xy) {
     await s.close();
-    return { error: 'no tour button on the welcome card (button[data-tour])' };
+    return { error: 'no tour button on the welcome card (button[data-tour])', disclosure };
+  }
+  if (!(xy.w > 0 && xy.h > 0)) {
+    await s.close();
+    return { inconclusive: `the tour button's rect is empty (${xy.w}x${xy.h}; disclosure ${disclosure})`, disclosure };
   }
   const recP = page.evaluate(() => window.__camRec.record(14000, 'inside'));
   await lib.sleep(150);
-  await page.mouse.click(xy[0], xy[1]);
+  await page.mouse.click(xy.x, xy.y);
   const rows = await recP;
   await t.shot(page, `camera-${prof}-tour.png`);
   const at = rows.findIndex((r) => r.deg > 0.05);
-  const moving = at >= 0 ? rows.slice(at) : rows;
+  if (at < 0) {
+    await s.close();
+    return { inconclusive: `the recorder never saw a turn over 0.05 deg in ${rows.length} frames (the tour did not start)`, disclosure, frames: rows.length };
+  }
+  const moving = rows.slice(at);
   const walls = moving.filter((r) => r.wall !== null && r.wall !== undefined);
-  const out = { ...sum(moving), framesInsideABuilding: walls.length, firstInsideAtMs: walls.length ? walls[0].t : null, insideOf: [...new Set(walls.map((r) => r.wall))], maxDegPerSecond: lib.round(Math.max(0, ...moving.map((r) => (r.dt > 0 ? (r.deg * 1000) / r.dt : 0))), 0) };
+  const out = { disclosure, ...sum(moving), framesInsideABuilding: walls.length, firstInsideAtMs: walls.length ? walls[0].t : null, insideOf: [...new Set(walls.map((r) => r.wall))], maxDegPerSecond: lib.round(Math.max(0, ...moving.map((r) => (r.dt > 0 ? (r.deg * 1000) / r.dt : 0))), 0) };
   await page.evaluate(() => {
     const a = window.__app;
     if (typeof a.endTour === 'function') a.endTour();
@@ -441,10 +453,15 @@ async function camera(t) {
     if (parts.includes('tour')) {
       await run('tour', () => tour(t, prof));
       const k = out.tour;
-      // MOT-18.
-      t.check(`${prof}: the tour's first frame (degrees)`, k.error ? null : k.firstFrameDeg < 1, k.error || k.firstFrameDeg, '< 1');
-      t.check(`${prof}: the tour's largest turn per frame (degrees)`, k.error ? null : k.maxDegPerFrame < 2, k.error || `${k.maxDegPerFrame} (${k.maxDegPerSecond} deg/s)`, '< 2');
-      t.check(`${prof}: tour frames with the camera inside a building`, k.error ? null : k.framesInsideABuilding === 0, k.error || (k.framesInsideABuilding ? `${k.framesInsideABuilding} (first at ${k.firstInsideAtMs} ms, in ${k.insideOf.join(', ')})` : 0), 0);
+      // MOT-18 and MOT-06 (A's fix in wave 4). Inconclusive (null, exit 3)
+      // when the button had an empty rect or the camera never turned.
+      // Baselines (w3-unhold rv-camera-tourfix-*): merged wave 3 9.21 deg/frame,
+      // 25 frames over 2 deg, peak at 7756 ms; wave-2 main 9.42 deg, 34 frames,
+      // a 9.42 deg first frame.
+      const no = k.error || k.inconclusive;
+      t.check(`${prof}: the tour's first frame (degrees)`, no ? null : k.firstFrameDeg < 1, no || k.firstFrameDeg, '< 1');
+      t.check(`${prof}: the tour's largest turn per frame (degrees)`, no ? null : k.maxDegPerFrame < 2, no || `${k.maxDegPerFrame} at ${k.maxAtMs} ms (${k.maxDegPerSecond} deg/s; ${k.over2deg} frames over 2 deg)`, '< 2');
+      t.check(`${prof}: tour frames with the camera inside a building`, no ? null : k.framesInsideABuilding === 0, no || (k.framesInsideABuilding ? `${k.framesInsideABuilding} (first at ${k.firstInsideAtMs} ms, in ${k.insideOf.join(', ')})` : 0), 0);
     }
     if (parts.includes('parked')) {
       await run('parked', () => parked(t, prof));

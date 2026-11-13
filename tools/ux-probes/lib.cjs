@@ -764,6 +764,31 @@ async function boot(session, base, { query = '', hour = undefined, waitWelcome =
   return { readyMs, welcomeMs };
 }
 
+/**
+ * D9 put Full tour (button[data-tour]) and its siblings behind the welcome
+ * card's 'More ways to explore' disclosure, where they have a 0x0 rect until
+ * it opens. Open it when `target` is not shown: 'not needed', 'opened' or
+ * 'none found'. Waits 400 ms after opening (the disclosure's own ease).
+ * Shared by fm.cjs (d-tour) and camera.cjs (tour); wave-4 amendments.
+ */
+async function openWelcomeDisclosure(page, target = 'button[data-tour]') {
+  const r = await page.evaluate(
+    ([W, sel]) => {
+      const card = document.querySelector(W);
+      const el = card && card.querySelector(sel);
+      const shown = el && el.getBoundingClientRect().height > 0 && getComputedStyle(el).visibility !== 'hidden';
+      if (shown) return 'not needed';
+      const d = card && [...card.querySelectorAll('button,[role=button],summary')].find((x) => x.hasAttribute('aria-expanded') || /more ways/i.test(x.textContent || ''));
+      if (!d) return 'none found';
+      d.click();
+      return 'opened';
+    },
+    [WELCOME, target],
+  );
+  if (r === 'opened') await sleep(400);
+  return r;
+}
+
 async function dismissWelcome(page) {
   const sel = `${WELCOME} button[data-dismiss]`;
   await page.waitForSelector(sel, { state: 'visible', timeout: 60000 });
@@ -1181,6 +1206,7 @@ module.exports = {
   bootQuery,
   boot,
   dismissWelcome,
+  openWelcomeDisclosure,
   nextFrames,
   HELPERS,
   FREEZE,
