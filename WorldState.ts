@@ -9,7 +9,7 @@
 //
 // It degrades to silence if Firebase is unavailable or the node is unset (e.g.
 // before the director is deployed). A `?mood=` URL override previews any mood
-// locally with no backend — used to verify the client reaction in dev.
+// with no backend, in any build; only its free-text `&headline=` is dev-only.
 
 export type Mood = 'festive' | 'busy' | 'calm' | 'mysterious' | 'proud';
 
@@ -140,7 +140,8 @@ const MOODS: Mood[] = ['festive', 'busy', 'calm', 'mysterious', 'proud'];
 
 /**
  * Client-side per-mood presentation: an accent colour (bulletin + ambience
- * tint), a dev-only fallback headline (the server headline wins in prod), and a
+ * tint), a fallback headline (the server's headline wins when it is live; a
+ * `?mood=` link shows this one, in production too), and a
  * small pool of NPC "flavour" lines the dialogue can lead with so the town's
  * tone visibly shifts with the day. These flavour lines are pre-authored + safe
  * (this stays true even in later phases — an LLM may only index-select them).
