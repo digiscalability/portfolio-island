@@ -641,9 +641,52 @@ The in-repo economy baseline at fcaa649 (`deploy-w3/dist`, 2026-11-14,
 `p2/tour` 6 coins after the four districts (the trail's 5 and one meadow
 coin; 2 min, 4 stamps, 1 secret); `p2/quests` six School presses pay +60;
 `p2/coinhunt` 5 coins after the trail, then 17.0 coins a minute at a walk
-(20.0 running), 2 of 80 meadow coins within 30 u of the spawn. The
-delivery-hop delta (main 0) is `p2/gather`'s row, a carry-over for the next
-pass.
+(20.0 running), 2 of 80 meadow coins within 30 u of the spawn;
+`p2/shop` 0 of 10 hats enabled with the trail's 5 coins (the cap costs 8);
+`p2/gather` a delivery hop pays 0.
+
+### Probe fixes and rows from the wave-4 amendments
+
+The carry-over lines of `wave4-amendments.md` (E). Baselines 2026-11-14 on
+wave-3 main (`deploy-w3/dist`, fcaa649) at `?hour=12` (the probe's own hours
+where it names them), ports 5191-5196, 0 leaks, other builders on the
+machine: counts hold, milliseconds are provisional. A row that reads a hook
+a later item adds is null, not fail, on fcaa649; a row that measures
+behaviour main already has is judged, and its fcaa649 value is the
+before-number the item moves.
+
+| Probe | Line | What changed | wave-3 main (fcaa649) |
+|---|---|---|---|
+| `camera` (tour), `fm` (d-tour) | camera.cjs tour | `lib.openWelcomeDisclosure` (moved from fm.cjs) opens D9's 'More ways to explore' before `button[data-tour]` is clicked; the tour rows are inconclusive (exit 3) when the button's rect is empty or the recorder never sees a turn over 0.05° | disclosure opened; 652 frames, first 0.1°, largest 15.01°/frame at 7858 ms, 23 frames over 2°: MOT-06 fails for real (w3-unhold: 9.21°, 25 frames, 7756 ms; wave-2 main 9.42°, 34 frames, a 9.42° first frame). fm d-tour 43.7 s |
+| `p2/bobber` | p2/bobber | the '!' row is one row per hour, null on a missed bite, no free shore spot or a stalled hour; a hard budget of 60 s a cast, 45 s an hour and 150 s for the spot search (`--cast-ms` shortens them), after which the session is closed | 7 of 8 clear and the sprite at 12, 18 and 21 h on desktop and phone (8 of 8 on a second desktop run). `--cast-ms 1500`: stalled at cast 0, every row null, exit 3 |
+| `guide --part night` | guide night-check | none: verified at fcaa649 with `--night-hour 21,23,2,6`, twice | 8 of 8 both runs (the Night Watch at 10-25.3 u, then 2.4-22.4 u). Closed |
+| perf gate | bundle | `BUNDLE.main` rebased to fcaa649 (1,123.45 kB raw / 351.48 kB gzip); `wave2` kept; `budgetBase` stays wave-1 8662b27, so waves 1-3 used 39.63 kB and wave 4 has about 10.4 kB gzip; `nextCandidate.how` names the wave-4 contract (D drops the value import, A dynamic-imports Chat) | this branch's main chunk is byte-identical to fcaa649: delta 0 |
+| perf gate | rows list | `FX_LEDGER.coinGlint` (20 µs desktop, 0 on the low tier) and `FX_BARS.coinGlint` (one program); `canopySway` landed with E6d | `--fx coinGlint` reads n/a (no such effect) |
+| `p2/quests` | rows list (P2-A9) | the School row is "pay exactly +10 on a fresh visitor" (was "<= 10"), with per-press deltas and the coins on arrival; enrolment pays move on the first press then nothing, and the first cast after enrolment pays +10 (both null without `ds_school_enrolled`) | +60 (10 a press): fail; the enrolment and cast rows null |
+| `p2/tour` | rows list (P2-A9) | coins after the four districts judged >= 25 (was report-only, mislabelled P2-A10) | 6: fail |
+| `p2/shop` | rows list (P2-A9, P2-A14) | a hat enabled on the first kiosk visit with the trail's 5 coins; after an equip at 1440x900, dot(camera, avatar forward) < -0.3 and the avatar's projected box centre outside the shop (null without `OrbitCamera.setMirrorPose`) | 0 of 10 hats: fail. Mirror rows null (dot -1, centre outside on D7's dock) |
+| `p2/gather` | rows list (P2-A9) | the delivery hop's coin delta, judged +3 | 0: fail |
+| `p2/survey` | rows list (P2-A11) | exhibit cap height at the back, left and right poses in the five halls (18 px desktop, 11 phone); the hire card from Professional and Contact in 2 actions (stand in the hotspot whose arg is 'hire', E; `hire_cta {cta:'interior'}` seen through a `window.va` stub, nothing sent); a project card in Projects and the compass in Welcome in 2 actions; J held 1 s indoors turns 60° or more | caps min 19.3 px over 15: pass. Professional and Contact open the zone panel, no hire_cta: fail. Projects opens at a card in view: pass. The Welcome map sets no compass: fail. J turns 0° in all four halls: fail |
+| `camera --part mirror` | rows list (P2-A14) | equip a hat at the kiosk: frames over 1.5 s with the camera inside a mesh near the player (prop boxes within 6 u, the avatar as a 0.3 u capsule), and the avatar's share of the frame at Customise over 3% | 0 of 119 frames inside; Customise 4%: both pass (no mirror pose yet) |
+| `intro` | rows list (D11) | the coin chip's layout width through a count-up 11 to 18 (within 0.5 px; null without a count-up); a synthetic ds:coin's flight ends inside the chip (null when nothing flies; `--selftest-flight` proves the row); with `--reduced-motion`, the menu and a panel ramp in 80-200 ms, opacity only | widths 62/63 px: fail. No flight: null (the self-test's flight ends on the chip at 623 ms). Reduced motion: full opacity on the first frame, 0 ms: fail |
+| `census` (`--compare`) | rows list (C7) | every unique texture the scene's materials hold, CanvasTextures and 512x512 canvases apart, with an estimated GPU size (w x h x 4 x 4/3); the C7 row wants -1 CanvasTexture and about -1.3 MiB: the GPU holds only the facade albedo, because `Materials.toonify` keeps only `map` (the normal, AO and roughness canvases are made, as texgen counts, and never uploaded) | 67 textures, 65 CanvasTextures, one 512x512, 22.44 MiB of canvases; against itself delta 0: null |
+| `showthrough` (new, in phone.cjs) | rows list (D16) | at 390x844 and 844x390: the minimap or compass showing through the Portfolio menu, the hire card and Projects (the overlap, inset by the card's corner radius, shot with the element shown, hidden and shown again: through when hiding it changes 1% more pixels, at 4 levels, than the scene's own motion); the minimap label cap height from its own `fillText` calls, >= 7 px. `--selftest-through` makes the cards half transparent | phone: the minimap through the menu (78.7% against 0.1% noise), not through the hire card or Projects; landscape: the compass through the menu (81.8%); label caps 6.3 px (phone), 5.4-6.7 px (landscape). Exit 1 |
+| `mobile` | rows list (D15) | the vibrate log judged from the pulses each action adds: the stick's engage 10 ms, a HUD button (JUMP) 12 ms, a USE tap at a cottage door 18 ms (null when no door prompt is in reach) | engage 5, JUMP 8, the door 8: all fail |
+| `loco` (wave) | rows list (B6) | the hand is armR's hand vertices (rig.cjs's marker), not `getHandAnchor()` (the armR bone: the shoulder pivot, which does not move in a wave, so the old curve read a flat 0.42 u); 10 crops at 100 ms steps across 150-1050 ms, judged from an in-page per-frame sample: the hand inside the 320 px crop around the head and not hidden by the head bone's disc; 8 of 10 | the curve -0.13 to 0.92 u (the audit's -0.12 to 0.91); 9 of 10 crops (hidden behind the head at 1050 ms): the crop row already passes from the chase camera, so B6's curve (dip, overshoot) carries its acceptance |
+| `events --part coin` | rows list (B9) | walk onto one meadow coin on the frozen sim, step 1 s more: exactly one ds:coin per coin gained, values summing to the gain, with x, y and value 1 (null without ds:coin); `--selftest-coin once\|twice` | collected at frame 31, no ds:coin: null. Self-test once: pass; twice: fail |
+
+Re-recorded at fcaa649 for the items that own them (the re-record-only line):
+- `p2/quests` (A, P2-A9): six School presses +60, 10 a press.
+- `loco` (B4): landing soles 0.077-0.078 u over the ground, the squash minimum 5-9 frames after touchdown (two runs); both fail.
+- `npc` (B, wave 5's B7): bob 1 cycle per leg cycle, roll 0.5, the walk-start leg pop 19.4°, soles while walking 0.020-0.114 u, sitting soles -0.121 u (kneeling 0.02 u passes); talk arms 42.8°, first gesture 325 ms, the B8 lean +4.0.
+- `mobile` (D15): |v| 1.00 at touchdown at all 5 rim points; the thumb's transition 0s; the stick at 0.15 and 0.7 of its radius 5.6 and 8.12 u/s.
+- `p2/daycycle` (C; P2-C1, C1), desktop, hub and the four districts at 6, 9, 10.5, 12 and 15 h: the worst district ground against the hub -8.0 L\* at Professional 15 h (50.8 against 58.8; bar -5), the lowest ground at 6 h 38.2 at Projects (bar 40): both still miss; sun elevation 45° or more and shadow strength 1 at every district; sky to ground 2.84:1 at 6 h.
+- `camera` tour (A, MOT-06): 15.01°/frame, 23 frames over 2° (the fixed tour part, above).
+
+The startup world_gen line is the integration's run (`perf:gate -- --ab`,
+alone after five quiet minutes): report `texgen`'s saving (its fixture cost
+x the facade canvases present, 4 on fcaa649, about 52 ms at 4x on a busy
+host here) beside `world_gen`.
 
 ### Probe fixes from the wave-2 integration
 
@@ -1208,6 +1251,11 @@ resolves.
 - Phase 2, wave 4 (P2-E2d), in `p2/`: `feed.cjs`, `landmarks.cjs` (its
   `PROJECT_BOARDS` fixture pinned by `test/probeSafety`), `build.cjs`,
   `coinhunt.cjs`, and `play.cjs`'s `p2/race --legs` and `--craft boat`.
+- Wave-4 amendments: `phone.cjs`'s `showthrough` (D16), `lib.cjs`'s
+  `openWelcomeDisclosure`, and new rows in `camera.cjs` (`--part mirror`),
+  `intro.cjs`, `census.cjs`, `mobile.cjs`, `loco.cjs`, `events.cjs`
+  (`--part coin`), `p2/loops.cjs` (bobber, shop, tour, gather; its
+  `fishKit` export), `p2/play.cjs` (quests) and `p2/survey.cjs`.
 - Phase 2, wave 2, in `p2/`: `light.cjs` (daycycle, weather, beacons,
   shadowdraws, edge-crawl), `rooms.cjs` (room-a11y, room-phone, room-light,
   room-rig, avlum, warmtest, room-census), `guidance.cjs` (recruiter, npcs,
