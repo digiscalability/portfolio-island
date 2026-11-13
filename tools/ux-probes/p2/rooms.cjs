@@ -277,7 +277,11 @@ const TOUCH_CONTROLS = () => {
   const all = [...document.querySelectorAll('#ui-overlay div')];
   const disc = (cap) => all.find((d) => d.style.width === '74px' && new RegExp(cap).test(d.textContent || ''));
   const joy = document.querySelector('[data-guide="joystick"]') || all.find((d) => d.style.touchAction === 'none' && d.style.width === '166px');
-  const one = (txt) => all.find((d) => (d.textContent || '').trim() === txt && d.children.length === 0);
+  // D13 (42717a0) swapped the chat and mic glyphs for sprite icons, so the
+  // text anchors found nothing. Both are .ds-aux-disc discs, told apart by the
+  // aria-label SimpleUI gives them ('Open chat'; 'Hold to talk ...').
+  const aux = (re) => [...document.querySelectorAll('#ui-overlay .ds-aux-disc')].find((d) => re.test(d.getAttribute('aria-label') || ''));
+  const byLabel = (re) => [...document.querySelectorAll('#ui-overlay [aria-label]')].find((d) => re.test(d.getAttribute('aria-label') || ''));
   const ui = window.__app.ui;
   const leave = ui.leaveBtn || [...document.querySelectorAll('#ui-overlay div, #ui-overlay button')].find((d) => /←\s*Leave/.test(d.textContent || '') && d.children.length <= 1);
   const lr = leave && leave.isConnected ? leave.getBoundingClientRect() : null;
@@ -286,12 +290,12 @@ const TOUCH_CONTROLS = () => {
     JUMP: vis(disc('JUMP')),
     WAVE: vis(disc('WAVE')),
     joystick: vis(joy),
-    chat: vis(one('💬')),
-    mic: vis(one('🎤')),
+    chat: vis(aux(/^Open chat$/)),
+    mic: vis(aux(/^Hold to talk/)),
     drawerToggle: vis(document.querySelector('[aria-label="Open island menu"]')),
     leave: vis(leave),
     leaveSize: lr ? [Math.round(lr.width), Math.round(lr.height)] : null,
-    emote: vis(one('😀')),
+    emote: vis(byLabel(/^Send an emote$/)),
   };
 };
 
