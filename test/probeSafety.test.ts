@@ -414,13 +414,28 @@ describe('probe conventions: silent speech and a pinned clock (wave-2 amendments
     walk(path.join(root, 'evals'));
     expect(files.length).toBeGreaterThan(20);
     const own = path.join(root, 'tools', 'ux-probes', 'lib.cjs');
+    // Wave-3 amendments (probeSafety): browser.newPage( makes its own context
+    // too, and an ESM script imports playwright with `from`. A CDP session on
+    // a harness page (hybrid.cjs, layout.cjs) stays allowed.
+    const offender =
+      /\.newContext\(|\.launch(PersistentContext)?\(\s*\{|require\(['"]playwright(-core)?['"]\)|\bbrowser\.newPage\(|\bfrom\s+['"]playwright(-core)?['"]/;
+    for (const bad of [
+      'const page = await browser.newPage();',
+      "import { chromium } from 'playwright';",
+      'import pw from "playwright-core";',
+      "const pw = require('playwright');",
+      'const ctx = await browser.newContext({});',
+    ])
+      expect(offender.test(bad), bad).toBe(true);
+    for (const ok of [
+      'const cdp = await page.context().newCDPSession(page);',
+      'const page = await ctx.newPage();',
+      "const lib = require('./lib.cjs');",
+    ])
+      expect(offender.test(ok), ok).toBe(false);
     const offenders = files
       .filter((f) => f !== own)
-      .filter((f) =>
-        /\.newContext\(|\.launch(PersistentContext)?\(\s*\{|require\(['"]playwright(-core)?['"]\)/.test(
-          fs.readFileSync(f, 'utf8'),
-        ),
-      )
+      .filter((f) => offender.test(fs.readFileSync(f, 'utf8')))
       .map((f) => path.relative(root, f));
     expect(offenders).toEqual([]);
     const lib = fs.readFileSync(own, 'utf8');
