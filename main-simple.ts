@@ -4557,8 +4557,31 @@ export class SimpleApp {
     }
     const shown = label ?? `${hit.icon} ${hit.label}`;
     this.setMapPick(new THREE.Vector3(hit.pos.x, hit.pos.y, hit.pos.z), shown, hit.zone);
-    this.ui.toast(`🧭 Compass set: ${shown}`);
+    this.compassSetToast(`🧭 Compass set: ${shown}`);
     track('map_guide_set', { label: label ?? hit.label, source });
+  }
+
+  /**
+   * The 'Compass set' toast, unless the guide card is out (wave-3 carry-over:
+   * at 390x844 it landed on the First steps card). While First steps runs
+   * unfolded, the recruiter route shows or the Next chip's list is open, the
+   * card already names the goal and the compass pill shows the new label, so
+   * the toast is dropped rather than held: a held one would arrive late,
+   * after the visitor had moved on. D's toast anchor is the backstop.
+   */
+  private compassSetToast(text: string): void {
+    if (this.guideCardOut()) return;
+    this.ui.toast(text);
+  }
+
+  /** The guide card is unfolded: First steps (not the chip), the recruiter
+   *  route, or the Next chip's open list. */
+  private guideCardOut(): boolean {
+    return (
+      (this.guide?.isActive() ?? false) ||
+      (this.route?.showing() ?? false) ||
+      (this.nextChip?.isExpanded() ?? false)
+    );
   }
 
   // ── First steps (A6) ─────────────────────────────────────────────────
@@ -5155,7 +5178,7 @@ export class SimpleApp {
           `${poi.icon} ${poi.label}`,
           zoneOf.get(poi) ?? null,
         );
-        this.ui.toast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
+        this.compassSetToast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
         track('map_guide_set', { label: poi.label, source: 'map' });
       },
       {

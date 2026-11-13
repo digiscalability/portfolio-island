@@ -395,3 +395,47 @@ describe('main-simple: a race finish goes to the board under a real name (P2-A7)
     expect(ui.flashMessage).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('main-simple: the Compass set toast waits out the guide card (wave-3 carry-over)', () => {
+  /** The fields compassSetToast reads: the guide, the route and the Next chip. */
+  const stubApp = (s: { steps?: boolean; route?: boolean; chipOpen?: boolean }) => {
+    const toast = vi.fn();
+    const app: Record<string, unknown> = {
+      ui: { toast },
+      guide: { isActive: () => !!s.steps },
+      route: { showing: () => !!s.route },
+      nextChip: { isExpanded: () => !!s.chipOpen },
+    };
+    app.guideCardOut = proto.guideCardOut.bind(app);
+    return { app, toast, say: (t: string) => proto.compassSetToast.call(app, t) };
+  };
+
+  test('with no card out, the toast shows', () => {
+    const { toast, say } = stubApp({});
+    say('🧭 Compass set: 🚀 Projects');
+    expect(toast).toHaveBeenCalledWith('🧭 Compass set: 🚀 Projects');
+  });
+
+  test.each([
+    ['First steps unfolded', { steps: true }],
+    ['the recruiter route', { route: true }],
+    ["the Next chip's open list", { chipOpen: true }],
+  ])('under %s, it is dropped', (_, s) => {
+    const { toast, say } = stubApp(s);
+    say('🧭 Compass set: 🚀 Projects');
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  test('before the guide exists (no guide, route or chip yet), the toast shows', () => {
+    const toast = vi.fn();
+    const app: Record<string, unknown> = {
+      ui: { toast },
+      guide: null,
+      route: null,
+      nextChip: null,
+    };
+    app.guideCardOut = proto.guideCardOut.bind(app);
+    proto.compassSetToast.call(app, '🧭 Compass set: 🏦 Bank');
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+});

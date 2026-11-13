@@ -1064,7 +1064,7 @@ describe("P2-A5: one 'Show me' seam, window 'ds:guide-to'", () => {
     expect(go).toMatch(/if \(!hit\) \{\s*this\.openIslandMap\(\);\s*return;\s*\}/);
     expect(go).toContain('this.setMapPick(');
     expect(go).toContain('hit.zone');
-    expect(go).toContain('this.ui.toast(`🧭 Compass set: ${shown}`);');
+    expect(go).toContain('this.compassSetToast(`🧭 Compass set: ${shown}`);');
     expect(go).toContain("track('map_guide_set', { label: label ?? hit.label, source });");
     // and the map's own picks now say where they came from
     expect(bodyOf(m, 'private openIslandMap(')).toContain(
