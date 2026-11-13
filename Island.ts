@@ -22,7 +22,7 @@ import {
   DISTRICT_SHIFT,
   districtAccentAt,
 } from './Districts';
-import { DAY_FACTOR_UNIFORM, DUSK_FACTOR_UNIFORM } from './EnvironmentCycle';
+import { DAY_FACTOR_UNIFORM, DUSK_FACTOR_UNIFORM, requestNightRescan } from './EnvironmentCycle';
 import { fx } from './FxBudget';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
@@ -8976,6 +8976,25 @@ export class Island {
     return group;
   }
 
+  /**
+   * Tag lamp.glb's bulbs (its Glow material, on the instanced fleet or on the
+   * clones) as authored night bulbs, so EnvironmentCycle drives them at
+   * their own strength plus the desktop night lift (P2-E5). Returns how many
+   * meshes it tagged.
+   */
+  public tagAuthoredLampBulbs(): number {
+    let n = 0;
+    this.mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || Array.isArray(m.material) || m.material?.name !== 'Glow') return;
+      if (this.lampFleet.includes(m as THREE.InstancedMesh)) return;
+      m.userData.isNightEmissive = true;
+      m.userData.nightBulbAuthored = true;
+      n++;
+    });
+    return n;
+  }
+
   // Attempt to replace the segmented road planes with DecalGeometry projected decals for sharper results.
   private async tryLoadModels(
     _buildings: THREE.Group,
@@ -9943,6 +9962,10 @@ export class Island {
         // (one flag each, materials untouched, so a failed load keeps it).
         onReplaced: () => {
           for (const m of this.lampFleet) m.visible = false;
+          // The authored bulbs (Glow) join the night drive in the hidden
+          // fleet's place: their own strength, plus the desktop night lift
+          // (P2-E5). One shared material, so no new program.
+          if (this.tagAuthoredLampBulbs() > 0) requestNightRescan();
         },
       });
       // Houses and towers stay PROCEDURAL. house.glb used to replace both

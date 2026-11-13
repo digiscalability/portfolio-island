@@ -42,6 +42,7 @@ import {
 } from '../CelLook';
 import {
   BULB_NIGHT_BLOOM_LIFT,
+  requestNightRescan,
   DAY_FACTOR_UNIFORM,
   DUSK_FACTOR_UNIFORM,
   duskFactorAt,
@@ -1957,13 +1958,71 @@ describe('the bulbs glow at night (P2-E5, ruling 2026-11-13)', () => {
     // Desktop only: the low tier has no bloom pass to halo them.
     expect(src).toContain("fx.register('bulbBloom', { desktop: true, low: false })");
     // The NIGHT factor (zero by day and through golden hour), not 1 - day.
-    expect(src).toContain("(fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0)");
+    expect(src).toContain("fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0");
     // Only the spheres (bulbs, lanterns) take it; the window panes do not.
-    expect(src).toContain("const bulb = mesh.geometry?.type === 'SphereGeometry'");
+    expect(src).toContain(
+      "const bulb = authored !== null || mesh.geometry?.type === 'SphereGeometry'",
+    );
     expect(src).toContain('e.mat.emissiveIntensity = e.bulb ? bulbIntensity : emIntensity');
     // No light, no new material: the drive writes intensities only.
     const update = decl('EnvironmentCycle.ts', 'update');
     expect(update).not.toMatch(/new THREE\.(PointLight|SpotLight|Mesh\w*Material)/);
+  });
+});
+
+describe("lamp.glb's bulbs join the night drive when the fleet lands (P2-E5)", () => {
+  const cycleOver = (scene: THREE.Scene): EnvironmentCycle => {
+    installHeadlessCanvas();
+    return new EnvironmentCycle(
+      scene,
+      new THREE.DirectionalLight(0xffe9c0, 1.6),
+      new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62),
+      {
+        topColor: { value: new THREE.Color() },
+        bottomColor: { value: new THREE.Color() },
+        horizonColor: { value: new THREE.Color() },
+      },
+    );
+  };
+  /** lamp.glb's Glow as it lands: opaque toon, emissive strength 5, a cone part. */
+  const glowFleet = (): THREE.InstancedMesh => {
+    const mat = new THREE.MeshToonMaterial({ color: 0xffd973, emissive: 0xffedb3 });
+    mat.name = 'Glow';
+    mat.emissiveIntensity = 5;
+    return new THREE.InstancedMesh(new THREE.ConeGeometry(0.2, 0.3, 8), mat, 3);
+  };
+
+  test('an authored bulb keeps its strength and colour by day and takes the night lift', () => {
+    const scene = new THREE.Scene();
+    const env = cycleOver(scene);
+    // Lands after construction and after the first update's late pass.
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    const fleet = glowFleet();
+    fleet.userData.isNightEmissive = true;
+    fleet.userData.nightBulbAuthored = true;
+    scene.add(fleet);
+    const mat = fleet.material as THREE.MeshToonMaterial;
+    // Not driven until the island asks for the rescan.
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(mat.emissiveIntensity).toBe(5);
+    requestNightRescan();
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 2);
+    // Desktop (the test default): its own 5 plus the night lift.
+    expect(mat.emissiveIntensity).toBeCloseTo(5 + BULB_NIGHT_BLOOM_LIFT, 9);
+    expect(mat.emissive.getHex()).toBe(0xffedb3);
+    // Noon: exactly as authored, so the day look is unchanged.
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 3);
+    expect(mat.emissiveIntensity).toBeCloseTo(5, 9);
+    expect(mat.emissive.getHex()).toBe(0xffedb3);
+  });
+
+  test('Island tags only the Glow parts, never the hidden fallback fleet', () => {
+    const src = stripped('Island.ts');
+    expect(decl('Island.ts', 'tagAuthoredLampBulbs')).toContain("m.material?.name !== 'Glow'");
+    expect(src).toContain('if (this.tagAuthoredLampBulbs() > 0) requestNightRescan();');
   });
 });
 

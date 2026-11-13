@@ -23,6 +23,20 @@ fx.register('localSun', { desktop: true, low: true });
 fx.register('bulbBloom', { desktop: true, low: false });
 export const BULB_NIGHT_BLOOM_LIFT = 3.0;
 
+/**
+ * The street lamps are lamp.glb's now (its Glow material, authored at
+ * emissive strength 5), and it lands AFTER the night pass and the one late
+ * rescan, so its bulbs never joined the drive (P2-E5 left no halo at
+ * Professional). Island tags the Glow meshes isNightEmissive plus
+ * nightBulbAuthored when the fleet lands and asks for one more pass here.
+ * An authored bulb keeps its own strength and colour at every hour (noon and
+ * the low tier unchanged) and takes the same desktop night lift on top.
+ */
+let nightRescanPending = false;
+export function requestNightRescan(): void {
+  nightRescanPending = true;
+}
+
 // Weather fog was authored as flat +0.010 (rain) / +0.005 (grey) ON TOP of the
 // R=50 base density (FOG_DENSITY_X_RADIUS / REFERENCE_RADIUS = 0.009). As the
 // base scales with the world those flat deltas silently changed the WEATHER
@@ -353,6 +367,9 @@ export class EnvironmentCycle {
     base: THREE.Color;
     /** A bulb or lantern (a sphere), not a window pane: P2-E5 lifts these. */
     bulb: boolean;
+    /** A GLB bulb's own emissive strength (lamp.glb Glow), kept at every
+     *  hour with the night lift on top; null for the drive's own bulbs. */
+    authored: number | null;
   }> = [];
   // District beacons (the 'zone-beacon' on each hall's roof), with the
   // colour each was authored in. Their own list, never nightEmissives: a
@@ -701,6 +718,7 @@ export class EnvironmentCycle {
         isLampLight?: boolean;
         isHouseWarmLight?: boolean;
         isNightEmissive?: boolean;
+        nightBulbAuthored?: boolean;
         isPavement?: boolean;
       };
       const l = obj as THREE.Light;
@@ -747,8 +765,10 @@ export class EnvironmentCycle {
       this.seenEmissive.add(mat);
       // Bulbs and lanterns are spheres (street and plaza lamps, door lamps,
       // gate lanterns); window panes are boxes and planes.
-      const bulb = mesh.geometry?.type === 'SphereGeometry';
-      this.nightEmissives.push({ mat, base: mat.emissive.clone(), bulb });
+      // A GLB bulb (lamp.glb Glow) says so itself and keeps its strength.
+      const authored = data.nightBulbAuthored ? mat.emissiveIntensity : null;
+      const bulb = authored !== null || mesh.geometry?.type === 'SphereGeometry';
+      this.nightEmissives.push({ mat, base: mat.emissive.clone(), bulb, authored });
     });
   }
 
@@ -1110,6 +1130,11 @@ export class EnvironmentCycle {
 
   /** Call every frame with the player's world position. */
   public update(deltaTime: number, playerPos: THREE.Vector3, time: number): void {
+    // A GLB fleet tagged after the passes above (lamp.glb's bulbs).
+    if (nightRescanPending) {
+      nightRescanPending = false;
+      this.collectNightAssets();
+    }
     // One-shot late pass for props placed after construction (TownPlanner)
     if (!this.rescanned) {
       this.rescanned = true;
@@ -1368,9 +1393,14 @@ export class EnvironmentCycle {
     // round it (measured: +18.6 L* on the player beside Professional).
     const nightF = 1 - dayFactor;
     const emIntensity = 0.15 + nightF * 1.15;
-    const bulbIntensity = emIntensity + (fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0);
+    const bulbLift = fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0;
+    const bulbIntensity = emIntensity + bulbLift;
     this._c2.set(0xff9c46);
     for (const e of this.nightEmissives) {
+      if (e.authored !== null) {
+        e.mat.emissiveIntensity = e.authored + bulbLift;
+        continue;
+      }
       e.mat.emissiveIntensity = e.bulb ? bulbIntensity : emIntensity;
       e.mat.emissive.copy(e.base).lerp(this._c2, nightF * 0.3);
     }
