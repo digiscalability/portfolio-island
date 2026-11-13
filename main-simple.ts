@@ -255,6 +255,8 @@ export class SimpleApp {
     legS: number;
     /** A9: the view direction the leg leaves on (unit). */
     fromView: THREE.Vector3;
+    /** MOT-06: the camera's orientation as the leg leaves (continuous with the frame before). */
+    fromQuat: THREE.Quaternion;
   } | null = null;
   /** afterIntro has run: the welcome card, if any, is up or already closed. */
   private introSettled = false;
@@ -267,6 +269,9 @@ export class SimpleApp {
   private readonly _tourViewB = new THREE.Vector3();
   private readonly _tourAxis = new THREE.Vector3();
   private readonly _tourQ = new THREE.Quaternion();
+  private readonly _tourToQuat = new THREE.Quaternion();
+  private readonly _tourArcQ = new THREE.Quaternion();
+  private readonly _tourMat = new THREE.Matrix4();
   // Villager line-of-sight probe (firstHitOnly: the terrain's BVH fast path)
   private readonly _tourRay = Object.assign(new THREE.Raycaster(), { firstHitOnly: true });
 
@@ -5609,6 +5614,7 @@ export class SimpleApp {
       held: null,
       legS: 0,
       fromView: new THREE.Vector3(),
+      fromQuat: cam.quaternion.clone(),
     };
     this.holdTourVillager(stops[0]);
     this.tour.legS = this.legDuration(this.tour, stops[0]);
@@ -5787,15 +5793,21 @@ export class SimpleApp {
         Math.sin(Math.PI * e) * 7 +
         this.firstLegLift(tour, e);
       cam.position.copy(this._tourDir).multiplyScalar(r);
-      // A9: the VIEW direction slerps from the leg's first view to the
-      // stop's, so the turn per frame is the leg's turn under the ease
-      // (legDuration keeps its peak at 120 deg/s). Lerping the look POINT
-      // whipped the view while the camera was still close to the player.
-      const toView = this._tourViewB.copy(stop.dir).multiplyScalar(stop.r);
-      toView.subVectors(stop.look, toView).normalize();
-      this.slerpDirs(this._tourViewA, tour.fromView, toView, e);
-      cam.up.copy(this._tourUp.copy(cam.position).normalize());
-      cam.lookAt(this._tourLook.copy(cam.position).add(this._tourViewA));
+      // MOT-06: the ORIENTATION slerps from the camera's own at take-off to
+      // the stop's dwell pose (lookAt with the dwell's up), so both seams are
+      // continuous and the turn per frame is the leg's turn under the ease.
+      // Slerping the view direction and re-deriving it with lookAt spun the
+      // camera ~10 deg/frame where the view passed the nadir (leg 1, 178 deg
+      // from the radial), because lookAt's yaw is undefined straight down.
+      // The slerp runs in a frame carried round the planet with the camera
+      // (arc = fromDir -> stop.dir, eased like the position), so the horizon
+      // stays near level mid-flight instead of rolling by the leg's arc.
+      this.tourStopQuat(this._tourToQuat, stop);
+      const arc = this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir);
+      this._tourToQuat.premultiply(this._tourQ.copy(arc).invert());
+      cam.quaternion.slerpQuaternions(tour.fromQuat, this._tourToQuat, e);
+      cam.quaternion.premultiply(this._tourQ.identity().slerp(arc, e));
+      cam.up.copy(this._tourUp.copy(stop.look).normalize());
       if (k >= 1) this.landTourStop();
     } else {
       // Gentle drift around the stop while the caption is read — held static
@@ -5811,6 +5823,14 @@ export class SimpleApp {
       cam.lookAt(stop.look);
       if (tour.t >= TOUR_DWELL_S) this.advanceTourStop();
     }
+  }
+
+  /** MOT-06: the orientation the dwell gives `stop` (camera at stop.dir × r, looking at stop.look, up = the look point's radial). */
+  private tourStopQuat(out: THREE.Quaternion, stop: TourStop): void {
+    const eye = this._tourLook.copy(stop.dir).multiplyScalar(stop.r);
+    const up = this._tourViewB.copy(stop.look).normalize();
+    this._tourMat.lookAt(eye, stop.look, up);
+    out.setFromRotationMatrix(this._tourMat);
   }
 
   private advanceTourStop(): void {
@@ -5829,6 +5849,7 @@ export class SimpleApp {
     tour.fromDir.copy(cam.position).normalize();
     tour.fromR = cam.position.length();
     tour.fromLook.copy(prev.look);
+    tour.fromQuat.copy(cam.quaternion);
     // The caption stays on the stop being left until the camera lands.
     this.holdTourVillager(tour.stops[tour.idx]);
     tour.legS = this.legDuration(tour, tour.stops[tour.idx]);

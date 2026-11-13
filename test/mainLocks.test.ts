@@ -1964,3 +1964,36 @@ describe('wave 4 P2-A14: the mirror pose follows the shop and Customise', () => 
     expect(s).not.toMatch(/ds:modal[^\n]*setMirrorPose/);
   });
 });
+
+describe('wave 4 MOT-06: the tour turns the camera continuously', () => {
+  test('the flight slerps the orientation, carried round the planet, with no lookAt', () => {
+    const upd = bodyOf(stripped('main-simple.ts'), 'private updateTour(');
+    const fly = upd.slice(
+      upd.indexOf('const k = Math.min(1, tour.t / tour.legS);'),
+      upd.indexOf('} else {'),
+    );
+    expect(fly).toContain('this.tourStopQuat(this._tourToQuat, stop);');
+    expect(fly).toContain('this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir)');
+    expect(fly).toContain('cam.quaternion.slerpQuaternions(tour.fromQuat, this._tourToQuat, e);');
+    expect(fly).toContain('cam.quaternion.premultiply(this._tourQ.identity().slerp(arc, e));');
+    // lookAt is undefined straight down: the view passed the nadir on two legs
+    expect(fly).not.toContain('cam.lookAt(');
+    // the dwell's pose is the one the leg lands on: same eye, target and up
+    const dwell = upd.slice(upd.indexOf('} else {'));
+    expect(dwell).toContain('const up = this._tourUp.copy(stop.look).normalize();');
+    expect(dwell).toContain('cam.lookAt(stop.look);');
+    const q = bodyOf(stripped('main-simple.ts'), 'private tourStopQuat(');
+    expect(q).toContain('this._tourLook.copy(stop.dir).multiplyScalar(stop.r)');
+    expect(q).toContain('this._tourViewB.copy(stop.look).normalize()');
+    expect(q).toContain('this._tourMat.lookAt(eye, stop.look, up);');
+  });
+
+  test('each leg leaves from the camera it has (no step at advanceTourStop or startTour)', () => {
+    expect(bodyOf(stripped('main-simple.ts'), 'private advanceTourStop(')).toContain(
+      'tour.fromQuat.copy(cam.quaternion);',
+    );
+    expect(bodyOf(stripped('main-simple.ts'), 'private startTour(')).toContain(
+      'fromQuat: cam.quaternion.clone(),',
+    );
+  });
+});
