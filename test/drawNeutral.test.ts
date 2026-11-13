@@ -51,6 +51,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type * as THREE from 'three';
+import { Vector3 } from 'three';
 import { beforeAll, describe, expect, test } from 'vitest';
 
 import { Island } from '../Island';
@@ -219,5 +220,63 @@ describe('ink on everything that stands (C4, desktop cel)', () => {
       }
     });
     expect(inkedClutter).toEqual([]);
+  });
+});
+
+describe('the Projects district dioramas (C8)', () => {
+  const tris = (g: THREE.BufferGeometry): number =>
+    (g.getIndex()?.count ?? g.getAttribute('position').count) / 3;
+
+  test('each diorama: 600 triangles or fewer, a 2.3 u footprint, 6.5 u tall or less', () => {
+    for (let i = 0; i < 5; i++) {
+      const parts = Island.dioramaParts(i);
+      const n = parts.reduce((a, g) => a + tris(g), 0);
+      expect(n).toBeLessThanOrEqual(600);
+      for (const g of parts) {
+        g.computeBoundingBox();
+        const b = g.boundingBox!;
+        expect(Math.max(-b.min.x, b.max.x, -b.min.z, b.max.z)).toBeLessThanOrEqual(1.15 + 1e-6);
+        expect(b.max.y).toBeLessThanOrEqual(6.5);
+      }
+    }
+  });
+
+  test('the district: 3k triangles, 3 materials and 15 draws or fewer, ink on', () => {
+    const district = warmIsland.mesh.getObjectByName('projects-dioramas');
+    expect(district).toBeDefined();
+    let draws = 0;
+    let triangles = 0;
+    const mats = new Set<string>();
+    let hulls = 0;
+    district!.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      if (m.userData.isCelHull) {
+        hulls++;
+        draws++;
+        return;
+      }
+      draws += Array.isArray(m.material) ? m.material.length : 1;
+      triangles += tris(m.geometry);
+      for (const x of Array.isArray(m.material) ? m.material : [m.material]) mats.add(x.uuid);
+    });
+    expect(draws).toBeLessThanOrEqual(15);
+    expect(triangles).toBeLessThanOrEqual(3000);
+    expect(mats.size).toBeLessThanOrEqual(3);
+    expect(hulls).toBeGreaterThan(0);
+  });
+
+  test('the five work-site anchors keep their names, and nothing else hangs off them', () => {
+    const names: string[] = [];
+    warmIsland.mesh.traverse((o) => {
+      if (/^construction_\d+$/.test(o.name)) {
+        names.push(o.name);
+        expect(o.children.length).toBe(0);
+        // Plumb (C0's lock): local +Y is the radial up.
+        const up = new Vector3(0, 1, 0).applyQuaternion(o.quaternion);
+        expect(up.angleTo(o.position.clone().normalize())).toBeLessThan(1e-6);
+      }
+    });
+    expect(names).toEqual([0, 1, 2, 3, 4].map((i) => `construction_${i}`));
   });
 });

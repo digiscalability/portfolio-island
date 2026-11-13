@@ -378,7 +378,7 @@ function collectHullTargets(
 
 /** addGroupHulls' opt-in for ?phoneink=1: pass it only from architecture
  *  that never moves, hides or is swapped (halls, houses, stalls, gates,
- *  zone markers, fountain, bandstand, kiosks, quest mailboxes, project boards). */
+ *  zone markers, fountain, bandstand, kiosks, quest mailboxes, dioramas). */
 export const STATIC_INK = { staticInk: true } as const;
 
 let phoneInkParam: boolean | null = null;
