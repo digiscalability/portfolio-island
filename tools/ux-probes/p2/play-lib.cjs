@@ -210,9 +210,12 @@ async function walkTo(page, target, { within = 2.0, maxMs = 60000, run = false, 
   let lastP = null;
   let stallMs = 0;
   const path = [];
+  // A11's contract: html[data-run-key] 'shift' means hold Shift to run; absent
+  // or 'space' means hold Space (the wave-2 and 58c8849 builds).
+  const runKey = run ? ((await page.evaluate(() => document.documentElement.getAttribute('data-run-key'))) === 'shift' ? 'Shift' : ' ') : null;
   try {
     await page.keyboard.down('w');
-    if (run) await page.keyboard.down(' ');
+    if (run) await page.keyboard.down(runKey);
     while (Date.now() - t0 < maxMs) {
       const s = await page.evaluate((tt) => {
         const g = window.__g;
@@ -232,7 +235,7 @@ async function walkTo(page, target, { within = 2.0, maxMs = 60000, run = false, 
       await page.waitForTimeout(sample);
     }
   } finally {
-    if (run) await page.keyboard.up(' ').catch(() => {});
+    if (run) await page.keyboard.up(runKey).catch(() => {});
     await page.keyboard.up('w').catch(() => {});
   }
   const last = path[path.length - 1] || { d: null };
