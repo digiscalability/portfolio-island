@@ -74,8 +74,9 @@ describe('framingFov', () => {
 });
 
 describe('A9: the tour rail paces itself', () => {
-  test('legs: clamp(1.6 + arc x 0.035, 2.6, 3.6)', () => {
-    expect(TOUR_LEG_MAX_S).toBe(3.6);
+  test('legs: clamp(1.6 + arc x 0.035, 2.6, 3.35)', () => {
+    // A9: 3.35 s keeps the full tour under its 44 s bar (2026-11-14 call).
+    expect(TOUR_LEG_MAX_S).toBe(3.35);
     expect(tourLegDuration(0)).toBe(TOUR_LEG_MIN_S);
     expect(tourLegDuration(40)).toBeCloseTo(3.0, 9);
     expect(tourLegDuration(200)).toBe(TOUR_LEG_MAX_S);
@@ -116,10 +117,12 @@ describe('A9: the tour rail paces itself', () => {
   test('the full tour: the dwell is at its 4.0 s floor and the legs keep their clamp', () => {
     expect(TOUR_DWELL_S).toBe(4.0);
     const legs = FULL.reduce((sum, a) => sum + tourLegDuration(a), 0);
-    // 2.6 + 5 x 3.6: five of six legs sit at the 3.6 s ceiling (2026-11-13 call).
-    expect(legs).toBeCloseTo(20.6, 1);
-    // 44.6 s planned: 0.6 s over the 44 s bar even at the new ceiling. Recorded, not hidden.
-    expect(total(FULL)).toBeCloseTo(44.6, 1);
+    // 2.6 + 5 x 3.35: five of six legs sit at the 3.35 s ceiling (2026-11-14 call).
+    expect(legs).toBeCloseTo(19.35, 2);
+    // A9, the 44 s bar: 43.35 s planned; fm d-tour measures 43.5 s at ?hour=12
+    // (the run adds about 0.15-0.3 s), so the planned total keeps 0.5 s of margin.
+    expect(total(FULL)).toBeCloseTo(43.35, 2);
+    expect(total(FULL)).toBeLessThanOrEqual(43.5);
   });
 
   test("captions: the Professional stop plus 'Stop n of 6 · ' is exactly 110 characters", () => {
