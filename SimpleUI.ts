@@ -9939,7 +9939,7 @@ export class SimpleUI {
         ${card(
           `
           <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:12px;color:#aab;">● paused</span></h3>
-          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront', 820, 384)}
+          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront', 808, 384)}
           <p style="margin:6px 0;font-size:14px;">Direct-to-consumer chocolate brand —
           the storefront, brand system, and content pipeline, end to end. Paused.</p>
           <div style="margin-top:6px;">${link('https://chocomate.au', '↗ chocomate.au', { small: true })}</div>
