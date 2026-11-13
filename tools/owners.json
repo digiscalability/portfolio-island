@@ -248,7 +248,7 @@
       "via": "read",
       "files": ["NpcChat.ts"],
       "where": "serverModeration 322-329 at 58c8849",
-      "why": "AI_NPCS is append-only (the persona roster order)"
+      "why": "AI_NPCS is append-only (the persona roster order), and the Sailor's door code"
     },
     {
       "test": "islandRadius",
