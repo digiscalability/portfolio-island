@@ -1599,21 +1599,33 @@ function modeRejudge(args) {
  * The main chunk's size (wave-2 amendments). Wave 1 took it over Vite's
  * 1,000 kB chunk warning (vite.config.ts chunkSizeWarningLimit, which stays
  * where it is). kB are Vite's: bytes / 1000, gzip at zlib's default level.
- * - main: the merged wave-1 main (8662b27), the baseline every report is
- *   held against; beforeWave1 is main before it (d5e0e96), for the record.
+ * - main: wave-2 main (f79c38c; 29edc9b builds the same chunk), the
+ *   baseline every delta is reported against (wave-3 amendments, bundle).
+ *   wave1 (8662b27) and beforeWave1 (d5e0e96) are kept for the record.
  * - gzipBudgetKB: the plan's '+50 KB transferred before the card' (the main
- *   chunk is fetched before the card); the gating half of the check.
+ *   chunk is fetched before the card); the gating half of the check. The
+ *   budget stays anchored at budgetBase (wave-1 main), so rebasing main
+ *   does not hand the budget back: wave 2 used +21.97 kB of it.
  * - lazyCandidate: the largest whole module in the chunk that nothing needs
  *   before the welcome card, measured on ux/w2-perf-gate by minifying each
  *   module of the chunk on its own (esbuild, then gzip). GameScene.ts,
  *   SimpleUI.ts, Island.ts and main-simple.ts are 69% of the chunk and are
- *   not candidates as whole files. Its owner moves it in wave 3.
+ *   not candidates as whole files. A moves it in wave 3 (amendments, A).
+ * - nextCandidate: the one the report names for wave 4.
  */
 const BUNDLE = {
   warnKB: 1000,
-  main: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
+  main: { rawKB: 1073.23, gzipKB: 333.82, at: 'wave-2 main (f79c38c)' },
+  wave1: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
   beforeWave1: { rawKB: 930.89, gzipKB: 288.04, at: 'main before wave 1 (d5e0e96)' },
   gzipBudgetKB: 50,
+  budgetBase: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
+  nextCandidate: {
+    module: 'Chat.ts',
+    minKB: 7.0,
+    gzipKB: 2.77,
+    how: "once SimpleUI.ts stops importing Chat's VOICE_MAX_MS (wave 4)",
+  },
   lazyCandidate: {
     module: 'Multiplayer.ts',
     minKB: 14.07,
@@ -1637,15 +1649,17 @@ function bundleSize(dist) {
 }
 /**
  * A main chunk against a baseline ({ rawKB, gzipKB }; BUNDLE.main unless side
- * A of an A/B is given). pass: gzip grew by no more than gzipBudgetKB.
+ * A of an A/B is given). The deltas are against that baseline. pass: gzip is
+ * no more than gzipBudgetKB over BUNDLE.budgetBase (budgetUsedKB).
  * overWarning is reported, never gating: the chunk was already over on main.
  */
 function bundleCheck(size, base = BUNDLE.main) {
   if (!size) return null;
   const deltaRawKB = round(size.rawKB - base.rawKB, 2);
   const deltaGzipKB = round(size.gzipKB - base.gzipKB, 2);
+  const budgetUsedKB = round(size.gzipKB - BUNDLE.budgetBase.gzipKB, 2);
   const overWarningKB = round(size.rawKB - BUNDLE.warnKB, 2);
-  return { ...size, base, deltaRawKB, deltaGzipKB, overWarning: overWarningKB > 0, overWarningKB, pass: deltaGzipKB <= BUNDLE.gzipBudgetKB };
+  return { ...size, base, deltaRawKB, deltaGzipKB, budgetUsedKB, overWarning: overWarningKB > 0, overWarningKB, pass: budgetUsedKB <= BUNDLE.gzipBudgetKB };
 }
 
 /** A dist's entry bundle (main-<hash>.js), or its folder name when it has none. */
@@ -2205,9 +2219,11 @@ async function modeReport(args) {
   if (bundle) {
     const m = BUNDLE.main;
     const c = BUNDLE.lazyCandidate;
-    check(`bundle: main chunk gzip kB against main (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB }, `<= main ${m.gzipKB} + ${BUNDLE.gzipBudgetKB} (${m.at})`);
-    check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
-    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `best lazy-load candidate: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners})`, true);
+    const n = BUNDLE.nextCandidate;
+    const b = BUNDLE.budgetBase;
+    check(`bundle: main chunk gzip kB inside the budget (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB, budgetUsed: bundle.budgetUsedKB }, `<= ${b.gzipKB} + ${BUNDLE.gzipBudgetKB} (${b.at}); delta against ${m.at} ${m.gzipKB}`);
+    check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB} (${m.at}); wave 1 ${BUNDLE.wave1.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
+    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `lazy-load candidate this wave: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners}); next for wave 4: ${n.module}, ${n.minKB} kB, ${n.gzipKB} kB gzip`, true);
   } else check('bundle: main chunk size (report-only)', null, 'no dist on disk (a --base run)', 'reported with --dist', true);
   const gating = data.checks.filter((c) => !c.reportOnly);
   data.verdict = data.leaks.length ? 'fail-closed' : gating.some((c) => c.pass === false) ? 'fail' : data.signUpMissing ? 'inconclusive' : 'pass';

@@ -907,6 +907,16 @@ level) against the merged wave-1 main (`BUNDLE.main`):
 | main before wave 1 (d5e0e96) | 930.89 | 288.04 |
 | wave-1 main (8662b27), the baseline | 1,004.45 | 311.85 |
 | ux/w2-perf-gate | 1,005.55 | 312.11 |
+| wave-2 main (f79c38c), the baseline from wave 3 | 1,073.23 | 333.82 |
+
+Wave 3 (amendments, bundle) rebases `BUNDLE.main` to wave-2 main f79c38c
+(measured on `w2-int`'s dist, the same chunk as 29edc9b). Deltas are
+reported against it; `BUNDLE.wave1` and `BUNDLE.beforeWave1` stay for the
+record. The +50 kB gzip budget stays anchored at wave-1 main
+(`BUNDLE.budgetBase`), so the rebase does not hand it back: wave 2 used
++21.97 kB of it (`budgetUsedKB`), leaving 28.03 kB. The report names
+`Multiplayer.ts` as this wave's move (A) and `Chat.ts` as the next
+candidate for wave 4 (`BUNDLE.nextCandidate`).
 
 One line gates: gzip no more than main + 50 kB (the plan's "+50 KB
 transferred before the card"; the chunk is fetched before the card). Raw
