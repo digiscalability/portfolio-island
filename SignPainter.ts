@@ -267,3 +267,17 @@ export function createSignTexture(specs: SignSpec[]): THREE.CanvasTexture | null
   }
   return tex;
 }
+
+/**
+ * The Projects district's five boards (C8, decision 14): today's five sites
+ * in WORK_SITES order, by the Public Fact Sheet's names and statuses. Ammi's
+ * recipes, never "grandmother"; no board calls DigiScalability a studio.
+ * Abbas checks these statuses against the Fact Sheet before C8 merges.
+ */
+export const PROJECT_BOARDS: ReadonlyArray<{ name: string; status: string }> = [
+  { name: 'RankPilot', status: 'Pre-launch' },
+  { name: 'ChocoMate', status: 'Paused' },
+  { name: 'DigiScalability', status: 'This island' },
+  { name: "Bano's Cookbook", status: "Ammi's recipes" },
+  { name: 'Insta Services API', status: 'Modernising' },
+];

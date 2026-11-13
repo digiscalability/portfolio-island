@@ -11,6 +11,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   createSignTexture,
   paintSign,
+  PROJECT_BOARDS,
   SIGN_COLORS,
   SIGN_FONT_FAMILY,
   SIGN_SIZES,
@@ -173,5 +174,37 @@ describe('the late face (the D12 contract)', () => {
     expect(tex!.version).toBeGreaterThan(v0); // needsUpdate: the same texture
     expect(spy).not.toHaveBeenCalled(); // the repaint draws nothing
     expect(ctorDraws).toBe(8); // CanvasTexture: Texture + Source uuids, no more
+  });
+});
+
+describe('the Projects boards (C8, decision 14)', () => {
+  test('the five board strings equal the decision-14 table, in site order', () => {
+    expect(PROJECT_BOARDS).toEqual([
+      { name: 'RankPilot', status: 'Pre-launch' },
+      { name: 'ChocoMate', status: 'Paused' },
+      { name: 'DigiScalability', status: 'This island' },
+      { name: "Bano's Cookbook", status: "Ammi's recipes" },
+      { name: 'Insta Services API', status: 'Modernising' },
+    ]);
+  });
+
+  test('no board says studio or grandmother', () => {
+    const all = PROJECT_BOARDS.map((b) => `${b.name} ${b.status}`.toLowerCase()).join(' ');
+    expect(all).not.toContain('studio');
+    expect(all).not.toContain('grandmother');
+  });
+
+  test('every board fits its row on the fallback face without shrinking past the floor', () => {
+    const r = recordingCtx();
+    PROJECT_BOARDS.forEach((b, i) =>
+      paintSign(
+        r.ctx,
+        { kind: 'plaque', text: b.name, sub: b.status, band: 0xc9a06a },
+        signFamily(true),
+        0,
+        i * 72,
+      ),
+    );
+    expect(r.ops.filter((o) => o.startsWith('fillText(')).length).toBe(10);
   });
 });

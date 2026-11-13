@@ -26,7 +26,7 @@ import { DAY_FACTOR_UNIFORM, DUSK_FACTOR_UNIFORM, requestNightRescan } from './E
 import { fx } from './FxBudget';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
-import { createSignTexture, type SignSpec } from './SignPainter';
+import { createSignTexture, PROJECT_BOARDS } from './SignPainter';
 import { SimplePlayer } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import TextureGenerator from './TextureGenerator';
@@ -4003,17 +4003,11 @@ export class Island {
       [1.55 + SHIFT_PROJECTS, 0.66],
       [1.25 + SHIFT_PROJECTS, 0.72],
     ];
-    // One per site — names the world after the projects the panel describes.
-    const PROJECT_LABELS = [
-      'RankPilot',
-      'ChocoMate',
-      'DigiScalability',
-      "Bano's Cookbook",
-      'Insta Services',
-    ];
+    // One per site: the projects the panel describes, by the Public Fact
+    // Sheet's names (decision 14; SignPainter.PROJECT_BOARDS).
     const projectsLon = DISTRICTS.find((d) => d.id === 'projects')?.lon ?? 1.25 + SHIFT_PROJECTS;
     for (let i = 0; i < WORK_SITES.length; i++) {
-      const block = this.createConstructionBlock(PROJECT_LABELS[i], i === 0, i);
+      const block = this.createConstructionBlock(i);
       const pos = this.claimOffStreet(
         this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]),
         this.arc(6),
@@ -4031,15 +4025,15 @@ export class Island {
       block.castShadow = true;
       block.receiveShadow = true;
       block.name = `construction_${i}`;
-      // The board faces the avenue (the nearest street, else the district's
-      // plaza): a yaw on the sign's pivot inside the block, so the block's
-      // own plumb quaternion above stays exactly as it is. No draws.
-      const sign = block.getObjectByName('project-sign');
-      if (sign) {
-        const here = block.position.clone().normalize();
-        const street = this.nearestStreetDir(here, this.arc(25));
-        sign.rotation.y = this.localYawToward(block, street ?? this.dirAt(projectsLon, ZONE_LAT));
-      }
+      // The diorama and its board face the avenue (the nearest street, else
+      // the district's plaza): a yaw inside the site, so the block's own
+      // plumb quaternion above stays exactly as it is. No draws.
+      const here = block.position.clone().normalize();
+      const street = this.nearestStreetDir(here, this.arc(25));
+      block.userData.facingYaw = this.localYawToward(
+        block,
+        street ?? this.dirAt(projectsLon, ZONE_LAT),
+      );
       constructions.add(block);
     }
     // After plaque #0, the process's first Sprite: a cold build pays three's
@@ -4672,6 +4666,12 @@ export class Island {
     // corrected positions.
     // (flowers omitted — instanced blooms are origin-anchored InstancedMeshes
     // that seatGroupsOnTerrain skips; each bloom is grounded at scatter time.)
+    // The work sites are empty anchors now (C8), so seatGroupsOnTerrain
+    // below skips them; seat them as it seated the old blocks (their base was
+    // at the anchor), so construction_${i} keeps main's positions, then build
+    // the district's dioramas on them.
+    this.seatEmptyAnchors(constructions);
+    this.buildProjectDioramas(constructions);
     this.seatGroupsOnTerrain(root, [
       buildings,
       houses,
@@ -8761,67 +8761,27 @@ export class Island {
     return group;
   }
 
+  /** Plaque board size (u). The 320x72 canvas row at 2.6 x 0.585 puts the
+   *  main line's cap height at about 0.23 u (C6's bar is 0.21 u). */
+  static readonly PLAQUE_W = 2.6;
+  static readonly PLAQUE_H = 0.585;
+  /** The board stands 1.2 u in front of the 2.3 u site's front edge. */
+  static readonly SIGN_Z = 1.15 + 1.2;
+  /** The board's bottom above the anchor: 1.0 u above the ground, which is
+   *  0.05 u above the seated anchor. */
+  private static readonly SIGN_BOTTOM = 1.05;
+  /** Seeded draws the old block's body took (C8): the timber and blueprint
+   *  storeys, the scaffold and, on site #0, the crane. MEASURED by
+   *  drawNeutral's census, cold and warm: 112 on #0 and 72 on the others,
+   *  of which the site's Group (kept) is 4. */
+  private static readonly SITE_BODY_DRAWS = [108, 68, 68, 68, 68];
+
   /** The SpriteMaterial plaque #0's kept Sprite is built with, made once on
    *  a local stream so it takes no seeded draws itself. */
   private static keptSpriteMat: THREE.SpriteMaterial | null = null;
   private static keptSpriteMaterial(): THREE.SpriteMaterial {
     Island.keptSpriteMat ??= withLocalRng(() => new THREE.SpriteMaterial(), 0x5917e000);
     return Island.keptSpriteMat;
-  }
-
-  /** Plaque board size (u). The 320x72 canvas at 2.6 x 0.585 puts the main
-   *  line's cap height at about 0.23 u (C6's bar is 0.21 u). */
-  static readonly PLAQUE_W = 2.6;
-  static readonly PLAQUE_H = 0.585;
-  /** The board stands 1.2 u in front of the 2.3 u site's front edge. */
-  static readonly SIGN_Z = 1.15 + 1.2;
-
-  /**
-   * A project board on two posts (C6): the SignPainter face front and back
-   * of a thin timber slab, its bottom 1.0 u above the ground and 1.2 u in
-   * front of the site (local +Z), under a pivot named 'project-sign' that
-   * the caller turns to face the avenue. Build it on a local stream.
-   */
-  private buildProjectSign(specs: SignSpec[]): THREE.Group | null {
-    const tex = createSignTexture(specs);
-    if (!tex) return null;
-    const pivot = new THREE.Group();
-    pivot.name = 'project-sign';
-    const W = Island.PLAQUE_W;
-    const H = Island.PLAQUE_H;
-    const bottom = 1.0;
-    const timber = Materials.createPBRMaterial({ color: 0x6d4a2f, roughness: 0.85 });
-    const face = new THREE.MeshBasicMaterial({ map: tex });
-    // BoxGeometry groups: +x, -x, +y, -y, +z (front), -z (back, reads
-    // correctly from behind).
-    const board = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.06), [
-      timber,
-      timber,
-      timber,
-      timber,
-      face,
-      face,
-    ]);
-    board.position.set(0, bottom + H / 2, Island.SIGN_Z);
-    board.name = 'project-board';
-    board.raycast = () => {};
-    pivot.add(board);
-    // The posts run 0.4 u into the ground, so a dip in front of the site
-    // never shows a floating foot.
-    const postLen = bottom + H + 0.4;
-    const postAt = (x: number): THREE.BufferGeometry =>
-      new THREE.CylinderGeometry(0.06, 0.06, postLen, 8).translate(
-        x,
-        postLen / 2 - 0.4,
-        Island.SIGN_Z - 0.06,
-      );
-    const postGeo = mergeGeometries([postAt(-W / 2 + 0.15), postAt(W / 2 - 0.15)]);
-    const posts = new THREE.Mesh(postGeo, timber);
-    posts.castShadow = true;
-    posts.raycast = () => {};
-    pivot.add(posts);
-    addGroupHulls(pivot, 0.3, () => true, STATIC_INK);
-    return pivot;
   }
 
   /** The yaw about an object's own local up (+Y) that turns its local +Z
@@ -8835,97 +8795,356 @@ export class Island {
     return Math.atan2(to.x, to.z);
   }
 
-  private createConstructionBlock(label?: string, withCrane = false, index = 0): THREE.Group {
+  /**
+   * One Projects work site's anchor (C8): an empty Group that the loop names
+   * construction_${i}, whose position GameScene's collider reads. The old
+   * block's body and plaque are gone; their seeded draws are burned here, in
+   * the order they were taken, and the dioramas are built after placement on
+   * a local stream (buildProjectDioramas).
+   */
+  private createConstructionBlock(index: number): THREE.Group {
     const group = new THREE.Group();
-    // A half-built workshop, not a grey concrete cube. Finished timber lower
-    // storey + a narrower "blueprint blue" upper storey still going up, so the
-    // Projects district reads as an ACTIVE build site — matching the
-    // "currently building" story the panel tells — instead of five anonymous
-    // grey boxes.
-    const timberMat = Materials.createPBRMaterial({ color: 0x9c774a, roughness: 0.85 });
-    const blueprintMat = Materials.createPBRMaterial({ color: 0x2f5aa0, roughness: 0.55 });
-    // Foundation slab (timber)
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.3, 2.3), timberMat);
-    slab.position.y = 0.15;
-    slab.receiveShadow = true;
-    group.add(slab);
-    // Lower storey — finished timber frame
-    const lower = new THREE.Mesh(new THREE.BoxGeometry(2, 1.6, 2), timberMat);
-    lower.position.set(0, 1.1, 0);
-    lower.castShadow = true;
-    lower.receiveShadow = true;
-    group.add(lower);
-    // Upper storey — blueprint-blue, narrower + set up: the part still "under
-    // construction"
-    const upper = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.2, 1.7), blueprintMat);
-    upper.position.set(0, 2.5, 0);
-    upper.castShadow = true;
-    upper.receiveShadow = true;
-    group.add(upper);
-    // Scaffolding — safety-orange poles + a couple of cross-rails
-    const poleMat = Materials.createTrimMaterial(0xd98a2b);
-    const poleGeom = new THREE.CylinderGeometry(0.05, 0.05, 4, 8);
-    for (let i = 0; i < 4; i++) {
-      const pole = new THREE.Mesh(poleGeom, poleMat);
-      const x = (i % 2) * 1.8 - 0.9;
-      const z = Math.floor(i / 2) * 1.8 - 0.9;
-      pole.position.set(x, 2, z);
-      pole.castShadow = true;
-      pole.receiveShadow = true;
-      group.add(pole);
-    }
-    const railGeom = new THREE.BoxGeometry(1.9, 0.06, 0.06);
-    for (const rz of [-0.9, 0.9]) {
-      const rail = new THREE.Mesh(railGeom, poleMat);
-      rail.position.set(0, 2.7, rz);
-      group.add(rail);
-    }
-    // Tower-crane silhouette — landmark for the hero (RankPilot) lot. Reads as
-    // "being built" from across the district and gives Projects a skyline.
-    if (withCrane) {
-      const craneMat = Materials.createTrimMaterial(0xe0b030);
-      const mast = new THREE.Mesh(new THREE.BoxGeometry(0.2, 6.5, 0.2), craneMat);
-      mast.position.set(1.3, 3.25, 1.3);
-      mast.castShadow = true;
-      group.add(mast);
-      const jib = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.18, 0.18), craneMat);
-      jib.position.set(0.1, 6.2, 1.3);
-      jib.castShadow = true;
-      group.add(jib);
-      const cable = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.02, 0.02, 2.2, 6),
-        Materials.createTrimMaterial(0x333333),
-      );
-      cable.position.set(-0.9, 5.1, 1.3);
-      group.add(cable);
-      const load = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 0.45), timberMat);
-      load.position.set(-0.9, 3.85, 1.3);
-      load.castShadow = true;
-      group.add(load);
-    }
-    // Name plaque: connect the world to the content (each block is labelled
-    // with its project). C6: a SignPainter board on two posts in front of the
-    // block, not a floating camera-facing sprite. The board's pivot is
-    // 'project-sign'; the WORK_SITES loop turns it to face the avenue.
-    if (label) {
-      // SEEDED WINDOW. The old plaque took 12 draws for its CanvasTexture
-      // and SpriteMaterial, then its Sprite: 4, and on the process's FIRST
-      // Sprite 8 more for three's shared sprite geometry (all MEASURED by
-      // drawNeutral, cold and warm). Plaque #0 still constructs one Sprite
-      // (never added) so that shared geometry is minted here in a cold build
-      // and nowhere later; the others burn the Sprite's 4.
-      burnDraws(Island.PLAQUE_TEXTURE_DRAWS);
-      if (index === 0) {
-        new THREE.Sprite(Island.keptSpriteMaterial());
-      } else {
-        burnDraws(Island.PLAQUE_SPRITE_DRAWS);
-      }
-      withLocalRng(() => {
-        const sign = this.buildProjectSign([{ kind: 'plaque', text: label, band: PROJECTS_BAND }]);
-        if (sign) group.add(sign);
-      }, 0x91a00000 + index);
+    burnDraws(Island.SITE_BODY_DRAWS[index] ?? 68);
+    // The old plaque (C6): its texture's 12, then its Sprite. Plaque #0
+    // still constructs the process's first Sprite (never added), so three's
+    // shared sprite geometry is minted here in a cold build and nowhere later.
+    burnDraws(Island.PLAQUE_TEXTURE_DRAWS);
+    if (index === 0) {
+      new THREE.Sprite(Island.keptSpriteMaterial());
+    } else {
+      burnDraws(Island.PLAQUE_SPRITE_DRAWS);
     }
     return group;
+  }
+
+  /** Seat empty, surface-positioned anchors as seatGroupsOnTerrain seats a
+   *  prop whose base is at its origin. Pure math, no draws. */
+  private seatEmptyAnchors(group: THREE.Group): void {
+    const SINK = 0.05;
+    for (const child of group.children) {
+      if (child.position.lengthSq() < 1) continue;
+      const dir = child.position.clone().normalize();
+      const sampled = this.sampleSurfaceByDirection(dir, 0);
+      const delta = sampled.position.dot(dir) - SINK - child.position.dot(dir);
+      if (Math.abs(delta) > 0.02) child.position.addScaledVector(dir, delta);
+    }
+  }
+
+  /**
+   * The Projects district (C8): one diorama per work site, each showing its
+   * project's true state (Public Fact Sheet; decision 14), and a SignPainter
+   * board in front of each. Built once, on a local stream, after the anchors
+   * are seated:
+   * - every diorama is primitives in vertex colour, merged across the whole
+   *   district into ONE toon mesh (one draw, one ink hull);
+   * - the five boards share one 320x360 atlas canvas (five 320x72 rows: the
+   *   old plaques' memory) on one MeshBasic mesh, unlit so they read at
+   *   night.
+   * Each diorama sits on the 2.3 u slab, 6.5 u tall at most and under 600
+   * triangles; the board is 1.2 u in front, its bottom 1.0 u above the ground.
+   */
+  private buildProjectDioramas(constructions: THREE.Group): void {
+    const sites = constructions.children.filter((c) => /^construction_\d+$/.test(c.name));
+    if (!sites.length) return;
+    withLocalRng(() => {
+      const body: THREE.BufferGeometry[] = [];
+      const faces: THREE.BufferGeometry[] = [];
+      const local = new THREE.Matrix4();
+      const yawM = new THREE.Matrix4();
+      sites.forEach((site, i) => {
+        site.updateMatrix();
+        yawM.makeRotationY((site.userData.facingYaw as number | undefined) ?? 0);
+        local.multiplyMatrices(site.matrix, yawM);
+        for (const g of [...Island.dioramaParts(i), ...Island.boardFrame()]) {
+          body.push(g.applyMatrix4(local));
+        }
+        for (const f of Island.boardFaces(i, sites.length)) faces.push(f.applyMatrix4(local));
+      });
+      const merged = mergeGeometries(body);
+      if (!merged) return;
+      const bodyMat = Materials.createPBRMaterial({ color: 0xffffff, roughness: 0.85 });
+      bodyMat.vertexColors = true;
+      const district = new THREE.Group();
+      district.name = 'projects-dioramas';
+      const dioramas = new THREE.Mesh(merged, bodyMat);
+      dioramas.name = 'projects-diorama-body';
+      dioramas.castShadow = true;
+      dioramas.receiveShadow = true;
+      dioramas.raycast = () => {};
+      district.add(dioramas);
+      const tex = createSignTexture(
+        PROJECT_BOARDS.slice(0, sites.length).map((b) => ({
+          kind: 'plaque' as const,
+          text: b.name,
+          sub: b.status,
+          band: PROJECTS_BAND,
+        })),
+      );
+      const faceGeo = tex ? mergeGeometries(faces) : null;
+      if (tex && faceGeo) {
+        const boards = new THREE.Mesh(faceGeo, new THREE.MeshBasicMaterial({ map: tex }));
+        boards.name = 'projects-board-faces';
+        boards.raycast = () => {};
+        district.add(boards);
+      }
+      // Ink on the dioramas, the board frames and the posts; the painted
+      // faces keep a clean edge.
+      addGroupHulls(district, 0.3, (m) => m.name !== 'projects-board-faces', STATIC_INK);
+      constructions.add(district);
+    }, 0x9d10a000);
+  }
+
+  /** A primitive with every vertex in one colour (sRGB hex). */
+  private static tint(geo: THREE.BufferGeometry, hex: number): THREE.BufferGeometry {
+    const c = new THREE.Color(hex);
+    const n = geo.getAttribute('position').count;
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      col[i * 3] = c.r;
+      col[i * 3 + 1] = c.g;
+      col[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return geo;
+  }
+
+  /**
+   * The five dioramas, in site order, each in its site's frame (+Z toward
+   * the avenue, the slab's top at y 0.3). The states are the Public Fact
+   * Sheet's: RankPilot pre-launch (its scaffold tarp still on), ChocoMate
+   * paused (shutters down), DigiScalability the island itself (a desk with a
+   * globe and its moon), Bano's Cookbook Ammi's recipes (a cottage window and
+   * an open recipe book), Insta Services API a workshop with a gear sign.
+   * Public for the triangle and footprint budget test.
+   */
+  static dioramaParts(site: number): THREE.BufferGeometry[] {
+    const T = Island.tint;
+    const B = (w: number, h: number, d: number): THREE.BufferGeometry =>
+      new THREE.BoxGeometry(w, h, d);
+    const Cyl = (rt: number, rb: number, h: number, seg: number): THREE.BufferGeometry =>
+      new THREE.CylinderGeometry(rt, rb, h, seg);
+    const top = 0.3;
+    // The slab, with a skirt 0.3 u into the ground for slopes.
+    const out: THREE.BufferGeometry[] = [T(B(2.3, 0.6, 2.3), 0x9c774a)];
+    const orange = 0xd98a2b;
+    switch (site) {
+      case 0: {
+        // RankPilot: a radar mast, its scaffold and tarp still on.
+        out.push(T(Cyl(0.16, 0.26, 5.4, 8).translate(0, top + 2.7, 0), 0xe9e4da));
+        out.push(
+          T(
+            Cyl(0.6, 0.12, 0.25, 8)
+              .rotateX(Math.PI / 2 - 0.35)
+              .translate(0, top + 5.55, 0.12),
+            0xd3dae2,
+          ),
+        );
+        for (const [x, z] of [
+          [-0.55, -0.55],
+          [0.55, -0.55],
+          [-0.55, 0.55],
+          [0.55, 0.55],
+        ]) {
+          out.push(T(B(0.07, 3.6, 0.07).translate(x, top + 1.8, z), orange));
+        }
+        for (const y of [1.6, 3.2]) {
+          out.push(T(B(1.17, 0.06, 0.06).translate(0, top + y, 0.55), orange));
+          out.push(T(B(1.17, 0.06, 0.06).translate(0, top + y, -0.55), orange));
+          out.push(T(B(0.06, 0.06, 1.17).translate(0.55, top + y, 0), orange));
+          out.push(T(B(0.06, 0.06, 1.17).translate(-0.55, top + y, 0), orange));
+        }
+        out.push(T(B(1.0, 2.6, 1.0).translate(0, top + 1.3, 0), 0x3f7f8c)); // the tarp
+        break;
+      }
+      case 1: {
+        // ChocoMate: a kiosk with its shutters down.
+        out.push(T(B(1.8, 1.5, 1.3).translate(0, top + 0.75, -0.1), 0x7a4a2e));
+        out.push(T(B(2.0, 0.12, 1.6).translate(0, top + 1.56, -0.05), 0x5a3a26));
+        out.push(T(B(1.5, 0.9, 0.05).translate(0, top + 0.85, 0.57), 0x9aa3ad));
+        for (const y of [0.55, 0.75, 0.95, 1.15]) {
+          out.push(T(B(1.5, 0.04, 0.07).translate(0, top + y, 0.58), 0x6f7882));
+        }
+        for (let k = 0; k < 5; k++) {
+          out.push(
+            T(
+              B(0.36, 0.05, 0.6)
+                .rotateX(0.35)
+                .translate(-0.72 + k * 0.36, top + 1.42, 0.85),
+              k % 2 ? 0xe9e1d0 : 0xb5523b,
+            ),
+          );
+        }
+        break;
+      }
+      case 2: {
+        // DigiScalability: a desk with a globe and its orbiting moon.
+        out.push(T(B(1.6, 0.08, 0.9).translate(0, top + 0.8, 0), 0xb08a5a));
+        for (const [x, z] of [
+          [-0.72, -0.38],
+          [0.72, -0.38],
+          [-0.72, 0.38],
+          [0.72, 0.38],
+        ]) {
+          out.push(T(B(0.07, 0.8, 0.07).translate(x, top + 0.4, z), 0x6d4a2f));
+        }
+        out.push(T(Cyl(0.05, 0.12, 0.35, 6).translate(0, top + 1.01, 0), 0x6d4a2f));
+        const gy = top + 1.6;
+        out.push(T(new THREE.SphereGeometry(0.42, 12, 8).translate(0, gy, 0), 0x3f7fc4));
+        out.push(
+          T(
+            new THREE.TorusGeometry(0.75, 0.015, 3, 20)
+              .rotateX(Math.PI / 2 - 0.35)
+              .translate(0, gy, 0),
+            0xe6e2d8,
+          ),
+        );
+        out.push(
+          T(new THREE.SphereGeometry(0.12, 8, 6).translate(0.75, gy + 0.05, 0.05), 0xe6e2d8),
+        );
+        break;
+      }
+      case 3: {
+        // Bano's Cookbook: a cottage window and a big open recipe book.
+        out.push(T(B(2.0, 1.9, 0.35).translate(0, top + 0.95, -0.6), 0xe8d9bf));
+        out.push(
+          T(
+            Cyl(0.5, 0.5, 2.2, 3)
+              .rotateZ(Math.PI / 2)
+              .translate(0, top + 2.05, -0.6),
+            0xa0523d,
+          ),
+        );
+        const frame = 0x6d4a2f;
+        out.push(T(B(0.8, 0.6, 0.04).translate(0, top + 1.15, -0.41), 0xf3d38a));
+        out.push(T(B(0.94, 0.07, 0.07).translate(0, top + 1.48, -0.4), frame));
+        out.push(T(B(0.94, 0.07, 0.07).translate(0, top + 0.82, -0.4), frame));
+        out.push(T(B(0.07, 0.7, 0.07).translate(-0.44, top + 1.15, -0.4), frame));
+        out.push(T(B(0.07, 0.7, 0.07).translate(0.44, top + 1.15, -0.4), frame));
+        out.push(T(B(0.3, 0.66, 0.04).translate(-0.64, top + 1.15, -0.41), 0x5f8f6a));
+        out.push(T(B(0.3, 0.66, 0.04).translate(0.64, top + 1.15, -0.41), 0x5f8f6a));
+        out.push(T(B(1.1, 0.08, 0.25).translate(0, top + 0.76, -0.32), frame));
+        out.push(T(B(0.55, 0.8, 0.45).translate(0, top + 0.4, 0.5), frame)); // lectern
+        out.push(
+          T(
+            B(1.3, 0.04, 0.9)
+              .rotateX(-0.3)
+              .translate(0, top + 0.86, 0.5),
+            0x8b2f3a,
+          ),
+        );
+        out.push(
+          T(
+            B(0.62, 0.05, 0.84)
+              .rotateZ(0.12)
+              .rotateX(-0.3)
+              .translate(-0.31, top + 0.92, 0.5),
+            0xf5efe0,
+          ),
+        );
+        out.push(
+          T(
+            B(0.62, 0.05, 0.84)
+              .rotateZ(-0.12)
+              .rotateX(-0.3)
+              .translate(0.31, top + 0.92, 0.5),
+            0xf5efe0,
+          ),
+        );
+        break;
+      }
+      default: {
+        // Insta Services API: a workshop with a gear sign.
+        out.push(T(B(1.9, 1.5, 1.5).translate(0, top + 0.75, -0.2), 0x7d8b99));
+        out.push(
+          T(
+            Cyl(0.62, 0.62, 2.0, 3)
+              .rotateZ(Math.PI / 2)
+              .translate(0, top + 1.8, -0.2),
+            0x4f5a66,
+          ),
+        );
+        out.push(T(B(0.7, 1.0, 0.04).translate(-0.3, top + 0.5, 0.57), 0x3d4650));
+        out.push(T(B(0.08, 1.6, 0.08).translate(0.65, top + 0.8, 0.8), 0x4f5a66));
+        const gy = top + 1.75;
+        const gold = 0xd9a441;
+        out.push(
+          T(
+            Cyl(0.3, 0.3, 0.08, 12)
+              .rotateX(Math.PI / 2)
+              .translate(0.65, gy, 0.8),
+            gold,
+          ),
+        );
+        for (let k = 0; k < 8; k++) {
+          const a = (k / 8) * Math.PI * 2;
+          out.push(
+            T(
+              B(0.12, 0.12, 0.08)
+                .rotateZ(a)
+                .translate(0.65 + Math.cos(a) * 0.34, gy + Math.sin(a) * 0.34, 0.8),
+              gold,
+            ),
+          );
+        }
+        out.push(
+          T(
+            Cyl(0.1, 0.1, 0.1, 8)
+              .rotateX(Math.PI / 2)
+              .translate(0.65, gy, 0.8),
+            0x3d4650,
+          ),
+        );
+        break;
+      }
+    }
+    return out;
+  }
+
+  /** A board's timber frame and its two posts, in its site's frame. */
+  private static boardFrame(): THREE.BufferGeometry[] {
+    const W = Island.PLAQUE_W;
+    const H = Island.PLAQUE_H;
+    const bottom = Island.SIGN_BOTTOM;
+    const postLen = bottom + H + 0.4; // 0.4 u into the ground
+    const post = (x: number): THREE.BufferGeometry =>
+      Island.tint(
+        new THREE.CylinderGeometry(0.06, 0.06, postLen, 8).translate(
+          x,
+          postLen / 2 - 0.4,
+          Island.SIGN_Z - 0.06,
+        ),
+        0x573a24,
+      );
+    return [
+      Island.tint(
+        new THREE.BoxGeometry(W + 0.08, H + 0.08, 0.06).translate(0, bottom + H / 2, Island.SIGN_Z),
+        0x6d4a2f,
+      ),
+      post(-W / 2 + 0.15),
+      post(W / 2 - 0.15),
+    ];
+  }
+
+  /** A board's painted faces, front and back, on its row of the atlas. */
+  private static boardFaces(row: number, rows: number): THREE.BufferGeometry[] {
+    const W = Island.PLAQUE_W;
+    const H = Island.PLAQUE_H;
+    const bottom = Island.SIGN_BOTTOM;
+    // Canvas row `row` (top down) is texture v in [1 - (row+1)/rows, 1 - row/rows].
+    const onRow = (g: THREE.BufferGeometry): THREE.BufferGeometry => {
+      const uv = g.getAttribute('uv') as THREE.BufferAttribute;
+      for (let k = 0; k < uv.count; k++) uv.setY(k, 1 - (row + 1 - uv.getY(k)) / rows);
+      return g;
+    };
+    const front = onRow(new THREE.PlaneGeometry(W, H)).translate(
+      0,
+      bottom + H / 2,
+      Island.SIGN_Z + 0.031,
+    );
+    const back = onRow(new THREE.PlaneGeometry(W, H))
+      .rotateY(Math.PI)
+      .translate(0, bottom + H / 2, Island.SIGN_Z - 0.031);
+    return [front, back];
   }
 
   private createRiver(): THREE.Group {
