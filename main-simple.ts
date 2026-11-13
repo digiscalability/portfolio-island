@@ -129,13 +129,13 @@ type RaceScene = GameScene & {
   nearestVehiclePos?: (kind: 'car' | 'boat' | 'jetski', out: THREE.Vector3) => THREE.Vector3 | null;
 };
 
-/** One stop on the cinematic tour rail (SimpleApp.startTour). */
 /**
  * Chat.ts's PROXIMITY_RADIUS (0.35 x the world radius), copied so Chat.ts can
  * be its own chunk (wave-4 bundle carry-over). test/mainLocks pins the two equal.
  */
 const CHAT_PROXIMITY_RADIUS = 0.35 * WORLD_RADIUS;
 
+/** One stop on the cinematic tour rail (SimpleApp.startTour). */
 interface TourStop {
   caption: string;
   look: THREE.Vector3; // surface point the camera studies
