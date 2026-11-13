@@ -10,7 +10,7 @@
 // (capPx), four room poses, the steady per-room cost, the forced window
 // pass, then out by the Leave control and the exit transition.
 //
-//   npm run probe -- p2/survey [--device desk|phone] [--hour 12] [--ids a,b] [--no-poses] [--weather rain] --dist dist --port <n>
+//   npm run probe -- p2/survey [--device desk|phone] [--hour 12] [--ids a,b] [--no-poses] [--weather rain] [--selftest-a11] --dist dist --port <n>
 //
 // P2-B1's bar: promptAtSpawn is [] and spawnInsideProp null in all 7 themes,
 // every hotspot reachable. D6's: entering the Welcome hall, no toast or flash
@@ -68,13 +68,33 @@ const MESSAGE_OVER_PANEL = () => {
 // a project card in Projects and the compass in Welcome, each in 2 actions
 // (walk to the hotspot, then E), and J held 1 s turning the view. The
 // analytics listener replaces window.va (@vercel/analytics' queue) before any
-// page script, so track('hire_cta', {cta:'interior'}) is seen without a send.
+// page script, and pins it so the insights script cannot swap it out (the
+// harness blocks /_vercel/insights/ anyway), so track('hire_cta',
+// {cta:'interior'}) is seen without a send.
+//
+// Every boot carries ?owner=1 (lib APP_QUERY), and Analytics.track() returns
+// at once on an owner visit (isOwnerVisit reads localStorage 'ds_owner'), so
+// with owner mode on no event would ever reach window.va. The survey hides
+// that key from the page: getItem('ds_owner') reads null in this session
+// only. Nothing leaves: insights hosts and paths and every non-GET are blocked
+// by the harness. isOwnerVisit gates analytics alone (Analytics.ts and the
+// inject() beforeSend in main-simple.ts), so nothing else in the run changes.
+const OWNER_KEY = 'ds_owner';
 const A11_INIT = `(() => {
   if (window.top !== window) return;
+  try {
+    const gi = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (k) { return k === ${JSON.stringify(OWNER_KEY)} ? null : gi.call(this, k); };
+  } catch (e) {}
   const L = (window.__a11 = { va: [], guideTo: [] });
-  window.va = function (...p) { try { L.va.push(JSON.parse(JSON.stringify(p))); } catch (e) {} };
+  const va = function (...p) { try { L.va.push(JSON.parse(JSON.stringify(p))); } catch (e) {} };
+  try { Object.defineProperty(window, 'va', { configurable: true, get: () => va, set: () => {} }); } catch (e) { window.va = va; }
   window.addEventListener('ds:guide-to', (e) => L.guideTo.push(e.detail ? JSON.parse(JSON.stringify(e.detail)) : null));
 })();`;
+/** The hire_cta event with this cta among the listener's events, or null. */
+const hireHit = (events, cta) => (events || []).find((e) => e && e.name === 'hire_cta' && e.data && e.data.cta === cta) || null;
+/** Events the listener has seen since index n, as {name, data}. */
+const VA_SINCE = (n) => window.__a11.va.slice(n).filter((p) => p[0] === 'event').map((p) => ({ name: p[1].name, data: p[1].data || null }));
 const A11_ROOMS = { professional: 'hire', contact: 'hire', projects: 'project', welcome: 'compass' };
 
 /** Stand on the hotspot whose arg starts with `want` (room-local), facing it; null when the build has none. */
@@ -271,6 +291,32 @@ async function survey(t) {
     if (touch) await page.tap(`${lib.WELCOME} button[data-dismiss]`).catch(() => lib.dismissWelcome(page));
     else await lib.dismissWelcome(page);
     await page.waitForTimeout(1200);
+    out.ownerHidden = await page.evaluate((k) => ({ query: new URLSearchParams(location.search).get('owner'), stored: localStorage.getItem(k) }), OWNER_KEY);
+    if (t.args.selftestA11) {
+      // --selftest-a11: a real track() through the app's own Analytics module
+      // (the hire card's 'Send a message' button fires hire_cta {cta:'message'}),
+      // judged by the same matcher as the hall rows. It proves the listener
+      // sees track() despite ?owner=1, so the hall rows can pass on a build
+      // that fires {cta:'interior'}.
+      const n = await page.evaluate(() => window.__a11.va.length);
+      const opened = await page.evaluate(() => {
+        window.__app.ui.showHireCard('menu');
+        const b = document.querySelector('button[data-hire-contact]');
+        if (!b) return false;
+        b.click();
+        return true;
+      });
+      await page.waitForTimeout(1500);
+      const events = await page.evaluate(VA_SINCE, n);
+      out.selftestA11 = { opened, events, ownerHidden: out.ownerHidden };
+      t.check(`${prof}: selftest: a real track('hire_cta') reaches the listener under ?owner=1 (row matcher)`, opened ? !!hireHit(events, 'message') : null, out.selftestA11, "hire_cta {cta:'message'} seen");
+      await page.evaluate(() => {
+        const ui = window.__app.ui;
+        if (ui.closeHireCard) ui.closeHireCard();
+        if (ui.panels && ui.panels.closeAll) ui.panels.closeAll();
+      });
+      await page.waitForTimeout(500);
+    }
     if (!t.args.noWarm) out.warm = await R.warm(page);
     if (t.args.weather && t.args.weather !== true) await page.evaluate((w) => window.__app.scene.getEnvironmentCycle().setWeather(w), String(t.args.weather));
     await page.waitForTimeout(1500);
@@ -310,7 +356,7 @@ async function survey(t) {
     const a11 = (hid) => (out.buildings[hid] && out.buildings[hid].a11) || null;
     for (const hid of ['professional', 'contact']) {
       const a = a11(hid);
-      const hit = a && a.after ? a.after.events.find((e) => e.name === 'hire_cta' && e.data && e.data.cta === 'interior') : null;
+      const hit = a && a.after ? hireHit(a.after.events, 'interior') : null;
       t.check(`${prof}: in the ${hid} hall the hire card opens in 2 actions, hire_cta {cta:'interior'} (P2-A11)`, a && a.after ? !!hit : null, a ? (a.after ? { prompt: a.prompt, events: a.after.events, panel: a.after.panel } : a.why) : 'not surveyed', "hire_cta {cta:'interior'} (null: no hotspot with arg 'hire')");
     }
     const ap = a11('projects');
