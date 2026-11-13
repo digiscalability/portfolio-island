@@ -182,7 +182,7 @@ describe('the Projects boards (C8, decision 14)', () => {
     expect(PROJECT_BOARDS).toEqual([
       { name: 'RankPilot', status: 'Pre-launch' },
       { name: 'ChocoMate', status: 'Paused' },
-      { name: 'DigiScalability', status: 'This island' },
+      { name: 'Life Island', status: 'This island' },
       { name: "Bano's Cookbook", status: "Ammi's recipes" },
       { name: 'Insta Services API', status: 'Modernising' },
     ]);
