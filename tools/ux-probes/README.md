@@ -726,6 +726,7 @@ Budgets (`THRESHOLDS`, from plan-r3 › perfBudget), as B − A:
 | low tier (1x) | CPU p95 +0.75 ms; draws spawn +20, hub-wide +30, Projects +25, vehicle +25, room no more than main; programs +3; scene nodes +150; textures +6 MB; +50 KB before the card. The first door: its longest frame 200 ms or less, 3 programs or fewer |
 | startup (4x) | welcome_visible +400 ms; world_gen +200 ms; long tasks main + 2, the longest task +50 ms; +50 KB before the card |
 | FxBudget (`FX_US`) | per effect 150 µs a frame on desktop and 80 on the low tier; all effects 600 and 300. An effect in plan-r3's ledger (`FX_LEDGER`) is held to its ledger value where that is lower, in `--fx` and in the CPU proxy |
+| Per-effect bars (`FX_BARS`, wave 4) | `--fx <name>` holds an effect with its own plan-r3 bars to them instead of the tier's: `canopySway` (C9) GPU p50 +0.3 ms or less and 0 programs added, ledger 0 µs. A build that never registers the effect reads `n/a` (exit 3), not a verdict: fcaa649 reads n/a |
 
 CPU p50 and triangles have no budget and are reported.
 

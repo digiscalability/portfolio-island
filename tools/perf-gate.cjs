@@ -129,6 +129,19 @@ const FX_LEDGER = {
   idleLife: { desktop: 40, lowtier: 15 },
   pins: 0,
   dust: 15,
+  // C9 (wave 4): the canopy sways in the vertex shader; its only CPU is the
+  // switch, so plan-r3's ledger line is 0 µs (n/a when fx.time never runs).
+  canopySway: 0,
+};
+// Per-effect bars that replace the tier's generic ones in --fx <name>
+// (plan-r3 perfBudget): canopySway's GPU p50 rises 0.3 ms or less and it adds
+// no program (the amplitude uniform is 0 when off; the program is the same).
+const FX_BARS = {
+  canopySway: { gpuP50: 0.3, programs: 0 },
+};
+const fxBar = (name, key, fallback) => {
+  const b = FX_BARS[name];
+  return b && typeof b[key] === 'number' ? b[key] : fallback;
 };
 const ledgerUs = (name, prof) => {
   const v = FX_LEDGER[name];
@@ -2021,6 +2034,13 @@ async function modeFx(args) {
       try {
         await bootPage(page, server.url, p, hour);
         await settleAfterCard(page, 30);
+        // A build that never registers the effect has nothing to switch: the
+        // effect reads null (the wave-4 contract: --fx canopySway before C9).
+        const reg = await page.evaluate(FX_SNAPSHOT);
+        if (FX_BARS[name] && !(reg.effects || {})[name]) {
+          data.profiles[prof] = { verdict: 'n/a', registered: false, note: `'${name}' is not registered with FxBudget on this build`, metrics: {} };
+          continue;
+        }
         // Counters: per view, 4 off/on pairs with the world held still.
         const counters = {};
         let programsAdded = 0;
@@ -2085,7 +2105,7 @@ async function modeFx(args) {
             [`${at}: CPU p95 ms`]: { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
           };
           rows[`${at}: CPU mean ms`] = { kind: 'timing', ...judge(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), null) };
-          rows[`${at}: GPU p50 ms`] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50 ?? null) };
+          rows[`${at}: GPU p50 ms`] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), fxBar(name, 'gpuP50', T.gpuP50 ?? null)) };
           for (const view of VIEWS) rows[`${view}: draws`] = { kind: 'counter', ...counters[view].draws };
           // What the effect is meant to save (FX_CREDIT), held beside the budgets.
           const credit = (FX_CREDIT[name] || {})[prof] || null;
@@ -2099,7 +2119,8 @@ async function modeFx(args) {
             }
             if (credit.shadowDrawsUnchanged) rows['credit: spawn shadow draws unchanged'] = { kind: 'credit', verdict: Math.abs(sd('on') - sd('off')) <= 0.5 ? 'pass' : 'fail', medianA: round(sd('off'), 1), medianB: round(sd('on'), 1), delta: round(sd('on') - sd('off'), 1), threshold: 'on = off', n: counters.spawn.on.length };
           }
-          rows['programs the effect adds'] = { kind: 'counter', verdict: programsAdded <= T.programs ? 'pass' : 'fail', delta: programsAdded, threshold: T.programs, n: 1 };
+          const progBar = fxBar(name, 'programs', T.programs);
+          rows['programs the effect adds'] = { kind: 'counter', verdict: programsAdded <= progBar ? 'pass' : 'fail', delta: programsAdded, threshold: progBar, n: 1 };
           const us = onW.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
           // The effect's own ledger line when plan-r3 gives one, inside the tier's per-effect cap.
           const usCap = Math.min(FX_US[prof], ledgerUs(name, prof) ?? FX_US[prof]);
@@ -2138,7 +2159,7 @@ async function modeFx(args) {
     await server.stop();
   }
   const vs = Object.values(data.profiles).map((p) => p.verdict);
-  data.verdict = data.leaks.length ? 'fail-closed' : vs.includes('fail') ? 'fail' : vs.includes('inconclusive') || data.signUpMissing ? 'inconclusive' : 'pass';
+  data.verdict = data.leaks.length ? 'fail-closed' : vs.includes('fail') ? 'fail' : vs.includes('inconclusive') || data.signUpMissing ? 'inconclusive' : vs.length && vs.every((v) => v === 'n/a') ? 'n/a' : 'pass';
   return data;
 }
 
@@ -2371,6 +2392,10 @@ function printSummary(data) {
   if (data.mode === 'report' || data.mode === 'governor' || data.scenario === 'modal') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
+      if (p.registered === false) {
+        lines.push(`  ${prof}: ${p.verdict}: ${p.note}`);
+        continue;
+      }
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
       const note = hostNote(p.otherBusyPct, p.verdict);
       if (note) lines.push(`    note: ${note}`);
@@ -2456,4 +2481,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, FX_BARS, fxBar, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

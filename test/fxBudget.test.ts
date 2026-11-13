@@ -1271,3 +1271,26 @@ describe('perf gate: the quiet-host note (wave-2 amendments)', () => {
     expect(readme).not.toMatch(/GPU at 21 h improves by 0\.5 ms or more"\s+is/);
   });
 });
+
+// Wave 4 (C9's contract): --fx canopySway holds the effect to plan-r3's own
+// bars, not the tier's generic ones, and reads null on a build without it.
+describe('perf gate: the canopySway bars', () => {
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    FX_LEDGER: Record<string, unknown>;
+    THRESHOLDS: Record<string, Record<string, number>>;
+    fxBar: (name: string, key: string, fallback: number | null) => number | null;
+  };
+
+  test('GPU p50 +0.3 ms, no program added, 0 µs on the ledger', () => {
+    expect(gate.fxBar('canopySway', 'gpuP50', gate.THRESHOLDS.desktop.gpuP50)).toBe(0.3);
+    expect(gate.fxBar('canopySway', 'programs', gate.THRESHOLDS.desktop.programs)).toBe(0);
+    expect(gate.FX_LEDGER.canopySway).toBe(0);
+  });
+
+  test('other effects keep the tier bars', () => {
+    expect(gate.fxBar('halfShadow', 'gpuP50', gate.THRESHOLDS.lowtier.gpuP50)).toBe(
+      gate.THRESHOLDS.lowtier.gpuP50,
+    );
+    expect(gate.fxBar('dust', 'programs', 5)).toBe(5);
+  });
+});
