@@ -70,18 +70,111 @@ const RECORDER = () => {
     return orig(pos, n);
   };
   // Hints: every toast with {hint:true}, and what was open when it fired.
+  // The guide counts as open by its card's data-active (A13's own gate, D6):
+  // the card stays in the DOM folded once First steps is skipped or done.
   const H = (window.__hints = []);
   const ui = window.__app.ui;
   const ot = ui.toast.bind(ui);
   ui.toast = (text, opts) => {
     if (opts && opts.hint) {
       const g = document.getElementById('ds-guide');
-      H.push({ t: performance.now(), text: String(text).slice(0, 100), panel: ui.panels ? ui.panels.current() : null, guideOpen: !!(g && g.getBoundingClientRect().height > 40 && getComputedStyle(g).display !== 'none'), inside: sc.isInsideInterior() });
+      H.push({ t: performance.now(), text: String(text).slice(0, 100), panel: ui.panels ? ui.panels.current() : null, guideOpen: !!(g && (g.dataset.active !== undefined ? g.dataset.active === '1' : g.getBoundingClientRect().height > 40 && getComputedStyle(g).display !== 'none')), inside: sc.isInsideInterior() });
     }
     return ot(text, opts);
   };
   return { soles: soles.reduce((s, x) => s + x.idx.length, 0), hand: !!(pl.getHandAnchor && pl.getHandAnchor()) };
 };
+/** A13's hint recorder alone: every toast with {hint:true}, and what was open when it fired. */
+const HINTS_INIT = () => {
+  if (window.__hints) return 'already';
+  const H = (window.__hints = []);
+  const ui = window.__app.ui;
+  const sc = window.__app.scene;
+  const ot = ui.toast.bind(ui);
+  ui.toast = (text, opts) => {
+    if (opts && opts.hint) {
+      const g = document.getElementById('ds-guide');
+      H.push({ t: performance.now(), text: String(text).slice(0, 100), panel: ui.panels ? ui.panels.current() : null, guideOpen: !!(g && (g.dataset.active !== undefined ? g.dataset.active === '1' : g.getBoundingClientRect().height > 40 && getComputedStyle(g).display !== 'none')), inside: sc.isInsideInterior() });
+    }
+    return ot(text, opts);
+  };
+  return true;
+};
+/** Stand the player 3 u from the nearest standing tree (A13's chop hint fires within 6 u). */
+const NEAR_TREE = () => {
+  const sc = window.__app.scene;
+  const isl = sc.getIsland();
+  const P = sc.getPlayer();
+  const p = P.getWorldPosition().clone();
+  let best = null;
+  let bd = Infinity;
+  for (const tr of sc.swayTrees || []) {
+    if (tr.felled || tr.pendingFell) continue;
+    const d = tr.group.position.distanceTo(p);
+    if (d < bd) {
+      bd = d;
+      best = tr;
+    }
+  }
+  if (!best) return null;
+  const c = best.group.position.clone();
+  const up = c.clone().normalize();
+  const V = c.constructor;
+  const ref = Math.abs(up.y) < 0.9 ? new V(0, 1, 0) : new V(1, 0, 0);
+  const tan = ref.addScaledVector(up, -ref.dot(up)).normalize();
+  const dir = c.addScaledVector(tan, 3).normalize();
+  const sfc = isl.sampleSurfaceByDirection(dir, 0);
+  P.setWorldPosition(dir.multiplyScalar(sfc.position.length() + 0.75));
+  return { treeFrom: +bd.toFixed(1) };
+};
+const HINT_STATE = () => {
+  const ls = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (/^ds_hint_/.test(k)) ls[k] = localStorage.getItem(k);
+  }
+  return { fired: (window.__hints || []).slice(), stored: ls };
+};
+
+/**
+ * A13's first-use hints on a fresh profile: First steps skipped (a hint
+ * never shows while the guide teaches), W held 4.5 s without running (the
+ * run hint waits for 3 s of walking), then the player 3 u from a tree (the
+ * chop hint, within 6 u). The page is reloaded on the same profile and the
+ * walk and the tree repeated: a hint fired on the first load must not fire
+ * again. Every hint records the panel, the guide and the interior at the
+ * moment it fired.
+ */
+async function hintsRun(t, prof) {
+  const s = await t.freshSession(prof);
+  const { page } = s;
+  const loads = [];
+  for (let load = 0; load < 2; load++) {
+    if (load === 0) await t.boot(s);
+    else {
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => window.__lifeIslandReady === true, null, { timeout: 240000, polling: 100 });
+    }
+    await lib.dismissWelcome(page).catch(() => {});
+    await lib.sleep(1500);
+    const skipped = await page.evaluate(() => {
+      const g = window.__app.guide;
+      if (g && typeof g.isActive === 'function' && g.isActive() && typeof g.skip === 'function') g.skip();
+      return g && typeof g.isActive === 'function' ? !g.isActive() : null;
+    });
+    await page.evaluate(HINTS_INIT);
+    await page.keyboard.down('w');
+    await lib.sleep(4500);
+    await page.keyboard.up('w');
+    await lib.sleep(800);
+    const tree = await page.evaluate(NEAR_TREE);
+    await lib.sleep(2000);
+    loads.push({ load: load + 1, guideOff: skipped, tree, ...(await page.evaluate(HINT_STATE)) });
+  }
+  await s.close();
+  return loads;
+}
+
 const take = (page) => page.evaluate(() => {
   const L = window.__loco;
   L.on = false;
@@ -227,20 +320,19 @@ async function loco(t) {
     const near = (x, c) => Math.min(Math.abs(x - c), Math.abs(x - c + 1), Math.abs(x - c - 1));
     out.footfall = { n: ph.length, phases: ph.slice(0, 16), at0or05: ph.filter((x) => near(x, 0) < 0.08 || near(x, 0.5) < 0.08).length, at025or075: ph.filter((x) => near(x, 0.25) < 0.08 || near(x, 0.75) < 0.08).length };
     t.check(`${prof}: footfalls at walk phases 0 and 0.5`, ph.length >= 4 ? out.footfall.at0or05 === ph.length : null, out.footfall, 'all at 0 / 0.5 (58c8849: 0.25 / 0.75)');
-    // ---- hints (A13)
+    // ---- hints (A13): the run session's own, then a fresh profile driven to them.
     await lib.sleep(1000);
-    const hints = await page.evaluate(() => {
-      const ls = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (/^ds_hint_/.test(k)) ls[k] = localStorage.getItem(k);
-      }
-      return { fired: window.__hints.slice(), stored: ls };
-    });
+    out.hintsInRun = await page.evaluate(HINT_STATE);
+    await s.close();
+    const loads = await hintsRun(t, prof);
+    const fired = loads.flatMap((l) => l.fired.map((h) => ({ ...h, load: l.load })));
     const seen = {};
-    for (const h of hints.fired) seen[h.text] = (seen[h.text] || 0) + 1;
-    out.hints = { ...hints, repeats: Object.entries(seen).filter(([, n]) => n > 1).map(([k]) => k), underCover: hints.fired.filter((h) => h.panel || h.guideOpen || h.inside).map((h) => h.text) };
-    t.check(`${prof}: each first-use hint shows once, never under a panel or the guide`, hints.fired.length ? out.hints.repeats.length === 0 && out.hints.underCover.length === 0 : null, { fired: hints.fired.map((h) => h.text), stored: Object.keys(hints.stored), repeats: out.hints.repeats, underCover: out.hints.underCover }, 'once each, none covered (null: no hint fired in this run)');
+    for (const h of fired) seen[h.text] = (seen[h.text] || 0) + 1;
+    const RUN = /run|stick to the edge/i;
+    out.hints = { loads, repeats: Object.entries(seen).filter(([, n]) => n > 1).map(([k]) => k), underCover: fired.filter((h) => h.panel || h.guideOpen || h.inside).map((h) => h.text) };
+    const first = loads[0] ? loads[0].fired : [];
+    t.check(`${prof}: on a fresh profile the run hint and one more fire (A13)`, first.length ? first.some((h) => RUN.test(h.text)) && first.length >= 2 : null, { fired: first.map((h) => h.text), stored: loads[0] ? Object.keys(loads[0].stored) : [], guideOff: loads[0] ? loads[0].guideOff : null, tree: loads[0] ? loads[0].tree : null }, 'the run hint + 1 (null: no hint fired; a build without A13)');
+    t.check(`${prof}: each first-use hint shows once (across a reload), never under a panel or the guide`, fired.length ? out.hints.repeats.length === 0 && out.hints.underCover.length === 0 : null, { fired: fired.map((h) => `${h.load}: ${h.text}`), repeats: out.hints.repeats, underCover: out.hints.underCover }, 'once each, none covered (null: no hint fired in this run)');
     t.data[prof] = out;
   }
 }

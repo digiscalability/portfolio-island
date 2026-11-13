@@ -290,10 +290,21 @@ async function gather(t) {
       out.mailbox = { prompt: await prompt(page) };
       const since = await page.evaluate(() => Math.round(performance.now()));
       await useKey(page, touch, T);
-      await lib.sleep(2500);
-      const ev = (await P.gpEvents(page, since)).filter((e) => e.ev === 'show' || e.ev === 'text').map((e) => e.text.slice(0, 140));
-      out.mailbox.toasts = [...new Set(ev)].slice(0, 6);
-      out.mailbox.nextDistrictToast = out.mailbox.toasts.find((x) => /Welcome Hub|Professional|Project|Personal|Get In Touch|School|harbour|kiosk/i.test(x) && /deliver|parcel|next|mailbox/i.test(x)) || null;
+      // The toast queues behind whatever is on screen (the arrival toast, a
+      // quest card), so it is read for up to 8 s, not 2.5: the integration
+      // saw 'Delivered. The next parcel waits near ...' land 79-108 ms after
+      // E when nothing was queued, and outside a 2.5 s window when it was.
+      const NEXT = (x) => /next parcel waits near/i.test(x) || (/Welcome Hub|Professional|Project|Personal|Get In Touch|School|harbour|kiosk/i.test(x) && /deliver|parcel|next|mailbox/i.test(x));
+      let ev = [];
+      for (let waited = 0; waited < 8000; waited += 250) {
+        await lib.sleep(250);
+        ev = (await P.gpEvents(page, since)).filter((e) => e.ev === 'show' || e.ev === 'text');
+        if (ev.some((e) => NEXT(e.text))) break;
+      }
+      const hit = ev.find((e) => NEXT(e.text));
+      out.mailbox.toasts = [...new Set(ev.map((e) => e.text.slice(0, 140)))].slice(0, 6);
+      out.mailbox.nextDistrictToast = hit ? hit.text.slice(0, 140) : null;
+      out.mailbox.nextDistrictToastAfterMs = hit ? Math.round(hit.t - since) : null;
     }
     const mp = out.mailbox ? out.mailbox.prompt : null;
     t.check(`${prof}: the mailbox prompt names its key`, mp === null ? null : touch ? /Tap|USE/i.test(mp) : /Press\s*(<strong>)?\s*E|\[E\]/i.test(mp), mp || 'no active delivery mailbox', touch ? "'Tap USE'" : "'Press E' (58c8849: the bubble text alone)");
@@ -600,25 +611,51 @@ async function shop(t) {
     await t.shot(page, `shop-${prof}-hats.png`);
     if (!touch) t.check(`${prof}: with the Hats tab open the avatar's centre is outside the shop`, out.hats ? !out.hats.inside : null, out.hats, 'outside (58c8849: inside, the shop is a centred modal)');
     const since = await page.evaluate(() => Math.round(performance.now()));
+    // Since P2-D3 an outcome inside the open shop is a status line pinned in
+    // the modal ([data-panel-note], appended to the top modal's element), not
+    // a toast: every note is recorded from the first click, with its delay
+    // after the click before it.
     const bought = await page.evaluate(async () => {
       const d = window.__app.ui.shopDiv;
       const b = d && [...d.querySelectorAll('button[data-shop-id]')].find((x) => !x.disabled);
       if (!b) return null;
+      const notes = [];
+      const clicks = [];
+      const read = () => {
+        for (const n of document.querySelectorAll('[data-panel-note]')) {
+          const text = (n.textContent || '').trim();
+          if (!text || notes.some((x) => x.text === text)) continue;
+          const now = performance.now();
+          const last = clicks.filter((c) => c <= now).slice(-1)[0];
+          const sd = window.__app.ui.shopDiv;
+          notes.push({ text: text.slice(0, 120), afterClickMs: last === undefined ? null : Math.round(now - last), inShop: !!(sd && sd.contains(n)) });
+        }
+      };
+      const mo = new MutationObserver(read);
+      mo.observe(document.body, { subtree: true, childList: true, characterData: true });
       const id = b.getAttribute('data-shop-id');
+      clicks.push(performance.now());
       b.click();
       await new Promise((r) => setTimeout(r, 500));
       const d2 = window.__app.ui.shopDiv;
       const b2 = d2 && d2.querySelector(`button[data-shop-id="${id}"]`);
-      if (b2 && /Equip$/.test(b2.textContent.trim()) && !b2.disabled) b2.click();
-      await new Promise((r) => setTimeout(r, 500));
+      if (b2 && /Equip$/.test(b2.textContent.trim()) && !b2.disabled) {
+        clicks.push(performance.now());
+        b2.click();
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+      read();
+      mo.disconnect();
       const b3 = window.__app.ui.shopDiv && window.__app.ui.shopDiv.querySelector(`button[data-shop-id="${id}"]`);
-      return { id, label: b3 ? b3.textContent.trim() : null };
+      return { id, label: b3 ? b3.textContent.trim() : null, clicks: clicks.length, notes };
     });
-    await lib.sleep(1200);
+    await lib.sleep(700);
     await t.shot(page, `shop-${prof}-equipped.png`);
     const ev = (await P.gpEvents(page, since)).filter((e) => e.ev === 'show' || e.ev === 'text').map((e) => e.text.slice(0, 120));
-    out.equip = { bought, toast: ev.find((x) => /wear|equip|hat|cap|looking/i.test(x) && !/Island Shop/.test(x)) || null };
-    t.check(`${prof}: equipping a hat fires a toast`, bought ? !!out.equip.toast : null, out.equip, 'a toast (58c8849: none)');
+    const HAT = /wear|equip|hat|cap|looking/i;
+    const note = bought ? bought.notes.find((x) => HAT.test(x.text) && x.afterClickMs !== null && x.afterClickMs <= 1000) || null : null;
+    out.equip = { bought, toast: ev.find((x) => HAT.test(x) && !/Island Shop/.test(x)) || null, note };
+    t.check(`${prof}: equipping a hat says so (a toast, or the shop's [data-panel-note] within 1 s)`, bought ? !!(out.equip.toast || out.equip.note) : null, out.equip.note ? `note ${out.equip.note.afterClickMs} ms after the click${out.equip.note.inShop ? ', inside the shop' : ''}: ${out.equip.note.text}` : out.equip, 'a toast or a note (58c8849: none)');
     t.data[prof] = out;
   }
 }

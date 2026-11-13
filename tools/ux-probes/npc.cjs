@@ -115,7 +115,14 @@ function gait(rows) {
   return { walkers: per.length, per: per.slice(0, 8), bobPerLeg: med(per.map((p) => p.bobPerLeg)), rollPerLeg: med(per.map((p) => p.rollPerLeg)), walkStartPopDeg: pops.length ? +Math.max(...pops).toFixed(1) : null, walkStartPopMedianDeg: pops.length ? +[...pops].sort((a, b) => a - b)[Math.floor(pops.length / 2)].toFixed(1) : null, pops: pops.length, soleWalking: soles.length ? { min: +Math.min(...soles).toFixed(3), max: +Math.max(...soles).toFixed(3) } : null };
 }
 
-const FRAMING = () => {
+/**
+ * The chat's sprite bounds for one villager (`name`; the held one by
+ * default): its pin, the bubble when it is on her, the head's projected top.
+ * `others: true` adds every other villager whose root projects inside the
+ * viewport, with a pin on screen (B8 fades the HELD villager's pin and
+ * bubble during a chat by design, so hers read null there).
+ */
+const FRAMING = ({ name = null, others = false } = {}) => {
   const sc = window.__app.scene;
   const cam = sc.getCamera();
   const V = cam.position.constructor;
@@ -151,30 +158,73 @@ const FRAMING = () => {
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)].map(Math.round);
   };
   const held = sc.heldNpcName;
-  const n = sc.getIsland().npcTargets.find((x) => x.name === held);
-  const tag = n && (sc.nameTags || []).find((g) => g.target === n || g.target.meshRef === n.meshRef);
-  let headTop = null;
-  if (n) {
-    let top = -Infinity;
-    let topP = null;
-    n.meshRef.traverse((m) => {
-      if (!m.isMesh || !m.geometry) return;
-      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
-      const b = m.geometry.boundingBox;
-      for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) {
-        const w = new V(x, y, z).applyMatrix4(m.matrixWorld);
-        if (w.length() > top) {
-          top = w.length();
-          topP = w;
-        }
-      }
-    });
-    if (topP) headTop = Math.round(px(topP.project(cam))[1]);
-  }
-  const bubble = spriteRect(sc.npcBubble && sc.npcBubble.sprite);
-  const pin = spriteRect(tag && tag.sprite);
+  const targets = sc.getIsland().npcTargets;
   const inView = (r) => (r ? r[0] >= 0 && r[1] >= 0 && r[2] <= W && r[3] <= H : null);
-  return { held, bubble, pin, headTop, bubbleInView: inView(bubble), pinInView: inView(pin), pinAboveHead: pin && headTop !== null ? pin[3] <= headTop : null };
+  const one = (n) => {
+    const tag = n && (sc.nameTags || []).find((g) => g.target === n || g.target.meshRef === n.meshRef);
+    let headTop = null;
+    if (n) {
+      let top = -Infinity;
+      let topP = null;
+      n.meshRef.traverse((m) => {
+        if (!m.isMesh || !m.geometry) return;
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        const b = m.geometry.boundingBox;
+        for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) {
+          const w = new V(x, y, z).applyMatrix4(m.matrixWorld);
+          if (w.length() > top) {
+            top = w.length();
+            topP = w;
+          }
+        }
+      });
+      if (topP) headTop = Math.round(px(topP.project(cam))[1]);
+    }
+    const bt = sc.npcBubble && n && sc.nameTags ? sc.nameTags[sc.npcBubbleFor] : null;
+    const onHer = !!bt && (bt.target === n || bt.target.meshRef === n.meshRef);
+    const bubble = onHer ? spriteRect(sc.npcBubble.sprite) : null;
+    const pin = spriteRect(tag && tag.sprite);
+    const pinOpacity = tag && tag.sprite && tag.sprite.material ? +tag.sprite.material.opacity.toFixed(2) : null;
+    return { name: n ? n.name : null, bubble, pin, pinOpacity, headTop, bubbleInView: inView(bubble), pinInView: inView(pin), pinAboveHead: pin && headTop !== null ? pin[3] <= headTop : null };
+  };
+  const n = targets.find((x) => x.name === (name || held));
+  const out = { held, ...one(n) };
+  if (others) {
+    out.others = [];
+    for (const o of targets) {
+      if (o === n || !o.meshRef.visible) continue;
+      const c = o.meshRef.getWorldPosition(new V()).project(cam);
+      // Inside the middle 80% of the view: a villager at the very edge has
+      // her pin cut by the edge whatever the chat does.
+      if (c.z > 1 || Math.abs(c.x) > 0.8 || Math.abs(c.y) > 0.8) continue;
+      const r = one(o);
+      if (r.pin) out.others.push(r);
+    }
+  }
+  return out;
+};
+/** The head-top read is a bounding-box corner, above the mesh: pins within this many px of it count as above. */
+const HEAD_TOL_PX = 2;
+/** The nearest other villager on screen, by index (for a bubble during the chat). */
+const OTHER_ON_SCREEN = (held) => {
+  const sc = window.__app.scene;
+  const cam = sc.getCamera();
+  const V = cam.position.constructor;
+  const ts = sc.getIsland().npcTargets;
+  let best = -1;
+  let bd = Infinity;
+  ts.forEach((o, i) => {
+    if (o.name === held || !o.meshRef.visible) return;
+    const w = o.meshRef.getWorldPosition(new V());
+    const c = w.clone().project(cam);
+    if (c.z > 1 || Math.abs(c.x) > 0.8 || c.y < -0.8 || c.y > 0.5) return;
+    const d = w.distanceTo(cam.position);
+    if (d < bd) {
+      bd = d;
+      best = i;
+    }
+  });
+  return best;
 };
 
 async function npc(t) {
@@ -250,13 +300,35 @@ async function npc(t) {
         out.lean = { before, during };
         t.check(`${prof}: the villager leans in while the visitor types (B8)`, during === null ? null : during - before > 2 ? true : null, out.lean, 'tilt grows (null: no lean on this build)');
       }
-      // framing during the chat
-      await page.evaluate((n) => window.__app.scene.showNpcSpeechBubble(window.__app.scene.getIsland().npcTargets.findIndex((x) => x.name === n), 'Hello there, welcome to the island!', 1e9), out.talk.name);
+      // Framing during the chat. B8 fades the held villager's pin and bubble
+      // (the chat panel carries the words), so what is judged on screen is
+      // every OTHER villager's pin, and a bubble on the nearest other one;
+      // the held villager's own pin is read with the hold released for
+      // 300 ms (it fades back in over 150 ms) while the chat camera stays.
+      const other = await page.evaluate(OTHER_ON_SCREEN, out.talk.name);
+      if (other >= 0) await page.evaluate((i) => window.__app.scene.showNpcSpeechBubble(i, 'Hello there, welcome to the island!', 1e9), other);
       await lib.sleep(400);
-      out.framing = await page.evaluate(FRAMING);
+      out.framing = await page.evaluate(FRAMING, { others: true });
+      out.framing.bubbleOn = other >= 0 ? await page.evaluate((i) => window.__app.scene.getIsland().npcTargets[i].name, other) : null;
+      const onOther = other >= 0 ? await page.evaluate(FRAMING, { name: out.framing.bubbleOn }) : null;
       await t.shot(page, `npc-${prof}-chat.png`);
-      t.check(`${prof}: during a chat the bubble and pin are inside the viewport`, out.framing.bubbleInView === null && out.framing.pinInView === null ? null : out.framing.bubbleInView !== false && out.framing.pinInView !== false, out.framing, 'inside');
-      t.check(`${prof}: the pin's bottom sits above the head's top`, out.framing.pinAboveHead, { pin: out.framing.pin, headTop: out.framing.headTop }, 'above (B8)');
+      const pins = out.framing.others || [];
+      const bubbleIn = onOther ? onOther.bubbleInView : null;
+      t.check(`${prof}: during a chat the other villagers' pins, and a bubble on one of them, are inside the viewport`, !pins.length && bubbleIn === null ? null : pins.every((r) => r.pinInView !== false) && bubbleIn !== false, { pins: pins.map((r) => ({ name: r.name, pin: r.pin, inView: r.pinInView })), bubble: onOther ? { on: onOther.name, rect: onOther.bubble, inView: bubbleIn } : null }, 'inside');
+      // headTop is the projected top of the head's bounding-box corners, which
+      // sit above the mesh itself, so a pin within HEAD_TOL_PX of it reads as
+      // above (integration: 1-2 px across three villagers).
+      const above = (r) => (r.pin && r.headTop !== null ? r.pin[3] <= r.headTop + HEAD_TOL_PX : null);
+      t.check(`${prof}: the other villagers' pins sit above their heads during the chat (${HEAD_TOL_PX} px box tolerance)`, pins.length ? pins.every((r) => above(r) !== false) : null, pins.map((r) => ({ name: r.name, pinBottom: r.pin && r.pin[3], headTop: r.headTop })), 'above (B8)');
+      await page.evaluate(() => window.__app.scene.setNpcDialogueHold(null));
+      await lib.sleep(300);
+      out.framing.heldBeforeFade = await page.evaluate(FRAMING, { name: out.talk.name });
+      const hb = out.framing.heldBeforeFade;
+      // At chat range the pin is in its near fade (Island's 2.6-6 u ramp), so
+      // it is judged only when it is at least half opaque; fainter, the row
+      // reports it (null) for B.
+      const visible = hb.pin && (hb.pinOpacity === null || hb.pinOpacity >= 0.5);
+      t.check(`${prof}: the held villager's pin (hold released 300 ms, chat camera kept) is inside the viewport, its bottom above her head`, visible ? hb.pinInView !== false && above(hb) !== false : null, { pin: hb.pin, opacity: hb.pinOpacity, headTop: hb.headTop, inView: hb.pinInView }, 'inside and above (B8); null when the near fade holds it under 0.5 opacity');
     }
     t.data[prof] = out;
   }
