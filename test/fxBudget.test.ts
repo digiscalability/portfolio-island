@@ -1301,6 +1301,15 @@ describe('perf gate: the canopySway bars', () => {
     expect(gate.FX_LEDGER.canopySway).toBe(0);
   });
 
+  // Wave-4 amendments (rows list): B9's glint, off on the low tier.
+  test('coinGlint: 20 µs on desktop, 0 on the low tier, one program', () => {
+    expect(gate.FX_LEDGER.coinGlint).toEqual({ desktop: 20, lowtier: 0 });
+    expect(gate.fxBar('coinGlint', 'programs', gate.THRESHOLDS.desktop.programs)).toBe(1);
+    expect(gate.fxBar('coinGlint', 'gpuP50', gate.THRESHOLDS.desktop.gpuP50)).toBe(
+      gate.THRESHOLDS.desktop.gpuP50,
+    );
+  });
+
   test('other effects keep the tier bars', () => {
     expect(gate.fxBar('halfShadow', 'gpuP50', gate.THRESHOLDS.lowtier.gpuP50)).toBe(
       gate.THRESHOLDS.lowtier.gpuP50,

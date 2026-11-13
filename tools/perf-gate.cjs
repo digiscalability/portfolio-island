@@ -132,12 +132,20 @@ const FX_LEDGER = {
   // C9 (wave 4): the canopy sways in the vertex shader; its only CPU is the
   // switch, so plan-r3's ledger line is 0 µs (n/a when fx.time never runs).
   canopySway: 0,
+  // B9 (wave 4): the additive glint quad over the instanced coins, off on the
+  // low tier. plan-r3's ledger line is the coins' (20 µs, the glint inside
+  // it), so the glint is held to the same 20 µs on desktop and 0 on the low
+  // tier, where it does not run (n/a when fx.time never runs).
+  coinGlint: { desktop: 20, lowtier: 0 },
 };
 // Per-effect bars that replace the tier's generic ones in --fx <name>
 // (plan-r3 perfBudget): canopySway's GPU p50 rises 0.3 ms or less and it adds
 // no program (the amplitude uniform is 0 when off; the program is the same).
 const FX_BARS = {
   canopySway: { gpuP50: 0.3, programs: 0 },
+  // B9's coins add +2 programs on desktop and +1 on the low tier (plan-r3),
+  // the difference being the glint's additive material: one program.
+  coinGlint: { programs: 1 },
 };
 const fxBar = (name, key, fallback) => {
   const b = FX_BARS[name];
