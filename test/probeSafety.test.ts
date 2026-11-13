@@ -547,3 +547,29 @@ describe('probe fixes from wave 1 (wave-2 amendments)', () => {
     );
   });
 });
+
+describe('probe fixes from wave 2 (wave-3 amendments)', () => {
+  const req = createRequire(import.meta.url);
+
+  test('guide: the night and legacy reads wait out First steps’ advance pause', () => {
+    type St = { present: boolean; stepNo: number | null; justDone?: string | null };
+    const guide = req('../tools/ux-probes/guide.cjs') as {
+      settled: (x: St | null) => boolean;
+      nightHours: (arg: unknown) => number[];
+    };
+    // The look step's check playing: the card still reads 2/5.
+    expect(guide.settled({ present: true, stepNo: 2, justDone: 'look' })).toBe(false);
+    expect(guide.settled({ present: true, stepNo: 3, justDone: null })).toBe(true);
+    expect(guide.settled({ present: true, stepNo: 2, justDone: null })).toBe(true);
+    // A build with no readable guide view: only a step past 2/5 counts.
+    expect(guide.settled({ present: true, stepNo: 2 })).toBe(false);
+    expect(guide.settled({ present: true, stepNo: 3 })).toBe(true);
+    expect(guide.settled({ present: false, stepNo: 3, justDone: null })).toBe(false);
+    expect(guide.settled(null)).toBe(false);
+    // The night-diag proof's hours by default; one hour or a list.
+    expect(guide.nightHours(undefined)).toEqual([21, 23, 2, 6]);
+    expect(guide.nightHours(true)).toEqual([21, 23, 2, 6]);
+    expect(guide.nightHours(23)).toEqual([23]);
+    expect(guide.nightHours('21, 2')).toEqual([21, 2]);
+  });
+});

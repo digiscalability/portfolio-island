@@ -613,6 +613,16 @@ fixers on the machine: counts hold, milliseconds are provisional.
 | `strafe` | A (A5) | 'as boarded' sets `sinceManualLook = Infinity` after posing (setYaw counts as a manual look and holds the follow); the compare row is one-sided (no more than 10% slower than the compare build), and a new row holds the swing to the pre-A5 37.2°/s (-10%) | 39 °/s as boarded against main's 17 (`followReleased: true`) |
 | `lum` | C | each view is the median of `--frames` captures (default 5, 300 ms apart): one frame let a wave crest move the horizon step by 20 L\* | per-frame horizon steps at noon on desktop: 15.6-37.7 L\*, median 33.4 |
 
+### Probe fixes from wave 2 (wave-3 amendments)
+
+The carry-over lines of `wave3-amendments.md` (E). Baselines 2026-11-13:
+this branch's dist and wave-2 main (`w2-int`, the same chunk as f79c38c),
+other builders on the machine: counts hold, milliseconds are provisional.
+
+| Probe | Line | What changed | This branch | wave-2 main |
+|---|---|---|---|---|
+| `guide` | guide night | the night talk read and the legacy step read wait out First steps' advance pause (STATE's `justDone` from `__app.guide.view()`; with no readable view, only a step past 2/5 counts), so the card's 2/5 during the 450 ms check no longer ends the read; `--night-hour` takes a list and runs 21,23,2,6 by default, the night-diag proof's hours | 8 of 8 at 21, 23, 2 and 6 h: the Night Watch awake, 6.6-19.3 u at Explore, the card on 3/5 naming him at 11.5-17.9 u and still 10 s on (screenshot `guide-night-h2-talk.png`: 'First steps 3/5', Night Watch under the lamp). Legacy 3 of 3 (3/5, 8.6 s after Explore) | 8 of 8: the Night Watch at 2.9-25.8 u |
+
 ### Probe fixes from wave 1 (wave-2 amendments)
 
 The wave-1 fix pass and re-verify found probes that misread the product.

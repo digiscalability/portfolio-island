@@ -26,7 +26,8 @@
 //   decision: B keeps a talking villager awake by the spawn overnight).
 //
 // Every session boots at ?hour=12 (lib.bootQuery; --hour <n> moves them all)
-// except the night session, which names its own hour (--night-hour, 23).
+// except the night sessions, which name their own hours (--night-hour,
+// 21,23,2,6 by default, the night-diag proof's hours; one hour or a list).
 //
 // The guide is read only through its contract: #ds-guide (data-active, the
 // 'n/5' header, Skip, the Resume chip, the finale buttons), localStorage
@@ -68,8 +69,17 @@ const STATE = () => {
   const m = /(\d)\s*\/\s*5/.exec(text);
   const b = g ? g.getBoundingClientRect() : null;
   const ui = window.__app && window.__app.ui;
+  // Guide.view().justDone: the step whose check plays during the 450 ms
+  // advance, while the card still reads the old n/5. undefined when the
+  // build exposes no guide view (the settled() fallback then waits for 3/5).
+  let justDone;
+  try {
+    const gv = window.__app && window.__app.guide && typeof window.__app.guide.view === 'function' ? window.__app.guide.view() : null;
+    justDone = gv ? gv.justDone || null : undefined;
+  } catch (e) {}
   return {
     t: Math.round(performance.now()),
+    justDone,
     present: !!g && vis(g),
     active: g ? g.getAttribute('data-active') : null,
     text: text.slice(0, 240),
@@ -305,6 +315,13 @@ async function waitFor(page, pred, ms, every = 100) {
     await lib.sleep(every);
   }
 }
+/**
+ * The card is on a step that has settled (wave-3 amendments, guide night):
+ * not inside First steps' advance pause, when the card still reads 2/5 with
+ * the check playing. With Guide's justDone readable, a step with no justDone
+ * counts; without it, only a step past 2/5 does (both callers want 3/5).
+ */
+const settled = (x) => !!x && x.present && x.stepNo !== null && (x.justDone === null || x.stepNo > 2);
 const isDone = (s, step) => !!(s && ((s.store && Array.isArray(s.store.done) && s.store.done.includes(step)) || (s.event && s.event.step && STEPS.indexOf(s.event.step) > STEPS.indexOf(step)) || (s.stepNo && s.stepNo - 1 > STEPS.indexOf(step))));
 
 async function clickXY(page, touch, T, xy) {
@@ -707,7 +724,8 @@ async function legacy(t) {
   const t1 = await ptime(page);
   // The controls card holds the guide for 8 s (or until its OK): the step is
   // read once the card has gone, not while it is up ('controls').
-  const onStep = (x) => x.present && (x.stepNo !== null || (!!x.event && STEPS.includes(x.event.step)));
+  // A settled step only: during the advance pause the card still reads 2/5.
+  const onStep = (x) => settled(x) || (x.present && x.stepNo === null && !x.justDone && !!x.event && STEPS.includes(x.event.step));
   const st = await waitFor(page, onStep, 20000);
   const stepAfterMs = st ? st.t - t1 + 1500 : null;
   const stuck = st ? null : await page.evaluate(STATE).catch(() => null);
@@ -734,8 +752,17 @@ async function legacy(t) {
  * coins lead to an awake villager, and after walk and look the card is on
  * 3/5 and names an awake villager within 30 u.
  */
-async function night(t) {
-  const hour = t.args.nightHour !== undefined && t.args.nightHour !== true ? Number(t.args.nightHour) : 23;
+/** --night-hour: one hour or a comma list; 21,23,2,6 by default (wave-3 amendments). */
+function nightHours(arg) {
+  const raw = arg !== undefined && arg !== true ? String(arg) : '21,23,2,6';
+  const hours = raw
+    .split(',')
+    .map((h) => Number(h.trim()))
+    .filter((h) => Number.isFinite(h) && h >= 0 && h < 24);
+  return hours.length ? hours : [23];
+}
+
+async function night(t, hour) {
   const s = await newSession(t, 'desktop');
   const { page } = s;
   const r = { hour };
@@ -762,7 +789,7 @@ async function night(t) {
   if (!first) {
     leadCheck(null);
     t.check(tagOf(t, `night (?hour=${hour}): the talk step names an awake villager within 30 u`), false, 'no guide card after Explore', 'an awake villager, <= 30 u');
-    t.data.night = r;
+    (t.data.night = t.data.night || {})[`h${hour}`] = r;
     await s.close();
     return;
   }
@@ -772,7 +799,9 @@ async function night(t) {
     await waitFor(page, (x) => isDone(x, step), 6000);
   }
   // The talk step, or what the guide did in its place.
-  const st = await waitFor(page, (x) => x.present && (x.stepNo !== null || x.finale), 4000);
+  // Past the look step's advance pause (the card reads 2/5 while its check
+  // plays): a settled step, or the finale when talk was skipped.
+  const st = await waitFor(page, (x) => settled(x) || (x.present && x.finale), 4000);
   const world = await page.evaluate(AWAKE);
   leadCheck(world);
   const awakeNear = world.rows.filter((x) => x.awake && x.d !== null && x.d <= 30).sort((a, b) => a.d - b.d);
@@ -795,7 +824,7 @@ async function night(t) {
   }
   const why = !st ? 'no guide card' : skipped ? `the talk step was skipped (card at ${st.stepNo || 'the finale'}/5); awake within 30 u: ${awakeNear.length ? awakeNear.map((x) => x.name).join(', ') : 'nobody'}` : r.talk;
   t.check(tagOf(t, `night (?hour=${hour}): the talk step names an awake villager within 30 u`), ok, ok ? { villager: name, distanceU: row.d, activity: row.activity, after10s: r.talk.after10s.names } : why, 'on 3/5, an awake villager, <= 30 u, still so 10 s on');
-  t.data.night = r;
+  (t.data.night = t.data.night || {})[`h${hour}`] = r;
   await s.close();
 }
 
@@ -808,13 +837,15 @@ async function guide(t) {
   if (on('skip')) for (const prof of ['desktop', 'phone']) if (!only || only === prof) await skipAndTrail(t, prof);
   if (on('reduced')) for (const prof of ['desktop', 'phone']) if (!only || only === prof) await reducedMotion(t, prof);
   if (on('legacy') && (!only || only === 'desktop')) await legacy(t);
-  if (on('night') && (!only || only === 'desktop')) await night(t);
+  if (on('night') && (!only || only === 'desktop')) for (const h of nightHours(t.args.nightHour)) await night(t, h);
   t.data.double = !!t.args.double;
   t.data.introEvents = 'see events.cjs';
 }
 
 module.exports = {
-  guide: { item: 'A6, B10 (E6a)', title: "First steps at 1440x900, 390x844, 844x390, 667x375 (?hour=12): step timing, finale, Skip, resume, the chip, reduced motion, geometry incl. toasts and flashes, 'Show me', legacy, the trail's villager; one night session (?hour=23)", profiles: ['desktop'], run: guide },
+  guide: { item: 'A6, B10 (E6a)', title: "First steps at 1440x900, 390x844, 844x390, 667x375 (?hour=12): step timing, finale, Skip, resume, the chip, reduced motion, geometry incl. toasts and flashes, 'Show me', legacy, the trail's villager; night sessions at 21, 23, 2 and 6 h", profiles: ['desktop'], run: guide },
   STATE,
+  settled,
+  nightHours,
   DOUBLE,
 };
