@@ -204,15 +204,28 @@ const MAP_LABELS = () => {
   const m = document.createElement('canvas').getContext('2d');
   const seen = new Map();
   for (const x of calls) {
-    const key = `${x.font}|${x.k}`;
+    // The online-count pill ('3 ONLINE') is a caption on the ring, not a
+    // place label; it is keyed apart so a shared font cannot hide either.
+    const pill = /^\d+\s+ONLINE$/i.test(x.text.trim());
+    const key = `${pill ? 'pill' : 'label'}|${x.font}|${x.k}`;
     if (seen.has(key)) continue;
     m.font = x.font;
     const cap = m.measureText('H').actualBoundingBoxAscent * x.k * css;
-    seen.set(key, { font: x.font, capPx: Math.round(cap * 10) / 10, sample: x.text });
+    seen.set(key, { font: x.font, capPx: Math.round(cap * 10) / 10, sample: x.text, pill });
   }
-  const rows = [...seen.values()];
-  return { labels: rows, minCapPx: rows.length ? Math.min(...rows.map((r) => r.capPx)) : null };
+  return { rows: [...seen.values()] };
 };
+/**
+ * D16's row: the minimap's place labels (the Hub, the districts), which D16
+ * sets to 10.5 px/600. The online-count pill is reported apart: D16 does not
+ * change it (6.7 px at 844x390 on main and on wave 4 alike).
+ */
+function judgeMapLabels(read) {
+  if (!read || !Array.isArray(read.rows)) return null;
+  const labels = read.rows.filter((r) => !r.pill);
+  const pills = read.rows.filter((r) => r.pill);
+  return { labels, pills, minCapPx: labels.length ? Math.min(...labels.map((r) => r.capPx)) : null, pillCapPx: pills.length ? Math.min(...pills.map((r) => r.capPx)) : null };
+}
 const RECT_UNDER = (which) => {
   const ui = window.__app.ui;
   const el = which === 'minimap' ? ui.mapCanvas : ui.compassDiv;
@@ -271,9 +284,10 @@ async function showthrough(t) {
     await t.boot(s, { query: 'hour=12' });
     await tapSel(page, `${lib.WELCOME} button[data-dismiss]`);
     await page.waitForTimeout(2500);
-    const out = { labels: await page.evaluate(MAP_LABELS), cards: {} };
+    const out = { labels: judgeMapLabels(await page.evaluate(MAP_LABELS)), cards: {} };
     await t.shot(page, `showthrough-${prof}-hud.png`);
     t.check(`${prof}: minimap label cap height (D16)`, out.labels && out.labels.minCapPx !== null ? out.labels.minCapPx >= 7 : null, out.labels ? out.labels.labels.map((l) => `${l.capPx} px ${l.font} (${l.sample})`) : 'no minimap', '>= 7 px (CSS)');
+    t.check(`${prof}: the minimap's online-count pill cap height (reported)`, true, out.labels && out.labels.pillCapPx !== null ? out.labels.pills.map((l) => `${l.capPx} px ${l.font} (${l.sample})`) : 'no pill drawn', 'reported, not D16 (main 6.7 px at 844x390)');
     const cards = [
       ['menu', async () => openMenu(page)],
       [
@@ -318,4 +332,5 @@ module.exports = {
   phone: { item: 'D4 (E6a)', title: 'phone tap targets under 44 px on every surface (welcome, HUD, drawer, menu, hire card, districts, emote wheel, NPC chat)', profiles: ['phone'], run: phone },
   UX_HELPERS,
   smallOf,
+  judgeMapLabels,
 };
