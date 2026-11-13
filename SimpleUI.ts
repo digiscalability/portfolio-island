@@ -2358,10 +2358,12 @@ export class SimpleUI {
       });
       const label = document.createElement('div');
       label.textContent = 'The island today';
+      label.className = 'ds-caption';
       Object.assign(label.style, {
         fontSize: '11px',
         letterSpacing: '0.08em',
         textTransform: 'uppercase',
+        color: 'inherit',
         opacity: '0.6',
         marginBottom: '2px',
       });
@@ -6081,7 +6083,7 @@ export class SimpleUI {
       );
       btn.innerHTML =
         `<div style="font-size:24px;line-height:1;">${icon}</div>` +
-        `<div style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
+        `<div class="ds-caption" style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:inherit;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
       Object.assign(btn.style, {
         position: 'absolute',
         right: `calc(var(--sar, 0px) + ${rightPx}px)`,
@@ -10031,8 +10033,8 @@ export class SimpleUI {
       // and digiscalability.com/about lead with it too.
       hire: `
         <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;display:flex;align-items:center;justify-content:center;gap:6px;">${icon('file-text', 16)}<span>Hiring?</span></div>
-        <h2 style="margin:0 0 2px;color:#fff;font-family:var(--font-display, 'Bebas Neue', sans-serif);font-weight:400;font-size:40px;line-height:1.05;letter-spacing:0.5px;">Abbas Ali</h2>
-        <p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
+        <h2 style="margin:0 0 2px;color:#fff;font-family:var(--font-display, 'Bebas Neue', sans-serif);font-weight:400;font-size:32px;line-height:1;letter-spacing:0.5px;">Abbas Ali</h2>
+        <p style="margin:0 0 8px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
         <p style="margin:0 0 12px;font-size:14px;line-height:1.55;color:#dde3ee;">I build AI
         products end to end and make them safe to put in front of the public: the model call and
         its guardrails, the realtime client, the cloud functions and the tests.</p>
