@@ -15645,7 +15645,7 @@ export class GameScene extends THREE.Scene {
         x: -1.1,
         z: -1.05,
         r: 0.7,
-        label: '✉️ Press <strong>E</strong> to copy the email',
+        label: '✉️ Press <strong>E</strong> to see the email',
         action: 'panel',
         arg: 'copy:email',
       },
@@ -16621,11 +16621,15 @@ export class GameScene extends THREE.Scene {
     // The title names who lives here, once they are home (night only).
     if (active === 'cottage' && !exhibits?.title && this.interiorOccupantNames.length) {
       const names = this.interiorOccupantNames;
+      // "The Baker and the Fisherman's cottage": every name keeps its article.
+      const the = names.map((n) => `the ${n}`);
       const who =
-        names.length === 1
-          ? names[0]
-          : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-      this.drawExhibit(0, { lines: [`The ${who}'s cottage`] }, true);
+        the.length === 1 ? the[0] : `${the.slice(0, -1).join(', ')} and ${the[the.length - 1]}`;
+      this.drawExhibit(
+        0,
+        { lines: [`${who.charAt(0).toUpperCase()}${who.slice(1)}'s cottage`] },
+        true,
+      );
     }
     // The room's light, at its preset from the first frame: the entry is
     // drawn under the door veil, and an ease from the island's values would

@@ -994,7 +994,7 @@ describe('hall exhibits drawn in the room, with hotspots that act (P2-B12)', () 
   test('the new spots carry their args, and every one still opens the zone panel', () => {
     expect(argOf('office', /browse the work/)).toBe('hire');
     expect(argOf('post', /counter bell/)).toBe('hire');
-    expect(argOf('post', /copy the email/)).toBe('copy:email');
+    expect(argOf('post', /see the email/)).toBe('copy:email');
     expect(argOf('hall', /read the map/)).toBe('compass');
     expect(argOf('hall', /notice board/)).toBe('times');
     expect(argOf('workshop', /project cards/)).toBe('project');
@@ -1126,7 +1126,9 @@ describe('hall exhibits drawn in the room, with hotspots that act (P2-B12)', () 
     try {
       scene.enterInterior('A cosy home', 0xe0c9a8, 'A place to\nrest', '', 'cottage', 'house_2');
       const titles = draw.mock.calls.filter((c) => c[0] === 0).map((c) => c[1].lines);
-      expect(titles[titles.length - 1]).toEqual(["The Village Baker and Night Watch's cottage"]);
+      expect(titles[titles.length - 1]).toEqual([
+        "The Village Baker and the Night Watch's cottage",
+      ]);
       scene.exitInterior();
       // Nobody home (by day): today's title.
       island.npcTargets = [];
