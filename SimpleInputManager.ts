@@ -15,6 +15,48 @@ export function consumePinchZoomFactor(): number {
   return f;
 }
 
+/**
+ * A13: the keys bound by POSITION (KeyboardEvent.code), so the W-position key
+ * walks on AZERTY ('z') and Dvorak (',') alike. Each maps to the lowercase
+ * token the rest of the game already reads (isKeyPressed('w'), ' ',
+ * 'shift'). A code not listed, or an empty code, falls back to e.key.
+ */
+export const KEY_CODE_TOKENS: Readonly<Record<string, string>> = {
+  KeyW: 'w',
+  KeyA: 'a',
+  KeyS: 's',
+  KeyD: 'd',
+  KeyE: 'e',
+  KeyQ: 'q',
+  KeyF: 'f',
+  KeyG: 'g',
+  KeyM: 'm',
+  KeyC: 'c',
+  KeyP: 'p',
+  KeyJ: 'j',
+  KeyL: 'l',
+  KeyI: 'i',
+  KeyK: 'k',
+  KeyR: 'r',
+  Space: ' ',
+  ShiftLeft: 'shift',
+  ShiftRight: 'shift',
+  ArrowUp: 'arrowup',
+  ArrowDown: 'arrowdown',
+  ArrowLeft: 'arrowleft',
+  ArrowRight: 'arrowright',
+  Equal: '=',
+  Minus: '-',
+  NumpadAdd: '+',
+  NumpadSubtract: '-',
+};
+
+/** A13: the game token for a key event: by position where bound, else the character. */
+export function keyToken(e: { code?: string; key: string }): string {
+  const byCode = e.code ? KEY_CODE_TOKENS[e.code] : undefined;
+  return byCode ?? e.key.toLowerCase();
+}
+
 /** A11: the wheel's zoom per normalised pixel: factor = exp(deltaY × K). */
 export const WHEEL_ZOOM_K = 0.0012;
 /** A11: the = and − keys step the orbit distance by these factors. */
@@ -190,13 +232,15 @@ export class SimpleInputManager {
         // A disposed manager is deaf even where a DOM ignores the abort
         // signal (happy-dom): the zoom step writes a module-level channel.
         if (signal.aborted) return;
-        const k = e.key.toLowerCase();
+        // A13: held and latched by position; the typing guard still reads
+        // the character typed.
+        const k = keyToken(e);
         // A focused control keeps the keys it uses (keyGuards.ts): a text field
         // every key, so typing "feed the birds" never fires the one-shot verbs
         // or walks; a slider or select its arrows; a button or link Space and
         // Enter. Holding counts too, not just the latch: a key typed into a
         // field used to walk the avatar behind it.
-        if (focusedControlOwnsKey(k, e.target)) return;
+        if (focusedControlOwnsKey(e.key.toLowerCase(), e.target)) return;
         // A11: = and − (by position, since Shift turns them into + and _)
         // step the zoom through the pinch channel, which every rail drains.
         const step = SimpleInputManager.zoomStepFor(e.code);
@@ -218,7 +262,7 @@ export class SimpleInputManager {
     document.addEventListener(
       'keyup',
       (e) => {
-        const k = e.key.toLowerCase();
+        const k = keyToken(e);
         this.keys.delete(k);
         this.lastKeyEventAt.delete(k);
       },

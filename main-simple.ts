@@ -2991,6 +2991,11 @@ export class SimpleApp {
         this.currentThrottle = Math.max(Math.abs(vFwd), Math.abs(vStrafe) * 0.5);
         this.applyLook(deltaTime);
         this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
+        this.maybeHint(
+          'ride',
+          'Steer with [W] [A] [S] [D]; press [E] to hop off.',
+          'Steer with the stick; tap USE to hop off.',
+        );
         if (this.inputManager.consumeKeyPress('e')) {
           this.scene.disembarkVehicle();
           this.ui.hideInteractionPrompt();
@@ -3070,6 +3075,8 @@ export class SimpleApp {
           }
         }
         this.prevJumpHeld = jumpInput;
+        // A13: the first-use and first-encounter hints, once each.
+        if (player) this.updateFirstHints(deltaTime, player);
         // Breath meter + underwater vignette
         if (player) this.ui.updateBreath(player.getOxygen(), player.isInWater());
         // Camera-submersion wash (independent of the player: the chase cam can
@@ -3136,12 +3143,14 @@ export class SimpleApp {
           if (typeof walkPhase === 'number') {
             if (onFoot) {
               // Two footfalls per cycle; alt-foot falls out of which plant fired.
-              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.25)) {
+              // A13: on the heel strikes, phases 0.0 and 0.5 (crossedPhase
+              // counts a wrap past 1.0, e.g. 0.97 to 0.03, as crossing 0).
+              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.0)) {
                 this.stepAlt = false;
                 sfx.footstep(this.stepAlt);
                 this.scene.spawnDust(player.getWorldPosition(), 1);
               }
-              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.75)) {
+              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.5)) {
                 this.stepAlt = true;
                 sfx.footstep(this.stepAlt);
                 this.scene.spawnDust(player.getWorldPosition(), 1);
@@ -5908,6 +5917,120 @@ export class SimpleApp {
    * previous and current sample, accounting for the 1\u21920 wrap. `prev < 0` marks
    * a freshly (re)started stride, so nothing has been crossed yet.
    */
+  /**
+   * A13: may a first-use hint show now? Never under a panel, never indoors,
+   * never on a tour, the welcome card or a conversation, and never while
+   * the First steps card or the Next chip's list is out.
+   */
+  private hintsQuiet(): boolean {
+    return (
+      this.ui.panels.isOpen() ||
+      this.ui.isWelcomeVisible() ||
+      this.scene.isInsideInterior() ||
+      this.tour !== null ||
+      this.npcCine !== null ||
+      (this.guide?.isActive() ?? false) ||
+      (this.nextChip?.isExpanded() ?? false)
+    );
+  }
+
+  /** A13: hints already shown on this device (mirrors ds_hint_* in localStorage). */
+  private readonly hintsShown = new Set<string>();
+
+  /**
+   * A13: show hint `id` once per device (ds_hint_<id>), in the visitor's
+   * scheme: '[Key]' tokens on a keyboard (D7 renders them as keycaps), the
+   * touch words on a phone. Returns true when it showed.
+   */
+  private maybeHint(id: string, keys: string, touch: string): boolean {
+    if (this.hintsShown.has(id) || this.hintsQuiet()) return false;
+    const key = `ds_hint_${id}`;
+    try {
+      if (localStorage.getItem(key)) {
+        this.hintsShown.add(id);
+        return false;
+      }
+      localStorage.setItem(key, '1');
+    } catch {
+      /* no storage: show it this session only */
+    }
+    this.hintsShown.add(id);
+    this.ui.toast(this.ui.isTouchDevice() ? touch : keys, { hint: true });
+    return true;
+  }
+
+  /** A13: seconds of walking without running (the run hint waits for 3). */
+  private walkHeldS = 0;
+  /** A13: the encounter scans run at about 3 Hz, not every frame. */
+  private hintScanIn = 0;
+
+  /**
+   * A13: free walk's hints. Run after 3 s of walking without running, swim
+   * the first time the visitor swims, and the first time a shore, a tree or
+   * a free build stake is within 6 u.
+   */
+  private updateFirstHints(
+    dt: number,
+    player: { isInWater(): boolean; isRunning(): boolean; isSwimming(): boolean },
+  ): void {
+    if (this.hintsShown.size >= 6) return;
+    const walking = this.guideMoveMag > 0.3 && !player.isInWater() && !player.isRunning();
+    this.walkHeldS = walking ? this.walkHeldS + dt : 0;
+    if (this.walkHeldS >= 3) {
+      if (SimpleApp.LEGACY_RUN) {
+        this.maybeHint(
+          'run',
+          'Hold [Space] while moving to run.',
+          'Hold JUMP while moving to run.',
+        );
+      } else {
+        this.maybeHint('run', 'Hold [Shift] to run.', 'Push the stick to the edge to run.');
+      }
+    }
+    if (player.isSwimming()) {
+      this.maybeHint(
+        'swim',
+        'Hold [Space] to stay afloat; hold [Shift] to dive.',
+        'Hold JUMP to stay afloat; hold DIVE to dive.',
+      );
+    }
+    this.hintScanIn -= dt;
+    if (this.hintScanIn > 0 || this.hintsQuiet()) return;
+    this.hintScanIn = 0.33;
+    if (!this.hintsShown.has('fish') && this.scene.canCastHere()) {
+      this.maybeHint(
+        'fish',
+        this.ownedRod
+          ? '🎣 A shore: press [E] to cast, and reel when the float dips.'
+          : '🎣 A shore: with a rod from the shop, press [E] here to cast.',
+        this.ownedRod
+          ? '🎣 A shore: tap USE to cast, and reel when the float dips.'
+          : '🎣 A shore: with a rod from the shop, tap USE here to cast.',
+      );
+    }
+    if (!this.hintsShown.has('chop') && this.scene.nearestChoppableTree(6) !== null) {
+      this.maybeHint(
+        'chop',
+        this.ownedAxe
+          ? '🪓 A tree: press [E] beside it to chop.'
+          : '🪓 A tree: with an axe from the shop, press [E] beside it to chop.',
+        this.ownedAxe
+          ? '🪓 A tree: tap USE beside it to chop.'
+          : '🪓 A tree: with an axe from the shop, tap USE beside it to chop.',
+      );
+    }
+    if (!this.hintsShown.has('build')) {
+      const b = this.nearestBuildOpportunity();
+      if (b && !b.own && b.dist <= 6) {
+        this.maybeHint(
+          'build',
+          '🔨 A build stake: press [E] at it to build.',
+          '🔨 A build stake: tap USE at it to build.',
+        );
+      }
+    }
+  }
+
   /**
    * A11: a lesson's toast, in the scheme the visitor plays with. Lesson 1
    * names Shift on desktop and the stick on touch (touchifyPlain does not

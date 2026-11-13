@@ -1042,6 +1042,11 @@ export class NextChip {
     this.ver++;
   }
 
+  /** A13: the goal list is unfolded (first-use hints wait until it folds). */
+  isExpanded(): boolean {
+    return this.expanded;
+  }
+
   /** The chip was tapped: unfold, or fold again. */
   toggle(): void {
     if (!this.showing()) return;

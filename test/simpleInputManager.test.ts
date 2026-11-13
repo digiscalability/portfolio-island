@@ -2,9 +2,11 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
+  KEY_CODE_TOKENS,
   SimpleInputManager,
   WHEEL_ZOOM_K,
   consumePinchZoomFactor,
+  keyToken,
   wheelZoomFactor,
 } from '../SimpleInputManager';
 
@@ -218,6 +220,73 @@ describe('A11: Shift runs, the wheel and = / − zoom', () => {
       new KeyboardEvent('keydown', { key: '-', code: 'NumpadSubtract', bubbles: true }),
     );
     expect(consumePinchZoomFactor()).toBeCloseTo(1.18, 9);
+    im.dispose();
+  });
+});
+
+describe('A13: keys by position', () => {
+  const kd = (init: KeyboardEventInit) =>
+    document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+  const ku = (init: KeyboardEventInit) =>
+    document.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, ...init }));
+
+  test('keyToken maps the bound codes and falls back to the character', () => {
+    expect(keyToken({ code: 'KeyW', key: 'z' })).toBe('w');
+    expect(keyToken({ code: 'KeyA', key: 'q' })).toBe('a');
+    expect(keyToken({ code: 'Space', key: ' ' })).toBe(' ');
+    expect(keyToken({ code: 'ShiftRight', key: 'Shift' })).toBe('shift');
+    expect(keyToken({ code: 'ArrowUp', key: 'ArrowUp' })).toBe('arrowup');
+    expect(keyToken({ code: '', key: 'E' })).toBe('e');
+    expect(keyToken({ code: 'KeyV', key: 'v' })).toBe('v'); // push-to-talk: unbound, by character
+    expect(keyToken({ code: 'Escape', key: 'Escape' })).toBe('escape');
+    for (const c of [
+      'KeyE',
+      'KeyQ',
+      'KeyF',
+      'KeyG',
+      'KeyM',
+      'KeyC',
+      'KeyP',
+      'KeyJ',
+      'KeyL',
+      'KeyI',
+      'KeyK',
+      'KeyR',
+    ]) {
+      expect(KEY_CODE_TOKENS[c]).toBe(c.slice(3).toLowerCase());
+    }
+  });
+
+  test('AZERTY: the W-position key walks and the A-position key strafes', () => {
+    const im = new SimpleInputManager();
+    kd({ code: 'KeyW', key: 'z' });
+    kd({ code: 'KeyA', key: 'q' });
+    expect(im.getMovementInput()).toEqual({ forward: 1, strafe: -1 });
+    // The A-position key is not Q (the wave) on AZERTY, even though it types 'q'.
+    expect(im.consumeKeyPress('q')).toBe(false);
+    ku({ code: 'KeyW', key: 'z' });
+    ku({ code: 'KeyA', key: 'q' });
+    expect(im.getMovementInput()).toEqual({ forward: 0, strafe: 0 });
+    im.dispose();
+  });
+
+  test("isKeyPressed('shift') holds for either Shift", () => {
+    const im = new SimpleInputManager();
+    kd({ code: 'ShiftRight', key: 'Shift' });
+    expect(im.isKeyPressed('shift')).toBe(true);
+    ku({ code: 'ShiftRight', key: 'Shift' });
+    expect(im.isKeyPressed('shift')).toBe(false);
+    im.dispose();
+  });
+
+  test('a focused text field still owns the character typed', () => {
+    const im = new SimpleInputManager();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', key: 'z', bubbles: true }));
+    expect(im.isKeyPressed('w')).toBe(false);
+    input.remove();
     im.dispose();
   });
 });
