@@ -81,7 +81,41 @@ const SCENE_CENSUS = () => {
   for (const e of toonNoRamp) for (const w of e.where) noRampBy[w] = (noRampBy[w] || 0) + 1;
   const ramps = new Set(rows.filter((e) => e.type === 'MeshToonMaterial' && e.ramp).map((e) => e.ramp));
   const R = app.renderer.getRenderer();
+  // Textures (wave-4 rows list, C7): every unique texture a scene material
+  // holds (map slots and shader uniforms) plus the scene's background and
+  // environment, with an estimated GPU size of w x h x 4 x 4/3 (RGBA8 with
+  // mipmaps). CanvasTextures are counted apart (C7 removes four 512x512).
+  const texs = new Set();
+  const addTex = (v) => {
+    if (v && v.isTexture) texs.add(v);
+  };
+  sc.traverse((o) => {
+    for (const m of o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []) {
+      if (!m) continue;
+      for (const k of Object.keys(m)) addTex(m[k]);
+      if (m.uniforms) for (const u of Object.values(m.uniforms)) if (u) addTex(u.value);
+    }
+  });
+  addTex(sc.background);
+  addTex(sc.environment);
+  const texRow = { count: 0, canvas: 0, canvas512: 0, bytes: 0, canvasBytes: 0 };
+  for (const tx of texs) {
+    const img = tx.image || {};
+    const w = img.width || img.videoWidth || 0;
+    const h = img.height || img.videoHeight || 0;
+    const bytes = Math.round(w * h * 4 * (4 / 3));
+    texRow.count++;
+    texRow.bytes += bytes;
+    if (tx.isCanvasTexture) {
+      texRow.canvas++;
+      texRow.canvasBytes += bytes;
+      if (w === 512 && h === 512) texRow.canvas512++;
+    }
+  }
+  texRow.MiB = Math.round((texRow.bytes / 1048576) * 100) / 100;
+  texRow.canvasMiB = Math.round((texRow.canvasBytes / 1048576) * 100) / 100;
   return {
+    textures: texRow,
     meshes,
     hulls,
     materials: rows.length,
@@ -255,6 +289,7 @@ async function census(t) {
   for (const prof of t.profiles(['desktop', 'phone'])) {
     const r = await censusOne(t, t.base, prof, 'subject');
     t.data[prof] = r;
+    t.log(`${prof}: textures ${JSON.stringify(r.scene.textures)}`);
     // C3's scope: the zone halls, tree.glb, the villagers and Island's props.
     // The player's dress and the scene props wait for B15, and the interiors
     // are wave 2's PR; they are reported, not judged.
@@ -292,6 +327,20 @@ async function census(t) {
       // One load per side, so the boot race's 3-4 program spread is allowed;
       // perf-gate --ab (programs at +30 s over 6-24 cycles) is the authority.
       t.check(`${prof}: programs 12 s after the card, no higher than the compare build (one load, ±4 boot race)`, a !== null && m !== null ? a <= m + 4 : null, { subject: a, compare: m }, '<= compare + 4');
+      // C7 (wave 4). The amendment's -4 textures / -5.3 MiB counts the four
+      // canvases createBuildingTextures MAKES (texgen.cjs counts those). The
+      // GPU holds one: Materials.toonify keeps only 'map', so the normal, AO
+      // and roughness canvases are never uploaded. MEASURED on fcaa649: one
+      // 512x512 CanvasTexture in the scene (1.33 MiB). The row wants that
+      // one gone (-1, about -1.3 MiB); no change reads null, more fails.
+      const ts = r.scene.textures;
+      const tc = c.scene.textures;
+      t.data[`${prof}Compare`].scene.textures = tc;
+      if (ts && tc) {
+        const dN = ts.canvas - tc.canvas;
+        const dMiB = Math.round((ts.canvasMiB - tc.canvasMiB) * 100) / 100;
+        t.check(`${prof}: CanvasTextures and their estimated GPU MiB against the compare build (C7)`, dN === 0 ? null : dN < 0 ? dN <= -1 && dMiB <= -1.3 : false, { subject: { canvas: ts.canvas, canvas512: ts.canvas512, canvasMiB: ts.canvasMiB, allMiB: ts.MiB }, compare: { canvas: tc.canvas, canvas512: tc.canvas512, canvasMiB: tc.canvasMiB, allMiB: tc.MiB }, delta: { canvas: dN, canvasMiB: dMiB } }, '<= -1 and <= -1.3 MiB, the facade albedo (null: unchanged)');
+      }
     }
   }
 }
