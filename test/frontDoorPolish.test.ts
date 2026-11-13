@@ -743,6 +743,26 @@ describe('messages: clear of First steps’ card', () => {
     expect(toastEl()!.dataset.bottom).toBe(String(844 - 403 + 8));
   });
 
+  // Wave-2 carry-over (guide at 390x844): the NextChip fades in from opacity
+  // 0, and the toast that was up when it arrived stayed on it for one poll.
+  test('a phone in portrait: a card still fading in counts, a hidden one does not', () => {
+    vi.useFakeTimers();
+    const g = phone(390, 844, new DOMRect(16, 451, 133, 46));
+    g.style.opacity = '0';
+    let running = true;
+    Object.defineProperty(g, 'getAnimations', {
+      configurable: true,
+      value: () => (running ? [{ playState: 'running' }] : []),
+    });
+    ui.toast('🧭 Compass set: 🏫 School');
+    expect(toastEl()!.dataset.bottom).toBe(String(844 - 451 + 8));
+    vi.advanceTimersByTime(6100);
+    running = false; // opacity 0 and nothing playing: hidden, the 350 lane
+    ui.toast('🧭 Compass set: 🚀 Projects');
+    vi.advanceTimersByTime(800);
+    expect(toastEl()!.dataset.bottom).toBe('350');
+  });
+
   test('short landscape: the flash goes 8 px below the card, and follows it', () => {
     vi.useFakeTimers();
     const card = new DOMRect(146, 60, 290, 91);

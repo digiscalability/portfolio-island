@@ -26,9 +26,11 @@
 //   first', 88 'values are escaped at the HTML sink'
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, test } from 'vitest';
 
 import { SimpleUI } from '../SimpleUI';
+import { DISTRICT_GLYPHS, ICON_NAMES, PARCEL_GLYPH, icon, spriteMarkup } from '../ui/icons';
 
 /** visualPolish.test.ts's reader: CRLF folded, comments stripped before
  *  matching, so a lock can never be satisfied by its own explanatory prose. */
@@ -223,8 +225,11 @@ describe('moved from visualPolish.test.ts (B): HUD — one chip recipe for the t
 
   test('per-frame HUD writers skip unchanged values (sweep round 2)', () => {
     const ui = src('SimpleUI.ts');
-    // Interaction prompt: innerHTML parse only when the TEXT changes.
-    expect(ui).toContain('if (text === this.lastPromptText && this.interactionDiv) return');
+    // Interaction prompt: innerHTML parse only when the text or the input
+    // mode changes (D7: a switch from keys to touch re-renders it).
+    expect(ui).toContain(
+      'if (text === this.lastPromptText && mode === this.lastPromptMode && this.interactionDiv) return',
+    );
     // Race panel: null-first so on-foot visitors never get the DOM built,
     // and show/hide writes only on the transition.
     const race = ui.slice(ui.indexOf('updateRaceHud(status'));
@@ -326,7 +331,8 @@ describe('D6: one message at a time', () => {
 
   test('a flash is a queued message, not a DOM write of its own', () => {
     const flash = bodyOf(ui, 'flashMessage(text: string): void');
-    expect(flash).toContain("this.queued(this.touchifyPlain(text), 'flash', false)");
+    // D7: queued as written; its keys render as nodes in the mode in use when it shows.
+    expect(flash).toContain("this.queued(text, 'flash', false)");
     expect(flash).toContain('this.enqueue(');
     expect(flash).not.toContain('createElement');
   });
@@ -350,7 +356,9 @@ describe('D6: one message at a time', () => {
 
   test('the prompt is announced after the per-frame guard, debounced, never per frame', () => {
     const prompt = bodyOf(ui, 'showInteractionPrompt(text: string): void');
-    const guard = prompt.indexOf('if (text === this.lastPromptText && this.interactionDiv) return');
+    const guard = prompt.indexOf(
+      'if (text === this.lastPromptText && mode === this.lastPromptMode && this.interactionDiv) return',
+    );
     expect(guard).toBeGreaterThan(-1);
     expect(prompt.indexOf('this.announce(')).toBeGreaterThan(guard);
     expect(prompt).toContain('}, 600);');
@@ -450,5 +458,155 @@ describe("Abbas's rulings: the frozen pills", () => {
     expect(rows.length).toBeGreaterThan(1); // the drawer list, not the overlay
     const order = (el: HTMLElement): number => Number(el.style.order || '0');
     expect(rows.filter((r) => r !== pills[0]).every((r) => order(r) > order(pills[0]))).toBe(true);
+  });
+});
+
+// D13: one icon set, and the phone drawer's contents in order.
+describe('D13: one icon set, the drawer in order', () => {
+  const PICTO = /\p{Extended_Pictographic}/u;
+  /** Frozen pill labels, exempt by the rulings (critique-r3). */
+  const FROZEN = new Set(['💼 Work with me', '📖 Portfolio']);
+  let app: SimpleUI | null = null;
+  afterEach(() => {
+    app?.panels.closeAll();
+    app?.dispose();
+    app = null;
+    history.replaceState(null, '', '/');
+  });
+  const boot = (url = '/'): SimpleUI => {
+    history.replaceState(null, '', url);
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    app = new SimpleUI('ui-overlay');
+    app.updateCoinCounter(3);
+    app.setCompletion(0, []);
+    return app;
+  };
+  /** Every chrome control's own text, with the frozen pills left out. */
+  const chromeEmoji = (root: ParentNode): string[] =>
+    [...root.querySelectorAll<HTMLElement>('.hud-btn, button, a')]
+      .filter((el) => !FROZEN.has((el.textContent ?? '').trim()))
+      .map((el) => (el.textContent ?? '').trim())
+      .filter((t) => PICTO.test(t));
+
+  test('the sprite: 24 px grid, currentColor strokes, 3 KB gzip or less', () => {
+    const m = spriteMarkup();
+    expect(ICON_NAMES.length).toBeGreaterThanOrEqual(40);
+    expect(gzipSync(m).length).toBeLessThanOrEqual(3 * 1024);
+    expect(m.match(/<symbol /g)).toHaveLength(ICON_NAMES.length);
+    expect(m).not.toMatch(/fill="#|stroke="#/); // currentColor only
+    expect(icon('volume')).toContain('stroke-width="1.75"');
+    expect(icon('volume')).toContain('stroke="currentColor"');
+    expect(icon('volume')).toContain('viewBox="0 0 24 24"');
+  });
+
+  test('five district glyphs as Path2D strings (C10), and a parcel distinct from mail (P2-D8)', () => {
+    expect(Object.keys(DISTRICT_GLYPHS).sort()).toEqual(
+      ['contact', 'personal', 'professional', 'projects', 'welcome'].sort(),
+    );
+    for (const d of Object.values(DISTRICT_GLYPHS)) expect(d).toMatch(/^M[\d.\s,a-zA-Z-]+$/);
+    expect(PARCEL_GLYPH).not.toBe(DISTRICT_GLYPHS.contact);
+  });
+
+  test('desktop: no emoji in the HUD chips, the Portfolio menu or the hire card chrome', () => {
+    const ui = boot('/');
+    const overlay = document.getElementById('ui-overlay')!;
+    expect(document.getElementById('ds-icon-sprite')).not.toBeNull();
+    expect(chromeEmoji(overlay)).toEqual([]);
+    // The frozen pills keep their labels exactly.
+    const pills = [...overlay.querySelectorAll<HTMLElement>('.hud-btn')].map((b) =>
+      (b.textContent ?? '').trim(),
+    );
+    expect(pills).toContain('💼 Work with me');
+    expect(pills).toContain('📖 Portfolio');
+    (ui as unknown as { togglePortfolioMenu(): void }).togglePortfolioMenu();
+    const menu = document.querySelector<HTMLElement>(
+      '[aria-labelledby="ds-portfolio-menu-title"]',
+    )!;
+    expect(chromeEmoji(menu)).toEqual([]);
+    expect(PICTO.test(menu.querySelector('h2')!.textContent ?? '')).toBe(false);
+    ui.panels.closeAll();
+    ui.showHireCard('cta');
+    const card = document
+      .querySelector<HTMLElement>('#ds-zone-title')!
+      .closest<HTMLElement>('[role="dialog"]')!;
+    const actions = card.querySelectorAll<HTMLElement>(
+      '[data-hire-actions] a, [data-hire-contact], [data-hire-tour]',
+    );
+    expect(actions.length).toBe(5);
+    expect([...actions].filter((a) => PICTO.test(a.textContent ?? ''))).toEqual([]);
+  });
+
+  test('phone HUD: USE, chat and the mic draw sprite icons, not emoji', () => {
+    boot('/?touch=1');
+    const use = document.querySelector<HTMLElement>('[data-guide="use-button"]')!;
+    const chat = document.querySelector<HTMLElement>('[aria-label="Open chat"]')!;
+    const mic = document.querySelector<HTMLElement>('[aria-label^="Hold to talk"]')!;
+    const want: Array<[HTMLElement, string]> = [
+      [use, 'hand'],
+      [chat, 'chat'],
+      [mic, 'mic'],
+    ];
+    for (const [el, name] of want) {
+      expect(el.querySelector('svg.ds-ic')!.getAttribute('data-icon'), name).toBe(name);
+      expect(PICTO.test(el.textContent ?? ''), name).toBe(false);
+    }
+    expect((use.textContent ?? '').trim()).toBe('USE');
+    expect(chromeEmoji(document.getElementById('ui-overlay')!)).toEqual([]);
+  });
+
+  test('Reduce motion wears the motion-off icon; CV and Hiring, Code and Source differ', () => {
+    boot('/');
+    const rm = document.querySelector<HTMLElement>('[aria-label="Toggle reduced motion"]')!;
+    expect(rm.querySelector('svg.ds-ic')!.getAttribute('data-icon')).toBe('motion-off');
+    const hiring = document.querySelector<HTMLElement>('[data-hiring-chip]')!;
+    expect(hiring.querySelector('svg.ds-ic')!.getAttribute('data-icon')).toBe('file-text');
+    const ui = code('SimpleUI.ts');
+    expect(ui).toContain("'📄': 'file-user'");
+    expect(ui).toContain("/\\bsource\\b/i.test(text) ? 'source' : 'code'");
+  });
+
+  test('phone drawer: 44 px rows of icon then label, CTA accents, Progress · 0%, role=group', () => {
+    boot('/?touch=1');
+    const list = document.getElementById('ds-drawer')!;
+    expect(list.getAttribute('role')).toBe('group');
+    const toggle = document.querySelector<HTMLElement>('[aria-controls="ds-drawer"]')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.querySelector('svg.ds-ic')).not.toBeNull();
+    const rows = [...list.children] as HTMLElement[];
+    expect(rows.length).toBe(11);
+    for (const r of rows) {
+      expect(r.classList.contains('ds-drawer-row')).toBe(true);
+      expect(r.style.minHeight).toBe('44px');
+      expect(r.style.padding).toBe('0px 12px');
+      expect(r.style.gap).toBe('12px');
+      // The first child is the 24 px icon slot: an SVG icon or a frozen emoji.
+      const first = r.firstElementChild!;
+      expect(first.matches('svg.ds-ic, .ds-ic-slot')).toBe(true);
+      expect(r.querySelector('.ds-chip-label')).not.toBeNull();
+    }
+    const byOrder = (o: number): HTMLElement => rows.find((r) => r.style.order === String(o))!;
+    expect(byOrder(1).textContent).toBe('💼 Work with me'); // ruled label, unchanged
+    expect(byOrder(1).classList.contains('ds-drawer-cta')).toBe(true);
+    expect(byOrder(2).classList.contains('ds-drawer-cta')).toBe(true);
+    expect(byOrder(3).classList.contains('ds-drawer-cta')).toBe(false);
+    expect(byOrder(8).querySelector('.ds-chip-label')!.textContent).toBe('Progress · 0%');
+    expect(byOrder(11).textContent).toBe('Controls & settings'); // Abbas: keep the row
+    expect(chromeEmoji(list)).toEqual([]);
+    const css = code('style.css');
+    expect(css).toMatch(/#ds-drawer \.ds-drawer-row > \.ds-ic \{\s*width: 24px;\s*height: 24px;/);
+    expect(css).toMatch(/#ds-drawer \.ds-chip-label \{\s*font-size: 15px;\s*font-weight: 600;/);
+    expect(css).toMatch(/\.ds-drawer-cta \{\s*box-shadow: inset 3px 0 0/);
+    expect(css).toMatch(/\.ds-caption \{\s*font-size: 11px;[^}]*text-transform: uppercase;/);
+    expect(css).toMatch(/\.ds-ic \{[^}]*pointer-events: none;/);
+  });
+
+  test('desktop: the volume slider opens left of the icon row, over none of its neighbours', () => {
+    const body = bodyOf(
+      code('SimpleUI.ts'),
+      'private createVolumePill(initialVolume: number): void',
+    );
+    expect(body).toContain("'calc(var(--sar, 0px) + 238px)'");
+    // The six 30 px icon chips sit at +10 .. +200 on a 38 px pitch: they end at +230.
+    expect(238).toBeGreaterThan(200 + 30);
   });
 });

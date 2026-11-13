@@ -119,7 +119,13 @@ describe('the hire card content', () => {
       'https://digiscalability.com/about',
       'https://github.com/digiscalability/portfolio-island',
     ]);
-    expect(row.map((a) => text(a))).toEqual(['🔗 LinkedIn', '📄 CV', '💻 Code']);
+    expect(row.map((a) => text(a))).toEqual(['LinkedIn', 'CV', 'Code']);
+    // D13: the sprite's icons; CV (file-user) and Hiring (file-text) differ.
+    expect(row.map((a) => a.querySelector('svg.ds-ic')?.getAttribute('data-icon'))).toEqual([
+      'user',
+      'file-user',
+      'code',
+    ]);
     const filled = row.map((a) => (a.getAttribute('style') ?? '').includes('linear-gradient'));
     expect(filled).toEqual([true, false, false]);
   });
@@ -413,10 +419,10 @@ describe('the recruiter path in one click (D5)', () => {
         .map((r) => ({ order: Number((r as HTMLElement).style.order || 0), text: text(r) }))
         .sort((a, b) => a.order - b.order);
       expect(rows.slice(0, 4).map((r) => [r.order, r.text])).toEqual([
-        [1, '💼 Work with me'],
+        [1, '💼 Work with me'], // frozen label (ruling), textContent unchanged
         [2, 'Hiring? CV & contact'],
-        [3, '📖 Portfolio'],
-        [4, '👋 Say hi'],
+        [3, '📖 Portfolio'], // frozen label
+        [4, 'Say hi'], // D13: the sprite's hand icon
       ]);
       expect(new Set(rows.map((r) => r.order)).size).toBe(rows.length); // no shared slots
     } finally {
@@ -551,14 +557,16 @@ describe('the recruiter path in one click (D5)', () => {
       'personal',
       'contact',
     ]);
+    // D13: icons from the sprite, so the label is the first word.
     const island = [...groups[1].querySelectorAll('button')].map((b) => text(b));
-    expect(island.map((t) => t.split(' ')[1])).toEqual([
+    expect(island.map((t) => t.split(' ')[0])).toEqual([
       'Journal',
       'Pack',
       'Passport',
       'Leaderboard',
       'Guestbook',
       'Island',
+      'Your', // P2-D10: 'Your visit', the visit's summary
       'Controls', // D8: the Controls & settings sheet, under the tiles
     ]);
     const filled = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter(

@@ -9,7 +9,11 @@
 // message-primitive fixes the same way reducedMotion.test.ts pins its gates.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+
+import { SimpleUI } from '../SimpleUI';
+import { keyTextPlain, promptKeysHtml, renderKeyText } from '../ui/keycaps';
+import { DS } from '../ui/tokens';
 
 const src = (f: string): string => readFileSync(join(process.cwd(), f), 'utf8');
 
@@ -106,3 +110,170 @@ describe('touch layout recomposition', () => {
 // The scene-transition grammar lock (tour end, postcard release and drown
 // respawn all veil through fadeThrough) is main-simple.ts code: it moved to
 // package A's test/mainLocks.test.ts (testOwnership rule 1).
+
+// D7: keycaps and touch glyphs that follow the input in use.
+describe('D7: one key renderer, and the input mode it follows', () => {
+  let ui: SimpleUI | null = null;
+  afterEach(() => {
+    ui?.dispose();
+    ui = null;
+    history.replaceState(null, '', '/');
+  });
+  const boot = (url = '/'): SimpleUI => {
+    history.replaceState(null, '', url);
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    return ui;
+  };
+  type Inner = {
+    setInput(i: 'keyboard' | 'mouse' | 'touch'): void;
+    interactionDiv: HTMLElement | null;
+    onInputKey(e: KeyboardEvent): void;
+  };
+  const inner = (u: SimpleUI): Inner => u as unknown as Inner;
+
+  test('the prompt: a keycap on the keyboard, the glyph pill on touch, no keyboard emoji', () => {
+    const p = '⌨️ Press <strong>E</strong> to interact';
+    expect(promptKeysHtml(p, 'keyboard')).toBe('Press <kbd class="kc">E</kbd> to interact');
+    const t = promptKeysHtml(p, 'touch');
+    expect(t).toMatch(/^Tap <span class="kg" data-ring="use"[^>]*>USE<\/span> to interact$/);
+    expect(t).not.toMatch(/press E|⌨/i);
+    expect(promptKeysHtml('Hold <strong>Space</strong> to swim up', 'touch')).toContain(
+      'Hold <span class="kg" data-ring="jump"',
+    );
+    expect(promptKeysHtml('press <strong>q</strong>, or [E]', 'touch')).toBe(
+      'tap <span class="kg" data-ring="wave" style="--kg-ring: var(--ds-ring-wave)">WAVE</span>, or <span class="kg" data-ring="use" style="--kg-ring: var(--ds-ring-use)">USE</span>',
+    );
+    // A key with no touch button keeps its keycap.
+    expect(promptKeysHtml('Press <strong>M</strong> for the map', 'touch')).toContain(
+      '<kbd class="kc">M</kbd>',
+    );
+  });
+
+  test('toasts build nodes from text, so a visitor-authored name never becomes markup', () => {
+    const el = document.createElement('div');
+    renderKeyText(el, '<img src=x onerror=alert(1)> says hi. Press E to wave back [Q]', 'keyboard');
+    expect(el.querySelector('img')).toBeNull();
+    expect(el.textContent).toBe('<img src=x onerror=alert(1)> says hi. Press E to wave back Q');
+    expect([...el.querySelectorAll('kbd.kc')].map((x) => x.textContent)).toEqual(['E', 'Q']);
+    renderKeyText(el, 'press F to feed', 'touch');
+    expect(el.querySelector('.kg')!.textContent).toBe('FEED');
+    expect(keyTextPlain('press G to eat', 'touch')).toBe('tap EAT to eat');
+    // Prose is not a key: the key must be written as one.
+    expect(keyTextPlain('press a button', 'touch')).toBe('press a button');
+  });
+
+  test('the glyph pill text is 7:1 or better on every ring tint (target 9:1)', () => {
+    type RGB = [number, number, number];
+    const hex = (h: string): RGB => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as RGB;
+    const lin = (c: number): number => {
+      const v = c / 255;
+      return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = ([r, g, b]: RGB): number => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    const over = (fg: RGB, a: number, bg: RGB): RGB =>
+      fg.map((v, i) => v * a + bg[i] * (1 - a)) as RGB;
+    const text = hex('#0b1220');
+    // The pill is opaque: the ring colour tinted 85/15 with white.
+    for (const ring of [DS.ringUse, DS.ringJump, DS.ringWave, DS.ringEat, DS.ringFeed]) {
+      const bg = over(hex(ring), 0.85, [255, 255, 255]);
+      const r = (Math.max(lum(bg), lum(text)) + 0.05) / (Math.min(lum(bg), lum(text)) + 0.05);
+      // 7:1 everywhere; 9:1 on the three standing buttons (USE, JUMP, WAVE).
+      expect(r, ring).toBeGreaterThanOrEqual(
+        [DS.ringUse, DS.ringJump, DS.ringWave].includes(ring) ? 9 : 7,
+      );
+    }
+    const css = src('style.css');
+    expect(css).toMatch(/kbd\.kc \{[^}]*background: rgba\(255, 255, 255, 0\.14\)/);
+    expect(css).toMatch(/\.kg \{[^}]*height: 22px[^}]*color: #0b1220/);
+  });
+
+  test('the boot scheme: ?touch=1 exactly, not any URL that says touch', () => {
+    expect(boot('/?utm_content=get-in-touch').isTouchDevice()).toBe(false);
+    ui!.dispose();
+    expect(boot('/?touch=1').isTouchDevice()).toBe(true);
+    ui!.dispose();
+    expect(boot('/?touch=0').isTouchDevice()).toBe(false);
+  });
+
+  test('getInputMode follows trusted input; untrusted keys (the touch buttons) never flip it', () => {
+    const u = boot('/?touch=1');
+    expect(u.getInputMode()).toBe('touch');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+    expect(u.getInputMode()).toBe('touch');
+    inner(u).setInput('keyboard');
+    expect(u.getInputMode()).toBe('keyboard');
+    inner(u).setInput('mouse');
+    expect(u.getInputMode()).toBe('keyboard'); // a mouse is the desktop scheme
+    inner(u).setInput('touch');
+    expect(u.getInputMode()).toBe('touch');
+  });
+
+  test("typing into the chat field on a touch boot leaves the mode at 'touch'", () => {
+    const u = boot('/?touch=1');
+    const key = inner(u).onInputKey;
+    const press = (target: EventTarget, k: string, isComposing = false): void =>
+      key({ isTrusted: true, key: k, isComposing, target } as unknown as KeyboardEvent);
+    const input = document.createElement('input');
+    const area = document.createElement('textarea');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    document.body.append(input, area, editable);
+    for (const t of [input, area, editable]) press(t, 'h');
+    press(document.body, 'Unidentified'); // Android's soft keyboard
+    press(document.body, 'Process'); // an IME
+    press(document.body, 'a', true); // mid-composition
+    expect(u.getInputMode()).toBe('touch');
+    // A hardware keyboard outside a field still switches the scheme.
+    press(document.body, 'e');
+    expect(u.getInputMode()).toBe('keyboard');
+  });
+
+  test('a switch of input mode re-renders the same prompt', () => {
+    const u = boot('/');
+    u.showInteractionPrompt('Press <strong>E</strong> to talk');
+    const div = inner(u).interactionDiv!;
+    expect(div.querySelector('kbd.kc')!.textContent).toBe('E');
+    inner(u).setInput('touch');
+    expect(div.querySelector('.kg')!.textContent).toBe('USE');
+    expect(div.textContent).toBe('Tap USE to talk');
+    inner(u).setInput('keyboard');
+    expect(div.querySelector('kbd.kc')).not.toBeNull();
+  });
+
+  test('ten seconds of keyboard-only play fade the touch controls; a touch brings them back', () => {
+    vi.useFakeTimers();
+    try {
+      const u = boot('/?touch=1');
+      const overlay = document.getElementById('ui-overlay')!;
+      expect(overlay.querySelectorAll('.ds-touch-ctl').length).toBeGreaterThan(2);
+      inner(u).setInput('keyboard');
+      vi.advanceTimersByTime(9_000);
+      expect(overlay.hasAttribute('data-touch-idle')).toBe(false);
+      vi.advanceTimersByTime(1_500);
+      expect(overlay.getAttribute('data-touch-idle')).toBe('1');
+      inner(u).setInput('touch');
+      expect(overlay.hasAttribute('data-touch-idle')).toBe(false);
+    } finally {
+      ui?.dispose();
+      ui = null;
+      vi.useRealTimers();
+    }
+    expect(src('style.css')).toMatch(
+      /#ui-overlay\[data-touch-idle\] \.ds-touch-ctl \{\s*opacity: 0\.35/,
+    );
+  });
+
+  test('a desktop-scheme device: the first trusted canvas touch reveals the controls', () => {
+    const u = boot('/');
+    const overlay = document.getElementById('ui-overlay')!;
+    expect(overlay.querySelector('.ds-touch-ctl')).toBeNull();
+    (u as unknown as { revealTouchControls(): void }).revealTouchControls();
+    expect(overlay.querySelectorAll('.ds-touch-ctl').length).toBeGreaterThan(2);
+    expect(u.isTouchDevice()).toBe(false); // the desktop chips stay
+    const handler = fn('SimpleUI.ts', 'private readonly onInputPointer');
+    expect(handler).toContain('if (!e.isTrusted) return;');
+    expect(handler).toContain('e.target instanceof HTMLCanvasElement');
+  });
+});

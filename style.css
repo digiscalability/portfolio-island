@@ -1288,6 +1288,102 @@ html.reduced-motion #ld-orbit {
     monospace;
   text-align: center;
 }
+/* D13: one icon set. Sprite icons are decorative and take no hits, so
+   elementFromPoint at a control's centre returns the control itself. */
+.ds-ic {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+/* The touch chat and mic discs centre their icon on the 52px line box. */
+.ds-aux-disc > .ds-ic {
+  vertical-align: middle;
+}
+.hud-btn > .ds-chip-label,
+.hud-btn > .ds-ic-slot {
+  pointer-events: none;
+}
+/* The 11 px uppercase caption: group headers in the menu and the drawer. */
+.ds-caption {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9fb0c8;
+}
+/* Phone drawer rows (layout unchanged): 44 px rows, 24 px icons and
+   15 px/600 labels, every label at the same x. */
+#ds-drawer .ds-drawer-row > .ds-ic {
+  width: 24px;
+  height: 24px;
+}
+#ds-drawer .ds-ic-slot {
+  flex: none;
+  width: 24px;
+  font-size: 18px;
+  line-height: 24px;
+  text-align: center;
+}
+#ds-drawer .ds-chip-label {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The CTA rows' 3 px left accent, inside the row so no label moves. */
+#ds-drawer .ds-drawer-cta {
+  box-shadow: inset 3px 0 0 #ffd479 !important;
+}
+#ds-drawer .ds-drawer-cta[data-cta='work-with-me'] {
+  box-shadow: inset 3px 0 0 #a6f4c5 !important;
+}
+/* D7: one renderer for keys. A keycap on the keyboard; on touch, the glyph
+   pill of the button that fires the key, in that button's ring tint at 0.85
+   with #0b1220 text (9:1 or better on all three tints). */
+kbd.kc {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 22px;
+  padding: 1px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  vertical-align: 1px;
+}
+.kg {
+  display: inline-flex;
+  box-sizing: border-box;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  background: var(--kg-ring, #6fcf97);
+  background: color-mix(in srgb, var(--kg-ring, #6fcf97) 85%, #fff);
+  color: #0b1220;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+/* D7: after 10 s of keyboard-only play the touch controls step back. */
+.ds-touch-ctl {
+  transition: opacity 0.4s ease;
+}
+#ui-overlay[data-touch-idle] .ds-touch-ctl {
+  opacity: 0.35 !important;
+}
 .ds-controls-todo {
   margin: 0;
   padding: 0;
@@ -1310,6 +1406,16 @@ html.reduced-motion #ld-orbit {
 .ds-controls-todo-text > span {
   color: #c5cfdd;
   font-size: 13px;
+}
+.ds-controls-todo-done {
+  flex: none;
+  color: #4ade80;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ds-controls-todo li[data-done] strong {
+  color: #c5cfdd;
 }
 .ds-controls-todo button {
   flex: none;

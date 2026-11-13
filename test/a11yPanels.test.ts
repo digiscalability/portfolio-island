@@ -14,6 +14,7 @@ import { a11y } from '../Accessibility';
 import { type CloseReason, PanelManager, type PanelSpec } from '../PanelManager';
 import { Passport } from '../Passport';
 import { hapticPulse, hapticsEnabled, SimpleUI } from '../SimpleUI';
+import { DISTRICT_GLYPHS, PARCEL_GLYPH } from '../ui/icons';
 
 // The boards are Firebase reads; here they answer at once, empty.
 vi.mock('../Boards', () => ({
@@ -618,7 +619,9 @@ describe('the Controls & settings sheet (D8)', () => {
     chip('Open portfolio menu').click();
     await tick();
     const row = document.querySelector<HTMLButtonElement>('button[data-controls]')!;
-    expect(txt(row)).toBe('⌨️ Controls & settings');
+    // D13: the sprite's keyboard icon, not an emoji.
+    expect(txt(row)).toBe('Controls & settings');
+    expect(row.querySelector('svg.ds-ic')?.getAttribute('data-icon')).toBe('keyboard');
     row.click();
     await tick();
     expect(ui.panels.current()).toBe('controls');
@@ -631,7 +634,7 @@ describe('the Controls & settings sheet (D8)', () => {
     chip('Open island menu').click();
     const list = document.getElementById('ds-drawer')!;
     const row = list.querySelector<HTMLElement>('[data-controls-row]')!;
-    expect(txt(row)).toBe('⌨️ Controls & settings');
+    expect(txt(row)).toBe('Controls & settings'); // D13: the keyboard icon from the sprite
     expect(row.style.order).toBe('11');
     // Work with me keeps slot #1 (Abbas's ruling), and no two rows share an order.
     const orders = [...list.children].map((c) => (c as HTMLElement).style.order);
@@ -1065,7 +1068,7 @@ describe('inside a building: the Leave button, the interior mode, the announceme
     (document.querySelector('#ui-overlay > .ds-sr-only[role="status"]')?.textContent ?? '').trim();
   /** The visitor's last real input, as the trusted listeners would record it
    *  (happy-dom's dispatched events are never trusted). */
-  const lastInput = (kind: 'keyboard' | 'pointer'): void => {
+  const lastInput = (kind: 'keyboard' | 'mouse'): void => {
     (ui as unknown as { lastInput: string }).lastInput = kind;
   };
   const touchUi = (): void => {
@@ -1167,7 +1170,7 @@ describe('inside a building: the Leave button, the interior mode, the announceme
   });
 
   test('it takes focus on a keyboard entry, never on a pointer one; focus goes back to the body on exit', () => {
-    lastInput('pointer');
+    lastInput('mouse');
     ui.showLeaveButton(() => {});
     expect(document.activeElement).not.toBe(leave());
     ui.hideLeaveButton();
@@ -1409,5 +1412,217 @@ describe('the zone panel and the door veil are made ahead (w1-fix, CO-A5)', () =
     expect(document.querySelectorAll('[data-veil]').length).toBe(1);
     ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
     expect(ui.panels.current()).toBe('zone');
+  });
+});
+
+// P2-D8: the lessons card, and a parcel glyph on the island map.
+describe('P2-D8: the lessons card and the parcel glyph', () => {
+  const LESSONS = [
+    { id: 'fish', title: 'Fishing', done: true, reward: 10, guideKey: 'shore' },
+    { id: 'chop', title: 'Chopping', done: false, reward: 10, guideKey: 'carpenter' },
+    { id: 'farm', title: 'Farming', done: false, reward: 10, guideKey: 'farm' },
+    { id: 'build', title: 'Building', done: false, reward: 10, guideKey: 'stake:nearest' },
+    { id: 'cook', title: 'Cooking', done: true, reward: 10, guideKey: 'canteen' },
+    { id: 'mine', title: 'Mining', done: false, reward: 10, guideKey: 'ore:nearest' },
+  ];
+
+  test("showLessons renders six rows; 'Show me' sends that row's key and closes the card", async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    ui.showLessons(LESSONS);
+    await tick();
+    expect(ui.panels.current()).toBe('lessons');
+    const card = ui.panels.topModal()!.el!;
+    expect(card.getAttribute('role')).toBe('dialog');
+    const rows = [...card.querySelectorAll<HTMLElement>('li[data-lesson]')];
+    expect(rows).toHaveLength(6);
+    // One 'Show me' per row not done, none on a done row.
+    expect(rows.map((r) => r.querySelectorAll('button[data-show-me]').length)).toEqual([
+      0, 1, 1, 1, 0, 1,
+    ]);
+    expect(rows[0].textContent).toContain('Done');
+    // D4: focus moved into the card.
+    expect(card.contains(document.activeElement)).toBe(true);
+    const sent: unknown[] = [];
+    const on = (e: Event): void => {
+      sent.push((e as CustomEvent).detail);
+    };
+    window.addEventListener('ds:guide-to', on);
+    rows[2].querySelector<HTMLButtonElement>('button[data-show-me]')!.click();
+    window.removeEventListener('ds:guide-to', on);
+    expect(sent).toEqual([{ key: 'farm', source: 'lessons' }]);
+    expect(ui.panels.current()).toBeNull();
+    opener.remove();
+  });
+
+  test('Escape closes the lessons card (D2 history, D4 focus)', async () => {
+    ui.showLessons(LESSONS);
+    await tick();
+    document.dispatchEvent(key('Escape'));
+    expect(ui.panels.current()).toBeNull();
+  });
+
+  test('the map legend: a parcel glyph, distinct from Contact’s mail glyph', () => {
+    const ctx2d = new Proxy({}, { get: () => () => {}, set: () => true });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      ctx2d as unknown as CanvasRenderingContext2D,
+    );
+    const at = (x: number): { x: number; y: number; z: number } => ({ x, y: 90, z: 10 });
+    ui.showIslandMap(
+      [
+        { icon: '📬', label: 'Contact', pos: at(10) },
+        { icon: '📦', label: 'Parcel', pos: at(20) },
+        { icon: '🛒', label: 'Shop kiosk', pos: at(5) },
+      ],
+      () => {},
+    );
+    const chips = [...document.querySelectorAll<HTMLElement>('#ui-overlay button')].filter((b) =>
+      /Contact|Parcel|Shop/.test(b.textContent ?? ''),
+    );
+    const glyphs = chips.map(
+      (c) => c.querySelector('svg.ds-ic')?.getAttribute('data-icon') ?? null,
+    );
+    expect(glyphs).toEqual(['mail', 'parcel', null]);
+    expect(chips.map((c) => (c.textContent ?? '').trim())).toEqual([
+      'Contact',
+      'Parcel',
+      '🛒 Shop kiosk',
+    ]);
+    expect(PARCEL_GLYPH).not.toBe(DISTRICT_GLYPHS.contact);
+  });
+
+  test('a browser with no 2D canvas still gets the legend', () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    ui.showIslandMap([{ icon: '📦', label: 'Parcel', pos: { x: 1, y: 90, z: 1 } }], () => {});
+    expect(document.querySelector('[data-glyph="parcel"]')).not.toBeNull();
+  });
+});
+
+// P2-D7: the shop keeps the avatar in view and names a way to earn; the race
+// HUD sits below the compass pill.
+describe('P2-D7: the shop and the race HUD', () => {
+  type Item = Parameters<SimpleUI['showShop']>[0]['items'][number];
+  const hat = (id: string, price: number, extra: Partial<Item> = {}): Item => ({
+    id,
+    icon: '🎩',
+    name: id === 'tophat' ? 'Top hat' : 'Beanie',
+    price,
+    category: 'hats',
+    equippable: true,
+    ...extra,
+  });
+  const open = (
+    coins: number,
+    items: Item[],
+    onAction = (_id: string): void => {},
+  ): {
+    closed: number;
+  } => {
+    const out = { closed: 0 };
+    ui.showShop({ coins, items }, onAction, () => {
+      out.closed++;
+    });
+    return out;
+  };
+  const shop = (): HTMLElement => document.querySelector<HTMLElement>('#shop-rows')!.parentElement!;
+  const tab = (t: string): void =>
+    document.querySelector<HTMLElement>(`button[data-shop-tab="${t}"]`)!.click();
+
+  test('desktop: the Hats tab docks the panel left; the other tabs stay centred', () => {
+    open(100, [
+      hat('tophat', 40),
+      { id: 'rod', icon: '🎣', name: 'Rod', price: 20, category: 'tools' },
+    ]);
+    tab('tools');
+    expect(shop().dataset.docked).toBe('');
+    expect(shop().style.left).toBe('50%');
+    tab('hats');
+    expect(shop().dataset.docked).toBe('left');
+    // (happy-dom drops a calc(var()) value: the source pins the left edge.)
+    expect(readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8')).toContain(
+      "left: 'calc(var(--sal, 0px) + 16px)',",
+    );
+    expect(shop().style.transform).toBe('translateY(-50%)');
+    expect(readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8')).toContain(
+      "width: 'min(380px, calc(100vw - 32px))',",
+    );
+    tab('tools');
+    ui.hideShop();
+  });
+
+  test('touch never docks: the phone keeps the centred sheet', () => {
+    ui.dispose();
+    history.replaceState(null, '', '/?touch=1');
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    try {
+      open(100, [hat('tophat', 40)]);
+      tab('hats');
+      expect(shop().dataset.docked).toBe('');
+      expect(shop().style.left).toBe('50%');
+      tab('tools');
+      ui.hideShop();
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  test("equipping a hat says '<hat> on — other visitors see it too'", () => {
+    const said: string[] = [];
+    vi.spyOn(ui, 'toast').mockImplementation((m: string) => {
+      said.push(m);
+    });
+    open(100, [hat('tophat', 40), hat('beanie', 500)]);
+    tab('hats');
+    document.querySelector<HTMLElement>('button[data-shop-id="tophat"]')!.click();
+    expect(said).toEqual(['Top hat on — other visitors see it too']);
+    tab('tools');
+    ui.hideShop();
+  });
+
+  test("nothing affordable in the tab: one 12 px line names a way to earn, and 'Show me' guides there", () => {
+    const sent: unknown[] = [];
+    const on = (e: Event): void => {
+      sent.push((e as CustomEvent).detail);
+    };
+    window.addEventListener('ds:guide-to', on);
+    const s = open(5, [hat('tophat', 40), hat('beanie', 60)]);
+    tab('hats');
+    const line = document.querySelector<HTMLElement>('[data-shop-earn]')!;
+    expect(line.style.fontSize).toBe('12px');
+    // It heads the rows, above the fold even under ten hats on a phone.
+    expect(document.getElementById('shop-rows')!.firstElementChild).toBe(line);
+    const b = line.querySelector<HTMLButtonElement>('button[data-shop-earn-key]')!;
+    const keys = (ui as unknown as { thingsToDo(): Array<{ key?: string }> })
+      .thingsToDo()
+      .map((t) => t.key);
+    expect(keys).toContain(b.dataset.shopEarnKey);
+    b.click();
+    window.removeEventListener('ds:guide-to', on);
+    expect(sent).toEqual([{ key: b.dataset.shopEarnKey, source: 'shop' }]);
+    expect(s.closed).toBe(1);
+    expect(ui.isShopOpen()).toBe(false);
+    ui.panels.closeAll();
+    // With something affordable there is no line.
+    open(100, [hat('tophat', 40)]);
+    tab('hats');
+    expect(document.querySelector('[data-shop-earn]')).toBeNull();
+    tab('tools');
+    ui.hideShop();
+  });
+
+  test('the race HUD sits at top +62, below the compass pill; the desktop toast lane drops below it', () => {
+    ui.updateRaceHud({ line1: '0:12.3', line2: 'Ring 2 / 6' });
+    expect(document.querySelector<HTMLElement>('[data-hud="race"]')).not.toBeNull();
+    const body = readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8');
+    const race = body.slice(body.indexOf('updateRaceHud(status:'));
+    expect(race.slice(0, 1800)).toContain("top: 'calc(var(--sat, 0px) + 62px)',");
+    const anchor = body.slice(body.indexOf('private applyToastAnchor('));
+    expect(anchor.slice(0, 2500)).toContain(
+      'this.raceVisible ? this.raceDiv?.getBoundingClientRect()',
+    );
+    expect(anchor.slice(0, 2500)).toContain('`${Math.ceil(race.bottom + 8)}px`');
+    ui.updateRaceHud(null);
   });
 });

@@ -83,3 +83,13 @@ describe('load-bearing gates exist at their call sites', () => {
     expect(fn('SimpleUI.ts', 'private startTypewriter')).toContain('a11y.reducedMotion');
   });
 });
+
+// D13: the toggle wears the sprite's motion-off icon, not the wheelchair emoji
+// (motion is not a disability glyph).
+describe('the in-app toggle (D13)', () => {
+  test('wears the motion-off icon', () => {
+    const body = fn('SimpleUI.ts', 'private createReducedMotionButton');
+    expect(body).toContain("SimpleUI.chipContent(btn, 'motion-off');");
+    expect(body).not.toContain("btn.textContent = '\u267F'");
+  });
+});
