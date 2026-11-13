@@ -8,13 +8,23 @@
 // noon, 18 u: 2.93:1 with bloom on, 15.38:1 off. DA-08's bar: 7:1 or better
 // with bloom on at 12 h and 21 h.
 //
+// The villager is stood still through her wander state (idle until far in
+// the future), NOT setNpcDialogueHold: since B8 the villager held in a chat
+// loses her pin and her bubble (the chat panel carries the words), so a held
+// villager's bubble is never on screen. A bubble shows on a villager the
+// visitor is near but not talking to, which is what this measures.
+//
 //   npm run probe -- bubble [--dists 10,18,26] [--hours 12,21] --dist dist --port <n>
 const lib = require('./lib.cjs');
 
 const PLACE = ({ name, d }) => {
   const sc = window.__app.scene;
   const n = sc.getIsland().npcTargets.find((x) => x.name === name);
-  sc.setNpcDialogueHold(name);
+  const w = n.meshRef.userData.wander;
+  if (w) {
+    w.state = 'idle';
+    w.until = 1e12;
+  }
   const c = n.meshRef.position.clone();
   const up = c.clone().normalize();
   const V = c.constructor;
@@ -126,7 +136,10 @@ async function bubble(t) {
         rows[`${h}h ${d}u`] = { rect: [r.x, r.y, r.w, r.h].map(Math.round), bloomOn: on, bloomOff: off };
       }
     }
-    await page.evaluate(() => window.__app.scene.setNpcDialogueHold(null));
+    await page.evaluate((n) => {
+      const w = window.__app.scene.getIsland().npcTargets.find((x) => x.name === n).meshRef.userData.wander;
+      if (w) w.until = 0;
+    }, name);
     t.data[prof] = { name, hasBloom, rows };
     for (const h of hours) {
       const r = rows[`${h}h ${dists[0]}u`];
