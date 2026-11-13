@@ -7800,18 +7800,20 @@ export class SimpleUI {
       fontFamily: 'system-ui, sans-serif',
     });
     // Nothing in the open tab to buy (P2-D7): one 12 px line names the
-    // nearest way to earn, with a 'Show me' on a Things to do key.
+    // nearest way to earn, with a 'Show me' on a Things to do key. It heads
+    // the rows: under ten hats it sat below the fold on a phone.
     const earnLine = (tab: 'tools' | 'supplies' | 'hats'): string => {
       const inTab = state.items.filter((it) => (it.category ?? 'hats') === tab);
       const buyable = inTab.filter((it) => it.consumable || !it.owned);
       if (buyable.length === 0 || buyable.some((it) => it.price <= state.coins)) return '';
       const earn = this.nearestEarn();
-      return `<div data-shop-earn style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 0 0;font-size:12px;color:#c5cfdd;">
+      return `<div data-shop-earn style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;font-size:12px;color:#c5cfdd;">
           <span>Short of coins? ${earn.label}</span>
           <button type="button" data-shop-earn-key="${earn.key}" aria-label="Show me: ${earn.title}" style="flex:none;min-height:${this.isTouch ? '44px' : '32px'};padding:0 12px;border-radius:8px;border:1px solid rgba(143,155,255,0.8);background:rgba(76,91,224,0.14);color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Show me</button>
         </div>`;
     };
     const rowsFor = (tab: 'tools' | 'supplies' | 'hats'): string =>
+      earnLine(tab) +
       state.items
         .filter((it) => (it.category ?? 'hats') === tab)
         .map((it) => {
@@ -7852,7 +7854,7 @@ export class SimpleUI {
           ">${btnLabel}</button>
         </div>`;
         })
-        .join('') + earnLine(tab);
+        .join('');
     const tabBtn = (tab: 'tools' | 'supplies' | 'hats', label: string): string =>
       `<button data-shop-tab="${tab}" style="flex:1;padding:8px 4px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;
         border:1px solid ${this.shopTab === tab ? 'rgba(255,211,74,0.7)' : 'rgba(255,255,255,0.12)'};

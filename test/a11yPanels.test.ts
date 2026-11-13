@@ -1591,6 +1591,8 @@ describe('P2-D7: the shop and the race HUD', () => {
     tab('hats');
     const line = document.querySelector<HTMLElement>('[data-shop-earn]')!;
     expect(line.style.fontSize).toBe('12px');
+    // It heads the rows, above the fold even under ten hats on a phone.
+    expect(document.getElementById('shop-rows')!.firstElementChild).toBe(line);
     const b = line.querySelector<HTMLButtonElement>('button[data-shop-earn-key]')!;
     const keys = (ui as unknown as { thingsToDo(): Array<{ key?: string }> })
       .thingsToDo()
