@@ -7934,7 +7934,9 @@ export class SimpleUI {
     // ── Online count pill along the bottom of the ring ──────────────────
     const online = data.online ?? peers.length + 1;
     const label = `${online} ONLINE`;
-    ctx.font = `700 ${(9 * ts).toFixed(1)}px system-ui, sans-serif`;
+    // D16: the caption is a minimap label too, so it takes the labels' 10.5 px
+    // on screen (cap height >= 7 px); at 9 px it read 6.7 px on a 104 px disc.
+    ctx.font = `700 ${(10.5 * ts).toFixed(1)}px system-ui, sans-serif`;
     const tw = ctx.measureText(label).width;
     const pillW = tw + 22;
     const pillH = 15 * ts;

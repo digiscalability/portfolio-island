@@ -103,6 +103,22 @@ describe('phase 2: the map teaches the island’s shape', () => {
     expect(s).toMatch(/labelBoxes\.some\(/);
     expect(s).toMatch(/if \(!collides\(nx, ny, w, h\)\)/);
   });
+
+  test('every word on the radar, the ONLINE caption included, is 10.5 px or more on screen (D16)', () => {
+    // phone.cjs measures each fillText of two or more letters: at 9 px the
+    // '1 ONLINE' caption read 6.7 px cap height on the 104 px landscape disc.
+    // Only the single-letter N/E/S/W ticks may stay smaller.
+    const s = stripped('SimpleUI.ts');
+    const i = s.indexOf('updateMinimap(data: {');
+    const body = s.slice(i, s.indexOf('\n  showShop(', i));
+    expect(body).toContain('ONLINE');
+    const sizes = [...body.matchAll(/\$\{\(([\d.]+) \* ts\)\.toFixed\(1\)\}px/g)].map((m) => +m[1]);
+    const small = sizes.filter((n) => n < 10.5);
+    // N at 10 px, E, S and W at 8 px; nothing else.
+    expect(small).toEqual([10, 8, 8, 8]);
+    const pill = body.slice(body.indexOf('ONLINE'), body.indexOf('ONLINE') + 400);
+    expect(pill).toMatch(/ctx\.font = `700 \$\{\(10\.5 \* ts\)\.toFixed\(1\)\}px/);
+  });
 });
 
 describe('phase 2: progression surfaces know about each other', () => {
