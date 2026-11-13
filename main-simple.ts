@@ -192,6 +192,24 @@ export class SimpleApp {
   private compassDistrict: string | null = null;
   /** A parcel was collected this session: deliveries may take the pill. */
   private deliveryOptIn = false;
+  /**
+   * The pack lines ('+1 (n in the pack)') and finished deliveries, counted.
+   * A pack line goes stale (its toast until()) once a newer pack line or a
+   * delivery follows it: four quick harvests queued four cabbage lines, about
+   * 2.5 s each, and the 'Delivered. The next parcel waits near …' line waited
+   * 5.4 s behind them on desktop (wave-3 integration, p2/gather).
+   */
+  private packToastSeq = 0;
+  private deliveryToastSeq = 0;
+
+  /** A pack line that gives way to the next pack line or a delivery. */
+  private packToast(text: string): void {
+    const pack = ++this.packToastSeq;
+    const delivered = this.deliveryToastSeq;
+    this.ui.toast(text, {
+      until: () => this.packToastSeq !== pack || this.deliveryToastSeq !== delivered,
+    });
+  }
   /** Passport stamps seen, for the "Next:" flash after stamps 1-3. */
   private stampsSeen = -1;
   private pendingNextFlash = false;
@@ -798,7 +816,9 @@ export class SimpleApp {
         // The visitor chose the courier chain: from now on the pill may point
         // at parcels (after the districts, compassTarget's branch 7).
         this.deliveryOptIn = true;
-        // P2-A6: name where the next parcel waits.
+        // P2-A6: name where the next parcel waits. The pack lines still
+        // queued from the farm step aside for it (packToast).
+        this.deliveryToastSeq += 1;
         const next = this.deliverySystem.getActiveDeliveries()[0]?.destination;
         const near = next ? this.districtNear(next.mesh.position) : null;
         if (near) {
@@ -3701,7 +3721,7 @@ export class SimpleApp {
             if (r?.felled) {
               this.timber += r.timber;
               this.persistTimber();
-              this.ui.toast(`🪵 Timber! +${r.timber} (${this.timber} in the pack)`);
+              this.packToast(`🪵 Timber! +${r.timber} (${this.timber} in the pack)`);
               track('tree_felled', { timber: this.timber });
             }
           }
@@ -3720,7 +3740,7 @@ export class SimpleApp {
               else this.produce += r.yieldN;
               this.persistHarvest();
               track('crop_harvested', { kind: r.kind });
-              this.ui.toast(
+              this.packToast(
                 r.yieldKind === 'wheat'
                   ? `🌾 Wheat! +${r.yieldN} (${this.wheat} in the pack) — the Baker buys these.`
                   : `🥬 ${r.kind}! +${r.yieldN} (${this.produce} in the pack) — the canteen buys these.`,
@@ -3738,7 +3758,9 @@ export class SimpleApp {
               this.ore += r.ore;
               this.persistOre();
               track('ore_mined', { total: this.ore });
-              this.ui.toast(`⛏️ Ore! +${r.ore} (${this.ore} in the pack) — the bank assays these.`);
+              this.packToast(
+                `⛏️ Ore! +${r.ore} (${this.ore} in the pack) — the bank assays these.`,
+              );
             }
           }
         } else if (this.ownedRod && this.scene.canCastHere()) {

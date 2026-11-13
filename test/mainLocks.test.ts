@@ -1841,3 +1841,21 @@ describe('wave-3 nits: comments sit on their methods and name live code', () => 
     expect(src('main-simple.ts')).not.toContain('hasVillagerWithin');
   });
 });
+
+describe('wave-3 integration: the next-parcel line is not stuck behind the pack lines', () => {
+  test('every pack line goes through packToast, which gives way to a newer pack line or a delivery', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).not.toMatch(/this\.ui\.toast\([^;]*in the pack/);
+    expect(s.match(/this\.packToast\(/g)?.length).toBe(3);
+    const pt = method('main-simple.ts', '  private packToast(text: string): void {');
+    expect(pt).toContain('this.packToastSeq !== pack || this.deliveryToastSeq !== delivered');
+  });
+
+  test('a delivery bumps the count before it names the next parcel', () => {
+    const s = stripped('main-simple.ts');
+    const bump = s.indexOf('this.deliveryToastSeq += 1;');
+    const line = s.indexOf('📬 Delivered. The next parcel waits near');
+    expect(bump).toBeGreaterThan(-1);
+    expect(line).toBeGreaterThan(bump);
+  });
+});
