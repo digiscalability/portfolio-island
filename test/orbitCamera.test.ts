@@ -818,3 +818,124 @@ describe('handing the camera back from a rail (w2 integration, conversation rele
     expect(camera.position.distanceTo(pos)).toBeLessThan(1e-6);
   });
 });
+
+describe('A12: the camera never parks inside a wall', () => {
+  /** A 6 u wall whose near face is `gap` u behind the look target, across the camera's ray. */
+  const wallBehind = (cam: OrbitCamera, camera: THREE.PerspectiveCamera, gap: number) => {
+    const target = new THREE.Vector3();
+    const pos = new THREE.Vector3();
+    cam.getFollowPose(pos, target);
+    const back = pos.clone().sub(target).normalize();
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(6, 6, 0.4), new THREE.MeshBasicMaterial());
+    wall.position.copy(target).addScaledVector(back, gap + 0.2);
+    wall.lookAt(target);
+    wall.updateMatrixWorld(true);
+    cam.setCollisionMesh(new THREE.Group(), wall);
+    return { target, back, wall, camera };
+  };
+
+  test('a wall 1.2 u behind: the camera settles in front of it, 0.55 u or more from the target', () => {
+    const { cam, camera } = rig();
+    run(cam, 0.5, 1 / 60);
+    const { target, back } = wallBehind(cam, camera, 1.2);
+    run(cam, 1, 1 / 60);
+    const along = camera.position.clone().sub(target).dot(back);
+    expect(along).toBeLessThan(1.2); // never past the wall's face
+    expect(along).toBeGreaterThanOrEqual(OrbitCamera.MIN_COLLISION_DISTANCE - 0.05);
+    expect(along).toBeCloseTo(1.2 - 0.25, 1); // the nearest hit less 0.25 u
+  });
+
+  test('a wall 0.3 u behind: the floor is 0.55 u, not the 2 u zoom minimum', () => {
+    const { cam, camera } = rig();
+    run(cam, 0.5, 1 / 60);
+    const { target, back } = wallBehind(cam, camera, 0.3);
+    run(cam, 1, 1 / 60);
+    expect(camera.position.clone().sub(target).dot(back)).toBeCloseTo(0.55, 1);
+  });
+
+  test('eases out slowly when the wall goes, and a rail pose takes the raw distance', () => {
+    const { cam, camera } = rig();
+    run(cam, 0.5, 1 / 60);
+    const { target, back } = wallBehind(cam, camera, 1.2);
+    run(cam, 1, 1 / 60);
+    // The rail pose (deltaTime 0) with the wall still there: the raw distance.
+    const pos = new THREE.Vector3();
+    const look = new THREE.Vector3();
+    cam.getFollowPose(pos, look);
+    expect(pos.clone().sub(look).length()).toBeCloseTo(0.95, 1);
+    cam.setCollisionMesh(new THREE.Group());
+    cam.update(1 / 60);
+    const d1 = camera.position.clone().sub(target).dot(back);
+    expect(d1).toBeLessThan(2); // 4/s out: no snap back to 4.4
+    run(cam, 3, 1 / 60);
+    expect(camera.position.clone().sub(target).dot(back)).toBeGreaterThan(4);
+  });
+
+  test('with camRays off, the old single ray and its 2 u floor', () => {
+    const { cam, camera } = rig();
+    (globalThis as { __dsFx?: Record<string, unknown> }).__dsFx = { camRays: false };
+    run(cam, 0.5, 1 / 60);
+    const { target, back } = wallBehind(cam, camera, 1.2);
+    run(cam, 1, 1 / 60);
+    expect(camera.position.clone().sub(target).dot(back)).toBeGreaterThanOrEqual(1.95);
+  });
+});
+
+describe('A12: a jump lifts the camera 30% of the hop', () => {
+  class JumpingPlayer extends FakePlayer {
+    ground = true;
+    isOnGround() {
+      return this.ground;
+    }
+    isInWater() {
+      return false;
+    }
+  }
+  test('a 1.09 u hop raises the camera 0.35 u or less, and it catches up after landing', () => {
+    const camera = new THREE.PerspectiveCamera(60, 16 / 10, 0.1, 1000);
+    const player = new JumpingPlayer();
+    const cam = new OrbitCamera(camera, player as unknown as SimplePlayer);
+    cam.snapToPlayer();
+    run(cam, 0.5, 1 / 60);
+    const r0 = camera.position.length();
+    let maxRise = 0;
+    // A 0.6 s parabola to 1.09 u.
+    player.ground = false;
+    for (let t = 0; t <= 0.6; t += 1 / 60) {
+      player.pos.setLength(R + 1.09 * 4 * (t / 0.6) * (1 - t / 0.6));
+      cam.update(1 / 60);
+      maxRise = Math.max(maxRise, camera.position.length() - r0);
+    }
+    expect(maxRise).toBeLessThanOrEqual(0.35);
+    expect(maxRise).toBeGreaterThan(0.05); // it does follow a little
+    player.ground = true;
+    player.pos.setLength(R);
+    run(cam, 1, 1 / 60);
+    expect(Math.abs(camera.position.length() - r0)).toBeLessThan(0.02);
+  });
+});
+
+describe('the interest yaw (for P2-B7)', () => {
+  test('eases toward the asked yaw, lets go on a manual look, and is ignored under reduced motion', () => {
+    const { cam, camera } = rig();
+    run(cam, 0.5, 1 / 60);
+    const h0 = heading(camera);
+    cam.setInterestYaw(Math.PI / 6);
+    run(cam, 4, 1 / 60);
+    expect(Math.abs(heading(camera) - h0)).toBeGreaterThan(25);
+    cam.setInput(0.0001, 0, 'mouse');
+    cam.update(1 / 60);
+    const hHeld = heading(camera);
+    run(cam, 4, 1 / 60);
+    // Let go: it eases back by the 30 deg it had leant.
+    expect(Math.abs(heading(camera) - hHeld)).toBeGreaterThan(20);
+
+    const r = rig();
+    a11y.reducedMotion = true;
+    run(r.cam, 0.5, 1 / 60);
+    const h1 = heading(r.camera);
+    r.cam.setInterestYaw(Math.PI / 6);
+    run(r.cam, 3, 1 / 60);
+    expect(Math.abs(heading(r.camera) - h1)).toBeLessThan(0.5);
+  });
+});
