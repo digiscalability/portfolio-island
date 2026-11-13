@@ -583,7 +583,7 @@ describe('the governor knows when the frame is CPU-bound (E3)', () => {
     expect(gcall(g, 'targetInterval')).toBeCloseTo(1 / 45, 6);
   });
 
-  test('a CPU-bound low tier: the pixel test finds render() flat, so the scale is lifted to 0.9 and claws toward 1 by 0.05', () => {
+  test('a CPU-bound low tier: the pixel test finds render() flat, so the scale climbs back by +0.05 a decision, never in one step', () => {
     // 4x CPU, as MEASURED on lowtier4x: 14 fps, logic ~10 ms and render() ~50 ms
     // at any scale (the main thread's, not the GPU's).
     const g = governor({ lowTier: true, renderScale: 1, cpuEma: 0.06, fpsEma: 14 });
@@ -591,14 +591,28 @@ describe('the governor knows when the frame is CPU-bound (E3)', () => {
     decide(g, 2, flat);
     expect(g.cpuBound).toBe(false); // shedding, the test running
     expect(g.renderScale).toBeLessThan(1);
-    decide(g, 4, flat);
+    // Wave-3 E review nit: the decision that finds it CPU-bound lifts the
+    // scale by 0.05 at most, not to max(0.9, scaleFloor) in one step.
+    const trail: number[] = [];
+    let flipped = -1;
+    for (let s = 0; s < 40; s++) {
+      const before = g.renderScale as number;
+      decide(g, 1, flat);
+      const after = g.renderScale as number;
+      trail.push(after);
+      if (g.cpuBound && flipped < 0) flipped = s;
+      if (g.cpuBound) {
+        expect(after - before).toBeLessThanOrEqual(0.05 + 1e-9);
+        expect(after).toBeGreaterThanOrEqual(before);
+      }
+    }
     expect(g.pixelBound).toBe(false);
-    expect(g.cpuBound).toBe(true);
-    expect(g.renderScale).toBeGreaterThanOrEqual(0.9);
-    const at = g.renderScale as number;
-    decide(g, 1, flat);
-    expect(g.renderScale).toBeCloseTo(Math.min(1, at + 0.05), 6);
-    decide(g, 30, flat);
+    expect(flipped).toBeGreaterThanOrEqual(0);
+    const low = trail[flipped];
+    expect(low).toBeLessThan(0.85); // the pixel test left it well under 0.9...
+    // ...and it climbs 0.05 a decision from there.
+    expect(trail[flipped + 1]).toBeCloseTo(Math.min(1, low + 0.05), 6);
+    expect(trail[flipped + 2]).toBeCloseTo(Math.min(1, low + 0.1), 6);
     expect(g.renderScale).toBe(1);
     // ...and the ladder still sheds: on the low tier rungs 1 and 2 are inert
     // (no composer; half-rate shadows already on), so it goes to rung 3.

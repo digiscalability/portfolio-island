@@ -241,8 +241,7 @@ export class SimpleRenderer {
   private static readonly PIXEL_TEST_STEP = 0.3;
   private static readonly PIXEL_TEST_GAIN = 0.5;
   private static readonly CPU_BOUND_RATIO = 0.85;
-  /** Floor and claw-back step for the render scale while CPU-bound. */
-  private static readonly CPU_BOUND_SCALE = 0.9;
+  /** Claw-back step for the render scale per decision while CPU-bound. */
   private static readonly CPU_BOUND_CLAW = 0.05;
   /** ?gpuheavy=1 adds one full-screen pass: a GPU-bound test case for the
    *  gate. Read once, like ?halfshadow; nothing happens without it. */
@@ -1110,12 +1109,15 @@ export class SimpleRenderer {
       }
     }
     if (cpuBound) {
-      // Hold at max(0.9, scaleFloor) or above, and claw toward 1.0 at +0.05 a
-      // decision whatever the rung (the +0.1 above stays gated on rung 0).
-      const hold = Math.max(SimpleRenderer.CPU_BOUND_SCALE, scaleFloor);
+      // Claw toward 1.0 at +0.05 a decision whatever the rung (the +0.1 above
+      // stays gated on rung 0), and never shed while CPU-bound. A scale the
+      // pixel test left low (0.48 on lowtier4x) climbs back at the same
+      // +0.05 a decision, not in one step: a jump from 0.48 to 0.9 is 3.5x
+      // the pixels in a single frame on the device least able to absorb it
+      // (wave-3 E review nit).
       this.renderScale = Math.min(
         1,
-        Math.max(hold, this.renderScale, prev + SimpleRenderer.CPU_BOUND_CLAW),
+        Math.max(this.renderScale, prev + SimpleRenderer.CPU_BOUND_CLAW),
       );
     }
     if (this.renderScale !== prev) {
