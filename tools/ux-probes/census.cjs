@@ -98,7 +98,7 @@ const SCENE_CENSUS = () => {
   });
   addTex(sc.background);
   addTex(sc.environment);
-  const texRow = { count: 0, canvas: 0, canvas512: 0, bytes: 0, canvasBytes: 0 };
+  const texRow = { count: 0, canvas: 0, canvas512: 0, bytes: 0, canvasBytes: 0, canvas512Bytes: 0 };
   for (const tx of texs) {
     const img = tx.image || {};
     const w = img.width || img.videoWidth || 0;
@@ -109,11 +109,15 @@ const SCENE_CENSUS = () => {
     if (tx.isCanvasTexture) {
       texRow.canvas++;
       texRow.canvasBytes += bytes;
-      if (w === 512 && h === 512) texRow.canvas512++;
+      if (w === 512 && h === 512) {
+        texRow.canvas512++;
+        texRow.canvas512Bytes += bytes;
+      }
     }
   }
   texRow.MiB = Math.round((texRow.bytes / 1048576) * 100) / 100;
   texRow.canvasMiB = Math.round((texRow.canvasBytes / 1048576) * 100) / 100;
+  texRow.canvas512MiB = Math.round((texRow.canvas512Bytes / 1048576) * 100) / 100;
   return {
     textures: texRow,
     meshes,
@@ -333,19 +337,33 @@ async function census(t) {
       // and roughness canvases are never uploaded. MEASURED on fcaa649: one
       // 512x512 CanvasTexture in the scene (1.33 MiB). The row wants that
       // one gone (-1, about -1.3 MiB); no change reads null, more fails.
+      // Judged on the 512x512 CanvasTextures (the facade size), so another
+      // package's new canvas (B9's desktop-only coinGlint) cannot offset C7.
       const ts = r.scene.textures;
       const tc = c.scene.textures;
       t.data[`${prof}Compare`].scene.textures = tc;
       if (ts && tc) {
-        const dN = ts.canvas - tc.canvas;
-        const dMiB = Math.round((ts.canvasMiB - tc.canvasMiB) * 100) / 100;
-        t.check(`${prof}: CanvasTextures and their estimated GPU MiB against the compare build (C7)`, dN === 0 ? null : dN < 0 ? dN <= -1 && dMiB <= -1.3 : false, { subject: { canvas: ts.canvas, canvas512: ts.canvas512, canvasMiB: ts.canvasMiB, allMiB: ts.MiB }, compare: { canvas: tc.canvas, canvas512: tc.canvas512, canvasMiB: tc.canvasMiB, allMiB: tc.MiB }, delta: { canvas: dN, canvasMiB: dMiB } }, '<= -1 and <= -1.3 MiB, the facade albedo (null: unchanged)');
+        const v = c7Verdict(ts, tc);
+        t.check(`${prof}: 512x512 CanvasTextures and their estimated GPU MiB against the compare build (C7)`, v.pass, { subject: { canvas: ts.canvas, canvas512: ts.canvas512, canvas512MiB: ts.canvas512MiB, canvasMiB: ts.canvasMiB, allMiB: ts.MiB }, compare: { canvas: tc.canvas, canvas512: tc.canvas512, canvas512MiB: tc.canvas512MiB, canvasMiB: tc.canvasMiB, allMiB: tc.MiB }, delta: v.delta }, '512x512: <= -1 and <= -1.3 MiB, the facade albedo (null: unchanged; all canvases reported)');
       }
     }
   }
 }
 
+/**
+ * C7's verdict from two texture rows: the change in 512x512 CanvasTextures
+ * (count and estimated MiB). null when unchanged, fail when it rises.
+ */
+function c7Verdict(ts, tc) {
+  const mib = (r) => (typeof r.canvas512MiB === 'number' ? r.canvas512MiB : Math.round(((r.canvas512 * 512 * 512 * 4 * (4 / 3)) / 1048576) * 100) / 100);
+  const dN = ts.canvas512 - tc.canvas512;
+  const dMiB = Math.round((mib(ts) - mib(tc)) * 100) / 100;
+  const delta = { canvas512: dN, canvas512MiB: dMiB, canvas: ts.canvas - tc.canvas, canvasMiB: Math.round((ts.canvasMiB - tc.canvasMiB) * 100) / 100 };
+  return { pass: dN === 0 ? null : dN < 0 ? dN <= -1 && dMiB <= -1.3 : false, delta };
+}
+
 module.exports = {
+  c7Verdict,
   EMOJI_CHROME,
   FROZEN_LABELS,
   census: { item: 'C3, B15 (E6a)', title: "scene material census (one shading model, the shared ramp, programs) on C3's targets; B's scene props reported apart (--scene-props judges them); the DOM style census (--dom judges emoji in the HUD, menu and hire-card chrome, D13)", profiles: ['desktop', 'phone'], compare: true, run: census },
