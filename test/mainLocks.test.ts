@@ -1825,3 +1825,32 @@ describe('wave-3 bundle carry-over: Multiplayer is its own chunk', () => {
     }
   });
 });
+
+describe('wave-3 nits: comments sit on their methods and name live code', () => {
+  test("prewarmZonePanel's JSDoc sits directly on its method", () => {
+    const m = src('main-simple.ts');
+    const at = m.indexOf('  private prewarmZonePanel(): void {');
+    expect(at).toBeGreaterThan(-1);
+    const before = m.slice(0, at);
+    expect(before.trimEnd().endsWith('*/')).toBe(true);
+    const doc = before.slice(before.lastIndexOf('/**'));
+    expect(doc).toContain("D's SimpleUI.prewarmZonePanel");
+  });
+
+  test('every GameScene.<member> a main-simple comment names exists in GameScene.ts', () => {
+    const scene = src('GameScene.ts');
+    const named = new Set(
+      [...src('main-simple.ts').matchAll(/GameScene\.(\w+)/g)].map((x) => x[1]),
+    );
+    expect(named.size).toBeGreaterThan(0);
+    for (const n of named) {
+      expect(scene, `GameScene.${n}`).toMatch(
+        new RegExp(
+          `(^|\\s)(?:(?:public|private|protected|static|readonly|get)\\s+)*${n}[(<: =]`,
+          'm',
+        ),
+      );
+    }
+    expect(named.has('hasVillagerWithin')).toBe(false);
+  });
+});

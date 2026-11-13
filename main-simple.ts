@@ -339,13 +339,6 @@ export class SimpleApp {
     void this.scene.warmInterior();
     this.prewarmZonePanel();
   };
-  /**
-   * CO-A5 remainder (w1-fix). The first showZonePanel cost 156-184 ms at 4x
-   * CPU inside the door fade's callback. D's SimpleUI.prewarmZonePanel lays
-   * the panels out ahead in idle slices; both room warms ask for it.
-   * Optional: A merges before D, and on main SimpleUI has no such method.
-   * It is idempotent, and it schedules its own idle work.
-   */
   /** Skip's compass hint has shown this visit: the trail-end toast then
    *  leaves out its own clause about the gold ➤ (w1-fix nit). */
   private guideSkipHintShown = false;
@@ -365,6 +358,13 @@ export class SimpleApp {
     this.bootTarget?.dispose();
     this.bootTarget = null;
   }
+  /**
+   * CO-A5 remainder (w1-fix). The first showZonePanel cost 156-184 ms at 4x
+   * CPU inside the door fade's callback. D's SimpleUI.prewarmZonePanel lays
+   * the panels out ahead in idle slices; both room warms ask for it.
+   * Optional: A merges before D, and on main SimpleUI has no such method.
+   * It is idempotent, and it schedules its own idle work.
+   */
   private prewarmZonePanel(): void {
     (this.ui as SimpleUI & { prewarmZonePanel?: () => void }).prewarmZonePanel?.();
   }
@@ -5362,8 +5362,9 @@ export class SimpleApp {
   /**
    * An AI villager (one of AI_NPCS, never one of the 4 scripted ones) is
    * visible within `radius` of the player. Gates the one-time talk hint, which
-   * says the villager talks through Claude Haiku 4.5. Same visibility rule as
-   * GameScene.hasVillagerWithin, so it never points at someone indoors.
+   * says the villager talks through Claude Haiku 4.5. A villager indoors (asleep,
+   * or vanished at a hold) has a hidden mesh, so `meshRef.visible` keeps the
+   * hint from pointing at someone the visitor cannot see.
    */
   private aiVillagerWithin(radius: number): boolean {
     const p = this.scene.getPlayer()?.getWorldPositionInto(this._hintPos);
