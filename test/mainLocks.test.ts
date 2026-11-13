@@ -13,7 +13,7 @@
 // The last two describes are not relocated: they hold A's own new locks on
 // how main-simple wires the stage-1 fixes, and on the seams the integration
 // review found where the stage-1 branches meet.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
@@ -1064,7 +1064,7 @@ describe("P2-A5: one 'Show me' seam, window 'ds:guide-to'", () => {
     expect(go).toMatch(/if \(!hit\) \{\s*this\.openIslandMap\(\);\s*return;\s*\}/);
     expect(go).toContain('this.setMapPick(');
     expect(go).toContain('hit.zone');
-    expect(go).toContain('this.ui.toast(`🧭 Compass set: ${shown}`);');
+    expect(go).toContain('this.compassSetToast(`🧭 Compass set: ${shown}`);');
     expect(go).toContain("track('map_guide_set', { label: label ?? hit.label, source });");
     // and the map's own picks now say where they came from
     expect(bodyOf(m, 'private openIslandMap(')).toContain(
@@ -1766,5 +1766,96 @@ describe('w2 integration: the Sailor from the water, and the conversation releas
     expect(m()).toContain('private static readonly NPC_CINE_RELEASE_S = 0.6;');
     // the old whip: look-only ease, resume after 0.35 s
     expect(cine).not.toContain('c.ending > 0.35');
+  });
+});
+
+describe('A9: tour captions fit 110 characters with their stop number', () => {
+  test("every addStop caption plus 'Stop n of 6 · ' is 110 characters or fewer", () => {
+    const body = bodyOf(stripped('main-simple.ts'), 'private startTour(');
+    const lits = [...body.matchAll(/addStop\(\s*[^,]+,\s*(['"`])((?:\\.|(?!\1).)*)\1/g)].map((m) =>
+      m[2]
+        .replace(/\\u([0-9a-f]{4})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\\'/g, "'")
+        .replace(/\$\{aiCount\}/g, '99'),
+    );
+    expect(lits.length).toBe(10);
+    for (const c of lits) expect([...`Stop 6 of 6 · ${c}`].length).toBeLessThanOrEqual(110);
+    expect(body).toContain(
+      'stops[i].caption = tourCaption(i + 1, stops.length, stops[i].caption);',
+    );
+  });
+
+  test('the push-in and the first tour leg start on the orbit camera pose', () => {
+    expect(bodyOf(stripped('main-simple.ts'), 'private beginNpcDialogue(')).toContain(
+      'this.scene.getOrbitCamera().getFollowPose(pos, look);',
+    );
+    expect(bodyOf(stripped('main-simple.ts'), 'private startTour(')).toContain(
+      'this.scene.getOrbitCamera().getFollowPose(this._tourFromPos, fromLook);',
+    );
+  });
+});
+
+describe('wave-3 bundle carry-over: Multiplayer is its own chunk', () => {
+  test('main-simple imports Multiplayer as a type and loads it with import()', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("import type { Multiplayer } from './Multiplayer';");
+    expect(m).not.toMatch(/import\s*\{\s*Multiplayer\s*\}\s*from\s*'\.\/Multiplayer'/);
+    const init = bodyOf(m, 'private async init(');
+    // The fetch starts beside the postprocessing preload, before world-gen...
+    const start = init.indexOf("import('./Multiplayer')");
+    expect(start).toBeGreaterThan(-1);
+    expect(start).toBeLessThan(init.indexOf('new GameScene()'));
+    expect(init.indexOf('SimpleRenderer.preloadPostProcessing();')).toBeLessThan(start);
+    // ...a failed fetch plays solo instead of failing boot...
+    expect(init.slice(start, start + 200)).toContain('.catch(');
+    // ...and the module is awaited only where it is constructed.
+    const built = init.indexOf('new mpMod.Multiplayer(this.scene, this.scene.getPlayer())');
+    expect(built).toBeGreaterThan(init.indexOf('const mpMod = await multiplayerModule;'));
+    expect(init).toContain('this.chat = multiplayer ? new Chat(multiplayer) : undefined;');
+  });
+
+  test('no other module imports Multiplayer as a value, so it stays out of the main chunk', () => {
+    const files = readdirSync(process.cwd()).filter(
+      (f) => f.endsWith('.ts') && f !== 'Multiplayer.ts',
+    );
+    for (const f of files) {
+      expect(src(f), f).not.toMatch(
+        /import\s*\{[^}]*\bMultiplayer\b[^}]*\}\s*from\s*'\.\/Multiplayer'/,
+      );
+    }
+  });
+});
+
+describe('wave-3 nits: comments sit on their methods and name live code', () => {
+  test("prewarmZonePanel's JSDoc sits directly on its method", () => {
+    const m = src('main-simple.ts');
+    const at = m.indexOf('  private prewarmZonePanel(): void {');
+    expect(at).toBeGreaterThan(-1);
+    const before = m.slice(0, at);
+    expect(before.trimEnd().endsWith('*/')).toBe(true);
+    const doc = before.slice(before.lastIndexOf('/**'));
+    expect(doc).toContain("D's SimpleUI.prewarmZonePanel");
+  });
+
+  test("aiVillagerWithin's comment no longer names the deleted GameScene.hasVillagerWithin", () => {
+    expect(src('main-simple.ts')).not.toContain('hasVillagerWithin');
+  });
+});
+
+describe('wave-3 integration: the next-parcel line is not stuck behind the pack lines', () => {
+  test('every pack line goes through packToast, which gives way to a newer pack line or a delivery', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).not.toMatch(/this\.ui\.toast\([^;]*in the pack/);
+    expect(s.match(/this\.packToast\(/g)?.length).toBe(3);
+    const pt = method('main-simple.ts', '  private packToast(text: string): void {');
+    expect(pt).toContain('this.packToastSeq !== pack || this.deliveryToastSeq !== delivered');
+  });
+
+  test('a delivery bumps the count before it names the next parcel', () => {
+    const s = stripped('main-simple.ts');
+    const bump = s.indexOf('this.deliveryToastSeq += 1;');
+    const line = s.indexOf('📬 Delivered. The next parcel waits near');
+    expect(bump).toBeGreaterThan(-1);
+    expect(line).toBeGreaterThan(bump);
   });
 });

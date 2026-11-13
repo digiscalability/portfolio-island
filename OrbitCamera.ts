@@ -2,9 +2,15 @@ import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
 import { BASE_VFOV } from './Framing';
+import { fx } from './FxBudget';
 import { expDecay } from './Juice';
 import { consumePinchZoomFactor } from './SimpleInputManager';
 import type { SimplePlayer } from './SimplePlayer';
+
+// A12: the multi-ray camera collision is a per-frame effect (perf gate --fx
+// camRays; budgets 50 us desktop, 40 us low tier). Off, the chase camera
+// casts its old single centre ray with the 2 u floor.
+fx.register('camRays', { desktop: true, low: true });
 
 /**
  * OrbitCamera
@@ -202,10 +208,80 @@ export class OrbitCamera {
       });
     });
     this.collisionMeshes = flat;
+    this.castValid = false;
+    this.collisionSpheres = new Float32Array(flat.length * 4);
+    this.refreshCollisionSpheres();
     this.raycaster.firstHitOnly = true; // BVH fast path on the terrain leg
   }
 
   private collisionMeshes: THREE.Mesh[] = [];
+
+  // ---- A12: collision that never parks the camera inside a wall ----------
+  /** The camera may come this close to the look target when a wall is behind (separate from the 2 u zoom minimum). */
+  public static readonly MIN_COLLISION_DISTANCE = 0.55;
+  /** The camera stops this far short of the nearest hit. */
+  private static readonly COLLISION_MARGIN = 0.25;
+  /** Side and up offsets of the four outer rays (u). */
+  private static readonly RAY_SPREAD = 0.2;
+  /** The eased collision distance (Infinity = nothing is in the way). */
+  private collisionDistance = Number.POSITIVE_INFINITY;
+  private static readonly COLLIDE_IN_K = 20;
+  private static readonly COLLIDE_OUT_K = 4;
+  private static readonly COLLIDE_OUT_K_REDUCED = 8;
+  private readonly _rayOrigin = new THREE.Vector3();
+  private readonly _rayUp = new THREE.Vector3();
+  private readonly _rayHits: THREE.Intersection[] = [];
+  /** fx.time's callback, bound once (no per-frame closure). */
+  private readonly castCollisionRays = (): number => this.nearestCollisionHit();
+  private rayDir: THREE.Vector3 | null = null;
+  /**
+   * World bounding spheres of collisionMeshes (x, y, z, r), refreshed every
+   * SPHERE_REFRESH_FRAMES so a moving prop is at most a few frames stale; the
+   * broadphase keeps a SPHERE_SLACK_U margin for that. The five rays then test
+   * only the meshes near the view segment, not all ~560 bounding spheres.
+   */
+  private collisionSpheres = new Float32Array(0);
+  private sphereAge = 0;
+  private readonly rayCandidates: THREE.Mesh[] = [];
+  private readonly _sphere = new THREE.Sphere();
+  private static readonly SPHERE_REFRESH_FRAMES = 15;
+  private static readonly SPHERE_SLACK_U = 4;
+  /**
+   * The last cast's inputs and its answer. A camera that has not moved (look
+   * target within CAST_STILL_U, view ray within CAST_STILL_DOT, same reach and
+   * ray count) reuses it instead of casting again, until the next sphere
+   * refresh (SPHERE_REFRESH_FRAMES), which always casts, so a prop that moves
+   * into a still view is caught within the broadphase's own staleness. The
+   * error this allows is millimetres against the 0.25 u margin.
+   */
+  private castValid = false;
+  private castHit = Number.POSITIVE_INFINITY;
+  private castFar = 0;
+  private castRays = 0;
+  private readonly castOrigin = new THREE.Vector3();
+  private readonly castDir = new THREE.Vector3();
+  private static readonly CAST_STILL_U = 0.003;
+  private static readonly CAST_STILL_DOT = 1 - 1e-7;
+  /** Casts actually run (all rays, after the broadphase) since construction; the tests read it. */
+  public collisionCasts = 0;
+
+  // ---- A12: jumps lift the camera 30% of the hop --------------------------
+  /** The player's radial distance the last frame they stood on the ground. */
+  private groundR = 0;
+  private airborneS = 0;
+  /** How far below the player's height the look target sits (eased back at 12/s after landing). */
+  private jumpDrop = 0;
+  private static readonly JUMP_FOLLOW = 0.3;
+  private static readonly JUMP_HOLD_S = 1.2;
+  private static readonly JUMP_CATCHUP_K = 12;
+
+  // ---- The fishing interest yaw (B's P2-B7 reads it optionally) ----------
+  /** A yaw offset (rad) a scene may ask for, e.g. toward a cast; null = none. */
+  private interestYawTarget: number | null = null;
+  private interestYawApplied = 0;
+  /** Set by a manual look; a new lean waits until the caller lets go (null). */
+  private interestYawReleased = false;
+  private static readonly INTEREST_K = 1.5;
   private _flattenScale = new THREE.Vector3();
 
   private _reducedVel = new THREE.Vector3();
@@ -358,6 +434,11 @@ export class OrbitCamera {
       this.followDir.applyQuaternion(yawQuat).normalize();
       this.yawStepPending = 0;
     }
+    const interest = this.interestYawStep(deltaTime);
+    if (interest !== 0) {
+      this.followDir.applyQuaternion(this._quat.setFromAxisAngle(surfaceNormal, interest));
+      this.followDir.normalize();
+    }
 
     // Auto-follow: swing behind the tangential motion. While riding, use
     // the vehicle's velocity (the player's own is zero); a stronger pull so
@@ -402,10 +483,12 @@ export class OrbitCamera {
     const pitchQuat = this._quat.setFromAxisAngle(right, this.pitch);
     const cameraDir = this._camDir.copy(this.followDir).applyQuaternion(pitchQuat).normalize();
 
-    // Target point: player + up*height (toward torso level) + look-ahead
+    // Target point: player + up*height (toward torso level) + look-ahead,
+    // less the part of a jump the camera does not follow (A12).
+    this.updateJumpDrop(playerPos, deltaTime);
     this.targetPosition
       .copy(playerPos)
-      .addScaledVector(surfaceNormal, this.height * 0.5)
+      .addScaledVector(surfaceNormal, this.height * 0.5 - this.jumpDrop)
       .add(this.lookAhead);
 
     // Point-of-interest bias (feed piles etc): ease a bounded fraction of
@@ -427,7 +510,7 @@ export class OrbitCamera {
 
     // Camera collision: pull in when terrain or a building blocks the view ray
     let effectiveDistance = this.distance;
-    if (this.collisionMeshes.length > 0) {
+    if (this.collisionMeshes.length > 0 && !fx.on('camRays')) {
       try {
         this.raycaster.set(this.targetPosition, cameraDir);
         this.raycaster.far = this.distance + 0.5;
@@ -438,6 +521,34 @@ export class OrbitCamera {
       } catch {
         // collision is best-effort; keep full distance on raycast issues
       }
+    } else if (this.collisionMeshes.length > 0) {
+      // A12: five rays (three on the low tier), the nearest hit less 0.25 u,
+      // down to 0.55 u; the distance eases in fast (20/s) and out slowly
+      // (4/s, 8/s under reduced motion). A rail's instant pose (deltaTime 0:
+      // snapToPlayer, getFollowPose) takes the raw distance and leaves the
+      // eased state alone.
+      this.rayDir = cameraDir;
+      const hit = fx.time('camRays', this.castCollisionRays);
+      const want =
+        hit === Number.POSITIVE_INFINITY
+          ? Number.POSITIVE_INFINITY
+          : Math.max(OrbitCamera.MIN_COLLISION_DISTANCE, hit - OrbitCamera.COLLISION_MARGIN);
+      let d = want;
+      if (deltaTime > 0) {
+        const cur = Math.min(this.collisionDistance, this.distance);
+        const goal = Math.min(want, this.distance);
+        const k =
+          goal < cur
+            ? OrbitCamera.COLLIDE_IN_K
+            : a11y.reducedMotion
+              ? OrbitCamera.COLLIDE_OUT_K_REDUCED
+              : OrbitCamera.COLLIDE_OUT_K;
+        const next = expDecay(cur, goal, k, deltaTime);
+        this.collisionDistance =
+          want === Number.POSITIVE_INFINITY && next >= this.distance - 1e-3 ? want : next;
+        d = this.collisionDistance;
+      }
+      effectiveDistance = Math.min(this.distance, d);
     }
 
     // Camera position
@@ -453,6 +564,160 @@ export class OrbitCamera {
   private focusActive = false;
   private focusAmt = 0;
   private readonly _focusBias = new THREE.Vector3();
+
+  /**
+   * A12: the nearest hit along the view ray from the look target, over the
+   * centre ray and its offsets along the camera's right and up (0.2 u):
+   * five rays, or three (centre, left, right) on the low tier. Infinity when
+   * nothing is within this.distance + 0.5.
+   */
+  private nearestCollisionHit(): number {
+    const dir = this.rayDir;
+    if (!dir) return Number.POSITIVE_INFINITY;
+    const refresh = ++this.sphereAge >= OrbitCamera.SPHERE_REFRESH_FRAMES;
+    const rays = fx.tier() === 'low' ? 3 : 5;
+    const far = this.distance + 0.5;
+    // Perf (camRays ledger): a still camera reuses its last answer.
+    if (
+      !refresh &&
+      this.castValid &&
+      this.castRays === rays &&
+      this.castFar === far &&
+      this.castDir.dot(dir) >= OrbitCamera.CAST_STILL_DOT &&
+      this.castOrigin.distanceToSquared(this.targetPosition) <=
+        OrbitCamera.CAST_STILL_U * OrbitCamera.CAST_STILL_U
+    ) {
+      return this.castHit;
+    }
+    if (refresh) this.refreshCollisionSpheres();
+    this.castValid = true;
+    this.castRays = rays;
+    this.castFar = far;
+    this.castDir.copy(dir);
+    this.castOrigin.copy(this.targetPosition);
+    this.castHit = this.castAll(dir, rays, far);
+    return this.castHit;
+  }
+
+  /** The broadphase and the rays themselves (nearestCollisionHit decides whether to cast). */
+  private castAll(dir: THREE.Vector3, rays: number, far: number): number {
+    // Broadphase: meshes whose sphere comes within reach of the look target.
+    const cands = this.rayCandidates;
+    cands.length = 0;
+    const reach = this.distance + 0.5 + OrbitCamera.RAY_SPREAD * 2 + OrbitCamera.SPHERE_SLACK_U;
+    const sp4 = this.collisionSpheres;
+    const tp = this.targetPosition;
+    for (let i = 0, j = 0; i < this.collisionMeshes.length; i++, j += 4) {
+      const dx = sp4[j] - tp.x;
+      const dy = sp4[j + 1] - tp.y;
+      const dz = sp4[j + 2] - tp.z;
+      const lim = reach + sp4[j + 3];
+      if (dx * dx + dy * dy + dz * dz <= lim * lim) cands.push(this.collisionMeshes[i]);
+    }
+    if (cands.length === 0) return Number.POSITIVE_INFINITY;
+    const right = this._camRight;
+    const up = this._rayUp.crossVectors(dir, right).normalize();
+    const sp = OrbitCamera.RAY_SPREAD;
+    let best = Number.POSITIVE_INFINITY;
+    this.raycaster.far = far;
+    this.collisionCasts += 1;
+    for (let i = 0; i < rays; i++) {
+      const o = this._rayOrigin.copy(this.targetPosition);
+      if (i === 1) o.addScaledVector(right, sp);
+      else if (i === 2) o.addScaledVector(right, -sp);
+      else if (i === 3) o.addScaledVector(up, sp);
+      else if (i === 4) o.addScaledVector(up, -sp);
+      this.raycaster.set(o, dir);
+      this._rayHits.length = 0;
+      try {
+        this.raycaster.intersectObjects(cands, false, this._rayHits);
+      } catch {
+        continue; // best-effort: a bad mesh never breaks the follow
+      }
+      if (this._rayHits.length > 0 && this._rayHits[0].distance < best) {
+        best = this._rayHits[0].distance;
+      }
+    }
+    return best;
+  }
+
+  /** A12: re-read every collision mesh's world bounding sphere. */
+  private refreshCollisionSpheres(): void {
+    this.sphereAge = 0;
+    const sp4 = this.collisionSpheres;
+    for (let i = 0, j = 0; i < this.collisionMeshes.length; i++, j += 4) {
+      const m = this.collisionMeshes[i];
+      if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
+      const bs = m.geometry.boundingSphere;
+      if (!bs) {
+        sp4[j + 3] = Number.POSITIVE_INFINITY; // unknown size: always a candidate
+        continue;
+      }
+      const w = this._sphere.copy(bs).applyMatrix4(m.matrixWorld);
+      sp4[j] = w.center.x;
+      sp4[j + 1] = w.center.y;
+      sp4[j + 2] = w.center.z;
+      sp4[j + 3] = w.radius;
+    }
+  }
+
+  /**
+   * A12: while the player is airborne (under 1.2 s), the look target follows
+   * only 30% of the hop above the last ground height; after landing it
+   * catches up at 12/s. Riding and swimming never lift. deltaTime 0 (a rail's
+   * instant pose) reads the current drop without advancing it.
+   */
+  private updateJumpDrop(playerPos: THREE.Vector3, deltaTime: number): void {
+    if (deltaTime <= 0) return;
+    const r = playerPos.length();
+    // Optional reads: a stand-in player (the unit tests') counts as grounded.
+    const pl = this.player as Partial<Pick<SimplePlayer, 'isOnGround' | 'isInWater'>>;
+    const grounded = typeof pl.isOnGround === 'function' ? pl.isOnGround() : true;
+    const inWater = typeof pl.isInWater === 'function' ? pl.isInWater() : false;
+    if (this.rideMode || grounded || inWater) {
+      if (grounded) this.groundR = r;
+      this.airborneS = 0;
+      this.jumpDrop = expDecay(this.jumpDrop, 0, OrbitCamera.JUMP_CATCHUP_K, deltaTime);
+      return;
+    }
+    this.airborneS += deltaTime;
+    if (this.groundR <= 0 || this.airborneS >= OrbitCamera.JUMP_HOLD_S) {
+      this.jumpDrop = expDecay(this.jumpDrop, 0, OrbitCamera.JUMP_CATCHUP_K, deltaTime);
+      return;
+    }
+    const rise = Math.max(0, r - this.groundR);
+    this.jumpDrop = rise * (1 - OrbitCamera.JUMP_FOLLOW);
+  }
+
+  /**
+   * Ask the camera to lean its yaw `rad` off the follow (a fishing cast, say),
+   * or null to let go. It eases in and out at 1.5/s and is ignored under
+   * reduced motion. A manual look releases it in place: the lean already in
+   * the follow direction stays where the visitor put it (nothing unwinds),
+   * and further leans are ignored until the caller passes null. B's fishing
+   * bias reads it as an optional call (P2-B7).
+   */
+  public setInterestYaw(rad: number | null): void {
+    if (rad === null) {
+      this.interestYawReleased = false;
+      this.interestYawTarget = null;
+      return;
+    }
+    if (!Number.isFinite(rad) || a11y.reducedMotion || this.interestYawReleased) return;
+    this.interestYawTarget = rad;
+  }
+
+  /** The interest yaw's step this frame, folded into the follow direction. */
+  private interestYawStep(deltaTime: number): number {
+    if (deltaTime <= 0 || a11y.reducedMotion) return 0;
+    const goal = this.interestYawTarget ?? 0;
+    if (goal === 0 && this.interestYawApplied === 0) return 0;
+    let next = expDecay(this.interestYawApplied, goal, OrbitCamera.INTEREST_K, deltaTime);
+    if (Math.abs(next - goal) < 1e-4) next = goal;
+    const step = next - this.interestYawApplied;
+    this.interestYawApplied = next;
+    return step;
+  }
 
   /** Hard-cut the camera to its computed follow pose (no ease) — used when
    *  returning from the interior room 300u below the island, where the
@@ -515,6 +780,18 @@ export class OrbitCamera {
 
     // Safely validate inputs
     const safeDeltaTime = Math.max(0, Math.min(deltaTime, 0.05)); // Clamp to prevent jumps
+
+    // A manual look since the last frame releases the interest yaw in place:
+    // forget the lean (it is already folded into followDir) so nothing eases
+    // back against the visitor's aim.
+    if (
+      this.sinceManualLook === 0 &&
+      (this.interestYawTarget !== null || this.interestYawApplied !== 0)
+    ) {
+      this.interestYawTarget = null;
+      this.interestYawApplied = 0;
+      this.interestYawReleased = true;
+    }
 
     // Touch fling: keep turning after a fast swipe, ω decaying by
     // exp(−dt/0.15 s), never more than 30° in all. It feeds the yaw TARGET,

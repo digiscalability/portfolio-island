@@ -17,7 +17,8 @@ required = [
   "Do not invent specific facts about Abbas beyond what is written here.",
 ]
 
-# The concierge villagers (the Storyteller, the Elder Sage, the Cartographer)
+# The four concierge villagers (the Storyteller, the Elder Sage, the
+# Cartographer and, since P2-E6, the Mayor at the end of the arrival trail)
 # carry the fact sheet. Each phrase is quoted from it.
 [concierge]
 required = [

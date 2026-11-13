@@ -155,9 +155,11 @@ describe('the audio review lows', () => {
     expect(s).not.toContain('Toggle all sound');
     expect(s).toContain('live calls excluded');
     // and the icon reflects EFFECTIVE silence on every update path:
-    expect(s).toMatch(/muted \|\| volume === 0 \? '🔇' : '🔊'/); // boot
-    expect(s).toMatch(/nowMuted \|\| this\.hudVolume === 0 \? '🔇' : '🔊'/); // mute click
-    expect(s).toMatch(/this\.hudMuted \|\| v === 0 \? '🔇' : '🔊'/); // slider (pre-existing)
+    // (D13: the sprite's volume and volume-x icons, through setMuteIcon.)
+    expect(s).toContain('this.setMuteIcon(muted || volume === 0);'); // boot
+    expect(s).toContain('this.setMuteIcon(nowMuted || this.hudVolume === 0);'); // mute click
+    expect(s).toContain('this.setMuteIcon(this.hudMuted || v === 0);'); // slider (pre-existing)
+    expect(s).toContain("silent ? 'volume-x' : 'volume'");
   });
 });
 

@@ -5,9 +5,14 @@
 //   perf:gate -- --dist dist --port 5191                 baseline report + counter and µs budget checks
 //   perf:gate -- --base http://127.0.0.1:5191            the same, attached to a running preview
 //   perf:gate -- --dist dist --port 5191 --fx <name>     one __dsFx effect: per-view draws and programs, then 6 x 1.5 s per side
+//                                                         (npcTalk times in a held chat, interiorCam inside the Professional hall: FX_SCENE)
 //   perf:gate -- --ab <distA> <distB> --ports pA,pB [--cycles 6]   whole build B against A, ABAB, fresh context per cycle
 //   perf:gate -- --rejudge <perf-gate-ab.json>           the verdict maths again on a saved A/B's loads (no browser)
 //   perf:gate -- --dist dist --port 5191 --dusk          the dusk check alone: ?hour=17, then the clock to 17.5 after the warm
+//   perf:gate -- --dist dist --port 5191 --governor      E3: the lowtier4x profile (390x844 DPR 2 touch, 4x CPU, no timer
+//                                                         queries), governor live: renderScale and fps after 30 s
+//   perf:gate -- --dist dist --port 5191 --governor --profile desktop --hour 21   the desktop: the scale sheds before rung 1 (bloom) unless CPU-bound
+//   perf:gate -- --dist dist --port 5191 --gpuheavy      E3: the 1x low tier with ?gpuheavy=1: renderScale under 0.9 within 20 s
 //   add --seed to compare window.__dsSeedDraws with the subject's test/golden/seedDraws.json (--golden <path> overrides)
 //   add --dusk to --ab for the dusk check on each side (side B is held to it)
 //   --profiles desktop,lowtier,startup  (default: all three; --fx and --dusk use desktop,lowtier)
@@ -117,6 +122,8 @@ const FX_LEDGER = {
   swim: 10,
   npcGait: 80,
   npcTalk: 20,
+  // P2-B11's acceptance: the interior follow camera, 20 µs per frame or less.
+  interiorCam: 20,
   coins: 20,
   avatarFade: 5,
   idleLife: { desktop: 40, lowtier: 15 },
@@ -1596,21 +1603,33 @@ function modeRejudge(args) {
  * The main chunk's size (wave-2 amendments). Wave 1 took it over Vite's
  * 1,000 kB chunk warning (vite.config.ts chunkSizeWarningLimit, which stays
  * where it is). kB are Vite's: bytes / 1000, gzip at zlib's default level.
- * - main: the merged wave-1 main (8662b27), the baseline every report is
- *   held against; beforeWave1 is main before it (d5e0e96), for the record.
+ * - main: wave-2 main (f79c38c; 29edc9b builds the same chunk), the
+ *   baseline every delta is reported against (wave-3 amendments, bundle).
+ *   wave1 (8662b27) and beforeWave1 (d5e0e96) are kept for the record.
  * - gzipBudgetKB: the plan's '+50 KB transferred before the card' (the main
- *   chunk is fetched before the card); the gating half of the check.
+ *   chunk is fetched before the card); the gating half of the check. The
+ *   budget stays anchored at budgetBase (wave-1 main), so rebasing main
+ *   does not hand the budget back: wave 2 used +21.97 kB of it.
  * - lazyCandidate: the largest whole module in the chunk that nothing needs
  *   before the welcome card, measured on ux/w2-perf-gate by minifying each
  *   module of the chunk on its own (esbuild, then gzip). GameScene.ts,
  *   SimpleUI.ts, Island.ts and main-simple.ts are 69% of the chunk and are
- *   not candidates as whole files. Its owner moves it in wave 3.
+ *   not candidates as whole files. A moves it in wave 3 (amendments, A).
+ * - nextCandidate: the one the report names for wave 4.
  */
 const BUNDLE = {
   warnKB: 1000,
-  main: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
+  main: { rawKB: 1073.23, gzipKB: 333.82, at: 'wave-2 main (f79c38c)' },
+  wave1: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
   beforeWave1: { rawKB: 930.89, gzipKB: 288.04, at: 'main before wave 1 (d5e0e96)' },
   gzipBudgetKB: 50,
+  budgetBase: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
+  nextCandidate: {
+    module: 'Chat.ts',
+    minKB: 7.0,
+    gzipKB: 2.77,
+    how: "once SimpleUI.ts stops importing Chat's VOICE_MAX_MS (wave 4)",
+  },
   lazyCandidate: {
     module: 'Multiplayer.ts',
     minKB: 14.07,
@@ -1634,15 +1653,17 @@ function bundleSize(dist) {
 }
 /**
  * A main chunk against a baseline ({ rawKB, gzipKB }; BUNDLE.main unless side
- * A of an A/B is given). pass: gzip grew by no more than gzipBudgetKB.
+ * A of an A/B is given). The deltas are against that baseline. pass: gzip is
+ * no more than gzipBudgetKB over BUNDLE.budgetBase (budgetUsedKB).
  * overWarning is reported, never gating: the chunk was already over on main.
  */
 function bundleCheck(size, base = BUNDLE.main) {
   if (!size) return null;
   const deltaRawKB = round(size.rawKB - base.rawKB, 2);
   const deltaGzipKB = round(size.gzipKB - base.gzipKB, 2);
+  const budgetUsedKB = round(size.gzipKB - BUNDLE.budgetBase.gzipKB, 2);
   const overWarningKB = round(size.rawKB - BUNDLE.warnKB, 2);
-  return { ...size, base, deltaRawKB, deltaGzipKB, overWarning: overWarningKB > 0, overWarningKB, pass: deltaGzipKB <= BUNDLE.gzipBudgetKB };
+  return { ...size, base, deltaRawKB, deltaGzipKB, budgetUsedKB, overWarning: overWarningKB > 0, overWarningKB, pass: budgetUsedKB <= BUNDLE.gzipBudgetKB };
 }
 
 /** A dist's entry bundle (main-<hash>.js), or its folder name when it has none. */
@@ -1771,8 +1792,211 @@ const FX_PAIR = ({ name }) => {
  * between); programs the ON sides add are the effect's. Then 6 x 1.5 s per
  * side of timing at the spawn, escalating like --ab.
  */
+// E4's modal scenario: main-thread busy time (long tasks and long animation
+// frames, merged, per second) and Event Timing durations for taps on the
+// panel's buttons, recorded from the first script.
+const MODAL_INIT = `(() => {
+  if (window.top !== window) return;
+  const M = (window.__modal = { busy: [], events: [] });
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) M.busy.push([e.startTime, e.startTime + e.duration]); }).observe({ type: 'longtask', buffered: true }); } catch (e) {}
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) M.busy.push([e.startTime, e.startTime + e.duration]); }).observe({ type: 'long-animation-frame', buffered: true }); } catch (e) {}
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) M.events.push({ t: e.startTime, name: e.name, d: e.duration }); }).observe({ type: 'event', durationThreshold: 16, buffered: true }); } catch (e) {}
+})();`;
+/** Busy ms per second over [a, b): the union of the recorded intervals, clipped. */
+const BUSY = ([a, b]) => {
+  const iv = window.__modal.busy.filter((x) => x[1] > a && x[0] < b).map((x) => [Math.max(a, x[0]), Math.min(b, x[1])]).sort((x, y) => x[0] - y[0]);
+  let sum = 0;
+  let cur = null;
+  for (const x of iv) {
+    if (!cur || x[0] > cur[1]) {
+      if (cur) sum += cur[1] - cur[0];
+      cur = [x[0], x[1]];
+    } else cur[1] = Math.max(cur[1], x[1]);
+  }
+  if (cur) sum += cur[1] - cur[0];
+  return +(sum / ((b - a) / 1000)).toFixed(1);
+};
+// E4's bar: the main thread busy under 400 ms a second behind Projects (from about 1005).
+const MODAL_BUSY_MS_S = 400;
+
+/** The Projects panel through the UI on a touch build: the drawer, the Portfolio menu, Projects. */
+async function openProjects(page) {
+  const tapSel = async (sel) => {
+    const r = await page.evaluate((s) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return b.width > 1 ? [b.left + b.width / 2, b.top + b.height / 2] : null;
+    }, sel);
+    if (!r) return false;
+    await page.touchscreen.tap(r[0], r[1]);
+    return true;
+  };
+  await tapSel('.hud-btn[aria-label="Open island menu"]');
+  await page.waitForTimeout(800);
+  await tapSel('.hud-btn[aria-label="Open portfolio menu"]');
+  await page.waitForTimeout(1000);
+  const ok = await tapSel('button[data-section="projects"]');
+  await page.waitForTimeout(1500);
+  return { tapped: ok, panel: await page.evaluate(() => window.__app.ui.panels.current()) };
+}
+
+/**
+ * --fx modalDivisor (E4): the lowtier4x profile, governor live. Projects is
+ * opened through the UI, then the switch alternates off and on behind it
+ * (__dsFx.modalDivisor, read per frame), 4 s a side for --cycles cycles:
+ * per side the main-thread busy ms/s and the Event Timing durations of taps
+ * on the panel's own buttons (non-closing ones). The panel region's pixels
+ * on against off, and the governor rung before and after.
+ */
+async function modeModal(args) {
+  const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
+  const browser = await lib.launch();
+  const p = LOWTIER4X();
+  const cycles = Number(args.cycles || 4);
+  const data = { mode: 'fx', effect: 'modalDivisor', scenario: 'modal', profile: p.name, profiles: {}, checks: [], leaks: [], signUpMissing: 0 };
+  try {
+    const s = await lib.openSession(browser, p, { init: [GATE_INIT({ nogpu: true }), MODAL_INIT], fx: { modalDivisor: false } });
+    const { page } = s;
+    const set = (v) => page.evaluate((x) => (window.__dsFx = Object.assign(window.__dsFx || {}, { modalDivisor: x })), v);
+    try {
+      await bootPage(page, server.url, p, args.hour || '12');
+      await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
+      await page.waitForTimeout(8000);
+      data.governorBefore = await page.evaluate(GOV_STATE);
+      data.open = await openProjects(page);
+      if (data.open.panel !== 'zone') throw new Error(`hook missing: the Projects panel did not open (${JSON.stringify(data.open)})`);
+      const buttons = await page.evaluate(() => {
+        const z = window.__app.ui.zonePanelDiv;
+        if (!z) return [];
+        return [...z.querySelectorAll('button, [role=tab]')]
+          .filter((b) => !/close|×|✕|back|leave/i.test(`${b.getAttribute('aria-label') || ''} ${b.textContent || ''}`) && !b.closest('a'))
+          .slice(0, 6)
+          .map((b) => {
+            const r = b.getBoundingClientRect();
+            return [r.left + r.width / 2, r.top + r.height / 2];
+          })
+          .filter(([x, y]) => x > 0 && y > 0 && y < innerHeight);
+      });
+      const sides = { off: { busy: [], events: [] }, on: { busy: [], events: [] } };
+      for (let c = 0; c < cycles; c++) {
+        for (const side of ['off', 'on']) {
+          await set(side === 'on');
+          await page.waitForTimeout(600);
+          const t0 = await page.evaluate(() => performance.now());
+          // --no-taps: the busy time of the panel left alone.
+          const taps = args.noTaps ? [] : buttons.slice(0, 3);
+          for (const [x, y] of taps) {
+            await page.touchscreen.tap(x, y);
+            await page.waitForTimeout(700);
+          }
+          await page.waitForTimeout(Math.max(0, 4000 - taps.length * 700));
+          const t1 = await page.evaluate(() => performance.now());
+          sides[side].busy.push(await page.evaluate(BUSY, [t0, t1]));
+          sides[side].events.push(...(await page.evaluate(([a, b]) => window.__modal.events.filter((e) => e.t >= a && e.t < b && /pointer|click|touch/.test(e.name)).map((e) => e.d), [t0, t1])));
+          sides[side].state = await page.evaluate(GOV_STATE);
+        }
+      }
+      // The panel region, on against off (the canvas behind a translucent panel).
+      const rect = await page.evaluate(() => {
+        const z = window.__app.ui.zonePanelDiv;
+        const r = z.getBoundingClientRect();
+        return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: Math.min(innerWidth, r.width), height: Math.min(innerHeight - Math.max(0, r.top), r.height) };
+      });
+      const shot = async (v) => {
+        await set(v);
+        await page.waitForTimeout(800);
+        const buf = await page.screenshot({ clip: rect });
+        fs.writeFileSync(path.join(lib.outDir(args, 'perf-gate'), `modal-panel-${v ? 'on' : 'off'}.png`), buf);
+        return lib.pngDecode(buf);
+      };
+      const a = await shot(false);
+      const b = await shot(true);
+      let diff = 0;
+      for (let i = 0; i < a.data.length; i += 4) if (Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]) > 24) diff++;
+      data.panelDiffPct = +((100 * diff) / (a.data.length / 4)).toFixed(2);
+      await set(null);
+      await page.evaluate(() => window.__app.ui.panels.closeAll());
+      await page.waitForTimeout(3000);
+      data.governorAfter = await page.evaluate(GOV_STATE);
+      data.sides = { off: { busy: sides.off.busy, eventsMs: sides.off.events, divisor: sides.off.state && sides.off.state.modalDivisor }, on: { busy: sides.on.busy, eventsMs: sides.on.events, divisor: sides.on.state && sides.on.state.modalDivisor } };
+    } finally {
+      await s.close({ waitSignUpMs: 20000 });
+      if (s.net.leaks.length) data.leaks.push(...s.net.leaks);
+      if (!s.net.signUpSeen && !s.net.bootProofSeen) data.signUpMissing++;
+    }
+  } finally {
+    await browser.close().catch(() => {});
+    await server.stop();
+  }
+  const check = (name, pass, value, expect) => data.checks.push({ name, pass, value, expect });
+  const S = data.sides;
+  if (S) {
+    check('lowtier4x behind Projects, divisor on: main thread busy ms/s (median)', median(S.on.busy) < MODAL_BUSY_MS_S, { on: median(S.on.busy), off: median(S.off.busy) }, `< ${MODAL_BUSY_MS_S} (wave-2 main: about 1005)`);
+    const eOn = S.on.eventsMs.length ? median(S.on.eventsMs) : null;
+    const eOff = S.off.eventsMs.length ? median(S.off.eventsMs) : null;
+    check('Event Timing durations of taps on the panel fall (one-sided, T = 0)', eOn === null || eOff === null ? null : eOn - eOff <= 0, { on: eOn, off: eOff, nOn: S.on.eventsMs.length, nOff: S.off.eventsMs.length }, 'on - off <= 0 ms');
+    check('the panel region on against off', data.panelDiffPct < 1, data.panelDiffPct, '< 1% of pixels');
+    check('the governor rung is the same before and after', data.governorBefore.qualityRung === data.governorAfter.qualityRung, [data.governorBefore.qualityRung, data.governorAfter.qualityRung], 'equal');
+  }
+  data.verdict = data.leaks.length ? 'fail-closed' : data.signUpMissing ? 'inconclusive' : data.checks.some((c) => c.pass === false) ? 'fail' : data.checks.some((c) => c.pass === null) ? 'inconclusive' : 'pass';
+  return data;
+}
+
+/**
+ * The scenario an effect's timing windows need, for effects fx.time only
+ * runs in a state the spawn never reaches: npcTalk (B8) runs while a
+ * villager is held in conversation (GameScene's wander loop, under
+ * setNpcDialogueHold), interiorCam (P2-B11) only inside a room. Without
+ * the scenario both read 'not timed by fx.time' and the verdict is n/a.
+ */
+const FX_SCENE = { npcTalk: 'chat', interiorCam: 'room' };
+
+/** Hold the nearest wandering villager in conversation, speaking (B8's events). */
+const CHAT_HOLD = () => {
+  const sc = window.__app.scene;
+  const p = sc.player.position;
+  let best = null;
+  for (const npc of sc.island.npcTargets) {
+    if (sc.fisherman && npc === sc.fisherman.npc) continue;
+    if (sc.baker && npc === sc.baker.npc) continue;
+    if (sc.pinnedNpcs && sc.pinnedNpcs.has(npc)) continue;
+    const d = npc.meshRef.position.distanceTo(p);
+    if (!best || d < best.d) best = { name: npc.name, d };
+  }
+  if (!best || typeof sc.setNpcDialogueHold !== 'function') return { held: null };
+  sc.setNpcDialogueHold(best.name);
+  window.dispatchEvent(new CustomEvent('ds:npc-speaking', { detail: { name: best.name, speaking: true } }));
+  return { held: best.name, distance: +best.d.toFixed(1) };
+};
+const CHAT_RELEASE = () => {
+  const sc = window.__app.scene;
+  const name = sc.heldNpcName;
+  if (name) window.dispatchEvent(new CustomEvent('ds:npc-speaking', { detail: { name, speaking: false } }));
+  if (typeof sc.setNpcDialogueHold === 'function') sc.setNpcDialogueHold(null);
+};
+
+/** Into the Professional hall the visitor's way (room-lib), its panel closed, at the door end. */
+async function fxRoomEnter(session) {
+  const { page } = session;
+  const touch = lib.isTouchProfile(session.profile);
+  await R.install(page);
+  const T = touch ? await lib.touch(session) : null;
+  const e = await R.enterRoom(page, ROOM_ID, { touch, T, back: 3.0 });
+  await page.waitForTimeout(2500);
+  const inside = await page.evaluate(() => {
+    const a = window.__app;
+    if (a.ui.panels && a.ui.panels.closeAll) a.ui.panels.closeAll();
+    return a.scene.isInsideInterior();
+  });
+  await page.waitForTimeout(800);
+  return { room: ROOM_ID, press: e.press, inside };
+}
+
 async function modeFx(args) {
   const name = String(args.fx);
+  // E4's modal divisor is measured behind a panel on the 4x low tier, not by off/on frame pairs.
+  if (name === 'modalDivisor' && !args.pairs) return modeModal(args);
   const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
   const browser = await lib.launch();
   const profiles = String(args.profiles || 'desktop,lowtier')
@@ -1828,9 +2052,18 @@ async function modeFx(args) {
             on,
           };
         }
-        // Timing at the spawn, interleaved.
+        // Timing at the spawn, interleaved; or in the effect's own scenario
+        // (FX_SCENE), where fx.time runs.
         await page.evaluate(POSE, { view: 'spawn' });
         await page.waitForTimeout(800);
+        const scene = FX_SCENE[name] || null;
+        let sceneState = null;
+        if (scene === 'chat') {
+          sceneState = await page.evaluate(CHAT_HOLD);
+          await page.waitForTimeout(600);
+        } else if (scene === 'room') {
+          sceneState = await fxRoomEnter(s);
+        }
         const offW = [];
         const onW = [];
         let cycles = Number(args.cycles || 6);
@@ -1846,12 +2079,13 @@ async function modeFx(args) {
             onW.push(await windowStats(page, 1500));
           }
           done = cycles;
+          const at = scene || 'spawn';
           rows = {
-            'spawn: CPU p50 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP50), onW.map((x) => x.cpuP50), T.cpuP50) },
-            'spawn: CPU p95 ms': { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
+            [`${at}: CPU p50 ms`]: { kind: 'timing', ...judge(offW.map((x) => x.cpuP50), onW.map((x) => x.cpuP50), T.cpuP50) },
+            [`${at}: CPU p95 ms`]: { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
           };
-          rows['spawn: CPU mean ms'] = { kind: 'timing', ...judge(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), null) };
-          rows['spawn: GPU p50 ms'] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50 ?? null) };
+          rows[`${at}: CPU mean ms`] = { kind: 'timing', ...judge(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), null) };
+          rows[`${at}: GPU p50 ms`] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50 ?? null) };
           for (const view of VIEWS) rows[`${view}: draws`] = { kind: 'counter', ...counters[view].draws };
           // What the effect is meant to save (FX_CREDIT), held beside the budgets.
           const credit = (FX_CREDIT[name] || {})[prof] || null;
@@ -1869,7 +2103,7 @@ async function modeFx(args) {
           const us = onW.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
           // The effect's own ledger line when plan-r3 gives one, inside the tier's per-effect cap.
           const usCap = Math.min(FX_US[prof], ledgerUs(name, prof) ?? FX_US[prof]);
-          rows['µs per frame (FxBudget)'] = us.length ? { kind: 'µs', verdict: median(us) <= usCap ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: usCap, ledger: ledgerUs(name, prof) } : { kind: 'µs', verdict: 'n/a', note: 'not timed by fx.time (unregistered or ?perf=1 off)' };
+          rows['µs per frame (FxBudget)'] = us.length ? { kind: 'µs', verdict: median(us) <= usCap ? 'pass' : 'fail', medianB: round(median(us), 2), threshold: usCap, ledger: ledgerUs(name, prof), scene: at } : { kind: 'µs', verdict: 'n/a', note: scene ? `not timed by fx.time in the ${scene} scenario (${JSON.stringify(sceneState)})` : 'not timed by fx.time (unregistered or ?perf=1 off)' };
           // plan-r3 rules: at most 3 animated elements at once.
           const anim = onW.map((x) => x.animatedMax).filter(isNum);
           rows['animated elements with the effect on (max)'] = anim.length ? { kind: 'counter', verdict: Math.max(...anim) <= 3 ? 'pass' : 'fail', medianB: Math.max(...anim), threshold: 3 } : { kind: 'counter', verdict: 'n/a' };
@@ -1877,8 +2111,10 @@ async function modeFx(args) {
           cycles = Math.min(24, cycles * 2);
         }
         await set(null);
+        if (scene === 'chat') await page.evaluate(CHAT_RELEASE);
         const fxNow = await page.evaluate(FX_SNAPSHOT);
         data.profiles[prof] = {
+          scene: scene ? { name: scene, ...sceneState } : null,
           cycles: done,
           verdict: overall(rows),
           metrics: rows,
@@ -1903,6 +2139,91 @@ async function modeFx(args) {
   }
   const vs = Object.values(data.profiles).map((p) => p.verdict);
   data.verdict = data.leaks.length ? 'fail-closed' : vs.includes('fail') ? 'fail' : vs.includes('inconclusive') || data.signUpMissing ? 'inconclusive' : 'pass';
+  return data;
+}
+
+// E3: the 4x low tier. 390x844, DPR 2, touch, 4x CPU, GPU timer queries off
+// (they inflate throttled CPU time by ~15%, as for 'startup').
+const LOWTIER4X = () => ({ ...lib.profile('lowtier'), name: 'lowtier4x', cpu: 4 });
+/** The governor's state: E3's snapshot where the build has it, else the private fields. */
+const GOV_STATE = () => {
+  const sr = window.__app.renderer;
+  if (typeof sr.getGovernorState === 'function') return { ...sr.getGovernorState(), armed: sr.governorArmed, lowBar: sr.fpsLowThreshold, lowStreak: sr.lowStreak, gpuHeavyDraws: sr.gpuHeavyParam ? sr.gpuHeavyDraws : null, via: 'getGovernorState' };
+  return { renderScale: sr.renderScale, fpsEma: sr.fpsEma, cpuEma: sr.cpuEma ?? null, qualityRung: sr.qualityRung, cpuBound: sr.cpuBound ?? null, modalDivisor: null, via: 'fields' };
+};
+// E3's bars: on the 4x low tier after 30 s the scale is 0.9 or more (from
+// 0.48 on wave-2 main) and 16 fps or more; with ?gpuheavy=1 on the low tier
+// at DPR 2 the scale drops below 0.9 within 20 s.
+const GOVERNOR_BARS = { scaleAt30s: 0.9, fpsAt30s: 16, gpuHeavyShedS: 20 };
+
+/**
+ * --governor (E3): one fresh load with the governor LIVE (never pinned). The
+ * default is the lowtier4x profile, idle at the spawn after the card: the
+ * governor state each second for 30 s, then renderScale and the delivered fps
+ * over the last 5 s. --gpuheavy instead boots the 1x low tier with
+ * ?gpuheavy=1 (one extra full-screen pass) and records when renderScale
+ * first drops below 0.9.
+ */
+async function modeGovernor(args) {
+  const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
+  const browser = await lib.launch();
+  const heavy = !!args.gpuheavy;
+  // --profile desktop: the desktop at --hour (21 for the night halo): the
+  // scale sheds before the rungs unless the LOGIC is CPU-bound, so bloom
+  // (rung 1) outlives the first resolution steps.
+  const desk = !heavy && args.profile === 'desktop';
+  const base = heavy ? lib.profile('lowtier') : desk ? lib.profile('desktop') : LOWTIER4X();
+  const heavyQ = heavy ? (args.gpuheavy === true ? '1' : String(args.gpuheavy)) : null;
+  const profObj = heavy ? { ...base, name: 'lowtier-gpuheavy', query: `${base.query || ''}&gpuheavy=${heavyQ}` } : base;
+  const seconds = Number(args.seconds || (heavy ? 20 : 30));
+  const data = { mode: 'governor', profile: profObj.name, cpu: profObj.cpu, seconds, bars: GOVERNOR_BARS, samples: [], checks: [], leaks: [], signUpMissing: 0 };
+  try {
+    const meter = await lib.hostLoadMeter(browser);
+    const s = await lib.openSession(browser, profObj, { init: [GATE_INIT({ nogpu: true })] });
+    const { page } = s;
+    try {
+      await bootPage(page, server.url, profObj, args.hour || '12');
+      await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
+      const t0 = Date.now();
+      for (let i = 1; i <= seconds; i++) {
+        await page.waitForTimeout(Math.max(0, i * 1000 - (Date.now() - t0)));
+        data.samples.push({ s: i, ...(await page.evaluate(GOV_STATE)) });
+      }
+      // Delivered app frames over the last 5 s (the gate's per-frame hook).
+      data.fpsLast5s = await page.evaluate(() => {
+        const now = performance.now();
+        return +(window.__gate.frames.filter((f) => f.t >= now - 5000).length / 5).toFixed(1);
+      });
+    } finally {
+      const load = await meter.stop();
+      data.otherBusyPct = load.otherBusyPct;
+      await s.close({ waitSignUpMs: 20000 });
+      if (s.net.leaks.length) data.leaks.push(...s.net.leaks);
+      if (!s.net.signUpSeen && !s.net.bootProofSeen) data.signUpMissing++;
+    }
+  } finally {
+    await browser.close().catch(() => {});
+    await server.stop();
+  }
+  const last = data.samples[data.samples.length - 1] || {};
+  const check = (name, pass, value, expect) => data.checks.push({ name, pass, value, expect });
+  if (desk) {
+    // Report rows plus one judged: the first rung (bloom) never comes before
+    // the scale has moved, unless the logic reads CPU-bound.
+    const firstRung = data.samples.find((x) => x.qualityRung >= 1);
+    const firstShed = data.samples.find((x) => x.renderScale < 1);
+    data.desktop = { firstRungAtS: firstRung ? firstRung.s : null, firstShedAtS: firstShed ? firstShed.s : null, cpuBoundSamples: data.samples.filter((x) => x.cpuBound).length, last };
+    const cpuB = firstRung ? data.samples.filter((x) => x.s <= firstRung.s).some((x) => x.cpuBound) : false;
+    check(`desktop at ${args.hour || '12'} h: the scale sheds before rung 1 (bloom), unless CPU-bound`, !firstRung || cpuB || (!!firstShed && firstShed.s < firstRung.s), { firstShedAtS: data.desktop.firstShedAtS, firstRungAtS: data.desktop.firstRungAtS, cpuBoundBeforeRung: cpuB }, 'scale first');
+    check(`desktop: cpuBound samples (report-only)`, null, data.desktop.cpuBoundSamples, `of ${data.samples.length}`);
+  } else if (heavy) {
+    const first = data.samples.find((x) => x.renderScale < GOVERNOR_BARS.scaleAt30s);
+    check(`lowtier ?gpuheavy=1: renderScale under ${GOVERNOR_BARS.scaleAt30s} within ${GOVERNOR_BARS.gpuHeavyShedS} s`, !!first && first.s <= GOVERNOR_BARS.gpuHeavyShedS, first ? `${first.renderScale} at ${first.s} s` : `never (last ${last.renderScale})`, `<= ${GOVERNOR_BARS.gpuHeavyShedS} s`);
+  } else {
+    check(`lowtier4x: renderScale after ${seconds} s`, last.renderScale >= GOVERNOR_BARS.scaleAt30s, last.renderScale, `>= ${GOVERNOR_BARS.scaleAt30s} (wave-2 main: 0.48)`);
+    check(`lowtier4x: fps after ${seconds} s`, data.fpsLast5s >= GOVERNOR_BARS.fpsAt30s, data.fpsLast5s, `>= ${GOVERNOR_BARS.fpsAt30s}`);
+  }
+  data.verdict = data.leaks.length ? 'fail-closed' : data.signUpMissing ? 'inconclusive' : data.checks.every((c) => c.pass !== false) ? 'pass' : 'fail';
   return data;
 }
 
@@ -1978,9 +2299,11 @@ async function modeReport(args) {
   if (bundle) {
     const m = BUNDLE.main;
     const c = BUNDLE.lazyCandidate;
-    check(`bundle: main chunk gzip kB against main (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB }, `<= main ${m.gzipKB} + ${BUNDLE.gzipBudgetKB} (${m.at})`);
-    check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
-    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `best lazy-load candidate: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners})`, true);
+    const n = BUNDLE.nextCandidate;
+    const b = BUNDLE.budgetBase;
+    check(`bundle: main chunk gzip kB inside the budget (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB, budgetUsed: bundle.budgetUsedKB }, `<= ${b.gzipKB} + ${BUNDLE.gzipBudgetKB} (${b.at}); delta against ${m.at} ${m.gzipKB}`);
+    check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB} (${m.at}); wave 1 ${BUNDLE.wave1.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
+    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `lazy-load candidate this wave: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners}); next for wave 4: ${n.module}, ${n.minKB} kB, ${n.gzipKB} kB gzip`, true);
   } else check('bundle: main chunk size (report-only)', null, 'no dist on disk (a --base run)', 'reported with --dist', true);
   const gating = data.checks.filter((c) => !c.reportOnly);
   data.verdict = data.leaks.length ? 'fail-closed' : gating.some((c) => c.pass === false) ? 'fail' : data.signUpMissing ? 'inconclusive' : 'pass';
@@ -2045,7 +2368,7 @@ function printSummary(data) {
     const b = data.bundle.B;
     lines.push(`  bundle: main chunk B ${b.rawKB} kB raw, ${b.gzipKB} kB gzip; against A ${b.deltaRawKB >= 0 ? '+' : ''}${b.deltaRawKB} raw, ${b.deltaGzipKB >= 0 ? '+' : ''}${b.deltaGzipKB} gzip${b.overWarning ? `; over Vite's ${BUNDLE.warnKB} kB warning by ${b.overWarningKB}` : ''} (report-only here; --report gates gzip)`);
   }
-  if (data.mode === 'report') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
+  if (data.mode === 'report' || data.mode === 'governor' || data.scenario === 'modal') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
@@ -2089,9 +2412,9 @@ function printSummary(data) {
 }
 
 async function main() {
-  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor', 'dusk'] });
+  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor', 'dusk', 'governor', 'gpuheavy', 'noTaps', 'pairs'] });
   if (args.help) {
-    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 43).join('\n') + '\n');
+    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 46).join('\n') + '\n');
     return 0;
   }
   const out = lib.outDir(args, 'perf-gate');
@@ -2102,9 +2425,10 @@ async function main() {
     else if (args.ab) data = await modeAB(args);
     else if (args.fx) data = await modeFx(args);
     else if (args.dusk) data = await modeDusk(args);
+    else if (args.governor || args.gpuheavy) data = await modeGovernor(args);
     else data = await modeReport(args);
   } catch (e) {
-    data = { mode: args.rejudge ? 'rejudge' : args.ab ? 'ab' : args.fx ? 'fx' : args.dusk ? 'dusk' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
+    data = { mode: args.rejudge ? 'rejudge' : args.ab ? 'ab' : args.fx ? 'fx' : args.dusk ? 'dusk' : args.governor || args.gpuheavy ? 'governor' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
   }
   data.startedAt = startedAt;
   data.finishedAt = new Date().toISOString();

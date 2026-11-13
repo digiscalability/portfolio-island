@@ -8,7 +8,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
-import { dayContext } from '../functions/src/personas';
+import {
+  ABOUT_ABBAS,
+  buildPersonas,
+  dayContext,
+  ISLAND_LOCATIONS,
+  NPC_ROLES,
+} from '../functions/src/personas';
 import { parsePlanReply, PLANNER_SYSTEM, plannerUserTurn } from '../functions/src/plannerPrompt';
 
 const ROOT = process.cwd();
@@ -165,4 +171,25 @@ describe('planner reply validator (parsePlanReply)', () => {
       expect(inPools(plan!)).toBe(true);
     }
   });
+});
+
+// P2-E6: the persona prompts know where things are, and the Mayor, who greets
+// visitors at the end of the arrival trail, carries the fact sheet.
+describe('persona prompts (personas.ts buildPersonas)', () => {
+  for (const audioTags of [false, true]) {
+    const cast = buildPersonas(audioTags);
+    test(`the Mayor's prompt carries the fact sheet and the location sentence (audio tags ${audioTags})`, () => {
+      const mayor = cast.get('mayor');
+      expect(mayor?.system).toContain(ABOUT_ABBAS);
+      expect(mayor?.system).toContain(ISLAND_LOCATIONS.trim());
+    });
+
+    test(`every persona says where things are, and stays under the evals' 8,000 characters (audio tags ${audioTags})`, () => {
+      expect([...cast.keys()]).toEqual(NPC_ROLES.map((r) => r.id));
+      for (const [id, p] of cast) {
+        expect(p.system, id).toContain(ISLAND_LOCATIONS.trim());
+        expect(p.system.length, id).toBeLessThan(8000);
+      }
+    });
+  }
 });

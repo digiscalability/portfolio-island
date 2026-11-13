@@ -89,7 +89,7 @@ describe('the fourth stamp inside a hall', () => {
     ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'proximity' });
     await Promise.resolve();
     [...crown()!.querySelectorAll('button')]
-      .find((b) => (b.textContent ?? '').includes('Wear it with pride'))!
+      .find((b) => (b.textContent ?? '').includes('Keep exploring'))!
       .click();
     expect(stack(ui)).toEqual(['zone']);
     expect(document.activeElement).toBe(internals(ui).zonePanelDiv!.querySelector('h2'));
@@ -156,5 +156,109 @@ describe('the fourth stamp inside a hall', () => {
     } finally {
       Object.defineProperty(window, 'history', real);
     }
+  });
+});
+
+// P2-D10: the crown leads somewhere, and the visit gets a summary. main-simple
+// publishes 'ds:goals' in the same task as it opens the card.
+describe("the crown's next step and the visit summary", () => {
+  const goals = (next: { id: string; label: string; guideKey: string } | null) => ({
+    done: 5,
+    total: 14,
+    next,
+    goals: [
+      {
+        id: 'stamp:projects',
+        rung: 1,
+        label: 'Projects',
+        guideKey: 'district:projects',
+        done: true,
+      },
+      { id: 'hire', rung: 1, label: 'The hire card', guideKey: 'panel:hire', done: true },
+      {
+        id: 'talk',
+        rung: 2,
+        label: 'Talk to a villager',
+        guideKey: 'villager:ai-nearest',
+        done: false,
+      },
+      { id: 'catch', rung: 2, label: 'Catch a fish', guideKey: 'shore', done: false },
+    ],
+    visit: { stamps: 4, villagers: 2, coins: 37, secrets: 1, minutes: 9 },
+  });
+  const publish = (d: unknown): void => {
+    window.dispatchEvent(new CustomEvent('ds:goals', { detail: d }));
+  };
+
+  test("'Next:' names the ladder's goal, and its click closes the crown and guides there", async () => {
+    ui = boot();
+    const sent: unknown[] = [];
+    const on = (e: Event): void => {
+      sent.push((e as CustomEvent).detail);
+    };
+    window.addEventListener('ds:guide-to', on);
+    publish(goals({ id: 'talk', label: 'Talk to a villager', guideKey: 'villager:ai-nearest' }));
+    ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'proximity' });
+    await Promise.resolve();
+    const card = crown()!;
+    const cta = card.querySelector<HTMLButtonElement>('button[data-crown-next]')!;
+    expect(cta.textContent).toBe('Next: Talk to a villager →');
+    const stats = Object.fromEntries(
+      [...card.querySelectorAll<HTMLElement>('[data-visit-stat]')].map((c) => [
+        c.dataset.visitStat,
+        c.querySelector('dd')!.textContent,
+      ]),
+    );
+    expect(stats).toEqual({ stamps: '4', villagers: '2', coins: '37', secrets: '1', minutes: '9' });
+    // The share button stays.
+    expect(card.textContent).toContain('Share the island');
+    cta.click();
+    window.removeEventListener('ds:guide-to', on);
+    expect(stack(ui)).toEqual(['zone']);
+    expect(sent).toEqual([{ key: 'villager:ai-nearest', source: 'crown' }]);
+  });
+
+  test("with no 'ds:goals', 'Keep exploring' and no summary block", async () => {
+    ui = boot();
+    ui.showZonePanel({ id: 'contact', name: 'contact' }, { source: 'proximity' });
+    await Promise.resolve();
+    const card = crown()!;
+    expect(card.querySelector('button[data-crown-next]')!.textContent).toBe('Keep exploring →');
+    expect(card.querySelector('[data-visit]')).toBeNull();
+  });
+
+  test("the Portfolio menu's Island group lists 'Your visit', and it opens the summary", () => {
+    ui = boot();
+    publish(goals(null));
+    (ui as unknown as { togglePortfolioMenu(): void }).togglePortfolioMenu();
+    const group = document.getElementById('ds-menu-group-island')!.parentElement!;
+    const row = group.querySelector<HTMLButtonElement>('button[data-visit]')!;
+    expect(row.textContent).toContain('Your visit');
+    row.click();
+    expect(ui.panels.current()).toBe('visit');
+    const stat = document.querySelector<HTMLElement>('[data-visit-stat="coins"] dd')!;
+    expect(stat.textContent).toBe('37');
+  });
+
+  test("Things to do renders the ladder's rows once 'ds:goals' has fired", () => {
+    ui = boot();
+    ui.showControls('menu', 'todo');
+    const before = document.querySelectorAll('.ds-controls-todo li').length;
+    expect(before).toBeGreaterThanOrEqual(8); // the static rows, the fallback
+    ui.panels.closeAll();
+    publish(goals({ id: 'talk', label: 'Talk to a villager', guideKey: 'villager:ai-nearest' }));
+    ui.showControls('menu', 'todo');
+    const rows = [...document.querySelectorAll<HTMLElement>('.ds-controls-todo li')];
+    expect(rows.map((r) => r.querySelector('strong')!.textContent)).toEqual([
+      '🚀 Projects',
+      expect.stringContaining('The hire card'),
+      expect.stringContaining('Talk to a villager'),
+      '🎣 Catch a fish',
+    ]);
+    expect(rows[0].dataset.done).toBe('1');
+    expect(rows[0].querySelector('button')).toBeNull();
+    expect(rows[3].querySelector<HTMLElement>('button[data-show-me]')!.dataset.showMe).toBe(
+      'shore',
+    );
   });
 });

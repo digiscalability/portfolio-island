@@ -1122,6 +1122,7 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
   type Check = Size & {
     deltaRawKB: number;
     deltaGzipKB: number;
+    budgetUsedKB: number;
     overWarning: boolean;
     overWarningKB: number;
     pass: boolean;
@@ -1131,8 +1132,11 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
       warnKB: number;
       gzipBudgetKB: number;
       main: { rawKB: number; gzipKB: number };
+      wave1: { rawKB: number; gzipKB: number };
       beforeWave1: { rawKB: number; gzipKB: number };
+      budgetBase: { rawKB: number; gzipKB: number };
       lazyCandidate: { module: string; minKB: number; gzipKB: number };
+      nextCandidate: { module: string; minKB: number; gzipKB: number };
     };
     bundleSize: (dist: string) => Size | null;
     bundleCheck: (size: Size | null, base?: { rawKB: number; gzipKB: number }) => Check | null;
@@ -1143,10 +1147,18 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
   const path = nodeRequire('node:path') as typeof import('node:path');
   const zlib = nodeRequire('node:zlib') as typeof import('node:zlib');
 
-  test('the baseline is the merged wave-1 main, and the warning limit is not raised', () => {
+  // Wave-3 amendments (bundle): main is rebased to wave-2 main f79c38c, as
+  // measured at integration; the +50 kB budget stays anchored at wave-1 main.
+  test('the baseline is wave-2 main, the budget stays at wave 1, and the warning limit is not raised', () => {
     expect(gate.BUNDLE.warnKB).toBe(1000);
-    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1004.45, gzipKB: 311.85 });
+    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1073.23, gzipKB: 333.82 });
+    expect(gate.BUNDLE.wave1).toMatchObject({ rawKB: 1004.45, gzipKB: 311.85 });
+    expect(gate.BUNDLE.budgetBase).toEqual(gate.BUNDLE.wave1);
     expect(gate.BUNDLE.beforeWave1).toMatchObject({ rawKB: 930.89, gzipKB: 288.04 });
+    // Wave 2 used +21.97 kB of the budget.
+    const w2 = gate.bundleCheck({ file: 'main-w2.js', rawKB: 1073.23, gzipKB: 333.82 }) as Check;
+    expect(w2).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, budgetUsedKB: 21.97, pass: true });
+    expect(w2.overWarningKB).toBe(73.23);
     const cfg = fs.readFileSync(path.resolve(__dirname, '../vite.config.ts'), 'utf8');
     expect(cfg).toMatch(/chunkSizeWarningLimit:\s*1000\b/);
   });
@@ -1174,18 +1186,24 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     }
   });
 
-  test('gzip gates at main + 50 kB; being over the warning is reported, not a fail', () => {
+  test('gzip gates at wave-1 main + 50 kB; being over the warning is reported, not a fail', () => {
     const at = (rawKB: number, gzipKB: number) =>
       gate.bundleCheck({ file: 'main-x.js', rawKB, gzipKB }) as Check;
-    const same = at(1004.45, 311.85);
-    expect(same).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, overWarning: true, pass: true });
-    expect(same.overWarningKB).toBe(4.45);
+    const w1 = at(1004.45, 311.85);
+    expect(w1).toMatchObject({
+      deltaRawKB: -68.78,
+      deltaGzipKB: -21.97,
+      budgetUsedKB: 0,
+      overWarning: true,
+      pass: true,
+    });
+    expect(w1.overWarningKB).toBe(4.45);
     expect(at(1100, 361.85).pass).toBe(true);
     expect(at(1100, 361.86).pass).toBe(false);
-    // Under the warning again once the candidate moves out.
-    const moved = at(991.5, 307);
-    expect(moved).toMatchObject({ overWarning: false, pass: true });
-    expect(moved.deltaRawKB).toBe(-12.95);
+    // A's Multiplayer move: about 1,059 kB raw, still over the warning.
+    const moved = at(1059.16, 328.65);
+    expect(moved).toMatchObject({ overWarning: true, pass: true });
+    expect(moved.deltaRawKB).toBe(-14.07);
     // Side A of an A/B is the baseline there.
     const ab = gate.bundleCheck(
       { file: 'main-b.js', rawKB: 1005.55, gzipKB: 312.11 },
@@ -1197,9 +1215,13 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
   test('the report names a lazy-load candidate with its measured size', () => {
     const c = gate.BUNDLE.lazyCandidate;
     expect(c.module).toBe('Multiplayer.ts');
-    expect(c.minKB).toBeGreaterThan(gate.BUNDLE.main.rawKB - gate.BUNDLE.warnKB);
+    expect(c.minKB).toBeGreaterThan(gate.BUNDLE.wave1.rawKB - gate.BUNDLE.warnKB);
     expect(c.gzipKB).toBeGreaterThan(0);
     expect(fs.existsSync(path.resolve(__dirname, '..', c.module))).toBe(true);
+    const n = gate.BUNDLE.nextCandidate;
+    expect(n.module).toBe('Chat.ts');
+    expect(n.gzipKB).toBeGreaterThan(0);
+    expect(fs.existsSync(path.resolve(__dirname, '..', n.module))).toBe(true);
   });
 });
 

@@ -20,6 +20,7 @@
 import * as THREE from 'three';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 
+import { a11y } from '../Accessibility';
 import { GameScene } from '../GameScene';
 import { installHeadlessCanvas } from './helpers/headlessDom';
 
@@ -598,22 +599,219 @@ describe('rooms wear the island’s cel look (P2-B10)', () => {
 });
 
 describe('a wall behind the camera fades the avatar (B11)', () => {
-  // The room camera trails 2.4 u behind the avatar and is clamped inside the
+  // The room camera trails 3.0 u behind the avatar and is clamped inside the
   // walls, so a visitor with their back to a wall has it at their shoulder.
   test('measured from the room-space avatar: far at the spawn, near against the door wall', () => {
     enter('hall');
     scene.updateInteriorMode(1 / 60);
     // SimplePlayer fades in under 1.1 u and back out over 1.3 u.
     expect(fadeDistance).toBeGreaterThan(1.3);
-    // Back against the front wall, still facing into the room.
+    // Back against the front wall, still facing into the room, once the
+    // entry shot (P2-B11) has eased into the follow.
     const o = statics.INTERIOR_ORIGIN;
     const p = (scene.player as { position: THREE.Vector3 }).position;
     p.set(o.x - 0.5, p.y, o.z + 3.3);
-    for (let i = 0; i < 90; i++) scene.updateInteriorMode(1 / 60);
-    expect(fadeDistance).toBeLessThan(1.1);
+    for (let i = 0; i < 300; i++) scene.updateInteriorMode(1 / 60);
+    // P2-B11's camera stands 1.55 u above the floor-standing avatar, so even
+    // at the wall it is 1.2 u over the torso: the clamped camera 0.3 u behind
+    // it is 1.24 u away, inside SimplePlayer's 1.1-1.3 u hysteresis.
     // The stand-in's getWorldPosition() is the doorstep, 376 u away: the
     // distance came from player.position, the group that is in the room.
-    expect(fadeDistance).toBeGreaterThan(0.5);
+    expect(fadeDistance).toBeCloseTo(Math.hypot(3.6 - 3.3, 0.8 + 1.55 - (0.8 + 0.35)), 4);
+    scene.exitInterior();
+  });
+});
+
+/** The room camera's private surface (P2-B11). */
+interface RoomCam {
+  interiorCamYaw: number;
+  interiorYaw: number;
+  interiorCamPull: number;
+  interiorCamBlockers: Record<
+    string,
+    Array<{ minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number }>
+  >;
+  setInteriorLook(dYaw: number): void;
+}
+const cam = (): RoomCam => scene as unknown as RoomCam;
+/** The camera in room space. */
+const camAt = (): THREE.Vector3 => scene.camera.position.clone().sub(statics.INTERIOR_ORIGIN);
+/** Stand the avatar at (x, z) facing yaw, the camera already behind it. */
+const pose = (x: number, z: number, yaw: number): void => {
+  const o = statics.INTERIOR_ORIGIN;
+  const p = (scene.player as { position: THREE.Vector3 }).position;
+  p.set(o.x + x, p.y, o.z + z);
+  cam().interiorYaw = yaw;
+  cam().interiorCamYaw = yaw;
+};
+const frames = (n: number): void => {
+  for (let i = 0; i < n; i++) scene.updateInteriorMode(1 / 60);
+};
+
+describe('the room camera frames the room (P2-B11)', () => {
+  test('the entry shot holds in the front corner for 1.2 s, then eases into the follow', () => {
+    enter('hall');
+    frames(1);
+    expect(camAt().x).toBeCloseTo(3.3, 6);
+    expect(camAt().y).toBeCloseTo(2.9, 6);
+    expect(camAt().z).toBeCloseTo(3.3, 6);
+    // Looking at (-0.5, 1.4, -2.5) from there.
+    const look = new THREE.Vector3(-0.5, 1.4, -2.5).sub(camAt()).normalize();
+    const dir = scene.camera.getWorldDirection(new THREE.Vector3());
+    expect(dir.dot(look)).toBeGreaterThan(0.99999);
+    frames(68); // 1.15 s in: still held
+    expect(camAt().x).toBeCloseTo(3.3, 6);
+    frames(12); // 1.35 s in: on its way, not cut
+    const x = camAt().x;
+    expect(x).toBeLessThan(3.3);
+    expect(x).toBeGreaterThan(0);
+    frames(240);
+    // Settled behind the avatar at the spawn (facing into the room, so
+    // the camera stands toward the door wall, clamped at 3.6).
+    const s = statics.INTERIOR_SPAWN;
+    expect(camAt().x).toBeCloseTo(s.x, 3);
+    expect(camAt().z).toBeCloseTo(3.6, 3);
+    scene.exitInterior();
+  });
+
+  test('the first input ends the hold', () => {
+    enter('hall');
+    frames(6);
+    scene.setInteriorMove(1, 0);
+    frames(1);
+    scene.setInteriorMove(0, 0);
+    frames(5);
+    expect(camAt().x).toBeLessThan(3.29);
+    scene.exitInterior();
+  });
+
+  test('reduced motion cuts from the entry shot to the follow', () => {
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      enter('hall');
+      frames(72); // 1.2 s: the hold is over on the next frame
+      frames(1);
+      const s = statics.INTERIOR_SPAWN;
+      expect(camAt().x).toBeCloseTo(s.x, 6);
+      expect(camAt().z).toBeCloseTo(3.6, 6);
+      scene.exitInterior();
+    } finally {
+      a11y.reducedMotion = was;
+    }
+  });
+
+  test.each([
+    [1.6, 3.0, 1.55],
+    [0.46, 3.4, 1.9],
+  ])('aspect %s: %s u behind, %s u above the floor-standing avatar', (aspect, back, up) => {
+    scene.camera.aspect = aspect;
+    try {
+      enter('hall');
+      frames(300);
+      // The open middle of the hall, facing the back wall: nothing behind.
+      pose(0.8, -0.2, Math.PI);
+      frames(2);
+      const c = camAt();
+      expect(Math.hypot(c.x - 0.8, c.z + 0.2)).toBeCloseTo(back, 6);
+      expect(c.y).toBeCloseTo(0.8 + up, 6);
+      // Looking at p.y + 0.95.
+      const dir = scene.camera.getWorldDirection(new THREE.Vector3());
+      const want = new THREE.Vector3(0.8, 0.8 + 0.95, -0.2).sub(c).normalize();
+      expect(dir.dot(want)).toBeGreaterThan(0.99999);
+      scene.exitInterior();
+    } finally {
+      scene.camera.aspect = 1.6;
+    }
+  });
+
+  test('where a wall cuts the follow short the camera climbs, so the entry view keeps its distance', () => {
+    // MEASURED (wave-3 integration, desktop): at the spawn the door wall left
+    // 1.7 u of the 3.0 u back, the camera stood 2.3 u from the avatar's feet
+    // and the avatar filled 12.8% of the entry view (bar 12%).
+    for (const theme of THEMES) {
+      enter(theme);
+      frames(400); // the entry shot, its ease, the follow settled
+      const s = statics.INTERIOR_SPAWN;
+      const c = camAt();
+      expect(c.z).toBeCloseTo(3.6, 3);
+      expect(Math.hypot(c.x - s.x, c.y - 0.8, c.z - s.z)).toBeGreaterThan(2.5);
+      expect(c.y).toBeLessThanOrEqual(2.85 + 1e-9); // under the curtain rail
+      scene.exitInterior();
+    }
+    // Phones climb no higher than the same top.
+    scene.camera.aspect = 0.46;
+    try {
+      enter('hall');
+      frames(400);
+      expect(camAt().y).toBeLessThanOrEqual(2.85 + 1e-9);
+      expect(camAt().y).toBeGreaterThanOrEqual(0.8 + 1.9 - 1e-9);
+      scene.exitInterior();
+    } finally {
+      scene.camera.aspect = 1.6;
+    }
+  });
+
+  test('the blockers are the tall props of the theme set only', () => {
+    for (const theme of THEMES) {
+      enter(theme);
+      const boxes = cam().interiorCamBlockers[theme];
+      expect(boxes.length).toBeGreaterThan(0);
+      expect(boxes.length).toBeLessThanOrEqual(20); // at most 20 x 6 tests a frame
+      for (const b of boxes) expect(b.maxY).toBeGreaterThan(1.4);
+      scene.exitInterior();
+    }
+  });
+
+  test('a wardrobe behind the avatar pulls the camera in, never inside it', () => {
+    enter('home');
+    frames(300);
+    // Facing +x with the wardrobe (x -3.88..-3.36, z -2.71..-1.29, 2.6 u
+    // tall) straight behind: the wanted point at the wall clamp is inside it.
+    pose(-1.6, -2.0, Math.PI / 2);
+    const wardrobe = cam().interiorCamBlockers.home.find(
+      (b) => b.minX < -3.3 && b.maxY > 2.5 && b.minZ < -2 && b.maxZ > -1.5,
+    )!;
+    expect(wardrobe).toBeDefined();
+    let inside = 0;
+    for (let i = 0; i < 120; i++) {
+      frames(1);
+      const c = camAt();
+      if (
+        c.x > wardrobe.minX &&
+        c.x < wardrobe.maxX &&
+        c.y < wardrobe.maxY &&
+        c.z > wardrobe.minZ &&
+        c.z < wardrobe.maxZ
+      ) {
+        inside++;
+      }
+    }
+    expect(inside).toBe(0);
+    // Settled clear of the grown box, closer than the follow distance.
+    const c = camAt();
+    expect(c.x).toBeGreaterThan(wardrobe.maxX + 0.1);
+    expect(Math.hypot(c.x + 1.6, c.z + 2.0)).toBeLessThan(2.0);
+    expect(cam().interiorCamPull).toBeLessThan(1);
+    // Turned away again, it eases back out at 4/s rather than snapping.
+    pose(-1.6, -2.0, -Math.PI / 2);
+    frames(1);
+    expect(cam().interiorCamPull).toBeLessThan(0.9);
+    frames(180);
+    expect(cam().interiorCamPull).toBe(1);
+    scene.exitInterior();
+  });
+
+  test('setInteriorLook turns the camera up to 120 degrees, then it eases back behind', () => {
+    enter('hall');
+    frames(300);
+    pose(0.8, -0.2, Math.PI);
+    cam().setInteriorLook(3);
+    expect(cam().interiorCamYaw - Math.PI).toBeCloseTo((Math.PI * 2) / 3, 6);
+    frames(60); // held for 1.5 s
+    expect(cam().interiorCamYaw - Math.PI).toBeCloseTo((Math.PI * 2) / 3, 6);
+    frames(300);
+    expect(cam().interiorCamYaw).toBeCloseTo(Math.PI, 3);
     scene.exitInterior();
   });
 });
@@ -757,6 +955,224 @@ describe('every hotspot can be reached', () => {
   });
 });
 
+/** The exhibit surface (P2-B12). */
+interface ExhibitRoom {
+  interiorScreen: { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture } | null;
+  interiorScreenMat: THREE.MeshBasicMaterial | null;
+  interiorSets: Record<string, THREE.Group>;
+  interiorExhibits: unknown;
+  drawExhibit(i: number, part: { lines: string[] }, big: boolean): void;
+  drawScreen(theme: string, part: unknown, title: string): void;
+  enterInterior(
+    title: string,
+    wall: number,
+    left: string,
+    right: string,
+    theme: string,
+    houseId?: string,
+    exhibits?: unknown,
+  ): void;
+}
+const ex = (): ExhibitRoom => scene as unknown as ExhibitRoom;
+
+/** Every cell a visitor can stand on from the spawn (the survey's flood fill),
+ *  and the labels that are THE prompt on at least one of them. */
+const promptsShown = (): Set<string | undefined> => {
+  const step = 0.1;
+  const N = Math.round(6.8 / step) + 1;
+  const xz = (i: number, j: number): [number, number] => [-3.4 + i * step, -3.4 + j * step];
+  const wall = (i: number, j: number): boolean =>
+    i < 0 || j < 0 || i >= N || j >= N || scene.interiorWallBlocked(...xz(i, j));
+  const prop = (i: number, j: number): boolean => scene.interiorFurnitureBlocked(...xz(i, j));
+  const s = statics.INTERIOR_SPAWN;
+  const start: [number, number] = [Math.round((s.x + 3.4) / step), Math.round((s.z + 3.4) / step)];
+  const seen = new Set<number>([start[0] * 1000 + start[1]]);
+  const queue: Array<[number, number]> = [start];
+  while (queue.length) {
+    const [i, j] = queue.shift()!;
+    const escaping = prop(i, j);
+    for (const [di, dj] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const ni = i + di;
+      const nj = j + dj;
+      if (wall(ni, nj) || seen.has(ni * 1000 + nj) || (!escaping && prop(ni, nj))) continue;
+      seen.add(ni * 1000 + nj);
+      queue.push([ni, nj]);
+    }
+  }
+  (scene as unknown as { interiorDoorArmed: boolean }).interiorDoorArmed = true;
+  const nearest = (x: number, z: number): Hotspot | null =>
+    (
+      scene as unknown as { nearestInteriorHotspot(x: number, z: number): Hotspot | null }
+    ).nearestInteriorHotspot(x, z);
+  return new Set([...seen].map((k) => nearest(...xz(Math.floor(k / 1000), k % 1000))?.label));
+};
+
+describe('hall exhibits drawn in the room, with hotspots that act (P2-B12)', () => {
+  const argOf = (theme: string, re: RegExp): string | undefined =>
+    (scene.interiorHotspotsFor(theme) as Array<Hotspot & { arg?: string }>).find((h) =>
+      re.test(h.label),
+    )?.arg;
+
+  test('the new spots carry their args, and every one still opens the zone panel', () => {
+    expect(argOf('office', /browse the work/)).toBe('hire');
+    expect(argOf('post', /counter bell/)).toBe('hire');
+    expect(argOf('post', /see the email/)).toBe('copy:email');
+    expect(argOf('hall', /read the map/)).toBe('compass');
+    expect(argOf('hall', /notice board/)).toBe('times');
+    expect(argOf('workshop', /project cards/)).toBe('project');
+    for (const theme of THEMES) {
+      for (const h of scene.interiorHotspotsFor(theme) as Array<Hotspot & { arg?: string }>) {
+        if (h.arg && h.arg !== 'times') expect(h.action, h.label).toBe('panel');
+      }
+    }
+  });
+
+  test('one pegboard spot per chip with an id, each THE prompt somewhere reachable', () => {
+    const exhibits = {
+      screen: {
+        lines: ['Projects'],
+        chips: [
+          { label: 'This island', id: 'island' },
+          { label: 'RankPilot', id: 'rankpilot' },
+          { label: 'No link' },
+          { label: '<b>Cook</b>book', id: 'cookbook' },
+        ],
+      },
+    };
+    ex().enterInterior('Projects', 0xa8793e, '', '', 'workshop', undefined, exhibits);
+    const spots = (
+      scene.interiorHotspotsFor('workshop') as Array<Hotspot & { arg?: string }>
+    ).filter((h) => h.arg?.startsWith('project'));
+    expect(spots.map((h) => h.arg)).toEqual([
+      'project:island',
+      'project:rankpilot',
+      'project:cookbook',
+    ]);
+    // A label is escaped before it reaches the prompt's markup.
+    expect(spots[2].label).toContain('&lt;b&gt;Cook&lt;/b&gt;book');
+    const shown = promptsShown();
+    expect(spots.filter((h) => !shown.has(h.label)).map((h) => h.arg)).toEqual([]);
+    scene.exitInterior();
+    // Without exhibits, the one 'project' spot is back.
+    enter('workshop');
+    expect(argOf('workshop', /project cards/)).toBe('project');
+    scene.exitInterior();
+  });
+
+  test('the shared screen: one 512x320 texture without mips (0.66 MB), on three faces', () => {
+    const sc = ex().interiorScreen!;
+    expect(sc).toBeTruthy();
+    expect([sc.ctx.canvas.width, sc.ctx.canvas.height]).toEqual([512, 320]);
+    expect(sc.tex.generateMipmaps).toBe(false);
+    expect(sc.tex.minFilter).toBe(THREE.LinearFilter);
+    expect(512 * 320 * 4).toBeLessThanOrEqual(0.7 * 1024 * 1024);
+    const faces = Object.entries(ex().interiorSets)
+      .map(([name, set]) => {
+        let n = 0;
+        set.traverse((o) => {
+          if ((o as THREE.Mesh).material === ex().interiorScreenMat) n++;
+        });
+        return [name, n];
+      })
+      .filter(([, n]) => (n as number) > 0);
+    expect(Object.fromEntries(faces)).toEqual({ office: 1, workshop: 1, hall: 1 });
+    // Pictures on walls and faces on props: never colliders.
+    enter('hall');
+    const map = (() => {
+      let m: THREE.Mesh | null = null;
+      ex().interiorSets.hall.traverse((o) => {
+        if ((o as THREE.Mesh).material === ex().interiorScreenMat) m = o as THREE.Mesh;
+      });
+      return m as THREE.Mesh | null;
+    })()!;
+    expect(map.userData.noCollide).toBe(true);
+    scene.exitInterior();
+  });
+
+  test("exhibits draw on the posters and the screen; without them, today's text", () => {
+    const draw = vi.spyOn(ex(), 'drawExhibit');
+    const screen = vi.spyOn(ex(), 'drawScreen');
+    try {
+      ex().enterInterior(
+        'Welcome Hub',
+        0x5d8a58,
+        'Meet the\nvillagers',
+        'Tour the\nisland',
+        'hall',
+      );
+      expect(draw.mock.calls.map((c) => [c[0], c[1].lines, c[2]])).toEqual([
+        [0, ['Welcome Hub'], true],
+        [1, ['Meet the', 'villagers'], false],
+        [2, ['Tour the', 'island'], false],
+      ]);
+      expect(screen.mock.calls[0]).toEqual(['hall', null, 'Welcome Hub']);
+      scene.exitInterior();
+      draw.mockClear();
+      screen.mockClear();
+      const e = {
+        title: { lines: ['Hiring'] },
+        left: { lines: ['One'], chips: [{ label: 'A' }] },
+        right: { lines: ['Two'] },
+        screen: { lines: ['Three'] },
+      };
+      ex().enterInterior('Welcome Hub', 0x5d8a58, 'x', 'y', 'office', undefined, e);
+      expect(draw.mock.calls.map((c) => c[1])).toEqual([e.title, e.left, e.right]);
+      expect(screen.mock.calls[0]).toEqual(['office', e.screen, 'Welcome Hub']);
+      scene.exitInterior();
+    } finally {
+      draw.mockRestore();
+      screen.mockRestore();
+    }
+  });
+
+  test('body lines are never under 48 canvas px', () => {
+    const F = (GameScene as unknown as { EXHIBIT_FONT: { body: number; title: number } })
+      .EXHIBIT_FONT;
+    expect(F.body).toBeGreaterThanOrEqual(48);
+    expect(F.title).toBeGreaterThan(F.body);
+  });
+
+  test('a cottage with someone home at night names them on its title poster', () => {
+    const island = scene.island as { houseDoors: unknown[]; npcTargets: unknown[] };
+    const door = new THREE.Vector3(0, 76, 0);
+    const sleeper = (name: string): unknown => {
+      const meshRef = new THREE.Object3D();
+      meshRef.visible = false;
+      meshRef.userData.wander = { activity: 'sleep', target: door.clone() };
+      return { name, position: new THREE.Vector3(), dialogue: [], meshRef };
+    };
+    const was = { houseDoors: island.houseDoors, npcTargets: island.npcTargets };
+    island.houseDoors = [{ id: 'house_2', position: door.clone() }];
+    island.npcTargets = [sleeper('Village Baker'), sleeper('Night Watch')];
+    const draw = vi.spyOn(ex(), 'drawExhibit');
+    try {
+      scene.enterInterior('A cosy home', 0xe0c9a8, 'A place to\nrest', '', 'cottage', 'house_2');
+      const titles = draw.mock.calls.filter((c) => c[0] === 0).map((c) => c[1].lines);
+      expect(titles[titles.length - 1]).toEqual([
+        "The Village Baker and the Night Watch's cottage",
+      ]);
+      scene.exitInterior();
+      // Nobody home (by day): today's title.
+      island.npcTargets = [];
+      draw.mockClear();
+      scene.enterInterior('A cosy home', 0xe0c9a8, '', '', 'cottage', 'house_2');
+      expect(draw.mock.calls.filter((c) => c[0] === 0).map((c) => c[1].lines)).toEqual([
+        ['A cosy home'],
+      ]);
+      scene.exitInterior();
+    } finally {
+      draw.mockRestore();
+      island.houseDoors = was.houseDoors;
+      island.npcTargets = was.npcTargets;
+    }
+  });
+});
+
 /** The private warm surface the CO-A5 tests drive. */
 interface Warm {
   interiorGroup: THREE.Group;
@@ -781,7 +1197,7 @@ interface Warm {
   ): Promise<unknown[]>;
   warmInteriorPasses(gl: unknown, khr: boolean): Promise<void>;
   warmInteriorPosters(): void;
-  drawPoster(i: number, text: string, big: boolean): void;
+  drawExhibit(i: number, part: { lines: string[] }, big: boolean): void;
   refreshInteriorView(): void;
   add(...o: THREE.Object3D[]): void;
   remove(...o: THREE.Object3D[]): void;
@@ -909,7 +1325,7 @@ describe('the warm prepares the first door first (CO-A5)', () => {
   test('the passes draw the posters, then compile the first door, then the rest', async () => {
     const w = scene as unknown as Warm;
     const g = w.interiorGroup;
-    const posters = vi.spyOn(w, 'drawPoster');
+    const posters = vi.spyOn(w, 'drawExhibit');
     const order: THREE.Object3D[] = [];
     let postersAtFirstCompile = -1;
     const shownAtCompile = new Set<boolean>();
@@ -1079,4 +1495,70 @@ describe('the first room frame carries no window pass (CO-A5)', () => {
       scene.exitInterior();
     }
   });
+});
+
+describe('the low tier draws the office desk once (wave-3 perf gate)', () => {
+  // MEASURED (wave-3 integration, low tier, the Professional room's steady
+  // view): 77 draws against main's 74, the bar being no more than main. The
+  // desk's top and four legs share a material and never move.
+  const deskColour = 0x5c4127;
+  const deskMeshes = (s: Room): THREE.Mesh[] => {
+    const out: THREE.Mesh[] = [];
+    (s as unknown as { interiorSets: Record<string, THREE.Group> }).interiorSets.office.traverse(
+      (n) => {
+        const m = n as THREE.Mesh;
+        if (!m.isMesh || m.userData.isCelHull || Array.isArray(m.material)) return;
+        const c = (m.material as THREE.MeshToonMaterial).color;
+        if (c && c.getHex() === deskColour) out.push(m);
+      },
+    );
+    return out;
+  };
+  const officeBoxes = (s: Room): unknown => {
+    s.enterInterior('Work', 0x7fa8c9, '', '', 'office');
+    const boxes = s.interiorColliders.office;
+    s.exitInterior();
+    return boxes;
+  };
+
+  test('one mesh on the low tier, five on desktop, and the same colliders', () => {
+    const low = vi
+      .spyOn(GameScene as unknown as { roomLowTier: () => boolean }, 'roomLowTier')
+      .mockReturnValue(true);
+    const init = vi
+      .spyOn(GameScene.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+      .mockResolvedValue(undefined);
+    let lowScene: Room;
+    try {
+      lowScene = new GameScene() as unknown as Room;
+      lowScene.player = scene.player;
+      lowScene.camera = new THREE.PerspectiveCamera(50, 1.6, 0.1, 2000);
+      lowScene.island = { houseDoors: [], npcTargets: [] };
+      (lowScene as unknown as { buildInterior(): void }).buildInterior();
+    } finally {
+      init.mockRestore();
+      low.mockRestore();
+    }
+    expect(deskMeshes(scene).length).toBe(5);
+    expect(deskMeshes(lowScene).length).toBe(1);
+    const boxes = officeBoxes(lowScene) as Array<Record<string, number>>;
+    const want = officeBoxes(scene) as Array<Record<string, number>>;
+    expect(boxes.length).toBe(want.length - 4);
+    // The legs' boxes sit inside the top's: what the desk blocks is unchanged.
+    const top = boxes.find(
+      (b) => b.minX < -1.15 && b.maxX > 1.15 && b.minZ < -3.05 && b.maxZ > -2.15,
+    )!;
+    expect(top).toBeDefined();
+    expect(top.maxY).toBeLessThan(0.85); // the desk, not a taller piece
+    let legs = 0;
+    for (const b of want)
+      if (b.maxX - b.minX < 0.2 && b.maxY < 0.75 && b.maxZ < -2.0) {
+        legs++;
+        expect(b.minX).toBeGreaterThanOrEqual(top.minX - 1e-6);
+        expect(b.maxX).toBeLessThanOrEqual(top.maxX + 1e-6);
+        expect(b.minZ).toBeGreaterThanOrEqual(top.minZ - 1e-6);
+        expect(b.maxZ).toBeLessThanOrEqual(top.maxZ + 1e-6);
+      }
+    expect(legs).toBe(4);
+  }, 60000);
 });

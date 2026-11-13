@@ -88,6 +88,37 @@ interface InteriorHotspot {
   label: string;
   action: string;
   text?: string;
+  /** What the action acts on (P2-B12): 'hire', 'copy:email', 'compass',
+   *  'project' or 'project:<id>', 'times'. Read by main-simple from wave 4. */
+  arg?: string;
+}
+
+/** One exhibit surface (P2-B12): body lines, then chips. A chip with an id
+ *  on a workshop exhibit becomes a pegboard hotspot ('project:<id>'). */
+export interface ExhibitPart {
+  lines: string[];
+  chips?: Array<{ label: string; id?: string }>;
+}
+
+/** What a hall shows (P2-B12): the title poster, the two side posters and
+ *  the shared screen (the office monitor, the workshop blueprint, the hall's
+ *  wall map). main-simple passes it from wave 4 (P2-A11); without it the
+ *  room shows today's posters. */
+export interface Exhibits {
+  title?: ExhibitPart;
+  left?: ExhibitPart;
+  right?: ExhibitPart;
+  screen?: ExhibitPart;
+}
+
+/** A room-local axis-aligned box: a prop's collider or camera blocker. */
+interface RoomBox {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
 }
 
 /** The slice of three's WebGLProgram the interior warm drives. */
@@ -144,6 +175,14 @@ fx.register('lightRig', { desktop: true, low: true });
 // The avatar fades when the camera comes close (B11; the fade itself is
 // SimplePlayer.updateCloseFade).
 fx.register('avatarFade', { desktop: true, low: true });
+
+// Villagers gesture as they talk (B8): the beats, the nod and sway while they
+// speak, the lean while the visitor types. Off, today's slow talk sway.
+fx.register('npcTalk', { desktop: true, low: true });
+
+// The room camera's pull-in and guest rise (P2-B11). Off, the camera follows
+// at the full distance and only the wall clamp bounds it.
+fx.register('interiorCam', { desktop: true, low: true });
 
 /** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
  *  (geometry and material are shared). */
@@ -3242,6 +3281,11 @@ export class GameScene extends THREE.Scene {
     return GameScene.birdVertexMatCache;
   }
 
+  /** The device tier, as the room build reads it (a seam for its tests). */
+  private static roomLowTier(): boolean {
+    return SimpleRenderer.isLowTierDevice();
+  }
+
   /** Bake a material's colour into `geo` as a vertex-colour attribute. Mutates
    *  and returns the geometry it is handed (callers pass freshly-built ones). */
   /**
@@ -3935,11 +3979,22 @@ export class GameScene extends THREE.Scene {
    * caller can keep the player's charge.
    */
   public throwBirdFeed(): boolean {
-    if (!this.island || !this.player) return false;
+    return this.throwBirdFeedReason() === 'ok';
+  }
+
+  /**
+   * throwBirdFeed with the reason it did not throw (P2-B7), so the caller
+   * can say why: 'night' (the birds are roosting), 'sea' (the spot ahead is
+   * water), 'none' (nowhere to throw: no island, player or direction yet).
+   * main-simple switches to it in wave 4 (P2-A10) through
+   * `scene.throwBirdFeedReason?.()`.
+   */
+  public throwBirdFeedReason(): 'ok' | 'night' | 'sea' | 'none' {
+    if (!this.island || !this.player) return 'none';
     // Not at night: the ground birds are roosted (scaled to nothing and
     // hidden), so they would pop in at full size, fly over and dissolve on
-    // landing. Returning false keeps the player's charge.
-    if (this.envCycle && this.envCycle.getDayFactor() < 0.3) return false;
+    // landing. Not throwing keeps the player's charge.
+    if (this.envCycle && this.envCycle.getDayFactor() < 0.3) return 'night';
     const origin = this.player.getWorldPosition();
     const up = this._feedUp.copy(origin).normalize();
     // Aim along the camera's tangent forward so the feed lands where you look.
@@ -3949,7 +4004,7 @@ export class GameScene extends THREE.Scene {
       this._feedFwd.copy(this.player.getForwardDirection());
       this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
     }
-    if (this._feedFwd.lengthSq() < 1e-4) return false;
+    if (this._feedFwd.lengthSq() < 1e-4) return 'none';
     this._feedFwd.normalize();
     const ang = GameScene.FEED_THROW_DIST / Math.max(1, origin.length());
     this._feedDir
@@ -3961,15 +4016,15 @@ export class GameScene extends THREE.Scene {
     try {
       surf = this.island.sampleSurfaceByDirection(this._feedDir, 0);
     } catch {
-      return false;
+      return 'none';
     }
-    if (surf.position.length() < this.island.seaLevel() + 0.15) return false; // in the sea
+    if (surf.position.length() < this.island.seaLevel() + 0.15) return 'sea'; // in the sea
 
     const time = performance.now() / 1000;
     const pos = this.spawnFeedPile(origin, up, surf.position, surf.normal, 0xd9bd7a, 'bird_feed');
     this.callBirdsToFeed(pos, time);
     this.feedThrowCeremony(pos, time);
-    return true;
+    return 'ok';
   }
 
   /**
@@ -6093,6 +6148,10 @@ export class GameScene extends THREE.Scene {
       const l = limbs[n];
       if (moving) {
         l.ang = swing * GameScene.NPC_LIMB_MIX[n];
+      } else if (talkTime >= 0 && n >= 2 && fx.on('npcTalk')) {
+        // Talk beats (B8): the pose updateNpcTalk wrote for bones 2-3
+        // (armL/armR per NPC_LIMB_BONES), composed onto the rest below.
+        l.ang = this.talkArm[n - 2];
       } else if (talkTime >= 0 && n >= 2) {
         // Dialogue-hold gesticulation: a slow asymmetric arm sway (bones
         // 2-3 are armL/armR per NPC_LIMB_BONES). Legs stay at rest; the
@@ -6472,6 +6531,10 @@ export class GameScene extends THREE.Scene {
       4,
     );
     sfx.toss();
+    // The camera's side bias starts with the cast, so it has turned by the
+    // time the float lands; a look input ends it (updateFishingBias).
+    this.fishBiasYaw0 = this.orbitCamera?.getYawTarget() ?? 0;
+    this.fishBiasReleased = false;
     return true;
   }
 
@@ -6509,6 +6572,8 @@ export class GameScene extends THREE.Scene {
     }
     F.phase = 'idle';
     if (F.bobber) F.bobber.visible = false;
+    if (this.biteMark) this.biteMark.visible = false;
+    this.releaseFishingBias();
     this.player.setRodHold(false);
     // The rod lingers half a second through the yank, then stows.
     if (this.playerRod) {
@@ -7823,9 +7888,15 @@ export class GameScene extends THREE.Scene {
         F.catchFish.rotation.z += 0.17;
       }
     }
-    if (F.phase === 'idle' || !F.bobber) return;
+    // The bite's '!' shows only while the fish is on (P2-B7).
+    if (this.biteMark && F.phase !== 'bite') this.biteMark.visible = false;
+    if (F.phase === 'idle' || !F.bobber) {
+      this.releaseFishingBias();
+      return;
+    }
     // Walking off cancels the cast (no free idle-fishing from across the map).
     if (this.player.getWorldPosition().distanceTo(F.castFrom) > 5) {
+      this.releaseFishingBias();
       F.phase = 'idle';
       F.bobber.visible = false;
       if (this.playerRod) this.playerRod.visible = false;
@@ -7859,6 +7930,7 @@ export class GameScene extends THREE.Scene {
         this.spawnSpray(F.bobber.position.clone(), F.dir.clone(), 5, 3);
         sfx.splash();
       }
+      this.updateFishingBias();
       return;
     }
     // Ride the real waves, exactly like the fisherman's bobber.
@@ -7868,9 +7940,13 @@ export class GameScene extends THREE.Scene {
       F.biteUntil = time + 1.6;
       // The bite announces itself: a ring on the water and the camera's soft
       // interest glances at the dipping float.
+      // (P2-B7) A '!' over the float says which press catches it. The cue
+      // stays the blip and the dip: the landing already splashed, and a
+      // second splash here would blur the two.
       this.spawnRipple(F.bobber.position.clone(), 0.8, 0.7);
       this.setInteractionFocus(F.bobber.position, 2.2);
       sfx.blip();
+      this.ensureBiteMark().visible = true;
     } else if (F.phase === 'wait' && time - F.lastRippleAt > 2.4) {
       // Idle rings keep the water alive while you wait.
       F.lastRippleAt = time;
@@ -7883,6 +7959,120 @@ export class GameScene extends THREE.Scene {
         F.biteAt = time + 3 + Math.random() * 5;
       }
     }
+    if (this.biteMark?.visible) {
+      // Above the float's resting height, not riding the dip.
+      this.biteMark.position.copy(F.dir).multiplyScalar(wave + 0.75);
+    }
+    this.updateFishingBias();
+  }
+
+  // ── The fishing bite you can see (P2-B7) ──
+  /** One pooled '!' sprite over the float, built on the first bite (long
+   *  after the seeded window): +1 draw while a fish is on. */
+  private biteMark: THREE.Sprite | null = null;
+  /** The camera's yaw target when the float landed: a look input that
+   *  moves it releases the wait's bias for the rest of the cast. */
+  private fishBiasYaw0 = 0;
+  private fishBiasReleased = true;
+  private fishBiasYawSet = false;
+  private readonly _fishBiasSide = new THREE.Vector3();
+  private readonly _fishBiasAt = new THREE.Vector3();
+  /** About 30 degrees toward the cast side (A's setInterestYaw, when present). */
+  private static readonly FISH_BIAS_YAW = Math.PI / 6;
+
+  private ensureBiteMark(): THREE.Sprite {
+    if (this.biteMark) return this.biteMark;
+    const cv = document.createElement('canvas');
+    cv.width = 64;
+    cv.height = 64;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#ffd34a';
+      ctx.strokeStyle = '#1f1a14';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(32, 32, 27, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#1f1a14';
+      ctx.font = 'bold 44px system-ui, "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('!', 32, 34);
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mark = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
+    );
+    mark.scale.setScalar(0.5);
+    mark.visible = false;
+    mark.renderOrder = 3;
+    this.biteMark = mark;
+    this.add(mark);
+    return mark;
+  }
+
+  /**
+   * From the cast's flick, through the flight, the wait and the bite, while
+   * the visitor stays within the 5 u tether, keep the camera's soft interest
+   * square to the cast's right, so the float sits beside the avatar rather
+   * than behind it; and hand A's orbit camera a 30 degree interest yaw when
+   * it takes one. Starting at the flick (not the landing) gives both eases
+   * the 0.55 s flight to turn. A look input releases both for the cast;
+   * reduced motion has none.
+   */
+  private updateFishingBias(): void {
+    const F = this.playerFishing;
+    if (
+      !F.bobber ||
+      (F.phase !== 'fly' && F.phase !== 'wait' && F.phase !== 'bite') ||
+      a11y.reducedMotion
+    ) {
+      this.releaseFishingBias();
+      return;
+    }
+    if (this.fishBiasReleased) return;
+    const oc = this.orbitCamera;
+    if (!oc) return;
+    if (Math.abs(oc.getYawTarget() - this.fishBiasYaw0) > 0.02) {
+      this.releaseFishingBias(); // the visitor looked: their camera now
+      return;
+    }
+    const up = F.dir;
+    // The cast's right on the water: (player to where the float lands) x up.
+    // The landing point, not the float, so the side is steady in flight.
+    const p = this.player.getWorldPosition();
+    this._fishBiasAt
+      .copy(up)
+      .multiplyScalar(this.island?.seaLevel() ?? p.length())
+      .sub(p);
+    this._fishBiasSide.crossVectors(this._fishBiasAt, up);
+    if (this._fishBiasSide.lengthSq() < 1e-6) return;
+    this._fishBiasSide.normalize();
+    // Square to the cast, at chest height: the orbit camera clamps its
+    // interest bias to 2.4 u, so a point far out to the side spends all of
+    // it sideways. The camera slides right, the near avatar moves left on
+    // screen more than the far float does, and the float clears the avatar.
+    // (A point on the float spent half of it pulling the camera forward.)
+    this._fishBiasAt
+      .copy(p)
+      .addScaledVector(p.normalize(), 1.0)
+      .addScaledVector(this._fishBiasSide, 6);
+    this.setInteractionFocus(this._fishBiasAt, 0.3);
+    const yaw = (oc as { setInterestYaw?: (rad: number | null) => void }).setInterestYaw;
+    if (yaw) {
+      yaw.call(oc, GameScene.FISH_BIAS_YAW);
+      this.fishBiasYawSet = true;
+    }
+  }
+
+  private releaseFishingBias(): void {
+    this.fishBiasReleased = true;
+    if (!this.fishBiasYawSet) return;
+    this.fishBiasYawSet = false;
+    const oc = this.orbitCamera as { setInterestYaw?: (rad: number | null) => void } | undefined;
+    oc?.setInterestYaw?.(null);
   }
 
   private updateFisherman(time: number, dt: number): void {
@@ -9426,6 +9616,61 @@ export class GameScene extends THREE.Scene {
     return this.hasLocalCoinRecord;
   }
 
+  /** A meadow or arrival-trail coin picked up at `time` (the coin loop in
+   *  update): the ceremony starts, the count, the save, the HUD and the
+   *  meadow-coin hook (P2-B7). */
+  private collectMeadowCoin(
+    c: { mesh: THREE.Mesh; respawnAt: number; trail?: boolean },
+    time: number,
+  ): void {
+    const cu = c.mesh.userData as { homePos?: THREE.Vector3; collectT0?: number };
+    if (!cu.homePos) cu.homePos = c.mesh.position.clone();
+    cu.homePos.copy(c.mesh.position);
+    cu.collectT0 = time;
+    // 120s (was 45s): a 45s cycle made the meadow an infinite coin farm, so
+    // hat prices were a timer, not a choice. Slower respawn makes race +
+    // quest + delivery rewards the sane way to kit out. Arrival-trail
+    // coins are one-shot: respawnAt 0 means the respawn branch never fires.
+    c.respawnAt = c.trail ? 0 : time + 120;
+    if (c.trail) {
+      // The first trail coin marks the visit: a reload after it builds no
+      // trail, so its coins cannot be collected again (a free coin per
+      // reload). main-simple's markDone at the trail's end writes the
+      // same key.
+      if (!this.arrivalMarked) {
+        this.arrivalMarked = true;
+        try {
+          localStorage.setItem('ds_arrived', '1');
+        } catch {
+          /* no storage: the trail shows again next visit */
+        }
+      }
+      if (--this.trailCoinsLeft === 0) this.onArrivalTrail?.();
+    }
+    // Streak-pitched chime: quick successive pickups climb a pentatonic
+    // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
+    // reward grammar. Only THIS site pitches; shop dings stay flat.
+    this.coinStreak = time - this.lastCoinAt < 2.5 ? this.coinStreak + 1 : 0;
+    this.lastCoinAt = time;
+    sfx.coin(this.coinStreak);
+    this.coinsCollected++;
+    try {
+      localStorage.setItem('ds_coins', String(this.coinsCollected));
+    } catch {
+      /* session-only counter */
+    }
+    this.onCoinCollected?.(this.coinsCollected);
+    this.onMeadowCoin?.({ trail: c.trail === true });
+  }
+
+  /** Fires at a meadow or arrival-trail coin pickup (P2-B7), never for coins
+   *  granted by addCoins (sales, quests, races). A reads it from wave 4
+   *  (P2-A10) through `scene.setOnMeadowCoin?.(cb)`. */
+  private onMeadowCoin: ((e: { trail: boolean }) => void) | null = null;
+  public setOnMeadowCoin(cb: ((e: { trail: boolean }) => void) | null): void {
+    this.onMeadowCoin = cb;
+  }
+
   public addCoins(n: number): void {
     this.hasLocalCoinRecord = true;
     this.coinsCollected += n;
@@ -9487,7 +9732,15 @@ export class GameScene extends THREE.Scene {
   // so the pill can be redrawn when the activity changes (a few times/day).
   private nameTags: Array<{
     sprite: THREE.Sprite;
-    target: { position: THREE.Vector3; meshRef: THREE.Object3D };
+    target: { position: THREE.Vector3; meshRef: THREE.Object3D; name?: string };
+    /** The villager's head top above its feet, measured once from its
+     *  model (B8): the pin sits above it, so a taller model's status line
+     *  is never behind its own head. Undefined until measured. */
+    headTop?: number;
+    /** The clock time before which an unloaded model is not re-measured. */
+    headRetryAt?: number;
+    /** 1, or easing to 0 over 150 ms while the visitor talks to this one. */
+    talkFade?: number;
     ctx: CanvasRenderingContext2D | null;
     tex: THREE.CanvasTexture;
     emoji: string;
@@ -9552,7 +9805,9 @@ export class GameScene extends THREE.Scene {
     Cartographer: { emoji: '🗺️', role: 'Mapmaker' },
     Philosopher: { emoji: '🤔', role: 'Philosopher' },
     Courier: { emoji: '✉️', role: 'Courier' },
-    'Night Watch': { emoji: '🔦', role: 'Watch' },
+    // 'Night Watch' over 'on his round' (wave-2 play issue 7): 'Watch' over
+    // 'on watch' said one thing twice.
+    'Night Watch': { emoji: '🔦', role: 'Night Watch' },
   };
 
   /** Build a floating identity pin above every NPC (once, after placement). */
@@ -9611,11 +9866,15 @@ export class GameScene extends THREE.Scene {
    *  gold line below it — identity stays readable while the badge shows work. */
   /** Touch/phone check for HUD sprite sizing (matches SimpleUI's isTouch). */
   private static isCoarsePointer(): boolean {
+    // ?touch=1 exactly (B8; D7 reads it the same way in SimpleUI): a bare
+    // includes('touch') matched ?utm_content=get-in-touch and gave desktop
+    // visitors from that link the phone's larger pins.
     return (
       typeof window !== 'undefined' &&
       ('ontouchstart' in window ||
         (navigator.maxTouchPoints ?? 0) > 0 ||
-        (typeof location !== 'undefined' && location.search.includes('touch')))
+        (typeof location !== 'undefined' &&
+          new URLSearchParams(location.search).get('touch') === '1'))
     );
   }
 
@@ -9671,6 +9930,65 @@ export class GameScene extends THREE.Scene {
     tag.tex.needsUpdate = true;
   }
 
+  /** A point's depth along the camera's view axis: the distance a
+   *  camera-facing sprite's on-screen width divides by (the straight-line
+   *  distance overstates it off-centre, and the clamp let a bubble reach
+   *  64% of the width). Falls back to the straight line behind the camera. */
+  private viewDepth(p: THREE.Vector3): number {
+    const cam = this.camera;
+    const d = GameScene._viewRel.copy(p).sub(cam.position);
+    const z = d.dot(cam.getWorldDirection(GameScene._viewFwd));
+    return z > 1e-3 ? z : d.length();
+  }
+  private static readonly _viewRel = new THREE.Vector3();
+  private static readonly _viewFwd = new THREE.Vector3();
+
+  /** The factor that keeps a sprite `worldW` wide at `dist` from the camera
+   *  within 60% of the viewport's width (B8, UX-14); 1 when it fits. */
+  private spriteWidthClamp(worldW: number, dist: number): number {
+    const cam = this.camera;
+    if (!cam || dist <= 0) return 1;
+    const viewW = 2 * dist * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) * cam.aspect;
+    const frac = worldW / Math.max(1e-6, viewW);
+    return frac > 0.6 ? 0.6 / frac : 1;
+  }
+
+  /** A villager's head top above its feet, in world units, from its meshes'
+   *  bind-pose boxes in the villager's own frame (plumb, so its local y is
+   *  up). Undefined while the model has not loaded; 0 for a meshless one. */
+  private static measureHeadTop(ref: THREE.Object3D): number | undefined {
+    let meshes = 0;
+    let top = -Infinity;
+    ref.updateMatrixWorld(true);
+    const inv = GameScene._headInv.copy(ref.matrixWorld).invert();
+    ref.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !m.geometry) return;
+      meshes++;
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox!;
+      GameScene._headMat.multiplyMatrices(inv, m.matrixWorld);
+      for (const x of [b.min.x, b.max.x])
+        for (const y of [b.min.y, b.max.y])
+          for (const z of [b.min.z, b.max.z]) {
+            const ly = GameScene._headPt.set(x, y, z).applyMatrix4(GameScene._headMat).y;
+            if (ly > top) top = ly;
+          }
+    });
+    if (meshes === 0) return undefined;
+    return Number.isFinite(top) ? top * ref.scale.y : 0;
+  }
+  /** A name pin's scale unit at `dist` (straight line) and `depth` (view
+   *  axis): ∝dist for a constant-ish size, then clamped so the pin's real
+   *  width (base × 1.7) stays within 60% of the viewport (B8). */
+  private pinScale(dist: number, depth: number): number {
+    const base = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6);
+    return base * this.spriteWidthClamp(base * 1.7, depth);
+  }
+  private static readonly _headInv = new THREE.Matrix4();
+  private static readonly _headMat = new THREE.Matrix4();
+  private static readonly _headPt = new THREE.Vector3();
+
   // ── NPC speech bubble ──
   // ONE shared in-world bubble (only one NPC speaks at a time): shown above an
   // AI NPC when the visitor walks up, carrying the aware proximity greeting.
@@ -9683,8 +10001,65 @@ export class GameScene extends THREE.Scene {
   } | null = null;
   private npcBubbleFor = -1;
   private npcBubbleUntil = 0;
+  /** A message is up (its window has not run out). The sprite's own
+   *  visible flag also drops while the bubble is faded for a chat, so a
+   *  faded bubble neither draws nor has bounds on screen (B8). */
+  private npcBubbleLive = false;
+  /** The quest "!" top above its villager's feet: 2.7 + 0.30 + the 0.12 bob. */
+  private static readonly QUEST_MARK_TOP = 3.12;
+  private static readonly NPC_BUBBLE_W = 3.4;
+  private static readonly NPC_BUBBLE_H = 1.06;
+  /** The bubble's handwriting (B8): painted once document.fonts says it is
+   *  loaded or 3 s have passed, and painted again if it lands after that. */
+  private bubbleFont: 'idle' | 'waiting' | 'ready' | 'fallback' = 'idle';
+  private bubbleLast: { i: number; text: string; time: number } | null = null;
+
+  private waitForBubbleFont(): void {
+    if (this.bubbleFont !== 'idle') return;
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+    if (!fonts || typeof fonts.load !== 'function') {
+      this.bubbleFont = 'ready';
+      return;
+    }
+    this.bubbleFont = 'waiting';
+    const repaint = (): void => {
+      const last = this.bubbleLast;
+      if (last) this.paintNpcSpeechBubble(last.i, last.text, last.time);
+    };
+    const timer = setTimeout(() => {
+      if (this.bubbleFont !== 'waiting') return;
+      this.bubbleFont = 'fallback'; // paint in the fallback face now
+      repaint();
+    }, 3000);
+    fonts
+      .load(`26px 'Patrick Hand'`)
+      .then(() => {
+        clearTimeout(timer);
+        const was = this.bubbleFont;
+        this.bubbleFont = 'ready';
+        // First paint, or the repaint in the real face after the fallback.
+        if (was === 'waiting' || was === 'fallback') repaint();
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        if (this.bubbleFont === 'waiting') {
+          this.bubbleFont = 'fallback';
+          repaint();
+        }
+      });
+  }
 
   private showNpcSpeechBubble(i: number, text: string, time: number): void {
+    this.bubbleLast = { i, text, time };
+    this.waitForBubbleFont();
+    // The visible window starts now, whether the paint waits or not.
+    this.npcBubbleFor = i;
+    this.npcBubbleUntil = time + 6.5;
+    if (this.bubbleFont === 'waiting') return; // painted when the font says
+    this.paintNpcSpeechBubble(i, text, time);
+  }
+
+  private paintNpcSpeechBubble(i: number, text: string, time: number): void {
     if (!this.npcBubble) {
       const canvas = document.createElement('canvas');
       // 2× the logical 512×160 (draw code scales its transform): on retina
@@ -9701,7 +10076,7 @@ export class GameScene extends THREE.Scene {
       const sprite = new THREE.Sprite(
         new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
       );
-      sprite.scale.set(3.4, 1.06, 1);
+      sprite.scale.set(GameScene.NPC_BUBBLE_W, GameScene.NPC_BUBBLE_H, 1);
       // Bottom-anchored so it stacks cleanly on top of the (also bottom-
       // anchored) name pill without ever growing down into it.
       sprite.center.set(0.5, 0);
@@ -9729,22 +10104,24 @@ export class GameScene extends THREE.Scene {
     const lh = 34;
     const h = 28 + lines.length * lh;
     const top = (160 - h) / 2;
-    ctx.fillStyle = 'rgba(250,248,242,0.93)';
+    // Opaque paper, a dark rim and near-black ink (B8): the old 93% cream
+    // with a 30% rim read 2.9:1 under bloom.
+    ctx.fillStyle = '#e8e2d4';
     ctx.beginPath();
     ctx.roundRect(16, top, 480, h, 18);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(60,50,40,0.3)';
+    ctx.strokeStyle = '#3a3128';
     ctx.lineWidth = 2;
     ctx.stroke();
-    ctx.fillStyle = '#2c2620';
-    ctx.font = '500 26px "Patrick Hand", system-ui, sans-serif';
+    ctx.fillStyle = '#1f1a14';
+    ctx.font = '600 26px "Patrick Hand", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     lines.forEach((ln, k) => ctx.fillText(ln, 256, top + 24 + k * lh));
     tex.needsUpdate = true;
-    sprite.visible = true;
+    this.npcBubbleLive = time + 6.5 > performance.now() / 1000;
+    sprite.visible = this.npcBubbleLive;
     this.npcBubbleFor = i;
-    this.npcBubbleUntil = time + 6.5;
   }
 
   // ── Dialogue hold ──────────────────────────────────────────────────
@@ -9759,7 +10136,141 @@ export class GameScene extends THREE.Scene {
    * their own routines and stay at their posts, so they need no hold.
    */
   public setNpcDialogueHold(name: string | null): void {
+    if (name !== this.heldNpcName) {
+      this.talkT0 = performance.now() / 1000;
+      this.talkBeatK = 0;
+      this.talkBeatStart = GameScene.talkBeatGap(name ?? '', 0);
+      this.talkHopAt = -1;
+    }
     this.heldNpcName = name;
+    this.listenToNpcTalk();
+  }
+
+  // ── Talk body language (B8) ──
+  // SimpleUI's 'ds:npc-speaking' {name, speaking} and 'ds:npc-typing' {name,
+  // typing} (D10). The held villager beats with an arm every 0.9-1.6 s,
+  // nods and sways while speaking, leans in while the visitor types, and
+  // hops once when a reply ends.
+  private talkSpeaking: string | null = null;
+  private talkTyping: string | null = null;
+  private talkT0 = 0;
+  private talkBeatK = 0;
+  private talkBeatStart = 0;
+  /** When the end-of-reply hop is due (seconds), or -1; and for whom. */
+  private talkHopAt = -1;
+  private talkHopFor: string | null = null;
+  private talkListening = false;
+  /** The held villager's talk pose, written by the 'npcTalk' effect. */
+  private readonly talkArm = [0, 0];
+  private talkPitch = 0;
+  private talkRoll = 0;
+  private talkNow = 0;
+  private talkDt = 0;
+  private readonly boundNpcTalk = (): void => this.updateNpcTalk(this.talkNow, this.talkDt);
+  private readonly _npcTalkQ = new THREE.Quaternion();
+  private readonly _npcTalkE = new THREE.Euler();
+
+  private listenToNpcTalk(): void {
+    if (this.talkListening || typeof window === 'undefined') return;
+    this.talkListening = true;
+    window.addEventListener('ds:npc-speaking', (e: Event) => {
+      const d = (e as CustomEvent<{ name?: string; speaking?: boolean }>).detail ?? {};
+      if (!d.name) return;
+      if (d.speaking) {
+        this.talkSpeaking = d.name;
+        this.talkHopAt = -1;
+      } else if (this.talkSpeaking === d.name) {
+        this.talkSpeaking = null;
+        // A reply that ended: one hop, a beat later, and only if the chat is
+        // still open with them (a panel close also sends speaking:false,
+        // and releases the hold in the same task).
+        this.talkHopAt = performance.now() / 1000 + 0.15;
+        this.talkHopFor = d.name;
+      }
+    });
+    window.addEventListener('ds:npc-typing', (e: Event) => {
+      const d = (e as CustomEvent<{ name?: string; typing?: boolean }>).detail ?? {};
+      if (!d.name) return;
+      if (d.typing) this.talkTyping = d.name;
+      else if (this.talkTyping === d.name) this.talkTyping = null;
+    });
+  }
+
+  /** A stable 0..1 from a villager's name and a salt (no Math.random: the
+   *  same villager gestures the same way on every visit). */
+  private static talkHash(name: string, k: number, salt: number): number {
+    let h = 2166136261 ^ (k * 374761393) ^ (salt * 668265263);
+    for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 16777619);
+    h = Math.imul(h ^ (h >>> 15), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
+  /** The gap before beat k: 0.9-1.6 s, seeded per name. */
+  private static talkBeatGap(name: string, k: number): number {
+    return 0.9 + 0.7 * GameScene.talkHash(name, k, 1);
+  }
+
+  /** A beat's envelope at `u` s into it: 180 ms in, 250 ms held, 300 ms out. */
+  private static talkEnvelope(u: number): number {
+    if (u < 0) return 0;
+    if (u < 0.18) {
+      const x = u / 0.18;
+      return x * x * (3 - 2 * x);
+    }
+    if (u < 0.43) return 1;
+    if (u < 0.73) {
+      const x = 1 - (u - 0.43) / 0.3;
+      return x * x * (3 - 2 * x);
+    }
+    return 0;
+  }
+
+  /** Arms hang at rest between beats. */
+  private static readonly TALK_ARM_REST = 0;
+  /** A beat's reach, seeded per name and beat: 0.70-0.80 rad, the top of
+   *  plan-r3's 0.55-0.8 band, so any beat sweeps the arm 40 degrees (0.70
+   *  rad, the acceptance) from rest. */
+  private static readonly TALK_BEAT_MIN = 0.7;
+  private static readonly TALK_BEAT_SPAN = 0.1;
+
+  /**
+   * The held villager's talk pose at `now` (fx 'npcTalk'): the arms (the
+   * beat on one, rest on the other), and the root's nod and sway while they
+   * speak and lean while the visitor types, all eased. Reduced motion: beats
+   * at half amplitude, no nod, sway or hop.
+   */
+  private updateNpcTalk(now: number, dt: number): void {
+    const name = this.heldNpcName ?? '';
+    const t = now - this.talkT0;
+    // Advance to the latest beat that has started.
+    for (let guard = 0; guard < 64; guard++) {
+      const next = this.talkBeatStart + GameScene.talkBeatGap(name, this.talkBeatK + 1);
+      if (t < next) break;
+      this.talkBeatStart = next;
+      this.talkBeatK++;
+    }
+    const k = this.talkBeatK;
+    const reduced = a11y.reducedMotion;
+    const amp =
+      (GameScene.TALK_BEAT_MIN + GameScene.TALK_BEAT_SPAN * GameScene.talkHash(name, k, 2)) *
+      (reduced ? 0.5 : 1);
+    const side = GameScene.talkHash(name, k, 3) < 0.5 ? 0 : 1;
+    const env = GameScene.talkEnvelope(t - this.talkBeatStart);
+    const ease = 1 - Math.exp(-14 * dt);
+    for (let a = 0; a < 2; a++) {
+      const want = GameScene.TALK_ARM_REST + (a === side ? -amp * env : 0);
+      // The envelope is the motion: follow it closely, settle the other arm.
+      this.talkArm[a] += (want - this.talkArm[a]) * (a === side ? 1 : ease);
+    }
+    const speaking = !reduced && this.talkSpeaking === name;
+    const typing = this.talkTyping === name;
+    const nod = speaking ? Math.sin(t * 2.2 * Math.PI * 2) * 0.05 : 0;
+    const sway = speaking ? Math.sin(t * 0.35 * Math.PI * 2) * 0.035 : 0;
+    const lean = typing ? 0.07 : 0;
+    const k2 = 1 - Math.exp(-20 * dt); // a lean shows inside 200 ms
+    this.talkPitch += (lean + nod - this.talkPitch) * k2;
+    this.talkRoll += (sway - this.talkRoll) * k2;
   }
 
   /** Distance from `pos` to the nearest cat (Infinity when none) — drives
@@ -11560,7 +12071,6 @@ export class GameScene extends THREE.Scene {
           greetT0?: number;
           lastGreetAt?: number;
           lastSpokeAt?: number; // aware proximity-greeting throttle
-          nextTalkHopAt?: number; // dialogue-hold conversational hop cadence
           wander?: {
             home: THREE.Vector3;
             dir: THREE.Vector3;
@@ -11611,15 +12121,14 @@ export class GameScene extends THREE.Scene {
         if (held) {
           if (w.state === 'walk') w.state = 'idle';
           w.until = Math.max(w.until, time + 0.6);
-          // Conversational body language: an occasional cheerful hop.
-          if (data.nextTalkHopAt === undefined) {
-            data.nextTalkHopAt = time + 4 + Math.random() * 5;
-          } else if (time > data.nextTalkHopAt) {
-            data.greetT0 = time;
-            data.nextTalkHopAt = time + 6 + Math.random() * 7;
+          // A reply that ended (B8): one hop, while the chat is still open.
+          if (this.talkHopAt >= 0 && time >= this.talkHopAt) {
+            if (this.talkHopFor === npc.name && !a11y.reducedMotion) data.greetT0 = time;
+            this.talkHopAt = -1;
           }
-        } else if (data.nextTalkHopAt !== undefined) {
-          data.nextTalkHopAt = undefined;
+          this.talkNow = time;
+          this.talkDt = deltaTime;
+          if (fx.on('npcTalk')) fx.time('npcTalk', this.boundNpcTalk);
         }
         let moving = false;
         if (w.state === 'idle') {
@@ -11903,6 +12412,13 @@ export class GameScene extends THREE.Scene {
           .copy(this._swayQuat)
           .multiply(this._wanderYawQ.setFromAxisAngle(GameScene._localUp, w.yaw))
           .multiply(this._npcRollQ.setFromAxisAngle(GameScene._localForward, w.roll));
+        // Talk (B8): the nod and the lean pitch about the villager's side
+        // axis (+x tips the head toward +z, their front), the sway rolls.
+        if (held && fx.on('npcTalk')) {
+          npc.meshRef.quaternion.multiply(
+            this._npcTalkQ.setFromEuler(this._npcTalkE.set(this.talkPitch, 0, this.talkRoll)),
+          );
+        }
       }
 
       // Grass wind (GPU-side — just advance the shared uniform)
@@ -12148,44 +12664,7 @@ export class GameScene extends THREE.Scene {
       } else if (d2 >= 4.4 && cu.homePos && c.mesh.position.distanceToSquared(cu.homePos) > 1e-4) {
         c.mesh.position.lerp(cu.homePos, Math.min(1, 6 * deltaTime));
       }
-      if (d2 < 0.9) {
-        if (!cu.homePos) cu.homePos = c.mesh.position.clone();
-        cu.homePos.copy(c.mesh.position);
-        cu.collectT0 = time;
-        // 120s (was 45s): a 45s cycle made the meadow an infinite coin farm, so
-        // hat prices were a timer, not a choice. Slower respawn makes race +
-        // quest + delivery rewards the sane way to kit out. Arrival-trail
-        // coins are one-shot: respawnAt 0 means the respawn branch never fires.
-        c.respawnAt = c.trail ? 0 : time + 120;
-        if (c.trail) {
-          // The first trail coin marks the visit: a reload after it builds no
-          // trail, so its coins cannot be collected again (a free coin per
-          // reload). main-simple's markDone at the trail's end writes the
-          // same key.
-          if (!this.arrivalMarked) {
-            this.arrivalMarked = true;
-            try {
-              localStorage.setItem('ds_arrived', '1');
-            } catch {
-              /* no storage: the trail shows again next visit */
-            }
-          }
-          if (--this.trailCoinsLeft === 0) this.onArrivalTrail?.();
-        }
-        // Streak-pitched chime: quick successive pickups climb a pentatonic
-        // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
-        // reward grammar. Only THIS site pitches; shop dings stay flat.
-        this.coinStreak = time - this.lastCoinAt < 2.5 ? this.coinStreak + 1 : 0;
-        this.lastCoinAt = time;
-        sfx.coin(this.coinStreak);
-        this.coinsCollected++;
-        try {
-          localStorage.setItem('ds_coins', String(this.coinsCollected));
-        } catch {
-          /* session-only counter */
-        }
-        this.onCoinCollected?.(this.coinsCollected);
-      }
+      if (d2 < 0.9) this.collectMeadowCoin(c, time);
     }
 
     // Day/night handoff for the small life: butterflies by day,
@@ -12270,15 +12749,25 @@ export class GameScene extends THREE.Scene {
     for (const tag of this.nameTags) {
       const pos = tag.target.position;
       this._tagNormal.copy(pos).normalize();
-      // Bottom-anchored (see createNameTags), so 1.55 IS the pill's bottom
-      // edge: 0.17 above the tallest dressed head (wizard hat ≈1.33 world
-      // after the 0.6×1.07 NPC group scale) at every camera distance.
+      // Bottom-anchored (see createNameTags), so this IS the pill's bottom
+      // edge: 1.55, 0.17 above the tallest dressed head (wizard hat ≈1.33
+      // world after the 0.6×1.07 NPC group scale), or 0.15 above this
+      // villager's own measured head top when that is higher (B8: the Night
+      // Watch's taller model hid the pin's status line behind his head).
+      // A model still loading has no meshes yet: retry at most every 0.5 s,
+      // not a full traverse every frame.
+      if (tag.headTop === undefined && time >= (tag.headRetryAt ?? 0)) {
+        tag.headTop = GameScene.measureHeadTop(tag.target.meshRef);
+        if (tag.headTop === undefined) tag.headRetryAt = time + 0.5;
+      }
+      const anchor = Math.max(1.55, (tag.headTop ?? 0) + 0.15);
       tag.sprite.position
         .copy(pos)
-        .addScaledVector(this._tagNormal, 1.55 + Math.sin(time * 2 + pos.x) * 0.05);
+        .addScaledVector(this._tagNormal, anchor + Math.sin(time * 2 + pos.x) * 0.05);
       const dist = this.camera.position.distanceTo(tag.sprite.position);
       // Constant-ish on-screen size: sprites attenuate ∝1/dist, so scale ∝dist.
-      const s = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6);
+      // Never wider than 60% of the viewport (B8, UX-14).
+      const s = this.pinScale(dist, this.viewDepth(tag.sprite.position));
       // 0.63 aspect matches the 256×96 two-line pill canvas (0.42 was the old
       // 64px canvas — it squished the role+activity pill every frame).
       tag.sprite.scale.set(s * 1.7, s * 0.63, 1);
@@ -12293,27 +12782,55 @@ export class GameScene extends THREE.Scene {
               : dist < 88
                 ? 1 - (dist - 62) / 26
                 : 0;
+      // The villager you are talking to: the chat panel carries the words,
+      // so their pin fades out over 150 ms, and back in after (B8).
+      const talking = this.heldNpcName !== null && tag.target.name === this.heldNpcName;
+      const fadeStep = deltaTime / 0.15;
+      tag.talkFade = THREE.MathUtils.clamp(
+        (tag.talkFade ?? 1) + (talking ? -fadeStep : fadeStep),
+        0,
+        1,
+      );
       const mat = tag.sprite.material as THREE.SpriteMaterial;
-      mat.opacity = op;
+      mat.opacity = op * tag.talkFade;
       // No pin over an empty doorstep while its NPC sleeps "inside".
-      tag.sprite.visible = op > 0.02 && tag.target.meshRef.visible;
+      tag.sprite.visible = mat.opacity > 0.02 && tag.target.meshRef.visible;
     }
 
     // Speech bubble follows its speaker just above the name pin; auto-hides.
-    if (this.npcBubble && this.npcBubble.sprite.visible) {
+    if (this.npcBubble && this.npcBubbleLive) {
       const tag = this.nameTags[this.npcBubbleFor];
       if (time > this.npcBubbleUntil || !tag || !tag.target.meshRef.visible) {
+        this.npcBubbleLive = false;
         this.npcBubble.sprite.visible = false;
       } else {
         // Both sprites are bottom-anchored, so the pill's current world
         // height IS its scale.y — seat the bubble 0.12 above the pill's top
         // so the distance-scaled pill can never grow up into it.
+        // A quest giver's "!" (2.7 u up, bobbing to 3.12) would sit inside
+        // the bubble at chat range: seat the bubble above it instead.
+        let lift = tag.sprite.scale.y + 0.12;
+        if (this.questMarkers.some((m) => m.npcName === tag.target.name)) {
+          const pinUp = tag.sprite.position.length() - tag.target.position.length();
+          lift = Math.max(lift, GameScene.QUEST_MARK_TOP + 0.06 - pinUp);
+        }
         this.npcBubble.sprite.position
           .copy(tag.sprite.position)
-          .addScaledVector(
-            this._tagNormal.copy(tag.target.position).normalize(),
-            tag.sprite.scale.y + 0.12,
-          );
+          .addScaledVector(this._tagNormal.copy(tag.target.position).normalize(), lift);
+        // Never wider than 60% of the viewport (B8, UX-14), and gone with
+        // the pin while its villager is in a chat.
+        const bs = this.spriteWidthClamp(
+          GameScene.NPC_BUBBLE_W,
+          this.viewDepth(this.npcBubble.sprite.position),
+        );
+        this.npcBubble.sprite.scale.set(
+          GameScene.NPC_BUBBLE_W * bs,
+          GameScene.NPC_BUBBLE_H * bs,
+          1,
+        );
+        const bo = tag.talkFade ?? 1;
+        (this.npcBubble.sprite.material as THREE.SpriteMaterial).opacity = bo;
+        this.npcBubble.sprite.visible = bo > 0.02;
       }
     }
 
@@ -13315,6 +13832,12 @@ export class GameScene extends THREE.Scene {
   private static readonly ROOM_INK_MIN_RADIUS = 0.5;
   private readonly _trimAccent = new THREE.Color();
   private interiorPosters: Array<{ ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
+  /** The one 512x320 screen texture (P2-B12), redrawn on entry: the office
+   *  monitor's face, the workshop blueprint and the hall's wall map. No mips
+   *  (0.66 MB rather than 0.87 MB with them). */
+  private interiorScreen: { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture } | null = null;
+  /** The visit's exhibits (P2-B12), or null: today's posters. */
+  private interiorExhibits: Exhibits | null = null;
   private interiorSets: Record<string, THREE.Group> = {};
   private interiorTime = 0;
   private onHouseEnterCb: ((id: string) => void) | null = null;
@@ -14498,6 +15021,26 @@ export class GameScene extends THREE.Scene {
     // Light switch by the door, at hand height.
     box(g, 0.14, 0.2, 0.05, 0xf0ece2, -2.75, 1.35, 3.82);
 
+    /** A plane mapped to the shared screen, on a themed set. Never a
+     *  collider or a camera blocker (buildInteriorColliders skips it). */
+    const screenPlane = (
+      parent: THREE.Group,
+      w: number,
+      h: number,
+      x: number,
+      y: number,
+      z: number,
+      ry: number,
+      rx: number,
+    ): THREE.Mesh => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), this.buildInteriorScreen());
+      m.position.set(x, y, z);
+      m.rotation.set(rx, ry, 0);
+      m.userData.noCollide = true;
+      parent.add(m);
+      return m;
+    };
+
     // ── Themed furniture sets (built once, toggled per building) ──
     const set = (name: string): THREE.Group => {
       const s = new THREE.Group();
@@ -14514,15 +15057,38 @@ export class GameScene extends THREE.Scene {
     // DESKS AND BENCHES stand at 0.8 of the height they were built at
     // (P2-B10): a desk top at 0.95 came to the 1.58 u avatar's chest, a
     // counter to its shoulders. What stands on one comes down with it.
-    box(office, 2.4, 0.12, 1.0, D, 0, 0.76, -2.6);
+    const desk = [box(office, 2.4, 0.12, 1.0, D, 0, 0.76, -2.6)];
     for (const [lx, lz] of [
       [-1.05, -2.25],
       [1.05, -2.25],
       [-1.05, -2.95],
       [1.05, -2.95],
     ] as const)
-      box(office, 0.12, 0.7, 0.12, D, lx, 0.35, lz);
+      desk.push(box(office, 0.12, 0.7, 0.12, D, lx, 0.35, lz));
+    // Low tier: the desk's top and legs are one draw. MEASURED (wave-3
+    // integration, low tier, the Professional room's steady view): 77 draws
+    // against main's 74, the bar being no more than main (the monitor's
+    // screen is one more draw, and the room camera frames a curtain and a
+    // contact shadow main's did not). One material, all static, and the
+    // top's box already holds the legs, so the collider, the blob and the
+    // camera blocker stay as they were. Desktop keeps them apart: its ink
+    // hull goes on the top alone.
+    if (GameScene.roomLowTier()) {
+      const parts = desk.map((m) => {
+        m.updateMatrix();
+        const g = m.geometry.clone().applyMatrix4(m.matrix);
+        m.geometry.dispose();
+        office.remove(m);
+        return g;
+      });
+      const merged = new THREE.Mesh(GameScene.mergeOrThrow(parts, 'office desk'), matFor(D));
+      for (const g of parts) g.dispose();
+      office.add(merged);
+    }
     box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.47, -2.75); // monitor
+    // The monitor's face: the shared screen (P2-B12).
+    const screenMat = this.buildInteriorScreen();
+    screenPlane(office, 0.86, 0.5, 0, 1.47, -2.715, 0, 0);
     box(office, 0.12, 0.3, 0.12, 0x33383f, 0, 0.97, -2.75);
     box(office, 0.6, 0.09, 0.35, 0xd7dbe0, 0.65, 0.87, -2.45); // keyboard? papers
     box(office, 0.55, 0.1, 0.55, 0x3a3f47, 0, 0.62, -1.65); // chair seat
@@ -14550,10 +15116,14 @@ export class GameScene extends THREE.Scene {
     box(shop, 0.09, 0.5, 0.05, 0x8a2f2b, -3.35, 2.1, -3.8); // tools on it
     box(shop, 0.4, 0.09, 0.05, 0x55595e, -2.85, 2.3, -3.8);
     box(shop, 0.09, 0.4, 0.05, 0x2e6b8a, -2.35, 2.0, -3.8);
-    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.78, -1.7, 0, -0.35); // drafting table
-    const bp = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.8), matFor(0x2f5aa0, 0.95));
+    // The drafting table tilts toward the room (P2-B12): tilted toward the
+    // back wall, its blueprint showed the room only its back face, which
+    // three culls, so nobody standing at its spot ever saw it.
+    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.78, -1.7, 0, 0.35); // drafting table
+    // The blueprint is the shared screen (P2-B12), drawn as a blueprint.
+    const bp = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.8), screenMat);
     bp.position.set(2.6, 0.85, -1.68);
-    bp.rotation.x = -Math.PI / 2 - 0.35;
+    bp.rotation.x = -Math.PI / 2 + 0.35;
     shop.add(bp);
     for (const [lx, lz] of [
       [2.0, -1.35],
@@ -14563,8 +15133,10 @@ export class GameScene extends THREE.Scene {
     ] as const)
       box(shop, 0.1, 0.76, 0.1, D, lx, 0.38, lz);
     cyl(shop, 0.25, 0.28, 0.55, W, 1.1, 0.38, -1.4); // stool
-    box(shop, 0.85, 0.75, 0.85, 0xb5854e, -3.0, 0.48, -2.55); // crates
-    box(shop, 0.7, 0.6, 0.7, 0xc09055, -2.85, 1.16, -2.7);
+    // Crates, forward of the pegboard (P2-B12): at z -2.55 they walled the
+    // board off, so none of its cards could be reached.
+    box(shop, 0.85, 0.75, 0.85, 0xb5854e, -3.0, 0.48, -1.5); // crates
+    box(shop, 0.7, 0.6, 0.7, 0xc09055, -2.85, 1.16, -1.65);
 
     // home — Personal: sofa, coffee table, fireplace, bookshelf, floor lamp.
     const home = set('home');
@@ -14618,6 +15190,8 @@ export class GameScene extends THREE.Scene {
     cyl(post, 0.16, 0.2, 0.08, 0xc9a227, 0.8, 1.02, -1.9); // scale base
     cyl(post, 0.03, 0.03, 0.4, 0xc9a227, 0.8, 1.25, -1.9);
     cyl(post, 0.18, 0.18, 0.03, 0xc9a227, 0.8, 1.48, -1.9);
+    // The email plate on the counter's front (P2-B12: 'copy:email').
+    box(post, 0.56, 0.18, 0.03, 0xc9a227, -1.0, 0.72, -1.53);
 
     // hall — Welcome town hall: podium, banners, visitor benches, notice board.
     const hall = set('hall');
@@ -14642,6 +15216,10 @@ export class GameScene extends THREE.Scene {
       [1.75, -2.35],
     ] as const)
       box(hall, 0.03, 0.34, 0.26, 0xf5f2ea, 3.74, py, pz);
+    // The wall map (P2-B12: 'compass'), on the left wall clear of the
+    // content poster, framed in trim. A picture on a wall: no collider.
+    box(hall, 0.05, 1.08, 1.68, W, -3.88, 2.0, -2.3);
+    screenPlane(hall, 1.6, 1.0, -3.85, 2.0, -2.3, Math.PI / 2, 0);
 
     // cottage — the houses: bed, round table + stools, hearth, kitchen shelf.
     // beach — Brother's Beach House on the islet: surf gear, driftwood
@@ -14905,11 +15483,28 @@ export class GameScene extends THREE.Scene {
   private interiorYaw = Math.PI;
   private interiorCamYaw = Math.PI;
   private interiorActiveTheme = 'cottage';
-  private interiorColliders: Record<
-    string,
-    Array<{ minX: number; maxX: number; minZ: number; maxZ: number }>
-  > = {};
-  private interiorHotspot: { label: string; action: string; text?: string } | null = null;
+  private interiorColliders: Record<string, RoomBox[]> = {};
+  /** Per theme, the props the room camera keeps out of (P2-B11): every piece
+   *  of the themed set that stands taller than 1.4 u. The shell (curtains,
+   *  pendant, window pane) is never one; the ±3.6 wall clamp bounds it. */
+  private interiorCamBlockers: Record<string, RoomBox[]> = {};
+  // The room camera (P2-B11). The entry shot holds for ENTRY_HOLD s or until
+  // the first input, then eases into the follow; the pull-in is the fraction
+  // of the follow distance the camera keeps; the rise lifts it over a guest.
+  private interiorEntryHold = 0;
+  private interiorEntryBlend = 1;
+  private interiorCamPull = 1;
+  private interiorCamRise = 0;
+  /** Seconds since the last setInteriorLook: the camera stays where the
+   *  visitor turned it for 1.5 s, then eases back behind the heading. */
+  private interiorLookIdle = Infinity;
+  private interiorCamDt = 0;
+  private readonly boundInteriorCam = (): void => this.updateInteriorCamera(this.interiorCamDt);
+  private readonly _icFollow = new THREE.Vector3();
+  private readonly _icLook = new THREE.Vector3();
+  private readonly _icPt = new THREE.Vector3();
+  private interiorHotspot: { label: string; action: string; text?: string; arg?: string } | null =
+    null;
   // The beach-house wall screen (room-local centre + half extents). The
   // watch overlay is a DOM iframe that SimpleApp pins to this plane's
   // projected rect every frame while interiorWatching.
@@ -15006,6 +15601,7 @@ export class GameScene extends THREE.Scene {
         r: 1.4,
         label: '💻 Press <strong>E</strong> to browse the work',
         action: 'panel',
+        arg: 'hire',
       },
       {
         x: -3.1,
@@ -15025,9 +15621,10 @@ export class GameScene extends THREE.Scene {
         action: 'panel',
       },
       {
-        x: -3.0,
-        z: -2.6,
-        r: 1.2,
+        // In front of the crates, which moved forward of the pegboard.
+        x: -2.9,
+        z: -0.55,
+        r: 0.9,
         label: '📦 Press <strong>E</strong> to peek in the crates',
         action: 'toast',
         text: 'Prototype parts, spare ideas, and one suspiciously good chocolate bar. 🍫',
@@ -15066,6 +15663,16 @@ export class GameScene extends THREE.Scene {
         r: 1.4,
         label: '📮 Press <strong>E</strong> to ring the counter bell',
         action: 'panel',
+        arg: 'hire',
+      },
+      {
+        // The email plate on the counter's front.
+        x: -1.1,
+        z: -1.05,
+        r: 0.7,
+        label: '✉️ Press <strong>E</strong> to see the email',
+        action: 'panel',
+        arg: 'copy:email',
       },
       {
         x: -2.7,
@@ -15083,6 +15690,16 @@ export class GameScene extends THREE.Scene {
         r: 1.3,
         label: '📰 Press <strong>E</strong> to read the notice board',
         action: 'times',
+        arg: 'times',
+      },
+      {
+        // The wall map, on the left wall.
+        x: -3.0,
+        z: -2.3,
+        r: 1.1,
+        label: '🗺️ Press <strong>E</strong> to read the map',
+        action: 'panel',
+        arg: 'compass',
       },
       {
         x: 0,
@@ -15166,6 +15783,8 @@ export class GameScene extends THREE.Scene {
   // into the room. The wander loop re-claims position/orientation/visibility
   // on the first frame after exit, so no restore bookkeeping is needed.
   private interiorOccupants: THREE.Object3D[] = [];
+  /** Their names, for the cottage's title poster (P2-B12). */
+  private interiorOccupantNames: string[] = [];
   private interiorZzz: THREE.Sprite | null = null;
   // Cottage variation: seeded per-house decor — dedicated tint materials plus
   // optional prop groups toggled per house (2 of 4 shown).
@@ -15177,6 +15796,7 @@ export class GameScene extends THREE.Scene {
    *  against this house's door identifies the room's occupants. */
   private placeCottageOccupants(houseId: string): void {
     this.interiorOccupants = [];
+    this.interiorOccupantNames = [];
     const door = this.island.houseDoors.find((d) => d.id === houseId);
     if (!door) return;
     const doorDir = this._goalScratch.copy(door.position).normalize();
@@ -15199,13 +15819,19 @@ export class GameScene extends THREE.Scene {
       npc.meshRef.position.set(o.x + spot.x, o.y + spot.y, o.z + spot.z);
       npc.meshRef.quaternion.setFromEuler(spot.euler);
       this.interiorOccupants.push(npc.meshRef);
+      this.interiorOccupantNames.push(npc.name);
     }
     if (this.interiorZzz) this.interiorZzz.visible = this.interiorOccupants.length > 0;
   }
 
   /** The hotspot the player is standing near (null when none) — main-simple
    *  shows the prompt and executes the action on E. */
-  public getInteriorHotspot(): { label: string; action: string; text?: string } | null {
+  public getInteriorHotspot(): {
+    label: string;
+    action: string;
+    text?: string;
+    arg?: string;
+  } | null {
     return this.interiorHotspot;
   }
 
@@ -15220,6 +15846,7 @@ export class GameScene extends THREE.Scene {
     const curtains = GameScene.INTERIOR_CURTAINS_AT[theme] ?? { x: 1.8, z: 2.95 };
     return [
       ...(GameScene.INTERIOR_HOTSPOTS[theme] ?? []),
+      ...(theme === 'workshop' ? this.pegboardHotspots() : []),
       {
         x: -2.75,
         z: 3.0,
@@ -15242,6 +15869,46 @@ export class GameScene extends THREE.Scene {
       },
       GameScene.INTERIOR_DOOR_HOTSPOT,
     ];
+  }
+
+  /** The pegboard spots (P2-B12): one per exhibit chip that carries an id,
+   *  spread along the board, or one 'project' spot without any. */
+  private pegboardHotspots(): InteriorHotspot[] {
+    const e = this.interiorExhibits;
+    const ids: Array<{ label: string; id: string }> = [];
+    for (const part of [e?.screen, e?.left, e?.right, e?.title]) {
+      for (const c of part?.chips ?? []) if (c.id && ids.length < 4) ids.push({ ...c, id: c.id });
+    }
+    if (ids.length === 0) {
+      return [
+        {
+          x: -2.7,
+          z: -2.9,
+          r: 0.9,
+          label: '📌 Press <strong>E</strong> to look at the project cards',
+          action: 'panel',
+          arg: 'project',
+        },
+      ];
+    }
+    // The board spans x -3.75..-1.95; the spots share it evenly.
+    const x0 = -3.2;
+    const x1 = -2.2;
+    return ids.map((c, i) => ({
+      x: ids.length === 1 ? -2.7 : x0 + ((x1 - x0) * i) / (ids.length - 1),
+      z: -2.9,
+      r: 0.7,
+      label: `📌 Press <strong>E</strong> to open ${GameScene.escapeLabel(c.label)}`,
+      action: 'panel',
+      arg: `project:${c.id}`,
+    }));
+  }
+
+  private static escapeLabel(t: string): string {
+    return t.replace(
+      /[&<>"']/g,
+      (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
+    );
   }
 
   /** The hotspot a visitor at room-local (px, pz) is prompted for: the
@@ -15304,23 +15971,32 @@ export class GameScene extends THREE.Scene {
     set.visible = true; // Box3.setFromObject ignores invisible subtrees
     this.interiorGroup.updateMatrixWorld(true);
     const o = GameScene.INTERIOR_ORIGIN;
-    const boxes: Array<{ minX: number; maxX: number; minZ: number; maxZ: number }> = [];
+    const boxes: RoomBox[] = [];
+    const blockers: RoomBox[] = [];
     const b = new THREE.Box3();
     for (const child of set.children) {
       if ((child as THREE.Sprite).isSprite) continue; // markers (💤) never block
       if (child.userData.isLightPool) continue; // nor does firelight on the floor
+      if (child.userData.noCollide) continue; // nor a picture on a wall
       b.setFromObject(child);
       if (b.isEmpty()) continue;
-      if (b.min.y - o.y > 1.45) continue; // overhead — walk under it
-      boxes.push({
+      const box: RoomBox = {
         minX: b.min.x - o.x,
         maxX: b.max.x - o.x,
+        minY: b.min.y - o.y,
+        maxY: b.max.y - o.y,
         minZ: b.min.z - o.z,
         maxZ: b.max.z - o.z,
-      });
+      };
+      // Anything taller than 1.4 u can stand between the room camera (at
+      // head height and above) and the avatar, overhead pieces included.
+      if (box.maxY > 1.4) blockers.push(box);
+      if (box.minY > 1.45) continue; // overhead — walk under it
+      boxes.push(box);
     }
     set.visible = wasVisible;
     this.interiorColliders[theme] = boxes;
+    this.interiorCamBlockers[theme] = blockers;
 
     // CONTACT SHADOWS, for free, from the boxes we just measured.
     // No interior mesh casts or receives a shadow (the borrowed sun's shadow
@@ -15860,11 +16536,13 @@ export class GameScene extends THREE.Scene {
     right = '',
     theme = 'cottage',
     houseId?: string,
+    exhibits?: Exhibits,
   ): void {
     this.buildInterior();
     // A real visit warms everything the idle pass would have, so retire the
     // pending warm — otherwise it can fire mid-visit and blink the room.
     this.interiorWarmed = true;
+    this.interiorExhibits = exhibits ?? null;
     if (this.interiorWallMat) {
       this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
     }
@@ -15887,9 +16565,12 @@ export class GameScene extends THREE.Scene {
     const active = this.interiorSets[theme] ? theme : 'cottage';
     for (const [name, s] of Object.entries(this.interiorSets)) s.visible = name === active;
     this.interiorRugMat?.color.set(GameScene.INTERIOR_RUGS[active] ?? 0xb06a72);
-    this.drawPoster(0, title, true);
-    this.drawPoster(1, left, false);
-    this.drawPoster(2, right, false);
+    const part = (p: ExhibitPart | undefined, text: string): ExhibitPart =>
+      p ?? { lines: (text || '').split('\n') };
+    this.drawExhibit(0, part(exhibits?.title, title), true);
+    this.drawExhibit(1, part(exhibits?.left, left), false);
+    this.drawExhibit(2, part(exhibits?.right, right), false);
+    this.drawScreen(active, exhibits?.screen ?? null, title);
     if (this.interiorGroup) this.interiorGroup.visible = true;
     // Borrow the island's light rig for the visit (P2-B9). Taken once: a
     // second entry without an exit must not remember the room's values.
@@ -15920,6 +16601,13 @@ export class GameScene extends THREE.Scene {
     this.player.position.set(o.x + spawn.x, o.y + GameScene.INTERIOR_PLAYER_Y, o.z + spawn.z);
     this.interiorYaw = Math.PI; // facing into the room (model +z convention)
     this.interiorCamYaw = Math.PI;
+    // The entry shot (P2-B11): the front corner across the room, held until
+    // the first input or 1.2 s, then eased into the follow.
+    this.interiorEntryHold = GameScene.INTERIOR_ENTRY_HOLD;
+    this.interiorEntryBlend = 0;
+    this.interiorCamPull = 1;
+    this.interiorCamRise = 0;
+    this.interiorLookIdle = Infinity;
     this.player.quaternion.setFromAxisAngle(GameScene._localUp, Math.PI);
     this.interiorMoveF = 0;
     this.interiorMoveS = 0;
@@ -15952,8 +16640,22 @@ export class GameScene extends THREE.Scene {
     }
     // Cottage at night: reveal whoever is asleep behind THIS door.
     this.interiorOccupants = [];
+    this.interiorOccupantNames = [];
     if (this.interiorZzz) this.interiorZzz.visible = false;
     if (active === 'cottage' && houseId) this.placeCottageOccupants(houseId);
+    // The title names who lives here, once they are home (night only).
+    if (active === 'cottage' && !exhibits?.title && this.interiorOccupantNames.length) {
+      const names = this.interiorOccupantNames;
+      // "The Baker and the Fisherman's cottage": every name keeps its article.
+      const the = names.map((n) => `the ${n}`);
+      const who =
+        the.length === 1 ? the[0] : `${the.slice(0, -1).join(', ')} and ${the[the.length - 1]}`;
+      this.drawExhibit(
+        0,
+        { lines: [`${who.charAt(0).toUpperCase()}${who.slice(1)}'s cottage`] },
+        true,
+      );
+    }
     // The room's light, at its preset from the first frame: the entry is
     // drawn under the door veil, and an ease from the island's values would
     // show as the veil lifts. (Last, so a party already has its club dim.)
@@ -16158,31 +16860,224 @@ export class GameScene extends THREE.Scene {
    */
   private warmInteriorPosters(): void {
     const glyphs = "ABCDEFGHIJKLM\nNOPQRSTUVWXYZ\nabcdefghijklm\nnopqrstuvwxyz\n0123456789 &,.'-";
-    this.interiorPosters.forEach((_, i) => this.drawPoster(i, glyphs, i === 0));
+    // Every font drawExhibit uses: the title, the 48 px body and the chips,
+    // on every canvas, and the screen's.
+    const warm: ExhibitPart = {
+      lines: glyphs.split('\n'),
+      chips: [{ label: glyphs.slice(0, 13) }],
+    };
+    this.interiorPosters.forEach((_, i) => this.drawExhibit(i, warm, i === 0));
+    this.drawScreen('office', warm, '');
   }
 
-  /** Draw a framed poster: title (big) or a content panel of \n-split lines. */
-  private drawPoster(i: number, text: string, big: boolean): void {
+  /** Exhibit type: the title, the body (never under 48 canvas px) and the
+   *  chips' labels. */
+  private static readonly EXHIBIT_FONT = {
+    title: 60,
+    body: 48,
+    chip: 36,
+    family: 'system-ui, "Segoe UI", sans-serif',
+  };
+
+  /** Draw a framed poster (P2-B12): body lines, word-wrapped to the canvas,
+   *  then a row of chips. `big` is the title poster: bold, larger. */
+  private drawExhibit(i: number, part: ExhibitPart, big: boolean): void {
     const p = this.interiorPosters[i];
     if (!p) return;
-    const cv = p.ctx.canvas;
     const ctx = p.ctx;
+    const cv = ctx.canvas;
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.fillStyle = 'rgba(250,248,242,0.94)';
     ctx.fillRect(10, 10, cv.width - 20, cv.height - 20);
     ctx.strokeStyle = 'rgba(60,50,40,0.35)';
     ctx.lineWidth = 5;
     ctx.strokeRect(10, 10, cv.width - 20, cv.height - 20);
+    GameScene.paintExhibit(ctx, part, big, big ? '#3a2f26' : '#40382f', '#e9e1d2', 28);
+    p.tex.needsUpdate = true;
+  }
+
+  /**
+   * Lay out an exhibit on a canvas: lines wrapped to the width inside `pad`,
+   * centred as a block, then the chips in rows under them. Lines that do not
+   * fit the height are dropped from the end rather than shrunk.
+   */
+  private static paintExhibit(
+    ctx: CanvasRenderingContext2D,
+    part: ExhibitPart,
+    big: boolean,
+    ink: string,
+    chipFill: string,
+    pad: number,
+  ): void {
+    const F = GameScene.EXHIBIT_FONT;
+    const cv = ctx.canvas;
+    const maxW = cv.width - pad * 2;
+    const fs = big ? F.title : F.body;
+    ctx.font = `${big ? 'bold' : '600'} ${fs}px ${F.family}`;
+    const lines: string[] = [];
+    for (const raw of part.lines) {
+      const words = raw.split(/\s+/).filter(Boolean);
+      let cur = '';
+      for (const w of words) {
+        const next = cur ? `${cur} ${w}` : w;
+        if (cur && ctx.measureText(next).width > maxW) {
+          lines.push(cur);
+          cur = w;
+        } else cur = next;
+      }
+      lines.push(cur);
+    }
+    const lh = fs * 1.2;
+    const chips = part.chips ?? [];
+    const chipH = chips.length ? F.chip * 1.6 : 0;
+    // Chip rows, measured in the chip font.
+    ctx.font = `600 ${F.chip}px ${F.family}`;
+    const rows: Array<Array<{ label: string; w: number }>> = [];
+    let row: Array<{ label: string; w: number }> = [];
+    let rowW = 0;
+    for (const c of chips) {
+      const w = Math.min(maxW, ctx.measureText(c.label).width + F.chip);
+      if (row.length && rowW + 12 + w > maxW) {
+        rows.push(row);
+        row = [];
+        rowW = 0;
+      }
+      row.push({ label: c.label, w });
+      rowW += (row.length > 1 ? 12 : 0) + w;
+    }
+    if (row.length) rows.push(row);
+    const avail = cv.height - pad * 2;
+    const chipBlock = rows.length * (chipH + 10);
+    const fitLines = Math.max(1, Math.min(lines.length, Math.floor((avail - chipBlock) / lh)));
+    const shown = lines.slice(0, fitLines);
+    const total = shown.length * lh + chipBlock;
+    let y = Math.max(pad, (cv.height - total) / 2);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = big ? '#3a2f26' : '#40382f';
-    const lines = (text || '').split('\n');
-    const fs = big ? 60 : 40;
-    const lh = fs * 1.28;
-    ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
-    const startY = cv.height / 2 - ((lines.length - 1) * lh) / 2;
-    lines.forEach((ln, k) => ctx.fillText(ln, cv.width / 2, startY + k * lh));
-    p.tex.needsUpdate = true;
+    ctx.fillStyle = ink;
+    ctx.font = `${big ? 'bold' : '600'} ${fs}px ${F.family}`;
+    for (const ln of shown) {
+      ctx.fillText(ln, cv.width / 2, y + lh / 2);
+      y += lh;
+    }
+    ctx.font = `600 ${F.chip}px ${F.family}`;
+    for (const r of rows) {
+      const w = r.reduce((a, c) => a + c.w, 0) + 12 * (r.length - 1);
+      let x = (cv.width - w) / 2;
+      y += 10;
+      for (const c of r) {
+        ctx.fillStyle = chipFill;
+        // A pill: two half-discs and the box between (roundRect is not in
+        // every browser the island supports).
+        const rr = chipH / 2;
+        ctx.beginPath();
+        ctx.arc(x + rr, y + rr, rr, Math.PI / 2, (Math.PI * 3) / 2);
+        ctx.arc(x + c.w - rr, y + rr, rr, -Math.PI / 2, Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = ink;
+        ctx.fillText(c.label, x + c.w / 2, y + chipH / 2, c.w - F.chip / 2);
+        x += c.w + 12;
+      }
+      y += chipH;
+    }
+  }
+
+  /** The shared screen's texture and material, built once (buildInterior). */
+  private buildInteriorScreen(): THREE.MeshBasicMaterial {
+    if (this.interiorScreenMat) return this.interiorScreenMat;
+    const cv = document.createElement('canvas');
+    cv.width = 512;
+    cv.height = 320;
+    const ctx = cv.getContext('2d');
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    if (ctx) this.interiorScreen = { ctx, tex };
+    // Unlit, like the window pane: a screen, a lamp-lit sheet, a painted map.
+    this.interiorScreenMat = new THREE.MeshBasicMaterial({ map: tex });
+    return this.interiorScreenMat;
+  }
+  private interiorScreenMat: THREE.MeshBasicMaterial | null = null;
+
+  /**
+   * Redraw the shared screen for the room (on entry): the exhibit's screen
+   * part when there is one, else the room's own face. The office monitor is
+   * a dark screen with the title; the workshop blueprint a grid with it; the
+   * hall's wall map the island, painted, with a dot per district.
+   */
+  private drawScreen(theme: string, part: ExhibitPart | null, title: string): void {
+    const sc = this.interiorScreen;
+    if (!sc) return;
+    const ctx = sc.ctx;
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const face =
+      theme === 'workshop'
+        ? { bg: '#2f5aa0', ink: '#f2f6ff', chip: '#4a76bd' }
+        : theme === 'hall'
+          ? { bg: '#e9dfc6', ink: '#3a2f26', chip: '#d8cba9' }
+          : { bg: '#1d232c', ink: '#e8eef6', chip: '#33404f' };
+    ctx.fillStyle = face.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (theme === 'workshop') {
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineWidth = 2;
+      for (let x = 32; x < W; x += 32) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+      }
+      for (let y = 32; y < H; y += 32) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+      }
+    }
+    if (theme === 'hall' && !part) {
+      // The island from above: sea, a sand rim, the land, one dot per district.
+      ctx.fillStyle = '#6fa8c7';
+      ctx.fillRect(14, 14, W - 28, H - 28);
+      const cx = W / 2;
+      const cy = H / 2;
+      const r = H * 0.36;
+      ctx.fillStyle = '#e3cf98';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, r * 1.32, r * 1.04, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#7fae5a';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, r * 1.2, r * 0.94, 0, 0, Math.PI * 2);
+      ctx.fill();
+      DISTRICTS.forEach((d, k) => {
+        const a = (k / DISTRICTS.length) * Math.PI * 2 - Math.PI / 2;
+        ctx.fillStyle = `#${d.accent.toString(16).padStart(6, '0')}`;
+        ctx.strokeStyle = '#3a2f26';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * r * 0.75, cy + Math.sin(a) * r * 0.58, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      });
+      ctx.fillStyle = '#f2ead8';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      GameScene.paintExhibit(
+        ctx,
+        part ?? { lines: (title || '').split('\n') },
+        !part,
+        face.ink,
+        face.chip,
+        24,
+      );
+    }
+    sc.tex.needsUpdate = true;
   }
 
   public exitInterior(): void {
@@ -16209,6 +17104,215 @@ export class GameScene extends THREE.Scene {
     // used to LERP from the interior camera (~300u below the island) — a
     // visible underground swoop racing the fade-out.
     this.orbitCamera?.snapToPlayer();
+  }
+
+  /** Follow distance and height above the floor-standing player (P2-B11);
+   *  phones (aspect under 0.8) sit further back and higher. */
+  private static readonly INTERIOR_CAM = { back: 3.0, up: 1.55, look: 0.95 };
+  private static readonly INTERIOR_CAM_PHONE = { back: 3.4, up: 1.9, look: 0.95 };
+  /** The entry shot: the front corner, looking across the room at the title
+   *  wall, held this long or until the first input. */
+  private static readonly INTERIOR_ENTRY_CAM = { x: 3.3, y: 2.9, z: 3.3 };
+  private static readonly INTERIOR_ENTRY_LOOK = { x: -0.5, y: 1.4, z: -2.5 };
+  /** On a phone the frame is too narrow for the title wall from that look:
+   *  MEASURED at 390x844 (fov 68), the poster showed 82%. Aimed at the wall
+   *  itself it shows 100%. */
+  private static readonly INTERIOR_ENTRY_LOOK_PHONE = { x: -0.3, y: 1.9, z: -3.9 };
+  private static readonly INTERIOR_ENTRY_HOLD = 1.2;
+  /** How far a visitor can turn the room camera off their heading. */
+  private static readonly INTERIOR_LOOK_MAX = (Math.PI * 2) / 3;
+  private static readonly INTERIOR_LOOK_IDLE_S = 1.5;
+  /** A blocker is grown by this much before the camera may stand next to it. */
+  private static readonly INTERIOR_CAM_PAD = 0.15;
+  /** The climb per unit of follow distance a wall takes, and the highest
+   *  the camera climbs to (room-local y): under the curtain rail's 2.97 and
+   *  the curtains' 2.98, with the 0.1 u near plane to spare. */
+  private static readonly INTERIOR_CAM_CLIMB = 0.4;
+  private static readonly INTERIOR_CAM_TOP = 2.85;
+
+  /**
+   * Turn the room camera (P2-B11): offsets interiorCamYaw from the heading by
+   * up to ±120°. It holds there for 1.5 s after the last turn, then eases
+   * back behind the heading. interiorCamYaw is the walk basis, so the turn
+   * steers the walk too. A turn ends the entry shot, like any input.
+   * main-simple calls it from wave 4 (P2-A11) as scene.setInteriorLook?.().
+   */
+  public setInteriorLook(dYaw: number): void {
+    if (!this.insideInterior || !Number.isFinite(dYaw) || dYaw === 0) return;
+    this.interiorEntryHold = 0;
+    this.interiorLookIdle = 0;
+    let off = this.interiorCamYaw + dYaw - this.interiorYaw;
+    while (off > Math.PI) off -= Math.PI * 2;
+    while (off < -Math.PI) off += Math.PI * 2;
+    const M = GameScene.INTERIOR_LOOK_MAX;
+    this.interiorCamYaw = this.interiorYaw + THREE.MathUtils.clamp(off, -M, M);
+  }
+
+  /** The follow camera's frame: yaw, then the pose (fx-timed), then the
+   *  entry shot's blend over it. */
+  private updateInteriorFollow(deltaTime: number): void {
+    // Eased behind the player's heading, unless the visitor turned it lately.
+    this.interiorLookIdle += deltaTime;
+    if (this.interiorLookIdle > GameScene.INTERIOR_LOOK_IDLE_S) {
+      let dCam = this.interiorYaw - this.interiorCamYaw;
+      while (dCam > Math.PI) dCam -= Math.PI * 2;
+      while (dCam < -Math.PI) dCam += Math.PI * 2;
+      this.interiorCamYaw += dCam * Math.min(1, 3 * deltaTime);
+    }
+    this.interiorCamDt = deltaTime;
+    if (fx.on('interiorCam')) fx.time('interiorCam', this.boundInteriorCam);
+    else {
+      this.interiorCamPull = 1;
+      this.interiorCamRise = 0;
+      this.followPose(false);
+    }
+    const o = GameScene.INTERIOR_ORIGIN;
+    // The entry shot, then a 3/s ease into the follow (a cut under reduced
+    // motion). The blend runs on the pose the follow just computed.
+    if (this.interiorEntryHold > 0) {
+      this.interiorEntryHold = Math.max(0, this.interiorEntryHold - deltaTime);
+      this.interiorEntryBlend = 0;
+    } else if (this.interiorEntryBlend < 1) {
+      this.interiorEntryBlend = a11y.reducedMotion
+        ? 1
+        : this.interiorEntryBlend + (1 - this.interiorEntryBlend) * (1 - Math.exp(-3 * deltaTime));
+      if (this.interiorEntryBlend > 0.999) this.interiorEntryBlend = 1;
+    }
+    const k = this.interiorEntryBlend;
+    if (k < 1) {
+      const E = GameScene.INTERIOR_ENTRY_CAM;
+      const L =
+        this.camera.aspect < 0.8
+          ? GameScene.INTERIOR_ENTRY_LOOK_PHONE
+          : GameScene.INTERIOR_ENTRY_LOOK;
+      this._icPt.set(o.x + E.x, o.y + E.y, o.z + E.z);
+      this._icFollow.lerpVectors(this._icPt, this._icFollow, k);
+      this._icPt.set(o.x + L.x, o.y + L.y, o.z + L.z);
+      this._icLook.lerpVectors(this._icPt, this._icLook, k);
+    }
+    this.camera.up.set(0, 1, 0);
+    this.camera.position.copy(this._icFollow);
+    this.camera.lookAt(this._icLook);
+  }
+
+  /** fx 'interiorCam': the follow pose with the pull-in and the guest rise. */
+  private updateInteriorCamera(deltaTime: number): void {
+    this.followPose(true, deltaTime);
+  }
+
+  /**
+   * The follow pose into _icFollow (camera) and _icLook (target): behind the
+   * heading at the follow distance, clamped inside the walls. With `avoid`,
+   * a wanted point inside a theme blocker (grown by 0.15) pulls in along
+   * camera to target by a 6-step binary search, eased in at 12/s and out at
+   * 4/s but never left inside a bare blocker; and a party guest within 0.5 u
+   * of the sightline lifts the camera 0.4 u.
+   */
+  private followPose(avoid: boolean, deltaTime = 0): void {
+    const o = GameScene.INTERIOR_ORIGIN;
+    const p = this.player.position;
+    const C = this.camera.aspect < 0.8 ? GameScene.INTERIOR_CAM_PHONE : GameScene.INTERIOR_CAM;
+    const cy = this.interiorCamYaw;
+    const tx = p.x - o.x;
+    const ty = p.y - o.y + C.look;
+    const tz = p.z - o.z;
+    const wx = THREE.MathUtils.clamp(tx - Math.sin(cy) * C.back, -3.6, 3.6);
+    const wz = THREE.MathUtils.clamp(tz - Math.cos(cy) * C.back, -3.6, 3.6);
+    // Where a wall cuts the follow short, the camera climbs by a share of
+    // what the wall took, under INTERIOR_CAM_TOP. MEASURED (wave-3
+    // integration, desktop, every theme): at the spawn the door wall left
+    // 1.7 u of the 3.0 u back, the camera stood 2.3 u from the avatar and
+    // the avatar filled 12.8% of the entry view (bar 12%). Backed right up
+    // to a wall the climb gives way (gone under 0.9 u left), so the camera
+    // comes down to the avatar's shoulder and the close fade takes it, as
+    // before, rather than looking down past an opaque head.
+    const kept = Math.hypot(wx - tx, wz - tz);
+    const lost = (C.back - kept) * THREE.MathUtils.smoothstep(kept, 0.9, 1.6);
+    const wy = Math.min(
+      GameScene.INTERIOR_PLAYER_Y + C.up + lost * GameScene.INTERIOR_CAM_CLIMB,
+      Math.max(GameScene.INTERIOR_PLAYER_Y + C.up, GameScene.INTERIOR_CAM_TOP),
+    );
+    let pull = 1;
+    let rise = 0;
+    if (avoid) {
+      const blockers = this.interiorCamBlockers[this.interiorActiveTheme] ?? [];
+      const at = (t: number, pad: number): boolean =>
+        this.roomBoxHit(blockers, tx + (wx - tx) * t, ty + (wy - ty) * t, tz + (wz - tz) * t, pad);
+      const PAD = GameScene.INTERIOR_CAM_PAD;
+      let allowed = 1;
+      if (at(1, PAD)) {
+        let lo = 0;
+        let hi = 1;
+        for (let i = 0; i < 6; i++) {
+          const mid = (lo + hi) / 2;
+          if (at(mid, PAD)) hi = mid;
+          else lo = mid;
+        }
+        allowed = lo;
+      }
+      const rate = allowed < this.interiorCamPull ? 12 : 4;
+      this.interiorCamPull += (allowed - this.interiorCamPull) * (1 - Math.exp(-rate * deltaTime));
+      if (this.interiorCamPull > 0.999 && allowed === 1) this.interiorCamPull = 1;
+      // The ease never leaves the camera inside the prop itself.
+      if (this.interiorCamPull > allowed && at(this.interiorCamPull, 0)) {
+        this.interiorCamPull = allowed;
+      }
+      pull = this.interiorCamPull;
+      // A dancing guest between the camera and the avatar: rise over them.
+      let want = 0;
+      for (const g of this.partyGuests) {
+        const gp = g.npc.meshRef.position;
+        if (this.segmentDistXZ(gp.x - o.x, gp.z - o.z, tx, tz, wx, wz) < 0.5) {
+          want = 0.4;
+          break;
+        }
+      }
+      this.interiorCamRise += (want - this.interiorCamRise) * (1 - Math.exp(-4 * deltaTime));
+      rise = this.interiorCamRise;
+    }
+    this._icFollow.set(
+      o.x + tx + (wx - tx) * pull,
+      o.y + ty + (wy - ty) * pull + rise,
+      o.z + tz + (wz - tz) * pull,
+    );
+    this._icLook.set(p.x, p.y + C.look, p.z);
+  }
+
+  /** Whether a room-local point lies inside any box grown by `pad`. */
+  private roomBoxHit(boxes: RoomBox[], x: number, y: number, z: number, pad: number): boolean {
+    for (const b of boxes) {
+      if (
+        x > b.minX - pad &&
+        x < b.maxX + pad &&
+        y > b.minY - pad &&
+        y < b.maxY + pad &&
+        z > b.minZ - pad &&
+        z < b.maxZ + pad
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Distance on the floor plane from (px, pz) to the segment a to b, counted
+   *  only strictly between its ends (a guest behind the camera or beyond the
+   *  avatar is not in the way). */
+  private segmentDistXZ(
+    px: number,
+    pz: number,
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+  ): number {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len2 = dx * dx + dz * dz;
+    if (len2 < 1e-8) return Infinity;
+    const t = ((px - ax) * dx + (pz - az) * dz) / len2;
+    if (t <= 0 || t >= 1) return Infinity;
+    return Math.hypot(ax + dx * t - px, az + dz * t - pz);
   }
 
   /** The interior frame: walk the player, follow with the camera, flicker the
@@ -16409,19 +17513,11 @@ export class GameScene extends THREE.Scene {
       this.camera.position.lerp(this._interiorCamPos, k);
       this.camera.lookAt(o.x + T.x, o.y + T.y, o.z + T.z);
     } else {
-      // Follow camera: eased behind the player's heading, clamped inside walls.
-      let dCam = this.interiorYaw - this.interiorCamYaw;
-      while (dCam > Math.PI) dCam -= Math.PI * 2;
-      while (dCam < -Math.PI) dCam += Math.PI * 2;
-      this.interiorCamYaw += dCam * Math.min(1, 3 * deltaTime);
-      const cy = this.interiorCamYaw;
-      const camX = THREE.MathUtils.clamp(p.x - o.x - Math.sin(cy) * 2.4, -3.6, 3.6);
-      const camZ = THREE.MathUtils.clamp(p.z - o.z - Math.cos(cy) * 2.4, -3.6, 3.6);
-      this.camera.up.set(0, 1, 0);
-      this.camera.position.set(o.x + camX, o.y + GameScene.INTERIOR_PLAYER_Y + 1.25, o.z + camZ);
-      this.camera.lookAt(p.x, p.y + 0.85, p.z);
+      if (wantMove) this.interiorEntryHold = 0; // the first input ends the entry shot
+      this.updateInteriorFollow(deltaTime);
     }
-    // A wall behind the camera brings it close: the avatar fades (B11).
+    // A wall or a prop behind the camera brings it close: the avatar fades
+    // (B11), measured from player.position after the camera's write.
     this.tickAvatarFade(deltaTime);
 
     // Fixtures: curtains slide, the lamp fades. Both eased rather than snapped
@@ -16524,6 +17620,15 @@ export class GameScene extends THREE.Scene {
   /** Start/finish gate of a race circuit, for the compass guide CTA. */
   public getRaceStartPosition(kind: 'land' | 'water'): THREE.Vector3 | null {
     return this.races?.getStartPosition(kind) ?? null;
+  }
+
+  /** The running race's next gate (P2-B7), written into `out` with no
+   *  allocation; null when no race runs. A's race compass (wave 4, P2-A8)
+   *  reads it as `scene.getRaceNextGate?.(out) ?? null`. */
+  public getRaceNextGate(
+    out: THREE.Vector3,
+  ): { idx: number; n: number; kind: 'land' | 'water' } | null {
+    return this.races?.getNextGate(out) ?? null;
   }
 
   /** Arm (or clear) a ?race=&beat= challenge target on the race HUD. */

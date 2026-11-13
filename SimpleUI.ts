@@ -3,7 +3,7 @@ import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import type { BoardRead } from './Boards';
 import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
-import { GUIDE_KEY, GUIDE_STEPS, type GuideStep } from './Guide';
+import { GUIDE_KEY, GUIDE_STEPS, type GoalsSummary, type GuideStep } from './Guide';
 import { checkName, safePeerName } from './Moderation';
 import { ACTIVITY_DEFS } from './NpcActivities';
 import { AI_NPCS, routeQuestion, type QuestionRoute } from './NpcChat';
@@ -20,10 +20,25 @@ import {
   isSttSupported,
   startListening,
 } from './Speech';
+import {
+  ensureIconSprite,
+  icon,
+  iconNode,
+  type IconName,
+  PARCEL_GLYPH,
+  DISTRICT_GLYPHS,
+} from './ui/icons';
+import { type InputMode, keyTextPlain, promptKeysHtml, renderKeyText } from './ui/keycaps';
 import { DS } from './ui/tokens';
 import { WORLD_ERA } from './WorldScale';
 import { EVENT_META } from './WorldState';
 import type { NoticeState, NpcPlan } from './WorldState';
+
+/** What 'ds:goals' carries (main-simple.publishGoals, P2-A12): the ladder,
+ *  and the visit's numbers for the crown's summary (P2-D10). */
+type VisitGoals = GoalsSummary & {
+  visit?: { stamps: number; villagers: number; coins: number; secrets: number; minutes: number };
+};
 
 /**
  * Haptics on? The settings sheet's switch (ds_haptics: '1' on, '0' off)
@@ -235,18 +250,41 @@ export class SimpleUI {
   // One registry for every panel (mobile-HUD Round 3): exclusivity, scrim,
   // Escape, and the chip/touch-control hide policy. See PanelManager.ts.
   public panels!: PanelManager;
-  // Touch device? Drives on-screen buttons + rewrites key-name prompts
-  // ("Press E") into tap language ("Tap USE") pointing at those buttons.
-  private readonly isTouch: boolean =
-    typeof window !== 'undefined' &&
-    ('ontouchstart' in window ||
-      (navigator.maxTouchPoints ?? 0) > 0 ||
-      // ?touch forces the mobile control scheme on desktop for testing
-      (typeof location !== 'undefined' && location.search.includes('touch')));
+  // The touch control scheme at boot (D7): on-screen buttons and the phone
+  // drawer. A coarse pointer that cannot hover (a phone, a tablet), or the
+  // dev flag ?touch=1 exactly. A touchscreen laptop boots the desktop scheme;
+  // its first trusted touch on the world reveals the touch controls.
+  private readonly isTouch: boolean = SimpleUI.bootTouchScheme();
 
-  /** Whether the touch control scheme is active (used as an analytics dimension). */
+  /** The boot scheme's test: (pointer: coarse) and (hover: none), or ?touch=1. */
+  static bootTouchScheme(): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+      if (new URLSearchParams(window.location.search).get('touch') === '1') return true;
+    } catch {
+      /* no location: the media queries decide */
+    }
+    try {
+      const mm = window.matchMedia;
+      if (typeof mm !== 'function') return false;
+      return (
+        mm.call(window, '(pointer: coarse)').matches && mm.call(window, '(hover: none)').matches
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** The touch scheme at boot. A11 and A13 choose copy with it; the input
+   *  in use now is getInputMode(). */
   isTouchDevice(): boolean {
     return this.isTouch;
+  }
+
+  /** The input in use now (D7): the last trusted key, or the last trusted
+   *  pointer's type (a mouse counts as the keyboard scheme). */
+  getInputMode(): InputMode {
+    return this.lastInput === 'touch' ? 'touch' : 'keyboard';
   }
 
   /** The HUD root — photo mode hides it for one frame to shoot a clean scene. */
@@ -386,16 +424,86 @@ export class SimpleUI {
   private leaveBtn: HTMLButtonElement | null = null;
   /** The building's name came with the call (else the hall panel names it). */
   private leaveTitled = false;
-  /** The visitor's last real input: a trusted key, or a pointer. Local to
-   *  the Leave button for now; D7 generalises it in wave 3. */
-  private lastInput: 'keyboard' | 'pointer' = 'pointer';
+  /**
+   * The visitor's last real input (D7, replacing P2-D2's local flag): a
+   * trusted key, or a trusted pointerdown's pointerType. The touch buttons,
+   * the prompt's own click and the touch discs send untrusted keys, which
+   * never flip it to the keyboard: the trusted pointerdown before them has
+   * already said 'touch' or 'mouse'.
+   */
+  private lastInput: 'keyboard' | 'mouse' | 'touch' = this.isTouch ? 'touch' : 'mouse';
   private readonly onInputKey = (e: KeyboardEvent): void => {
-    // The touch buttons send synthetic keys (USE is 'e'): not a keyboard.
-    if (e.isTrusted) this.lastInput = 'keyboard';
+    if (!e.isTrusted) return;
+    // A phone's soft keyboard sends trusted keys too: typing into the chat
+    // field, or an IME composing, says nothing about the scheme. A hardware
+    // keyboard still switches the mode with any key pressed outside a field.
+    if (e.isComposing || e.key === 'Process' || e.key === 'Unidentified') return;
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.isContentEditable || t.matches('input, textarea, select, [contenteditable]'))
+    ) {
+      return;
+    }
+    this.setInput('keyboard');
   };
-  private readonly onInputPointer = (): void => {
-    this.lastInput = 'pointer';
+  private readonly onInputPointer = (e: Event): void => {
+    if (!e.isTrusted) return;
+    const type = (e as PointerEvent).pointerType;
+    const touch = type === 'touch' || type === 'pen';
+    this.setInput(touch ? 'touch' : 'mouse');
+    // A touchscreen laptop boots the desktop scheme: its first trusted touch
+    // on the world brings the touch controls in, beside the desktop chips.
+    if (touch && !this.isTouch && e.target instanceof HTMLCanvasElement) {
+      this.revealTouchControls();
+    }
   };
+
+  /** Touch controls fade to 0.35 (style.css, data-touch-idle) after this
+   *  long of keyboard-only play. */
+  private static readonly TOUCH_IDLE_MS = 10_000;
+  private touchIdleTimer = 0;
+
+  /** Record the input in use; a change of mode re-renders the prompt. */
+  private setInput(input: 'keyboard' | 'mouse' | 'touch'): void {
+    const before = this.getInputMode();
+    this.lastInput = input;
+    const mode = this.getInputMode();
+    trackOnce('input_mode', { mode });
+    if (input === 'keyboard') {
+      // Ten seconds of keys and nothing else: the touch controls step back.
+      if (!this.touchIdleTimer && !this.overlay.hasAttribute('data-touch-idle')) {
+        this.touchIdleTimer = window.setTimeout(() => {
+          this.touchIdleTimer = 0;
+          if (this.lastInput === 'keyboard') this.overlay.setAttribute('data-touch-idle', '1');
+        }, SimpleUI.TOUCH_IDLE_MS);
+      }
+    } else {
+      if (this.touchIdleTimer) {
+        clearTimeout(this.touchIdleTimer);
+        this.touchIdleTimer = 0;
+      }
+      if (input === 'touch') this.overlay.removeAttribute('data-touch-idle');
+    }
+    if (mode !== before) this.rerenderPrompt();
+  }
+
+  /** The touch controls came in on a desktop-scheme device (D7). */
+  private touchRevealed = false;
+  private revealTouchControls(): void {
+    if (this.touchRevealed || this.isTouch) return;
+    this.touchRevealed = true;
+    this.createTouchControls(true);
+    track('touch_controls_revealed');
+  }
+
+  /** The prompt in the mode now in use (its text has not changed). */
+  private rerenderPrompt(): void {
+    const text = this.lastPromptText;
+    if (!text || !this.interactionDiv) return;
+    this.lastPromptMode = null;
+    this.showInteractionPrompt(text);
+  }
 
   /**
    * "← Leave", shown while inside a building (P2-D2, INT-07): a real button
@@ -497,6 +605,8 @@ export class SimpleUI {
 
   constructor(id: string) {
     // Create or get overlay
+    // The chrome's icon sprite (D13), once per page.
+    if (typeof document !== 'undefined' && document.body) ensureIconSprite();
     this.overlay = document.getElementById(id) as HTMLElement;
     if (!this.overlay) {
       this.overlay = document.createElement('div');
@@ -733,8 +843,13 @@ export class SimpleUI {
     if (!this.isTouch && !this.bulletinShowing() && window.innerWidth >= 900) {
       el.dataset.lane = 'top';
       delete el.dataset.bottom;
+      // While the race HUD shows, the lane drops below its measured bottom.
+      const race = this.raceVisible ? this.raceDiv?.getBoundingClientRect() : null;
       Object.assign(el.style, {
-        top: 'calc(var(--sat, 0px) + 66px)',
+        top:
+          race && race.height > 0
+            ? `${Math.ceil(race.bottom + 8)}px`
+            : 'calc(var(--sat, 0px) + 66px)',
         bottom: '',
         maxWidth: 'min(92vw, 440px)',
         left: '50%',
@@ -810,13 +925,22 @@ export class SimpleUI {
   }
 
   /** First steps' card or chip (A6, #ds-guide) where it stands on screen,
-   *  or null while it is hidden. */
+   *  or null while it is hidden. A card still fading in counts: GuideCard
+   *  shows each card and the NextChip with a 180 ms opacity animation from
+   *  0, and the resize that tells watchShown the chip arrived comes in its
+   *  first frame. Read as hidden then, the "Compass set" toast stayed on the
+   *  chip until the next 120 ms poll (wave-2 integration, 390x844, 1 run in
+   *  2; 2 runs in 14 here before this). */
   private guideRect(): DOMRect | null {
     const g = typeof document === 'undefined' ? null : document.getElementById('ds-guide');
     if (!g?.isConnected) return null;
     const cs = getComputedStyle(g);
-    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) {
-      return null;
+    if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+    if (parseFloat(cs.opacity) < 0.05) {
+      const fading =
+        typeof g.getAnimations === 'function' &&
+        g.getAnimations().some((a) => a.playState === 'running' || a.pending);
+      if (!fading) return null;
     }
     const r = g.getBoundingClientRect();
     return r.width > 0 && r.height > 0 ? r : null;
@@ -913,6 +1037,9 @@ export class SimpleUI {
       this.panels.registerLayer('nav-chips', el);
       return;
     }
+    // One row shape for every item (D13): 44 px tall, a 24 px icon, then a
+    // 15 px/600 label, so every label starts at the same x. An icon-only chip
+    // takes its label inside it; a frozen label's emoji takes the icon slot.
     Object.assign(el.style, {
       // relative, NOT static — same in-flow layout, but the chip stays a
       // containing block for its .hud-btn::after tap pad (see tierChip).
@@ -921,45 +1048,32 @@ export class SimpleUI {
       right: '',
       left: '',
       bottom: '',
-      height: '', // clear the CHIP recipe's fixed 30px — drawer rows are 40px
+      height: '', // clear the CHIP recipe's fixed 30px — drawer rows are 44px
+      width: '100%',
       boxSizing: 'border-box',
-      minHeight: '40px',
+      minHeight: '44px',
       display: 'flex',
       alignItems: 'center',
+      justifyContent: 'flex-start',
+      gap: '12px',
+      padding: '0 12px',
       borderRadius: '10px',
-      fontSize: '13px',
+      fontSize: '15px',
+      fontWeight: '600',
     });
-    let item: HTMLElement = el;
-    if (opts.label) {
-      const row = document.createElement('div');
-      Object.assign(row.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        minHeight: '40px',
-        padding: '0 4px',
-        borderRadius: '10px',
-        cursor: 'pointer',
-        pointerEvents: 'auto',
-      });
-      const span = document.createElement('span');
-      span.textContent = opts.label;
-      Object.assign(span.style, { fontSize: '13px', fontWeight: '600', color: '#fff' });
-      row.appendChild(el);
-      row.appendChild(span);
-      // Tapping the label fires the chip. composedPath guard: el.click()
-      // bubbles back through this row — without it, infinite recursion.
-      row.addEventListener('click', (e) => {
-        if (!e.composedPath().includes(el)) el.click();
-      });
-      item = row;
-    } else {
-      Object.assign(el.style, { width: '100%' });
-    }
+    el.classList.add('ds-drawer-row');
+    // The CHIP recipe's 1 px border on every row, so a borderless pill's
+    // label does not start a pixel left of the rest.
+    if (!el.style.borderStyle) el.style.border = '1px solid transparent';
+    if (opts.label) SimpleUI.chipText(el, opts.label);
+    else SimpleUI.slotLeadingEmoji(el);
+    // The CTA rows (Work with me, Hiring) carry a 3 px left accent, drawn
+    // inside the row so it moves no label.
+    if (opts.order === 1 || opts.order === 2) el.classList.add('ds-drawer-cta');
     // Business priority beats creation order: flex `order` puts Work-with-me
     // in slot #1 regardless of which create* ran first.
-    if (opts.order !== undefined) item.style.order = String(opts.order);
-    this.getDrawerList().appendChild(item);
+    if (opts.order !== undefined) el.style.order = String(opts.order);
+    this.getDrawerList().appendChild(el);
   }
 
   /** The drawer's (initially hidden) pill column + the ☰ toggle that owns it. */
@@ -995,7 +1109,7 @@ export class SimpleUI {
     this.drawerListEl = list;
 
     const t = document.createElement('div');
-    t.textContent = '☰';
+    t.appendChild(iconNode('menu', 22));
     Object.assign(t.style, {
       width: '44px',
       height: '44px',
@@ -1053,6 +1167,7 @@ export class SimpleUI {
     this.makeHudButtonAccessible(t, 'Open island menu');
     t.dataset.guide = 'drawer-toggle'; // First steps rings it (A6)
     list.id = 'ds-drawer';
+    list.setAttribute('role', 'group');
     list.setAttribute('aria-label', 'Island menu');
     t.setAttribute('aria-controls', 'ds-drawer');
     t.setAttribute('aria-expanded', 'false');
@@ -1182,6 +1297,10 @@ export class SimpleUI {
       pos: { x: number; y: number; z: number };
       /** District accent (zone POIs only) — halo + legend chip border. */
       color?: string;
+      /** A sprite glyph in place of the emoji (P2-D8). Without one, '📦' and
+       *  a parcel or delivery label take the parcel glyph, and Contact's '📬'
+       *  the mail glyph, so the two never read alike. */
+      glyph?: 'parcel' | 'mail';
     }>,
     onPick: (poi: {
       icon: string;
@@ -1229,97 +1348,122 @@ export class SimpleUI {
     });
     modal.appendChild(canvas);
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const cx = D / 2;
-    const cy = D / 2;
-    const R = D / 2 - 6;
-    // Polar projection from the pole: r grows with distance from the pole
-    // (lat π/2 = centre, shore lat ~0.24 = rim).
-    const SHORE_LAT = 0.2;
-    const project = (pos: { x: number; y: number; z: number }): { x: number; y: number } => {
-      const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
-      const lat = Math.asin(Math.max(-1, Math.min(1, pos.y / len)));
-      const lon = Math.atan2(pos.z, pos.x);
-      const r = (R * (Math.PI / 2 - lat)) / (Math.PI / 2 - SHORE_LAT);
-      return { x: cx + Math.cos(lon) * Math.min(r, R), y: cy + Math.sin(lon) * Math.min(r, R) };
-    };
-    // Sea, land, plaza ring.
-    ctx.fillStyle = '#17435e';
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#4d8a46';
-    ctx.beginPath();
-    ctx.arc(cx, cy, R * 0.94, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(232, 217, 184, 0.5)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(cx, cy, (R * (Math.PI / 2 - 0.4636)) / (Math.PI / 2 - SHORE_LAT), 0, Math.PI * 2);
-    ctx.stroke();
-    // POIs.
     const hits: Array<{ x: number; y: number; poi: (typeof pois)[number] }> = [];
-    ctx.font = '16px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (const poi of pois) {
-      const p = project(poi.pos);
-      // District POIs get their accent as a soft halo — the map used to
-      // render five identical glyphs with nothing tying them to the coloured
-      // beacons the radar and the 3D world already use.
-      if (poi.color) {
-        ctx.fillStyle = poi.color;
-        ctx.globalAlpha = 0.28;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-      ctx.fillText(poi.icon, p.x, p.y);
-      hits.push({ x: p.x, y: p.y, poi });
-    }
-    // The compass pill's current target: a gold halo, so the map a visitor
-    // opened FROM the pill visibly agrees with it. Static ring on purpose —
-    // the modal canvas draws once, and reduced-motion needs no special case.
-    if (opts?.targetPos) {
-      const tp = project(opts.targetPos);
-      ctx.strokeStyle = '#ffd54a';
-      ctx.lineWidth = 2;
+    // The parcel and Contact's mail never share a glyph (P2-D8).
+    const glyphOf = (poi: (typeof pois)[number]): 'parcel' | 'mail' | null =>
+      poi.glyph ??
+      (poi.icon === '📦' || /\b(parcel|deliver)/i.test(poi.label)
+        ? 'parcel'
+        : poi.icon === '📬'
+          ? 'mail'
+          : null);
+    // No 2D context (a locked-down browser, a test DOM): the legend below is
+    // still the whole map, as it is for a screen reader.
+    if (ctx) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const cx = D / 2;
+      const cy = D / 2;
+      const R = D / 2 - 6;
+      // Polar projection from the pole: r grows with distance from the pole
+      // (lat π/2 = centre, shore lat ~0.24 = rim).
+      const SHORE_LAT = 0.2;
+      const project = (pos: { x: number; y: number; z: number }): { x: number; y: number } => {
+        const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
+        const lat = Math.asin(Math.max(-1, Math.min(1, pos.y / len)));
+        const lon = Math.atan2(pos.z, pos.x);
+        const r = (R * (Math.PI / 2 - lat)) / (Math.PI / 2 - SHORE_LAT);
+        return { x: cx + Math.cos(lon) * Math.min(r, R), y: cy + Math.sin(lon) * Math.min(r, R) };
+      };
+      // Sea, land, plaza ring.
+      ctx.fillStyle = '#17435e';
       ctx.beginPath();
-      ctx.arc(tp.x, tp.y, 12.5, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    // You-are-here + heading. The heading arrow's screen direction comes from
-    // projecting a point a step ahead — the polar projection's own math, so
-    // it is correct at any longitude without a tangent-frame derivation.
-    if (opts?.playerPos) {
-      const pp = project(opts.playerPos);
-      if (opts.playerFwd) {
-        const ahead = project({
-          x: opts.playerPos.x + opts.playerFwd.x * 3,
-          y: opts.playerPos.y + opts.playerFwd.y * 3,
-          z: opts.playerPos.z + opts.playerFwd.z * 3,
-        });
-        const dx = ahead.x - pp.x;
-        const dy = ahead.y - pp.y;
-        const len = Math.hypot(dx, dy);
-        if (len > 0.01) {
-          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(pp.x, pp.y);
-          ctx.lineTo(pp.x + (dx / len) * 11, pp.y + (dy / len) * 11);
-          ctx.stroke();
-        }
-      }
-      ctx.fillStyle = '#ffffff';
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(pp.x, pp.y, 4, 0, Math.PI * 2);
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
       ctx.fill();
+      ctx.fillStyle = '#4d8a46';
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 0.94, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(232, 217, 184, 0.5)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(cx, cy, (R * (Math.PI / 2 - 0.4636)) / (Math.PI / 2 - SHORE_LAT), 0, Math.PI * 2);
       ctx.stroke();
+      // POIs.
+      ctx.font = '16px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const poi of pois) {
+        const p = project(poi.pos);
+        // District POIs get their accent as a soft halo — the map used to
+        // render five identical glyphs with nothing tying them to the coloured
+        // beacons the radar and the 3D world already use.
+        if (poi.color) {
+          ctx.fillStyle = poi.color;
+          ctx.globalAlpha = 0.28;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        const glyph = glyphOf(poi);
+        if (glyph && typeof Path2D === 'function') {
+          // The sprite's glyph, 18 px on the 24 px grid, light on the map.
+          ctx.save();
+          ctx.translate(p.x - 9, p.y - 9);
+          ctx.scale(0.75, 0.75);
+          ctx.strokeStyle = '#fff6d8';
+          ctx.lineWidth = 2;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke(new Path2D(glyph === 'parcel' ? PARCEL_GLYPH : DISTRICT_GLYPHS.contact));
+          ctx.restore();
+        } else {
+          ctx.fillText(poi.icon, p.x, p.y);
+        }
+        hits.push({ x: p.x, y: p.y, poi });
+      }
+      // The compass pill's current target: a gold halo, so the map a visitor
+      // opened FROM the pill visibly agrees with it. Static ring on purpose —
+      // the modal canvas draws once, and reduced-motion needs no special case.
+      if (opts?.targetPos) {
+        const tp = project(opts.targetPos);
+        ctx.strokeStyle = '#ffd54a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(tp.x, tp.y, 12.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // You-are-here + heading. The heading arrow's screen direction comes from
+      // projecting a point a step ahead — the polar projection's own math, so
+      // it is correct at any longitude without a tangent-frame derivation.
+      if (opts?.playerPos) {
+        const pp = project(opts.playerPos);
+        if (opts.playerFwd) {
+          const ahead = project({
+            x: opts.playerPos.x + opts.playerFwd.x * 3,
+            y: opts.playerPos.y + opts.playerFwd.y * 3,
+            z: opts.playerPos.z + opts.playerFwd.z * 3,
+          });
+          const dx = ahead.x - pp.x;
+          const dy = ahead.y - pp.y;
+          const len = Math.hypot(dx, dy);
+          if (len > 0.01) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(pp.x, pp.y);
+            ctx.lineTo(pp.x + (dx / len) * 11, pp.y + (dy / len) * 11);
+            ctx.stroke();
+          }
+        }
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(pp.x, pp.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
     }
     const pick = (poi: (typeof pois)[number]): void => {
       modal.remove();
@@ -1379,10 +1523,15 @@ export class SimpleUI {
       const poi = list[0];
       const chip = document.createElement('button');
       chip.type = 'button';
-      chip.textContent =
-        list.length > 1
-          ? `${poi.icon} ${plural(poi.label)} (${list.length})`
-          : `${poi.icon} ${poi.label}`;
+      const glyph = glyphOf(poi);
+      const words = list.length > 1 ? `${plural(poi.label)} (${list.length})` : poi.label;
+      if (glyph) {
+        SimpleUI.chipContent(chip, glyph, words);
+        chip.dataset.glyph = glyph;
+        Object.assign(chip.style, { display: 'inline-flex', alignItems: 'center', gap: '5px' });
+      } else {
+        chip.textContent = `${poi.icon} ${words}`;
+      }
       Object.assign(chip.style, {
         padding: '5px 9px',
         minHeight: this.isTouch ? '44px' : '36px',
@@ -1401,6 +1550,71 @@ export class SimpleUI {
     modal.appendChild(legend);
     this.overlay.appendChild(modal);
     trackOnce('island_map_opened');
+  }
+
+  /**
+   * The School's lessons card (P2-D8): one row per lesson, done or not, with
+   * its reward. Each row not done has one 'Show me', which sends that row's
+   * key through 'ds:guide-to' (A's P2-A9 opens this from the School, wave 4).
+   * A centred modal under the manager: Escape, Back and focus as every other.
+   */
+  public showLessons(
+    rows: ReadonlyArray<{
+      id: string;
+      title: string;
+      done: boolean;
+      reward: number;
+      guideKey?: string;
+    }>,
+  ): void {
+    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'lessons');
+    const title = document.createElement('h2');
+    title.textContent = 'School lessons';
+    Object.assign(title.style, { margin: '0 0 6px', color: '#8a9bff' });
+    modal.appendChild(title);
+    const lede = document.createElement('p');
+    lede.textContent = 'Each lesson teaches one of the island’s trades, and pays a few coins.';
+    Object.assign(lede.style, { margin: '0 0 12px', fontSize: '13px', color: '#c5cfdd' });
+    modal.appendChild(lede);
+    const list = document.createElement('ul');
+    list.className = 'ds-controls-todo';
+    list.dataset.lessons = '1';
+    for (const r of rows) {
+      const li = document.createElement('li');
+      li.dataset.lesson = r.id;
+      if (r.done) li.dataset.done = '1';
+      const text = document.createElement('span');
+      text.className = 'ds-controls-todo-text';
+      const strong = document.createElement('strong');
+      strong.textContent = r.title;
+      const sub = document.createElement('span');
+      sub.textContent = r.done ? 'Learned' : `Reward: ${Math.max(0, Math.round(r.reward))} coins`;
+      text.append(strong, sub);
+      li.appendChild(text);
+      if (r.done) {
+        const done = document.createElement('span');
+        done.className = 'ds-controls-todo-done';
+        done.appendChild(iconNode('check', 16));
+        done.append(' Done');
+        li.appendChild(done);
+      } else if (r.guideKey) {
+        const key = r.guideKey;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = 'Show me';
+        b.dataset.showMe = key;
+        b.setAttribute('aria-label', `Show me: ${r.title}`);
+        b.addEventListener('click', () => {
+          this.closeCenteredModal(modal, 'lessons');
+          this.guideTo(key, 'lessons');
+        });
+        li.appendChild(b);
+      }
+      list.appendChild(li);
+    }
+    modal.appendChild(list);
+    trackOnce('lessons_opened');
+    this.overlay.appendChild(modal);
   }
 
   /** Wire the mute button to the audio system (returns new muted state). */
@@ -1439,6 +1653,8 @@ export class SimpleUI {
     fontSize: '20px',
     lineHeight: '52px',
     textAlign: 'center',
+    // The chat and mic glyphs are ui/icons.ts strokes in currentColor (D13).
+    color: 'white',
     pointerEvents: 'auto',
     userSelect: 'none',
   };
@@ -1494,7 +1710,7 @@ export class SimpleUI {
    * scene.isInsideInterior()`).
    */
   public toast(message: string, opts?: { hint?: boolean; until?: () => boolean }): void {
-    this.enqueue(this.queued(this.touchifyPlain(message), 'toast', !!opts?.hint, opts?.until));
+    this.enqueue(this.queued(message, 'toast', !!opts?.hint, opts?.until));
   }
 
   /** A fresh queue entry: never shown yet. */
@@ -1784,7 +2000,7 @@ export class SimpleUI {
     else this.showToast(m.text, dwell);
     // Read out on its first show only: a re-show after a step aside is the
     // same line, and the live region read 'Lost?' seven times in 33 s.
-    if (m.shows === 1) this.announce(m.text);
+    if (m.shows === 1) this.announce(keyTextPlain(m.text, this.getInputMode()));
     this.watchShown(m);
   }
 
@@ -1816,7 +2032,9 @@ export class SimpleUI {
       });
       this.overlay.appendChild(this.toastEl);
     }
-    this.toastEl.textContent = text;
+    // Keys as k() nodes, built from text nodes: a toast can carry a
+    // visitor's name, so its text never becomes markup (D7).
+    renderKeyText(this.toastEl, text, this.getInputMode());
     this.applyToastAnchor(this.toastEl); // the lanes depend on what else is up
     this.toastEl.style.opacity = '1';
     if (this.toastTimer) clearTimeout(this.toastTimer);
@@ -1891,7 +2109,7 @@ export class SimpleUI {
         });
         el.appendChild(note);
       }
-      note.textContent = m.text;
+      renderKeyText(note, m.text, this.getInputMode());
       const shown = note;
       if (this.panelNoteTimer) clearTimeout(this.panelNoteTimer);
       this.panelNoteTimer = window.setTimeout(
@@ -1999,11 +2217,27 @@ export class SimpleUI {
     if (typeof window === 'undefined') return;
     window.addEventListener('ds:guide', this.onGuideEvent);
     window.addEventListener('ds:intro', this.onIntroEvent);
+    // The ladder and the visit's numbers (P2-D10), kept from boot: main-simple
+    // publishes in the same task as it opens the crown's card.
+    window.addEventListener('ds:goals', this.onGoalsEvent);
     // Capture: a press inside a modal marks the next outcome as its own,
     // whatever the control does with the event afterwards.
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {
       this.overlay.addEventListener(type, this.onPanelAction, true);
     }
+  }
+
+  /** The latest 'ds:goals' detail (P2-D10); null until main-simple sends one
+   *  (it never does without a Next chip). */
+  private goals: VisitGoals | null = null;
+  private readonly onGoalsEvent = (e: Event): void => {
+    const d = (e as CustomEvent<VisitGoals | null>).detail;
+    if (d && Array.isArray(d.goals)) this.goals = d;
+  };
+
+  /** The latest 'ds:goals' detail, for tests and probes. */
+  getGoals(): VisitGoals | null {
+    return this.goals;
   }
 
   private readonly onGuideEvent = (e: Event): void => {
@@ -2208,8 +2442,15 @@ export class SimpleUI {
          You explored every zone of the island. The <strong>Founder's Golden Crown</strong>
          is now yours — and equipped. Thanks for taking the full tour.</p>`,
     );
+    // Your visit, from the latest 'ds:goals' (P2-D10). Without one the block
+    // stays out and the button falls back to 'Keep exploring'.
+    const goals = this.goals;
+    if (goals?.visit) modal.appendChild(this.visitSummaryBlock(goals.visit));
+    const next = goals?.next ?? null;
     const cta = document.createElement('button');
-    cta.textContent = 'Wear it with pride →';
+    cta.type = 'button';
+    cta.dataset.crownNext = next ? next.id : '';
+    cta.textContent = next ? `Next: ${next.label} →` : 'Keep exploring →';
     Object.assign(cta.style, {
       padding: '11px 22px',
       borderRadius: '10px',
@@ -2223,6 +2464,9 @@ export class SimpleUI {
     cta.addEventListener('click', () => {
       modal.remove();
       this.panels.notifyClosed('passport-complete');
+      // The crown leads somewhere: the ladder's next goal, through the seam
+      // every 'Show me' uses.
+      if (next) this.guideTo(next.guideKey, 'crown');
     });
     modal.appendChild(cta);
     // The single highest-intent share moment in the app — the visitor just
@@ -2239,6 +2483,100 @@ export class SimpleUI {
     );
     modal.appendChild(shareRow);
     trackOnce('passport_complete');
+    this.overlay.appendChild(modal);
+  }
+
+  /**
+   * 'Your visit' (P2-D10): districts stamped, villagers talked to, coins
+   * earned, secrets found and minutes on the island, from the visit field
+   * of 'ds:goals'. Numbers only, built with textContent.
+   */
+  private visitSummaryBlock(v: VisitGoals['visit']): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'ds-visit';
+    box.dataset.visit = '1';
+    Object.assign(box.style, { margin: '0 0 16px', textAlign: 'left' });
+    const h = document.createElement('h3');
+    h.textContent = 'Your visit';
+    h.className = 'ds-caption';
+    Object.assign(h.style, {
+      margin: '0 0 8px',
+      fontSize: '11px',
+      fontWeight: '700',
+      letterSpacing: '0.08em',
+      textTransform: 'uppercase',
+      color: '#9fb0c8',
+    });
+    box.appendChild(h);
+    const dl = document.createElement('dl');
+    Object.assign(dl.style, {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))',
+      gap: '8px',
+      margin: '0',
+    });
+    const n = (x: unknown): number =>
+      typeof x === 'number' && Number.isFinite(x) ? Math.max(0, Math.round(x)) : 0;
+    const rows: Array<[string, string, number]> = [
+      ['stamps', 'Districts stamped', n(v?.stamps)],
+      ['villagers', 'Villagers talked to', n(v?.villagers)],
+      ['coins', 'Coins earned', n(v?.coins)],
+      ['secrets', 'Secrets found', n(v?.secrets)],
+      ['minutes', 'Minutes here', n(v?.minutes)],
+    ];
+    for (const [id, label, value] of rows) {
+      const cell = document.createElement('div');
+      cell.dataset.visitStat = id;
+      Object.assign(cell.style, {
+        display: 'flex',
+        flexDirection: 'column-reverse',
+        padding: '8px 6px',
+        borderRadius: '10px',
+        background: 'rgba(255,255,255,0.05)',
+        border: '1px solid rgba(255,255,255,0.1)',
+      });
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      Object.assign(dt.style, { fontSize: '12px', color: '#c3cede' });
+      const dd = document.createElement('dd');
+      dd.textContent = String(value);
+      Object.assign(dd.style, { margin: '0', fontSize: '20px', fontWeight: '700', color: '#fff' });
+      cell.append(dt, dd);
+      dl.appendChild(cell);
+    }
+    box.appendChild(dl);
+    return box;
+  }
+
+  /** The Portfolio menu's 'Your visit' row (P2-D10): the summary on its own.
+   *  Before any 'ds:goals' it shows the passport's count and zeros. */
+  showVisitSummary(): void {
+    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))', 'visit');
+    const title = document.createElement('h2');
+    title.textContent = 'Your visit';
+    Object.assign(title.style, { margin: '0 0 12px', color: '#8a9bff' });
+    modal.appendChild(title);
+    const visit = this.goals?.visit ?? {
+      stamps: this.passport?.count() ?? 0,
+      villagers: 0,
+      coins: 0,
+      secrets: 0,
+      minutes: 0,
+    };
+    const block = this.visitSummaryBlock(visit);
+    block.querySelector('h3')?.remove();
+    modal.appendChild(block);
+    const shareRow = document.createElement('div');
+    shareRow.appendChild(
+      this.makeShareButton('📣 Share the island', {
+        surface: 'visit_summary',
+        url: buildShareUrl(),
+        title: 'DigiScalability Life Island',
+        text: 'A 3D portfolio island you can walk around — take the tour:',
+      }),
+    );
+    modal.appendChild(shareRow);
+    trackOnce('visit_summary_opened');
     this.overlay.appendChild(modal);
   }
 
@@ -2485,8 +2823,12 @@ export class SimpleUI {
     opts: { surface: string; url: string; title?: string; text?: string },
   ): HTMLButtonElement {
     const btn = document.createElement('button');
-    btn.textContent = label;
+    // The share icon from the sprite, in place of a leading emoji (D13).
+    SimpleUI.chipContent(btn, 'share', label.replace(/^\p{Extended_Pictographic}\uFE0F?\s*/u, ''));
     Object.assign(btn.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '7px',
       padding: '9px 16px',
       minHeight: this.isTouch ? '44px' : '', // a thumb target (it measured 38)
       borderRadius: '10px',
@@ -3147,7 +3489,7 @@ export class SimpleUI {
    *  moderation and muting for free — no separate protocol. */
   private createEmoteButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '😀';
+    SimpleUI.chipContent(btn, 'smile');
     Object.assign(btn.style, {
       ...CHIP_ICON,
       top: 'calc(var(--sat, 0px) + 88px)',
@@ -3442,6 +3784,64 @@ export class SimpleUI {
    * state via aria-pressed. Pairs with the `.hud-btn:focus-visible` ring in
    * style.css.
    */
+  /** A chip's content (D13): an icon from the sprite, then its text. */
+  private static chipContent(el: HTMLElement, name: IconName | null, text = ''): void {
+    const kids: Node[] = [];
+    if (name) kids.push(iconNode(name, 18));
+    if (text) {
+      const s = document.createElement('span');
+      s.className = 'ds-chip-label';
+      s.textContent = text;
+      kids.push(s);
+    }
+    el.replaceChildren(...kids);
+  }
+
+  /** Swap a chip's icon, keeping its text. */
+  private static chipIcon(el: HTMLElement, name: IconName): void {
+    const old = [...el.children].find((c) => c.classList.contains('ds-ic'));
+    const next = iconNode(name, 18);
+    if (old) old.replaceWith(next);
+    else el.prepend(next);
+  }
+
+  /** Set a chip's text, keeping its icon. */
+  private static chipText(el: HTMLElement, text: string): void {
+    let s = [...el.children].find((c) => c.classList.contains('ds-chip-label'));
+    if (!s) {
+      s = document.createElement('span');
+      s.className = 'ds-chip-label';
+      el.appendChild(s);
+    }
+    if (s.textContent !== text) s.textContent = text;
+  }
+
+  /**
+   * A frozen label in a drawer row ('💼 Work with me', '📖 Portfolio'): its
+   * emoji goes in the row's 24 px icon slot and its words line up with every
+   * other label. The text is unchanged: the whitespace node between the two
+   * spans keeps textContent as ruled, and a flex row lays it out as nothing.
+   */
+  private static slotLeadingEmoji(el: HTMLElement): void {
+    if (el.querySelector('.ds-ic, .ds-ic-slot')) return;
+    const t = el.textContent ?? '';
+    const m = /^(\p{Extended_Pictographic}\uFE0F?)(\s+)(.+)$/u.exec(t);
+    if (!m) return;
+    const slot = document.createElement('span');
+    slot.className = 'ds-ic-slot';
+    slot.setAttribute('aria-hidden', 'true');
+    slot.textContent = m[1];
+    const label = document.createElement('span');
+    label.className = 'ds-chip-label';
+    label.textContent = m[3];
+    el.replaceChildren(slot, document.createTextNode(m[2]), label);
+  }
+
+  /** Mute's icon: silent whenever the game is effectively silent. */
+  private setMuteIcon(silent: boolean): void {
+    if (this.muteBtn) SimpleUI.chipIcon(this.muteBtn, silent ? 'volume-x' : 'volume');
+  }
+
   private makeHudButtonAccessible(el: HTMLElement, label: string, pressed?: boolean): void {
     el.setAttribute('role', 'button');
     el.setAttribute('tabindex', '0');
@@ -3840,7 +4240,7 @@ export class SimpleUI {
     // 🔇 whenever the game is EFFECTIVELY silent — muted OR volume 0. The
     // slider path already hinted 🔇 at zero, but a reload with a persisted
     // volume of 0 booted showing 🔊 over a silent game.
-    this.muteBtn.textContent = muted || volume === 0 ? '🔇' : '🔊';
+    this.setMuteIcon(muted || volume === 0);
     Object.assign(this.muteBtn.style, {
       ...CHIP_ICON,
       top: 'calc(var(--sat, 0px) + 88px)',
@@ -3854,7 +4254,7 @@ export class SimpleUI {
       // Volume 0 keeps the 🔇 even when unmuted — unmuting a zero-volume game
       // produces no sound, and an icon that claims otherwise is the same
       // lying-control class Ctrl+B just got fixed for.
-      this.muteBtn.textContent = nowMuted || this.hudVolume === 0 ? '🔇' : '🔊';
+      this.setMuteIcon(nowMuted || this.hudVolume === 0);
       this.muteBtn.setAttribute('aria-pressed', String(nowMuted));
       // Tapping the button also surfaces the volume pill for a few seconds —
       // the only mobile path to the slider (no hover on touch).
@@ -3894,7 +4294,10 @@ export class SimpleUI {
     Object.assign(pill.style, {
       position: 'absolute',
       top: 'calc(var(--sat, 0px) + 88px)',
-      right: 'calc(var(--sar, 0px) + 48px)', // opens at the ♿ slot's edge
+      // Desktop (D13): left of the whole icon row (its six 30 px chips end at
+      // +230), so it covers none of its neighbours. Touch keeps the ♿ slot's
+      // edge: there the icons live in the drawer, closed by then.
+      right: this.isTouch ? 'calc(var(--sar, 0px) + 48px)' : 'calc(var(--sar, 0px) + 238px)',
       background: 'rgba(0, 0, 0, 0.85)',
       padding: '8px 12px',
       borderRadius: '10px',
@@ -3928,7 +4331,7 @@ export class SimpleUI {
         this.hudMuted = this.onMuteToggle();
       }
       if (this.muteBtn) {
-        this.muteBtn.textContent = this.hudMuted || v === 0 ? '🔇' : '🔊';
+        this.setMuteIcon(this.hudMuted || v === 0);
         this.muteBtn.setAttribute('aria-pressed', String(this.hudMuted));
       }
       this.showVolumePill(3500); // keep it up while adjusting
@@ -3989,7 +4392,7 @@ export class SimpleUI {
   /** 🎨 button (also bound to the C key): opens the appearance editor. */
   private createCustomizeButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '🎨';
+    SimpleUI.chipContent(btn, 'palette');
     btn.title = 'Customize appearance (C)';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4010,7 +4413,7 @@ export class SimpleUI {
   /** ♿ toggle: dampens the fly-in, camera swoop, and pulsing gates. */
   private createReducedMotionButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '♿';
+    SimpleUI.chipContent(btn, 'motion-off');
     btn.title = 'Reduced motion — dampens the fly-in, camera swoop, and pulsing effects';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4194,8 +4597,9 @@ export class SimpleUI {
    */
   private createHiringChip(): void {
     const btn = document.createElement('div');
-    btn.innerHTML =
-      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true" style="color:#ffd479;flex:none"><path d="M4 1.5h5l3.5 3.5v9.5h-8.5z"/><path d="M9 1.5v3.5h3.5M6 9h4.5M6 11.5h4.5"/></svg><span>Hiring? CV &amp; contact</span>';
+    // The sprite's file-text icon (D13), distinct from the CV's file-user.
+    SimpleUI.chipContent(btn, 'file-text', 'Hiring? CV & contact');
+    (btn.firstElementChild as SVGElement | null)?.style.setProperty('color', '#ffd479');
     btn.dataset.hiringChip = '1';
     Object.assign(btn.style, {
       ...CHIP,
@@ -4222,7 +4626,7 @@ export class SimpleUI {
    *  was the screenshotted clutter). The P shortcut lives in the tooltip. */
   private createPhotoButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '📸';
+    SimpleUI.chipContent(btn, 'camera');
     btn.title = 'Take a photo (P)';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4360,7 +4764,7 @@ export class SimpleUI {
    */
   private createSayHiButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '👋 Say hi';
+    SimpleUI.chipContent(btn, 'hand', 'Say hi');
     Object.assign(btn.style, {
       ...CHIP,
       top: 'calc(var(--sat, 0px) + 202px)', // row below Work-with-me (38px pitch)
@@ -4480,7 +4884,7 @@ export class SimpleUI {
    *  from its own pill row with 📸); touch re-homes it into the ☰ drawer. */
   private createInventoryButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '🎒';
+    SimpleUI.chipContent(btn, 'backpack');
     btn.title = 'Your pack (inventory)';
     Object.assign(btn.style, {
       ...CHIP_ICON,
@@ -4497,7 +4901,7 @@ export class SimpleUI {
 
   private createCompletionButton(): void {
     const btn = document.createElement('div');
-    btn.textContent = '🏝 …';
+    SimpleUI.chipContent(btn, 'map', '…');
     Object.assign(btn.style, {
       ...CHIP,
       top: 'calc(var(--sat, 0px) + 240px)', // last row of the column
@@ -4508,7 +4912,7 @@ export class SimpleUI {
       this.showCompletionModal();
     });
     this.makeHudButtonAccessible(btn, 'Island completion checklist');
-    this.chipHost(btn, { drawer: true, label: 'Progress', order: 8 });
+    this.chipHost(btn, { drawer: true, label: 'Progress · 0%', order: 8 });
     this.completionBtn = btn;
   }
 
@@ -4530,7 +4934,11 @@ export class SimpleUI {
     // first visit. Touch keeps the compact form (the drawer already labels
     // it "Progress", and the tier-1 row has no room for prose).
     if (this.completionBtn) {
-      this.completionBtn.textContent = this.isTouch ? `🏝 ${pct}%` : `🏝 ${pct}% explored`;
+      // The drawer row reads 'Progress · n%' (D13); desktop keeps its words.
+      SimpleUI.chipText(
+        this.completionBtn,
+        this.isTouch ? `Progress · ${pct}%` : `${pct}% explored`,
+      );
     }
     // Introduce the checklist at the FIRST increment — the moment the number
     // visibly moves is the discovery moment; a welcome-close toast would
@@ -4759,53 +5167,56 @@ export class SimpleUI {
     // island's. It mixed 6 portfolio items with 7 game items under one title,
     // with Passport, a game item, first and the only filled button. Now the
     // Hiring row leads as the one filled button (#ffd479 on #1b1400, 13:1).
-    const sections: Array<{ id: string; label: string }> = [
+    // The sprite's icons in the rows (D13): Hiring's file-text, the
+    // districts' glyphs (DISTRICT_GLYPHS), no emoji in the chrome.
+    const sections: Array<{ id: string; label: string; icon: IconName }> = [
       // The hire card is reachable from here too: a recruiter who dismissed
       // the welcome card must not have to find the pill again.
-      { id: 'hire', label: '📄 Hiring? CV, experience and contact' },
-      { id: 'welcome', label: '🏠 About this world' },
-      { id: 'professional', label: '💼 Professional' },
-      { id: 'projects', label: '🚀 Projects' },
-      { id: 'personal', label: '🎨 Personal' },
-      { id: 'contact', label: '📬 Get in touch' },
+      { id: 'hire', label: 'Hiring? CV, experience and contact', icon: 'file-text' },
+      { id: 'welcome', label: 'About this world', icon: 'home' },
+      { id: 'professional', label: 'Professional', icon: 'briefcase' },
+      { id: 'projects', label: 'Projects', icon: 'rocket' },
+      { id: 'personal', label: 'Personal', icon: 'heart' },
+      { id: 'contact', label: 'Get in touch', icon: 'mail' },
     ];
     const row =
-      'display:block;width:100%;min-height:44px;margin:6px 0;padding:11px 12px;border-radius:10px;font-size:15px;cursor:pointer;text-align:left;';
+      'display:flex;align-items:center;gap:10px;width:100%;min-height:44px;margin:6px 0;padding:11px 12px;border-radius:10px;font-size:15px;cursor:pointer;text-align:left;';
     const rows = sections
       .map((s) =>
         s.id === 'hire'
-          ? `<button data-section="${s.id}" style="${row}background:#ffd479;color:#1b1400;border:1px solid #ffd479;font-weight:700;">${s.label}</button>`
-          : `<button data-section="${s.id}" style="${row}background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);">${s.label}</button>`,
+          ? `<button data-section="${s.id}" style="${row}background:#ffd479;color:#1b1400;border:1px solid #ffd479;font-weight:700;">${icon(s.icon)}<span>${s.label}</span></button>`
+          : `<button data-section="${s.id}" style="${row}background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);">${icon(s.icon)}<span>${s.label}</span></button>`,
       )
       .join('');
     const pp = this.passport;
     const ppLabel = pp
       ? pp.isComplete()
-        ? '🛂 Passport 👑'
-        : `🛂 Passport ${pp.count()}/${pp.total()}`
-      : '🛂 Passport';
+        ? `<span>Passport</span>${icon('crown', 16)}`
+        : `<span>Passport ${pp.count()}/${pp.total()}</span>`
+      : '<span>Passport</span>';
     const tile =
-      'min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
-    const group =
-      'margin:14px 0 2px;font-size:11.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9fb0c8;text-align:left;';
+      'display:flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
+    // The group headers take the 11 px uppercase caption class (D13).
+    const group = 'margin:14px 0 2px;text-align:left;';
     menu.innerHTML = `
-      <h2 id="ds-portfolio-menu-title" style="margin:0 0 4px; color:#8a9bff;">📖 Portfolio</h2>
+      <h2 id="ds-portfolio-menu-title" style="margin:0 0 4px; color:#8a9bff;display:flex;align-items:center;justify-content:center;gap:8px;">${icon('book', 22)}<span>Portfolio</span></h2>
       <p style="margin:0 0 4px; font-size:13px; color:#aab;">Jump to any section — or close this and explore the island.</p>
       <div role="group" aria-labelledby="ds-menu-group-portfolio">
-        <h3 id="ds-menu-group-portfolio" style="${group}">Portfolio</h3>
+        <h3 id="ds-menu-group-portfolio" class="ds-caption" style="${group}">Portfolio</h3>
         ${rows}
       </div>
       <div role="group" aria-labelledby="ds-menu-group-island">
-        <h3 id="ds-menu-group-island" style="${group}">Island</h3>
+        <h3 id="ds-menu-group-island" class="ds-caption" style="${group}">Island</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
-          <button data-journal style="${tile}">📔 Journal</button>
-          <button data-pack style="${tile}">🎒 Pack</button>
-          <button data-passport="1" style="${tile}">${ppLabel}</button>
-          <button data-board="leaderboard" style="${tile}">🏁 Leaderboard</button>
-          <button data-board="guestbook" style="${tile}">✍️ Guestbook</button>
-          <button data-board="times" style="${tile}">📰 Island Times</button>
+          <button data-journal style="${tile}">${icon('book', 16)}<span>Journal</span></button>
+          <button data-pack style="${tile}">${icon('backpack', 16)}<span>Pack</span></button>
+          <button data-passport="1" style="${tile}">${icon('passport', 16)}${ppLabel}</button>
+          <button data-board="leaderboard" style="${tile}">${icon('trophy', 16)}<span>Leaderboard</span></button>
+          <button data-board="guestbook" style="${tile}">${icon('pen', 16)}<span>Guestbook</span></button>
+          <button data-board="times" style="${tile}">${icon('news', 16)}<span>Island Times</span></button>
         </div>
-        <button data-controls style="${tile}display:block;width:100%;margin-top:8px;">⌨️ Controls &amp; settings</button>
+        <button data-visit style="${tile}width:100%;margin-top:8px;">${icon('compass', 16)}<span>Your visit</span></button>
+        <button data-controls style="${tile}width:100%;margin-top:8px;">${icon('keyboard', 16)}<span>Controls &amp; settings</span></button>
       </div>`;
 
     // close button: named, and the 44px box every other × has (it measured
@@ -4849,6 +5260,10 @@ export class SimpleUI {
     menu.querySelector('button[data-controls]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
       this.showControls('menu');
+    });
+    menu.querySelector('button[data-visit]')?.addEventListener('click', () => {
+      this.togglePortfolioMenu();
+      this.showVisitSummary();
     });
     menu.querySelector('button[data-journal]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
@@ -4923,6 +5338,41 @@ export class SimpleUI {
     ['Map', 'tap the compass pill or the minimap'],
     ['Menu', '☰ — Work with me, Portfolio, photo, sound and this sheet'],
   ];
+
+  /**
+   * The nearest way to earn, for the shop's short-of-coins line (P2-D7): the
+   * first undone earning goal on the ladder ('ds:goals'), else deliveries.
+   * Its key is the one Things to do gives that system.
+   */
+  private nearestEarn(): { key: string; title: string; label: string } {
+    const ways: Array<{ goal: string; key: string; title: string; label: string }> = [
+      {
+        goal: 'deliveries',
+        key: 'mailbox:next',
+        title: 'Deliveries',
+        label: 'A glowing mailbox holds a paid delivery.',
+      },
+      {
+        goal: 'lesson',
+        key: 'school',
+        title: 'The School’s lessons',
+        label: 'Each School lesson pays a few coins.',
+      },
+      {
+        goal: 'catch',
+        key: 'shore',
+        title: 'Fishing',
+        label: 'The Fisherman buys every catch.',
+      },
+    ];
+    const keys = new Set(this.thingsToDo().map((t) => t.key));
+    const goals = this.goals?.goals;
+    const open = ways.filter(
+      (w) => keys.has(w.key) && !goals?.some((g) => g.id === w.goal && g.done),
+    );
+    const pick = open[0] ?? ways[0];
+    return { key: pick.key, title: pick.title, label: pick.label };
+  }
 
   /** One line per system; `key` is a 'ds:guide-to' key the compass can take. */
   private thingsToDo(): Array<{ icon: string; title: string; how: string; key?: string }> {
@@ -5003,6 +5453,37 @@ export class SimpleUI {
     ];
   }
 
+  /**
+   * The Things to do rows. Once 'ds:goals' has fired they are the ladder's
+   * goals in ladder order (P2-D10), each with the static row's icon and how
+   * where one shares its key; the static rows stay as the fallback.
+   */
+  private todoRows(): Array<{
+    icon: string;
+    title: string;
+    how: string;
+    key?: string;
+    done?: boolean;
+  }> {
+    const fixed = this.thingsToDo();
+    const goals = this.goals?.goals;
+    if (!goals || goals.length === 0) return fixed;
+    const byKey = new Map(fixed.filter((r) => r.key).map((r) => [r.key as string, r]));
+    const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    return goals.map((g) => {
+      const zone = g.id.startsWith('stamp:') ? g.id.slice('stamp:'.length) : null;
+      const meta = zone ? (PASSPORT_META as Record<string, { icon: string }>)[zone] : undefined;
+      const same = byKey.get(g.guideKey);
+      return {
+        icon: meta?.icon ?? same?.icon ?? '⭐',
+        title: esc(g.label),
+        how: zone ? 'Walk into its hall to stamp your passport.' : (same?.how ?? ''),
+        key: g.guideKey,
+        done: g.done,
+      };
+    });
+  }
+
   /** Write a setting and tell the input layer (SimpleInputManager re-reads
    *  its three look keys on 'ds:settings'). */
   private writeSetting(key: string, value: string): void {
@@ -5071,7 +5552,7 @@ export class SimpleUI {
       `<dl class="ds-controls-rows">${list
         .map(([what, how]) => `<div><dt>${what}</dt><dd>${how}</dd></div>`)
         .join('')}</dl>`;
-    const todo = this.thingsToDo();
+    const todo = this.todoRows();
     const tabs: Array<[typeof tab, string]> = [
       ['controls', 'Controls'],
       ['todo', 'Things to do'],
@@ -5108,11 +5589,13 @@ export class SimpleUI {
            ${todo
              .map(
                (it) =>
-                 `<li><span class="ds-controls-todo-text"><strong>${it.icon} ${it.title}</strong>
-                    <span>${it.how}</span></span>${
-                      it.key
-                        ? `<button type="button" data-show-me="${it.key}" aria-label="Show me: ${it.title}">Show me</button>`
-                        : ''
+                 `<li${it.done ? ' data-done="1"' : ''}><span class="ds-controls-todo-text"><strong>${it.icon} ${it.title}</strong>
+                    ${it.how ? `<span>${it.how}</span>` : ''}</span>${
+                      it.done
+                        ? '<span class="ds-controls-todo-done">✓ Done</span>'
+                        : it.key
+                          ? `<button type="button" data-show-me="${it.key}" aria-label="Show me: ${it.title}">Show me</button>`
+                          : ''
                     }</li>`,
              )
              .join('')}
@@ -5271,7 +5754,7 @@ export class SimpleUI {
   private createControlsRow(): void {
     if (!this.isTouch) return;
     const btn = document.createElement('div');
-    btn.textContent = '⌨️ Controls & settings';
+    SimpleUI.chipContent(btn, 'keyboard', 'Controls & settings');
     btn.dataset.controlsRow = '1';
     Object.assign(btn.style, { ...CHIP });
     btn.addEventListener('click', (e) => {
@@ -5289,8 +5772,8 @@ export class SimpleUI {
    * input path (interaction, dialogue advance, jump) works unchanged;
    * the analog joystick is merged into movement in main-simple.
    */
-  private createTouchControls(): void {
-    if (!this.isTouch) return;
+  private createTouchControls(revealed = false): void {
+    if (!this.isTouch && !revealed) return;
 
     // Joystick — the visible ring sits inside a larger INVISIBLE hit region
     // (the whole ~166px lower-left corner): a blind thumb landing a little
@@ -5332,6 +5815,7 @@ export class SimpleUI {
     base.appendChild(thumb);
     base.dataset.guide = 'joystick'; // First steps' ghost thumb sits on the ring (A6)
     hit.appendChild(base);
+    hit.classList.add('ds-touch-ctl'); // fades after keyboard-only play (D7)
     this.overlay.appendChild(hit);
     this.panels.registerLayer('touch-controls', hit);
 
@@ -5436,6 +5920,7 @@ export class SimpleUI {
       layer: 'touch-controls' | 'aux-controls' = 'touch-controls',
     ): HTMLElement => {
       const btn = document.createElement('div');
+      btn.classList.add('ds-touch-ctl');
       btn.innerHTML =
         `<div style="font-size:24px;line-height:1;">${icon}</div>` +
         `<div style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
@@ -5505,7 +5990,9 @@ export class SimpleUI {
     };
     // Stacked bottom-right: interact (primary, lowest for thumb reach),
     // jump/swim (hold), wave.
-    makeButton('👆', 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide = 'use-button';
+    // D13: the chrome draws its glyphs from ui/icons.ts, not emoji.
+    makeButton(icon('hand', 26), 'USE', '36px', 'KeyE', 'e', DS.ringUse).dataset.guide =
+      'use-button';
     // JUMP, WAVE and the contextual DIVE, FEED and EAT have no use inside a
     // room: the 'interior' mode takes this layer out (P2-D2). USE, the
     // joystick, chat and the mic stay.
@@ -5569,7 +6056,8 @@ export class SimpleUI {
     // Stacked above the joystick (which spans bottom 26–136px here) so
     // neither control overlaps it.
     const chatBtn = document.createElement('div');
-    chatBtn.textContent = '💬';
+    chatBtn.innerHTML = icon('chat', 22);
+    chatBtn.classList.add('ds-aux-disc');
     Object.assign(chatBtn.style, {
       ...SimpleUI.AUX_DISC,
       left: 'calc(var(--sal, 0px) + 26px)',
@@ -5598,7 +6086,8 @@ export class SimpleUI {
 
     const micBtn = document.createElement('div');
     this.micBtn = micBtn;
-    micBtn.textContent = '🎤';
+    micBtn.innerHTML = icon('mic', 22);
+    micBtn.classList.add('ds-aux-disc');
     Object.assign(micBtn.style, {
       ...SimpleUI.AUX_DISC,
       // 8px above 💬 (174 + 52 + 8); short landscape moves it beside 💬
@@ -6549,8 +7038,11 @@ export class SimpleUI {
     // Called every frame while a target is in range — skip the innerHTML
     // parse/replace when the prompt hasn't changed (it changes only when the
     // TARGET changes). Cleared in hideInteractionPrompt.
-    if (text === this.lastPromptText && this.interactionDiv) return;
+    // Text plus input mode: a switch from keys to touch re-renders it (D7).
+    const mode = this.getInputMode();
+    if (text === this.lastPromptText && mode === this.lastPromptMode && this.interactionDiv) return;
     this.lastPromptText = text;
+    this.lastPromptMode = mode;
     if (!this.interactionDiv) {
       this.interactionDiv = document.createElement('div');
       // The guide card's anchor (A6 keeps 8 px above it).
@@ -6592,7 +7084,7 @@ export class SimpleUI {
       });
     }
 
-    this.interactionDiv.innerHTML = this.touchify(text);
+    this.interactionDiv.innerHTML = this.touchify(text, mode);
     // Read out once the text has held for 600 ms: this runs every frame while
     // a target is in range, and only a CHANGE gets this far (D6).
     if (this.promptAnnounceTimer) clearTimeout(this.promptAnnounceTimer);
@@ -6611,34 +7103,22 @@ export class SimpleUI {
   private promptAnnounceTimer = 0;
 
   /**
-   * Rewrite keyboard prompts into touch language on phones/tablets. Desktop
-   * gets the text unchanged. Maps each key to the on-screen button that fires
-   * it so "Press E / Space / Q" becomes "Tap USE / JUMP / WAVE".
+   * The prompt's keys in the input in use (D7): 'Press <strong>X</strong>'
+   * (any case, a keyboard-emoji prefix dropped) and '[Key]' tokens become a
+   * keycap on the keyboard, and the glyph pill of the button that fires the
+   * key on touch ('Tap USE', 'Hold JUMP', 'eat with EAT').
    */
-  private touchify(html: string): string {
-    if (!this.isTouch) return html;
-    return (
-      html
-        .replace(/Press <strong>E<\/strong>/g, 'Tap <strong>👆 USE</strong>')
-        .replace(/Press <strong>Space<\/strong>/g, 'Tap <strong>⤒ JUMP</strong>')
-        .replace(/Hold <strong>Space<\/strong>/g, 'Hold <strong>⤒ JUMP</strong>')
-        .replace(/Press <strong>Q<\/strong>/g, 'Tap <strong>👋 WAVE</strong>')
-        // The eat verb: G on a keyboard, the contextual 🍽 EAT button on touch
-        // (it exists whenever a meal is held — exactly when this copy shows).
-        .replace(/eat with G\b/g, 'eat with <strong>🍽 EAT</strong>')
-    );
+  private touchify(html: string, mode: InputMode = this.getInputMode()): string {
+    return promptKeysHtml(html, mode);
   }
 
   /**
-   * Plain-text sibling of touchify for surfaces that render via textContent
-   * (toast, flashMessage) — markup would leak there as literal angle brackets.
+   * Plain-text sibling of touchify, for text that is escaped into markup
+   * elsewhere (the pack's hints). Toasts and flashes do not use it: they
+   * render their keys as nodes when they show (renderKeyText).
    */
   private touchifyPlain(text: string): string {
-    if (!this.isTouch) return text;
-    return text
-      .replace(/[Pp]ress G\b/g, 'tap 🍽 EAT')
-      .replace(/[Pp]ress E\b/g, 'tap 👆 USE')
-      .replace(/[Pp]ress Q\b/g, 'tap 👋 WAVE');
+    return keyTextPlain(text, this.getInputMode());
   }
 
   /**
@@ -7337,7 +7817,21 @@ export class SimpleUI {
       zIndex: '1700',
       fontFamily: 'system-ui, sans-serif',
     });
+    // Nothing in the open tab to buy (P2-D7): one 12 px line names the
+    // nearest way to earn, with a 'Show me' on a Things to do key. It heads
+    // the rows: under ten hats it sat below the fold on a phone.
+    const earnLine = (tab: 'tools' | 'supplies' | 'hats'): string => {
+      const inTab = state.items.filter((it) => (it.category ?? 'hats') === tab);
+      const buyable = inTab.filter((it) => it.consumable || !it.owned);
+      if (buyable.length === 0 || buyable.some((it) => it.price <= state.coins)) return '';
+      const earn = this.nearestEarn();
+      return `<div data-shop-earn style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;font-size:12px;color:#c5cfdd;">
+          <span>Short of coins? ${earn.label}</span>
+          <button type="button" data-shop-earn-key="${earn.key}" aria-label="Show me: ${earn.title}" style="flex:none;min-height:${this.isTouch ? '44px' : '32px'};padding:0 12px;border-radius:8px;border:1px solid rgba(143,155,255,0.8);background:rgba(76,91,224,0.14);color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Show me</button>
+        </div>`;
+    };
     const rowsFor = (tab: 'tools' | 'supplies' | 'hats'): string =>
+      earnLine(tab) +
       state.items
         .filter((it) => (it.category ?? 'hats') === tab)
         .map((it) => {
@@ -7404,10 +7898,47 @@ export class SimpleUI {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           const id = (btn as HTMLElement).getAttribute('data-shop-id');
-          if (id) onAction(id);
+          if (!id) return;
+          const item = state.items.find((it) => it.id === id);
+          onAction(id);
+          // A hat goes on (bought or owned): say who sees it (P2-D7). The
+          // button was enabled, so the equip went through; main-simple's
+          // equip path is A's and does not change.
+          if (item?.equippable && !item.equipped && (item.owned || state.coins >= item.price)) {
+            this.toast(`${item.name} on — other visitors see it too`);
+          }
         });
       });
+      this.shopDiv!.querySelector<HTMLElement>('button[data-shop-earn-key]')?.addEventListener(
+        'click',
+        (e) => {
+          e.stopPropagation();
+          const key = (e.currentTarget as HTMLElement).dataset.shopEarnKey ?? '';
+          this.hideShop();
+          onClose();
+          this.guideTo(key, 'shop');
+        },
+      );
     };
+    // Desktop, Hats open: the panel docks left so the avatar stays in view
+    // (P2-D7). Everywhere else it stays centred.
+    const dock = (): void => {
+      const d = this.shopDiv;
+      if (!d) return;
+      const docked = !this.isTouch && this.shopTab === 'hats';
+      d.dataset.docked = docked ? 'left' : '';
+      Object.assign(
+        d.style,
+        docked
+          ? {
+              left: 'calc(var(--sal, 0px) + 16px)',
+              transform: 'translateY(-50%)',
+              width: 'min(380px, calc(100vw - 32px))',
+            }
+          : { left: '50%', transform: 'translate(-50%, -50%)', width: 'min(420px, 92%)' },
+      );
+    };
+    dock();
     this.shopDiv.querySelectorAll('button[data-shop-tab]').forEach((tb) => {
       tb.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -7423,6 +7954,7 @@ export class SimpleUI {
           (b as HTMLElement).style.color = active ? '#ffd34a' : 'rgba(255,255,255,0.55)';
         });
         bindRows();
+        dock();
       });
     });
     this.overlay.appendChild(this.shopDiv);
@@ -7513,7 +8045,7 @@ export class SimpleUI {
         this.overlay.appendChild(this.coinDiv);
         this.panels.registerLayer('nav-chips', this.coinDiv);
       }
-      this.coinDiv.textContent = `🪙 ${total}`;
+      SimpleUI.chipContent(this.coinDiv, 'coin', String(total));
       this._coinShown = total;
       return; // no bump on first render
     }
@@ -7521,7 +8053,7 @@ export class SimpleUI {
     const delta = total - from;
     // Reduced motion: no count-up, no pop — just the value.
     if (a11y.reducedMotion || delta === 0) {
-      this.coinDiv.textContent = `🪙 ${total}`;
+      SimpleUI.chipText(this.coinDiv, String(total));
       this._coinShown = total;
       return;
     }
@@ -7543,12 +8075,12 @@ export class SimpleUI {
     const step = (): void => {
       const p = Math.min(1, (performance.now() - start) / dur);
       const v = Math.round(from + delta * (1 - (1 - p) * (1 - p)));
-      el.textContent = `🪙 ${v}`;
+      SimpleUI.chipText(el, String(v));
       this._coinShown = v;
       if (p < 1) {
         this._coinAnim = requestAnimationFrame(step);
       } else {
-        el.textContent = `🪙 ${total}`;
+        SimpleUI.chipText(el, String(total));
         this._coinShown = total;
         this._coinAnim = 0;
       }
@@ -7638,9 +8170,12 @@ export class SimpleUI {
     }
     if (!this.raceDiv) {
       this.raceDiv = document.createElement('div');
+      this.raceDiv.dataset.hud = 'race';
       Object.assign(this.raceDiv.style, {
         position: 'absolute',
-        top: 'calc(var(--sat, 0px) + 12px)',
+        // Below the compass pill (P2-D7): at +12 it sat over the pill, 83% of
+        // it on desktop and 88% on the phone.
+        top: 'calc(var(--sat, 0px) + 62px)',
         left: '50%',
         transform: 'translateX(-50%)',
         background: 'rgba(0, 0, 0, 0.6)',
@@ -7705,6 +8240,7 @@ export class SimpleUI {
   // 0.12s width transition; opacities compare by exact string (they vary
   // continuously while swimming, and quantizing would step the fade).
   private lastPromptText: string | null = null;
+  private lastPromptMode: InputMode | null = null;
   private raceVisible = false;
   private raceLastLine1: string | null = null;
   private raceLastLine2: string | null = null;
@@ -7909,7 +8445,7 @@ export class SimpleUI {
    * found' across the Projects text), and dwells 50 ms a character, 2-6 s.
    */
   flashMessage(text: string): void {
-    this.enqueue(this.queued(this.touchifyPlain(text), 'flash', false));
+    this.enqueue(this.queued(text, 'flash', false));
   }
 
   private showFlash(text: string, dwell: number): void {
@@ -7919,7 +8455,7 @@ export class SimpleUI {
     this.flashEl?.remove();
     const el = document.createElement('div');
     this.flashEl = el;
-    el.textContent = text;
+    renderKeyText(el, text, this.getInputMode());
     Object.assign(el.style, {
       position: 'absolute',
       top: '38%',
@@ -7964,7 +8500,12 @@ export class SimpleUI {
    */
   updatePlayerCount(count: number): void {
     if (this.playerCountDiv) {
-      this.playerCountDiv.textContent = `👥 ${count} online`;
+      const text = `${count} online`;
+      if (!this.playerCountDiv.querySelector('.ds-ic')) {
+        SimpleUI.chipContent(this.playerCountDiv, 'users', text);
+      } else {
+        SimpleUI.chipText(this.playerCountDiv, text);
+      }
     }
   }
 
@@ -8933,6 +9474,33 @@ export class SimpleUI {
   /**
    * Get content for zone
    */
+  /**
+   * A link's or a button's label in the chrome (D13): a leading emoji becomes
+   * the sprite's icon. CV and Hiring differ (file-user, file-text), and so do
+   * Code and Source (code, source). A label with no known emoji is unchanged.
+   */
+  private static iconLabel(label: string): string {
+    const m = /^(\p{Extended_Pictographic}\uFE0F?|↗)\s*(.+)$/u.exec(label);
+    if (!m) return label;
+    const [, mark, text] = m;
+    const pick: Record<string, IconName> = {
+      '🔗': 'user',
+      '📄': 'file-user',
+      '💻': /\bsource\b/i.test(text) ? 'source' : 'code',
+      '🌐': 'link',
+      '🧭': 'compass',
+      '↗': 'external',
+      '▶️': 'play',
+      '▶': 'play',
+      '📸': 'camera',
+      '✉️': 'mail',
+      '✉': 'mail',
+      '🎬': 'play',
+    };
+    const name = pick[mark];
+    return name ? `${icon(name, 16)}<span>${text}</span>` : label;
+  }
+
   private getZoneContent(zone: any): string {
     // Shared button styles for the clickable portfolio links. Links are the
     // owner's own curated URLs (a visitor chooses to click), opened in a new
@@ -8954,7 +9522,7 @@ export class SimpleUI {
         ? base + size + `background:${DS.primary};color:#fff;font-weight:600;border:none;`
         : base + size + 'background:#2a2a37;color:#e8e8f0;border:1px solid rgba(255,255,255,0.14);';
       const cls = opts.primary ? ' class="ds-press"' : '';
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer"${cls} style="${style}">${label}</a>`;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer"${cls} style="${style}">${SimpleUI.iconLabel(label)}</a>`;
     };
     // Counted from the client roster, never typed: the panel said 18 while the
     // roster (and the server personas it must match) had grown to 24.
@@ -9183,7 +9751,7 @@ export class SimpleUI {
       // the fact sheet makes LinkedIn the primary hiring link, and hire.html
       // and digiscalability.com/about lead with it too.
       hire: `
-        <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;">📄 Hiring?</div>
+        <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;display:flex;align-items:center;justify-content:center;gap:6px;">${icon('file-text', 16)}<span>Hiring?</span></div>
         <h2 style="margin:0 0 2px;color:#fff;font-size:26px;">Abbas Ali</h2>
         <p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
         <p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:#dde3ee;">I build AI
@@ -9199,11 +9767,11 @@ export class SimpleUI {
         ${emailRow(false)}
         <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:10px 0 0;">
           <button type="button" data-hire-contact style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;">
-            ✉️ Send a message</button>
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            ${icon('send', 16)}<span>Send a message</span></button>
           <button type="button" data-hire-tour style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;">
-            🎬 Or watch the highlights tour (under a minute)</button>
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            ${icon('play', 16)}<span>Or watch the highlights tour (under a minute)</span></button>
         </div>
         <div data-selected-work style="margin:16px 0 0;text-align:left;">
           <h3 style="margin:0 0 2px;font-size:15px;">Selected work</h3>
@@ -10492,9 +11060,11 @@ export class SimpleUI {
     this.stopMessages();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
+    window.removeEventListener('ds:goals', this.onGoalsEvent);
     window.removeEventListener('keydown', this.onControlsKey);
     document.removeEventListener('keydown', this.onInputKey, true);
     document.removeEventListener('pointerdown', this.onInputPointer, true);
+    if (this.touchIdleTimer) clearTimeout(this.touchIdleTimer);
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {
       this.overlay.removeEventListener(type, this.onPanelAction, true);
     }

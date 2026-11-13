@@ -9,6 +9,8 @@
 // the boot latch is set before the import so the module builds no app. The
 // chat itself (openVillagerChat) and the board write (submitRaceTime) are the
 // seams the stubs replace, so nothing here reaches a backend.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { NpcQuestSystem, type QuestTalk, type TalkResult } from '../NpcQuests';
@@ -393,5 +395,167 @@ describe('main-simple: a race finish goes to the board under a real name (P2-A7)
     proto.onRaceEvent.call(app, { kind: 'checkpoint', text: 'Checkpoint 2/8' });
     expect(board).toEqual([]);
     expect(ui.flashMessage).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('main-simple: the Compass set toast waits out the guide card (wave-3 carry-over)', () => {
+  /** The fields compassSetToast reads: the guide, the route and the Next chip. */
+  const stubApp = (s: { steps?: boolean; route?: boolean; chipOpen?: boolean }) => {
+    const toast = vi.fn();
+    const app: Record<string, unknown> = {
+      ui: { toast },
+      guide: { isActive: () => !!s.steps },
+      route: { showing: () => !!s.route },
+      nextChip: { isExpanded: () => !!s.chipOpen },
+    };
+    app.guideCardOut = proto.guideCardOut.bind(app);
+    return { app, toast, say: (t: string) => proto.compassSetToast.call(app, t) };
+  };
+
+  test('with no card out, the toast shows', () => {
+    const { toast, say } = stubApp({});
+    say('🧭 Compass set: 🚀 Projects');
+    expect(toast).toHaveBeenCalledWith('🧭 Compass set: 🚀 Projects');
+  });
+
+  test.each([
+    ['First steps unfolded', { steps: true }],
+    ['the recruiter route', { route: true }],
+    ["the Next chip's open list", { chipOpen: true }],
+  ])('under %s, it is dropped', (_, s) => {
+    const { toast, say } = stubApp(s);
+    say('🧭 Compass set: 🚀 Projects');
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  test('before the guide exists (no guide, route or chip yet), the toast shows', () => {
+    const toast = vi.fn();
+    const app: Record<string, unknown> = {
+      ui: { toast },
+      guide: null,
+      route: null,
+      nextChip: null,
+    };
+    app.guideCardOut = proto.guideCardOut.bind(app);
+    proto.compassSetToast.call(app, '🧭 Compass set: 🏦 Bank');
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('main-simple: School lessons read right on a phone (wave-3 p2/copy carry-over)', () => {
+  type Lesson = [string, string];
+  let lessons: Lesson[] = [];
+  beforeAll(async () => {
+    const mod = await import('../main-simple');
+    lessons = (mod.SimpleApp as unknown as { LESSONS: Lesson[] }).LESSONS;
+  }, 120000);
+
+  /** What lessonCopy hands the toast on a touch device. The toast then maps
+   *  'press E', 'press G' and 'press Q' to the USE, EAT and WAVE buttons
+   *  (SimpleUI.touchifyPlain, D's), so those forms are the only key words a
+   *  phone lesson may carry. */
+  const onPhone = (l: Lesson): string =>
+    proto.lessonCopy.call({ ui: { isTouchDevice: () => true } }, l) as string;
+  const onDesktop = (l: Lesson): string =>
+    proto.lessonCopy.call({ ui: { isTouchDevice: () => false } }, l) as string;
+
+  test('no lesson names a keyboard key on a phone, beyond the press E/G/Q the toast maps', () => {
+    expect(lessons.length).toBe(6);
+    for (const l of lessons) {
+      const said = onPhone(l).replace(/[Pp]ress [EGQ]\b/g, 'tap');
+      expect(said, l[0]).not.toMatch(/\bWASD\b|\bSpace\b|\bShift\b|\b[A-Z]\b/);
+    }
+    expect(onPhone(lessons.find(([id]) => id === 'fish') as Lesson)).toContain('press E to cast');
+  });
+
+  test('the desktop copy keeps its keys, and no lesson types a villager count', () => {
+    expect(onDesktop(lessons.find(([id]) => id === 'move') as Lesson)).toContain(
+      'hold Shift to run',
+    );
+    for (const l of lessons) {
+      expect(l[1]).not.toMatch(/\bdozen\b/i);
+      expect(l[1]).not.toMatch(/\d+\s+(of them|villagers)/i);
+    }
+  });
+});
+
+describe('main-simple: run intent, first-use hint gates and heel-strike footfalls (A11, A13)', () => {
+  beforeAll(async () => {
+    await import('../main-simple');
+  }, 120000);
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const still = { forward: 0, strafe: 0 };
+  const rim = { forward: 1, strafe: 0 };
+  const near = { forward: 0.9, strafe: 0 };
+  const runApp = (shift: boolean): Record<string, unknown> => ({
+    stickRimSince: -1,
+    inputManager: { getRunInput: () => shift },
+  });
+
+  test('Shift runs on land only; Space alone never runs; the stick runs after 250 ms at the rim', () => {
+    let now = 1000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const ri = (
+      app: Record<string, unknown>,
+      jump: boolean,
+      joy: typeof still,
+      water: boolean,
+    ): boolean => proto.runIntent.call(app, jump, joy, water) as boolean;
+    expect(ri(runApp(true), false, still, false)).toBe(true);
+    expect(ri(runApp(true), false, still, true)).toBe(false); // Shift in water dives, never runs
+    expect(ri(runApp(false), true, still, false)).toBe(false); // Space only jumps
+    const touch = runApp(false);
+    expect(ri(touch, false, rim, false)).toBe(false);
+    now += 249;
+    expect(ri(touch, false, rim, false)).toBe(false);
+    now += 2;
+    expect(ri(touch, false, rim, false)).toBe(true);
+    expect(ri(touch, false, rim, true)).toBe(false);
+    expect(ri(touch, false, near, false)).toBe(false); // under 0.95 resets the timer
+    now += 1000;
+    expect(ri(touch, false, near, false)).toBe(false);
+    expect(ri(touch, false, rim, false)).toBe(false);
+  });
+
+  test('legacyrun keeps the old hold-Space run, and footfalls sit on the heel strikes', () => {
+    const src = readFileSync(join(process.cwd(), 'main-simple.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const body = src.slice(
+      src.indexOf('  private runIntent('),
+      src.indexOf('  private crossedPhase('),
+    );
+    expect(body).toMatch(/if \(SimpleApp\.LEGACY_RUN\) return jumpInput;/);
+    expect(src).not.toMatch(/setRunIntent\(\s*jumpInput\s*&&/);
+    expect(src).toMatch(/crossedPhase\(this\.prevWalkPhase, walkPhase, 0\.0\)/);
+    expect(src).toMatch(/crossedPhase\(this\.prevWalkPhase, walkPhase, 0\.5\)/);
+    expect(src).not.toMatch(/crossedPhase\(this\.prevWalkPhase, walkPhase, 0\.(25|75)\)/);
+  });
+
+  test('crossedPhase counts the wrap past 1.0 as crossing 0.0, and a fresh stride crosses nothing', () => {
+    const cp = (p: number, c: number, t: number): boolean =>
+      proto.crossedPhase.call({}, p, c, t) as boolean;
+    expect(cp(0.97, 0.03, 0.0)).toBe(true);
+    expect(cp(0.03, 0.2, 0.0)).toBe(false);
+    expect(cp(0.45, 0.55, 0.5)).toBe(true);
+    expect(cp(0.55, 0.6, 0.5)).toBe(false);
+    expect(cp(-1, 0.6, 0.5)).toBe(false);
+  });
+
+  test('a first-use hint waits while any panel, card, interior, tour, talk, guide or Next list is up', () => {
+    const quietWith = (o: Partial<Record<string, boolean>>): boolean =>
+      proto.hintsQuiet.call({
+        ui: { panels: { isOpen: () => !!o.panel }, isWelcomeVisible: () => !!o.welcome },
+        scene: { isInsideInterior: () => !!o.interior },
+        tour: o.tour ? {} : null,
+        npcCine: o.talk ? {} : null,
+        guide: { isActive: () => !!o.guide },
+        nextChip: { isExpanded: () => !!o.next },
+      }) as boolean;
+    expect(quietWith({})).toBe(false);
+    for (const gate of ['panel', 'welcome', 'interior', 'tour', 'talk', 'guide', 'next']) {
+      expect(quietWith({ [gate]: true }), gate).toBe(true);
+    }
   });
 });

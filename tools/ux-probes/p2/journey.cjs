@@ -309,7 +309,9 @@ async function enterAndRead(t, page, touch, leg, tag) {
   if (complete) {
     await t.shot(page, `journey-${tag}-passport-complete.png`);
     await pressFn(page, touch, () => {
-      const b = [...document.querySelectorAll('#ui-overlay button')].find((x) => /Wear it with pride/.test(x.textContent));
+      // P2-D10: the crown's call is button[data-crown-next] ('Next: ...');
+      // older builds name it 'Wear it with pride'.
+      const b = document.querySelector('#ui-overlay button[data-crown-next]') || [...document.querySelectorAll('#ui-overlay button')].find((x) => /Wear it with pride/.test(x.textContent));
       if (!b) return null;
       const r = b.getBoundingClientRect();
       return [r.left + r.width / 2, r.top + r.height / 2];

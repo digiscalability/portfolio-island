@@ -201,7 +201,7 @@ describe('the tokens are worn where AA failed', () => {
 
   test('the hire card leads with LinkedIn in the primary', () => {
     ui.showHireCard('cta');
-    const linkedIn = byText('🔗 LinkedIn');
+    const linkedIn = byText('LinkedIn'); // D13: the sprite's icon, then the label
     expect(linkedIn.getAttribute('style')).toContain(`background:${DS.primary};`);
   });
 

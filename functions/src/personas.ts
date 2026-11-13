@@ -17,8 +17,14 @@ export interface Persona {
   system: string;
 }
 
+// P2-E6: one input-neutral sentence on where things are (Districts.ts and the
+// panel copy). No key names, since phones have none, and no counts.
+export const ISLAND_LOCATIONS =
+  ' The Welcome Hub sits at the north pole, with Professional Experience, Project Portfolio, Personal Life and Get In Touch around it, along with the School, the shop kiosk by Professional, and the fishing shore and harbour; the gold arrow at the top of the screen guides visitors, and the minimap opens the island map.';
+
 export const ISLAND_CONTEXT =
-  '"Portfolio Island" — a small 3D world that is the interactive portfolio of Abbas, a solo founder at DigiScalability. The island has districts for Abbas\'s professional Work, his Projects (like RankPilot and ChocoMate), his Personal life, and a way to Get in touch, and glowing mailboxes that hold deliveries.';
+  '"Portfolio Island" — a small 3D world that is the interactive portfolio of Abbas, a solo founder at DigiScalability. The island has districts for Abbas\'s professional Work, his Projects (like RankPilot and ChocoMate), his Personal life, and a way to Get in touch, and glowing mailboxes that hold deliveries.' +
+  ISLAND_LOCATIONS;
 
 // Only meaningful when npcVoice's model actually renders these (see
 // MODEL_SUPPORTS_AUDIO_TAGS in tts.ts) — on a non-v3 build this instruction
@@ -77,8 +83,10 @@ export const NPC_ROLES: ReadonlyArray<{ id: string; name: string; role: string; 
   { id: 'philosopher', name: 'the Philosopher', role: 'a musing philosopher who wonders whether the player walks the planet or the planet turns beneath them' },
   { id: 'courier', name: 'the Courier', role: 'a busy delivery courier who knows the quest chain starts with the Welcome packages and finishing them unlocks something special' },
   { id: 'night_watch', name: 'the Night Watch', role: 'a calm night watchman who loves the quiet island at dusk and its flickering lamps' },
-  { id: 'sailor', name: 'the Sailor', role: 'a weathered, good-humoured sailor who lives on his little boat just offshore, loves the mathematically-perfect waves, and swears the sea tells him things' },
-  { id: 'mayor', name: 'the Mayor', role: 'the island\'s cheerfully officious mayor who holds court at the pole plaza town hall, treats every visitor as a new constituent, and campaigns on "deliveries up, complaints down"' },
+  { id: 'sailor', name: 'the Sailor', role: 'a weathered, good-humoured sailor who lives on his little boat just offshore, loves the mathematically-perfect waves, and swears the sea tells him things; the beach house on the islet out south is his brother\'s, and he gladly tells travellers its door code, 5673, "our old boat number"' },
+  // The Mayor greets visitors at the end of the arrival trail (P2-E6), so he
+  // carries the fact sheet too. He leads the day trail only.
+  { id: 'mayor', name: 'the Mayor', role: 'the island\'s cheerfully officious mayor who holds court at the pole plaza town hall, treats every visitor as a new constituent, and campaigns on "deliveries up, complaints down"', concierge: true },
   { id: 'farmer', name: 'the Farmer', role: 'a plain-spoken, hard-working farmer who tends the hamlet fields, respects honest weather and honest code, and leaves the flowers to the Gardener' },
   // Economy P2 — appended (persona lists are append-only, mirroring the
   // client's index-zip law).
