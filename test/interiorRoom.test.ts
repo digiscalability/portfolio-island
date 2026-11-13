@@ -928,6 +928,222 @@ describe('every hotspot can be reached', () => {
   });
 });
 
+/** The exhibit surface (P2-B12). */
+interface ExhibitRoom {
+  interiorScreen: { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture } | null;
+  interiorScreenMat: THREE.MeshBasicMaterial | null;
+  interiorSets: Record<string, THREE.Group>;
+  interiorExhibits: unknown;
+  drawExhibit(i: number, part: { lines: string[] }, big: boolean): void;
+  drawScreen(theme: string, part: unknown, title: string): void;
+  enterInterior(
+    title: string,
+    wall: number,
+    left: string,
+    right: string,
+    theme: string,
+    houseId?: string,
+    exhibits?: unknown,
+  ): void;
+}
+const ex = (): ExhibitRoom => scene as unknown as ExhibitRoom;
+
+/** Every cell a visitor can stand on from the spawn (the survey's flood fill),
+ *  and the labels that are THE prompt on at least one of them. */
+const promptsShown = (): Set<string | undefined> => {
+  const step = 0.1;
+  const N = Math.round(6.8 / step) + 1;
+  const xz = (i: number, j: number): [number, number] => [-3.4 + i * step, -3.4 + j * step];
+  const wall = (i: number, j: number): boolean =>
+    i < 0 || j < 0 || i >= N || j >= N || scene.interiorWallBlocked(...xz(i, j));
+  const prop = (i: number, j: number): boolean => scene.interiorFurnitureBlocked(...xz(i, j));
+  const s = statics.INTERIOR_SPAWN;
+  const start: [number, number] = [Math.round((s.x + 3.4) / step), Math.round((s.z + 3.4) / step)];
+  const seen = new Set<number>([start[0] * 1000 + start[1]]);
+  const queue: Array<[number, number]> = [start];
+  while (queue.length) {
+    const [i, j] = queue.shift()!;
+    const escaping = prop(i, j);
+    for (const [di, dj] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const ni = i + di;
+      const nj = j + dj;
+      if (wall(ni, nj) || seen.has(ni * 1000 + nj) || (!escaping && prop(ni, nj))) continue;
+      seen.add(ni * 1000 + nj);
+      queue.push([ni, nj]);
+    }
+  }
+  (scene as unknown as { interiorDoorArmed: boolean }).interiorDoorArmed = true;
+  const nearest = (x: number, z: number): Hotspot | null =>
+    (
+      scene as unknown as { nearestInteriorHotspot(x: number, z: number): Hotspot | null }
+    ).nearestInteriorHotspot(x, z);
+  return new Set([...seen].map((k) => nearest(...xz(Math.floor(k / 1000), k % 1000))?.label));
+};
+
+describe('hall exhibits drawn in the room, with hotspots that act (P2-B12)', () => {
+  const argOf = (theme: string, re: RegExp): string | undefined =>
+    (scene.interiorHotspotsFor(theme) as Array<Hotspot & { arg?: string }>).find((h) =>
+      re.test(h.label),
+    )?.arg;
+
+  test('the new spots carry their args, and every one still opens the zone panel', () => {
+    expect(argOf('office', /browse the work/)).toBe('hire');
+    expect(argOf('post', /counter bell/)).toBe('hire');
+    expect(argOf('post', /copy the email/)).toBe('copy:email');
+    expect(argOf('hall', /read the map/)).toBe('compass');
+    expect(argOf('hall', /notice board/)).toBe('times');
+    expect(argOf('workshop', /project cards/)).toBe('project');
+    for (const theme of THEMES) {
+      for (const h of scene.interiorHotspotsFor(theme) as Array<Hotspot & { arg?: string }>) {
+        if (h.arg && h.arg !== 'times') expect(h.action, h.label).toBe('panel');
+      }
+    }
+  });
+
+  test('one pegboard spot per chip with an id, each THE prompt somewhere reachable', () => {
+    const exhibits = {
+      screen: {
+        lines: ['Projects'],
+        chips: [
+          { label: 'This island', id: 'island' },
+          { label: 'RankPilot', id: 'rankpilot' },
+          { label: 'No link' },
+          { label: '<b>Cook</b>book', id: 'cookbook' },
+        ],
+      },
+    };
+    ex().enterInterior('Projects', 0xa8793e, '', '', 'workshop', undefined, exhibits);
+    const spots = (
+      scene.interiorHotspotsFor('workshop') as Array<Hotspot & { arg?: string }>
+    ).filter((h) => h.arg?.startsWith('project'));
+    expect(spots.map((h) => h.arg)).toEqual([
+      'project:island',
+      'project:rankpilot',
+      'project:cookbook',
+    ]);
+    // A label is escaped before it reaches the prompt's markup.
+    expect(spots[2].label).toContain('&lt;b&gt;Cook&lt;/b&gt;book');
+    const shown = promptsShown();
+    expect(spots.filter((h) => !shown.has(h.label)).map((h) => h.arg)).toEqual([]);
+    scene.exitInterior();
+    // Without exhibits, the one 'project' spot is back.
+    enter('workshop');
+    expect(argOf('workshop', /project cards/)).toBe('project');
+    scene.exitInterior();
+  });
+
+  test('the shared screen: one 512x320 texture without mips (0.66 MB), on three faces', () => {
+    const sc = ex().interiorScreen!;
+    expect(sc).toBeTruthy();
+    expect([sc.ctx.canvas.width, sc.ctx.canvas.height]).toEqual([512, 320]);
+    expect(sc.tex.generateMipmaps).toBe(false);
+    expect(sc.tex.minFilter).toBe(THREE.LinearFilter);
+    expect(512 * 320 * 4).toBeLessThanOrEqual(0.7 * 1024 * 1024);
+    const faces = Object.entries(ex().interiorSets)
+      .map(([name, set]) => {
+        let n = 0;
+        set.traverse((o) => {
+          if ((o as THREE.Mesh).material === ex().interiorScreenMat) n++;
+        });
+        return [name, n];
+      })
+      .filter(([, n]) => (n as number) > 0);
+    expect(Object.fromEntries(faces)).toEqual({ office: 1, workshop: 1, hall: 1 });
+    // Pictures on walls and faces on props: never colliders.
+    enter('hall');
+    const map = (() => {
+      let m: THREE.Mesh | null = null;
+      ex().interiorSets.hall.traverse((o) => {
+        if ((o as THREE.Mesh).material === ex().interiorScreenMat) m = o as THREE.Mesh;
+      });
+      return m as THREE.Mesh | null;
+    })()!;
+    expect(map.userData.noCollide).toBe(true);
+    scene.exitInterior();
+  });
+
+  test("exhibits draw on the posters and the screen; without them, today's text", () => {
+    const draw = vi.spyOn(ex(), 'drawExhibit');
+    const screen = vi.spyOn(ex(), 'drawScreen');
+    try {
+      ex().enterInterior(
+        'Welcome Hub',
+        0x5d8a58,
+        'Meet the\nvillagers',
+        'Tour the\nisland',
+        'hall',
+      );
+      expect(draw.mock.calls.map((c) => [c[0], c[1].lines, c[2]])).toEqual([
+        [0, ['Welcome Hub'], true],
+        [1, ['Meet the', 'villagers'], false],
+        [2, ['Tour the', 'island'], false],
+      ]);
+      expect(screen.mock.calls[0]).toEqual(['hall', null, 'Welcome Hub']);
+      scene.exitInterior();
+      draw.mockClear();
+      screen.mockClear();
+      const e = {
+        title: { lines: ['Hiring'] },
+        left: { lines: ['One'], chips: [{ label: 'A' }] },
+        right: { lines: ['Two'] },
+        screen: { lines: ['Three'] },
+      };
+      ex().enterInterior('Welcome Hub', 0x5d8a58, 'x', 'y', 'office', undefined, e);
+      expect(draw.mock.calls.map((c) => c[1])).toEqual([e.title, e.left, e.right]);
+      expect(screen.mock.calls[0]).toEqual(['office', e.screen, 'Welcome Hub']);
+      scene.exitInterior();
+    } finally {
+      draw.mockRestore();
+      screen.mockRestore();
+    }
+  });
+
+  test('body lines are never under 48 canvas px', () => {
+    const F = (GameScene as unknown as { EXHIBIT_FONT: { body: number; title: number } })
+      .EXHIBIT_FONT;
+    expect(F.body).toBeGreaterThanOrEqual(48);
+    expect(F.title).toBeGreaterThan(F.body);
+  });
+
+  test('a cottage with someone home at night names them on its title poster', () => {
+    const island = scene.island as { houseDoors: unknown[]; npcTargets: unknown[] };
+    const door = new THREE.Vector3(0, 76, 0);
+    const sleeper = (name: string): unknown => {
+      const meshRef = new THREE.Object3D();
+      meshRef.visible = false;
+      meshRef.userData.wander = { activity: 'sleep', target: door.clone() };
+      return { name, position: new THREE.Vector3(), dialogue: [], meshRef };
+    };
+    const was = { houseDoors: island.houseDoors, npcTargets: island.npcTargets };
+    island.houseDoors = [{ id: 'house_2', position: door.clone() }];
+    island.npcTargets = [sleeper('Village Baker'), sleeper('Night Watch')];
+    const draw = vi.spyOn(ex(), 'drawExhibit');
+    try {
+      scene.enterInterior('A cosy home', 0xe0c9a8, 'A place to\nrest', '', 'cottage', 'house_2');
+      const titles = draw.mock.calls.filter((c) => c[0] === 0).map((c) => c[1].lines);
+      expect(titles[titles.length - 1]).toEqual(["The Village Baker and Night Watch's cottage"]);
+      scene.exitInterior();
+      // Nobody home (by day): today's title.
+      island.npcTargets = [];
+      draw.mockClear();
+      scene.enterInterior('A cosy home', 0xe0c9a8, '', '', 'cottage', 'house_2');
+      expect(draw.mock.calls.filter((c) => c[0] === 0).map((c) => c[1].lines)).toEqual([
+        ['A cosy home'],
+      ]);
+      scene.exitInterior();
+    } finally {
+      draw.mockRestore();
+      island.houseDoors = was.houseDoors;
+      island.npcTargets = was.npcTargets;
+    }
+  });
+});
+
 /** The private warm surface the CO-A5 tests drive. */
 interface Warm {
   interiorGroup: THREE.Group;
@@ -952,7 +1168,7 @@ interface Warm {
   ): Promise<unknown[]>;
   warmInteriorPasses(gl: unknown, khr: boolean): Promise<void>;
   warmInteriorPosters(): void;
-  drawPoster(i: number, text: string, big: boolean): void;
+  drawExhibit(i: number, part: { lines: string[] }, big: boolean): void;
   refreshInteriorView(): void;
   add(...o: THREE.Object3D[]): void;
   remove(...o: THREE.Object3D[]): void;
@@ -1080,7 +1296,7 @@ describe('the warm prepares the first door first (CO-A5)', () => {
   test('the passes draw the posters, then compile the first door, then the rest', async () => {
     const w = scene as unknown as Warm;
     const g = w.interiorGroup;
-    const posters = vi.spyOn(w, 'drawPoster');
+    const posters = vi.spyOn(w, 'drawExhibit');
     const order: THREE.Object3D[] = [];
     let postersAtFirstCompile = -1;
     const shownAtCompile = new Set<boolean>();

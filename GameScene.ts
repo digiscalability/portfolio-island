@@ -93,6 +93,24 @@ interface InteriorHotspot {
   arg?: string;
 }
 
+/** One exhibit surface (P2-B12): body lines, then chips. A chip with an id
+ *  on a workshop exhibit becomes a pegboard hotspot ('project:<id>'). */
+export interface ExhibitPart {
+  lines: string[];
+  chips?: Array<{ label: string; id?: string }>;
+}
+
+/** What a hall shows (P2-B12): the title poster, the two side posters and
+ *  the shared screen (the office monitor, the workshop blueprint, the hall's
+ *  wall map). main-simple passes it from wave 4 (P2-A11); without it the
+ *  room shows today's posters. */
+export interface Exhibits {
+  title?: ExhibitPart;
+  left?: ExhibitPart;
+  right?: ExhibitPart;
+  screen?: ExhibitPart;
+}
+
 /** A room-local axis-aligned box: a prop's collider or camera blocker. */
 interface RoomBox {
   minX: number;
@@ -13332,6 +13350,12 @@ export class GameScene extends THREE.Scene {
   private static readonly ROOM_INK_MIN_RADIUS = 0.5;
   private readonly _trimAccent = new THREE.Color();
   private interiorPosters: Array<{ ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
+  /** The one 512x320 screen texture (P2-B12), redrawn on entry: the office
+   *  monitor's face, the workshop blueprint and the hall's wall map. No mips
+   *  (0.66 MB rather than 0.87 MB with them). */
+  private interiorScreen: { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture } | null = null;
+  /** The visit's exhibits (P2-B12), or null: today's posters. */
+  private interiorExhibits: Exhibits | null = null;
   private interiorSets: Record<string, THREE.Group> = {};
   private interiorTime = 0;
   private onHouseEnterCb: ((id: string) => void) | null = null;
@@ -14515,6 +14539,26 @@ export class GameScene extends THREE.Scene {
     // Light switch by the door, at hand height.
     box(g, 0.14, 0.2, 0.05, 0xf0ece2, -2.75, 1.35, 3.82);
 
+    /** A plane mapped to the shared screen, on a themed set. Never a
+     *  collider or a camera blocker (buildInteriorColliders skips it). */
+    const screenPlane = (
+      parent: THREE.Group,
+      w: number,
+      h: number,
+      x: number,
+      y: number,
+      z: number,
+      ry: number,
+      rx: number,
+    ): THREE.Mesh => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), this.buildInteriorScreen());
+      m.position.set(x, y, z);
+      m.rotation.set(rx, ry, 0);
+      m.userData.noCollide = true;
+      parent.add(m);
+      return m;
+    };
+
     // ── Themed furniture sets (built once, toggled per building) ──
     const set = (name: string): THREE.Group => {
       const s = new THREE.Group();
@@ -14540,6 +14584,9 @@ export class GameScene extends THREE.Scene {
     ] as const)
       box(office, 0.12, 0.7, 0.12, D, lx, 0.35, lz);
     box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.47, -2.75); // monitor
+    // The monitor's face: the shared screen (P2-B12).
+    const screenMat = this.buildInteriorScreen();
+    screenPlane(office, 0.86, 0.5, 0, 1.47, -2.715, 0, 0);
     box(office, 0.12, 0.3, 0.12, 0x33383f, 0, 0.97, -2.75);
     box(office, 0.6, 0.09, 0.35, 0xd7dbe0, 0.65, 0.87, -2.45); // keyboard? papers
     box(office, 0.55, 0.1, 0.55, 0x3a3f47, 0, 0.62, -1.65); // chair seat
@@ -14567,10 +14614,14 @@ export class GameScene extends THREE.Scene {
     box(shop, 0.09, 0.5, 0.05, 0x8a2f2b, -3.35, 2.1, -3.8); // tools on it
     box(shop, 0.4, 0.09, 0.05, 0x55595e, -2.85, 2.3, -3.8);
     box(shop, 0.09, 0.4, 0.05, 0x2e6b8a, -2.35, 2.0, -3.8);
-    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.78, -1.7, 0, -0.35); // drafting table
-    const bp = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.8), matFor(0x2f5aa0, 0.95));
+    // The drafting table tilts toward the room (P2-B12): tilted toward the
+    // back wall, its blueprint showed the room only its back face, which
+    // three culls, so nobody standing at its spot ever saw it.
+    box(shop, 1.4, 0.08, 1.0, D, 2.6, 0.78, -1.7, 0, 0.35); // drafting table
+    // The blueprint is the shared screen (P2-B12), drawn as a blueprint.
+    const bp = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.8), screenMat);
     bp.position.set(2.6, 0.85, -1.68);
-    bp.rotation.x = -Math.PI / 2 - 0.35;
+    bp.rotation.x = -Math.PI / 2 + 0.35;
     shop.add(bp);
     for (const [lx, lz] of [
       [2.0, -1.35],
@@ -14580,8 +14631,10 @@ export class GameScene extends THREE.Scene {
     ] as const)
       box(shop, 0.1, 0.76, 0.1, D, lx, 0.38, lz);
     cyl(shop, 0.25, 0.28, 0.55, W, 1.1, 0.38, -1.4); // stool
-    box(shop, 0.85, 0.75, 0.85, 0xb5854e, -3.0, 0.48, -2.55); // crates
-    box(shop, 0.7, 0.6, 0.7, 0xc09055, -2.85, 1.16, -2.7);
+    // Crates, forward of the pegboard (P2-B12): at z -2.55 they walled the
+    // board off, so none of its cards could be reached.
+    box(shop, 0.85, 0.75, 0.85, 0xb5854e, -3.0, 0.48, -1.5); // crates
+    box(shop, 0.7, 0.6, 0.7, 0xc09055, -2.85, 1.16, -1.65);
 
     // home — Personal: sofa, coffee table, fireplace, bookshelf, floor lamp.
     const home = set('home');
@@ -14635,6 +14688,8 @@ export class GameScene extends THREE.Scene {
     cyl(post, 0.16, 0.2, 0.08, 0xc9a227, 0.8, 1.02, -1.9); // scale base
     cyl(post, 0.03, 0.03, 0.4, 0xc9a227, 0.8, 1.25, -1.9);
     cyl(post, 0.18, 0.18, 0.03, 0xc9a227, 0.8, 1.48, -1.9);
+    // The email plate on the counter's front (P2-B12: 'copy:email').
+    box(post, 0.56, 0.18, 0.03, 0xc9a227, -1.0, 0.72, -1.53);
 
     // hall — Welcome town hall: podium, banners, visitor benches, notice board.
     const hall = set('hall');
@@ -14659,6 +14714,10 @@ export class GameScene extends THREE.Scene {
       [1.75, -2.35],
     ] as const)
       box(hall, 0.03, 0.34, 0.26, 0xf5f2ea, 3.74, py, pz);
+    // The wall map (P2-B12: 'compass'), on the left wall clear of the
+    // content poster, framed in trim. A picture on a wall: no collider.
+    box(hall, 0.05, 1.08, 1.68, W, -3.88, 2.0, -2.3);
+    screenPlane(hall, 1.6, 1.0, -3.85, 2.0, -2.3, Math.PI / 2, 0);
 
     // cottage — the houses: bed, round table + stools, hearth, kitchen shelf.
     // beach — Brother's Beach House on the islet: surf gear, driftwood
@@ -14942,7 +15001,8 @@ export class GameScene extends THREE.Scene {
   private readonly _icFollow = new THREE.Vector3();
   private readonly _icLook = new THREE.Vector3();
   private readonly _icPt = new THREE.Vector3();
-  private interiorHotspot: { label: string; action: string; text?: string } | null = null;
+  private interiorHotspot: { label: string; action: string; text?: string; arg?: string } | null =
+    null;
   // The beach-house wall screen (room-local centre + half extents). The
   // watch overlay is a DOM iframe that SimpleApp pins to this plane's
   // projected rect every frame while interiorWatching.
@@ -15039,6 +15099,7 @@ export class GameScene extends THREE.Scene {
         r: 1.4,
         label: '💻 Press <strong>E</strong> to browse the work',
         action: 'panel',
+        arg: 'hire',
       },
       {
         x: -3.1,
@@ -15058,9 +15119,10 @@ export class GameScene extends THREE.Scene {
         action: 'panel',
       },
       {
-        x: -3.0,
-        z: -2.6,
-        r: 1.2,
+        // In front of the crates, which moved forward of the pegboard.
+        x: -2.9,
+        z: -0.55,
+        r: 0.9,
         label: '📦 Press <strong>E</strong> to peek in the crates',
         action: 'toast',
         text: 'Prototype parts, spare ideas, and one suspiciously good chocolate bar. 🍫',
@@ -15099,6 +15161,16 @@ export class GameScene extends THREE.Scene {
         r: 1.4,
         label: '📮 Press <strong>E</strong> to ring the counter bell',
         action: 'panel',
+        arg: 'hire',
+      },
+      {
+        // The email plate on the counter's front.
+        x: -1.1,
+        z: -1.05,
+        r: 0.7,
+        label: '✉️ Press <strong>E</strong> to copy the email',
+        action: 'panel',
+        arg: 'copy:email',
       },
       {
         x: -2.7,
@@ -15116,6 +15188,16 @@ export class GameScene extends THREE.Scene {
         r: 1.3,
         label: '📰 Press <strong>E</strong> to read the notice board',
         action: 'times',
+        arg: 'times',
+      },
+      {
+        // The wall map, on the left wall.
+        x: -3.0,
+        z: -2.3,
+        r: 1.1,
+        label: '🗺️ Press <strong>E</strong> to read the map',
+        action: 'panel',
+        arg: 'compass',
       },
       {
         x: 0,
@@ -15199,6 +15281,8 @@ export class GameScene extends THREE.Scene {
   // into the room. The wander loop re-claims position/orientation/visibility
   // on the first frame after exit, so no restore bookkeeping is needed.
   private interiorOccupants: THREE.Object3D[] = [];
+  /** Their names, for the cottage's title poster (P2-B12). */
+  private interiorOccupantNames: string[] = [];
   private interiorZzz: THREE.Sprite | null = null;
   // Cottage variation: seeded per-house decor — dedicated tint materials plus
   // optional prop groups toggled per house (2 of 4 shown).
@@ -15210,6 +15294,7 @@ export class GameScene extends THREE.Scene {
    *  against this house's door identifies the room's occupants. */
   private placeCottageOccupants(houseId: string): void {
     this.interiorOccupants = [];
+    this.interiorOccupantNames = [];
     const door = this.island.houseDoors.find((d) => d.id === houseId);
     if (!door) return;
     const doorDir = this._goalScratch.copy(door.position).normalize();
@@ -15232,13 +15317,19 @@ export class GameScene extends THREE.Scene {
       npc.meshRef.position.set(o.x + spot.x, o.y + spot.y, o.z + spot.z);
       npc.meshRef.quaternion.setFromEuler(spot.euler);
       this.interiorOccupants.push(npc.meshRef);
+      this.interiorOccupantNames.push(npc.name);
     }
     if (this.interiorZzz) this.interiorZzz.visible = this.interiorOccupants.length > 0;
   }
 
   /** The hotspot the player is standing near (null when none) — main-simple
    *  shows the prompt and executes the action on E. */
-  public getInteriorHotspot(): { label: string; action: string; text?: string } | null {
+  public getInteriorHotspot(): {
+    label: string;
+    action: string;
+    text?: string;
+    arg?: string;
+  } | null {
     return this.interiorHotspot;
   }
 
@@ -15253,6 +15344,7 @@ export class GameScene extends THREE.Scene {
     const curtains = GameScene.INTERIOR_CURTAINS_AT[theme] ?? { x: 1.8, z: 2.95 };
     return [
       ...(GameScene.INTERIOR_HOTSPOTS[theme] ?? []),
+      ...(theme === 'workshop' ? this.pegboardHotspots() : []),
       {
         x: -2.75,
         z: 3.0,
@@ -15275,6 +15367,46 @@ export class GameScene extends THREE.Scene {
       },
       GameScene.INTERIOR_DOOR_HOTSPOT,
     ];
+  }
+
+  /** The pegboard spots (P2-B12): one per exhibit chip that carries an id,
+   *  spread along the board, or one 'project' spot without any. */
+  private pegboardHotspots(): InteriorHotspot[] {
+    const e = this.interiorExhibits;
+    const ids: Array<{ label: string; id: string }> = [];
+    for (const part of [e?.screen, e?.left, e?.right, e?.title]) {
+      for (const c of part?.chips ?? []) if (c.id && ids.length < 4) ids.push({ ...c, id: c.id });
+    }
+    if (ids.length === 0) {
+      return [
+        {
+          x: -2.7,
+          z: -2.9,
+          r: 0.9,
+          label: '📌 Press <strong>E</strong> to look at the project cards',
+          action: 'panel',
+          arg: 'project',
+        },
+      ];
+    }
+    // The board spans x -3.75..-1.95; the spots share it evenly.
+    const x0 = -3.2;
+    const x1 = -2.2;
+    return ids.map((c, i) => ({
+      x: ids.length === 1 ? -2.7 : x0 + ((x1 - x0) * i) / (ids.length - 1),
+      z: -2.9,
+      r: 0.7,
+      label: `📌 Press <strong>E</strong> to open ${GameScene.escapeLabel(c.label)}`,
+      action: 'panel',
+      arg: `project:${c.id}`,
+    }));
+  }
+
+  private static escapeLabel(t: string): string {
+    return t.replace(
+      /[&<>"']/g,
+      (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
+    );
   }
 
   /** The hotspot a visitor at room-local (px, pz) is prompted for: the
@@ -15343,6 +15475,7 @@ export class GameScene extends THREE.Scene {
     for (const child of set.children) {
       if ((child as THREE.Sprite).isSprite) continue; // markers (💤) never block
       if (child.userData.isLightPool) continue; // nor does firelight on the floor
+      if (child.userData.noCollide) continue; // nor a picture on a wall
       b.setFromObject(child);
       if (b.isEmpty()) continue;
       const box: RoomBox = {
@@ -15901,11 +16034,13 @@ export class GameScene extends THREE.Scene {
     right = '',
     theme = 'cottage',
     houseId?: string,
+    exhibits?: Exhibits,
   ): void {
     this.buildInterior();
     // A real visit warms everything the idle pass would have, so retire the
     // pending warm — otherwise it can fire mid-visit and blink the room.
     this.interiorWarmed = true;
+    this.interiorExhibits = exhibits ?? null;
     if (this.interiorWallMat) {
       this.interiorWallMat.color.set(wallColor).lerp(new THREE.Color(0xffffff), 0.55);
     }
@@ -15928,9 +16063,12 @@ export class GameScene extends THREE.Scene {
     const active = this.interiorSets[theme] ? theme : 'cottage';
     for (const [name, s] of Object.entries(this.interiorSets)) s.visible = name === active;
     this.interiorRugMat?.color.set(GameScene.INTERIOR_RUGS[active] ?? 0xb06a72);
-    this.drawPoster(0, title, true);
-    this.drawPoster(1, left, false);
-    this.drawPoster(2, right, false);
+    const part = (p: ExhibitPart | undefined, text: string): ExhibitPart =>
+      p ?? { lines: (text || '').split('\n') };
+    this.drawExhibit(0, part(exhibits?.title, title), true);
+    this.drawExhibit(1, part(exhibits?.left, left), false);
+    this.drawExhibit(2, part(exhibits?.right, right), false);
+    this.drawScreen(active, exhibits?.screen ?? null, title);
     if (this.interiorGroup) this.interiorGroup.visible = true;
     // Borrow the island's light rig for the visit (P2-B9). Taken once: a
     // second entry without an exit must not remember the room's values.
@@ -16000,8 +16138,18 @@ export class GameScene extends THREE.Scene {
     }
     // Cottage at night: reveal whoever is asleep behind THIS door.
     this.interiorOccupants = [];
+    this.interiorOccupantNames = [];
     if (this.interiorZzz) this.interiorZzz.visible = false;
     if (active === 'cottage' && houseId) this.placeCottageOccupants(houseId);
+    // The title names who lives here, once they are home (night only).
+    if (active === 'cottage' && !exhibits?.title && this.interiorOccupantNames.length) {
+      const names = this.interiorOccupantNames;
+      const who =
+        names.length === 1
+          ? names[0]
+          : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+      this.drawExhibit(0, { lines: [`The ${who}'s cottage`] }, true);
+    }
     // The room's light, at its preset from the first frame: the entry is
     // drawn under the door veil, and an ease from the island's values would
     // show as the veil lifts. (Last, so a party already has its club dim.)
@@ -16206,31 +16354,224 @@ export class GameScene extends THREE.Scene {
    */
   private warmInteriorPosters(): void {
     const glyphs = "ABCDEFGHIJKLM\nNOPQRSTUVWXYZ\nabcdefghijklm\nnopqrstuvwxyz\n0123456789 &,.'-";
-    this.interiorPosters.forEach((_, i) => this.drawPoster(i, glyphs, i === 0));
+    // Every font drawExhibit uses: the title, the 48 px body and the chips,
+    // on every canvas, and the screen's.
+    const warm: ExhibitPart = {
+      lines: glyphs.split('\n'),
+      chips: [{ label: glyphs.slice(0, 13) }],
+    };
+    this.interiorPosters.forEach((_, i) => this.drawExhibit(i, warm, i === 0));
+    this.drawScreen('office', warm, '');
   }
 
-  /** Draw a framed poster: title (big) or a content panel of \n-split lines. */
-  private drawPoster(i: number, text: string, big: boolean): void {
+  /** Exhibit type: the title, the body (never under 48 canvas px) and the
+   *  chips' labels. */
+  private static readonly EXHIBIT_FONT = {
+    title: 60,
+    body: 48,
+    chip: 36,
+    family: 'system-ui, "Segoe UI", sans-serif',
+  };
+
+  /** Draw a framed poster (P2-B12): body lines, word-wrapped to the canvas,
+   *  then a row of chips. `big` is the title poster: bold, larger. */
+  private drawExhibit(i: number, part: ExhibitPart, big: boolean): void {
     const p = this.interiorPosters[i];
     if (!p) return;
-    const cv = p.ctx.canvas;
     const ctx = p.ctx;
+    const cv = ctx.canvas;
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.fillStyle = 'rgba(250,248,242,0.94)';
     ctx.fillRect(10, 10, cv.width - 20, cv.height - 20);
     ctx.strokeStyle = 'rgba(60,50,40,0.35)';
     ctx.lineWidth = 5;
     ctx.strokeRect(10, 10, cv.width - 20, cv.height - 20);
+    GameScene.paintExhibit(ctx, part, big, big ? '#3a2f26' : '#40382f', '#e9e1d2', 28);
+    p.tex.needsUpdate = true;
+  }
+
+  /**
+   * Lay out an exhibit on a canvas: lines wrapped to the width inside `pad`,
+   * centred as a block, then the chips in rows under them. Lines that do not
+   * fit the height are dropped from the end rather than shrunk.
+   */
+  private static paintExhibit(
+    ctx: CanvasRenderingContext2D,
+    part: ExhibitPart,
+    big: boolean,
+    ink: string,
+    chipFill: string,
+    pad: number,
+  ): void {
+    const F = GameScene.EXHIBIT_FONT;
+    const cv = ctx.canvas;
+    const maxW = cv.width - pad * 2;
+    const fs = big ? F.title : F.body;
+    ctx.font = `${big ? 'bold' : '600'} ${fs}px ${F.family}`;
+    const lines: string[] = [];
+    for (const raw of part.lines) {
+      const words = raw.split(/\s+/).filter(Boolean);
+      let cur = '';
+      for (const w of words) {
+        const next = cur ? `${cur} ${w}` : w;
+        if (cur && ctx.measureText(next).width > maxW) {
+          lines.push(cur);
+          cur = w;
+        } else cur = next;
+      }
+      lines.push(cur);
+    }
+    const lh = fs * 1.2;
+    const chips = part.chips ?? [];
+    const chipH = chips.length ? F.chip * 1.6 : 0;
+    // Chip rows, measured in the chip font.
+    ctx.font = `600 ${F.chip}px ${F.family}`;
+    const rows: Array<Array<{ label: string; w: number }>> = [];
+    let row: Array<{ label: string; w: number }> = [];
+    let rowW = 0;
+    for (const c of chips) {
+      const w = Math.min(maxW, ctx.measureText(c.label).width + F.chip);
+      if (row.length && rowW + 12 + w > maxW) {
+        rows.push(row);
+        row = [];
+        rowW = 0;
+      }
+      row.push({ label: c.label, w });
+      rowW += (row.length > 1 ? 12 : 0) + w;
+    }
+    if (row.length) rows.push(row);
+    const avail = cv.height - pad * 2;
+    const chipBlock = rows.length * (chipH + 10);
+    const fitLines = Math.max(1, Math.min(lines.length, Math.floor((avail - chipBlock) / lh)));
+    const shown = lines.slice(0, fitLines);
+    const total = shown.length * lh + chipBlock;
+    let y = Math.max(pad, (cv.height - total) / 2);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = big ? '#3a2f26' : '#40382f';
-    const lines = (text || '').split('\n');
-    const fs = big ? 60 : 40;
-    const lh = fs * 1.28;
-    ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
-    const startY = cv.height / 2 - ((lines.length - 1) * lh) / 2;
-    lines.forEach((ln, k) => ctx.fillText(ln, cv.width / 2, startY + k * lh));
-    p.tex.needsUpdate = true;
+    ctx.fillStyle = ink;
+    ctx.font = `${big ? 'bold' : '600'} ${fs}px ${F.family}`;
+    for (const ln of shown) {
+      ctx.fillText(ln, cv.width / 2, y + lh / 2);
+      y += lh;
+    }
+    ctx.font = `600 ${F.chip}px ${F.family}`;
+    for (const r of rows) {
+      const w = r.reduce((a, c) => a + c.w, 0) + 12 * (r.length - 1);
+      let x = (cv.width - w) / 2;
+      y += 10;
+      for (const c of r) {
+        ctx.fillStyle = chipFill;
+        // A pill: two half-discs and the box between (roundRect is not in
+        // every browser the island supports).
+        const rr = chipH / 2;
+        ctx.beginPath();
+        ctx.arc(x + rr, y + rr, rr, Math.PI / 2, (Math.PI * 3) / 2);
+        ctx.arc(x + c.w - rr, y + rr, rr, -Math.PI / 2, Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = ink;
+        ctx.fillText(c.label, x + c.w / 2, y + chipH / 2, c.w - F.chip / 2);
+        x += c.w + 12;
+      }
+      y += chipH;
+    }
+  }
+
+  /** The shared screen's texture and material, built once (buildInterior). */
+  private buildInteriorScreen(): THREE.MeshBasicMaterial {
+    if (this.interiorScreenMat) return this.interiorScreenMat;
+    const cv = document.createElement('canvas');
+    cv.width = 512;
+    cv.height = 320;
+    const ctx = cv.getContext('2d');
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    if (ctx) this.interiorScreen = { ctx, tex };
+    // Unlit, like the window pane: a screen, a lamp-lit sheet, a painted map.
+    this.interiorScreenMat = new THREE.MeshBasicMaterial({ map: tex });
+    return this.interiorScreenMat;
+  }
+  private interiorScreenMat: THREE.MeshBasicMaterial | null = null;
+
+  /**
+   * Redraw the shared screen for the room (on entry): the exhibit's screen
+   * part when there is one, else the room's own face. The office monitor is
+   * a dark screen with the title; the workshop blueprint a grid with it; the
+   * hall's wall map the island, painted, with a dot per district.
+   */
+  private drawScreen(theme: string, part: ExhibitPart | null, title: string): void {
+    const sc = this.interiorScreen;
+    if (!sc) return;
+    const ctx = sc.ctx;
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const face =
+      theme === 'workshop'
+        ? { bg: '#2f5aa0', ink: '#f2f6ff', chip: '#4a76bd' }
+        : theme === 'hall'
+          ? { bg: '#e9dfc6', ink: '#3a2f26', chip: '#d8cba9' }
+          : { bg: '#1d232c', ink: '#e8eef6', chip: '#33404f' };
+    ctx.fillStyle = face.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (theme === 'workshop') {
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineWidth = 2;
+      for (let x = 32; x < W; x += 32) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+      }
+      for (let y = 32; y < H; y += 32) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+      }
+    }
+    if (theme === 'hall' && !part) {
+      // The island from above: sea, a sand rim, the land, one dot per district.
+      ctx.fillStyle = '#6fa8c7';
+      ctx.fillRect(14, 14, W - 28, H - 28);
+      const cx = W / 2;
+      const cy = H / 2;
+      const r = H * 0.36;
+      ctx.fillStyle = '#e3cf98';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, r * 1.32, r * 1.04, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#7fae5a';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, r * 1.2, r * 0.94, 0, 0, Math.PI * 2);
+      ctx.fill();
+      DISTRICTS.forEach((d, k) => {
+        const a = (k / DISTRICTS.length) * Math.PI * 2 - Math.PI / 2;
+        ctx.fillStyle = `#${d.accent.toString(16).padStart(6, '0')}`;
+        ctx.strokeStyle = '#3a2f26';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * r * 0.75, cy + Math.sin(a) * r * 0.58, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      });
+      ctx.fillStyle = '#f2ead8';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      GameScene.paintExhibit(
+        ctx,
+        part ?? { lines: (title || '').split('\n') },
+        !part,
+        face.ink,
+        face.chip,
+        24,
+      );
+    }
+    sc.tex.needsUpdate = true;
   }
 
   public exitInterior(): void {
