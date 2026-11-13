@@ -331,6 +331,7 @@ describe('D15: the joystick lands under the thumb', () => {
     boot();
     const { ring, hit } = parts();
     expect(hit.style.width).toBe('166px');
+    expect(ring.dataset.stickRadius).toBe('40'); // full deflection, for the probes
     expect(ring.style.left).toBe('26px');
     expect(ring.style.bottom).toBe('26px');
   });

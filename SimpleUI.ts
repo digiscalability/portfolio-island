@@ -5898,7 +5898,10 @@ export class SimpleUI {
     const HIT = 166;
     const RING = 110;
     const REST = 26; // the ring's home: left/bottom 26 px
-    const MAX = 40; // the thumb's travel
+    const MAX = 40; // the thumb's travel: full deflection, the stick's radius
+    // Published for the probes (mobile.cjs's stick plateaus): deflection is
+    // measured against this travel, not the 110 px ring's half-width.
+    base.dataset.stickRadius = String(MAX);
     // Hysteresis: engage at 12% deflection; once engaged, release only below
     // 8%, renormalised from 8% so the output is continuous on the way down.
     const ENGAGE = 0.12;
