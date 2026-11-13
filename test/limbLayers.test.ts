@@ -17,7 +17,14 @@
 import * as THREE from 'three';
 import { describe, expect, test, vi } from 'vitest';
 
-import { SimplePlayer } from '../SimplePlayer';
+import {
+  gaitCadence,
+  gaitLegGain,
+  GAIT_G_MAX,
+  GAIT_SWING,
+  SimplePlayer,
+  stickSpeedScale,
+} from '../SimplePlayer';
 
 // No server in a unit test: read player.glb from disk, with the real loader's
 // contract (the scale option applied to the scene), exactly as swimStroke does.
@@ -416,4 +423,165 @@ describe('the avatar fades when the camera comes close (B11)', () => {
     expect(first.opacity).toBe(0.9);
     first.opacity = 1;
   });
+});
+
+// ── The gait layer (B3) ─────────────────────────────────────────────────────
+// Feet that plant: the stride gain, cadence, bob, turn cap and stick speed,
+// driven through SimplePlayer.update() on player.glb (world law 3: the swing
+// and the clip length are read off the rig, here and in the code's comment).
+
+interface GaitRig {
+  gltfModel: THREE.Group | null;
+  walkAction: THREE.AnimationAction | null;
+  gaitBob: number;
+}
+
+/** Quaternion angle of a limb from its bind rest (never an Euler delta). */
+function angleFromRest(b: THREE.Object3D, rest: THREE.Quaternion): number {
+  return 2 * Math.acos(Math.min(1, Math.abs(b.quaternion.dot(rest))));
+}
+
+/** The player's tangential speed on the test planet. */
+function walkFor(player: SimplePlayer, mag: number, frames: number, each?: () => void): void {
+  const dir = new THREE.Vector3();
+  for (let k = 0; k < frames; k++) {
+    // Due "east" along the planet's tangent at the player's spot.
+    const n = player.getSurfaceNormal();
+    dir.set(0, 0, 1).cross(n).normalize().multiplyScalar(mag);
+    player.setMovementVector(dir);
+    player.update(DT);
+    each?.();
+  }
+}
+
+describe('feet that plant: the gait layer (B3)', () => {
+  test('the measured rig: Walk swings the legs 0.65 rad in a 1 s clip', async () => {
+    const { player, model } = await standingPlayer();
+    const clip = (player as unknown as GaitRig).walkAction?.getClip();
+    if (!clip) throw new Error('no Walk clip on player.glb');
+    expect(clip.duration).toBeCloseTo(1, 6);
+    // The code's constant matches the rig: the clip's widest leg angle from
+    // the bind rest, on a fresh mixer.
+    const legL = bone(model, 'legL');
+    const rest = legL.quaternion.clone();
+    const mixer = new THREE.AnimationMixer(model);
+    mixer.clipAction(clip).play();
+    let peak = 0;
+    for (let i = 0; i <= 200; i++) {
+      mixer.setTime((i / 200) * clip.duration);
+      peak = Math.max(peak, angleFromRest(legL, rest));
+    }
+    mixer.stopAllAction();
+    expect(peak).toBeCloseTo(GAIT_SWING, 3);
+  });
+
+  test('cadence carries what the capped stride cannot', () => {
+    expect(gaitCadence(0)).toBeCloseTo(0.9, 6);
+    expect(gaitCadence(8.1)).toBeCloseTo(2.36, 1);
+    // The stride gain caps at 0.9 rad / swing; the arms follow at 60%.
+    expect(gaitLegGain(8.1)).toBeCloseTo(GAIT_G_MAX, 6);
+    expect(gaitLegGain(8.1) * GAIT_SWING).toBeLessThanOrEqual(0.9 + 1e-9);
+    expect(gaitLegGain(0.5)).toBe(1);
+    // A planted foot carries the body: 2π · f · 0.61 · swing · g = v.
+    for (const v of [5.6, 8.1]) {
+      const carried = 2 * Math.PI * gaitCadence(v) * 0.61 * GAIT_SWING * gaitLegGain(v);
+      expect(carried).toBeCloseTo(v, 6);
+    }
+  });
+
+  test('the stick sets the speed: 0.15 holds about 2.0 u/s, 0.7 the full 5.6', () => {
+    expect(stickSpeedScale(1)).toBe(1); // a keyboard is unchanged
+    expect(5.6 * stickSpeedScale(0.15)).toBeGreaterThan(1.8);
+    expect(5.6 * stickSpeedScale(0.15)).toBeLessThan(2.2);
+    expect(5.6 * stickSpeedScale(0.7)).toBeCloseTo(5.6, 6);
+  });
+
+  test('on player.glb: stick plateaus, measured through update()', { timeout: 30000 }, async () => {
+    for (const [mag, want, tol] of [
+      [0.15, 2.0, 0.2],
+      [0.7, 5.6, 0.1],
+    ] as const) {
+      const { player } = await standingPlayer();
+      walkFor(player, mag, 180); // 3 s: the 0.4 s ramp has long settled
+      expect(player.getTangentialSpeed(), `stick ${mag}`).toBeGreaterThan(want - tol);
+      expect(player.getTangentialSpeed(), `stick ${mag}`).toBeLessThan(want + tol);
+    }
+  });
+
+  test(
+    'at a run (8.1 u/s) the hip flexes 0.9 rad at most, and the bob is lowest at the plant',
+    { timeout: 30000 },
+    async () => {
+      const { player, model } = await standingPlayer();
+      const rig = player as unknown as GaitRig;
+      const legL = bone(model, 'legL');
+      const legR = bone(model, 'legR');
+      const restL = legL.quaternion.clone();
+      const restR = legR.quaternion.clone();
+      walkFor(player, 1, 60);
+      player.setRunIntent(true);
+      walkFor(player, 1, 60); // up to speed (stamina lasts ~4.5 s)
+      expect(player.getTangentialSpeed()).toBeGreaterThan(7.9);
+      let peak = 0;
+      const bob: number[] = [];
+      const spread: number[] = [];
+      walkFor(player, 1, 120, () => {
+        const a = angleFromRest(legL, restL);
+        peak = Math.max(peak, a, angleFromRest(legR, restR));
+        bob.push(rig.gaitBob);
+        spread.push(a);
+      });
+      expect(peak, 'peak |leg − rest| at 8.1 u/s (rad)').toBeLessThanOrEqual(0.9 + 0.01);
+      expect(peak, 'the stride did open up past the clip').toBeGreaterThan(0.8);
+      // Heel strike is where a leg is at its widest; the bob (subtracted from
+      // the body height) peaks there, within one frame.
+      let checked = 0;
+      for (let i = 1; i < bob.length - 1; i++) {
+        if (bob[i] >= bob[i - 1] && bob[i] > bob[i + 1]) {
+          const near = spread.slice(Math.max(0, i - 1), i + 2);
+          const local = spread.slice(Math.max(0, i - 6), i + 7);
+          expect(Math.max(...near), `frame ${i}: spread peaks with the bob`).toBe(
+            Math.max(...local),
+          );
+          checked++;
+        }
+      }
+      expect(checked, 'bob minima seen').toBeGreaterThan(4);
+      player.setRunIntent(false);
+    },
+  );
+
+  test(
+    'turn180 at a walk: under 720°/s, 90% of the turn in 0.28-0.36 s',
+    {
+      timeout: 30000,
+    },
+    async () => {
+      const { player } = await standingPlayer();
+      const dir = new THREE.Vector3();
+      const drive = (sign: number) => {
+        const n = player.getSurfaceNormal();
+        dir.set(0, 0, 1).cross(n).normalize().multiplyScalar(sign);
+        player.setMovementVector(dir);
+        player.setRotation(sign > 0 ? Math.PI / 2 : -Math.PI / 2);
+        player.update(DT);
+      };
+      for (let k = 0; k < 120; k++) drive(1);
+      const y0 = player.getYaw();
+      let prev = y0;
+      let peak = 0;
+      let t90: number | null = null;
+      for (let k = 1; k <= 90; k++) {
+        drive(-1);
+        const y = player.getYaw();
+        peak = Math.max(peak, Math.abs(y - prev) / DT);
+        prev = y;
+        if (t90 === null && Math.abs(y - y0) >= 0.9 * Math.PI) t90 = k * DT;
+      }
+      expect((peak * 180) / Math.PI, 'peak turn rate (°/s)').toBeLessThanOrEqual(720);
+      expect(t90, 't90 (s)').not.toBeNull();
+      expect(t90 as number).toBeGreaterThanOrEqual(0.28);
+      expect(t90 as number).toBeLessThanOrEqual(0.36);
+    },
+  );
 });
