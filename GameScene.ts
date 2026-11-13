@@ -10889,6 +10889,18 @@ export class GameScene extends THREE.Scene {
     }
   }
 
+  /**
+   * The coins' InstancedMesh and glint quads skip frustum culling (one draw
+   * spread over the island), so in a room at y -300 they still drew: lowtier
+   * room draws read 73 against main's 72. enterInterior hides them and
+   * exitInterior shows them; the glint's own per-frame switch runs only
+   * outdoors (update returns early into the interior mode).
+   */
+  private showCoins(on: boolean): void {
+    if (this.coinMesh) this.coinMesh.visible = on;
+    if (this.coinGlint) this.coinGlint.visible = on && fx.on('coinGlint');
+  }
+
   private glintTime = 0;
   private glintCamQ: THREE.Quaternion | null = null;
   private readonly boundCoinGlint = (): void => this.writeCoinGlints();
@@ -17037,6 +17049,7 @@ export class GameScene extends THREE.Scene {
     // the freeze with the quality governor's rung 2 — the old save/restore of
     // the raw field fought the governor (see restoreShadowAutoUpdate).
     this.rendererRef?.setShadowFreeze?.(true);
+    this.showCoins(false);
     // Aim the window's camera BEFORE the player's visual group is teleported
     // into the room — getWorldPosition() is still the doorstep they walked to.
     this.aimInteriorOutlook();
@@ -17531,6 +17544,7 @@ export class GameScene extends THREE.Scene {
     this.setPartyMode(false); // guests go home; the wander loop re-claims them
     this.sendPartyGuestsHome(); // …including any the party let go indoors
     if (this.interiorGroup) this.interiorGroup.visible = false;
+    this.showCoins(true);
     this.interiorHotspot = null;
     // Hand the island its light rig back, exactly as it was left (P2-B9).
     this.restoreOutdoorRig();
