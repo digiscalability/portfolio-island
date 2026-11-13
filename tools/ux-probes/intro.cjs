@@ -86,7 +86,7 @@ const WATCH_NEW = ({ ms, pick }) =>
       const el = find();
       if (el) {
         const cs = getComputedStyle(el);
-        rows.push({ t: +(now - t0).toFixed(1), o: +(+cs.opacity).toFixed(3), tf: cs.transform === 'none' ? 0 : 1 });
+        rows.push({ t: +(now - t0).toFixed(1), o: +(+cs.opacity).toFixed(3), tf: cs.transform });
       } else rows.push({ t: +(now - t0).toFixed(1), o: null });
       if (now - t0 < ms) requestAnimationFrame(tick);
       else res(rows);
@@ -94,12 +94,18 @@ const WATCH_NEW = ({ ms, pick }) =>
     requestAnimationFrame(tick);
   });
 
-/** First frame's opacity, and when the element is fully in. */
+/**
+ * First frame's opacity, and when the element is fully in. `transformed` is
+ * D11's "opacity only" test: true when the computed transform CHANGES across
+ * the frames the element is seen (a slide or a scale). A constant transform
+ * is the element's static positioning (a centring translate), not motion.
+ */
 function ramp(rows) {
   const seen = rows.filter((r) => r.o !== null);
   if (!seen.length) return { shown: false };
   const full = seen.find((r) => r.o >= 0.99);
-  return { shown: true, firstFrameAtMs: seen[0].t, firstFrameOpacity: seen[0].o, fullAtMs: full ? full.t : null, rampMs: full ? +(full.t - seen[0].t).toFixed(0) : null, transformed: seen.some((r) => r.tf === 1) };
+  const tfs = [...new Set(seen.map((r) => (r.tf === undefined ? 'none' : String(r.tf))))];
+  return { shown: true, firstFrameAtMs: seen[0].t, firstFrameOpacity: seen[0].o, fullAtMs: full ? full.t : null, rampMs: full ? +(full.t - seen[0].t).toFixed(0) : null, transformed: tfs.length > 1, transforms: tfs.slice(0, 6) };
 }
 
 async function watch(page, pick, act, ms = 700) {
@@ -344,4 +350,5 @@ const WATCH_VEIL = () =>
 
 module.exports = {
   intro: { item: 'E6b (MOT-09, MOT-10; A10)', title: "the fly-in or calm entry: the camera's turn per frame, frames over 50 ms after the loader fades, welcome_visible; first-frame opacity of the welcome card, menu, zone panel and hire card; the veil's first-use ramp", profiles: ['desktop'], run: intro },
+  ramp,
 };
