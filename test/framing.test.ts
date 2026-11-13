@@ -22,7 +22,70 @@ import {
   TOUR_PEAK_DEG_S,
   TOUR_TURN_PEAK_DEG_S,
   TOUR_TURN_PEAK_SLOPE,
+  pickTourBearing,
+  tourBearingCost,
+  TOUR_BEARINGS,
+  TOUR_CLUTTER_GRID,
+  TOUR_FACE_WEIGHT,
+  TOUR_VILLAGER_ALT,
+  TOUR_VILLAGER_BACK,
+  TOUR_VILLAGER_RANK_COST,
+  type TourBearing,
 } from '../Framing';
+
+// The villager stop (wave-4 play review, stop 4): a villager 11 u away, seen
+// from behind, 15% of a desktop frame tall, behind an awning, a signpost and
+// a canopy. Scratch probe A-fix/tour-frame.cjs measured the fix on the dist:
+// desktop 0.152 -> 0.283 of the frame, facing -0.14 -> 0.98, clutter 0.
+describe('the tour villager stop', () => {
+  const b = (turn: number, clutter: number, facing: number, headClear = true): TourBearing => ({
+    turn,
+    headClear,
+    clutter,
+    facing,
+  });
+
+  test('the camera is close enough that a 1.8 u villager fills about a quarter of a desktop frame', () => {
+    const d = Math.hypot(TOUR_VILLAGER_ALT, TOUR_VILLAGER_BACK);
+    const frameH = 2 * d * Math.tan(THREE.MathUtils.degToRad(BASE_VFOV) / 2);
+    expect(1.8 / frameH).toBeGreaterThan(0.25);
+    expect(1.8 / frameH).toBeLessThan(0.4);
+  });
+
+  test('bearings go all the way round, and the grid covers the lower frame', () => {
+    expect(TOUR_BEARINGS).toBeGreaterThanOrEqual(8);
+    expect(Math.min(...TOUR_CLUTTER_GRID.map(([, y]) => y))).toBeLessThanOrEqual(-0.8);
+    expect(Math.max(...TOUR_CLUTTER_GRID.map(([x]) => Math.abs(x)))).toBeGreaterThanOrEqual(0.9);
+  });
+
+  test('a head that cannot be seen never wins; all blocked is null', () => {
+    expect(pickTourBearing([b(0, 0, 1, false), b(1, 0.5, -1)])?.turn).toBe(1);
+    expect(pickTourBearing([b(0, 0, 1, false)])).toBeNull();
+    expect(pickTourBearing([])).toBeNull();
+  });
+
+  test('the review frame (cluttered, from behind) loses to a clear face-on one', () => {
+    const review = b(0, 0.22, -0.2);
+    const faceOn = b(2, 0, 0.98);
+    expect(pickTourBearing([review, faceOn])?.turn).toBe(2);
+    // a back view costs TOUR_FACE_WEIGHT, a face-on one nothing
+    expect(tourBearingCost(b(0, 0, -1))).toBeCloseTo(TOUR_FACE_WEIGHT);
+    expect(tourBearingCost(b(0, 0, 1))).toBe(0);
+    // a clear back view beats a face-on view through a cluttered frame
+    expect(pickTourBearing([b(0, 0.6, 1), b(1, 0, -1)])?.turn).toBe(1);
+    // ties keep the earlier bearing
+    expect(pickTourBearing([b(0, 0.1, 0), b(1, 0.1, 0)])?.turn).toBe(0);
+  });
+
+  test('a later villager wins only on a clearly better frame', () => {
+    // the preferred villager's back view against the next one's face-on view
+    expect(tourBearingCost(b(0, 0, -1))).toBeGreaterThan(
+      tourBearingCost(b(0, 0, 1)) + 3 * TOUR_VILLAGER_RANK_COST,
+    );
+    // a near-tie stays with the preferred villager
+    expect(TOUR_VILLAGER_RANK_COST).toBeGreaterThan(0);
+  });
+});
 
 const ASPECTS = {
   portraitPhone: 393 / 852,

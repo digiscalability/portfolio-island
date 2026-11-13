@@ -154,3 +154,79 @@ export function tourCaption(n: number, m: number, text: string): string {
 export function renderedLength(text: string): number {
   return [...text].length;
 }
+
+// ---- The villager stop ("N townsfolk talk through Claude Haiku 4.5") ----
+// A play review found the stop framed a villager 11 u away from behind, 15% of
+// a desktop frame tall (10% on a phone), with a market awning, a signpost, a
+// tree canopy or a parked car filling the foreground. One ray to the head
+// was the only test. The camera now sits closer, and each candidate bearing
+// is scored on the whole frame and on which way the villager faces.
+
+/** Camera height above the villager and set-back along the bearing (u): about
+ *  6.6 u from the feet, so a 1.8 u villager is about a quarter of the frame. */
+export const TOUR_VILLAGER_ALT = 3.4;
+export const TOUR_VILLAGER_BACK = 5.6;
+
+/** Candidate bearings about the villager's up (12 = every 30 degrees). */
+export const TOUR_BEARINGS = 12;
+
+/** The frame's sample points, in normalised device coordinates: 5 across the
+ *  inner 90% by 4 down, the lower rows where foreground props intrude. */
+export const TOUR_CLUTTER_GRID: ReadonlyArray<readonly [number, number]> = (() => {
+  const pts: Array<readonly [number, number]> = [];
+  for (const y of [-0.85, -0.45, 0, 0.45]) {
+    for (const x of [-0.9, -0.45, 0, 0.45, 0.9]) pts.push([x, y] as const);
+  }
+  return pts;
+})();
+
+/** A grid ray counts as clutter when it hits something nearer than this share
+ *  of the camera's distance to the villager. */
+export const TOUR_CLUTTER_NEAR = 1.0;
+
+/** How much a face-on view is worth against clutter: a bearing that sees the
+ *  villager's back costs as much as this share of the grid blocked. */
+export const TOUR_FACE_WEIGHT = 0.4;
+
+/** One candidate bearing for the villager stop. */
+export interface TourBearing {
+  /** Turn about the villager's up (radians), as frameTourStop takes it. */
+  turn: number;
+  /** Nothing between the camera and the villager's head. */
+  headClear: boolean;
+  /** Share of TOUR_CLUTTER_GRID's rays blocked near the camera (0..1). */
+  clutter: number;
+  /** cos of the angle between the villager's front and the way to the camera
+   *  (1 = face on, -1 = their back). */
+  facing: number;
+}
+
+/** The cost of one bearing: clutter, plus TOUR_FACE_WEIGHT for a back view. */
+export function tourBearingCost(b: TourBearing): number {
+  return b.clutter + (TOUR_FACE_WEIGHT * (1 - b.facing)) / 2;
+}
+
+/**
+ * The bearing to frame a villager from: the cheapest whose head is clear.
+ * Ties go to the earlier candidate. null when every head ray is blocked (the
+ * caller keeps its default framing).
+ */
+export function pickTourBearing(cands: readonly TourBearing[]): TourBearing | null {
+  let best: TourBearing | null = null;
+  let bestCost = Infinity;
+  for (const c of cands) {
+    if (!c.headClear) continue;
+    const cost = tourBearingCost(c);
+    if (cost < bestCost - 1e-9) {
+      best = c;
+      bestCost = cost;
+    }
+  }
+  return best;
+}
+
+/** Villagers up and about, in the stop's order, scored for the stop. */
+export const TOUR_VILLAGER_TRIES = 4;
+
+/** What each later place in that order costs, against tourBearingCost. */
+export const TOUR_VILLAGER_RANK_COST = 0.05;

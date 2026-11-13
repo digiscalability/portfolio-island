@@ -22,9 +22,19 @@ import {
   tourCaption,
   tourFirstLegLift,
   tourLegDuration,
+  pickTourBearing,
   tourTurnFloor,
+  TOUR_BEARINGS,
+  TOUR_CLUTTER_GRID,
+  TOUR_CLUTTER_NEAR,
   TOUR_DWELL_S,
   TOUR_TURN_MAX_STEP_DEG,
+  tourBearingCost,
+  TOUR_VILLAGER_ALT,
+  TOUR_VILLAGER_BACK,
+  TOUR_VILLAGER_RANK_COST,
+  TOUR_VILLAGER_TRIES,
+  type TourBearing,
 } from './Framing';
 import { fx } from './FxBudget';
 import { GameScene, type Exhibits } from './GameScene';
@@ -290,6 +300,8 @@ export class SimpleApp {
   private readonly _tourSampleQ = new THREE.Quaternion();
   // Villager line-of-sight probe (firstHitOnly: the terrain's BVH fast path)
   private readonly _tourRay = Object.assign(new THREE.Raycaster(), { firstHitOnly: true });
+  /** The traffic fleet's mesh, found once by the villager stop (null: none). */
+  private tourCars: THREE.Object3D | null | undefined = undefined;
 
   // Completion meter recompute throttle (localStorage reads are cheap; 2.5s
   // keeps the pill fresh without touching storage every frame)
@@ -5597,8 +5609,8 @@ export class SimpleApp {
       addStop(
         storyteller,
         `${aiCount} villagers talk through Claude Haiku 4.5, with a voice \u2014 planned each morning.`,
-        6.5,
-        9,
+        TOUR_VILLAGER_ALT,
+        TOUR_VILLAGER_BACK,
         storytellerNames,
       );
       addStop(
@@ -5631,10 +5643,12 @@ export class SimpleApp {
       addStop(
         gardener,
         `${aiCount} townsfolk talk through Claude Haiku 4.5 \u2014 planned each morning, reported on nightly.`,
-        // High enough to clear tree canopies \u2014 NPC positions are live, so a low
-        // camera is occlusion roulette (a prod capture found a tree filling it).
-        6.5,
-        9,
+        // Close enough to read the villager (TOUR_VILLAGER_*). NPC positions
+        // are live, so a fixed camera is occlusion roulette: the bearing is
+        // chosen when the leg starts, for a clear, face-on frame
+        // (clearTourBearing).
+        TOUR_VILLAGER_ALT,
+        TOUR_VILLAGER_BACK,
         gardenerNames,
       );
       addStop(
@@ -5722,12 +5736,23 @@ export class SimpleApp {
    * any villager with a position.
    */
   private tourVillager(names: readonly string[]): string | null {
+    return this.tourVillagers(names, 1)[0] ?? null;
+  }
+
+  /** The first `max` of `names` who are up and about, in order; with none
+   *  up, the first with a position (tourVillager's fallback). */
+  private tourVillagers(names: readonly string[], max: number): string[] {
     const targets = this.scene.getIsland().npcTargets;
+    const up: string[] = [];
     for (const n of names) {
+      if (up.length >= max) break;
+      if (up.includes(n)) continue;
       const t = targets.find((x) => x.name === n);
-      if (t?.meshRef.visible && this.scene.getNpcActivity(n) !== 'sleep') return n;
+      if (t?.meshRef.visible && this.scene.getNpcActivity(n) !== 'sleep') up.push(n);
     }
-    return names.find((n) => this.scene.getNpcPosition(n)) ?? null;
+    if (up.length) return up;
+    const any = names.find((n) => this.scene.getNpcPosition(n));
+    return any ? [any] : [];
   }
 
   /**
@@ -5740,10 +5765,29 @@ export class SimpleApp {
   private holdTourVillager(stop: TourStop): void {
     const tour = this.tour;
     if (!tour || !stop.villagers) return;
-    const who = this.tourVillager(stop.villagers);
-    const p = who ? this.scene.getNpcPosition(who) : null;
+    // The first villager up can stand where no bearing frames them (wave-4
+    // play review: the Gardener facing the office wall, seen from behind).
+    // The first TOUR_VILLAGER_TRIES villagers up, in the stop's order, are
+    // scored and the best frame wins; each later place costs
+    // TOUR_VILLAGER_RANK_COST, so the preferred villager wins a near-tie.
+    let who: string | null = null;
+    let p: THREE.Vector3 | null = null;
+    let turn = 0;
+    let best = Infinity;
+    this.tourVillagers(stop.villagers, TOUR_VILLAGER_TRIES).forEach((n, rank) => {
+      const at = this.scene.getNpcPosition(n);
+      if (!at) return;
+      const b = this.clearTourBearing(stop, at, n);
+      const cost = (b ? tourBearingCost(b) : 10) + rank * TOUR_VILLAGER_RANK_COST;
+      if (cost < best) {
+        best = cost;
+        who = n;
+        p = at;
+        turn = b?.turn ?? 0;
+      }
+    });
     if (!who || !p) return; // keep the start-of-tour framing
-    this.frameTourStop(stop, p, this.clearTourBearing(stop, p));
+    this.frameTourStop(stop, p, turn);
     // Never take over a real conversation's hold (none can start mid-tour,
     // but the slot is shared).
     if (!this.npcDialogueName) {
@@ -5754,33 +5798,115 @@ export class SimpleApp {
 
   /**
    * A bearing (turn about the villager's up) whose camera can SEE the
-   * villager. Villagers stand among buildings and trees, and one fixed
-   * bearing parked the camera behind them: SEEN in a capture, the held
-   * Storyteller dead centre in the frame and hidden by an office block.
-   * Tries eight bearings against the chase camera's own view-blocker list
-   * (terrain + every mesh big enough to block a view ray; it ray-tests that
-   * list every frame, so eight rays once per leg cost nothing).
+   * villager, face on where it can, through an uncluttered frame. Villagers
+   * stand among buildings, stalls, trees and parked cars. One fixed bearing
+   * parked the camera behind them (SEEN: the held Storyteller hidden by an
+   * office block), and one head ray let a market awning, a signpost and a tree
+   * canopy fill the frame round a small villager seen from behind (the wave-4
+   * play review of stop 4). Each of TOUR_BEARINGS candidates now casts the
+   * head ray plus TOUR_CLUTTER_GRID's rays through its own frame, against the
+   * chase camera's view-blocker list (the meshes near the shot only) and the
+   * traffic fleet, and pickTourBearing weighs clutter against a back view.
+   * Once per villager leg: about 250 rays against a few dozen meshes.
    */
-  private clearTourBearing(stop: TourStop, p: THREE.Vector3): number {
+  private clearTourBearing(stop: TourStop, p: THREE.Vector3, who: string): TourBearing | null {
     // Private on OrbitCamera; read here rather than widening its API.
     const blockers = (this.scene.getOrbitCamera() as unknown as { collisionMeshes?: THREE.Mesh[] })
       .collisionMeshes;
-    if (!blockers?.length) return 0;
+    if (!blockers?.length) return null;
+    const reach = Math.hypot(stop.alt, stop.back) + 4;
+    const centre = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const near: THREE.Object3D[] = [];
+    let ground: THREE.Object3D | null = null;
+    let groundR = 0;
+    for (const m of blockers) {
+      if ((m as THREE.InstancedMesh).isInstancedMesh) {
+        near.push(m); // its geometry's sphere is one instance's, not the set's
+        continue;
+      }
+      const g = m.geometry;
+      if (!g.boundingSphere) g.computeBoundingSphere();
+      const bs = g.boundingSphere;
+      if (!bs) continue;
+      const r = bs.radius * Math.max(...m.getWorldScale(scale).toArray());
+      if (r > groundR) {
+        groundR = r;
+        ground = m; // the terrain: the largest blocker by far
+      }
+      if (centre.copy(bs.center).applyMatrix4(m.matrixWorld).distanceTo(p) < reach + r) {
+        near.push(m);
+      }
+    }
+    // The traffic fleet is not a camera blocker (it moves); a parked or
+    // passing car still fills a foreground. Found once, by name (Traffic.ts).
+    if (this.tourCars === undefined) {
+      let root: THREE.Object3D = this.scene.getIsland().mesh;
+      while (root.parent) root = root.parent;
+      this.tourCars = root.getObjectByName('traffic_cars') ?? null;
+    }
+    const cars = this.tourCars as THREE.InstancedMesh | null;
+    if (cars?.isInstancedMesh) {
+      cars.computeBoundingSphere(); // the cars have moved since the last one
+      near.push(cars);
+    }
+    const props = near.filter((m) => m !== ground);
+    // The villager's front (+Z, GameScene's wander orientation) on its ground.
+    const t = this.scene.getIsland().npcTargets.find((n) => n.name === who);
+    const up = p.clone().normalize();
+    const front = new THREE.Vector3();
+    if (t) {
+      front.set(0, 0, 1).applyQuaternion(t.meshRef.getWorldQuaternion(new THREE.Quaternion()));
+      front.addScaledVector(up, -front.dot(up));
+      if (front.lengthSq() > 1e-6) front.normalize();
+    }
+    const cam = this.scene.getCamera();
+    const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+    const tanX = tanY * cam.aspect;
     const probe: TourStop = { ...stop, look: new THREE.Vector3(), dir: new THREE.Vector3() };
     const camPos = new THREE.Vector3();
+    const head = p.clone().addScaledVector(up, 1.8);
     const toCam = new THREE.Vector3();
-    for (let k = 0; k < 8; k++) {
-      const turn = (k * Math.PI) / 4;
+    const q = new THREE.Quaternion();
+    const ray = this._tourRay;
+    const cands: TourBearing[] = [];
+    for (let k = 0; k < TOUR_BEARINGS; k++) {
+      const turn = (k * Math.PI * 2) / TOUR_BEARINGS;
       this.frameTourStop(probe, p, turn);
       camPos.copy(probe.dir).multiplyScalar(probe.r);
-      toCam.subVectors(camPos, probe.look);
+      // Head: nothing between it and the camera (terrain included).
+      toCam.subVectors(camPos, head);
       const dist = toCam.length();
-      this._tourRay.set(probe.look, toCam.divideScalar(dist));
-      this._tourRay.near = 0.5; // clear of the villager's own head
-      this._tourRay.far = dist;
-      if (this._tourRay.intersectObjects(blockers, false).length === 0) return turn;
+      ray.set(head, toCam.divideScalar(dist));
+      ray.near = 0.5; // clear of the villager's own head
+      ray.far = dist;
+      const headClear = ray.intersectObjects(near, false).length === 0;
+      // The frame: rays from the camera through the grid, stopping short of
+      // the villager. A hit is a prop in the foreground.
+      this.tourStopQuat(q, probe);
+      const subject = camPos.distanceTo(probe.look);
+      let blocked = 0;
+      if (headClear) {
+        for (const [x, y] of TOUR_CLUTTER_GRID) {
+          toCam
+            .set(x * tanX, y * tanY, -1)
+            .applyQuaternion(q)
+            .normalize();
+          ray.set(camPos, toCam);
+          ray.near = 0;
+          ray.far = subject * TOUR_CLUTTER_NEAR;
+          if (ray.intersectObjects(props, false).length > 0) blocked++;
+        }
+      }
+      // Facing: the villager's front against the way to the camera.
+      toCam.subVectors(camPos, p);
+      toCam.addScaledVector(up, -toCam.dot(up));
+      const facing = front.lengthSq() > 0.5 ? front.dot(toCam.normalize()) : 0;
+      cands.push({ turn, headClear, clutter: blocked / TOUR_CLUTTER_GRID.length, facing });
     }
-    return 0; // every bearing blocked: keep the default framing
+    ray.near = 0;
+    ray.far = Infinity;
+    return pickTourBearing(cands); // null: every bearing blocked
   }
 
   /** Let the tour's villager walk on again. */

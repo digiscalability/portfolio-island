@@ -321,21 +321,32 @@ describe('from frontDoorPolish.test.ts', () => {
 
   test('a villager stop is re-read and held when its leg starts, released after', () => {
     const hold = method('main-simple.ts', 'private holdTourVillager');
-    expect(hold).toContain('this.tourVillager(stop.villagers)');
-    expect(hold).toContain('this.scene.getNpcPosition(who)');
-    expect(hold).toContain('this.frameTourStop(stop, p, this.clearTourBearing(stop, p))');
+    // the first villagers up are each scored, and the best frame is held
+    expect(hold).toContain('this.tourVillagers(stop.villagers, TOUR_VILLAGER_TRIES)');
+    expect(hold).toContain('this.scene.getNpcPosition(n)');
+    expect(hold).toContain('this.clearTourBearing(stop, at, n)');
+    expect(hold).toContain('rank * TOUR_VILLAGER_RANK_COST');
+    expect(hold).toContain('this.frameTourStop(stop, p, turn)');
     expect(hold).toContain('this.scene.setNpcDialogueHold(who)');
-    // the camera bearing is chosen for a clear line of sight to the villager
+    // the camera bearing is chosen for a clear line of sight to the villager,
+    // an uncluttered frame (props and the traffic fleet) and a face-on view
     const bearing = method('main-simple.ts', 'private clearTourBearing');
     expect(bearing).toContain('collisionMeshes');
-    expect(bearing).toContain('intersectObjects(blockers, false)');
+    expect(bearing).toContain('ray.intersectObjects(near, false)');
+    expect(bearing).toContain('ray.intersectObjects(props, false)');
+    expect(bearing).toContain("getObjectByName('traffic_cars')");
+    expect(bearing).toContain('TOUR_CLUTTER_GRID');
+    expect(bearing).toContain('return pickTourBearing(cands)');
+    expect(
+      stripped('main-simple.ts').match(/TOUR_VILLAGER_ALT,\s+TOUR_VILLAGER_BACK,\s+\w+Names,/g),
+    ).toHaveLength(2);
     const adv = method('main-simple.ts', 'private advanceTourStop');
     expect(adv.indexOf('this.releaseTourVillager()')).toBeGreaterThan(-1);
     expect(adv.indexOf('this.releaseTourVillager()')).toBeLessThan(adv.indexOf('tour.idx += 1'));
     expect(adv).toContain('this.holdTourVillager(tour.stops[tour.idx])');
     expect(method('main-simple.ts', 'private endTour')).toContain('this.releaseTourVillager()');
     // asleep villagers are hidden indoors: only frame one who is up
-    expect(method('main-simple.ts', 'private tourVillager')).toContain(
+    expect(method('main-simple.ts', 'private tourVillagers')).toContain(
       "this.scene.getNpcActivity(n) !== 'sleep'",
     );
   });
