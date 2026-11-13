@@ -121,6 +121,17 @@ const CAM_YAW = () => {
   return (Math.atan2(d.x, d.z) * 180) / Math.PI;
 };
 
+/**
+ * The project whose card E must open: the one the ACTIVE hotspot names (the
+ * prompt the visitor reads when pressing E), not the one the probe posed on.
+ * Hotspots can overlap (RankPilot's pegboard spot surfaces ChocoMate's
+ * prompt), and E correctly opens the prompted card.
+ */
+function cardAnchor(prompt, posedArg) {
+  const arg = (prompt && prompt.arg) || posedArg || '';
+  return arg.startsWith('project:') ? arg.slice(8) : null;
+}
+
 async function a11Room(page, id, { touch, T }) {
   const want = A11_ROOMS[id];
   const out = { want };
@@ -151,9 +162,9 @@ async function a11Room(page, id, { touch, T }) {
           const v = zp.getBoundingClientRect();
           inView = r.top >= v.top - 1 && r.top < v.bottom - 20;
         }
-        return { events: va.map((e) => ({ name: e.name, data: e.data || null })), guideTo: window.__a11.guideTo.slice(n.g), panel, projectCard: !!card, projectCardInView: inView };
+        return { events: va.map((e) => ({ name: e.name, data: e.data || null })), guideTo: window.__a11.guideTo.slice(n.g), panel, anchor, projectCard: !!card, projectCardInView: inView };
       },
-      [n0, go.arg.startsWith('project:') ? go.arg.slice(8) : null],
+      [n0, cardAnchor(out.prompt, go.arg)],
     );
     await page.evaluate(() => {
       const ui = window.__app.ui;
@@ -360,7 +371,7 @@ async function survey(t) {
       t.check(`${prof}: in the ${hid} hall the hire card opens in 2 actions, hire_cta {cta:'interior'} (P2-A11)`, a && a.after ? !!hit : null, a ? (a.after ? { prompt: a.prompt, events: a.after.events, panel: a.after.panel } : a.why) : 'not surveyed', "hire_cta {cta:'interior'} (null: no hotspot with arg 'hire')");
     }
     const ap = a11('projects');
-    t.check(`${prof}: in Projects a project card opens in 2 actions (P2-A11)`, ap && ap.after ? ap.after.projectCard && ap.after.projectCardInView !== false : null, ap ? (ap.after ? { prompt: ap.prompt, arg: ap.arg, panel: ap.after.panel, card: ap.after.projectCard, inView: ap.after.projectCardInView } : ap.why) : 'not surveyed', "Projects open at a card (null: no hotspot with arg 'project')");
+    t.check(`${prof}: in Projects a project card opens in 2 actions (P2-A11)`, ap && ap.after ? ap.after.projectCard && ap.after.projectCardInView !== false : null, ap ? (ap.after ? { prompt: ap.prompt, posedOn: ap.arg, anchor: ap.after.anchor, panel: ap.after.panel, card: ap.after.projectCard, inView: ap.after.projectCardInView } : ap.why) : 'not surveyed', "Projects open at a card (null: no hotspot with arg 'project')");
     const aw = a11('welcome');
     t.check(`${prof}: in Welcome the compass is set in 2 actions (P2-A11)`, aw && aw.after ? aw.after.guideTo.some((d) => d && /^district:/.test(d.key || '')) : null, aw ? (aw.after ? { prompt: aw.prompt, guideTo: aw.after.guideTo } : aw.why) : 'not surveyed', "ds:guide-to {key:'district:...'} (null: no hotspot with arg 'compass')");
     if (!touch) {
@@ -372,5 +383,6 @@ async function survey(t) {
 }
 
 module.exports = {
+  cardAnchor,
   survey: { item: 'P2-E1a (INT-03, INT-04, P2-B1, D6)', title: 'every building by the door: entry, reach and promptAtSpawn, spawnInsideProp, camera sweep, avatarFrame, capPx, poses, cost, Leave and exit', profiles: ['desktop'], run: survey },
 };
