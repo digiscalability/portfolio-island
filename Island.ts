@@ -23,6 +23,7 @@ import {
   districtAccentAt,
 } from './Districts';
 import { DAY_FACTOR_UNIFORM, DUSK_FACTOR_UNIFORM } from './EnvironmentCycle';
+import { fx } from './FxBudget';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
 import { createSignTexture, type SignSpec } from './SignPainter';
@@ -37,6 +38,21 @@ import {
   beltScale,
 } from './WorldScale';
 import { burnDraws, withLocalRng } from './WorldSeed';
+
+/**
+ * The GLB props' 600-800 ms cross-fade from their placeholders (C carry-over,
+ * no-KHR post-card compiles). Fading sets a model's shared materials
+ * transparent, so it links a transparent variant of their programs (three
+ * keys 'opaque' into the program), and it flags every fading material
+ * needsUpdate each frame, so three re-keys them all, every frame, while the
+ * props land around the welcome card. MEASURED (phone and low tier, no KHR,
+ * 12 h): the fade's only extra program is Glow's transparent variant (52
+ * programs with the fade, 51 without), and a full compile 6 s after boot owes
+ * nothing either way: the opaque programs already exist when a fade hands its
+ * materials back. The low tier places the props opaque in one frame; desktop
+ * keeps the fade.
+ */
+fx.register('glbFade', { desktop: true, low: false });
 
 /** The Projects district's colour, for its boards' band. */
 const PROJECTS_BAND = DISTRICTS.find((d) => d.id === 'projects')?.accent ?? 0xc9a06a;
@@ -307,6 +323,20 @@ export class Island {
    * edge read at all (0 px in every column probed), so it is 2.2 now (C2).
    */
   private seaBandsUniform = { value: new THREE.Vector3(2.2, 2.4, 3.2) };
+  /**
+   * True once a compile pass has built the sea. The sea is in the boot
+   * pre-compile on every tier and theme, behind the loader, and no frame is
+   * drawn before it, so a GLB that lands earlier has nothing to fade from.
+   */
+  private compilePassSeen = false;
+  /** GLB clones placed opaque (no fade) and clones that faded in. */
+  private readonly glbFadeStats = { opaque: 0, faded: 0 };
+  /** performance.now() of each fade's restore (the first 256), for probes. */
+  private readonly glbRestoreAt: number[] = [];
+  /** Read-only, for probes: how the GLB clones arrived (see 'glbFade'). */
+  public getGlbFadeStats(): { opaque: number; faded: number; restoreAt: number[] } {
+    return { ...this.glbFadeStats, restoreAt: this.glbRestoreAt.slice() };
+  }
   /** The share of the key's direct specular (SEA_GLARE) and direct diffuse
    *  (SEA_KEY) the sea keeps, now that the key stands high in every
    *  visitor's sky (see the sea's lights_fragment_end patch). Measured, not
@@ -1726,6 +1756,7 @@ export class Island {
       // pre-compile waits ~1 s on its last program, behind the loader (see
       // Materials.flushAfterCompile).
       Materials.flushAfterCompile(renderer);
+      this.compilePassSeen = true;
       shader.uniforms.uTime = this.seaTimeUniform;
       shader.uniforms.uAmp = { value: Island.WAVE_AMP };
       shader.uniforms.uTide = this.seaTideUniform;
@@ -9253,6 +9284,13 @@ export class Island {
       ) => {
         // clone model, apply local scale; caller should position the returned copy using placeObjectOnSurface
         const copy = model.clone(true) as THREE.Object3D;
+        // The fade sets the shared materials transparent, so it compiles the
+        // transparent variant of each (three keys 'opaque' into the program;
+        // the opaque ones are already built). See the 'glbFade' switch.
+        const fade = this.compilePassSeen && fx.on('glbFade');
+        copy.userData.glbFade = fade;
+        if (fade) this.glbFadeStats.faded++;
+        else this.glbFadeStats.opaque++;
         copy.position.set(0, 0, 0);
         copy.quaternion.identity();
         copy.scale.setScalar(scale);
@@ -9366,7 +9404,7 @@ export class Island {
                 'material map',
               );
 
-              if ('opacity' in typedMaterial) {
+              if (fade && 'opacity' in typedMaterial) {
                 typedMaterial.transparent = true;
                 (typedMaterial as { opacity?: number }).opacity = 0;
               }
@@ -9381,8 +9419,10 @@ export class Island {
               (typedMaterial as THREE.Material & { isMeshToonMaterial?: boolean })
                 .isMeshToonMaterial
             ) {
-              typedMaterial.transparent = true;
-              typedMaterial.opacity = 0;
+              if (fade) {
+                typedMaterial.transparent = true;
+                typedMaterial.opacity = 0;
+              }
               return;
             }
 
@@ -9434,8 +9474,10 @@ export class Island {
 
               standardMaterial.envMapIntensity =
                 typeof overrides?.envMapIntensity === 'number' ? overrides.envMapIntensity : 0.6;
-              standardMaterial.transparent = true;
-              standardMaterial.opacity = 0;
+              if (fade) {
+                standardMaterial.transparent = true;
+                standardMaterial.opacity = 0;
+              }
 
               if (Array.isArray(node.material)) {
                 const updatedMaterials = node.material.slice();
@@ -9508,6 +9550,7 @@ export class Island {
         mats: THREE.Material[],
         snap: Map<string, AuthoredMat>,
       ): void => {
+        if (this.glbRestoreAt.length < 256) this.glbRestoreAt.push(performance.now());
         for (const mat of mats) {
           // prepareClone REPLACES some source materials with fresh
           // MeshStandardMaterials (non-standard/physical sources), whose
@@ -9755,7 +9798,15 @@ export class Island {
                     /* ignore animation setup errors */
                   }
 
-                  // fade in/out
+                  // fade in/out (none on the low tier or behind the loader: 'glbFade')
+                  if (!clone.userData.glbFade) {
+                    try {
+                      ph.visible = false;
+                    } catch {
+                      /* ignore */
+                    }
+                    return;
+                  }
                   const duration = 600;
                   const start = performance.now();
                   const fadeMats = collectFadeMaterials(clone);
@@ -10127,7 +10178,8 @@ export class Island {
                     this.animationMixers.push(mixer);
                   }
                 } catch {}
-                // quick fade-in
+                // quick fade-in (none on the low tier or behind the loader: 'glbFade')
+                if (!copy.userData.glbFade) continue;
                 const duration = 800;
                 const start = performance.now();
                 const treeFadeMats = collectFadeMaterials(copy);

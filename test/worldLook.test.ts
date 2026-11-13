@@ -2029,3 +2029,26 @@ describe('villager lines tell the island as it is (p2/copy, C carry-over)', () =
     expect(villagerLines().filter((l) => keys.some((re) => re.test(l)))).toEqual([]);
   });
 });
+
+describe('the GLB props land opaque on the low tier (C carry-over, no-KHR compiles)', () => {
+  test("a 'glbFade' switch, desktop only, gates every transparent write of the fade", () => {
+    const src = stripped('Island.ts');
+    expect(src).toContain("fx.register('glbFade', { desktop: true, low: false })");
+    // Decided once per clone, before any material is touched.
+    expect(src).toContain("const fade = this.compilePassSeen && fx.on('glbFade');");
+    // The boot pre-compile builds the sea first; a GLB that lands earlier has
+    // nothing to fade from.
+    expect(src).toMatch(
+      /Materials\.flushAfterCompile\(renderer\);\s*this\.compilePassSeen = true;/,
+    );
+    // prepareClone's three start states are all behind the gate.
+    expect(src).toContain("if (fade && 'opacity' in typedMaterial) {");
+    expect(
+      src.match(/if \(fade\) \{\s*(typedMaterial|standardMaterial)\.transparent = true;/g),
+    ).toHaveLength(2);
+    expect(src.match(/\.transparent = true;/g)?.length).toBeGreaterThan(0);
+    // Both loaders skip the fade when the clone is opaque.
+    expect(src).toMatch(/if \(!clone\.userData\.glbFade\) \{\s*try \{\s*ph\.visible = false;/);
+    expect(src).toContain('if (!copy.userData.glbFade) continue;');
+  });
+});
