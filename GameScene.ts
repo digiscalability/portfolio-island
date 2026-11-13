@@ -9732,6 +9732,8 @@ export class GameScene extends THREE.Scene {
      *  model (B8): the pin sits above it, so a taller model's status line
      *  is never behind its own head. Undefined until measured. */
     headTop?: number;
+    /** The clock time before which an unloaded model is not re-measured. */
+    headRetryAt?: number;
     /** 1, or easing to 0 over 150 ms while the visitor talks to this one. */
     talkFade?: number;
     ctx: CanvasRenderingContext2D | null;
@@ -9923,8 +9925,6 @@ export class GameScene extends THREE.Scene {
     tag.tex.needsUpdate = true;
   }
 
-  /** The factor that keeps a sprite `worldW` wide at `dist` from the camera
-   *  within 60% of the viewport's width (B8, UX-14); 1 when it fits. */
   /** A point's depth along the camera's view axis: the distance a
    *  camera-facing sprite's on-screen width divides by (the straight-line
    *  distance overstates it off-centre, and the clamp let a bubble reach
@@ -9938,6 +9938,8 @@ export class GameScene extends THREE.Scene {
   private static readonly _viewRel = new THREE.Vector3();
   private static readonly _viewFwd = new THREE.Vector3();
 
+  /** The factor that keeps a sprite `worldW` wide at `dist` from the camera
+   *  within 60% of the viewport's width (B8, UX-14); 1 when it fits. */
   private spriteWidthClamp(worldW: number, dist: number): number {
     const cam = this.camera;
     if (!cam || dist <= 0) return 1;
@@ -9970,6 +9972,13 @@ export class GameScene extends THREE.Scene {
     });
     if (meshes === 0) return undefined;
     return Number.isFinite(top) ? top * ref.scale.y : 0;
+  }
+  /** A name pin's scale unit at `dist` (straight line) and `depth` (view
+   *  axis): ∝dist for a constant-ish size, then clamped so the pin's real
+   *  width (base × 1.7) stays within 60% of the viewport (B8). */
+  private pinScale(dist: number, depth: number): number {
+    const base = THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6);
+    return base * this.spriteWidthClamp(base * 1.7, depth);
   }
   private static readonly _headInv = new THREE.Matrix4();
   private static readonly _headMat = new THREE.Matrix4();
@@ -12740,7 +12749,12 @@ export class GameScene extends THREE.Scene {
       // world after the 0.6×1.07 NPC group scale), or 0.15 above this
       // villager's own measured head top when that is higher (B8: the Night
       // Watch's taller model hid the pin's status line behind his head).
-      if (tag.headTop === undefined) tag.headTop = GameScene.measureHeadTop(tag.target.meshRef);
+      // A model still loading has no meshes yet: retry at most every 0.5 s,
+      // not a full traverse every frame.
+      if (tag.headTop === undefined && time >= (tag.headRetryAt ?? 0)) {
+        tag.headTop = GameScene.measureHeadTop(tag.target.meshRef);
+        if (tag.headTop === undefined) tag.headRetryAt = time + 0.5;
+      }
       const anchor = Math.max(1.55, (tag.headTop ?? 0) + 0.15);
       tag.sprite.position
         .copy(pos)
@@ -12748,9 +12762,7 @@ export class GameScene extends THREE.Scene {
       const dist = this.camera.position.distanceTo(tag.sprite.position);
       // Constant-ish on-screen size: sprites attenuate ∝1/dist, so scale ∝dist.
       // Never wider than 60% of the viewport (B8, UX-14).
-      const s =
-        THREE.MathUtils.clamp(dist * 0.055, 1.1, 3.6) *
-        this.spriteWidthClamp(1.7, this.viewDepth(tag.sprite.position));
+      const s = this.pinScale(dist, this.viewDepth(tag.sprite.position));
       // 0.63 aspect matches the 256×96 two-line pill canvas (0.42 was the old
       // 64px canvas — it squished the role+activity pill every frame).
       tag.sprite.scale.set(s * 1.7, s * 0.63, 1);

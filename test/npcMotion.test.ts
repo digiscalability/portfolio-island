@@ -30,6 +30,7 @@ interface Talk {
   setNpcDialogueHold(name: string | null): void;
   updateNpcTalk(now: number, dt: number): void;
   spriteWidthClamp(worldW: number, dist: number): number;
+  pinScale(dist: number, depth: number): number;
   viewDepth(p: THREE.Vector3): number;
   showNpcSpeechBubble(i: number, text: string, time: number): void;
   paintNpcSpeechBubble(i: number, text: string, time: number): void;
@@ -258,7 +259,26 @@ describe('bubbles and pins you can read (B8)', () => {
     expect(block).toContain('this.viewDepth(this.npcBubble.sprite.position)');
     expect(block).toContain('this.npcBubble.sprite.visible = bo > 0.02;');
     expect(block).toContain('this.npcBubbleLive = false;');
-    expect(g).toContain('this.spriteWidthClamp(1.7, this.viewDepth(tag.sprite.position))');
+    expect(g).toContain('const s = this.pinScale(dist, this.viewDepth(tag.sprite.position));');
+    expect(g).toContain('tag.sprite.scale.set(s * 1.7, s * 0.63, 1);');
+  });
+
+  test("a name pin's real width holds 60% on a phone (the clamp sees base x 1.7)", () => {
+    // 390x844 at fov 68: a pin at view depth 3 u. Clamping the bare 1.7 u
+    // let the 1.1 base through, so the pin drew 66% of the width.
+    scene.camera.fov = 68;
+    scene.camera.aspect = 390 / 844;
+    const viewW = (d: number): number =>
+      2 * d * Math.tan(THREE.MathUtils.degToRad(68) / 2) * (390 / 844);
+    for (const depth of [2.6, 3, 4, 5, 6]) {
+      const s = scene.pinScale(depth, depth);
+      expect((s * 1.7) / viewW(depth)).toBeLessThanOrEqual(0.6 + 1e-9);
+    }
+    expect((scene.pinScale(3, 3) * 1.7) / viewW(3)).toBeCloseTo(0.6, 6);
+    // Far away the clamp does not engage: the distance scale stands.
+    scene.camera.aspect = 1.6;
+    expect(scene.pinScale(40, 40)).toBeCloseTo(40 * 0.055, 6);
+    scene.camera.fov = 50;
   });
 
   test("a quest giver's bubble sits above its '!' (bubble.cjs: the mark cut the text)", () => {
