@@ -20,7 +20,14 @@ import {
   isSttSupported,
   startListening,
 } from './Speech';
-import { ensureIconSprite, icon, iconNode, type IconName } from './ui/icons';
+import {
+  ensureIconSprite,
+  icon,
+  iconNode,
+  type IconName,
+  PARCEL_GLYPH,
+  DISTRICT_GLYPHS,
+} from './ui/icons';
 import { type InputMode, keyTextPlain, promptKeysHtml, renderKeyText } from './ui/keycaps';
 import { DS } from './ui/tokens';
 import { WORLD_ERA } from './WorldScale';
@@ -1264,6 +1271,10 @@ export class SimpleUI {
       pos: { x: number; y: number; z: number };
       /** District accent (zone POIs only) — halo + legend chip border. */
       color?: string;
+      /** A sprite glyph in place of the emoji (P2-D8). Without one, '📦' and
+       *  a parcel or delivery label take the parcel glyph, and Contact's '📬'
+       *  the mail glyph, so the two never read alike. */
+      glyph?: 'parcel' | 'mail';
     }>,
     onPick: (poi: {
       icon: string;
@@ -1311,97 +1322,122 @@ export class SimpleUI {
     });
     modal.appendChild(canvas);
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const cx = D / 2;
-    const cy = D / 2;
-    const R = D / 2 - 6;
-    // Polar projection from the pole: r grows with distance from the pole
-    // (lat π/2 = centre, shore lat ~0.24 = rim).
-    const SHORE_LAT = 0.2;
-    const project = (pos: { x: number; y: number; z: number }): { x: number; y: number } => {
-      const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
-      const lat = Math.asin(Math.max(-1, Math.min(1, pos.y / len)));
-      const lon = Math.atan2(pos.z, pos.x);
-      const r = (R * (Math.PI / 2 - lat)) / (Math.PI / 2 - SHORE_LAT);
-      return { x: cx + Math.cos(lon) * Math.min(r, R), y: cy + Math.sin(lon) * Math.min(r, R) };
-    };
-    // Sea, land, plaza ring.
-    ctx.fillStyle = '#17435e';
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#4d8a46';
-    ctx.beginPath();
-    ctx.arc(cx, cy, R * 0.94, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(232, 217, 184, 0.5)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(cx, cy, (R * (Math.PI / 2 - 0.4636)) / (Math.PI / 2 - SHORE_LAT), 0, Math.PI * 2);
-    ctx.stroke();
-    // POIs.
     const hits: Array<{ x: number; y: number; poi: (typeof pois)[number] }> = [];
-    ctx.font = '16px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (const poi of pois) {
-      const p = project(poi.pos);
-      // District POIs get their accent as a soft halo — the map used to
-      // render five identical glyphs with nothing tying them to the coloured
-      // beacons the radar and the 3D world already use.
-      if (poi.color) {
-        ctx.fillStyle = poi.color;
-        ctx.globalAlpha = 0.28;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-      ctx.fillText(poi.icon, p.x, p.y);
-      hits.push({ x: p.x, y: p.y, poi });
-    }
-    // The compass pill's current target: a gold halo, so the map a visitor
-    // opened FROM the pill visibly agrees with it. Static ring on purpose —
-    // the modal canvas draws once, and reduced-motion needs no special case.
-    if (opts?.targetPos) {
-      const tp = project(opts.targetPos);
-      ctx.strokeStyle = '#ffd54a';
-      ctx.lineWidth = 2;
+    // The parcel and Contact's mail never share a glyph (P2-D8).
+    const glyphOf = (poi: (typeof pois)[number]): 'parcel' | 'mail' | null =>
+      poi.glyph ??
+      (poi.icon === '📦' || /\b(parcel|deliver)/i.test(poi.label)
+        ? 'parcel'
+        : poi.icon === '📬'
+          ? 'mail'
+          : null);
+    // No 2D context (a locked-down browser, a test DOM): the legend below is
+    // still the whole map, as it is for a screen reader.
+    if (ctx) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const cx = D / 2;
+      const cy = D / 2;
+      const R = D / 2 - 6;
+      // Polar projection from the pole: r grows with distance from the pole
+      // (lat π/2 = centre, shore lat ~0.24 = rim).
+      const SHORE_LAT = 0.2;
+      const project = (pos: { x: number; y: number; z: number }): { x: number; y: number } => {
+        const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
+        const lat = Math.asin(Math.max(-1, Math.min(1, pos.y / len)));
+        const lon = Math.atan2(pos.z, pos.x);
+        const r = (R * (Math.PI / 2 - lat)) / (Math.PI / 2 - SHORE_LAT);
+        return { x: cx + Math.cos(lon) * Math.min(r, R), y: cy + Math.sin(lon) * Math.min(r, R) };
+      };
+      // Sea, land, plaza ring.
+      ctx.fillStyle = '#17435e';
       ctx.beginPath();
-      ctx.arc(tp.x, tp.y, 12.5, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    // You-are-here + heading. The heading arrow's screen direction comes from
-    // projecting a point a step ahead — the polar projection's own math, so
-    // it is correct at any longitude without a tangent-frame derivation.
-    if (opts?.playerPos) {
-      const pp = project(opts.playerPos);
-      if (opts.playerFwd) {
-        const ahead = project({
-          x: opts.playerPos.x + opts.playerFwd.x * 3,
-          y: opts.playerPos.y + opts.playerFwd.y * 3,
-          z: opts.playerPos.z + opts.playerFwd.z * 3,
-        });
-        const dx = ahead.x - pp.x;
-        const dy = ahead.y - pp.y;
-        const len = Math.hypot(dx, dy);
-        if (len > 0.01) {
-          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(pp.x, pp.y);
-          ctx.lineTo(pp.x + (dx / len) * 11, pp.y + (dy / len) * 11);
-          ctx.stroke();
-        }
-      }
-      ctx.fillStyle = '#ffffff';
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(pp.x, pp.y, 4, 0, Math.PI * 2);
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
       ctx.fill();
+      ctx.fillStyle = '#4d8a46';
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 0.94, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(232, 217, 184, 0.5)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(cx, cy, (R * (Math.PI / 2 - 0.4636)) / (Math.PI / 2 - SHORE_LAT), 0, Math.PI * 2);
       ctx.stroke();
+      // POIs.
+      ctx.font = '16px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const poi of pois) {
+        const p = project(poi.pos);
+        // District POIs get their accent as a soft halo — the map used to
+        // render five identical glyphs with nothing tying them to the coloured
+        // beacons the radar and the 3D world already use.
+        if (poi.color) {
+          ctx.fillStyle = poi.color;
+          ctx.globalAlpha = 0.28;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        const glyph = glyphOf(poi);
+        if (glyph && typeof Path2D === 'function') {
+          // The sprite's glyph, 18 px on the 24 px grid, light on the map.
+          ctx.save();
+          ctx.translate(p.x - 9, p.y - 9);
+          ctx.scale(0.75, 0.75);
+          ctx.strokeStyle = '#fff6d8';
+          ctx.lineWidth = 2;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke(new Path2D(glyph === 'parcel' ? PARCEL_GLYPH : DISTRICT_GLYPHS.contact));
+          ctx.restore();
+        } else {
+          ctx.fillText(poi.icon, p.x, p.y);
+        }
+        hits.push({ x: p.x, y: p.y, poi });
+      }
+      // The compass pill's current target: a gold halo, so the map a visitor
+      // opened FROM the pill visibly agrees with it. Static ring on purpose —
+      // the modal canvas draws once, and reduced-motion needs no special case.
+      if (opts?.targetPos) {
+        const tp = project(opts.targetPos);
+        ctx.strokeStyle = '#ffd54a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(tp.x, tp.y, 12.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // You-are-here + heading. The heading arrow's screen direction comes from
+      // projecting a point a step ahead — the polar projection's own math, so
+      // it is correct at any longitude without a tangent-frame derivation.
+      if (opts?.playerPos) {
+        const pp = project(opts.playerPos);
+        if (opts.playerFwd) {
+          const ahead = project({
+            x: opts.playerPos.x + opts.playerFwd.x * 3,
+            y: opts.playerPos.y + opts.playerFwd.y * 3,
+            z: opts.playerPos.z + opts.playerFwd.z * 3,
+          });
+          const dx = ahead.x - pp.x;
+          const dy = ahead.y - pp.y;
+          const len = Math.hypot(dx, dy);
+          if (len > 0.01) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(pp.x, pp.y);
+            ctx.lineTo(pp.x + (dx / len) * 11, pp.y + (dy / len) * 11);
+            ctx.stroke();
+          }
+        }
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(pp.x, pp.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
     }
     const pick = (poi: (typeof pois)[number]): void => {
       modal.remove();
@@ -1461,10 +1497,15 @@ export class SimpleUI {
       const poi = list[0];
       const chip = document.createElement('button');
       chip.type = 'button';
-      chip.textContent =
-        list.length > 1
-          ? `${poi.icon} ${plural(poi.label)} (${list.length})`
-          : `${poi.icon} ${poi.label}`;
+      const glyph = glyphOf(poi);
+      const words = list.length > 1 ? `${plural(poi.label)} (${list.length})` : poi.label;
+      if (glyph) {
+        SimpleUI.chipContent(chip, glyph, words);
+        chip.dataset.glyph = glyph;
+        Object.assign(chip.style, { display: 'inline-flex', alignItems: 'center', gap: '5px' });
+      } else {
+        chip.textContent = `${poi.icon} ${words}`;
+      }
       Object.assign(chip.style, {
         padding: '5px 9px',
         minHeight: this.isTouch ? '44px' : '36px',
@@ -1483,6 +1524,71 @@ export class SimpleUI {
     modal.appendChild(legend);
     this.overlay.appendChild(modal);
     trackOnce('island_map_opened');
+  }
+
+  /**
+   * The School's lessons card (P2-D8): one row per lesson, done or not, with
+   * its reward. Each row not done has one 'Show me', which sends that row's
+   * key through 'ds:guide-to' (A's P2-A9 opens this from the School, wave 4).
+   * A centred modal under the manager: Escape, Back and focus as every other.
+   */
+  public showLessons(
+    rows: ReadonlyArray<{
+      id: string;
+      title: string;
+      done: boolean;
+      reward: number;
+      guideKey?: string;
+    }>,
+  ): void {
+    const modal = this.buildCenteredModal('min(420px, calc(100vw - 32px))', 'lessons');
+    const title = document.createElement('h2');
+    title.textContent = 'School lessons';
+    Object.assign(title.style, { margin: '0 0 6px', color: '#8a9bff' });
+    modal.appendChild(title);
+    const lede = document.createElement('p');
+    lede.textContent = 'Each lesson teaches one of the island’s trades, and pays a few coins.';
+    Object.assign(lede.style, { margin: '0 0 12px', fontSize: '13px', color: '#c5cfdd' });
+    modal.appendChild(lede);
+    const list = document.createElement('ul');
+    list.className = 'ds-controls-todo';
+    list.dataset.lessons = '1';
+    for (const r of rows) {
+      const li = document.createElement('li');
+      li.dataset.lesson = r.id;
+      if (r.done) li.dataset.done = '1';
+      const text = document.createElement('span');
+      text.className = 'ds-controls-todo-text';
+      const strong = document.createElement('strong');
+      strong.textContent = r.title;
+      const sub = document.createElement('span');
+      sub.textContent = r.done ? 'Learned' : `Reward: ${Math.max(0, Math.round(r.reward))} coins`;
+      text.append(strong, sub);
+      li.appendChild(text);
+      if (r.done) {
+        const done = document.createElement('span');
+        done.className = 'ds-controls-todo-done';
+        done.appendChild(iconNode('check', 16));
+        done.append(' Done');
+        li.appendChild(done);
+      } else if (r.guideKey) {
+        const key = r.guideKey;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = 'Show me';
+        b.dataset.showMe = key;
+        b.setAttribute('aria-label', `Show me: ${r.title}`);
+        b.addEventListener('click', () => {
+          this.closeCenteredModal(modal, 'lessons');
+          this.guideTo(key, 'lessons');
+        });
+        li.appendChild(b);
+      }
+      list.appendChild(li);
+    }
+    modal.appendChild(list);
+    trackOnce('lessons_opened');
+    this.overlay.appendChild(modal);
   }
 
   /** Wire the mute button to the audio system (returns new muted state). */

@@ -14,6 +14,7 @@ import { a11y } from '../Accessibility';
 import { type CloseReason, PanelManager, type PanelSpec } from '../PanelManager';
 import { Passport } from '../Passport';
 import { hapticPulse, hapticsEnabled, SimpleUI } from '../SimpleUI';
+import { DISTRICT_GLYPHS, PARCEL_GLYPH } from '../ui/icons';
 
 // The boards are Firebase reads; here they answer at once, empty.
 vi.mock('../Boards', () => ({
@@ -1411,5 +1412,89 @@ describe('the zone panel and the door veil are made ahead (w1-fix, CO-A5)', () =
     expect(document.querySelectorAll('[data-veil]').length).toBe(1);
     ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
     expect(ui.panels.current()).toBe('zone');
+  });
+});
+
+// P2-D8: the lessons card, and a parcel glyph on the island map.
+describe('P2-D8: the lessons card and the parcel glyph', () => {
+  const LESSONS = [
+    { id: 'fish', title: 'Fishing', done: true, reward: 10, guideKey: 'shore' },
+    { id: 'chop', title: 'Chopping', done: false, reward: 10, guideKey: 'carpenter' },
+    { id: 'farm', title: 'Farming', done: false, reward: 10, guideKey: 'farm' },
+    { id: 'build', title: 'Building', done: false, reward: 10, guideKey: 'stake:nearest' },
+    { id: 'cook', title: 'Cooking', done: true, reward: 10, guideKey: 'canteen' },
+    { id: 'mine', title: 'Mining', done: false, reward: 10, guideKey: 'ore:nearest' },
+  ];
+
+  test("showLessons renders six rows; 'Show me' sends that row's key and closes the card", async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    ui.showLessons(LESSONS);
+    await tick();
+    expect(ui.panels.current()).toBe('lessons');
+    const card = ui.panels.topModal()!.el!;
+    expect(card.getAttribute('role')).toBe('dialog');
+    const rows = [...card.querySelectorAll<HTMLElement>('li[data-lesson]')];
+    expect(rows).toHaveLength(6);
+    // One 'Show me' per row not done, none on a done row.
+    expect(rows.map((r) => r.querySelectorAll('button[data-show-me]').length)).toEqual([
+      0, 1, 1, 1, 0, 1,
+    ]);
+    expect(rows[0].textContent).toContain('Done');
+    // D4: focus moved into the card.
+    expect(card.contains(document.activeElement)).toBe(true);
+    const sent: unknown[] = [];
+    const on = (e: Event): void => {
+      sent.push((e as CustomEvent).detail);
+    };
+    window.addEventListener('ds:guide-to', on);
+    rows[2].querySelector<HTMLButtonElement>('button[data-show-me]')!.click();
+    window.removeEventListener('ds:guide-to', on);
+    expect(sent).toEqual([{ key: 'farm', source: 'lessons' }]);
+    expect(ui.panels.current()).toBeNull();
+    opener.remove();
+  });
+
+  test('Escape closes the lessons card (D2 history, D4 focus)', async () => {
+    ui.showLessons(LESSONS);
+    await tick();
+    document.dispatchEvent(key('Escape'));
+    expect(ui.panels.current()).toBeNull();
+  });
+
+  test('the map legend: a parcel glyph, distinct from Contact’s mail glyph', () => {
+    const ctx2d = new Proxy({}, { get: () => () => {}, set: () => true });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      ctx2d as unknown as CanvasRenderingContext2D,
+    );
+    const at = (x: number): { x: number; y: number; z: number } => ({ x, y: 90, z: 10 });
+    ui.showIslandMap(
+      [
+        { icon: '📬', label: 'Contact', pos: at(10) },
+        { icon: '📦', label: 'Parcel', pos: at(20) },
+        { icon: '🛒', label: 'Shop kiosk', pos: at(5) },
+      ],
+      () => {},
+    );
+    const chips = [...document.querySelectorAll<HTMLElement>('#ui-overlay button')].filter((b) =>
+      /Contact|Parcel|Shop/.test(b.textContent ?? ''),
+    );
+    const glyphs = chips.map(
+      (c) => c.querySelector('svg.ds-ic')?.getAttribute('data-icon') ?? null,
+    );
+    expect(glyphs).toEqual(['mail', 'parcel', null]);
+    expect(chips.map((c) => (c.textContent ?? '').trim())).toEqual([
+      'Contact',
+      'Parcel',
+      '🛒 Shop kiosk',
+    ]);
+    expect(PARCEL_GLYPH).not.toBe(DISTRICT_GLYPHS.contact);
+  });
+
+  test('a browser with no 2D canvas still gets the legend', () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    ui.showIslandMap([{ icon: '📦', label: 'Parcel', pos: { x: 1, y: 90, z: 1 } }], () => {});
+    expect(document.querySelector('[data-glyph="parcel"]')).not.toBeNull();
   });
 });
