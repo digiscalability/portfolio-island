@@ -9716,10 +9716,16 @@ export class GameScene extends THREE.Scene {
   }
 
   private readonly _coinNdc = new THREE.Vector3();
-  /** window 'ds:coin' {x, y, value: 1}: the pop point projected to CSS px. */
+  /** window 'ds:coin' {x, y, value: 1}: the pop point projected to CSS px,
+   *  always finite and on screen. With no camera, or a pop point behind it
+   *  (a pickup in the vehicle view with the camera turned away), it is the
+   *  screen centre; otherwise clamped to the viewport. D11's flight starts
+   *  there. */
   private dispatchCoinEvent(c: CoinRecord): void {
-    let x = NaN;
-    let y = NaN;
+    const w = typeof window !== 'undefined' ? window.innerWidth : 0;
+    const h = typeof window !== 'undefined' ? window.innerHeight : 0;
+    let x = Math.round(w / 2);
+    let y = Math.round(h / 2);
     const cam = this.camera as THREE.PerspectiveCamera | undefined;
     if (cam) {
       // The camera's matrices as of now (a frame may not have rendered since
@@ -9727,10 +9733,10 @@ export class GameScene extends THREE.Scene {
       cam.updateMatrixWorld();
       const n = this._coinN.copy(c.home).normalize();
       const v = this._coinNdc.copy(c.home).addScaledVector(n, GameScene.COIN_POP_RISE).project(cam);
-      const w = typeof window !== 'undefined' ? window.innerWidth : 0;
-      const h = typeof window !== 'undefined' ? window.innerHeight : 0;
-      x = Math.round(((v.x + 1) / 2) * w);
-      y = Math.round(((1 - v.y) / 2) * h);
+      if (v.z <= 1 && Number.isFinite(v.x) && Number.isFinite(v.y)) {
+        x = Math.round(THREE.MathUtils.clamp((v.x + 1) / 2, 0, 1) * w);
+        y = Math.round(THREE.MathUtils.clamp((1 - v.y) / 2, 0, 1) * h);
+      }
     }
     try {
       window.dispatchEvent(new CustomEvent('ds:coin', { detail: { x, y, value: 1 } }));

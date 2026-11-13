@@ -111,6 +111,36 @@ describe('a pickup says where it popped: window ds:coin (B9 to D11)', () => {
     }
   });
 
+  test('x and y stay on screen: the centre when behind the camera or with none', () => {
+    const sc = scene as unknown as { camera?: THREE.PerspectiveCamera };
+    const saved = sc.camera;
+    const seen: Array<{ x: number; y: number }> = [];
+    const onCoin = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener('ds:coin', onCoin);
+    const cam = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
+    cam.position.set(0, 80, 0);
+    sc.camera = cam;
+    cam.lookAt(0, 200, 0); // turned away: the coin at y 76 is behind it
+    scene.collectMeadowCoin(coin(), 50);
+    cam.lookAt(40, 76, 0); // in front but far off to the side of the frame
+    scene.collectMeadowCoin(coin(), 51);
+    sc.camera = undefined;
+    scene.collectMeadowCoin(coin(), 52);
+    sc.camera = saved;
+    window.removeEventListener('ds:coin', onCoin);
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    expect(seen[0]).toEqual({ x: Math.round(W / 2), y: Math.round(H / 2), value: 1 });
+    expect(seen[2]).toEqual({ x: Math.round(W / 2), y: Math.round(H / 2), value: 1 });
+    for (const d of seen) {
+      expect(Number.isFinite(d.x) && Number.isFinite(d.y)).toBe(true);
+      expect(d.x).toBeGreaterThanOrEqual(0);
+      expect(d.x).toBeLessThanOrEqual(W);
+      expect(d.y).toBeGreaterThanOrEqual(0);
+      expect(d.y).toBeLessThanOrEqual(H);
+    }
+  });
+
   test('addCoins and spendCoins dispatch nothing', () => {
     const cb = vi.fn();
     window.addEventListener('ds:coin', cb);
