@@ -166,6 +166,13 @@ export const GAIT_SWING = 0.65;
 export const GAIT_LEG = 0.61;
 /** Peak leg angle about rest: 0.9 rad, so the gain caps at 0.9 / swing. */
 export const GAIT_G_MAX = 0.9 / GAIT_SWING;
+/** The clip's stance phase offset (measured, slide.cjs rows at hour 12 on
+ *  this branch): the legs pass each other at walk phases 0.29 and 0.79 and
+ *  reach full spread just after 0 and 0.5, so the Walk clip's stride runs
+ *  0.04 of a cycle behind the phase. The bob and the stance roll read
+ *  `phase − GAIT_PHASE0`, locally and on peers, so the hip is lowest at full
+ *  spread (heel strike) and highest as the legs pass. */
+export const GAIT_PHASE0 = 0.04;
 
 /** Gait cadence in cycles/s at ground speed `v` (u/s). The brief's
  *  0.9 + 0.12v, raised where the capped stride cannot carry the speed. */
@@ -1509,8 +1516,8 @@ export class SimplePlayer extends THREE.Group {
             gw *
             calm *
             0.5 *
-            (1 + Math.cos(4 * Math.PI * phase));
-          gaitRoll = -0.05 * Math.sin(2 * Math.PI * phase) * gw * calm;
+            (1 + Math.cos(4 * Math.PI * (phase - GAIT_PHASE0)));
+          gaitRoll = -0.05 * Math.sin(2 * Math.PI * (phase - GAIT_PHASE0)) * gw * calm;
           const leanTarget = reduced ? 0 : THREE.MathUtils.lerp(0.07, 0.17, run) * gw;
           gaitLean += (leanTarget - gaitLean) * Math.min(1, 8 * dt);
         } else {
@@ -2527,8 +2534,9 @@ export class SimplePlayer extends THREE.Group {
    * - Stride: each leg's clip swing about rest scaled by gaitLegGain (arms by
    *   1 + 0.6(g − 1)), as an additive angle onClip; quaternion reads only, so
    *   the ±π rest never flips (world law 2).
-   * - Bob: lowest at phases 0 and 0.5, where the legs are at full spread and
-   *   the hip sits lowest (0.035 u walking, 0.06 u running).
+   * - Bob: lowest at phases GAIT_PHASE0 and 0.5 + GAIT_PHASE0, where the
+   *   legs are at full spread and the hip sits lowest (0.035 u walking,
+   *   0.06 u running). `gaitBob` is a depression: writeBody subtracts it.
    * - Stance roll 0.05 rad toward the leg that carries the body: legR across
    *   phases 0-0.5 (the Walk clip has legL trailing at phase 0), legL after.
    * - Forward lean, eased at 8/s: 0.07 rad walking, 0.17 rad running.
@@ -2553,8 +2561,9 @@ export class SimplePlayer extends THREE.Group {
     const phase = this.getWalkCyclePhase();
     const calm = reduced ? 0.5 : 1;
     const bobAmp = THREE.MathUtils.lerp(0.035, 0.06, run) * w * calm;
-    this.gaitBob = bobAmp * 0.5 * (1 + Math.cos(4 * Math.PI * phase));
-    this.gaitRoll = -0.05 * Math.sin(2 * Math.PI * phase) * w * calm;
+    const stance = phase - GAIT_PHASE0;
+    this.gaitBob = bobAmp * 0.5 * (1 + Math.cos(4 * Math.PI * stance));
+    this.gaitRoll = -0.05 * Math.sin(2 * Math.PI * stance) * w * calm;
     const leanTarget = reduced ? 0 : THREE.MathUtils.lerp(0.07, 0.17, run) * w;
     this.gaitLean += (leanTarget - this.gaitLean) * Math.min(1, 8 * dt);
   }

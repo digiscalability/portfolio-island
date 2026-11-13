@@ -547,6 +547,22 @@ describe('feet that plant: the gait layer (B3)', () => {
         }
       }
       expect(checked, 'bob minima seen').toBeGreaterThan(4);
+      // And the hip is highest as the legs pass each other (the swap of the
+      // lower sole, slide.cjs's heel-strike frame), on the same frame (median):
+      // the GAIT_PHASE0 offset. Without it the bob led the legs.
+      const offs: number[] = [];
+      for (let i = 1; i < bob.length - 1; i++) {
+        if (bob[i] <= bob[i - 1] && bob[i] < bob[i + 1]) {
+          const local = spread.slice(Math.max(0, i - 6), i + 7);
+          const at = Math.max(0, i - 6) + local.indexOf(Math.min(...local));
+          offs.push(at - i);
+        }
+      }
+      expect(offs.length, 'bob maxima seen').toBeGreaterThan(4);
+      const sorted = offs.map(Math.abs).sort((a, b) => a - b);
+      expect(sorted[sorted.length >> 1], `median |frames| ${offs.join(',')}`).toBeLessThanOrEqual(
+        0,
+      );
       player.setRunIntent(false);
     },
   );
