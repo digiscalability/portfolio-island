@@ -176,6 +176,60 @@ describe('NpcQuests.getActiveQuests: accepted quests with where they stand', () 
   });
 });
 
+describe('P2-A10: the Gardener counts meadow pickups, not held coins', () => {
+  test('accept, spend 3, pick up 5 meadow coins: complete; a +10 lesson and trail coins add nothing', () => {
+    const q = new NpcQuestSystem();
+    q.useMeadowCounter();
+    expect(q.onTalk('Gardener', 10)?.accepted?.id).toBe('gardener_coins');
+    // spend 3 at the shop: held coins fall to 7, progress stays 0
+    expect(q.getActiveQuests(7)[0].progress).toBe('0/5');
+    // a +10 lesson: held coins jump, progress does not
+    expect(q.getActiveQuests(17)[0].progress).toBe('0/5');
+    expect(q.talkKind('Gardener', 17)).toBe('status');
+    // trail coins never count
+    for (let i = 0; i < 5; i++) q.onMeadowCoin({ trail: true });
+    expect(q.getActiveQuests(22)[0].progress).toBe('0/5');
+    for (let i = 0; i < 4; i++) q.onMeadowCoin({ trail: false });
+    expect(q.getActiveQuests(0)[0].progress).toBe('4/5');
+    expect(q.onTalk('Gardener', 0)?.completed).toBeUndefined();
+    q.onMeadowCoin({ trail: false });
+    expect(q.talkKind('Gardener', 0)).toBe('errand');
+    expect(q.onTalk('Gardener', 0)?.completed?.id).toBe('gardener_coins');
+  });
+
+  test('pickups before the accept do not count, and the counter survives a reload', () => {
+    const q = new NpcQuestSystem();
+    q.onMeadowCoin({ trail: false });
+    q.onTalk('Gardener', 1);
+    q.onMeadowCoin({ trail: false });
+    q.onMeadowCoin({ trail: false });
+    const r = new NpcQuestSystem();
+    r.useMeadowCounter();
+    expect(r.getActiveQuests(99)[0].progress).toBe('2/5');
+  });
+
+  test('an active quest in an old save (no meadowCoins) restarts at 0', () => {
+    localStorage.setItem(
+      'ds_npc_quests',
+      JSON.stringify({ gardener_coins: { state: 'active', coinBaseline: 0 } }),
+    );
+    const q = new NpcQuestSystem();
+    q.useMeadowCounter();
+    expect(q.getActiveQuests(40)[0].progress).toBe('0/5');
+    q.onMeadowCoin({ trail: false });
+    expect(q.getActiveQuests(40)[0].progress).toBe('1/5');
+    // coinBaseline stays in the save shape for one release
+    const saved = JSON.parse(localStorage.getItem('ds_npc_quests') ?? '{}');
+    expect(saved.gardener_coins).toMatchObject({ coinBaseline: 0, meadowCoins: 1 });
+  });
+
+  test('without the scene feed, the held-coins arithmetic as before', () => {
+    const q = new NpcQuestSystem();
+    q.onTalk('Gardener', 3);
+    expect(q.getActiveQuests(8)[0].progress).toBe('5/5');
+  });
+});
+
 // ---- main-simple: the talk handler and the race finish ----------------------
 
 type Fn = (this: unknown, ...a: unknown[]) => unknown;

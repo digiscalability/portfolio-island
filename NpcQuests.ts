@@ -28,8 +28,21 @@ export interface NpcQuest {
   doneDialogue: string[];
   rewardCoins: number;
   state: NpcQuestState;
+  /** Kept in the save shape for one release (P2-A10), then ignored: the
+   *  coins held at the accept, for the old held-coins arithmetic. */
   coinBaseline: number;
+  /** 'coins': meadow coins picked up since the accept (P2-A10). A shop
+   *  purchase or a +10 lesson no longer moves it. */
+  meadowCoins?: number;
   carrying?: boolean; // 'fetch': the item has been picked up, not yet delivered
+}
+
+/** One quest's persisted row. */
+interface SavedQuest {
+  state: NpcQuestState;
+  coinBaseline: number;
+  meadowCoins?: number;
+  carrying?: boolean;
 }
 
 export interface TalkResult {
@@ -137,16 +150,18 @@ export class NpcQuestSystem {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const saved = JSON.parse(raw) as Record<
-          string,
-          { state: NpcQuestState; coinBaseline: number; carrying?: boolean }
-        >;
+        const saved = JSON.parse(raw) as Record<string, SavedQuest>;
         for (const q of this.quests) {
           const s = saved[q.id];
           if (s) {
             q.state = s.state;
             q.coinBaseline = s.coinBaseline;
             q.carrying = s.carrying;
+            // An active 'coins' quest from an older save has no counter: it
+            // restarts at 0 rather than credit coins of unknown origin.
+            if (q.kind === 'coins') {
+              q.meadowCoins = typeof s.meadowCoins === 'number' ? s.meadowCoins : 0;
+            }
           }
         }
       }
@@ -157,16 +172,51 @@ export class NpcQuestSystem {
 
   private save(): void {
     try {
-      const out: Record<
-        string,
-        { state: NpcQuestState; coinBaseline: number; carrying?: boolean }
-      > = {};
+      const out: Record<string, SavedQuest> = {};
       for (const q of this.quests)
-        out[q.id] = { state: q.state, coinBaseline: q.coinBaseline, carrying: q.carrying };
+        out[q.id] = {
+          state: q.state,
+          coinBaseline: q.coinBaseline,
+          meadowCoins: q.meadowCoins,
+          carrying: q.carrying,
+        };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(out));
     } catch {
       /* session-only */
     }
+  }
+
+  /** True once the scene feeds meadow pickups in (setOnMeadowCoin). Without
+   *  that feed, 'coins' quests keep the held-coins arithmetic. */
+  private countsMeadow = false;
+
+  /**
+   * A meadow or trail coin was picked up (GameScene.setOnMeadowCoin, P2-B7).
+   * Only meadow pickups count toward a 'coins' quest; the first call also
+   * switches the quest from held coins to this counter.
+   */
+  public onMeadowCoin(e: { trail: boolean }): void {
+    this.countsMeadow = true;
+    if (e.trail) return;
+    let changed = false;
+    for (const q of this.quests) {
+      if (q.kind !== 'coins' || q.state !== 'active') continue;
+      q.meadowCoins = (q.meadowCoins ?? 0) + 1;
+      changed = true;
+    }
+    if (changed) this.save();
+  }
+
+  /** The scene feeds meadow pickups: count them, not held coins (P2-A10). */
+  public useMeadowCounter(): void {
+    this.countsMeadow = true;
+  }
+
+  /** A 'coins' quest's progress: meadow pickups since the accept when the
+   *  scene feeds them, else held coins over the baseline (never negative). */
+  private coinProgress(q: NpcQuest, currentCoins: number): number {
+    if (this.countsMeadow) return q.meadowCoins ?? 0;
+    return Math.max(0, currentCoins - q.coinBaseline);
   }
 
   /** NPC names that should show a quest "!" marker right now. */
@@ -198,9 +248,7 @@ export class NpcQuestSystem {
       if (q.giverName !== npcName) continue;
       if (q.state === 'available') return 'offer';
       if (q.state === 'active' && q.kind === 'coins') {
-        return Math.max(0, currentCoins - q.coinBaseline) >= (q.coinTarget ?? 0)
-          ? 'errand'
-          : 'status';
+        return this.coinProgress(q, currentCoins) >= (q.coinTarget ?? 0) ? 'errand' : 'status';
       }
       return 'status';
     }
@@ -225,7 +273,7 @@ export class NpcQuestSystem {
       if (q.kind === 'coins') {
         const target = q.coinTarget ?? 0;
         label = 'dew-coins';
-        progress = `${Math.min(target, Math.max(0, currentCoins - q.coinBaseline))}/${target}`;
+        progress = `${Math.min(target, this.coinProgress(q, currentCoins))}/${target}`;
       } else if (q.kind === 'fetch') {
         label = `a fish from the ${q.targetName ?? 'shore'}`;
         progress = q.carrying ? 'in hand, take it back' : 'to collect';
@@ -271,12 +319,13 @@ export class NpcQuestSystem {
       if (q.state === 'available') {
         q.state = 'active';
         q.coinBaseline = currentCoins;
+        if (q.kind === 'coins') q.meadowCoins = 0;
         this.save();
         return { lines: q.introDialogue, accepted: q };
       }
       if (q.state === 'active') {
         if (q.kind === 'coins') {
-          const progress = Math.max(0, currentCoins - q.coinBaseline);
+          const progress = this.coinProgress(q, currentCoins);
           const target = q.coinTarget ?? 0;
           if (progress >= target) {
             q.state = 'done';

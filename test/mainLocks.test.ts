@@ -1329,7 +1329,7 @@ describe('P2-A1: indoors, Escape leaves and the outdoors stays out', () => {
     expect(u).toContain(
       'this.ui.toast(DISTRICT_INTRO[bestId], { hint: true, until: this.indoorsNow });',
     );
-    expect(u).toContain('{ hint: true, until: this.talkHintStale },');
+    expect(u).toContain('{ hint: true, until: this.talkHintStaleOrChatted },');
     expect(bodyOf(m(), 'private showLostHint(')).toContain(
       '{ hint: true, until: this.indoorsNow },',
     );
@@ -1879,5 +1879,32 @@ describe('wave 4 P2-A8: the compass leads a race ring by ring, and laps are quie
     );
     expect(bodyOf(s, 'private guideHoldsHints(')).toContain('if (this.racing) return true;');
     expect(bodyOf(s, 'private hintsQuiet(')).toContain('this.racing ||');
+  });
+});
+
+describe('wave 4 P2-A10: night feed, stale hints, the meadow counter', () => {
+  test('tossFeed reads the reason: night falls through to cat feed, else the roost line, never spent', () => {
+    const t = bodyOf(stripped('main-simple.ts'), 'private tossFeed(): void {');
+    expect(t).toContain(
+      "this.scene.throwBirdFeedReason?.() ?? (this.scene.throwBirdFeed() ? 'ok' : 'none')",
+    );
+    expect(t).toContain("if (why === 'night' && this.catFeed > 0) continue;");
+    const night = t.indexOf("if (why === 'night') {");
+    const spend = t.indexOf('this.birdFeed--;');
+    expect(night).toBeGreaterThan(-1);
+    expect(spend).toBeGreaterThan(night);
+    expect(t).toMatch(/birds are roosting/);
+  });
+
+  test('the talk hint is stale once chatted; the coin hint once the journal opened', () => {
+    const s = stripped('main-simple.ts');
+    expect(bodyOf(s, 'private readonly talkHintStaleOrChatted = (): boolean =>')).toContain(
+      "localStorage.getItem('ds_npc_chatted') === '1'",
+    );
+    expect(s).toContain('until: this.journalSeenNow,');
+    expect(s).toContain(
+      "if (!this.journalSeen && this.ui.panels.isOpen('journal')) this.journalSeen = true;",
+    );
+    expect(s).toContain('this.scene.setOnMeadowCoin((e) => this.npcQuests.onMeadowCoin(e));');
   });
 });

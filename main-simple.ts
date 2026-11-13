@@ -873,6 +873,13 @@ export class SimpleApp {
 
       // NPC quests: stateful dialogue + rewards layered over ambient lines
       this.npcQuests = new NpcQuestSystem();
+      // P2-A10: the Gardener counts meadow pickups, not held coins, so a
+      // shop purchase or a lesson's pay no longer moves the quest. Without
+      // the scene's feed, the held-coins arithmetic as before.
+      if (typeof this.scene.setOnMeadowCoin === 'function') {
+        this.npcQuests.useMeadowCounter();
+        this.scene.setOnMeadowCoin((e) => this.npcQuests.onMeadowCoin(e));
+      }
       this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
 
       // Restore the shop wardrobe (owned + equipped hats) + consumables
@@ -1179,6 +1186,7 @@ export class SimpleApp {
             localStorage.setItem('ds_hint_earn', '1');
             this.ui.toast('🪙 Coins! The 📔 Journal (Portfolio menu) lists every way to earn.', {
               hint: true,
+              until: this.journalSeenNow,
             });
           }
         } catch {
@@ -2928,7 +2936,7 @@ export class SimpleApp {
             this.ui.isTouchDevice()
               ? '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and tap USE to ask anything.'
               : '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and press E to ask anything.',
-            { hint: true, until: this.talkHintStale },
+            { hint: true, until: this.talkHintStaleOrChatted },
           );
         }
       } catch {
@@ -2938,6 +2946,10 @@ export class SimpleApp {
 
     // Any open panel needs the cursor: let go of the opt-in pointer lock.
     if (this.ui.panels.isOpen()) this.inputManager.releasePointerLock();
+    // P2-A10: the coin hint points at the Journal; once it has been open the
+    // hint is stale. Read here, not from 'ds:modal', which does not fire for
+    // a journal opened over another modal.
+    if (!this.journalSeen && this.ui.panels.isOpen('journal')) this.journalSeen = true;
     // P2-A6: the kiosk's 1.0 s lock runs from the shop panel's close, and a
     // finished cast forgets an E held during its wait.
     const shopOpen = this.ui.panels.isOpen('shop');
@@ -4875,6 +4887,19 @@ export class SimpleApp {
     }
     return true;
   };
+
+  /** P2-A10: the talk hint is also stale once the visitor has chatted. */
+  private readonly talkHintStaleOrChatted = (): boolean => {
+    if (this.talkHintStale()) return true;
+    try {
+      return localStorage.getItem('ds_npc_chatted') === '1';
+    } catch {
+      return false;
+    }
+  };
+  /** P2-A10: the Journal has been open this visit (the coin hint's until). */
+  private journalSeen = false;
+  private readonly journalSeenNow = (): boolean => this.journalSeen;
 
   /** One of main-simple's own unprompted hints: now, or once the guide lets
    *  go; one that comes due inside a room waits for the door (P2-A1). */
@@ -7228,7 +7253,16 @@ export class SimpleApp {
         return;
       }
       if (kind === 'bird' && this.birdFeed > 0) {
-        if (!this.scene.throwBirdFeed()) {
+        // P2-A10: say why. At night the birds roost: cat feed goes instead
+        // when the visitor holds some, else the roost line; never spent.
+        const why =
+          this.scene.throwBirdFeedReason?.() ?? (this.scene.throwBirdFeed() ? 'ok' : 'none');
+        if (why === 'night' && this.catFeed > 0) continue;
+        if (why === 'night') {
+          this.ui.flashMessage('🌙 The birds are roosting — try cat feed, or come back at dawn');
+          return;
+        }
+        if (why !== 'ok') {
           this.ui.flashMessage('🌾 Not here — try over open ground');
           return;
         }
