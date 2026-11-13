@@ -37,6 +37,16 @@ const HIT = () => {
   return { sq: [a.left, a.top, a.width, a.height], c: [b.left + b.width / 2, b.top + b.height / 2], ring: b.width, thumbTransition: thumb ? getComputedStyle(thumb).transitionDuration : null };
 };
 
+/**
+ * The stick's radius in px: the smallest pull, from a [px, |joy|] sweep
+ * outward from the centre, at which the output reaches full deflection
+ * (0.995 or more; JOY reads 2 decimals). null when none does.
+ */
+function fullDeflectionPx(sweep) {
+  const hit = sweep.find(([, v]) => typeof v === 'number' && v >= 0.995);
+  return hit ? hit[0] : null;
+}
+
 async function mobile(t) {
   for (const prof of t.profiles(['phone'])) {
     const s = await t.session(prof, { init: [VIB] });
@@ -86,9 +96,26 @@ async function mobile(t) {
     }
     t.check(`${prof}: the stick's speed follows deflection`, out.walk[-10] < 3.5 && out.walk[-40] > 5, out.walk, 'dy -10 about 2 u/s, -40 about 5.6 (58c8849: 5.6 at all three)');
     // Stick plateaus (B3, wave 4): deflection as a share of the stick's own
-    // radius (the ring's half-width, read from the build), not fixed px.
-    const R = h.ring / 2;
-    out.plateau = { radiusPx: lib.round(R, 1) };
+    // radius, not fixed px. The radius is the thumb's travel to full
+    // deflection, MEASURED from the build's output (the smallest pull at
+    // which |joyState| reaches 1), not the drawn ring's half-width: the ring
+    // is 110 px but main and D15 both reach full deflection at 40 px, so
+    // 0.7 x 55 px read as 0.96 and engaged the rim run.
+    const sweep = [];
+    {
+      const c = h.c;
+      await T.send('touchStart', [[c[0], c[1], 3]]);
+      await lib.sleep(50);
+      for (let px = 6; px <= Math.max(70, h.ring / 2 + 10); px += 2) {
+        await T.send('touchMove', [[c[0], c[1] - px, 3]]);
+        sweep.push([px, await page.evaluate(JOY)]);
+      }
+      await T.send('touchEnd', []);
+      await lib.sleep(900);
+    }
+    const full = fullDeflectionPx(sweep);
+    const R = full ?? h.ring / 2;
+    out.plateau = { radiusPx: lib.round(R, 1), from: full !== null ? 'full deflection' : 'ring half-width (no full deflection seen)', ringHalfPx: lib.round(h.ring / 2, 1) };
     for (const share of [0.15, 0.7]) {
       const c = h.c;
       await T.send('touchStart', [[c[0], c[1], 3]]);
@@ -195,5 +222,6 @@ async function mobile(t) {
 }
 
 module.exports = {
+  fullDeflectionPx,
   mobile: { item: 'E6c (JOY-01, HAPTIC-01, RUN-01, PROMPT-01; A11, D7)', title: 'the phone stick: |v| at touchdown, speed by deflection, the release transition, the rim run, the vibrate log, touchify on prompts', profiles: ['phone'], run: mobile },
 };
