@@ -725,6 +725,33 @@ describe('the room camera frames the room (P2-B11)', () => {
     }
   });
 
+  test('where a wall cuts the follow short the camera climbs, so the entry view keeps its distance', () => {
+    // MEASURED (wave-3 integration, desktop): at the spawn the door wall left
+    // 1.7 u of the 3.0 u back, the camera stood 2.3 u from the avatar's feet
+    // and the avatar filled 12.8% of the entry view (bar 12%).
+    for (const theme of THEMES) {
+      enter(theme);
+      frames(400); // the entry shot, its ease, the follow settled
+      const s = statics.INTERIOR_SPAWN;
+      const c = camAt();
+      expect(c.z).toBeCloseTo(3.6, 3);
+      expect(Math.hypot(c.x - s.x, c.y - 0.8, c.z - s.z)).toBeGreaterThan(2.5);
+      expect(c.y).toBeLessThanOrEqual(2.85 + 1e-9); // under the curtain rail
+      scene.exitInterior();
+    }
+    // Phones climb no higher than the same top.
+    scene.camera.aspect = 0.46;
+    try {
+      enter('hall');
+      frames(400);
+      expect(camAt().y).toBeLessThanOrEqual(2.85 + 1e-9);
+      expect(camAt().y).toBeGreaterThanOrEqual(0.8 + 1.9 - 1e-9);
+      scene.exitInterior();
+    } finally {
+      scene.camera.aspect = 1.6;
+    }
+  });
+
   test('the blockers are the tall props of the theme set only', () => {
     for (const theme of THEMES) {
       enter(theme);
@@ -1468,4 +1495,70 @@ describe('the first room frame carries no window pass (CO-A5)', () => {
       scene.exitInterior();
     }
   });
+});
+
+describe('the low tier draws the office desk once (wave-3 perf gate)', () => {
+  // MEASURED (wave-3 integration, low tier, the Professional room's steady
+  // view): 77 draws against main's 74, the bar being no more than main. The
+  // desk's top and four legs share a material and never move.
+  const deskColour = 0x5c4127;
+  const deskMeshes = (s: Room): THREE.Mesh[] => {
+    const out: THREE.Mesh[] = [];
+    (s as unknown as { interiorSets: Record<string, THREE.Group> }).interiorSets.office.traverse(
+      (n) => {
+        const m = n as THREE.Mesh;
+        if (!m.isMesh || m.userData.isCelHull || Array.isArray(m.material)) return;
+        const c = (m.material as THREE.MeshToonMaterial).color;
+        if (c && c.getHex() === deskColour) out.push(m);
+      },
+    );
+    return out;
+  };
+  const officeBoxes = (s: Room): unknown => {
+    s.enterInterior('Work', 0x7fa8c9, '', '', 'office');
+    const boxes = s.interiorColliders.office;
+    s.exitInterior();
+    return boxes;
+  };
+
+  test('one mesh on the low tier, five on desktop, and the same colliders', () => {
+    const low = vi
+      .spyOn(GameScene as unknown as { roomLowTier: () => boolean }, 'roomLowTier')
+      .mockReturnValue(true);
+    const init = vi
+      .spyOn(GameScene.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+      .mockResolvedValue(undefined);
+    let lowScene: Room;
+    try {
+      lowScene = new GameScene() as unknown as Room;
+      lowScene.player = scene.player;
+      lowScene.camera = new THREE.PerspectiveCamera(50, 1.6, 0.1, 2000);
+      lowScene.island = { houseDoors: [], npcTargets: [] };
+      (lowScene as unknown as { buildInterior(): void }).buildInterior();
+    } finally {
+      init.mockRestore();
+      low.mockRestore();
+    }
+    expect(deskMeshes(scene).length).toBe(5);
+    expect(deskMeshes(lowScene).length).toBe(1);
+    const boxes = officeBoxes(lowScene) as Array<Record<string, number>>;
+    const want = officeBoxes(scene) as Array<Record<string, number>>;
+    expect(boxes.length).toBe(want.length - 4);
+    // The legs' boxes sit inside the top's: what the desk blocks is unchanged.
+    const top = boxes.find(
+      (b) => b.minX < -1.15 && b.maxX > 1.15 && b.minZ < -3.05 && b.maxZ > -2.15,
+    )!;
+    expect(top).toBeDefined();
+    expect(top.maxY).toBeLessThan(0.85); // the desk, not a taller piece
+    let legs = 0;
+    for (const b of want)
+      if (b.maxX - b.minX < 0.2 && b.maxY < 0.75 && b.maxZ < -2.0) {
+        legs++;
+        expect(b.minX).toBeGreaterThanOrEqual(top.minX - 1e-6);
+        expect(b.maxX).toBeLessThanOrEqual(top.maxX + 1e-6);
+        expect(b.minZ).toBeGreaterThanOrEqual(top.minZ - 1e-6);
+        expect(b.maxZ).toBeLessThanOrEqual(top.maxZ + 1e-6);
+      }
+    expect(legs).toBe(4);
+  }, 60000);
 });

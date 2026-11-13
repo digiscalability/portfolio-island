@@ -3281,6 +3281,11 @@ export class GameScene extends THREE.Scene {
     return GameScene.birdVertexMatCache;
   }
 
+  /** The device tier, as the room build reads it (a seam for its tests). */
+  private static roomLowTier(): boolean {
+    return SimpleRenderer.isLowTierDevice();
+  }
+
   /** Bake a material's colour into `geo` as a vertex-colour attribute. Mutates
    *  and returns the geometry it is handed (callers pass freshly-built ones). */
   /**
@@ -15052,14 +15057,34 @@ export class GameScene extends THREE.Scene {
     // DESKS AND BENCHES stand at 0.8 of the height they were built at
     // (P2-B10): a desk top at 0.95 came to the 1.58 u avatar's chest, a
     // counter to its shoulders. What stands on one comes down with it.
-    box(office, 2.4, 0.12, 1.0, D, 0, 0.76, -2.6);
+    const desk = [box(office, 2.4, 0.12, 1.0, D, 0, 0.76, -2.6)];
     for (const [lx, lz] of [
       [-1.05, -2.25],
       [1.05, -2.25],
       [-1.05, -2.95],
       [1.05, -2.95],
     ] as const)
-      box(office, 0.12, 0.7, 0.12, D, lx, 0.35, lz);
+      desk.push(box(office, 0.12, 0.7, 0.12, D, lx, 0.35, lz));
+    // Low tier: the desk's top and legs are one draw. MEASURED (wave-3
+    // integration, low tier, the Professional room's steady view): 77 draws
+    // against main's 74, the bar being no more than main (the monitor's
+    // screen is one more draw, and the room camera frames a curtain and a
+    // contact shadow main's did not). One material, all static, and the
+    // top's box already holds the legs, so the collider, the blob and the
+    // camera blocker stay as they were. Desktop keeps them apart: its ink
+    // hull goes on the top alone.
+    if (GameScene.roomLowTier()) {
+      const parts = desk.map((m) => {
+        m.updateMatrix();
+        const g = m.geometry.clone().applyMatrix4(m.matrix);
+        m.geometry.dispose();
+        office.remove(m);
+        return g;
+      });
+      const merged = new THREE.Mesh(GameScene.mergeOrThrow(parts, 'office desk'), matFor(D));
+      for (const g of parts) g.dispose();
+      office.add(merged);
+    }
     box(office, 0.95, 0.6, 0.06, 0x22262e, 0, 1.47, -2.75); // monitor
     // The monitor's face: the shared screen (P2-B12).
     const screenMat = this.buildInteriorScreen();
@@ -17099,6 +17124,11 @@ export class GameScene extends THREE.Scene {
   private static readonly INTERIOR_LOOK_IDLE_S = 1.5;
   /** A blocker is grown by this much before the camera may stand next to it. */
   private static readonly INTERIOR_CAM_PAD = 0.15;
+  /** The climb per unit of follow distance a wall takes, and the highest
+   *  the camera climbs to (room-local y): under the curtain rail's 2.97 and
+   *  the curtains' 2.98, with the 0.1 u near plane to spare. */
+  private static readonly INTERIOR_CAM_CLIMB = 0.4;
+  private static readonly INTERIOR_CAM_TOP = 2.85;
 
   /**
    * Turn the room camera (P2-B11): offsets interiorCamYaw from the heading by
@@ -17187,8 +17217,21 @@ export class GameScene extends THREE.Scene {
     const ty = p.y - o.y + C.look;
     const tz = p.z - o.z;
     const wx = THREE.MathUtils.clamp(tx - Math.sin(cy) * C.back, -3.6, 3.6);
-    const wy = GameScene.INTERIOR_PLAYER_Y + C.up;
     const wz = THREE.MathUtils.clamp(tz - Math.cos(cy) * C.back, -3.6, 3.6);
+    // Where a wall cuts the follow short, the camera climbs by a share of
+    // what the wall took, under INTERIOR_CAM_TOP. MEASURED (wave-3
+    // integration, desktop, every theme): at the spawn the door wall left
+    // 1.7 u of the 3.0 u back, the camera stood 2.3 u from the avatar and
+    // the avatar filled 12.8% of the entry view (bar 12%). Backed right up
+    // to a wall the climb gives way (gone under 0.9 u left), so the camera
+    // comes down to the avatar's shoulder and the close fade takes it, as
+    // before, rather than looking down past an opaque head.
+    const kept = Math.hypot(wx - tx, wz - tz);
+    const lost = (C.back - kept) * THREE.MathUtils.smoothstep(kept, 0.9, 1.6);
+    const wy = Math.min(
+      GameScene.INTERIOR_PLAYER_Y + C.up + lost * GameScene.INTERIOR_CAM_CLIMB,
+      Math.max(GameScene.INTERIOR_PLAYER_Y + C.up, GameScene.INTERIOR_CAM_TOP),
+    );
     let pull = 1;
     let rise = 0;
     if (avoid) {
