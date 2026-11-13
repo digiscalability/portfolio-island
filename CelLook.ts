@@ -207,10 +207,18 @@ export function updateCelRim(sunWorldDir: THREE.Vector3, camera: THREE.Camera): 
 
 fx.register('canopySway', { desktop: true, low: true });
 
-/** The sway's constants (u, rad/s). The GLSL below and canopySwayOffset share them. */
+/**
+ * The sway's constants (u, rad/s). The GLSL below and canopySwayOffset share them.
+ * The brief's 0.06/0.02 u moved a crown top about 3 px at 30 u (E's env.cjs,
+ * pixels), far short of its own 15-30 px bar, so the amplitudes are 5x/3x and
+ * a quarter-cycle-shifted cross term traces a narrow ellipse: the crown moves
+ * on screen whichever way the camera looks along the main axis.
+ */
 export const CANOPY_SWAY = {
-  amp: 0.06,
-  ampFast: 0.02,
+  amp: 0.3,
+  ampFast: 0.06,
+  /** The cross axis's amplitude (u), on cos of the slow term. */
+  ampCross: 0.18,
   w: 0.8,
   wFast: 2.3,
   phaseFast: 1.7,
@@ -243,7 +251,9 @@ export function canopySwayOffset(w: number, t: number, phase: number, amp = 1): 
       CANOPY_SWAY.ampFast * Math.sin(t * CANOPY_SWAY.wFast + CANOPY_SWAY.phaseFast * phase)) *
     canopyGust(t) *
     amp;
-  return [s * CANOPY_SWAY.dirX, s * CANOPY_SWAY.dirZ];
+  const c = w * CANOPY_SWAY.ampCross * Math.cos(t * CANOPY_SWAY.w + phase) * canopyGust(t) * amp;
+  // Main axis (dirX, dirZ); cross axis (-dirZ, dirX).
+  return [s * CANOPY_SWAY.dirX - c * CANOPY_SWAY.dirZ, s * CANOPY_SWAY.dirZ + c * CANOPY_SWAY.dirX];
 }
 
 /**
@@ -312,7 +322,8 @@ const CANOPY_SWAY_VERTEX = `#include <begin_vertex>
 		float cT = uCanopyTime;
 		float cGust = 1.0 + ${f3(CANOPY_SWAY.gust)} * max( 0.0, sin( cT * ${f3(CANOPY_SWAY.gustW)} ) );
 		float cS = cw * ( ${f3(CANOPY_SWAY.amp)} * sin( cT * ${f3(CANOPY_SWAY.w)} + cPh ) + ${f3(CANOPY_SWAY.ampFast)} * sin( cT * ${f3(CANOPY_SWAY.wFast)} + ${f3(CANOPY_SWAY.phaseFast)} * cPh ) ) * cGust * uCanopyAmp;
-		transformed.xz += cS * vec2( ${CANOPY_SWAY.dirX.toFixed(6)}, ${CANOPY_SWAY.dirZ.toFixed(6)} );
+		float cC = cw * ${f3(CANOPY_SWAY.ampCross)} * cos( cT * ${f3(CANOPY_SWAY.w)} + cPh ) * cGust * uCanopyAmp;
+		transformed.xz += cS * vec2( ${CANOPY_SWAY.dirX.toFixed(6)}, ${CANOPY_SWAY.dirZ.toFixed(6)} ) + cC * vec2( ${(-CANOPY_SWAY.dirZ).toFixed(6)}, ${CANOPY_SWAY.dirX.toFixed(6)} );
 	}
 }`;
 

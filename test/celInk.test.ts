@@ -19,6 +19,7 @@ import {
   applyCanopySway,
   bakeCanopyWeights,
   canopyPhase,
+  CANOPY_SWAY,
   canopySwayOffset,
   flushPhoneInk,
   PHONE_INK_MAX_TRIANGLES,
@@ -349,7 +350,33 @@ describe('C9: canopy sway, outlines attached', () => {
     expect(maxGap).toBeLessThanOrEqual(0.01);
     expect(trunkTravel).toBe(0); // trunks stay plumb
     expect(maxTravel).toBeGreaterThan(0.03); // the crown really moves
-    expect(maxTravel).toBeLessThanOrEqual((0.06 + 0.02) * 1.7 + 1e-9);
+    expect(maxTravel).toBeLessThanOrEqual(Math.hypot(0.3 + 0.06, 0.18) * 1.7 + 1e-9);
+  });
+
+  test('the crown traces an ellipse, so it moves on screen from any side (env.cjs bar)', () => {
+    // The brief's single-axis 0.06/0.02 u moved a crown top about 3 px at 30 u
+    // in E's env.cjs (pixels); the bar is 15-30 px. The amplitudes are 5x/3x
+    // and the cross term (cos of the slow term) keeps the minor axis open.
+    expect(CANOPY_SWAY.amp).toBe(0.3);
+    expect(CANOPY_SWAY.ampFast).toBe(0.06);
+    expect(CANOPY_SWAY.ampCross).toBe(0.18);
+    const main = [CANOPY_SWAY.dirX, CANOPY_SWAY.dirZ];
+    let minMain = Infinity;
+    let maxMain = -Infinity;
+    let minCross = Infinity;
+    let maxCross = -Infinity;
+    const T = (2 * Math.PI) / CANOPY_SWAY.w;
+    for (let k = 0; k < 400; k++) {
+      const [dx, dz] = canopySwayOffset(1, (k / 400) * T, 0.7);
+      const a = dx * main[0] + dz * main[1];
+      const c = -dx * main[1] + dz * main[0];
+      minMain = Math.min(minMain, a);
+      maxMain = Math.max(maxMain, a);
+      minCross = Math.min(minCross, c);
+      maxCross = Math.max(maxCross, c);
+    }
+    expect(maxMain - minMain).toBeGreaterThan(0.5); // about 0.6 u peak to peak at gust 1
+    expect(maxCross - minCross).toBeGreaterThan(0.3); // the minor axis, not a line
   });
 
   test('a house hull carries zero-filled aCanopy and gets 0 displacement', () => {
@@ -387,6 +414,8 @@ describe('C9: canopy sway, outlines attached', () => {
     expect(shader.vertexShader).toContain('modelMatrix[ 3 ].xyz');
     // Gust is GameScene.update's own formula, from the grass clock.
     expect(shader.vertexShader).toContain('1.0 + 0.700 * max( 0.0, sin( cT * 0.250 ) )');
+    // The cross term mirrors canopySwayOffset's.
+    expect(shader.vertexShader).toContain('0.180 * cos( cT * 0.800 + cPh )');
     expect(Object.keys(shader.uniforms).sort()).toEqual(['uCanopyAmp', 'uCanopyTime']);
     // Idempotent: a second application does not stack a second chunk.
     applyCanopySway(ink);
