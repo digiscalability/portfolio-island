@@ -4,6 +4,7 @@ import { a11y } from './Accessibility';
 import { addGroupHulls, isCelTheme, STATIC_INK } from './CelLook';
 import { Island } from './Island';
 import { Materials } from './Materials';
+import { DISTRICT_GLYPHS } from './ui/icons';
 
 export interface ZoneData {
   id: string;
@@ -13,6 +14,38 @@ export interface ZoneData {
   color: number;
   audioKey?: string;
   icon?: string;
+}
+
+/** The marker disc's fill and rim (C10): cream paper with the UI's ink rim. */
+export const ZONE_ICON_DISC = '#fff6d8';
+export const ZONE_ICON_RIM = '#1c2430';
+
+/**
+ * Paint a district's roof icon on a 128 px canvas: a cream disc with a 4 px
+ * #1c2430 rim, and the district's ui/icons.ts glyph stroked in the same ink,
+ * scaled from the 24 px grid. Without Path2D (old browsers, the headless test
+ * DOM) only the disc is drawn; nothing ever falls back to text.
+ */
+export function paintDistrictIcon(ctx: CanvasRenderingContext2D, id: string): void {
+  ctx.beginPath();
+  ctx.arc(64, 64, 58, 0, Math.PI * 2);
+  ctx.fillStyle = ZONE_ICON_DISC;
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = ZONE_ICON_RIM;
+  ctx.stroke();
+  const glyph = DISTRICT_GLYPHS[id];
+  if (!glyph || typeof Path2D !== 'function') return;
+  ctx.save();
+  // The 24-unit grid scaled to 72 px, centred on the disc.
+  ctx.translate(28, 28);
+  ctx.scale(3, 3);
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = ZONE_ICON_RIM;
+  ctx.stroke(new Path2D(glyph));
+  ctx.restore();
 }
 
 /**
@@ -300,7 +333,7 @@ export class Zone {
     // centrepiece) earns the portico; the district halls stay simpler.
     if (id === 'welcome') this.addPortico(g, bd, base);
 
-    // District emoji, floated on the roof axis ABOVE the bobbing beacon
+    // District icon, floated on the roof axis ABOVE the bobbing beacon
     // (carries per-district identity from any angle, no bloom, opts out of
     // raycasting). It used to hang at bh+0.35 on the door face, where gable
     // roofs (apex bh+1.4) sliced through it and camera-facing billboard swing
@@ -311,10 +344,12 @@ export class Zone {
       canvas.height = 128;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.font = '92px system-ui, "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(icon, 64, 70);
+        // C10: the HUD's own glyph (ui/icons.ts) on a cream disc with an ink
+        // rim, never the emoji, so the roof marker and the map/compass icon
+        // read as one set. Keyed by the district id, not by ZonesManager's
+        // emoji. Canvas content only: the canvas, texture and sprite below
+        // are the same objects as before, so the seeded draws do not move.
+        paintDistrictIcon(ctx, id);
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
         const sprite = new THREE.Sprite(

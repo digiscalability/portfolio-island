@@ -2111,3 +2111,92 @@ describe('the GLB props land opaque on the low tier (C carry-over, no-KHR compil
     expect(src).toContain('if (!copy.userData.glbFade) continue;');
   });
 });
+
+describe('C10: the roof markers paint the HUD glyphs, never an emoji', () => {
+  const stubIsland = {
+    sampleSurfaceByDirection: () => {
+      throw new Error('stub: Zone falls back to an ideal-sphere seat');
+    },
+    getRadius: () => 100,
+  } as unknown as Island;
+  const ZONE_EMOJI: Record<string, string> = {
+    welcome: '🏛️',
+    professional: '💼',
+    projects: '🚀',
+    personal: '🎨',
+    contact: '📬',
+  };
+
+  test('each district stroke()s its own Path2D glyph on a cream disc; fillText never runs', () => {
+    const texts: string[] = [];
+    const paths: string[] = [];
+    const fills: string[] = [];
+    const g = globalThis as unknown as { Path2D?: unknown };
+    const hadPath2D = g.Path2D;
+    class FakePath2D {
+      constructor(public d: string) {}
+    }
+    g.Path2D = FakePath2D;
+    const proto = HTMLCanvasElement.prototype as unknown as { getContext: unknown };
+    const prevGetContext = proto.getContext;
+    proto.getContext = function (this: HTMLCanvasElement): unknown {
+      const state: Record<string, unknown> = {
+        canvas: this,
+        fillText: (s: string) => texts.push(String(s)),
+        strokeText: (s: string) => texts.push(String(s)),
+        stroke: (p?: unknown) => {
+          if (p instanceof FakePath2D) paths.push(p.d);
+        },
+        fill: () => fills.push(String(state.fillStyle)),
+        measureText: (s: string) => ({ width: String(s ?? '').length * 8 }),
+      };
+      return new Proxy(state, {
+        get: (t, k) => (k in t ? t[k as string] : () => {}),
+        set: (t, k, v) => {
+          t[k as string] = v;
+          return true;
+        },
+      });
+    };
+    try {
+      for (const id of Object.keys(ZONE_EMOJI)) {
+        new Zone(
+          {
+            id,
+            name: id,
+            description: '',
+            position: new THREE.Vector3(0, 100, 0),
+            color: 0x4b5bd6,
+            icon: ZONE_EMOJI[id],
+          },
+          stubIsland,
+        );
+      }
+    } finally {
+      proto.getContext = prevGetContext;
+      g.Path2D = hadPath2D;
+    }
+    // No text at all, so no Extended_Pictographic code point either.
+    expect(texts.filter((t) => /\p{Extended_Pictographic}/u.test(t))).toEqual([]);
+    expect(texts).toEqual([]);
+    // One SVG path per district, five different glyphs. That they are the
+    // ui/icons.ts exports is pinned on the source below (D's file is not
+    // imported here: lock-census rule).
+    expect(paths).toHaveLength(5);
+    expect(new Set(paths).size).toBe(5);
+    for (const d of paths) expect(d).toMatch(/^M[\d.]/);
+    expect(fills.filter((f) => f === '#fff6d8')).toHaveLength(5);
+  });
+
+  test('the disc has a 4 px #1c2430 rim, and the icon is keyed by id, not by the emoji', () => {
+    const body = decl('Zones.ts', 'paintDistrictIcon');
+    expect(body).toContain('ctx.lineWidth = 4;');
+    expect(stripped('Zones.ts')).toContain("export const ZONE_ICON_RIM = '#1c2430';");
+    expect(body).toContain('DISTRICT_GLYPHS[id]');
+    expect(body).toContain('ctx.stroke(new Path2D(glyph));');
+    expect(stripped('Zones.ts')).toContain("import { DISTRICT_GLYPHS } from './ui/icons';");
+    expect(body).toContain("typeof Path2D !== 'function'");
+    expect(decl('Zones.ts', 'createBuilding')).not.toContain('fillText');
+    expect(stripped('Zones.ts')).not.toMatch(/Segoe UI Emoji|Noto Color Emoji/);
+  });
+});
