@@ -33,7 +33,7 @@ async function visit(page, id, touch, T, { standStillMs = 0, beforePress = null,
   const fr = await page.evaluate(() => window.__ia.stop());
   const p1 = await R.programs(page);
   const tr = R.transition(fr, e.p0);
-  return { id, walkMs: e.walkMs, press: e.press, pressAt: e.pressAt, standStillMs, nearDoorWarmBeforeE: e.nearDoorWarmBeforeE, inside: tr.inside, programsAdded: p1 - e.p0, maxDt: tr.maxDt, over50: tr.over50, blackMs: tr.blackMs, rtPass: tr.rtPass, firstInsideAt: tr.firstInsideAtMs };
+  return { id, walkMs: e.walkMs, press: e.press, pressAt: e.pressAt, standStillMs, nearDoorWarmBeforeE: e.nearDoorWarmBeforeE, inside: tr.inside, programsAdded: p1 - e.p0, maxDt: tr.maxDt, over50: tr.over50, blackMs: tr.blackMs, rtPass: tr.rtPass, firstInsideAt: tr.firstInsideAtMs, gov: tr.gov, over50After: tr.over50.filter((x) => tr.firstInsideAtMs !== null && x[0] > tr.firstInsideAtMs).length };
 }
 
 async function cpuSession(t, prof, cpu, fresh) {

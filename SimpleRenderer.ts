@@ -28,6 +28,10 @@ export interface GovernorState {
   fpsEma: number;
   /** Smoothed CPU seconds per rendered frame (renderCallback + governor + render). */
   cpuEma: number;
+  /** Smoothed seconds of the frame's own logic (renderCallback + governor), without render(). */
+  logicEma: number;
+  /** The pixel test (E3): true when render() time fell with the pixels shed (GPU-bound), false when it did not, null untested. */
+  pixelBound: boolean | null;
   qualityRung: number;
   cpuBound: boolean;
   /** 3 while the modal divisor holds (E4), else 1. */
@@ -207,14 +211,35 @@ export class SimpleRenderer {
 
   /**
    * E3: CPU time per rendered frame (renderCallback + updateAdaptiveResolution
-   * + render, two performance.now() reads), smoothed like fpsEma. When it is
-   * 0.85 of the target frame interval or more at a decision, the frame is
-   * bound by the main thread, not the GPU: shedding resolution buys nothing
-   * there (the low tier at 4x CPU walked to a 0.48 scale and stayed slow), so
-   * the governor holds the scale up and sheds rungs instead.
+   * + render), smoothed like fpsEma, and the logic share alone (logicEma).
+   * The frame is CPU-BOUND when cpuEma is 0.85 of the target frame interval
+   * or more at two decisions in a row AND the pixel test says render() does
+   * not shrink with the pixels: shedding resolution buys nothing there (the
+   * low tier at 4x CPU walked to a 0.48 scale and stayed slow), so the
+   * governor holds the scale up and sheds rungs instead.
+   *
+   * WHY THE PIXEL TEST: render() blocks on the GPU when its queue is full, so
+   * a GPU-bound frame reads as CPU time in cpuEma. MEASURED at integration on
+   * desktop at 21 h (bloom on): cpuBound true at cpuEma 0.02-0.08 s, the scale
+   * held at 1.0 and the ladder walked to rung 3 (bloom gone at 5 s), where
+   * main sheds to 0.6 and stays at rungs 1-2. And the logic alone cannot tell
+   * either: MEASURED on the 4x low tier, logic 8-12 ms (under the 14 ms bar)
+   * and render() 45-50 ms at a 1.0 scale, 47-53 ms at 0.48. So the governor
+   * sheds as before, and once the scale is PIXEL_TEST_STEP under where the
+   * test started it compares render()'s share: fallen by less than
+   * PIXEL_TEST_GAIN of the pixel cut means the time is the main thread's.
    */
   private cpuEma = 0;
+  private logicEma = 0;
   private cpuBound = false;
+  /** Consecutive decisions with cpuEma over (+) or under (-) the bar. */
+  private cpuBoundRun = 0;
+  private static readonly CPU_BOUND_DECISIONS = 2;
+  /** The pixel test: null untested, true GPU-bound (render() shrank with the pixels), false not. */
+  private pixelBound: boolean | null = null;
+  private pixelProbe: { scale: number; render: number } | null = null;
+  private static readonly PIXEL_TEST_STEP = 0.3;
+  private static readonly PIXEL_TEST_GAIN = 0.5;
   private static readonly CPU_BOUND_RATIO = 0.85;
   /** Floor and claw-back step for the render scale while CPU-bound. */
   private static readonly CPU_BOUND_SCALE = 0.9;
@@ -230,6 +255,21 @@ export class SimpleRenderer {
   })();
   private gpuHeavy: { scene: THREE.Scene; camera: THREE.OrthographicCamera } | null = null;
   private static readonly GPU_HEAVY_DRAWS = 40;
+  /**
+   * The pass is scaled to the GPU: from the armed governor on, every
+   * GPU_HEAVY_RAMP_FRAMES rendered frames it grows x1.5 (to GPU_HEAVY_MAX_DRAWS)
+   * until fpsEma is under 0.85 of the shed bar, then holds that many draws
+   * for good, so the shed it provokes is the governor's to undo. A fixed
+   * count did not provoke one on a quiet host (integration: fpsEma 35.8-44.7
+   * against a 33.75 bar for 20 s). Nothing is drawn before the governor
+   * arms, so the refresh estimate (the bar) is read on the unloaded frame.
+   */
+  private gpuHeavyDraws = SimpleRenderer.GPU_HEAVY_DRAWS;
+  private gpuHeavyFrames = 0;
+  private gpuHeavyHeld = false;
+  private gpuHeavyUnder = 0;
+  private static readonly GPU_HEAVY_RAMP_FRAMES = 20;
+  private static readonly GPU_HEAVY_MAX_DRAWS = 1200;
 
   /**
    * E4: window 'ds:modal' {open, id, zone?} (PanelManager) says whether a
@@ -244,8 +284,12 @@ export class SimpleRenderer {
   private modalFrozen = false;
   private modalFrame = 0;
   private static readonly MODAL_DIVISOR = 3;
-  /** The last rendered frame's CPU seconds (E3's sample), for the divisor's time floor. */
+  /** Wall seconds the modal has been open, and how long before the divisor engages. */
+  private modalOpenFor = 0;
+  private static readonly MODAL_GRACE_S = 1.0;
+  /** The last two rendered frames' CPU seconds (E3's sample), for the divisor's time floor. */
   private lastFrameCpu = 0;
+  private prevFrameCpu = 0;
   private readonly _onModal = (e: Event): void => {
     const d = (e as CustomEvent<{ open?: boolean } | null>).detail;
     this.modalOpen = !!(d && d.open);
@@ -630,7 +674,16 @@ export class SimpleRenderer {
       let wallDt = rawDt;
       // E4: a modal opened or closed since the last frame (the event, or the
       // perf gate's --fx flipping the switch).
-      const modal = this.modalOpen && fx.on('modalDivisor');
+      // It engages after MODAL_GRACE_S of wall time open, so the panel's own
+      // entrance and an entry under it (a hall's veil and first view) run at
+      // the full rate: MEASURED at integration, the hall panel opening as the
+      // 4x phone walked into the Welcome Hub stretched the entry's longest
+      // frame from ~120 ms (main) to 200-480 ms.
+      this.modalOpenFor = this.modalOpen ? this.modalOpenFor + rawDt : 0;
+      const modal =
+        this.modalOpen &&
+        fx.on('modalDivisor') &&
+        this.modalOpenFor >= SimpleRenderer.MODAL_GRACE_S;
       if (modal !== this.modalApplied) this.applyModal(modal);
       if (this.frameCapFps > 0 || this.modalApplied) {
         this.frameAccum += rawDt;
@@ -639,8 +692,9 @@ export class SimpleRenderer {
           if (this.frameAccum < interval - SimpleRenderer.FRAME_CAP_TOLERANCE_S) return;
         }
         // Behind a modal: 1 in MODAL_DIVISOR of the frames the cap lets
-        // through, AND at least MODAL_DIVISOR x the last frame's own CPU time
-        // of wall per rendered frame. The count alone is the third of the rate
+        // through, AND at least MODAL_DIVISOR x the cheaper of the last two
+        // frames' own CPU time of wall per rendered frame (the cheaper, so one
+        // costly frame, a compile or a GC, does not triple the gap after it). The count alone is the third of the rate
         // on a device with headroom; on a CPU-bound one the skipped rAF ticks
         // are ~0 ms each and the costly frames ran back to back, MEASURED on
         // the 4x low tier behind Projects: 890 ms/s of main-thread busy with
@@ -649,7 +703,8 @@ export class SimpleRenderer {
         if (
           this.modalApplied &&
           (++this.modalFrame < SimpleRenderer.MODAL_DIVISOR ||
-            this.frameAccum < SimpleRenderer.MODAL_DIVISOR * this.lastFrameCpu)
+            this.frameAccum <
+              SimpleRenderer.MODAL_DIVISOR * Math.min(this.lastFrameCpu, this.prevFrameCpu))
         )
           return;
         this.modalFrame = 0;
@@ -692,11 +747,13 @@ export class SimpleRenderer {
       // it floored the governor's view at 20fps and stretched every one of its
       // clocks. See updateAdaptiveResolution.
       this.updateAdaptiveResolution(wallDt);
+      const cpuT1 = performance.now();
 
       // Render
       this.render();
+      this.prevFrameCpu = this.lastFrameCpu;
       this.lastFrameCpu = (performance.now() - cpuT0) / 1000;
-      this.feedCpu(this.lastFrameCpu, wallDt);
+      this.feedCpu(this.lastFrameCpu, (cpuT1 - cpuT0) / 1000, wallDt);
     };
 
     animate();
@@ -787,12 +844,13 @@ export class SimpleRenderer {
    * updated by this frame's updateAdaptiveResolution). Disarmed, the EMA
    * still measures; armGovernor discards it with the rest.
    */
-  private feedCpu(cpuS: number, wallDt: number): void {
-    if (wallDt <= 0 || !(cpuS >= 0) || this.modalApplied) return;
+  private feedCpu(cpuS: number, logicS: number, wallDt: number): void {
+    if (wallDt <= 0 || !(cpuS >= 0) || !(logicS >= 0) || this.modalApplied) return;
     if (wallDt > SimpleRenderer.GOVERNOR_MAX_DT && this.stallRun < 3) return;
     const dt = Math.min(wallDt, SimpleRenderer.GOVERNOR_MAX_DT);
     const alpha = Math.min(0.25, 1 - Math.exp(-dt / 0.75));
     this.cpuEma += (cpuS - this.cpuEma) * alpha;
+    this.logicEma += (logicS - this.logicEma) * alpha;
   }
 
   /**
@@ -810,6 +868,8 @@ export class SimpleRenderer {
       renderScale: this.renderScale,
       fpsEma: this.fpsEma,
       cpuEma: this.cpuEma,
+      logicEma: this.logicEma,
+      pixelBound: this.pixelBound,
       qualityRung: this.qualityRung,
       cpuBound: this.cpuBound,
       modalDivisor: this.modalApplied ? SimpleRenderer.MODAL_DIVISOR : 1,
@@ -945,11 +1005,33 @@ export class SimpleRenderer {
     // machine sits permanently at 0.6 effective DPR.
     const scaleFloor = Math.min(0.9, this.dprFloor / this.dprCap);
     const prev = this.renderScale;
-    // E3: CPU-BOUND. At 0.85 of the target interval or more the frame is
-    // spent on the main thread, and fewer pixels buy nothing back: hold the
-    // scale up and go straight to the rungs (rungStep, as below).
-    const cpuBound = this.cpuEma >= SimpleRenderer.CPU_BOUND_RATIO * this.targetInterval();
-    this.cpuBound = cpuBound;
+    // E3: CPU-BOUND. The frame takes 0.85 of the target interval or more of
+    // main-thread time at CPU_BOUND_DECISIONS decisions in a row, and the
+    // pixel test found render() does not shrink with the pixels: fewer pixels
+    // buy nothing back, so hold the scale up and go straight to the rungs
+    // (rungStep, as below). Under the bar that many times, the flag drops and
+    // the pixel test is forgotten (the load changed; a later dip tests anew).
+    const over = this.cpuEma >= SimpleRenderer.CPU_BOUND_RATIO * this.targetInterval();
+    this.cpuBoundRun = over
+      ? Math.max(1, this.cpuBoundRun + 1)
+      : Math.min(-1, this.cpuBoundRun - 1);
+    if (this.cpuBoundRun <= -SimpleRenderer.CPU_BOUND_DECISIONS) {
+      this.cpuBound = false;
+      this.pixelBound = null;
+      this.pixelProbe = null;
+    }
+    // The pixel test's verdict, once the scale is a full step under its start.
+    const probe = this.pixelProbe;
+    if (probe && this.renderScale <= probe.scale - SimpleRenderer.PIXEL_TEST_STEP) {
+      const cut = 1 - (this.renderScale / probe.scale) ** 2;
+      const render = Math.max(0, this.cpuEma - this.logicEma);
+      this.pixelBound = render < probe.render * (1 - SimpleRenderer.PIXEL_TEST_GAIN * cut);
+      this.pixelProbe = null;
+    }
+    if (this.cpuBoundRun >= SimpleRenderer.CPU_BOUND_DECISIONS && this.pixelBound === false) {
+      this.cpuBound = true;
+    }
+    const cpuBound = this.cpuBound;
     if (this.fpsEma < this.fpsLowThreshold) {
       this.lowStreak += 1;
       if (cpuBound) {
@@ -961,6 +1043,14 @@ export class SimpleRenderer {
           this.setQualityRung(this.rungStep(1));
         }
       } else if (this.renderScale > scaleFloor && this.lowStreak >= 2) {
+        // E3: the first shed of an untested dip starts the pixel test, from
+        // render()'s share of the frame at this scale.
+        if (this.pixelBound === null && !this.pixelProbe) {
+          this.pixelProbe = {
+            scale: this.renderScale,
+            render: Math.max(0, this.cpuEma - this.logicEma),
+          };
+        }
         // Struggling, and for a SECOND consecutive decision — one bad second
         // (a shader compile, walking into a dense district) is not a reason
         // to drop resolution. Shed 0.08/decision against a 0.1 restore, so
@@ -1114,6 +1204,11 @@ export class SimpleRenderer {
   private resetGovernorClocks(): void {
     this.fpsEma = 60;
     this.cpuEma = 0;
+    this.logicEma = 0;
+    this.cpuBoundRun = 0;
+    this.cpuBound = false;
+    this.pixelBound = null;
+    this.pixelProbe = null;
     this.qualityAccum = 0;
     this.rungCooldown = 0;
     this.lowStreak = 0;
@@ -1284,8 +1379,20 @@ export class SimpleRenderer {
     // on a weak GPU would trip the driver's timeout. MEASURED on the dev rig's
     // GPU: one 640-iteration pass added 0.24 ms, so a GPU-bound case needs
     // about 20 ms of passes there.
-    for (let i = 0; i < SimpleRenderer.GPU_HEAVY_DRAWS; i++) {
+    for (let i = 0; i < this.gpuHeavyDraws; i++) {
       this.renderer.render(this.gpuHeavy.scene, this.gpuHeavy.camera);
+    }
+    if (!this.gpuHeavyHeld && ++this.gpuHeavyFrames >= SimpleRenderer.GPU_HEAVY_RAMP_FRAMES) {
+      this.gpuHeavyFrames = 0;
+      // Two checks in a row under, so the EMA's fall from the armed reset (60)
+      // does not hold the count before the load has told.
+      this.gpuHeavyUnder = this.fpsEma < 0.85 * this.fpsLowThreshold ? this.gpuHeavyUnder + 1 : 0;
+      if (this.gpuHeavyUnder >= 2) this.gpuHeavyHeld = true;
+      else if (this.gpuHeavyUnder === 0)
+        this.gpuHeavyDraws = Math.min(
+          SimpleRenderer.GPU_HEAVY_MAX_DRAWS,
+          Math.ceil(this.gpuHeavyDraws * 1.5),
+        );
     }
     this.renderer.autoClear = auto;
   }
@@ -1354,7 +1461,7 @@ export class SimpleRenderer {
     } else {
       this.renderer.render(this.scene, this.camera);
     }
-    if (this.gpuHeavyParam) this.renderGpuHeavy();
+    if (this.gpuHeavyParam && this.governorArmed) this.renderGpuHeavy();
 
     // Photo mode: read the drawing buffer in the SAME task as the draw
     // (toBlob snapshots the bitmap at call time; without preserveDrawingBuffer

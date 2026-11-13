@@ -528,7 +528,11 @@ function governor(
     renderScale: o.renderScale ?? 1,
     fpsEma: o.fpsEma ?? 14,
     cpuEma: o.cpuEma ?? 0,
+    logicEma: 0,
     cpuBound: false,
+    cpuBoundRun: 0,
+    pixelBound: null,
+    pixelProbe: null,
     qualityAccum: 0,
     lowStreak: 0,
     stallRun: 0,
@@ -550,14 +554,24 @@ const gcall = (g: Gov, m: string, ...a: unknown[]): unknown =>
     g,
     a,
   );
-/** One decision per simulated second: frames of `dt` with their CPU share fed, the EMA held where the case pins it. */
-function decide(g: Gov, seconds: number, opts: { fps: number; cpuS: number }): void {
+/**
+ * One decision per simulated second: frames of `dt` with their CPU time fed
+ * (logicS of it the logic, the rest render()). `render` may follow the scale:
+ * a function of renderScale gives render()'s seconds at that scale.
+ */
+function decide(
+  g: Gov,
+  seconds: number,
+  opts: { fps: number; cpuS?: number; logicS?: number; render?: (scale: number) => number },
+): void {
   // A hair over 1/fps, so float rounding cannot leave a second's frames just under 1.0.
   const dt = 1 / opts.fps + 1e-7;
+  const logic = opts.logicS ?? 0;
   for (let s = 0; s < seconds; s++)
     for (let f = 0; f < opts.fps; f++) {
       gcall(g, 'updateAdaptiveResolution', dt);
-      gcall(g, 'feedCpu', opts.cpuS, dt);
+      const cpu = opts.render ? logic + opts.render(g.renderScale as number) : (opts.cpuS ?? 0);
+      gcall(g, 'feedCpu', cpu, Math.min(logic, cpu), dt);
     }
 }
 
@@ -569,15 +583,22 @@ describe('the governor knows when the frame is CPU-bound (E3)', () => {
     expect(gcall(g, 'targetInterval')).toBeCloseTo(1 / 45, 6);
   });
 
-  test('a CPU-bound low tier at 0.48 is lifted to 0.9 and claws toward 1 by 0.05', () => {
-    // 4x CPU: 14 fps, and the frame is all main thread (70 ms of a 71 ms frame).
-    const g = governor({ lowTier: true, renderScale: 0.48, cpuEma: 0.07, fpsEma: 14 });
-    decide(g, 1, { fps: 14, cpuS: 0.07 });
+  test('a CPU-bound low tier: the pixel test finds render() flat, so the scale is lifted to 0.9 and claws toward 1 by 0.05', () => {
+    // 4x CPU, as MEASURED on lowtier4x: 14 fps, logic ~10 ms and render() ~50 ms
+    // at any scale (the main thread's, not the GPU's).
+    const g = governor({ lowTier: true, renderScale: 1, cpuEma: 0.06, fpsEma: 14 });
+    const flat = { fps: 14, logicS: 0.01, render: () => 0.05 };
+    decide(g, 2, flat);
+    expect(g.cpuBound).toBe(false); // shedding, the test running
+    expect(g.renderScale).toBeLessThan(1);
+    decide(g, 4, flat);
+    expect(g.pixelBound).toBe(false);
     expect(g.cpuBound).toBe(true);
-    expect(g.renderScale).toBeCloseTo(0.9, 6);
-    decide(g, 1, { fps: 14, cpuS: 0.07 });
-    expect(g.renderScale).toBeCloseTo(0.95, 6);
-    decide(g, 30, { fps: 14, cpuS: 0.07 });
+    expect(g.renderScale).toBeGreaterThanOrEqual(0.9);
+    const at = g.renderScale as number;
+    decide(g, 1, flat);
+    expect(g.renderScale).toBeCloseTo(Math.min(1, at + 0.05), 6);
+    decide(g, 30, flat);
     expect(g.renderScale).toBe(1);
     // ...and the ladder still sheds: on the low tier rungs 1 and 2 are inert
     // (no composer; half-rate shadows already on), so it goes to rung 3.
@@ -592,6 +613,30 @@ describe('the governor knows when the frame is CPU-bound (E3)', () => {
     expect(g.renderScale).toBeLessThan(0.9);
   });
 
+  test('a GPU-bound frame whose render() blocks on the GPU is not read as CPU-bound', () => {
+    // Integration, desktop at 21 h: render() waits on a full GPU queue, so the
+    // whole frame reads as main-thread time (cpuEma over the bar), but that
+    // time falls with the pixels. The pixel test says GPU, and the scale sheds.
+    const g = governor({ renderScale: 1, cpuEma: 0.03, fpsEma: 30 });
+    decide(g, 8, { fps: 30, logicS: 0.003, render: (k) => 0.03 * k * k });
+    expect(g.pixelBound).toBe(true);
+    expect(g.cpuBound).toBe(false);
+    expect(g.renderScale).toBeLessThan(0.7);
+  });
+
+  test('cpuBound needs two decisions over the bar, and two under drop it and forget the pixel test', () => {
+    const g = governor({ lowTier: true, renderScale: 1, cpuEma: 0.06, fpsEma: 14 });
+    g.pixelBound = false;
+    decide(g, 1, { fps: 14, cpuS: 0.06, logicS: 0.01 });
+    expect(g.cpuBound).toBe(false);
+    decide(g, 1, { fps: 14, cpuS: 0.06, logicS: 0.01 });
+    expect(g.cpuBound).toBe(true);
+    // The load falls: 5 ms frames at 60 fps.
+    decide(g, 3, { fps: 60, cpuS: 0.005, logicS: 0.002 });
+    expect(g.cpuBound).toBe(false);
+    expect(g.pixelBound).toBe(null);
+  });
+
   test('the +0.1 claw-back stays gated on rung 0', () => {
     const g = governor({ renderScale: 0.7, cpuEma: 0.001, fpsEma: 60 });
     g.qualityRung = 2;
@@ -603,27 +648,41 @@ describe('the governor knows when the frame is CPU-bound (E3)', () => {
   test('cpuEma skips an isolated stall, as fpsEma does, and armGovernor resets it', () => {
     const g = governor({ cpuEma: 0.01 });
     g.stallRun = 1;
-    gcall(g, 'feedCpu', 2.0, 2.0);
+    gcall(g, 'feedCpu', 2.0, 0.5, 2.0);
     expect(g.cpuEma).toBe(0.01);
+    expect(g.logicEma).toBe(0);
     g.governorArmed = false;
+    g.pixelBound = false;
+    g.cpuBound = true;
     gcall(g, 'armGovernor');
     expect(g.cpuEma).toBe(0);
+    expect(g.logicEma).toBe(0);
+    expect(g.pixelBound).toBe(null);
+    expect(g.cpuBound).toBe(false);
     expect(g.fpsEma).toBe(60);
   });
 
-  test('two performance.now() reads frame the CPU sample; ?gpuheavy is a URL param read once', () => {
+  test('three performance.now() reads frame the CPU sample and its logic share; ?gpuheavy is a URL param read once', () => {
     const s = src('SimpleRenderer.ts');
     const loop = s.slice(
       s.indexOf('public startRenderLoop('),
       s.indexOf('private applyRefreshEstimate'),
     );
-    expect(loop.match(/performance\.now\(\)/g)).toHaveLength(2);
+    expect(loop.match(/performance\.now\(\)/g)).toHaveLength(3);
     expect(loop.indexOf('const cpuT0 = performance.now();')).toBeLessThan(
       loop.indexOf('this.renderCallback(deltaTime)'),
     );
+    // The logic share ends after the governor and before render().
+    expect(loop.indexOf('const cpuT1 = performance.now();')).toBeGreaterThan(
+      loop.indexOf('this.updateAdaptiveResolution(wallDt);'),
+    );
+    expect(loop.indexOf('const cpuT1 = performance.now();')).toBeLessThan(
+      loop.indexOf('this.render();'),
+    );
     expect(loop.indexOf('this.feedCpu(')).toBeGreaterThan(loop.indexOf('this.render();'));
     expect(s).toContain("new URLSearchParams(window.location.search).get('gpuheavy') === '1'");
-    expect(s).toContain('if (this.gpuHeavyParam) this.renderGpuHeavy();');
+    // The pass waits for the armed governor (the refresh estimate is read unloaded).
+    expect(s).toContain('if (this.gpuHeavyParam && this.governorArmed) this.renderGpuHeavy();');
     expect(s).toContain('public getGovernorState(): GovernorState');
   });
 });
@@ -670,10 +729,18 @@ describe('the world behind a modal on the low tier (E4)', () => {
     const s = src('SimpleRenderer.ts');
     expect(s).toContain("fx.register('modalDivisor', { desktop: false, low: true });");
     expect(s).toContain('private static readonly MODAL_DIVISOR = 3;');
-    expect(s).toContain("const modal = this.modalOpen && fx.on('modalDivisor');");
+    // The divisor engages after a grace of wall time open (an entry under a
+    // panel opening runs at the full rate).
+    expect(s).toContain('private static readonly MODAL_GRACE_S = 1.0;');
+    expect(s).toContain('this.modalOpenFor = this.modalOpen ? this.modalOpenFor + rawDt : 0;');
+    expect(s).toContain('this.modalOpenFor >= SimpleRenderer.MODAL_GRACE_S;');
     expect(s).toContain('if (this.frameCapFps > 0 || this.modalApplied) {');
     expect(s).toContain('(++this.modalFrame < SimpleRenderer.MODAL_DIVISOR ||');
-    expect(s).toContain('this.frameAccum < SimpleRenderer.MODAL_DIVISOR * this.lastFrameCpu)');
+    // The time floor follows the cheaper of the last two frames.
+    expect(s).toContain(
+      'SimpleRenderer.MODAL_DIVISOR * Math.min(this.lastFrameCpu, this.prevFrameCpu))',
+    );
+    expect(s).toContain('this.prevFrameCpu = this.lastFrameCpu;');
     expect(s).toContain('this.lastFrameCpu = (performance.now() - cpuT0) / 1000;');
     expect(s).toContain("window.addEventListener('ds:modal', this._onModal);");
     expect(s).toContain("window.removeEventListener('ds:modal', this._onModal);");
@@ -699,35 +766,43 @@ describe('the world behind a modal on the low tier (E4)', () => {
   // frame costs `cost` s of main thread, a skipped rAF tick costs nothing,
   // and the next tick comes at the next vsync after the work ends.
   const simulate = (
-    cost: number,
+    cost: number | ((n: number) => number),
     seconds: number,
-  ): { rendered: number; busy: number; wall: number } => {
+  ): { rendered: number; busy: number; wall: number; gaps: number[] } => {
     const vsync = 1 / 60;
+    const costOf = typeof cost === 'number' ? () => cost : cost;
     let t = 0;
     let accum = 0;
     let frame = 0;
     let last = 0;
+    let before = 0;
     let rendered = 0;
     let busy = 0;
     let wall = 0;
     let prev = 0;
+    let lastAt = 0;
+    const gaps: number[] = [];
     while (t < seconds) {
       const raw = t - prev;
       prev = t;
       accum += raw;
-      if (++frame < 3 || accum < 3 * last) {
+      if (++frame < 3 || accum < 3 * Math.min(last, before)) {
         t += vsync;
         continue;
       }
       frame = 0;
       wall += accum;
       accum = 0;
+      gaps.push(t - lastAt);
+      lastAt = t;
+      const c = costOf(rendered);
       rendered++;
-      busy += cost;
-      last = cost;
-      t += Math.ceil(cost / vsync) * vsync;
+      busy += c;
+      before = last;
+      last = c;
+      t += Math.ceil(c / vsync) * vsync;
     }
-    return { rendered, busy: busy / seconds, wall };
+    return { rendered, busy: busy / seconds, wall, gaps };
   };
 
   test('the limiter, simulated: a healthy 60 Hz phone renders a third of the frames, in true wall time', () => {
@@ -743,5 +818,14 @@ describe('the world behind a modal on the low tier (E4)', () => {
     const r = simulate(0.07, 10);
     expect(r.busy).toBeLessThan(0.4);
     expect(r.busy).toBeGreaterThan(0.25);
+  });
+
+  test('the limiter, simulated: one costly frame does not triple the gap after it', () => {
+    // 20 ms frames with one 150 ms frame (a compile, a GC) in the middle:
+    // with the last frame alone the next gap was 3 x 150 ms; the cheaper of
+    // the last two keeps it near the 20 ms frames' own.
+    const r = simulate((n) => (n === 50 ? 0.15 : 0.02), 5);
+    const after = r.gaps[51];
+    expect(after).toBeLessThan(0.25);
   });
 });

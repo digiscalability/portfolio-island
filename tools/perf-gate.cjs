@@ -2082,7 +2082,7 @@ const LOWTIER4X = () => ({ ...lib.profile('lowtier'), name: 'lowtier4x', cpu: 4 
 /** The governor's state: E3's snapshot where the build has it, else the private fields. */
 const GOV_STATE = () => {
   const sr = window.__app.renderer;
-  if (typeof sr.getGovernorState === 'function') return { ...sr.getGovernorState(), armed: sr.governorArmed, lowBar: sr.fpsLowThreshold, lowStreak: sr.lowStreak, via: 'getGovernorState' };
+  if (typeof sr.getGovernorState === 'function') return { ...sr.getGovernorState(), armed: sr.governorArmed, lowBar: sr.fpsLowThreshold, lowStreak: sr.lowStreak, gpuHeavyDraws: sr.gpuHeavyParam ? sr.gpuHeavyDraws : null, via: 'getGovernorState' };
   return { renderScale: sr.renderScale, fpsEma: sr.fpsEma, cpuEma: sr.cpuEma ?? null, qualityRung: sr.qualityRung, cpuBound: sr.cpuBound ?? null, modalDivisor: null, via: 'fields' };
 };
 // E3's bars: on the 4x low tier after 30 s the scale is 0.9 or more (from
@@ -2102,8 +2102,13 @@ async function modeGovernor(args) {
   const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
   const browser = await lib.launch();
   const heavy = !!args.gpuheavy;
-  const base = heavy ? lib.profile('lowtier') : LOWTIER4X();
-  const profObj = heavy ? { ...base, name: 'lowtier-gpuheavy', query: `${base.query || ''}&gpuheavy=1` } : base;
+  // --profile desktop: the desktop at --hour (21 for the night halo): the
+  // scale sheds before the rungs unless the LOGIC is CPU-bound, so bloom
+  // (rung 1) outlives the first resolution steps.
+  const desk = !heavy && args.profile === 'desktop';
+  const base = heavy ? lib.profile('lowtier') : desk ? lib.profile('desktop') : LOWTIER4X();
+  const heavyQ = heavy ? (args.gpuheavy === true ? '1' : String(args.gpuheavy)) : null;
+  const profObj = heavy ? { ...base, name: 'lowtier-gpuheavy', query: `${base.query || ''}&gpuheavy=${heavyQ}` } : base;
   const seconds = Number(args.seconds || (heavy ? 20 : 30));
   const data = { mode: 'governor', profile: profObj.name, cpu: profObj.cpu, seconds, bars: GOVERNOR_BARS, samples: [], checks: [], leaks: [], signUpMissing: 0 };
   try {
@@ -2136,14 +2141,23 @@ async function modeGovernor(args) {
   }
   const last = data.samples[data.samples.length - 1] || {};
   const check = (name, pass, value, expect) => data.checks.push({ name, pass, value, expect });
-  if (heavy) {
+  if (desk) {
+    // Report rows plus one judged: the first rung (bloom) never comes before
+    // the scale has moved, unless the logic reads CPU-bound.
+    const firstRung = data.samples.find((x) => x.qualityRung >= 1);
+    const firstShed = data.samples.find((x) => x.renderScale < 1);
+    data.desktop = { firstRungAtS: firstRung ? firstRung.s : null, firstShedAtS: firstShed ? firstShed.s : null, cpuBoundSamples: data.samples.filter((x) => x.cpuBound).length, last };
+    const cpuB = firstRung ? data.samples.filter((x) => x.s <= firstRung.s).some((x) => x.cpuBound) : false;
+    check(`desktop at ${args.hour || '12'} h: the scale sheds before rung 1 (bloom), unless CPU-bound`, !firstRung || cpuB || (!!firstShed && firstShed.s < firstRung.s), { firstShedAtS: data.desktop.firstShedAtS, firstRungAtS: data.desktop.firstRungAtS, cpuBoundBeforeRung: cpuB }, 'scale first');
+    check(`desktop: cpuBound samples (report-only)`, null, data.desktop.cpuBoundSamples, `of ${data.samples.length}`);
+  } else if (heavy) {
     const first = data.samples.find((x) => x.renderScale < GOVERNOR_BARS.scaleAt30s);
     check(`lowtier ?gpuheavy=1: renderScale under ${GOVERNOR_BARS.scaleAt30s} within ${GOVERNOR_BARS.gpuHeavyShedS} s`, !!first && first.s <= GOVERNOR_BARS.gpuHeavyShedS, first ? `${first.renderScale} at ${first.s} s` : `never (last ${last.renderScale})`, `<= ${GOVERNOR_BARS.gpuHeavyShedS} s`);
   } else {
     check(`lowtier4x: renderScale after ${seconds} s`, last.renderScale >= GOVERNOR_BARS.scaleAt30s, last.renderScale, `>= ${GOVERNOR_BARS.scaleAt30s} (wave-2 main: 0.48)`);
     check(`lowtier4x: fps after ${seconds} s`, data.fpsLast5s >= GOVERNOR_BARS.fpsAt30s, data.fpsLast5s, `>= ${GOVERNOR_BARS.fpsAt30s}`);
   }
-  data.verdict = data.leaks.length ? 'fail-closed' : data.signUpMissing ? 'inconclusive' : data.checks.every((c) => c.pass) ? 'pass' : 'fail';
+  data.verdict = data.leaks.length ? 'fail-closed' : data.signUpMissing ? 'inconclusive' : data.checks.every((c) => c.pass !== false) ? 'pass' : 'fail';
   return data;
 }
 

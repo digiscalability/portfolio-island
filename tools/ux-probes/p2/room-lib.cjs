@@ -141,6 +141,11 @@ const INSTALL = () => {
       f.inside = sc.isInsideInterior();
       const fd = app.ui.fadeDiv;
       f.fade = fd ? +getComputedStyle(fd).opacity : 0;
+      // The governor as this frame left it (E3's snapshot; null on a build
+      // without one): the render scale, the rung, the CPU-bound flag and E4's
+      // modal divisor.
+      const g = typeof R.getGovernorState === 'function' ? R.getGovernorState() : null;
+      f.gov = g ? [+g.renderScale.toFixed(2), g.qualityRung, g.cpuBound ? 1 : 0, g.modalDivisor] : null;
       if (IA.rec) {
         IA.frames.push(f);
         if (IA.frames.length > IA.maxFrames) IA.frames.shift();
@@ -185,6 +190,7 @@ const INSTALL = () => {
         prog: f.prog,
         inside: f.inside,
         fade: +(f.fade ?? 0).toFixed(2),
+        gov: f.gov ?? null,
       });
     }
     return out;
@@ -645,6 +651,25 @@ function transition(fr, p0) {
     programsAdded: (fr.length ? fr[fr.length - 1].prog : p0) - p0,
     rtPass: fr.filter((f) => f.rt > 0).map((f) => ({ t: f.t, draws: f.rt, ms: f.rtMs })),
     inside: fr.length ? fr[fr.length - 1].inside : null,
+    // Report-only: the governor across the recording ([renderScale, rung,
+    // cpuBound] per frame, E3's snapshot), null on a build without it.
+    gov: governorSummary(fr, firstIn),
+  };
+}
+
+/** The render scale and rung at the first frame inside and their range, and the share of frames read CPU-bound. */
+function governorSummary(fr, firstIn) {
+  const g = fr.map((f) => f.gov).filter(Boolean);
+  if (!g.length) return null;
+  const at = firstIn >= 0 && fr[firstIn].gov ? fr[firstIn].gov : g[0];
+  return {
+    scaleAtEntry: at[0],
+    rungAtEntry: at[1],
+    scaleRange: [Math.min(...g.map((x) => x[0])), Math.max(...g.map((x) => x[0]))],
+    rungRange: [Math.min(...g.map((x) => x[1])), Math.max(...g.map((x) => x[1]))],
+    cpuBoundPct: +((100 * g.filter((x) => x[2]).length) / g.length).toFixed(0),
+    // E4's divisor held (a modal on top): its share of the frames.
+    modalPct: +((100 * g.filter((x) => x[3] > 1).length) / g.length).toFixed(0),
   };
 }
 
