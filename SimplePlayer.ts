@@ -272,6 +272,103 @@ function swimArmQuat(
 /** The swim stroke's clock rate, rad/s: tread 3.2, stroke 7. */
 export const SWIM_TREAD_RATE = 3.2;
 export const SWIM_STROKE_RATE = 7;
+// ── The wave (B6) ──────────────────────────────────────────────────────────
+// An abduction you can read from behind: the arm swings OUT and up beside the
+// head instead of forward. MEASURED on player.glb (world law 3): composed on
+// the arm's rest, rest·Rz(−2.2) carries armR's hand out to (0.64, 0.88) in the
+// model, beside and above the head (0.58); Rz(+2.2) folds it across the body.
+// Rx(−0.35) tips the raised hand 0.22 u forward of the shoulder plane (+0.35
+// tips it 0.14 u back). Ry on this single-bone arm is a twist about its own
+// axis and moves the hand 0 u, so the wag swings the abduction instead.
+/** The wave's length, s: 60 ms anticipation, 220 ms raise, 650 ms wag, 300 ms lower. */
+export const WAVE_DURATION = 1.23;
+const WAVE_ANTICIPATE = 0.06;
+const WAVE_RAISE = 0.22;
+const WAVE_WAG = 0.65;
+/** Abduction (armR's sign; armL mirrors it), forward tip, wag amplitude. */
+export const WAVE_ABDUCT = -2.2;
+const WAVE_TIP = -0.35;
+const WAVE_WAG_AMP = 0.45;
+const WAVE_WAG_HZ = 2.5;
+
+/** easeOutBack with a 6% overshoot (c1 = 1.0285 peaks at 1.060). */
+const easeOutBack6 = (t: number): number => {
+  const c1 = 1.0285;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+};
+const easeOutCubic = (t: number): number => 1 - Math.pow(1 - t, 3);
+const smooth01 = (t: number): number => t * t * (3 - 2 * t);
+
+export interface WaveFrame {
+  /** 0..1(+overshoot): how far the arm is raised. */
+  raise: number;
+  /** The wag's abduction offset, rad. */
+  wag: number;
+  /** 0..1: the weight of the wave pose over the clip. */
+  blend: number;
+  /** 0..1: the body's share (roll, head turn, counter-swing). */
+  body: number;
+  /** 0..1: the anticipation's knee dip. */
+  dip: number;
+}
+
+/** The wave's envelope at `t` seconds into it (shared by the local player and
+ *  every peer). Reduced motion: no wag and no overshoot. */
+export function waveFrame(t: number, reduced: boolean, out: WaveFrame): WaveFrame {
+  out.raise = 0;
+  out.wag = 0;
+  out.blend = 0;
+  out.body = 0;
+  out.dip = 0;
+  if (t <= 0 || t >= WAVE_DURATION) return out;
+  const tRaise = WAVE_ANTICIPATE;
+  const tWag = tRaise + WAVE_RAISE;
+  const tLower = tWag + WAVE_WAG;
+  if (t < tRaise) {
+    // Anticipation: a small knee dip, the arm drawn in toward the body.
+    const u = t / tRaise;
+    out.blend = smooth01(u);
+    out.raise = -0.07 * Math.sin(Math.PI * u);
+    out.dip = Math.sin(Math.PI * u);
+  } else if (t < tWag) {
+    const u = (t - tRaise) / WAVE_RAISE;
+    out.blend = 1;
+    out.raise = reduced ? easeOutCubic(u) : easeOutBack6(u);
+  } else if (t < tLower) {
+    const u = (t - tWag) / WAVE_WAG;
+    out.blend = 1;
+    out.raise = 1;
+    if (!reduced) {
+      out.wag =
+        WAVE_WAG_AMP * Math.sin(2 * Math.PI * WAVE_WAG_HZ * (t - tWag)) * Math.sin(Math.PI * u);
+    }
+  } else {
+    const u = (t - tLower) / (WAVE_DURATION - tLower);
+    out.raise = 1;
+    out.blend = 1 - smooth01(u);
+  }
+  out.body = Math.min(1, t / tWag) * (t < tLower ? 1 : out.blend);
+  return out;
+}
+
+/** The waving arm's target on its rest: rest·Rz(side·(abduct·raise + wag))·Rx(tip·raise). */
+function waveArmQuat(
+  out: THREE.Quaternion,
+  rest: THREE.Quaternion,
+  side: 1 | -1,
+  f: WaveFrame,
+): THREE.Quaternion {
+  const r = Math.max(f.raise, -0.2);
+  return out
+    .copy(rest)
+    .multiply(_swimTurn.setFromAxisAngle(_waveAxisZ, side * (WAVE_ABDUCT * r - f.wag)))
+    .multiply(_swimResid.setFromAxisAngle(_limbAxisX, WAVE_TIP * Math.max(0, r)));
+}
+const _waveAxisZ = new THREE.Vector3(0, 0, 1);
+const _waveAxisY = new THREE.Vector3(0, 1, 0);
+const _waveQ = new THREE.Quaternion();
+
 fx.register('gait', { desktop: true, low: true });
 fx.register('squash', { desktop: true, low: true });
 
@@ -310,13 +407,21 @@ class LimbClip {
     legR: new THREE.Quaternion(),
   };
   private held = false;
+  /** The head's clip output (B6): the wave's head turn is written on it, and
+   *  restored before the mixer like a limb, so a skipped frame cannot keep
+   *  last frame's turn. */
+  readonly headClip = new THREE.Quaternion();
 
-  constructor(private readonly bone: (k: LimbKey) => THREE.Object3D | null) {}
+  constructor(
+    private readonly bone: (k: LimbKey) => THREE.Object3D | null,
+    private readonly head: () => THREE.Object3D | null = () => null,
+  ) {}
 
   /** Before mixer.update: every limb back on the last clip output. */
   restore(): void {
     if (!this.held) return;
     for (const k of LIMB_KEYS) this.bone(k)?.quaternion.copy(this.clip[k]);
+    this.head()?.quaternion.copy(this.headClip);
   }
 
   /** After mixer.update — and once at load, from the bind pose, which is the
@@ -328,6 +433,8 @@ class LimbClip {
       this.clip[k].copy(b.quaternion);
       if (!this.held) this.rest[k].copy(b.quaternion);
     }
+    const h = this.head();
+    if (h) this.headClip.copy(h.quaternion);
     this.held = true;
   }
 
@@ -598,18 +705,25 @@ export class SimplePlayer extends THREE.Group {
   private airPoseWeight = 0;
   private airLegWeight = 0; // the legs' share, faded faster on landing (B4)
   // The mixer's last output for the four limbs (see LimbClip).
-  private readonly limbClip = new LimbClip((k) =>
-    k === 'armL'
-      ? this.armLBone
-      : k === 'armR'
-        ? this.armRBone
-        : k === 'legL'
-          ? this.legLBone
-          : this.legRBone,
+  private readonly limbClip = new LimbClip(
+    (k) =>
+      k === 'armL'
+        ? this.armLBone
+        : k === 'armR'
+          ? this.armRBone
+          : k === 'legL'
+            ? this.legLBone
+            : this.legRBone,
+    () => this.headBone,
   );
   // Arm-wave gesture: seconds of the ~1.2s wave remaining (0 = idle).
   private waveTime = 0;
-  private static readonly WAVE_DURATION = 1.2;
+  /** The wave's state (B6): its frame, the camera direction for the head
+   *  turn (GameScene sets it while waving), the head's clip quaternion. */
+  private readonly waveF: WaveFrame = { raise: 0, wag: 0, blend: 0, body: 0, dip: 0 };
+  private readonly waveLook = new THREE.Vector3();
+  private waveLookSet = false;
+  private headBone: THREE.Object3D | null = null;
   // Feed-toss gesture: windup → underhand scatter → settle (0 = idle).
   private feedTossTime = 0;
   private static readonly FEED_TOSS_DURATION = 0.7;
@@ -1172,9 +1286,15 @@ export class SimplePlayer extends THREE.Group {
     }
     // The peer's own clip layer (LimbClip), seeded from the fresh clone's bind
     // pose before any pose touches it.
-    const clip = new LimbClip((k) =>
-      k === 'armL' ? armLBone : k === 'armR' ? armRBone : k === 'legL' ? legLBone : legRBone,
+    const clip = new LimbClip(
+      (k) =>
+        k === 'armL' ? armLBone : k === 'armR' ? armRBone : k === 'legL' ? legLBone : legRBone,
+      () => headBone,
     );
+    const peerWave: WaveFrame = { raise: 0, wag: 0, blend: 0, body: 0, dip: 0 };
+    const qWave = new THREE.Quaternion();
+    // The stride gain last put on armL (B3), so B6's counter-swing adds to it.
+    let strideArmL = 0;
     clip.capture();
 
     // Broadcast pose (0 foot, 1 swim, 2 ride, 3 air) + eased override weight, so
@@ -1374,7 +1494,8 @@ export class SimplePlayer extends THREE.Group {
           const ga = 1 + 0.6 * (g - 1);
           clip.onClip('legL', (g - 1) * clip.clipAngleX('legL') * gw);
           clip.onClip('legR', (g - 1) * clip.clipAngleX('legR') * gw);
-          clip.onClip('armL', (ga - 1) * clip.clipAngleX('armL') * gw);
+          strideArmL = (ga - 1) * clip.clipAngleX('armL') * gw;
+          clip.onClip('armL', strideArmL);
           clip.onClip('armR', (ga - 1) * clip.clipAngleX('armR') * gw);
           const dur = walk ? walk.getClip().duration || 1 : 1;
           const phase = walk ? (((walk.time % dur) + dur) % dur) / dur : 0;
@@ -1389,6 +1510,7 @@ export class SimplePlayer extends THREE.Group {
           const leanTarget = reduced ? 0 : THREE.MathUtils.lerp(0.07, 0.17, run) * gw;
           gaitLean += (leanTarget - gaitLean) * Math.min(1, 8 * dt);
         } else {
+          strideArmL = 0;
           gaitBob = 0;
           gaitRoll = 0;
           gaitLean += (0 - gaitLean) * Math.min(1, 8 * dt);
@@ -1397,15 +1519,19 @@ export class SimplePlayer extends THREE.Group {
       }
       model.position.y = baseY - (weight > 0.001 ? 0 : gaitBob);
       if (waveT > 0) {
+        // B6, mirrored from the local player: the same envelope and the same
+        // abduction on the peer's own cached rest; on foot, the body's roll,
+        // knee dip and the other arm's counter-swing too.
         waveT = Math.max(0, waveT - dt);
-        const elapsed = SimplePlayer.WAVE_DURATION - waveT;
-        const env = Math.min(Math.min(1, elapsed / 0.15), Math.min(1, waveT / 0.25));
-        if (armRBone) {
-          // Same rest-relative rule as the local player: the arm hangs at
-          // -PI, and -2.6 is a delta from it. Written raw it swung the hand
-          // down and behind the hip — peers waved backwards too.
-          armRBone.rotation.x = -Math.PI + -2.6 * env;
-          armRBone.rotation.z = Math.sin(elapsed * 14) * 0.4 * env;
+        const f = waveFrame(waveT > 0 ? WAVE_DURATION - waveT : 0, a11y.reducedMotion, peerWave);
+        if (armRBone && f.blend > 0) {
+          waveArmQuat(qWave, clip.rest.armR, 1, f);
+          armRBone.quaternion.copy(clip.clipOf('armR')).slerp(qWave, f.blend);
+        }
+        if (weight <= 0.001) {
+          if (f.body > 0) clip.onClip('armL', strideArmL + 0.12 * f.body);
+          model.rotation.z += 0.07 * f.body;
+          model.position.y -= 0.09 * 0.25 * f.dip;
         }
       }
     };
@@ -1417,7 +1543,7 @@ export class SimplePlayer extends THREE.Group {
       swimTang = tangSpeed;
     };
     const wave = (): void => {
-      waveT = SimplePlayer.WAVE_DURATION;
+      waveT = WAVE_DURATION;
     };
     const dispose = (): void => {
       mixer?.stopAllAction();
@@ -2031,10 +2157,11 @@ export class SimplePlayer extends THREE.Group {
   /** Cache the four limb bones once (used by the air pose + wave). */
   private ensureLimbBones(): void {
     if (!this.gltfModel) return;
-    if (this.armLBone && this.armRBone && this.legLBone && this.legRBone) return;
+    if (this.armLBone && this.armRBone && this.legLBone && this.legRBone && this.headBone) return;
     this.gltfModel.traverse((o) => {
       const b = o as THREE.Bone;
       if (!b.isBone) return;
+      if (o.name === 'head') this.headBone = this.headBone ?? b;
       if (o.name === 'legL') this.legLBone = b;
       else if (o.name === 'legR') this.legRBone = b;
       else if (o.name === 'armL') this.armLBone = b;
@@ -2042,9 +2169,22 @@ export class SimplePlayer extends THREE.Group {
     });
   }
 
-  /** Start the ~1.2s arm-raise wave gesture (triggered by the local Q wave). */
+  /** Start the 1.23 s wave (triggered by the local Q wave). */
   public triggerWave(): void {
-    this.waveTime = SimplePlayer.WAVE_DURATION;
+    this.waveTime = WAVE_DURATION;
+  }
+
+  /** True while the wave plays (GameScene hides the rod meanwhile). */
+  public isWaving(): boolean {
+    return this.waveTime > 0;
+  }
+
+  /** The world direction from the avatar toward the camera, set each frame
+   *  while waving: the head turns up to 0.4 rad toward it. Without it, no
+   *  head turn. */
+  public setWaveLookDir(v: THREE.Vector3): void {
+    this.waveLook.copy(v);
+    this.waveLookSet = v.lengthSq() > 1e-8;
   }
 
   /** The right-hand attachment point for held tools (rod, axe). Props parented
@@ -2126,9 +2266,11 @@ export class SimplePlayer extends THREE.Group {
     let waveElapsed = 0;
     if (this.waveTime > 0) {
       this.waveTime = Math.max(0, this.waveTime - dt);
-      waveElapsed = SimplePlayer.WAVE_DURATION - this.waveTime;
+      waveElapsed = WAVE_DURATION - this.waveTime;
       waveEnv = Math.min(Math.min(1, waveElapsed / 0.15), Math.min(1, this.waveTime / 0.25));
     }
+    // B6's envelope (the rigged path); the fallback body keeps the old one.
+    const wf = waveFrame(this.waveTime > 0 ? waveElapsed : 0, a11y.reducedMotion, this.waveF);
     const wag = Math.sin(waveElapsed * 14) * 0.4;
     // Feed toss: a quick windup behind the hip, an underhand scatter swing
     // forward-up, then the mixer reclaims the arm as the envelope fades. The
@@ -2212,7 +2354,8 @@ export class SimplePlayer extends THREE.Group {
       const air = aw > 0.001 ? aw : 0;
       // The gait layer's stride gain (B3, applyGait) joins the same sum.
       const g = this.gaitAdd;
-      const addArmL = -0.85 * air + (tossing ? tossLean : 0) + g.armL;
+      // B6: the other arm swings 0.12 rad back against the wave.
+      const addArmL = -0.85 * air + (tossing ? tossLean : 0) + g.armL + 0.12 * wf.body;
       const addArmR = -0.85 * air + g.armR;
       // B4's 80 ms leg absorb at touchdown: a small forward flex, 0.12 rad at
       // its peak (a straight leg lifts its sole 0.61·(1 − cos 0.12) = 0.004 u).
@@ -2227,21 +2370,12 @@ export class SimplePlayer extends THREE.Group {
       if (addLeg + g.legL !== 0) this.limbClip.onClip('legL', addLeg + g.legL);
       if (addLeg + g.legR !== 0) this.limbClip.onClip('legR', addLeg + g.legR);
       if (waveEnv > 0 && this.armRBone) {
-        // Bone convention, measured on the live rig: rotation.x = 0 points the
-        // limb UP, +/-PI points it DOWN (that IS the arm's rest), and -1.6 is
-        // forward-horizontal. The old target of -2.6 therefore sat 0.17rad off
-        // hanging — the arm never rose, it just wagged backwards at the hip,
-        // which is the "inverse wave". -0.55 raises it up and slightly forward.
-        // Interpolate from an explicit PI base rather than from the live value:
-        // near PI the Euler flips between +3.13 and -3.13 frame to frame, and
-        // lerping from a value whose SIGN flips makes the arm pick a different
-        // direction each frame.
-        // -2.6 was authored as a delta FROM that rest (the air pose just above
-        // correctly uses +=); written raw it is a +0.54 swing, so the arm went
-        // down-and-back. Applied to the rest it lands up-and-forward.
-        const REST_X = -Math.PI;
-        this.armRBone.rotation.x = REST_X + -2.6 * waveEnv;
-        this.armRBone.rotation.z = wag * waveEnv;
+        // B6: abduction composed on the cached REST quaternion (world law 2),
+        // slerped over the clip by the envelope's blend. Never an Euler write:
+        // the old forward raise (`-PI + -2.6·env` on rotation.x) put the hand
+        // in front of the face, hidden from the chase camera.
+        waveArmQuat(_waveQ, this.limbClip.rest.armR, 1, wf);
+        this.armRBone.quaternion.copy(this.limbClip.clipOf('armR')).slerp(_waveQ, wf.blend);
       } else if (tossEnv > 0) {
         if (this.armRBone) {
           // Blended against +PI — see SETTLE_REST (forward targets must not
@@ -2289,8 +2423,11 @@ export class SimplePlayer extends THREE.Group {
       }
       // Body dip rides the CACHED seating base (modelBaseY): an additive
       // per-frame offset on gltfModel.position.y would accumulate.
-      // writeBody turns it into the one gltfModel.position.y write.
-      this.bodyDip = Math.max(tossCrouch, chopCrouch);
+      // writeBody turns it into the one gltfModel.position.y write. The
+      // wave's anticipation dips the knees a quarter as deep (B6).
+      this.bodyDip = Math.max(tossCrouch, chopCrouch, 0.25 * wf.dip);
+      // The head turns toward the camera through the wave (B6).
+      this.applyWaveHead(wf.body);
     } else if (this.armPivots.length === 2 && this.legPivots.length === 2) {
       if (aw > 0.001) {
         this.armPivots[0].rotation.x += -0.85 * aw;
@@ -2444,7 +2581,9 @@ export class SimplePlayer extends THREE.Group {
         this.modelBaseY - 0.09 * this.bodyDip - this.gaitBob + (1 - this.landSy) * sole;
     }
     // Out of the water, the swim pitch and roll ease out with swimW (B5).
-    m.rotation.z = this.leanRoll + this.gaitRoll + this.swimExitRoll * this.swimW;
+    // The wave rolls the body 0.07 rad away from the raised arm (B6).
+    m.rotation.z =
+      this.leanRoll + this.gaitRoll + this.swimExitRoll * this.swimW + 0.07 * this.waveF.body;
     m.rotation.x = this.gaitLean + this.swimExitPitch * this.swimW;
   }
 
@@ -2477,6 +2616,21 @@ export class SimplePlayer extends THREE.Group {
     this.landVy += ((target - this.landSy) * w * w - 2 * z * w * this.landVy) * dt;
     this.landSy += this.landVy * dt;
     this.legAbsorbT = Math.max(0, this.legAbsorbT - dt);
+  }
+
+  /**
+   * The wave's head turn (B6): up to 0.4 rad of yaw toward the camera
+   * (setWaveLookDir), on the head's clip quaternion — the head rests at the
+   * identity, so a local Ry composed on the clip is rest-anchored.
+   */
+  private applyWaveHead(body: number): void {
+    const head = this.headBone;
+    const m = this.gltfModel;
+    if (!head || !m || body <= 0 || !this.waveLookSet) return;
+    m.getWorldQuaternion(_waveQ).invert();
+    const local = this._vecScratch.copy(this.waveLook).applyQuaternion(_waveQ);
+    const yaw = THREE.MathUtils.clamp(Math.atan2(local.x, local.z), -0.4, 0.4) * body;
+    head.quaternion.copy(this.limbClip.headClip).multiply(_waveQ.setFromAxisAngle(_waveAxisY, yaw));
   }
 
   /** The gait layer's state this frame (probes read it; B3). */

@@ -383,3 +383,111 @@ describe('swimming without pops (B5)', () => {
     },
   );
 });
+
+// ── A wave you can read from behind (B6) ────────────────────────────────────
+// The wave is an abduction composed on the arm's rest: the hand goes OUT and
+// up beside the head, where the chase camera behind the avatar sees it. The
+// local player and every peer run the same envelope (60 ms anticipation,
+// 220 ms raise with a 6% overshoot, 650 ms wag, 300 ms lower).
+
+describe('a wave you can read from behind (B6)', () => {
+  async function wavers() {
+    const player = new SimplePlayer();
+    const swimmer = player as unknown as LocalSwimmer;
+    await vi.waitFor(
+      () => {
+        if (!swimmer.gltfModel) throw new Error('player.glb not loaded yet');
+      },
+      { timeout: 20000, interval: 20 },
+    );
+    const R = 100;
+    player.setPlanet(new THREE.Vector3(), R);
+    player.setWorldPosition(new THREE.Vector3(0, R + 0.7, 0));
+    const peer = await SimplePlayer.createRemoteAvatar();
+    if (!peer) throw new Error('createRemoteAvatar');
+    const model = swimmer.gltfModel as THREE.Group;
+    for (let k = 0; k < 120; k++) {
+      player.update(1 / 60);
+      peer.update(1 / 60, 0);
+    }
+    return { player, peer, model };
+  }
+
+  /** Hand height (u) in the root's own frame over the wave, at 240 Hz. */
+  function heights(root: THREE.Object3D, verts: ReturnType<typeof handVerts>, step: () => void) {
+    const out: number[] = [];
+    for (let k = 0; k < Math.round(1.25 * 240); k++) {
+      step();
+      root.updateMatrixWorld(true);
+      out.push(root.worldToLocal(centroid(verts)).y);
+    }
+    return out;
+  }
+
+  test('local and peer: the same hand-height curve within 0.02 u', { timeout: 30000 }, async () => {
+    const { player, peer, model } = await wavers();
+    const local = handVerts(model, 'armR');
+    const remote = handVerts(peer.body, 'armR');
+    const head = bone(model, 'head');
+    player.triggerWave();
+    peer.wave();
+    expect(player.isWaving()).toBe(true);
+    const a = heights(player, local, () => player.update(1 / 240));
+    const b = heights(peer.body, remote, () => peer.update(1 / 240, 0));
+    expect(player.isWaving()).toBe(false);
+    // Ten samples across the 1.23 s.
+    for (let i = 1; i <= 10; i++) {
+      const k = Math.min(a.length - 1, Math.round(((i * 1.23) / 10) * 240) - 1);
+      expect(Math.abs(a[k] - b[k]), `sample ${i} (t ${(k + 1) / 240} s)`).toBeLessThan(0.02);
+    }
+    // The hand is up beside the head through the hold: above the head bone.
+    player.triggerWave();
+    for (let k = 0; k < Math.round(0.5 * 240); k++) player.update(1 / 240);
+    player.updateMatrixWorld(true);
+    const hand = player.worldToLocal(centroid(local));
+    const headY = player.worldToLocal(head.getWorldPosition(new THREE.Vector3())).y;
+    expect(hand.y, 'hand above the head bone mid-wave').toBeGreaterThan(headY);
+    expect(Math.abs(hand.x), 'out to the side, clear of the head').toBeGreaterThan(0.3);
+    peer.dispose();
+  });
+
+  test('the curve: a dip, a 6% overshoot, then the wag', { timeout: 30000 }, async () => {
+    const { player, model } = await wavers();
+    const verts = handVerts(model, 'armR');
+    player.triggerWave();
+    const h = heights(player, verts, () => player.update(1 / 240));
+    const at = (t: number) => h[Math.round(t * 240) - 1];
+    const start = h[0];
+    // The 60 ms anticipation dips the hand below where it started.
+    expect(Math.min(...h.slice(0, Math.round(0.06 * 240))), 'the dip').toBeLessThan(start - 0.003);
+    // The raise overshoots the hold height (raise 1, no wag at t = 0.28 s).
+    const hold = at(0.28);
+    const peak = Math.max(...h.slice(Math.round(0.06 * 240), Math.round(0.28 * 240)));
+    expect(peak, 'the overshoot').toBeGreaterThan(hold + 0.01);
+    // The wag moves the hand through the hold.
+    const wag = h.slice(Math.round(0.3 * 240), Math.round(0.9 * 240));
+    expect(Math.max(...wag) - Math.min(...wag), 'the wag').toBeGreaterThan(0.05);
+    // And it ends back on the clip.
+    expect(Math.abs(h[h.length - 1] - start)).toBeLessThan(0.02);
+  });
+
+  test('reduced motion: no wag and no overshoot', { timeout: 30000 }, async () => {
+    const { a11y } = await import('../Accessibility');
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      const { player, model } = await wavers();
+      const verts = handVerts(model, 'armR');
+      player.triggerWave();
+      const h = heights(player, verts, () => player.update(1 / 240));
+      const hold = h[Math.round(0.5 * 240)];
+      const raise = h.slice(Math.round(0.06 * 240), Math.round(0.28 * 240));
+      // The idle clip still breathes the shoulder by a few mm.
+      expect(Math.max(...raise), 'no overshoot').toBeLessThanOrEqual(hold + 0.004);
+      const wag = h.slice(Math.round(0.3 * 240), Math.round(0.9 * 240));
+      expect(Math.max(...wag) - Math.min(...wag), 'no wag').toBeLessThan(0.005);
+    } finally {
+      a11y.reducedMotion = was;
+    }
+  });
+});

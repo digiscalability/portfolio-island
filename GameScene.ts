@@ -362,6 +362,8 @@ export class GameScene extends THREE.Scene {
    *  at −playerHeight (SimplePlayer.loadGLTFCharacter). Juice.squash pivots
    *  there (B4). */
   private static readonly PLAYER_FEET_Y = -0.7;
+  /** The camera direction handed to the waving avatar (B6). */
+  private readonly _waveLook = new THREE.Vector3();
   /** A cat's paws, ~0.12 below its origin (buildCat's leg comment). */
   private static readonly CAT_FEET_Y = -0.12;
 
@@ -11663,6 +11665,17 @@ export class GameScene extends THREE.Scene {
       this.realGradeDone = true;
       this.gradeRealMaterials();
     }
+
+    // B6: while the avatar waves, its head turns toward the camera, and the
+    // rod (parented to the waving arm) folds away. The rod's own visibility
+    // stays fishing's: the wave only scales it.
+    const waving = this.player.isWaving();
+    if (waving) {
+      this.player.setWaveLookDir(
+        this._waveLook.copy(this.camera.position).sub(this.player.position),
+      );
+    }
+    if (this.playerRod) this.playerRod.scale.setScalar(waving ? 1e-4 : 1);
 
     // Update player physics
     this.player.update(deltaTime);
