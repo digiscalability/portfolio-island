@@ -12,11 +12,26 @@ import { beforeAll, describe, expect, test, vi } from 'vitest';
 
 import { GameScene } from '../GameScene';
 
+/** A coin record (B9): the transforms the old per-coin Mesh carried, plus a
+ *  plain `mesh` stand-in for the probes. */
+interface CoinRec {
+  pos: THREE.Vector3;
+  quat: THREE.Quaternion;
+  home: THREE.Vector3;
+  respawnAt: number;
+  trail?: boolean;
+  collectT0?: number;
+  idx: number;
+  spin: number;
+  mesh: { name: string; position: THREE.Vector3; visible: boolean };
+}
+
 interface Coins {
   setOnMeadowCoin(cb: ((e: { trail: boolean }) => void) | null): void;
+  setOnCoinCollected(cb: (total: number) => void): void;
   addCoins(n: number): void;
   spendCoins(n: number): boolean;
-  collectMeadowCoin(c: { mesh: THREE.Mesh; respawnAt: number; trail?: boolean }, t: number): void;
+  collectMeadowCoin(c: CoinRec, t: number): void;
   trailCoinsLeft: number;
   coinsCollected: number;
 }
@@ -31,11 +46,19 @@ beforeAll(() => {
   init.mockRestore();
 });
 
-const coin = (trail = false): { mesh: THREE.Mesh; respawnAt: number; trail?: boolean } => ({
-  mesh: new THREE.Mesh(),
-  respawnAt: 0,
-  trail,
-});
+const coin = (trail = false): CoinRec => {
+  const pos = new THREE.Vector3(0, 76, 0);
+  return {
+    pos,
+    quat: new THREE.Quaternion(),
+    home: pos.clone(),
+    respawnAt: 0,
+    trail,
+    idx: 0,
+    spin: 0,
+    mesh: { name: 'coin_0', position: pos, visible: true },
+  };
+};
 
 describe('setOnMeadowCoin fires at the pickup, not in addCoins (P2-B7)', () => {
   test('a meadow coin and a trail coin fire it, with trail set', () => {
@@ -63,5 +86,52 @@ describe('setOnMeadowCoin fires at the pickup, not in addCoins (P2-B7)', () => {
     const before = scene.coinsCollected;
     scene.collectMeadowCoin(coin(), 20);
     expect(scene.coinsCollected).toBe(before + 1);
+  });
+});
+
+describe('a pickup says where it popped: window ds:coin (B9 to D11)', () => {
+  test('once per pickup, value 1, before the count moves; meadow and trail alike', () => {
+    const order: string[] = [];
+    const seen: Array<{ x: number; y: number; value: number }> = [];
+    const onCoin = (e: Event) => {
+      order.push('ds:coin');
+      seen.push((e as CustomEvent).detail);
+    };
+    window.addEventListener('ds:coin', onCoin);
+    scene.setOnCoinCollected(() => order.push('count'));
+    scene.collectMeadowCoin(coin(), 30);
+    scene.trailCoinsLeft = 2;
+    scene.collectMeadowCoin(coin(true), 31);
+    window.removeEventListener('ds:coin', onCoin);
+    expect(order).toEqual(['ds:coin', 'count', 'ds:coin', 'count']);
+    expect(seen).toHaveLength(2);
+    for (const d of seen) {
+      expect(d.value).toBe(1);
+      expect(Object.keys(d).sort()).toEqual(['value', 'x', 'y']);
+    }
+  });
+
+  test('addCoins and spendCoins dispatch nothing', () => {
+    const cb = vi.fn();
+    window.addEventListener('ds:coin', cb);
+    scene.addCoins(3);
+    scene.spendCoins(1);
+    window.removeEventListener('ds:coin', cb);
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  test('the pickup is saved (ds_coins) and starts the pop from where it lies', () => {
+    const c = coin();
+    c.pos.set(1, 76, 2); // the magnet has pulled it toward the visitor
+    const before = scene.coinsCollected;
+    scene.collectMeadowCoin(c, 40);
+    expect(localStorage.getItem('ds_coins')).toBe(String(before + 1));
+    expect(c.collectT0).toBe(40);
+    expect(c.home.toArray()).toEqual([1, 76, 2]);
+    expect(c.respawnAt).toBe(160); // a meadow coin respawns after 120 s
+    const t = coin(true);
+    scene.trailCoinsLeft = 3;
+    scene.collectMeadowCoin(t, 41);
+    expect(t.respawnAt).toBe(0); // trail coins are one-shot
   });
 });

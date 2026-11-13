@@ -67,7 +67,9 @@ const fnv1a = (s: string): string => {
 /** The private builder surface this suite drives. */
 interface Builders {
   island: Island;
-  coins: Array<{ mesh: THREE.Object3D; respawnAt: number; trail?: boolean }>;
+  // B9: coin records, drawn later as one InstancedMesh (pos and quat are
+  // what the old per-coin Meshes carried).
+  coins: Array<{ pos: THREE.Vector3; quat: THREE.Quaternion; respawnAt: number; trail?: boolean }>;
   dustPuffs: unknown[];
   nameTags: Array<{ target: { name: string } }>;
   trailCoinsLeft: number;
@@ -145,13 +147,13 @@ const build = (arrived: boolean): Census => {
     Math.random = real;
     spy.mockRestore();
   }
-  const row = (o: THREE.Object3D): string => {
-    const p = o.position;
-    const q = o.quaternion;
+  const row = (c: { pos: THREE.Vector3; quat: THREE.Quaternion }): string => {
+    const p = c.pos;
+    const q = c.quat;
     return `${v5(p.x)},${v5(p.y)},${v5(p.z)}|${v5(q.x)},${v5(q.y)},${v5(q.z)},${v5(q.w)}`;
   };
-  const coinRows = scene.coins.filter((c) => !c.trail).map((c) => row(c.mesh));
-  const trailRows = scene.coins.filter((c) => c.trail).map((c) => row(c.mesh));
+  const coinRows = scene.coins.filter((c) => !c.trail).map(row);
+  const trailRows = scene.coins.filter((c) => c.trail).map(row);
   const pins = scene.nameTags.map((t) => t.target.name);
   const placement = fnv1a(
     [
@@ -164,7 +166,7 @@ const build = (arrived: boolean): Census => {
   const trailVillager = scene.getTrailVillager();
   const villager = scene.island.npcTargets.find((t) => t.name === trailVillager);
   const trail = scene.coins.filter((c) => c.trail);
-  const last = trail.length ? trail[trail.length - 1].mesh.position : null;
+  const last = trail.length ? trail[trail.length - 1].pos : null;
   const lastTrailToVillager = last && villager ? last.distanceTo(villager.position) : null;
   return {
     ...census,
