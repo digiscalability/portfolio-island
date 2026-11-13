@@ -165,3 +165,81 @@ describe('a pickup says where it popped: window ds:coin (B9 to D11)', () => {
     expect(t.respawnAt).toBe(0); // trail coins are one-shot
   });
 });
+
+describe('the pop faces the camera and stays small on screen (B9 play fix)', () => {
+  const px = (scale: number, d: number, fov: number, h: number) =>
+    (0.6 * scale * h) / (2 * d * Math.tan(THREE.MathUtils.degToRad(fov) / 2));
+
+  test('next to the camera: capped to COIN_POP_MAX_PX and face-on, never a slab', () => {
+    const at = new THREE.Vector3(0.3, 77.75, 0.2);
+    const cam = new THREE.Vector3(1.2, 78.3, 2.1); // about 2.2 u away, the 21:00 case
+    const q = new THREE.Quaternion();
+    const d = cam.distanceTo(at);
+    for (const h of [900, 844]) {
+      const s = GameScene.coinPopFit(at, cam, 50, h, 1.35, q);
+      expect(px(1.35, d, 50, h)).toBeGreaterThan(GameScene.COIN_POP_MAX_PX * 2);
+      expect(px(s, d, 50, h)).toBeCloseTo(GameScene.COIN_POP_MAX_PX, 5);
+      const face = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+      const toCam = cam.clone().sub(at).normalize();
+      expect(face.dot(toCam)).toBeCloseTo(1, 6); // the disc's face, not its rim
+    }
+  });
+
+  test('at the chase distance a smaller pop is left alone; no viewport only turns it', () => {
+    const at = new THREE.Vector3(0, 77.75, 0);
+    const cam = new THREE.Vector3(0, 82, 14);
+    const q = new THREE.Quaternion();
+    expect(GameScene.coinPopFit(at, cam, 50, 900, 1.35, q)).toBe(1.35);
+    expect(px(1.35, cam.distanceTo(at), 50, 900)).toBeLessThan(GameScene.COIN_POP_MAX_PX);
+    expect(GameScene.coinPopFit(at, new THREE.Vector3(0, 78, 1), 50, 0, 1.2, q)).toBe(1.2);
+  });
+
+  test('the live instance: the popped coin is face-on and inside the cap; sparkles clear its disc', () => {
+    const sc = scene as unknown as {
+      camera?: THREE.PerspectiveCamera;
+      coins: CoinRec[];
+      coinMesh: THREE.InstancedMesh | null;
+      buildCoinInstances(): void;
+      writeCoinInstances(t: number, q: THREE.Quaternion | null): void;
+      spawnCoinSparks(c: CoinRec, t: number): void;
+      coinSparks: Array<{ t0: number; at: THREE.Vector3; vel: THREE.Vector3 }>;
+    };
+    const savedCam = sc.camera;
+    const savedCoins = sc.coins;
+    const c = coin();
+    sc.coins = [c];
+    sc.coinMesh = null;
+    const cam = new THREE.PerspectiveCamera(50, 390 / 844, 0.1, 500);
+    cam.position.set(0.9, 78.2, 1.9);
+    cam.lookAt(0, 77, 0);
+    cam.updateMatrixWorld();
+    sc.camera = cam;
+    sc.buildCoinInstances();
+    scene.collectMeadowCoin(c, 100);
+    sc.spawnCoinSparks(c, 100);
+    sc.writeCoinInstances(100.2, cam.quaternion); // hanging above the head
+    const m = new THREE.Matrix4();
+    sc.coinMesh!.getMatrixAt(0, m);
+    const p = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const s = new THREE.Vector3();
+    m.decompose(p, q, s);
+    const d = cam.position.distanceTo(p);
+    expect(s.x).toBeGreaterThan(0);
+    expect(px(s.x, d, cam.fov, window.innerHeight)).toBeLessThanOrEqual(
+      GameScene.COIN_POP_MAX_PX + 1e-6,
+    );
+    const face = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+    expect(face.dot(cam.position.clone().sub(p).normalize())).toBeGreaterThan(0.999);
+    // Each sparkle starts outside the popped disc (0.3 x 1.35) plus its own
+    // radius (0.3 x 0.28), so no rim shows through the face.
+    const popAt = c.home.clone().addScaledVector(c.home.clone().normalize(), 1.75);
+    expect(sc.coinSparks).toHaveLength(6);
+    for (const sp of sc.coinSparks) {
+      expect(sp.at.distanceTo(popAt)).toBeGreaterThan(0.3 * 1.35 + 0.3 * 0.28);
+    }
+    sc.coins = savedCoins;
+    sc.coinMesh = null;
+    sc.camera = savedCam;
+  });
+});
