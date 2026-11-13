@@ -29,6 +29,7 @@
         "fxBudget",
         "probeSafety",
         "probeHitch",
+        "probeRows",
         "astSlice"
       ],
       "testFiles": ["test/helpers/networkStubs.ts", "test/helpers/astSlice.ts"]
