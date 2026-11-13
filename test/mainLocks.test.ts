@@ -1951,3 +1951,16 @@ describe('wave 4 P2-A11: hall exhibits, the room look and the Leave label', () =
     expect(s).toContain('if (turn !== 0) this.scene.setInteriorLook?.(-turn);');
   });
 });
+
+describe('wave 4 P2-A14: the mirror pose follows the shop and Customise', () => {
+  test('an equip turns it on and the shop close off; Customise releases on its div', () => {
+    const s = stripped('main-simple.ts');
+    const shop = bodyOf(s, 'private openShop(): void {');
+    const on = shop.indexOf('this.scene.getOrbitCamera().setMirrorPose(true);');
+    expect(on).toBeGreaterThan(shop.indexOf("track('hat_equipped', { hat: id });"));
+    expect(shop).toContain('this.scene.getOrbitCamera().setMirrorPose(false);');
+    expect(bodyOf(s, 'private openCustomize(): void {')).toContain('this.customizeMirror = true;');
+    expect(s).toContain("if (this.customizeMirror && !this.ui['customizeDiv']) {");
+    expect(s).not.toMatch(/ds:modal[^\n]*setMirrorPose/);
+  });
+});

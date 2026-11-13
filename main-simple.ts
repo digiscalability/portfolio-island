@@ -3093,6 +3093,11 @@ export class SimpleApp {
     // hint is stale. Read here, not from 'ds:modal', which does not fire for
     // a journal opened over another modal.
     if (!this.journalSeen && this.ui.panels.isOpen('journal')) this.journalSeen = true;
+    // P2-A14: Customise closed: the follow pose comes back.
+    if (this.customizeMirror && !this.ui['customizeDiv']) {
+      this.customizeMirror = false;
+      this.scene.getOrbitCamera().setMirrorPose(false);
+    }
     // P2-A6: the kiosk's 1.0 s lock runs from the shop panel's close, and a
     // finished cast forgets an E held during its wait.
     const shopOpen = this.ui.panels.isOpen('shop');
@@ -6857,10 +6862,13 @@ export class SimpleApp {
           this.multiplayer?.setHat(id as HatId);
           saveProfile({ hat: id, ownedHats: [...this.ownedHats] });
           track('hat_equipped', { hat: id });
+          // P2-A14: the camera comes round to the front so the hat shows.
+          this.scene.getOrbitCamera().setMirrorPose(true);
           render();
         },
         () => {
-          /* closed */
+          // The follow pose returns with the shop's close (P2-A14).
+          this.scene.getOrbitCamera().setMirrorPose(false);
         },
       );
     };
@@ -7733,7 +7741,16 @@ export class SimpleApp {
         saveProfile({ hat: id, ownedHats: [...this.ownedHats] });
       },
     });
+    // P2-A14: Customise shows the avatar from the front. It is a sheet with
+    // no close callback (and no ds:modal), so the frame tick lets go once
+    // its div is gone.
+    if (this.ui['customizeDiv']) {
+      this.customizeMirror = true;
+      this.scene.getOrbitCamera().setMirrorPose(true);
+    }
   }
+  /** P2-A14: Customise holds the mirror pose until its sheet closes. */
+  private customizeMirror = false;
 
   /** Persist the current body colours to localStorage + the cloud profile. */
   private saveAppearance(): void {

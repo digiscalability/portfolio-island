@@ -968,3 +968,56 @@ describe('the interest yaw (for P2-B7)', () => {
     expect(Math.abs(heading(r.camera) - h1)).toBeLessThan(0.5);
   });
 });
+
+describe('the mirror pose: a hat shows from the front (P2-A14)', () => {
+  /** dot(camera look direction, avatar facing): under -0.3 is the front hemisphere. */
+  const frontness = (camera: THREE.PerspectiveCamera, player: FakePlayer): number =>
+    camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize().dot(player.facing);
+
+  test('on: the camera comes round to the front three-quarter in 0.6 s; off: back behind', () => {
+    a11y.reducedMotion = false;
+    const { camera, player, cam } = rig();
+    player.facing.set(0, 0, -1);
+    cam.recentre();
+    run(cam, 0.5, 1 / 60);
+    expect(frontness(camera, player)).toBeGreaterThan(0.9); // behind, looking where they face
+    cam.setMirrorPose(true);
+    expect(cam.isMirrorPose()).toBe(true);
+    run(cam, 0.6, 1 / 60);
+    const f = frontness(camera, player);
+    expect(f).toBeLessThan(-0.3);
+    expect(f).toBeCloseTo(-Math.cos(Math.PI / 6), 1);
+    cam.setMirrorPose(true); // a second equip keeps the saved yaw
+    cam.setMirrorPose(false);
+    expect(cam.isMirrorPose()).toBe(false);
+    run(cam, 0.8, 1 / 60);
+    expect(frontness(camera, player)).toBeGreaterThan(0.9);
+  });
+
+  test('a manual look cancels it in place: off then leaves the view alone', () => {
+    a11y.reducedMotion = false;
+    const { camera, player, cam } = rig();
+    cam.setMirrorPose(true);
+    run(cam, 0.6, 1 / 60);
+    cam.setInput(0.3, 0);
+    expect(cam.isMirrorPose()).toBe(false);
+    run(cam, 0.3, 1 / 60);
+    const h = heading(camera);
+    cam.setMirrorPose(false);
+    run(cam, 0.5, 1 / 60);
+    expect(Math.abs(heading(camera) - h)).toBeLessThan(0.5);
+    void player;
+  });
+
+  test('reduced motion cuts both ways, with no frames in between', () => {
+    a11y.reducedMotion = true;
+    const { camera, player, cam } = rig();
+    player.facing.set(0, 0, -1);
+    cam.recentre();
+    cam.setMirrorPose(true);
+    expect(frontness(camera, player)).toBeLessThan(-0.3);
+    cam.setMirrorPose(false);
+    expect(frontness(camera, player)).toBeGreaterThan(0.9);
+    a11y.reducedMotion = false;
+  });
+});
