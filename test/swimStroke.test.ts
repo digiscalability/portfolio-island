@@ -236,3 +236,150 @@ describe('the swim stroke is a front crawl, measured on player.glb', () => {
     peer.dispose();
   });
 });
+
+// ── Swimming without pops (B5) ──────────────────────────────────────────────
+// MOT-08 measured one-frame limb or pitch changes of 126° at entry, 136° at a
+// dive, 48° at a turn-back and 151° at the exit: the swim pose switched on and
+// off in one frame, the tread/stroke gate was a hard 0.4 u/s, and the exit
+// wrote `rotation.x = 0` on all four limbs (straight UP on this rig). Now the
+// pose blends from the clip by swimW and between tread and stroke by strokeW.
+
+interface SwimRig {
+  gltfModel: THREE.Group | null;
+}
+
+/** Quaternion angle between two orientations, degrees. */
+const angDeg = (a: THREE.Quaternion, b: THREE.Quaternion): number =>
+  (2 * Math.acos(Math.min(1, Math.abs(a.dot(b)))) * 180) / Math.PI;
+
+describe('swimming without pops (B5)', () => {
+  test(
+    'wade in, stroke, dive, turn back and walk out: no limb or pitch jumps 25° in a frame',
+    { timeout: 60000 },
+    async () => {
+      const player = new SimplePlayer();
+      const rig = player as unknown as SwimRig;
+      await vi.waitFor(
+        () => {
+          if (!rig.gltfModel) throw new Error('player.glb not loaded yet');
+        },
+        { timeout: 20000, interval: 20 },
+      );
+      const model = rig.gltfModel as THREE.Group;
+      const R = 100;
+      // Land to the west, sea to the east of x = 0.04 (seabed 2.5 u down).
+      const sea = (d: THREE.Vector3) => d.x > 0.04;
+      player.setPlanet(new THREE.Vector3(), R);
+      player.setGroundSampler((d) => (sea(d) ? R - 2.5 : R));
+      player.setWaterSampler((d) => ({ surface: R, isWater: sea(d) }));
+      player.setWorldPosition(new THREE.Vector3(0, R + 0.7, 0));
+      player.setSwimIntent(true);
+      const names = ['armL', 'armR', 'legL', 'legR'] as const;
+      const bones = names.map((n) => bone(model, n));
+      const prevQ = bones.map((b) => b.quaternion.clone());
+      const prevBody = new THREE.Quaternion();
+      const bodyQ = () => {
+        model.updateMatrixWorld(true);
+        return model
+          .getWorldQuaternion(new THREE.Quaternion())
+          .premultiply(player.getWorldQuaternion(new THREE.Quaternion()).invert());
+      };
+      prevBody.copy(bodyQ());
+      let worst = 0;
+      let where = '';
+      let wasIn = false;
+      let entered = false;
+      let exited = false;
+      const dir = new THREE.Vector3();
+      const step = (east: number, label: string) => {
+        const n = player.getSurfaceNormal();
+        dir.set(0, 0, -1).cross(n).normalize().multiplyScalar(east);
+        player.setMovementVector(dir);
+        if (east !== 0) player.setRotation(east > 0 ? Math.PI / 2 : -Math.PI / 2);
+        player.update(1 / 60);
+        if (player.isInWater() && !wasIn) entered = true;
+        if (!player.isInWater() && wasIn) exited = true;
+        wasIn = player.isInWater();
+        bones.forEach((b, i) => {
+          const d = angDeg(b.quaternion, prevQ[i]);
+          if (d > worst) {
+            worst = d;
+            where = `${label} ${names[i]}`;
+          }
+          prevQ[i].copy(b.quaternion);
+        });
+        const q = bodyQ();
+        const d = angDeg(q, prevBody);
+        if (d > worst) {
+          worst = d;
+          where = `${label} body`;
+        }
+        prevBody.copy(q);
+      };
+      for (let k = 0; k < 60; k++) step(0, 'stand');
+      for (let k = 0; k < 240; k++) step(1, 'wade in and stroke');
+      expect(entered, 'reached the water').toBe(true);
+      for (let k = 0; k < 60; k++) step(0.05, 'tread'); // under the 0.3 u/s gate
+      player.setDiveIntent(true);
+      for (let k = 0; k < 60; k++) step(1, 'dive');
+      player.setDiveIntent(false);
+      for (let k = 0; k < 120; k++) step(1, 'surface');
+      for (let k = 0; k < 600; k++) step(-1, 'turn back and walk out');
+      expect(exited, 'walked out').toBe(true);
+      for (let k = 0; k < 60; k++) step(0, 'stand');
+      expect(worst, `largest one-frame change (deg), at ${where}`).toBeLessThan(25);
+    },
+  );
+
+  test(
+    'local and peer hands trace the same stroke (within 0.02 u)',
+    { timeout: 30000 },
+    async () => {
+      const player = new SimplePlayer();
+      const swimmer = player as unknown as LocalSwimmer;
+      await vi.waitFor(
+        () => {
+          if (!swimmer.gltfModel) throw new Error('player.glb not loaded yet');
+        },
+        { timeout: 20000, interval: 20 },
+      );
+      const peer = await SimplePlayer.createRemoteAvatar();
+      expect(peer).not.toBeNull();
+      if (!peer) return;
+      const model = swimmer.gltfModel as THREE.Group;
+      const hands = { L: handVerts(model, 'armL'), R: handVerts(model, 'armR') };
+      const peerHands = { L: handVerts(peer.body, 'armL'), R: handVerts(peer.body, 'armR') };
+      const local = () => swimmer.applySwimPose(1 / 240, true, 4.4);
+      peer.setPose(1);
+      peer.setSwimMotion(0, 4.4);
+      const remote = () => peer.update(1 / 240, 4.4);
+      for (let k = 0; k < 960; k++) {
+        local();
+        remote();
+      }
+      // Hand positions in each swimmer's own root frame, over 2 s of stroke.
+      const path = (root: THREE.Object3D, h: typeof hands, step: () => void) => {
+        const out: Record<'L' | 'R', THREE.Vector3[]> = { L: [], R: [] };
+        for (let k = 0; k < 480; k++) {
+          step();
+          root.updateMatrixWorld(true);
+          for (const side of ['L', 'R'] as const)
+            out[side].push(root.worldToLocal(centroid(h[side])));
+        }
+        return out;
+      };
+      const a = path(player, hands, local);
+      const b = path(peer.body, peerHands, remote);
+      // The clocks start from each rig's own arm angle, so compare the paths as
+      // shapes: every local sample lies within 0.02 u of the peer's path, and
+      // the other way round.
+      const hausdorff = (p: THREE.Vector3[], q: THREE.Vector3[]) =>
+        Math.max(...p.map((x) => Math.min(...q.map((y) => x.distanceTo(y)))));
+      for (const side of ['L', 'R'] as const) {
+        expect(hausdorff(a[side], b[side]), `${side} hand, local vs peer (u)`).toBeLessThan(0.02);
+        expect(hausdorff(b[side], a[side]), `${side} hand, peer vs local (u)`).toBeLessThan(0.02);
+      }
+      peer.dispose();
+    },
+  );
+});
