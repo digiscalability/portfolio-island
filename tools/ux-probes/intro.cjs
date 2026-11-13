@@ -197,8 +197,44 @@ async function intro(t) {
       const second = await page.evaluate(WATCH_VEIL);
       ui.veil = { firstUse: first, secondUse: second };
     } else ui.veil = { note: 'no ui.fadeThrough on this build' };
+    // D11 (wave-4 rows list): the coin chip through a count-up, and the
+    // flight a ds:coin starts (a synthetic one: D11 listens for B9's event).
+    if (await page.evaluate(() => window.__app.ui.isWelcomeVisible())) await lib.dismissWelcome(page).catch(() => {});
+    await lib.sleep(400);
+    out.coinChip = await page.evaluate(COIN_COUNT_UP);
+    // --selftest-flight: a stand-in for D11's flight (a 22 px coin to the chip
+    // over 420 ms), so the flight row is shown to judge a real one.
+    if (t.args.selftestFlight)
+      await page.evaluate(() => {
+        window.addEventListener('ds:coin', (e) => {
+          const chip = window.__app.ui.coinDiv.getBoundingClientRect();
+          const d = document.createElement('div');
+          Object.assign(d.style, { position: 'fixed', width: '22px', height: '22px', borderRadius: '50%', background: '#ffd34a', zIndex: 99999, left: `${e.detail.x - 11}px`, top: `${e.detail.y - 11}px` });
+          document.body.appendChild(d);
+          const t0 = performance.now();
+          const step = () => {
+            const k = Math.min(1, (performance.now() - t0) / 420);
+            d.style.left = `${e.detail.x + (chip.left + chip.width / 2 - e.detail.x) * k - 11}px`;
+            d.style.top = `${e.detail.y + (chip.top + chip.height / 2 - e.detail.y) * k - 11}px`;
+            if (k < 1) requestAnimationFrame(step);
+            else setTimeout(() => d.remove(), 200);
+          };
+          requestAnimationFrame(step);
+        });
+      });
+    out.coinFlight = t.args.reducedMotion ? null : await page.evaluate(COIN_FLIGHT);
     out.ui = ui;
     t.data[prof] = out;
+    const cc = out.coinChip;
+    t.check(`${prof}: the coin chip's width stays constant through a count-up, 11 to 18 (D11)`, cc && cc.texts.length >= 2 ? cc.spreadPx <= 0.5 : null, cc ? `${cc.spreadPx} px spread, widths ${cc.widths.join('/')} (${cc.texts.join(' > ')})${cc.texts.length < 2 ? '; no count-up seen' : ''}` : 'no coin chip', '<= 0.5 px (layout width; tabular-nums)');
+    if (!t.args.reducedMotion) {
+      const f = out.coinFlight;
+      t.check(`${prof}: a ds:coin's flight ends on the coin chip (D11)`, f && f.flew ? f.endsOnChip : null, f ? (f.flew ? { end: f.end, chip: f.chip, ms: f.lastMs } : f.why) : 'not run', 'the flying coin ends inside the chip (+-4 px) (null: no flight on this build)');
+    } else {
+      // D11's reduced-motion rule: an opacity-only ramp of about 120 ms.
+      const rm = [ui.menu, ui.zonePanel].filter((x) => x && x.shown);
+      t.check(`${prof}: reduced motion ramps the menu and a panel in about 120 ms (D11)`, rm.length ? rm.every((x) => x.rampMs !== null && x.rampMs >= 80 && x.rampMs <= 200 && !x.transformed) : null, rm.map((x) => ({ firstFrameOpacity: x.firstFrameOpacity, rampMs: x.rampMs, transformed: x.transformed })), '80-200 ms, opacity only (main: instant)');
+    }
     t.log(`${prof}: ${JSON.stringify({ flight: out.flight, loader: out.loader, over50AfterFade: out.over50AfterFade, welcome: out.welcome, ui })}`);
     // A10's bar is desktop's; the phone's calm entry is reported.
     const flew = out.flight.flewIn && out.flight.visibleFrames > 5;
@@ -207,6 +243,72 @@ async function intro(t) {
     t.check(`${prof}: the welcome card appears`, !!out.welcome, out.welcome ? `${out.welcome.visibleMs} ms, first-frame opacity ${out.welcome.firstFrameOpacity}` : 'no card', 'reported');
   }
 }
+
+/** The coin chip's layout width (offsetWidth: the pop's transform aside) per rAF while 11 counts up to 18. */
+const COIN_COUNT_UP = () =>
+  new Promise((res) => {
+    const a = window.__app;
+    const sc = a.scene;
+    const ui = a.ui;
+    if (typeof sc.setCoins !== 'function' || typeof ui.updateCoinCounter !== 'function') return res(null);
+    sc.setCoins(11);
+    ui.updateCoinCounter(11);
+    setTimeout(() => {
+      const el = ui.coinDiv;
+      if (!el || !el.isConnected) return res(null);
+      const widths = [];
+      const texts = [];
+      sc.addCoins(7);
+      ui.updateCoinCounter(sc.getCoinsCollected());
+      const t0 = performance.now();
+      const tick = () => {
+        widths.push(el.offsetWidth);
+        const tx = (el.textContent || '').trim();
+        if (texts[texts.length - 1] !== tx) texts.push(tx);
+        if (performance.now() - t0 < 1000) requestAnimationFrame(tick);
+        else res({ widths: [...new Set(widths)], spreadPx: Math.max(...widths) - Math.min(...widths), texts: texts.slice(0, 10) });
+      };
+      requestAnimationFrame(tick);
+    }, 600);
+  });
+
+/**
+ * Dispatch one ds:coin {x, y, value: 1} at the screen's centre-left and track
+ * any 14-32 px element that appears and moves in the next 900 ms: its last
+ * rect is the flight's end, judged against the chip's rect (+-4 px).
+ */
+const COIN_FLIGHT = () =>
+  new Promise((res) => {
+    const ui = window.__app.ui;
+    const chipEl = ui.coinDiv;
+    if (!chipEl || !chipEl.isConnected) return res({ flew: false, why: 'no coin chip' });
+    const seen = new Map();
+    const mo = new MutationObserver((ms) => {
+      for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1 && !seen.has(n)) seen.set(n, []);
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+    const t0 = performance.now();
+    window.dispatchEvent(new CustomEvent('ds:coin', { detail: { x: Math.round(innerWidth * 0.4), y: Math.round(innerHeight * 0.55), value: 1 } }));
+    const tick = () => {
+      const now = performance.now() - t0;
+      for (const [n, rows] of seen) {
+        if (!n.isConnected) continue;
+        const r = n.getBoundingClientRect();
+        if (r.width >= 14 && r.width <= 32 && r.height >= 14 && r.height <= 32) rows.push({ t: Math.round(now), x: r.left + r.width / 2, y: r.top + r.height / 2 });
+      }
+      if (now < 900) requestAnimationFrame(tick);
+      else {
+        mo.disconnect();
+        const moved = [...seen.values()].filter((rows) => rows.length >= 3 && Math.hypot(rows[rows.length - 1].x - rows[0].x, rows[rows.length - 1].y - rows[0].y) > 20);
+        if (!moved.length) return res({ flew: false, why: 'no element flew after ds:coin' });
+        const rows = moved.sort((p, q) => q.length - p.length)[0];
+        const last = rows[rows.length - 1];
+        const c = chipEl.getBoundingClientRect();
+        res({ flew: true, end: [Math.round(last.x), Math.round(last.y)], lastMs: last.t, chip: [Math.round(c.left), Math.round(c.top), Math.round(c.width), Math.round(c.height)], endsOnChip: last.x >= c.left - 4 && last.x <= c.right + 4 && last.y >= c.top - 4 && last.y <= c.bottom + 4 });
+      }
+    };
+    requestAnimationFrame(tick);
+  });
 
 /** The veil's opacity per rAF across one fadeThrough: when it starts, when it is black, how long the ramp took. */
 const WATCH_VEIL = () =>
