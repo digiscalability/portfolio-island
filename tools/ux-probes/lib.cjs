@@ -446,8 +446,51 @@ const SILENT_TTS = `(() => {
   } catch (e) {}
 })();`;
 
+// One page-side reader for GameScene.coins, in either shape: today's per-coin
+// Mesh ({mesh, trail?}, standing = mesh.visible and no userData.collectT0) or
+// B9's instanced record ({pos, quat, home, respawnAt, trail?, collectT0?, idx},
+// no mesh; standing = no pending respawn and no collect in flight). Probes
+// read coins only through window.__uxCoin, so a B9 build reads the same as
+// fcaa649's. list() is null when the scene has no coin array or any entry has
+// neither shape, so a probe records null instead of throwing.
+const COIN_READ = `(() => {
+  const isV = (v) => !!v && typeof v.x === 'number' && typeof v.y === 'number' && typeof v.z === 'number';
+  const shapeOf = (c) => (!c ? null : c.mesh && isV(c.mesh.position) ? 'mesh' : isV(c.pos) ? 'b9' : null);
+  const posOf = (c) => { const s = shapeOf(c); return s === 'mesh' ? c.mesh.position : s === 'b9' ? c.pos : null; };
+  const standing = (c) => {
+    const s = shapeOf(c);
+    if (s === 'mesh') return !!c.mesh.visible && typeof (c.mesh.userData || {}).collectT0 !== 'number';
+    if (s === 'b9') return !(c.respawnAt > 0) && typeof c.collectT0 !== 'number';
+    return null;
+  };
+  const order = (c, i) => {
+    if (c && typeof c.idx === 'number') return c.idx;
+    const m = /_([0-9]+)$/.exec((c && c.mesh && c.mesh.name) || '');
+    return m ? +m[1] : i;
+  };
+  // [{i, c, p, order}] with p a fresh Vector3. trail: true (trail coins only),
+  // false (meadow only) or undefined (both); all: true keeps collected coins.
+  const list = (sc, opts) => {
+    const o = opts || {};
+    const cs = sc && sc.coins;
+    if (!Array.isArray(cs)) return null;
+    const V = sc.camera && sc.camera.position && sc.camera.position.constructor;
+    const out = [];
+    for (let i = 0; i < cs.length; i++) {
+      const c = cs[i];
+      if (!shapeOf(c)) return null;
+      if (o.trail !== undefined && !!c.trail !== !!o.trail) continue;
+      if (!o.all && !standing(c)) continue;
+      const q = posOf(c);
+      out.push({ i, c, p: V ? new V(q.x, q.y, q.z) : { x: q.x, y: q.y, z: q.z }, order: order(c, i) });
+    }
+    return out;
+  };
+  window.__uxCoin = { shapeOf, posOf, standing, order, list };
+})();`;
+
 function baseInitScripts({ noKhr = false, clock = false, recaptchaStub = true } = {}) {
-  return [WS_STUB, SILENT_TTS, ...(recaptchaStub ? [RECAPTCHA_STUB] : []), RECORDER, ...(noKhr ? [NO_KHR] : []), ...(clock ? [CLOCK] : [])];
+  return [WS_STUB, SILENT_TTS, COIN_READ, ...(recaptchaStub ? [RECAPTCHA_STUB] : []), RECORDER, ...(noKhr ? [NO_KHR] : []), ...(clock ? [CLOCK] : [])];
 }
 
 /**
@@ -1195,6 +1238,7 @@ module.exports = {
   SELFTEST_URL,
   RECAPTCHA_STUB,
   SILENT_TTS,
+  COIN_READ,
   baseInitScripts,
   triggerSelftestLeak,
   openSession,

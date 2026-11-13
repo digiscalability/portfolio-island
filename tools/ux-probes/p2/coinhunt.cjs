@@ -26,11 +26,12 @@ const P = require('./play-lib.cjs');
 const HUNT_LIB = () => {
   const sc = window.__app.scene;
   const g = window.__g;
-  const list = (trail) =>
-    (Array.isArray(sc.coins) ? sc.coins : [])
-      .map((c, i) => ({ i, c }))
-      .filter(({ c }) => c && c.mesh && c.mesh.visible && !!c.trail === trail && typeof (c.mesh.userData || {}).collectT0 !== 'number')
-      .map(({ i, c }) => ({ i, p: c.mesh.position.clone() }));
+  // Standing coins in either shape (lib COIN_READ: today's meshes or B9's
+  // records); null when the scene has neither, so the rate reads null.
+  const list = (trail) => {
+    const l = window.__uxCoin.list(sc, { trail });
+    return l ? l.map(({ i, p }) => ({ i, p })) : null;
+  };
   const H = (window.__hunt = {
     spawn: g.pos(),
     skip: new Set(),
@@ -39,14 +40,14 @@ const HUNT_LIB = () => {
     list,
     near(trail) {
       const p = g.pos();
-      const all = list(trail).filter((x) => !H.skip.has(x.i));
+      const all = (list(trail) || []).filter((x) => !H.skip.has(x.i));
       all.sort((a, b) => g.arc(p, a.p) - g.arc(p, b.p));
       return all[0] || null;
     },
     /** Steer toward the nearest coin for n frames; returns the count. */
     step(n, trail) {
       const p = g.pos();
-      if (!H.target || !list(trail).some((x) => x.i === H.target.i) || H.since > 12 * 60) {
+      if (!H.target || !(list(trail) || []).some((x) => x.i === H.target.i) || H.since > 12 * 60) {
         if (H.target && H.since > 12 * 60) H.skip.add(H.target.i);
         H.target = H.near(trail);
         H.since = 0;
@@ -59,10 +60,11 @@ const HUNT_LIB = () => {
     },
   });
   const meadow = list(false);
+  const trail = list(true);
   return {
-    meadow: meadow.length,
-    trail: list(true).length,
-    within30: meadow.filter((x) => g.arc(H.spawn, x.p) <= 30).length,
+    meadow: meadow ? meadow.length : null,
+    trail: trail ? trail.length : null,
+    within30: meadow ? meadow.filter((x) => g.arc(H.spawn, x.p) <= 30).length : null,
     seedDraws: typeof window.__dsSeedDraws === 'number' ? window.__dsSeedDraws : window.__dsSeedDraws && window.__dsSeedDraws.total ? window.__dsSeedDraws.total : null,
   };
 };
@@ -94,7 +96,7 @@ async function coinhunt(t) {
       if (r.target === null) break;
     }
     const afterTrail = await page.evaluate(() => window.__app.scene.getCoinsCollected());
-    const trailLeft = await page.evaluate(() => window.__hunt.list(true).length);
+    const trailLeft = await page.evaluate(() => { const l = window.__hunt.list(true); return l ? l.length : null; });
     // The hunt.
     await page.evaluate(() => {
       window.__hunt.target = null;
@@ -116,8 +118,8 @@ async function coinhunt(t) {
     const out = { start, coinsAtStart: c0, afterTrail, trailLeft, minutes, hunted, perMin: lib.round(hunted / minutes, 1), skipped: end.skipped, gait: runKey === null ? 'walk' : runKey === ' ' ? 'run (Space)' : 'run (Shift)', trace };
     t.data[prof] = out;
     t.check(`${prof}: coins per minute, a perfect meadow hunter (P2-A9 baseline)`, hunted > 0 ? true : null, out.perMin, 'reported (the audit: 13/min)');
-    t.check(`${prof}: meadow coins within 30 u of the spawn (reported)`, true, `${start.within30} of ${start.meadow}`, 'reported (the audit: 2 of 80)');
-    t.check(`${prof}: the coin total after the arrival trail (reported)`, trailLeft === 0 ? true : null, { afterTrail, trailCoins: start.trail, left: trailLeft }, 'reported (p2/tour reads 5 on fcaa649)');
+    t.check(`${prof}: meadow coins within 30 u of the spawn (reported)`, start.meadow ? true : null, `${start.within30} of ${start.meadow}`, 'reported (the audit: 2 of 80)');
+    t.check(`${prof}: the coin total after the arrival trail (reported)`, trailLeft === 0 && start.trail > 0 ? true : null, { afterTrail, trailCoins: start.trail, left: trailLeft }, 'reported (p2/tour reads 5 on fcaa649)');
   }
 }
 

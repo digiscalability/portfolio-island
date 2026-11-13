@@ -353,9 +353,12 @@ async function follow(t, prof) {
   const coins = await page.evaluate(() => {
     const sc = window.__app.scene;
     const P = sc.getPlayer().getWorldPosition();
-    return (sc.coins || []).filter((c) => c.trail && c.mesh.visible).map((c) => [...c.mesh.position.toArray(), c.mesh.position.distanceTo(P)]).sort((a, b) => a[3] - b[3]);
+    // Either coin shape (lib COIN_READ); null when neither is present.
+    const l = window.__uxCoin.list(sc, { trail: true });
+    return l ? l.map((e) => [e.p.x, e.p.y, e.p.z, e.p.distanceTo(P)]).sort((a, b) => a[3] - b[3]) : null;
   });
-  for (const c of coins) await G.walkTo(page, c.slice(0, 3), 6000, 0.9);
+  R.trailCoins = coins ? coins.length : null;
+  for (const c of coins || []) await G.walkTo(page, c.slice(0, 3), 6000, 0.9);
   await lib.sleep(2200);
   R.steps.push({ at: 'trail done', s: await now(), read: await G.readout(page) });
   // The villager the trail ended at: the one the build says it leads to

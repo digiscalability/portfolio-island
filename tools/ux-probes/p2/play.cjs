@@ -160,11 +160,13 @@ async function firstplay(t) {
     const coins = await page.evaluate(() => {
       const sc = window.__app.scene;
       const p = sc.getPlayer().getWorldPosition();
-      return (sc.coins || []).filter((c) => c.trail && c.mesh.visible).map((c) => [...c.mesh.position.toArray(), c.mesh.position.distanceTo(p)]).sort((a, b) => a[3] - b[3]);
+      // Either coin shape (lib COIN_READ); null when neither is present.
+      const l = window.__uxCoin.list(sc, { trail: true });
+      return l ? l.map((e) => [e.p.x, e.p.y, e.p.z, e.p.distanceTo(p)]).sort((a, b) => a[3] - b[3]) : null;
     });
     const t0 = Date.now();
-    for (const c of coins) await G.walkTo(page, c.slice(0, 3), 6000, 0.9);
-    out.trail = { coins: coins.length, seconds: +((Date.now() - t0) / 1000).toFixed(1), collected: await page.evaluate(() => window.__app.scene.getCoinsCollected()) };
+    for (const c of coins || []) await G.walkTo(page, c.slice(0, 3), 6000, 0.9);
+    out.trail = { coins: coins ? coins.length : null, seconds: +((Date.now() - t0) / 1000).toFixed(1), collected: await page.evaluate(() => window.__app.scene.getCoinsCollected()) };
     const who = await page.evaluate(() => {
       const sc = window.__app.scene;
       const p = sc.getPlayer().getWorldPosition();

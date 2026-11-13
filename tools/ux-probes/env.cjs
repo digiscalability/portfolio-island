@@ -65,20 +65,8 @@ const ENV_LIB = () => {
     });
     return best;
   };
-  /** Meadow coins (never the trail's): per-mesh on 58c8849-fcaa649, or B9's list. */
-  const coinList = () => {
-    const out = [];
-    const cs = sc.coins;
-    if (Array.isArray(cs))
-      for (const c of cs) {
-        if (!c || c.trail) continue;
-        const m = c.mesh;
-        const pos = m && m.position ? m.position : c.position || c.pos || null;
-        const vis = m ? m.visible : c.visible !== false && !c.collected;
-        if (pos && vis) out.push(pos.clone ? pos.clone() : new V3(pos.x, pos.y, pos.z));
-      }
-    return out;
-  };
+  /** Standing meadow coins (never the trail's), per-mesh on 58c8849-fcaa649 or B9's records (lib COIN_READ). */
+  const coinList = () => (window.__uxCoin.list(sc, { trail: false }) || []).map((e) => e.p);
   const E = (window.__env = { proj, headTopH, coinList, coinEvents: [] });
   window.addEventListener('ds:coin', (e) => E.coinEvents.push({ t: performance.now(), detail: e.detail ? JSON.parse(JSON.stringify(e.detail)) : null }));
   return { coins: coinList().length, swayTrees: (sc.swayTrees || []).length, fx: !!(window.__app.fx || window.__fx) };

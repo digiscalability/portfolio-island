@@ -164,10 +164,12 @@ const TOAST_NOW = () => {
 // The B10 trail check: the last trail coin, the nearest villager to it.
 const TRAIL = () => {
   const sc = window.__app.scene;
-  const coins = (sc.coins || []).filter((c) => c.trail && c.mesh && /trail_coin_\d+/.test(c.mesh.name || ''));
-  if (!coins.length) return null;
-  coins.sort((a, b) => +a.mesh.name.split('_').pop() - +b.mesh.name.split('_').pop());
-  const last = coins[coins.length - 1].mesh.position.clone();
+  // Every trail coin, collected or not, in either shape (lib COIN_READ),
+  // ordered by its trail_coin_N name or B9's idx.
+  const coins = window.__uxCoin.list(sc, { trail: true, all: true });
+  if (!coins || !coins.length) return null;
+  coins.sort((a, b) => a.order - b.order);
+  const last = coins[coins.length - 1].p.clone();
   let best = null;
   for (const n of sc.getIsland().npcTargets || []) {
     if (!n.meshRef || !n.meshRef.visible) continue;
