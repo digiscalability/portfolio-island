@@ -622,6 +622,7 @@ other builders on the machine: counts hold, milliseconds are provisional.
 | Probe | Line | What changed | This branch | wave-2 main |
 |---|---|---|---|---|
 | `guide` | guide night | the night talk read and the legacy step read wait out First steps' advance pause (STATE's `justDone` from `__app.guide.view()`; with no readable view, only a step past 2/5 counts), so the card's 2/5 during the 450 ms check no longer ends the read; `--night-hour` takes a list and runs 21,23,2,6 by default, the night-diag proof's hours | 8 of 8 at 21, 23, 2 and 6 h: the Night Watch awake, 6.6-19.3 u at Explore, the card on 3/5 naming him at 11.5-17.9 u and still 10 s on (screenshot `guide-night-h2-talk.png`: 'First steps 3/5', Night Watch under the lamp). Legacy 3 of 3 (3/5, 8.6 s after Explore) | 8 of 8: the Night Watch at 2.9-25.8 u |
+| `seed` | seed low tier | `--profile lowtier` is judged, not only reported: three fresh boots and `ds_arrived='1'` identical, and equal to the golden when `lib.goldenFor` has an entry for the tier (the differing marks are listed); with no entry the row is report-only | 6 of 6: 80842 on every boot on both tiers, equal to the golden; a golden with the low tier's `coins` mark moved by one fails the row (`coins: 51594 vs 51595`) | 6 of 6, the same numbers |
 
 ### Probe fixes from wave 1 (wave-2 amendments)
 
