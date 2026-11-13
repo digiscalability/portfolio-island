@@ -17961,6 +17961,33 @@ export class GameScene extends THREE.Scene {
     return this.races?.getNextGate(out) ?? null;
   }
 
+  /** The nearest unoccupied vehicle of `kind` anywhere on the island, from
+   *  the player, written into `out` with no allocation and no draws; null
+   *  when none is free. Occupied covers the player's own ride and every craft
+   *  a peer holds. A's race compass (wave 4, P2-A8) reads it as
+   *  `scene.nearestVehiclePos?.('car', out) ?? null`. */
+  public nearestVehiclePos(
+    kind: 'car' | 'boat' | 'jetski',
+    out: THREE.Vector3,
+  ): THREE.Vector3 | null {
+    const vs = this.vehicles;
+    if (!vs || vs.length === 0 || !this.player) return null;
+    const p = this.player.getWorldPositionInto(this._nearVehP);
+    let best = -1;
+    let bestD2 = Infinity;
+    for (let i = 0; i < vs.length; i++) {
+      const v = vs[i];
+      if (v.kind !== kind || v.occupied) continue;
+      const d2 = v.group.position.distanceToSquared(p);
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = i;
+      }
+    }
+    return best < 0 ? null : out.copy(vs[best].group.position);
+  }
+  private readonly _nearVehP = new THREE.Vector3();
+
   /** Arm (or clear) a ?race=&beat= challenge target on the race HUD. */
   public setRaceChallenge(kind: 'land' | 'water', ms: number | null): void {
     this.races?.setChallenge(kind, ms);
