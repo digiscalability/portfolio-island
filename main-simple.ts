@@ -458,7 +458,7 @@ export class SimpleApp {
   private static readonly LESSONS: Array<[string, string]> = [
     [
       'move',
-      '🏃 Lesson 1 — WASD or the joystick to walk; Space to jump. The island is round: keep walking and you come home.',
+      '🏃 Lesson 1 — WASD to walk, Space to jump, hold Shift to run. The island is round: keep walking and you come home.',
     ],
     [
       'fish',
@@ -540,6 +540,18 @@ export class SimpleApp {
   private stepAccum: number = 0;
   private stepAlt: boolean = false;
   private prevWalkPhase: number = -1; // last sampled walk-cycle phase (-1 = stride inactive)
+  /** A11: when the touch stick reached the rim (-1 = not at the rim). */
+  private stickRimSince = -1;
+  private static readonly STICK_RUN_MAG = 0.95;
+  private static readonly STICK_RUN_MS = 250;
+  /** A11: ?legacyrun=1 keeps hold-Space (and hold-JUMP) running, for one release. */
+  private static readonly LEGACY_RUN = ((): boolean => {
+    try {
+      return new URLSearchParams(location.search).get('legacyrun') === '1';
+    } catch {
+      return false;
+    }
+  })();
   private airborneTime: number = 0;
   private prevJumpHeld: boolean = false;
   private lastSwimWarnAt = 0; // throttle for the shoreline-barrier hint
@@ -635,6 +647,14 @@ export class SimpleApp {
 
       // Accessibility prefs (reduced motion) — seed before anything animates
       a11y.init();
+
+      // A11: the run key, read at render time by the guide's copy and D8's
+      // Controls sheet (and by the probes). Set before the first welcome or
+      // guide render.
+      document.documentElement.setAttribute(
+        'data-run-key',
+        SimpleApp.LEGACY_RUN ? 'space' : 'shift',
+      );
 
       // Create UI first (shows loading screen)
       try {
@@ -3013,12 +3033,14 @@ export class SimpleApp {
           // The touch DIVE button appears only while actually swimming.
           this.ui.setAuxActionAvailable('dive', player.isSwimming());
         }
-        // HOLD Space while moving = run (stamina-gated). Tap stays jump —
-        // held Space never re-jumps, so the two share the key cleanly.
+        // A11: HOLD Shift while moving on land = run (stamina-gated); on
+        // touch, the stick held at the rim for 250 ms. Space only jumps (and
+        // floats in water, where Shift still dives). ?legacyrun=1 keeps the
+        // old hold-Space run for one release.
         if (player) {
           const runMag =
             Math.abs(moveInput.forward + joy.forward) + Math.abs(moveInput.strafe + joy.strafe);
-          player.setRunIntent(jumpInput && runMag > 0.3);
+          player.setRunIntent(this.runIntent(jumpInput, joy, player.isInWater()) && runMag > 0.3);
           this.ui.updateStamina(player.getStamina(), player.isRunning());
           // One-time nudge: winded while carrying food → teach the G/eat verb.
           if (
@@ -3447,7 +3469,7 @@ export class SimpleApp {
               this.scene.floatCoinsAtPlayer(10);
               this.scene.logTransaction('School lesson', 10);
               sfx.coin();
-              this.ui.toast(next[1]);
+              this.ui.toast(this.lessonCopy(next));
               track('lesson_done', { id: next[0], total: this.lessons.length });
             }
           }
@@ -5886,6 +5908,44 @@ export class SimpleApp {
    * previous and current sample, accounting for the 1\u21920 wrap. `prev < 0` marks
    * a freshly (re)started stride, so nothing has been crossed yet.
    */
+  /**
+   * A11: a lesson's toast, in the scheme the visitor plays with. Lesson 1
+   * names Shift on desktop and the stick on touch (touchifyPlain does not
+   * map Shift); under ?legacyrun=1 it names the old hold-Space run.
+   */
+  private lessonCopy(lesson: [string, string]): string {
+    if (lesson[0] !== 'move') return lesson[1];
+    if (this.ui.isTouchDevice()) {
+      return SimpleApp.LEGACY_RUN
+        ? '🏃 Lesson 1 — the joystick to walk, JUMP to jump, hold JUMP while moving to run. The island is round: keep walking and you come home.'
+        : '🏃 Lesson 1 — the joystick to walk, JUMP to jump, push the stick to the edge to run. The island is round: keep walking and you come home.';
+    }
+    return SimpleApp.LEGACY_RUN
+      ? '🏃 Lesson 1 — WASD to walk, Space to jump, hold Space while moving to run. The island is round: keep walking and you come home.'
+      : lesson[1];
+  }
+
+  /**
+   * A11: is the visitor asking to run this frame? Shift held on land, or on
+   * touch the stick at 0.95 or more for 250 ms. Under ?legacyrun=1, the old
+   * hold-Space (and hold-JUMP) run. The caller adds the runMag > 0.3 gate.
+   */
+  private runIntent(
+    jumpInput: boolean,
+    joy: { forward: number; strafe: number },
+    inWater: boolean,
+  ): boolean {
+    if (SimpleApp.LEGACY_RUN) return jumpInput;
+    const now = performance.now();
+    if (Math.hypot(joy.forward, joy.strafe) >= SimpleApp.STICK_RUN_MAG) {
+      if (this.stickRimSince < 0) this.stickRimSince = now;
+    } else {
+      this.stickRimSince = -1;
+    }
+    const stickRun = this.stickRimSince >= 0 && now - this.stickRimSince >= SimpleApp.STICK_RUN_MS;
+    return !inWater && (this.inputManager.getRunInput() || stickRun);
+  }
+
   private crossedPhase(prev: number, cur: number, thr: number): boolean {
     if (prev < 0) return false;
     if (cur >= prev) return prev < thr && thr <= cur;

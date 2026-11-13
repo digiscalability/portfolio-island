@@ -15,6 +15,30 @@ export function consumePinchZoomFactor(): number {
   return f;
 }
 
+/** A11: the wheel's zoom per normalised pixel: factor = exp(deltaY × K). */
+export const WHEEL_ZOOM_K = 0.0012;
+/** A11: the = and − keys step the orbit distance by these factors. */
+export const ZOOM_STEP_IN = 0.85;
+export const ZOOM_STEP_OUT = 1.18;
+
+/**
+ * A11: one wheel event as a pinch factor (> 1 zooms out). deltaMode is
+ * normalised to pixels (lines × 16, pages × 400). Chromium on Windows turns
+ * Shift+wheel into a horizontal scroll, and Shift is the run key, so with
+ * Shift held and no vertical delta the horizontal one is read instead.
+ */
+export function wheelZoomFactor(e: {
+  deltaY: number;
+  deltaX: number;
+  deltaMode: number;
+  shiftKey: boolean;
+}): number {
+  const raw = e.shiftKey && e.deltaY === 0 ? e.deltaX : e.deltaY;
+  const px = e.deltaMode === 1 ? raw * 16 : e.deltaMode === 2 ? raw * 400 : raw;
+  if (!Number.isFinite(px) || px === 0) return 1;
+  return Math.exp(px * WHEEL_ZOOM_K);
+}
+
 /**
  * How a desktop pointer looks around. 'drag' (the default): press and drag on
  * the world with either button. 'lock': the opt-in pointer lock (localStorage
@@ -163,6 +187,9 @@ export class SimpleInputManager {
         // Ctrl+W closes the tab, Alt+Tab leaves. Nothing is held or latched
         // while Ctrl, Meta or Alt is down. Shift still counts (the dive key).
         if (e.ctrlKey || e.metaKey || e.altKey) return;
+        // A disposed manager is deaf even where a DOM ignores the abort
+        // signal (happy-dom): the zoom step writes a module-level channel.
+        if (signal.aborted) return;
         const k = e.key.toLowerCase();
         // A focused control keeps the keys it uses (keyGuards.ts): a text field
         // every key, so typing "feed the birds" never fires the one-shot verbs
@@ -170,6 +197,10 @@ export class SimpleInputManager {
         // Enter. Holding counts too, not just the latch: a key typed into a
         // field used to walk the avatar behind it.
         if (focusedControlOwnsKey(k, e.target)) return;
+        // A11: = and − (by position, since Shift turns them into + and _)
+        // step the zoom through the pinch channel, which every rail drains.
+        const step = SimpleInputManager.zoomStepFor(e.code);
+        if (step !== 1) pinchState.factor *= step;
         this.keys.add(k);
         this.lastKeyEventAt.set(k, performance.now());
         // Latch the press edge (ignore OS auto-repeat) for consumeKeyPress().
@@ -425,6 +456,32 @@ export class SimpleInputManager {
     canvas.addEventListener('pointercancel', (e) => this.onPointerEnd(e), { signal });
     canvas.addEventListener('lostpointercapture', (e) => this.onPointerEnd(e), { signal });
     canvas.addEventListener('click', () => this.requestLockOnClick(), { signal });
+    // A11: the wheel zooms. Not passive, so the page never scrolls under the
+    // world; Ctrl+wheel stays the browser's page zoom.
+    canvas.addEventListener(
+      'wheel',
+      (e) => {
+        if (e.ctrlKey || signal.aborted) return;
+        e.preventDefault();
+        const f = wheelZoomFactor(e);
+        if (f !== 1) pinchState.factor *= f;
+      },
+      { signal, passive: false },
+    );
+  }
+
+  /** A11: the zoom step a key's position gives (1 = not a zoom key). */
+  private static zoomStepFor(code: string | undefined): number {
+    switch (code) {
+      case 'Equal':
+      case 'NumpadAdd':
+        return ZOOM_STEP_IN;
+      case 'Minus':
+      case 'NumpadSubtract':
+        return ZOOM_STEP_OUT;
+      default:
+        return 1;
+    }
   }
 
   /**
@@ -721,6 +778,14 @@ export class SimpleInputManager {
    * modifier is never purged despite modifiers having no OS auto-repeat.
    */
   public getDiveInput(): boolean {
+    return this.isKeyPressed('shift');
+  }
+
+  /**
+   * A11: the run modifier, Shift held. The same key dives in water, so the
+   * caller (main-simple.runIntent) only reads it on land.
+   */
+  public getRunInput(): boolean {
     return this.isKeyPressed('shift');
   }
 
