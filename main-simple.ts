@@ -45,7 +45,7 @@ import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
 import { worldInputBlocked } from './keyGuards';
 import { Materials } from './Materials';
-import { Multiplayer } from './Multiplayer';
+import type { Multiplayer } from './Multiplayer';
 import {
   AI_NPCS,
   askNpc,
@@ -703,6 +703,14 @@ export class SimpleApp {
       // (initPostProcessing awaits the same cached promise). Tier-gated
       // inside — phones still never fetch the chunk.
       SimpleRenderer.preloadPostProcessing();
+      // Multiplayer is its own chunk (wave-3 bundle carry-over): nothing needs
+      // it before the world is built, so its fetch starts here and overlaps
+      // world-gen; the await where it is constructed is then only a microtask.
+      // A failed fetch resolves null: the island plays solo, chat stays off.
+      const multiplayerModule = import('./Multiplayer').catch((e: unknown) => {
+        console.warn('Multiplayer chunk failed to load; playing solo:', e);
+        return null;
+      });
       console.log('🎨 SimpleRenderer created:', {
         canvas: this.renderer.getCanvas(),
         renderer: this.renderer.getRenderer(),
@@ -912,16 +920,19 @@ export class SimpleApp {
         /* default colours */
       }
 
-      // Multiplayer: other visitors on the same island, waves included
-      this.multiplayer = new Multiplayer(this.scene, this.scene.getPlayer());
-      this.multiplayer.onCount((count) => this.ui.updatePlayerCount(count));
-      this.multiplayer.setHat((this.equippedHat as HatId) ?? null);
+      // Multiplayer: other visitors on the same island, waves included.
+      // Loaded lazily (started beside preloadPostProcessing above).
+      const mpMod = await multiplayerModule;
+      const multiplayer = mpMod ? new mpMod.Multiplayer(this.scene, this.scene.getPlayer()) : null;
+      this.multiplayer = multiplayer;
+      multiplayer?.onCount((count) => this.ui.updatePlayerCount(count));
+      multiplayer?.setHat((this.equippedHat as HatId) ?? null);
 
       // Proximity chat: text bubbles + push-to-talk voice between nearby
       // visitors. Wired to the mobile chat/mic HUD buttons and to
       // Enter/V(oice) on desktop (see setupDebugShortcuts-adjacent binding
-      // below, near the input manager setup).
-      this.chat = new Chat(this.multiplayer);
+      // below, near the input manager setup). No multiplayer, no chat.
+      this.chat = multiplayer ? new Chat(multiplayer) : undefined;
       // DOM twins live in the overlay so photo mode hides them for free.
       this.hudLabels = new HudLabels(this.ui.getOverlay());
       // Expandable island map: tap the radar (or press M) for the full map.
@@ -934,14 +945,14 @@ export class SimpleApp {
         if (req) this.guideTo(req.key, req.label, req.source);
       };
       window.addEventListener('ds:guide-to', this.boundHandlers.guideTo);
-      this.ui.setVoiceSupported(this.chat.voiceSupported);
-      this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
+      this.ui.setVoiceSupported(this.chat?.voiceSupported ?? false);
+      multiplayer?.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
       this.ui.setOnMicDown(() => void this.chat?.startRecording());
       this.ui.setOnMicUp(() => this.chat?.stopRecording());
       // Show the "● Recording Xs" indicator only while the mic is truly live.
-      this.chat.setOnRecordingStart(() => this.ui.showRecordingIndicator());
-      this.chat.setOnRecordingStop(() => this.ui.hideRecordingIndicator());
+      this.chat?.setOnRecordingStart(() => this.ui.showRecordingIndicator());
+      this.chat?.setOnRecordingStop(() => this.ui.hideRecordingIndicator());
 
       // Portfolio Passport: visiting all four work zones unlocks the Founder's
       // Golden Crown — the mechanic that routes explorers through the real work.

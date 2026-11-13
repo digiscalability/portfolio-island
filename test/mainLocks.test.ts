@@ -13,7 +13,7 @@
 // The last two describes are not relocated: they hold A's own new locks on
 // how main-simple wires the stage-1 fixes, and on the seams the integration
 // review found where the stage-1 branches meet.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
@@ -1792,5 +1792,36 @@ describe('A9: tour captions fit 110 characters with their stop number', () => {
     expect(bodyOf(stripped('main-simple.ts'), 'private startTour(')).toContain(
       'this.scene.getOrbitCamera().getFollowPose(this._tourFromPos, fromLook);',
     );
+  });
+});
+
+describe('wave-3 bundle carry-over: Multiplayer is its own chunk', () => {
+  test('main-simple imports Multiplayer as a type and loads it with import()', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("import type { Multiplayer } from './Multiplayer';");
+    expect(m).not.toMatch(/import\s*\{\s*Multiplayer\s*\}\s*from\s*'\.\/Multiplayer'/);
+    const init = bodyOf(m, 'private async init(');
+    // The fetch starts beside the postprocessing preload, before world-gen...
+    const start = init.indexOf("import('./Multiplayer')");
+    expect(start).toBeGreaterThan(-1);
+    expect(start).toBeLessThan(init.indexOf('new GameScene()'));
+    expect(init.indexOf('SimpleRenderer.preloadPostProcessing();')).toBeLessThan(start);
+    // ...a failed fetch plays solo instead of failing boot...
+    expect(init.slice(start, start + 200)).toContain('.catch(');
+    // ...and the module is awaited only where it is constructed.
+    const built = init.indexOf('new mpMod.Multiplayer(this.scene, this.scene.getPlayer())');
+    expect(built).toBeGreaterThan(init.indexOf('const mpMod = await multiplayerModule;'));
+    expect(init).toContain('this.chat = multiplayer ? new Chat(multiplayer) : undefined;');
+  });
+
+  test('no other module imports Multiplayer as a value, so it stays out of the main chunk', () => {
+    const files = readdirSync(process.cwd()).filter(
+      (f) => f.endsWith('.ts') && f !== 'Multiplayer.ts',
+    );
+    for (const f of files) {
+      expect(src(f), f).not.toMatch(
+        /import\s*\{[^}]*\bMultiplayer\b[^}]*\}\s*from\s*'\.\/Multiplayer'/,
+      );
+    }
   });
 });
