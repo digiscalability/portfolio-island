@@ -325,9 +325,208 @@ export function addGroupHulls(
   // Ink is a draw-call DOUBLER on every hulled part (~300+ extra draws with
   // the full cast). Phones are draw-call-bound, not fill-bound — low-tier
   // devices get the clean cel look without outlines. Desktop unchanged.
-  if (SimpleRenderer.isLowTierDevice()) return;
+  if (SimpleRenderer.isLowTierDevice()) {
+    // ?phoneink=1 (decision 15, for Abbas to compare on his phone): the
+    // ARCHITECTURE path (a filter is passed) only remembers what it would
+    // have inked; flushPhoneInk merges it into one static hull per district.
+    // Recording allocates no three object, so it draws nothing either.
+    if (filter && isPhoneInk()) collectHullTargets(root, minWorldRadius, filter, phoneInkQueue);
+    return;
+  }
   // Both gates sit OUTSIDE the shield so the early-return path stays free.
   withInkRng(() => addGroupHullsInner(root, minWorldRadius, filter));
+}
+
+/** The meshes addGroupHullsInner would hull in `root`, with the hull
+ *  thickness it would give each (the same guards, the same floor). */
+function collectHullTargets(
+  root: THREE.Object3D,
+  minWorldRadius: number,
+  filter: ((m: THREE.Mesh) => boolean) | undefined,
+  out: Array<{ mesh: THREE.Mesh; thickness: number }>,
+): void {
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || (m as unknown as { isSkinnedMesh?: boolean }).isSkinnedMesh) return;
+    if (m.userData.isCelHull || m.userData.hasCelHull) return;
+    if (filter) {
+      if ((m as unknown as { isInstancedMesh?: boolean }).isInstancedMesh) return;
+      const mat = m.material as THREE.Material | THREE.Material[];
+      if (!Array.isArray(mat) && mat?.transparent === true) return;
+      if (m.geometry.type === 'PlaneGeometry') return;
+      if (!filter(m)) return;
+    }
+    if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
+    const r = (m.geometry.boundingSphere?.radius ?? 0) * m.getWorldScale(_wScale).x;
+    if (r < minWorldRadius) return;
+    out.push({ mesh: m, thickness: Math.min(0.05, Math.max(0.008, r * 0.03)) });
+  });
+}
+
+// ── ?phoneink=1: one merged static hull per district (C4, decision 15) ─────
+//
+// The low tier stays ink-free by default (the gate above). With ?phoneink=1
+// the architecture calls are recorded instead, and flushPhoneInk bakes them,
+// once every hall and prop is seated, into ONE world-space hull per district:
+// a draw each, the one ink program, and no per-part hull objects.
+
+let phoneInkParam: boolean | null = null;
+/** ?phoneink=1, read once (as SimpleRenderer reads ?halfshadow). */
+export function isPhoneInk(): boolean {
+  if (phoneInkParam === null) {
+    try {
+      phoneInkParam =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('phoneink') === '1';
+    } catch {
+      phoneInkParam = false;
+    }
+  }
+  return phoneInkParam;
+}
+
+/** Test seam: forget the cached ?phoneink read (and anything queued). */
+export function resetPhoneInkForTest(): void {
+  phoneInkParam = null;
+  phoneInkQueue.length = 0;
+}
+
+const phoneInkQueue: Array<{ mesh: THREE.Mesh; thickness: number }> = [];
+
+/** The phone-ink district hulls stay under this many triangles in all. */
+export const PHONE_INK_MAX_TRIANGLES = 40000;
+
+const _hv = new THREE.Vector3();
+const _hm = new THREE.Matrix4();
+
+/** Append `geo`'s indexed triangles (positions only) through `matrix` into
+ *  the growing arrays. Returns the triangles appended. */
+function appendHullTriangles(
+  geo: THREE.BufferGeometry,
+  matrix: THREE.Matrix4,
+  pos: number[],
+  idx: number[],
+): number {
+  const p = geo.getAttribute('position');
+  const base = pos.length / 3;
+  for (let i = 0; i < p.count; i++) {
+    _hv.fromBufferAttribute(p, i).applyMatrix4(matrix);
+    pos.push(_hv.x, _hv.y, _hv.z);
+  }
+  const index = geo.getIndex();
+  if (index) {
+    for (let i = 0; i < index.count; i++) idx.push(base + index.getX(i));
+    return index.count / 3;
+  }
+  for (let i = 0; i < p.count; i++) idx.push(base + i);
+  return p.count / 3;
+}
+
+/** One position-only hull mesh from merged triangles, on the shared ink. */
+function mergedHullMesh(pos: number[], idx: number[], name: string): THREE.Mesh {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeBoundingSphere();
+  const hull = new THREE.Mesh(geo, getInkMat());
+  hull.name = name;
+  hull.userData.isCelHull = true;
+  hull.raycast = () => {};
+  hull.castShadow = false;
+  hull.receiveShadow = false;
+  hull.matrixAutoUpdate = false; // static: baked in its parent's space
+  return hull;
+}
+
+/**
+ * ?phoneink=1 on the low tier: merge every recorded architecture hull into
+ * one static world-space mesh per district (the nearest anchor; the halls'
+ * beacons are the district centres) and add them to `scene`. Runs once, after
+ * placement; a no-op without the flag, on desktop, or with nothing recorded.
+ * Returns the triangles built (0 when it did nothing).
+ */
+export function flushPhoneInk(scene: THREE.Object3D, anchors: THREE.Vector3[]): number {
+  if (!phoneInkQueue.length || !anchors.length) {
+    phoneInkQueue.length = 0;
+    return 0;
+  }
+  const queue = phoneInkQueue.splice(0);
+  return withInkRng(() => {
+    scene.updateMatrixWorld(true);
+    const buckets = anchors.map(() => ({ pos: [] as number[], idx: [] as number[] }));
+    let tris = 0;
+    // Biggest parts first, so the triangle cap drops the smallest detail.
+    const ranked = queue
+      .filter((e) => e.mesh.parent)
+      .map((e) => ({ ...e, size: e.thickness }))
+      .sort((a, b) => b.size - a.size);
+    for (const e of ranked) {
+      const geo = bakeHullGeometry(e.mesh.geometry, e.thickness / e.mesh.getWorldScale(_wScale).x);
+      const n = (geo.getIndex()?.count ?? geo.getAttribute('position').count) / 3;
+      if (tris + n > PHONE_INK_MAX_TRIANGLES) continue;
+      e.mesh.getWorldPosition(_hv);
+      let best = 0;
+      let bestD = Infinity;
+      for (let a = 0; a < anchors.length; a++) {
+        const d = _hv.distanceToSquared(anchors[a]);
+        if (d < bestD) {
+          bestD = d;
+          best = a;
+        }
+      }
+      tris += appendHullTriangles(geo, e.mesh.matrixWorld, buckets[best].pos, buckets[best].idx);
+      e.mesh.userData.hasCelHull = true;
+    }
+    // World space: undo the scene root's own transform (identity in the game).
+    _hm.copy(scene.matrixWorld).invert();
+    buckets.forEach((b, i) => {
+      if (!b.idx.length) return;
+      const hull = mergedHullMesh(b.pos, b.idx, `phoneink_${i}`);
+      hull.matrix.copy(_hm);
+      scene.add(hull);
+    });
+    return tris;
+  });
+}
+
+/**
+ * Ink for a GLB fleet that collapseClonesToInstances re-packed into
+ * InstancedMesh (benches, mailboxes, lamps). Each part that clears the size
+ * floor is baked once and repeated at every instance's matrix into ONE static
+ * hull mesh under `parent` (the instances' own space): one draw for the whole
+ * fleet, on the ink material every other hull already compiled, so no new
+ * program. Desktop cel only, inside the ink shield. Returns the hull, or null.
+ */
+export function addFleetHull(
+  parent: THREE.Object3D,
+  parts: Array<{ geometry: THREE.BufferGeometry; matrices: THREE.Matrix4[] }>,
+  minWorldRadius: number,
+  name: string,
+): THREE.Mesh | null {
+  if (!isCelTheme()) return null;
+  if (SimpleRenderer.isLowTierDevice()) return null;
+  return withInkRng(() => {
+    const pos: number[] = [];
+    const idx: number[] = [];
+    const s = new THREE.Vector3();
+    for (const part of parts) {
+      if (!part.matrices.length) continue;
+      if (!part.geometry.boundingSphere) part.geometry.computeBoundingSphere();
+      s.setFromMatrixScale(part.matrices[0]);
+      const r = (part.geometry.boundingSphere?.radius ?? 0) * s.x;
+      if (r < minWorldRadius) continue;
+      const t = Math.min(0.05, Math.max(0.008, r * 0.03));
+      const geo = bakeHullGeometry(part.geometry, t / Math.max(1e-6, s.x));
+      for (const m of part.matrices) appendHullTriangles(geo, m, pos, idx);
+    }
+    if (!idx.length) return null;
+    const hull = mergedHullMesh(pos, idx, name);
+    // The fleets ring the planet, so the merged bounding sphere spans the
+    // world and the hull culls all-or-nothing, as the instances do.
+    hull.updateMatrix();
+    parent.add(hull);
+    return hull;
+  });
 }
 
 function addGroupHullsInner(

@@ -50,6 +50,7 @@
 // 0 and the suite fails instead of comparing two warm builds.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type * as THREE from 'three';
 import { beforeAll, describe, expect, test } from 'vitest';
 
 import { Island } from '../Island';
@@ -175,5 +176,48 @@ describe('what new Island() builds', () => {
       if ((o as { isLight?: boolean }).isLight) lights.push(o.type);
     });
     expect(lights).toEqual([]);
+  });
+});
+
+describe('ink on everything that stands (C4, desktop cel)', () => {
+  const hullsUnder = (name: RegExp): number[] => {
+    const out: number[] = [];
+    warmIsland.mesh.traverse((o) => {
+      if (!name.test(o.name)) return;
+      let n = 0;
+      o.traverse((c) => {
+        if (c.userData.isCelHull) n++;
+      });
+      out.push(n);
+    });
+    return out;
+  };
+
+  test('every parked car carries hulls (chassis and cabin)', () => {
+    const cars = hullsUnder(/^car_\d+$/);
+    expect(cars.length).toBe(8);
+    for (const n of cars) expect(n).toBe(2);
+  });
+
+  test('the fountain, the bandstand and the gates carry hulls', () => {
+    expect(hullsUnder(/^town_fountain$/)[0]).toBeGreaterThan(0);
+    expect(hullsUnder(/^bandstand$/)[0]).toBeGreaterThan(0);
+    const gates = hullsUnder(/^district_gate_\d+$/);
+    expect(gates.length).toBe(4);
+    for (const n of gates) expect(n).toBeGreaterThan(0);
+  });
+
+  test('ground clutter is never inked', () => {
+    // Grass, rocks and flowers are instanced, and no hull hangs off an
+    // instanced part (the fleets get their own merged hull after load).
+    const inkedClutter: string[] = [];
+    warmIsland.mesh.traverse((o) => {
+      if (!o.userData.isCelHull) return;
+      const p = o.parent as THREE.Object3D & { isInstancedMesh?: boolean };
+      if (p?.isInstancedMesh || /grass|rock|flower|petal|stem|kelp|coral/i.test(p?.name ?? '')) {
+        inkedClutter.push(p.name);
+      }
+    });
+    expect(inkedClutter).toEqual([]);
   });
 });

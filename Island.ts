@@ -14,7 +14,7 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-import { addGroupHulls, addSkinnedHull, applyCelRim } from './CelLook';
+import { addFleetHull, addGroupHulls, addSkinnedHull, applyCelRim } from './CelLook';
 import {
   DISTRICTS,
   RING_DISTRICT_LONS,
@@ -3573,6 +3573,8 @@ export class Island {
     fountain.add(cap);
     fountain.castShadow = true;
     fountain.name = 'town_fountain';
+    // Ink (C4): basins, rim and pillar; the water is transparent and skipped.
+    addGroupHulls(fountain, 0.3, () => true);
     // Village square centerpiece, at the edge of the Personal hamlet
     // (the old raw world coords stranded it near the north pole)
     this.placeObjectOnSurface(
@@ -3786,6 +3788,12 @@ export class Island {
       carGroup.castShadow = true;
       carGroup.name = `car_${i}`;
       cars.add(carGroup);
+      // Ink (C4): the chassis and cabin, the masses that read as a car from
+      // across a street. Bumpers, wheels, spokes and lamps sit under the
+      // 1.1 world-size floor (the group's 1.45 scale puts a bumper at 0.99),
+      // and the glass is a transparent plane. The hulls ride the car when it
+      // is driven (they are its parts' children).
+      addGroupHulls(carGroup, 1.1, () => true);
     }
 
     // Add market stalls near houses
@@ -7952,6 +7960,9 @@ export class Island {
     stool.position.set(0.9, 0.58, 0.5);
     g.add(stool);
 
+    // Ink (C4): deck and roof. The posts are instanced and the stool is
+    // under the floor.
+    addGroupHulls(g, 0.4, () => true);
     parent.add(g);
     this.bandstandSites.push(seat.position.clone());
     const up = seat.normal.clone();
@@ -9539,6 +9550,15 @@ export class Island {
           inst.instanceMatrix.needsUpdate = true;
           this.mesh.add(inst);
         }
+        // Ink (C4): the re-packed fleet (benches, mailboxes, lamps) lost the
+        // placeholders' hulls with the clones. One static hull for the whole
+        // fleet, at the instances' own matrices: a draw, no new program.
+        addFleetHull(
+          this.mesh,
+          Array.from(buckets.values(), (b) => ({ geometry: b.geometry, matrices: b.matrices })),
+          0.2,
+          `glbfleet_${label}ink`,
+        );
         for (const clone of clones) clone.parent?.remove(clone);
         return buckets.size;
       };

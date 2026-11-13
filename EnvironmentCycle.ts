@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { setCelNight } from './CelLook';
+import { flushPhoneInk, isPhoneInk, setCelNight } from './CelLook';
 import { fx } from './FxBudget';
 import { isRealTheme } from './Theme';
 import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
@@ -1096,6 +1096,17 @@ export class EnvironmentCycle {
     if (!this.rescanned) {
       this.rescanned = true;
       this.collectNightAssets();
+      // ?phoneink=1 on the low tier (C4, decision 15): every hall and prop
+      // is seated by now, so bake the recorded architecture into one hull per
+      // district, the halls' beacons standing for the district centres. A
+      // no-op without the flag and on desktop.
+      if (isPhoneInk()) {
+        const anchors: THREE.Vector3[] = [];
+        this.scene.traverse((o) => {
+          if (o.name === 'zone-beacon') anchors.push(o.getWorldPosition(new THREE.Vector3()));
+        });
+        flushPhoneInk(this.scene, anchors);
+      }
     }
     // The visitor's frame first: everything below that points at the sky uses it.
     this._framePos = playerPos;
