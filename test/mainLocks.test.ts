@@ -1942,7 +1942,7 @@ describe('wave 4 P2-A11: hall exhibits, the room look and the Leave label', () =
   test('a hall passes its exhibits, the Leave button names the room, hire_cta says interior', () => {
     const s = stripped('main-simple.ts');
     const eb = bodyOf(s, 'private enterBuilding(');
-    expect(eb).toContain('SimpleApp.INTERIOR_EXHIBITS[id]');
+    expect(eb).toContain('SimpleApp.interiorExhibits(id, this.touchCopy())');
     expect(eb).toContain('isZone ? undefined : id, exhibits);');
     expect(eb).toContain('this.ui.showLeaveButton(() => this.exitBuilding(isZone), title);');
     expect(bodyOf(s, 'private runExhibitArg(')).toContain(

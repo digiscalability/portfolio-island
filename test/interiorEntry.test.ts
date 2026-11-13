@@ -62,6 +62,7 @@ function stubApp(showZonePanel: Fn) {
     scene,
     inputManager,
     markDone: vi.fn(),
+    touchCopy: () => false,
     insideZone: null,
     insideIsZone: false,
   };
@@ -305,10 +306,12 @@ describe('P2-A11: exhibits, their hotspot actions and the Leave label', () => {
   type M = (this: unknown, ...a: unknown[]) => unknown;
   let p: Record<string, M>;
   let EX: Record<string, { left?: { lines: string[] }; right?: unknown; screen?: unknown }>;
+  let exFor: (id: string, touch: boolean) => unknown;
   beforeAll(async () => {
     const mod = await import('../main-simple');
     p = mod.SimpleApp.prototype as unknown as Record<string, M>;
     EX = (mod.SimpleApp as unknown as { INTERIOR_EXHIBITS: typeof EX }).INTERIOR_EXHIBITS;
+    exFor = mod.SimpleApp.interiorExhibits;
   }, 120000);
 
   const app = () => {
@@ -394,5 +397,22 @@ describe('P2-A11: exhibits, their hotspot actions and the Leave label', () => {
     expect(text).toContain('admin@digiscalability.com');
     const ids = [...text.matchAll(/"id":"([a-z]+)"/g)].map((m) => m[1]);
     expect(ids).toEqual(['rankpilot', 'chocomate', 'banos', 'insta']);
+  });
+
+  test('the posters name the key the visitor has: E on a keyboard, USE on touch', () => {
+    for (const id of Object.keys(EX)) {
+      const touch = JSON.stringify(exFor(id, true));
+      const keys = JSON.stringify(exFor(id, false));
+      expect(touch).not.toMatch(/\bE\b|\{use\}/i);
+      expect(keys).not.toMatch(/\bUSE\b|\{use\}/);
+      // the pegboard chips (and their ids) survive the rewrite
+      expect(JSON.stringify(exFor(id, true)).match(/"id"/g)?.length ?? 0).toBe(
+        JSON.stringify(EX[id]).match(/"id"/g)?.length ?? 0,
+      );
+    }
+    expect(JSON.stringify(exFor('projects', true))).toContain('Tap USE at a card');
+    expect(JSON.stringify(exFor('projects', false))).toContain('Press E at a card');
+    expect(JSON.stringify(exFor('welcome', true))).toContain('tap USE to set the compass');
+    expect(exFor('nowhere', true)).toBeUndefined();
   });
 });

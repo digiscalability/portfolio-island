@@ -2478,11 +2478,14 @@ export class SimpleApp {
    * EXHIBIT_FONT), so a side poster holds about four short lines. A chip
    * with an id on the Projects posters becomes a pegboard spot that opens
    * that card (at most four). INTERIOR_CONTENT stays as the fallback.
+   * '{use}' / '{Use}' name the room's action key for the visitor's input
+   * (interiorExhibits): 'press E' on a keyboard, 'tap USE' on touch, since
+   * these are canvas text and touchify only rewrites the DOM prompt.
    */
   private static readonly INTERIOR_EXHIBITS: Record<string, Exhibits> = {
     welcome: {
       left: { lines: ['The Hub', 'Every avenue starts here'] },
-      right: { lines: ['The wall map:', 'press E to set the compass'] },
+      right: { lines: ['The wall map:', '{use} to set the compass'] },
     },
     professional: {
       left: { lines: ['Now: founder & lead developer, DigiScalability', 'since Jan 2025'] },
@@ -2495,18 +2498,18 @@ export class SimpleApp {
           { label: 'Next.js' },
         ],
       },
-      screen: { lines: ['CV · LinkedIn · GitHub — press E'] },
+      screen: { lines: ['CV · LinkedIn · GitHub — {use}'] },
     },
     projects: {
       left: {
-        lines: ['Press E at a card'],
+        lines: ['{Use} at a card'],
         chips: [
           { label: 'RankPilot · pre-launch', id: 'rankpilot' },
           { label: 'ChocoMate · paused', id: 'chocomate' },
         ],
       },
       right: {
-        lines: ['Press E at a card'],
+        lines: ['{Use} at a card'],
         chips: [
           { label: 'Bano’s Cookbook', id: 'banos' },
           { label: 'Insta Services API', id: 'insta' },
@@ -2520,10 +2523,32 @@ export class SimpleApp {
       right: { lines: ['Bano’s Cookbook:', 'Ammi’s handwritten recipes from 1981'] },
     },
     contact: {
-      left: { lines: ['Hiring?', 'Press E at the counter for CV & contact'] },
+      left: { lines: ['Hiring?', '{Use} at the counter for CV & contact'] },
       right: { lines: ['Email'], chips: [{ label: SimpleApp.OWNER_EMAIL }] },
     },
   };
+
+  /** Copy for the input in use: the last input (D7), else the boot scheme. */
+  private touchCopy(): boolean {
+    const mode = this.ui.getInputMode?.() ?? (this.ui.isTouchDevice?.() ? 'touch' : 'keyboard');
+    return mode === 'touch';
+  }
+
+  /** P2-A11: a hall's exhibits with its action key named for the input in use (touch: USE). */
+  static interiorExhibits(id: string, touch: boolean): Exhibits | undefined {
+    const ex = SimpleApp.INTERIOR_EXHIBITS[id];
+    if (!ex) return undefined;
+    const key = (l: string) =>
+      l
+        .replace(/\{use\}/g, touch ? 'tap USE' : 'press E')
+        .replace(/\{Use\}/g, touch ? 'Tap USE' : 'Press E');
+    const out: Exhibits = {};
+    for (const k of ['title', 'left', 'right', 'screen'] as const) {
+      const part = ex[k];
+      if (part) out[k] = { ...part, lines: part.lines.map(key) };
+    }
+    return out;
+  }
 
   // Which themed furniture set each zone building opens into (houses → cottage).
   private static readonly INTERIOR_THEMES: Record<string, string> = {
@@ -2666,7 +2691,8 @@ export class SimpleApp {
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
       // P2-A11: a hall gets its exhibits (houseId undefined for halls).
-      const exhibits = isZone ? SimpleApp.INTERIOR_EXHIBITS[id] : undefined;
+      // Canvas text: the key is named for the input in use (touch: USE).
+      const exhibits = isZone ? SimpleApp.interiorExhibits(id, this.touchCopy()) : undefined;
       this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id, exhibits);
       // No carry-over (INT-12): a key pressed on the doorstep, in the gap
       // between the last outdoor frame and this swap, never fires in the room.
