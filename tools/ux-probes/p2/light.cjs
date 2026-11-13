@@ -208,101 +208,233 @@ function bloomStats(normalFile, maskFile) {
       }
     }
   const Ls = (k) => (acc[k] ? +L.Lstar(acc[k].s / acc[k].n).toFixed(1) : null);
-  return { ground: Ls('ground'), player: Ls('player'), bulb: Ls('bulb'), halo: Ls('halo'), prop: Ls('prop'), frame: Ls('frame'), bulbShare: acc.bulb ? +(acc.bulb.n / (W * H)).toFixed(4) : 0 };
+  return { ground: Ls('ground'), player: Ls('player'), bulb: Ls('bulb'), halo: Ls('halo'), prop: Ls('prop'), frame: Ls('frame'), bulbShare: acc.bulb ? +(acc.bulb.n / (W * H)).toFixed(4) : 0, bulbPx: acc.bulb ? acc.bulb.n : 0, haloPx: acc.halo ? acc.halo.n : 0 };
 }
 
-/** One frozen frame under several bloom settings (the loop stopped throughout), and its bulbs mask. */
-async function bloomVariants(page, stem, variants) {
+/**
+ * The paused camera on a street lamp's head (P2-E5's call, 2026-11-13): the
+ * lamp site nearest `near` (the spawn, or a district centre), the camera
+ * 4.5 u out on the far side at eye height, looking at the head (base +
+ * 2.9 u, lamp.glb's), the lamp's radial up as its up. Null with no lamp.
+ */
+const LAMP_AIM = ({ near, lon, lat }) => {
+  const H = window.__L;
+  const sc = window.__app.scene;
+  const isl = sc.getIsland();
+  const target = near === 'spawn' ? window.__lSpawn.pos.clone().normalize() : H.lonlat(lon, lat);
+  let best = null;
+  let bd = 1e9;
+  for (const p of isl.lampSites || []) {
+    const d = p.clone().normalize().distanceTo(target);
+    if (d < bd) {
+      bd = d;
+      best = p;
+    }
+  }
+  if (!best) return null;
+  const up = best.clone().normalize();
+  const off = target.clone().sub(up);
+  off.addScaledVector(up, -off.dot(up));
+  if (off.lengthSq() < 1e-8) off.copy(H.north(up));
+  off.normalize();
+  const cam = window.__app.renderer.camera;
+  cam.up.copy(up);
+  cam.position.copy(best).addScaledVector(off, -4.5).addScaledVector(up, 1.9);
+  cam.lookAt(best.clone().addScaledVector(up, 2.9));
+  cam.updateMatrixWorld();
+  return { lampFromTargetRad: +bd.toFixed(3) };
+};
+
+/** Untag every isNightEmissive mesh but lamp.glb's Glow parts (and say how many Glow meshes there are), or put the tags back. */
+const GLOW_ONLY = (on) => {
+  const root = window.__app.scene.getIsland().mesh.parent;
+  if (on) {
+    window.__untagged = [];
+    let glow = 0;
+    root.traverse((o) => {
+      if (!o.userData || !o.userData.isNightEmissive) return;
+      if (o.material && o.material.name === 'Glow') {
+        if (o.visible) glow++;
+        return;
+      }
+      o.userData.isNightEmissive = false;
+      window.__untagged.push(o);
+    });
+    return glow;
+  }
+  for (const o of window.__untagged || []) o.userData.isNightEmissive = true;
+  window.__untagged = [];
+  return null;
+};
+
+/**
+ * One frozen frame under several bloom settings (the loop stopped
+ * throughout), and its bulb masks: every isNightEmissive mesh ('all') and,
+ * with `glow`, lamp.glb's Glow parts alone ('glow'). `aim` puts the paused
+ * camera on a lamp head first (LAMP_AIM).
+ */
+async function bloomVariants(page, stem, variants, { aim = null, glow = false } = {}) {
   await L.setUi(page, false);
   await page.evaluate(L.pauseLoop);
+  const aimed = aim ? await page.evaluate(LAMP_AIM, aim) : null;
   const files = {};
   for (const v of variants) {
     await page.evaluate(({ enabled, threshold }) => {
       const sr = window.__app.renderer;
-      sr.setBloomEnabled(enabled);
-      if (threshold !== null && threshold !== undefined) sr.bloomPass.threshold = threshold;
+      if (sr.bloomPass && enabled !== null) {
+        sr.setBloomEnabled(enabled);
+        if (threshold !== null && threshold !== undefined) sr.bloomPass.threshold = threshold;
+      }
       sr.render();
     }, v);
     await page.waitForTimeout(60);
     files[v.tag] = await L.shot(page, `${stem}-${v.tag}.png`);
   }
+  const masks = {};
   await page.evaluate(L.maskBegin, { cats: L.CATS, bulbs: true });
   await page.evaluate(L.renderOnce);
   await page.waitForTimeout(60);
-  const mask = await L.shot(page, `${stem}.mask.png`);
+  masks.all = await L.shot(page, `${stem}.mask-all.png`);
   await page.evaluate(L.maskEnd);
-  return { files, mask };
+  let glowMeshes = null;
+  if (glow) {
+    glowMeshes = await page.evaluate(GLOW_ONLY, true);
+    await page.evaluate(L.maskBegin, { cats: L.CATS, bulbs: true });
+    await page.evaluate(L.renderOnce);
+    await page.waitForTimeout(60);
+    masks.glow = await L.shot(page, `${stem}.mask-glow.png`);
+    await page.evaluate(L.maskEnd);
+    await page.evaluate(GLOW_ONLY, false);
+  }
+  return { files, masks, aimed, glowMeshes };
 }
 
+/** A street lamp's view: the lamp nearest the spawn ('hub-lamp') or the Professional centre. */
+const LAMP_VIEWS = { 'hub-lamp': { near: 'spawn' }, 'professional-lamp': { near: 'district', lon: DISTRICTS.professional, lat: ZONE_LAT } };
+
 /**
- * P2-E5: one frozen frame at 12 and 21 h, at Professional and the hub, under
- * today's bloom ('on'), the decided night threshold ('night': the build's own
- * setBloomNight where it has one, else the probe writes the curve's value)
- * and the bloom pass off. --sweep adds thresholds 0.90 and 0.95.
+ * P2-E5 (the call of 2026-11-13): bulb pixels are already saturated (about
+ * 97 L*), so bloom cannot raise them; the measure is the HALO, within 6 px
+ * of lamp.glb's Glow parts. One frozen frame at 12 and 21 h, at a hub lamp
+ * head and a Professional lamp head (and the hub-wide view, as before),
+ * under today's bloom ('on'), the decided night threshold ('night': the
+ * build's own setBloomNight where it has one, else the probe writes the
+ * curve's value) and the bloom pass off. Judged on desktop at 21 h: the
+ * Glow-only halo +5 L* or more over bloom-off at both lamps (the all-bulbs
+ * mask when the build has no Glow parts, and the check says so). Noon: the
+ * frame within +-1 of today's bloom. The bulb pixels are report-only. The
+ * low tier (no bloom pass) at the same lamps, with --compare: no more than
+ * +2 L* over main's frame and halo. --sweep adds thresholds 0.90 and 0.95.
  */
 async function bloomRun(t) {
-  const prof = 'desktop';
-  const s = await openWorld(t, prof, t.base);
-  const { page } = s;
   const rows = {};
-  for (const h of [12, 21]) {
-    await page.evaluate(SET_HOUR, h);
-    await page.waitForTimeout(1600);
-    for (const view of ['professional', 'hub']) {
-      await page.evaluate(VIEW, viewArg(view));
-      await page.waitForTimeout(900);
-      const sun = await page.evaluate(L.sunState);
-      const asBuilt = await page.evaluate(BLOOM);
-      if (!asBuilt) throw new Error('hook missing: __app.renderer.bloomPass (no composer on this profile)');
-      const want = bloomCurve(sun.day);
-      // The build's own lever where it has one (so the curve measured is the build's).
-      const lever = asBuilt.lever
-        ? await page.evaluate((day) => {
-            const sr = window.__app.renderer;
-            const was = sr.bloomPass.threshold;
-            sr.setBloomNight(day);
-            const v = sr.bloomPass.threshold;
-            sr.bloomPass.threshold = was;
-            return v;
-          }, sun.day)
-        : null;
-      const driven = Math.abs(asBuilt.threshold - want) < 0.005 && h === 21;
-      const nightBy = driven ? 'the build, already driving it' : lever !== null ? 'setBloomNight, called by the probe (no caller on this build)' : 'the probe, writing the threshold (no setBloomNight on this build)';
-      const variants = [
-        { tag: 'on', enabled: true, threshold: asBuilt.threshold },
-        { tag: 'night', enabled: true, threshold: lever !== null ? lever : want },
-        ...(t.args.sweep ? [0.9, 0.95].map((x) => ({ tag: `t${x}`, enabled: true, threshold: x })) : []),
-        { tag: 'off', enabled: false, threshold: null },
-      ];
-      const cap = await bloomVariants(page, path.join(t.out, `bloom-h${h}-${view}`), variants);
-      const row = { sun, asBuilt, nightThreshold: lever !== null ? lever : want, nightBy };
-      for (const v of variants) row[v.tag] = bloomStats(cap.files[v.tag], cap.mask);
-      fs.rmSync(cap.mask, { force: true });
-      t.data.frames = [...(t.data.frames || []), ...Object.values(cap.files)];
-      // Put the pass back as the build had it.
-      await page.evaluate((b) => {
-        const sr = window.__app.renderer;
-        sr.setBloomEnabled(b.enabled);
-        sr.bloomPass.threshold = b.threshold;
-        sr.render();
-      }, asBuilt);
-      await page.evaluate(L.resumeLoop);
-      await L.setUi(page, true);
-      rows[`h${h}-${view}`] = row;
-      t.log(`bloom ${h} h ${view} (night threshold ${row.nightThreshold}, ${nightBy}): ${variants.map((v) => `${v.tag} ${JSON.stringify(row[v.tag])}`).join(' ')}`);
+  const glowMaskOf = (cap) => cap.masks.glow || null;
+  for (const prof of ['desktop', 'lowtier']) {
+    const builds = prof === 'lowtier' && t.compareBase ? [['subject', t.base], ['main', t.compareBase]] : [['subject', t.base]];
+    for (const [label, base] of builds) {
+      const s = await openWorld(t, prof, base);
+      const { page } = s;
+      for (const h of [12, 21]) {
+        await page.evaluate(SET_HOUR, h);
+        await page.waitForTimeout(1600);
+        for (const view of ['hub', 'hub-lamp', 'professional-lamp']) {
+          const lamp = LAMP_VIEWS[view] || null;
+          // The player stands at the spawn for the hub lamp, at the district for Professional's.
+          await page.evaluate(VIEW, lamp && lamp.near === 'district' ? viewArg('professional') : viewArg('hub'));
+          await page.waitForTimeout(900);
+          const sun = await page.evaluate(L.sunState);
+          const asBuilt = await page.evaluate(BLOOM);
+          if (!asBuilt && prof === 'desktop') throw new Error('hook missing: __app.renderer.bloomPass (no composer on this profile)');
+          let variants;
+          let row;
+          if (asBuilt) {
+            const want = bloomCurve(sun.day);
+            const lever = asBuilt.lever
+              ? await page.evaluate((day) => {
+                  const sr = window.__app.renderer;
+                  const was = sr.bloomPass.threshold;
+                  sr.setBloomNight(day);
+                  const v = sr.bloomPass.threshold;
+                  sr.bloomPass.threshold = was;
+                  return v;
+                }, sun.day)
+              : null;
+            const driven = Math.abs(asBuilt.threshold - want) < 0.005 && h === 21;
+            const nightBy = driven ? 'the build, already driving it' : lever !== null ? 'setBloomNight, called by the probe (no caller on this build)' : 'the probe, writing the threshold (no setBloomNight on this build)';
+            variants = [
+              { tag: 'on', enabled: true, threshold: asBuilt.threshold },
+              { tag: 'night', enabled: true, threshold: lever !== null ? lever : want },
+              ...(t.args.sweep ? [0.9, 0.95].map((x) => ({ tag: `t${x}`, enabled: true, threshold: x })) : []),
+              { tag: 'off', enabled: false, threshold: null },
+            ];
+            row = { sun, asBuilt, nightThreshold: lever !== null ? lever : want, nightBy };
+          } else {
+            variants = [{ tag: 'on', enabled: null, threshold: null }];
+            row = { sun, asBuilt: null };
+          }
+          const stem = path.join(t.out, `bloom-${label}-${prof}-h${h}-${view}`);
+          const cap = await bloomVariants(page, stem, variants, { aim: lamp, glow: !!lamp });
+          row.aimed = cap.aimed;
+          row.glowMeshes = cap.glowMeshes;
+          for (const v of variants) {
+            row[v.tag] = bloomStats(cap.files[v.tag], cap.masks.all);
+            const gm = glowMaskOf(cap);
+            if (gm) row[v.tag].glow = bloomStats(cap.files[v.tag], gm);
+          }
+          for (const m of Object.values(cap.masks)) fs.rmSync(m, { force: true });
+          t.data.frames = [...(t.data.frames || []), ...Object.values(cap.files)];
+          if (asBuilt)
+            await page.evaluate((b) => {
+              const sr = window.__app.renderer;
+              sr.setBloomEnabled(b.enabled);
+              sr.bloomPass.threshold = b.threshold;
+              sr.render();
+            }, asBuilt);
+          await page.evaluate(L.resumeLoop);
+          await L.setUi(page, true);
+          rows[`${label}-${prof}-h${h}-${view}`] = row;
+          t.log(`bloom ${label} ${prof} ${h} h ${view}: ${variants.map((v) => `${v.tag} ${JSON.stringify(row[v.tag])}`).join(' ')}`);
+        }
+      }
+      await page.evaluate(SET_HOUR, null);
+      await s.close();
     }
   }
-  await page.evaluate(SET_HOUR, null);
   t.data.bloom = rows;
   const d = (a, b) => (a === null || b === null || a === undefined || b === undefined ? null : +(a - b).toFixed(1));
-  for (const view of ['professional', 'hub']) {
-    const n = rows[`h21-${view}`];
-    const x = n.night;
-    t.check(`21 h ${view}: ground against bloom-off, L* (threshold ${n.nightThreshold}, by ${n.nightBy})`, d(x.ground, n.off.ground) !== null ? Math.abs(d(x.ground, n.off.ground)) <= 1 : null, d(x.ground, n.off.ground), 'within +-1');
-    t.check(`21 h ${view}: player against bloom-off, L*`, d(x.player, n.off.player) !== null ? Math.abs(d(x.player, n.off.player)) <= 2 : null, d(x.player, n.off.player), 'within +-2');
-    t.check(`21 h ${view}: bulb pixels against bloom-off, L*`, d(x.bulb, n.off.bulb) !== null ? d(x.bulb, n.off.bulb) >= 5 : null, d(x.bulb, n.off.bulb) === null ? 'no bulb pixels in view' : `${d(x.bulb, n.off.bulb)} (today's bloom: ${d(n.on.bulb, n.off.bulb)}; the halo within 6 px: ${d(x.halo, n.off.halo)}, today ${d(n.on.halo, n.off.halo)})`, '>= +5');
-    const day = rows[`h12-${view}`];
-    t.check(`12 h ${view}: the frame against today's bloom, L*`, Math.abs(d(day.night.frame, day.on.frame)) <= 1 && Math.abs(d(day.night.ground, day.on.ground)) <= 1, { frame: d(day.night.frame, day.on.frame), ground: d(day.night.ground, day.on.ground) }, 'within +-1');
+  // Desktop, 21 h: the hub-wide view's ground and player as before.
+  const hub = rows['subject-desktop-h21-hub'];
+  t.check(`21 h hub: ground against bloom-off, L* (threshold ${hub.nightThreshold}, by ${hub.nightBy})`, d(hub.night.ground, hub.off.ground) !== null ? Math.abs(d(hub.night.ground, hub.off.ground)) <= 1 : null, d(hub.night.ground, hub.off.ground), 'within +-1');
+  t.check('21 h hub: player against bloom-off, L*', d(hub.night.player, hub.off.player) !== null ? Math.abs(d(hub.night.player, hub.off.player)) <= 2 : null, d(hub.night.player, hub.off.player), 'within +-2');
+  for (const view of ['hub-lamp', 'professional-lamp']) {
+    const n = rows[`subject-desktop-h21-${view}`];
+    const glow = n.night.glow && n.night.glow.bulbPx > 0;
+    const sel = (x) => (glow ? x.glow : x);
+    const halo = d(sel(n.night).halo, sel(n.off).halo);
+    const mask = glow ? `Glow-only, ${n.night.glow.bulbPx} bulb px` : `all bulbs (no Glow parts in view: ${n.glowMeshes ?? 0} on the island)`;
+    t.check(`21 h ${view}: the halo within 6 px against bloom-off, L* (${mask})`, halo !== null ? halo >= 5 : null, halo === null ? (n.aimed ? 'no bulb pixels in view' : 'no lamp site') : `${halo} (today's bloom: ${d(sel(n.on).halo, sel(n.off).halo)})`, '>= +5');
+    // Report-only (the call): the bulb pixels are saturated, bloom cannot lift them.
+    t.data.bulbReport = { ...(t.data.bulbReport || {}), [view]: { bulbVsOff: d(sel(n.night).bulb, sel(n.off).bulb), bulbOff: sel(n.off).bulb } };
+    t.log(`21 h ${view}: bulb pixels against bloom-off ${d(sel(n.night).bulb, sel(n.off).bulb)} L* (report-only; bulb ${sel(n.off).bulb} L* with bloom off)`);
+  }
+  for (const view of ['hub', 'hub-lamp', 'professional-lamp']) {
+    const day = rows[`subject-desktop-h12-${view}`];
+    t.check(`12 h ${view}: the frame against today's bloom, L*`, Math.abs(d(day.night.frame, day.on.frame)) <= 1 && Math.abs(d(day.night.ground, day.on.ground) ?? 0) <= 1, { frame: d(day.night.frame, day.on.frame), ground: d(day.night.ground, day.on.ground) }, 'within +-1');
+  }
+  // The low tier (no bloom pass): no brighter than main by more than 2 L* at
+  // 21 h, judged on the hub-wide view (the same geometry on both builds:
+  // lamp.glb replaces the lamp model, so a lamp head's pixels are not the
+  // same pixels on main), the frame, the ground and the all-bulbs halo. The
+  // lamp views are reported.
+  const sub = rows['subject-lowtier-h21-hub'];
+  const main = rows['main-lowtier-h21-hub'];
+  const dv = main ? { frame: d(sub.on.frame, main.on.frame), ground: d(sub.on.ground, main.on.ground), halo: d(sub.on.halo, main.on.halo) } : null;
+  const ok = dv && dv.frame !== null ? dv.frame <= 2 && (dv.ground === null || dv.ground <= 2) && (dv.halo === null || dv.halo <= 2) : null;
+  t.check('low tier, 21 h hub: frame, ground and halo against main, L* (no bloom pass)', ok, dv || `report: frame ${sub.on.frame}, halo ${sub.on.halo} (no --compare)`, '<= +2');
+  for (const view of ['hub-lamp', 'professional-lamp']) {
+    const a = rows[`subject-lowtier-h21-${view}`];
+    const b = rows[`main-lowtier-h21-${view}`];
+    t.data.lowtierLamps = { ...(t.data.lowtierLamps || {}), [view]: { frame: a.on.frame, glowHalo: a.on.glow ? a.on.glow.halo : null, mainFrame: b ? b.on.frame : null } };
   }
 }
 
