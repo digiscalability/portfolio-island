@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { addGroupHulls } from './CelLook';
+import { addGroupHulls, STATIC_INK } from './CelLook';
 import { Materials } from './Materials';
 import { isRealTheme } from './Theme';
 
@@ -107,7 +107,7 @@ export class Mailbox {
     // Ink (C4): the post and the box. The plate is a plane, the flag is under
     // the floor, and the glow and the beam are their own effects (never ink).
     // Shielded like every hull, so the seeded window sees nothing new.
-    addGroupHulls(group, 0.3, (m) => m !== this.beam && m !== glow);
+    addGroupHulls(group, 0.3, (m) => m !== this.beam && m !== glow, STATIC_INK);
 
     return group;
   }

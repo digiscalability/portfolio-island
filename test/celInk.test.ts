@@ -17,6 +17,7 @@ import {
   flushPhoneInk,
   PHONE_INK_MAX_TRIANGLES,
   resetPhoneInkForTest,
+  STATIC_INK,
 } from '../CelLook';
 
 const boxGroup = (n: number): THREE.Group => {
@@ -162,7 +163,7 @@ describe('phone ink (?phoneink=1 on the low tier, decision 15)', () => {
       const scene = new THREE.Scene();
       const g = boxGroup(3);
       scene.add(g);
-      addGroupHulls(g, 0.12, () => true);
+      addGroupHulls(g, 0.12, () => true, STATIC_INK);
       expect(countHulls(scene)).toBe(0);
       expect(flushPhoneInk(scene, [new THREE.Vector3()])).toBe(0);
       expect(countHulls(scene)).toBe(0);
@@ -178,8 +179,8 @@ describe('phone ink (?phoneink=1 on the low tier, decision 15)', () => {
       scene.add(west, east);
       const spy = vi.spyOn(Math, 'random');
       spy.mockClear();
-      addGroupHulls(west, 0.12, () => true);
-      addGroupHulls(east, 0.12, () => true);
+      addGroupHulls(west, 0.12, () => true, STATIC_INK);
+      addGroupHulls(east, 0.12, () => true, STATIC_INK);
       // Recording only: no per-part hull exists on a phone.
       expect(countHulls(scene)).toBe(0);
       const tris = flushPhoneInk(scene, [new THREE.Vector3(0, 0, 0), new THREE.Vector3(100, 0, 0)]);
@@ -193,6 +194,54 @@ describe('phone ink (?phoneink=1 on the low tier, decision 15)', () => {
       expect(tris).toBeLessThanOrEqual(PHONE_INK_MAX_TRIANGLES);
       // A second flush has nothing left to bake.
       expect(flushPhoneInk(scene, [new THREE.Vector3()])).toBe(0);
+    });
+  });
+
+  test('a filtered call without STATIC_INK (cars, playground, gazebos) queues nothing', () => {
+    withUrl('/?phoneink=1', () => {
+      const scene = new THREE.Scene();
+      const g = boxGroup(3);
+      scene.add(g);
+      addGroupHulls(g, 0.12, () => true);
+      expect(flushPhoneInk(scene, [new THREE.Vector3()])).toBe(0);
+      expect(countHulls(scene)).toBe(0);
+    });
+  });
+
+  test('a hidden mesh (a placeholder a GLB replaced) bakes no ink', () => {
+    withUrl('/?phoneink=1', () => {
+      const scene = new THREE.Scene();
+      const shown = boxGroup(2);
+      const hidden = boxGroup(3);
+      const parentHidden = new THREE.Group();
+      const child = boxGroup(1);
+      parentHidden.add(child);
+      parentHidden.visible = false;
+      hidden.children.forEach((c) => (c.visible = false));
+      scene.add(shown, hidden, parentHidden);
+      addGroupHulls(shown, 0.12, () => true, STATIC_INK);
+      addGroupHulls(hidden, 0.12, () => true, STATIC_INK);
+      addGroupHulls(child, 0.12, () => true, STATIC_INK);
+      const tris = flushPhoneInk(scene, [new THREE.Vector3()]);
+      expect(tris).toBe(24);
+      const hulls = scene.children.filter((o) => o.userData.isCelHull) as THREE.Mesh[];
+      expect(hulls.map((h) => triCount(h.geometry))).toEqual([24]);
+    });
+  });
+
+  test('after the flush a late STATIC_INK call queues and builds nothing', () => {
+    withUrl('/?phoneink=1', () => {
+      const scene = new THREE.Scene();
+      const early = boxGroup(1);
+      scene.add(early);
+      addGroupHulls(early, 0.12, () => true, STATIC_INK);
+      expect(flushPhoneInk(scene, [new THREE.Vector3()])).toBe(12);
+      const late = boxGroup(2);
+      scene.add(late);
+      addGroupHulls(late, 0.12, () => true, STATIC_INK);
+      expect(countHulls(scene)).toBe(1);
+      expect(flushPhoneInk(scene, [new THREE.Vector3()])).toBe(0);
+      expect(countHulls(scene)).toBe(1);
     });
   });
 

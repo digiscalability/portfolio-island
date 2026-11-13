@@ -320,17 +320,23 @@ export function addGroupHulls(
   root: THREE.Object3D,
   minWorldRadius = 0.045,
   filter?: (m: THREE.Mesh) => boolean,
+  opts?: { staticInk?: boolean },
 ): void {
   if (!isCelTheme()) return;
   // Ink is a draw-call DOUBLER on every hulled part (~300+ extra draws with
   // the full cast). Phones are draw-call-bound, not fill-bound — low-tier
   // devices get the clean cel look without outlines. Desktop unchanged.
   if (SimpleRenderer.isLowTierDevice()) {
-    // ?phoneink=1 (decision 15, for Abbas to compare on his phone): the
-    // ARCHITECTURE path (a filter is passed) only remembers what it would
-    // have inked; flushPhoneInk merges it into one static hull per district.
-    // Recording allocates no three object, so it draws nothing either.
-    if (filter && isPhoneInk()) collectHullTargets(root, minWorldRadius, filter, phoneInkQueue);
+    // ?phoneink=1 (decision 15, for Abbas to compare on his phone): a call
+    // that opts in with staticInk (architecture that never moves, hides or
+    // is swapped for a GLB) only remembers what it would have inked;
+    // flushPhoneInk merges it into one static hull per district. Cars, the
+    // GLB-replaced placeholders, the playground and the build-plot gazebos
+    // never opt in. Recording allocates no three object, so it draws nothing
+    // either; once the flush has run nothing more is queued.
+    if (opts?.staticInk && !phoneInkFlushed && isPhoneInk()) {
+      collectHullTargets(root, minWorldRadius, filter, phoneInkQueue);
+    }
     return;
   }
   // Both gates sit OUTSIDE the shield so the early-return path stays free.
@@ -370,7 +376,14 @@ function collectHullTargets(
 // once every hall and prop is seated, into ONE world-space hull per district:
 // a draw each, the one ink program, and no per-part hull objects.
 
+/** addGroupHulls' opt-in for ?phoneink=1: pass it only from architecture
+ *  that never moves, hides or is swapped (halls, houses, stalls, gates,
+ *  zone markers, fountain, bandstand, kiosks, quest mailboxes, project boards). */
+export const STATIC_INK = { staticInk: true } as const;
+
 let phoneInkParam: boolean | null = null;
+/** Set once flushPhoneInk has run: later staticInk calls queue nothing. */
+let phoneInkFlushed = false;
 /** ?phoneink=1, read once (as SimpleRenderer reads ?halfshadow). */
 export function isPhoneInk(): boolean {
   if (phoneInkParam === null) {
@@ -388,6 +401,7 @@ export function isPhoneInk(): boolean {
 /** Test seam: forget the cached ?phoneink read (and anything queued). */
 export function resetPhoneInkForTest(): void {
   phoneInkParam = null;
+  phoneInkFlushed = false;
   phoneInkQueue.length = 0;
 }
 
@@ -422,6 +436,16 @@ function appendHullTriangles(
   return p.count / 3;
 }
 
+/** True when `o` and every ancestor up to `root` are visible and `root`
+ *  is one of its ancestors (a hidden placeholder bakes no ink). */
+function isShownInScene(o: THREE.Object3D, root: THREE.Object3D): boolean {
+  for (let p: THREE.Object3D | null = o; p; p = p.parent) {
+    if (!p.visible) return false;
+    if (p === root) return true;
+  }
+  return false;
+}
+
 /** One position-only hull mesh from merged triangles, on the shared ink. */
 function mergedHullMesh(pos: number[], idx: number[], name: string): THREE.Mesh {
   const geo = new THREE.BufferGeometry();
@@ -446,6 +470,7 @@ function mergedHullMesh(pos: number[], idx: number[], name: string): THREE.Mesh 
  * Returns the triangles built (0 when it did nothing).
  */
 export function flushPhoneInk(scene: THREE.Object3D, anchors: THREE.Vector3[]): number {
+  phoneInkFlushed = true;
   if (!phoneInkQueue.length || !anchors.length) {
     phoneInkQueue.length = 0;
     return 0;
@@ -457,7 +482,7 @@ export function flushPhoneInk(scene: THREE.Object3D, anchors: THREE.Vector3[]): 
     let tris = 0;
     // Biggest parts first, so the triangle cap drops the smallest detail.
     const ranked = queue
-      .filter((e) => e.mesh.parent)
+      .filter((e) => e.mesh.parent && isShownInScene(e.mesh, scene))
       .map((e) => ({ ...e, size: e.thickness }))
       .sort((a, b) => b.size - a.size);
     for (const e of ranked) {

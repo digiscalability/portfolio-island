@@ -14,7 +14,7 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-import { addFleetHull, addGroupHulls, addSkinnedHull, applyCelRim } from './CelLook';
+import { addFleetHull, addGroupHulls, addSkinnedHull, applyCelRim, STATIC_INK } from './CelLook';
 import {
   DISTRICTS,
   RING_DISTRICT_LONS,
@@ -2222,7 +2222,7 @@ export class Island {
       buildings.add(b);
       // Outline Tier 1: ink the tower masses. Guarded path (see addGroupHulls)
       // auto-skips the emissive window planes and any transparent glass.
-      addGroupHulls(b, 1.0, () => true);
+      addGroupHulls(b, 1.0, () => true, STATIC_INK);
       buildingPlaceholders.push(b);
     }
 
@@ -2398,7 +2398,7 @@ export class Island {
       houses.add(house);
       // Outline Tier 1: body/roof/plinth/chimney get ink; the doormat, knob
       // and porch lamp fall under the 0.6 size floor, windows plane-guard out.
-      addGroupHulls(house, 0.6, () => true);
+      addGroupHulls(house, 0.6, () => true, STATIC_INK);
       // Porch light: CONSTRUCTED, NEVER ADDED (decision P2-1: no exterior
       // point lights). three bakes the light COUNT into every lit program,
       // so six porch lights joining the scene at dusk re-linked the whole
@@ -3620,7 +3620,7 @@ export class Island {
     fountain.castShadow = true;
     fountain.name = 'town_fountain';
     // Ink (C4): basins, rim and pillar; the water is transparent and skipped.
-    addGroupHulls(fountain, 0.3, () => true);
+    addGroupHulls(fountain, 0.3, () => true, STATIC_INK);
     // Village square centerpiece, at the edge of the Personal hamlet
     // (the old raw world coords stranded it near the north pole)
     this.placeObjectOnSurface(
@@ -3917,7 +3917,7 @@ export class Island {
       stalls.add(stall);
       // Outline Tier 1: skirt/table/roof only — posts and goods sit under the
       // 1.0 world-size floor (group scale 2.2 is already applied above).
-      addGroupHulls(stall, 1.0, () => true);
+      addGroupHulls(stall, 1.0, () => true, STATIC_INK);
     }
 
     // Signboards removed: unsupported flat planes floating at 0.8u read as
@@ -4633,7 +4633,7 @@ export class Island {
       // Outline Tier 1: posts + lintel; the district board keeps its clean
       // face (text legibility) — the lantern is emissive-but-opaque so its
       // ink cap is fine.
-      addGroupHulls(gate, 0.3, (m) => m.name !== 'gate-board');
+      addGroupHulls(gate, 0.3, (m) => m.name !== 'gate-board', STATIC_INK);
     }
     Island.seedMark('island:gateBoards');
 
@@ -6637,7 +6637,7 @@ export class Island {
             metal,
           ),
         );
-        addGroupHulls(g, 0.7, () => true);
+        addGroupHulls(g, 0.7, () => true, STATIC_INK);
       },
       'kiosk',
     );
@@ -6705,7 +6705,7 @@ export class Island {
             paper,
           ),
         );
-        addGroupHulls(g, 0.7, () => true);
+        addGroupHulls(g, 0.7, () => true, STATIC_INK);
       },
       'board',
     );
@@ -6739,7 +6739,7 @@ export class Island {
           ),
           merge([new THREE.BoxGeometry(1.4, 0.06, 1.0).rotateX(0.18).translate(0, 1.62, 0)], cloth),
         );
-        addGroupHulls(g, 0.7, () => true);
+        addGroupHulls(g, 0.7, () => true, STATIC_INK);
       },
       'canteen',
     );
@@ -6760,7 +6760,7 @@ export class Island {
         ),
         merge([new THREE.BoxGeometry(1.6, 0.06, 0.9).rotateX(0.2).translate(0, 1.5, 0)], cloth),
       );
-      addGroupHulls(g, 0.7, () => true);
+      addGroupHulls(g, 0.7, () => true, STATIC_INK);
     });
     // Market tables with parasols for the Contact plaza approach. The canopy
     // rim breathes in the wind on the shared grass clock. `parasolSway` only
@@ -8004,7 +8004,7 @@ export class Island {
 
     // Ink (C4): deck and roof. The posts are instanced and the stool is
     // under the floor.
-    addGroupHulls(g, 0.4, () => true);
+    addGroupHulls(g, 0.4, () => true, STATIC_INK);
     parent.add(g);
     this.bandstandSites.push(seat.position.clone());
     const up = seat.normal.clone();
@@ -8820,7 +8820,7 @@ export class Island {
     posts.castShadow = true;
     posts.raycast = () => {};
     pivot.add(posts);
-    addGroupHulls(pivot, 0.3, () => true);
+    addGroupHulls(pivot, 0.3, () => true, STATIC_INK);
     return pivot;
   }
 
