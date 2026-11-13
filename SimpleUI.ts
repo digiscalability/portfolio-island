@@ -913,13 +913,22 @@ export class SimpleUI {
   }
 
   /** First steps' card or chip (A6, #ds-guide) where it stands on screen,
-   *  or null while it is hidden. */
+   *  or null while it is hidden. A card still fading in counts: GuideCard
+   *  shows each card and the NextChip with a 180 ms opacity animation from
+   *  0, and the resize that tells watchShown the chip arrived comes in its
+   *  first frame. Read as hidden then, the "Compass set" toast stayed on the
+   *  chip until the next 120 ms poll (wave-2 integration, 390x844, 1 run in
+   *  2; 2 runs in 14 here before this). */
   private guideRect(): DOMRect | null {
     const g = typeof document === 'undefined' ? null : document.getElementById('ds-guide');
     if (!g?.isConnected) return null;
     const cs = getComputedStyle(g);
-    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) {
-      return null;
+    if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+    if (parseFloat(cs.opacity) < 0.05) {
+      const fading =
+        typeof g.getAnimations === 'function' &&
+        g.getAnimations().some((a) => a.playState === 'running' || a.playState === 'pending');
+      if (!fading) return null;
     }
     const r = g.getBoundingClientRect();
     return r.width > 0 && r.height > 0 ? r : null;
