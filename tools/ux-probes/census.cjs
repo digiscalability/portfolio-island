@@ -130,6 +130,109 @@ const DOM_CENSUS = () => {
   return { visibleElements: els.length, radii: top(radii), shadows: top(shadows, 15), fonts: top(fonts), fontSizes: top(sizes, 40), textColors: top(colors), backgrounds: top(bgs), emoji: { distinct: emoji.size, top: top(emoji, 60) } };
 };
 
+/**
+ * domCensus, judged (wave-3 amendments, for D13): emoji in the chrome of the
+ * HUD, the menu (the Portfolio menu on desktop, the drawer on the phone) and
+ * the hire card. Chrome is a control (button, link, tab, switch and the like,
+ * with what is inside it), a HUD anchor ([data-guide]) and, in the menu and
+ * the hire card, a heading. Narrative text may keep emoji: toasts and live
+ * regions, the guide card, chat and dialogue, and body copy are not chrome.
+ * The frozen pill labels ('📖 Portfolio', '💼 Work with me') are exempt as
+ * whole labels. Page side; scope is 'hud', 'menu' or 'hire'.
+ */
+const FROZEN_LABELS = ['📖 Portfolio', '💼 Work with me'];
+const EMOJI_CHROME = ({ scope, frozen }) => {
+  const emojiRe = /\p{Extended_Pictographic}/gu;
+  const norm = (s) => (s || '').replace(new RegExp(String.fromCharCode(0xfe0f), 'g'), '').replace(/\s+/g, ' ').trim();
+  const frozenSet = new Set(frozen.map(norm));
+  const vis = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    for (let p = el; p && p !== document.body; p = p.parentElement) {
+      const cs = getComputedStyle(p);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return false;
+    }
+    return true;
+  };
+  const CONTROL = 'button, a[href], [role=button], [role=link], [role=menuitem], [role=tab], [role=switch], [role=checkbox], [role=radio], summary, label, select';
+  const NARRATIVE = '[aria-live], [role=status], [role=log], [role=alert], #ds-guide';
+  let roots = [];
+  let chromeSel = CONTROL;
+  if (scope === 'hud') {
+    const ov = document.getElementById('ui-overlay');
+    roots = ov ? [ov] : [];
+    chromeSel = `${CONTROL}, [data-guide]`;
+  } else if (scope === 'menu') {
+    roots = [document.getElementById('ds-drawer'), document.querySelector('[role=dialog][aria-labelledby="ds-portfolio-menu-title"]')].filter((el) => el && vis(el));
+    chromeSel = `${CONTROL}, h1, h2, h3, h4, [role=heading]`;
+  } else if (scope === 'hire') {
+    roots = [document.querySelector('[role=dialog][data-zone="hire"]')].filter((el) => el && vis(el));
+    chromeSel = `${CONTROL}, h1, h2, h3, h4, [role=heading]`;
+  }
+  const out = [];
+  const seen = new Set();
+  for (const root of roots) {
+    for (const el of root.querySelectorAll(chromeSel)) {
+      if (!vis(el)) continue;
+      // The outermost chrome element owns its text: a span inside a button is the button's.
+      let owner = el;
+      for (let p = el.parentElement; p && p !== root; p = p.parentElement) if (p.matches(chromeSel)) owner = p;
+      if (seen.has(owner)) continue;
+      seen.add(owner);
+      if (owner.closest(NARRATIVE)) continue;
+      if (scope === 'hud' && owner.closest('[role=dialog], [role=alertdialog], #ds-drawer')) continue;
+      const text = norm(owner.innerText || owner.textContent);
+      const label = norm(owner.getAttribute('aria-label'));
+      const found = text.match(emojiRe) || [];
+      if (!found.length) continue;
+      if (frozenSet.has(text)) continue;
+      out.push({ tag: owner.tagName.toLowerCase(), text: text.slice(0, 60), label: label.slice(0, 60) || null, emoji: [...new Set(found)].join('') });
+    }
+  }
+  return { scope, roots: roots.length, offenders: out };
+};
+
+/** --dom: open the menu and the hire card and census their chrome's emoji (D13's acceptance). */
+async function domChrome(t, page, prof) {
+  const res = { hud: await page.evaluate(EMOJI_CHROME, { scope: 'hud', frozen: FROZEN_LABELS }) };
+  // The menu: the drawer toggle on the phone, the Portfolio pill on desktop.
+  const opened = await page.evaluate(() => {
+    const ui = window.__app && window.__app.ui;
+    const toggle = document.querySelector('[data-guide="drawer-toggle"]');
+    const r = toggle ? toggle.getBoundingClientRect() : null;
+    if (toggle && r.width > 1 && r.height > 1) {
+      toggle.click();
+      return 'drawer';
+    }
+    const pill = [...document.querySelectorAll('#ui-overlay button')].find((b) => /Portfolio/.test(b.textContent || '') && b.getBoundingClientRect().width > 1);
+    if (pill) {
+      pill.click();
+      return 'portfolio pill';
+    }
+    if (ui && typeof ui.togglePortfolioMenu === 'function') {
+      ui.togglePortfolioMenu();
+      return 'togglePortfolioMenu()';
+    }
+    return null;
+  });
+  await page.waitForTimeout(700);
+  res.menu = { openedBy: opened, ...(await page.evaluate(EMOJI_CHROME, { scope: 'menu', frozen: FROZEN_LABELS })) };
+  await t.shot(page, `census-dom-menu-${prof}.png`);
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.evaluate(() => {
+    const ui = window.__app && window.__app.ui;
+    if (document.getElementById('ds-drawer') && ui && ui.drawerOpen && typeof ui.closeDrawer === 'function') ui.closeDrawer();
+    if (ui && ui.panels && typeof ui.panels.closeAll === 'function') ui.panels.closeAll();
+  });
+  await page.waitForTimeout(500);
+  await page.evaluate(() => window.__app && window.__app.ui && window.__app.ui.showHireCard && window.__app.ui.showHireCard('menu'));
+  await page.waitForTimeout(900);
+  res.hire = await page.evaluate(EMOJI_CHROME, { scope: 'hire', frozen: FROZEN_LABELS });
+  await t.shot(page, `census-dom-hire-${prof}.png`);
+  await page.keyboard.press('Escape').catch(() => {});
+  return res;
+}
+
 async function censusOne(t, base, prof, label) {
   const s = await t.session(prof);
   const b = await t.boot(s, { base, query: 'hour=12' });
@@ -140,7 +243,8 @@ async function censusOne(t, base, prof, label) {
   const scene = await page.evaluate(SCENE_CENSUS);
   const dom = await page.evaluate(DOM_CENSUS);
   await t.shot(page, `census-${label}-${prof}.png`);
-  return { boot: b, scene, dom };
+  const chrome = t.args.dom ? await domChrome(t, page, prof) : null;
+  return { boot: b, scene, dom, chrome };
 }
 
 /** Flip to true once B15 (the scene props' conversion) is on main: they are judged by default from then on. */
@@ -170,6 +274,16 @@ async function census(t) {
       t.check(`${prof}: one shading model in the scene props (B15: race gates, cruise ship, islet house, road markings, rocks)`, sp.count === 0, sp.count ? { count: sp.count, samples: sp.samples.slice(0, 8) } : 0, 0);
       t.check(`${prof}: every MeshToon scene prop carries the shared ramp (B15)`, spNoRamp === 0, spNoRamp, 0);
     } else t.log(`${prof}: scene props (B15, reported apart): ${sp.count} lit opaque non-toon, ${spNoRamp} toon without the ramp`);
+    // --dom (wave-3 amendments, D13): the DOM census judged. 0 emoji in the
+    // chrome of the HUD, the menu and the hire card; the frozen pill labels
+    // are exempt. A menu or hire card that did not open is inconclusive.
+    if (r.chrome) {
+      for (const sc of ['hud', 'menu', 'hire']) {
+        const c = r.chrome[sc];
+        const n = c.offenders.length;
+        t.check(`${prof}: emoji in the ${sc === 'hire' ? 'hire card' : sc === 'hud' ? 'HUD' : 'menu'} chrome (D13; frozen pill labels exempt)`, c.roots ? n === 0 : null, c.roots ? (n ? { count: n, offenders: c.offenders.slice(0, 12) } : 0) : `no ${sc} on screen`, 0);
+      }
+    }
     if (t.compareBase) {
       const c = await censusOne(t, t.compareBase, prof, 'compare');
       t.data[`${prof}Compare`] = { scene: { byType: c.scene.byType, notToon: c.scene.notToon.count, renderer: c.scene.renderer } };
@@ -183,5 +297,7 @@ async function census(t) {
 }
 
 module.exports = {
-  census: { item: 'C3, B15 (E6a)', title: "scene material census (one shading model, the shared ramp, programs) on C3's targets; B's scene props reported apart (--scene-props judges them); the DOM style census", profiles: ['desktop', 'phone'], compare: true, run: census },
+  EMOJI_CHROME,
+  FROZEN_LABELS,
+  census: { item: 'C3, B15 (E6a)', title: "scene material census (one shading model, the shared ramp, programs) on C3's targets; B's scene props reported apart (--scene-props judges them); the DOM style census (--dom judges emoji in the HUD, menu and hire-card chrome, D13)", profiles: ['desktop', 'phone'], compare: true, run: census },
 };
