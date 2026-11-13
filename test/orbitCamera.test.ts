@@ -879,6 +879,23 @@ describe('A12: the camera never parks inside a wall', () => {
     run(cam, 1, 1 / 60);
     expect(camera.position.clone().sub(target).dot(back)).toBeGreaterThanOrEqual(1.95);
   });
+
+  test('a still camera reuses its cast (camRays ledger); it re-casts when it moves and every 15 frames', () => {
+    const { cam, camera, player } = rig();
+    run(cam, 0.5, 1 / 60);
+    const { target, back } = wallBehind(cam, camera, 1.2);
+    run(cam, 1, 1 / 60); // 60 still frames
+    const casts = cam.collisionCasts;
+    run(cam, 0.5, 1 / 60); // 30 more still frames: two sphere refreshes, no other casts
+    expect(cam.collisionCasts - casts).toBe(2);
+    // the cached answer still holds the camera in front of the wall
+    expect(camera.position.clone().sub(target).dot(back)).toBeCloseTo(1.2 - 0.25, 1);
+    // a 0.05 u step casts on the very next frame
+    const before = cam.collisionCasts;
+    player.pos.x += 0.05;
+    cam.update(1 / 60);
+    expect(cam.collisionCasts).toBe(before + 1);
+  });
 });
 
 describe('A12: a jump lifts the camera 30% of the hop', () => {

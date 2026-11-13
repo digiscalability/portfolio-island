@@ -208,6 +208,7 @@ export class OrbitCamera {
       });
     });
     this.collisionMeshes = flat;
+    this.castValid = false;
     this.collisionSpheres = new Float32Array(flat.length * 4);
     this.refreshCollisionSpheres();
     this.raycaster.firstHitOnly = true; // BVH fast path on the terrain leg
@@ -245,6 +246,24 @@ export class OrbitCamera {
   private readonly _sphere = new THREE.Sphere();
   private static readonly SPHERE_REFRESH_FRAMES = 15;
   private static readonly SPHERE_SLACK_U = 4;
+  /**
+   * The last cast's inputs and its answer. A camera that has not moved (look
+   * target within CAST_STILL_U, view ray within CAST_STILL_DOT, same reach and
+   * ray count) reuses it instead of casting again, until the next sphere
+   * refresh (SPHERE_REFRESH_FRAMES), which always casts, so a prop that moves
+   * into a still view is caught within the broadphase's own staleness. The
+   * error this allows is millimetres against the 0.25 u margin.
+   */
+  private castValid = false;
+  private castHit = Number.POSITIVE_INFINITY;
+  private castFar = 0;
+  private castRays = 0;
+  private readonly castOrigin = new THREE.Vector3();
+  private readonly castDir = new THREE.Vector3();
+  private static readonly CAST_STILL_U = 0.003;
+  private static readonly CAST_STILL_DOT = 1 - 1e-7;
+  /** Casts actually run (all rays, after the broadphase) since construction; the tests read it. */
+  public collisionCasts = 0;
 
   // ---- A12: jumps lift the camera 30% of the hop --------------------------
   /** The player's radial distance the last frame they stood on the ground. */
@@ -555,7 +574,33 @@ export class OrbitCamera {
   private nearestCollisionHit(): number {
     const dir = this.rayDir;
     if (!dir) return Number.POSITIVE_INFINITY;
-    if (++this.sphereAge >= OrbitCamera.SPHERE_REFRESH_FRAMES) this.refreshCollisionSpheres();
+    const refresh = ++this.sphereAge >= OrbitCamera.SPHERE_REFRESH_FRAMES;
+    const rays = fx.tier() === 'low' ? 3 : 5;
+    const far = this.distance + 0.5;
+    // Perf (camRays ledger): a still camera reuses its last answer.
+    if (
+      !refresh &&
+      this.castValid &&
+      this.castRays === rays &&
+      this.castFar === far &&
+      this.castDir.dot(dir) >= OrbitCamera.CAST_STILL_DOT &&
+      this.castOrigin.distanceToSquared(this.targetPosition) <=
+        OrbitCamera.CAST_STILL_U * OrbitCamera.CAST_STILL_U
+    ) {
+      return this.castHit;
+    }
+    if (refresh) this.refreshCollisionSpheres();
+    this.castValid = true;
+    this.castRays = rays;
+    this.castFar = far;
+    this.castDir.copy(dir);
+    this.castOrigin.copy(this.targetPosition);
+    this.castHit = this.castAll(dir, rays, far);
+    return this.castHit;
+  }
+
+  /** The broadphase and the rays themselves (nearestCollisionHit decides whether to cast). */
+  private castAll(dir: THREE.Vector3, rays: number, far: number): number {
     // Broadphase: meshes whose sphere comes within reach of the look target.
     const cands = this.rayCandidates;
     cands.length = 0;
@@ -572,10 +617,10 @@ export class OrbitCamera {
     if (cands.length === 0) return Number.POSITIVE_INFINITY;
     const right = this._camRight;
     const up = this._rayUp.crossVectors(dir, right).normalize();
-    const rays = fx.tier() === 'low' ? 3 : 5;
     const sp = OrbitCamera.RAY_SPREAD;
     let best = Number.POSITIVE_INFINITY;
-    this.raycaster.far = this.distance + 0.5;
+    this.raycaster.far = far;
+    this.collisionCasts += 1;
     for (let i = 0; i < rays; i++) {
       const o = this._rayOrigin.copy(this.targetPosition);
       if (i === 1) o.addScaledVector(right, sp);
