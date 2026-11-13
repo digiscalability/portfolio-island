@@ -1131,12 +1131,13 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     BUNDLE: {
       warnKB: number;
       gzipBudgetKB: number;
-      main: { rawKB: number; gzipKB: number };
+      main: { rawKB: number; gzipKB: number; at: string };
+      wave2: { rawKB: number; gzipKB: number };
       wave1: { rawKB: number; gzipKB: number };
       beforeWave1: { rawKB: number; gzipKB: number };
       budgetBase: { rawKB: number; gzipKB: number };
       lazyCandidate: { module: string; minKB: number; gzipKB: number };
-      nextCandidate: { module: string; minKB: number; gzipKB: number };
+      nextCandidate: { module: string; minKB: number; gzipKB: number; how: string };
     };
     bundleSize: (dist: string) => Size | null;
     bundleCheck: (size: Size | null, base?: { rawKB: number; gzipKB: number }) => Check | null;
@@ -1147,18 +1148,31 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
   const path = nodeRequire('node:path') as typeof import('node:path');
   const zlib = nodeRequire('node:zlib') as typeof import('node:zlib');
 
-  // Wave-3 amendments (bundle): main is rebased to wave-2 main f79c38c, as
-  // measured at integration; the +50 kB budget stays anchored at wave-1 main.
-  test('the baseline is wave-2 main, the budget stays at wave 1, and the warning limit is not raised', () => {
+  // Wave-4 amendments (bundle): main is rebased to wave-3 main fcaa649
+  // (w3-unhold perf-ab.log); the +50 kB budget stays anchored at wave-1 main.
+  test('the baseline is wave-3 main, the budget stays at wave 1, and the warning limit is not raised', () => {
     expect(gate.BUNDLE.warnKB).toBe(1000);
-    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1073.23, gzipKB: 333.82 });
+    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1123.45, gzipKB: 351.48 });
+    expect(gate.BUNDLE.main.at).toMatch(/fcaa649/);
+    expect(gate.BUNDLE.wave2).toMatchObject({ rawKB: 1073.23, gzipKB: 333.82 });
     expect(gate.BUNDLE.wave1).toMatchObject({ rawKB: 1004.45, gzipKB: 311.85 });
     expect(gate.BUNDLE.budgetBase).toEqual(gate.BUNDLE.wave1);
     expect(gate.BUNDLE.beforeWave1).toMatchObject({ rawKB: 930.89, gzipKB: 288.04 });
-    // Wave 2 used +21.97 kB of the budget.
+    // Waves 1-3 used +39.63 kB of the budget: about 10.4 kB is left for wave 4.
+    const w3 = gate.bundleCheck({ file: 'main-w3.js', rawKB: 1123.45, gzipKB: 351.48 }) as Check;
+    expect(w3).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, budgetUsedKB: 39.63, pass: true });
+    expect(w3.overWarningKB).toBe(123.45);
+    expect(Math.round((gate.BUNDLE.gzipBudgetKB - w3.budgetUsedKB) * 100) / 100).toBe(10.37);
+    // Wave 2 used +21.97 kB of it.
     const w2 = gate.bundleCheck({ file: 'main-w2.js', rawKB: 1073.23, gzipKB: 333.82 }) as Check;
-    expect(w2).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, budgetUsedKB: 21.97, pass: true });
-    expect(w2.overWarningKB).toBe(73.23);
+    expect(w2).toMatchObject({
+      deltaRawKB: -50.22,
+      deltaGzipKB: -17.66,
+      budgetUsedKB: 21.97,
+      pass: true,
+    });
+    // The candidate's how names the wave-4 contract (D drops the value import, A dynamic-imports).
+    expect(gate.BUNDLE.nextCandidate.how).toMatch(/D's SimpleUI\.ts.*A dynamic-imports/);
     const cfg = fs.readFileSync(path.resolve(__dirname, '../vite.config.ts'), 'utf8');
     expect(cfg).toMatch(/chunkSizeWarningLimit:\s*1000\b/);
   });
@@ -1191,8 +1205,8 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
       gate.bundleCheck({ file: 'main-x.js', rawKB, gzipKB }) as Check;
     const w1 = at(1004.45, 311.85);
     expect(w1).toMatchObject({
-      deltaRawKB: -68.78,
-      deltaGzipKB: -21.97,
+      deltaRawKB: -119,
+      deltaGzipKB: -39.63,
       budgetUsedKB: 0,
       overWarning: true,
       pass: true,
@@ -1203,7 +1217,7 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     // A's Multiplayer move: about 1,059 kB raw, still over the warning.
     const moved = at(1059.16, 328.65);
     expect(moved).toMatchObject({ overWarning: true, pass: true });
-    expect(moved.deltaRawKB).toBe(-14.07);
+    expect(moved.deltaRawKB).toBe(-64.29);
     // Side A of an A/B is the baseline there.
     const ab = gate.bundleCheck(
       { file: 'main-b.js', rawKB: 1005.55, gzipKB: 312.11 },

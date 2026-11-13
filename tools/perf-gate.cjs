@@ -1616,9 +1616,11 @@ function modeRejudge(args) {
  * The main chunk's size (wave-2 amendments). Wave 1 took it over Vite's
  * 1,000 kB chunk warning (vite.config.ts chunkSizeWarningLimit, which stays
  * where it is). kB are Vite's: bytes / 1000, gzip at zlib's default level.
- * - main: wave-2 main (f79c38c; 29edc9b builds the same chunk), the
- *   baseline every delta is reported against (wave-3 amendments, bundle).
+ * - main: wave-3 main (fcaa649; w3-unhold perf-ab.log), the baseline every
+ *   delta is reported against (wave-4 amendments, bundle). wave2 (f79c38c),
  *   wave1 (8662b27) and beforeWave1 (d5e0e96) are kept for the record.
+ *   Waves 1-3 used 39.63 kB of the budget, so all of wave 4 has about
+ *   10.4 kB gzip.
  * - gzipBudgetKB: the plan's '+50 KB transferred before the card' (the main
  *   chunk is fetched before the card); the gating half of the check. The
  *   budget stays anchored at budgetBase (wave-1 main), so rebasing main
@@ -1632,7 +1634,8 @@ function modeRejudge(args) {
  */
 const BUNDLE = {
   warnKB: 1000,
-  main: { rawKB: 1073.23, gzipKB: 333.82, at: 'wave-2 main (f79c38c)' },
+  main: { rawKB: 1123.45, gzipKB: 351.48, at: 'wave-3 main (fcaa649)' },
+  wave2: { rawKB: 1073.23, gzipKB: 333.82, at: 'wave-2 main (f79c38c)' },
   wave1: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
   beforeWave1: { rawKB: 930.89, gzipKB: 288.04, at: 'main before wave 1 (d5e0e96)' },
   gzipBudgetKB: 50,
@@ -1641,7 +1644,7 @@ const BUNDLE = {
     module: 'Chat.ts',
     minKB: 7.0,
     gzipKB: 2.77,
-    how: "once SimpleUI.ts stops importing Chat's VOICE_MAX_MS (wave 4)",
+    how: "wave-4 contract: D's SimpleUI.ts drops the VOICE_MAX_MS value import (a local constant pinned to Chat.ts by a test), then A dynamic-imports Chat in main-simple.ts as its last, droppable commit",
   },
   lazyCandidate: {
     module: 'Multiplayer.ts',
