@@ -134,8 +134,62 @@ async function mobile(t) {
     t.check(`${prof}: touch prompts carry no 'press E' or keyboard glyph`, prompts.length ? bad.length === 0 : null, prompts, "no 'press E', no ⌨️");
     // haptics
     // A pattern may arrive as a number, an array, or (through the harness's own wrapper) {t, p}.
-    out.vibrate = (await page.evaluate(() => window.__vib.slice())).map((v) => (v && typeof v === 'object' && !Array.isArray(v) && 'p' in v ? v.p : v));
-    t.check(`${prof}: the vibrate log`, true, [...new Set(out.vibrate.map((v) => JSON.stringify(v)))],'reported (58c8849: 5 and 8 ms; HAPTIC-01 wants 10, 12 and 18 ms)');
+    const vib = async () => (await page.evaluate(() => window.__vib.slice())).map((v) => (v && typeof v === 'object' && !Array.isArray(v) && 'p' in v ? v.p : v));
+    out.vibrate = await vib();
+    t.check(`${prof}: the vibrate log`, true, [...new Set(out.vibrate.map((v) => JSON.stringify(v)))], 'reported (58c8849: 5 and 8 ms; HAPTIC-01 wants 10, 12 and 18 ms)');
+    // D15 (wave-4 rows list): the pulses judged, each read from the log
+    // entries its own action adds.
+    const pulsesOf = async (fn) => {
+      const n = (await vib()).length;
+      await fn();
+      return (await vib()).slice(n);
+    };
+    out.haptics = {};
+    out.haptics.engage = await pulsesOf(async () => {
+      const c = await T.joyCenter();
+      await T.send('touchStart', [[c[0], c[1], 3]]);
+      await lib.sleep(120);
+      await T.send('touchEnd', []);
+      await lib.sleep(400);
+    });
+    t.check(`${prof}: the stick's engage pulse is 10 ms (D15)`, out.haptics.engage.length ? out.haptics.engage[0] === 10 : null, out.haptics.engage, '10 (58c8849 and fcaa649: 5)');
+    const jump = await page.evaluate(() => {
+      const el = [...document.querySelectorAll('#ui-overlay [role=button], #ui-overlay > div')].find((d) => /^jump/i.test(d.getAttribute('aria-label') || '') || /^\W*JUMP\W*$/i.test((d.textContent || '').trim()));
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return b.width > 0 ? [b.left + b.width / 2, b.top + b.height / 2] : null;
+    });
+    out.haptics.button = jump ? await pulsesOf(async () => {
+      await T.tap(jump[0], jump[1]);
+      await lib.sleep(900);
+    }) : null;
+    t.check(`${prof}: a HUD button press pulses 12 ms (D15; JUMP)`, out.haptics.button && out.haptics.button.length ? out.haptics.button[0] === 12 : null, out.haptics.button || 'no JUMP button found', '12 (58c8849 and fcaa649: 8)');
+    // A USE tap at a cottage door: the interaction-success pulse.
+    const door = await page.evaluate(() => {
+      const a = window.__app;
+      const d = a.scene.getIsland().houseDoors && a.scene.getIsland().houseDoors[0];
+      if (!d) return null;
+      const sc = a.scene;
+      const dir = d.position.clone().normalize();
+      const surf = sc.getIsland().sampleSurfaceByDirection(dir, 0);
+      sc.getPlayer().setWorldPosition(dir.multiplyScalar(surf.position.length() + 0.75));
+      return d.id;
+    });
+    await lib.sleep(900);
+    const doorPrompt = door ? await page.evaluate(() => (window.__app.ui.interactionDiv ? window.__app.ui.interactionDiv.textContent.trim() : '')) : '';
+    const u = /door|enter|knock|inside|visit|home/i.test(doorPrompt) ? await T.useBtn() : null;
+    out.haptics.door = { door, prompt: doorPrompt.slice(0, 80), pulses: u ? await pulsesOf(async () => {
+      await T.tap(u[0], u[1]);
+      await lib.sleep(1500);
+    }) : null };
+    await page.evaluate(() => {
+      const a = window.__app;
+      try {
+        if (a.scene.isInsideInterior()) a.exitBuilding(true);
+      } catch (e) {}
+    });
+    const dp = out.haptics.door.pulses;
+    t.check(`${prof}: a USE tap at a door pulses 18 ms (D15)`, dp ? dp.includes(18) : null, dp ? { prompt: out.haptics.door.prompt, pulses: dp } : `no door in reach (${door || 'no houseDoors'}; prompt '${doorPrompt.slice(0, 60)}')`, '18 among the pulses (null: no door in reach)');
     t.data[prof] = out;
   }
 }
