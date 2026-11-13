@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { a11y } from './Accessibility';
 import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
 import { setInkVisible } from './CelLook';
-import { Chat, PROXIMITY_RADIUS } from './Chat';
+import type { Chat } from './Chat';
 import {
   compassBearing,
   compassTarget,
@@ -80,7 +80,7 @@ import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
 import { placeBench, subscribeBenches } from './worldBenches';
 import { BUILD_KIND_IDS, placeBuild, removeBuild, subscribeBuilds } from './worldBuilds';
-import { WORLD_ERA } from './WorldScale';
+import { WORLD_ERA, WORLD_RADIUS } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
 import './style.css';
@@ -130,6 +130,12 @@ type RaceScene = GameScene & {
 };
 
 /** One stop on the cinematic tour rail (SimpleApp.startTour). */
+/**
+ * Chat.ts's PROXIMITY_RADIUS (0.35 x the world radius), copied so Chat.ts can
+ * be its own chunk (wave-4 bundle carry-over). test/mainLocks pins the two equal.
+ */
+const CHAT_PROXIMITY_RADIUS = 0.35 * WORLD_RADIUS;
+
 interface TourStop {
   caption: string;
   look: THREE.Vector3; // surface point the camera studies
@@ -755,6 +761,12 @@ export class SimpleApp {
         console.warn('Multiplayer chunk failed to load; playing solo:', e);
         return null;
       });
+      // Chat rides with Multiplayer (wave-4 bundle carry-over): no peers, no
+      // chat, so it is its own chunk too. A failed fetch leaves chat off.
+      const chatModule = import('./Chat').catch((e: unknown) => {
+        console.warn('Chat chunk failed to load; chat stays off:', e);
+        return null;
+      });
       console.log('🎨 SimpleRenderer created:', {
         canvas: this.renderer.getCanvas(),
         renderer: this.renderer.getRenderer(),
@@ -991,7 +1003,8 @@ export class SimpleApp {
       // visitors. Wired to the mobile chat/mic HUD buttons and to
       // Enter/V(oice) on desktop (see setupDebugShortcuts-adjacent binding
       // below, near the input manager setup). No multiplayer, no chat.
-      this.chat = multiplayer ? new Chat(multiplayer) : undefined;
+      const chatMod = multiplayer ? await chatModule : null;
+      this.chat = multiplayer && chatMod ? new chatMod.Chat(multiplayer) : undefined;
       // DOM twins live in the overlay so photo mode hides them for free.
       this.hudLabels = new HudLabels(this.ui.getOverlay());
       // Expandable island map: tap the radar (or press M) for the full map.
@@ -4114,7 +4127,7 @@ export class SimpleApp {
 
     // First time a real visitor comes within chat range, surface how to
     // interact (idempotent + persisted, so this is effectively free after once).
-    if (this.multiplayer && this.multiplayer.nearestPeerDistance() < PROXIMITY_RADIUS) {
+    if (this.multiplayer && this.multiplayer.nearestPeerDistance() < CHAT_PROXIMITY_RADIUS) {
       this.ui.showProximityCoachMark();
     }
 

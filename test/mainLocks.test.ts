@@ -17,6 +17,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
+import { PROXIMITY_FRACTION, PROXIMITY_RADIUS } from '../Chat';
+import { WORLD_RADIUS } from '../WorldScale';
+
 // EOL-agnostic: a Windows checkout (core.autocrlf=true) hands these files over
 // as CRLF. No assertion below contains a line break.
 const src = (f: string): string =>
@@ -1811,7 +1814,9 @@ describe('wave-3 bundle carry-over: Multiplayer is its own chunk', () => {
     // ...and the module is awaited only where it is constructed.
     const built = init.indexOf('new mpMod.Multiplayer(this.scene, this.scene.getPlayer())');
     expect(built).toBeGreaterThan(init.indexOf('const mpMod = await multiplayerModule;'));
-    expect(init).toContain('this.chat = multiplayer ? new Chat(multiplayer) : undefined;');
+    expect(init).toContain(
+      'this.chat = multiplayer && chatMod ? new chatMod.Chat(multiplayer) : undefined;',
+    );
   });
 
   test('no other module imports Multiplayer as a value, so it stays out of the main chunk', () => {
@@ -1995,5 +2000,31 @@ describe('wave 4 MOT-06: the tour turns the camera continuously', () => {
     expect(bodyOf(stripped('main-simple.ts'), 'private startTour(')).toContain(
       'fromQuat: cam.quaternion.clone(),',
     );
+  });
+});
+
+describe('wave 4 bundle carry-over: Chat is its own chunk (droppable)', () => {
+  test('main-simple imports Chat as a type and builds it from import()', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("import type { Chat } from './Chat';");
+    expect(m).not.toMatch(/import\s*\{[^}]*\}\s*from\s*'\.\/Chat'/);
+    const init = bodyOf(m, 'private async init(');
+    const start = init.indexOf("import('./Chat')");
+    expect(start).toBeGreaterThan(init.indexOf("import('./Multiplayer')"));
+    expect(start).toBeLessThan(init.indexOf('new GameScene()'));
+    expect(init.slice(start, start + 200)).toContain('.catch(');
+    const built = init.indexOf('new chatMod.Chat(multiplayer)');
+    expect(built).toBeGreaterThan(
+      init.indexOf('const chatMod = multiplayer ? await chatModule : null;'),
+    );
+  });
+
+  test("the local proximity radius is Chat.ts's PROXIMITY_RADIUS", () => {
+    const m = stripped('main-simple.ts');
+    const f = /const CHAT_PROXIMITY_RADIUS = ([\d.]+) \* WORLD_RADIUS;/.exec(m);
+    expect(f).not.toBeNull();
+    expect(Number(f![1]) * WORLD_RADIUS).toBe(PROXIMITY_RADIUS);
+    expect(Number(f![1])).toBe(PROXIMITY_FRACTION);
+    expect(m).toContain('nearestPeerDistance() < CHAT_PROXIMITY_RADIUS');
   });
 });
