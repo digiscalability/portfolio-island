@@ -598,7 +598,8 @@ async function seed(t) {
   const runs = [];
   const profiles = t.profiles(['desktop', 'lowtier']);
   for (const prof of profiles) {
-    const reps = prof === 'desktop' ? 3 : 1;
+    // Three fresh boots per tier (wave-3 amendments: the low tier is judged too).
+    const reps = 3;
     for (let i = 0; i < reps; i++) runs.push(await seedRun(t, prof, `fresh #${i + 1}`, null));
     runs.push(await seedRun(t, prof, "ds_arrived='1'", { ds_arrived: '1' }));
   }
@@ -621,10 +622,24 @@ async function seed(t) {
       t.check("desktop: total and every mark identical for fresh storage, ds_arrived='1' and 3 reloads", present ? sameAll : false, present ? mine.map((r) => `${r.label}: ${r.seed.total}`) : 'seed counter absent', 'identical');
       t.check(`desktop: equal to ${shown}`, present && g ? key(first) === key(g) : false, !golden ? 'golden absent' : !present ? 'seed counter absent' : { measured: first.total, golden: g ? g.total : 'no desktop entry' }, 'equal');
     } else {
-      // The low tier is reported; a difference is a pre-existing finding.
-      t.data[`${prof}Report`] = present ? { totals: mine.map((r) => `${r.label}: ${r.seed.total}`), identical: sameAll, equalsDesktop: key(first) === key((runs.find((r) => r.profile === 'desktop') || {}).seed), equalsGolden: g ? key(first) === key(g) : 'golden absent' } : 'seed counter absent';
+      // Wave-3 amendments (seed low tier): the low tier is judged, not only
+      // reported. Identical across fresh boots, ds_arrived and reloads; equal
+      // to the golden when lib.goldenFor has an entry for it, else reported.
+      const desk = (runs.find((r) => r.profile === 'desktop') || {}).seed;
+      t.data[`${prof}Report`] = present ? { totals: mine.map((r) => `${r.label}: ${r.seed.total}`), identical: sameAll, equalsDesktop: desk ? key(first) === key(desk) : 'no desktop run', equalsGolden: g ? key(first) === key(g) : 'golden absent' } : 'seed counter absent';
+      t.check(`${prof}: window.__dsSeedDraws present`, present, present ? first.total : 'seed counter absent', '{marks, total}');
+      t.check(`${prof}: total and every mark identical for fresh storage, ds_arrived='1' and 3 reloads`, present ? sameAll : false, present ? mine.map((r) => `${r.label}: ${r.seed.total}`) : 'seed counter absent', 'identical');
+      if (g) t.check(`${prof}: equal to ${shown}`, present ? key(first) === key(g) : false, !present ? 'seed counter absent' : { measured: first.total, golden: g.total, differingMarks: present ? diffMarks(first.marks, g.marks) : null }, 'equal');
+      else t.check(`${prof}: against ${shown} (report-only: no entry for this tier)`, null, !golden ? 'golden absent' : 'no entry', 'equal when the golden has an entry', 'report-only');
     }
   }
+}
+
+/** Marks whose counts differ between two { name: count } maps (the first 8). */
+function diffMarks(a, b) {
+  const out = [];
+  for (const k of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) if ((a || {})[k] !== (b || {})[k]) out.push(`${k}: ${(a || {})[k]} vs ${(b || {})[k]}`);
+  return out.slice(0, 8);
 }
 
 /** --bless: write B0's golden from the desktop runs (only when they all agree). */

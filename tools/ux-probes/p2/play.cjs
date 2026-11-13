@@ -536,6 +536,31 @@ async function quests(t) {
     // GP-04: six presses used to pay +60 in 2 s; the fix pays one lesson (+10) a visit.
     t.check(`${prof}: six presses at the School pay (coins)`, /lesson/i.test(prompt0 || '') ? out.school.paid <= 10 : null, /lesson/i.test(prompt0 || '') ? out.school.paid : `no lesson prompt at the School: '${prompt0}'`, '<= +10 (main: +60)');
 
+    // P2-E2c: the canteen double press (P2-A6). Two E presses 150 ms apart,
+    // empty-handed: coins and soups before and after.
+    const canteen = await page.evaluate(() => {
+      const p = window.__app.scene.canteenPos();
+      return p ? p.toArray() : null;
+    });
+    if (canteen) {
+      await page.evaluate(() => {
+        const a = window.__app;
+        a.produce = 0;
+        if (a.scene.getCoinsCollected() < 10) a.scene.addCoins(10 - a.scene.getCoinsCollected());
+      });
+      await page.evaluate(TP_NEAR, { p: canteen, dist: 2.0 });
+      await lib.sleep(900);
+      const before = await page.evaluate(() => ({ coins: window.__app.scene.getCoinsCollected(), soup: window.__app.meals ? window.__app.meals.soup : null, prompt: window.__g.prompt() }));
+      await useKey(page, touch, T);
+      await lib.sleep(150);
+      await useKey(page, touch, T);
+      await lib.sleep(1200);
+      const after = await page.evaluate(() => ({ coins: window.__app.scene.getCoinsCollected(), soup: window.__app.meals ? window.__app.meals.soup : null }));
+      out.canteen = { prompt: before.prompt, coinsBefore: before.coins, coinsAfter: after.coins, soupBefore: before.soup, soupAfter: after.soup, bought: after.soup !== null && before.soup !== null ? after.soup - before.soup : null };
+      t.log(`${prof} canteen: ${JSON.stringify(out.canteen)}`);
+      t.check(`${prof}: a canteen double press buys one soup`, /soup/i.test(before.prompt || '') && out.canteen.bought !== null ? out.canteen.bought === 1 : null, out.canteen, '1 soup, -3 coins');
+    } else out.canteen = { note: 'no scene.canteenPos()' };
+
     // The Elder Sage: the prompt says she has a request, and after it E opens the chat.
     const sage = await page.evaluate(() => {
       const sc = window.__app.scene;
@@ -598,5 +623,11 @@ async function quests(t) {
 module.exports = {
   firstplay: { item: 'P2-E2b (GP-02, GP-08; P2-D4)', title: "the first play: the trail, its villager, and five questions with the backend blocked (the reply, its button, where the button leads, the badge)", profiles: ['desktop', 'phone'], run: firstplay },
   race: { item: 'P2-E2b (GP-03, GP-05; P2-A7, D10)', title: "a lap by the gates' positions (or --driver compass: by the compass pill alone): the next ring against the horizon, the HUD over the pill, district toasts, the finish modal, the name prompt", profiles: ['desktop', 'phone'], run: race },
-  quests: { item: 'P2-E2b (GP-04, GP-07, GP-10; P2-A7)', title: "six presses at the School, the Elder Sage's prompt and what E does after her quest, the parcel prompt", profiles: ['desktop'], run: quests },
+  quests: { item: 'P2-E2b (GP-04, GP-07, GP-10; P2-A7); P2-E2c canteen', title: "six presses at the School, the canteen double press (coins and soups), the Elder Sage's prompt and what E does after her quest, the parcel prompt", profiles: ['desktop'], run: quests },
+  // Helpers for the top-level npc.cjs (functions, not probes: run.cjs registers only {run}).
+  openChat,
+  besideNpc,
+  useKey,
+  CHAT,
+  TP_NEAR,
 };

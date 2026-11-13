@@ -19,6 +19,24 @@ fx.register('halfShadow', { desktop: false, low: true });
 // P2-3). Desktop only: the low tier builds no composer. With the switch off
 // the threshold stays at its day value, which keeps today's warm night haze.
 fx.register('bloomNight', { desktop: true, low: false });
+// E4: behind a modal the low tier renders one rAF frame in three, freezes the
+// shadow map and pauses the governor. Desktop is unchanged.
+fx.register('modalDivisor', { desktop: false, low: true });
+/** What getGovernorState() returns: a read-only snapshot for the probes. */
+export interface GovernorState {
+  renderScale: number;
+  fpsEma: number;
+  /** Smoothed CPU seconds per rendered frame (renderCallback + governor + render). */
+  cpuEma: number;
+  /** Smoothed seconds of the frame's own logic (renderCallback + governor), without render(). */
+  logicEma: number;
+  /** The pixel test (E3): true when render() time fell with the pixels shed (GPU-bound), false when it did not, null untested. */
+  pixelBound: boolean | null;
+  qualityRung: number;
+  cpuBound: boolean;
+  /** 3 while the modal divisor holds (E4), else 1. */
+  modalDivisor: number;
+}
 
 /**
  * SimpleRenderer
@@ -190,6 +208,96 @@ export class SimpleRenderer {
     if (this.halfShadowParam !== null) return this.halfShadowParam;
     return this.lowTier && fx.on('halfShadow');
   }
+
+  /**
+   * E3: CPU time per rendered frame (renderCallback + updateAdaptiveResolution
+   * + render), smoothed like fpsEma, and the logic share alone (logicEma).
+   * The frame is CPU-BOUND when cpuEma is 0.85 of the target frame interval
+   * or more at two decisions in a row AND the pixel test says render() does
+   * not shrink with the pixels: shedding resolution buys nothing there (the
+   * low tier at 4x CPU walked to a 0.48 scale and stayed slow), so the
+   * governor holds the scale up and sheds rungs instead.
+   *
+   * WHY THE PIXEL TEST: render() blocks on the GPU when its queue is full, so
+   * a GPU-bound frame reads as CPU time in cpuEma. MEASURED at integration on
+   * desktop at 21 h (bloom on): cpuBound true at cpuEma 0.02-0.08 s, the scale
+   * held at 1.0 and the ladder walked to rung 3 (bloom gone at 5 s), where
+   * main sheds to 0.6 and stays at rungs 1-2. And the logic alone cannot tell
+   * either: MEASURED on the 4x low tier, logic 8-12 ms (under the 14 ms bar)
+   * and render() 45-50 ms at a 1.0 scale, 47-53 ms at 0.48. So the governor
+   * sheds as before, and once the scale is PIXEL_TEST_STEP under where the
+   * test started it compares render()'s share: fallen by less than
+   * PIXEL_TEST_GAIN of the pixel cut means the time is the main thread's.
+   */
+  private cpuEma = 0;
+  private logicEma = 0;
+  private cpuBound = false;
+  /** Consecutive decisions with cpuEma over (+) or under (-) the bar. */
+  private cpuBoundRun = 0;
+  private static readonly CPU_BOUND_DECISIONS = 2;
+  /** The pixel test: null untested, true GPU-bound (render() shrank with the pixels), false not. */
+  private pixelBound: boolean | null = null;
+  private pixelProbe: { scale: number; render: number } | null = null;
+  private static readonly PIXEL_TEST_STEP = 0.3;
+  private static readonly PIXEL_TEST_GAIN = 0.5;
+  private static readonly CPU_BOUND_RATIO = 0.85;
+  /** Floor and claw-back step for the render scale while CPU-bound. */
+  private static readonly CPU_BOUND_SCALE = 0.9;
+  private static readonly CPU_BOUND_CLAW = 0.05;
+  /** ?gpuheavy=1 adds one full-screen pass: a GPU-bound test case for the
+   *  gate. Read once, like ?halfshadow; nothing happens without it. */
+  private readonly gpuHeavyParam: boolean = (() => {
+    try {
+      return new URLSearchParams(window.location.search).get('gpuheavy') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  private gpuHeavy: { scene: THREE.Scene; camera: THREE.OrthographicCamera } | null = null;
+  private static readonly GPU_HEAVY_DRAWS = 40;
+  /**
+   * The pass is scaled to the GPU: from the armed governor on, every
+   * GPU_HEAVY_RAMP_FRAMES rendered frames it grows x1.5 (to GPU_HEAVY_MAX_DRAWS)
+   * until fpsEma is under 0.85 of the shed bar, then holds that many draws
+   * for good, so the shed it provokes is the governor's to undo. A fixed
+   * count did not provoke one on a quiet host (integration: fpsEma 35.8-44.7
+   * against a 33.75 bar for 20 s). Nothing is drawn before the governor
+   * arms, so the refresh estimate (the bar) is read on the unloaded frame.
+   */
+  private gpuHeavyDraws = SimpleRenderer.GPU_HEAVY_DRAWS;
+  private gpuHeavyFrames = 0;
+  private gpuHeavyHeld = false;
+  private gpuHeavyUnder = 0;
+  private static readonly GPU_HEAVY_RAMP_FRAMES = 20;
+  private static readonly GPU_HEAVY_MAX_DRAWS = 1200;
+
+  /**
+   * E4: window 'ds:modal' {open, id, zone?} (PanelManager) says whether a
+   * modal is on top. While one is and the 'modalDivisor' switch is on (the
+   * low tier's default), the loop renders 1 rAF frame in MODAL_DIVISOR,
+   * freezes the shadow map through modalFrozen (OR-ed with the interior and
+   * intro freeze, so a modal's close never clears theirs) and pauses the
+   * governor. No event, no change.
+   */
+  private modalOpen = false;
+  private modalApplied = false;
+  private modalFrozen = false;
+  private modalFrame = 0;
+  private static readonly MODAL_DIVISOR = 3;
+  /** Wall seconds the modal has been open, and how long before the divisor engages. */
+  private modalOpenFor = 0;
+  private static readonly MODAL_GRACE_S = 1.0;
+  /** The last two rendered frames' CPU seconds (E3's sample), for the divisor's time floor. */
+  private lastFrameCpu = 0;
+  private prevFrameCpu = 0;
+  private readonly _onModal = (e: Event): void => {
+    const d = (e as CustomEvent<{ open?: boolean } | null>).detail;
+    this.modalOpen = !!(d && d.open);
+  };
+  /** The interior/intro freeze and the modal freeze, composed. */
+  private get depthFrozen(): boolean {
+    return this.shadowFrozen || this.modalFrozen;
+  }
   // Stable handler ref so dispose() can actually detach the resize listener
   // (an inline arrow at addEventListener cannot be removed).
   private readonly _onResize = (): void => this.onWindowResize();
@@ -250,6 +358,9 @@ export class SimpleRenderer {
 
     // Responsive resize
     window.addEventListener('resize', this._onResize);
+    // E4: PanelManager's modal state (contract: the 'ds:modal' name and its
+    // `open` field). Removed in dispose().
+    window.addEventListener('ds:modal', this._onModal);
 
     // WebGL context-loss resilience. Under GPU memory pressure a mobile browser
     // can drop the context: the canvas goes black while the DOM HUD stays on
@@ -561,10 +672,42 @@ export class SimpleRenderer {
       // game speed is unchanged. The 1ms tolerance absorbs rAF timestamp
       // jitter so a healthy cadence doesn't spuriously drop to half rate.
       let wallDt = rawDt;
-      if (this.frameCapFps > 0) {
+      // E4: a modal opened or closed since the last frame (the event, or the
+      // perf gate's --fx flipping the switch).
+      // It engages after MODAL_GRACE_S of wall time open, so the panel's own
+      // entrance and an entry under it (a hall's veil and first view) run at
+      // the full rate: MEASURED at integration, the hall panel opening as the
+      // 4x phone walked into the Welcome Hub stretched the entry's longest
+      // frame from ~120 ms (main) to 200-480 ms.
+      this.modalOpenFor = this.modalOpen ? this.modalOpenFor + rawDt : 0;
+      const modal =
+        this.modalOpen &&
+        fx.on('modalDivisor') &&
+        this.modalOpenFor >= SimpleRenderer.MODAL_GRACE_S;
+      if (modal !== this.modalApplied) this.applyModal(modal);
+      if (this.frameCapFps > 0 || this.modalApplied) {
         this.frameAccum += rawDt;
-        const interval = 1 / this.frameCapFps;
-        if (this.frameAccum < interval - SimpleRenderer.FRAME_CAP_TOLERANCE_S) return;
+        if (this.frameCapFps > 0) {
+          const interval = 1 / this.frameCapFps;
+          if (this.frameAccum < interval - SimpleRenderer.FRAME_CAP_TOLERANCE_S) return;
+        }
+        // Behind a modal: 1 in MODAL_DIVISOR of the frames the cap lets
+        // through, AND at least MODAL_DIVISOR x the cheaper of the last two
+        // frames' own CPU time of wall per rendered frame (the cheaper, so one
+        // costly frame, a compile or a GC, does not triple the gap after it). The count alone is the third of the rate
+        // on a device with headroom; on a CPU-bound one the skipped rAF ticks
+        // are ~0 ms each and the costly frames ran back to back, MEASURED on
+        // the 4x low tier behind Projects: 890 ms/s of main-thread busy with
+        // the count alone. The skipped frames run neither the update nor
+        // render(), and their time stays in frameAccum for the one that does.
+        if (
+          this.modalApplied &&
+          (++this.modalFrame < SimpleRenderer.MODAL_DIVISOR ||
+            this.frameAccum <
+              SimpleRenderer.MODAL_DIVISOR * Math.min(this.lastFrameCpu, this.prevFrameCpu))
+        )
+          return;
+        this.modalFrame = 0;
         wallDt = this.frameAccum;
         // ZERO, not `%= interval`: wallDt above consumed the WHOLE
         // accumulator, so keeping the remainder re-injected it into the next
@@ -581,6 +724,11 @@ export class SimpleRenderer {
       // Clamp dt: after a stall (alt-tab, GC pause) getDelta can be huge and
       // would teleport physics/animation on the catch-up frame.
       const deltaTime = Math.min(wallDt, 0.05);
+
+      // E3: the frame's CPU time, from here to the end of render() (two reads,
+      // no allocation). The governor below decides on the previous frame's
+      // average; this frame's sample feeds it after the draw.
+      const cpuT0 = performance.now();
 
       // Update game logic
       if (this.renderCallback) {
@@ -599,9 +747,13 @@ export class SimpleRenderer {
       // it floored the governor's view at 20fps and stretched every one of its
       // clocks. See updateAdaptiveResolution.
       this.updateAdaptiveResolution(wallDt);
+      const cpuT1 = performance.now();
 
       // Render
       this.render();
+      this.prevFrameCpu = this.lastFrameCpu;
+      this.lastFrameCpu = (performance.now() - cpuT0) / 1000;
+      this.feedCpu(this.lastFrameCpu, (cpuT1 - cpuT0) / 1000, wallDt);
     };
 
     animate();
@@ -687,6 +839,63 @@ export class SimpleRenderer {
   }
 
   /**
+   * E3: smooth one frame's CPU seconds into cpuEma with fpsEma's time-based
+   * alpha, skipping an isolated stall the way fpsEma does (stallRun was
+   * updated by this frame's updateAdaptiveResolution). Disarmed, the EMA
+   * still measures; armGovernor discards it with the rest.
+   */
+  private feedCpu(cpuS: number, logicS: number, wallDt: number): void {
+    if (wallDt <= 0 || !(cpuS >= 0) || !(logicS >= 0) || this.modalApplied) return;
+    if (wallDt > SimpleRenderer.GOVERNOR_MAX_DT && this.stallRun < 3) return;
+    const dt = Math.min(wallDt, SimpleRenderer.GOVERNOR_MAX_DT);
+    const alpha = Math.min(0.25, 1 - Math.exp(-dt / 0.75));
+    this.cpuEma += (cpuS - this.cpuEma) * alpha;
+    this.logicEma += (logicS - this.logicEma) * alpha;
+  }
+
+  /**
+   * E3: the target frame interval the governor holds, in seconds: the rate
+   * applyRefreshEstimate derived (fpsLowThreshold = target x 0.75), not a
+   * fixed 1/60.
+   */
+  private targetInterval(): number {
+    return 0.75 / this.fpsLowThreshold;
+  }
+
+  /** Read-only governor snapshot for the probes (contract E3/E4 to probes). */
+  public getGovernorState(): GovernorState {
+    return {
+      renderScale: this.renderScale,
+      fpsEma: this.fpsEma,
+      cpuEma: this.cpuEma,
+      logicEma: this.logicEma,
+      pixelBound: this.pixelBound,
+      qualityRung: this.qualityRung,
+      cpuBound: this.cpuBound,
+      modalDivisor: this.modalApplied ? SimpleRenderer.MODAL_DIVISOR : 1,
+    };
+  }
+
+  /**
+   * E4: enter or leave the modal divisor. Entering freezes the shadow map
+   * (modalFrozen, composed with the interior/intro freeze in
+   * applyShadowPolicy) and starts the 1-in-MODAL_DIVISOR count. Leaving
+   * unfreezes, refreshes the map once unless the interior or intro freeze
+   * still holds, and discards what the governor measured while the world ran
+   * at a third of the rate; the rung and the armed state are kept.
+   */
+  private applyModal(on: boolean): void {
+    this.modalApplied = on;
+    this.modalFrozen = on;
+    this.modalFrame = 0;
+    this.applyShadowPolicy();
+    if (!on) {
+      if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;
+      this.resetGovernorClocks();
+    }
+  }
+
+  /**
    * Nudge the internal render scale toward whatever the GPU can sustain.
    * Runs at most ~once/second with hysteresis so it settles instead of
    * oscillating. Costs nothing when already at the ceiling and healthy.
@@ -696,6 +905,9 @@ export class SimpleRenderer {
    */
   private updateAdaptiveResolution(wallDt: number): void {
     if (wallDt <= 0) return;
+    // E4: paused behind a modal on the low tier: measure nothing, decide
+    // nothing (applyModal resets the clocks on the way out).
+    if (this.modalApplied) return;
     // TRUE WALL TIME, BOUNDED — not the physics dt.
     //
     // This used to be handed `Math.min(wallDt, 0.05)`, the clamp that stops a
@@ -793,9 +1005,52 @@ export class SimpleRenderer {
     // machine sits permanently at 0.6 effective DPR.
     const scaleFloor = Math.min(0.9, this.dprFloor / this.dprCap);
     const prev = this.renderScale;
+    // E3: CPU-BOUND. The frame takes 0.85 of the target interval or more of
+    // main-thread time at CPU_BOUND_DECISIONS decisions in a row, and the
+    // pixel test found render() does not shrink with the pixels: fewer pixels
+    // buy nothing back, so hold the scale up and go straight to the rungs
+    // (rungStep, as below). Under the bar that many times, the flag drops and
+    // the pixel test is forgotten (the load changed; a later dip tests anew).
+    const over = this.cpuEma >= SimpleRenderer.CPU_BOUND_RATIO * this.targetInterval();
+    this.cpuBoundRun = over
+      ? Math.max(1, this.cpuBoundRun + 1)
+      : Math.min(-1, this.cpuBoundRun - 1);
+    if (this.cpuBoundRun <= -SimpleRenderer.CPU_BOUND_DECISIONS) {
+      this.cpuBound = false;
+      this.pixelBound = null;
+      this.pixelProbe = null;
+    }
+    // The pixel test's verdict, once the scale is a full step under its start.
+    const probe = this.pixelProbe;
+    if (probe && this.renderScale <= probe.scale - SimpleRenderer.PIXEL_TEST_STEP) {
+      const cut = 1 - (this.renderScale / probe.scale) ** 2;
+      const render = Math.max(0, this.cpuEma - this.logicEma);
+      this.pixelBound = render < probe.render * (1 - SimpleRenderer.PIXEL_TEST_GAIN * cut);
+      this.pixelProbe = null;
+    }
+    if (this.cpuBoundRun >= SimpleRenderer.CPU_BOUND_DECISIONS && this.pixelBound === false) {
+      this.cpuBound = true;
+    }
+    const cpuBound = this.cpuBound;
     if (this.fpsEma < this.fpsLowThreshold) {
       this.lowStreak += 1;
-      if (this.renderScale > scaleFloor && this.lowStreak >= 2) {
+      if (cpuBound) {
+        if (
+          this.lowStreak >= 2 &&
+          this.qualityRung < SimpleRenderer.MAX_QUALITY_RUNG &&
+          this.rungCooldown >= SimpleRenderer.RUNG_ENGAGE_COOLDOWN_S
+        ) {
+          this.setQualityRung(this.rungStep(1));
+        }
+      } else if (this.renderScale > scaleFloor && this.lowStreak >= 2) {
+        // E3: the first shed of an untested dip starts the pixel test, from
+        // render()'s share of the frame at this scale.
+        if (this.pixelBound === null && !this.pixelProbe) {
+          this.pixelProbe = {
+            scale: this.renderScale,
+            render: Math.max(0, this.cpuEma - this.logicEma),
+          };
+        }
         // Struggling, and for a SECOND consecutive decision — one bad second
         // (a shader compile, walking into a dense district) is not a reason
         // to drop resolution. Shed 0.08/decision against a 0.1 restore, so
@@ -854,6 +1109,15 @@ export class SimpleRenderer {
         this.renderScale = Math.min(1, this.renderScale + 0.1);
       }
     }
+    if (cpuBound) {
+      // Hold at max(0.9, scaleFloor) or above, and claw toward 1.0 at +0.05 a
+      // decision whatever the rung (the +0.1 above stays gated on rung 0).
+      const hold = Math.max(SimpleRenderer.CPU_BOUND_SCALE, scaleFloor);
+      this.renderScale = Math.min(
+        1,
+        Math.max(hold, this.renderScale, prev + SimpleRenderer.CPU_BOUND_CLAW),
+      );
+    }
     if (this.renderScale !== prev) {
       const effectiveDpr = this.dprCap * this.renderScale;
       this.renderer.setPixelRatio(effectiveDpr);
@@ -895,7 +1159,7 @@ export class SimpleRenderer {
     // fresh. Interior freeze still wins (autoUpdate off, no re-arm).
     this.halfShadowApplied = this.alwaysHalfShadow;
     this.renderer.shadowMap.autoUpdate =
-      !this.shadowFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow;
+      !this.depthFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow;
   }
 
   /**
@@ -928,7 +1192,23 @@ export class SimpleRenderer {
   public armGovernor(): void {
     if (this.governorArmed) return;
     this.governorArmed = true;
+    this.resetGovernorClocks();
+  }
+
+  /**
+   * Discard what the governor has measured and restart its decision clocks;
+   * governorArmed and qualityRung are kept. armGovernor's reset (the intro is
+   * not representative), and E4's on a modal's close (the world behind it ran
+   * at a third of the rate).
+   */
+  private resetGovernorClocks(): void {
     this.fpsEma = 60;
+    this.cpuEma = 0;
+    this.logicEma = 0;
+    this.cpuBoundRun = 0;
+    this.cpuBound = false;
+    this.pixelBound = null;
+    this.pixelProbe = null;
     this.qualityAccum = 0;
     this.rungCooldown = 0;
     this.lowStreak = 0;
@@ -1054,6 +1334,70 @@ export class SimpleRenderer {
   }
 
   /**
+   * ?gpuheavy=1 only (E3's GPU-bound test case): one extra full-screen pass
+   * whose fragment shader burns GPU time per pixel and writes nothing (zero
+   * colour, additive), so the image is unchanged and the cost scales with the
+   * render scale, the lever a GPU-bound frame should pull. Built on first use.
+   */
+  private renderGpuHeavy(): void {
+    if (!this.gpuHeavy) {
+      const scene = new THREE.Scene();
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const mat = new THREE.ShaderMaterial({
+        vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        // uZero is 0 and uIters the loop count at run time: as uniforms the
+        // compiler can neither fold the loop away (a literal 0.0 lets it) nor
+        // unroll it (a literal bound made the D3D compile a no-op pass).
+        uniforms: { uZero: { value: 0 }, uIters: { value: 4096 } },
+        fragmentShader: `
+          uniform float uZero;
+          uniform int uIters;
+          void main() {
+            vec2 p = gl_FragCoord.xy * 0.001;
+            float a = 0.0;
+            for (int i = 0; i < 65536; i++) {
+              if (i >= uIters) break;
+              a += sin(p.x * float(i) + a) * cos(p.y * float(i) - a);
+            }
+            gl_FragColor = vec4(vec3(a * uZero), 1.0);
+          }`,
+        // Additive with a zero colour adds nothing, whatever the alpha.
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+      });
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+      quad.frustumCulled = false;
+      scene.add(quad);
+      this.gpuHeavy = { scene, camera };
+    }
+    const auto = this.renderer.autoClear;
+    this.renderer.autoClear = false;
+    // Several short draws rather than one long one: a single multi-second draw
+    // on a weak GPU would trip the driver's timeout. MEASURED on the dev rig's
+    // GPU: one 640-iteration pass added 0.24 ms, so a GPU-bound case needs
+    // about 20 ms of passes there.
+    for (let i = 0; i < this.gpuHeavyDraws; i++) {
+      this.renderer.render(this.gpuHeavy.scene, this.gpuHeavy.camera);
+    }
+    if (!this.gpuHeavyHeld && ++this.gpuHeavyFrames >= SimpleRenderer.GPU_HEAVY_RAMP_FRAMES) {
+      this.gpuHeavyFrames = 0;
+      // Two checks in a row under, so the EMA's fall from the armed reset (60)
+      // does not hold the count before the load has told.
+      this.gpuHeavyUnder = this.fpsEma < 0.85 * this.fpsLowThreshold ? this.gpuHeavyUnder + 1 : 0;
+      if (this.gpuHeavyUnder >= 2) this.gpuHeavyHeld = true;
+      else if (this.gpuHeavyUnder === 0)
+        this.gpuHeavyDraws = Math.min(
+          SimpleRenderer.GPU_HEAVY_MAX_DRAWS,
+          Math.ceil(this.gpuHeavyDraws * 1.5),
+        );
+    }
+    this.renderer.autoClear = auto;
+  }
+
+  /**
    * Stop the render loop
    */
   public stopRenderLoop(): void {
@@ -1107,7 +1451,7 @@ export class SimpleRenderer {
     // moves slowly enough that a one-frame-stale map is invisible. Suspended
     // by the interior freeze — a half-rate depth pass indoors is still a
     // depth pass indoors.
-    if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.shadowFrozen) {
+    if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.depthFrozen) {
       this.shadowFramePhase ^= 1;
       if (this.shadowFramePhase === 1) this.renderer.shadowMap.needsUpdate = true;
     }
@@ -1117,6 +1461,7 @@ export class SimpleRenderer {
     } else {
       this.renderer.render(this.scene, this.camera);
     }
+    if (this.gpuHeavyParam && this.governorArmed) this.renderGpuHeavy();
 
     // Photo mode: read the drawing buffer in the SAME task as the draw
     // (toBlob snapshots the bitmap at call time; without preserveDrawingBuffer
@@ -1315,6 +1660,13 @@ export class SimpleRenderer {
   public dispose(): void {
     this.stopRenderLoop();
     window.removeEventListener('resize', this._onResize);
+    window.removeEventListener('ds:modal', this._onModal);
+    if (this.gpuHeavy) {
+      const q = this.gpuHeavy.scene.children[0] as THREE.Mesh | undefined;
+      q?.geometry.dispose();
+      (q?.material as THREE.Material | undefined)?.dispose();
+      this.gpuHeavy = null;
+    }
 
     if (this.composer) {
       this.composer.dispose();

@@ -414,13 +414,28 @@ describe('probe conventions: silent speech and a pinned clock (wave-2 amendments
     walk(path.join(root, 'evals'));
     expect(files.length).toBeGreaterThan(20);
     const own = path.join(root, 'tools', 'ux-probes', 'lib.cjs');
+    // Wave-3 amendments (probeSafety): browser.newPage( makes its own context
+    // too, and an ESM script imports playwright with `from`. A CDP session on
+    // a harness page (hybrid.cjs, layout.cjs) stays allowed.
+    const offender =
+      /\.newContext\(|\.launch(PersistentContext)?\(\s*\{|require\(['"]playwright(-core)?['"]\)|\bbrowser\.newPage\(|\bfrom\s+['"]playwright(-core)?['"]/;
+    for (const bad of [
+      'const page = await browser.newPage();',
+      "import { chromium } from 'playwright';",
+      'import pw from "playwright-core";',
+      "const pw = require('playwright');",
+      'const ctx = await browser.newContext({});',
+    ])
+      expect(offender.test(bad), bad).toBe(true);
+    for (const ok of [
+      'const cdp = await page.context().newCDPSession(page);',
+      'const page = await ctx.newPage();',
+      "const lib = require('./lib.cjs');",
+    ])
+      expect(offender.test(ok), ok).toBe(false);
     const offenders = files
       .filter((f) => f !== own)
-      .filter((f) =>
-        /\.newContext\(|\.launch(PersistentContext)?\(\s*\{|require\(['"]playwright(-core)?['"]\)/.test(
-          fs.readFileSync(f, 'utf8'),
-        ),
-      )
+      .filter((f) => offender.test(fs.readFileSync(f, 'utf8')))
       .map((f) => path.relative(root, f));
     expect(offenders).toEqual([]);
     const lib = fs.readFileSync(own, 'utf8');
@@ -530,5 +545,31 @@ describe('probe fixes from wave 1 (wave-2 amendments)', () => {
     expect(census).toMatch(
       /const IN_SCOPE = \['zone halls', 'trees', 'villagers', 'props', 'terrain'\];/,
     );
+  });
+});
+
+describe('probe fixes from wave 2 (wave-3 amendments)', () => {
+  const req = createRequire(import.meta.url);
+
+  test('guide: the night and legacy reads wait out First steps’ advance pause', () => {
+    type St = { present: boolean; stepNo: number | null; justDone?: string | null };
+    const guide = req('../tools/ux-probes/guide.cjs') as {
+      settled: (x: St | null) => boolean;
+      nightHours: (arg: unknown) => number[];
+    };
+    // The look step's check playing: the card still reads 2/5.
+    expect(guide.settled({ present: true, stepNo: 2, justDone: 'look' })).toBe(false);
+    expect(guide.settled({ present: true, stepNo: 3, justDone: null })).toBe(true);
+    expect(guide.settled({ present: true, stepNo: 2, justDone: null })).toBe(true);
+    // A build with no readable guide view: only a step past 2/5 counts.
+    expect(guide.settled({ present: true, stepNo: 2 })).toBe(false);
+    expect(guide.settled({ present: true, stepNo: 3 })).toBe(true);
+    expect(guide.settled({ present: false, stepNo: 3, justDone: null })).toBe(false);
+    expect(guide.settled(null)).toBe(false);
+    // The night-diag proof's hours by default; one hour or a list.
+    expect(guide.nightHours(undefined)).toEqual([21, 23, 2, 6]);
+    expect(guide.nightHours(true)).toEqual([21, 23, 2, 6]);
+    expect(guide.nightHours(23)).toEqual([23]);
+    expect(guide.nightHours('21, 2')).toEqual([21, 2]);
   });
 });

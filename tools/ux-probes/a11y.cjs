@@ -158,7 +158,7 @@ const SURFACES_DESKTOP = [
 ];
 
 /** Open each surface the way the app does and measure its filled buttons. */
-async function measureSession(t, prof, hour) {
+async function measureSession(t, prof, hour, withKeys = false) {
   const touch = prof !== 'desktop';
   const s = await t.session(prof);
   const b = await t.boot(s, { query: `hour=${hour}` });
@@ -175,6 +175,7 @@ async function measureSession(t, prof, hour) {
   }
   for (const [, find, note] of SURFACES_DESKTOP.filter(([k]) => k === 'hud')) await m(find, note);
   await t.shot(page, `contrast-${prof}-h${hour}-hud.png`);
+  const keys = withKeys ? await keyRows(page) : null;
   const ring = !touch && (hour === 12 || hour === 18) ? await focusRing(page, '#ui-overlay [aria-label="Open portfolio menu"]', 'focus ring on the Portfolio pill') : null;
   await page.evaluate(() => window.__app.ui.panels.closeAll());
   // Hire card: LinkedIn.
@@ -211,7 +212,76 @@ async function measureSession(t, prof, hour) {
   // Phone: the touch captions over grass (spawn), sand (a beach) and sky.
   let captions = null;
   if (touch) captions = await captionsOver(t, page, prof, hour);
-  return { boot: b, rows, ring, captions };
+  return { boot: b, rows, ring, captions, keys };
+}
+
+/**
+ * D7's key markup (wave-3 amendments, rows other items need): the glyph
+ * pill's text against its own fill, for every ring tint, and the keycap's
+ * background. The probe renders one of each with the build's own classes
+ * (kbd.kc, span.kg with --kg-ring), so no villager prompt is needed; a build
+ * whose stylesheets have no rule for them reports null.
+ */
+const KG_RINGS = [
+  ['use', 'USE'],
+  ['jump', 'JUMP'],
+  ['wave', 'WAVE'],
+  ['feed', 'FEED'],
+  ['eat', 'EAT'],
+];
+const KEY_SAMPLES = (rings) => {
+  const has = (re) => {
+    for (const sh of document.styleSheets) {
+      let rules;
+      try {
+        rules = sh.cssRules;
+      } catch (e) {
+        continue;
+      }
+      for (const r of rules || []) if (r.selectorText && re.test(r.selectorText)) return true;
+    }
+    return false;
+  };
+  const out = { kc: has(/(^|[\s,])kbd\.kc\b/), kg: has(/(^|[\s,])\.kg\b/), keycapBg: null };
+  document.getElementById('ux-key-samples')?.remove();
+  if (!out.kc && !out.kg) return out;
+  const box = document.createElement('div');
+  box.id = 'ux-key-samples';
+  box.style.cssText = 'position:fixed;left:16px;top:120px;z-index:99999;display:flex;flex-direction:column;gap:8px;align-items:flex-start;pointer-events:none';
+  if (out.kg) {
+    for (const [ring, label] of rings) {
+      const s = document.createElement('span');
+      s.className = 'kg';
+      s.dataset.ring = ring;
+      s.dataset.uxKg = ring;
+      s.style.setProperty('--kg-ring', `var(--ds-ring-${ring})`);
+      s.textContent = label;
+      box.appendChild(s);
+    }
+  }
+  if (out.kc) {
+    const k = document.createElement('kbd');
+    k.className = 'kc';
+    k.dataset.uxKc = '1';
+    k.textContent = 'E';
+    box.appendChild(k);
+  }
+  (document.getElementById('ui-overlay') || document.body).appendChild(box);
+  if (out.kc) out.keycapBg = getComputedStyle(box.querySelector('[data-ux-kc]')).backgroundColor;
+  return out;
+};
+
+async function keyRows(page) {
+  const s = await page.evaluate(KEY_SAMPLES, KG_RINGS);
+  await page.waitForTimeout(100);
+  const r = { markup: { kc: s.kc, kg: s.kg }, keycapBg: s.keycapBg, keycapBgAlpha: null, pills: [] };
+  if (s.keycapBg) {
+    const c = lib.parseRgb(s.keycapBg);
+    r.keycapBgAlpha = c ? lib.round(c.a, 3) : null;
+  }
+  if (s.kg) for (const [ring, label] of KG_RINGS) r.pills.push({ ring, ...(await contrastAt(page, { sel: `[data-ux-kg="${ring}"]` }, `${label} glyph pill (${ring} ring)`)) });
+  await page.evaluate(() => document.getElementById('ux-key-samples')?.remove());
+  return r;
 }
 
 const CAPTION_SEL = (cap) => ({ sel: '#ui-overlay > div > div', text: `^${cap}$` });
@@ -276,7 +346,7 @@ async function contrast(t) {
   const hours = t.args.hours ? String(t.args.hours).split(',').map(Number) : [6, 12, 18, 21];
   for (const prof of t.profiles(['desktop', 'phone'])) {
     for (const hour of hours) {
-      const r = await measureSession(t, prof, hour);
+      const r = await measureSession(t, prof, hour, hour === hours[0]);
       t.data[`${prof}-h${hour}`] = r;
       for (const row of r.rows) {
         if (row.missing) {
@@ -289,6 +359,17 @@ async function contrast(t) {
         if (r.ring.missing) t.check(`${prof} ?hour=${hour}: focus ring outer edge`, null, 'element not found', '>= 3');
         else t.check(`${prof} ?hour=${hour}: focus ring outer edge vs surround`, r.ring.ringVisible && r.ring.ratio >= 3, r.ring.ringVisible ? r.ring.ratio : 'no visible ring', '>= 3');
       }
+      if (r.keys) {
+        // D7's acceptance: glyph pill text 7:1 or better (target 9:1) on every
+        // ring tint, and a keycap background that is not transparent.
+        const k = r.keys;
+        if (!k.markup.kg) t.check(`${prof}: glyph pill text against its fill (D7)`, null, 'no .kg rule on this build', '>= 7 (target 9)');
+        for (const row of k.pills) {
+          if (row.missing) t.check(`${prof}: ${row.note}`, null, 'not rendered', '>= 7 (target 9)');
+          else t.check(`${prof}: ${row.note} text (median, worst) (D7)`, row.ratioMedian >= 7, [row.ratioMedian, row.ratioWorst], '>= 7 (target 9)');
+        }
+        t.check(`${prof}: keycap background is not transparent (D7)`, k.markup.kc ? k.keycapBgAlpha !== null && k.keycapBgAlpha > 0 : null, k.markup.kc ? { background: k.keycapBg, alpha: k.keycapBgAlpha } : 'no kbd.kc rule on this build', 'alpha > 0');
+      }
       if (r.captions) {
         for (const [bg, list] of Object.entries(r.captions)) {
           for (const row of list) {
@@ -299,7 +380,6 @@ async function contrast(t) {
       }
     }
   }
-  t.data.glyphPill = 'enabled once D7 adds the glyph pills';
 }
 
 // -------------------------------------------------------------------- axe
@@ -447,7 +527,7 @@ async function axe(t) {
 }
 
 module.exports = {
-  contrast: { item: 'D3', title: 'label-on-fill contrast at ?hour=6/12/18/21 on 1440 and 390, captions, focus ring', profiles: ['desktop', 'phone'], run: contrast },
+  contrast: { item: 'D3', title: 'label-on-fill contrast at ?hour=6/12/18/21 on 1440 and 390, captions, focus ring, D7 glyph pills and keycap', profiles: ['desktop', 'phone'], run: contrast },
   axe: { item: 'D3, D4, D8', title: 'axe-core 4.10.3 on the welcome card and 20 surfaces per device (40): HUD, menu or drawer, hire card, 4 zone panels, 11 modals, NPC chat, name prompt', profiles: ['desktop', 'phone'], run: axe },
   AXE_SURFACES,
 };

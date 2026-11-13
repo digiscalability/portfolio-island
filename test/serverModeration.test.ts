@@ -388,6 +388,52 @@ describe('concierge facts and the persona map (functions/src/personas.ts)', () =
     }
   });
 
+  // P2-E6: the Mayor joins the concierge set; every prompt says where things
+  // are, with no counts; nobody calls villagers agents; the Sailor's code is
+  // the client's.
+  test('the concierge set is exactly the Storyteller, the Elder Sage, the Cartographer and the Mayor', () => {
+    expect(new Set(NPC_ROLES.filter((r) => r.concierge).map((r) => r.id))).toEqual(
+      new Set(['storyteller', 'elder_sage', 'cartographer', 'mayor']),
+    );
+  });
+
+  test('no persona calls the villagers agents', () => {
+    for (const [id, p] of cast) {
+      expect(p.system, id).not.toMatch(
+        /\bvillagers?\b[^.]{0,40}\b(?:are|is)\b[^.]{0,20}\bagents?\b/i,
+      );
+      // The only 'agent' tokens: the planner agent and the analyst agent.
+      const agents = [...p.system.matchAll(/\b(\w+)\s+agents?\b/gi)].map((m) => m[1].toLowerCase());
+      for (const a of agents) expect(['planner', 'analyst'], `${id}: '${a} agent'`).toContain(a);
+    }
+  });
+
+  test('ISLAND_CONTEXT says where things are and names no count', () => {
+    expect(ISLAND_CONTEXT).toContain(
+      'The Welcome Hub sits at the north pole, with Professional Experience, Project Portfolio, Personal Life and Get In Touch around it',
+    );
+    expect(ISLAND_CONTEXT).toContain(
+      'the gold arrow at the top of the screen guides visitors, and the minimap opens the island map',
+    );
+    // "3D" is a word, not a count.
+    expect(ISLAND_CONTEXT.replace(/\b3D\b/g, '')).not.toMatch(/\d/);
+    expect(ISLAND_CONTEXT).not.toMatch(
+      /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|dozen|dozens|hundred)\b/i,
+    );
+    // Input-neutral: no key names (phones have none).
+    expect(ISLAND_CONTEXT).not.toMatch(/\b(press|key|click|tap)\b|\bM\b/);
+  });
+
+  test("the Sailor's door code is the one NpcChat.ts's Sailor line gives", () => {
+    const chat = read('NpcChat.ts');
+    const line = /SAILOR_CODE_LINE\s*=\s*'([^']+)'/.exec(chat);
+    expect(line, 'NpcChat.ts SAILOR_CODE_LINE').not.toBeNull();
+    const clientDigits = (line?.[1] ?? '').replace(/\D/g, '');
+    const sailor = NPC_ROLES.find((r) => r.id === 'sailor');
+    expect(sailor?.role.replace(/\D/g, '')).toBe(clientDigits);
+    expect(clientDigits).toMatch(/^\d{4}$/);
+  });
+
   test('"open source" waits for a licence', () => {
     // Without a LICENSE file the code would be all rights reserved by default,
     // so "open source" would be false. The LICENSE is MIT, which is what lets
