@@ -831,8 +831,13 @@ export class SimpleUI {
     if (!this.isTouch && !this.bulletinShowing() && window.innerWidth >= 900) {
       el.dataset.lane = 'top';
       delete el.dataset.bottom;
+      // While the race HUD shows, the lane drops below its measured bottom.
+      const race = this.raceVisible ? this.raceDiv?.getBoundingClientRect() : null;
       Object.assign(el.style, {
-        top: 'calc(var(--sat, 0px) + 66px)',
+        top:
+          race && race.height > 0
+            ? `${Math.ceil(race.bottom + 8)}px`
+            : 'calc(var(--sat, 0px) + 66px)',
         bottom: '',
         maxWidth: 'min(92vw, 440px)',
         left: '50%',
@@ -5311,6 +5316,41 @@ export class SimpleUI {
     ['Menu', '☰ — Work with me, Portfolio, photo, sound and this sheet'],
   ];
 
+  /**
+   * The nearest way to earn, for the shop's short-of-coins line (P2-D7): the
+   * first undone earning goal on the ladder ('ds:goals'), else deliveries.
+   * Its key is the one Things to do gives that system.
+   */
+  private nearestEarn(): { key: string; title: string; label: string } {
+    const ways: Array<{ goal: string; key: string; title: string; label: string }> = [
+      {
+        goal: 'deliveries',
+        key: 'mailbox:next',
+        title: 'Deliveries',
+        label: 'A glowing mailbox holds a paid delivery.',
+      },
+      {
+        goal: 'lesson',
+        key: 'school',
+        title: 'The School’s lessons',
+        label: 'Each School lesson pays a few coins.',
+      },
+      {
+        goal: 'catch',
+        key: 'shore',
+        title: 'Fishing',
+        label: 'The Fisherman buys every catch.',
+      },
+    ];
+    const keys = new Set(this.thingsToDo().map((t) => t.key));
+    const goals = this.goals?.goals;
+    const open = ways.filter(
+      (w) => keys.has(w.key) && !goals?.some((g) => g.id === w.goal && g.done),
+    );
+    const pick = open[0] ?? ways[0];
+    return { key: pick.key, title: pick.title, label: pick.label };
+  }
+
   /** One line per system; `key` is a 'ds:guide-to' key the compass can take. */
   private thingsToDo(): Array<{ icon: string; title: string; how: string; key?: string }> {
     const pp = this.passport;
@@ -7750,6 +7790,18 @@ export class SimpleUI {
       zIndex: '1700',
       fontFamily: 'system-ui, sans-serif',
     });
+    // Nothing in the open tab to buy (P2-D7): one 12 px line names the
+    // nearest way to earn, with a 'Show me' on a Things to do key.
+    const earnLine = (tab: 'tools' | 'supplies' | 'hats'): string => {
+      const inTab = state.items.filter((it) => (it.category ?? 'hats') === tab);
+      const buyable = inTab.filter((it) => it.consumable || !it.owned);
+      if (buyable.length === 0 || buyable.some((it) => it.price <= state.coins)) return '';
+      const earn = this.nearestEarn();
+      return `<div data-shop-earn style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 0 0;font-size:12px;color:#c5cfdd;">
+          <span>Short of coins? ${earn.label}</span>
+          <button type="button" data-shop-earn-key="${earn.key}" aria-label="Show me: ${earn.title}" style="flex:none;min-height:${this.isTouch ? '44px' : '32px'};padding:0 12px;border-radius:8px;border:1px solid rgba(143,155,255,0.8);background:rgba(76,91,224,0.14);color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Show me</button>
+        </div>`;
+    };
     const rowsFor = (tab: 'tools' | 'supplies' | 'hats'): string =>
       state.items
         .filter((it) => (it.category ?? 'hats') === tab)
@@ -7791,7 +7843,7 @@ export class SimpleUI {
           ">${btnLabel}</button>
         </div>`;
         })
-        .join('');
+        .join('') + earnLine(tab);
     const tabBtn = (tab: 'tools' | 'supplies' | 'hats', label: string): string =>
       `<button data-shop-tab="${tab}" style="flex:1;padding:8px 4px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;
         border:1px solid ${this.shopTab === tab ? 'rgba(255,211,74,0.7)' : 'rgba(255,255,255,0.12)'};
@@ -7817,10 +7869,47 @@ export class SimpleUI {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           const id = (btn as HTMLElement).getAttribute('data-shop-id');
-          if (id) onAction(id);
+          if (!id) return;
+          const item = state.items.find((it) => it.id === id);
+          onAction(id);
+          // A hat goes on (bought or owned): say who sees it (P2-D7). The
+          // button was enabled, so the equip went through; main-simple's
+          // equip path is A's and does not change.
+          if (item?.equippable && !item.equipped && (item.owned || state.coins >= item.price)) {
+            this.toast(`${item.name} on — other visitors see it too`);
+          }
         });
       });
+      this.shopDiv!.querySelector<HTMLElement>('button[data-shop-earn-key]')?.addEventListener(
+        'click',
+        (e) => {
+          e.stopPropagation();
+          const key = (e.currentTarget as HTMLElement).dataset.shopEarnKey ?? '';
+          this.hideShop();
+          onClose();
+          this.guideTo(key, 'shop');
+        },
+      );
     };
+    // Desktop, Hats open: the panel docks left so the avatar stays in view
+    // (P2-D7). Everywhere else it stays centred.
+    const dock = (): void => {
+      const d = this.shopDiv;
+      if (!d) return;
+      const docked = !this.isTouch && this.shopTab === 'hats';
+      d.dataset.docked = docked ? 'left' : '';
+      Object.assign(
+        d.style,
+        docked
+          ? {
+              left: 'calc(var(--sal, 0px) + 16px)',
+              transform: 'translateY(-50%)',
+              width: 'min(380px, calc(100vw - 32px))',
+            }
+          : { left: '50%', transform: 'translate(-50%, -50%)', width: 'min(420px, 92%)' },
+      );
+    };
+    dock();
     this.shopDiv.querySelectorAll('button[data-shop-tab]').forEach((tb) => {
       tb.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -7836,6 +7925,7 @@ export class SimpleUI {
           (b as HTMLElement).style.color = active ? '#ffd34a' : 'rgba(255,255,255,0.55)';
         });
         bindRows();
+        dock();
       });
     });
     this.overlay.appendChild(this.shopDiv);
@@ -8051,9 +8141,12 @@ export class SimpleUI {
     }
     if (!this.raceDiv) {
       this.raceDiv = document.createElement('div');
+      this.raceDiv.dataset.hud = 'race';
       Object.assign(this.raceDiv.style, {
         position: 'absolute',
-        top: 'calc(var(--sat, 0px) + 12px)',
+        // Below the compass pill (P2-D7): at +12 it sat over the pill, 83% of
+        // it on desktop and 88% on the phone.
+        top: 'calc(var(--sat, 0px) + 62px)',
         left: '50%',
         transform: 'translateX(-50%)',
         background: 'rgba(0, 0, 0, 0.6)',

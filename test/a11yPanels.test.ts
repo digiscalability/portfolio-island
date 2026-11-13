@@ -1498,3 +1498,129 @@ describe('P2-D8: the lessons card and the parcel glyph', () => {
     expect(document.querySelector('[data-glyph="parcel"]')).not.toBeNull();
   });
 });
+
+// P2-D7: the shop keeps the avatar in view and names a way to earn; the race
+// HUD sits below the compass pill.
+describe('P2-D7: the shop and the race HUD', () => {
+  type Item = Parameters<SimpleUI['showShop']>[0]['items'][number];
+  const hat = (id: string, price: number, extra: Partial<Item> = {}): Item => ({
+    id,
+    icon: '🎩',
+    name: id === 'tophat' ? 'Top hat' : 'Beanie',
+    price,
+    category: 'hats',
+    equippable: true,
+    ...extra,
+  });
+  const open = (
+    coins: number,
+    items: Item[],
+    onAction = (_id: string): void => {},
+  ): {
+    closed: number;
+  } => {
+    const out = { closed: 0 };
+    ui.showShop({ coins, items }, onAction, () => {
+      out.closed++;
+    });
+    return out;
+  };
+  const shop = (): HTMLElement => document.querySelector<HTMLElement>('#shop-rows')!.parentElement!;
+  const tab = (t: string): void =>
+    document.querySelector<HTMLElement>(`button[data-shop-tab="${t}"]`)!.click();
+
+  test('desktop: the Hats tab docks the panel left; the other tabs stay centred', () => {
+    open(100, [
+      hat('tophat', 40),
+      { id: 'rod', icon: '🎣', name: 'Rod', price: 20, category: 'tools' },
+    ]);
+    tab('tools');
+    expect(shop().dataset.docked).toBe('');
+    expect(shop().style.left).toBe('50%');
+    tab('hats');
+    expect(shop().dataset.docked).toBe('left');
+    // (happy-dom drops a calc(var()) value: the source pins the left edge.)
+    expect(readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8')).toContain(
+      "left: 'calc(var(--sal, 0px) + 16px)',",
+    );
+    expect(shop().style.transform).toBe('translateY(-50%)');
+    expect(readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8')).toContain(
+      "width: 'min(380px, calc(100vw - 32px))',",
+    );
+    tab('tools');
+    ui.hideShop();
+  });
+
+  test('touch never docks: the phone keeps the centred sheet', () => {
+    ui.dispose();
+    history.replaceState(null, '', '/?touch=1');
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    try {
+      open(100, [hat('tophat', 40)]);
+      tab('hats');
+      expect(shop().dataset.docked).toBe('');
+      expect(shop().style.left).toBe('50%');
+      tab('tools');
+      ui.hideShop();
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  });
+
+  test("equipping a hat says '<hat> on — other visitors see it too'", () => {
+    const said: string[] = [];
+    vi.spyOn(ui, 'toast').mockImplementation((m: string) => {
+      said.push(m);
+    });
+    open(100, [hat('tophat', 40), hat('beanie', 500)]);
+    tab('hats');
+    document.querySelector<HTMLElement>('button[data-shop-id="tophat"]')!.click();
+    expect(said).toEqual(['Top hat on — other visitors see it too']);
+    tab('tools');
+    ui.hideShop();
+  });
+
+  test("nothing affordable in the tab: one 12 px line names a way to earn, and 'Show me' guides there", () => {
+    const sent: unknown[] = [];
+    const on = (e: Event): void => {
+      sent.push((e as CustomEvent).detail);
+    };
+    window.addEventListener('ds:guide-to', on);
+    const s = open(5, [hat('tophat', 40), hat('beanie', 60)]);
+    tab('hats');
+    const line = document.querySelector<HTMLElement>('[data-shop-earn]')!;
+    expect(line.style.fontSize).toBe('12px');
+    const b = line.querySelector<HTMLButtonElement>('button[data-shop-earn-key]')!;
+    const keys = (ui as unknown as { thingsToDo(): Array<{ key?: string }> })
+      .thingsToDo()
+      .map((t) => t.key);
+    expect(keys).toContain(b.dataset.shopEarnKey);
+    b.click();
+    window.removeEventListener('ds:guide-to', on);
+    expect(sent).toEqual([{ key: b.dataset.shopEarnKey, source: 'shop' }]);
+    expect(s.closed).toBe(1);
+    expect(ui.isShopOpen()).toBe(false);
+    ui.panels.closeAll();
+    // With something affordable there is no line.
+    open(100, [hat('tophat', 40)]);
+    tab('hats');
+    expect(document.querySelector('[data-shop-earn]')).toBeNull();
+    tab('tools');
+    ui.hideShop();
+  });
+
+  test('the race HUD sits at top +62, below the compass pill; the desktop toast lane drops below it', () => {
+    ui.updateRaceHud({ line1: '0:12.3', line2: 'Ring 2 / 6' });
+    expect(document.querySelector<HTMLElement>('[data-hud="race"]')).not.toBeNull();
+    const body = readFileSync(join(process.cwd(), 'SimpleUI.ts'), 'utf8');
+    const race = body.slice(body.indexOf('updateRaceHud(status:'));
+    expect(race.slice(0, 1800)).toContain("top: 'calc(var(--sat, 0px) + 62px)',");
+    const anchor = body.slice(body.indexOf('private applyToastAnchor('));
+    expect(anchor.slice(0, 2500)).toContain(
+      'this.raceVisible ? this.raceDiv?.getBoundingClientRect()',
+    );
+    expect(anchor.slice(0, 2500)).toContain('`${Math.ceil(race.bottom + 8)}px`');
+    ui.updateRaceHud(null);
+  });
+});
