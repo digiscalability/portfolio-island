@@ -591,6 +591,25 @@ as above.
 | `p2/tour` | GP-01, GP-04; P2-D10, P2-A10 | desktop and phone: the four districts walked (play-lib's steerer, run held) and entered by the door: stamps, coins, minutes, the last `ds:goals` visit; after the fourth stamp the celebration's text: 'Next:' and 'Your visit' | 4 stamps, 6 and 5 coins, about 2 min; the card reads 'Portfolio complete! … Wear it with pride', no 'Next:' and no visit block (null); no `ds:goals` | 4 stamps, 5 and 8 coins; the same card; `ds:goals` visit {stamps 4, villagers 0, coins 5/8, secrets 1/2, minutes 2} |
 | `p2/quests` (canteen row) | P2-A6 | desktop: empty-handed at the canteen, two E presses 150 ms apart: soups and coins | 2 soups, -6 coins | the same |
 
+### Stage-2 probes, wave 4 (E6d)
+
+Top-level probes, registered in `run.cjs`'s `GROUPS`. The audit's scripts
+(`motion/slide2`, `swim`, `env_juice`; `design-assets/fonts-cdp`, `loader`,
+`texgen-time`, `webp-edge`; `perf-headroom/bundles.cjs`) were session temp
+files and are gone, so these are rebuilt from the reports
+(`ux-audit/results/motion.json`, `design.json`, `performance.json`) and
+checked against the numbers recorded there. Every row reads a wave-4 feature
+optionally and reports null, not fail, on a build without it. Baselines
+2026-11-14 at `?hour=12`: 58c8849 (`ux-audit/dist`) and wave-3 main
+(`deploy-w3/dist`, a local build of fcaa649), 0 leaks and a boot proof in
+every session, the port free afterwards, four other builders on the machine
+(counts hold, milliseconds are provisional).
+
+| Probe | Item | What it measures | 58c8849 | wave-3 main (fcaa649) |
+|---|---|---|---|---|
+| `slide` | MOT-04, MOT-20; B3 | desktop, the frozen sim at 1/60 s: W held, then the build's run key (`html[data-run-key]`, else Space). Per leg the sole is the centroid of the 8 lowest bind-pose vertices skinned to `legL`/`legR`; each frame the lower sole's tangential world speed over `getTangentialSpeed()`, its minimum per walk cycle, `bestPlantRatio` the median of those. The bob's lowest frame per half-cycle against the nearest heel strike (`getGaitState?.().bob`, else the model's radial height; null when nothing bobs). Peak hip flexion at the run: the quaternion angle of `legL`/`legR` from the bind rest. turn180: W then S, the model's heading rate, peak °/s and t90 | walk 0.359 at 5.59 u/s (the audit 0.33 at 5.32 u/s: the same 2.0 u/s sole over a faster body), run 0.364 at 8.12 u/s (audit 0.36); no bob; flexion 0.65 rad; turn180 1603°/s, t90 200 ms (audit 1603°/s, 217 ms). Exits 1 | the same: walk 0.359, run 0.365 (Shift), no bob, flexion 0.65 rad, 1603°/s, t90 200 ms. Exits 1 |
+<!-- e6d-rows -->
+
 ### Probe fixes from the wave-2 integration
 
 The wave-2 integration read probe defects as product faults. Each was checked
