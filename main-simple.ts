@@ -5,11 +5,24 @@ import { a11y } from './Accessibility';
 import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
 import { setInkVisible } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
-import { compassBearing, compassTarget, nearestWithHysteresis, type CompassState } from './Compass';
+import {
+  compassBearing,
+  compassTarget,
+  nearestNeighbourTour,
+  nearestWithHysteresis,
+  type CompassState,
+} from './Compass';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
+import {
+  easeInOutSine,
+  tourCaption,
+  tourFirstLegLift,
+  tourLegDuration,
+  TOUR_DWELL_S,
+} from './Framing';
 import { fx } from './FxBudget';
 import { GameScene } from './GameScene';
 import {
@@ -32,7 +45,7 @@ import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
 import { worldInputBlocked } from './keyGuards';
 import { Materials } from './Materials';
-import { Multiplayer } from './Multiplayer';
+import type { Multiplayer } from './Multiplayer';
 import {
   AI_NPCS,
   askNpc,
@@ -179,6 +192,24 @@ export class SimpleApp {
   private compassDistrict: string | null = null;
   /** A parcel was collected this session: deliveries may take the pill. */
   private deliveryOptIn = false;
+  /**
+   * The pack lines ('+1 (n in the pack)') and finished deliveries, counted.
+   * A pack line goes stale (its toast until()) once a newer pack line or a
+   * delivery follows it: four quick harvests queued four cabbage lines, about
+   * 2.5 s each, and the 'Delivered. The next parcel waits near …' line waited
+   * 5.4 s behind them on desktop (wave-3 integration, p2/gather).
+   */
+  private packToastSeq = 0;
+  private deliveryToastSeq = 0;
+
+  /** A pack line that gives way to the next pack line or a delivery. */
+  private packToast(text: string): void {
+    const pack = ++this.packToastSeq;
+    const delivered = this.deliveryToastSeq;
+    this.ui.toast(text, {
+      until: () => this.packToastSeq !== pack || this.deliveryToastSeq !== delivered,
+    });
+  }
   /** Passport stamps seen, for the "Next:" flash after stamps 1-3. */
   private stampsSeen = -1;
   private pendingNextFlash = false;
@@ -200,6 +231,10 @@ export class SimpleApp {
     fromLook: THREE.Vector3;
     /** The villager this tour is holding in place (GameScene dialogue hold). */
     held: string | null;
+    /** A9: this leg's flight time (legDuration), seconds. */
+    legS: number;
+    /** A9: the view direction the leg leaves on (unit). */
+    fromView: THREE.Vector3;
   } | null = null;
   /** afterIntro has run: the welcome card, if any, is up or already closed. */
   private introSettled = false;
@@ -207,6 +242,9 @@ export class SimpleApp {
   private readonly _tourDir = new THREE.Vector3();
   private readonly _tourLook = new THREE.Vector3();
   private readonly _tourUp = new THREE.Vector3();
+  private readonly _tourFromPos = new THREE.Vector3();
+  private readonly _tourViewA = new THREE.Vector3();
+  private readonly _tourViewB = new THREE.Vector3();
   private readonly _tourAxis = new THREE.Vector3();
   private readonly _tourQ = new THREE.Quaternion();
   // Villager line-of-sight probe (firstHitOnly: the terrain's BVH fast path)
@@ -319,13 +357,6 @@ export class SimpleApp {
     void this.scene.warmInterior();
     this.prewarmZonePanel();
   };
-  /**
-   * CO-A5 remainder (w1-fix). The first showZonePanel cost 156-184 ms at 4x
-   * CPU inside the door fade's callback. D's SimpleUI.prewarmZonePanel lays
-   * the panels out ahead in idle slices; both room warms ask for it.
-   * Optional: A merges before D, and on main SimpleUI has no such method.
-   * It is idempotent, and it schedules its own idle work.
-   */
   /** Skip's compass hint has shown this visit: the trail-end toast then
    *  leaves out its own clause about the gold ➤ (w1-fix nit). */
   private guideSkipHintShown = false;
@@ -345,6 +376,13 @@ export class SimpleApp {
     this.bootTarget?.dispose();
     this.bootTarget = null;
   }
+  /**
+   * CO-A5 remainder (w1-fix). The first showZonePanel cost 156-184 ms at 4x
+   * CPU inside the door fade's callback. D's SimpleUI.prewarmZonePanel lays
+   * the panels out ahead in idle slices; both room warms ask for it.
+   * Optional: A merges before D, and on main SimpleUI has no such method.
+   * It is idempotent, and it schedules its own idle work.
+   */
   private prewarmZonePanel(): void {
     (this.ui as SimpleUI & { prewarmZonePanel?: () => void }).prewarmZonePanel?.();
   }
@@ -458,11 +496,11 @@ export class SimpleApp {
   private static readonly LESSONS: Array<[string, string]> = [
     [
       'move',
-      '🏃 Lesson 1 — WASD or the joystick to walk; Space to jump. The island is round: keep walking and you come home.',
+      '🏃 Lesson 1 — WASD to walk, Space to jump, hold Shift to run. The island is round: keep walking and you come home.',
     ],
     [
       'fish',
-      '🎣 Lesson 2 — buy the rod at the shop, stand at any shore, E to cast. Reel when the float dips.',
+      '🎣 Lesson 2 — buy the rod at the shop, stand at any shore, press E to cast. Reel when the float dips.',
     ],
     [
       'chop',
@@ -474,7 +512,7 @@ export class SimpleApp {
     ],
     [
       'chat',
-      '💬 Lesson 5 — walk up to any villager and press E. Two dozen of them will really talk with you.',
+      '💬 Lesson 5 — walk up to any villager and press E. Most of them will really talk with you.',
     ],
     [
       'build',
@@ -540,6 +578,27 @@ export class SimpleApp {
   private stepAccum: number = 0;
   private stepAlt: boolean = false;
   private prevWalkPhase: number = -1; // last sampled walk-cycle phase (-1 = stride inactive)
+  /** P2-A6: when E went down during the fishing wait (-1 = not held). */
+  private fishEarlyHoldAt = -1;
+  /** P2-A6: holding E this long during the wait reels in early. */
+  private static readonly FISH_EARLY_REEL_MS = 600;
+  /** P2-A6: a vendor that just sold or sold to you ignores E until then (ms). */
+  private readonly vendorLockUntil = new Map<string, number>();
+  private static readonly VENDOR_LOCK_MS = 1000;
+  /** P2-A6: the shop panel was open last frame (its close locks the kiosk). */
+  private shopWasOpen = false;
+  /** A11: when the touch stick reached the rim (-1 = not at the rim). */
+  private stickRimSince = -1;
+  private static readonly STICK_RUN_MAG = 0.95;
+  private static readonly STICK_RUN_MS = 250;
+  /** A11: ?legacyrun=1 keeps hold-Space (and hold-JUMP) running, for one release. */
+  private static readonly LEGACY_RUN = ((): boolean => {
+    try {
+      return new URLSearchParams(location.search).get('legacyrun') === '1';
+    } catch {
+      return false;
+    }
+  })();
   private airborneTime: number = 0;
   private prevJumpHeld: boolean = false;
   private lastSwimWarnAt = 0; // throttle for the shoreline-barrier hint
@@ -636,6 +695,14 @@ export class SimpleApp {
       // Accessibility prefs (reduced motion) — seed before anything animates
       a11y.init();
 
+      // A11: the run key, read at render time by the guide's copy and D8's
+      // Controls sheet (and by the probes). Set before the first welcome or
+      // guide render.
+      document.documentElement.setAttribute(
+        'data-run-key',
+        SimpleApp.LEGACY_RUN ? 'space' : 'shift',
+      );
+
       // Create UI first (shows loading screen)
       try {
         this.ui = new SimpleUI('ui-overlay');
@@ -654,6 +721,14 @@ export class SimpleApp {
       // (initPostProcessing awaits the same cached promise). Tier-gated
       // inside — phones still never fetch the chunk.
       SimpleRenderer.preloadPostProcessing();
+      // Multiplayer is its own chunk (wave-3 bundle carry-over): nothing needs
+      // it before the world is built, so its fetch starts here and overlaps
+      // world-gen; the await where it is constructed is then only a microtask.
+      // A failed fetch resolves null: the island plays solo, chat stays off.
+      const multiplayerModule = import('./Multiplayer').catch((e: unknown) => {
+        console.warn('Multiplayer chunk failed to load; playing solo:', e);
+        return null;
+      });
       console.log('🎨 SimpleRenderer created:', {
         canvas: this.renderer.getCanvas(),
         renderer: this.renderer.getRenderer(),
@@ -705,7 +780,15 @@ export class SimpleApp {
       // Assign the full quest chain across the mailboxes (round-robin) and
       // route mailbox interaction through the delivery system
       const mailboxes = this.scene.getMailboxes();
-      this.deliverySystem.assignDestinations(mailboxes);
+      // P2-A6: hand the chain to the mailboxes in a nearest-neighbour tour
+      // from the hub (the Welcome pole), so consecutive parcels are
+      // neighbours. Progress is keyed by delivery id, so saves survive.
+      const hubR = mailboxes[0]?.mesh.position.length() ?? 0;
+      const tour = nearestNeighbourTour(
+        mailboxes.map((m) => m.mesh.position),
+        new THREE.Vector3(0, hubR, 0),
+      );
+      this.deliverySystem.assignDestinations(tour.map((i) => mailboxes[i]));
       this.scene.setOnMailboxInteract((mailbox) => {
         const collected = this.deliverySystem.collectFromMailbox(mailbox);
         if (collected) this.scene.wiggleMailbox(mailbox);
@@ -733,6 +816,14 @@ export class SimpleApp {
         // The visitor chose the courier chain: from now on the pill may point
         // at parcels (after the districts, compassTarget's branch 7).
         this.deliveryOptIn = true;
+        // P2-A6: name where the next parcel waits. The pack lines still
+        // queued from the farm step aside for it (packToast).
+        this.deliveryToastSeq += 1;
+        const next = this.deliverySystem.getActiveDeliveries()[0]?.destination;
+        const near = next ? this.districtNear(next.mesh.position) : null;
+        if (near) {
+          this.ui.toast(`📬 Delivered. The next parcel waits near ${this.districtLabel(near)}.`);
+        }
         track('delivery_completed', {
           id: d.id,
           count: this.deliverySystem.getCompletedCount(),
@@ -849,16 +940,19 @@ export class SimpleApp {
         /* default colours */
       }
 
-      // Multiplayer: other visitors on the same island, waves included
-      this.multiplayer = new Multiplayer(this.scene, this.scene.getPlayer());
-      this.multiplayer.onCount((count) => this.ui.updatePlayerCount(count));
-      this.multiplayer.setHat((this.equippedHat as HatId) ?? null);
+      // Multiplayer: other visitors on the same island, waves included.
+      // Loaded lazily (started beside preloadPostProcessing above).
+      const mpMod = await multiplayerModule;
+      const multiplayer = mpMod ? new mpMod.Multiplayer(this.scene, this.scene.getPlayer()) : null;
+      this.multiplayer = multiplayer;
+      multiplayer?.onCount((count) => this.ui.updatePlayerCount(count));
+      multiplayer?.setHat((this.equippedHat as HatId) ?? null);
 
       // Proximity chat: text bubbles + push-to-talk voice between nearby
       // visitors. Wired to the mobile chat/mic HUD buttons and to
       // Enter/V(oice) on desktop (see setupDebugShortcuts-adjacent binding
-      // below, near the input manager setup).
-      this.chat = new Chat(this.multiplayer);
+      // below, near the input manager setup). No multiplayer, no chat.
+      this.chat = multiplayer ? new Chat(multiplayer) : undefined;
       // DOM twins live in the overlay so photo mode hides them for free.
       this.hudLabels = new HudLabels(this.ui.getOverlay());
       // Expandable island map: tap the radar (or press M) for the full map.
@@ -871,14 +965,14 @@ export class SimpleApp {
         if (req) this.guideTo(req.key, req.label, req.source);
       };
       window.addEventListener('ds:guide-to', this.boundHandlers.guideTo);
-      this.ui.setVoiceSupported(this.chat.voiceSupported);
-      this.multiplayer.setChatHandler((msg) => this.chat?.onWire(msg));
+      this.ui.setVoiceSupported(this.chat?.voiceSupported ?? false);
+      multiplayer?.setChatHandler((msg) => this.chat?.onWire(msg));
       this.ui.setOnChatSend((text) => this.chat?.sendText(text));
       this.ui.setOnMicDown(() => void this.chat?.startRecording());
       this.ui.setOnMicUp(() => this.chat?.stopRecording());
       // Show the "● Recording Xs" indicator only while the mic is truly live.
-      this.chat.setOnRecordingStart(() => this.ui.showRecordingIndicator());
-      this.chat.setOnRecordingStop(() => this.ui.hideRecordingIndicator());
+      this.chat?.setOnRecordingStart(() => this.ui.showRecordingIndicator());
+      this.chat?.setOnRecordingStop(() => this.ui.hideRecordingIndicator());
 
       // Portfolio Passport: visiting all four work zones unlocks the Founder's
       // Golden Crown — the mechanic that routes explorers through the real work.
@@ -2821,6 +2915,12 @@ export class SimpleApp {
 
     // Any open panel needs the cursor: let go of the opt-in pointer lock.
     if (this.ui.panels.isOpen()) this.inputManager.releasePointerLock();
+    // P2-A6: the kiosk's 1.0 s lock runs from the shop panel's close, and a
+    // finished cast forgets an E held during its wait.
+    const shopOpen = this.ui.panels.isOpen('shop');
+    if (this.shopWasOpen && !shopOpen) this.lockVendor('kiosk');
+    this.shopWasOpen = shopOpen;
+    if (this.fishEarlyHoldAt >= 0 && !this.scene.isFishingActive()) this.fishEarlyHoldAt = -1;
 
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
@@ -2970,7 +3070,15 @@ export class SimpleApp {
         this.scene.getOrbitCamera().setMoveInput(vFwd, vStrafe);
         this.currentThrottle = Math.max(Math.abs(vFwd), Math.abs(vStrafe) * 0.5);
         this.applyLook(deltaTime);
-        this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
+        // P2-A6: the glyph of the vehicle being ridden, as the board prompt.
+        const rideKind = this.scene.getActiveVehicleKind();
+        const rideIcon = rideKind === 'jetski' ? '🌊' : rideKind === 'car' ? '🚗' : '⛵';
+        this.ui.showInteractionPrompt(`${rideIcon} Press <strong>E</strong> to hop off`);
+        this.maybeHint(
+          'ride',
+          'Steer with [W] [A] [S] [D]; press [E] to hop off.',
+          'Steer with the stick; tap USE to hop off.',
+        );
         if (this.inputManager.consumeKeyPress('e')) {
           this.scene.disembarkVehicle();
           this.ui.hideInteractionPrompt();
@@ -3013,12 +3121,14 @@ export class SimpleApp {
           // The touch DIVE button appears only while actually swimming.
           this.ui.setAuxActionAvailable('dive', player.isSwimming());
         }
-        // HOLD Space while moving = run (stamina-gated). Tap stays jump —
-        // held Space never re-jumps, so the two share the key cleanly.
+        // A11: HOLD Shift while moving on land = run (stamina-gated); on
+        // touch, the stick held at the rim for 250 ms. Space only jumps (and
+        // floats in water, where Shift still dives). ?legacyrun=1 keeps the
+        // old hold-Space run for one release.
         if (player) {
           const runMag =
             Math.abs(moveInput.forward + joy.forward) + Math.abs(moveInput.strafe + joy.strafe);
-          player.setRunIntent(jumpInput && runMag > 0.3);
+          player.setRunIntent(this.runIntent(jumpInput, joy, player.isInWater()) && runMag > 0.3);
           this.ui.updateStamina(player.getStamina(), player.isRunning());
           // One-time nudge: winded while carrying food → teach the G/eat verb.
           if (
@@ -3048,6 +3158,8 @@ export class SimpleApp {
           }
         }
         this.prevJumpHeld = jumpInput;
+        // A13: the first-use and first-encounter hints, once each.
+        if (player) this.updateFirstHints(deltaTime, player);
         // Breath meter + underwater vignette
         if (player) this.ui.updateBreath(player.getOxygen(), player.isInWater());
         // Camera-submersion wash (independent of the player: the chase cam can
@@ -3114,12 +3226,14 @@ export class SimpleApp {
           if (typeof walkPhase === 'number') {
             if (onFoot) {
               // Two footfalls per cycle; alt-foot falls out of which plant fired.
-              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.25)) {
+              // A13: on the heel strikes, phases 0.0 and 0.5 (crossedPhase
+              // counts a wrap past 1.0, e.g. 0.97 to 0.03, as crossing 0).
+              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.0)) {
                 this.stepAlt = false;
                 sfx.footstep(this.stepAlt);
                 this.scene.spawnDust(player.getWorldPosition(), 1);
               }
-              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.75)) {
+              if (this.crossedPhase(this.prevWalkPhase, walkPhase, 0.5)) {
                 this.stepAlt = true;
                 sfx.footstep(this.stepAlt);
                 this.scene.spawnDust(player.getWorldPosition(), 1);
@@ -3176,12 +3290,31 @@ export class SimpleApp {
           this.ui.showInteractionPrompt('🏊 Hold <strong>Space</strong> to swim');
         } else if (this.scene.isFishingActive()) {
           // Line is in the water: reeling outranks every other interaction.
+          // P2-A6: the landing splashes, the bite DIPS the float. Until it
+          // dips, E only says "not yet"; holding E for 0.6 s reels in early.
+          const biting = this.scene.isFishBiting();
           this.ui.showInteractionPrompt(
-            this.scene.isFishBiting()
+            biting
               ? '❗ Press <strong>E</strong> — something is biting!'
-              : '🎣 Press <strong>E</strong> to reel in',
+              : this.ui.isTouchDevice()
+                ? '🎣 Watch the float — tap <strong>👆 USE</strong> when it dips'
+                : '🎣 Watch the float — press <strong>E</strong> when it dips',
           );
-          if (this.inputManager.consumeKeyPress('e')) {
+          const pressed = this.inputManager.consumeKeyPress('e');
+          let reel = biting && pressed;
+          if (!biting) {
+            if (pressed) {
+              this.fishEarlyHoldAt = performance.now();
+              this.ui.flashMessage('Not yet — wait for the float to dip');
+            } else if (this.fishEarlyHoldAt >= 0 && !this.inputManager.isKeyPressed('e')) {
+              this.fishEarlyHoldAt = -1;
+            }
+            reel =
+              this.fishEarlyHoldAt >= 0 &&
+              performance.now() - this.fishEarlyHoldAt >= SimpleApp.FISH_EARLY_REEL_MS;
+          }
+          if (reel) {
+            this.fishEarlyHoldAt = -1;
             if (this.scene.reelLine() === 'fish') {
               this.fishEver = true; // a rung-2 goal (P2-A12)
               this.fishCaught++;
@@ -3330,7 +3463,8 @@ export class SimpleApp {
           this.ui.showInteractionPrompt(
             `${this.featuredStar('canteen')}🥬 Press <strong>E</strong> to sell ${this.produce} produce (+${pEarn} 🪙)${pFull === 0 ? ' · pot brimming' : ''}`,
           );
-          if (this.inputManager.consumeKeyPress('e')) {
+          if (this.vendorPress('canteen')) {
+            this.lockVendor('canteen');
             this.scene.addCoins(pEarn);
             this.scene.logTransaction('Sold produce', pEarn);
             this.dailySold('ds_produce_day', this.produce);
@@ -3388,10 +3522,11 @@ export class SimpleApp {
           this.ui.showInteractionPrompt(
             '🥣 Press <strong>E</strong> to buy soup (3 🪙) — eat with G',
           );
-          if (this.inputManager.consumeKeyPress('e')) {
+          if (this.vendorPress('canteen')) {
             if (!this.scene.spendCoins(SimpleApp.SOUP_PRICE)) {
               this.ui.toast('🪙 Soup is 3 coins.');
             } else {
+              this.lockVendor('canteen');
               this.meals.soup++;
               this.persistMeals();
               this.refreshFeedHud();
@@ -3447,21 +3582,24 @@ export class SimpleApp {
               this.scene.floatCoinsAtPlayer(10);
               this.scene.logTransaction('School lesson', 10);
               sfx.coin();
-              this.ui.toast(next[1]);
+              this.ui.toast(this.lessonCopy(next));
               track('lesson_done', { id: next[0], total: this.lessons.length });
             }
           }
         } else if (
           (buildOpp = this.nearestBuildOpportunity()) !== null &&
-          // A far/unaffordable stake is only an ADVERT — never let it shadow
-          // an actionable tool prompt (the farm's edge stake was eclipsing
-          // "Press E to harvest" for sickle owners standing in the crops).
-          (buildOpp.dist < 3.5 ||
-            !(
-              (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
-              (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
-              (this.ownedPickaxe && this.scene.nearestOreNode() !== null)
-            ))
+          // A stake never shadows an actionable tool prompt (the farm's edge
+          // stake was eclipsing "Press E to harvest" for sickle owners
+          // standing in the crops). P2-A6: a near stake no longer escapes
+          // this either, so harvest presses beside the farm stake harvest.
+          !(
+            (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
+            (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
+            (this.ownedPickaxe && this.scene.nearestOreNode() !== null)
+          ) &&
+          // Nor a nearer interactable: the courier tour's first mailbox
+          // stands 3-6 u from a bench plot's advert.
+          !(nearby && nearby.distance < buildOpp.dist)
         ) {
           const b = buildOpp;
           if (b.own) {
@@ -3517,7 +3655,7 @@ export class SimpleApp {
           if (this.inputManager.consumeKeyPress('e')) void this.openVault();
         } else if (this.scene.isNearKiosk()) {
           this.ui.showInteractionPrompt('🛒 Press <strong>E</strong> to browse the kiosk');
-          if (this.inputManager.consumeKeyPress('e')) {
+          if (this.vendorPress('kiosk')) {
             sfx.blip();
             this.openShop();
           }
@@ -3530,8 +3668,12 @@ export class SimpleApp {
           if (nearby.type === 'mailbox') {
             // State-aware copy: the glowing mailbox's prompt should CONFIRM
             // "this is the one" — the old generic line never did.
-            text = nearby.mailbox.bubbleText
-              ? esc(nearby.mailbox.bubbleText)
+            // P2-A6: a glowing mailbox names its key before its message.
+            const bubble = nearby.mailbox.bubbleText;
+            text = bubble
+              ? nearby.mailbox.hasDelivery
+                ? `📬 Press <strong>E</strong> — ${esc(bubble.replace(/^📬\s*/u, ''))}`
+                : esc(bubble)
               : nearby.mailbox.hasDelivery
                 ? '📬 Press <strong>E</strong> to collect the delivery'
                 : '📭 Press <strong>E</strong> to check the mailbox';
@@ -3579,7 +3721,7 @@ export class SimpleApp {
             if (r?.felled) {
               this.timber += r.timber;
               this.persistTimber();
-              this.ui.toast(`🪵 Timber! +${r.timber} (${this.timber} in the pack)`);
+              this.packToast(`🪵 Timber! +${r.timber} (${this.timber} in the pack)`);
               track('tree_felled', { timber: this.timber });
             }
           }
@@ -3598,7 +3740,7 @@ export class SimpleApp {
               else this.produce += r.yieldN;
               this.persistHarvest();
               track('crop_harvested', { kind: r.kind });
-              this.ui.toast(
+              this.packToast(
                 r.yieldKind === 'wheat'
                   ? `🌾 Wheat! +${r.yieldN} (${this.wheat} in the pack) — the Baker buys these.`
                   : `🥬 ${r.kind}! +${r.yieldN} (${this.produce} in the pack) — the canteen buys these.`,
@@ -3616,7 +3758,9 @@ export class SimpleApp {
               this.ore += r.ore;
               this.persistOre();
               track('ore_mined', { total: this.ore });
-              this.ui.toast(`⛏️ Ore! +${r.ore} (${this.ore} in the pack) — the bank assays these.`);
+              this.packToast(
+                `⛏️ Ore! +${r.ore} (${this.ore} in the pack) — the bank assays these.`,
+              );
             }
           }
         } else if (this.ownedRod && this.scene.canCastHere()) {
@@ -4129,6 +4273,25 @@ export class SimpleApp {
     return this.compassDistrict;
   }
 
+  /**
+   * P2-A6: the stamp district nearest a point, stamped or not, with no
+   * hysteresis and no compass state (nearestDistrict's pool is the pill's).
+   */
+  private districtNear(pos: THREE.Vector3): string | null {
+    this.zonePos('projects'); // fills zoneList
+    let best: string | null = null;
+    let bestD = Infinity;
+    for (const z of this.zoneList ?? []) {
+      if (this.passport && !this.passport.isStampZone(z.id)) continue;
+      const d = pos.distanceTo(z.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = z.id;
+      }
+    }
+    return best;
+  }
+
   private districtLabel(id: string): string {
     const meta = (PASSPORT_META as Record<string, { icon: string; label: string }>)[id];
     return meta ? `${meta.icon} ${meta.label}` : id;
@@ -4416,8 +4579,31 @@ export class SimpleApp {
     }
     const shown = label ?? `${hit.icon} ${hit.label}`;
     this.setMapPick(new THREE.Vector3(hit.pos.x, hit.pos.y, hit.pos.z), shown, hit.zone);
-    this.ui.toast(`🧭 Compass set: ${shown}`);
+    this.compassSetToast(`🧭 Compass set: ${shown}`);
     track('map_guide_set', { label: label ?? hit.label, source });
+  }
+
+  /**
+   * The 'Compass set' toast, unless the guide card is out (wave-3 carry-over:
+   * at 390x844 it landed on the First steps card). While First steps runs
+   * unfolded, the recruiter route shows or the Next chip's list is open, the
+   * card already names the goal and the compass pill shows the new label, so
+   * the toast is dropped rather than held: a held one would arrive late,
+   * after the visitor had moved on. D's toast anchor is the backstop.
+   */
+  private compassSetToast(text: string): void {
+    if (this.guideCardOut()) return;
+    this.ui.toast(text);
+  }
+
+  /** The guide card is unfolded: First steps (not the chip), the recruiter
+   *  route, or the Next chip's open list. */
+  private guideCardOut(): boolean {
+    return (
+      (this.guide?.isActive() ?? false) ||
+      (this.route?.showing() ?? false) ||
+      (this.nextChip?.isExpanded() ?? false)
+    );
   }
 
   // ── First steps (A6) ─────────────────────────────────────────────────
@@ -5014,7 +5200,7 @@ export class SimpleApp {
           `${poi.icon} ${poi.label}`,
           zoneOf.get(poi) ?? null,
         );
-        this.ui.toast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
+        this.compassSetToast(`🧭 Compass set: ${poi.icon} ${poi.label}`);
         track('map_guide_set', { label: poi.label, source: 'map' });
       },
       {
@@ -5027,8 +5213,8 @@ export class SimpleApp {
   }
 
   // \u2500\u2500 Tour mode: skippable cinematic rail (welcome CTA / ?tour=1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-  private static readonly TOUR_FLY_S = 2.6; // seconds flying between stops
-  private static readonly TOUR_DWELL_S = 6.0; // seconds studying each stop
+  // A9: each leg's flight time comes from legDuration (Framing.tourLegDuration),
+  // and the dwell is Framing.TOUR_DWELL_S (4.0 s, the plan's floor; was 6.0).
 
   /**
    * Build the rail and hand the camera to it. Stops are derived from live
@@ -5094,7 +5280,7 @@ export class SimpleApp {
       );
       addStop(
         storyteller,
-        `${aiCount} villagers talk through Claude Haiku 4.5, with a voice \u2014 planned each morning, reported on nightly.`,
+        `${aiCount} villagers talk through Claude Haiku 4.5, with a voice \u2014 planned each morning.`,
         6.5,
         9,
         storytellerNames,
@@ -5126,7 +5312,7 @@ export class SimpleApp {
       );
       addStop(
         gardener,
-        `${aiCount} townsfolk talk through Claude Haiku 4.5 \u2014 planned each morning, reported on nightly. Walk up and talk.`,
+        `${aiCount} townsfolk talk through Claude Haiku 4.5 \u2014 planned each morning, reported on nightly.`,
         // High enough to clear tree canopies \u2014 NPC positions are live, so a low
         // camera is occlusion roulette (a prod capture found a tree filling it).
         6.5,
@@ -5147,11 +5333,20 @@ export class SimpleApp {
       );
     }
     if (stops.length === 0) return;
+    // A9: 'Stop n of m · ' is baked in once the stops are known.
+    for (let i = 0; i < stops.length; i++) {
+      stops[i].caption = tourCaption(i + 1, stops.length, stops[i].caption);
+    }
     track(recruiter ? 'recruit_tour_start' : 'tour_start');
     const cam = this.scene.getCamera();
     this.scene.setCameraSuspended(true);
     this.ui.hideInteractionPrompt();
-    const playerPos = this.scene.getPlayer()?.getWorldPosition() ?? stops[0].look.clone();
+    // A9: the first leg leaves from the orbit camera's own look target, so
+    // its first frame turns nothing (it was seeded at the player's feet).
+    const fromLook = stops[0].look.clone();
+    if (this.scene.getPlayer()) {
+      this.scene.getOrbitCamera().getFollowPose(this._tourFromPos, fromLook);
+    }
     this.tour = {
       stops,
       idx: 0,
@@ -5159,10 +5354,13 @@ export class SimpleApp {
       phase: 'fly',
       fromDir: cam.position.clone().normalize(),
       fromR: Math.max(cam.position.length(), 20),
-      fromLook: playerPos.clone(),
+      fromLook,
       held: null,
+      legS: 0,
+      fromView: new THREE.Vector3(),
     };
     this.holdTourVillager(stops[0]);
+    this.tour.legS = this.legDuration(this.tour, stops[0]);
     this.ui.showTourOverlay(() => this.endTour(true));
     // The opening caption shows at once (it introduces the whole planet);
     // every later caption swaps in on LANDING (landTourStop).
@@ -5186,8 +5384,9 @@ export class SimpleApp {
   /**
    * An AI villager (one of AI_NPCS, never one of the 4 scripted ones) is
    * visible within `radius` of the player. Gates the one-time talk hint, which
-   * says the villager talks through Claude Haiku 4.5. Same visibility rule as
-   * GameScene.hasVillagerWithin, so it never points at someone indoors.
+   * says the villager talks through Claude Haiku 4.5. A villager indoors (asleep,
+   * or vanished at a hold) has a hidden mesh, so `meshRef.visible` keeps the
+   * hint from pointing at someone the visitor cannot see.
    */
   private aiVillagerWithin(radius: number): boolean {
     const p = this.scene.getPlayer()?.getWorldPositionInto(this._hintPos);
@@ -5273,6 +5472,30 @@ export class SimpleApp {
     tour.held = null;
   }
 
+  /**
+   * A9: the leg about to fly to `stop`: its arc round the planet sets the
+   * time (Framing.tourLegDuration), lengthened when the view would turn
+   * faster than 120 deg/s at the ease's peak. Seeds the leg's first view.
+   */
+  private legDuration(tour: NonNullable<SimpleApp['tour']>, stop: TourStop): number {
+    const arcDeg = THREE.MathUtils.radToDeg(tour.fromDir.angleTo(stop.dir));
+    const fromPos = this._tourFromPos.copy(tour.fromDir).multiplyScalar(tour.fromR);
+    const viewA = this._tourViewA.subVectors(tour.fromLook, fromPos);
+    tour.fromView.copy(viewA).normalize();
+    const viewB = this._tourViewB.copy(stop.dir).multiplyScalar(stop.r);
+    viewB.subVectors(stop.look, viewB);
+    const turnDeg =
+      viewA.lengthSq() > 1e-9 && viewB.lengthSq() > 1e-9
+        ? THREE.MathUtils.radToDeg(viewA.angleTo(viewB))
+        : 0;
+    return tourLegDuration(arcDeg, turnDeg);
+  }
+
+  /** A9: the first leg's rise (+3 u over 0.5 s, gone by landing); 0 on later legs. */
+  private firstLegLift(tour: NonNullable<SimpleApp['tour']>, e: number): number {
+    return tour.idx === 0 ? tourFirstLegLift(tour.t, e) : 0;
+  }
+
   /** The camera has arrived: start the dwell and show THIS stop's caption.
    *  Swapping it at take-off described the next stop for the whole flight. */
   private landTourStop(): void {
@@ -5302,15 +5525,26 @@ export class SimpleApp {
         this.landTourStop();
         return;
       }
-      const k = Math.min(1, tour.t / SimpleApp.TOUR_FLY_S);
-      const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      const k = Math.min(1, tour.t / tour.legS);
+      const e = easeInOutSine(k);
       this.slerpDirs(this._tourDir, tour.fromDir, stop.dir, e);
       // Altitude hop: arcing over the terrain beats a chord that dips through it
-      const r = tour.fromR + (stop.r - tour.fromR) * e + Math.sin(Math.PI * e) * 7;
+      // (A9: the first leg also lifts 3 u over its first 0.5 s, firstLegLift).
+      const r =
+        tour.fromR +
+        (stop.r - tour.fromR) * e +
+        Math.sin(Math.PI * e) * 7 +
+        this.firstLegLift(tour, e);
       cam.position.copy(this._tourDir).multiplyScalar(r);
-      this._tourLook.copy(tour.fromLook).lerp(stop.look, e);
+      // A9: the VIEW direction slerps from the leg's first view to the
+      // stop's, so the turn per frame is the leg's turn under the ease
+      // (legDuration keeps its peak at 120 deg/s). Lerping the look POINT
+      // whipped the view while the camera was still close to the player.
+      const toView = this._tourViewB.copy(stop.dir).multiplyScalar(stop.r);
+      toView.subVectors(stop.look, toView).normalize();
+      this.slerpDirs(this._tourViewA, tour.fromView, toView, e);
       cam.up.copy(this._tourUp.copy(cam.position).normalize());
-      cam.lookAt(this._tourLook);
+      cam.lookAt(this._tourLook.copy(cam.position).add(this._tourViewA));
       if (k >= 1) this.landTourStop();
     } else {
       // Gentle drift around the stop while the caption is read — held static
@@ -5324,7 +5558,7 @@ export class SimpleApp {
       cam.position.copy(stop.dir).multiplyScalar(stop.r);
       cam.up.copy(up);
       cam.lookAt(stop.look);
-      if (tour.t >= SimpleApp.TOUR_DWELL_S) this.advanceTourStop();
+      if (tour.t >= TOUR_DWELL_S) this.advanceTourStop();
     }
   }
 
@@ -5346,6 +5580,7 @@ export class SimpleApp {
     tour.fromLook.copy(prev.look);
     // The caption stays on the stop being left until the camera lands.
     this.holdTourVillager(tour.stops[tour.idx]);
+    tour.legS = this.legDuration(tour, tour.stops[tour.idx]);
   }
 
   private endTour(skipped: boolean): void {
@@ -5404,7 +5639,11 @@ export class SimpleApp {
     ending: number; // <0 = active; >=0 = seconds into the release glide
     /** The pose the release glide starts from (its first frame sets it). */
     from: { pos: THREE.Vector3; look: THREE.Vector3; up: THREE.Vector3; fov: number } | null;
+    /** A9: seconds since the push-in began (its ease-in ramp). */
+    age: number;
   } | null = null;
+  /** A9: the push-in's rates ramp in over this long, so its first frame turns almost nothing. */
+  private static readonly NPC_CINE_RAMP_S = 0.6;
   /** The release glide's length: the old 0.35 s whip-panned the last frame (w2 integration). */
   private static readonly NPC_CINE_RELEASE_S = 0.6;
   private readonly _cineGoalPos = new THREE.Vector3();
@@ -5590,13 +5829,20 @@ export class SimpleApp {
     const cam = this.scene.getCamera();
     const player = this.scene.getPlayer();
     if (!cam || !player) return;
+    // A9: the push-in starts on the orbit camera's own pose and look target
+    // (lookAhead and the chest offset included), not the player's feet: the
+    // first frame turned 11.8 deg when the look was seeded at the root.
+    const pos = new THREE.Vector3();
+    const look = new THREE.Vector3();
+    this.scene.getOrbitCamera().getFollowPose(pos, look);
     this.npcCine = {
       name,
-      pos: cam.position.clone(),
-      look: player.getWorldPosition().clone(),
+      pos,
+      look,
       prevFov: cam.fov,
       ending: -1,
       from: null,
+      age: 0,
     };
     this.scene.setCameraSuspended(true);
   }
@@ -5657,9 +5903,15 @@ export class SimpleApp {
       // Slow, savoured push-in (~2s to settle — was k 3.2/4.5/3.0, which
       // read as a snap zoom): the look leads the dolly slightly, the FOV
       // narrows last, like a camera operator leaning in.
-      expDecayV3(c.pos, desired, 1.5, dt);
-      expDecayV3(c.look, desiredLook, 2.1, dt);
-      cam.fov = expDecay(cam.fov, c.prevFov - 8, 1.3, dt);
+      // A9: the rates ramp in (smoothstep over NPC_CINE_RAMP_S), so the
+      // first frame leaves the orbit camera's pose almost untouched; it
+      // turned 12 deg when the push-in started at full rate from the feet.
+      c.age += dt;
+      const ru = Math.min(1, c.age / SimpleApp.NPC_CINE_RAMP_S);
+      const ramp = ru * ru * (3 - 2 * ru);
+      expDecayV3(c.pos, desired, 1.5 * ramp, dt);
+      expDecayV3(c.look, desiredLook, 2.1 * ramp, dt);
+      cam.fov = expDecay(cam.fov, c.prevFov - 8, 1.3 * ramp, dt);
       cam.updateProjectionMatrix();
     } else {
       // Release glide (w2 integration): the camera glides ONTO the orbit
@@ -5879,6 +6131,173 @@ export class SimpleApp {
     ];
     const done = items.filter((i) => i.done).length;
     this.ui.setCompletion(Math.round((done / items.length) * 100), items);
+  }
+
+  /**
+   * P2-A6: after a sale or a purchase, vendor `id` ignores E for 1.0 s, so a
+   * double press never sells and then buys (the canteen) or reopens the shop
+   * just closed (the kiosk).
+   */
+  private lockVendor(id: string): void {
+    this.vendorLockUntil.set(id, performance.now() + SimpleApp.VENDOR_LOCK_MS);
+  }
+
+  /** P2-A6: E pressed at vendor `id` and not swallowed by its lock. */
+  private vendorPress(id: string): boolean {
+    if (!this.inputManager.consumeKeyPress('e')) return false;
+    return performance.now() >= (this.vendorLockUntil.get(id) ?? 0);
+  }
+
+  /**
+   * A13: may a first-use hint show now? Never under a panel, never indoors,
+   * never on a tour, the welcome card or a conversation, and never while
+   * the First steps card or the Next chip's list is out.
+   */
+  private hintsQuiet(): boolean {
+    return (
+      this.ui.panels.isOpen() ||
+      this.ui.isWelcomeVisible() ||
+      this.scene.isInsideInterior() ||
+      this.tour !== null ||
+      this.npcCine !== null ||
+      (this.guide?.isActive() ?? false) ||
+      (this.nextChip?.isExpanded() ?? false)
+    );
+  }
+
+  /** A13: hints already shown on this device (mirrors ds_hint_* in localStorage). */
+  private readonly hintsShown = new Set<string>();
+
+  /**
+   * A13: show hint `id` once per device (ds_hint_<id>), in the visitor's
+   * scheme: '[Key]' tokens on a keyboard (D7 renders them as keycaps), the
+   * touch words on a phone. Returns true when it showed.
+   */
+  private maybeHint(id: string, keys: string, touch: string): boolean {
+    if (this.hintsShown.has(id) || this.hintsQuiet()) return false;
+    const key = `ds_hint_${id}`;
+    try {
+      if (localStorage.getItem(key)) {
+        this.hintsShown.add(id);
+        return false;
+      }
+      localStorage.setItem(key, '1');
+    } catch {
+      /* no storage: show it this session only */
+    }
+    this.hintsShown.add(id);
+    this.ui.toast(this.ui.isTouchDevice() ? touch : keys, { hint: true });
+    return true;
+  }
+
+  /** A13: seconds of walking without running (the run hint waits for 3). */
+  private walkHeldS = 0;
+  /** A13: the encounter scans run at about 3 Hz, not every frame. */
+  private hintScanIn = 0;
+
+  /**
+   * A13: free walk's hints. Run after 3 s of walking without running, swim
+   * the first time the visitor swims, and the first time a shore, a tree or
+   * a free build stake is within 6 u.
+   */
+  private updateFirstHints(
+    dt: number,
+    player: { isInWater(): boolean; isRunning(): boolean; isSwimming(): boolean },
+  ): void {
+    if (this.hintsShown.size >= 6) return;
+    const walking = this.guideMoveMag > 0.3 && !player.isInWater() && !player.isRunning();
+    this.walkHeldS = walking ? this.walkHeldS + dt : 0;
+    if (this.walkHeldS >= 3) {
+      if (SimpleApp.LEGACY_RUN) {
+        this.maybeHint(
+          'run',
+          'Hold [Space] while moving to run.',
+          'Hold JUMP while moving to run.',
+        );
+      } else {
+        this.maybeHint('run', 'Hold [Shift] to run.', 'Push the stick to the edge to run.');
+      }
+    }
+    if (player.isSwimming()) {
+      this.maybeHint(
+        'swim',
+        'Hold [Space] to stay afloat; hold [Shift] to dive.',
+        'Hold JUMP to stay afloat; hold DIVE to dive.',
+      );
+    }
+    this.hintScanIn -= dt;
+    if (this.hintScanIn > 0 || this.hintsQuiet()) return;
+    this.hintScanIn = 0.33;
+    if (!this.hintsShown.has('fish') && this.scene.canCastHere()) {
+      this.maybeHint(
+        'fish',
+        this.ownedRod
+          ? '🎣 A shore: press [E] to cast, and reel when the float dips.'
+          : '🎣 A shore: with a rod from the shop, press [E] here to cast.',
+        this.ownedRod
+          ? '🎣 A shore: tap USE to cast, and reel when the float dips.'
+          : '🎣 A shore: with a rod from the shop, tap USE here to cast.',
+      );
+    }
+    if (!this.hintsShown.has('chop') && this.scene.nearestChoppableTree(6) !== null) {
+      this.maybeHint(
+        'chop',
+        this.ownedAxe
+          ? '🪓 A tree: press [E] beside it to chop.'
+          : '🪓 A tree: with an axe from the shop, press [E] beside it to chop.',
+        this.ownedAxe
+          ? '🪓 A tree: tap USE beside it to chop.'
+          : '🪓 A tree: with an axe from the shop, tap USE beside it to chop.',
+      );
+    }
+    if (!this.hintsShown.has('build')) {
+      const b = this.nearestBuildOpportunity();
+      if (b && !b.own && b.dist <= 6) {
+        this.maybeHint(
+          'build',
+          '🔨 A build stake: press [E] at it to build.',
+          '🔨 A build stake: tap USE at it to build.',
+        );
+      }
+    }
+  }
+
+  /**
+   * A11: a lesson's toast, in the scheme the visitor plays with. Lesson 1
+   * names Shift on desktop and the stick on touch (touchifyPlain does not
+   * map Shift); under ?legacyrun=1 it names the old hold-Space run.
+   */
+  private lessonCopy(lesson: [string, string]): string {
+    if (lesson[0] !== 'move') return lesson[1];
+    if (this.ui.isTouchDevice()) {
+      return SimpleApp.LEGACY_RUN
+        ? '🏃 Lesson 1 — the joystick to walk, JUMP to jump, hold JUMP while moving to run. The island is round: keep walking and you come home.'
+        : '🏃 Lesson 1 — the joystick to walk, JUMP to jump, push the stick to the edge to run. The island is round: keep walking and you come home.';
+    }
+    return SimpleApp.LEGACY_RUN
+      ? '🏃 Lesson 1 — WASD to walk, Space to jump, hold Space while moving to run. The island is round: keep walking and you come home.'
+      : lesson[1];
+  }
+
+  /**
+   * A11: is the visitor asking to run this frame? Shift held on land, or on
+   * touch the stick at 0.95 or more for 250 ms. Under ?legacyrun=1, the old
+   * hold-Space (and hold-JUMP) run. The caller adds the runMag > 0.3 gate.
+   */
+  private runIntent(
+    jumpInput: boolean,
+    joy: { forward: number; strafe: number },
+    inWater: boolean,
+  ): boolean {
+    if (SimpleApp.LEGACY_RUN) return jumpInput;
+    const now = performance.now();
+    if (Math.hypot(joy.forward, joy.strafe) >= SimpleApp.STICK_RUN_MAG) {
+      if (this.stickRimSince < 0) this.stickRimSince = now;
+    } else {
+      this.stickRimSince = -1;
+    }
+    const stickRun = this.stickRimSince >= 0 && now - this.stickRimSince >= SimpleApp.STICK_RUN_MS;
+    return !inWater && (this.inputManager.getRunInput() || stickRun);
   }
 
   /**

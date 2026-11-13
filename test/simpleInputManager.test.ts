@@ -1,7 +1,14 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import { SimpleInputManager } from '../SimpleInputManager';
+import {
+  KEY_CODE_TOKENS,
+  SimpleInputManager,
+  WHEEL_ZOOM_K,
+  consumePinchZoomFactor,
+  keyToken,
+  wheelZoomFactor,
+} from '../SimpleInputManager';
 
 const key = (type: 'keydown' | 'keyup', k: string, repeat = false) => {
   document.dispatchEvent(new KeyboardEvent(type, { key: k, repeat, bubbles: true }));
@@ -118,6 +125,168 @@ describe('SimpleInputManager', () => {
     key('keyup', 'a');
     key('keydown', 'd');
     expect(im.getMovementInput()).toEqual({ forward: 1, strafe: 1 });
+    im.dispose();
+  });
+});
+
+describe('A11: Shift runs, the wheel and = / − zoom', () => {
+  const wheel = (init: WheelEventInit) => {
+    const ev = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init });
+    // happy-dom's WheelEvent drops the modifier flags; a browser keeps them.
+    Object.defineProperty(ev, 'ctrlKey', { value: !!init.ctrlKey });
+    Object.defineProperty(ev, 'shiftKey', { value: !!init.shiftKey });
+    return ev;
+  };
+
+  test('getRunInput is Shift held; Space is not a run', () => {
+    const im = new SimpleInputManager();
+    key('keydown', ' ');
+    expect(im.getRunInput()).toBe(false);
+    expect(im.getJumpInput()).toBe(true);
+    key('keydown', 'Shift');
+    expect(im.getRunInput()).toBe(true);
+    expect(im.getDiveInput()).toBe(true); // the same key still dives in water
+    key('keyup', 'Shift');
+    expect(im.getRunInput()).toBe(false);
+    im.dispose();
+  });
+
+  test('wheelZoomFactor: exp(deltaY × 0.0012), lines × 16, pages × 400', () => {
+    const base = { deltaX: 0, shiftKey: false };
+    expect(wheelZoomFactor({ ...base, deltaY: 240, deltaMode: 0 })).toBeCloseTo(Math.exp(0.288), 9);
+    expect(wheelZoomFactor({ ...base, deltaY: 3, deltaMode: 1 })).toBeCloseTo(
+      Math.exp(48 * WHEEL_ZOOM_K),
+      9,
+    );
+    expect(wheelZoomFactor({ ...base, deltaY: 1, deltaMode: 2 })).toBeCloseTo(
+      Math.exp(400 * WHEEL_ZOOM_K),
+      9,
+    );
+    expect(wheelZoomFactor({ ...base, deltaY: 0, deltaMode: 0 })).toBe(1);
+    // Shift+wheel arrives horizontal on Chromium/Windows: read deltaX then.
+    expect(wheelZoomFactor({ deltaY: 0, deltaX: -240, deltaMode: 0, shiftKey: true })).toBeCloseTo(
+      Math.exp(-0.288),
+      9,
+    );
+    // A real horizontal scroll without Shift is not a zoom.
+    expect(wheelZoomFactor({ deltaY: 0, deltaX: 120, deltaMode: 0, shiftKey: false })).toBe(1);
+  });
+
+  test('five +240 notches from the walk distance reach the 12 u clamp, five −240 reach 2', () => {
+    const f = wheelZoomFactor({ deltaY: 240, deltaX: 0, deltaMode: 0, shiftKey: false });
+    const clamp = (d: number) => Math.max(2, Math.min(12, d));
+    let d = 4.4;
+    for (let i = 0; i < 5; i++) d = clamp(d * f);
+    expect(d).toBe(12);
+    d = 4.4;
+    for (let i = 0; i < 5; i++) d = clamp(d / f);
+    expect(d).toBe(2);
+  });
+
+  test('a canvas wheel prevents the page scroll and feeds the pinch channel; Ctrl+wheel does not', () => {
+    const im = new SimpleInputManager();
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    im.attachToCanvas(canvas);
+    consumePinchZoomFactor();
+    const ev = wheel({ deltaY: 240 });
+    canvas.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(consumePinchZoomFactor()).toBeCloseTo(Math.exp(0.288), 9);
+    const ctrl = wheel({ deltaY: 240, ctrlKey: true });
+    canvas.dispatchEvent(ctrl);
+    expect(ctrl.defaultPrevented).toBe(false);
+    expect(consumePinchZoomFactor()).toBe(1);
+    im.dispose();
+    canvas.remove();
+  });
+
+  test('= and − step the zoom by position (Shift makes them + and _)', () => {
+    const im = new SimpleInputManager();
+    consumePinchZoomFactor();
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '+', code: 'Equal', bubbles: true }),
+    );
+    expect(consumePinchZoomFactor()).toBeCloseTo(0.85, 9);
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '_', code: 'Minus', bubbles: true }),
+    );
+    expect(consumePinchZoomFactor()).toBeCloseTo(1.18, 9);
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '+', code: 'NumpadAdd', bubbles: true }),
+    );
+    expect(consumePinchZoomFactor()).toBeCloseTo(0.85, 9);
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '-', code: 'NumpadSubtract', bubbles: true }),
+    );
+    expect(consumePinchZoomFactor()).toBeCloseTo(1.18, 9);
+    im.dispose();
+  });
+});
+
+describe('A13: keys by position', () => {
+  const kd = (init: KeyboardEventInit) =>
+    document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+  const ku = (init: KeyboardEventInit) =>
+    document.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, ...init }));
+
+  test('keyToken maps the bound codes and falls back to the character', () => {
+    expect(keyToken({ code: 'KeyW', key: 'z' })).toBe('w');
+    expect(keyToken({ code: 'KeyA', key: 'q' })).toBe('a');
+    expect(keyToken({ code: 'Space', key: ' ' })).toBe(' ');
+    expect(keyToken({ code: 'ShiftRight', key: 'Shift' })).toBe('shift');
+    expect(keyToken({ code: 'ArrowUp', key: 'ArrowUp' })).toBe('arrowup');
+    expect(keyToken({ code: '', key: 'E' })).toBe('e');
+    expect(keyToken({ code: 'KeyV', key: 'v' })).toBe('v'); // push-to-talk: unbound, by character
+    expect(keyToken({ code: 'Escape', key: 'Escape' })).toBe('escape');
+    for (const c of [
+      'KeyE',
+      'KeyQ',
+      'KeyF',
+      'KeyG',
+      'KeyM',
+      'KeyC',
+      'KeyP',
+      'KeyJ',
+      'KeyL',
+      'KeyI',
+      'KeyK',
+      'KeyR',
+    ]) {
+      expect(KEY_CODE_TOKENS[c]).toBe(c.slice(3).toLowerCase());
+    }
+  });
+
+  test('AZERTY: the W-position key walks and the A-position key strafes', () => {
+    const im = new SimpleInputManager();
+    kd({ code: 'KeyW', key: 'z' });
+    kd({ code: 'KeyA', key: 'q' });
+    expect(im.getMovementInput()).toEqual({ forward: 1, strafe: -1 });
+    // The A-position key is not Q (the wave) on AZERTY, even though it types 'q'.
+    expect(im.consumeKeyPress('q')).toBe(false);
+    ku({ code: 'KeyW', key: 'z' });
+    ku({ code: 'KeyA', key: 'q' });
+    expect(im.getMovementInput()).toEqual({ forward: 0, strafe: 0 });
+    im.dispose();
+  });
+
+  test("isKeyPressed('shift') holds for either Shift", () => {
+    const im = new SimpleInputManager();
+    kd({ code: 'ShiftRight', key: 'Shift' });
+    expect(im.isKeyPressed('shift')).toBe(true);
+    ku({ code: 'ShiftRight', key: 'Shift' });
+    expect(im.isKeyPressed('shift')).toBe(false);
+    im.dispose();
+  });
+
+  test('a focused text field still owns the character typed', () => {
+    const im = new SimpleInputManager();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', key: 'z', bubbles: true }));
+    expect(im.isKeyPressed('w')).toBe(false);
+    input.remove();
     im.dispose();
   });
 });

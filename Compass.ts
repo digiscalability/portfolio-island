@@ -156,3 +156,37 @@ export function nearestWithHysteresis(
   if (cur && best.dist > cur.dist - margin) return cur.id;
   return best.id;
 }
+
+/**
+ * P2-A6: visit order for a route that starts at `start`: always the nearest
+ * point not yet visited (greedy nearest neighbour, straight-line distance).
+ * Returns the indices into `points`. The courier chain hands its deliveries
+ * to the mailboxes in this order from the hub, so consecutive parcels are
+ * neighbours instead of round-robin across the island. Ties keep the
+ * earlier index, so the order is stable for a given layout.
+ */
+export function nearestNeighbourTour(points: readonly Vec3Like[], start: Vec3Like): number[] {
+  const left: number[] = points.map((_, i) => i);
+  const order: number[] = [];
+  let cx = start.x;
+  let cy = start.y;
+  let cz = start.z;
+  while (left.length > 0) {
+    let bestK = 0;
+    let bestD = Infinity;
+    for (let k = 0; k < left.length; k++) {
+      const p = points[left[k]];
+      const d = (p.x - cx) ** 2 + (p.y - cy) ** 2 + (p.z - cz) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        bestK = k;
+      }
+    }
+    const i = left.splice(bestK, 1)[0];
+    order.push(i);
+    cx = points[i].x;
+    cy = points[i].y;
+    cz = points[i].z;
+  }
+  return order;
+}

@@ -11,6 +11,7 @@ import {
   compassBearing,
   compassTarget,
   DISTRICT_HYSTERESIS_U,
+  nearestNeighbourTour,
   nearestWithHysteresis,
   type CompassState,
 } from '../Compass';
@@ -275,5 +276,46 @@ describe('nearestWithHysteresis: districts switch only when another is 12 u clos
   test('a held district that is gone (stamped) is dropped', () => {
     expect(nearestWithHysteresis('projects', [{ id: 'contact', dist: 90 }])).toBe('contact');
     expect(nearestWithHysteresis('projects', [])).toBeNull();
+  });
+});
+
+describe('P2-A6: the courier chain tours the mailboxes from the hub', () => {
+  // The five mailboxes as measured on the built island (R 102, wave-2 main).
+  const R = 102.2;
+  const boxes = [
+    [84.1, 53.6, -18.9],
+    [-76.9, 31.1, 58.4],
+    [22.9, 90.5, -39.9],
+    [49.8, 56.5, 68.2],
+    [-73.1, 69.2, -12.9],
+  ].map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  const hub = new THREE.Vector3(0, R, 0);
+  const arc = (a: THREE.Vector3, b: THREE.Vector3) => R * a.angleTo(b);
+  /** Ten deliveries round-robin over `order`, walked from the hub, in surface metres. */
+  const chain = (order: number[]) => {
+    let at = hub;
+    let sum = 0;
+    for (let i = 0; i < 10; i++) {
+      const next = boxes[order[i % order.length]];
+      sum += arc(at, next);
+      at = next;
+    }
+    return sum;
+  };
+
+  test('nearest neighbour from the hub: every index once, nearest first', () => {
+    const order = nearestNeighbourTour(boxes, hub);
+    expect([...order].sort()).toEqual([0, 1, 2, 3, 4]);
+    expect(order[0]).toBe(2); // the plaza-side box is the hub's nearest
+    expect(order).toEqual([2, 0, 3, 1, 4]);
+  });
+
+  test('the chain is 1,000 u or less (round-robin in array order was over 1,600)', () => {
+    expect(chain([0, 1, 2, 3, 4])).toBeGreaterThan(1600);
+    expect(chain(nearestNeighbourTour(boxes, hub))).toBeLessThanOrEqual(1000);
+  });
+
+  test('empty in, empty out', () => {
+    expect(nearestNeighbourTour([], hub)).toEqual([]);
   });
 });
